@@ -15,7 +15,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
   config {
     ingress_rule {
       hostname = cloudflare_record.k8s.hostname
-      service  = "tcp://kubernetes.default.svc.cluster.local:6443"
+      service  = "http://argocd-server.argocd.svc.cluster.local:8080"
     }
     ingress_rule {
       service = "http_status:404"
