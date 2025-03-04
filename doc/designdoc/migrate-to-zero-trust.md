@@ -27,6 +27,8 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 | `cloudflare_tunnel_config` | `cloudflare_zero_trust_tunnel_cloudflared_config` |
 | `cloudflare_access_application` | `cloudflare_zero_trust_access_application` |
 | `cloudflare_access_policy` | `cloudflare_zero_trust_access_policy` |
+| `cloudflare_access_identity_provider` | `cloudflare_zero_trust_access_identity_provider` |
+| `cloudflare_record` | `cloudflare_dns_record` |
 
 ### 設定方法の変更点
 
@@ -36,7 +38,8 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 
 2. Tunnel設定
    - リソース名が `cloudflare_zero_trust_tunnel_cloudflared` に変更
-   - 設定内容は基本的に同じ（`account_id`, `name`, `secret`）
+   - `secret` が `tunnel_secret` に変更
+   - 設定内容は基本的に同じ（`account_id`, `name`, `tunnel_secret`）
 
 3. Tunnel Configuration
    - リソース名が `cloudflare_zero_trust_tunnel_cloudflared_config` に変更
@@ -48,7 +51,24 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 
 5. Access Policy
    - リソース名が `cloudflare_zero_trust_access_policy` に変更
-   - 設定内容は基本的に同じ
+   - `account_id` が必須パラメータとして追加
+   - `application_id` が不要に
+   - `include` ブロックがオブジェクトからマップ配列に変更
+   ```hcl
+   # 旧
+   include {
+     login_method = [data.cloudflare_access_identity_provider.github.id]
+   }
+   
+   # 新
+   include = [{
+     login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
+   }]
+   ```
+
+6. Identity Provider
+   - リソース名が `cloudflare_zero_trust_access_identity_provider` に変更
+   - `account_id` が必須パラメータとして追加
 
 ## 移行手順の例（longhornの場合）
 
@@ -64,7 +84,7 @@ resource "cloudflare_record" "longhorn" {
 }
 
 # After
-resource "cloudflare_record" "longhorn" {
+resource "cloudflare_dns_record" "longhorn" {
   zone_id = var.zone_id
   name    = "longhorn"
   content = cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.cname
@@ -84,9 +104,9 @@ resource "cloudflare_tunnel" "longhorn_tunnel" {
 
 # After
 resource "cloudflare_zero_trust_tunnel_cloudflared" "longhorn_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare longhorn tunnel"
-  secret     = sensitive(base64sha256(random_password.tunnel_secret.result))
+  account_id     = var.account_id
+  name           = "cloudflare longhorn tunnel"
+  tunnel_secret  = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 ```
 
@@ -113,7 +133,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "longhorn_tunnel" {
   account_id = var.account_id
   config {
     ingress_rule {
-      hostname = cloudflare_record.longhorn.hostname
+      hostname = cloudflare_dns_record.longhorn.hostname
       service  = "http://longhorn-frontend:80"
     }
     ingress_rule {
@@ -158,14 +178,29 @@ resource "cloudflare_access_policy" "longhorn_policy" {
 
 # After
 resource "cloudflare_zero_trust_access_policy" "longhorn_policy" {
-  application_id = cloudflare_zero_trust_access_application.longhorn.id
-  zone_id       = var.zone_id
-  name          = "policy for longhorn.b0xp.io"
-  precedence    = "1"
-  decision      = "allow"
-  include {
-    login_method = [data.cloudflare_access_identity_provider.github.id]
-  }
+  account_id = var.account_id
+  app_id     = cloudflare_zero_trust_access_application.longhorn.id
+  name       = "policy for longhorn.b0xp.io"
+  precedence = "1"
+  decision   = "allow"
+  include = [{
+    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
+  }]
+}
+```
+
+### Identity Providerの変更
+```hcl
+# Before
+data "cloudflare_access_identity_provider" "github" {
+  zone_id = var.zone_id
+  name    = "GitHub"
+}
+
+# After
+data "cloudflare_zero_trust_access_identity_provider" "github" {
+  account_id = var.account_id
+  name       = "GitHub"
 }
 ```
 
