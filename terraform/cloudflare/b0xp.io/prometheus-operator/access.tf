@@ -1,6 +1,6 @@
 # Creates an Access application to control who can connect.
 resource "cloudflare_zero_trust_access_application" "grafana" {
-  zone_id          = var.zone_id
+  account_id       = var.account_id
   name             = "Access application for grafana.b0xp.io"
   domain           = "grafana.b0xp.io"
   session_duration = "24h"
@@ -8,7 +8,7 @@ resource "cloudflare_zero_trust_access_application" "grafana" {
 
 # Creates an Access application to control who can connect.
 resource "cloudflare_zero_trust_access_application" "prometheus_web" {
-  zone_id          = var.zone_id
+  account_id       = var.account_id
   name             = "Access application for prometheus-web.b0xp.io"
   domain           = "prometheus-web.b0xp.io"
   session_duration = "24h"

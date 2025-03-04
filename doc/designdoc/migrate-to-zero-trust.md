@@ -29,12 +29,13 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 | `cloudflare_access_policy` | `cloudflare_zero_trust_access_policy` |
 | `cloudflare_access_identity_provider` | `cloudflare_zero_trust_access_identity_provider` |
 | `cloudflare_record` | `cloudflare_dns_record` |
+| `cloudflare_access_group` | `cloudflare_zero_trust_access_group` |
 
 ### 設定方法の変更点
 
 1. DNSレコードの設定
    - 旧: `value = cloudflare_tunnel.xxx_tunnel.cname`
-   - 新: `content = cloudflare_zero_trust_tunnel_cloudflared.xxx_tunnel.cname`
+   - 新: `content = "${cloudflare_zero_trust_tunnel_cloudflared.xxx_tunnel.id}.cfargotunnel.com"`
 
 2. Tunnel設定
    - リソース名が `cloudflare_zero_trust_tunnel_cloudflared` に変更
@@ -53,21 +54,45 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    - リソース名が `cloudflare_zero_trust_access_policy` に変更
    - `account_id` が必須パラメータとして追加
    - `application_id` が不要に
+   - `app_id` は存在しない
    ```hcl
    # 旧
-   include {
-     login_method = [data.cloudflare_access_identity_provider.github.id]
+   resource "cloudflare_access_policy" "example" {
+     application_id = cloudflare_access_application.example.id
+     zone_id       = var.zone_id
+     name          = "policy for example.com"
+     precedence    = "1"
+     decision      = "allow"
+     include {
+       login_method = [data.cloudflare_access_identity_provider.github.id]
+     }
    }
    
    # 新
-   include {
-     login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
+   resource "cloudflare_zero_trust_access_policy" "example" {
+     account_id  = var.account_id
+     name        = "policy for example.com"
+     precedence  = "1"
+     decision    = "allow"
+     include {
+       login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
+     }
    }
    ```
 
 6. Identity Provider
    - リソース名が `cloudflare_zero_trust_access_identity_provider` に変更
    - `account_id` が必須パラメータとして追加
+
+7. Access Group
+   - リソース名が `cloudflare_zero_trust_access_group` に変更
+   - `account_id` が必須パラメータとして追加
+   - `zone_id` は非推奨となり、`account_id` の使用が推奨
+
+8. 全般的な変更点
+   - ほとんどのリソースで `zone_id` の代わりに `account_id` の使用が推奨
+   - `terraform import` コマンドの形式が変更（例: `terraform import cloudflare_zero_trust_tunnel_cloudflared.example account_id/tunnel_id`）
+   - 一部のリソースで新しい属性が追加（例: `cloudflare_zero_trust_access_application` の `type` 属性）
 
 ## 移行手順の例（longhornの場合）
 
@@ -86,7 +111,7 @@ resource "cloudflare_record" "longhorn" {
 resource "cloudflare_dns_record" "longhorn" {
   zone_id = var.zone_id
   name    = "longhorn"
-  content = cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.cname
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.id}.cfargotunnel.com"
   type    = "CNAME"
   proxied = true
 }
@@ -177,11 +202,10 @@ resource "cloudflare_access_policy" "longhorn_policy" {
 
 # After
 resource "cloudflare_zero_trust_access_policy" "longhorn_policy" {
-  account_id = var.account_id
-  app_id     = cloudflare_zero_trust_access_application.longhorn.id
-  name       = "policy for longhorn.b0xp.io"
-  precedence = "1"
-  decision   = "allow"
+  account_id  = var.account_id
+  name        = "policy for longhorn.b0xp.io"
+  precedence  = "1"
+  decision    = "allow"
   include {
     login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
   }
@@ -209,6 +233,18 @@ data "cloudflare_zero_trust_access_identity_provider" "github" {
 2. 本番環境への適用前にステージング環境でテストすることを推奨します
 3. バックアップを取得してから移行を開始してください
 4. 移行中にサービスの中断が発生する可能性があるため、メンテナンス時間を設定することを推奨します
+
+5. プロバイダーのバージョンを明示的に指定することを推奨します
+   ```hcl
+   terraform {
+     required_providers {
+       cloudflare = {
+         source  = "cloudflare/cloudflare"
+         version = "~> 5.0"
+       }
+     }
+   }
+   ```
 
 ## 参考
 

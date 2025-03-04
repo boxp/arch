@@ -2,7 +2,7 @@
 resource "cloudflare_dns_record" "grafana" {
   zone_id = var.zone_id
   name    = "grafana"
-  content = cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.cname
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.id}.cfargotunnel.com"
   type    = "CNAME"
   proxied = true
 }
@@ -11,7 +11,7 @@ resource "cloudflare_dns_record" "grafana" {
 resource "cloudflare_dns_record" "prometheus_web" {
   zone_id = var.zone_id
   name    = "prometheus-web"
-  content = cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.cname
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.id}.cfargotunnel.com"
   type    = "CNAME"
   proxied = true
 }
