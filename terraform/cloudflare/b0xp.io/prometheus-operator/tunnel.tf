@@ -3,9 +3,9 @@ data "aws_ssm_parameter" "prometheus_operator_tunnel_secret" {
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "prometheus_operator_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare prometheus-operator tunnel"
-  secret     = sensitive(base64encode(data.aws_ssm_parameter.prometheus_operator_tunnel_secret.value))
+  account_id     = var.account_id
+  name           = "cloudflare prometheus-operator tunnel"
+  tunnel_secret  = sensitive(base64encode(data.aws_ssm_parameter.prometheus_operator_tunnel_secret.value))
 }
 
 # Creates the configuration for the tunnel.
@@ -14,11 +14,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "prometheus_operator_
   account_id = var.account_id
   config {
     ingress_rule {
-      hostname = cloudflare_record.grafana.hostname
+      hostname = cloudflare_dns_record.grafana.hostname
       service  = "http://grafana:3000"
     }
     ingress_rule {
-      hostname = cloudflare_record.prometheus_web.hostname
+      hostname = cloudflare_dns_record.prometheus_web.hostname
       service  = "http://prometheus-k8s:9090"
     }
     ingress_rule {
