@@ -234,7 +234,7 @@ data "cloudflare_zero_trust_access_identity_provider" "github" {
 3. バックアップを取得してから移行を開始してください
 4. 移行中にサービスの中断が発生する可能性があるため、メンテナンス時間を設定することを推奨します
 
-5. プロバイダーのバージョンを明示的に指定することを推奨します
+5. `backend.tf` のプロバイダーのバージョンを明示的に指定することを推奨します
    ```hcl
    terraform {
      required_providers {
