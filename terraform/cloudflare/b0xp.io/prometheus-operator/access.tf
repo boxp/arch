@@ -14,7 +14,7 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
   session_duration = "24h"
 }
 
-data "cloudflare_zero_trust_identity_provider" "github" {
+data "cloudflare_zero_trust_access_identity_provider" "github" {
   account_id = var.account_id
   name       = "GitHub"
 }
@@ -25,9 +25,9 @@ resource "cloudflare_zero_trust_access_policy" "grafana_policy" {
   name        = "policy for grafana.b0xp.io"
   precedence  = "1"
   decision    = "allow"
-  include = [{
-    login_method = [data.cloudflare_zero_trust_identity_provider.github.id]
-  }]
+  include {
+    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
+  }
 }
 
 # Creates an Access policy for the application.
@@ -36,7 +36,7 @@ resource "cloudflare_zero_trust_access_policy" "prometheus_web_policy" {
   name        = "policy for prometheus-web.b0xp.io"
   precedence  = "1"
   decision    = "allow"
-  include = [{
-    login_method = [data.cloudflare_zero_trust_identity_provider.github.id]
-  }]
+  include {
+    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
+  }
 }
