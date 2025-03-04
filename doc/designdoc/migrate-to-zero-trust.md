@@ -53,7 +53,6 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    - リソース名が `cloudflare_zero_trust_access_policy` に変更
    - `account_id` が必須パラメータとして追加
    - `application_id` が不要に
-   - `include` ブロックがオブジェクトからマップ配列に変更
    ```hcl
    # 旧
    include {
@@ -61,9 +60,9 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    }
    
    # 新
-   include = [{
+   include {
      login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
-   }]
+   }
    ```
 
 6. Identity Provider
@@ -183,9 +182,9 @@ resource "cloudflare_zero_trust_access_policy" "longhorn_policy" {
   name       = "policy for longhorn.b0xp.io"
   precedence = "1"
   decision   = "allow"
-  include = [{
+  include {
     login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
-  }]
+  }
 }
 ```
 
