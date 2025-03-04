@@ -55,6 +55,7 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    - `account_id` が必須パラメータとして追加
    - `application_id` が不要に
    - `app_id` は存在しない
+   - `precedence` が不要に
    ```hcl
    # 旧
    resource "cloudflare_access_policy" "example" {
@@ -72,7 +73,6 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    resource "cloudflare_zero_trust_access_policy" "example" {
      account_id  = var.account_id
      name        = "policy for example.com"
-     precedence  = "1"
      decision    = "allow"
      include {
        login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
