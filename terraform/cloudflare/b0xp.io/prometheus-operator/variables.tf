@@ -10,3 +10,9 @@ variable "zone_id" {
   default     = "ec593206d0ef695c3aae3a4cb3173264"
 
 }
+
+variable "identity_provider_id" {
+  description = "GitHub Identity ProviderのID"
+  type        = string
+  default     = "b9248b7d-c1fa-48ab-8a43-ebffe03fabac"
+}

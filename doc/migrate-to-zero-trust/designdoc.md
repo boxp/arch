@@ -75,14 +75,15 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
      name        = "policy for example.com"
      decision    = "allow"
      include {
-       login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
+       login_method = [var.identity_provider_id]
      }
    }
    ```
 
 6. Identity Provider
-   - リソース名が `cloudflare_zero_trust_access_identity_provider` に変更
-   - `account_id` が必須パラメータとして追加
+   - `data "cloudflare_access_identity_provider"` や `data "cloudflare_zero_trust_access_identity_provider"` のデータソース参照は使用せず、代わりに直接IDを変数として定義して使用する
+   - Identity ProviderのIDは変数として定義し、Access Policyから直接参照する
+   - `account_id` が必須パラメータとなった（リソースを作成する場合）
 
 7. Access Group
    - リソース名が `cloudflare_zero_trust_access_group` に変更
@@ -259,25 +260,17 @@ resource "cloudflare_zero_trust_access_policy" "longhorn_policy" {
   name        = "policy for longhorn.b0xp.io"
   decision    = "allow"
   include {
-    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
+    login_method = [var.identity_provider_id]
   }
 }
 ```
 
-### Identity Providerの変更
-```hcl
-# Before
-data "cloudflare_access_identity_provider" "github" {
-  zone_id = var.zone_id
-  name    = "GitHub"
+### identity_provider_idの変数定義
+variable "identity_provider_id" {
+  description = "GitHub Identity ProviderのID"
+  type        = string
+  default     = "b9248b7d-c1fa-48ab-8a43-ebffe03fabac"
 }
-
-# After
-data "cloudflare_zero_trust_access_identity_provider" "github" {
-  account_id = var.account_id
-  name       = "GitHub"
-}
-```
 
 ## 注意事項
 
