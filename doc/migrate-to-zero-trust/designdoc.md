@@ -94,8 +94,7 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    - `terraform import` コマンドの形式が変更（例: `terraform import cloudflare_zero_trust_tunnel_cloudflared.example account_id/tunnel_id`）
    - 一部のリソースで新しい属性が追加（例: `cloudflare_zero_trust_access_application` の `type` 属性）
 
-9. Tunnelトークンの取得について: Cloudflare Provider v5では`token`属性が削除されました。代わりに`data.cloudflare_zero_trust_tunnel_token`データソースを使用する必要があります
-
+9. Tunnelトークンの取得について: Cloudflare Provider v5では`token`属性が削除されました。代わりに`data.cloudflare_zero_trust_tunnel_cloudflared_token`データソースを使用する必要があります
    ```hcl
    # Before
    resource "aws_ssm_parameter" "tunnel_token" {
@@ -105,7 +104,7 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    }
 
    # After - 方法1: データソースを使用
-   data "cloudflare_zero_trust_tunnel_token" "example_token" {
+   data "cloudflare_zero_trust_tunnel_cloudflared_token " "example_token" {
      account_id = var.account_id
      tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.example_tunnel.id
    }
@@ -113,7 +112,7 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    resource "aws_ssm_parameter" "tunnel_token" {
      name  = "tunnel-token"
      type  = "SecureString"
-     value = sensitive(data.cloudflare_zero_trust_tunnel_token.example_token.token)
+     value = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.example_token.token)
    }
    ```
 
@@ -286,7 +285,7 @@ data "cloudflare_zero_trust_access_identity_provider" "github" {
 6. Identity Providerの参照には`name`属性を直接指定するか、`filter`ブロックを使用してください
 7. Access Policyの`include`属性はリスト形式（map[]）で指定する必要があります
 8. Tunnel Configurationの`config`属性はマップ型として指定する必要があります
-9. Tunnelトークンの取得について: Cloudflare Provider v5では`token`属性が削除されました。代わりに`data.cloudflare_zero_trust_tunnel_token`データソースを使用する必要があります
+9. Tunnelトークンの取得について: Cloudflare Provider v5では`token`属性が削除されました。代わりに`data.cloudflare_zero_trust_tunnel_cloudflared_token`データソースを使用する必要があります
 
    ```hcl
    # 代替方法：HTTP APIを使用してトークンを取得
