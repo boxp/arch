@@ -201,8 +201,8 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 ```hcl
 migration "state" "migrate_tunnel" {
   actions = [
-    "move cloudflare_tunnel.prometheus_operator_tunnel cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel",
-    "move cloudflare_tunnel_config.prometheus_operator_tunnel cloudflare_zero_trust_tunnel_cloudflared_config.prometheus_operator_tunnel",
+    "mv cloudflare_tunnel.prometheus_operator_tunnel cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel",
+    "mv cloudflare_tunnel_config.prometheus_operator_tunnel cloudflare_zero_trust_tunnel_cloudflared_config.prometheus_operator_tunnel",
   ]
 }
 ```
@@ -212,10 +212,10 @@ migration "state" "migrate_tunnel" {
 ```hcl
 migration "state" "migrate_access" {
   actions = [
-    "move cloudflare_access_application.grafana cloudflare_zero_trust_access_application.grafana",
-    "move cloudflare_access_application.prometheus_web cloudflare_zero_trust_access_application.prometheus_web",
-    "move cloudflare_access_policy.grafana_policy cloudflare_zero_trust_access_policy.grafana_policy",
-    "move cloudflare_access_policy.prometheus_web_policy cloudflare_zero_trust_access_policy.prometheus_web_policy",
+    "mv cloudflare_access_application.grafana cloudflare_zero_trust_access_application.grafana",
+    "mv cloudflare_access_application.prometheus_web cloudflare_zero_trust_access_application.prometheus_web",
+    "mv cloudflare_access_policy.grafana_policy cloudflare_zero_trust_access_policy.grafana_policy",
+    "mv cloudflare_access_policy.prometheus_web_policy cloudflare_zero_trust_access_policy.prometheus_web_policy",
   ]
 }
 ```
@@ -225,8 +225,8 @@ migration "state" "migrate_access" {
 ```hcl
 migration "state" "migrate_dns" {
   actions = [
-    "move cloudflare_record.grafana cloudflare_dns_record.grafana",
-    "move cloudflare_record.prometheus_web cloudflare_dns_record.prometheus_web",
+    "mv cloudflare_record.grafana cloudflare_dns_record.grafana",
+    "mv cloudflare_record.prometheus_web cloudflare_dns_record.prometheus_web",
   ]
 }
 ```
