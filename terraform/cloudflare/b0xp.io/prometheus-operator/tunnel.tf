@@ -29,9 +29,15 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "prometheus_operator_
   }
 }
 
+# トンネルトークンの取得
+data "cloudflare_zero_trust_tunnel_token" "prometheus_operator_tunnel_token" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.id
+}
+
 resource "aws_ssm_parameter" "prometheus_operator_tunnel_token" {
   name        = "prometheus-operator-tunnel-token"
   description = "for prometheus-operator tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_token.prometheus_operator_tunnel_token.token)
 }

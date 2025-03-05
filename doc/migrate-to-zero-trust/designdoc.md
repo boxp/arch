@@ -14,8 +14,7 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 3. terraform/cloudflare/b0xp.io/longhorn
 4. terraform/cloudflare/b0xp.io/hitohub/prod
 5. terraform/cloudflare/b0xp.io/hitohub/stage
-
-なお、terraform/cloudflare/b0xp.io/k8sディレクトリはすでに新しい形式に移行済みです。
+6. terraform/cloudflare/b0xp.io/k8s
 
 ## 変更点
 
@@ -94,6 +93,53 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    - ほとんどのリソースで `zone_id` の代わりに `account_id` の使用が推奨
    - `terraform import` コマンドの形式が変更（例: `terraform import cloudflare_zero_trust_tunnel_cloudflared.example account_id/tunnel_id`）
    - 一部のリソースで新しい属性が追加（例: `cloudflare_zero_trust_access_application` の `type` 属性）
+
+9. Tunnelトークンの取得について: Cloudflare Provider v5では`token`属性が削除されました。代わりに`data.cloudflare_zero_trust_tunnel_token`データソースを使用する必要があります
+
+   ```hcl
+   # Before
+   resource "aws_ssm_parameter" "tunnel_token" {
+     name  = "tunnel-token"
+     type  = "SecureString"
+     value = sensitive(cloudflare_tunnel.example_tunnel.token)
+   }
+
+   # After - 方法1: データソースを使用
+   data "cloudflare_zero_trust_tunnel_token" "example_token" {
+     account_id = var.account_id
+     tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.example_tunnel.id
+   }
+
+   resource "aws_ssm_parameter" "tunnel_token" {
+     name  = "tunnel-token"
+     type  = "SecureString"
+     value = sensitive(data.cloudflare_zero_trust_tunnel_token.example_token.token)
+   }
+   ```
+
+   方法2：HTTP APIを使って直接トークンを取得する方法（推奨）：
+
+   ```hcl
+   # 環境変数CLOUDFLARE_API_TOKENを利用するためのデータソース
+   data "external" "env" {
+     program = ["sh", "-c", "echo '{\"token\":\"'\"$CLOUDFLARE_API_TOKEN\"'\"}'"]
+   }
+
+   # HTTP APIを使用してトンネルトークンを取得
+   data "http" "tunnel_token" {
+     url = "https://api.cloudflare.com/client/v4/accounts/${var.account_id}/cfd_tunnel/${cloudflare_zero_trust_tunnel_cloudflared.example_tunnel.id}/token"
+     request_headers = {
+       "Authorization" = "Bearer ${data.external.env.result.token}"
+       "Content-Type"  = "application/json"
+     }
+   }
+
+   resource "aws_ssm_parameter" "tunnel_token" {
+     name  = "tunnel-token"
+     type  = "SecureString"
+     value = sensitive(jsondecode(data.http.tunnel_token.response_body)["result"])
+   }
+   ```
 
 ## 移行手順の例（longhornの場合）
 
@@ -240,7 +286,47 @@ data "cloudflare_zero_trust_access_identity_provider" "github" {
 6. Identity Providerの参照には`name`属性を直接指定するか、`filter`ブロックを使用してください
 7. Access Policyの`include`属性はリスト形式（map[]）で指定する必要があります
 8. Tunnel Configurationの`config`属性はマップ型として指定する必要があります
-9. Tunnelトークンの参照は`token`属性を使用してください
+9. Tunnelトークンの取得について: Cloudflare Provider v5では`token`属性が削除されました。代わりに`data.cloudflare_zero_trust_tunnel_token`データソースを使用する必要があります
+
+   ```hcl
+   # 代替方法：HTTP APIを使用してトークンを取得
+   data "http" "tunnel_token" {
+     url = "https://api.cloudflare.com/client/v4/accounts/${var.account_id}/cfd_tunnel/${cloudflare_zero_trust_tunnel_cloudflared.example_tunnel.id}/token"
+     request_headers = {
+       "Authorization" = "Bearer ${var.cloudflare_api_token}"
+       "Content-Type"  = "application/json"
+     }
+   }
+
+   resource "aws_ssm_parameter" "tunnel_token" {
+     name  = "tunnel-token"
+     type  = "SecureString"
+     value = sensitive(jsondecode(data.http.tunnel_token.response_body)["result"])
+   }
+   ```
+
+   環境変数`CLOUDFLARE_API_TOKEN`を直接参照する方法：
+
+   ```hcl
+   # 環境変数CLOUDFLARE_API_TOKENを利用するためのデータソース
+   data "external" "env" {
+     program = ["sh", "-c", "echo '{\"token\":\"'\"$CLOUDFLARE_API_TOKEN\"'\"}'"]
+   }
+
+   data "http" "tunnel_token" {
+     url = "https://api.cloudflare.com/client/v4/accounts/${var.account_id}/cfd_tunnel/${cloudflare_zero_trust_tunnel_cloudflared.example_tunnel.id}/token"
+     request_headers = {
+       "Authorization" = "Bearer ${data.external.env.result.token}"
+       "Content-Type"  = "application/json"
+     }
+   }
+
+   resource "aws_ssm_parameter" "tunnel_token" {
+     name  = "tunnel-token"
+     type  = "SecureString"
+     value = sensitive(jsondecode(data.http.tunnel_token.response_body)["result"])
+   }
+   ```
 
 ## 参考
 
