@@ -53,7 +53,7 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 5. Access Policy
    - リソース名が `cloudflare_zero_trust_access_policy` に変更
    - `account_id` が必須パラメータとして追加
-   - `application_id` が不要に
+   - `application_id` は削除する
    - `app_id` は存在しない
    - `precedence` は非サポートになり削除が必要
    ```hcl
@@ -209,7 +209,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "longhorn_tunnel" {
   config = {
     ingress = [
       {
-        hostname = cloudflare_dns_record.longhorn.hostname
+        hostname = "${cloudflare_dns_record.longhorn.name}.b0xp.io"
         service  = "http://longhorn-frontend:80"
       },
       {
@@ -290,6 +290,10 @@ data "cloudflare_zero_trust_access_identity_provider" "github" {
 7. Access Policyの`include`属性はリスト形式（map[]）で指定する必要があります
 8. Tunnel Configurationの`config`属性はマップ型として指定する必要があります
 9. Tunnelトークンの取り扱いについて: Cloudflare Provider v5では`token`属性が削除されました
+
+10. `cloudflare_dns_record`リソースの`hostname`属性はProvider v5で削除されました：
+    - Tunnel Configurationでホスト名を参照する場合、`${cloudflare_dns_record.example.name}.your-domain.com`のように構築する必要があります
+    - 例: `hostname = "${cloudflare_dns_record.grafana.name}.b0xp.io"`
 
 ## 参考
 

@@ -15,11 +15,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "prometheus_operator_
   config = {
     ingress = [
       {
-        hostname = cloudflare_dns_record.grafana.hostname
+        hostname = "${cloudflare_dns_record.grafana.name}.b0xp.io"
         service  = "http://grafana:3000"
       },
       {
-        hostname = cloudflare_dns_record.prometheus_web.hostname
+        hostname = "${cloudflare_dns_record.prometheus_web.name}.b0xp.io"
         service  = "http://prometheus-k8s:9090"
       },
       {
