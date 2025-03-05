@@ -99,25 +99,30 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    **重要**: 以前はトンネルトークンをAWS SSM Parameterに保存していましたが、この実装をやめることになりました。以下の手順でリソースを削除してください：
 
    ```hcl
-   # aws_ssm_parameterリソースをremovedブロックで置き換え（terraform 0.12以降）
-   # ファイル: tunnel.tf
+   # tfmigrateを使用してAWS SSM Parameterリソースをstateから削除する方法
+   # 対象ディレクトリのtfmigrateディレクトリに以下のようなファイルを作成します
+   # ファイル名例: tfmigrate/YYYYMMDDHHMMSS_remove_tunnel_token.hcl
    
-   # 元のリソース
-   # resource "aws_ssm_parameter" "tunnel_token" {
-   #   name        = "tunnel-token"
-   #   description = "for tunnel token"
-   #   type        = "SecureString"
-   #   value       = sensitive(...)
-   # }
-   
-   # removed文を使った削除方法
-   # この方法では、terraform stateからのみリソースを削除し、実際のAWSリソースは残ります
-   removed {
-     from = aws_ssm_parameter.tunnel_token
+   migration "state" "remove_tunnel_token" {
+     actions = [
+       "rm aws_ssm_parameter.tunnel_token",
+     ]
+     force = true
    }
-   
-   # terraform applyを実行した後、必要に応じてAWSコンソールまたはCLIから実際のパラメータを削除します
-   # aws ssm delete-parameter --name "tunnel-token"
+   ```
+
+   ファイルを作成した後、以下のようにtfmigrateを実行することで、stateからリソースを削除できます：
+
+   ```bash
+   # ローカルでの実行例
+   tfmigrate apply tfmigrate/YYYYMMDDHHMMSS_remove_tunnel_token.hcl
+   ```
+
+   または、Pull RequestをオープンしてCIでの実行も可能です。この方法ではterraform stateからのみリソースを削除し、実際のAWSリソースは残ります。
+
+   必要に応じて、AWSコンソールまたはCLIから実際のパラメータを削除してください：
+   ```bash
+   aws ssm delete-parameter --name "tunnel-token"
    ```
 
    トンネルトークンが必要な場合は、以下のいずれかの方法で取得できます：

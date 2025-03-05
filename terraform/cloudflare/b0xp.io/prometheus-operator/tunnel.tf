@@ -30,6 +30,8 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "prometheus_operator_
 }
 
 # トンネルトークンの取得と保存を停止
+# 注意: このリソースはtfmigrateを使用してステートから削除されました
+# 詳細は tfmigrate/20250306001748_remove_tunnel_token.hcl を参照してください
 # 元のリソース:
 # resource "aws_ssm_parameter" "prometheus_operator_tunnel_token" {
 #   name        = "prometheus-operator-tunnel-token"
@@ -37,8 +39,3 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "prometheus_operator_
 #   type        = "SecureString"
 #   value       = sensitive(...)
 # }
-
-# removed文を使って、terraformのステートからのみリソースを削除
-removed {
-  from = aws_ssm_parameter.prometheus_operator_tunnel_token
-}
