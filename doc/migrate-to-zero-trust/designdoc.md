@@ -48,13 +48,36 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 
 4. Access Application
    - リソース名が `cloudflare_zero_trust_access_application` に変更
-   - 設定内容は基本的に同じ
+   - policiesに使用する紐づけるpoliciesを列挙する
+    ```hcl
+    # 旧
+    resource "cloudflare_access_application" "prometheus_web" {
+      zone_id          = var.zone_id
+      name             = "Access application for prometheus-web.b0xp.io"
+      domain           = "prometheus-web.b0xp.io"
+      session_duration = "24h"
+    }
+
+    # 新
+    resource "cloudflare_zero_trust_access_application" "prometheus_web" {
+      account_id       = var.account_id
+      name             = "Access application for prometheus-web.b0xp.io"
+      domain           = "prometheus-web.b0xp.io"
+      session_duration = "24h"
+      policies = [{
+        id = cloudflare_zero_trust_access_policy.prometheus_web_policy.id
+        precedence = 0
+      }]
+    }
+    ```
 
 5. Access Policy
    - リソース名が `cloudflare_zero_trust_access_policy` に変更
    - `account_id` が必須パラメータとして追加
    - `application_id` は削除する
-   - `app_id` は存在しない
+    - `cloudflare_zero_trust_access_application` が紐づけを決定するようになったので `application_id` は不要になった
+    - includeはmap[]へ変更
+    - login_methodはmapへ変更
    - `precedence` は非サポートになり削除が必要
    ```hcl
    # 旧
@@ -74,9 +97,11 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
      account_id  = var.account_id
      name        = "policy for example.com"
      decision    = "allow"
-     include {
-       login_method = [var.identity_provider_id]
-     }
+     include = [{
+       login_method = {
+        id = var.identity_provider_id
+       }
+     }]
    }
    ```
 

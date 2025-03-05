@@ -4,6 +4,10 @@ resource "cloudflare_zero_trust_access_application" "grafana" {
   name             = "Access application for grafana.b0xp.io"
   domain           = "grafana.b0xp.io"
   session_duration = "24h"
+  policies = [{
+    id = cloudflare_zero_trust_access_policy.grafana_policy.id
+    precedence = 0
+  }]
 }
 
 # Creates an Access application to control who can connect.
@@ -12,6 +16,10 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
   name             = "Access application for prometheus-web.b0xp.io"
   domain           = "prometheus-web.b0xp.io"
   session_duration = "24h"
+  policies = [{
+    id = cloudflare_zero_trust_access_policy.prometheus_web_policy.id
+    precedence = 0
+  }]
 }
 
 # 変数を使用するため、データソース参照は不要
@@ -23,21 +31,23 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "grafana_policy" {
   account_id  = var.account_id
-  application_id = cloudflare_zero_trust_access_application.grafana.id
   name        = "policy for grafana.b0xp.io"
   decision    = "allow"
-  include {
-    login_method = [var.identity_provider_id]
-  }
+  include = [{
+    login_method = {
+      id = var.identity_provider_id
+    }
+  }]
 }
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "prometheus_web_policy" {
   account_id  = var.account_id
-  application_id = cloudflare_zero_trust_access_application.prometheus_web.id
   name        = "policy for prometheus-web.b0xp.io"
   decision    = "allow"
-  include {
-    login_method = [var.identity_provider_id]
-  }
+  include = [{
+    login_method = {
+      id = var.identity_provider_id
+    }
+  }]
 }
