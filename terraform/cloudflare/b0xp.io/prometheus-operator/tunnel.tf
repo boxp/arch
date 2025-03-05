@@ -29,15 +29,23 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "prometheus_operator_
   }
 }
 
-# トンネルトークンの取得
-data "cloudflare_zero_trust_tunnel_cloudflared_token" "prometheus_operator_tunnel_token" {
-  account_id = var.account_id
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.id
+# 環境変数CLOUDFLARE_API_TOKENを利用するためのデータソース
+data "external" "env" {
+  program = ["sh", "-c", "echo '{\"token\":\"'\"$CLOUDFLARE_API_TOKEN\"'\"}'"]
+}
+
+# HTTP APIを使用してトンネルトークンを取得
+data "http" "prometheus_operator_tunnel_token" {
+  url = "https://api.cloudflare.com/client/v4/accounts/${var.account_id}/cfd_tunnel/${cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.id}/token"
+  request_headers = {
+    "Authorization" = "Bearer ${data.external.env.result.token}"
+    "Content-Type"  = "application/json"
+  }
 }
 
 resource "aws_ssm_parameter" "prometheus_operator_tunnel_token" {
   name        = "prometheus-operator-tunnel-token"
   description = "for prometheus-operator tunnel token"
   type        = "SecureString"
-  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.prometheus_operator_tunnel_token.token)
+  value       = sensitive(jsondecode(data.http.prometheus_operator_tunnel_token.response_body)["result"])
 }

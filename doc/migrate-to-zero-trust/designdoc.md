@@ -95,6 +95,9 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    - 一部のリソースで新しい属性が追加（例: `cloudflare_zero_trust_access_application` の `type` 属性）
 
 9. Tunnelトークンの取得について: Cloudflare Provider v5では`token`属性が削除されました。代わりに`data.cloudflare_zero_trust_tunnel_cloudflared_token`データソースを使用する必要があります
+
+   > **注意**: `cloudflare_zero_trust_tunnel_cloudflared_token`データソースはCloudflare Provider v5.2.0がリリースされるまで使用できません。それまでの間は、以下で説明するHTTP APIを使用してトークンを取得する方法（方法2）を利用してください。
+
    ```hcl
    # Before
    resource "aws_ssm_parameter" "tunnel_token" {
