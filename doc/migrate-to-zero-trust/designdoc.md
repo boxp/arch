@@ -44,7 +44,8 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 
 3. Tunnel Configuration
    - リソース名が `cloudflare_zero_trust_tunnel_cloudflared_config` に変更
-   - 設定構造は基本的に同じ
+   - `config` 属性はマップ型として指定
+   - `ingress_rule` ではなく `ingress` 配列を使用
 
 4. Access Application
    - リソース名が `cloudflare_zero_trust_access_application` に変更
@@ -55,7 +56,7 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    - `account_id` が必須パラメータとして追加
    - `application_id` が不要に
    - `app_id` は存在しない
-   - `precedence` が不要に
+   - `precedence` は非サポートになり削除が必要
    ```hcl
    # 旧
    resource "cloudflare_access_policy" "example" {
@@ -114,6 +115,7 @@ resource "cloudflare_dns_record" "longhorn" {
   content = "${cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.id}.cfargotunnel.com"
   type    = "CNAME"
   proxied = true
+  ttl     = 1  # プロキシ有効時は1固定
 }
 ```
 
@@ -155,14 +157,16 @@ resource "cloudflare_tunnel_config" "longhorn_tunnel" {
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "longhorn_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.id
   account_id = var.account_id
-  config {
-    ingress_rule {
-      hostname = cloudflare_dns_record.longhorn.hostname
-      service  = "http://longhorn-frontend:80"
-    }
-    ingress_rule {
-      service = "http_status:404"
-    }
+  config = {
+    ingress = [
+      {
+        hostname = cloudflare_dns_record.longhorn.hostname
+        service  = "http://longhorn-frontend:80"
+      },
+      {
+        service = "http_status:404"
+      }
+    ]
   }
 }
 ```
@@ -204,7 +208,6 @@ resource "cloudflare_access_policy" "longhorn_policy" {
 resource "cloudflare_zero_trust_access_policy" "longhorn_policy" {
   account_id  = var.account_id
   name        = "policy for longhorn.b0xp.io"
-  precedence  = "1"
   decision    = "allow"
   include {
     login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
@@ -233,18 +236,11 @@ data "cloudflare_zero_trust_access_identity_provider" "github" {
 2. 本番環境への適用前にステージング環境でテストすることを推奨します
 3. バックアップを取得してから移行を開始してください
 4. 移行中にサービスの中断が発生する可能性があるため、メンテナンス時間を設定することを推奨します
-
-5. `backend.tf` のプロバイダーのバージョンを明示的に指定することを推奨します
-   ```hcl
-   terraform {
-     required_providers {
-       cloudflare = {
-         source  = "cloudflare/cloudflare"
-         version = "~> 5.0"
-       }
-     }
-   }
-   ```
+5. DNSレコードの`ttl`属性は必須です。プロキシ有効時は1に設定してください
+6. Identity Providerの参照には`name`属性を直接指定するか、`filter`ブロックを使用してください
+7. Access Policyの`include`属性はリスト形式（map[]）で指定する必要があります
+8. Tunnel Configurationの`config`属性はマップ型として指定する必要があります
+9. Tunnelトークンの参照は`token`属性を使用してください
 
 ## 参考
 
