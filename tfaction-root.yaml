@@ -155,3 +155,8 @@ target_groups:
 #     aws_assume_role_arn: arn:aws:iam::000000000000:role/GitHubActions_Terraform_gcp_tfmigrate_apply
 #     gcp_service_account: terraform@my-project.iam.gserviceaccount.com
 #     gcp_workload_identity_provider: 'projects/123456789/locations/global/workloadIdentityPools/my-pool/providers/my-provider'
+
+replace:
+  patterns
+    - regexp: terraform/
+      replace: ""
