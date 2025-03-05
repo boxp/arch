@@ -96,36 +96,26 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 
 9. Tunnelトークンの取り扱いについて: Cloudflare Provider v5では`token`属性が削除されました
 
-   **重要**: 以前はトンネルトークンをAWS SSM Parameterに保存していましたが、この実装をやめることになりました。以下の手順でリソースを削除してください：
+   **重要**: トンネルトークンの管理方法を以下のように変更します：
+
+   1. AWS SSM Parameterリソースは残します
+   2. `value`に一時的な値「DUMMY」を設定します
+   3. `lifecycle`ブロックで`ignore_changes`を使用して、手動で設定した値がTerraformによって上書きされないようにします
 
    ```hcl
-   # tfmigrateを使用してAWS SSM Parameterリソースをstateから削除する方法
-   # 対象ディレクトリのtfmigrateディレクトリに以下のようなファイルを作成します
-   # ファイル名例: tfmigrate/YYYYMMDDHHMMSS_remove_tunnel_token.hcl
-   
-   migration "state" "remove_tunnel_token" {
-     actions = [
-       "rm aws_ssm_parameter.tunnel_token",
-     ]
-     force = true
+   # AWS SSM Parameterの設定例
+   resource "aws_ssm_parameter" "example_tunnel_token" {
+     name  = "example-tunnel-token"
+     type  = "SecureString"
+     value = "DUMMY"  # この値は後で手動で正しいトークンに置き換えてください
+     
+     lifecycle {
+       ignore_changes = [value]
+     }
    }
    ```
 
-   ファイルを作成した後、以下のようにtfmigrateを実行することで、stateからリソースを削除できます：
-
-   ```bash
-   # ローカルでの実行例
-   tfmigrate apply tfmigrate/YYYYMMDDHHMMSS_remove_tunnel_token.hcl
-   ```
-
-   または、Pull RequestをオープンしてCIでの実行も可能です。この方法ではterraform stateからのみリソースを削除し、実際のAWSリソースは残ります。
-
-   必要に応じて、AWSコンソールまたはCLIから実際のパラメータを削除してください：
-   ```bash
-   aws ssm delete-parameter --name "tunnel-token"
-   ```
-
-   トンネルトークンが必要な場合は、以下のいずれかの方法で取得できます：
+   トンネルトークンは以下のいずれかの方法で取得し、手動でSSMに設定してください：
 
    方法1: Cloudflare dashboardからトークンを取得する
    1. Cloudflare dashboardにログイン
@@ -143,6 +133,15 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
    curl -X GET "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/cfd_tunnel/<TUNNEL_ID>/token" \
       -H "Authorization: Bearer <API_TOKEN>" \
       -H "Content-Type: application/json"
+   ```
+
+   取得したトークンは以下のようにAWS CLIを使用してSSMに設定してください：
+   ```bash
+   aws ssm put-parameter \
+     --name "example-tunnel-token" \
+     --type "SecureString" \
+     --value "<TUNNEL_TOKEN>" \
+     --overwrite
    ```
 
 ## 移行手順の例（longhornの場合）

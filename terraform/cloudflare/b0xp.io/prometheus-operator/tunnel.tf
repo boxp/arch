@@ -29,13 +29,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "prometheus_operator_
   }
 }
 
-# トンネルトークンの取得と保存を停止
-# 注意: このリソースはtfmigrateを使用してステートから削除されました
-# 詳細は tfmigrate/20250306001748_remove_tunnel_token.hcl を参照してください
-# 元のリソース:
-# resource "aws_ssm_parameter" "prometheus_operator_tunnel_token" {
-#   name        = "prometheus-operator-tunnel-token"
-#   description = "for prometheus-operator tunnel token"
-#   type        = "SecureString"
-#   value       = sensitive(...)
-# }
+# トンネルトークンの管理方法に関する新方針
+# 1. AWS SSM Parameterリソースは残し、後で手動でトークンを設定
+# 2. valueに一時的な値「DUMMY」を設定
+# 3. ignore_changesを使用して手動更新をTerraformに管理させない
+resource "aws_ssm_parameter" "prometheus_operator_tunnel_token" {
+  name        = "prometheus-operator-tunnel-token"
+  description = "for prometheus-operator tunnel token"
+  type        = "SecureString"
+  value       = "DUMMY"  # この値は後で手動で正しいトークンに置き換えてください
+  
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
