@@ -170,6 +170,67 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
      --overwrite
    ```
 
+## Terraform状態の移行
+
+コードを修正しただけでは、Terraformの状態は自動的には更新されません。古いリソースタイプから新しいリソースタイプへ状態を移行する必要があります。この移行にはtfactionのtfmigrateを使用します。
+
+### tfmigrateによる状態移行の手順
+
+各ディレクトリで以下の手順を実行します：
+
+1. リソース名の変更に対応するtfmigrateファイルを作成する
+2. tfmigrateコマンドを実行して状態を移行する
+3. terraform planを実行して変更がないことを確認する
+
+### tfmigrate設定ファイルの作成
+
+各ディレクトリ内のtfmigrateフォルダに、以下のような命名規則でファイルを作成します：
+`{yyyyMMddHHmmss}_migrate_{リソースタイプ}.hcl`
+
+例えば：
+- `20240320112233_migrate_tunnel.hcl` - Tunnelリソースの移行
+- `20240320112244_migrate_access.hcl` - Accessリソースの移行
+- `20240320112255_migrate_dns.hcl` - DNSレコードの移行
+
+### 移行設定例
+
+各リソースタイプごとに以下のような設定ファイルを作成します。`<account_id>` と `<tunnel_id>` などの値は実際の環境に合わせて置き換えてください。
+
+#### 1. Tunnelリソースの移行 (tfmigrate/20240320112233_migrate_tunnel.hcl)
+
+```hcl
+migration "state" "migrate_tunnel" {
+  actions = [
+    "move cloudflare_tunnel.prometheus_operator_tunnel cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel",
+    "move cloudflare_tunnel_config.prometheus_operator_tunnel cloudflare_zero_trust_tunnel_cloudflared_config.prometheus_operator_tunnel",
+  ]
+}
+```
+
+#### 2. Accessリソースの移行 (tfmigrate/20240320112244_migrate_access.hcl)
+
+```hcl
+migration "state" "migrate_access" {
+  actions = [
+    "move cloudflare_access_application.grafana cloudflare_zero_trust_access_application.grafana",
+    "move cloudflare_access_application.prometheus_web cloudflare_zero_trust_access_application.prometheus_web",
+    "move cloudflare_access_policy.grafana_policy cloudflare_zero_trust_access_policy.grafana_policy",
+    "move cloudflare_access_policy.prometheus_web_policy cloudflare_zero_trust_access_policy.prometheus_web_policy",
+  ]
+}
+```
+
+#### 3. DNSレコードの移行 (tfmigrate/20240320112255_migrate_dns.hcl)
+
+```hcl
+migration "state" "migrate_dns" {
+  actions = [
+    "move cloudflare_record.grafana cloudflare_dns_record.grafana",
+    "move cloudflare_record.prometheus_web cloudflare_dns_record.prometheus_web",
+  ]
+}
+```
+
 ## 移行手順の例（longhornの場合）
 
 ### DNSレコードの変更
