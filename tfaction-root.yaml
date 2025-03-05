@@ -158,5 +158,5 @@ target_groups:
 
 replace:
   patterns:
-    - regexp: terraform/
-      replace: ""
+    - regexp: terraform/(.*)/
+      replace: "$1/"
