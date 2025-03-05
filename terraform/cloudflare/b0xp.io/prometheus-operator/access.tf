@@ -5,7 +5,7 @@ resource "cloudflare_zero_trust_access_application" "grafana" {
   domain           = "grafana.b0xp.io"
   session_duration = "24h"
   policies = [{
-    id = cloudflare_zero_trust_access_policy.grafana_policy.id
+    id         = cloudflare_zero_trust_access_policy.grafana_policy.id
     precedence = 0
   }]
 }
@@ -17,7 +17,7 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
   domain           = "prometheus-web.b0xp.io"
   session_duration = "24h"
   policies = [{
-    id = cloudflare_zero_trust_access_policy.prometheus_web_policy.id
+    id         = cloudflare_zero_trust_access_policy.prometheus_web_policy.id
     precedence = 0
   }]
 }
@@ -30,9 +30,9 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "grafana_policy" {
-  account_id  = var.account_id
-  name        = "policy for grafana.b0xp.io"
-  decision    = "allow"
+  account_id = var.account_id
+  name       = "policy for grafana.b0xp.io"
+  decision   = "allow"
   include = [{
     login_method = {
       id = var.identity_provider_id
@@ -42,9 +42,9 @@ resource "cloudflare_zero_trust_access_policy" "grafana_policy" {
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "prometheus_web_policy" {
-  account_id  = var.account_id
-  name        = "policy for prometheus-web.b0xp.io"
-  decision    = "allow"
+  account_id = var.account_id
+  name       = "policy for prometheus-web.b0xp.io"
+  decision   = "allow"
   include = [{
     login_method = {
       id = var.identity_provider_id

@@ -3,9 +3,9 @@ data "aws_ssm_parameter" "prometheus_operator_tunnel_secret" {
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "prometheus_operator_tunnel" {
-  account_id     = var.account_id
-  name           = "cloudflare prometheus-operator tunnel"
-  tunnel_secret  = sensitive(base64encode(data.aws_ssm_parameter.prometheus_operator_tunnel_secret.value))
+  account_id    = var.account_id
+  name          = "cloudflare prometheus-operator tunnel"
+  tunnel_secret = sensitive(base64encode(data.aws_ssm_parameter.prometheus_operator_tunnel_secret.value))
 }
 
 # Creates the configuration for the tunnel.
@@ -37,8 +37,8 @@ resource "aws_ssm_parameter" "prometheus_operator_tunnel_token" {
   name        = "prometheus-operator-tunnel-token"
   description = "for prometheus-operator tunnel token"
   type        = "SecureString"
-  value       = "DUMMY"  # この値は後で手動で正しいトークンに置き換えてください
-  
+  value       = "DUMMY" # この値は後で手動で正しいトークンに置き換えてください
+
   lifecycle {
     ignore_changes = [value]
   }
