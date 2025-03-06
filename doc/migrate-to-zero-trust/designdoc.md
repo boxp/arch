@@ -201,8 +201,13 @@ Cloudflare Provider v5へのアップグレードに伴い、Cloudflare Tunnel�
 ```hcl
 migration "state" "migrate_tunnel" {
   actions = [
-    "mv cloudflare_tunnel.prometheus_operator_tunnel cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel",
-    "mv cloudflare_tunnel_config.prometheus_operator_tunnel cloudflare_zero_trust_tunnel_cloudflared_config.prometheus_operator_tunnel",
+    # 古いリソースを削除
+    "rm cloudflare_tunnel.prometheus_operator_tunnel",
+    "rm cloudflare_tunnel_config.prometheus_operator_tunnel",
+    
+    # 新しいリソースをインポート
+    "import cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.prometheus_operator_tunnel_id}",
+    "import cloudflare_zero_trust_tunnel_cloudflared_config.prometheus_operator_tunnel ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.prometheus_operator_tunnel_id}",
   ]
 }
 ```
@@ -212,10 +217,17 @@ migration "state" "migrate_tunnel" {
 ```hcl
 migration "state" "migrate_access" {
   actions = [
-    "mv cloudflare_access_application.grafana cloudflare_zero_trust_access_application.grafana",
-    "mv cloudflare_access_application.prometheus_web cloudflare_zero_trust_access_application.prometheus_web",
-    "mv cloudflare_access_policy.grafana_policy cloudflare_zero_trust_access_policy.grafana_policy",
-    "mv cloudflare_access_policy.prometheus_web_policy cloudflare_zero_trust_access_policy.prometheus_web_policy",
+    # 古いリソースを削除
+    "rm cloudflare_access_application.grafana",
+    "rm cloudflare_access_application.prometheus_web",
+    "rm cloudflare_access_policy.grafana_policy",
+    "rm cloudflare_access_policy.prometheus_web_policy",
+    
+    # 新しいリソースをインポート
+    "import cloudflare_zero_trust_access_application.grafana ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.grafana_application_id}",
+    "import cloudflare_zero_trust_access_application.prometheus_web ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.prometheus_web_application_id}",
+    "import cloudflare_zero_trust_access_policy.grafana_policy ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.grafana_policy_id}",
+    "import cloudflare_zero_trust_access_policy.prometheus_web_policy ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.prometheus_web_policy_id}",
   ]
 }
 ```
@@ -225,11 +237,99 @@ migration "state" "migrate_access" {
 ```hcl
 migration "state" "migrate_dns" {
   actions = [
-    "mv cloudflare_record.grafana cloudflare_dns_record.grafana",
-    "mv cloudflare_record.prometheus_web cloudflare_dns_record.prometheus_web",
+    # 古いリソースを削除
+    "rm cloudflare_record.grafana",
+    "rm cloudflare_record.prometheus_web",
+    
+    # 新しいリソースをインポート
+    "import cloudflare_dns_record.grafana ${var.zone_id}/${data.terraform_remote_state.cloudflare.outputs.grafana_dns_record_id}",
+    "import cloudflare_dns_record.prometheus_web ${var.zone_id}/${data.terraform_remote_state.cloudflare.outputs.prometheus_web_dns_record_id}",
   ]
 }
 ```
+
+### リソースIDの取得方法
+
+importコマンドに必要なリソースIDは以下の方法で取得できます：
+
+1. **Cloudflare Dashboardから取得する場合**
+   - Cloudflare Dashboardにログイン
+   - 各リソースの詳細ページでIDを確認（URLやAPIレスポンスに含まれることが多い）
+
+2. **既存のステートから取得する場合**
+   ```bash
+   terraform state show cloudflare_tunnel.prometheus_operator_tunnel
+   terraform state show cloudflare_access_application.grafana
+   terraform state show cloudflare_record.grafana
+   ```
+
+3. **Cloudflare APIを使用して取得する場合**
+   ```bash
+   # Tunnelの一覧を取得
+   curl -X GET "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/cfd_tunnel" \
+      -H "Authorization: Bearer <API_TOKEN>" \
+      -H "Content-Type: application/json"
+   
+   # Accessアプリケーションの一覧を取得
+   curl -X GET "https://api.cloudflare.com/client/v4/accounts/<ACCOUNT_ID>/access/apps" \
+      -H "Authorization: Bearer <API_TOKEN>" \
+      -H "Content-Type: application/json"
+   
+   # DNSレコードの一覧を取得
+   curl -X GET "https://api.cloudflare.com/client/v4/zones/<ZONE_ID>/dns_records" \
+      -H "Authorization: Bearer <API_TOKEN>" \
+      -H "Content-Type: application/json"
+   ```
+
+4. **remote_stateを使用する場合**
+   - 他のTerraformステートからリソースIDを参照する場合は、以下のようなデータソースを追加します：
+   
+   ```hcl
+   data "terraform_remote_state" "cloudflare" {
+     backend = "s3"
+     config = {
+       bucket = "your-terraform-state-bucket"
+       key    = "path/to/cloudflare.tfstate"
+       region = "ap-northeast-1"
+     }
+   }
+   ```
+
+### tfmigrateの実行手順
+
+1. 各ディレクトリで以下のコマンドを実行します：
+
+```bash
+cd <対象ディレクトリ>
+
+# Tunnelの移行
+tfmigrate apply tfmigrate/20240320112233_migrate_tunnel.hcl
+
+# Accessの移行
+tfmigrate apply tfmigrate/20240320112244_migrate_access.hcl
+
+# DNSレコードの移行
+tfmigrate apply tfmigrate/20240320112255_migrate_dns.hcl
+```
+
+2. 移行後、terraform planを実行して変更がないことを確認します：
+
+```bash
+terraform plan
+```
+
+出力に `No changes. Your infrastructure matches the configuration.` と表示されれば、移行は成功です。
+
+### tfmigrateの注意点
+
+1. tfmigrateファイルを適用する順序は重要です。依存関係がある場合は、依存元を先に移行してください。
+2. 移行前に必ずterraform状態のバックアップを取ってください。
+3. ドライランモードでtfmigrateを試すことができます：
+   ```bash
+   tfmigrate plan tfmigrate/20240320112233_migrate_tunnel.hcl
+   ```
+4. 大規模な変更を一度に行うと複雑になるため、リソースタイプごとに分けて移行することをお勧めします。
+5. rmコマンドの後にimportを行うため、一時的にTerraform状態からリソースが削除されます。そのためバックアップは非常に重要です。
 
 ## 移行手順の例（longhornの場合）
 
