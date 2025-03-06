@@ -212,6 +212,9 @@ migration "state" "migrate_tunnel" {
 }
 ```
 
+- マイグレーションファイル内で変数の呼び出しは不可能なので、実際には変数に対応する値をそのまま記入する
+- tunnel_idに関しては doc/migrate-to-zero-trust/tunnels.json から探して記入する
+
 #### 2. Accessリソースの移行 (tfmigrate/20240320112244_migrate_access.hcl)
 
 ```hcl
@@ -220,17 +223,16 @@ migration "state" "migrate_access" {
     # 古いリソースを削除
     "rm cloudflare_access_application.grafana",
     "rm cloudflare_access_application.prometheus_web",
-    "rm cloudflare_access_policy.grafana_policy",
-    "rm cloudflare_access_policy.prometheus_web_policy",
     
     # 新しいリソースをインポート
     "import cloudflare_zero_trust_access_application.grafana ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.grafana_application_id}",
     "import cloudflare_zero_trust_access_application.prometheus_web ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.prometheus_web_application_id}",
-    "import cloudflare_zero_trust_access_policy.grafana_policy ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.grafana_policy_id}",
-    "import cloudflare_zero_trust_access_policy.prometheus_web_policy ${var.account_id}/${data.terraform_remote_state.cloudflare.outputs.prometheus_web_policy_id}",
   ]
 }
 ```
+
+- マイグレーションファイル内で変数の呼び出しは不可能なので、実際には変数に対応する値をそのまま記入する
+- application_idに関しては doc/migrate-to-zero-trust/accesses.json から探して記入する
 
 #### 3. DNSレコードの移行 (tfmigrate/20240320112255_migrate_dns.hcl)
 
@@ -247,6 +249,10 @@ migration "state" "migrate_dns" {
   ]
 }
 ```
+
+- マイグレーションファイル内で変数の呼び出しは不可能なので、実際には変数に対応する値をそのまま記入する
+- record_idに関しては doc/migrate-to-zero-trust/dns_records.json から探して記入する
+- zone_idに関しては variables.tf を読み込んで探して記入する
 
 ### リソースIDの取得方法
 

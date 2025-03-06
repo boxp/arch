@@ -1,0 +1,201 @@
+{
+  "result": [
+    {
+      "id": "9d2eb0ebd057eae6c3474953c421737a",
+      "name": "api-hitohub.b0xp.io",
+      "type": "CNAME",
+      "content": "feb15a6d-15d3-4f55-a2dc-b61520ca0103.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-05-02T16:57:04.493868Z",
+      "modified_on": "2024-05-02T16:57:04.493868Z"
+    },
+    {
+      "id": "962cec8fc494d23dd2c148779b62df17",
+      "name": "api-hitohub-stage.b0xp.io",
+      "type": "CNAME",
+      "content": "022d17d0-5fcc-4521-8d9b-9c530ddbe0d3.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-04-26T17:13:41.453193Z",
+      "modified_on": "2024-04-26T17:13:41.453193Z"
+    },
+    {
+      "id": "6b82535834abf948c6607ca4df385bc7",
+      "name": "argocd.b0xp.io",
+      "type": "CNAME",
+      "content": "28ce47fb-d9cb-46b7-9562-7641b01c1d28.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-04-19T09:29:32.068979Z",
+      "modified_on": "2024-04-19T09:29:32.068979Z"
+    },
+    {
+      "id": "bf14fdebe2bc2eda24103843e9405df8",
+      "name": "b0xp.io",
+      "type": "CNAME",
+      "content": "shanghai-4t4.pages.dev",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-04-26T11:21:25.028027Z",
+      "modified_on": "2024-04-26T11:21:25.028027Z"
+    },
+    {
+      "id": "5c417e702ef44fa1252b50c770078c35",
+      "name": "grafana.b0xp.io",
+      "type": "CNAME",
+      "content": "25190a02-f54f-4951-ac18-c98db4501fb4.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-04-17T14:07:54.423288Z",
+      "modified_on": "2024-04-17T14:07:54.423288Z"
+    },
+    {
+      "id": "deb71f3ade902c1889d1773ea0a32817",
+      "name": "hitohub.b0xp.io",
+      "type": "CNAME",
+      "content": "feb15a6d-15d3-4f55-a2dc-b61520ca0103.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-05-02T16:57:04.661274Z",
+      "modified_on": "2024-05-02T16:57:04.661274Z"
+    },
+    {
+      "id": "f2389ad3bd78830c88257488a9c43287",
+      "name": "hitohub-stage.b0xp.io",
+      "type": "CNAME",
+      "content": "022d17d0-5fcc-4521-8d9b-9c530ddbe0d3.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-04-26T17:13:41.6992Z",
+      "modified_on": "2024-04-26T17:13:41.6992Z"
+    },
+    {
+      "id": "b6815d54d5527c2b250dcbc3e93b4580",
+      "name": "k8s.b0xp.io",
+      "type": "CNAME",
+      "content": "0eb241e1-1295-4672-8285-f18241a38210.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-12-09T00:15:06.815645Z",
+      "modified_on": "2024-12-09T00:15:06.815645Z"
+    },
+    {
+      "id": "a2fa84b544f57cd1efe7ff874db4c269",
+      "name": "longhorn.b0xp.io",
+      "type": "CNAME",
+      "content": "e4e9edf2-773c-446b-8e6b-23fc69e2f150.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-04-21T13:42:29.561653Z",
+      "modified_on": "2024-04-21T13:42:29.561653Z"
+    },
+    {
+      "id": "81d8045b8d659c76675ba79e9dc92a44",
+      "name": "prometheus-web.b0xp.io",
+      "type": "CNAME",
+      "content": "25190a02-f54f-4951-ac18-c98db4501fb4.cfargotunnel.com",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2025-01-04T09:33:36.419862Z",
+      "modified_on": "2025-01-04T09:33:36.419862Z"
+    },
+    {
+      "id": "66082f130db0e13f2eed2a6d96362ecd",
+      "name": "www.b0xp.io",
+      "type": "CNAME",
+      "content": "shanghai-4t4.pages.dev",
+      "proxiable": true,
+      "proxied": true,
+      "ttl": 1,
+      "settings": {
+        "flatten_cname": false
+      },
+      "meta": {},
+      "comment": null,
+      "tags": [],
+      "created_on": "2024-04-26T11:21:24.957415Z",
+      "modified_on": "2024-04-26T11:21:24.957415Z"
+    }
+  ],
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result_info": {
+    "page": 1,
+    "per_page": 100,
+    "count": 11,
+    "total_count": 11,
+    "total_pages": 1
+  }
+}

@@ -1,0 +1,347 @@
+{
+  "result": [
+    {
+      "id": "d3c1ed75-68dd-415e-bdcc-3dd50d791e4d",
+      "uid": "d3c1ed75-68dd-415e-bdcc-3dd50d791e4d",
+      "type": "self_hosted",
+      "name": "Access application for prometheus-web.b0xp.io",
+      "aud": "c07abc09a25be76ef9891b73320fe4ac5564f676ba468d9c034cc22460f681d0",
+      "created_at": "2025-01-04T09:33:35Z",
+      "updated_at": "2025-01-04T09:33:35Z",
+      "domain": "prometheus-web.b0xp.io",
+      "self_hosted_domains": [
+        "prometheus-web.b0xp.io"
+      ],
+      "destinations": [
+        {
+          "type": "public",
+          "uri": "prometheus-web.b0xp.io"
+        }
+      ],
+      "app_launcher_visible": true,
+      "allowed_idps": [],
+      "tags": [],
+      "auto_redirect_to_identity": false,
+      "policies": [
+        {
+          "created_at": "2025-01-04T09:33:36Z",
+          "decision": "allow",
+          "exclude": [],
+          "id": "7de37d0a-a0e5-4603-8383-e71b57d5a3a9",
+          "include": [
+            {
+              "login_method": {
+                "id": "b9248b7d-c1fa-48ab-8a43-ebffe03fabac"
+              }
+            }
+          ],
+          "name": "policy for prometheus-web.b0xp.io",
+          "require": [],
+          "uid": "7de37d0a-a0e5-4603-8383-e71b57d5a3a9",
+          "updated_at": "2025-01-04T09:33:36Z",
+          "reusable": false,
+          "precedence": 1
+        }
+      ],
+      "session_duration": "24h",
+      "enable_binding_cookie": false,
+      "http_only_cookie_attribute": false,
+      "options_preflight_bypass": false
+    },
+    {
+      "id": "49966ac9-5c55-4324-aee6-f963bba9f223",
+      "uid": "49966ac9-5c55-4324-aee6-f963bba9f223",
+      "type": "self_hosted",
+      "name": "Access application for k8s.b0xp.io",
+      "aud": "72306f6b99f455b61b3c2dacec0c38212d6ae01955e28c70228761d09e1a635e",
+      "created_at": "2024-12-09T00:15:00Z",
+      "updated_at": "2024-12-09T18:28:26Z",
+      "domain": "k8s.b0xp.io",
+      "self_hosted_domains": [
+        "k8s.b0xp.io"
+      ],
+      "destinations": [
+        {
+          "type": "public",
+          "uri": "k8s.b0xp.io"
+        }
+      ],
+      "app_launcher_visible": true,
+      "allowed_idps": [],
+      "tags": [],
+      "auto_redirect_to_identity": false,
+      "policies": [
+        {
+          "created_at": "2024-12-09T18:28:26Z",
+          "decision": "allow",
+          "exclude": [],
+          "id": "9f35eef0-f0ea-45b9-bedf-a8eb62e24bc9",
+          "include": [
+            {
+              "service_token": {
+                "token_id": "04a75e03-ac20-467e-bf01-6333445089d1"
+              }
+            }
+          ],
+          "name": "GitHub Actions Access Policy",
+          "require": [],
+          "uid": "9f35eef0-f0ea-45b9-bedf-a8eb62e24bc9",
+          "updated_at": "2024-12-10T19:34:04Z",
+          "reusable": true,
+          "precedence": 1
+        }
+      ],
+      "session_duration": "24h",
+      "enable_binding_cookie": false,
+      "http_only_cookie_attribute": false,
+      "options_preflight_bypass": false
+    },
+    {
+      "id": "40a32995-20b7-4f5d-b378-7a3606199ff0",
+      "uid": "40a32995-20b7-4f5d-b378-7a3606199ff0",
+      "type": "self_hosted",
+      "name": "Access application for hitohub-stage.b0xp.io",
+      "aud": "f8c8f1ba6c2bcda37af6ed8546fe12ad7deb01bfe04a8b9242e95bc0535aeeed",
+      "created_at": "2024-04-26T17:13:40Z",
+      "updated_at": "2024-04-26T17:13:40Z",
+      "domain": "hitohub-stage.b0xp.io",
+      "self_hosted_domains": [
+        "hitohub-stage.b0xp.io"
+      ],
+      "destinations": [
+        {
+          "type": "public",
+          "uri": "hitohub-stage.b0xp.io"
+        }
+      ],
+      "app_launcher_visible": true,
+      "allowed_idps": [],
+      "tags": [],
+      "auto_redirect_to_identity": false,
+      "policies": [
+        {
+          "created_at": "2024-04-26T17:13:41Z",
+          "decision": "allow",
+          "exclude": [],
+          "id": "c94a68d9-2d83-4cb2-80f0-85ab597e5998",
+          "include": [
+            {
+              "login_method": {
+                "id": "b9248b7d-c1fa-48ab-8a43-ebffe03fabac"
+              }
+            }
+          ],
+          "name": "policy for hitohub-stage.b0xp.io",
+          "require": [],
+          "uid": "c94a68d9-2d83-4cb2-80f0-85ab597e5998",
+          "updated_at": "2024-04-26T17:13:41Z",
+          "reusable": false,
+          "precedence": 1
+        }
+      ],
+      "session_duration": "24h",
+      "enable_binding_cookie": false,
+      "http_only_cookie_attribute": false,
+      "options_preflight_bypass": false
+    },
+    {
+      "id": "e432ab87-8661-4356-b9e5-1f111193f57b",
+      "uid": "e432ab87-8661-4356-b9e5-1f111193f57b",
+      "type": "self_hosted",
+      "name": "Access application for longhorn.b0xp.io",
+      "aud": "a988d9f360b3034745578ca0273b7192099f9d42237e1c74a9b341404f130d69",
+      "created_at": "2024-04-21T13:42:28Z",
+      "updated_at": "2024-04-21T13:42:28Z",
+      "domain": "longhorn.b0xp.io",
+      "self_hosted_domains": [
+        "longhorn.b0xp.io"
+      ],
+      "destinations": [
+        {
+          "type": "public",
+          "uri": "longhorn.b0xp.io"
+        }
+      ],
+      "app_launcher_visible": true,
+      "allowed_idps": [],
+      "tags": [],
+      "auto_redirect_to_identity": false,
+      "policies": [
+        {
+          "created_at": "2024-04-21T13:42:29Z",
+          "decision": "allow",
+          "exclude": [],
+          "id": "5cf766f2-167f-4a6b-8307-57b9a3a96907",
+          "include": [
+            {
+              "login_method": {
+                "id": "b9248b7d-c1fa-48ab-8a43-ebffe03fabac"
+              }
+            }
+          ],
+          "name": "policy for longhorn.b0xp.io",
+          "require": [],
+          "uid": "5cf766f2-167f-4a6b-8307-57b9a3a96907",
+          "updated_at": "2024-04-21T13:42:29Z",
+          "reusable": false,
+          "precedence": 1
+        }
+      ],
+      "session_duration": "24h",
+      "enable_binding_cookie": false,
+      "http_only_cookie_attribute": false,
+      "options_preflight_bypass": false
+    },
+    {
+      "id": "eabc169f-306c-4867-a3f2-053b94dc59c6",
+      "uid": "eabc169f-306c-4867-a3f2-053b94dc59c6",
+      "type": "self_hosted",
+      "name": "Access application for argocd.b0xp.io",
+      "aud": "4a653646707fa25779147821f5769e54ce6aea0fd25f90b77b4b5f477ba2cdab",
+      "created_at": "2024-04-19T09:29:30Z",
+      "updated_at": "2024-04-19T09:29:30Z",
+      "domain": "argocd.b0xp.io",
+      "self_hosted_domains": [
+        "argocd.b0xp.io"
+      ],
+      "destinations": [
+        {
+          "type": "public",
+          "uri": "argocd.b0xp.io"
+        }
+      ],
+      "app_launcher_visible": true,
+      "allowed_idps": [],
+      "tags": [],
+      "auto_redirect_to_identity": false,
+      "policies": [
+        {
+          "created_at": "2024-04-19T09:29:31Z",
+          "decision": "allow",
+          "exclude": [],
+          "id": "0d64bd0c-36ae-46ca-921a-7bafc9ed160e",
+          "include": [
+            {
+              "login_method": {
+                "id": "b9248b7d-c1fa-48ab-8a43-ebffe03fabac"
+              }
+            }
+          ],
+          "name": "policy for argocd.b0xp.io",
+          "require": [],
+          "uid": "0d64bd0c-36ae-46ca-921a-7bafc9ed160e",
+          "updated_at": "2024-04-19T09:29:31Z",
+          "reusable": false,
+          "precedence": 1
+        }
+      ],
+      "session_duration": "24h",
+      "enable_binding_cookie": false,
+      "http_only_cookie_attribute": false,
+      "options_preflight_bypass": false
+    },
+    {
+      "id": "cfa833f1-2322-41ad-b535-064d0f54137a",
+      "uid": "cfa833f1-2322-41ad-b535-064d0f54137a",
+      "type": "self_hosted",
+      "name": "Access application for grafana.b0xp.io",
+      "aud": "ff515a3a1e1976671e7b9be8102f9e28b2025260a31bcb091d8daa4ea7675939",
+      "created_at": "2024-04-17T14:07:52Z",
+      "updated_at": "2024-04-17T15:30:11Z",
+      "domain": "grafana.b0xp.io",
+      "self_hosted_domains": [
+        "grafana.b0xp.io"
+      ],
+      "destinations": [
+        {
+          "type": "public",
+          "uri": "grafana.b0xp.io"
+        }
+      ],
+      "app_launcher_visible": true,
+      "allowed_idps": [],
+      "tags": [],
+      "auto_redirect_to_identity": false,
+      "policies": [
+        {
+          "created_at": "2024-04-17T14:07:53Z",
+          "decision": "allow",
+          "exclude": [],
+          "id": "88e321bd-2366-4e71-bf36-590c832de6bd",
+          "include": [
+            {
+              "login_method": {
+                "id": "b9248b7d-c1fa-48ab-8a43-ebffe03fabac"
+              }
+            }
+          ],
+          "name": "policy for grafana.b0xp.io",
+          "require": [],
+          "uid": "88e321bd-2366-4e71-bf36-590c832de6bd",
+          "updated_at": "2024-04-17T15:41:24Z",
+          "reusable": false,
+          "precedence": 1
+        }
+      ],
+      "session_duration": "24h",
+      "enable_binding_cookie": false,
+      "http_only_cookie_attribute": false,
+      "options_preflight_bypass": false
+    },
+    {
+      "id": "ccb49999-7a12-476d-8724-0f4cc6a6c0cb",
+      "uid": "ccb49999-7a12-476d-8724-0f4cc6a6c0cb",
+      "type": "warp",
+      "name": "Warp Login App",
+      "aud": "fe9e69ba80e350069fcd4d76243cc8f39e6a5b217a614c1175173b71d0befea3",
+      "created_at": "2024-02-10T09:01:08Z",
+      "updated_at": "2024-02-12T13:30:09Z",
+      "domain": "boxp.cloudflareaccess.com/warp",
+      "allowed_idps": [],
+      "session_duration": "24h",
+      "auto_redirect_to_identity": false,
+      "policies": [
+        {
+          "created_at": "2024-02-10T09:13:13Z",
+          "decision": "allow",
+          "exclude": [],
+          "id": "d807cdcb-141e-40f3-ac82-5b6f97468f19",
+          "include": [
+            {
+              "email": {
+                "email": "tiyotiyouda@gmail.com"
+              }
+            },
+            {
+              "email": {
+                "email": "onitikutrain@gmail.com"
+              }
+            },
+            {
+              "email": {
+                "email": "nyamo.hovdk@gmail.com"
+              }
+            }
+          ],
+          "name": "mail addresses",
+          "require": [],
+          "uid": "d807cdcb-141e-40f3-ac82-5b6f97468f19",
+          "updated_at": "2024-02-12T13:30:09Z",
+          "reusable": false,
+          "precedence": 2
+        }
+      ],
+      "tags": []
+    }
+  ],
+  "success": true,
+  "errors": [],
+  "messages": [],
+  "result_info": {
+    "page": 1,
+    "per_page": 1000,
+    "count": 7,
+    "total_count": 7,
+    "total_pages": 1
+  }
+}
