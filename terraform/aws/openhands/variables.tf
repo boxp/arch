@@ -8,7 +8,7 @@ variable "bedrock_region" {
   description = "AWS region where Bedrock is available"
   type        = string
   default     = "us-west-2"
-} 
+}
 
 variable "account_id" {
   description = "AWS account ID"
