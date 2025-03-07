@@ -11,7 +11,7 @@ resource "aws_iam_access_key" "bedrock_user_key" {
 resource "aws_iam_policy" "bedrock_policy" {
   name        = "bedrock-openhands-policy"
   description = "Policy for accessing AWS Bedrock Claude 3.7 Sonnet"
-  
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
