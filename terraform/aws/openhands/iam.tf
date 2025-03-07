@@ -26,7 +26,7 @@ resource "aws_iam_policy" "bedrock_policy" {
           "bedrock:GetFoundationModel"
         ]
         Resource = [
-          "arn:aws:bedrock:*::foundation-model/${var.bedrock_model_id}"
+          "arn:aws:bedrock:${var.bedrock_region}::foundation-model/${var.bedrock_model_id}"
         ]
       }
     ]
