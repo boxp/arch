@@ -1,6 +1,6 @@
 resource "cloudflare_page_rule" "redirect_hitohub_prod" {
   zone_id  = var.zone_id                # ドメインのzone ID
-  target   = "https://hitohub.boxp.tk*" # リダイレクト元
+  target   = "https://hitohub.boxp.tk/*" # リダイレクト元
   priority = 3                          # ルールの優先度
 
   actions {
