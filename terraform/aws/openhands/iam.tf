@@ -28,6 +28,7 @@ resource "aws_iam_policy" "bedrock_policy" {
         Resource = [
           "arn:aws:bedrock:${var.bedrock_region}:${var.account_id}:inference-profile/${var.bedrock_model_id}",
           "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
           "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0"
         ]
       }
@@ -39,4 +40,4 @@ resource "aws_iam_policy" "bedrock_policy" {
 resource "aws_iam_user_policy_attachment" "bedrock_policy_attachment" {
   user       = aws_iam_user.bedrock_user.name
   policy_arn = aws_iam_policy.bedrock_policy.arn
-} 
+}
