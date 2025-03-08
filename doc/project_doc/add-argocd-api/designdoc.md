@@ -1,5 +1,20 @@
 # argocd-api.b0xp.io 実装設計書
 
+## 重要な注意点
+
+### バリデーションエラー解決（2024年XX月XX日追加）
+
+以下のTerraformバリデーションエラーが発生したため、Accessトークン設定を修正しました：
+
+```
+Error: Unsupported argument
+  on access.tf line 50, in resource "cloudflare_access_service_token" "github_action_token":
+  50:   triggers = {
+An argument named "triggers" is not expected here.
+```
+
+`cloudflare_access_service_token`リソースでは`triggers`パラメータは使用できないため、代わりに`lifecycle`ブロック内の`replace_triggered_by`を使用してトークンローテーションを実装するよう設計を変更しました。この修正により、同等の機能を維持しながらバリデーションエラーを解消しています。
+
 ## 1. 目的
 
 本プロジェクトの目的は、lolice Kubernetesクラスター上のArgo CD APIをGitHub Actionからアクセス可能にし、PRプロセスでのManifestの差分表示を自動化することです。これにより、コード変更のレビュープロセスが改善され、デプロイの安全性と効率が向上します。
@@ -103,10 +118,9 @@ resource "cloudflare_access_service_token" "github_action_token" {
   # トークンローテーション設定
   lifecycle {
     create_before_destroy = true
-  }
-  
-  triggers = {
-    rotation = time_rotating.token_rotation.id
+    replace_triggered_by = [
+      time_rotating.token_rotation.id
+    ]
   }
 }
 

@@ -45,10 +45,9 @@ resource "cloudflare_access_service_token" "github_action_token" {
   # トークンローテーション設定
   lifecycle {
     create_before_destroy = true
-  }
-  
-  triggers = {
-    rotation = time_rotating.token_rotation.id
+    replace_triggered_by = [
+      time_rotating.token_rotation.id
+    ]
   }
 }
 
