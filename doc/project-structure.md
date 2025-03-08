@@ -68,6 +68,7 @@
 ├── .gitignore           # Gitで無視するファイルのリスト
 ├── .openhands/          # openhandsに関する重要な指示が記載されたマイクロエージェントファイルが含まれるディレクトリ。特に、.openhands/microagentsに記載された指示は必ず読んでください。
 
+（注: .openhands/microagents/repo.mdは、openhandsに強制的に読ませるドキュメントです）
 ├── LICENSE              # ライセンス情報
 ├── README.md            # プロジェクトの概要説明
 ├── renovate.json5       # Renovateの設定ファイル（依存関係自動更新ツール）
