@@ -40,4 +40,4 @@ resource "aws_iam_policy" "bedrock_policy" {
 resource "aws_iam_user_policy_attachment" "bedrock_policy_attachment" {
   user       = aws_iam_user.bedrock_user.name
   policy_arn = aws_iam_policy.bedrock_policy.arn
-} 
+}
