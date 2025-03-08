@@ -66,6 +66,8 @@
 │   └── gcp/             # GCP関連のTerraform設定
 │       └── boxp-tk/     # boxp.tk関連のGCPリソース設定
 ├── .gitignore           # Gitで無視するファイルのリスト
+├── .openhands/          # openhandsに関する重要な指示が記載されたマイクロエージェントファイルが含まれるディレクトリ。特に、.openhands/microagentsに記載された指示は必ず読んでください。
+
 ├── LICENSE              # ライセンス情報
 ├── README.md            # プロジェクトの概要説明
 ├── renovate.json5       # Renovateの設定ファイル（依存関係自動更新ツール）
@@ -120,6 +122,7 @@
 │   └── calico/          # Calicoネットワークプラグインの基本設定
 ├── doc/                 # プロジェクトのドキュメント
 ├── .gitignore           # Gitで無視するファイルのリスト
+├── .openhands/          # openhandsに関する重要な指示が記載されたファイルを含むディレクトリ。特に、.openhands/microagentsに記載された指示は必ず読んでください。
 ├── LICENSE              # ライセンス情報
 ├── README.md            # プロジェクトの概要説明
 ├── cluster.jpg          # クラスターの物理的な構成図
@@ -138,3 +141,5 @@
   - ArgoCDを使用してGitOpsワークフローで管理
   - クラスタ上で動作する各種サービスやアプリケーションのマニフェストを格納
   - 監視、ストレージ、ネットワーク、アプリケーションなどの設定を管理 
+
+
