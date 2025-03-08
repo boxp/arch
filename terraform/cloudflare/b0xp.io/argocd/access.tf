@@ -38,17 +38,16 @@ resource "cloudflare_access_application" "argocd_api" {
 
 # GitHub Action用のサービストークン
 resource "cloudflare_access_service_token" "github_action_token" {
-  account_id = var.account_id
-  name       = "GitHub Action - ArgoCD API"
+  account_id           = var.account_id
+  name                 = "GitHub Action - ArgoCD API"
   min_days_for_renewal = 30
-  
+
   # トークンローテーション設定
   lifecycle {
     create_before_destroy = true
-  }
-  
-  triggers = {
-    rotation = time_rotating.token_rotation.id
+    replace_triggered_by = [
+      time_rotating.token_rotation.id
+    ]
   }
 }
 
