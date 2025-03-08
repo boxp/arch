@@ -57,7 +57,7 @@ resource "cloudflare_access_policy" "argocd_api_policy" {
   zone_id        = var.zone_id
   name           = "GitHub Actions access policy for argocd-api.b0xp.io"
   precedence     = "1"
-  decision       = "allow"
+  decision       = "non_identity"
   include {
     service_token = [cloudflare_access_service_token.github_action_token.id]
   }
