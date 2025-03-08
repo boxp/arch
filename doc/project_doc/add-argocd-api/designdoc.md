@@ -367,7 +367,24 @@ jobs:
 1. `arch/terraform/cloudflare/b0xp.io/argocd/dns.tf`を編集してDNSレコードを追加
 2. `arch/terraform/cloudflare/b0xp.io/argocd/tunnel.tf`を編集してTunnel設定を追加
 3. `arch/terraform/cloudflare/b0xp.io/argocd/access.tf`を編集してAccess設定を追加
-4. Terraformコードを適用:
+4. `time_rotating`リソースを使用するため、GitHub Actionのプロバイダーホワイトリストに`time`プロバイダーを追加:
+   ```bash
+   vim arch/.github/workflows/wc-plan.yaml
+   ```
+   以下の行を追加:
+   ```yaml
+   TFPROVIDERCHECK_CONFIG_BODY: |
+     providers:
+       - name: registry.terraform.io/cloudflare/cloudflare
+       - name: registry.terraform.io/hashicorp/aws
+       - name: registry.terraform.io/hashicorp/google
+       - name: registry.terraform.io/hashicorp/null
+       - name: registry.terraform.io/hashicorp/tls
+       - name: registry.terraform.io/hashicorp/random
+       - name: registry.terraform.io/hashicorp/time  # トークンローテーション用
+       - name: registry.terraform.io/integrations/github
+   ```
+5. Terraformコードを適用:
    ```bash
    cd arch/terraform/cloudflare/b0xp.io/argocd
    terraform init
