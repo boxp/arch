@@ -1,0 +1,5 @@
+agent: microagent
+version: "1.0"
+always_read:
+  - doc/project-structure.md
+  - doc/project-spec.md
