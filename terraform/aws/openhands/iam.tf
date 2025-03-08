@@ -26,7 +26,8 @@ resource "aws_iam_policy" "bedrock_policy" {
           "bedrock:GetFoundationModel"
         ]
         Resource = [
-          "arn:aws:bedrock:${var.bedrock_region}:${var.account_id}:inference-profile/${var.bedrock_model_id}"
+          "arn:aws:bedrock:${var.bedrock_region}:${var.account_id}:inference-profile/${var.bedrock_model_id}",
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0"
         ]
       }
     ]
