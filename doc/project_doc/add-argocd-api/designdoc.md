@@ -15,6 +15,48 @@ An argument named "triggers" is not expected here.
 
 `cloudflare_access_service_token`リソースでは`triggers`パラメータは使用できないため、代わりに`lifecycle`ブロック内の`replace_triggered_by`を使用してトークンローテーションを実装するよう設計を変更しました。この修正により、同等の機能を維持しながらバリデーションエラーを解消しています。
 
+### TFLintエラー解決（2024年XX月XX日追加）
+
+また、以下のTFLintエラーが発生したため、追加の修正が必要です：
+
+```
+WARNING access.tf 27 ... 27 Missing version constraint for provider "time" in required_providers
+```
+
+`time_rotating`リソースを使用しているため、`terraform.required_providers`ブロック内に`time`プロバイダーのバージョン制約を追加する必要があります。具体的には、`backend.tf`ファイルを以下のように修正する必要があります：
+
+```hcl
+terraform {
+  required_version = ">= 1.0"
+  backend "s3" {
+    bucket = "tfaction-state"
+    key    = "terraform/cloudflare/b0xp.io/argocd/v1/terraform.tfstate"
+    region = "ap-northeast-1"
+  }
+
+  required_providers {
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "= 4.52.0"
+    }
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+    random = {
+      source  = "hashicorp/random"
+      version = "3.7.1"
+    }
+    time = {
+      source  = "hashicorp/time"
+      version = "~> 0.10.0"
+    }
+  }
+}
+```
+
+この修正により、Terraformに`time`プロバイダーのバージョンを明示的に指定し、TFLintのエラーを解消します。
+
 ## 1. 目的
 
 本プロジェクトの目的は、lolice Kubernetesクラスター上のArgo CD APIをGitHub Actionからアクセス可能にし、PRプロセスでのManifestの差分表示を自動化することです。これにより、コード変更のレビュープロセスが改善され、デプロイの安全性と効率が向上します。
@@ -256,9 +298,6 @@ spec:
         - tunnel
         - --metrics
         - 0.0.0.0:2000
-        - run
-        - --token
-        - $(TUNNEL_TOKEN)
         livenessProbe:
           httpGet:
             path: /ready
@@ -381,7 +420,18 @@ jobs:
 1. `arch/terraform/cloudflare/b0xp.io/argocd/dns.tf`を編集してDNSレコードを追加
 2. `arch/terraform/cloudflare/b0xp.io/argocd/tunnel.tf`を編集してTunnel設定を追加
 3. `arch/terraform/cloudflare/b0xp.io/argocd/access.tf`を編集してAccess設定を追加
-4. `time_rotating`リソースを使用するため、GitHub Actionのプロバイダーホワイトリストに`time`プロバイダーを追加:
+4. `arch/terraform/cloudflare/b0xp.io/argocd/backend.tf`を編集してtimeプロバイダーを追加:
+   ```bash
+   vim arch/terraform/cloudflare/b0xp.io/argocd/backend.tf
+   ```
+   以下を`required_providers`ブロックに追加:
+   ```hcl
+   time = {
+     source  = "hashicorp/time"
+     version = "~> 0.10.0"
+   }
+   ```
+5. `time_rotating`リソースを使用するため、GitHub Actionのプロバイダーホワイトリストに`time`プロバイダーを追加:
    ```bash
    vim arch/.github/workflows/wc-plan.yaml
    ```
@@ -398,135 +448,10 @@ jobs:
        - name: registry.terraform.io/hashicorp/time  # トークンローテーション用
        - name: registry.terraform.io/integrations/github
    ```
-5. Terraformコードを適用:
+6. Terraformコードを適用:
    ```bash
    cd arch/terraform/cloudflare/b0xp.io/argocd
    terraform init
    terraform plan -out=plan.out
    terraform apply plan.out
    ```
-
-### 4.2 Argo CD API設定
-
-1. Argo CDにログインし、GitHub Action用のサービスアカウントとロールを設定するためのトークンを生成:
-   ```bash
-   argocd proj role create-token default github-actions-role
-   ```
-   生成されたトークンはGitHubリポジトリのSecretsに直接設定します（後述の「4.4 GitHub Action設定」参照）。
-
-### 4.3 Kubernetesマニフェスト適用
-
-1. GitHub Actions RBAC設定を作成:
-   ```bash
-   mkdir -p lolice/argoproj/argocd/base/
-   vim lolice/argoproj/argocd/base/github-actions-rbac.yaml
-   ```
-2. ExternalSecret定義を作成:
-   ```bash
-   vim lolice/argoproj/argocd/base/external-secrets.yaml
-   ```
-3. cloudflared Deployment定義を作成:
-   ```bash
-   vim lolice/argoproj/argocd/base/cloudflared-api.yaml
-   ```
-4. NetworkPolicy定義を作成:
-   ```bash
-   vim lolice/argoproj/argocd/base/network-policy.yaml
-   ```
-5. ArgoCD kustomization.yamlを更新して新しいマニフェストを含める:
-   ```bash
-   vim lolice/argoproj/argocd/kustomization.yaml
-   ```
-   以下のように追加したリソースを記述:
-   ```yaml
-   apiVersion: kustomize.config.k8s.io/v1beta1
-   kind: Kustomization
-   resources:
-   - github.com/argoproj/argo-cd/manifests/base?ref=v2.14.4
-   - cloudflared-deployment.yaml
-   - external-secret.yaml
-   - base/github-actions-rbac.yaml  # GitHub Action用RBAC
-   - base/external-secrets.yaml     # API用トンネルトークン取得
-   - base/cloudflared-api.yaml      # API用cloudflared
-   - base/network-policy.yaml       # API用通信制限
-   patchesStrategicMerge:
-   - overlays/argocd-redis-network-policy.yaml
-   - overlays/argocd-repo-server-network-policy.yaml
-   - overlays/argocd-server-network-policy.yaml
-   - overlays/argocd-cmd-params-cm.yaml
-   - overlays/argocd-cm.yaml
-   ```
-6. 変更をリポジトリにプッシュし、ArgoCD経由でデプロイ
-
-### 4.4 GitHub Action設定
-
-1. GitHub Actionワークフロー定義を作成:
-   ```bash
-   mkdir -p lolice/.github/workflows/
-   vim lolice/.github/workflows/argocd-diff.yaml
-   ```
-2. GitHubリポジトリのSecretsに必要な値を設定:
-   - `ARGOCD_SERVER_URL`: `https://argocd-api.b0xp.io`
-   - `ARGOCD_AUTH_TOKEN`: 前のステップ（4.2）で生成したArgo CD APIトークン
-   - `ARGOCD_API_TOKEN_ID`: AWS SSM Parameter Storeに保存されたCloudflare Accessサービストークンのclient_id
-   - `ARGOCD_API_TOKEN_SECRET`: AWS SSM Parameter Storeに保存されたCloudflare Accessサービストークンのclient_secret
-
-## 5. テスト計画
-
-実装完了後、以下のテストを実施します：
-
-1. **cloudflared接続テスト**
-   - cloudflaredポッドが正常に起動しているか確認
-   - トンネル接続が確立されているか確認
-   ```bash
-   kubectl -n argocd get pods -l app=cloudflared-api
-   kubectl -n argocd logs -l app=cloudflared-api
-   ```
-
-2. **Cloudflare Access認証テスト**
-   - サービストークンを使用して手動でAPIリクエストを送信
-   ```bash
-   curl -H "CF-Access-Client-Id: ${CLIENT_ID}" \
-        -H "CF-Access-Client-Secret: ${CLIENT_SECRET}" \
-        https://argocd-api.b0xp.io/api/v1/applications
-   ```
-
-3. **GitHub Actionワークフローテスト**
-   - テスト用のPull Requestを作成して、ワークフローが正常に実行されるか確認
-   - PRコメントに差分情報が表示されるか確認
-
-## 6. リスク管理
-
-| リスク | 影響 | 緩和策 |
-|--------|------|--------|
-| Cloudflare Accessトークンの漏洩 | 不正アクセスの可能性 | 90日ごとのトークン自動ローテーション、GitHub Secretsの適切な管理 |
-| Argo CD APIトークンの漏洩 | APIへの不正アクセス | 最小権限の原則に基づく権限設定、定期的なトークンローテーション |
-| cloudflaredの障害 | API接続不能 | ヘルスチェックの設定、監視と自動復旧機能の追加 |
-| ネットワークポリシーの不備 | クラスター内の不正アクセス | 厳格なポリシーの定義と定期的なレビュー |
-| GitHub Actionの障害 | 差分表示の失敗 | エラー処理の追加、通知設定 |
-
-## 7. 運用計画
-
-### 7.1 監視
-
-- cloudflaredポッドのログ監視
-- GitHub Actionの実行結果監視
-- Cloudflare Tunnelの接続状態監視
-
-### 7.2 メンテナンス
-
-- 3ヶ月ごとのCloudflare Accessトークンローテーション（自動）
-- 6ヶ月ごとのArgo CD APIトークンローテーション（手動）
-- GitHubリポジトリSecretsの定期的な更新
-
-### 7.3 インシデント対応
-
-1. **アクセス障害時**:
-   - cloudflaredログの確認
-   - ポッドの再起動
-   - Tunnel設定の確認と再適用
-
-2. **GitHub Action失敗時**:
-   - ワークフローログの確認
-   - シークレットの有効性確認
-   - 手動でのAPI疎通確認
