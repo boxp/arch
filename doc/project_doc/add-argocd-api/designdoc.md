@@ -23,7 +23,7 @@ An argument named "triggers" is not expected here.
 WARNING access.tf 27 ... 27 Missing version constraint for provider "time" in required_providers
 ```
 
-`time_rotating`リソースを使用しているため、`terraform.required_providers`ブロック内に`time`プロバイダーのバージョン制約を追加する必要があります。具体的には、`backend.tf`ファイルを以下のように修正する必要があります：
+`time_rotating`リソースを使用したため、`terraform.required_providers`ブロック内に`time`プロバイダーのバージョン制約を追加する必要があります。具体的には、`backend.tf`ファイルを以下のように修正する必要があります：
 
 ```hcl
 terraform {
@@ -56,6 +56,79 @@ terraform {
 ```
 
 この修正により、Terraformに`time`プロバイダーのバージョンを明示的に指定し、TFLintのエラーを解消します。
+
+### kustomizeパス解決エラーの解決（2024年XX月XX日追加）
+
+GitHub Action内でkustomizeを使用したdiff確認時に、以下のようなエラーが発生することがありました：
+
+```
+Error: must build at directory: not a valid directory: evalsymlink failure on 'argoproj/argocd-image-updater' : lstat /argoproj: no such file or directory
+```
+
+このエラーは、kustomizeが相対パスを絶対パスに解決しようとする際に、`argoproj/argocd-image-updater`を`/argoproj/argocd-image-updater`（ルートディレクトリからの絶対パス）として解釈してしまうことが原因です。GitHub Actionの実行環境では、作業ディレクトリがルートディレクトリではないため、このようなパス解決エラーが発生します。
+
+この問題を解決するために、以下のように`argocd app diff`コマンドの実行方法を修正する必要があります：
+
+1. 絶対パスを使用して`--local`オプションを指定する
+2. ディレクトリを作業ディレクトリからの絶対パスとして構築する
+
+具体的には、以下のように「Extract applications and check for changes」ステップを修正します：
+
+```yaml
+# Diffを取得
+REPO_ROOT=$(pwd)
+if ! argocd app diff "argocd/$APP_NAME" \
+  --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID,CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  --grpc-web \
+  --insecure \
+  --local-repo-root "$REPO_ROOT" \
+  --local "$REPO_ROOT/$CURRENT_DIR" >> app_diff_results.md 2>&1; then
+  echo "Error getting diff for $APP_NAME" >> app_diff_results.md
+fi
+```
+
+この修正によって、kustomizeが作業ディレクトリからの正しい絶対パスを使用するようになり、パス解決エラーが解消されます。
+
+### argocd app diffコマンドのexit code処理（2024年XX月XX日追加）
+
+`argocd app diff`コマンドは特殊なexit codeを返すため、エラー処理を修正する必要があります。[公式ドキュメント](https://argo-cd.readthedocs.io/en/latest/user-guide/commands/argocd_app_diff/)によると、このコマンドは以下のexit codeを返します：
+
+- 0: 差分なし
+- 1: 差分あり（エラーではない）
+- 2: 一般的なエラー
+
+現在の実装では、非ゼロのexit codeをすべてエラーとして扱っていますが、exit code 1は実際には正常な状態（差分あり）を示します。また、GitHubアクションでは、ステップのexit codeが0以外の場合、CIが失敗として扱われるため、差分がある場合でもCIが失敗しないように修正が必要です。
+
+最も重要な点は、`argocd app diff`コマンドの終了ステータスがそのままシェルスクリプトに伝播しないようにすることです。よって、以下のように「Extract applications and check for changes」ステップを修正します：
+
+```yaml
+# Diffを取得 - コマンドの終了ステータスがシェルに伝播しないようにする
+REPO_ROOT=$(pwd)
+set +e  # エラーが発生してもスクリプトを終了しないようにする
+argocd app diff "argocd/$APP_NAME" \
+  --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID,CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  --grpc-web \
+  --insecure \
+  --local-repo-root "$REPO_ROOT" \
+  --local "$REPO_ROOT/$CURRENT_DIR" >> app_diff_results.md 2>&1
+DIFF_EXIT_CODE=$?
+set -e  # エラー時にスクリプトを終了する設定に戻す
+
+# exit codeに基づいて適切なメッセージを追加
+if [ $DIFF_EXIT_CODE -eq 0 ]; then
+  echo "✅ 差分なし" >> app_diff_results.md
+elif [ $DIFF_EXIT_CODE -eq 1 ]; then
+  echo "ℹ️ 上記の差分が見つかりました" >> app_diff_results.md
+elif [ $DIFF_EXIT_CODE -eq 2 ]; then
+  echo "❌ エラーが発生しました" >> app_diff_results.md
+  # 本当のエラー（exit code 2）の場合のみ、ステップを失敗させる
+  exit 1
+fi
+```
+
+この修正により、`argocd app diff`コマンドのexit codeを正確に処理し、適切なメッセージをPRコメントに表示します。また、真のエラー（exit code 2）の場合のみCIジョブを失敗させ、単なる差分検出（exit code 1）の場合は成功として扱います。
+
+`set +e`と`set -e`の設定により、`argocd app diff`コマンドの終了ステータスがスクリプト全体に伝播しなくなり、私たちが意図した通りの制御が可能になります。
 
 ## 1. 目的
 
@@ -360,6 +433,17 @@ jobs:
           curl -sSL -o argocd-linux-amd64 https://github.com/argoproj/argo-cd/releases/latest/download/argocd-linux-amd64
           sudo install -m 555 argocd-linux-amd64 /usr/local/bin/argocd
           rm argocd-linux-amd64
+          
+          # kustomizeのインストール
+          curl -s "https://raw.githubusercontent.com/kubernetes-sigs/kustomize/master/hack/install_kustomize.sh" | bash
+          sudo install -m 555 kustomize /usr/local/bin/kustomize
+          rm kustomize
+          
+          # Helmのインストール
+          curl -fsSL -o get_helm.sh https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+          chmod 700 get_helm.sh
+          ./get_helm.sh
+          rm get_helm.sh
       
       - name: Extract applications and check for changes
         id: get-apps
@@ -408,7 +492,13 @@ jobs:
                 echo '```diff' >> app_diff_results.md
                 
                 # Diffを取得
-                if ! argocd app diff "$APP_NAME" --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID,CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" --grpc-web --insecure --server-side-generate --local "$CURRENT_DIR" >> app_diff_results.md 2>&1; then
+                REPO_ROOT=$(pwd)
+                if ! argocd app diff "argocd/$APP_NAME" \
+                  --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID,CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+                  --grpc-web \
+                  --insecure \
+                  --local-repo-root "$REPO_ROOT" \
+                  --local "$REPO_ROOT/$CURRENT_DIR" >> app_diff_results.md 2>&1; then
                   echo "Error getting diff for $APP_NAME" >> app_diff_results.md
                 fi
                 
@@ -557,9 +647,7 @@ jobs:
    data:
      policy.csv: |
        # 既存のポリシーがある場合は、その下に追加します
-       p, role:github-actions, applications, get, */*, allow
-       p, role:github-actions, applications, sync, */*, deny
-       g, github-actions, role:github-actions
+       g, github-actions, role:readonly
    ```
 
 3. overlayファイルを`kustomization.yaml`に追加します（既に含まれている場合は不要）：
