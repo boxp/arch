@@ -104,15 +104,20 @@ fi
 ```yaml
 # Diffを取得 - コマンドの終了ステータスがシェルに伝播しないようにする
 REPO_ROOT=$(pwd)
-set +e  # エラーが発生してもスクリプトを終了しないようにする
-argocd app diff "argocd/$APP_NAME" \
-  --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID,CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
-  --grpc-web \
-  --insecure \
-  --local-repo-root "$REPO_ROOT" \
-  --local "$REPO_ROOT/$CURRENT_DIR" >> app_diff_results.md 2>&1
-DIFF_EXIT_CODE=$?
-set -e  # エラー時にスクリプトを終了する設定に戻す
+et +e  # エラーが発生してもスクリプトを終了しないようにする
+ 特定のwarningメッセージのみをフィルタリング
+ 注: "local diff without --server-side-generate is deprecated"の警告を抑制しています
+ これはArgoCD側のバグのためです。--server-side-generateオプションを--grpc-webと併用するとエラーが発生します
+ 関連issue: https://github.com/argoproj/argo-cd/discussions/13302
+
+rgocd app diff "argocd/$APP_NAME" \
+ --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID,CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+ --grpc-web \
+ --insecure \
+ --local-repo-root "$REPO_ROOT" \
+ --local "$REPO_ROOT/$CURRENT_DIR" 2> >(grep -v "local diff without --server-side-generate is deprecated" >&2) >> app_diff_results.md
+IFF_EXIT_CODE=$?
+et -e  # エラー時にスクリプトを終了する設定に戻す
 
 # exit codeに基づいて適切なメッセージを追加
 if [ $DIFF_EXIT_CODE -eq 0 ]; then
@@ -129,6 +134,29 @@ fi
 この修正により、`argocd app diff`コマンドのexit codeを正確に処理し、適切なメッセージをPRコメントに表示します。また、真のエラー（exit code 2）の場合のみCIジョブを失敗させ、単なる差分検出（exit code 1）の場合は成功として扱います。
 
 `set +e`と`set -e`の設定により、`argocd app diff`コマンドの終了ステータスがスクリプト全体に伝播しなくなり、私たちが意図した通りの制御が可能になります。
+
+### argocd app diffコマンドからのwarningメッセージ抑制（2024年XX月XX日追加）
+
+`argocd app diff`コマンド実行時に、対処不可能なwarningメッセージが出力され、PRコメントの可読性が低下する問題が確認されました。これらのwarningは主にKubernetesリソースのスキーマ検証やCRDに関連するもので、アプリケーションの機能に影響を与えないものです。
+
+この問題を解決するため、`--loglevel error`オプションを追加してwarningメッセージを抑制し、エラーメッセージのみを表示するように設定を変更しました：
+
+```yaml
+# Diffを取得 - コマンドの終了ステータスがシェルに伝播しないようにする
+REPO_ROOT=$(pwd)
+set +e  # エラーが発生してもスクリプトを終了しないようにする
+argocd app diff "argocd/$APP_NAME" \
+  --loglevel error \
+  --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID,CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
+  --grpc-web \
+  --insecure \
+  --local-repo-root "$REPO_ROOT" \
+  --local "$REPO_ROOT/$CURRENT_DIR" >> app_diff_results.md 2>&1
+DIFF_EXIT_CODE=$?
+set -e  # エラー時にスクリプトを終了する設定に戻す
+```
+
+この変更により、PRコメントの可読性が向上し、重要な差分情報により集中できるようになります。実際のエラー（exit code 2）は引き続き報告されるため、重要な問題の検出には影響ありません。
 
 ## 1. 目的
 
@@ -494,6 +522,7 @@ jobs:
                 # Diffを取得
                 REPO_ROOT=$(pwd)
                 if ! argocd app diff "argocd/$APP_NAME" \
+                  --loglevel error \
                   --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID,CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET" \
                   --grpc-web \
                   --insecure \
@@ -830,3 +859,16 @@ GitHub Actionの実行時に以下のようなエラーが発生する場合が�
    - アプリケーション名が正しく抽出されているか確認する
    - 指定したアプリケーションがArgo CDサーバーに存在するか確認する
    - ローカルパスが正しく指定されているか確認する
+
+#### 7.4.2 warningメッセージ対応
+
+GitHub Actionの実行時に、`argocd app diff`コマンドから多数のwarningメッセージが出力される場合があります。これにより、PRコメントの可読性が低下し、重要な差分情報を確認しにくくなることがあります。
+
+**解決策**:
+- `--loglevel error`オプションを使用して、warningメッセージを抑制しています
+- 本当に対応が必要なwarningメッセージがある場合は、以下の方法で対処してください：
+  1. 定期的にwarningの内容を確認し、重要な警告がないか評価する
+  2. 必要に応じて、マニフェストやリソース定義を修正する
+  3. CRDに関連するwarningの場合は、最新のCRD定義を適用する
+
+`--loglevel error`オプションを使用することで、重要なエラーメッセージは引き続き表示されるため、クリティカルな問題の検出には影響ありません。
