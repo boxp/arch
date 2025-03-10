@@ -1,15 +1,15 @@
-# アクセスキーIDをSSMパラメータに保存
-resource "aws_ssm_parameter" "bedrock_access_key_id" {
-  name        = "bedrock-access-key-id"
-  description = "AWS Access Key ID for Bedrock service"
+# SSMリーダーユーザーのアクセスキーIDをSSMパラメータに保存
+resource "aws_ssm_parameter" "ssm_reader_access_key_id" {
+  name        = "ssm-reader-access-key-id"
+  description = "AWS Access Key ID for SSM Parameter Reader"
   type        = "SecureString"
-  value       = aws_iam_access_key.bedrock_user_key.id
+  value       = aws_iam_access_key.ssm_reader_user_key.id
 }
 
-# シークレットアクセスキーをSSMパラメータに保存
-resource "aws_ssm_parameter" "bedrock_secret_access_key" {
-  name        = "bedrock-secret-access-key"
-  description = "AWS Secret Access Key for Bedrock service"
+# SSMリーダーユーザーのシークレットアクセスキーをSSMパラメータに保存
+resource "aws_ssm_parameter" "ssm_reader_secret_access_key" {
+  name        = "ssm-reader-secret-access-key"
+  description = "AWS Secret Access Key for SSM Parameter Reader"
   type        = "SecureString"
-  value       = aws_iam_access_key.bedrock_user_key.secret
-} 
+  value       = aws_iam_access_key.ssm_reader_user_key.secret
+}
