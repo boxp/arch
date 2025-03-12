@@ -7,3 +7,5 @@ resource "cloudflare_record" "k8s" {
   proxied = true
 }
 
+# テスト用コメント
+
