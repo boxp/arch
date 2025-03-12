@@ -6,3 +6,4 @@ resource "cloudflare_record" "k8s" {
   type    = "CNAME"
   proxied = true
 }
+
