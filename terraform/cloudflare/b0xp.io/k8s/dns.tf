@@ -6,3 +6,5 @@ resource "cloudflare_record" "k8s" {
   type    = "CNAME"
   proxied = true
 }
+
+# テスト用コメント - plan-aggregatorの動作確認
