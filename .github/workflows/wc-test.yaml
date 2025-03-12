@@ -73,9 +73,9 @@ jobs:
   # 新しいアグリゲータージョブを追加
   plan-aggregator:
     uses: ./.github/workflows/wc-plan-aggregator.yaml
-    needs: [setup, plan]
+    needs: [setup]
     if: always() # 常に実行する
     with:
-      # planジョブが実行された場合のみ結果を渡す
-      plan_result: ${{ needs.plan.result != '' && needs.plan.outputs.result || '[]' }}
+      # planジョブの結果は参照しない
+      plan_result: '[]'
       has_terraform_targets: ${{ join(fromJSON(needs.setup.outputs.targets), '') != '' }}
