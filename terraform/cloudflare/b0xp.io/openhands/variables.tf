@@ -10,3 +10,4 @@ variable "zone_id" {
   default     = "ec593206d0ef695c3aae3a4cb3173264"
 
 }
+
