@@ -16,6 +16,10 @@ on:
         required: true
       gh_cloudflare_api_token:
         required: true
+    outputs:
+      result:
+        description: "JSON array of plan job results"
+        value: ${{ jobs.collect-results.outputs.results }}
 
 jobs:
   plan:
@@ -145,8 +149,61 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
 
       - uses: suzuki-shunsuke/tfaction/plan@d8646dcdc60933280ab9a229bd2a8d8c6390e1b6 # v1.15.5
+        id: plan
         with:
           github_token: ${{steps.generate_token.outputs.token}}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and tfcmt and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
+      
+      # 各planジョブの結果を出力
+      - name: Set job result
+        id: set-result
+        if: always()
+        run: |
+          echo "status=${{ job.status }}" >> $GITHUB_OUTPUT
+          echo "target=${{ matrix.target.target }}" >> $GITHUB_OUTPUT
+
+  # 全てのplanジョブの結果を収集するジョブ
+  collect-results:
+    name: "Collect Plan Results"
+    runs-on: ubuntu-latest
+    needs: plan
+    if: always()
+    outputs:
+      results: ${{ steps.collect.outputs.results }}
+    steps:
+      - name: Collect results
+        id: collect
+        run: |
+          # 全てのplanジョブの結果を収集
+          RESULTS='['
+          
+          # needs.plan.result が成功/失敗/スキップのいずれかを示す
+          # needs.plan.outputs は各ジョブの出力を含む
+          
+          # マトリックスジョブの結果を処理
+          MATRIX_CONTEXT='${{ toJSON(needs.plan) }}'
+          echo "Matrix context: $MATRIX_CONTEXT"
+          
+          # 各ジョブの結果を配列に追加
+          FIRST=true
+          for TARGET in $(echo '${{ toJSON(fromJSON(inputs.targets)) }}' | jq -r '.[].target'); do
+            JOB_ID="plan-$TARGET"
+            JOB_ID="${JOB_ID//\//-}"  # スラッシュをハイフンに置換
+            
+            # ジョブの結果を取得
+            JOB_RESULT=$(echo "$MATRIX_CONTEXT" | jq -r '.result')
+            
+            if [ "$FIRST" = "false" ]; then
+              RESULTS="${RESULTS},"
+            fi
+            FIRST=false
+            
+            # 結果をJSONオブジェクトとして追加
+            RESULTS="${RESULTS}{\"target\":\"${TARGET}\",\"result\":\"${JOB_RESULT}\"}"
+          done
+          
+          RESULTS="${RESULTS}]"
+          echo "results=$RESULTS" >> $GITHUB_OUTPUT
+          echo "Collected results: $RESULTS"

@@ -17,6 +17,10 @@ on:
         required: false
       secrets:
         required: false
+    outputs:
+      plan_aggregator_result:
+        description: "Result of the plan-aggregator job"
+        value: ${{ jobs.plan-aggregator.outputs.result }}
 
 env:
   TFACTION_IS_APPLY: 'false'
@@ -65,3 +69,13 @@ jobs:
     permissions:
       id-token: write
       contents: read
+  
+  # 新しいアグリゲータージョブを追加
+  plan-aggregator:
+    uses: ./.github/workflows/wc-plan-aggregator.yaml
+    needs: [setup, plan]
+    if: always() # 常に実行する
+    with:
+      # planジョブが実行された場合のみ結果を渡す
+      plan_result: ${{ needs.plan.result != '' && needs.plan.outputs.result || '[]' }}
+      has_terraform_targets: ${{ join(fromJSON(needs.setup.outputs.targets), '') != '' }}

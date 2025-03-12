@@ -40,7 +40,11 @@ jobs:
       - renovate-config-validator
       - test
       - update-aqua-checksums
-    if: failure()
+    if: |
+      failure() && 
+      !(needs.test.result == 'success' || 
+        (needs.test.result == 'failure' && 
+         needs.test.outputs.plan_aggregator_result == 'success'))
     steps:
       - run: exit 1
 
