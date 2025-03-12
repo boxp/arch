@@ -161,13 +161,15 @@ jobs:
         id: set-result
         if: always()
         run: |
-          echo "status=${{ job.status }}" >> $GITHUB_OUTPUT
-          echo "target=${{ matrix.target.target }}" >> $GITHUB_OUTPUT
+          echo "status=${{ job.status }}" >> "$GITHUB_OUTPUT"
+          echo "target=${{ matrix.target.target }}" >> "$GITHUB_OUTPUT"
 
   # 全てのplanジョブの結果を収集するジョブ
   collect-results:
     name: "Collect Plan Results"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     needs: plan
     if: always()
     outputs:
@@ -205,5 +207,5 @@ jobs:
           done
           
           RESULTS="${RESULTS}]"
-          echo "results=$RESULTS" >> $GITHUB_OUTPUT
+          echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
           echo "Collected results: $RESULTS"

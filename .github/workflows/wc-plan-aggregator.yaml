@@ -22,6 +22,8 @@ jobs:
   aggregate-plan-results:
     name: "Aggregate Plan Results"
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     # このジョブは常に実行される
     steps:
       - name: Check plan results
@@ -36,15 +38,15 @@ jobs:
           fi
           
           # Terraform対象があるかどうか
-          HAS_TARGETS=${{ inputs.has_terraform_targets }}
+          HAS_TARGETS="${{ inputs.has_terraform_targets }}"
           
           # 結果を解析
           echo "Plan results: $PLAN_RESULTS"
           echo "Has terraform targets: $HAS_TARGETS"
           
           # 成功したplanの数をカウント
-          SUCCESS_COUNT=$(echo $PLAN_RESULTS | jq '[.[] | select(.result == "success")] | length')
-          TOTAL_COUNT=$(echo $PLAN_RESULTS | jq 'length')
+          SUCCESS_COUNT=$(echo "$PLAN_RESULTS" | jq '[.[] | select(.result == "success")] | length')
+          TOTAL_COUNT=$(echo "$PLAN_RESULTS" | jq 'length')
           
           echo "Total plan jobs: $TOTAL_COUNT"
           echo "Successful plan jobs: $SUCCESS_COUNT"
@@ -54,10 +56,10 @@ jobs:
           # 2. 一つでも成功したplanがある場合は成功
           if [ "$HAS_TARGETS" = "false" ] || [ "$SUCCESS_COUNT" -gt 0 ]; then
             echo "✅ Plan check passed!"
-            echo "result=success" >> $GITHUB_OUTPUT
+            echo "result=success" >> "$GITHUB_OUTPUT"
           else
             echo "❌ All plan jobs failed!"
-            echo "result=failure" >> $GITHUB_OUTPUT
+            echo "result=failure" >> "$GITHUB_OUTPUT"
           fi
       
       - name: Plan Result
