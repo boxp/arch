@@ -25,6 +25,8 @@ jobs:
     permissions:
       contents: read
     # このジョブは常に実行される
+    outputs:
+      result: ${{ steps.check-results.outputs.result }}
     steps:
       - name: Check plan results
         id: check-results

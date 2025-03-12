@@ -188,24 +188,11 @@ jobs:
           MATRIX_CONTEXT='${{ toJSON(needs.plan) }}'
           echo "Matrix context: $MATRIX_CONTEXT"
           
-          # 各ジョブの結果を配列に追加
-          FIRST=true
-          for TARGET in $(echo '${{ toJSON(fromJSON(inputs.targets)) }}' | jq -r '.[].target'); do
-            JOB_ID="plan-$TARGET"
-            JOB_ID="${JOB_ID//\//-}"  # スラッシュをハイフンに置換
-            
-            # ジョブの結果を取得
-            JOB_RESULT=$(echo "$MATRIX_CONTEXT" | jq -r '.result')
-            
-            if [ "$FIRST" = "false" ]; then
-              RESULTS="${RESULTS},"
-            fi
-            FIRST=false
-            
-            # 結果をJSONオブジェクトとして追加
-            RESULTS="${RESULTS}{\"target\":\"${TARGET}\",\"result\":\"${JOB_RESULT}\"}"
-          done
+          # jqを使って直接結果を生成
+          TARGETS_JSON='${{ toJSON(fromJSON(inputs.targets)) }}'
+          JOB_RESULT=$(echo "$MATRIX_CONTEXT" | jq -r '.result')
           
-          RESULTS="${RESULTS}]"
+          # jqを使って配列を構築
+          RESULTS=$(echo "$TARGETS_JSON" | jq --arg result "$JOB_RESULT" '[.[] | {target: .target, result: $result}]')
           echo "results=$RESULTS" >> "$GITHUB_OUTPUT"
           echo "Collected results: $RESULTS"
