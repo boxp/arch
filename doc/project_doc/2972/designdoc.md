@@ -4,6 +4,8 @@
 
 このドキュメントでは、OpenHandsのランタイムイメージにAWS認証情報を安全に提供するための詳細な設計と実装計画を提供します。OpenHandsランタイムコンテナがAWSリソース（特にSSM Parameter Store）にアクセスするために必要な認証情報を、セキュアな方法で提供する方法を説明します。
 
+当初はS3バケットを使用する設計でしたが、セキュリティ強化のためにSSM Parameter Storeを使用する設計に変更しました。また、認証情報の取り扱いもランタイム時の取得からビルド時の埋め込みに変更し、よりセキュアな実装を目指します。
+
 ## 2. 背景と目的
 
 OpenHandsランタイムコンテナは、ユーザーのワークスペースでコードを実行するための環境を提供します。一部のユースケースでは、このランタイム環境からAWSリソース（特にSSM Parameter Store）にアクセスする必要があります。このドキュメントでは、以下の目標を達成するための設計を提案します：
@@ -107,7 +109,7 @@ exec "$@"
 AWSにGitHub Actions OIDC Providerを設定します：
 
 ```hcl
-# ファイルパス: /workspace/arch/terraform/aws/iam/github_actions_oidc.tf
+# ファイルパス: /workspace/arch/terraform/aws/openhands/github_actions_oidc.tf
 resource "aws_iam_openid_connect_provider" "github_actions" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
@@ -120,7 +122,7 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 GitHub ActionsがAWS認証情報を取得するためのIAMロールとポリシー：
 
 ```hcl
-# ファイルパス: /workspace/arch/terraform/aws/iam/openhands_runtime_role.tf
+# ファイルパス: /workspace/arch/terraform/aws/openhands/iam_role.tf
 resource "aws_iam_role" "openhands_runtime" {
   name = "openhands-runtime-role"
   
@@ -206,8 +208,8 @@ jobs:
 
       - name: Get AWS credentials from SSM Parameter Store
         run: |
-          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name /openhands/aws/access_key_id --with-decryption --query Parameter.Value --output text)
-          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name /openhands/aws/secret_access_key --with-decryption --query Parameter.Value --output text)
+          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name /openhands/aws-access-key-id --with-decryption --query Parameter.Value --output text)
+          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name /openhands/aws-secret-access-key --with-decryption --query Parameter.Value --output text)
           echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
           echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
           echo "AWS_REGION=ap-northeast-1" >> $GITHUB_ENV
@@ -292,7 +294,7 @@ spec:
 
 ### 7.1 デプロイメント手順
 
-1. Terraformコードを適用してAWS IAMリソースを作成（/workspace/arch/terraform/aws/iam/）
+1. Terraformコードを適用してAWS IAMリソースを作成（/workspace/arch/terraform/aws/openhands/）
 2. 新しいリポジトリ（boxp/open-hands-runtime）を作成
 3. カスタムDockerイメージをビルドしてECRにプッシュ（839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime）
 4. Kubernetesデプロイメントを更新（/workspace/arch/kubernetes/openhands/deployment.yaml）
