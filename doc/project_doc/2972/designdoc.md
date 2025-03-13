@@ -97,7 +97,7 @@ EOF
   
   # SSM Parameter Storeへのアクセスをテスト
   echo "Testing SSM Parameter Store access..."
-  aws ssm get-parameters-by-path --path "/openhands/" --recursive --query "Parameters[].Name" --output text || echo "Warning: SSM Parameter Store access failed"
+  aws ssm get-parameters-by-path --path "/parameter/" --recursive --query "Parameters[].Name" --output text || echo "Warning: SSM Parameter Store access failed"
 fi
 
 # 元のエントリポイントコマンドを実行
@@ -163,7 +163,7 @@ resource "aws_iam_policy" "openhands_ssm_access" {
         ]
         Effect   = "Allow"
         Resource = [
-          "arn:aws:ssm:ap-northeast-1:839695154978:parameter/openhands/*"
+          "arn:aws:ssm:ap-northeast-1:839695154978:parameter/parameter/*"
         ]
       }
     ]
@@ -179,16 +179,16 @@ resource "aws_iam_role_policy_attachment" "openhands_ssm_access" {
 ### 4.5 SSMパラメータの定義
 
 ```hcl
-# ファイルパス: /workspace/arch/terraform/aws/openhands/parameter.tf
+# ファイルパス: /workspace/arch/terraform/aws/openhands/ssm.tf
 # SSMパラメータの作成
 resource "aws_ssm_parameter" "aws_access_key_id" {
-  name  = "/openhands/aws-access-key-id"
+  name  = "/parameter/aws-access-key-id"
   type  = "SecureString"
   value = "実際のアクセスキーID"  # 本番環境では別途設定
 }
 
 resource "aws_ssm_parameter" "aws_secret_access_key" {
-  name  = "/openhands/aws-secret-access-key"
+  name  = "/parameter/aws-secret-access-key"
   type  = "SecureString"
   value = "実際のシークレットアクセスキー"  # 本番環境では別途設定
 }
@@ -226,8 +226,11 @@ jobs:
 
       - name: Get AWS credentials from SSM Parameter Store
         run: |
-          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name /openhands/aws-access-key-id --with-decryption --query Parameter.Value --output text)
-          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name /openhands/aws-secret-access-key --with-decryption --query Parameter.Value --output text)
+          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name /parameter/aws-access-key-id --with-decryption --query Parameter.Value --output text)
+          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name /parameter/aws-secret-access-key --with-decryption --query Parameter.Value --output text)
+          # 認証情報をログに出力しないように設定
+          echo "::add-mask::$AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
           echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
           echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
           echo "AWS_REGION=ap-northeast-1" >> $GITHUB_ENV
@@ -241,7 +244,7 @@ jobs:
         with:
           context: .
           push: true
-          tags: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:latest
+          tags: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:${{ github.sha }}
           build-args: |
             AWS_ACCESS_KEY_ID=${{ env.AWS_ACCESS_KEY_ID }}
             AWS_SECRET_ACCESS_KEY=${{ env.AWS_SECRET_ACCESS_KEY }}
@@ -268,7 +271,7 @@ spec:
         # ... 既存の設定 ...
         env:
         - name: SANDBOX_RUNTIME_CONTAINER_IMAGE
-          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:latest
+          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:${IMAGE_TAG}
         # ... 他の環境変数 ...
 ```
 
@@ -284,9 +287,9 @@ metadata:
   name: openhands
   namespace: argocd
   annotations:
-    argocd-image-updater.argoproj.io/image-list: my-image=839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime
-    argocd-image-updater.argoproj.io/my-image.update-strategy: newest-build
-    argocd-image-updater.argoproj.io/write-back-method: argocd
+    argocd-image-updater.argoproj.io/image-list: runtime-image=839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime
+    argocd-image-updater.argoproj.io/runtime-image.update-strategy: digest
+    argocd-image-updater.argoproj.io/write-back-method: git
 spec:
   # ... 既存の設定 ...
 ```
