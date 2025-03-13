@@ -2,11 +2,11 @@
 
 ## 1. 概要
 
-このドキュメントでは、OpenHandsのランタイムイメージにAWS認証情報を安全に提供するための詳細な設計と実装計画を提供します。OpenHandsランタイムコンテナがAWSリソース（特にS3バケット）にアクセスするために必要な認証情報を、セキュアな方法で提供する方法を説明します。
+このドキュメントでは、OpenHandsのランタイムイメージにAWS認証情報を安全に提供するための詳細な設計と実装計画を提供します。OpenHandsランタイムコンテナがAWSリソース（特にSSM Parameter Store）にアクセスするために必要な認証情報を、セキュアな方法で提供する方法を説明します。
 
 ## 2. 背景と目的
 
-OpenHandsランタイムコンテナは、ユーザーのワークスペースでコードを実行するための環境を提供します。一部のユースケースでは、このランタイム環境からAWSリソース（特にS3バケット）にアクセスする必要があります。このドキュメントでは、以下の目標を達成するための設計を提案します：
+OpenHandsランタイムコンテナは、ユーザーのワークスペースでコードを実行するための環境を提供します。一部のユースケースでは、このランタイム環境からAWSリソース（特にSSM Parameter Store）にアクセスする必要があります。このドキュメントでは、以下の目標を達成するための設計を提案します：
 
 1. OpenHandsランタイムコンテナにAWS認証情報を安全に提供する
 2. 認証情報の漏洩リスクを最小限に抑える
@@ -17,20 +17,23 @@ OpenHandsランタイムコンテナは、ユーザーのワークスペース�
 
 提案するアーキテクチャは以下のコンポーネントで構成されます：
 
-1. **カスタムOpenHandsランタイムイメージ**: AWS CLIとAWS SDKを含むカスタムDockerイメージ
+1. **カスタムOpenHandsランタイムイメージ**: nikolaik/python-nodejs:python3.12-nodejs22をベースとし、AWS CLIとAWS SDKを含むカスタムDockerイメージ
 2. **GitHub Actions OIDC Provider**: GitHub ActionsからAWSへの認証に使用
-3. **AWS IAMロール**: 最小権限を持つ専用のIAMロール
+3. **AWS IAMロール**: SSM Parameter Storeへの最小権限を持つ専用のIAMロール
 4. **AWS SSM Parameter Store**: 設定値の安全な保存
-5. **エントリポイントスクリプト**: コンテナ起動時にAWS認証情報を設定
+5. **AWS ECR**: コンテナイメージの保存（839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime）
+6. **エントリポイントスクリプト**: コンテナ起動時にAWS認証情報を設定（ビルド時に埋め込み済み）
 
 ### 3.1 システム構成図
 
 ```
 [GitHub Actions] ---(OIDC認証)---> [AWS STS] ---(一時的な認証情報)---> [AWS IAMロール]
                                                                           |
-[OpenHands] ---(コンテナ起動)---> [カスタムランタイムイメージ] ---(認証情報取得)---> [AWS SSM]
-                                   |                                       |
-                                   |---(AWS CLIコマンド実行)------------> [AWS S3]
+                                                                          v
+[GitHub Actions] ---(ビルド時)---> [カスタムランタイムイメージ] ---(プッシュ)---> [AWS ECR]
+                                                                          |
+                                                                          v
+[OpenHands] ---(コンテナ起動)---> [カスタムランタイムイメージ] ---(認証情報利用)---> [AWS SSM Parameter Store]
 ```
 
 ## 4. 詳細設計
@@ -40,7 +43,8 @@ OpenHandsランタイムコンテナは、ユーザーのワークスペース�
 既存のOpenHandsランタイムイメージを拡張し、AWS CLIとAWS SDKをインストールします。
 
 ```dockerfile
-FROM docker.all-hands.dev/all-hands-ai/runtime:0.27-nikolaik
+# ファイルパス: /boxp/open-hands-runtime/Dockerfile
+FROM nikolaik/python-nodejs:python3.12-nodejs22
 
 # AWS CLIのインストール
 RUN apt-get update && apt-get install -y \
@@ -52,6 +56,9 @@ RUN apt-get update && apt-get install -y \
     boto3 \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
+
+# AWS認証情報は、GitHub Actionsがビルド時にSSM Parameter Storeから取得し、
+# ビルド時の環境変数としてコンテナに埋め込む
 
 # エントリポイントスクリプトの追加
 COPY entrypoint.sh /entrypoint.sh
@@ -65,30 +72,30 @@ ENTRYPOINT ["/entrypoint.sh"]
 コンテナ起動時にAWS認証情報を設定するエントリポイントスクリプト：
 
 ```bash
+# ファイルパス: /boxp/open-hands-runtime/entrypoint.sh
 #!/bin/bash
 set -e
 
-# AWS認証情報の設定（環境変数から）
+# AWS認証情報はビルド時に環境変数として埋め込まれているため、
+# ここでは追加の設定は不要
+
+# AWS認証情報はビルド時に埋め込まれているため、実行時に確認するだけ
 if [ -n "$AWS_ACCESS_KEY_ID" ] && [ -n "$AWS_SECRET_ACCESS_KEY" ]; then
-  mkdir -p ~/.aws
-  cat > ~/.aws/credentials << EOF
-[default]
-aws_access_key_id = $AWS_ACCESS_KEY_ID
-aws_secret_access_key = $AWS_SECRET_ACCESS_KEY
-EOF
-
-  if [ -n "$AWS_SESSION_TOKEN" ]; then
-    echo "aws_session_token = $AWS_SESSION_TOKEN" >> ~/.aws/credentials
-  fi
-
+  echo "AWS credentials are configured"
+  
+  # リージョン設定
   if [ -n "$AWS_REGION" ]; then
+    mkdir -p ~/.aws
     cat > ~/.aws/config << EOF
 [default]
 region = $AWS_REGION
 EOF
+    echo "AWS region configured: $AWS_REGION"
   fi
-
-  echo "AWS credentials configured successfully"
+  
+  # SSM Parameter Storeへのアクセスをテスト
+  echo "Testing SSM Parameter Store access..."
+  aws ssm get-parameters-by-path --path "/openhands/" --recursive --query "Parameters[].Name" --output text || echo "Warning: SSM Parameter Store access failed"
 fi
 
 # 元のエントリポイントコマンドを実行
@@ -100,6 +107,7 @@ exec "$@"
 AWSにGitHub Actions OIDC Providerを設定します：
 
 ```hcl
+# ファイルパス: /workspace/arch/terraform/aws/iam/github_actions_oidc.tf
 resource "aws_iam_openid_connect_provider" "github_actions" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
@@ -112,6 +120,7 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 GitHub ActionsがAWS認証情報を取得するためのIAMロールとポリシー：
 
 ```hcl
+# ファイルパス: /workspace/arch/terraform/aws/iam/openhands_runtime_role.tf
 resource "aws_iam_role" "openhands_runtime" {
   name = "openhands-runtime-role"
   
@@ -129,7 +138,7 @@ resource "aws_iam_role" "openhands_runtime" {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
           }
           StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:boxp/arch:*"
+            "token.actions.githubusercontent.com:sub" = "repo:boxp/open-hands-runtime:*"
           }
         }
       }
@@ -137,47 +146,45 @@ resource "aws_iam_role" "openhands_runtime" {
   })
 }
 
-resource "aws_iam_policy" "openhands_s3_access" {
-  name        = "openhands-s3-access"
-  description = "Policy for OpenHands runtime to access S3"
+resource "aws_iam_policy" "openhands_ssm_access" {
+  name        = "openhands-ssm-access"
+  description = "Policy for OpenHands runtime to access SSM Parameter Store"
   
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
         Action = [
-          "s3:GetObject",
-          "s3:PutObject",
-          "s3:ListBucket"
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:GetParametersByPath"
         ]
         Effect   = "Allow"
         Resource = [
-          "arn:aws:s3:::openhands-data/*",
-          "arn:aws:s3:::openhands-data"
+          "arn:aws:ssm:ap-northeast-1:839695154978:parameter/openhands/*"
         ]
       }
     ]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "openhands_s3_access" {
+resource "aws_iam_role_policy_attachment" "openhands_ssm_access" {
   role       = aws_iam_role.openhands_runtime.name
-  policy_arn = aws_iam_policy.openhands_s3_access.arn
+  policy_arn = aws_iam_policy.openhands_ssm_access.arn
 }
 ```
 
 ### 4.5 GitHub Actions Workflow
 
-GitHub Actionsでカスタムイメージをビルドし、AWS認証情報を設定するワークフロー：
+GitHub Actionsでカスタムイメージをビルドし、AWS認証情報を埋め込み、ECRにプッシュするワークフロー：
 
 ```yaml
+# ファイルパス: /boxp/open-hands-runtime/.github/workflows/build.yml
 name: Build OpenHands Runtime with AWS
 
 on:
   push:
     branches: [ main ]
-    paths:
-      - 'docker/openhands-runtime/**'
   workflow_dispatch:
 
 permissions:
@@ -194,22 +201,31 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v2
         with:
-          role-to-assume: arn:aws:iam::123456789012:role/openhands-runtime-role
+          role-to-assume: arn:aws:iam::839695154978:role/openhands-runtime-role
           aws-region: ap-northeast-1
 
-      - name: Login to Docker Registry
-        uses: docker/login-action@v2
-        with:
-          registry: docker.all-hands.dev
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+      - name: Get AWS credentials from SSM Parameter Store
+        run: |
+          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name /openhands/aws/access_key_id --with-decryption --query Parameter.Value --output text)
+          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name /openhands/aws/secret_access_key --with-decryption --query Parameter.Value --output text)
+          echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
+          echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
+          echo "AWS_REGION=ap-northeast-1" >> $GITHUB_ENV
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
 
       - name: Build and push
         uses: docker/build-push-action@v4
         with:
-          context: ./docker/openhands-runtime
+          context: .
           push: true
-          tags: docker.all-hands.dev/all-hands-ai/runtime:0.27-aws
+          tags: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:latest
+          build-args: |
+            AWS_ACCESS_KEY_ID=${{ env.AWS_ACCESS_KEY_ID }}
+            AWS_SECRET_ACCESS_KEY=${{ env.AWS_SECRET_ACCESS_KEY }}
+            AWS_REGION=${{ env.AWS_REGION }}
 ```
 
 ### 4.6 Kubernetes Deployment更新
@@ -217,6 +233,7 @@ jobs:
 OpenHandsデプロイメントを更新して、カスタムランタイムイメージを使用するように設定します：
 
 ```yaml
+# ファイルパス: /workspace/arch/kubernetes/openhands/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -231,7 +248,7 @@ spec:
         # ... 既存の設定 ...
         env:
         - name: SANDBOX_RUNTIME_CONTAINER_IMAGE
-          value: docker.all-hands.dev/all-hands-ai/runtime:0.27-aws
+          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:latest
         # ... 他の環境変数 ...
 ```
 
@@ -239,28 +256,32 @@ spec:
 
 ### 5.1 認証情報の保護
 
-1. **一時的な認証情報**: GitHub Actions OIDCを使用して短期間の一時的な認証情報を取得
-2. **最小権限**: 必要最小限のアクセス権限のみを付与
-3. **認証情報の分離**: ランタイムコンテナ内でのみ認証情報を使用し、ホストシステムには露出させない
+1. **ビルド時の認証情報埋め込み**: 認証情報はコンテナビルド時に埋め込まれ、実行時に外部から取得する必要がない
+2. **一時的な認証情報**: GitHub Actions OIDCを使用して短期間の一時的な認証情報を取得
+3. **最小権限**: SSM Parameter Storeへの必要最小限のアクセス権限のみを付与
+4. **プライベートECRリポジトリ**: コンテナイメージはプライベートECRリポジトリに保存
+5. **認証情報の分離**: ランタイムコンテナ内でのみ認証情報を使用し、ホストシステムには露出させない
 
 ### 5.2 セキュリティリスク軽減策
 
 1. **コンテナ分離**: OpenHandsランタイムコンテナは分離された環境で実行
-2. **監査ログ**: AWS CloudTrailを有効にしてすべてのAPI呼び出しを記録
+2. **監査ログ**: AWS CloudTrailを有効にしてSSM Parameter Storeへのすべてのアクセスを記録
 3. **定期的な認証情報のローテーション**: 定期的に認証情報を更新
+4. **ECRリポジトリの保護**: ECRリポジトリへのアクセスを制限し、イメージの脆弱性スキャンを有効化
 
 ## 6. テスト計画
 
 ### 6.1 ユニットテスト
 
-1. エントリポイントスクリプトのテスト
-2. AWS認証情報の設定テスト
+1. エントリポイントスクリプトのテスト（/boxp/open-hands-runtime/entrypoint.sh）
+2. AWS認証情報の設定テスト（ビルド時の環境変数が正しく設定されるか）
+3. Dockerfileのビルドテスト（/boxp/open-hands-runtime/Dockerfile）
 
 ### 6.2 統合テスト
 
 1. GitHub ActionsからのAWS認証情報取得テスト
-2. カスタムイメージのビルドテスト
-3. S3バケットへのアクセステスト
+2. カスタムイメージのビルドテスト（ECRへのプッシュ確認）
+3. SSM Parameter Storeへのアクセステスト
 
 ### 6.3 セキュリティテスト
 
@@ -271,15 +292,17 @@ spec:
 
 ### 7.1 デプロイメント手順
 
-1. Terraformコードを適用してAWS IAMリソースを作成
-2. カスタムDockerイメージをビルドしてレジストリにプッシュ
-3. Kubernetesデプロイメントを更新
+1. Terraformコードを適用してAWS IAMリソースを作成（/workspace/arch/terraform/aws/iam/）
+2. 新しいリポジトリ（boxp/open-hands-runtime）を作成
+3. カスタムDockerイメージをビルドしてECRにプッシュ（839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime）
+4. Kubernetesデプロイメントを更新（/workspace/arch/kubernetes/openhands/deployment.yaml）
 
 ### 7.2 モニタリングと監査
 
 1. AWS CloudTrailでのAPI呼び出し監視
-2. S3バケットアクセスログの有効化
-3. 定期的なセキュリティレビュー
+2. SSM Parameter Storeアクセスログの監視
+3. ECRイメージスキャン結果の定期確認
+4. 定期的なセキュリティレビュー
 
 ### 7.3 障害対応計画
 
