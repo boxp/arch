@@ -271,7 +271,7 @@ spec:
         # ... 既存の設定 ...
         env:
         - name: SANDBOX_RUNTIME_CONTAINER_IMAGE
-          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:${IMAGE_TAG}
+          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:${{ github.sha }}
         # ... 他の環境変数 ...
 ```
 
@@ -287,9 +287,9 @@ metadata:
   name: openhands
   namespace: argocd
   annotations:
-    argocd-image-updater.argoproj.io/image-list: runtime-image=839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime
-    argocd-image-updater.argoproj.io/runtime-image.update-strategy: digest
-    argocd-image-updater.argoproj.io/write-back-method: git
+    argocd-image-updater.argoproj.io/image-list: my-image=839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime
+    argocd-image-updater.argoproj.io/my-image.update-strategy: newest-build
+    argocd-image-updater.argoproj.io/write-back-method: argocd
 spec:
   # ... 既存の設定 ...
 ```
