@@ -272,6 +272,37 @@ spec:
         # ... 他の環境変数 ...
 ```
 
+### 4.8 ArgoCD Image Updater設定
+
+ArgoCD Image Updaterを使用して、OpenHandsランタイムイメージの更新を自動化します：
+
+```yaml
+# ファイルパス: /workspace/lolice/argoproj/openhands/application.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: openhands
+  namespace: argocd
+  annotations:
+    argocd-image-updater.argoproj.io/image-list: my-image=839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime
+    argocd-image-updater.argoproj.io/my-image.update-strategy: newest-build
+    argocd-image-updater.argoproj.io/write-back-method: argocd
+spec:
+  # ... 既存の設定 ...
+```
+
+また、kustomizationファイルを追加して、ArgoCD Image Updaterがすべてのマニフェストファイルを認識できるようにします：
+
+```yaml
+# ファイルパス: /workspace/lolice/argoproj/openhands/kustomization.yaml
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - deployment.yaml
+  - service.yaml
+  # その他のマニフェストファイル
+```
 ## 5. セキュリティ考慮事項
 
 ### 5.1 認証情報の保護
