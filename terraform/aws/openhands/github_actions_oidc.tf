@@ -1,6 +1,6 @@
 resource "aws_iam_openid_connect_provider" "github_actions" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
+  url            = "https://token.actions.githubusercontent.com"
+  client_id_list = ["sts.amazonaws.com"]
   thumbprint_list = [
     "6938fd4d98bab03faadb97b34396831e3780aea1",
     "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
@@ -16,7 +16,7 @@ data "aws_iam_policy_document" "openhands_runtime_gha_assume_role_policy" {
       type        = "Federated"
       identifiers = ["arn:aws:iam::${var.account_id}:oidc-provider/token.actions.githubusercontent.com"]
     }
-    
+
     # audience条件 - GitHub Actionsが使用する標準値
     condition {
       test     = "StringEquals"
