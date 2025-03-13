@@ -45,7 +45,7 @@ OpenHandsランタイムコンテナは、ユーザーのワークスペース�
 既存のOpenHandsランタイムイメージを拡張し、AWS CLIとAWS SDKをインストールします。
 
 ```dockerfile
-# ファイルパス: /workdir/openhands-runtime/Dockerfile
+# ファイルパス: /workspace/openhands-runtime/Dockerfile
 FROM nikolaik/python-nodejs:python3.12-nodejs22
 
 # AWS CLIのインストール
@@ -74,7 +74,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 コンテナ起動時にAWS認証情報を設定するエントリポイントスクリプト：
 
 ```bash
-# ファイルパス: /workdir/openhands-runtime/entrypoint.sh
+# ファイルパス: /workspace/openhands-runtime/entrypoint.sh
 #!/bin/bash
 set -e
 
@@ -276,7 +276,7 @@ resource "aws_ssm_parameter" "ssm_reader_secret_access_key" {
 GitHub Actionsでカスタムイメージをビルドし、AWS認証情報を埋め込み、ECRにプッシュするワークフロー：
 
 ```yaml
-# ファイルパス: /workdir/openhands-runtime/.github/workflows/build.yml
+# ファイルパス: /workspace/openhands-runtime/.github/workflows/build.yml
 name: Build OpenHands Runtime with AWS
 
 on:
@@ -406,9 +406,9 @@ resources:
 
 ### 6.1 ユニットテスト
 
-1. エントリポイントスクリプトのテスト（/workdir/openhands-runtime/entrypoint.sh）
+1. エントリポイントスクリプトのテスト（/workspace/openhands-runtime/entrypoint.sh）
 2. AWS認証情報の設定テスト（ビルド時の環境変数が正しく設定されるか）
-3. Dockerfileのビルドテスト（/workdir/openhands-runtime/Dockerfile）
+3. Dockerfileのビルドテスト（/workspace/openhands-runtime/Dockerfile）
 
 ### 6.2 統合テスト
 
