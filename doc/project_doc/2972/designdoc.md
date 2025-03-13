@@ -196,11 +196,47 @@ resource "aws_iam_role_policy_attachment" "openhands_runtime_policy_attachment" 
   role       = aws_iam_role.openhands_runtime_role.name
   policy_arn = aws_iam_policy.openhands_runtime_policy.arn
 }
+
+### 4.4 ECRリポジトリの設定
+
+OpenHandsランタイムイメージを保存するためのECRリポジトリを設定します：
+
+```hcl
+# ファイルパス: /workspace/arch/terraform/aws/openhands/ecr.tf
+# OpenHandsランタイムイメージ用のECRリポジトリ
+resource "aws_ecr_repository" "openhands_runtime" {
+  name                 = "openhands-runtime"
+  image_tag_mutability = "MUTABLE"
+  
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+# リポジトリのライフサイクルポリシー - 古いイメージを自動的に削除
+resource "aws_ecr_lifecycle_policy" "openhands_runtime_lifecycle" {
+  repository = aws_ecr_repository.openhands_runtime.name
+
+  policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1,
+        description  = "保持するイメージを10個に制限",
+        selection = {
+          tagStatus     = "any",
+          countType     = "imageCountMoreThan",
+          countNumber   = 10
+        },
+        action = {
+          type = "expire"
+        }
+      }
+    ]
+  })
+}
 ```
 
-**注意**: GitHub Actionsは2つのサムプリントを利用する可能性があります。2023年6月にGitHubが発表した通り、両方のサムプリントを設定することが認証の安定性のために重要です。
-
-### 4.4 既存のIAMとSSMリソースの活用
+### 4.5 既存のIAMとSSMリソースの活用
 
 OpenHandsランタイムは、既存のIAMユーザーとSSMパラメータを活用します。これらは既に以下のファイルで定義されています：
 
@@ -246,7 +282,7 @@ resource "aws_iam_user_policy_attachment" "ssm_reader_policy_attachment" {
 }
 ```
 
-### 4.5 既存のSSMパラメータの活用
+### 4.6 既存のSSMパラメータの活用
 
 OpenHandsランタイムは、以下の既存のSSMパラメータを使用してAWS認証情報を取得します：
 
@@ -269,7 +305,7 @@ resource "aws_ssm_parameter" "ssm_reader_secret_access_key" {
 }
 ```
 
-### 4.6 GitHub Actions Workflow
+### 4.7 GitHub Actions Workflow
 
 GitHub Actionsでカスタムイメージをビルドし、AWS認証情報を埋め込み、ECRにプッシュするワークフロー：
 
@@ -328,7 +364,7 @@ jobs:
 
 **注意**: このワークフローは、前のセクションで定義したIAMロール`openhands-runtime-role`を使用してAWSリソースにアクセスします。GitHub Actions OIDC認証を使用することで、リポジトリに認証情報を保存する必要がなく、安全に一時的な認証情報を取得することができます。
 
-### 4.7 Kubernetes Deployment更新
+### 4.8 Kubernetes Deployment更新
 
 OpenHandsデプロイメントを更新して、カスタムランタイムイメージを使用するように設定します。既存のデプロイメント構成を維持しながら、ランタイムイメージの参照のみを変更します：
 
@@ -354,7 +390,7 @@ spec:
 
 既存の環境設定やボリュームマウント、リソース制限などは保持されます。この変更により、既存のOpenHandsデプロイメントは新しいカスタムランタイムイメージを使用するようになりますが、その他の設定は影響を受けません。
 
-### 4.8 ArgoCD Image Updater設定
+### 4.9 ArgoCD Image Updater設定
 
 ArgoCD Image Updaterを使用して、OpenHandsランタイムイメージの更新を自動化します：
 
