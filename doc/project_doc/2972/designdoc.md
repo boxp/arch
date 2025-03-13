@@ -97,7 +97,7 @@ EOF
   
   # SSM Parameter Storeへのアクセスをテスト
   echo "Testing SSM Parameter Store access..."
-  aws ssm get-parameter --name bedrock-access-key-id --query "Parameter.Name" --output text || echo "Warning: SSM Parameter Store access failed"
+  aws ssm get-parameter --name parameter-reader-access-key-id --query "Parameter.Name" --output text || echo "Warning: SSM Parameter Store access failed"
 fi
 
 # 元のエントリポイントコマンドを実行
@@ -123,19 +123,20 @@ OpenHandsランタイムは、既存のIAMユーザーとSSMパラメータを�
 
 ```hcl
 # ファイルパス: /workspace/arch/terraform/aws/openhands/iam.tf
-resource "aws_iam_user" "bedrock_user" {
-  name = "bedrock-openhands-user"
+# SSMパラメータ読み取り用のIAMユーザー
+resource "aws_iam_user" "ssm_reader_user" {
+  name = "ssm-reader-openhands-user"
   path = "/service/"
 }
 
-resource "aws_iam_access_key" "bedrock_user_key" {
-  user = aws_iam_user.bedrock_user.name
+resource "aws_iam_access_key" "ssm_reader_user_key" {
+  user = aws_iam_user.ssm_reader_user.name
 }
 
-# カスタムポリシーの作成（最小権限の原則に基づく）
-resource "aws_iam_policy" "bedrock_policy" {
-  name        = "bedrock-openhands-policy"
-  description = "Policy for accessing AWS Bedrock Claude 3.7 Sonnet"
+# SSMパラメータ読み取り用のポリシー
+resource "aws_iam_policy" "ssm_reader_policy" {
+  name        = "ssm-reader-openhands-policy"
+  description = "Policy for reading SSM parameters"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -143,18 +144,12 @@ resource "aws_iam_policy" "bedrock_policy" {
       {
         Effect = "Allow"
         Action = [
-          "bedrock:InvokeModel",
-          "bedrock:InvokeModelWithResponseStream",
-          "bedrock:GetModelCustomizationJob",
-          "bedrock:ListModelCustomizationJobs",
-          "bedrock:ListFoundationModels",
-          "bedrock:GetFoundationModel"
+          "ssm:GetParameter",
+          "ssm:GetParameters",
+          "ssm:DescribeParameters"
         ]
         Resource = [
-          "arn:aws:bedrock:${var.bedrock_region}:${var.account_id}:inference-profile/${var.bedrock_model_id}",
-          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
-          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
-          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0"
+          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/*"
         ]
       }
     ]
@@ -162,9 +157,9 @@ resource "aws_iam_policy" "bedrock_policy" {
 }
 
 # ポリシーをIAMユーザーにアタッチ
-resource "aws_iam_user_policy_attachment" "bedrock_policy_attachment" {
-  user       = aws_iam_user.bedrock_user.name
-  policy_arn = aws_iam_policy.bedrock_policy.arn
+resource "aws_iam_user_policy_attachment" "ssm_reader_policy_attachment" {
+  user       = aws_iam_user.ssm_reader_user.name
+  policy_arn = aws_iam_policy.ssm_reader_policy.arn
 }
 ```
 
@@ -174,20 +169,20 @@ OpenHandsランタイムは、以下の既存のSSMパラメータを使用し�
 
 ```hcl
 # ファイルパス: /workspace/arch/terraform/aws/openhands/ssm.tf
-# アクセスキーIDをSSMパラメータに保存
-resource "aws_ssm_parameter" "bedrock_access_key_id" {
-  name        = "bedrock-access-key-id"
-  description = "AWS Access Key ID for Bedrock service"
+# SSMリーダーユーザーのアクセスキーIDをSSMパラメータに保存
+resource "aws_ssm_parameter" "ssm_reader_access_key_id" {
+  name        = "parameter-reader-access-key-id"
+  description = "AWS Access Key ID for SSM Parameter Reader"
   type        = "SecureString"
-  value       = aws_iam_access_key.bedrock_user_key.id
+  value       = aws_iam_access_key.ssm_reader_user_key.id
 }
 
-# シークレットアクセスキーをSSMパラメータに保存
-resource "aws_ssm_parameter" "bedrock_secret_access_key" {
-  name        = "bedrock-secret-access-key"
-  description = "AWS Secret Access Key for Bedrock service"
+# SSMリーダーユーザーのシークレットアクセスキーをSSMパラメータに保存
+resource "aws_ssm_parameter" "ssm_reader_secret_access_key" {
+  name        = "parameter-reader-secret-access-key"
+  description = "AWS Secret Access Key for SSM Parameter Reader"
   type        = "SecureString"
-  value       = aws_iam_access_key.bedrock_user_key.secret
+  value       = aws_iam_access_key.ssm_reader_user_key.secret
 }
 ```
 
@@ -223,8 +218,8 @@ jobs:
 
       - name: Get AWS credentials from SSM Parameter Store
         run: |
-          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name bedrock-access-key-id --with-decryption --query Parameter.Value --output text)
-          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name bedrock-secret-access-key --with-decryption --query Parameter.Value --output text)
+          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name parameter-reader-access-key-id --with-decryption --query Parameter.Value --output text)
+          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name parameter-reader-secret-access-key --with-decryption --query Parameter.Value --output text)
           # 認証情報をログに出力しないように設定
           echo "::add-mask::$AWS_ACCESS_KEY_ID"
           echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
