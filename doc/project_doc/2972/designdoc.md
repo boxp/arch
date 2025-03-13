@@ -45,7 +45,7 @@ OpenHandsランタイムコンテナは、ユーザーのワークスペース�
 既存のOpenHandsランタイムイメージを拡張し、AWS CLIとAWS SDKをインストールします。
 
 ```dockerfile
-# ファイルパス: /boxp/open-hands-runtime/Dockerfile
+# ファイルパス: /workdir/open-hands-runtime/Dockerfile
 FROM nikolaik/python-nodejs:python3.12-nodejs22
 
 # AWS CLIのインストール
@@ -74,7 +74,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 コンテナ起動時にAWS認証情報を設定するエントリポイントスクリプト：
 
 ```bash
-# ファイルパス: /boxp/open-hands-runtime/entrypoint.sh
+# ファイルパス: /workdir/open-hands-runtime/entrypoint.sh
 #!/bin/bash
 set -e
 
@@ -122,7 +122,7 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 GitHub ActionsがAWS認証情報を取得するためのIAMロールとポリシー：
 
 ```hcl
-# ファイルパス: /workspace/arch/terraform/aws/openhands/iam_role.tf
+# ファイルパス: /workspace/arch/terraform/aws/openhands/iam.tf
 resource "aws_iam_role" "openhands_runtime" {
   name = "openhands-runtime-role"
   
@@ -176,12 +176,30 @@ resource "aws_iam_role_policy_attachment" "openhands_ssm_access" {
 }
 ```
 
-### 4.5 GitHub Actions Workflow
+### 4.5 SSMパラメータの定義
+
+```hcl
+# ファイルパス: /workspace/arch/terraform/aws/openhands/parameter.tf
+# SSMパラメータの作成
+resource "aws_ssm_parameter" "aws_access_key_id" {
+  name  = "/openhands/aws-access-key-id"
+  type  = "SecureString"
+  value = "実際のアクセスキーID"  # 本番環境では別途設定
+}
+
+resource "aws_ssm_parameter" "aws_secret_access_key" {
+  name  = "/openhands/aws-secret-access-key"
+  type  = "SecureString"
+  value = "実際のシークレットアクセスキー"  # 本番環境では別途設定
+}
+```
+
+### 4.6 GitHub Actions Workflow
 
 GitHub Actionsでカスタムイメージをビルドし、AWS認証情報を埋め込み、ECRにプッシュするワークフロー：
 
 ```yaml
-# ファイルパス: /boxp/open-hands-runtime/.github/workflows/build.yml
+# ファイルパス: /workdir/open-hands-runtime/.github/workflows/build.yml
 name: Build OpenHands Runtime with AWS
 
 on:
@@ -230,12 +248,12 @@ jobs:
             AWS_REGION=${{ env.AWS_REGION }}
 ```
 
-### 4.6 Kubernetes Deployment更新
+### 4.7 Kubernetes Deployment更新
 
 OpenHandsデプロイメントを更新して、カスタムランタイムイメージを使用するように設定します：
 
 ```yaml
-# ファイルパス: /workspace/arch/kubernetes/openhands/deployment.yaml
+# ファイルパス: /workspace/lolice/argoproj/openhands/deployment.yaml
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -275,9 +293,9 @@ spec:
 
 ### 6.1 ユニットテスト
 
-1. エントリポイントスクリプトのテスト（/boxp/open-hands-runtime/entrypoint.sh）
+1. エントリポイントスクリプトのテスト（/workdir/open-hands-runtime/entrypoint.sh）
 2. AWS認証情報の設定テスト（ビルド時の環境変数が正しく設定されるか）
-3. Dockerfileのビルドテスト（/boxp/open-hands-runtime/Dockerfile）
+3. Dockerfileのビルドテスト（/workdir/open-hands-runtime/Dockerfile）
 
 ### 6.2 統合テスト
 
@@ -297,7 +315,7 @@ spec:
 1. Terraformコードを適用してAWS IAMリソースを作成（/workspace/arch/terraform/aws/openhands/）
 2. 新しいリポジトリ（boxp/open-hands-runtime）を作成
 3. カスタムDockerイメージをビルドしてECRにプッシュ（839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime）
-4. Kubernetesデプロイメントを更新（/workspace/arch/kubernetes/openhands/deployment.yaml）
+4. Kubernetesデプロイメントを更新（/workspace/lolice/argoproj/openhands/deployment.yaml）
 
 ### 7.2 モニタリングと監査
 
