@@ -24,5 +24,11 @@
         '/.*/',
       ],
     },
+    {
+      matchDatasources: ["terraform-provider"],
+      matchPackageNames: ["cloudflare/cloudflare"],
+      enabled: false,
+      description: "Disable Cloudflare provider updates until v5.2.0 is released"
+    },
   ],
 }
