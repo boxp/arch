@@ -97,7 +97,7 @@ EOF
   
   # SSM Parameter Storeへのアクセスをテスト
   echo "Testing SSM Parameter Store access..."
-  aws ssm get-parameters-by-path --path "/parameter/" --recursive --query "Parameters[].Name" --output text || echo "Warning: SSM Parameter Store access failed"
+  aws ssm get-parameter --name bedrock-access-key-id --query "Parameter.Name" --output text || echo "Warning: SSM Parameter Store access failed"
 fi
 
 # 元のエントリポイントコマンドを実行
@@ -117,80 +117,77 @@ resource "aws_iam_openid_connect_provider" "github_actions" {
 }
 ```
 
-### 4.4 IAMロールとポリシー
+### 4.4 既存のIAMとSSMリソースの活用
 
-GitHub ActionsがAWS認証情報を取得するためのIAMロールとポリシー：
+OpenHandsランタイムは、既存のIAMユーザーとSSMパラメータを活用します。これらは既に以下のファイルで定義されています：
 
 ```hcl
 # ファイルパス: /workspace/arch/terraform/aws/openhands/iam.tf
-resource "aws_iam_role" "openhands_runtime" {
-  name = "openhands-runtime-role"
-  
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [
-      {
-        Action = "sts:AssumeRoleWithWebIdentity"
-        Effect = "Allow"
-        Principal = {
-          Federated = aws_iam_openid_connect_provider.github_actions.arn
-        }
-        Condition = {
-          StringEquals = {
-            "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
-          }
-          StringLike = {
-            "token.actions.githubusercontent.com:sub" = "repo:boxp/open-hands-runtime:*"
-          }
-        }
-      }
-    ]
-  })
+resource "aws_iam_user" "bedrock_user" {
+  name = "bedrock-openhands-user"
+  path = "/service/"
 }
 
-resource "aws_iam_policy" "openhands_ssm_access" {
-  name        = "openhands-ssm-access"
-  description = "Policy for OpenHands runtime to access SSM Parameter Store"
-  
+resource "aws_iam_access_key" "bedrock_user_key" {
+  user = aws_iam_user.bedrock_user.name
+}
+
+# カスタムポリシーの作成（最小権限の原則に基づく）
+resource "aws_iam_policy" "bedrock_policy" {
+  name        = "bedrock-openhands-policy"
+  description = "Policy for accessing AWS Bedrock Claude 3.7 Sonnet"
+
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
+        Effect = "Allow"
         Action = [
-          "ssm:GetParameter",
-          "ssm:GetParameters",
-          "ssm:GetParametersByPath"
+          "bedrock:InvokeModel",
+          "bedrock:InvokeModelWithResponseStream",
+          "bedrock:GetModelCustomizationJob",
+          "bedrock:ListModelCustomizationJobs",
+          "bedrock:ListFoundationModels",
+          "bedrock:GetFoundationModel"
         ]
-        Effect   = "Allow"
         Resource = [
-          "arn:aws:ssm:ap-northeast-1:839695154978:parameter/parameter/*"
+          "arn:aws:bedrock:${var.bedrock_region}:${var.account_id}:inference-profile/${var.bedrock_model_id}",
+          "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
+          "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0",
+          "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-3-7-sonnet-20250219-v1:0"
         ]
       }
     ]
   })
 }
 
-resource "aws_iam_role_policy_attachment" "openhands_ssm_access" {
-  role       = aws_iam_role.openhands_runtime.name
-  policy_arn = aws_iam_policy.openhands_ssm_access.arn
+# ポリシーをIAMユーザーにアタッチ
+resource "aws_iam_user_policy_attachment" "bedrock_policy_attachment" {
+  user       = aws_iam_user.bedrock_user.name
+  policy_arn = aws_iam_policy.bedrock_policy.arn
 }
 ```
 
-### 4.5 SSMパラメータの定義
+### 4.5 既存のSSMパラメータの活用
+
+OpenHandsランタイムは、以下の既存のSSMパラメータを使用してAWS認証情報を取得します：
 
 ```hcl
 # ファイルパス: /workspace/arch/terraform/aws/openhands/ssm.tf
-# SSMパラメータの作成
-resource "aws_ssm_parameter" "aws_access_key_id" {
-  name  = "/parameter/aws-access-key-id"
-  type  = "SecureString"
-  value = "実際のアクセスキーID"  # 本番環境では別途設定
+# アクセスキーIDをSSMパラメータに保存
+resource "aws_ssm_parameter" "bedrock_access_key_id" {
+  name        = "bedrock-access-key-id"
+  description = "AWS Access Key ID for Bedrock service"
+  type        = "SecureString"
+  value       = aws_iam_access_key.bedrock_user_key.id
 }
 
-resource "aws_ssm_parameter" "aws_secret_access_key" {
-  name  = "/parameter/aws-secret-access-key"
-  type  = "SecureString"
-  value = "実際のシークレットアクセスキー"  # 本番環境では別途設定
+# シークレットアクセスキーをSSMパラメータに保存
+resource "aws_ssm_parameter" "bedrock_secret_access_key" {
+  name        = "bedrock-secret-access-key"
+  description = "AWS Secret Access Key for Bedrock service"
+  type        = "SecureString"
+  value       = aws_iam_access_key.bedrock_user_key.secret
 }
 ```
 
@@ -226,8 +223,8 @@ jobs:
 
       - name: Get AWS credentials from SSM Parameter Store
         run: |
-          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name /parameter/aws-access-key-id --with-decryption --query Parameter.Value --output text)
-          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name /parameter/aws-secret-access-key --with-decryption --query Parameter.Value --output text)
+          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name bedrock-access-key-id --with-decryption --query Parameter.Value --output text)
+          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name bedrock-secret-access-key --with-decryption --query Parameter.Value --output text)
           # 認証情報をログに出力しないように設定
           echo "::add-mask::$AWS_ACCESS_KEY_ID"
           echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
