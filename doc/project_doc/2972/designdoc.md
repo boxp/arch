@@ -348,7 +348,7 @@ spec:
         # ... 既存の設定 ...
         env:
         - name: SANDBOX_RUNTIME_CONTAINER_IMAGE
-          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:latest
+          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:${{ github.sha }}
         # ... 他の環境変数 ...
 ```
 
