@@ -45,7 +45,7 @@ OpenHandsランタイムコンテナは、ユーザーのワークスペース�
 既存のOpenHandsランタイムイメージを拡張し、AWS CLIとAWS SDKをインストールします。
 
 ```dockerfile
-# ファイルパス: /workdir/open-hands-runtime/Dockerfile
+# ファイルパス: /workdir/openhands-runtime/Dockerfile
 FROM nikolaik/python-nodejs:python3.12-nodejs22
 
 # AWS CLIのインストール
@@ -74,7 +74,7 @@ ENTRYPOINT ["/entrypoint.sh"]
 コンテナ起動時にAWS認証情報を設定するエントリポイントスクリプト：
 
 ```bash
-# ファイルパス: /workdir/open-hands-runtime/entrypoint.sh
+# ファイルパス: /workdir/openhands-runtime/entrypoint.sh
 #!/bin/bash
 set -e
 
@@ -113,9 +113,94 @@ AWSにGitHub Actions OIDC Providerを設定します：
 resource "aws_iam_openid_connect_provider" "github_actions" {
   url             = "https://token.actions.githubusercontent.com"
   client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = ["6938fd4d98bab03faadb97b34396831e3780aea1"]
+  thumbprint_list = [
+    "6938fd4d98bab03faadb97b34396831e3780aea1",
+    "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
+  ]
+}
+
+# GitHub ActionsのOIDCプロバイダーが利用するIAMロールのための信頼ポリシー
+data "aws_iam_policy_document" "openhands_runtime_gha_assume_role_policy" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+    principals {
+      type        = "Federated"
+      identifiers = ["arn:aws:iam::${var.account_id}:oidc-provider/token.actions.githubusercontent.com"]
+    }
+    
+    # audience条件 - GitHub Actionsが使用する標準値
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    # subject条件 - リポジトリとブランチを制限
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = ["repo:boxp/openhands-runtime:ref:refs/heads/main"]
+    }
+  }
+}
+
+# GitHub Actions用のIAMロール
+resource "aws_iam_role" "openhands_runtime_role" {
+  name               = "openhands-runtime-role"
+  assume_role_policy = data.aws_iam_policy_document.openhands_runtime_gha_assume_role_policy.json
+}
+
+# GitHub Actions用のポリシー（ECRとSSMパラメータストアへのアクセス）
+resource "aws_iam_policy" "openhands_runtime_policy" {
+  name        = "openhands-runtime-policy"
+  description = "Policy for OpenHands Runtime GitHub Actions"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Action = [
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
+          "ecr:BatchCheckLayerAvailability",
+          "ecr:PutImage",
+          "ecr:InitiateLayerUpload",
+          "ecr:UploadLayerPart",
+          "ecr:CompleteLayerUpload",
+        ]
+        Effect   = "Allow"
+        Resource = "arn:aws:ecr:${var.region}:${var.account_id}:repository/openhands-runtime"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ecr:GetAuthorizationToken"
+        ]
+        Resource = "*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:GetParameter",
+          "ssm:GetParameters"
+        ]
+        Resource = [
+          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-*"
+        ]
+      }
+    ]
+  })
+}
+
+# ポリシーをロールにアタッチ
+resource "aws_iam_role_policy_attachment" "openhands_runtime_policy_attachment" {
+  role       = aws_iam_role.openhands_runtime_role.name
+  policy_arn = aws_iam_policy.openhands_runtime_policy.arn
 }
 ```
+
+**注意**: GitHub Actionsは2つのサムプリントを利用する可能性があります。2023年6月にGitHubが発表した通り、両方のサムプリントを設定することが認証の安定性のために重要です。
 
 ### 4.4 既存のIAMとSSMリソースの活用
 
@@ -191,7 +276,7 @@ resource "aws_ssm_parameter" "ssm_reader_secret_access_key" {
 GitHub Actionsでカスタムイメージをビルドし、AWS認証情報を埋め込み、ECRにプッシュするワークフロー：
 
 ```yaml
-# ファイルパス: /workdir/open-hands-runtime/.github/workflows/build.yml
+# ファイルパス: /workdir/openhands-runtime/.github/workflows/build.yml
 name: Build OpenHands Runtime with AWS
 
 on:
@@ -242,6 +327,8 @@ jobs:
             AWS_SECRET_ACCESS_KEY=${{ env.AWS_SECRET_ACCESS_KEY }}
             AWS_REGION=${{ env.AWS_REGION }}
 ```
+
+**注意**: このワークフローは、前のセクションで定義したIAMロール`openhands-runtime-role`を使用してAWSリソースにアクセスします。GitHub Actions OIDC認証を使用することで、リポジトリに認証情報を保存する必要がなく、安全に一時的な認証情報を取得することができます。
 
 ### 4.7 Kubernetes Deployment更新
 
@@ -319,9 +406,9 @@ resources:
 
 ### 6.1 ユニットテスト
 
-1. エントリポイントスクリプトのテスト（/workdir/open-hands-runtime/entrypoint.sh）
+1. エントリポイントスクリプトのテスト（/workdir/openhands-runtime/entrypoint.sh）
 2. AWS認証情報の設定テスト（ビルド時の環境変数が正しく設定されるか）
-3. Dockerfileのビルドテスト（/workdir/open-hands-runtime/Dockerfile）
+3. Dockerfileのビルドテスト（/workdir/openhands-runtime/Dockerfile）
 
 ### 6.2 統合テスト
 
@@ -339,7 +426,7 @@ resources:
 ### 7.1 デプロイメント手順
 
 1. Terraformコードを適用してAWS IAMリソースを作成（/workspace/arch/terraform/aws/openhands/）
-2. 新しいリポジトリ（boxp/open-hands-runtime）を作成
+2. 新しいリポジトリ（boxp/openhands-runtime）を作成
 3. カスタムDockerイメージをビルドしてECRにプッシュ（839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime）
 4. Kubernetesデプロイメントを更新（/workspace/lolice/argoproj/openhands/deployment.yaml）
 
