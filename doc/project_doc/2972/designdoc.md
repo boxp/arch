@@ -61,6 +61,13 @@ RUN apt-get update && apt-get install -y \
 
 # AWS認証情報は、GitHub Actionsがビルド時にSSM Parameter Storeから取得し、
 # ビルド時の環境変数としてコンテナに埋め込む
+ARG AWS_ACCESS_KEY_ID
+ARG AWS_SECRET_ACCESS_KEY
+ARG AWS_REGION
+
+ENV AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
+ENV AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
+ENV AWS_REGION=${AWS_REGION}
 
 # エントリポイントスクリプトの追加
 COPY entrypoint.sh /entrypoint.sh
@@ -110,15 +117,6 @@ AWSにGitHub Actions OIDC Providerを設定します：
 
 ```hcl
 # ファイルパス: /workspace/arch/terraform/aws/openhands/github_actions_oidc.tf
-resource "aws_iam_openid_connect_provider" "github_actions" {
-  url             = "https://token.actions.githubusercontent.com"
-  client_id_list  = ["sts.amazonaws.com"]
-  thumbprint_list = [
-    "6938fd4d98bab03faadb97b34396831e3780aea1",
-    "1c58a3a8518e8759bf075b76b750d4f2df264fcd"
-  ]
-}
-
 # GitHub ActionsのOIDCプロバイダーが利用するIAMロールのための信頼ポリシー
 data "aws_iam_policy_document" "openhands_runtime_gha_assume_role_policy" {
   statement {
@@ -332,7 +330,7 @@ jobs:
 
 ### 4.7 Kubernetes Deployment更新
 
-OpenHandsデプロイメントを更新して、カスタムランタイムイメージを使用するように設定します：
+OpenHandsデプロイメントを更新して、カスタムランタイムイメージを使用するように設定します。既存のデプロイメント構成を維持しながら、ランタイムイメージの参照のみを変更します：
 
 ```yaml
 # ファイルパス: /workspace/lolice/argoproj/openhands/deployment.yaml
@@ -354,6 +352,8 @@ spec:
         # ... 他の環境変数 ...
 ```
 
+既存の環境設定やボリュームマウント、リソース制限などは保持されます。この変更により、既存のOpenHandsデプロイメントは新しいカスタムランタイムイメージを使用するようになりますが、その他の設定は影響を受けません。
+
 ### 4.8 ArgoCD Image Updater設定
 
 ArgoCD Image Updaterを使用して、OpenHandsランタイムイメージの更新を自動化します：
@@ -373,7 +373,7 @@ spec:
   # ... 既存の設定 ...
 ```
 
-また、kustomizationファイルを追加して、ArgoCD Image Updaterがすべてのマニフェストファイルを認識できるようにします：
+また、kustomizationファイルを追加して、ArgoCD Image Updaterがすべてのマニフェストファイルを認識できるようにします。これにより、ディレクトリ内のすべてのKubernetesリソースが適切に管理されます：
 
 ```yaml
 # ファイルパス: /workspace/lolice/argoproj/openhands/kustomization.yaml
@@ -381,10 +381,18 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
 resources:
+  - namespace.yaml
   - deployment.yaml
   - service.yaml
-  # その他のマニフェストファイル
+  - application.yaml
+  - docker-cleanup-cronjob.yaml
+  - external-secret.yaml
+  - cloudflared-deployment.yaml
+  - pvc.yaml
 ```
+
+このkustomizationファイルは、OpenHandsの完全な環境設定に必要なすべてのマニフェストファイルを含みます。既存のCronJobやSecretの設定、PersistentVolumeClaimなど、環境を構成するすべてのリソースが含まれています。
+
 ## 5. セキュリティ考慮事項
 
 ### 5.1 認証情報の保護
