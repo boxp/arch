@@ -67,6 +67,13 @@ resource "aws_iam_policy" "openhands_runtime_policy" {
         Resource = [
           "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-*"
         ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "ssm:DescribeParameters"
+        ]
+        Resource = "*"
       }
     ]
   })
