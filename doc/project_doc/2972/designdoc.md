@@ -275,8 +275,7 @@ resource "aws_iam_policy" "ssm_reader_policy" {
           "ssm:DescribeParameters"
         ]
         Resource = [
-          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-access-key-id",
-          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-secret-access-key"
+          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/*"
         ]
       }
     ]
