@@ -118,6 +118,62 @@ query {
    - バージョン不一致や欠落パッケージを確認
    - 依存関係グラフの整合性を検証
 
+# PRレビューコメントの確認
+
+## 呼び出し方
+
+以下のような表現で呼び出されることがあります
+これより下のドキュメントを参考に対応してください
+
+- "レビューを確認して"
+- "未解決のコメントを教えて"
+- "PRのフィードバックを確認して"
+- "レビューの指摘事項を確認して"
+
+## 未解決のPRレビューコメントの確認方法
+
+GitHub GraphQL APIを使用して、PRの未解決のレビューコメントを確認できます:
+
+```graphql
+query { 
+  repository(owner: "OWNER", name: "REPO") {
+    pullRequest(number: PR_NUMBER) {
+      reviewThreads(first: 20) {
+        nodes {
+          isResolved
+          comments(first: 10) {
+            nodes {
+              author {
+                login
+              }
+              body
+              createdAt
+              path
+              position
+            }
+          }
+        }
+      }
+    }
+  }
+}
+```
+
+## 未解決コメント確認の手順
+
+1. PRの番号を特定します
+2. GraphQL APIを使用して、`isResolved: false`のレビュースレッドを取得します
+3. 各未解決コメントの内容、作成者、ファイルパス、位置を確認します
+4. コメントの内容を分析し、どのような修正が求められているかを理解します
+5. 必要に応じて、コメントされたファイルの内容も確認します
+6. 未解決コメントの概要と対応方法をユーザーに日本語で説明します
+
+## 実行例
+
+```bash
+curl -s -H "Authorization: Bearer $GITHUB_TOKEN" -H "Content-Type: application/json" https://api.github.com/graphql -d '{"query": "query { repository(owner: \"OWNER\", name: \"REPO\") { pullRequest(number: PR_NUMBER) { reviewThreads(first: 20) { nodes { isResolved comments(first: 10) { nodes { author { login } body createdAt path position } } } } } } }"}'
+```
+
 # 検索指示の取り扱い
 
 ユーザーから「検索」や「調べてほしい」といった指示があった際には、必ず Bing Search を利用して情報を検索してください。取得した検索結果は日本語で分かりやすくユーザーに提供するようにしてください。
