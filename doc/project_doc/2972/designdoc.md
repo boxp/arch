@@ -184,7 +184,8 @@ resource "aws_iam_policy" "openhands_runtime_policy" {
           "ssm:GetParameters"
         ]
         Resource = [
-          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-*"
+          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-access-key-id",
+          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-secret-access-key"
         ]
       }
     ]
