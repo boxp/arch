@@ -10,7 +10,6 @@ agent: CodeActAgent
 
 - doc/project-structure.md
 - doc/project-spec.md
-- doc/project-coding-rule.md
 
 !!必ず日本語で受け答えしてください!!
 
