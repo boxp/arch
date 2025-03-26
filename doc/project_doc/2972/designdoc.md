@@ -349,9 +349,9 @@ jobs:
           # 認証情報をログに出力しないように設定
           echo "::add-mask::$AWS_ACCESS_KEY_ID"
           echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
-          echo "AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
-          echo "AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
-          echo "AWS_REGION=ap-northeast-1" >> $GITHUB_ENV
+          echo "SSM_AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
+          echo "SSM_AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
+          echo "SSM_AWS_REGION=ap-northeast-1" >> $GITHUB_ENV
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -364,9 +364,9 @@ jobs:
           push: true
           tags: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:${{ github.sha }}
           build-args: |
-            AWS_ACCESS_KEY_ID=${{ env.AWS_ACCESS_KEY_ID }}
-            AWS_SECRET_ACCESS_KEY=${{ env.AWS_SECRET_ACCESS_KEY }}
-            AWS_REGION=${{ env.AWS_REGION }}
+            AWS_ACCESS_KEY_ID=${{ env.SSM_AWS_ACCESS_KEY_ID }}
+            AWS_SECRET_ACCESS_KEY=${{ env.SSM_AWS_SECRET_ACCESS_KEY }}
+            AWS_REGION=${{ env.SSM_AWS_REGION }}
 ```
 
 **注意**: このワークフローは、前のセクションで定義したIAMロール`openhands-runtime-role`を使用してAWSリソースにアクセスします。GitHub Actions OIDC認証を使用することで、リポジトリに認証情報を保存する必要がなく、安全に一時的な認証情報を取得することができます。
