@@ -344,14 +344,17 @@ jobs:
 
       - name: Get AWS credentials from SSM Parameter Store
         run: |
-          AWS_ACCESS_KEY_ID=$(aws ssm get-parameter --name parameter-reader-access-key-id --with-decryption --query Parameter.Value --output text)
-          AWS_SECRET_ACCESS_KEY=$(aws ssm get-parameter --name parameter-reader-secret-access-key --with-decryption --query Parameter.Value --output text)
+          SSM_KEY_ID=$(aws ssm get-parameter --name parameter-reader-access-key-id --with-decryption --query Parameter.Value --output text)
+          SSM_SECRET_KEY=$(aws ssm get-parameter --name parameter-reader-secret-access-key --with-decryption --query Parameter.Value --output text)
           # 認証情報をログに出力しないように設定
-          echo "::add-mask::$AWS_ACCESS_KEY_ID"
-          echo "::add-mask::$AWS_SECRET_ACCESS_KEY"
-          echo "SSM_AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID" >> $GITHUB_ENV
-          echo "SSM_AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY" >> $GITHUB_ENV
+          echo "::add-mask::$SSM_KEY_ID"
+          echo "::add-mask::$SSM_SECRET_KEY"
+          echo "SSM_AWS_ACCESS_KEY_ID=$SSM_KEY_ID" >> $GITHUB_ENV
+          echo "SSM_AWS_SECRET_ACCESS_KEY=$SSM_SECRET_KEY" >> $GITHUB_ENV
           echo "SSM_AWS_REGION=ap-northeast-1" >> $GITHUB_ENV
+          # 新しい変数名もマスク
+          echo "::add-mask::$SSM_AWS_ACCESS_KEY_ID"
+          echo "::add-mask::$SSM_AWS_SECRET_ACCESS_KEY"
 
       - name: Login to Amazon ECR
         id: login-ecr
@@ -369,7 +372,7 @@ jobs:
             AWS_REGION=${{ env.SSM_AWS_REGION }}
 ```
 
-**注意**: このワークフローは、前のセクションで定義したIAMロール`openhands-runtime-role`を使用してAWSリソースにアクセスします。GitHub Actions OIDC認証を使用することで、リポジトリに認証情報を保存する必要がなく、安全に一時的な認証情報を取得することができます。
+**注意**: このワークフローは、前のセクションで定義したIAMロール`openhands-runtime-role`を使用してAWSリソースにアクセスします。GitHub Actions OIDC認証を使用することで、リポジトリに認証情報を保存する必要がなく、安全に一時的な認証情報を取得することができます。また、環境変数名には`SSM_`プレフィックスを付けることで、GitHub Actionsが提供するAWS認証情報との競合を避けています。
 
 ### 4.8 Kubernetes Deployment更新
 
