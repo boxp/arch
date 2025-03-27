@@ -374,6 +374,9 @@ jobs:
 
 **注意**: このワークフローは、前のセクションで定義したIAMロール`openhands-runtime-role`を使用してAWSリソースにアクセスします。GitHub Actions OIDC認証を使用することで、リポジトリに認証情報を保存する必要がなく、安全に一時的な認証情報を取得することができます。また、環境変数名には`SSM_`プレフィックスを付けることで、GitHub Actionsが提供するAWS認証情報との競合を避けています。
 
+**実装状況**: 現在このワークフローは正常に実行され、以下のイメージがビルド・デプロイされています：
+`839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:41e379330403af0ac6a89713bb1995b27caf564f`
+
 ### 4.8 Kubernetes Deployment更新
 
 OpenHandsデプロイメントを更新して、カスタムランタイムイメージを使用するように設定します。既存のデプロイメント構成を維持しながら、ランタイムイメージの参照のみを変更します：
@@ -394,7 +397,7 @@ spec:
         # ... 既存の設定 ...
         env:
         - name: SANDBOX_RUNTIME_CONTAINER_IMAGE
-          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:${{ github.sha }}
+          value: 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:41e379330403af0ac6a89713bb1995b27caf564f
         # ... 他の環境変数 ...
 ```
 
@@ -438,6 +441,223 @@ resources:
 ```
 
 このkustomizationファイルは、OpenHandsの完全な環境設定に必要なすべてのマニフェストファイルを含みます。既存のCronJobやSecretの設定、PersistentVolumeClaimなど、環境を構成するすべてのリソースが含まれています。
+
+### 4.10 ホストノードECR認証設定
+
+OpenHandsはホストのDockerデーモン（docker.sock）を使用してランタイムコンテナを実行するため、ノードのDockerでECRリポジトリからイメージをプルするための認証情報が必要です。k8s-ecr-token-updaterはKubernetes内のイメージプルには機能しますが、ホストDockerには適用されないため、別途認証を設定する必要があります。
+
+この認証を管理するため、既存のk8s-ecr-token-updaterと同様のアプローチでKubernetes CronJobを使用して定期的にホストのDockerデーモンにECR認証情報を設定します。これにより管理が統一され、運用が簡素化されます。
+
+#### 4.10.1 OpenHands ECRトークン更新CronJob
+
+以下のCronJobマニフェストを作成し、loliceリポジトリに保存します：
+
+```yaml
+# ファイルパス: /workspace/lolice/argoproj/openhands/ecr-auth-cronjob.yaml
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: openhands-ecr-auth-updater
+  namespace: openhands
+spec:
+  schedule: "0 */10 * * *"  # k8s-ecr-token-updaterと同じスケジュール
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          serviceAccountName: default
+          hostPID: true
+          hostNetwork: true
+          nodeSelector:
+            kubernetes.io/hostname: golyat-1  # OpenHandsが実行されるノードを指定
+          containers:
+          - name: ecr-auth-updater
+            image: omarxs/awskctl:v1.0  # k8s-ecr-token-updaterと同じイメージ
+            securityContext:
+              privileged: true  # Docker socketにアクセスするために必要
+            envFrom:
+              - secretRef:
+                  name: aws-credentials  # k8s-ecr-token-updaterと同じシークレット
+            env:
+            - name: AWS_REGION
+              value: "ap-northeast-1"
+            command:
+              - /bin/bash
+              - -c
+              - |-
+                echo "OpenHands ホストECR認証情報を更新しています..."
+                # ECRログイン情報を取得
+                ECR_TOKEN="$(aws ecr get-login-password --region ${AWS_REGION})"
+                
+                # ホストのDockerに認証情報を設定
+                docker login --username AWS --password ${ECR_TOKEN} https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
+                
+                echo "OpenHands ホストECR認証情報の更新が完了しました"
+            volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          volumes:
+          - name: docker-sock
+            hostPath:
+              path: /var/run/docker.sock
+              type: Socket
+          restartPolicy: OnFailure
+```
+
+このCronJobはkustomizationファイルにも追加します：
+
+```yaml
+# ファイルパス: /workspace/lolice/argoproj/openhands/kustomization.yaml（更新版）
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - application.yaml
+  - docker-cleanup-cronjob.yaml
+  - external-secret.yaml
+  - cloudflared-deployment.yaml
+  - pvc.yaml
+  - ecr-auth-cronjob.yaml  # 追加
+```
+
+#### 4.10.2 AWS認証情報の共有
+
+この実装では、既存のk8s-ecr-token-updaterと同じAWS認証情報を使用します。これらの認証情報は`aws-credentials`というSecretに格納されており、次の情報が含まれています：
+
+- `AWS_ACCESS_KEY_ID`: ECRにアクセスするためのアクセスキーID
+- `AWS_SECRET_ACCESS_KEY`: ECRにアクセスするためのシークレットアクセスキー
+- `AWS_ACCOUNT_ID`: AWSアカウントID
+
+k8s-ecr-token-updaterでは、これらの認証情報はExternalSecretコントローラーを通じてAWS Parameter Storeから取得され、定期的に更新されています：
+
+```yaml
+# k8s-ecr-token-updaterのexternal-secret.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: external-secret
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: parameterstore
+    kind: ClusterSecretStore
+  target:
+    name: aws-credentials
+    creationPolicy: Owner
+  data:
+  - secretKey: AWS_ACCESS_KEY_ID
+    remoteRef:
+      key: k8s-ecr-token-updater-aws-access-key
+  - secretKey: AWS_SECRET_ACCESS_KEY
+    remoteRef:
+      key: k8s-ecr-token-updater-aws-secret
+  - secretKey: AWS_ACCOUNT_ID
+    remoteRef:
+      key: k8s-ecr-token-updater-aws-account-id
+```
+
+OpenHandsでも同様のアプローチを使用し、以下のExternal Secretマニフェストを作成してAWS認証情報を取得します：
+
+```yaml
+# ファイルパス: /workspace/lolice/argoproj/openhands/external-secret.yaml
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: openhands-ecr-credentials
+  namespace: openhands
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: parameterstore
+    kind: ClusterSecretStore
+  target:
+    name: aws-credentials
+    creationPolicy: Owner
+  data:
+  - secretKey: AWS_ACCESS_KEY_ID
+    remoteRef:
+      key: k8s-ecr-token-updater-aws-access-key  # 同じパラメータを使用
+  - secretKey: AWS_SECRET_ACCESS_KEY
+    remoteRef:
+      key: k8s-ecr-token-updater-aws-secret  # 同じパラメータを使用
+  - secretKey: AWS_ACCOUNT_ID
+    remoteRef:
+      key: k8s-ecr-token-updater-aws-account-id  # 同じパラメータを使用
+```
+
+この実装により、OpenHandsは以下の利点を得ることができます：
+
+1. **認証情報の一元管理**: k8s-ecr-token-updaterと同じパラメータストアの値を参照することで、認証情報の管理が一元化されます
+2. **自動更新**: ExternalSecretコントローラーが1時間ごとにパラメータストアから最新の認証情報を取得し、Secretを更新します
+3. **セキュアな管理**: 認証情報はKubernetesクラスター外（AWS Parameter Store）で管理され、暗号化されています
+4. **メンテナンス性**: AWS認証情報の更新が必要な場合、Parameter Storeの値を更新するだけで、すべての依存サービスに変更が反映されます
+
+このExternal Secretを使用してOpenHandsのECR認証更新CronJobは、常に最新のAWS認証情報にアクセスすることができます。
+
+同じSecretを再利用することで、認証情報の一元管理を実現し、メンテナンスの手間を削減します。
+
+#### 4.10.3 初回デプロイと検証
+
+CronJobをデプロイした後、k8s-ecr-token-updaterと同様に手動で一度実行して初期設定を行います：
+
+```bash
+# CronJobをデプロイ
+kubectl apply -f /workspace/lolice/argoproj/openhands/ecr-auth-cronjob.yaml
+
+# 手動で一度実行（READMEに記載されている方法）
+kubectl create job --from=cronjob/openhands-ecr-auth-updater openhands-ecr-auth-init -n openhands
+
+# ログを確認
+kubectl logs -f job/openhands-ecr-auth-init -n openhands
+```
+
+初回実行が成功したら、ランタイムイメージがプルできることを確認します：
+
+```bash
+# golyat-1ノードにSSH接続
+ssh golyat-1
+
+# イメージをプル
+docker pull 839695154978.dkr.ecr.ap-northeast-1.amazonaws.com/openhands-runtime:41e379330403af0ac6a89713bb1995b27caf564f
+```
+
+#### 4.10.4 セキュリティと権限設定
+
+k8s-ecr-token-updaterでは以下のような権限設定が行われています：
+
+```yaml
+# クラスターロール
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: role-full-access-to-secrets
+rules:
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["regcred"]
+  verbs: ["delete"]
+- apiGroups: [""]
+  resources: ["secrets"]
+  verbs: ["create"]
+- apiGroups: [""]
+  resources: ["namespaces"]
+  verbs: ["list", "get"]
+```
+
+OpenHandsのECR認証更新CronJobでは、ホストDockerにのみアクセスするため、このような広範囲の権限は必要ありません。必要最小限の権限として、`privileged: true`の設定でDocker socketにアクセスする権限のみを付与します。
+
+#### 4.10.5 運用上の考慮事項
+
+1. **実行スケジュール**: k8s-ecr-token-updaterと同じ10時間ごとの実行（ECRトークンの有効期限は12時間）
+2. **監視と通知**: k8s-ecr-token-updaterと同様に、Kubernetesログを通じて実行状況を監視
+3. **トラブルシューティング**: 問題が発生した場合、k8s-ecr-token-updaterの`README.md`に記載されている手動実行コマンドを参考に対応
+4. **メンテナンス**: AWS認証情報の更新は既存のk8s-ecr-token-updaterのExternalSecretを通じて行われるため、個別のメンテナンスは不要
+
+この実装により、Kubernetesクラスター全体のECR認証管理とホストノードのECR認証管理が統一的なアプローチで行われ、運用の一貫性と効率性が向上します。また、既存のk8s-ecr-token-updaterのベストプラクティスを活用することで、安定した認証環境を確保できます。
 
 ## 5. セキュリティ考慮事項
 
