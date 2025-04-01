@@ -19,7 +19,7 @@ resource "cloudflare_tunnel_config" "grafana_api_tunnel" { # Renamed from argocd
       # Hostname from dns.tf
       hostname = cloudflare_record.grafana_api.hostname # Changed from argocd_api
       # Internal Grafana service address (adjust if necessary)
-      service  = "http://prometheus-grafana.monitoring.svc.cluster.local:80" # Changed from argocd-server
+      service  = "http://grafana.monitoring.svc.cluster.local:80" # Use 'grafana' service in 'monitoring' namespace
     }
     # Default rule: return 404 for unmatched requests
     ingress_rule {
