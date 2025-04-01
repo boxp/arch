@@ -34,7 +34,7 @@ resource "cloudflare_access_policy" "grafana_api_policy" {
   zone_id        = var.zone_id
   name           = "GitHub Actions access policy for grafana-api.b0xp.io" # Changed from argocd-api
   precedence     = "1"
-  decision       = "service_auth" # Use service_auth for service tokens
+  decision       = "non_identity" # Use non_identity for service tokens
   include {
     # Allow access from the specific service token
     service_token = [cloudflare_access_service_token.grafana_api_service_token.id] # Changed from github_action_token
