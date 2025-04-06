@@ -42,22 +42,14 @@ OpenHandsランタイムコンテナは、ユーザーのワークスペース�
 
 ### 4.1 カスタムOpenHandsランタイムイメージ
 
-既存のOpenHandsランタイムイメージを拡張し、AWS CLIとAWS SDKをインストールします。
+既存のOpenHandsランタイムイメージを拡張し、AWS CLIをインストールします。
 
 ```dockerfile
 # ファイルパス: /workspace/openhands-runtime/Dockerfile
 FROM nikolaik/python-nodejs:python3.12-nodejs22
 
-# AWS CLIのインストール
-RUN apt-get update && apt-get install -y \
-    python3-pip \
-    unzip \
-    curl \
-    && pip3 install --no-cache-dir \
-    awscli \
-    boto3 \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# AWS CLIのインストール（最小限の依存関係で）
+RUN pip install --no-cache-dir awscli
 
 # AWS認証情報は、GitHub Actionsがビルド時にSSM Parameter Storeから取得し、
 # ビルド時の環境変数としてコンテナに埋め込む
@@ -473,7 +465,7 @@ spec:
             kubernetes.io/hostname: golyat-1  # OpenHandsが実行されるノードを指定
           containers:
           - name: ecr-auth-updater
-            image: omarxs/awskctl:v1.0  # k8s-ecr-token-updaterと同じイメージ
+            image: docker:20.10-dind  # Dockerコマンドを含むイメージに変更
             securityContext:
               privileged: true  # Docker socketにアクセスするために必要
             envFrom:
@@ -483,25 +475,67 @@ spec:
             - name: AWS_REGION
               value: "ap-northeast-1"
             command:
-              - /bin/bash
+              - /bin/sh
               - -c
               - |-
+                # AWS CLIをインストール
+                apk add --no-cache aws-cli
+                
                 echo "OpenHands ホストECR認証情報を更新しています..."
                 # ECRログイン情報を取得
                 ECR_TOKEN="$(aws ecr get-login-password --region ${AWS_REGION})"
                 
-                # ホストのDockerに認証情報を設定
+                # コンテナ内のDockerに認証情報を設定
+                mkdir -p /root/.docker
                 docker login --username AWS --password ${ECR_TOKEN} https://${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com
                 
+                # ホスト側のboxpユーザーの.dockerディレクトリに設定を反映
+                if [ -d "/host-docker" ]; then
+                  # ディレクトリが存在しない場合は作成
+                  mkdir -p /host-docker
+                  
+                  # 認証情報ファイルをコピー
+                  cp -f /root/.docker/config.json /host-docker/config.json
+                  
+                  # 固定UID/GID（boxpユーザー用）
+                  BOXP_UID=1000
+                  BOXP_GID=1000
+                  
+                  # 所有権を変更
+                  chown ${BOXP_UID}:${BOXP_GID} /host-docker/config.json
+                  # パーミッションを設定（ユーザーのみ読み書き可能）
+                  chmod 600 /host-docker/config.json
+                  
+                  echo "ホスト側の認証情報ファイルを更新し、権限を設定しました: /home/boxp/.docker/config.json (1000:1000)"
+                fi
+                
                 echo "OpenHands ホストECR認証情報の更新が完了しました"
+                
+                # デバッグ情報
+                echo "認証情報ファイルの内容確認:"
+                cat /root/.docker/config.json
+                if [ -f "/host-docker/config.json" ]; then
+                  echo "ホスト側の認証情報ファイル情報:"
+                  ls -la /host-docker/config.json
+                  echo "ホスト側の認証情報ファイル内容:"
+                  cat /host-docker/config.json
+                else
+                  echo "警告: ホスト側の認証情報ファイルが見つかりません"
+                fi
             volumeMounts:
             - name: docker-sock
               mountPath: /var/run/docker.sock
+            - name: host-docker-config
+              mountPath: /host-docker
           volumes:
           - name: docker-sock
             hostPath:
               path: /var/run/docker.sock
               type: Socket
+          - name: host-docker-config
+            hostPath:
+              path: /home/boxp/.docker
+              type: Directory
           restartPolicy: OnFailure
 ```
 
