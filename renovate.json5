@@ -3,7 +3,7 @@
     'config:recommended',
     'github>aquaproj/aqua-renovate-config#2.8.0',
     'github>aquaproj/aqua-renovate-config:file#2.8.0(^(.*/)?aqua/[^/]*\\.ya?ml$)',
-    'github>suzuki-shunsuke/renovate-config#2.5.0',
+    'github>suzuki-shunsuke/renovate-config#3.2.1',
   ],
   labels: [
     'renovate:{{depName}}',
