@@ -1,21 +1,18 @@
-# GitHub ActionsのOIDCプロバイダーが利用するIAMロールのための信頼ポリシー
 data "aws_iam_policy_document" "ark_discord_bot_gha_assume_role_policy" {
   statement {
     effect  = "Allow"
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = ["arn:aws:iam::${var.account_id}:oidc-provider/token.actions.githubusercontent.com"]
+      identifiers = ["arn:aws:iam::${var.aws_account_id}:oidc-provider/token.actions.githubusercontent.com"] # ID プロバイダの ARN
     }
-
-    # audience条件 - GitHub Actionsが使用する標準値
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:aud"
       values   = ["sts.amazonaws.com"]
     }
 
-    # subject条件 - リポジトリとブランチを制限
+    # 特定のリポジトリの特定のブランチからのみ認証を許可する
     condition {
       test     = "StringEquals"
       variable = "token.actions.githubusercontent.com:sub"
@@ -24,15 +21,16 @@ data "aws_iam_policy_document" "ark_discord_bot_gha_assume_role_policy" {
   }
 }
 
-# GitHub Actions用のIAMロール
-resource "aws_iam_role" "ark_discord_bot_role" {
-  name               = "ark-discord-bot-role"
+resource "aws_iam_role" "ark_discord_bot_gha_role" {
+  name               = "ark-discord-bot-gha-role"
   assume_role_policy = data.aws_iam_policy_document.ark_discord_bot_gha_assume_role_policy.json
 }
 
-# GitHub Actions用のポリシー（ECRとSSMパラメータストアへのアクセス）
-resource "aws_iam_policy" "ark_discord_bot_policy" {
-  name        = "ark-discord-bot-policy"
+# ecr:GetAuthorizationToken が リソースレベルのアクセス許可をサポートしていないため、全リソースに対して許可する
+#trivy:ignore:AVD-AWS-0057
+resource "aws_iam_policy" "ark_discord_bot_gha_policy" {
+  name        = "ark-discord-bot-gha-policy"
+  path        = "/"
   description = "Policy for ARK Discord Bot GitHub Actions"
 
   policy = jsonencode({
@@ -49,7 +47,7 @@ resource "aws_iam_policy" "ark_discord_bot_policy" {
           "ecr:CompleteLayerUpload",
         ]
         Effect   = "Allow"
-        Resource = "arn:aws:ecr:${var.region}:${var.account_id}:repository/ark-discord-bot"
+        Resource = "arn:aws:ecr:ap-northeast-1:${var.aws_account_id}:repository/ark-discord-bot"
       },
       {
         Effect = "Allow"
@@ -65,8 +63,9 @@ resource "aws_iam_policy" "ark_discord_bot_policy" {
           "ssm:GetParameters"
         ]
         Resource = [
-          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-access-key-id",
-          "arn:aws:ssm:${var.region}:${var.account_id}:parameter/parameter-reader-secret-access-key"
+          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/lolice/ark-discord-bot/DISCORD_BOT_TOKEN",
+          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/lolice/ark-discord-bot/DISCORD_CHANNEL_ID",
+          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/lolice/ark-discord-bot/RCON_PASSWORD"
         ]
       }
     ]
@@ -74,7 +73,7 @@ resource "aws_iam_policy" "ark_discord_bot_policy" {
 }
 
 # ポリシーをロールにアタッチ
-resource "aws_iam_role_policy_attachment" "ark_discord_bot_policy_attachment" {
-  role       = aws_iam_role.ark_discord_bot_role.name
-  policy_arn = aws_iam_policy.ark_discord_bot_policy.arn
+resource "aws_iam_role_policy_attachment" "ark_discord_bot_gha_policy_attachment" {
+  role       = aws_iam_role.ark_discord_bot_gha_role.name
+  policy_arn = aws_iam_policy.ark_discord_bot_gha_policy.arn
 }
