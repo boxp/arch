@@ -1,95 +1,96 @@
 # CLAUDE.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+このファイルは、このリポジトリでClaude Code (claude.ai/code)がコードを扱う際のガイダンスを提供します。
 
-## Overview
+## 概要
 
-This is the `arch` repository - a personal infrastructure management project using Terraform and TFAction for declarative infrastructure-as-code across multiple cloud providers (AWS, Cloudflare, GCP). It manages the infrastructure foundation that supports a companion Kubernetes repository called `lolice`.
+これは `arch` リポジトリです - 複数のクラウドプロバイダー（AWS、Cloudflare、GCP）にわたってTerraformとTFActionを使用した宣言的なインフラストラクチャー・アズ・コードの個人インフラストラクチャー管理プロジェクトです。`lolice`という名前の姉妹Kubernetesリポジトリをサポートするインフラストラクチャー基盤を管理しています。
 
-## Key Commands
+## 主要コマンド
 
-### Tool Management (Aqua)
-- `aqua install` - Install all required tools for the project
-- `aqua list` - List all available tools and versions
-- Tools are managed globally at project root and per-directory via `aqua/aqua.yaml` files
+### ツール管理 (Aqua)
+- `aqua install` - プロジェクトに必要なすべてのツールをインストール
+- `aqua list` - 利用可能なすべてのツールとバージョンを一覧表示
+- ツールはプロジェクトルートでグローバルに管理され、`aqua/aqua.yaml`ファイルを通じてディレクトリごとに管理されます
 
-### Terraform Operations
-- **Navigate to specific terraform directory first** (e.g., `cd terraform/aws/users/` or `cd terraform/cloudflare/b0xp.io/k8s/`)
-- `terraform init` - Initialize terraform in a working directory
-- `terraform plan` - Plan terraform changes
-- `terraform apply` - Apply terraform changes
-- `terraform validate` - Validate terraform configuration
-- `terraform fmt` - Format terraform files
+### Terraform操作
+- **最初に特定のterraformディレクトリに移動** (例: `cd terraform/aws/users/` または `cd terraform/cloudflare/b0xp.io/k8s/`)
+- `terraform init` - 作業ディレクトリでterraformを初期化
+- `terraform plan` - terraform変更を計画
+- `terraform apply` - terraform変更を適用
+- `terraform validate` - terraform設定を検証
+- `terraform fmt` - terraformファイルをフォーマット
 
-### Linting and Validation
-- `tflint` - Lint terraform files (run from terraform working directories)
-- `conftest verify --policy policy/terraform` - Validate against OPA policies
-- `trivy config .` - Security scanning of terraform configurations
-- `actionlint` - Lint GitHub Actions workflows
-- `ghalint run` - GitHub Actions workflow linting
+### リンティングと検証
+- `tflint` - terraformファイルをリント（terraformワーキングディレクトリから実行）
+- `conftest verify --policy policy/terraform` - OPAポリシーに対して検証
+- `trivy config .` - terraform設定のセキュリティスキャン
+- `actionlint` - GitHub Actionsワークフローをリント
+- `ghalint run` - GitHub Actionsワークフローリンティング
 
-### TFAction Workflows
-- TFAction automatically handles terraform operations via GitHub Actions
-- Uses `tfaction-root.yaml` for global configuration
-- Each terraform directory has its own `tfaction.yaml` for specific settings
-- Supports automated plan/apply workflows with proper IAM role assumptions
+### TFActionワークフロー
+- TFActionはGitHub Actions経由でterraform操作を自動処理
+- グローバル設定には`tfaction-root.yaml`を使用
+- 各terraformディレクトリには特定の設定用の独自の`tfaction.yaml`があります
+- 適切なIAMロール引き受けによる自動化されたplan/applyワークフローをサポート
 
-## Architecture
+## アーキテクチャ
 
-### Project Structure
-- **`terraform/`** - Main terraform configurations organized by provider
-  - `aws/` - AWS resources (IAM, ECR, SSM Parameter Store, etc.)
-  - `cloudflare/` - Cloudflare resources (DNS, tunnels, access policies)
-  - Two domains managed: `b0xp.io` and `boxp.tk`
-- **`policy/terraform/`** - Open Policy Agent (OPA) policies for governance
-- **`templates/`** - Terraform module templates for new components
-- **`aqua/`** - Tool dependency management configuration
+### プロジェクト構造
+- **`terraform/`** - プロバイダーごとに整理されたメインのterraform設定
+  - `aws/` - AWSリソース（IAM、ECR、SSM Parameter Storeなど）
+  - `cloudflare/` - Cloudflareリソース（DNS、トンネル、アクセスポリシー）
+  - 管理対象ドメイン: `b0xp.io` と `boxp.tk`
+- **`policy/terraform/`** - ガバナンス用のOpen Policy Agent (OPA)ポリシー
+- **`templates/`** - 新しいコンポーネント用のTerraformモジュールテンプレート
+- **`aqua/`** - ツール依存関係管理設定
 
-### Technology Stack
+### 技術スタック
 - **Terraform** - Infrastructure as Code
-- **TFAction** - Terraform automation via GitHub Actions
-- **Aqua** - Tool version management
-- **Open Policy Agent** - Policy enforcement
-- **AWS** - Cloud services (primarily IAM, ECR, SSM)
-- **Cloudflare** - DNS, tunnels, and access management
-- **Renovate** - Automated dependency updates
+- **TFAction** - GitHub Actions経由のTerraform自動化
+- **Aqua** - ツールバージョン管理
+- **Open Policy Agent** - ポリシー実行
+- **AWS** - クラウドサービス（主にIAM、ECR、SSM）
+- **Cloudflare** - DNS、トンネル、アクセス管理
+- **Renovate** - 自動依存関係更新
 
-### Relationship with `lolice` Project
-The `arch` project provides the infrastructure foundation that the `lolice` Kubernetes repository builds upon:
-- `arch` defines cloud resources, DNS, tunnels, and access policies
-- `lolice` deploys applications on the Kubernetes cluster using the infrastructure
-- Secrets managed in AWS SSM Parameter Store (arch) are consumed by External Secrets in `lolice`
-- Cloudflare tunnels defined in `arch` provide secure external access to `lolice` services
+### `lolice`プロジェクトとの関係
+`arch`プロジェクトは`lolice` Kubernetesリポジトリが基盤とするインフラストラクチャー基盤を提供します：
+- `arch`はクラウドリソース、DNS、トンネル、アクセスポリシーを定義
+- `lolice`はインフラストラクチャーを使用してKubernetesクラスター上にアプリケーションをデプロイ
+- AWS SSM Parameter Store (arch)で管理されるシークレットは`lolice`のExternal Secretsによって消費されます
+- `arch`で定義されたCloudflareトンネルは`lolice`サービスへの安全な外部アクセスを提供
+- `lolice`プロジェクトは git@github.com:boxp/lolice.git に存在します
 
-### TFAction CI/CD Flow
-1. Changes to terraform files trigger GitHub Actions
-2. `terraform plan` runs automatically on PRs
-3. After approval and merge, `terraform apply` runs automatically
-4. State is stored in S3 with proper IAM role assumptions
-5. Policies are enforced via OPA conftest during validation
+### TFAction CI/CDフロー
+1. terraformファイルの変更がGitHub Actionsをトリガー
+2. PRで`terraform plan`が自動実行
+3. 承認とマージ後、`terraform apply`が自動実行
+4. 状態は適切なIAMロール引き受けによりS3に保存
+5. 検証時にOPA conftestによってポリシーが実行
 
-### Security & Compliance
-- All terraform providers are explicitly whitelisted in CI/CD
-- OPA policies enforce naming conventions and security standards
-- AWS IAM roles with least-privilege for GitHub Actions
-- Secrets management via AWS SSM Parameter Store
-- Regular dependency updates via Renovate
+### セキュリティとコンプライアンス
+- すべてのterraformプロバイダーはCI/CDで明示的にホワイトリスト化
+- OPAポリシーが命名規則とセキュリティ標準を実行
+- GitHub Actions用の最小権限のAWS IAMロール
+- AWS SSM Parameter Store経由のシークレット管理
+- Renovateによる定期的な依存関係更新
 
-## Important Notes
+## 重要な注意事項
 
-### Working with Terraform
-- Always run terraform commands from the appropriate working directory
-- Each terraform directory is independently managed with its own state
-- Use `aqua install` to ensure you have the correct tool versions
-- Policy validation runs automatically but can be tested locally with conftest
+### Terraformでの作業
+- 常に適切な作業ディレクトリからterraformコマンドを実行
+- 各terraformディレクトリは独自の状態で独立して管理
+- 正しいツールバージョンを確保するために`aqua install`を使用
+- ポリシー検証は自動実行されますが、conftestでローカルテスト可能
 
-### Adding New Infrastructure
-1. Use templates from `templates/` directory as starting point
-2. Follow existing naming conventions and directory structure
-3. Ensure new terraform providers are added to the approved whitelist
-4. Test with `terraform plan` before creating PR
+### 新しいインフラストラクチャーの追加
+1. 開始点として`templates/`ディレクトリのテンプレートを使用
+2. 既存の命名規則とディレクトリ構造に従う
+3. 新しいterraformプロバイダーが承認されたホワイトリストに追加されていることを確認
+4. PRを作成する前に`terraform plan`でテスト
 
-### Cursor Rules Integration
-The repository includes Cursor IDE rules that require reading project documentation files before task execution:
-- `@doc/project-structure.md` - Detailed directory structure
-- `@doc/project-spec.md` - Complete project specifications and workflows
+### Cursor Rules統合
+リポジトリにはタスク実行前にプロジェクトドキュメントファイルの読み取りを必要とするCursor IDEルールが含まれています：
+- `@doc/project-structure.md` - 詳細なディレクトリ構造
+- `@doc/project-spec.md` - 完全なプロジェクト仕様とワークフロー
