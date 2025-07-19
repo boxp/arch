@@ -1,11 +1,13 @@
-data "aws_ssm_parameter" "kubernetes_dashboard_tunnel_secret" {
-  name = "kubernetes-dashboard-tunnel-secret"
+# ランダムな秘密トークンの生成
+resource "random_password" "tunnel_secret" {
+  length  = 64
+  special = false
 }
 
 resource "cloudflare_tunnel" "kubernetes_dashboard_tunnel" {
   account_id = var.account_id
   name       = "cloudflare kubernetes-dashboard tunnel"
-  secret     = sensitive(base64encode(data.aws_ssm_parameter.kubernetes_dashboard_tunnel_secret.value))
+  secret     = base64sha256(random_password.tunnel_secret.result)
 }
 
 # Creates the configuration for the tunnel.
