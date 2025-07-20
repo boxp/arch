@@ -37,19 +37,19 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd ansible
+          cd "ansible"
           uv sync
 
       - name: Run ansible-lint
         run: |
-          cd ansible
+          cd "ansible"
           source .venv/bin/activate
           ansible-lint
 
       - name: Detect changed roles
         id: changed-roles
         run: |
-          cd ansible
+          cd "ansible"
           # Get list of changed ansible role files
           CHANGED_FILES=$(git diff --name-only origin/main...HEAD | grep "^ansible/roles/" || true)
           
@@ -71,7 +71,7 @@ jobs:
 
       - name: Run Molecule tests for changed roles
         run: |
-          cd ansible
+          cd "ansible"
           source .venv/bin/activate
           
           # Get changed roles from previous step
