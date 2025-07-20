@@ -24,28 +24,13 @@ resource "aws_s3_bucket_versioning" "orange_pi_images" {
   }
 }
 
-# KMS key for S3 encryption
-resource "aws_kms_key" "orange_pi_images" {
-  description             = "KMS key for Orange Pi images S3 bucket"
-  deletion_window_in_days = 7
-
-  tags = {
-    Name = "orange-pi-images-key"
-  }
-}
-
-resource "aws_kms_alias" "orange_pi_images" {
-  name          = "alias/orange-pi-images"
-  target_key_id = aws_kms_key.orange_pi_images.key_id
-}
-
 resource "aws_s3_bucket_server_side_encryption_configuration" "orange_pi_images" {
   bucket = aws_s3_bucket.orange_pi_images.id
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm     = "aws:kms"
-      kms_master_key_id = aws_kms_key.orange_pi_images.arn
+      sse_algorithm = "aws:kms"
+      # Use AWS managed key for S3 (aws/s3)
     }
     bucket_key_enabled = true
   }
@@ -204,17 +189,6 @@ resource "aws_iam_role_policy" "github_actions_orangepi_s3" {
             "s3:prefix" = "images/orange-pi-zero3/*"
           }
         }
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:ReEncrypt*",
-          "kms:GenerateDataKey*",
-          "kms:DescribeKey"
-        ]
-        Resource = aws_kms_key.orange_pi_images.arn
       }
     ]
   })
@@ -240,17 +214,6 @@ resource "aws_iam_policy" "boxp_orangepi_images_access" {
           aws_s3_bucket.orange_pi_images.arn,
           "${aws_s3_bucket.orange_pi_images.arn}/*"
         ]
-      },
-      {
-        Effect = "Allow"
-        Action = [
-          "kms:Encrypt",
-          "kms:Decrypt",
-          "kms:ReEncrypt*",
-          "kms:GenerateDataKey*",
-          "kms:DescribeKey"
-        ]
-        Resource = aws_kms_key.orange_pi_images.arn
       }
     ]
   })
