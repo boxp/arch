@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       node_name:
-        description: 'Node to build (leave empty to build all)'
-        required: false
+        description: 'Node to build'
+        required: true
         type: choice
+        default: 'all'
         options:
-          - ''
+          - all
           - shanghai-1
           - shanghai-2
           - shanghai-3
@@ -22,10 +23,10 @@ jobs:
       - name: Determine nodes to build
         id: set-nodes
         run: |
-          if [ -n "${{ github.event.inputs.node_name }}" ]; then
-            echo "nodes=[\"${{ github.event.inputs.node_name }}\"]" >> $GITHUB_OUTPUT
-          else
+          if [ "${{ github.event.inputs.node_name }}" = "all" ]; then
             echo "nodes=[\"shanghai-1\", \"shanghai-2\", \"shanghai-3\"]" >> $GITHUB_OUTPUT
+          else
+            echo "nodes=[\"${{ github.event.inputs.node_name }}\"]" >> $GITHUB_OUTPUT
           fi
 
   build-images:
