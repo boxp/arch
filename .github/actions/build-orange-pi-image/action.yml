@@ -108,7 +108,7 @@ runs:
           "image_file": "$FINAL_IMAGE",
           "checksum_file": "${FINAL_IMAGE}.sha256",
           "armbian_version": "$(cat armbian-build/VERSION)",
-          "github_sha": "${{ github.sha }}"
+          "github_sha": "$GITHUB_SHA"
         }
         EOF
 
@@ -141,4 +141,4 @@ runs:
         aws s3api put-object-tagging \
           --bucket "${{ inputs.s3_bucket }}" \
           --key "images/orange-pi-zero3/${{ inputs.node_name }}/orangepi-zero3-${{ inputs.node_name }}.img.xz" \
-          --tagging "TagSet=[{Key=NodeName,Value=${{ inputs.node_name }}},{Key=BuildDate,Value=$(date +%Y-%m-%d)},{Key=GitSHA,Value=${{ github.sha }}}]"
+          --tagging "TagSet=[{Key=NodeName,Value=${{ inputs.node_name }}},{Key=BuildDate,Value=$(date +%Y-%m-%d)},{Key=GitSHA,Value=$GITHUB_SHA}]"
