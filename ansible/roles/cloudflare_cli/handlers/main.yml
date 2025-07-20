@@ -1,7 +1,7 @@
 ---
 # handlers file for cloudflare_cli
 
-- name: restart cloudflared
+- name: Restart cloudflared
   ansible.builtin.systemd:
     name: "{{ cloudflare_cli_service_name }}"
     state: restarted
