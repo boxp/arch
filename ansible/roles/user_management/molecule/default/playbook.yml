@@ -5,4 +5,5 @@
   roles:
     - role: "../../../user_management"
       vars:
-        user_management_ssh_key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... test@molecule"
+        user_management_use_github_keys: true
+        user_management_github_username: "boxp"

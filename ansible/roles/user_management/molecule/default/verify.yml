@@ -56,3 +56,15 @@
           - auth_keys.stat.exists
           - auth_keys.stat.mode == '0600'
         fail_msg: "authorized_keys does not exist or has incorrect permissions"
+
+    - name: Check authorized_keys content for GitHub keys
+      ansible.builtin.command: cat /home/boxp/.ssh/authorized_keys
+      register: auth_keys_content
+      changed_when: false
+
+    - name: Assert GitHub SSH keys are present
+      ansible.builtin.assert:
+        that:
+          - auth_keys_content.stdout | length > 0
+          - "'ssh-' in auth_keys_content.stdout"
+        fail_msg: "GitHub SSH keys not found in authorized_keys"

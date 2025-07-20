@@ -25,13 +25,38 @@
     mode: '0700'
   become: true
 
-- name: Add SSH public key
+- name: Fetch GitHub public keys
+  ansible.builtin.uri:
+    url: "https://github.com/{{ user_management_github_username }}.keys"
+    method: GET
+    return_content: true
+  register: github_keys_response
+  when: 
+    - user_management_use_github_keys
+    - user_management_github_username != ""
+  delegate_to: localhost
+  become: false
+
+- name: Add SSH public key from variable
   ansible.posix.authorized_key:
     user: "{{ user_management_username }}"
     key: "{{ user_management_ssh_key }}"
     state: present
   become: true
-  when: user_management_ssh_key != ""
+  when: 
+    - not user_management_use_github_keys
+    - user_management_ssh_key != ""
+
+- name: Add SSH public keys from GitHub
+  ansible.posix.authorized_key:
+    user: "{{ user_management_username }}"
+    key: "{{ github_keys_response.content }}"
+    state: present
+  become: true
+  when: 
+    - user_management_use_github_keys
+    - github_keys_response is defined
+    - github_keys_response.content != ""
 
 - name: Ensure user can sudo without password
   ansible.builtin.lineinfile:
