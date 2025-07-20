@@ -12,13 +12,6 @@ on:
           - shanghai-1
           - shanghai-2
           - shanghai-3
-  push:
-    paths:
-      - 'ansible/playbooks/node-*.yml'
-      - 'ansible/roles/**'
-      - 'armbian-build/userpatches/**'
-      - '.github/workflows/build-orange-pi-images.yml'
-      - '.github/actions/build-orange-pi-image/**'
 
 jobs:
   determine-nodes:

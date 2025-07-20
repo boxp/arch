@@ -10,16 +10,16 @@
     cluster_vip: "192.168.10.99"
     cluster_domain: "cluster.local"
     cluster_dns: "10.96.0.10"
-    
+
     # Kubernetes configuration
     kubernetes_version: "1.32"
     kubernetes_package_version: "1.32.0-1.1"
     crio_version: "1.32"
-    
+
     # Hardware configuration
     hardware_type: "orange_pi_zero3"
     architecture: "arm64"
-    
+
     # Network configuration
     network_gateway: "192.168.10.1"
     network_dns_servers:
@@ -28,17 +28,17 @@
 
   tasks:
     - name: Set hostname
-      hostname:
+      ansible.builtin.hostname:
         name: "{{ node_hostname }}"
 
     - name: Update /etc/hosts
-      lineinfile:
+      ansible.builtin.lineinfile:
         path: /etc/hosts
         regexp: '^127\.0\.1\.1'
         line: "127.0.1.1 {{ node_hostname }}"
 
     - name: Configure static IP with netplan
-      copy:
+      ansible.builtin.copy:
         content: |
           network:
             version: 2
@@ -55,12 +55,12 @@
         mode: '0644'
 
     - name: Remove dhcp configuration
-      file:
+      ansible.builtin.file:
         path: /etc/netplan/10-dhcp-all-interfaces.yaml
         state: absent
 
     - name: Create kube-vip manifest for this node
-      template:
+      ansible.builtin.template:
         src: /tmp/kube-vip.yaml.j2
         dest: /etc/kubernetes/manifests/kube-vip.yaml
         mode: '0644'
@@ -70,7 +70,7 @@
 
 
     - name: Create directories for kubeadm
-      file:
+      ansible.builtin.file:
         path: "{{ item }}"
         state: directory
         mode: '0755'
@@ -79,27 +79,27 @@
         - /etc/kubernetes/pki
 
     - name: Create first-boot initialization script
-      copy:
+      ansible.builtin.copy:
         content: |
           #!/bin/bash
-          
+
           # Wait for network to be ready
           sleep 30
-          
+
           # Apply network configuration
           netplan apply
-          
+
           # Start and enable services
           systemctl enable --now crio
           systemctl enable --now kubelet
-          
+
           echo "Shanghai-3 node ready for manual cluster join"
           echo "Use: kubeadm join <cluster-endpoint> --token <token> --discovery-token-ca-cert-hash <hash> --control-plane"
         dest: /usr/local/bin/init-shanghai-3.sh
         mode: '0755'
 
     - name: Create systemd service for first-boot initialization
-      copy:
+      ansible.builtin.copy:
         content: |
           [Unit]
           Description=Shanghai-3 node initialization
@@ -111,7 +111,7 @@
           Type=oneshot
           ExecStart=/usr/local/bin/init-shanghai-3.sh
           ExecStartPost=/bin/touch /var/lib/shanghai-3-initialized
-          RemainAfterExit=yes
+          RemainAfterExit=true
 
           [Install]
           WantedBy=multi-user.target
@@ -119,7 +119,7 @@
         mode: '0644'
 
     - name: Enable shanghai-3 initialization service
-      systemd:
+      ansible.builtin.systemd:
         name: init-shanghai-3.service
-        enabled: yes
-        daemon_reload: yes
+        enabled: true
+        daemon_reload: true
