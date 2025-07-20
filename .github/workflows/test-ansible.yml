@@ -46,15 +46,51 @@ jobs:
           source .venv/bin/activate
           ansible-lint
 
-      - name: Run Molecule tests
+      - name: Detect changed roles
+        id: changed-roles
+        run: |
+          cd ansible
+          # Get list of changed ansible role files
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | grep "^ansible/roles/" || true)
+          
+          # Extract unique role names from changed files
+          CHANGED_ROLES=""
+          if [ ! -z "$CHANGED_FILES" ]; then
+            CHANGED_ROLES=$(echo "$CHANGED_FILES" | sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u)
+          fi
+          
+          echo "changed-files=$CHANGED_FILES"
+          echo "changed-roles=$CHANGED_ROLES"
+          
+          # Set output for use in next step
+          echo "roles<<EOF" >> $GITHUB_OUTPUT
+          echo "$CHANGED_ROLES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Run Molecule tests for changed roles
         run: |
           cd ansible
           source .venv/bin/activate
-          for role in roles/*/; do
-            if [ -d "$role/molecule" ]; then
-              echo "Testing role: $role"
-              cd "$role"
+          
+          # Get changed roles from previous step
+          CHANGED_ROLES="${{ steps.changed-roles.outputs.roles }}"
+          
+          if [ -z "$CHANGED_ROLES" ]; then
+            echo "No Ansible roles changed, skipping Molecule tests"
+            exit 0
+          fi
+          
+          echo "Testing changed roles: $CHANGED_ROLES"
+          
+          # Test each changed role
+          for role in $CHANGED_ROLES; do
+            role_path="roles/$role"
+            if [ -d "$role_path/molecule" ]; then
+              echo "Testing role: $role_path"
+              cd "$role_path"
               molecule test
               cd - > /dev/null
+            else
+              echo "No molecule tests found for role: $role_path"
             fi
           done
