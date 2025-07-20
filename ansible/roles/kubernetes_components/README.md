@@ -74,4 +74,5 @@ Created for Orange Pi Zero 3 Kubernetes cluster deployment.
 
 ## Notes
 - Uses Kubernetes v1.32 for latest features and security updates
-- Optimized for ARM64 architecture
+- Optimized for ARM64 architecture (Orange Pi Zero 3)
+- Includes comprehensive Molecule testing for CI/CD validation
