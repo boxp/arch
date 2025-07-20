@@ -37,7 +37,7 @@
       ansible.builtin.assert:
         that:
           - manifest_yaml.spec.containers[0].env | selectattr('name', 'equalto', 'address') | list | length > 0
-          - manifest_yaml.spec.containers[0].env | selectattr('name', 'equalto', 'address') | map(attribute='value') | first == "192.168.100.10"
+          - manifest_yaml.spec.containers[0].env | selectattr('name', 'equalto', 'address') | map(attribute='value') | first == "192.168.10.99"
         fail_msg: "VIP address not properly configured"
 
     - name: Check interface is configured

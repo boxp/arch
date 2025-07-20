@@ -21,7 +21,7 @@ Kube-vip provides Kubernetes clusters with a virtual IP for high availability wi
 ## Role Variables
 
 ### Required Variables
-- `kube_vip_vip`: Virtual IP address for the cluster (e.g., "192.168.1.100")
+- `kube_vip_vip`: Virtual IP address for the cluster (e.g., "192.168.10.99")
 
 ### Optional Variables
 - `kube_vip_version`: Version of kube-vip to deploy (default: "v0.8.9")
@@ -47,7 +47,7 @@ Kube-vip provides Kubernetes clusters with a virtual IP for high availability wi
   roles:
     - role: kube_vip
       vars:
-        kube_vip_vip: "192.168.1.100"
+        kube_vip_vip: "192.168.10.99"
         kube_vip_interface: "eth0"  # Optional, will auto-detect
 ```
 

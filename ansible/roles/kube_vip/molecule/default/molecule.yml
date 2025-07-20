@@ -22,7 +22,7 @@ provisioner:
   inventory:
     group_vars:
       control_plane:
-        kube_vip_vip: "192.168.100.10"
+        kube_vip_vip: "192.168.10.99"
         kube_vip_auto_detect_interface: true
 verifier:
   name: ansible
