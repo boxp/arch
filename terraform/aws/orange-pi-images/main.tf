@@ -160,6 +160,48 @@ resource "aws_iam_role_policy" "github_actions_orangepi_s3" {
   })
 }
 
+# IAM policy for boxp user access to Orange Pi images bucket
+resource "aws_iam_policy" "boxp_orangepi_images_access" {
+  name        = "boxp-orangepi-images-access"
+  description = "Allow boxp user to access Orange Pi images bucket"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject",
+          "s3:ListBucket"
+        ]
+        Resource = [
+          aws_s3_bucket.orange_pi_images.arn,
+          "${aws_s3_bucket.orange_pi_images.arn}/*"
+        ]
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
+        ]
+        Resource = aws_kms_key.orange_pi_images.arn
+      }
+    ]
+  })
+}
+
+# Attach policy to boxp user
+resource "aws_iam_user_policy_attachment" "boxp_orangepi_images_access" {
+  user       = "boxp"
+  policy_arn = aws_iam_policy.boxp_orangepi_images_access.arn
+}
+
 data "aws_caller_identity" "current" {}
 
 # Store bucket name in SSM for easy reference
