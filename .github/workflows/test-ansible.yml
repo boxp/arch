@@ -65,9 +65,9 @@ jobs:
           # Set output for use in next step
           {
             echo "roles<<EOF"
-            echo "$CHANGED_ROLES"
+            printf '%s\n' "$CHANGED_ROLES"
             echo "EOF"
-          } >> $GITHUB_OUTPUT
+          } >> "$GITHUB_OUTPUT"
 
       - name: Run Molecule tests for changed roles
         run: |
