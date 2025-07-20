@@ -1,6 +1,6 @@
 # S3 bucket for storing Orange Pi images
 resource "aws_s3_bucket" "orange_pi_images" {
-  bucket = "arch-orange-pi-images-${random_id.bucket_suffix.hex}"
+  bucket = "arch-orange-pi-images"
 }
 
 # Block all public access to the bucket
@@ -11,10 +11,6 @@ resource "aws_s3_bucket_public_access_block" "orange_pi_images" {
   block_public_policy     = true
   ignore_public_acls      = true
   restrict_public_buckets = true
-}
-
-resource "random_id" "bucket_suffix" {
-  byte_length = 4
 }
 
 resource "aws_s3_bucket_versioning" "orange_pi_images" {
@@ -38,7 +34,7 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "orange_pi_images"
 
 # S3 bucket for access logs
 resource "aws_s3_bucket" "orange_pi_images_logs" {
-  bucket = "arch-orange-pi-images-logs-${random_id.bucket_suffix.hex}"
+  bucket = "arch-orange-pi-images-logs"
 }
 
 resource "aws_s3_bucket_public_access_block" "orange_pi_images_logs" {
@@ -136,19 +132,19 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
   }
 }
 
-# IAM role for GitHub Actions
-resource "aws_iam_role" "github_actions_orangepi" {
-  name = "github-actions-orangepi-images"
+# Create dedicated IAM role for Orange Pi image builds
+resource "aws_iam_role" "github_actions_orangepi_build" {
+  name = "GitHubActions_OrangePi_Build"
 
   assume_role_policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
       {
-        Action = "sts:AssumeRole"
         Effect = "Allow"
         Principal = {
           Federated = "arn:aws:iam::${data.aws_caller_identity.current.account_id}:oidc-provider/token.actions.githubusercontent.com"
         }
+        Action = "sts:AssumeRoleWithWebIdentity"
         Condition = {
           StringEquals = {
             "token.actions.githubusercontent.com:aud" = "sts.amazonaws.com"
@@ -162,9 +158,10 @@ resource "aws_iam_role" "github_actions_orangepi" {
   })
 }
 
+# S3 access policy for Orange Pi image builds
 resource "aws_iam_role_policy" "github_actions_orangepi_s3" {
   name = "orangepi-images-s3-policy"
-  role = aws_iam_role.github_actions_orangepi.id
+  role = aws_iam_role.github_actions_orangepi_build.id
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -227,15 +224,3 @@ resource "aws_iam_user_policy_attachment" "boxp_orangepi_images_access" {
 
 data "aws_caller_identity" "current" {}
 
-# Store bucket name in SSM for easy reference
-resource "aws_ssm_parameter" "orange_pi_bucket_name" {
-  name  = "/arch/orange-pi/s3-bucket-name"
-  type  = "String"
-  value = aws_s3_bucket.orange_pi_images.bucket
-}
-
-resource "aws_ssm_parameter" "github_actions_role_arn" {
-  name  = "/arch/orange-pi/github-actions-role-arn"
-  type  = "String"
-  value = aws_iam_role.github_actions_orangepi.arn
-}

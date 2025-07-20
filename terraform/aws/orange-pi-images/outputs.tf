@@ -9,11 +9,11 @@ output "s3_bucket_arn" {
 }
 
 output "github_actions_role_arn" {
-  description = "ARN of the IAM role for GitHub Actions"
-  value       = aws_iam_role.github_actions_orangepi.arn
+  description = "ARN of the GitHub Actions IAM role for Orange Pi builds"
+  value       = aws_iam_role.github_actions_orangepi_build.arn
 }
 
 output "github_actions_role_name" {
-  description = "Name of the IAM role for GitHub Actions"
-  value       = aws_iam_role.github_actions_orangepi.name
+  description = "Name of the GitHub Actions IAM role for Orange Pi builds"
+  value       = aws_iam_role.github_actions_orangepi_build.name
 }
