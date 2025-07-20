@@ -36,6 +36,11 @@
 - GitHub Actionsの場合: `actionlint && ghalint run`
 - 全体的なセキュリティチェック: `trivy config .`
 
+### Ansible Moleculeテスト
+- **ローカル環境**: `cd ansible/roles/[role_name] && molecule test` (x86_64環境で実行)
+- **ARM64シミュレーション**: `MOLECULE_DOCKER_PLATFORM=linux/arm64 molecule test` (Orange Pi Zero 3環境をエミュレート)
+- CIでは自動的にARM64プラットフォームが使用されます
+
 ### TFActionワークフロー
 - TFActionはGitHub Actions経由でterraform操作を自動処理
 - グローバル設定には`tfaction-root.yaml`を使用

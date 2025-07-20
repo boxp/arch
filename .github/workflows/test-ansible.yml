@@ -92,7 +92,8 @@ jobs:
             if [ -d "$role_path/molecule" ]; then
               echo "Testing role: $role_path"
               cd "$role_path"
-              molecule test
+              # Set ARM64 platform for CI Orange Pi Zero 3 simulation
+              MOLECULE_DOCKER_PLATFORM=linux/arm64 molecule test
               cd - > /dev/null
             else
               echo "No molecule tests found for role: $role_path"
