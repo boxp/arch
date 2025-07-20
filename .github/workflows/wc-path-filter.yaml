@@ -20,6 +20,8 @@ on:
         value: ${{jobs.path-filter.outputs.opa-fmt}}
       ghalint:
         value: ${{jobs.path-filter.outputs.ghalint}}
+      test-ansible:
+        value: ${{jobs.path-filter.outputs.test-ansible}}
 
 jobs:
   path-filter:
@@ -33,6 +35,7 @@ jobs:
       conftest-verify: ${{steps.changes.outputs.conftest-verify}}
       opa-fmt: ${{steps.changes.outputs.opa-fmt}}
       ghalint: ${{steps.changes.outputs.ghalint}}
+      test-ansible: ${{steps.changes.outputs.test-ansible}}
     steps:
       - name: Generate token
         id: token
@@ -83,3 +86,8 @@ jobs:
             ghalint:
               - .github/workflows/*
               - aqua/imports/ghalint.yaml
+
+            test-ansible:
+              - ansible/**
+              - .github/workflows/test-ansible.yml
+              - .github/workflows/test.yaml

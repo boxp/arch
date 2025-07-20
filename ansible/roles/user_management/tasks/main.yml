@@ -31,7 +31,7 @@
     method: GET
     return_content: true
   register: github_keys_response
-  when: 
+  when:
     - user_management_use_github_keys
     - user_management_github_username != ""
   delegate_to: localhost
@@ -43,7 +43,7 @@
     key: "{{ user_management_ssh_key }}"
     state: present
   become: true
-  when: 
+  when:
     - not user_management_use_github_keys
     - user_management_ssh_key != ""
 
@@ -53,7 +53,7 @@
     key: "{{ github_keys_response.content }}"
     state: present
   become: true
-  when: 
+  when:
     - user_management_use_github_keys
     - github_keys_response is defined
     - github_keys_response.content != ""
