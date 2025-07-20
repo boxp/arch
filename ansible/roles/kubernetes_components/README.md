@@ -28,7 +28,7 @@ This role provides a complete setup for Kubernetes control plane components incl
 - `kubelet_cluster_domain`: Cluster domain (default: "cluster.local")
 
 ### CRI-O Configuration
-- `crio_version`: CRI-O version to install (default: "1.32")
+- `crio_version`: CRI-O version to install (default: "1.31")
 - `container_runtime`: Container runtime to use (default: "cri-o")
 
 ### System Configuration

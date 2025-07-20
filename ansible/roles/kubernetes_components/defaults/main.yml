@@ -5,7 +5,7 @@
 kubernetes_version: "1.32"
 kubernetes_package_version: "1.32.0-1.1"
 
-# CRI-O version to install (stable 1.32)
+# CRI-O version to install (using stable available version)
 crio_version: "1.32"
 
 # Network configuration for kubelet
@@ -23,10 +23,10 @@ kubernetes_enable_modules: true
 # Repository configuration
 kubernetes_apt_key_url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key"
 kubernetes_apt_repository: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/"
-crio_apt_key_url: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_22.04/Release.key"
-crio_apt_repository: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_22.04/"
-crio_version_apt_key_url: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ crio_version }}/xUbuntu_22.04/Release.key"
-crio_version_apt_repository: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ crio_version }}/xUbuntu_22.04/"
+crio_apt_key_url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_version }}/deb/Release.key"
+crio_apt_repository: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_version }}/deb/"
+crio_version_apt_key_url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_version }}/deb/Release.key"
+crio_version_apt_repository: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_version }}/deb/"
 
 # Packages to install
 kubernetes_packages:

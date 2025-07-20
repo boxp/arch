@@ -44,8 +44,6 @@
   ansible.builtin.package:
     name:
       - cri-o
-      - cri-o-runc
-      - cri-tools
     state: present
   become: true
   notify: Restart crio
@@ -75,3 +73,4 @@
     state: started
     daemon_reload: true
   become: true
+  when: not ansible_virtualization_type == "docker"
