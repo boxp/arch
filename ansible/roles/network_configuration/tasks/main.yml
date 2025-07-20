@@ -37,7 +37,9 @@
   notify: Restart networking
 
 - name: Check WiFi status
-  ansible.builtin.command: rfkill list wifi
+  ansible.builtin.shell: |
+    set -o pipefail
+    rfkill list wifi | grep -q 'Soft blocked: no' || true
   register: wifi_status
   become: true
   when: network_disable_wifi
@@ -47,11 +49,14 @@
 - name: Disable WiFi
   ansible.builtin.command: rfkill block wifi
   become: true
-  when: network_disable_wifi and wifi_status.stdout is defined and 'Soft blocked: no' in wifi_status.stdout
+  when: network_disable_wifi and wifi_status.rc == 0
+  changed_when: true
   failed_when: false
 
 - name: Check Bluetooth status
-  ansible.builtin.command: rfkill list bluetooth
+  ansible.builtin.shell: |
+    set -o pipefail
+    rfkill list bluetooth | grep -q 'Soft blocked: no' || true
   register: bluetooth_status
   become: true
   when: network_disable_bluetooth
@@ -61,7 +66,8 @@
 - name: Disable Bluetooth
   ansible.builtin.command: rfkill block bluetooth
   become: true
-  when: network_disable_bluetooth and bluetooth_status.stdout is defined and 'Soft blocked: no' in bluetooth_status.stdout
+  when: network_disable_bluetooth and bluetooth_status.rc == 0
+  changed_when: true
   failed_when: false
 
 - name: Create systemd service to disable WiFi and Bluetooth on boot
