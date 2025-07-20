@@ -84,8 +84,10 @@ jobs:
           
           echo "Testing changed roles: $CHANGED_ROLES"
           
-          # Test each changed role
-          for role in $CHANGED_ROLES; do
+          # Test each changed role  
+          # Convert to array to handle spaces properly
+          read -ra ROLE_ARRAY <<< "$CHANGED_ROLES"
+          for role in "${ROLE_ARRAY[@]}"; do
             role_path="roles/$role"
             if [ -d "$role_path/molecule" ]; then
               echo "Testing role: $role_path"
