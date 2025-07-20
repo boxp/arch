@@ -86,7 +86,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
 
     noncurrent_version_expiration {
       newer_noncurrent_versions = 3
-      noncurrent_days          = 1
+      noncurrent_days           = 1
     }
 
     abort_incomplete_multipart_upload {
@@ -105,7 +105,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
 
     noncurrent_version_expiration {
       newer_noncurrent_versions = 3
-      noncurrent_days          = 1
+      noncurrent_days           = 1
     }
 
     abort_incomplete_multipart_upload {
@@ -124,7 +124,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
 
     noncurrent_version_expiration {
       newer_noncurrent_versions = 3
-      noncurrent_days          = 1
+      noncurrent_days           = 1
     }
 
     abort_incomplete_multipart_upload {
