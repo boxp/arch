@@ -25,7 +25,7 @@
 - **OS**: Armbian Ubuntu 22.04 Jammy
 - **Kubernetes**: v1.32.0
 - **Container Runtime**: CRI-O v1.32
-- **CNI**: Flannel
+- **CNI**: Calico v3.29.1
 - **Load Balancer**: kube-vip v0.8.9
 
 ## イメージビルドプロセス
