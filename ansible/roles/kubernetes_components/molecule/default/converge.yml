@@ -1,11 +1,10 @@
 ---
 - name: Converge
   hosts: all
-  tasks:
-    - name: "Include kubernetes_components"
-      ansible.builtin.include_role:
-        name: "kubernetes_components"
-      vars:
-        # Test-specific overrides for container environment
-        kubernetes_disable_swap: false  # Skip swap operations in container
-        kubernetes_enable_modules: false  # Skip module loading in container
+  become: true
+  roles:
+    - role: ../../../../kubernetes_components
+  vars:
+    # Test-specific overrides for container environment
+    kubernetes_disable_swap: false  # Skip swap operations in container
+    kubernetes_enable_modules: false  # Skip module loading in container
