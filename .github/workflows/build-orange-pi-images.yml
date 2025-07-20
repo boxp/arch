@@ -50,8 +50,8 @@ jobs:
         uses: ./.github/actions/build-orange-pi-image
         with:
           node_name: ${{ matrix.node }}
-          aws_role_arn: ${{ vars.AWS_ROLE_ARN }}
-          s3_bucket: ${{ vars.S3_BUCKET_NAME }}
+          aws_role_arn: arn:aws:iam::839695154978:role/GitHubActions_OrangePi_Build
+          s3_bucket: arch-orange-pi-images
 
       - name: Build summary
         run: |
@@ -61,5 +61,5 @@ jobs:
             echo "- **Image**: orangepi-zero3-${{ matrix.node }}.img.xz"
             echo "- **Size**: $(du -h "orangepi-zero3-${{ matrix.node }}.img.xz" | cut -f1)"
             echo "- **Checksum**: $(cut -d' ' -f1 "orangepi-zero3-${{ matrix.node }}.img.xz.sha256")"
-            echo "- **S3 Path**: s3://${{ vars.S3_BUCKET_NAME }}/images/orange-pi-zero3/${{ matrix.node }}/"
+            echo "- **S3 Path**: s3://arch-orange-pi-images/images/orange-pi-zero3/${{ matrix.node }}/"
           } >> "$GITHUB_STEP_SUMMARY"
