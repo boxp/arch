@@ -49,8 +49,7 @@ jobs:
       - name: Detect changed roles
         id: changed-roles
         run: |
-          cd "ansible"
-          # Get list of changed ansible role files
+          # Get list of changed ansible role files (from project root)
           CHANGED_FILES=$(git diff --name-only origin/main...HEAD | grep "^ansible/roles/" || true)
           
           # Extract unique role names from changed files
@@ -61,6 +60,16 @@ jobs:
           
           echo "changed-files=$CHANGED_FILES"
           echo "changed-roles=$CHANGED_ROLES"
+          
+          # Debug output
+          echo "Debug: CHANGED_FILES content:"
+          echo "$CHANGED_FILES" | while read -r line; do
+            echo "  File: $line"
+          done
+          echo "Debug: CHANGED_ROLES content:"
+          echo "$CHANGED_ROLES" | while read -r line; do
+            echo "  Role: $line"
+          done
           
           # Set output for use in next step
           {
