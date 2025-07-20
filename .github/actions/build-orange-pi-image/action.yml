@@ -28,29 +28,26 @@ runs:
     - name: Download Orange Pi Zero 3 server image
       shell: bash
       run: |
-        # Download latest Orange Pi Zero 3 server image from Armbian
-        ARMBIAN_VERSION="24.11.1"
-        IMAGE_NAME="Armbian_${ARMBIAN_VERSION}_Orangepizero3_jammy_current_6.6.63_server.img.xz"
-        DOWNLOAD_URL="https://dl.armbian.com/orangepizero3/Jammy_current_server/${IMAGE_NAME}"
-        
-        echo "Downloading Orange Pi Zero 3 server image..."
-        wget -O "${IMAGE_NAME}" "${DOWNLOAD_URL}"
+        # Use direct download from archive
+        echo "Downloading Orange Pi Zero 3 server image from archive..."
+        wget -O "Armbian_orangepizero3_jammy_current_server.img.xz" \
+          "https://archive.armbian.com/orangepizero3/archive/Armbian_23.8.1_Orangepizero3_jammy_current_6.1.47_server.img.xz"
         
         # Verify download
-        if [ ! -f "${IMAGE_NAME}" ]; then
+        if [ ! -f "Armbian_orangepizero3_jammy_current_server.img.xz" ]; then
           echo "Error: Failed to download image"
           exit 1
         fi
         
-        echo "Downloaded: ${IMAGE_NAME}"
+        echo "Downloaded: Armbian_orangepizero3_jammy_current_server.img.xz"
 
     - name: Extract and customize image for node
       shell: bash
       run: |
-        # Find the downloaded image
-        IMAGE_FILE=$(find . -name "Armbian_*_Orangepizero3_*.img.xz" | head -n1)
-        if [ -z "$IMAGE_FILE" ]; then
-          echo "Error: No image file found"
+        # Use the downloaded image
+        IMAGE_FILE="Armbian_orangepizero3_jammy_current_server.img.xz"
+        if [ ! -f "$IMAGE_FILE" ]; then
+          echo "Error: Image file not found: $IMAGE_FILE"
           exit 1
         fi
         
@@ -58,7 +55,7 @@ runs:
         
         # Extract image
         xz -d "$IMAGE_FILE"
-        IMG_FILE="${IMAGE_FILE%.xz}"
+        IMG_FILE="Armbian_orangepizero3_jammy_current_server.img"
         
         # Create loop device
         LOOP_DEVICE=$(sudo losetup -f --show "$IMG_FILE")
@@ -110,7 +107,7 @@ runs:
           "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
           "image_file": "$FINAL_IMAGE",
           "checksum_file": "${FINAL_IMAGE}.sha256",
-          "armbian_version": "24.11.1",
+          "armbian_version": "23.8.1",
           "github_sha": "$GITHUB_SHA"
         }
         EOF
