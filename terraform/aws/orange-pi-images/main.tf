@@ -3,6 +3,16 @@ resource "aws_s3_bucket" "orange_pi_images" {
   bucket = "arch-orange-pi-images-${random_id.bucket_suffix.hex}"
 }
 
+# Block all public access to the bucket
+resource "aws_s3_bucket_public_access_block" "orange_pi_images" {
+  bucket = aws_s3_bucket.orange_pi_images.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
 resource "random_id" "bucket_suffix" {
   byte_length = 4
 }
@@ -14,14 +24,52 @@ resource "aws_s3_bucket_versioning" "orange_pi_images" {
   }
 }
 
+# KMS key for S3 encryption
+resource "aws_kms_key" "orange_pi_images" {
+  description             = "KMS key for Orange Pi images S3 bucket"
+  deletion_window_in_days = 7
+
+  tags = {
+    Name = "orange-pi-images-key"
+  }
+}
+
+resource "aws_kms_alias" "orange_pi_images" {
+  name          = "alias/orange-pi-images"
+  target_key_id = aws_kms_key.orange_pi_images.key_id
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "orange_pi_images" {
   bucket = aws_s3_bucket.orange_pi_images.id
 
   rule {
     apply_server_side_encryption_by_default {
-      sse_algorithm = "AES256"
+      sse_algorithm     = "aws:kms"
+      kms_master_key_id = aws_kms_key.orange_pi_images.arn
     }
+    bucket_key_enabled = true
   }
+}
+
+# S3 bucket for access logs
+resource "aws_s3_bucket" "orange_pi_images_logs" {
+  bucket = "arch-orange-pi-images-logs-${random_id.bucket_suffix.hex}"
+}
+
+resource "aws_s3_bucket_public_access_block" "orange_pi_images_logs" {
+  bucket = aws_s3_bucket.orange_pi_images_logs.id
+
+  block_public_acls       = true
+  block_public_policy     = true
+  ignore_public_acls      = true
+  restrict_public_buckets = true
+}
+
+resource "aws_s3_bucket_logging" "orange_pi_images" {
+  bucket = aws_s3_bucket.orange_pi_images.id
+
+  target_bucket = aws_s3_bucket.orange_pi_images_logs.id
+  target_prefix = "access-logs/"
 }
 
 resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
@@ -79,15 +127,34 @@ resource "aws_iam_role_policy" "github_actions_orangepi_s3" {
       {
         Effect = "Allow"
         Action = [
-          "s3:GetObject",
           "s3:PutObject",
-          "s3:DeleteObject",
+          "s3:PutObjectAcl",
+          "s3:PutObjectTagging"
+        ]
+        Resource = "${aws_s3_bucket.orange_pi_images.arn}/images/orange-pi-zero3/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
           "s3:ListBucket"
         ]
-        Resource = [
-          aws_s3_bucket.orange_pi_images.arn,
-          "${aws_s3_bucket.orange_pi_images.arn}/*"
+        Resource = aws_s3_bucket.orange_pi_images.arn
+        Condition = {
+          StringLike = {
+            "s3:prefix" = "images/orange-pi-zero3/*"
+          }
+        }
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "kms:Encrypt",
+          "kms:Decrypt",
+          "kms:ReEncrypt*",
+          "kms:GenerateDataKey*",
+          "kms:DescribeKey"
         ]
+        Resource = aws_kms_key.orange_pi_images.arn
       }
     ]
   })
