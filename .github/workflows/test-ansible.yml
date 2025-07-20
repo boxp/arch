@@ -7,16 +7,6 @@ on:
         description: The ref to checkout
         type: string
         default: ${{ github.ref }}
-  pull_request:
-    paths:
-      - 'ansible/**'
-      - '.github/workflows/test-ansible.yml'
-  push:
-    branches:
-      - main
-    paths:
-      - 'ansible/**'
-      - '.github/workflows/test-ansible.yml'
 
 jobs:
   test:
