@@ -8,20 +8,18 @@
     cluster_vip: "192.168.10.99"
     cluster_domain: "cluster.local"
     cluster_dns: "10.96.0.10"
-    
+
   roles:
     - role: user_management
       tags: [users, bootstrap]
-      
     - role: network_configuration
       tags: [network, bootstrap]
       vars:
         network_ip_address: "{{ node_ip }}"
         network_gateway: "192.168.10.1"
-        
+
     - role: cloudflare_cli
       tags: [cloudflare, external-access]
-      
     - role: kubernetes_components
       tags: [kubernetes, k8s-components]
       vars:
@@ -30,7 +28,6 @@
         crio_version: "1.32"
         kubelet_cluster_dns: "{{ cluster_dns }}"
         kubelet_cluster_domain: "{{ cluster_domain }}"
-        
     - role: kube_vip
       tags: [kube-vip, ha]
       vars:
