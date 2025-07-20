@@ -69,8 +69,16 @@ runs:
         sudo mkdir -p /mnt/orangepi
         sudo mount /dev/loop0p1 /mnt/orangepi
         
-        # Apply node-specific Ansible configuration
+        # Apply common control-plane configuration first
         cd ansible
+        sudo ansible-playbook \
+          -i localhost, \
+          -c local \
+          -e ansible_host=localhost \
+          -e target_mount=/mnt/orangepi \
+          playbooks/control-plane.yml
+        
+        # Apply node-specific configuration
         sudo ansible-playbook \
           -i localhost, \
           -c local \
