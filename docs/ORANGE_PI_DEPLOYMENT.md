@@ -84,41 +84,38 @@ xzcat orangepi-zero3-shanghai-3.img.xz | sudo dd of=/dev/sdZ bs=1M status=progre
 
 ### 3. 初回起動と設定
 
-#### Shanghai-1 (初期ノード)
+#### 全ノード共通手順
 
 1. SDカードを挿入して起動
-2. 自動的にKubernetesクラスターが初期化される
-3. root/boxpパスワードを設定（初回ログイン時）
+2. root/boxpパスワードを設定（初回ログイン時）
+3. ノードの初期化完了を確認
+4. 手動でクラスターへ参加
 
 ```bash
 # 初期化状況の確認
-sudo journalctl -u init-shanghai-1.service -f
+sudo journalctl -u init-shanghai-X.service -f
 
-# クラスター状態確認
-kubectl get nodes
-kubectl get pods -A
+# ノードの準備状態確認
+systemctl status crio kubelet
 ```
 
-#### Shanghai-2, Shanghai-3 (追加ノード)
+#### クラスター参加手順
 
-1. shanghai-1の初期化完了を確認
-2. SDカードを挿入して起動  
-3. 手動でクラスターへ参加
-
+既存クラスターからjoinトークンを取得：
 ```bash
-# shanghai-1からjoinトークンを取得
+# 既存クラスターで実行
 kubeadm token create --print-join-command --ttl 24h
 
 # 出力例:
-# kubeadm join 192.168.10.99:6443 --token abcdef.1234567890abcdef \
+# kubeadm join <cluster-endpoint>:6443 --token abcdef.1234567890abcdef \
 #   --discovery-token-ca-cert-hash sha256:xxxxx \
 #   --control-plane
 ```
 
-各追加ノードで：
+各ノードで：
 ```bash
 # 上記のコマンドをそのまま実行
-sudo kubeadm join 192.168.10.99:6443 --token <token> \
+sudo kubeadm join <cluster-endpoint>:6443 --token <token> \
   --discovery-token-ca-cert-hash sha256:<hash> \
   --control-plane
 ```

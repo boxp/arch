@@ -68,42 +68,6 @@
         kube_vip_vip: "{{ cluster_vip }}"
         kube_vip_interface: "eth0"
 
-    - name: Create kubeadm init configuration
-      copy:
-        content: |
-          apiVersion: kubeadm.k8s.io/v1beta3
-          kind: InitConfiguration
-          localAPIEndpoint:
-            advertiseAddress: {{ node_ip }}
-            bindPort: 6443
-          nodeRegistration:
-            criSocket: unix:///var/run/crio/crio.sock
-            kubeletExtraArgs:
-              node-ip: {{ node_ip }}
-          ---
-          apiVersion: kubeadm.k8s.io/v1beta3
-          kind: ClusterConfiguration
-          kubernetesVersion: v{{ kubernetes_version }}.0
-          controlPlaneEndpoint: {{ cluster_vip }}:6443
-          networking:
-            serviceSubnet: 10.96.0.0/16
-            podSubnet: 192.168.0.0/16
-            dnsDomain: {{ cluster_domain }}
-          etcd:
-            local:
-              dataDir: /var/lib/etcd
-          dns:
-            type: CoreDNS
-          ---
-          apiVersion: kubelet.config.k8s.io/v1beta1
-          kind: KubeletConfiguration
-          clusterDNS:
-            - {{ cluster_dns }}
-          clusterDomain: {{ cluster_domain }}
-          containerRuntimeEndpoint: unix:///var/run/crio/crio.sock
-          cgroupDriver: systemd
-        dest: /etc/kubeadm/kubeadm-init.yaml
-        mode: '0644'
 
     - name: Create directories for kubeadm
       file:
@@ -129,26 +93,8 @@
           systemctl enable --now crio
           systemctl enable --now kubelet
           
-          # Initialize Kubernetes cluster (only on first boot)
-          if [ ! -f /etc/kubernetes/admin.conf ]; then
-              kubeadm init --config=/etc/kubeadm/kubeadm-init.yaml
-              
-              # Configure kubectl for root
-              mkdir -p /root/.kube
-              cp -i /etc/kubernetes/admin.conf /root/.kube/config
-              chown root:root /root/.kube/config
-              
-              # Configure kubectl for boxp user
-              mkdir -p /home/boxp/.kube
-              cp -i /etc/kubernetes/admin.conf /home/boxp/.kube/config
-              chown boxp:boxp /home/boxp/.kube/config
-              
-              # Install CNI (Calico)
-              kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.1/manifests/tigera-operator.yaml
-              kubectl create -f https://raw.githubusercontent.com/projectcalico/calico/v3.29.1/manifests/custom-resources.yaml
-          fi
-          
-          echo "Shanghai-1 initialization completed"
+          echo "Shanghai-1 node ready for manual cluster join"
+          echo "Use: kubeadm join <cluster-endpoint> --token <token> --discovery-token-ca-cert-hash <hash> --control-plane"
         dest: /usr/local/bin/init-shanghai-1.sh
         mode: '0755'
 
@@ -156,7 +102,7 @@
       copy:
         content: |
           [Unit]
-          Description=Shanghai-1 Kubernetes initialization
+          Description=Shanghai-1 node initialization
           After=network-online.target
           Wants=network-online.target
           ConditionPathExists=!/var/lib/shanghai-1-initialized
