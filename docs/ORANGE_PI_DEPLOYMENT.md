@@ -103,7 +103,7 @@ kubectl get pods -A
 
 1. shanghai-1の初期化完了を確認
 2. SDカードを挿入して起動  
-3. 手動でクラスターへ参加設定
+3. 手動でクラスターへ参加
 
 ```bash
 # shanghai-1からjoinトークンを取得
@@ -117,12 +117,10 @@ kubeadm token create --print-join-command --ttl 24h
 
 各追加ノードで：
 ```bash
-# join設定を更新
-sudo nano /etc/kubeadm/kubeadm-join.yaml
-# token と caCertHashes を実際の値に置き換え
-
-# クラスターに参加
-sudo kubeadm join --config=/etc/kubeadm/kubeadm-join.yaml
+# 上記のコマンドをそのまま実行
+sudo kubeadm join 192.168.10.99:6443 --token <token> \
+  --discovery-token-ca-cert-hash sha256:<hash> \
+  --control-plane
 ```
 
 ## 運用管理
