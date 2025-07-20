@@ -1,0 +1,65 @@
+name: Build Orange Pi Zero 3 Images
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_name:
+        description: 'Node to build'
+        required: true
+        type: choice
+        default: 'all'
+        options:
+          - all
+          - shanghai-1
+          - shanghai-2
+          - shanghai-3
+
+jobs:
+  determine-nodes:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      nodes: ${{ steps.set-nodes.outputs.nodes }}
+    steps:
+      - name: Determine nodes to build
+        id: set-nodes
+        run: |
+          if [ "${{ github.event.inputs.node_name }}" = "all" ]; then
+            echo "nodes=[\"shanghai-1\", \"shanghai-2\", \"shanghai-3\"]" >> "$GITHUB_OUTPUT"
+          else
+            echo "nodes=[\"${{ github.event.inputs.node_name }}\"]" >> "$GITHUB_OUTPUT"
+          fi
+
+  build-images:
+    needs: determine-nodes
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        node: ${{ fromJson(needs.determine-nodes.outputs.nodes) }}
+      fail-fast: false
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@692973e3d937129bcbf40652eb9f2f61becf3332 # v4.1.7
+
+      - name: Build Orange Pi image for ${{ matrix.node }}
+        uses: ./.github/actions/build-orange-pi-image
+        with:
+          node_name: ${{ matrix.node }}
+          aws_role_arn: arn:aws:iam::839695154978:role/GitHubActions_OrangePi_Build
+          s3_bucket: arch-orange-pi-images
+
+      - name: Build summary
+        run: |
+          {
+            echo "## Build Summary for ${{ matrix.node }}"
+            echo "- **Node**: ${{ matrix.node }}"
+            echo "- **Image**: orangepi-zero3-${{ matrix.node }}.img.xz"
+            echo "- **Size**: $(du -h "orangepi-zero3-${{ matrix.node }}.img.xz" | cut -f1)"
+            echo "- **Checksum**: $(cut -d' ' -f1 "orangepi-zero3-${{ matrix.node }}.img.xz.sha256")"
+            echo "- **S3 Path**: s3://arch-orange-pi-images/images/orange-pi-zero3/${{ matrix.node }}/"
+          } >> "$GITHUB_STEP_SUMMARY"

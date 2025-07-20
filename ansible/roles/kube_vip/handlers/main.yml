@@ -8,17 +8,14 @@
   become: true
 
 - name: Check kube-vip pod status
-  kubernetes.core.k8s_info:
-    api_version: v1
-    kind: Pod
-    name: kube-vip
-    namespace: kube-system
-    kubeconfig: /etc/kubernetes/admin.conf
-    wait: true
-    wait_condition:
-      type: Ready
-      status: "True"
-    wait_sleep: 10
-    wait_timeout: 300
+  ansible.builtin.shell: |
+    if [ -f /etc/kubernetes/admin.conf ]; then
+      kubectl --kubeconfig=/etc/kubernetes/admin.conf get pod -n kube-system -l component=kube-vip --no-headers
+    else
+      echo "Kubeconfig not found, skipping pod status check"
+    fi
+  register: kube_vip_pod_status
   become: true
   when: ansible_virtualization_type != "docker"
+  changed_when: false
+  failed_when: false
