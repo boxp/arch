@@ -1,0 +1,51 @@
+---
+# defaults file for kubernetes_components
+
+# Kubernetes version to install
+kubernetes_version: "1.28"
+kubernetes_package_version: "1.28.2-1.1"
+
+# CRI-O version to install
+crio_version: "1.28"
+
+# Network configuration for kubelet
+kubelet_node_ip: ""  # Will be auto-detected if empty
+kubelet_cluster_dns: "10.96.0.10"
+kubelet_cluster_domain: "cluster.local"
+
+# Container runtime configuration
+container_runtime: "cri-o"
+
+# System configuration
+kubernetes_disable_swap: true
+kubernetes_enable_modules: true
+
+# Repository configuration
+kubernetes_apt_key_url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key"
+kubernetes_apt_repository: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/"
+crio_apt_key_url: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_22.04/Release.key"
+crio_apt_repository: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable/xUbuntu_22.04/"
+crio_version_apt_key_url: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ crio_version }}/xUbuntu_22.04/Release.key"
+crio_version_apt_repository: "https://download.opensuse.org/repositories/devel:/kubic:/libcontainers:/stable:/cri-o:/{{ crio_version }}/xUbuntu_22.04/"
+
+# Packages to install
+kubernetes_packages:
+  - kubelet={{ kubernetes_package_version }}
+  - kubeadm={{ kubernetes_package_version }}
+  - kubectl={{ kubernetes_package_version }}
+
+# Services to enable
+kubernetes_services:
+  - kubelet
+  - crio
+
+# Kernel modules for container runtime
+kernel_modules:
+  - overlay
+  - br_netfilter
+
+# Sysctl parameters for Kubernetes
+sysctl_config:
+  net.bridge.bridge-nf-call-iptables: 1
+  net.bridge.bridge-nf-call-ip6tables: 1
+  net.ipv4.ip_forward: 1

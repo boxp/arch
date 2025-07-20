@@ -1,0 +1,6 @@
+---
+- name: Test kubernetes_components role
+  hosts: localhost
+  remote_user: root
+  roles:
+    - kubernetes_components

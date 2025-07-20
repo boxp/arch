@@ -1,0 +1,45 @@
+---
+# Kubernetes installation tasks
+
+- name: Add Kubernetes repository key
+  ansible.builtin.apt_key:
+    url: "{{ kubernetes_apt_key_url }}"
+    state: present
+  become: true
+
+- name: Add Kubernetes repository
+  ansible.builtin.apt_repository:
+    repo: "deb {{ kubernetes_apt_repository }} /"
+    state: present
+    filename: kubernetes
+    update_cache: true
+  become: true
+
+- name: Install Kubernetes packages
+  ansible.builtin.package:
+    name: "{{ kubernetes_packages }}"
+    state: present
+    allow_downgrade: true
+  become: true
+  notify: Restart kubelet
+
+- name: Hold Kubernetes packages to prevent automatic updates
+  ansible.builtin.dpkg_selections:
+    name: "{{ item.split('=')[0] }}"
+    selection: hold
+  become: true
+  loop: "{{ kubernetes_packages }}"
+
+- name: Create kubelet configuration directory
+  ansible.builtin.file:
+    path: /etc/kubernetes
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Enable kubelet service
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    daemon_reload: true
+  become: true
