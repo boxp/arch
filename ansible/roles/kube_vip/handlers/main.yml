@@ -1,0 +1,24 @@
+---
+# handlers file for kube_vip
+
+- name: Wait for kube-vip pod
+  ansible.builtin.wait_for:
+    path: "{{ kube_vip_manifest_dir }}/kube-vip.yaml"
+    state: present
+  become: true
+
+- name: Check kube-vip pod status
+  kubernetes.core.k8s_info:
+    api_version: v1
+    kind: Pod
+    name: kube-vip
+    namespace: kube-system
+    kubeconfig: /etc/kubernetes/admin.conf
+    wait: true
+    wait_condition:
+      type: Ready
+      status: "True"
+    wait_sleep: 10
+    wait_timeout: 300
+  become: true
+  when: ansible_virtualization_type != "docker"
