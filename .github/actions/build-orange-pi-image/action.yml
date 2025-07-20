@@ -23,51 +23,54 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y git wget build-essential python3-distutils
+        sudo apt-get install -y wget xz-utils kpartx
 
-    - name: Clone Armbian build framework
+    - name: Download Orange Pi Zero 3 server image
       shell: bash
       run: |
-        git clone --depth=1 https://github.com/armbian/build armbian-build
-
-    - name: Copy userpatches
-      shell: bash
-      run: |
-        cp -r armbian-build/userpatches ./armbian-build/
-
-    - name: Build base Orange Pi Zero 3 image
-      shell: bash
-      run: |
-        cd armbian-build
-        ./compile.sh \
-          BOARD=orangepizero3 \
-          BRANCH=current \
-          RELEASE=jammy \
-          BUILD_MINIMAL=no \
-          BUILD_DESKTOP=no \
-          KERNEL_CONFIGURE=no \
-          COMPRESS_OUTPUTIMAGE=xz
+        # Download latest Orange Pi Zero 3 server image from Armbian
+        ARMBIAN_VERSION="24.11.1"
+        IMAGE_NAME="Armbian_${ARMBIAN_VERSION}_Orangepizero3_jammy_current_6.6.63_server.img.xz"
+        DOWNLOAD_URL="https://dl.armbian.com/orangepizero3/Jammy_current_server/${IMAGE_NAME}"
+        
+        echo "Downloading Orange Pi Zero 3 server image..."
+        wget -O "${IMAGE_NAME}" "${DOWNLOAD_URL}"
+        
+        # Verify download
+        if [ ! -f "${IMAGE_NAME}" ]; then
+          echo "Error: Failed to download image"
+          exit 1
+        fi
+        
+        echo "Downloaded: ${IMAGE_NAME}"
 
     - name: Extract and customize image for node
       shell: bash
       run: |
-        # Find the built image
-        IMAGE_FILE=$(find armbian-build/output/images -name "Armbian_*_Orangepizero3_*.img.xz" | head -n1)
+        # Find the downloaded image
+        IMAGE_FILE=$(find . -name "Armbian_*_Orangepizero3_*.img.xz" | head -n1)
         if [ -z "$IMAGE_FILE" ]; then
           echo "Error: No image file found"
           exit 1
         fi
+        
+        echo "Using image: $IMAGE_FILE"
         
         # Extract image
         xz -d "$IMAGE_FILE"
         IMG_FILE="${IMAGE_FILE%.xz}"
         
         # Create loop device
-        sudo losetup -P /dev/loop0 "$IMG_FILE"
+        LOOP_DEVICE=$(sudo losetup -f --show "$IMG_FILE")
+        echo "Loop device: $LOOP_DEVICE"
+        
+        # Wait for partitions to be available
+        sleep 2
+        sudo partprobe "$LOOP_DEVICE"
         
         # Mount root partition
         sudo mkdir -p /mnt/orangepi
-        sudo mount /dev/loop0p1 /mnt/orangepi
+        sudo mount "${LOOP_DEVICE}p1" /mnt/orangepi
         
         # Apply common control-plane configuration first
         cd ansible
@@ -88,7 +91,7 @@ runs:
         
         # Cleanup
         sudo umount /mnt/orangepi
-        sudo losetup -d /dev/loop0
+        sudo losetup -d "$LOOP_DEVICE"
         
         # Compress customized image
         xz -9 "$IMG_FILE"
@@ -107,7 +110,7 @@ runs:
           "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
           "image_file": "$FINAL_IMAGE",
           "checksum_file": "${FINAL_IMAGE}.sha256",
-          "armbian_version": "$(cat armbian-build/VERSION)",
+          "armbian_version": "24.11.1",
           "github_sha": "$GITHUB_SHA"
         }
         EOF
