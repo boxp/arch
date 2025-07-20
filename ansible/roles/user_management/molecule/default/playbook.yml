@@ -1,9 +1,0 @@
----
-- name: Converge
-  hosts: all
-  become: true
-  roles:
-    - role: "../../../user_management"
-      vars:
-        user_management_use_github_keys: true
-        user_management_github_username: "boxp"
