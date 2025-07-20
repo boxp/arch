@@ -1,0 +1,34 @@
+---
+galaxy_info:
+  role_name: kube_vip
+  namespace: orangepi
+  author: Orange Pi Zero 3 Infrastructure Team
+  description: Ansible role for deploying kube-vip for high availability VIP management on Orange Pi Zero 3 Kubernetes clusters
+  company: Personal Infrastructure
+  
+  license: MIT
+  
+  min_ansible_version: "2.12"
+  
+  platforms:
+    - name: Ubuntu
+      versions:
+        - "22.04"
+    - name: Debian
+      versions:
+        - "11"
+        - "12"
+  
+  galaxy_tags:
+    - kubernetes
+    - ha
+    - vip
+    - load-balancer
+    - orange-pi
+    - arm64
+
+dependencies: []
+
+collections:
+  - kubernetes.core
+  - community.general

@@ -1,0 +1,49 @@
+---
+# Main tasks file for kube_vip
+
+- name: Validate required variables
+  ansible.builtin.assert:
+    that:
+      - kube_vip_vip is defined
+      - kube_vip_vip != ""
+    fail_msg: "kube_vip_vip must be set to a valid IP address"
+
+- name: Include network interface detection
+  ansible.builtin.include_tasks: detect_interface.yml
+  when: 
+    - kube_vip_auto_detect_interface
+    - kube_vip_interface == ""
+
+- name: Validate network interface
+  ansible.builtin.assert:
+    that:
+      - kube_vip_interface is defined
+      - kube_vip_interface != ""
+    fail_msg: "kube_vip_interface must be set or auto-detected"
+
+- name: Create kube-vip configuration directory
+  ansible.builtin.file:
+    path: "{{ kube_vip_config_dir }}"
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Check if kubeconfig exists
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeconfig_stat
+
+- name: Deploy kube-vip static pod manifest
+  ansible.builtin.template:
+    src: kube-vip.yaml.j2
+    dest: "{{ kube_vip_manifest_dir }}/kube-vip.yaml"
+    mode: '0644'
+  become: true
+  when: kubeconfig_stat.stat.exists
+  notify: Wait for kube-vip pod
+
+- name: Create RBAC resources for kube-vip
+  ansible.builtin.include_tasks: rbac.yml
+  when: 
+    - kube_vip_rbac_create
+    - kubeconfig_stat.stat.exists
