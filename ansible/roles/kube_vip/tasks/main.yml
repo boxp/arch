@@ -10,7 +10,7 @@
 
 - name: Include network interface detection
   ansible.builtin.include_tasks: detect_interface.yml
-  when: 
+  when:
     - kube_vip_auto_detect_interface
     - kube_vip_interface == ""
 
@@ -44,6 +44,6 @@
 
 - name: Create RBAC resources for kube-vip
   ansible.builtin.include_tasks: rbac.yml
-  when: 
+  when:
     - kube_vip_rbac_create
     - kubeconfig_stat.stat.exists
