@@ -1,16 +1,3 @@
-terraform {
-  required_providers {
-    aws = {
-      source  = "hashicorp/aws"
-      version = "~> 5.0"
-    }
-  }
-}
-
-provider "aws" {
-  region = "ap-northeast-1"
-}
-
 # S3 bucket for storing Orange Pi images
 resource "aws_s3_bucket" "orange_pi_images" {
   bucket = "arch-orange-pi-images-${random_id.bucket_suffix.hex}"
