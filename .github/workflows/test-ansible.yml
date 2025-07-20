@@ -1,23 +1,31 @@
-name: Ansible Lint
+name: Test Ansible
 
 on:
   pull_request:
     paths:
       - 'ansible/**'
-      - '.github/workflows/ansible-lint.yml'
+      - '.github/workflows/test-ansible.yml'
   push:
     branches:
       - main
     paths:
       - 'ansible/**'
-      - '.github/workflows/ansible-lint.yml'
+      - '.github/workflows/test-ansible.yml'
 
 jobs:
-  lint:
+  test:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Set up Python
         uses: actions/setup-python@v5

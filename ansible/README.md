@@ -72,7 +72,7 @@ ansible-playbook playbooks/control-plane.yml --tags network
 
 ### Test with Molecule
 
-Each role includes Molecule tests for TDD:
+Each role includes Molecule tests for TDD with Orange Pi Zero 3 simulation:
 
 ```bash
 cd ansible/roles/user_management
@@ -80,11 +80,14 @@ source ../../.venv/bin/activate
 molecule test
 ```
 
+**Note**: Tests simulate Orange Pi Zero 3 environment using Debian containers with ARM64-compatible settings and hardware simulation.
+
 ## Roles
 
 ### user_management
 - Creates `boxp` user with sudo privileges
-- Configures SSH access with public key
+- **GitHub Integration**: Automatically fetches SSH keys from `github.com/{username}.keys`
+- **Manual Option**: Supports manual SSH key configuration
 - Sets up passwordless sudo
 
 ### network_configuration
@@ -111,7 +114,20 @@ GitHub Actions workflow runs on every PR:
 ## Variables
 
 Key variables to configure in `group_vars/control_plane.yml`:
-- `user_management_ssh_key`: SSH public key for boxp user
+
+### GitHub SSH Key Integration (Recommended)
+```yaml
+user_management_use_github_keys: true
+user_management_github_username: "boxp"
+```
+
+### Manual SSH Key (Alternative)
+```yaml
+user_management_use_github_keys: false
+user_management_ssh_key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... boxp@example.com"
+```
+
+### Other Variables
 - `kubernetes_version`: Kubernetes version to install
 - `crio_version`: CRI-O version to install
 - `cluster_vip`: Virtual IP for kube-vip

@@ -1,3 +1,7 @@
 ---
-# SSH key for boxp user - replace with actual public key
-user_management_ssh_key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... boxp@example.com"
+# GitHub integration for SSH keys
+user_management_use_github_keys: true
+user_management_github_username: "boxp"
+
+# Alternative: Manual SSH key (used when use_github_keys is false)
+# user_management_ssh_key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... boxp@example.com"
