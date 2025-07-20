@@ -55,7 +55,7 @@ jobs:
           
           # Extract unique role names from changed files
           CHANGED_ROLES=""
-          if [ ! -z "$CHANGED_FILES" ]; then
+          if [ -n "$CHANGED_FILES" ]; then
             CHANGED_ROLES=$(echo "$CHANGED_FILES" | sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u)
           fi
           
@@ -63,9 +63,11 @@ jobs:
           echo "changed-roles=$CHANGED_ROLES"
           
           # Set output for use in next step
-          echo "roles<<EOF" >> $GITHUB_OUTPUT
-          echo "$CHANGED_ROLES" >> $GITHUB_OUTPUT
-          echo "EOF" >> $GITHUB_OUTPUT
+          {
+            echo "roles<<EOF"
+            echo "$CHANGED_ROLES"
+            echo "EOF"
+          } >> $GITHUB_OUTPUT
 
       - name: Run Molecule tests for changed roles
         run: |
