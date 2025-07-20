@@ -28,12 +28,11 @@ runs:
     - name: Download Orange Pi Zero 3 server image
       shell: bash
       run: |
-        # Download latest Orange Pi Zero 3 server image from Armbian
-        ARMBIAN_VERSION="24.11.1"
-        IMAGE_NAME="Armbian_${ARMBIAN_VERSION}_Orangepizero3_jammy_current_6.6.63_server.img.xz"
-        DOWNLOAD_URL="https://dl.armbian.com/orangepizero3/Jammy_current_server/${IMAGE_NAME}"
+        # Download latest Orange Pi Zero 3 Noble server image
+        IMAGE_NAME="Armbian_25.5.1_Orangepizero3_noble_current_6.12.23.img.xz"
+        DOWNLOAD_URL="https://dl.armbian.com/orangepizero3/Noble_current_server/${IMAGE_NAME}"
         
-        echo "Downloading Orange Pi Zero 3 server image..."
+        echo "Downloading Orange Pi Zero 3 Noble server image..."
         wget -O "${IMAGE_NAME}" "${DOWNLOAD_URL}"
         
         # Verify download
@@ -110,7 +109,7 @@ runs:
           "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
           "image_file": "$FINAL_IMAGE",
           "checksum_file": "${FINAL_IMAGE}.sha256",
-          "armbian_version": "24.11.1",
+          "armbian_version": "25.5.1",
           "github_sha": "$GITHUB_SHA"
         }
         EOF
