@@ -1,0 +1,136 @@
+name: 'Build Orange Pi Image'
+description: 'Build customized Orange Pi Zero 3 image for specific node'
+inputs:
+  node_name:
+    description: 'Name of the node (e.g., shanghai-1)'
+    required: true
+  aws_role_arn:
+    description: 'AWS IAM role ARN for S3 access'
+    required: true
+  s3_bucket:
+    description: 'S3 bucket name for storing images'
+    required: true
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Set up QEMU for ARM64 emulation
+      uses: docker/setup-qemu-action@v3
+      with:
+        platforms: linux/arm64
+
+    - name: Install dependencies
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y git wget build-essential python3-distutils
+
+    - name: Clone Armbian build framework
+      shell: bash
+      run: |
+        git clone --depth=1 https://github.com/armbian/build armbian-build
+
+    - name: Copy userpatches
+      shell: bash
+      run: |
+        cp -r armbian-build/userpatches ./armbian-build/
+
+    - name: Build base Orange Pi Zero 3 image
+      shell: bash
+      run: |
+        cd armbian-build
+        ./compile.sh \
+          BOARD=orangepizero3 \
+          BRANCH=current \
+          RELEASE=jammy \
+          BUILD_MINIMAL=no \
+          BUILD_DESKTOP=no \
+          KERNEL_CONFIGURE=no \
+          COMPRESS_OUTPUTIMAGE=xz
+
+    - name: Extract and customize image for node
+      shell: bash
+      run: |
+        # Find the built image
+        IMAGE_FILE=$(find armbian-build/output/images -name "Armbian_*_Orangepizero3_*.img.xz" | head -n1)
+        if [ -z "$IMAGE_FILE" ]; then
+          echo "Error: No image file found"
+          exit 1
+        fi
+        
+        # Extract image
+        xz -d "$IMAGE_FILE"
+        IMG_FILE="${IMAGE_FILE%.xz}"
+        
+        # Create loop device
+        sudo losetup -P /dev/loop0 "$IMG_FILE"
+        
+        # Mount root partition
+        sudo mkdir -p /mnt/orangepi
+        sudo mount /dev/loop0p1 /mnt/orangepi
+        
+        # Apply node-specific Ansible configuration
+        cd ansible
+        sudo ansible-playbook \
+          -i localhost, \
+          -c local \
+          -e ansible_host=localhost \
+          -e target_mount=/mnt/orangepi \
+          playbooks/node-${{ inputs.node_name }}.yml
+        
+        # Cleanup
+        sudo umount /mnt/orangepi
+        sudo losetup -d /dev/loop0
+        
+        # Compress customized image
+        xz -9 "$IMG_FILE"
+        
+        # Create final image name
+        FINAL_IMAGE="orangepi-zero3-${{ inputs.node_name }}.img.xz"
+        mv "${IMG_FILE}.xz" "$FINAL_IMAGE"
+        
+        # Generate checksum
+        sha256sum "$FINAL_IMAGE" > "${FINAL_IMAGE}.sha256"
+        
+        # Create image info
+        cat > image-info.json << EOF
+        {
+          "node_name": "${{ inputs.node_name }}",
+          "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+          "image_file": "$FINAL_IMAGE",
+          "checksum_file": "${FINAL_IMAGE}.sha256",
+          "armbian_version": "$(cat armbian-build/VERSION)",
+          "github_sha": "${{ github.sha }}"
+        }
+        EOF
+
+    - name: Configure AWS credentials
+      uses: aws-actions/configure-aws-credentials@v4
+      with:
+        role-to-assume: ${{ inputs.aws_role_arn }}
+        aws-region: ap-northeast-1
+
+    - name: Upload to S3
+      shell: bash
+      run: |
+        # Upload image file
+        aws s3 cp "orangepi-zero3-${{ inputs.node_name }}.img.xz" \
+          "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/"
+        
+        # Upload checksum
+        aws s3 cp "orangepi-zero3-${{ inputs.node_name }}.img.xz.sha256" \
+          "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/"
+        
+        # Upload image info
+        aws s3 cp image-info.json \
+          "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/"
+        
+        # Create latest symlink
+        aws s3 cp "orangepi-zero3-${{ inputs.node_name }}.img.xz" \
+          "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/latest.img.xz"
+        
+        # Set metadata
+        aws s3api put-object-tagging \
+          --bucket "${{ inputs.s3_bucket }}" \
+          --key "images/orange-pi-zero3/${{ inputs.node_name }}/orangepi-zero3-${{ inputs.node_name }}.img.xz" \
+          --tagging "TagSet=[{Key=NodeName,Value=${{ inputs.node_name }}},{Key=BuildDate,Value=$(date +%Y-%m-%d)},{Key=GitSHA,Value=${{ github.sha }}}]"
