@@ -1,0 +1,14 @@
+---
+- name: Configure control plane nodes
+  hosts: control_plane
+  become: true
+  gather_facts: true
+  roles:
+    - role: user_management
+      tags: users
+
+    - role: network_configuration
+      tags: network
+      vars:
+        network_ip_address: "{{ node_ip }}"
+        network_gateway: "192.168.10.1"

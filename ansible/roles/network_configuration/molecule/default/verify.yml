@@ -1,0 +1,51 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Check if network configuration file exists
+      ansible.builtin.stat:
+        path: /etc/network/interfaces.d/eth0
+      register: network_config
+
+    - name: Assert network configuration exists
+      ansible.builtin.assert:
+        that:
+          - network_config.stat.exists
+        fail_msg: "Network configuration file does not exist"
+
+    - name: Read network configuration
+      ansible.builtin.slurp:
+        src: /etc/network/interfaces.d/eth0
+      register: network_content
+
+    - name: Decode network configuration
+      ansible.builtin.set_fact:
+        network_config_content: "{{ network_content.content | b64decode }}"
+
+    - name: Assert static IP configuration
+      ansible.builtin.assert:
+        that:
+          - "'iface eth0 inet static' in network_config_content"
+          - "'address 192.168.10.' in network_config_content"
+        fail_msg: "Static IP configuration not found"
+
+    - name: Check if WiFi is disabled
+      ansible.builtin.command: rfkill list wifi
+      register: wifi_status
+      changed_when: false
+      failed_when: false
+
+    - name: Check if Bluetooth is disabled
+      ansible.builtin.command: rfkill list bluetooth
+      register: bt_status
+      changed_when: false
+      failed_when: false
+
+    - name: Assert WiFi and Bluetooth are blocked
+      ansible.builtin.assert:
+        that:
+          - wifi_status.rc != 0 or 'blocked: yes' in wifi_status.stdout
+          - bt_status.rc != 0 or 'blocked: yes' in bt_status.stdout
+        fail_msg: "WiFi or Bluetooth is not disabled"
+      when: wifi_status.rc == 0 or bt_status.rc == 0

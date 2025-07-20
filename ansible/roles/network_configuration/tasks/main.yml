@@ -1,0 +1,81 @@
+---
+# tasks file for network_configuration
+
+- name: Ensure IP address is provided
+  ansible.builtin.fail:
+    msg: "network_ip_address must be provided"
+  when: network_ip_address == ""
+
+- name: Ensure gateway is provided
+  ansible.builtin.fail:
+    msg: "network_gateway must be provided"
+  when: network_gateway == ""
+
+- name: Install required packages
+  ansible.builtin.package:
+    name:
+      - iproute2
+      - rfkill
+    state: present
+  become: true
+
+- name: Ensure network interfaces directory exists
+  ansible.builtin.file:
+    path: /etc/network/interfaces.d
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Configure static IP for {{ network_interface }}
+  ansible.builtin.template:
+    src: interface.j2
+    dest: "/etc/network/interfaces.d/{{ network_interface }}"
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  notify: Restart networking
+
+- name: Disable WiFi
+  ansible.builtin.command: rfkill block wifi
+  become: true
+  when: network_disable_wifi
+  changed_when: true
+  failed_when: false
+
+- name: Disable Bluetooth
+  ansible.builtin.command: rfkill block bluetooth
+  become: true
+  when: network_disable_bluetooth
+  changed_when: true
+  failed_when: false
+
+- name: Create systemd service to disable WiFi and Bluetooth on boot
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/disable-wireless.service
+    content: |
+      [Unit]
+      Description=Disable WiFi and Bluetooth
+      After=multi-user.target
+
+      [Service]
+      Type=oneshot
+      RemainAfterExit=yes
+      ExecStart=/usr/sbin/rfkill block wifi
+      ExecStart=/usr/sbin/rfkill block bluetooth
+
+      [Install]
+      WantedBy=multi-user.target
+    owner: root
+    group: root
+    mode: '0644'
+  become: true
+  when: network_disable_wifi or network_disable_bluetooth
+
+- name: Enable disable-wireless service
+  ansible.builtin.systemd:
+    name: disable-wireless
+    enabled: true
+    daemon_reload: true
+  become: true
+  when: network_disable_wifi or network_disable_bluetooth

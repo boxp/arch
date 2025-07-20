@@ -1,0 +1,7 @@
+---
+- name: Converge
+  hosts: all
+  tasks:
+    - name: "Include user_management"
+      ansible.builtin.include_role:
+        name: "arch.user_management"
