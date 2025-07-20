@@ -7,6 +7,8 @@ platforms:
   - name: instance
     # Use systemd-enabled image that simulates Orange Pi Zero 3 environment
     image: "geerlingguy/docker-debian11-ansible:latest"
+    # Use ARM64 platform in CI, native platform locally for development
+    platform: "${MOLECULE_DOCKER_PLATFORM:-linux/amd64}"
     pre_build_image: true
     privileged: true
     volumes:

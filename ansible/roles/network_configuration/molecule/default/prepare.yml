@@ -42,7 +42,6 @@
     # Simulate Orange Pi Zero 3 hardware environment
     - name: Create mock rfkill devices for testing
       ansible.builtin.shell: |
-        # Create mock rfkill files if they don't exist
         mkdir -p /sys/class/rfkill/rfkill0
         mkdir -p /sys/class/rfkill/rfkill1
         echo "wlan" > /sys/class/rfkill/rfkill0/type || true

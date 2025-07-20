@@ -27,6 +27,19 @@
 - `trivy config .` - terraform設定のセキュリティスキャン
 - `actionlint` - GitHub Actionsワークフローをリント
 - `ghalint run` - GitHub Actionsワークフローリンティング
+- `cd ansible && uv run ansible-lint` - Ansibleプレイブック/ロールをリント
+
+### コミット前の必須チェック
+**重要**: コミット前に必ず以下のlintチェックを実行してください：
+- Terraformの場合: `terraform fmt && terraform validate && tflint`
+- Ansibleの場合: `cd ansible && uv run ansible-lint`
+- GitHub Actionsの場合: `actionlint && ghalint run`
+- 全体的なセキュリティチェック: `trivy config .`
+
+### Ansible Moleculeテスト
+- **ローカル環境**: `cd ansible/roles/[role_name] && molecule test` (x86_64環境で実行)
+- **ARM64シミュレーション**: `MOLECULE_DOCKER_PLATFORM=linux/arm64 molecule test` (Orange Pi Zero 3環境をエミュレート)
+- CIでは自動的にARM64プラットフォームが使用されます
 
 ### TFActionワークフロー
 - TFActionはGitHub Actions経由でterraform操作を自動処理

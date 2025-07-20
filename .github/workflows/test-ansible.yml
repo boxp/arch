@@ -37,24 +37,65 @@ jobs:
 
       - name: Install dependencies
         run: |
-          cd ansible
+          cd "ansible"
           uv sync
 
       - name: Run ansible-lint
         run: |
-          cd ansible
+          cd "ansible"
           source .venv/bin/activate
           ansible-lint
 
-      - name: Run Molecule tests
+      - name: Detect changed roles
+        id: changed-roles
         run: |
-          cd ansible
+          cd "ansible"
+          # Get list of changed ansible role files
+          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | grep "^ansible/roles/" || true)
+          
+          # Extract unique role names from changed files
+          CHANGED_ROLES=""
+          if [ -n "$CHANGED_FILES" ]; then
+            CHANGED_ROLES=$(echo "$CHANGED_FILES" | sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u)
+          fi
+          
+          echo "changed-files=$CHANGED_FILES"
+          echo "changed-roles=$CHANGED_ROLES"
+          
+          # Set output for use in next step
+          {
+            echo "roles<<EOF"
+            printf '%s\n' "$CHANGED_ROLES"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Run Molecule tests for changed roles
+        run: |
+          cd "ansible"
           source .venv/bin/activate
-          for role in roles/*/; do
-            if [ -d "$role/molecule" ]; then
-              echo "Testing role: $role"
-              cd "$role"
-              molecule test
+          
+          # Get changed roles from previous step
+          CHANGED_ROLES="${{ steps.changed-roles.outputs.roles }}"
+          
+          if [ -z "$CHANGED_ROLES" ]; then
+            echo "No Ansible roles changed, skipping Molecule tests"
+            exit 0
+          fi
+          
+          echo "Testing changed roles: $CHANGED_ROLES"
+          
+          # Test each changed role  
+          # Convert to array to handle spaces properly
+          read -ra ROLE_ARRAY <<< "$CHANGED_ROLES"
+          for role in "${ROLE_ARRAY[@]}"; do
+            role_path="roles/$role"
+            if [ -d "$role_path/molecule" ]; then
+              echo "Testing role: $role_path"
+              cd "$role_path"
+              # Set ARM64 platform for CI Orange Pi Zero 3 simulation
+              MOLECULE_DOCKER_PLATFORM=linux/arm64 molecule test
               cd - > /dev/null
+            else
+              echo "No molecule tests found for role: $role_path"
             fi
           done

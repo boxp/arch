@@ -36,17 +36,37 @@
   become: true
   notify: Restart networking
 
+- name: Check WiFi status
+  ansible.builtin.shell: |
+    set -o pipefail
+    rfkill list wifi | grep -q 'Soft blocked: no' || true
+  register: wifi_status
+  become: true
+  when: network_disable_wifi
+  changed_when: false
+  failed_when: false
+
 - name: Disable WiFi
   ansible.builtin.command: rfkill block wifi
   become: true
-  when: network_disable_wifi
+  when: network_disable_wifi and wifi_status.rc == 0
   changed_when: true
+  failed_when: false
+
+- name: Check Bluetooth status
+  ansible.builtin.shell: |
+    set -o pipefail
+    rfkill list bluetooth | grep -q 'Soft blocked: no' || true
+  register: bluetooth_status
+  become: true
+  when: network_disable_bluetooth
+  changed_when: false
   failed_when: false
 
 - name: Disable Bluetooth
   ansible.builtin.command: rfkill block bluetooth
   become: true
-  when: network_disable_bluetooth
+  when: network_disable_bluetooth and bluetooth_status.rc == 0
   changed_when: true
   failed_when: false
 

@@ -6,3 +6,4 @@
     name: networking
     state: restarted
   become: true
+  when: ansible_virtualization_type != "docker"
