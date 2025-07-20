@@ -1,0 +1,65 @@
+---
+- name: Prepare Orange Pi Zero 3 simulation environment
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Update package cache
+      ansible.builtin.package:
+        update_cache: true
+      become: true
+
+    - name: Install required packages for Orange Pi Zero 3 simulation
+      ansible.builtin.package:
+        name:
+          - systemd
+          - dbus
+          - init
+          - iproute2
+          - kmod
+          - procps
+          - curl
+          - gnupg
+          - ca-certificates
+        state: present
+      become: true
+
+    - name: Create kernel modules directory
+      ansible.builtin.file:
+        path: /lib/modules
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Ensure systemd is running
+      ansible.builtin.systemd:
+        name: systemd-logind
+        state: started
+      become: true
+      failed_when: false
+
+    - name: Create SSH host keys
+      ansible.builtin.command: ssh-keygen -A
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: Create mock kernel modules for testing
+      ansible.builtin.shell: |
+        set -o pipefail
+        mkdir -p /lib/modules/$(uname -r)
+        touch /lib/modules/$(uname -r)/modules.dep
+        touch /lib/modules/$(uname -r)/modules.symbols
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: Mock modprobe for container environment
+      ansible.builtin.copy:
+        dest: /usr/local/bin/modprobe
+        content: |
+          #!/bin/bash
+          # Mock modprobe for container testing
+          echo "Mock modprobe: $*"
+          exit 0
+        mode: '0755'
+      become: true

@@ -1,0 +1,51 @@
+---
+# Kubelet configuration tasks
+
+- name: Detect node IP address
+  ansible.builtin.set_fact:
+    detected_node_ip: "{{ ansible_default_ipv4.address }}"
+  when: kubelet_node_ip == ""
+
+- name: Use configured node IP
+  ansible.builtin.set_fact:
+    detected_node_ip: "{{ kubelet_node_ip }}"
+  when: kubelet_node_ip != ""
+
+- name: Create kubelet configuration directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/kubelet.service.d
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Configure kubelet with CRI-O
+  ansible.builtin.template:
+    src: kubelet-config.yaml.j2
+    dest: /etc/kubernetes/kubelet-config.yaml
+    mode: '0644'
+  become: true
+  notify: Restart kubelet
+
+- name: Create kubelet systemd drop-in directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/kubelet.service.d
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Configure kubelet systemd service
+  ansible.builtin.template:
+    src: 10-kubeadm.conf.j2
+    dest: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+    mode: '0644'
+  become: true
+  notify:
+    - Reload systemd
+    - Restart kubelet
+
+- name: Ensure kubelet is enabled
+  ansible.builtin.systemd:
+    name: kubelet
+    enabled: true
+    daemon_reload: true
+  become: true

@@ -1,0 +1,25 @@
+---
+galaxy_info:
+  author: boxp
+  description: Install and configure Kubernetes components (kubeadm, kubelet, cri-o) for Orange Pi Zero 3
+  company: Personal
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - focal
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+  galaxy_tags:
+    - kubernetes
+    - container
+    - orchestration
+    - crio
+    - kubeadm
+    - kubelet
+
+dependencies: []

@@ -1,0 +1,30 @@
+---
+# handlers file for kubernetes_components
+
+- name: Reload sysctl
+  ansible.builtin.command: sysctl --system
+  become: true
+  changed_when: true
+  listen: "Reload sysctl"
+
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+  become: true
+  listen: "Reload systemd"
+
+- name: Restart crio
+  ansible.builtin.systemd:
+    name: crio
+    state: restarted
+  become: true
+  when: ansible_virtualization_type != "docker"
+  listen: "Restart crio"
+
+- name: Restart kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+  become: true
+  when: ansible_virtualization_type != "docker"
+  listen: "Restart kubelet"

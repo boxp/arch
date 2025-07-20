@@ -1,0 +1,76 @@
+---
+# CRI-O installation and configuration tasks
+
+- name: Install dependencies for CRI-O
+  ansible.builtin.package:
+    name:
+      - curl
+      - gnupg
+      - software-properties-common
+      - apt-transport-https
+      - ca-certificates
+    state: present
+  become: true
+
+- name: Add CRI-O repository key
+  ansible.builtin.apt_key:
+    url: "{{ crio_apt_key_url }}"
+    state: present
+  become: true
+
+- name: Add CRI-O version-specific repository key
+  ansible.builtin.apt_key:
+    url: "{{ crio_version_apt_key_url }}"
+    state: present
+  become: true
+
+- name: Add CRI-O repository
+  ansible.builtin.apt_repository:
+    repo: "deb {{ crio_apt_repository }} /"
+    state: present
+    filename: crio
+    update_cache: true
+  become: true
+
+- name: Add CRI-O version-specific repository
+  ansible.builtin.apt_repository:
+    repo: "deb {{ crio_version_apt_repository }} /"
+    state: present
+    filename: crio-version
+    update_cache: true
+  become: true
+
+- name: Install CRI-O packages
+  ansible.builtin.package:
+    name:
+      - cri-o
+    state: present
+  become: true
+  notify: Restart crio
+
+- name: Create CRI-O configuration directory
+  ansible.builtin.file:
+    path: /etc/crio/crio.conf.d
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Configure CRI-O for systemd cgroup driver
+  ansible.builtin.copy:
+    dest: /etc/crio/crio.conf.d/02-cgroup-manager.conf
+    content: |
+      [crio.runtime]
+      conmon_cgroup = "systemd"
+      cgroup_manager = "systemd"
+    mode: '0644'
+  become: true
+  notify: Restart crio
+
+- name: Enable and start CRI-O service
+  ansible.builtin.systemd:
+    name: crio
+    enabled: true
+    state: started
+    daemon_reload: true
+  become: true
+  when: not ansible_virtualization_type == "docker"

@@ -1,0 +1,10 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  roles:
+    - role: ../../../../kubernetes_components
+  vars:
+    # Test-specific overrides for container environment
+    kubernetes_disable_swap: false  # Skip swap operations in container
+    kubernetes_enable_modules: false  # Skip module loading in container

@@ -1,0 +1,112 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Check if CRI-O is installed
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Assert CRI-O packages are installed
+      ansible.builtin.assert:
+        that:
+          - "'cri-o' in ansible_facts.packages"
+          - "'cri-tools' in ansible_facts.packages"
+        fail_msg: "CRI-O packages are not installed"
+
+    - name: Check if Kubernetes packages are installed
+      ansible.builtin.assert:
+        that:
+          - "'kubelet' in ansible_facts.packages"
+          - "'kubeadm' in ansible_facts.packages"
+          - "'kubectl' in ansible_facts.packages"
+        fail_msg: "Kubernetes packages are not installed"
+
+    - name: Check if CRI-O configuration exists
+      ansible.builtin.stat:
+        path: /etc/crio/crio.conf.d/02-cgroup-manager.conf
+      register: crio_config
+
+    - name: Assert CRI-O configuration exists
+      ansible.builtin.assert:
+        that:
+          - crio_config.stat.exists
+        fail_msg: "CRI-O configuration file does not exist"
+
+    - name: Check if kubelet configuration exists
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet-config.yaml
+      register: kubelet_config
+
+    - name: Assert kubelet configuration exists
+      ansible.builtin.assert:
+        that:
+          - kubelet_config.stat.exists
+        fail_msg: "Kubelet configuration file does not exist"
+
+    - name: Check if kubelet systemd configuration exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/kubelet.service.d/10-kubeadm.conf
+      register: kubelet_systemd
+
+    - name: Assert kubelet systemd configuration exists
+      ansible.builtin.assert:
+        that:
+          - kubelet_systemd.stat.exists
+        fail_msg: "Kubelet systemd configuration does not exist"
+
+    - name: Check if sysctl configuration exists
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/k8s.conf
+      register: sysctl_config
+
+    - name: Assert sysctl configuration exists
+      ansible.builtin.assert:
+        that:
+          - sysctl_config.stat.exists
+        fail_msg: "Kubernetes sysctl configuration does not exist"
+
+    - name: Check if kernel modules configuration exists
+      ansible.builtin.stat:
+        path: /etc/modules-load.d/k8s.conf
+      register: modules_config
+
+    - name: Check CRI-O service status
+      ansible.builtin.systemd:
+        name: crio
+      register: crio_service
+      failed_when: false
+
+    - name: Check kubelet service status
+      ansible.builtin.systemd:
+        name: kubelet
+      register: kubelet_service
+      failed_when: false
+
+    - name: Verify CRI-O socket exists
+      ansible.builtin.stat:
+        path: /var/run/crio/crio.sock
+      register: crio_socket
+      failed_when: false
+
+    - name: Check kubeadm version
+      ansible.builtin.command: kubeadm version -o short
+      register: kubeadm_version
+      changed_when: false
+
+    - name: Assert kubeadm version is correct
+      ansible.builtin.assert:
+        that:
+          - "'v1.32' in kubeadm_version.stdout"
+        fail_msg: "Kubeadm version is not as expected"
+
+    - name: Check kubectl version
+      ansible.builtin.command: kubectl version --client -o yaml
+      register: kubectl_version
+      changed_when: false
+
+    - name: Assert kubectl version is correct
+      ansible.builtin.assert:
+        that:
+          - "'1.32' in kubectl_version.stdout"
+        fail_msg: "Kubectl version is not as expected"

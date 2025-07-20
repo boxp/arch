@@ -1,0 +1,21 @@
+apiVersion: kubelet.config.k8s.io/v1beta1
+kind: KubeletConfiguration
+authentication:
+  anonymous:
+    enabled: false
+  webhook:
+    enabled: true
+  x509:
+    clientCAFile: /etc/kubernetes/pki/ca.crt
+authorization:
+  mode: Webhook
+clusterDNS:
+  - {{ kubelet_cluster_dns }}
+clusterDomain: {{ kubelet_cluster_domain }}
+containerRuntimeEndpoint: unix:///var/run/crio/crio.sock
+cgroupDriver: systemd
+failSwapOn: false
+serverTLSBootstrap: true
+{% if detected_node_ip is defined and detected_node_ip != "" %}
+nodeIP: {{ detected_node_ip }}
+{% endif %}
