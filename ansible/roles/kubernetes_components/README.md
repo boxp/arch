@@ -21,14 +21,14 @@ This role provides a complete setup for Kubernetes control plane components incl
 ## Role Variables
 
 ### Kubernetes Configuration
-- `kubernetes_version`: Kubernetes version to install (default: "1.28")
-- `kubernetes_package_version`: Specific package version (default: "1.28.2-1.1")
+- `kubernetes_version`: Kubernetes version to install (default: "1.32")
+- `kubernetes_package_version`: Specific package version (default: "1.32.0-1.1")
 - `kubelet_node_ip`: Node IP for kubelet (auto-detected if empty)
 - `kubelet_cluster_dns`: Cluster DNS server IP (default: "10.96.0.10")
 - `kubelet_cluster_domain`: Cluster domain (default: "cluster.local")
 
 ### CRI-O Configuration
-- `crio_version`: CRI-O version to install (default: "1.28")
+- `crio_version`: CRI-O version to install (default: "1.32")
 - `container_runtime`: Container runtime to use (default: "cri-o")
 
 ### System Configuration
@@ -47,7 +47,7 @@ None
   roles:
     - role: kubernetes_components
       vars:
-        kubernetes_version: "1.28"
+        kubernetes_version: "1.32"
         kubelet_node_ip: "192.168.1.100"
 ```
 

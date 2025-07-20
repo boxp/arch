@@ -97,7 +97,7 @@
     - name: Assert kubeadm version is correct
       ansible.builtin.assert:
         that:
-          - "'v1.28' in kubeadm_version.stdout"
+          - "'v1.32' in kubeadm_version.stdout"
         fail_msg: "Kubeadm version is not as expected"
 
     - name: Check kubectl version
@@ -108,5 +108,5 @@
     - name: Assert kubectl version is correct
       ansible.builtin.assert:
         that:
-          - "'1.28' in kubectl_version.stdout"
+          - "'1.32' in kubectl_version.stdout"
         fail_msg: "Kubectl version is not as expected"

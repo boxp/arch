@@ -2,11 +2,11 @@
 # defaults file for kubernetes_components
 
 # Kubernetes version to install
-kubernetes_version: "1.28"
-kubernetes_package_version: "1.28.2-1.1"
+kubernetes_version: "1.32"
+kubernetes_package_version: "1.32.0-1.1"
 
 # CRI-O version to install
-crio_version: "1.28"
+crio_version: "1.32"
 
 # Network configuration for kubelet
 kubelet_node_ip: ""  # Will be auto-detected if empty
