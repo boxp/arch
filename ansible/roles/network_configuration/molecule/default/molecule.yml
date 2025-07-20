@@ -7,6 +7,7 @@ platforms:
   - name: instance
     # Use systemd-enabled image that simulates Orange Pi Zero 3 environment
     image: "geerlingguy/docker-debian11-ansible:latest"
+    platform: "linux/arm64"
     pre_build_image: true
     privileged: true
     volumes:

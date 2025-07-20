@@ -6,6 +6,7 @@ driver:
 platforms:
   - name: instance
     image: geerlingguy/docker-debian11-ansible:latest
+    platform: "linux/arm64"
     command: /sbin/init
     privileged: true
     systemd: true
