@@ -1,14 +1,40 @@
 ---
-- name: Configure control plane nodes
+- name: Configure Orange Pi Zero 3 control plane nodes
   hosts: control_plane
   become: true
   gather_facts: true
+  vars:
+    # Common cluster configuration
+    cluster_vip: "192.168.10.99"
+    cluster_domain: "cluster.local"
+    cluster_dns: "10.96.0.10"
+    
   roles:
     - role: user_management
-      tags: users
-
+      tags: [users, bootstrap]
+      
     - role: network_configuration
-      tags: network
+      tags: [network, bootstrap]
       vars:
         network_ip_address: "{{ node_ip }}"
         network_gateway: "192.168.10.1"
+        
+    - role: cloudflare_cli
+      tags: [cloudflare, external-access]
+      
+    - role: kubernetes_components
+      tags: [kubernetes, k8s-components]
+      vars:
+        kubernetes_version: "1.32"
+        kubernetes_package_version: "1.32.0-1.1"
+        crio_version: "1.32"
+        kubelet_cluster_dns: "{{ cluster_dns }}"
+        kubelet_cluster_domain: "{{ cluster_domain }}"
+        
+    - role: kube_vip
+      tags: [kube-vip, ha]
+      vars:
+        kube_vip_vip: "{{ cluster_vip }}"
+        kube_vip_interface: "eth0"
+        kube_vip_control_plane: true
+        kube_vip_services: false
