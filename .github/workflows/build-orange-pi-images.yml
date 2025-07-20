@@ -24,9 +24,9 @@ jobs:
         id: set-nodes
         run: |
           if [ "${{ github.event.inputs.node_name }}" = "all" ]; then
-            echo "nodes=[\"shanghai-1\", \"shanghai-2\", \"shanghai-3\"]" >> $GITHUB_OUTPUT
+            echo "nodes=[\"shanghai-1\", \"shanghai-2\", \"shanghai-3\"]" >> "$GITHUB_OUTPUT"
           else
-            echo "nodes=[\"${{ github.event.inputs.node_name }}\"]" >> $GITHUB_OUTPUT
+            echo "nodes=[\"${{ github.event.inputs.node_name }}\"]" >> "$GITHUB_OUTPUT"
           fi
 
   build-images:
@@ -53,9 +53,11 @@ jobs:
 
       - name: Build summary
         run: |
-          echo "## Build Summary for ${{ matrix.node }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Node**: ${{ matrix.node }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Image**: orangepi-zero3-${{ matrix.node }}.img.xz" >> $GITHUB_STEP_SUMMARY
-          echo "- **Size**: $(du -h orangepi-zero3-${{ matrix.node }}.img.xz | cut -f1)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Checksum**: $(cat orangepi-zero3-${{ matrix.node }}.img.xz.sha256 | cut -d' ' -f1)" >> $GITHUB_STEP_SUMMARY
-          echo "- **S3 Path**: s3://${{ vars.S3_BUCKET_NAME }}/images/orange-pi-zero3/${{ matrix.node }}/" >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Build Summary for ${{ matrix.node }}"
+            echo "- **Node**: ${{ matrix.node }}"
+            echo "- **Image**: orangepi-zero3-${{ matrix.node }}.img.xz"
+            echo "- **Size**: $(du -h "orangepi-zero3-${{ matrix.node }}.img.xz" | cut -f1)"
+            echo "- **Checksum**: $(cut -d' ' -f1 "orangepi-zero3-${{ matrix.node }}.img.xz.sha256")"
+            echo "- **S3 Path**: s3://${{ vars.S3_BUCKET_NAME }}/images/orange-pi-zero3/${{ matrix.node }}/"
+          } >> "$GITHUB_STEP_SUMMARY"
