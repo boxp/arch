@@ -75,11 +75,71 @@ resource "aws_s3_bucket_logging" "orange_pi_images" {
 resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
   bucket = aws_s3_bucket.orange_pi_images.id
 
+  # Shanghai-1 node lifecycle rule
   rule {
-    id     = "cleanup_old_versions"
+    id     = "cleanup_shanghai_1_images"
     status = "Enabled"
 
-    filter {}
+    filter {
+      prefix = "images/orange-pi-zero3/shanghai-1/"
+    }
+
+    noncurrent_version_expiration {
+      newer_noncurrent_versions = 3
+      noncurrent_days          = 1
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # Shanghai-2 node lifecycle rule
+  rule {
+    id     = "cleanup_shanghai_2_images"
+    status = "Enabled"
+
+    filter {
+      prefix = "images/orange-pi-zero3/shanghai-2/"
+    }
+
+    noncurrent_version_expiration {
+      newer_noncurrent_versions = 3
+      noncurrent_days          = 1
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # Shanghai-3 node lifecycle rule
+  rule {
+    id     = "cleanup_shanghai_3_images"
+    status = "Enabled"
+
+    filter {
+      prefix = "images/orange-pi-zero3/shanghai-3/"
+    }
+
+    noncurrent_version_expiration {
+      newer_noncurrent_versions = 3
+      noncurrent_days          = 1
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
+  # General cleanup for other paths
+  rule {
+    id     = "cleanup_general"
+    status = "Enabled"
+
+    filter {
+      prefix = "images/"
+    }
 
     noncurrent_version_expiration {
       noncurrent_days = 30
