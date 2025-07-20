@@ -1,0 +1,70 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Check if boxp user exists
+      ansible.builtin.user:
+        name: boxp
+        state: present
+      check_mode: true
+      register: user_check
+
+    - name: Assert user exists
+      ansible.builtin.assert:
+        that:
+          - not user_check.changed
+        fail_msg: "User boxp does not exist"
+
+    - name: Get user info
+      ansible.builtin.getent:
+        database: passwd
+        key: boxp
+
+    - name: Check if user is in sudo group
+      ansible.builtin.command: groups boxp
+      register: user_groups
+      changed_when: false
+
+    - name: Assert user is in sudo group
+      ansible.builtin.assert:
+        that:
+          - "'sudo' in user_groups.stdout"
+        fail_msg: "User boxp is not in sudo group"
+
+    - name: Check if .ssh directory exists
+      ansible.builtin.stat:
+        path: /home/boxp/.ssh
+      register: ssh_dir
+
+    - name: Assert .ssh directory exists
+      ansible.builtin.assert:
+        that:
+          - ssh_dir.stat.exists
+          - ssh_dir.stat.isdir
+          - ssh_dir.stat.mode == '0700'
+        fail_msg: ".ssh directory does not exist or has incorrect permissions"
+
+    - name: Check if authorized_keys exists
+      ansible.builtin.stat:
+        path: /home/boxp/.ssh/authorized_keys
+      register: auth_keys
+
+    - name: Assert authorized_keys exists
+      ansible.builtin.assert:
+        that:
+          - auth_keys.stat.exists
+          - auth_keys.stat.mode == '0600'
+        fail_msg: "authorized_keys does not exist or has incorrect permissions"
+
+    - name: Check authorized_keys content for GitHub keys
+      ansible.builtin.command: cat /home/boxp/.ssh/authorized_keys
+      register: auth_keys_content
+      changed_when: false
+
+    - name: Assert GitHub SSH keys are present
+      ansible.builtin.assert:
+        that:
+          - auth_keys_content.stdout | length > 0
+          - "'ssh-' in auth_keys_content.stdout"
+        fail_msg: "GitHub SSH keys not found in authorized_keys"

@@ -1,0 +1,28 @@
+[project]
+name = "arch-ansible"
+version = "0.1.0"
+description = "Ansible configuration for arch infrastructure"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "ansible>=9.0.0",
+    "ansible-lint>=24.0.0",
+    "molecule>=24.0.0",
+    "molecule-docker>=2.0.0",
+    "pytest>=8.0.0",
+    "pytest-ansible>=24.0.0",
+    "testinfra>=6.0.0",
+]
+
+[tool.uv]
+dev-dependencies = [
+    "ruff>=0.8.0",
+]
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "N", "UP", "S", "B", "A", "C4", "PIE", "T20", "SIM", "RET"]
+ignore = ["E501"]

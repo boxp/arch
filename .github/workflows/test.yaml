@@ -39,6 +39,7 @@ jobs:
       - opa-fmt
       - renovate-config-validator
       - test
+      - test-ansible
       - update-aqua-checksums
     if: failure()
     steps:
@@ -118,6 +119,16 @@ jobs:
       gh_cloudflare_api_token: ${{secrets.CLOUDFLARE_API_TOKEN}}
       terraform_private_module_ssh_key: ${{secrets.TERRAFORM_PRIVATE_MODULE_SSH_KEY}}
       secrets: ${{toJSON(secrets)}}
+
+  test-ansible:
+    uses: ./.github/workflows/test-ansible.yml
+    needs: path-filter
+    if: |
+      needs.path-filter.outputs.test-ansible == 'true'
+    permissions:
+      contents: read
+    with:
+      ref: ${{needs.path-filter.outputs.merge_commit_sha}}
 
   update-aqua-checksums:
     uses: ./.github/workflows/wc-update-aqua-checksums.yaml

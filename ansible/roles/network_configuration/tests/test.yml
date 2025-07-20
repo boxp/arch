@@ -1,0 +1,6 @@
+---
+- name: Test network_configuration role
+  hosts: localhost
+  remote_user: root
+  roles:
+    - network_configuration

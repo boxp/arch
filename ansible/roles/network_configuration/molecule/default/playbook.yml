@@ -1,0 +1,14 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  roles:
+    - role: "../../../network_configuration"
+      vars:
+        network_interface: eth0
+        network_ip_address: 192.168.10.100
+        network_netmask: 255.255.255.0
+        network_gateway: 192.168.10.1
+        network_dns_servers:
+          - 8.8.8.8
+          - 8.8.4.4

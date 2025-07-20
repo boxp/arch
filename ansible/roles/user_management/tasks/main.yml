@@ -1,0 +1,68 @@
+---
+# tasks file for user_management
+
+- name: Ensure sudo package is installed
+  ansible.builtin.package:
+    name: sudo
+    state: present
+  become: true
+
+- name: Create user {{ user_management_username }}
+  ansible.builtin.user:
+    name: "{{ user_management_username }}"
+    groups: "{{ user_management_groups }}"
+    shell: "{{ user_management_shell }}"
+    create_home: true
+    state: present
+  become: true
+
+- name: Ensure .ssh directory exists
+  ansible.builtin.file:
+    path: "/home/{{ user_management_username }}/.ssh"
+    state: directory
+    owner: "{{ user_management_username }}"
+    group: "{{ user_management_username }}"
+    mode: '0700'
+  become: true
+
+- name: Fetch GitHub public keys
+  ansible.builtin.uri:
+    url: "https://github.com/{{ user_management_github_username }}.keys"
+    method: GET
+    return_content: true
+  register: github_keys_response
+  when:
+    - user_management_use_github_keys
+    - user_management_github_username != ""
+  delegate_to: localhost
+  become: false
+
+- name: Add SSH public key from variable
+  ansible.posix.authorized_key:
+    user: "{{ user_management_username }}"
+    key: "{{ user_management_ssh_key }}"
+    state: present
+  become: true
+  when:
+    - not user_management_use_github_keys
+    - user_management_ssh_key != ""
+
+- name: Add SSH public keys from GitHub
+  ansible.posix.authorized_key:
+    user: "{{ user_management_username }}"
+    key: "{{ github_keys_response.content }}"
+    state: present
+  become: true
+  when:
+    - user_management_use_github_keys
+    - github_keys_response is defined
+    - github_keys_response.content != ""
+
+- name: Ensure user can sudo without password
+  ansible.builtin.lineinfile:
+    path: /etc/sudoers.d/{{ user_management_username }}
+    line: "{{ user_management_username }} ALL=(ALL) NOPASSWD:ALL"
+    create: true
+    mode: '0440'
+    validate: 'visudo -cf %s'
+  become: true

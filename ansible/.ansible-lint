@@ -1,0 +1,30 @@
+---
+# .ansible-lint
+
+exclude_paths:
+  - .cache/
+  - molecule/
+
+parseable: true
+verbosity: 1
+
+use_default_rules: true
+rulesdir:
+  - ./rules/
+
+enable_list:
+  - yaml
+  - role-name
+  - no-handler
+  - no-relative-paths
+  - risky-file-permissions
+  - no-changed-when
+
+skip_list:
+  - experimental  # all rules tagged as experimental
+  - var-naming[no-role-prefix]  # Skip role prefix requirement
+
+warn_list:
+  - yaml[line-length]
+
+# vim: ft=yaml

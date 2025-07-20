@@ -1,0 +1,9 @@
+---
+# defaults file for user_management
+user_management_username: boxp
+user_management_groups:
+  - sudo
+user_management_shell: /bin/bash
+user_management_ssh_key: ""  # SSH public key should be provided via vars
+user_management_github_username: ""  # GitHub username to fetch public keys from
+user_management_use_github_keys: false  # Enable GitHub public key fetching

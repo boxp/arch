@@ -1,0 +1,11 @@
+---
+# defaults file for network_configuration
+network_interface: eth0
+network_ip_address: ""  # Must be provided
+network_netmask: 255.255.255.0
+network_gateway: ""  # Must be provided
+network_dns_servers:
+  - 8.8.8.8
+  - 8.8.4.4
+network_disable_wifi: true
+network_disable_bluetooth: true
