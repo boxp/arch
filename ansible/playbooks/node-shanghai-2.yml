@@ -1,0 +1,168 @@
+---
+- name: Configure Shanghai-2 control plane node
+  hosts: localhost
+  become: true
+  gather_facts: false
+  vars:
+    # Node-specific configuration
+    node_hostname: "shanghai-2"
+    node_ip: "192.168.10.103"
+    cluster_vip: "192.168.10.99"
+    cluster_domain: "cluster.local"
+    cluster_dns: "10.96.0.10"
+    
+    # Kubernetes configuration
+    kubernetes_version: "1.32"
+    kubernetes_package_version: "1.32.0-1.1"
+    crio_version: "1.32"
+    
+    # Hardware configuration
+    hardware_type: "orange_pi_zero3"
+    architecture: "arm64"
+    
+    # Network configuration
+    network_gateway: "192.168.10.1"
+    network_dns_servers:
+      - "8.8.8.8"
+      - "8.8.4.4"
+
+  tasks:
+    - name: Set hostname
+      hostname:
+        name: "{{ node_hostname }}"
+
+    - name: Update /etc/hosts
+      lineinfile:
+        path: /etc/hosts
+        regexp: '^127\.0\.1\.1'
+        line: "127.0.1.1 {{ node_hostname }}"
+
+    - name: Configure static IP with netplan
+      copy:
+        content: |
+          network:
+            version: 2
+            renderer: systemd
+            ethernets:
+              eth0:
+                dhcp4: false
+                addresses:
+                  - {{ node_ip }}/24
+                gateway4: {{ network_gateway }}
+                nameservers:
+                  addresses: {{ network_dns_servers }}
+        dest: /etc/netplan/01-armbian-static.yaml
+        mode: '0644'
+
+    - name: Remove dhcp configuration
+      file:
+        path: /etc/netplan/10-dhcp-all-interfaces.yaml
+        state: absent
+
+    - name: Create kube-vip manifest for this node
+      template:
+        src: /tmp/kube-vip.yaml.j2
+        dest: /etc/kubernetes/manifests/kube-vip.yaml
+        mode: '0644'
+      vars:
+        kube_vip_vip: "{{ cluster_vip }}"
+        kube_vip_interface: "eth0"
+
+    - name: Create kubeadm join configuration
+      copy:
+        content: |
+          apiVersion: kubeadm.k8s.io/v1beta3
+          kind: JoinConfiguration
+          discovery:
+            bootstrapToken:
+              apiServerEndpoint: {{ cluster_vip }}:6443
+              token: "TO_BE_REPLACED_AT_RUNTIME"
+              caCertHashes:
+                - "TO_BE_REPLACED_AT_RUNTIME"
+          nodeRegistration:
+            criSocket: unix:///var/run/crio/crio.sock
+            kubeletExtraArgs:
+              node-ip: {{ node_ip }}
+          controlPlane:
+            localAPIEndpoint:
+              advertiseAddress: {{ node_ip }}
+              bindPort: 6443
+          ---
+          apiVersion: kubelet.config.k8s.io/v1beta1
+          kind: KubeletConfiguration
+          clusterDNS:
+            - {{ cluster_dns }}
+          clusterDomain: {{ cluster_domain }}
+          containerRuntimeEndpoint: unix:///var/run/crio/crio.sock
+          cgroupDriver: systemd
+        dest: /etc/kubeadm/kubeadm-join.yaml
+        mode: '0644'
+
+    - name: Create directories for kubeadm
+      file:
+        path: "{{ item }}"
+        state: directory
+        mode: '0755'
+      loop:
+        - /etc/kubeadm
+        - /etc/kubernetes/pki
+
+    - name: Create first-boot join script
+      copy:
+        content: |
+          #!/bin/bash
+          
+          # Wait for network to be ready
+          sleep 30
+          
+          # Apply network configuration
+          netplan apply
+          
+          # Start and enable services
+          systemctl enable --now crio
+          systemctl enable --now kubelet
+          
+          # Join Kubernetes cluster (only on first boot)
+          if [ ! -f /etc/kubernetes/kubelet.conf ]; then
+              # Wait for shanghai-1 to be ready
+              echo "Waiting for cluster to be ready..."
+              while ! nc -z {{ cluster_vip }} 6443; do
+                  sleep 10
+              done
+              
+              # Get join token and CA cert hash from shanghai-1
+              # This would need to be configured manually or through automation
+              echo "Ready to join cluster. Manual configuration needed for join token."
+              echo "Run: kubeadm join --config=/etc/kubeadm/kubeadm-join.yaml"
+              echo "After updating the join configuration with actual token and CA hash"
+          fi
+          
+          echo "Shanghai-2 initialization completed"
+        dest: /usr/local/bin/init-shanghai-2.sh
+        mode: '0755'
+
+    - name: Create systemd service for first-boot join
+      copy:
+        content: |
+          [Unit]
+          Description=Shanghai-2 Kubernetes join
+          After=network-online.target
+          Wants=network-online.target
+          ConditionPathExists=!/var/lib/shanghai-2-initialized
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/bin/init-shanghai-2.sh
+          ExecStartPost=/bin/touch /var/lib/shanghai-2-initialized
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+        dest: /etc/systemd/system/init-shanghai-2.service
+        mode: '0644'
+
+    - name: Enable shanghai-2 join service
+      systemd:
+        name: init-shanghai-2.service
+        enabled: yes
+        daemon_reload: yes

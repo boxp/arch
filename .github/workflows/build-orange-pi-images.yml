@@ -1,0 +1,219 @@
+name: Build Orange Pi Zero 3 Images
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'ansible/**'
+      - 'armbian-build/**'
+      - '.github/workflows/build-orange-pi-images.yml'
+  pull_request:
+    branches: [ main ]
+    paths:
+      - 'ansible/**'
+      - 'armbian-build/**'
+      - '.github/workflows/build-orange-pi-images.yml'
+  workflow_dispatch:
+    inputs:
+      node_name:
+        description: 'Specific node to build (shanghai-1, shanghai-2, shanghai-3, or all)'
+        required: false
+        default: 'all'
+        type: choice
+        options:
+          - all
+          - shanghai-1
+          - shanghai-2
+          - shanghai-3
+
+env:
+  AWS_REGION: ap-northeast-1
+  S3_BUCKET: ${{ secrets.S3_BUCKET_NAME }}
+
+jobs:
+  build-base-image:
+    runs-on: ubuntu-latest
+    outputs:
+      base-image-path: ${{ steps.build.outputs.image-path }}
+      base-image-name: ${{ steps.build.outputs.image-name }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet
+          sudo rm -rf /opt/ghc
+          sudo rm -rf /usr/local/share/boost
+          sudo rm -rf "$AGENT_TOOLSDIRECTORY"
+          df -h
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support
+
+      - name: Setup QEMU emulation
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install all
+
+      - name: Build base Armbian image
+        id: build
+        run: |
+          cd armbian-build
+          ./compile.sh \
+            BOARD=orangepizero3 \
+            BRANCH=current \
+            RELEASE=jammy \
+            BUILD_MINIMAL=yes \
+            BUILD_DESKTOP=no \
+            KERNEL_CONFIGURE=no
+          
+          # Get the generated image info
+          IMAGE_PATH=$(find output/images -name "*.img" | head -1)
+          IMAGE_NAME=$(basename "$IMAGE_PATH")
+          
+          echo "image-path=$IMAGE_PATH" >> $GITHUB_OUTPUT
+          echo "image-name=$IMAGE_NAME" >> $GITHUB_OUTPUT
+
+      - name: Upload base image as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: base-armbian-image
+          path: armbian-build/output/images/
+          retention-days: 1
+
+  customize-images:
+    needs: build-base-image
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node: [shanghai-1, shanghai-2, shanghai-3]
+        exclude:
+          - node: ${{ github.event.inputs.node_name != 'all' && github.event.inputs.node_name != matrix.node && 'excluded' || 'included' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download base image
+        uses: actions/download-artifact@v4
+        with:
+          name: base-armbian-image
+          path: ./base-image/
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static binfmt-support kpartx mount
+          python3 -m pip install ansible
+
+      - name: Setup QEMU emulation
+        run: |
+          docker run --privileged --rm tonistiigi/binfmt --install all
+
+      - name: Customize image for ${{ matrix.node }}
+        run: |
+          # Get the base image
+          BASE_IMAGE=$(find ./base-image -name "*.img" | head -1)
+          NODE_IMAGE="orangepi-zero3-${{ matrix.node }}.img"
+          
+          # Copy base image
+          cp "$BASE_IMAGE" "$NODE_IMAGE"
+          
+          # Create loop device and mount image
+          sudo losetup -P /dev/loop0 "$NODE_IMAGE"
+          sudo mkdir -p /mnt/rootfs
+          sudo mount /dev/loop0p1 /mnt/rootfs
+          
+          # Copy ansible files to image
+          sudo cp -r ansible /mnt/rootfs/tmp/
+          sudo cp ansible/templates/kube-vip.yaml.j2 /mnt/rootfs/tmp/
+          
+          # Bind mount for chroot
+          sudo mount --bind /dev /mnt/rootfs/dev
+          sudo mount --bind /proc /mnt/rootfs/proc
+          sudo mount --bind /sys /mnt/rootfs/sys
+          
+          # Copy qemu static
+          sudo cp /usr/bin/qemu-aarch64-static /mnt/rootfs/usr/bin/
+          
+          # Install ansible in chroot and run playbook
+          sudo chroot /mnt/rootfs /bin/bash -c "
+            export DEBIAN_FRONTEND=noninteractive
+            apt-get update
+            apt-get install -y python3-pip python3-dev
+            pip3 install ansible
+            cd /tmp
+            ansible-playbook -i localhost, -c local ansible/playbooks/node-${{ matrix.node }}.yml
+          "
+          
+          # Cleanup
+          sudo rm -rf /mnt/rootfs/tmp/ansible
+          sudo rm -f /mnt/rootfs/tmp/kube-vip.yaml.j2
+          sudo rm -f /mnt/rootfs/usr/bin/qemu-aarch64-static
+          
+          # Unmount
+          sudo umount /mnt/rootfs/sys
+          sudo umount /mnt/rootfs/proc  
+          sudo umount /mnt/rootfs/dev
+          sudo umount /mnt/rootfs
+          sudo losetup -d /dev/loop0
+          
+          # Compress image
+          xz -9 -T 0 "$NODE_IMAGE"
+          
+          echo "NODE_IMAGE_XZ=${NODE_IMAGE}.xz" >> $GITHUB_ENV
+
+      - name: Generate checksums
+        run: |
+          sha256sum "$NODE_IMAGE_XZ" > "${NODE_IMAGE_XZ}.sha256"
+          
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Upload to S3
+        run: |
+          # Upload compressed image
+          aws s3 cp "$NODE_IMAGE_XZ" "s3://$S3_BUCKET/images/orange-pi-zero3/${{ matrix.node }}/" \
+            --metadata "node=${{ matrix.node }},build-date=$(date -u +%Y-%m-%d),commit-sha=${{ github.sha }}"
+          
+          # Upload checksum
+          aws s3 cp "${NODE_IMAGE_XZ}.sha256" "s3://$S3_BUCKET/images/orange-pi-zero3/${{ matrix.node }}/"
+          
+          # Create latest symlink
+          aws s3 cp "$NODE_IMAGE_XZ" "s3://$S3_BUCKET/images/orange-pi-zero3/${{ matrix.node }}/latest.img.xz" \
+            --metadata "node=${{ matrix.node }},build-date=$(date -u +%Y-%m-%d),commit-sha=${{ github.sha }}"
+
+      - name: Upload image info
+        run: |
+          # Create image metadata
+          cat > image-info.json << EOF
+          {
+            "node": "${{ matrix.node }}",
+            "build_date": "$(date -u +%Y-%m-%d_%H-%M-%S)",
+            "commit_sha": "${{ github.sha }}",
+            "workflow_run": "${{ github.run_number }}",
+            "image_size": "$(stat -c%s "$NODE_IMAGE_XZ")",
+            "sha256": "$(cat "${NODE_IMAGE_XZ}.sha256" | cut -d' ' -f1)"
+          }
+          EOF
+          
+          aws s3 cp image-info.json "s3://$S3_BUCKET/images/orange-pi-zero3/${{ matrix.node }}/"
+
+  cleanup:
+    needs: [build-base-image, customize-images]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Cleanup artifacts
+        uses: actions/upload-artifact/merge@v4
+        with:
+          name: cleanup
+          pattern: base-armbian-image
+          delete-merged: true
