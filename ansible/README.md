@@ -2,6 +2,8 @@
 
 This directory contains Ansible playbooks and roles for managing Kubernetes control plane nodes on Orange Pi Zero 3 devices.
 
+## Test CI Integration
+
 ## Overview
 
 The Ansible configuration manages:
