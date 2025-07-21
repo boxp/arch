@@ -23,7 +23,7 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget xz-utils kpartx
+        sudo apt-get install -y wget xz-utils kpartx ansible
 
     - name: Download Orange Pi Zero 3 server image
       shell: bash
