@@ -70,9 +70,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
       }
     }
 
-    # Delete old timestamped images after 30 days, keeping only recent ones
+    # Delete old timestamped images after 7 days, keeping only recent ones
     expiration {
-      days = 30
+      days = 7
     }
 
     noncurrent_version_expiration {
@@ -99,9 +99,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
       }
     }
 
-    # Delete old timestamped images after 30 days, keeping only recent ones
+    # Delete old timestamped images after 7 days, keeping only recent ones
     expiration {
-      days = 30
+      days = 7
     }
 
     noncurrent_version_expiration {
@@ -128,9 +128,9 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
       }
     }
 
-    # Delete old timestamped images after 30 days, keeping only recent ones
+    # Delete old timestamped images after 7 days, keeping only recent ones
     expiration {
-      days = 30
+      days = 7
     }
 
     noncurrent_version_expiration {
