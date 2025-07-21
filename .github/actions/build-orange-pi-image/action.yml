@@ -63,8 +63,7 @@ runs:
           echo "Falling back to HTTP mirrors..."
           MIRRORS=(
             "https://dl.armbian.com/orangepizero3/Noble_current_server"
-            "https://mirrors.tuna.tsinghua.edu.cn/armbian-releases/orangepizero3/archive/Armbian_25.5.1_Orangepizero3_noble_current_6.12.23.img.xz"
-            "https://mirrors.ustc.edu.cn/armbian-releases/orangepizero3/archive/Armbian_25.5.1_Orangepizero3_noble_current_6.12.23.img.xz"
+            "https://archive.armbian.com/orangepizero3/archive/Armbian_25.5.1_Orangepizero3_noble_current_6.12.23.img.xz"
           )
           
           for MIRROR in "${MIRRORS[@]}"; do
