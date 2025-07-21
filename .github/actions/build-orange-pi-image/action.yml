@@ -161,7 +161,20 @@ runs:
         sudo umount /mnt/orangepi
         sudo losetup -d "$LOOP_DEVICE"
         
+        # Verify image file exists before compression
+        if [ ! -f "$IMG_FILE" ]; then
+          echo "❌ Error: Image file missing after customization: $IMG_FILE"
+          echo "📁 Current directory contents:"
+          ls -la
+          echo "📁 Looking for any .img files:"
+          find . -name "*.img*" -type f || echo "No .img files found"
+          exit 1
+        fi
+        
+        echo "✅ Image file verified: $IMG_FILE ($(du -h "$IMG_FILE" | cut -f1))"
+        
         # Compress customized image
+        echo "🗜️ Compressing image with xz..."
         xz -9 "$IMG_FILE"
         
         # Create final image name
