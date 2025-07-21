@@ -23,25 +23,70 @@ runs:
       shell: bash
       run: |
         sudo apt-get update
-        sudo apt-get install -y wget xz-utils kpartx ansible
+        sudo apt-get install -y wget xz-utils kpartx ansible aria2
 
+    - name: Cache Armbian image
+      uses: actions/cache@v4
+      id: cache-armbian
+      with:
+        path: orangepi-zero3-noble-server.img.xz
+        key: armbian-orangepi-zero3-noble-${{ hashFiles('**/node-*.yml') || '20250721' }}
+        
     - name: Download Orange Pi Zero 3 server image
+      if: steps.cache-armbian.outputs.cache-hit != 'true'
       shell: bash
       run: |
-        # Download latest Orange Pi Zero 3 Noble server image (redirects to latest)
-        DOWNLOAD_URL="https://dl.armbian.com/orangepizero3/Noble_current_server"
         OUTPUT_FILE="orangepi-zero3-noble-server.img.xz"
+        TORRENT_URL="https://dl.armbian.com/orangepizero3/Noble_current_server.torrent"
         
         echo "Downloading Orange Pi Zero 3 Noble server image..."
-        wget -O "${OUTPUT_FILE}" "${DOWNLOAD_URL}"
+        
+        # Try torrent download first (faster if peers available)
+        echo "Attempting torrent download..."
+        if timeout 300 aria2c --bt-tracker-timeout=30 --bt-tracker-connect-timeout=10 --seed-time=0 --max-upload-limit=1K "${TORRENT_URL}"; then
+          # Find downloaded file
+          DOWNLOADED_FILE=$(find . -name "*.img.xz" -type f | head -n1)
+          if [ -n "$DOWNLOADED_FILE" ] && [ -f "$DOWNLOADED_FILE" ]; then
+            mv "$DOWNLOADED_FILE" "$OUTPUT_FILE"
+            echo "Successfully downloaded via torrent: $OUTPUT_FILE"
+          else
+            echo "Torrent download failed to produce expected file"
+            rm -f *.img.xz
+          fi
+        else
+          echo "Torrent download timed out or failed"
+          rm -f *.img.xz
+        fi
+        
+        # Fallback to HTTP mirrors if torrent failed
+        if [ ! -f "${OUTPUT_FILE}" ]; then
+          echo "Falling back to HTTP mirrors..."
+          MIRRORS=(
+            "https://dl.armbian.com/orangepizero3/Noble_current_server"
+            "https://mirrors.tuna.tsinghua.edu.cn/armbian-releases/orangepizero3/archive/Armbian_25.5.1_Orangepizero3_noble_current_6.12.23.img.xz"
+            "https://mirrors.ustc.edu.cn/armbian-releases/orangepizero3/archive/Armbian_25.5.1_Orangepizero3_noble_current_6.12.23.img.xz"
+          )
+          
+          for MIRROR in "${MIRRORS[@]}"; do
+            echo "Trying mirror: $MIRROR"
+            if wget -T 30 -t 3 -O "${OUTPUT_FILE}" "${MIRROR}"; then
+              echo "Successfully downloaded from: $MIRROR"
+              break
+            else
+              echo "Failed to download from: $MIRROR"
+              rm -f "${OUTPUT_FILE}"
+            fi
+          done
+        fi
         
         # Verify download
         if [ ! -f "${OUTPUT_FILE}" ]; then
-          echo "Error: Failed to download image"
+          echo "Error: Failed to download image from all sources"
           exit 1
         fi
         
         echo "Downloaded: ${OUTPUT_FILE}"
+        echo "File size: $(du -h "${OUTPUT_FILE}" | cut -f1)"
 
     - name: Extract and customize image for node
       shell: bash
