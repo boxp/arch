@@ -59,11 +59,9 @@
         path: /etc/netplan/10-dhcp-all-interfaces.yaml
         state: absent
 
-    - name: Create kube-vip manifest for this node
-      ansible.builtin.template:
-        src: /tmp/kube-vip.yaml.j2
-        dest: /etc/kubernetes/manifests/kube-vip.yaml
-        mode: '0644'
+    - name: Deploy kube-vip for cluster VIP
+      include_role:
+        name: kube_vip
       vars:
         kube_vip_vip: "{{ cluster_vip }}"
         kube_vip_interface: "eth0"
