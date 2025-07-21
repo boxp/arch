@@ -62,12 +62,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
     status = "Enabled"
 
     filter {
-      and {
-        prefix = "images/orange-pi-zero3/shanghai-1/"
-        tags = {
-          NodeName = "shanghai-1"
-        }
-      }
+      prefix = "images/orange-pi-zero3/shanghai-1/"
     }
 
     # Delete old timestamped images after 7 days, keeping only recent ones
@@ -91,12 +86,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
     status = "Enabled"
 
     filter {
-      and {
-        prefix = "images/orange-pi-zero3/shanghai-2/"
-        tags = {
-          NodeName = "shanghai-2"
-        }
-      }
+      prefix = "images/orange-pi-zero3/shanghai-2/"
     }
 
     # Delete old timestamped images after 7 days, keeping only recent ones
@@ -120,12 +110,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
     status = "Enabled"
 
     filter {
-      and {
-        prefix = "images/orange-pi-zero3/shanghai-3/"
-        tags = {
-          NodeName = "shanghai-3"
-        }
-      }
+      prefix = "images/orange-pi-zero3/shanghai-3/"
     }
 
     # Delete old timestamped images after 7 days, keeping only recent ones
