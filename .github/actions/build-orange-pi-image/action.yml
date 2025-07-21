@@ -28,28 +28,28 @@ runs:
     - name: Download Orange Pi Zero 3 server image
       shell: bash
       run: |
-        # Download latest Orange Pi Zero 3 Noble server image
-        IMAGE_NAME="Armbian_25.5.1_Orangepizero3_noble_current_6.12.23.img.xz"
-        DOWNLOAD_URL="https://dl.armbian.com/orangepizero3/Noble_current_server/${IMAGE_NAME}"
+        # Download latest Orange Pi Zero 3 Noble server image (redirects to latest)
+        DOWNLOAD_URL="https://dl.armbian.com/orangepizero3/Noble_current_server"
+        OUTPUT_FILE="orangepi-zero3-noble-server.img.xz"
         
         echo "Downloading Orange Pi Zero 3 Noble server image..."
-        wget -O "${IMAGE_NAME}" "${DOWNLOAD_URL}"
+        wget -O "${OUTPUT_FILE}" "${DOWNLOAD_URL}"
         
         # Verify download
-        if [ ! -f "${IMAGE_NAME}" ]; then
+        if [ ! -f "${OUTPUT_FILE}" ]; then
           echo "Error: Failed to download image"
           exit 1
         fi
         
-        echo "Downloaded: ${IMAGE_NAME}"
+        echo "Downloaded: ${OUTPUT_FILE}"
 
     - name: Extract and customize image for node
       shell: bash
       run: |
-        # Find the downloaded image
-        IMAGE_FILE=$(find . -name "Armbian_*_Orangepizero3_*.img.xz" | head -n1)
-        if [ -z "$IMAGE_FILE" ]; then
-          echo "Error: No image file found"
+        # Use the downloaded image
+        IMAGE_FILE="orangepi-zero3-noble-server.img.xz"
+        if [ ! -f "$IMAGE_FILE" ]; then
+          echo "Error: Image file not found: $IMAGE_FILE"
           exit 1
         fi
         
@@ -57,7 +57,7 @@ runs:
         
         # Extract image
         xz -d "$IMAGE_FILE"
-        IMG_FILE="${IMAGE_FILE%.xz}"
+        IMG_FILE="orangepi-zero3-noble-server.img"
         
         # Create loop device
         LOOP_DEVICE=$(sudo losetup -f --show "$IMG_FILE")
@@ -109,7 +109,7 @@ runs:
           "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
           "image_file": "$FINAL_IMAGE",
           "checksum_file": "${FINAL_IMAGE}.sha256",
-          "armbian_version": "25.5.1",
+          "armbian_version": "latest-noble",
           "github_sha": "$GITHUB_SHA"
         }
         EOF
