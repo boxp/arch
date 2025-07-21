@@ -201,24 +201,26 @@ runs:
     - name: Upload to S3
       shell: bash
       run: |
-        # Upload image file
-        aws s3 cp "orangepi-zero3-${{ inputs.node_name }}.img.xz" \
+        # Upload image file with unique name
+        aws s3 cp "$FINAL_IMAGE" \
           "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/"
         
         # Upload checksum
-        aws s3 cp "orangepi-zero3-${{ inputs.node_name }}.img.xz.sha256" \
+        aws s3 cp "${FINAL_IMAGE}.sha256" \
           "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/"
         
         # Upload image info
         aws s3 cp image-info.json \
           "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/"
         
-        # Create latest symlink
-        aws s3 cp "orangepi-zero3-${{ inputs.node_name }}.img.xz" \
-          "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/latest.img.xz"
+        # Create latest.img.xz by copying the uploaded image
+        aws s3api copy-object \
+          --copy-source "${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/$FINAL_IMAGE" \
+          --bucket "${{ inputs.s3_bucket }}" \
+          --key "images/orange-pi-zero3/${{ inputs.node_name }}/latest.img.xz"
         
-        # Set metadata
+        # Set metadata on the unique image file
         aws s3api put-object-tagging \
           --bucket "${{ inputs.s3_bucket }}" \
-          --key "images/orange-pi-zero3/${{ inputs.node_name }}/orangepi-zero3-${{ inputs.node_name }}.img.xz" \
+          --key "images/orange-pi-zero3/${{ inputs.node_name }}/$FINAL_IMAGE" \
           --tagging "TagSet=[{Key=NodeName,Value=${{ inputs.node_name }}},{Key=BuildDate,Value=$(date +%Y-%m-%d)},{Key=GitSHA,Value=$GITHUB_SHA}]"
