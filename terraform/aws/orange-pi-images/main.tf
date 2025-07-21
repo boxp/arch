@@ -186,7 +186,8 @@ resource "aws_iam_role_policy" "github_actions_orangepi_s3" {
         Action = [
           "s3:PutObject",
           "s3:PutObjectAcl",
-          "s3:PutObjectTagging"
+          "s3:PutObjectTagging",
+          "s3:GetObject"
         ]
         Resource = "${aws_s3_bucket.orange_pi_images.arn}/images/orange-pi-zero3/*"
       },
