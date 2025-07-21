@@ -11,18 +11,19 @@
 
   tasks:
     - name: Ensure SSH server is installed and configured
+      tags: [ssh, bootstrap]
       block:
         - name: Install OpenSSH server
           ansible.builtin.apt:
             name: openssh-server
             state: present
-            update_cache: yes
+            update_cache: true
           tags: [ssh, bootstrap]
 
         - name: Ensure SSH service is enabled and started
           ansible.builtin.systemd:
             name: ssh
-            enabled: yes
+            enabled: true
             state: started
           tags: [ssh, bootstrap]
 
@@ -37,12 +38,11 @@
             - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
             - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
             - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
-          notify: restart ssh
+          notify: Restart SSH service
           tags: [ssh, bootstrap]
-      tags: [ssh, bootstrap]
 
   handlers:
-    - name: restart ssh
+    - name: Restart SSH service
       ansible.builtin.systemd:
         name: ssh
         state: restarted
