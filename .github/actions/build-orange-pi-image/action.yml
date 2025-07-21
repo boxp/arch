@@ -96,7 +96,7 @@ runs:
         echo "🎯 Armbian build completed!"
         
         # Find the generated image
-        OUTPUT_IMAGE=$(find output/images -name "Armbian_*_Orangepizero3_*.img.xz" | head -n1)
+        OUTPUT_IMAGE=$(find output/images -name "Armbian*Orangepizero3*.img.xz" | head -n1)
         if [ -z "$OUTPUT_IMAGE" ]; then
           echo "❌ Error: No output image found"
           echo "📁 Available files in output/images:"
