@@ -157,6 +157,9 @@ runs:
           -e target_mount=/mnt/orangepi \
           playbooks/node-${{ inputs.node_name }}.yml
         
+        # Return to parent directory
+        cd ..
+        
         # Cleanup
         sudo umount /mnt/orangepi
         sudo losetup -d "$LOOP_DEVICE"
