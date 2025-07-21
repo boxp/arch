@@ -9,6 +9,44 @@
     cluster_domain: "cluster.local"
     cluster_dns: "10.96.0.10"
 
+  tasks:
+    - name: Ensure SSH server is installed and configured
+      tags: [ssh, bootstrap]
+      block:
+        - name: Install OpenSSH server
+          ansible.builtin.apt:
+            name: openssh-server
+            state: present
+            update_cache: true
+          tags: [ssh, bootstrap]
+
+        - name: Ensure SSH service is enabled and started
+          ansible.builtin.systemd:
+            name: ssh
+            enabled: true
+            state: started
+          tags: [ssh, bootstrap]
+
+        - name: Configure SSH server
+          ansible.builtin.lineinfile:
+            path: /etc/ssh/sshd_config
+            regexp: "{{ item.regexp }}"
+            line: "{{ item.line }}"
+            validate: 'sshd -t -f %s'
+          loop:
+            - { regexp: '^#?PermitRootLogin', line: 'PermitRootLogin no' }
+            - { regexp: '^#?PasswordAuthentication', line: 'PasswordAuthentication no' }
+            - { regexp: '^#?PubkeyAuthentication', line: 'PubkeyAuthentication yes' }
+            - { regexp: '^#?ChallengeResponseAuthentication', line: 'ChallengeResponseAuthentication no' }
+          notify: Restart SSH service
+          tags: [ssh, bootstrap]
+
+  handlers:
+    - name: Restart SSH service
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
+
   roles:
     - role: user_management
       tags: [users, bootstrap]

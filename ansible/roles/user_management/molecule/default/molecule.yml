@@ -5,8 +5,8 @@ driver:
   name: docker
 platforms:
   - name: instance
-    # Use systemd-enabled image that simulates Orange Pi Zero 3 environment
-    image: "geerlingguy/docker-debian11-ansible:latest"
+    # Use systemd-enabled Ubuntu Noble image that matches Armbian build
+    image: "geerlingguy/docker-ubuntu2404-ansible:latest"
     pre_build_image: true
     privileged: true
     volumes:
@@ -15,6 +15,8 @@ platforms:
     command: /lib/systemd/systemd
     env:
       DEBIAN_FRONTEND: noninteractive
+    # Support ARM64 platform for Orange Pi Zero 3
+    platform: "${MOLECULE_DOCKER_PLATFORM:-linux/amd64}"
     # Simulate Orange Pi Zero 3 environment
     groups:
       - orange_pi_zero3
