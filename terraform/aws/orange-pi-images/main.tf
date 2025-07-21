@@ -56,13 +56,23 @@ resource "aws_s3_bucket_logging" "orange_pi_images" {
 resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
   bucket = aws_s3_bucket.orange_pi_images.id
 
-  # Shanghai-1 node lifecycle rule
+  # Shanghai-1 node lifecycle rule - keep only latest 3 timestamped images
   rule {
     id     = "cleanup_shanghai_1_images"
     status = "Enabled"
 
     filter {
-      prefix = "images/orange-pi-zero3/shanghai-1/"
+      and {
+        prefix = "images/orange-pi-zero3/shanghai-1/"
+        tags = {
+          NodeName = "shanghai-1"
+        }
+      }
+    }
+
+    # Delete old timestamped images after 30 days, keeping only recent ones
+    expiration {
+      days = 30
     }
 
     noncurrent_version_expiration {
@@ -75,13 +85,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
     }
   }
 
-  # Shanghai-2 node lifecycle rule
+  # Shanghai-2 node lifecycle rule - keep only latest 3 timestamped images
   rule {
     id     = "cleanup_shanghai_2_images"
     status = "Enabled"
 
     filter {
-      prefix = "images/orange-pi-zero3/shanghai-2/"
+      and {
+        prefix = "images/orange-pi-zero3/shanghai-2/"
+        tags = {
+          NodeName = "shanghai-2"
+        }
+      }
+    }
+
+    # Delete old timestamped images after 30 days, keeping only recent ones
+    expiration {
+      days = 30
     }
 
     noncurrent_version_expiration {
@@ -94,13 +114,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
     }
   }
 
-  # Shanghai-3 node lifecycle rule
+  # Shanghai-3 node lifecycle rule - keep only latest 3 timestamped images
   rule {
     id     = "cleanup_shanghai_3_images"
     status = "Enabled"
 
     filter {
-      prefix = "images/orange-pi-zero3/shanghai-3/"
+      and {
+        prefix = "images/orange-pi-zero3/shanghai-3/"
+        tags = {
+          NodeName = "shanghai-3"
+        }
+      }
+    }
+
+    # Delete old timestamped images after 30 days, keeping only recent ones
+    expiration {
+      days = 30
     }
 
     noncurrent_version_expiration {
