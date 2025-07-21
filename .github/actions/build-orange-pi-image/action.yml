@@ -40,52 +40,72 @@ runs:
         TORRENT_URL="https://dl.armbian.com/orangepizero3/Noble_current_server.torrent"
         
         echo "Downloading Orange Pi Zero 3 Noble server image..."
+        echo "Primary method: P2P torrent download"
         
-        # Try torrent download first (faster if peers available)
-        echo "Attempting torrent download..."
-        if timeout 300 aria2c --bt-tracker-timeout=30 --bt-tracker-connect-timeout=10 --seed-time=0 --max-upload-limit=1K "${TORRENT_URL}"; then
-          # Find downloaded file
-          DOWNLOADED_FILE=$(find . -name "*.img.xz" -type f | head -n1)
+        # Try torrent download first with optimized settings
+        echo "Starting torrent download with aria2c..."
+        if aria2c \
+          --bt-tracker-timeout=60 \
+          --bt-tracker-connect-timeout=30 \
+          --bt-request-peer-speed-limit=1M \
+          --max-connection-per-server=8 \
+          --max-concurrent-downloads=8 \
+          --seed-time=0 \
+          --max-upload-limit=10K \
+          --bt-max-peers=50 \
+          --bt-stop-timeout=300 \
+          --timeout=600 \
+          --retry-wait=10 \
+          --max-tries=3 \
+          --summary-interval=30 \
+          "${TORRENT_URL}"; then
+          
+          # Find and rename downloaded file
+          DOWNLOADED_FILE=$(find . -name "*.img.xz" -type f -not -name "$OUTPUT_FILE" | head -n1)
           if [ -n "$DOWNLOADED_FILE" ] && [ -f "$DOWNLOADED_FILE" ]; then
             mv "$DOWNLOADED_FILE" "$OUTPUT_FILE"
-            echo "Successfully downloaded via torrent: $OUTPUT_FILE"
+            echo "✅ Torrent download successful: $OUTPUT_FILE"
+            echo "📊 File size: $(du -h "${OUTPUT_FILE}" | cut -f1)"
+            echo "🚀 P2P download completed successfully!"
           else
-            echo "Torrent download failed to produce expected file"
-            rm -f *.img.xz
+            echo "❌ Torrent downloaded but file not found"
+            rm -f *.img.xz *.torrent
           fi
         else
-          echo "Torrent download timed out or failed"
-          rm -f *.img.xz
+          echo "❌ Torrent download failed, cleaning up..."
+          rm -f *.img.xz *.torrent
         fi
         
-        # Fallback to HTTP mirrors if torrent failed
+        # Fallback to HTTP mirrors only if torrent completely failed
         if [ ! -f "${OUTPUT_FILE}" ]; then
-          echo "Falling back to HTTP mirrors..."
+          echo "🔄 Falling back to HTTP mirrors..."
           MIRRORS=(
             "https://dl.armbian.com/orangepizero3/Noble_current_server"
             "https://mirrors.bfsu.edu.cn/armbian-releases/orangepizero3/archive/Armbian_25.5.1_Orangepizero3_noble_current_6.12.23_minimal.img.xz"
           )
           
-          for MIRROR in "${MIRRORS[@]}"; do
-            echo "Trying mirror: $MIRROR"
-            if wget -T 30 -t 3 -O "${OUTPUT_FILE}" "${MIRROR}"; then
-              echo "Successfully downloaded from: $MIRROR"
+          for i in "${!MIRRORS[@]}"; do
+            MIRROR="${MIRRORS[$i]}"
+            echo "Trying mirror $((i+1))/${#MIRRORS[@]}: $MIRROR"
+            if wget -T 60 -t 2 --progress=bar:force -O "${OUTPUT_FILE}" "${MIRROR}"; then
+              echo "✅ HTTP download successful from mirror $((i+1))"
               break
             else
-              echo "Failed to download from: $MIRROR"
+              echo "❌ Failed to download from mirror $((i+1))"
               rm -f "${OUTPUT_FILE}"
             fi
           done
         fi
         
-        # Verify download
+        # Final verification
         if [ ! -f "${OUTPUT_FILE}" ]; then
-          echo "Error: Failed to download image from all sources"
+          echo "💥 FATAL: Failed to download image from all sources (P2P + HTTP)"
           exit 1
         fi
         
-        echo "Downloaded: ${OUTPUT_FILE}"
-        echo "File size: $(du -h "${OUTPUT_FILE}" | cut -f1)"
+        echo "📦 Final result: ${OUTPUT_FILE}"
+        echo "📏 File size: $(du -h "${OUTPUT_FILE}" | cut -f1)"
+        echo "🎯 Download completed successfully!"
 
     - name: Extract and customize image for node
       shell: bash
