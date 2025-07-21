@@ -60,7 +60,7 @@
         state: absent
 
     - name: Deploy kube-vip for cluster VIP
-      include_role:
+      ansible.builtin.include_role:
         name: kube_vip
       vars:
         kube_vip_vip: "{{ cluster_vip }}"
