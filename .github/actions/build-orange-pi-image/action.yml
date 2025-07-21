@@ -95,6 +95,9 @@ runs:
         
         echo "🎯 Armbian build completed!"
         
+        # Fix file permissions for cache artifacts
+        sudo chown -R runner:docker cache/ output/ || true
+        
         # Find the generated image
         OUTPUT_IMAGE=$(find output/images -name "Armbian*Orangepizero3*.img.xz" | head -n1)
         if [ -z "$OUTPUT_IMAGE" ]; then
@@ -167,8 +170,10 @@ runs:
         # Compress customized image
         xz -9 "$IMG_FILE"
         
-        # Create final image name
-        FINAL_IMAGE="orangepi-zero3-${{ inputs.node_name }}.img.xz"
+        # Create final image name with timestamp and git hash for uniqueness
+        BUILD_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
+        GIT_SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-8)
+        FINAL_IMAGE="orangepi-zero3-${{ inputs.node_name }}-${BUILD_TIMESTAMP}-${GIT_SHORT_SHA}.img.xz"
         mv "${IMG_FILE}.xz" "$FINAL_IMAGE"
         
         # Generate checksum
