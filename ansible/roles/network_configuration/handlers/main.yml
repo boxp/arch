@@ -1,9 +1,8 @@
 ---
-# handlers file for network_configuration
+# Updated handlers file for network_configuration using Netplan
 
-- name: Restart networking
-  ansible.builtin.systemd:
-    name: networking
-    state: restarted
+- name: Apply netplan configuration
+  ansible.builtin.command: netplan apply
   become: true
-  when: ansible_virtualization_type != "docker"
+  changed_when: true
+  failed_when: false  # Allow failure in container environments without udev

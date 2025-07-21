@@ -1,0 +1,11 @@
+# {{ ansible_managed }}
+# Static IP configuration for {{ network_interface }}
+
+auto {{ network_interface }}
+iface {{ network_interface }} inet static
+    address {{ network_ip_address }}
+    netmask {{ network_netmask }}
+    gateway {{ network_gateway }}
+{% if network_dns_servers %}
+    dns-nameservers {{ network_dns_servers | join(' ') }}
+{% endif %}

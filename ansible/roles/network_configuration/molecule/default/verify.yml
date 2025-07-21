@@ -3,31 +3,32 @@
   hosts: all
   gather_facts: true
   tasks:
-    - name: Check if network configuration file exists
+    - name: Check if netplan configuration file exists
       ansible.builtin.stat:
-        path: /etc/network/interfaces.d/eth0
-      register: network_config
+        path: /etc/netplan/01-static-eth0.yaml
+      register: netplan_config
 
-    - name: Assert network configuration exists
+    - name: Assert netplan configuration exists
       ansible.builtin.assert:
         that:
-          - network_config.stat.exists
-        fail_msg: "Network configuration file does not exist"
+          - netplan_config.stat.exists
+        fail_msg: "Netplan configuration file does not exist"
 
-    - name: Read network configuration
+    - name: Read netplan configuration
       ansible.builtin.slurp:
-        src: /etc/network/interfaces.d/eth0
-      register: network_content
+        src: /etc/netplan/01-static-eth0.yaml
+      register: netplan_content
 
-    - name: Decode network configuration
+    - name: Decode netplan configuration
       ansible.builtin.set_fact:
-        network_config_content: "{{ network_content.content | b64decode }}"
+        netplan_config_content: "{{ netplan_content.content | b64decode }}"
 
     - name: Assert static IP configuration
       ansible.builtin.assert:
         that:
-          - "'iface eth0 inet static' in network_config_content"
-          - "'address 192.168.10.' in network_config_content"
+          - "'dhcp4: false' in netplan_config_content"
+          - "'192.168.10.' in netplan_config_content"
+          - "'renderer: networkd' in netplan_config_content"
         fail_msg: "Static IP configuration not found"
 
     - name: Check if WiFi is disabled
