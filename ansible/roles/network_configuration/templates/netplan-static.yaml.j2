@@ -1,0 +1,21 @@
+# {{ ansible_managed }}
+# Netplan configuration for static IP on {{ network_interface }}
+
+network:
+  version: 2
+  renderer: networkd
+  ethernets:
+    {{ network_interface }}:
+      dhcp4: false
+      dhcp6: false
+      addresses:
+        - {{ network_ip_address }}/{{ network_cidr_prefix | default('24') }}
+      routes:
+        - to: default
+          via: {{ network_gateway }}
+      nameservers:
+        addresses:
+{% for dns in network_dns_servers %}
+          - {{ dns }}
+{% endfor %}
+      optional: false

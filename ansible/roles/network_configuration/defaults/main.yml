@@ -2,7 +2,8 @@
 # defaults file for network_configuration
 network_interface: eth0
 network_ip_address: ""  # Must be provided
-network_netmask: 255.255.255.0
+network_cidr_prefix: 24  # CIDR notation instead of netmask
+network_netmask: 255.255.255.0  # Kept for backward compatibility
 network_gateway: ""  # Must be provided
 network_dns_servers:
   - 8.8.8.8

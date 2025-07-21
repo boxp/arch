@@ -1,5 +1,5 @@
 ---
-# Updated tasks file for network_configuration using Netplan
+# tasks file for network_configuration
 
 - name: Ensure IP address is provided
   ansible.builtin.fail:
@@ -16,39 +16,25 @@
     name:
       - iproute2
       - rfkill
-      - netplan.io
     state: present
   become: true
 
-- name: Ensure netplan directory exists
+- name: Ensure network interfaces directory exists
   ansible.builtin.file:
-    path: /etc/netplan
+    path: /etc/network/interfaces.d
     state: directory
     mode: '0755'
   become: true
 
-- name: Remove default DHCP netplan configuration
-  ansible.builtin.file:
-    path: /etc/netplan/10-dhcp-all-interfaces.yaml
-    state: absent
-  become: true
-  notify: Apply netplan configuration
-
-- name: Remove legacy network interfaces configuration
-  ansible.builtin.file:
-    path: "/etc/network/interfaces.d/{{ network_interface }}"
-    state: absent
-  become: true
-
-- name: Configure static IP with Netplan
+- name: Configure static IP for {{ network_interface }}
   ansible.builtin.template:
-    src: netplan-static.yaml.j2
-    dest: "/etc/netplan/01-static-{{ network_interface }}.yaml"
+    src: interface.j2
+    dest: "/etc/network/interfaces.d/{{ network_interface }}"
     owner: root
     group: root
-    mode: '0600'
+    mode: '0644'
   become: true
-  notify: Apply netplan configuration
+  notify: Restart networking
 
 - name: Check WiFi status
   ansible.builtin.shell: |
