@@ -143,27 +143,41 @@ runs:
         sudo mkdir -p /mnt/orangepi
         sudo mount "${LOOP_DEVICE}p1" /mnt/orangepi
         
+        # Set up chroot environment
+        echo "Setting up chroot environment..."
+        sudo mount -t proc /proc /mnt/orangepi/proc
+        sudo mount -t sysfs /sys /mnt/orangepi/sys
+        sudo mount -o bind /dev /mnt/orangepi/dev
+        sudo mount -o bind /dev/pts /mnt/orangepi/dev/pts
+        
+        # Copy resolv.conf for network access in chroot
+        sudo cp /etc/resolv.conf /mnt/orangepi/etc/resolv.conf
+        
         # Apply common control-plane configuration first
         cd ansible
         sudo ansible-playbook \
-          -i localhost, \
-          -c local \
-          -e ansible_host=localhost \
-          -e target_mount=/mnt/orangepi \
+          -i /mnt/orangepi, \
+          -c chroot \
+          -e chroot_build=true \
           playbooks/control-plane.yml
         
         # Apply node-specific configuration
         sudo ansible-playbook \
-          -i localhost, \
-          -c local \
-          -e ansible_host=localhost \
-          -e target_mount=/mnt/orangepi \
+          -i /mnt/orangepi, \
+          -c chroot \
+          -e chroot_build=true \
           playbooks/node-${{ inputs.node_name }}.yml
         
         # Return to parent directory
         cd ..
         
-        # Cleanup
+        # Cleanup chroot mounts
+        sudo umount /mnt/orangepi/dev/pts || true
+        sudo umount /mnt/orangepi/dev || true
+        sudo umount /mnt/orangepi/sys || true
+        sudo umount /mnt/orangepi/proc || true
+        
+        # Cleanup root mount
         sudo umount /mnt/orangepi
         sudo losetup -d "$LOOP_DEVICE"
         

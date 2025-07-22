@@ -106,10 +106,18 @@
   become: true
   when: network_disable_wifi or network_disable_bluetooth
 
-- name: Enable disable-wireless service
-  ansible.builtin.systemd:
-    name: disable-wireless
-    enabled: true
-    daemon_reload: true
+- name: Create systemd multi-user.target.wants directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/multi-user.target.wants
+    state: directory
+    mode: '0755'
+  become: true
+  when: network_disable_wifi or network_disable_bluetooth
+
+- name: Enable disable-wireless service via symlink
+  ansible.builtin.file:
+    src: /etc/systemd/system/disable-wireless.service
+    dest: /etc/systemd/system/multi-user.target.wants/disable-wireless.service
+    state: link
   become: true
   when: network_disable_wifi or network_disable_bluetooth

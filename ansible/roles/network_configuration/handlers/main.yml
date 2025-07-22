@@ -6,3 +6,4 @@
   become: true
   changed_when: true
   failed_when: false  # Allow failure in container environments without udev
+  when: chroot_build is not defined or not chroot_build

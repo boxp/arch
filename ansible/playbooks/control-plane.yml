@@ -1,6 +1,6 @@
 ---
 - name: Configure Orange Pi Zero 3 control plane nodes
-  hosts: control_plane
+  hosts: all
   become: true
   gather_facts: true
   vars:
@@ -20,11 +20,18 @@
             update_cache: true
           tags: [ssh, bootstrap]
 
-        - name: Ensure SSH service is enabled and started
-          ansible.builtin.systemd:
-            name: ssh
-            enabled: true
-            state: started
+        - name: Create systemd multi-user.target.wants directory
+          ansible.builtin.file:
+            path: /etc/systemd/system/multi-user.target.wants
+            state: directory
+            mode: '0755'
+          tags: [ssh, bootstrap]
+
+        - name: Enable SSH service via symlink
+          ansible.builtin.file:
+            src: /lib/systemd/system/ssh.service
+            dest: /etc/systemd/system/multi-user.target.wants/ssh.service
+            state: link
           tags: [ssh, bootstrap]
 
         - name: Configure SSH server

@@ -6,19 +6,23 @@
   become: true
   changed_when: true
   listen: "Reload sysctl"
+  when: chroot_build is not defined or not chroot_build
 
 - name: Reload systemd
   ansible.builtin.systemd:
     daemon_reload: true
   become: true
   listen: "Reload systemd"
+  when: chroot_build is not defined or not chroot_build
 
 - name: Restart crio
   ansible.builtin.systemd:
     name: crio
     state: restarted
   become: true
-  when: ansible_virtualization_type != "docker"
+  when:
+    - ansible_virtualization_type != "docker"
+    - chroot_build is not defined or not chroot_build
   listen: "Restart crio"
 
 - name: Restart kubelet
@@ -26,5 +30,7 @@
     name: kubelet
     state: restarted
   become: true
-  when: ansible_virtualization_type != "docker"
+  when:
+    - ansible_virtualization_type != "docker"
+    - chroot_build is not defined or not chroot_build
   listen: "Restart kubelet"
