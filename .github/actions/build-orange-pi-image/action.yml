@@ -170,28 +170,30 @@ runs:
 HOSTS_EOF
         fi
         
-        # Create temporary inventory for chroot
+        # Create proper inventory for community.general.chroot connection
         cd ansible
-        cat > /tmp/chroot_inventory << EOF
-        [all]
-        orangepi_chroot ansible_connection=community.general.chroot ansible_chroot=/mnt/orangepi
+        cat > chroot_inventory.ini << 'EOF'
+        [chroots]
+        orangepi_chroot ansible_host=/mnt/orangepi ansible_connection=community.general.chroot
         EOF
         
         # Apply common control-plane configuration first
         sudo ansible-playbook \
-          -i /tmp/chroot_inventory \
+          -i chroot_inventory.ini \
           -e chroot_build=true \
+          -e ansible_python_interpreter=/usr/bin/python3 \
           playbooks/control-plane.yml
         
         # Apply node-specific configuration
         sudo ansible-playbook \
-          -i /tmp/chroot_inventory \
+          -i chroot_inventory.ini \
           -e chroot_build=true \
+          -e ansible_python_interpreter=/usr/bin/python3 \
           playbooks/node-${{ inputs.node_name }}.yml
         
-        # Return to parent directory and cleanup
+        # Cleanup and return to parent directory
+        rm -f chroot_inventory.ini
         cd ..
-        rm -f /tmp/chroot_inventory
         
         # Cleanup chroot mounts
         sudo umount /mnt/orangepi/run || true
