@@ -3,13 +3,16 @@
   hosts: all
   become: true
   gather_facts: false
+  vars_files:
+    - ../vars/nodes.yml
   vars:
     # Node-specific configuration
-    node_hostname: "shanghai-2"
-    node_ip: "192.168.10.103"
-    cluster_vip: "192.168.10.99"
-    cluster_domain: "cluster.local"
-    cluster_dns: "10.96.0.10"
+    node_name: "shanghai-2"
+    node_hostname: "{{ node_name }}"
+    node_ip: "{{ node_ips[node_name] }}"
+    cluster_vip: "{{ cluster.vip }}"
+    cluster_domain: "{{ cluster.domain }}"
+    cluster_dns: "{{ cluster.dns }}"
 
     # Kubernetes configuration
     kubernetes_version: "1.32"
@@ -21,10 +24,8 @@
     architecture: "arm64"
 
     # Network configuration
-    network_gateway: "192.168.10.1"
-    network_dns_servers:
-      - "8.8.8.8"
-      - "8.8.4.4"
+    network_gateway: "{{ cluster.gateway }}"
+    network_dns_servers: "{{ cluster.dns_servers }}"
 
   tasks:
     - name: Set hostname
