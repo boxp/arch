@@ -46,16 +46,24 @@ jobs:
           source .venv/bin/activate
           ansible-lint
 
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
+        with:
+          files: ansible/roles/**
+
       - name: Detect changed roles
         id: changed-roles
         run: |
-          # Get list of changed ansible role files (from project root)
-          CHANGED_FILES=$(git diff --name-only origin/main...HEAD | grep "^ansible/roles/" || true)
+          # Get changed files from previous step
+          CHANGED_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+          
+          echo "Changed files: $CHANGED_FILES"
           
           # Extract unique role names from changed files
           CHANGED_ROLES=""
           if [ -n "$CHANGED_FILES" ]; then
-            CHANGED_ROLES=$(echo "$CHANGED_FILES" | sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u)
+            CHANGED_ROLES=$(echo "$CHANGED_FILES" | tr ' ' '\n' | grep "^ansible/roles/" | sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u | tr '\n' ' ')
           fi
           
           echo "changed-files=$CHANGED_FILES"
@@ -63,18 +71,18 @@ jobs:
           
           # Debug output
           echo "Debug: CHANGED_FILES content:"
-          echo "$CHANGED_FILES" | while read -r line; do
-            echo "  File: $line"
+          echo "$CHANGED_FILES" | tr ' ' '\n' | while read -r line; do
+            [ -n "$line" ] && echo "  File: $line"
           done
           echo "Debug: CHANGED_ROLES content:"
-          echo "$CHANGED_ROLES" | while read -r line; do
-            echo "  Role: $line"
+          echo "$CHANGED_ROLES" | tr ' ' '\n' | while read -r line; do
+            [ -n "$line" ] && echo "  Role: $line"
           done
           
           # Set output for use in next step
           {
             echo "roles<<EOF"
-            printf '%s\n' "$CHANGED_ROLES"
+            echo "$CHANGED_ROLES" | tr ' ' '\n' | grep -v '^$'
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
