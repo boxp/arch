@@ -176,12 +176,18 @@ runs:
         # Extract node IP from node-specific playbook for control-plane
         NODE_IP=$(grep "node_ip:" playbooks/node-${{ inputs.node_name }}.yml | head -1 | cut -d'"' -f2)
         
+        # Create variables file for control-plane playbook
+        cat > vars_control_plane.yml << EOF
+        ---
+        node_ip: "$NODE_IP"
+        chroot_build: true
+        ansible_python_interpreter: "/usr/bin/python3"
+        EOF
+        
         # Apply common control-plane configuration first
         sudo ansible-playbook \
           -i chroot_inventory.ini \
-          -e chroot_build=true \
-          -e ansible_python_interpreter=/usr/bin/python3 \
-          -e node_ip="$NODE_IP" \
+          -e "@vars_control_plane.yml" \
           playbooks/control-plane.yml
         
         # Apply node-specific configuration
@@ -192,7 +198,7 @@ runs:
           playbooks/node-${{ inputs.node_name }}.yml
         
         # Cleanup and return to parent directory
-        rm -f chroot_inventory.ini
+        rm -f chroot_inventory.ini vars_control_plane.yml
         cd ..
         
         # Cleanup chroot mounts
