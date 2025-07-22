@@ -36,6 +36,9 @@ runs:
           python3-pip \
           bc \
           binfmt-support
+        
+        # Install Ansible collections needed for chroot
+        ansible-galaxy collection install community.general
 
     - name: Clone Armbian build system
       shell: bash
@@ -143,35 +146,45 @@ runs:
         sudo mkdir -p /mnt/orangepi
         sudo mount "${LOOP_DEVICE}p1" /mnt/orangepi
         
-        # Set up chroot environment
+        # Set up chroot environment properly
         echo "Setting up chroot environment..."
         sudo mount -t proc /proc /mnt/orangepi/proc
-        sudo mount -t sysfs /sys /mnt/orangepi/sys
+        sudo mount -t sysfs /sys /mnt/orangepi/sys  
         sudo mount -o bind /dev /mnt/orangepi/dev
         sudo mount -o bind /dev/pts /mnt/orangepi/dev/pts
+        sudo mount -t tmpfs tmpfs /mnt/orangepi/tmp
+        sudo mount -t tmpfs tmpfs /mnt/orangepi/run
         
-        # Copy resolv.conf for network access in chroot
+        # Copy DNS configuration for network access in chroot
         sudo cp /etc/resolv.conf /mnt/orangepi/etc/resolv.conf
+        sudo cp /etc/hosts /mnt/orangepi/etc/hosts
+        
+        # Create temporary inventory for chroot
+        cd ansible
+        cat > /tmp/chroot_inventory << EOF
+        [all]
+        orangepi_chroot ansible_connection=community.general.chroot ansible_chroot=/mnt/orangepi
+        EOF
         
         # Apply common control-plane configuration first
-        cd ansible
         sudo ansible-playbook \
-          -i /mnt/orangepi, \
-          -c chroot \
+          -i /tmp/chroot_inventory \
           -e chroot_build=true \
           playbooks/control-plane.yml
         
         # Apply node-specific configuration
         sudo ansible-playbook \
-          -i /mnt/orangepi, \
-          -c chroot \
+          -i /tmp/chroot_inventory \
           -e chroot_build=true \
           playbooks/node-${{ inputs.node_name }}.yml
         
-        # Return to parent directory
+        # Return to parent directory and cleanup
         cd ..
+        rm -f /tmp/chroot_inventory
         
         # Cleanup chroot mounts
+        sudo umount /mnt/orangepi/run || true
+        sudo umount /mnt/orangepi/tmp || true
         sudo umount /mnt/orangepi/dev/pts || true
         sudo umount /mnt/orangepi/dev || true
         sudo umount /mnt/orangepi/sys || true
