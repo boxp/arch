@@ -72,6 +72,7 @@ runs:
         
         # Copy ansible directory to overlay just before build
         echo "📋 Copying Ansible files to overlay..."
+        mkdir -p armbian/userpatches/overlay
         cp -r ansible armbian/userpatches/overlay/ansible
         
         echo "✅ Customization files prepared!"
