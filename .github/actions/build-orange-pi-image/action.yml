@@ -62,24 +62,45 @@ runs:
         restore-keys: |
           armbian-build-orangepizero3-
 
-    - name: Build Orange Pi Zero 3 image with Armbian
+    - name: Prepare customization files
+      shell: bash
+      run: |
+        echo "📋 Preparing Armbian customization files..."
+        
+        # Copy userpatches directory to Armbian build (standard location)
+        cp -r userpatches armbian/
+        
+        # Copy ansible directory to overlay just before build
+        echo "📋 Copying Ansible files to overlay..."
+        cp -r ansible armbian/userpatches/overlay/
+        
+        echo "✅ Customization files prepared!"
+        echo "📁 Userpatches contents:"
+        ls -la armbian/userpatches/
+        echo "📁 Overlay contents:"
+        ls -la armbian/userpatches/overlay/
+
+    - name: Build Orange Pi Zero 3 image with Armbian and customization
       shell: bash
       run: |
         cd armbian
         
-        echo "🏗️ Building Orange Pi Zero 3 custom image..."
+        echo "🏗️ Building Orange Pi Zero 3 custom image with integrated customization..."
         echo "📋 Build configuration:"
         echo "  - Board: orangepizero3"
         echo "  - Branch: current"
         echo "  - Release: noble"
         echo "  - Build: minimal"
         echo "  - Node: ${{ inputs.node_name }}"
+        echo "  - Customization: customize-image.sh"
         
         # Set CPU cores for faster build
         CPUS=$(nproc)
         echo "🚀 Using $CPUS CPU cores for parallel build"
         
-        # Configure build with optimization for GitHub Actions
+        # Configure build with customization support
+        export ORANGEPI_NODE_NAME="${{ inputs.node_name }}"
+        
         ./compile.sh \
           BOARD=orangepizero3 \
           BRANCH=current \
@@ -94,9 +115,10 @@ runs:
           PARALLEL="$CPUS" \
           PROGRESS_LOG_TO_FILE=yes \
           SYNC_CLOCK=no \
-          SKIP_EXTERNAL_TOOLCHAINS=yes
+          SKIP_EXTERNAL_TOOLCHAINS=yes \
+          ORANGEPI_NODE_NAME="${{ inputs.node_name }}"
         
-        echo "🎯 Armbian build completed!"
+        echo "🎯 Armbian build with customization completed!"
         
         # Fix file permissions for cache artifacts
         sudo chown -R runner:docker cache/ output/ || true
@@ -112,108 +134,17 @@ runs:
           exit 1
         fi
         
-        echo "📦 Generated image: $OUTPUT_IMAGE"
+        echo "📦 Generated customized image: $OUTPUT_IMAGE"
         echo "📏 Image size: $(du -h "$OUTPUT_IMAGE" | cut -f1)"
         
-        # Move to expected location
-        cp "$OUTPUT_IMAGE" ../orangepi-zero3-noble-server.img.xz
-        
-    - name: Extract and customize image for node
-      shell: bash
-      run: |
-        # Use the built image
-        IMAGE_FILE="orangepi-zero3-noble-server.img.xz"
-        if [ ! -f "$IMAGE_FILE" ]; then
-          echo "Error: Built image file not found: $IMAGE_FILE"
-          exit 1
-        fi
-        
-        echo "Using built image: $IMAGE_FILE"
-        
-        # Extract image
-        xz -d "$IMAGE_FILE"
-        IMG_FILE="orangepi-zero3-noble-server.img"
-        
-        # Create loop device
-        LOOP_DEVICE=$(sudo losetup -f --show "$IMG_FILE")
-        echo "Loop device: $LOOP_DEVICE"
-        
-        # Wait for partitions to be available
-        sleep 2
-        sudo partprobe "$LOOP_DEVICE"
-        
-        # Mount root partition
-        sudo mkdir -p /mnt/orangepi
-        sudo mount "${LOOP_DEVICE}p1" /mnt/orangepi
-        
-        # Set up chroot environment properly
-        echo "Setting up chroot environment..."
-        sudo mount -t proc /proc /mnt/orangepi/proc
-        sudo mount -t sysfs /sys /mnt/orangepi/sys  
-        sudo mount -o bind /dev /mnt/orangepi/dev
-        sudo mount -o bind /dev/pts /mnt/orangepi/dev/pts
-        sudo mount -t tmpfs tmpfs /mnt/orangepi/tmp
-        sudo mount -t tmpfs tmpfs /mnt/orangepi/run
-        
-        # Set up DNS configuration for network access in chroot
-        echo "Setting up DNS in chroot environment..."
-        sudo rm -f /mnt/orangepi/etc/resolv.conf
-        echo "nameserver 8.8.8.8" | sudo tee /mnt/orangepi/etc/resolv.conf
-        echo "nameserver 8.8.4.4" | sudo tee -a /mnt/orangepi/etc/resolv.conf
-        
-        # Ensure basic hosts file exists
-        if [ ! -f "/mnt/orangepi/etc/hosts" ]; then
-          echo "127.0.0.1	localhost" | sudo tee /mnt/orangepi/etc/hosts
-          echo "127.0.1.1	orangepi" | sudo tee -a /mnt/orangepi/etc/hosts
-          echo "::1		localhost ip6-localhost ip6-loopback" | sudo tee -a /mnt/orangepi/etc/hosts
-        fi
-        
-        # Create proper inventory for community.general.chroot connection
-        cd ansible
-        echo "[chroots]" > chroot_inventory.ini
-        echo "orangepi_chroot ansible_host=/mnt/orangepi ansible_connection=community.general.chroot" >> chroot_inventory.ini
-        
-        # Apply common control-plane configuration first
-        sudo ansible-playbook \
-          -i chroot_inventory.ini \
-          -e chroot_build=true \
-          -e ansible_python_interpreter=/usr/bin/python3 \
-          -e node_name=${{ inputs.node_name }} \
-          playbooks/control-plane.yml
-        
-        # Apply node-specific configuration
-        sudo ansible-playbook \
-          -i chroot_inventory.ini \
-          -e chroot_build=true \
-          -e ansible_python_interpreter=/usr/bin/python3 \
-          playbooks/node-${{ inputs.node_name }}.yml
-        
-        # Cleanup and return to parent directory
-        rm -f chroot_inventory.ini
-        cd ..
-        
-        # Cleanup chroot mounts
-        sudo umount /mnt/orangepi/run || true
-        sudo umount /mnt/orangepi/tmp || true
-        sudo umount /mnt/orangepi/dev/pts || true
-        sudo umount /mnt/orangepi/dev || true
-        sudo umount /mnt/orangepi/sys || true
-        sudo umount /mnt/orangepi/proc || true
-        
-        # Cleanup root mount
-        sudo umount /mnt/orangepi
-        sudo losetup -d "$LOOP_DEVICE"
-        
-        # Compress customized image
-        xz -9 "$IMG_FILE"
-        
-        # Create final image name with timestamp and git hash for uniqueness
+        # Move to expected location with node-specific naming
         BUILD_TIMESTAMP=$(date +%Y%m%d-%H%M%S)
         GIT_SHORT_SHA=$(echo "$GITHUB_SHA" | cut -c1-8)
         FINAL_IMAGE="orangepi-zero3-${{ inputs.node_name }}-${BUILD_TIMESTAMP}-${GIT_SHORT_SHA}.img.xz"
-        mv "${IMG_FILE}.xz" "$FINAL_IMAGE"
+        cp "$OUTPUT_IMAGE" "../$FINAL_IMAGE"
         
         # Generate checksum
+        cd ..
         sha256sum "$FINAL_IMAGE" > "${FINAL_IMAGE}.sha256"
         
         # Create image info
@@ -224,12 +155,11 @@ runs:
           "image_file": "$FINAL_IMAGE",
           "checksum_file": "${FINAL_IMAGE}.sha256",
           "armbian_version": "custom-build-noble",
-          "build_method": "armbian/build",
+          "build_method": "armbian/build-with-customize-script",
           "github_sha": "$GITHUB_SHA"
         }
         EOF
         
-        # Export variables for next steps
         echo "FINAL_IMAGE=$FINAL_IMAGE" >> "$GITHUB_ENV"
 
     - name: Configure AWS credentials
