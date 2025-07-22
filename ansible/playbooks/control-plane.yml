@@ -3,11 +3,14 @@
   hosts: all
   become: true
   gather_facts: true
+  vars_files:
+    - ../vars/nodes.yml
   vars:
-    # Common cluster configuration
-    cluster_vip: "192.168.10.99"
-    cluster_domain: "cluster.local"
-    cluster_dns: "10.96.0.10"
+    # Node-specific IP (should be set by build process)
+    node_ip: "{{ node_ips[node_name] }}"
+    cluster_vip: "{{ cluster.vip }}"
+    cluster_domain: "{{ cluster.domain }}"
+    cluster_dns: "{{ cluster.dns }}"
 
   tasks:
     - name: Ensure SSH server is installed and configured
@@ -61,7 +64,8 @@
       tags: [network, bootstrap]
       vars:
         network_ip_address: "{{ node_ip }}"
-        network_gateway: "192.168.10.1"
+        network_gateway: "{{ cluster.gateway }}"
+        network_dns_servers: "{{ cluster.dns_servers }}"
 
     - role: cloudflare_cli
       tags: [cloudflare, external-access]

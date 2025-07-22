@@ -1,0 +1,16 @@
+---
+# Node IP addresses for Orange Pi Zero 3 cluster
+node_ips:
+  shanghai-1: "192.168.10.102"
+  shanghai-2: "192.168.10.103"
+  shanghai-3: "192.168.10.104"
+
+# Common cluster configuration
+cluster:
+  vip: "192.168.10.99"
+  domain: "cluster.local"
+  dns: "10.96.0.10"
+  gateway: "192.168.10.1"
+  dns_servers:
+    - "8.8.8.8"
+    - "8.8.4.4"

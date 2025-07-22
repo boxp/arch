@@ -178,6 +178,7 @@ runs:
           -i chroot_inventory.ini \
           -e chroot_build=true \
           -e ansible_python_interpreter=/usr/bin/python3 \
+          -e node_name=${{ inputs.node_name }} \
           playbooks/control-plane.yml
         
         # Apply node-specific configuration
