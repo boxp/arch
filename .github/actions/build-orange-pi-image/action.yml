@@ -99,9 +99,9 @@ runs:
         echo "🚀 Using $CPUS CPU cores for parallel build"
         
         # Configure build with customization support
-        export ORANGEPI_NODE_NAME="${{ inputs.node_name }}"
+        echo 'export ORANGEPI_NODE_NAME="${{ inputs.node_name }}"' >> userpatches/config-shanghai.conf.sh
         
-        ./compile.sh \
+        ./compile.sh shanghai \
           BOARD=orangepizero3 \
           BRANCH=current \
           RELEASE=noble \
@@ -115,8 +115,7 @@ runs:
           PARALLEL="$CPUS" \
           PROGRESS_LOG_TO_FILE=yes \
           SYNC_CLOCK=no \
-          SKIP_EXTERNAL_TOOLCHAINS=yes \
-          ORANGEPI_NODE_NAME="${{ inputs.node_name }}"
+          SKIP_EXTERNAL_TOOLCHAINS=yes
         
         echo "🎯 Armbian build with customization completed!"
         
