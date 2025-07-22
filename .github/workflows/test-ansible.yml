@@ -90,9 +90,6 @@ jobs:
           
           # Set output for use in next step (space-separated for simplicity)
           echo "roles=${CHANGED_ROLES}" >> "$GITHUB_OUTPUT"
-          
-          # Always exit successfully
-          exit 0
 
       - name: Run Molecule tests for changed roles
         run: |
