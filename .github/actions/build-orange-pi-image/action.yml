@@ -37,8 +37,8 @@ runs:
           bc \
           binfmt-support
         
-        # Install Python requirements for chroot operations
-        pip3 install --user pexpect
+        # Install Ansible collections needed for chroot
+        ansible-galaxy collection install community.general
 
     - name: Clone Armbian build system
       shell: bash
@@ -170,24 +170,29 @@ runs:
 HOSTS_EOF
         fi
         
-        # Apply common control-plane configuration first using standard chroot connection
+        # Create proper inventory for community.general.chroot connection
         cd ansible
+        cat > chroot_inventory.ini << 'EOF'
+        [chroots]
+        orangepi_chroot ansible_host=/mnt/orangepi ansible_connection=community.general.chroot
+        EOF
+        
+        # Apply common control-plane configuration first
         sudo ansible-playbook \
-          -i /mnt/orangepi, \
-          -c chroot \
+          -i chroot_inventory.ini \
           -e chroot_build=true \
           -e ansible_python_interpreter=/usr/bin/python3 \
           playbooks/control-plane.yml
         
         # Apply node-specific configuration
         sudo ansible-playbook \
-          -i /mnt/orangepi, \
-          -c chroot \
+          -i chroot_inventory.ini \
           -e chroot_build=true \
           -e ansible_python_interpreter=/usr/bin/python3 \
           playbooks/node-${{ inputs.node_name }}.yml
         
-        # Return to parent directory
+        # Cleanup and return to parent directory
+        rm -f chroot_inventory.ini
         cd ..
         
         # Cleanup chroot mounts
