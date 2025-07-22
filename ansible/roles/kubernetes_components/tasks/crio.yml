@@ -66,11 +66,17 @@
   become: true
   notify: Restart crio
 
-- name: Enable and start CRI-O service
-  ansible.builtin.systemd:
-    name: crio
-    enabled: true
-    state: started
-    daemon_reload: true
+- name: Create systemd multi-user.target.wants directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/multi-user.target.wants
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Enable CRI-O service via symlink
+  ansible.builtin.file:
+    src: /usr/lib/systemd/system/crio.service
+    dest: /etc/systemd/system/multi-user.target.wants/crio.service
+    state: link
   become: true
   when: not ansible_virtualization_type == "docker"

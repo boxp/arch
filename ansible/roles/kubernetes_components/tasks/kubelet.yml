@@ -43,9 +43,16 @@
     - Reload systemd
     - Restart kubelet
 
-- name: Ensure kubelet is enabled
-  ansible.builtin.systemd:
-    name: kubelet
-    enabled: true
-    daemon_reload: true
+- name: Create systemd multi-user.target.wants directory
+  ansible.builtin.file:
+    path: /etc/systemd/system/multi-user.target.wants
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Enable kubelet service via symlink
+  ansible.builtin.file:
+    src: /usr/lib/systemd/system/kubelet.service
+    dest: /etc/systemd/system/multi-user.target.wants/kubelet.service
+    state: link
   become: true

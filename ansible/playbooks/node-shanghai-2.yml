@@ -1,6 +1,6 @@
 ---
 - name: Configure Shanghai-2 control plane node
-  hosts: localhost
+  hosts: all
   become: true
   gather_facts: false
   vars:
@@ -88,8 +88,8 @@
           netplan apply
 
           # Start and enable services
-          systemctl enable --now crio
-          systemctl enable --now kubelet
+          # Services will be enabled by enable-services-chroot.yml
+          # systemctl doesn't work in chroot environment
 
           echo "Shanghai-2 node ready for manual cluster join"
           echo "Use: kubeadm join <cluster-endpoint> --token <token> --discovery-token-ca-cert-hash <hash> --control-plane"
@@ -116,8 +116,14 @@
         dest: /etc/systemd/system/init-shanghai-2.service
         mode: '0644'
 
-    - name: Enable shanghai-2 initialization service
-      ansible.builtin.systemd:
-        name: init-shanghai-2.service
-        enabled: true
-        daemon_reload: true
+    - name: Create systemd multi-user.target.wants directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/multi-user.target.wants
+        state: directory
+        mode: '0755'
+
+    - name: Enable shanghai-2 initialization service via symlink
+      ansible.builtin.file:
+        src: /etc/systemd/system/init-shanghai-2.service
+        dest: /etc/systemd/system/multi-user.target.wants/init-shanghai-2.service
+        state: link

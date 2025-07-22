@@ -21,7 +21,7 @@
     state: present
   become: true
   loop: "{{ kernel_modules }}"
-  when: kubernetes_enable_modules
+  when: kubernetes_enable_modules and not (ansible_virtualization_type | default('') == 'docker' and item == 'br_netfilter')
 
 - name: Ensure kernel modules are loaded at boot
   ansible.builtin.lineinfile:
@@ -31,7 +31,7 @@
     mode: '0644'
   become: true
   loop: "{{ kernel_modules }}"
-  when: kubernetes_enable_modules
+  when: kubernetes_enable_modules and not (ansible_virtualization_type | default('') == 'docker' and item == 'br_netfilter')
 
 - name: Configure sysctl parameters
   ansible.posix.sysctl:
@@ -42,6 +42,7 @@
     reload: true
   become: true
   loop: "{{ sysctl_config | dict2items }}"
+  when: not (ansible_virtualization_type | default('') == 'docker' and item.key is match('net\.bridge\..*'))
 
 - name: Create sysctl configuration file
   ansible.builtin.template:
