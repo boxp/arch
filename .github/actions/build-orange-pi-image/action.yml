@@ -155,9 +155,20 @@ runs:
         sudo mount -t tmpfs tmpfs /mnt/orangepi/tmp
         sudo mount -t tmpfs tmpfs /mnt/orangepi/run
         
-        # Copy DNS configuration for network access in chroot
-        sudo cp /etc/resolv.conf /mnt/orangepi/etc/resolv.conf
-        sudo cp /etc/hosts /mnt/orangepi/etc/hosts
+        # Set up DNS configuration for network access in chroot
+        echo "Setting up DNS in chroot environment..."
+        sudo rm -f /mnt/orangepi/etc/resolv.conf
+        echo "nameserver 8.8.8.8" | sudo tee /mnt/orangepi/etc/resolv.conf
+        echo "nameserver 8.8.4.4" | sudo tee -a /mnt/orangepi/etc/resolv.conf
+        
+        # Ensure basic hosts file exists
+        if [ ! -f "/mnt/orangepi/etc/hosts" ]; then
+          cat << 'HOSTS_EOF' | sudo tee /mnt/orangepi/etc/hosts
+127.0.0.1	localhost
+127.0.1.1	orangepi
+::1		localhost ip6-localhost ip6-loopback
+HOSTS_EOF
+        fi
         
         # Create temporary inventory for chroot
         cd ansible
