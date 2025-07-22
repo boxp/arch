@@ -79,12 +79,8 @@ jobs:
             [ -n "$line" ] && echo "  Role: $line"
           done
           
-          # Set output for use in next step
-          {
-            echo "roles<<EOF"
-            echo "$CHANGED_ROLES" | tr ' ' '\n' | grep -v '^$'
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          # Set output for use in next step (space-separated for simplicity)
+          echo "roles=$CHANGED_ROLES" >> "$GITHUB_OUTPUT"
 
       - name: Run Molecule tests for changed roles
         run: |
