@@ -60,6 +60,9 @@
   roles:
     - role: user_management
       tags: [users, bootstrap]
+      vars:
+        user_management_use_github_keys: true
+        user_management_github_username: "boxp"
     - role: network_configuration
       tags: [network, bootstrap]
       vars:
