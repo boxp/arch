@@ -13,8 +13,6 @@ echo "  - Running as: $(whoami)"
 echo "📦 Installing Ansible..."
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y ansible python3-pip
-pip3 install ansible-core
-ansible-galaxy collection install community.general ansible.posix
 
 # Copy Ansible playbooks from build environment to rootfs
 # The /tmp/overlay is where Armbian mounts external files
