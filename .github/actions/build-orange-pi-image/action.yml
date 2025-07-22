@@ -173,11 +173,15 @@ runs:
         echo "[chroots]" > chroot_inventory.ini
         echo "orangepi_chroot ansible_host=/mnt/orangepi ansible_connection=community.general.chroot" >> chroot_inventory.ini
         
+        # Extract node IP from node-specific playbook for control-plane
+        NODE_IP=$(grep "node_ip:" playbooks/node-${{ inputs.node_name }}.yml | head -1 | cut -d'"' -f2)
+        
         # Apply common control-plane configuration first
         sudo ansible-playbook \
           -i chroot_inventory.ini \
           -e chroot_build=true \
           -e ansible_python_interpreter=/usr/bin/python3 \
+          -e node_ip="$NODE_IP" \
           playbooks/control-plane.yml
         
         # Apply node-specific configuration
