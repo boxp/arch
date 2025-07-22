@@ -163,19 +163,15 @@ runs:
         
         # Ensure basic hosts file exists
         if [ ! -f "/mnt/orangepi/etc/hosts" ]; then
-          cat << 'HOSTS_EOF' | sudo tee /mnt/orangepi/etc/hosts
-127.0.0.1	localhost
-127.0.1.1	orangepi
-::1		localhost ip6-localhost ip6-loopback
-HOSTS_EOF
+          echo "127.0.0.1	localhost" | sudo tee /mnt/orangepi/etc/hosts
+          echo "127.0.1.1	orangepi" | sudo tee -a /mnt/orangepi/etc/hosts
+          echo "::1		localhost ip6-localhost ip6-loopback" | sudo tee -a /mnt/orangepi/etc/hosts
         fi
         
         # Create proper inventory for community.general.chroot connection
         cd ansible
-        cat > chroot_inventory.ini << 'EOF'
-        [chroots]
-        orangepi_chroot ansible_host=/mnt/orangepi ansible_connection=community.general.chroot
-        EOF
+        echo "[chroots]" > chroot_inventory.ini
+        echo "orangepi_chroot ansible_host=/mnt/orangepi ansible_connection=community.general.chroot" >> chroot_inventory.ini
         
         # Apply common control-plane configuration first
         sudo ansible-playbook \
