@@ -1,11 +1,31 @@
 ---
 # System preparation tasks for Kubernetes
 
+- name: Check if running in chroot environment
+  ansible.builtin.stat:
+    path: /proc/1/root/.
+  register: chroot_check
+  changed_when: false
+  failed_when: false
+
+- name: Set chroot fact
+  ansible.builtin.set_fact:
+    is_chroot: "{{ chroot_check.stat.ino is not defined or chroot_check.stat.ino != 2 }}"
+
 - name: Disable swap
   ansible.builtin.command: swapoff -a
   become: true
-  when: kubernetes_disable_swap
+  when:
+    - kubernetes_disable_swap
+    - not is_chroot
   changed_when: false
+
+- name: Skip swap disable in chroot
+  ansible.builtin.debug:
+    msg: "Skipping swapoff in chroot environment. Swap will be disabled via fstab."
+  when:
+    - kubernetes_disable_swap
+    - is_chroot
 
 - name: Remove swap from /etc/fstab
   ansible.builtin.lineinfile:
