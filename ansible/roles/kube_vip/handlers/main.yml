@@ -6,6 +6,7 @@
     path: "{{ kube_vip_manifest_dir }}/kube-vip.yaml"
     state: present
   become: true
+  when: not (is_chroot_build | default(false))
 
 - name: Check kube-vip pod status
   ansible.builtin.shell: |
@@ -16,6 +17,8 @@
     fi
   register: kube_vip_pod_status
   become: true
-  when: ansible_virtualization_type != "docker"
+  when: 
+    - ansible_virtualization_type != "docker"
+    - not (is_chroot_build | default(false))
   changed_when: false
   failed_when: false
