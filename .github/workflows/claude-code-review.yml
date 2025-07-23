@@ -12,6 +12,7 @@ on:
 
 jobs:
   claude-review:
+    timeout-minutes: 30
     # Optional: Filter by PR author
     # if: |
     #   github.event.pull_request.user.login == 'external-contributor' ||
@@ -27,13 +28,14 @@ jobs:
     
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           fetch-depth: 1
+          persist-credentials: false
 
       - name: Run Claude Code Review
         id: claude-review
-        uses: anthropics/claude-code-action@beta
+        uses: anthropics/claude-code-action@2660c3a6d30056eb5ddd5d6c902574f4aa90c471 # beta
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
 
