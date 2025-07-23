@@ -17,7 +17,7 @@
     fi
   register: kube_vip_pod_status
   become: true
-  when: 
+  when:
     - ansible_virtualization_type != "docker"
     - not (is_chroot_build | default(false))
   changed_when: false

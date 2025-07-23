@@ -48,9 +48,8 @@
     dest: "{{ kube_vip_manifest_dir }}/kube-vip.yaml"
     mode: '0644'
   become: true
-  when: 
+  when:
     - kubeconfig_stat.stat.exists
-    - not is_chroot_build
   notify: Wait for kube-vip pod
 
 - name: Create RBAC resources for kube-vip
