@@ -41,7 +41,17 @@
     state: present
   become: true
   loop: "{{ kernel_modules }}"
-  when: kubernetes_enable_modules and not (ansible_virtualization_type | default('') == 'docker' and item == 'br_netfilter')
+  when:
+    - kubernetes_enable_modules
+    - not is_chroot
+    - not (ansible_virtualization_type | default('') == 'docker' and item == 'br_netfilter')
+
+- name: Skip kernel module loading in chroot
+  ansible.builtin.debug:
+    msg: "Skipping kernel module loading in chroot environment. Modules will be loaded on first boot."
+  when:
+    - kubernetes_enable_modules
+    - is_chroot
 
 - name: Ensure kernel modules are loaded at boot
   ansible.builtin.lineinfile:
@@ -51,18 +61,27 @@
     mode: '0644'
   become: true
   loop: "{{ kernel_modules }}"
-  when: kubernetes_enable_modules and not (ansible_virtualization_type | default('') == 'docker' and item == 'br_netfilter')
+  when:
+    - kubernetes_enable_modules
+    - not (ansible_virtualization_type | default('') == 'docker' and item == 'br_netfilter')
 
 - name: Configure sysctl parameters
   ansible.posix.sysctl:
     name: "{{ item.key }}"
     value: "{{ item.value }}"
-    sysctl_set: true
+    sysctl_set: "{{ not is_chroot }}"
     state: present
-    reload: true
+    reload: "{{ not is_chroot }}"
   become: true
   loop: "{{ sysctl_config | dict2items }}"
-  when: not (ansible_virtualization_type | default('') == 'docker' and item.key is match('net\.bridge\..*'))
+  when:
+    - not (ansible_virtualization_type | default('') == 'docker' and item.key is match('net\.bridge\..*'))
+    - not (is_chroot and item.key is match('net\.bridge\..*'))
+
+- name: Skip sysctl runtime configuration in chroot
+  ansible.builtin.debug:
+    msg: "Skipping sysctl runtime configuration in chroot environment. Parameters will be applied on first boot."
+  when: is_chroot
 
 - name: Create sysctl configuration file
   ansible.builtin.template:
