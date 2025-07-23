@@ -40,6 +40,6 @@ jobs:
         env:
           AQUA_GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
 
-      - run: github-comment exec -- ghalint run
+      - run: github-comment exec -- ghalint run --config .ghalint.yaml
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
