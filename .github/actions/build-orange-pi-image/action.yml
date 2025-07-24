@@ -107,7 +107,8 @@ runs:
           PARALLEL="$CPUS" \
           PROGRESS_LOG_TO_FILE=yes \
           SYNC_CLOCK=no \
-          SKIP_EXTERNAL_TOOLCHAINS=yes
+          SKIP_EXTERNAL_TOOLCHAINS=yes \
+          INCLUDE_HOME_DIR=yes
         
         echo "🎯 Armbian build with customization completed!"
         
