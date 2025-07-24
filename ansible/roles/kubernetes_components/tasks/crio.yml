@@ -1,6 +1,10 @@
 ---
 # CRI-O installation and configuration tasks
 
+- name: Detect chroot build environment
+  ansible.builtin.set_fact:
+    is_chroot_build: "{{ chroot_build | default(false) | bool or (ansible_env.PWD | default('') | regex_search('/tmp/.*rootfs')) is not none }}"
+
 - name: Install dependencies for CRI-O
   ansible.builtin.package:
     name:

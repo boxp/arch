@@ -1,10 +1,24 @@
 ---
 # Kubelet configuration tasks
 
-- name: Detect node IP address
+- name: Detect chroot build environment
+  ansible.builtin.set_fact:
+    is_chroot_build: "{{ chroot_build | default(false) | bool or (ansible_env.PWD | default('') | regex_search('/tmp/.*rootfs')) is not none }}"
+
+- name: Detect node IP address (normal environment)
   ansible.builtin.set_fact:
     detected_node_ip: "{{ ansible_default_ipv4.address }}"
-  when: kubelet_node_ip == ""
+  when: 
+    - kubelet_node_ip == ""
+    - not is_chroot_build
+    - ansible_default_ipv4.address is defined
+
+- name: Use fallback IP for chroot environment
+  ansible.builtin.set_fact:
+    detected_node_ip: "192.168.1.100"
+  when: 
+    - kubelet_node_ip == ""
+    - is_chroot_build
 
 - name: Use configured node IP
   ansible.builtin.set_fact:

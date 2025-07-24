@@ -1,6 +1,10 @@
 ---
 # Kubernetes installation tasks
 
+- name: Detect chroot build environment
+  ansible.builtin.set_fact:
+    is_chroot_build: "{{ chroot_build | default(false) | bool or (ansible_env.PWD | default('') | regex_search('/tmp/.*rootfs')) is not none }}"
+
 - name: Add Kubernetes repository key
   ansible.builtin.apt_key:
     url: "{{ kubernetes_apt_key_url }}"
@@ -37,10 +41,28 @@
     mode: '0755'
   become: true
 
-- name: Enable kubelet service
+- name: Enable kubelet service (normal environment)
   ansible.builtin.systemd:
     name: kubelet
     enabled: true
     daemon_reload: true
   become: true
-  when: not ansible_virtualization_type == "docker"
+  when: 
+    - not ansible_virtualization_type == "docker"
+    - not is_chroot_build
+
+- name: Create systemd multi-user.target.wants directory (chroot environment)
+  ansible.builtin.file:
+    path: /etc/systemd/system/multi-user.target.wants
+    state: directory
+    mode: '0755'
+  become: true
+  when: is_chroot_build
+
+- name: Enable kubelet service via symlink (chroot environment)
+  ansible.builtin.file:
+    src: /lib/systemd/system/kubelet.service
+    dest: /etc/systemd/system/multi-user.target.wants/kubelet.service
+    state: link
+  become: true
+  when: is_chroot_build
