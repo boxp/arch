@@ -1,6 +1,15 @@
 ---
 # Main tasks file for kube_vip
 
+- name: Detect chroot build environment
+  ansible.builtin.set_fact:
+    is_chroot_build: "{{ chroot_build | default(false) | bool or (ansible_env.PWD | default('') | regex_search('/tmp/.*rootfs')) is not none }}"
+
+- name: Debug chroot detection
+  ansible.builtin.debug:
+    msg: "Chroot build detected: {{ is_chroot_build }}"
+  when: is_chroot_build
+
 - name: Validate required variables
   ansible.builtin.assert:
     that:
@@ -39,7 +48,8 @@
     dest: "{{ kube_vip_manifest_dir }}/kube-vip.yaml"
     mode: '0644'
   become: true
-  when: kubeconfig_stat.stat.exists
+  when:
+    - kubeconfig_stat.stat.exists
   notify: Wait for kube-vip pod
 
 - name: Create RBAC resources for kube-vip
@@ -47,3 +57,4 @@
   when:
     - kube_vip_rbac_create
     - kubeconfig_stat.stat.exists
+    - not is_chroot_build

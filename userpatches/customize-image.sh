@@ -26,6 +26,15 @@ else
     exit 1
 fi
 
+# Install Ansible collections
+echo "📦 Installing Ansible collections..."
+cd /root/ansible
+if [ -f "requirements.yml" ]; then
+    ansible-galaxy collection install -r requirements.yml
+else
+    echo "⚠️ requirements.yml not found"
+fi
+
 # Set node name from environment
 NODE_NAME="${ORANGEPI_NODE_NAME:-unknown}"
 
