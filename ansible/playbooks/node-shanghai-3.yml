@@ -64,6 +64,16 @@
         path: /etc/netplan/10-dhcp-all-interfaces.yaml
         state: absent
 
+    - name: Configure Kubernetes components
+      ansible.builtin.include_role:
+        name: kubernetes_components
+      vars:
+        kubernetes_version: "{{ kubernetes_version }}"
+        kubernetes_package_version: "{{ kubernetes_package_version }}"
+        crio_version: "{{ crio_version }}"
+        kubelet_cluster_dns: "{{ cluster_dns }}"
+        kubelet_cluster_domain: "{{ cluster_domain }}"
+
     - name: Deploy kube-vip for cluster VIP
       ansible.builtin.include_role:
         name: kube_vip
