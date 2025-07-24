@@ -35,7 +35,7 @@ runs:
       shell: bash
       run: |
         echo "Cloning Armbian build repository..."
-        git clone --depth=1 https://github.com/armbian/build armbian
+        git clone -b v25.8.0-trunk.393 --depth=1 https://github.com/armbian/build armbian
         cd armbian
         
         echo "Armbian build system cloned:"
