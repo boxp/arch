@@ -95,3 +95,19 @@
   ansible.builtin.package:
     update_cache: true
   become: true
+
+- name: Install essential tools
+  ansible.builtin.package:
+    name:
+      - vim
+      - curl
+      - wget
+      - htop
+      - tree
+      - git
+      - nano
+      - less
+      - unzip
+      - dnsutils
+    state: present
+  become: true
