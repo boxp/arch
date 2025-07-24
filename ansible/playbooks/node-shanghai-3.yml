@@ -43,17 +43,21 @@
         content: |
           network:
             version: 2
-            renderer: systemd
+            renderer: networkd
             ethernets:
               eth0:
                 dhcp4: false
+                dhcp6: false
                 addresses:
                   - {{ node_ip }}/24
-                gateway4: {{ network_gateway }}
+                routes:
+                  - to: default
+                    via: {{ network_gateway }}
                 nameservers:
                   addresses: {{ network_dns_servers }}
+                optional: false
         dest: /etc/netplan/01-armbian-static.yaml
-        mode: '0644'
+        mode: '0600'
 
     - name: Remove dhcp configuration
       ansible.builtin.file:

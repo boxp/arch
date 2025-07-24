@@ -68,3 +68,22 @@
           - auth_keys_content.stdout | length > 0
           - "'ssh-' in auth_keys_content.stdout"
         fail_msg: "GitHub SSH keys not found in authorized_keys"
+
+    - name: Check essential tools are installed
+      ansible.builtin.package_facts:
+        manager: apt
+
+    - name: Assert essential tools are installed
+      ansible.builtin.assert:
+        that:
+          - "'vim' in ansible_facts.packages"
+          - "'curl' in ansible_facts.packages"
+          - "'wget' in ansible_facts.packages"
+          - "'htop' in ansible_facts.packages"
+          - "'tree' in ansible_facts.packages"
+          - "'git' in ansible_facts.packages"
+          - "'nano' in ansible_facts.packages"
+          - "'less' in ansible_facts.packages"
+          - "'unzip' in ansible_facts.packages"
+          - "'dnsutils' in ansible_facts.packages"
+        fail_msg: "Not all essential tools are installed"
