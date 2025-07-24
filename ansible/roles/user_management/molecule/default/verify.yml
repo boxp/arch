@@ -16,11 +16,6 @@
           - not user_check.changed
         fail_msg: "User boxp does not exist"
 
-    - name: Get user info
-      ansible.builtin.getent:
-        database: passwd
-        key: boxp
-
     - name: Check if user is in sudo group
       ansible.builtin.command: groups boxp
       register: user_groups
@@ -34,7 +29,7 @@
 
     - name: Check if .ssh directory exists
       ansible.builtin.stat:
-        path: "{{ ansible_facts.getent_passwd.boxp[4] }}/.ssh"
+        path: "/home/boxp/.ssh"
       register: ssh_dir
 
     - name: Assert .ssh directory exists
@@ -47,7 +42,7 @@
 
     - name: Check if authorized_keys exists
       ansible.builtin.stat:
-        path: "{{ ansible_facts.getent_passwd.boxp[4] }}/.ssh/authorized_keys"
+        path: "/home/boxp/.ssh/authorized_keys"
       register: auth_keys
 
     - name: Assert authorized_keys exists
@@ -58,7 +53,7 @@
         fail_msg: "authorized_keys does not exist or has incorrect permissions"
 
     - name: Check authorized_keys content for GitHub keys
-      ansible.builtin.command: cat "{{ ansible_facts.getent_passwd.boxp[4] }}/.ssh/authorized_keys"
+      ansible.builtin.command: cat "/home/boxp/.ssh/authorized_keys"
       register: auth_keys_content
       changed_when: false
 
