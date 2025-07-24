@@ -34,4 +34,3 @@
     - ansible_virtualization_type != "docker"
     - chroot_build is not defined or not chroot_build
   listen: "Restart kubelet"
-
