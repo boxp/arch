@@ -35,10 +35,3 @@
     - chroot_build is not defined or not chroot_build
   listen: "Restart kubelet"
 
-- name: Update grub
-  ansible.builtin.command: update-grub
-  become: true
-  when:
-    - ansible_virtualization_type != "docker" 
-    - chroot_build is not defined or not chroot_build
-  listen: "Update grub"
