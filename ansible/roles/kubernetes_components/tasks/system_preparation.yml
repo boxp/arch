@@ -35,6 +35,71 @@
   become: true
   when: kubernetes_disable_swap
 
+- name: Check if zswap is enabled
+  ansible.builtin.stat:
+    path: /sys/module/zswap/parameters/enabled
+  register: zswap_enabled_check
+  when:
+    - kubernetes_disable_swap
+    - not is_chroot
+
+- name: Disable zswap at runtime
+  ansible.builtin.shell: echo 0 > /sys/module/zswap/parameters/enabled
+  become: true
+  when:
+    - kubernetes_disable_swap
+    - not is_chroot
+    - zswap_enabled_check.stat.exists
+  changed_when: false
+
+- name: Check if Armbian boot environment file exists
+  ansible.builtin.stat:
+    path: /boot/armbianEnv.txt
+  register: armbian_env_check
+  when: kubernetes_disable_swap
+
+- name: Add zswap.enabled=0 to Armbian boot environment
+  ansible.builtin.lineinfile:
+    path: /boot/armbianEnv.txt
+    regexp: '^extraargs='
+    line: 'extraargs=zswap.enabled=0'
+    create: false
+  become: true
+  when:
+    - kubernetes_disable_swap
+    - armbian_env_check.stat.exists
+  register: armbian_zswap_disabled
+
+- name: Append zswap.enabled=0 to existing extraargs in Armbian boot environment
+  ansible.builtin.replace:
+    path: /boot/armbianEnv.txt
+    regexp: '^(extraargs=(?!.*zswap\.enabled=0).*)$'
+    replace: '\1 zswap.enabled=0'
+  become: true
+  when:
+    - kubernetes_disable_swap
+    - armbian_env_check.stat.exists
+    - armbian_zswap_disabled is not changed
+
+- name: Check if GRUB configuration exists
+  ansible.builtin.stat:
+    path: /etc/default/grub
+  register: grub_config_check
+  when: kubernetes_disable_swap
+
+- name: Add zswap.enabled=0 to GRUB configuration
+  ansible.builtin.lineinfile:
+    path: /etc/default/grub
+    regexp: '^GRUB_CMDLINE_LINUX_DEFAULT='
+    line: 'GRUB_CMDLINE_LINUX_DEFAULT="quiet zswap.enabled=0"'
+    backup: true
+  become: true
+  when:
+    - kubernetes_disable_swap
+    - grub_config_check.stat.exists
+    - not armbian_env_check.stat.exists
+  notify: Update grub
+
 - name: Load kernel modules
   community.general.modprobe:
     name: "{{ item }}"
