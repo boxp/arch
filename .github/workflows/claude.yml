@@ -59,18 +59,20 @@ jobs:
             必ず日本語で回答してください
           
           # Optional: Custom environment variables for Claude
-          claude_env: |
-            CLAUDE_CODE_OPENAI_TOKEN: ${{ secrets.CLAUDE_CODE_OPENAI_TOKEN }}
+          # claude_env: |
+          #  CLAUDE_CODE_OPENAI_TOKEN: ${{ secrets.CLAUDE_CODE_OPENAI_TOKEN }}
 
           # MCP configuration for o3 integration
           mcp_config: |
             {
               "mcpServers": {
-                "openai": {
+                "o3": {
                   "command": "npx",
-                  "args": ["-y", "@modelcontextprotocol/server-openai"],
+                  "args": ["o3-search-mcp"],
                   "env": {
-                    "OPENAI_API_KEY": "$CLAUDE_CODE_OPENAI_TOKEN"
+                    "OPENAI_API_KEY": "${{ CLAUDE_CODE_OPENAI_TOKEN }}",
+                    "SEARCH_CONTEXT_SIZE": "medium",
+                    "REASONING_EFFORT": "medium"
                   }
                 }
               }
