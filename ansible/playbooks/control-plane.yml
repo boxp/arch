@@ -56,6 +56,7 @@
       ansible.builtin.systemd:
         name: ssh
         state: restarted
+      when: not (ansible_facts.get('chroot', false) or ansible_env.get('CHROOT') or (chroot_check is defined and chroot_check.stat.islnk | default(false)))
 
   roles:
     - role: user_management

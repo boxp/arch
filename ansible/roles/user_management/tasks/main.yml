@@ -25,6 +25,23 @@
     mode: '0700'
   become: true
 
+- name: Check if running in chroot environment
+  ansible.builtin.stat:
+    path: /proc/1/root
+  register: chroot_check
+
+- name: Determine if in chroot
+  ansible.builtin.set_fact:
+    is_chroot_environment: "{{ chroot_check.stat.islnk | default(false) }}"
+
+- name: Skip GitHub key fetch in chroot environment
+  ansible.builtin.debug:
+    msg: "Skipping GitHub SSH key fetch as we're in a chroot build environment"
+  when:
+    - user_management_use_github_keys
+    - user_management_github_username != ""
+    - is_chroot_environment
+
 - name: Fetch GitHub public keys
   ansible.builtin.uri:
     url: "https://github.com/{{ user_management_github_username }}.keys"
@@ -34,6 +51,7 @@
   when:
     - user_management_use_github_keys
     - user_management_github_username != ""
+    - not is_chroot_environment
   delegate_to: localhost
   become: false
 
@@ -55,6 +73,7 @@
   become: true
   when:
     - user_management_use_github_keys
+    - not is_chroot_environment
     - github_keys_response is defined
     - github_keys_response.content != ""
 
