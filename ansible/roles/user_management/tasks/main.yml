@@ -110,7 +110,7 @@
     - armbian-firstrun
     - armbian-firstrun-config
   when: armbian_release.stat.exists
-  ignore_errors: true
+  failed_when: false
 
 - name: Remove .not_logged_in_yet to prevent firstrun execution
   ansible.builtin.file:
