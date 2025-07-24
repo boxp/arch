@@ -13,6 +13,17 @@
     cluster_dns: "{{ cluster.dns }}"
 
   tasks:
+    - name: Check if running in chroot environment
+      ansible.builtin.stat:
+        path: /proc/1/root
+      register: proc_root_stat
+      tags: [ssh, bootstrap]
+
+    - name: Detect chroot environment
+      ansible.builtin.set_fact:
+        is_chroot: "{{ proc_root_stat.stat.islnk | default(false) }}"
+      tags: [ssh, bootstrap]
+
     - name: Ensure SSH server is installed and configured
       tags: [ssh, bootstrap]
       block:
@@ -37,6 +48,14 @@
             state: link
           tags: [ssh, bootstrap]
 
+        - name: Create SSH privilege separation directory for chroot
+          ansible.builtin.file:
+            path: /run/sshd
+            state: directory
+            mode: '0755'
+          when: is_chroot | bool
+          tags: [ssh, bootstrap]
+
         - name: Configure SSH server
           ansible.builtin.lineinfile:
             path: /etc/ssh/sshd_config
@@ -56,6 +75,7 @@
       ansible.builtin.systemd:
         name: ssh
         state: restarted
+      when: not (is_chroot | default(false) | bool)
 
   roles:
     - role: user_management
