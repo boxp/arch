@@ -37,24 +37,15 @@
     mode: '0755'
   become: true
 
-- name: Check if kubeconfig exists
-  ansible.builtin.stat:
-    path: /etc/kubernetes/admin.conf
-  register: kubeconfig_stat
-
 - name: Deploy kube-vip static pod manifest
   ansible.builtin.template:
     src: kube-vip.yaml.j2
     dest: "{{ kube_vip_manifest_dir }}/kube-vip.yaml"
     mode: '0644'
   become: true
-  when:
-    - kubeconfig_stat.stat.exists
   notify: Wait for kube-vip pod
 
 - name: Create RBAC resources for kube-vip
   ansible.builtin.include_tasks: rbac.yml
   when:
     - kube_vip_rbac_create
-    - kubeconfig_stat.stat.exists
-    - not is_chroot_build
