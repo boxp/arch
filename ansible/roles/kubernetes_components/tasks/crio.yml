@@ -1,6 +1,10 @@
 ---
 # CRI-O installation and configuration tasks
 
+- name: Detect chroot build environment
+  ansible.builtin.set_fact:
+    is_chroot: "{{ chroot_build | default(false) | bool or (ansible_env.PWD | default('') | regex_search('/tmp/.*rootfs')) is not none }}"
+
 - name: Install dependencies for CRI-O
   ansible.builtin.package:
     name:
@@ -79,4 +83,4 @@
     dest: /etc/systemd/system/multi-user.target.wants/crio.service
     state: link
   become: true
-  when: not ansible_virtualization_type == "docker"
+  when: not ansible_virtualization_type == "docker"  # Enable in all environments via symlink

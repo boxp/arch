@@ -44,9 +44,15 @@ spec:
     - name: log_level
       value: "{{ kube_vip_log_level }}"
     image: {{ kube_vip_image }}
-    imagePullPolicy: Always
+    imagePullPolicy: IfNotPresent
     name: kube-vip
-    resources: {}
+    resources:
+      limits:
+        memory: 64Mi
+        cpu: 100m
+      requests:
+        memory: 16Mi
+        cpu: 50m
     securityContext:
       capabilities:
         add:
