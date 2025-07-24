@@ -60,7 +60,7 @@
     dest: /etc/crio/crio.conf.d/02-cgroup-manager.conf
     content: |
       [crio.runtime]
-      conmon_cgroup = "systemd"
+      conmon_cgroup = "pod"
       cgroup_manager = "systemd"
     mode: '0644'
   become: true
