@@ -44,8 +44,3 @@
     mode: '0644'
   become: true
   notify: Wait for kube-vip pod
-
-- name: Create RBAC resources for kube-vip
-  ansible.builtin.include_tasks: rbac.yml
-  when:
-    - kube_vip_rbac_create
