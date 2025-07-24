@@ -104,6 +104,6 @@
       tags: [kube-vip, ha]
       vars:
         kube_vip_vip: "{{ cluster_vip }}"
-        kube_vip_interface: "eth0"
+        kube_vip_interface: "end0"
         kube_vip_control_plane: true
         kube_vip_services: false

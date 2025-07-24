@@ -45,7 +45,7 @@
             version: 2
             renderer: networkd
             ethernets:
-              eth0:
+              end0:
                 dhcp4: false
                 dhcp6: false
                 addresses:
@@ -69,7 +69,7 @@
         name: kube_vip
       vars:
         kube_vip_vip: "{{ cluster_vip }}"
-        kube_vip_interface: "eth0"
+        kube_vip_interface: "end0"
 
 
     - name: Create directories for kubeadm

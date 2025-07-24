@@ -18,7 +18,7 @@
 
 - name: Fallback to eth0 if no default route found
   ansible.builtin.set_fact:
-    kube_vip_interface: "eth0"
+    kube_vip_interface: "end0"
   when: default_interface.stdout == ""
 
 - name: Display detected interface

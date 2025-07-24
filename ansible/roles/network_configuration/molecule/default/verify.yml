@@ -5,7 +5,7 @@
   tasks:
     - name: Check if netplan configuration file exists
       ansible.builtin.stat:
-        path: /etc/netplan/01-static-eth0.yaml
+        path: /etc/netplan/01-static-end0.yaml
       register: netplan_config
 
     - name: Assert netplan configuration exists
@@ -16,7 +16,7 @@
 
     - name: Read netplan configuration
       ansible.builtin.slurp:
-        src: /etc/netplan/01-static-eth0.yaml
+        src: /etc/netplan/01-static-end0.yaml
       register: netplan_content
 
     - name: Decode netplan configuration
