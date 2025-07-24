@@ -70,7 +70,7 @@ jobs:
                   "command": "npx",
                   "args": ["o3-search-mcp"],
                   "env": {
-                    "OPENAI_API_KEY": "${{ CLAUDE_CODE_OPENAI_TOKEN }}",
+                    "OPENAI_API_KEY": "${{ secrets.CLAUDE_CODE_OPENAI_TOKEN }}",
                     "SEARCH_CONTEXT_SIZE": "medium",
                     "REASONING_EFFORT": "medium"
                   }
