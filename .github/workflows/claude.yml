@@ -73,7 +73,8 @@ jobs:
                     "OPENAI_API_KEY": "${{ secrets.CLAUDE_CODE_OPENAI_TOKEN }}",
                     "SEARCH_CONTEXT_SIZE": "medium",
                     "REASONING_EFFORT": "medium"
-                  }
+                  },
+                  "timeout": 600000
                 }
               }
             }
