@@ -62,6 +62,8 @@
     - kubernetes_enable_modules
     - not is_chroot
     - not (ansible_virtualization_type | default('') == 'docker' and item == 'br_netfilter')
+  failed_when: false
+  register: modprobe_results
 
 - name: Skip kernel module loading in chroot
   ansible.builtin.debug:
@@ -107,3 +109,16 @@
     mode: '0644'
   become: true
   notify: Reload sysctl
+
+- name: Switch to iptables-legacy for Calico compatibility
+  community.general.alternatives:
+    name: "{{ item }}"
+    path: "/usr/sbin/{{ item }}-legacy"
+  become: true
+  loop:
+    - iptables
+    - ip6tables
+  when: ansible_facts['os_family'] == "Debian"
+  notify: 
+    - Restart crio
+    - Restart kubelet
