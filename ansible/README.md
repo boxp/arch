@@ -11,7 +11,6 @@ The Ansible configuration manages:
 - Network configuration (static IPs, disable WiFi/Bluetooth)
 - Cloudflare CLI for SSH tunneling
 - Kubernetes components (kubeadm, kubelet, cri-o)
-- Kernel modules for container runtime and Calico CNI
 - kube-vip for HA cluster VIP
 
 ## Target Nodes
@@ -99,21 +98,6 @@ molecule test
 - Disables WiFi and Bluetooth
 - Creates systemd service to persist wireless settings
 
-### kubernetes_components
-- Installs Kubernetes packages (kubeadm, kubelet, kubectl)
-- Configures CRI-O container runtime
-- Loads required kernel modules for container runtime and Calico CNI
-- Sets up sysctl parameters for networking
-- Handles both chroot (build-time) and runtime environments
-
-### cloudflare_cli
-- Installs Cloudflare CLI for secure tunnel access
-- Configures remote SSH access via Cloudflare tunnels
-
-### kube_vip
-- Configures kube-vip for high availability VIP
-- Sets up VIP management for control plane load balancing
-
 ## Development
 
 This project follows TDD practices:
@@ -149,7 +133,6 @@ user_management_ssh_key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... boxp@exampl
 - `kubernetes_version`: Kubernetes version to install
 - `crio_version`: CRI-O version to install
 - `cluster_vip`: Virtual IP for kube-vip
-- `kernel_modules`: List of kernel modules to load (includes Calico requirements)
 
 ## Security Notes
 
