@@ -59,14 +59,16 @@ jobs:
             必ず日本語で回答してください
           
           # Optional: Custom environment variables for Claude
-          # claude_env: |
-          #  CLAUDE_CODE_OPENAI_TOKEN: ${{ secrets.CLAUDE_CODE_OPENAI_TOKEN }}
+          claude_env: |
+            MCP_TOOL_TIMEOUT: 600000
+            MCP_TIMEOUT: 600000
 
           # MCP configuration for o3 integration
           mcp_config: |
             {
               "mcpServers": {
                 "o3": {
+                  "type": "stdio",
                   "command": "npx",
                   "args": ["o3-search-mcp"],
                   "env": {
