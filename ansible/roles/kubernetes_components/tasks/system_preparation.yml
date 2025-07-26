@@ -35,6 +35,23 @@
   become: true
   when: kubernetes_disable_swap
 
+- name: Check if Armbian zram config exists
+  ansible.builtin.stat:
+    path: /etc/default/armbian-zram-config
+  register: armbian_zram_config_check
+  when: kubernetes_disable_swap
+
+- name: Disable zram in Armbian configuration
+  ansible.builtin.lineinfile:
+    path: /etc/default/armbian-zram-config
+    regexp: '^SWAP='
+    line: 'SWAP=false'
+    create: false
+  become: true
+  when:
+    - kubernetes_disable_swap
+    - armbian_zram_config_check.stat.exists
+
 - name: Load kernel modules
   community.general.modprobe:
     name: "{{ item }}"

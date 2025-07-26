@@ -87,3 +87,34 @@
       - dnsutils
     state: present
   become: true
+
+# Armbian-specific workarounds for home directory issues
+# Based on o3 research: https://docs.armbian.com/Developer-Guide_Build-Switches/
+# Root cause: INCLUDE_HOME_DIR=no (default) and armbian-firstrun service
+# Ideal solution: Set INCLUDE_HOME_DIR=yes during Armbian image build
+# Workaround: Disable armbian-firstrun to prevent /home directory reset
+
+- name: Check if running on Armbian
+  ansible.builtin.stat:
+    path: /etc/armbian-release
+  register: armbian_release
+  become: true
+
+- name: Disable armbian-firstrun service to prevent home directory reset
+  ansible.builtin.systemd:
+    name: "{{ item }}"
+    enabled: false
+    state: stopped
+  become: true
+  loop:
+    - armbian-firstrun
+    - armbian-firstrun-config
+  when: armbian_release.stat.exists
+  failed_when: false
+
+- name: Remove .not_logged_in_yet to prevent firstrun execution
+  ansible.builtin.file:
+    path: /root/.not_logged_in_yet
+    state: absent
+  become: true
+  when: armbian_release.stat.exists

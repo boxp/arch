@@ -35,7 +35,7 @@ runs:
       shell: bash
       run: |
         echo "Cloning Armbian build repository..."
-        git clone --depth=1 https://github.com/armbian/build armbian
+        git clone -b v25.8.0-trunk.393 --depth=1 https://github.com/armbian/build armbian
         cd armbian
         
         echo "Armbian build system cloned:"
@@ -107,7 +107,8 @@ runs:
           PARALLEL="$CPUS" \
           PROGRESS_LOG_TO_FILE=yes \
           SYNC_CLOCK=no \
-          SKIP_EXTERNAL_TOOLCHAINS=yes
+          SKIP_EXTERNAL_TOOLCHAINS=yes \
+          INCLUDE_HOME_DIR=yes
         
         echo "🎯 Armbian build with customization completed!"
         

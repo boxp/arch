@@ -48,7 +48,7 @@ Kube-vip provides Kubernetes clusters with a virtual IP for high availability wi
     - role: kube_vip
       vars:
         kube_vip_vip: "192.168.10.99"
-        kube_vip_interface: "eth0"  # Optional, will auto-detect
+        kube_vip_interface: "end0"  # Optional, will auto-detect
 ```
 
 ## High Availability Setup
