@@ -95,7 +95,7 @@ runs:
         
         ./compile.sh shanghai \
           BOARD=orangepizero3 \
-          BRANCH=legacy \
+          BRANCH=current \
           RELEASE=noble \
           BUILD_MINIMAL=yes \
           BUILD_DESKTOP=no \
