@@ -7,8 +7,9 @@ This Ansible role installs and configures Kubernetes components (kubeadm, kubele
 This role provides a complete setup for Kubernetes control plane components including:
 - CRI-O container runtime with systemd cgroup driver
 - kubeadm for cluster initialization
-- kubelet for node management  
+- kubelet for node management with server certificate rotation
 - kubectl for cluster interaction
+- RBAC configuration for kubelet serving certificate auto-approval
 - Proper system configuration (kernel modules, sysctl, swap disable)
 
 ## Requirements
@@ -34,6 +35,9 @@ This role provides a complete setup for Kubernetes control plane components incl
 ### System Configuration
 - `kubernetes_disable_swap`: Disable swap for Kubernetes (default: true)
 - `kubernetes_enable_modules`: Load required kernel modules (default: true)
+
+### RBAC Configuration
+- `kubernetes_rbac_enabled`: Enable kubelet serving CSR approver RBAC (default: true)
 
 ## Dependencies
 
