@@ -10,6 +10,7 @@ This role provides a complete setup for Kubernetes control plane components incl
 - kubelet for node management  
 - kubectl for cluster interaction
 - Proper system configuration (kernel modules, sysctl, swap disable)
+- Calico CNI kernel module requirements (xt_set, ip_set support)
 
 ## Requirements
 
@@ -34,6 +35,8 @@ This role provides a complete setup for Kubernetes control plane components incl
 ### System Configuration
 - `kubernetes_disable_swap`: Disable swap for Kubernetes (default: true)
 - `kubernetes_enable_modules`: Load required kernel modules (default: true)
+- `kernel_modules`: List of kernel modules to load (default: overlay, br_netfilter, xt_set, ip_set*)
+- `sysctl_config`: Sysctl parameters for networking (bridge-nf-call-iptables, ip_forward)
 
 ## Dependencies
 
@@ -76,3 +79,5 @@ Created for Orange Pi Zero 3 Kubernetes cluster deployment.
 - Uses Kubernetes v1.32 for latest features and security updates
 - Optimized for ARM64 architecture (Orange Pi Zero 3)
 - Includes comprehensive Molecule testing for CI/CD validation
+- Includes kernel module support for Calico CNI (xt_set, ip_set) to prevent iptables errors
+- Supports both chroot build environment and runtime deployment

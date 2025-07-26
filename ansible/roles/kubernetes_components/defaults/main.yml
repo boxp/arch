@@ -39,10 +39,15 @@ kubernetes_services:
   - kubelet
   - crio
 
-# Kernel modules for container runtime
+# Kernel modules for container runtime and Calico
 kernel_modules:
   - overlay
   - br_netfilter
+  # Calico iptables requirements
+  - xt_set
+  - ip_set
+  - ip_set_hash_ip
+  - ip_set_hash_net
 
 # Sysctl parameters for Kubernetes
 sysctl_config:
