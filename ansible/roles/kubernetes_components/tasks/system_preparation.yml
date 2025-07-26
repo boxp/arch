@@ -119,6 +119,6 @@
     - iptables
     - ip6tables
   when: ansible_facts['os_family'] == "Debian"
-  notify: 
+  notify:
     - Restart crio
     - Restart kubelet
