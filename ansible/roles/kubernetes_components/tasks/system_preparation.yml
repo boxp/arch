@@ -110,6 +110,12 @@
   become: true
   notify: Reload sysctl
 
+- name: Check if iptables-legacy is available
+  ansible.builtin.stat:
+    path: /usr/sbin/iptables-legacy
+  register: iptables_legacy_check
+  when: ansible_facts['os_family'] == "Debian"
+
 - name: Switch to iptables-legacy for Calico compatibility
   community.general.alternatives:
     name: "{{ item }}"
@@ -118,7 +124,9 @@
   loop:
     - iptables
     - ip6tables
-  when: ansible_facts['os_family'] == "Debian"
+  when:
+    - ansible_facts['os_family'] == "Debian"
+    - iptables_legacy_check.stat.exists | default(false)
   notify:
     - Restart crio
     - Restart kubelet
