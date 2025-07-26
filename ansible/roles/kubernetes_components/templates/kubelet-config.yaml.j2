@@ -18,6 +18,3 @@ failSwapOn: false
 serverTLSBootstrap: true
 staticPodPath: /etc/kubernetes/manifests
 rotateCertificates: true
-{% if detected_node_ip is defined and detected_node_ip != "" %}
-nodeIP: {{ detected_node_ip }}
-{% endif %}
