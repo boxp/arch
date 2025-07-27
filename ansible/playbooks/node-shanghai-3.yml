@@ -64,14 +64,6 @@
         path: /etc/netplan/10-dhcp-all-interfaces.yaml
         state: absent
 
-    - name: Deploy kube-vip for cluster VIP
-      ansible.builtin.include_role:
-        name: kube_vip
-      vars:
-        kube_vip_vip: "{{ cluster_vip }}"
-        kube_vip_interface: "end0"
-
-
     - name: Create directories for kubeadm
       ansible.builtin.file:
         path: "{{ item }}"
