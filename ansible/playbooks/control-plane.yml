@@ -100,10 +100,3 @@
         crio_version: "1.32"
         kubelet_cluster_dns: "{{ cluster_dns }}"
         kubelet_cluster_domain: "{{ cluster_domain }}"
-    - role: kube_vip
-      tags: [kube-vip, ha]
-      vars:
-        kube_vip_vip: "{{ cluster_vip }}"
-        kube_vip_interface: "end0"
-        kube_vip_control_plane: true
-        kube_vip_services: false
