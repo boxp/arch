@@ -25,12 +25,12 @@ resource "aws_ssm_parameter" "longhorn_backup_secret_key" {
 
 resource "aws_ssm_parameter" "longhorn_backup_endpoints" {
   name        = "/longhorn/backup/aws-endpoints"
-  description = "AWS endpoints for Longhorn backup (optional)"
+  description = "AWS endpoints for Longhorn backup optional"
   type        = "String"
-  value       = "" # デフォルトのAWSエンドポイントを使用
+  value       = "default" # デフォルトのAWSエンドポイントを使用
 
   tags = {
-    Description = "Longhorn backup AWS endpoints (optional)"
+    Description = "Longhorn backup AWS endpoints optional"
     Project     = "lolice"
   }
 }
