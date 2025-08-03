@@ -100,3 +100,4 @@
         crio_version: "1.32"
         kubelet_cluster_dns: "{{ cluster_dns }}"
         kubelet_cluster_domain: "{{ cluster_domain }}"
+        kubelet_node_ip: "{{ node_ip }}"
