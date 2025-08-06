@@ -1,0 +1,192 @@
+<mxfile host="65bd71144e">
+    <diagram name="System Architecture" id="system-arch">
+        <mxGraphModel dx="1176" dy="1289" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1200" pageHeight="840" math="0" shadow="0">
+            <root>
+                <mxCell id="0"/>
+                <mxCell id="1" parent="0"/>
+                <mxCell id="title" value="arch プロジェクト システム全体図" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=24;fontStyle=1;fontColor=#FFFFFF;labelBackgroundColor=none;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="10" width="300" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="legend-box" value="" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#cccccc;" parent="1" vertex="1">
+                    <mxGeometry x="20" y="40" width="140" height="100" as="geometry"/>
+                </mxCell>
+                <mxCell id="legend-title" value="凡例" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="60" y="50" width="60" height="20" as="geometry"/>
+                </mxCell>
+                <mxCell id="physical-infra" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="160" width="300" height="200" as="geometry"/>
+                </mxCell>
+                <mxCell id="physical-infra-title" value="物理インフラ" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="150" y="170" width="100" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="orangepi-cluster" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#d79b00;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="200" width="260" height="140" as="geometry"/>
+                </mxCell>
+                <mxCell id="orangepi-title" value="Orange Pi Zero 3 クラスター" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=14;fontStyle=1;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="130" y="205" width="140" height="25" as="geometry"/>
+                </mxCell>
+                <mxCell id="shanghai-1" value="shanghai-1&lt;br style=&quot;font-size: 9px;&quot;&gt;192.168.10.102" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffedcc;strokeColor=#d79b00;fontColor=#000000;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="80" y="240" width="70" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="shanghai-2" value="shanghai-2&lt;br style=&quot;font-size: 9px;&quot;&gt;192.168.10.103" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffedcc;strokeColor=#d79b00;fontColor=#000000;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="160" y="240" width="70" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="shanghai-3" value="shanghai-3&lt;br style=&quot;font-size: 9px;&quot;&gt;192.168.10.104" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffedcc;strokeColor=#d79b00;fontColor=#000000;fontSize=9;" parent="1" vertex="1">
+                    <mxGeometry x="240" y="240" width="70" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="kube-vip" value="kube-vip&lt;br style=&quot;font-size: 11px;&quot;&gt;VIP: 192.168.10.99" style="ellipse;whiteSpace=wrap;html=1;fillColor=#e6ffcc;strokeColor=#36c900;fontColor=#000000;fontSize=11;" parent="1" vertex="1">
+                    <mxGeometry x="140" y="285" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="k8s-services" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="400" y="160" width="350" height="480" as="geometry"/>
+                </mxCell>
+                <mxCell id="k8s-title" value="Kubernetes Services" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="500" y="170" width="150" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="argocd" value="ArgoCD" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ccf2cc;strokeColor=#82b366;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="430" y="215" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="monitoring" value="Grafana&lt;br&gt;Prometheus" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ccf2cc;strokeColor=#82b366;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="530" y="215" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="longhorn" value="Longhorn" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ccf2cc;strokeColor=#82b366;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="630" y="215" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="k8s-dashboard" value="Kubernetes&lt;br&gt;Dashboard" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ccf2cc;strokeColor=#82b366;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="430" y="275" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="hitohub" value="HitoHub" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ccf2cc;strokeColor=#82b366;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="530" y="275" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="openhands" value="OpenHands" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ccf2cc;strokeColor=#82b366;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="630" y="275" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="external-secrets" value="External Secrets&lt;br&gt;Operator" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ccf2cc;strokeColor=#82b366;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="430" y="335" width="100" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="aws-services" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="800" y="160" width="350" height="320" as="geometry"/>
+                </mxCell>
+                <mxCell id="aws-title" value="AWS Services" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="900" y="170" width="150" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="ecr" value="ECR&lt;br&gt;&lt;font size=&quot;1&quot;&gt;ark-discord-bot&lt;br&gt;hitohub, openhands&lt;br&gt;palserver&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="820" y="200" width="100" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="ssm" value="SSM Parameter&lt;br&gt;Store&lt;br&gt;&lt;font size=&quot;1&quot;&gt;Secrets Management&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="940" y="200" width="100" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="s3" value="S3&lt;br&gt;&lt;font size=&quot;1&quot;&gt;Longhorn Backups&lt;br&gt;Orange Pi Images&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="820" y="280" width="100" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="iam" value="IAM&lt;br&gt;&lt;font size=&quot;1&quot;&gt;GitHub OIDC&lt;br&gt;Service Accounts&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="940" y="280" width="100" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="github-actions" value="GitHub Actions (CI/CD)" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="820" y="360" width="220" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="cloudflare-services" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="800" y="520" width="350" height="240" as="geometry"/>
+                </mxCell>
+                <mxCell id="cloudflare-title" value="Cloudflare Services" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="900" y="530" width="150" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="dns" value="DNS&lt;br&gt;&lt;font size=&quot;1&quot;&gt;b0xp.io&lt;br&gt;boxp.tk&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="865" y="580" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="tunnels" value="Tunnels&lt;br&gt;&lt;font size=&quot;1&quot;&gt;Secure Access&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="985" y="580" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="zero-trust" value="Zero Trust&lt;br&gt;&lt;font size=&quot;1&quot;&gt;Authentication&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="865" y="650" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="pages" value="Pages&lt;br&gt;&lt;font size=&quot;1&quot;&gt;Static Sites&lt;/font&gt;" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ddd6e7;strokeColor=#9673a6;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="985" y="650" width="100" height="50" as="geometry"/>
+                </mxCell>
+                <mxCell id="automation-tools" value="" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;strokeWidth=2;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="400" width="300" height="240" as="geometry"/>
+                </mxCell>
+                <mxCell id="automation-title" value="自動化ツール" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=16;fontStyle=1;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="150" y="410" width="100" height="30" as="geometry"/>
+                </mxCell>
+                <mxCell id="terraform" value="Terraform" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffcc;strokeColor=#d6b656;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="450" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="ansible" value="Ansible" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffcc;strokeColor=#d6b656;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="170" y="450" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="aqua" value="Aqua" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffcc;strokeColor=#d6b656;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="270" y="450" width="60" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="tfaction" value="TFAction" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffcc;strokeColor=#d6b656;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="70" y="510" width="120" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="renovate" value="Renovate" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#ffffcc;strokeColor=#d6b656;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="210" y="510" width="80" height="40" as="geometry"/>
+                </mxCell>
+                <mxCell id="lolice-project" value="lolice プロジェクト&lt;br&gt;(Kubernetes アプリケーション管理)&lt;br&gt;&lt;font size=&quot;1&quot;&gt;github.com/boxp/lolice&lt;/font&gt;" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="50" y="680" width="300" height="60" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;strokeWidth=2;strokeColor=#666666;" parent="1" source="orangepi-cluster" target="k8s-services" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;strokeWidth=2;strokeColor=#009900;dashed=1;dashPattern=5 5;" parent="1" source="external-secrets" target="ssm" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="735" y="355"/>
+                            <mxPoint x="735" y="270"/>
+                            <mxPoint x="930" y="270"/>
+                            <mxPoint x="930" y="230"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge2-label" value="Secrets" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontColor=#009900;" parent="edge2" vertex="1" connectable="0">
+                    <mxGeometry x="-0.3" y="-1" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=1;exitY=0.25;exitDx=0;exitDy=0;strokeWidth=2;strokeColor=#0066cc;dashed=1;dashPattern=5 5;" parent="1" source="k8s-services" target="ecr" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge3-label" value="Images" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontColor=#0066cc;" parent="edge3" vertex="1" connectable="0">
+                    <mxGeometry x="-0.2" y="-1" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.5;entryDx=0;entryDy=0;exitX=0.5;exitY=1;exitDx=0;exitDy=0;strokeWidth=2;strokeColor=#cc6600;dashed=1;dashPattern=5 5;" parent="1" source="k8s-services" target="tunnels" edge="1">
+                    <mxGeometry relative="1" as="geometry">
+                        <Array as="points">
+                            <mxPoint x="575" y="740"/>
+                            <mxPoint x="970" y="740"/>
+                            <mxPoint x="970" y="605"/>
+                        </Array>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge4-label" value="External Access" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontColor=#cc6600;" parent="edge4" vertex="1" connectable="0">
+                    <mxGeometry x="-0.4" y="-1" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0.5;entryY=1;entryDx=0;entryDy=0;exitX=0.5;exitY=0;exitDx=0;exitDy=0;strokeWidth=2;strokeColor=#999999;" parent="1" source="automation-tools" target="physical-infra" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge5-label" value="Configuration" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontColor=#999999;" parent="edge5" vertex="1" connectable="0">
+                    <mxGeometry x="-0.2" y="-1" relative="1" as="geometry">
+                        <mxPoint x="-20" as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="edge6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;entryX=0;entryY=0.75;entryDx=0;entryDy=0;exitX=1;exitY=0.5;exitDx=0;exitDy=0;strokeWidth=2;strokeColor=#999999;dashed=1;dashPattern=3 3;" parent="1" source="automation-tools" target="aws-services" edge="1">
+                    <mxGeometry relative="1" as="geometry"/>
+                </mxCell>
+                <mxCell id="edge6-label" value="IaC Management" style="edgeLabel;html=1;align=center;verticalAlign=middle;resizable=0;points=[];fontColor=#999999;" parent="edge6" vertex="1" connectable="0">
+                    <mxGeometry x="-0.2" y="-1" relative="1" as="geometry">
+                        <mxPoint as="offset"/>
+                    </mxGeometry>
+                </mxCell>
+                <mxCell id="data-flow-text" value="データフロー: 実線=直接接続, 破線=API/ネットワーク経由" style="text;html=1;strokeColor=none;fillColor=none;align=center;verticalAlign=middle;whiteSpace=wrap;rounded=0;fontSize=12;fontStyle=2;fontColor=#000000;" parent="1" vertex="1">
+                    <mxGeometry x="450" y="780" width="300" height="30" as="geometry"/>
+                </mxCell>
+            </root>
+        </mxGraphModel>
+    </diagram>
+</mxfile>
