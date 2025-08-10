@@ -30,28 +30,3 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "longhorn_backup" 
     }
   }
 }
-
-resource "aws_s3_bucket_lifecycle_configuration" "longhorn_backup" {
-  bucket = aws_s3_bucket.longhorn_backup.id
-
-  rule {
-    id     = "delete-old-backups"
-    status = "Enabled"
-
-    filter {
-      prefix = ""
-    }
-
-    expiration {
-      days = 30
-    }
-
-    noncurrent_version_expiration {
-      noncurrent_days = 7
-    }
-
-    abort_incomplete_multipart_upload {
-      days_after_initiation = 7
-    }
-  }
-}
