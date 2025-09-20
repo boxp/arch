@@ -55,7 +55,7 @@ jobs:
         env:
           AQUA_GITHUB_TOKEN: ${{steps.aqua_installer_token.outputs.token}}
 
-      - uses: suzuki-shunsuke/tfaction/export-secrets@bf4e4fed5bfc227b0987bfb7a7de167a18158f74 # v1.19.3
+      - uses: suzuki-shunsuke/tfaction/export-secrets@87610cec60807dbed155594235862384ce4c9f01 # v1.19.4
         with:
           secrets: ${{toJSON(secrets)}}
 
@@ -97,13 +97,13 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction/setup@bf4e4fed5bfc227b0987bfb7a7de167a18158f74 # v1.19.3
+      - uses: suzuki-shunsuke/tfaction/setup@87610cec60807dbed155594235862384ce4c9f01 # v1.19.4
         with:
           github_token: ${{steps.generate_token.outputs.token}}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider
 
-      - uses: suzuki-shunsuke/tfaction/get-target-config@bf4e4fed5bfc227b0987bfb7a7de167a18158f74 # v1.19.3
+      - uses: suzuki-shunsuke/tfaction/get-target-config@87610cec60807dbed155594235862384ce4c9f01 # v1.19.4
         id: target-config
 
       - name: Generate token (pull request write)
@@ -137,14 +137,14 @@ jobs:
               - name: registry.terraform.io/integrations/github
           GITHUB_TOKEN: ${{steps.pull_request_token.outputs.token}} # For github-comment
 
-      - uses: suzuki-shunsuke/tfaction/test@bf4e4fed5bfc227b0987bfb7a7de167a18158f74 # v1.19.3
+      - uses: suzuki-shunsuke/tfaction/test@87610cec60807dbed155594235862384ce4c9f01 # v1.19.4
         with:
           github_token: ${{steps.generate_token.outputs.token}}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and reviewdog and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
 
-      - uses: suzuki-shunsuke/tfaction/plan@bf4e4fed5bfc227b0987bfb7a7de167a18158f74 # v1.19.3
+      - uses: suzuki-shunsuke/tfaction/plan@87610cec60807dbed155594235862384ce4c9f01 # v1.19.4
         with:
           github_token: ${{steps.generate_token.outputs.token}}
         env:
