@@ -56,7 +56,7 @@ resource "aws_s3_bucket_logging" "orange_pi_images" {
 resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
   bucket = aws_s3_bucket.orange_pi_images.id
 
-  # Shanghai-1 node lifecycle rule - keep only latest 3 timestamped images
+  # Shanghai-1 node lifecycle rule - delete old timestamped images after 30 days
   rule {
     id     = "cleanup_shanghai_1_images"
     status = "Enabled"
@@ -65,14 +65,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
       prefix = "images/orange-pi-zero3/shanghai-1/"
     }
 
-    # Delete old timestamped images after 7 days, keeping only recent ones
     expiration {
-      days = 7
-    }
-
-    noncurrent_version_expiration {
-      newer_noncurrent_versions = 3
-      noncurrent_days           = 1
+      days = 30
     }
 
     abort_incomplete_multipart_upload {
@@ -80,7 +74,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
     }
   }
 
-  # Shanghai-2 node lifecycle rule - keep only latest 3 timestamped images
+  # Shanghai-2 node lifecycle rule - delete old timestamped images after 30 days
   rule {
     id     = "cleanup_shanghai_2_images"
     status = "Enabled"
@@ -89,14 +83,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
       prefix = "images/orange-pi-zero3/shanghai-2/"
     }
 
-    # Delete old timestamped images after 7 days, keeping only recent ones
     expiration {
-      days = 7
-    }
-
-    noncurrent_version_expiration {
-      newer_noncurrent_versions = 3
-      noncurrent_days           = 1
+      days = 30
     }
 
     abort_incomplete_multipart_upload {
@@ -104,7 +92,7 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
     }
   }
 
-  # Shanghai-3 node lifecycle rule - keep only latest 3 timestamped images
+  # Shanghai-3 node lifecycle rule - delete old timestamped images after 30 days
   rule {
     id     = "cleanup_shanghai_3_images"
     status = "Enabled"
@@ -113,14 +101,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
       prefix = "images/orange-pi-zero3/shanghai-3/"
     }
 
-    # Delete old timestamped images after 7 days, keeping only recent ones
     expiration {
-      days = 7
-    }
-
-    noncurrent_version_expiration {
-      newer_noncurrent_versions = 3
-      noncurrent_days           = 1
+      days = 30
     }
 
     abort_incomplete_multipart_upload {
