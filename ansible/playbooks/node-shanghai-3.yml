@@ -124,3 +124,14 @@
         src: /etc/systemd/system/init-shanghai-3.service
         dest: /etc/systemd/system/multi-user.target.wants/init-shanghai-3.service
         state: link
+
+  roles:
+    - role: kubernetes_components
+      tags: [kubernetes, k8s-components]
+      vars:
+        kubernetes_version: "{{ kubernetes_version }}"
+        kubernetes_package_version: "{{ kubernetes_package_version }}"
+        crio_version: "{{ crio_version }}"
+        kubelet_cluster_dns: "{{ cluster_dns }}"
+        kubelet_cluster_domain: "{{ cluster_domain }}"
+        kubelet_node_ip: "{{ node_ip }}"

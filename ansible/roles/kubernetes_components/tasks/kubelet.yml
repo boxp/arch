@@ -50,18 +50,6 @@
     mode: '0755'
   become: true
 
-- name: Configure kubelet resolv.conf settings
-  ansible.builtin.copy:
-    content: |
-      [Service]
-      Environment="KUBELET_EXTRA_ARGS=--resolv-conf=/run/systemd/resolve/resolv.conf"
-    dest: /etc/systemd/system/kubelet.service.d/10-resolv-conf.conf
-    mode: '0644'
-  become: true
-  notify:
-    - Reload systemd
-    - Restart kubelet
-
 - name: Enable kubelet service via symlink
   ansible.builtin.file:
     src: /usr/lib/systemd/system/kubelet.service
