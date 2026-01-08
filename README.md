@@ -6,7 +6,7 @@ My infrastructure as code project - 複数のクラウドプロバイダー（AW
 
 以下の図は、このプロジェクトで管理している全体的なシステム構成を示しています：
 
-![System Architecture](docs/system-architecture.drawio.svg)
+![System Architecture](doc/system-architecture.drawio.svg)
 
 ### 主要コンポーネント
 
