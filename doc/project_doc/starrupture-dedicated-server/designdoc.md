@@ -118,7 +118,7 @@ resource "cloudflare_tunnel_config" "starrupture_tunnel" {
   config {
     ingress_rule {
       hostname = cloudflare_record.starrupture_server.hostname
-      service  = "tcp://starrupture-server:7777"
+      service  = "udp://starrupture-server:7777"
     }
     ingress_rule {
       service = "http_status:404"
@@ -155,6 +155,11 @@ resource "cloudflare_access_application" "starrupture_server" {
   tags = ["starrupture", "gaming", "private"]
 }
 
+data "cloudflare_access_identity_provider" "github" {
+  zone_id = var.zone_id
+  name    = "GitHub"
+}
+
 # 承認されたユーザーのみアクセス可能
 resource "cloudflare_access_policy" "starrupture_users" {
   application_id = cloudflare_access_application.starrupture_server.id
@@ -164,24 +169,8 @@ resource "cloudflare_access_policy" "starrupture_users" {
   decision       = "allow"
 
   include {
-    email = ["boxp@users.noreply.github.com"]
+    login_method = [data.cloudflare_access_identity_provider.github.id]
   }
-  
-  # 必要に応じて追加ユーザーを定義
-  include {
-    group = [cloudflare_access_group.starrupture_players.id]
-  }
-}
-
-# プレイヤーグループの定義
-resource "cloudflare_access_group" "starrupture_players" {
-  zone_id = var.zone_id
-  name    = "StarRupture Players"
-  
-  include {
-    email_domain = ["trusted-friends.com"]
-  }
-}
 ```
 
 #### 3.2.4 Variables設定
@@ -303,7 +292,7 @@ spec:
         ports:
         - name: game-port
           containerPort: 7777
-          protocol: TCP
+          protocol: UDP
         - name: query-port  
           containerPort: 27015
           protocol: UDP
@@ -521,42 +510,21 @@ configMapGenerator:
 ### 4.1 Phase 1: Terraform実装（boxp/arch）
 
 1. **Cloudflare設定作成**
-   ```bash
-   cd terraform/cloudflare/b0xp.io/starrupture
-   # DNS、Tunnel、Access設定の実装
-   terraform init
-   terraform plan
-   terraform apply
-   ```
+   - DNS、Tunnel、Access設定をTerraformで定義
+   - GitOpsにより自動的にplan/apply実行
 
 2. **AWS SSMパラメータ確認**
-   ```bash
-   aws ssm get-parameter --name "/starrupture/tunnel-token" --with-decryption
-   ```
+   - トンネルトークンがSSMに正常に保存されることを確認
 
 ### 4.2 Phase 2: Kubernetes実装（boxp/lolice）
 
-1. **Namespace作成**
-   ```bash
-   kubectl create namespace starrupture
-   ```
+1. **Kubernetesマニフェスト作成**
+   - Namespace、Deployment、Service等のマニフェストを定義
+   - GitOpsによりクラスターへの自動反映
 
-2. **External Secrets適用**
-   ```bash
-   kubectl apply -f external-secret.yaml
-   kubectl get secret starrupture-tunnel-credentials -n starrupture
-   ```
-
-3. **StarRuptureサーバーデプロイ**
-   ```bash
-   kubectl apply -k .
-   ```
-
-4. **デプロイ状況確認**
-   ```bash
-   kubectl get pods -n starrupture
-   kubectl logs -f deployment/starrupture-server -n starrupture
-   ```
+2. **デプロイ状況確認**
+   - ArgoCD経由でのデプロイ状況監視
+   - ポッドとサービスの動作確認
 
 ### 4.3 Phase 3: アクセステスト
 
