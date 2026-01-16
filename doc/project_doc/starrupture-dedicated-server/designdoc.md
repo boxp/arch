@@ -134,43 +134,46 @@ Game Client + WARP ⟷ Cloudflare Zero Trust ⟷ Private Tunnel ⟷ lolice k8s c
 **tunnel.tf**
 ```hcl
 # StarRupture専用プライベートトンネル
-resource "cloudflare_tunnel" "starrupture_tunnel" {
+resource "cloudflare_zero_trust_tunnel_cloudflared" "starrupture_tunnel" {
   account_id = var.account_id
   name       = "starrupture-private-network"
-  secret     = sensitive(base64sha256(random_password.starrupture_tunnel_secret.result))
+  config_src = "cloudflare"
+  secret     = base64encode(random_password.starrupture_tunnel_secret.result)
 }
 
 resource "random_password" "starrupture_tunnel_secret" {
-  length = 64
+  length  = 32
+  special = false
 }
 
-# プライベートネットワークトンネル設定
-# プライベートホスト名アプローチではhostnameを指定せず、serviceのみを指定
-resource "cloudflare_tunnel_config" "starrupture_tunnel" {
-  tunnel_id  = cloudflare_tunnel.starrupture_tunnel.id
+# プライベートホスト名ルート設定
+# このリソースがプライベートホスト名をトンネルにルーティングする鍵
+resource "cloudflare_zero_trust_network_hostname_route" "starrupture_hostname" {
   account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.starrupture_tunnel.id
+  hostname   = "starrupture.internal"
+  comment    = "StarRupture dedicated server private hostname"
+}
 
-  config {
-    # プライベートホスト名用のingress rule
-    # hostnameを指定しない、またはワイルドカードを使用
-    ingress_rule {
-      # プライベートネットワーク経由でのUDP接続
-      service  = "tcp://starrupture-server.starrupture.svc.cluster.local:7777"
-    }
+# トンネルIDとシークレットをSSMに保存
+resource "aws_ssm_parameter" "starrupture_tunnel_id" {
+  name        = "/starrupture/tunnel-id"
+  description = "Cloudflare tunnel ID for StarRupture server"
+  type        = "String"
+  value       = cloudflare_zero_trust_tunnel_cloudflared.starrupture_tunnel.id
 
-    # 念のためのcatch-all rule
-    ingress_rule {
-      service = "http_status:404"
-    }
+  tags = {
+    Environment = "production"
+    Application = "starrupture"
+    ManagedBy   = "terraform"
   }
 }
 
-# トンネルトークンをSSMに保存
-resource "aws_ssm_parameter" "starrupture_tunnel_token" {
-  name        = "/starrupture/tunnel-token"
-  description = "Cloudflare private network tunnel token for StarRupture server"
+resource "aws_ssm_parameter" "starrupture_tunnel_secret" {
+  name        = "/starrupture/tunnel-secret"
+  description = "Cloudflare tunnel secret for StarRupture server"
   type        = "SecureString"
-  value       = sensitive(cloudflare_tunnel.starrupture_tunnel.tunnel_token)
+  value       = sensitive(random_password.starrupture_tunnel_secret.result)
 
   tags = {
     Environment = "production"
@@ -181,78 +184,60 @@ resource "aws_ssm_parameter" "starrupture_tunnel_token" {
 ```
 
 **注意事項**:
-- プライベートホスト名を使用する場合、`ingress_rule`に`hostname`を指定しません
-- Cloudflare Tunnelは、WARP Clientからのプライベートネットワークトラフィックを受け付けます
-- ゲームサーバーへのアクセスは `starrupture.internal` などのプライベートホスト名で行います
-- この名前解決はCloudflare Zero Trust側で設定します（後述のSplit Tunnel設定を参照）
+- `cloudflare_zero_trust_tunnel_cloudflared` でトンネルを作成
+- `cloudflare_zero_trust_network_hostname_route` でプライベートホスト名(`starrupture.internal`)をトンネルにルーティング
+- プライベートホスト名では `cloudflare_tunnel_config` の ingress_rule は不要
+- トンネルへのトラフィックは hostname route 経由で自動的にルーティングされます
 
 #### 4.2.3 Zero Trust設定（プライベートネットワーク用）
 
-**split-tunnel.tf**
+**zero-trust.tf**
 ```hcl
-# Split Tunnel設定でプライベートネットワークを定義
-# この設定により、WARP Clientがプライベートホスト名を解決できるようになります
-resource "cloudflare_split_tunnel" "starrupture_private_network" {
-  account_id = var.account_id
-  mode       = "include"
-
-  tunnels {
-    # StarRupture用のプライベートIPレンジ（例: 10.0.100.0/24）
-    # または特定のホスト名パターン
-    address     = "starrupture.internal"
-    description = "StarRupture Private Network"
-  }
+# WARP Client設定（Gateway Proxyを有効化）
+resource "cloudflare_zero_trust_device_settings" "starrupture_warp" {
+  account_id                 = var.account_id
+  gateway_proxy_enabled      = true
+  gateway_udp_proxy_enabled  = true
+  use_zt_virtual_ip          = true
 }
 
-# デバイス登録ポリシー（WARP Clientの認証）
-resource "cloudflare_device_posture_rule" "github_authenticated" {
+# Gateway DNS Policy（プライベートホスト名へのアクセス制御）
+resource "cloudflare_zero_trust_gateway_policy" "starrupture_dns_policy" {
   account_id  = var.account_id
-  name        = "GitHub Authenticated Users"
-  type        = "warp"
-  description = "Require WARP client with GitHub authentication"
-
-  match {
-    platform = "all"
-  }
-
-  input {
-    id = data.cloudflare_access_identity_provider.github.id
-  }
-}
-
-data "cloudflare_access_identity_provider" "github" {
-  account_id = var.account_id
-  name       = "GitHub"
-}
-
-# Gateway Policy（プライベートネットワークへのアクセス制御）
-resource "cloudflare_teams_rule" "starrupture_access" {
-  account_id  = var.account_id
-  name        = "Allow StarRupture Private Access"
-  description = "Allow authenticated users to access StarRupture private network"
-  precedence  = 1000
+  name        = "Allow StarRupture Private Hostname"
+  description = "Allow DNS resolution for starrupture.internal via WARP"
   action      = "allow"
+  precedence  = 1000
   enabled     = true
+  filters     = ["dns"]
 
-  traffic = jsonencode({
-    type = "hostname"
-    value = "starrupture.internal"
-  })
+  # DNS query matching
+  traffic = "dns.domains == \"starrupture.internal\""
 
-  identity = jsonencode({
-    type = "identity_provider"
-    id   = data.cloudflare_access_identity_provider.github.id
-  })
+  # 認証されたユーザーのみアクセス可能
+  # identity = "any(identity.groups.name[*] in {\"authorized-users\"})"
+}
 
-  filters = ["dns"]
+# Gateway Network Policy（UDP トラフィック制御）
+resource "cloudflare_zero_trust_gateway_policy" "starrupture_network_policy" {
+  account_id  = var.account_id
+  name        = "Allow StarRupture Game Traffic"
+  description = "Allow UDP traffic to StarRupture server"
+  action      = "allow"
+  precedence  = 1001
+  enabled     = true
+  filters     = ["l4"]
+
+  # Network traffic matching (UDP port 7777)
+  traffic = "net.dst.ip == starrupture.internal and net.dst.port == 7777"
 }
 ```
 
 **注意事項**:
-- `cloudflare_split_tunnel`でプライベートホスト名を定義します
-- WARP Client使用時に、このホスト名へのトラフィックがCloudflare Tunnelを経由します
-- `cloudflare_teams_rule`で認証されたユーザーのみアクセスを許可します
-- 公開アクセスアプリケーション（`cloudflare_access_application`）は使用しません
+- `cloudflare_zero_trust_device_settings` でWARP ClientのGateway Proxyを有効化
+- `gateway_udp_proxy_enabled = true` でUDPトラフィックのプロキシを有効化（ゲームサーバーに必須）
+- `cloudflare_zero_trust_gateway_policy` でDNS解決とネットワークトラフィックを制御
+- プライベートホスト名は自動的にWARP Client経由でのみ解決可能になります
 
 #### 4.2.4 Variables設定
 
@@ -300,7 +285,7 @@ terraform {
   required_providers {
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "= 4.52.0"
+      version = "~> 5.15"
     }
     aws = {
       source  = "hashicorp/aws"
@@ -308,7 +293,7 @@ terraform {
     }
     random = {
       source  = "hashicorp/random"
-      version = "3.7.1"
+      version = "~> 3.7"
     }
   }
 }
@@ -339,9 +324,12 @@ spec:
     name: starrupture-tunnel-credentials
     creationPolicy: Owner
   data:
-  - secretKey: tunnel-token
+  - secretKey: tunnel-id
     remoteRef:
-      key: /starrupture/tunnel-token
+      key: /starrupture/tunnel-id
+  - secretKey: tunnel-secret
+    remoteRef:
+      key: /starrupture/tunnel-secret
 ```
 
 #### 4.3.2 StarRupture Server Deployment
@@ -488,17 +476,21 @@ spec:
         - --metrics
         - 0.0.0.0:2000
         - run
-        - --token
-        - $(TUNNEL_TOKEN)
+        - $(TUNNEL_ID)
         ports:
         - name: metrics
           containerPort: 2000
         env:
+        - name: TUNNEL_ID
+          valueFrom:
+            secretKeyRef:
+              name: starrupture-tunnel-credentials
+              key: tunnel-id
         - name: TUNNEL_TOKEN
           valueFrom:
             secretKeyRef:
               name: starrupture-tunnel-credentials
-              key: tunnel-token
+              key: tunnel-secret
         livenessProbe:
           httpGet:
             path: /ready
