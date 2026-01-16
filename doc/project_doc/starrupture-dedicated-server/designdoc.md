@@ -9,20 +9,21 @@
 ### 1.1 アーキテクチャ概要
 
 ```
-GitHub ⟷ Cloudflare Tunnel ⟷ lolice k8s cluster ⟷ StarRupture Server Pod
+Game Client + WARP ⟷ Cloudflare Zero Trust ⟷ Private Tunnel ⟷ lolice k8s cluster ⟷ StarRupture Server Pod
 ```
 
 1. **Dockerイメージ**: `struppinet/starrupture-dedicated-server`を利用
-2. **アクセス制御**: Cloudflare Zero Trust（CF ZT）によるプライベートアクセス
-3. **インフラ管理**: boxp/arch（Terraform）+ boxp/lolice（Kubernetes）
-4. **シークレット管理**: AWS SSM Parameter Store + External Secrets Operator
+2. **アクセス制御**: Cloudflare Zero Trust（CF ZT）+ WARP Client によるプライベートアクセス
+3. **プライベートホスト名**: 公開DNSを使用しない内部専用ホスト名（`starrupture.internal`）
+4. **インフラ管理**: boxp/arch（Terraform）+ boxp/lolice（Kubernetes）
+5. **シークレット管理**: AWS SSM Parameter Store + External Secrets Operator
 
 ### 1.2 技術スタック
 
 **インフラ層（boxp/arch）**
-- **DNS**: Cloudflare DNS（`starrupture.b0xp.io`）
-- **Tunnel**: Cloudflare Tunnel（プライベートアクセス用）
-- **Access Control**: Cloudflare Zero Trust Access
+- **Private Hostname**: Cloudflare Private Network（`starrupture.internal`） - 公開DNSなし
+- **Tunnel**: Cloudflare Tunnel（プライベートネットワーク用）
+- **Access Control**: Cloudflare Zero Trust + WARP Client
 - **Secret Management**: AWS SSM Parameter Store
 
 **アプリケーション層（boxp/lolice）**
@@ -31,9 +32,43 @@ GitHub ⟷ Cloudflare Tunnel ⟷ lolice k8s cluster ⟷ StarRupture Server Pod
 - **Storage**: Persistent Volume（セーブデータ永続化）
 - **Secret Sync**: External Secrets Operator
 
-## 2. 要件定義
+## 2. プライベートホスト名アプローチの特徴
 
-### 2.1 機能要件
+### 2.1 従来のCloudflare Tunnelとの違い
+
+| 項目 | 従来のPublic Hostname | Private Hostname（本設計） |
+|------|----------------------|---------------------------|
+| DNS設定 | 公開DNSレコード必要（CNAME） | 公開DNSレコード不要 |
+| アクセス方法 | ブラウザから直接アクセス可 | WARP Client必須 |
+| 可視性 | インターネット上から存在確認可 | 完全プライベート、外部から不可視 |
+| 認証方式 | Cloudflare Access認証画面 | WARP Client + Zero Trust統合認証 |
+| 用途 | Webアプリケーション向け | 非HTTPアプリケーション、ゲームサーバー向け |
+| プロトコル | 主にHTTP/HTTPS | TCP/UDP含む任意のプロトコル |
+
+### 2.2 プライベートホスト名の利点
+
+1. **セキュリティ強化**
+   - 公開DNSに存在しないため、攻撃対象として発見されにくい
+   - WARP Clientなしではアクセス不可能（ゼロトラスト）
+   - 認証済みデバイスのみがホスト名を解決可能
+
+2. **ゲームサーバーに最適**
+   - UDP/TCPプロトコルに完全対応
+   - ブラウザベースの認証画面が不要
+   - 低レイテンシー接続
+
+3. **運用の簡素化**
+   - 公開DNSレコード管理が不要
+   - ドメイン所有権検証が不要
+   - SSL証明書管理が不要（ゲームプロトコルのため）
+
+4. **柔軟な名前空間**
+   - `.internal` など任意のTLDを使用可能
+   - 組織内部のネーミング規則に従った設計が可能
+
+## 3. 要件定義
+
+### 3.1 機能要件
 
 1. **ゲームサーバー機能**
    - StarRuptureの専用サーバー実行
@@ -42,8 +77,9 @@ GitHub ⟷ Cloudflare Tunnel ⟷ lolice k8s cluster ⟷ StarRupture Server Pod
 
 2. **アクセス制御**
    - Cloudflare Zero Trustによる認証
+   - WARP Clientを使用したプライベートネットワークアクセス
    - 承認されたユーザーのみアクセス可能
-   - VPNレス接続
+   - プライベートホスト名による内部専用接続
 
 3. **データ永続化**
    - ゲーム進行データの保存
@@ -55,71 +91,74 @@ GitHub ⟷ Cloudflare Tunnel ⟷ lolice k8s cluster ⟷ StarRupture Server Pod
    - メトリクス監視
    - 自動復旧
 
-### 2.2 非機能要件
+### 3.2 非機能要件
 
 1. **可用性**: 99%のアップタイム目標
 2. **セキュリティ**: プライベートネットワーク内での運用
 3. **スケーラビリティ**: 必要に応じたリソース調整
 4. **保守性**: GitOpsによる宣言的管理
 
-## 3. システム設計
+## 4. システム設計
 
-### 3.1 アーキテクチャ詳細
+### 4.1 アーキテクチャ詳細
 
 ```
-┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
-│   Game Client   │────│ Cloudflare ZT   │────│ lolice cluster  │
-└─────────────────┘    └─────────────────┘    └─────────────────┘
-                              │                         │
-                              │                         │
-                        ┌─────▼─────┐            ┌─────▼─────┐
-                        │  CF Tunnel │            │StarRupture│
-                        │    DNS     │            │   Pod     │
-                        └───────────┘            └───────────┘
+┌─────────────────┐    ┌─────────────────────┐    ┌─────────────────┐
+│   Game Client   │    │ Cloudflare Zero     │    │ lolice cluster  │
+│   + WARP Client │────│ Trust Network       │────│                 │
+└─────────────────┘    │ (Private Hostname)  │    └─────────────────┘
+                       └─────────────────────┘              │
+                                 │                           │
+                          ┌──────▼──────┐            ┌──────▼──────┐
+                          │ CF Tunnel   │            │ StarRupture │
+                          │ (Private)   │◄───────────│    Pod      │
+                          └─────────────┘            │ UDP:7777    │
+                                                     └─────────────┘
+
+接続フロー:
+1. ユーザーがWARP Clientを起動しCloudflare ZTに接続
+2. プライベートホスト名 starrupture.internal を解決
+3. Cloudflare Tunnelを経由してlolice cluster内のStarRuptureサーバーに接続
+4. UDP 7777ポートでゲームセッションを確立
 ```
 
-### 3.2 Terraform設定（boxp/arch）
+### 4.2 Terraform設定（boxp/arch）
 
-#### 3.2.1 DNS設定 (terraform/cloudflare/b0xp.io/starrupture/)
+#### 4.2.1 プライベートネットワーク設定 (terraform/cloudflare/b0xp.io/starrupture/)
 
-**dns.tf**
-```hcl
-resource "cloudflare_record" "starrupture_server" {
-  zone_id = var.zone_id
-  name    = "starrupture"
-  value   = cloudflare_tunnel.starrupture_tunnel.cname
-  type    = "CNAME"
-  proxied = true
+**注意**: プライベートホスト名を使用するため、公開DNS（cloudflare_record）は作成しません。
+代わりに、Cloudflare Zero TrustのSplit Tunnelとローカル名前解決を使用します。
 
-  comment = "StarRupture dedicated server endpoint"
-}
-```
-
-#### 3.2.2 Tunnel設定
+#### 4.2.2 Tunnel設定（プライベートネットワーク用）
 
 **tunnel.tf**
 ```hcl
-# StarRupture専用トンネル
+# StarRupture専用プライベートトンネル
 resource "cloudflare_tunnel" "starrupture_tunnel" {
   account_id = var.account_id
-  name       = "starrupture-dedicated-server"
+  name       = "starrupture-private-network"
   secret     = sensitive(base64sha256(random_password.starrupture_tunnel_secret.result))
 }
 
 resource "random_password" "starrupture_tunnel_secret" {
-  length = 32
+  length = 64
 }
 
-# トンネル設定
+# プライベートネットワークトンネル設定
+# プライベートホスト名アプローチではhostnameを指定せず、serviceのみを指定
 resource "cloudflare_tunnel_config" "starrupture_tunnel" {
   tunnel_id  = cloudflare_tunnel.starrupture_tunnel.id
   account_id = var.account_id
 
   config {
+    # プライベートホスト名用のingress rule
+    # hostnameを指定しない、またはワイルドカードを使用
     ingress_rule {
-      hostname = cloudflare_record.starrupture_server.hostname
-      service  = "udp://starrupture-server:7777"
+      # プライベートネットワーク経由でのUDP接続
+      service  = "tcp://starrupture-server.starrupture.svc.cluster.local:7777"
     }
+
+    # 念のためのcatch-all rule
     ingress_rule {
       service = "http_status:404"
     }
@@ -129,10 +168,10 @@ resource "cloudflare_tunnel_config" "starrupture_tunnel" {
 # トンネルトークンをSSMに保存
 resource "aws_ssm_parameter" "starrupture_tunnel_token" {
   name        = "/starrupture/tunnel-token"
-  description = "Cloudflare tunnel token for StarRupture server"
+  description = "Cloudflare private network tunnel token for StarRupture server"
   type        = "SecureString"
   value       = sensitive(cloudflare_tunnel.starrupture_tunnel.tunnel_token)
-  
+
   tags = {
     Environment = "production"
     Application = "starrupture"
@@ -141,39 +180,81 @@ resource "aws_ssm_parameter" "starrupture_tunnel_token" {
 }
 ```
 
-#### 3.2.3 アクセス制御設定
+**注意事項**:
+- プライベートホスト名を使用する場合、`ingress_rule`に`hostname`を指定しません
+- Cloudflare Tunnelは、WARP Clientからのプライベートネットワークトラフィックを受け付けます
+- ゲームサーバーへのアクセスは `starrupture.internal` などのプライベートホスト名で行います
+- この名前解決はCloudflare Zero Trust側で設定します（後述のSplit Tunnel設定を参照）
 
-**access.tf**
+#### 4.2.3 Zero Trust設定（プライベートネットワーク用）
+
+**split-tunnel.tf**
 ```hcl
-# StarRupture用のアクセスアプリケーション
-resource "cloudflare_access_application" "starrupture_server" {
-  zone_id          = var.zone_id
-  name             = "StarRupture Dedicated Server"
-  domain           = "starrupture.b0xp.io"
-  session_duration = "24h"
-  
-  tags = ["starrupture", "gaming", "private"]
+# Split Tunnel設定でプライベートネットワークを定義
+# この設定により、WARP Clientがプライベートホスト名を解決できるようになります
+resource "cloudflare_split_tunnel" "starrupture_private_network" {
+  account_id = var.account_id
+  mode       = "include"
+
+  tunnels {
+    # StarRupture用のプライベートIPレンジ（例: 10.0.100.0/24）
+    # または特定のホスト名パターン
+    address     = "starrupture.internal"
+    description = "StarRupture Private Network"
+  }
+}
+
+# デバイス登録ポリシー（WARP Clientの認証）
+resource "cloudflare_device_posture_rule" "github_authenticated" {
+  account_id  = var.account_id
+  name        = "GitHub Authenticated Users"
+  type        = "warp"
+  description = "Require WARP client with GitHub authentication"
+
+  match {
+    platform = "all"
+  }
+
+  input {
+    id = data.cloudflare_access_identity_provider.github.id
+  }
 }
 
 data "cloudflare_access_identity_provider" "github" {
-  zone_id = var.zone_id
-  name    = "GitHub"
+  account_id = var.account_id
+  name       = "GitHub"
 }
 
-# 承認されたユーザーのみアクセス可能
-resource "cloudflare_access_policy" "starrupture_users" {
-  application_id = cloudflare_access_application.starrupture_server.id
-  zone_id        = var.zone_id
-  name           = "StarRupture Authorized Users"
-  precedence     = "1"
-  decision       = "allow"
+# Gateway Policy（プライベートネットワークへのアクセス制御）
+resource "cloudflare_teams_rule" "starrupture_access" {
+  account_id  = var.account_id
+  name        = "Allow StarRupture Private Access"
+  description = "Allow authenticated users to access StarRupture private network"
+  precedence  = 1000
+  action      = "allow"
+  enabled     = true
 
-  include {
-    login_method = [data.cloudflare_access_identity_provider.github.id]
-  }
+  traffic = jsonencode({
+    type = "hostname"
+    value = "starrupture.internal"
+  })
+
+  identity = jsonencode({
+    type = "identity_provider"
+    id   = data.cloudflare_access_identity_provider.github.id
+  })
+
+  filters = ["dns"]
+}
 ```
 
-#### 3.2.4 Variables設定
+**注意事項**:
+- `cloudflare_split_tunnel`でプライベートホスト名を定義します
+- WARP Client使用時に、このホスト名へのトラフィックがCloudflare Tunnelを経由します
+- `cloudflare_teams_rule`で認証されたユーザーのみアクセスを許可します
+- 公開アクセスアプリケーション（`cloudflare_access_application`）は使用しません
+
+#### 4.2.4 Variables設定
 
 **variables.tf**
 ```hcl
@@ -188,7 +269,7 @@ variable "account_id" {
 }
 ```
 
-#### 3.2.5 TFAction設定
+#### 4.2.5 TFAction設定
 
 **tfaction.yaml**
 ```yaml
@@ -238,9 +319,9 @@ provider "aws" {
 }
 ```
 
-### 3.3 Kubernetes設定（boxp/lolice）
+### 4.3 Kubernetes設定（boxp/lolice）
 
-#### 3.3.1 External Secret設定
+#### 4.3.1 External Secret設定
 
 **external-secret.yaml**
 ```yaml
@@ -263,7 +344,7 @@ spec:
       key: /starrupture/tunnel-token
 ```
 
-#### 3.3.2 StarRupture Server Deployment
+#### 4.3.2 StarRupture Server Deployment
 
 **starrupture-deployment.yaml**
 ```yaml
@@ -336,7 +417,7 @@ spec:
           name: starrupture-config
 ```
 
-#### 3.3.3 Persistent Volume設定
+#### 4.3.3 Persistent Volume設定
 
 **pvc.yaml**
 ```yaml
@@ -354,7 +435,7 @@ spec:
       storage: 10Gi
 ```
 
-#### 3.3.4 Service設定
+#### 4.3.4 Service設定
 
 **service.yaml**
 ```yaml
@@ -378,7 +459,7 @@ spec:
   type: ClusterIP
 ```
 
-#### 3.3.5 cloudflared Deployment
+#### 4.3.5 cloudflared Deployment
 
 **cloudflared-deployment.yaml**
 ```yaml
@@ -434,7 +515,7 @@ spec:
             memory: 256Mi
 ```
 
-#### 3.3.6 ConfigMap設定
+#### 4.3.6 ConfigMap設定
 
 **configmap.yaml**
 ```yaml
@@ -460,7 +541,7 @@ data:
     DayTimeSpeedScale=1.000000
 ```
 
-#### 3.3.7 Namespace設定
+#### 4.3.7 Namespace設定
 
 **namespace.yaml**
 ```yaml
@@ -473,7 +554,7 @@ metadata:
     app: starrupture-server
 ```
 
-### 3.4 アプリケーション設定
+### 4.4 アプリケーション設定
 
 **kustomization.yaml**
 ```yaml
@@ -505,18 +586,23 @@ configMapGenerator:
   - config/game.ini
 ```
 
-## 4. 実装手順
+## 5. 実装手順
 
-### 4.1 Phase 1: Terraform実装（boxp/arch）
+### 5.1 Phase 1: Terraform実装（boxp/arch）
 
-1. **Cloudflare設定作成**
-   - DNS、Tunnel、Access設定をTerraformで定義
+1. **Cloudflare Private Network設定作成**
+   - プライベートトンネル、Split Tunnel、Gateway Policy設定をTerraformで定義
+   - 公開DNSレコードは作成しない（プライベートホスト名のみ）
    - GitOpsにより自動的にplan/apply実行
 
 2. **AWS SSMパラメータ確認**
    - トンネルトークンがSSMに正常に保存されることを確認
 
-### 4.2 Phase 2: Kubernetes実装（boxp/lolice）
+3. **Zero Trust設定確認**
+   - Cloudflare Zero TrustダッシュボードでSplit Tunnel設定を確認
+   - `starrupture.internal` がプライベートホスト名として登録されていることを確認
+
+### 5.2 Phase 2: Kubernetes実装（boxp/lolice）
 
 1. **Kubernetesマニフェスト作成**
    - Namespace、Deployment、Service等のマニフェストを定義
@@ -526,36 +612,44 @@ configMapGenerator:
    - ArgoCD経由でのデプロイ状況監視
    - ポッドとサービスの動作確認
 
-### 4.3 Phase 3: アクセステスト
+### 5.3 Phase 3: WARP Client設定とアクセステスト
 
-1. **Cloudflare Accessログイン**
-   - https://starrupture.b0xp.io にアクセス
-   - Cloudflare Zero Trust認証を通過
+1. **WARP Client設定**
+   - Cloudflare WARP Clientをクライアント端末にインストール
+   - GitHub認証でCloudflare Zero Trustにログイン
+   - WARP接続を有効化
 
-2. **ゲーム接続テスト**
-   - StarRuptureクライアントから接続
+2. **プライベートホスト名解決確認**
+   - `nslookup starrupture.internal` または `ping starrupture.internal` でDNS解決を確認
+   - Cloudflare Tunnelを経由してlolice clusterに到達することを確認
+
+3. **ゲーム接続テスト**
+   - StarRuptureクライアントから `starrupture.internal:7777` に接続
    - サーバーリスト表示確認
+   - ゲームセッション確立確認
 
-## 5. テスト計画
+## 6. テスト計画
 
 ### 5.1 機能テスト
 
 1. **インフラテスト**
-   - DNS解決確認
-   - Tunnel接続確認
-   - Access認証テスト
+   - WARP Client経由のプライベートホスト名解決確認
+   - Cloudflare Tunnel接続確認
+   - Zero Trust認証テスト（GitHub OAuth）
 
 2. **アプリケーションテスト**
    - ゲームサーバー起動確認
-   - プレイヤー接続テスト
+   - プレイヤー接続テスト（WARP Client経由）
+   - UDP 7777ポート接続確認
    - セーブデータ永続化確認
 
 3. **セキュリティテスト**
-   - 未認証アクセスの拒否確認
-   - VPNなしアクセステスト
+   - WARP Clientなしでのアクセス拒否確認
+   - 未認証ユーザーのアクセス拒否確認
+   - プライベートホスト名の外部からの不可視性確認
    - 不正アクセス試行の検出
 
-### 5.2 運用テスト
+### 6.2 運用テスト
 
 1. **高可用性テスト**
    - Pod再起動テスト
@@ -567,9 +661,9 @@ configMapGenerator:
    - レスポンス時間測定
    - リソース使用量監視
 
-## 6. 運用計画
+## 7. 運用計画
 
-### 6.1 監視
+### 7.1 監視
 
 1. **インフラ監視**
    - Cloudflare Tunnel接続状態
@@ -581,7 +675,7 @@ configMapGenerator:
    - プレイヤー接続数
    - エラーログ監視
 
-### 6.2 バックアップ・復旧
+### 7.2 バックアップ・復旧
 
 1. **セーブデータバックアップ**
    - 日次自動バックアップ
@@ -592,7 +686,7 @@ configMapGenerator:
    - Kubernetesマニフェストのバージョン管理
    - Terraform状態ファイルバックアップ
 
-### 6.3 メンテナンス
+### 7.3 メンテナンス
 
 1. **定期更新**
    - Dockerイメージ更新
@@ -604,7 +698,7 @@ configMapGenerator:
    - 複数インスタンスの検討
    - ロードバランサー導入検討
 
-## 7. リスク管理
+## 8. リスク管理
 
 | リスク | 影響度 | 対策 |
 |--------|--------|------|
@@ -613,9 +707,9 @@ configMapGenerator:
 | ストレージ障害 | 高 | 定期バックアップとレプリケーション |
 | 不正アクセス | 中 | アクセス制御とログ監視強化 |
 
-## 8. 将来拡張計画
+## 9. 将来拡張計画
 
-### 8.1 短期拡張（3ヶ月以内）
+### 9.1 短期拡張（3ヶ月以内）
 
 1. **マルチサーバー対応**
    - 複数のゲームモード用サーバー
@@ -625,7 +719,7 @@ configMapGenerator:
    - Grafanaダッシュボード構築
    - アラート設定
 
-### 8.2 中期拡張（6ヶ月以内）
+### 9.2 中期拡張（6ヶ月以内）
 
 1. **自動スケーリング**
    - プレイヤー数に応じた自動スケールアウト
@@ -635,7 +729,7 @@ configMapGenerator:
    - セーブデータの自動バックアップ・復元
    - Point-in-time recovery
 
-### 8.3 長期拡張（1年以内）
+### 9.3 長期拡張（1年以内）
 
 1. **マルチクラウド対応**
    - 複数クラウドでの冗長化
@@ -646,8 +740,30 @@ configMapGenerator:
    - プレイヤー統計
    - イベント管理
 
-## 9. まとめ
+## 10. まとめ
 
-本設計により、StarRupture専用サーバーをセキュアかつスケーラブルに運用できる環境が構築されます。Cloudflare Zero Trustによるプライベートアクセスと、Kubernetesによる高可用性を実現し、継続的な運用とメンテナンスを可能にします。
+本設計により、StarRupture専用サーバーをセキュアかつスケーラブルに運用できる環境が構築されます。
+
+### 主な特徴
+
+1. **プライベートホスト名によるセキュリティ強化**
+   - 公開DNSに存在しない完全プライベートな接続
+   - WARP Clientによるゼロトラスト認証
+   - インターネットからの直接アクセスを完全にブロック
+
+2. **ゲームサーバーに最適化されたアーキテクチャ**
+   - UDP/TCPプロトコルの完全サポート
+   - 低レイテンシー接続
+   - Cloudflare Tunnelによる安全なトラフィック転送
+
+3. **運用の簡素化**
+   - GitOpsによる宣言的インフラ管理
+   - Kubernetesによる自動復旧と高可用性
+   - 公開DNSやSSL証明書の管理が不要
+
+4. **段階的な実装と検証**
+   - Phase 1: Terraform設定によるインフラ構築
+   - Phase 2: Kubernetes設定によるアプリケーションデプロイ
+   - Phase 3: WARP Clientによるアクセステスト
 
 実装は段階的に行い、各フェーズでの動作確認を徹底することで、安定したゲーム環境を提供します。
