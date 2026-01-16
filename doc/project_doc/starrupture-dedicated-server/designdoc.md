@@ -146,6 +146,28 @@ resource "random_password" "starrupture_tunnel_secret" {
   special = false
 }
 
+# トンネル設定（ingress rule）
+# プライベートホスト名をクラスター内のサービスに向ける
+resource "cloudflare_zero_trust_tunnel_cloudflared_config" "starrupture_config" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.starrupture_tunnel.id
+
+  config {
+    ingress {
+      hostname = "starrupture.internal"
+      service  = "tcp://starrupture-server.starrupture.svc.cluster.local:7777"
+      origin_request {
+        no_tls_verify = true
+        connect_timeout = 30
+      }
+    }
+    # Catch-all rule (required)
+    ingress {
+      service = "http_status:404"
+    }
+  }
+}
+
 # プライベートホスト名ルート設定
 # このリソースがプライベートホスト名をトンネルにルーティングする鍵
 resource "cloudflare_zero_trust_network_hostname_route" "starrupture_hostname" {
@@ -185,14 +207,21 @@ resource "aws_ssm_parameter" "starrupture_tunnel_secret" {
 
 **注意事項**:
 - `cloudflare_zero_trust_tunnel_cloudflared` でトンネルを作成
+- `cloudflare_zero_trust_tunnel_cloudflared_config` でingress ruleを設定し、プライベートホスト名をKubernetesサービスに向ける
 - `cloudflare_zero_trust_network_hostname_route` でプライベートホスト名(`starrupture.internal`)をトンネルにルーティング
-- プライベートホスト名では `cloudflare_tunnel_config` の ingress_rule は不要
-- トンネルへのトラフィックは hostname route 経由で自動的にルーティングされます
+- `service` には Kubernetes の内部DNS名（`starrupture-server.starrupture.svc.cluster.local:7777`）を指定
+- `tcp://` プロトコルを使用してUDPゲームサーバーに接続
 
 #### 4.2.3 Zero Trust設定（プライベートネットワーク用）
 
 **zero-trust.tf**
 ```hcl
+# GitHub Identity Provider（データソース）
+data "cloudflare_access_identity_provider" "github" {
+  account_id = var.account_id
+  name       = "GitHub"
+}
+
 # WARP Client設定（Gateway Proxyを有効化）
 resource "cloudflare_zero_trust_device_settings" "starrupture_warp" {
   account_id                 = var.account_id
@@ -205,7 +234,7 @@ resource "cloudflare_zero_trust_device_settings" "starrupture_warp" {
 resource "cloudflare_zero_trust_gateway_policy" "starrupture_dns_policy" {
   account_id  = var.account_id
   name        = "Allow StarRupture Private Hostname"
-  description = "Allow DNS resolution for starrupture.internal via WARP"
+  description = "Allow DNS resolution for starrupture.internal via WARP with GitHub authentication"
   action      = "allow"
   precedence  = 1000
   enabled     = true
@@ -214,15 +243,15 @@ resource "cloudflare_zero_trust_gateway_policy" "starrupture_dns_policy" {
   # DNS query matching
   traffic = "dns.domains == \"starrupture.internal\""
 
-  # 認証されたユーザーのみアクセス可能
-  # identity = "any(identity.groups.name[*] in {\"authorized-users\"})"
+  # GitHub認証されたユーザーのみアクセス可能
+  identity = "identity.email.domain == \"github.com\" or any(identity.groups.name[*] in {\"GitHub Users\"})"
 }
 
 # Gateway Network Policy（UDP トラフィック制御）
 resource "cloudflare_zero_trust_gateway_policy" "starrupture_network_policy" {
   account_id  = var.account_id
   name        = "Allow StarRupture Game Traffic"
-  description = "Allow UDP traffic to StarRupture server"
+  description = "Allow UDP traffic to StarRupture server with GitHub authentication"
   action      = "allow"
   precedence  = 1001
   enabled     = true
@@ -230,14 +259,19 @@ resource "cloudflare_zero_trust_gateway_policy" "starrupture_network_policy" {
 
   # Network traffic matching (UDP port 7777)
   traffic = "net.dst.ip == starrupture.internal and net.dst.port == 7777"
+
+  # GitHub認証されたユーザーのみアクセス可能
+  identity = "identity.email.domain == \"github.com\" or any(identity.groups.name[*] in {\"GitHub Users\"})"
 }
 ```
 
 **注意事項**:
+- `cloudflare_access_identity_provider` データソースでGitHub Identity Providerを参照
 - `cloudflare_zero_trust_device_settings` でWARP ClientのGateway Proxyを有効化
 - `gateway_udp_proxy_enabled = true` でUDPトラフィックのプロキシを有効化（ゲームサーバーに必須）
 - `cloudflare_zero_trust_gateway_policy` でDNS解決とネットワークトラフィックを制御
-- プライベートホスト名は自動的にWARP Client経由でのみ解決可能になります
+- `identity` 条件でGitHub認証されたユーザーのみアクセスを許可
+- プライベートホスト名は認証済みユーザーのWARP Client経由でのみ解決可能
 
 #### 4.2.4 Variables設定
 
