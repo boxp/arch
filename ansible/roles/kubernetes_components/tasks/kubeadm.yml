@@ -30,8 +30,8 @@
 - name: Update etcd CPU resource request in manifest
   ansible.builtin.lineinfile:
     path: /etc/kubernetes/manifests/etcd.yaml
-    regexp: '^\s+cpu:\s+\d+m\s*$'
-    line: '      cpu: {{ etcd_resource_requests_cpu }}'
+    regexp: '^(\s+)cpu:\s+\d+m\s*$'
+    line: '\1cpu: {{ etcd_resource_requests_cpu }}'
     backrefs: true
     backup: true
   become: true
@@ -42,8 +42,8 @@
 - name: Update etcd memory resource request in manifest
   ansible.builtin.lineinfile:
     path: /etc/kubernetes/manifests/etcd.yaml
-    regexp: '^\s+memory:\s+\d+Mi\s*$'
-    line: '      memory: {{ etcd_resource_requests_memory }}'
+    regexp: '^(\s+)memory:\s+\d+Mi\s*$'
+    line: '\1memory: {{ etcd_resource_requests_memory }}'
     backrefs: true
   become: true
   when:
