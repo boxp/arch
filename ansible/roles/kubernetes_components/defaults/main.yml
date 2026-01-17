@@ -49,3 +49,8 @@ sysctl_config:
   net.bridge.bridge-nf-call-iptables: 1
   net.bridge.bridge-nf-call-ip6tables: 1
   net.ipv4.ip_forward: 1
+
+# etcd resource configuration for ARM boards
+# Increased from default 100m CPU / 100Mi memory to accommodate ARM processor characteristics
+etcd_resource_requests_cpu: "200m"
+etcd_resource_requests_memory: "200Mi"
