@@ -34,7 +34,7 @@ jobs:
 
       - name: Run Claude Code
         id: claude
-        uses: anthropics/claude-code-action@2660c3a6d30056eb5ddd5d6c902574f4aa90c471 # beta
+        uses: anthropics/claude-code-action@b6e5a9f27ac3c7d2c2b1542b8670917750e0433f # beta
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
 
@@ -52,7 +52,7 @@ jobs:
           # assignee_trigger: "claude-bot"
           
           # Optional: Allow Claude to run specific commands
-          allowed_tools: "Bash(git add:*),Bash(git commit:*),Bash(git push:*),Read,Edit,Write,mcp__o3__o3-search"
+          allowed_tools: "Bash(git add:*),Bash(git commit:*),Bash(git push:*),Read,Edit,Write,WebSearch,WebFetch,mcp__o3__o3-search"
           
           # Optional: Add custom instructions for Claude to customize its behavior for your project
           custom_instructions: |
