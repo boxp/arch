@@ -1,0 +1,42 @@
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: ClusterConfiguration
+kubernetesVersion: v{{ kubernetes_version }}.0
+controlPlaneEndpoint: "{{ cluster_vip | default('') }}"
+networking:
+  serviceSubnet: "10.96.0.0/12"
+  podSubnet: "10.244.0.0/16"
+  dnsDomain: "{{ kubelet_cluster_domain }}"
+etcd:
+  local:
+    extraArgs:
+      # Increase heartbeat interval from default 100ms to 1000ms for ARM boards
+      heartbeat-interval: "1000"
+      # Increase election timeout from default 1000ms to 10000ms for ARM boards
+      election-timeout: "10000"
+    serverCertSANs:
+      - localhost
+      - 127.0.0.1
+{% if cluster_vip is defined and cluster_vip != "" %}
+      - "{{ cluster_vip }}"
+{% endif %}
+    peerCertSANs:
+      - localhost
+      - 127.0.0.1
+apiServer:
+  certSANs:
+    - localhost
+    - 127.0.0.1
+{% if cluster_vip is defined and cluster_vip != "" %}
+    - "{{ cluster_vip }}"
+{% endif %}
+---
+apiVersion: kubeadm.k8s.io/v1beta4
+kind: InitConfiguration
+localAPIEndpoint:
+  advertiseAddress: "{{ kubelet_node_ip }}"
+  bindPort: 6443
+nodeRegistration:
+  criSocket: unix:///var/run/crio/crio.sock
+  kubeletExtraArgs:
+    node-ip: "{{ kubelet_node_ip }}"

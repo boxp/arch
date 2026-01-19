@@ -12,3 +12,6 @@
 
 - name: Include kubelet configuration tasks
   ansible.builtin.include_tasks: kubelet.yml
+
+- name: Include kubeadm configuration tasks
+  ansible.builtin.include_tasks: kubeadm.yml
