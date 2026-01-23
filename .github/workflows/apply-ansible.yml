@@ -146,17 +146,27 @@ jobs:
         id: credentials
         run: |
           # Get Cloudflare Access credentials with retry logic
+          CF_ID=""
           for i in 1 2 3; do
             CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
             echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
             sleep 5
           done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
 
+          CF_SECRET=""
           for i in 1 2 3; do
             CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
             echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
             sleep 5
           done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
 
           # Mask secrets in logs
           echo "::add-mask::$CF_ID"
@@ -167,11 +177,23 @@ jobs:
 
           # Get SSH private key with retry logic
           mkdir -p ~/.ssh
+          SSH_KEY=""
           for i in 1 2 3; do
-            aws ssm get-parameter --name "ansible-ssh-private-key" --with-decryption --query "Parameter.Value" --output text > ~/.ssh/id_ed25519 && break
+            SSH_KEY=$(aws ssm get-parameter --name "ansible-ssh-private-key" --with-decryption --query "Parameter.Value" --output text) && break
             echo "Retry $i: Failed to get SSH private key"
             sleep 5
           done
+          if [ -z "$SSH_KEY" ]; then
+            echo "::error::Failed to retrieve SSH private key after 3 attempts"
+            exit 1
+          fi
+
+          # Mask SSH private key in logs (mask each line to handle multi-line secret)
+          echo "$SSH_KEY" | while IFS= read -r line; do
+            [ -n "$line" ] && echo "::add-mask::$line"
+          done
+
+          echo "$SSH_KEY" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install cloudflared
