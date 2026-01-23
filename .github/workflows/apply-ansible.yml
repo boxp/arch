@@ -1,0 +1,197 @@
+name: Apply Ansible
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ansible/**'
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      changed_roles: ${{ steps.detect.outputs.roles }}
+      has_changes: ${{ steps.detect.outputs.has_changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+        with:
+          fetch-depth: 2
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
+        with:
+          files: ansible/roles/**
+
+      - name: Detect changed roles
+        id: detect
+        run: |
+          CHANGED_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+          echo "Changed files: $CHANGED_FILES"
+
+          ROLES=""
+          if [ -n "$CHANGED_FILES" ]; then
+            ROLES=$(echo "$CHANGED_FILES" | tr ' ' '\n' | grep "^ansible/roles/" | \
+              sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
+          fi
+
+          echo "Changed roles: $ROLES"
+          echo "roles=${ROLES}" >> "$GITHUB_OUTPUT"
+
+          if [ -n "$ROLES" ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  apply:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.has_changes == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        node: [shanghai-1, shanghai-2, shanghai-3]
+      max-parallel: 1
+      fail-fast: true
+    env:
+      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+      # Pin cloudflared version for reproducible builds
+      CLOUDFLARED_VERSION: "2025.4.2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup credentials
+        id: credentials
+        run: |
+          # Get Cloudflare Access credentials with retry logic
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+
+          # Mask secrets in logs
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> $GITHUB_ENV
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> $GITHUB_ENV
+
+          # Get SSH private key with retry logic
+          mkdir -p ~/.ssh
+          for i in 1 2 3; do
+            aws ssm get-parameter --name "ansible-ssh-private-key" --with-decryption --query "Parameter.Value" --output text > ~/.ssh/id_ed25519 && break
+            echo "Retry $i: Failed to get SSH private key"
+            sleep 5
+          done
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install cloudflared
+        run: |
+          curl -sL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" -o cloudflared
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+          cloudflared --version
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
+
+          # Configure SSH to route through bastion for the target node IP
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+
+          # Match by IP address (used by ansible_host)
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking no
+            UserKnownHostsFile /dev/null
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
+          echo "Testing SSH connectivity to ${{ matrix.node }} (${NODE_IP}) via bastion..."
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
+
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Run Ansible playbook
+        run: |
+          cd ansible
+          source .venv/bin/activate
+
+          CHANGED_ROLES="${{ needs.detect-changes.outputs.changed_roles }}"
+          TAGS=""
+
+          # Map roles to tags
+          if echo "$CHANGED_ROLES" | grep -qE "(user_management|network_configuration)"; then
+            TAGS="${TAGS:+$TAGS,}bootstrap"
+          fi
+          if echo "$CHANGED_ROLES" | grep -q "cloudflare_cli"; then
+            TAGS="${TAGS:+$TAGS,}cloudflare"
+          fi
+          if echo "$CHANGED_ROLES" | grep -q "kubernetes_components"; then
+            TAGS="${TAGS:+$TAGS,}kubernetes"
+          fi
+          if echo "$CHANGED_ROLES" | grep -q "kube_vip"; then
+            TAGS="${TAGS:+$TAGS,}kube-vip"
+          fi
+
+          # Warn if roles changed but no tags matched
+          if [ -z "$TAGS" ] && [ -n "$CHANGED_ROLES" ]; then
+            echo "::warning::Changed roles detected but no tag mappings found: $CHANGED_ROLES"
+            echo "Please update the role-to-tag mapping in this workflow if a new role was added."
+            exit 0
+          fi
+
+          if [ -n "$TAGS" ]; then
+            echo "Running playbook with tags: $TAGS on node: ${{ matrix.node }}"
+            # Override ansible_ssh_common_args to use SSH config instead of inventory's ProxyCommand
+            ansible-playbook \
+              -i inventories/production/hosts.yml \
+              playbooks/control-plane.yml \
+              --limit ${{ matrix.node }} \
+              --tags "$TAGS" \
+              -e "ansible_ssh_common_args=''" \
+              -v
+          fi
