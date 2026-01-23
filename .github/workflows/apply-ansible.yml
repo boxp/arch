@@ -9,6 +9,7 @@ on:
 jobs:
   detect-changes:
     runs-on: ubuntu-latest
+    permissions: {}
     outputs:
       changed_roles: ${{ steps.detect.outputs.roles }}
       run_control_plane: ${{ steps.detect.outputs.run_control_plane }}
