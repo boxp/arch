@@ -7,85 +7,7 @@ on:
       - 'ansible/**'
 
 jobs:
-  detect-changes:
-    runs-on: ubuntu-latest
-    permissions: {}
-    outputs:
-      changed_roles: ${{ steps.detect.outputs.roles }}
-      run_control_plane: ${{ steps.detect.outputs.run_control_plane }}
-      run_node_shanghai_1: ${{ steps.detect.outputs.run_node_shanghai_1 }}
-      run_node_shanghai_2: ${{ steps.detect.outputs.run_node_shanghai_2 }}
-      run_node_shanghai_3: ${{ steps.detect.outputs.run_node_shanghai_3 }}
-      has_changes: ${{ steps.detect.outputs.has_changes }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
-        with:
-          fetch-depth: 2
-
-      - name: Get changed files
-        id: changed-files
-        uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
-        with:
-          files: ansible/**
-
-      - name: Detect changes
-        id: detect
-        run: |
-          CHANGED_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
-          echo "Changed files: $CHANGED_FILES"
-
-          # Detect changed roles
-          ROLES=""
-          if echo "$CHANGED_FILES" | tr ' ' '\n' | grep -q "^ansible/roles/"; then
-            ROLES=$(echo "$CHANGED_FILES" | tr ' ' '\n' | grep "^ansible/roles/" | \
-              sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-          fi
-          echo "Changed roles: $ROLES"
-
-          # Detect if control-plane.yml should run
-          # Run if: roles changed, control-plane.yml changed, vars changed, or inventories changed
-          RUN_CONTROL_PLANE="false"
-          if [ -n "$ROLES" ]; then
-            RUN_CONTROL_PLANE="true"
-          fi
-          if echo "$CHANGED_FILES" | tr ' ' '\n' | grep -qE "^ansible/(playbooks/control-plane\.yml|vars/|inventories/)"; then
-            RUN_CONTROL_PLANE="true"
-          fi
-
-          # Detect node-specific playbook changes
-          RUN_NODE_1="false"
-          RUN_NODE_2="false"
-          RUN_NODE_3="false"
-          if echo "$CHANGED_FILES" | tr ' ' '\n' | grep -q "ansible/playbooks/node-shanghai-1.yml"; then
-            RUN_NODE_1="true"
-          fi
-          if echo "$CHANGED_FILES" | tr ' ' '\n' | grep -q "ansible/playbooks/node-shanghai-2.yml"; then
-            RUN_NODE_2="true"
-          fi
-          if echo "$CHANGED_FILES" | tr ' ' '\n' | grep -q "ansible/playbooks/node-shanghai-3.yml"; then
-            RUN_NODE_3="true"
-          fi
-
-          # Determine if there are any changes to process
-          HAS_CHANGES="false"
-          if [ "$RUN_CONTROL_PLANE" = "true" ] || [ "$RUN_NODE_1" = "true" ] || [ "$RUN_NODE_2" = "true" ] || [ "$RUN_NODE_3" = "true" ]; then
-            HAS_CHANGES="true"
-          fi
-
-          # Write all outputs at once to satisfy SC2129
-          {
-            echo "roles=${ROLES}"
-            echo "run_control_plane=${RUN_CONTROL_PLANE}"
-            echo "run_node_shanghai_1=${RUN_NODE_1}"
-            echo "run_node_shanghai_2=${RUN_NODE_2}"
-            echo "run_node_shanghai_3=${RUN_NODE_3}"
-            echo "has_changes=${HAS_CHANGES}"
-          } >> "$GITHUB_OUTPUT"
-
   apply:
-    needs: detect-changes
-    if: needs.detect-changes.outputs.has_changes == 'true'
     runs-on: ubuntu-latest
     permissions:
       id-token: write
@@ -100,54 +22,16 @@ jobs:
       # Pin cloudflared version for reproducible builds
       CLOUDFLARED_VERSION: "2025.4.2"
     steps:
-      - name: Check if this node needs processing
-        id: check-node
-        run: |
-          NODE="${{ matrix.node }}"
-          RUN_CONTROL_PLANE="${{ needs.detect-changes.outputs.run_control_plane }}"
-          RUN_NODE_1="${{ needs.detect-changes.outputs.run_node_shanghai_1 }}"
-          RUN_NODE_2="${{ needs.detect-changes.outputs.run_node_shanghai_2 }}"
-          RUN_NODE_3="${{ needs.detect-changes.outputs.run_node_shanghai_3 }}"
-
-          SHOULD_RUN="false"
-          RUN_NODE_PLAYBOOK="false"
-
-          case "$NODE" in
-            shanghai-1)
-              [ "$RUN_CONTROL_PLANE" = "true" ] || [ "$RUN_NODE_1" = "true" ] && SHOULD_RUN="true"
-              [ "$RUN_NODE_1" = "true" ] && RUN_NODE_PLAYBOOK="true"
-              ;;
-            shanghai-2)
-              [ "$RUN_CONTROL_PLANE" = "true" ] || [ "$RUN_NODE_2" = "true" ] && SHOULD_RUN="true"
-              [ "$RUN_NODE_2" = "true" ] && RUN_NODE_PLAYBOOK="true"
-              ;;
-            shanghai-3)
-              [ "$RUN_CONTROL_PLANE" = "true" ] || [ "$RUN_NODE_3" = "true" ] && SHOULD_RUN="true"
-              [ "$RUN_NODE_3" = "true" ] && RUN_NODE_PLAYBOOK="true"
-              ;;
-          esac
-
-          echo "should_run=${SHOULD_RUN}" >> "$GITHUB_OUTPUT"
-          echo "run_node_playbook=${RUN_NODE_PLAYBOOK}" >> "$GITHUB_OUTPUT"
-          echo "Node: $NODE, Should run: $SHOULD_RUN, Run node playbook: $RUN_NODE_PLAYBOOK"
-
-      - name: Skip if no changes for this node
-        if: steps.check-node.outputs.should_run != 'true'
-        run: echo "No changes for ${{ matrix.node }}, skipping"
-
       - name: Checkout
-        if: steps.check-node.outputs.should_run == 'true'
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
 
       - name: Configure AWS credentials
-        if: steps.check-node.outputs.should_run == 'true'
         uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
 
       - name: Setup credentials
-        if: steps.check-node.outputs.should_run == 'true'
         id: credentials
         run: |
           # Get Cloudflare Access credentials with retry logic
@@ -202,7 +86,6 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install cloudflared
-        if: steps.check-node.outputs.should_run == 'true'
         run: |
           curl -sL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" -o cloudflared
           chmod +x cloudflared
@@ -210,7 +93,6 @@ jobs:
           cloudflared --version
 
       - name: Setup SSH config
-        if: steps.check-node.outputs.should_run == 'true'
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
 
@@ -237,86 +119,53 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Verify SSH connectivity
-        if: steps.check-node.outputs.should_run == 'true'
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
           echo "Testing SSH connectivity to ${{ matrix.node }} (${NODE_IP}) via bastion..."
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
 
       - name: Set up Python
-        if: steps.check-node.outputs.should_run == 'true'
         uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
         with:
           python-version: '3.12'
 
       - name: Install uv
-        if: steps.check-node.outputs.should_run == 'true'
         uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
 
       - name: Install dependencies
-        if: steps.check-node.outputs.should_run == 'true'
         run: |
           cd ansible
           uv sync
 
       - name: Run control-plane playbook
-        if: steps.check-node.outputs.should_run == 'true' && needs.detect-changes.outputs.run_control_plane == 'true'
         run: |
           cd ansible
           source .venv/bin/activate
 
-          CHANGED_ROLES="${{ needs.detect-changes.outputs.changed_roles }}"
-          TAGS=""
-
-          # Map roles to tags
-          if echo "$CHANGED_ROLES" | grep -qE "(user_management|network_configuration)"; then
-            TAGS="${TAGS:+$TAGS,}bootstrap"
-          fi
-          if echo "$CHANGED_ROLES" | grep -q "cloudflare_cli"; then
-            TAGS="${TAGS:+$TAGS,}cloudflare"
-          fi
-          if echo "$CHANGED_ROLES" | grep -q "kubernetes_components"; then
-            TAGS="${TAGS:+$TAGS,}kubernetes"
-          fi
-          if echo "$CHANGED_ROLES" | grep -q "kube_vip"; then
-            TAGS="${TAGS:+$TAGS,}kube-vip"
-          fi
-
-          # If no roles changed but control-plane.yml or vars changed, run without tags (full playbook)
-          if [ -z "$TAGS" ] && [ -z "$CHANGED_ROLES" ]; then
-            echo "Running full control-plane playbook on node: ${{ matrix.node }}"
-            ansible-playbook \
-              -i inventories/production/hosts.yml \
-              playbooks/control-plane.yml \
-              --limit ${{ matrix.node }} \
-              -e "ansible_ssh_common_args=''" \
-              -v
-          elif [ -n "$TAGS" ]; then
-            echo "Running control-plane playbook with tags: $TAGS on node: ${{ matrix.node }}"
-            ansible-playbook \
-              -i inventories/production/hosts.yml \
-              playbooks/control-plane.yml \
-              --limit ${{ matrix.node }} \
-              --tags "$TAGS" \
-              -e "ansible_ssh_common_args=''" \
-              -v
-          else
-            echo "::warning::Changed roles detected but no tag mappings found: $CHANGED_ROLES"
-            echo "Please update the role-to-tag mapping in this workflow if a new role was added."
-          fi
+          echo "Running control-plane playbook on node: ${{ matrix.node }}"
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/control-plane.yml \
+            --limit ${{ matrix.node }} \
+            -e "ansible_ssh_common_args=''" \
+            -v
 
       - name: Run node-specific playbook
-        if: steps.check-node.outputs.should_run == 'true' && steps.check-node.outputs.run_node_playbook == 'true'
         run: |
           cd ansible
           source .venv/bin/activate
 
           NODE="${{ matrix.node }}"
-          echo "Running node-specific playbook for: $NODE"
+          PLAYBOOK="playbooks/node-${NODE}.yml"
 
-          ansible-playbook \
-            -i inventories/production/hosts.yml \
-            "playbooks/node-${NODE}.yml" \
-            --limit "${NODE}" \
-            -e "ansible_ssh_common_args=''" \
-            -v
+          if [ -f "$PLAYBOOK" ]; then
+            echo "Running node-specific playbook for: $NODE"
+            ansible-playbook \
+              -i inventories/production/hosts.yml \
+              "$PLAYBOOK" \
+              --limit "${NODE}" \
+              -e "ansible_ssh_common_args=''" \
+              -v
+          else
+            echo "No node-specific playbook found for: $NODE (skipping)"
+          fi
