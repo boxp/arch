@@ -41,7 +41,6 @@ jobs:
               sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
           fi
           echo "Changed roles: $ROLES"
-          echo "roles=${ROLES}" >> "$GITHUB_OUTPUT"
 
           # Detect if control-plane.yml should run
           # Run if: roles changed, control-plane.yml changed, vars changed, or inventories changed
@@ -52,7 +51,6 @@ jobs:
           if echo "$CHANGED_FILES" | tr ' ' '\n' | grep -qE "^ansible/(playbooks/control-plane\.yml|vars/|inventories/)"; then
             RUN_CONTROL_PLANE="true"
           fi
-          echo "run_control_plane=${RUN_CONTROL_PLANE}" >> "$GITHUB_OUTPUT"
 
           # Detect node-specific playbook changes
           RUN_NODE_1="false"
@@ -67,16 +65,22 @@ jobs:
           if echo "$CHANGED_FILES" | tr ' ' '\n' | grep -q "ansible/playbooks/node-shanghai-3.yml"; then
             RUN_NODE_3="true"
           fi
-          echo "run_node_shanghai_1=${RUN_NODE_1}" >> "$GITHUB_OUTPUT"
-          echo "run_node_shanghai_2=${RUN_NODE_2}" >> "$GITHUB_OUTPUT"
-          echo "run_node_shanghai_3=${RUN_NODE_3}" >> "$GITHUB_OUTPUT"
 
           # Determine if there are any changes to process
+          HAS_CHANGES="false"
           if [ "$RUN_CONTROL_PLANE" = "true" ] || [ "$RUN_NODE_1" = "true" ] || [ "$RUN_NODE_2" = "true" ] || [ "$RUN_NODE_3" = "true" ]; then
-            echo "has_changes=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+            HAS_CHANGES="true"
           fi
+
+          # Write all outputs at once to satisfy SC2129
+          {
+            echo "roles=${ROLES}"
+            echo "run_control_plane=${RUN_CONTROL_PLANE}"
+            echo "run_node_shanghai_1=${RUN_NODE_1}"
+            echo "run_node_shanghai_2=${RUN_NODE_2}"
+            echo "run_node_shanghai_3=${RUN_NODE_3}"
+            echo "has_changes=${HAS_CHANGES}"
+          } >> "$GITHUB_OUTPUT"
 
   apply:
     needs: detect-changes
@@ -172,8 +176,8 @@ jobs:
           echo "::add-mask::$CF_ID"
           echo "::add-mask::$CF_SECRET"
 
-          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> $GITHUB_ENV
-          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> $GITHUB_ENV
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
 
           # Get SSH private key with retry logic
           mkdir -p ~/.ssh
