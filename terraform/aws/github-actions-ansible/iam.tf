@@ -41,7 +41,9 @@ resource "aws_iam_policy" "ssm_read" {
           "ssm:GetParameters"
         ]
         Resource = [
-          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/bastion-*"
+          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/bastion-tunnel-token",
+          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/bastion-cf-access-client-id",
+          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/bastion-cf-access-client-secret"
         ]
       }
     ]
