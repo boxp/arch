@@ -255,32 +255,28 @@ jobs:
       - name: Build github-comment variables
         id: build-vars
         run: |
-          # Combine all node summaries into a single JSON array
-          NODES_JSON="[]"
-          HAS_CHANGES="false"
+          # Combine all node summaries using file-based operations
+          # to avoid "Argument list too long" errors
 
+          # Collect summary files in order
+          SUMMARY_FILES=()
           for node in shanghai-1 shanghai-2 shanghai-3; do
             SUMMARY_FILE="plan_outputs/${node}_summary.json"
             if [ -f "$SUMMARY_FILE" ]; then
-              NODE_DATA=$(cat "$SUMMARY_FILE")
-              NODES_JSON=$(echo "$NODES_JSON" | jq --argjson node "$NODE_DATA" '. + [$node]')
-
-              # Check if this node has changes
-              CHANGED=$(echo "$NODE_DATA" | jq -r '.changed')
-              if [ "$CHANGED" != "0" ]; then
-                HAS_CHANGES="true"
-              fi
+              SUMMARY_FILES+=("$SUMMARY_FILE")
             fi
           done
 
-          # Create the final vars JSON
-          VARS_JSON=$(jq -n \
-            --argjson nodes "$NODES_JSON" \
-            --argjson has_changes "$HAS_CHANGES" \
-            '{nodes: $nodes, has_changes: $has_changes}')
-
-          # Write to file for github-comment
-          echo "$VARS_JSON" > /tmp/ansible-plan-vars.json
+          # Merge all summaries into a single array and check for changes
+          # Use jq -s to slurp files directly (avoids shell variable size limits)
+          if [ ${#SUMMARY_FILES[@]} -gt 0 ]; then
+            jq -s '{
+              nodes: .,
+              has_changes: (map(.changed) | add > 0)
+            }' "${SUMMARY_FILES[@]}" > /tmp/ansible-plan-vars.json
+          else
+            echo '{"nodes": [], "has_changes": false}' > /tmp/ansible-plan-vars.json
+          fi
 
           echo "vars_file=/tmp/ansible-plan-vars.json" >> "$GITHUB_OUTPUT"
 
