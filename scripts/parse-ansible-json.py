@@ -49,14 +49,21 @@ def extract_changed_tasks(data: dict) -> list[dict]:
     """Extract tasks that have changed=true."""
     tasks = []
     for play in data.get("plays", []):
-        for task in play.get("tasks", []):
-            hosts = task.get("hosts", {})
+        for task_entry in play.get("tasks", []):
+            # Task metadata is in task_entry.task, not in host results
+            task_info = task_entry.get("task", {})
+            task_name = task_info.get("name", "unknown")
+            task_action = task_entry.get("action", task_info.get("action", "unknown"))
+
+            hosts = task_entry.get("hosts", {})
             for host_result in hosts.values():
                 if host_result.get("changed"):
                     tasks.append({
-                        "task": host_result.get("task", "unknown"),
-                        "action": host_result.get("action", "unknown"),
+                        "task": task_name,
+                        "action": task_action,
                     })
+                    break  # Only need to record once per task
+
     # Remove duplicates while preserving order
     seen = set()
     unique_tasks = []
