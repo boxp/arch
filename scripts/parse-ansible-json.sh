@@ -150,34 +150,35 @@ extract_diffs() {
   echo "$all_diffs"
 }
 
-# Read and combine all text outputs
-read_full_output() {
-  local combined=""
+# Read and combine all text outputs to a temp file (to avoid arg list too long)
+write_full_output_to_file() {
+  local output_file="$1"
 
-  for text_file in "${TEXT_FILES[@]}"; do
-    if [ ! -f "$text_file" ]; then
-      continue
-    fi
+  # Combine all text files and write as JSON string to temp file
+  {
+    for i in "${!TEXT_FILES[@]}"; do
+      text_file="${TEXT_FILES[$i]}"
+      if [ ! -f "$text_file" ]; then
+        continue
+      fi
 
-    local content
-    content=$(cat "$text_file")
-
-    if [ -n "$combined" ]; then
-      combined="${combined}\n\n--- Next Playbook ---\n\n${content}"
-    else
-      combined="$content"
-    fi
-  done
-
-  # Escape for JSON
-  echo "$combined" | jq -Rs '.'
+      if [ "$i" -gt 0 ]; then
+        printf '\n\n--- Next Playbook ---\n\n'
+      fi
+      cat "$text_file"
+    done
+  } | jq -Rs '.' > "$output_file"
 }
 
 # Main processing
 STATS=$(extract_and_sum_stats)
 CHANGED_TASKS=$(extract_changed_tasks)
 DIFFS=$(extract_diffs)
-FULL_OUTPUT=$(read_full_output)
+
+# Write full output to temp file to avoid "Argument list too long" error
+FULL_OUTPUT_FILE=$(mktemp)
+trap "rm -f '$FULL_OUTPUT_FILE'" EXIT
+write_full_output_to_file "$FULL_OUTPUT_FILE"
 
 # Get individual stat values
 OK=$(echo "$STATS" | jq -r '.ok // 0')
@@ -190,6 +191,7 @@ UNREACHABLE=$(echo "$STATS" | jq -r '.unreachable // 0')
 TOTAL_FAILED=$((FAILED + UNREACHABLE))
 
 # Output JSON structure for github-comment
+# Use --slurpfile to read full_output from file (avoids arg list too long)
 jq -n \
   --arg name "$NODE_NAME" \
   --argjson ok "$OK" \
@@ -198,7 +200,7 @@ jq -n \
   --argjson failed "$TOTAL_FAILED" \
   --argjson changed_tasks "$CHANGED_TASKS" \
   --arg diff "$DIFFS" \
-  --argjson full_output "$FULL_OUTPUT" \
+  --slurpfile full_output "$FULL_OUTPUT_FILE" \
   '{
     name: $name,
     ok: $ok,
@@ -207,5 +209,5 @@ jq -n \
     failed: $failed,
     changed_tasks: $changed_tasks,
     diff: $diff,
-    full_output: $full_output
+    full_output: $full_output[0]
   }'
