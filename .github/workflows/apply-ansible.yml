@@ -31,8 +31,8 @@ jobs:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
 
-      - name: Setup credentials
-        id: credentials
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
         run: |
           # Get Cloudflare Access credentials with retry logic
           CF_ID=""
@@ -64,25 +64,10 @@ jobs:
           echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
           echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
 
-          # Get SSH private key with retry logic
+      - name: Setup SSH key
+        run: |
           mkdir -p ~/.ssh
-          SSH_KEY=""
-          for i in 1 2 3; do
-            SSH_KEY=$(aws ssm get-parameter --name "ansible-ssh-private-key" --with-decryption --query "Parameter.Value" --output text) && break
-            echo "Retry $i: Failed to get SSH private key"
-            sleep 5
-          done
-          if [ -z "$SSH_KEY" ]; then
-            echo "::error::Failed to retrieve SSH private key after 3 attempts"
-            exit 1
-          fi
-
-          # Mask SSH private key in logs (mask each line to handle multi-line secret)
-          echo "$SSH_KEY" | while IFS= read -r line; do
-            [ -n "$line" ] && echo "::add-mask::$line"
-          done
-
-          echo "$SSH_KEY" > ~/.ssh/id_ed25519
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install cloudflared

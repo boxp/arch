@@ -29,7 +29,7 @@ resource "aws_iam_role" "github_actions_ansible" {
 resource "aws_iam_policy" "ssm_read" {
   name        = "GitHubActions_Ansible_SSMRead"
   path        = "/"
-  description = "Policy for GitHub Actions Ansible to read SSM parameters"
+  description = "Policy for GitHub Actions Ansible to read SSM parameters for Cloudflare bastion access"
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -41,8 +41,7 @@ resource "aws_iam_policy" "ssm_read" {
           "ssm:GetParameters"
         ]
         Resource = [
-          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/bastion-*",
-          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/ansible-*"
+          "arn:aws:ssm:ap-northeast-1:${var.aws_account_id}:parameter/bastion-*"
         ]
       }
     ]
