@@ -289,6 +289,6 @@ jobs:
         run: |
           github-comment post \
             -k ansible-plan \
-            -var-file "${{ steps.build-vars.outputs.vars_file }}"
+            --var-file "Vars:${{ steps.build-vars.outputs.vars_file }}"
         env:
           GITHUB_TOKEN: ${{ github.token }}
