@@ -52,6 +52,5 @@ post:
       </details>
 
 hide:
-  ansible-plan:
-    condition: |
-      Comment.Body contains "## :gear: Ansible Plan Results"
+  ansible-plan: |
+    Comment.Body contains "## :gear: Ansible Plan Results"
