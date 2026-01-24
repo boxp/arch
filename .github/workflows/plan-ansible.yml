@@ -143,15 +143,23 @@ jobs:
 
             set +e
             # Run with JSON callback for structured output
+            # Keep stderr separate to avoid corrupting JSON output
             ANSIBLE_STDOUT_CALLBACK=json ansible-playbook \
               -i inventories/production/hosts.yml \
               "$playbook" \
               --limit "$node" \
               -e "ansible_ssh_common_args=''" \
               -e "node_name=$node" \
-              --check --diff 2>&1 | tee "$json_output"
-            local exit_code=${PIPESTATUS[0]}
+              --check --diff > "$json_output" 2>"${json_output%.json}.stderr"
+            local exit_code=$?
             set -e
+
+            # Show stderr in CI logs for debugging
+            if [ -s "${json_output%.json}.stderr" ]; then
+              echo "::group::Ansible stderr for $playbook"
+              cat "${json_output%.json}.stderr"
+              echo "::endgroup::"
+            fi
 
             # Generate human-readable output from JSON
             # Extract task results and format them
@@ -186,17 +194,32 @@ jobs:
 
           # Check for node-specific playbook
           PLAYBOOK="playbooks/node-${NODE}.yml"
+          HAS_NODE_SPECIFIC=false
 
           if [ -f "$PLAYBOOK" ]; then
             run_ansible "$PLAYBOOK" "$NODE" \
               "plan_outputs/${NODE}_node-specific.json" \
               "plan_outputs/${NODE}_node-specific.txt"
+            HAS_NODE_SPECIFIC=true
           fi
 
           # Parse JSON outputs and create combined summary
-          ../scripts/parse-ansible-json.sh "$NODE" \
-            "plan_outputs/${NODE}_control-plane.json" \
-            "plan_outputs/${NODE}_control-plane.txt" > "plan_outputs/${NODE}_summary.json"
+          # Include both control-plane and node-specific results if available
+          if [ "$HAS_NODE_SPECIFIC" = true ]; then
+            ../scripts/parse-ansible-json.sh "$NODE" \
+              "plan_outputs/${NODE}_control-plane.json" \
+              "plan_outputs/${NODE}_node-specific.json" \
+              -- \
+              "plan_outputs/${NODE}_control-plane.txt" \
+              "plan_outputs/${NODE}_node-specific.txt" \
+              > "plan_outputs/${NODE}_summary.json"
+          else
+            ../scripts/parse-ansible-json.sh "$NODE" \
+              "plan_outputs/${NODE}_control-plane.json" \
+              -- \
+              "plan_outputs/${NODE}_control-plane.txt" \
+              > "plan_outputs/${NODE}_summary.json"
+          fi
 
       - name: Upload plan output
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
