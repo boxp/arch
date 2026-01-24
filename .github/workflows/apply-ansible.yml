@@ -135,6 +135,7 @@ jobs:
             playbooks/control-plane.yml \
             --limit ${{ matrix.node }} \
             -e "ansible_ssh_common_args=''" \
+            -e "node_name=${{ matrix.node }}" \
             -v
 
       - name: Run node-specific playbook
@@ -152,6 +153,7 @@ jobs:
               "$PLAYBOOK" \
               --limit "${NODE}" \
               -e "ansible_ssh_common_args=''" \
+              -e "node_name=${NODE}" \
               -v
           else
             echo "No node-specific playbook found for: $NODE (skipping)"
