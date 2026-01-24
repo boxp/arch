@@ -7,7 +7,7 @@ on:
       - 'ansible/**'
       - '.github/workflows/plan-ansible.yml'
       - '.github/workflows/apply-ansible.yml'
-      - 'scripts/parse-ansible-json.sh'
+      - 'scripts/parse-ansible-json.py'
       - '.github-comment.yaml'
 
 jobs:
@@ -206,7 +206,7 @@ jobs:
           # Parse JSON outputs and create combined summary
           # Include both control-plane and node-specific results if available
           if [ "$HAS_NODE_SPECIFIC" = true ]; then
-            ../scripts/parse-ansible-json.sh "$NODE" \
+            python3 ../scripts/parse-ansible-json.py "$NODE" \
               "plan_outputs/${NODE}_control-plane.json" \
               "plan_outputs/${NODE}_node-specific.json" \
               -- \
@@ -214,7 +214,7 @@ jobs:
               "plan_outputs/${NODE}_node-specific.txt" \
               > "plan_outputs/${NODE}_summary.json"
           else
-            ../scripts/parse-ansible-json.sh "$NODE" \
+            python3 ../scripts/parse-ansible-json.py "$NODE" \
               "plan_outputs/${NODE}_control-plane.json" \
               -- \
               "plan_outputs/${NODE}_control-plane.txt" \
