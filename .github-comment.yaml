@@ -1,0 +1,57 @@
+---
+post:
+  ansible-plan:
+    template: |
+      ## :gear: Ansible Plan Results
+
+      **Mode:** `--check --diff` (dry run)
+
+      ### Summary
+      | Node | :white_check_mark: OK | :arrows_counterclockwise: Changed | :fast_forward: Skipped | :x: Failed |
+      |------|-----|---------|---------|--------|
+      {{- range .Vars.nodes }}
+      | {{ .name }} | {{ .ok }} | {{ .changed }} | {{ .skipped }} | {{ .failed }} |
+      {{- end }}
+
+      {{ if .Vars.has_changes }}
+      ### :warning: Changes Detected
+      {{ range .Vars.nodes }}
+      {{ if gt .changed 0.0 }}
+      <details>
+      <summary><strong>{{ .name }}</strong> - {{ .changed }} change(s)</summary>
+
+      #### Changed Tasks
+      {{ range .changed_tasks }}
+      - `{{ .task }}` ({{ .action }})
+      {{ end }}
+
+      {{ if ne .diff "" }}
+      ```diff
+      {{ .diff }}
+      ```
+      {{ end }}
+
+      </details>
+      {{ end }}
+      {{ end }}
+      {{ else }}
+      ### :white_check_mark: No Changes
+      All nodes are up to date.
+      {{ end }}
+
+      <details>
+      <summary>:page_facing_up: Full Output</summary>
+
+      {{ range .Vars.nodes }}
+      #### {{ .name }}
+      ```
+      {{ .full_output }}
+      ```
+      {{ end }}
+
+      </details>
+
+hide:
+  ansible-plan:
+    condition: |
+      Comment.Body contains "## :gear: Ansible Plan Results"
