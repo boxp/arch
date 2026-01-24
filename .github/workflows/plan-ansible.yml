@@ -1,0 +1,272 @@
+name: Plan Ansible
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - 'ansible/**'
+      - '.github/workflows/plan-ansible.yml'
+      - '.github/workflows/apply-ansible.yml'
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        node: [shanghai-1, shanghai-2, shanghai-3]
+      fail-fast: false
+    env:
+      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+      CLOUDFLARED_VERSION: "2025.4.2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Plan
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install cloudflared
+        env:
+          CLOUDFLARED_SHA256: "c4f2c09e38569f850da274d3b8502ea88304c1bd0a4f1528b420c23f715d4551"
+        run: |
+          curl -sL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" -o cloudflared
+          echo "${CLOUDFLARED_SHA256}  cloudflared" | sha256sum -c -
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+          cloudflared --version
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
+
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
+          echo "Testing SSH connectivity to ${{ matrix.node }} (${NODE_IP}) via bastion..."
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
+
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Run Ansible Plan (check + diff)
+        id: ansible-plan
+        run: |
+          cd ansible
+          source .venv/bin/activate
+
+          NODE="${{ matrix.node }}"
+          echo "Running Ansible plan (--check --diff) on node: $NODE"
+
+          # Create output file
+          mkdir -p plan_outputs
+          OUTPUT_FILE="plan_outputs/${NODE}.md"
+
+          # Function to run ansible-playbook and handle exit codes
+          # Exit codes: 0=OK, 2=OK with changes, others=error
+          run_ansible() {
+            local playbook="$1"
+            local node="$2"
+            local output_file="$3"
+
+            set +e
+            ansible-playbook \
+              -i inventories/production/hosts.yml \
+              "$playbook" \
+              --limit "$node" \
+              -e "ansible_ssh_common_args=''" \
+              -e "node_name=$node" \
+              --check --diff 2>&1 | tee -a "$output_file"
+            local exit_code=${PIPESTATUS[0]}
+            set -e
+
+            # Exit code 0 (no changes) and 2 (changes detected) are OK
+            # Other exit codes indicate real errors
+            if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 2 ]; then
+              echo "::error::Ansible playbook $playbook failed with exit code $exit_code"
+              return "$exit_code"
+            fi
+            return 0
+          }
+
+          {
+            echo "### $NODE"
+            echo ""
+            echo "<details>"
+            echo "<summary>control-plane.yml</summary>"
+            echo ""
+            echo "\`\`\`diff"
+          } > "$OUTPUT_FILE"
+
+          # Run control-plane playbook
+          run_ansible "playbooks/control-plane.yml" "$NODE" "$OUTPUT_FILE"
+
+          {
+            echo "\`\`\`"
+            echo ""
+            echo "</details>"
+          } >> "$OUTPUT_FILE"
+
+          # Check for node-specific playbook
+          PLAYBOOK="playbooks/node-${NODE}.yml"
+
+          if [ -f "$PLAYBOOK" ]; then
+            {
+              echo ""
+              echo "<details>"
+              echo "<summary>node-${NODE}.yml</summary>"
+              echo ""
+              echo "\`\`\`diff"
+            } >> "$OUTPUT_FILE"
+
+            run_ansible "$PLAYBOOK" "$NODE" "$OUTPUT_FILE"
+
+            {
+              echo "\`\`\`"
+              echo ""
+              echo "</details>"
+            } >> "$OUTPUT_FILE"
+          fi
+
+      - name: Upload plan output
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: plan-${{ matrix.node }}
+          path: ansible/plan_outputs/
+          retention-days: 1
+
+  comment:
+    needs: plan
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Download all plan outputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          path: plan_outputs
+          pattern: plan-*
+          merge-multiple: true
+
+      - name: Create combined plan output
+        run: |
+          {
+            echo "## Ansible Plan Results"
+            echo ""
+            echo "**Mode:** \`--check --diff\` (dry run)"
+            echo ""
+          } > combined_plan.md
+
+          for node in shanghai-1 shanghai-2 shanghai-3; do
+            if [ -f "plan_outputs/${node}.md" ]; then
+              cat "plan_outputs/${node}.md" >> combined_plan.md
+              echo "" >> combined_plan.md
+            fi
+          done
+
+          echo "---" >> combined_plan.md
+          echo "*Plan executed on all nodes in parallel.*" >> combined_plan.md
+
+      - name: Comment PR with plan results
+        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
+        with:
+          script: |
+            const fs = require('fs');
+            const planOutput = fs.readFileSync('combined_plan.md', 'utf8');
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+
+            const botComment = comments.find(comment =>
+              comment.user.type === 'Bot' &&
+              comment.body.includes('## Ansible Plan Results')
+            );
+
+            if (botComment) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: botComment.id,
+                body: planOutput
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: planOutput
+              });
+            }
