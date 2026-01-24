@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'ansible/**'
+      - '.github/workflows/apply-ansible.yml'
 
 jobs:
   apply:
