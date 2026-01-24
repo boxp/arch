@@ -16,8 +16,12 @@
 
 - name: Extract version from redirect URL
   ansible.builtin.set_fact:
-    cloudflare_cli_resolved_version: "{{ cloudflared_latest_release.url.split('/')[-1] }}"
-  when: cloudflare_cli_version == "latest"
+    cloudflare_cli_resolved_version: >-
+      {{ (cloudflared_latest_release | default({})).url | default('') | split('/') | last }}
+  when:
+    - cloudflare_cli_version == "latest"
+    - cloudflared_latest_release is defined
+    - cloudflared_latest_release is not skipped
 
 - name: Use specified version
   ansible.builtin.set_fact:
