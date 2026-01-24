@@ -1,0 +1,161 @@
+name: Apply Ansible
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'ansible/**'
+      - '.github/workflows/apply-ansible.yml'
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    strategy:
+      matrix:
+        node: [shanghai-1, shanghai-2, shanghai-3]
+      max-parallel: 1
+      fail-fast: true
+    env:
+      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+      # Pin cloudflared version for reproducible builds
+      CLOUDFLARED_VERSION: "2025.4.2"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@ececac1a45f3b08a01d2dd070d28d111c5fe6722 # v4.1.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
+        run: |
+          # Get Cloudflare Access credentials with retry logic
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
+
+          # Mask secrets in logs
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install cloudflared
+        env:
+          # SHA256 checksum for cloudflared-linux-amd64 version 2025.4.2
+          CLOUDFLARED_SHA256: "c4f2c09e38569f850da274d3b8502ea88304c1bd0a4f1528b420c23f715d4551"
+        run: |
+          curl -sL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" -o cloudflared
+          echo "${CLOUDFLARED_SHA256}  cloudflared" | sha256sum -c -
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+          cloudflared --version
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
+
+          # Configure SSH to route through bastion for the target node IP
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          # Match by IP address (used by ansible_host)
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
+          echo "Testing SSH connectivity to ${{ matrix.node }} (${NODE_IP}) via bastion..."
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
+
+      - name: Set up Python
+        uses: actions/setup-python@83679a892e2d95755f2dac6acb0bfd1e9ac5d548 # v6.1.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@681c641aba71e4a1c380be3ab5e12ad51f415867 # v7.1.6
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Run control-plane playbook
+        run: |
+          cd ansible
+          source .venv/bin/activate
+
+          echo "Running control-plane playbook on node: ${{ matrix.node }}"
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/control-plane.yml \
+            --limit ${{ matrix.node }} \
+            -e "ansible_ssh_common_args=''" \
+            -e "node_name=${{ matrix.node }}" \
+            -v
+
+      - name: Run node-specific playbook
+        run: |
+          cd ansible
+          source .venv/bin/activate
+
+          NODE="${{ matrix.node }}"
+          PLAYBOOK="playbooks/node-${NODE}.yml"
+
+          if [ -f "$PLAYBOOK" ]; then
+            echo "Running node-specific playbook for: $NODE"
+            ansible-playbook \
+              -i inventories/production/hosts.yml \
+              "$PLAYBOOK" \
+              --limit "${NODE}" \
+              -e "ansible_ssh_common_args=''" \
+              -e "node_name=${NODE}" \
+              -v
+          else
+            echo "No node-specific playbook found for: $NODE (skipping)"
+          fi
