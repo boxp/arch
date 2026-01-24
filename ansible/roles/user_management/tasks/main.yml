@@ -56,7 +56,8 @@
   when:
     - user_management_use_github_keys
     - github_keys_response is defined
-    - github_keys_response.content != ""
+    - github_keys_response is not skipped
+    - github_keys_response.content | default('') != ""
 
 - name: Ensure user can sudo without password
   ansible.builtin.lineinfile:
