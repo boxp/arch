@@ -16,6 +16,37 @@
   prHourlyLimit: 10,
   prConcurrentLimit: 10,
   branchConcurrentLimit: 20,
+  regexManagers: [
+    // Kubernetes version (playbooks)
+    {
+      fileMatch: ["^ansible/playbooks/.*\\.yml$"],
+      matchStrings: [
+        "kubernetes_version:\\s*\"(?<currentValue>[0-9.]+)\""
+      ],
+      depNameTemplate: "kubernetes/kubernetes",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    // CRI-O version (playbooks)
+    {
+      fileMatch: ["^ansible/playbooks/.*\\.yml$"],
+      matchStrings: [
+        "crio_version:\\s*\"(?<currentValue>[0-9.]+)\""
+      ],
+      depNameTemplate: "cri-o/cri-o",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    // kube-vip version
+    {
+      fileMatch: ["^ansible/roles/kube_vip/defaults/main\\.yml$"],
+      matchStrings: [
+        "kube_vip_version:\\s*\"(?<currentValue>v[0-9.]+)\""
+      ],
+      depNameTemplate: "kube-vip/kube-vip",
+      datasourceTemplate: "github-releases"
+    }
+  ],
   packageRules: [
     {
       additionalBranchPrefix: '{{packageFileDir}}-',
@@ -30,5 +61,21 @@
       enabled: false,
       description: "Disable Cloudflare provider updates until v5.2.0 is released"
     },
+    // Kubernetes components (manual review required)
+    {
+      matchManagers: ["regex"],
+      matchPackageNames: ["kubernetes/kubernetes", "cri-o/cri-o"],
+      groupName: "Kubernetes components",
+      automerge: false,
+      prPriority: -10,
+      labels: ["kubernetes", "manual-review-required"]
+    },
+    // kube-vip (manual review)
+    {
+      matchManagers: ["regex"],
+      matchPackageNames: ["kube-vip/kube-vip"],
+      automerge: false,
+      labels: ["kubernetes", "kube-vip"]
+    }
   ],
 }

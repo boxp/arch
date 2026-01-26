@@ -20,7 +20,6 @@ jobs:
       fail-fast: false
     env:
       NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
-      CLOUDFLARED_VERSION: "2025.4.2"
     steps:
       - name: Checkout
         uses: actions/checkout@8e8c483db84b4bee98b60c0593521ed34d9990e8 # v6.0.1
@@ -68,15 +67,11 @@ jobs:
           echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
 
-      - name: Install cloudflared
-        env:
-          CLOUDFLARED_SHA256: "c4f2c09e38569f850da274d3b8502ea88304c1bd0a4f1528b420c23f715d4551"
-        run: |
-          curl -sL "https://github.com/cloudflare/cloudflared/releases/download/${CLOUDFLARED_VERSION}/cloudflared-linux-amd64" -o cloudflared
-          echo "${CLOUDFLARED_SHA256}  cloudflared" | sha256sum -c -
-          chmod +x cloudflared
-          sudo mv cloudflared /usr/local/bin/
-          cloudflared --version
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@e2d0136abcf70b7a2f6f505720640750557c4b33 # v4.0.0
+        with:
+          aqua_version: v2.51.2
+          working_directory: aqua
 
       - name: Setup SSH config
         run: |
