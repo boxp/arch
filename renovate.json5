@@ -16,10 +16,11 @@
   prHourlyLimit: 10,
   prConcurrentLimit: 10,
   branchConcurrentLimit: 20,
-  regexManagers: [
+  customManagers: [
     // Kubernetes version (playbooks)
     {
-      fileMatch: ["^ansible/playbooks/.*\\.yml$"],
+      customType: "regex",
+      managerFilePatterns: ["/^ansible/playbooks/.*\\.yml$/"],
       matchStrings: [
         "kubernetes_version:\\s*\"(?<currentValue>[0-9.]+)\""
       ],
@@ -29,7 +30,8 @@
     },
     // CRI-O version (playbooks)
     {
-      fileMatch: ["^ansible/playbooks/.*\\.yml$"],
+      customType: "regex",
+      managerFilePatterns: ["/^ansible/playbooks/.*\\.yml$/"],
       matchStrings: [
         "crio_version:\\s*\"(?<currentValue>[0-9.]+)\""
       ],
@@ -39,7 +41,8 @@
     },
     // kube-vip version
     {
-      fileMatch: ["^ansible/roles/kube_vip/defaults/main\\.yml$"],
+      customType: "regex",
+      managerFilePatterns: ["/^ansible/roles/kube_vip/defaults/main\\.yml$/"],
       matchStrings: [
         "kube_vip_version:\\s*\"(?<currentValue>v[0-9.]+)\""
       ],
@@ -63,7 +66,7 @@
     },
     // Kubernetes components (manual review required)
     {
-      matchManagers: ["regex"],
+      matchManagers: ["custom.regex"],
       matchPackageNames: ["kubernetes/kubernetes", "cri-o/cri-o"],
       groupName: "Kubernetes components",
       automerge: false,
@@ -72,7 +75,7 @@
     },
     // kube-vip (manual review)
     {
-      matchManagers: ["regex"],
+      matchManagers: ["custom.regex"],
       matchPackageNames: ["kube-vip/kube-vip"],
       automerge: false,
       labels: ["kubernetes", "kube-vip"]
