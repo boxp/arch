@@ -68,9 +68,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@e2d0136abcf70b7a2f6f505720640750557c4b33 # v4.0.0
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
         with:
-          aqua_version: v2.51.2
+          aqua_version: v2.56.5
           working_directory: aqua
 
       - name: Setup SSH config
