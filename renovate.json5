@@ -61,8 +61,8 @@
     {
       matchDatasources: ["terraform-provider"],
       matchPackageNames: ["cloudflare/cloudflare"],
-      enabled: false,
-      description: "Disable Cloudflare provider updates until v5.2.0 is released"
+      allowedVersions: "<5.0.0",
+      description: "Allow v4.x updates only. Block v5.x until official migration tools are available (March 2026)"
     },
     // Kubernetes components (manual review required)
     {
