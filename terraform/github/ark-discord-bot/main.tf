@@ -17,4 +17,7 @@ resource "github_repository" "ark_discord_bot" {
   has_issues   = true
   has_projects = false
   has_wiki     = false
+
+  # GitHub App token lacks Administration permission for vulnerability_alerts API
+  ignore_vulnerability_alerts_during_read = true
 }
