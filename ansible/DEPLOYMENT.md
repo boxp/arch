@@ -60,12 +60,6 @@ ansible-playbook -i inventories/production/hosts.yml playbooks/control-plane.yml
   --tags "kubernetes"
 ```
 
-#### ステップ4: kube-vip高可用性設定
-```bash
-ansible-playbook -i inventories/production/hosts.yml playbooks/control-plane.yml \
-  --tags "kube-vip"
-```
-
 ### 3. 全体デプロイ（一括実行）
 ```bash
 ansible-playbook -i inventories/production/hosts.yml playbooks/control-plane.yml \
@@ -91,13 +85,7 @@ ansible control_plane -i inventories/production/hosts.yml \
   -m shell -a "systemctl status kubelet crio"
 ```
 
-### 2. kube-vip動作確認
-```bash
-ansible control_plane -i inventories/production/hosts.yml \
-  -m shell -a "kubectl get pods -n kube-system | grep kube-vip"
-```
-
-### 3. VIP確認
+### 2. VIP確認
 ```bash
 # VIP 192.168.10.99の確認
 ping 192.168.10.99
@@ -121,14 +109,6 @@ ssh -vvv shanghai-1
 ssh shanghai-1
 sudo systemctl status kubelet
 sudo journalctl -u kubelet -f
-```
-
-### 3. kube-vip問題
-```bash
-# 静的Pod確認
-ssh shanghai-1
-sudo ls -la /etc/kubernetes/manifests/
-sudo kubectl logs -n kube-system kube-vip-shanghai-1
 ```
 
 ## クラスター初期化
@@ -162,5 +142,4 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 ## リソース
 
 - [Orange Pi Zero 3公式ドキュメント](http://www.orangepi.org/html/hardWare/computerAndMicrocontrollers/details/Orange-Pi-Zero-3.html)
-- [kube-vip公式ドキュメント](https://kube-vip.io/)
 - [kubeadm公式ドキュメント](https://kubernetes.io/docs/setup/production-environment/tools/kubeadm/)
