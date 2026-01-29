@@ -1,9 +1,4 @@
 provider "github" {
-  owner = var.github_owner
+  owner = "boxp"
   # token pulled from $GITHUB_TOKEN
-}
-
-variable "github_owner" {
-  description = "GitHub owner (user or organization)"
-  type        = string
 }
