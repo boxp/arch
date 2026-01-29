@@ -2,7 +2,7 @@
 # defaults file for kube_vip
 
 # kube-vip version to install
-kube_vip_version: "v0.8.9"
+kube_vip_version: "v0.9.2"
 
 # VIP configuration
 kube_vip_vip: ""  # Must be set by user - the virtual IP address
