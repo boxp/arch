@@ -11,7 +11,6 @@ The Ansible configuration manages:
 - Network configuration (static IPs, disable WiFi/Bluetooth)
 - Cloudflare CLI for SSH tunneling
 - Kubernetes components (kubeadm, kubelet, cri-o)
-- kube-vip for HA cluster VIP
 
 ## Target Nodes
 
@@ -132,7 +131,6 @@ user_management_ssh_key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... boxp@exampl
 ### Other Variables
 - `kubernetes_version`: Kubernetes version to install
 - `crio_version`: CRI-O version to install
-- `cluster_vip`: Virtual IP for kube-vip
 
 ## Security Notes
 
