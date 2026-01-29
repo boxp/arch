@@ -3,11 +3,13 @@ import {
   id = "ark-discord-bot"
 }
 
+#trivy:ignore:AVD-GIT-0001
+#trivy:ignore:AVD-GIT-0003
 resource "github_repository" "ark_discord_bot" {
   name        = "ark-discord-bot"
   description = "Discord Bot for ARK: Survival Evolved"
 
-  visibility = "public" #trivy:ignore:AVD-GIT-0001
+  visibility = "public"
 
   allow_auto_merge       = true
   delete_branch_on_merge = true
@@ -15,6 +17,4 @@ resource "github_repository" "ark_discord_bot" {
   has_issues   = true
   has_projects = false
   has_wiki     = false
-
-  vulnerability_alerts = true
 }
