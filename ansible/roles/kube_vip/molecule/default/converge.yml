@@ -1,9 +1,0 @@
----
-- name: Converge
-  hosts: all
-  become: true
-  roles:
-    - role: ../../../../kube_vip
-  vars:
-    # Override RBAC creation for testing without real K8s API
-    kube_vip_rbac_create: false
