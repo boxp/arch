@@ -119,7 +119,6 @@ jobs:
       gh_cloudflare_api_token: ${{secrets.CLOUDFLARE_API_TOKEN}}
       terraform_private_module_ssh_key: ${{secrets.TERRAFORM_PRIVATE_MODULE_SSH_KEY}}
       secrets: ${{toJSON(secrets)}}
-      GH_TOKEN_PLAN: ${{secrets.GH_TOKEN_PLAN}}
 
   test-ansible:
     uses: ./.github/workflows/test-ansible.yml
