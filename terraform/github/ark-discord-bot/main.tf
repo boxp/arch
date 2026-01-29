@@ -1,3 +1,8 @@
+import {
+  to = github_repository.ark_discord_bot
+  id = "ark-discord-bot"
+}
+
 resource "github_repository" "ark_discord_bot" {
   name        = "ark-discord-bot"
   description = "Discord Bot for ARK: Survival Evolved"
