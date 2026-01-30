@@ -8,6 +8,7 @@ on:
 jobs:
   pick-out-drift-issues:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
@@ -45,6 +46,7 @@ jobs:
   detect-drift:
     name: "detect-drift (${{matrix.issue.target}})"
     runs-on: ${{matrix.issue.runs_on}}
+    timeout-minutes: 30
     needs: pick-out-drift-issues
     permissions:
       issues: write # For github-comment and tfcmt

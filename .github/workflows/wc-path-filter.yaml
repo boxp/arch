@@ -27,6 +27,7 @@ jobs:
   path-filter:
     # Get changed files to filter jobs
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions: {}
     outputs:
       merge_commit_sha: ${{steps.pr.outputs.merge_commit_sha}}

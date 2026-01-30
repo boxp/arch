@@ -15,6 +15,7 @@ on:
 jobs:
   scaffold:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     env:
       TFACTION_MODULE_PATH: ${{inputs.module_path}}
       TFACTION_MODULE_TEMPLATE_DIR: ${{inputs.template_dir}}

@@ -33,6 +33,7 @@ jobs:
   # Add this job to `Status checks that are required`
   status-check:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     needs:
       - conftest-verify
       - hide-comment

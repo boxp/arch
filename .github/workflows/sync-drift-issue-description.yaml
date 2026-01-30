@@ -8,6 +8,7 @@ on:
 jobs:
   sync-issue:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     # PLEASE CHANGE github.actor
     if: |
       !github.event.issue.pull_request && startsWith(github.event.issue.title, 'Terraform Drift (') && endsWith(github.event.issue.title, ')') && github.actor == 'suzuki-shunsuke'
