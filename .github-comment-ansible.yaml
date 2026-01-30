@@ -29,14 +29,14 @@ post:
 
       **Changed Tasks ({{ len $plan.changed_tasks }}):**
       {{- range $plan.changed_tasks }}
-      - {{ .task }} ({{ .host }})
+      - {{ .name | AvoidHTMLEscape }}
       {{- end }}
       {{- end }}
       {{- if $plan.failed_tasks }}
 
       **Failed Tasks ({{ len $plan.failed_tasks }}):**
       {{- range $plan.failed_tasks }}
-      - {{ .task }} ({{ .host }}): {{ .msg }}
+      - {{ .name | AvoidHTMLEscape }}: {{ .msg | AvoidHTMLEscape }}
       {{- end }}
       {{- end }}
       {{- if and (not $plan.changed_tasks) (not $plan.failed_tasks) }}
