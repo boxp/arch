@@ -149,9 +149,21 @@ jobs:
               return "$ansible_exit"
             fi
 
-            # Strip non-JSON lines (e.g. profile_tasks timestamps) before the JSON object
+            # Extract valid JSON from stdout (profile_tasks adds timestamp lines)
             local clean_json_file="${json_file%.json}.clean.json"
-            sed -n '/^{/,$p' "$json_file" > "$clean_json_file"
+            if ! python3 -c "
+import json, sys
+raw = open(sys.argv[1]).read()
+start = raw.find('{')
+if start < 0:
+    print('No JSON object found', file=sys.stderr)
+    sys.exit(1)
+obj = json.loads(raw[start:])
+json.dump(obj, sys.stdout)
+" "$json_file" > "$clean_json_file"; then
+              echo "::error::Failed to extract valid JSON from ansible output for $playbook_name on $node"
+              return 1
+            fi
 
             echo "::group::Ansible JSON output for ${playbook_name} on ${node}"
             cat "$clean_json_file"
