@@ -128,6 +128,7 @@ jobs:
             local node="$2"
             local playbook_name="$3"
             local output_file="$4"
+            local json_file="plan_outputs/${node}-${playbook_name}.json"
 
             set +e
             ANSIBLE_STDOUT_CALLBACK=json \
@@ -137,15 +138,19 @@ jobs:
               --limit "$node" \
               -e "ansible_ssh_common_args=''" \
               -e "node_name=$node" \
-              --check --diff 2>"plan_outputs/${node}-${playbook_name}.stderr" | \
-              ansible-plan-formatter --node "$node" --playbook "$playbook_name" > "$output_file"
-            local ansible_exit=${PIPESTATUS[0]}
+              --check --diff \
+              > "$json_file" \
+              2>"plan_outputs/${node}-${playbook_name}.stderr"
+            local ansible_exit=$?
             set -e
 
             if [ "$ansible_exit" -ne 0 ] && [ "$ansible_exit" -ne 2 ]; then
               echo "::error::Ansible playbook $playbook failed with exit code $ansible_exit"
               return "$ansible_exit"
             fi
+
+            ansible-plan-formatter --node "$node" --playbook "$playbook_name" \
+              < "$json_file" > "$output_file"
             return 0
           }
 
