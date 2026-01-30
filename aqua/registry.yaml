@@ -1,0 +1,9 @@
+packages:
+  - type: github_release
+    repo_owner: boxp
+    repo_name: ansible-plan-formatter
+    asset: ansible-plan-formatter_{{.OS}}_{{.Arch}}.tar.gz
+    supported_envs:
+      - linux/amd64
+    files:
+      - name: ansible-plan-formatter

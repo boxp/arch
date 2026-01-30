@@ -4,5 +4,8 @@ checksum:
 registries:
   - type: standard
     ref: v4.464.0 # renovate: depName=aquaproj/aqua-registry
+  - name: local
+    type: local
+    path: registry.yaml
 packages:
   - import: imports/*.yaml

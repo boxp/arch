@@ -1,0 +1,3 @@
+packages:
+  - name: boxp/ansible-plan-formatter@v0.1.0
+    registry: local
