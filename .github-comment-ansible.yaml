@@ -1,0 +1,24 @@
+hide:
+  ansible-plan: 'Comment.Body startsWith "## Ansible Plan Results"'
+
+post:
+  ansible-plan:
+    template: |
+      ## Ansible Plan Results
+
+      **Mode:** `--check --diff` (dry run)
+
+      {{- if eq .Vars.has_changes "true" }}
+
+      :warning: **Changes detected**
+      {{- else }}
+
+      :white_check_mark: **No changes**
+      {{- end }}
+
+      ---
+
+      {{.Vars.body | AvoidHTMLEscape}}
+
+      ---
+      *Plan executed on all nodes in parallel.*

@@ -20,6 +20,7 @@ jobs:
       fail-fast: false
     env:
       NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+      AQUA_POLICY_CONFIG: ${{ github.workspace }}/aqua/aqua-policy.yaml
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -119,78 +120,62 @@ jobs:
         run: |
           cd ansible
           source .venv/bin/activate
-
           NODE="${{ matrix.node }}"
-          echo "Running Ansible plan (--check --diff) on node: $NODE"
-
-          # Create output file
           mkdir -p plan_outputs
-          OUTPUT_FILE="plan_outputs/${NODE}.md"
 
-          # Function to run ansible-playbook and handle exit codes
-          # Exit codes: 0=OK, 2=OK with changes, others=error
+          # Disable profile_tasks callback for this run only to get clean JSON stdout
+          sed -i 's/^callbacks_enabled.*/#&/' ansible.cfg
+
           run_ansible() {
             local playbook="$1"
             local node="$2"
-            local output_file="$3"
+            local playbook_name="$3"
+            local output_file="$4"
+            local json_file="plan_outputs/${node}-${playbook_name}.json"
 
             set +e
+            ANSIBLE_STDOUT_CALLBACK=json \
             ansible-playbook \
               -i inventories/production/hosts.yml \
               "$playbook" \
               --limit "$node" \
               -e "ansible_ssh_common_args=''" \
               -e "node_name=$node" \
-              --check --diff 2>&1 | tee -a "$output_file"
-            local exit_code=${PIPESTATUS[0]}
+              --check --diff \
+              > "$json_file" \
+              2>"plan_outputs/${node}-${playbook_name}.stderr"
+            local ansible_exit=$?
             set -e
 
-            # Exit code 0 (no changes) and 2 (changes detected) are OK
-            # Other exit codes indicate real errors
-            if [ "$exit_code" -ne 0 ] && [ "$exit_code" -ne 2 ]; then
-              echo "::error::Ansible playbook $playbook failed with exit code $exit_code"
-              return "$exit_code"
+            if [ "$ansible_exit" -ne 0 ] && [ "$ansible_exit" -ne 2 ]; then
+              echo "::error::Ansible playbook $playbook failed with exit code $ansible_exit"
+              return "$ansible_exit"
+            fi
+
+            echo "::group::Ansible JSON output for ${playbook_name} on ${node}"
+            cat "$json_file"
+            echo "::endgroup::"
+
+            set +e
+            ansible-plan-formatter --node "$node" --playbook "$playbook_name" \
+              < "$json_file" > "$output_file"
+            local fmt_exit=$?
+            set -e
+            # exit 0=no changes, 2=changes detected, 1=tool error
+            if [ "$fmt_exit" -eq 1 ]; then
+              echo "::error::ansible-plan-formatter failed for $playbook_name on $node"
+              return 1
             fi
             return 0
           }
 
-          {
-            echo "### $NODE"
-            echo ""
-            echo "<details>"
-            echo "<summary>control-plane.yml</summary>"
-            echo ""
-            echo "\`\`\`diff"
-          } > "$OUTPUT_FILE"
+          run_ansible "playbooks/control-plane.yml" "$NODE" "control-plane" \
+            "plan_outputs/${NODE}-control-plane.md"
 
-          # Run control-plane playbook
-          run_ansible "playbooks/control-plane.yml" "$NODE" "$OUTPUT_FILE"
-
-          {
-            echo "\`\`\`"
-            echo ""
-            echo "</details>"
-          } >> "$OUTPUT_FILE"
-
-          # Check for node-specific playbook
           PLAYBOOK="playbooks/node-${NODE}.yml"
-
           if [ -f "$PLAYBOOK" ]; then
-            {
-              echo ""
-              echo "<details>"
-              echo "<summary>node-${NODE}.yml</summary>"
-              echo ""
-              echo "\`\`\`diff"
-            } >> "$OUTPUT_FILE"
-
-            run_ansible "$PLAYBOOK" "$NODE" "$OUTPUT_FILE"
-
-            {
-              echo "\`\`\`"
-              echo ""
-              echo "</details>"
-            } >> "$OUTPUT_FILE"
+            run_ansible "$PLAYBOOK" "$NODE" "node-${NODE}" \
+              "plan_outputs/${NODE}-node-specific.md"
           fi
 
       - name: Upload plan output
@@ -205,7 +190,17 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       pull-requests: write
+      contents: read
     steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.56.5
+          working_directory: aqua
+
       - name: Download all plan outputs
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
@@ -213,55 +208,36 @@ jobs:
           pattern: plan-*
           merge-multiple: true
 
-      - name: Create combined plan output
+      - name: Combine plan outputs
+        id: combine
         run: |
-          {
-            echo "## Ansible Plan Results"
-            echo ""
-            echo "**Mode:** \`--check --diff\` (dry run)"
-            echo ""
-          } > combined_plan.md
-
+          BODY=""
+          HAS_CHANGES="false"
           for node in shanghai-1 shanghai-2 shanghai-3; do
-            if [ -f "plan_outputs/${node}.md" ]; then
-              cat "plan_outputs/${node}.md" >> combined_plan.md
-              echo "" >> combined_plan.md
-            fi
+            for part in control-plane node-specific; do
+              FILE="plan_outputs/${node}-${part}.md"
+              if [ -f "$FILE" ]; then
+                CONTENT=$(cat "$FILE")
+                BODY="${BODY}${CONTENT}"$'\n\n'
+                if grep -q "to change" "$FILE"; then
+                  HAS_CHANGES="true"
+                fi
+              fi
+            done
           done
+          echo "has_changes=${HAS_CHANGES}" >> "$GITHUB_OUTPUT"
+          printf '%s' "$BODY" > plan_body.txt
 
-          echo "---" >> combined_plan.md
-          echo "*Plan executed on all nodes in parallel.*" >> combined_plan.md
+      - name: Hide old comments
+        run: github-comment hide --config .github-comment-ansible.yaml -k ansible-plan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Comment PR with plan results
-        uses: actions/github-script@60a0d83039c74a4aee543508d2ffcb1c3799cdea # v7
-        with:
-          script: |
-            const fs = require('fs');
-            const planOutput = fs.readFileSync('combined_plan.md', 'utf8');
-
-            const { data: comments } = await github.rest.issues.listComments({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number,
-            });
-
-            const botComment = comments.find(comment =>
-              comment.user.type === 'Bot' &&
-              comment.body.includes('## Ansible Plan Results')
-            );
-
-            if (botComment) {
-              await github.rest.issues.updateComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                comment_id: botComment.id,
-                body: planOutput
-              });
-            } else {
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: planOutput
-              });
-            }
+      - name: Post comment
+        run: |
+          github-comment post --config .github-comment-ansible.yaml -k ansible-plan \
+            -var "has_changes:${{ steps.combine.outputs.has_changes }}" \
+            -var-file "body:plan_body.txt"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_COMMENT_SHA1: ${{ github.event.pull_request.head.sha }}
