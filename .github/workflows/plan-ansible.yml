@@ -132,6 +132,7 @@ jobs:
 
             set +e
             ANSIBLE_STDOUT_CALLBACK=json \
+            ANSIBLE_CALLBACKS_ENABLED="" \
             ansible-playbook \
               -i inventories/production/hosts.yml \
               "$playbook" \
