@@ -197,9 +197,8 @@ jobs:
             for part in control-plane node-specific; do
               FILE="plan_outputs/${node}-${part}.md"
               if [ -f "$FILE" ]; then
-                BODY="${BODY}$(cat "$FILE")
-
-"
+                CONTENT=$(cat "$FILE")
+                BODY="${BODY}${CONTENT}"$'\n\n'
                 if grep -q "to change" "$FILE"; then
                   HAS_CHANGES="true"
                 fi
