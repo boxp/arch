@@ -17,8 +17,34 @@ post:
       {{- end }}
 
       ---
+      {{- range $plan := fromJson .Vars.plans_json }}
 
-      {{.Vars.body | AvoidHTMLEscape}}
+      ### {{ $plan.node }} / {{ $plan.playbook }}
+
+      **Stats:**
+      {{- range $host, $stat := $plan.stats }}
+      - **{{ $host }}**: ok={{ $stat.ok }} changed={{ $stat.changed }} failures={{ $stat.failures }} skipped={{ $stat.skipped }} unreachable={{ $stat.unreachable }}
+      {{- end }}
+      {{- if $plan.changed_tasks }}
+
+      **Changed Tasks ({{ len $plan.changed_tasks }}):**
+      {{- range $plan.changed_tasks }}
+      - {{ .task }} ({{ .host }})
+      {{- end }}
+      {{- end }}
+      {{- if $plan.failed_tasks }}
+
+      **Failed Tasks ({{ len $plan.failed_tasks }}):**
+      {{- range $plan.failed_tasks }}
+      - {{ .task }} ({{ .host }}): {{ .msg }}
+      {{- end }}
+      {{- end }}
+      {{- if and (not $plan.changed_tasks) (not $plan.failed_tasks) }}
+
+      No changes detected.
+      {{- end }}
 
       ---
+      {{- end }}
+
       *Plan executed on all nodes in parallel.*

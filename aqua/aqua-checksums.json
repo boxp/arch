@@ -1,8 +1,8 @@
 {
   "checksums": [
     {
-      "id": "github_release/github.com/boxp/ansible-plan-formatter/v0.1.1/ansible-plan-formatter_linux_amd64.tar.gz",
-      "checksum": "E06CA7FFA3FA957C6F4BF7600C4E61BCF3000FE21F74C4AE4391949844271E5E",
+      "id": "github_release/github.com/boxp/ansible-plan-formatter/v1.0.0/ansible-plan-formatter_linux_amd64.tar.gz",
+      "checksum": "0019DFC4B32D63C1392AA264AED2253C1E0C2FB09216F8E2CC269BBFB8BB49B5",
       "algorithm": "sha256"
     },
     {
