@@ -132,7 +132,6 @@ jobs:
 
             set +e
             ANSIBLE_STDOUT_CALLBACK=json \
-            ANSIBLE_CALLBACKS_ENABLED="" \
             ansible-playbook \
               -i inventories/production/hosts.yml \
               "$playbook" \
@@ -150,12 +149,16 @@ jobs:
               return "$ansible_exit"
             fi
 
+            # Strip non-JSON lines (e.g. profile_tasks timestamps) before the JSON object
+            local clean_json_file="${json_file%.json}.clean.json"
+            sed -n '/^{/,$p' "$json_file" > "$clean_json_file"
+
             echo "::group::Ansible JSON output for ${playbook_name} on ${node}"
-            cat "$json_file"
+            cat "$clean_json_file"
             echo "::endgroup::"
 
             if ! ansible-plan-formatter --node "$node" --playbook "$playbook_name" \
-              < "$json_file" > "$output_file"; then
+              < "$clean_json_file" > "$output_file"; then
               echo "::error::ansible-plan-formatter failed for $playbook_name on $node"
               return 1
             fi
