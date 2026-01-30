@@ -209,38 +209,24 @@ jobs:
           merge-multiple: true
 
       - name: Combine plan outputs
+        id: combine
         run: |
+          BODY=""
           HAS_CHANGES="false"
-          {
-            echo "## Ansible Plan Results"
-            echo ""
-            echo "**Mode:** \`--check --diff\` (dry run)"
-            echo ""
-          } > comment_body.md
-
           for node in shanghai-1 shanghai-2 shanghai-3; do
             for part in control-plane node-specific; do
               FILE="plan_outputs/${node}-${part}.md"
               if [ -f "$FILE" ]; then
-                cat "$FILE" >> comment_body.md
-                echo "" >> comment_body.md
+                CONTENT=$(cat "$FILE")
+                BODY="${BODY}${CONTENT}"$'\n\n'
                 if grep -q "to change" "$FILE"; then
                   HAS_CHANGES="true"
                 fi
               fi
             done
           done
-
-          if [ "$HAS_CHANGES" = "true" ]; then
-            sed -i '3a\\n:warning: **Changes detected**' comment_body.md
-          else
-            sed -i '3a\\n:white_check_mark: **No changes**' comment_body.md
-          fi
-
-          {
-            echo "---"
-            echo "*Plan executed on all nodes in parallel.*"
-          } >> comment_body.md
+          echo "has_changes=${HAS_CHANGES}" >> "$GITHUB_OUTPUT"
+          printf '%s' "$BODY" > plan_body.txt
 
       - name: Hide old comments
         run: github-comment hide --config .github-comment-ansible.yaml -k ansible-plan
@@ -249,8 +235,9 @@ jobs:
 
       - name: Post comment
         run: |
-          github-comment post \
-            --template "$(cat comment_body.md)"
+          github-comment post --config .github-comment-ansible.yaml -k ansible-plan \
+            -var "has_changes:${{ steps.combine.outputs.has_changes }}" \
+            -var-file "body:plan_body.txt"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_COMMENT_SHA1: ${{ github.event.pull_request.head.sha }}

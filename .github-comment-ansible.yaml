@@ -18,7 +18,7 @@ post:
 
       ---
 
-      {{.Vars.body}}
+      {{.Vars.body | AvoidHTMLEscape}}
 
       ---
       *Plan executed on all nodes in parallel.*
