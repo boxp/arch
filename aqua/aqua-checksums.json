@@ -81,24 +81,29 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/koalaman/shellcheck/v0.9.0/shellcheck-v0.9.0.darwin.x86_64.tar.xz",
-      "checksum": "9F236690AC20CC320088E0E631C4FDC4B32CDAF7A1BC65459C278BE88E97B1A33F0BA606B2E62186BB1E6FFA811EFC3136BCB4EE72388D02863250DCFE9ACA96",
-      "algorithm": "sha512"
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.darwin.aarch64.tar.xz",
+      "checksum": "56AFFDD8DE5527894DCA6DC3D7E0A99A873B0F004D7AABC30AE407D3F48B0A79",
+      "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/koalaman/shellcheck/v0.9.0/shellcheck-v0.9.0.linux.aarch64.tar.xz",
-      "checksum": "3C11BC1901D470BA7F95334FCD4D8EA9C39C73EBB15655CD0CC478826279B02413409FA3F7B011C7ECDBA98530953BE54906B4A99B898B064C236F146F3EC749",
-      "algorithm": "sha512"
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.darwin.x86_64.tar.xz",
+      "checksum": "3C89DB4EDCAB7CF1C27BFF178882E0F6F27F7AFDF54E859FA041FCA10FEBE4C6",
+      "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/koalaman/shellcheck/v0.9.0/shellcheck-v0.9.0.linux.x86_64.tar.xz",
-      "checksum": "157FD8B2C18A257F3876E23015580EA63D27B12C4F13F87D625A180E8CA042E7501271D15EDEB36E7B5780DA73815B45386A33E063AB1C891D838F35C778A8AC",
-      "algorithm": "sha512"
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.linux.aarch64.tar.xz",
+      "checksum": "12B331C1D2DB6B9EB13CFCA64306B1B157A86EB69DB83023E261EAA7E7C14588",
+      "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/koalaman/shellcheck/v0.9.0/shellcheck-v0.9.0.zip",
-      "checksum": "31F415A995864D238E4C286CFD0227DAE3C9BCC6C327B925E182A390C9258A1783F815BA4389D85BEA504CFE62B1BABDC862303F2EF014AF66D4189A42797BD0",
-      "algorithm": "sha512"
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.linux.x86_64.tar.xz",
+      "checksum": "8C3BE12B05D5C177A04C29E3C78CE89AC86F1595681CAB149B65B97C4E227198",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/koalaman/shellcheck/v0.11.0/shellcheck-v0.11.0.zip",
+      "checksum": "8A4E35AB0B331C85D73567B12F2A444DF187F483E5079CEFFA6BDA1FAA2E740E",
+      "algorithm": "sha256"
     },
     {
       "id": "github_release/github.com/minamijoyo/tfmigrate/v0.3.18/tfmigrate_0.3.18_darwin_amd64.tar.gz",
