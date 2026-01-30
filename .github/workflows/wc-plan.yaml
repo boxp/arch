@@ -88,14 +88,14 @@ jobs:
           # issues:write - Create labels
           # pull_requests:write - Post comments and set labels
           # contents:write - Push commits
+          # administration:read - Read vulnerability alerts for GitHub Provider
           permissions: >-
             {
               "pull_requests": "write",
               "issues": "write",
-              "contents": "write"
+              "contents": "write",
+              "administration": "read"
             }
-          repositories: >-
-            ["${{github.event.repository.name}}"]
 
       - uses: suzuki-shunsuke/tfaction/setup@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
         with:
