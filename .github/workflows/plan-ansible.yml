@@ -229,13 +229,13 @@ jobs:
           printf '%s' "$BODY" > plan_body.txt
 
       - name: Hide old comments
-        run: github-comment hide -c .github-comment-ansible.yaml -k ansible-plan
+        run: github-comment hide --config .github-comment-ansible.yaml -k ansible-plan
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Post comment
         run: |
-          github-comment post -c .github-comment-ansible.yaml -k ansible-plan \
+          github-comment post --config .github-comment-ansible.yaml -k ansible-plan \
             -var "has_changes:${{ steps.combine.outputs.has_changes }}" \
             -var-file "body:plan_body.txt"
         env:
