@@ -21,6 +21,7 @@ jobs:
   plan:
     name: "plan (${{matrix.target.target}})"
     runs-on: ${{matrix.target.runs_on}}
+    timeout-minutes: 30
     permissions:
       id-token: write # For OIDC
       contents: read # To checkout private repositories

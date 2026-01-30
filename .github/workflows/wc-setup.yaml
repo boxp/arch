@@ -26,6 +26,7 @@ jobs:
     permissions:
       contents: read # For checkout a private repository
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       targets: ${{steps.list-targets.outputs.targets}}
       modules: ${{steps.list-targets.outputs.modules}}
