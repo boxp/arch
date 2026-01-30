@@ -20,6 +20,7 @@ jobs:
       fail-fast: false
     env:
       NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+      AQUA_POLICY_CONFIG: ${{ github.workspace }}/aqua/aqua-policy.yaml
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
