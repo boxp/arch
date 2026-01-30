@@ -1,9 +1,0 @@
----
-- name: Converge
-  hosts: all
-  become: true
-  roles:
-    - role: ../../../../cloudflare_cli
-  vars:
-    cloudflare_cli_version: "latest"
-    cloudflare_cli_install_path: "/usr/local/bin/cloudflared"

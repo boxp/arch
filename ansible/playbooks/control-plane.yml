@@ -90,8 +90,6 @@
         network_gateway: "{{ cluster.gateway }}"
         network_dns_servers: "{{ cluster.dns_servers }}"
 
-    - role: cloudflare_cli
-      tags: [cloudflare, external-access]
     - role: kubernetes_components
       tags: [kubernetes, k8s-components]
       vars:
