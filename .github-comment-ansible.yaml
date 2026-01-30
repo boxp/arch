@@ -1,5 +1,5 @@
 hide:
-  ansible-plan: 'Comment.HasPrefix "## Ansible Plan Results"'
+  ansible-plan: 'Comment.HasPrefix("## Ansible Plan Results")'
 
 post:
   ansible-plan:
