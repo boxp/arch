@@ -114,12 +114,12 @@ target_groups:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_terraform_apply
     secrets:
     - env_name: GITHUB_TOKEN
-      secret_name: gh_token_apply
+      secret_name: GH_TOKEN_APPLY
   tfmigrate_apply_config:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_apply
     secrets:
     - env_name: GITHUB_TOKEN
-      secret_name: gh_token_apply
+      secret_name: GH_TOKEN_APPLY
 
 # - working_directory: github/services/
 #   target: github/
