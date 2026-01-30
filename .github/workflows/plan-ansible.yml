@@ -149,6 +149,10 @@ jobs:
               return "$ansible_exit"
             fi
 
+            echo "::group::Ansible JSON output for ${playbook_name} on ${node}"
+            cat "$json_file"
+            echo "::endgroup::"
+
             if ! ansible-plan-formatter --node "$node" --playbook "$playbook_name" \
               < "$json_file" > "$output_file"; then
               echo "::error::ansible-plan-formatter failed for $playbook_name on $node"
