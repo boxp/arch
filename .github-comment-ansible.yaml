@@ -17,8 +17,52 @@ post:
       {{- end }}
 
       ---
+      {{- range $plan := fromJson .Vars.plans_json }}
 
-      {{.Vars.body | AvoidHTMLEscape}}
+      ### {{ $plan.node }}: {{ $plan.playbook }}
+
+      | Host | OK | Changed | Skipped | Failed | Unreachable |
+      |------|---:|--------:|--------:|-------:|------------:|
+      {{- range $host, $stat := $plan.stats }}
+      | {{ $host }} | {{ $stat.ok }} | {{ $stat.changed }} | {{ $stat.skipped }} | {{ $stat.failures }} | {{ $stat.unreachable }} |
+      {{- end }}
+      {{- if $plan.failed_tasks }}
+
+      **{{ len $plan.failed_tasks }} failed**
+      {{- else if $plan.changed_tasks }}
+
+      **{{ len $plan.changed_tasks }} changed**
+      {{- else }}
+
+      **No changes**
+      {{- end }}
+      {{- if $plan.changed_tasks }}
+
+      <details>
+      <summary>Changed Tasks ({{ len $plan.changed_tasks }})</summary>
+
+      | # | Task | Module |
+      |--:|------|--------|
+      {{- range $i, $t := $plan.changed_tasks }}
+      | {{ add $i 1 }} | {{ $t.name }} | {{ $t.module }} |
+      {{- end }}
+
+      </details>
+      {{- end }}
+      {{- if $plan.failed_tasks }}
+
+      <details>
+      <summary>Failed Tasks ({{ len $plan.failed_tasks }})</summary>
+
+      | # | Task | Module | Error |
+      |--:|------|--------|-------|
+      {{- range $i, $t := $plan.failed_tasks }}
+      | {{ add $i 1 }} | {{ $t.name }} | {{ $t.module }} | {{ $t.msg }} |
+      {{- end }}
+
+      </details>
+      {{- end }}
+      {{- end }}
 
       ---
       *Plan executed on all nodes in parallel.*
