@@ -16,6 +16,8 @@ on:
         required: true
       gh_cloudflare_api_token:
         required: true
+      GH_TOKEN_PLAN:
+        required: false
 
 jobs:
   plan:
