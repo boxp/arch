@@ -156,9 +156,11 @@ jobs:
             cat "$json_file"
             echo "::endgroup::"
 
+            set +e
             ansible-plan-formatter --node "$node" --playbook "$playbook_name" \
               < "$json_file" > "$output_file"
             local fmt_exit=$?
+            set -e
             # exit 0=no changes, 2=changes detected, 1=tool error
             if [ "$fmt_exit" -eq 1 ]; then
               echo "::error::ansible-plan-formatter failed for $playbook_name on $node"
