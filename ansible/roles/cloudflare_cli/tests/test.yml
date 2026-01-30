@@ -1,6 +1,0 @@
----
-- name: Test cloudflare_cli role
-  hosts: localhost
-  remote_user: root
-  roles:
-    - cloudflare_cli
