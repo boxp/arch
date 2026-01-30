@@ -136,10 +136,9 @@ jobs:
               --limit "$node" \
               -e "ansible_ssh_common_args=''" \
               -e "node_name=$node" \
-              --check --diff 2>plan_outputs/${node}-${playbook_name}.stderr | \
+              --check --diff 2>"plan_outputs/${node}-${playbook_name}.stderr" | \
               ansible-plan-formatter --node "$node" --playbook "$playbook_name" > "$output_file"
             local ansible_exit=${PIPESTATUS[0]}
-            local fmt_exit=${PIPESTATUS[1]}
             set -e
 
             if [ "$ansible_exit" -ne 0 ] && [ "$ansible_exit" -ne 2 ]; then
