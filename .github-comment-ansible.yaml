@@ -44,7 +44,7 @@ post:
       | # | Task | Module |
       |--:|------|--------|
       {{- range $i, $t := $plan.changed_tasks }}
-      | {{ add $i 1 }} | {{ $t.name | AvoidHTMLEscape }} | {{ $t.module | AvoidHTMLEscape }} |
+      | {{ add $i 1 }} | {{ $t.name }} | {{ $t.module }} |
       {{- end }}
 
       </details>
@@ -57,7 +57,7 @@ post:
       | # | Task | Module | Error |
       |--:|------|--------|-------|
       {{- range $i, $t := $plan.failed_tasks }}
-      | {{ add $i 1 }} | {{ $t.name | AvoidHTMLEscape }} | {{ $t.module | AvoidHTMLEscape }} | {{ $t.msg | AvoidHTMLEscape }} |
+      | {{ add $i 1 }} | {{ $t.name }} | {{ $t.module }} | {{ $t.msg }} |
       {{- end }}
 
       </details>
