@@ -1,0 +1,2 @@
+# CMK (Customer Managed Key) は個人インフラに不要。AWS managed key / AES256 で十分。
+AVD-AWS-0132
