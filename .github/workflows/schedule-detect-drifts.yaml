@@ -95,6 +95,7 @@ jobs:
           github_token: ${{steps.generate_token.outputs.token}}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
+          TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
       - uses: suzuki-shunsuke/tfaction/terraform-plan@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
         with:
