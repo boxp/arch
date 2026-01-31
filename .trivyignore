@@ -1,2 +1,11 @@
 # CMK (Customer Managed Key) は個人インフラに不要。AWS managed key / AES256 で十分。
 AVD-AWS-0132
+
+# Trivy HCL scanner が aws_s3_bucket_server_side_encryption_configuration 等の
+# 別リソース定義を aws_s3_bucket とリンクできず誤検知する既知の問題 (aquasecurity/trivy#4736)。
+# 実際には別リソースで設定済み。
+AVD-AWS-0088
+AVD-AWS-0090
+
+# ログバケット自体のロギングは循環するため設定不可。
+s3-bucket-logging
