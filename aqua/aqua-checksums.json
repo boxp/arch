@@ -106,23 +106,23 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/minamijoyo/tfmigrate/v0.3.18/tfmigrate_0.3.18_darwin_amd64.tar.gz",
-      "checksum": "571D21DEC5C762FE54D6F9C8096A9D97FE8B297525AF1F8885FC3024E561FF84",
+      "id": "github_release/github.com/minamijoyo/tfmigrate/v0.4.4/tfmigrate_0.4.4_darwin_amd64.tar.gz",
+      "checksum": "3AC9A4F860D277712AFF98F0CC7A3C46FCE25E764DE95B31FCD24649FE357195",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/minamijoyo/tfmigrate/v0.3.18/tfmigrate_0.3.18_darwin_arm64.tar.gz",
-      "checksum": "196312B365D8FCBE4C8159F0343FDD2F8ACFFB17C8636E955A37380954D4F21A",
+      "id": "github_release/github.com/minamijoyo/tfmigrate/v0.4.4/tfmigrate_0.4.4_darwin_arm64.tar.gz",
+      "checksum": "819E3811007160832D0624A33233490DEA810756711FA356F54D5C8A80A4452B",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/minamijoyo/tfmigrate/v0.3.18/tfmigrate_0.3.18_linux_amd64.tar.gz",
-      "checksum": "796A67893FE3875EE362DBAFAEAB29EAF8B7835F6FC8E25576B0FD047526F78F",
+      "id": "github_release/github.com/minamijoyo/tfmigrate/v0.4.4/tfmigrate_0.4.4_linux_amd64.tar.gz",
+      "checksum": "2000827C023108D4627643F5ED1A44E4F577F70802B4C4271C5581DA81D4657E",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/minamijoyo/tfmigrate/v0.3.18/tfmigrate_0.3.18_linux_arm64.tar.gz",
-      "checksum": "4780E9211D54C4F49C7A302BAD0138A49F9B81A7F2D036EB63FF71A856A69964",
+      "id": "github_release/github.com/minamijoyo/tfmigrate/v0.4.4/tfmigrate_0.4.4_linux_arm64.tar.gz",
+      "checksum": "579CA7BD9FD7C24D11AD372F18F95FEFE604349A7CD72A8BE05D1E990C9B965B",
       "algorithm": "sha256"
     },
     {
