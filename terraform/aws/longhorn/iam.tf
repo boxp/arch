@@ -9,7 +9,9 @@ resource "aws_iam_user" "longhorn_backup" {
   }
 }
 
+#trivy:ignore:aws-iam-enforce-mfa
 resource "aws_iam_group" "longhorn_backup" {
+  # MFA is not applicable to programmatic-only system users
   name = "longhorn-backup-group"
   path = "/system/"
 }

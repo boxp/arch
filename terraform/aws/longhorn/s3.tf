@@ -47,6 +47,14 @@ resource "aws_s3_bucket_public_access_block" "longhorn_backup_logs" {
   restrict_public_buckets = true
 }
 
+resource "aws_s3_bucket_versioning" "longhorn_backup_logs" {
+  bucket = aws_s3_bucket.longhorn_backup_logs.id
+
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 resource "aws_s3_bucket_server_side_encryption_configuration" "longhorn_backup_logs" {
   bucket = aws_s3_bucket.longhorn_backup_logs.id
 
