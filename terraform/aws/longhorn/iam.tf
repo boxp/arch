@@ -9,9 +9,19 @@ resource "aws_iam_user" "longhorn_backup" {
   }
 }
 
-resource "aws_iam_user_policy" "longhorn_backup" {
+resource "aws_iam_group" "longhorn_backup" {
+  name = "longhorn-backup-group"
+  path = "/system/"
+}
+
+resource "aws_iam_group_membership" "longhorn_backup" {
+  name  = "longhorn-backup-membership"
+  users = [aws_iam_user.longhorn_backup.name]
+  group = aws_iam_group.longhorn_backup.name
+}
+
+resource "aws_iam_policy" "longhorn_backup" {
   name = "longhorn-backup-policy"
-  user = aws_iam_user.longhorn_backup.name
 
   policy = jsonencode({
     Version = "2012-10-17"
@@ -35,6 +45,11 @@ resource "aws_iam_user_policy" "longhorn_backup" {
       }
     ]
   })
+}
+
+resource "aws_iam_group_policy_attachment" "longhorn_backup" {
+  group      = aws_iam_group.longhorn_backup.name
+  policy_arn = aws_iam_policy.longhorn_backup.arn
 }
 
 resource "aws_iam_access_key" "longhorn_backup" {
