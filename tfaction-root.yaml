@@ -35,8 +35,13 @@ aqua:
 #   enabled: true
 # tflint:
 #   enabled: true
-# trivy:
-#   enabled: false
+trivy:
+  enabled: true
+  reviewdog:
+    # Trivy HCL scanner cannot link separate resources (e.g. aws_s3_bucket_server_side_encryption_configuration)
+    # to aws_s3_bucket, causing false positives (AVD-AWS-0088, AVD-AWS-0090, etc.).
+    # Use "added" filter to only report findings on newly added lines.
+    filter_mode: added
 
 # We don't recommend disabling this feature.
 # update_related_pull_requests:
