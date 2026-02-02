@@ -27,7 +27,7 @@ resource "aws_iam_role" "palserver_gha_role" {
 }
 
 # ecr:GetAuthorizationToken が リソースレベルのアクセス許可をサポートしていないため、全リソースに対して許可する
-#trivy:ignore:AVD-AWS-0057
+#trivy:ignore:AWS-0057
 resource "aws_iam_policy" "palserver_gha_policy" {
   name        = "palserver-gha-policy"
   path        = "/"

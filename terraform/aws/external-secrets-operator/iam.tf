@@ -1,6 +1,6 @@
 # External Secret OperatorがSSMを読み取るためのIAMポリシー
 # 動的にパラメータが増えるのでワイルドカードを許容する
-#trivy:ignore:AVD-AWS-0057
+#trivy:ignore:AWS-0057
 resource "aws_iam_policy" "external_secret_policy" {
   name        = "external_secret_policy"
   description = "Policy for accessing SSM parameters"
