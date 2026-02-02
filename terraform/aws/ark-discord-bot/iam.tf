@@ -27,7 +27,7 @@ resource "aws_iam_role" "ark_discord_bot_gha_role" {
 }
 
 # ecr:GetAuthorizationToken が リソースレベルのアクセス許可をサポートしていないため、全リソースに対して許可する
-#trivy:ignore:AVD-AWS-0057
+#trivy:ignore:AWS-0057
 resource "aws_iam_policy" "ark_discord_bot_gha_policy" {
   name        = "ark-discord-bot-gha-policy"
   path        = "/"

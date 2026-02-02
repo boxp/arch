@@ -27,7 +27,7 @@ resource "aws_iam_role" "hitohub_prod_gha_role" {
 }
 
 # ecr:GetAuthorizationToken が リソースレベルのアクセス許可をサポートしていないため、全リソースに対して許可する
-#trivy:ignore:AVD-AWS-0057
+#trivy:ignore:AWS-0057
 resource "aws_iam_policy" "hitohub_prod_gha_policy" {
   name        = "hitohub-prod-gha-policy"
   path        = "/"

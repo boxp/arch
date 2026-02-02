@@ -7,7 +7,7 @@ resource "aws_ecr_repository" "hitohub_backend_prod" {
   }
 
   # terraform planが非常に不安定になったのでkms keyはdefaultにする
-  #trivy:ignore:AVD-AWS-0033
+  #trivy:ignore:AWS-0033
   encryption_configuration {
     encryption_type = "KMS"
   }
@@ -44,7 +44,7 @@ resource "aws_ecr_repository" "hitohub_frontend_prod" {
   }
 
   # terraform planが非常に不安定になったのでkms keyはdefaultにする
-  #trivy:ignore:AVD-AWS-0033
+  #trivy:ignore:AWS-0033
   encryption_configuration {
     encryption_type = "KMS"
   }

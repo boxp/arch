@@ -1,11 +1,11 @@
 # roleのattatchができないserviceで利用するため、iamユーザーに直でpolicyを付与する
-#trivy:ignore:AVD-AWS-0143
+#trivy:ignore:AWS-0143
 resource "aws_iam_user" "k8s_ecr_token_updater_user" {
   name = "k8s-ecr-token-updater-user"
 }
 
 # ECRは動的に増えるのでワイルドカードを許容する
-#trivy:ignore:AVD-AWS-0057
+#trivy:ignore:AWS-0057
 resource "aws_iam_policy" "ecr_pull_policy" {
   name        = "ECRPullPolicy"
   description = "Policy that allows pulling from ECR repositories"
