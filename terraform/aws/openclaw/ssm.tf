@@ -85,3 +85,14 @@ resource "aws_ssm_parameter" "openai_api_key" {
     ignore_changes = [value]
   }
 }
+
+# Claude Code OAuth Token をSSMパラメータに保存 (Max Plan認証用)
+resource "aws_ssm_parameter" "claude_code_oauth_token" {
+  name        = "/lolice/openclaw/CLAUDE_CODE_OAUTH_TOKEN"
+  description = "Claude Code OAuth token for Max Plan authentication"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
