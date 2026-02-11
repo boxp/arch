@@ -1082,6 +1082,132 @@ kubectl exec -n openclaw deployment/litellm -- curl -s https://api.anthropic.com
 
 ---
 
+## 実装結果（2026-02-11 時点）
+
+### 全体ステータス
+
+| Wave | ステータス | 備考 |
+|---|---|---|
+| Wave 1 | **完了** | Terraform (AWS SSM + Cloudflare Tunnel/DNS/Access) |
+| Wave 2 | **完了** | SSMパラメータ手動設定、Discord Bot作成、GitHub PAT作成 |
+| Wave 3 | **完了** | K8sデプロイ（多数のイテレーション修正を経て稼働） |
+| Wave 4 | **一部完了** | Web UI + Discord チャット動作確認済み。SOUL.md/NetworkPolicyテスト等は未実施 |
+
+### Wave 3 の計画と実装の差分
+
+#### 構成の変更: Helm chart → プレーンマニフェスト
+
+計画ではumbrella chart + Helm chartパターンだったが、実装ではプレーンKubernetesマニフェストを採用。
+
+**実際のファイル構成**:
+```
+argoproj/openclaw/
+├── configmap-litellm.yaml      # LiteLLM設定
+├── configmap-openclaw.yaml     # OpenClaw設定 (openclaw.json)
+├── deployment-litellm.yaml     # LiteLLM Deployment
+├── deployment-openclaw.yaml    # OpenClaw Deployment (init containers + DinD sidecar)
+├── externalsecret-litellm.yaml # LiteLLM用シークレット
+├── externalsecret.yaml         # OpenClaw用シークレット
+├── deployment-cloudflared.yaml # Cloudflare Tunnel
+├── namespace.yaml              # openclaw namespace
+├── networkpolicy.yaml          # 全Pod用NetworkPolicy
+├── pvc.yaml                    # OpenClaw永続ボリューム
+├── service-litellm.yaml        # LiteLLM Service
+└── service-openclaw.yaml       # OpenClaw Service
+```
+
+#### OpenClaw Config Schema（計画 vs 実際）
+
+計画のconfig構造は古いスキーマに基づいていた。実際のOpenClawが要求するトップレベルキー:
+
+| 計画のキー | 実際のキー | 備考 |
+|---|---|---|
+| `agent.model` | `agents.defaults.model` | `agents.defaults`配下に移動 |
+| `agent.models.providers` | `models.providers` | トップレベル`models`に分離 |
+| `agent.elevated` | `tools.elevated` | `tools`配下に移動 |
+| (なし) | `plugins.entries.discord.enabled` | チャンネル設定とは別にプラグイン有効化が必要 |
+| `gateway.auth.mode: "token"` | `gateway.mode: "local"` + `gateway.auth.token` | non-dev環境では`mode: "local"`が必須 |
+| (なし) | `gateway.controlUi.allowInsecureAuth` | Cloudflare Access背後ではデバイスペアリングをスキップ |
+| `api: "openai-chat"` | `api: "openai-completions"` | 正しいenum値 |
+| モデル名のみ | `models`配列（id, name, reasoning等） | プロバイダー内にモデル定義が必要 |
+
+#### LiteLLM Deployment の修正点
+
+| 項目 | 計画 | 実際 |
+|---|---|---|
+| メモリ制限 | 512Mi | **1Gi**（512Miでは OOMKilled） |
+| メモリリクエスト | 256Mi | **512Mi** |
+| config読み込み | (暗黙的) | **`CONFIG_FILE_PATH=/app/config.yaml`** env var が必須 |
+| イメージ | `ghcr.io/berriai/litellm:main-v1.63.2` | `ghcr.io/berriai/litellm:v1.81.3-stable` |
+
+#### LITELLM_PROXY_KEY の設計変更
+
+計画では `LITELLM_PROXY_KEY` と `LITELLM_MASTER_KEY` を別々のキーとして管理する想定だったが、
+LiteLLMの仮想キー機能にはPostgreSQLが必要で、DB無しの構成ではマスターキーのみで認証する。
+
+**実際の実装**: OpenClawの `LITELLM_PROXY_KEY` env varは `litellm-credentials.LITELLM_MASTER_KEY` を参照。
+
+```yaml
+# deployment-openclaw.yaml
+- name: LITELLM_PROXY_KEY
+  valueFrom:
+    secretKeyRef:
+      name: litellm-credentials  # openclaw-credentials ではなく litellm-credentials
+      key: LITELLM_MASTER_KEY    # LITELLM_PROXY_KEY ではなく LITELLM_MASTER_KEY
+```
+
+#### OpenClaw Deployment のinit containers
+
+計画の `install-tools` init container（node:22-bookworm-slim + npm install codex）は不採用。
+代わりに以下の構成:
+
+1. **`init-docker-cli`**: `docker:27-cli`イメージからDockerバイナリをコピー（shared-bin emptyDir経由）
+2. **`init-config`**: ConfigMapからPVCにopenclaw.jsonをコピー（sedによる環境変数置換は不要 — OpenClawがメモリ上で`${VAR_NAME}`を解決）
+
+#### NetworkPolicy の変更
+
+OpenClaw Podのegressに **port 80 (HTTP)** を追加。サンドボックスコンテナ内でapt-getを実行するため。
+
+### 修正PR一覧（Wave 3 イテレーション）
+
+| PR | 内容 | 根本原因 |
+|---|---|---|
+| #375 | Config schema修正: `agent.*` → `agents.defaults.*` | レガシーキー使用 |
+| #376 | Config schema修正: api値、modelsアレイ、aliases | 不正なenum値、構造の差異 |
+| #377 | `gateway.mode: "local"` 追加 | non-dev環境では必須 |
+| #378 | `gateway.controlUi.allowInsecureAuth: true` 追加 | Cloudflare Access背後でのペアリングスキップ |
+| #379 | Discord plugin有効化 + Docker CLI注入 | channels設定だけでなくplugins有効化も必要 |
+| #380 | init-docker-cli を docker:27-cli に変更 + NetworkPolicy port 80追加 | apt-getがNetworkPolicyでブロックされた |
+| #381 | LiteLLM メモリ 512Mi → 1Gi + init-config sed削除 | OOMKilled (Exit Code 137) |
+| #382 | LITELLM_PROXY_KEY → litellm-credentials.LITELLM_MASTER_KEY | 認証キー不一致 (400 Bad Request) |
+| #383 | `CONFIG_FILE_PATH=/app/config.yaml` env var追加 | LiteLLMがconfigを読み込んでいなかった |
+
+### 得られた教訓
+
+1. **OpenClawのconfig schemaはドキュメントだけでなく実際のバリデーションエラーから確認する** — 公式ドキュメントと実際のスキーマに差異があった
+2. **OpenClawは`${VAR_NAME}`をメモリ上で解決する** — config fileにはテンプレートのまま残してよい。sedによる事前置換は不要
+3. **OpenClawのchannelsとpluginsは別概念** — `channels.discord.enabled: true` だけでなく `plugins.entries.discord.enabled: true` も必要
+4. **LiteLLMはDB無しではmaster_keyのみで認証** — 仮想キー（別のproxy key）を使うにはPostgreSQLが必要
+5. **LiteLLMのconfigは明示的に指定が必要** — ファイルをマウントしただけでは読み込まれない（`CONFIG_FILE_PATH` or `--config`）
+6. **LiteLLMのメモリは最低1Gi必要** — Pythonアプリケーションのモジュールロードで512Miでは不足
+7. **fact checkしてから実装する** — 仮説で実装するのではなく、ドキュメントを確認してから修正
+
+### 現在の状態と残作業
+
+**動作確認済み**:
+- Web UI (openclaw.b0xp.io) — Cloudflare Access認証 → チャット動作
+- Discord Bot — ログイン成功、チャット応答動作
+- LiteLLM → Anthropic API — 認証・推論成功（クレジット補充後）
+
+**未実施（Wave 4 残り）**:
+- SOUL.md ポリシー配置
+- NetworkPolicy 疎通テスト（クラスター内アクセスブロック確認）
+- Codex CLI セットアップ・動作確認
+- サンドボックスコンテナの`/home/node`問題の修正（ツール実行に影響、基本チャットには影響なし）
+
+---
+
+>>>>>>> dadb4b51 (docs(openclaw): update plan with implementation results and lessons learned)
 ## 参考ソース
 - [OpenClaw GitHub](https://github.com/openclaw/openclaw)
 - [OpenClaw Helm chart](https://serhanekici.com/openclaw-helm.html)
