@@ -64,6 +64,17 @@ resource "aws_ssm_parameter" "github_token" {
   }
 }
 
+# Discord Allowed User IDs をSSMパラメータに保存 (DM allowlist用)
+resource "aws_ssm_parameter" "discord_allowed_user_ids" {
+  name        = "/lolice/openclaw/DISCORD_ALLOWED_USER_IDS"
+  description = "Discord user ID allowed to DM the OpenClaw bot"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # OpenAI API Key をSSMパラメータに保存 (Codex CLI用)
 resource "aws_ssm_parameter" "openai_api_key" {
   name        = "/lolice/openclaw/OPENAI_API_KEY"

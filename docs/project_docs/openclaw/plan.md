@@ -1200,10 +1200,22 @@ OpenClaw Podのegressに **port 80 (HTTP)** を追加。サンドボックスコ
 - LiteLLM → Anthropic API — 認証・推論成功（クレジット補充後）
 
 **未実施（Wave 4 残り）**:
-- SOUL.md ポリシー配置
-- NetworkPolicy 疎通テスト（クラスター内アクセスブロック確認）
-- Codex CLI セットアップ・動作確認
-- サンドボックスコンテナの`/home/node`問題の修正（ツール実行に影響、基本チャットには影響なし）
+- SOUL.md ポリシー配置 → **ユーザーがWeb UIから直接追記済み**
+- NetworkPolicy 疎通テスト → **完了（2026-02-12）**
+- Codex CLI セットアップ → スキップ（サンドボックス修正後に対応）
+- サンドボックスコンテナの`/home/node`問題 → スキップ（基本チャットに影響なし、ユーザー了承済み）
+
+### NetworkPolicy 疎通テスト結果（2026-02-12）
+
+| # | テスト | 期待結果 | 実際の結果 | 判定 |
+|---|--------|----------|------------|------|
+| 1 | OpenClaw → 外部HTTPS (discord.com) | HTTP 200 or 301 | HTTP 200 | PASS |
+| 2 | OpenClaw → クラスター内 (argocd-server) | タイムアウト | タイムアウト (exit code 28) | PASS |
+| 3 | LiteLLM → Anthropic API (api.anthropic.com) | HTTP 200 or 401 | HTTP 404 (接続成功) | PASS |
+| 4 | LiteLLM → クラスター内 (argocd-server) | タイムアウト | タイムアウト | PASS |
+
+**結論**: NetworkPolicyが正しく機能。外部HTTPSは許可、RFC1918ブロックによりクラスター内サービスへのアクセスは遮断されている。
+テスト3のHTTP 404はAPIルートパスへの認証なしリクエストのため正常。TCP接続成功がNetworkPolicy許可を証明。
 
 ---
 
