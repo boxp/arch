@@ -42,4 +42,3 @@ tfplan.json
 node_modules
 *.log
 armbian-build/
-.claude/
