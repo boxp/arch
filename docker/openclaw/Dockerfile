@@ -1,6 +1,6 @@
-FROM docker:27-cli AS docker-cli
+FROM docker:27-cli@sha256:851f91d241214e7c6db86513b270d58776379aacc5eb9c4a87e5b47115e3065c AS docker-cli
 
-FROM ghcr.io/openclaw/openclaw:2026.2.9
+FROM ghcr.io/openclaw/openclaw:2026.2.9@sha256:7503c7dc56800b61f1223d3c4032ada61a100538a41425210b4043b71f871488
 
 USER root
 
