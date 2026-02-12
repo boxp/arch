@@ -30,7 +30,7 @@ jobs:
         with:
           images: ghcr.io/boxp/arch/openclaw
           tags: |
-            type=raw,value={{date 'YYYYMMDD'}},enable={{is_default_branch}}
+            type=raw,value={{date 'YYYYMMDDHHmm'}},enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
