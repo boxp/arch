@@ -30,7 +30,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 
 # Create trusted workspace config for Claude Code
 RUN mkdir -p /home/node/.claude && \
-    echo '{"trustedWorkspaces":["/home/node/ghq/github.com/**","/home/node/.openclaw/workspace/**"]}' \
+    echo '{"permissionMode":"acceptEdits","allowedCommands":["git","gh"],"trustedWorkspaces":["/home/node/ghq/github.com/**","/home/node/.openclaw/workspace/**"]}' \
       > /home/node/.claude/config.json
 
 ENV PATH="/home/node/.local/bin:${PATH}"
