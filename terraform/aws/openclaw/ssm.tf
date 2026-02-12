@@ -96,3 +96,14 @@ resource "aws_ssm_parameter" "claude_code_oauth_token" {
     ignore_changes = [value]
   }
 }
+
+# xAI API Key をSSMパラメータに保存
+resource "aws_ssm_parameter" "xai_api_key" {
+  name        = "/lolice/openclaw/XAI_API_KEY"
+  description = "xAI API Key for OpenClaw"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
