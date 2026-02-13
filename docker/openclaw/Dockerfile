@@ -1,5 +1,9 @@
 FROM docker:29-cli@sha256:1d6d751f1d68d1a5142c23c730ef5ecc976a8e050fa08c3cdb09f7e2e54a4439 AS docker-cli
 
+FROM golang:1.24 AS go-tools
+RUN go install github.com/x-motemen/ghq@v1.8.1 && \
+    go install github.com/d-kuro/gwq@v0.0.13
+
 FROM ghcr.io/openclaw/openclaw:2026.2.9@sha256:7503c7dc56800b61f1223d3c4032ada61a100538a41425210b4043b71f871488
 
 USER root
@@ -19,6 +23,10 @@ RUN apt-get update && \
 
 # Copy Docker CLI from docker:27-cli
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
+
+# Copy ghq and gwq from go-tools
+COPY --from=go-tools /go/bin/ghq /usr/local/bin/ghq
+COPY --from=go-tools /go/bin/gwq /usr/local/bin/gwq
 
 # Install Codex CLI globally
 RUN npm install -g @openai/codex
