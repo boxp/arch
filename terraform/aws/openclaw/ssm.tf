@@ -64,6 +64,17 @@ resource "aws_ssm_parameter" "github_token" {
   }
 }
 
+# Google AI Studio API Key をSSMパラメータに保存 (LiteLLMのみが使用)
+resource "aws_ssm_parameter" "gemini_api_key" {
+  name        = "/lolice/openclaw/GEMINI_API_KEY"
+  description = "Google AI Studio API Key for LiteLLM proxy (Gemini models)"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # OpenAI API Key をSSMパラメータに保存 (Codex CLI用)
 resource "aws_ssm_parameter" "openai_api_key" {
   name        = "/lolice/openclaw/OPENAI_API_KEY"
