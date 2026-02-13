@@ -64,6 +64,17 @@ resource "aws_ssm_parameter" "github_token" {
   }
 }
 
+# Discord Allowed User IDs をSSMパラメータに保存 (DM allowlist用)
+resource "aws_ssm_parameter" "discord_allowed_user_ids" {
+  name        = "/lolice/openclaw/DISCORD_ALLOWED_USER_IDS"
+  description = "Discord user ID allowed to DM the OpenClaw bot"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
 # Google AI Studio API Key をSSMパラメータに保存 (LiteLLMのみが使用)
 resource "aws_ssm_parameter" "gemini_api_key" {
   name        = "/lolice/openclaw/GEMINI_API_KEY"
@@ -79,6 +90,28 @@ resource "aws_ssm_parameter" "gemini_api_key" {
 resource "aws_ssm_parameter" "openai_api_key" {
   name        = "/lolice/openclaw/OPENAI_API_KEY"
   description = "OpenAI API Key for Codex CLI"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Claude Code OAuth Token をSSMパラメータに保存 (Max Plan認証用)
+resource "aws_ssm_parameter" "claude_code_oauth_token" {
+  name        = "/lolice/openclaw/CLAUDE_CODE_OAUTH_TOKEN"
+  description = "Claude Code OAuth token for Max Plan authentication"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# xAI API Key をSSMパラメータに保存
+resource "aws_ssm_parameter" "xai_api_key" {
+  name        = "/lolice/openclaw/XAI_API_KEY"
+  description = "xAI API Key for OpenClaw"
   type        = "SecureString"
   value       = "dummy-value-to-be-updated-manually"
   lifecycle {
