@@ -1,6 +1,6 @@
 FROM docker:29-cli@sha256:1d6d751f1d68d1a5142c23c730ef5ecc976a8e050fa08c3cdb09f7e2e54a4439 AS docker-cli
 
-FROM golang:1.24 AS go-tools
+FROM golang:1.25 AS go-tools
 RUN go install github.com/x-motemen/ghq@v1.8.1 && \
     go install github.com/d-kuro/gwq@v0.0.13
 
