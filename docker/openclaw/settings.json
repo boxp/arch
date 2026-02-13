@@ -1,0 +1,41 @@
+{
+  "permissions": {
+    "defaultMode": "acceptEdits",
+    "allow": [
+      "Bash(git *)",
+      "Bash(gh *)",
+      "Bash(ghq *)",
+      "Bash(gwq *)",
+      "Bash(mkdir *)",
+      "Bash(touch *)",
+      "Bash(cp *)",
+      "Bash(mv *)",
+      "Bash(rm *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(sed *)",
+      "Bash(awk *)",
+      "Bash(sort *)",
+      "Bash(uniq *)",
+      "Bash(wc *)",
+      "Bash(diff *)",
+      "Bash(chmod *)",
+      "Bash(curl *)",
+      "Bash(tar *)",
+      "Bash(xargs *)",
+      "Bash(dirname *)",
+      "Bash(basename *)",
+      "Bash(tee *)",
+      "Bash(codex *)",
+      "Bash(docker *)",
+      "Bash(bb *)",
+      "Bash(man *)",
+      "Bash(apt-get *)",
+      "Bash(apt *)"
+    ]
+  }
+}
