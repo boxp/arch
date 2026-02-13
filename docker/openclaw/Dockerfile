@@ -32,7 +32,7 @@ RUN curl -fsSL https://claude.ai/install.sh | bash
 RUN mkdir -p /home/node/.claude && \
     echo '{"trustedWorkspaces":["/home/node/ghq/github.com/**","/home/node/.openclaw/workspace/**"]}' \
       > /home/node/.claude/config.json && \
-    echo '{"permissionMode":"acceptEdits","allowedCommands":["git","gh","ghq","gwq"]}' \
+    echo '{"permissionMode":"acceptEdits","allowedCommands":["git","gh","ghq","gwq","mkdir","touch","cp","mv","rm","ls","cat","head","tail","find","grep","sed","awk","sort","uniq","wc","diff","chmod","curl","tar","xargs","dirname","basename","tee","codex"]}' \
       > /home/node/.claude/settings.json
 
 ENV PATH="/home/node/.local/bin:${PATH}"
