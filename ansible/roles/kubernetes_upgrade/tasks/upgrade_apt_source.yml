@@ -1,0 +1,59 @@
+---
+# upgrade_apt_source.yml — Update apt sources and install kubeadm
+
+- name: Update apt source for kubernetes
+  ansible.builtin.template:
+    src: kubernetes.list.j2
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    mode: '0644'
+  become: true
+  tags: [upgrade]
+
+- name: Update CRI-O apt repository version
+  ansible.builtin.replace:
+    path: "/etc/apt/sources.list.d/{{ item }}"
+    regexp: 'stable:/v[0-9]+\.[0-9]+/'
+    replace: "stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/"
+  loop:
+    - crio.list
+    - crio-version.list
+  become: true
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  tags: [upgrade]
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+  become: true
+  tags: [upgrade]
+
+- name: Unhold kubeadm
+  ansible.builtin.dpkg_selections:
+    name: kubeadm
+    selection: install
+  become: true
+  tags: [upgrade]
+
+- name: Install target kubeadm version
+  ansible.builtin.apt:
+    name: "kubeadm={{ kubernetes_upgrade_package }}"
+    state: present
+    allow_downgrade: false
+  become: true
+  tags: [upgrade]
+
+- name: Hold kubeadm
+  ansible.builtin.dpkg_selections:
+    name: kubeadm
+    selection: hold
+  become: true
+  tags: [upgrade]
+
+- name: Upgrade CRI-O
+  ansible.builtin.apt:
+    name: "cri-o={{ crio_upgrade_version }}*"
+    state: present
+  become: true
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  notify: restart crio
+  tags: [upgrade]

@@ -1,0 +1,44 @@
+---
+# pre_checks.yml — Pre-upgrade validation
+
+- name: Verify current kubernetes version
+  ansible.builtin.command: kubelet --version
+  register: current_kubelet_version
+  changed_when: false
+  tags: [pre_checks]
+
+- name: Display current kubelet version
+  ansible.builtin.debug:
+    msg: "Current kubelet version: {{ current_kubelet_version.stdout }}"
+  tags: [pre_checks]
+
+- name: Verify etcd cluster health (all members)
+  ansible.builtin.command: >
+    etcdctl endpoint health
+    --cluster
+    --cacert={{ etcd_cacert }}
+    --cert={{ etcd_cert }}
+    --key={{ etcd_key }}
+  register: etcd_health
+  changed_when: false
+  when: node_role == "control_plane"
+  become: true
+  tags: [pre_checks]
+
+- name: Verify all nodes are Ready
+  ansible.builtin.command: kubectl get nodes --no-headers
+  environment:
+    KUBECONFIG: "{{ kubernetes_admin_conf }}"
+  register: node_status
+  changed_when: false
+  failed_when: "'NotReady' in node_status.stdout"
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  run_once: true
+  become: true
+  tags: [pre_checks]
+
+- name: Display node status
+  ansible.builtin.debug:
+    msg: "{{ node_status.stdout_lines }}"
+  run_once: true
+  tags: [pre_checks]

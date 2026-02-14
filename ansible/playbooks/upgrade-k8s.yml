@@ -1,0 +1,75 @@
+---
+# Kubernetes Cluster Upgrade Playbook
+# Usage: ansible-playbook playbooks/upgrade-k8s.yml \
+#          -e kubernetes_upgrade_version=1.35.1 \
+#          -e kubernetes_upgrade_package=1.35.1-1.1 \
+#          -e crio_upgrade_version=1.35.0
+
+# Step 1: Pre-upgrade cluster-wide checks + etcd snapshot
+- name: Pre-upgrade validation and etcd snapshot
+  hosts: control_plane[0]
+  become: true
+  gather_facts: true
+  tags: [pre_checks]
+  tasks:
+    - name: Verify cluster health
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: pre_checks.yml
+      tags: [pre_checks]
+    - name: Take etcd snapshot
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: etcd_snapshot.yml
+      tags: [pre_checks, etcd_snapshot]
+
+# Step 2: Upgrade first control plane (shanghai-1)
+- name: Upgrade first control plane (shanghai-1)
+  hosts: control_plane[0]
+  become: true
+  serial: 1
+  gather_facts: true
+  tags: [upgrade]
+  roles:
+    - role: kubernetes_upgrade
+      vars:
+        node_role: control_plane
+        is_first_control_plane: true
+
+# Step 3: Upgrade remaining control planes (shanghai-2, shanghai-3)
+- name: Upgrade secondary control planes
+  hosts: "control_plane[1:]"
+  become: true
+  serial: 1
+  gather_facts: true
+  tags: [upgrade]
+  roles:
+    - role: kubernetes_upgrade
+      vars:
+        node_role: control_plane
+        is_first_control_plane: false
+
+# Step 4: Upgrade worker nodes (Phase 3 — uncomment when inventory has workers group)
+# - name: Upgrade worker nodes
+#   hosts: workers
+#   become: true
+#   serial: 1
+#   gather_facts: true
+#   tags: [upgrade]
+#   roles:
+#     - role: kubernetes_upgrade
+#       vars:
+#         node_role: worker
+
+# Step 5: Post-upgrade cluster-wide health check
+- name: Post-upgrade cluster health check
+  hosts: control_plane
+  become: true
+  gather_facts: false
+  tags: [health_check]
+  tasks:
+    - name: Verify all nodes health
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: health_check.yml
+      tags: [health_check]

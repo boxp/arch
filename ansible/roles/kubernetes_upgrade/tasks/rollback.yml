@@ -1,0 +1,110 @@
+---
+# rollback.yml — etcd snapshot restore-based cluster rollback
+# WARNING: This procedure requires manual intervention. Automated execution is planned for Phase 3.
+
+- name: Stop kubelet on all control plane nodes
+  ansible.builtin.systemd:
+    name: kubelet
+    state: stopped
+  become: true
+  tags: [rollback]
+
+- name: Restore etcd from snapshot (first control plane only)
+  ansible.builtin.command: >
+    etcdctl snapshot restore
+    {{ etcd_snapshot_dir }}/pre-upgrade-{{ snapshot_timestamp }}.db
+    --data-dir=/var/lib/etcd-restore
+    --name={{ inventory_hostname }}
+    --initial-cluster={{ etcd_initial_cluster }}
+    --initial-advertise-peer-urls=https://{{ node_ip }}:2380
+  become: true
+  when: is_first_control_plane
+  changed_when: true
+  tags: [rollback]
+
+- name: Replace etcd data directory
+  ansible.builtin.shell: |
+    set -o pipefail
+    mv /var/lib/etcd /var/lib/etcd-backup-{{ ansible_date_time.iso8601_basic_short }}
+    mv /var/lib/etcd-restore /var/lib/etcd
+  args:
+    executable: /bin/bash
+  become: true
+  when: is_first_control_plane
+  changed_when: true
+  tags: [rollback]
+
+- name: Revert Kubernetes apt source to previous version
+  ansible.builtin.copy:
+    content: |
+      deb https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_previous_version }}/deb/ /
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    mode: '0644'
+  become: true
+  tags: [rollback]
+
+- name: Revert CRI-O apt source to previous version
+  ansible.builtin.replace:
+    path: "/etc/apt/sources.list.d/{{ item }}"
+    regexp: 'stable:/v[0-9]+\.[0-9]+/'
+    replace: "stable:/v{{ crio_previous_version.split('.')[:2] | join('.') }}/"
+  loop:
+    - crio.list
+    - crio-version.list
+  become: true
+  when: crio_previous_version is defined and crio_previous_version != ""
+  tags: [rollback]
+
+- name: Update apt cache for rollback
+  ansible.builtin.apt:
+    update_cache: true
+  become: true
+  tags: [rollback]
+
+- name: Unhold packages before downgrade
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: install
+  loop:
+    - kubeadm
+    - kubelet
+    - kubectl
+  become: true
+  tags: [rollback]
+
+- name: Downgrade kubeadm to previous version
+  ansible.builtin.apt:
+    name: "kubeadm={{ kubernetes_previous_package }}"
+    state: present
+    allow_downgrade: true
+  become: true
+  tags: [rollback]
+
+- name: Downgrade kubelet and kubectl
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_previous_package }}"
+      - "kubectl={{ kubernetes_previous_package }}"
+    state: present
+    allow_downgrade: true
+  become: true
+  tags: [rollback]
+
+- name: Hold packages at previous version
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop:
+    - kubeadm
+    - kubelet
+    - kubectl
+  become: true
+  tags: [rollback]
+
+- name: Start kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    state: started
+    daemon_reload: true
+  become: true
+  tags: [rollback]

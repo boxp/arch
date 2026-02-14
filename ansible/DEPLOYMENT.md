@@ -132,12 +132,57 @@ sudo chown $(id -u):$(id -g) $HOME/.kube/config
 # kubeadm init出力のjoinコマンドを使用
 ```
 
+## Kubernetesアップグレード
+
+Kubernetesクラスターのバージョンアップグレードは `upgrade-k8s.yml` playbookで自動化されています。
+
+### アップグレード手順
+
+```bash
+cd ansible
+source .venv/bin/activate
+
+# 1. プリチェック（etcdスナップショット含む）
+ansible-playbook playbooks/upgrade-k8s.yml --tags pre_checks \
+  -e kubernetes_upgrade_version=1.35.1 \
+  -e kubernetes_upgrade_package=1.35.1-1.1 \
+  -e crio_upgrade_version=1.35.0
+
+# 2. フルアップグレード実行（CP1 → CP2 → CP3 の順に実行）
+ansible-playbook playbooks/upgrade-k8s.yml \
+  -e kubernetes_upgrade_version=1.35.1 \
+  -e kubernetes_upgrade_package=1.35.1-1.1 \
+  -e crio_upgrade_version=1.35.0
+```
+
+### アップグレード処理の流れ
+
+1. **Pre-checks**: etcdクラスタヘルス確認、全ノードReady確認
+2. **etcdスナップショット**: shanghai-1でスナップショット取得（ロールバック用）
+3. **最初のControl Plane (shanghai-1)**: drain → kubeadm upgrade apply → kubelet/kubectl更新 → uncordon
+4. **残りのControl Plane (shanghai-2, 3)**: drain → kubeadm upgrade node → kubelet/kubectl更新 → uncordon
+5. **Post-check**: 全ノードのヘルスチェック
+
+### ロールバック
+
+アップグレードが失敗した場合、etcdスナップショットからロールバックできます：
+
+```bash
+ansible-playbook playbooks/upgrade-k8s.yml --tags rollback \
+  -e kubernetes_previous_package=1.34.0-1.1 \
+  -e snapshot_timestamp=20260214T120000 \
+  -e etcd_initial_cluster="shanghai-1=https://192.168.10.102:2380,shanghai-2=https://192.168.10.103:2380,shanghai-3=https://192.168.10.104:2380"
+```
+
+詳細は [Kubernetes Update Automation Plan](../docs/project_docs/k8s-update-automation/plan.md) を参照してください。
+
 ## 注意事項
 
 1. **段階的デプロイ推奨**: 全ロールを一度に実行せず、段階的に適用することを推奨
 2. **バックアップ**: 重要な設定変更前は設定ファイルのバックアップを取得
 3. **ログ確認**: 各ステップ後にサービスログを確認
 4. **ネットワーク**: VIP 192.168.10.99が他のデバイスと競合しないよう確認
+5. **Kubernetesアップグレード**: アップグレード前に必ずetcdスナップショットを取得すること
 
 ## リソース
 

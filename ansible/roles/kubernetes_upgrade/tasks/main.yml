@@ -1,0 +1,55 @@
+---
+# tasks file for kubernetes_upgrade
+
+- name: Run pre-upgrade checks
+  ansible.builtin.include_tasks:
+    file: pre_checks.yml
+    apply:
+      tags: [pre_checks]
+  tags: [pre_checks, upgrade]
+
+- name: Take etcd snapshot before upgrade
+  ansible.builtin.include_tasks:
+    file: etcd_snapshot.yml
+    apply:
+      tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot, pre_checks, upgrade]
+  when: node_role == "control_plane" and is_first_control_plane
+
+- name: Upgrade first control plane
+  ansible.builtin.include_tasks:
+    file: upgrade_control_plane_first.yml
+    apply:
+      tags: [upgrade]
+  tags: [upgrade]
+  when: node_role == "control_plane" and is_first_control_plane
+
+- name: Upgrade secondary control plane
+  ansible.builtin.include_tasks:
+    file: upgrade_control_plane_secondary.yml
+    apply:
+      tags: [upgrade]
+  tags: [upgrade]
+  when: node_role == "control_plane" and not is_first_control_plane
+
+- name: Upgrade worker node
+  ansible.builtin.include_tasks:
+    file: upgrade_worker.yml
+    apply:
+      tags: [upgrade]
+  tags: [upgrade]
+  when: node_role == "worker"
+
+- name: Run post-upgrade health check
+  ansible.builtin.include_tasks:
+    file: health_check.yml
+    apply:
+      tags: [health_check]
+  tags: [health_check, upgrade]
+
+- name: Run rollback procedure
+  ansible.builtin.include_tasks:
+    file: rollback.yml
+    apply:
+      tags: [rollback]
+  tags: [never, rollback]

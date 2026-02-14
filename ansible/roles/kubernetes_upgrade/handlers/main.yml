@@ -1,0 +1,24 @@
+---
+# handlers file for kubernetes_upgrade
+
+- name: Restart crio
+  ansible.builtin.systemd:
+    name: crio
+    state: restarted
+    daemon_reload: true
+  become: true
+  when:
+    - ansible_virtualization_type != "docker"
+    - chroot_build is not defined or not chroot_build
+  listen: "restart crio"
+
+- name: Restart kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    state: restarted
+    daemon_reload: true
+  become: true
+  when:
+    - ansible_virtualization_type != "docker"
+    - chroot_build is not defined or not chroot_build
+  listen: "restart kubelet"

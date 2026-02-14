@@ -40,15 +40,18 @@ All nodes are Orange Pi Zero 3 devices running Armbian.
 ansible/
 ├── inventories/
 │   └── production/
-│       └── hosts.yml      # Inventory with node definitions
+│       └── hosts.yml          # Inventory with node definitions
 ├── playbooks/
-│   └── control-plane.yml  # Main playbook
+│   ├── control-plane.yml      # Main playbook (initial setup)
+│   └── upgrade-k8s.yml        # Kubernetes cluster upgrade playbook
 ├── roles/
-│   ├── user_management/   # User and SSH configuration
-│   └── network_configuration/  # Network settings
+│   ├── user_management/       # User and SSH configuration
+│   ├── network_configuration/ # Network settings
+│   ├── kubernetes_components/ # Kubernetes installation
+│   └── kubernetes_upgrade/    # Kubernetes upgrade automation
 ├── group_vars/
-│   └── control_plane.yml  # Group variables
-└── requirements.yml       # Ansible collections
+│   └── control_plane.yml      # Group variables
+└── requirements.yml           # Ansible collections
 ```
 
 ## Usage
@@ -70,6 +73,25 @@ ansible-playbook playbooks/control-plane.yml --tags users
 # Only configure network
 ansible-playbook playbooks/control-plane.yml --tags network
 ```
+
+### Upgrade Kubernetes cluster
+
+```bash
+ansible-playbook playbooks/upgrade-k8s.yml \
+  -e kubernetes_upgrade_version=1.35.1 \
+  -e kubernetes_upgrade_package=1.35.1-1.1 \
+  -e crio_upgrade_version=1.35.0
+```
+
+Run pre-checks only:
+
+```bash
+ansible-playbook playbooks/upgrade-k8s.yml --tags pre_checks \
+  -e kubernetes_upgrade_version=1.35.1 \
+  -e kubernetes_upgrade_package=1.35.1-1.1
+```
+
+See the [Kubernetes Update Automation Plan](../docs/project_docs/k8s-update-automation/plan.md) for details.
 
 ### Test with Molecule
 
@@ -96,6 +118,15 @@ molecule test
 - Sets up DNS servers
 - Disables WiFi and Bluetooth
 - Creates systemd service to persist wireless settings
+
+### kubernetes_upgrade
+- Automates Kubernetes cluster upgrades (kubeadm upgrade apply/node)
+- Pre-upgrade validation (etcd health, node readiness)
+- etcd snapshot for rollback safety
+- Rolling drain/uncordon of control plane nodes
+- Post-upgrade health checks (node Ready, kubelet version, etcd health)
+- Rollback support via etcd snapshot restore
+- Tag-based partial execution (`pre_checks`, `etcd_snapshot`, `upgrade`, `health_check`, `rollback`)
 
 ## Development
 
@@ -131,6 +162,13 @@ user_management_ssh_key: "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC... boxp@exampl
 ### Other Variables
 - `kubernetes_version`: Kubernetes version to install
 - `crio_version`: CRI-O version to install
+
+### Upgrade Variables (for `upgrade-k8s.yml`)
+- `kubernetes_upgrade_version`: Target Kubernetes version (e.g., `"1.35.1"`)
+- `kubernetes_upgrade_package`: Target package version (e.g., `"1.35.1-1.1"`)
+- `crio_upgrade_version`: Target CRI-O version (e.g., `"1.35.0"`)
+- `kubernetes_previous_version`: Previous version for rollback (e.g., `"1.34"`)
+- `kubernetes_previous_package`: Previous package version for rollback (e.g., `"1.34.0-1.1"`)
 
 ## Security Notes
 

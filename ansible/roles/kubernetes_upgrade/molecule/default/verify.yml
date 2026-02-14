@@ -1,0 +1,84 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Check if etcd snapshot directory exists
+      ansible.builtin.stat:
+        path: /var/lib/etcd-snapshots
+      register: etcd_snapshot_dir
+
+    - name: Assert etcd snapshot directory exists
+      ansible.builtin.assert:
+        that:
+          - etcd_snapshot_dir.stat.exists
+          - etcd_snapshot_dir.stat.isdir
+        fail_msg: "etcd snapshot directory does not exist"
+
+    - name: Check if etcd snapshot directory has correct permissions
+      ansible.builtin.assert:
+        that:
+          - etcd_snapshot_dir.stat.mode == '0700'
+        fail_msg: "etcd snapshot directory permissions are not 0700"
+
+    - name: Check if kubernetes apt source was updated
+      ansible.builtin.command: cat /etc/apt/sources.list.d/kubernetes.list
+      register: k8s_apt_source
+      changed_when: false
+
+    - name: Assert kubernetes apt source contains upgrade version
+      ansible.builtin.assert:
+        that:
+          - "'v1.35' in k8s_apt_source.stdout"
+        fail_msg: "Kubernetes apt source does not contain expected version v1.35"
+
+    - name: Verify etcdctl mock is available
+      ansible.builtin.command: which etcdctl
+      register: etcdctl_path
+      changed_when: false
+
+    - name: Assert etcdctl is available
+      ansible.builtin.assert:
+        that:
+          - etcdctl_path.rc == 0
+        fail_msg: "etcdctl is not available"
+
+    - name: Verify kubectl mock is available
+      ansible.builtin.command: which kubectl
+      register: kubectl_path
+      changed_when: false
+
+    - name: Assert kubectl is available
+      ansible.builtin.assert:
+        that:
+          - kubectl_path.rc == 0
+        fail_msg: "kubectl is not available"
+
+    - name: Verify kubeadm mock is available
+      ansible.builtin.command: which kubeadm
+      register: kubeadm_path
+      changed_when: false
+
+    - name: Assert kubeadm is available
+      ansible.builtin.assert:
+        that:
+          - kubeadm_path.rc == 0
+        fail_msg: "kubeadm is not available"
+
+    - name: Check mock etcd PKI files exist
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      register: etcd_pki_files
+      loop:
+        - /etc/kubernetes/pki/etcd/ca.crt
+        - /etc/kubernetes/pki/etcd/healthcheck-client.crt
+        - /etc/kubernetes/pki/etcd/healthcheck-client.key
+
+    - name: Assert etcd PKI files exist
+      ansible.builtin.assert:
+        that:
+          - item.stat.exists
+        fail_msg: "etcd PKI file {{ item.item }} does not exist"
+      loop: "{{ etcd_pki_files.results }}"
+      loop_control:
+        label: "{{ item.item }}"
