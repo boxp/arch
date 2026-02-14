@@ -175,7 +175,7 @@ ansible/roles/kubernetes_upgrade/
 # Target versions
 kubernetes_upgrade_version: ""       # e.g., "1.35.1"
 kubernetes_upgrade_package: ""       # e.g., "1.35.1-1.1"
-crio_upgrade_version: ""             # e.g., "1.35.0"
+crio_upgrade_version: ""             # e.g., "1.35.0" or "1.35" (both X.Y and X.Y.Z accepted)
 
 # Previous versions (for rollback reference — actual rollback uses etcd snapshot)
 kubernetes_previous_version: ""      # e.g., "1.34"
@@ -620,14 +620,16 @@ Phase 1〜2 では Control Plane のみが対象。Worker Node の play は Phas
 
 ### 3.3 CRI-O アップグレード対応
 
-CRI-Oのアップグレードは `upgrade_apt_source.yml` 内で処理する:
+CRI-Oのアップグレードは `upgrade_apt_source.yml` 内で処理する。
+
+**バージョン正規化**: CRI-O の apt リポジトリURL には `vX.Y` 形式（メジャー.マイナー）が必要。`crio_upgrade_version` は `"1.35.0"` (X.Y.Z) と `"1.35"` (X.Y) の両形式を受け付けるため、`split('.')[:2] | join('.')` で常にメジャー.マイナーを抽出する。`regex_replace('\\.[0-9]+$', '')` は `X.Y` 入力時に `X` へ化けるため使用しない。
 
 ```yaml
 - name: Update CRI-O apt repository version
   replace:
     path: /etc/apt/sources.list.d/cri-o.list
     regexp: 'cri-o/v[0-9]+\.[0-9]+/'
-    replace: "cri-o/v{{ crio_upgrade_version | regex_replace('\\.[0-9]+$', '') }}/"
+    replace: "cri-o/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/"
   become: true
   when: crio_upgrade_version is defined and crio_upgrade_version != ""
   tags: [upgrade]
