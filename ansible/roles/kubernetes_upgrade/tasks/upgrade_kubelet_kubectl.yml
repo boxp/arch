@@ -1,0 +1,44 @@
+---
+- name: Unhold kubelet
+  ansible.builtin.dpkg_selections:
+    name: kubelet
+    selection: install
+  become: true
+  tags: [upgrade]
+
+- name: Unhold kubectl
+  ansible.builtin.dpkg_selections:
+    name: kubectl
+    selection: install
+  become: true
+  tags: [upgrade]
+
+- name: Install target kubelet version
+  ansible.builtin.apt:
+    name: "kubelet={{ kubernetes_upgrade_package }}"
+    state: present
+    allow_downgrade: false
+  become: true
+  tags: [upgrade]
+
+- name: Install target kubectl version
+  ansible.builtin.apt:
+    name: "kubectl={{ kubernetes_upgrade_package }}"
+    state: present
+    allow_downgrade: false
+  become: true
+  tags: [upgrade]
+
+- name: Hold kubelet
+  ansible.builtin.dpkg_selections:
+    name: kubelet
+    selection: hold
+  become: true
+  tags: [upgrade]
+
+- name: Hold kubectl
+  ansible.builtin.dpkg_selections:
+    name: kubectl
+    selection: hold
+  become: true
+  tags: [upgrade]

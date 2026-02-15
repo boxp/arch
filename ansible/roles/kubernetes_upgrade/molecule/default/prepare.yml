@@ -1,0 +1,190 @@
+---
+- name: Prepare test environment for kubernetes_upgrade role
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Update package cache
+      ansible.builtin.package:
+        update_cache: true
+      become: true
+
+    - name: Install required packages for testing
+      ansible.builtin.package:
+        name:
+          - systemd
+          - dbus
+          - init
+          - iproute2
+          - procps
+          - curl
+          - gnupg
+          - ca-certificates
+        state: present
+      become: true
+
+    - name: Create apt keyrings directory
+      ansible.builtin.file:
+        path: /etc/apt/keyrings
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Create mock kubernetes apt keyring
+      ansible.builtin.command: >
+        gpg --batch --gen-key /dev/null
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: Create mock kubernetes apt keyring file
+      ansible.builtin.copy:
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+        content: ""
+        mode: '0644'
+      become: true
+
+    - name: Create mock kubernetes apt source list
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/kubernetes.list
+        content: "deb https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /\n"
+        mode: '0644'
+      become: true
+
+    - name: Create mock CRI-O apt source list
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/cri-o.list
+        content: "deb https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.34/deb/ /\n"
+        mode: '0644'
+      become: true
+
+    - name: Create mock CRI-O version-specific apt source list
+      ansible.builtin.copy:
+        dest: /etc/apt/sources.list.d/crio-version.list
+        content: "deb https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.34/deb/ /\n"
+        mode: '0644'
+      become: true
+
+    - name: Create mock etcd certificates directory
+      ansible.builtin.file:
+        path: /etc/kubernetes/pki/etcd
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Create mock etcd certificate files
+      ansible.builtin.copy:
+        dest: "{{ item }}"
+        content: "mock-cert"
+        mode: '0600'
+      loop:
+        - /etc/kubernetes/pki/etcd/ca.crt
+        - /etc/kubernetes/pki/etcd/healthcheck-client.crt
+        - /etc/kubernetes/pki/etcd/healthcheck-client.key
+      become: true
+
+    - name: Create mock kubeconfig file
+      ansible.builtin.copy:
+        dest: /etc/kubernetes/admin.conf
+        content: |
+          apiVersion: v1
+          kind: Config
+          clusters: []
+          contexts: []
+          users: []
+        mode: '0600'
+      become: true
+
+    - name: Create mock kubelet binary
+      ansible.builtin.copy:
+        dest: /usr/local/bin/kubelet
+        content: |
+          #!/bin/bash
+          echo "Kubernetes v1.34.0 (linux/arm64)"
+        mode: '0755'
+      become: true
+
+    - name: Create mock kubectl binary
+      ansible.builtin.copy:
+        dest: /usr/local/bin/kubectl
+        content: |
+          #!/bin/bash
+          case "$*" in
+            *"get nodes"*"--no-headers"*)
+              echo "control-plane-test   Ready   control-plane   1d   v1.34.0"
+              ;;
+            *"get node"*"Ready"*)
+              echo "True"
+              ;;
+            *"get node"*"kubeletVersion"*)
+              echo "v1.35.1"
+              ;;
+            *"get node"*"conditions"*)
+              printf "MemoryPressure=False\nDiskPressure=False\nPIDPressure=False\nReady=True\n"
+              ;;
+            *"drain"*)
+              echo "node/control-plane-test cordoned"
+              echo "node/control-plane-test drained"
+              ;;
+            *"uncordon"*)
+              echo "node/control-plane-test uncordoned"
+              ;;
+            *)
+              echo "mock kubectl: $*"
+              ;;
+          esac
+        mode: '0755'
+      become: true
+
+    - name: Create mock etcdctl binary
+      ansible.builtin.copy:
+        dest: /usr/local/bin/etcdctl
+        content: |
+          #!/bin/bash
+          case "$1" in
+            "endpoint")
+              echo "127.0.0.1:2379 is healthy"
+              ;;
+            "snapshot")
+              if [ "$2" = "save" ]; then
+                touch "$3" 2>/dev/null || true
+                echo "Snapshot saved"
+              elif [ "$2" = "status" ]; then
+                echo "+----------+----------+------------+------------+"
+                echo "|   HASH   | REVISION | TOTAL KEYS | TOTAL SIZE |"
+                echo "+----------+----------+------------+------------+"
+                echo "| abcd1234 |    12345 |       1000 |     5.0 MB |"
+                echo "+----------+----------+------------+------------+"
+              fi
+              ;;
+            *)
+              echo "mock etcdctl: $*"
+              ;;
+          esac
+        mode: '0755'
+      become: true
+
+    - name: Create mock kubeadm binary
+      ansible.builtin.copy:
+        dest: /usr/local/bin/kubeadm
+        content: |
+          #!/bin/bash
+          case "$*" in
+            *"upgrade apply"*)
+              echo "[upgrade/successful] SUCCESS! Your cluster was upgraded to \"v1.35.1\"."
+              ;;
+            *"upgrade node"*)
+              echo "[upgrade] Successfully upgraded node."
+              ;;
+            *)
+              echo "mock kubeadm: $*"
+              ;;
+          esac
+        mode: '0755'
+      become: true
+
+    - name: Ensure systemd is running
+      ansible.builtin.systemd:
+        name: systemd-logind
+        state: started
+      become: true
+      failed_when: false

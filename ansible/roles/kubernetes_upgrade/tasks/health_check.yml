@@ -1,0 +1,49 @@
+---
+- name: Wait for node to be Ready
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
+  register: node_ready
+  until: node_ready.stdout == "True"
+  retries: "{{ upgrade_health_check_retries }}"
+  delay: "{{ upgrade_health_check_delay }}"
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  changed_when: false
+  become: true
+  tags: [health_check]
+
+- name: Verify kubelet version on node
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    -o jsonpath='{.status.nodeInfo.kubeletVersion}'
+  register: node_kubelet_version
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  changed_when: false
+  failed_when: "kubernetes_upgrade_version not in node_kubelet_version.stdout"
+  become: true
+  tags: [health_check]
+
+- name: Verify node conditions (no pressure)
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
+  register: node_conditions
+  delegate_to: "{{ groups['control_plane'][0] }}"
+  changed_when: false
+  failed_when: >
+    'MemoryPressure=True' in node_conditions.stdout or
+    'DiskPressure=True' in node_conditions.stdout or
+    'PIDPressure=True' in node_conditions.stdout
+  become: true
+  tags: [health_check]
+
+- name: Verify etcd cluster health (control plane only)
+  ansible.builtin.command: >
+    etcdctl endpoint health
+    --cacert={{ etcd_cacert }}
+    --cert={{ etcd_cert }}
+    --key={{ etcd_key }}
+  changed_when: false
+  become: true
+  when: node_role == "control_plane"
+  tags: [health_check]

@@ -1,0 +1,34 @@
+---
+# Target versions
+kubernetes_upgrade_version: ""       # e.g., "1.35.1"
+kubernetes_upgrade_package: ""       # e.g., "1.35.1-1.1"
+crio_upgrade_version: ""             # e.g., "1.35.0" or "1.35" (both X.Y and X.Y.Z accepted)
+
+# Previous versions (for rollback reference — actual rollback uses etcd snapshot)
+kubernetes_previous_version: ""      # e.g., "1.34"
+kubernetes_previous_package: ""      # e.g., "1.34.0-1.1"
+crio_previous_version: ""
+
+# Upgrade behavior
+upgrade_drain_timeout: 300           # seconds
+upgrade_health_check_retries: 30
+upgrade_health_check_delay: 10       # seconds
+
+# etcd snapshot
+etcd_snapshot_dir: /var/lib/etcd-snapshots
+etcd_cacert: /etc/kubernetes/pki/etcd/ca.crt
+etcd_cert: /etc/kubernetes/pki/etcd/healthcheck-client.crt
+etcd_key: /etc/kubernetes/pki/etcd/healthcheck-client.key
+
+# etcd initial cluster (for rollback restore)
+etcd_initial_cluster: ""
+
+# Rollback snapshot timestamp (for rollback tasks)
+snapshot_timestamp: ""
+
+# kubectl configuration
+kubeconfig_path: /etc/kubernetes/admin.conf
+
+# Role detection
+node_role: "control_plane"           # "control_plane" or "worker"
+is_first_control_plane: false        # true for shanghai-1

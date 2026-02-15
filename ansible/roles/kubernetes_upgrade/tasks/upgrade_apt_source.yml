@@ -1,0 +1,44 @@
+---
+- name: Update kubernetes apt repository version
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/kubernetes.list
+    regexp: 'stable:/v[0-9]+\.[0-9]+/'
+    replace: "stable:/v{{ kubernetes_upgrade_version.split('.')[:2] | join('.') }}/"
+  become: true
+  tags: [upgrade]
+
+- name: Update CRI-O apt repository version (crio.list)
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/cri-o.list
+    regexp: 'stable:/v[0-9]+\.[0-9]+/'
+    replace: "stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/"
+  become: true
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  failed_when: false
+  tags: [upgrade]
+
+- name: Update CRI-O version-specific apt repository (crio-version.list)
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/crio-version.list
+    regexp: 'stable:/v[0-9]+\.[0-9]+/'
+    replace: "stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/"
+  become: true
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  failed_when: false
+  tags: [upgrade]
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+  become: true
+  tags: [upgrade]
+
+- name: Upgrade CRI-O
+  ansible.builtin.apt:
+    name: "cri-o={{ crio_upgrade_version }}*"
+    state: present
+    update_cache: false
+  become: true
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  notify: Restart crio
+  tags: [upgrade]

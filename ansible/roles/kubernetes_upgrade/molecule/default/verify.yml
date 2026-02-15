@@ -1,0 +1,129 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: true
+  tasks:
+    # Verify apt source template was correctly generated
+    - name: Check kubernetes apt source file exists
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/kubernetes.list
+      register: k8s_apt_source
+
+    - name: Assert kubernetes apt source exists
+      ansible.builtin.assert:
+        that:
+          - k8s_apt_source.stat.exists
+        fail_msg: "Kubernetes apt source file does not exist"
+
+    - name: Read kubernetes apt source content
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/kubernetes.list
+      register: k8s_apt_content
+
+    - name: Assert kubernetes apt source contains correct version
+      ansible.builtin.assert:
+        that:
+          - "'v1.35' in (k8s_apt_content.content | b64decode)"
+        fail_msg: "Kubernetes apt source does not contain the correct version (v1.35)"
+
+    # Verify CRI-O apt source was updated
+    - name: Check CRI-O apt source file exists
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/cri-o.list
+      register: crio_apt_source
+
+    - name: Assert CRI-O apt source exists
+      ansible.builtin.assert:
+        that:
+          - crio_apt_source.stat.exists
+        fail_msg: "CRI-O apt source file does not exist"
+
+    - name: Read CRI-O apt source content
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/cri-o.list
+      register: crio_apt_content
+
+    - name: Assert CRI-O apt source contains correct version
+      ansible.builtin.assert:
+        that:
+          - "'v1.35' in (crio_apt_content.content | b64decode)"
+        fail_msg: "CRI-O apt source does not contain the correct version (v1.35)"
+
+    # Verify CRI-O version-specific apt source was updated
+    - name: Check CRI-O version-specific apt source file exists
+      ansible.builtin.stat:
+        path: /etc/apt/sources.list.d/crio-version.list
+      register: crio_version_apt_source
+
+    - name: Assert CRI-O version-specific apt source exists
+      ansible.builtin.assert:
+        that:
+          - crio_version_apt_source.stat.exists
+        fail_msg: "CRI-O version-specific apt source file does not exist"
+
+    - name: Read CRI-O version-specific apt source content
+      ansible.builtin.slurp:
+        src: /etc/apt/sources.list.d/crio-version.list
+      register: crio_version_apt_content
+
+    - name: Assert CRI-O version-specific apt source contains correct version
+      ansible.builtin.assert:
+        that:
+          - "'v1.35' in (crio_version_apt_content.content | b64decode)"
+        fail_msg: "CRI-O version-specific apt source does not contain the correct version (v1.35)"
+
+    # Verify etcd snapshot directory was created
+    - name: Check etcd snapshot directory exists
+      ansible.builtin.stat:
+        path: /var/lib/etcd-snapshots
+      register: etcd_snap_dir
+
+    - name: Assert etcd snapshot directory exists
+      ansible.builtin.assert:
+        that:
+          - etcd_snap_dir.stat.exists
+          - etcd_snap_dir.stat.isdir
+        fail_msg: "etcd snapshot directory does not exist"
+
+    # Verify etcd snapshot directory has correct permissions
+    - name: Assert etcd snapshot directory has correct permissions
+      ansible.builtin.assert:
+        that:
+          - etcd_snap_dir.stat.mode == '0700'
+        fail_msg: "etcd snapshot directory does not have correct permissions (expected 0700)"
+
+    # Verify etcd certificate paths exist (mock)
+    - name: Check etcd CA certificate exists
+      ansible.builtin.stat:
+        path: /etc/kubernetes/pki/etcd/ca.crt
+      register: etcd_ca
+
+    - name: Assert etcd certificates exist
+      ansible.builtin.assert:
+        that:
+          - etcd_ca.stat.exists
+        fail_msg: "etcd CA certificate does not exist"
+
+    # Verify mock binaries are functional
+    - name: Verify kubelet mock returns version
+      ansible.builtin.command: kubelet --version
+      register: kubelet_ver
+      changed_when: false
+
+    - name: Assert kubelet version output is valid
+      ansible.builtin.assert:
+        that:
+          - "'Kubernetes' in kubelet_ver.stdout"
+        fail_msg: "kubelet mock did not return expected version output"
+
+    - name: Verify kubectl get nodes mock works
+      ansible.builtin.command: kubectl get nodes --no-headers
+      register: kubectl_nodes
+      changed_when: false
+
+    - name: Assert kubectl get nodes returns Ready status
+      ansible.builtin.assert:
+        that:
+          - "'Ready' in kubectl_nodes.stdout"
+          - "'NotReady' not in kubectl_nodes.stdout"
+        fail_msg: "kubectl get nodes mock did not return expected output"

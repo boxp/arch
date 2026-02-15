@@ -1,0 +1,30 @@
+---
+- name: Create etcd snapshot directory
+  ansible.builtin.file:
+    path: "{{ etcd_snapshot_dir }}"
+    state: directory
+    mode: '0700'
+  become: true
+  tags: [etcd_snapshot, pre_checks]
+
+- name: Take etcd snapshot before upgrade
+  ansible.builtin.command: >
+    etcdctl snapshot save
+    {{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_date_time.iso8601_basic_short }}.db
+    --cacert={{ etcd_cacert }}
+    --cert={{ etcd_cert }}
+    --key={{ etcd_key }}
+  become: true
+  register: etcd_snapshot_result
+  failed_when: etcd_snapshot_result.rc != 0
+  changed_when: etcd_snapshot_result.rc == 0
+  tags: [etcd_snapshot, pre_checks]
+
+- name: Verify etcd snapshot integrity
+  ansible.builtin.command: >
+    etcdctl snapshot status
+    {{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_date_time.iso8601_basic_short }}.db
+    --write-out=table
+  become: true
+  changed_when: false
+  tags: [etcd_snapshot, pre_checks]

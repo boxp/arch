@@ -1,0 +1,69 @@
+---
+# Rollback tasks — etcd snapshot restore based cluster recovery
+# WARNING: This procedure requires manual intervention. Automatic execution
+# is planned for Phase 3 and beyond.
+
+- name: Stop kubelet on all control plane nodes
+  ansible.builtin.systemd:
+    name: kubelet
+    state: stopped
+  become: true
+  tags: [rollback]
+
+- name: Restore etcd from snapshot (first control plane only)
+  ansible.builtin.command: >
+    etcdctl snapshot restore
+    {{ etcd_snapshot_dir }}/pre-upgrade-{{ snapshot_timestamp }}.db
+    --data-dir=/var/lib/etcd-restore
+    --name={{ inventory_hostname }}
+    --initial-cluster={{ etcd_initial_cluster }}
+    --initial-advertise-peer-urls=https://{{ node_ip | default(ansible_host) }}:2380
+  become: true
+  when: is_first_control_plane
+  changed_when: true
+  tags: [rollback]
+
+- name: Replace etcd data directory
+  ansible.builtin.shell: |
+    mv /var/lib/etcd /var/lib/etcd-backup-{{ ansible_date_time.iso8601_basic_short }}
+    mv /var/lib/etcd-restore /var/lib/etcd
+  args:
+    executable: /bin/bash
+  become: true
+  when: is_first_control_plane
+  changed_when: true
+  tags: [rollback]
+
+- name: Downgrade kubeadm to previous version
+  ansible.builtin.apt:
+    name: "kubeadm={{ kubernetes_previous_package }}"
+    state: present
+    allow_downgrade: true
+  become: true
+  tags: [rollback]
+
+- name: Downgrade kubelet and kubectl
+  ansible.builtin.apt:
+    name:
+      - "kubelet={{ kubernetes_previous_package }}"
+      - "kubectl={{ kubernetes_previous_package }}"
+    state: present
+    allow_downgrade: true
+  become: true
+  tags: [rollback]
+
+- name: Hold packages at previous version
+  ansible.builtin.dpkg_selections:
+    name: "{{ item }}"
+    selection: hold
+  loop: [kubeadm, kubelet, kubectl]
+  become: true
+  tags: [rollback]
+
+- name: Start kubelet
+  ansible.builtin.systemd:
+    name: kubelet
+    state: started
+    daemon_reload: true
+  become: true
+  tags: [rollback]
