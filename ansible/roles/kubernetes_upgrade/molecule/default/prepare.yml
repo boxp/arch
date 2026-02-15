@@ -29,35 +29,33 @@
         mode: '0755'
       become: true
 
-    - name: Create mock kubernetes apt keyring
-      ansible.builtin.command: >
-        gpg --batch --gen-key /dev/null
-      become: true
-      changed_when: false
-      failed_when: false
-
-    - name: Create mock kubernetes apt keyring file
-      ansible.builtin.copy:
-        dest: /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-        content: ""
-        mode: '0644'
+    - name: Import Kubernetes apt GPG key for pre-upgrade version
+      ansible.builtin.apt_key:
+        url: "https://pkgs.k8s.io/core:/stable:/v1.34/deb/Release.key"
+        state: present
       become: true
 
-    - name: Create mock kubernetes apt source list
+    - name: Import CRI-O apt GPG key for pre-upgrade version
+      ansible.builtin.apt_key:
+        url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.34/deb/Release.key"
+        state: present
+      become: true
+
+    - name: Create kubernetes apt source list
       ansible.builtin.copy:
         dest: /etc/apt/sources.list.d/kubernetes.list
         content: "deb https://pkgs.k8s.io/core:/stable:/v1.34/deb/ /\n"
         mode: '0644'
       become: true
 
-    - name: Create mock CRI-O apt source list
+    - name: Create CRI-O apt source list
       ansible.builtin.copy:
         dest: /etc/apt/sources.list.d/crio.list
         content: "deb https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.34/deb/ /\n"
         mode: '0644'
       become: true
 
-    - name: Create mock CRI-O version-specific apt source list
+    - name: Create CRI-O version-specific apt source list
       ansible.builtin.copy:
         dest: /etc/apt/sources.list.d/crio-version.list
         content: "deb https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.34/deb/ /\n"
