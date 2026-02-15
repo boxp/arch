@@ -2,7 +2,8 @@ FROM docker:29-cli@sha256:1d6d751f1d68d1a5142c23c730ef5ecc976a8e050fa08c3cdb09f7
 
 FROM golang:1.26@sha256:c83e68f3ebb6943a2904fa66348867d108119890a2c6a2e6f07b38d0eb6c25c5 AS go-tools
 RUN go install github.com/x-motemen/ghq@v1.8.1 && \
-    go install github.com/d-kuro/gwq/cmd/gwq@v0.0.13
+    go install github.com/d-kuro/gwq/cmd/gwq@v0.0.13 && \
+    go install github.com/grafana/mcp-grafana/cmd/mcp-grafana@v0.10.0
 
 FROM debian:bookworm-slim@sha256:98f4b71de414932439ac6ac690d7060df1f27161073c5036a7553723881bffbe AS babashka-download
 ARG BABASHKA_VERSION=1.12.214
@@ -38,6 +39,9 @@ COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 # Copy ghq and gwq from go-tools
 COPY --from=go-tools /go/bin/ghq /usr/local/bin/ghq
 COPY --from=go-tools /go/bin/gwq /usr/local/bin/gwq
+
+# Copy mcp-grafana from go-tools (Grafana MCP Server for metrics context)
+COPY --from=go-tools /go/bin/mcp-grafana /usr/local/bin/mcp-grafana
 
 # Copy Babashka from babashka-download
 COPY --from=babashka-download /bb /usr/local/bin/bb

@@ -39,7 +39,14 @@
       "Bash(bb *)",
       "Bash(man *)",
       "Bash(apt-get *)",
-      "Bash(apt *)"
+      "Bash(apt *)",
+      "mcp__grafana__*"
     ]
+  },
+  "mcpServers": {
+    "grafana": {
+      "command": "mcp-grafana",
+      "args": ["--transport", "stdio", "--disable-write"]
+    }
   }
 }
