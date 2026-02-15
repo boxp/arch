@@ -3,7 +3,10 @@
 ## Overview
 
 OpenClaw環境内でBabashka (bb) を実行可能にするための計画書。
-変更対象は `boxp/arch` (Dockerfile / Ansibleロール) と `boxp/lolice` (Kubernetesマニフェスト) の2リポジトリ。
+変更対象は `boxp/arch` (Dockerfile) と `boxp/lolice` (Kubernetesマニフェスト) の2リポジトリ。
+
+> **Note**: 当初Ansibleロール（物理ノード向け）も計画していたが、オーナーレビューにより
+> 「openclawコンテナ内だけでいい。node側へのインストールは不要」との判断でAnsibleロールは削除済み。
 
 ## 1. Babashka について
 
@@ -16,56 +19,10 @@ Babashka はClojure互換のスクリプティングツール。GraalVM Native I
 
 ## 2. 変更計画
 
-### 2.1. `boxp/arch` - Ansibleロール (物理ノード向け)
+### ~~2.1. `boxp/arch` - Ansibleロール (物理ノード向け)~~ [削除済み]
 
-**目的**: Orange Pi Zero 3 (ARM64) クラスターノードにBabashkaをインストールするAnsibleロールを作成。
-
-**ロール名**: `babashka`
-
-**ディレクトリ構造**:
-```
-ansible/roles/babashka/
-├── meta/main.yml           # Galaxy metadata
-├── defaults/main.yml       # デフォルト変数 (バージョン等)
-├── tasks/main.yml          # インストールタスク
-├── molecule/
-│   └── default/
-│       ├── molecule.yml    # Moleculeテスト設定
-│       ├── converge.yml    # テスト実行プレイブック
-│       ├── prepare.yml     # テスト準備
-│       └── verify.yml      # 検証タスク
-└── README.md               # ドキュメント
-```
-
-**インストール手順** (tasks/main.yml):
-1. 必要パッケージ(curl)の確認・インストール
-2. Babashkaバイナリのダウンロード (GitHub Releases)
-3. SHA256チェックサムの検証
-4. 解凍して `/usr/local/bin/bb` に配置
-5. 実行権限の設定
-6. バージョン確認
-
-**デフォルト変数** (defaults/main.yml):
-- `babashka_version`: "1.12.214" (最新安定版、2025-12-22リリース)
-- `babashka_install_dir`: "/usr/local/bin"
-- `babashka_arch_map`: `ansible_architecture` factに基づくアーキテクチャマッピング (`x86_64` → `amd64`, `aarch64` → `aarch64`)
-- `babashka_checksum`: SHA256チェックサム値 (アーキテクチャ別)
-  - amd64: `2926098700f6e230b21007871b47844280d29e641959b693535a5d74e4dab4a3`
-  - aarch64: `b6bc6d28a41cb303b429cdbd565311a046719c842dcb25e8ad1ed2929f9145fe`
-
-**プレイブックへの組み込み**:
-`ansible/playbooks/control-plane.yml` の `roles:` セクションに babashka ロールを追加:
-```yaml
-roles:
-  - role: user_management
-    ...
-  - role: network_configuration
-    ...
-  - role: kubernetes_components
-    ...
-  - role: babashka
-    tags: [babashka, tools]
-```
+> オーナーレビューにより不要と判断。Babashkaはopenclawコンテナ内でのみ使用するため、
+> 物理ノードへのインストール用Ansibleロールは削除。
 
 ### 2.2. `boxp/arch` - Dockerfile修正 (OpenClawコンテナイメージ)
 
@@ -116,19 +73,9 @@ Babashkaは `boxp/arch` のDockerfileでイメージに組み込まれ、`/usr/l
 
 ## 3. テスト計画
 
-### 3.1. Ansibleロール テスト (Molecule)
+### ~~3.1. Ansibleロール テスト (Molecule)~~ [削除済み]
 
-- **ローカルテスト** (x86_64): `cd ansible/roles/babashka && molecule test`
-- **ARM64テスト**: `MOLECULE_DOCKER_PLATFORM=linux/arm64 molecule test`
-- **正常系検証項目**:
-  - `bb` バイナリが `/usr/local/bin/bb` に存在する
-  - 実行権限が設定されている
-  - `bb --version` が正常に実行できる
-  - SHA256チェックサムが検証されている
-  - 既にインストール済みの場合はスキップされる (冪等性)
-- **異常系検証項目**:
-  - チェックサム不一致時にタスクが確実に失敗する
-  - 未対応アーキテクチャ指定時に明示的エラーで停止する
+> Ansibleロールが削除されたため、Moleculeテストも不要。
 
 ### 3.2. Dockerイメージ テスト
 
@@ -150,7 +97,6 @@ Babashkaは `boxp/arch` のDockerfileでイメージに組み込まれ、`/usr/l
 
 ### 3.4. CI自動ゲート条件
 
-- Molecule テスト: PR マージの必須条件
 - Docker ビルド成功: イメージプッシュの必須条件
 - チェックサム検証失敗時: ビルド即時停止（fail-closed）
 
@@ -158,7 +104,7 @@ Babashkaは `boxp/arch` のDockerfileでイメージに組み込まれ、`/usr/l
 
 ### 4.1. バイナリの信頼性と供給チェーンリスク
 - Babashkaは公式GitHubリリースからダウンロード
-- **SHA256チェックサム検証を初期実装に含める** (DockerfileおよびAnsibleロールの両方)
+- **SHA256チェックサム検証を初期実装に含める** (Dockerfile)
 - **チェックサム値の管理方針**:
   - チェックサム値はGitHub Releases公式ページの `.sha256` ファイルから取得
   - 取得したチェックサム値はコードレビュー済みのPRでバージョン管理される
@@ -191,9 +137,9 @@ Babashkaは `boxp/arch` のDockerfileでイメージに組み込まれ、`/usr/l
 2. イメージを再ビルド・プッシュ
 3. `lolice` リポジトリで `deployment-openclaw.yaml` のイメージタグを新タグに更新するPRを作成・マージ
 
-### 5.3. Ansibleロールのロールバック
-1. ロールの適用をスキップするか、PRをリバート
-2. 手動でノードから `/usr/local/bin/bb` を削除: `ansible control_plane -m file -a "path=/usr/local/bin/bb state=absent"`
+### ~~5.3. Ansibleロールのロールバック~~ [削除済み]
+
+> Ansibleロールは不要と判断され削除済み。
 
 ### 5.4. ロールバック判定基準
 - OpenClaw Podが起動失敗（CrashLoopBackOff）する場合
@@ -206,19 +152,16 @@ Babashkaは `boxp/arch` のDockerfileでイメージに組み込まれ、`/usr/l
 
 ## 6. 実装順序
 
-1. `boxp/arch`: Babashka Ansibleロールの作成 + control-plane.ymlへの組み込み
-2. `boxp/arch`: Dockerfileの修正 (SHA256検証付き)
-3. `boxp/arch`: PR作成
-4. `boxp/lolice`: 計画書ドキュメントの配置 + PR作成
-5. （別途）`boxp/arch` のイメージビルド完了後、`boxp/lolice` でイメージタグ更新PRを作成
+1. `boxp/arch`: Dockerfileの修正 (SHA256検証付き)
+2. `boxp/arch`: PR作成
+3. `boxp/lolice`: 計画書ドキュメントの配置 + PR作成
+4. （別途）`boxp/arch` のイメージビルド完了後、`boxp/lolice` でイメージタグ更新PRを作成
 
 ## 7. 影響範囲
 
 | コンポーネント | 影響 | リスク |
 |---|---|---|
 | OpenClawコンテナイメージ | バイナリ追加 (~30MB) | 低 - イメージサイズ増加のみ |
-| Orange Pi Zero 3 ノード | Ansibleロール追加 | 低 - 新規バイナリの配置のみ |
-| control-plane.yml | babashkaロール追加 | 低 - 既存ロールに影響なし |
 | NetworkPolicy | 変更なし | なし |
 | PVC | 変更なし | なし |
 | 既存ツール | 影響なし | なし |
