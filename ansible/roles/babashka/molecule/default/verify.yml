@@ -42,9 +42,14 @@
     - name: Run role again for idempotency check
       ansible.builtin.include_role:
         name: "arch.babashka"
-      register: idempotency_run
 
-    - name: Verify idempotency (no downloads on second run)
+    - name: Check babashka_needs_install flag after second run
+      ansible.builtin.assert:
+        that:
+          - not (babashka_needs_install | bool)
+        fail_msg: "Idempotency failed: babashka_needs_install is still true on second run"
+
+    - name: Verify version unchanged after idempotent run
       ansible.builtin.command:
         cmd: /usr/local/bin/bb --version
       register: bb_version_after
