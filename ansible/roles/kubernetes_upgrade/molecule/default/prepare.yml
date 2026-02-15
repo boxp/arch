@@ -52,7 +52,7 @@
 
     - name: Create mock CRI-O apt source list
       ansible.builtin.copy:
-        dest: /etc/apt/sources.list.d/cri-o.list
+        dest: /etc/apt/sources.list.d/crio.list
         content: "deb https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.34/deb/ /\n"
         mode: '0644'
       become: true

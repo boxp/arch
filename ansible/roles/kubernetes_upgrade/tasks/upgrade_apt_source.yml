@@ -9,7 +9,7 @@
 
 - name: Update CRI-O apt repository version (crio.list)
   ansible.builtin.replace:
-    path: /etc/apt/sources.list.d/cri-o.list
+    path: /etc/apt/sources.list.d/crio.list
     regexp: 'stable:/v[0-9]+\.[0-9]+/'
     replace: "stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/"
   become: true

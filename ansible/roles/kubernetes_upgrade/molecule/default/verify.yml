@@ -29,7 +29,7 @@
     # Verify CRI-O apt source was updated
     - name: Check CRI-O apt source file exists
       ansible.builtin.stat:
-        path: /etc/apt/sources.list.d/cri-o.list
+        path: /etc/apt/sources.list.d/crio.list
       register: crio_apt_source
 
     - name: Assert CRI-O apt source exists
@@ -40,7 +40,7 @@
 
     - name: Read CRI-O apt source content
       ansible.builtin.slurp:
-        src: /etc/apt/sources.list.d/cri-o.list
+        src: /etc/apt/sources.list.d/crio.list
       register: crio_apt_content
 
     - name: Assert CRI-O apt source contains correct version
