@@ -118,3 +118,14 @@ resource "aws_ssm_parameter" "xai_api_key" {
     ignore_changes = [value]
   }
 }
+
+# Grafana API Key をSSMパラメータに保存 (メトリクス読み取り用)
+resource "aws_ssm_parameter" "grafana_api_key" {
+  name        = "/lolice/openclaw/GRAFANA_API_KEY"
+  description = "Grafana API Key for OpenClaw metrics context"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
