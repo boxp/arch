@@ -1,0 +1,8 @@
+---
+- name: Prepare environment for Babashka installation
+  hosts: all
+  become: true
+  tasks:
+    - name: Update package cache
+      ansible.builtin.apt:
+        update_cache: true

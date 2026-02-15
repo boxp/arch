@@ -1,0 +1,63 @@
+---
+# tasks file for babashka
+
+- name: Resolve Babashka architecture name
+  ansible.builtin.set_fact:
+    babashka_arch: "{{ babashka_arch_map[ansible_architecture] | default('') }}"
+
+- name: Fail if architecture is not supported
+  ansible.builtin.fail:
+    msg: >-
+      Unsupported architecture: {{ ansible_architecture }}.
+      Supported architectures: {{ babashka_arch_map.keys() | list | join(', ') }}
+  when: babashka_arch == ""
+
+- name: Check if Babashka is already installed with correct version
+  ansible.builtin.command:
+    cmd: "{{ babashka_install_dir }}/bb --version"
+  register: bb_version_check
+  changed_when: false
+  failed_when: false
+
+- name: Set Babashka download variables
+  ansible.builtin.set_fact:
+    babashka_tarball: "babashka-{{ babashka_version }}-linux-{{ babashka_arch }}-static.tar.gz"
+    babashka_checksum: "{{ babashka_checksums[babashka_arch] }}"
+  when: >-
+    bb_version_check.rc != 0 or
+    ('babashka v' + babashka_version) not in (bb_version_check.stdout | default(''))
+
+- name: Download Babashka binary
+  ansible.builtin.get_url:
+    url: "https://github.com/babashka/babashka/releases/download/v{{ babashka_version }}/{{ babashka_tarball }}"
+    dest: "/tmp/{{ babashka_tarball }}"
+    checksum: "sha256:{{ babashka_checksum }}"
+    mode: "0644"
+  become: true
+  when: babashka_tarball is defined
+
+- name: Extract Babashka binary
+  ansible.builtin.unarchive:
+    src: "/tmp/{{ babashka_tarball }}"
+    dest: "{{ babashka_install_dir }}"
+    remote_src: true
+    mode: "0755"
+  become: true
+  when: babashka_tarball is defined
+
+- name: Remove downloaded tarball
+  ansible.builtin.file:
+    path: "/tmp/{{ babashka_tarball }}"
+    state: absent
+  become: true
+  when: babashka_tarball is defined
+
+- name: Verify Babashka installation
+  ansible.builtin.command:
+    cmd: "{{ babashka_install_dir }}/bb --version"
+  register: bb_verify
+  changed_when: false
+
+- name: Display Babashka version
+  ansible.builtin.debug:
+    msg: "Babashka installed: {{ bb_verify.stdout }}"

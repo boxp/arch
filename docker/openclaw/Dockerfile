@@ -4,6 +4,17 @@ FROM golang:1.26@sha256:c83e68f3ebb6943a2904fa66348867d108119890a2c6a2e6f07b38d0
 RUN go install github.com/x-motemen/ghq@v1.8.1 && \
     go install github.com/d-kuro/gwq/cmd/gwq@v0.0.13
 
+FROM debian:bookworm-slim@sha256:98f4b71de414932439ac6ac690d7060df1f27161073c5036a7553723881bffbe AS babashka-download
+ARG BABASHKA_VERSION=1.12.214
+ARG BABASHKA_SHA256=2926098700f6e230b21007871b47844280d29e641959b693535a5d74e4dab4a3
+SHELL ["/bin/bash", "-euo", "pipefail", "-c"]
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+    curl -fSL -o babashka.tar.gz \
+      "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" && \
+    echo "${BABASHKA_SHA256}  babashka.tar.gz" | sha256sum -c - && \
+    tar xzf babashka.tar.gz && \
+    chmod +x bb
+
 FROM ghcr.io/openclaw/openclaw:2026.2.9@sha256:7503c7dc56800b61f1223d3c4032ada61a100538a41425210b4043b71f871488
 
 USER root
@@ -27,6 +38,9 @@ COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 # Copy ghq and gwq from go-tools
 COPY --from=go-tools /go/bin/ghq /usr/local/bin/ghq
 COPY --from=go-tools /go/bin/gwq /usr/local/bin/gwq
+
+# Copy Babashka from babashka-download
+COPY --from=babashka-download /bb /usr/local/bin/bb
 
 # Install Codex CLI globally
 RUN npm install -g @openai/codex
