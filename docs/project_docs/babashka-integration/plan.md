@@ -100,22 +100,19 @@ COPY --from=babashka-download /bb /usr/local/bin/bb
 - OpenClawコンテナは `linux/amd64` で動作 (`nodeSelector: kubernetes.io/arch: amd64`)
 - 静的バイナリのため追加の依存関係不要
 
-### 2.3. `boxp/lolice` - Kubernetesマニフェスト修正
+### 2.3. `boxp/lolice` - Kubernetesマニフェスト確認
 
-**目的**: OpenClawコンテナからBabashkaが利用可能であることを保証。
+**結論**: lolice側のK8sマニフェスト変更は不要。
 
-**変更内容**:
-Babashkaは `boxp/arch` のDockerfileでイメージに組み込むため、環境変数 `PATH` にBabashkaのパスが含まれていることを確認する。
+Babashkaは `boxp/arch` のDockerfileでイメージに組み込まれ、`/usr/local/bin/bb` にインストールされる。
+現在のPATH設定 (deployment-openclaw.yaml:148) に `/usr/local/bin` が含まれているため、追加の環境変数変更は不要。
 
-**現在のPATH設定** (deployment-openclaw.yaml:148):
 ```yaml
 - name: PATH
   value: "/shared-bin:/shared-npm/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 ```
 
-Babashkaは `/usr/local/bin/bb` にインストールされるため、既存のPATHで問題なし。
-
-**イメージタグの更新**: OpenClawにはArgoCD Image Updater が設定されていないため、`deployment-openclaw.yaml` のイメージタグは手動で更新する必要がある。新しいイメージがビルドされた後、`lolice` リポジトリで全コンテナ（init-config, init-dotfiles, openclaw, config-manager）のイメージタグを新タグに更新するPRを作成する。
+**注意**: `boxp/arch` 側でDockerイメージがビルド・プッシュされた後、`deployment-openclaw.yaml` のイメージタグ更新は別途のPRで対応する（本計画の範囲外）。
 
 ## 3. テスト計画
 
@@ -212,8 +209,8 @@ Babashkaは `/usr/local/bin/bb` にインストールされるため、既存の
 1. `boxp/arch`: Babashka Ansibleロールの作成 + control-plane.ymlへの組み込み
 2. `boxp/arch`: Dockerfileの修正 (SHA256検証付き)
 3. `boxp/arch`: PR作成
-4. `boxp/lolice`: ドキュメントプランの追加 + イメージタグ更新（ビルド完了後）
-5. `boxp/lolice`: PR作成
+4. `boxp/lolice`: 計画書ドキュメントの配置 + PR作成
+5. （別途）`boxp/arch` のイメージビルド完了後、`boxp/lolice` でイメージタグ更新PRを作成
 
 ## 7. 影響範囲
 
