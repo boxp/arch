@@ -20,6 +20,14 @@ FROM ghcr.io/openclaw/openclaw:2026.2.9@sha256:7503c7dc56800b61f1223d3c4032ada61
 
 USER root
 
+# Temporary patch: fix OpenAI Codex call_id 64-char limit (openclaw/openclaw#10640)
+# Remove this block once the upstream fix is released.
+COPY patches/openclaw-codex-call-id-fix.patch /tmp/openclaw-codex-call-id-fix.patch
+RUN cd /app && patch -p1 < /tmp/openclaw-codex-call-id-fix.patch && \
+    rm /tmp/openclaw-codex-call-id-fix.patch && \
+    pnpm exec tsdown && \
+    chown -R node:node /app/dist
+
 # Install gh CLI
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl gpg && \

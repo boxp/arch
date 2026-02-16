@@ -1,0 +1,133 @@
+--- a/src/agents/pi-embedded-helpers/images.ts
++++ b/src/agents/pi-embedded-helpers/images.ts
+@@ -51,10 +51,9 @@
+   const allowNonImageSanitization = sanitizeMode === "full";
+   // We sanitize historical session messages because Anthropic can reject a request
+   // if the transcript contains oversized base64 images (see MAX_IMAGE_DIMENSION_PX).
+-  const sanitizedIds =
+-    allowNonImageSanitization && options?.sanitizeToolCallIds
+-      ? sanitizeToolCallIdsForCloudCodeAssist(messages, options.toolCallIdMode)
+-      : messages;
++  const sanitizedIds = options?.sanitizeToolCallIds
++    ? sanitizeToolCallIdsForCloudCodeAssist(messages, options.toolCallIdMode)
++    : messages;
+   const out: AgentMessage[] = [];
+   for (const msg of sanitizedIds) {
+     if (!msg || typeof msg !== "object") {
+--- a/src/agents/tool-call-id.ts
++++ b/src/agents/tool-call-id.ts
+@@ -1,9 +1,10 @@
+ import type { AgentMessage } from "@mariozechner/pi-agent-core";
+ import { createHash } from "node:crypto";
+
+-export type ToolCallIdMode = "strict" | "strict9";
++export type ToolCallIdMode = "strict" | "strict9" | "openai";
+
+ const STRICT9_LEN = 9;
++const OPENAI_MAX_LEN = 64;
+
+ /**
+  * Sanitize a tool call ID to be compatible with various providers.
+@@ -33,6 +34,27 @@
+     return shortHash("sanitized", STRICT9_LEN);
+   }
+
++  if (mode === "openai") {
++    // OpenAI Responses API allows [a-zA-Z0-9_-] with max 64 chars per part.
++    // Preserve "|" separator for call_id|item_id format used by OpenAI Responses.
++    if (id.includes("|")) {
++      const parts = id.split("|");
++      const sanitized = parts
++        .map((part) => {
++          const clean = part.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+$/, "");
++          return clean.length > OPENAI_MAX_LEN ? clean.slice(0, OPENAI_MAX_LEN).replace(/_+$/, "") : clean;
++        })
++        .filter((part) => part.length > 0);
++      return sanitized.length > 0 ? sanitized.join("|") : "call_sanitized";
++    }
++    const clean = id.replace(/[^a-zA-Z0-9_-]/g, "_").replace(/_+$/, "");
++    if (clean.length <= OPENAI_MAX_LEN) {
++      return clean || "call_sanitized";
++    }
++    const truncated = clean.slice(0, OPENAI_MAX_LEN).replace(/_+$/, "");
++    return truncated || "call_sanitized";
++  }
++
+   // Some providers require strictly alphanumeric tool call IDs.
+   const alphanumericOnly = id.replace(/[^a-zA-Z0-9]/g, "");
+   return alphanumericOnly.length > 0 ? alphanumericOnly : "sanitizedtoolid";
+@@ -43,6 +65,11 @@
+   if (mode === "strict9") {
+     return /^[a-zA-Z0-9]{9}$/.test(id);
+   }
++  if (mode === "openai") {
++    // OpenAI allows [a-zA-Z0-9_-], max 64 chars per part, "|" as separator
++    const parts = id.split("|");
++    return parts.every((part) => /^[a-zA-Z0-9_-]+$/.test(part) && part.length <= OPENAI_MAX_LEN);
++  }
+   // Strictly alphanumeric for providers with tighter tool ID constraints
+   return /^[a-zA-Z0-9]+$/.test(id);
+ }
+@@ -73,6 +100,32 @@
+     return shortHash(`${params.id}:${Date.now()}`, STRICT9_LEN);
+   }
+
++  if (params.mode === "openai") {
++    const base = sanitizeToolCallId(params.id, params.mode);
++    if (!params.used.has(base)) {
++      return base;
++    }
++
++    const hash = shortHash(params.id);
++    const maxBaseLen = OPENAI_MAX_LEN - 1 - hash.length; // 1 for "_"
++    const clippedBase = base.slice(0, maxBaseLen);
++    const candidate = `${clippedBase}_${hash}`;
++    if (!params.used.has(candidate)) {
++      return candidate;
++    }
++
++    for (let i = 2; i < 1000; i += 1) {
++      const suffix = `_${i}`;
++      const next = `${candidate.slice(0, OPENAI_MAX_LEN - suffix.length)}${suffix}`;
++      if (!params.used.has(next)) {
++        return next;
++      }
++    }
++
++    const ts = `_${Date.now()}`;
++    return `${candidate.slice(0, OPENAI_MAX_LEN - ts.length)}${ts}`;
++  }
++
+   const MAX_LEN = 40;
+
+   const base = sanitizeToolCallId(params.id, params.mode).slice(0, MAX_LEN);
+--- a/src/agents/transcript-policy.ts
++++ b/src/agents/transcript-policy.ts
+@@ -93,12 +93,14 @@
+
+   const needsNonImageSanitize = isGoogle || isAnthropic || isMistral || isOpenRouterGemini;
+
+-  const sanitizeToolCallIds = isGoogle || isMistral;
++  const sanitizeToolCallIds = isGoogle || isMistral || isOpenAi;
+   const toolCallIdMode: ToolCallIdMode | undefined = isMistral
+     ? "strict9"
+-    : sanitizeToolCallIds
+-      ? "strict"
+-      : undefined;
++    : isOpenAi
++      ? "openai"
++      : sanitizeToolCallIds
++        ? "strict"
++        : undefined;
+   const repairToolUseResultPairing = isGoogle || isAnthropic;
+   const sanitizeThoughtSignatures = isOpenRouterGemini
+     ? { allowBase64Only: true, includeCamelCase: true }
+@@ -107,7 +109,7 @@
+
+   return {
+     sanitizeMode: isOpenAi ? "images-only" : needsNonImageSanitize ? "full" : "images-only",
+-    sanitizeToolCallIds: !isOpenAi && sanitizeToolCallIds,
++    sanitizeToolCallIds,
+     toolCallIdMode,
+     repairToolUseResultPairing: !isOpenAi && repairToolUseResultPairing,
+     preserveSignatures: isAntigravityClaudeModel,
