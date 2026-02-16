@@ -23,10 +23,12 @@ kubernetes_enable_modules: true
 # Repository configuration
 kubernetes_apt_key_url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key"
 kubernetes_apt_repository: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/"
-crio_apt_key_url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_version }}/deb/Release.key"
-crio_apt_repository: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_version }}/deb/"
-crio_version_apt_key_url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_version }}/deb/Release.key"
-crio_version_apt_repository: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_version }}/deb/"
+# CRI-O OBS repos only support major.minor format (e.g. v1.35, not v1.35.0)
+crio_repo_version: "{{ crio_version.split('.')[:2] | join('.') }}"
+crio_apt_key_url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_repo_version }}/deb/Release.key"
+crio_apt_repository: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_repo_version }}/deb/"
+crio_version_apt_key_url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_repo_version }}/deb/Release.key"
+crio_version_apt_repository: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_repo_version }}/deb/"
 
 # Packages to install
 kubernetes_packages:
