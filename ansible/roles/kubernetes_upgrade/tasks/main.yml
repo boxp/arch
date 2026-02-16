@@ -12,7 +12,7 @@
     apply:
       tags: [etcd_snapshot, pre_checks]
   tags: [etcd_snapshot, pre_checks, upgrade]
-  when: node_role == "control_plane" and is_first_control_plane
+  when: node_role == "control_plane" and (is_first_control_plane | bool)
 
 - name: Upgrade first control plane
   ansible.builtin.include_tasks:
@@ -20,7 +20,7 @@
     apply:
       tags: [upgrade]
   tags: [upgrade]
-  when: node_role == "control_plane" and is_first_control_plane
+  when: node_role == "control_plane" and (is_first_control_plane | bool)
 
 - name: Upgrade secondary control plane
   ansible.builtin.include_tasks:
@@ -28,7 +28,7 @@
     apply:
       tags: [upgrade]
   tags: [upgrade]
-  when: node_role == "control_plane" and not is_first_control_plane
+  when: node_role == "control_plane" and not (is_first_control_plane | bool)
 
 - name: Upgrade worker node
   ansible.builtin.include_tasks:
