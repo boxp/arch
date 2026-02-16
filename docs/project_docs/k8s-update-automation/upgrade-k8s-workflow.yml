@@ -1,0 +1,690 @@
+name: Kubernetes Upgrade
+
+on:
+  workflow_dispatch:
+    inputs:
+      kubernetes_version:
+        description: 'Target Kubernetes version (e.g., 1.35.1). Leave empty to auto-extract from playbook'
+        required: false
+      kubernetes_package:
+        description: 'Target package version (e.g., 1.35.1-1.1). Leave empty to auto-extract from playbook'
+        required: false
+      crio_version:
+        description: 'Target CRI-O version (e.g., 1.35.0). Leave empty to auto-extract from playbook'
+        required: false
+      dry_run:
+        description: 'Dry run mode (--check)'
+        type: boolean
+        default: true
+      target_node:
+        description: 'Upgrade only the specified node. Leave empty to upgrade all CP nodes sequentially'
+        type: choice
+        options:
+          - ''
+          - shanghai-1
+          - shanghai-2
+          - shanghai-3
+
+env:
+  NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+  ALL_NODE_IPS: "192.168.10.102 192.168.10.103 192.168.10.104"
+
+jobs:
+  extract-versions:
+    name: Extract Versions from Playbook
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      k8s_version: ${{ steps.versions.outputs.k8s_version }}
+      k8s_package: ${{ steps.versions.outputs.k8s_package }}
+      crio_version: ${{ steps.versions.outputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Extract versions from playbook
+        id: versions
+        run: |
+          K8S_VER=$(grep -m1 'kubernetes_version:' ansible/playbooks/control-plane.yml \
+            | awk -F'"' '{print $2}')
+          K8S_PKG=$(grep -m1 'kubernetes_package_version:' ansible/playbooks/control-plane.yml \
+            | awk -F'"' '{print $2}')
+          CRIO_VER=$(grep -m1 'crio_version:' ansible/playbooks/control-plane.yml \
+            | awk -F'"' '{print $2}')
+          echo "k8s_version=$K8S_VER" >> "$GITHUB_OUTPUT"
+          echo "k8s_package=$K8S_PKG" >> "$GITHUB_OUTPUT"
+          echo "crio_version=$CRIO_VER" >> "$GITHUB_OUTPUT"
+          echo "Extracted versions: k8s=$K8S_VER, pkg=$K8S_PKG, crio=$CRIO_VER"
+
+  pre-check:
+    name: Pre-upgrade Validation
+    needs: extract-versions
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      K8S_VERSION: ${{ inputs.kubernetes_version || needs.extract-versions.outputs.k8s_version }}
+      K8S_PACKAGE: ${{ inputs.kubernetes_package || needs.extract-versions.outputs.k8s_package }}
+      CRIO_VERSION: ${{ inputs.crio_version || needs.extract-versions.outputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.56.6
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+          EOF
+
+          for NODE_IP in $ALL_NODE_IPS; do
+            cat >> ~/.ssh/config << EOF
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+
+          chmod 600 ~/.ssh/config
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Run pre-upgrade checks
+        run: |
+          cd ansible
+          source .venv/bin/activate
+          echo "Running pre-upgrade checks with K8S_VERSION=${K8S_VERSION}"
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags pre_checks \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
+            -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -v
+
+  upgrade-cp-1:
+    name: Upgrade shanghai-1 (first CP)
+    needs: [extract-versions, pre-check]
+    if: "!inputs.target_node || inputs.target_node == 'shanghai-1'"
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      K8S_VERSION: ${{ inputs.kubernetes_version || needs.extract-versions.outputs.k8s_version }}
+      K8S_PACKAGE: ${{ inputs.kubernetes_package || needs.extract-versions.outputs.k8s_package }}
+      CRIO_VERSION: ${{ inputs.crio_version || needs.extract-versions.outputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.56.6
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          echo "Testing SSH connectivity to shanghai-1 (${NODE_IP}) via bastion..."
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-1'"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Upgrade shanghai-1
+        run: |
+          cd ansible
+          source .venv/bin/activate
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--check"
+          fi
+          echo "Upgrading shanghai-1 (first control plane)"
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags upgrade \
+            --limit shanghai-1 \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
+            -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "node_role=control_plane" \
+            -e "is_first_control_plane=true" \
+            ${DRY_RUN_FLAG} \
+            -v
+
+  upgrade-cp-2:
+    name: Upgrade shanghai-2
+    needs: [extract-versions, pre-check, upgrade-cp-1]
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && needs.extract-versions.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (!inputs.target_node || inputs.target_node == 'shanghai-2')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      K8S_VERSION: ${{ inputs.kubernetes_version || needs.extract-versions.outputs.k8s_version }}
+      K8S_PACKAGE: ${{ inputs.kubernetes_package || needs.extract-versions.outputs.k8s_package }}
+      CRIO_VERSION: ${{ inputs.crio_version || needs.extract-versions.outputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.56.6
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
+
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
+          echo "Testing SSH connectivity to shanghai-2 (${NODE_IP}) via bastion..."
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-2'"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Upgrade shanghai-2
+        run: |
+          cd ansible
+          source .venv/bin/activate
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--check"
+          fi
+          echo "Upgrading shanghai-2 (secondary control plane)"
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags upgrade \
+            --limit shanghai-2 \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
+            -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "node_role=control_plane" \
+            -e "is_first_control_plane=false" \
+            ${DRY_RUN_FLAG} \
+            -v
+
+  upgrade-cp-3:
+    name: Upgrade shanghai-3
+    needs: [extract-versions, pre-check, upgrade-cp-1, upgrade-cp-2]
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && needs.extract-versions.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (!inputs.target_node || inputs.target_node == 'shanghai-3')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      K8S_VERSION: ${{ inputs.kubernetes_version || needs.extract-versions.outputs.k8s_version }}
+      K8S_PACKAGE: ${{ inputs.kubernetes_package || needs.extract-versions.outputs.k8s_package }}
+      CRIO_VERSION: ${{ inputs.crio_version || needs.extract-versions.outputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.56.6
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-3"')
+
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-3"')
+          echo "Testing SSH connectivity to shanghai-3 (${NODE_IP}) via bastion..."
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-3'"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Upgrade shanghai-3
+        run: |
+          cd ansible
+          source .venv/bin/activate
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--check"
+          fi
+          echo "Upgrading shanghai-3 (secondary control plane)"
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags upgrade \
+            --limit shanghai-3 \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
+            -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "node_role=control_plane" \
+            -e "is_first_control_plane=false" \
+            ${DRY_RUN_FLAG} \
+            -v
+
+  post-check:
+    name: Post-upgrade Validation
+    needs: [extract-versions, pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3]
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-3.result == 'success')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      K8S_VERSION: ${{ inputs.kubernetes_version || needs.extract-versions.outputs.k8s_version }}
+      K8S_PACKAGE: ${{ inputs.kubernetes_package || needs.extract-versions.outputs.k8s_package }}
+      CRIO_VERSION: ${{ inputs.crio_version || needs.extract-versions.outputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@8df5847569e6427dd6c4fb1cf565c83acfa8afa7 # v6.0.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.56.6
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+          EOF
+
+          for NODE_IP in $ALL_NODE_IPS; do
+            cat >> ~/.ssh/config << EOF
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+
+          chmod 600 ~/.ssh/config
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@eac588ad8def6316056a12d4907a9d4d84ff7a3b # v7.3.0
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Verify cluster health
+        run: |
+          cd ansible
+          source .venv/bin/activate
+          echo "Running post-upgrade cluster health check"
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags health_check \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -v
