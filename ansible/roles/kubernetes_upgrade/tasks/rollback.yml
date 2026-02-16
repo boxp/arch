@@ -25,7 +25,7 @@
 
 - name: Replace etcd data directory
   ansible.builtin.shell: |
-    mv /var/lib/etcd /var/lib/etcd-backup-{{ ansible_date_time.iso8601_basic_short }}
+    mv /var/lib/etcd /var/lib/etcd-backup-{{ ansible_facts['date_time']['iso8601_basic_short'] }}
     mv /var/lib/etcd-restore /var/lib/etcd
   args:
     executable: /bin/bash

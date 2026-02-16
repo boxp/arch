@@ -5,4 +5,4 @@
     state: restarted
     daemon_reload: true
   become: true
-  when: ansible_virtualization_type != "docker"
+  when: ansible_facts['virtualization_type'] != "docker"

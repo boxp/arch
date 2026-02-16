@@ -7,24 +7,47 @@
   become: true
   tags: [etcd_snapshot, pre_checks]
 
-- name: Take etcd snapshot before upgrade
-  ansible.builtin.command: >
-    etcdctl snapshot save
-    {{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_date_time.iso8601_basic_short }}.db
-    --cacert={{ etcd_cacert }}
-    --cert={{ etcd_cert }}
-    --key={{ etcd_key }}
+- name: Check if etcd snapshot already exists for today
+  ansible.builtin.find:
+    paths: "{{ etcd_snapshot_dir }}"
+    patterns: "pre-upgrade-{{ ansible_facts['date_time']['date'] | replace('-', '') }}*.db"
   become: true
-  register: etcd_snapshot_result
-  failed_when: etcd_snapshot_result.rc != 0
-  changed_when: etcd_snapshot_result.rc == 0
+  register: existing_snapshots
+  tags: [etcd_snapshot, pre_checks]
+
+- name: Take etcd snapshot before upgrade
+  ansible.builtin.command:
+    argv:
+      - etcdctl
+      - snapshot
+      - save
+      - "{{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
+      - "--cacert={{ etcd_cacert }}"
+      - "--cert={{ etcd_cert }}"
+      - "--key={{ etcd_key }}"
+  become: true
+  changed_when: true
+  when: existing_snapshots.matched == 0
+  tags: [etcd_snapshot, pre_checks]
+
+- name: Set snapshot path for verification
+  ansible.builtin.set_fact:
+    _etcd_verify_snapshot: >-
+      {% if existing_snapshots.matched > 0 %}
+      {{ (existing_snapshots.files | sort(attribute='mtime') | last).path }}
+      {% else %}
+      {{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db
+      {% endif %}
   tags: [etcd_snapshot, pre_checks]
 
 - name: Verify etcd snapshot integrity
-  ansible.builtin.command: >
-    etcdctl snapshot status
-    {{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_date_time.iso8601_basic_short }}.db
-    --write-out=table
+  ansible.builtin.command:
+    argv:
+      - etcdctl
+      - snapshot
+      - status
+      - "{{ _etcd_verify_snapshot | trim }}"
+      - --write-out=table
   become: true
   changed_when: false
   tags: [etcd_snapshot, pre_checks]
