@@ -1,0 +1,32 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  tasks:
+    # Test pre_checks tasks
+    - name: Run pre-upgrade checks
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: pre_checks.yml
+      tags: [pre_checks]
+
+    # Test etcd snapshot tasks
+    - name: Take etcd snapshot
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: etcd_snapshot.yml
+      tags: [etcd_snapshot]
+
+    # Test apt source update template generation
+    - name: Update apt source
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: upgrade_apt_source.yml
+      tags: [upgrade]
+
+    # Test health check tasks
+    - name: Run health check
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: health_check.yml
+      tags: [health_check]

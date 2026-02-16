@@ -1,0 +1,70 @@
+---
+# Kubernetes Cluster Upgrade Playbook
+# Usage: ansible-playbook playbooks/upgrade-k8s.yml \
+#          -e kubernetes_upgrade_version=1.35.1 \
+#          -e kubernetes_upgrade_package=1.35.1-1.1 \
+#          -e crio_upgrade_version=1.35.0
+
+# Pre-upgrade cluster-wide checks + etcd snapshot
+- name: Pre-upgrade validation and etcd snapshot
+  hosts: control_plane[0]
+  gather_facts: true
+  tags: [pre_checks]
+  tasks:
+    - name: Verify cluster health
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: pre_checks.yml
+      tags: [pre_checks]
+    - name: Take etcd snapshot
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: etcd_snapshot.yml
+      tags: [pre_checks, etcd_snapshot]
+
+# Upgrade first control plane
+- name: Upgrade first control plane (shanghai-1)
+  hosts: control_plane[0]
+  serial: 1
+  gather_facts: true
+  tags: [upgrade]
+  roles:
+    - role: kubernetes_upgrade
+      vars:
+        node_role: control_plane
+        is_first_control_plane: true
+
+# Upgrade remaining control planes
+- name: Upgrade secondary control planes
+  hosts: "control_plane[1:]"
+  serial: 1
+  gather_facts: true
+  tags: [upgrade]
+  roles:
+    - role: kubernetes_upgrade
+      vars:
+        node_role: control_plane
+        is_first_control_plane: false
+
+# Upgrade worker nodes (Phase 3 で有効化。inventory に workers グループ追加が前提)
+# - name: Upgrade worker nodes
+#   hosts: workers
+#   serial: 1
+#   gather_facts: true
+#   tags: [upgrade]
+#   roles:
+#     - role: kubernetes_upgrade
+#       vars:
+#         node_role: worker
+
+# Post-upgrade cluster-wide health check
+- name: Post-upgrade cluster health check
+  hosts: control_plane
+  gather_facts: false
+  tags: [health_check]
+  tasks:
+    - name: Verify all nodes health
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: health_check.yml
+      tags: [health_check]

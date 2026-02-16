@@ -1,0 +1,23 @@
+---
+galaxy_info:
+  author: boxp
+  description: Kubernetes cluster upgrade automation (kubeadm upgrade, drain/uncordon, etcd snapshot)
+  company: Personal
+  license: MIT
+  min_ansible_version: "2.14"
+  platforms:
+    - name: Ubuntu
+      versions:
+        - jammy
+        - focal
+    - name: Debian
+      versions:
+        - bullseye
+        - bookworm
+  galaxy_tags:
+    - kubernetes
+    - upgrade
+    - kubeadm
+    - etcd
+
+dependencies: []

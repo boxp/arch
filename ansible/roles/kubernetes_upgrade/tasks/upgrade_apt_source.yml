@@ -1,0 +1,75 @@
+---
+- name: Update kubernetes apt repository version
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/kubernetes.list
+    regexp: 'stable:/v[0-9]+\.[0-9]+/'
+    replace: "stable:/v{{ kubernetes_upgrade_version.split('.')[:2] | join('.') }}/"
+  become: true
+  tags: [upgrade]
+
+- name: Check CRI-O apt source file exists
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/crio.list
+  register: crio_list_stat
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  tags: [upgrade]
+
+- name: Update CRI-O apt repository version (crio.list)
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/crio.list
+    regexp: 'stable:/v[0-9]+\.[0-9]+/'
+    replace: "stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/"
+  become: true
+  when: >
+    crio_upgrade_version is defined and crio_upgrade_version != ""
+    and crio_list_stat.stat.exists | default(false)
+  tags: [upgrade]
+
+- name: Check CRI-O version-specific apt source file exists
+  ansible.builtin.stat:
+    path: /etc/apt/sources.list.d/crio-version.list
+  register: crio_version_list_stat
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  tags: [upgrade]
+
+- name: Update CRI-O version-specific apt repository (crio-version.list)
+  ansible.builtin.replace:
+    path: /etc/apt/sources.list.d/crio-version.list
+    regexp: 'stable:/v[0-9]+\.[0-9]+/'
+    replace: "stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/"
+  become: true
+  when: >
+    crio_upgrade_version is defined and crio_upgrade_version != ""
+    and crio_version_list_stat.stat.exists | default(false)
+  tags: [upgrade]
+
+- name: Import Kubernetes apt repository GPG key for target version
+  ansible.builtin.apt_key:
+    url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_upgrade_version.split('.')[:2] | join('.') }}/deb/Release.key"
+    state: present
+  become: true
+  tags: [upgrade]
+
+- name: Import CRI-O apt repository GPG key for target version
+  ansible.builtin.apt_key:
+    url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/deb/Release.key"
+    state: present
+  become: true
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  tags: [upgrade]
+
+- name: Update apt cache
+  ansible.builtin.apt:
+    update_cache: true
+  become: true
+  tags: [upgrade]
+
+- name: Upgrade CRI-O
+  ansible.builtin.apt:
+    name: "cri-o={{ crio_upgrade_version }}*"
+    state: present
+    update_cache: false
+  become: true
+  when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  notify: Restart crio
+  tags: [upgrade]
