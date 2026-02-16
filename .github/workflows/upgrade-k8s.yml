@@ -17,10 +17,11 @@ on:
         type: boolean
         default: true
       target_node:
-        description: 'Upgrade only the specified node. Leave empty to upgrade all CP nodes sequentially'
+        description: 'Upgrade only the specified node. Select "all" to upgrade all CP nodes sequentially'
         type: choice
+        default: all
         options:
-          - ''
+          - all
           - shanghai-1
           - shanghai-2
           - shanghai-3
@@ -33,6 +34,7 @@ jobs:
   extract-versions:
     name: Extract Versions from Playbook
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       contents: read
     outputs:
@@ -54,9 +56,11 @@ jobs:
             | awk -F'"' '{print $2}')
           CRIO_VER=$(grep -m1 'crio_version:' ansible/playbooks/control-plane.yml \
             | awk -F'"' '{print $2}')
-          echo "k8s_version=$K8S_VER" >> "$GITHUB_OUTPUT"
-          echo "k8s_package=$K8S_PKG" >> "$GITHUB_OUTPUT"
-          echo "crio_version=$CRIO_VER" >> "$GITHUB_OUTPUT"
+          {
+            echo "k8s_version=$K8S_VER"
+            echo "k8s_package=$K8S_PKG"
+            echo "crio_version=$CRIO_VER"
+          } >> "$GITHUB_OUTPUT"
           echo "Extracted versions: k8s=$K8S_VER, pkg=$K8S_PKG, crio=$CRIO_VER"
 
   pre-check:
@@ -181,7 +185,7 @@ jobs:
   upgrade-cp-1:
     name: Upgrade shanghai-1 (first CP)
     needs: [extract-versions, pre-check]
-    if: "!inputs.target_node || inputs.target_node == 'shanghai-1'"
+    if: inputs.target_node == 'all' || inputs.target_node == 'shanghai-1'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -312,7 +316,7 @@ jobs:
   upgrade-cp-2:
     name: Upgrade shanghai-2
     needs: [extract-versions, pre-check, upgrade-cp-1]
-    if: always() && !cancelled() && needs.pre-check.result == 'success' && needs.extract-versions.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (!inputs.target_node || inputs.target_node == 'shanghai-2')
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && needs.extract-versions.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'shanghai-2')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -443,7 +447,7 @@ jobs:
   upgrade-cp-3:
     name: Upgrade shanghai-3
     needs: [extract-versions, pre-check, upgrade-cp-1, upgrade-cp-2]
-    if: always() && !cancelled() && needs.pre-check.result == 'success' && needs.extract-versions.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (!inputs.target_node || inputs.target_node == 'shanghai-3')
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && needs.extract-versions.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'shanghai-3')
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
