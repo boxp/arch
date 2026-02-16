@@ -19,7 +19,7 @@
     --initial-cluster={{ etcd_initial_cluster }}
     --initial-advertise-peer-urls=https://{{ node_ip | default(ansible_host) }}:2380
   become: true
-  when: is_first_control_plane
+  when: is_first_control_plane | bool
   changed_when: true
   tags: [rollback]
 
@@ -30,7 +30,7 @@
   args:
     executable: /bin/bash
   become: true
-  when: is_first_control_plane
+  when: is_first_control_plane | bool
   changed_when: true
   tags: [rollback]
 
