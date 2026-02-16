@@ -51,8 +51,8 @@ arch/
 │   └── workflows/            # CI/CD パイプライン設定
 │       ├── wc-plan.yaml      # terraform plan 用ワークフロー
 │       └── ...
-├── doc/                      # プロジェクトドキュメント
-│   ├── project_doc/          # 各プロジェクトの詳細ドキュメント
+├── docs/                     # プロジェクトドキュメント
+│   ├── project_docs/         # 各プロジェクトの詳細ドキュメント
 │   └── ...
 ├── terraform/                # Terraform コード
 │   ├── aws/                  # AWS リソース定義

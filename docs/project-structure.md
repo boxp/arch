@@ -121,7 +121,7 @@
 │   └── tidb-operator/               # TiDBデータベースオペレーターの設定
 ├── k8s/                 # クラスター基本コンポーネントの設定
 │   └── calico/          # Calicoネットワークプラグインの基本設定
-├── doc/                 # プロジェクトのドキュメント
+├── docs/                # プロジェクトのドキュメント
 ├── .gitignore           # Gitで無視するファイルのリスト
 ├── .openhands/          # openhandsに関する重要な指示が記載されたファイルを含むディレクトリ。特に、.openhands/microagentsに記載された指示は必ず読んでください。
 ├── LICENSE              # ライセンス情報
