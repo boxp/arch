@@ -8,8 +8,8 @@ agent: CodeActAgent
 
 タスクに取り掛かるまえに、必ず以下のファイルを読んでください
 
-- doc/project-structure.md
-- doc/project-spec.md
+- docs/project-structure.md
+- docs/project-spec.md
 
 !!必ず日本語で受け答えしてください!!
 

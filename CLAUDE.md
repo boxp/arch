@@ -105,5 +105,5 @@
 
 ### Cursor Rules統合
 リポジトリにはタスク実行前にプロジェクトドキュメントファイルの読み取りを必要とするCursor IDEルールが含まれています：
-- `@doc/project-structure.md` - 詳細なディレクトリ構造
-- `@doc/project-spec.md` - 完全なプロジェクト仕様とワークフロー
+- `@docs/project-structure.md` - 詳細なディレクトリ構造
+- `@docs/project-spec.md` - 完全なプロジェクト仕様とワークフロー
