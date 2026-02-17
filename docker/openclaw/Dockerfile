@@ -59,5 +59,6 @@ RUN mkdir -p /home/node/.claude && \
     echo '{"trustedWorkspaces":["/home/node/ghq/**","/home/node/.openclaw/workspace/**"]}' \
       > /home/node/.claude/config.json
 COPY --chown=node:node settings.json /home/node/.claude/settings.json
+COPY --chown=node:node mcp-config.json /home/node/.claude/mcp-config.json
 
 ENV PATH="/home/node/.local/bin:${PATH}"
