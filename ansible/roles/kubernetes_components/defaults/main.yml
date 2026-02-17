@@ -1,7 +1,7 @@
 ---
 # defaults file for kubernetes_components
 
-# Kubernetes version to install (required v1.32.X)
+# Kubernetes version to install (major.minor or major.minor.patch, e.g. "1.35" or "1.35.1")
 kubernetes_version: "1.32"
 kubernetes_package_version: "1.32.0-1.1"
 
@@ -21,8 +21,10 @@ kubernetes_disable_swap: true
 kubernetes_enable_modules: true
 
 # Repository configuration
-kubernetes_apt_key_url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/Release.key"
-kubernetes_apt_repository: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version }}/deb/"
+# Kubernetes apt repos only support major.minor format (e.g. v1.35, not v1.35.1)
+kubernetes_repo_version: "{{ (kubernetes_version | string).split('.')[:2] | join('.') }}"
+kubernetes_apt_key_url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_repo_version }}/deb/Release.key"
+kubernetes_apt_repository: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_repo_version }}/deb/"
 # CRI-O OBS repos only support major.minor format (e.g. v1.35, not v1.35.0)
 crio_repo_version: "{{ (crio_version | string).split('.')[:2] | join('.') }}"
 crio_apt_key_url: "https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_repo_version }}/deb/Release.key"
