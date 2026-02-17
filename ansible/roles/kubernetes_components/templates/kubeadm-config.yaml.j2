@@ -1,7 +1,7 @@
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
-kubernetesVersion: v{{ kubernetes_version }}.0
+kubernetesVersion: v{{ kubernetes_version if (kubernetes_version | string).split('.') | length >= 3 else kubernetes_version ~ '.0' }}
 controlPlaneEndpoint: "{{ cluster_vip | default('') }}"
 networking:
   serviceSubnet: "10.96.0.0/12"
