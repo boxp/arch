@@ -154,6 +154,25 @@ jobs:
 
           chmod 600 ~/.ssh/config
 
+      - name: Verify SSH connectivity
+        run: |
+          echo "::group::SSH connectivity check"
+          FAILED=0
+          for NODE_IP in $ALL_NODE_IPS; do
+            echo "Testing SSH to ${NODE_IP} via bastion..."
+            if ssh -o ConnectTimeout=30 -o BatchMode=yes "${NODE_IP}" "hostname" 2>&1; then
+              echo "::notice::SSH OK: ${NODE_IP}"
+            else
+              echo "::error::SSH FAILED: ${NODE_IP}"
+              FAILED=1
+            fi
+          done
+          echo "::endgroup::"
+          if [ "$FAILED" -eq 1 ]; then
+            echo "::error::One or more nodes are unreachable via SSH. Check bastion/Cloudflare tunnel and SSH keys."
+            exit 1
+          fi
+
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
         with:
@@ -168,7 +187,9 @@ jobs:
           uv sync
 
       - name: Run pre-upgrade checks
+        shell: bash
         run: |
+          set -eo pipefail
           cd ansible
           source .venv/bin/activate
           echo "Running pre-upgrade checks with K8S_VERSION=${K8S_VERSION}"
@@ -180,7 +201,15 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
-            -v
+            -vv 2>&1 | tee /tmp/pre-check-ansible.log
+
+      - name: Upload pre-check logs
+        if: failure()
+        uses: actions/upload-artifact@ea165f8d65b6db9a6b7e75b195db813b2c2c94cd # v4.6.2
+        with:
+          name: pre-check-ansible-log
+          path: /tmp/pre-check-ansible.log
+          retention-days: 14
 
   upgrade-cp-1:
     name: Upgrade shanghai-1 (first CP)
