@@ -1,7 +1,1 @@
 title = "gitleaks config for arch"
-
-[allowlist]
-  description = "global allowlist"
-  paths = [
-    '''(^|/)\.github/workflows/.*\.ya?ml$''',
-  ]
