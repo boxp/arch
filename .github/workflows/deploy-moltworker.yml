@@ -3,9 +3,13 @@ name: Deploy Moltworker
 on:
   push:
     branches: [main]
-    paths: ['docker/moltworker/**']
+    paths:
+      - 'docker/moltworker/**'
+      - '!docker/moltworker/UPSTREAM_REF'
   pull_request:
-    paths: ['docker/moltworker/**']
+    paths:
+      - 'docker/moltworker/**'
+      - '!docker/moltworker/UPSTREAM_REF'
   workflow_dispatch: {}
 
 jobs:
