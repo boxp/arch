@@ -69,7 +69,8 @@
   "routes": [
     {
       "pattern": "moltworker.b0xp.io",
-      "zone_name": "b0xp.io"
+      "zone_name": "b0xp.io",
+      "custom_domain": true
     }
   ],
 
