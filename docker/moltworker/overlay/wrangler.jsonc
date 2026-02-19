@@ -1,0 +1,84 @@
+{
+  // Moltworker - OpenClaw on Cloudflare Workers + Containers (boxp overlay)
+  //
+  // This file overrides upstream cloudflare/moltworker wrangler.jsonc with
+  // boxp-specific settings (routes, R2 bucket name, observability).
+  // Applied by prepare.sh during build.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "moltbot-sandbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-05-06",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Static assets for admin UI (built by vite)
+  "assets": {
+    "directory": "./dist/client",
+    "not_found_handling": "single-page-application",
+    "html_handling": "auto-trailing-slash",
+    "binding": "ASSETS",
+    "run_worker_first": true
+  },
+
+  // Allow importing HTML files as text modules and PNG files as binary
+  "rules": [
+    { "type": "Text", "globs": ["**/*.html"], "fallthrough": false },
+    { "type": "Data", "globs": ["**/*.png"], "fallthrough": false }
+  ],
+
+  // Build command for vite
+  "build": {
+    "command": "npm run build"
+  },
+
+  // Cloudflare Containers configuration
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 1
+    }
+  ],
+
+  // Durable Objects for container lifecycle management
+  "durable_objects": {
+    "bindings": [
+      { "class_name": "Sandbox", "name": "Sandbox" }
+    ]
+  },
+
+  // SQLite migration for Durable Objects
+  "migrations": [
+    { "new_sqlite_classes": ["Sandbox"], "tag": "v1" }
+  ],
+
+  // R2 bucket for persistent storage (boxp: custom bucket name)
+  "r2_buckets": [
+    {
+      "binding": "MOLTBOT_BUCKET",
+      "bucket_name": "moltworker-data"
+    }
+  ],
+
+  // Browser Rendering binding for CDP shim
+  "browser": {
+    "binding": "BROWSER"
+  },
+
+  // Custom domain routing (boxp-specific)
+  "routes": [
+    {
+      "pattern": "moltworker.b0xp.io",
+      "zone_name": "b0xp.io"
+    }
+  ],
+
+  // Observability (boxp: enhanced logging)
+  "observability": {
+    "enabled": true,
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
+}
