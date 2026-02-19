@@ -133,7 +133,8 @@ Cloudflare Terraform Provider v5.17.0（2026年2月時点）に `cloudflare_cont
 | シークレット管理 | AWS SSM → ExternalSecret → K8s Secret | Workers Secrets (wrangler secret put) |
 | 認証 | Cloudflare Access (GitHub) | Cloudflare Access (別ポリシー) |
 | LLM ルーティング | LiteLLM Pod → 各プロバイダー | AI Gateway → 各プロバイダー |
-| CPU アーキテクチャ | ARM64 (Orange Pi Zero 3) | x86_64 (linux/amd64) |
+| LLM サブスクリプション | OpenAI-Codex サブスクリプションプラン利用 | 現行同様、OpenAI-Codex サブスクリプションプランを利用 |
+| CPU アーキテクチャ | amd64 (worker node) | amd64 (linux/amd64) |
 | 運用 | 常時稼働 | オンデマンド（stop/start） |
 | 位置づけ | 本番 | PoC（いつでも停止可能） |
 
@@ -196,7 +197,7 @@ Cloudflare Terraform Provider v5.17.0（2026年2月時点）に `cloudflare_cont
 |---|--------|----------|----------|
 | 0-1 | Moltworker リポジトリの clone と構成分析 | `git clone https://github.com/cloudflare/moltworker` | Dockerfile, wrangler.jsonc, src/ の構成を把握 |
 | 0-2 | 最小構成の特定 | Moltworker から PoC に不要な機能を特定 | 基本チャット + ツール実行に必要な最小設定を特定 |
-| 0-3 | CPU アーキテクチャ互換性確認 | 現行が ARM64 (Orange Pi)、Containers は linux/amd64 | 既存の ghcr.io/openclaw/openclaw イメージが amd64 ビルドを提供しているか確認 |
+| 0-3 | CPU アーキテクチャ互換性確認 | 現行 worker node も amd64、Containers も linux/amd64 | 既存の ghcr.io/openclaw/openclaw イメージが amd64 ビルドを提供しているか確認（現行と同一アーキテクチャのため互換性リスクは低い） |
 | 0-4 | `wrangler dev` でのローカル動作確認 | Moltworker を手元で起動し、基本的なチャット応答を確認 | Container cold start → OpenClaw 起動 → チャット応答の一連のフローが動作するか |
 | 0-5 | Cold Start 時間の計測 | Container 停止状態からの起動時間を計測 | 2分以内に利用可能になること（オンデマンド運用の前提） |
 | 0-6 | sleepAfter 設定の動作確認 | アイドル後に Container が自動停止するか | 設定した時間後に課金が停止すること |
@@ -210,7 +211,7 @@ Cloudflare Terraform Provider v5.17.0（2026年2月時点）に `cloudflare_cont
 
 **中止基準**:
 - OpenClaw の基本動作（チャット応答 + ツール実行）が Sandbox 上で動作しない
-- amd64 ビルドが提供されておらず、ビルド対応に過大な労力が必要
+- amd64 ビルドが提供されておらず、ビルド対応に過大な労力が必要（※現行 worker node も amd64 のためリスク低）
 - Cold Start が 5分以上かかり、オンデマンド運用が実用的でない
 
 ---
@@ -219,6 +220,8 @@ Cloudflare Terraform Provider v5.17.0（2026年2月時点）に `cloudflare_cont
 
 **目標**: Moltworker を Cloudflare にデプロイし、既存環境と完全に分離した PoC として運用開始
 
+**方針: クレデンシャル設定以外は最初から GitOps（Terraform + CI/CD）で進める。** 手動 `wrangler deploy` ではなく、Terraform レシピの追加と CI/CD パイプラインの構築を Phase 1 に含める。クレデンシャル（Workers Secrets）のみ `wrangler secret put` で手動設定する。
+
 **タスク**:
 
 | # | タスク | arch での変更 | 根拠 |
@@ -226,10 +229,12 @@ Cloudflare Terraform Provider v5.17.0（2026年2月時点）に `cloudflare_cont
 | 1-1 | PoC 用 DNS レコード追加 | `terraform/cloudflare/b0xp.io/openclaw/dns.tf` (更新) | `moltworker-poc.b0xp.io`。既存 `openclaw.b0xp.io` には一切触れない |
 | 1-2 | PoC 用 Cloudflare Access ポリシー追加 | `terraform/cloudflare/b0xp.io/openclaw/access.tf` (更新) | 既存 Access とは別ポリシーで PoC エンドポイントを保護 |
 | 1-3 | R2 バケット作成（PoC 用） | `terraform/cloudflare/b0xp.io/openclaw/r2.tf` (新規) | PoC 環境の永続ストレージ。バケット名に `-poc` サフィックスを付与 |
-| 1-4 | Moltworker のデプロイ（wrangler deploy） | Wrangler プロジェクト（配置先は Phase 0 で決定） | 最小構成でデプロイ。sleepAfter を短め（15-30分）に設定 |
-| 1-5 | Workers Secrets の設定 | `wrangler secret put` | 最小限のシークレットのみ（ANTHROPIC_API_KEY, GITHUB_TOKEN 等） |
-| 1-6 | 基本動作確認 | PoC エンドポイント経由でチャット | 認証 → チャット応答 → ツール実行の一連のフロー |
-| 1-7 | コスト実測（1週間） | Cloudflare ダッシュボードでコスト確認 | 利用パターンに応じた実コストを計測 |
+| 1-4 | Terraform レシピ追加（Workers/Wrangler 管理） | Terraform 構成ファイル追加（配置先は Phase 0 で決定） | Terraform 未対応部分は Wrangler プロジェクトとして管理し、CI/CD 経由でデプロイ |
+| 1-5 | CI/CD パイプライン構築 | `.github/workflows/` に PoC 用デプロイワークフロー追加 | `wrangler deploy` を CI/CD で自動化。手動デプロイを排除 |
+| 1-6 | Moltworker のデプロイ（CI/CD 経由） | CI/CD パイプライン経由でデプロイ | 最小構成でデプロイ。sleepAfter を短め（15-30分）に設定 |
+| 1-7 | Workers Secrets の設定（手動） | `wrangler secret put` | 最小限のシークレットのみ（ANTHROPIC_API_KEY, GITHUB_TOKEN 等）。クレデンシャルのみ手動設定 |
+| 1-8 | 基本動作確認 | PoC エンドポイント経由でチャット | 認証 → チャット応答 → ツール実行の一連のフロー |
+| 1-9 | コスト実測（1週間） | Cloudflare ダッシュボードでコスト確認 | 利用パターンに応じた実コストを計測 |
 
 **lolice リポジトリへの変更**: なし（既存 K8s 上の OpenClaw は完全に独立して稼働を継続）
 
@@ -258,7 +263,6 @@ v2 で計画した以下の項目は、必要になった時点で個別に判�
 |------|---------|
 | カスタムツール（ghq, gwq, mcp-grafana, Babashka, Codex CLI）の移植 | PoC を頻繁に使うようになった場合 |
 | Discord Bot 統合 | PoC を常用するようになった場合 |
-| CI/CD パイプライン構築 | 手動デプロイが煩雑になった場合 |
 | AI Gateway 設定の Terraform 管理 | LLM 利用が安定した場合 |
 
 **この Phase は現時点で詳細計画しない。** Phase 1 の運用結果に基づいて必要性を判断する。
@@ -332,7 +336,7 @@ PoC では全シークレットを移行せず、最小限のみ設定する。
 | OPENCLAW_GATEWAY_TOKEN | 必須 | API 認証 |
 | LITELLM_MASTER_KEY | 不要 | AI Gateway に置換 |
 | LITELLM_PROXY_KEY | 不要 | AI Gateway に置換 |
-| OPENAI_API_KEY | 任意 | AI Gateway 経由で使う場合のみ |
+| OPENAI_API_KEY | **必須** | OpenAI-Codex サブスクリプションプラン利用（現行 lolice 同様） |
 | GEMINI_API_KEY | 任意 | AI Gateway 経由で使う場合のみ |
 | XAI_API_KEY | 任意 | AI Gateway 経由で使う場合のみ |
 | CLAUDE_CODE_OAUTH_TOKEN | 任意 | Claude Code を Sandbox 内で使う場合 |
