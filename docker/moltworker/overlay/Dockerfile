@@ -1,5 +1,7 @@
-# Moltworker - OpenClaw Sandbox Container
-# Based on cloudflare/moltworker Dockerfile
+# Moltworker - OpenClaw Sandbox Container (boxp overlay)
+# Based on upstream cloudflare/moltworker Dockerfile with boxp-specific additions:
+#   - Pinned sandbox image to 0.7.4 (with digest)
+#   - Added: gh CLI, git, jq, curl
 # This runs inside Cloudflare Containers (linux/amd64)
 FROM docker.io/cloudflare/sandbox:0.7.4@sha256:83be471f7344ee91b6aa27f1eecc991f822a9209a201eca39508984921798639
 
@@ -28,7 +30,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install pnpm and openclaw
 RUN npm install -g pnpm openclaw@2026.2.3
 
-# Install gh CLI
+# Install gh CLI (boxp addition)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
   && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
@@ -39,9 +41,13 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && rm -rf /var/lib/apt/lists/*
 
 # Prepare directories
-RUN mkdir -p /root/.openclaw /root/clawd
+RUN mkdir -p /root/.openclaw /root/clawd /root/clawd/skills
 
 WORKDIR /root/clawd
 EXPOSE 18789
+
+COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
+RUN chmod +x /usr/local/bin/start-openclaw.sh
+COPY skills/ /root/clawd/skills/
 
 CMD ["/usr/local/bin/start-openclaw.sh"]

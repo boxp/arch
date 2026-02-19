@@ -24,14 +24,14 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Install dependencies
+      - name: Prepare upstream (clone + overlay)
         working-directory: docker/moltworker
-        run: npm install
+        run: bash prepare.sh
 
       # On PRs: dry-run only (validate wrangler config)
       - name: Validate wrangler config (PR)
         if: github.event_name == 'pull_request'
-        working-directory: docker/moltworker
+        working-directory: docker/moltworker/.upstream
         run: npx wrangler deploy --dry-run
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -40,7 +40,7 @@ jobs:
       # On main push: actual deploy
       - name: Deploy to Cloudflare Workers
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        working-directory: docker/moltworker
+        working-directory: docker/moltworker/.upstream
         run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

@@ -1,18 +1,12 @@
 {
   "name": "moltworker-deploy",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
-  "description": "Moltworker - OpenClaw on Cloudflare Workers + Containers",
+  "description": "Moltworker - OpenClaw on Cloudflare Workers + Containers (upstream clone method)",
   "scripts": {
-    "build": "echo 'Using upstream moltworker build'",
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev"
-  },
-  "dependencies": {
-    "@cloudflare/sandbox": "*",
-    "moltworker": "github:cloudflare/moltworker"
-  },
-  "devDependencies": {
-    "wrangler": "4.66.0"
+    "prepare": "bash prepare.sh",
+    "deploy": "cd .upstream && npx wrangler deploy",
+    "deploy:dry-run": "cd .upstream && npx wrangler deploy --dry-run",
+    "dev": "cd .upstream && npx wrangler dev"
   }
 }
