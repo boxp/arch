@@ -1,3 +1,10 @@
+# =============================================================================
+# boxp/arch openclaw Dockerfile
+# Based on: cloudflare/moltworker upstream Dockerfile
+# Upstream ref: https://github.com/cloudflare/moltworker/blob/main/Dockerfile
+# =============================================================================
+
+# --- Multi-stage: build tools not available in upstream base ---
 FROM docker:29-cli@sha256:1d6d751f1d68d1a5142c23c730ef5ecc976a8e050fa08c3cdb09f7e2e54a4439 AS docker-cli
 
 FROM golang:1.26@sha256:c83e68f3ebb6943a2904fa66348867d108119890a2c6a2e6f07b38d0eb6c25c5 AS go-tools
@@ -16,11 +23,67 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     tar xzf babashka.tar.gz && \
     chmod +x bb
 
-FROM ghcr.io/openclaw/openclaw:2026.2.15@sha256:20fb8df4e6c6d893de5b8445394583258fdf0f98179e82cdfa24062c6bed5de0
+# =============================================================================
+# Main stage: upstream moltworker base
+# Upstream: docker.io/cloudflare/sandbox:0.7.0
+# =============================================================================
+FROM docker.io/cloudflare/sandbox:0.7.0
 
-USER root
+# --- BEGIN: upstream moltworker Dockerfile (verbatim) ---
 
-# Install gh CLI
+# Install Node.js 22 (required by OpenClaw) and rclone (for R2 persistence)
+# The base image has Node 20, we need to replace it with Node 22
+# Using direct binary download for reliability
+ENV NODE_VERSION=22.13.1
+RUN ARCH="$(dpkg --print-architecture)" \
+    && case "${ARCH}" in \
+         amd64) NODE_ARCH="x64" ;; \
+         arm64) NODE_ARCH="arm64" ;; \
+         *) echo "Unsupported architecture: ${ARCH}" >&2; exit 1 ;; \
+       esac \
+    && apt-get update && apt-get install -y xz-utils ca-certificates rclone \
+    && curl -fsSLk https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz -o /tmp/node.tar.xz \
+    && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
+    && rm /tmp/node.tar.xz \
+    && node --version \
+    && npm --version
+
+# Install pnpm globally
+RUN npm install -g pnpm
+
+# Install OpenClaw (formerly clawdbot/moltbot)
+# Pin to specific version for reproducible builds
+# NOTE: bumped from upstream 2026.2.3 to 2026.2.15 for this deployment
+RUN npm install -g openclaw@2026.2.15 \
+    && openclaw --version
+
+# Create OpenClaw directories
+# Legacy .clawdbot paths are kept for R2 backup migration
+RUN mkdir -p /root/.openclaw \
+    && mkdir -p /root/clawd \
+    && mkdir -p /root/clawd/skills
+
+# Copy startup script
+COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
+RUN chmod +x /usr/local/bin/start-openclaw.sh
+
+# Copy custom skills
+COPY skills/ /root/clawd/skills/
+
+# Set working directory
+WORKDIR /root/clawd
+
+# Expose the gateway port
+EXPOSE 18789
+
+# --- END: upstream moltworker Dockerfile ---
+
+# =============================================================================
+# boxp customizations (minimal diff from upstream)
+# See: docs/project_docs/openclaw/T-20260219-012-dockerfile-upstream-diff.md
+# =============================================================================
+
+# Install gh CLI and jq (required for GitHub operations and script processing)
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl gpg && \
     mkdir -p -m 755 /etc/apt/keyrings && \
@@ -33,22 +96,23 @@ RUN apt-get update && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Copy Docker CLI from docker:27-cli
+# Copy Docker CLI (required for container operations)
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 
-# Copy ghq and gwq from go-tools
+# Copy ghq and gwq (required for repository/worktree management)
 COPY --from=go-tools /go/bin/ghq /usr/local/bin/ghq
 COPY --from=go-tools /go/bin/gwq /usr/local/bin/gwq
 
-# Copy mcp-grafana from go-tools (Grafana MCP Server for metrics context)
+# Copy mcp-grafana (Grafana MCP Server for metrics context)
 COPY --from=go-tools /go/bin/mcp-grafana /usr/local/bin/mcp-grafana
 
-# Copy Babashka from babashka-download
+# Copy Babashka (Clojure scripting runtime)
 COPY --from=babashka-download /bb /usr/local/bin/bb
 
 # Install Codex CLI globally
 RUN npm install -g @openai/codex
 
+# Switch to non-root user for security
 USER node
 
 # Install Claude Code CLI (user-level)
