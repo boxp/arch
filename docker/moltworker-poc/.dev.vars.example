@@ -1,0 +1,16 @@
+# Local development environment variables
+# Copy to .dev.vars and fill in actual values.
+# DO NOT commit .dev.vars to version control.
+
+# Required
+ANTHROPIC_API_KEY=sk-ant-your-key-here
+MOLTBOT_GATEWAY_TOKEN=generate-with-openssl-rand-hex-32
+
+# Required for PoC (OpenAI-Codex subscription)
+OPENAI_API_KEY=sk-your-key-here
+
+# Development mode (bypasses Cloudflare Access auth)
+DEV_MODE=true
+
+# Optional: sleepAfter for auto-sleep
+# SANDBOX_SLEEP_AFTER=30m

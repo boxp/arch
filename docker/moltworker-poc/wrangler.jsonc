@@ -1,0 +1,60 @@
+{
+  // Moltworker PoC - OpenClaw on Cloudflare Workers + Containers
+  // Based on cloudflare/moltworker (https://github.com/cloudflare/moltworker)
+  //
+  // This configuration is deployed via CI/CD (wrangler deploy).
+  // Secrets are set manually via `wrangler secret put`.
+  "name": "moltbot-sandbox",
+  "main": "node_modules/moltworker/dist/index.js",
+  "compatibility_date": "2025-05-06",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Cloudflare Containers configuration
+  "containers": [
+    {
+      "class_name": "Sandbox",
+      "image": "./Dockerfile",
+      "instance_type": "standard-1",
+      "max_instances": 1
+    }
+  ],
+
+  // Durable Objects for container lifecycle management
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "Sandbox",
+        "name": "Sandbox"
+      }
+    ]
+  },
+
+  // SQLite migration for Durable Objects
+  "migrations": [
+    {
+      "new_sqlite_classes": ["Sandbox"],
+      "tag": "v1"
+    }
+  ],
+
+  // R2 bucket for persistent storage (managed by Terraform)
+  "r2_buckets": [
+    {
+      "binding": "MOLTBOT_BUCKET",
+      "bucket_name": "moltworker-poc-data"
+    }
+  ],
+
+  // Custom domain routing
+  "routes": [
+    {
+      "pattern": "moltworker-poc.b0xp.io",
+      "zone_name": "b0xp.io"
+    }
+  ],
+
+  // Build command
+  "build": {
+    "command": "npm run build"
+  }
+}
