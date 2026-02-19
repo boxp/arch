@@ -1,9 +1,64 @@
-# T-20260219-003: Cloudflare Workers/Edge での OpenClaw ホスト検証 — 計画書 v2（ソース固定版）
+# T-20260219-003: Cloudflare Workers/Edge での OpenClaw PoC 環境構築 — 計画書 v3（並行PoC版）
 
 **作成日**: 2026-02-19
-**改訂**: v2（前回計画からの全面見直し）
+**改訂**: v3（v2 からの前提修正: 「本番移行検証」→「並行PoC環境の追加」）
 **ステータス**: 計画段階（実装なし）
 **対象リポジトリ**: `boxp/arch`（IaC層）+ Moltworker 評価
+
+---
+
+## 目的と非目的
+
+### 目的
+
+**Cloudflare Workers + Moltworker を使い、既存 lolice K8s 上の OpenClaw とは別系統の PoC 環境をもう1つ立てる。**
+
+- 既存環境に一切影響を与えず、独立したエンドポイント・設定で Cloudflare 上に OpenClaw を構築する
+- 常時稼働を前提とせず、必要時のみ起動するオンデマンド運用を想定する
+- コストが許容範囲を超えた場合は即座に停止し、設定を保管した状態で休眠させる
+- 「Cloudflare Workers/Containers で OpenClaw がどの程度使えるか」のデータを取得する
+
+### 非目的
+
+- **既存 lolice K8s 上の OpenClaw を Cloudflare に移行すること（移行は目的ではない）**
+- 既存環境を縮退・停止すること
+- 本番同等の SLA や可用性を確保すること
+- 全カスタムツールの完全移植（使えるものだけ使う）
+
+---
+
+## v2 からの差分（前提修正）
+
+### 修正 1: 根本的な位置づけの変更
+
+| v2（前回） | v3（今回） |
+|-----------|-----------|
+| 「Moltworker を主軸に検証し、K8s 版からの移行可否を判定」 | 「既存 K8s 版とは独立した PoC 環境を Cloudflare 上に追加構築」 |
+| Phase 2 に「本番移行判定」「機能パリティ 80%」を目標とした | 移行判定は行わない。PoC として独立運用し、価値があれば継続 |
+| K8s クラスター（lolice）のリソース制約からの解放が動機 | 動機は「Cloudflare 上で別系統の OpenClaw を低コストで持てるか試す」 |
+
+### 修正 2: コスト・運用前提の変更
+
+| v2（前回） | v3（今回） |
+|-----------|-----------|
+| 24/7 稼働で推定 $30〜35/月を前提に評価 | 常時稼働を前提としない。必要時のみ起動、不要時は停止 |
+| 月額 $50 以下を中止基準とした | 月額目標は $10 以下（停止保管時はほぼ $0）。高コスト時は停止して保管 |
+| sleepAfter はコスト削減オプションとして言及 | sleepAfter + 手動 stop/start がデフォルト運用 |
+
+### 修正 3: Phase 構成の変更
+
+| v2（前回） | v3（今回） |
+|-----------|-----------|
+| Phase 0 → 1 → 2（評価→インフラ→カスタマイズ+移行判定） | Phase 0 → 1（評価→最小構成デプロイ+PoC運用）。Phase 2 は「必要になったら」 |
+| Phase 2 に「本番移行 Go/No-Go 判定」があった | Exit 条件を「高コスト時の停止保管」「オンデマンド再起動」に変更 |
+
+### 修正 4: 評価基準の変更
+
+| v2（前回） | v3（今回） |
+|-----------|-----------|
+| K8s 版との機能パリティ 80% 以上 | 基本チャット + ツール実行ができれば合格 |
+| 応答レイテンシが K8s 版の 2x 以内 | 起動から利用可能になるまでの時間（cold start）を重視 |
+| 1 週間の安定稼働確認 | 数回の利用で安定動作すれば十分 |
 
 ---
 
@@ -66,20 +121,21 @@ Cloudflare Terraform Provider v5.17.0（2026年2月時点）に `cloudflare_cont
 - https://developers.cloudflare.com/changelog/2026-02-12-terraform-v5170-provider/
 - Terraform Registry で container 関連リソースが見当たらない（`未検証` — Registry を直接検索していないため断定不可）
 
-### 前提 5: 現行 OpenClaw on lolice K8s との差異
+### 前提 5: 既存 OpenClaw（lolice K8s）との関係
 
-| 項目 | 現行 (lolice K8s) | Moltworker (CF Workers) |
-|------|-------------------|------------------------|
+**今回の PoC は既存環境とは完全に分離する。**
+
+| 項目 | 既存 (lolice K8s) — 変更なし | PoC (CF Workers) — 新規追加 |
+|------|---------------------------|--------------------------|
+| エンドポイント | `openclaw.b0xp.io` | `moltworker-poc.b0xp.io`（別ドメイン） |
 | ランタイム | DinD sidecar + OpenClaw Pod | Sandbox Container (linux/amd64) |
 | ストレージ | K8s PV (Longhorn) | エフェメラル + R2 マウント |
 | シークレット管理 | AWS SSM → ExternalSecret → K8s Secret | Workers Secrets (wrangler secret put) |
-| 認証 | Cloudflare Access (GitHub) | Cloudflare Access (同一) |
+| 認証 | Cloudflare Access (GitHub) | Cloudflare Access (別ポリシー) |
 | LLM ルーティング | LiteLLM Pod → 各プロバイダー | AI Gateway → 各プロバイダー |
-| ブラウザ自動化 | なし | Browser Rendering (headless Chromium) |
-| カスタムツール | ghq, gwq, mcp-grafana, Babashka, Codex CLI | Moltworker skills + Sandbox SDK exec |
 | CPU アーキテクチャ | ARM64 (Orange Pi Zero 3) | x86_64 (linux/amd64) |
-| Docker | DinD sidecar | Sandbox 内で `未検証`（Containers 内 Docker は未公開情報） |
-| 月額コスト | 電気代 + Cloudflare Free | $5 (Workers Paid) + 使用量 (推定 $30〜35/月 24/7稼働時) |
+| 運用 | 常時稼働 | オンデマンド（stop/start） |
+| 位置づけ | 本番 | PoC（いつでも停止可能） |
 
 ### 前提 6: boxp/arch リポジトリのスコープ
 
@@ -93,192 +149,134 @@ Cloudflare Terraform Provider v5.17.0（2026年2月時点）に `cloudflare_cont
 
 ---
 
-## 前回計画からの修正点
+## 運用モデル: Stop/Start 前提のコスト最適化
 
-### 修正 1: 検証対象の根本的変更
+### 基本方針
 
-| 前回 | 今回 |
-|------|------|
-| Workers Gateway（プロキシ型）を推奨候補Aとした | Moltworker（OpenClaw 本体を Sandbox で直接実行）を検証主軸にする |
-| 「OpenClaw 本体は K8s に残し Workers をプロキシに」が前提 | Cloudflare 公式 PoC (Moltworker) により「OpenClaw 本体を Workers/Sandbox で動かす」が現実的選択肢に |
-| Container Workers は「★☆☆☆☆ 未検証」評価 | Containers は Public Beta で Moltworker が動作実績あり → 評価を引き上げ |
+```
+[通常時] Container 停止（$0/月）
+    ↓ 必要時に手動 or API で起動
+[利用時] Container 起動 → Cold Start (1-2分) → 利用可能
+    ↓ sleepAfter (例: 30分) で自動スリープ
+[アイドル後] Container 停止 → 課金停止
+```
 
-### 修正 2: 前提の根拠不足を解消
+### コスト試算
 
-| 前回の問題 | 今回の対応 |
-|-----------|-----------|
-| 「Container Workers は2025年時点でベータ/限定提供。GA状況は未確認」| Containers は2025年6月 Public Beta 開始、2026年2月時点で Beta 継続中。Moltworker で動作実績あり |
-| 「DinD が Container Workers 内で可能かは未検証」| Sandbox SDK は `exec` でコマンド実行可能だが、Container 内での Docker デーモン起動は `未検証`。Moltworker は DinD を使わず Sandbox SDK の exec API で代替 |
-| 「Terraform provider 未対応の可能性」| v5.17.0 時点で Container/Sandbox リソースは未対応を確認。Wrangler デプロイが前提 |
-| Workers Workflows を候補D として検討 | Moltworker が Sandbox SDK を採用しているため、Workflows 評価は不要に |
-
-### 修正 3: 候補構成の整理
-
-前回の4候補（A: Gateway / B: DO+AI / C: Container / D: Workflows）を以下の2軸に再整理:
-
-| 軸 | 内容 | 根拠 |
-|----|------|------|
-| **軸1: Moltworker ベース** | cloudflare/moltworker を fork/参照し、OpenClaw 本体を Sandbox Container で実行 | https://github.com/cloudflare/moltworker |
-| **軸2: Edge Gateway + K8s バックエンド** | Workers を Gateway として配置、OpenClaw 本体は K8s に残す（前回候補A相当） | 前回計画の候補A |
-
-→ **軸1（Moltworker）を主軸に検証**。理由: Cloudflare 公式に動作実績があり、今回のXポストの検証対象そのもの。
-
-### 修正 4: コスト前提の変更
-
-| 前回 | 今回 |
-|------|------|
-| 「候補A なら追加コストはほぼゼロ（Free 枠内）」 | Moltworker は Workers Paid プラン必須（$5/月）+ 使用量課金。24/7 稼働で推定 $30〜35/月。sleepAfter 設定で削減可能 |
+| シナリオ | Container 稼働時間/月 | Workers Paid | Container 課金 | R2 | 合計 |
+|---------|---------------------|-------------|---------------|-----|------|
+| 停止保管（休眠） | 0h | $5 | $0 | ~$0 | **~$5/月** |
+| 低頻度利用（週2-3回、各1h） | ~12h | $5 | ~$1-2 | ~$0 | **~$7/月** |
+| 中頻度利用（平日毎日2h） | ~44h | $5 | ~$4-5 | ~$0 | **~$10/月** |
+| 24/7 常時稼働（参考） | 730h | $5 | ~$25-30 | ~$0 | **~$30-35/月** |
 
 **根拠**: https://developers.cloudflare.com/containers/pricing/ および Moltworker README のコスト試算
+**注意**: Container 課金の時間単価は `未検証`（上記は Moltworker README の概算に基づく推定）
 
-### 修正 5: arch リポジトリのスコープ変更
+### Exit 条件
 
-前回は「Workers Gateway の Terraform 定義のみ」だったが、今回は:
-- Moltworker は Wrangler ベースのため、arch 内 Terraform とは別に Wrangler プロジェクトが必要
-- arch で管理するのは DNS / Access / R2 バケット / AI Gateway 等の **周辺インフラ**
-- Workers スクリプト自体の Terraform 管理は Containers 非対応のため現実的ではない
+| 条件 | アクション |
+|------|----------|
+| 月額が $15 を超えそう | sleepAfter を短縮、利用頻度を下げる |
+| 月額が $20 を超過 | Container を停止し、設定（wrangler.jsonc + Secrets）を保管。必要時のみ再起動 |
+| PoC に価値がないと判断 | `wrangler delete` で完全削除。Terraform リソース（DNS/Access/R2）も削除 |
+| Cloudflare Containers が GA し料金体系が変わった | 再評価 |
 
 ---
 
-## arch 実施計画（Phase 0/1/2）
+## arch 実施計画（Phase 0 / Phase 1）
 
 ### Phase 0: Moltworker 評価・ローカル検証（デスクリサーチ + wrangler dev）
 
-**目標**: Moltworker の動作確認と、boxp/arch の OpenClaw カスタマイズとの互換性評価
+**目標**: Moltworker の動作確認と、最小構成での PoC 可否判定
 
 **タスク**:
 
 | # | タスク | 確認方法 | 判定基準 |
 |---|--------|----------|----------|
 | 0-1 | Moltworker リポジトリの clone と構成分析 | `git clone https://github.com/cloudflare/moltworker` | Dockerfile, wrangler.jsonc, src/ の構成を把握 |
-| 0-2 | boxp/arch の OpenClaw カスタム Dockerfile との差分分析 | diff `docker/openclaw/Dockerfile` vs Moltworker の `Dockerfile` | ghq, gwq, mcp-grafana, Babashka, Codex CLI 等のカスタムツールが Moltworker に含まれるか / 追加可能か |
-| 0-3 | Sandbox SDK 上での Docker (DinD) 実行可否調査 | Cloudflare ドキュメント + Community Forum 検索 | Sandbox 内で `dockerd` が起動可能か。不可の場合、sandbox.exec() で代替可能な範囲を特定 |
-| 0-4 | CPU アーキテクチャ互換性確認 | 現行が ARM64 (Orange Pi)、Containers は linux/amd64 | 既存の ghcr.io/openclaw/openclaw イメージが amd64 ビルドを提供しているか確認 |
-| 0-5 | LiteLLM → AI Gateway 移行の影響調査 | Moltworker は AI Gateway 経由。現行は LiteLLM Pod 経由 | 現行の LiteLLM 設定（モデルルーティング、API キー管理）が AI Gateway で再現可能か |
-| 0-6 | R2 マウントによるストレージ永続性の評価 | Moltworker の R2 マウント実装を確認 | ghq/gwq のリポジトリキャッシュ、.claude/ 設定等が R2 上で永続化可能か |
-| 0-7 | `wrangler dev` でのローカル動作確認 | Moltworker を手元で起動し、基本的なチャット応答を確認 | Container cold start → OpenClaw 起動 → チャット応答の一連のフローが動作するか |
-| 0-8 | Cloudflare Terraform Provider v5 で管理可能な範囲の特定 | Provider ドキュメント精査 | DNS, Access, R2 bucket, AI Gateway は Terraform 管理可。Worker script は Terraform 可だが Container binding は `未検証` |
+| 0-2 | 最小構成の特定 | Moltworker から PoC に不要な機能を特定 | 基本チャット + ツール実行に必要な最小設定を特定 |
+| 0-3 | CPU アーキテクチャ互換性確認 | 現行が ARM64 (Orange Pi)、Containers は linux/amd64 | 既存の ghcr.io/openclaw/openclaw イメージが amd64 ビルドを提供しているか確認 |
+| 0-4 | `wrangler dev` でのローカル動作確認 | Moltworker を手元で起動し、基本的なチャット応答を確認 | Container cold start → OpenClaw 起動 → チャット応答の一連のフローが動作するか |
+| 0-5 | Cold Start 時間の計測 | Container 停止状態からの起動時間を計測 | 2分以内に利用可能になること（オンデマンド運用の前提） |
+| 0-6 | sleepAfter 設定の動作確認 | アイドル後に Container が自動停止するか | 設定した時間後に課金が停止すること |
 
 **arch リポジトリへの変更**: なし
 **lolice リポジトリへの変更**: なし
 
 **Done criteria**:
-- 全 8 項目に対して「可/不可/制約付き可/未検証」の判定が完了
+- 全 6 項目に対して「可/不可/制約付き可/未検証」の判定が完了
 - Moltworker の `wrangler dev` でローカル動作確認ができた場合のみ Phase 1 に進む
-- boxp/arch カスタムツール（ghq, gwq, mcp-grafana, Babashka, Codex CLI）の互換性が評価済み
 
 **中止基準**:
 - OpenClaw の基本動作（チャット応答 + ツール実行）が Sandbox 上で動作しない
-- amd64 ビルドが提供されておらず、マルチアーキテクチャ対応に過大な労力が必要
-- カスタムツールの大半が Sandbox 環境に移植不可能
+- amd64 ビルドが提供されておらず、ビルド対応に過大な労力が必要
+- Cold Start が 5分以上かかり、オンデマンド運用が実用的でない
 
 ---
 
-### Phase 1: arch リポジトリでの周辺インフラ定義 + Moltworker 初期デプロイ
+### Phase 1: 最小 PoC 環境のデプロイ + 試用
 
-**目標**: Moltworker を Cloudflare にデプロイし、boxp/arch のインフラ管理と統合
+**目標**: Moltworker を Cloudflare にデプロイし、既存環境と完全に分離した PoC として運用開始
 
 **タスク**:
 
 | # | タスク | arch での変更 | 根拠 |
 |---|--------|--------------|------|
-| 1-1 | R2 バケット作成の Terraform 定義 | `terraform/cloudflare/b0xp.io/openclaw/r2.tf` (新規) | Moltworker が永続ストレージに R2 を使用。[R2 Terraform](https://registry.terraform.io/providers/cloudflare/cloudflare/latest/docs/resources/r2_bucket) |
-| 1-2 | AI Gateway 設定の Terraform 定義 | `terraform/cloudflare/b0xp.io/openclaw/ai_gateway.tf` (新規) | Moltworker が AI Gateway 経由で LLM 呼び出し。`未検証`: AI Gateway の Terraform リソース対応状況 |
-| 1-3 | Cloudflare Access の Moltworker 用設定 | `terraform/cloudflare/b0xp.io/openclaw/access.tf` (更新) | 既存の openclaw.b0xp.io Access に加え、Moltworker 用エンドポイントを追加 |
-| 1-4 | DNS レコードの追加（テスト用サブドメイン） | `terraform/cloudflare/b0xp.io/openclaw/dns.tf` (更新) | `moltworker.b0xp.io` 等のテスト用レコード。既存 `openclaw.b0xp.io` は変更しない |
-| 1-5 | Moltworker Wrangler プロジェクトの配置方針決定 | `docs/project_docs/T-20260219-003/` (新規) | arch リポジトリ内に `workers/moltworker/` として置くか、別リポジトリにするかの判断。Terraform との統合方法を決定 |
-| 1-6 | Moltworker の初期デプロイ（wrangler deploy） | Wrangler プロジェクト（配置先は 1-5 で決定） | `wrangler deploy` + `wrangler secret put` で Workers Secrets 設定 |
-| 1-7 | Workers Secrets への既存シークレット移行 | SSM パラメータの一部を Workers Secrets にも設定 | ANTHROPIC_API_KEY, DISCORD_BOT_TOKEN 等。SSM は残し、Workers Secrets に複製 |
-| 1-8 | CI/CD パイプライン検討 | `.github/workflows/deploy-moltworker.yml` (新規) | `wrangler deploy` を GitHub Actions で実行。既存の build-openclaw-image.yml を参考 |
+| 1-1 | PoC 用 DNS レコード追加 | `terraform/cloudflare/b0xp.io/openclaw/dns.tf` (更新) | `moltworker-poc.b0xp.io`。既存 `openclaw.b0xp.io` には一切触れない |
+| 1-2 | PoC 用 Cloudflare Access ポリシー追加 | `terraform/cloudflare/b0xp.io/openclaw/access.tf` (更新) | 既存 Access とは別ポリシーで PoC エンドポイントを保護 |
+| 1-3 | R2 バケット作成（PoC 用） | `terraform/cloudflare/b0xp.io/openclaw/r2.tf` (新規) | PoC 環境の永続ストレージ。バケット名に `-poc` サフィックスを付与 |
+| 1-4 | Moltworker のデプロイ（wrangler deploy） | Wrangler プロジェクト（配置先は Phase 0 で決定） | 最小構成でデプロイ。sleepAfter を短め（15-30分）に設定 |
+| 1-5 | Workers Secrets の設定 | `wrangler secret put` | 最小限のシークレットのみ（ANTHROPIC_API_KEY, GITHUB_TOKEN 等） |
+| 1-6 | 基本動作確認 | PoC エンドポイント経由でチャット | 認証 → チャット応答 → ツール実行の一連のフロー |
+| 1-7 | コスト実測（1週間） | Cloudflare ダッシュボードでコスト確認 | 利用パターンに応じた実コストを計測 |
 
-**lolice リポジトリへの変更**: なし（既存 K8s 上の OpenClaw は並行稼働を継続）
+**lolice リポジトリへの変更**: なし（既存 K8s 上の OpenClaw は完全に独立して稼働を継続）
 
 **Done criteria**:
-- Moltworker が `moltworker.b0xp.io`（テスト用サブドメイン）でアクセス可能
+- Moltworker が `moltworker-poc.b0xp.io` でアクセス可能
 - Cloudflare Access による認証が動作
 - 基本的なチャット応答が可能（Claude API 経由）
-- R2 マウントによるデータ永続化が動作
-- 既存の `openclaw.b0xp.io`（K8s版）に影響がないこと
+- sleepAfter による自動停止が動作
+- 1週間の実コストが月額換算 $15 以下
+- **既存の `openclaw.b0xp.io`（K8s版）に一切影響がないこと**
 
 **中止基準**:
-- Moltworker のデプロイが失敗し、Cloudflare サポートでも解決不可
-- Workers Paid プラン + 使用量コストが月額 $50 を超える見込み
+- Moltworker のデプロイが失敗し、解決不可
+- 1週間の実コストが月額換算 $20 を超過 → Container 停止保管に移行
 - Cloudflare Access と Moltworker の統合に互換性問題
 
 ---
 
-### Phase 2: カスタマイズ + 本番移行評価
+### Phase 2（任意）: カスタマイズ拡張
 
-**目標**: boxp/arch 固有のカスタムツールを Moltworker に統合し、K8s 版との機能パリティを評価
+**Phase 1 で PoC に価値があると判断した場合のみ実施。**
 
-**タスク**:
+v2 で計画した以下の項目は、必要になった時点で個別に判断する:
 
-| # | タスク | 内容 | 判定基準 |
-|---|--------|------|----------|
-| 2-1 | カスタムツールの Sandbox 移植 | ghq, gwq, mcp-grafana, Babashka, Codex CLI を Moltworker の Dockerfile に追加 | 各ツールが Sandbox 内で正常動作すること |
-| 2-2 | Discord Bot 統合テスト | Moltworker の Discord 連携を設定 | 既存の Discord Bot 機能が Moltworker でも動作すること |
-| 2-3 | mcp-grafana 統合テスト | Sandbox 内から mcp-grafana が Grafana API にアクセス可能か | Grafana ダッシュボード参照・メトリクス取得が動作すること |
-| 2-4 | DinD 代替手段の検証 | Sandbox SDK の exec API で Docker CLI 相当の操作が可能か | `未検証`: Sandbox 内で `docker build` / `docker run` が実行可能か。不可の場合、Moltworker の exec() で代替できる範囲を特定 |
-| 2-5 | パフォーマンス比較 | K8s 版 vs Moltworker 版の応答レイテンシ・安定性を測定 | 応答レイテンシが K8s 版の 2x 以内。24h 連続稼働テスト |
-| 2-6 | コスト実測 | 1週間の実稼働でのコスト計測 | 月額換算 $50 以下 |
-| 2-7 | 本番移行判定 | Phase 2 の結果を総合評価し、K8s 版からの移行可否を判定 | 機能パリティ 80% 以上 + コスト許容範囲 + 安定性確認 |
+| 項目 | 実施条件 |
+|------|---------|
+| カスタムツール（ghq, gwq, mcp-grafana, Babashka, Codex CLI）の移植 | PoC を頻繁に使うようになった場合 |
+| Discord Bot 統合 | PoC を常用するようになった場合 |
+| CI/CD パイプライン構築 | 手動デプロイが煩雑になった場合 |
+| AI Gateway 設定の Terraform 管理 | LLM 利用が安定した場合 |
 
-**arch リポジトリへの変更**:
-- Moltworker Dockerfile の更新（カスタムツール追加）
-- 必要に応じて Terraform リソースの追加（Logpush 等）
-
-**lolice リポジトリへの変更**:
-- 本番移行決定時: K8s 版 OpenClaw の段階的縮退（ただし本 Phase では判定のみ、実際の縮退は別タスク）
-
-**Done criteria**:
-- カスタムツールの 80% 以上が Sandbox 内で動作
-- 1 週間の安定稼働確認
-- 本番移行の Go/No-Go 判定が文書化
-
-**中止基準**:
-- カスタムツールの主要機能（ghq/gwq によるリポジトリ操作、mcp-grafana）が動作不可
-- レイテンシが K8s 版の 3x 以上
-- 月額コストが $50 を超過
-- DinD 代替が見つからず、コード実行サンドボックス機能が大幅に制限される
+**この Phase は現時点で詳細計画しない。** Phase 1 の運用結果に基づいて必要性を判断する。
 
 ---
 
-## 「Workers で OpenClaw 本体を直接動かす」前提 vs 「Edge Gateway / 周辺機能を置く」前提の分離評価
+## 評価基準: 低頻度利用でも価値があるか
 
-### 軸1: OpenClaw 本体を Workers/Sandbox で直接実行（Moltworker 方式）
+PoC は常時稼働型ではなく、オンデマンド利用を想定している。そのため、以下の観点で評価する:
 
-| 評価項目 | 判定 | 根拠 |
-|----------|------|------|
-| 技術的実現可能性 | **○ 実証済み** | Cloudflare 公式 Moltworker が動作実績あり |
-| boxp/arch カスタムとの互換性 | **△ 要検証** | ghq/gwq/mcp-grafana/Babashka/Codex CLI の Sandbox 互換性は未確認 |
-| DinD（Docker サンドボックス） | **△ 未検証** | Sandbox 内での Docker デーモン起動の可否は未公開情報 |
-| Terraform 管理 | **× 非対応** | Containers/Sandbox は Terraform provider 未対応。Wrangler デプロイ前提 |
-| コスト | **△ 要実測** | 24/7 稼働で推定 $30〜35/月。sleepAfter で削減可能だが実測値なし |
-| アーキテクチャ移行コスト | **△ 中程度** | LiteLLM → AI Gateway、SSM → Workers Secrets、PV → R2 の移行が必要 |
-| 運用負荷 | **○ 低い** | `wrangler deploy` のみ。K8s/ArgoCD の運用不要 |
-
-### 軸2: Edge Gateway + K8s バックエンド（前回候補A相当）
-
-| 評価項目 | 判定 | 根拠 |
-|----------|------|------|
-| 技術的実現可能性 | **○ 高い** | Workers → Tunnel fetch() は標準機能 |
-| boxp/arch カスタムとの互換性 | **○ 影響なし** | K8s 上の OpenClaw に変更不要 |
-| DinD | **○ 既存動作** | K8s DinD sidecar がそのまま使える |
-| Terraform 管理 | **○ 対応** | `cloudflare_workers_script` + `cloudflare_workers_route` で管理可能 |
-| コスト | **○ Free 枠内** | Workers Free 枠（100,000 req/日）で個人利用は十分 |
-| アーキテクチャ移行コスト | **○ 最小** | Workers Gateway の追加のみ。既存構成は維持 |
-| 運用負荷 | **△ 二重管理** | Workers + K8s の両方を管理。K8s の運用負荷は残る |
-
-### 総合判定
-
-**今回の検証の主軸は軸1（Moltworker）とする**。理由:
-
-1. Xポスト（https://x.com/cloudflare/status/2021739474049544648）の検証対象がMoltworker であること
-2. Cloudflare 公式の動作実績があり、「一般論ベースの推測」ではない
-3. K8s クラスター（lolice）のリソース制約からの解放が本来の動機
-4. 軸2（Gateway）は従来計画で十分評価済み
-
-ただし、**軸1が不適合と判定された場合のフォールバックとして軸2を維持**する。
+| 評価観点 | 指標 | 合格ライン |
+|---------|------|----------|
+| **起動時間** | Cold Start から利用可能になるまで | 2分以内 |
+| **安定性** | 起動 → 利用 → 自動停止のサイクルでエラーなし | 10回中8回以上成功 |
+| **運用の手間** | 起動/停止にかかる手順 | ブラウザ or CLI 1コマンドで起動可能 |
+| **月額コスト** | 低頻度利用（週2-3回）時 | $10 以下 |
+| **データ永続性** | R2 上の設定・ファイルが停止/再起動後も維持される | 再起動後にデータが消えない |
+| **既存環境への影響** | lolice K8s の OpenClaw に変化がない | 影響ゼロ |
 
 ---
 
@@ -318,27 +316,30 @@ Cloudflare Terraform Provider v5.17.0（2026年2月時点）に `cloudflare_cont
 | Workers Secrets の上限数 | Cloudflare ドキュメントで確認していない（現行 SSM は 13 パラメータ）|
 | R2 FUSE マウントのパフォーマンス特性 | R2 マウントの IOPS / レイテンシは未公開 |
 | sleepAfter 設定時のコールドスタート時間 | Moltworker README に「1-2分」の記載あるが実測値なし |
+| Container 課金の時間単価 | Moltworker README の概算に基づく推定であり、Cloudflare 公式料金ページの直接確認は未実施 |
 
 ---
 
-## 付録: Moltworker の必要シークレット vs 現行 SSM パラメータの対応
+## 付録: PoC 環境で必要な最小シークレット
 
-| 現行 SSM パラメータ | Moltworker 対応 | 移行方針 |
-|---------------------|----------------|----------|
-| ANTHROPIC_API_KEY | ANTHROPIC_API_KEY（または AI Gateway 経由） | Workers Secret に設定 |
-| DISCORD_BOT_TOKEN | DISCORD_BOT_TOKEN | Workers Secret に設定 |
-| OPENCLAW_GATEWAY_TOKEN | MOLTBOT_GATEWAY_TOKEN（名称変更） | Workers Secret に新規設定 |
-| LITELLM_MASTER_KEY | 不要（AI Gateway に置換） | 移行不要 |
-| LITELLM_PROXY_KEY | 不要（AI Gateway に置換） | 移行不要 |
-| GITHUB_TOKEN | Sandbox 環境変数として注入 | Workers Secret に設定 |
-| OPENAI_API_KEY | AI Gateway 経由（または直接） | Workers Secret に設定 |
-| GEMINI_API_KEY | AI Gateway 経由（または直接） | Workers Secret に設定 |
-| CLAUDE_CODE_OAUTH_TOKEN | Sandbox 環境変数として注入 | Workers Secret に設定 |
-| DISCORD_ALLOWED_USER_IDS | Sandbox 環境変数として注入 | Workers Secret に設定 |
-| XAI_API_KEY | AI Gateway 経由（または直接） | Workers Secret に設定 |
-| GRAFANA_API_KEY | Sandbox 環境変数として注入 | Workers Secret に設定 |
-| tunnel-token | 不要（Tunnel は Moltworker では不使用） | 移行不要 |
+PoC では全シークレットを移行せず、最小限のみ設定する。
+
+| シークレット | PoC での要否 | 理由 |
+|------------|------------|------|
+| ANTHROPIC_API_KEY | **必須** | チャット応答の基盤 |
+| GITHUB_TOKEN | **必須** | gh CLI / リポジトリアクセス |
+| DISCORD_BOT_TOKEN | 不要（Phase 2） | PoC では Discord 連携しない |
+| OPENCLAW_GATEWAY_TOKEN | 必須 | API 認証 |
+| LITELLM_MASTER_KEY | 不要 | AI Gateway に置換 |
+| LITELLM_PROXY_KEY | 不要 | AI Gateway に置換 |
+| OPENAI_API_KEY | 任意 | AI Gateway 経由で使う場合のみ |
+| GEMINI_API_KEY | 任意 | AI Gateway 経由で使う場合のみ |
+| XAI_API_KEY | 任意 | AI Gateway 経由で使う場合のみ |
+| CLAUDE_CODE_OAUTH_TOKEN | 任意 | Claude Code を Sandbox 内で使う場合 |
+| DISCORD_ALLOWED_USER_IDS | 不要（Phase 2） | Discord 連携しないため不要 |
+| GRAFANA_API_KEY | 不要（Phase 2） | mcp-grafana は PoC では移植しない |
+| tunnel-token | 不要 | Tunnel は Moltworker では不使用 |
 
 ---
 
-*本計画は実装を含まない。Phase 0 の結果に基づき、Phase 1/2 の実施可否を判断する。*
+*本計画は実装を含まない。Phase 0 の結果に基づき、Phase 1 の実施可否を判断する。高コスト・低価値と判断した場合はいつでも停止・削除できる。*
