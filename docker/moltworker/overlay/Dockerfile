@@ -2,7 +2,7 @@
 # Based on pre-built upstream cloudflare/moltworker image with boxp-specific additions:
 #   - Added: gh CLI, git, jq, curl
 # This runs inside Cloudflare Containers (linux/amd64)
-FROM ghcr.io/boxp/arch/moltworker-base:latest
+FROM ghcr.io/boxp/arch/moltworker-base:latest@sha256:414d231ce19a7fe42aae62b2787ebf731687bd109987d4d3c458bc0fae3b0fcf
 
 # Install boxp-specific tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
