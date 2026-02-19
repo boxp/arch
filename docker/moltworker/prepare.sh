@@ -37,6 +37,13 @@ else
   git -C "${UPSTREAM_DIR}" fetch origin
 fi
 
+# Clean working tree before checkout (overlay/npm install may have dirtied it)
+if [ -d "${UPSTREAM_DIR}/.git" ]; then
+  echo "==> Cleaning upstream working tree..."
+  git -C "${UPSTREAM_DIR}" reset --hard HEAD
+  git -C "${UPSTREAM_DIR}" clean -fd
+fi
+
 echo "==> Checking out ${UPSTREAM_REF}..."
 git -C "${UPSTREAM_DIR}" checkout "${UPSTREAM_REF}"
 
