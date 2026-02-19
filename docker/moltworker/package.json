@@ -9,6 +9,7 @@
     "dev": "wrangler dev"
   },
   "dependencies": {
+    "@cloudflare/sandbox": "*",
     "moltworker": "github:cloudflare/moltworker"
   },
   "devDependencies": {
