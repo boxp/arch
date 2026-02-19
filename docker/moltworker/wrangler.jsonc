@@ -1,5 +1,5 @@
 {
-  // Moltworker PoC - OpenClaw on Cloudflare Workers + Containers
+  // Moltworker - OpenClaw on Cloudflare Workers + Containers
   // Based on cloudflare/moltworker (https://github.com/cloudflare/moltworker)
   //
   // This configuration is deployed via CI/CD (wrangler deploy).
@@ -41,14 +41,14 @@
   "r2_buckets": [
     {
       "binding": "MOLTBOT_BUCKET",
-      "bucket_name": "moltworker-poc-data"
+      "bucket_name": "moltworker-data"
     }
   ],
 
   // Custom domain routing
   "routes": [
     {
-      "pattern": "moltworker-poc.b0xp.io",
+      "pattern": "moltworker.b0xp.io",
       "zone_name": "b0xp.io"
     }
   ],

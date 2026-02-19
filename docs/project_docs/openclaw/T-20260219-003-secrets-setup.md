@@ -1,4 +1,4 @@
-# T-20260219-003: Moltworker PoC Secrets 投入手順
+# T-20260219-003: Moltworker Secrets 投入手順
 
 **作成日**: 2026-02-19
 
@@ -9,6 +9,8 @@
 - Workers Secrets は `wrangler secret put` で手動設定する（コードに含めない）
 - GitHub Actions Secrets は GitHub リポジトリ設定で手動設定する
 - 既存の lolice K8s 用シークレット（AWS SSM）とは完全に分離
+- **OpenAI サブスクリプションのみ利用想定** のため `ANTHROPIC_API_KEY` は不要
+- OpenAI サブスク特典は API キー認証だけでは有効にならない。OpenClaw 起動後の onboarding 認証が必要
 
 ---
 
@@ -35,19 +37,15 @@ Moltworker デプロイに必要な追加権限:
 
 ## 2. Workers Secrets（Moltworker ランタイム用）
 
-`docker/moltworker-poc/` ディレクトリから実行:
+`docker/moltworker/` ディレクトリから実行:
 
 ```bash
-# 必須: Anthropic API キー
-npx wrangler secret put ANTHROPIC_API_KEY
-# プロンプトに sk-ant-... を入力
-
 # 必須: ゲートウェイトークン（新規生成）
 export MOLTBOT_GATEWAY_TOKEN=$(openssl rand -hex 32)
 echo "Generated token: $MOLTBOT_GATEWAY_TOKEN"
 echo "$MOLTBOT_GATEWAY_TOKEN" | npx wrangler secret put MOLTBOT_GATEWAY_TOKEN
 
-# 必須: OpenAI API キー（OpenAI-Codex サブスク利用）
+# 任意: OpenAI API キー（直接 API アクセス用。サブスク特典は onboarding 認証で有効化）
 npx wrangler secret put OPENAI_API_KEY
 # プロンプトに sk-... を入力
 
@@ -73,11 +71,10 @@ echo "30m" | npx wrangler secret put SANDBOX_SLEEP_AFTER
 
 | Secret 名 | 必須/任意 | 用途 |
 |-----------|---------|------|
-| `ANTHROPIC_API_KEY` | **必須** | Claude API アクセス |
 | `MOLTBOT_GATEWAY_TOKEN` | **必須** | ゲートウェイ認証トークン |
-| `OPENAI_API_KEY` | **必須** | OpenAI-Codex サブスク利用 |
 | `CF_ACCESS_TEAM_DOMAIN` | **必須** | Cloudflare Access ドメイン |
 | `CF_ACCESS_AUD` | **必須** | Access Application audience tag |
+| `OPENAI_API_KEY` | 任意 | OpenAI 直接 API アクセス（サブスク特典は onboarding 認証で有効化） |
 | `GITHUB_TOKEN` | 推奨 | gh CLI / リポジトリアクセス |
 | `SANDBOX_SLEEP_AFTER` | 推奨 | アイドル時の自動スリープ（例: `30m`） |
 
@@ -90,7 +87,7 @@ echo "30m" | npx wrangler secret put SANDBOX_SLEEP_AFTER
 npx wrangler secret list
 
 # デプロイ後の動作確認
-# ブラウザで https://moltworker-poc.b0xp.io にアクセス
+# ブラウザで https://moltworker.b0xp.io にアクセス
 # Cloudflare Access の GitHub 認証を通過
 # ?token=<MOLTBOT_GATEWAY_TOKEN> でゲートウェイにアクセス
 ```

@@ -1,4 +1,4 @@
-# Moltworker PoC - OpenClaw Sandbox Container
+# Moltworker - OpenClaw Sandbox Container
 # Based on cloudflare/moltworker Dockerfile
 # This runs inside Cloudflare Containers (linux/amd64)
 FROM docker.io/cloudflare/sandbox:0.7.0

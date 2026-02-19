@@ -1,15 +1,15 @@
 {
-  "name": "moltworker-poc",
+  "name": "moltworker-deploy",
   "version": "0.1.0",
   "private": true,
-  "description": "Moltworker PoC - OpenClaw on Cloudflare Workers + Containers",
+  "description": "Moltworker - OpenClaw on Cloudflare Workers + Containers",
   "scripts": {
     "build": "echo 'Using upstream moltworker build'",
     "deploy": "wrangler deploy",
     "dev": "wrangler dev"
   },
   "dependencies": {
-    "moltworker": "latest"
+    "moltworker": "github:cloudflare/moltworker"
   },
   "devDependencies": {
     "wrangler": "^4"

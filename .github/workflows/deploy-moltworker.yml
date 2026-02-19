@@ -1,11 +1,11 @@
-name: Deploy Moltworker PoC
+name: Deploy Moltworker
 
 on:
   push:
     branches: [main]
-    paths: ['docker/moltworker-poc/**']
+    paths: ['docker/moltworker/**']
   pull_request:
-    paths: ['docker/moltworker-poc/**']
+    paths: ['docker/moltworker/**']
   workflow_dispatch: {}
 
 jobs:
@@ -25,13 +25,13 @@ jobs:
           node-version: '22'
 
       - name: Install dependencies
-        working-directory: docker/moltworker-poc
-        run: npm ci
+        working-directory: docker/moltworker
+        run: npm install
 
       # On PRs: dry-run only (validate wrangler config)
       - name: Validate wrangler config (PR)
         if: github.event_name == 'pull_request'
-        working-directory: docker/moltworker-poc
+        working-directory: docker/moltworker
         run: npx wrangler deploy --dry-run
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -40,7 +40,7 @@ jobs:
       # On main push: actual deploy
       - name: Deploy to Cloudflare Workers
         if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        working-directory: docker/moltworker-poc
+        working-directory: docker/moltworker
         run: npx wrangler deploy
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}

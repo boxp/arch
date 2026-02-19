@@ -40,9 +40,9 @@ moltworker/
 
 PoC に必要な最小構成:
 - **必須**: Workers Paid ($5/月), Containers, Durable Objects
-- **必須シークレット**: `ANTHROPIC_API_KEY`, `MOLTBOT_GATEWAY_TOKEN`
+- **必須シークレット**: `MOLTBOT_GATEWAY_TOKEN`
 - **本番必須**: `CF_ACCESS_TEAM_DOMAIN`, `CF_ACCESS_AUD` (Cloudflare Access 認証)
-- **推奨**: R2 バケット (永続ストレージ)、`OPENAI_API_KEY` (OpenAI-Codex サブスク利用)
+- **推奨**: R2 バケット (永続ストレージ)、`OPENAI_API_KEY` (直接 API アクセス用。サブスク特典は onboarding 認証で有効化)
 
 不要な機能:
 - Discord/Telegram/Slack 連携 → Phase 2 以降
@@ -105,9 +105,9 @@ Phase 1 で実際に設定・動作確認する。
 ## Phase 1 実装方針
 
 ### Terraform で管理するもの
-- DNS レコード (`moltworker-poc.b0xp.io` → Workers Route)
-- Cloudflare Access (PoC 用の別ポリシー)
-- R2 バケット (`moltworker-poc-data`)
+- DNS レコード (`moltworker.b0xp.io` → Workers Route)
+- Cloudflare Access (Moltworker 用の別ポリシー)
+- R2 バケット (`moltworker-data`)
 
 ### Terraform で管理しないもの（wrangler deploy）
 - Workers スクリプト本体
@@ -122,7 +122,7 @@ Phase 1 で実際に設定・動作確認する。
 
 ### ディレクトリ構成
 ```
-terraform/cloudflare/b0xp.io/moltworker-poc/   # Terraform IaC (DNS, Access, R2)
-docker/moltworker-poc/                          # wrangler.jsonc + デプロイ設定
-.github/workflows/deploy-moltworker-poc.yml     # CI/CD ワークフロー
+terraform/cloudflare/b0xp.io/moltworker/   # Terraform IaC (DNS, Access, R2)
+docker/moltworker/                         # wrangler.jsonc + デプロイ設定
+.github/workflows/deploy-moltworker.yml    # CI/CD ワークフロー
 ```

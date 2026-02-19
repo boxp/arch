@@ -2,7 +2,7 @@ terraform {
   required_version = ">= 1.0"
   backend "s3" {
     bucket = "tfaction-state"
-    key    = "terraform/cloudflare/b0xp.io/moltworker-poc/v1/terraform.tfstate"
+    key    = "terraform/cloudflare/b0xp.io/moltworker/v1/terraform.tfstate"
     region = "ap-northeast-1"
   }
 
