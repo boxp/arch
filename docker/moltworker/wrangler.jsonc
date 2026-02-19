@@ -65,5 +65,13 @@
       "pattern": "moltworker.b0xp.io",
       "zone_name": "b0xp.io"
     }
-  ]
+  ],
+
+  // Logs
+  "observability": {
+    "logs": {
+      "enabled": true,
+      "invocation_logs": true
+    }
+  }
 }
