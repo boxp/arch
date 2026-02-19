@@ -5,9 +5,23 @@
   // This configuration is deployed via CI/CD (wrangler deploy).
   // Secrets are set manually via `wrangler secret put`.
   "name": "moltbot-sandbox",
-  "main": "node_modules/moltworker/dist/index.js",
+  "main": "node_modules/moltworker/src/index.ts",
   "compatibility_date": "2025-05-06",
   "compatibility_flags": ["nodejs_compat"],
+
+  // Allow importing HTML files as text modules and PNG files as binary
+  "rules": [
+    {
+      "type": "Text",
+      "globs": ["**/*.html"],
+      "fallthrough": false
+    },
+    {
+      "type": "Data",
+      "globs": ["**/*.png"],
+      "fallthrough": false
+    }
+  ],
 
   // Cloudflare Containers configuration
   "containers": [
@@ -51,10 +65,5 @@
       "pattern": "moltworker.b0xp.io",
       "zone_name": "b0xp.io"
     }
-  ],
-
-  // Build command
-  "build": {
-    "command": "npm run build"
-  }
+  ]
 }
