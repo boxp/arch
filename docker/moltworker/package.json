@@ -13,6 +13,6 @@
     "moltworker": "github:cloudflare/moltworker"
   },
   "devDependencies": {
-    "wrangler": "^4"
+    "wrangler": "4.66.0"
   }
 }
