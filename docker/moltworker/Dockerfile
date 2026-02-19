@@ -44,7 +44,4 @@ RUN mkdir -p /root/.openclaw /root/clawd
 WORKDIR /root/clawd
 EXPOSE 18789
 
-COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
-RUN chmod +x /usr/local/bin/start-openclaw.sh
-
 CMD ["/usr/local/bin/start-openclaw.sh"]
