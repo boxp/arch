@@ -1,34 +1,16 @@
 # Moltworker - OpenClaw Sandbox Container (boxp overlay)
-# Based on upstream cloudflare/moltworker Dockerfile with boxp-specific additions:
-#   - Pinned sandbox image to 0.7.4 (with digest)
+# Based on pre-built upstream cloudflare/moltworker image with boxp-specific additions:
 #   - Added: gh CLI, git, jq, curl
 # This runs inside Cloudflare Containers (linux/amd64)
-FROM docker.io/cloudflare/sandbox:0.7.4@sha256:83be471f7344ee91b6aa27f1eecc991f822a9209a201eca39508984921798639
+FROM ghcr.io/boxp/arch/moltworker-base:latest
 
-# Install Node.js 22.13.1
-ENV NODE_VERSION=22.13.1
+# Install boxp-specific tools
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    xz-utils \
-    ca-certificates \
-    rclone \
     curl \
     git \
     jq \
-  && ARCH="$(dpkg --print-architecture)" \
-  && case "${ARCH}" in \
-       amd64) NODE_ARCH="x64" ;; \
-       arm64) NODE_ARCH="arm64" ;; \
-       *) echo "Unsupported architecture: ${ARCH}" && exit 1 ;; \
-     esac \
-  && curl -fsSL "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${NODE_ARCH}.tar.xz" \
-     -o /tmp/node.tar.xz \
-  && tar -xJf /tmp/node.tar.xz -C /usr/local --strip-components=1 \
-  && rm /tmp/node.tar.xz \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
-
-# Install pnpm and openclaw
-RUN npm install -g pnpm openclaw@2026.2.3
 
 # Install gh CLI (boxp addition)
 RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
@@ -40,14 +22,3 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
   && apt-get clean \
   && rm -rf /var/lib/apt/lists/*
 
-# Prepare directories
-RUN mkdir -p /root/.openclaw /root/clawd /root/clawd/skills
-
-WORKDIR /root/clawd
-EXPOSE 18789
-
-COPY start-openclaw.sh /usr/local/bin/start-openclaw.sh
-RUN chmod +x /usr/local/bin/start-openclaw.sh
-COPY skills/ /root/clawd/skills/
-
-CMD ["/usr/local/bin/start-openclaw.sh"]
