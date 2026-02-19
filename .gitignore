@@ -54,3 +54,6 @@ armbian-build/
 credentials.json
 service-account*.json
 *.kubeconfig
+
+# Wrangler local dev secrets
+.dev.vars

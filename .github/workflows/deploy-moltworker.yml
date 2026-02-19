@@ -1,0 +1,47 @@
+name: Deploy Moltworker
+
+on:
+  push:
+    branches: [main]
+    paths: ['docker/moltworker/**']
+  pull_request:
+    paths: ['docker/moltworker/**']
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: docker/moltworker
+        run: npm install
+
+      # On PRs: dry-run only (validate wrangler config)
+      - name: Validate wrangler config (PR)
+        if: github.event_name == 'pull_request'
+        working-directory: docker/moltworker
+        run: npx wrangler deploy --dry-run
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # On main push: actual deploy
+      - name: Deploy to Cloudflare Workers
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        working-directory: docker/moltworker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

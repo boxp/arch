@@ -1,0 +1,18 @@
+# Local development environment variables
+# Copy to .dev.vars and fill in actual values.
+# DO NOT commit .dev.vars to version control.
+
+# Required: gateway authentication token
+MOLTBOT_GATEWAY_TOKEN=generate-with-openssl-rand-hex-32
+
+# OpenAI API key (for direct API access only).
+# NOTE: API key authentication alone does NOT activate OpenAI subscription
+# benefits. After starting OpenClaw, complete the onboarding authentication
+# flow to enable subscription features.
+OPENAI_API_KEY=sk-your-key-here
+
+# Development mode (bypasses Cloudflare Access auth)
+DEV_MODE=true
+
+# Optional: sleepAfter for auto-sleep
+# SANDBOX_SLEEP_AFTER=30m
