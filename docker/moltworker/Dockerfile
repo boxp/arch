@@ -1,7 +1,7 @@
 # Moltworker - OpenClaw Sandbox Container
 # Based on cloudflare/moltworker Dockerfile
 # This runs inside Cloudflare Containers (linux/amd64)
-FROM docker.io/cloudflare/sandbox:0.7.0@sha256:7d646f289c3727592cd091d2f5684c322fa25e89bad51055b390bc68cabac832
+FROM docker.io/cloudflare/sandbox:0.7.4@sha256:83be471f7344ee91b6aa27f1eecc991f822a9209a201eca39508984921798639
 
 # Install Node.js 22.13.1
 ENV NODE_VERSION=22.13.1
