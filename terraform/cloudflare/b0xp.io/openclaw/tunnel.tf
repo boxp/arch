@@ -18,6 +18,10 @@ resource "cloudflare_tunnel_config" "openclaw_tunnel" {
       service  = "http://openclaw.openclaw.svc.cluster.local:18789"
     }
     ingress_rule {
+      hostname = cloudflare_record.board.hostname
+      service  = "http://openclaw.openclaw.svc.cluster.local:8080"
+    }
+    ingress_rule {
       service = "http_status:404"
     }
   }
