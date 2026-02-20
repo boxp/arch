@@ -3,6 +3,6 @@
 # across container restarts.
 resource "cloudflare_r2_bucket" "moltworker_data" {
   account_id = var.account_id
-  name       = "moltworker-data"
+  name       = "moltbot-data"
   location   = "APAC"
 }
