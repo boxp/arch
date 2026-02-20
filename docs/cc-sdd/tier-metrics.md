@@ -11,7 +11,7 @@
 | 定義 | mainブランチへのマージ回数/日 |
 | データソース | GitHub API: `GET /repos/{owner}/{repo}/pulls?state=closed&base=main` |
 | 算出ロジック | `merged_at` が非nullのPR数を日別に集計 |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 週次 |
 | 保持先 | `metrics/weekly/{YYYY-WW}/deploy-frequency.json` |
 | 目標 | 現状比+20%（ベースライン確定後に絶対値を設定） |
@@ -31,7 +31,7 @@ gh pr list --repo boxp/arch --state merged --base main --limit 100 \
 | 定義 | Issue作成〜対応PRのmainマージまでの時間（時間単位） |
 | データソース | GitHub API: Issue `created_at` + PR `merged_at`（PRのClosing referenceでIssueとPRを紐付け） |
 | 算出ロジック | `merged_at - issue.created_at`。Issueに紐付かないPRは `pr.created_at` を起点とする |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 週次 |
 | 保持先 | `metrics/weekly/{YYYY-WW}/lead-time.json` |
 | 目標 | 現状比-15% |
@@ -54,7 +54,7 @@ gh pr list --repo boxp/arch --state merged --limit 20 \
 | 定義 | 計測期間内にマージされたPRのうち、マージ後30日以内にrevertまたはhotfix PRが作成された率 |
 | データソース | GitHub API: PRタイトル/ブランチ名に `revert` または `hotfix` を含むPR。revert PRの本文またはタイトルから元PRを特定 |
 | 算出ロジック | 1. 計測期間内の全マージPRを取得 2. revert/hotfix PRを取得し、タイトルの `Revert "..."` パターンまたはブランチ名から元PRを特定 3. 元PRのマージ後30日以内に作成されたrevert/hotfix PRのみカウント 4. 同一元PRに複数のrevert/hotfixがある場合は元PRを1件としてカウント（ユニーク化） 5. `(revert/hotfixが紐づいた元PRのユニーク件数) / (全マージPR数) * 100` |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 月次 |
 | 保持先 | `metrics/monthly/{YYYY-MM}/change-failure-rate.json` |
 | 目標 | <5% |
@@ -77,7 +77,7 @@ gh pr list --repo boxp/arch --state merged --limit 100 \
 | 算出ロジック | `fix_pr.merged_at - incident_issue.created_at`（時間単位） |
 | 検出時刻の確定ルール | Issueの `created_at` を暫定検出時刻とする。Grafanaアラート発火時刻がIssue本文に記載されている場合はそちらを優先 |
 | 紐付け方法 | Issueをクローズする修正PRの `closingIssuesReferences` で紐付け。紐付けがない場合は、Issue番号をPRタイトルまたはブランチ名に含むPRを検索 |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | インシデント発生時（月次レポートに集約） |
 | 保持先 | `metrics/monthly/{YYYY-MM}/recovery-time.json` |
 | 目標 | <2h |
@@ -106,7 +106,7 @@ gh pr view --repo boxp/arch {pr_number} --json mergedAt --jq '.mergedAt'
 | 定義 | PR作成〜最初のApproveレビューまでの時間（時間単位） |
 | データソース | GitHub API: PR `created_at` + Reviews API `submitted_at`（state=APPROVED） |
 | 算出ロジック | `first_approve.submitted_at - pr.created_at` |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 週次 |
 | 保持先 | `metrics/weekly/{YYYY-WW}/review-time.json` |
 | 目標 | 現状比-25% |
@@ -124,16 +124,18 @@ gh api "repos/boxp/arch/pulls/{pr_number}/reviews" \
 |------|------|
 | 定義 | PRに対するCI実行の全体成功率（全run中のsuccess率） |
 | データソース | GitHub Actions API: `GET /repos/{owner}/{repo}/actions/runs` |
-| 算出ロジック | `(conclusion == "success" のrun数) / (全run数) * 100`（PR起因のrunのみ対象） |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 算出ロジック | `(conclusion == "success" のrun数) / (全run数) * 100`（PR起因の `pull_request` イベントrunのみ対象） |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 週次 |
 | 保持先 | `metrics/weekly/{YYYY-WW}/ci-success-rate.json` |
 | 目標 | >85% |
+| 備考 | workflow名はリポジトリごとに異なる（例: `test.yaml`, `wc-test.yaml` 等）ため特定のworkflow名に固定せず、`pull_request` イベントで起動された全runを対象とする |
 
 **API呼び出し例:**
 
 ```bash
-gh run list --repo boxp/arch --workflow ci.yml --limit 50 \
+# pull_requestイベントで起動された全workflow runを対象とする（workflow名固定は行わない）
+gh run list --repo boxp/arch --event pull_request --limit 50 \
   --json conclusion \
   --jq '{total: length, success: [.[] | select(.conclusion == "success")] | length}'
 ```
@@ -144,8 +146,8 @@ gh run list --repo boxp/arch --workflow ci.yml --limit 50 \
 |------|------|
 | 定義 | 新規機能PRのうち `docs/project_docs/` に対応する plan.md が存在し、「概要」「実装計画」「リスク」セクションを含む率 |
 | データソース | PRの変更ファイル一覧 + リポジトリ内 `docs/project_docs/` ディレクトリ |
-| 算出ロジック | PRブランチ名またはタイトルからチケット番号を抽出 → `docs/project_docs/{ticket}/plan.md` の存在と必須セクション有無をチェック |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 算出ロジック | PRブランチ名またはタイトルからチケット番号（例: `T-20260220-008`）を抽出 → `docs/project_docs/` 配下でチケット番号に前方一致するディレクトリを検索（例: `T-20260220-008-cc-sdd-phase1-foundation/`）→ そのディレクトリ内の `plan.md` の存在と必須セクション有無をチェック |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 週次 |
 | 保持先 | `metrics/weekly/{YYYY-WW}/spec-coverage.json` |
 | 目標 | >80%（新規機能PRのみ。バグ修正・dependabot PRは除外） |
@@ -153,10 +155,17 @@ gh run list --repo boxp/arch --workflow ci.yml --limit 50 \
 **検証ロジック:**
 
 ```bash
+# チケット番号に前方一致するディレクトリを検索（サフィックス付き命名規則に対応）
+PLAN_DIR=$(find docs/project_docs/ -maxdepth 1 -type d -name "${TICKET}*" | head -1)
+if [ -z "$PLAN_DIR" ] || [ ! -f "${PLAN_DIR}/plan.md" ]; then
+  echo "plan.md not found for ${TICKET}"
+  exit 1
+fi
+
 # plan.mdの必須セクション確認
 required_sections=("## 概要" "## 実装計画" "## リスク")
 for section in "${required_sections[@]}"; do
-  grep -q "$section" "docs/project_docs/${TICKET}/plan.md"
+  grep -q "$section" "${PLAN_DIR}/plan.md"
 done
 ```
 
@@ -167,7 +176,7 @@ done
 | 定義 | Codexレビューの初回OK率（修正なしで通過した割合） |
 | データソース | OpenClaw進捗ファイル（`progress/*.md`）内のCodexレビュー結果記録 |
 | 算出ロジック | `(初回OK数) / (全レビュー実行数) * 100` |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 週次 |
 | 保持先 | `metrics/weekly/{YYYY-WW}/codex-pass-rate.json` |
 | 目標 | >60% |
@@ -185,7 +194,7 @@ done
 | 定義 | PRの変更行数（additions + deletions）の中央値 |
 | データソース | GitHub API: `GET /repos/{owner}/{repo}/pulls/{number}` の `additions`, `deletions` |
 | 算出ロジック | 直近マージPR群の `additions + deletions` を昇順ソートし中央値を算出 |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 週次 |
 | 保持先 | `metrics/weekly/{YYYY-WW}/pr-size.json` |
 | 目標 | 中央値 <300行 |
@@ -226,7 +235,7 @@ total=$(ls -1 .openclaw/workspace/T-*.md 2>/dev/null | wc -l)
 | 定義 | AGENTS.md の最終更新からの経過日数 |
 | データソース | Git log: `AGENTS.md` の最終コミット日時 |
 | 算出ロジック | `today - last_commit_date(AGENTS.md)` |
-| 対象リポジトリ | `boxp/arch`, `openclaw/openclaw` |
+| 対象リポジトリ | `boxp/arch`, `boxp/lolice` |
 | 計測頻度 | 週次 |
 | 保持先 | `metrics/weekly/{YYYY-WW}/steering-freshness.json` |
 | 目標 | <30日 |
@@ -269,7 +278,7 @@ metrics/
   "period": "2026-W08",
   "repositories": {
     "boxp/arch": { "value": 15, "unit": "merges" },
-    "openclaw/openclaw": { "value": 8, "unit": "merges" }
+    "boxp/lolice": { "value": 8, "unit": "merges" }
   },
   "aggregated": { "value": 23, "unit": "merges" },
   "target": "+20% from baseline",
