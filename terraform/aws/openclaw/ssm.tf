@@ -129,3 +129,49 @@ resource "aws_ssm_parameter" "grafana_api_key" {
     ignore_changes = [value]
   }
 }
+
+# --- Google 連携用 SSM パラメータ (Phase 1) ---
+
+# Google OAuth Client ID をSSMパラメータに保存 (Calendar API用)
+resource "aws_ssm_parameter" "google_oauth_client_id" {
+  name        = "/lolice/openclaw/GOOGLE_OAUTH_CLIENT_ID"
+  description = "Google OAuth2 Client ID for Calendar API"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Google OAuth Client Secret をSSMパラメータに保存 (Calendar API用)
+resource "aws_ssm_parameter" "google_oauth_client_secret" {
+  name        = "/lolice/openclaw/GOOGLE_OAUTH_CLIENT_SECRET"
+  description = "Google OAuth2 Client Secret for Calendar API"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Google OAuth Refresh Token をSSMパラメータに保存 (Calendar API用)
+resource "aws_ssm_parameter" "google_oauth_refresh_token" {
+  name        = "/lolice/openclaw/GOOGLE_OAUTH_REFRESH_TOKEN"
+  description = "Google OAuth2 Refresh Token for Calendar API (offline access)"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
+
+# Google Maps API Key をSSMパラメータに保存 (Geocoding/Directions用)
+resource "aws_ssm_parameter" "google_maps_api_key" {
+  name        = "/lolice/openclaw/GOOGLE_MAPS_API_KEY"
+  description = "Google Maps API Key for Geocoding and Directions API"
+  type        = "SecureString"
+  value       = "dummy-value-to-be-updated-manually"
+  lifecycle {
+    ignore_changes = [value]
+  }
+}
