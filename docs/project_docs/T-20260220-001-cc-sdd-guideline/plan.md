@@ -143,11 +143,17 @@ gh pr list --state merged --limit 20 \
 done | awk '{ sum += $1; n++ } END { if (n>0) printf "平均レビュー時間: %.1f h\n", sum/n }'
 
 # CI成功率: 実際の取得件数を分母として率を算出
+# ACTUAL_TOTAL==0 の場合（導入初期で履歴なし等）は「データなし」として扱い、
+# 計測を停止せず次の指標へ進む
 RUNS=$(gh run list --workflow ci.yml --limit 50 \
   --json conclusion --jq '.')
 ACTUAL_TOTAL=$(echo "$RUNS" | jq 'length')
 SUCCESS=$(echo "$RUNS" | jq '[.[] | select(.conclusion == "success")] | length')
-echo "CI成功率: $((SUCCESS * 100 / ACTUAL_TOTAL))% (${SUCCESS}/${ACTUAL_TOTAL})"
+if [ "$ACTUAL_TOTAL" -eq 0 ]; then
+  echo "CI成功率: データなし (該当するワークフロー実行が0件)"
+else
+  echo "CI成功率: $((SUCCESS * 100 / ACTUAL_TOTAL))% (${SUCCESS}/${ACTUAL_TOTAL})"
+fi
 ```
 
 ### 4. 更新フロー
@@ -160,6 +166,7 @@ echo "CI成功率: $((SUCCESS * 100 / ACTUAL_TOTAL))% (${SUCCESS}/${ACTUAL_TOTAL
 
 継続的更新トリガー:
   - CI成功率が80%を下回った場合 → ステアリングドキュメント見直し
+    ※ ワークフロー実行が0件（データなし）の場合はトリガーしない
   - 変更失敗率が10%を超えた場合 → 品質ゲート強化
   - 新しいAIツール/機能の導入時 → ガイドライン追記
 ```
