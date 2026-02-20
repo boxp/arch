@@ -68,9 +68,16 @@ fi
 
 if [ $PATCH_APPLIED -eq 0 ]; then
     echo ""
-    echo "WARNING: No patches were applied. The code structure may have changed."
-    echo "Please verify if this fix is still needed or update the patch patterns."
-    # Don't fail here - the fix might already be upstream
+    echo "ERROR: No patches were applied!"
+    echo "The OpenClaw version may have changed its minified code structure."
+    echo ""
+    echo "Actions required:"
+    echo "  1. Check if upstream issue #10640 has been fixed"
+    echo "  2. If fixed upstream, remove this patch script and Dockerfile reference"
+    echo "  3. If not fixed, update the patch patterns to match the new code structure"
+    echo ""
+    echo "See: https://github.com/openclaw/openclaw/issues/10640"
+    exit 1
 fi
 
 echo ""
