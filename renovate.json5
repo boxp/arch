@@ -80,6 +80,14 @@
       matchPackageNames: ["kube-vip/kube-vip"],
       automerge: false,
       labels: ["kubernetes", "kube-vip"]
+    },
+    // OpenClaw base image (manual review required, triggers downstream rebuild)
+    {
+      matchDatasources: ["docker"],
+      matchPackageNames: ["ghcr.io/openclaw/openclaw"],
+      automerge: false,
+      labels: ["openclaw", "base-image"],
+      description: "OpenClaw upstream base image. Merge triggers ghcr.io/boxp/arch/openclaw rebuild via GitHub Actions, then ArgoCD Image Updater deploys to lolice."
     }
   ],
 }
