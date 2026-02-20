@@ -17,29 +17,36 @@ PATCH_APPLIED=0
 
 echo "Applying tool call ID sanitization fix (issue #10640)..."
 
-for file in "$DIST_DIR"/*.js; do
-    [ -f "$file" ] || continue
-
+# Find all JS files recursively (includes plugin-sdk subdirectory)
+find "$DIST_DIR" -name "*.js" -type f | while read -r file; do
     if grep -q 'sanitizeToolCallIds' "$file"; then
         echo "Processing: $file"
 
-        # Fix A: !isOpenAi&&sanitizeToolCallIds -> sanitizeToolCallIds
+        # Fix A: !isOpenAi && sanitizeToolCallIds -> sanitizeToolCallIds
         # (removes the OpenAI exclusion from sanitization)
-        if grep -q '!isOpenAi&&sanitizeToolCallIds' "$file"; then
-            sed -i 's/!isOpenAi&&sanitizeToolCallIds/sanitizeToolCallIds/g' "$file"
+        # Note: The compiled code has spaces around &&
+        if grep -q '!isOpenAi && sanitizeToolCallIds' "$file"; then
+            sed -i 's/!isOpenAi && sanitizeToolCallIds/sanitizeToolCallIds/g' "$file"
             echo "  Applied fix A: Removed OpenAI exclusion from sanitizeToolCallIds"
-            PATCH_APPLIED=1
+            echo "1" > /tmp/patch_applied
         fi
 
-        # Fix B: allowNonImageSanitization&&options?.sanitizeToolCallIds -> options?.sanitizeToolCallIds
+        # Fix B: allowNonImageSanitization && options?.sanitizeToolCallIds -> options?.sanitizeToolCallIds
         # (decouples ID sanitization from sanitizeMode)
-        if grep -q 'allowNonImageSanitization&&options?.sanitizeToolCallIds' "$file"; then
-            sed -i 's/allowNonImageSanitization&&options?.sanitizeToolCallIds/options?.sanitizeToolCallIds/g' "$file"
+        # Note: The compiled code has spaces around &&
+        if grep -q 'allowNonImageSanitization && options?.sanitizeToolCallIds' "$file"; then
+            sed -i 's/allowNonImageSanitization && options?.sanitizeToolCallIds/options?.sanitizeToolCallIds/g' "$file"
             echo "  Applied fix B: Decoupled ID sanitization from sanitizeMode"
-            PATCH_APPLIED=1
+            echo "1" > /tmp/patch_applied
         fi
     fi
 done
+
+# Check if any patches were applied (using temp file due to subshell)
+if [ -f /tmp/patch_applied ]; then
+    PATCH_APPLIED=1
+    rm -f /tmp/patch_applied
+fi
 
 # Verification
 echo ""
@@ -48,13 +55,13 @@ echo "Verifying patches..."
 VERIFY_FAILED=0
 
 # Verify fix A was applied (the old pattern should not exist)
-if grep -r '!isOpenAi&&sanitizeToolCallIds' "$DIST_DIR"/*.js 2>/dev/null; then
+if grep -r '!isOpenAi && sanitizeToolCallIds' "$DIST_DIR" --include="*.js" 2>/dev/null; then
     echo "ERROR: Fix A verification failed - old pattern still exists"
     VERIFY_FAILED=1
 fi
 
 # Verify fix B was applied
-if grep -r 'allowNonImageSanitization&&options?.sanitizeToolCallIds' "$DIST_DIR"/*.js 2>/dev/null; then
+if grep -r 'allowNonImageSanitization && options?.sanitizeToolCallIds' "$DIST_DIR" --include="*.js" 2>/dev/null; then
     echo "ERROR: Fix B verification failed - old pattern still exists"
     VERIFY_FAILED=1
 fi
