@@ -56,7 +56,7 @@
   "r2_buckets": [
     {
       "binding": "MOLTBOT_BUCKET",
-      "bucket_name": "moltworker-data"
+      "bucket_name": "moltbot-data"
     }
   ],
 
