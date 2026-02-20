@@ -122,14 +122,14 @@ trap 'rm -f "$TEMP_BOARD"' EXIT
     if [[ "$line" =~ ^##\  ]]; then
       if [[ "$line" == "## Done" || "$line" == "## Done ("* ]]; then
         skip_section=1
-        echo "$line"
+        echo "## Done (0)"
         echo ""
         echo "- (archived to archived/${DATE_STAMP}.md)"
         echo ""
         continue
       elif [[ "$line" == "## Rejected" || "$line" == "## Rejected ("* ]]; then
         skip_section=1
-        echo "$line"
+        echo "## Rejected (0)"
         echo ""
         echo "- (archived to archived/${DATE_STAMP}.md)"
         echo ""
