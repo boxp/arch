@@ -188,7 +188,7 @@ Web表示側では `##` 見出しをKanbanカラム、`- **[T-...]**` をカー�
 ```
 
 - **Markdownソース取得元**: GitHub API (`GET /repos/:owner/:repo/contents/path`) or R2
-- **レンダリング**: `marked` / `markdown-it` 等のJSライブラリをWorkerにバンドル
+- **レンダリング**: `marked` / `markdown-it` 等のJSライブラリをWorkerにバンドル + **Workers互換HTMLサニタイザーでサニタイズ（必須）**
 - **キャッシュ**: Cache API で TTL 60秒、stale-while-revalidate パターン
 
 **利点**: SEO対応、初回表示が速い、JSなしで動作
@@ -212,7 +212,7 @@ Web表示側では `##` 見出しをKanbanカラム、`- **[T-...]**` をカー�
 
 ```
 [ブラウザ] → [CF Access] → [CF Cache] → HIT: キャッシュHTML返却
-                                       → MISS: [Worker: fetch → render → cache store → 返却]
+                                       → MISS: [Worker: fetch → render → sanitize → cache store → 返却]
 ```
 
 - αと同じレンダリングだが、CDN EdgeキャッシュまたはKVを活用
@@ -280,7 +280,7 @@ Phase 2でcronジョブ連動またはイベント駆動を導入し、更新即
                                     ↓
 [ブラウザ] → [CF Access (GitHub認証)] → [CF Cache]
                                           ↓ MISS
-                                    [Worker: R2から取得 → marked.jsでHTML変換 → Cache格納 → 返却]
+                                    [Worker: R2から取得 → marked.jsでHTML変換 → HTMLサニタイズ → CSPヘッダ付与 → Cache格納 → 返却]
 ```
 
 **ドメイン**: `board.b0xp.io`
@@ -288,7 +288,7 @@ Phase 2でcronジョブ連動またはイベント駆動を導入し、更新即
 **選定理由:**
 1. **デプロイ不要**: board.mdの更新はR2へのアップロードのみ。Worker自体の再デプロイは不要
 2. **運用コスト最小**: サーバーレス、既存R2バケット活用、Cloudflare無料枠内
-3. **セキュリティ**: Cloudflare Access (GitHub認証) による既存パターン踏襲
+3. **セキュリティ**: Cloudflare Access (GitHub認証) + DOMPurifyサニタイズ + CSPヘッダによる多層防御
 4. **既存ノウハウ活用**: moltworkerのTerraform/wrangler設定パターンを流用
 5. **段階的拡張**: 将来的にKanbanビューやフィルタ機能をWorker/クライアントJSで追加可能
 
@@ -309,7 +309,21 @@ Phase 2でcronジョブ連動またはイベント駆動を導入し、更新即
 
 2. **Worker実装**: `docker/board-viewer/`
    - `wrangler.jsonc`: route `board.b0xp.io/*`, R2バインディング
-   - `src/index.ts`: R2からboard.md取得 → `marked` でHTML変換 → レスポンス
+   - `src/index.ts`: R2からboard.md取得 → `marked` でHTML変換 → **HTMLサニタイズ** → レスポンス
+   - **HTMLサニタイズ（必須）**: `marked` はデフォルトでサニタイズを行わないため、Workers互換のHTMLサニタイザーをWorker側で適用する。board.mdに混入しうるHTML/scriptタグによるXSSを防止する
+     - **ライブラリ選定**: Cloudflare Workers ランタイムでは `jsdom` が動作しないため、以下のいずれかを採用（Phase 1実装時にWorkers互換検証を通過したものを選定）:
+       - `sanitize-html`（Workers互換、ホワイトリスト方式、軽量）
+       - `dompurify` + `linkedom`（`jsdom` の代替として `linkedom` を使用、Workers互換のDOM実装）
+       - HTMLRewriter API（Cloudflare Workers ネイティブ、タグフィルタリングに適用可能）
+     - 許可タグ方針: Markdown由来の標準HTML要素のみ（`<h1>`〜`<h6>`, `<p>`, `<ul>`, `<ol>`, `<li>`, `<table>`, `<a>`, `<code>`, `<pre>`, `<strong>`, `<em>`, `<blockquote>`, `<img>` 等）
+     - 禁止: `<script>`, `<iframe>`, `<object>`, `<embed>`, `<form>`, `on*` イベント属性, `javascript:` URI
+     - `<a href>` は `https:` / `http:` / 相対パスのみ許可（`javascript:`, `data:` スキーム禁止）
+     - `<img src>` は `https:` のみ許可（`data:` URI禁止、外部トラッキング/情報漏洩リスク低減のため）
+   - **CSP（Content Security Policy）ヘッダ**: レスポンスに以下を付与
+     - `Content-Security-Policy: default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'`
+     - `script-src 'none'`: スクリプト実行の明示的禁止
+     - `frame-ancestors 'none'`: clickjacking対策（iframe埋め込み禁止）
+     - `img-src https:`: 外部画像は HTTPS のみ許可（`data:` 禁止でSVG/HTML経由の攻撃を防止）
    - 最小CSS（GitHub Markdown風スタイル）をインライン埋め込み
    - Cache-Control ヘッダでCDNキャッシュ（TTL 60秒）
 
@@ -334,7 +348,33 @@ Phase 2でcronジョブ連動またはイベント駆動を導入し、更新即
 
 ---
 
-## 8. リスクと緩和策
+## 8. セキュリティ: 脅威モデルと対策
+
+### 8.1 脅威モデル
+
+board.mdはMarkdownファイルだが、以下の経路でHTML/scriptが混入する可能性がある:
+
+| 脅威 | 混入経路 | 影響 |
+|------|----------|------|
+| **Stored XSS** | board.mdに `<script>` タグやイベント属性（`onerror` 等）が手動編集で混入 | Access配下の閲覧者のブラウザでスクリプト実行 |
+| **Markdown経由XSS** | Markdownの画像構文やリンク構文に `javascript:` URIを埋め込み | クリック時にスクリプト実行 |
+| **外部由来テキスト取り込み** | openclawが外部ソース（GitHub Issues等）からテキストを取り込みboard.mdに反映する際、サニタイズ漏れ | 間接的なスクリプト注入 |
+| **外部リソース読み込み** | board.mdに外部URLを参照する `<img>` タグや Markdown画像構文が含まれる場合 | 閲覧者のIP・UA等が外部サーバーに送信される（トラッキング/情報漏洩） |
+
+### 8.2 多層防御戦略（Phase 1で全て実装）
+
+| 層 | 対策 | 実装 |
+|----|------|------|
+| **L1: サーバー側サニタイズ** | `marked` 変換後のHTMLをWorkers互換サニタイザーで浄化 | Worker内で `marked(md)` → サニタイズ（`sanitize-html` / `dompurify+linkedom` / HTMLRewriter のいずれか、Workers互換検証済みのもの） |
+| **L2: 許可タグ方針** | ホワイトリスト方式で許可する要素・属性を限定 | `ALLOWED_TAGS`: 標準Markdownで生成されるHTML要素のみ。`FORBID_TAGS`: `script`, `iframe`, `object`, `embed`, `form`。`FORBID_ATTR`: `on*` イベント属性 |
+| **L3: URIスキーム制限** | `<a href>`, `<img src>` の許可スキームを限定 | `<a href>`: `https:` / `http:` / 相対パスのみ。`<img src>`: `https:` のみ。`javascript:`, `data:` スキームは全て禁止 |
+| **L4: CSPヘッダ** | ブラウザ側でのスクリプト実行・iframe埋め込みを完全禁止 | `Content-Security-Policy: default-src 'none'; script-src 'none'; style-src 'unsafe-inline'; img-src https:; base-uri 'none'; form-action 'none'; frame-ancestors 'none'` |
+
+L1〜L4の多層防御により、仮にDOMPurifyにバイパス脆弱性が発見されてもCSPで防御、CSP未対応ブラウザでもDOMPurifyで防御するフェイルセーフ構造とする。
+
+---
+
+## 9. リスクと緩和策
 
 | リスク | 影響度 | 緩和策 |
 |--------|--------|--------|
@@ -342,11 +382,12 @@ Phase 2でcronジョブ連動またはイベント駆動を導入し、更新即
 | R2からの取得遅延 | 低 | CDNキャッシュで軽減。TTL 60秒で十分 |
 | board.md形式変更でパース失敗 | 中 | Phase 1はMarkdown全体をそのままHTMLレンダリングするため影響なし |
 | GitHub認証のCloudflare Access障害 | 低 | Cloudflare SLA 99.9%。代替手段としてCLIアクセスは常時可能 |
-| marked.jsの脆弱性 | 中 | DOMPurifyによるサニタイズ追加。定期的なdependency update |
+| board.mdへのHTML/script混入によるXSS | 高 | **Phase 1で必須対策**: (1) DOMPurifyによるサーバー側HTMLサニタイズ（許可タグのホワイトリスト方式）、(2) CSPヘッダでscript実行を完全禁止（`default-src 'none'`）、(3) `<a>` hrefのスキーム制限。外部由来テキスト取り込みや手動編集による混入を想定 |
+| marked.jsの脆弱性 | 中 | DOMPurifyによる多層防御で緩和。定期的なdependency update（Renovate）。marked自体のXSS bypassが発見された場合もDOMPurify + CSPで防御 |
 
 ---
 
-## 9. 非スコープの確認
+## 10. 非スコープの確認
 
 以下は本計画では実施しない:
 
@@ -357,7 +398,7 @@ Phase 2でcronジョブ連動またはイベント駆動を導入し、更新即
 
 ---
 
-## 10. 次のアクション
+## 11. 次のアクション
 
 1. 本計画のレビュー・承認
 2. Phase 1実装タスクをboard.mdのInboxに追加
