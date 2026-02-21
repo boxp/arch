@@ -2,16 +2,8 @@
 # Used for openclaw configuration, conversation history, and file persistence
 # across container restarts.
 
-removed {
-  from = cloudflare_r2_bucket.moltworker_data
-
-  lifecycle {
-    destroy = false
-  }
+resource "cloudflare_r2_bucket" "moltworker_data" {
+  account_id = var.account_id
+  name       = "moltbot-data"
+  location   = "APAC"
 }
-
-# resource "cloudflare_r2_bucket" "moltworker_data" {
-#   account_id = var.account_id
-#   name       = "moltbot-data"
-#   location   = "APAC"
-# }
