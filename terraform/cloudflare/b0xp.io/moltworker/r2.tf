@@ -10,8 +10,8 @@ removed {
   }
 }
 
-resource "cloudflare_r2_bucket" "moltworker_data" {
-  account_id = var.account_id
-  name       = "moltbot-data"
-  location   = "APAC"
-}
+# resource "cloudflare_r2_bucket" "moltworker_data" {
+#   account_id = var.account_id
+#   name       = "moltbot-data"
+#   location   = "APAC"
+# }
