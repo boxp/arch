@@ -69,4 +69,7 @@ RUN mkdir -p /home/node/.claude && \
 COPY --chown=node:node settings.json /home/node/.claude/settings.json
 COPY --chown=node:node mcp-config.json /home/node/.claude/mcp-config.json
 
+# Copy workspace scripts (board archive, etc.)
+COPY --chown=node:node scripts/ /home/node/.openclaw/scripts/
+
 ENV PATH="/home/node/.local/bin:${PATH}"
