@@ -20,6 +20,14 @@ FROM ghcr.io/openclaw/openclaw:2026.2.19@sha256:5352d3ababbc12237fda60fe00a25237
 
 USER root
 
+# GitHub Issue #10640: Tool call ID sanitization fix
+# Target: OpenClaw 2026.2.19 - Remove when fixed upstream
+# See: https://github.com/openclaw/openclaw/issues/10640
+COPY patches/fix-tool-call-id-sanitization.sh /tmp/
+RUN chmod +x /tmp/fix-tool-call-id-sanitization.sh && \
+    /tmp/fix-tool-call-id-sanitization.sh && \
+    rm /tmp/fix-tool-call-id-sanitization.sh
+
 # Install gh CLI
 RUN apt-get update && \
     apt-get install -y --no-install-recommends curl gpg && \
@@ -60,5 +68,8 @@ RUN mkdir -p /home/node/.claude && \
       > /home/node/.claude/config.json
 COPY --chown=node:node settings.json /home/node/.claude/settings.json
 COPY --chown=node:node mcp-config.json /home/node/.claude/mcp-config.json
+
+# Copy workspace scripts (board archive, etc.)
+COPY --chown=node:node scripts/ /home/node/.openclaw/scripts/
 
 ENV PATH="/home/node/.local/bin:${PATH}"
