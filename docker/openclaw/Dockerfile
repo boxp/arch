@@ -59,11 +59,17 @@ RUN npm install -g @openai/codex
 
 # Workaround for https://github.com/openclaw/openclaw/issues/6989.
 # Remove once the upstream release bundles @opentelemetry/api.
-RUN cd /app && npm install --no-audit --no-fund \
+# Install in a separate directory to avoid npm arborist crash on /app's
+# existing node_modules tree. NODE_PATH makes them resolvable at runtime.
+RUN mkdir -p /opt/otel-deps && \
+    echo '{}' > /opt/otel-deps/package.json && \
+    cd /opt/otel-deps && \
+    npm install --no-audit --no-fund \
       @opentelemetry/api \
       @opentelemetry/sdk-node \
       @opentelemetry/sdk-metrics \
       @opentelemetry/exporter-metrics-otlp-proto
+ENV NODE_PATH="/opt/otel-deps/node_modules"
 
 USER node
 
