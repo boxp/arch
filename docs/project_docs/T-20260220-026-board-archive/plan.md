@@ -32,7 +32,7 @@ board.md の Done/Rejected セクションを毎日 JST 24:00（15:00 UTC）に�
 ```
 Schedule: 0 15 * * * (毎日 15:00 UTC = JST 24:00)
 Session: isolated
-Prompt: "Run the board archive script: bash docker/openclaw/scripts/archive-board.sh"
+Prompt: "Run the board archive script: bash /home/node/.openclaw/scripts/archive-board.sh"
 ```
 
 設定コマンド（手動で1回実行）:
@@ -41,7 +41,7 @@ openclaw cron add \
   --name "board-archive-daily" \
   --schedule "0 15 * * *" \
   --session isolated \
-  --prompt 'Run: bash docker/openclaw/scripts/archive-board.sh'
+  --prompt 'Run: bash /home/node/.openclaw/scripts/archive-board.sh'
 ```
 
 ### ディレクトリ構造
@@ -66,4 +66,5 @@ tasks/
 ## 変更ファイル
 
 1. `docker/openclaw/scripts/archive-board.sh` - 新規: アーカイブスクリプト
-2. `docs/project_docs/T-20260220-026-board-archive/plan.md` - 新規: 本計画書
+2. `docker/openclaw/Dockerfile` - 変更: スクリプトをコンテナ内 `/home/node/.openclaw/scripts/` へ配置する COPY 命令追加
+3. `docs/project_docs/T-20260220-026-board-archive/plan.md` - 新規: 本計画書
