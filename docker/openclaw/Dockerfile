@@ -57,6 +57,14 @@ COPY --from=babashka-download /bb /usr/local/bin/bb
 # Install Codex CLI globally
 RUN npm install -g @openai/codex
 
+# Workaround for https://github.com/openclaw/openclaw/issues/6989.
+# Remove once the upstream release bundles @opentelemetry/api.
+RUN cd /app && npm install --no-audit --no-fund \
+      @opentelemetry/api \
+      @opentelemetry/sdk-node \
+      @opentelemetry/sdk-metrics \
+      @opentelemetry/exporter-metrics-otlp-proto
+
 USER node
 
 # Install Claude Code CLI (user-level)
