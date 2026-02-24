@@ -6,33 +6,33 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cli/cli/v2.86.0/gh_2.86.0_linux_amd64.tar.gz",
-      "checksum": "F3B08BD6A28420CC2229B0A1A687FA25F2B838D3F04B297414C1041CA68103C7",
+      "id": "github_release/github.com/cli/cli/v2.87.2/gh_2.87.2_linux_amd64.tar.gz",
+      "checksum": "18360B2243E3BF9C1457035DB45F6400AE4CF957DCC2F674E69717B4E0B14D55",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cli/cli/v2.86.0/gh_2.86.0_linux_arm64.tar.gz",
-      "checksum": "83CF7A7962EA9DFCC2C123666695792916A87AF32CBA5F1F6E585DB08FA57547",
+      "id": "github_release/github.com/cli/cli/v2.87.2/gh_2.87.2_linux_arm64.tar.gz",
+      "checksum": "E37EFDD8EC98425F44175040B5037C767BBD49F192AED1DE5AABC4B4EA9E22C5",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cli/cli/v2.86.0/gh_2.86.0_macOS_amd64.zip",
-      "checksum": "CED7094D05702EB54A63542ABD8A1DC570B7E5AE94951844EB1626BA74BC2C60",
+      "id": "github_release/github.com/cli/cli/v2.87.2/gh_2.87.2_macOS_amd64.zip",
+      "checksum": "5CE4DA6DA0F29E6AA46E54EA6ADB2528243D2BB517A7098E75CCA16A5D983D28",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cli/cli/v2.86.0/gh_2.86.0_macOS_arm64.zip",
-      "checksum": "BDE753978A352C5AE6C4ABEC47334D516E82807AF20C9DBBD45507A5A0AEDAAA",
+      "id": "github_release/github.com/cli/cli/v2.87.2/gh_2.87.2_macOS_arm64.zip",
+      "checksum": "18D90C7AE5B462D47CC665D4C59DE61AF1E208EDB81A9ABEE1B5A82C94E91D94",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cli/cli/v2.86.0/gh_2.86.0_windows_amd64.zip",
-      "checksum": "983C74A8C594366B198485187CD6D4D07638F0BF9A9948D51A2A81A5164D8BFD",
+      "id": "github_release/github.com/cli/cli/v2.87.2/gh_2.87.2_windows_amd64.zip",
+      "checksum": "8483C9F5E5F777E5D7994D5BA3562C5FACE6EA5046AF142B208EB4D6713F7749",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cli/cli/v2.86.0/gh_2.86.0_windows_arm64.zip",
-      "checksum": "1CC4276108D4023BF0487F48401B69989222260A78910BB9F72DCB32680F725D",
+      "id": "github_release/github.com/cli/cli/v2.87.2/gh_2.87.2_windows_arm64.zip",
+      "checksum": "8BE40AD1CD67AF6132A807E55AD1FE48D4292F40E60C29888482E8C04ECF0F4A",
       "algorithm": "sha256"
     },
     {
@@ -56,28 +56,28 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/int128/ghcp/v1.15.1/ghcp_darwin_amd64.zip",
-      "checksum": "9FB8839EE08BC0D98973970F3FEF88322E49E8486AC3BD80DCE57DCEA97035E2",
+      "id": "github_release/github.com/int128/ghcp/v1.15.2/ghcp_darwin_amd64.zip",
+      "checksum": "37AAC4B1D7E451ABAA6D49B87608D9010EF3B1CD56E310A0A6895CE433292DBB",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/int128/ghcp/v1.15.1/ghcp_darwin_arm64.zip",
-      "checksum": "5A923E288CE67B454CD1C7D5118EBF4028E9F1905DF3B1105AE8D05A1FE23A6E",
+      "id": "github_release/github.com/int128/ghcp/v1.15.2/ghcp_darwin_arm64.zip",
+      "checksum": "E292732BA0B6D3EF2A19FEF0062EC72DC3E3E758568BABFE07D27F65D90348B1",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/int128/ghcp/v1.15.1/ghcp_linux_amd64.zip",
-      "checksum": "C5BA74D0B2652A4375C4AE653B7C065024A619ADCFF40DEDBFDD10D40E287D3D",
+      "id": "github_release/github.com/int128/ghcp/v1.15.2/ghcp_linux_amd64.zip",
+      "checksum": "A1E13FB5FEC92913E67984D88DB6D4C39473CCA3A6B9927621E410EE431F3532",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/int128/ghcp/v1.15.1/ghcp_linux_arm64.zip",
-      "checksum": "801DB65A3EA5148C7A89F5201F8992963F2592FC17ED5FD88E4D996BAD9542B2",
+      "id": "github_release/github.com/int128/ghcp/v1.15.2/ghcp_linux_arm64.zip",
+      "checksum": "5B0A4FFDBAA27FFE4CBAF13C3C4B6AC3EAB25D447947FAE114F89D1EE4EBF734",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/int128/ghcp/v1.15.1/ghcp_windows_amd64.zip",
-      "checksum": "A7673944CEFAA9955A3FEFA5DDF5B03C4CCEC2F7E5F0D14D2707804AF88BA22B",
+      "id": "github_release/github.com/int128/ghcp/v1.15.2/ghcp_windows_amd64.zip",
+      "checksum": "2E513207F22897E03B54A119ACECCFE623DBCC25C0DCCBDCBB15A3247616CBB7",
       "algorithm": "sha256"
     },
     {
@@ -156,28 +156,28 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.13.1/opa_darwin_amd64",
-      "checksum": "09F84CA9002450C41406F4D2A5BD95842D390A4673461FF8191A8C434FC6BC72",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.13.2/opa_darwin_amd64",
+      "checksum": "D88DB0CE918FCCD9E979E83BA537658BA475734BB6673D1D75A366A74FFCE4B5",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.13.1/opa_darwin_arm64_static",
-      "checksum": "9B3583221498FDF9BFE7944A219008AAB977DC3189247D40560C30947C179DB6",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.13.2/opa_darwin_arm64_static",
+      "checksum": "F0537DA4E8806F84AE05A2742C868CE9AC29E2D2635AB06D223BBA01DE99F026",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.13.1/opa_linux_amd64_static",
-      "checksum": "B6C96DBCAF9C1C03E95C326B9CDFFC4F931BF6AC0EC93B3B98C1BAC9DEBA93DE",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.13.2/opa_linux_amd64_static",
+      "checksum": "84192D8EA8D000D396FABD7C3C4CE84E2B3921EC5331F66BF982362BC04C7E18",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.13.1/opa_linux_arm64_static",
-      "checksum": "5B82438279FB94992BFF49ED6ED4CB486564A98E9543C4E5FF0EEE9A46AC7C6C",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.13.2/opa_linux_arm64_static",
+      "checksum": "C0F63F075A7282D207361920D0331BDD239BB41E8F0227A966B241F567123F57",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.13.1/opa_windows_amd64.exe",
-      "checksum": "880000E48BC05458FB7CB1AEC37DD667532CC6E75C388007AA7A0044B797FD44",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.13.2/opa_windows_amd64.exe",
+      "checksum": "14FDC37180A68C9BE66ADAD7154A56D7132278A0A6E52A3C2A80CB7E6AB55805",
       "algorithm": "sha256"
     },
     {
@@ -451,8 +451,8 @@
       "algorithm": "sha256"
     },
     {
-      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.474.0/registry.yaml",
-      "checksum": "016EF14665FC08BE9E471077E473DA2690F7EA9AEB2E5C157BEB502DD494A3D8DA7F10BDE4271EAFC4A878813ADEDA4BBB4648AD7D935435A59389FB95AEE856",
+      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.475.0/registry.yaml",
+      "checksum": "E345B9F34974C93379E0DA176EEBAE252B0AF19F52DCA0D8956B198BB2075EDF6EE54BEFF8A5D959CED5D50467DE2FD7EABB2E84C71E8A05284C29E31DE587C1",
       "algorithm": "sha512"
     }
   ]
