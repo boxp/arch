@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     tar xzf babashka.tar.gz && \
     chmod +x bb
 
-FROM ghcr.io/openclaw/openclaw:2026.2.22@sha256:51c3fe85913545ca6c15c0fe2447230167ed1d329a07088f67d2a1612541b64b
+FROM ghcr.io/openclaw/openclaw:2026.2.25@sha256:3be2d31b096d2b77405d5a33d896d03e7c41f6bc2411977b20fcc5b253144116
 
 USER root
 
