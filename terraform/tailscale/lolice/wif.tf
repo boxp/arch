@@ -8,11 +8,15 @@ resource "tailscale_federated_identity" "github_actions_argocd_diff" {
   # Subject: restrict to pull_request events from the target repository
   subject = "repo:${var.github_repository}:pull_request"
 
+  # Scopes granted to tokens generated via this trust credential
+  scopes = ["auth_keys", "devices:core"]
+
   # Tags assigned to ephemeral nodes created via this trust credential
+  # Required when scopes include "devices:core" or "auth_keys"
   tags = ["tag:ci"]
 
   # Custom claim rules to further restrict to the specific workflow
-  claim_mappings = {
+  custom_claim_rules = {
     workflow = var.argocd_diff_workflow_name
   }
 }
