@@ -53,6 +53,7 @@
 - **`terraform/`** - プロバイダーごとに整理されたメインのterraform設定
   - `aws/` - AWSリソース（IAM、ECR、SSM Parameter Storeなど）
   - `cloudflare/` - Cloudflareリソース（DNS、トンネル、アクセスポリシー）
+  - `tailscale/` - Tailscaleリソース（ACL、WIF Trust Credential、DNS、subnet routes）※導入予定
   - 管理対象ドメイン: `b0xp.io` と `boxp.tk`
 - **`policy/terraform/`** - ガバナンス用のOpen Policy Agent (OPA)ポリシー
 - **`templates/`** - 新しいコンポーネント用のTerraformモジュールテンプレート
@@ -65,6 +66,7 @@
 - **Open Policy Agent** - ポリシー実行
 - **AWS** - クラウドサービス（主にIAM、ECR、SSM）
 - **Cloudflare** - DNS、トンネル、アクセス管理
+- **Tailscale** - VPN/ゼロトラストネットワーク、Workload Identity Federation
 - **Renovate** - 自動依存関係更新
 
 ### `lolice`プロジェクトとの関係
@@ -73,6 +75,7 @@
 - `lolice`はインフラストラクチャーを使用してKubernetesクラスター上にアプリケーションをデプロイ
 - AWS SSM Parameter Store (arch)で管理されるシークレットは`lolice`のExternal Secretsによって消費されます
 - `arch`で定義されたCloudflareトンネルは`lolice`サービスへの安全な外部アクセスを提供
+- Tailscale関連設定（ACL、WIF Trust Credential、DNS、subnet routes）は`arch`のTerraformで一元管理し、`lolice`側はKubernetes上のsubnet routerデプロイのみを担当
 - `lolice`プロジェクトは git@github.com:boxp/lolice.git に存在します
 
 ### TFAction CI/CDフロー
@@ -88,6 +91,15 @@
 - GitHub Actions用の最小権限のAWS IAMロール
 - AWS SSM Parameter Store経由のシークレット管理
 - Renovateによる定期的な依存関係更新
+
+### Tailscale Terraform管理方針（導入予定）
+`lolice`クラスターのGitHub Actions CI/CDでTailscale Workload Identity Federation（WIF）を活用し、Cloudflare Service Tokenの長寿命キーを置き換える計画。Tailscale関連の全設定は`arch`リポジトリのTerraform（tfaction）で管理する方針。詳細は `boxp/lolice` PR #490 の計画ドキュメントを参照。
+
+- **管理対象（Terraform必須）**: ACLポリシー、WIF Trust Credential、DNS設定、subnet routes承認
+- **配置**: `terraform/tailscale/lolice/` 配下にターゲットを構成予定
+- **CI/CD**: `tfaction-root.yaml`の`target_groups`にtailscaleエントリを追加、`.github/workflows/wc-plan.yaml`のprovider whitelistに`tailscale/tailscale`を追加が必要
+- **責務分離**: `arch`がTailscale設定の宣言・適用を担当、`lolice`はKubernetes上のsubnet router Podデプロイとauth key管理（External Secrets経由）を担当
+- **ロールバック**: 通常はPR revert + tfaction apply、緊急時はtargeted destroy、最終手段として管理コンソール手動操作（24時間以内にTerraform追従必須）
 
 ## 重要な注意事項
 
