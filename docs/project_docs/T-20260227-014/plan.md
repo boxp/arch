@@ -117,7 +117,8 @@ curl -k https://<argocd-cluster-ip>:443/api/version
 
 1. PR #7263 + #7266 の変更を revert する PR を作成:
    ```bash
-   git revert --no-commit 4fc88b3..1e958d8
+   # 両コミットを新しい順に revert (範囲指定は始点を含まないため、個別に指定)
+   git revert --no-commit 1e958d8 4fc88b3
    git commit -m "revert: remove tailscale terraform resources"
    ```
 2. PR マージ → tfaction apply が自動実行
