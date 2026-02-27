@@ -7,10 +7,12 @@ terraform {
   }
 
   required_providers {
-    tailscale = {
-      source  = "tailscale/tailscale"
-      version = "0.28.0"
-    }
+    # NOTE: Add tailscale provider when TAILSCALE_API_KEY and
+    # TAILSCALE_TAILNET are configured as GitHub Secrets.
+    # tailscale = {
+    #   source  = "tailscale/tailscale"
+    #   version = "0.28.0"
+    # }
     aws = {
       source  = "hashicorp/aws"
       version = "~> 6.0"
