@@ -53,7 +53,7 @@
 - **`terraform/`** - プロバイダーごとに整理されたメインのterraform設定
   - `aws/` - AWSリソース（IAM、ECR、SSM Parameter Storeなど）
   - `cloudflare/` - Cloudflareリソース（DNS、トンネル、アクセスポリシー）
-  - `tailscale/` - Tailscaleリソース（ACL、WIF Trust Credential、DNS、subnet routes）※導入予定
+  - `tailscale/` - Tailscaleリソース（ACL、WIF Trust Credential、auth key、DNS、subnet routes）※Phase 1.5 完了・運用中
   - 管理対象ドメイン: `b0xp.io` と `boxp.tk`
 - **`policy/terraform/`** - ガバナンス用のOpen Policy Agent (OPA)ポリシー
 - **`templates/`** - 新しいコンポーネント用のTerraformモジュールテンプレート
@@ -92,14 +92,15 @@
 - AWS SSM Parameter Store経由のシークレット管理
 - Renovateによる定期的な依存関係更新
 
-### Tailscale Terraform管理方針（導入予定）
-`lolice`クラスターのGitHub Actions CI/CDでTailscale Workload Identity Federation（WIF）を活用し、Cloudflare Service Tokenの長寿命キーを置き換える計画。Tailscale関連の全設定は`arch`リポジトリのTerraform（tfaction）で管理する方針。詳細は `boxp/lolice` PR #490 の計画ドキュメントを参照。
+### Tailscale Terraform管理方針（Phase 1.5 完了・運用中）
+`lolice`クラスターのGitHub Actions CI/CDでTailscale Workload Identity Federation（WIF）を活用し、Cloudflare Service Tokenの長寿命キーを置き換える。Tailscale関連の全設定は`arch`リポジトリのTerraform（tfaction）で管理。詳細は `boxp/lolice` PR #490 の計画ドキュメントおよび `docs/project_docs/T-20260227-014/plan.md` を参照。
 
-- **管理対象（Terraform必須）**: ACLポリシー、WIF Trust Credential、DNS設定、subnet routes承認
-- **配置**: `terraform/tailscale/lolice/` 配下にターゲットを構成予定
-- **CI/CD**: `tfaction-root.yaml`の`target_groups`にtailscaleエントリを追加、`.github/workflows/wc-plan.yaml`のprovider whitelistに`tailscale/tailscale`を追加が必要
-- **責務分離**: `arch`がTailscale設定の宣言・適用を担当、`lolice`はKubernetes上のsubnet router Podデプロイとauth key管理（External Secrets経由）を担当
-- **ロールバック**: 通常はPR revert + tfaction apply、緊急時はtargeted destroy、最終手段として管理コンソール手動操作（24時間以内にTerraform追従必須）
+- **管理対象（Terraform管理済み）**: ACLポリシー (`tailscale_acl`)、WIF Trust Credential (`tailscale_federated_identity`)、auth key (`tailscale_tailnet_key` + AWS SSM)
+- **未適用（Phase 2）**: DNS設定、subnet routes承認（`argocd_service_cluster_ip` 設定後に有効化）
+- **配置**: `terraform/tailscale/lolice/` 配下にターゲット構成済み
+- **CI/CD**: `tfaction-root.yaml` の `target_groups` に tailscale エントリ追加済み、`.github/workflows/wc-plan.yaml` の provider whitelist に `tailscale/tailscale` 追加済み。Secrets: `TAILSCALE_API_KEY`, `TAILSCALE_TAILNET`
+- **責務分離**: `arch`がTailscale設定の宣言・適用を担当、`lolice`はKubernetes上のsubnet router Podデプロイとauth key消費（External Secrets経由）を担当
+- **ロールバック**: 通常はPR revert + tfaction apply、緊急時はtargeted destroy、最終手段として管理コンソール手動操作（24時間以内にTerraform追従必須）。詳細は `docs/project_docs/T-20260227-014/plan.md` セクション3を参照
 
 ## 重要な注意事項
 
