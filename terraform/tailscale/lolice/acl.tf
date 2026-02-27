@@ -7,16 +7,16 @@ resource "tailscale_acl" "this" {
       "tag:subnet-router"  = ["autogroup:admin"]
     }
 
-    acls = [
+    acls = var.argocd_service_cluster_ip != "" ? [
       # Allow CI-tagged nodes to reach ArgoCD API via subnet router.
       # dst uses the actual ClusterIP; tag-based dst does not cover
       # subnet route targets.
       {
         action = "accept"
         src    = ["tag:ci"]
-        dst    = var.argocd_service_cluster_ip != "" ? ["${var.argocd_service_cluster_ip}/32:443"] : []
+        dst    = ["${var.argocd_service_cluster_ip}/32:443"]
       },
-    ]
+    ] : []
 
     autoApprovers = var.argocd_service_cluster_ip != "" ? {
       routes = {
