@@ -7,6 +7,9 @@ resource "tailscale_tailnet_key" "subnet_router" {
   preauthorized = true
   tags          = ["tag:subnet-router"]
   description   = "lolice subnet router for ArgoCD API access"
+
+  # ACL must be applied first so that tag:subnet-router is recognised.
+  depends_on = [tailscale_acl.this]
 }
 
 # Store the auth key in AWS SSM Parameter Store for External Secrets to consume.

@@ -19,4 +19,7 @@ resource "tailscale_federated_identity" "github_actions_argocd_diff" {
   custom_claim_rules = {
     workflow = var.argocd_diff_workflow_name
   }
+
+  # ACL must be applied first so that tag:ci is recognised.
+  depends_on = [tailscale_acl.this]
 }
