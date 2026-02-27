@@ -62,6 +62,7 @@ jobs:
       gh_app_id: ${{secrets.gh_app_id}}
       gh_app_private_key: ${{secrets.gh_app_private_key}}
       gh_cloudflare_api_token: ${{secrets.gh_cloudflare_api_token}}
+      secrets: ${{secrets.secrets}}
     permissions:
       id-token: write
       contents: read

@@ -16,6 +16,8 @@ on:
         required: true
       gh_cloudflare_api_token:
         required: true
+      secrets:
+        required: false
 
 jobs:
   plan:
@@ -59,7 +61,7 @@ jobs:
 
       - uses: suzuki-shunsuke/tfaction/export-secrets@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
         with:
-          secrets: ${{toJSON(secrets)}}
+          secrets: ${{secrets.secrets || toJSON(secrets)}}
 
       - name: Generate token to download private Terraform Modules
         id: gh_setup_token
