@@ -3,8 +3,8 @@
 resource "tailscale_acl" "this" {
   acl = jsonencode({
     tagOwners = {
-      "tag:ci"             = ["autogroup:admin"]
-      "tag:subnet-router"  = ["autogroup:admin"]
+      "tag:ci"            = ["autogroup:admin"]
+      "tag:subnet-router" = ["autogroup:admin"]
     }
 
     acls = var.argocd_service_cluster_ip != "" ? [
