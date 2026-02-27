@@ -1,6 +1,6 @@
 output "wif_client_id" {
   description = "The client ID of the WIF federated identity for GitHub Actions."
-  value       = tailscale_federated_identity.github_actions_argocd_diff.client_id
+  value       = tailscale_federated_identity.github_actions_argocd_diff.id
 }
 
 output "subnet_router_auth_key_id" {
