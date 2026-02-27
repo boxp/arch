@@ -5,6 +5,7 @@ resource "tailscale_acl" "this" {
     tagOwners = {
       "tag:ci"            = ["autogroup:admin"]
       "tag:subnet-router" = ["autogroup:admin"]
+      "tag:k8s-operator"  = ["autogroup:admin"]
     }
 
     acls = var.argocd_service_cluster_ip != "" ? [
