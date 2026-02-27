@@ -11,5 +11,9 @@ terraform {
       source  = "tailscale/tailscale"
       version = "0.28.0"
     }
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 6.0"
+    }
   }
 }
