@@ -129,21 +129,34 @@ target_groups:
   terraform_command: terraform
   drift_detection:
     enabled: false
-  # NOTE: Add secrets config when TAILSCALE_API_KEY and TAILSCALE_TAILNET
-  # are configured as GitHub Secrets:
-  #   secrets:
-  #   - env_name: TAILSCALE_API_KEY
-  #     secret_name: TAILSCALE_API_KEY
-  #   - env_name: TAILSCALE_TAILNET
-  #     secret_name: TAILSCALE_TAILNET
   terraform_plan_config:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_terraform_plan
+    secrets:
+    - env_name: TAILSCALE_API_KEY
+      secret_name: TAILSCALE_API_KEY
+    - env_name: TAILSCALE_TAILNET
+      secret_name: TAILSCALE_TAILNET
   tfmigrate_plan_config:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_plan
+    secrets:
+    - env_name: TAILSCALE_API_KEY
+      secret_name: TAILSCALE_API_KEY
+    - env_name: TAILSCALE_TAILNET
+      secret_name: TAILSCALE_TAILNET
   terraform_apply_config:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_terraform_apply
+    secrets:
+    - env_name: TAILSCALE_API_KEY
+      secret_name: TAILSCALE_API_KEY
+    - env_name: TAILSCALE_TAILNET
+      secret_name: TAILSCALE_TAILNET
   tfmigrate_apply_config:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_apply
+    secrets:
+    - env_name: TAILSCALE_API_KEY
+      secret_name: TAILSCALE_API_KEY
+    - env_name: TAILSCALE_TAILNET
+      secret_name: TAILSCALE_TAILNET
 
 # - working_directory: github/services/
 #   target: github/
