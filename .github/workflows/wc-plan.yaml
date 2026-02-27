@@ -16,6 +16,10 @@ on:
         required: true
       gh_cloudflare_api_token:
         required: true
+      TAILSCALE_API_KEY:
+        required: false
+      TAILSCALE_TAILNET:
+        required: false
 
 jobs:
   plan:
