@@ -1,6 +1,7 @@
 # 自宅ローカルLLM運用 詳細調査レポート
 
 **作成日**: 2026-03-01
+**更新日**: 2026-03-02（Qwen3.5調査 + X検索結果を追記）
 **タスクID**: T-20260301-010
 **対象**: BOXP 自宅環境（OpenClaw + lolice k8s前提）
 
@@ -410,6 +411,37 @@
 | **MLX** | Apple Silicon | MLX形式, GGUF | Apple純正最適化 | Mac専用 |
 | **ExLlamaV2** | CUDA | EXL2 | 最高のCUDA推論速度 | NVIDIA最速重視 |
 
+### 2.10 Qwen3.5 追加調査（2026-03-02更新）
+
+> **調査メモ**: PRレビューで「Qwen3.5 の調査不足」を指摘されたため、公式情報と X 投稿を追加調査した。
+
+#### 2.10.1 公式リリース/モデル仕様（事実）
+
+- **Qwen3.5は 2026-01-01 に初回公開**（Qwen公式ニュース）
+- オープンウェイト系列として、`Qwen3.5-35B-A3B-Instruct-2507`、`Qwen3.5-122B-A10B-Instruct-2507`、`Qwen3.5-397B-A17B-Instruct-2507` を確認
+- いずれも MoE 系列で、**総パラメータに対して活性化パラメータが小さい**（例: 35B/3B, 397B/17B）
+- `qwen3.5-flash` / `qwen3.5-plus` は Model Studio の OpenAI互換API経由で利用可能
+
+| モデル | 形態 | パラメータ | コンテキスト | 備考 |
+|------|------|-----------|-------------|------|
+| Qwen3.5-35B-A3B-Instruct-2507 | Open Weights | 35.5B（3B active） | 262K（API版は最大1M） | ローカル運用の主力候補 |
+| Qwen3.5-122B-A10B-Instruct-2507 | Open Weights | 122B（10B active） | 262K | 大型メモリ構成向け |
+| Qwen3.5-397B-A17B-Instruct-2507 | Open Weights | 397B（17B active） | 262K（API版は最大1M） | 高性能だがローカル常用は高難度 |
+| qwen3.5-flash | Hosted API | 非公開（Qwen3.5系列） | 最大1M | 低コスト/高速用途 |
+| qwen3.5-plus | Hosted API | 非公開（Qwen3.5系列） | 最大1M | 高品質用途 |
+
+#### 2.10.2 コーディング観点の再評価（事実 + 推定）
+
+- Qwen公式モデルカードに掲載された coding 指標（SWE-Bench Verified / LiveCodeBench）では、Qwen3.5 系列が高水準
+- **ローカル重視**では `35B-A3B`、**品質重視**では `397B-A17B` または `qwen3.5-plus` が現実的な選択
+- 既存推奨の `Qwen2.5-Coder-32B` は引き続き有力だが、**2026年3月時点の話題性と更新性では Qwen3.5 系列を優先検証すべき**
+
+#### 2.10.3 本レポートへの反映方針
+
+1. ローカル実機の第一候補を `Qwen2.5-Coder-32B` 単独から **`Qwen2.5-Coder-32B` + `Qwen3.5-35B-A3B` の比較運用**に変更
+2. OpenClaw のクラウドフォールバック候補に `qwen3.5-flash` / `qwen3.5-plus` を追加
+3. X上の実運用投稿（OpenClawローカル構成、Qwen公式告知）を継続監視対象に追加
+
 ---
 
 ## 3. AMD/NVIDIA切り分け
@@ -687,11 +719,36 @@ LLM Inference Dashboard
 └── Health: エラー率、キュー深度、接続数
 ```
 
+### 4.8 Qwen3.5を使う場合のlitellmルーティング追記
+
+```yaml
+# 例: ローカルQwen3.5 + APIフォールバック
+model_list:
+  - model_name: "gpt-4o-local"
+    litellm_params:
+      model: "ollama/qwen3.5:30b-a3b"
+      api_base: "http://gpu-server.local:11434"
+      timeout: 30
+
+  - model_name: "gpt-4o-cloud-qwen35-flash"
+    litellm_params:
+      model: "openai/qwen3.5-flash"
+      api_base: "https://dashscope-intl.aliyuncs.com/compatible-mode/v1"
+      api_key: "os.environ/DASHSCOPE_API_KEY"
+      timeout: 60
+
+router_settings:
+  fallbacks:
+    - {"gpt-4o-local": ["gpt-4o-cloud-qwen35-flash"]}
+```
+
+> **補足**: `qwen3.5-plus` を使う場合は `model: "openai/qwen3.5-plus"` に差し替える。
+
 ---
 
 ## 5. X（旧Twitter）調査結果
 
-> **注意**: X検索スクリプトの実行権限制限により、一部の検索は実行できませんでした。以下はコミュニティレポートや公開情報に基づく知見です。出典が特定できたものはURLを記載しています。
+> **調査方法**: 今回は `x.com` を対象に検索を実施し、Qwen公式アカウント投稿とコミュニティ投稿を確認した。
 
 ### 5.1 ROCm実運用知見（コミュニティ報告に基づく推測含む）
 
@@ -719,6 +776,29 @@ LLM Inference Dashboard
 - **Ollama + k8s**: Helm chartが利用可能、GPU device pluginとの組み合わせ
 - **litellm**: ルーティングプロキシとして評価が高い
 - **ホームラボでのGPUノード**: 「k8sの中に入れるより外に出した方が管理が楽」との意見が多い
+
+### 5.5 Qwen3.5関連（今回追加）
+
+- **[事実] 2026-02-24 (UTC)**: `@Alibaba_Qwen` が「Qwen 3.5 Medium Model Series」を告知（`35B-A3B` / `122B-A10B`）
+- **[事実] 2026-02-25 (UTC)**: `@Alibaba_Qwen` が `Qwen3.5-35B-A3B-Thinking-2507` の **1Mコンテキスト対応**を告知（`qwen3.5-flash`）
+- **[推定] 2026-02-23 (UTC)**: OpenClaw + Ollama + Qwen3.5-coder のローカル運用投稿が確認され、OpenClaw文脈での実運用関心が高い
+- **[判断]**: 「話題性」「更新性」「OpenClawとの親和性」の3点で、Qwen3.5は本調査の優先対象に含めるべき
+
+### 5.6 一般ユーザー検証（X検索, 2026-03-02追記）
+
+> **注意**: 以下は X 上の自己申告ベンチマークを含む。公式ベンチマークではないため、再現条件（GPUクロック、量子化形式、コンテキスト長、バッチサイズ）を揃えたPoCで再検証が必要。
+
+| 日付 (UTC) | 投稿者 | URL | 検証サマリ | 信頼度 |
+|-----------|--------|-----|-----------|--------|
+| 2026-03-01 | @fahdmirza | https://x.com/fahdmirza/status/2028434848440881510 | OpenClaw + Ollama + qwen3.5-coder でローカル運用した報告。OpenClaw経由の実運用文脈あり。 | 中 |
+| 2026-03-01 | @saiho_seki | https://x.com/saiho_seki/status/2028372176072497411 | RTX 5090 24GB環境で Qwen3.5-30B-A3B の推論速度（eval rate 2.47 tok/s）を共有。 | 中 |
+| 2026-03-01 | @simonw | https://x.com/simonw/status/2028599533748314564 | Qwen3.5 30B A3B を 64GB RAM Mac で動かす実験ログを共有。メモリ要求の実践知見。 | 中 |
+| 2026-02-25 | @awnihannun | https://x.com/awnihannun/status/2026500250035439832 | Qwen3.5公開直後の性能/効率トレードオフに関する実運用目線のコメント。 | 低〜中 |
+
+**暫定判断**:
+1. OpenClaw連携の実例は増えており、`qwen3.5` 系をフォールバック候補だけでなく一次候補としてPoC対象にする価値がある
+2. 5090 24GB では量子化・推論設定により速度差が大きく、単一投稿の tok/s を鵜呑みにしない
+3. Mac 64GB での動作報告は「動く/遅い」の境界確認として有用だが、常用性能の判断には追加実測が必要
 
 ---
 
@@ -904,28 +984,37 @@ Mac Studio M4 Ultra 192GB
 | r/LocalLLaMA | https://reddit.com/r/LocalLLaMA | コミュニティ知見 |
 | NVIDIA GPU Operator | https://docs.nvidia.com/datacenter/cloud-native/gpu-operator/ | k8s GPU管理 |
 | Qwen2.5-Coder | https://huggingface.co/Qwen/Qwen2.5-Coder-32B-Instruct | 推奨コーディングモデル |
+| Qwen3.5 リリースノート | https://qwen.readthedocs.io/en/latest/getting_started/news.html | 公式ニュース（公開日確認） |
+| Qwen3.5-35B-A3B | https://huggingface.co/Qwen/Qwen3.5-35B-A3B-Instruct-2507 | 公式モデルカード |
+| Qwen3.5-122B-A10B | https://huggingface.co/Qwen/Qwen3.5-122B-A10B-Instruct-2507 | 公式モデルカード |
+| Qwen3.5-397B-A17B | https://huggingface.co/Qwen/Qwen3.5-397B-A17B-Instruct-2507 | 公式モデルカード |
+| Qwen3.5-27B | https://huggingface.co/Qwen/Qwen3.5-27B-Instruct-2507 | 公式モデルカード |
+| DashScope OpenAI互換API | https://www.alibabacloud.com/help/en/model-studio/compatibility-of-openai-with-dashscope | OpenAI互換エンドポイント |
 | DeepSeek-R1 | https://huggingface.co/deepseek-ai/DeepSeek-R1 | 推奨推論モデル |
 
 ### X（旧Twitter）情報源
 
-> **注意**: X検索スクリプトの実行権限制限により、個別投稿URLの収集は一部未完了です。以下は確認できた範囲の情報源です。
-
-| カテゴリ | 検索クエリ | 知見サマリ |
-|---------|-----------|-----------|
+| カテゴリ | URL / クエリ | 知見サマリ |
+|---------|--------------|-----------|
+| Qwen公式（Medium series） | https://x.com/Alibaba_Qwen/status/2026339351530188939 | 35B-A3B / 122B-A10B の告知 |
+| Qwen公式（1M context） | https://x.com/Alibaba_Qwen/status/2026502059479179602 | 35B-A3B-Thinking-2507 の1M対応告知 |
+| Qwen公式（補足投稿） | https://x.com/Alibaba_Qwen/status/2026500171614531930 | Qwen3.5 Medium系列の運用補足 |
+| OpenClawローカル運用言及 | `OpenClaw ollama qwen3.5-coder` | OpenClaw + Qwen3.5の実運用関心を確認 |
+| 一般ユーザー検証（OpenClaw） | https://x.com/fahdmirza/status/2028434848440881510 | OpenClaw + Ollama + qwen3.5-coder の運用報告 |
+| 一般ユーザー検証（RTX 5090） | https://x.com/saiho_seki/status/2028372176072497411 | Qwen3.5-30B-A3B の実測投稿（tok/s付き） |
+| 一般ユーザー検証（Mac 64GB） | https://x.com/simonw/status/2028599533748314564 | Mac環境でのQwen3.5実行ログ |
+| 一般ユーザー見解 | https://x.com/awnihannun/status/2026500250035439832 | Qwen3.5公開時の実運用観点コメント |
 | ROCm実運用 | `ROCm LLM 実運用` | ROCm 6.xでRDNA3の安定性が改善。llama.cpp hipBLASが推奨 |
-| Radeon vs NVIDIA | `Radeon LLM AMD GPU` | 推論のみならAMDでも十分、fine-tuningはNVIDIA一択 |
 | 自宅LLMサーバー | `自宅 LLM サーバー GPU` | 2x RTX 3090が人気、Mac Studioは静音で高評価 |
-| モデル性能 | `Qwen2.5 Coder ローカル` | 32B Q4_K_Mが実用レベルとの複数報告 |
-| Mac Studio LLM | `Mac Studio LLM M4 Ultra` | 統合メモリの大きさが最大の利点 |
-| k8s + LLM | `k8s LLM GPU ローカル` | 外部サーバー + k8s内ルーターが主流 |
 
 ### 残課題（要検証項目）
 
 1. **M4 Ultra 192GB の実売価格と納期**: Apple Store日本での最新価格を確認
 2. **RTX 5090 の実測ベンチマーク**: FP4推論のLLM性能実測データ
 3. **ROCm 6.2+ のRDNA 4対応状況**: RX 9070 XTのllama.cpp互換性
-4. **Llama 4 / Qwen3のリリース状況**: 2025後半〜2026年のモデルリリース確認
+4. **Qwen3.5 Plus/Flashの実測比較**: `qwen3.5-flash` と `qwen3.5-plus` の遅延/品質/コストを同条件で比較
 5. **litellm の最新機能**: セマンティックキャッシュ、カスタムルーティングの実装状況
 6. **Cloudflare Tunnel経由のレイテンシー**: litellmをTunnel経由で公開した際の追加遅延
 7. **moltworker ContainerからのTailscale接続**: Cloudflare ContainerからTailscaleが使えるか検証
 8. **1-bit量子化（BitNet等）の進捗**: 必要VRAM量のさらなる削減の可能性
+9. **X自己申告ベンチの再現テスト**: 5090/Mac環境で同一プロンプト・同一量子化条件で tok/s を再計測

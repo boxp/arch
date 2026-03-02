@@ -16,6 +16,8 @@
 4. OpenClaw連携設計（litellm、lolice k8s統合）
 5. X（旧Twitter）調査（ROCm実運用、自宅LLM構成等）
 6. 推奨アーキテクチャ提案（A/B/C 3案）
+7. Qwen3.5 追加調査（公式モデルカード + Model Studio + X投稿）
+8. X検索による一般ユーザー検証（OpenClaw/Ollama/llama.cpp の実測投稿）
 
 ## 結論
 
