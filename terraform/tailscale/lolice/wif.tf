@@ -44,5 +44,12 @@ resource "tailscale_federated_identity" "k8s_operator" {
   # Tag assigned to the operator node
   tags = ["tag:k8s-operator"]
 
-  depends_on = [tailscale_acl.this]
+  # ACL must exist so tag:k8s-operator is recognised, and the S3
+  # OIDC discovery docs must be published before Tailscale validates
+  # the issuer URL.
+  depends_on = [
+    tailscale_acl.this,
+    aws_s3_object.oidc_discovery,
+    aws_s3_object.oidc_jwks,
+  ]
 }
