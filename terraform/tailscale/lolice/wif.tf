@@ -51,5 +51,6 @@ resource "tailscale_federated_identity" "k8s_operator" {
     tailscale_acl.this,
     aws_s3_object.oidc_discovery,
     aws_s3_object.oidc_jwks,
+    aws_s3_bucket_policy.k8s_oidc_public_read,
   ]
 }

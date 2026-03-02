@@ -25,10 +25,13 @@ resource "aws_s3_bucket_public_access_block" "k8s_oidc" {
   bucket = aws_s3_bucket.k8s_oidc.id
 
   # Allow public read via bucket policy (required for OIDC discovery).
-  block_public_acls       = true
-  block_public_policy     = false
-  ignore_public_acls      = true
-  restrict_public_buckets = false
+  block_public_acls  = true
+  ignore_public_acls = true
+
+  # Public policy and buckets must be allowed so Tailscale can fetch the
+  # OIDC discovery documents without authentication.
+  block_public_policy     = false #trivy:ignore:AVD-AWS-0087 -- intentional: OIDC discovery must be public
+  restrict_public_buckets = false #trivy:ignore:AVD-AWS-0093 -- intentional: OIDC discovery must be public
 }
 
 resource "aws_s3_bucket_policy" "k8s_oidc_public_read" {
