@@ -78,10 +78,10 @@ resource "aws_s3_object" "oidc_discovery" {
   content_type = "application/json"
 
   content = jsonencode({
-    issuer                            = local.oidc_issuer_url
-    jwks_uri                          = "${local.oidc_issuer_url}/openid/v1/jwks"
-    response_types_supported          = ["id_token"]
-    subject_types_supported           = ["public"]
+    issuer                                = local.oidc_issuer_url
+    jwks_uri                              = "${local.oidc_issuer_url}/openid/v1/jwks"
+    response_types_supported              = ["id_token"]
+    subject_types_supported               = ["public"]
     id_token_signing_alg_values_supported = ["RS256"]
   })
 }
