@@ -87,65 +87,72 @@ ceekerはcmuxの**Linux/WSL向け代替**として、以下の方針で設計す
 │  [Enter] Jump  [r] Refresh  [q] Quit                 │
 └──────────────────────────────────────────────────────┘
           │                           ▲
-          │ tmux select-pane          │ State updates
-          ▼                           │
+          │ tmux select-pane          │ inotify / poll
+          ▼                           │ (read only)
 ┌─────────────────┐   ┌──────────────────────────────┐
-│   tmux sessions │   │        State Store            │
-│   (gwq managed) │   │  ┌─────────────────────────┐  │
+│   tmux sessions │   │   State Store (persistent)    │
+│   (gwq managed) │   │   $XDG_RUNTIME_DIR/ceeker/   │
+│                 │   │  ┌─────────────────────────┐  │
+│  session:0      │   │  │ sessions.edn            │  │
+│  session:1      │   │  │ (hook CLIが直接書込)     │  │
+│  session:2      │   │  └─────────────────────────┘  │
+│                 │   │  ┌─────────────────────────┐  │
 │                 │   │  │ Progress File Watcher    │  │
-│  session:0      │   │  │ (inotify/fswatch)        │  │
-│  session:1      │   │  └─────────────────────────┘  │
-│  session:2      │   │  ┌─────────────────────────┐  │
-│                 │   │  │ gwq status Parser        │  │
+│                 │   │  │ (inotify/fswatch)        │  │
 │                 │   │  └─────────────────────────┘  │
 │                 │   │  ┌─────────────────────────┐  │
-│                 │   │  │ Hook Receiver (UDS)      │  │
-│                 │   │  │ Unix Domain Socket       │  │
-│                 │   │  │ ← ceeker hook CLI        │  │
+│                 │   │  │ gwq status Parser        │  │
 │                 │   │  └─────────────────────────┘  │
 │                 │   │  ┌─────────────────────────┐  │
 │                 │   │  │ tmux Query               │  │
 │                 │   │  │ (session/pane mapping)   │  │
 │                 │   │  └─────────────────────────┘  │
 └─────────────────┘   └──────────────────────────────┘
-          ▲                           ▲
-          │                           │
-  Claude Code / Codex ────────────────┘
-  (hook → ceeker hook CLI → UDS)
+          ▲                     ▲
+          │                     │ ceeker hook CLI
+  Claude Code / Codex ──────────┘
+  (hook → ceeker hook <event> → State Store直接更新)
 ```
 
 ### 3.2 コンポーネント詳細
 
-#### 3.2.1 Hook Receiver
+#### 3.2.1 Hook CLI（`ceeker hook`）
 
-Claude Code / Codex からのhookイベントを受信する仕組み。HTTPサーバーは使用せず、hookから直接ceekerのCLIサブコマンドを呼び出し、Unix Domain Socket（UDS）経由でTUIプロセスに通知する。
+Claude Code / Codex からのhookイベントを受け取り、State Storeを直接更新するCLIサブコマンド。TUIプロセスへのIPC通信は不要で、hookイベント発生のたびに `ceeker hook <event>` が起動し、永続State Storeファイルに状態を書き込む。
 
 - **CLIサブコマンド**:
-  - `ceeker hook session-start` — セッション開始通知
-  - `ceeker hook notification` — 通知（進捗、質問、エラー等）
-  - `ceeker hook stop` — セッション終了通知
-- **IPC**: Unix Domain Socket（`$XDG_RUNTIME_DIR/ceeker.sock` or `/tmp/ceeker-<uid>.sock`）
-- **フロー**: hook → `ceeker hook <event>` CLI → UDS送信 → TUIプロセスが受信・State Store更新
+  - `ceeker hook session-start` — セッション開始通知 → State Storeにセッション追加
+  - `ceeker hook notification` — 通知（進捗、質問、エラー等）→ State Storeのセッション状態更新
+  - `ceeker hook stop` — セッション終了通知 → State Storeのセッション状態を完了に更新
+- **State Store**: ファイルベース永続ストア（`$XDG_RUNTIME_DIR/ceeker/sessions.edn` or `/tmp/ceeker-<uid>/sessions.edn`）
+- **フロー**: hook → `ceeker hook <event>` CLI → State Storeファイルを直接更新（ファイルロックで排他制御）
+- **TUIとの連携**: TUIはState Storeファイルをinotify監視し、変更を検知して画面を更新する。TUIは読み取り専用であり、State Storeへの書き込みは行わない。
 
 **重要**: ceekerはClaude Code/Codexをwrapしない。hookはユーザーがClaude Code/Codex側の設定（`--hooks` JSON / `config.toml`）で明示的に設定する。これにより:
 - Claude Code/Codexのアップデートに影響されない
 - 複数のhook consumerを共存可能
-- ceekerが停止してもエージェント動作に影響しない（CLIコマンドがUDS接続失敗時は静かに終了）
+- ceekerが停止してもエージェント動作に影響しない（CLIコマンドはState Storeファイルに書き込むだけなのでTUI不要）
+- TUIが複数起動していても問題ない（全TUIが同一のState Storeを読み取る）
+- TUIが起動していなくてもhookイベントは永続化される
 
 #### 3.2.2 State Store
 
-全worktreeの状態を集約するインメモリストア。
+全worktreeの状態を集約する永続ファイルベースストア。`ceeker hook` CLIが直接書き込み、TUIは読み取り専用でinotify監視する。
 
-- **データソース**: Progress File Watcher, gwq status, Hook Receiver (UDS), tmux Query
-- **更新トリガー**: inotifyイベント、UDS hookイベント、定期ポーリング（gwq/tmux）
-- **一貫性**: 各データソースは独立して更新、State Storeが集約
+- **保存先**: `$XDG_RUNTIME_DIR/ceeker/sessions.edn`（フォールバック: `/tmp/ceeker-<uid>/sessions.edn`）
+- **書き込み元**: `ceeker hook` CLIサブコマンド（hookイベント時に直接更新）
+- **読み取り元**: TUI（inotify監視で変更を検知）
+- **補助データソース**: Progress File Watcher, gwq status, tmux Query（TUI側でインメモリ集約）
+- **排他制御**: ファイルロック（`java.nio.channels.FileLock`）で複数hookプロセスの同時書き込みを制御
+- **一貫性**: hookデータは永続ファイルが正（TUI未起動でも保持）、補助データはTUI起動時にポーリングで収集
 
 #### 3.2.3 TUI
 
-ターミナルUI。worktree一覧、進捗バー、エージェント状態を表示。
+ターミナルUI。worktree一覧、進捗バー、エージェント状態を表示。State Storeの読み取り専用クライアントとして動作し、状態の書き込みは行わない。
 
 - **描画ライブラリ**: Clojure TUIライブラリ（後述）
 - **レイアウト**: 単一リスト + ステータスバー
+- **状態取得**: State Storeファイルのinotify監視 + gwq/tmux定期ポーリング
 - **キーバインド**:
   - `↑/↓` or `j/k`: worktree選択
   - `Enter`: 選択worktreeのtmuxペインにジャンプ
@@ -271,7 +278,7 @@ notify = "ceeker hook notification --message \"$MESSAGE\""
 
 ### 5.4 hookが利用できない場合のフォールバック
 
-hookが設定されていない、またはceekerのTUIプロセスが起動していない場合でも、以下のデータソースで基本機能を提供:
+hookが設定されていない場合でも、以下のデータソースで基本機能を提供:
 
 1. **progressファイル監視**: worktree内のprogressファイルのinotify監視
 2. **gwq status**: worktree一覧と基本情報の取得
@@ -337,7 +344,7 @@ ceeker:
 | 用途 | ライブラリ | 備考 |
 |------|-----------|------|
 | TUI描画 | [clojure-lanterna](https://github.com/MultiMUD/clojure-lanterna) or JLine3 | GraalVM native互換を要確認 |
-| IPC (UDS) | Java NIO SocketChannel (Unix Domain Socket) | hook CLI → TUI間通信、JDK 16+ |
+| ファイルロック | Java NIO FileLock | State Storeの排他制御（hook CLI間） |
 | ファイル監視 | Java NIO WatchService | inotify相当、GraalVM native対応 |
 | JSON処理 | cheshire or jsonista | hookペイロードのパース |
 | プロセス実行 | clojure.java.shell / babashka.process | tmux/gwqコマンド呼び出し |
@@ -362,11 +369,10 @@ boxp/ceeker/
 ├── src/ceeker/
 │   ├── core.clj              ; エントリーポイント、CLIパース
 │   ├── hook/
-│   │   ├── receiver.clj      ; UDS hook receiver (Unix Domain Socket)
 │   │   ├── cli.clj           ; hook CLIサブコマンド (ceeker hook ...)
-│   │   └── handler.clj       ; hookイベントハンドラ
+│   │   └── handler.clj       ; hookイベント → State Store書き込み
 │   ├── state/
-│   │   ├── store.clj         ; State Store (atom based)
+│   │   ├── store.clj         ; State Store (persistent file + file lock)
 │   │   └── workspace.clj     ; WorkspaceState管理
 │   ├── source/
 │   │   ├── progress.clj      ; progressファイル監視・パース
@@ -408,7 +414,7 @@ boxp/ceeker/
 - [ ] TUI基本表示（worktreeリスト、プログレスバー、ブランチ名）
 - [ ] tmux jump（Enter キー → tmux switch-client）
 - [ ] 完了マーカーによるタスク完了検知
-- [ ] Hook receiver（UDS）+ `ceeker hook` CLIサブコマンド
+- [ ] `ceeker hook` CLIサブコマンド + State Store永続ファイル書き込み
 - [ ] Claude Code hook handler実装
 - [ ] Codex hook handler実装
 - [ ] hookイベント → State Store反映
@@ -422,6 +428,7 @@ boxp/ceeker/
 - Claude Code / Codex hookイベントがTUIにリアルタイム反映されること
 - JVMモードで動作すること（native image化はPhase 2）
 - ceekerが停止してもClaude Code / Codexの動作に影響しないこと
+- TUIが起動していなくてもhookイベントがState Storeに永続化されること
 
 **非スコープ（MVP）**: native image
 
@@ -429,7 +436,7 @@ boxp/ceeker/
 
 **スコープ**:
 - [ ] GraalVM native image ビルド・テスト
-- [ ] native imageでのUDS / TUI動作検証
+- [ ] native imageでのState Store / TUI動作検証
 
 **受け入れ条件**:
 - native imageでの起動時間 < 100ms
@@ -439,7 +446,7 @@ boxp/ceeker/
 
 **スコープ**:
 - [ ] ポート一覧表示（ss + /proc/net/tcp パース）
-- [ ] セッション永続化（JSON / EDN）
+- [ ] セッション履歴・統計機能（State Storeの永続データを活用）
 - [ ] tmux統合強化（自動ウィンドウ配置）
 - [ ] 通知（notify-send / tmux display-message）
 - [ ] Git branch / PR情報表示（gh CLI連携）
@@ -463,7 +470,7 @@ boxp/ceeker/
 
 1. **依存コマンド**: `tmux`, `gwq` がPATH上に必要
 2. **ファイルシステム**: inotify対応のファイルシステムが必要（ext4, xfs等）
-3. **IPC**: hook受信にUnix Domain Socketを使用（`$XDG_RUNTIME_DIR/ceeker.sock`）
+3. **State Store**: hook状態の永続化に `$XDG_RUNTIME_DIR/ceeker/sessions.edn` を使用
 4. **メモリ**: JVMモード時はヒープサイズ制御が必要（推奨: `-Xmx256m`）
 
 ### 9.3 ロールバック方針
