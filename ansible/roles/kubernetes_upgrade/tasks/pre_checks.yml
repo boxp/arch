@@ -6,11 +6,22 @@
   tags: [pre_checks]
 
 - name: Verify etcd cluster health
-  ansible.builtin.command: >
-    etcdctl endpoint health
-    --cacert={{ etcd_cacert }}
-    --cert={{ etcd_cert }}
-    --key={{ etcd_key }}
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - "--kubeconfig={{ kubeconfig_path }}"
+      - -n
+      - kube-system
+      - exec
+      - "etcd-{{ inventory_hostname }}"
+      - --
+      - etcdctl
+      - endpoint
+      - health
+      - "--endpoints=https://127.0.0.1:2379"
+      - "--cacert={{ etcd_cacert }}"
+      - "--cert={{ etcd_cert }}"
+      - "--key={{ etcd_key }}"
   register: etcd_health
   changed_when: false
   when: node_role == "control_plane"
