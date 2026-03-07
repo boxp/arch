@@ -95,7 +95,7 @@
       vars:
         kubernetes_version: "1.35.2"
         kubernetes_package_version: "1.34.0-1.1"
-        crio_version: "1.35.0"
+        crio_version: "1.35.1"
         kubelet_cluster_dns: "{{ cluster_dns }}"
         kubelet_cluster_domain: "{{ cluster_domain }}"
         kubelet_node_ip: "{{ node_ip }}"
