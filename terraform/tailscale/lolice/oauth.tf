@@ -45,3 +45,31 @@ resource "aws_ssm_parameter" "operator_oauth_client_secret" {
     ignore_changes = [value]
   }
 }
+
+# ── Workload Identity Federation credentials ────────────────────────
+# These are NOT secrets (public identifiers), but stored in SSM for
+# consistent management and to allow lolice ExternalSecret to pull them.
+
+resource "aws_ssm_parameter" "operator_wif_client_id" {
+  name        = "/lolice/tailscale/operator-wif-client-id"
+  description = "Tailscale WIF client ID for the Kubernetes Operator (not a secret)"
+  type        = "String"
+  value       = tailscale_federated_identity.k8s_operator.id
+
+  tags = {
+    Project = "lolice"
+    Purpose = "tailscale-k8s-operator-wif"
+  }
+}
+
+resource "aws_ssm_parameter" "operator_wif_audience" {
+  name        = "/lolice/tailscale/operator-wif-audience"
+  description = "Tailscale WIF audience for the Kubernetes Operator (not a secret)"
+  type        = "String"
+  value       = tailscale_federated_identity.k8s_operator.audience
+
+  tags = {
+    Project = "lolice"
+    Purpose = "tailscale-k8s-operator-wif"
+  }
+}
