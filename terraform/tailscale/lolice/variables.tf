@@ -15,3 +15,16 @@ variable "argocd_diff_workflow_name" {
   type        = string
   default     = "ArgoCD Diff Check"
 }
+
+# ── Workload Identity Federation for K8s Operator ───────────────────
+
+variable "k8s_sa_jwks_json" {
+  description = <<-EOT
+    JWKS JSON containing the Kubernetes service-account signing public
+    key.  Extract from a control-plane node with:
+      kubectl get --raw /openid/v1/jwks
+    Leave as the default placeholder until the cluster is configured.
+  EOT
+  type        = string
+  default     = "{\"keys\":[]}"
+}

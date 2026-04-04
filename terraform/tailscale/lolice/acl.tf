@@ -6,6 +6,7 @@ resource "tailscale_acl" "this" {
       "tag:ci"            = ["autogroup:admin"]
       "tag:subnet-router" = ["autogroup:admin"]
       "tag:k8s-operator"  = ["autogroup:admin"]
+      "tag:k8s"           = ["tag:k8s-operator"]
     }
 
     acls = concat(
