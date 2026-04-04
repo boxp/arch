@@ -161,28 +161,28 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.15.0/opa_darwin_amd64",
-      "checksum": "7B7C25F9DA8CEF511DBD8B963BE5DB3DBC4BB051A386E4DDDB96F2001589F142",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.15.1/opa_darwin_amd64",
+      "checksum": "62D04F2072D1198B6C7917FC32430D374CBE5CC6BD84E3CF6661DAB3BF9D863A",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.15.0/opa_darwin_arm64_static",
-      "checksum": "055C6197C5B65D0A4220700F3920319009E9B110DE443F1EDF4C6D923A37E1C5",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.15.1/opa_darwin_arm64_static",
+      "checksum": "1F391B7ED19899A925ADD37EC378B80802508B064CDDC6F62925F317368CB0EE",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.15.0/opa_linux_amd64_static",
-      "checksum": "8193CCEBCFC99EA7FE2E6A3A0D9E1EDA94A64CF151F8A5473FE709B1395ABF60",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.15.1/opa_linux_amd64_static",
+      "checksum": "0F96986E4F96A39715257A19AE5AA79615A0344A4CB743EC5A38D316DB18B735",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.15.0/opa_linux_arm64_static",
-      "checksum": "7A0B129FD53E6A3BBD3854E8F942977662E14045836967452AE563673F268DB4",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.15.1/opa_linux_arm64_static",
+      "checksum": "6ED12D21FD9AB4D2D07CB8985B4EF6C76B2CB285553AD674BC5BD8F7AEAB22C2",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.15.0/opa_windows_amd64.exe",
-      "checksum": "263CFFE04DD953E4CAA4016E818B7DDBAF392DFDB0E261C51C808087A91A4955",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.15.1/opa_windows_amd64.exe",
+      "checksum": "ABA2AFC22151CF072096AE73D6A3B4CFD77D8EDC05B3D5625AE3C2E3E5F8DD9F",
       "algorithm": "sha256"
     },
     {
@@ -216,33 +216,33 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/rhysd/actionlint/v1.7.11/actionlint_1.7.11_darwin_amd64.tar.gz",
-      "checksum": "17FFC17FED8F0258EF6AD4AED932D3272464C7EF7D64E1CB0D65AA97C9752107",
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_darwin_amd64.tar.gz",
+      "checksum": "5B44C3BC2255115C9B69E30EFC0FECDF498FDB63C5D58E17084FD5F16324C644",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/rhysd/actionlint/v1.7.11/actionlint_1.7.11_darwin_arm64.tar.gz",
-      "checksum": "A21BA7366D8329E7223FAEE0ED69EB13DA27FE8ACABB356BB7EB0B7F1E1CB6D8",
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_darwin_arm64.tar.gz",
+      "checksum": "ABA9CED2DEE8D27FECCA3DC7FEB1A7F9A52CAEFA1EB46F3271EA66B6E0E6953F",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/rhysd/actionlint/v1.7.11/actionlint_1.7.11_linux_amd64.tar.gz",
-      "checksum": "900919A84F2229BAC68CA9CD4103EA297ABC35E9689EBB842C6E34A3D1B01B0A",
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz",
+      "checksum": "8ACA8DB96F1B94770F1B0D72B6DDDCB1EBB8123CB3712530B08CC387B349A3D8",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/rhysd/actionlint/v1.7.11/actionlint_1.7.11_linux_arm64.tar.gz",
-      "checksum": "21BC0DFB57A913FE175298C2A9E906EE630F747CB66D0A934D0D4B69F4EE1235",
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_linux_arm64.tar.gz",
+      "checksum": "325E971B6BA9BFA504672E29BE93C24981EEB1C07576D730E9F7C8805AFFF0C6",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/rhysd/actionlint/v1.7.11/actionlint_1.7.11_windows_amd64.zip",
-      "checksum": "5414B7124A91F4B5ABEE62E5C9D84802237734F8D15B9B7032732A32C3EBFFA3",
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_windows_amd64.zip",
+      "checksum": "6E7241B51E6817EA6A047693D8E6FED13B31819C9A0DD6C5A726E1592D22F6E9",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/rhysd/actionlint/v1.7.11/actionlint_1.7.11_windows_arm64.zip",
-      "checksum": "4900EB60E084604850935705306305F0BB0CA532E07C2B4AE642917142ABA75D",
+      "id": "github_release/github.com/rhysd/actionlint/v1.7.12/actionlint_1.7.12_windows_arm64.zip",
+      "checksum": "CADCF7EA4EFE3A68728893813643CEBE1185E5B1D4BE5B96245F65C9A4D5EA41",
       "algorithm": "sha256"
     },
     {
@@ -456,8 +456,8 @@
       "algorithm": "sha256"
     },
     {
-      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.491.0/registry.yaml",
-      "checksum": "B8A22CB2C7B23FE966BB444520CB1DDB6A153D24282D4D358288D575A573A4340E57B793E25A2B31D94D68D1A9D8B987CFC13CDFFE3131EF59E880BF79551188",
+      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.492.0/registry.yaml",
+      "checksum": "A0FAAA0CDBA0C23349E000D45D7DFE48185519CA72A0D5618A4C6198F2BCBA9EE10FA209351D44437495541A3BCECD987D65D176BBF59CF23271FC30D53DA90E",
       "algorithm": "sha512"
     }
   ]
