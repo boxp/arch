@@ -32,6 +32,10 @@ apiServer:
 {% if cluster_vip is defined and cluster_vip != "" %}
     - "{{ cluster_vip }}"
 {% endif %}
+{% if k8s_oidc_issuer_url is defined and k8s_oidc_issuer_url != "" %}
+  extraArgs:
+    service-account-issuer: "{{ k8s_oidc_issuer_url }}"
+{% endif %}
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration
