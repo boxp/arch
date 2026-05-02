@@ -158,3 +158,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and tfcmt and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
+
+      - name: Create Renovate plan follow-up PR
+        if: |
+          failure() &&
+          github.event_name == 'pull_request_target' &&
+          github.event.pull_request.user.login == 'renovate[bot]'
+        run: ${{ github.workspace }}/.github/scripts/create-renovate-plan-follow-up-pr.sh
+        env:
+          GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
+          PR_NUMBER: ${{github.event.pull_request.number}}
+          BASE_REF: ${{github.event.pull_request.base.ref}}
