@@ -13,6 +13,8 @@ clusterDNS:
   - {{ kubelet_cluster_dns }}
 clusterDomain: {{ kubelet_cluster_domain }}
 containerRuntimeEndpoint: unix:///var/run/crio/crio.sock
+containerLogMaxSize: {{ container_log_max_size }}
+containerLogMaxFiles: {{ container_log_max_files }}
 cgroupDriver: systemd
 failSwapOn: false
 serverTLSBootstrap: true

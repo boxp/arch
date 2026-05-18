@@ -15,6 +15,9 @@ kubelet_cluster_domain: "cluster.local"
 
 # Container runtime configuration
 container_runtime: "cri-o"
+container_log_max_size: "1Mi"
+container_log_max_files: 2
+crio_log_size_max: 1048576
 
 # System configuration
 kubernetes_disable_swap: true

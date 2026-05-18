@@ -66,6 +66,16 @@
   become: true
   notify: Restart crio
 
+- name: Configure CRI-O container log size limit
+  ansible.builtin.copy:
+    dest: /etc/crio/crio.conf.d/99-log-rotation.conf
+    content: |
+      [crio.runtime]
+      log_size_max = {{ crio_log_size_max }}
+    mode: '0644'
+  become: true
+  notify: Restart crio
+
 - name: Create systemd multi-user.target.wants directory
   ansible.builtin.file:
     path: /etc/systemd/system/multi-user.target.wants
