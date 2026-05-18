@@ -33,6 +33,28 @@
           - crio_config.stat.exists
         fail_msg: "CRI-O configuration file does not exist"
 
+    - name: Check if CRI-O log rotation configuration exists
+      ansible.builtin.stat:
+        path: /etc/crio/crio.conf.d/99-log-rotation.conf
+      register: crio_log_rotation_config
+
+    - name: Assert CRI-O log rotation configuration exists
+      ansible.builtin.assert:
+        that:
+          - crio_log_rotation_config.stat.exists
+        fail_msg: "CRI-O log rotation configuration file does not exist"
+
+    - name: Read CRI-O log rotation configuration
+      ansible.builtin.slurp:
+        path: /etc/crio/crio.conf.d/99-log-rotation.conf
+      register: crio_log_rotation_content
+
+    - name: Assert CRI-O log size limit is configured
+      ansible.builtin.assert:
+        that:
+          - "'log_size_max = 1048576' in (crio_log_rotation_content.content | b64decode)"
+        fail_msg: "CRI-O log size limit is not configured"
+
     - name: Check if kubelet configuration exists
       ansible.builtin.stat:
         path: /etc/kubernetes/kubelet-config.yaml
@@ -43,6 +65,18 @@
         that:
           - kubelet_config.stat.exists
         fail_msg: "Kubelet configuration file does not exist"
+
+    - name: Read kubelet configuration
+      ansible.builtin.slurp:
+        path: /etc/kubernetes/kubelet-config.yaml
+      register: kubelet_config_content
+
+    - name: Assert kubelet container log rotation is configured
+      ansible.builtin.assert:
+        that:
+          - "'containerLogMaxSize: 1Mi' in (kubelet_config_content.content | b64decode)"
+          - "'containerLogMaxFiles: 2' in (kubelet_config_content.content | b64decode)"
+        fail_msg: "Kubelet container log rotation is not configured"
 
     - name: Check if kubelet systemd configuration exists
       ansible.builtin.stat:
