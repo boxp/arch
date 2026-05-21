@@ -49,6 +49,105 @@
       ],
       depNameTemplate: "kube-vip/kube-vip",
       datasourceTemplate: "github-releases"
+    },
+    // Codex workspace npm package versions
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG CODEX_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "@openai/codex",
+      datasourceTemplate: "npm"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG EVEN_TERMINAL_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "@evenrealities/even-terminal",
+      datasourceTemplate: "npm"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG OBSIDIAN_HEADLESS_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "obsidian-headless",
+      datasourceTemplate: "npm"
+    },
+    // Codex workspace GitHub release versions
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG GHQ_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "x-motemen/ghq",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG GWQ_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "d-kuro/gwq",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG CEEKER_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "boxp/ceeker",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG BABASHKA_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "babashka/babashka",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG LAZYGIT_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "jesseduffield/lazygit",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG YAZI_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "sxyazi/yazi",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    // Codex workspace NodeSource major version
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG NODE_MAJOR=(?<currentValue>[0-9]+)"
+      ],
+      depNameTemplate: "node",
+      datasourceTemplate: "node-version"
     }
   ],
   packageRules: [
