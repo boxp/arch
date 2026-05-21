@@ -11,7 +11,7 @@ if [[ -f /tmp/authorized_keys/authorized_keys ]]; then
 fi
 
 ssh-keygen -A
-/usr/sbin/sshd -D -e &
+/usr/sbin/sshd -D -e -p "${SSHD_PORT:-2222}" &
 
 token_args=()
 if [[ -n "${EVEN_TERMINAL_TOKEN:-}" ]]; then
