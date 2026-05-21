@@ -1,5 +1,4 @@
 # Cloudflare Access application for the Moltworker.
-# Separate from the existing openclaw.b0xp.io Access policy.
 resource "cloudflare_access_application" "moltworker" {
   zone_id          = var.zone_id
   name             = "Access application for moltworker.b0xp.io"

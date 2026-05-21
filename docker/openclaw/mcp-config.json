@@ -1,8 +1,0 @@
-{
-  "mcpServers": {
-    "grafana": {
-      "command": "mcp-grafana",
-      "args": ["--transport", "stdio", "--disable-write"]
-    }
-  }
-}
