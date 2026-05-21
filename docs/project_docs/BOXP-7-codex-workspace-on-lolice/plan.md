@@ -10,6 +10,7 @@ OpenClaw の代替として、`lolice` cluster 上に Codex と Even G2 Terminal
 - Image build は amd64 worker 固定のため `linux/amd64` のみ。
 - Image には `codex`, `@evenrealities/even-terminal`, `obsidian-headless`, `git`, `ghq`, `gwq`, `boxp/ceeker`, `bb`, `lazygit`, `yazi`, `vim`, `node`, `npm` を入れる。
 - `terraform/cloudflare/b0xp.io/k8s` で既存 k8s tunnel に WARP private route `10.111.250.7/32` を追加する。
+- `codex-workspace.b0xp.io` は DNS-only A record として `10.111.250.7` に解決させる。
 - `lolice` 側は fixed ClusterIP `10.111.250.7` の Service を作成し、SSH `2222` と Even Terminal `3456` を公開する。
 
 ## Tasks
