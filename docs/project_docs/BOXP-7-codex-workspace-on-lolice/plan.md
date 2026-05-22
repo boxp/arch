@@ -11,6 +11,7 @@ OpenClaw の代替として、`lolice` cluster 上に Codex と Even G2 Terminal
 - Image には `codex`, `@evenrealities/even-terminal`, `obsidian-headless`, `git`, `ghq`, `gwq`, `boxp/ceeker`, `bb`, `lazygit`, `yazi`, `vim`, `node`, `npm` を入れる。
 - Ubuntu base image の UID/GID 1000 既存ユーザーを利用する場合も user/group を `boxp:boxp` に揃え、entrypoint の `/home/boxp` 初期化が失敗しないようにする。
 - `obsidian-headless` package は `ob` command として利用する。
+- entrypoint は `/usr/sbin/runuser` で `even-terminal` を `boxp` user として起動する。
 - Dockerfile の pinned package versions は Renovate custom manager で更新対象にする。
 - `terraform/cloudflare/b0xp.io/k8s` で既存 k8s tunnel に WARP private route `10.111.250.7/32` を追加する。
 - `codex-workspace.b0xp.io` は DNS-only A record として `10.111.250.7` に解決させる。
@@ -23,6 +24,7 @@ OpenClaw の代替として、`lolice` cluster 上に Codex と Even G2 Terminal
 - [x] 既存の bastion/Cloudflare/Longhorn PVC パターンを確認する。
 - [x] workspace image build を追加する。
 - [x] workspace image 内の `boxp` user/group 作成を修正する。
+- [x] workspace image entrypoint で `/usr/sbin/runuser` を使うように修正する。
 - [x] Cloudflare WARP private route を追加する。
 - [x] Terraform validate を通す。
 - [ ] PR を作成する。
