@@ -1,6 +1,8 @@
 data "cloudflare_zero_trust_tunnel_cloudflared" "k8s" {
   account_id = var.account_id
-  name       = "cloudflare k8s tunnel"
+  filter = {
+    name = "cloudflare k8s tunnel"
+  }
 }
 
 resource "cloudflare_zero_trust_network_hostname_route" "codex_workspace" {

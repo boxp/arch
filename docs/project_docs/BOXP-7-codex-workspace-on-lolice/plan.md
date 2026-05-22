@@ -18,7 +18,7 @@ OpenClaw の代替として、`lolice` cluster 上に Codex と Even G2 Terminal
 - `codex-workspace.b0xp.io` は Cloudflare Zero Trust private hostname route として k8s tunnel に紐づける。
   - WARP/Gateway DNS が hostname を Cloudflare の initially resolved IP に解決し、client が直接 `10.111.250.7` を route しなくて済むようにする。
   - DNS-only A record `codex-workspace -> 10.111.250.7` は、cloudflared/Gateway が hostname を private IP に解決するために残す。
-  - private hostname route は Cloudflare provider v5 resource のため、`terraform/cloudflare/b0xp.io/codex-workspace` target を分けて provider v5 で管理する。
+  - private hostname route と DNS-only A record は Cloudflare provider v5 resource のため、`terraform/cloudflare/b0xp.io/codex-workspace` target を分けて provider v5 で管理する。
 - `lolice` 側は fixed ClusterIP `10.111.250.7` の Service を作成し、SSH `2222` と Even Terminal `3456` を公開する。
 
 ## Tasks
