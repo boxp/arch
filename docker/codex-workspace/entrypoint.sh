@@ -13,12 +13,14 @@ fi
 ssh-keygen -A
 /usr/sbin/sshd -D -e -p "${SSHD_PORT:-2222}" &
 
+cd /home/boxp
+
 token_args=()
 if [[ -n "${EVEN_TERMINAL_TOKEN:-}" ]]; then
   token_args=(--token "${EVEN_TERMINAL_TOKEN}")
 fi
 
-exec /usr/sbin/runuser -u boxp -- even-terminal \
+exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp even-terminal \
   --port "${EVEN_TERMINAL_PORT:-3456}" \
   --cwd "${EVEN_TERMINAL_CWD:-/home/boxp}" \
   --provider "${EVEN_TERMINAL_PROVIDER:-codex}" \
