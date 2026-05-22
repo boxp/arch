@@ -2,15 +2,10 @@ terraform {
   required_version = ">= 1.0"
   backend "s3" {
     bucket = "tfaction-state"
-    key    = "terraform/tailscale/lolice/v1/terraform.tfstate"
+    key    = "terraform/aws/codex-workspace/v1/terraform.tfstate"
     region = "ap-northeast-1"
   }
-
   required_providers {
-    tailscale = {
-      source  = "tailscale/tailscale"
-      version = "0.29.0"
-    }
     aws = {
       source  = "hashicorp/aws"
       version = "~> 6.0"
