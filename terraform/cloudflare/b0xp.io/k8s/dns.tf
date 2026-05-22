@@ -6,3 +6,11 @@ resource "cloudflare_record" "k8s" {
   type    = "CNAME"
   proxied = true
 }
+
+resource "cloudflare_record" "codex_workspace" {
+  zone_id = var.zone_id
+  name    = "codex-workspace"
+  content = "192.168.10.98"
+  type    = "A"
+  proxied = false
+}
