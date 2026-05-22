@@ -18,7 +18,7 @@ if [[ -n "${EVEN_TERMINAL_TOKEN:-}" ]]; then
   token_args=(--token "${EVEN_TERMINAL_TOKEN}")
 fi
 
-exec runuser -u boxp -- even-terminal \
+exec /usr/sbin/runuser -u boxp -- even-terminal \
   --port "${EVEN_TERMINAL_PORT:-3456}" \
   --cwd "${EVEN_TERMINAL_CWD:-/home/boxp}" \
   --provider "${EVEN_TERMINAL_PROVIDER:-codex}" \
