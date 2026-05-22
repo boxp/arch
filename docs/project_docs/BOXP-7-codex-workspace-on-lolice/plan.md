@@ -10,6 +10,7 @@ OpenClaw の代替として、`lolice` cluster 上に Codex と Even G2 Terminal
 - Image build は amd64 worker 固定のため `linux/amd64` のみ。
 - Image には `codex`, `@evenrealities/even-terminal`, `obsidian-headless`, `git`, `ghq`, `gwq`, `boxp/ceeker`, `bb`, `lazygit`, `yazi`, `vim`, `node`, `npm` を入れる。
 - Ubuntu base image の UID/GID 1000 既存ユーザーを利用する場合も user/group を `boxp:boxp` に揃え、entrypoint の `/home/boxp` 初期化が失敗しないようにする。
+- `boxp` user は SSH public key login 用に locked account にしない。`PasswordAuthentication no` のため password login は無効。
 - `obsidian-headless` package は `ob` command として利用する。
 - entrypoint は `/usr/sbin/runuser` で `even-terminal` を `boxp` user として起動する。
 - `even-terminal` のログやユーザー設定が root filesystem 直下へ出ないよう、process cwd と `HOME` を `/home/boxp` に揃える。
@@ -28,6 +29,7 @@ OpenClaw の代替として、`lolice` cluster 上に Codex と Even G2 Terminal
 - [x] 既存の bastion/Cloudflare/Longhorn PVC パターンを確認する。
 - [x] workspace image build を追加する。
 - [x] workspace image 内の `boxp` user/group 作成を修正する。
+- [x] workspace image 内の `boxp` account lock を解除する。
 - [x] workspace image entrypoint で `/usr/sbin/runuser` を使うように修正する。
 - [x] workspace image entrypoint で `even-terminal` の cwd/HOME を `/home/boxp` に揃える。
 - [x] Cloudflare WARP private route を追加する。

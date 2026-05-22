@@ -86,6 +86,7 @@ RUN locale-gen en_US.UTF-8 \
       useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 boxp; \
     fi \
     && usermod -aG sudo boxp \
+    && passwd -d boxp \
     && echo "boxp ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/boxp \
     && chmod 0440 /etc/sudoers.d/boxp \
     && install -d -m 0755 /run/sshd
