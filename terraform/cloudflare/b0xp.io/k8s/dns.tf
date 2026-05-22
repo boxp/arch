@@ -7,7 +7,9 @@ resource "cloudflare_record" "k8s" {
   proxied = true
 }
 
-# Creates the DNS-only record for WARP private routing to the Codex workspace.
+# Used by cloudflared/Gateway to resolve the private hostname to the
+# Kubernetes Service IP. WARP clients should receive a Gateway initial
+# resolved IP via the private hostname route, not this private IP directly.
 resource "cloudflare_record" "codex_workspace" {
   zone_id = var.zone_id
   name    = "codex-workspace"
