@@ -3,6 +3,7 @@ FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e57
 ARG CODEX_VERSION=0.133.0
 ARG EVEN_TERMINAL_VERSION=0.7.9
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.8
+ARG GH_VERSION=2.92.0
 ARG GHQ_VERSION=1.10.1
 ARG GWQ_VERSION=0.1.1
 ARG CEEKER_VERSION=0.3.7
@@ -20,12 +21,14 @@ RUN apt-get update \
       ca-certificates \
       curl \
       fzf \
+      g++ \
       git \
       gnupg \
       gzip \
       jq \
       less \
       locales \
+      make \
       openssh-server \
       ripgrep \
       sudo \
@@ -50,23 +53,27 @@ RUN npm install -g \
     && npm cache clean --force
 
 RUN set -eux; \
+    download() { curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL "$1" -o "$2"; }; \
     tmp="$(mktemp -d)"; \
-    curl -fsSL "https://github.com/x-motemen/ghq/releases/download/v${GHQ_VERSION}/ghq_linux_amd64.zip" -o "$tmp/ghq.zip"; \
+    download "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_amd64.tar.gz" "$tmp/gh.tar.gz"; \
+    tar -xzf "$tmp/gh.tar.gz" -C "$tmp"; \
+    install -m 0755 "$(find "$tmp" -type f -path '*/bin/gh' | head -n 1)" /usr/local/bin/gh; \
+    download "https://github.com/x-motemen/ghq/releases/download/v${GHQ_VERSION}/ghq_linux_amd64.zip" "$tmp/ghq.zip"; \
     unzip -q "$tmp/ghq.zip" -d "$tmp/ghq"; \
     install -m 0755 "$(find "$tmp/ghq" -type f -name ghq | head -n 1)" /usr/local/bin/ghq; \
-    curl -fsSL "https://github.com/d-kuro/gwq/releases/download/v${GWQ_VERSION}/gwq_Linux_x86_64.tar.gz" -o "$tmp/gwq.tar.gz"; \
+    download "https://github.com/d-kuro/gwq/releases/download/v${GWQ_VERSION}/gwq_Linux_x86_64.tar.gz" "$tmp/gwq.tar.gz"; \
     tar -xzf "$tmp/gwq.tar.gz" -C "$tmp"; \
     install -m 0755 "$(find "$tmp" -type f -name gwq | head -n 1)" /usr/local/bin/gwq; \
-    curl -fsSL "https://github.com/boxp/ceeker/releases/download/v${CEEKER_VERSION}/ceeker-linux-amd64.tar.gz" -o "$tmp/ceeker.tar.gz"; \
+    download "https://github.com/boxp/ceeker/releases/download/v${CEEKER_VERSION}/ceeker-linux-amd64.tar.gz" "$tmp/ceeker.tar.gz"; \
     tar -xzf "$tmp/ceeker.tar.gz" -C "$tmp"; \
     install -m 0755 "$tmp/ceeker-linux-amd64" /usr/local/bin/ceeker; \
-    curl -fsSL "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" -o "$tmp/bb.tar.gz"; \
+    download "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" "$tmp/bb.tar.gz"; \
     tar -xzf "$tmp/bb.tar.gz" -C "$tmp"; \
     install -m 0755 "$(find "$tmp" -type f -name bb | head -n 1)" /usr/local/bin/bb; \
-    curl -fsSL "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_linux_x86_64.tar.gz" -o "$tmp/lazygit.tar.gz"; \
+    download "https://github.com/jesseduffield/lazygit/releases/download/v${LAZYGIT_VERSION}/lazygit_${LAZYGIT_VERSION}_linux_x86_64.tar.gz" "$tmp/lazygit.tar.gz"; \
     tar -xzf "$tmp/lazygit.tar.gz" -C "$tmp"; \
     install -m 0755 "$(find "$tmp" -type f -name lazygit | head -n 1)" /usr/local/bin/lazygit; \
-    curl -fsSL "https://github.com/sxyazi/yazi/releases/download/v${YAZI_VERSION}/yazi-x86_64-unknown-linux-gnu.zip" -o "$tmp/yazi.zip"; \
+    download "https://github.com/sxyazi/yazi/releases/download/v${YAZI_VERSION}/yazi-x86_64-unknown-linux-gnu.zip" "$tmp/yazi.zip"; \
     unzip -q "$tmp/yazi.zip" -d "$tmp/yazi"; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name yazi | head -n 1)" /usr/local/bin/yazi; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name ya | head -n 1)" /usr/local/bin/ya; \

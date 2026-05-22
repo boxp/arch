@@ -83,6 +83,16 @@
       customType: "regex",
       managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
       matchStrings: [
+        "ARG GH_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "cli/cli",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
         "ARG GHQ_VERSION=(?<currentValue>[0-9.]+)"
       ],
       depNameTemplate: "x-motemen/ghq",
