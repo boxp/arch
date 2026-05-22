@@ -73,11 +73,17 @@ RUN set -eux; \
     rm -rf "$tmp"
 
 RUN locale-gen en_US.UTF-8 \
+    && if getent group 1000 >/dev/null; then \
+      existing_group="$(getent group 1000 | cut -d: -f1)"; \
+      if [ "$existing_group" != "boxp" ]; then groupmod --new-name boxp "$existing_group"; fi; \
+    else \
+      groupadd --gid 1000 boxp; \
+    fi \
     && if getent passwd 1000 >/dev/null; then \
       existing_user="$(getent passwd 1000 | cut -d: -f1)"; \
-      usermod --login boxp --home /home/boxp --move-home "$existing_user"; \
+      usermod --login boxp --home /home/boxp --gid 1000 --move-home "$existing_user"; \
     else \
-      useradd --create-home --shell /bin/bash --uid 1000 boxp; \
+      useradd --create-home --shell /bin/bash --uid 1000 --gid 1000 boxp; \
     fi \
     && usermod -aG sudo boxp \
     && echo "boxp ALL=(ALL) NOPASSWD:ALL" > /etc/sudoers.d/boxp \
