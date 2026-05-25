@@ -16,7 +16,7 @@ upgrade_health_check_delay: 10       # seconds
 
 # etcd snapshot
 etcd_snapshot_dir: /var/lib/etcd-snapshots
-etcd_snapshot_pod_dir: /tmp
+etcd_snapshot_pod_dir: /var/lib/etcd
 etcd_snapshot_local_dir: ""
 etcd_snapshot_cleanup_pod_file: true
 etcd_snapshot_force: false
