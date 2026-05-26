@@ -16,6 +16,10 @@ upgrade_health_check_delay: 10       # seconds
 
 # etcd snapshot
 etcd_snapshot_dir: /var/lib/etcd-snapshots
+etcd_snapshot_pod_dir: /var/lib/etcd
+etcd_snapshot_local_dir: ""
+etcd_snapshot_cleanup_pod_file: true
+etcd_snapshot_force: false
 etcd_cacert: /etc/kubernetes/pki/etcd/ca.crt
 etcd_cert: /etc/kubernetes/pki/etcd/healthcheck-client.crt
 etcd_key: /etc/kubernetes/pki/etcd/healthcheck-client.key
