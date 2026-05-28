@@ -16,10 +16,6 @@ on:
         required: true
       gh_cloudflare_api_token:
         required: true
-      TAILSCALE_API_KEY:
-        required: false
-      TAILSCALE_TAILNET:
-        required: false
 
 jobs:
   plan:
@@ -156,7 +152,6 @@ jobs:
               - name: registry.terraform.io/hashicorp/random
               - name: registry.terraform.io/hashicorp/time
               - name: registry.terraform.io/integrations/github
-              - name: registry.terraform.io/tailscale/tailscale
           GITHUB_TOKEN: ${{steps.pull_request_token.outputs.token}} # For github-comment
 
       - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
