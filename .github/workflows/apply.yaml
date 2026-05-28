@@ -22,9 +22,10 @@ jobs:
         with:
           aqua_version: v2.59.1
 
-      - uses: suzuki-shunsuke/tfaction/list-targets@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         id: list-targets
-
+        with:
+          action: list-targets
   apply:
     name: "apply (${{matrix.target.target}})"
     runs-on: ${{matrix.target.runs_on}}
@@ -39,6 +40,7 @@ jobs:
     env:
       TFACTION_TARGET: ${{matrix.target.target}}
       TFACTION_JOB_TYPE: ${{matrix.target.job_type}}
+      TFACTION_SKIP_TERRAFORM: ${{matrix.target.skip_terraform}}
     permissions:
       id-token: write # For OIDC
       contents: read # To checkout a private repository
@@ -65,10 +67,6 @@ jobs:
           aqua_version: v2.59.1
         env:
           AQUA_GITHUB_TOKEN: ${{ steps.aqua_installer_token.outputs.token }}
-
-      - uses: suzuki-shunsuke/tfaction/export-secrets@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
-        with:
-          secrets: ${{ toJSON(secrets) }}
 
       - name: Generate token to download private Terraform Modules
         id: gh_setup_token
@@ -106,10 +104,10 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - run: tfaction get-or-create-drift-issue
-        shell: bash
-        env:
-          GITHUB_TOKEN: ${{ steps.drift_issue_token.outputs.token }}
+      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+        with:
+          action: get-or-create-drift-issue
+          github_token: ${{ steps.drift_issue_token.outputs.token }}
 
       - name: Generate token for setup
         id: setup_token
@@ -127,10 +125,19 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction/setup@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+        id: setup
         with:
+          action: setup
           github_token: ${{ steps.setup_token.outputs.token }}
-          ssh_key: ${{ secrets.TERRAFORM_PRIVATE_MODULE_SSH_KEY }} # This isn't needed if you don't use SSH key to checkout private Terraform Modules
+          secrets: ${{ toJSON(secrets) }}
+
+      - uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        if: steps.setup.outputs.aws_assume_role_arn != ''
+        with:
+          role-to-assume: ${{ steps.setup.outputs.aws_assume_role_arn }}
+          role-session-name: ${{ steps.setup.outputs.aws_role_session_name }}
+          aws-region: ${{ steps.setup.outputs.aws_region }}
 
       - name: Generate token for apply
         id: apply_token
@@ -152,12 +159,26 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction/apply@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         with:
+          action: terraform-init
           github_token: ${{ steps.apply_token.outputs.token }}
+          secrets: ${{ toJSON(secrets) }}
+
+      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+        with:
+          action: apply
+          github_token: ${{ steps.apply_token.outputs.token }}
+          secrets: ${{ toJSON(secrets) }}
         env:
           CLOUDFLARE_API_TOKEN: ${{secrets.CLOUDFLARE_API_TOKEN}} # For cloudflare provider
 
+      - name: Update related PR branches
+        uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+        if: always()
+        with:
+          action: update-pr-branch
+          github_token: ${{ steps.apply_token.outputs.token }}
 
       - name: Generate token for creating follow up pr
         id: follow_up_pr_token
@@ -176,13 +197,15 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction/create-follow-up-pr@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         if: failure()
         with:
+          action: create-follow-up-pr
           github_token: ${{steps.follow_up_pr_token.outputs.token}}
 
-      - uses: suzuki-shunsuke/tfaction/update-drift-issue@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         if: always()
         with:
+          action: update-drift-issue
           status: ${{job.status}}
           github_token: ${{steps.drift_issue_token.outputs.token}}
