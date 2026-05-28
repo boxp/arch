@@ -1,2 +1,2 @@
 packages:
-  - name: cloudflare/cloudflared@2026.5.0
+  - name: cloudflare/cloudflared@2026.5.1
