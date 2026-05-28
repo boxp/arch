@@ -61,7 +61,7 @@ jobs:
         env:
           AQUA_GITHUB_TOKEN: ${{steps.aqua_installer_token.outputs.token}}
 
-      - uses: suzuki-shunsuke/tfaction/export-secrets@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction/export-secrets@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         with:
           secrets: ${{toJSON(secrets)}}
 
@@ -103,13 +103,13 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction/setup@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction/setup@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         with:
           github_token: ${{steps.generate_token.outputs.token}}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider
 
-      - uses: suzuki-shunsuke/tfaction/get-target-config@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction/get-target-config@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         id: target-config
 
       - name: Generate token (pull request write)
@@ -144,7 +144,7 @@ jobs:
               - name: registry.terraform.io/tailscale/tailscale
           GITHUB_TOKEN: ${{steps.pull_request_token.outputs.token}} # For github-comment
 
-      - uses: suzuki-shunsuke/tfaction/test@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction/test@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         with:
           github_token: ${{steps.generate_token.outputs.token}}
         env:
@@ -152,7 +152,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
           TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
-      - uses: suzuki-shunsuke/tfaction/plan@4562d910bbacecf384c8aeda25332284fcf05f38 # v1.20.1
+      - uses: suzuki-shunsuke/tfaction/plan@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
         with:
           github_token: ${{steps.generate_token.outputs.token}}
         env:
