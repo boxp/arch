@@ -1,20 +1,20 @@
 ---
-plan_workflow_name: pull_request_target
+plan_workflow_name: test.yaml
 
 draft_pr: false # default is false. If `draft_pr` is true, tfaction creates pull requests as draft
 base_working_directory: "" # default is empty, which means the current directory
 working_directory_file: tfaction.yaml # default is "tfaction.yaml"
 
-# conftest_policy_directory: tfaction >= v1.1.0
-# conftest_policy_directory is the file path to the conftest policy directory.
-# The default value is "policy".
-# If conftest_policy_directory isn't set and the directory policy doesn't exist, contest is skipped.
-# If conftest_policy_directory is set but the directory doesn't exist, the action fails.
-conftest_policy_directory: policy/terraform
+conftest:
+  policies:
+    - policy: policy/terraform
+      plan: true
 
-renovate_login: 'renovate[bot]' # default is "renovate[bot]"
+auto_apps:
+  logins:
+    - 'renovate[bot]'
+
 label_prefixes:
-  target: "target:" # default is "target:"
   tfmigrate: "tfmigrate:" # default is "tfmigrate:"
   skip: "skip:" # default is "skip:"
 
@@ -57,9 +57,19 @@ drift_detection:
 
 terraform_command: terraform
 
+available_providers:
+  - name: registry.terraform.io/cloudflare/cloudflare
+  - name: registry.terraform.io/hashicorp/aws
+  - name: registry.terraform.io/hashicorp/google
+  - name: registry.terraform.io/hashicorp/null
+  - name: registry.terraform.io/hashicorp/tls
+  - name: registry.terraform.io/hashicorp/random
+  - name: registry.terraform.io/hashicorp/time
+  - name: registry.terraform.io/integrations/github
+  - name: registry.terraform.io/tailscale/tailscale
+
 target_groups:
-- working_directory: terraform/aws/
-  target: terraform/aws/
+- working_directory: terraform/aws/**
   aws_region: ap-northeast-1
   s3_bucket_name_tfmigrate_history: 'tfaction-history'
   template_dir: templates/aws # This is used by `scaffold-working-dir` action
@@ -75,8 +85,7 @@ target_groups:
   tfmigrate_apply_config:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_apply
 
-- working_directory: terraform/cloudflare/
-  target: terraform/cloudflare/
+- working_directory: terraform/cloudflare/**
   aws_region: ap-northeast-1
   s3_bucket_name_tfmigrate_history: 'tfaction-history'
   template_dir: templates/cloudflare # This is used by `scaffold-working-dir` action
@@ -92,8 +101,7 @@ target_groups:
   tfmigrate_apply_config:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_apply
 
-- working_directory: terraform/github/
-  target: terraform/github/
+- working_directory: terraform/github/**
   aws_region: ap-northeast-1
   s3_bucket_name_tfmigrate_history: 'tfaction-history'
   template_dir: templates/github
@@ -121,8 +129,7 @@ target_groups:
     - env_name: GITHUB_TOKEN
       secret_name: GH_TOKEN_APPLY
 
-- working_directory: terraform/tailscale/
-  target: terraform/tailscale/
+- working_directory: terraform/tailscale/**
   aws_region: ap-northeast-1
   s3_bucket_name_tfmigrate_history: 'tfaction-history'
   template_dir: templates/tailscale
