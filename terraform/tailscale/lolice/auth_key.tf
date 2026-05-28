@@ -18,4 +18,8 @@ resource "aws_ssm_parameter" "subnet_router_auth_key" {
   description = "Tailscale auth key for lolice subnet router Pod"
   type        = "SecureString"
   value       = tailscale_tailnet_key.subnet_router.key
+
+  lifecycle {
+    ignore_changes = [value]
+  }
 }
