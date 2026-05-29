@@ -14,11 +14,3 @@ resource "cloudflare_record" "codex_workspace" {
   type    = "A"
   proxied = false
 }
-
-resource "cloudflare_record" "even_g2_main" {
-  zone_id = var.zone_id
-  name    = "even-g2-main"
-  content = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.cname
-  type    = "CNAME"
-  proxied = true
-}
