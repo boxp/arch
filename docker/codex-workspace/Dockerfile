@@ -103,6 +103,7 @@ ENV LANG=en_US.UTF-8 \
     PATH=/home/boxp/.local/bin:/home/boxp/go/bin:/usr/local/bin:/usr/bin:/bin
 
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
+COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint
 
 EXPOSE 2222 3456
