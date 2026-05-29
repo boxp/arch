@@ -1,69 +1,58 @@
 ---
 name: codex-workspace-cron
-description: Manage Codex workspace scheduled prompt jobs in boxp/lolice. Use when the user asks to list, show, add, edit, enable, disable, delete, or manually run Codex cron jobs backed by argoproj/codex-workspace jobs.yaml and Kubernetes CronJobs.
+description: Manage Codex workspace scheduled prompt jobs stored under ~/.codex-cron. Use when the user asks to list, show, add, edit, enable, disable, delete, or manually run Codex cron jobs.
 ---
 
 # Codex Workspace Cron
 
 Use this skill to operate the Codex workspace prompt scheduler from inside the Codex workspace.
 
-The scheduler is GitOps-managed in `boxp/lolice`:
+The live scheduler reads and writes only the workspace home PVC:
 
-- `argoproj/codex-workspace/cron-configmap.yaml`
-  - embedded `jobs.yaml` registry
-  - `prompt-*.md` prompt bodies
-  - runner scripts
-- `argoproj/codex-workspace/cronjob.yaml`
-  - one Kubernetes CronJob per registered job
+- `/home/boxp/.codex-cron/jobs.edn`: job registry.
+- `/home/boxp/.codex-cron/prompts/*.md`: prompt bodies.
+- `/home/boxp/.codex-cron/jobs-state.edn`: scheduler bookkeeping.
+- `/home/boxp/.codex-cron/runs/<job>/<run-id>/`: run logs.
 
 ## Workflow
 
-1. Work in a `boxp/lolice` worktree, preferably using the `worktree` skill.
-2. Use the bundled script for manifest CRUD:
+1. Use the bundled helper for CRUD:
 
    ```bash
-   bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice list
+   bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb list
    ```
 
-3. After changes, run:
-
-   ```bash
-   kustomize build argoproj/codex-workspace
-   git diff --check
-   ```
-
-4. Commit and update the `boxp/lolice` PR.
+2. New jobs should default to disabled unless the user explicitly asks to enable them.
+3. Use `run` only when the user asks for a manual execution or validation run.
 
 ## Commands
 
 List jobs:
 
 ```bash
-bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice list
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb list
 ```
 
 Show one job:
 
 ```bash
-bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice show <job-id>
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb show <job-id>
 ```
 
-Add a job:
+Add a disabled job:
 
 ```bash
-bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice add \
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb add \
   --id daily-report \
   --name "Daily report" \
   --schedule "0 22 * * *" \
-  --prompt-file prompt-daily-report.md \
-  --prompt "調査して日本語で報告してください。" \
-  --enabled false
+  --prompt "調査して日本語で報告してください。"
 ```
 
 Update metadata or prompt:
 
 ```bash
-bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice update daily-report \
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb update daily-report \
   --schedule "30 22 * * *" \
   --prompt "新しいプロンプト"
 ```
@@ -71,19 +60,24 @@ bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice update daily-r
 Enable or disable:
 
 ```bash
-bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice enable daily-report
-bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice disable daily-report
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb enable daily-report
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb disable daily-report
 ```
 
 Delete:
 
 ```bash
-bb <this-skill>/scripts/codex_cron_jobs.bb --repo /path/to/lolice delete daily-report
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb delete daily-report
+```
+
+Manual run:
+
+```bash
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb run daily-report
 ```
 
 ## Safety
 
-- New jobs should default to disabled unless the user explicitly asks to enable them.
-- Keep `jobs.yaml enabled` and CronJob `spec.suspend` consistent.
-- Do not run `kubectl` mutations unless the user explicitly asks for live cluster operations.
-- For manual live runs, prefer documenting the command from `argoproj/codex-workspace/cron.md`.
+- Confirm schedule, prompt, and enabled state before turning a job on.
+- The scheduler supports standard 5-field cron expressions and polls every 30 seconds by default.
+- Do not edit Kubernetes CronJobs for individual schedules; the resident scheduler sidecar reads `~/.codex-cron/jobs.edn`.
