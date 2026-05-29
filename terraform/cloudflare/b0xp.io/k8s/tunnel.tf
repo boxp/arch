@@ -21,6 +21,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
       service  = "http://argocd-server.argocd.svc.cluster.local:8080"
     }
     ingress_rule {
+      hostname = cloudflare_record.even_g2_main.hostname
+      service  = "http://even-g2-main.even-g2-lab.svc.cluster.local:80"
+    }
+    ingress_rule {
       service = "http_status:404"
     }
   }
