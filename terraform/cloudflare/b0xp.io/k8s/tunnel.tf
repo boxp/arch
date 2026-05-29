@@ -21,10 +21,6 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
       service  = "http://argocd-server.argocd.svc.cluster.local:8080"
     }
     ingress_rule {
-      hostname = cloudflare_zero_trust_network_hostname_route.even_g2_main.hostname
-      service  = "http://even-g2-main.even-g2-lab.svc.cluster.local:80"
-    }
-    ingress_rule {
       service = "http_status:404"
     }
   }
@@ -35,11 +31,4 @@ resource "cloudflare_zero_trust_tunnel_route" "codex_workspace" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id
   network    = "192.168.10.98/32"
   comment    = "lolice codex-workspace LoadBalancer for WARP access"
-}
-
-resource "cloudflare_zero_trust_network_hostname_route" "even_g2_main" {
-  account_id = var.account_id
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id
-  hostname   = "even-g2-main.b0xp.io"
-  comment    = "lolice even-g2-lab main app private hostname"
 }
