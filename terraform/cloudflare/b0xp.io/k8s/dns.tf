@@ -14,3 +14,11 @@ resource "cloudflare_record" "codex_workspace" {
   type    = "A"
   proxied = false
 }
+
+resource "cloudflare_record" "even_g2_main" {
+  zone_id = var.zone_id
+  name    = "even-g2-main"
+  content = "192.168.10.99"
+  type    = "A"
+  proxied = false
+}

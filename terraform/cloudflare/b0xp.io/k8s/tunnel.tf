@@ -32,3 +32,10 @@ resource "cloudflare_zero_trust_tunnel_route" "codex_workspace" {
   network    = "192.168.10.98/32"
   comment    = "lolice codex-workspace LoadBalancer for WARP access"
 }
+
+resource "cloudflare_zero_trust_tunnel_route" "even_g2_main" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id
+  network    = "192.168.10.99/32"
+  comment    = "lolice even-g2-lab main LoadBalancer for WARP access"
+}
