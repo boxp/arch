@@ -18,9 +18,15 @@ function getElement<T extends Element>(selector: string): T {
 }
 
 const fileInput = getElement<HTMLInputElement>('#file-input')
+const dropZone = getElement<HTMLButtonElement>('#drop-zone')
+const dropZoneMeta = getElement<HTMLElement>('#drop-zone-meta')
 const video = getElement<HTMLVideoElement>('#source-video')
 const canvas = getElement<HTMLCanvasElement>('#preview-canvas')
 const timeline = getElement<HTMLInputElement>('#timeline')
+const rangeStart = getElement<HTMLInputElement>('#range-start')
+const rangeEnd = getElement<HTMLInputElement>('#range-end')
+const rangeFill = getElement<HTMLDivElement>('#range-fill')
+const playhead = getElement<HTMLDivElement>('#playhead')
 const startInput = getElement<HTMLInputElement>('#start-input')
 const endInput = getElement<HTMLInputElement>('#end-input')
 const sizeSelect = getElement<HTMLSelectElement>('#size-select')
@@ -28,8 +34,9 @@ const formatSelect = getElement<HTMLSelectElement>('#format-select')
 const markStartButton = getElement<HTMLButtonElement>('#mark-start')
 const markEndButton = getElement<HTMLButtonElement>('#mark-end')
 const exportButton = getElement<HTMLButtonElement>('#export-button')
-const fileMeta = getElement<HTMLSpanElement>('#file-meta')
+const fileMeta = getElement<HTMLElement>('#file-meta')
 const timeMeta = getElement<HTMLSpanElement>('#time-meta')
+const clipDuration = getElement<HTMLSpanElement>('#clip-duration')
 const statusLine = getElement<HTMLDivElement>('#status')
 const downloadLink = getElement<HTMLAnchorElement>('#download-link')
 
@@ -50,6 +57,7 @@ let fetchFileForFfmpeg: FetchFile | null = null
 let lastFfmpegLog = ''
 
 const ffmpegCoreBaseUrl = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd'
+const rangeInputs = [timeline, rangeStart, rangeEnd]
 
 function getRotation(): Rotation {
   const checked = document.querySelector<HTMLInputElement>('input[name="rotation"]:checked')
@@ -70,15 +78,23 @@ function formatTime(seconds: number): string {
   return `${minutes.toString().padStart(2, '0')}:${rest.toFixed(1).padStart(4, '0')}`
 }
 
+function getDuration(): number {
+  return Number.isFinite(video.duration) ? video.duration : 0
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(value, max))
+}
+
 function setStatus(message: string): void {
   statusLine.textContent = message
 }
 
 function getClipRange(): { start: number; end: number } {
-  const duration = Number.isFinite(video.duration) ? video.duration : 0
-  const start = Math.max(0, Math.min(Number(startInput.value) || 0, duration))
+  const duration = getDuration()
+  const start = clamp(Number(startInput.value) || 0, 0, duration)
   const fallbackEnd = duration > 0 ? duration : start
-  const end = Math.max(start, Math.min(Number(endInput.value) || fallbackEnd, duration))
+  const end = clamp(Number(endInput.value) || fallbackEnd, start, duration)
   return { start, end }
 }
 
@@ -133,10 +149,10 @@ function drawFrame(): void {
 }
 
 function updateMeta(): void {
-  const duration = Number.isFinite(video.duration) ? video.duration : 0
-  timeline.max = duration.toString()
+  const duration = getDuration()
   timeline.value = video.currentTime.toString()
   timeMeta.textContent = `${formatTime(video.currentTime)} / ${formatTime(duration)}`
+  updateTrimVisuals()
 }
 
 function tick(): void {
@@ -146,16 +162,64 @@ function tick(): void {
 }
 
 function setDefaultRange(): void {
-  const duration = Number.isFinite(video.duration) ? video.duration : 0
+  const duration = getDuration()
   const end = Math.min(duration, 30)
   startInput.value = '0'
   endInput.value = end.toFixed(1)
+  rangeStart.value = '0'
+  rangeEnd.value = end.toString()
+  updateTrimVisuals()
 }
 
 function normalizeRangeInputs(): void {
   const { start, end } = getClipRange()
   startInput.value = start.toFixed(1)
   endInput.value = end.toFixed(1)
+  rangeStart.value = start.toString()
+  rangeEnd.value = end.toString()
+  updateTrimVisuals()
+}
+
+function updateRangeLimits(): void {
+  const duration = getDuration()
+
+  rangeInputs.forEach((input) => {
+    input.max = duration.toString()
+    input.disabled = duration <= 0
+  })
+}
+
+function updateTrimVisuals(): void {
+  const duration = getDuration()
+  const { start, end } = getClipRange()
+  const startPercent = duration > 0 ? (start / duration) * 100 : 0
+  const endPercent = duration > 0 ? (end / duration) * 100 : 0
+  const playheadPercent = duration > 0 ? (video.currentTime / duration) * 100 : 0
+
+  rangeFill.style.left = `${startPercent}%`
+  rangeFill.style.width = `${Math.max(0, endPercent - startPercent)}%`
+  playhead.style.left = `${clamp(playheadPercent, 0, 100)}%`
+  clipDuration.textContent = `${formatTime(end - start)} clip`
+}
+
+function updateRangeFromHandle(activeHandle: 'start' | 'end'): void {
+  const duration = getDuration()
+  const minGap = duration > 0 ? Math.min(0.1, duration) : 0
+  let start = Number(rangeStart.value) || 0
+  let end = Number(rangeEnd.value) || 0
+
+  if (activeHandle === 'start') {
+    start = clamp(start, 0, Math.max(0, end - minGap))
+  } else {
+    end = clamp(end, Math.min(duration, start + minGap), duration)
+  }
+
+  startInput.value = start.toFixed(1)
+  endInput.value = end.toFixed(1)
+  rangeStart.value = start.toString()
+  rangeEnd.value = end.toString()
+  video.currentTime = activeHandle === 'start' ? start : end
+  updateTrimVisuals()
 }
 
 function revokeDownload(): void {
@@ -166,6 +230,32 @@ function revokeDownload(): void {
 
   downloadLink.hidden = true
   downloadLink.removeAttribute('href')
+}
+
+function setSourceFile(file: File): void {
+  if (!file.type.startsWith('video/')) {
+    setStatus('動画ファイルを選択してください')
+    return
+  }
+
+  if (sourceUrl) {
+    URL.revokeObjectURL(sourceUrl)
+  }
+
+  revokeDownload()
+  sourceUrl = URL.createObjectURL(file)
+  sourceName = file.name.replace(/\.[^.]+$/, '') || 'rotated-video'
+  video.src = sourceUrl
+  fileMeta.textContent = `${file.name} / ${(file.size / 1024 / 1024).toFixed(1)} MB`
+  dropZoneMeta.textContent = file.name
+  document.body.classList.add('has-video')
+  exportButton.disabled = false
+  setStatus('読み込み中')
+}
+
+function getDroppedVideoFile(event: DragEvent): File | null {
+  const files = Array.from(event.dataTransfer?.files ?? [])
+  return files.find((file) => file.type.startsWith('video/')) ?? null
 }
 
 function getSupportedMimeType(format: ExportFormat): string {
@@ -397,20 +487,51 @@ fileInput.addEventListener('change', () => {
     return
   }
 
-  if (sourceUrl) {
-    URL.revokeObjectURL(sourceUrl)
+  setSourceFile(file)
+})
+
+dropZone.addEventListener('click', () => {
+  fileInput.click()
+})
+
+dropZone.addEventListener('dragenter', (event) => {
+  event.preventDefault()
+  dropZone.classList.add('is-dragging')
+})
+
+dropZone.addEventListener('dragover', (event) => {
+  event.preventDefault()
+  dropZone.classList.add('is-dragging')
+})
+
+dropZone.addEventListener('dragleave', () => {
+  dropZone.classList.remove('is-dragging')
+})
+
+dropZone.addEventListener('drop', (event) => {
+  event.preventDefault()
+  dropZone.classList.remove('is-dragging')
+
+  const file = getDroppedVideoFile(event)
+
+  if (!file) {
+    setStatus('動画ファイルをドロップしてください')
+    return
   }
 
-  revokeDownload()
-  sourceUrl = URL.createObjectURL(file)
-  sourceName = file.name.replace(/\.[^.]+$/, '') || 'rotated-video'
-  video.src = sourceUrl
-  fileMeta.textContent = `${file.name} / ${(file.size / 1024 / 1024).toFixed(1)} MB`
-  exportButton.disabled = false
-  setStatus('読み込み中')
+  setSourceFile(file)
+})
+
+window.addEventListener('dragover', (event) => {
+  event.preventDefault()
+})
+
+window.addEventListener('drop', (event) => {
+  event.preventDefault()
 })
 
 video.addEventListener('loadedmetadata', () => {
+  updateRangeLimits()
   setDefaultRange()
   normalizeRangeInputs()
   resizeCanvas()
@@ -420,10 +541,13 @@ video.addEventListener('loadedmetadata', () => {
 
 timeline.addEventListener('input', () => {
   video.currentTime = Number(timeline.value)
+  updateTrimVisuals()
 })
 
 startInput.addEventListener('change', normalizeRangeInputs)
 endInput.addEventListener('change', normalizeRangeInputs)
+rangeStart.addEventListener('input', () => updateRangeFromHandle('start'))
+rangeEnd.addEventListener('input', () => updateRangeFromHandle('end'))
 sizeSelect.addEventListener('change', drawFrame)
 document.querySelectorAll<HTMLInputElement>('input[name="rotation"]').forEach((input) => {
   input.addEventListener('change', drawFrame)
