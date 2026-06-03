@@ -35,7 +35,7 @@ jobs:
 
       - name: Deploy to Cloudflare Pages dev
         working-directory: apps/video-rotator
-        run: npx wrangler pages deploy dist --project-name boxp-video-rotator-dev --branch dev
+        run: npx wrangler pages deploy dist --project-name boxp-video-rotator-dev --branch main
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
