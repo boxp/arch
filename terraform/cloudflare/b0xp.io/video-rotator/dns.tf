@@ -5,3 +5,11 @@ resource "cloudflare_record" "video_rotator" {
   type    = "CNAME"
   proxied = true
 }
+
+resource "cloudflare_record" "video_rotator_dev" {
+  zone_id = var.zone_id
+  name    = "video-rotator-dev"
+  value   = cloudflare_pages_project.video_rotator_dev.subdomain
+  type    = "CNAME"
+  proxied = true
+}
