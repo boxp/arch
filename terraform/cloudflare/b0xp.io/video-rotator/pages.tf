@@ -21,12 +21,10 @@ resource "cloudflare_pages_project" "video_rotator" {
       repo_name                       = "arch"
       production_branch               = "main"
       pr_comments_enabled             = true
-      production_deployments_enabled  = true
+      production_deployment_enabled   = true
       preview_deployment_setting      = "custom"
       preview_branch_includes         = ["feature/*"]
       preview_branch_excludes         = ["main"]
-      path_includes                   = ["apps/video-rotator/**"]
-      path_excludes                   = []
     }
   }
 }
