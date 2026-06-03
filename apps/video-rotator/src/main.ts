@@ -47,6 +47,7 @@ let isExporting = false
 let lastDownloadUrl: string | null = null
 let ffmpeg: FFmpegInstance | null = null
 let fetchFileForFfmpeg: FetchFile | null = null
+let lastFfmpegLog = ''
 
 const ffmpegCoreBaseUrl = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd'
 
@@ -167,12 +168,19 @@ function revokeDownload(): void {
   downloadLink.removeAttribute('href')
 }
 
-function getSupportedMimeType(): string {
-  const candidates = [
+function getSupportedMimeType(format: ExportFormat): string {
+  const mp4Candidates = [
+    'video/mp4;codecs=avc1.42E01E,mp4a.40.2',
+    'video/mp4;codecs=avc1.64001F,mp4a.40.2',
+    'video/mp4;codecs=h264,aac',
+    'video/mp4',
+  ]
+  const webmCandidates = [
     'video/webm;codecs=vp9,opus',
     'video/webm;codecs=vp8,opus',
     'video/webm',
   ]
+  const candidates = format === 'mp4' ? [...mp4Candidates, ...webmCandidates] : webmCandidates
 
   return candidates.find((candidate) => MediaRecorder.isTypeSupported(candidate)) ?? ''
 }
@@ -240,6 +248,9 @@ async function loadFfmpeg(): Promise<{ ffmpeg: FFmpegInstance; fetchFile: FetchF
 
   ffmpeg = new FFmpeg()
   fetchFileForFfmpeg = fetchFile
+  ffmpeg.on('log', ({ message }) => {
+    lastFfmpegLog = message
+  })
   ffmpeg.on('progress', ({ progress }) => {
     if (progress > 0 && progress <= 1) {
       setStatus(`MP4へ変換中 ${Math.round(progress * 100)}%`)
@@ -268,17 +279,18 @@ async function convertWebmToMp4(webmBlob: Blob): Promise<Blob> {
   const outputName = 'output.mp4'
 
   setStatus('MP4へ変換中')
+  lastFfmpegLog = ''
   await ffmpegInstance.writeFile(inputName, await fetchFile(webmBlob))
 
   const exitCode = await ffmpegInstance.exec([
     '-i',
     inputName,
     '-c:v',
-    'libx264',
+    'mpeg4',
+    '-q:v',
+    '5',
     '-pix_fmt',
     'yuv420p',
-    '-preset',
-    'veryfast',
     '-movflags',
     'faststart',
     '-c:a',
@@ -289,7 +301,8 @@ async function convertWebmToMp4(webmBlob: Blob): Promise<Blob> {
   ])
 
   if (exitCode !== 0) {
-    throw new Error('MP4変換に失敗しました')
+    const detail = lastFfmpegLog ? `: ${lastFfmpegLog}` : ''
+    throw new Error(`MP4変換に失敗しました${detail}`)
   }
 
   const data = await ffmpegInstance.readFile(outputName)
@@ -319,13 +332,14 @@ async function exportClip(): Promise<void> {
 
   const { start, end } = getClipRange()
   const duration = end - start
+  const format = getExportFormat()
 
   if (!video.src || duration <= 0) {
     setStatus('書き出す時間範囲を指定してください')
     return
   }
 
-  const mimeType = getSupportedMimeType()
+  const mimeType = getSupportedMimeType(format)
 
   if (!mimeType) {
     setStatus('このブラウザはMediaRecorderの動画書き出しに対応していません')
@@ -339,11 +353,13 @@ async function exportClip(): Promise<void> {
 
   const wasMuted = video.muted
   const wasPaused = video.paused
-  const format = getExportFormat()
 
   try {
-    const webmBlob = await recordRotatedClip(start, end, mimeType)
-    const outputBlob = format === 'mp4' ? await convertWebmToMp4(webmBlob) : webmBlob
+    const recordedBlob = await recordRotatedClip(start, end, mimeType)
+    const outputBlob =
+      format === 'mp4' && !mimeType.startsWith('video/mp4')
+        ? await convertWebmToMp4(recordedBlob)
+        : recordedBlob
     showDownload(outputBlob, format, start, end)
     setStatus('書き出し完了')
   } catch (error) {
