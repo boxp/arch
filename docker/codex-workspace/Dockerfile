@@ -19,6 +19,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       bash-completion \
       ca-certificates \
+      chromium \
       curl \
       fzf \
       g++ \
@@ -100,6 +101,8 @@ RUN locale-gen en_US.UTF-8 \
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
+    CHROME_BIN=/usr/bin/chromium \
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium \
     PATH=/home/boxp/.local/bin:/home/boxp/go/bin:/usr/local/bin:/usr/bin:/bin
 
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
