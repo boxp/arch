@@ -5,6 +5,7 @@ type ExportSize = 'source' | '1080' | '720'
 type ExportFormat = 'mp4' | 'webm'
 type FFmpegInstance = import('@ffmpeg/ffmpeg').FFmpeg
 type FetchFile = typeof import('@ffmpeg/util').fetchFile
+type ToBlobUrl = typeof import('@ffmpeg/util').toBlobURL
 
 function getElement<T extends Element>(selector: string): T {
   const element = document.querySelector<T>(selector)
@@ -46,6 +47,8 @@ let isExporting = false
 let lastDownloadUrl: string | null = null
 let ffmpeg: FFmpegInstance | null = null
 let fetchFileForFfmpeg: FetchFile | null = null
+
+const ffmpegCoreBaseUrl = 'https://unpkg.com/@ffmpeg/core@0.12.10/dist/umd'
 
 function getRotation(): Rotation {
   const checked = document.querySelector<HTMLInputElement>('input[name="rotation"]:checked')
@@ -230,7 +233,7 @@ async function loadFfmpeg(): Promise<{ ffmpeg: FFmpegInstance; fetchFile: FetchF
 
   setStatus('MP4変換エンジンを読み込み中')
 
-  const [{ FFmpeg }, { fetchFile }] = await Promise.all([
+  const [{ FFmpeg }, { fetchFile, toBlobURL }] = await Promise.all([
     import('@ffmpeg/ffmpeg'),
     import('@ffmpeg/util'),
   ])
@@ -243,12 +246,20 @@ async function loadFfmpeg(): Promise<{ ffmpeg: FFmpegInstance; fetchFile: FetchF
     }
   })
 
-  await ffmpeg.load({
-    coreURL: '/ffmpeg-core/ffmpeg-core.js',
-    wasmURL: '/ffmpeg-core/ffmpeg-core.wasm',
-  })
+  await ffmpeg.load(await getFfmpegCoreUrls(toBlobURL))
 
   return { ffmpeg, fetchFile }
+}
+
+async function getFfmpegCoreUrls(
+  toBlobURL: ToBlobUrl,
+): Promise<{ coreURL: string; wasmURL: string }> {
+  const [coreURL, wasmURL] = await Promise.all([
+    toBlobURL(`${ffmpegCoreBaseUrl}/ffmpeg-core.js`, 'text/javascript'),
+    toBlobURL(`${ffmpegCoreBaseUrl}/ffmpeg-core.wasm`, 'application/wasm'),
+  ])
+
+  return { coreURL, wasmURL }
 }
 
 async function convertWebmToMp4(webmBlob: Blob): Promise<Blob> {

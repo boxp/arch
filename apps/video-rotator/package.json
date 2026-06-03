@@ -4,9 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "predev": "sh scripts/prepare-ffmpeg-core.sh",
     "dev": "vite --host 0.0.0.0 --port 5175",
-    "prebuild": "sh scripts/prepare-ffmpeg-core.sh",
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "deploy:cloudflare": "npm run build && npx wrangler pages deploy dist --project-name boxp-video-rotator"
@@ -16,7 +14,6 @@
     "vite": "latest"
   },
   "dependencies": {
-    "@ffmpeg/core": "^0.12.10",
     "@ffmpeg/ffmpeg": "^0.12.15",
     "@ffmpeg/util": "^0.12.2"
   }
