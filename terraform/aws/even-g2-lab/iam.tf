@@ -36,6 +36,8 @@ resource "aws_iam_policy" "even_g2_lab_main_gha_policy" {
     Statement = [
       {
         Action = [
+          "ecr:GetDownloadUrlForLayer",
+          "ecr:BatchGetImage",
           "ecr:BatchCheckLayerAvailability",
           "ecr:CompleteLayerUpload",
           "ecr:InitiateLayerUpload",
@@ -60,4 +62,3 @@ resource "aws_iam_role_policy_attachment" "even_g2_lab_main_gha_policy_attachmen
   role       = aws_iam_role.even_g2_lab_main_gha_role.name
   policy_arn = aws_iam_policy.even_g2_lab_main_gha_policy.arn
 }
-
