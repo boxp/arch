@@ -22,19 +22,6 @@ resource "cloudflare_zero_trust_access_policy" "codex_workspace_warp_enrollment"
   ]
 }
 
-resource "cloudflare_zero_trust_access_application" "codex_workspace_warp_enrollment" {
-  account_id = var.account_id
-  type       = "warp"
-  name       = "Codex workspace WARP enrollment"
-
-  policies = [
-    {
-      id         = cloudflare_zero_trust_access_policy.codex_workspace_warp_enrollment.id
-      precedence = 1
-    }
-  ]
-}
-
 resource "aws_ssm_parameter" "cloudflare_warp_auth_client_id" {
   name        = "/lolice/codex-workspace/cloudflare-warp-auth-client-id"
   description = "Cloudflare WARP service token client ID for non-interactive Codex workspace enrollment"
