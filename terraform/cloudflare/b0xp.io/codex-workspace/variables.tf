@@ -9,3 +9,9 @@ variable "cloudflare_zero_trust_team_name" {
   type        = string
   default     = "b0xp"
 }
+
+variable "cloudflare_one_client_access_application_domain" {
+  description = "The existing Cloudflare One Client Access application domain used for WARP device enrollment permissions."
+  type        = string
+  default     = "b0xp.cloudflareaccess.com/warp"
+}

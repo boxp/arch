@@ -22,6 +22,50 @@ resource "cloudflare_zero_trust_access_policy" "codex_workspace_warp_enrollment"
   ]
 }
 
+data "cloudflare_zero_trust_access_application" "cloudflare_one_client" {
+  account_id = var.account_id
+
+  filter = {
+    domain = var.cloudflare_one_client_access_application_domain
+    exact  = true
+  }
+}
+
+locals {
+  existing_cloudflare_one_client_policies = [
+    for policy in data.cloudflare_zero_trust_access_application.cloudflare_one_client.policies : {
+      id         = policy.id
+      precedence = policy.precedence
+    }
+    if policy.id != cloudflare_zero_trust_access_policy.codex_workspace_warp_enrollment.id
+  ]
+
+  cloudflare_one_client_next_policy_precedence = max(
+    concat([0], [for policy in local.existing_cloudflare_one_client_policies : policy.precedence])...
+  ) + 1
+}
+
+import {
+  to = cloudflare_zero_trust_access_application.cloudflare_one_client
+  id = "accounts/${var.account_id}/${data.cloudflare_zero_trust_access_application.cloudflare_one_client.id}"
+}
+
+resource "cloudflare_zero_trust_access_application" "cloudflare_one_client" {
+  account_id = var.account_id
+  name       = data.cloudflare_zero_trust_access_application.cloudflare_one_client.name
+  type       = "warp"
+
+  policies = concat(
+    local.existing_cloudflare_one_client_policies,
+    [
+      {
+        id         = cloudflare_zero_trust_access_policy.codex_workspace_warp_enrollment.id
+        precedence = local.cloudflare_one_client_next_policy_precedence
+      }
+    ]
+  )
+}
+
 resource "aws_ssm_parameter" "cloudflare_warp_auth_client_id" {
   name        = "/lolice/codex-workspace/cloudflare-warp-auth-client-id"
   description = "Cloudflare WARP service token client ID for non-interactive Codex workspace enrollment"
