@@ -88,6 +88,15 @@ EOF
     return 0
   fi
 
+  if ! warp-cli --accept-tos registration show >/tmp/cloudflare-warp-registration 2>&1; then
+    if ! warp-cli --accept-tos registration new "${CLOUDFLARE_WARP_ORGANIZATION}" >/tmp/cloudflare-warp-registration 2>&1; then
+      echo "cloudflare-warp: registration failed" >&2
+      cat /tmp/cloudflare-warp-registration >&2
+      [[ "$required" == "true" ]] && return 1
+      return 0
+    fi
+  fi
+
   if ! warp-cli --accept-tos connect >/tmp/cloudflare-warp-connect 2>&1; then
     echo "cloudflare-warp: connect failed" >&2
     cat /tmp/cloudflare-warp-connect >&2
