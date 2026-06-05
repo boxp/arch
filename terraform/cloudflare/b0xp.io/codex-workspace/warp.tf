@@ -52,9 +52,10 @@ import {
 }
 
 resource "cloudflare_zero_trust_access_application" "cloudflare_one_client" {
-  account_id = var.account_id
-  name       = local.cloudflare_one_client_application.name
-  type       = "warp"
+  account_id                = var.account_id
+  auto_redirect_to_identity = false
+  name                      = local.cloudflare_one_client_application.name
+  type                      = "warp"
 
   policies = concat(
     local.existing_cloudflare_one_client_policies,
