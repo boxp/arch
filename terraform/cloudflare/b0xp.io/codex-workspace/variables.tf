@@ -7,5 +7,5 @@ variable "account_id" {
 variable "cloudflare_zero_trust_team_name" {
   description = "The Cloudflare Zero Trust team name used by WARP MDM organization."
   type        = string
-  default     = "b0xp"
+  default     = "boxp"
 }
