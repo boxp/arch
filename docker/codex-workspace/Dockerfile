@@ -10,6 +10,7 @@ ARG CEEKER_VERSION=0.3.7
 ARG BABASHKA_VERSION=1.12.218
 ARG LAZYGIT_VERSION=0.61.1
 ARG YAZI_VERSION=26.5.6
+ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -77,6 +78,18 @@ RUN set -eux; \
     unzip -q "$tmp/yazi.zip" -d "$tmp/yazi"; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name yazi | head -n 1)" /usr/local/bin/yazi; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name ya | head -n 1)" /usr/local/bin/ya; \
+    rm -rf "$tmp"
+
+RUN set -eux; \
+    tmp="$(mktemp -d)"; \
+    curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
+      "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" \
+      -o "$tmp/cursor-agent.tar.gz"; \
+    rm -rf /opt/cursor-agent; \
+    mkdir -p /opt/cursor-agent; \
+    tar --strip-components=1 -xzf "$tmp/cursor-agent.tar.gz" -C /opt/cursor-agent; \
+    ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent; \
+    ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
     rm -rf "$tmp"
 
 RUN locale-gen en_US.UTF-8 \
