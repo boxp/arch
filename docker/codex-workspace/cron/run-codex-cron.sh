@@ -7,7 +7,7 @@ if [[ -z "${job_id}" ]]; then
   exit 2
 fi
 
-cron_root="${CODEX_CRON_ROOT:-/home/boxp/.codex-cron}"
+cron_root="${CODEX_CRON_ROOT:-/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron}"
 
 eval "$(
   bb /opt/codex-workspace/cron/select-codex-cron-job.bb "${job_id}"
