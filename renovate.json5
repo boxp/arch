@@ -17,6 +17,11 @@
   prHourlyLimit: 10,
   prConcurrentLimit: 10,
   branchConcurrentLimit: 20,
+  ignorePaths: [
+    // Mend-hosted Renovate currently runs with a 3GB memory limit.
+    // Terraform aqua imports are high-cardinality and make scheduled jobs OOM.
+    'terraform/**/aqua/imports/**',
+  ],
   customManagers: [
     // Kubernetes version (playbooks)
     {
