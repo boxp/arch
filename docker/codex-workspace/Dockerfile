@@ -10,6 +10,7 @@ ARG CEEKER_VERSION=0.3.7
 ARG BABASHKA_VERSION=1.12.218
 ARG LAZYGIT_VERSION=0.62.2
 ARG YAZI_VERSION=26.5.6
+ARG MOSHI_HOOK_VERSION=0.2.27
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG NODE_MAJOR=24
 ARG CLOUDFLARE_WARP_DISTRO=noble
@@ -59,6 +60,10 @@ RUN npm install -g \
       "@evenrealities/even-terminal@${EVEN_TERMINAL_VERSION}" \
       "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
     && npm cache clean --force
+
+RUN curl -fsSL https://getmoshi.app/install.sh \
+      | INSTALL_DIR=/usr/local/bin MOSHI_HOOK_VERSION="${MOSHI_HOOK_VERSION}" sh \
+    && moshi-hook version
 
 RUN set -eux; \
     download() { curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL "$1" -o "$2"; }; \
