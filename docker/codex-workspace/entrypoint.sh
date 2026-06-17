@@ -8,6 +8,30 @@ install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-cron
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/ghq
 
+start_moshi_hook() {
+  if [[ "${MOSHI_HOOK_ENABLED:-1}" == "0" ]]; then
+    return
+  fi
+
+  if ! command -v moshi-hook >/dev/null 2>&1; then
+    echo "moshi-hook is not installed; skipping Moshi hook setup" >&2
+    return
+  fi
+
+  if [[ -n "${MOSHI_PAIRING_TOKEN:-}" ]]; then
+    /usr/sbin/runuser -u boxp -- env HOME=/home/boxp PATH="${PATH}" \
+      moshi-hook pair --token "${MOSHI_PAIRING_TOKEN}" --store file \
+      || echo "moshi-hook pair failed; continuing workspace startup" >&2
+  fi
+
+  /usr/sbin/runuser -u boxp -- env HOME=/home/boxp PATH="${PATH}" \
+    moshi-hook install \
+    || echo "moshi-hook install failed; continuing workspace startup" >&2
+
+  /usr/sbin/runuser -u boxp -- env HOME=/home/boxp PATH="${PATH}" \
+    moshi-hook serve &
+}
+
 if [[ -d /opt/codex-workspace/skills ]]; then
   /usr/sbin/runuser -u boxp -- cp -R --no-preserve=mode,ownership \
     /opt/codex-workspace/skills/. /home/boxp/.codex/skills/
@@ -20,6 +44,7 @@ fi
 
 ssh-keygen -A
 /usr/sbin/sshd -D -e -p "${SSHD_PORT:-2222}" &
+start_moshi_hook
 
 cd /home/boxp
 
