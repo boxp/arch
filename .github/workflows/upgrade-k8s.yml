@@ -127,7 +127,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
         with:
-          aqua_version: v2.60.0
+          aqua_version: v2.60.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -299,7 +299,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
         with:
-          aqua_version: v2.60.0
+          aqua_version: v2.60.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -430,7 +430,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
         with:
-          aqua_version: v2.60.0
+          aqua_version: v2.60.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -561,7 +561,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
         with:
-          aqua_version: v2.60.0
+          aqua_version: v2.60.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -692,7 +692,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
         with:
-          aqua_version: v2.60.0
+          aqua_version: v2.60.1
           working_directory: aqua
 
       - name: Setup SSH config
