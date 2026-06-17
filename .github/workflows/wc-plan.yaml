@@ -40,7 +40,7 @@ jobs:
       matrix:
         target: ${{fromJSON(inputs.targets)}}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           ref: ${{inputs.ref}}
           persist-credentials: false
@@ -58,7 +58,7 @@ jobs:
 
       - uses: aquaproj/aqua-installer@11dd79b4e498d471a9385aa9fb7f62bb5f52a73c # v4.0.4
         with:
-          aqua_version: v2.59.1
+          aqua_version: v2.60.0
         env:
           AQUA_GITHUB_TOKEN: ${{steps.aqua_installer_token.outputs.token}}
 
@@ -100,7 +100,7 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+      - uses: suzuki-shunsuke/tfaction@92afb0ac879cf9c560fe1160a9bbde50b11ff119 # v2.0.2
         id: setup
         with:
           action: setup
@@ -109,20 +109,20 @@ jobs:
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider
 
-      - uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+      - uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
         if: steps.setup.outputs.aws_assume_role_arn != ''
         with:
           role-to-assume: ${{ steps.setup.outputs.aws_assume_role_arn }}
           role-session-name: ${{ steps.setup.outputs.aws_role_session_name }}
           aws-region: ${{ steps.setup.outputs.aws_region }}
 
-      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+      - uses: suzuki-shunsuke/tfaction@92afb0ac879cf9c560fe1160a9bbde50b11ff119 # v2.0.2
         id: target-config
 
         with:
           action: get-target-config
 
-      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+      - uses: suzuki-shunsuke/tfaction@92afb0ac879cf9c560fe1160a9bbde50b11ff119 # v2.0.2
         with:
           action: terraform-init
           github_token: ${{steps.generate_token.outputs.token}}
@@ -159,7 +159,7 @@ jobs:
               - name: registry.terraform.io/tailscale/tailscale
           GITHUB_TOKEN: ${{steps.pull_request_token.outputs.token}} # For github-comment
 
-      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+      - uses: suzuki-shunsuke/tfaction@92afb0ac879cf9c560fe1160a9bbde50b11ff119 # v2.0.2
         with:
           action: test
           github_token: ${{steps.generate_token.outputs.token}}
@@ -169,7 +169,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
           TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
-      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+      - uses: suzuki-shunsuke/tfaction@92afb0ac879cf9c560fe1160a9bbde50b11ff119 # v2.0.2
         with:
           action: plan
           github_token: ${{steps.generate_token.outputs.token}}

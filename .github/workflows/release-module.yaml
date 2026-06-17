@@ -20,14 +20,14 @@ jobs:
     permissions:
       contents: write # To create a release
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
           persist-credentials: false
       - uses: aquaproj/aqua-installer@11dd79b4e498d471a9385aa9fb7f62bb5f52a73c # v4.0.4
         with:
-          aqua_version: v2.59.1
+          aqua_version: v2.60.0
 
-      - uses: suzuki-shunsuke/tfaction@5d2ecf0f4898a0b3ecc6b536e9a3f4691f46bfad # v2.0.0
+      - uses: suzuki-shunsuke/tfaction@92afb0ac879cf9c560fe1160a9bbde50b11ff119 # v2.0.2
         with:
           action: release-module
           version: ${{ github.event.inputs.version }}

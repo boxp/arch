@@ -1,18 +1,18 @@
 ---
 name: codex-workspace-cron
-description: Manage Codex workspace scheduled prompt jobs stored under ~/.codex-cron. Use when the user asks to list, show, add, edit, enable, disable, delete, or manually run Codex cron jobs.
+description: Manage Codex workspace scheduled prompt jobs stored in the Obsidian vault. Use when the user asks to list, show, add, edit, enable, disable, delete, or manually run Codex cron jobs.
 ---
 
 # Codex Workspace Cron
 
 Use this skill to operate the Codex workspace prompt scheduler from inside the Codex workspace.
 
-The live scheduler reads and writes only the workspace home PVC:
+The live scheduler reads and writes only the Obsidian vault path on the workspace home PVC:
 
-- `/home/boxp/.codex-cron/jobs.edn`: job registry.
-- `/home/boxp/.codex-cron/prompts/*.md`: prompt bodies.
-- `/home/boxp/.codex-cron/jobs-state.edn`: scheduler bookkeeping.
-- `/home/boxp/.codex-cron/runs/<job>/<run-id>/`: run logs.
+- `/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron/jobs.edn`: job registry.
+- `/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron/prompts/*.md`: prompt bodies.
+- `/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron/jobs-state.edn`: scheduler bookkeeping.
+- `/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron/runs/<job>/<run-id>/`: run logs.
 
 ## Workflow
 
@@ -80,4 +80,4 @@ bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb run daily-rep
 
 - Confirm schedule, prompt, and enabled state before turning a job on.
 - The scheduler supports standard 5-field cron expressions and polls every 30 seconds by default.
-- Do not edit Kubernetes CronJobs for individual schedules; the resident scheduler sidecar reads `~/.codex-cron/jobs.edn`.
+- Do not edit Kubernetes CronJobs for individual schedules; the resident scheduler sidecar reads the Obsidian vault `Codex Cron/jobs.edn`.
