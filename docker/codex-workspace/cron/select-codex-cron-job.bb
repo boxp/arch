@@ -18,6 +18,7 @@
     (lib/emit "CODEX_CRON_PROMPT_FILE" (str prompt-file))
     (lib/emit "CODEX_CRON_WORKDIR" (:workdir job))
     (lib/emit "CODEX_CRON_OUTPUT_ROOT" (:output-root job))
+    (lib/emit "CODEX_CRON_RUNNER" (:runner job))
     (lib/emit "CODEX_CRON_MODEL" (:model job))
     (lib/emit "CODEX_CRON_PROFILE" (:profile job))
     (lib/emit "CODEX_CRON_BYPASS_APPROVALS" (str (get job :bypass-approvals true)))

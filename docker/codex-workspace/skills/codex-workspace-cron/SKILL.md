@@ -49,6 +49,14 @@ bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb add \
   --prompt "調査して日本語で報告してください。"
 ```
 
+Use Cursor Agent or a specific model:
+
+```bash
+bb ~/.codex/skills/codex-workspace-cron/scripts/codex_cron_jobs.bb update daily-report \
+  --runner cursor \
+  --model claude-opus-4-8-high
+```
+
 Update metadata or prompt:
 
 ```bash
