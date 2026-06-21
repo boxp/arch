@@ -5,7 +5,7 @@
     state: directory
     mode: '0700'
   become: true
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Check if etcd snapshot already exists for today
   ansible.builtin.find:
@@ -13,14 +13,14 @@
     patterns: "pre-upgrade-{{ ansible_facts['date_time']['date'] | replace('-', '') }}*.db"
   become: true
   register: existing_snapshots
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Set etcd snapshot paths
   ansible.builtin.set_fact:
     _etcd_snapshot_filename: "pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
     _etcd_snapshot_pod_path: "{{ etcd_snapshot_pod_dir }}/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
     _etcd_snapshot_remote_path: "{{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Reuse existing etcd snapshot for today
   ansible.builtin.set_fact:
@@ -29,13 +29,14 @@
   when:
     - not (etcd_snapshot_force | bool)
     - existing_snapshots.matched > 0
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Take etcd snapshot inside etcd pod
   ansible.builtin.command:
     argv:
       - kubectl
       - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
       - -n
       - kube-system
       - exec
@@ -51,13 +52,14 @@
   become: true
   changed_when: true
   when: (etcd_snapshot_force | bool) or existing_snapshots.matched == 0
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Verify etcd snapshot integrity inside etcd pod
   ansible.builtin.command:
     argv:
       - kubectl
       - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
       - -n
       - kube-system
       - exec
@@ -71,7 +73,7 @@
   become: true
   changed_when: false
   when: (etcd_snapshot_force | bool) or existing_snapshots.matched == 0
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Move etcd snapshot from host-mounted etcd data directory
   ansible.builtin.command:
@@ -82,7 +84,7 @@
   become: true
   changed_when: true
   when: (etcd_snapshot_force | bool) or existing_snapshots.matched == 0
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Create local etcd snapshot artifact directory
   ansible.builtin.file:
@@ -92,7 +94,7 @@
   delegate_to: localhost
   become: false
   when: etcd_snapshot_local_dir | length > 0
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Fetch etcd snapshot to local artifact directory
   ansible.builtin.fetch:
@@ -101,7 +103,7 @@
     flat: true
   become: true
   when: etcd_snapshot_local_dir | length > 0
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]
 
 - name: Remove temporary etcd snapshot from host-mounted etcd data directory
   ansible.builtin.command:
@@ -114,4 +116,4 @@
   when:
     - etcd_snapshot_cleanup_pod_file | bool
     - (etcd_snapshot_force | bool) or existing_snapshots.matched == 0
-  tags: [etcd_snapshot, pre_checks]
+  tags: [etcd_snapshot]

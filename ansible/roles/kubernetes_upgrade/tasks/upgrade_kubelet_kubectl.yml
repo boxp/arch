@@ -4,6 +4,7 @@
     name: kubelet
     selection: install
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Unhold kubectl
@@ -11,6 +12,7 @@
     name: kubectl
     selection: install
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Install target kubelet version
@@ -19,6 +21,7 @@
     state: present
     allow_downgrade: false
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Install target kubectl version
@@ -27,6 +30,7 @@
     state: present
     allow_downgrade: false
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Hold kubelet
@@ -34,6 +38,7 @@
     name: kubelet
     selection: hold
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Hold kubectl
@@ -41,4 +46,5 @@
     name: kubectl
     selection: hold
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]

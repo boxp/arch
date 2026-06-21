@@ -6,10 +6,9 @@
 #          -e crio_upgrade_version=1.35.0
 
 # Pre-upgrade cluster-wide checks + etcd snapshot
-- name: Pre-upgrade validation and etcd snapshot
+- name: Pre-upgrade validation and optional etcd snapshot
   hosts: control_plane[0]
   gather_facts: true
-  tags: [pre_checks]
   tasks:
     - name: Verify cluster health
       ansible.builtin.include_role:
@@ -20,7 +19,7 @@
       ansible.builtin.include_role:
         name: kubernetes_upgrade
         tasks_from: etcd_snapshot.yml
-      tags: [pre_checks, etcd_snapshot]
+      tags: [etcd_snapshot]
 
 # Upgrade first control plane
 - name: Upgrade first control plane (shanghai-1)
