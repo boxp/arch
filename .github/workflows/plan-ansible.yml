@@ -151,6 +151,12 @@ jobs:
             set -e
 
             if [ "$ansible_exit" -ne 0 ] && [ "$ansible_exit" -ne 2 ]; then
+              echo "::group::Ansible stderr for ${playbook_name} on ${node}"
+              cat "plan_outputs/${node}-${playbook_name}.stderr" || true
+              echo "::endgroup::"
+              echo "::group::Ansible JSON tail for ${playbook_name} on ${node}"
+              tail -n 200 "$json_file" || true
+              echo "::endgroup::"
               echo "::error::Ansible playbook $playbook failed with exit code $ansible_exit"
               return "$ansible_exit"
             fi
@@ -182,6 +188,7 @@ jobs:
           fi
 
       - name: Upload plan output
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: plan-${{ matrix.node }}

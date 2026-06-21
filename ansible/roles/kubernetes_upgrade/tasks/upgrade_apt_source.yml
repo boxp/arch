@@ -62,6 +62,7 @@
   ansible.builtin.apt:
     update_cache: true
   become: true
+  changed_when: false
   tags: [upgrade]
 
 - name: Upgrade CRI-O
