@@ -119,6 +119,12 @@
             *"get node"*"conditions"*)
               printf "MemoryPressure=False\nDiskPressure=False\nPIDPressure=False\nReady=True\n"
               ;;
+            *"wait"*"app.kubernetes.io/name=etcd-snapshot-store"*)
+              echo "pod/etcd-snapshot-store-test condition met"
+              ;;
+            *"get pod"*"app.kubernetes.io/name=etcd-snapshot-store"*"jsonpath"*)
+              echo -n "etcd-snapshot-store-test"
+              ;;
             *"drain"*)
               echo "node/control-plane-test cordoned"
               echo "node/control-plane-test drained"
@@ -140,12 +146,27 @@
               printf "mock snapshot\n" > "$snapshot_path"
               echo "Snapshot saved at $snapshot_path"
               ;;
-            *"exec etcd-"*"etcdctl snapshot status"*)
+            *"exec etcd-"*"etcdutl snapshot status"*)
               echo "+----------+----------+------------+------------+"
               echo "|   HASH   | REVISION | TOTAL KEYS | TOTAL SIZE |"
               echo "+----------+----------+------------+------------+"
               echo "| abcd1234 |    12345 |       1000 |     5.0 MB |"
               echo "+----------+----------+------------+------------+"
+              ;;
+            *"exec -i "*" sh -c "*"cat > "*)
+              shell_command="${@: -1}"
+              snapshot_path="${shell_command#cat > }"
+              snapshot_path="${snapshot_path%\'}"
+              snapshot_path="${snapshot_path#\'}"
+              mkdir -p "$(dirname "$snapshot_path")"
+              cat > "$snapshot_path"
+              ;;
+            *"exec "*" test -s "*)
+              snapshot_path="${@: -1}"
+              test -s "$snapshot_path"
+              ;;
+            *"exec "*" sh -c "*"pre-upgrade-"*)
+              echo "mock prune"
               ;;
             *"exec etcd-"*" cat "*)
               snapshot_path="${@: -1}"
