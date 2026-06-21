@@ -189,7 +189,6 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
-            -e "etcd_snapshot_force=true" \
             -vv 2>&1 | tee /tmp/etcd-snapshot-ansible.log
 
       - name: Upload pre-check logs

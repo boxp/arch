@@ -26,6 +26,7 @@
     _etcd_snapshot_pod_path: "{{ etcd_snapshot_pod_dir }}/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
     _etcd_snapshot_remote_path: "{{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
     _etcd_snapshot_needs_create: "{{ (etcd_snapshot_force | bool) or (_valid_existing_snapshots | length == 0) }}"
+    _etcd_snapshot_reused_from_pvc: false
   tags: [etcd_snapshot]
 
 - name: Reuse existing etcd snapshot for today
@@ -77,6 +78,39 @@
 - name: Set etcd snapshot store pod name
   ansible.builtin.set_fact:
     _etcd_snapshot_store_pod: "{{ etcd_snapshot_store_pod_result.stdout }}"
+  tags: [etcd_snapshot]
+
+- name: Find existing etcd snapshot in Longhorn PVC for today
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
+      - -n
+      - "{{ etcd_snapshot_store_namespace }}"
+      - exec
+      - "{{ _etcd_snapshot_store_pod }}"
+      - --
+      - sh
+      - -c
+      - >-
+        ls -1t {{ etcd_snapshot_store_mount_path | quote
+        }}/pre-upgrade-{{ ansible_facts['date_time']['date'] | replace('-', '')
+        }}*.db 2>/dev/null | head -n 1 || true
+  become: true
+  changed_when: false
+  register: existing_pvc_snapshot
+  when: not (etcd_snapshot_force | bool)
+  tags: [etcd_snapshot]
+
+- name: Reuse existing etcd snapshot in Longhorn PVC for today
+  ansible.builtin.set_fact:
+    _etcd_snapshot_filename: "{{ existing_pvc_snapshot.stdout | basename }}"
+    _etcd_snapshot_needs_create: false
+    _etcd_snapshot_reused_from_pvc: true
+  when:
+    - not (etcd_snapshot_force | bool)
+    - existing_pvc_snapshot.stdout | default('') | length > 0
   tags: [etcd_snapshot]
 
 - name: Take etcd snapshot inside etcd pod
@@ -166,6 +200,25 @@
   become: true
   changed_when: false
   when: _etcd_snapshot_needs_create | bool
+  tags: [etcd_snapshot]
+
+- name: Verify reused etcd snapshot exists in Longhorn PVC
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
+      - -n
+      - "{{ etcd_snapshot_store_namespace }}"
+      - exec
+      - "{{ _etcd_snapshot_store_pod }}"
+      - --
+      - test
+      - -s
+      - "{{ etcd_snapshot_store_mount_path }}/{{ _etcd_snapshot_filename }}"
+  become: true
+  changed_when: false
+  when: _etcd_snapshot_reused_from_pvc | bool
   tags: [etcd_snapshot]
 
 - name: Prune old etcd snapshots from Longhorn PVC
