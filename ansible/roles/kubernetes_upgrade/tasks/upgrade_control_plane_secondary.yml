@@ -4,7 +4,6 @@
     kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} drain {{ inventory_hostname }}
     --ignore-daemonsets --delete-emptydir-data
     --timeout={{ upgrade_drain_timeout }}s
-  delegate_to: "{{ groups['control_plane'][0] }}"
   become: true
   changed_when: true
   tags: [upgrade]
@@ -60,7 +59,6 @@
 
 - name: Uncordon control plane node
   ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} uncordon {{ inventory_hostname }}"
-  delegate_to: "{{ groups['control_plane'][0] }}"
   become: true
   changed_when: true
   when: not ansible_check_mode
