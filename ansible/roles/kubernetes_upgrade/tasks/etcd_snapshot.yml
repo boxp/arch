@@ -113,7 +113,7 @@
       - exec
       - "etcd-{{ inventory_hostname }}"
       - --
-      - etcdutl
+      - etcdctl
       - snapshot
       - status
       - "{{ _etcd_snapshot_pod_path }}"
