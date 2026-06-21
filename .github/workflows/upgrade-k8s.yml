@@ -724,11 +724,21 @@ jobs:
         run: |
           cd ansible
           source .venv/bin/activate
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--check"
+          fi
+          POST_CHECK_LIMIT="control_plane"
+          if [ "${{ inputs.target_node }}" != "all" ]; then
+            POST_CHECK_LIMIT="${{ inputs.target_node }}"
+          fi
           echo "Running post-upgrade cluster health check"
           ansible-playbook \
             -i inventories/production/hosts.yml \
             playbooks/upgrade-k8s.yml \
             --tags health_check \
+            --limit "${POST_CHECK_LIMIT}" \
             -e "ansible_ssh_common_args=''" \
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            ${DRY_RUN_FLAG} \
             -v
