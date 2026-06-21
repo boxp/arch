@@ -60,10 +60,27 @@
   when: not ansible_check_mode
   tags: [upgrade]
 
+- name: Wait for kube-apiserver before uncordon
+  ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get --raw=/readyz"
+  become: true
+  register: kube_apiserver_ready
+  until:
+    - kube_apiserver_ready.rc == 0
+    - "'readyz check passed' in kube_apiserver_ready.stdout"
+  retries: "{{ upgrade_uncordon_retries }}"
+  delay: "{{ upgrade_uncordon_delay }}"
+  changed_when: false
+  when: not ansible_check_mode
+  tags: [upgrade]
+
 - name: Uncordon control plane node
   ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} uncordon {{ inventory_hostname }}"
   become: true
-  changed_when: true
+  register: uncordon_result
+  until: uncordon_result.rc == 0
+  retries: "{{ upgrade_uncordon_retries }}"
+  delay: "{{ upgrade_uncordon_delay }}"
+  changed_when: uncordon_result.rc == 0
   when: not ansible_check_mode
   tags: [upgrade]
 
