@@ -207,6 +207,7 @@
       - rm
       - -f
       - "{{ _etcd_snapshot_pod_path }}"
+      - "{{ _etcd_snapshot_pod_path }}.part"
   become: true
   changed_when: false
   when:

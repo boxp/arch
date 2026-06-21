@@ -13,6 +13,7 @@ crio_previous_version: ""
 upgrade_drain_timeout: 300           # seconds
 upgrade_health_check_retries: 30
 upgrade_health_check_delay: 10       # seconds
+kubeadm_upgrade_etcd: false          # skip kubeadm's etcd static pod phase unless explicitly enabled
 
 # etcd snapshot
 etcd_snapshot_dir: /var/lib/etcd-snapshots
