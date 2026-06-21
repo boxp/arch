@@ -7,18 +7,18 @@
     state: present
   become: true
 
-- name: Add Kubernetes repository
-  ansible.builtin.apt_repository:
-    repo: "deb {{ kubernetes_apt_repository }} /"
-    state: present
-    filename: kubernetes
-    update_cache: true
+- name: Configure Kubernetes repository
+  ansible.builtin.copy:
+    dest: /etc/apt/sources.list.d/kubernetes.list
+    content: "deb {{ kubernetes_apt_repository }} /\n"
+    mode: '0644'
   become: true
 
 - name: Install Kubernetes packages
-  ansible.builtin.package:
+  ansible.builtin.apt:
     name: "{{ kubernetes_packages }}"
     state: present
+    update_cache: true
     allow_downgrade: true
   become: true
   notify: Restart kubelet
