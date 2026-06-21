@@ -55,6 +55,22 @@
     mode: '0755'
   become: true
 
+- name: Create containers registries configuration directory
+  ansible.builtin.file:
+    path: /etc/containers/registries.conf.d
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Configure containers short-name mode
+  ansible.builtin.copy:
+    dest: /etc/containers/registries.conf.d/99-short-name-mode.conf
+    content: |
+      short-name-mode = "permissive"
+    mode: '0644'
+  become: true
+  notify: Restart crio
+
 - name: Configure CRI-O for systemd cgroup driver
   ansible.builtin.copy:
     dest: /etc/crio/crio.conf.d/02-cgroup-manager.conf
