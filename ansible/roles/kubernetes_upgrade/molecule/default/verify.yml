@@ -81,6 +81,20 @@
           - etcd_snap_dir.stat.mode == '0700'
         fail_msg: "etcd snapshot directory does not have correct permissions (expected 0700)"
 
+    # Verify etcd snapshot was streamed into the Longhorn PVC mount
+    - name: Find etcd snapshots in PVC mount
+      ansible.builtin.find:
+        paths: /snapshots
+        patterns: "pre-upgrade-*.db"
+      register: pvc_snapshots
+
+    - name: Assert etcd snapshot exists in PVC mount
+      ansible.builtin.assert:
+        that:
+          - pvc_snapshots.matched > 0
+          - pvc_snapshots.files | selectattr('size', 'gt', 0) | list | length > 0
+        fail_msg: "etcd snapshot was not stored in the PVC mount"
+
     # Verify etcd certificate paths exist (mock)
     - name: Check etcd CA certificate exists
       ansible.builtin.stat:

@@ -29,7 +29,6 @@ on:
 env:
   NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
   ALL_NODE_IPS: "192.168.10.102 192.168.10.103 192.168.10.104"
-  ETCD_SNAPSHOT_S3_URI: s3://arch-etcd-snapshots/kubernetes-upgrade
 
 jobs:
   pre-check:
@@ -176,11 +175,9 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
-          ETCD_SNAPSHOT_ARTIFACT_DIR="/tmp/etcd-snapshots"
-          mkdir -p "${ETCD_SNAPSHOT_ARTIFACT_DIR}"
           cd ansible
           source .venv/bin/activate
-          echo "Taking etcd snapshot before production upgrade"
+          echo "Taking etcd snapshot before production upgrade and storing it in the Longhorn PVC"
           ansible-playbook \
             -i inventories/production/hosts.yml \
             playbooks/upgrade-k8s.yml \
@@ -189,7 +186,6 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
-            -e "etcd_snapshot_local_dir=${ETCD_SNAPSHOT_ARTIFACT_DIR}" \
             -e "etcd_snapshot_force=true" \
             -vv 2>&1 | tee /tmp/etcd-snapshot-ansible.log
 
@@ -202,25 +198,6 @@ jobs:
             /tmp/pre-check-ansible.log
             /tmp/etcd-snapshot-ansible.log
           retention-days: 14
-
-      - name: Upload etcd snapshot to S3
-        if: inputs.dry_run == false
-        shell: bash
-        run: |
-          set -euo pipefail
-          shopt -s nullglob
-
-          snapshots=(/tmp/etcd-snapshots/*.db)
-          if [ "${#snapshots[@]}" -eq 0 ]; then
-            echo "No etcd snapshots found to upload"
-            exit 0
-          fi
-
-          for snapshot in "${snapshots[@]}"; do
-            aws s3 cp "${snapshot}" \
-              "${ETCD_SNAPSHOT_S3_URI}/run-${GITHUB_RUN_ID}/$(basename "${snapshot}")" \
-              --sse AES256
-          done
 
   upgrade-cp-1:
     name: Upgrade shanghai-1 (first CP)
