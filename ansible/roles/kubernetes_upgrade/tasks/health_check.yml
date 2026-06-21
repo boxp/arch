@@ -1,7 +1,7 @@
 ---
 - name: Wait for node to be Ready
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ health_check_kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
   register: node_ready
   check_mode: false
@@ -10,11 +10,18 @@
   delay: "{{ upgrade_health_check_delay }}"
   changed_when: false
   become: true
+  delegate_to: "{{ health_check_delegate_host }}"
+  vars:
+    health_check_delegate_host: "{{ groups['control_plane'][0] if node_role == 'worker' else inventory_hostname }}"
+    health_check_kubectl_api_server: >-
+      {{ 'https://' ~ hostvars[groups['control_plane'][0]].node_ip ~ ':6443'
+      if node_role == 'worker' else kubectl_api_server }}
+    health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
 
 - name: Verify kubelet version on node
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ health_check_kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{.status.nodeInfo.kubeletVersion}'
   register: node_kubelet_version
   check_mode: false
@@ -23,11 +30,18 @@
     - not ansible_check_mode
     - kubernetes_upgrade_version not in node_kubelet_version.stdout
   become: true
+  delegate_to: "{{ health_check_delegate_host }}"
+  vars:
+    health_check_delegate_host: "{{ groups['control_plane'][0] if node_role == 'worker' else inventory_hostname }}"
+    health_check_kubectl_api_server: >-
+      {{ 'https://' ~ hostvars[groups['control_plane'][0]].node_ip ~ ':6443'
+      if node_role == 'worker' else kubectl_api_server }}
+    health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
 
 - name: Verify node conditions (no pressure)
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ health_check_kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
   register: node_conditions
   check_mode: false
@@ -37,6 +51,13 @@
     'DiskPressure=True' in node_conditions.stdout or
     'PIDPressure=True' in node_conditions.stdout
   become: true
+  delegate_to: "{{ health_check_delegate_host }}"
+  vars:
+    health_check_delegate_host: "{{ groups['control_plane'][0] if node_role == 'worker' else inventory_hostname }}"
+    health_check_kubectl_api_server: >-
+      {{ 'https://' ~ hostvars[groups['control_plane'][0]].node_ip ~ ':6443'
+      if node_role == 'worker' else kubectl_api_server }}
+    health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
 
 - name: Verify etcd cluster health (control plane only)
