@@ -17,7 +17,7 @@ on:
         type: boolean
         default: true
       target_node:
-        description: 'Upgrade only the specified node. Select "all" to upgrade all CP nodes sequentially'
+        description: 'Upgrade only the specified node. Select "all" to upgrade all nodes sequentially'
         type: choice
         default: all
         options:
@@ -25,10 +25,13 @@ on:
           - shanghai-1
           - shanghai-2
           - shanghai-3
+          - golyat-1
+          - golyat-2
+          - golyat-3
 
 env:
-  NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
-  ALL_NODE_IPS: "192.168.10.102 192.168.10.103 192.168.10.104"
+  NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104","golyat-1":"192.168.10.101","golyat-2":"192.168.10.105","golyat-3":"192.168.10.106"}'
+  ALL_NODE_IPS: "192.168.10.102 192.168.10.103 192.168.10.104 192.168.10.101 192.168.10.105 192.168.10.106"
 
 jobs:
   pre-check:
@@ -592,10 +595,421 @@ jobs:
             ${DRY_RUN_FLAG} \
             -v
 
+  upgrade-worker-1:
+    name: Upgrade golyat-1
+    needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3]
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'golyat-1')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      K8S_VERSION: ${{ inputs.kubernetes_version }}
+      K8S_PACKAGE: ${{ inputs.kubernetes_package }}
+      CRIO_VERSION: ${{ inputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.60.1
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-1"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+
+          Host ${CP_IP}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-1"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-1'"
+          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to shanghai-1'"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Upgrade golyat-1
+        run: |
+          cd ansible
+          source .venv/bin/activate
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--check"
+          fi
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags upgrade \
+            --limit golyat-1 \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
+            -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "node_role=worker" \
+            ${DRY_RUN_FLAG} \
+            -v
+
+  upgrade-worker-2:
+    name: Upgrade golyat-2
+    needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3, upgrade-worker-1]
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-1.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'golyat-2')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      K8S_VERSION: ${{ inputs.kubernetes_version }}
+      K8S_PACKAGE: ${{ inputs.kubernetes_package }}
+      CRIO_VERSION: ${{ inputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.60.1
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-2"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+
+          Host ${CP_IP}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-2"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-2'"
+          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to shanghai-1'"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Upgrade golyat-2
+        run: |
+          cd ansible
+          source .venv/bin/activate
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--check"
+          fi
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags upgrade \
+            --limit golyat-2 \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
+            -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "node_role=worker" \
+            ${DRY_RUN_FLAG} \
+            -v
+
+  upgrade-worker-3:
+    name: Upgrade golyat-3
+    needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3, upgrade-worker-1, upgrade-worker-2]
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-1.result == 'skipped') && (needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-2.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'golyat-3')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      K8S_VERSION: ${{ inputs.kubernetes_version }}
+      K8S_PACKAGE: ${{ inputs.kubernetes_package }}
+      CRIO_VERSION: ${{ inputs.crio_version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e7f100cf4c008499ea8adda475de1042d6975c7b # v6.2.0
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        with:
+          aqua_version: v2.60.1
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-3"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+
+          Host ${CP_IP}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity
+        run: |
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-3"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-3'"
+          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to shanghai-1'"
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+
+      - name: Install dependencies
+        run: |
+          cd ansible
+          uv sync
+
+      - name: Upgrade golyat-3
+        run: |
+          cd ansible
+          source .venv/bin/activate
+          DRY_RUN_FLAG=""
+          if [ "${{ inputs.dry_run }}" = "true" ]; then
+            DRY_RUN_FLAG="--check"
+          fi
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags upgrade \
+            --limit golyat-3 \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
+            -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "node_role=worker" \
+            ${DRY_RUN_FLAG} \
+            -v
+
   post-check:
     name: Post-upgrade Validation
-    needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3]
-    if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-3.result == 'success')
+    needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3, upgrade-worker-1, upgrade-worker-2, upgrade-worker-3]
+    if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-1.result == 'skipped') && (needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-2.result == 'skipped') && (needs.upgrade-worker-3.result == 'success' || needs.upgrade-worker-3.result == 'skipped') && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-3.result == 'success' || needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-3.result == 'success')
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:

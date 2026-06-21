@@ -45,25 +45,38 @@
         node_role: control_plane
         is_first_control_plane: false
 
-# Upgrade worker nodes (Phase 3 で有効化。inventory に workers グループ追加が前提)
-# - name: Upgrade worker nodes
-#   hosts: workers
-#   serial: 1
-#   gather_facts: true
-#   tags: [upgrade]
-#   roles:
-#     - role: kubernetes_upgrade
-#       vars:
-#         node_role: worker
+# Upgrade worker nodes
+- name: Upgrade worker nodes
+  hosts: workers
+  serial: 1
+  gather_facts: true
+  tags: [upgrade]
+  roles:
+    - role: kubernetes_upgrade
+      vars:
+        node_role: worker
 
 # Post-upgrade cluster-wide health check
-- name: Post-upgrade cluster health check
+- name: Post-upgrade control-plane health check
   hosts: control_plane
   gather_facts: false
   tags: [health_check]
   tasks:
-    - name: Verify all nodes health
+    - name: Verify control-plane node health
       ansible.builtin.include_role:
         name: kubernetes_upgrade
         tasks_from: health_check.yml
+      tags: [health_check]
+
+- name: Post-upgrade worker health check
+  hosts: workers
+  gather_facts: false
+  tags: [health_check]
+  tasks:
+    - name: Verify worker node health
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: health_check.yml
+      vars:
+        node_role: worker
       tags: [health_check]

@@ -32,10 +32,21 @@
   tags: [pre_checks]
 
 - name: Verify all nodes are Ready
-  ansible.builtin.command: kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get nodes --no-headers
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ pre_check_kubectl_api_server_arg }}
+    get nodes --no-headers
   register: node_status
   check_mode: false
   changed_when: false
-  failed_when: "'NotReady' in node_status.stdout"
+  failed_when: >
+    node_status.rc != 0 or
+    'NotReady' in node_status.stdout
   become: true
+  delegate_to: "{{ pre_check_delegate_host }}"
+  vars:
+    pre_check_delegate_host: "{{ groups['control_plane'][0] if node_role == 'worker' else inventory_hostname }}"
+    pre_check_kubectl_api_server: >-
+      {{ 'https://' ~ hostvars[groups['control_plane'][0]].node_ip ~ ':6443'
+      if node_role == 'worker' else kubectl_api_server }}
+    pre_check_kubectl_api_server_arg: "{{ '--server=' ~ pre_check_kubectl_api_server }}"
   tags: [pre_checks]

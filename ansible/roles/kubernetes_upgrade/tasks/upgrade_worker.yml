@@ -6,6 +6,7 @@
     --timeout={{ upgrade_drain_timeout }}s
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: true
+  when: not ansible_check_mode
   changed_when: true
   tags: [upgrade]
 
@@ -18,6 +19,7 @@
     name: kubeadm
     selection: install
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Install target kubeadm version
@@ -26,6 +28,7 @@
     state: present
     allow_downgrade: false
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Hold kubeadm
@@ -33,11 +36,13 @@
     name: kubeadm
     selection: hold
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Run kubeadm upgrade node
   ansible.builtin.command: kubeadm upgrade node
   become: true
+  when: not ansible_check_mode
   changed_when: true
   tags: [upgrade]
 
@@ -51,18 +56,21 @@
     state: restarted
     daemon_reload: true
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Reboot worker node
   ansible.builtin.reboot:
     reboot_timeout: 300
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Uncordon worker node
   ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} uncordon {{ inventory_hostname }}"
   delegate_to: "{{ groups['control_plane'][0] }}"
   become: true
+  when: not ansible_check_mode
   changed_when: true
   tags: [upgrade]
 
