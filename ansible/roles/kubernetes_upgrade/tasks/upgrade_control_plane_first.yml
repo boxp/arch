@@ -38,7 +38,9 @@
   tags: [upgrade]
 
 - name: Run kubeadm upgrade apply
-  ansible.builtin.command: "kubeadm upgrade apply v{{ kubernetes_upgrade_version }} --yes"
+  ansible.builtin.command: >-
+    kubeadm upgrade apply v{{ kubernetes_upgrade_version }} --yes
+    --etcd-upgrade={{ kubeadm_upgrade_etcd | bool | ternary('true', 'false') }}
   become: true
   register: upgrade_result
   changed_when: upgrade_result.rc == 0
