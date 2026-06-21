@@ -66,7 +66,7 @@
   register: kube_apiserver_ready
   until:
     - kube_apiserver_ready.rc == 0
-    - "'readyz check passed' in kube_apiserver_ready.stdout"
+    - kube_apiserver_ready.stdout in ["ok", "readyz check passed"]
   retries: "{{ upgrade_uncordon_retries }}"
   delay: "{{ upgrade_uncordon_delay }}"
   changed_when: false
