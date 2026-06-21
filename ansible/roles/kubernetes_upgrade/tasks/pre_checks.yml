@@ -2,6 +2,7 @@
 - name: Verify current kubernetes version
   ansible.builtin.command: kubelet --version
   register: current_kubelet_version
+  check_mode: false
   changed_when: false
   tags: [pre_checks]
 
@@ -10,6 +11,7 @@
     argv:
       - kubectl
       - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
       - -n
       - kube-system
       - exec
@@ -23,14 +25,16 @@
       - "--cert={{ etcd_cert }}"
       - "--key={{ etcd_key }}"
   register: etcd_health
+  check_mode: false
   changed_when: false
   when: node_role == "control_plane"
   become: true
   tags: [pre_checks]
 
 - name: Verify all nodes are Ready
-  ansible.builtin.command: kubectl --kubeconfig={{ kubeconfig_path }} get nodes --no-headers
+  ansible.builtin.command: kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get nodes --no-headers
   register: node_status
+  check_mode: false
   changed_when: false
   failed_when: "'NotReady' in node_status.stdout"
   delegate_to: "{{ groups['control_plane'][0] }}"

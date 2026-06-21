@@ -32,6 +32,8 @@ snapshot_timestamp: ""
 
 # kubectl configuration
 kubeconfig_path: /etc/kubernetes/admin.conf
+kubectl_api_server: "https://{{ node_ip | default(cluster_vip) }}:6443"
+kubectl_api_server_arg: "{{ '--server=' ~ kubectl_api_server if (kubectl_api_server | length) > 0 else '' }}"
 
 # Role detection
 node_role: "control_plane"           # "control_plane" or "worker"

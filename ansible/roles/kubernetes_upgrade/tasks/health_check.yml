@@ -1,9 +1,10 @@
 ---
 - name: Wait for node to be Ready
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
   register: node_ready
+  check_mode: false
   until: node_ready.stdout == "True"
   retries: "{{ upgrade_health_check_retries }}"
   delay: "{{ upgrade_health_check_delay }}"
@@ -14,20 +15,24 @@
 
 - name: Verify kubelet version on node
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{.status.nodeInfo.kubeletVersion}'
   register: node_kubelet_version
+  check_mode: false
   delegate_to: "{{ groups['control_plane'][0] }}"
   changed_when: false
-  failed_when: "kubernetes_upgrade_version not in node_kubelet_version.stdout"
+  failed_when:
+    - not ansible_check_mode
+    - kubernetes_upgrade_version not in node_kubelet_version.stdout
   become: true
   tags: [health_check]
 
 - name: Verify node conditions (no pressure)
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
   register: node_conditions
+  check_mode: false
   delegate_to: "{{ groups['control_plane'][0] }}"
   changed_when: false
   failed_when: >
@@ -42,6 +47,7 @@
     argv:
       - kubectl
       - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
       - -n
       - kube-system
       - exec
@@ -54,6 +60,7 @@
       - "--cacert={{ etcd_cacert }}"
       - "--cert={{ etcd_cert }}"
       - "--key={{ etcd_key }}"
+  check_mode: false
   changed_when: false
   become: true
   when: node_role == "control_plane"

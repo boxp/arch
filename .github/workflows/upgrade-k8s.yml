@@ -57,6 +57,18 @@ jobs:
             | awk -F'"' '{print $2}')
           CRIO_VER=$(grep -m1 'crio_version:' ansible/playbooks/control-plane.yml \
             | awk -F'"' '{print $2}')
+          if [ -z "$K8S_VER" ] || [ -z "$K8S_PKG" ] || [ -z "$CRIO_VER" ]; then
+            echo "::error::Failed to extract Kubernetes/CRI-O versions from ansible/playbooks/control-plane.yml"
+            exit 1
+          fi
+          if [ "${K8S_PKG%%-*}" != "$K8S_VER" ]; then
+            echo "::error::kubernetes_package_version ($K8S_PKG) must match kubernetes_version ($K8S_VER)"
+            exit 1
+          fi
+          if [ "${K8S_VER%.*}" != "${CRIO_VER%.*}" ]; then
+            echo "::error::crio_version ($CRIO_VER) must use the same major.minor as kubernetes_version ($K8S_VER)"
+            exit 1
+          fi
           {
             echo "k8s_version=$K8S_VER"
             echo "k8s_package=$K8S_PKG"
@@ -191,8 +203,6 @@ jobs:
         shell: bash
         run: |
           set -eo pipefail
-          ETCD_SNAPSHOT_ARTIFACT_DIR="/tmp/etcd-snapshots"
-          mkdir -p "${ETCD_SNAPSHOT_ARTIFACT_DIR}"
           cd ansible
           source .venv/bin/activate
           echo "Running pre-upgrade checks with K8S_VERSION=${K8S_VERSION}"
@@ -204,20 +214,42 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -vv 2>&1 | tee /tmp/pre-check-ansible.log
+
+      - name: Take etcd snapshot
+        if: inputs.dry_run == false
+        shell: bash
+        run: |
+          set -eo pipefail
+          ETCD_SNAPSHOT_ARTIFACT_DIR="/tmp/etcd-snapshots"
+          mkdir -p "${ETCD_SNAPSHOT_ARTIFACT_DIR}"
+          cd ansible
+          source .venv/bin/activate
+          echo "Taking etcd snapshot before production upgrade"
+          ansible-playbook \
+            -i inventories/production/hosts.yml \
+            playbooks/upgrade-k8s.yml \
+            --tags etcd_snapshot \
+            -e "ansible_ssh_common_args=''" \
+            -e "kubernetes_upgrade_version=${K8S_VERSION}" \
+            -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
+            -e "crio_upgrade_version=${CRIO_VERSION}" \
             -e "etcd_snapshot_local_dir=${ETCD_SNAPSHOT_ARTIFACT_DIR}" \
             -e "etcd_snapshot_force=true" \
-            -vv 2>&1 | tee /tmp/pre-check-ansible.log
+            -vv 2>&1 | tee /tmp/etcd-snapshot-ansible.log
 
       - name: Upload pre-check logs
         if: failure()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: pre-check-ansible-log
-          path: /tmp/pre-check-ansible.log
+          path: |
+            /tmp/pre-check-ansible.log
+            /tmp/etcd-snapshot-ansible.log
           retention-days: 14
 
       - name: Upload etcd snapshot to S3
-        if: always()
+        if: inputs.dry_run == false
         shell: bash
         run: |
           set -euo pipefail

@@ -1,7 +1,7 @@
 ---
 - name: Drain control plane node
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} drain {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} drain {{ inventory_hostname }}
     --ignore-daemonsets --delete-emptydir-data
     --timeout={{ upgrade_drain_timeout }}s
   become: true
@@ -17,6 +17,7 @@
     name: kubeadm
     selection: install
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Install target kubeadm version
@@ -25,6 +26,7 @@
     state: present
     allow_downgrade: false
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Hold kubeadm
@@ -32,6 +34,7 @@
     name: kubeadm
     selection: hold
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Run kubeadm upgrade apply
@@ -39,6 +42,7 @@
   become: true
   register: upgrade_result
   changed_when: upgrade_result.rc == 0
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Upgrade kubelet and kubectl
@@ -51,12 +55,14 @@
     state: restarted
     daemon_reload: true
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Uncordon control plane node
-  ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} uncordon {{ inventory_hostname }}"
+  ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} uncordon {{ inventory_hostname }}"
   become: true
   changed_when: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Wait for node to become Ready
