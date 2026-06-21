@@ -38,7 +38,9 @@
   tags: [upgrade]
 
 - name: Run kubeadm upgrade node
-  ansible.builtin.command: kubeadm upgrade node
+  ansible.builtin.command: >-
+    kubeadm upgrade node
+    --etcd-upgrade={{ kubeadm_upgrade_etcd | bool | ternary('true', 'false') }}
   become: true
   changed_when: true
   when: not ansible_check_mode
