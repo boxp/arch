@@ -12,6 +12,10 @@
   ansible.builtin.include_tasks: upgrade_apt_source.yml
   tags: [upgrade]
 
+- name: Apply CRI-O restart before continuing control plane upgrade
+  ansible.builtin.meta: flush_handlers
+  tags: [upgrade]
+
 - name: Unhold kubeadm
   ansible.builtin.dpkg_selections:
     name: kubeadm
