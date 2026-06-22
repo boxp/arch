@@ -44,9 +44,9 @@
   become: true
   delegate_to: "{{ pre_check_delegate_host }}"
   vars:
-    pre_check_delegate_host: "{{ groups['control_plane'][0] if node_role == 'worker' else inventory_hostname }}"
+    pre_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
     pre_check_kubectl_api_server: >-
-      {{ 'https://' ~ hostvars[groups['control_plane'][0]].node_ip ~ ':6443'
+      {{ 'https://' ~ hostvars[pre_check_delegate_host].node_ip ~ ':6443'
       if node_role == 'worker' else kubectl_api_server }}
     pre_check_kubectl_api_server_arg: "{{ '--server=' ~ pre_check_kubectl_api_server }}"
   tags: [pre_checks]
