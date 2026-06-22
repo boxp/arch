@@ -3,7 +3,7 @@
   ansible.builtin.command: >
     kubectl --kubeconfig={{ kubeconfig_path }} drain {{ inventory_hostname }}
     --ignore-daemonsets --delete-emptydir-data
-    --timeout={{ upgrade_drain_timeout }}s
+    --timeout={{ kubernetes_worker_drain_timeout }}s
   delegate_to: "{{ kubernetes_worker_drain_delegate }}"
   become: true
   when: not ansible_check_mode
