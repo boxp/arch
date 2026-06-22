@@ -663,7 +663,7 @@ jobs:
       - name: Setup SSH config
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-1"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
 
           cat >> ~/.ssh/config << EOF
           Host bastion
@@ -693,9 +693,9 @@ jobs:
       - name: Verify SSH connectivity
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-1"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-1'"
-          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to shanghai-1'"
+          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -800,7 +800,7 @@ jobs:
       - name: Setup SSH config
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-2"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
 
           cat >> ~/.ssh/config << EOF
           Host bastion
@@ -830,9 +830,9 @@ jobs:
       - name: Verify SSH connectivity
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-2"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-2'"
-          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to shanghai-1'"
+          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -937,7 +937,7 @@ jobs:
       - name: Setup SSH config
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-3"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
 
           cat >> ~/.ssh/config << EOF
           Host bastion
@@ -967,9 +967,9 @@ jobs:
       - name: Verify SSH connectivity
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-3"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-1"')
+          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-3'"
-          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to shanghai-1'"
+          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
