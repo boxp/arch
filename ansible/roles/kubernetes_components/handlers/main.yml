@@ -3,8 +3,17 @@
 
 - name: Reload sysctl
   ansible.builtin.command: sysctl --system --ignore
+  register: sysctl_reload_result
   become: true
   changed_when: true
+  failed_when: >
+    sysctl_reload_result.rc != 0 and
+    (
+      sysctl_reload_result.stderr_lines
+      | reject('search', 'net.core.default_qdisc')
+      | list
+      | length
+    ) > 0
   listen: "Reload sysctl"
   when: chroot_build is not defined or not chroot_build
 
