@@ -2,7 +2,7 @@
 # handlers file for kubernetes_components
 
 - name: Reload sysctl
-  ansible.builtin.command: sysctl --system
+  ansible.builtin.command: sysctl --system --ignore
   become: true
   changed_when: true
   listen: "Reload sysctl"
