@@ -17,11 +17,10 @@ on:
         type: boolean
         default: true
       target_node:
-        description: 'Upgrade only the specified node. Select "all" to upgrade all nodes sequentially'
+        description: 'Upgrade only the specified node. Run this workflow one node at a time'
         type: choice
-        default: all
+        default: shanghai-1
         options:
-          - all
           - shanghai-1
           - shanghai-2
           - shanghai-3
@@ -46,6 +45,13 @@ jobs:
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
     steps:
+      - name: Validate per-node execution
+        run: |
+          if [ "${{ inputs.target_node }}" = "all" ]; then
+            echo "::error::target_node=all is disabled. Run this workflow once per node and verify cluster health before continuing."
+            exit 1
+          fi
+
       - name: Checkout
         uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6.0.3
         with:
