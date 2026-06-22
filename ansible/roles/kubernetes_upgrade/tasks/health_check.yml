@@ -12,9 +12,9 @@
   become: true
   delegate_to: "{{ health_check_delegate_host }}"
   vars:
-    health_check_delegate_host: "{{ groups['control_plane'][0] if node_role == 'worker' else inventory_hostname }}"
+    health_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
     health_check_kubectl_api_server: >-
-      {{ 'https://' ~ hostvars[groups['control_plane'][0]].node_ip ~ ':6443'
+      {{ 'https://' ~ hostvars[health_check_delegate_host].node_ip ~ ':6443'
       if node_role == 'worker' else kubectl_api_server }}
     health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
@@ -32,9 +32,9 @@
   become: true
   delegate_to: "{{ health_check_delegate_host }}"
   vars:
-    health_check_delegate_host: "{{ groups['control_plane'][0] if node_role == 'worker' else inventory_hostname }}"
+    health_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
     health_check_kubectl_api_server: >-
-      {{ 'https://' ~ hostvars[groups['control_plane'][0]].node_ip ~ ':6443'
+      {{ 'https://' ~ hostvars[health_check_delegate_host].node_ip ~ ':6443'
       if node_role == 'worker' else kubectl_api_server }}
     health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
@@ -53,9 +53,9 @@
   become: true
   delegate_to: "{{ health_check_delegate_host }}"
   vars:
-    health_check_delegate_host: "{{ groups['control_plane'][0] if node_role == 'worker' else inventory_hostname }}"
+    health_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
     health_check_kubectl_api_server: >-
-      {{ 'https://' ~ hostvars[groups['control_plane'][0]].node_ip ~ ':6443'
+      {{ 'https://' ~ hostvars[health_check_delegate_host].node_ip ~ ':6443'
       if node_role == 'worker' else kubectl_api_server }}
     health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
