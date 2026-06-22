@@ -668,6 +668,8 @@ jobs:
 
       - name: Setup SSH config
         run: |
+          NODE_NAME=golyat-1
+          CP_NODE=shanghai-2
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-1"')
           CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
 
@@ -679,14 +681,14 @@ jobs:
             ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
             StrictHostKeyChecking accept-new
 
-          Host ${NODE_IP}
+          Host ${NODE_NAME} ${NODE_IP}
             HostName ${NODE_IP}
             User boxp
             IdentityFile ~/.ssh/id_ed25519
             ProxyJump bastion
             StrictHostKeyChecking accept-new
 
-          Host ${CP_IP}
+          Host ${CP_NODE} ${CP_IP}
             HostName ${CP_IP}
             User boxp
             IdentityFile ~/.ssh/id_ed25519
@@ -698,10 +700,12 @@ jobs:
 
       - name: Verify SSH connectivity
         run: |
+          NODE_NAME=golyat-1
+          CP_NODE=shanghai-2
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-1"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-1'"
-          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
+          ssh -o ConnectTimeout=60 "${NODE_NAME}" "echo 'SSH connection successful to golyat-1 inventory name'"
+          ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -805,6 +809,8 @@ jobs:
 
       - name: Setup SSH config
         run: |
+          NODE_NAME=golyat-2
+          CP_NODE=shanghai-2
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-2"')
           CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
 
@@ -816,14 +822,14 @@ jobs:
             ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
             StrictHostKeyChecking accept-new
 
-          Host ${NODE_IP}
+          Host ${NODE_NAME} ${NODE_IP}
             HostName ${NODE_IP}
             User boxp
             IdentityFile ~/.ssh/id_ed25519
             ProxyJump bastion
             StrictHostKeyChecking accept-new
 
-          Host ${CP_IP}
+          Host ${CP_NODE} ${CP_IP}
             HostName ${CP_IP}
             User boxp
             IdentityFile ~/.ssh/id_ed25519
@@ -835,10 +841,12 @@ jobs:
 
       - name: Verify SSH connectivity
         run: |
+          NODE_NAME=golyat-2
+          CP_NODE=shanghai-2
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-2"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-2'"
-          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
+          ssh -o ConnectTimeout=60 "${NODE_NAME}" "echo 'SSH connection successful to golyat-2 inventory name'"
+          ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
@@ -942,6 +950,8 @@ jobs:
 
       - name: Setup SSH config
         run: |
+          NODE_NAME=golyat-3
+          CP_NODE=shanghai-2
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-3"')
           CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
 
@@ -953,14 +963,14 @@ jobs:
             ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
             StrictHostKeyChecking accept-new
 
-          Host ${NODE_IP}
+          Host ${NODE_NAME} ${NODE_IP}
             HostName ${NODE_IP}
             User boxp
             IdentityFile ~/.ssh/id_ed25519
             ProxyJump bastion
             StrictHostKeyChecking accept-new
 
-          Host ${CP_IP}
+          Host ${CP_NODE} ${CP_IP}
             HostName ${CP_IP}
             User boxp
             IdentityFile ~/.ssh/id_ed25519
@@ -972,10 +982,12 @@ jobs:
 
       - name: Verify SSH connectivity
         run: |
+          NODE_NAME=golyat-3
+          CP_NODE=shanghai-2
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."golyat-3"')
-          CP_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."shanghai-2"')
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to golyat-3'"
-          ssh -o ConnectTimeout=60 "${CP_IP}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
+          ssh -o ConnectTimeout=60 "${NODE_NAME}" "echo 'SSH connection successful to golyat-3 inventory name'"
+          ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
