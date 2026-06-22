@@ -11,6 +11,7 @@ crio_previous_version: ""
 
 # Upgrade behavior
 upgrade_drain_timeout: 300           # seconds
+kubernetes_worker_drain_timeout: 1800
 upgrade_health_check_retries: 30
 upgrade_health_check_delay: 10       # seconds
 upgrade_uncordon_retries: 18
