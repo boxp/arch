@@ -16,6 +16,7 @@ upgrade_health_check_delay: 10       # seconds
 upgrade_uncordon_retries: 18
 upgrade_uncordon_delay: 10           # seconds
 kubeadm_upgrade_etcd: false          # skip kubeadm's etcd static pod phase unless explicitly enabled
+kubernetes_worker_drain_delegate: "{{ groups['control_plane'][1] | default(groups['control_plane'][0]) }}"
 
 # etcd snapshot
 etcd_snapshot_dir: /var/lib/etcd-snapshots
