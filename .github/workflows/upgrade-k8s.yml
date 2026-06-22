@@ -4,13 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       kubernetes_version:
-        description: 'Target Kubernetes version (e.g., 1.35.6)'
+        description: 'Target Kubernetes version (e.g., 1.36.1)'
         required: true
       kubernetes_package:
-        description: 'Target package version (e.g., 1.35.6-1.1)'
+        description: 'Target package version (e.g., 1.36.1-1.1)'
         required: true
       crio_version:
-        description: 'Target CRI-O version (e.g., 1.35.4)'
+        description: 'Target CRI-O version (e.g., 1.36.1)'
         required: true
       dry_run:
         description: 'Dry run mode (--check)'
