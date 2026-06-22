@@ -80,6 +80,20 @@
         - /etc/kubernetes/pki/etcd/healthcheck-client.key
       become: true
 
+    - name: Create mock host etcd snapshot directory
+      ansible.builtin.file:
+        path: /var/lib/etcd-snapshots
+        state: directory
+        mode: '0700'
+      become: true
+
+    - name: Create pre-existing host-only etcd snapshot
+      ansible.builtin.copy:
+        dest: "/var/lib/etcd-snapshots/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
+        content: "host-only mock snapshot"
+        mode: '0600'
+      become: true
+
     - name: Create mock kubeconfig file
       ansible.builtin.copy:
         dest: /etc/kubernetes/admin.conf

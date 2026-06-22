@@ -7,35 +7,13 @@
   become: true
   tags: [etcd_snapshot]
 
-- name: Check if etcd snapshot already exists for today
-  ansible.builtin.find:
-    paths: "{{ etcd_snapshot_dir }}"
-    patterns: "pre-upgrade-{{ ansible_facts['date_time']['date'] | replace('-', '') }}*.db"
-  become: true
-  register: existing_snapshots
-  tags: [etcd_snapshot]
-
-- name: Set valid existing etcd snapshots
-  ansible.builtin.set_fact:
-    _valid_existing_snapshots: "{{ existing_snapshots.files | selectattr('size', 'gt', 0) | list }}"
-  tags: [etcd_snapshot]
-
 - name: Set etcd snapshot paths
   ansible.builtin.set_fact:
     _etcd_snapshot_filename: "pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
     _etcd_snapshot_pod_path: "{{ etcd_snapshot_pod_dir }}/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
     _etcd_snapshot_remote_path: "{{ etcd_snapshot_dir }}/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
-    _etcd_snapshot_needs_create: "{{ (etcd_snapshot_force | bool) or (_valid_existing_snapshots | length == 0) }}"
+    _etcd_snapshot_needs_create: true
     _etcd_snapshot_reused_from_pvc: false
-  tags: [etcd_snapshot]
-
-- name: Reuse existing etcd snapshot for today
-  ansible.builtin.set_fact:
-    _etcd_snapshot_remote_path: "{{ (_valid_existing_snapshots | sort(attribute='mtime') | last).path }}"
-    _etcd_snapshot_filename: "{{ (_valid_existing_snapshots | sort(attribute='mtime') | last).path | basename }}"
-  when:
-    - not (etcd_snapshot_force | bool)
-    - _valid_existing_snapshots | length > 0
   tags: [etcd_snapshot]
 
 - name: Wait for etcd snapshot store pod
@@ -183,7 +161,7 @@
   when: _etcd_snapshot_needs_create | bool
   tags: [etcd_snapshot]
 
-- name: Verify etcd snapshot exists in Longhorn PVC
+- name: Verify selected etcd snapshot exists in Longhorn PVC
   ansible.builtin.command:
     argv:
       - kubectl
@@ -199,26 +177,6 @@
       - "{{ etcd_snapshot_store_mount_path }}/{{ _etcd_snapshot_filename }}"
   become: true
   changed_when: false
-  when: _etcd_snapshot_needs_create | bool
-  tags: [etcd_snapshot]
-
-- name: Verify reused etcd snapshot exists in Longhorn PVC
-  ansible.builtin.command:
-    argv:
-      - kubectl
-      - "--kubeconfig={{ kubeconfig_path }}"
-      - "{{ kubectl_api_server_arg }}"
-      - -n
-      - "{{ etcd_snapshot_store_namespace }}"
-      - exec
-      - "{{ _etcd_snapshot_store_pod }}"
-      - --
-      - test
-      - -s
-      - "{{ etcd_snapshot_store_mount_path }}/{{ _etcd_snapshot_filename }}"
-  become: true
-  changed_when: false
-  when: _etcd_snapshot_reused_from_pvc | bool
   tags: [etcd_snapshot]
 
 - name: Prune old etcd snapshots from Longhorn PVC
