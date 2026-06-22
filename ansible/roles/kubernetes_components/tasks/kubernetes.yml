@@ -14,21 +14,60 @@
     mode: '0644'
   become: true
 
+- name: Check Kubernetes package versions against baseline
+  ansible.builtin.shell: |
+    set -eu
+    package={{ item | quote }}
+    desired={{ kubernetes_package_version | quote }}
+    installed="$(dpkg-query -W -f='${Version}' "$package" 2>/dev/null || true)"
+
+    if [ -z "$installed" ] || dpkg --compare-versions "$installed" lt "$desired"; then
+      printf '%s=%s\n' "$package" "$desired"
+    elif dpkg --compare-versions "$installed" gt "$desired"; then
+      printf 'skip-newer:%s=%s\n' "$package" "$installed"
+    fi
+  args:
+    executable: /bin/bash
+  become: true
+  changed_when: false
+  loop: "{{ kubernetes_package_names }}"
+  register: kubernetes_package_version_checks
+
+- name: Set Kubernetes packages that need install or upgrade
+  ansible.builtin.set_fact:
+    kubernetes_packages_to_install: >-
+      {{ kubernetes_package_version_checks.results
+      | map(attribute='stdout')
+      | select('match', '^[^:]+=')
+      | list }}
+    kubernetes_packages_newer_than_baseline: >-
+      {{ kubernetes_package_version_checks.results
+      | map(attribute='stdout')
+      | select('match', '^skip-newer:')
+      | list }}
+
+- name: Report Kubernetes packages newer than baseline
+  ansible.builtin.debug:
+    msg: "Skipping Kubernetes package downgrade during normal apply: {{ kubernetes_packages_newer_than_baseline }}"
+  when: kubernetes_packages_newer_than_baseline | length > 0
+
 - name: Install Kubernetes packages
   ansible.builtin.apt:
-    name: "{{ kubernetes_packages }}"
+    name: "{{ kubernetes_packages_to_install }}"
     state: present
     update_cache: true
-    allow_downgrade: true
+    allow_change_held_packages: true
+    allow_downgrade: false
   become: true
   notify: Restart kubelet
+  when: kubernetes_packages_to_install | length > 0
 
 - name: Hold Kubernetes packages to prevent automatic updates
   ansible.builtin.dpkg_selections:
-    name: "{{ item.split('=')[0] }}"
+    name: "{{ item }}"
     selection: hold
   become: true
-  loop: "{{ kubernetes_packages }}"
+  loop: "{{ kubernetes_package_names }}"
 
 - name: Create kubelet configuration directory
   ansible.builtin.file:
