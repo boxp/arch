@@ -100,7 +100,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.60.1
           working_directory: aqua
@@ -269,7 +269,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.60.1
           working_directory: aqua
@@ -400,7 +400,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.60.1
           working_directory: aqua
@@ -531,7 +531,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.60.1
           working_directory: aqua
@@ -661,7 +661,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.60.1
           working_directory: aqua
@@ -802,7 +802,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.60.1
           working_directory: aqua
@@ -943,7 +943,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.60.1
           working_directory: aqua
@@ -1085,7 +1085,7 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.60.1
           working_directory: aqua
