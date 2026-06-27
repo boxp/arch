@@ -26,6 +26,7 @@ Complete Phase 2 of the lolice GPU worker local LLM project by adding a reproduc
 3. Add `.github/workflows/build-gpu-worker-image.yml` for manual image builds and artifact upload.
 4. Extend the image S3 IAM policy to allow `images/ubuntu-amd64-gpu-worker/*`.
 5. Add `docs/GPU_WORKER_IMAGE_DEPLOYMENT.md` with build, verify, flash, and recovery procedure.
+6. Keep Plan Ansible resilient to a temporarily unreachable live node by warning and skipping that node's plan after SSH preflight failure, while still running plans for reachable nodes.
 
 ## Artifact Retention
 
