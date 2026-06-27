@@ -111,6 +111,25 @@ jobs:
         if: steps.ssh-connectivity.outcome != 'success'
         run: |
           echo "::warning::Skipping Ansible plan for ${{ matrix.node }} because SSH connectivity failed."
+          mkdir -p ansible/plan_outputs
+          jq -n \
+            --arg node "${{ matrix.node }}" \
+            '{
+              node: $node,
+              playbook: "ssh-connectivity",
+              has_changes: false,
+              stats: {
+                ($node): {
+                  ok: 0,
+                  changed: 0,
+                  skipped: 1,
+                  failures: 0,
+                  unreachable: 1
+                }
+              },
+              changed_tasks: [],
+              failed_tasks: []
+            }' > "ansible/plan_outputs/${{ matrix.node }}-ssh-connectivity.fmt.json"
 
       - name: Set up Python
         if: steps.ssh-connectivity.outcome == 'success'
@@ -193,7 +212,6 @@ jobs:
           fi
 
       - name: Upload plan output
-        if: steps.ssh-connectivity.outcome == 'success'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: plan-${{ matrix.node }}
