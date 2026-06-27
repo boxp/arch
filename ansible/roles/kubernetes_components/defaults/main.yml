@@ -7,6 +7,7 @@ kubernetes_package_version: "1.32.0-1.1"
 
 # CRI-O version to install (using stable available version)
 crio_version: "1.32"
+crio_package_version: ""
 
 # Network configuration for kubelet
 kubelet_node_ip: ""  # Will be auto-detected if empty

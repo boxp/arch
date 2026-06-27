@@ -45,6 +45,7 @@ apps/video-rotator/public/ffmpeg-core/
 apps/video-rotator/*.tsbuildinfo
 *.log
 armbian-build/
+build/
 
 # Secret and credential files
 .env

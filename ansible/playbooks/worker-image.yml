@@ -1,0 +1,142 @@
+---
+- name: Build lolice amd64 worker node image
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../vars/nodes.yml
+  vars:
+    node_ip: "{{ node_ips[node_name] | default('') }}"
+    worker_configure_static_network: false
+    worker_install_gpu_host_tools: false
+    worker_base_packages:
+      - ca-certificates
+      - curl
+      - gnupg
+      - jq
+      - lsb-release
+      - openssh-server
+      - sudo
+      - vim
+    worker_gpu_host_packages:
+      - clinfo
+      - intel-gpu-tools
+      - vainfo
+
+  pre_tasks:
+    - name: Check if running in chroot environment
+      ansible.builtin.stat:
+        path: /proc/1/root/.
+      register: worker_chroot_check
+      changed_when: false
+      failed_when: false
+      tags: [always]
+
+    - name: Detect chroot environment
+      ansible.builtin.set_fact:
+        is_chroot: "{{ worker_chroot_check.stat.ino is not defined or worker_chroot_check.stat.ino != 2 }}"
+      tags: [always]
+
+    - name: Install worker base packages
+      ansible.builtin.apt:
+        name: "{{ worker_base_packages }}"
+        state: present
+        update_cache: true
+      tags: [bootstrap, packages]
+
+    - name: Install optional Intel GPU host smoke-test tools
+      ansible.builtin.apt:
+        name: "{{ worker_gpu_host_packages }}"
+        state: present
+        update_cache: true
+      when: worker_install_gpu_host_tools | bool
+      tags: [gpu, packages]
+
+    - name: Create systemd multi-user.target.wants directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/multi-user.target.wants
+        state: directory
+        mode: "0755"
+      tags: [ssh, bootstrap]
+
+    - name: Enable SSH service via symlink
+      ansible.builtin.file:
+        src: /lib/systemd/system/ssh.service
+        dest: /etc/systemd/system/multi-user.target.wants/ssh.service
+        state: link
+      tags: [ssh, bootstrap]
+
+    - name: Create SSH privilege separation directory for chroot
+      ansible.builtin.file:
+        path: /run/sshd
+        state: directory
+        mode: "0755"
+      when: is_chroot | bool
+      tags: [ssh, bootstrap]
+
+    - name: Generate temporary SSH host keys for config validation in chroot
+      ansible.builtin.command: ssh-keygen -A
+      changed_when: true
+      when: is_chroot | bool
+      tags: [ssh, bootstrap]
+
+    - name: Configure SSH server
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        validate: "sshd -t -f %s"
+      loop:
+        - { regexp: "^#?PermitRootLogin", line: "PermitRootLogin no" }
+        - { regexp: "^#?PasswordAuthentication", line: "PasswordAuthentication no" }
+        - { regexp: "^#?PubkeyAuthentication", line: "PubkeyAuthentication yes" }
+        - { regexp: "^#?ChallengeResponseAuthentication", line: "ChallengeResponseAuthentication no" }
+      notify: Restart SSH service
+      tags: [ssh, bootstrap]
+
+  roles:
+    - role: user_management
+      tags: [users, bootstrap]
+      vars:
+        user_management_use_github_keys: true
+        user_management_github_username: "boxp"
+
+    - role: network_configuration
+      tags: [network, bootstrap]
+      vars:
+        network_ip_address: "{{ node_ip }}"
+        network_gateway: "{{ cluster.gateway }}"
+        network_dns_servers: "{{ cluster.dns_servers }}"
+      when: worker_configure_static_network | bool
+
+    - role: kubernetes_components
+      tags: [kubernetes, k8s-components]
+      vars:
+        kubernetes_version: "1.36.1"
+        kubernetes_package_version: "1.36.1-1.1"
+        crio_version: "1.36.1"
+        crio_package_version: "1.36.1-1.1"
+        kubelet_cluster_dns: "{{ cluster.dns }}"
+        kubelet_cluster_domain: "{{ cluster.domain }}"
+        kubelet_node_ip: "{{ node_ip }}"
+
+  tasks:
+    - name: Record worker image build metadata
+      ansible.builtin.copy:
+        dest: /etc/lolice-worker-image
+        mode: "0644"
+        content: |
+          node_name={{ node_name | default('golyat-4') }}
+          kubernetes_version={{ kubernetes_version }}
+          crio_version={{ crio_version }}
+          crio_package_version={{ crio_package_version }}
+          static_network={{ worker_configure_static_network | bool }}
+          gpu_host_tools={{ worker_install_gpu_host_tools | bool }}
+      tags: [bootstrap]
+
+  handlers:
+    - name: Restart SSH service
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
+      when: not (is_chroot | default(false) | bool)

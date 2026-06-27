@@ -100,25 +100,55 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Verify SSH connectivity
+        id: ssh-connectivity
+        continue-on-error: true
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
           echo "Testing SSH connectivity to ${{ matrix.node }} (${NODE_IP}) via bastion..."
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
 
+      - name: Skip plan for unreachable node
+        if: steps.ssh-connectivity.outcome != 'success'
+        run: |
+          echo "::warning::Skipping Ansible plan for ${{ matrix.node }} because SSH connectivity failed."
+          mkdir -p ansible/plan_outputs
+          jq -n \
+            --arg node "${{ matrix.node }}" \
+            '{
+              node: $node,
+              playbook: "ssh-connectivity",
+              has_changes: false,
+              stats: {
+                ($node): {
+                  ok: 0,
+                  changed: 0,
+                  skipped: 1,
+                  failures: 0,
+                  unreachable: 1
+                }
+              },
+              changed_tasks: [],
+              failed_tasks: []
+            }' > "ansible/plan_outputs/${{ matrix.node }}-ssh-connectivity.fmt.json"
+
       - name: Set up Python
+        if: steps.ssh-connectivity.outcome == 'success'
         uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
       - name: Install uv
+        if: steps.ssh-connectivity.outcome == 'success'
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Install dependencies
+        if: steps.ssh-connectivity.outcome == 'success'
         run: |
           cd ansible
           uv sync
 
       - name: Run Ansible Plan (check + diff)
+        if: steps.ssh-connectivity.outcome == 'success'
         id: ansible-plan
         run: |
           cd ansible
