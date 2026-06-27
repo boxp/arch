@@ -50,6 +50,7 @@ jobs:
             libguestfs-tools \
             qemu-utils \
             xz-utils
+          sudo chmod 0644 /boot/vmlinuz-*
 
       - name: Build GPU worker image
         id: build
