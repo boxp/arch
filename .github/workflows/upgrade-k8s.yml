@@ -150,7 +150,7 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
@@ -303,7 +303,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-1'"
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
@@ -434,7 +434,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
@@ -565,7 +565,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-3'"
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
@@ -708,7 +708,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
@@ -849,7 +849,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
@@ -990,7 +990,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
@@ -1116,7 +1116,7 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
