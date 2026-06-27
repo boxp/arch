@@ -82,4 +82,6 @@
     enabled: true
     daemon_reload: true
   become: true
-  when: not ansible_virtualization_type == "docker"
+  when:
+    - not ansible_virtualization_type == "docker"
+    - not (is_chroot | default(false) | bool)

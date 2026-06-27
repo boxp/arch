@@ -110,6 +110,24 @@ resource "aws_s3_bucket_lifecycle_configuration" "orange_pi_images" {
     }
   }
 
+  # GPU worker image lifecycle rule - delete old timestamped artifacts after 30 days
+  rule {
+    id     = "cleanup_gpu_worker_images"
+    status = "Enabled"
+
+    filter {
+      prefix = "images/ubuntu-amd64-gpu-worker/artifacts/"
+    }
+
+    expiration {
+      days = 30
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
+
   # General cleanup for other paths
   rule {
     id     = "cleanup_general"
@@ -155,7 +173,7 @@ resource "aws_iam_role" "github_actions_orangepi_build" {
   })
 }
 
-# S3 access policy for Orange Pi image builds
+# S3 access policy for node image builds
 resource "aws_iam_role_policy" "github_actions_orangepi_s3" {
   name = "orangepi-images-s3-policy"
   role = aws_iam_role.github_actions_orangepi_build.id
@@ -171,7 +189,10 @@ resource "aws_iam_role_policy" "github_actions_orangepi_s3" {
           "s3:PutObjectTagging",
           "s3:GetObject"
         ]
-        Resource = "${aws_s3_bucket.orange_pi_images.arn}/images/orange-pi-zero3/*"
+        Resource = [
+          "${aws_s3_bucket.orange_pi_images.arn}/images/orange-pi-zero3/*",
+          "${aws_s3_bucket.orange_pi_images.arn}/images/ubuntu-amd64-gpu-worker/*"
+        ]
       },
       {
         Effect = "Allow"
@@ -181,7 +202,10 @@ resource "aws_iam_role_policy" "github_actions_orangepi_s3" {
         Resource = aws_s3_bucket.orange_pi_images.arn
         Condition = {
           StringLike = {
-            "s3:prefix" = "images/orange-pi-zero3/*"
+            "s3:prefix" = [
+              "images/orange-pi-zero3/*",
+              "images/ubuntu-amd64-gpu-worker/*"
+            ]
           }
         }
       }
@@ -221,4 +245,3 @@ resource "aws_iam_user_policy_attachment" "boxp_orangepi_images_access" {
 }
 
 data "aws_caller_identity" "current" {}
-
