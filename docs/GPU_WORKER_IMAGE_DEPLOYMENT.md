@@ -41,6 +41,8 @@ Timestamped S3 objects under the `artifacts/` prefix expire after 30 days. `late
 
 The workflow intentionally does not upload the image to GitHub Actions artifacts. The customized image can include node access material and must stay in the private S3 image bucket, matching the Orange Pi image workflow storage model.
 
+The image is built at the requested `image_size`, currently `64G`, and includes `lolice-grow-rootfs.service`. On first boot, that service runs `growpart` against the mounted root partition and resizes the root filesystem so the flashed image can use the full target disk.
+
 The Phase 2 local artifact verified on 2026-06-27 was:
 
 ```text
@@ -101,6 +103,15 @@ sudo partprobe /dev/nvmeXn1
 ```
 
 First boot should reach SSH with the baked `boxp` account. Cluster join is performed later with `kubeadm join`.
+
+After first boot, confirm root filesystem expansion:
+
+```bash
+systemctl status lolice-grow-rootfs.service --no-pager
+cat /var/log/lolice-grow-rootfs.log
+lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS
+df -h /
+```
 
 ## Rollback And Recovery
 
