@@ -2,6 +2,7 @@ FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e57
 
 ARG CODEX_VERSION=0.142.2
 ARG EVEN_TERMINAL_VERSION=0.8.1
+ARG PI_AGENT_VERSION=0.80.2
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.12
 ARG GH_VERSION=2.95.0
 ARG GHQ_VERSION=1.10.1
@@ -58,6 +59,7 @@ RUN apt-get update \
 RUN npm install -g \
       "@openai/codex@${CODEX_VERSION}" \
       "@evenrealities/even-terminal@${EVEN_TERMINAL_VERSION}" \
+      "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \
       "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
     && npm cache clean --force
 
