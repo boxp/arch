@@ -20,7 +20,7 @@ on:
         description: Expanded raw image size
         required: true
         type: string
-        default: 64G
+        default: 16G
       install_gpu_host_tools:
         description: Install clinfo/intel-gpu-tools/vainfo for host smoke tests
         required: true

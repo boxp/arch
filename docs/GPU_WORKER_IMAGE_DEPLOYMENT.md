@@ -10,7 +10,7 @@ Run the workflow manually:
 gh workflow run build-gpu-worker-image.yml \
   -f node_name=golyat-4 \
   -f base_release=jammy \
-  -f image_size=64G \
+  -f image_size=16G \
   -f install_gpu_host_tools=false
 ```
 
@@ -19,7 +19,7 @@ Or build locally when `qemu-img`, `virt-resize`, `virt-customize`, `virt-sysprep
 ```bash
 NODE_NAME=golyat-4 \
 BASE_RELEASE=jammy \
-IMAGE_SIZE=64G \
+IMAGE_SIZE=16G \
 OUTPUT_DIR=/tmp/gpu-worker-image-prod \
 INSTALL_GPU_HOST_TOOLS=false \
 scripts/images/build-gpu-worker-image.sh
@@ -41,7 +41,7 @@ Timestamped S3 objects under the `artifacts/` prefix expire after 30 days. `late
 
 The workflow intentionally does not upload the image to GitHub Actions artifacts. The customized image can include node access material and must stay in the private S3 image bucket, matching the Orange Pi image workflow storage model.
 
-The image is built at the requested `image_size`, currently `64G`, and includes `lolice-grow-rootfs.service`. On first boot, that service runs `growpart` against the mounted root partition and resizes the root filesystem so the flashed image can use the full target disk.
+The image is built at the requested `image_size`, currently `16G`, and includes `lolice-grow-rootfs.service`. On first boot, that service runs `growpart` against the mounted root partition and resizes the root filesystem so the flashed image can use the full target disk. The compressed artifact is a full disk image, not an installer.
 
 The Phase 2 local artifact verified on 2026-06-27 was:
 
@@ -90,7 +90,19 @@ sha256sum -c latest.img.xz.sha256
 
 If using the unique timestamped image instead of `latest.img.xz`, verify the matching timestamped checksum file.
 
-## Flash
+## USB Boot Smoke Test
+
+The image can be written to a USB drive for a direct boot smoke test. In that mode, the USB drive itself is the root disk; the image does not install itself to the internal SSD/NVMe.
+
+Replace `/dev/sdX` only after confirming it is the intended USB drive.
+
+```bash
+lsblk -o NAME,SIZE,MODEL,SERIAL,TYPE,MOUNTPOINTS
+xzcat ubuntu-jammy-amd64-gpu-worker-golyat-4-*.img.xz | sudo dd of=/dev/sdX bs=16M status=progress conv=fsync
+sync
+```
+
+## Flash From Generic Live USB
 
 Replace `/dev/nvmeXn1` only after confirming it is the intended target.
 
@@ -101,6 +113,8 @@ xzcat ubuntu-jammy-amd64-gpu-worker-golyat-4-*.img.xz | sudo dd of=/dev/nvmeXn1 
 sync
 sudo partprobe /dev/nvmeXn1
 ```
+
+The target is the whole disk, not an existing partition. Existing EFI, Windows, recovery, and data partitions on the target disk are overwritten by this operation.
 
 First boot should reach SSH with the baked `boxp` account. Cluster join is performed later with `kubeadm join`.
 
