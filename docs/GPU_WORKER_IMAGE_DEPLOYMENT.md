@@ -39,11 +39,7 @@ s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/artifacts/golyat-4/
 
 Timestamped S3 objects under the `artifacts/` prefix expire after 30 days. `latest.img.xz`, `latest.img.xz.sha256`, and `image-info.json` under the stable node prefix are overwritten on each successful build and are not current-object expiration targets. Noncurrent versions are retained for 30 days by the bucket lifecycle policy.
 
-The workflow also uploads a 7-day GitHub Actions artifact containing:
-
-- `ubuntu-jammy-amd64-gpu-worker-<node>-<timestamp>-<sha>.img.xz`
-- matching `.sha256`
-- `image-info.json`
+The workflow intentionally does not upload the image to GitHub Actions artifacts. The customized image can include node access material and must stay in the private S3 image bucket, matching the Orange Pi image workflow storage model.
 
 The Phase 2 local artifact verified on 2026-06-27 was:
 

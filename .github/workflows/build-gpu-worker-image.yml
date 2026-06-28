@@ -135,16 +135,6 @@ jobs:
             --key "${S3_ARTIFACT_PREFIX}/${final_name}" \
             --tagging "TagSet=[{Key=NodeName,Value=${NODE_NAME}},{Key=BuildDate,Value=$(date +%Y-%m-%d)},{Key=GitSHA,Value=${GITHUB_SHA}}]"
 
-      - name: Upload GitHub artifact
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: gpu-worker-image-${{ inputs.node_name }}
-          path: |
-            ${{ steps.build.outputs.final_image }}
-            ${{ steps.build.outputs.checksum_file }}
-            ${{ steps.build.outputs.image_info }}
-          retention-days: 7
-
       - name: Build summary
         run: |
           {
@@ -154,6 +144,7 @@ jobs:
             echo "- Image: $(basename "${{ steps.build.outputs.final_image }}")"
             echo "- Size: $(du -h "${{ steps.build.outputs.final_image }}" | cut -f1)"
             echo "- Checksum: $(cut -d' ' -f1 "${{ steps.build.outputs.checksum_file }}")"
+            echo "- Artifact storage: S3 only"
             echo "- S3 latest path: s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/${{ inputs.node_name }}/latest.img.xz"
             echo "- S3 artifact path: s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/artifacts/${{ inputs.node_name }}/"
           } >> "$GITHUB_STEP_SUMMARY"
