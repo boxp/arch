@@ -6,6 +6,8 @@ BASE_RELEASE="${BASE_RELEASE:-jammy}"
 IMAGE_SIZE="${IMAGE_SIZE:-16G}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/gpu-worker-image}"
 INSTALL_GPU_HOST_TOOLS="${INSTALL_GPU_HOST_TOOLS:-false}"
+CONFIGURE_STATIC_NETWORK="${CONFIGURE_STATIC_NETWORK:-true}"
+WORKER_NETWORK_INTERFACE="${WORKER_NETWORK_INTERFACE:-enp44s0}"
 GUESTFS_MEMSIZE="${GUESTFS_MEMSIZE:-4096}"
 GUESTFS_SMP="${GUESTFS_SMP:-2}"
 
@@ -85,7 +87,7 @@ virt-customize \
   --run-command "python3 -m venv /opt/ansible-venv" \
   --run-command "/opt/ansible-venv/bin/python -m pip install --no-cache-dir ansible==9.13.0" \
   --run-command "LANG=C.UTF-8 LC_ALL=C.UTF-8 PATH=/opt/ansible-venv/bin:\$PATH ansible-galaxy collection install -r /opt/arch-ansible/ansible/requirements.yml" \
-  --run-command "cd /opt/arch-ansible/ansible && LANG=C.UTF-8 LC_ALL=C.UTF-8 PATH=/opt/ansible-venv/bin:\$PATH ansible-playbook -i inventories/image-build/hosts.ini playbooks/worker-image.yml -e node_name=${NODE_NAME} -e worker_install_gpu_host_tools=${INSTALL_GPU_HOST_TOOLS} -e chroot_build=true" \
+  --run-command "cd /opt/arch-ansible/ansible && LANG=C.UTF-8 LC_ALL=C.UTF-8 PATH=/opt/ansible-venv/bin:\$PATH ansible-playbook -i inventories/image-build/hosts.ini playbooks/worker-image.yml -e node_name=${NODE_NAME} -e worker_install_gpu_host_tools=${INSTALL_GPU_HOST_TOOLS} -e worker_configure_static_network=${CONFIGURE_STATIC_NETWORK} -e worker_static_network_interface=${WORKER_NETWORK_INTERFACE} -e chroot_build=true" \
   --run-command "apt-get clean" \
   --run-command "rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /opt/arch-ansible /opt/ansible-venv"
 
