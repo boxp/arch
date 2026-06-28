@@ -17,6 +17,8 @@
       - lsb-release
       - openssh-server
       - sudo
+      - cloud-guest-utils
+      - e2fsprogs
       - vim
     worker_gpu_host_packages:
       - clinfo
@@ -121,6 +123,101 @@
         kubelet_node_ip: "{{ node_ip }}"
 
   tasks:
+    - name: Install root filesystem grow script
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/lolice-grow-rootfs
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          marker="/var/lib/lolice-grow-rootfs.done"
+          log_file="/var/log/lolice-grow-rootfs.log"
+
+          mkdir -p "$(dirname "$marker")"
+          exec > >(tee -a "$log_file") 2>&1
+
+          if [ -e "$marker" ]; then
+            echo "Root filesystem grow already completed: $marker"
+            exit 0
+          fi
+
+          root_source="$(findmnt -n -o SOURCE /)"
+          root_device="$(readlink -f "$root_source" 2>/dev/null || true)"
+          root_fstype="$(findmnt -n -o FSTYPE /)"
+
+          if [ -z "$root_device" ] || [ ! -b "$root_device" ]; then
+            root_majmin="$(findmnt -n -o MAJ:MIN /)"
+            root_device="$(lsblk -rpno NAME,MAJ:MIN | awk -v majmin="$root_majmin" '$2 == majmin { print $1; exit }')"
+          fi
+
+          if [[ "$root_device" != /dev/* ]] || [ ! -b "$root_device" ]; then
+            echo "Unsupported root source: $root_source resolved to $root_device" >&2
+            exit 1
+          fi
+
+          disk_name="$(lsblk -no PKNAME "$root_device" | tr -d '[:space:]')"
+          part_num="$(lsblk -no PARTN "$root_device" | tr -d '[:space:]')"
+
+          if [ -z "$disk_name" ] || [ -z "$part_num" ]; then
+            echo "Could not determine parent disk or partition number for $root_device" >&2
+            lsblk -o NAME,PKNAME,PARTN,FSTYPE,SIZE,MOUNTPOINTS
+            exit 1
+          fi
+
+          disk="/dev/${disk_name}"
+          echo "Growing root partition: disk=$disk partition=$part_num root=$root_device fstype=$root_fstype"
+
+          growpart "$disk" "$part_num"
+          partprobe "$disk" || true
+          udevadm settle || true
+
+          case "$root_fstype" in
+            ext2|ext3|ext4)
+              resize2fs "$root_device"
+              ;;
+            xfs)
+              xfs_growfs /
+              ;;
+            btrfs)
+              btrfs filesystem resize max /
+              ;;
+            *)
+              echo "Unsupported root filesystem type: $root_fstype" >&2
+              exit 1
+              ;;
+          esac
+
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$marker"
+          echo "Root filesystem grow completed"
+      tags: [bootstrap, grow-rootfs]
+
+    - name: Install root filesystem grow systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/lolice-grow-rootfs.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Grow lolice worker root filesystem to fill disk
+          After=local-fs.target
+          ConditionPathExists=!/var/lib/lolice-grow-rootfs.done
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/lolice-grow-rootfs
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+      tags: [bootstrap, grow-rootfs]
+
+    - name: Enable root filesystem grow service via symlink
+      ansible.builtin.file:
+        src: /etc/systemd/system/lolice-grow-rootfs.service
+        dest: /etc/systemd/system/multi-user.target.wants/lolice-grow-rootfs.service
+        state: link
+      tags: [bootstrap, grow-rootfs]
+
     - name: Record worker image build metadata
       ansible.builtin.copy:
         dest: /etc/lolice-worker-image
