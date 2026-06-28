@@ -28,13 +28,13 @@ scripts/images/build-gpu-worker-image.sh
 The stable latest image is uploaded to:
 
 ```text
-s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/golyat-4/
+s3://arch-gpu-worker-images/images/golyat-4/
 ```
 
 Timestamped artifacts are uploaded to:
 
 ```text
-s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/artifacts/golyat-4/
+s3://arch-gpu-worker-images/images/artifacts/golyat-4/
 ```
 
 Timestamped S3 objects under the `artifacts/` prefix expire after 30 days. `latest.img.xz`, `latest.img.xz.sha256`, and `image-info.json` under the stable node prefix are overwritten on each successful build and are not current-object expiration targets. Noncurrent versions are retained for 30 days by the bucket lifecycle policy.
@@ -83,8 +83,8 @@ Do not write this image to the GMKtec internal storage until all checks are true
 ## Download And Verify
 
 ```bash
-aws s3 cp s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/golyat-4/latest.img.xz ./
-aws s3 cp s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/golyat-4/latest.img.xz.sha256 ./
+aws s3 cp s3://arch-gpu-worker-images/images/golyat-4/latest.img.xz ./
+aws s3 cp s3://arch-gpu-worker-images/images/golyat-4/latest.img.xz.sha256 ./
 sha256sum -c latest.img.xz.sha256
 ```
 

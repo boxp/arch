@@ -99,15 +99,15 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4
         with:
-          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_OrangePi_Build
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_GPUWorkerImage_Build
           aws-region: ap-northeast-1
 
       - name: Upload image to S3
         env:
           NODE_NAME: ${{ inputs.node_name }}
-          S3_BUCKET: arch-orange-pi-images
-          S3_STABLE_PREFIX: images/ubuntu-amd64-gpu-worker/${{ inputs.node_name }}
-          S3_ARTIFACT_PREFIX: images/ubuntu-amd64-gpu-worker/artifacts/${{ inputs.node_name }}
+          S3_BUCKET: arch-gpu-worker-images
+          S3_STABLE_PREFIX: images/${{ inputs.node_name }}
+          S3_ARTIFACT_PREFIX: images/artifacts/${{ inputs.node_name }}
         run: |
           final_image="${{ steps.build.outputs.final_image }}"
           checksum_file="${{ steps.build.outputs.checksum_file }}"
@@ -145,6 +145,6 @@ jobs:
             echo "- Size: $(du -h "${{ steps.build.outputs.final_image }}" | cut -f1)"
             echo "- Checksum: $(cut -d' ' -f1 "${{ steps.build.outputs.checksum_file }}")"
             echo "- Artifact storage: S3 only"
-            echo "- S3 latest path: s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/${{ inputs.node_name }}/latest.img.xz"
-            echo "- S3 artifact path: s3://arch-orange-pi-images/images/ubuntu-amd64-gpu-worker/artifacts/${{ inputs.node_name }}/"
+            echo "- S3 latest path: s3://arch-gpu-worker-images/images/${{ inputs.node_name }}/latest.img.xz"
+            echo "- S3 artifact path: s3://arch-gpu-worker-images/images/artifacts/${{ inputs.node_name }}/"
           } >> "$GITHUB_STEP_SUMMARY"
