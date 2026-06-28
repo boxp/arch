@@ -12,7 +12,7 @@ on:
         description: Ubuntu cloud image release
         required: true
         type: choice
-        default: jammy
+        default: noble
         options:
           - jammy
           - noble
@@ -22,10 +22,10 @@ on:
         type: string
         default: 16G
       install_gpu_host_tools:
-        description: Install clinfo/intel-gpu-tools/vainfo for host smoke tests
+        description: Install Intel graphics runtime and host smoke-test tools
         required: true
         type: boolean
-        default: false
+        default: true
 
 jobs:
   build-image:
