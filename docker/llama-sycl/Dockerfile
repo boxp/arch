@@ -1,7 +1,7 @@
 FROM ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54 AS builder
 
-ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
-ARG LLAMA_REF=feature/turboquant-kv-cache
+ARG LLAMA_REPO=https://github.com/cclecle/llama-cpp-turboquant.git
+ARG LLAMA_REF=76d7e0727abd24247bcc8b62b9820e8685efbb7c
 
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -54,8 +54,8 @@ RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
 
 FROM ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
 
-ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
-ARG LLAMA_REF=feature/turboquant-kv-cache
+ARG LLAMA_REPO=https://github.com/cclecle/llama-cpp-turboquant.git
+ARG LLAMA_REF=76d7e0727abd24247bcc8b62b9820e8685efbb7c
 
 LABEL org.opencontainers.image.title="llama-server SYCL" \
       org.opencontainers.image.description="Intel GPU SYCL build of llama-server for lolice local LLM workers" \
