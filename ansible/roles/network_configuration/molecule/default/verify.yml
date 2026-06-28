@@ -31,22 +31,21 @@
           - "'renderer: networkd' in netplan_config_content"
         fail_msg: "Static IP configuration not found"
 
-    - name: Check if WiFi is disabled
-      ansible.builtin.command: rfkill list wifi
-      register: wifi_status
-      changed_when: false
-      failed_when: false
+    - name: Check disable-wireless service
+      ansible.builtin.slurp:
+        src: /etc/systemd/system/disable-wireless.service
+      register: disable_wireless_service
 
-    - name: Check if Bluetooth is disabled
-      ansible.builtin.command: rfkill list bluetooth
-      register: bt_status
-      changed_when: false
-      failed_when: false
+    - name: Check disable-wireless service symlink
+      ansible.builtin.stat:
+        path: /etc/systemd/system/multi-user.target.wants/disable-wireless.service
+      register: disable_wireless_symlink
 
-    - name: Assert WiFi and Bluetooth are blocked
+    - name: Assert WiFi and Bluetooth are disabled on boot
       ansible.builtin.assert:
         that:
-          - "wifi_status.rc != 0 or 'blocked: yes' in wifi_status.stdout"
-          - "bt_status.rc != 0 or 'blocked: yes' in bt_status.stdout"
-        fail_msg: "WiFi or Bluetooth is not disabled"
-      when: "wifi_status.rc == 0 or bt_status.rc == 0"
+          - "'ExecStart=/usr/sbin/rfkill block wifi' in (disable_wireless_service.content | b64decode)"
+          - "'ExecStart=/usr/sbin/rfkill block bluetooth' in (disable_wireless_service.content | b64decode)"
+          - disable_wireless_symlink.stat.islnk
+          - disable_wireless_symlink.stat.lnk_source == '/etc/systemd/system/disable-wireless.service'
+        fail_msg: "WiFi and Bluetooth disable service is not configured"
