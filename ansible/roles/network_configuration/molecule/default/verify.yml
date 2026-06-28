@@ -46,7 +46,7 @@
     - name: Assert WiFi and Bluetooth are blocked
       ansible.builtin.assert:
         that:
-          - wifi_status.rc != 0 or 'blocked: yes' in wifi_status.stdout
-          - bt_status.rc != 0 or 'blocked: yes' in bt_status.stdout
+          - "wifi_status.rc != 0 or 'blocked: yes' in wifi_status.stdout"
+          - "bt_status.rc != 0 or 'blocked: yes' in bt_status.stdout"
         fail_msg: "WiFi or Bluetooth is not disabled"
-      when: wifi_status.rc == 0 or bt_status.rc == 0
+      when: "wifi_status.rc == 0 or bt_status.rc == 0"
