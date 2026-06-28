@@ -29,7 +29,7 @@ on:
 
 jobs:
   build-image:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
     permissions:
       id-token: write
@@ -51,6 +51,9 @@ jobs:
             qemu-utils \
             xz-utils
           sudo chmod 0644 /boot/vmlinuz-*
+          if [ -e /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm
+          fi
 
       - name: Build GPU worker image
         id: build
@@ -62,6 +65,7 @@ jobs:
           OUTPUT_DIR: build/gpu-worker-image
           LIBGUESTFS_BACKEND: direct
         run: |
+          set -o pipefail
           scripts/images/build-gpu-worker-image.sh | tee build-output.log
           final_image_line="$(grep '^FINAL_IMAGE=' build-output.log | tail -n1)"
           checksum_file_line="$(grep '^CHECKSUM_FILE=' build-output.log | tail -n1)"
@@ -69,6 +73,12 @@ jobs:
           final_image="${final_image_line#FINAL_IMAGE=}"
           checksum_file="${checksum_file_line#CHECKSUM_FILE=}"
           image_info="${image_info_line#IMAGE_INFO=}"
+          for output_path in "$final_image" "$checksum_file" "$image_info"; do
+            if [ -z "$output_path" ] || [ ! -f "$output_path" ]; then
+              echo "Missing expected build output: $output_path" >&2
+              exit 1
+            fi
+          done
           {
             echo "final_image=$final_image"
             echo "checksum_file=$checksum_file"
