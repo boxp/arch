@@ -99,7 +99,9 @@ COPY --from=builder /opt/llama.cpp /opt/llama.cpp
 COPY --from=builder /opt/llama-source-revision /opt/llama-source-revision
 COPY entrypoint.sh /usr/local/bin/llama-sycl-entrypoint
 
-RUN chmod 0755 /usr/local/bin/llama-sycl-entrypoint \
+RUN echo /opt/llama.cpp/bin > /etc/ld.so.conf.d/llama-sycl.conf \
+    && ldconfig \
+    && chmod 0755 /usr/local/bin/llama-sycl-entrypoint \
     && useradd --create-home --shell /usr/sbin/nologin llama
 
 USER llama
