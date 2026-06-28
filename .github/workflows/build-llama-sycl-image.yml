@@ -3,7 +3,7 @@ name: Build llama-server SYCL Image
 on:
   push:
     branches: [main]
-    paths: ['docker/llama-sycl/**']
+    paths: ['docker/llama-sycl/**', '.github/workflows/build-llama-sycl-image.yml']
   pull_request:
     paths: ['docker/llama-sycl/**', '.github/workflows/build-llama-sycl-image.yml']
   workflow_dispatch:
@@ -11,11 +11,11 @@ on:
       llama_repo:
         description: 'llama.cpp source repository'
         required: true
-        default: 'https://github.com/TheTom/llama-cpp-turboquant.git'
+        default: 'https://github.com/cclecle/llama-cpp-turboquant.git'
       llama_ref:
         description: 'llama.cpp source ref'
         required: true
-        default: 'feature/turboquant-kv-cache'
+        default: '76d7e0727abd24247bcc8b62b9820e8685efbb7c'
 
 jobs:
   build-and-push:
@@ -35,8 +35,8 @@ jobs:
           INPUT_LLAMA_REPO: ${{ inputs.llama_repo }}
           INPUT_LLAMA_REF: ${{ inputs.llama_ref }}
         run: |
-          repo="${INPUT_LLAMA_REPO:-https://github.com/TheTom/llama-cpp-turboquant.git}"
-          ref="${INPUT_LLAMA_REF:-feature/turboquant-kv-cache}"
+          repo="${INPUT_LLAMA_REPO:-https://github.com/cclecle/llama-cpp-turboquant.git}"
+          ref="${INPUT_LLAMA_REF:-76d7e0727abd24247bcc8b62b9820e8685efbb7c}"
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
