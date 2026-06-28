@@ -17,10 +17,10 @@ jobs:
       contents: read
     strategy:
       matrix:
-        node: [shanghai-1, shanghai-2, shanghai-3]
+        node: [shanghai-1, shanghai-2, shanghai-3, golyat-4]
       fail-fast: false
     env:
-      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104","golyat-4":"192.168.10.107"}'
       AQUA_POLICY_CONFIG: ${{ github.workspace }}/aqua/aqua-policy.yaml
     steps:
       - name: Checkout
@@ -164,6 +164,7 @@ jobs:
             local node="$2"
             local playbook_name="$3"
             local output_file="$4"
+            shift 4
             local json_file="plan_outputs/${node}-${playbook_name}.json"
 
             set +e
@@ -174,6 +175,7 @@ jobs:
               --limit "$node" \
               -e "ansible_ssh_common_args=''" \
               -e "node_name=$node" \
+              "$@" \
               --check --diff \
               > "$json_file" \
               2>"plan_outputs/${node}-${playbook_name}.stderr"
@@ -202,8 +204,18 @@ jobs:
             return 0
           }
 
-          run_ansible "playbooks/control-plane.yml" "$NODE" "control-plane" \
-            "plan_outputs/${NODE}-control-plane.fmt.json"
+          if [[ "$NODE" == shanghai-* ]]; then
+            run_ansible "playbooks/control-plane.yml" "$NODE" "control-plane" \
+              "plan_outputs/${NODE}-control-plane.fmt.json"
+          elif [[ "$NODE" == golyat-* ]]; then
+            run_ansible "playbooks/worker-image.yml" "$NODE" "worker-image" \
+              "plan_outputs/${NODE}-worker-image.fmt.json" \
+              -e "worker_configure_static_network=true" \
+              -e "worker_static_network_interface=enp44s0"
+          else
+            echo "::error::Unsupported Ansible target node: $NODE"
+            exit 1
+          fi
 
           PLAYBOOK="playbooks/node-${NODE}.yml"
           if [ -f "$PLAYBOOK" ]; then

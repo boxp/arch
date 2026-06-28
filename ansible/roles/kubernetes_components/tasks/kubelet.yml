@@ -54,7 +54,7 @@
   ansible.builtin.copy:
     content: |
       [Service]
-      Environment="KUBELET_EXTRA_ARGS=--resolv-conf=/run/systemd/resolve/resolv.conf"
+      Environment="KUBELET_RESOLV_CONF_ARGS=--resolv-conf=/run/systemd/resolve/resolv.conf"
     dest: /etc/systemd/system/kubelet.service.d/10-resolv-conf.conf
     mode: '0644'
   become: true

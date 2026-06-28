@@ -10,7 +10,7 @@
 
 - name: Set chroot fact
   ansible.builtin.set_fact:
-    is_chroot: "{{ chroot_check.stat.ino is not defined or chroot_check.stat.ino != 2 }}"
+    is_chroot: "{{ chroot_build | default(false) | bool }}"
 
 - name: Disable swap
   ansible.builtin.command: swapoff -a

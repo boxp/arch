@@ -2,10 +2,11 @@
 [Service]
 Environment="KUBELET_KUBECONFIG_ARGS=--bootstrap-kubeconfig=/etc/kubernetes/bootstrap-kubelet.conf --kubeconfig=/etc/kubernetes/kubelet.conf"
 Environment="KUBELET_CONFIG_ARGS=--config=/etc/kubernetes/kubelet-config.yaml"
+Environment="KUBELET_RESOLV_CONF_ARGS="
 {% if detected_node_ip is defined and detected_node_ip != "" %}
 Environment="KUBELET_EXTRA_ARGS=--node-ip={{ detected_node_ip }}"
 {% else %}
 Environment="KUBELET_EXTRA_ARGS="
 {% endif %}
 ExecStart=
-ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_EXTRA_ARGS
+ExecStart=/usr/bin/kubelet $KUBELET_KUBECONFIG_ARGS $KUBELET_CONFIG_ARGS $KUBELET_RESOLV_CONF_ARGS $KUBELET_EXTRA_ARGS
