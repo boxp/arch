@@ -1,4 +1,4 @@
-FROM ubuntu:24.04 AS builder
+FROM ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54 AS builder
 
 ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
 ARG LLAMA_REF=feature/turboquant-kv-cache
@@ -52,7 +52,7 @@ RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
     && install -d -m 0755 /opt/llama.cpp/bin \
     && cp -a /src/llama.cpp/build-sycl/bin/. /opt/llama.cpp/bin/
 
-FROM ubuntu:24.04
+FROM ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
 
 ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
 ARG LLAMA_REF=feature/turboquant-kv-cache
