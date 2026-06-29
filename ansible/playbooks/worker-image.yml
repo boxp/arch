@@ -26,17 +26,6 @@
     worker_extra_kernel_modules_package: true
     worker_static_network_interface: enp44s0
     worker_static_networkd_config: /etc/systemd/network/20-wired.network
-    worker_intel_graphics_ppa: ppa:kobuk-team/intel-graphics
-    worker_gpu_host_packages:
-      - clinfo
-      - intel-gsc
-      - intel-gpu-tools
-      - intel-ocloc
-      - intel-opencl-icd
-      - libze-dev
-      - libze-intel-gpu1
-      - libze1
-      - vainfo
 
   pre_tasks:
     - name: Check if running in chroot environment
@@ -76,32 +65,6 @@
         - worker_extra_kernel_modules_package | bool
         - worker_generic_kernel_modules.files | length > 0
       tags: [bootstrap, packages]
-
-    - name: Install Intel graphics PPA dependencies
-      ansible.builtin.apt:
-        name:
-          - python3-launchpadlib
-          - software-properties-common
-        state: present
-        update_cache: true
-      when: worker_install_gpu_host_tools | bool
-      tags: [gpu, packages]
-
-    - name: Enable Intel graphics PPA for GPU runtime packages
-      ansible.builtin.apt_repository:
-        repo: "{{ worker_intel_graphics_ppa }}"
-        state: present
-        update_cache: true
-      when: worker_install_gpu_host_tools | bool
-      tags: [gpu, packages]
-
-    - name: Install Intel GPU runtime and host smoke-test tools
-      ansible.builtin.apt:
-        name: "{{ worker_gpu_host_packages }}"
-        state: present
-        update_cache: true
-      when: worker_install_gpu_host_tools | bool
-      tags: [gpu, packages]
 
     - name: Create systemd multi-user.target.wants directory
       ansible.builtin.file:
@@ -245,6 +208,11 @@
         kubelet_cluster_domain: "{{ cluster.domain }}"
         kubelet_node_ip: "{{ node_ip }}"
 
+    - role: gpu_worker_host_tools
+      tags: [gpu, packages]
+      vars:
+        gpu_worker_host_tools_enabled: "{{ worker_install_gpu_host_tools }}"
+
   tasks:
     - name: Install root filesystem grow script
       ansible.builtin.copy:
@@ -359,7 +327,7 @@
           crio_package_version={{ crio_package_version }}
           static_network={{ worker_configure_static_network | bool }}
           gpu_runtime={{ worker_install_gpu_host_tools | bool }}
-          intel_graphics_ppa={{ worker_intel_graphics_ppa if worker_install_gpu_host_tools | bool else '' }}
+          intel_graphics_ppa={{ gpu_worker_host_tools_intel_graphics_ppa if worker_install_gpu_host_tools | bool else '' }}
       tags: [bootstrap]
 
   handlers:
