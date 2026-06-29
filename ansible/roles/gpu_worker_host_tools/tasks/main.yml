@@ -6,6 +6,13 @@
     update_cache: true
   when: gpu_worker_host_tools_enabled | bool
 
+- name: Add Intel graphics PPA for GPU runtime packages
+  ansible.builtin.apt_repository:
+    repo: "{{ gpu_worker_host_tools_intel_graphics_ppa }}"
+    state: present
+    update_cache: true
+  when: gpu_worker_host_tools_enabled | bool
+
 - name: Add nvtop PPA for Intel-enabled builds
   ansible.builtin.apt_repository:
     repo: "{{ gpu_worker_host_tools_nvtop_ppa }}"

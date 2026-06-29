@@ -9,19 +9,19 @@ Run the workflow manually:
 ```bash
 gh workflow run build-gpu-worker-image.yml \
   -f node_name=golyat-4 \
-  -f base_release=jammy \
+  -f base_release=noble \
   -f image_size=16G \
-  -f install_gpu_host_tools=false
+  -f install_gpu_host_tools=true
 ```
 
 Or build locally when `qemu-img`, `virt-resize`, `virt-customize`, `virt-sysprep`, and `xz` are available:
 
 ```bash
 NODE_NAME=golyat-4 \
-BASE_RELEASE=jammy \
+BASE_RELEASE=noble \
 IMAGE_SIZE=16G \
 OUTPUT_DIR=/tmp/gpu-worker-image-prod \
-INSTALL_GPU_HOST_TOOLS=false \
+INSTALL_GPU_HOST_TOOLS=true \
 scripts/images/build-gpu-worker-image.sh
 ```
 
@@ -54,12 +54,15 @@ The local artifact passed `sha256sum -c` and `xz --test`. Treat `/tmp` artifacts
 
 ## Image Contents
 
-The image is based on the current Ubuntu amd64 cloud image, then customized with Ansible:
+The image is based on the current Ubuntu 24.04 Noble amd64 cloud image, then customized with Ansible:
 
 - `boxp` user with GitHub SSH keys
 - SSH enabled with password login disabled
 - Kubernetes `kubelet`, `kubeadm`, `kubectl` pinned to `1.36.1-1.1`
 - CRI-O pinned to package version `1.36.1-1.1`
+- Intel graphics PPA `ppa:kobuk-team/intel-graphics`
+- Intel OpenCL / Level Zero runtime packages: `intel-opencl-icd`, `libze-intel-gpu1`, `libze1`, `intel-gsc`, `intel-ocloc`, `libze-dev`
+- Host smoke-test tools: `clinfo`, `intel-gpu-tools`, `vainfo`
 - Kubernetes sysctl/module baseline for workers
 - `/etc/lolice-worker-image` build metadata
 
@@ -68,7 +71,7 @@ The initial GPU worker identity is:
 - hostname / Kubernetes node name: `golyat-4`
 - planned static IP: `192.168.10.107`
 
-GPU runtime, Intel device plugin, node labels, taints, and cluster join are intentionally left to later phases. Optional host smoke-test tools can be installed by setting `install_gpu_host_tools=true`.
+Intel device plugin, node labels, taints, and cluster join are intentionally left to later phases. GPU runtime packages are installed by default so first boot can verify `/dev/dri` and `clinfo -l` before joining the cluster.
 
 ## Pre-Flash Gate
 
@@ -98,7 +101,7 @@ Replace `/dev/sdX` only after confirming it is the intended USB drive.
 
 ```bash
 lsblk -o NAME,SIZE,MODEL,SERIAL,TYPE,MOUNTPOINTS
-xzcat ubuntu-jammy-amd64-gpu-worker-golyat-4-*.img.xz | sudo dd of=/dev/sdX bs=16M status=progress conv=fsync
+xzcat ubuntu-noble-amd64-gpu-worker-golyat-4-*.img.xz | sudo dd of=/dev/sdX bs=16M status=progress conv=fsync
 sync
 ```
 
@@ -109,7 +112,7 @@ Replace `/dev/nvmeXn1` only after confirming it is the intended target.
 ```bash
 lsblk -o NAME,SIZE,MODEL,SERIAL,TYPE,MOUNTPOINTS
 sudo wipefs --no-act /dev/nvmeXn1
-xzcat ubuntu-jammy-amd64-gpu-worker-golyat-4-*.img.xz | sudo dd of=/dev/nvmeXn1 bs=16M status=progress conv=fsync
+xzcat ubuntu-noble-amd64-gpu-worker-golyat-4-*.img.xz | sudo dd of=/dev/nvmeXn1 bs=16M status=progress conv=fsync
 sync
 sudo partprobe /dev/nvmeXn1
 ```
@@ -125,6 +128,8 @@ systemctl status lolice-grow-rootfs.service --no-pager
 cat /var/log/lolice-grow-rootfs.log
 lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS
 df -h /
+ls -l /dev/dri
+clinfo -l
 ```
 
 ## Rollback And Recovery

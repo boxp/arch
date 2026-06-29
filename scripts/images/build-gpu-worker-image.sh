@@ -2,7 +2,7 @@
 set -euo pipefail
 
 NODE_NAME="${NODE_NAME:-golyat-4}"
-BASE_RELEASE="${BASE_RELEASE:-jammy}"
+BASE_RELEASE="${BASE_RELEASE:-noble}"
 IMAGE_SIZE="${IMAGE_SIZE:-16G}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/gpu-worker-image}"
 INSTALL_GPU_HOST_TOOLS="${INSTALL_GPU_HOST_TOOLS:-true}"

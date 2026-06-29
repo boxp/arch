@@ -1,11 +1,18 @@
 ---
 gpu_worker_host_tools_enabled: false
+gpu_worker_host_tools_intel_graphics_ppa: ppa:kobuk-team/intel-graphics
 gpu_worker_host_tools_nvtop_ppa: ppa:quentiumyt/nvtop
 gpu_worker_host_tools_packages:
   - clinfo
+  - intel-gsc
   - intel-gpu-tools
+  - intel-ocloc
+  - intel-opencl-icd
+  - libze-dev
+  - libze-intel-gpu1
+  - libze1
   - nvtop
   - vainfo
 gpu_worker_host_tools_ppa_prerequisites:
-  - python3-apt
+  - python3-launchpadlib
   - software-properties-common

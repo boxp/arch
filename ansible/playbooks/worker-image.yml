@@ -326,7 +326,8 @@
           crio_version={{ crio_version }}
           crio_package_version={{ crio_package_version }}
           static_network={{ worker_configure_static_network | bool }}
-          gpu_host_tools={{ worker_install_gpu_host_tools | bool }}
+          gpu_runtime={{ worker_install_gpu_host_tools | bool }}
+          intel_graphics_ppa={{ gpu_worker_host_tools_intel_graphics_ppa if worker_install_gpu_host_tools | bool else '' }}
       tags: [bootstrap]
 
   handlers:
