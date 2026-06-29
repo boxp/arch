@@ -1,7 +1,7 @@
 FROM ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54 AS builder
 
-ARG LLAMA_REPO=https://github.com/cclecle/llama-cpp-turboquant.git
-ARG LLAMA_REF=76d7e0727abd24247bcc8b62b9820e8685efbb7c
+ARG LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
+ARG LLAMA_REF=8c146a8366304c871efc26057cc90370ccf58dad
 
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -45,17 +45,20 @@ RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
     && cmake -S /src/llama.cpp -B /src/llama.cpp/build-sycl -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
       -DGGML_SYCL=ON \
-      -DGGML_SYCL_F16=ON \
+      -DGGML_VULKAN=OFF \
+      -DLLAMA_BUILD_SERVER=ON \
+      -DLLAMA_CURL=OFF \
+      -DGGML_NATIVE=ON \
       -DCMAKE_C_COMPILER=icx \
       -DCMAKE_CXX_COMPILER=icpx \
-    && cmake --build /src/llama.cpp/build-sycl --target llama-ls-sycl-device llama-server -j"$(nproc)" \
+    && cmake --build /src/llama.cpp/build-sycl --target llama-server -j"$(nproc)" \
     && install -d -m 0755 /opt/llama.cpp/bin \
     && cp -a /src/llama.cpp/build-sycl/bin/. /opt/llama.cpp/bin/
 
 FROM ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae77ff1dc54
 
-ARG LLAMA_REPO=https://github.com/cclecle/llama-cpp-turboquant.git
-ARG LLAMA_REF=76d7e0727abd24247bcc8b62b9820e8685efbb7c
+ARG LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
+ARG LLAMA_REF=8c146a8366304c871efc26057cc90370ccf58dad
 
 LABEL org.opencontainers.image.title="llama-server SYCL" \
       org.opencontainers.image.description="Intel GPU SYCL build of llama-server for lolice local LLM workers" \
@@ -63,7 +66,8 @@ LABEL org.opencontainers.image.title="llama-server SYCL" \
       org.opencontainers.image.revision="${LLAMA_REF}"
 
 ENV DEBIAN_FRONTEND=noninteractive \
-    ONEAPI_DEVICE_SELECTOR=level_zero:0 \
+    ONEAPI_DEVICE_SELECTOR=level_zero:gpu \
+    ZE_ENABLE_PCI_ID_DEVICE_ORDER=1 \
     PATH=/opt/llama.cpp/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
