@@ -2,6 +2,7 @@ FROM ubuntu:24.04@sha256:786a8b558f7be160c6c8c4a54f9a57274f3b4fb1491cf65146521ae
 
 ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
 ARG LLAMA_REF=a33ef00b13476e9c609caecc3c1c015b8615011d
+ARG LLAMA_CPU_FLAGS="-march=x86-64-v3 -mavxvnni"
 
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -42,6 +43,10 @@ RUN set -eux; \
 
 RUN cmake -S /src/llama.cpp -B /src/llama.cpp/build-vulkan -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_FLAGS="${LLAMA_CPU_FLAGS}" \
+      -DCMAKE_CXX_FLAGS="${LLAMA_CPU_FLAGS}" \
+      -DGGML_NATIVE=OFF \
+      -DGGML_AVX_VNNI=ON \
       -DGGML_VULKAN=ON \
       -DGGML_SYCL=OFF \
     && cmake --build /src/llama.cpp/build-vulkan --target llama-server -j"$(nproc)" \
