@@ -1,0 +1,21 @@
+---
+- name: Install GPU host tool PPA prerequisites
+  ansible.builtin.apt:
+    name: "{{ gpu_worker_host_tools_ppa_prerequisites }}"
+    state: present
+    update_cache: true
+  when: gpu_worker_host_tools_enabled | bool
+
+- name: Add nvtop PPA for Intel-enabled builds
+  ansible.builtin.apt_repository:
+    repo: "{{ gpu_worker_host_tools_nvtop_ppa }}"
+    state: present
+    update_cache: true
+  when: gpu_worker_host_tools_enabled | bool
+
+- name: Install GPU host tools
+  ansible.builtin.apt:
+    name: "{{ gpu_worker_host_tools_packages }}"
+    state: present
+    update_cache: true
+  when: gpu_worker_host_tools_enabled | bool

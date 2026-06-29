@@ -1,0 +1,11 @@
+---
+gpu_worker_host_tools_enabled: false
+gpu_worker_host_tools_nvtop_ppa: ppa:quentiumyt/nvtop
+gpu_worker_host_tools_packages:
+  - clinfo
+  - intel-gpu-tools
+  - nvtop
+  - vainfo
+gpu_worker_host_tools_ppa_prerequisites:
+  - python3-apt
+  - software-properties-common
