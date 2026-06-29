@@ -11,11 +11,11 @@ on:
       llama_repo:
         description: 'llama.cpp source repository'
         required: true
-        default: 'https://github.com/cclecle/llama-cpp-turboquant.git'
+        default: 'https://github.com/ggml-org/llama.cpp.git'
       llama_ref:
         description: 'llama.cpp source ref'
         required: true
-        default: '76d7e0727abd24247bcc8b62b9820e8685efbb7c'
+        default: '8c146a8366304c871efc26057cc90370ccf58dad'
 
 jobs:
   build-and-push:
@@ -35,8 +35,8 @@ jobs:
           INPUT_LLAMA_REPO: ${{ inputs.llama_repo }}
           INPUT_LLAMA_REF: ${{ inputs.llama_ref }}
         run: |
-          repo="${INPUT_LLAMA_REPO:-https://github.com/cclecle/llama-cpp-turboquant.git}"
-          ref="${INPUT_LLAMA_REF:-76d7e0727abd24247bcc8b62b9820e8685efbb7c}"
+          repo="${INPUT_LLAMA_REPO:-https://github.com/ggml-org/llama.cpp.git}"
+          ref="${INPUT_LLAMA_REF:-8c146a8366304c871efc26057cc90370ccf58dad}"
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 
