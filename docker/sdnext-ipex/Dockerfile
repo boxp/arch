@@ -10,6 +10,7 @@ LABEL org.opencontainers.image.title="SD.Next IPEX" \
 
 ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=true \
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
     UV_NO_CACHE=true \
     SD_DOCKER=true \
     SD_DATADIR=/data \
@@ -37,6 +38,7 @@ RUN apt-get update \
       software-properties-common \
       tini \
       wget \
+    && python3 -m pip install --no-cache-dir uv \
     && wget -qO - https://repositories.intel.com/gpu/intel-graphics.key \
       | gpg --yes --dearmor --output /usr/share/keyrings/intel-graphics.gpg \
     && echo "deb [arch=amd64,i386 signed-by=/usr/share/keyrings/intel-graphics.gpg] https://repositories.intel.com/gpu/ubuntu noble client" \
@@ -66,6 +68,36 @@ ENV HF_HOME=/scratch/huggingface \
     TMPDIR=/scratch/tmp
 
 WORKDIR /app
+
+RUN set -eux; \
+    python3 -m venv "${venv_dir}"; \
+    "${venv_dir}/bin/python" -m pip install --no-cache-dir uv; \
+    uv pip install --python "${venv_dir}/bin/python" \
+      torch==2.12.0+xpu \
+      torchvision==0.27.0+xpu \
+      --extra-index-url https://download.pytorch.org/whl/xpu; \
+    set +e; \
+    /app/webui.sh -f \
+      --use-ipex \
+      --uv \
+      --skip-git \
+      --skip-extensions \
+      --skip-torch \
+      --test \
+      --log /tmp/sdnext-build.log; \
+    status="$?"; \
+    set -e; \
+    test "$status" -eq 0 -o "$status" -eq 139; \
+    grep -q 'Installer time:' /tmp/sdnext-build.log; \
+    ! grep -q 'Setup complete with errors' /tmp/sdnext-build.log; \
+    rm -rf \
+      /tmp/sdnext-build.log \
+      /app/sdnext.log \
+      /app/pip.log \
+      /scratch/tmp/* \
+      /scratch/cache/* \
+      /scratch/huggingface/*
+
 EXPOSE 7860
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/sdnext-ipex-entrypoint"]
-CMD ["--use-ipex", "--listen", "--server-name", "0.0.0.0", "--port", "7860", "--uv", "--log", "/scratch/sdnext.log"]
+CMD ["--use-ipex", "--listen", "--server-name", "0.0.0.0", "--port", "7860", "--skip-git", "--skip-requirements", "--skip-extensions", "--skip-torch", "--log", "/scratch/sdnext.log"]
