@@ -137,19 +137,6 @@ write_session_env() {
 if [ -r /run/codex-workspace/session-env ]; then
   . /run/codex-workspace/session-env
 fi
-
-if [ -n "${BASH_VERSION:-}" ]; then
-  y() {
-    local tmp cwd
-    tmp="$(mktemp -t "yazi-cwd.XXXXXX")" || return
-    command yazi "$@" --cwd-file="$tmp"
-    IFS= read -r -d '' cwd <"$tmp" || true
-    rm -f -- "$tmp"
-    if [ -n "$cwd" ] && [ "$cwd" != "$PWD" ] && [ -d "$cwd" ]; then
-      builtin cd -- "$cwd"
-    fi
-  }
-fi
 EOF
   chmod 0644 "${profile_file}"
 }
