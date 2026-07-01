@@ -124,6 +124,8 @@ ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
     CHROME_BIN=/usr/bin/chromium \
     PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium \
+    EDITOR=vim \
+    VISUAL=vim \
     PATH=/home/boxp/.local/bin:/home/boxp/go/bin:/usr/local/bin:/usr/bin:/bin
 
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
