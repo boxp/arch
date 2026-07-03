@@ -196,8 +196,28 @@ test_review_without_pr_is_blocked() {
   assert_file_not_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::review'
 }
 
+test_review_with_pr_url_is_noted() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-401|BOXP-401: review pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-401 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-pr.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-401\|BOXP-401: review pr\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-401.md" 'PR: https://github.com/boxp/example/pull/123'
+}
+
 test_parallel_codex_runs
 test_stale_lock_recovers
 test_review_without_pr_is_blocked
+test_review_with_pr_url_is_noted
 
 echo "task-board-runner tests passed"
