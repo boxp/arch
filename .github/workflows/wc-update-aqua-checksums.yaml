@@ -14,13 +14,72 @@ on:
 jobs:
   update-aqua-checksums:
     # Update aqua-checksums.json and push a commit
-    uses: aquaproj/update-checksum-workflow/.github/workflows/update-checksum.yaml@eba908314cdc3b2ab7fb7546950c05a666effbc0 # v1.0.5
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
     permissions:
-      contents: write
-    with:
-      aqua_version: v2.60.1
-      prune: true
-      ref: ${{inputs.ref}}
-    secrets:
-      gh_app_id: ${{secrets.gh_app_id}}
-      gh_app_private_key: ${{secrets.gh_app_private_key}}
+      contents: read
+    steps:
+      - name: Generate token
+        id: generate_token
+        if: github.event_name != 'pull_request_target' || ! github.event.pull_request.head.repo.fork
+        uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
+        with:
+          app_id: ${{secrets.gh_app_id}}
+          private_key: ${{secrets.gh_app_private_key}}
+          permissions: >-
+            {"contents": "write"}
+          repositories: >-
+            ["${{github.event.repository.name}}"]
+
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{inputs.ref || github.event.pull_request.head.sha || github.sha}}
+          persist-credentials: false
+
+      - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        with:
+          aqua_version: v2.60.1
+        env:
+          AQUA_GITHUB_TOKEN: ${{steps.generate_token.outputs.token || github.token}}
+
+      - name: Update checksums
+        run: aqua update-checksum -deep -prune
+        env:
+          AQUA_GITHUB_TOKEN: ${{steps.generate_token.outputs.token || github.token}}
+
+      - name: Detect checksum changes
+        id: changes
+        run: |
+          set -eu
+          changed_files="$(git ls-files --modified --others --exclude-standard -- 'aqua/aqua-checksums.json')"
+          if [ -z "$changed_files" ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Fail when a fork needs checksum updates
+        if: steps.changes.outputs.changed == 'true' && github.event_name == 'pull_request_target' && github.event.pull_request.head.repo.fork
+        run: |
+          echo "::error file=aqua/aqua-checksums.json::aqua/aqua-checksums.json is not up to date, and this workflow will not push to a fork."
+          exit 1
+
+      - name: Commit checksum updates
+        if: steps.changes.outputs.changed == 'true' && (github.event_name != 'pull_request_target' || ! github.event.pull_request.head.repo.fork)
+        run: |
+          set -eu
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add aqua/aqua-checksums.json
+          git commit -m "chore(aqua): update aqua/aqua-checksums.json"
+          if [ "$EVENT_NAME" = "pull_request_target" ]; then
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${HEAD_REPO}.git" "HEAD:${HEAD_REF}"
+          else
+            git push "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" "HEAD:${GITHUB_REF_NAME}"
+          fi
+        env:
+          EVENT_NAME: ${{github.event_name}}
+          GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
+          HEAD_REF: ${{github.event.pull_request.head.ref}}
+          HEAD_REPO: ${{github.event.pull_request.head.repo.full_name}}

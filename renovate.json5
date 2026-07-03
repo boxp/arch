@@ -195,21 +195,25 @@
       matchDatasources: ["custom.cursor-agent"],
       extractVersion: "downloads\\.cursor\\.com/lab/(?<version>[^/]+)/\\$\\{OS\\}/\\$\\{ARCH\\}/agent-cli-package\\.tar\\.gz"
     },
-    // Kubernetes components (manual review required)
+    // Kubernetes upgrades are planned and applied manually.
     {
       matchManagers: ["custom.regex"],
       matchPackageNames: ["kubernetes/kubernetes", "cri-o/cri-o"],
       groupName: "Kubernetes components",
+      enabled: false,
       automerge: false,
       prPriority: -10,
-      labels: ["kubernetes", "manual-review-required"]
+      labels: ["kubernetes", "manual-upgrade-only"],
+      description: "Disable Renovate PRs for Kubernetes control-plane and runtime upgrades. These updates are handled by the manual upgrade workflow."
     },
-    // kube-vip (manual review)
+    // kube-vip is upgraded with the Kubernetes maintenance window.
     {
       matchManagers: ["custom.regex"],
       matchPackageNames: ["kube-vip/kube-vip"],
+      enabled: false,
       automerge: false,
-      labels: ["kubernetes", "kube-vip"]
+      labels: ["kubernetes", "manual-upgrade-only", "kube-vip"],
+      description: "Disable Renovate PRs for kube-vip because it is reviewed together with manual Kubernetes upgrades."
     }
   ],
 }
