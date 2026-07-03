@@ -102,7 +102,8 @@ write_session_env() {
     VISUAL \
     GRAFANA_URL \
     GRAFANA_SERVICE_ACCOUNT_TOKEN \
-    GEMINI_API_KEY; do
+    GEMINI_API_KEY \
+    KUBECONFIG; do
     if [[ -n "${!name:-}" ]]; then
       printf 'export %s=%q\n' "${name}" "${!name}" >>"${env_tmp}"
     fi
@@ -132,7 +133,7 @@ if [[ -n "${EVEN_TERMINAL_TOKEN:-}" ]]; then
 fi
 
 exec /usr/sbin/runuser -u boxp \
-  --whitelist-environment=DOCKER_HOST,DOCKER_BUILDKIT,EDITOR,VISUAL,GRAFANA_URL,GRAFANA_SERVICE_ACCOUNT_TOKEN,GEMINI_API_KEY \
+  --whitelist-environment=DOCKER_HOST,DOCKER_BUILDKIT,EDITOR,VISUAL,GRAFANA_URL,GRAFANA_SERVICE_ACCOUNT_TOKEN,GEMINI_API_KEY,KUBECONFIG \
   -- env HOME=/home/boxp even-terminal \
   --port "${EVEN_TERMINAL_PORT:-3456}" \
   --cwd "${EVEN_TERMINAL_CWD:-/home/boxp}" \
