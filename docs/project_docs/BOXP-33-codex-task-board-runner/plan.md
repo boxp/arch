@@ -18,6 +18,9 @@ Add a codex-workspace Task Board runner that detects Obsidian tickets assigned t
 10. Close stale ticket locks at tick startup, mark the previous run `interrupted`, and then decide whether to restart or stop from the current Task Board lane and assignee.
 11. Skip missing ticket files and active locked tickets without aborting the whole tick, preserving Task Board lane as the source of truth.
 12. Require Codex to include a GitHub PR URL before moving repository-changing work to `Review`; allow `TASK_BOARD_REVIEW_PR: none` only when no repository changes were made.
+13. Document the system under the Obsidian vault `Projects/codex-task-board-runner/` directory.
+14. Add black-box tests for the runner behavior that had regressed or was ambiguous: parallel starts, stale lock recovery, and review PR gating.
+15. Add a GitHub Actions workflow that runs the runner tests when the runner, tests, or workflow change.
 
 ## Validation
 
@@ -30,5 +33,6 @@ Add a codex-workspace Task Board runner that detects Obsidian tickets assigned t
 - `bb docker/codex-workspace/task-board/task_board_runner.bb tick` against a temporary vault with comma-separated and space-separated multi-repo frontmatter, confirming per-run git worktrees are prepared.
 - `bb docker/codex-workspace/task-board/task_board_runner.bb tick` with `CODEX_TASK_BOARD_BYPASS_APPROVALS=false`, confirming the vault and worktree gitdirs are passed through `--add-dir`.
 - `bb docker/codex-workspace/task-board/task_board_runner.bb tick` against a temporary vault where one Codex run returns `review` without a PR marker.
+- `tests/codex-workspace/task-board-runner-test.sh`, which covers parallel fake Codex starts, stale lock recovery, and blocking review without a PR marker.
 - `bash -n docker/codex-workspace/entrypoint.sh`.
 - `git diff --check`.
