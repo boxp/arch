@@ -503,6 +503,9 @@
 (defn github-pr-url? [text]
   (boolean (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))))
 
+(defn first-github-pr-url [text]
+  (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text "")))
+
 (defn no-repo-review-marker? [text]
   (boolean (re-find #"(?im)^TASK_BOARD_REVIEW_PR:\s*none\s*$" (or text ""))))
 
@@ -585,11 +588,18 @@
       intended)))
 
 (defn final-note [run-id next-status result last-message]
-  (let [base (str "Codex task-board run " run-id " finished with result " next-status ".")]
-    (if (and (= "blocked" next-status)
-             (not (#{"done" "blocked"} result))
-             (not (review-ready? last-message)))
+  (let [base (str "Codex task-board run " run-id " finished with result " next-status ".")
+        pr-url (first-github-pr-url last-message)]
+    (cond
+      (and (= "blocked" next-status)
+           (not (#{"done" "blocked"} result))
+           (not (review-ready? last-message)))
       (str base " Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker, so the runner blocked before moving to review.")
+
+      (and (= "review" next-status) pr-url)
+      (str base " PR: " pr-url)
+
+      :else
       base)))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
