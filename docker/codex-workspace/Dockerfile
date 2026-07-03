@@ -12,6 +12,8 @@ ARG BABASHKA_VERSION=1.12.218
 ARG LAZYGIT_VERSION=0.62.2
 ARG YAZI_VERSION=26.5.6
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
+ARG KUBECTL_VERSION=1.36.1
+ARG KUSTOMIZE_VERSION=5.8.1
 ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -82,6 +84,11 @@ RUN set -eux; \
     unzip -q "$tmp/yazi.zip" -d "$tmp/yazi"; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name yazi | head -n 1)" /usr/local/bin/yazi; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name ya | head -n 1)" /usr/local/bin/ya; \
+    download "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" "$tmp/kubectl"; \
+    install -m 0755 "$tmp/kubectl" /usr/local/bin/kubectl; \
+    download "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" "$tmp/kustomize.tar.gz"; \
+    tar -xzf "$tmp/kustomize.tar.gz" -C "$tmp"; \
+    install -m 0755 "$tmp/kustomize" /usr/local/bin/kustomize; \
     rm -rf "$tmp"
 
 RUN set -eux; \
