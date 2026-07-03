@@ -340,7 +340,9 @@
                     "Ticket: " ticket-id "\n"
                     "Current lane: " lane "\n\n"
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
-                    "Ticket contents:\n\n" ticket-text "\n\n")]
+                    "Ticket contents:\n\n" ticket-text "\n\n")
+        review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
+                             "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
     (case action
       :groom
       (str common
@@ -354,6 +356,7 @@
            "Goal: address review feedback or requested changes for this ticket.\n"
            "First inspect the ticket Notes, relevant repos, current git state, PR state if referenced, and tests.\n"
            "Do the requested work end to end where possible.\n"
+           review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n"
            "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n")
 
@@ -362,6 +365,7 @@
            "Goal: retry or re-investigate the blocked work.\n"
            "First verify whether the blocker is actually cleared. If still blocked, update Notes with the concrete blocker.\n"
            "Do the work end to end where possible.\n"
+           review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n")
 
       :implement
@@ -369,12 +373,23 @@
            "Goal: implement or complete this ticket.\n"
            "First inspect the ticket Notes, relevant repos, current git state, and existing project conventions.\n"
            "Do the work end to end where possible, including focused validation.\n"
+           review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n"
            "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n"))))
 
 (defn result-marker [text]
   (when-let [[_ value] (re-find #"(?im)^TASK_BOARD_RESULT:\s*(done|review|blocked)\s*$" (or text ""))]
     value))
+
+(defn github-pr-url? [text]
+  (boolean (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))))
+
+(defn no-repo-review-marker? [text]
+  (boolean (re-find #"(?im)^TASK_BOARD_REVIEW_PR:\s*none\s*$" (or text ""))))
+
+(defn review-ready? [text]
+  (or (github-pr-url? text)
+      (no-repo-review-marker? text)))
 
 (defn run-codex! [ticket-id action lane lock]
   (let [run (:run-id lock)
@@ -419,7 +434,7 @@
                       :exit-code exit
                       :result marker
                       :finished-at (now-str)}))
-        {:exit exit :result marker :run-id run :dir (str dir)})
+        {:exit exit :result marker :run-id run :dir (str dir) :last-message last-message})
       (finally
         (reset! stop? true)
         @hb))))
@@ -434,33 +449,44 @@
       "blocked" :blocked-retry
       nil)))
 
-(defn final-status [action result exit]
-  (cond
-    (not (zero? exit)) "blocked"
-    (= :groom action) "ready"
-    (#{"done" "review" "blocked"} result) result
-    :else "review"))
+(defn final-status [action result exit last-message]
+  (let [intended (cond
+                   (not (zero? exit)) "blocked"
+                   (= :groom action) "ready"
+                   (#{"done" "review" "blocked"} result) result
+                   :else "review")]
+    (if (and (= "review" intended) (not (review-ready? last-message)))
+      "blocked"
+      intended)))
+
+(defn final-note [run-id next-status result last-message]
+  (let [base (str "Codex task-board run " run-id " finished with result " next-status ".")]
+    (if (and (= "blocked" next-status)
+             (not (#{"done" "blocked"} result))
+             (not (review-ready? last-message)))
+      (str base " Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker, so the runner blocked before moving to review.")
+      base)))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
         action (candidate-action card assignee)]
     (when action
-      (when (#{"ready" "review" "blocked"} status)
-        (move-card! ticket-id "in-progress")
-        (update-frontmatter! ticket-id {:status "in-progress"}))
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (acquire-lock! ticket-id action effective-lane)]
         (when lock
           (try
+            (when (#{"ready" "review" "blocked"} status)
+              (move-card! ticket-id "in-progress")
+              (update-frontmatter! ticket-id {:status "in-progress"}))
             (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) "."))
-            (let [{:keys [exit result run-id]} (run-codex! ticket-id action effective-lane lock)
-                  next-status (final-status action result exit)]
+            (let [{:keys [exit result run-id last-message]} (run-codex! ticket-id action effective-lane lock)
+                  next-status (final-status action result exit last-message)]
               (move-card! ticket-id next-status)
               (update-frontmatter! ticket-id (cond-> {:status next-status
                                                        :assignee "boxp"}
                                                 (= "done" next-status) (assoc :closed (today))))
-              (append-note! ticket-id (str "Codex task-board run " run-id " finished with result " next-status "."))
+              (append-note! ticket-id (final-note run-id next-status result last-message))
               true)
             (catch Exception e
               (move-card! ticket-id "blocked")
@@ -470,19 +496,39 @@
             (finally
               (release-lock! ticket-id))))))))
 
+(defn ticket-assignee [ticket-id]
+  (let [path (ticket-path ticket-id)]
+    (if (fs/exists? path)
+      (:assignee (ticket-frontmatter ticket-id))
+      (do
+        (println (str "ticket file not found, skipping card: " ticket-id))
+        nil))))
+
+(defn next-candidate [skip-ticket-ids]
+  (let [cards (parse-board-cards (vec (read-lines (board-path))))]
+    (first (filter (fn [{:keys [ticket-id] :as card}]
+                     (and (not (contains? skip-ticket-ids ticket-id))
+                          (some? (candidate-action card (ticket-assignee ticket-id)))))
+                   cards))))
+
 (defn tick! []
   (ensure-root!)
   (sync-all!)
-  (let [cards (parse-board-cards (vec (read-lines (board-path))))
-        candidates (filter (fn [{:keys [ticket-id] :as card}]
-                             (let [assignee (:assignee (ticket-frontmatter ticket-id))]
-                               (some? (candidate-action card assignee))))
-                           cards)]
-    (if-let [card (first candidates)]
+  (loop [processed 0 skipped #{}]
+    (if-let [card (next-candidate skipped)]
       (do
         (println (str "processing " (:ticket-id card) " from " (:lane card)))
-        (process-card! card))
-      (println "no codex-assigned Task Board tickets"))))
+        (let [started? (process-card! card)]
+          (if started?
+            (do
+              (sync-all!)
+              (recur (inc processed) skipped))
+            (do
+              (println (str "candidate could not start, leaving it for a future tick: " (:ticket-id card)))
+              (recur processed (conj skipped (:ticket-id card)))))))
+      (println (if (zero? processed)
+                 "no codex-assigned Task Board tickets"
+                 (str "processed " processed " codex-assigned Task Board ticket(s)"))))))
 
 (defn loop! []
   (println (str "codex task-board runner started, vault=" (vault) ", root=" (root)))
