@@ -6,6 +6,8 @@ install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0700 /home/boxp/.ssh
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex/skills
+/usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-cron
+/usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-task-board
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.pi/agent/extensions
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.local/bin
 /usr/sbin/runuser -u boxp -- install -d -m 0755 "/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron"
