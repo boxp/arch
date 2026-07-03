@@ -19,6 +19,12 @@
 
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
+(def board-mutex (Object.))
+(def log-mutex (Object.))
+
+(defn log! [message]
+  (locking log-mutex
+    (println message)))
 
 (defn env [k default]
   (or (System/getenv k) default))
@@ -158,30 +164,32 @@
   (vec (concat (subvec lines 0 idx) (subvec lines (inc idx)))))
 
 (defn move-card! [ticket-id target-status]
-  (let [path (board-path)
-        lines (vec (read-lines path))
-        card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
-        target-lane (or (status->lane target-status)
-                        (fail (str "invalid target status: " target-status)))]
-    (when-not card
-      (fail (str "ticket card not found: " ticket-id)))
-    (let [new-line (normalize-card-line (:line card) target-status)
-          without (remove-index lines (:idx card))
-          moved (insert-after-heading without target-lane new-line)]
-      (write-lines! path moved))))
+  (locking board-mutex
+    (let [path (board-path)
+          lines (vec (read-lines path))
+          card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
+          target-lane (or (status->lane target-status)
+                          (fail (str "invalid target status: " target-status)))]
+      (when-not card
+        (fail (str "ticket card not found: " ticket-id)))
+      (let [new-line (normalize-card-line (:line card) target-status)
+            without (remove-index lines (:idx card))
+            moved (insert-after-heading without target-lane new-line)]
+        (write-lines! path moved)))))
 
 (defn sync-board-statuses! []
-  (let [path (board-path)
-        lines (vec (read-lines path))
-        cards (parse-board-cards lines)
-        updates (into {} (map (fn [{:keys [idx line status]}]
-                                [idx (normalize-card-line line status)])
-                              cards))
-        new-lines (mapv (fn [idx line] (get updates idx line))
-                        (range (count lines))
-                        lines)]
-    (when (not= lines new-lines)
-      (write-lines! path new-lines))))
+  (locking board-mutex
+    (let [path (board-path)
+          lines (vec (read-lines path))
+          cards (parse-board-cards lines)
+          updates (into {} (map (fn [{:keys [idx line status]}]
+                                  [idx (normalize-card-line line status)])
+                                cards))
+          new-lines (mapv (fn [idx line] (get updates idx line))
+                          (range (count lines))
+                          lines)]
+      (when (not= lines new-lines)
+        (write-lines! path new-lines)))))
 
 (defn ticket-path [ticket-id]
   (fs/path (tickets-dir) (str ticket-id ".md")))
@@ -259,6 +267,9 @@
 (defn run-dir [ticket-id run-id]
   (fs/path (root) "runs" ticket-id run-id))
 
+(defn run-workspace-dir [ticket-id run-id]
+  (fs/path (root) "workspaces" ticket-id run-id))
+
 (defn seconds-since [instant-str]
   (try
     (let [then (java.time.Instant/parse instant-str)]
@@ -283,8 +294,32 @@
     (mark-run! ticket-id stale-run :interrupted
                {:reason "heartbeat timeout"
                 :previous-lock lock})
-    (append-note! ticket-id (str "Codex run " stale-run " was marked interrupted after heartbeat timeout.")))
+    (when (fs/exists? (ticket-path ticket-id))
+      (append-note! ticket-id (str "Codex run " stale-run " was marked interrupted after heartbeat timeout."))))
   (fs/delete-if-exists (lock-path ticket-id)))
+
+(defn close-corrupt-lock! [ticket-id path error]
+  (log! (str "closing corrupt lock: " ticket-id " (" (.getMessage error) ")"))
+  (when (fs/exists? (ticket-path ticket-id))
+    (append-note! ticket-id "Codex lock file was corrupt and was cleared so the runner can recover."))
+  (fs/delete-if-exists path))
+
+(defn lock-ticket-id [path]
+  (second (re-find #"(BOXP-\d+)\.edn$" (str path))))
+
+(defn cleanup-stale-locks! []
+  (let [locks-dir (fs/path (root) "locks")]
+    (when (fs/exists? locks-dir)
+      (doseq [path (fs/list-dir locks-dir)
+              :let [ticket-id (lock-ticket-id path)]
+              :when ticket-id]
+        (try
+          (let [lock (read-edn-file path {})]
+            (when (stale-lock? lock)
+              (log! (str "closing stale lock: " ticket-id))
+              (close-stale-lock! ticket-id lock)))
+          (catch Exception e
+            (close-corrupt-lock! ticket-id path e)))))))
 
 (defn acquire-lock! [ticket-id action lane]
   (let [path (lock-path ticket-id)
@@ -302,14 +337,18 @@
       (do
         (write-edn-file! path lock)
         lock)
-      (let [existing (read-edn-file path {})]
-        (if (stale-lock? existing)
-          (do
-            (close-stale-lock! ticket-id existing)
-            (acquire-lock! ticket-id action lane))
-          (do
-            (println (str "ticket already locked: " ticket-id))
-            nil))))))
+      (try
+        (let [existing (read-edn-file path {})]
+          (if (stale-lock? existing)
+            (do
+              (close-stale-lock! ticket-id existing)
+              (acquire-lock! ticket-id action lane))
+            (do
+              (log! (str "ticket already locked: " ticket-id))
+              nil)))
+        (catch Exception e
+          (close-corrupt-lock! ticket-id path e)
+          (acquire-lock! ticket-id action lane))))))
 
 (defn release-lock! [ticket-id]
   (fs/delete-if-exists (lock-path ticket-id)))
@@ -331,7 +370,86 @@
            (take-last 3)
            vec))))
 
-(defn prompt-for [action ticket-id lane]
+(defn ticket-repos [ticket-id]
+  (->> (str/split (or (:repo (ticket-frontmatter ticket-id)) "") #"[,\s]+")
+       (map str/trim)
+       (remove str/blank?)
+       vec))
+
+(defn local-repo-path [repo]
+  (let [[owner name] (str/split repo #"/" 2)]
+    (when (and owner name)
+      (fs/path "/home/boxp/ghq/github.com" owner name))))
+
+(defn ticket-worktree-branch [ticket-id run-id]
+  (str "codex-task-board/" ticket-id "-" run-id))
+
+(defn git-path [repo-path rev-parse-arg]
+  (let [proc @(p/process ["git" "-C" (str repo-path) "rev-parse" rev-parse-arg]
+                         {:out :string :err :string})]
+    (when (zero? (:exit proc))
+      (let [path (str/trim (:out proc))]
+        (if (fs/absolute? path)
+          path
+          (str (fs/path repo-path path)))))))
+
+(defn prepare-repo-worktree! [workspace-dir ticket-id run-id repo]
+  (let [source (local-repo-path repo)
+        target (fs/path workspace-dir "ghq/github.com" repo)
+        branch (ticket-worktree-branch ticket-id run-id)]
+    (if-not (and source (fs/exists? source))
+      {:repo repo
+       :missing true
+       :message (str "Local checkout was not found at " source ". Clone or prepare this repository inside the run workspace if needed.")}
+      (do
+        (fs/create-dirs (fs/parent target))
+        (let [proc @(p/process ["git" "-C" (str source) "worktree" "add" "-b" branch (str target) "HEAD"]
+                               {:out :string :err :string})]
+          (if (zero? (:exit proc))
+            {:repo repo
+             :path (str target)
+             :branch branch
+             :git-dirs (vec (distinct (remove str/blank?
+                                               [(git-path target "--git-dir")
+                                                (git-path target "--git-common-dir")])))}
+            {:repo repo
+             :worktree-failed true
+             :message (str "Could not create a per-run worktree: " (:err proc)
+                           " Clone or prepare this repository inside the run workspace if needed.")}))))))
+
+(defn prepare-run-workspace! [ticket-id run-id]
+  (let [workspace-dir (run-workspace-dir ticket-id run-id)
+        repos (ticket-repos ticket-id)]
+    (fs/create-dirs workspace-dir)
+    {:workspace-dir (str workspace-dir)
+     :repo-worktrees (mapv #(prepare-repo-worktree! workspace-dir ticket-id run-id %) repos)}))
+
+(defn workspace-prompt [workspace]
+  (let [repo-worktrees (:repo-worktrees workspace)
+        prepared (filter :path repo-worktrees)
+        unavailable (remove :path repo-worktrees)]
+    (str "Ticket run workspace: " (:workspace-dir workspace) "\n"
+         (if (seq prepared)
+           (str "Repository worktrees for this run:\n"
+                (str/join "" (map (fn [{:keys [repo path branch]}]
+                                    (str "- " repo " -> " path " (branch " branch ")\n"))
+                                  prepared))
+                "Use these per-run worktrees for repository changes. Do not edit shared checkouts under /home/boxp/ghq for this task.\n")
+           "No repository worktree was prepared for this ticket.\n")
+         (when (seq unavailable)
+           (str "Repositories that need preparation inside this run workspace:\n"
+                (str/join "" (map (fn [{:keys [repo message]}]
+                                    (str "- " repo ": " message "\n"))
+                                  unavailable)))))))
+
+(defn workspace-add-dirs [workspace]
+  (->> (:repo-worktrees workspace)
+       (mapcat :git-dirs)
+       (remove str/blank?)
+       distinct
+       vec))
+
+(defn prompt-for [action ticket-id lane workspace]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
         common (str "You are running inside codex-workspace as an automated Task Board worker.\n"
@@ -339,6 +457,7 @@
                     "Task Board lane is the source of truth. Do not move Task Board cards directly; the runner will do that after this run.\n"
                     "Ticket: " ticket-id "\n"
                     "Current lane: " lane "\n\n"
+                    (workspace-prompt workspace) "\n"
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
@@ -394,6 +513,7 @@
 (defn run-codex! [ticket-id action lane lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
+        workspace (prepare-run-workspace! ticket-id run)
         prompt-path (fs/path dir "prompt.md")
         stdout-path (fs/path dir "events.jsonl")
         stderr-path (fs/path dir "stderr.log")
@@ -401,16 +521,21 @@
         stop? (atom false)
         hb (heartbeat! ticket-id lock stop?)]
     (fs/create-dirs dir)
-    (spit (str prompt-path) (prompt-for action ticket-id lane))
+    (spit (str prompt-path) (prompt-for action ticket-id lane workspace))
     (mark-run! ticket-id run :running {:action action :lane lane :started-at (now-str)})
     (try
-      (let [args (cond-> ["codex" "exec" "--json" "--cd" "/home/boxp"
+      (let [args (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
+                          "--skip-git-repo-check"
                           "--output-last-message" (str last-message-path)]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-bypass-approvals-and-sandbox")
 
                    (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                   (conj "--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write"))
+                   (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
+                          "--add-dir" (vault)])
+
+                   (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                   (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
 
                    (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
                    (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
@@ -501,37 +626,40 @@
     (if (fs/exists? path)
       (:assignee (ticket-frontmatter ticket-id))
       (do
-        (println (str "ticket file not found, skipping card: " ticket-id))
+        (log! (str "ticket file not found, skipping card: " ticket-id))
         nil))))
 
-(defn next-candidate [skip-ticket-ids]
+(defn candidate-cards []
   (let [cards (parse-board-cards (vec (read-lines (board-path))))]
-    (first (filter (fn [{:keys [ticket-id] :as card}]
-                     (and (not (contains? skip-ticket-ids ticket-id))
-                          (some? (candidate-action card (ticket-assignee ticket-id)))))
-                   cards))))
+    (->> cards
+         (filter (fn [{:keys [ticket-id] :as card}]
+                   (some? (candidate-action card (ticket-assignee ticket-id)))))
+         vec)))
 
 (defn tick! []
   (ensure-root!)
+  (cleanup-stale-locks!)
   (sync-all!)
-  (loop [processed 0 skipped #{}]
-    (if-let [card (next-candidate skipped)]
-      (do
-        (println (str "processing " (:ticket-id card) " from " (:lane card)))
-        (let [started? (process-card! card)]
-          (if started?
-            (do
-              (sync-all!)
-              (recur (inc processed) skipped))
-            (do
-              (println (str "candidate could not start, leaving it for a future tick: " (:ticket-id card)))
-              (recur processed (conj skipped (:ticket-id card)))))))
-      (println (if (zero? processed)
-                 "no codex-assigned Task Board tickets"
-                 (str "processed " processed " codex-assigned Task Board ticket(s)"))))))
+  (let [candidates (candidate-cards)
+        runs (doall
+              (for [card candidates]
+                (future
+                  (log! (str "processing " (:ticket-id card) " from " (:lane card)))
+                  (let [started? (process-card! card)]
+                    (when-not started?
+                      (log! (str "candidate could not start, leaving it for a future tick: " (:ticket-id card))))
+                    {:ticket-id (:ticket-id card)
+                     :started? (boolean started?)}))))
+        results (doall (map deref runs))
+        processed (count (filter :started? results))]
+    (sync-all!)
+    (log! (cond
+            (empty? candidates) "no codex-assigned Task Board tickets"
+            (zero? processed) "no codex-assigned Task Board tickets could start"
+            :else (str "processed " processed " codex-assigned Task Board ticket(s) in parallel")))))
 
 (defn loop! []
-  (println (str "codex task-board runner started, vault=" (vault) ", root=" (root)))
+  (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)))
   (loop []
     (try
       (tick!)
