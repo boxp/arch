@@ -73,6 +73,15 @@
       customType: "regex",
       managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
       matchStrings: [
+        "ARG PI_AGENT_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "@earendil-works/pi-coding-agent",
+      datasourceTemplate: "npm"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
         "ARG OBSIDIAN_HEADLESS_VERSION=(?<currentValue>[0-9.]+)"
       ],
       depNameTemplate: "obsidian-headless",
@@ -148,6 +157,26 @@
       depNameTemplate: "sxyazi/yazi",
       datasourceTemplate: "github-releases",
       extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG KUBECTL_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "kubernetes/kubernetes",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG KUSTOMIZE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "kubernetes-sigs/kustomize",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^kustomize/v(?<version>.*)$"
     },
     {
       customType: "regex",
