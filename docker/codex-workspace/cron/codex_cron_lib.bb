@@ -3,7 +3,7 @@
             [clojure.edn :as edn]
             [clojure.string :as str]))
 
-(def default-root "/home/boxp/.codex-cron")
+(def default-root "/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron")
 (def default-registry "jobs.edn")
 (def default-state "jobs-state.edn")
 

@@ -1,7 +1,7 @@
 ---
 - name: Drain control plane node
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} drain {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} drain {{ inventory_hostname }}
     --ignore-daemonsets --delete-emptydir-data
     --timeout={{ upgrade_drain_timeout }}s
   become: true
@@ -12,11 +12,16 @@
   ansible.builtin.include_tasks: upgrade_apt_source.yml
   tags: [upgrade]
 
+- name: Apply CRI-O restart before continuing control plane upgrade
+  ansible.builtin.meta: flush_handlers
+  tags: [upgrade]
+
 - name: Unhold kubeadm
   ansible.builtin.dpkg_selections:
     name: kubeadm
     selection: install
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Install target kubeadm version
@@ -25,6 +30,7 @@
     state: present
     allow_downgrade: false
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Hold kubeadm
@@ -32,13 +38,17 @@
     name: kubeadm
     selection: hold
   become: true
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Run kubeadm upgrade apply
-  ansible.builtin.command: "kubeadm upgrade apply v{{ kubernetes_upgrade_version }} --yes"
+  ansible.builtin.command: >-
+    kubeadm upgrade apply v{{ kubernetes_upgrade_version }} --yes
+    --etcd-upgrade={{ kubeadm_upgrade_etcd | bool | ternary('true', 'false') }}
   become: true
   register: upgrade_result
   changed_when: upgrade_result.rc == 0
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Upgrade kubelet and kubectl
@@ -51,12 +61,31 @@
     state: restarted
     daemon_reload: true
   become: true
+  when: not ansible_check_mode
+  tags: [upgrade]
+
+- name: Wait for kube-apiserver before uncordon
+  ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} get --raw=/readyz"
+  become: true
+  register: kube_apiserver_ready
+  until:
+    - kube_apiserver_ready.rc == 0
+    - kube_apiserver_ready.stdout in ["ok", "readyz check passed"]
+  retries: "{{ upgrade_uncordon_retries }}"
+  delay: "{{ upgrade_uncordon_delay }}"
+  changed_when: false
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Uncordon control plane node
-  ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} uncordon {{ inventory_hostname }}"
+  ansible.builtin.command: "kubectl --kubeconfig={{ kubeconfig_path }} {{ kubectl_api_server_arg }} uncordon {{ inventory_hostname }}"
   become: true
-  changed_when: true
+  register: uncordon_result
+  until: uncordon_result.rc == 0
+  retries: "{{ upgrade_uncordon_retries }}"
+  delay: "{{ upgrade_uncordon_delay }}"
+  changed_when: uncordon_result.rc == 0
+  when: not ansible_check_mode
   tags: [upgrade]
 
 - name: Wait for node to become Ready

@@ -11,15 +11,24 @@ crio_previous_version: ""
 
 # Upgrade behavior
 upgrade_drain_timeout: 300           # seconds
+kubernetes_worker_drain_timeout: 1800
 upgrade_health_check_retries: 30
 upgrade_health_check_delay: 10       # seconds
+upgrade_uncordon_retries: 18
+upgrade_uncordon_delay: 10           # seconds
+kubeadm_upgrade_etcd: false          # skip kubeadm's etcd static pod phase unless explicitly enabled
+kubernetes_worker_drain_delegate: "{{ groups['control_plane'][1] | default(groups['control_plane'][0]) }}"
 
 # etcd snapshot
 etcd_snapshot_dir: /var/lib/etcd-snapshots
 etcd_snapshot_pod_dir: /var/lib/etcd
-etcd_snapshot_local_dir: ""
 etcd_snapshot_cleanup_pod_file: true
+etcd_snapshot_cleanup_host_file: false
 etcd_snapshot_force: false
+etcd_snapshot_store_namespace: etcd-snapshots
+etcd_snapshot_store_pod_selector: app.kubernetes.io/name=etcd-snapshot-store
+etcd_snapshot_store_mount_path: /snapshots
+etcd_snapshot_store_retention_count: 3
 etcd_cacert: /etc/kubernetes/pki/etcd/ca.crt
 etcd_cert: /etc/kubernetes/pki/etcd/healthcheck-client.crt
 etcd_key: /etc/kubernetes/pki/etcd/healthcheck-client.key
@@ -32,6 +41,8 @@ snapshot_timestamp: ""
 
 # kubectl configuration
 kubeconfig_path: /etc/kubernetes/admin.conf
+kubectl_api_server: "https://{{ node_ip | default(cluster_vip) }}:6443"
+kubectl_api_server_arg: "{{ '--server=' ~ kubectl_api_server if (kubectl_api_server | length) > 0 else '' }}"
 
 # Role detection
 node_role: "control_plane"           # "control_plane" or "worker"

@@ -221,4 +221,3 @@ resource "aws_iam_user_policy_attachment" "boxp_orangepi_images_access" {
 }
 
 data "aws_caller_identity" "current" {}
-

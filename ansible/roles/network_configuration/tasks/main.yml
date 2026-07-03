@@ -15,10 +15,16 @@
   ansible.builtin.package:
     name:
       - iproute2
-      - rfkill
       - netplan.io
     state: present
   become: true
+
+- name: Install rfkill when wireless devices should be disabled
+  ansible.builtin.package:
+    name: rfkill
+    state: present
+  become: true
+  when: network_disable_wifi or network_disable_bluetooth
 
 - name: Ensure netplan directory exists
   ansible.builtin.file:

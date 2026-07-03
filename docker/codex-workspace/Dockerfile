@@ -1,15 +1,18 @@
 FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
-ARG CODEX_VERSION=0.133.0
-ARG EVEN_TERMINAL_VERSION=0.7.9
-ARG OBSIDIAN_HEADLESS_VERSION=0.0.8
-ARG GH_VERSION=2.92.0
+ARG CODEX_VERSION=0.142.4
+ARG EVEN_TERMINAL_VERSION=0.8.1
+ARG PI_AGENT_VERSION=0.80.2
+ARG OBSIDIAN_HEADLESS_VERSION=0.0.12
+ARG GH_VERSION=2.95.0
 ARG GHQ_VERSION=1.10.1
 ARG GWQ_VERSION=0.1.1
 ARG CEEKER_VERSION=0.3.7
 ARG BABASHKA_VERSION=1.12.218
-ARG LAZYGIT_VERSION=0.61.1
+ARG LAZYGIT_VERSION=0.62.2
 ARG YAZI_VERSION=26.5.6
+ARG MOSHI_HOOK_VERSION=0.2.27
+ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -19,6 +22,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       bash-completion \
       ca-certificates \
+      chromium \
       curl \
       fzf \
       g++ \
@@ -27,6 +31,7 @@ RUN apt-get update \
       gzip \
       jq \
       less \
+      lsb-release \
       locales \
       make \
       openssh-server \
@@ -49,8 +54,13 @@ RUN apt-get update \
 RUN npm install -g \
       "@openai/codex@${CODEX_VERSION}" \
       "@evenrealities/even-terminal@${EVEN_TERMINAL_VERSION}" \
+      "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \
       "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
     && npm cache clean --force
+
+RUN curl -fsSL https://getmoshi.app/install.sh \
+      | INSTALL_DIR=/usr/local/bin MOSHI_HOOK_VERSION="${MOSHI_HOOK_VERSION}" sh \
+    && moshi-hook version
 
 RUN set -eux; \
     download() { curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL "$1" -o "$2"; }; \
@@ -79,6 +89,18 @@ RUN set -eux; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name ya | head -n 1)" /usr/local/bin/ya; \
     rm -rf "$tmp"
 
+RUN set -eux; \
+    tmp="$(mktemp -d)"; \
+    curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
+      "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" \
+      -o "$tmp/cursor-agent.tar.gz"; \
+    rm -rf /opt/cursor-agent; \
+    mkdir -p /opt/cursor-agent; \
+    tar --strip-components=1 -xzf "$tmp/cursor-agent.tar.gz" -C /opt/cursor-agent; \
+    ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent; \
+    ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
+    rm -rf "$tmp"
+
 RUN locale-gen en_US.UTF-8 \
     && if getent group 1000 >/dev/null; then \
       existing_group="$(getent group 1000 | cut -d: -f1)"; \
@@ -100,6 +122,10 @@ RUN locale-gen en_US.UTF-8 \
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
+    CHROME_BIN=/usr/bin/chromium \
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium \
+    EDITOR=vim \
+    VISUAL=vim \
     PATH=/home/boxp/.local/bin:/home/boxp/go/bin:/usr/local/bin:/usr/bin:/bin
 
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint

@@ -80,6 +80,20 @@
         - /etc/kubernetes/pki/etcd/healthcheck-client.key
       become: true
 
+    - name: Create mock host etcd snapshot directory
+      ansible.builtin.file:
+        path: /var/lib/etcd-snapshots
+        state: directory
+        mode: '0700'
+      become: true
+
+    - name: Create pre-existing host-only etcd snapshot
+      ansible.builtin.copy:
+        dest: "/var/lib/etcd-snapshots/pre-upgrade-{{ ansible_facts['date_time']['iso8601_basic_short'] }}.db"
+        content: "host-only mock snapshot"
+        mode: '0600'
+      become: true
+
     - name: Create mock kubeconfig file
       ansible.builtin.copy:
         dest: /etc/kubernetes/admin.conf
@@ -119,6 +133,12 @@
             *"get node"*"conditions"*)
               printf "MemoryPressure=False\nDiskPressure=False\nPIDPressure=False\nReady=True\n"
               ;;
+            *"wait"*"app.kubernetes.io/name=etcd-snapshot-store"*)
+              echo "pod/etcd-snapshot-store-test condition met"
+              ;;
+            *"get pod"*"app.kubernetes.io/name=etcd-snapshot-store"*"jsonpath"*)
+              echo -n "etcd-snapshot-store-test"
+              ;;
             *"drain"*)
               echo "node/control-plane-test cordoned"
               echo "node/control-plane-test drained"
@@ -146,6 +166,25 @@
               echo "+----------+----------+------------+------------+"
               echo "| abcd1234 |    12345 |       1000 |     5.0 MB |"
               echo "+----------+----------+------------+------------+"
+              ;;
+            *"exec -i "*" sh -c "*"cat > "*)
+              shell_command="${@: -1}"
+              snapshot_path="${shell_command#cat > }"
+              snapshot_path="${snapshot_path%\'}"
+              snapshot_path="${snapshot_path#\'}"
+              mkdir -p "$(dirname "$snapshot_path")"
+              cat > "$snapshot_path"
+              ;;
+            *"exec "*" test -s "*)
+              snapshot_path="${@: -1}"
+              test -s "$snapshot_path"
+              ;;
+            *"exec "*" sh -c "*"ls -1t "*"pre-upgrade-"*)
+              shell_command="${@: -1}"
+              bash -c "$shell_command"
+              ;;
+            *"exec "*" sh -c "*"pre-upgrade-"*)
+              echo "mock prune"
               ;;
             *"exec etcd-"*" cat "*)
               snapshot_path="${@: -1}"

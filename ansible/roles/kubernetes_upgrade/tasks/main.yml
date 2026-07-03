@@ -6,14 +6,6 @@
       tags: [pre_checks]
   tags: [pre_checks, upgrade]
 
-- name: Take etcd snapshot before upgrade
-  ansible.builtin.include_tasks:
-    file: etcd_snapshot.yml
-    apply:
-      tags: [etcd_snapshot, pre_checks]
-  tags: [etcd_snapshot, pre_checks, upgrade]
-  when: node_role == "control_plane" and (is_first_control_plane | bool)
-
 - name: Upgrade first control plane
   ansible.builtin.include_tasks:
     file: upgrade_control_plane_first.yml
