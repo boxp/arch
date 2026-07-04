@@ -64,6 +64,15 @@
       customType: "regex",
       managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
       matchStrings: [
+        "ARG CLAUDE_CODE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "@anthropic-ai/claude-code",
+      datasourceTemplate: "npm"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
         "ARG EVEN_TERMINAL_VERSION=(?<currentValue>[0-9.]+)"
       ],
       depNameTemplate: "@evenrealities/even-terminal",
