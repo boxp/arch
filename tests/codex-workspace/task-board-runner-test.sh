@@ -77,25 +77,45 @@ make_fake_gh() {
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [[ "$1 $2 $3" == "pr view https://github.com/boxp/example/pull/123" ]]; then
+if [[ "$1 $2" == "pr view" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9]+$ ]]; then
+  pr_number="${3##*/}"
+  checks_var="GH_FAKE_CHECKS_${pr_number}"
   if [[ -n "${GH_FAKE_CHECKS:-}" ]]; then
     checks="${GH_FAKE_CHECKS}"
+  elif [[ -n "${!checks_var:-}" ]]; then
+    checks="${!checks_var}"
   else
     checks='[{"name":"runner test","status":"COMPLETED","conclusion":"SUCCESS"}]'
   fi
+  draft_var="GH_FAKE_IS_DRAFT_${pr_number}"
+  merge_var="GH_FAKE_MERGE_STATE_${pr_number}"
+  draft="${GH_FAKE_IS_DRAFT:-false}"
+  merge_state="${GH_FAKE_MERGE_STATE:-CLEAN}"
+  if [[ -n "${!draft_var:-}" ]]; then
+    draft="${!draft_var}"
+  fi
+  if [[ -n "${!merge_var:-}" ]]; then
+    merge_state="${!merge_var}"
+  fi
   cat <<JSON
 {
-  "url": "https://github.com/boxp/example/pull/123",
-  "isDraft": ${GH_FAKE_IS_DRAFT:-false},
-  "mergeStateStatus": "${GH_FAKE_MERGE_STATE:-CLEAN}",
+  "url": "${3}",
+  "isDraft": ${draft},
+  "mergeStateStatus": "${merge_state}",
   "statusCheckRollup": ${checks}
 }
 JSON
   exit 0
 fi
 
-if [[ "$1 $2 $3" == "pr diff https://github.com/boxp/example/pull/123" ]]; then
-  printf '%s\n' "${GH_FAKE_DIFF:-diff --git a/file b/file}"
+if [[ "$1 $2" == "pr diff" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9]+$ ]]; then
+  pr_number="${3##*/}"
+  diff_var="GH_FAKE_DIFF_${pr_number}"
+  diff="${GH_FAKE_DIFF:-diff --git a/file b/file}"
+  if [[ -n "${!diff_var:-}" ]]; then
+    diff="${!diff_var}"
+  fi
+  printf '%s\n' "${diff}"
   exit 0
 fi
 
@@ -361,6 +381,47 @@ test_review_with_pr_and_none_marker_checks_pr() {
   assert_file_contains "${vault}/Tickets/BOXP-406.md" 'Review gates passed'
 }
 
+test_review_with_multiple_pr_urls_checks_all() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-410|BOXP-410: multiple prs]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-410 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PRs:\nhttps://github.com/boxp/example/pull/123\nhttps://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-multiple-prs.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-410\|BOXP-410: multiple prs\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" 'PR: https://github.com/boxp/example/pull/123, https://github.com/boxp/example/pull/456'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" 'All PR gates passed for 2 PR\(s\)'
+}
+
+test_review_with_multiple_pr_urls_blocks_on_second_failure() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-411|BOXP-411: second pr fails]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-411 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS_456='[{"name":"integration","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PRs:\nhttps://github.com/boxp/example/pull/123\nhttps://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-multiple-prs-fail.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-411\|BOXP-411: second pr fails\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" 'Review gate failed \(ci\)'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" 'https://github.com/boxp/example/pull/456'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" 'integration=FAILURE'
+}
+
 test_review_with_empty_ci_rollup_times_out() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -430,6 +491,8 @@ test_review_with_conflict_is_blocked
 test_review_with_ci_failure_is_blocked
 test_review_with_codex_review_issue_is_blocked
 test_review_with_pr_and_none_marker_checks_pr
+test_review_with_multiple_pr_urls_checks_all
+test_review_with_multiple_pr_urls_blocks_on_second_failure
 test_review_with_empty_ci_rollup_times_out
 test_review_with_draft_pr_is_blocked
 test_review_with_behind_merge_state_times_out

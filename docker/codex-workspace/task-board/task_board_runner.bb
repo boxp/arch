@@ -504,8 +504,10 @@
 (defn github-pr-url? [text]
   (boolean (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))))
 
-(defn first-github-pr-url [text]
-  (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text "")))
+(defn github-pr-urls [text]
+  (->> (re-seq #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))
+       distinct
+       vec))
 
 (defn no-repo-review-marker? [text]
   (boolean (re-find #"(?im)^TASK_BOARD_REVIEW_PR:\s*none\s*$" (or text ""))))
@@ -659,7 +661,7 @@
 
 (defn run-codex-review! [run-dir pr-url]
   (let [diff (run-string! ["gh" "pr" "diff" pr-url] {})
-        review-path (fs/path run-dir "codex-review.md")
+        review-path (fs/path run-dir (str "codex-review-" (last (str/split pr-url #"/")) ".md"))
         prompt (str "CODEX_REVIEW_GATE\n"
                     "Review this GitHub PR diff for actionable bugs, regressions, missing tests, or acceptance-criteria gaps.\n"
                     "Return CODEX_REVIEW_RESULT: clean only if there are no actionable findings.\n"
@@ -695,23 +697,40 @@
 
 (defn review-gate! [run-dir last-message]
   (try
-    (cond
-      (first-github-pr-url last-message)
-      (let [pr-url (first-github-pr-url last-message)
-            pr-state (wait-for-pr-state! pr-url)]
-        (if-not (:ok? pr-state)
-          pr-state
-          (let [review (run-codex-review! run-dir pr-url)]
-            (update review :message #(str (:message pr-state) " " %)))))
+    (let [pr-urls (github-pr-urls last-message)]
+      (cond
+        (seq pr-urls)
+        (loop [remaining pr-urls
+               passed []]
+          (if-let [pr-url (first remaining)]
+            (let [pr-state (wait-for-pr-state! pr-url)]
+              (if-not (:ok? pr-state)
+                (assoc pr-state
+                       :checked-pr-urls passed
+                       :pr-urls pr-urls)
+                (let [review (run-codex-review! run-dir pr-url)
+                      passed-message (str pr-url ": " (:message pr-state) " " (:message review))]
+                  (if-not (:ok? review)
+                    (assoc review
+                           :checked-pr-urls passed
+                           :pr-urls pr-urls
+                           :message (str pr-url ": " (:message pr-state) " " (:message review)))
+                    (recur (rest remaining) (conj passed passed-message))))))
+            {:ok? true
+             :pr-urls pr-urls
+             :message (str "All PR gates passed for "
+                           (count pr-urls)
+                           " PR(s): "
+                           (str/join " | " passed))}))
 
-      (no-repo-review-marker? last-message)
-      {:ok? true
-       :message "TASK_BOARD_REVIEW_PR: none was provided; PR gates were skipped because no repository changes were reported."}
+        (no-repo-review-marker? last-message)
+        {:ok? true
+         :message "TASK_BOARD_REVIEW_PR: none was provided; PR gates were skipped because no repository changes were reported."}
 
-      :else
-      {:ok? false
-       :gate :pr-url
-       :message "Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker."})
+        :else
+        {:ok? false
+         :gate :pr-url
+         :message "Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker."}))
     (catch Exception e
       {:ok? false
        :gate :pr-gate
@@ -793,7 +812,7 @@
 
 (defn final-note [run-id next-status result last-message review-gate]
   (let [base (str "Codex task-board run " run-id " finished with result " next-status ".")
-        pr-url (first-github-pr-url last-message)]
+        pr-urls (github-pr-urls last-message)]
     (cond
       (and (= "blocked" next-status)
            (not (#{"done" "blocked"} result))
@@ -801,10 +820,12 @@
       (str base " Review gate failed"
            (when-let [gate (:gate review-gate)]
              (str " (" (name gate) ")"))
+           (when-let [url (:url review-gate)]
+             (str " for " url))
            ": " (:message review-gate))
 
-      (and (= "review" next-status) pr-url)
-      (str base " PR: " pr-url ". Review gates passed: " (:message review-gate))
+      (and (= "review" next-status) (seq pr-urls))
+      (str base " PR: " (str/join ", " pr-urls) ". Review gates passed: " (:message review-gate))
 
       :else
       base)))
