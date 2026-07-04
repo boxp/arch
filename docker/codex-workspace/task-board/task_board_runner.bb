@@ -532,6 +532,14 @@
       (throw (ex-info (str "command failed: " (str/join " " args) "\n" (:err proc))
                       {:args args :exit (:exit proc) :err (:err proc)})))))
 
+(defn codex-model-profile-args []
+  (cond-> []
+    (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
+    (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
+
+    (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
+    (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))))
+
 (defn pr-view [pr-url]
   (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,isDraft,mergeStateStatus,statusCheckRollup"] {})
       (json/parse-string true)))
@@ -668,10 +676,14 @@
                     "Return CODEX_REVIEW_RESULT: issues when any actionable finding remains, followed by a concise summary.\n\n"
                     "PR: " pr-url "\n\n"
                     diff)
-        proc @(p/process ["codex" "exec"
-                          "--skip-git-repo-check"
-                          "--output-last-message" (str review-path)
-                          "-"]
+        proc @(p/process (cond-> ["codex" "exec"
+                                  "--skip-git-repo-check"
+                                  "--output-last-message" (str review-path)]
+                           true
+                           (into (codex-model-profile-args))
+
+                           true
+                           (conj "-"))
                          {:in prompt :out :string :err :string})
         last-message (when (fs/exists? review-path)
                        (slurp (str review-path)))]
@@ -760,11 +772,8 @@
                  (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                  (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
 
-                 (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
-                 (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
-
-                 (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
-                 (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))
+                 true
+                 (into (codex-model-profile-args))
 
                  true
                  (conj "-"))

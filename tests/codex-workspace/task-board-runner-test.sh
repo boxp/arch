@@ -40,6 +40,9 @@ make_fake_codex() {
 set -euo pipefail
 
 last_message=""
+if [[ -n "${CODEX_FAKE_ARG_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"${CODEX_FAKE_ARG_LOG}"
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output-last-message)
@@ -455,6 +458,30 @@ test_review_gate_keeps_lock_heartbeat_active() {
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-412\|BOXP-412: gate heartbeat\]\].*status::review'
 }
 
+test_review_gate_passes_codex_model_profile_to_review() {
+  local tmp vault state bin log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  log="${tmp}/codex-args.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-413|BOXP-413: review codex config]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-413 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_MODEL=gpt-test \
+    CODEX_TASK_BOARD_PROFILE=review-profile \
+    CODEX_FAKE_ARG_LOG="${log}" \
+    CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-review-codex-config.out
+
+  assert_file_contains "${log}" 'codex-review-123\.md.*--model gpt-test.*--profile review-profile'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-413\|BOXP-413: review codex config\]\].*status::review'
+}
+
 test_review_with_empty_ci_rollup_times_out() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -527,6 +554,7 @@ test_review_with_pr_and_none_marker_checks_pr
 test_review_with_multiple_pr_urls_checks_all
 test_review_with_multiple_pr_urls_blocks_on_second_failure
 test_review_gate_keeps_lock_heartbeat_active
+test_review_gate_passes_codex_model_profile_to_review
 test_review_with_empty_ci_rollup_times_out
 test_review_with_draft_pr_is_blocked
 test_review_with_behind_merge_state_times_out
