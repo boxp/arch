@@ -47,7 +47,7 @@ trap cleanup EXIT
 
 runner="$(printf '%s' "${runner}" | tr '[:upper:]' '[:lower:]')"
 case "${runner}" in
-  codex | cursor) ;;
+  codex | cursor | claude) ;;
   *)
     echo "unsupported codex cron runner '${runner}' for job '${job_name}'" >&2
     exit 2
@@ -55,7 +55,7 @@ case "${runner}" in
 esac
 
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if [[ "${runner}" == "cursor" ]]; then
+if [[ "${runner}" == "cursor" || "${runner}" == "claude" ]]; then
   stdout_log="${run_dir}/stdout.log"
 else
   stdout_log="${run_dir}/events.jsonl"
@@ -82,13 +82,28 @@ if [[ "${runner}" == "codex" ]]; then
   if [[ -n "${CODEX_CRON_PROFILE:-}" ]]; then
     args+=(--profile "${CODEX_CRON_PROFILE}")
   fi
-else
+elif [[ "${runner}" == "cursor" ]]; then
   args=(--print --output-format text --trust --workspace "${workdir}")
 
   if [[ "${CODEX_CRON_BYPASS_APPROVALS:-true}" == "true" ]]; then
     args+=(--force --sandbox disabled)
   else
     args+=(--sandbox "${CODEX_CRON_CURSOR_SANDBOX:-enabled}")
+  fi
+
+  if [[ -n "${CODEX_CRON_MODEL:-}" ]]; then
+    args+=(--model "${CODEX_CRON_MODEL}")
+  fi
+
+  if [[ -n "${CODEX_CRON_PROFILE:-}" ]]; then
+    echo "CODEX_CRON_PROFILE is only supported by the codex runner" >&2
+    exit 2
+  fi
+else
+  args=(--print --output-format text)
+
+  if [[ "${CODEX_CRON_BYPASS_APPROVALS:-true}" == "true" ]]; then
+    args+=(--dangerously-skip-permissions)
   fi
 
   if [[ -n "${CODEX_CRON_MODEL:-}" ]]; then
@@ -123,13 +138,15 @@ fi
 set +e
 if [[ "${runner}" == "codex" ]]; then
   codex "${args[@]}" - < "${prompt_file}" > "${stdout_log}" 2> "${stderr_log}"
-else
+elif [[ "${runner}" == "cursor" ]]; then
   cursor-agent "${args[@]}" "$(< "${prompt_file}")" > "${stdout_log}" 2> "${stderr_log}"
+else
+  (cd "${workdir}" && claude "${args[@]}" "$(< "${prompt_file}")") > "${stdout_log}" 2> "${stderr_log}"
 fi
 exit_code=$?
 set -e
 
-if [[ "${runner}" == "cursor" && -f "${stdout_log}" ]]; then
+if [[ ("${runner}" == "cursor" || "${runner}" == "claude") && -f "${stdout_log}" ]]; then
   cp "${stdout_log}" "${last_message}"
 fi
 
