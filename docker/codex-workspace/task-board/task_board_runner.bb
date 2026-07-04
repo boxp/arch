@@ -2,6 +2,7 @@
 
 (require '[babashka.fs :as fs]
          '[babashka.process :as p]
+         '[cheshire.core :as json]
          '[clojure.edn :as edn]
          '[clojure.java.io :as io]
          '[clojure.string :as str])
@@ -503,8 +504,10 @@
 (defn github-pr-url? [text]
   (boolean (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))))
 
-(defn first-github-pr-url [text]
-  (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text "")))
+(defn github-pr-urls [text]
+  (->> (re-seq #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))
+       distinct
+       vec))
 
 (defn no-repo-review-marker? [text]
   (boolean (re-find #"(?im)^TASK_BOARD_REVIEW_PR:\s*none\s*$" (or text ""))))
@@ -513,6 +516,238 @@
   (or (github-pr-url? text)
       (no-repo-review-marker? text)))
 
+(defn env-long [k default]
+  (Long/parseLong (env k default)))
+
+(defn pr-gate-timeout-seconds []
+  (env-long "CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS" "1800"))
+
+(defn pr-gate-poll-seconds []
+  (env-long "CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS" "15"))
+
+(defn run-string! [args opts]
+  (let [proc @(p/process args (merge {:out :string :err :string} opts))]
+    (if (zero? (:exit proc))
+      (:out proc)
+      (throw (ex-info (str "command failed: " (str/join " " args) "\n" (:err proc))
+                      {:args args :exit (:exit proc) :err (:err proc)})))))
+
+(defn codex-model-profile-args []
+  (cond-> []
+    (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
+    (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
+
+    (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
+    (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))))
+
+(defn pr-view [pr-url]
+  (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,isDraft,mergeStateStatus,statusCheckRollup"] {})
+      (json/parse-string true)))
+
+(defn check-name [check]
+  (or (:name check)
+      (:context check)
+      (:workflowName check)
+      (:displayName check)
+      "unknown check"))
+
+(def successful-check-conclusions
+  #{"SUCCESS" "SKIPPED" "NEUTRAL"})
+
+(defn check-completed? [check]
+  (or (= "COMPLETED" (some-> (:status check) str/upper-case))
+      (contains? #{"SUCCESS" "FAILURE" "ERROR"}
+                 (some-> (:state check) str/upper-case))))
+
+(defn check-successful? [check]
+  (and (check-completed? check)
+       (or (contains? successful-check-conclusions
+                     (some-> (:conclusion check) str/upper-case))
+           (= "SUCCESS" (some-> (:state check) str/upper-case)))))
+
+(defn check-failed? [check]
+  (and (check-completed? check)
+       (not (check-successful? check))))
+
+(defn ci-state [checks]
+  (let [checks (vec checks)
+        failed (filter check-failed? checks)
+        pending (remove check-completed? checks)]
+    (cond
+      (empty? checks)
+      {:state :pending
+       :message "No CI checks have been reported for this PR yet."}
+
+      (seq failed)
+      {:state :failed
+       :message (str "CI checks failed: "
+                     (str/join ", " (map (fn [check]
+                                            (str (check-name check) "=" (:conclusion check)))
+                                          failed)))}
+
+      (seq pending)
+      {:state :pending
+       :message (str "CI checks still pending: "
+                     (str/join ", " (map check-name pending)))}
+
+      :else
+      {:state :passed
+       :message (str "CI checks passed: " (str/join ", " (map check-name checks)))})))
+
+(defn merge-state [pr]
+  (let [state (some-> (:mergeStateStatus pr) str/upper-case)]
+    (cond
+      (:isDraft pr)
+      {:state :failed
+       :gate :mergeability
+       :message "GitHub reports this PR is still a draft."}
+
+      (= "DIRTY" state)
+      {:state :failed
+       :gate :conflict
+       :message "GitHub reports mergeStateStatus=DIRTY, which indicates conflicts with the base branch."}
+
+      (#{"UNKNOWN" "BEHIND"} state)
+      {:state :pending
+       :gate :mergeability
+       :message (str "GitHub mergeStateStatus=" state " is not ready yet.")}
+
+      (#{"CLEAN" "HAS_HOOKS" "BLOCKED" "UNSTABLE"} state)
+      {:state :passed
+       :message (str "GitHub mergeStateStatus=" state ".")}
+
+      :else
+      {:state :failed
+       :gate :mergeability
+       :message (str "GitHub mergeStateStatus=" (or state "missing") " is not review-ready.")})))
+
+(defn wait-for-pr-state! [pr-url]
+  (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))]
+    (loop []
+      (let [pr (pr-view pr-url)
+            merge (merge-state pr)
+            ci (ci-state (:statusCheckRollup pr))]
+        (cond
+          (= :failed (:state merge))
+          {:ok? false
+           :gate (:gate merge)
+           :url pr-url
+           :message (:message merge)}
+
+          (= :failed (:state ci))
+          {:ok? false
+           :gate :ci
+           :url pr-url
+           :message (:message ci)}
+
+          (and (= :passed (:state merge))
+               (= :passed (:state ci)))
+          {:ok? true
+           :url pr-url
+           :message (str (:message merge) " " (:message ci))}
+
+          (> (System/currentTimeMillis) deadline)
+          {:ok? false
+           :gate (if (= :pending (:state merge)) (:gate merge) :ci)
+           :url pr-url
+           :message (str "Timed out waiting for PR gates. " (:message merge) " " (:message ci))}
+
+          :else
+          (do
+            (Thread/sleep (* 1000 (pr-gate-poll-seconds)))
+            (recur)))))))
+
+(defn codex-review-clean? [text]
+  (boolean (re-find #"(?im)^CODEX_REVIEW_RESULT:\s*clean\s*$" (or text ""))))
+
+(defn codex-review-summary [text]
+  (->> (str/split-lines (or text ""))
+       (remove #(re-find #"(?im)^CODEX_REVIEW_RESULT:" %))
+       (remove str/blank?)
+       (take 6)
+       (str/join " ")))
+
+(defn run-codex-review! [run-dir pr-url]
+  (let [diff (run-string! ["gh" "pr" "diff" pr-url] {})
+        review-path (fs/path run-dir (str "codex-review-" (last (str/split pr-url #"/")) ".md"))
+        prompt (str "CODEX_REVIEW_GATE\n"
+                    "Review this GitHub PR diff for actionable bugs, regressions, missing tests, or acceptance-criteria gaps.\n"
+                    "Return CODEX_REVIEW_RESULT: clean only if there are no actionable findings.\n"
+                    "Return CODEX_REVIEW_RESULT: issues when any actionable finding remains, followed by a concise summary.\n\n"
+                    "PR: " pr-url "\n\n"
+                    diff)
+        proc @(p/process (cond-> ["codex" "exec"
+                                  "--skip-git-repo-check"
+                                  "--output-last-message" (str review-path)]
+                           true
+                           (into (codex-model-profile-args))
+
+                           true
+                           (conj "-"))
+                         {:in prompt :out :string :err :string})
+        last-message (when (fs/exists? review-path)
+                       (slurp (str review-path)))]
+    (cond
+      (not (zero? (:exit proc)))
+      {:ok? false
+       :gate :codex-review
+       :url pr-url
+       :message (str "codex review command failed: " (:err proc))}
+
+      (codex-review-clean? last-message)
+      {:ok? true
+       :url pr-url
+       :message "codex review reported no actionable findings."}
+
+      :else
+      {:ok? false
+       :gate :codex-review
+       :url pr-url
+       :message (str "codex review reported actionable findings"
+                     (when-let [summary (not-empty (codex-review-summary last-message))]
+                       (str ": " summary)))})))
+
+(defn review-gate! [run-dir last-message]
+  (try
+    (let [pr-urls (github-pr-urls last-message)]
+      (cond
+        (seq pr-urls)
+        (loop [remaining pr-urls
+               passed []]
+          (if-let [pr-url (first remaining)]
+            (let [pr-state (wait-for-pr-state! pr-url)]
+              (if-not (:ok? pr-state)
+                (assoc pr-state
+                       :checked-pr-urls passed
+                       :pr-urls pr-urls)
+                (let [review (run-codex-review! run-dir pr-url)
+                      passed-message (str pr-url ": " (:message pr-state) " " (:message review))]
+                  (if-not (:ok? review)
+                    (assoc review
+                           :checked-pr-urls passed
+                           :pr-urls pr-urls
+                           :message (str pr-url ": " (:message pr-state) " " (:message review)))
+                    (recur (rest remaining) (conj passed passed-message))))))
+            {:ok? true
+             :pr-urls pr-urls
+             :message (str "All PR gates passed for "
+                           (count pr-urls)
+                           " PR(s): "
+                           (str/join " | " passed))}))
+
+        (no-repo-review-marker? last-message)
+        {:ok? true
+         :message "TASK_BOARD_REVIEW_PR: none was provided; PR gates were skipped because no repository changes were reported."}
+
+        :else
+        {:ok? false
+         :gate :pr-url
+         :message "Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker."}))
+    (catch Exception e
+      {:ok? false
+       :gate :pr-gate
+       :message (.getMessage e)})))
+
 (defn run-codex! [ticket-id action lane lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
@@ -520,52 +755,43 @@
         prompt-path (fs/path dir "prompt.md")
         stdout-path (fs/path dir "events.jsonl")
         stderr-path (fs/path dir "stderr.log")
-        last-message-path (fs/path dir "last-message.md")
-        stop? (atom false)
-        hb (heartbeat! ticket-id lock stop?)]
+        last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace))
     (mark-run! ticket-id run :running {:action action :lane lane :started-at (now-str)})
-    (try
-      (let [args (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
-                          "--skip-git-repo-check"
-                          "--output-last-message" (str last-message-path)]
-                   (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                   (conj "--dangerously-bypass-approvals-and-sandbox")
+    (let [args (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
+                        "--skip-git-repo-check"
+                        "--output-last-message" (str last-message-path)]
+                 (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                 (conj "--dangerously-bypass-approvals-and-sandbox")
 
-                   (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                   (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
-                          "--add-dir" (vault)])
+                 (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                 (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
+                        "--add-dir" (vault)])
 
-                   (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                   (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
+                 (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                 (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
 
-                   (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
-                   (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
+                 true
+                 (into (codex-model-profile-args))
 
-                   (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
-                   (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))
-
-                   true
-                   (conj "-"))
-            proc @(p/process args {:in (io/file (str prompt-path))
-                                   :out (io/file (str stdout-path))
-                                   :err (io/file (str stderr-path))})
-            exit (:exit proc)
-            last-message (when (fs/exists? last-message-path)
-                           (slurp (str last-message-path)))
-            marker (result-marker last-message)]
-        (let [status (if (zero? exit) :succeeded :failed)]
-          (mark-run! ticket-id run status
-                     {:action action
-                      :lane lane
-                      :exit-code exit
-                      :result marker
-                      :finished-at (now-str)}))
-        {:exit exit :result marker :run-id run :dir (str dir) :last-message last-message})
-      (finally
-        (reset! stop? true)
-        @hb))))
+                 true
+                 (conj "-"))
+          proc @(p/process args {:in (io/file (str prompt-path))
+                                 :out (io/file (str stdout-path))
+                                 :err (io/file (str stderr-path))})
+          exit (:exit proc)
+          last-message (when (fs/exists? last-message-path)
+                         (slurp (str last-message-path)))
+          marker (result-marker last-message)]
+      (let [status (if (zero? exit) :succeeded :failed)]
+        (mark-run! ticket-id run status
+                   {:action action
+                    :lane lane
+                    :exit-code exit
+                    :result marker
+                    :finished-at (now-str)}))
+      {:exit exit :result marker :run-id run :dir (str dir) :last-message last-message})))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (when (= "codex" assignee)
@@ -577,27 +803,32 @@
       "blocked" :blocked-retry
       nil)))
 
-(defn final-status [action result exit last-message]
+(defn final-status [action result exit review-gate]
   (let [intended (cond
                    (not (zero? exit)) "blocked"
                    (= :groom action) "ready"
                    (#{"done" "review" "blocked"} result) result
                    :else "review")]
-    (if (and (= "review" intended) (not (review-ready? last-message)))
+    (if (and (= "review" intended) (not (:ok? review-gate)))
       "blocked"
       intended)))
 
-(defn final-note [run-id next-status result last-message]
+(defn final-note [run-id next-status result last-message review-gate]
   (let [base (str "Codex task-board run " run-id " finished with result " next-status ".")
-        pr-url (first-github-pr-url last-message)]
+        pr-urls (github-pr-urls last-message)]
     (cond
       (and (= "blocked" next-status)
            (not (#{"done" "blocked"} result))
-           (not (review-ready? last-message)))
-      (str base " Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker, so the runner blocked before moving to review.")
+           (not (:ok? review-gate)))
+      (str base " Review gate failed"
+           (when-let [gate (:gate review-gate)]
+             (str " (" (name gate) ")"))
+           (when-let [url (:url review-gate)]
+             (str " for " url))
+           ": " (:message review-gate))
 
-      (and (= "review" next-status) pr-url)
-      (str base " PR: " pr-url)
+      (and (= "review" next-status) (seq pr-urls))
+      (str base " PR: " (str/join ", " pr-urls) ". Review gates passed: " (:message review-gate))
 
       :else
       base)))
@@ -610,26 +841,46 @@
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (acquire-lock! ticket-id action effective-lane)]
         (when lock
-          (try
-            (when (#{"ready" "review" "blocked"} status)
-              (move-card! ticket-id "in-progress")
-              (update-frontmatter! ticket-id {:status "in-progress"}))
-            (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) "."))
-            (let [{:keys [exit result run-id last-message]} (run-codex! ticket-id action effective-lane lock)
-                  next-status (final-status action result exit last-message)]
-              (move-card! ticket-id next-status)
-              (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                       :assignee "boxp"}
-                                                (= "done" next-status) (assoc :closed (today))))
-              (append-note! ticket-id (final-note run-id next-status result last-message))
-              true)
-            (catch Exception e
-              (move-card! ticket-id "blocked")
-              (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
-              (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " failed: " (.getMessage e)))
-              true)
-            (finally
-              (release-lock! ticket-id))))))))
+          (let [stop? (atom false)
+                hb (heartbeat! ticket-id lock stop?)]
+            (try
+              (when (#{"ready" "review" "blocked"} status)
+                (move-card! ticket-id "in-progress")
+                (update-frontmatter! ticket-id {:status "in-progress"}))
+              (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) "."))
+              (let [{:keys [exit result run-id dir last-message]} (run-codex! ticket-id action effective-lane lock)
+                    intended (cond
+                               (not (zero? exit)) "blocked"
+                               (= :groom action) "ready"
+                               (#{"done" "review" "blocked"} result) result
+                               :else "review")
+                    review-gate (if (= "review" intended)
+                                  (review-gate! dir last-message)
+                                  {:ok? true})
+                    next-status (final-status action result exit review-gate)]
+                (when (= "review" intended)
+                  (mark-run! ticket-id run-id (if (:ok? review-gate) :succeeded :blocked)
+                             {:action action
+                              :lane effective-lane
+                              :exit-code exit
+                              :result result
+                              :review-gate review-gate
+                              :finished-at (now-str)}))
+                (move-card! ticket-id next-status)
+                (update-frontmatter! ticket-id (cond-> {:status next-status
+                                                         :assignee "boxp"}
+                                                  (= "done" next-status) (assoc :closed (today))))
+                (append-note! ticket-id (final-note run-id next-status result last-message review-gate))
+                true)
+              (catch Exception e
+                (move-card! ticket-id "blocked")
+                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " failed: " (.getMessage e)))
+                true)
+              (finally
+                (reset! stop? true)
+                @hb
+                (release-lock! ticket-id)))))))))
 
 (defn ticket-assignee [ticket-id]
   (let [path (ticket-path ticket-id)]

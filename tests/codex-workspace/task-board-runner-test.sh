@@ -23,6 +23,16 @@ assert_file_not_contains() {
   fi
 }
 
+assert_run_summary_contains() {
+  local state="$1"
+  local ticket="$2"
+  local pattern="$3"
+  local summary
+  summary="$(find "${state}/runs/${ticket}" -name summary.edn -print | head -n 1)"
+  [[ -n "${summary}" ]] || fail "expected summary for ${ticket}"
+  assert_file_contains "${summary}" "${pattern}"
+}
+
 make_fake_codex() {
   local bin_dir="$1"
   cat >"${bin_dir}/codex" <<'EOF'
@@ -30,6 +40,9 @@ make_fake_codex() {
 set -euo pipefail
 
 last_message=""
+if [[ -n "${CODEX_FAKE_ARG_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"${CODEX_FAKE_ARG_LOG}"
+fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --output-last-message)
@@ -46,6 +59,11 @@ prompt="$(mktemp)"
 cat >"${prompt}"
 ticket="$(sed -n 's/^Ticket: //p' "${prompt}" | head -n 1)"
 mkdir -p "$(dirname "${last_message}")"
+if grep -q '^CODEX_REVIEW_GATE$' "${prompt}"; then
+  printf '%s\n' "${CODEX_FAKE_REVIEW_MESSAGE:-CODEX_REVIEW_RESULT: clean}" >"${last_message}"
+  rm -f "${prompt}"
+  exit 0
+fi
 if [[ -n "${CODEX_FAKE_START_LOG:-}" ]]; then
   printf '%s %s\n' "${ticket}" "$(date +%s)" >>"${CODEX_FAKE_START_LOG}"
 fi
@@ -54,6 +72,68 @@ printf '%s\n' "${CODEX_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}" >"${last_message}
 rm -f "${prompt}"
 EOF
   chmod +x "${bin_dir}/codex"
+}
+
+make_fake_gh() {
+  local bin_dir="$1"
+  cat >"${bin_dir}/gh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ "$1 $2" == "pr view" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9]+$ ]]; then
+  if [[ -n "${GH_FAKE_LOCK_MTIME_LOG:-}" && -n "${GH_FAKE_LOCK_FILE:-}" ]]; then
+    before="$(stat -c %Y "${GH_FAKE_LOCK_FILE}")"
+    sleep "${GH_FAKE_PR_VIEW_SLEEP_SECONDS:-0}"
+    after="$(stat -c %Y "${GH_FAKE_LOCK_FILE}")"
+    printf '%s %s\n' "${before}" "${after}" >>"${GH_FAKE_LOCK_MTIME_LOG}"
+  elif [[ -n "${GH_FAKE_PR_VIEW_SLEEP_SECONDS:-}" ]]; then
+    sleep "${GH_FAKE_PR_VIEW_SLEEP_SECONDS}"
+  fi
+  pr_number="${3##*/}"
+  checks_var="GH_FAKE_CHECKS_${pr_number}"
+  if [[ -n "${GH_FAKE_CHECKS:-}" ]]; then
+    checks="${GH_FAKE_CHECKS}"
+  elif [[ -n "${!checks_var:-}" ]]; then
+    checks="${!checks_var}"
+  else
+    checks='[{"name":"runner test","status":"COMPLETED","conclusion":"SUCCESS"}]'
+  fi
+  draft_var="GH_FAKE_IS_DRAFT_${pr_number}"
+  merge_var="GH_FAKE_MERGE_STATE_${pr_number}"
+  draft="${GH_FAKE_IS_DRAFT:-false}"
+  merge_state="${GH_FAKE_MERGE_STATE:-CLEAN}"
+  if [[ -n "${!draft_var:-}" ]]; then
+    draft="${!draft_var}"
+  fi
+  if [[ -n "${!merge_var:-}" ]]; then
+    merge_state="${!merge_var}"
+  fi
+  cat <<JSON
+{
+  "url": "${3}",
+  "isDraft": ${draft},
+  "mergeStateStatus": "${merge_state}",
+  "statusCheckRollup": ${checks}
+}
+JSON
+  exit 0
+fi
+
+if [[ "$1 $2" == "pr diff" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9]+$ ]]; then
+  pr_number="${3##*/}"
+  diff_var="GH_FAKE_DIFF_${pr_number}"
+  diff="${GH_FAKE_DIFF:-diff --git a/file b/file}"
+  if [[ -n "${!diff_var:-}" ]]; then
+    diff="${!diff_var}"
+  fi
+  printf '%s\n' "${diff}"
+  exit 0
+fi
+
+echo "unexpected gh invocation: $*" >&2
+exit 1
+EOF
+  chmod +x "${bin_dir}/gh"
 }
 
 write_board() {
@@ -204,20 +284,279 @@ test_review_with_pr_url_is_noted() {
   bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-401|BOXP-401: review pr]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-401 in-progress codex boxp/example
 
-  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-pr.out
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-pr.out
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-401\|BOXP-401: review pr\]\].*status::review'
   assert_file_contains "${vault}/Tickets/BOXP-401.md" '^status: review$'
   assert_file_contains "${vault}/Tickets/BOXP-401.md" '^assignee: boxp$'
   assert_file_contains "${vault}/Tickets/BOXP-401.md" 'PR: https://github.com/boxp/example/pull/123'
+  assert_file_contains "${vault}/Tickets/BOXP-401.md" 'Review gates passed'
+}
+
+test_review_without_repo_marker_skips_pr_gates() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-402|BOXP-402: no repo review]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-402 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-none.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-402\|BOXP-402: no repo review\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: review$'
+}
+
+test_review_with_conflict_is_blocked() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-403|BOXP-403: conflict]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-403 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_MERGE_STATE=DIRTY CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-conflict.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-403\|BOXP-403: conflict\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-403.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-403.md" 'Review gate failed \(conflict\)'
+  assert_run_summary_contains "${state}" BOXP-403 ':gate :conflict'
+}
+
+test_review_with_ci_failure_is_blocked() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-404|BOXP-404: ci fail]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-404 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-ci.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-404\|BOXP-404: ci fail\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-404.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-404.md" 'Review gate failed \(ci\)'
+  assert_file_contains "${vault}/Tickets/BOXP-404.md" 'unit=FAILURE'
+}
+
+test_review_with_codex_review_issue_is_blocked() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-405|BOXP-405: review issue]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-405 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\n- missing regression test' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-issue.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-405\|BOXP-405: review issue\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Review gate failed \(codex-review\)'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'missing regression test'
+}
+
+test_review_with_pr_and_none_marker_checks_pr() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-406|BOXP-406: pr wins]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-406 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nCreated PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-pr-wins.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-406\|BOXP-406: pr wins\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-406.md" 'Review gates passed'
+}
+
+test_review_with_multiple_pr_urls_checks_all() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-410|BOXP-410: multiple prs]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-410 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PRs:\nhttps://github.com/boxp/example/pull/123\nhttps://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-multiple-prs.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-410\|BOXP-410: multiple prs\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" 'PR: https://github.com/boxp/example/pull/123, https://github.com/boxp/example/pull/456'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" 'All PR gates passed for 2 PR\(s\)'
+}
+
+test_review_with_multiple_pr_urls_blocks_on_second_failure() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-411|BOXP-411: second pr fails]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-411 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS_456='[{"name":"integration","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PRs:\nhttps://github.com/boxp/example/pull/123\nhttps://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-multiple-prs-fail.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-411\|BOXP-411: second pr fails\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" 'Review gate failed \(ci\)'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" 'https://github.com/boxp/example/pull/456'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" 'integration=FAILURE'
+}
+
+test_review_gate_keeps_lock_heartbeat_active() {
+  local tmp vault state bin log before after
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  log="${tmp}/lock-mtime.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-412|BOXP-412: gate heartbeat]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-412 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" \
+    GH_FAKE_LOCK_FILE="${state}/locks/BOXP-412.edn" \
+    GH_FAKE_LOCK_MTIME_LOG="${log}" \
+    GH_FAKE_PR_VIEW_SLEEP_SECONDS=2 \
+    CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-review-gate-heartbeat.out
+
+  read -r before after <"${log}"
+  [[ "${after}" -gt "${before}" ]] || fail "expected lock heartbeat to update during PR gate, got ${before} -> ${after}"
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-412\|BOXP-412: gate heartbeat\]\].*status::review'
+}
+
+test_review_gate_passes_codex_model_profile_to_review() {
+  local tmp vault state bin log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  log="${tmp}/codex-args.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-413|BOXP-413: review codex config]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-413 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_MODEL=gpt-test \
+    CODEX_TASK_BOARD_PROFILE=review-profile \
+    CODEX_FAKE_ARG_LOG="${log}" \
+    CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-review-codex-config.out
+
+  assert_file_contains "${log}" 'codex-review-123\.md.*--model gpt-test.*--profile review-profile'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-413\|BOXP-413: review codex config\]\].*status::review'
+}
+
+test_review_with_empty_ci_rollup_times_out() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-407|BOXP-407: no checks yet]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-407 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-empty-ci.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-407\|BOXP-407: no checks yet\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-407.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-407.md" 'Review gate failed \(ci\)'
+  assert_file_contains "${vault}/Tickets/BOXP-407.md" 'No CI checks have been reported'
+}
+
+test_review_with_draft_pr_is_blocked() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-408|BOXP-408: draft pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-408 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_IS_DRAFT=true CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-draft.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-408\|BOXP-408: draft pr\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-408.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-408.md" 'Review gate failed \(mergeability\)'
+  assert_file_contains "${vault}/Tickets/BOXP-408.md" 'still a draft'
+}
+
+test_review_with_behind_merge_state_times_out() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-409|BOXP-409: behind]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-409 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 GH_FAKE_MERGE_STATE=BEHIND CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-behind.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-409\|BOXP-409: behind\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-409.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-409.md" 'Review gate failed \(mergeability\)'
+  assert_file_contains "${vault}/Tickets/BOXP-409.md" 'mergeStateStatus=BEHIND'
 }
 
 test_parallel_codex_runs
 test_stale_lock_recovers
 test_review_without_pr_is_blocked
 test_review_with_pr_url_is_noted
+test_review_without_repo_marker_skips_pr_gates
+test_review_with_conflict_is_blocked
+test_review_with_ci_failure_is_blocked
+test_review_with_codex_review_issue_is_blocked
+test_review_with_pr_and_none_marker_checks_pr
+test_review_with_multiple_pr_urls_checks_all
+test_review_with_multiple_pr_urls_blocks_on_second_failure
+test_review_gate_keeps_lock_heartbeat_active
+test_review_gate_passes_codex_model_profile_to_review
+test_review_with_empty_ci_rollup_times_out
+test_review_with_draft_pr_is_blocked
+test_review_with_behind_merge_state_times_out
 
 echo "task-board-runner tests passed"
