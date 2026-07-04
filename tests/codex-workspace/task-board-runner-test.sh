@@ -78,6 +78,14 @@ make_fake_gh() {
 set -euo pipefail
 
 if [[ "$1 $2" == "pr view" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9]+$ ]]; then
+  if [[ -n "${GH_FAKE_LOCK_MTIME_LOG:-}" && -n "${GH_FAKE_LOCK_FILE:-}" ]]; then
+    before="$(stat -c %Y "${GH_FAKE_LOCK_FILE}")"
+    sleep "${GH_FAKE_PR_VIEW_SLEEP_SECONDS:-0}"
+    after="$(stat -c %Y "${GH_FAKE_LOCK_FILE}")"
+    printf '%s %s\n' "${before}" "${after}" >>"${GH_FAKE_LOCK_MTIME_LOG}"
+  elif [[ -n "${GH_FAKE_PR_VIEW_SLEEP_SECONDS:-}" ]]; then
+    sleep "${GH_FAKE_PR_VIEW_SLEEP_SECONDS}"
+  fi
   pr_number="${3##*/}"
   checks_var="GH_FAKE_CHECKS_${pr_number}"
   if [[ -n "${GH_FAKE_CHECKS:-}" ]]; then
@@ -422,6 +430,31 @@ test_review_with_multiple_pr_urls_blocks_on_second_failure() {
   assert_file_contains "${vault}/Tickets/BOXP-411.md" 'integration=FAILURE'
 }
 
+test_review_gate_keeps_lock_heartbeat_active() {
+  local tmp vault state bin log before after
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  log="${tmp}/lock-mtime.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-412|BOXP-412: gate heartbeat]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-412 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" \
+    GH_FAKE_LOCK_FILE="${state}/locks/BOXP-412.edn" \
+    GH_FAKE_LOCK_MTIME_LOG="${log}" \
+    GH_FAKE_PR_VIEW_SLEEP_SECONDS=2 \
+    CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-review-gate-heartbeat.out
+
+  read -r before after <"${log}"
+  [[ "${after}" -gt "${before}" ]] || fail "expected lock heartbeat to update during PR gate, got ${before} -> ${after}"
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-412\|BOXP-412: gate heartbeat\]\].*status::review'
+}
+
 test_review_with_empty_ci_rollup_times_out() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -493,6 +526,7 @@ test_review_with_codex_review_issue_is_blocked
 test_review_with_pr_and_none_marker_checks_pr
 test_review_with_multiple_pr_urls_checks_all
 test_review_with_multiple_pr_urls_blocks_on_second_failure
+test_review_gate_keeps_lock_heartbeat_active
 test_review_with_empty_ci_rollup_times_out
 test_review_with_draft_pr_is_blocked
 test_review_with_behind_merge_state_times_out

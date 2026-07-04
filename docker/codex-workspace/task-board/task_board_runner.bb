@@ -743,52 +743,46 @@
         prompt-path (fs/path dir "prompt.md")
         stdout-path (fs/path dir "events.jsonl")
         stderr-path (fs/path dir "stderr.log")
-        last-message-path (fs/path dir "last-message.md")
-        stop? (atom false)
-        hb (heartbeat! ticket-id lock stop?)]
+        last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace))
     (mark-run! ticket-id run :running {:action action :lane lane :started-at (now-str)})
-    (try
-      (let [args (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
-                          "--skip-git-repo-check"
-                          "--output-last-message" (str last-message-path)]
-                   (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                   (conj "--dangerously-bypass-approvals-and-sandbox")
+    (let [args (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
+                        "--skip-git-repo-check"
+                        "--output-last-message" (str last-message-path)]
+                 (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                 (conj "--dangerously-bypass-approvals-and-sandbox")
 
-                   (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                   (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
-                          "--add-dir" (vault)])
+                 (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                 (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
+                        "--add-dir" (vault)])
 
-                   (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                   (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
+                 (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                 (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
 
-                   (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
-                   (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
+                 (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
+                 (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
 
-                   (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
-                   (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))
+                 (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
+                 (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))
 
-                   true
-                   (conj "-"))
-            proc @(p/process args {:in (io/file (str prompt-path))
-                                   :out (io/file (str stdout-path))
-                                   :err (io/file (str stderr-path))})
-            exit (:exit proc)
-            last-message (when (fs/exists? last-message-path)
-                           (slurp (str last-message-path)))
-            marker (result-marker last-message)]
-        (let [status (if (zero? exit) :succeeded :failed)]
-          (mark-run! ticket-id run status
-                     {:action action
-                      :lane lane
-                      :exit-code exit
-                      :result marker
-                      :finished-at (now-str)}))
-        {:exit exit :result marker :run-id run :dir (str dir) :last-message last-message})
-      (finally
-        (reset! stop? true)
-        @hb))))
+                 true
+                 (conj "-"))
+          proc @(p/process args {:in (io/file (str prompt-path))
+                                 :out (io/file (str stdout-path))
+                                 :err (io/file (str stderr-path))})
+          exit (:exit proc)
+          last-message (when (fs/exists? last-message-path)
+                         (slurp (str last-message-path)))
+          marker (result-marker last-message)]
+      (let [status (if (zero? exit) :succeeded :failed)]
+        (mark-run! ticket-id run status
+                   {:action action
+                    :lane lane
+                    :exit-code exit
+                    :result marker
+                    :finished-at (now-str)}))
+      {:exit exit :result marker :run-id run :dir (str dir) :last-message last-message})))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (when (= "codex" assignee)
@@ -838,42 +832,46 @@
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (acquire-lock! ticket-id action effective-lane)]
         (when lock
-          (try
-            (when (#{"ready" "review" "blocked"} status)
-              (move-card! ticket-id "in-progress")
-              (update-frontmatter! ticket-id {:status "in-progress"}))
-            (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) "."))
-            (let [{:keys [exit result run-id dir last-message]} (run-codex! ticket-id action effective-lane lock)
-                  intended (cond
-                             (not (zero? exit)) "blocked"
-                             (= :groom action) "ready"
-                             (#{"done" "review" "blocked"} result) result
-                             :else "review")
-                  review-gate (if (= "review" intended)
-                                (review-gate! dir last-message)
-                                {:ok? true})
-                  next-status (final-status action result exit review-gate)]
-              (when (= "review" intended)
-                (mark-run! ticket-id run-id (if (:ok? review-gate) :succeeded :blocked)
-                           {:action action
-                            :lane effective-lane
-                            :exit-code exit
-                            :result result
-                            :review-gate review-gate
-                            :finished-at (now-str)}))
-              (move-card! ticket-id next-status)
-              (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                       :assignee "boxp"}
-                                                (= "done" next-status) (assoc :closed (today))))
-              (append-note! ticket-id (final-note run-id next-status result last-message review-gate))
-              true)
-            (catch Exception e
-              (move-card! ticket-id "blocked")
-              (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
-              (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " failed: " (.getMessage e)))
-              true)
-            (finally
-              (release-lock! ticket-id))))))))
+          (let [stop? (atom false)
+                hb (heartbeat! ticket-id lock stop?)]
+            (try
+              (when (#{"ready" "review" "blocked"} status)
+                (move-card! ticket-id "in-progress")
+                (update-frontmatter! ticket-id {:status "in-progress"}))
+              (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) "."))
+              (let [{:keys [exit result run-id dir last-message]} (run-codex! ticket-id action effective-lane lock)
+                    intended (cond
+                               (not (zero? exit)) "blocked"
+                               (= :groom action) "ready"
+                               (#{"done" "review" "blocked"} result) result
+                               :else "review")
+                    review-gate (if (= "review" intended)
+                                  (review-gate! dir last-message)
+                                  {:ok? true})
+                    next-status (final-status action result exit review-gate)]
+                (when (= "review" intended)
+                  (mark-run! ticket-id run-id (if (:ok? review-gate) :succeeded :blocked)
+                             {:action action
+                              :lane effective-lane
+                              :exit-code exit
+                              :result result
+                              :review-gate review-gate
+                              :finished-at (now-str)}))
+                (move-card! ticket-id next-status)
+                (update-frontmatter! ticket-id (cond-> {:status next-status
+                                                         :assignee "boxp"}
+                                                  (= "done" next-status) (assoc :closed (today))))
+                (append-note! ticket-id (final-note run-id next-status result last-message review-gate))
+                true)
+              (catch Exception e
+                (move-card! ticket-id "blocked")
+                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " failed: " (.getMessage e)))
+                true)
+              (finally
+                (reset! stop? true)
+                @hb
+                (release-lock! ticket-id)))))))))
 
 (defn ticket-assignee [ticket-id]
   (let [path (ticket-path ticket-id)]
