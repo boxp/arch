@@ -14,3 +14,11 @@ resource "cloudflare_record" "codex_workspace" {
   type    = "A"
   proxied = false
 }
+
+resource "cloudflare_record" "codex_task_board" {
+  zone_id = var.zone_id
+  name    = "codex-task-board"
+  content = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.cname
+  type    = "CNAME"
+  proxied = true
+}

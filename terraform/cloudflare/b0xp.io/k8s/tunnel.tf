@@ -21,6 +21,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
       service  = "http://argocd-server.argocd.svc.cluster.local:8080"
     }
     ingress_rule {
+      hostname = cloudflare_record.codex_task_board.hostname
+      service  = "http://codex-task-board-dashboard.codex-workspace.svc.cluster.local:8080"
+    }
+    ingress_rule {
       service = "http_status:404"
     }
   }
