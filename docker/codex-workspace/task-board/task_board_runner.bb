@@ -271,6 +271,18 @@
 (defn run-workspace-dir [ticket-id run-id]
   (fs/path (root) "workspaces" ticket-id run-id))
 
+(defn state-path []
+  (fs/path (root) "state.edn"))
+
+(defn runner-state []
+  (read-edn-file (state-path) {}))
+
+(defn write-runner-state! [state]
+  (write-edn-file! (state-path) state))
+
+(defn env-long [k default]
+  (Long/parseLong (env k default)))
+
 (defn seconds-since [instant-str]
   (try
     (let [then (java.time.Instant/parse instant-str)]
@@ -371,6 +383,61 @@
            (take-last 3)
            vec))))
 
+(defn pr-gate-retry-limit []
+  (env-long "CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT" "2"))
+
+(defn retry-fingerprint [review-gate]
+  (str (:url review-gate) "|" (some-> (:gate review-gate) name) "|" (:message review-gate)))
+
+(defn latest-pr-gate-retry [ticket-id]
+  (let [retries (get-in (runner-state) [:pr-gate-retries ticket-id])]
+    (when (seq retries)
+      (->> (vals retries)
+           (sort-by #(or (:updated-at %) ""))
+           last))))
+
+(defn pr-gate-retry-prompt [ticket-id]
+  (when-let [{:keys [pr-url gate message run-id run-dir count limit]} (latest-pr-gate-retry ticket-id)]
+    (str "Pending PR gate retry instruction:\n"
+         "- Target PR URL: " pr-url "\n"
+         "- Failed gate: " gate "\n"
+         "- Failure reason: " message "\n"
+         "- Retry count for this same PR/gate/reason: " count "/" limit "\n"
+         "- Previous run summary: " run-dir "/summary.edn\n"
+         "- Previous run logs: " run-dir "/events.jsonl and " run-dir "/stderr.log\n"
+         "- Expected completion state: update the same PR until draft/mergeability/CI/codex-review gates pass, then return TASK_BOARD_RESULT: review with the PR URL.\n\n")))
+
+(defn record-pr-gate-failure! [ticket-id run-id review-gate]
+  (let [limit (pr-gate-retry-limit)
+        fingerprint (retry-fingerprint review-gate)
+        path [:pr-gate-retries ticket-id fingerprint]
+        state (runner-state)
+        current (get-in state path)
+        count (inc (long (or (:count current) 0)))
+        record {:pr-url (:url review-gate)
+                :gate (some-> (:gate review-gate) name)
+                :message (:message review-gate)
+                :run-id run-id
+                :run-dir (str (run-dir ticket-id run-id))
+                :count count
+                :limit limit
+                :updated-at (now-str)}
+        next-state (assoc-in state path record)]
+    (write-runner-state! next-state)
+    (assoc review-gate
+           :retry-count count
+           :retry-limit limit
+           :retry-exhausted? (> count limit))))
+
+(defn clear-pr-gate-retries! [ticket-id]
+  (let [state (runner-state)
+        retries (dissoc (:pr-gate-retries state) ticket-id)
+        next-state (if (seq retries)
+                     (assoc state :pr-gate-retries retries)
+                     (dissoc state :pr-gate-retries))]
+    (when (not= state next-state)
+      (write-runner-state! next-state))))
+
 (defn ticket-repos [ticket-id]
   (->> (str/split (or (:repo (ticket-frontmatter ticket-id)) "") #"[,\s]+")
        (map str/trim)
@@ -460,6 +527,7 @@
                     "Current lane: " lane "\n\n"
                     (workspace-prompt workspace) "\n"
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
+                    (or (pr-gate-retry-prompt ticket-id) "")
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
                              "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
@@ -515,9 +583,6 @@
 (defn review-ready? [text]
   (or (github-pr-url? text)
       (no-repo-review-marker? text)))
-
-(defn env-long [k default]
-  (Long/parseLong (env k default)))
 
 (defn pr-gate-timeout-seconds []
   (env-long "CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS" "1800"))
@@ -632,12 +697,14 @@
           {:ok? false
            :gate (:gate merge)
            :url pr-url
+           :retryable? true
            :message (:message merge)}
 
           (= :failed (:state ci))
           {:ok? false
            :gate :ci
            :url pr-url
+           :retryable? true
            :message (:message ci)}
 
           (and (= :passed (:state merge))
@@ -650,6 +717,7 @@
           {:ok? false
            :gate (if (= :pending (:state merge)) (:gate merge) :ci)
            :url pr-url
+           :retryable? true
            :message (str "Timed out waiting for PR gates. " (:message merge) " " (:message ci))}
 
           :else
@@ -692,6 +760,7 @@
       {:ok? false
        :gate :codex-review
        :url pr-url
+       :retryable? false
        :message (str "codex review command failed: " (:err proc))}
 
       (codex-review-clean? last-message)
@@ -703,6 +772,7 @@
       {:ok? false
        :gate :codex-review
        :url pr-url
+       :retryable? true
        :message (str "codex review reported actionable findings"
                      (when-let [summary (not-empty (codex-review-summary last-message))]
                        (str ": " summary)))})))
@@ -742,10 +812,12 @@
         :else
         {:ok? false
          :gate :pr-url
+         :retryable? false
          :message "Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker."}))
     (catch Exception e
       {:ok? false
        :gate :pr-gate
+       :retryable? false
        :message (.getMessage e)})))
 
 (defn run-codex! [ticket-id action lane lock]
@@ -809,8 +881,17 @@
                    (= :groom action) "ready"
                    (#{"done" "review" "blocked"} result) result
                    :else "review")]
-    (if (and (= "review" intended) (not (:ok? review-gate)))
+    (cond
+      (and (= "review" intended)
+           (not (:ok? review-gate))
+           (:retryable? review-gate)
+           (not (:retry-exhausted? review-gate)))
+      "in-progress"
+
+      (and (= "review" intended) (not (:ok? review-gate)))
       "blocked"
+
+      :else
       intended)))
 
 (defn final-note [run-id next-status result last-message review-gate]
@@ -826,6 +907,18 @@
            (when-let [url (:url review-gate)]
              (str " for " url))
            ": " (:message review-gate))
+
+      (and (= "in-progress" next-status)
+           (not (:ok? review-gate))
+           (:retryable? review-gate))
+      (str base " Review gate failed"
+           (when-let [gate (:gate review-gate)]
+             (str " (" (name gate) ")"))
+           (when-let [url (:url review-gate)]
+             (str " for " url))
+           ": " (:message review-gate)
+           " Retrying with Codex instruction "
+           (:retry-count review-gate) "/" (:retry-limit review-gate) ".")
 
       (and (= "review" next-status) (seq pr-urls))
       (str base " PR: " (str/join ", " pr-urls) ". Review gates passed: " (:message review-gate))
@@ -855,20 +948,29 @@
                                (#{"done" "review" "blocked"} result) result
                                :else "review")
                     review-gate (if (= "review" intended)
-                                  (review-gate! dir last-message)
+                                  (let [gate-result (review-gate! dir last-message)]
+                                    (if (and (not (:ok? gate-result))
+                                             (:retryable? gate-result))
+                                      (record-pr-gate-failure! ticket-id run-id gate-result)
+                                      gate-result))
                                   {:ok? true})
                     next-status (final-status action result exit review-gate)]
                 (when (= "review" intended)
-                  (mark-run! ticket-id run-id (if (:ok? review-gate) :succeeded :blocked)
+                  (mark-run! ticket-id run-id (cond
+                                                (:ok? review-gate) :succeeded
+                                                (= "in-progress" next-status) :retrying
+                                                :else :blocked)
                              {:action action
                               :lane effective-lane
                               :exit-code exit
                               :result result
                               :review-gate review-gate
                               :finished-at (now-str)}))
+                (when (:ok? review-gate)
+                  (clear-pr-gate-retries! ticket-id))
                 (move-card! ticket-id next-status)
                 (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                         :assignee "boxp"}
+                                                         :assignee (if (= "in-progress" next-status) "codex" "boxp")}
                                                   (= "done" next-status) (assoc :closed (today))))
                 (append-note! ticket-id (final-note run-id next-status result last-message review-gate))
                 true)
