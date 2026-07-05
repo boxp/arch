@@ -16,19 +16,19 @@ jobs:
       contents: read
     strategy:
       matrix:
-        node: [shanghai-1, shanghai-2, shanghai-3]
+        node: [shanghai-1, shanghai-2, shanghai-3, golyat-4]
       max-parallel: 1
       fail-fast: true
     env:
-      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104","golyat-4":"192.168.10.107"}'
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -73,9 +73,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.59.1
+          aqua_version: v2.60.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -109,30 +109,45 @@ jobs:
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
 
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Install dependencies
         run: |
           cd ansible
           uv sync
 
-      - name: Run control-plane playbook
+      - name: Run primary node playbook
         run: |
           cd ansible
           source .venv/bin/activate
 
-          echo "Running control-plane playbook on node: ${{ matrix.node }}"
+          NODE="${{ matrix.node }}"
+          if [[ "$NODE" == shanghai-* ]]; then
+            PLAYBOOK="playbooks/control-plane.yml"
+            PLAYBOOK_NAME="control-plane"
+            EXTRA_ARGS=()
+          elif [[ "$NODE" == golyat-* ]]; then
+            PLAYBOOK="playbooks/worker-image.yml"
+            PLAYBOOK_NAME="worker-image"
+            EXTRA_ARGS=(-e "worker_configure_static_network=true" -e "worker_static_network_interface=enp44s0")
+          else
+            echo "::error::Unsupported Ansible target node: $NODE"
+            exit 1
+          fi
+
+          echo "Running ${PLAYBOOK_NAME} playbook on node: ${NODE}"
           ansible-playbook \
             -i inventories/production/hosts.yml \
-            playbooks/control-plane.yml \
-            --limit ${{ matrix.node }} \
+            "$PLAYBOOK" \
+            --limit "$NODE" \
             -e "ansible_ssh_common_args=''" \
-            -e "node_name=${{ matrix.node }}" \
+            -e "node_name=${NODE}" \
+            "${EXTRA_ARGS[@]}" \
             -v
 
       - name: Run node-specific playbook

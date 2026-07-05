@@ -16,9 +16,9 @@ jobs:
     # Update aqua-checksums.json and push a commit
     uses: aquaproj/update-checksum-workflow/.github/workflows/update-checksum.yaml@eba908314cdc3b2ab7fb7546950c05a666effbc0 # v1.0.5
     permissions:
-      contents: read
+      contents: write
     with:
-      aqua_version: v2.59.1
+      aqua_version: v2.60.1
       prune: true
       ref: ${{inputs.ref}}
     secrets:

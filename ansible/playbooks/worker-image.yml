@@ -1,0 +1,344 @@
+---
+- name: Build lolice amd64 worker node image
+  hosts: all
+  become: true
+  gather_facts: true
+  vars_files:
+    - ../vars/nodes.yml
+  vars:
+    node_ip: "{{ node_ips[node_name] | default('') }}"
+    worker_configure_static_network: false
+    worker_install_gpu_host_tools: false
+    worker_base_packages:
+      - ca-certificates
+      - curl
+      - gnupg
+      - jq
+      - linux-firmware
+      - lsb-release
+      - openssh-server
+      - python3-apt
+      - sudo
+      - cloud-guest-utils
+      - e2fsprogs
+      - vim
+      - wireless-regdb
+    worker_extra_kernel_modules_package: true
+    worker_static_network_interface: enp44s0
+    worker_static_networkd_config: /etc/systemd/network/20-wired.network
+
+  pre_tasks:
+    - name: Check if running in chroot environment
+      ansible.builtin.stat:
+        path: /proc/1/root/.
+      register: worker_chroot_check
+      changed_when: false
+      failed_when: false
+      tags: [always]
+
+    - name: Detect chroot environment
+      ansible.builtin.set_fact:
+        is_chroot: "{{ chroot_build | default(false) | bool }}"
+      tags: [always]
+
+    - name: Install worker base packages
+      ansible.builtin.apt:
+        name: "{{ worker_base_packages }}"
+        state: present
+        update_cache: true
+      tags: [bootstrap, packages]
+
+    - name: Find installed generic kernel module trees
+      ansible.builtin.find:
+        paths: /lib/modules
+        file_type: directory
+        patterns: "*-generic"
+      register: worker_generic_kernel_modules
+      tags: [bootstrap, packages]
+
+    - name: Install extra modules for installed generic kernels
+      ansible.builtin.apt:
+        name: "{{ worker_generic_kernel_modules.files | map(attribute='path') | map('basename') | map('regex_replace', '^(.*)$', 'linux-modules-extra-\\1') | list }}"
+        state: present
+        update_cache: true
+      when:
+        - worker_extra_kernel_modules_package | bool
+        - worker_generic_kernel_modules.files | length > 0
+      tags: [bootstrap, packages]
+
+    - name: Create systemd multi-user.target.wants directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/multi-user.target.wants
+        state: directory
+        mode: "0755"
+      tags: [ssh, bootstrap]
+
+    - name: Enable SSH service via symlink
+      ansible.builtin.file:
+        src: /lib/systemd/system/ssh.service
+        dest: /etc/systemd/system/multi-user.target.wants/ssh.service
+        state: link
+      tags: [ssh, bootstrap]
+
+    - name: Create SSH privilege separation directory for chroot
+      ansible.builtin.file:
+        path: /run/sshd
+        state: directory
+        mode: "0755"
+      when: is_chroot | bool
+      tags: [ssh, bootstrap]
+
+    - name: Generate temporary SSH host keys for config validation in chroot
+      ansible.builtin.command: ssh-keygen -A
+      changed_when: true
+      when: is_chroot | bool
+      tags: [ssh, bootstrap]
+
+    - name: Install SSH runtime directory tmpfiles rule
+      ansible.builtin.copy:
+        dest: /etc/tmpfiles.d/lolice-sshd.conf
+        mode: "0644"
+        content: |
+          d /run/sshd 0755 root root -
+      tags: [ssh, bootstrap]
+
+    - name: Install first boot SSH host key service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/lolice-ssh-hostkeys.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Generate SSH host keys before sshd starts
+          Before=ssh.service
+
+          [Service]
+          Type=oneshot
+          ExecStart=/bin/mkdir -p /run/sshd
+          ExecStart=/usr/bin/ssh-keygen -A
+
+          [Install]
+          WantedBy=ssh.service
+      tags: [ssh, bootstrap]
+
+    - name: Create ssh.service.wants directory
+      ansible.builtin.file:
+        path: /etc/systemd/system/ssh.service.wants
+        state: directory
+        mode: "0755"
+      tags: [ssh, bootstrap]
+
+    - name: Enable first boot SSH host key service via symlink
+      ansible.builtin.file:
+        src: /etc/systemd/system/lolice-ssh-hostkeys.service
+        dest: /etc/systemd/system/ssh.service.wants/lolice-ssh-hostkeys.service
+        state: link
+        force: true
+      tags: [ssh, bootstrap]
+
+    - name: Configure SSH server
+      ansible.builtin.lineinfile:
+        path: /etc/ssh/sshd_config
+        regexp: "{{ item.regexp }}"
+        line: "{{ item.line }}"
+        validate: "sshd -t -f %s"
+      loop:
+        - { regexp: "^#?PermitRootLogin", line: "PermitRootLogin no" }
+        - { regexp: "^#?PasswordAuthentication", line: "PasswordAuthentication no" }
+        - { regexp: "^#?PubkeyAuthentication", line: "PubkeyAuthentication yes" }
+        - { regexp: "^#?ChallengeResponseAuthentication", line: "ChallengeResponseAuthentication no" }
+      notify: Restart SSH service
+      tags: [ssh, bootstrap]
+
+    - name: Create systemd-networkd configuration directory
+      ansible.builtin.file:
+        path: /etc/systemd/network
+        state: directory
+        mode: "0755"
+      when: worker_configure_static_network | bool
+      tags: [network, bootstrap]
+
+    - name: Remove worker netplan static configuration
+      ansible.builtin.file:
+        path: "/etc/netplan/01-static-{{ worker_static_network_interface }}.yaml"
+        state: absent
+      when: worker_configure_static_network | bool
+      tags: [network, bootstrap]
+
+    - name: Configure worker static network with systemd-networkd
+      ansible.builtin.copy:
+        dest: "{{ worker_static_networkd_config }}"
+        mode: "0644"
+        content: |
+          [Match]
+          Name={{ worker_static_network_interface }}
+
+          [Network]
+          Address={{ node_ip }}/24
+          Gateway={{ cluster.gateway }}
+          {% for dns in cluster.dns_servers %}
+          DNS={{ dns }}
+          {% endfor %}
+      notify: Restart systemd-networkd
+      when: worker_configure_static_network | bool
+      tags: [network, bootstrap]
+
+    - name: Enable systemd-networkd service via symlink
+      ansible.builtin.file:
+        src: /lib/systemd/system/systemd-networkd.service
+        dest: /etc/systemd/system/multi-user.target.wants/systemd-networkd.service
+        state: link
+      when: worker_configure_static_network | bool
+      tags: [network, bootstrap]
+
+  roles:
+    - role: user_management
+      tags: [users, bootstrap]
+      vars:
+        user_management_use_github_keys: true
+        user_management_github_username: "boxp"
+
+    - role: kubernetes_components
+      tags: [kubernetes, k8s-components]
+      vars:
+        kubernetes_version: "1.36.1"
+        kubernetes_package_version: "1.36.1-1.1"
+        crio_version: "1.36.1"
+        crio_package_version: "1.36.1-1.1"
+        kubelet_cluster_dns: "{{ cluster.dns }}"
+        kubelet_cluster_domain: "{{ cluster.domain }}"
+        kubelet_node_ip: "{{ node_ip }}"
+
+    - role: gpu_worker_host_tools
+      tags: [gpu, packages]
+      vars:
+        gpu_worker_host_tools_enabled: "{{ worker_install_gpu_host_tools }}"
+
+  tasks:
+    - name: Install root filesystem grow script
+      ansible.builtin.copy:
+        dest: /usr/local/sbin/lolice-grow-rootfs
+        mode: "0755"
+        content: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          marker="/var/lib/lolice-grow-rootfs.done"
+          log_file="/var/log/lolice-grow-rootfs.log"
+
+          mkdir -p "$(dirname "$marker")"
+          exec > >(tee -a "$log_file") 2>&1
+
+          if [ -e "$marker" ]; then
+            echo "Root filesystem grow already completed: $marker"
+            exit 0
+          fi
+
+          root_source="$(findmnt -n -o SOURCE /)"
+          root_device="$(readlink -f "$root_source" 2>/dev/null || true)"
+          root_fstype="$(findmnt -n -o FSTYPE /)"
+
+          if [ -z "$root_device" ] || [ ! -b "$root_device" ]; then
+            root_majmin="$(findmnt -n -o MAJ:MIN /)"
+            root_device="$(lsblk -rpno NAME,MAJ:MIN | awk -v majmin="$root_majmin" '$2 == majmin { print $1; exit }')"
+          fi
+
+          if [[ "$root_device" != /dev/* ]] || [ ! -b "$root_device" ]; then
+            echo "Unsupported root source: $root_source resolved to $root_device" >&2
+            exit 1
+          fi
+
+          disk_name="$(lsblk -no PKNAME "$root_device" | tr -d '[:space:]')"
+          root_block="$(basename "$root_device")"
+          part_num="$(cat "/sys/class/block/${root_block}/partition" 2>/dev/null || true)"
+
+          if [ -z "$disk_name" ] || [ -z "$part_num" ]; then
+            echo "Could not determine parent disk or partition number for $root_device" >&2
+            lsblk -o NAME,PKNAME,FSTYPE,SIZE,MOUNTPOINTS
+            exit 1
+          fi
+
+          disk="/dev/${disk_name}"
+          echo "Growing root partition: disk=$disk partition=$part_num root=$root_device fstype=$root_fstype"
+
+          growpart_rc=0
+          growpart_output="$(growpart "$disk" "$part_num" 2>&1)" || growpart_rc=$?
+          echo "$growpart_output"
+          if [ "$growpart_rc" -ne 0 ] && ! grep -q '^NOCHANGE:' <<< "$growpart_output"; then
+            exit "$growpart_rc"
+          fi
+
+          partprobe "$disk" || true
+          udevadm settle || true
+
+          case "$root_fstype" in
+            ext2|ext3|ext4)
+              resize2fs "$root_device"
+              ;;
+            xfs)
+              xfs_growfs /
+              ;;
+            btrfs)
+              btrfs filesystem resize max /
+              ;;
+            *)
+              echo "Unsupported root filesystem type: $root_fstype" >&2
+              exit 1
+              ;;
+          esac
+
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$marker"
+          echo "Root filesystem grow completed"
+      tags: [bootstrap, grow-rootfs]
+
+    - name: Install root filesystem grow systemd service
+      ansible.builtin.copy:
+        dest: /etc/systemd/system/lolice-grow-rootfs.service
+        mode: "0644"
+        content: |
+          [Unit]
+          Description=Grow lolice worker root filesystem to fill disk
+          After=local-fs.target
+          ConditionPathExists=!/var/lib/lolice-grow-rootfs.done
+
+          [Service]
+          Type=oneshot
+          ExecStart=/usr/local/sbin/lolice-grow-rootfs
+          RemainAfterExit=yes
+
+          [Install]
+          WantedBy=multi-user.target
+      tags: [bootstrap, grow-rootfs]
+
+    - name: Enable root filesystem grow service via symlink
+      ansible.builtin.file:
+        src: /etc/systemd/system/lolice-grow-rootfs.service
+        dest: /etc/systemd/system/multi-user.target.wants/lolice-grow-rootfs.service
+        state: link
+      tags: [bootstrap, grow-rootfs]
+
+    - name: Record worker image build metadata
+      ansible.builtin.copy:
+        dest: /etc/lolice-worker-image
+        mode: "0644"
+        content: |
+          node_name={{ node_name | default('golyat-4') }}
+          kubernetes_version={{ kubernetes_version }}
+          crio_version={{ crio_version }}
+          crio_package_version={{ crio_package_version }}
+          static_network={{ worker_configure_static_network | bool }}
+          gpu_runtime={{ worker_install_gpu_host_tools | bool }}
+          intel_graphics_ppa={{ gpu_worker_host_tools_intel_graphics_ppa if worker_install_gpu_host_tools | bool else '' }}
+      tags: [bootstrap]
+
+  handlers:
+    - name: Restart SSH service
+      ansible.builtin.systemd:
+        name: ssh
+        state: restarted
+      when: not (is_chroot | default(false) | bool)
+
+    - name: Restart systemd-networkd
+      ansible.builtin.systemd:
+        name: systemd-networkd
+        state: restarted
+      when: not (is_chroot | default(false) | bool)

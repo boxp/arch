@@ -1,9 +1,9 @@
 {
   extends: [
     'config:recommended',
-    'github>aquaproj/aqua-renovate-config#2.12.1',
-    'github>aquaproj/aqua-renovate-config:file#2.12.1(^(.*/)?aqua/[^/]*\\.ya?ml$)',
-    'github>aquaproj/aqua-renovate-config:file#2.12.1(^(.*/)?aqua/imports/[^/]*\\.ya?ml$)',
+    'github>aquaproj/aqua-renovate-config#2.13.0',
+    'github>aquaproj/aqua-renovate-config:file#2.13.0(^(.*/)?aqua/[^/]*\\.ya?ml$)',
+    'github>aquaproj/aqua-renovate-config:file#2.13.0(^(.*/)?aqua/imports/[^/]*\\.ya?ml$)',
     'github>suzuki-shunsuke/renovate-config#4.0.0',
   ],
   labels: [
@@ -64,9 +64,27 @@
       customType: "regex",
       managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
       matchStrings: [
+        "ARG CLAUDE_CODE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "@anthropic-ai/claude-code",
+      datasourceTemplate: "npm"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
         "ARG EVEN_TERMINAL_VERSION=(?<currentValue>[0-9.]+)"
       ],
       depNameTemplate: "@evenrealities/even-terminal",
+      datasourceTemplate: "npm"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG PI_AGENT_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "@earendil-works/pi-coding-agent",
       datasourceTemplate: "npm"
     },
     {
@@ -149,6 +167,37 @@
       datasourceTemplate: "github-releases",
       extractVersionTemplate: "^v(?<version>.*)$"
     },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG KUBECTL_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "kubernetes/kubernetes",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG KUSTOMIZE_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "kubernetes-sigs/kustomize",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^kustomize/v(?<version>.*)$"
+    },
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG CURSOR_AGENT_VERSION=(?<currentValue>[^\\s]+)"
+      ],
+      depNameTemplate: "cursor-agent",
+      packageNameTemplate: "cursor-agent",
+      datasourceTemplate: "custom.cursor-agent",
+      versioningTemplate: "loose"
+    },
     // Codex workspace NodeSource major version
     {
       customType: "regex",
@@ -160,6 +209,12 @@
       datasourceTemplate: "node-version"
     }
   ],
+  customDatasources: {
+    "cursor-agent": {
+      defaultRegistryUrlTemplate: "https://cursor.com/install",
+      format: "plain"
+    }
+  },
   packageRules: [
     {
       additionalBranchPrefix: '{{packageFileDir}}-',
@@ -173,6 +228,10 @@
       matchPackageNames: ["cloudflare/cloudflare"],
       allowedVersions: "<5.0.0",
       description: "Allow v4.x updates only. Block v5.x until official migration tools are available (March 2026)"
+    },
+    {
+      matchDatasources: ["custom.cursor-agent"],
+      extractVersion: "downloads\\.cursor\\.com/lab/(?<version>[^/]+)/\\$\\{OS\\}/\\$\\{ARCH\\}/agent-cli-package\\.tar\\.gz"
     },
     // Kubernetes components (manual review required)
     {

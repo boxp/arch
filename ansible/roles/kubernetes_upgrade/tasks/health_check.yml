@@ -1,40 +1,63 @@
 ---
 - name: Wait for node to be Ready
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ health_check_kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{.status.conditions[?(@.type=="Ready")].status}'
   register: node_ready
+  check_mode: false
   until: node_ready.stdout == "True"
   retries: "{{ upgrade_health_check_retries }}"
   delay: "{{ upgrade_health_check_delay }}"
-  delegate_to: "{{ groups['control_plane'][0] }}"
   changed_when: false
   become: true
+  delegate_to: "{{ health_check_delegate_host }}"
+  vars:
+    health_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
+    health_check_kubectl_api_server: >-
+      {{ 'https://' ~ hostvars[health_check_delegate_host].node_ip ~ ':6443'
+      if node_role == 'worker' else kubectl_api_server }}
+    health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
 
 - name: Verify kubelet version on node
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ health_check_kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{.status.nodeInfo.kubeletVersion}'
   register: node_kubelet_version
-  delegate_to: "{{ groups['control_plane'][0] }}"
+  check_mode: false
   changed_when: false
-  failed_when: "kubernetes_upgrade_version not in node_kubelet_version.stdout"
+  failed_when:
+    - not ansible_check_mode
+    - kubernetes_upgrade_version not in node_kubelet_version.stdout
   become: true
+  delegate_to: "{{ health_check_delegate_host }}"
+  vars:
+    health_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
+    health_check_kubectl_api_server: >-
+      {{ 'https://' ~ hostvars[health_check_delegate_host].node_ip ~ ':6443'
+      if node_role == 'worker' else kubectl_api_server }}
+    health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
 
 - name: Verify node conditions (no pressure)
   ansible.builtin.command: >
-    kubectl --kubeconfig={{ kubeconfig_path }} get node {{ inventory_hostname }}
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ health_check_kubectl_api_server_arg }} get node {{ inventory_hostname }}
     -o jsonpath='{range .status.conditions[*]}{.type}={.status}{"\n"}{end}'
   register: node_conditions
-  delegate_to: "{{ groups['control_plane'][0] }}"
+  check_mode: false
   changed_when: false
   failed_when: >
     'MemoryPressure=True' in node_conditions.stdout or
     'DiskPressure=True' in node_conditions.stdout or
     'PIDPressure=True' in node_conditions.stdout
   become: true
+  delegate_to: "{{ health_check_delegate_host }}"
+  vars:
+    health_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
+    health_check_kubectl_api_server: >-
+      {{ 'https://' ~ hostvars[health_check_delegate_host].node_ip ~ ':6443'
+      if node_role == 'worker' else kubectl_api_server }}
+    health_check_kubectl_api_server_arg: "{{ '--server=' ~ health_check_kubectl_api_server }}"
   tags: [health_check]
 
 - name: Verify etcd cluster health (control plane only)
@@ -42,6 +65,7 @@
     argv:
       - kubectl
       - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
       - -n
       - kube-system
       - exec
@@ -54,6 +78,7 @@
       - "--cacert={{ etcd_cacert }}"
       - "--cert={{ etcd_cert }}"
       - "--key={{ etcd_key }}"
+  check_mode: false
   changed_when: false
   become: true
   when: node_role == "control_plane"

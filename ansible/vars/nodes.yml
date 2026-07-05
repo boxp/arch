@@ -4,6 +4,7 @@ node_ips:
   shanghai-1: "192.168.10.102"
   shanghai-2: "192.168.10.103"
   shanghai-3: "192.168.10.104"
+  golyat-4: "192.168.10.107"
 
 # Common cluster configuration
 cluster:

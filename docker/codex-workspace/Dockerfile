@@ -1,15 +1,21 @@
 FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
-ARG CODEX_VERSION=0.133.0
-ARG EVEN_TERMINAL_VERSION=0.7.9
-ARG OBSIDIAN_HEADLESS_VERSION=0.0.8
-ARG GH_VERSION=2.92.0
+# Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
+ARG CODEX_VERSION=0.142.5
+ARG CLAUDE_CODE_VERSION=2.1.201
+ARG EVEN_TERMINAL_VERSION=0.8.1
+ARG PI_AGENT_VERSION=0.80.3
+ARG OBSIDIAN_HEADLESS_VERSION=0.0.12
+ARG GH_VERSION=2.95.0
 ARG GHQ_VERSION=1.10.1
 ARG GWQ_VERSION=0.1.1
 ARG CEEKER_VERSION=0.3.7
 ARG BABASHKA_VERSION=1.12.218
-ARG LAZYGIT_VERSION=0.61.1
+ARG LAZYGIT_VERSION=0.62.2
 ARG YAZI_VERSION=26.5.6
+ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
+ARG KUBECTL_VERSION=1.36.2
+ARG KUSTOMIZE_VERSION=5.8.1
 ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -19,6 +25,7 @@ RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       bash-completion \
       ca-certificates \
+      chromium \
       curl \
       fzf \
       g++ \
@@ -27,6 +34,7 @@ RUN apt-get update \
       gzip \
       jq \
       less \
+      lsb-release \
       locales \
       make \
       openssh-server \
@@ -48,7 +56,9 @@ RUN apt-get update \
 
 RUN npm install -g \
       "@openai/codex@${CODEX_VERSION}" \
+      "@anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}" \
       "@evenrealities/even-terminal@${EVEN_TERMINAL_VERSION}" \
+      "@earendil-works/pi-coding-agent@${PI_AGENT_VERSION}" \
       "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
     && npm cache clean --force
 
@@ -77,6 +87,23 @@ RUN set -eux; \
     unzip -q "$tmp/yazi.zip" -d "$tmp/yazi"; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name yazi | head -n 1)" /usr/local/bin/yazi; \
     install -m 0755 "$(find "$tmp/yazi" -type f -name ya | head -n 1)" /usr/local/bin/ya; \
+    download "https://dl.k8s.io/release/v${KUBECTL_VERSION}/bin/linux/amd64/kubectl" "$tmp/kubectl"; \
+    install -m 0755 "$tmp/kubectl" /usr/local/bin/kubectl; \
+    download "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" "$tmp/kustomize.tar.gz"; \
+    tar -xzf "$tmp/kustomize.tar.gz" -C "$tmp"; \
+    install -m 0755 "$tmp/kustomize" /usr/local/bin/kustomize; \
+    rm -rf "$tmp"
+
+RUN set -eux; \
+    tmp="$(mktemp -d)"; \
+    curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
+      "https://downloads.cursor.com/lab/${CURSOR_AGENT_VERSION}/linux/x64/agent-cli-package.tar.gz" \
+      -o "$tmp/cursor-agent.tar.gz"; \
+    rm -rf /opt/cursor-agent; \
+    mkdir -p /opt/cursor-agent; \
+    tar --strip-components=1 -xzf "$tmp/cursor-agent.tar.gz" -C /opt/cursor-agent; \
+    ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/cursor-agent; \
+    ln -sf /opt/cursor-agent/cursor-agent /usr/local/bin/agent; \
     rm -rf "$tmp"
 
 RUN locale-gen en_US.UTF-8 \
@@ -100,14 +127,20 @@ RUN locale-gen en_US.UTF-8 \
 
 ENV LANG=en_US.UTF-8 \
     LC_ALL=en_US.UTF-8 \
+    CHROME_BIN=/usr/bin/chromium \
+    PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium \
+    EDITOR=vim \
+    VISUAL=vim \
     PATH=/home/boxp/.local/bin:/home/boxp/go/bin:/usr/local/bin:/usr/bin:/bin
 
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
 COPY cron/ /opt/codex-workspace/cron/
+COPY task-board/ /opt/codex-workspace/task-board/
 COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && find /opt/codex-workspace/cron -type f -name "*.sh" -exec chmod 0755 {} + \
-    && find /opt/codex-workspace/cron -type f -name "*.bb" -exec chmod 0755 {} +
+    && find /opt/codex-workspace/cron -type f -name "*.bb" -exec chmod 0755 {} + \
+    && find /opt/codex-workspace/task-board -type f -name "*.bb" -exec chmod 0755 {} +
 
 EXPOSE 2222 3456
 ENTRYPOINT ["/usr/local/bin/codex-workspace-entrypoint"]

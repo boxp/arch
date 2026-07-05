@@ -40,13 +40,26 @@
     update_cache: true
   become: true
 
-- name: Install CRI-O packages
-  ansible.builtin.package:
-    name:
-      - cri-o
+- name: Set CRI-O package spec
+  ansible.builtin.set_fact:
+    crio_package_spec: "{{ 'cri-o=' ~ crio_package_version if (crio_package_version | default('')) | length > 0 else 'cri-o' }}"
+
+- name: Install CRI-O package
+  ansible.builtin.apt:
+    name: "{{ crio_package_spec }}"
     state: present
+    update_cache: true
+    allow_change_held_packages: true
+    allow_downgrade: false
   become: true
   notify: Restart crio
+
+- name: Hold CRI-O package to prevent automatic updates
+  ansible.builtin.dpkg_selections:
+    name: cri-o
+    selection: hold
+  become: true
+  when: (crio_package_version | default('')) | length > 0
 
 - name: Create CRI-O configuration directory
   ansible.builtin.file:
@@ -54,6 +67,22 @@
     state: directory
     mode: '0755'
   become: true
+
+- name: Create containers registries configuration directory
+  ansible.builtin.file:
+    path: /etc/containers/registries.conf.d
+    state: directory
+    mode: '0755'
+  become: true
+
+- name: Configure containers short-name mode
+  ansible.builtin.copy:
+    dest: /etc/containers/registries.conf.d/99-short-name-mode.conf
+    content: |
+      short-name-mode = "permissive"
+    mode: '0644'
+  become: true
+  notify: Restart crio
 
 - name: Configure CRI-O for systemd cgroup driver
   ansible.builtin.copy:

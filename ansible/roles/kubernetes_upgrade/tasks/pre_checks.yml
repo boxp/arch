@@ -2,6 +2,7 @@
 - name: Verify current kubernetes version
   ansible.builtin.command: kubelet --version
   register: current_kubelet_version
+  check_mode: false
   changed_when: false
   tags: [pre_checks]
 
@@ -10,6 +11,7 @@
     argv:
       - kubectl
       - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
       - -n
       - kube-system
       - exec
@@ -23,17 +25,28 @@
       - "--cert={{ etcd_cert }}"
       - "--key={{ etcd_key }}"
   register: etcd_health
+  check_mode: false
   changed_when: false
   when: node_role == "control_plane"
   become: true
   tags: [pre_checks]
 
 - name: Verify all nodes are Ready
-  ansible.builtin.command: kubectl --kubeconfig={{ kubeconfig_path }} get nodes --no-headers
+  ansible.builtin.command: >
+    kubectl --kubeconfig={{ kubeconfig_path }} {{ pre_check_kubectl_api_server_arg }}
+    get nodes --no-headers
   register: node_status
+  check_mode: false
   changed_when: false
-  failed_when: "'NotReady' in node_status.stdout"
-  delegate_to: "{{ groups['control_plane'][0] }}"
-  run_once: true
+  failed_when: >
+    node_status.rc != 0 or
+    'NotReady' in node_status.stdout
   become: true
+  delegate_to: "{{ pre_check_delegate_host }}"
+  vars:
+    pre_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
+    pre_check_kubectl_api_server: >-
+      {{ 'https://' ~ hostvars[pre_check_delegate_host].node_ip ~ ':6443'
+      if node_role == 'worker' else kubectl_api_server }}
+    pre_check_kubectl_api_server_arg: "{{ '--server=' ~ pre_check_kubectl_api_server }}"
   tags: [pre_checks]

@@ -49,28 +49,17 @@
           - "'v1.35' in (crio_apt_content.content | b64decode)"
         fail_msg: "CRI-O apt source does not contain the correct version (v1.35)"
 
-    # Verify CRI-O version-specific apt source was updated
+    # Verify duplicate CRI-O version-specific apt source was removed
     - name: Check CRI-O version-specific apt source file exists
       ansible.builtin.stat:
         path: /etc/apt/sources.list.d/crio-version.list
       register: crio_version_apt_source
 
-    - name: Assert CRI-O version-specific apt source exists
+    - name: Assert duplicate CRI-O version-specific apt source is removed
       ansible.builtin.assert:
         that:
-          - crio_version_apt_source.stat.exists
-        fail_msg: "CRI-O version-specific apt source file does not exist"
-
-    - name: Read CRI-O version-specific apt source content
-      ansible.builtin.slurp:
-        src: /etc/apt/sources.list.d/crio-version.list
-      register: crio_version_apt_content
-
-    - name: Assert CRI-O version-specific apt source contains correct version
-      ansible.builtin.assert:
-        that:
-          - "'v1.35' in (crio_version_apt_content.content | b64decode)"
-        fail_msg: "CRI-O version-specific apt source does not contain the correct version (v1.35)"
+          - not crio_version_apt_source.stat.exists
+        fail_msg: "Duplicate CRI-O version-specific apt source file still exists"
 
     # Verify etcd snapshot directory was created
     - name: Check etcd snapshot directory exists
@@ -91,6 +80,20 @@
         that:
           - etcd_snap_dir.stat.mode == '0700'
         fail_msg: "etcd snapshot directory does not have correct permissions (expected 0700)"
+
+    # Verify etcd snapshot was streamed into the Longhorn PVC mount
+    - name: Find etcd snapshots in PVC mount
+      ansible.builtin.find:
+        paths: /snapshots
+        patterns: "pre-upgrade-*.db"
+      register: pvc_snapshots
+
+    - name: Assert etcd snapshot exists in PVC mount
+      ansible.builtin.assert:
+        that:
+          - pvc_snapshots.matched > 0
+          - pvc_snapshots.files | selectattr('size', 'gt', 0) | list | length > 0
+        fail_msg: "etcd snapshot was not stored in the PVC mount"
 
     # Verify etcd certificate paths exist (mock)
     - name: Check etcd CA certificate exists

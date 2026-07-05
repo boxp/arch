@@ -6,10 +6,9 @@
 #          -e crio_upgrade_version=1.35.0
 
 # Pre-upgrade cluster-wide checks + etcd snapshot
-- name: Pre-upgrade validation and etcd snapshot
+- name: Pre-upgrade validation and optional etcd snapshot
   hosts: control_plane[0]
   gather_facts: true
-  tags: [pre_checks]
   tasks:
     - name: Verify cluster health
       ansible.builtin.include_role:
@@ -20,7 +19,7 @@
       ansible.builtin.include_role:
         name: kubernetes_upgrade
         tasks_from: etcd_snapshot.yml
-      tags: [pre_checks, etcd_snapshot]
+      tags: [etcd_snapshot]
 
 # Upgrade first control plane
 - name: Upgrade first control plane (shanghai-1)
@@ -28,6 +27,23 @@
   serial: 1
   gather_facts: true
   tags: [upgrade]
+  pre_tasks:
+    - name: Create containers registries configuration directory
+      ansible.builtin.file:
+        path: /etc/containers/registries.conf.d
+        state: directory
+        mode: '0755'
+      become: true
+      when: crio_upgrade_version is defined and crio_upgrade_version != ""
+
+    - name: Configure containers short-name mode
+      ansible.builtin.copy:
+        dest: /etc/containers/registries.conf.d/99-short-name-mode.conf
+        content: |
+          short-name-mode = "permissive"
+        mode: '0644'
+      become: true
+      when: crio_upgrade_version is defined and crio_upgrade_version != ""
   roles:
     - role: kubernetes_upgrade
       vars:
@@ -40,31 +56,78 @@
   serial: 1
   gather_facts: true
   tags: [upgrade]
+  pre_tasks:
+    - name: Create containers registries configuration directory
+      ansible.builtin.file:
+        path: /etc/containers/registries.conf.d
+        state: directory
+        mode: '0755'
+      become: true
+      when: crio_upgrade_version is defined and crio_upgrade_version != ""
+
+    - name: Configure containers short-name mode
+      ansible.builtin.copy:
+        dest: /etc/containers/registries.conf.d/99-short-name-mode.conf
+        content: |
+          short-name-mode = "permissive"
+        mode: '0644'
+      become: true
+      when: crio_upgrade_version is defined and crio_upgrade_version != ""
   roles:
     - role: kubernetes_upgrade
       vars:
         node_role: control_plane
         is_first_control_plane: false
 
-# Upgrade worker nodes (Phase 3 で有効化。inventory に workers グループ追加が前提)
-# - name: Upgrade worker nodes
-#   hosts: workers
-#   serial: 1
-#   gather_facts: true
-#   tags: [upgrade]
-#   roles:
-#     - role: kubernetes_upgrade
-#       vars:
-#         node_role: worker
+# Upgrade worker nodes
+- name: Upgrade worker nodes
+  hosts: workers
+  serial: 1
+  gather_facts: true
+  tags: [upgrade]
+  pre_tasks:
+    - name: Create containers registries configuration directory
+      ansible.builtin.file:
+        path: /etc/containers/registries.conf.d
+        state: directory
+        mode: '0755'
+      become: true
+      when: crio_upgrade_version is defined and crio_upgrade_version != ""
+
+    - name: Configure containers short-name mode
+      ansible.builtin.copy:
+        dest: /etc/containers/registries.conf.d/99-short-name-mode.conf
+        content: |
+          short-name-mode = "permissive"
+        mode: '0644'
+      become: true
+      when: crio_upgrade_version is defined and crio_upgrade_version != ""
+  roles:
+    - role: kubernetes_upgrade
+      vars:
+        node_role: worker
 
 # Post-upgrade cluster-wide health check
-- name: Post-upgrade cluster health check
+- name: Post-upgrade control-plane health check
   hosts: control_plane
   gather_facts: false
   tags: [health_check]
   tasks:
-    - name: Verify all nodes health
+    - name: Verify control-plane node health
       ansible.builtin.include_role:
         name: kubernetes_upgrade
         tasks_from: health_check.yml
+      tags: [health_check]
+
+- name: Post-upgrade worker health check
+  hosts: workers
+  gather_facts: false
+  tags: [health_check]
+  tasks:
+    - name: Verify worker node health
+      ansible.builtin.include_role:
+        name: kubernetes_upgrade
+        tasks_from: health_check.yml
+      vars:
+        node_role: worker
       tags: [health_check]

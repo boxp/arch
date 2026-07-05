@@ -40,8 +40,12 @@ terraform.rc
 tfplan.out
 tfplan.json
 node_modules
+apps/video-rotator/dist/
+apps/video-rotator/public/ffmpeg-core/
+apps/video-rotator/*.tsbuildinfo
 *.log
 armbian-build/
+build/
 
 # Secret and credential files
 .env

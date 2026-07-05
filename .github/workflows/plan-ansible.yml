@@ -17,19 +17,19 @@ jobs:
       contents: read
     strategy:
       matrix:
-        node: [shanghai-1, shanghai-2, shanghai-3]
+        node: [shanghai-1, shanghai-2, shanghai-3, golyat-4]
       fail-fast: false
     env:
-      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
+      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104","golyat-4":"192.168.10.107"}'
       AQUA_POLICY_CONFIG: ${{ github.workspace }}/aqua/aqua-policy.yaml
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@d979d5b3a71173a29b74b5b88418bfda9437d885 # v6.1.1
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Plan
           aws-region: ap-northeast-1
@@ -72,9 +72,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.59.1
+          aqua_version: v2.60.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -100,25 +100,55 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Verify SSH connectivity
+        id: ssh-connectivity
+        continue-on-error: true
         run: |
           NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
           echo "Testing SSH connectivity to ${{ matrix.node }} (${NODE_IP}) via bastion..."
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
 
+      - name: Skip plan for unreachable node
+        if: steps.ssh-connectivity.outcome != 'success'
+        run: |
+          echo "::warning::Skipping Ansible plan for ${{ matrix.node }} because SSH connectivity failed."
+          mkdir -p ansible/plan_outputs
+          jq -n \
+            --arg node "${{ matrix.node }}" \
+            '{
+              node: $node,
+              playbook: "ssh-connectivity",
+              has_changes: false,
+              stats: {
+                ($node): {
+                  ok: 0,
+                  changed: 0,
+                  skipped: 1,
+                  failures: 0,
+                  unreachable: 1
+                }
+              },
+              changed_tasks: [],
+              failed_tasks: []
+            }' > "ansible/plan_outputs/${{ matrix.node }}-ssh-connectivity.fmt.json"
+
       - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        if: steps.ssh-connectivity.outcome == 'success'
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        if: steps.ssh-connectivity.outcome == 'success'
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
 
       - name: Install dependencies
+        if: steps.ssh-connectivity.outcome == 'success'
         run: |
           cd ansible
           uv sync
 
       - name: Run Ansible Plan (check + diff)
+        if: steps.ssh-connectivity.outcome == 'success'
         id: ansible-plan
         run: |
           cd ansible
@@ -134,6 +164,7 @@ jobs:
             local node="$2"
             local playbook_name="$3"
             local output_file="$4"
+            shift 4
             local json_file="plan_outputs/${node}-${playbook_name}.json"
 
             set +e
@@ -144,6 +175,7 @@ jobs:
               --limit "$node" \
               -e "ansible_ssh_common_args=''" \
               -e "node_name=$node" \
+              "$@" \
               --check --diff \
               > "$json_file" \
               2>"plan_outputs/${node}-${playbook_name}.stderr"
@@ -172,8 +204,18 @@ jobs:
             return 0
           }
 
-          run_ansible "playbooks/control-plane.yml" "$NODE" "control-plane" \
-            "plan_outputs/${NODE}-control-plane.fmt.json"
+          if [[ "$NODE" == shanghai-* ]]; then
+            run_ansible "playbooks/control-plane.yml" "$NODE" "control-plane" \
+              "plan_outputs/${NODE}-control-plane.fmt.json"
+          elif [[ "$NODE" == golyat-* ]]; then
+            run_ansible "playbooks/worker-image.yml" "$NODE" "worker-image" \
+              "plan_outputs/${NODE}-worker-image.fmt.json" \
+              -e "worker_configure_static_network=true" \
+              -e "worker_static_network_interface=enp44s0"
+          else
+            echo "::error::Unsupported Ansible target node: $NODE"
+            exit 1
+          fi
 
           PLAYBOOK="playbooks/node-${NODE}.yml"
           if [ -f "$PLAYBOOK" ]; then
@@ -197,14 +239,14 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@f6be09d5313d3af86e3ad665911c67b149a4498c # v4.0.4
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.59.1
+          aqua_version: v2.60.1
           working_directory: aqua
 
       - name: Download all plan outputs

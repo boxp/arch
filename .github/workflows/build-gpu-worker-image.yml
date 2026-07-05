@@ -1,0 +1,150 @@
+name: Build GPU Worker Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_name:
+        description: GPU worker node name
+        required: true
+        type: string
+        default: golyat-4
+      base_release:
+        description: Ubuntu cloud image release
+        required: true
+        type: choice
+        default: noble
+        options:
+          - jammy
+          - noble
+      image_size:
+        description: Expanded raw image size
+        required: true
+        type: string
+        default: 16G
+      install_gpu_host_tools:
+        description: Install Intel graphics runtime, nvtop, and host smoke-test tools
+        required: true
+        type: boolean
+        default: true
+
+jobs:
+  build-image:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install image build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            jq \
+            libguestfs-tools \
+            qemu-utils \
+            xz-utils
+          sudo chmod 0644 /boot/vmlinuz-*
+          if [ -e /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm
+          fi
+
+      - name: Build GPU worker image
+        id: build
+        env:
+          NODE_NAME: ${{ inputs.node_name }}
+          BASE_RELEASE: ${{ inputs.base_release }}
+          IMAGE_SIZE: ${{ inputs.image_size }}
+          INSTALL_GPU_HOST_TOOLS: ${{ inputs.install_gpu_host_tools }}
+          OUTPUT_DIR: build/gpu-worker-image
+          LIBGUESTFS_BACKEND: direct
+        run: |
+          set -o pipefail
+          scripts/images/build-gpu-worker-image.sh | tee build-output.log
+          final_image_line="$(grep '^FINAL_IMAGE=' build-output.log | tail -n1)"
+          checksum_file_line="$(grep '^CHECKSUM_FILE=' build-output.log | tail -n1)"
+          image_info_line="$(grep '^IMAGE_INFO=' build-output.log | tail -n1)"
+          final_image="${final_image_line#FINAL_IMAGE=}"
+          checksum_file="${checksum_file_line#CHECKSUM_FILE=}"
+          image_info="${image_info_line#IMAGE_INFO=}"
+          for output_path in "$final_image" "$checksum_file" "$image_info"; do
+            if [ -z "$output_path" ] || [ ! -f "$output_path" ]; then
+              echo "Missing expected build output: $output_path" >&2
+              exit 1
+            fi
+          done
+          {
+            echo "final_image=$final_image"
+            echo "checksum_file=$checksum_file"
+            echo "image_info=$image_info"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Verify image artifact
+        run: |
+          checksum_file="${{ steps.build.outputs.checksum_file }}"
+          (
+            cd "$(dirname "$checksum_file")"
+            sha256sum -c "$(basename "$checksum_file")"
+          )
+          xz --test "${{ steps.build.outputs.final_image }}"
+          file "${{ steps.build.outputs.final_image }}"
+          jq . "${{ steps.build.outputs.image_info }}"
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_GPUWorkerImage_Build
+          aws-region: ap-northeast-1
+
+      - name: Upload image to S3
+        env:
+          NODE_NAME: ${{ inputs.node_name }}
+          S3_BUCKET: arch-gpu-worker-images
+          S3_STABLE_PREFIX: images/${{ inputs.node_name }}
+          S3_ARTIFACT_PREFIX: images/artifacts/${{ inputs.node_name }}
+        run: |
+          final_image="${{ steps.build.outputs.final_image }}"
+          checksum_file="${{ steps.build.outputs.checksum_file }}"
+          image_info="${{ steps.build.outputs.image_info }}"
+          final_name="$(basename "$final_image")"
+          latest_checksum_file="${RUNNER_TEMP}/latest.img.xz.sha256"
+          checksum_value="$(cut -d' ' -f1 "$checksum_file")"
+          printf '%s  latest.img.xz\n' "$checksum_value" > "$latest_checksum_file"
+
+          aws s3 cp "$final_image" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/"
+          aws s3 cp "$checksum_file" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/"
+          aws s3 cp "$image_info" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/image-info.json"
+
+          aws s3api copy-object \
+            --copy-source "${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/${final_name}" \
+            --bucket "$S3_BUCKET" \
+            --key "${S3_STABLE_PREFIX}/latest.img.xz"
+
+          aws s3 cp "$latest_checksum_file" "s3://${S3_BUCKET}/${S3_STABLE_PREFIX}/latest.img.xz.sha256"
+
+          aws s3 cp "$image_info" "s3://${S3_BUCKET}/${S3_STABLE_PREFIX}/image-info.json"
+
+          aws s3api put-object-tagging \
+            --bucket "$S3_BUCKET" \
+            --key "${S3_ARTIFACT_PREFIX}/${final_name}" \
+            --tagging "TagSet=[{Key=NodeName,Value=${NODE_NAME}},{Key=BuildDate,Value=$(date +%Y-%m-%d)},{Key=GitSHA,Value=${GITHUB_SHA}}]"
+
+      - name: Build summary
+        run: |
+          {
+            echo "## GPU Worker Image"
+            echo "- Node: ${{ inputs.node_name }}"
+            echo "- Base release: ${{ inputs.base_release }}"
+            echo "- Image: $(basename "${{ steps.build.outputs.final_image }}")"
+            echo "- Size: $(du -h "${{ steps.build.outputs.final_image }}" | cut -f1)"
+            echo "- Checksum: $(cut -d' ' -f1 "${{ steps.build.outputs.checksum_file }}")"
+            echo "- Artifact storage: S3 only"
+            echo "- S3 latest path: s3://arch-gpu-worker-images/images/${{ inputs.node_name }}/latest.img.xz"
+            echo "- S3 artifact path: s3://arch-gpu-worker-images/images/artifacts/${{ inputs.node_name }}/"
+          } >> "$GITHUB_STEP_SUMMARY"

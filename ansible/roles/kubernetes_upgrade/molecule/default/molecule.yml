@@ -7,6 +7,7 @@ platforms:
   - name: control-plane-test
     image: "geerlingguy/docker-ubuntu2404-ansible:latest"
     platform: "${MOLECULE_DOCKER_PLATFORM:-linux/amd64}"
+    pull: true
     pre_build_image: true
     privileged: true
     volumes:
@@ -32,9 +33,11 @@ provisioner:
         crio_upgrade_version: "1.35.0"
         node_role: "control_plane"
         is_first_control_plane: true
+        cluster_vip: "127.0.0.1"
     host_vars:
       control-plane-test:
         ansible_python_interpreter: /usr/bin/python3
+        ansible_remote_tmp: /tmp/.ansible/tmp
         hardware_type: orange_pi_zero3
         architecture: arm64
 verifier:

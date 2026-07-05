@@ -13,7 +13,7 @@
 
 (def key-order
   [:id :name :enabled :schedule :time-zone :prompt-file :workdir :output-root
-   :model :profile :bypass-approvals :extra-args])
+   :runner :model :profile :bypass-approvals :extra-args])
 
 (defn usage []
   (println "usage: codex_cron_jobs.bb [--root PATH] <list|show|add|update|enable|disable|delete|run> ...")
@@ -109,6 +109,7 @@
          :workdir (get opts "workdir" "/home/boxp")
          :output-root (get opts "output-root" (str (root) "/runs"))
          :bypass-approvals (bool-opt opts "bypass-approvals" true)}
+        (assoc-some :runner (get opts "runner"))
         (assoc-some :model (get opts "model"))
         (assoc-some :profile (get opts "profile"))
         (assoc-some :extra-args (get opts "extra-args")))))
@@ -131,6 +132,7 @@
     (contains? opts "prompt-file") (assoc :prompt-file (get opts "prompt-file"))
     (contains? opts "workdir") (assoc :workdir (get opts "workdir"))
     (contains? opts "output-root") (assoc :output-root (get opts "output-root"))
+    (contains? opts "runner") (assoc-some :runner (get opts "runner"))
     (contains? opts "model") (assoc-some :model (get opts "model"))
     (contains? opts "profile") (assoc-some :profile (get opts "profile"))
     (contains? opts "extra-args") (assoc-some :extra-args (get opts "extra-args"))

@@ -137,9 +137,7 @@ jobs:
     needs: path-filter
     if: needs.path-filter.outputs.update-aqua-checksums == 'true'
     permissions:
-      contents: read
-    with:
-      ref: ${{needs.path-filter.outputs.merge_commit_sha}}
+      contents: write
     secrets:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
