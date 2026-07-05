@@ -100,6 +100,58 @@
           - sysctl_config.stat.exists
         fail_msg: "Kubernetes sysctl configuration does not exist"
 
+    - name: Check if persistent journald directory exists
+      ansible.builtin.stat:
+        path: /var/log/journal
+      register: journald_dir
+
+    - name: Assert persistent journald directory exists
+      ansible.builtin.assert:
+        that:
+          - journald_dir.stat.exists
+          - journald_dir.stat.isdir
+          - journald_dir.stat.mode == '2755'
+        fail_msg: "Persistent journald directory is not configured"
+
+    - name: Check if journald persistent storage drop-in exists
+      ansible.builtin.stat:
+        path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+      register: journald_dropin
+
+    - name: Assert journald persistent storage drop-in exists
+      ansible.builtin.assert:
+        that:
+          - journald_dropin.stat.exists
+        fail_msg: "Persistent journald drop-in does not exist"
+
+    - name: Read journald persistent storage drop-in
+      ansible.builtin.slurp:
+        path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+      register: journald_dropin_content
+
+    - name: Assert journald persistent storage is bounded
+      ansible.builtin.assert:
+        that:
+          - "'Storage=persistent' in (journald_dropin_content.content | b64decode)"
+          - "'SystemMaxUse=256M' in (journald_dropin_content.content | b64decode)"
+          - "'MaxRetentionSec=14day' in (journald_dropin_content.content | b64decode)"
+        fail_msg: "Persistent journald storage is not bounded as expected"
+
+    - name: Check iptables backend
+      ansible.builtin.command: "{{ item }} --version"
+      loop:
+        - iptables
+        - ip6tables
+      register: iptables_version
+      changed_when: false
+
+    - name: Assert iptables legacy backend is active
+      ansible.builtin.assert:
+        that:
+          - "'legacy' in item.stdout"
+        fail_msg: "{{ item.item }} is not using the legacy backend"
+      loop: "{{ iptables_version.results }}"
+
     - name: Check if kernel modules configuration exists
       ansible.builtin.stat:
         path: /etc/modules-load.d/k8s.conf

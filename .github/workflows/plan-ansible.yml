@@ -17,10 +17,10 @@ jobs:
       contents: read
     strategy:
       matrix:
-        node: [shanghai-1, shanghai-2, shanghai-3, golyat-4]
+        node: [shanghai-1, shanghai-2, shanghai-3]
       fail-fast: false
     env:
-      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104","golyat-4":"192.168.10.107"}'
+      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104"}'
       AQUA_POLICY_CONFIG: ${{ github.workspace }}/aqua/aqua-policy.yaml
     steps:
       - name: Checkout
@@ -207,11 +207,6 @@ jobs:
           if [[ "$NODE" == shanghai-* ]]; then
             run_ansible "playbooks/control-plane.yml" "$NODE" "control-plane" \
               "plan_outputs/${NODE}-control-plane.fmt.json"
-          elif [[ "$NODE" == golyat-* ]]; then
-            run_ansible "playbooks/worker-image.yml" "$NODE" "worker-image" \
-              "plan_outputs/${NODE}-worker-image.fmt.json" \
-              -e "worker_configure_static_network=true" \
-              -e "worker_static_network_interface=enp44s0"
           else
             echo "::error::Unsupported Ansible target node: $NODE"
             exit 1

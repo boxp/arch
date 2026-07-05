@@ -24,6 +24,11 @@ crio_log_size_max: 1048576
 kubernetes_disable_swap: true
 kubernetes_enable_modules: true
 
+# Persist node logs across reboots while keeping SD-card writes bounded.
+journald_persistent_storage: true
+journald_system_max_use: "256M"
+journald_max_retention_sec: "14day"
+
 # Repository configuration
 # Kubernetes apt repos only support major.minor format (e.g. v1.35, not v1.35.1)
 kubernetes_repo_version: "{{ (kubernetes_version | string).split('.')[:2] | join('.') }}"

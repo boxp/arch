@@ -4,6 +4,9 @@
 - name: Include system preparation tasks
   ansible.builtin.include_tasks: system_preparation.yml
 
+- name: Include journald configuration tasks
+  ansible.builtin.include_tasks: journald.yml
+
 - name: Include CRI-O installation tasks
   ansible.builtin.include_tasks: crio.yml
 

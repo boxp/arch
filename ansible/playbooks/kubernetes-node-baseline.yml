@@ -1,0 +1,13 @@
+---
+- name: Configure baseline Kubernetes node components
+  hosts: all
+  become: true
+  gather_facts: true
+  vars:
+    kubelet_cluster_dns: "{{ cluster_dns }}"
+    kubelet_cluster_domain: "{{ cluster_domain }}"
+    kubelet_node_ip: "{{ node_ip }}"
+
+  roles:
+    - role: kubernetes_components
+      tags: [kubernetes, k8s-components]

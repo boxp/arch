@@ -135,3 +135,15 @@
   notify:
     - Restart crio
     - Restart kubelet
+
+- name: Verify iptables legacy backend for Calico compatibility
+  ansible.builtin.command: "{{ item }} --version"
+  loop:
+    - iptables
+    - ip6tables
+  register: iptables_backend_check
+  changed_when: false
+  failed_when: "'legacy' not in iptables_backend_check.stdout"
+  when:
+    - ansible_facts['os_family'] == "Debian"
+    - not is_chroot

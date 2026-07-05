@@ -61,7 +61,7 @@ gh workflow run build-orange-pi-images.yml -f node_name=shanghai-1
 ### 前提条件
 
 1. **AWS認証情報**: S3からイメージをダウンロードするための認証
-2. **SDカード**: 32GB以上のmicroSDカード × 3枚
+2. **SDカード**: 32GB以上の高耐久microSDカード × 3枚
 3. **ネットワーク**: 192.168.10.0/24ネットワークへのアクセス
 
 ### 1. イメージのダウンロード
@@ -81,6 +81,8 @@ xzcat orangepi-zero3-shanghai-1.img.xz | sudo dd of=/dev/sdX bs=1M status=progre
 xzcat orangepi-zero3-shanghai-2.img.xz | sudo dd of=/dev/sdY bs=1M status=progress  
 xzcat orangepi-zero3-shanghai-3.img.xz | sudo dd of=/dev/sdZ bs=1M status=progress
 ```
+
+本番 control-plane では、通常の consumer microSD ではなく high-endurance 系の媒体を使用してください。boot media failure 時は同じカードを再利用せず、etcd snapshot を取得してから古い etcd member を削除し、新しいカードで control-plane join します。
 
 ### 3. 初回起動と設定
 
@@ -191,3 +193,14 @@ sudo tar -czf /backup/k8s-config-$(date +%Y%m%d).tar.gz /etc/kubernetes/
 # システム設定
 sudo tar -czf /backup/system-config-$(date +%Y%m%d).tar.gz /etc/systemd/ /etc/netplan/
 ```
+
+### Control-plane SDカード故障時の復旧
+
+1. 残存 control-plane で `/readyz` と etcd quorum を確認する。
+2. 健全な etcd member から snapshot を保存する。
+3. 故障ノードの古い etcd member を削除する。
+4. 新しい高耐久SDカードへ対象ノード用 image を書き込む。
+5. stale な Kubernetes Node object を削除してから `kubeadm join --control-plane` する。
+6. etcd が3 member healthyに戻り、Calico / kube-vip / Service VIP が正常なことを確認して uncordon する。
+
+詳細な incident runbook は Obsidian vault の `Incidents/Runbooks/shanghai-control-plane-sdcard-failure.md` を参照してください。
