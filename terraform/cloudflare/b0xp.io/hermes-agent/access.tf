@@ -19,9 +19,6 @@ resource "cloudflare_access_policy" "hermes_agent_policy" {
   precedence     = "1"
   decision       = "allow"
   include {
-    github {
-      identity_provider_id = data.cloudflare_access_identity_provider.github.id
-      name                 = "boxp"
-    }
+    login_method = [data.cloudflare_access_identity_provider.github.id]
   }
 }
