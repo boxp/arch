@@ -89,7 +89,7 @@
     },
     {
       customType: "regex",
-      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      managerFilePatterns: ["/^docker/(codex-workspace|hermes-agent)/Dockerfile$/"],
       matchStrings: [
         "ARG OBSIDIAN_HEADLESS_VERSION=(?<currentValue>[0-9.]+)"
       ],
@@ -139,7 +139,7 @@
     },
     {
       customType: "regex",
-      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      managerFilePatterns: ["/^docker/(codex-workspace|hermes-agent)/Dockerfile$/"],
       matchStrings: [
         "ARG BABASHKA_VERSION=(?<currentValue>[0-9.]+)"
       ],
