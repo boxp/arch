@@ -15,6 +15,12 @@ assert_contains() {
   grep -Fq "$needle" <<<"${haystack}" || fail "expected output to contain: ${needle}"
 }
 
+assert_not_contains() {
+  local haystack="$1"
+  local needle="$2"
+  ! grep -Fq "$needle" <<<"${haystack}" || fail "expected output not to contain: ${needle}"
+}
+
 tmp="$(mktemp -d)"
 trap 'rm -rf "${tmp}"' EXIT
 vault="${tmp}/vault"
@@ -275,6 +281,7 @@ EVENT
 
 out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-06-10 dry-run)"
 assert_contains "${out}" $'candidate	kubernetes-upgrade-planning	kubernetes-upgrade-planning:2026-07-01'
+assert_not_contains "${out}" 'kubernetes-upgrade-planning:2026-07-02'
 assert_contains "${out}" $'not-yet	tax-return-preparation'
 assert_contains "${out}" $'invalid	invalid-event'
 assert_contains "${out}" $'invalid	invalid-occurrence-missing-date'

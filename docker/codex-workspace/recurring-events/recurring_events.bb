@@ -192,7 +192,9 @@
           (= "occurrences" (:type schedule)) (into (valid-occurrence-items occurrence-items)))))))
 
 (defn cron-values [field min max]
-  (letfn [(expand [part]
+  (if (= "*" field)
+    :any
+    (letfn [(expand [part]
             (let [[base step-s] (str/split part #"/" 2)
                   step (Long/parseLong (or step-s "1"))
                   [a b] (cond
@@ -200,19 +202,38 @@
                           (str/includes? base "-") (mapv #(Long/parseLong %) (str/split base #"-" 2))
                           :else (let [n (Long/parseLong base)] [n n]))]
               (range a (inc b) step)))]
-    (set (mapcat expand (str/split field #",")))))
+      (set (mapcat expand (str/split field #","))))))
+
+(defn cron-match? [values n]
+  (or (= :any values) (contains? values n)))
+
+(defn cron-values-valid? [values]
+  (or (= :any values) (seq values)))
+
+(defn cron-day-match? [dom-values dow-values date]
+  (let [d (.getDayOfMonth date)
+        w (let [v (.getValue (.getDayOfWeek date))] (if (= 7 v) 0 v))
+        dom-match (cron-match? dom-values d)
+        dow-match (or (cron-match? dow-values w)
+                      (and (= 0 w) (cron-match? dow-values 7)))]
+    (cond
+      (and (= :any dom-values) (= :any dow-values)) true
+      (= :any dom-values) dow-match
+      (= :any dow-values) dom-match
+      :else (or dom-match dow-match))))
 
 (defn cron-date? [cron date]
   (let [[minute hour dom month dow] (str/split cron #"\s+")
-        d (.getDayOfMonth date)
         m (.getMonthValue date)
-        w (let [v (.getValue (.getDayOfWeek date))] (if (= 7 v) 0 v))]
-    (and (seq (cron-values minute 0 59))
-         (seq (cron-values hour 0 23))
-         ((cron-values dom 1 31) d)
-         ((cron-values month 1 12) m)
-         (or ((cron-values dow 0 7) w)
-             (and (= 0 w) ((cron-values dow 0 7) 7))))))
+        minute-values (cron-values minute 0 59)
+        hour-values (cron-values hour 0 23)
+        dom-values (cron-values dom 1 31)
+        month-values (cron-values month 1 12)
+        dow-values (cron-values dow 0 7)]
+    (and (cron-values-valid? minute-values)
+         (cron-values-valid? hour-values)
+         (cron-match? month-values m)
+         (cron-day-match? dom-values dow-values date))))
 
 (defn cron-occurrences [fm today]
   (let [lead (:lead-days fm)
