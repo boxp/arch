@@ -4,12 +4,14 @@ on:
   pull_request:
     paths:
       - docker/codex-workspace/task-board/**
+      - docker/codex-workspace/recurring-events/**
       - tests/codex-workspace/**
       - .github/workflows/test-codex-task-board-runner.yml
   push:
     branches: [main]
     paths:
       - docker/codex-workspace/task-board/**
+      - docker/codex-workspace/recurring-events/**
       - tests/codex-workspace/**
       - .github/workflows/test-codex-task-board-runner.yml
   workflow_dispatch: {}
@@ -37,3 +39,4 @@ jobs:
           tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
           sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
       - run: tests/codex-workspace/task-board-runner-test.sh
+      - run: tests/codex-workspace/recurring-events-test.sh
