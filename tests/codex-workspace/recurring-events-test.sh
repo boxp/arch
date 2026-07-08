@@ -461,6 +461,34 @@ out="$(bb "${RUNNER}" --vault "${seed_vault}" --today 2026-12-20 dry-run)"
 assert_contains "${out}" $'candidate	kubernetes-upgrade-planning	kubernetes-upgrade-planning:2027-01-01'
 assert_contains "${out}" $'candidate	tax-return-preparation	tax-return-preparation:2026'
 
+if command -v sudo >/dev/null && sudo -n true 2>/dev/null; then
+  if ! getent passwd boxp >/dev/null; then
+    sudo useradd -m -s /bin/bash boxp
+  fi
+
+  entrypoint_vault="${tmp}/entrypoint-vault"
+  chmod 0755 "${tmp}"
+  sudo install -d -o boxp -g boxp -m 0755 "${entrypoint_vault}"
+  sudo env \
+    CODEX_TASK_BOARD_VAULT="${entrypoint_vault}" \
+    CODEX_WORKSPACE_RECURRING_EVENTS_SEED="${ROOT_DIR}/docker/codex-workspace/recurring-events/vault-seed" \
+    CODEX_WORKSPACE_ENTRYPOINT_SEED_ONLY=1 \
+    bash "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh"
+
+  for path in \
+    "${entrypoint_vault}/Infrastructure" \
+    "${entrypoint_vault}/Infrastructure/Recurring Events" \
+    "${entrypoint_vault}/Infrastructure/Recurring Events/Events" \
+    "${entrypoint_vault}/Infrastructure/Codex Cron" \
+    "${entrypoint_vault}/Infrastructure/Codex Cron/prompts" \
+    "${entrypoint_vault}/Templates"; do
+    [[ "$(stat -c '%U:%G' "${path}")" == "boxp:boxp" ]] || fail "entrypoint seed directory owner mismatch: ${path}"
+  done
+  sudo rm -rf "${entrypoint_vault}"
+else
+  echo "warning: skipping entrypoint seed ownership test because passwordless sudo is unavailable" >&2
+fi
+
 fake_bin="${tmp}/fake-bin"
 mkdir -p "${fake_bin}"
 cat >"${fake_bin}/codex" <<'FAKE_CODEX'

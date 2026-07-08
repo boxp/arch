@@ -85,7 +85,7 @@ if [[ -d /opt/codex-workspace/skills ]]; then
 fi
 
 install_vault_seed() {
-  local seed=/opt/codex-workspace/recurring-events/vault-seed
+  local seed="${CODEX_WORKSPACE_RECURRING_EVENTS_SEED:-/opt/codex-workspace/recurring-events/vault-seed}"
   local vault="${task_board_vault}"
   local src rel dest existing_task_board_vault
 
@@ -105,13 +105,14 @@ install_vault_seed() {
     fi
     dest="${vault}/${rel}"
     if [[ ! -e "${dest}" ]]; then
-      install -D -o boxp -g boxp -m 0644 "${src}" "${dest}"
+      install -d -o boxp -g boxp -m 0755 "$(dirname "${dest}")"
+      install -o boxp -g boxp -m 0644 "${src}" "${dest}"
     fi
   done < <(find "${seed}" -type f -print0)
 }
 
 install_codex_cron_seed_files() {
-  local seed=/opt/codex-workspace/recurring-events/vault-seed/Infrastructure/Codex\ Cron
+  local seed="${CODEX_WORKSPACE_RECURRING_EVENTS_SEED:-/opt/codex-workspace/recurring-events/vault-seed}/Infrastructure/Codex Cron"
   local src rel dest
 
   if [[ ! -d "${seed}" ]]; then
@@ -125,13 +126,14 @@ install_codex_cron_seed_files() {
     fi
     dest="${codex_cron_root}/${rel}"
     if [[ ! -e "${dest}" ]]; then
-      install -D -o boxp -g boxp -m 0644 "${src}" "${dest}"
+      install -d -o boxp -g boxp -m 0755 "$(dirname "${dest}")"
+      install -o boxp -g boxp -m 0644 "${src}" "${dest}"
     fi
   done < <(find "${seed}" -type f -print0)
 }
 
 ensure_recurring_events_cron_job() {
-  local seed=/opt/codex-workspace/recurring-events/vault-seed/Infrastructure/Codex\ Cron/jobs.edn
+  local seed="${CODEX_WORKSPACE_RECURRING_EVENTS_SEED:-/opt/codex-workspace/recurring-events/vault-seed}/Infrastructure/Codex Cron/jobs.edn"
   local jobs="${codex_cron_root}/jobs.edn"
 
   if [[ ! -f "${seed}" ]]; then
@@ -173,6 +175,9 @@ ensure_recurring_events_cron_job() {
 install_vault_seed
 install_codex_cron_seed_files
 ensure_recurring_events_cron_job
+if [[ "${CODEX_WORKSPACE_ENTRYPOINT_SEED_ONLY:-}" == "1" ]]; then
+  exit 0
+fi
 configure_codex
 configure_pi_agent
 
