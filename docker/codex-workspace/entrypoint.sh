@@ -79,14 +79,22 @@ fi
 install_vault_seed() {
   local seed=/opt/codex-workspace/recurring-events/vault-seed
   local vault="${CODEX_TASK_BOARD_VAULT:-/home/boxp/Documents/obsidian-headless/BOXP}"
-  local src rel dest
+  local src rel dest existing_task_board_vault
 
   if [[ ! -d "${seed}" ]]; then
     return
   fi
 
+  existing_task_board_vault=false
+  if [[ -f "${vault}/Boards/Task Board.md" || -d "${vault}/Tickets" ]]; then
+    existing_task_board_vault=true
+  fi
+
   while IFS= read -r -d '' src; do
     rel="${src#"${seed}/"}"
+    if [[ "${existing_task_board_vault}" == true && "${rel}" == Infrastructure/Recurring\ Events/Events/* ]]; then
+      continue
+    fi
     dest="${vault}/${rel}"
     if [[ ! -e "${dest}" ]]; then
       install -D -o boxp -g boxp -m 0644 "${src}" "${dest}"

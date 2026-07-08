@@ -10,6 +10,9 @@
   [:id :title :description :schedule :time-zone :lead-days :priority :project
    :initial-lane :ticket-template :enabled])
 
+(def required-non-blank-fields
+  [:id :title :description :time-zone :priority :project :initial-lane])
+
 (defn env [k default]
   (or (System/getenv k) default))
 
@@ -178,6 +181,15 @@
    (range)
    items))
 
+(defn blank-field-errors [fm]
+  (concat
+   (keep (fn [field]
+           (when (str/blank? (str (get fm field)))
+             (str (name field) " must not be blank")))
+         required-non-blank-fields)
+   (when (str/blank? (str (get-in fm [:ticket-template :title])))
+     ["ticket-template.title must not be blank"])))
+
 (defn cron-values [field min max]
   (if (= "*" field)
     :any
@@ -217,7 +229,7 @@
   (let [missing (remove #(contains? fm %) required-fields)
         schedule (:schedule fm)
         occurrence-items (:items schedule)
-        errors (cond-> []
+        errors (cond-> (vec (blank-field-errors fm))
                  (seq missing) (conj (str "missing required field(s): " (str/join ", " (map name missing))))
                  (not (integer? (:lead-days fm))) (conj "lead-days must be an integer")
                  (and (integer? (:lead-days fm)) (neg? (:lead-days fm))) (conj "lead-days must be >= 0")
@@ -410,6 +422,12 @@
 (defn event-id-from-path [path]
   (str/replace (fs/file-name path) #"\.md$" ""))
 
+(defn result-event-id [r]
+  (let [id (str/trim (str (get-in r [:event :id])))]
+    (if (str/blank? id)
+      (event-id-from-path (:source-file r))
+      id)))
+
 (defn evaluate-event [path today-override]
   (try
     (let [{:keys [frontmatter body]} (parse-frontmatter (slurp (str path)))
@@ -451,7 +469,7 @@
 (defn print-result [r]
   (let [fm (:event r)
         occ (:occurrence r)]
-    (println (str (name (:status r)) "\t" (:id fm)
+    (println (str (name (:status r)) "\t" (result-event-id r)
                   (when occ (str "\t" (:occurrence-key occ)))))
     (doseq [e (:errors r)] (println (str "  - " e)))
     (when (= :candidate (:status r))

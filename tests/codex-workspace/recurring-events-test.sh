@@ -239,6 +239,25 @@ ticket-template:
 ---
 EVENT
 
+cat >"${vault}/Infrastructure/Recurring Events/Events/blank-required-fields.md" <<'EVENT'
+---
+id:
+title:
+description:
+enabled: true
+schedule:
+  type: cron
+  value: "0 9 8 7 *"
+time-zone:
+lead-days: 0
+priority:
+project:
+initial-lane: Backlog
+ticket-template:
+  title:
+---
+EVENT
+
 cat >"${vault}/Infrastructure/Recurring Events/Events/missing-frontmatter.md" <<'EVENT'
 # Missing frontmatter
 
@@ -373,6 +392,14 @@ assert_contains "${out}" $'invalid	invalid-occurrence-bad-date'
 assert_contains "${out}" 'schedule.items[0].scheduled-date must be YYYY-MM-DD'
 assert_contains "${out}" $'invalid	invalid-cron-token'
 assert_contains "${out}" 'schedule.value must be a valid 5-field cron'
+assert_contains "${out}" $'invalid	blank-required-fields'
+assert_contains "${out}" 'id must not be blank'
+assert_contains "${out}" 'title must not be blank'
+assert_contains "${out}" 'description must not be blank'
+assert_contains "${out}" 'time-zone must not be blank'
+assert_contains "${out}" 'priority must not be blank'
+assert_contains "${out}" 'project must not be blank'
+assert_contains "${out}" 'ticket-template.title must not be blank'
 assert_contains "${out}" $'invalid	missing-frontmatter'
 assert_contains "${out}" 'event note is missing YAML frontmatter'
 assert_contains "${out}" $'invalid	unclosed-frontmatter'
