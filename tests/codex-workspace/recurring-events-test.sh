@@ -260,6 +260,44 @@ ticket-template:
 ---
 EVENT
 
+cat >"${vault}/Infrastructure/Recurring Events/Events/blank-enabled.md" <<'EVENT'
+---
+id: blank-enabled
+title: Blank enabled
+description: Blank enabled should be invalid.
+enabled:
+schedule:
+  type: cron
+  value: "0 9 8 7 *"
+time-zone: Asia/Tokyo
+lead-days: 0
+priority: medium
+project: BOXP
+initial-lane: Backlog
+ticket-template:
+  title: Blank enabled
+---
+EVENT
+
+cat >"${vault}/Infrastructure/Recurring Events/Events/non-boolean-enabled.md" <<'EVENT'
+---
+id: non-boolean-enabled
+title: Non boolean enabled
+description: Non boolean enabled should be invalid.
+enabled: yes
+schedule:
+  type: cron
+  value: "0 9 8 7 *"
+time-zone: Asia/Tokyo
+lead-days: 0
+priority: medium
+project: BOXP
+initial-lane: Backlog
+ticket-template:
+  title: Non boolean enabled
+---
+EVENT
+
 cat >"${vault}/Infrastructure/Recurring Events/Events/missing-frontmatter.md" <<'EVENT'
 # Missing frontmatter
 
@@ -402,6 +440,9 @@ assert_contains "${out}" 'time-zone must not be blank'
 assert_contains "${out}" 'priority must not be blank'
 assert_contains "${out}" 'project must not be blank'
 assert_contains "${out}" 'ticket-template.title must not be blank'
+assert_contains "${out}" $'invalid	blank-enabled'
+assert_contains "${out}" $'invalid	non-boolean-enabled'
+assert_contains "${out}" 'enabled must be true or false'
 assert_contains "${out}" $'invalid	missing-frontmatter'
 assert_contains "${out}" 'event note is missing YAML frontmatter'
 assert_contains "${out}" $'invalid	unclosed-frontmatter'

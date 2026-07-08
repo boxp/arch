@@ -233,6 +233,7 @@
                  (seq missing) (conj (str "missing required field(s): " (str/join ", " (map name missing))))
                  (not (integer? (:lead-days fm))) (conj "lead-days must be an integer")
                  (and (integer? (:lead-days fm)) (neg? (:lead-days fm))) (conj "lead-days must be >= 0")
+                 (not (boolean? (:enabled fm))) (conj "enabled must be true or false")
                  (not (allowed-lanes (:initial-lane fm))) (conj "initial-lane must be Backlog or Ready")
                  (not (#{"cron" "occurrences"} (:type schedule))) (conj "schedule.type must be cron or occurrences")
                  (and (= "cron" (:type schedule))
