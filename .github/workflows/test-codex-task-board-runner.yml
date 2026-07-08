@@ -3,6 +3,9 @@ name: Test Codex Task Board Runner
 on:
   pull_request:
     paths:
+      - docker/codex-workspace/Dockerfile
+      - docker/codex-workspace/cron/**
+      - docker/codex-workspace/entrypoint.sh
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/recurring-events/**
       - tests/codex-workspace/**
@@ -10,6 +13,9 @@ on:
   push:
     branches: [main]
     paths:
+      - docker/codex-workspace/Dockerfile
+      - docker/codex-workspace/cron/**
+      - docker/codex-workspace/entrypoint.sh
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/recurring-events/**
       - tests/codex-workspace/**
