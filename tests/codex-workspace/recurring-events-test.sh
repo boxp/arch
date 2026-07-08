@@ -401,4 +401,16 @@ grep -Fq 'Prepare tax return from custom template.' "${vault}/Tickets/BOXP-11.md
 grep -Fq '## Summary' "${vault}/Tickets/BOXP-11.md" || fail "ticket headings were not normalized"
 grep -Fq '"tax-return-preparation:2026"' "${vault}/Infrastructure/Recurring Events/state.edn" || fail "state not updated"
 
+seed_vault="${tmp}/seed-vault"
+mkdir -p "${seed_vault}"
+cp -R "${ROOT_DIR}/docker/codex-workspace/recurring-events/vault-seed/." "${seed_vault}/"
+[[ -f "${seed_vault}/Infrastructure/Recurring Events/README.md" ]] || fail "seed README missing"
+[[ -f "${seed_vault}/Templates/Recurring Event.md" ]] || fail "seed template missing"
+[[ -f "${seed_vault}/Infrastructure/Codex Cron/prompts/recurring-events.md" ]] || fail "seed cron prompt missing"
+grep -Fq ':id "recurring-events-dry-run"' "${seed_vault}/Infrastructure/Codex Cron/jobs.edn" || fail "seed cron job missing"
+grep -Fq ':enabled false' "${seed_vault}/Infrastructure/Codex Cron/jobs.edn" || fail "seed cron job must start disabled"
+out="$(bb "${RUNNER}" --vault "${seed_vault}" --today 2026-12-20 dry-run)"
+assert_contains "${out}" $'candidate	kubernetes-upgrade-planning	kubernetes-upgrade-planning:2027-01-01'
+assert_contains "${out}" $'candidate	tax-return-preparation	tax-return-preparation:2026'
+
 echo "recurring events tests passed"

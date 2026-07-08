@@ -76,6 +76,57 @@ if [[ -d /opt/codex-workspace/skills ]]; then
     /opt/codex-workspace/skills/. /home/boxp/.codex/skills/
 fi
 
+install_vault_seed() {
+  local seed=/opt/codex-workspace/recurring-events/vault-seed
+  local vault="${CODEX_TASK_BOARD_VAULT:-/home/boxp/Documents/obsidian-headless/BOXP}"
+  local src rel dest
+
+  if [[ ! -d "${seed}" ]]; then
+    return
+  fi
+
+  while IFS= read -r -d '' src; do
+    rel="${src#"${seed}/"}"
+    dest="${vault}/${rel}"
+    if [[ ! -e "${dest}" ]]; then
+      install -D -o boxp -g boxp -m 0644 "${src}" "${dest}"
+    fi
+  done < <(find "${seed}" -type f -print0)
+}
+
+ensure_recurring_events_cron_job() {
+  local seed=/opt/codex-workspace/recurring-events/vault-seed/Infrastructure/Codex\ Cron/jobs.edn
+  local vault="${CODEX_TASK_BOARD_VAULT:-/home/boxp/Documents/obsidian-headless/BOXP}"
+  local jobs="${vault}/Infrastructure/Codex Cron/jobs.edn"
+
+  if [[ ! -f "${seed}" ]]; then
+    return
+  fi
+
+  install -d -o boxp -g boxp -m 0755 "$(dirname "${jobs}")"
+  bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (defn read-edn [path fallback]
+      (if (.exists (java.io.File. path))
+        (edn/read-string (slurp path))
+        fallback))
+    (defn registry [value]
+      (cond
+        (vector? value) {:version 1 :jobs value}
+        (map? value) (update value :jobs #(vec (or % [])))
+        :else {:version 1 :jobs []}))
+    (let [[target seed] *command-line-args*
+          seed-job (first (:jobs (registry (read-edn seed {:version 1 :jobs []}))))
+          current (registry (read-edn target {:version 1 :jobs []}))
+          jobs (:jobs current)]
+      (when (and seed-job (not-any? #(= (:id %) (:id seed-job)) jobs))
+        (spit target (str (pr-str (assoc current :jobs (conj jobs seed-job))) "\n"))))
+  ' "${jobs}" "${seed}"
+  chown boxp:boxp "${jobs}"
+}
+
+install_vault_seed
+ensure_recurring_events_cron_job
 configure_codex
 configure_pi_agent
 

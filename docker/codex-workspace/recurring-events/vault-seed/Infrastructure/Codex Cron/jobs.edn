@@ -1,0 +1,11 @@
+{:version 1
+ :jobs
+ [{:id "recurring-events-dry-run"
+   :name "Recurring events dry-run"
+   :enabled false
+   :schedule "0 8 * * *"
+   :time-zone "Asia/Tokyo"
+   :workdir "/home/boxp"
+   :prompt-file "prompts/recurring-events.md"
+   :output-root "/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron/runs"
+   :bypass-approvals true}]}
