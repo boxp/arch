@@ -130,7 +130,7 @@ ticket-template:
 
 ## Summary
 
-Prepare tax return.
+Prepare tax return from custom template.
 
 ## Acceptance Criteria
 
@@ -178,6 +178,29 @@ Already.
 ## Notes
 EVENT
 
+cat >"${vault}/Infrastructure/Recurring Events/Events/default-body.md" <<'EVENT'
+---
+id: default-body
+title: Default body
+description: Default body description.
+enabled: true
+schedule:
+  type: cron
+  value: "0 9 15 6 *"
+time-zone: Asia/Tokyo
+lead-days: 5
+priority: medium
+project: BOXP
+initial-lane: Backlog
+ticket-template:
+  title: "Default body {{scheduled-date}}"
+---
+
+## Draft
+
+## Notes
+EVENT
+
 cat >"${vault}/Infrastructure/Recurring Events/Events/invalid.md" <<'EVENT'
 ---
 id: invalid-event
@@ -192,6 +215,25 @@ project: BOXP
 initial-lane: Later
 ticket-template:
   title: Invalid
+---
+EVENT
+
+cat >"${vault}/Infrastructure/Recurring Events/Events/invalid-cron-token.md" <<'EVENT'
+---
+id: invalid-cron-token
+title: Invalid cron token
+description: Invalid cron token.
+enabled: true
+schedule:
+  type: cron
+  value: "0 9 * JAN *"
+time-zone: Asia/Tokyo
+lead-days: 1
+priority: medium
+project: BOXP
+initial-lane: Backlog
+ticket-template:
+  title: Invalid cron token
 ---
 EVENT
 
@@ -282,6 +324,9 @@ EVENT
 out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-06-10 dry-run)"
 assert_contains "${out}" $'candidate	kubernetes-upgrade-planning	kubernetes-upgrade-planning:2026-07-01'
 assert_not_contains "${out}" 'kubernetes-upgrade-planning:2026-07-02'
+assert_contains "${out}" $'candidate	default-body	default-body:2026-06-15'
+default_block="$(sed -n '/# BOXP-N: Default body 2026-06-15/,/- dry-run:/p' <<<"${out}")"
+[[ "$(grep -Fc '元イベントファイル' <<<"${default_block}")" == "1" ]] || fail "default ticket metadata was duplicated"
 assert_contains "${out}" $'not-yet	tax-return-preparation'
 assert_contains "${out}" $'invalid	invalid-event'
 assert_contains "${out}" $'invalid	invalid-occurrence-missing-date'
@@ -291,6 +336,8 @@ assert_contains "${out}" 'schedule.items[0].title-suffix is required'
 assert_contains "${out}" 'schedule.items[1].key is required'
 assert_contains "${out}" $'invalid	invalid-occurrence-bad-date'
 assert_contains "${out}" 'schedule.items[0].scheduled-date must be YYYY-MM-DD'
+assert_contains "${out}" $'invalid	invalid-cron-token'
+assert_contains "${out}" 'schedule.value must be a valid 5-field cron'
 
 out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-12-20 dry-run)"
 assert_contains "${out}" $'candidate	tax-return-preparation	tax-return-preparation:2026'
@@ -306,6 +353,7 @@ assert_contains "${out}" $'created	BOXP-10	Backlog	Kubernetes upgrade planning: 
 assert_contains "${out}" $'created	BOXP-11	Backlog	Tax return preparation: 2026年分'
 grep -Fq '[[Tickets/BOXP-11|BOXP-11: Tax return preparation: 2026年分]] #ticket status::backlog priority::high' "${vault}/Boards/Task Board.md" || fail "board card was not inserted"
 grep -Fq 'occurrence-key: tax-return-preparation:2026' "${vault}/Tickets/BOXP-11.md" || fail "ticket metadata missing"
+grep -Fq 'Prepare tax return from custom template.' "${vault}/Tickets/BOXP-11.md" || fail "ticket template body was not preserved"
 grep -Fq '## Summary' "${vault}/Tickets/BOXP-11.md" || fail "ticket headings were not normalized"
 grep -Fq '"tax-return-preparation:2026"' "${vault}/Infrastructure/Recurring Events/state.edn" || fail "state not updated"
 

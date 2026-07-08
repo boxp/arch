@@ -152,6 +152,14 @@
     (when start
       (str/trim (str/join "\n" (subvec lines (inc start) (or next-heading (count lines))))))))
 
+(defn ticket-template-section [body]
+  (let [lines (vec (str/split-lines body))
+        start (first (keep-indexed #(when (= "## Ticket Template" %2) %1) lines))
+        end (when start
+              (first (keep-indexed #(when (and (> %1 start) (= "## Notes" %2)) %1) lines)))]
+    (when start
+      (str/trim (str/join "\n" (subvec lines (inc start) (or end (count lines))))))))
+
 (defn valid-occurrence-items [items]
   (mapcat
    (fn [idx item]
@@ -167,6 +175,39 @@
    (range)
    items))
 
+(defn cron-values [field min max]
+  (if (= "*" field)
+    :any
+    (letfn [(expand [part]
+              (let [[base step-s] (str/split part #"/" 2)
+                    step (Long/parseLong (or step-s "1"))
+                    [a b] (cond
+                            (= "*" base) [min max]
+                            (str/includes? base "-") (mapv #(Long/parseLong %) (str/split base #"-" 2))
+                            :else (let [n (Long/parseLong base)] [n n]))]
+                (when-not (pos? step)
+                  (throw (ex-info "cron step must be positive" {:field field})))
+                (range a (inc b) step)))]
+      (set (mapcat expand (str/split field #","))))))
+
+(defn cron-match? [values n]
+  (or (= :any values) (contains? values n)))
+
+(defn cron-values-valid? [values]
+  (or (= :any values) (seq values)))
+
+(defn valid-cron? [cron]
+  (try
+    (let [[minute hour dom month dow :as fields] (str/split (or cron "") #"\s+")]
+      (and (= 5 (count fields))
+           (cron-values-valid? (cron-values minute 0 59))
+           (cron-values-valid? (cron-values hour 0 23))
+           (cron-values-valid? (cron-values dom 1 31))
+           (cron-values-valid? (cron-values month 1 12))
+           (cron-values-valid? (cron-values dow 0 7))))
+    (catch Exception _
+      false)))
+
 (defn valid-event [fm]
   (let [missing (remove #(contains? fm %) required-fields)
         schedule (:schedule fm)
@@ -178,8 +219,8 @@
                  (not (allowed-lanes (:initial-lane fm))) (conj "initial-lane must be Backlog or Ready")
                  (not (#{"cron" "occurrences"} (:type schedule))) (conj "schedule.type must be cron or occurrences")
                  (and (= "cron" (:type schedule))
-                      (not (re-matches #"\S+\s+\S+\s+\S+\s+\S+\s+\S+" (or (:value schedule) ""))))
-                 (conj "schedule.value must be a 5-field cron")
+                      (not (valid-cron? (:value schedule))))
+                 (conj "schedule.value must be a valid 5-field cron")
                  (and (= "occurrences" (:type schedule))
                       (empty? occurrence-items))
                  (conj "schedule.items must not be empty"))]
@@ -190,25 +231,6 @@
       (catch Exception e
         (cond-> (conj errors (str "invalid time-zone: " (.getMessage e)))
           (= "occurrences" (:type schedule)) (into (valid-occurrence-items occurrence-items)))))))
-
-(defn cron-values [field min max]
-  (if (= "*" field)
-    :any
-    (letfn [(expand [part]
-            (let [[base step-s] (str/split part #"/" 2)
-                  step (Long/parseLong (or step-s "1"))
-                  [a b] (cond
-                          (= "*" base) [min max]
-                          (str/includes? base "-") (mapv #(Long/parseLong %) (str/split base #"-" 2))
-                          :else (let [n (Long/parseLong base)] [n n]))]
-              (range a (inc b) step)))]
-      (set (mapcat expand (str/split field #","))))))
-
-(defn cron-match? [values n]
-  (or (= :any values) (contains? values n)))
-
-(defn cron-values-valid? [values]
-  (or (= :any values) (seq values)))
 
 (defn cron-day-match? [dom-values dow-values date]
   (let [d (.getDayOfMonth date)
@@ -300,7 +322,7 @@
 
 (defn ticket-body [ticket-id fm body occ dry-run?]
   (let [title (render-template (or (get-in fm [:ticket-template :title]) (:title fm)) occ)
-        tmpl (normalize-ticket-template (or (section body "## Ticket Template") "") occ)
+        tmpl (normalize-ticket-template (or (ticket-template-section body) "") occ)
         meta (str "- 元イベントファイル: " (:source-file occ) "\n"
                   "- event-id: " (:id fm) "\n"
                   "- occurrence-key: " (:occurrence-key occ) "\n"
@@ -335,9 +357,9 @@
                 "## Context\n\n" meta "\n"
                 "## Plan\n\n- [ ] 内容を確認する\n\n"
                 "## Notes\n\n")
-           (str tmpl "\n\n## Notes\n\n"))
-         (when-not (str/includes? tmpl "元イベントファイル")
-           (str "- recurring-events metadata\n" meta))
+           (str tmpl "\n\n## Notes\n\n"
+                (when-not (str/includes? tmpl "元イベントファイル")
+                  (str "- recurring-events metadata\n" meta))))
          (when dry-run?
            "- dry-run: この本文は候補表示であり、まだ作成されていません。\n"))))
 
