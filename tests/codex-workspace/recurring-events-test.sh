@@ -239,6 +239,20 @@ ticket-template:
 ---
 EVENT
 
+cat >"${vault}/Infrastructure/Recurring Events/Events/missing-frontmatter.md" <<'EVENT'
+# Missing frontmatter
+
+This malformed event note should not stop the whole dry-run.
+EVENT
+
+cat >"${vault}/Infrastructure/Recurring Events/Events/unclosed-frontmatter.md" <<'EVENT'
+---
+id: unclosed-frontmatter
+title: Unclosed frontmatter
+description: This malformed event note should be reported as invalid.
+enabled: true
+EVENT
+
 cat >"${vault}/Infrastructure/Recurring Events/Events/invalid-occurrence-missing-date.md" <<'EVENT'
 ---
 id: invalid-occurrence-missing-date
@@ -359,6 +373,10 @@ assert_contains "${out}" $'invalid	invalid-occurrence-bad-date'
 assert_contains "${out}" 'schedule.items[0].scheduled-date must be YYYY-MM-DD'
 assert_contains "${out}" $'invalid	invalid-cron-token'
 assert_contains "${out}" 'schedule.value must be a valid 5-field cron'
+assert_contains "${out}" $'invalid	missing-frontmatter'
+assert_contains "${out}" 'event note is missing YAML frontmatter'
+assert_contains "${out}" $'invalid	unclosed-frontmatter'
+assert_contains "${out}" 'event note frontmatter is not closed'
 
 cat >"${vault}/Infrastructure/Recurring Events/Events/invalid-cron-range.md" <<'EVENT'
 ---

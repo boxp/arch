@@ -22,6 +22,9 @@
     (println (str "error: " message)))
   (System/exit 1))
 
+(defn invalid-event-note [message]
+  (throw (ex-info message {:type :invalid-event-note})))
+
 (defn now-str []
   (str (java.time.Instant/now)))
 
@@ -114,9 +117,9 @@
 (defn parse-frontmatter [text]
   (let [lines (str/split-lines text)]
     (when-not (= "---" (first lines))
-      (fail "event note is missing YAML frontmatter"))
+      (invalid-event-note "event note is missing YAML frontmatter"))
     (let [end (or (first (keep-indexed #(when (and (pos? %1) (= "---" %2)) %1) lines))
-                  (fail "event note frontmatter is not closed"))
+                  (invalid-event-note "event note frontmatter is not closed"))
           fm-lines (subvec (vec lines) 1 end)
           body (str/join "\n" (subvec (vec lines) (inc end)))]
       {:frontmatter
@@ -404,35 +407,46 @@
                                 :source-file (:source-file occ)}))
     {:ticket-id ticket-id :title title :lane (:initial-lane fm)}))
 
+(defn event-id-from-path [path]
+  (str/replace (fs/file-name path) #"\.md$" ""))
+
 (defn evaluate-event [path today-override]
-  (let [{:keys [frontmatter body]} (parse-frontmatter (slurp (str path)))
-        fm frontmatter
-        errors (valid-event fm)
-        created (get (state) :created-occurrences {})]
-    (cond
-      (seq errors)
-      [{:status :invalid :event fm :source-file (str path) :errors errors}]
+  (try
+    (let [{:keys [frontmatter body]} (parse-frontmatter (slurp (str path)))
+          fm frontmatter
+          errors (valid-event fm)
+          created (get (state) :created-occurrences {})]
+      (cond
+        (seq errors)
+        [{:status :invalid :event fm :source-file (str path) :errors errors}]
 
-      (false? (:enabled fm))
-      [{:status :disabled :event fm :source-file (str path)}]
+        (false? (:enabled fm))
+        [{:status :disabled :event fm :source-file (str path)}]
 
-      :else
-      (let [today (if today-override (parse-date today-override) (today-for-zone (:time-zone fm)))
-            occs (map #(assoc % :source-file (str path)) (due-occurrences fm today))]
-        (if (empty? occs)
-          [{:status :not-yet :event fm :source-file (str path)}]
-          (mapv (fn [occ]
-                  (cond
-                    (contains? created (:occurrence-key occ))
-                    {:status :already-created :event fm :occurrence occ :source-file (str path)}
+        :else
+        (let [today (if today-override (parse-date today-override) (today-for-zone (:time-zone fm)))
+              occs (map #(assoc % :source-file (str path)) (due-occurrences fm today))]
+          (if (empty? occs)
+            [{:status :not-yet :event fm :source-file (str path)}]
+            (mapv (fn [occ]
+                    (cond
+                      (contains? created (:occurrence-key occ))
+                      {:status :already-created :event fm :occurrence occ :source-file (str path)}
 
-                    (or (ticket-exists-for-occurrence? (:occurrence-key occ))
-                        (board-contains-occurrence? (:occurrence-key occ)))
-                    {:status :needs-human-check :event fm :occurrence occ :source-file (str path)}
+                      (or (ticket-exists-for-occurrence? (:occurrence-key occ))
+                          (board-contains-occurrence? (:occurrence-key occ)))
+                      {:status :needs-human-check :event fm :occurrence occ :source-file (str path)}
 
-                    :else
-                    {:status :candidate :event fm :body body :occurrence occ :source-file (str path)}))
-                occs))))))
+                      :else
+                      {:status :candidate :event fm :body body :occurrence occ :source-file (str path)}))
+                  occs)))))
+    (catch clojure.lang.ExceptionInfo e
+      (if (= :invalid-event-note (:type (ex-data e)))
+        [{:status :invalid
+          :event {:id (event-id-from-path path)}
+          :source-file (str path)
+          :errors [(.getMessage e)]}]
+        (throw e)))))
 
 (defn print-result [r]
   (let [fm (:event r)
