@@ -189,6 +189,52 @@ ticket-template:
 ---
 EVENT
 
+cat >"${vault}/Infrastructure/Recurring Events/Events/invalid-occurrence-missing-date.md" <<'EVENT'
+---
+id: invalid-occurrence-missing-date
+title: Invalid occurrence missing date
+description: Invalid occurrence item.
+enabled: true
+schedule:
+  type: occurrences
+  items:
+    - key: "x"
+    - scheduled-date: 2026-07-08
+      target-period: "test"
+      title-suffix: "test"
+time-zone: Asia/Tokyo
+lead-days: 0
+priority: medium
+project: BOXP
+initial-lane: Backlog
+ticket-template:
+  title: Invalid occurrence missing date
+---
+EVENT
+
+cat >"${vault}/Infrastructure/Recurring Events/Events/invalid-occurrence-bad-date.md" <<'EVENT'
+---
+id: invalid-occurrence-bad-date
+title: Invalid occurrence bad date
+description: Invalid occurrence item.
+enabled: true
+schedule:
+  type: occurrences
+  items:
+    - key: "x"
+      scheduled-date: 2026-99-99
+      target-period: "test"
+      title-suffix: "test"
+time-zone: Asia/Tokyo
+lead-days: 0
+priority: medium
+project: BOXP
+initial-lane: Backlog
+ticket-template:
+  title: Invalid occurrence bad date
+---
+EVENT
+
 cat >"${vault}/Infrastructure/Recurring Events/Events/disabled.md" <<'EVENT'
 ---
 id: disabled-event
@@ -231,6 +277,13 @@ out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-06-10 dry-run)"
 assert_contains "${out}" $'candidate	kubernetes-upgrade-planning	kubernetes-upgrade-planning:2026-07-01'
 assert_contains "${out}" $'not-yet	tax-return-preparation'
 assert_contains "${out}" $'invalid	invalid-event'
+assert_contains "${out}" $'invalid	invalid-occurrence-missing-date'
+assert_contains "${out}" 'schedule.items[0].scheduled-date is required'
+assert_contains "${out}" 'schedule.items[0].target-period is required'
+assert_contains "${out}" 'schedule.items[0].title-suffix is required'
+assert_contains "${out}" 'schedule.items[1].key is required'
+assert_contains "${out}" $'invalid	invalid-occurrence-bad-date'
+assert_contains "${out}" 'schedule.items[0].scheduled-date must be YYYY-MM-DD'
 
 out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-12-20 dry-run)"
 assert_contains "${out}" $'candidate	tax-return-preparation	tax-return-preparation:2026'

@@ -28,6 +28,13 @@
 (defn parse-date [s]
   (java.time.LocalDate/parse (str s)))
 
+(defn valid-date? [s]
+  (try
+    (parse-date s)
+    true
+    (catch Exception _
+      false)))
+
 (defn today-for-zone [zone]
   (java.time.LocalDate/now (java.time.ZoneId/of zone)))
 
@@ -145,9 +152,25 @@
     (when start
       (str/trim (str/join "\n" (subvec lines (inc start) (or next-heading (count lines))))))))
 
+(defn valid-occurrence-items [items]
+  (mapcat
+   (fn [idx item]
+     (let [prefix (str "schedule.items[" idx "]")]
+       (cond-> []
+         (str/blank? (str (:key item))) (conj (str prefix ".key is required"))
+         (str/blank? (str (:scheduled-date item))) (conj (str prefix ".scheduled-date is required"))
+         (and (not (str/blank? (str (:scheduled-date item))))
+              (not (valid-date? (:scheduled-date item))))
+         (conj (str prefix ".scheduled-date must be YYYY-MM-DD"))
+         (str/blank? (str (:target-period item))) (conj (str prefix ".target-period is required"))
+         (str/blank? (str (:title-suffix item))) (conj (str prefix ".title-suffix is required")))))
+   (range)
+   items))
+
 (defn valid-event [fm]
   (let [missing (remove #(contains? fm %) required-fields)
         schedule (:schedule fm)
+        occurrence-items (:items schedule)
         errors (cond-> []
                  (seq missing) (conj (str "missing required field(s): " (str/join ", " (map name missing))))
                  (not (integer? (:lead-days fm))) (conj "lead-days must be an integer")
@@ -158,13 +181,15 @@
                       (not (re-matches #"\S+\s+\S+\s+\S+\s+\S+\s+\S+" (or (:value schedule) ""))))
                  (conj "schedule.value must be a 5-field cron")
                  (and (= "occurrences" (:type schedule))
-                      (empty? (:items schedule)))
+                      (empty? occurrence-items))
                  (conj "schedule.items must not be empty"))]
     (try
       (java.time.ZoneId/of (:time-zone fm))
-      errors
+      (cond-> errors
+        (= "occurrences" (:type schedule)) (into (valid-occurrence-items occurrence-items)))
       (catch Exception e
-        (conj errors (str "invalid time-zone: " (.getMessage e)))))))
+        (cond-> (conj errors (str "invalid time-zone: " (.getMessage e)))
+          (= "occurrences" (:type schedule)) (into (valid-occurrence-items occurrence-items)))))))
 
 (defn cron-values [field min max]
   (letfn [(expand [part]
@@ -337,7 +362,6 @@
   (let [{:keys [frontmatter body]} (parse-frontmatter (slurp (str path)))
         fm frontmatter
         errors (valid-event fm)
-        today (if today-override (parse-date today-override) (today-for-zone (:time-zone fm)))
         created (get (state) :created-occurrences {})]
     (cond
       (seq errors)
@@ -347,7 +371,8 @@
       [{:status :disabled :event fm :source-file (str path)}]
 
       :else
-      (let [occs (map #(assoc % :source-file (str path)) (due-occurrences fm today))]
+      (let [today (if today-override (parse-date today-override) (today-for-zone (:time-zone fm)))
+            occs (map #(assoc % :source-file (str path)) (due-occurrences fm today))]
         (if (empty? occs)
           [{:status :not-yet :event fm :source-file (str path)}]
           (mapv (fn [occ]
