@@ -7,7 +7,14 @@ if [[ -z "${job_id}" ]]; then
   exit 2
 fi
 
-cron_root="${CODEX_CRON_ROOT:-/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron}"
+default_cron_root=/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex\ Cron
+if [[ -n "${CODEX_CRON_ROOT:-}" ]]; then
+  cron_root="${CODEX_CRON_ROOT}"
+elif [[ -n "${CODEX_TASK_BOARD_VAULT:-}" ]]; then
+  cron_root="${CODEX_TASK_BOARD_VAULT}/Infrastructure/Codex Cron"
+else
+  cron_root="${default_cron_root}"
+fi
 selector="${CODEX_CRON_SELECTOR:-/opt/codex-workspace/cron/select-codex-cron-job.bb}"
 
 eval "$(

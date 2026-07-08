@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/recurring-events/recurring_events.bb"
+CRON_RUNNER="${ROOT_DIR}/docker/codex-workspace/cron/run-codex-cron.sh"
+CRON_SELECTOR="${ROOT_DIR}/docker/codex-workspace/cron/select-codex-cron-job.bb"
 
 fail() {
   echo "error: $*" >&2
@@ -454,8 +456,71 @@ cp -R "${ROOT_DIR}/docker/codex-workspace/recurring-events/vault-seed/." "${seed
 [[ -f "${seed_vault}/Infrastructure/Codex Cron/prompts/recurring-events.md" ]] || fail "seed cron prompt missing"
 grep -Fq ':id "recurring-events-dry-run"' "${seed_vault}/Infrastructure/Codex Cron/jobs.edn" || fail "seed cron job missing"
 grep -Fq ':enabled false' "${seed_vault}/Infrastructure/Codex Cron/jobs.edn" || fail "seed cron job must start disabled"
+! grep -Fq ':output-root' "${seed_vault}/Infrastructure/Codex Cron/jobs.edn" || fail "seed cron job output root must follow selected cron root"
 out="$(bb "${RUNNER}" --vault "${seed_vault}" --today 2026-12-20 dry-run)"
 assert_contains "${out}" $'candidate	kubernetes-upgrade-planning	kubernetes-upgrade-planning:2027-01-01'
 assert_contains "${out}" $'candidate	tax-return-preparation	tax-return-preparation:2026'
+
+fake_bin="${tmp}/fake-bin"
+mkdir -p "${fake_bin}"
+cat >"${fake_bin}/codex" <<'FAKE_CODEX'
+#!/usr/bin/env bash
+set -euo pipefail
+last_message=""
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --output-last-message)
+      last_message="$2"
+      shift 2
+      ;;
+    *)
+      shift
+      ;;
+  esac
+done
+cat >/dev/null
+if [[ -n "${last_message}" ]]; then
+  printf 'fake codex completed\n' >"${last_message}"
+fi
+printf '{"event":"fake"}\n'
+FAKE_CODEX
+chmod +x "${fake_bin}/codex"
+
+custom_vault="${tmp}/custom-vault"
+custom_cron_root="${custom_vault}/Infrastructure/Codex Cron"
+mkdir -p "${custom_cron_root}/prompts"
+cat >"${custom_cron_root}/jobs.edn" <<'JOBS'
+{:version 1
+ :jobs [{:id "custom-root-job"
+         :enabled true
+         :prompt-file "prompts/custom-root-job.md"
+         :workdir "/tmp"}]}
+JOBS
+printf 'custom vault prompt\n' >"${custom_cron_root}/prompts/custom-root-job.md"
+PATH="${fake_bin}:${PATH}" \
+  CODEX_TASK_BOARD_VAULT="${custom_vault}" \
+  CODEX_CRON_SELECTOR="${CRON_SELECTOR}" \
+  CODEX_CRON_RUN_ID="custom-vault-run" \
+  bash "${CRON_RUNNER}" custom-root-job >/dev/null
+[[ -f "${custom_cron_root}/runs/custom-root-job/custom-vault-run/summary.edn" ]] || fail "custom vault cron root was not used"
+
+override_cron_root="${tmp}/override-cron-root"
+mkdir -p "${override_cron_root}/prompts"
+cat >"${override_cron_root}/jobs.edn" <<'JOBS'
+{:version 1
+ :jobs [{:id "override-root-job"
+         :enabled true
+         :prompt-file "prompts/override-root-job.md"
+         :workdir "/tmp"}]}
+JOBS
+printf 'override prompt\n' >"${override_cron_root}/prompts/override-root-job.md"
+PATH="${fake_bin}:${PATH}" \
+  CODEX_TASK_BOARD_VAULT="${custom_vault}" \
+  CODEX_CRON_ROOT="${override_cron_root}" \
+  CODEX_CRON_SELECTOR="${CRON_SELECTOR}" \
+  CODEX_CRON_RUN_ID="override-run" \
+  bash "${CRON_RUNNER}" override-root-job >/dev/null
+[[ -f "${override_cron_root}/runs/override-root-job/override-run/summary.edn" ]] || fail "CODEX_CRON_ROOT override was not used"
+[[ ! -e "${custom_cron_root}/runs/override-root-job" ]] || fail "CODEX_CRON_ROOT did not override CODEX_TASK_BOARD_VAULT"
 
 echo "recurring events tests passed"

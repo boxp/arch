@@ -7,5 +7,4 @@
    :time-zone "Asia/Tokyo"
    :workdir "/home/boxp"
    :prompt-file "prompts/recurring-events.md"
-   :output-root "/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron/runs"
    :bypass-approvals true}]}
