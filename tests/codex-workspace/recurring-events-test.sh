@@ -31,6 +31,8 @@ cat >"${vault}/Boards/Task Board.md" <<'BOARD'
 
 ## Backlog
 
+- [ ] [[Tickets/BOXP-8|BOXP-8: Stale card]] #ticket status::backlog priority::medium occurrence::stale-card:2026-07-08
+
 ## Ready
 
 ## In Progress
@@ -321,6 +323,25 @@ ticket-template:
 ---
 EVENT
 
+cat >"${vault}/Infrastructure/Recurring Events/Events/stale-card.md" <<'EVENT'
+---
+id: stale-card
+title: Stale card
+description: Existing card without state.
+enabled: true
+schedule:
+  type: cron
+  value: "0 9 8 7 *"
+time-zone: Asia/Tokyo
+lead-days: 0
+priority: medium
+project: BOXP
+initial-lane: Backlog
+ticket-template:
+  title: Stale card
+---
+EVENT
+
 out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-06-10 dry-run)"
 assert_contains "${out}" $'candidate	kubernetes-upgrade-planning	kubernetes-upgrade-planning:2026-07-01'
 assert_not_contains "${out}" 'kubernetes-upgrade-planning:2026-07-02'
@@ -339,6 +360,28 @@ assert_contains "${out}" 'schedule.items[0].scheduled-date must be YYYY-MM-DD'
 assert_contains "${out}" $'invalid	invalid-cron-token'
 assert_contains "${out}" 'schedule.value must be a valid 5-field cron'
 
+cat >"${vault}/Infrastructure/Recurring Events/Events/invalid-cron-range.md" <<'EVENT'
+---
+id: invalid-cron-range
+title: Invalid cron range
+description: Invalid cron range.
+enabled: true
+schedule:
+  type: cron
+  value: "0 99 * * *"
+time-zone: Asia/Tokyo
+lead-days: 1
+priority: medium
+project: BOXP
+initial-lane: Backlog
+ticket-template:
+  title: Invalid cron range
+---
+EVENT
+out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-06-10 dry-run)"
+assert_contains "${out}" $'invalid	invalid-cron-range'
+assert_contains "${out}" 'schedule.value must be a valid 5-field cron'
+
 out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-12-20 dry-run)"
 assert_contains "${out}" $'candidate	tax-return-preparation	tax-return-preparation:2026'
 assert_contains "${out}" "Tax return preparation: 2026年分"
@@ -347,11 +390,12 @@ out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-07-08 dry-run)"
 assert_contains "${out}" $'already-created	already-created	already-created:2026-07-08'
 assert_contains "${out}" $'disabled	disabled-event'
 assert_contains "${out}" $'needs-human-check	needs-check	needs-check:2026-07-08'
+assert_contains "${out}" $'needs-human-check	stale-card	stale-card:2026-07-08'
 
 out="$(bb "${RUNNER}" --vault "${vault}" --today 2026-12-20 apply)"
 assert_contains "${out}" $'created	BOXP-10	Backlog	Kubernetes upgrade planning: 2027-01-01'
 assert_contains "${out}" $'created	BOXP-11	Backlog	Tax return preparation: 2026年分'
-grep -Fq '[[Tickets/BOXP-11|BOXP-11: Tax return preparation: 2026年分]] #ticket status::backlog priority::high' "${vault}/Boards/Task Board.md" || fail "board card was not inserted"
+grep -Fq '[[Tickets/BOXP-11|BOXP-11: Tax return preparation: 2026年分]] #ticket status::backlog priority::high occurrence::tax-return-preparation:2026' "${vault}/Boards/Task Board.md" || fail "board card was not inserted"
 grep -Fq 'occurrence-key: tax-return-preparation:2026' "${vault}/Tickets/BOXP-11.md" || fail "ticket metadata missing"
 grep -Fq 'Prepare tax return from custom template.' "${vault}/Tickets/BOXP-11.md" || fail "ticket template body was not preserved"
 grep -Fq '## Summary' "${vault}/Tickets/BOXP-11.md" || fail "ticket headings were not normalized"

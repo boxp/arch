@@ -187,6 +187,8 @@
                             :else (let [n (Long/parseLong base)] [n n]))]
                 (when-not (pos? step)
                   (throw (ex-info "cron step must be positive" {:field field})))
+                (when (or (< a min) (> a max) (< b min) (> b max) (> a b))
+                  (throw (ex-info "cron field is out of range" {:field field :min min :max max})))
                 (range a (inc b) step)))]
       (set (mapcat expand (str/split field #","))))))
 
@@ -363,9 +365,10 @@
          (when dry-run?
            "- dry-run: この本文は候補表示であり、まだ作成されていません。\n"))))
 
-(defn card-line [ticket-id title fm]
+(defn card-line [ticket-id title fm occ]
   (str "- [ ] [[Tickets/" ticket-id "|" ticket-id ": " title "]] #ticket status::"
        (str/lower-case (:initial-lane fm)) " priority::" (:priority fm)
+       " occurrence::" (:occurrence-key occ)
        (when-let [repo (not-empty (:repo fm))] (str " repo::" repo))))
 
 (defn insert-card [board lane line]
@@ -387,7 +390,7 @@
         tmp (fs/path (tickets-dir) (str "." ticket-id ".tmp.md"))
         final (fs/path (tickets-dir) (str ticket-id ".md"))
         board (slurp (str (board-path)))
-        new-board (str (str/join "\n" (insert-card board (:initial-lane fm) (card-line ticket-id title fm))) "\n")]
+        new-board (str (str/join "\n" (insert-card board (:initial-lane fm) (card-line ticket-id title fm occ))) "\n")]
     (fs/create-dirs (tickets-dir))
     (spit (str tmp) ticket)
     (spit (str (board-path)) new-board)
