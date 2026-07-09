@@ -25,7 +25,7 @@
 (def assignee->model
   {"codex"      "gpt-5.6-sol"
    "codex-sol"  "gpt-5.6-sol"
-   "codex-full" "gpt-5.6-sol"
+   "codex-full" "gpt-5.6-terra"
    "codex-mini" "gpt-5.6-luna"})
 
 (def board-mutex (Object.))
@@ -1095,8 +1095,27 @@
   (println "usage: task_board_runner.bb <tick|loop|sync>")
   (System/exit 2))
 
+(defn run-tests! []
+  (let [failures (atom [])]
+    (doseq [[assignee expected-model] [["codex"      "gpt-5.6-sol"]
+                                       ["codex-sol"  "gpt-5.6-sol"]
+                                       ["codex-full" "gpt-5.6-terra"]
+                                       ["codex-mini" "gpt-5.6-luna"]]]
+      (let [args (codex-model-profile-args assignee)
+            model-idx (.indexOf args "--model")
+            actual-model (when (>= model-idx 0) (nth args (inc model-idx)))]
+        (if (= actual-model expected-model)
+          (println (str "PASS: " assignee " -> " actual-model))
+          (do
+            (println (str "FAIL: " assignee " expected=" expected-model " actual=" actual-model))
+            (swap! failures conj assignee)))))
+    (if (seq @failures)
+      (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
+      (println "All assignee model tests passed."))))
+
 (case (or (first *command-line-args*) "tick")
   "tick" (tick!)
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
+  "test" (run-tests!)
   (usage))
