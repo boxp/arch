@@ -77,6 +77,30 @@ EOF
   chmod +x "${bin_dir}/codex"
 }
 
+make_fake_claude() {
+  local bin_dir="$1"
+  cat >"${bin_dir}/claude" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ -n "${CLAUDE_FAKE_ARG_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"${CLAUDE_FAKE_ARG_LOG}"
+fi
+
+prompt="$(cat)"
+ticket="$(printf '%s\n' "${prompt}" | sed -n 's/^Ticket: //p' | head -n 1)"
+if [[ -n "${CLAUDE_FAKE_PROMPT_LOG:-}" ]]; then
+  printf '%s\n' "${prompt}" >>"${CLAUDE_FAKE_PROMPT_LOG}"
+fi
+if [[ -n "${CLAUDE_FAKE_START_LOG:-}" ]]; then
+  printf '%s %s\n' "${ticket}" "$(date +%s)" >>"${CLAUDE_FAKE_START_LOG}"
+fi
+sleep "${CLAUDE_FAKE_SLEEP:-0}"
+printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+EOF
+  chmod +x "${bin_dir}/claude"
+}
+
 make_fake_gh() {
   local bin_dir="$1"
   cat >"${bin_dir}/gh" <<'EOF'
@@ -236,6 +260,67 @@ test_parallel_codex_runs() {
   assert_file_contains "${vault}/Tickets/BOXP-102.md" '^status: done$'
 }
 
+test_fable_assignee_runs_via_claude() {
+  local tmp vault state bin prompt_log args_log summary last_message events
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  args_log="${tmp}/claude-args.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-150|BOXP-150: fable]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-150 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_ARG_LOG="${args_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-fable.out
+
+  assert_file_contains "${args_log}" '.*--print --output-format text.*--agent fable'
+  assert_file_not_contains "${args_log}" 'BOXP-150'
+  assert_file_contains "${prompt_log}" '^Task Board assignee/agent: fable$'
+  assert_file_contains "${prompt_log}" 'Fable routing policy'
+  assert_file_contains "${prompt_log}" 'Delegate long investigation, implementation, file editing, and test execution to Codex'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-150\|BOXP-150: fable\]\].*status::done'
+  assert_file_contains "${vault}/Tickets/BOXP-150.md" '^status: done$'
+  summary="$(find "${state}/runs/BOXP-150" -name summary.edn -print | sort | tail -n 1)"
+  last_message="$(find "${state}/runs/BOXP-150" -name last-message.md -print | sort | tail -n 1)"
+  events="$(find "${state}/runs/BOXP-150" -name events.jsonl -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" ':agent "fable"'
+  assert_file_contains "${last_message}" '^TASK_BOARD_RESULT: done$'
+  assert_file_contains "${events}" '^TASK_BOARD_RESULT: done$'
+}
+
+test_unsupported_assignee_is_ignored() {
+  local tmp vault state bin codex_log claude_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  codex_log="${tmp}/codex-starts.log"
+  claude_log="${tmp}/claude-starts.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-151|BOXP-151: human]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-151 in-progress boxp
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_START_LOG="${codex_log}" \
+    CLAUDE_FAKE_START_LOG="${claude_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-unsupported-assignee.out
+
+  [[ ! -e "${codex_log}" ]] || fail "expected codex not to start for unsupported assignee"
+  [[ ! -e "${claude_log}" ]] || fail "expected claude not to start for unsupported assignee"
+  [[ ! -d "${state}/runs/BOXP-151" ]] || fail "expected no run directory for unsupported assignee"
+  assert_file_contains "${vault}/Tickets/BOXP-151.md" '^status: in-progress$'
+  assert_file_contains /tmp/task-board-unsupported-assignee.out 'no supported-agent-assigned Task Board tickets'
+}
+
 test_stale_lock_recovers() {
   local tmp vault state bin old_run
   tmp="$(mktemp -d)"
@@ -338,6 +423,28 @@ test_review_with_conflict_is_blocked() {
   assert_file_contains "${vault}/Tickets/BOXP-403.md" 'Retrying with Codex instruction 1/2'
   assert_run_summary_contains "${state}" BOXP-403 ':gate :conflict'
   assert_run_summary_contains "${state}" BOXP-403 ':status :retrying'
+}
+
+test_fable_review_gate_retry_keeps_fable_assignee() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-416|BOXP-416: fable conflict]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-416 in-progress fable boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_MERGE_STATE=DIRTY CLAUDE_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-fable-review-conflict.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-416\|BOXP-416: fable conflict\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-416.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-416.md" '^assignee: fable$'
+  assert_file_contains "${vault}/Tickets/BOXP-416.md" 'Retrying with Codex instruction 1/2'
+  assert_run_summary_contains "${state}" BOXP-416 ':agent "fable"'
+  assert_file_contains "${state}/state.edn" ':agent "fable"'
 }
 
 test_review_with_ci_failure_is_blocked() {
@@ -605,11 +712,14 @@ test_review_gate_pass_after_retry_moves_review() {
 }
 
 test_parallel_codex_runs
+test_fable_assignee_runs_via_claude
+test_unsupported_assignee_is_ignored
 test_stale_lock_recovers
 test_review_without_pr_is_blocked
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates
 test_review_with_conflict_is_blocked
+test_fable_review_gate_retry_keeps_fable_assignee
 test_review_with_ci_failure_is_blocked
 test_review_with_codex_review_issue_is_blocked
 test_review_with_pr_and_none_marker_checks_pr
