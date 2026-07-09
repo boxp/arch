@@ -20,7 +20,14 @@
 
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
-(def supported-assignees #{"codex" "fable"})
+(def supported-assignees #{"codex" "codex-sol" "codex-full" "codex-mini" "fable"})
+
+(def assignee->model
+  {"codex"      "gpt-5.6-sol"
+   "codex-sol"  "gpt-5.6-sol"
+   "codex-full" "gpt-5.6-sol"
+   "codex-mini" "gpt-5.6-luna"})
+
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
@@ -610,13 +617,18 @@
       (throw (ex-info (str "command failed: " (str/join " " args) "\n" (:err proc))
                       {:args args :exit (:exit proc) :err (:err proc)})))))
 
-(defn codex-model-profile-args []
-  (cond-> []
-    (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
-    (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
+(defn codex-model-profile-args
+  ([] (codex-model-profile-args nil))
+  ([assignee]
+   (let [env-model (System/getenv "CODEX_TASK_BOARD_MODEL")
+         default-model (get assignee->model assignee)
+         model (or (seq env-model) default-model)]
+     (cond-> []
+       model
+       (conj "--model" (if (seq env-model) env-model default-model))
 
-    (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
-    (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))))
+       (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
+       (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))))))
 
 (defn pr-view [pr-url]
   (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,isDraft,mergeStateStatus,statusCheckRollup"] {})
@@ -885,7 +897,7 @@
                    (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
 
                    true
-                   (into (codex-model-profile-args))
+                   (into (codex-model-profile-args agent))
 
                    true
                    (conj "-")))
