@@ -20,6 +20,7 @@
 
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
+(def supported-assignees #{"codex" "fable"})
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
@@ -397,17 +398,18 @@
            last))))
 
 (defn pr-gate-retry-prompt [ticket-id]
-  (when-let [{:keys [pr-url gate message run-id run-dir count limit]} (latest-pr-gate-retry ticket-id)]
+  (when-let [{:keys [pr-url gate message run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
     (str "Pending PR gate retry instruction:\n"
          "- Target PR URL: " pr-url "\n"
          "- Failed gate: " gate "\n"
          "- Failure reason: " message "\n"
+         "- Retry agent: " (or agent "codex") "\n"
          "- Retry count for this same PR/gate/reason: " count "/" limit "\n"
          "- Previous run summary: " run-dir "/summary.edn\n"
          "- Previous run logs: " run-dir "/events.jsonl and " run-dir "/stderr.log\n"
          "- Expected completion state: update the same PR until draft/mergeability/CI/codex-review gates pass, then return TASK_BOARD_RESULT: review with the PR URL.\n\n")))
 
-(defn record-pr-gate-failure! [ticket-id run-id review-gate]
+(defn record-pr-gate-failure! [ticket-id run-id agent review-gate]
   (let [limit (pr-gate-retry-limit)
         fingerprint (retry-fingerprint review-gate)
         path [:pr-gate-retries ticket-id fingerprint]
@@ -419,6 +421,7 @@
                 :message (:message review-gate)
                 :run-id run-id
                 :run-dir (str (run-dir ticket-id run-id))
+                :agent agent
                 :count count
                 :limit limit
                 :updated-at (now-str)}
@@ -517,17 +520,27 @@
        distinct
        vec))
 
-(defn prompt-for [action ticket-id lane workspace]
+(defn fable-policy-prompt []
+  (str "Fable routing policy:\n"
+       "- You are the Claude Code fable entry point for this Task Board run.\n"
+       "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
+       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
+
+(defn prompt-for [action ticket-id lane workspace agent]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
         common (str "You are running inside codex-workspace as an automated Task Board worker.\n"
                     "Respond in Japanese when editing notes or summaries for the user.\n"
                     "Task Board lane is the source of truth. Do not move Task Board cards directly; the runner will do that after this run.\n"
                     "Ticket: " ticket-id "\n"
+                    "Task Board assignee/agent: " agent "\n"
                     "Current lane: " lane "\n\n"
                     (workspace-prompt workspace) "\n"
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
+                    (when (= "fable" agent) (fable-policy-prompt))
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
                              "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
@@ -820,7 +833,21 @@
        :retryable? false
        :message (.getMessage e)})))
 
-(defn run-codex! [ticket-id action lane lock]
+(defn fable-model-args []
+  (let [model (System/getenv "CODEX_TASK_BOARD_FABLE_MODEL")
+        agent (env "CODEX_TASK_BOARD_FABLE_AGENT" "fable")
+        extra (System/getenv "CODEX_TASK_BOARD_FABLE_EXTRA_ARGS")]
+    (cond-> []
+      (seq model)
+      (into ["--model" model])
+
+      (seq agent)
+      (into ["--agent" agent])
+
+      (seq extra)
+      (into (str/split extra #"\s+")))))
+
+(defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
         workspace (prepare-run-workspace! ticket-id run)
@@ -829,36 +856,55 @@
         stderr-path (fs/path dir "stderr.log")
         last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
-    (spit (str prompt-path) (prompt-for action ticket-id lane workspace))
-    (mark-run! ticket-id run :running {:action action :lane lane :started-at (now-str)})
-    (let [args (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
-                        "--skip-git-repo-check"
-                        "--output-last-message" (str last-message-path)]
-                 (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                 (conj "--dangerously-bypass-approvals-and-sandbox")
+    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
+    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
+    (let [args (case agent
+                 "fable"
+                 (cond-> ["claude" "--print" "--output-format" "text"]
+                   (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                   (conj "--dangerously-skip-permissions")
 
-                 (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                 (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
-                        "--add-dir" (vault)])
+                   (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                   (into (mapcat (fn [dir] ["--add-dir" dir])
+                                 (cons (vault) (workspace-add-dirs workspace))))
 
-                 (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
-                 (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
+                   true
+                   (into (fable-model-args)))
 
-                 true
-                 (into (codex-model-profile-args))
+                 (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
+                          "--skip-git-repo-check"
+                          "--output-last-message" (str last-message-path)]
+                   (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                   (conj "--dangerously-bypass-approvals-and-sandbox")
 
-                 true
-                 (conj "-"))
-          proc @(p/process args {:in (io/file (str prompt-path))
-                                 :out (io/file (str stdout-path))
-                                 :err (io/file (str stderr-path))})
+                   (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                   (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
+                          "--add-dir" (vault)])
+
+                   (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
+                   (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
+
+                   true
+                   (into (codex-model-profile-args))
+
+                   true
+                   (conj "-")))
+          proc @(p/process args (cond-> {:in (io/file (str prompt-path))
+                                         :out (io/file (str stdout-path))
+                                         :err (io/file (str stderr-path))}
+                                  (= "fable" agent)
+                                  (assoc :dir (:workspace-dir workspace))))
           exit (:exit proc)
+          _ (when (and (= "fable" agent) (fs/exists? stdout-path))
+              (io/copy (io/file (str stdout-path))
+                       (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path)
                          (slurp (str last-message-path)))
           marker (result-marker last-message)]
       (let [status (if (zero? exit) :succeeded :failed)]
         (mark-run! ticket-id run status
                    {:action action
+                    :agent agent
                     :lane lane
                     :exit-code exit
                     :result marker
@@ -866,7 +912,7 @@
       {:exit exit :result marker :run-id run :dir (str dir) :last-message last-message})))
 
 (defn candidate-action [{:keys [lane status]} assignee]
-  (when (= "codex" assignee)
+  (when (contains? supported-assignees assignee)
     (case status
       "backlog" :groom
       "ready" :implement
@@ -940,8 +986,8 @@
               (when (#{"ready" "review" "blocked"} status)
                 (move-card! ticket-id "in-progress")
                 (update-frontmatter! ticket-id {:status "in-progress"}))
-              (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) "."))
-              (let [{:keys [exit result run-id dir last-message]} (run-codex! ticket-id action effective-lane lock)
+              (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
+              (let [{:keys [exit result run-id dir last-message]} (run-agent! ticket-id action effective-lane assignee lock)
                     intended (cond
                                (not (zero? exit)) "blocked"
                                (= :groom action) "ready"
@@ -951,7 +997,7 @@
                                   (let [gate-result (review-gate! dir last-message)]
                                     (if (and (not (:ok? gate-result))
                                              (:retryable? gate-result))
-                                      (record-pr-gate-failure! ticket-id run-id gate-result)
+                                      (record-pr-gate-failure! ticket-id run-id assignee gate-result)
                                       gate-result))
                                   {:ok? true})
                     next-status (final-status action result exit review-gate)]
@@ -961,6 +1007,7 @@
                                                 (= "in-progress" next-status) :retrying
                                                 :else :blocked)
                              {:action action
+                              :agent assignee
                               :lane effective-lane
                               :exit-code exit
                               :result result
@@ -970,7 +1017,7 @@
                   (clear-pr-gate-retries! ticket-id))
                 (move-card! ticket-id next-status)
                 (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                         :assignee (if (= "in-progress" next-status) "codex" "boxp")}
+                                                         :assignee (if (= "in-progress" next-status) assignee "boxp")}
                                                   (= "done" next-status) (assoc :closed (today))))
                 (append-note! ticket-id (final-note run-id next-status result last-message review-gate))
                 true)
@@ -1017,9 +1064,9 @@
         processed (count (filter :started? results))]
     (sync-all!)
     (log! (cond
-            (empty? candidates) "no codex-assigned Task Board tickets"
-            (zero? processed) "no codex-assigned Task Board tickets could start"
-            :else (str "processed " processed " codex-assigned Task Board ticket(s) in parallel")))))
+            (empty? candidates) "no supported-agent-assigned Task Board tickets"
+            (zero? processed) "no supported-agent-assigned Task Board tickets could start"
+            :else (str "processed " processed " supported-agent-assigned Task Board ticket(s) in parallel")))))
 
 (defn loop! []
   (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)))
