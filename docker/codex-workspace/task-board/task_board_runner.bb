@@ -20,12 +20,15 @@
 
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
-(def supported-assignees #{"codex" "codex-sol" "codex-full" "codex-mini" "fable"})
+(def supported-assignees #{"codex" "codex-sol" "codex-full" "codex-terra" "codex-mini" "fable"})
 
 (def assignee->model
+  ;; GPT-5.6 performance order: Sol > Terra > Luna.
+  ;; codex-full is kept as a compatibility alias for the highest-performance route.
   {"codex"      "gpt-5.6-sol"
    "codex-sol"  "gpt-5.6-sol"
-   "codex-full" "gpt-5.6-terra"
+   "codex-full" "gpt-5.6-sol"
+   "codex-terra" "gpt-5.6-terra"
    "codex-mini" "gpt-5.6-luna"})
 
 (def board-mutex (Object.))
@@ -531,7 +534,7 @@
   (str "Fable routing policy:\n"
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
-       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-sol, unless CODEX_TASK_BOARD_MODEL overrides it. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 
@@ -617,6 +620,10 @@
       (throw (ex-info (str "command failed: " (str/join " " args) "\n" (:err proc))
                       {:args args :exit (:exit proc) :err (:err proc)})))))
 
+(defn get-codex-model [assignee env-model]
+  (or (when (seq env-model) env-model)
+      (get assignee->model assignee)))
+
 (defn codex-model-profile-args
   ([] (codex-model-profile-args nil))
   ([assignee]
@@ -624,11 +631,10 @@
          env-profile (env "CODEX_TASK_BOARD_PROFILE" nil)]
      (codex-model-profile-args assignee env-model env-profile)))
   ([assignee env-model env-profile]
-   (let [default-model (get assignee->model assignee)
-         model (or (seq env-model) default-model)]
+   (let [model (get-codex-model assignee env-model)]
      (cond-> []
        model
-       (conj "--model" (if (seq env-model) env-model default-model))
+       (conj "--model" model)
 
        (seq env-profile)
        (conj "--profile" env-profile)))))
@@ -1106,10 +1112,10 @@
   (let [failures (atom [])]
     (doseq [[assignee expected-model] [["codex"      "gpt-5.6-sol"]
                                        ["codex-sol"  "gpt-5.6-sol"]
-                                       ["codex-full" "gpt-5.6-terra"]
+                                       ["codex-full" "gpt-5.6-sol"]
+                                       ["codex-terra" "gpt-5.6-terra"]
                                        ["codex-mini" "gpt-5.6-luna"]]]
-      (let [args (codex-model-profile-args assignee nil nil)
-            actual-model (arg-value args "--model")]
+      (let [actual-model (get-codex-model assignee nil)]
         (if (= actual-model expected-model)
           (println (str "PASS: " assignee " -> " actual-model))
           (do
