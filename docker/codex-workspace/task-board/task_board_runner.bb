@@ -20,7 +20,19 @@
 
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
-(def supported-assignees #{"codex" "fable"})
+(def supported-assignees #{"codex" "codex-sol" "codex-full" "codex-terra" "codex-mini" "fable"})
+
+(def assignee->model
+  ;; GPT-5.6 performance order: Sol > Terra > Luna.
+  ;; codex (default) / codex-terra route to Terra (GPT-5.5-equivalent, cost-efficient default).
+  ;; codex-sol / codex-full route to Sol (highest-performance, complex tasks only).
+  ;; codex-mini routes to Luna (lightweight tier).
+  {"codex"       "gpt-5.6-terra"
+   "codex-sol"   "gpt-5.6-sol"
+   "codex-full"  "gpt-5.6-sol"
+   "codex-terra" "gpt-5.6-terra"
+   "codex-mini"  "gpt-5.6-luna"})
+
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
@@ -524,7 +536,7 @@
   (str "Fable routing policy:\n"
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
-       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 
@@ -610,13 +622,24 @@
       (throw (ex-info (str "command failed: " (str/join " " args) "\n" (:err proc))
                       {:args args :exit (:exit proc) :err (:err proc)})))))
 
-(defn codex-model-profile-args []
-  (cond-> []
-    (seq (System/getenv "CODEX_TASK_BOARD_MODEL"))
-    (conj "--model" (System/getenv "CODEX_TASK_BOARD_MODEL"))
+(defn get-codex-model [assignee env-model]
+  (or (when (seq env-model) env-model)
+      (get assignee->model assignee)))
 
-    (seq (System/getenv "CODEX_TASK_BOARD_PROFILE"))
-    (conj "--profile" (System/getenv "CODEX_TASK_BOARD_PROFILE"))))
+(defn codex-model-profile-args
+  ([] (codex-model-profile-args nil))
+  ([assignee]
+   (let [env-model (env "CODEX_TASK_BOARD_MODEL" nil)
+         env-profile (env "CODEX_TASK_BOARD_PROFILE" nil)]
+     (codex-model-profile-args assignee env-model env-profile)))
+  ([assignee env-model env-profile]
+   (let [model (get-codex-model assignee env-model)]
+     (cond-> []
+       model
+       (conj "--model" model)
+
+       (seq env-profile)
+       (conj "--profile" env-profile)))))
 
 (defn pr-view [pr-url]
   (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,isDraft,mergeStateStatus,statusCheckRollup"] {})
@@ -761,7 +784,7 @@
                                   "--skip-git-repo-check"
                                   "--output-last-message" (str review-path)]
                            true
-                           (into (codex-model-profile-args))
+                           (into (codex-model-profile-args "codex"))
 
                            true
                            (conj "-"))
@@ -834,6 +857,8 @@
        :message (.getMessage e)})))
 
 (defn fable-model-args []
+  ;; Fable runs via the `claude` CLI. Model defaults to claude CLI's built-in default
+  ;; (claude-sonnet-4-6) unless CODEX_TASK_BOARD_FABLE_MODEL overrides it.
   (let [model (System/getenv "CODEX_TASK_BOARD_FABLE_MODEL")
         agent (env "CODEX_TASK_BOARD_FABLE_AGENT" "fable")
         extra (System/getenv "CODEX_TASK_BOARD_FABLE_EXTRA_ARGS")]
@@ -885,7 +910,7 @@
                    (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
 
                    true
-                   (into (codex-model-profile-args))
+                   (into (codex-model-profile-args agent))
 
                    true
                    (conj "-")))
@@ -1083,8 +1108,45 @@
   (println "usage: task_board_runner.bb <tick|loop|sync>")
   (System/exit 2))
 
+(defn arg-value [args flag]
+  (let [idx (.indexOf args flag)]
+    (when (>= idx 0) (nth args (inc idx)))))
+
+(defn run-tests! []
+  (let [failures (atom [])]
+    (doseq [[assignee expected-model] [["codex"       "gpt-5.6-terra"]
+                                       ["codex-sol"   "gpt-5.6-sol"]
+                                       ["codex-full"  "gpt-5.6-sol"]
+                                       ["codex-terra" "gpt-5.6-terra"]
+                                       ["codex-mini"  "gpt-5.6-luna"]]]
+      (let [actual-model (get-codex-model assignee nil)]
+        (if (= actual-model expected-model)
+          (println (str "PASS: " assignee " -> " actual-model))
+          (do
+            (println (str "FAIL: " assignee " expected=" expected-model " actual=" actual-model))
+            (swap! failures conj assignee)))))
+    (let [args (codex-model-profile-args "codex-full" "gpt-test-override" nil)
+          actual-model (arg-value args "--model")]
+      (if (= actual-model "gpt-test-override")
+        (println (str "PASS: CODEX_TASK_BOARD_MODEL overrides assignee model -> " actual-model))
+        (do
+          (println (str "FAIL: CODEX_TASK_BOARD_MODEL override expected=gpt-test-override actual=" actual-model))
+          (swap! failures conj "CODEX_TASK_BOARD_MODEL override"))))
+    ;; Verify run-codex-review! default: codex-model-profile-args "codex" without env override
+    (let [args (codex-model-profile-args "codex" nil nil)
+          actual-model (arg-value args "--model")]
+      (if (= actual-model "gpt-5.6-terra")
+        (println (str "PASS: codex-review gate default model -> " actual-model))
+        (do
+          (println (str "FAIL: codex-review gate default model expected=gpt-5.6-terra actual=" actual-model))
+          (swap! failures conj "codex-review default model"))))
+    (if (seq @failures)
+      (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
+      (println "All assignee model tests passed."))))
+
 (case (or (first *command-line-args*) "tick")
   "tick" (tick!)
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
+  "test" (run-tests!)
   (usage))

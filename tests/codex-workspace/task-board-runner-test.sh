@@ -711,6 +711,31 @@ test_review_gate_pass_after_retry_moves_review() {
   assert_file_not_contains "${state}/state.edn" 'BOXP-415'
 }
 
+test_assignee_model_routing() {
+  bb "${RUNNER}" test
+}
+
+test_assignee_model_tick_routing() {
+  local tmp vault state bin args_log assignee expected_model
+  local pairs=("codex-sol:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna")
+  for pair in "${pairs[@]}"; do
+    assignee="${pair%%:*}"
+    expected_model="${pair##*:}"
+    tmp="$(mktemp -d)"
+    vault="${tmp}/vault"
+    state="${tmp}/state"
+    bin="${tmp}/bin"
+    args_log="${tmp}/codex-args.log"
+    mkdir -p "${bin}"
+    make_fake_codex "${bin}"
+    make_fake_gh "${bin}"
+    write_board "${vault}" "- [ ] [[Tickets/BOXP-500|BOXP-500: model tick]] #ticket status::in-progress"
+    write_ticket "${vault}" BOXP-500 in-progress "${assignee}"
+    PATH="${bin}:$PATH" CODEX_FAKE_ARG_LOG="${args_log}" run_tick "${vault}" "${state}" env >"/tmp/task-board-model-tick-${assignee}.out"
+    assert_file_contains "${args_log}" "exec.*--model ${expected_model}"
+  done
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_unsupported_assignee_is_ignored
@@ -732,5 +757,7 @@ test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks
 test_review_gate_pass_after_retry_moves_review
+test_assignee_model_routing
+test_assignee_model_tick_routing
 
 echo "task-board-runner tests passed"
