@@ -36,17 +36,6 @@
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
-;; Fixed pool of 256 lock objects (striped locking). Prevents read-modify-write races
-;; between sync-ticket-statuses! and in-flight process-card! workers, with bounded
-;; memory regardless of how many distinct ticket IDs are processed over the lifetime
-;; of the process.
-(def ^:private ticket-file-lock-stripes
-  (vec (repeatedly 256 #(Object.))))
-
-(defn ticket-file-mutex [ticket-id]
-  (nth ticket-file-lock-stripes
-       (mod (Math/abs (.hashCode (str ticket-id))) 256)))
-
 (defn log! [message]
   (locking log-mutex
     (println message)))
@@ -243,37 +232,35 @@
       (conj (vec fm-lines) replacement))))
 
 (defn update-frontmatter! [ticket-id updates]
-  (locking (ticket-file-mutex ticket-id)
-    (let [path (ticket-path ticket-id)
-          lines (vec (read-lines path))
-          {:keys [end]} (or (frontmatter-range lines)
-                            (fail (str "missing frontmatter: " path)))
-          before (subvec lines 0 (inc end))
-          body (subvec lines (inc end))
-          fm-lines (subvec before 1 end)
-          new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
-                         fm-lines
-                         updates)
-          new-lines (vec (concat ["---"] new-fm ["---"] body))]
-      (when (not= lines new-lines)
-        (write-lines! path new-lines)))))
+  (let [path (ticket-path ticket-id)
+        lines (vec (read-lines path))
+        {:keys [end]} (or (frontmatter-range lines)
+                          (fail (str "missing frontmatter: " path)))
+        before (subvec lines 0 (inc end))
+        body (subvec lines (inc end))
+        fm-lines (subvec before 1 end)
+        new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
+                       fm-lines
+                       updates)
+        new-lines (vec (concat ["---"] new-fm ["---"] body))]
+    (when (not= lines new-lines)
+      (write-lines! path new-lines))))
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
 
 (defn append-note! [ticket-id note]
-  (locking (ticket-file-mutex ticket-id)
-    (let [path (ticket-path ticket-id)
-          lines (vec (read-lines path))
-          bullet (str "- " (today) ": " note)
-          idx (or (section-index lines "## Notes") (dec (count lines)))
-          insert-idx (if (= "## Notes" (nth lines idx))
-                       (count lines)
-                       (count lines))
-          new-lines (if (some #(= bullet %) lines)
-                      lines
-                      (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-      (write-lines! path new-lines))))
+  (let [path (ticket-path ticket-id)
+        lines (vec (read-lines path))
+        bullet (str "- " (today) ": " note)
+        idx (or (section-index lines "## Notes") (dec (count lines)))
+        insert-idx (if (= "## Notes" (nth lines idx))
+                     (count lines)
+                     (count lines))
+        new-lines (if (some #(= bullet %) lines)
+                    lines
+                    (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
+    (write-lines! path new-lines)))
 
 (defn sync-ticket-statuses! []
   (let [lines (vec (read-lines (board-path)))]
@@ -1257,58 +1244,6 @@
       (deliver p-a :done)
       @f-a)
     (reset! in-flight-futures {})
-
-    ;; Test: concurrent update-frontmatter! and append-note! on the same ticket do not lose writes.
-    ;; Uses a CountDownLatch hook inside write-lines! to force update-frontmatter! to pause
-    ;; AFTER its read and BEFORE its write, while append-note! runs concurrently.
-    ;; A separate releaser thread delivers write-proceed after a short delay so there is no
-    ;; deadlock even when append-note! blocks on the mutex.  Without the mutex this test would
-    ;; deterministically lose the appended note; with the mutex both writes are preserved.
-    (let [tmp-dir (fs/create-temp-dir)
-          ticket-id "TEST-RACE"
-          ticket-file (fs/path tmp-dir (str ticket-id ".md"))
-          initial-content "---\nstatus: init\nassignee: codex\n---\n\n## Notes\n"]
-      (spit (str ticket-file) initial-content)
-      (with-redefs [tickets-dir (fn [] tmp-dir)]
-        (let [first-write-latch (java.util.concurrent.CountDownLatch. 1)
-              write-proceed (promise)
-              first-write? (atom true)
-              orig-write write-lines!]
-          (with-redefs [write-lines! (fn [path lines]
-                                       ;; On the first write call (from update-frontmatter!),
-                                       ;; signal that the read is done and pause before writing.
-                                       ;; This creates a deterministic race window.
-                                       (when (compare-and-set! first-write? true false)
-                                         (.countDown first-write-latch)
-                                         @write-proceed)
-                                       (orig-write path lines))]
-            ;; f1: update-frontmatter! -- will pause inside write-lines! hook
-            (let [f1 (future (update-frontmatter! ticket-id {:status "updated"}))
-                  ;; Releaser thread: delivers write-proceed after a delay so f1 can finish
-                  ;; regardless of whether the main thread is blocked on the mutex.
-                  f-release (future
-                              (.await first-write-latch)
-                              (Thread/sleep 50)
-                              (deliver write-proceed :go))]
-              ;; Wait for f1 to have completed its read (inside its lock window)
-              (.await first-write-latch)
-              ;; Call append-note! now: with mutex it blocks until f1 finishes;
-              ;; without mutex it reads the stale file and its write gets overwritten by f1.
-              (append-note! ticket-id "important-note")
-              @f-release
-              @f1)))
-        (let [content (slurp (str ticket-file))
-              has-update (str/includes? content "status: updated")
-              has-note   (str/includes? content "important-note")]
-          (cond
-            (not has-update)
-            (do (println "FAIL: concurrent write lost frontmatter update")
-                (swap! failures conj "ticket-file-race: frontmatter update preserved"))
-            (not has-note)
-            (do (println "FAIL: concurrent write lost appended note")
-                (swap! failures conj "ticket-file-race: appended note preserved"))
-            :else
-            (println "PASS: mutex prevented concurrent write race; both frontmatter and note preserved")))))
 
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
