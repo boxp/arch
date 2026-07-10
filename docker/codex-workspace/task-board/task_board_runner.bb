@@ -36,16 +36,16 @@
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
-;; Per-ticket file mutex map. Ensures update-frontmatter! and append-note!
-;; are never called concurrently for the same ticket, preventing read-modify-write
-;; races between sync-ticket-statuses! and in-flight process-card! workers.
-(def ticket-file-mutexes (atom {}))
+;; Fixed pool of 256 lock objects (striped locking). Prevents read-modify-write races
+;; between sync-ticket-statuses! and in-flight process-card! workers, with bounded
+;; memory regardless of how many distinct ticket IDs are processed over the lifetime
+;; of the process.
+(def ^:private ticket-file-lock-stripes
+  (vec (repeatedly 256 #(Object.))))
 
 (defn ticket-file-mutex [ticket-id]
-  (or (get @ticket-file-mutexes ticket-id)
-      (let [new-mutex (Object.)]
-        (get (swap! ticket-file-mutexes update ticket-id #(or % new-mutex))
-             ticket-id))))
+  (nth ticket-file-lock-stripes
+       (mod (Math/abs (.hashCode (str ticket-id))) 256)))
 
 (defn log! [message]
   (locking log-mutex
@@ -1248,39 +1248,56 @@
     (reset! in-flight-futures {})
 
     ;; Test: concurrent update-frontmatter! and append-note! on the same ticket do not lose writes.
-    ;; Uses a unique status per iteration (e.g. "s0", "s1", ...) so every update-frontmatter! call
-    ;; always changes the frontmatter and actually writes to the file. This guarantees the
-    ;; read-modify-write race that the per-ticket mutex fixes is reliably triggered.
+    ;; Uses a CountDownLatch hook inside write-lines! to force update-frontmatter! to pause
+    ;; AFTER its read and BEFORE its write, while append-note! runs concurrently.
+    ;; A separate releaser thread delivers write-proceed after a short delay so there is no
+    ;; deadlock even when append-note! blocks on the mutex.  Without the mutex this test would
+    ;; deterministically lose the appended note; with the mutex both writes are preserved.
     (let [tmp-dir (fs/create-temp-dir)
           ticket-id "TEST-RACE"
           ticket-file (fs/path tmp-dir (str ticket-id ".md"))
           initial-content "---\nstatus: init\nassignee: codex\n---\n\n## Notes\n"]
       (spit (str ticket-file) initial-content)
       (with-redefs [tickets-dir (fn [] tmp-dir)]
-        (let [n-iters 50
-              sync-results (future
-                             (dotimes [i n-iters]
-                               (update-frontmatter! ticket-id {:status (str "s" i)})))
-              worker-results (future
-                               (dotimes [i n-iters]
-                                 (append-note! ticket-id (str "note-" i))))]
-          @sync-results
-          @worker-results
-          (let [final-lines (str/split-lines (slurp (str ticket-file)))
-                note-lines (filter #(str/starts-with? % "- ") final-lines)
-                note-count (count note-lines)
-                has-status (some #(str/starts-with? % "status:") final-lines)]
-            (cond
-              (not has-status)
-              (do (println "FAIL: concurrent update-frontmatter! lost status field")
-                  (swap! failures conj "ticket-file-race: status field preserved"))
-
-              (not= n-iters note-count)
-              (do (println (str "FAIL: concurrent append-note! lost writes; expected=" n-iters " actual=" note-count))
-                  (swap! failures conj "ticket-file-race: all notes preserved"))
-
-              :else
-              (println "PASS: concurrent update-frontmatter! and append-note! did not lose writes"))))))
+        (let [first-write-latch (java.util.concurrent.CountDownLatch. 1)
+              write-proceed (promise)
+              first-write? (atom true)
+              orig-write write-lines!]
+          (with-redefs [write-lines! (fn [path lines]
+                                       ;; On the first write call (from update-frontmatter!),
+                                       ;; signal that the read is done and pause before writing.
+                                       ;; This creates a deterministic race window.
+                                       (when (compare-and-set! first-write? true false)
+                                         (.countDown first-write-latch)
+                                         @write-proceed)
+                                       (orig-write path lines))]
+            ;; f1: update-frontmatter! -- will pause inside write-lines! hook
+            (let [f1 (future (update-frontmatter! ticket-id {:status "updated"}))
+                  ;; Releaser thread: delivers write-proceed after a delay so f1 can finish
+                  ;; regardless of whether the main thread is blocked on the mutex.
+                  f-release (future
+                              (.await first-write-latch)
+                              (Thread/sleep 50)
+                              (deliver write-proceed :go))]
+              ;; Wait for f1 to have completed its read (inside its lock window)
+              (.await first-write-latch)
+              ;; Call append-note! now: with mutex it blocks until f1 finishes;
+              ;; without mutex it reads the stale file and its write gets overwritten by f1.
+              (append-note! ticket-id "important-note")
+              @f-release
+              @f1)))
+        (let [content (slurp (str ticket-file))
+              has-update (str/includes? content "status: updated")
+              has-note   (str/includes? content "important-note")]
+          (cond
+            (not has-update)
+            (do (println "FAIL: concurrent write lost frontmatter update")
+                (swap! failures conj "ticket-file-race: frontmatter update preserved"))
+            (not has-note)
+            (do (println "FAIL: concurrent write lost appended note")
+                (swap! failures conj "ticket-file-race: appended note preserved"))
+            :else
+            (println "PASS: mutex prevented concurrent write race; both frontmatter and note preserved")))))
 
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
