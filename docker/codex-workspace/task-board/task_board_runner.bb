@@ -24,12 +24,13 @@
 
 (def assignee->model
   ;; GPT-5.6 performance order: Sol > Terra > Luna.
-  ;; codex-full is kept as a compatibility alias for the highest-performance route.
-  {"codex"      "gpt-5.6-sol"
-   "codex-sol"  "gpt-5.6-sol"
-   "codex-full" "gpt-5.6-sol"
+  ;; codex / codex-sol / codex-full all route to Sol (highest-performance tier).
+  ;; codex-terra routes to Terra (mid-tier), codex-mini routes to Luna (lightweight).
+  {"codex"       "gpt-5.6-sol"
+   "codex-sol"   "gpt-5.6-sol"
+   "codex-full"  "gpt-5.6-sol"
    "codex-terra" "gpt-5.6-terra"
-   "codex-mini" "gpt-5.6-luna"})
+   "codex-mini"  "gpt-5.6-luna"})
 
 (def board-mutex (Object.))
 (def log-mutex (Object.))
@@ -855,6 +856,8 @@
        :message (.getMessage e)})))
 
 (defn fable-model-args []
+  ;; Fable runs via the `claude` CLI. Model defaults to claude CLI's built-in default
+  ;; (claude-sonnet-4-6) unless CODEX_TASK_BOARD_FABLE_MODEL overrides it.
   (let [model (System/getenv "CODEX_TASK_BOARD_FABLE_MODEL")
         agent (env "CODEX_TASK_BOARD_FABLE_AGENT" "fable")
         extra (System/getenv "CODEX_TASK_BOARD_FABLE_EXTRA_ARGS")]
