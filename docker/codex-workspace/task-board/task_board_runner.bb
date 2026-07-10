@@ -556,6 +556,7 @@
         ;; Pod's own locks. Recreate gives the replacement Pod a different UID, so only
         ;; another owner is allowed to consume a planned-shutdown marker.
         recoverable-markers (remove current-owner-marker? markers)
+        recovered-marker-paths (atom #{})
         locks-dir (fs/path (root) "locks")]
     (when (and (seq recoverable-markers) (fs/exists? locks-dir))
       (doseq [path (fs/list-dir locks-dir)
@@ -569,10 +570,15 @@
               (when-let [marker (matching-shutdown-marker recoverable-markers lock)]
                 (log! (str "closing lock from planned owner shutdown: " ticket-id
                            " owner=" (:owner-id marker)))
-                (close-planned-shutdown-lock! ticket-id lock marker)))
+                (when (close-planned-shutdown-lock! ticket-id lock marker)
+                  (swap! recovered-marker-paths conj (:path marker)))))
             (catch Exception e
               (close-corrupt-lock! ticket-id path e)))))))
-    (doseq [marker recoverable-markers]
+    ;; Keep unmatched markers for the next scan. A matching lock may be created while
+    ;; this process is enumerating the shared directory, and dropping the marker here
+    ;; would defer that lock to the heartbeat timeout instead of planned recovery.
+    (doseq [marker recoverable-markers
+            :when (contains? @recovered-marker-paths (:path marker))]
       (fs/delete-if-exists (:path marker))
       (fs/delete-if-exists (owner-state-path (:owner-id marker))))))
 

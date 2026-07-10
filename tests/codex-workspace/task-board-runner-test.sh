@@ -606,8 +606,52 @@ EOF
 
   [[ ! -e "${start_log}" ]] || fail "expected mismatched marker not to start a replacement run"
   [[ -e "${state}/locks/BOXP-204.edn" ]] || fail "expected fresh mismatched lock to remain"
+  [[ -e "${state}/terminating-owners/old-pod.edn" ]] || fail "expected unmatched marker to remain for a later scan"
   assert_file_not_contains "${vault}/Tickets/BOXP-204.md" 'marked interrupted'
   assert_file_contains "${vault}/Tickets/BOXP-204.md" '^status: in-progress$'
+}
+
+test_shutdown_marker_waits_for_late_matching_lock() {
+  local tmp vault state old_run heartbeat marker owner_state
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  old_run="20260710T000300Z"
+  heartbeat="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  marker="${state}/terminating-owners/old-pod.edn"
+  owner_state="${state}/owners/old-pod.edn"
+  mkdir -p "${state}/locks" "${state}/runs/BOXP-206/${old_run}" "${state}/terminating-owners" "${state}/owners"
+  write_board "${vault}" ""
+  cat >"${marker}" <<EOF
+{:owner-id "old-pod" :instance-id "old-instance" :host "old-pod" :requested-at "${heartbeat}"}
+EOF
+  cat >"${owner_state}" <<EOF
+{:owner-id "old-pod" :instance-id "old-instance" :host "old-pod" :pid 10 :started-at "${heartbeat}"}
+EOF
+
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    bb "${RUNNER}" recover >/tmp/task-board-marker-before-lock.out
+
+  [[ -e "${marker}" ]] || fail "expected marker without a matching lock to survive recovery"
+  [[ -e "${owner_state}" ]] || fail "expected owner state to remain with an unmatched marker"
+  cat >"${state}/locks/BOXP-206.edn" <<EOF
+{:ticket "BOXP-206" :run-id "${old_run}" :action :implement :lane "In Progress" :owner-id "old-pod" :owner-instance-id "old-instance" :heartbeat-at "${heartbeat}"}
+EOF
+
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    bb "${RUNNER}" recover >/tmp/task-board-marker-after-lock.out
+
+  [[ ! -e "${state}/locks/BOXP-206.edn" ]] || fail "expected late matching lock to be recovered"
+  [[ ! -e "${marker}" ]] || fail "expected consumed marker to be removed"
+  [[ ! -e "${owner_state}" ]] || fail "expected recovered owner state to be removed"
+  assert_file_contains "${state}/runs/BOXP-206/${old_run}/summary.edn" ':status :interrupted'
+  assert_file_contains "${state}/runs/BOXP-206/${old_run}/summary.edn" ':reason "planned workspace shutdown"'
 }
 
 test_review_without_pr_is_blocked() {
@@ -1059,6 +1103,7 @@ test_cross_process_lock_guard_preserves_replacement_lock
 test_sigterm_writes_shutdown_marker_without_prestop
 test_current_owner_shutdown_marker_drains_without_recovery
 test_mismatched_shutdown_marker_does_not_recover_fresh_lock
+test_shutdown_marker_waits_for_late_matching_lock
 test_review_without_pr_is_blocked
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates
