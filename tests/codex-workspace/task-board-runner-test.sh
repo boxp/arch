@@ -313,7 +313,8 @@ test_codex_sol_assignee_includes_delegation_policy() {
     run_tick "${vault}" "${state}" env >/tmp/task-board-codex-sol.out
 
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: codex-sol$'
-  assert_file_contains "${prompt_log}" 'Codex-sol routing policy'
+  assert_file_contains "${prompt_log}" 'High-cost model routing policy'
+  assert_file_contains "${prompt_log}" 'You are the codex-sol high-cost entry point'
   assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, and verification to lower-cost models whenever practical'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-152\|BOXP-152: codex-sol\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-152.md" '^status: done$'
@@ -341,7 +342,8 @@ test_codex_full_assignee_includes_delegation_policy() {
     run_tick "${vault}" "${state}" env >/tmp/task-board-codex-full.out
 
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: codex-full$'
-  assert_file_contains "${prompt_log}" 'Codex-sol routing policy'
+  assert_file_contains "${prompt_log}" 'High-cost model routing policy'
+  assert_file_contains "${prompt_log}" 'You are the codex-full high-cost entry point'
   assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, and verification to lower-cost models whenever practical'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-153\|BOXP-153: codex-full\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-153.md" '^status: done$'
