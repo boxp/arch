@@ -782,7 +782,7 @@
                                   "--skip-git-repo-check"
                                   "--output-last-message" (str review-path)]
                            true
-                           (into (codex-model-profile-args))
+                           (into (codex-model-profile-args "codex"))
 
                            true
                            (conj "-"))
@@ -1128,6 +1128,14 @@
         (do
           (println (str "FAIL: CODEX_TASK_BOARD_MODEL override expected=gpt-test-override actual=" actual-model))
           (swap! failures conj "CODEX_TASK_BOARD_MODEL override"))))
+    ;; Verify run-codex-review! default: codex-model-profile-args "codex" without env override
+    (let [args (codex-model-profile-args "codex" nil nil)
+          actual-model (arg-value args "--model")]
+      (if (= actual-model "gpt-5.6-sol")
+        (println (str "PASS: codex-review gate default model -> " actual-model))
+        (do
+          (println (str "FAIL: codex-review gate default model expected=gpt-5.6-sol actual=" actual-model))
+          (swap! failures conj "codex-review default model"))))
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
       (println "All assignee model tests passed."))))
