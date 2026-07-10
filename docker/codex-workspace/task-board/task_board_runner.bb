@@ -24,9 +24,10 @@
 
 (def assignee->model
   ;; GPT-5.6 performance order: Sol > Terra > Luna.
-  ;; codex / codex-sol / codex-full all route to Sol (highest-performance tier).
-  ;; codex-terra routes to Terra (mid-tier), codex-mini routes to Luna (lightweight).
-  {"codex"       "gpt-5.6-sol"
+  ;; codex (default) / codex-terra route to Terra (GPT-5.5-equivalent, cost-efficient default).
+  ;; codex-sol / codex-full route to Sol (highest-performance, complex tasks only).
+  ;; codex-mini routes to Luna (lightweight tier).
+  {"codex"       "gpt-5.6-terra"
    "codex-sol"   "gpt-5.6-sol"
    "codex-full"  "gpt-5.6-sol"
    "codex-terra" "gpt-5.6-terra"
@@ -535,7 +536,7 @@
   (str "Fable routing policy:\n"
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
-       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-sol, unless CODEX_TASK_BOARD_MODEL overrides it. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 
@@ -1113,11 +1114,11 @@
 
 (defn run-tests! []
   (let [failures (atom [])]
-    (doseq [[assignee expected-model] [["codex"      "gpt-5.6-sol"]
-                                       ["codex-sol"  "gpt-5.6-sol"]
-                                       ["codex-full" "gpt-5.6-sol"]
+    (doseq [[assignee expected-model] [["codex"       "gpt-5.6-terra"]
+                                       ["codex-sol"   "gpt-5.6-sol"]
+                                       ["codex-full"  "gpt-5.6-sol"]
                                        ["codex-terra" "gpt-5.6-terra"]
-                                       ["codex-mini" "gpt-5.6-luna"]]]
+                                       ["codex-mini"  "gpt-5.6-luna"]]]
       (let [actual-model (get-codex-model assignee nil)]
         (if (= actual-model expected-model)
           (println (str "PASS: " assignee " -> " actual-model))
@@ -1134,10 +1135,10 @@
     ;; Verify run-codex-review! default: codex-model-profile-args "codex" without env override
     (let [args (codex-model-profile-args "codex" nil nil)
           actual-model (arg-value args "--model")]
-      (if (= actual-model "gpt-5.6-sol")
+      (if (= actual-model "gpt-5.6-terra")
         (println (str "PASS: codex-review gate default model -> " actual-model))
         (do
-          (println (str "FAIL: codex-review gate default model expected=gpt-5.6-sol actual=" actual-model))
+          (println (str "FAIL: codex-review gate default model expected=gpt-5.6-terra actual=" actual-model))
           (swap! failures conj "codex-review default model"))))
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
