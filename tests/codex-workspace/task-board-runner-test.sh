@@ -406,7 +406,7 @@ EOF
 }
 
 test_planned_shutdown_lock_recovers_immediately() {
-  local tmp vault state bin old_run lock_snapshot started elapsed heartbeat
+  local tmp vault state bin old_run lock_snapshot replacement_run started elapsed heartbeat
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -434,14 +434,18 @@ EOF
   PATH="${bin}:$PATH" \
     CODEX_TASK_BOARD_OWNER_ID=new-pod \
     CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    CODEX_TASK_BOARD_RUN_TIMESTAMP="${old_run}" \
     CODEX_FAKE_LOCK_FILE="${state}/locks/BOXP-202.edn" \
     CODEX_FAKE_LOCK_SNAPSHOT="${lock_snapshot}" \
     run_tick "${vault}" "${state}" env >/tmp/task-board-planned-recovery.out
   elapsed=$((SECONDS - started))
+  replacement_run="$(sed -n 's/.*:run-id "\([^"]*\)".*/\1/p' "${lock_snapshot}" | head -n 1)"
 
   [[ "${elapsed}" -lt 5 ]] || fail "expected planned shutdown recovery under 5s in simulation, got ${elapsed}s"
+  [[ "${replacement_run}" == "${old_run}-"* ]] || fail "expected a unique replacement run ID for the same timestamp, got ${replacement_run}"
   assert_file_contains "${state}/runs/BOXP-202/${old_run}/summary.edn" ':status :interrupted'
   assert_file_contains "${state}/runs/BOXP-202/${old_run}/summary.edn" ':reason "planned workspace shutdown"'
+  assert_file_contains "${state}/runs/BOXP-202/${replacement_run}/summary.edn" ':status :succeeded'
   assert_file_contains "${vault}/Tickets/BOXP-202.md" 'marked interrupted after planned workspace shutdown of owner old-pod'
   assert_file_contains "${vault}/Tickets/BOXP-202.md" '^status: done$'
   assert_file_contains "${lock_snapshot}" ':owner-id "new-pod"'

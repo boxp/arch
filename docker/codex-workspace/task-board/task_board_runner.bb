@@ -117,9 +117,16 @@
 (defn today []
   (str (java.time.LocalDate/now java.time.ZoneOffset/UTC)))
 
+(defn run-timestamp []
+  (env "CODEX_TASK_BOARD_RUN_TIMESTAMP"
+       (.format (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss'Z'")
+                (java.time.ZonedDateTime/now java.time.ZoneOffset/UTC))))
+
+(defn unique-run-id [timestamp]
+  (str timestamp "-" (java.util.UUID/randomUUID)))
+
 (defn run-id []
-  (.format (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss'Z'")
-           (java.time.ZonedDateTime/now java.time.ZoneOffset/UTC)))
+  (unique-run-id (run-timestamp)))
 
 (defn fail [message]
   (binding [*out* *err*]
@@ -1374,6 +1381,18 @@
 
 (defn run-tests! []
   (let [failures (atom [])]
+    (let [timestamp "20260710T000000Z"
+          first-id (unique-run-id timestamp)
+          second-id (unique-run-id timestamp)
+          expected-pattern #"^20260710T000000Z-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"]
+      (if (and (not= first-id second-id)
+               (re-matches expected-pattern first-id)
+               (re-matches expected-pattern second-id))
+        (println "PASS: run IDs remain unique within the same second")
+        (do
+          (println (str "FAIL: same-second run IDs must be unique: " first-id " / " second-id))
+          (swap! failures conj "same-second run ID uniqueness"))))
+
     (doseq [[assignee expected-model] [["codex"       "gpt-5.6-terra"]
                                        ["codex-sol"   "gpt-5.6-sol"]
                                        ["codex-full"  "gpt-5.6-sol"]
