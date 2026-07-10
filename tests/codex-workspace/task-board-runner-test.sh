@@ -691,7 +691,9 @@ EOF
 
   [[ ! -e "${state}/locks/BOXP-206.edn" ]] || fail "expected late matching lock to be recovered"
   [[ ! -e "${marker}" ]] || fail "expected consumed marker to be removed"
-  [[ ! -e "${owner_state}" ]] || fail "expected recovered owner state to be removed"
+  [[ -e "${owner_state}" ]] || fail "expected recovered owner state to remain as a termination tombstone"
+  assert_file_contains "${owner_state}" ':status :terminated'
+  assert_file_contains "${owner_state}" ':instance-id "old-instance"'
   assert_file_contains "${state}/runs/BOXP-206/${old_run}/summary.edn" ':status :interrupted'
   assert_file_contains "${state}/runs/BOXP-206/${old_run}/summary.edn" ':reason "planned workspace shutdown"'
 }
@@ -761,9 +763,39 @@ EOF
 
   [[ ! -e "${state}/locks/BOXP-208.edn" ]] || fail "expected the late lock to be recovered on the next scan"
   [[ ! -e "${marker}" ]] || fail "expected marker removal after all matching locks were recovered"
-  [[ ! -e "${owner_state}" ]] || fail "expected owner state removal after all matching locks were recovered"
+  [[ -e "${owner_state}" ]] || fail "expected owner termination tombstone after all matching locks were recovered"
+  assert_file_contains "${owner_state}" ':status :terminated'
+  assert_file_contains "${owner_state}" ':instance-id "old-instance"'
   assert_file_contains "${state}/runs/BOXP-208/${late_run}/summary.edn" ':status :interrupted'
   assert_file_contains "${state}/runs/BOXP-208/${late_run}/summary.edn" ':reason "planned workspace shutdown"'
+}
+
+test_terminated_owner_cannot_create_lock_after_marker_cleanup() {
+  local tmp vault state bin start_log heartbeat
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  start_log="${tmp}/starts.log"
+  heartbeat="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "${bin}" "${state}/owners"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-209|BOXP-209: retired owner]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-209 in-progress codex
+  cat >"${state}/owners/old-pod.edn" <<EOF
+{:owner-id "old-pod" :instance-id "old-instance" :status :terminated :host "old-pod" :terminated-at "${heartbeat}"}
+EOF
+
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_OWNER_ID=old-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=old-instance \
+    CODEX_FAKE_START_LOG="${start_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-terminated-owner.out
+
+  [[ ! -e "${start_log}" ]] || fail "expected a terminated owner not to start an agent"
+  [[ ! -e "${state}/locks/BOXP-209.edn" ]] || fail "expected a terminated owner not to create a lock"
+  assert_file_contains /tmp/task-board-terminated-owner.out 'is draining; not accepting new tickets'
+  assert_file_contains "${vault}/Tickets/BOXP-209.md" '^status: in-progress$'
 }
 
 test_review_without_pr_is_blocked() {
@@ -1218,6 +1250,7 @@ test_current_owner_shutdown_marker_drains_without_recovery
 test_mismatched_shutdown_marker_does_not_recover_fresh_lock
 test_shutdown_marker_waits_for_late_matching_lock
 test_shutdown_marker_survives_late_second_lock
+test_terminated_owner_cannot_create_lock_after_marker_cleanup
 test_review_without_pr_is_blocked
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates

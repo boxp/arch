@@ -42,9 +42,16 @@
 (def ^:private ticket-lock-stripes
   (vec (repeatedly 256 #(Object.))))
 
+(def ^:private owner-lock-stripes
+  (vec (repeatedly 256 #(Object.))))
+
 (defn ticket-mutex [ticket-id]
   (nth ticket-lock-stripes
        (Math/floorMod (.hashCode (str ticket-id)) (count ticket-lock-stripes))))
+
+(defn owner-mutex [owner]
+  (nth owner-lock-stripes
+       (Math/floorMod (.hashCode (str owner)) (count owner-lock-stripes))))
 
 (defn log! [message]
   (locking log-mutex
@@ -93,6 +100,9 @@
 (defn lock-guards-dir []
   (fs/path (root) "lock-guards"))
 
+(defn owner-lock-guards-dir []
+  (fs/path (root) "owner-lock-guards"))
+
 (defn owner-state-path
   ([] (owner-state-path (owner-id)))
   ([value] (fs/path (owners-dir) (str (safe-owner-id value) ".edn"))))
@@ -100,6 +110,21 @@
 (defn shutdown-marker-path
   ([] (shutdown-marker-path (owner-id)))
   ([value] (fs/path (terminating-owners-dir) (str (safe-owner-id value) ".edn"))))
+
+(defn owner-lock-guard-path [value]
+  (fs/path (owner-lock-guards-dir) (str (safe-owner-id value) ".lock")))
+
+(defn with-owner-lock-guard [value f]
+  ;; Planned-shutdown marker changes and every lock acquisition for an owner must
+  ;; share one cross-process critical section. Ticket guards cannot close the gap
+  ;; between a directory-wide rescan and deleting the owner marker.
+  (let [guard-key (safe-owner-id value)]
+    (locking (owner-mutex guard-key)
+      (fs/create-dirs (owner-lock-guards-dir))
+      (with-open [file (java.io.RandomAccessFile. (str (owner-lock-guard-path guard-key)) "rw")
+                  channel (.getChannel file)]
+        (let [_file-lock (.lock channel)]
+          (f))))))
 
 (defn vault []
   (env "CODEX_TASK_BOARD_VAULT" default-vault))
@@ -141,7 +166,8 @@
                 (fs/path (root) "runs")
                 (owners-dir)
                 (terminating-owners-dir)
-                (lock-guards-dir)]]
+                (lock-guards-dir)
+                (owner-lock-guards-dir)]]
     (fs/create-dirs path)))
 
 (defn read-edn-file [path fallback]
@@ -154,26 +180,40 @@
   (spit (str path) (str (pr-str value) "\n")))
 
 (defn activate-owner! []
-  (write-edn-file! (owner-state-path)
-                   {:owner-id (owner-id)
-                    :instance-id runner-instance-id
-                    :host (or (System/getenv "HOSTNAME") "unknown")
-                    :pid (.pid (java.lang.ProcessHandle/current))
-                    :started-at (now-str)}))
+  (with-owner-lock-guard
+   (owner-id)
+   #(write-edn-file! (owner-state-path)
+                     {:owner-id (owner-id)
+                      :instance-id runner-instance-id
+                      :status :active
+                      :host (or (System/getenv "HOSTNAME") "unknown")
+                      :pid (.pid (java.lang.ProcessHandle/current))
+                      :started-at (now-str)})))
 
 (defn prepare-shutdown! []
   (ensure-root!)
-  (let [active (try
-                 (read-edn-file (owner-state-path) {})
-                 (catch Exception _ {}))
-        marker {:owner-id (owner-id)
-                :instance-id (:instance-id active)
-                :host (or (:host active) (System/getenv "HOSTNAME") "unknown")
-                :requested-at (now-str)}]
-    (write-edn-file! (shutdown-marker-path) marker)
-    (log! (str "prepared shutdown for owner " (:owner-id marker)
-               ", instance=" (or (:instance-id marker) "unknown")))
-    marker))
+  (with-owner-lock-guard
+   (owner-id)
+   (fn []
+     (let [active (try
+                    (read-edn-file (owner-state-path) {})
+                    (catch Exception _ {}))
+           instance (or (:instance-id active) runner-instance-id)
+           requested-at (now-str)
+           marker {:owner-id (owner-id)
+                   :instance-id instance
+                   :host (or (:host active) (System/getenv "HOSTNAME") "unknown")
+                   :requested-at requested-at}]
+       (write-edn-file! (owner-state-path)
+                        (merge active
+                               {:owner-id (owner-id)
+                                :instance-id instance
+                                :status :terminating
+                                :shutdown-requested-at requested-at}))
+       (write-edn-file! (shutdown-marker-path) marker)
+       (log! (str "prepared shutdown for owner " (:owner-id marker)
+                  ", instance=" (or (:instance-id marker) "unknown")))
+       marker))))
 
 (def shutdown-hook-installed? (atom false))
 
@@ -197,10 +237,16 @@
 (defn current-owner-marker? [marker]
   (= (owner-id) (:owner-id marker)))
 
+(defn stopping-owner-state? [state]
+  (and (= (owner-id) (:owner-id state))
+       (contains? #{:terminating :terminated} (:status state))))
+
 (defn draining? []
   (try
-    (when (fs/exists? (shutdown-marker-path))
-      (current-runner-marker? (read-edn-file (shutdown-marker-path) {})))
+    (or (when (fs/exists? (shutdown-marker-path))
+          (current-owner-marker? (read-edn-file (shutdown-marker-path) {})))
+        (when (fs/exists? (owner-state-path))
+          (stopping-owner-state? (read-edn-file (owner-state-path) {}))))
     (catch Exception _ false)))
 
 (defn read-lines [path]
@@ -505,6 +551,9 @@
 (defn lock-ticket-id [path]
   (second (re-find #"(BOXP-\d+)\.edn$" (str path))))
 
+(defn shutdown-marker-owner-key [path]
+  (str/replace (str (.getFileName (fs/path path))) #"\.edn$" ""))
+
 (defn cleanup-stale-locks! []
   (let [locks-dir (fs/path (root) "locks")]
     (when (fs/exists? locks-dir)
@@ -528,19 +577,22 @@
     (if-not (fs/exists? dir)
       []
       (reduce (fn [markers path]
-                (try
-                  (let [marker (read-edn-file path {})]
-                    (if (and (seq (:owner-id marker))
-                             (seq (:instance-id marker)))
-                      (conj markers (assoc marker :path path))
-                      (do
-                        (log! (str "discarding incomplete shutdown marker: " path))
-                        (fs/delete-if-exists path)
-                        markers)))
-                  (catch Exception e
-                    (log! (str "discarding corrupt shutdown marker " path ": " (.getMessage e)))
-                    (fs/delete-if-exists path)
-                    markers)))
+                (with-owner-lock-guard
+                 (shutdown-marker-owner-key path)
+                 (fn []
+                   (try
+                     (let [marker (read-edn-file path {})]
+                       (if (and (seq (:owner-id marker))
+                                (seq (:instance-id marker)))
+                         (conj markers (assoc marker :path path))
+                         (do
+                           (log! (str "discarding incomplete shutdown marker: " path))
+                           (fs/delete-if-exists path)
+                           markers)))
+                     (catch Exception e
+                       (log! (str "discarding corrupt shutdown marker " path ": " (.getMessage e)))
+                       (fs/delete-if-exists path)
+                       markers)))))
               []
               (fs/list-dir dir)))))
 
@@ -548,6 +600,28 @@
   (first (filter #(and (= (:owner-id %) (:owner-id lock))
                        (= (:instance-id %) (:owner-instance-id lock)))
                  markers)))
+
+(defn same-shutdown-marker? [expected actual]
+  (and (= (:owner-id expected) (:owner-id actual))
+       (= (:instance-id expected) (:instance-id actual))
+       (= (:requested-at expected) (:requested-at actual))))
+
+(defn owner-instance-for-lock-under-guard []
+  (let [state (try
+                (read-edn-file (owner-state-path) {})
+                (catch Exception _ {}))]
+    (if (and (= (owner-id) (:owner-id state))
+             (seq (:instance-id state))
+             (not (contains? #{:terminating :terminated} (:status state))))
+      (:instance-id state)
+      runner-instance-id)))
+
+(defn owner-accepting-locks-under-guard? []
+  (let [state (try
+                (read-edn-file (owner-state-path) {})
+                (catch Exception _ {}))]
+    (and (not (fs/exists? (shutdown-marker-path)))
+         (not (stopping-owner-state? state)))))
 
 (defn matching-shutdown-lock-exists? [marker]
   (let [locks-dir (fs/path (root) "locks")]
@@ -564,45 +638,77 @@
                          (catch Exception _ false))))))
                 (fs/list-dir locks-dir))))))
 
+(defn retire-owner-under-guard! [marker]
+  (let [path (owner-state-path (:owner-id marker))
+        state (try
+                (read-edn-file path {})
+                (catch Exception _ {}))]
+    ;; Do not overwrite a newer instance if an owner ID was unexpectedly reused.
+    (when (or (empty? state)
+              (= (:instance-id marker) (:instance-id state)))
+      (write-edn-file! path
+                       (merge state
+                              {:owner-id (:owner-id marker)
+                               :instance-id (:instance-id marker)
+                               :status :terminated
+                               :terminated-at (now-str)}))
+      true)))
+
+(defn recover-planned-shutdown-marker! [marker]
+  (with-owner-lock-guard
+   (:owner-id marker)
+   (fn []
+     ;; The marker may have been replaced while marker paths were enumerated. Only
+     ;; consume the exact generation observed by this recovery pass.
+     (let [current-marker (try
+                            (read-edn-file (:path marker) {})
+                            (catch Exception _ {}))
+           recovered? (atom false)
+           locks-dir (fs/path (root) "locks")]
+       (when (same-shutdown-marker? marker current-marker)
+         (when (fs/exists? locks-dir)
+           (doseq [path (fs/list-dir locks-dir)
+                   :let [ticket-id (lock-ticket-id path)]
+                   :when ticket-id]
+             (with-ticket-lock-guard
+              ticket-id
+              (fn []
+                (try
+                  (let [lock (read-edn-file path {})]
+                    (when (matching-shutdown-marker [marker] lock)
+                      (log! (str "closing lock from planned owner shutdown: " ticket-id
+                                 " owner=" (:owner-id marker)))
+                      (when (close-planned-shutdown-lock! ticket-id lock marker)
+                        (reset! recovered? true))))
+                  (catch Exception e
+                    (close-corrupt-lock! ticket-id path e)))))))
+         ;; Give deterministic black-box tests a point to create a second matching lock
+         ;; after the first directory scan but before the final guarded recheck.
+         (when @recovered?
+           (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_MARKER_DELETE_SIGNAL")]
+             (spit signal-path "ready\n"))
+           (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_MARKER_DELETE_MILLIS")]
+             (Thread/sleep (Long/parseLong hold-ms))))
+         ;; Lock creation for this owner takes the same owner guard. Marking the owner
+         ;; terminated before deleting the marker also prevents a waiter from creating
+         ;; a lock immediately after this critical section ends.
+         (when (and @recovered?
+                    (not (matching-shutdown-lock-exists? marker))
+                    (same-shutdown-marker? marker
+                                           (try
+                                             (read-edn-file (:path marker) {})
+                                             (catch Exception _ {})))
+                    (retire-owner-under-guard! marker))
+           (fs/delete-if-exists (:path marker))))))))
+
 (defn recover-planned-shutdown-locks! []
   (let [markers (read-shutdown-markers)
         ;; A helper command running inside the terminating Pod must never reclaim that
         ;; Pod's own locks. Recreate gives the replacement Pod a different UID, so only
         ;; another owner is allowed to consume a planned-shutdown marker.
-        recoverable-markers (remove current-owner-marker? markers)
-        recovered-marker-paths (atom #{})
-        locks-dir (fs/path (root) "locks")]
-    (when (and (seq recoverable-markers) (fs/exists? locks-dir))
-      (doseq [path (fs/list-dir locks-dir)
-              :let [ticket-id (lock-ticket-id path)]
-              :when ticket-id]
-        (with-ticket-lock-guard
-         ticket-id
-         (fn []
-          (try
-            (let [lock (read-edn-file path {})]
-              (when-let [marker (matching-shutdown-marker recoverable-markers lock)]
-                (log! (str "closing lock from planned owner shutdown: " ticket-id
-                           " owner=" (:owner-id marker)))
-                (when (close-planned-shutdown-lock! ticket-id lock marker)
-                  (swap! recovered-marker-paths conj (:path marker)))))
-            (catch Exception e
-              (close-corrupt-lock! ticket-id path e)))))))
-    ;; Give deterministic black-box tests a point to create a second matching lock
-    ;; after the first directory scan but before marker cleanup.
-    (when (seq @recovered-marker-paths)
-      (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_MARKER_DELETE_SIGNAL")]
-        (spit signal-path "ready\n"))
-      (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_MARKER_DELETE_MILLIS")]
-        (Thread/sleep (Long/parseLong hold-ms))))
-    ;; Keep unmatched markers and recovered markers that still have another matching
-    ;; lock. A lock may appear late in the shared directory enumeration; deleting its
-    ;; owner marker would defer it to the heartbeat timeout instead of the next scan.
-    (doseq [marker recoverable-markers
-            :when (contains? @recovered-marker-paths (:path marker))
-            :when (not (matching-shutdown-lock-exists? marker))]
-      (fs/delete-if-exists (:path marker))
-      (fs/delete-if-exists (owner-state-path (:owner-id marker))))))
+        recoverable-markers (remove current-owner-marker? markers)]
+    (doseq [marker recoverable-markers]
+      (recover-planned-shutdown-marker! marker))))
 
 (defn recover-locks! []
   (ensure-root!)
@@ -615,44 +721,47 @@
     lock))
 
 (defn acquire-lock! [ticket-id action lane]
-  (when-not (draining?)
-    (with-ticket-lock-guard
-     ticket-id
-     (fn []
-      (let [path (lock-path ticket-id)
-            run (run-id)
-            lock {:ticket ticket-id
-                  :run-id run
-                  :action action
-                  :lane lane
-                  :owner-id (owner-id)
-                  :owner-instance-id runner-instance-id
-                  :host (or (System/getenv "HOSTNAME") "unknown")
-                  :pid (.pid (java.lang.ProcessHandle/current))
-                  :started-at (now-str)
-                  :heartbeat-at (now-str)}]
-        (fs/create-dirs (fs/parent path))
-        (if-let [created (create-lock-under-guard! path lock)]
-          created
-          (try
-            (let [existing (read-edn-file path {})]
-              (if (and (stale-lock? existing)
-                       (not (current-runner-lock? existing)))
-                (do
-                  (close-stale-lock! ticket-id existing)
-                  (or (create-lock-under-guard! path lock)
-                      (do
-                        (log! (str "ticket lock changed while recovering: " ticket-id))
-                        nil)))
-                (do
-                  (log! (str "ticket already locked: " ticket-id))
-                  nil)))
-            (catch Exception e
-              (close-corrupt-lock! ticket-id path e)
-              (or (create-lock-under-guard! path lock)
-                  (do
-                    (log! (str "ticket lock changed while clearing corruption: " ticket-id))
-                    nil))))))))))
+  (with-owner-lock-guard
+   (owner-id)
+   (fn []
+     (when (owner-accepting-locks-under-guard?)
+       (with-ticket-lock-guard
+        ticket-id
+        (fn []
+         (let [path (lock-path ticket-id)
+               run (run-id)
+               lock {:ticket ticket-id
+                     :run-id run
+                     :action action
+                     :lane lane
+                     :owner-id (owner-id)
+                     :owner-instance-id (owner-instance-for-lock-under-guard)
+                     :host (or (System/getenv "HOSTNAME") "unknown")
+                     :pid (.pid (java.lang.ProcessHandle/current))
+                     :started-at (now-str)
+                     :heartbeat-at (now-str)}]
+           (fs/create-dirs (fs/parent path))
+           (if-let [created (create-lock-under-guard! path lock)]
+             created
+             (try
+               (let [existing (read-edn-file path {})]
+                 (if (and (stale-lock? existing)
+                          (not (current-runner-lock? existing)))
+                   (do
+                     (close-stale-lock! ticket-id existing)
+                     (or (create-lock-under-guard! path lock)
+                         (do
+                           (log! (str "ticket lock changed while recovering: " ticket-id))
+                           nil)))
+                   (do
+                     (log! (str "ticket already locked: " ticket-id))
+                     nil)))
+               (catch Exception e
+                 (close-corrupt-lock! ticket-id path e)
+                 (or (create-lock-under-guard! path lock)
+                     (do
+                       (log! (str "ticket lock changed while clearing corruption: " ticket-id))
+                       nil))))))))))))
 
 (defn release-lock! [ticket-id lock]
   (delete-lock-if-matches! ticket-id lock))
