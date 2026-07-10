@@ -703,10 +703,10 @@
 
 (defn recover-planned-shutdown-locks! []
   (let [markers (read-shutdown-markers)
-        ;; A helper command running inside the terminating Pod must never reclaim that
-        ;; Pod's own locks. Recreate gives the replacement Pod a different UID, so only
-        ;; another owner is allowed to consume a planned-shutdown marker.
-        recoverable-markers (remove current-owner-marker? markers)]
+        ;; The runner that wrote a marker must not reclaim its own locks while it is
+        ;; draining. A restarted runner can reuse the Pod UID, though, so a different
+        ;; instance under the same owner must be allowed to recover the old instance.
+        recoverable-markers (remove current-runner-marker? markers)]
     (doseq [marker recoverable-markers]
       (recover-planned-shutdown-marker! marker))))
 

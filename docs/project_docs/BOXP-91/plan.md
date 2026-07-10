@@ -37,6 +37,7 @@ Service は `app=codex-workspace` の単一 Pod を選択し、image updater の
 - loop process は recovery / owner activation より先に SIGTERM shutdown hook を登録し、起動直後を含めて同じ marker を永続化する。manifest hook がない場合も計画停止を通知する。
 - startup / `recover` で marker と lock owner が一致する fresh lock を `:interrupted` にし、Notes に計画停止理由を残す。
 - marker は一致 lock を実際に compare-and-delete できた場合だけ削除し、一致 lock がまだ見えない場合は次回走査まで保持する。削除時は owner state を同じ instance の `:terminated` tombstone に更新して残し、marker 削除待ちだった旧 owner が後から lock を作らないようにする。
+- recovery では owner だけでなく runner instance まで一致する現在 process の marker だけを除外する。同じ Pod UID のまま runner container が再起動した場合は、異なる instance の旧 marker / lock を回収してから owner state を新 instance で activate する。
 - marker のない fresh active lock と、別 owner の lock は維持する。
 - run ID を秒 timestamp + UUID とし、即時再開が旧 run と同じ秒でも summary / workspace / branch を再利用しない。
 - ticket ごとの永続 guard file を Java `FileLock` で共有し、runner / helper / replacement JVM 間でも lock の compare-and-delete、acquire、heartbeat、release を同じ critical section で行う。
@@ -72,6 +73,7 @@ runner image の変更は [boxp/arch PR #11010](https://github.com/boxp/arch/pul
 - loop process へ直接 SIGTERM を送り、preStop command なしでも owner / instance 一致の shutdown marker が作成されることを確認する。
 - marker のない fresh lock、owner 不一致の marker、現在 heartbeat 中の lock が回収されないことを確認する。
 - marker の走査時点で一致 lock がなくても marker / owner state が保持され、後続走査で遅れて現れた一致 lock を即時回収できることを確認する。
+- 同じ Pod UID（同一 owner）で runner instance だけが変わる container restart を再現し、旧 instance の fresh lock / marker を即時回収して新 instance が ticket 受付を再開できることを確認する。
 - 同一 timestamp の旧 run を planned shutdown で回収しても、置換 run が別 UUID の artifact directory を使い、旧 summary を上書きしないことを確認する。
 - 別 JVM が旧 lock の比較後に replacement lock を作ろうとする競合を再現し、guard 解放後に作られた replacement lock を旧 recovery が削除しないことを確認する。marker cleanup 後も `:terminated` owner は新しい lock を取得できないことを確認する。
 - `kubectl kustomize argoproj/codex-workspace` と repository の Argo CD manifest validation を通す。

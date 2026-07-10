@@ -620,6 +620,69 @@ EOF
   assert_file_contains "${vault}/Tickets/BOXP-203.md" '^status: in-progress$'
 }
 
+test_same_owner_new_instance_recovers_previous_instance() {
+  local tmp vault state bin old_run heartbeat start_log output marker pid
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  old_run="20260710T000150Z"
+  heartbeat="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  start_log="${tmp}/starts.log"
+  output="${tmp}/runner.out"
+  marker="${state}/terminating-owners/restarted-pod.edn"
+  mkdir -p \
+    "${bin}" \
+    "${state}/locks" \
+    "${state}/runs/BOXP-210/${old_run}" \
+    "${state}/terminating-owners" \
+    "${state}/owners"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-210|BOXP-210: container restart]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-210 in-progress codex
+  cat >"${state}/owners/restarted-pod.edn" <<EOF
+{:owner-id "restarted-pod" :instance-id "old-instance" :status :terminating :host "restarted-pod" :shutdown-requested-at "${heartbeat}"}
+EOF
+  cat >"${marker}" <<EOF
+{:owner-id "restarted-pod" :instance-id "old-instance" :host "restarted-pod" :requested-at "${heartbeat}"}
+EOF
+  cat >"${state}/locks/BOXP-210.edn" <<EOF
+{:ticket "BOXP-210" :run-id "${old_run}" :action :implement :lane "In Progress" :owner-id "restarted-pod" :owner-instance-id "old-instance" :heartbeat-at "${heartbeat}"}
+EOF
+
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=restarted-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    CODEX_TASK_BOARD_POLL_SECONDS=1 \
+    CODEX_FAKE_START_LOG="${start_log}" \
+    bb "${RUNNER}" loop >"${output}" 2>&1 &
+  pid=$!
+
+  for _attempt in $(seq 1 100); do
+    if [[ -e "${start_log}" ]] && grep -Eq '^status: done$' "${vault}/Tickets/BOXP-210.md"; then
+      break
+    fi
+    sleep 0.1
+  done
+  if [[ ! -e "${start_log}" ]] || ! grep -Eq '^status: done$' "${vault}/Tickets/BOXP-210.md"; then
+    kill -KILL "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+    fail "expected a new runner instance with the same owner to recover and accept tickets"
+  fi
+
+  [[ ! -e "${marker}" ]] || fail "expected the previous instance marker to be consumed"
+  assert_file_contains "${state}/owners/restarted-pod.edn" ':instance-id "new-instance"'
+  assert_file_contains "${state}/owners/restarted-pod.edn" ':status :active'
+  assert_file_contains "${state}/runs/BOXP-210/${old_run}/summary.edn" ':status :interrupted'
+  assert_file_contains "${state}/runs/BOXP-210/${old_run}/summary.edn" ':reason "planned workspace shutdown"'
+
+  kill -TERM "${pid}"
+  wait "${pid}" 2>/dev/null || true
+  assert_file_contains "${marker}" ':instance-id "new-instance"'
+}
+
 test_mismatched_shutdown_marker_does_not_recover_fresh_lock() {
   local tmp vault state bin old_run heartbeat start_log
   tmp="$(mktemp -d)"
@@ -1247,6 +1310,7 @@ test_cross_process_lock_guard_preserves_replacement_lock
 test_sigterm_writes_shutdown_marker_without_prestop
 test_one_shot_tick_does_not_replace_loop_owner_instance
 test_current_owner_shutdown_marker_drains_without_recovery
+test_same_owner_new_instance_recovers_previous_instance
 test_mismatched_shutdown_marker_does_not_recover_fresh_lock
 test_shutdown_marker_waits_for_late_matching_lock
 test_shutdown_marker_survives_late_second_lock
