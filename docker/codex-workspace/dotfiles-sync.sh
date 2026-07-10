@@ -6,7 +6,7 @@ SYNC_INTERVAL="${SYNC_INTERVAL:-300}"
 if ! [[ "${SYNC_INTERVAL}" =~ ^[0-9]+$ ]] || [ "${SYNC_INTERVAL}" -le 0 ]; then
   echo "[dotfiles-sync] WARNING: Invalid SYNC_INTERVAL='${SYNC_INTERVAL}', using 300" >&2
   SYNC_INTERVAL=300
-elif [ "${SYNC_INTERVAL}" -gt 300 ]; then
+elif [ "${#SYNC_INTERVAL}" -gt 4 ] || [ "${SYNC_INTERVAL}" -gt 300 ]; then
   echo "[dotfiles-sync] WARNING: SYNC_INTERVAL=${SYNC_INTERVAL} exceeds max 300, clamping to 300" >&2
   SYNC_INTERVAL=300
 fi
