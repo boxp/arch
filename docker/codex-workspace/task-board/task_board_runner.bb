@@ -20,8 +20,6 @@
 
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
-(def supported-assignees #{"codex" "codex-sol" "codex-full" "codex-terra" "codex-mini" "fable"})
-
 (def assignee->model
   ;; GPT-5.6 performance order: Sol > Terra > Luna.
   ;; codex (default) / codex-terra route to Terra (GPT-5.5-equivalent, cost-efficient default).
@@ -32,6 +30,8 @@
    "codex-full"  "gpt-5.6-sol"
    "codex-terra" "gpt-5.6-terra"
    "codex-mini"  "gpt-5.6-luna"})
+
+(def reasoning-levels #{"minimal" "low" "medium" "high" "xhigh"})
 
 (def board-mutex (Object.))
 (def log-mutex (Object.))
@@ -53,6 +53,23 @@
 
 (defn env [k default]
   (or (System/getenv k) default))
+
+(defn parse-codex-assignee [assignee]
+  (cond
+    (contains? assignee->model assignee)
+    {:base-assignee assignee}
+
+    :else
+    (when-let [[_ base-assignee reasoning-effort]
+               (re-matches #"^(.*)-([^-]+)$" (or assignee ""))]
+      (when (and (contains? assignee->model base-assignee)
+                 (contains? reasoning-levels reasoning-effort))
+        {:base-assignee base-assignee
+         :reasoning-effort reasoning-effort}))))
+
+(defn supported-assignee? [assignee]
+  (or (= "fable" assignee)
+      (some? (parse-codex-assignee assignee))))
 
 (defn root []
   (env "CODEX_TASK_BOARD_ROOT" default-root))
@@ -648,7 +665,7 @@
 
 (defn get-codex-model [assignee env-model]
   (or (when (seq env-model) env-model)
-      (get assignee->model assignee)))
+      (some-> assignee parse-codex-assignee :base-assignee assignee->model)))
 
 (defn codex-model-profile-args
   ([] (codex-model-profile-args nil))
@@ -657,10 +674,14 @@
          env-profile (env "CODEX_TASK_BOARD_PROFILE" nil)]
      (codex-model-profile-args assignee env-model env-profile)))
   ([assignee env-model env-profile]
-   (let [model (get-codex-model assignee env-model)]
+   (let [model (get-codex-model assignee env-model)
+         reasoning-effort (:reasoning-effort (parse-codex-assignee assignee))]
      (cond-> []
        model
        (conj "--model" model)
+
+       reasoning-effort
+       (into ["-c" (str "model_reasoning_effort=" reasoning-effort)])
 
        (seq env-profile)
        (conj "--profile" env-profile)))))
@@ -961,7 +982,7 @@
       {:exit exit :result marker :run-id run :dir (str dir) :last-message last-message})))
 
 (defn candidate-action [{:keys [lane status]} assignee]
-  (when (contains? supported-assignees assignee)
+  (when (supported-assignee? assignee)
     (case status
       "backlog" :groom
       "ready" :implement
@@ -1178,6 +1199,43 @@
           (do
             (println (str "FAIL: " assignee " expected=" expected-model " actual=" actual-model))
             (swap! failures conj assignee)))))
+    (doseq [[base-assignee expected-model] assignee->model
+            reasoning-effort reasoning-levels]
+      (let [assignee (str base-assignee "-" reasoning-effort)
+            args (codex-model-profile-args assignee nil nil)
+            actual-model (arg-value args "--model")
+            actual-reasoning (arg-value args "-c")]
+        (if (and (= actual-model expected-model)
+                 (= actual-reasoning (str "model_reasoning_effort=" reasoning-effort))
+                 (supported-assignee? assignee))
+          (println (str "PASS: " assignee " -> " actual-model ", " actual-reasoning))
+          (do
+            (println (str "FAIL: " assignee " expected model=" expected-model " reasoning level=" reasoning-effort " args=" args))
+            (swap! failures conj assignee)))))
+    (doseq [assignee (keys assignee->model)]
+      (let [args (codex-model-profile-args assignee nil nil)]
+        (if (nil? (arg-value args "-c"))
+          (println (str "PASS: " assignee " keeps Codex reasoning default"))
+          (do
+            (println (str "FAIL: " assignee " unexpectedly overrides reasoning: " args))
+            (swap! failures conj assignee)))))
+    (doseq [[lane status expected-action] [["Backlog" "backlog" :groom]
+                                           ["Ready" "ready" :implement]
+                                           ["In Progress" "in-progress" :implement]
+                                           ["Review" "review" :review-fix]
+                                           ["Blocked" "blocked" :blocked-retry]]]
+      (let [action (candidate-action {:lane lane :status status} "codex-sol-high")]
+        (if (= action expected-action)
+          (println (str "PASS: " lane " recognizes codex-sol-high"))
+          (do
+            (println (str "FAIL: " lane " expected action=" expected-action " actual=" action))
+            (swap! failures conj lane)))))
+    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"]]
+      (if (not (supported-assignee? assignee))
+        (println (str "PASS: unsupported assignee ignored: " assignee))
+        (do
+          (println (str "FAIL: invalid assignee was supported: " assignee))
+          (swap! failures conj assignee))))
     (let [args (codex-model-profile-args "codex-full" "gpt-test-override" nil)
           actual-model (arg-value args "--model")]
       (if (= actual-model "gpt-test-override")
