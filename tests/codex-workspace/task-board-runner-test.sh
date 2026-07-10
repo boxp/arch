@@ -775,7 +775,7 @@ test_assignee_model_routing() {
 
 test_assignee_model_tick_routing() {
   local tmp vault state bin args_log assignee expected_model
-  local pairs=("codex-sol:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna")
+  local pairs=("codex-sol:gpt-5.6-sol" "codex-full:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna")
   for pair in "${pairs[@]}"; do
     assignee="${pair%%:*}"
     expected_model="${pair##*:}"
