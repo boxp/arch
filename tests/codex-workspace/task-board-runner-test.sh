@@ -70,6 +70,9 @@ fi
 if [[ -n "${CODEX_FAKE_START_LOG:-}" ]]; then
   printf '%s %s\n' "${ticket}" "$(date +%s)" >>"${CODEX_FAKE_START_LOG}"
 fi
+if [[ -n "${CODEX_FAKE_LOCK_SNAPSHOT:-}" && -n "${CODEX_FAKE_LOCK_FILE:-}" ]]; then
+  cp "${CODEX_FAKE_LOCK_FILE}" "${CODEX_FAKE_LOCK_SNAPSHOT}"
+fi
 sleep "${CODEX_FAKE_SLEEP:-0}"
 printf '%s\n' "${CODEX_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}" >"${last_message}"
 rm -f "${prompt}"
@@ -230,7 +233,7 @@ run_tick() {
   shift 2
   CODEX_TASK_BOARD_VAULT="${vault}" \
   CODEX_TASK_BOARD_ROOT="${state_root}" \
-  CODEX_TASK_BOARD_LOCK_STALE_SECONDS="${CODEX_TASK_BOARD_LOCK_STALE_SECONDS:-1800}" \
+  CODEX_TASK_BOARD_LOCK_STALE_SECONDS="${CODEX_TASK_BOARD_LOCK_STALE_SECONDS:-180}" \
   "$@" bb "${RUNNER}" tick
 }
 
@@ -400,6 +403,119 @@ EOF
   assert_file_contains "${vault}/Tickets/BOXP-201.md" 'marked interrupted after heartbeat timeout'
   assert_file_contains "${vault}/Tickets/BOXP-201.md" '^status: done$'
   [[ ! -e "${state}/locks/BOXP-201.edn" ]] || fail "expected stale lock to be released"
+}
+
+test_planned_shutdown_lock_recovers_immediately() {
+  local tmp vault state bin old_run lock_snapshot started elapsed heartbeat
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  old_run="20260710T000000Z"
+  lock_snapshot="${tmp}/new-lock.edn"
+  heartbeat="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-202/${old_run}" "${state}/owners"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-202|BOXP-202: planned restart]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-202 in-progress codex
+  cat >"${state}/owners/old-pod.edn" <<EOF
+{:owner-id "old-pod" :instance-id "old-instance" :host "old-pod" :pid 10 :started-at "${heartbeat}"}
+EOF
+  cat >"${state}/locks/BOXP-202.edn" <<EOF
+{:ticket "BOXP-202" :run-id "${old_run}" :action :implement :lane "In Progress" :owner-id "old-pod" :owner-instance-id "old-instance" :heartbeat-at "${heartbeat}"}
+EOF
+
+  CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=old-pod \
+    bb "${RUNNER}" prepare-shutdown >/tmp/task-board-prepare-shutdown.out
+  assert_file_contains "${state}/terminating-owners/old-pod.edn" ':instance-id "old-instance"'
+
+  started="${SECONDS}"
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    CODEX_FAKE_LOCK_FILE="${state}/locks/BOXP-202.edn" \
+    CODEX_FAKE_LOCK_SNAPSHOT="${lock_snapshot}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-planned-recovery.out
+  elapsed=$((SECONDS - started))
+
+  [[ "${elapsed}" -lt 5 ]] || fail "expected planned shutdown recovery under 5s in simulation, got ${elapsed}s"
+  assert_file_contains "${state}/runs/BOXP-202/${old_run}/summary.edn" ':status :interrupted'
+  assert_file_contains "${state}/runs/BOXP-202/${old_run}/summary.edn" ':reason "planned workspace shutdown"'
+  assert_file_contains "${vault}/Tickets/BOXP-202.md" 'marked interrupted after planned workspace shutdown of owner old-pod'
+  assert_file_contains "${vault}/Tickets/BOXP-202.md" '^status: done$'
+  assert_file_contains "${lock_snapshot}" ':owner-id "new-pod"'
+  assert_file_contains "${lock_snapshot}" ':owner-instance-id "new-instance"'
+  [[ ! -e "${state}/terminating-owners/old-pod.edn" ]] || fail "expected recovered owner marker to be removed"
+  [[ ! -e "${state}/locks/BOXP-202.edn" ]] || fail "expected replacement run to release its lock"
+  echo "planned shutdown recovery simulation passed in ${elapsed}s"
+}
+
+test_current_owner_shutdown_marker_drains_without_recovery() {
+  local tmp vault state bin old_run heartbeat start_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  old_run="20260710T000100Z"
+  heartbeat="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  start_log="${tmp}/starts.log"
+  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-203/${old_run}" "${state}/owners"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-203|BOXP-203: draining]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-203 in-progress codex
+  cat >"${state}/owners/current-pod.edn" <<EOF
+{:owner-id "current-pod" :instance-id "current-instance" :host "current-pod" :pid 10 :started-at "${heartbeat}"}
+EOF
+  cat >"${state}/locks/BOXP-203.edn" <<EOF
+{:ticket "BOXP-203" :run-id "${old_run}" :action :implement :lane "In Progress" :owner-id "current-pod" :owner-instance-id "current-instance" :heartbeat-at "${heartbeat}"}
+EOF
+  CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=current-pod \
+    bb "${RUNNER}" prepare-shutdown >/tmp/task-board-current-prepare.out
+
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_OWNER_ID=current-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=current-instance \
+    CODEX_FAKE_START_LOG="${start_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-current-drain.out
+
+  [[ ! -e "${start_log}" ]] || fail "expected draining owner not to start a replacement run"
+  [[ -e "${state}/locks/BOXP-203.edn" ]] || fail "expected current owner lock to remain active"
+  assert_file_contains /tmp/task-board-current-drain.out 'is draining; not accepting new tickets'
+  assert_file_contains "${vault}/Tickets/BOXP-203.md" '^status: in-progress$'
+}
+
+test_mismatched_shutdown_marker_does_not_recover_fresh_lock() {
+  local tmp vault state bin old_run heartbeat start_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  old_run="20260710T000200Z"
+  heartbeat="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  start_log="${tmp}/starts.log"
+  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-204/${old_run}" "${state}/terminating-owners"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-204|BOXP-204: mismatched owner]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-204 in-progress codex
+  cat >"${state}/locks/BOXP-204.edn" <<EOF
+{:ticket "BOXP-204" :run-id "${old_run}" :action :implement :lane "In Progress" :owner-id "old-pod" :owner-instance-id "still-active" :heartbeat-at "${heartbeat}"}
+EOF
+  cat >"${state}/terminating-owners/old-pod.edn" <<EOF
+{:owner-id "old-pod" :instance-id "different-instance" :host "old-pod" :requested-at "${heartbeat}"}
+EOF
+
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    CODEX_FAKE_START_LOG="${start_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-mismatched-owner.out
+
+  [[ ! -e "${start_log}" ]] || fail "expected mismatched marker not to start a replacement run"
+  [[ -e "${state}/locks/BOXP-204.edn" ]] || fail "expected fresh mismatched lock to remain"
+  assert_file_not_contains "${vault}/Tickets/BOXP-204.md" 'marked interrupted'
+  assert_file_contains "${vault}/Tickets/BOXP-204.md" '^status: in-progress$'
 }
 
 test_review_without_pr_is_blocked() {
@@ -846,6 +962,9 @@ test_codex_sol_assignee_includes_delegation_policy
 test_codex_full_assignee_includes_delegation_policy
 test_unsupported_assignee_is_ignored
 test_stale_lock_recovers
+test_planned_shutdown_lock_recovers_immediately
+test_current_owner_shutdown_marker_drains_without_recovery
+test_mismatched_shutdown_marker_does_not_recover_fresh_lock
 test_review_without_pr_is_blocked
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates

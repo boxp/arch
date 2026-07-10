@@ -74,6 +74,31 @@
 (defn root []
   (env "CODEX_TASK_BOARD_ROOT" default-root))
 
+(defn owner-id []
+  (env "CODEX_TASK_BOARD_OWNER_ID"
+       (or (System/getenv "HOSTNAME") "unknown-owner")))
+
+(def runner-instance-id
+  (env "CODEX_TASK_BOARD_RUNNER_INSTANCE_ID"
+       (str (java.util.UUID/randomUUID))))
+
+(defn safe-owner-id [value]
+  (str/replace (str value) #"[^A-Za-z0-9._-]" "_"))
+
+(defn owners-dir []
+  (fs/path (root) "owners"))
+
+(defn terminating-owners-dir []
+  (fs/path (root) "terminating-owners"))
+
+(defn owner-state-path
+  ([] (owner-state-path (owner-id)))
+  ([value] (fs/path (owners-dir) (str (safe-owner-id value) ".edn"))))
+
+(defn shutdown-marker-path
+  ([] (shutdown-marker-path (owner-id)))
+  ([value] (fs/path (terminating-owners-dir) (str (safe-owner-id value) ".edn"))))
+
 (defn vault []
   (env "CODEX_TASK_BOARD_VAULT" default-vault))
 
@@ -104,7 +129,9 @@
 (defn ensure-root! []
   (doseq [path [(root)
                 (fs/path (root) "locks")
-                (fs/path (root) "runs")]]
+                (fs/path (root) "runs")
+                (owners-dir)
+                (terminating-owners-dir)]]
     (fs/create-dirs path)))
 
 (defn read-edn-file [path fallback]
@@ -115,6 +142,41 @@
 (defn write-edn-file! [path value]
   (fs/create-dirs (fs/parent path))
   (spit (str path) (str (pr-str value) "\n")))
+
+(defn activate-owner! []
+  (write-edn-file! (owner-state-path)
+                   {:owner-id (owner-id)
+                    :instance-id runner-instance-id
+                    :host (or (System/getenv "HOSTNAME") "unknown")
+                    :pid (.pid (java.lang.ProcessHandle/current))
+                    :started-at (now-str)}))
+
+(defn prepare-shutdown! []
+  (ensure-root!)
+  (let [active (try
+                 (read-edn-file (owner-state-path) {})
+                 (catch Exception _ {}))
+        marker {:owner-id (owner-id)
+                :instance-id (:instance-id active)
+                :host (or (:host active) (System/getenv "HOSTNAME") "unknown")
+                :requested-at (now-str)}]
+    (write-edn-file! (shutdown-marker-path) marker)
+    (log! (str "prepared shutdown for owner " (:owner-id marker)
+               ", instance=" (or (:instance-id marker) "unknown")))
+    marker))
+
+(defn current-runner-marker? [marker]
+  (and (= (owner-id) (:owner-id marker))
+       (= runner-instance-id (:instance-id marker))))
+
+(defn current-owner-marker? [marker]
+  (= (owner-id) (:owner-id marker)))
+
+(defn draining? []
+  (try
+    (when (fs/exists? (shutdown-marker-path))
+      (current-runner-marker? (read-edn-file (shutdown-marker-path) {})))
+    (catch Exception _ false)))
 
 (defn read-lines [path]
   (if (fs/exists? path)
@@ -335,7 +397,26 @@
 
 (defn stale-lock? [lock]
   (> (seconds-since (:heartbeat-at lock))
-     (Long/parseLong (env "CODEX_TASK_BOARD_LOCK_STALE_SECONDS" "1800"))))
+     (Long/parseLong (env "CODEX_TASK_BOARD_LOCK_STALE_SECONDS" "180"))))
+
+(defn current-runner-lock? [lock]
+  (and (= (owner-id) (:owner-id lock))
+       (= runner-instance-id (:owner-instance-id lock))))
+
+(defn same-ticket-lock? [expected actual]
+  (and (= (:ticket expected) (:ticket actual))
+       (= (:run-id expected) (:run-id actual))
+       (= (:owner-id expected) (:owner-id actual))
+       (= (:owner-instance-id expected) (:owner-instance-id actual))))
+
+(defn delete-lock-if-matches! [ticket-id expected]
+  (locking (ticket-file-mutex ticket-id)
+    (let [path (lock-path ticket-id)
+          actual (try
+                   (read-edn-file path nil)
+                   (catch Exception _ nil))]
+      (when (same-ticket-lock? expected actual)
+        (fs/delete-if-exists path)))))
 
 (defn mark-run! [ticket-id run-id status extra]
   (let [summary (merge {:ticket ticket-id
@@ -345,14 +426,25 @@
                        extra)]
     (write-edn-file! (fs/path (run-dir ticket-id run-id) "summary.edn") summary)))
 
-(defn close-stale-lock! [ticket-id lock]
-  (when-let [stale-run (:run-id lock)]
-    (mark-run! ticket-id stale-run :interrupted
-               {:reason "heartbeat timeout"
+(defn close-interrupted-lock! [ticket-id lock reason note]
+  (when-let [interrupted-run (:run-id lock)]
+    (mark-run! ticket-id interrupted-run :interrupted
+               {:reason reason
                 :previous-lock lock})
     (when (fs/exists? (ticket-path ticket-id))
-      (append-note! ticket-id (str "Codex run " stale-run " was marked interrupted after heartbeat timeout."))))
-  (fs/delete-if-exists (lock-path ticket-id)))
+      (append-note! ticket-id (str "Codex run " interrupted-run " " note))))
+  (delete-lock-if-matches! ticket-id lock))
+
+(defn close-stale-lock! [ticket-id lock]
+  (close-interrupted-lock! ticket-id lock
+                           "heartbeat timeout"
+                           "was marked interrupted after heartbeat timeout."))
+
+(defn close-planned-shutdown-lock! [ticket-id lock marker]
+  (close-interrupted-lock! ticket-id lock
+                           "planned workspace shutdown"
+                           (str "was marked interrupted after planned workspace shutdown of owner "
+                                (:owner-id marker) ".")))
 
 (defn close-corrupt-lock! [ticket-id path error]
   (log! (str "closing corrupt lock: " ticket-id " (" (.getMessage error) ")"))
@@ -370,49 +462,120 @@
               :let [ticket-id (lock-ticket-id path)]
               :when ticket-id]
         (try
-          (let [lock (read-edn-file path {})]
-            (when (stale-lock? lock)
-              (log! (str "closing stale lock: " ticket-id))
-              (close-stale-lock! ticket-id lock)))
+          (locking (ticket-file-mutex ticket-id)
+            (let [lock (read-edn-file path {})]
+              (when (and (stale-lock? lock)
+                         (not (current-runner-lock? lock)))
+                (log! (str "closing stale lock: " ticket-id))
+                (close-stale-lock! ticket-id lock))))
           (catch Exception e
             (close-corrupt-lock! ticket-id path e)))))))
 
-(defn acquire-lock! [ticket-id action lane]
-  (let [path (lock-path ticket-id)
-        run (run-id)
-        lock {:ticket ticket-id
-              :run-id run
-              :action action
-              :lane lane
-              :host (or (System/getenv "HOSTNAME") "unknown")
-              :pid (.pid (java.lang.ProcessHandle/current))
-              :started-at (now-str)
-              :heartbeat-at (now-str)}]
-    (fs/create-dirs (fs/parent path))
-    (if (.createNewFile (io/file (str path)))
-      (do
-        (write-edn-file! path lock)
-        lock)
-      (try
-        (let [existing (read-edn-file path {})]
-          (if (stale-lock? existing)
-            (do
-              (close-stale-lock! ticket-id existing)
-              (acquire-lock! ticket-id action lane))
-            (do
-              (log! (str "ticket already locked: " ticket-id))
-              nil)))
-        (catch Exception e
-          (close-corrupt-lock! ticket-id path e)
-          (acquire-lock! ticket-id action lane))))))
+(defn read-shutdown-markers []
+  (let [dir (terminating-owners-dir)]
+    (if-not (fs/exists? dir)
+      []
+      (reduce (fn [markers path]
+                (try
+                  (let [marker (read-edn-file path {})]
+                    (if (and (seq (:owner-id marker))
+                             (seq (:instance-id marker)))
+                      (conj markers (assoc marker :path path))
+                      (do
+                        (log! (str "discarding incomplete shutdown marker: " path))
+                        (fs/delete-if-exists path)
+                        markers)))
+                  (catch Exception e
+                    (log! (str "discarding corrupt shutdown marker " path ": " (.getMessage e)))
+                    (fs/delete-if-exists path)
+                    markers)))
+              []
+              (fs/list-dir dir)))))
 
-(defn release-lock! [ticket-id]
-  (fs/delete-if-exists (lock-path ticket-id)))
+(defn matching-shutdown-marker [markers lock]
+  (first (filter #(and (= (:owner-id %) (:owner-id lock))
+                       (= (:instance-id %) (:owner-instance-id lock)))
+                 markers)))
+
+(defn recover-planned-shutdown-locks! []
+  (let [markers (read-shutdown-markers)
+        ;; A helper command running inside the terminating Pod must never reclaim that
+        ;; Pod's own locks. Recreate gives the replacement Pod a different UID, so only
+        ;; another owner is allowed to consume a planned-shutdown marker.
+        recoverable-markers (remove current-owner-marker? markers)
+        locks-dir (fs/path (root) "locks")]
+    (when (and (seq recoverable-markers) (fs/exists? locks-dir))
+      (doseq [path (fs/list-dir locks-dir)
+              :let [ticket-id (lock-ticket-id path)]
+              :when ticket-id]
+        (try
+          (locking (ticket-file-mutex ticket-id)
+            (let [lock (read-edn-file path {})]
+              (when-let [marker (matching-shutdown-marker recoverable-markers lock)]
+                (log! (str "closing lock from planned owner shutdown: " ticket-id
+                           " owner=" (:owner-id marker)))
+                (close-planned-shutdown-lock! ticket-id lock marker))))
+          (catch Exception e
+            (close-corrupt-lock! ticket-id path e)))))
+    (doseq [marker recoverable-markers]
+      (fs/delete-if-exists (:path marker))
+      (fs/delete-if-exists (owner-state-path (:owner-id marker))))))
+
+(defn recover-locks! []
+  (ensure-root!)
+  (recover-planned-shutdown-locks!)
+  (cleanup-stale-locks!))
+
+(defn acquire-lock! [ticket-id action lane]
+  (when-not (draining?)
+    (locking (ticket-file-mutex ticket-id)
+      (let [path (lock-path ticket-id)
+            run (run-id)
+            lock {:ticket ticket-id
+                  :run-id run
+                  :action action
+                  :lane lane
+                  :owner-id (owner-id)
+                  :owner-instance-id runner-instance-id
+                  :host (or (System/getenv "HOSTNAME") "unknown")
+                  :pid (.pid (java.lang.ProcessHandle/current))
+                  :started-at (now-str)
+                  :heartbeat-at (now-str)}]
+        (fs/create-dirs (fs/parent path))
+        (if (.createNewFile (io/file (str path)))
+          (do
+            (write-edn-file! path lock)
+            lock)
+          (try
+            (let [existing (read-edn-file path {})]
+              (if (and (stale-lock? existing)
+                       (not (current-runner-lock? existing)))
+                (do
+                  (close-stale-lock! ticket-id existing)
+                  (acquire-lock! ticket-id action lane))
+                (do
+                  (log! (str "ticket already locked: " ticket-id))
+                  nil)))
+            (catch Exception e
+              (close-corrupt-lock! ticket-id path e)
+              (acquire-lock! ticket-id action lane))))))))
+
+(defn release-lock! [ticket-id lock]
+  (delete-lock-if-matches! ticket-id lock))
 
 (defn heartbeat! [ticket-id lock stop?]
   (future
     (while (not @stop?)
-      (write-edn-file! (lock-path ticket-id) (assoc lock :heartbeat-at (now-str)))
+      (locking (ticket-file-mutex ticket-id)
+        (let [path (lock-path ticket-id)
+              existing (try
+                         (read-edn-file path nil)
+                         (catch Exception _ nil))]
+          (if (same-ticket-lock? lock existing)
+            (write-edn-file! path (assoc existing :heartbeat-at (now-str)))
+            (do
+              (log! (str "heartbeat stopped because lock ownership changed: " ticket-id))
+              (reset! stop? true)))))
       (Thread/sleep 1000))))
 
 (defn previous-run-summaries [ticket-id]
@@ -1099,7 +1262,7 @@
               (finally
                 (reset! stop? true)
                 @hb
-                (release-lock! ticket-id)))))))))
+                (release-lock! ticket-id lock)))))))))
 
 (defn ticket-assignee [ticket-id]
   (let [path (ticket-path ticket-id)]
@@ -1134,41 +1297,46 @@
     completed-ids))
 
 (defn tick! []
-  (ensure-root!)
-  (cleanup-stale-locks!)
-  (sync-all!)
-  (let [done (collect-completed-futures!)
-        in-flight-ids (set (keys @in-flight-futures))
-        candidates (candidate-cards)
-        new-candidates (remove #(contains? in-flight-ids (:ticket-id %)) candidates)]
-    (doseq [card new-candidates]
-      (let [f (future
-                (log! (str "processing " (:ticket-id card) " from " (:lane card)))
-                (let [started? (process-card! card)]
-                  (when-not started?
-                    (log! (str "candidate could not start, leaving it for a future tick: " (:ticket-id card))))
-                  {:ticket-id (:ticket-id card)
-                   :started? (boolean started?)}))]
-        (swap! in-flight-futures assoc (:ticket-id card) f)))
-    (sync-all!)
-    (when (seq done)
-      (log! (str "collected " (count done) " completed ticket(s): " (str/join ", " done))))
-    (log! (cond
-            (empty? candidates)
-            "no supported-agent-assigned Task Board tickets"
+  (recover-locks!)
+  (if (draining?)
+    (log! (str "runner owner " (owner-id) " is draining; not accepting new tickets"))
+    (do
+      (sync-all!)
+      (let [done (collect-completed-futures!)
+            in-flight-ids (set (keys @in-flight-futures))
+            candidates (candidate-cards)
+            new-candidates (remove #(contains? in-flight-ids (:ticket-id %)) candidates)]
+        (doseq [card new-candidates]
+          (let [f (future
+                    (log! (str "processing " (:ticket-id card) " from " (:lane card)))
+                    (let [started? (process-card! card)]
+                      (when-not started?
+                        (log! (str "candidate could not start, leaving it for a future tick: " (:ticket-id card))))
+                      {:ticket-id (:ticket-id card)
+                       :started? (boolean started?)}))]
+            (swap! in-flight-futures assoc (:ticket-id card) f)))
+        (sync-all!)
+        (when (seq done)
+          (log! (str "collected " (count done) " completed ticket(s): " (str/join ", " done))))
+        (log! (cond
+                (empty? candidates)
+                "no supported-agent-assigned Task Board tickets"
 
-            (and (empty? new-candidates) (seq in-flight-ids))
-            (str (count in-flight-ids) " ticket(s) already in flight, no new candidates this tick")
+                (and (empty? new-candidates) (seq in-flight-ids))
+                (str (count in-flight-ids) " ticket(s) already in flight, no new candidates this tick")
 
-            (empty? new-candidates)
-            "no supported-agent-assigned Task Board tickets could start"
+                (empty? new-candidates)
+                "no supported-agent-assigned Task Board tickets could start"
 
-            :else
-            (str "started " (count new-candidates) " new ticket(s), "
-                 (count @in-flight-futures) " total in flight")))))
+                :else
+                (str "started " (count new-candidates) " new ticket(s), "
+                     (count @in-flight-futures) " total in flight")))))))
 
 (defn loop! []
-  (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)))
+  (recover-locks!)
+  (activate-owner!)
+  (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)
+             ", owner=" (owner-id) ", instance=" runner-instance-id))
   (loop []
     (try
       (tick!)
@@ -1179,7 +1347,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick|loop|sync>")
+  (println "usage: task_board_runner.bb <tick|loop|sync|prepare-shutdown|recover>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -1289,8 +1457,8 @@
                            {:ticket-id "TEST-B" :lane "In Progress" :status "in-progress"}]]
       (swap! in-flight-futures assoc "TEST-A" f-a)
       (with-redefs [candidate-cards (fn [] test-candidates)
-                    ensure-root! (fn [] nil)
-                    cleanup-stale-locks! (fn [] nil)
+                    recover-locks! (fn [] nil)
+                    draining? (fn [] false)
                     sync-all! (fn [] nil)
                     process-card! (fn [{:keys [ticket-id]}]
                                     (swap! started-ids conj ticket-id)
@@ -1380,8 +1548,10 @@
   (reset! in-flight-futures {}))
 
 (case (or (first *command-line-args*) "tick")
-  "tick" (do (tick!) (drain-in-flight!) (sync-all!))
+  "tick" (do (recover-locks!) (activate-owner!) (tick!) (drain-in-flight!) (sync-all!))
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
+  "prepare-shutdown" (prepare-shutdown!)
+  "recover" (recover-locks!)
   "test" (run-tests!)
   (usage))
