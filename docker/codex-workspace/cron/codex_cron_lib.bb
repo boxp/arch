@@ -6,6 +6,7 @@
 (def default-root "/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron")
 (def default-registry "jobs.edn")
 (def default-state "jobs-state.edn")
+(def codex-cron-subdir "Infrastructure/Codex Cron")
 
 (defn fail [message]
   (binding [*out* *err*]
@@ -15,6 +16,9 @@
 (defn root []
   (or (System/getProperty "codex.cron.root")
       (System/getenv "CODEX_CRON_ROOT")
+      (some-> (System/getenv "CODEX_TASK_BOARD_VAULT")
+              (fs/path codex-cron-subdir)
+              str)
       default-root))
 
 (defn registry-path []

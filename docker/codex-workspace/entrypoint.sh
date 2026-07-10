@@ -10,7 +10,15 @@ install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-task-board
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.pi/agent/extensions
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.local/bin
-/usr/sbin/runuser -u boxp -- install -d -m 0755 "/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron"
+default_task_board_vault=/home/boxp/Documents/obsidian-headless/BOXP
+task_board_vault="${CODEX_TASK_BOARD_VAULT:-${default_task_board_vault}}"
+if [[ -n "${CODEX_CRON_ROOT:-}" ]]; then
+  codex_cron_root="${CODEX_CRON_ROOT}"
+else
+  codex_cron_root="${task_board_vault}/Infrastructure/Codex Cron"
+fi
+
+/usr/sbin/runuser -u boxp -- install -d -m 0755 "${codex_cron_root}"
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/ghq
 
 export EDITOR="${EDITOR:-vim}"
@@ -76,6 +84,100 @@ if [[ -d /opt/codex-workspace/skills ]]; then
     /opt/codex-workspace/skills/. /home/boxp/.codex/skills/
 fi
 
+install_vault_seed() {
+  local seed="${CODEX_WORKSPACE_RECURRING_EVENTS_SEED:-/opt/codex-workspace/recurring-events/vault-seed}"
+  local vault="${task_board_vault}"
+  local src rel dest existing_task_board_vault
+
+  if [[ ! -d "${seed}" ]]; then
+    return
+  fi
+
+  existing_task_board_vault=false
+  if [[ -f "${vault}/Boards/Task Board.md" || -d "${vault}/Tickets" ]]; then
+    existing_task_board_vault=true
+  fi
+
+  while IFS= read -r -d '' src; do
+    rel="${src#"${seed}/"}"
+    if [[ "${existing_task_board_vault}" == true && "${rel}" == Infrastructure/Recurring\ Events/Events/* ]]; then
+      continue
+    fi
+    dest="${vault}/${rel}"
+    if [[ ! -e "${dest}" ]]; then
+      install -d -o boxp -g boxp -m 0755 "$(dirname "${dest}")"
+      install -o boxp -g boxp -m 0644 "${src}" "${dest}"
+    fi
+  done < <(find "${seed}" -type f -print0)
+}
+
+install_codex_cron_seed_files() {
+  local seed="${CODEX_WORKSPACE_RECURRING_EVENTS_SEED:-/opt/codex-workspace/recurring-events/vault-seed}/Infrastructure/Codex Cron"
+  local src rel dest
+
+  if [[ ! -d "${seed}" ]]; then
+    return
+  fi
+
+  while IFS= read -r -d '' src; do
+    rel="${src#"${seed}/"}"
+    if [[ "${rel}" == "jobs.edn" ]]; then
+      continue
+    fi
+    dest="${codex_cron_root}/${rel}"
+    if [[ ! -e "${dest}" ]]; then
+      install -d -o boxp -g boxp -m 0755 "$(dirname "${dest}")"
+      install -o boxp -g boxp -m 0644 "${src}" "${dest}"
+    fi
+  done < <(find "${seed}" -type f -print0)
+}
+
+ensure_recurring_events_cron_job() {
+  local seed="${CODEX_WORKSPACE_RECURRING_EVENTS_SEED:-/opt/codex-workspace/recurring-events/vault-seed}/Infrastructure/Codex Cron/jobs.edn"
+  local jobs="${codex_cron_root}/jobs.edn"
+
+  if [[ ! -f "${seed}" ]]; then
+    return
+  fi
+
+  install -d -o boxp -g boxp -m 0755 "$(dirname "${jobs}")"
+  bb -e '
+    (require (quote [clojure.edn :as edn]))
+    (defn read-edn [path fallback]
+      (if (.exists (java.io.File. path))
+        (edn/read-string (slurp path))
+        fallback))
+    (defn registry [value]
+      (cond
+        (vector? value) {:version 1 :jobs value}
+        (map? value) (update value :jobs #(vec (or % [])))
+        :else {:version 1 :jobs []}))
+    (def stale-output-root "/home/boxp/Documents/obsidian-headless/BOXP/Infrastructure/Codex Cron/runs")
+    (defn migrate-job [seed-job job]
+      (if (and seed-job
+               (= (:id job) (:id seed-job))
+               (= stale-output-root (:output-root job)))
+        (dissoc job :output-root)
+        job))
+    (let [[target seed] *command-line-args*
+          seed-job (first (:jobs (registry (read-edn seed {:version 1 :jobs []}))))
+          current (registry (read-edn target {:version 1 :jobs []}))
+          jobs (mapv #(migrate-job seed-job %) (:jobs current))
+          next-jobs (if (and seed-job (not-any? #(= (:id %) (:id seed-job)) jobs))
+                      (conj jobs seed-job)
+                      jobs)]
+      (when (not= next-jobs (:jobs current))
+        (spit target (str (pr-str (assoc current :jobs next-jobs)) "\n"))))
+  ' "${jobs}" "${seed}"
+  chown boxp:boxp "${jobs}"
+}
+
+install_vault_seed
+install_codex_cron_seed_files
+ensure_recurring_events_cron_job
+if [[ "${CODEX_WORKSPACE_ENTRYPOINT_SEED_ONLY:-}" == "1" ]]; then
+  exit 0
+fi
 configure_codex
 configure_pi_agent
 
@@ -110,6 +212,8 @@ write_session_env() {
     GRAFANA_URL \
     GRAFANA_SERVICE_ACCOUNT_TOKEN \
     GEMINI_API_KEY \
+    CODEX_TASK_BOARD_VAULT \
+    CODEX_CRON_ROOT \
     KUBECONFIG; do
     if [[ -n "${!name:-}" ]]; then
       printf 'export %s=%q\n' "${name}" "${!name}" >>"${env_tmp}"
@@ -140,7 +244,7 @@ if [[ -n "${EVEN_TERMINAL_TOKEN:-}" ]]; then
 fi
 
 exec /usr/sbin/runuser -u boxp \
-  --whitelist-environment=DOCKER_HOST,DOCKER_BUILDKIT,EDITOR,VISUAL,ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CODE_OAUTH_TOKEN,CLAUDE_CODE_USE_BEDROCK,CLAUDE_CODE_USE_VERTEX,CLAUDE_CODE_USE_FOUNDRY,GRAFANA_URL,GRAFANA_SERVICE_ACCOUNT_TOKEN,GEMINI_API_KEY,KUBECONFIG \
+  --whitelist-environment=DOCKER_HOST,DOCKER_BUILDKIT,EDITOR,VISUAL,ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CODE_OAUTH_TOKEN,CLAUDE_CODE_USE_BEDROCK,CLAUDE_CODE_USE_VERTEX,CLAUDE_CODE_USE_FOUNDRY,GRAFANA_URL,GRAFANA_SERVICE_ACCOUNT_TOKEN,GEMINI_API_KEY,CODEX_TASK_BOARD_VAULT,CODEX_CRON_ROOT,KUBECONFIG \
   -- env HOME=/home/boxp even-terminal \
   --port "${EVEN_TERMINAL_PORT:-3456}" \
   --cwd "${EVEN_TERMINAL_CWD:-/home/boxp}" \

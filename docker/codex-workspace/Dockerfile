@@ -136,11 +136,13 @@ ENV LANG=en_US.UTF-8 \
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
 COPY cron/ /opt/codex-workspace/cron/
 COPY task-board/ /opt/codex-workspace/task-board/
+COPY recurring-events/ /opt/codex-workspace/recurring-events/
 COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && find /opt/codex-workspace/cron -type f -name "*.sh" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/cron -type f -name "*.bb" -exec chmod 0755 {} + \
-    && find /opt/codex-workspace/task-board -type f -name "*.bb" -exec chmod 0755 {} +
+    && find /opt/codex-workspace/task-board -type f -name "*.bb" -exec chmod 0755 {} + \
+    && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} +
 
 EXPOSE 2222 3456
 ENTRYPOINT ["/usr/local/bin/codex-workspace-entrypoint"]
