@@ -2,12 +2,22 @@
 set -o pipefail
 
 TARGET_DIR="${DOTFILES_DIR:-/home/boxp/ghq/github.com/boxp/dotfiles}"
-DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/boxp/dotfiles}"
 SYNC_INTERVAL="${SYNC_INTERVAL:-300}"
 FIRST_SYNC_DONE=false
 SETUP_NEEDED=false
 
+# Hardcoded allowed URL — not overridable via environment variable to prevent
+# arbitrary repo execution via DOTFILES_REPO override
+readonly EXPECTED_DOTFILES_REPO="https://github.com/boxp/dotfiles"
+
 log() { echo "[dotfiles-sync] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
+
+is_valid_dotfiles_url() {
+  local url="$1"
+  [[ "$url" == "https://github.com/boxp/dotfiles" ]] || \
+  [[ "$url" == "https://github.com/boxp/dotfiles.git" ]] || \
+  [[ "$url" == "git@github.com:boxp/dotfiles.git" ]]
+}
 
 run_setup() {
   log "Running setup.sh ..."
@@ -23,9 +33,16 @@ run_setup() {
 
 sync_once() {
   if [ ! -e "${TARGET_DIR}" ]; then
-    log "Target not found, cloning ${DOTFILES_REPO} ..."
+    log "Target not found, cloning ${EXPECTED_DOTFILES_REPO} ..."
     mkdir -p "$(dirname "${TARGET_DIR}")"
-    if git clone --branch master "${DOTFILES_REPO}" "${TARGET_DIR}"; then
+    if git clone --branch master "${EXPECTED_DOTFILES_REPO}" "${TARGET_DIR}"; then
+      local cloned_remote
+      cloned_remote=$(git -C "${TARGET_DIR}" remote get-url origin 2>/dev/null || echo "")
+      if ! is_valid_dotfiles_url "${cloned_remote}"; then
+        log "ERROR: Cloned remote '${cloned_remote}' is not the expected dotfiles repo. Removing clone."
+        rm -rf "${TARGET_DIR}"
+        return
+      fi
       log "Clone succeeded"
       FIRST_SYNC_DONE=true
       SETUP_NEEDED=true
@@ -42,13 +59,10 @@ sync_once() {
 
   local remote_url
   remote_url=$(git -C "${TARGET_DIR}" remote get-url origin 2>/dev/null || echo "")
-  case "${remote_url}" in
-    *boxp/dotfiles*) ;;
-    *)
-      log "ERROR: ${TARGET_DIR} origin is '${remote_url}', expected boxp/dotfiles, skipping"
-      return
-      ;;
-  esac
+  if ! is_valid_dotfiles_url "${remote_url}"; then
+    log "ERROR: ${TARGET_DIR} origin is '${remote_url}', expected exact boxp/dotfiles URL, skipping"
+    return
+  fi
 
   local fetch_output
   if ! fetch_output=$(git -C "${TARGET_DIR}" fetch origin master 2>&1); then
