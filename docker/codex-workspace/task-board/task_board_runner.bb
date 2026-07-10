@@ -1238,8 +1238,15 @@
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
       (println "All tests passed."))))
 
+(defn drain-in-flight! []
+  (doseq [[ticket-id f] @in-flight-futures]
+    (try @f
+         (catch Exception e
+           (log! (str "error completing " ticket-id ": " (.getMessage e))))))
+  (reset! in-flight-futures {}))
+
 (case (or (first *command-line-args*) "tick")
-  "tick" (tick!)
+  "tick" (do (tick!) (drain-in-flight!) (sync-all!))
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
   "test" (run-tests!)
