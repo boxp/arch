@@ -11,7 +11,7 @@ log() { echo "[dotfiles-sync] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
 run_setup() {
   log "Running setup.sh ..."
-  if runuser -u boxp -- env HOME=/home/boxp sh "${TARGET_DIR}/setup.sh"; then
+  if env HOME=/home/boxp sh "${TARGET_DIR}/setup.sh"; then
     log "setup.sh succeeded"
     SETUP_NEEDED=false
   else
@@ -50,10 +50,12 @@ sync_once() {
       ;;
   esac
 
-  if ! git -C "${TARGET_DIR}" fetch origin master 2>&1 | while IFS= read -r line; do log "fetch: $line"; done; then
-    log "fetch failed, will retry next cycle"
+  local fetch_output
+  if ! fetch_output=$(git -C "${TARGET_DIR}" fetch origin master 2>&1); then
+    log "fetch failed: ${fetch_output}, will retry next cycle"
     return
   fi
+  log "fetch: ${fetch_output}"
 
   if [ "${FIRST_SYNC_DONE}" = "false" ]; then
     if ! git -C "${TARGET_DIR}" diff --quiet HEAD 2>/dev/null || \
@@ -65,12 +67,12 @@ sync_once() {
       log "WARNING: local HEAD is not an ancestor of origin/master (diverged) at ${TARGET_DIR}, skipping sync and setup.sh"
       return
     fi
-    local old_head remote_head
+    local old_head remote_head merge_output
     old_head=$(git -C "${TARGET_DIR}" rev-parse HEAD)
     remote_head=$(git -C "${TARGET_DIR}" rev-parse origin/master)
     if [ "${old_head}" != "${remote_head}" ]; then
-      if ! git -C "${TARGET_DIR}" merge --ff-only origin/master 2>&1 | while IFS= read -r line; do log "merge: $line"; done; then
-        log "fast-forward failed at ${TARGET_DIR}, will retry next cycle"
+      if ! merge_output=$(git -C "${TARGET_DIR}" merge --ff-only origin/master 2>&1); then
+        log "fast-forward failed at ${TARGET_DIR}: ${merge_output}, will retry next cycle"
         return
       fi
       log "fast-forward succeeded: ${old_head:0:8} -> ${remote_head:0:8}"
@@ -93,15 +95,15 @@ sync_once() {
     SETUP_NEEDED=false
     return
   fi
-  local old_head remote_head new_head
+  local old_head remote_head new_head merge_output
   old_head=$(git -C "${TARGET_DIR}" rev-parse HEAD)
   remote_head=$(git -C "${TARGET_DIR}" rev-parse origin/master)
   if [ "${old_head}" = "${remote_head}" ]; then
     log "Already up to date (${old_head:0:8})"
     return
   fi
-  if ! git -C "${TARGET_DIR}" merge --ff-only origin/master 2>&1 | while IFS= read -r line; do log "merge: $line"; done; then
-    log "fast-forward failed at ${TARGET_DIR}, will retry next cycle"
+  if ! merge_output=$(git -C "${TARGET_DIR}" merge --ff-only origin/master 2>&1); then
+    log "fast-forward failed at ${TARGET_DIR}: ${merge_output}, will retry next cycle"
     return
   fi
   new_head=$(git -C "${TARGET_DIR}" rev-parse HEAD)
