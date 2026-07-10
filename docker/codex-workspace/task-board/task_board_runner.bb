@@ -1247,18 +1247,20 @@
       @f-a)
     (reset! in-flight-futures {})
 
-    ;; Test: concurrent update-frontmatter! and append-note! on the same ticket do not lose writes
-    ;; This reproduces the race between sync-ticket-statuses! and in-flight process-card! workers.
+    ;; Test: concurrent update-frontmatter! and append-note! on the same ticket do not lose writes.
+    ;; Uses alternating status values ("in-progress" / "review") so each update-frontmatter! call
+    ;; actually writes to the file, triggering the read-modify-write race that the per-ticket mutex fixes.
     (let [tmp-dir (fs/create-temp-dir)
           ticket-id "TEST-RACE"
           ticket-file (fs/path tmp-dir (str ticket-id ".md"))
-          initial-content "---\nstatus: in-progress\nassignee: codex\n---\n\n## Notes\n"]
+          initial-content "---\nstatus: in-progress\nassignee: codex\n---\n\n## Notes\n"
+          statuses ["in-progress" "review"]]
       (spit (str ticket-file) initial-content)
       (with-redefs [tickets-dir (fn [] tmp-dir)]
         (let [n-iters 50
               sync-results (future
-                             (dotimes [_ n-iters]
-                               (update-frontmatter! ticket-id {:status "in-progress"})))
+                             (dotimes [i n-iters]
+                               (update-frontmatter! ticket-id {:status (nth statuses (mod i (count statuses)))})))
               worker-results (future
                                (dotimes [i n-iters]
                                  (append-note! ticket-id (str "note-" i))))]
