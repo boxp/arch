@@ -36,6 +36,17 @@
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
+;; Per-ticket file mutex map. Ensures update-frontmatter! and append-note!
+;; are never called concurrently for the same ticket, preventing read-modify-write
+;; races between sync-ticket-statuses! and in-flight process-card! workers.
+(def ticket-file-mutexes (atom {}))
+
+(defn ticket-file-mutex [ticket-id]
+  (or (get @ticket-file-mutexes ticket-id)
+      (let [new-mutex (Object.)]
+        (get (swap! ticket-file-mutexes update ticket-id #(or % new-mutex))
+             ticket-id))))
+
 (defn log! [message]
   (locking log-mutex
     (println message)))
@@ -232,35 +243,37 @@
       (conj (vec fm-lines) replacement))))
 
 (defn update-frontmatter! [ticket-id updates]
-  (let [path (ticket-path ticket-id)
-        lines (vec (read-lines path))
-        {:keys [end]} (or (frontmatter-range lines)
-                          (fail (str "missing frontmatter: " path)))
-        before (subvec lines 0 (inc end))
-        body (subvec lines (inc end))
-        fm-lines (subvec before 1 end)
-        new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
-                       fm-lines
-                       updates)
-        new-lines (vec (concat ["---"] new-fm ["---"] body))]
-    (when (not= lines new-lines)
-      (write-lines! path new-lines))))
+  (locking (ticket-file-mutex ticket-id)
+    (let [path (ticket-path ticket-id)
+          lines (vec (read-lines path))
+          {:keys [end]} (or (frontmatter-range lines)
+                            (fail (str "missing frontmatter: " path)))
+          before (subvec lines 0 (inc end))
+          body (subvec lines (inc end))
+          fm-lines (subvec before 1 end)
+          new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
+                         fm-lines
+                         updates)
+          new-lines (vec (concat ["---"] new-fm ["---"] body))]
+      (when (not= lines new-lines)
+        (write-lines! path new-lines)))))
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
 
 (defn append-note! [ticket-id note]
-  (let [path (ticket-path ticket-id)
-        lines (vec (read-lines path))
-        bullet (str "- " (today) ": " note)
-        idx (or (section-index lines "## Notes") (dec (count lines)))
-        insert-idx (if (= "## Notes" (nth lines idx))
-                     (count lines)
-                     (count lines))
-        new-lines (if (some #(= bullet %) lines)
-                    lines
-                    (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-    (write-lines! path new-lines)))
+  (locking (ticket-file-mutex ticket-id)
+    (let [path (ticket-path ticket-id)
+          lines (vec (read-lines path))
+          bullet (str "- " (today) ": " note)
+          idx (or (section-index lines "## Notes") (dec (count lines)))
+          insert-idx (if (= "## Notes" (nth lines idx))
+                       (count lines)
+                       (count lines))
+          new-lines (if (some #(= bullet %) lines)
+                      lines
+                      (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
+      (write-lines! path new-lines))))
 
 (defn sync-ticket-statuses! []
   (let [lines (vec (read-lines (board-path)))]
@@ -1233,6 +1246,39 @@
       (deliver p-a :done)
       @f-a)
     (reset! in-flight-futures {})
+
+    ;; Test: concurrent update-frontmatter! and append-note! on the same ticket do not lose writes
+    ;; This reproduces the race between sync-ticket-statuses! and in-flight process-card! workers.
+    (let [tmp-dir (fs/create-temp-dir)
+          ticket-id "TEST-RACE"
+          ticket-file (fs/path tmp-dir (str ticket-id ".md"))
+          initial-content "---\nstatus: in-progress\nassignee: codex\n---\n\n## Notes\n"]
+      (spit (str ticket-file) initial-content)
+      (with-redefs [tickets-dir (fn [] tmp-dir)]
+        (let [n-iters 50
+              sync-results (future
+                             (dotimes [_ n-iters]
+                               (update-frontmatter! ticket-id {:status "in-progress"})))
+              worker-results (future
+                               (dotimes [i n-iters]
+                                 (append-note! ticket-id (str "note-" i))))]
+          @sync-results
+          @worker-results
+          (let [final-lines (str/split-lines (slurp (str ticket-file)))
+                note-lines (filter #(str/starts-with? % "- ") final-lines)
+                note-count (count note-lines)
+                has-status (some #(str/starts-with? % "status:") final-lines)]
+            (cond
+              (not has-status)
+              (do (println "FAIL: concurrent update-frontmatter! lost status field")
+                  (swap! failures conj "ticket-file-race: status field preserved"))
+
+              (not= n-iters note-count)
+              (do (println (str "FAIL: concurrent append-note! lost writes; expected=" n-iters " actual=" note-count))
+                  (swap! failures conj "ticket-file-race: all notes preserved"))
+
+              :else
+              (println "PASS: concurrent update-frontmatter! and append-note! did not lose writes"))))))
 
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
