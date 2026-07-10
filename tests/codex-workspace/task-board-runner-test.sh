@@ -711,6 +711,10 @@ test_review_gate_pass_after_retry_moves_review() {
   assert_file_not_contains "${state}/state.edn" 'BOXP-415'
 }
 
+test_assignee_model_routing() {
+  bb "${RUNNER}" test
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_unsupported_assignee_is_ignored
@@ -732,5 +736,6 @@ test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks
 test_review_gate_pass_after_retry_moves_review
+test_assignee_model_routing
 
 echo "task-board-runner tests passed"
