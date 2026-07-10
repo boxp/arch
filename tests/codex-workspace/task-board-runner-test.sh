@@ -543,6 +543,48 @@ test_sigterm_writes_shutdown_marker_without_prestop() {
   assert_file_contains "${output}" 'prepared shutdown for owner old-pod, instance=old-instance'
 }
 
+test_one_shot_tick_does_not_replace_loop_owner_instance() {
+  local tmp vault state output pid marker
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  output="${tmp}/runner.out"
+  marker="${state}/terminating-owners/pod-x.edn"
+  write_board "${vault}" ""
+
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=pod-x \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=loop-instance \
+    CODEX_TASK_BOARD_POLL_SECONDS=60 \
+    bb "${RUNNER}" loop >"${output}" 2>&1 &
+  pid=$!
+
+  for _attempt in $(seq 1 50); do
+    [[ -e "${state}/owners/pod-x.edn" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -e "${state}/owners/pod-x.edn" ]]; then
+    kill -KILL "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+    fail "expected loop runner to register its owner instance"
+  fi
+
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=pod-x \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=tick-instance \
+    bb "${RUNNER}" tick >/tmp/task-board-owner-one-shot-tick.out
+  assert_file_contains "${state}/owners/pod-x.edn" ':instance-id "loop-instance"'
+  assert_file_not_contains "${state}/owners/pod-x.edn" ':instance-id "tick-instance"'
+
+  kill -TERM "${pid}"
+  wait "${pid}" 2>/dev/null || true
+  [[ -e "${marker}" ]] || fail "expected loop shutdown to create an owner marker"
+  assert_file_contains "${marker}" ':instance-id "loop-instance"'
+  assert_file_not_contains "${marker}" ':instance-id "tick-instance"'
+}
+
 test_current_owner_shutdown_marker_drains_without_recovery() {
   local tmp vault state bin old_run heartbeat start_log
   tmp="$(mktemp -d)"
@@ -1171,6 +1213,7 @@ test_stale_lock_recovers
 test_planned_shutdown_lock_recovers_immediately
 test_cross_process_lock_guard_preserves_replacement_lock
 test_sigterm_writes_shutdown_marker_without_prestop
+test_one_shot_tick_does_not_replace_loop_owner_instance
 test_current_owner_shutdown_marker_drains_without_recovery
 test_mismatched_shutdown_marker_does_not_recover_fresh_lock
 test_shutdown_marker_waits_for_late_matching_lock

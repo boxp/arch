@@ -96,6 +96,7 @@ runner image の変更は [boxp/arch PR #11010](https://github.com/boxp/arch/pul
 - 実環境 baseline: Deployment generation 89 / revision 83、`replicas=1`、`Recreate`、Pod `codex-workspace-858bcf8d45-zwswr`（UID `00aad169-dd98-4975-b339-a75c35efc2a5`）で 7 container が Ready。active lock は 1 秒間隔で heartbeat を更新していたが、現行 image の lock には owner metadata がなく、stale 設定は 1,800 秒だった。
 - validation environment: 一時 vault / state、fake Codex、旧 owner の fresh lock と planned-shutdown marker を使う black-box rollout simulation は 1 秒で `interrupted` 記録、Notes 追記、新 owner lock 取得、同 tick 再実行、最終 lane/frontmatter 更新まで完了した。
 - graceful signal: loop process に直接 SIGTERM を送り、preStop command を実行しない条件でも owner / instance 一致の shutdown marker が書かれる black-box test が通過した。
+- owner state isolation: 同じ Pod owner で one-shot `tick` を実行しても常駐 `loop` の owner instance を上書きせず、その後の SIGTERM marker が loop instance と一致することを確認した。
 - active safety: 現 owner marker と owner-instance 不一致 marker の fresh lock は回収されず、新 run が開始されないテストが通った。replacement lock 取得後は旧 heartbeat / release が別 owner lock を更新・削除しない実装とした。
 - same-second recovery: 旧 run と同じ timestamp を固定して planned recovery を実行し、置換 run が UUID suffix 付きの別 summary directory を使い、旧 summary の `interrupted` 状態を維持するテストが通った。
 - cross-process ownership: recovery JVM を compare-and-delete 中で停止し、別 JVM が同じ永続 guard を取得して replacement lock を作る競合テストで、replacement lock が維持されることを確認した。

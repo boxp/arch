@@ -1659,7 +1659,7 @@
   (reset! in-flight-futures {}))
 
 (case (or (first *command-line-args*) "tick")
-  "tick" (do (recover-locks!) (activate-owner!) (tick!) (drain-in-flight!) (sync-all!))
+  "tick" (do (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
   "prepare-shutdown" (prepare-shutdown!)
