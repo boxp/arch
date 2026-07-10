@@ -165,6 +165,21 @@
                ", instance=" (or (:instance-id marker) "unknown")))
     marker))
 
+(def shutdown-hook-installed? (atom false))
+
+(defn install-shutdown-hook! []
+  (when (compare-and-set! shutdown-hook-installed? false true)
+    (.addShutdownHook
+     (Runtime/getRuntime)
+     (Thread.
+      ^Runnable
+      (fn []
+        (try
+          (prepare-shutdown!)
+          (catch Exception e
+            (binding [*out* *err*]
+              (println (str "failed to prepare task-board shutdown: " (.getMessage e)))))))))))
+
 (defn current-runner-marker? [marker]
   (and (= (owner-id) (:owner-id marker))
        (= runner-instance-id (:instance-id marker))))
@@ -1335,6 +1350,9 @@
 (defn loop! []
   (recover-locks!)
   (activate-owner!)
+  ;; preStop is the explicit deployment contract. The process-level hook preserves
+  ;; the same owner marker when the runner receives SIGTERM directly.
+  (install-shutdown-hook!)
   (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)
              ", owner=" (owner-id) ", instance=" runner-instance-id))
   (loop []

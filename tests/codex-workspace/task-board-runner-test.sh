@@ -451,6 +451,42 @@ EOF
   echo "planned shutdown recovery simulation passed in ${elapsed}s"
 }
 
+test_sigterm_writes_shutdown_marker_without_prestop() {
+  local tmp vault state output pid marker attempt
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  output="${tmp}/runner.out"
+  marker="${state}/terminating-owners/old-pod.edn"
+  write_board "${vault}" ""
+
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=old-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=old-instance \
+    CODEX_TASK_BOARD_POLL_SECONDS=60 \
+    bb "${RUNNER}" loop >"${output}" 2>&1 &
+  pid=$!
+
+  for attempt in $(seq 1 50); do
+    [[ -e "${state}/owners/old-pod.edn" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -e "${state}/owners/old-pod.edn" ]]; then
+    kill -KILL "${pid}" 2>/dev/null || true
+    wait "${pid}" 2>/dev/null || true
+    fail "expected loop runner to activate old-pod owner"
+  fi
+
+  kill -TERM "${pid}"
+  wait "${pid}" 2>/dev/null || true
+
+  [[ -e "${marker}" ]] || fail "expected SIGTERM shutdown hook to write owner marker"
+  assert_file_contains "${marker}" ':owner-id "old-pod"'
+  assert_file_contains "${marker}" ':instance-id "old-instance"'
+  assert_file_contains "${output}" 'prepared shutdown for owner old-pod, instance=old-instance'
+}
+
 test_current_owner_shutdown_marker_drains_without_recovery() {
   local tmp vault state bin old_run heartbeat start_log
   tmp="$(mktemp -d)"
@@ -963,6 +999,7 @@ test_codex_full_assignee_includes_delegation_policy
 test_unsupported_assignee_is_ignored
 test_stale_lock_recovers
 test_planned_shutdown_lock_recovers_immediately
+test_sigterm_writes_shutdown_marker_without_prestop
 test_current_owner_shutdown_marker_drains_without_recovery
 test_mismatched_shutdown_marker_does_not_recover_fresh_lock
 test_review_without_pr_is_blocked
