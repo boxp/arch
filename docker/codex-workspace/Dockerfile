@@ -103,9 +103,11 @@ ENV LANG=en_US.UTF-8 \
     PATH=/home/boxp/.local/bin:/home/boxp/go/bin:/usr/local/bin:/usr/bin:/bin
 
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
+COPY dotfiles-sync.sh /opt/codex-workspace/dotfiles-sync.sh
 COPY cron/ /opt/codex-workspace/cron/
 COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
+    && chmod 0755 /opt/codex-workspace/dotfiles-sync.sh \
     && find /opt/codex-workspace/cron -type f -name "*.sh" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/cron -type f -name "*.bb" -exec chmod 0755 {} +
 
