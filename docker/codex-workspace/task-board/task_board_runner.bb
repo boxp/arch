@@ -1082,56 +1082,27 @@
                    (some? (candidate-action card (ticket-assignee ticket-id)))))
          vec)))
 
-;; Map of ticket-id -> future for currently running process-card! calls.
-;; Persists across tick! invocations so the loop can detect new candidates
-;; without blocking on already-running tickets.
-(def in-flight-futures (atom {}))
-
-(defn collect-completed-futures! []
-  (let [snapshot @in-flight-futures
-        completed (filter (fn [[_id f]] (future-done? f)) snapshot)
-        completed-ids (mapv first completed)]
-    (doseq [[ticket-id f] completed]
-      (try @f
-           (catch Exception e
-             (log! (str "in-flight future for " ticket-id " completed with error: " (.getMessage e))))))
-    (when (seq completed-ids)
-      (swap! in-flight-futures #(apply dissoc % completed-ids)))
-    completed-ids))
-
 (defn tick! []
   (ensure-root!)
   (cleanup-stale-locks!)
   (sync-all!)
-  (let [done (collect-completed-futures!)
-        in-flight-ids (set (keys @in-flight-futures))
-        candidates (candidate-cards)
-        new-candidates (remove #(contains? in-flight-ids (:ticket-id %)) candidates)]
-    (doseq [card new-candidates]
-      (let [f (future
-                (log! (str "processing " (:ticket-id card) " from " (:lane card)))
-                (let [started? (process-card! card)]
-                  (when-not started?
-                    (log! (str "candidate could not start, leaving it for a future tick: " (:ticket-id card))))
-                  {:ticket-id (:ticket-id card)
-                   :started? (boolean started?)}))]
-        (swap! in-flight-futures assoc (:ticket-id card) f)))
+  (let [candidates (candidate-cards)
+        runs (doall
+              (for [card candidates]
+                (future
+                  (log! (str "processing " (:ticket-id card) " from " (:lane card)))
+                  (let [started? (process-card! card)]
+                    (when-not started?
+                      (log! (str "candidate could not start, leaving it for a future tick: " (:ticket-id card))))
+                    {:ticket-id (:ticket-id card)
+                     :started? (boolean started?)}))))
+        results (doall (map deref runs))
+        processed (count (filter :started? results))]
     (sync-all!)
-    (when (seq done)
-      (log! (str "collected " (count done) " completed ticket(s): " (str/join ", " done))))
     (log! (cond
-            (empty? candidates)
-            "no supported-agent-assigned Task Board tickets"
-
-            (and (empty? new-candidates) (seq in-flight-ids))
-            (str (count in-flight-ids) " ticket(s) already in flight, no new candidates this tick")
-
-            (empty? new-candidates)
-            "no supported-agent-assigned Task Board tickets could start"
-
-            :else
-            (str "started " (count new-candidates) " new ticket(s), "
-                 (count @in-flight-futures) " total in flight")))))
+            (empty? candidates) "no supported-agent-assigned Task Board tickets"
+            (zero? processed) "no supported-agent-assigned Task Board tickets could start"
+            :else (str "processed " processed " supported-agent-assigned Task Board ticket(s) in parallel")))))
 
 (defn loop! []
   (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)))
@@ -1180,84 +1151,12 @@
         (do
           (println (str "FAIL: codex-review gate default model expected=gpt-5.6-terra actual=" actual-model))
           (swap! failures conj "codex-review default model"))))
-
-    ;; Test: collect-completed-futures! collects done futures and leaves pending ones
-    (reset! in-flight-futures {})
-    (let [p (promise)
-          f-pending (future @p)
-          f-done (future 42)]
-      (Thread/sleep 50)
-      (swap! in-flight-futures assoc "TEST-DONE" f-done "TEST-PENDING" f-pending)
-      (let [done (collect-completed-futures!)]
-        (cond
-          (not= ["TEST-DONE"] done)
-          (do (println (str "FAIL: collect-completed-futures! done expected=[TEST-DONE] got=" done))
-              (swap! failures conj "collect-completed-futures! done list"))
-
-          (not (contains? @in-flight-futures "TEST-PENDING"))
-          (do (println "FAIL: collect-completed-futures! removed pending future")
-              (swap! failures conj "collect-completed-futures! pending kept"))
-
-          (contains? @in-flight-futures "TEST-DONE")
-          (do (println "FAIL: collect-completed-futures! kept done future")
-              (swap! failures conj "collect-completed-futures! done removed"))
-
-          :else
-          (println "PASS: collect-completed-futures! collects done and keeps pending")))
-      (deliver p :done)
-      @f-pending)
-    (reset! in-flight-futures {})
-
-    ;; Test: tick! starts new candidates alongside already in-flight tickets
-    ;; and does NOT restart in-flight tickets
-    (reset! in-flight-futures {})
-    (let [p-a (promise)
-          f-a (future @p-a)
-          started-ids (atom [])
-          test-candidates [{:ticket-id "TEST-A" :lane "In Progress" :status "in-progress"}
-                           {:ticket-id "TEST-B" :lane "In Progress" :status "in-progress"}]]
-      (swap! in-flight-futures assoc "TEST-A" f-a)
-      (with-redefs [candidate-cards (fn [] test-candidates)
-                    ensure-root! (fn [] nil)
-                    cleanup-stale-locks! (fn [] nil)
-                    sync-all! (fn [] nil)
-                    process-card! (fn [{:keys [ticket-id]}]
-                                    (swap! started-ids conj ticket-id)
-                                    true)]
-        (tick!)
-        ;; Wait for started futures to complete within the with-redefs scope
-        ;; so process-card! is still redefined when futures execute
-        (Thread/sleep 200))
-      (doseq [[_ f] @in-flight-futures]
-        (when (future-done? f) (try @f (catch Exception _))))
-      (cond
-        (not (contains? (set @started-ids) "TEST-B"))
-        (do (println "FAIL: tick! did not start new candidate TEST-B while TEST-A was in flight")
-            (swap! failures conj "tick! starts new candidate alongside in-flight"))
-
-        (contains? (set @started-ids) "TEST-A")
-        (do (println "FAIL: tick! restarted in-flight ticket TEST-A")
-            (swap! failures conj "tick! skips in-flight ticket"))
-
-        :else
-        (println "PASS: tick! starts new candidates without restarting in-flight tickets"))
-      (deliver p-a :done)
-      @f-a)
-    (reset! in-flight-futures {})
-
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
-      (println "All tests passed."))))
-
-(defn drain-in-flight! []
-  (doseq [[ticket-id f] @in-flight-futures]
-    (try @f
-         (catch Exception e
-           (log! (str "error completing " ticket-id ": " (.getMessage e))))))
-  (reset! in-flight-futures {}))
+      (println "All assignee model tests passed."))))
 
 (case (or (first *command-line-args*) "tick")
-  "tick" (do (tick!) (drain-in-flight!) (sync-all!))
+  "tick" (tick!)
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
   "test" (run-tests!)
