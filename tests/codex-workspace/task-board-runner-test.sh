@@ -295,6 +295,34 @@ test_fable_assignee_runs_via_claude() {
   assert_file_contains "${events}" '^TASK_BOARD_RESULT: done$'
 }
 
+test_codex_sol_assignee_includes_delegation_policy() {
+  local tmp vault state bin prompt_log summary last_message
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-152|BOXP-152: codex-sol]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-152 in-progress codex-sol
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-codex-sol.out
+
+  assert_file_contains "${prompt_log}" '^Task Board assignee/agent: codex-sol$'
+  assert_file_contains "${prompt_log}" 'Codex-sol routing policy'
+  assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, and verification to lower-cost models whenever practical'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-152\|BOXP-152: codex-sol\]\].*status::done'
+  assert_file_contains "${vault}/Tickets/BOXP-152.md" '^status: done$'
+  summary="$(find "${state}/runs/BOXP-152" -name summary.edn -print | sort | tail -n 1)"
+  last_message="$(find "${state}/runs/BOXP-152" -name last-message.md -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" ':agent "codex-sol"'
+  assert_file_contains "${last_message}" '^TASK_BOARD_RESULT: done$'
+}
+
 test_unsupported_assignee_is_ignored() {
   local tmp vault state bin codex_log claude_log
   tmp="$(mktemp -d)"
@@ -738,6 +766,7 @@ test_assignee_model_tick_routing() {
 
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
+test_codex_sol_assignee_includes_delegation_policy
 test_unsupported_assignee_is_ignored
 test_stale_lock_recovers
 test_review_without_pr_is_blocked
