@@ -236,6 +236,8 @@ write_session_env
 ssh-keygen -A
 /usr/sbin/sshd -D -e -p "${SSHD_PORT:-2222}" &
 
+/usr/sbin/runuser -u boxp -- env HOME=/home/boxp /opt/codex-workspace/dotfiles-sync.sh &
+
 cd /home/boxp
 
 token_args=()
