@@ -91,6 +91,9 @@
 (defn terminating-owners-dir []
   (fs/path (root) "terminating-owners"))
 
+(defn lock-guards-dir []
+  (fs/path (root) "lock-guards"))
+
 (defn owner-state-path
   ([] (owner-state-path (owner-id)))
   ([value] (fs/path (owners-dir) (str (safe-owner-id value) ".edn"))))
@@ -138,7 +141,8 @@
                 (fs/path (root) "locks")
                 (fs/path (root) "runs")
                 (owners-dir)
-                (terminating-owners-dir)]]
+                (terminating-owners-dir)
+                (lock-guards-dir)]]
     (fs/create-dirs path)))
 
 (defn read-edn-file [path fallback]
@@ -431,14 +435,39 @@
        (= (:owner-id expected) (:owner-id actual))
        (= (:owner-instance-id expected) (:owner-instance-id actual))))
 
-(defn delete-lock-if-matches! [ticket-id expected]
+(defn ticket-lock-guard-path [ticket-id]
+  (fs/path (lock-guards-dir) (str (safe-owner-id ticket-id) ".lock")))
+
+(defn with-ticket-lock-guard [ticket-id f]
+  ;; `locking` serializes threads in this JVM. FileLock extends the same critical
+  ;; section to helper commands and replacement runner JVMs sharing the PVC.
   (locking (ticket-file-mutex ticket-id)
-    (let [path (lock-path ticket-id)
-          actual (try
-                   (read-edn-file path nil)
-                   (catch Exception _ nil))]
-      (when (same-ticket-lock? expected actual)
-        (fs/delete-if-exists path)))))
+    (fs/create-dirs (lock-guards-dir))
+    (with-open [file (java.io.RandomAccessFile. (str (ticket-lock-guard-path ticket-id)) "rw")
+                channel (.getChannel file)]
+      (let [_file-lock (.lock channel)]
+        ;; Closing the channel releases all of its locks; Babashka does not expose
+        ;; FileLock.release on the JDK's internal FileLock implementation.
+        (f)))))
+
+(defn delete-lock-if-matches-under-guard! [ticket-id expected]
+  (let [path (lock-path ticket-id)
+        actual (try
+                 (read-edn-file path nil)
+                 (catch Exception _ nil))]
+    (when (same-ticket-lock? expected actual)
+      ;; Deterministic black-box race hook; unset in the deployment.
+      (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_LOCK_DELETE_SIGNAL")]
+        (spit signal-path "ready\n"))
+      (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_LOCK_DELETE_MILLIS")]
+        (Thread/sleep (Long/parseLong hold-ms)))
+      (fs/delete-if-exists path)
+      true)))
+
+(defn delete-lock-if-matches! [ticket-id expected]
+  (with-ticket-lock-guard
+   ticket-id
+   #(delete-lock-if-matches-under-guard! ticket-id expected)))
 
 (defn mark-run! [ticket-id run-id status extra]
   (let [summary (merge {:ticket ticket-id
@@ -455,7 +484,7 @@
                 :previous-lock lock})
     (when (fs/exists? (ticket-path ticket-id))
       (append-note! ticket-id (str "Codex run " interrupted-run " " note))))
-  (delete-lock-if-matches! ticket-id lock))
+  (delete-lock-if-matches-under-guard! ticket-id lock))
 
 (defn close-stale-lock! [ticket-id lock]
   (close-interrupted-lock! ticket-id lock
@@ -483,15 +512,17 @@
       (doseq [path (fs/list-dir locks-dir)
               :let [ticket-id (lock-ticket-id path)]
               :when ticket-id]
-        (try
-          (locking (ticket-file-mutex ticket-id)
+        (with-ticket-lock-guard
+         ticket-id
+         (fn []
+          (try
             (let [lock (read-edn-file path {})]
               (when (and (stale-lock? lock)
                          (not (current-runner-lock? lock)))
                 (log! (str "closing stale lock: " ticket-id))
-                (close-stale-lock! ticket-id lock))))
-          (catch Exception e
-            (close-corrupt-lock! ticket-id path e)))))))
+                (close-stale-lock! ticket-id lock)))
+            (catch Exception e
+              (close-corrupt-lock! ticket-id path e)))))))))
 
 (defn read-shutdown-markers []
   (let [dir (terminating-owners-dir)]
@@ -530,15 +561,17 @@
       (doseq [path (fs/list-dir locks-dir)
               :let [ticket-id (lock-ticket-id path)]
               :when ticket-id]
-        (try
-          (locking (ticket-file-mutex ticket-id)
+        (with-ticket-lock-guard
+         ticket-id
+         (fn []
+          (try
             (let [lock (read-edn-file path {})]
               (when-let [marker (matching-shutdown-marker recoverable-markers lock)]
                 (log! (str "closing lock from planned owner shutdown: " ticket-id
                            " owner=" (:owner-id marker)))
-                (close-planned-shutdown-lock! ticket-id lock marker))))
-          (catch Exception e
-            (close-corrupt-lock! ticket-id path e)))))
+                (close-planned-shutdown-lock! ticket-id lock marker)))
+            (catch Exception e
+              (close-corrupt-lock! ticket-id path e)))))))
     (doseq [marker recoverable-markers]
       (fs/delete-if-exists (:path marker))
       (fs/delete-if-exists (owner-state-path (:owner-id marker))))))
@@ -548,9 +581,16 @@
   (recover-planned-shutdown-locks!)
   (cleanup-stale-locks!))
 
+(defn create-lock-under-guard! [path lock]
+  (when (.createNewFile (io/file (str path)))
+    (write-edn-file! path lock)
+    lock))
+
 (defn acquire-lock! [ticket-id action lane]
   (when-not (draining?)
-    (locking (ticket-file-mutex ticket-id)
+    (with-ticket-lock-guard
+     ticket-id
+     (fn []
       (let [path (lock-path ticket-id)
             run (run-id)
             lock {:ticket ticket-id
@@ -564,23 +604,27 @@
                   :started-at (now-str)
                   :heartbeat-at (now-str)}]
         (fs/create-dirs (fs/parent path))
-        (if (.createNewFile (io/file (str path)))
-          (do
-            (write-edn-file! path lock)
-            lock)
+        (if-let [created (create-lock-under-guard! path lock)]
+          created
           (try
             (let [existing (read-edn-file path {})]
               (if (and (stale-lock? existing)
                        (not (current-runner-lock? existing)))
                 (do
                   (close-stale-lock! ticket-id existing)
-                  (acquire-lock! ticket-id action lane))
+                  (or (create-lock-under-guard! path lock)
+                      (do
+                        (log! (str "ticket lock changed while recovering: " ticket-id))
+                        nil)))
                 (do
                   (log! (str "ticket already locked: " ticket-id))
                   nil)))
             (catch Exception e
               (close-corrupt-lock! ticket-id path e)
-              (acquire-lock! ticket-id action lane))))))))
+              (or (create-lock-under-guard! path lock)
+                  (do
+                    (log! (str "ticket lock changed while clearing corruption: " ticket-id))
+                    nil))))))))))
 
 (defn release-lock! [ticket-id lock]
   (delete-lock-if-matches! ticket-id lock))
@@ -588,7 +632,9 @@
 (defn heartbeat! [ticket-id lock stop?]
   (future
     (while (not @stop?)
-      (locking (ticket-file-mutex ticket-id)
+      (with-ticket-lock-guard
+       ticket-id
+       (fn []
         (let [path (lock-path ticket-id)
               existing (try
                          (read-edn-file path nil)
@@ -597,7 +643,7 @@
             (write-edn-file! path (assoc existing :heartbeat-at (now-str)))
             (do
               (log! (str "heartbeat stopped because lock ownership changed: " ticket-id))
-              (reset! stop? true)))))
+              (reset! stop? true))))))
       (Thread/sleep 1000))))
 
 (defn previous-run-summaries [ticket-id]

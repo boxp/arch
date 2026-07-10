@@ -455,6 +455,58 @@ EOF
   echo "planned shutdown recovery simulation passed in ${elapsed}s"
 }
 
+test_cross_process_lock_guard_preserves_replacement_lock() {
+  local tmp vault state old_run heartbeat signal recover_pid replacement
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  old_run="20260710T000050Z"
+  heartbeat="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  signal="${tmp}/before-delete"
+  mkdir -p "${state}/locks" "${state}/runs/BOXP-205/${old_run}"
+  write_board "${vault}" ""
+  cat >"${state}/locks/BOXP-205.edn" <<EOF
+{:ticket "BOXP-205" :run-id "${old_run}" :action :implement :lane "In Progress" :owner-id "old-pod" :owner-instance-id "old-instance" :heartbeat-at "2000-01-01T00:00:00Z"}
+EOF
+
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    CODEX_TASK_BOARD_TEST_BEFORE_LOCK_DELETE_SIGNAL="${signal}" \
+    CODEX_TASK_BOARD_TEST_BEFORE_LOCK_DELETE_MILLIS=1500 \
+    bb "${RUNNER}" recover >/tmp/task-board-cross-process-recover.out 2>&1 &
+  recover_pid=$!
+
+  for _attempt in $(seq 1 50); do
+    [[ -e "${signal}" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -e "${signal}" ]]; then
+    kill -KILL "${recover_pid}" 2>/dev/null || true
+    wait "${recover_pid}" 2>/dev/null || true
+    fail "expected recovery process to reach guarded compare-and-delete"
+  fi
+
+  replacement="{:ticket \"BOXP-205\" :run-id \"replacement-run\" :action :implement :lane \"In Progress\" :owner-id \"replacement-pod\" :owner-instance-id \"replacement-instance\" :heartbeat-at \"${heartbeat}\"}"
+  bb -e '
+    (let [[guard-path lock-path content] *command-line-args*
+          guard-file (java.io.File. guard-path)]
+      (.mkdirs (.getParentFile guard-file))
+      (with-open [file (java.io.RandomAccessFile. guard-file "rw")
+                  channel (.getChannel file)]
+        (let [_file-lock (.lock channel)]
+          (spit lock-path (str content "\n")))))' \
+    "${state}/lock-guards/BOXP-205.lock" \
+    "${state}/locks/BOXP-205.edn" \
+    "${replacement}"
+
+  wait "${recover_pid}"
+  assert_file_contains "${state}/locks/BOXP-205.edn" ':run-id "replacement-run"'
+  assert_file_contains "${state}/locks/BOXP-205.edn" ':owner-id "replacement-pod"'
+  assert_file_contains "${state}/runs/BOXP-205/${old_run}/summary.edn" ':status :interrupted'
+}
+
 test_sigterm_writes_shutdown_marker_without_prestop() {
   local tmp vault state output pid marker attempt
   tmp="$(mktemp -d)"
@@ -1003,6 +1055,7 @@ test_codex_full_assignee_includes_delegation_policy
 test_unsupported_assignee_is_ignored
 test_stale_lock_recovers
 test_planned_shutdown_lock_recovers_immediately
+test_cross_process_lock_guard_preserves_replacement_lock
 test_sigterm_writes_shutdown_marker_without_prestop
 test_current_owner_shutdown_marker_drains_without_recovery
 test_mismatched_shutdown_marker_does_not_recover_fresh_lock
