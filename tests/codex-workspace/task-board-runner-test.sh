@@ -775,7 +775,7 @@ test_assignee_model_routing() {
 
 test_assignee_model_tick_routing() {
   local tmp vault state bin args_log assignee expected_model
-  local pairs=("codex-sol:gpt-5.6-sol" "codex-full:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna")
+  local pairs=("codex:gpt-5.6-terra" "codex-sol:gpt-5.6-sol" "codex-full:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna")
   for pair in "${pairs[@]}"; do
     assignee="${pair%%:*}"
     expected_model="${pair##*:}"
@@ -791,6 +791,52 @@ test_assignee_model_tick_routing() {
     write_ticket "${vault}" BOXP-500 in-progress "${assignee}"
     PATH="${bin}:$PATH" CODEX_FAKE_ARG_LOG="${args_log}" run_tick "${vault}" "${state}" env >"/tmp/task-board-model-tick-${assignee}.out"
     assert_file_contains "${args_log}" "exec.*--model ${expected_model}"
+    assert_file_not_contains "${args_log}" 'model_reasoning_effort='
+  done
+}
+
+test_assignee_reasoning_tick_routing() {
+  local tmp vault state bin args_log assignee expected_model level
+  local pairs=(
+    "codex-minimal:gpt-5.6-terra:minimal"
+    "codex-sol-low:gpt-5.6-sol:low"
+    "codex-full-medium:gpt-5.6-sol:medium"
+    "codex-terra-high:gpt-5.6-terra:high"
+    "codex-mini-xhigh:gpt-5.6-luna:xhigh"
+  )
+  for pair in "${pairs[@]}"; do
+    IFS=: read -r assignee expected_model level <<<"${pair}"
+    tmp="$(mktemp -d)"
+    vault="${tmp}/vault"
+    state="${tmp}/state"
+    bin="${tmp}/bin"
+    args_log="${tmp}/codex-args.log"
+    mkdir -p "${bin}"
+    make_fake_codex "${bin}"
+    write_board "${vault}" "- [ ] [[Tickets/BOXP-501|BOXP-501: reasoning tick]] #ticket status::in-progress"
+    write_ticket "${vault}" BOXP-501 in-progress "${assignee}"
+    PATH="${bin}:$PATH" CODEX_FAKE_ARG_LOG="${args_log}" run_tick "${vault}" "${state}" env >"/tmp/task-board-reasoning-tick-${assignee}.out"
+    assert_file_contains "${args_log}" "exec.*--model ${expected_model}.*-c model_reasoning_effort=${level}"
+    assert_file_contains "${vault}/Tickets/BOXP-501.md" '^status: done$'
+  done
+}
+
+test_invalid_reasoning_assignees_are_ignored() {
+  local tmp vault state bin args_log assignee
+  local assignees=("codex-terra-ultra" "unknown-high" "fable-high")
+  for assignee in "${assignees[@]}"; do
+    tmp="$(mktemp -d)"
+    vault="${tmp}/vault"
+    state="${tmp}/state"
+    bin="${tmp}/bin"
+    args_log="${tmp}/codex-args.log"
+    mkdir -p "${bin}"
+    make_fake_codex "${bin}"
+    write_board "${vault}" "- [ ] [[Tickets/BOXP-502|BOXP-502: invalid reasoning]] #ticket status::in-progress"
+    write_ticket "${vault}" BOXP-502 in-progress "${assignee}"
+    PATH="${bin}:$PATH" CODEX_FAKE_ARG_LOG="${args_log}" run_tick "${vault}" "${state}" env >"/tmp/task-board-invalid-reasoning-${assignee}.out"
+    [[ ! -e "${args_log}" ]] || fail "expected codex not to start for invalid assignee ${assignee}"
+    [[ ! -d "${state}/runs/BOXP-502" ]] || fail "expected no run directory for invalid assignee ${assignee}"
   done
 }
 
@@ -819,5 +865,7 @@ test_review_gate_retry_limit_blocks
 test_review_gate_pass_after_retry_moves_review
 test_assignee_model_routing
 test_assignee_model_tick_routing
+test_assignee_reasoning_tick_routing
+test_invalid_reasoning_assignees_are_ignored
 
 echo "task-board-runner tests passed"

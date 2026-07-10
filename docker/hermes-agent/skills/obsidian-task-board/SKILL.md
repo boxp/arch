@@ -117,6 +117,12 @@ The Task Board runner specification is the operational source for lane behavior:
 Projects/codex-task-board-runner/spec.md
 ```
 
+### Codex assignee と reasoning level
+
+既存の `codex`、`codex-sol`、`codex-full`、`codex-terra`、`codex-mini` はそのまま使用できます。これらには必要に応じて `-minimal`、`-low`、`-medium`、`-high`、`-xhigh` を付加できます。例えば `assignee: codex-sol-high` は Sol モデルを選び、Codex CLI に `model_reasoning_effort=high` を明示します。
+
+サフィックスなしの既存名は runner から reasoning を強制せず、Codex の既存設定を使います。未知のベース名または許容外の suffix は実行対象になりません。`fable` は reasoning suffix を受け付けず、従来どおり `fable` のみが有効です。
+
 ## Failure Handling
 
 If the helper refuses a change, report the exact command and error. Common causes are missing ticket files, malformed frontmatter delimiters, missing board lanes, or multiple board cards for one ticket. Prefer `show` and `list --json` to inspect state before retrying.
