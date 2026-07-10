@@ -549,6 +549,21 @@
                        (= (:instance-id %) (:owner-instance-id lock)))
                  markers)))
 
+(defn matching-shutdown-lock-exists? [marker]
+  (let [locks-dir (fs/path (root) "locks")]
+    (and (fs/exists? locks-dir)
+         (boolean
+          (some (fn [path]
+                  (when-let [ticket-id (lock-ticket-id path)]
+                    (with-ticket-lock-guard
+                     ticket-id
+                     (fn []
+                       (try
+                         (some? (matching-shutdown-marker [marker]
+                                                          (read-edn-file path {})))
+                         (catch Exception _ false))))))
+                (fs/list-dir locks-dir))))))
+
 (defn recover-planned-shutdown-locks! []
   (let [markers (read-shutdown-markers)
         ;; A helper command running inside the terminating Pod must never reclaim that
@@ -573,11 +588,19 @@
                   (swap! recovered-marker-paths conj (:path marker)))))
             (catch Exception e
               (close-corrupt-lock! ticket-id path e)))))))
-    ;; Keep unmatched markers for the next scan. A matching lock may be created while
-    ;; this process is enumerating the shared directory, and dropping the marker here
-    ;; would defer that lock to the heartbeat timeout instead of planned recovery.
+    ;; Give deterministic black-box tests a point to create a second matching lock
+    ;; after the first directory scan but before marker cleanup.
+    (when (seq @recovered-marker-paths)
+      (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_MARKER_DELETE_SIGNAL")]
+        (spit signal-path "ready\n"))
+      (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_MARKER_DELETE_MILLIS")]
+        (Thread/sleep (Long/parseLong hold-ms))))
+    ;; Keep unmatched markers and recovered markers that still have another matching
+    ;; lock. A lock may appear late in the shared directory enumeration; deleting its
+    ;; owner marker would defer it to the heartbeat timeout instead of the next scan.
     (doseq [marker recoverable-markers
-            :when (contains? @recovered-marker-paths (:path marker))]
+            :when (contains? @recovered-marker-paths (:path marker))
+            :when (not (matching-shutdown-lock-exists? marker))]
       (fs/delete-if-exists (:path marker))
       (fs/delete-if-exists (owner-state-path (:owner-id marker))))))
 

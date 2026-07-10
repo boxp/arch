@@ -100,6 +100,7 @@ runner image の変更は [boxp/arch PR #11010](https://github.com/boxp/arch/pul
 - same-second recovery: 旧 run と同じ timestamp を固定して planned recovery を実行し、置換 run が UUID suffix 付きの別 summary directory を使い、旧 summary の `interrupted` 状態を維持するテストが通った。
 - cross-process ownership: recovery JVM を compare-and-delete 中で停止し、別 JVM が同じ永続 guard を取得して replacement lock を作る競合テストで、replacement lock が維持されることを確認した。
 - marker enumeration race: 一致 lock のない shutdown marker / owner state が初回 recovery 後も残り、その後に作成された fresh な一致 lock を次回 recovery で planned shutdown として回収することを確認した。
+- multi-lock marker race: 同じ owner / instance の lock を1件回収した直後に2件目が列挙へ現れる競合でも marker / owner state を保持し、次回 recovery で2件目を回収してから marker を削除することを確認した。
 - `tests/codex-workspace/task-board-runner-test.sh`、runner 内蔵 test、`tests/codex-workspace/recurring-events-test.sh` が通過した。recurring-events の passwordless sudo を要する ownership test だけは環境条件により skip された。
 - `kustomize build argoproj/codex-workspace` と、Calico NetworkPolicy 文書を除く client-side `kubectl apply --dry-run=client --validate=false` が通過した。Calico 文書は kubectl client の CRD patch 構造化変換制約のため render 成功で確認した。
 - companion の lolice PR #723 で ArgoCD diff と gitleaks が成功し、rendered Deployment に `preStop prepare-shutdown`、Pod UID の `CODEX_TASK_BOARD_OWNER_ID`、stale 180 秒、poll 30 秒、grace 60 秒が現れることを確認した。

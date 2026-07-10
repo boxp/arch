@@ -654,6 +654,76 @@ EOF
   assert_file_contains "${state}/runs/BOXP-206/${old_run}/summary.edn" ':reason "planned workspace shutdown"'
 }
 
+test_shutdown_marker_survives_late_second_lock() {
+  local tmp vault state first_run late_run heartbeat marker owner_state signal recover_pid
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  first_run="20260710T000400Z"
+  late_run="20260710T000401Z"
+  heartbeat="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  marker="${state}/terminating-owners/old-pod.edn"
+  owner_state="${state}/owners/old-pod.edn"
+  signal="${tmp}/before-marker-delete"
+  mkdir -p \
+    "${state}/locks" \
+    "${state}/runs/BOXP-207/${first_run}" \
+    "${state}/runs/BOXP-208/${late_run}" \
+    "${state}/terminating-owners" \
+    "${state}/owners"
+  write_board "${vault}" ""
+  cat >"${marker}" <<EOF
+{:owner-id "old-pod" :instance-id "old-instance" :host "old-pod" :requested-at "${heartbeat}"}
+EOF
+  cat >"${owner_state}" <<EOF
+{:owner-id "old-pod" :instance-id "old-instance" :host "old-pod" :pid 10 :started-at "${heartbeat}"}
+EOF
+  cat >"${state}/locks/BOXP-207.edn" <<EOF
+{:ticket "BOXP-207" :run-id "${first_run}" :action :implement :lane "In Progress" :owner-id "old-pod" :owner-instance-id "old-instance" :heartbeat-at "${heartbeat}"}
+EOF
+
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    CODEX_TASK_BOARD_TEST_BEFORE_MARKER_DELETE_SIGNAL="${signal}" \
+    CODEX_TASK_BOARD_TEST_BEFORE_MARKER_DELETE_MILLIS=1500 \
+    bb "${RUNNER}" recover >/tmp/task-board-marker-late-second.out 2>&1 &
+  recover_pid=$!
+
+  for _attempt in $(seq 1 50); do
+    [[ -e "${signal}" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -e "${signal}" ]]; then
+    kill -KILL "${recover_pid}" 2>/dev/null || true
+    wait "${recover_pid}" 2>/dev/null || true
+    fail "expected recovery to pause before deleting a consumed marker"
+  fi
+  cat >"${state}/locks/BOXP-208.edn" <<EOF
+{:ticket "BOXP-208" :run-id "${late_run}" :action :implement :lane "In Progress" :owner-id "old-pod" :owner-instance-id "old-instance" :heartbeat-at "${heartbeat}"}
+EOF
+  wait "${recover_pid}"
+
+  [[ ! -e "${state}/locks/BOXP-207.edn" ]] || fail "expected the first matching lock to be recovered"
+  [[ -e "${state}/locks/BOXP-208.edn" ]] || fail "expected the late lock to remain for the next scan"
+  [[ -e "${marker}" ]] || fail "expected a marker with a late second lock to be retained"
+  [[ -e "${owner_state}" ]] || fail "expected owner state to remain while a matching lock exists"
+  assert_file_contains "${state}/runs/BOXP-207/${first_run}/summary.edn" ':status :interrupted'
+
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    bb "${RUNNER}" recover >/tmp/task-board-marker-late-second-retry.out
+
+  [[ ! -e "${state}/locks/BOXP-208.edn" ]] || fail "expected the late lock to be recovered on the next scan"
+  [[ ! -e "${marker}" ]] || fail "expected marker removal after all matching locks were recovered"
+  [[ ! -e "${owner_state}" ]] || fail "expected owner state removal after all matching locks were recovered"
+  assert_file_contains "${state}/runs/BOXP-208/${late_run}/summary.edn" ':status :interrupted'
+  assert_file_contains "${state}/runs/BOXP-208/${late_run}/summary.edn" ':reason "planned workspace shutdown"'
+}
+
 test_review_without_pr_is_blocked() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -1104,6 +1174,7 @@ test_sigterm_writes_shutdown_marker_without_prestop
 test_current_owner_shutdown_marker_drains_without_recovery
 test_mismatched_shutdown_marker_does_not_recover_fresh_lock
 test_shutdown_marker_waits_for_late_matching_lock
+test_shutdown_marker_survives_late_second_lock
 test_review_without_pr_is_blocked
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates
