@@ -1538,11 +1538,11 @@
                      (count @in-flight-futures) " total in flight")))))))
 
 (defn loop! []
+  ;; Register before recovery or owner activation so direct SIGTERM during startup
+  ;; can still persist the planned-shutdown marker.
+  (install-shutdown-hook!)
   (recover-locks!)
   (activate-owner!)
-  ;; preStop is the explicit deployment contract. The process-level hook preserves
-  ;; the same owner marker when the runner receives SIGTERM directly.
-  (install-shutdown-hook!)
   (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)
              ", owner=" (owner-id) ", instance=" runner-instance-id))
   (loop []
@@ -1564,6 +1564,21 @@
 
 (defn run-tests! []
   (let [failures (atom [])]
+    (let [calls (atom [])]
+      (try
+        (with-redefs [install-shutdown-hook! #(swap! calls conj :install-shutdown-hook)
+                      recover-locks! #(swap! calls conj :recover-locks)
+                      activate-owner! #(do
+                                         (swap! calls conj :activate-owner)
+                                         (throw (ex-info "stop loop startup test" {})))]
+          (loop!))
+        (catch Exception _))
+      (if (= [:install-shutdown-hook :recover-locks :activate-owner] @calls)
+        (println "PASS: loop installs shutdown hook before recovery and owner activation")
+        (do
+          (println (str "FAIL: loop startup order expected hook/recover/activate got=" @calls))
+          (swap! failures conj "loop startup shutdown hook order"))))
+
     (let [timestamp "20260710T000000Z"
           first-id (unique-run-id timestamp)
           second-id (unique-run-id timestamp)
