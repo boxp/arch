@@ -1248,19 +1248,19 @@
     (reset! in-flight-futures {})
 
     ;; Test: concurrent update-frontmatter! and append-note! on the same ticket do not lose writes.
-    ;; Uses alternating status values ("in-progress" / "review") so each update-frontmatter! call
-    ;; actually writes to the file, triggering the read-modify-write race that the per-ticket mutex fixes.
+    ;; Uses a unique status per iteration (e.g. "s0", "s1", ...) so every update-frontmatter! call
+    ;; always changes the frontmatter and actually writes to the file. This guarantees the
+    ;; read-modify-write race that the per-ticket mutex fixes is reliably triggered.
     (let [tmp-dir (fs/create-temp-dir)
           ticket-id "TEST-RACE"
           ticket-file (fs/path tmp-dir (str ticket-id ".md"))
-          initial-content "---\nstatus: in-progress\nassignee: codex\n---\n\n## Notes\n"
-          statuses ["in-progress" "review"]]
+          initial-content "---\nstatus: init\nassignee: codex\n---\n\n## Notes\n"]
       (spit (str ticket-file) initial-content)
       (with-redefs [tickets-dir (fn [] tmp-dir)]
         (let [n-iters 50
               sync-results (future
                              (dotimes [i n-iters]
-                               (update-frontmatter! ticket-id {:status (nth statuses (mod i (count statuses)))})))
+                               (update-frontmatter! ticket-id {:status (str "s" i)})))
               worker-results (future
                                (dotimes [i n-iters]
                                  (append-note! ticket-id (str "note-" i))))]
