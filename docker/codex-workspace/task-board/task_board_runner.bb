@@ -237,6 +237,10 @@
 (defn current-owner-marker? [marker]
   (= (owner-id) (:owner-id marker)))
 
+(defn previous-runner-marker? [marker]
+  (and (current-owner-marker? marker)
+       (not (current-runner-marker? marker))))
+
 (defn stopping-owner-state? [state]
   (and (= (owner-id) (:owner-id state))
        (contains? #{:terminating :terminated} (:status state))))
@@ -654,7 +658,7 @@
                                :terminated-at (now-str)}))
       true)))
 
-(defn recover-planned-shutdown-marker! [marker]
+(defn recover-planned-shutdown-marker! [marker retire-empty-marker?]
   (with-owner-lock-guard
    (:owner-id marker)
    (fn []
@@ -692,7 +696,7 @@
          ;; Lock creation for this owner takes the same owner guard. Marking the owner
          ;; terminated before deleting the marker also prevents a waiter from creating
          ;; a lock immediately after this critical section ends.
-         (when (and @recovered?
+         (when (and (or @recovered? retire-empty-marker?)
                     (not (matching-shutdown-lock-exists? marker))
                     (same-shutdown-marker? marker
                                            (try
@@ -701,19 +705,31 @@
                     (retire-owner-under-guard! marker))
            (fs/delete-if-exists (:path marker))))))))
 
-(defn recover-planned-shutdown-locks! []
-  (let [markers (read-shutdown-markers)
-        ;; The runner that wrote a marker must not reclaim its own locks while it is
-        ;; draining. A restarted runner can reuse the Pod UID, though, so a different
-        ;; instance under the same owner must be allowed to recover the old instance.
-        recoverable-markers (remove current-runner-marker? markers)]
-    (doseq [marker recoverable-markers]
-      (recover-planned-shutdown-marker! marker))))
+(defn recover-planned-shutdown-locks!
+  ([] (recover-planned-shutdown-locks! false))
+  ([runner-startup?]
+   (let [markers (read-shutdown-markers)
+         ;; Helper commands keep excluding the whole current owner. Only loop startup
+         ;; may recover a previous instance that reused the Pod UID.
+         current-marker? (if runner-startup?
+                           current-runner-marker?
+                           current-owner-marker?)
+         recoverable-markers (remove current-marker? markers)]
+     (doseq [marker recoverable-markers]
+       ;; A replacement loop starts only after the old container process exited. Under
+       ;; the owner guard it may therefore retire an old same-owner marker even when
+       ;; that instance had no in-flight locks. Other owners retain empty markers so a
+       ;; late matching lock can still be recovered on a future scan.
+       (recover-planned-shutdown-marker!
+        marker
+        (and runner-startup? (previous-runner-marker? marker)))))))
 
-(defn recover-locks! []
-  (ensure-root!)
-  (recover-planned-shutdown-locks!)
-  (cleanup-stale-locks!))
+(defn recover-locks!
+  ([] (recover-locks! false))
+  ([runner-startup?]
+   (ensure-root!)
+   (recover-planned-shutdown-locks! runner-startup?)
+   (cleanup-stale-locks!)))
 
 (defn create-lock-under-guard! [path lock]
   (when (.createNewFile (io/file (str path)))
@@ -1541,7 +1557,7 @@
   ;; Register before recovery or owner activation so direct SIGTERM during startup
   ;; can still persist the planned-shutdown marker.
   (install-shutdown-hook!)
-  (recover-locks!)
+  (recover-locks! true)
   (activate-owner!)
   (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)
              ", owner=" (owner-id) ", instance=" runner-instance-id))
@@ -1567,7 +1583,7 @@
     (let [calls (atom [])]
       (try
         (with-redefs [install-shutdown-hook! #(swap! calls conj :install-shutdown-hook)
-                      recover-locks! #(swap! calls conj :recover-locks)
+                      recover-locks! (fn [& _] (swap! calls conj :recover-locks))
                       activate-owner! #(do
                                          (swap! calls conj :activate-owner)
                                          (throw (ex-info "stop loop startup test" {})))]
