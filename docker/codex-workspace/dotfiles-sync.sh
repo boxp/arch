@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+set -o pipefail
 
 TARGET_DIR="${DOTFILES_DIR:-/home/boxp/ghq/github.com/boxp/dotfiles}"
 DOTFILES_REPO="${DOTFILES_REPO:-https://github.com/boxp/dotfiles}"
