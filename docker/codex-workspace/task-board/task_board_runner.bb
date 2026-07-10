@@ -36,16 +36,15 @@
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
-;; Fixed pool of 256 lock objects (striped locking). Prevents read-modify-write races
-;; between sync-ticket-statuses! and in-flight process-card! workers, with bounded
-;; memory regardless of how many distinct ticket IDs are processed over the lifetime
-;; of the process.
-(def ^:private ticket-file-lock-stripes
+;; Fixed pool of 256 lock objects (striped locking). Serializes all ticket-scoped
+;; mutations in this JVM, including frontmatter / Notes writes and the process-shared
+;; lock guard, with bounded memory regardless of the number of distinct ticket IDs.
+(def ^:private ticket-lock-stripes
   (vec (repeatedly 256 #(Object.))))
 
-(defn ticket-file-mutex [ticket-id]
-  (nth ticket-file-lock-stripes
-       (mod (Math/abs (.hashCode (str ticket-id))) 256)))
+(defn ticket-mutex [ticket-id]
+  (nth ticket-lock-stripes
+       (Math/floorMod (.hashCode (str ticket-id)) (count ticket-lock-stripes))))
 
 (defn log! [message]
   (locking log-mutex
@@ -348,7 +347,7 @@
       (conj (vec fm-lines) replacement))))
 
 (defn update-frontmatter! [ticket-id updates]
-  (locking (ticket-file-mutex ticket-id)
+  (locking (ticket-mutex ticket-id)
     (let [path (ticket-path ticket-id)
           lines (vec (read-lines path))
           {:keys [end]} (or (frontmatter-range lines)
@@ -367,7 +366,7 @@
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
 
 (defn append-note! [ticket-id note]
-  (locking (ticket-file-mutex ticket-id)
+  (locking (ticket-mutex ticket-id)
     (let [path (ticket-path ticket-id)
           lines (vec (read-lines path))
           bullet (str "- " (today) ": " note)
@@ -441,7 +440,7 @@
 (defn with-ticket-lock-guard [ticket-id f]
   ;; `locking` serializes threads in this JVM. FileLock extends the same critical
   ;; section to helper commands and replacement runner JVMs sharing the PVC.
-  (locking (ticket-file-mutex ticket-id)
+  (locking (ticket-mutex ticket-id)
     (fs/create-dirs (lock-guards-dir))
     (with-open [file (java.io.RandomAccessFile. (str (ticket-lock-guard-path ticket-id)) "rw")
                 channel (.getChannel file)]
