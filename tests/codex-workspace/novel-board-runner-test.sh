@@ -163,6 +163,21 @@ manuscript="$(printf '%s\n' "${prompt}" | sed -n 's/^Manuscript path: //p' | hea
 mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
 [[ -n "${FAKE_AGENT_PID_FILE:-}" ]] && printf '%s\n' "$$" >"${FAKE_AGENT_PID_FILE}"
+if [[ -n "${FAKE_DETACHED_CHILD_MARKER:-}" ]]; then
+  # Escape the runner-created process group exactly as a real agent can with
+  # setsid. The execution token must remain the cleanup boundary.
+  setsid bash -c '
+    trap "" TERM HUP
+    printf "started\n" >"${FAKE_DETACHED_CHILD_MARKER}.started"
+    sleep "${FAKE_DETACHED_CHILD_SLEEP:-3}"
+    printf "survived timeout\n" >"${FAKE_DETACHED_CHILD_MARKER}"
+  ' </dev/null >/dev/null 2>&1 &
+  for _ in $(seq 1 50); do
+    [[ -e "${FAKE_DETACHED_CHILD_MARKER}.started" ]] && break
+    sleep 0.02
+  done
+  while :; do sleep 10; done
+fi
 if [[ -n "${FAKE_EXIT_BACKGROUND_CHILD_MARKER:-}" ]]; then
   (
     trap '' TERM HUP
@@ -471,6 +486,34 @@ test_agent_timeout_falls_back_when_group_signal_fails() {
   assert_not_contains "${summary}" ":cleanup-error"
   assert_contains "${stderr}" "terminated the agent after 1 seconds"
   assert_not_contains "${stderr}" "Agent timeout cleanup was incomplete"
+}
+
+test_agent_timeout_cleans_detached_descendant() {
+  local tmp vault state bin summary stderr detached_marker
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-TD|NOVEL-TD: Detached Timeout]] #novel status::backlog assignee::pi"
+  detached_marker="${tmp}/detached-child-survived"
+
+  FAKE_DETACHED_CHILD_MARKER="${detached_marker}" \
+    FAKE_DETACHED_CHILD_SLEEP=3 \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env
+
+  # The child moved to a new session and process group before the timeout. It
+  # still inherits the per-run execution token and must not modify files later.
+  sleep 4
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+  assert_contains "${vault}/Novels/NOVEL-TD.md" "agent timed out after 1 seconds"
+  summary="$(find "${state}/runs/NOVEL-TD" -name summary.edn -print -quit)"
+  stderr="$(find "${state}/runs/NOVEL-TD" -name stderr.log -print -quit)"
+  assert_contains "${summary}" ":exit-code 124"
+  assert_contains "${summary}" ":timed-out true"
+  assert_contains "${stderr}" "terminated the agent after 1 seconds"
+  [[ -e "${detached_marker}.started" ]] || fail "fake agent did not start detached regression-test child"
+  [[ ! -e "${detached_marker}" ]] || fail "detached descendant survived timeout cleanup"
 }
 
 test_successful_agent_cleans_background_process_group() {
@@ -953,6 +996,7 @@ test_groom_and_human_stop
 test_write_review_and_pi_revision
 test_agent_timeout_returns_to_human_review
 test_agent_timeout_falls_back_when_group_signal_fails
+test_agent_timeout_cleans_detached_descendant
 test_successful_agent_cleans_background_process_group
 test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved

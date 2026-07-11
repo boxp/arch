@@ -36,6 +36,7 @@
 (def lock-guard-mutexes (vec (repeatedly 256 #(Object.))))
 (def note-lock-mutexes (vec (repeatedly 256 #(Object.))))
 (def publication-lock-mutexes (vec (repeatedly 256 #(Object.))))
+(def execution-token-env "CODEX_NOVEL_BOARD_EXECUTION_TOKEN")
 
 (defn env [key default]
   (or (System/getenv key) default))
@@ -733,10 +734,40 @@
        sort
        vec))
 
-(defn await-process-group! [process-group-id timeout-seconds]
+(defn process-has-execution-token? [proc-entry execution-token]
+  (try
+    (let [expected (str execution-token-env "=" execution-token)
+          environ (String. (Files/readAllBytes (fs/path proc-entry "environ"))
+                            "ISO-8859-1")]
+      (some #(= expected %) (str/split environ #"\u0000")))
+    (catch Exception _ false)))
+
+(defn active-execution-token-pids [execution-token]
+  (->> (fs/list-dir "/proc")
+       (keep (fn [entry]
+               (let [name (str (fs/file-name entry))]
+                 (when (and (re-matches #"\d+" name)
+                            (process-has-execution-token? entry execution-token))
+                   (process-stat (fs/path entry "stat"))))))
+       (filter #(not= "Z" (:state %)))
+       (mapv :pid)
+       sort
+       vec))
+
+(defn active-agent-pids [process-group-id execution-token]
+  ;; The process group covers ordinary forks and TERM-handler races. The
+  ;; inherited execution token also covers descendants that call setsid or
+  ;; double-fork into another process group before the agent exits.
+  (->> (concat (active-process-group-pids process-group-id)
+               (active-execution-token-pids execution-token))
+       distinct
+       sort
+       vec))
+
+(defn await-agent-processes! [process-group-id execution-token timeout-seconds]
   (let [deadline (+ (System/nanoTime) (* timeout-seconds 1000000000))]
     (loop []
-      (let [alive (active-process-group-pids process-group-id)
+      (let [alive (active-agent-pids process-group-id execution-token)
             remaining-nanos (- deadline (System/nanoTime))]
         (if (or (empty? alive) (not (pos? remaining-nanos)))
           alive
@@ -774,19 +805,18 @@
                              ": " (str/trim (or err "")))
                         {:pids pids :signal signal :exit exit}))))))
 
-(defn force-terminate-process-group! [process-group-id timeout-seconds]
+(defn force-terminate-agent-processes! [process-group-id execution-token timeout-seconds]
   (let [deadline (+ (System/nanoTime) (* timeout-seconds 1000000000))]
     (loop []
-      (let [alive (active-process-group-pids process-group-id)]
+      (let [alive (active-agent-pids process-group-id execution-token)]
         (cond
           (empty? alive) []
           (not (pos? (- deadline (System/nanoTime)))) alive
           :else
           (do
             ;; Keep signaling the group to cover processes forked after the
-            ;; previous scan. Also signal the observed PIDs directly because
-            ;; the session leader may already have exited while descendants
-            ;; still retain its process-group ID.
+            ;; previous scan. Signal every token-matched PID directly as well,
+            ;; including detached descendants in a different process group.
             (try (signal-process-group! process-group-id "KILL")
                  (catch Exception _ nil))
             (try (signal-pids! alive "KILL")
@@ -794,12 +824,13 @@
             (Thread/sleep 50)
             (recur)))))))
 
-(defn terminate-process-group! [process]
+(defn terminate-agent-processes! [process execution-token]
   ;; setsid makes the direct process PID the process-group ID. Signals sent to
-  ;; that group also cover descendants forked by a TERM handler during grace.
+  ;; that group cover ordinary descendants; the execution token scan extends
+  ;; the cleanup boundary to descendants that detach into another group.
   (let [process-group-id (.pid process)
         grace-seconds (agent-shutdown-grace-seconds)
-        observed-pids (active-process-group-pids process-group-id)]
+        observed-pids (active-agent-pids process-group-id execution-token)]
     ;; Group delivery is preferred because it also reaches descendants forked
     ;; after this snapshot. It can fail when the session leader disappears or
     ;; the platform rejects a negative PID, so never let that prevent direct
@@ -808,7 +839,7 @@
          (catch Exception _ nil))
     (try (signal-pids! observed-pids "TERM")
          (catch Exception _ nil))
-    (let [survivors (await-process-group! process-group-id grace-seconds)]
+    (let [survivors (await-agent-processes! process-group-id execution-token grace-seconds)]
       (when (seq survivors)
         (try (signal-process-group! process-group-id "KILL")
              (catch Exception _ nil))
@@ -817,37 +848,41 @@
       ;; Reap the direct process before the final /proc scan so its zombie does
       ;; not make an otherwise empty process group look active.
       (.waitFor process grace-seconds TimeUnit/SECONDS)
-      (let [remaining (force-terminate-process-group! process-group-id grace-seconds)]
+      (let [remaining (force-terminate-agent-processes! process-group-id execution-token grace-seconds)]
         (when (seq remaining)
-          (throw (ex-info (str "agent process group did not exit after forced termination: " remaining)
+          (throw (ex-info (str "agent processes did not exit after forced termination: " remaining)
                           {:process-group-id process-group-id
+                           :execution-token execution-token
                            :pids remaining})))))))
 
-(defn cleanup-process-group-after-exit! [process]
+(defn cleanup-agent-processes-after-exit! [process execution-token]
   ;; A successful session leader can leave background descendants running in
-  ;; its process group. Give well-behaved descendants the same grace period to
-  ;; finish naturally, then apply the full TERM/KILL cleanup used for timeouts.
+  ;; or outside its process group. Give well-behaved descendants the same grace
+  ;; period to finish, then apply the full cleanup used for timeouts.
   (let [process-group-id (.pid process)
-        remaining (await-process-group! process-group-id
-                                        (agent-shutdown-grace-seconds))]
+        remaining (await-agent-processes! process-group-id execution-token
+                                          (agent-shutdown-grace-seconds))]
     (when (seq remaining)
-      (terminate-process-group! process))))
+      (terminate-agent-processes! process execution-token))))
 
 (defn await-agent! [args opts]
   ;; Do not use `setsid --wait` here. In wait mode util-linux keeps a wrapper
   ;; process in one session while launching the agent in another, so the
   ;; wrapper PID is not the process-group ID that owns the agent descendants.
-  (let [handle (p/process (into ["setsid"] args) opts)
+  (let [execution-token (str (UUID/randomUUID))
+        process-opts (update opts :extra-env
+                             #(assoc (or % {}) execution-token-env execution-token))
+        handle (p/process (into ["setsid"] args) process-opts)
         process (:proc handle)
         timeout-seconds (agent-timeout-seconds)]
     (if (.waitFor process timeout-seconds TimeUnit/SECONDS)
       (let [process-result @handle]
         ;; The direct agent exit is not sufficient: background children keep
         ;; the same process-group ID after the session leader has gone.
-        (cleanup-process-group-after-exit! process)
+        (cleanup-agent-processes-after-exit! process execution-token)
         {:process-result process-result :timed-out? false})
       (let [cleanup-error (try
-                            (terminate-process-group! process)
+                            (terminate-agent-processes! process execution-token)
                             nil
                             (catch Exception e
                               {:message (.getMessage e)
