@@ -764,7 +764,7 @@
                           (conj "--dangerously-skip-permissions")
                           (System/getenv "CODEX_NOVEL_BOARD_FABLE_MODEL")
                           (into ["--model" (System/getenv "CODEX_NOVEL_BOARD_FABLE_MODEL")]))
-                 :pi (cond-> ["pi" "--offline"
+                 :pi (cond-> ["pi"
                               "--no-extensions" "--no-skills"
                               "--no-prompt-templates" "--no-context-files"
                               "--print" "--approve" "--mode" "text"

@@ -429,7 +429,8 @@ test_write_review_and_pi_revision() {
   sed -i "/^- Synopsis:/a\\- Vision reference: ![[Attachments/character reference.png]]\\n- Setting reference: ![setting](Attachments/setting.webp)\\n- Rejected external image: ![[${outside}]]" "${vault}/Novels/NOVEL-2.md"
   FAKE_ARG_LOG="${args}" CODEX_NOVEL_BOARD_PI_MODEL="llama.cpp/gemma4-26b-vision" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-2/manuscript.md" "Pi 改稿済み"
-  assert_contains "${args}" "pi --offline --no-extensions --no-skills --no-prompt-templates --no-context-files --print --approve --mode text --session-dir"
+  assert_contains "${args}" "pi --no-extensions --no-skills --no-prompt-templates --no-context-files --print --approve --mode text --session-dir"
+  assert_not_contains "${args}" "--offline"
   assert_contains "${args}" "--model llama.cpp/gemma4-26b-vision"
   assert_contains "${args}" "@${image}"
   assert_contains "${args}" "@${markdown_image}"
