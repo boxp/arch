@@ -823,6 +823,16 @@
                           {:process-group-id process-group-id
                            :pids remaining})))))))
 
+(defn cleanup-process-group-after-exit! [process]
+  ;; A successful session leader can leave background descendants running in
+  ;; its process group. Give well-behaved descendants the same grace period to
+  ;; finish naturally, then apply the full TERM/KILL cleanup used for timeouts.
+  (let [process-group-id (.pid process)
+        remaining (await-process-group! process-group-id
+                                        (agent-shutdown-grace-seconds))]
+    (when (seq remaining)
+      (terminate-process-group! process))))
+
 (defn await-agent! [args opts]
   ;; Do not use `setsid --wait` here. In wait mode util-linux keeps a wrapper
   ;; process in one session while launching the agent in another, so the
@@ -831,7 +841,11 @@
         process (:proc handle)
         timeout-seconds (agent-timeout-seconds)]
     (if (.waitFor process timeout-seconds TimeUnit/SECONDS)
-      {:process-result @handle :timed-out? false}
+      (let [process-result @handle]
+        ;; The direct agent exit is not sufficient: background children keep
+        ;; the same process-group ID after the session leader has gone.
+        (cleanup-process-group-after-exit! process)
+        {:process-result process-result :timed-out? false})
       (let [cleanup-error (try
                             (terminate-process-group! process)
                             nil

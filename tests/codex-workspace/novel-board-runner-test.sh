@@ -163,6 +163,18 @@ manuscript="$(printf '%s\n' "${prompt}" | sed -n 's/^Manuscript path: //p' | hea
 mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
 [[ -n "${FAKE_AGENT_PID_FILE:-}" ]] && printf '%s\n' "$$" >"${FAKE_AGENT_PID_FILE}"
+if [[ -n "${FAKE_EXIT_BACKGROUND_CHILD_MARKER:-}" ]]; then
+  (
+    trap '' TERM HUP
+    printf 'started\n' >"${FAKE_EXIT_BACKGROUND_CHILD_MARKER}.started"
+    for _ in $(seq 1 "${FAKE_EXIT_BACKGROUND_CHILD_STEPS:-50}"); do
+      sleep 0.1 || true
+    done
+    printf 'survived agent exit\n' >"${FAKE_EXIT_BACKGROUND_CHILD_MARKER}"
+  ) &
+  printf '%s\n' "${FAKE_RESULT:-NOVEL_BOARD_RESULT: review}"
+  exit "${FAKE_EXIT:-0}"
+fi
 if [[ -n "${FAKE_TERM_FORK_CHILD_MARKER:-}" ]]; then
   trap '(
     trap "" TERM
@@ -459,6 +471,40 @@ test_agent_timeout_falls_back_when_group_signal_fails() {
   assert_not_contains "${summary}" ":cleanup-error"
   assert_contains "${stderr}" "terminated the agent after 1 seconds"
   assert_not_contains "${stderr}" "Agent timeout cleanup was incomplete"
+}
+
+test_successful_agent_cleans_background_process_group() {
+  local tmp vault state bin summary child_marker agent_pid_file agent_pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-BG|NOVEL-BG: Background Cleanup]] #novel status::backlog assignee::pi"
+  child_marker="${tmp}/background-child-survived"
+  agent_pid_file="${tmp}/agent.pid"
+
+  FAKE_EXIT_BACKGROUND_CHILD_MARKER="${child_marker}" \
+    FAKE_AGENT_PID_FILE="${agent_pid_file}" \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=10 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env
+
+  # The direct Pi process exits 0 immediately while a TERM-ignoring child
+  # remains in its process group. The runner must clean that child even though
+  # the agent itself did not time out.
+  sleep 6
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+  summary="$(find "${state}/runs/NOVEL-BG" -name summary.edn -print -quit)"
+  assert_contains "${summary}" ":status :succeeded"
+  assert_contains "${summary}" ":exit-code 0"
+  assert_contains "${summary}" ":timed-out false"
+  [[ -e "${child_marker}.started" ]] || fail "successful agent did not start the regression-test background child"
+  [[ ! -e "${child_marker}" ]] || fail "background descendant survived successful agent cleanup"
+  agent_pid="$(cat "${agent_pid_file}")"
+  if ps -eo pgid=,stat= | awk -v pgid="${agent_pid}" \
+    '$1 == pgid && $2 !~ /^Z/ { found = 1 } END { exit found ? 0 : 1 }'; then
+    kill -KILL -- "-${agent_pid}" 2>/dev/null || true
+    fail "successful agent cleanup left an active process-group member"
+  fi
 }
 
 test_review_without_instructions_stops() {
@@ -907,6 +953,7 @@ test_groom_and_human_stop
 test_write_review_and_pi_revision
 test_agent_timeout_returns_to_human_review
 test_agent_timeout_falls_back_when_group_signal_fails
+test_successful_agent_cleans_background_process_group
 test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved
 test_fable_and_failure_return_to_review
