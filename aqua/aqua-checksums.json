@@ -36,28 +36,28 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.6.1/cloudflared-darwin-amd64.tgz",
-      "checksum": "D7A66B525FE76820DA6E5406611B61E48B40DE682368AC00454D9158F085BE4B",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.0/cloudflared-darwin-amd64.tgz",
+      "checksum": "DD1FB6A914A21DC52C64BAD96987BBBC72D6C65553A2CFEE1DD5BC886742DDFB",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.6.1/cloudflared-darwin-arm64.tgz",
-      "checksum": "F6D4C439C6C782B83264951D327989CE5E23373ACC5942B872411601FEDB020D",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.0/cloudflared-darwin-arm64.tgz",
+      "checksum": "276F4AE3119C88D1708B0F884A35A1C87D9AE459B0DAB6313F2DADDBDDAB2BEC",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.6.1/cloudflared-linux-amd64",
-      "checksum": "5861A10A438FE8DDCFEBB3B830F83966CBF193EDAFCE0FE2EEB198FBAE1F7A22",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.0/cloudflared-linux-amd64",
+      "checksum": "434A04EB237E07D3D4146FC44ACDBB411260A94FCB01764F454ABE38A09503F3",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.6.1/cloudflared-linux-arm64",
-      "checksum": "59816CE9B16DB71F5BC2A86D59B3632A96C8C3EE934BDE2BC8641EE83A6070EB",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.0/cloudflared-linux-arm64",
+      "checksum": "A4C14D1DFB4EA1092DA4B64EDE05FAB7092BA8A424C7DF1E7747F5232A4127FF",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.6.1/cloudflared-windows-amd64.exe",
-      "checksum": "5253E66F1F493C4E13539749F1AA86FD0C61E3072900FEC29A44BA046A6D97E2",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.0/cloudflared-windows-amd64.exe",
+      "checksum": "B11EE950A12B15604E6B0A0F30A226516ADC7AEC75DE2E3C642B28E50DDEF9EA",
       "algorithm": "sha256"
     },
     {
