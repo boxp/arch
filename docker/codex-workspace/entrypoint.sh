@@ -8,6 +8,7 @@ install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex/skills
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-cron
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-task-board
+/usr/sbin/runuser -u boxp -- install -d -m 0700 /home/boxp/.novel-board
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.pi/agent/extensions
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.local/bin
 default_task_board_vault=/home/boxp/Documents/obsidian-headless/BOXP
@@ -111,6 +112,24 @@ install_vault_seed() {
   done < <(find "${seed}" -type f -print0)
 }
 
+install_novel_board_seed() {
+  local seed="${CODEX_NOVEL_BOARD_SEED:-/opt/codex-workspace/novel-board/vault-seed}"
+  local src rel dest
+
+  if [[ ! -d "${seed}" ]]; then
+    return
+  fi
+
+  while IFS= read -r -d '' src; do
+    rel="${src#"${seed}/"}"
+    dest="${task_board_vault}/${rel}"
+    if [[ ! -e "${dest}" ]]; then
+      install -d -o boxp -g boxp -m 0755 "$(dirname "${dest}")"
+      install -o boxp -g boxp -m 0644 "${src}" "${dest}"
+    fi
+  done < <(find "${seed}" -type f -print0)
+}
+
 install_codex_cron_seed_files() {
   local seed="${CODEX_WORKSPACE_RECURRING_EVENTS_SEED:-/opt/codex-workspace/recurring-events/vault-seed}/Infrastructure/Codex Cron"
   local src rel dest
@@ -173,6 +192,7 @@ ensure_recurring_events_cron_job() {
 }
 
 install_vault_seed
+install_novel_board_seed
 install_codex_cron_seed_files
 ensure_recurring_events_cron_job
 if [[ "${CODEX_WORKSPACE_ENTRYPOINT_SEED_ONLY:-}" == "1" ]]; then
