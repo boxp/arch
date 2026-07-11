@@ -963,20 +963,24 @@
               run (run-id)
               lock (acquire-lock! novel-id action (:lane card) run)]
           (when lock
-            (try
-              (when-let [fresh-card (current-card novel-id)]
-                (when (= action (candidate-action fresh-card))
-                  (let [result (publish! fresh-card)]
-                    (mark-run! novel-id run :succeeded {:action action :lane (:lane fresh-card)
-                                                         :result result :finished-at (now-str)})
-                    result)))
-              (catch Exception e
-                (append-history! novel-id (str "Done publication failed without changing the lane: " (.getMessage e) ". Retry after correcting the cause."))
-                (mark-run! novel-id run :failed {:action action :lane (:lane card)
-                                                  :error (.getMessage e) :finished-at (now-str)})
-                :failed)
-              (finally
-                (release-lock! novel-id lock)))))
+            (let [stop? (atom false)
+                  heartbeat (heartbeat! novel-id lock stop?)]
+              (try
+                (when-let [fresh-card (current-card novel-id)]
+                  (when (= action (candidate-action fresh-card))
+                    (let [result (publish! fresh-card)]
+                      (mark-run! novel-id run :succeeded {:action action :lane (:lane fresh-card)
+                                                           :result result :finished-at (now-str)})
+                      result)))
+                (catch Exception e
+                  (append-history! novel-id (str "Done publication failed without changing the lane: " (.getMessage e) ". Retry after correcting the cause."))
+                  (mark-run! novel-id run :failed {:action action :lane (:lane card)
+                                                    :error (.getMessage e) :finished-at (now-str)})
+                  :failed)
+                (finally
+                  (reset! stop? true)
+                  (future-cancel heartbeat)
+                  (release-lock! novel-id lock))))))
         (let [novel-id (:novel-id card)
               run (run-id)
               lock (acquire-lock! novel-id action (:lane card) run)]

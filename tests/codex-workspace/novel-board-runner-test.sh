@@ -494,6 +494,47 @@ test_publish_routing_and_idempotency() {
   [[ "$(find "${vault}/NSFW/小説/AI執筆" -maxdepth 1 -type f -name '*_夜の話.md' | wc -l)" -eq 1 ]] || fail "Done rescan duplicated NSFW publication"
 }
 
+test_publish_heartbeat_keeps_card_lock_fresh() {
+  local tmp vault state bin manuscript writer_pid runner_pid initial_heartbeat current_heartbeat published i
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "" "" "" "" "- [x] [[Novels/NOVEL-HB|NOVEL-HB: 長時間公開]] #novel status::done assignee::boxp"
+  write_note "${vault}" NOVEL-HB done boxp "長時間公開" "${state}"
+  manuscript="${state}/work/NOVEL-HB/manuscript.md"
+  mkfifo "${manuscript}"
+
+  (
+    for _ in 1 2; do
+      { printf 'A'; sleep 2; printf 'B'; } >"${manuscript}"
+    done
+  ) &
+  writer_pid=$!
+  run_tick "${vault}" "${state}" "${bin}" env >"${tmp}/runner.log" 2>&1 &
+  runner_pid=$!
+
+  for i in $(seq 1 50); do
+    [[ -f "${state}/locks/NOVEL-HB.edn" ]] && break
+    sleep 0.05
+  done
+  [[ -f "${state}/locks/NOVEL-HB.edn" ]] || fail "publish did not acquire the card lock"
+  initial_heartbeat="$(sed -n 's/.*:heartbeat-at \"\([^\"]*\)\".*/\1/p' "${state}/locks/NOVEL-HB.edn")"
+
+  current_heartbeat="${initial_heartbeat}"
+  for i in $(seq 1 50); do
+    sleep 0.1
+    current_heartbeat="$(sed -n 's/.*:heartbeat-at \"\([^\"]*\)\".*/\1/p' "${state}/locks/NOVEL-HB.edn")"
+    [[ -n "${current_heartbeat}" && "${current_heartbeat}" != "${initial_heartbeat}" ]] && break
+  done
+  [[ -n "${current_heartbeat}" && "${current_heartbeat}" != "${initial_heartbeat}" ]] || fail "publish did not refresh the card lock heartbeat"
+
+  wait "${runner_pid}"
+  wait "${writer_pid}"
+  published="$(find "${vault}/小説草案/AI執筆" -maxdepth 1 -type f -name '*_長時間公開.md' -print -quit)"
+  [[ -n "${published}" ]] || fail "slow publication did not create the completed manuscript"
+  [[ "$(cat "${published}")" == "AB" ]] || fail "slow publication produced incomplete content"
+  assert_contains "${state}/published/NOVEL-HB.edn" ":status :published"
+}
+
 test_untrusted_management_published_path_is_not_reused() {
   local tmp vault state bin untrusted published
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -768,6 +809,7 @@ test_fable_and_failure_return_to_review
 test_explicit_approval_bypass
 test_all_task_board_routes_and_unknown_skip
 test_publish_routing_and_idempotency
+test_publish_heartbeat_keeps_card_lock_fresh
 test_untrusted_management_published_path_is_not_reused
 test_collision_and_missing_manuscript_stay_done
 test_parallel_processes_do_not_overwrite_same_destination
