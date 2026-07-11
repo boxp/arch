@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
+  exec "${CODEX_NOVEL_BOARD_RUNNER:-/opt/codex-workspace/novel-board/novel_board_runner.bb}" loop
+fi
+
 install -d -m 0755 /run/sshd
 install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0700 /home/boxp/.ssh

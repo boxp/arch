@@ -170,7 +170,7 @@ run_tick() {
 }
 
 test_seed_and_entrypoint() {
-  local tmp home vault custom_vault task_vault seed entrypoint
+  local tmp home vault custom_vault task_vault seed entrypoint role_log role_runner
   tmp="$(mktemp -d)"
   home="${tmp}/home"
   vault="${home}/Documents/obsidian-headless/BOXP"
@@ -186,6 +186,19 @@ test_seed_and_entrypoint() {
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" "install_novel_board_seed"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'local vault="${CODEX_NOVEL_BOARD_VAULT:-${task_board_vault}}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'dest="${vault}/${rel}"'
+
+  role_log="${tmp}/role.log"
+  role_runner="${tmp}/role-runner"
+  cat >"${role_runner}" <<'EOF'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >"${ROLE_LOG}"
+EOF
+  chmod 0755 "${role_runner}"
+  CODEX_WORKSPACE_ROLE=novel-board-runner \
+    CODEX_NOVEL_BOARD_RUNNER="${role_runner}" \
+    ROLE_LOG="${role_log}" \
+    bash "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh"
+  [[ "$(cat "${role_log}")" == "loop" ]] || fail "Novel Board role did not start the runner loop"
 
   custom_vault="${tmp}/novel-vault"
   task_vault="${tmp}/task-vault"
