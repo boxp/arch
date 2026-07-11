@@ -495,20 +495,36 @@ test_publish_routing_and_idempotency() {
 }
 
 test_publish_heartbeat_keeps_card_lock_fresh() {
-  local tmp vault state bin manuscript writer_pid runner_pid initial_heartbeat current_heartbeat published i
+  local tmp vault state bin manuscript checksum dest canonical_dest guard_key guard ready holder_pid runner_pid initial_heartbeat current_heartbeat published i
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
   make_fake_agents "${bin}"
   write_board "${vault}" "" "" "" "" "- [x] [[Novels/NOVEL-HB|NOVEL-HB: 長時間公開]] #novel status::done assignee::boxp"
   write_note "${vault}" NOVEL-HB done boxp "長時間公開" "${state}"
   manuscript="${state}/work/NOVEL-HB/manuscript.md"
-  mkfifo "${manuscript}"
+  printf 'AB' >"${manuscript}"
+  checksum="$(sha256sum "${manuscript}" | cut -d ' ' -f 1)"
+  dest="${vault}/小説草案/AI執筆/2026-07-11-12-38_長時間公開.md"
+  canonical_dest="$(realpath -m "${dest}")"
+  guard_key="$(printf '%s' "${canonical_dest}" | sha256sum | cut -d ' ' -f 1)"
+  guard="${state}/publication-locks/${guard_key}.lock"
+  ready="${tmp}/publication-lock-ready"
+  mkdir -p "$(dirname "${dest}")" "${state}/published" "${state}/publication-locks"
+  printf '{:novel-id "NOVEL-HB", :path "%s", :sha256 "%s", :published-at "2026-07-11T03:38:00Z", :nsfw false, :status :reserved}\n' "${dest}" "${checksum}" >"${state}/published/NOVEL-HB.edn"
 
-  (
-    for _ in 1 2; do
-      { printf 'A'; sleep 2; printf 'B'; } >"${manuscript}"
-    done
-  ) &
-  writer_pid=$!
+  PUBLICATION_GUARD="${guard}" PUBLICATION_READY="${ready}" bb -e '
+    (import (java.io RandomAccessFile))
+    (with-open [file (RandomAccessFile. (System/getenv "PUBLICATION_GUARD") "rw")
+                channel (.getChannel file)]
+      (let [_lock (.lock channel)]
+        (spit (System/getenv "PUBLICATION_READY") "ready")
+        (Thread/sleep 4000)))' &
+  holder_pid=$!
+  for i in $(seq 1 50); do
+    [[ -f "${ready}" ]] && break
+    sleep 0.05
+  done
+  [[ -f "${ready}" ]] || fail "test process did not acquire the publication destination lock"
+
   run_tick "${vault}" "${state}" "${bin}" env >"${tmp}/runner.log" 2>&1 &
   runner_pid=$!
 
@@ -528,7 +544,7 @@ test_publish_heartbeat_keeps_card_lock_fresh() {
   [[ -n "${current_heartbeat}" && "${current_heartbeat}" != "${initial_heartbeat}" ]] || fail "publish did not refresh the card lock heartbeat"
 
   wait "${runner_pid}"
-  wait "${writer_pid}"
+  wait "${holder_pid}"
   published="$(find "${vault}/小説草案/AI執筆" -maxdepth 1 -type f -name '*_長時間公開.md' -print -quit)"
   [[ -n "${published}" ]] || fail "slow publication did not create the completed manuscript"
   [[ "$(cat "${published}")" == "AB" ]] || fail "slow publication produced incomplete content"
