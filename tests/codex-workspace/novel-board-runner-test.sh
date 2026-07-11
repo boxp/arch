@@ -170,7 +170,7 @@ run_tick() {
 }
 
 test_seed_and_entrypoint() {
-  local tmp home vault
+  local tmp home vault custom_vault task_vault seed entrypoint
   tmp="$(mktemp -d)"
   home="${tmp}/home"
   vault="${home}/Documents/obsidian-headless/BOXP"
@@ -184,6 +184,35 @@ test_seed_and_entrypoint() {
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## Review"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## Done"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" "install_novel_board_seed"
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'local vault="${CODEX_NOVEL_BOARD_VAULT:-${task_board_vault}}"'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'dest="${vault}/${rel}"'
+
+  custom_vault="${tmp}/novel-vault"
+  task_vault="${tmp}/task-vault"
+  seed="${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed"
+  entrypoint="${ROOT_DIR}/docker/codex-workspace/entrypoint.sh"
+  CODEX_NOVEL_BOARD_VAULT="${custom_vault}" \
+    CODEX_NOVEL_BOARD_SEED="${seed}" \
+    TASK_BOARD_VAULT="${task_vault}" \
+    ENTRYPOINT="${entrypoint}" \
+    bash -c '
+      set -euo pipefail
+      task_board_vault="${TASK_BOARD_VAULT}"
+      install() {
+        local args=()
+        while [[ $# -gt 0 ]]; do
+          case "$1" in
+            -o|-g) shift 2 ;;
+            *) args+=("$1"); shift ;;
+          esac
+        done
+        command install "${args[@]}"
+      }
+      source <(awk '\''/^install_novel_board_seed\(\)/ {copy=1} copy {print} copy && /^}/ {exit}'\'' "${ENTRYPOINT}")
+      install_novel_board_seed
+    '
+  [[ -f "${custom_vault}/Boards/Novel Board.md" ]] || fail "Novel seed was not installed in CODEX_NOVEL_BOARD_VAULT"
+  [[ ! -e "${task_vault}/Boards/Novel Board.md" ]] || fail "Novel seed leaked into CODEX_TASK_BOARD_VAULT"
 }
 
 test_groom_and_human_stop() {
@@ -197,6 +226,8 @@ test_groom_and_human_stop() {
   assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
   assert_contains "${vault}/Novels/NOVEL-1.md" 'status: "draft"'
   assert_contains "${vault}/Novels/NOVEL-1.md" "fake groom completed"
+  assert_contains "$(find "${state}/runs/NOVEL-1" -name summary.edn -print -quit)" ":status :succeeded"
+  assert_contains "$(find "${state}/runs/NOVEL-1" -name summary.edn -print -quit)" ":exit-code 0"
   [[ ! -f "${state}/work/NOVEL-1/manuscript.md" ]] || fail "groom must not create manuscript"
   assert_contains "${prompt}" "Do not write any novel prose"
 
@@ -220,11 +251,25 @@ test_write_review_and_pi_revision() {
   assert_contains "${args}" "model_reasoning_effort=xhigh"
 
   sed -i 's/status::review assignee::boxp/status::review assignee::pi/' "${vault}/Boards/Novel Board.md"
-  printf '\n- 余韻を追加する。\n' >>"${vault}/Novels/NOVEL-2.md"
+  sed -i '/^## Review Instructions$/a\\\n- 余韻を追加する。' "${vault}/Novels/NOVEL-2.md"
   FAKE_ARG_LOG="${args}" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-2/manuscript.md" "Pi 改稿済み"
   assert_contains "${args}" "pi --print --approve --mode text --session-dir"
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
+}
+
+test_review_without_instructions_stops() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "" "" "" "- [ ] [[Novels/NOVEL-RI|NOVEL-RI: 指示待ち]] #novel status::review assignee::codex"
+  write_note "${vault}" NOVEL-RI review codex "指示待ち" "${state}"
+
+  run_tick "${vault}" "${state}" "${bin}" env
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::codex"
+  assert_contains "${vault}/Novels/NOVEL-RI.md" "Review Instructions are empty"
+  [[ ! -d "${state}/runs/NOVEL-RI" ]] || fail "Review without instructions must not start an agent"
 }
 
 test_human_lane_move_during_agent_is_preserved() {
@@ -263,6 +308,7 @@ test_fable_and_failure_return_to_review() {
   assert_contains "${args}" "claude --print"
 
   sed -i 's/status::review assignee::boxp/status::review assignee::codex-mini/' "${vault}/Boards/Novel Board.md"
+  sed -i '/^## Review Instructions$/a\\\n- 語尾を整える。' "${vault}/Novels/NOVEL-3.md"
   FAKE_EXIT=42 FAKE_ARG_LOG="${args}" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
   assert_contains "${vault}/Novels/NOVEL-3.md" "agent exited 42"
@@ -465,6 +511,7 @@ test_task_board_and_cron_untouched() {
 test_seed_and_entrypoint
 test_groom_and_human_stop
 test_write_review_and_pi_revision
+test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved
 test_fable_and_failure_return_to_review
 test_all_task_board_routes_and_unknown_skip

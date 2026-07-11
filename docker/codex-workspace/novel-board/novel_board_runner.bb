@@ -341,6 +341,19 @@
 (defn supported-assignee? [assignee]
   (or (= assignee "fable") (= assignee "pi") (some? (parse-codex-assignee assignee))))
 
+(defn section-content [content heading]
+  (->> (str/split-lines content)
+       (drop-while #(not= % (str "## " heading)))
+       rest
+       (take-while #(not (str/starts-with? % "## ")))
+       (str/join "\n")
+       str/trim))
+
+(defn review-instructions-present? [novel-id]
+  (let [path (note-path novel-id)]
+    (and (fs/exists? path)
+         (not (str/blank? (section-content (slurp (str path)) "Review Instructions"))))))
+
 (defn assignee-route [assignee]
   (cond
     (= assignee "fable") :fable
@@ -348,14 +361,14 @@
     (parse-codex-assignee assignee) :codex
     :else nil))
 
-(defn candidate-action [{:keys [status assignee]}]
+(defn candidate-action [{:keys [novel-id status assignee]}]
   (cond
     (= status "done") :publish
     (not (supported-assignee? assignee)) nil
     (= status "backlog") :groom
     (= status "draft") :write
     (= status "in-progress") :write
-    (= status "review") :revise
+    (and (= status "review") (review-instructions-present? novel-id)) :revise
     :else nil))
 
 (defn current-card [novel-id]
@@ -545,10 +558,10 @@
           marker (result-marker last-message)]
       (doseq [path [stdout-path stderr-path last-message-path]]
         (when (fs/exists? path) (private-file! path)))
-        (mark-run! novel-id run (if (zero? exit) :succeeded :failed)
-                   {:action action :agent (:assignee card) :lane (:lane card)
-                    :exit-code exit :result marker :finished-at (now-str)})
-        {:exit exit :result marker :last-message last-message})
+      (mark-run! novel-id run (if (zero? exit) :succeeded :failed)
+                 {:action action :agent (:assignee card) :lane (:lane card)
+                  :exit-code exit :result marker :finished-at (now-str)})
+      {:exit exit :result marker :last-message last-message})
       (finally
         (when (fs/exists? (manuscript-path novel-id))
           (private-file! (manuscript-path novel-id)))))))
@@ -704,11 +717,19 @@
                      (str "Runner skipped unsupported or human assignee '" (:assignee card)
                           "'. Assign codex/codex-sol/codex-full/codex-terra/codex-mini (optionally with a reasoning suffix), fable, or pi to resume."))))
 
+(defn record-missing-review-instructions! [{:keys [novel-id status assignee]}]
+  (when (and (= status "review")
+             (supported-assignee? assignee)
+             (not (review-instructions-present? novel-id)))
+    (append-history! novel-id
+                     "Runner kept the card in Review because Review Instructions are empty. Record concrete revision instructions and keep a supported agent assigned to resume.")))
+
 (defn tick! []
   (recover-locks!)
   (let [cards (sync-all!)]
     (doseq [card cards]
       (record-unsupported! card)
+      (record-missing-review-instructions! card)
       (when (candidate-action card)
         (log! (str "processing " (:novel-id card) " from " (:lane card)))
         (process-card! card)))

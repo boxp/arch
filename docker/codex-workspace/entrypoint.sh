@@ -114,6 +114,7 @@ install_vault_seed() {
 
 install_novel_board_seed() {
   local seed="${CODEX_NOVEL_BOARD_SEED:-/opt/codex-workspace/novel-board/vault-seed}"
+  local vault="${CODEX_NOVEL_BOARD_VAULT:-${task_board_vault}}"
   local src rel dest
 
   if [[ ! -d "${seed}" ]]; then
@@ -122,7 +123,7 @@ install_novel_board_seed() {
 
   while IFS= read -r -d '' src; do
     rel="${src#"${seed}/"}"
-    dest="${task_board_vault}/${rel}"
+    dest="${vault}/${rel}"
     if [[ ! -e "${dest}" ]]; then
       install -d -o boxp -g boxp -m 0755 "$(dirname "${dest}")"
       install -o boxp -g boxp -m 0644 "${src}" "${dest}"
