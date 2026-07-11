@@ -1,6 +1,28 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
+  novel_board_root="${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"
+  current_uid="$(id -u)"
+  boxp_uid="$(id -u boxp)"
+
+  if [[ "${current_uid}" == "0" ]]; then
+    install -d -o boxp -g boxp -m 0755 /home/boxp
+    install -d -o boxp -g boxp -m 0700 "${novel_board_root}"
+    exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp \
+      "${CODEX_NOVEL_BOARD_RUNNER:-/opt/codex-workspace/novel-board/novel_board_runner.bb}" loop
+  fi
+
+  if [[ "${current_uid}" != "${boxp_uid}" ]]; then
+    printf 'novel-board-runner must run as root or boxp (uid %s), got uid %s\n' "${boxp_uid}" "${current_uid}" >&2
+    exit 1
+  fi
+
+  install -d -m 0700 "${novel_board_root}"
+  exec env HOME=/home/boxp \
+    "${CODEX_NOVEL_BOARD_RUNNER:-/opt/codex-workspace/novel-board/novel_board_runner.bb}" loop
+fi
+
 install -d -m 0755 /run/sshd
 install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0700 /home/boxp/.ssh
@@ -8,6 +30,7 @@ install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex/skills
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-cron
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-task-board
+install -d -o boxp -g boxp -m 0700 "${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.pi/agent/extensions
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.local/bin
 default_task_board_vault=/home/boxp/Documents/obsidian-headless/BOXP
@@ -111,6 +134,25 @@ install_vault_seed() {
   done < <(find "${seed}" -type f -print0)
 }
 
+install_novel_board_seed() {
+  local seed="${CODEX_NOVEL_BOARD_SEED:-/opt/codex-workspace/novel-board/vault-seed}"
+  local vault="${CODEX_NOVEL_BOARD_VAULT:-${task_board_vault}}"
+  local src rel dest
+
+  if [[ ! -d "${seed}" ]]; then
+    return
+  fi
+
+  while IFS= read -r -d '' src; do
+    rel="${src#"${seed}/"}"
+    dest="${vault}/${rel}"
+    if [[ ! -e "${dest}" ]]; then
+      install -d -o boxp -g boxp -m 0755 "$(dirname "${dest}")"
+      install -o boxp -g boxp -m 0644 "${src}" "${dest}"
+    fi
+  done < <(find "${seed}" -type f -print0)
+}
+
 install_codex_cron_seed_files() {
   local seed="${CODEX_WORKSPACE_RECURRING_EVENTS_SEED:-/opt/codex-workspace/recurring-events/vault-seed}/Infrastructure/Codex Cron"
   local src rel dest
@@ -173,6 +215,7 @@ ensure_recurring_events_cron_job() {
 }
 
 install_vault_seed
+install_novel_board_seed
 install_codex_cron_seed_files
 ensure_recurring_events_cron_job
 if [[ "${CODEX_WORKSPACE_ENTRYPOINT_SEED_ONLY:-}" == "1" ]]; then
