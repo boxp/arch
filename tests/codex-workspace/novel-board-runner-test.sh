@@ -176,6 +176,8 @@ test_seed_and_entrypoint() {
   vault="${home}/Documents/obsidian-headless/BOXP"
   mkdir -p "${home}" "${vault}/Boards"
   cp "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "${vault}/Boards/existing.md"
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "kanban-plugin: board"
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "%% kanban:settings"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## Backlog"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## Draft"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## In Progress"
@@ -193,7 +195,7 @@ test_groom_and_human_stop() {
 
   assert_contains "${vault}/Boards/Novel Board.md" "## Draft"
   assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
-  assert_contains "${vault}/Novels/NOVEL-1.md" "status: draft"
+  assert_contains "${vault}/Novels/NOVEL-1.md" 'status: "draft"'
   assert_contains "${vault}/Novels/NOVEL-1.md" "fake groom completed"
   [[ ! -f "${state}/work/NOVEL-1/manuscript.md" ]] || fail "groom must not create manuscript"
   assert_contains "${prompt}" "Do not write any novel prose"
@@ -322,7 +324,7 @@ test_publish_reservation_repairs_link() {
   printf '{:novel-id "NOVEL-P", :path "%s", :published-at "2026-07-11T03:34:00Z", :nsfw false, :status :reserved}\n' "${dest}" >"${state}/published/NOVEL-P.edn"
 
   run_tick "${vault}" "${state}" "${bin}" env
-  assert_contains "${vault}/Novels/NOVEL-P.md" "published-path: ${dest}"
+  assert_contains "${vault}/Novels/NOVEL-P.md" "published-path: \"${dest}\""
   assert_contains "${vault}/Novels/NOVEL-P.md" "[[小説草案/AI執筆/2026-07-11-12-34_復旧]]"
   assert_contains "${state}/published/NOVEL-P.edn" ":status :published"
   [[ "$(find "${vault}/小説草案/AI執筆" -maxdepth 1 -type f | wc -l)" -eq 1 ]] || fail "reservation recovery duplicated publication"
@@ -376,6 +378,49 @@ test_double_start_is_locked() {
   [[ "$(find "${state}/runs/NOVEL-D" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 1 ]] || fail "double start created duplicate run directories"
 }
 
+test_parallel_cards_preserve_board_updates() {
+  local tmp vault state bin starts first_pid i
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; starts="${tmp}/starts.log"
+  make_fake_agents "${bin}"
+  write_board "${vault}" $'- [ ] [[Novels/NOVEL-A|NOVEL-A: Alpha]] #novel status::backlog assignee::codex\n- [ ] [[Novels/NOVEL-B|NOVEL-B: Beta]] #novel status::backlog assignee::codex'
+
+  FAKE_START_LOG="${starts}" FAKE_SLEEP=2 run_tick "${vault}" "${state}" "${bin}" env >"${tmp}/first.log" 2>&1 &
+  first_pid=$!
+  for i in $(seq 1 50); do
+    [[ -f "${state}/locks/NOVEL-A.edn" ]] && break
+    sleep 0.05
+  done
+  [[ -f "${state}/locks/NOVEL-A.edn" ]] || fail "first parallel run did not acquire NOVEL-A"
+  FAKE_START_LOG="${starts}" run_tick "${vault}" "${state}" "${bin}" env >"${tmp}/second.log" 2>&1
+  wait "${first_pid}"
+
+  [[ "$(wc -l <"${starts}")" -eq 2 ]] || fail "parallel ticks relaunched a completed card"
+  [[ "$(grep -c 'status::draft assignee::boxp' "${vault}/Boards/Novel Board.md")" -eq 2 ]] || fail "parallel Board updates were lost"
+  assert_contains "${vault}/Novels/NOVEL-A.md" 'status: "draft"'
+  assert_contains "${vault}/Novels/NOVEL-B.md" 'status: "draft"'
+}
+
+test_yaml_safe_title() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" '- [ ] [[Novels/NOVEL-Y|NOVEL-Y: 第1章: はじまり #1 "引用"]] #novel status::backlog assignee::mystery'
+
+  run_tick "${vault}" "${state}" "${bin}" env
+  assert_contains "${vault}/Novels/NOVEL-Y.md" 'title: "第1章: はじまり #1 \"引用\""'
+  assert_contains "${vault}/Novels/NOVEL-Y.md" 'assignee: "mystery"'
+
+  sed -i 's/ assignee::mystery//' "${vault}/Boards/Novel Board.md"
+  run_tick "${vault}" "${state}" "${bin}" env
+  assert_contains "${vault}/Boards/Novel Board.md" 'assignee::mystery'
+
+  sed -i "s/assignee: \"mystery\"/assignee: 'codex'/" "${vault}/Novels/NOVEL-Y.md"
+  sed -i 's/ assignee::mystery//' "${vault}/Boards/Novel Board.md"
+  run_tick "${vault}" "${state}" "${bin}" env
+  assert_contains "${vault}/Boards/Novel Board.md" 'status::draft assignee::boxp'
+  assert_contains "${vault}/Novels/NOVEL-Y.md" 'status: "draft"'
+}
+
 test_task_board_and_cron_untouched() {
   local tmp vault state bin task_before cron_before
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -401,6 +446,8 @@ test_collision_and_missing_manuscript_stay_done
 test_publish_reservation_repairs_link
 test_active_and_stale_lock
 test_double_start_is_locked
+test_parallel_cards_preserve_board_updates
+test_yaml_safe_title
 test_task_board_and_cron_untouched
 
 echo "All Novel Board runner tests passed."

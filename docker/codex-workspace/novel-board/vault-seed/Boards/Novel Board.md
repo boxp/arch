@@ -1,3 +1,9 @@
+---
+
+kanban-plugin: board
+
+---
+
 # Novel Board
 
 ## Backlog
@@ -9,3 +15,9 @@
 ## Review
 
 ## Done
+
+%% kanban:settings
+```
+{"kanban-plugin":"board","show-checkboxes":false}
+```
+%%

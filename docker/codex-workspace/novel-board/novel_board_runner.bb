@@ -45,6 +45,7 @@
 (defn owner-id [] (env "CODEX_NOVEL_BOARD_OWNER_ID" (or (System/getenv "HOSTNAME") "unknown-owner")))
 (def runner-instance-id (env "CODEX_NOVEL_BOARD_RUNNER_INSTANCE_ID" (str (UUID/randomUUID))))
 (defn board-path [] (fs/path (vault) "Boards" "Novel Board.md"))
+(defn board-lock-path [] (fs/path (root) "board.lock"))
 (defn novels-dir [] (fs/path (vault) "Novels"))
 (defn note-path [novel-id] (fs/path (novels-dir) (str novel-id ".md")))
 (defn locks-dir [] (fs/path (root) "locks"))
@@ -105,6 +106,15 @@
 (defn write-edn! [path value]
   (atomic-spit! path (str (pr-str value) "\n")))
 
+(defn with-board-lock [f]
+  (ensure-private-dir! (root))
+  (locking board-mutex
+    (with-open [file (java.io.RandomAccessFile. (str (board-lock-path)) "rw")
+                channel (.getChannel file)]
+      (private-file! (board-lock-path))
+      (let [_file-lock (.lock channel)]
+        (f)))))
+
 (defn read-edn [path fallback]
   (try
     (if (fs/exists? path) (edn/read-string (slurp (str path))) fallback)
@@ -128,7 +138,20 @@
     (let [end (inc (.indexOf (vec (rest lines)) "---"))]
       (reduce (fn [acc line]
                 (if-let [[_ key value] (re-matches #"^([A-Za-z0-9_-]+):(?:[ ]?(.*))?$" line)]
-                  (assoc acc (keyword key) (str/replace (or value "") #"^['\"]|['\"]$" ""))
+                  (let [raw (or value "")
+                        parsed (cond
+                                 (and (str/starts-with? raw "\"")
+                                      (str/ends-with? raw "\""))
+                                 (try (edn/read-string raw)
+                                      (catch Exception _ raw))
+
+                                 (and (str/starts-with? raw "'")
+                                      (str/ends-with? raw "'")
+                                      (<= 2 (count raw)))
+                                 (str/replace (subs raw 1 (dec (count raw))) "''" "'")
+
+                                 :else raw)]
+                    (assoc acc (keyword key) parsed))
                   acc))
               {}
               (subvec (vec lines) 1 end)))
@@ -142,7 +165,7 @@
     (nil? value) ""
     (true? value) "true"
     (false? value) "false"
-    :else (str value)))
+    :else (pr-str (str value))))
 
 (defn update-frontmatter! [novel-id updates]
   (let [path (note-path novel-id)
@@ -228,7 +251,8 @@
     line))
 
 (defn move-card! [novel-id target-status assignee]
-  (locking board-mutex
+  (with-board-lock
+   (fn []
     (let [path (board-path)
           lines (vec (read-lines path))
           target-lane (get status->lane target-status)
@@ -244,13 +268,7 @@
             insert-at (or next-heading (count without-card))
             card-line (update-card-line (nth lines card-index) novel-id target-status assignee)
             next-lines (vec (concat (subvec without-card 0 insert-at) [card-line] (subvec without-card insert-at)))]
-        (write-lines! path next-lines)))))
-
-(defn sync-card-metadata! [{:keys [novel-id status assignee]}]
-  (locking board-mutex
-    (let [lines (vec (read-lines (board-path)))
-          next-lines (mapv #(update-card-line % novel-id status assignee) lines)]
-      (when (not= lines next-lines) (write-lines! (board-path) next-lines)))))
+        (write-lines! path next-lines))))))
 
 (defn create-note! [{:keys [novel-id title status assignee nsfw]}]
   (let [path (note-path novel-id)]
@@ -258,14 +276,14 @@
       (fs/create-dirs (novels-dir))
       (atomic-spit! path
                     (str "---\n"
-                         "id: " novel-id "\n"
+                         "id: " (yaml-value novel-id) "\n"
                          "type: novel\n"
-                         "status: " status "\n"
-                         "title: " title "\n"
-                         "assignee: " (or assignee "boxp") "\n"
-                         "nsfw: " nsfw "\n"
-                         "work-dir: " (work-dir novel-id) "\n"
-                         "manuscript: " (manuscript-path novel-id) "\n"
+                         "status: " (yaml-value status) "\n"
+                         "title: " (yaml-value title) "\n"
+                         "assignee: " (yaml-value (or assignee "boxp")) "\n"
+                         "nsfw: " (yaml-value nsfw) "\n"
+                         "work-dir: " (yaml-value (work-dir novel-id)) "\n"
+                         "manuscript: " (yaml-value (manuscript-path novel-id)) "\n"
                          "published-path: \n"
                          "published-at: \n"
                          "---\n\n# " title "\n\n"
@@ -275,19 +293,27 @@
                          "- References:\n- NSFW: " nsfw "\n\n"
                          "## Outline\n\n## Review Instructions\n\n## Change History\n\n## Run History\n")))))
 
-(defn sync-card! [card]
-  (create-note! card)
-  (let [fm (note-frontmatter (:novel-id card))
-        effective-assignee (or (:assignee card) (:assignee fm) "boxp")]
-    (sync-card-metadata! (assoc card :assignee effective-assignee))
-    (update-frontmatter! (:novel-id card)
-                         {:status (:status card)
-                          :title (:title card)
-                          :assignee effective-assignee
-                          :nsfw (:nsfw card)
-                          :work-dir (work-dir (:novel-id card))
-                          :manuscript (manuscript-path (:novel-id card))})
-    (assoc card :assignee effective-assignee)))
+(defn sync-card! [{:keys [novel-id]}]
+  (with-board-lock
+   (fn []
+     (let [lines (vec (read-lines (board-path)))
+           current (first (filter (fn [card] (= novel-id (:novel-id card)))
+                                  (parse-board-cards lines)))]
+       (when current
+         (create-note! current)
+         (let [fm (note-frontmatter novel-id)
+               effective-assignee (or (:assignee current) (:assignee fm) "boxp")
+               synced (assoc current :assignee effective-assignee)
+               next-lines (mapv #(update-card-line % novel-id (:status current) effective-assignee) lines)]
+           (when (not= lines next-lines) (write-lines! (board-path) next-lines))
+           (update-frontmatter! novel-id
+                                {:status (:status current)
+                                 :title (:title current)
+                                 :assignee effective-assignee
+                                 :nsfw (:nsfw current)
+                                 :work-dir (work-dir novel-id)
+                                 :manuscript (manuscript-path novel-id)})
+           synced))))))
 
 (defn parse-codex-assignee [assignee]
   (cond
@@ -316,6 +342,11 @@
     (= status "in-progress") :write
     (= status "review") :revise
     :else nil))
+
+(defn current-card [novel-id]
+  (with-board-lock
+   #(first (filter (fn [card] (= novel-id (:novel-id card)))
+                   (parse-board-cards (vec (read-lines (board-path))))))))
 
 (defn lock-data [novel-id action lane run]
   {:novel-id novel-id
@@ -587,10 +618,12 @@
               lock (acquire-lock! novel-id action (:lane card) run)]
           (when lock
             (try
-              (let [result (publish! card)]
-                (mark-run! novel-id run :succeeded {:action action :lane (:lane card)
-                                                     :result result :finished-at (now-str)})
-                result)
+              (when-let [fresh-card (current-card novel-id)]
+                (when (= action (candidate-action fresh-card))
+                  (let [result (publish! fresh-card)]
+                    (mark-run! novel-id run :succeeded {:action action :lane (:lane fresh-card)
+                                                         :result result :finished-at (now-str)})
+                    result)))
               (catch Exception e
                 (append-history! novel-id (str "Done publication failed without changing the lane: " (.getMessage e) ". Retry after correcting the cause."))
                 (mark-run! novel-id run :failed {:action action :lane (:lane card)
@@ -603,23 +636,26 @@
               lock (acquire-lock! novel-id action (:lane card) run)]
           (when lock
             (let [stop? (atom false)
-                  heartbeat (heartbeat! novel-id lock stop?)]
+                  heartbeat (atom nil)]
               (try
-                (when (#{:write :revise} action)
-                  (move-card! novel-id "in-progress" (:assignee card))
-                  (update-frontmatter! novel-id {:status "in-progress"}))
-                (append-history! novel-id (str "Novel Board run " run " started from " (:lane card) " with action " (name action) " using " (:assignee card) "."))
-                (let [{:keys [exit result]} (run-agent! (assoc card :status (if (#{:write :revise} action) "in-progress" (:status card))) action run)
-                      next-status (if (= action :groom) "draft" "review")
-                      outcome (cond
-                                (not (zero? exit)) (str "agent exited " exit)
-                                (= result :blocked) "human decision or missing input requested"
-                                (nil? result) "result marker missing"
-                                :else "agent returned review")]
-                  (move-card! novel-id next-status "boxp")
-                  (update-frontmatter! novel-id {:status next-status :assignee "boxp"})
-                  (append-history! novel-id (str "Novel Board run " run " finished in " next-status ": " outcome ". Resume by recording instructions and assigning a supported agent."))
-                  true)
+                (when-let [fresh-card (current-card novel-id)]
+                  (when (= action (candidate-action fresh-card))
+                    (reset! heartbeat (heartbeat! novel-id lock stop?))
+                    (when (#{:write :revise} action)
+                      (move-card! novel-id "in-progress" (:assignee fresh-card))
+                      (update-frontmatter! novel-id {:status "in-progress"}))
+                    (append-history! novel-id (str "Novel Board run " run " started from " (:lane fresh-card) " with action " (name action) " using " (:assignee fresh-card) "."))
+                    (let [{:keys [exit result]} (run-agent! (assoc fresh-card :status (if (#{:write :revise} action) "in-progress" (:status fresh-card))) action run)
+                          next-status (if (= action :groom) "draft" "review")
+                          outcome (cond
+                                    (not (zero? exit)) (str "agent exited " exit)
+                                    (= result :blocked) "human decision or missing input requested"
+                                    (nil? result) "result marker missing"
+                                    :else "agent returned review")]
+                      (move-card! novel-id next-status "boxp")
+                      (update-frontmatter! novel-id {:status next-status :assignee "boxp"})
+                      (append-history! novel-id (str "Novel Board run " run " finished in " next-status ": " outcome ". Resume by recording instructions and assigning a supported agent."))
+                      true)))
                 (catch Exception e
                   (move-card! novel-id (if (= action :groom) "draft" "review") "boxp")
                   (update-frontmatter! novel-id {:status (if (= action :groom) "draft" "review") :assignee "boxp"})
@@ -628,14 +664,14 @@
                   true)
                 (finally
                   (reset! stop? true)
-                  (future-cancel heartbeat)
+                  (when-let [worker @heartbeat] (future-cancel worker))
                   (release-lock! novel-id lock))))))))))
 
 (defn sync-all! []
   (ensure-root!)
   (when-not (fs/exists? (board-path))
     (throw (ex-info "Novel Board not found" {:path (board-path)})))
-  (mapv sync-card! (parse-board-cards (vec (read-lines (board-path))))))
+  (into [] (keep sync-card!) (parse-board-cards (vec (read-lines (board-path))))))
 
 (defn record-unsupported! [card]
   (when (and (not= "done" (:status card))
