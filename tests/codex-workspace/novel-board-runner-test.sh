@@ -3,6 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/novel-board/novel_board_runner.bb"
+SUPERVISOR_SOURCE="${ROOT_DIR}/docker/codex-workspace/novel-board/novel_agent_supervisor.cc"
+TEST_RUNTIME="$(mktemp -d)"
+SUPERVISOR="${TEST_RUNTIME}/novel-agent-supervisor"
+trap 'rm -rf "${TEST_RUNTIME}"' EXIT
+g++ -std=c++17 -O2 -Wall -Wextra -Werror "${SUPERVISOR_SOURCE}" -o "${SUPERVISOR}"
 
 fail() {
   echo "error: $*" >&2
@@ -164,13 +169,15 @@ mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
 [[ -n "${FAKE_AGENT_PID_FILE:-}" ]] && printf '%s\n' "$$" >"${FAKE_AGENT_PID_FILE}"
 if [[ -n "${FAKE_DETACHED_CHILD_MARKER:-}" ]]; then
-  # Escape the runner-created process group exactly as a real agent can with
-  # setsid. The execution token must remain the cleanup boundary.
-  setsid bash -c '
-    trap "" TERM HUP
-    printf "started\n" >"${FAKE_DETACHED_CHILD_MARKER}.started"
-    sleep "${FAKE_DETACHED_CHILD_SLEEP:-3}"
-    printf "survived timeout\n" >"${FAKE_DETACHED_CHILD_MARKER}"
+  # Remove the old execution token, create a new session, then double-fork.
+  # Only the child-subreaper ancestry boundary can still contain this process.
+  env -u CODEX_NOVEL_BOARD_EXECUTION_TOKEN setsid bash -c '
+    bash -c '\''
+      trap "" TERM HUP
+      printf "started\n" >"${FAKE_DETACHED_CHILD_MARKER}.started"
+      sleep "${FAKE_DETACHED_CHILD_SLEEP:-3}"
+      printf "survived timeout\n" >"${FAKE_DETACHED_CHILD_MARKER}"
+    '\'' </dev/null >/dev/null 2>&1 &
   ' </dev/null >/dev/null 2>&1 &
   for _ in $(seq 1 50); do
     [[ -e "${FAKE_DETACHED_CHILD_MARKER}.started" ]] && break
@@ -218,6 +225,8 @@ run_tick() {
     CODEX_NOVEL_BOARD_OWNER_ID="test-owner" \
     CODEX_NOVEL_BOARD_LOCK_STALE_SECONDS="1" \
     CODEX_NOVEL_BOARD_HEARTBEAT_SECONDS="1" \
+    CODEX_NOVEL_BOARD_AGENT_SUPERVISOR="${SUPERVISOR}" \
+    CODEX_NOVEL_BOARD_EXECUTION_TOKEN="must-not-be-used-as-boundary" \
     "$@" bb "${RUNNER}" tick
 }
 
@@ -249,6 +258,8 @@ test_seed_and_entrypoint() {
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'install -d -o boxp -g boxp -m 0700 "${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'exec env HOME=/home/boxp'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/Dockerfile" 'novel_agent_supervisor.cc'
+  assert_contains "${SUPERVISOR_SOURCE}" 'PR_SET_CHILD_SUBREAPER'
 
   role_log="${tmp}/role.log"
   role_runuser_log="${tmp}/role-runuser.log"
@@ -453,15 +464,15 @@ test_agent_timeout_returns_to_human_review() {
   [[ ! -e "${escaped_child_marker}" ]] || fail "TERM-handler descendant survived timeout cleanup"
 }
 
-test_agent_timeout_falls_back_when_group_signal_fails() {
+test_agent_timeout_does_not_depend_on_shell_group_signal() {
   local tmp vault state bin summary stderr agent_pid_file agent_pid
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
   make_fake_agents "${bin}"
   write_board "${vault}" "- [ ] [[Novels/NOVEL-TC|NOVEL-TC: Cleanup Timeout]] #novel status::backlog assignee::pi"
   agent_pid_file="${tmp}/agent.pid"
 
-  # Reproduce process-group signal failures while direct PID signals remain
-  # available. The observed process tree must still be fully collected.
+  # The old implementation used a shell command to signal a process group.
+  # Sabotaging that path must not affect the native supervisor boundary.
   FAKE_SIGNAL_FAILURE=1 \
     FAKE_AGENT_PID_FILE="${agent_pid_file}" \
     FAKE_SLEEP=30 \
@@ -470,10 +481,9 @@ test_agent_timeout_falls_back_when_group_signal_fails() {
     run_tick "${vault}" "${state}" "${bin}" env
 
   agent_pid="$(cat "${agent_pid_file}")"
-  if ps -eo pgid=,stat= | awk -v pgid="${agent_pid}" \
-    '$1 == pgid && $2 !~ /^Z/ { found = 1 } END { exit found ? 0 : 1 }'; then
-    kill -KILL -- "-${agent_pid}" 2>/dev/null || kill -KILL "${agent_pid}" 2>/dev/null || true
-    fail "direct PID fallback left an active fake agent process running"
+  if kill -0 "${agent_pid}" 2>/dev/null; then
+    kill -KILL "${agent_pid}" 2>/dev/null || true
+    fail "supervisor left the fake agent process running"
   fi
 
   assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
@@ -501,8 +511,8 @@ test_agent_timeout_cleans_detached_descendant() {
     CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
     run_tick "${vault}" "${state}" "${bin}" env
 
-  # The child moved to a new session and process group before the timeout. It
-  # still inherits the per-run execution token and must not modify files later.
+  # The child removed the token, moved to a new session, and double-forked
+  # before timeout. It must still remain inside the subreaper boundary.
   sleep 4
 
   assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
@@ -531,8 +541,8 @@ test_successful_agent_cleans_background_process_group() {
     run_tick "${vault}" "${state}" "${bin}" env
 
   # The direct Pi process exits 0 immediately while a TERM-ignoring child
-  # remains in its process group. The runner must clean that child even though
-  # the agent itself did not time out.
+  # remains. The supervisor must clean that child even though the agent itself
+  # did not time out.
   sleep 6
 
   assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
@@ -543,10 +553,9 @@ test_successful_agent_cleans_background_process_group() {
   [[ -e "${child_marker}.started" ]] || fail "successful agent did not start the regression-test background child"
   [[ ! -e "${child_marker}" ]] || fail "background descendant survived successful agent cleanup"
   agent_pid="$(cat "${agent_pid_file}")"
-  if ps -eo pgid=,stat= | awk -v pgid="${agent_pid}" \
-    '$1 == pgid && $2 !~ /^Z/ { found = 1 } END { exit found ? 0 : 1 }'; then
-    kill -KILL -- "-${agent_pid}" 2>/dev/null || true
-    fail "successful agent cleanup left an active process-group member"
+  if kill -0 "${agent_pid}" 2>/dev/null; then
+    kill -KILL "${agent_pid}" 2>/dev/null || true
+    fail "successful agent cleanup left the fake agent process running"
   fi
 }
 
@@ -995,7 +1004,7 @@ test_manual_title_scaffold
 test_groom_and_human_stop
 test_write_review_and_pi_revision
 test_agent_timeout_returns_to_human_review
-test_agent_timeout_falls_back_when_group_signal_fails
+test_agent_timeout_does_not_depend_on_shell_group_signal
 test_agent_timeout_cleans_detached_descendant
 test_successful_agent_cleans_background_process_group
 test_review_without_instructions_stops
