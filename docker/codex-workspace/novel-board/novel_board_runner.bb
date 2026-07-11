@@ -728,16 +728,14 @@
       {:process-result @handle :timed-out? false}
       (let [cleanup-error (try
                             (.destroy process)
-                            (when-not (.waitFor process (+ grace-seconds 2)
-                                                TimeUnit/SECONDS)
-                              (throw (ex-info "agent supervisor did not finish descendant cleanup"
-                                              {:supervisor-pid (.pid process)})))
                             nil
                             (catch Exception e {:message (.getMessage e)
-                                                :data (ex-data e)}))]
-        ;; A timeout remains a timeout even when best-effort cleanup reports
-        ;; a supervisor failure. Do not forcibly kill the supervisor here:
-        ;; keeping the subreaper alive preserves containment of its descendants.
+                                                :data (ex-data e)}))
+            ;; Do not release the card lock while a supervised descendant can
+            ;; still modify its work directory. The caller's heartbeat remains
+            ;; active during this wait. The supervisor applies TERM/KILL itself
+            ;; and exits only after every descendant has been reaped.
+            _ (.waitFor process)]
         {:process-result {:exit 124}
          :timed-out? true
          :cleanup-error cleanup-error}))))

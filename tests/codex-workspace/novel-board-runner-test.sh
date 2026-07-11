@@ -167,6 +167,7 @@ prompt="${!#}"
 manuscript="$(printf '%s\n' "${prompt}" | sed -n 's/^Manuscript path: //p' | head -n 1)"
 mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
+[[ -n "${FAKE_START_LOG:-}" ]] && printf 'pi\n' >>"${FAKE_START_LOG}"
 [[ -n "${FAKE_AGENT_PID_FILE:-}" ]] && printf '%s\n' "$$" >"${FAKE_AGENT_PID_FILE}"
 if [[ -n "${FAKE_DETACHED_CHILD_MARKER:-}" ]]; then
   # Remove the old execution token, create a new session, then double-fork.
@@ -524,6 +525,51 @@ test_agent_timeout_cleans_detached_descendant() {
   assert_contains "${stderr}" "terminated the agent after 1 seconds"
   [[ -e "${detached_marker}.started" ]] || fail "fake agent did not start detached regression-test child"
   [[ ! -e "${detached_marker}" ]] || fail "detached descendant survived timeout cleanup"
+}
+
+test_timeout_cleanup_keeps_card_locked_until_supervisor_exits() {
+  local tmp vault state bin starts delayed first_pid i
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  starts="${tmp}/starts.log"; delayed="${tmp}/delayed-supervisor"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-TL|NOVEL-TL: Locked Cleanup]] #novel status::backlog assignee::pi"
+
+  cat >"${delayed}" <<'EOF'
+#!/usr/bin/env bash
+set -u
+"${DELAYED_REAL_SUPERVISOR}" "$@" &
+child=$!
+trap 'sleep "${DELAYED_SUPERVISOR_TERM_SECONDS:-2}"; kill -TERM "${child}" 2>/dev/null || true' TERM
+status=0
+while kill -0 "${child}" 2>/dev/null; do
+  wait "${child}" || status=$?
+done
+exit "${status}"
+EOF
+  chmod +x "${delayed}"
+
+  FAKE_START_LOG="${starts}" \
+    FAKE_SLEEP=30 \
+    DELAYED_REAL_SUPERVISOR="${SUPERVISOR}" \
+    DELAYED_SUPERVISOR_TERM_SECONDS=2 \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env \
+      CODEX_NOVEL_BOARD_AGENT_SUPERVISOR="${delayed}" >"${tmp}/first.log" 2>&1 &
+  first_pid=$!
+
+  for i in $(seq 1 100); do
+    [[ -s "${starts}" ]] && break
+    sleep 0.02
+  done
+  [[ -s "${starts}" ]] || fail "delayed-cleanup fake agent did not start"
+  sleep 2
+  [[ -f "${state}/locks/NOVEL-TL.edn" ]] || fail "timeout cleanup released the card lock before supervisor exit"
+
+  FAKE_START_LOG="${starts}" run_tick "${vault}" "${state}" "${bin}" env
+  wait "${first_pid}"
+  [[ "$(wc -l <"${starts}")" -eq 1 ]] || fail "timeout cleanup allowed a duplicate agent run"
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
 }
 
 test_successful_agent_cleans_background_process_group() {
@@ -1006,6 +1052,7 @@ test_write_review_and_pi_revision
 test_agent_timeout_returns_to_human_review
 test_agent_timeout_does_not_depend_on_shell_group_signal
 test_agent_timeout_cleans_detached_descendant
+test_timeout_cleanup_keeps_card_locked_until_supervisor_exits
 test_successful_agent_cleans_background_process_group
 test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved
