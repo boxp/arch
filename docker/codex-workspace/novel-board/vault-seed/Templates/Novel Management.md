@@ -13,6 +13,8 @@ published-at:
 
 # Novel
 
+このノートは `Boards/Novel Board.md` のカードと1対1で管理する。状態変更は Board のレーンを先に移動し、runner に `status` を同期させる。初稿・改稿本文はこのノートへ貼らず、`manuscript` の private file を使う。
+
 ## Requirements
 
 - Title:

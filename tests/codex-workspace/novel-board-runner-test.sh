@@ -30,7 +30,9 @@ write_board() {
   local progress="${4:-}"
   local review="${5:-}"
   local done="${6:-}"
-  mkdir -p "${vault}/Boards" "${vault}/Novels"
+  mkdir -p "${vault}/Boards" "${vault}/Novels" "${vault}/Templates"
+  cp "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Templates/Novel Management.md" \
+    "${vault}/Templates/Novel Management.md"
   cat >"${vault}/Boards/Novel Board.md" <<EOF
 # Novel Board
 
@@ -183,6 +185,9 @@ test_seed_and_entrypoint() {
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## In Progress"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## Review"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## Done"
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" 'Backlog` に `- [ ] タイトル`'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "Templates/Novel Management.md"
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Novels/README.md" "## レーン運用"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" "install_novel_board_seed"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'local vault="${CODEX_NOVEL_BOARD_VAULT:-${task_board_vault}}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'dest="${vault}/${rel}"'
@@ -273,7 +278,37 @@ EOF
       install_novel_board_seed
     '
   [[ -f "${custom_vault}/Boards/Novel Board.md" ]] || fail "Novel seed was not installed in CODEX_NOVEL_BOARD_VAULT"
+  [[ -f "${custom_vault}/Templates/Novel Management.md" ]] || fail "Novel management template was not installed"
+  [[ -f "${custom_vault}/Novels/README.md" ]] || fail "Novel operations README was not installed"
   [[ ! -e "${task_vault}/Boards/Novel Board.md" ]] || fail "Novel seed leaked into CODEX_TASK_BOARD_VAULT"
+}
+
+test_manual_title_scaffold() {
+  local tmp vault state bin note_count card_count
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" $'- [ ] 手入力の物語\n- [ ] 夜の手入力 #nsfw'
+  write_note "${vault}" NOVEL-7 backlog boxp "既存作品" "${state}"
+  printf '\n## Custom Template Marker\n\ntitle: 本文中のカスタム行は保持する。\n' >>"${vault}/Templates/Novel Management.md"
+
+  run_tick "${vault}" "${state}" "${bin}" env
+
+  assert_contains "${vault}/Boards/Novel Board.md" '[[Novels/NOVEL-8|NOVEL-8: 手入力の物語]] #novel status::backlog assignee::boxp'
+  assert_contains "${vault}/Boards/Novel Board.md" '[[Novels/NOVEL-9|NOVEL-9: 夜の手入力]] #novel #nsfw status::backlog assignee::boxp'
+  assert_not_contains "${vault}/Boards/Novel Board.md" '- [ ] 手入力の物語'
+  assert_contains "${vault}/Novels/NOVEL-8.md" 'id: "NOVEL-8"'
+  assert_contains "${vault}/Novels/NOVEL-8.md" 'title: "手入力の物語"'
+  assert_contains "${vault}/Novels/NOVEL-8.md" '# 手入力の物語'
+  assert_contains "${vault}/Novels/NOVEL-8.md" "## Custom Template Marker"
+  assert_contains "${vault}/Novels/NOVEL-8.md" "title: 本文中のカスタム行は保持する。"
+  assert_contains "${vault}/Novels/NOVEL-9.md" 'nsfw: true'
+  [[ ! -d "${state}/runs/NOVEL-8" && ! -d "${state}/runs/NOVEL-9" ]] || fail "default human assignee started an agent after scaffold"
+
+  run_tick "${vault}" "${state}" "${bin}" env
+  note_count="$(find "${vault}/Novels" -maxdepth 1 -type f -name 'NOVEL-*.md' | wc -l)"
+  card_count="$(grep -c '\[\[Novels/NOVEL-[89]|' "${vault}/Boards/Novel Board.md")"
+  [[ "${note_count}" -eq 3 ]] || fail "Novel scaffold duplicated a management note"
+  [[ "${card_count}" -eq 2 ]] || fail "Novel scaffold duplicated a Board card"
 }
 
 test_groom_and_human_stop() {
@@ -719,6 +754,7 @@ test_task_board_and_cron_untouched() {
 }
 
 test_seed_and_entrypoint
+test_manual_title_scaffold
 test_groom_and_human_stop
 test_write_review_and_pi_revision
 test_review_without_instructions_stops

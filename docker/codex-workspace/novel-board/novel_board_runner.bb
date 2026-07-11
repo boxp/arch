@@ -49,6 +49,7 @@
 (defn board-path [] (fs/path (vault) "Boards" "Novel Board.md"))
 (defn board-lock-path [] (fs/path (root) "board.lock"))
 (defn novels-dir [] (fs/path (vault) "Novels"))
+(defn note-template-path [] (fs/path (vault) "Templates" "Novel Management.md"))
 (defn note-path [novel-id] (fs/path (novels-dir) (str novel-id ".md")))
 (defn locks-dir [] (fs/path (root) "locks"))
 (defn lock-guards-dir [] (fs/path (root) "lock-guards"))
@@ -236,6 +237,79 @@
 (defn metadata-value [tail key]
   (some-> (re-find (re-pattern (str "(?:^|\\s)" key "::([^\\s]+)")) tail) second))
 
+(defn scaffold-title [body]
+  (-> body
+      (str/replace #"(?:^|\s)#novel(?=\s|$)" " ")
+      (str/replace #"(?:^|\s)#nsfw(?=\s|$)" " ")
+      (str/replace #"(?:^|\s)status::[^\s]+" " ")
+      (str/replace #"(?:^|\s)assignee::[^\s]+" " ")
+      (str/replace #"\s+" " ")
+      str/trim))
+
+(defn backlog-scaffold-cards [lines]
+  (loop [idx 0 lane nil cards []]
+    (if (< idx (count lines))
+      (let [line (nth lines idx)]
+        (cond
+          (re-matches #"^## .+$" line)
+          (recur (inc idx) (subs line 3) cards)
+
+          (= lane "Backlog")
+          (if-let [[_ _ body] (re-matches #"^- \[([ xX])\] (.+)$" line)]
+            (let [title (scaffold-title body)]
+              (if (and (not (str/includes? body "[["))
+                       (not (str/blank? title)))
+                (recur (inc idx) lane
+                       (conj cards {:line-index idx
+                                    :title title
+                                    :assignee (or (metadata-value body "assignee") "boxp")
+                                    :nsfw (token-present? body "#nsfw")}))
+                (recur (inc idx) lane cards)))
+            (recur (inc idx) lane cards))
+
+          :else
+          (recur (inc idx) lane cards)))
+      cards)))
+
+(defn existing-scaffold-numbers [lines]
+  (let [board-numbers (keep (fn [line]
+                              (some-> (re-find #"\[\[Novels/NOVEL-(\d+)(?:\||\]\])" line)
+                                      second
+                                      Long/parseLong))
+                            lines)
+        note-numbers (if (fs/exists? (novels-dir))
+                       (keep (fn [path]
+                               (some-> (re-matches #"NOVEL-(\d+)\.md" (str (fs/file-name path)))
+                                       second
+                                       Long/parseLong))
+                             (fs/list-dir (novels-dir)))
+                       [])]
+    (concat board-numbers note-numbers)))
+
+(defn scaffold-card-line [{:keys [novel-id title assignee nsfw]}]
+  (str "- [ ] [[Novels/" novel-id "|" novel-id ": " title "]] #novel"
+       (when nsfw " #nsfw")
+       " status::backlog assignee::" assignee))
+
+(defn scaffold-backlog-cards! []
+  (with-board-lock
+   (fn []
+     (let [lines (vec (read-lines (board-path)))
+           drafts (backlog-scaffold-cards lines)]
+       (when (seq drafts)
+         (let [start-number (inc (reduce max 0 (existing-scaffold-numbers lines)))
+               cards (map-indexed (fn [offset card]
+                                    (assoc card :novel-id (str "NOVEL-" (+ start-number offset))))
+                                  drafts)
+               replacements (into {} (map (juxt :line-index scaffold-card-line) cards))
+               next-lines (mapv (fn [idx line] (get replacements idx line))
+                                (range (count lines))
+                                lines)]
+           (write-lines! (board-path) next-lines)
+           (doseq [{:keys [novel-id title]} cards]
+             (log! (str "scaffolded " novel-id " from Backlog title: " title)))
+           (count cards)))))))
+
 (defn parse-board-cards [lines]
   (loop [remaining lines lane nil cards []]
     (if-let [line (first remaining)]
@@ -307,28 +381,54 @@
          (move-card-lines! lines (card-index lines novel-id) novel-id target-status assignee)
          true)))))
 
-(defn create-note! [{:keys [novel-id title status assignee nsfw]}]
+(defn replace-template-line [content pattern replacement]
+  (str/replace content pattern (fn [_] replacement)))
+
+(defn render-template-frontmatter [content updates]
+  (let [lines (vec (str/split-lines content))
+        end (when (= "---" (first lines)) (inc (.indexOf (vec (rest lines)) "---")))]
+    (when-not (and end (pos? end))
+      (throw (ex-info "Novel Management template has invalid frontmatter" {:path (note-template-path)})))
+    (let [remaining (atom updates)
+          frontmatter (mapv (fn [line]
+                              (if-let [[_ key] (re-matches #"^([A-Za-z0-9_-]+):.*$" line)]
+                                (let [k (keyword key)]
+                                  (if (contains? @remaining k)
+                                    (let [value (get @remaining k)]
+                                      (swap! remaining dissoc k)
+                                      (str key ": " (yaml-value value)))
+                                    line))
+                                line))
+                            (subvec lines 1 end))
+          inserted (mapv (fn [[key value]] (str (name key) ": " (yaml-value value))) @remaining)
+          rendered (str/join "\n" (concat ["---"] frontmatter inserted ["---"] (subvec lines (inc end))))]
+      (if (str/ends-with? content "\n") (str rendered "\n") rendered))))
+
+(defn render-note-template [{:keys [novel-id title status assignee nsfw]}]
+  (let [template-path (note-template-path)]
+    (when-not (fs/exists? template-path)
+      (throw (ex-info "Novel Management template not found" {:path template-path})))
+    (let [content (render-template-frontmatter
+                   (slurp (str template-path))
+                   {:id novel-id
+                    :type "novel"
+                    :status status
+                    :title title
+                    :assignee (or assignee "boxp")
+                    :nsfw nsfw
+                    :work-dir (work-dir novel-id)
+                    :manuscript (manuscript-path novel-id)})]
+      (-> content
+          (replace-template-line #"(?m)^# Novel[ \t]*$" (str "# " title))
+          (replace-template-line #"(?m)^- Title:.*$" (str "- Title: " title))
+          (replace-template-line #"(?m)^- NSFW:.*$" (str "- NSFW: " nsfw))))))
+
+(defn create-note! [{:keys [novel-id] :as card}]
   (let [path (note-path novel-id)]
     (when-not (fs/exists? path)
       (fs/create-dirs (novels-dir))
-      (atomic-spit! path
-                    (str "---\n"
-                         "id: " (yaml-value novel-id) "\n"
-                         "type: novel\n"
-                         "status: " (yaml-value status) "\n"
-                         "title: " (yaml-value title) "\n"
-                         "assignee: " (yaml-value (or assignee "boxp")) "\n"
-                         "nsfw: " (yaml-value nsfw) "\n"
-                         "work-dir: " (yaml-value (work-dir novel-id)) "\n"
-                         "manuscript: " (yaml-value (manuscript-path novel-id)) "\n"
-                         "published-path: \n"
-                         "published-at: \n"
-                         "---\n\n# " title "\n\n"
-                         "## Requirements\n\n"
-                         "- Title: " title "\n- Synopsis:\n- Characters:\n- Style and point of view:\n"
-                         "- Target readers:\n- Target length:\n- Required elements:\n- Prohibited elements:\n"
-                         "- References: (Pi image input: embed a vault-local PNG/JPEG/GIF/WebP)\n- NSFW: " nsfw "\n\n"
-                         "## Outline\n\n## Review Instructions\n\n## Change History\n\n## Run History\n")))))
+      (let [content (render-note-template card)]
+        (atomic-spit! path (if (str/ends-with? content "\n") content (str content "\n")))))))
 
 (defn sync-card! [{:keys [novel-id]}]
   (with-board-lock
@@ -921,6 +1021,7 @@
   (ensure-root!)
   (when-not (fs/exists? (board-path))
     (throw (ex-info "Novel Board not found" {:path (board-path)})))
+  (scaffold-backlog-cards!)
   (into [] (keep sync-card!) (parse-board-cards (vec (read-lines (board-path))))))
 
 (defn record-unsupported! [card]

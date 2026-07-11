@@ -42,6 +42,18 @@ kanban-plugin: board
 - `#nsfw` 判定はカード上の空白区切り正規タグだけを使う。管理ノート本文の文字列や類似タグは判定に使わない。
 - Board lane と card `status::` が不一致なら lane を優先して card metadata と管理ノートを同期する。
 
+人間が新規案を追加する場合だけ、`Backlog` に未リンクのタイトルカードを置ける。
+
+```markdown
+- [ ] タイトルだけ
+- [ ] 成人向けタイトル #nsfw
+- [ ] 要件整理をすぐ依頼するタイトル assignee::pi
+```
+
+runner は board lock 内で既存の Board card と `Novels/NOVEL-N.md` を確認し、次の数値 ID を採番して元の行を正規カードへ置換する。管理ノートは `Templates/Novel Management.md` から作成する。`assignee::` を省略した場合は `boxp` とし、scaffold だけで agent を起動しない。`#nsfw` と明示 assignee は正規カード・管理ノートへ引き継ぐ。正規カードへの置換後に停止しても次 tick の通常 sync が不足ノートを作るため、同じ入力行を重複採番しない。
+
+Board 冒頭には正規カード形式、タイトル入力、テンプレート、lane SSOT、human review、Done 公開の運用ルールを常設し、詳細は `Novels/README.md` に記載する。
+
 ## 3. 状態遷移
 
 ```mermaid
@@ -70,7 +82,7 @@ runner が自動で行う遷移は `Backlog -> Draft`、`Draft -> In Progress ->
 
 ## 5. 管理ノート
 
-管理ノートは `Novels/<ID>.md` とし、最低限次を持つ。
+管理ノートは `Novels/<ID>.md` とし、`Templates/Novel Management.md` を生成元にして最低限次を持つ。
 
 ```yaml
 ---
@@ -159,7 +171,7 @@ codex-workspace image の既定 entrypoint は `CODEX_WORKSPACE_ROLE=novel-board
 
 ## 11. テストと既知制約
 
-black-box test は一時 vault と fake `codex` / `claude` / `pi` を使い、主要遷移、review stop/restart、全 route、Pi vision model と vault-local `@image`、vault 外画像の拒否、SFW/NSFW、冪等 publish、未検証 `published-path` の拒否、上書き禁止、別 process・別 card の同一 destination 競合、active/stale lock、lane/status sync、agent failure を再現する。
+black-box test は一時 vault と fake `codex` / `claude` / `pi` を使い、タイトルのみカードの採番・テンプレート scaffold・再走査時の重複防止、主要遷移、review stop/restart、全 route、Pi vision model と vault-local `@image`、vault 外画像の拒否、SFW/NSFW、冪等 publish、未検証 `published-path` の拒否、上書き禁止、別 process・別 card の同一 destination 競合、active/stale lock、lane/status sync、agent failure を再現する。
 
 既知制約:
 
