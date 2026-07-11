@@ -299,7 +299,7 @@ test_groom_and_human_stop() {
 }
 
 test_write_review_and_pi_revision() {
-  local tmp vault state bin args
+  local tmp vault state bin args image markdown_image outside prompt_log
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; args="${tmp}/args.log"
   make_fake_agents "${bin}"
   write_board "${vault}" "" "- [ ] [[Novels/NOVEL-2|NOVEL-2: 夏の話]] #novel status::draft assignee::codex-sol-xhigh"
@@ -315,9 +315,23 @@ test_write_review_and_pi_revision() {
 
   sed -i 's/status::review assignee::boxp/status::review assignee::pi/' "${vault}/Boards/Novel Board.md"
   sed -i '/^## Review Instructions$/a\\\n- 余韻を追加する。' "${vault}/Novels/NOVEL-2.md"
-  FAKE_ARG_LOG="${args}" run_tick "${vault}" "${state}" "${bin}" env
+  image="${vault}/Attachments/character reference.png"
+  markdown_image="${vault}/Attachments/setting.webp"
+  outside="${tmp}/outside.png"
+  mkdir -p "$(dirname "${image}")"
+  printf 'fake image\n' >"${image}"
+  printf 'fake webp\n' >"${markdown_image}"
+  printf 'outside image\n' >"${outside}"
+  sed -i "/^- Synopsis:/a\\- Vision reference: ![[Attachments/character reference.png]]\\n- Setting reference: ![setting](Attachments/setting.webp)\\n- Rejected external image: ![[${outside}]]" "${vault}/Novels/NOVEL-2.md"
+  FAKE_ARG_LOG="${args}" CODEX_NOVEL_BOARD_PI_MODEL="llama.cpp/gemma4-26b-vision" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-2/manuscript.md" "Pi 改稿済み"
   assert_contains "${args}" "pi --print --approve --mode text --session-dir"
+  assert_contains "${args}" "--model llama.cpp/gemma4-26b-vision"
+  assert_contains "${args}" "@${image}"
+  assert_contains "${args}" "@${markdown_image}"
+  assert_not_contains "${args}" "@${outside}"
+  prompt_log="$(find "${state}/runs/NOVEL-2" -name prompt.md | sort | tail -n 1)"
+  assert_contains "${prompt_log}" "Reference images attached to the agent:"
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
 }
 
@@ -438,6 +452,30 @@ test_publish_routing_and_idempotency() {
   run_tick "${vault}" "${state}" "${bin}" env
   [[ "$(find "${vault}/小説草案/AI執筆" -maxdepth 1 -type f -name '*_光の話.md' | wc -l)" -eq 1 ]] || fail "Done rescan duplicated SFW publication"
   [[ "$(find "${vault}/NSFW/小説/AI執筆" -maxdepth 1 -type f -name '*_夜の話.md' | wc -l)" -eq 1 ]] || fail "Done rescan duplicated NSFW publication"
+}
+
+test_untrusted_management_published_path_is_not_reused() {
+  local tmp vault state bin untrusted published
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "" "" "" "" "- [x] [[Novels/NOVEL-UP|NOVEL-UP: 信頼境界]] #novel #nsfw status::done assignee::boxp"
+  write_note "${vault}" NOVEL-UP done boxp "信頼境界" "${state}"
+  printf '# 承認済み原稿\n' >"${state}/work/NOVEL-UP/manuscript.md"
+  untrusted="${vault}/小説草案/AI執筆/existing.md"
+  mkdir -p "$(dirname "${untrusted}")"
+  printf '# unrelated existing file\n' >"${untrusted}"
+  sed -i "s|^published-path:.*|published-path: \"${untrusted}\"|" "${vault}/Novels/NOVEL-UP.md"
+
+  run_tick "${vault}" "${state}" "${bin}" env
+
+  [[ "$(cat "${untrusted}")" == '# unrelated existing file' ]] || fail "untrusted management published-path was overwritten"
+  published="$(find "${vault}/NSFW/小説/AI執筆" -maxdepth 1 -type f -name '*_信頼境界.md' -print -quit)"
+  [[ -n "${published}" ]] || fail "NSFW manuscript was not published to its designated directory"
+  cmp "${state}/work/NOVEL-UP/manuscript.md" "${published}" || fail "designated publication does not match the approved manuscript"
+  assert_contains "${state}/published/NOVEL-UP.edn" ":path \"${published}\""
+  assert_contains "${state}/published/NOVEL-UP.edn" ":status :published"
+  assert_contains "${vault}/Novels/NOVEL-UP.md" "published-path: \"${published}\""
+  assert_not_contains "${vault}/Novels/NOVEL-UP.md" "published-path: \"${untrusted}\""
 }
 
 test_collision_and_missing_manuscript_stay_done() {
@@ -689,6 +727,7 @@ test_fable_and_failure_return_to_review
 test_explicit_approval_bypass
 test_all_task_board_routes_and_unknown_skip
 test_publish_routing_and_idempotency
+test_untrusted_management_published_path_is_not_reused
 test_collision_and_missing_manuscript_stay_done
 test_parallel_processes_do_not_overwrite_same_destination
 test_publish_reservation_repairs_link

@@ -23,7 +23,7 @@ published-at:
 - Target length:
 - Required elements:
 - Prohibited elements:
-- References:
+- References: (Pi image input: embed a vault-local PNG/JPEG/GIF/WebP as `![[Attachments/example.png]]` or `![alt](Attachments/example.png)`)
 - NSFW: false
 
 ## Outline

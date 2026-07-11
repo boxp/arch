@@ -308,7 +308,7 @@
                          "## Requirements\n\n"
                          "- Title: " title "\n- Synopsis:\n- Characters:\n- Style and point of view:\n"
                          "- Target readers:\n- Target length:\n- Required elements:\n- Prohibited elements:\n"
-                         "- References:\n- NSFW: " nsfw "\n\n"
+                         "- References: (Pi image input: embed a vault-local PNG/JPEG/GIF/WebP)\n- NSFW: " nsfw "\n\n"
                          "## Outline\n\n## Review Instructions\n\n## Change History\n\n## Run History\n")))))
 
 (defn sync-card! [{:keys [novel-id]}]
@@ -356,6 +356,59 @@
   (let [path (note-path novel-id)]
     (and (fs/exists? path)
          (not (str/blank? (section-content (slurp (str path)) "Review Instructions"))))))
+
+(def obsidian-image-pattern
+  #"(?i)!\[\[([^\]|#]+\.(?:png|jpe?g|gif|webp))(?:#[^\]|]*)?(?:\|[^\]]*)?\]\]")
+
+(def markdown-image-pattern
+  #"(?i)!\[[^\]]*\]\(\s*(?:<([^>]+\.(?:png|jpe?g|gif|webp))>|([^\s)]+\.(?:png|jpe?g|gif|webp)))(?:\s+[\"'][^\"']*[\"'])?\s*\)")
+
+(defn embedded-image-references [content]
+  (concat (map second (re-seq obsidian-image-pattern content))
+          (map (fn [match] (or (nth match 1 nil) (nth match 2 nil)))
+               (re-seq markdown-image-pattern content))))
+
+(defn canonical-file [path]
+  (.getCanonicalFile (io/file (str path))))
+
+(defn vault-local-regular-file? [file]
+  (let [vault-path (.toPath (canonical-file (vault)))
+        canonical (canonical-file file)
+        file-path (.toPath canonical)]
+    (and (.startsWith file-path vault-path)
+         (.isFile canonical))))
+
+(defn unique-vault-file [filename]
+  (let [matches (->> (file-seq (io/file (vault)))
+                     (filter #(.isFile %))
+                     (filter #(= filename (.getName %)))
+                     (take 2)
+                     vec)]
+    (when (= 1 (count matches)) (first matches))))
+
+(defn resolve-reference-image [novel-id reference]
+  (let [reference (str/trim reference)
+        raw-file (io/file reference)
+        candidates (if (.isAbsolute raw-file)
+                     [raw-file]
+                     [(io/file (vault) reference)
+                      (io/file (str (fs/parent (note-path novel-id))) reference)])
+        existing (first (filter vault-local-regular-file? candidates))
+        basename-match (when (and (nil? existing)
+                                  (not (str/includes? reference "/"))
+                                  (not (str/includes? reference "\\")))
+                         (unique-vault-file reference))]
+    (some-> (or existing basename-match) canonical-file str)))
+
+(defn reference-image-paths [novel-id]
+  (let [content (slurp (str (note-path novel-id)))
+        reference-content (str/join "\n"
+                                    (map #(section-content content %)
+                                         ["Requirements" "Outline" "Review Instructions"]))]
+    (->> (embedded-image-references reference-content)
+         (keep #(resolve-reference-image novel-id %))
+         distinct
+         vec)))
 
 (defn assignee-route [assignee]
   (cond
@@ -501,7 +554,7 @@
       reasoning-effort (into ["-c" (str "model_reasoning_effort=" reasoning-effort)])
       true (conj "-"))))
 
-(defn prompt-for [{:keys [novel-id title status lane assignee nsfw]} action]
+(defn prompt-for [{:keys [novel-id title status lane assignee nsfw]} action reference-images]
   (let [note (slurp (str (note-path novel-id)))
         manuscript (manuscript-path novel-id)]
     (str "You are an automated Novel Board worker. Respond and edit prose in Japanese.\n"
@@ -511,6 +564,9 @@
          "Management note: " (note-path novel-id) "\n"
          "Manuscript path: " manuscript "\n"
          "Private work directory: " (work-dir novel-id) "\n\n"
+         (when (seq reference-images)
+           (str "Reference images attached to the agent:\n"
+                (str/join "\n" (map #(str "- " %) reference-images)) "\n\n"))
          (case action
            :groom
            (str "Groom requirements only. Do not write any novel prose and do not create or edit the manuscript. "
@@ -536,8 +592,9 @@
         stderr-path (fs/path dir "stderr.log")
         last-message-path (fs/path dir "last-message.md")
         pi-session-dir (fs/path dir "pi-session")
-        prompt (prompt-for card action)
-        route (assignee-route (:assignee card))]
+        route (assignee-route (:assignee card))
+        reference-images (if (= route :pi) (reference-image-paths novel-id) [])
+        prompt (prompt-for card action reference-images)]
     (ensure-private-dir! dir)
     (ensure-private-dir! (work-dir novel-id))
     (atomic-spit! prompt-path prompt)
@@ -555,6 +612,8 @@
                               "--session-dir" (str pi-session-dir)]
                        (System/getenv "CODEX_NOVEL_BOARD_PI_MODEL")
                        (into ["--model" (System/getenv "CODEX_NOVEL_BOARD_PI_MODEL")])
+                       (seq reference-images)
+                       (into (map #(str "@" %) reference-images))
                        true (conj prompt)))
           opts (cond-> {:out (io/file (str stdout-path))
                         :err (io/file (str stderr-path))}
@@ -594,6 +653,21 @@
 
 (defn canonical-path [path]
   (.getCanonicalPath (io/file (str path))))
+
+(defn publication-destination-dir [nsfw]
+  (fs/path (vault) (if nsfw "NSFW/小説/AI執筆" "小説草案/AI執筆")))
+
+(defn publication-path-in-dir? [path dest-dir]
+  (and (some? path)
+       (= (canonical-path (fs/parent (fs/path path)))
+          (canonical-path dest-dir))))
+
+(defn reusable-publication-state? [novel-id state dest-dir nsfw]
+  (and (#{:reserved :published} (:status state))
+       (= novel-id (:novel-id state))
+       (= nsfw (:nsfw state))
+       (not-empty (:path state))
+       (publication-path-in-dir? (:path state) dest-dir)))
 
 (defn publication-key [dest]
   (sha256-string (canonical-path dest)))
@@ -680,11 +754,17 @@
         manuscript (fs/path (or (not-empty (:manuscript fm)) (manuscript-path novel-id)))
         state-path (published-state-path novel-id)
         state (read-edn state-path {})
-        fm-recorded-path (not-empty (:published-path fm))
-        recorded-path (or fm-recorded-path (:path state))
+        dest-dir (publication-destination-dir nsfw)
+        reusable-state? (reusable-publication-state? novel-id state dest-dir nsfw)
+        recorded-path (when reusable-state? (:path state))
         reserved? (= :reserved (:status state))
-        published-at (or (not-empty (:published-at fm)) (:published-at state) (now-str))]
+        published-at (or (when reusable-state? (:published-at state)) (now-str))]
     (cond
+      (and (seq state) (not reusable-state?))
+      (do
+        (append-history! novel-id "Done publication is waiting: runner publication state does not match this card or its designated SFW/NSFW directory. Correct or clear the private publication state before retrying.")
+        :invalid-publication-state)
+
       (and reserved? (not (fs/exists? manuscript)))
       (do (append-history! novel-id "Done publication is waiting: manuscript is missing. Restore the private manuscript and keep the card in Done for retry.")
           :missing-manuscript)
@@ -709,11 +789,6 @@
           (finalize-publication! novel-id recorded-path published-at nsfw published-sha)
           :already-published))
 
-      (and fm-recorded-path (fs/exists? fm-recorded-path) (not reserved?))
-      (let [published-sha (sha256 fm-recorded-path)]
-        (finalize-publication! novel-id fm-recorded-path published-at nsfw published-sha)
-        :already-published)
-
       (not (fs/exists? manuscript))
       (do (append-history! novel-id "Done publication is waiting: manuscript is missing. Restore the private manuscript and keep the card in Done for retry.")
           :missing-manuscript)
@@ -724,7 +799,6 @@
 
       :else
       (let [manuscript-sha (sha256 manuscript)
-            dest-dir (fs/path (vault) (if nsfw "NSFW/小説/AI執筆" "小説草案/AI執筆"))
             timestamp (.format (DateTimeFormatter/ofPattern "yyyy-MM-dd-HH-mm")
                                (ZonedDateTime/now (ZoneId/of "Asia/Tokyo")))
             dest (if recorded-path
