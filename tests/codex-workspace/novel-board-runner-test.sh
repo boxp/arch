@@ -430,6 +430,7 @@ test_write_review_and_pi_revision() {
   FAKE_ARG_LOG="${args}" CODEX_NOVEL_BOARD_PI_MODEL="llama.cpp/gemma4-26b-vision" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-2/manuscript.md" "Pi 改稿済み"
   assert_contains "${args}" "pi --no-extensions --no-skills --no-prompt-templates --no-context-files --print --approve --mode text --session-dir"
+  assert_not_contains "${args}" "--offline"
   assert_contains "${args}" "--model llama.cpp/gemma4-26b-vision"
   assert_contains "${args}" "@${image}"
   assert_contains "${args}" "@${markdown_image}"
