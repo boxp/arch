@@ -714,10 +714,10 @@
   (some->> (re-seq #"(?m)^NOVEL_BOARD_RESULT:\s*(review|blocked)\s*$" (or message "")) last second keyword))
 
 (defn await-agent! [args opts]
-  ;; The native supervisor is a Linux child-subreaper. A child cannot erase
-  ;; this ancestry boundary by clearing its environment, calling setsid, or
-  ;; double-forking: orphaned descendants are reparented to the supervisor,
-  ;; which does not exit until every descendant has exited and been reaped.
+  ;; The shell supervisor runs below tini's Linux child-subreaper boundary. A
+  ;; child cannot erase this ancestry boundary by clearing its environment,
+  ;; calling setsid, or double-forking: orphaned descendants are reparented to
+  ;; tini, while the readable shell loop waits for and terminates every process.
   (let [grace-seconds (agent-shutdown-grace-seconds)
         supervisor-args [(agent-supervisor) "--grace-ms"
                          (str (* grace-seconds 1000)) "--"]

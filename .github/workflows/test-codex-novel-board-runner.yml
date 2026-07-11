@@ -34,6 +34,8 @@ jobs:
       - name: Install Babashka
         run: |
           set -eux
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends tini
           tmp="$(mktemp -d)"
           curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
             "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" \

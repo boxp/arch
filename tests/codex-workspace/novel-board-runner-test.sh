@@ -3,11 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/novel-board/novel_board_runner.bb"
-SUPERVISOR_SOURCE="${ROOT_DIR}/docker/codex-workspace/novel-board/novel_agent_supervisor.cc"
-TEST_RUNTIME="$(mktemp -d)"
-SUPERVISOR="${TEST_RUNTIME}/novel-agent-supervisor"
-trap 'rm -rf "${TEST_RUNTIME}"' EXIT
-g++ -std=c++17 -O2 -Wall -Wextra -Werror "${SUPERVISOR_SOURCE}" -o "${SUPERVISOR}"
+SUPERVISOR="${ROOT_DIR}/docker/codex-workspace/novel-board/novel_agent_supervisor.sh"
+command -v tini >/dev/null 2>&1 || {
+  echo "error: tini is required for Novel agent supervisor tests" >&2
+  exit 1
+}
 
 fail() {
   echo "error: $*" >&2
@@ -259,8 +259,10 @@ test_seed_and_entrypoint() {
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'install -d -o boxp -g boxp -m 0700 "${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'exec env HOME=/home/boxp'
-  assert_contains "${ROOT_DIR}/docker/codex-workspace/Dockerfile" 'novel_agent_supervisor.cc'
-  assert_contains "${SUPERVISOR_SOURCE}" 'PR_SET_CHILD_SUBREAPER'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/Dockerfile" 'novel_agent_supervisor.sh'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/Dockerfile" 'tini'
+  assert_contains "${SUPERVISOR}" 'exec tini -s'
+  assert_contains "${SUPERVISOR}" 'collect_active_descendants'
 
   role_log="${tmp}/role.log"
   role_runuser_log="${tmp}/role-runuser.log"
@@ -473,7 +475,7 @@ test_agent_timeout_does_not_depend_on_shell_group_signal() {
   agent_pid_file="${tmp}/agent.pid"
 
   # The old implementation used a shell command to signal a process group.
-  # Sabotaging that path must not affect the native supervisor boundary.
+  # Sabotaging that path must not affect the tini + shell supervisor boundary.
   FAKE_SIGNAL_FAILURE=1 \
     FAKE_AGENT_PID_FILE="${agent_pid_file}" \
     FAKE_SLEEP=30 \
