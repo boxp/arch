@@ -446,6 +446,28 @@ test_interrupted_publish_recovers_partial_destination() {
   assert_contains "${vault}/Novels/NOVEL-I.md" "published file checksum differs from its completed state and was not overwritten"
 }
 
+test_reserved_completed_destination_rejects_changed_manuscript() {
+  local tmp vault state bin dest manuscript reserved_checksum
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "" "" "" "" "- [x] [[Novels/NOVEL-RC|NOVEL-RC: 予約後変更]] #novel status::done assignee::boxp"
+  write_note "${vault}" NOVEL-RC done boxp "予約後変更" "${state}"
+  manuscript="${state}/work/NOVEL-RC/manuscript.md"
+  dest="${vault}/小説草案/AI執筆/2026-07-11-12-36_予約後変更.md"
+  mkdir -p "$(dirname "${dest}")" "${state}/published"
+  printf '# 予約時の完成原稿\n' >"${dest}"
+  reserved_checksum="$(sha256sum "${dest}" | cut -d ' ' -f 1)"
+  printf '# 予約後に編集された原稿\n' >"${manuscript}"
+  printf '{:novel-id "NOVEL-RC", :path "%s", :sha256 "%s", :published-at "2026-07-11T03:36:00Z", :nsfw false, :status :reserved}\n' "${dest}" "${reserved_checksum}" >"${state}/published/NOVEL-RC.edn"
+
+  run_tick "${vault}" "${state}" "${bin}" env
+
+  [[ "$(cat "${dest}")" == '# 予約時の完成原稿' ]] || fail "changed private manuscript overwrote the reserved completed destination"
+  assert_contains "${state}/published/NOVEL-RC.edn" ":status :reserved"
+  assert_not_contains "${vault}/Novels/NOVEL-RC.md" "published-path: \""
+  assert_contains "${vault}/Novels/NOVEL-RC.md" "private manuscript changed after its publication path was reserved"
+}
+
 test_active_and_stale_lock() {
   local tmp vault state bin old
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -571,6 +593,7 @@ test_publish_routing_and_idempotency
 test_collision_and_missing_manuscript_stay_done
 test_publish_reservation_repairs_link
 test_interrupted_publish_recovers_partial_destination
+test_reserved_completed_destination_rejects_changed_manuscript
 test_active_and_stale_lock
 test_double_start_is_locked
 test_parallel_cards_preserve_board_updates

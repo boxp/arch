@@ -635,6 +635,15 @@
         reserved? (= :reserved (:status state))
         published-at (or (not-empty (:published-at fm)) (:published-at state) (now-str))]
     (cond
+      (and reserved? (not (fs/exists? manuscript)))
+      (do (append-history! novel-id "Done publication is waiting: manuscript is missing. Restore the private manuscript and keep the card in Done for retry.")
+          :missing-manuscript)
+
+      (and reserved? (:sha256 state) (not= (:sha256 state) (sha256 manuscript)))
+      (do
+        (append-history! novel-id "Done publication is waiting: the private manuscript changed after its publication path was reserved. Restore the reserved manuscript or explicitly clear the reservation before retrying.")
+        :reserved-manuscript-mismatch)
+
       (and recorded-path (fs/exists? recorded-path) (:sha256 state)
            (= (:sha256 state) (sha256 recorded-path)))
       (do
@@ -662,11 +671,6 @@
       (str/blank? (sanitize-title title))
       (do (append-history! novel-id "Done publication is waiting: title is empty after filename sanitization.")
           :invalid-title)
-
-      (and reserved? (:sha256 state) (not= (:sha256 state) (sha256 manuscript)))
-      (do
-        (append-history! novel-id "Done publication is waiting: the private manuscript changed after its publication path was reserved. Restore the reserved manuscript or explicitly clear the reservation before retrying.")
-        :reserved-manuscript-mismatch)
 
       :else
       (let [manuscript-sha (sha256 manuscript)
