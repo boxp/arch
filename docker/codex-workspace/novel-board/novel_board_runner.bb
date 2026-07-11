@@ -479,15 +479,18 @@
   (write-edn! (terminating-owner-path)
               {:owner-id (owner-id) :runner-instance-id runner-instance-id :created-at (now-str)}))
 
+(defn bypass-approvals? []
+  (= "true" (env "CODEX_NOVEL_BOARD_BYPASS_APPROVALS" "false")))
+
 (defn codex-args [assignee cwd last-message]
   (let [{:keys [base-assignee reasoning-effort]} (parse-codex-assignee assignee)
         model (env "CODEX_NOVEL_BOARD_MODEL" (get assignee->model base-assignee))
         profile (System/getenv "CODEX_NOVEL_BOARD_PROFILE")]
     (cond-> ["codex" "exec" "--json" "--cd" (str cwd) "--skip-git-repo-check"
              "--output-last-message" (str last-message)]
-      (= "true" (env "CODEX_NOVEL_BOARD_BYPASS_APPROVALS" "true"))
+      (bypass-approvals?)
       (conj "--dangerously-bypass-approvals-and-sandbox")
-      (not= "true" (env "CODEX_NOVEL_BOARD_BYPASS_APPROVALS" "true"))
+      (not (bypass-approvals?))
       (into ["--sandbox" (env "CODEX_NOVEL_BOARD_SANDBOX" "workspace-write")
              "--add-dir" (vault)])
       model (into ["--model" model])
@@ -541,7 +544,7 @@
                  :codex (codex-args (:assignee card) (work-dir novel-id) last-message-path)
                  :fable (cond-> ["claude" "--print" "--output-format" "text"
                                   "--add-dir" (vault) "--add-dir" (root)]
-                          (= "true" (env "CODEX_NOVEL_BOARD_BYPASS_APPROVALS" "true"))
+                          (bypass-approvals?)
                           (conj "--dangerously-skip-permissions")
                           (System/getenv "CODEX_NOVEL_BOARD_FABLE_MODEL")
                           (into ["--model" (System/getenv "CODEX_NOVEL_BOARD_FABLE_MODEL")]))

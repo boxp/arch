@@ -249,6 +249,8 @@ test_write_review_and_pi_revision() {
   [[ "$(stat -c %a "${state}/work/NOVEL-2/manuscript.md")" == "600" ]] || fail "working manuscript must be private"
   assert_contains "${args}" "--model gpt-5.6-sol"
   assert_contains "${args}" "model_reasoning_effort=xhigh"
+  assert_contains "${args}" "--sandbox workspace-write --add-dir ${vault}"
+  assert_not_contains "${args}" "--dangerously-bypass-approvals-and-sandbox"
 
   sed -i 's/status::review assignee::boxp/status::review assignee::pi/' "${vault}/Boards/Novel Board.md"
   sed -i '/^## Review Instructions$/a\\\n- 余韻を追加する。' "${vault}/Novels/NOVEL-2.md"
@@ -306,6 +308,7 @@ test_fable_and_failure_return_to_review() {
   FAKE_ARG_LOG="${args}" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-3/manuscript.md" "Claude 初稿"
   assert_contains "${args}" "claude --print"
+  assert_not_contains "${args}" "--dangerously-skip-permissions"
 
   sed -i 's/status::review assignee::boxp/status::review assignee::codex-mini/' "${vault}/Boards/Novel Board.md"
   sed -i '/^## Review Instructions$/a\\\n- 語尾を整える。' "${vault}/Novels/NOVEL-3.md"
@@ -313,6 +316,18 @@ test_fable_and_failure_return_to_review() {
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
   assert_contains "${vault}/Novels/NOVEL-3.md" "agent exited 42"
   assert_contains "${args}" "--model gpt-5.6-luna"
+}
+
+test_explicit_approval_bypass() {
+  local tmp vault state bin args
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; args="${tmp}/args.log"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-BP|NOVEL-BP: Bypass]] #novel status::backlog assignee::codex"
+
+  FAKE_ARG_LOG="${args}" run_tick "${vault}" "${state}" "${bin}" env CODEX_NOVEL_BOARD_BYPASS_APPROVALS=true
+
+  assert_contains "${args}" "--dangerously-bypass-approvals-and-sandbox"
+  assert_not_contains "${args}" "--sandbox"
 }
 
 test_all_task_board_routes_and_unknown_skip() {
@@ -521,6 +536,7 @@ test_write_review_and_pi_revision
 test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved
 test_fable_and_failure_return_to_review
+test_explicit_approval_bypass
 test_all_task_board_routes_and_unknown_skip
 test_publish_routing_and_idempotency
 test_collision_and_missing_manuscript_stay_done
