@@ -33,6 +33,7 @@
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 (def lock-guard-mutexes (vec (repeatedly 256 #(Object.))))
+(def note-lock-mutexes (vec (repeatedly 256 #(Object.))))
 (def publication-lock-mutexes (vec (repeatedly 256 #(Object.))))
 
 (defn env [key default]
@@ -54,6 +55,11 @@
 (defn runs-dir [] (fs/path (root) "runs"))
 (defn work-dir [novel-id] (fs/path (root) "work" novel-id))
 (defn manuscript-path [novel-id] (fs/path (work-dir novel-id) "manuscript.md"))
+(defn note-locks-dir [] (fs/path (root) "note-locks"))
+(defn note-lock-path [novel-id] (fs/path (note-locks-dir) (str novel-id ".lock")))
+(defn note-lock-mutex [novel-id]
+  (nth note-lock-mutexes
+       (Math/floorMod (.hashCode (str novel-id)) (count note-lock-mutexes))))
 (defn published-dir [] (fs/path (root) "published"))
 (defn published-state-path [novel-id] (fs/path (published-dir) (str novel-id ".edn")))
 (defn publication-locks-dir [] (fs/path (root) "publication-locks"))
@@ -89,6 +95,15 @@
     (catch UnsupportedOperationException _ nil))
   path)
 
+(defn with-note-lock [novel-id f]
+  (ensure-private-dir! (note-locks-dir))
+  (locking (note-lock-mutex novel-id)
+    (with-open [file (java.io.RandomAccessFile. (str (note-lock-path novel-id)) "rw")
+                channel (.getChannel file)]
+      (private-file! (note-lock-path novel-id))
+      (let [_file-lock (.lock channel)]
+        (f)))))
+
 (defn atomic-spit! [path content]
   (fs/create-dirs (fs/parent path))
   (let [tmp (fs/path (fs/parent path) (str "." (fs/file-name path) "." (UUID/randomUUID) ".tmp"))]
@@ -123,7 +138,7 @@
     (catch Exception _ fallback)))
 
 (defn ensure-root! []
-  (doseq [path [(root) (locks-dir) (lock-guards-dir) (runs-dir) (published-dir) (publication-locks-dir)
+  (doseq [path [(root) (locks-dir) (lock-guards-dir) (note-locks-dir) (runs-dir) (published-dir) (publication-locks-dir)
                 (fs/path (root) "work")
                 (terminating-owners-dir)]]
     (ensure-private-dir! path))
@@ -171,36 +186,40 @@
     :else (pr-str (str value))))
 
 (defn update-frontmatter! [novel-id updates]
-  (let [path (note-path novel-id)
-        lines (vec (read-lines path))
-        end (when (= "---" (first lines)) (inc (.indexOf (vec (rest lines)) "---")))]
-    (when-not (and end (pos? end))
-      (throw (ex-info "management note has invalid frontmatter" {:novel-id novel-id})))
-    (let [remaining (atom updates)
-          body (mapv (fn [line]
-                       (if-let [[_ key] (re-matches #"^([A-Za-z0-9_-]+):.*$" line)]
-                         (let [k (keyword key)]
-                           (if (contains? @remaining k)
-                             (let [value (get @remaining k)]
-                               (swap! remaining dissoc k)
-                               (str key ": " (yaml-value value)))
-                             line))
-                         line))
-                     (subvec lines 1 end))
-          inserted (mapv (fn [[key value]] (str (name key) ": " (yaml-value value))) @remaining)
-          next-lines (vec (concat ["---"] body inserted ["---"] (subvec lines (inc end))))]
-      (write-lines! path next-lines))))
+  (with-note-lock
+    novel-id
+    #(let [path (note-path novel-id)
+           lines (vec (read-lines path))
+           end (when (= "---" (first lines)) (inc (.indexOf (vec (rest lines)) "---")))]
+       (when-not (and end (pos? end))
+         (throw (ex-info "management note has invalid frontmatter" {:novel-id novel-id})))
+       (let [remaining (atom updates)
+             body (mapv (fn [line]
+                          (if-let [[_ key] (re-matches #"^([A-Za-z0-9_-]+):.*$" line)]
+                            (let [k (keyword key)]
+                              (if (contains? @remaining k)
+                                (let [value (get @remaining k)]
+                                  (swap! remaining dissoc k)
+                                  (str key ": " (yaml-value value)))
+                                line))
+                            line))
+                        (subvec lines 1 end))
+             inserted (mapv (fn [[key value]] (str (name key) ": " (yaml-value value))) @remaining)
+             next-lines (vec (concat ["---"] body inserted ["---"] (subvec lines (inc end))))]
+         (write-lines! path next-lines)))))
 
 (defn append-history! [novel-id message]
-  (let [path (note-path novel-id)
-        content (slurp (str path))
-        entry (str "- " (now-str) ": " message)]
-    (when-not (str/includes? content message)
-      (atomic-spit! path
-                    (if-let [idx (str/index-of content "## Run History")]
-                      (let [insert-at (+ idx (count "## Run History"))]
-                        (str (subs content 0 insert-at) "\n\n" entry (subs content insert-at)))
-                      (str content "\n## Run History\n\n" entry "\n"))))))
+  (with-note-lock
+    novel-id
+    #(let [path (note-path novel-id)
+           content (slurp (str path))
+           entry (str "- " (now-str) ": " message)]
+       (when-not (str/includes? content message)
+         (atomic-spit! path
+                       (if-let [idx (str/index-of content "## Run History")]
+                         (let [insert-at (+ idx (count "## Run History"))]
+                           (str (subs content 0 insert-at) "\n\n" entry (subs content insert-at)))
+                         (str content "\n## Run History\n\n" entry "\n")))))))
 
 (defn valid-id? [value]
   (boolean (re-matches #"[A-Za-z0-9][A-Za-z0-9._-]*" (or value ""))))

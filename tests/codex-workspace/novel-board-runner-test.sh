@@ -330,7 +330,7 @@ test_write_review_and_pi_revision() {
   assert_contains "${args}" "@${image}"
   assert_contains "${args}" "@${markdown_image}"
   assert_not_contains "${args}" "@${outside}"
-  prompt_log="$(find "${state}/runs/NOVEL-2" -name prompt.md | sort | tail -n 1)"
+  prompt_log="$(grep -l -F 'Reference images attached to the agent:' "${state}/runs/NOVEL-2"/*/prompt.md | head -n 1)"
   assert_contains "${prompt_log}" "Reference images attached to the agent:"
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
 }
