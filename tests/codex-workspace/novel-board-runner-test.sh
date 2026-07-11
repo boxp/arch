@@ -426,15 +426,15 @@ test_agent_timeout_returns_to_human_review() {
   [[ ! -e "${escaped_child_marker}" ]] || fail "TERM-handler descendant survived timeout cleanup"
 }
 
-test_agent_timeout_survives_cleanup_failure() {
+test_agent_timeout_falls_back_when_group_signal_fails() {
   local tmp vault state bin summary stderr agent_pid_file agent_pid
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
   make_fake_agents "${bin}"
   write_board "${vault}" "- [ ] [[Novels/NOVEL-TC|NOVEL-TC: Cleanup Timeout]] #novel status::backlog assignee::pi"
   agent_pid_file="${tmp}/agent.pid"
 
-  # Reproduce a process-group signal failure. The timeout outcome must still
-  # be recorded and the card must return to its human review point.
+  # Reproduce process-group signal failures while direct PID signals remain
+  # available. The observed process tree must still be fully collected.
   FAKE_SIGNAL_FAILURE=1 \
     FAKE_AGENT_PID_FILE="${agent_pid_file}" \
     FAKE_SLEEP=30 \
@@ -442,20 +442,23 @@ test_agent_timeout_survives_cleanup_failure() {
     CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
     run_tick "${vault}" "${state}" "${bin}" env
 
-  # The simulated signal failure intentionally leaves the fake agent running.
-  # Clean it up before assertions so a failed assertion cannot leak it.
   agent_pid="$(cat "${agent_pid_file}")"
-  kill -KILL -- "-${agent_pid}" 2>/dev/null || kill -KILL "${agent_pid}" 2>/dev/null || true
+  if ps -eo pgid=,stat= | awk -v pgid="${agent_pid}" \
+    '$1 == pgid && $2 !~ /^Z/ { found = 1 } END { exit found ? 0 : 1 }'; then
+    kill -KILL -- "-${agent_pid}" 2>/dev/null || kill -KILL "${agent_pid}" 2>/dev/null || true
+    fail "direct PID fallback left an active fake agent process running"
+  fi
 
   assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
-  assert_contains "${vault}/Novels/NOVEL-TC.md" "agent timed out after 1 seconds; cleanup was incomplete"
+  assert_contains "${vault}/Novels/NOVEL-TC.md" "agent timed out after 1 seconds"
+  assert_not_contains "${vault}/Novels/NOVEL-TC.md" "cleanup was incomplete"
   summary="$(find "${state}/runs/NOVEL-TC" -name summary.edn -print -quit)"
   stderr="$(find "${state}/runs/NOVEL-TC" -name stderr.log -print -quit)"
   assert_contains "${summary}" ":exit-code 124"
   assert_contains "${summary}" ":timed-out true"
-  assert_contains "${summary}" ":cleanup-error"
+  assert_not_contains "${summary}" ":cleanup-error"
   assert_contains "${stderr}" "terminated the agent after 1 seconds"
-  assert_contains "${stderr}" "Agent timeout cleanup was incomplete"
+  assert_not_contains "${stderr}" "Agent timeout cleanup was incomplete"
 }
 
 test_review_without_instructions_stops() {
@@ -903,7 +906,7 @@ test_manual_title_scaffold
 test_groom_and_human_stop
 test_write_review_and_pi_revision
 test_agent_timeout_returns_to_human_review
-test_agent_timeout_survives_cleanup_failure
+test_agent_timeout_falls_back_when_group_signal_fails
 test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved
 test_fable_and_failure_return_to_review

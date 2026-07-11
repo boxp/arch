@@ -789,7 +789,8 @@
             ;; still retain its process-group ID.
             (try (signal-process-group! process-group-id "KILL")
                  (catch Exception _ nil))
-            (signal-pids! alive "KILL")
+            (try (signal-pids! alive "KILL")
+                 (catch Exception _ nil))
             (Thread/sleep 50)
             (recur)))))))
 
@@ -797,12 +798,22 @@
   ;; setsid makes the direct process PID the process-group ID. Signals sent to
   ;; that group also cover descendants forked by a TERM handler during grace.
   (let [process-group-id (.pid process)
-        grace-seconds (agent-shutdown-grace-seconds)]
-    (signal-process-group! process-group-id "TERM")
+        grace-seconds (agent-shutdown-grace-seconds)
+        observed-pids (active-process-group-pids process-group-id)]
+    ;; Group delivery is preferred because it also reaches descendants forked
+    ;; after this snapshot. It can fail when the session leader disappears or
+    ;; the platform rejects a negative PID, so never let that prevent direct
+    ;; signaling of the members already observed in /proc.
+    (try (signal-process-group! process-group-id "TERM")
+         (catch Exception _ nil))
+    (try (signal-pids! observed-pids "TERM")
+         (catch Exception _ nil))
     (let [survivors (await-process-group! process-group-id grace-seconds)]
       (when (seq survivors)
-        (signal-process-group! process-group-id "KILL")
-        (signal-pids! survivors "KILL"))
+        (try (signal-process-group! process-group-id "KILL")
+             (catch Exception _ nil))
+        (try (signal-pids! survivors "KILL")
+             (catch Exception _ nil)))
       ;; Reap the direct process before the final /proc scan so its zombie does
       ;; not make an otherwise empty process group look active.
       (.waitFor process grace-seconds TimeUnit/SECONDS)
