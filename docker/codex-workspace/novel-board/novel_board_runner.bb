@@ -258,6 +258,7 @@
           (if-let [[_ _ body] (re-matches #"^- \[([ xX])\] (.+)$" line)]
             (let [title (scaffold-title body)]
               (if (and (not (str/includes? body "[["))
+                       (not (token-present? body "#novel-rule"))
                        (not (str/blank? title)))
                 (recur (inc idx) lane
                        (conj cards {:line-index idx

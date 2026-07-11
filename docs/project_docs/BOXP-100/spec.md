@@ -52,7 +52,7 @@ kanban-plugin: board
 
 runner は board lock 内で既存の Board card と `Novels/NOVEL-N.md` を確認し、次の数値 ID を採番して元の行を正規カードへ置換する。管理ノートは `Templates/Novel Management.md` から作成する。`assignee::` を省略した場合は `boxp` とし、scaffold だけで agent を起動しない。`#nsfw` と明示 assignee は正規カード・管理ノートへ引き継ぐ。正規カードへの置換後に停止しても次 tick の通常 sync が不足ノートを作るため、同じ入力行を重複採番しない。
 
-Board 冒頭には正規カード形式、タイトル入力、テンプレート、lane SSOT、human review、Done 公開の運用ルールを常設し、詳細は `Novels/README.md` に記載する。
+Board 冒頭には正規カード形式、タイトル入力、テンプレート、lane SSOT、human review、Done 公開の運用ルールを常設する。さらに各レーン内へ予約タグ `#novel-rule` の説明カードを1枚置き、runner はこれをタイトル-only scaffold 対象から除外する。管理ノート template にも5レーンの Workflow を含め、詳細は `Novels/README.md` に記載する。
 
 ## 3. 状態遷移
 

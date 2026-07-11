@@ -17,13 +17,23 @@ kanban-plugin: board
 
 ## Backlog
 
+- [ ] **運用ルール:** タイトルだけの新規カードを受け付ける。agent 割当時は本文を書かず Requirements と Outline を整理し、完了後に `Draft` へ移す。 #novel-rule
+
 ## Draft
+
+- [ ] **運用ルール:** 執筆開始前の人間確認レーン。条件不足なら人間が `Backlog` へ戻し、執筆を始める場合だけ対応 agent を割り当てる。 #novel-rule
 
 ## In Progress
 
+- [ ] **運用ルール:** 同じ private 原稿で初稿または改稿を進める。レビュー可能、失敗、要件不足、判断待ちのいずれも理由を記録して `Review` へ移す。 #novel-rule
+
 ## Review
 
+- [ ] **運用ルール:** 人間確認レーン。改稿は管理ノートの `Review Instructions` と agent 割当で再開し、承認時だけ人間が `Done` へ移す。 #novel-rule
+
 ## Done
+
+- [ ] **運用ルール:** agent は再実行しない。承認済み原稿をカードの `#nsfw` に従って一度だけ完成版フォルダへ配置する。 #novel-rule
 
 %% kanban:settings
 ```

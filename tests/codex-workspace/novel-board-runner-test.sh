@@ -187,6 +187,9 @@ test_seed_and_entrypoint() {
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "## Done"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" 'Backlog` に `- [ ] タイトル`'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md" "Templates/Novel Management.md"
+  [[ "$(grep -c '#novel-rule' "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Boards/Novel Board.md")" -eq 5 ]] || fail "each Novel Board lane must contain one rule card"
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Templates/Novel Management.md" "## Workflow"
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Templates/Novel Management.md" '`Review Instructions`'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed/Novels/README.md" "## レーン運用"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" "install_novel_board_seed"
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'local vault="${CODEX_NOVEL_BOARD_VAULT:-${task_board_vault}}"'
@@ -287,7 +290,7 @@ test_manual_title_scaffold() {
   local tmp vault state bin note_count card_count
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
   make_fake_agents "${bin}"
-  write_board "${vault}" $'- [ ] 手入力の物語\n- [ ] 夜の手入力 #nsfw'
+  write_board "${vault}" $'- [ ] Backlog の説明 #novel-rule\n- [ ] 手入力の物語\n- [ ] 夜の手入力 #nsfw'
   write_note "${vault}" NOVEL-7 backlog boxp "既存作品" "${state}"
   printf '\n## Custom Template Marker\n\ntitle: 本文中のカスタム行は保持する。\n' >>"${vault}/Templates/Novel Management.md"
 
@@ -296,6 +299,8 @@ test_manual_title_scaffold() {
   assert_contains "${vault}/Boards/Novel Board.md" '[[Novels/NOVEL-8|NOVEL-8: 手入力の物語]] #novel status::backlog assignee::boxp'
   assert_contains "${vault}/Boards/Novel Board.md" '[[Novels/NOVEL-9|NOVEL-9: 夜の手入力]] #novel #nsfw status::backlog assignee::boxp'
   assert_not_contains "${vault}/Boards/Novel Board.md" '- [ ] 手入力の物語'
+  assert_contains "${vault}/Boards/Novel Board.md" '- [ ] Backlog の説明 #novel-rule'
+  assert_not_contains "${vault}/Boards/Novel Board.md" 'NOVEL-10'
   assert_contains "${vault}/Novels/NOVEL-8.md" 'id: "NOVEL-8"'
   assert_contains "${vault}/Novels/NOVEL-8.md" 'title: "手入力の物語"'
   assert_contains "${vault}/Novels/NOVEL-8.md" '# 手入力の物語'
