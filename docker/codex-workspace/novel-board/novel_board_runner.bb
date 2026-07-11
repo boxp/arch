@@ -760,6 +760,39 @@
                        :signal signal
                        :exit exit})))))
 
+(defn signal-pids! [pids signal]
+  (when (seq pids)
+    (let [{:keys [exit err]}
+          @(p/process (into ["kill" "-s" signal "--"] (map str pids))
+                      {:out :string :err :string})]
+      (when (and (not (zero? exit))
+                 (some (fn [pid]
+                         (when-let [stat (process-stat (fs/path "/proc" (str pid) "stat"))]
+                           (not= "Z" (:state stat))))
+                       pids))
+        (throw (ex-info (str "failed to send " signal " to agent PIDs " pids
+                             ": " (str/trim (or err "")))
+                        {:pids pids :signal signal :exit exit}))))))
+
+(defn force-terminate-process-group! [process-group-id timeout-seconds]
+  (let [deadline (+ (System/nanoTime) (* timeout-seconds 1000000000))]
+    (loop []
+      (let [alive (active-process-group-pids process-group-id)]
+        (cond
+          (empty? alive) []
+          (not (pos? (- deadline (System/nanoTime)))) alive
+          :else
+          (do
+            ;; Keep signaling the group to cover processes forked after the
+            ;; previous scan. Also signal the observed PIDs directly because
+            ;; the session leader may already have exited while descendants
+            ;; still retain its process-group ID.
+            (try (signal-process-group! process-group-id "KILL")
+                 (catch Exception _ nil))
+            (signal-pids! alive "KILL")
+            (Thread/sleep 50)
+            (recur)))))))
+
 (defn terminate-process-group! [process]
   ;; setsid makes the direct process PID the process-group ID. Signals sent to
   ;; that group also cover descendants forked by a TERM handler during grace.
@@ -768,27 +801,42 @@
     (signal-process-group! process-group-id "TERM")
     (let [survivors (await-process-group! process-group-id grace-seconds)]
       (when (seq survivors)
-        (signal-process-group! process-group-id "KILL"))
+        (signal-process-group! process-group-id "KILL")
+        (signal-pids! survivors "KILL"))
       ;; Reap the direct process before the final /proc scan so its zombie does
       ;; not make an otherwise empty process group look active.
       (.waitFor process grace-seconds TimeUnit/SECONDS)
-      (let [remaining (await-process-group! process-group-id grace-seconds)]
+      (let [remaining (force-terminate-process-group! process-group-id grace-seconds)]
         (when (seq remaining)
           (throw (ex-info (str "agent process group did not exit after forced termination: " remaining)
                           {:process-group-id process-group-id
                            :pids remaining})))))))
 
 (defn await-agent! [args opts]
-  (let [handle (p/process (into ["setsid" "--wait"] args) opts)
+  ;; Do not use `setsid --wait` here. In wait mode util-linux keeps a wrapper
+  ;; process in one session while launching the agent in another, so the
+  ;; wrapper PID is not the process-group ID that owns the agent descendants.
+  (let [handle (p/process (into ["setsid"] args) opts)
         process (:proc handle)
         timeout-seconds (agent-timeout-seconds)]
     (if (.waitFor process timeout-seconds TimeUnit/SECONDS)
       {:process-result @handle :timed-out? false}
-      (do
-        (terminate-process-group! process)
-        (let [process-result @handle]
-          {:process-result (assoc process-result :exit 124)
-           :timed-out? true})))))
+      (let [cleanup-error (try
+                            (terminate-process-group! process)
+                            nil
+                            (catch Exception e
+                              {:message (.getMessage e)
+                               :data (ex-data e)}))
+            _ (when cleanup-error
+                (try (.destroyForcibly process)
+                     (catch Exception _ nil)))]
+        ;; A timeout remains a timeout even when best-effort cleanup reports
+        ;; surviving PIDs. Do not dereference the process handle here: a
+        ;; cleanup failure must not prevent the card from reaching its human
+        ;; review lane and recording exit 124.
+        {:process-result {:exit 124}
+         :timed-out? true
+         :cleanup-error cleanup-error}))))
 
 (defn run-agent! [card action run]
   (let [novel-id (:novel-id card)
@@ -829,12 +877,17 @@
                  (= route :pi) (assoc :in (io/file "/dev/null"))
                  (not= route :pi) (assoc :in (io/file (str prompt-path)))
                  (#{:fable :pi} route) (assoc :dir (str (work-dir novel-id))))
-          {:keys [process-result timed-out?]} (await-agent! args opts)
+          {:keys [process-result timed-out? cleanup-error]} (await-agent! args opts)
           exit (:exit process-result)
           _ (when timed-out?
               (spit (str stderr-path)
                     (str "Novel Board runner terminated the agent after "
                          (agent-timeout-seconds) " seconds.\n")
+                    :append true))
+          _ (when cleanup-error
+              (spit (str stderr-path)
+                    (str "Agent timeout cleanup was incomplete: "
+                         (:message cleanup-error) "\n")
                     :append true))
           _ (when (and (not= route :codex) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path)) (io/file (str last-message-path))))
@@ -843,10 +896,12 @@
       (doseq [path [stdout-path stderr-path last-message-path]]
         (when (fs/exists? path) (private-file! path)))
       (mark-run! novel-id run (if (zero? exit) :succeeded :failed)
-                 {:action action :agent (:assignee card) :lane (:lane card)
-                  :exit-code exit :timed-out timed-out?
-                  :result marker :finished-at (now-str)})
-      {:exit exit :timed-out? timed-out? :result marker :last-message last-message})
+                 (cond-> {:action action :agent (:assignee card) :lane (:lane card)
+                          :exit-code exit :timed-out timed-out?
+                          :result marker :finished-at (now-str)}
+                   cleanup-error (assoc :cleanup-error cleanup-error)))
+      (cond-> {:exit exit :timed-out? timed-out? :result marker :last-message last-message}
+        cleanup-error (assoc :cleanup-error cleanup-error)))
       (finally
         (when (fs/exists? (manuscript-path novel-id))
           (private-file! (manuscript-path novel-id)))))))
@@ -1092,10 +1147,12 @@
                       (update-frontmatter! novel-id {:status "in-progress"}))
                     (append-history! novel-id (str "Novel Board run " run " started from " (:lane fresh-card) " with action " (name action) " using " (:assignee fresh-card) "."))
                     (let [expected-status (if (#{:write :revise} action) "in-progress" (:status fresh-card))
-                          {:keys [exit result timed-out?]} (run-agent! (assoc fresh-card :status expected-status) action run)
+                          {:keys [exit result timed-out? cleanup-error]} (run-agent! (assoc fresh-card :status expected-status) action run)
                           next-status (if (= action :groom) "draft" "review")
                           outcome (cond
-                                    timed-out? (str "agent timed out after " (agent-timeout-seconds) " seconds")
+                                    timed-out? (str "agent timed out after " (agent-timeout-seconds) " seconds"
+                                                    (when cleanup-error
+                                                      (str "; cleanup was incomplete: " (:message cleanup-error))))
                                     (not (zero? exit)) (str "agent exited " exit)
                                     (= result :blocked) "human decision or missing input requested"
                                     (nil? result) "result marker missing"

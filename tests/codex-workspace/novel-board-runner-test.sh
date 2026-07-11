@@ -97,6 +97,17 @@ EOF
 make_fake_agents() {
   local bin="$1"
   mkdir -p "${bin}"
+  cat >"${bin}/bash" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+if [[ "${FAKE_SIGNAL_FAILURE:-}" == "1" && "${1:-}" == "-c" && "${2:-}" == *'kill -s '* ]]; then
+  printf 'simulated signal failure\n' >&2
+  exit 99
+fi
+exec /bin/bash "$@"
+EOF
+  chmod +x "${bin}/bash"
+
   cat >"${bin}/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -151,6 +162,7 @@ prompt="${!#}"
 manuscript="$(printf '%s\n' "${prompt}" | sed -n 's/^Manuscript path: //p' | head -n 1)"
 mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
+[[ -n "${FAKE_AGENT_PID_FILE:-}" ]] && printf '%s\n' "$$" >"${FAKE_AGENT_PID_FILE}"
 if [[ -n "${FAKE_TERM_FORK_CHILD_MARKER:-}" ]]; then
   trap '(
     trap "" TERM
@@ -412,6 +424,38 @@ test_agent_timeout_returns_to_human_review() {
   assert_contains "${stderr}" "terminated the agent after 1 seconds"
   [[ -e "${escaped_child_marker}.started" ]] || fail "TERM handler did not fork the regression-test child"
   [[ ! -e "${escaped_child_marker}" ]] || fail "TERM-handler descendant survived timeout cleanup"
+}
+
+test_agent_timeout_survives_cleanup_failure() {
+  local tmp vault state bin summary stderr agent_pid_file agent_pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-TC|NOVEL-TC: Cleanup Timeout]] #novel status::backlog assignee::pi"
+  agent_pid_file="${tmp}/agent.pid"
+
+  # Reproduce a process-group signal failure. The timeout outcome must still
+  # be recorded and the card must return to its human review point.
+  FAKE_SIGNAL_FAILURE=1 \
+    FAKE_AGENT_PID_FILE="${agent_pid_file}" \
+    FAKE_SLEEP=30 \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env
+
+  # The simulated signal failure intentionally leaves the fake agent running.
+  # Clean it up before assertions so a failed assertion cannot leak it.
+  agent_pid="$(cat "${agent_pid_file}")"
+  kill -KILL -- "-${agent_pid}" 2>/dev/null || kill -KILL "${agent_pid}" 2>/dev/null || true
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+  assert_contains "${vault}/Novels/NOVEL-TC.md" "agent timed out after 1 seconds; cleanup was incomplete"
+  summary="$(find "${state}/runs/NOVEL-TC" -name summary.edn -print -quit)"
+  stderr="$(find "${state}/runs/NOVEL-TC" -name stderr.log -print -quit)"
+  assert_contains "${summary}" ":exit-code 124"
+  assert_contains "${summary}" ":timed-out true"
+  assert_contains "${summary}" ":cleanup-error"
+  assert_contains "${stderr}" "terminated the agent after 1 seconds"
+  assert_contains "${stderr}" "Agent timeout cleanup was incomplete"
 }
 
 test_review_without_instructions_stops() {
@@ -859,6 +903,7 @@ test_manual_title_scaffold
 test_groom_and_human_stop
 test_write_review_and_pi_revision
 test_agent_timeout_returns_to_human_review
+test_agent_timeout_survives_cleanup_failure
 test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved
 test_fable_and_failure_return_to_review
