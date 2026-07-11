@@ -597,21 +597,62 @@
   (update-frontmatter! novel-id {:published-path (str path) :published-at published-at})
   (append-history! novel-id (str "Published approved manuscript once: [[" (str/replace (vault-relative path) #"\.md$" "") "]].")))
 
+(defn publication-temp-path [novel-id dest]
+  (fs/path (fs/parent dest) (str "." (fs/file-name dest) "." novel-id ".publishing")))
+
+(defn atomic-publish-copy! [novel-id manuscript dest expected-sha]
+  (let [tmp (publication-temp-path novel-id dest)]
+    (Files/copy (.toPath (io/file (str manuscript)))
+                (.toPath (io/file (str tmp)))
+                (into-array StandardCopyOption [StandardCopyOption/REPLACE_EXISTING]))
+    (private-file! tmp)
+    (let [staged-sha (sha256 tmp)]
+      (when-not (= expected-sha staged-sha)
+        (throw (ex-info "staged publication checksum does not match the reserved manuscript"
+                        {:expected expected-sha :actual staged-sha :path (str tmp)}))))
+    (Files/move (.toPath (io/file (str tmp)))
+                (.toPath (io/file (str dest)))
+                (into-array StandardCopyOption [StandardCopyOption/ATOMIC_MOVE]))
+    (let [published-sha (sha256 dest)]
+      (when-not (= expected-sha published-sha)
+        (throw (ex-info "published file checksum does not match the reserved manuscript"
+                        {:expected expected-sha :actual published-sha :path (str dest)}))))))
+
+(defn finalize-publication! [novel-id dest published-at nsfw expected-sha]
+  (write-edn! (published-state-path novel-id)
+              {:novel-id novel-id :path (str dest) :sha256 expected-sha
+               :published-at published-at :nsfw nsfw :status :published})
+  (ensure-published-link! novel-id dest published-at)
+  (log! (str "published " novel-id " to " dest)))
+
 (defn publish! [{:keys [novel-id title nsfw]}]
   (let [fm (note-frontmatter novel-id)
         manuscript (fs/path (or (not-empty (:manuscript fm)) (manuscript-path novel-id)))
         state-path (published-state-path novel-id)
         state (read-edn state-path {})
-        recorded-path (or (not-empty (:published-path fm)) (:path state))]
+        fm-recorded-path (not-empty (:published-path fm))
+        recorded-path (or fm-recorded-path (:path state))
+        reserved? (= :reserved (:status state))
+        published-at (or (not-empty (:published-at fm)) (:published-at state) (now-str))]
     (cond
-      (and recorded-path (fs/exists? recorded-path))
-      (let [published-at (or (not-empty (:published-at fm)) (:published-at state) (now-str))
-            next-state (merge state {:novel-id novel-id :path (str recorded-path)
-                                     :published-at published-at :nsfw nsfw :status :published}
-                              (when (fs/exists? manuscript) {:sha256 (sha256 manuscript)}))]
-        (write-edn! state-path next-state)
-        (ensure-published-link! novel-id recorded-path published-at)
-        (log! (str novel-id " already published at " recorded-path))
+      (and recorded-path (fs/exists? recorded-path) (:sha256 state)
+           (= (:sha256 state) (sha256 recorded-path)))
+      (do
+        (finalize-publication! novel-id recorded-path published-at nsfw (:sha256 state))
+        :already-published)
+
+      (and recorded-path (fs/exists? recorded-path) (= :published (:status state)))
+      (if (:sha256 state)
+        (do
+          (append-history! novel-id (str "Done publication is waiting: published file checksum differs from its completed state and was not overwritten: " recorded-path))
+          :published-checksum-mismatch)
+        (let [published-sha (sha256 recorded-path)]
+          (finalize-publication! novel-id recorded-path published-at nsfw published-sha)
+          :already-published))
+
+      (and fm-recorded-path (fs/exists? fm-recorded-path) (not reserved?))
+      (let [published-sha (sha256 fm-recorded-path)]
+        (finalize-publication! novel-id fm-recorded-path published-at nsfw published-sha)
         :already-published)
 
       (not (fs/exists? manuscript))
@@ -622,31 +663,40 @@
       (do (append-history! novel-id "Done publication is waiting: title is empty after filename sanitization.")
           :invalid-title)
 
+      (and reserved? (:sha256 state) (not= (:sha256 state) (sha256 manuscript)))
+      (do
+        (append-history! novel-id "Done publication is waiting: the private manuscript changed after its publication path was reserved. Restore the reserved manuscript or explicitly clear the reservation before retrying.")
+        :reserved-manuscript-mismatch)
+
       :else
-      (let [dest-dir (fs/path (vault) (if nsfw "NSFW/小説/AI執筆" "小説草案/AI執筆"))
+      (let [manuscript-sha (sha256 manuscript)
+            dest-dir (fs/path (vault) (if nsfw "NSFW/小説/AI執筆" "小説草案/AI執筆"))
             timestamp (.format (DateTimeFormatter/ofPattern "yyyy-MM-dd-HH-mm")
                                (ZonedDateTime/now (ZoneId/of "Asia/Tokyo")))
             dest (if recorded-path
                    (fs/path recorded-path)
-                   (fs/path dest-dir (str timestamp "_" (sanitize-title title) ".md")))]
+                   (fs/path dest-dir (str timestamp "_" (sanitize-title title) ".md")))
+            expected-sha (or (:sha256 state) manuscript-sha)]
         (fs/create-dirs dest-dir)
-        (if (and (not recorded-path) (fs/exists? dest))
+        (cond
+          (and reserved? (fs/exists? dest) (= expected-sha (sha256 dest)))
+          (do
+            (finalize-publication! novel-id dest published-at nsfw expected-sha)
+            :already-published)
+
+          (and (fs/exists? dest) (not reserved?))
           (do (append-history! novel-id (str "Done publication is waiting: destination already exists and was not overwritten: " dest))
               :collision)
+
+          :else
           (do
-            (let [published-at (or (:published-at state) (now-str))]
-              (write-edn! state-path {:novel-id novel-id :path (str dest) :published-at published-at
-                                      :nsfw nsfw :status :reserved}))
-            (Files/copy (.toPath (io/file (str manuscript)))
-                        (.toPath (io/file (str dest)))
-                        (make-array StandardCopyOption 0))
-            (let [published-at (or (:published-at (read-edn state-path {})) (now-str))
-                  final-state {:novel-id novel-id :path (str dest) :sha256 (sha256 manuscript)
-                               :published-at published-at :nsfw nsfw :status :published}]
-              (write-edn! state-path final-state)
-              (ensure-published-link! novel-id dest published-at)
-              (log! (str "published " novel-id " to " dest))
-              :published)))))))
+            (write-edn! state-path {:novel-id novel-id :path (str dest) :sha256 manuscript-sha
+                                    :published-at published-at :nsfw nsfw :status :reserved})
+            (when (and reserved? (fs/exists? dest))
+              (Files/delete (.toPath (io/file (str dest)))))
+            (atomic-publish-copy! novel-id manuscript dest manuscript-sha)
+            (finalize-publication! novel-id dest published-at nsfw manuscript-sha)
+            :published))))))
 
 (defn process-card! [card]
   (let [action (candidate-action card)]

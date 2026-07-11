@@ -417,6 +417,35 @@ test_publish_reservation_repairs_link() {
   [[ "$(find "${vault}/小説草案/AI執筆" -maxdepth 1 -type f | wc -l)" -eq 1 ]] || fail "reservation recovery duplicated publication"
 }
 
+test_interrupted_publish_recovers_partial_destination() {
+  local tmp vault state bin dest manuscript checksum temp
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "" "" "" "" "- [x] [[Novels/NOVEL-I|NOVEL-I: 中断復旧]] #novel status::done assignee::boxp"
+  write_note "${vault}" NOVEL-I done boxp "中断復旧" "${state}"
+  manuscript="${state}/work/NOVEL-I/manuscript.md"
+  printf '# 中断復旧\n\nこれは完全な完成原稿です。\n' >"${manuscript}"
+  checksum="$(sha256sum "${manuscript}" | cut -d ' ' -f 1)"
+  dest="${vault}/小説草案/AI執筆/2026-07-11-12-35_中断復旧.md"
+  temp="$(dirname "${dest}")/.$(basename "${dest}").NOVEL-I.publishing"
+  mkdir -p "$(dirname "${dest}")" "${state}/published"
+  printf '# 中断' >"${dest}"
+  printf '# 中' >"${temp}"
+  printf '{:novel-id "NOVEL-I", :path "%s", :sha256 "%s", :published-at "2026-07-11T03:35:00Z", :nsfw false, :status :reserved}\n' "${dest}" "${checksum}" >"${state}/published/NOVEL-I.edn"
+
+  run_tick "${vault}" "${state}" "${bin}" env
+  cmp "${manuscript}" "${dest}" || fail "interrupted publication was not restored from the complete manuscript"
+  [[ ! -e "${temp}" ]] || fail "publication staging file remained after recovery"
+  assert_contains "${state}/published/NOVEL-I.edn" ":sha256 \"${checksum}\""
+  assert_contains "${state}/published/NOVEL-I.edn" ":status :published"
+  assert_contains "${vault}/Novels/NOVEL-I.md" "published-path: \"${dest}\""
+
+  printf '# 公開後に破損' >"${dest}"
+  run_tick "${vault}" "${state}" "${bin}" env
+  [[ "$(cat "${dest}")" == '# 公開後に破損' ]] || fail "completed publication checksum mismatch was overwritten"
+  assert_contains "${vault}/Novels/NOVEL-I.md" "published file checksum differs from its completed state and was not overwritten"
+}
+
 test_active_and_stale_lock() {
   local tmp vault state bin old
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -541,6 +570,7 @@ test_all_task_board_routes_and_unknown_skip
 test_publish_routing_and_idempotency
 test_collision_and_missing_manuscript_stay_done
 test_publish_reservation_repairs_link
+test_interrupted_publish_recovers_partial_destination
 test_active_and_stale_lock
 test_double_start_is_locked
 test_parallel_cards_preserve_board_updates

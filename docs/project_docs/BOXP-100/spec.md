@@ -109,7 +109,7 @@ Done tick 時点のカードに正規タグ `#nsfw` があれば `NSFW/小説/AI
 
 ファイル名は日本標準時の `YYYY-MM-DD-HH-mm_タイトル.md`。title は path separator と制御文字を除去する。同名が存在する場合は上書きせず配置失敗として記録する。
 
-冪等性は管理ノートの `published-path` に加え、card lock と `published.edn` に保存する `novel-id`、原稿 SHA-256、path、timestamp、reservation status で保証する。コピー前に destination を予約し、既存記録の path が存在すれば再コピーせず管理ノートの link を修復する。Done 再走査やコピー直後の runner 再起動でも同一 ID の完成版は増えない。管理ノートには vault 相対 wiki link を残す。
+冪等性は管理ノートの `published-path` に加え、card lock と `published.edn` に保存する `novel-id`、原稿 SHA-256、path、timestamp、reservation status で保証する。コピー前に destination と原稿 SHA-256 を予約し、同じディレクトリの private staging file へコピーしてハッシュを検証した後、最終 path へ atomic move する。予約状態の最終 path が存在する場合も予約ハッシュを検証し、旧 runner の中断コピーによる不完全ファイルなら同じ予約 path へ完全な原稿を再配置する。`published` 状態のハッシュ不一致や未予約の同名ファイルは上書きしない。Done 再走査やコピー直後の runner 再起動でも同一 ID の完成版は増えない。管理ノートには vault 相対 wiki link を残す。
 
 ## 8. assignee と CLI route
 
