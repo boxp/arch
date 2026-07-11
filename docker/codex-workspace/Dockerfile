@@ -43,6 +43,7 @@ RUN apt-get update \
       tar \
       tmux \
       unzip \
+      util-linux \
       vim \
       xz-utils \
     && install -d -m 0755 /etc/apt/keyrings \

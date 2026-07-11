@@ -151,13 +151,14 @@ prompt="${!#}"
 manuscript="$(printf '%s\n' "${prompt}" | sed -n 's/^Manuscript path: //p' | head -n 1)"
 mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
-if [[ -n "${FAKE_TERM_IGNORING_CHILD_MARKER:-}" ]]; then
-  (
-    trap '' TERM
-    sleep "${FAKE_TERM_IGNORING_CHILD_SLEEP:-4}"
-    printf 'survived timeout\n' >"${FAKE_TERM_IGNORING_CHILD_MARKER}"
+if [[ -n "${FAKE_TERM_FORK_CHILD_MARKER:-}" ]]; then
+  trap '(
+    trap "" TERM
+    sleep "${FAKE_TERM_FORK_CHILD_SLEEP:-4}"
+    printf "survived timeout\\n" >"${FAKE_TERM_FORK_CHILD_MARKER}"
   ) &
-  wait "$!"
+  exit 143' TERM
+  while :; do sleep 10; done
 fi
 sleep "${FAKE_SLEEP:-0}"
 printf '%s\n' "${FAKE_RESULT:-NOVEL_BOARD_RESULT: review}"
@@ -390,14 +391,15 @@ test_agent_timeout_returns_to_human_review() {
   make_fake_agents "${bin}"
   write_board "${vault}" "- [ ] [[Novels/NOVEL-T|NOVEL-T: Timeout]] #novel status::backlog assignee::pi"
 
-  escaped_child_marker="${tmp}/term-ignoring-child-survived"
-  FAKE_TERM_IGNORING_CHILD_MARKER="${escaped_child_marker}" \
-    FAKE_TERM_IGNORING_CHILD_SLEEP=4 \
+  escaped_child_marker="${tmp}/term-handler-child-survived"
+  FAKE_TERM_FORK_CHILD_MARKER="${escaped_child_marker}" \
+    FAKE_TERM_FORK_CHILD_SLEEP=4 \
     CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
     CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
     run_tick "${vault}" "${state}" "${bin}" env
 
-  # A TERM-ignoring descendant would create this after the runner returned.
+  # The parent forks this TERM-ignoring child only from its TERM handler. A
+  # timeout-time process tree snapshot cannot see it; process-group KILL must.
   sleep 3
 
   assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
@@ -407,7 +409,7 @@ test_agent_timeout_returns_to_human_review() {
   assert_contains "${summary}" ":exit-code 124"
   assert_contains "${summary}" ":timed-out true"
   assert_contains "${stderr}" "terminated the agent after 1 seconds"
-  [[ ! -e "${escaped_child_marker}" ]] || fail "TERM-ignoring agent descendant survived timeout cleanup"
+  [[ ! -e "${escaped_child_marker}" ]] || fail "TERM-handler descendant survived timeout cleanup"
 }
 
 test_review_without_instructions_stops() {

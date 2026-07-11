@@ -711,26 +711,32 @@
 (defn result-marker [message]
   (some->> (re-seq #"(?m)^NOVEL_BOARD_RESULT:\s*(review|blocked)\s*$" (or message "")) last second keyword))
 
-(defn process-tree-handles [process]
-  (with-open [descendants (.descendants process)]
-    (vec (cons (.toHandle process)
-               (iterator-seq (.iterator descendants))))))
+(defn process-stat [stat-path]
+  (try
+    (when-let [[_ pid state _ process-group-id]
+               (re-matches #"(?s)^(\d+)\s+\(.*\)\s+(\S)\s+(\d+)\s+(\d+)\s+.*$"
+                           (Files/readString stat-path))]
+      {:pid (Long/parseLong pid)
+       :state state
+       :process-group-id (Long/parseLong process-group-id)})
+    (catch Exception _ nil)))
 
-(defn process-handle-active? [process-handle]
-  (when (.isAlive process-handle)
-    (let [stat-path (fs/path "/proc" (str (.pid process-handle)) "stat")]
-      ;; ProcessHandle.isAlive may remain true for an orphaned zombie until the
-      ;; container's PID 1 reaps it. A zombie has already exited and cannot
-      ;; mutate the manuscript, so it is not an active timeout survivor.
-      (not (and (fs/exists? stat-path)
-                (try
-                  (re-find #"\)\s+Z\s" (Files/readString (.toPath (io/file (str stat-path)))))
-                  (catch Exception _ false)))))))
+(defn active-process-group-pids [process-group-id]
+  (->> (fs/list-dir "/proc")
+       (keep (fn [entry]
+               (let [name (str (fs/file-name entry))]
+                 (when (re-matches #"\d+" name)
+                   (process-stat (fs/path entry "stat"))))))
+       (filter #(and (= process-group-id (:process-group-id %))
+                     (not= "Z" (:state %))))
+       (mapv :pid)
+       sort
+       vec))
 
-(defn await-process-handles! [handles timeout-seconds]
+(defn await-process-group! [process-group-id timeout-seconds]
   (let [deadline (+ (System/nanoTime) (* timeout-seconds 1000000000))]
     (loop []
-      (let [alive (filterv process-handle-active? handles)
+      (let [alive (active-process-group-pids process-group-id)
             remaining-nanos (- deadline (System/nanoTime))]
         (if (or (empty? alive) (not (pos? remaining-nanos)))
           alive
@@ -738,39 +744,48 @@
             (Thread/sleep (long (min 50 (max 1 (quot remaining-nanos 1000000)))))
             (recur)))))))
 
-(defn destroy-forcibly-if-active! [process-handle]
-  (try
-    (.destroyForcibly process-handle)
-    (catch Exception e
-      ;; A process can exit between the active snapshot and this signal.
-      (when (process-handle-active? process-handle)
-        (throw e)))))
+(defn signal-process-group! [process-group-id signal]
+  (let [target (str "-" process-group-id)
+        {:keys [exit err]}
+        @(p/process ["bash" "-c" "kill -s \"$1\" -- \"$2\""
+                     "novel-board-signal" signal target]
+                    {:out :string :err :string})]
+    ;; The group can disappear between the signal and this check. Only fail if
+    ;; active members still exist and the signal could not be delivered.
+    (when (and (not (zero? exit))
+               (seq (active-process-group-pids process-group-id)))
+      (throw (ex-info (str "failed to send " signal " to agent process group "
+                           process-group-id ": " (str/trim (or err "")))
+                      {:process-group-id process-group-id
+                       :signal signal
+                       :exit exit})))))
 
-(defn terminate-process-tree! [handle process]
-  ;; Capture descendants before the parent exits and the OS reparents them.
-  (let [tree (process-tree-handles process)
+(defn terminate-process-group! [process]
+  ;; setsid makes the direct process PID the process-group ID. Signals sent to
+  ;; that group also cover descendants forked by a TERM handler during grace.
+  (let [process-group-id (.pid process)
         grace-seconds (agent-shutdown-grace-seconds)]
-    (p/destroy-tree handle)
-    (let [survivors (await-process-handles! tree grace-seconds)]
-      (doseq [process-handle (reverse survivors)]
-        (destroy-forcibly-if-active! process-handle))
-      ;; Reap the direct child before checking the captured ProcessHandles.
-      ;; On Linux an unreaped direct child can still appear alive here.
+    (signal-process-group! process-group-id "TERM")
+    (let [survivors (await-process-group! process-group-id grace-seconds)]
+      (when (seq survivors)
+        (signal-process-group! process-group-id "KILL"))
+      ;; Reap the direct process before the final /proc scan so its zombie does
+      ;; not make an otherwise empty process group look active.
       (.waitFor process grace-seconds TimeUnit/SECONDS)
-      (let [remaining (await-process-handles! survivors grace-seconds)]
+      (let [remaining (await-process-group! process-group-id grace-seconds)]
         (when (seq remaining)
-          (let [pids (mapv #(.pid %) remaining)]
-            (throw (ex-info (str "agent process tree did not exit after forced termination: " pids)
-                            {:pids pids}))))))))
+          (throw (ex-info (str "agent process group did not exit after forced termination: " remaining)
+                          {:process-group-id process-group-id
+                           :pids remaining})))))))
 
 (defn await-agent! [args opts]
-  (let [handle (p/process args opts)
+  (let [handle (p/process (into ["setsid" "--wait"] args) opts)
         process (:proc handle)
         timeout-seconds (agent-timeout-seconds)]
     (if (.waitFor process timeout-seconds TimeUnit/SECONDS)
       {:process-result @handle :timed-out? false}
       (do
-        (terminate-process-tree! handle process)
+        (terminate-process-group! process)
         (let [process-result @handle]
           {:process-result (assoc process-result :exit 124)
            :timed-out? true})))))
