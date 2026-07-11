@@ -416,12 +416,19 @@ test_active_and_stale_lock() {
   mkdir -p "${state}/terminating-owners"
   printf '{:owner-id "other", :runner-instance-id "other", :created-at "%s"}\n' "$(date -u +%FT%TZ)" >"${state}/terminating-owners/other.edn"
   run_tick "${vault}" "${state}" "${bin}" env
+  [[ -f "${state}/locks/NOVEL-L.edn" ]] || fail "planned shutdown marker recovered a fresh lock"
+  [[ -f "${state}/terminating-owners/other.edn" ]] || fail "planned shutdown marker was removed while its lock remained active"
+  [[ ! -d "${state}/runs/NOVEL-L" ]] || fail "planned shutdown marker allowed a second run before heartbeat became stale"
+
+  old="$(date -u -d '10 seconds ago' +%FT%TZ)"
+  printf '{:novel-id "NOVEL-L", :run-id "active", :owner-id "other", :runner-instance-id "other", :heartbeat-at "%s"}\n' "${old}" >"${state}/locks/NOVEL-L.edn"
+  run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-L/manuscript.md" "本文です"
-  assert_contains "${vault}/Novels/NOVEL-L.md" "recovered after planned owner shutdown"
+  assert_contains "${vault}/Novels/NOVEL-L.md" "recovered after planned owner shutdown with stale heartbeat"
   assert_contains "${state}/runs/NOVEL-L/active/summary.edn" ":status :interrupted"
+  [[ ! -f "${state}/terminating-owners/other.edn" ]] || fail "planned shutdown marker remained after its last lock was recovered"
 
   sed -i 's/status::review assignee::boxp/status::in-progress assignee::codex/' "${vault}/Boards/Novel Board.md"
-  old="$(date -u -d '10 seconds ago' +%FT%TZ)"
   printf '{:novel-id "NOVEL-L", :run-id "stale", :owner-id "old", :runner-instance-id "old", :heartbeat-at "%s"}\n' "${old}" >"${state}/locks/NOVEL-L.edn"
   run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-L/manuscript.md" "本文です"

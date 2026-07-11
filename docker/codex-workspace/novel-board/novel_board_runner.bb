@@ -458,17 +458,21 @@
                    [_ marker] (get owner->marker (:owner-id lock))
                    planned? (and marker (not= (:runner-instance-id marker) runner-instance-id))
                    stale? (> (instant-age-seconds (:heartbeat-at lock)) stale-seconds)]
-               (when (or planned? stale?)
-                 (let [reason (if planned? "planned owner shutdown" "stale heartbeat")]
+               (when stale?
+                 (let [reason (if planned? "planned owner shutdown with stale heartbeat" "stale heartbeat")]
                    (when (fs/exists? (note-path novel-id))
                      (append-history! novel-id (str "Interrupted run " (:run-id lock) " recovered after " reason ". Resume from the current Novel Board lane.")))
                    (when (:run-id lock)
                      (mark-run! novel-id (:run-id lock) :interrupted {:reason reason :lock lock}))
                    (fs/delete-if-exists path)
                    (log! (str "recovered " novel-id " lock after " reason)))))))))
-    (doseq [[path marker] markers]
-      (when (not= (:runner-instance-id marker) runner-instance-id)
-        (fs/delete-if-exists path)))))
+    (let [locked-owner-ids (->> (fs/glob (locks-dir) "*.edn")
+                                (keep (fn [path] (:owner-id (read-edn path {}))))
+                                set)]
+      (doseq [[path marker] markers]
+        (when (and (not= (:runner-instance-id marker) runner-instance-id)
+                   (not (contains? locked-owner-ids (:owner-id marker))))
+          (fs/delete-if-exists path))))))
 
 (defn prepare-shutdown! []
   (ensure-root!)
