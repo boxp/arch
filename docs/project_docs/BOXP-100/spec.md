@@ -109,7 +109,7 @@ Done tick 時点のカードに正規タグ `#nsfw` があれば `NSFW/小説/AI
 
 ファイル名は日本標準時の `YYYY-MM-DD-HH-mm_タイトル.md`。title は path separator と制御文字を除去する。同名が存在する場合は上書きせず配置失敗として記録する。
 
-冪等性は管理ノートの `published-path` に加え、card lock と `published.edn` に保存する `novel-id`、原稿 SHA-256、path、timestamp、reservation status で保証する。コピー前に destination と原稿 SHA-256 を予約し、同じディレクトリの private staging file へコピーしてハッシュを検証した後、最終 path へ atomic move する。予約状態の最終 path が存在する場合も予約ハッシュを検証し、旧 runner の中断コピーによる不完全ファイルなら同じ予約 path へ完全な原稿を再配置する。`published` 状態のハッシュ不一致や未予約の同名ファイルは上書きしない。Done 再走査やコピー直後の runner 再起動でも同一 ID の完成版は増えない。管理ノートには vault 相対 wiki link を残す。
+冪等性は管理ノートの `published-path` に加え、card lock と `published.edn` に保存する `novel-id`、原稿 SHA-256、path、timestamp、reservation status で保証する。コピー前に destination と原稿 SHA-256 を予約し、同じディレクトリの private staging file へコピーしてハッシュを検証した後、最終 path へ atomic move する。さらに canonical destination path 単位の OS file lock と永続 reservation を private root で共有し、別 process・別 card が同一分に同一 title を公開しても、存在確認から atomic move・確定までを直列化する。先に destination を予約した card だけが中断コピーを復旧でき、別 card は完成版を削除・置換しない。予約状態の最終 path が存在する場合も予約ハッシュを検証し、旧 runner の中断コピーによる不完全ファイルなら同じ予約 path へ完全な原稿を再配置する。`published` 状態のハッシュ不一致や未予約・他 card 予約済みの同名ファイルは上書きしない。Done 再走査やコピー直後の runner 再起動でも同一 ID の完成版は増えない。管理ノートには vault 相対 wiki link を残す。
 
 ## 8. assignee と CLI route
 
@@ -155,7 +155,7 @@ novel_board_runner.bb <tick|loop|sync|prepare-shutdown|recover>
 
 ## 11. テストと既知制約
 
-black-box test は一時 vault と fake `codex` / `claude` / `pi` を使い、主要遷移、review stop/restart、全 route、SFW/NSFW、冪等 publish、上書き禁止、active/stale lock、lane/status sync、agent failure を再現する。
+black-box test は一時 vault と fake `codex` / `claude` / `pi` を使い、主要遷移、review stop/restart、全 route、SFW/NSFW、冪等 publish、上書き禁止、別 process・別 card の同一 destination 競合、active/stale lock、lane/status sync、agent failure を再現する。
 
 既知制約:
 

@@ -398,6 +398,44 @@ test_collision_and_missing_manuscript_stay_done() {
   assert_contains "${vault}/Boards/Novel Board.md" "status::done"
 }
 
+test_parallel_processes_do_not_overwrite_same_destination() {
+  local tmp vault state bin dest checksum_a checksum_b pid_a pid_b published_count winner loser
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "" "" "" "" "- [x] [[Novels/NOVEL-PA|NOVEL-PA: 同時公開]] #novel status::done assignee::boxp
+- [x] [[Novels/NOVEL-PB|NOVEL-PB: 同時公開]] #novel status::done assignee::boxp"
+  write_note "${vault}" NOVEL-PA done boxp "同時公開" "${state}"
+  write_note "${vault}" NOVEL-PB done boxp "同時公開" "${state}"
+  head -c $((16 * 1024 * 1024)) /dev/zero | tr '\0' 'A' >"${state}/work/NOVEL-PA/manuscript.md"
+  head -c $((16 * 1024 * 1024)) /dev/zero | tr '\0' 'B' >"${state}/work/NOVEL-PB/manuscript.md"
+  checksum_a="$(sha256sum "${state}/work/NOVEL-PA/manuscript.md" | cut -d ' ' -f 1)"
+  checksum_b="$(sha256sum "${state}/work/NOVEL-PB/manuscript.md" | cut -d ' ' -f 1)"
+  dest="${vault}/小説草案/AI執筆/2026-07-11-12-37_同時公開.md"
+  mkdir -p "${state}/published"
+  printf '{:novel-id "NOVEL-PA", :path "%s", :sha256 "%s", :published-at "2026-07-11T03:37:00Z", :nsfw false, :status :reserved}\n' "${dest}" "${checksum_a}" >"${state}/published/NOVEL-PA.edn"
+  printf '{:novel-id "NOVEL-PB", :path "%s", :sha256 "%s", :published-at "2026-07-11T03:37:00Z", :nsfw false, :status :reserved}\n' "${dest}" "${checksum_b}" >"${state}/published/NOVEL-PB.edn"
+
+  run_tick "${vault}" "${state}" "${bin}" env >"${tmp}/runner-a.log" 2>&1 &
+  pid_a=$!
+  run_tick "${vault}" "${state}" "${bin}" env >"${tmp}/runner-b.log" 2>&1 &
+  pid_b=$!
+  wait "${pid_a}"
+  wait "${pid_b}"
+
+  published_count="$(grep -l ':status :published' "${state}/published/NOVEL-PA.edn" "${state}/published/NOVEL-PB.edn" | wc -l)"
+  [[ "${published_count}" -eq 1 ]] || fail "same destination was published by ${published_count} cards"
+  [[ "$(find "${state}/publication-locks" -maxdepth 1 -type f -name '*.edn' | wc -l)" -eq 1 ]] || fail "same destination did not share one persistent reservation"
+  if grep -Fq ':status :published' "${state}/published/NOVEL-PA.edn"; then
+    winner="NOVEL-PA"; loser="NOVEL-PB"
+  else
+    winner="NOVEL-PB"; loser="NOVEL-PA"
+  fi
+  cmp "${state}/work/${winner}/manuscript.md" "${dest}" || fail "published destination does not match its reservation owner"
+  assert_contains "${state}/published/${loser}.edn" ":status :reserved"
+  assert_not_contains "${vault}/Novels/${loser}.md" "published-path: \"${dest}\""
+  assert_contains "${vault}/Novels/${loser}.md" "destination is reserved by another novel and was not overwritten"
+}
+
 test_publish_reservation_repairs_link() {
   local tmp vault state bin dest
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -591,6 +629,7 @@ test_explicit_approval_bypass
 test_all_task_board_routes_and_unknown_skip
 test_publish_routing_and_idempotency
 test_collision_and_missing_manuscript_stay_done
+test_parallel_processes_do_not_overwrite_same_destination
 test_publish_reservation_repairs_link
 test_interrupted_publish_recovers_partial_destination
 test_reserved_completed_destination_rejects_changed_manuscript

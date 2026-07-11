@@ -33,6 +33,7 @@
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 (def lock-guard-mutexes (vec (repeatedly 256 #(Object.))))
+(def publication-lock-mutexes (vec (repeatedly 256 #(Object.))))
 
 (defn env [key default]
   (or (System/getenv key) default))
@@ -55,6 +56,7 @@
 (defn manuscript-path [novel-id] (fs/path (work-dir novel-id) "manuscript.md"))
 (defn published-dir [] (fs/path (root) "published"))
 (defn published-state-path [novel-id] (fs/path (published-dir) (str novel-id ".edn")))
+(defn publication-locks-dir [] (fs/path (root) "publication-locks"))
 (defn lock-path [novel-id] (fs/path (locks-dir) (str novel-id ".edn")))
 (defn terminating-owners-dir [] (fs/path (root) "terminating-owners"))
 (defn terminating-owner-path [] (fs/path (terminating-owners-dir) (str (str/replace (owner-id) #"[^A-Za-z0-9._-]" "_") ".edn")))
@@ -121,7 +123,8 @@
     (catch Exception _ fallback)))
 
 (defn ensure-root! []
-  (doseq [path [(root) (locks-dir) (lock-guards-dir) (runs-dir) (published-dir) (fs/path (root) "work")
+  (doseq [path [(root) (locks-dir) (lock-guards-dir) (runs-dir) (published-dir) (publication-locks-dir)
+                (fs/path (root) "work")
                 (terminating-owners-dir)]]
     (ensure-private-dir! path))
   (fs/create-dirs (novels-dir)))
@@ -584,6 +587,53 @@
               (recur))))))
     (apply str (map #(format "%02x" (bit-and % 0xff)) (.digest digest)))))
 
+(defn sha256-string [value]
+  (let [digest (MessageDigest/getInstance "SHA-256")]
+    (.update digest (.getBytes (str value) "UTF-8"))
+    (apply str (map #(format "%02x" (bit-and % 0xff)) (.digest digest)))))
+
+(defn canonical-path [path]
+  (.getCanonicalPath (io/file (str path))))
+
+(defn publication-key [dest]
+  (sha256-string (canonical-path dest)))
+
+(defn publication-lock-guard-path [dest]
+  (fs/path (publication-locks-dir) (str (publication-key dest) ".lock")))
+
+(defn publication-reservation-path [dest]
+  (fs/path (publication-locks-dir) (str (publication-key dest) ".edn")))
+
+(defn publication-lock-mutex [dest]
+  (nth publication-lock-mutexes
+       (Math/floorMod (.hashCode (canonical-path dest)) (count publication-lock-mutexes))))
+
+(defn with-publication-lock [dest f]
+  (ensure-private-dir! (publication-locks-dir))
+  (locking (publication-lock-mutex dest)
+    (let [guard-path (publication-lock-guard-path dest)]
+      (with-open [file (java.io.RandomAccessFile. (str guard-path) "rw")
+                  channel (.getChannel file)]
+        (private-file! guard-path)
+        (let [_file-lock (.lock channel)]
+          (f))))))
+
+(defn publication-owned-by-other? [novel-id dest]
+  (let [reservation (read-edn (publication-reservation-path dest) {})]
+    (and (seq reservation)
+         (or (not= novel-id (:novel-id reservation))
+             (not= (canonical-path dest) (:canonical-path reservation))))))
+
+(defn reserve-publication-destination! [novel-id dest expected-sha]
+  (let [path (publication-reservation-path dest)
+        reservation (read-edn path {})]
+    (when (empty? reservation)
+      (write-edn! path {:novel-id novel-id
+                        :path (str dest)
+                        :canonical-path (canonical-path dest)
+                        :sha256 expected-sha
+                        :reserved-at (now-str)}))))
+
 (defn sanitize-title [title]
   (-> (or title "")
       (str/replace #"[\\/\p{Cntrl}]" "_")
@@ -682,25 +732,34 @@
                    (fs/path dest-dir (str timestamp "_" (sanitize-title title) ".md")))
             expected-sha (or (:sha256 state) manuscript-sha)]
         (fs/create-dirs dest-dir)
-        (cond
-          (and reserved? (fs/exists? dest) (= expected-sha (sha256 dest)))
-          (do
-            (finalize-publication! novel-id dest published-at nsfw expected-sha)
-            :already-published)
+        (with-publication-lock
+          dest
+          #(cond
+             (publication-owned-by-other? novel-id dest)
+             (do
+               (append-history! novel-id (str "Done publication is waiting: destination is reserved by another novel and was not overwritten: " dest))
+               :collision)
 
-          (and (fs/exists? dest) (not reserved?))
-          (do (append-history! novel-id (str "Done publication is waiting: destination already exists and was not overwritten: " dest))
-              :collision)
+             (and reserved? (fs/exists? dest) (= expected-sha (sha256 dest)))
+             (do
+               (reserve-publication-destination! novel-id dest expected-sha)
+               (finalize-publication! novel-id dest published-at nsfw expected-sha)
+               :already-published)
 
-          :else
-          (do
-            (write-edn! state-path {:novel-id novel-id :path (str dest) :sha256 manuscript-sha
-                                    :published-at published-at :nsfw nsfw :status :reserved})
-            (when (and reserved? (fs/exists? dest))
-              (Files/delete (.toPath (io/file (str dest)))))
-            (atomic-publish-copy! novel-id manuscript dest manuscript-sha)
-            (finalize-publication! novel-id dest published-at nsfw manuscript-sha)
-            :published))))))
+             (and (fs/exists? dest) (not reserved?))
+             (do (append-history! novel-id (str "Done publication is waiting: destination already exists and was not overwritten: " dest))
+                 :collision)
+
+             :else
+             (do
+               (reserve-publication-destination! novel-id dest manuscript-sha)
+               (write-edn! state-path {:novel-id novel-id :path (str dest) :sha256 manuscript-sha
+                                       :published-at published-at :nsfw nsfw :status :reserved})
+               (when (and reserved? (fs/exists? dest))
+                 (Files/delete (.toPath (io/file (str dest)))))
+               (atomic-publish-copy! novel-id manuscript dest manuscript-sha)
+               (finalize-publication! novel-id dest published-at nsfw manuscript-sha)
+               :published)))))))
 
 (defn process-card! [card]
   (let [action (candidate-action card)]
