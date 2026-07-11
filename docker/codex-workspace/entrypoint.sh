@@ -1,20 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-install -d -o boxp -g boxp -m 0755 /home/boxp
-install -d -o boxp -g boxp -m 0700 "${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"
-
 if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
-  exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp \
+  novel_board_root="${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"
+  current_uid="$(id -u)"
+  boxp_uid="$(id -u boxp)"
+
+  if [[ "${current_uid}" == "0" ]]; then
+    install -d -o boxp -g boxp -m 0755 /home/boxp
+    install -d -o boxp -g boxp -m 0700 "${novel_board_root}"
+    exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp \
+      "${CODEX_NOVEL_BOARD_RUNNER:-/opt/codex-workspace/novel-board/novel_board_runner.bb}" loop
+  fi
+
+  if [[ "${current_uid}" != "${boxp_uid}" ]]; then
+    printf 'novel-board-runner must run as root or boxp (uid %s), got uid %s\n' "${boxp_uid}" "${current_uid}" >&2
+    exit 1
+  fi
+
+  install -d -m 0700 "${novel_board_root}"
+  exec env HOME=/home/boxp \
     "${CODEX_NOVEL_BOARD_RUNNER:-/opt/codex-workspace/novel-board/novel_board_runner.bb}" loop
 fi
 
 install -d -m 0755 /run/sshd
+install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0700 /home/boxp/.ssh
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex/skills
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-cron
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-task-board
+install -d -o boxp -g boxp -m 0700 "${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.pi/agent/extensions
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.local/bin
 default_task_board_vault=/home/boxp/Documents/obsidian-headless/BOXP

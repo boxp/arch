@@ -170,7 +170,7 @@ run_tick() {
 }
 
 test_seed_and_entrypoint() {
-  local tmp home vault custom_vault task_vault seed entrypoint role_entrypoint role_log role_runner role_runuser role_runuser_log
+  local tmp home vault custom_vault task_vault seed entrypoint role_entrypoint role_id role_log role_runner role_runuser role_runuser_log
   tmp="$(mktemp -d)"
   home="${tmp}/home"
   vault="${home}/Documents/obsidian-headless/BOXP"
@@ -187,13 +187,16 @@ test_seed_and_entrypoint() {
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'local vault="${CODEX_NOVEL_BOARD_VAULT:-${task_board_vault}}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'dest="${vault}/${rel}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'install -d -o boxp -g boxp -m 0755 /home/boxp'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'install -d -o boxp -g boxp -m 0700 "${novel_board_root}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'install -d -o boxp -g boxp -m 0700 "${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'exec env HOME=/home/boxp'
 
   role_log="${tmp}/role.log"
   role_runuser_log="${tmp}/role-runuser.log"
   role_runner="${tmp}/role-runner"
   role_runuser="${tmp}/runuser"
+  role_id="${tmp}/id"
   role_entrypoint="${tmp}/entrypoint.sh"
   cat >"${role_runner}" <<'EOF'
 #!/usr/bin/env bash
@@ -206,20 +209,44 @@ printf '%s\n' "$*" >>"${ROLE_RUNUSER_LOG}"
 shift 3
 exec "$@"
 EOF
+  cat >"${role_id}" <<'EOF'
+#!/usr/bin/env bash
+case "$*" in
+  "-u") printf '%s\n' "${ROLE_CURRENT_UID}" ;;
+  "-u boxp") printf '1000\n' ;;
+  *) exec /usr/bin/id "$@" ;;
+esac
+EOF
   sed \
     -e "s#/usr/sbin/runuser#${role_runuser}#g" \
     -e "s#/home/boxp#${home}#g" \
     -e 's/-o boxp -g boxp //g' \
     "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" >"${role_entrypoint}"
-  chmod 0755 "${role_runner}" "${role_runuser}" "${role_entrypoint}"
-  CODEX_WORKSPACE_ROLE=novel-board-runner \
+  chmod 0755 "${role_runner}" "${role_runuser}" "${role_id}" "${role_entrypoint}"
+  PATH="${tmp}:$PATH" \
+    CODEX_WORKSPACE_ROLE=novel-board-runner \
     CODEX_NOVEL_BOARD_RUNNER="${role_runner}" \
+    ROLE_CURRENT_UID=0 \
     ROLE_LOG="${role_log}" \
     ROLE_RUNUSER_LOG="${role_runuser_log}" \
     bash "${role_entrypoint}"
-  [[ "$(cat "${role_log}")" == "loop" ]] || fail "Novel Board role did not start the runner loop"
+  [[ "$(cat "${role_log}")" == "loop" ]] || fail "root Novel Board role did not start the runner loop"
   assert_contains "${role_runuser_log}" "-u boxp -- env HOME=${home} ${role_runner} loop"
   [[ "$(stat -c %a "${home}/.novel-board")" == "700" ]] || fail "Novel Board private root is not mode 0700"
+
+  rm -rf "${home}/.novel-board"
+  : >"${role_log}"
+  : >"${role_runuser_log}"
+  PATH="${tmp}:$PATH" \
+    CODEX_WORKSPACE_ROLE=novel-board-runner \
+    CODEX_NOVEL_BOARD_RUNNER="${role_runner}" \
+    ROLE_CURRENT_UID=1000 \
+    ROLE_LOG="${role_log}" \
+    ROLE_RUNUSER_LOG="${role_runuser_log}" \
+    bash "${role_entrypoint}"
+  [[ "$(cat "${role_log}")" == "loop" ]] || fail "boxp Novel Board role did not start the runner loop"
+  [[ ! -s "${role_runuser_log}" ]] || fail "boxp Novel Board role unnecessarily invoked runuser"
+  [[ "$(stat -c %a "${home}/.novel-board")" == "700" ]] || fail "boxp Novel Board private root is not mode 0700"
 
   custom_vault="${tmp}/novel-vault"
   task_vault="${tmp}/task-vault"
