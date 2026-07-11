@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+install -d -o boxp -g boxp -m 0755 /home/boxp
+install -d -o boxp -g boxp -m 0700 "${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"
+
 if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
-  exec "${CODEX_NOVEL_BOARD_RUNNER:-/opt/codex-workspace/novel-board/novel_board_runner.bb}" loop
+  exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp \
+    "${CODEX_NOVEL_BOARD_RUNNER:-/opt/codex-workspace/novel-board/novel_board_runner.bb}" loop
 fi
 
 install -d -m 0755 /run/sshd
-install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0700 /home/boxp/.ssh
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex/skills
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-cron
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.codex-task-board
-/usr/sbin/runuser -u boxp -- install -d -m 0700 /home/boxp/.novel-board
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.pi/agent/extensions
 /usr/sbin/runuser -u boxp -- install -d -m 0755 /home/boxp/.local/bin
 default_task_board_vault=/home/boxp/Documents/obsidian-headless/BOXP
