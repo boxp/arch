@@ -151,6 +151,14 @@ prompt="${!#}"
 manuscript="$(printf '%s\n' "${prompt}" | sed -n 's/^Manuscript path: //p' | head -n 1)"
 mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
+if [[ -n "${FAKE_TERM_IGNORING_CHILD_MARKER:-}" ]]; then
+  (
+    trap '' TERM
+    sleep "${FAKE_TERM_IGNORING_CHILD_SLEEP:-4}"
+    printf 'survived timeout\n' >"${FAKE_TERM_IGNORING_CHILD_MARKER}"
+  ) &
+  wait "$!"
+fi
 sleep "${FAKE_SLEEP:-0}"
 printf '%s\n' "${FAKE_RESULT:-NOVEL_BOARD_RESULT: review}"
 exit "${FAKE_EXIT:-0}"
@@ -377,12 +385,20 @@ test_write_review_and_pi_revision() {
 }
 
 test_agent_timeout_returns_to_human_review() {
-  local tmp vault state bin summary stderr
+  local tmp vault state bin summary stderr escaped_child_marker
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
   make_fake_agents "${bin}"
   write_board "${vault}" "- [ ] [[Novels/NOVEL-T|NOVEL-T: Timeout]] #novel status::backlog assignee::pi"
 
-  FAKE_SLEEP=3 CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 run_tick "${vault}" "${state}" "${bin}" env
+  escaped_child_marker="${tmp}/term-ignoring-child-survived"
+  FAKE_TERM_IGNORING_CHILD_MARKER="${escaped_child_marker}" \
+    FAKE_TERM_IGNORING_CHILD_SLEEP=4 \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env
+
+  # A TERM-ignoring descendant would create this after the runner returned.
+  sleep 3
 
   assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
   assert_contains "${vault}/Novels/NOVEL-T.md" "agent timed out after 1 seconds"
@@ -391,6 +407,7 @@ test_agent_timeout_returns_to_human_review() {
   assert_contains "${summary}" ":exit-code 124"
   assert_contains "${summary}" ":timed-out true"
   assert_contains "${stderr}" "terminated the agent after 1 seconds"
+  [[ ! -e "${escaped_child_marker}" ]] || fail "TERM-ignoring agent descendant survived timeout cleanup"
 }
 
 test_review_without_instructions_stops() {

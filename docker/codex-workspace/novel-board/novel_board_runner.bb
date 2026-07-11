@@ -46,6 +46,9 @@
 (defn agent-timeout-seconds []
   (env-long "CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS" "7200"))
 
+(defn agent-shutdown-grace-seconds []
+  (env-long "CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS" "10"))
+
 (defn vault [] (env "CODEX_NOVEL_BOARD_VAULT" default-vault))
 (defn root [] (env "CODEX_NOVEL_BOARD_ROOT" default-root))
 (defn owner-id [] (env "CODEX_NOVEL_BOARD_OWNER_ID" (or (System/getenv "HOSTNAME") "unknown-owner")))
@@ -708,6 +711,58 @@
 (defn result-marker [message]
   (some->> (re-seq #"(?m)^NOVEL_BOARD_RESULT:\s*(review|blocked)\s*$" (or message "")) last second keyword))
 
+(defn process-tree-handles [process]
+  (with-open [descendants (.descendants process)]
+    (vec (cons (.toHandle process)
+               (iterator-seq (.iterator descendants))))))
+
+(defn process-handle-active? [process-handle]
+  (when (.isAlive process-handle)
+    (let [stat-path (fs/path "/proc" (str (.pid process-handle)) "stat")]
+      ;; ProcessHandle.isAlive may remain true for an orphaned zombie until the
+      ;; container's PID 1 reaps it. A zombie has already exited and cannot
+      ;; mutate the manuscript, so it is not an active timeout survivor.
+      (not (and (fs/exists? stat-path)
+                (try
+                  (re-find #"\)\s+Z\s" (Files/readString (.toPath (io/file (str stat-path)))))
+                  (catch Exception _ false)))))))
+
+(defn await-process-handles! [handles timeout-seconds]
+  (let [deadline (+ (System/nanoTime) (* timeout-seconds 1000000000))]
+    (loop []
+      (let [alive (filterv process-handle-active? handles)
+            remaining-nanos (- deadline (System/nanoTime))]
+        (if (or (empty? alive) (not (pos? remaining-nanos)))
+          alive
+          (do
+            (Thread/sleep (long (min 50 (max 1 (quot remaining-nanos 1000000)))))
+            (recur)))))))
+
+(defn destroy-forcibly-if-active! [process-handle]
+  (try
+    (.destroyForcibly process-handle)
+    (catch Exception e
+      ;; A process can exit between the active snapshot and this signal.
+      (when (process-handle-active? process-handle)
+        (throw e)))))
+
+(defn terminate-process-tree! [handle process]
+  ;; Capture descendants before the parent exits and the OS reparents them.
+  (let [tree (process-tree-handles process)
+        grace-seconds (agent-shutdown-grace-seconds)]
+    (p/destroy-tree handle)
+    (let [survivors (await-process-handles! tree grace-seconds)]
+      (doseq [process-handle (reverse survivors)]
+        (destroy-forcibly-if-active! process-handle))
+      ;; Reap the direct child before checking the captured ProcessHandles.
+      ;; On Linux an unreaped direct child can still appear alive here.
+      (.waitFor process grace-seconds TimeUnit/SECONDS)
+      (let [remaining (await-process-handles! survivors grace-seconds)]
+        (when (seq remaining)
+          (let [pids (mapv #(.pid %) remaining)]
+            (throw (ex-info (str "agent process tree did not exit after forced termination: " pids)
+                            {:pids pids}))))))))
+
 (defn await-agent! [args opts]
   (let [handle (p/process args opts)
         process (:proc handle)
@@ -715,9 +770,7 @@
     (if (.waitFor process timeout-seconds TimeUnit/SECONDS)
       {:process-result @handle :timed-out? false}
       (do
-        (p/destroy-tree handle)
-        (when-not (.waitFor process 10 TimeUnit/SECONDS)
-          (.destroyForcibly process))
+        (terminate-process-tree! handle process)
         (let [process-result @handle]
           {:process-result (assoc process-result :exit 124)
            :timed-out? true})))))
