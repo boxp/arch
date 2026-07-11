@@ -154,7 +154,8 @@ printf '\nPi 改稿済み。\n' >>"${manuscript}"
 if [[ -n "${FAKE_TERM_FORK_CHILD_MARKER:-}" ]]; then
   trap '(
     trap "" TERM
-    sleep "${FAKE_TERM_FORK_CHILD_SLEEP:-4}"
+    printf "started\\n" >"${FAKE_TERM_FORK_CHILD_MARKER}.started"
+    sleep "${FAKE_TERM_FORK_CHILD_SLEEP:-2}"
     printf "survived timeout\\n" >"${FAKE_TERM_FORK_CHILD_MARKER}"
   ) &
   exit 143' TERM
@@ -393,7 +394,7 @@ test_agent_timeout_returns_to_human_review() {
 
   escaped_child_marker="${tmp}/term-handler-child-survived"
   FAKE_TERM_FORK_CHILD_MARKER="${escaped_child_marker}" \
-    FAKE_TERM_FORK_CHILD_SLEEP=4 \
+    FAKE_TERM_FORK_CHILD_SLEEP=2 \
     CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
     CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
     run_tick "${vault}" "${state}" "${bin}" env
@@ -409,6 +410,7 @@ test_agent_timeout_returns_to_human_review() {
   assert_contains "${summary}" ":exit-code 124"
   assert_contains "${summary}" ":timed-out true"
   assert_contains "${stderr}" "terminated the agent after 1 seconds"
+  [[ -e "${escaped_child_marker}.started" ]] || fail "TERM handler did not fork the regression-test child"
   [[ ! -e "${escaped_child_marker}" ]] || fail "TERM-handler descendant survived timeout cleanup"
 }
 
