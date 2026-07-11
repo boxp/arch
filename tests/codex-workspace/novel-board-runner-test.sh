@@ -151,6 +151,7 @@ prompt="${!#}"
 manuscript="$(printf '%s\n' "${prompt}" | sed -n 's/^Manuscript path: //p' | head -n 1)"
 mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
+sleep "${FAKE_SLEEP:-0}"
 printf '%s\n' "${FAKE_RESULT:-NOVEL_BOARD_RESULT: review}"
 exit "${FAKE_EXIT:-0}"
 EOF
@@ -365,7 +366,7 @@ test_write_review_and_pi_revision() {
   sed -i "/^- Synopsis:/a\\- Vision reference: ![[Attachments/character reference.png]]\\n- Setting reference: ![setting](Attachments/setting.webp)\\n- Rejected external image: ![[${outside}]]" "${vault}/Novels/NOVEL-2.md"
   FAKE_ARG_LOG="${args}" CODEX_NOVEL_BOARD_PI_MODEL="llama.cpp/gemma4-26b-vision" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-2/manuscript.md" "Pi 改稿済み"
-  assert_contains "${args}" "pi --print --approve --mode text --session-dir"
+  assert_contains "${args}" "pi --offline --no-extensions --no-skills --no-prompt-templates --no-context-files --print --approve --mode text --session-dir"
   assert_contains "${args}" "--model llama.cpp/gemma4-26b-vision"
   assert_contains "${args}" "@${image}"
   assert_contains "${args}" "@${markdown_image}"
@@ -373,6 +374,23 @@ test_write_review_and_pi_revision() {
   prompt_log="$(grep -l -F 'Reference images attached to the agent:' "${state}/runs/NOVEL-2"/*/prompt.md | head -n 1)"
   assert_contains "${prompt_log}" "Reference images attached to the agent:"
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
+}
+
+test_agent_timeout_returns_to_human_review() {
+  local tmp vault state bin summary stderr
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-T|NOVEL-T: Timeout]] #novel status::backlog assignee::pi"
+
+  FAKE_SLEEP=3 CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 run_tick "${vault}" "${state}" "${bin}" env
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+  assert_contains "${vault}/Novels/NOVEL-T.md" "agent timed out after 1 seconds"
+  summary="$(find "${state}/runs/NOVEL-T" -name summary.edn -print -quit)"
+  stderr="$(find "${state}/runs/NOVEL-T" -name stderr.log -print -quit)"
+  assert_contains "${summary}" ":exit-code 124"
+  assert_contains "${summary}" ":timed-out true"
+  assert_contains "${stderr}" "terminated the agent after 1 seconds"
 }
 
 test_review_without_instructions_stops() {
@@ -819,6 +837,7 @@ test_seed_and_entrypoint
 test_manual_title_scaffold
 test_groom_and_human_stop
 test_write_review_and_pi_revision
+test_agent_timeout_returns_to_human_review
 test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved
 test_fable_and_failure_return_to_review

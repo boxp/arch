@@ -11,7 +11,8 @@
         '[java.security MessageDigest]
         '[java.time Duration Instant ZoneId ZonedDateTime]
         '[java.time.format DateTimeFormatter]
-        '[java.util UUID])
+        '[java.util UUID]
+        '[java.util.concurrent TimeUnit])
 
 (def lane->status
   {"Backlog" "backlog"
@@ -41,6 +42,9 @@
 
 (defn env-long [key default]
   (Long/parseLong (env key default)))
+
+(defn agent-timeout-seconds []
+  (env-long "CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS" "7200"))
 
 (defn vault [] (env "CODEX_NOVEL_BOARD_VAULT" default-vault))
 (defn root [] (env "CODEX_NOVEL_BOARD_ROOT" default-root))
@@ -704,6 +708,20 @@
 (defn result-marker [message]
   (some->> (re-seq #"(?m)^NOVEL_BOARD_RESULT:\s*(review|blocked)\s*$" (or message "")) last second keyword))
 
+(defn await-agent! [args opts]
+  (let [handle (p/process args opts)
+        process (:proc handle)
+        timeout-seconds (agent-timeout-seconds)]
+    (if (.waitFor process timeout-seconds TimeUnit/SECONDS)
+      {:process-result @handle :timed-out? false}
+      (do
+        (p/destroy-tree handle)
+        (when-not (.waitFor process 10 TimeUnit/SECONDS)
+          (.destroyForcibly process))
+        (let [process-result @handle]
+          {:process-result (assoc process-result :exit 124)
+           :timed-out? true})))))
+
 (defn run-agent! [card action run]
   (let [novel-id (:novel-id card)
         dir (fs/path (runs-dir) novel-id run)
@@ -728,7 +746,10 @@
                           (conj "--dangerously-skip-permissions")
                           (System/getenv "CODEX_NOVEL_BOARD_FABLE_MODEL")
                           (into ["--model" (System/getenv "CODEX_NOVEL_BOARD_FABLE_MODEL")]))
-                 :pi (cond-> ["pi" "--print" "--approve" "--mode" "text"
+                 :pi (cond-> ["pi" "--offline"
+                              "--no-extensions" "--no-skills"
+                              "--no-prompt-templates" "--no-context-files"
+                              "--print" "--approve" "--mode" "text"
                               "--session-dir" (str pi-session-dir)]
                        (System/getenv "CODEX_NOVEL_BOARD_PI_MODEL")
                        (into ["--model" (System/getenv "CODEX_NOVEL_BOARD_PI_MODEL")])
@@ -737,10 +758,16 @@
                        true (conj prompt)))
           opts (cond-> {:out (io/file (str stdout-path))
                         :err (io/file (str stderr-path))}
+                 (= route :pi) (assoc :in (io/file "/dev/null"))
                  (not= route :pi) (assoc :in (io/file (str prompt-path)))
                  (#{:fable :pi} route) (assoc :dir (str (work-dir novel-id))))
-          proc @(p/process args opts)
-          exit (:exit proc)
+          {:keys [process-result timed-out?]} (await-agent! args opts)
+          exit (:exit process-result)
+          _ (when timed-out?
+              (spit (str stderr-path)
+                    (str "Novel Board runner terminated the agent after "
+                         (agent-timeout-seconds) " seconds.\n")
+                    :append true))
           _ (when (and (not= route :codex) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path)) (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path) (slurp (str last-message-path)))
@@ -749,8 +776,9 @@
         (when (fs/exists? path) (private-file! path)))
       (mark-run! novel-id run (if (zero? exit) :succeeded :failed)
                  {:action action :agent (:assignee card) :lane (:lane card)
-                  :exit-code exit :result marker :finished-at (now-str)})
-      {:exit exit :result marker :last-message last-message})
+                  :exit-code exit :timed-out timed-out?
+                  :result marker :finished-at (now-str)})
+      {:exit exit :timed-out? timed-out? :result marker :last-message last-message})
       (finally
         (when (fs/exists? (manuscript-path novel-id))
           (private-file! (manuscript-path novel-id)))))))
@@ -996,9 +1024,10 @@
                       (update-frontmatter! novel-id {:status "in-progress"}))
                     (append-history! novel-id (str "Novel Board run " run " started from " (:lane fresh-card) " with action " (name action) " using " (:assignee fresh-card) "."))
                     (let [expected-status (if (#{:write :revise} action) "in-progress" (:status fresh-card))
-                          {:keys [exit result]} (run-agent! (assoc fresh-card :status expected-status) action run)
+                          {:keys [exit result timed-out?]} (run-agent! (assoc fresh-card :status expected-status) action run)
                           next-status (if (= action :groom) "draft" "review")
                           outcome (cond
+                                    timed-out? (str "agent timed out after " (agent-timeout-seconds) " seconds")
                                     (not (zero? exit)) (str "agent exited " exit)
                                     (= result :blocked) "human decision or missing input requested"
                                     (nil? result) "result marker missing"
