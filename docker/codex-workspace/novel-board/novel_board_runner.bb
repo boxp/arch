@@ -250,25 +250,40 @@
       assignee (replace-or-append-metadata "assignee" assignee))
     line))
 
+(defn move-card-lines! [lines card-index novel-id target-status assignee]
+  (let [path (board-path)
+        target-lane (get status->lane target-status)]
+    (when-not (and card-index target-lane)
+      (throw (ex-info "card or target lane not found" {:novel-id novel-id :status target-status})))
+    (let [without-card (vec (concat (subvec lines 0 card-index) (subvec lines (inc card-index))))
+          lane-index (first (keep-indexed (fn [idx line] (when (= line (str "## " target-lane)) idx)) without-card))
+          next-heading (first (filter #(and (> % lane-index) (str/starts-with? (nth without-card %) "## "))
+                                      (range (inc lane-index) (count without-card))))
+          insert-at (or next-heading (count without-card))
+          card-line (update-card-line (nth lines card-index) novel-id target-status assignee)
+          next-lines (vec (concat (subvec without-card 0 insert-at) [card-line] (subvec without-card insert-at)))]
+      (write-lines! path next-lines))))
+
+(defn card-index [lines novel-id]
+  (first (keep-indexed (fn [idx line]
+                         (when (re-find (re-pattern (str "\\[\\[Novels/" (java.util.regex.Pattern/quote novel-id) "(?:\\||\\]\\])")) line) idx))
+                       lines)))
+
 (defn move-card! [novel-id target-status assignee]
   (with-board-lock
    (fn []
-    (let [path (board-path)
-          lines (vec (read-lines path))
-          target-lane (get status->lane target-status)
-          card-index (first (keep-indexed (fn [idx line]
-                                            (when (re-find (re-pattern (str "\\[\\[Novels/" (java.util.regex.Pattern/quote novel-id) "(?:\\||\\]\\])")) line) idx))
-                                          lines))]
-      (when-not (and card-index target-lane)
-        (throw (ex-info "card or target lane not found" {:novel-id novel-id :status target-status})))
-      (let [without-card (vec (concat (subvec lines 0 card-index) (subvec lines (inc card-index))))
-            lane-index (first (keep-indexed (fn [idx line] (when (= line (str "## " target-lane)) idx)) without-card))
-            next-heading (first (filter #(and (> % lane-index) (str/starts-with? (nth without-card %) "## "))
-                                        (range (inc lane-index) (count without-card))))
-            insert-at (or next-heading (count without-card))
-            card-line (update-card-line (nth lines card-index) novel-id target-status assignee)
-            next-lines (vec (concat (subvec without-card 0 insert-at) [card-line] (subvec without-card insert-at)))]
-        (write-lines! path next-lines))))))
+     (let [lines (vec (read-lines (board-path)))]
+       (move-card-lines! lines (card-index lines novel-id) novel-id target-status assignee)))))
+
+(defn move-card-if-status! [novel-id expected-status target-status assignee]
+  (with-board-lock
+   (fn []
+     (let [lines (vec (read-lines (board-path)))
+           current (first (filter (fn [card] (= novel-id (:novel-id card)))
+                                  (parse-board-cards lines)))]
+       (when (= expected-status (:status current))
+         (move-card-lines! lines (card-index lines novel-id) novel-id target-status assignee)
+         true)))))
 
 (defn create-note! [{:keys [novel-id title status assignee nsfw]}]
   (let [path (note-path novel-id)]
@@ -504,7 +519,8 @@
     (ensure-private-dir! (work-dir novel-id))
     (atomic-spit! prompt-path prompt)
     (mark-run! novel-id run :running {:action action :agent (:assignee card) :lane (:lane card)})
-    (let [args (case route
+    (try
+      (let [args (case route
                  :codex (codex-args (:assignee card) (work-dir novel-id) last-message-path)
                  :fable (cond-> ["claude" "--print" "--output-format" "text"
                                   "--add-dir" (vault) "--add-dir" (root)]
@@ -529,10 +545,13 @@
           marker (result-marker last-message)]
       (doseq [path [stdout-path stderr-path last-message-path]]
         (when (fs/exists? path) (private-file! path)))
-      (mark-run! novel-id run (if (zero? exit) :succeeded :failed)
-                 {:action action :agent (:assignee card) :lane (:lane card)
-                  :exit-code exit :result marker :finished-at (now-str)})
-      {:exit exit :result marker :last-message last-message})))
+        (mark-run! novel-id run (if (zero? exit) :succeeded :failed)
+                   {:action action :agent (:assignee card) :lane (:lane card)
+                    :exit-code exit :result marker :finished-at (now-str)})
+        {:exit exit :result marker :last-message last-message})
+      (finally
+        (when (fs/exists? (manuscript-path novel-id))
+          (private-file! (manuscript-path novel-id)))))))
 
 (defn sha256 [path]
   (let [digest (MessageDigest/getInstance "SHA-256")]
@@ -645,20 +664,25 @@
                       (move-card! novel-id "in-progress" (:assignee fresh-card))
                       (update-frontmatter! novel-id {:status "in-progress"}))
                     (append-history! novel-id (str "Novel Board run " run " started from " (:lane fresh-card) " with action " (name action) " using " (:assignee fresh-card) "."))
-                    (let [{:keys [exit result]} (run-agent! (assoc fresh-card :status (if (#{:write :revise} action) "in-progress" (:status fresh-card))) action run)
+                    (let [expected-status (if (#{:write :revise} action) "in-progress" (:status fresh-card))
+                          {:keys [exit result]} (run-agent! (assoc fresh-card :status expected-status) action run)
                           next-status (if (= action :groom) "draft" "review")
                           outcome (cond
                                     (not (zero? exit)) (str "agent exited " exit)
                                     (= result :blocked) "human decision or missing input requested"
                                     (nil? result) "result marker missing"
                                     :else "agent returned review")]
-                      (move-card! novel-id next-status "boxp")
-                      (update-frontmatter! novel-id {:status next-status :assignee "boxp"})
-                      (append-history! novel-id (str "Novel Board run " run " finished in " next-status ": " outcome ". Resume by recording instructions and assigning a supported agent."))
+                      (if (move-card-if-status! novel-id expected-status next-status "boxp")
+                        (do
+                          (update-frontmatter! novel-id {:status next-status :assignee "boxp"})
+                          (append-history! novel-id (str "Novel Board run " run " finished in " next-status ": " outcome ". Resume by recording instructions and assigning a supported agent.")))
+                        (append-history! novel-id (str "Novel Board run " run " finished, but the Board no longer remained in " expected-status "; preserved the current lane instead of moving it to " next-status ".")))
                       true)))
                 (catch Exception e
-                  (move-card! novel-id (if (= action :groom) "draft" "review") "boxp")
-                  (update-frontmatter! novel-id {:status (if (= action :groom) "draft" "review") :assignee "boxp"})
+                  (let [expected-status (if (= action :groom) "backlog" "in-progress")
+                        next-status (if (= action :groom) "draft" "review")]
+                    (when (move-card-if-status! novel-id expected-status next-status "boxp")
+                      (update-frontmatter! novel-id {:status next-status :assignee "boxp"})))
                   (append-history! novel-id (str "Novel Board run " run " failed: " (.getMessage e) ". Resume after correcting the cause and assigning a supported agent."))
                   (mark-run! novel-id run :failed {:action action :error (.getMessage e) :finished-at (now-str)})
                   true)

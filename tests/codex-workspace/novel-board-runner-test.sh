@@ -215,6 +215,7 @@ test_write_review_and_pi_revision() {
   FAKE_ARG_LOG="${args}" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
   assert_contains "${state}/work/NOVEL-2/manuscript.md" "本文です"
+  [[ "$(stat -c %a "${state}/work/NOVEL-2/manuscript.md")" == "600" ]] || fail "working manuscript must be private"
   assert_contains "${args}" "--model gpt-5.6-sol"
   assert_contains "${args}" "model_reasoning_effort=xhigh"
 
@@ -224,6 +225,31 @@ test_write_review_and_pi_revision() {
   assert_contains "${state}/work/NOVEL-2/manuscript.md" "Pi 改稿済み"
   assert_contains "${args}" "pi --print --approve --mode text --session-dir"
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
+}
+
+test_human_lane_move_during_agent_is_preserved() {
+  local tmp vault state bin starts runner_pid i card
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; starts="${tmp}/starts.log"
+  make_fake_agents "${bin}"
+  card='- [ ] [[Novels/NOVEL-H|NOVEL-H: Human Move]] #novel status::draft assignee::codex'
+  write_board "${vault}" "" "${card}"
+  write_note "${vault}" NOVEL-H draft codex "Human Move" "${state}"
+
+  FAKE_START_LOG="${starts}" FAKE_SLEEP=2 run_tick "${vault}" "${state}" "${bin}" env >"${tmp}/runner.log" 2>&1 &
+  runner_pid=$!
+  for i in $(seq 1 50); do
+    [[ -s "${starts}" ]] && break
+    sleep 0.05
+  done
+  [[ -s "${starts}" ]] || fail "agent did not start before human lane move"
+  card="$(grep 'Novels/NOVEL-H' "${vault}/Boards/Novel Board.md")"
+  write_board "${vault}" "" "" "" "" "${card/status::in-progress/status::done}"
+  wait "${runner_pid}"
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::done assignee::codex"
+  assert_not_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
+  assert_contains "${vault}/Novels/NOVEL-H.md" 'status: "done"'
+  assert_contains "${vault}/Novels/NOVEL-H.md" "preserved the current lane instead of moving it to review"
 }
 
 test_fable_and_failure_return_to_review() {
@@ -439,6 +465,7 @@ test_task_board_and_cron_untouched() {
 test_seed_and_entrypoint
 test_groom_and_human_stop
 test_write_review_and_pi_revision
+test_human_lane_move_during_agent_is_preserved
 test_fable_and_failure_return_to_review
 test_all_task_board_routes_and_unknown_skip
 test_publish_routing_and_idempotency
