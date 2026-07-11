@@ -28,7 +28,6 @@ RUN apt-get update \
       chromium \
       curl \
       fzf \
-      g++ \
       git \
       gnupg \
       gzip \
@@ -41,8 +40,10 @@ RUN apt-get update \
       ripgrep \
       sudo \
       tar \
+      tini \
       tmux \
       unzip \
+      util-linux \
       vim \
       xz-utils \
     && install -d -m 0755 /etc/apt/keyrings \
@@ -140,12 +141,16 @@ COPY task-board/ /opt/codex-workspace/task-board/
 COPY novel-board/ /opt/codex-workspace/novel-board/
 COPY recurring-events/ /opt/codex-workspace/recurring-events/
 COPY skills/ /opt/codex-workspace/skills/
-RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
+RUN install -m 0755 \
+      /opt/codex-workspace/novel-board/novel_agent_supervisor.sh \
+      /usr/local/bin/novel-agent-supervisor \
+    && chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && chmod 0755 /opt/codex-workspace/dotfiles-sync.sh \
     && find /opt/codex-workspace/cron -type f -name "*.sh" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/cron -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/task-board -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/novel-board -type f -name "*.bb" -exec chmod 0755 {} + \
+    && find /opt/codex-workspace/novel-board -type f -name "*.sh" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} +
 
 EXPOSE 2222 3456

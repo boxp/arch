@@ -11,7 +11,8 @@
         '[java.security MessageDigest]
         '[java.time Duration Instant ZoneId ZonedDateTime]
         '[java.time.format DateTimeFormatter]
-        '[java.util UUID])
+        '[java.util UUID]
+        '[java.util.concurrent TimeUnit])
 
 (def lane->status
   {"Backlog" "backlog"
@@ -35,12 +36,20 @@
 (def lock-guard-mutexes (vec (repeatedly 256 #(Object.))))
 (def note-lock-mutexes (vec (repeatedly 256 #(Object.))))
 (def publication-lock-mutexes (vec (repeatedly 256 #(Object.))))
-
 (defn env [key default]
   (or (System/getenv key) default))
 
 (defn env-long [key default]
   (Long/parseLong (env key default)))
+
+(defn agent-timeout-seconds []
+  (env-long "CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS" "7200"))
+
+(defn agent-shutdown-grace-seconds []
+  (env-long "CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS" "10"))
+
+(defn agent-supervisor []
+  (env "CODEX_NOVEL_BOARD_AGENT_SUPERVISOR" "/usr/local/bin/novel-agent-supervisor"))
 
 (defn vault [] (env "CODEX_NOVEL_BOARD_VAULT" default-vault))
 (defn root [] (env "CODEX_NOVEL_BOARD_ROOT" default-root))
@@ -704,6 +713,33 @@
 (defn result-marker [message]
   (some->> (re-seq #"(?m)^NOVEL_BOARD_RESULT:\s*(review|blocked)\s*$" (or message "")) last second keyword))
 
+(defn await-agent! [args opts]
+  ;; The shell supervisor runs below tini's Linux child-subreaper boundary. A
+  ;; child cannot erase this ancestry boundary by clearing its environment,
+  ;; calling setsid, or double-forking: orphaned descendants are reparented to
+  ;; tini, while the readable shell loop waits for and terminates every process.
+  (let [grace-seconds (agent-shutdown-grace-seconds)
+        supervisor-args [(agent-supervisor) "--grace-ms"
+                         (str (* grace-seconds 1000)) "--"]
+        handle (p/process (into supervisor-args args) opts)
+        process (:proc handle)
+        timeout-seconds (agent-timeout-seconds)]
+    (if (.waitFor process timeout-seconds TimeUnit/SECONDS)
+      {:process-result @handle :timed-out? false}
+      (let [cleanup-error (try
+                            (.destroy process)
+                            nil
+                            (catch Exception e {:message (.getMessage e)
+                                                :data (ex-data e)}))
+            ;; Do not release the card lock while a supervised descendant can
+            ;; still modify its work directory. The caller's heartbeat remains
+            ;; active during this wait. The supervisor applies TERM/KILL itself
+            ;; and exits only after every descendant has been reaped.
+            _ (.waitFor process)]
+        {:process-result {:exit 124}
+         :timed-out? true
+         :cleanup-error cleanup-error}))))
+
 (defn run-agent! [card action run]
   (let [novel-id (:novel-id card)
         dir (fs/path (runs-dir) novel-id run)
@@ -728,7 +764,10 @@
                           (conj "--dangerously-skip-permissions")
                           (System/getenv "CODEX_NOVEL_BOARD_FABLE_MODEL")
                           (into ["--model" (System/getenv "CODEX_NOVEL_BOARD_FABLE_MODEL")]))
-                 :pi (cond-> ["pi" "--print" "--approve" "--mode" "text"
+                 :pi (cond-> ["pi" "--offline"
+                              "--no-extensions" "--no-skills"
+                              "--no-prompt-templates" "--no-context-files"
+                              "--print" "--approve" "--mode" "text"
                               "--session-dir" (str pi-session-dir)]
                        (System/getenv "CODEX_NOVEL_BOARD_PI_MODEL")
                        (into ["--model" (System/getenv "CODEX_NOVEL_BOARD_PI_MODEL")])
@@ -737,10 +776,21 @@
                        true (conj prompt)))
           opts (cond-> {:out (io/file (str stdout-path))
                         :err (io/file (str stderr-path))}
+                 (= route :pi) (assoc :in (io/file "/dev/null"))
                  (not= route :pi) (assoc :in (io/file (str prompt-path)))
                  (#{:fable :pi} route) (assoc :dir (str (work-dir novel-id))))
-          proc @(p/process args opts)
-          exit (:exit proc)
+          {:keys [process-result timed-out? cleanup-error]} (await-agent! args opts)
+          exit (:exit process-result)
+          _ (when timed-out?
+              (spit (str stderr-path)
+                    (str "Novel Board runner terminated the agent after "
+                         (agent-timeout-seconds) " seconds.\n")
+                    :append true))
+          _ (when cleanup-error
+              (spit (str stderr-path)
+                    (str "Agent timeout cleanup was incomplete: "
+                         (:message cleanup-error) "\n")
+                    :append true))
           _ (when (and (not= route :codex) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path)) (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path) (slurp (str last-message-path)))
@@ -748,9 +798,12 @@
       (doseq [path [stdout-path stderr-path last-message-path]]
         (when (fs/exists? path) (private-file! path)))
       (mark-run! novel-id run (if (zero? exit) :succeeded :failed)
-                 {:action action :agent (:assignee card) :lane (:lane card)
-                  :exit-code exit :result marker :finished-at (now-str)})
-      {:exit exit :result marker :last-message last-message})
+                 (cond-> {:action action :agent (:assignee card) :lane (:lane card)
+                          :exit-code exit :timed-out timed-out?
+                          :result marker :finished-at (now-str)}
+                   cleanup-error (assoc :cleanup-error cleanup-error)))
+      (cond-> {:exit exit :timed-out? timed-out? :result marker :last-message last-message}
+        cleanup-error (assoc :cleanup-error cleanup-error)))
       (finally
         (when (fs/exists? (manuscript-path novel-id))
           (private-file! (manuscript-path novel-id)))))))
@@ -996,9 +1049,12 @@
                       (update-frontmatter! novel-id {:status "in-progress"}))
                     (append-history! novel-id (str "Novel Board run " run " started from " (:lane fresh-card) " with action " (name action) " using " (:assignee fresh-card) "."))
                     (let [expected-status (if (#{:write :revise} action) "in-progress" (:status fresh-card))
-                          {:keys [exit result]} (run-agent! (assoc fresh-card :status expected-status) action run)
+                          {:keys [exit result timed-out? cleanup-error]} (run-agent! (assoc fresh-card :status expected-status) action run)
                           next-status (if (= action :groom) "draft" "review")
                           outcome (cond
+                                    timed-out? (str "agent timed out after " (agent-timeout-seconds) " seconds"
+                                                    (when cleanup-error
+                                                      (str "; cleanup was incomplete: " (:message cleanup-error))))
                                     (not (zero? exit)) (str "agent exited " exit)
                                     (= result :blocked) "human decision or missing input requested"
                                     (nil? result) "result marker missing"

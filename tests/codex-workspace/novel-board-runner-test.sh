@@ -3,6 +3,11 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/novel-board/novel_board_runner.bb"
+SUPERVISOR="${ROOT_DIR}/docker/codex-workspace/novel-board/novel_agent_supervisor.sh"
+command -v tini >/dev/null 2>&1 || {
+  echo "error: tini is required for Novel agent supervisor tests" >&2
+  exit 1
+}
 
 fail() {
   echo "error: $*" >&2
@@ -97,6 +102,17 @@ EOF
 make_fake_agents() {
   local bin="$1"
   mkdir -p "${bin}"
+  cat >"${bin}/bash" <<'EOF'
+#!/bin/bash
+set -euo pipefail
+if [[ "${FAKE_SIGNAL_FAILURE:-}" == "1" && "${1:-}" == "-c" && "${2:-}" == *'kill -s '* ]]; then
+  printf 'simulated signal failure\n' >&2
+  exit 99
+fi
+exec /bin/bash "$@"
+EOF
+  chmod +x "${bin}/bash"
+
   cat >"${bin}/codex" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -151,6 +167,48 @@ prompt="${!#}"
 manuscript="$(printf '%s\n' "${prompt}" | sed -n 's/^Manuscript path: //p' | head -n 1)"
 mkdir -p "$(dirname "${manuscript}")"
 printf '\nPi 改稿済み。\n' >>"${manuscript}"
+[[ -n "${FAKE_START_LOG:-}" ]] && printf 'pi\n' >>"${FAKE_START_LOG}"
+[[ -n "${FAKE_AGENT_PID_FILE:-}" ]] && printf '%s\n' "$$" >"${FAKE_AGENT_PID_FILE}"
+if [[ -n "${FAKE_DETACHED_CHILD_MARKER:-}" ]]; then
+  # Remove the old execution token, create a new session, then double-fork.
+  # Only the child-subreaper ancestry boundary can still contain this process.
+  env -u CODEX_NOVEL_BOARD_EXECUTION_TOKEN setsid bash -c '
+    bash -c '\''
+      trap "" TERM HUP
+      printf "started\n" >"${FAKE_DETACHED_CHILD_MARKER}.started"
+      sleep "${FAKE_DETACHED_CHILD_SLEEP:-3}"
+      printf "survived timeout\n" >"${FAKE_DETACHED_CHILD_MARKER}"
+    '\'' </dev/null >/dev/null 2>&1 &
+  ' </dev/null >/dev/null 2>&1 &
+  for _ in $(seq 1 50); do
+    [[ -e "${FAKE_DETACHED_CHILD_MARKER}.started" ]] && break
+    sleep 0.02
+  done
+  while :; do sleep 10; done
+fi
+if [[ -n "${FAKE_EXIT_BACKGROUND_CHILD_MARKER:-}" ]]; then
+  (
+    trap '' TERM HUP
+    printf 'started\n' >"${FAKE_EXIT_BACKGROUND_CHILD_MARKER}.started"
+    for _ in $(seq 1 "${FAKE_EXIT_BACKGROUND_CHILD_STEPS:-50}"); do
+      sleep 0.1 || true
+    done
+    printf 'survived agent exit\n' >"${FAKE_EXIT_BACKGROUND_CHILD_MARKER}"
+  ) &
+  printf '%s\n' "${FAKE_RESULT:-NOVEL_BOARD_RESULT: review}"
+  exit "${FAKE_EXIT:-0}"
+fi
+if [[ -n "${FAKE_TERM_FORK_CHILD_MARKER:-}" ]]; then
+  trap '(
+    trap "" TERM
+    printf "started\\n" >"${FAKE_TERM_FORK_CHILD_MARKER}.started"
+    sleep "${FAKE_TERM_FORK_CHILD_SLEEP:-2}"
+    printf "survived timeout\\n" >"${FAKE_TERM_FORK_CHILD_MARKER}"
+  ) &
+  exit 143' TERM
+  while :; do sleep 10; done
+fi
+sleep "${FAKE_SLEEP:-0}"
 printf '%s\n' "${FAKE_RESULT:-NOVEL_BOARD_RESULT: review}"
 exit "${FAKE_EXIT:-0}"
 EOF
@@ -168,6 +226,8 @@ run_tick() {
     CODEX_NOVEL_BOARD_OWNER_ID="test-owner" \
     CODEX_NOVEL_BOARD_LOCK_STALE_SECONDS="1" \
     CODEX_NOVEL_BOARD_HEARTBEAT_SECONDS="1" \
+    CODEX_NOVEL_BOARD_AGENT_SUPERVISOR="${SUPERVISOR}" \
+    CODEX_NOVEL_BOARD_EXECUTION_TOKEN="must-not-be-used-as-boundary" \
     "$@" bb "${RUNNER}" tick
 }
 
@@ -199,6 +259,10 @@ test_seed_and_entrypoint() {
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'install -d -o boxp -g boxp -m 0700 "${CODEX_NOVEL_BOARD_ROOT:-/home/boxp/.novel-board}"'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'exec /usr/sbin/runuser -u boxp -- env HOME=/home/boxp'
   assert_contains "${ROOT_DIR}/docker/codex-workspace/entrypoint.sh" 'exec env HOME=/home/boxp'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/Dockerfile" 'novel_agent_supervisor.sh'
+  assert_contains "${ROOT_DIR}/docker/codex-workspace/Dockerfile" 'tini'
+  assert_contains "${SUPERVISOR}" 'exec tini -s'
+  assert_contains "${SUPERVISOR}" 'collect_active_descendants'
 
   role_log="${tmp}/role.log"
   role_runuser_log="${tmp}/role-runuser.log"
@@ -365,7 +429,7 @@ test_write_review_and_pi_revision() {
   sed -i "/^- Synopsis:/a\\- Vision reference: ![[Attachments/character reference.png]]\\n- Setting reference: ![setting](Attachments/setting.webp)\\n- Rejected external image: ![[${outside}]]" "${vault}/Novels/NOVEL-2.md"
   FAKE_ARG_LOG="${args}" CODEX_NOVEL_BOARD_PI_MODEL="llama.cpp/gemma4-26b-vision" run_tick "${vault}" "${state}" "${bin}" env
   assert_contains "${state}/work/NOVEL-2/manuscript.md" "Pi 改稿済み"
-  assert_contains "${args}" "pi --print --approve --mode text --session-dir"
+  assert_contains "${args}" "pi --offline --no-extensions --no-skills --no-prompt-templates --no-context-files --print --approve --mode text --session-dir"
   assert_contains "${args}" "--model llama.cpp/gemma4-26b-vision"
   assert_contains "${args}" "@${image}"
   assert_contains "${args}" "@${markdown_image}"
@@ -373,6 +437,174 @@ test_write_review_and_pi_revision() {
   prompt_log="$(grep -l -F 'Reference images attached to the agent:' "${state}/runs/NOVEL-2"/*/prompt.md | head -n 1)"
   assert_contains "${prompt_log}" "Reference images attached to the agent:"
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
+}
+
+test_agent_timeout_returns_to_human_review() {
+  local tmp vault state bin summary stderr escaped_child_marker
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-T|NOVEL-T: Timeout]] #novel status::backlog assignee::pi"
+
+  escaped_child_marker="${tmp}/term-handler-child-survived"
+  FAKE_TERM_FORK_CHILD_MARKER="${escaped_child_marker}" \
+    FAKE_TERM_FORK_CHILD_SLEEP=2 \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env
+
+  # The parent forks this TERM-ignoring child only from its TERM handler. A
+  # timeout-time process tree snapshot cannot see it; process-group KILL must.
+  sleep 3
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+  assert_contains "${vault}/Novels/NOVEL-T.md" "agent timed out after 1 seconds"
+  summary="$(find "${state}/runs/NOVEL-T" -name summary.edn -print -quit)"
+  stderr="$(find "${state}/runs/NOVEL-T" -name stderr.log -print -quit)"
+  assert_contains "${summary}" ":exit-code 124"
+  assert_contains "${summary}" ":timed-out true"
+  assert_contains "${stderr}" "terminated the agent after 1 seconds"
+  [[ -e "${escaped_child_marker}.started" ]] || fail "TERM handler did not fork the regression-test child"
+  [[ ! -e "${escaped_child_marker}" ]] || fail "TERM-handler descendant survived timeout cleanup"
+}
+
+test_agent_timeout_does_not_depend_on_shell_group_signal() {
+  local tmp vault state bin summary stderr agent_pid_file agent_pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-TC|NOVEL-TC: Cleanup Timeout]] #novel status::backlog assignee::pi"
+  agent_pid_file="${tmp}/agent.pid"
+
+  # The old implementation used a shell command to signal a process group.
+  # Sabotaging that path must not affect the tini + shell supervisor boundary.
+  FAKE_SIGNAL_FAILURE=1 \
+    FAKE_AGENT_PID_FILE="${agent_pid_file}" \
+    FAKE_SLEEP=30 \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env
+
+  agent_pid="$(cat "${agent_pid_file}")"
+  if kill -0 "${agent_pid}" 2>/dev/null; then
+    kill -KILL "${agent_pid}" 2>/dev/null || true
+    fail "supervisor left the fake agent process running"
+  fi
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+  assert_contains "${vault}/Novels/NOVEL-TC.md" "agent timed out after 1 seconds"
+  assert_not_contains "${vault}/Novels/NOVEL-TC.md" "cleanup was incomplete"
+  summary="$(find "${state}/runs/NOVEL-TC" -name summary.edn -print -quit)"
+  stderr="$(find "${state}/runs/NOVEL-TC" -name stderr.log -print -quit)"
+  assert_contains "${summary}" ":exit-code 124"
+  assert_contains "${summary}" ":timed-out true"
+  assert_not_contains "${summary}" ":cleanup-error"
+  assert_contains "${stderr}" "terminated the agent after 1 seconds"
+  assert_not_contains "${stderr}" "Agent timeout cleanup was incomplete"
+}
+
+test_agent_timeout_cleans_detached_descendant() {
+  local tmp vault state bin summary stderr detached_marker
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-TD|NOVEL-TD: Detached Timeout]] #novel status::backlog assignee::pi"
+  detached_marker="${tmp}/detached-child-survived"
+
+  FAKE_DETACHED_CHILD_MARKER="${detached_marker}" \
+    FAKE_DETACHED_CHILD_SLEEP=3 \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env
+
+  # The child removed the token, moved to a new session, and double-forked
+  # before timeout. It must still remain inside the subreaper boundary.
+  sleep 4
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+  assert_contains "${vault}/Novels/NOVEL-TD.md" "agent timed out after 1 seconds"
+  summary="$(find "${state}/runs/NOVEL-TD" -name summary.edn -print -quit)"
+  stderr="$(find "${state}/runs/NOVEL-TD" -name stderr.log -print -quit)"
+  assert_contains "${summary}" ":exit-code 124"
+  assert_contains "${summary}" ":timed-out true"
+  assert_contains "${stderr}" "terminated the agent after 1 seconds"
+  [[ -e "${detached_marker}.started" ]] || fail "fake agent did not start detached regression-test child"
+  [[ ! -e "${detached_marker}" ]] || fail "detached descendant survived timeout cleanup"
+}
+
+test_timeout_cleanup_keeps_card_locked_until_supervisor_exits() {
+  local tmp vault state bin starts delayed first_pid i
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  starts="${tmp}/starts.log"; delayed="${tmp}/delayed-supervisor"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-TL|NOVEL-TL: Locked Cleanup]] #novel status::backlog assignee::pi"
+
+  cat >"${delayed}" <<'EOF'
+#!/usr/bin/env bash
+set -u
+"${DELAYED_REAL_SUPERVISOR}" "$@" &
+child=$!
+trap 'sleep "${DELAYED_SUPERVISOR_TERM_SECONDS:-2}"; kill -TERM "${child}" 2>/dev/null || true' TERM
+status=0
+while kill -0 "${child}" 2>/dev/null; do
+  wait "${child}" || status=$?
+done
+exit "${status}"
+EOF
+  chmod +x "${delayed}"
+
+  FAKE_START_LOG="${starts}" \
+    FAKE_SLEEP=30 \
+    DELAYED_REAL_SUPERVISOR="${SUPERVISOR}" \
+    DELAYED_SUPERVISOR_TERM_SECONDS=2 \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=1 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env \
+      CODEX_NOVEL_BOARD_AGENT_SUPERVISOR="${delayed}" >"${tmp}/first.log" 2>&1 &
+  first_pid=$!
+
+  for i in $(seq 1 100); do
+    [[ -s "${starts}" ]] && break
+    sleep 0.02
+  done
+  [[ -s "${starts}" ]] || fail "delayed-cleanup fake agent did not start"
+  sleep 2
+  [[ -f "${state}/locks/NOVEL-TL.edn" ]] || fail "timeout cleanup released the card lock before supervisor exit"
+
+  FAKE_START_LOG="${starts}" run_tick "${vault}" "${state}" "${bin}" env
+  wait "${first_pid}"
+  [[ "$(wc -l <"${starts}")" -eq 1 ]] || fail "timeout cleanup allowed a duplicate agent run"
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+}
+
+test_successful_agent_cleans_background_process_group() {
+  local tmp vault state bin summary child_marker agent_pid_file agent_pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-BG|NOVEL-BG: Background Cleanup]] #novel status::backlog assignee::pi"
+  child_marker="${tmp}/background-child-survived"
+  agent_pid_file="${tmp}/agent.pid"
+
+  FAKE_EXIT_BACKGROUND_CHILD_MARKER="${child_marker}" \
+    FAKE_AGENT_PID_FILE="${agent_pid_file}" \
+    CODEX_NOVEL_BOARD_AGENT_TIMEOUT_SECONDS=10 \
+    CODEX_NOVEL_BOARD_AGENT_SHUTDOWN_GRACE_SECONDS=1 \
+    run_tick "${vault}" "${state}" "${bin}" env
+
+  # The direct Pi process exits 0 immediately while a TERM-ignoring child
+  # remains. The supervisor must clean that child even though the agent itself
+  # did not time out.
+  sleep 6
+
+  assert_contains "${vault}/Boards/Novel Board.md" "status::draft assignee::boxp"
+  summary="$(find "${state}/runs/NOVEL-BG" -name summary.edn -print -quit)"
+  assert_contains "${summary}" ":status :succeeded"
+  assert_contains "${summary}" ":exit-code 0"
+  assert_contains "${summary}" ":timed-out false"
+  [[ -e "${child_marker}.started" ]] || fail "successful agent did not start the regression-test background child"
+  [[ ! -e "${child_marker}" ]] || fail "background descendant survived successful agent cleanup"
+  agent_pid="$(cat "${agent_pid_file}")"
+  if kill -0 "${agent_pid}" 2>/dev/null; then
+    kill -KILL "${agent_pid}" 2>/dev/null || true
+    fail "successful agent cleanup left the fake agent process running"
+  fi
 }
 
 test_review_without_instructions_stops() {
@@ -819,6 +1051,11 @@ test_seed_and_entrypoint
 test_manual_title_scaffold
 test_groom_and_human_stop
 test_write_review_and_pi_revision
+test_agent_timeout_returns_to_human_review
+test_agent_timeout_does_not_depend_on_shell_group_signal
+test_agent_timeout_cleans_detached_descendant
+test_timeout_cleanup_keeps_card_locked_until_supervisor_exits
+test_successful_agent_cleans_background_process_group
 test_review_without_instructions_stops
 test_human_lane_move_during_agent_is_preserved
 test_fable_and_failure_return_to_review
