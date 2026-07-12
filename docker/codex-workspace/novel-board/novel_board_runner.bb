@@ -734,8 +734,8 @@
                 "Produce a reviewable manuscript, then append a concise entry under Change History without deleting prior history.\n")
            :revise
            (str "Revise the existing manuscript in place using the latest Review Instructions. Preserve previous review instructions and append a concise Change History entry describing the changes.\n"))
-         "File editing: prefer bash (e.g. printf '%s' 'CONTENT' > 'PATH') or the write tool (path, content) for whole-file writes. "
-         "If using the edit tool, its required schema is: {\"path\": \"/abs/path\", \"edits\": [{\"oldText\": \"text to replace\", \"newText\": \"replacement\"}]}.\n"
+         "File editing: use bash (e.g. printf '%s' 'CONTENT' > 'PATH') or the write tool (path, content). "
+         "Do NOT use the edit tool — it is disabled for this session.\n"
          "Never write a draft into the SFW or NSFW publication folders. Do not edit existing novels, Task Board files, or daily cron files.\n"
          "If a human decision or missing requirement prevents completion, record the reason and exact resume condition in Run History.\n"
          "End your final response with exactly one line: NOVEL_BOARD_RESULT: review or NOVEL_BOARD_RESULT: blocked.\n\n"
@@ -798,6 +798,7 @@
                  :pi (cond-> ["pi"
                               "--no-extensions" "--no-skills"
                               "--no-prompt-templates" "--no-context-files"
+                              "--exclude-tools" "edit"
                               "--print" "--approve" "--mode" "text"
                               "--session-dir" (str pi-session-dir)]
                        (System/getenv "CODEX_NOVEL_BOARD_PI_MODEL")
