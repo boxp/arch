@@ -380,6 +380,27 @@ test_manual_title_scaffold() {
   [[ "${card_count}" -eq 2 ]] || fail "Novel scaffold duplicated a Board card"
 }
 
+test_nsfw_note_to_board_sync() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  make_fake_agents "${bin}"
+  # Board card has no #nsfw; management note frontmatter sets nsfw: true (user changed it)
+  write_board "${vault}" "- [ ] [[Novels/NOVEL-N|NOVEL-N: NSFWテスト]] #novel status::backlog assignee::boxp"
+  write_note "${vault}" NOVEL-N backlog boxp "NSFWテスト" "${state}"
+  sed -i 's/^nsfw: false$/nsfw: true/' "${vault}/Novels/NOVEL-N.md"
+
+  run_tick "${vault}" "${state}" "${bin}" env
+
+  # Board card must now carry #nsfw (note frontmatter propagated to board)
+  assert_contains "${vault}/Boards/Novel Board.md" '[[Novels/NOVEL-N|NOVEL-N: NSFWテスト]] #novel #nsfw status::backlog assignee::boxp'
+  assert_contains "${vault}/Novels/NOVEL-N.md" 'nsfw: true'
+
+  # Second tick: board now has #nsfw, note says nsfw: true — state is stable
+  run_tick "${vault}" "${state}" "${bin}" env
+  assert_contains "${vault}/Boards/Novel Board.md" '[[Novels/NOVEL-N|NOVEL-N: NSFWテスト]] #novel #nsfw status::backlog assignee::boxp'
+  assert_contains "${vault}/Novels/NOVEL-N.md" 'nsfw: true'
+}
+
 test_groom_and_human_stop() {
   local tmp vault state bin prompt
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; prompt="${tmp}/prompt.log"
@@ -437,6 +458,9 @@ test_write_review_and_pi_revision() {
   assert_not_contains "${args}" "@${outside}"
   prompt_log="$(grep -l -F 'Reference images attached to the agent:' "${state}/runs/NOVEL-2"/*/prompt.md | head -n 1)"
   assert_contains "${prompt_log}" "Reference images attached to the agent:"
+  # Prompt must include file-tool hint so local models know the correct schema
+  assert_contains "${prompt_log}" "File editing:"
+  assert_contains "${prompt_log}" "oldText"
   assert_contains "${vault}/Boards/Novel Board.md" "status::review assignee::boxp"
 }
 
@@ -1050,6 +1074,7 @@ test_task_board_and_cron_untouched() {
 
 test_seed_and_entrypoint
 test_manual_title_scaffold
+test_nsfw_note_to_board_sync
 test_groom_and_human_stop
 test_write_review_and_pi_revision
 test_agent_timeout_returns_to_human_review
