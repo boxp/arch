@@ -356,6 +356,25 @@
       assignee (replace-or-append-metadata "assignee" assignee))
     line))
 
+(defn update-card-nsfw
+  "Add or remove the #nsfw tag in the tail of a board card line for the given novel-id.
+  Only the portion after the closing ]] is modified to avoid touching the card label."
+  [line novel-id nsfw]
+  (if-not (re-find (re-pattern (str "\\[\\[Novels/" (java.util.regex.Pattern/quote novel-id) "(?:\\||\\]\\])")) line)
+    line
+    (let [bracket-end (some-> (str/index-of line "]]") (+ 2))]
+      (if-not bracket-end
+        line
+        (let [prefix (subs line 0 bracket-end)
+              tail (subs line bracket-end)
+              has-nsfw (token-present? tail "#nsfw")]
+          (cond
+            (and nsfw (not has-nsfw))
+            (str prefix (str/replace-first tail #"(#novel)(?=\s|$)" "$1 #nsfw"))
+            (and (not nsfw) has-nsfw)
+            (str prefix (str/replace tail #"\s#nsfw(?=\s|$)" ""))
+            :else line))))))
+
 (defn move-card-lines! [lines card-index novel-id target-status assignee]
   (let [path (board-path)
         target-lane (get status->lane target-status)]
@@ -450,14 +469,24 @@
          (create-note! current)
          (let [fm (note-frontmatter novel-id)
                effective-assignee (or (:assignee current) (:assignee fm) "boxp")
-               synced (assoc current :assignee effective-assignee)
-               next-lines (mapv #(update-card-line % novel-id (:status current) effective-assignee) lines)]
+               ;; nsfw is bidirectional: note frontmatter can set #nsfw on the board card.
+               ;; Either source being true makes the novel NSFW. To clear NSFW, remove
+               ;; #nsfw from the board card and set nsfw: false in the management note.
+               ;; Note: parse-frontmatter-lines returns the string "true"/"false" for
+               ;; unquoted YAML booleans, so compare explicitly with = "true".
+               note-nsfw (= "true" (str (:nsfw fm)))
+               effective-nsfw (or (:nsfw current) note-nsfw false)
+               synced (assoc current :assignee effective-assignee :nsfw effective-nsfw)
+               next-lines (mapv #(-> %
+                                     (update-card-line novel-id (:status current) effective-assignee)
+                                     (update-card-nsfw novel-id effective-nsfw))
+                                lines)]
            (when (not= lines next-lines) (write-lines! (board-path) next-lines))
            (update-frontmatter! novel-id
                                 {:status (:status current)
                                  :title (:title current)
                                  :assignee effective-assignee
-                                 :nsfw (:nsfw current)
+                                 :nsfw effective-nsfw
                                  :work-dir (work-dir novel-id)
                                  :manuscript (manuscript-path novel-id)})
            synced))))))
@@ -705,6 +734,8 @@
                 "Produce a reviewable manuscript, then append a concise entry under Change History without deleting prior history.\n")
            :revise
            (str "Revise the existing manuscript in place using the latest Review Instructions. Preserve previous review instructions and append a concise Change History entry describing the changes.\n"))
+         "File editing: prefer bash (e.g. printf '%s' 'CONTENT' > 'PATH') or the write tool (path, content) for whole-file writes. "
+         "If using the edit tool, its required schema is: {\"path\": \"/abs/path\", \"edits\": [{\"oldText\": \"text to replace\", \"newText\": \"replacement\"}]}.\n"
          "Never write a draft into the SFW or NSFW publication folders. Do not edit existing novels, Task Board files, or daily cron files.\n"
          "If a human decision or missing requirement prevents completion, record the reason and exact resume condition in Run History.\n"
          "End your final response with exactly one line: NOVEL_BOARD_RESULT: review or NOVEL_BOARD_RESULT: blocked.\n\n"
