@@ -133,6 +133,7 @@ jobs:
 
       - name: Verify target device on worker node
         run: |
+          # shellcheck disable=SC2029
           DEVICE="${{ github.event.inputs.device_path }}"
           echo "Checking device $DEVICE on ${{ github.event.inputs.worker_node }}..."
 
@@ -189,16 +190,18 @@ jobs:
           IMAGE_SIZE=$(echo "$IMAGE_INFO" | awk '{print $3}')
           echo "Image found: date=$IMAGE_DATE size=${IMAGE_SIZE} bytes"
 
-          echo "## SD Card Write Plan" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Field | Value |" >> "$GITHUB_STEP_SUMMARY"
-          echo "|-------|-------|" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Node to restore | ${{ github.event.inputs.node_name }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image S3 path | \`$S3_PATH\` |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image date | $IMAGE_DATE |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Image compressed size | ${IMAGE_SIZE} bytes |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Worker node | ${{ github.event.inputs.worker_node }} (${{ env.WORKER_NODE_IP }}) |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Target device | ${{ github.event.inputs.device_path }} |" >> "$GITHUB_STEP_SUMMARY"
-          echo "| Dry run | ${{ github.event.inputs.dry_run }} |" >> "$GITHUB_STEP_SUMMARY"
+          {
+            echo "## SD Card Write Plan"
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Node to restore | ${{ github.event.inputs.node_name }} |"
+            echo "| Image S3 path | \`$S3_PATH\` |"
+            echo "| Image date | $IMAGE_DATE |"
+            echo "| Image compressed size | ${IMAGE_SIZE} bytes |"
+            echo "| Worker node | ${{ github.event.inputs.worker_node }} (${{ env.WORKER_NODE_IP }}) |"
+            echo "| Target device | ${{ github.event.inputs.device_path }} |"
+            echo "| Dry run | ${{ github.event.inputs.dry_run }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
 
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             echo ""
@@ -249,10 +252,12 @@ jobs:
           if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
             echo "**Result**: Dry run completed. No data was written." >> "$GITHUB_STEP_SUMMARY"
           elif [ "${{ env.IMAGE_DOWNLOADED }}" = "true" ]; then
-            echo "**Result**: Image written successfully to ${{ github.event.inputs.device_path }} on ${{ github.event.inputs.worker_node }}." >> "$GITHUB_STEP_SUMMARY"
-            echo "" >> "$GITHUB_STEP_SUMMARY"
-            echo "**Next steps**:" >> "$GITHUB_STEP_SUMMARY"
-            echo "1. Safely remove the SD card from ${{ github.event.inputs.worker_node }}'s card writer." >> "$GITHUB_STEP_SUMMARY"
-            echo "2. Insert the SD card into ${{ github.event.inputs.node_name }} and power it on." >> "$GITHUB_STEP_SUMMARY"
-            echo "3. Follow the Runbook: \`Incidents/Runbooks/shanghai-control-plane-sdcard-failure\`." >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo "**Result**: Image written successfully to ${{ github.event.inputs.device_path }} on ${{ github.event.inputs.worker_node }}."
+              echo ""
+              echo "**Next steps**:"
+              echo "1. Safely remove the SD card from ${{ github.event.inputs.worker_node }}'s card writer."
+              echo "2. Insert the SD card into ${{ github.event.inputs.node_name }} and power it on."
+              echo "3. Follow the Runbook: \`Incidents/Runbooks/shanghai-control-plane-sdcard-failure\`."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
