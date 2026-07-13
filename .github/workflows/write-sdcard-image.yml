@@ -245,9 +245,11 @@ jobs:
           echo "Writing image to $DEVICE_PATH on ${{ github.event.inputs.worker_node }}..."
           echo "This may take several minutes for a ~32GB card."
 
-          # Stream the image via SSH: decompress on GH runner, pipe through SSH to dd on worker
-          xzcat latest.img.xz | DEVICE_PATH="$DEVICE_PATH" ssh "${{ env.WORKER_NODE_IP }}" \
-            'sudo dd of="$DEVICE_PATH" bs=4M status=progress conv=fsync oflag=direct 2>&1'
+          # Stream the image via SSH: decompress on GH runner, pipe through SSH to dd on worker.
+          # $DEVICE_PATH is expanded locally (already validated as /dev/sd[a-z] or /dev/mmcblk[0-9]+),
+          # so double-quoting here safely embeds the literal device path in the remote command.
+          xzcat latest.img.xz | ssh "${{ env.WORKER_NODE_IP }}" \
+            "sudo dd of='$DEVICE_PATH' bs=4M status=progress conv=fsync oflag=direct 2>&1"
 
           echo "Image write complete."
           echo "IMAGE_WRITTEN=true" >> "$GITHUB_ENV"
@@ -256,22 +258,16 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         run: |
           echo "Verifying written partition table on $DEVICE_PATH..."
-          # shellcheck disable=SC2029
-          LSBLK_OUT=$(DEVICE_PATH="$DEVICE_PATH" ssh "${{ env.WORKER_NODE_IP }}" '
-            sudo partprobe "$DEVICE_PATH" 2>/dev/null || true
-            sleep 2
-            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT "$DEVICE_PATH"
-          ')
-          echo "$LSBLK_OUT"
+          # $DEVICE_PATH is expanded locally (already validated format), so double-quoting is safe.
+          ssh "${{ env.WORKER_NODE_IP }}" \
+            "sudo partprobe '$DEVICE_PATH' 2>/dev/null || true; sleep 2; lsblk -o NAME,SIZE,TYPE,MOUNTPOINT '$DEVICE_PATH'"
 
-          # Explicitly verify that at least one partition (TYPE=part) exists.
-          # lsblk succeeds even for blank/corrupt cards (it shows the disk itself),
-          # so we must check for child partitions to confirm a valid partition table was written.
-          # shellcheck disable=SC2029
-          PART_COUNT=$(DEVICE_PATH="$DEVICE_PATH" ssh "${{ env.WORKER_NODE_IP }}" \
-            'lsblk -no TYPE "$DEVICE_PATH" 2>/dev/null | grep -c "^part$" || echo 0')
+          # Count partitions using wc -l (always exits 0) to avoid grep -c returning "0\n0" on no match.
+          # lsblk alone cannot confirm a valid write — even a blank/corrupt card shows the disk itself.
+          PART_COUNT=$(ssh "${{ env.WORKER_NODE_IP }}" \
+            "lsblk -no TYPE '$DEVICE_PATH' 2>/dev/null | grep -E '^part$' | wc -l")
           if [ "$PART_COUNT" -lt 1 ]; then
-            echo "::error::Partition table verification failed: no partitions of TYPE=part found on $DEVICE_PATH. The image may not have been written correctly."
+            echo "::error::Partition table verification failed: no partitions (TYPE=part) found on $DEVICE_PATH. The image may not have been written correctly."
             exit 1
           fi
 
