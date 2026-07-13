@@ -256,11 +256,26 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         run: |
           echo "Verifying written partition table on $DEVICE_PATH..."
-          DEVICE_PATH="$DEVICE_PATH" ssh "${{ env.WORKER_NODE_IP }}" '
+          # shellcheck disable=SC2029
+          LSBLK_OUT=$(DEVICE_PATH="$DEVICE_PATH" ssh "${{ env.WORKER_NODE_IP }}" '
             sudo partprobe "$DEVICE_PATH" 2>/dev/null || true
             sleep 2
             lsblk -o NAME,SIZE,TYPE,MOUNTPOINT "$DEVICE_PATH"
-          '
+          ')
+          echo "$LSBLK_OUT"
+
+          # Explicitly verify that at least one partition (TYPE=part) exists.
+          # lsblk succeeds even for blank/corrupt cards (it shows the disk itself),
+          # so we must check for child partitions to confirm a valid partition table was written.
+          # shellcheck disable=SC2029
+          PART_COUNT=$(DEVICE_PATH="$DEVICE_PATH" ssh "${{ env.WORKER_NODE_IP }}" \
+            'lsblk -no TYPE "$DEVICE_PATH" 2>/dev/null | grep -c "^part$" || echo 0')
+          if [ "$PART_COUNT" -lt 1 ]; then
+            echo "::error::Partition table verification failed: no partitions of TYPE=part found on $DEVICE_PATH. The image may not have been written correctly."
+            exit 1
+          fi
+
+          echo "Partition table verified: $PART_COUNT partition(s) found."
           echo "WRITE_VERIFIED=true" >> "$GITHUB_ENV"
 
       - name: Write summary
