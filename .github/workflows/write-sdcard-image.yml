@@ -133,10 +133,10 @@ jobs:
 
       - name: Verify target device on worker node
         run: |
-          # shellcheck disable=SC2029
           DEVICE="${{ github.event.inputs.device_path }}"
           echo "Checking device $DEVICE on ${{ github.event.inputs.worker_node }}..."
 
+          # shellcheck disable=SC2029
           DEVICE_INFO=$(ssh "${{ env.WORKER_NODE_IP }}" "
             lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,RM,VENDOR,MODEL '$DEVICE' 2>&1 || echo 'DEVICE_NOT_FOUND'
           ")
@@ -148,6 +148,7 @@ jobs:
           fi
 
           # Safety check: device must be removable (RM=1)
+          # shellcheck disable=SC2029
           IS_REMOVABLE=$(ssh "${{ env.WORKER_NODE_IP }}" "
             DEV_NAME=\$(basename '$DEVICE')
             cat /sys/block/\$DEV_NAME/removable 2>/dev/null || echo '0'
@@ -158,6 +159,7 @@ jobs:
           fi
 
           # Check if any partition is mounted
+          # shellcheck disable=SC2029
           MOUNT_CHECK=$(ssh "${{ env.WORKER_NODE_IP }}" "
             mount | grep '^$DEVICE' || true
           ")
@@ -168,6 +170,7 @@ jobs:
             exit 1
           fi
 
+          # shellcheck disable=SC2029
           DEVICE_SIZE=$(ssh "${{ env.WORKER_NODE_IP }}" "lsblk -o SIZE -n -d '$DEVICE' 2>/dev/null || echo 'unknown'")
           echo "Device $DEVICE size: $DEVICE_SIZE (removable=yes, not mounted)"
 
