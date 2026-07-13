@@ -88,3 +88,40 @@ resource "aws_iam_role_policy_attachment" "github_actions_ansible_plan_ssm_read"
   role       = aws_iam_role.github_actions_ansible_plan.name
   policy_arn = aws_iam_policy.ssm_read.arn
 }
+
+# S3 read policy for downloading Orange Pi images (used by write-sdcard-image workflow)
+resource "aws_iam_policy" "orangepi_images_s3_read" {
+  name        = "GitHubActions_Ansible_OrangePiImagesS3Read"
+  path        = "/"
+  description = "Allow GitHub Actions Ansible role to read Orange Pi images from S3"
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:GetObject"
+        ]
+        Resource = "arn:aws:s3:::arch-orange-pi-images/images/orange-pi-zero3/*"
+      },
+      {
+        Effect = "Allow"
+        Action = [
+          "s3:ListBucket"
+        ]
+        Resource = "arn:aws:s3:::arch-orange-pi-images"
+        Condition = {
+          StringLike = {
+            "s3:prefix" = ["images/orange-pi-zero3/*"]
+          }
+        }
+      }
+    ]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "github_actions_ansible_orangepi_s3_read" {
+  role       = aws_iam_role.github_actions_ansible.name
+  policy_arn = aws_iam_policy.orangepi_images_s3_read.arn
+}

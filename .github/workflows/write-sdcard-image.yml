@@ -1,0 +1,296 @@
+name: Write SD Card Image
+
+on:
+  workflow_dispatch:
+    inputs:
+      node_name:
+        description: 'Control plane node to restore (whose image to write)'
+        required: true
+        type: choice
+        default: 'shanghai-2'
+        options:
+          - shanghai-1
+          - shanghai-2
+          - shanghai-3
+      worker_node:
+        description: 'Worker node that has the SD card writer connected'
+        required: true
+        type: choice
+        default: 'golyat-4'
+        options:
+          - golyat-1
+          - golyat-2
+          - golyat-3
+          - golyat-4
+      device_path:
+        description: 'Block device path on worker node (e.g., /dev/sdj). Use lsblk to confirm before running.'
+        required: true
+        default: '/dev/sdj'
+      dry_run:
+        description: 'Dry run: show image info and device details without writing'
+        required: false
+        default: 'false'
+        type: boolean
+
+concurrency:
+  group: write-sdcard-${{ github.event.inputs.worker_node }}-${{ github.event.inputs.device_path }}
+  cancel-in-progress: false
+
+jobs:
+  write-sdcard:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      NODE_IPS: '{"golyat-1":"192.168.10.101","golyat-2":"192.168.10.105","golyat-3":"192.168.10.106","golyat-4":"192.168.10.107"}'
+      DEVICE_PATH: ${{ github.event.inputs.device_path }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@254c19bd240aabef8777f48595e9d2d7b972184b # v6.2.1
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Setup Cloudflare credentials
+        id: cf-credentials
+        run: |
+          CF_ID=""
+          for i in 1 2 3; do
+            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
+            sleep 5
+          done
+          if [ -z "$CF_ID" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
+            exit 1
+          fi
+
+          CF_SECRET=""
+          for i in 1 2 3; do
+            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
+            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
+            sleep 5
+          done
+          if [ -z "$CF_SECRET" ]; then
+            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
+            exit 1
+          fi
+
+          echo "::add-mask::$CF_ID"
+          echo "::add-mask::$CF_SECRET"
+          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
+          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
+
+      - name: Setup SSH key
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        with:
+          aqua_version: v2.60.2
+          working_directory: aqua
+
+      - name: Setup SSH config
+        run: |
+          WORKER_NODE="${{ github.event.inputs.worker_node }}"
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r --arg node "$WORKER_NODE" '.[$node]')
+
+          if [ -z "$NODE_IP" ] || [ "$NODE_IP" = "null" ]; then
+            echo "::error::Unknown worker node: $WORKER_NODE"
+            exit 1
+          fi
+
+          echo "WORKER_NODE_IP=$NODE_IP" >> "$GITHUB_ENV"
+
+          cat >> ~/.ssh/config << EOF
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+
+          Host ${NODE_IP}
+            HostName ${NODE_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+
+          chmod 600 ~/.ssh/config
+
+      - name: Verify SSH connectivity to worker node
+        run: |
+          echo "Testing SSH connectivity to ${{ github.event.inputs.worker_node }} (${{ env.WORKER_NODE_IP }})..."
+          ssh -o ConnectTimeout=60 "${{ env.WORKER_NODE_IP }}" "echo 'SSH OK: connected to ${{ github.event.inputs.worker_node }}'"
+
+      - name: Verify target device on worker node
+        run: |
+          # Validate device_path format: must be /dev/sd[a-z] or /dev/mmcblk[0-9]
+          if ! echo "$DEVICE_PATH" | grep -qE '^/dev/(sd[a-z]|mmcblk[0-9]+)$'; then
+            echo "::error::Invalid device_path format: '$DEVICE_PATH'. Must match /dev/sd[a-z] or /dev/mmcblk[0-9]."
+            exit 1
+          fi
+
+          DEVICE="$DEVICE_PATH"
+          echo "Checking device $DEVICE on ${{ github.event.inputs.worker_node }}..."
+
+          # shellcheck disable=SC2029
+          DEVICE_INFO=$(ssh "${{ env.WORKER_NODE_IP }}" "
+            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,RM,VENDOR,MODEL \"$DEVICE\" 2>&1 || echo 'DEVICE_NOT_FOUND'
+          ")
+          echo "$DEVICE_INFO"
+
+          if echo "$DEVICE_INFO" | grep -q "DEVICE_NOT_FOUND\|cannot open"; then
+            echo "::error::Device $DEVICE not found on ${{ github.event.inputs.worker_node }}"
+            exit 1
+          fi
+
+          # Safety check: device must be removable (RM=1)
+          # shellcheck disable=SC2029
+          IS_REMOVABLE=$(ssh "${{ env.WORKER_NODE_IP }}" "
+            DEV_NAME=\$(basename '$DEVICE')
+            cat /sys/block/\$DEV_NAME/removable 2>/dev/null || echo '0'
+          ")
+          if [ "$IS_REMOVABLE" != "1" ]; then
+            echo "::error::Safety check failed: $DEVICE is not a removable device (removable=$IS_REMOVABLE). Refusing to write."
+            exit 1
+          fi
+
+          # Check if any partition is mounted via lsblk MOUNTPOINT inspection
+          # (detects UUID/label/by-* mounts that 'mount | grep' would miss)
+          # shellcheck disable=SC2029
+          MOUNTED_PARTS=$(ssh "${{ env.WORKER_NODE_IP }}" "lsblk -no MOUNTPOINT '$DEVICE' 2>/dev/null | grep -v '^[[:space:]]*$' || true")
+          if [ -n "$MOUNTED_PARTS" ]; then
+            echo "::warning::Device $DEVICE or its partitions are currently mounted:"
+            echo "$MOUNTED_PARTS"
+            echo "::error::Refusing to write to a mounted device."
+            exit 1
+          fi
+
+          # shellcheck disable=SC2029
+          DEVICE_SIZE=$(ssh "${{ env.WORKER_NODE_IP }}" "lsblk -o SIZE -n -d \"$DEVICE\" 2>/dev/null || echo 'unknown'")
+          echo "Device $DEVICE size: $DEVICE_SIZE (removable=yes, not mounted)"
+
+      - name: Download image from S3
+        run: |
+          NODE_NAME="${{ github.event.inputs.node_name }}"
+          S3_PATH="s3://arch-orange-pi-images/images/orange-pi-zero3/${NODE_NAME}/latest.img.xz"
+          S3_CHECKSUM_PATH="s3://arch-orange-pi-images/images/orange-pi-zero3/${NODE_NAME}/latest.img.xz.sha256"
+
+          echo "Checking for image: $S3_PATH"
+          if ! aws s3 ls "$S3_PATH" > /dev/null 2>&1; then
+            echo "::error::Image not found at $S3_PATH"
+            echo "Available images:"
+            aws s3 ls "s3://arch-orange-pi-images/images/orange-pi-zero3/${NODE_NAME}/" 2>&1 || true
+            exit 1
+          fi
+
+          IMAGE_INFO=$(aws s3 ls "$S3_PATH")
+          IMAGE_DATE=$(echo "$IMAGE_INFO" | awk '{print $1, $2}')
+          IMAGE_SIZE=$(echo "$IMAGE_INFO" | awk '{print $3}')
+          echo "Image found: date=$IMAGE_DATE size=${IMAGE_SIZE} bytes"
+
+          {
+            echo "## SD Card Write Plan"
+            echo "| Field | Value |"
+            echo "|-------|-------|"
+            echo "| Node to restore | ${{ github.event.inputs.node_name }} |"
+            echo "| Image S3 path | \`$S3_PATH\` |"
+            echo "| Image date | $IMAGE_DATE |"
+            echo "| Image compressed size | ${IMAGE_SIZE} bytes |"
+            echo "| Worker node | ${{ github.event.inputs.worker_node }} (${{ env.WORKER_NODE_IP }}) |"
+            echo "| Target device | $DEVICE_PATH |"
+            echo "| Dry run | ${{ github.event.inputs.dry_run }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo ""
+            echo "DRY RUN: Skipping image download and write."
+            echo "To perform the actual write, trigger this workflow with dry_run=false."
+            exit 0
+          fi
+
+          echo "Downloading image..."
+          aws s3 cp "$S3_PATH" latest.img.xz
+
+          echo "Downloading checksum..."
+          if ! aws s3 cp "$S3_CHECKSUM_PATH" latest.img.xz.sha256; then
+            echo "::error::Checksum file not found at $S3_CHECKSUM_PATH. Refusing to write unverified image."
+            exit 1
+          fi
+
+          echo "Verifying checksum..."
+          sha256sum -c latest.img.xz.sha256
+          echo "Checksum verified."
+
+          echo "IMAGE_DOWNLOADED=true" >> "$GITHUB_ENV"
+
+      - name: Write image to SD card
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          set -o pipefail
+          echo "Writing image to $DEVICE_PATH on ${{ github.event.inputs.worker_node }}..."
+          echo "This may take several minutes for a ~32GB card."
+
+          # Stream the image via SSH: decompress on GH runner, pipe through SSH to dd on worker.
+          # $DEVICE_PATH is expanded locally (already validated as /dev/sd[a-z] or /dev/mmcblk[0-9]+),
+          # so double-quoting here safely embeds the literal device path in the remote command.
+          # shellcheck disable=SC2029
+          xzcat latest.img.xz | ssh "${{ env.WORKER_NODE_IP }}" \
+            "sudo dd of='$DEVICE_PATH' bs=4M status=progress conv=fsync oflag=direct 2>&1"
+
+          echo "Image write complete."
+          echo "IMAGE_WRITTEN=true" >> "$GITHUB_ENV"
+
+      - name: Verify write (partition table check)
+        if: github.event.inputs.dry_run != 'true'
+        run: |
+          echo "Verifying written partition table on $DEVICE_PATH..."
+          # $DEVICE_PATH is expanded locally (already validated format), so double-quoting is safe.
+          # shellcheck disable=SC2029
+          ssh "${{ env.WORKER_NODE_IP }}" \
+            "sudo partprobe '$DEVICE_PATH' 2>/dev/null || true; sleep 2; lsblk -o NAME,SIZE,TYPE,MOUNTPOINT '$DEVICE_PATH'"
+
+          # Count partitions using wc -l (always exits 0) to avoid grep -c returning "0\n0" on no match.
+          # lsblk alone cannot confirm a valid write — even a blank/corrupt card shows the disk itself.
+          # shellcheck disable=SC2029
+          PART_COUNT=$(ssh "${{ env.WORKER_NODE_IP }}" \
+            "lsblk -no TYPE '$DEVICE_PATH' 2>/dev/null | grep -E '^part$' | wc -l")
+          if [ "$PART_COUNT" -lt 1 ]; then
+            echo "::error::Partition table verification failed: no partitions (TYPE=part) found on $DEVICE_PATH. The image may not have been written correctly."
+            exit 1
+          fi
+
+          echo "Partition table verified: $PART_COUNT partition(s) found."
+          echo "WRITE_VERIFIED=true" >> "$GITHUB_ENV"
+
+      - name: Write summary
+        if: always()
+        run: |
+          if [ "${{ github.event.inputs.dry_run }}" = "true" ]; then
+            echo "**Result**: Dry run completed. No data was written." >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ env.IMAGE_WRITTEN }}" = "true" ] && [ "${{ env.WRITE_VERIFIED }}" = "true" ]; then
+            {
+              echo "**Result**: Image written successfully to $DEVICE_PATH on ${{ github.event.inputs.worker_node }}."
+              echo ""
+              echo "**Next steps**:"
+              echo "1. Safely remove the SD card from ${{ github.event.inputs.worker_node }}'s card writer."
+              echo "2. Insert the SD card into ${{ github.event.inputs.node_name }} and power it on."
+              echo "3. Follow the Runbook: \`Incidents/Runbooks/shanghai-control-plane-sdcard-failure\`."
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "**Result**: Write failed or was not completed. Check the logs above for details." >> "$GITHUB_STEP_SUMMARY"
+          fi

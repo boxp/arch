@@ -14,6 +14,10 @@ on:
           - shanghai-2
           - shanghai-3
 
+concurrency:
+  group: build-orange-pi-image-${{ github.event.inputs.node_name || github.ref }}
+  cancel-in-progress: false
+
 jobs:
   determine-nodes:
     runs-on: ubuntu-latest
