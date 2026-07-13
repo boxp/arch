@@ -32,6 +32,10 @@ on:
         default: 'false'
         type: boolean
 
+concurrency:
+  group: write-sdcard-${{ github.event.inputs.worker_node }}-${{ github.event.inputs.device_path }}
+  cancel-in-progress: false
+
 jobs:
   write-sdcard:
     runs-on: ubuntu-latest
@@ -165,14 +169,13 @@ jobs:
             exit 1
           fi
 
-          # Check if any partition is mounted
+          # Check if any partition is mounted via lsblk MOUNTPOINT inspection
+          # (detects UUID/label/by-* mounts that 'mount | grep' would miss)
           # shellcheck disable=SC2029
-          MOUNT_CHECK=$(ssh "${{ env.WORKER_NODE_IP }}" "
-            mount | grep '^$DEVICE' || true
-          ")
-          if [ -n "$MOUNT_CHECK" ]; then
-            echo "::warning::Device $DEVICE has mounted partitions:"
-            echo "$MOUNT_CHECK"
+          MOUNTED_PARTS=$(ssh "${{ env.WORKER_NODE_IP }}" "lsblk -no MOUNTPOINT '$DEVICE' 2>/dev/null | grep -v '^[[:space:]]*$' || true")
+          if [ -n "$MOUNTED_PARTS" ]; then
+            echo "::warning::Device $DEVICE or its partitions are currently mounted:"
+            echo "$MOUNTED_PARTS"
             echo "::error::Refusing to write to a mounted device."
             exit 1
           fi
