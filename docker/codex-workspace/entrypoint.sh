@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# novel-board-runner sidecar compatibility stub: keeps the sidecar alive as a
+# no-op while boxp/lolice deployment removes the container. Removed once the
+# lolice sidecar deletion is merged.
+if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
+  exec sleep infinity
+fi
+
 install -d -m 0755 /run/sshd
 install -d -o boxp -g boxp -m 0755 /home/boxp
 /usr/sbin/runuser -u boxp -- install -d -m 0700 /home/boxp/.ssh
