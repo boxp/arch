@@ -215,15 +215,16 @@ jobs:
 
           echo "Downloading image..."
           aws s3 cp "$S3_PATH" latest.img.xz
-          aws s3 cp "$S3_CHECKSUM_PATH" latest.img.xz.sha256 2>/dev/null || true
 
-          if [ -f latest.img.xz.sha256 ]; then
-            echo "Verifying checksum..."
-            sha256sum -c latest.img.xz.sha256
-            echo "Checksum verified."
-          else
-            echo "::warning::No checksum file found, skipping verification."
+          echo "Downloading checksum..."
+          if ! aws s3 cp "$S3_CHECKSUM_PATH" latest.img.xz.sha256; then
+            echo "::error::Checksum file not found at $S3_CHECKSUM_PATH. Refusing to write unverified image."
+            exit 1
           fi
+
+          echo "Verifying checksum..."
+          sha256sum -c latest.img.xz.sha256
+          echo "Checksum verified."
 
           echo "IMAGE_DOWNLOADED=true" >> "$GITHUB_ENV"
 
