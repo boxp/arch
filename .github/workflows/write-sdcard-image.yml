@@ -248,6 +248,7 @@ jobs:
           # Stream the image via SSH: decompress on GH runner, pipe through SSH to dd on worker.
           # $DEVICE_PATH is expanded locally (already validated as /dev/sd[a-z] or /dev/mmcblk[0-9]+),
           # so double-quoting here safely embeds the literal device path in the remote command.
+           # shellcheck disable=SC2029
           xzcat latest.img.xz | ssh "${{ env.WORKER_NODE_IP }}" \
             "sudo dd of='$DEVICE_PATH' bs=4M status=progress conv=fsync oflag=direct 2>&1"
 
@@ -259,11 +260,13 @@ jobs:
         run: |
           echo "Verifying written partition table on $DEVICE_PATH..."
           # $DEVICE_PATH is expanded locally (already validated format), so double-quoting is safe.
+           # shellcheck disable=SC2029
           ssh "${{ env.WORKER_NODE_IP }}" \
             "sudo partprobe '$DEVICE_PATH' 2>/dev/null || true; sleep 2; lsblk -o NAME,SIZE,TYPE,MOUNTPOINT '$DEVICE_PATH'"
 
           # Count partitions using wc -l (always exits 0) to avoid grep -c returning "0\n0" on no match.
           # lsblk alone cannot confirm a valid write — even a blank/corrupt card shows the disk itself.
+           # shellcheck disable=SC2029
           PART_COUNT=$(ssh "${{ env.WORKER_NODE_IP }}" \
             "lsblk -no TYPE '$DEVICE_PATH' 2>/dev/null | grep -E '^part$' | wc -l")
           if [ "$PART_COUNT" -lt 1 ]; then
