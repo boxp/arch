@@ -41,6 +41,7 @@ jobs:
       contents: read
     env:
       NODE_IPS: '{"golyat-1":"192.168.10.101","golyat-2":"192.168.10.105","golyat-3":"192.168.10.106","golyat-4":"192.168.10.107"}'
+      DEVICE_PATH: ${{ github.event.inputs.device_path }}
 
     steps:
       - name: Checkout repository
@@ -133,12 +134,18 @@ jobs:
 
       - name: Verify target device on worker node
         run: |
-          DEVICE="${{ github.event.inputs.device_path }}"
+          # Validate device_path format: must be /dev/sd[a-z] or /dev/mmcblk[0-9]
+          if ! echo "$DEVICE_PATH" | grep -qE '^/dev/(sd[a-z]|mmcblk[0-9]+)$'; then
+            echo "::error::Invalid device_path format: '$DEVICE_PATH'. Must match /dev/sd[a-z] or /dev/mmcblk[0-9]."
+            exit 1
+          fi
+
+          DEVICE="$DEVICE_PATH"
           echo "Checking device $DEVICE on ${{ github.event.inputs.worker_node }}..."
 
           # shellcheck disable=SC2029
           DEVICE_INFO=$(ssh "${{ env.WORKER_NODE_IP }}" "
-            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,RM,VENDOR,MODEL '$DEVICE' 2>&1 || echo 'DEVICE_NOT_FOUND'
+            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,RM,VENDOR,MODEL "$DEVICE" 2>&1 || echo 'DEVICE_NOT_FOUND'
           ")
           echo "$DEVICE_INFO"
 
@@ -171,7 +178,7 @@ jobs:
           fi
 
           # shellcheck disable=SC2029
-          DEVICE_SIZE=$(ssh "${{ env.WORKER_NODE_IP }}" "lsblk -o SIZE -n -d '$DEVICE' 2>/dev/null || echo 'unknown'")
+          DEVICE_SIZE=$(ssh "${{ env.WORKER_NODE_IP }}" "lsblk -o SIZE -n -d \"$DEVICE\" 2>/dev/null || echo 'unknown'")
           echo "Device $DEVICE size: $DEVICE_SIZE (removable=yes, not mounted)"
 
       - name: Download image from S3
@@ -202,7 +209,7 @@ jobs:
             echo "| Image date | $IMAGE_DATE |"
             echo "| Image compressed size | ${IMAGE_SIZE} bytes |"
             echo "| Worker node | ${{ github.event.inputs.worker_node }} (${{ env.WORKER_NODE_IP }}) |"
-            echo "| Target device | ${{ github.event.inputs.device_path }} |"
+            echo "| Target device | $DEVICE_PATH |"
             echo "| Dry run | ${{ github.event.inputs.dry_run }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -232,12 +239,12 @@ jobs:
         if: github.event.inputs.dry_run != 'true'
         run: |
           set -o pipefail
-          echo "Writing image to ${{ github.event.inputs.device_path }} on ${{ github.event.inputs.worker_node }}..."
+          echo "Writing image to $DEVICE_PATH on ${{ github.event.inputs.worker_node }}..."
           echo "This may take several minutes for a ~32GB card."
 
           # Stream the image via SSH: decompress on GH runner, pipe through SSH to dd on worker
-          xzcat latest.img.xz | ssh "${{ env.WORKER_NODE_IP }}" \
-            "sudo dd of='${{ github.event.inputs.device_path }}' bs=4M status=progress conv=fsync oflag=direct 2>&1"
+          xzcat latest.img.xz | DEVICE_PATH="$DEVICE_PATH" ssh "${{ env.WORKER_NODE_IP }}" \
+            'sudo dd of="$DEVICE_PATH" bs=4M status=progress conv=fsync oflag=direct 2>&1'
 
           echo "Image write complete."
           echo "IMAGE_WRITTEN=true" >> "$GITHUB_ENV"
@@ -245,12 +252,12 @@ jobs:
       - name: Verify write (partition table check)
         if: github.event.inputs.dry_run != 'true'
         run: |
-          echo "Verifying written partition table on ${{ github.event.inputs.device_path }}..."
-          ssh "${{ env.WORKER_NODE_IP }}" "
-            sudo partprobe '${{ github.event.inputs.device_path }}' 2>/dev/null || true
+          echo "Verifying written partition table on $DEVICE_PATH..."
+          DEVICE_PATH="$DEVICE_PATH" ssh "${{ env.WORKER_NODE_IP }}" '
+            sudo partprobe "$DEVICE_PATH" 2>/dev/null || true
             sleep 2
-            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT '${{ github.event.inputs.device_path }}'
-          "
+            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT "$DEVICE_PATH"
+          '
           echo "WRITE_VERIFIED=true" >> "$GITHUB_ENV"
 
       - name: Write summary
@@ -260,7 +267,7 @@ jobs:
             echo "**Result**: Dry run completed. No data was written." >> "$GITHUB_STEP_SUMMARY"
           elif [ "${{ env.IMAGE_WRITTEN }}" = "true" ] && [ "${{ env.WRITE_VERIFIED }}" = "true" ]; then
             {
-              echo "**Result**: Image written successfully to ${{ github.event.inputs.device_path }} on ${{ github.event.inputs.worker_node }}."
+              echo "**Result**: Image written successfully to $DEVICE_PATH on ${{ github.event.inputs.worker_node }}."
               echo ""
               echo "**Next steps**:"
               echo "1. Safely remove the SD card from ${{ github.event.inputs.worker_node }}'s card writer."
