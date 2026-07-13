@@ -181,7 +181,13 @@ runs:
           --copy-source "${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/$FINAL_IMAGE" \
           --bucket "${{ inputs.s3_bucket }}" \
           --key "images/orange-pi-zero3/${{ inputs.node_name }}/latest.img.xz"
-        
+
+        # Create and upload checksum for latest.img.xz (with correct filename reference)
+        CHECKSUM=$(cut -d' ' -f1 "${FINAL_IMAGE}.sha256")
+        echo "$CHECKSUM  latest.img.xz" > latest.img.xz.sha256
+        aws s3 cp latest.img.xz.sha256 \
+          "s3://${{ inputs.s3_bucket }}/images/orange-pi-zero3/${{ inputs.node_name }}/latest.img.xz.sha256"
+
         # Set metadata on the unique image file
         aws s3api put-object-tagging \
           --bucket "${{ inputs.s3_bucket }}" \
