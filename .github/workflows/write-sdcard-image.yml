@@ -145,7 +145,7 @@ jobs:
 
           # shellcheck disable=SC2029
           DEVICE_INFO=$(ssh "${{ env.WORKER_NODE_IP }}" "
-            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,RM,VENDOR,MODEL "$DEVICE" 2>&1 || echo 'DEVICE_NOT_FOUND'
+            lsblk -o NAME,SIZE,TYPE,MOUNTPOINT,RM,VENDOR,MODEL \"$DEVICE\" 2>&1 || echo 'DEVICE_NOT_FOUND'
           ")
           echo "$DEVICE_INFO"
 
