@@ -11,6 +11,7 @@ RUN apt-get update \
         curl \
         git \
         jq \
+        make \
         openssh-client \
         python3 \
         python3-venv \
