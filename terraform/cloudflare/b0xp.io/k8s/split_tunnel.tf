@@ -42,5 +42,5 @@ resource "cloudflare_zero_trust_split_tunnel" "warp_include" {
 
 import {
   to = cloudflare_zero_trust_split_tunnel.warp_include
-  id = "${var.account_id}/include"
+  id = "${var.account_id}//include"
 }
