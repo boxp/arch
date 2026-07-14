@@ -27,6 +27,7 @@ RUN apt-get update \
         libelf-dev \
         libguestfs-tools \
         libssl-dev \
+        linux-image-virtual \
         make \
         mtd-utils \
         openssh-client \
