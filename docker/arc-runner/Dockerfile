@@ -8,14 +8,33 @@ USER root
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
         ca-certificates \
+        bc \
+        bison \
+        build-essential \
+        bzip2 \
+        cpio \
         curl \
+        device-tree-compiler \
+        file \
+        flex \
+        gcc-arm-linux-gnueabi \
         git \
+        gzip \
         jq \
+        libc6-i386 \
+        lib32z1 \
+        libelf-dev \
+        libssl-dev \
         make \
+        mtd-utils \
         openssh-client \
+        patch \
         python3 \
         python3-venv \
+        rsync \
         unzip \
+        wget \
+        xz-utils \
     && rm -rf /var/lib/apt/lists/* \
     && curl --fail --location --retry 3 --output /tmp/awscliv2.zip \
         https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
