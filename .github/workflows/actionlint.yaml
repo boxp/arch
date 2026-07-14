@@ -23,4 +23,4 @@ jobs:
           aqua_version: v2.61.0
       - uses: suzuki-shunsuke/github-action-actionlint@4f0298e8f8b13fffbdc13207463d65e92205ad0c # v0.1.5
         with:
-          flags: -config-file ${{ github.workspace }}/.actionlint.yaml
+          actionlint_options: -config-file ${{ github.workspace }}/.actionlint.yaml
