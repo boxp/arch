@@ -6,6 +6,7 @@ on:
     paths:
       - .github/workflows/**
       - aqua/actionlint.yaml
+      - .github/actionlint.yaml
 jobs:
   actionlint:
     runs-on: ubuntu-latest
@@ -21,3 +22,5 @@ jobs:
         with:
           aqua_version: v2.61.0
       - uses: suzuki-shunsuke/github-action-actionlint@4f0298e8f8b13fffbdc13207463d65e92205ad0c # v0.1.5
+        with:
+          actionlint_options: -config-file ${{ github.workspace }}/.github/actionlint.yaml
