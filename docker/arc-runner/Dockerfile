@@ -14,6 +14,7 @@ RUN apt-get update \
         bzip2 \
         cpio \
         curl \
+        debootstrap \
         device-tree-compiler \
         file \
         flex \
@@ -24,6 +25,7 @@ RUN apt-get update \
         libc6-i386 \
         lib32z1 \
         libelf-dev \
+        libguestfs-tools \
         libssl-dev \
         make \
         mtd-utils \
@@ -31,11 +33,16 @@ RUN apt-get update \
         patch \
         python3 \
         python3-venv \
+        qemu-utils \
+        qemu-user-static \
         rsync \
+        sudo \
         unzip \
         wget \
         xz-utils \
     && rm -rf /var/lib/apt/lists/* \
+    && echo 'runner ALL=(ALL) NOPASSWD:ALL' > /etc/sudoers.d/runner \
+    && chmod 0440 /etc/sudoers.d/runner \
     && curl --fail --location --retry 3 --output /tmp/awscliv2.zip \
         https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
     && unzip -q /tmp/awscliv2.zip -d /tmp \
