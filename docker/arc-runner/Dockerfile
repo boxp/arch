@@ -7,7 +7,6 @@ USER root
 # relying on the GitHub-hosted ubuntu-latest VM tool cache.
 RUN apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends \
-        awscli \
         ca-certificates \
         curl \
         git \
@@ -16,6 +15,11 @@ RUN apt-get update \
         python3 \
         python3-venv \
         unzip \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && curl --fail --location --retry 3 --output /tmp/awscliv2.zip \
+        https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip \
+    && unzip -q /tmp/awscliv2.zip -d /tmp \
+    && /tmp/aws/install \
+    && rm -rf /tmp/aws /tmp/awscliv2.zip
 
 USER runner
