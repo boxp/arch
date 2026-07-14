@@ -21,8 +21,6 @@ jobs:
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
           aqua_version: v2.61.0
-      - name: Setup actionlint config
-        run: |
-          mkdir -p ~/.config/actionlint
-          cp .actionlint.yaml ~/.config/actionlint/actionlint.yaml
       - uses: suzuki-shunsuke/github-action-actionlint@4f0298e8f8b13fffbdc13207463d65e92205ad0c # v0.1.5
+        env:
+          ACTIONLINT_OPTIONS: -config-file ${{ github.workspace }}/.actionlint.yaml
