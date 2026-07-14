@@ -19,17 +19,11 @@ runs:
       with:
         platforms: linux/arm64
 
-    - name: Install Armbian build dependencies
+    - name: Verify Armbian build dependencies
       shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y \
-          git \
-          build-essential \
-          qemu-user-static \
-          debootstrap \
-          rsync \
-          bc
+        command -v debootstrap
+        command -v qemu-aarch64-static
 
     - name: Clone Armbian build system
       shell: bash
