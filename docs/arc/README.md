@@ -40,15 +40,16 @@ Registry へアクセスできることも必要です。
 
 ## ワークフローの設定
 
-Ansible の実行ジョブは `runs-on: [self-hosted, linux, x64]` を指定します。ARC が
-登録する Linux/x64 runner のみが対象となり、amd64 worker 上で実行されます。
+Ansible の実行ジョブは `runs-on: arc-runners` を指定します。ARC runner scale set
+はデフォルトで Helm リリース名（`arc-runners`）をラベルとして使用するため、
+`[self-hosted, linux, x64]` ではなく `arc-runners` を指定する必要があります。
 PR コメントを投稿する `plan-ansible` の `comment` ジョブは GitHub-hosted runner
 （`ubuntu-latest`）のままです。
 
 ## フォールバック戦略
 
 self-hosted runner が停止してジョブを実行できない場合は、対象ワークフローの
-`runs-on: [self-hosted, linux, x64]` を一時的に `runs-on: ubuntu-latest` へ戻し、
+`runs-on: arc-runners` を一時的に `runs-on: ubuntu-latest` へ戻し、
 変更を commit・push します。ARC 復旧後に self-hosted 指定へ戻してください。
 
 ## 運用上の注意
