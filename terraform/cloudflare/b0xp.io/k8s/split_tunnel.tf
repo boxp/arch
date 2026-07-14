@@ -19,8 +19,16 @@ resource "cloudflare_zero_trust_split_tunnel" "warp_include" {
     description = "starRupture"
   }
   tunnels {
+    address     = "192.168.10.88/32"
+    description = "Grafana"
+  }
+  tunnels {
     address     = "192.168.10.95/32"
     description = "llama-server"
+  }
+  tunnels {
+    address     = "192.168.10.96/32"
+    description = "Kubernetes Dashboard"
   }
   tunnels {
     address     = "192.168.10.97/32"
