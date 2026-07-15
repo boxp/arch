@@ -1281,6 +1281,46 @@ test_review_gate_pass_after_retry_moves_review() {
   assert_file_not_contains "${state}/state.edn" 'BOXP-415'
 }
 
+test_groom_prompt_contains_investigation_steps() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}" "${vault}/Boards" "${vault}/Tickets"
+  make_fake_codex "${bin}"
+  cat >"${vault}/Boards/Task Board.md" <<'EOF'
+# Task Board
+
+## Backlog
+- [ ] [[Tickets/BOXP-600|BOXP-600: groom prompt]] #ticket status::backlog
+
+## Ready
+
+## In Progress
+
+## Blocked
+
+## Review
+
+## Done
+EOF
+  write_ticket "${vault}" BOXP-600 backlog codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-prompt.out
+
+  assert_file_contains "${prompt_log}" 'First investigate before writing'
+  assert_file_contains "${prompt_log}" 'Notes'
+  assert_file_contains "${prompt_log}" 'GitHub'
+  assert_file_contains "${prompt_log}" 'gh CLI'
+  assert_file_contains "${prompt_log}" 'Fill Context with investigation findings'
+  assert_file_contains "${prompt_log}" 'Fill Plan with concrete implementation steps'
+}
+
 test_assignee_model_routing() {
   bb "${RUNNER}" test
 }
@@ -1386,6 +1426,7 @@ test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks
 test_review_gate_pass_after_retry_moves_review
+test_groom_prompt_contains_investigation_steps
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing
