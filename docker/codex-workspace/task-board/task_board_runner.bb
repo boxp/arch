@@ -985,7 +985,8 @@
       :groom
       (str common
            "Goal: clarify this backlog ticket only. Do not implement code, do not create commits, and do not open PRs.\n"
-           "Update the ticket file so Summary, Acceptance Criteria, Context, Plan, and Notes are specific enough for a human to review.\n"
+           "First investigate before writing: read ticket Notes and related Obsidian documents, inspect relevant GitHub repository state (issues, PRs, discussions via gh CLI), check related repo/git conventions, run Web searches for key technologies if needed, and for infra tickets check kubectl pod/deployment state; for performance/incident tickets check Grafana metrics.\n"
+           "Then update the ticket file so Summary, Acceptance Criteria, Context, Plan, and Notes are specific enough for a human to review. Fill Context with investigation findings (system state, related docs, design rationale). Fill Plan with concrete implementation steps derived from findings.\n"
            "Keep the scope practical and preserve existing decisions.\n"
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: review\n")
 
