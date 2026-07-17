@@ -14,6 +14,11 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     namespace_id = cloudflare_workers_kv_namespace.pending_requests.id
   }
 
+  durable_object_namespace_binding {
+    name       = "POLICY_UPDATER"
+    class_name = "PolicyUpdater"
+  }
+
   secret_text_binding {
     name = "CF_API_TOKEN"
     text = var.cf_api_token
