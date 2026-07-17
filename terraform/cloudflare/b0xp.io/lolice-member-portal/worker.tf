@@ -7,6 +7,7 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
   account_id = var.account_id
   name       = "lolice-member-portal"
   content    = file("${path.module}/../../../../apps/lolice-member-portal/src/index.js")
+  module     = true
 
   kv_namespace_binding {
     name         = "PENDING_REQUESTS"
@@ -49,8 +50,8 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
   }
 }
 
-resource "cloudflare_worker_route" "lolice_member_portal_api" {
+resource "cloudflare_worker_route" "lolice_member_portal" {
   zone_id     = "ec593206d0ef695c3aae3a4cb3173264"
-  pattern     = "lolice.b0xp.io/api/*"
+  pattern     = "lolice.b0xp.io/*"
   script_name = cloudflare_workers_script.lolice_member_portal.name
 }
