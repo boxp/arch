@@ -135,68 +135,107 @@ function accessPolicyUrl(env) {
   return `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps/${env.CF_APP_ID}/policies/${env.CF_POLICY_ID}`;
 }
 
-async function addEmailToAccessPolicy(env, email, maxRetries = 5) {
+// Advisory lock key for serializing Access Policy updates.
+// KV lacks atomic CAS, so this is best-effort serialization. Combined with
+// post-PUT verification and retry, all concurrent approvals converge correctly:
+// if a concurrent PUT overwrites our change, the verify step detects the missing
+// email and the loop re-reads and re-adds it until confirmed present.
+const POLICY_LOCK_KEY = "__policy_update_lock__";
+const POLICY_LOCK_TTL_SECONDS = 30;
+
+async function acquirePolicyLock(env) {
+  for (let i = 0; i < 15; i++) {
+    const existing = await env.PENDING_REQUESTS.get(POLICY_LOCK_KEY);
+    if (!existing) {
+      await env.PENDING_REQUESTS.put(POLICY_LOCK_KEY, "1", {
+        expirationTtl: POLICY_LOCK_TTL_SECONDS,
+      });
+      return true;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 200 + Math.random() * 200));
+  }
+  return false;
+}
+
+async function releasePolicyLock(env) {
+  try {
+    await env.PENDING_REQUESTS.delete(POLICY_LOCK_KEY);
+  } catch {
+    // TTL ensures the lock expires even if deletion fails
+  }
+}
+
+async function addEmailToAccessPolicy(env, email, maxRetries = 8) {
+  const lockAcquired = await acquirePolicyLock(env);
   const headers = {
     Authorization: `Bearer ${env.CF_API_TOKEN}`,
     "Content-Type": "application/json",
   };
   const normalizedEmail = email.toLowerCase();
 
-  for (let attempt = 0; attempt < maxRetries; attempt++) {
-    const policyResponse = await fetch(accessPolicyUrl(env), { headers });
-    if (!policyResponse.ok) {
-      throw new Error(`Cloudflare Access policy fetch failed with status ${policyResponse.status}`);
-    }
+  try {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      const policyResponse = await fetch(accessPolicyUrl(env), { headers });
+      if (!policyResponse.ok) {
+        throw new Error(`Cloudflare Access policy fetch failed with status ${policyResponse.status}`);
+      }
 
-    const policyPayload = await policyResponse.json();
-    const policy = policyPayload.result;
-    if (!policy || !Array.isArray(policy.include)) {
-      throw new Error("Cloudflare Access policy response did not contain an include rule list");
-    }
+      const policyPayload = await policyResponse.json();
+      const policy = policyPayload.result;
+      if (!policy || !Array.isArray(policy.include)) {
+        throw new Error("Cloudflare Access policy response did not contain an include rule list");
+      }
 
-    const hasEmail = policy.include.some((rule) => rule.email?.email?.toLowerCase() === normalizedEmail);
-    if (hasEmail) {
-      return;
-    }
+      const hasEmail = policy.include.some((rule) => rule.email?.email?.toLowerCase() === normalizedEmail);
+      if (hasEmail) {
+        return;
+      }
 
-    const updatedPolicy = {
-      name: policy.name,
-      decision: policy.decision,
-      include: [...policy.include, { email: { email: normalizedEmail } }],
-      exclude: policy.exclude ?? [],
-      require: policy.require ?? [],
-    };
-    const updateResponse = await fetch(accessPolicyUrl(env), {
-      method: "PUT",
-      headers,
-      body: JSON.stringify(updatedPolicy),
-    });
+      const updatedPolicy = {
+        name: policy.name,
+        decision: policy.decision,
+        include: [...policy.include, { email: { email: normalizedEmail } }],
+        exclude: policy.exclude ?? [],
+        require: policy.require ?? [],
+      };
+      const updateResponse = await fetch(accessPolicyUrl(env), {
+        method: "PUT",
+        headers,
+        body: JSON.stringify(updatedPolicy),
+      });
 
-    if (updateResponse.ok) {
-      const verifyResponse = await fetch(accessPolicyUrl(env), { headers });
-      if (verifyResponse.ok) {
-        const verifyPayload = await verifyResponse.json();
-        const confirmed = verifyPayload.result?.include?.some(
-          (rule) => rule.email?.email?.toLowerCase() === normalizedEmail
-        );
-        if (confirmed) {
-          return;
+      if (updateResponse.ok) {
+        // Re-read after PUT to detect if a concurrent PUT overwrote our addition.
+        // If the email is missing, loop back to re-read the merged state and re-add.
+        const verifyResponse = await fetch(accessPolicyUrl(env), { headers });
+        if (verifyResponse.ok) {
+          const verifyPayload = await verifyResponse.json();
+          const confirmed = verifyPayload.result?.include?.some(
+            (rule) => rule.email?.email?.toLowerCase() === normalizedEmail
+          );
+          if (confirmed) {
+            return;
+          }
+          await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+          continue;
         }
-        await new Promise((resolve) => setTimeout(resolve, 300 * (attempt + 1)));
+        return;
+      }
+
+      if (attempt < maxRetries - 1 && (updateResponse.status === 409 || updateResponse.status >= 500)) {
+        await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
         continue;
       }
-      return;
+
+      throw new Error(`Cloudflare Access policy update failed with status ${updateResponse.status}`);
     }
 
-    if (attempt < maxRetries - 1 && (updateResponse.status === 409 || updateResponse.status >= 500)) {
-      await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
-      continue;
+    throw new Error(`Failed to confirm email addition to Access Policy after ${maxRetries} attempts`);
+  } finally {
+    if (lockAcquired) {
+      await releasePolicyLock(env);
     }
-
-    throw new Error(`Cloudflare Access policy update failed with status ${updateResponse.status}`);
   }
-
-  throw new Error(`Failed to confirm email addition to Access Policy after ${maxRetries} attempts`);
 }
 
 async function handleRequest(request, env) {
