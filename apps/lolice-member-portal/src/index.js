@@ -164,15 +164,22 @@ export class PolicyUpdater {
       });
     }
 
+    const now = Date.now();
     const key = `rate:${ip}`;
-    const current = (await this.state.storage.get(key)) ?? 0;
-    if (current >= RATE_LIMIT_MAX) {
+    const record = (await this.state.storage.get(key)) ?? { count: 0, windowStart: now };
+
+    if (now - record.windowStart > RATE_LIMIT_WINDOW_SECONDS * 1000) {
+      record.count = 0;
+      record.windowStart = now;
+    }
+
+    if (record.count >= RATE_LIMIT_MAX) {
       return new Response(JSON.stringify({ limited: true }), {
         headers: { "Content-Type": "application/json" },
       });
     }
 
-    await this.state.storage.put(key, current + 1, { expirationTtl: RATE_LIMIT_WINDOW_SECONDS });
+    await this.state.storage.put(key, { count: record.count + 1, windowStart: record.windowStart });
     return new Response(JSON.stringify({ limited: false }), {
       headers: { "Content-Type": "application/json" },
     });
