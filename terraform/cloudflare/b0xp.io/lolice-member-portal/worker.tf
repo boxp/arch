@@ -19,16 +19,6 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     namespace_id = cloudflare_workers_kv_namespace.pending_requests.id
   }
 
-  secret_text_binding {
-    name = "CF_API_TOKEN"
-    text = var.cf_api_token
-  }
-
-  secret_text_binding {
-    name = "RESEND_API_KEY"
-    text = var.resend_api_key
-  }
-
   plain_text_binding {
     name = "ADMIN_EMAIL"
     text = "tiyotiyouda@gmail.com"
@@ -59,6 +49,30 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     namespace_id = cloudflare_workers_kv_namespace.approved_emails.id
   }
 
+}
+
+# Secrets are managed as separate resources so their values are set manually
+# after first apply and never overwritten by Terraform.
+resource "cloudflare_workers_secret" "cf_api_token" {
+  account_id  = var.account_id
+  script_name = cloudflare_workers_script.lolice_member_portal.name
+  name        = "CF_API_TOKEN"
+  secret_text = "dummy-value-to-be-updated-manually"
+
+  lifecycle {
+    ignore_changes = [secret_text]
+  }
+}
+
+resource "cloudflare_workers_secret" "resend_api_key" {
+  account_id  = var.account_id
+  script_name = cloudflare_workers_script.lolice_member_portal.name
+  name        = "RESEND_API_KEY"
+  secret_text = "dummy-value-to-be-updated-manually"
+
+  lifecycle {
+    ignore_changes = [secret_text]
+  }
 }
 
 resource "cloudflare_worker_route" "lolice_member_portal" {
