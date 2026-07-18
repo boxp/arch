@@ -49,6 +49,16 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     text = "https://lolice.b0xp.io"
   }
 
+  durable_object_namespace_binding {
+    name       = "POLICY_UPDATER"
+    class_name = "PolicyUpdater"
+  }
+
+  migrations {
+    new_tag     = "v1"
+    new_classes = ["PolicyUpdater"]
+  }
+
 }
 
 resource "cloudflare_worker_route" "lolice_member_portal" {

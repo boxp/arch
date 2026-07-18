@@ -133,31 +133,80 @@ async function sendEmail(env, { to, subject, html }) {
   }
 }
 
-// Adds an email to the Cloudflare Access policy using a read-modify-write loop
-// with post-write verification. If a concurrent approval overwrites the PUT,
-// the verify step detects the missing email and retries until the write is
-// confirmed present in the authoritative policy.
-async function addEmailToAccessPolicy(env, email) {
-  const normalizedEmail = email.trim().toLowerCase();
-  const cfHeaders = {
-    Authorization: `Bearer ${env.CF_API_TOKEN}`,
-    "Content-Type": "application/json",
-  };
-  const url = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps/${env.CF_APP_ID}/policies/${env.CF_POLICY_ID}`;
+// Durable Object that serializes Access policy updates and rate limiting.
+// JS is single-threaded per DO instance, so concurrent fetch() calls are
+// queued and executed one at a time — eliminating read-modify-write races.
+export class PolicyUpdater {
+  constructor(state, env) {
+    this.state = state;
+    this.env = env;
+  }
 
-  const MAX_ATTEMPTS = 5;
-  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
-    const getResponse = await fetch(url, { headers: cfHeaders });
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    if (url.pathname === "/rate-check") {
+      return this.#handleRateCheck(request);
+    }
+
+    if (url.pathname === "/policy-update") {
+      return this.#handlePolicyUpdate(request);
+    }
+
+    return new Response("Not found", { status: 404 });
+  }
+
+  async #handleRateCheck(request) {
+    const { ip } = await request.json();
+    if (!ip) {
+      return new Response(JSON.stringify({ limited: false }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    const key = `rate:${ip}`;
+    const current = (await this.state.storage.get(key)) ?? 0;
+    if (current >= RATE_LIMIT_MAX) {
+      return new Response(JSON.stringify({ limited: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
+
+    await this.state.storage.put(key, current + 1, { expirationTtl: RATE_LIMIT_WINDOW_SECONDS });
+    return new Response(JSON.stringify({ limited: false }), {
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  async #handlePolicyUpdate(request) {
+    const { email } = await request.json();
+    const normalizedEmail = email.trim().toLowerCase();
+
+    const cfHeaders = {
+      Authorization: `Bearer ${this.env.CF_API_TOKEN}`,
+      "Content-Type": "application/json",
+    };
+    const apiUrl = `https://api.cloudflare.com/client/v4/accounts/${this.env.CF_ACCOUNT_ID}/access/apps/${this.env.CF_APP_ID}/policies/${this.env.CF_POLICY_ID}`;
+
+    const getResponse = await fetch(apiUrl, { headers: cfHeaders });
     if (!getResponse.ok) {
-      throw new Error(`Cloudflare Access policy fetch failed: ${getResponse.status}`);
+      return new Response(
+        JSON.stringify({ error: `Cloudflare API GET failed: ${getResponse.status}` }),
+        { status: 502, headers: { "Content-Type": "application/json" } }
+      );
     }
     const { result: policy } = await getResponse.json();
     if (!policy || !Array.isArray(policy.include)) {
-      throw new Error("Cloudflare Access policy response did not contain an include rule list");
+      return new Response(
+        JSON.stringify({ error: "Invalid policy response from Cloudflare API" }),
+        { status: 502, headers: { "Content-Type": "application/json" } }
+      );
     }
 
     if (policy.include.some((r) => r.email?.email?.toLowerCase() === normalizedEmail)) {
-      return;
+      return new Response(JSON.stringify({ ok: true }), {
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     const updated = {
@@ -168,43 +217,49 @@ async function addEmailToAccessPolicy(env, email) {
       require: policy.require ?? [],
     };
 
-    const putResponse = await fetch(url, {
+    const putResponse = await fetch(apiUrl, {
       method: "PUT",
       headers: cfHeaders,
       body: JSON.stringify(updated),
     });
     if (!putResponse.ok) {
-      throw new Error(`Cloudflare Access policy update failed: ${putResponse.status}`);
+      return new Response(
+        JSON.stringify({ error: `Cloudflare API PUT failed: ${putResponse.status}` }),
+        { status: 502, headers: { "Content-Type": "application/json" } }
+      );
     }
 
-    // Verify the write is reflected; a concurrent PUT may have overwritten ours.
-    const verifyResponse = await fetch(url, { headers: cfHeaders });
-    if (!verifyResponse.ok) {
-      throw new Error(`Cloudflare Access policy verify fetch failed: ${verifyResponse.status}`);
-    }
-    const { result: verified } = await verifyResponse.json();
-    if (verified?.include?.some((r) => r.email?.email?.toLowerCase() === normalizedEmail)) {
-      return;
-    }
-
-    // Our change was overwritten by a concurrent PUT; back off and retry.
-    await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
+    return new Response(JSON.stringify({ ok: true }), {
+      headers: { "Content-Type": "application/json" },
+    });
   }
-
-  throw new Error("Failed to add email to Access policy after multiple retries");
 }
 
-// Max RATE_LIMIT_MAX requests per IP per hour to prevent admin email spam.
 async function isRateLimited(env, ip) {
   if (!ip) return false;
-  const key = `rate:${ip}`;
-  const current = await env.PENDING_REQUESTS.get(key);
-  const count = current ? parseInt(current, 10) : 0;
-  if (count >= RATE_LIMIT_MAX) return true;
-  await env.PENDING_REQUESTS.put(key, String(count + 1), {
-    expirationTtl: RATE_LIMIT_WINDOW_SECONDS,
+  const id = env.POLICY_UPDATER.idFromName("singleton");
+  const stub = env.POLICY_UPDATER.get(id);
+  const response = await stub.fetch("https://do/rate-check", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ip }),
   });
-  return false;
+  const { limited } = await response.json();
+  return limited;
+}
+
+async function addEmailToAccessPolicy(env, email) {
+  const id = env.POLICY_UPDATER.idFromName("singleton");
+  const stub = env.POLICY_UPDATER.get(id);
+  const response = await stub.fetch("https://do/policy-update", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ email }),
+  });
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({ error: "Unknown DO error" }));
+    throw new Error(body.error ?? "Policy update failed");
+  }
 }
 
 async function handleRequest(request, env) {
