@@ -179,8 +179,16 @@ async function addEmailToAccessPolicy(env, email) {
     }
 
     // Step 2: load ALL approved emails from KV (includes any concurrent additions).
-    const kvList = await env.APPROVED_EMAILS.list({ prefix: "email:" });
-    const kvEmails = kvList.keys.map((k) => k.name.slice("email:".length));
+    // KV list() returns at most 1,000 keys per call; paginate until list_complete.
+    const kvEmails = [];
+    let cursor;
+    do {
+      const kvList = await env.APPROVED_EMAILS.list({ prefix: "email:", ...(cursor ? { cursor } : {}) });
+      for (const k of kvList.keys) {
+        kvEmails.push(k.name.slice("email:".length));
+      }
+      cursor = kvList.list_complete ? undefined : kvList.cursor;
+    } while (cursor);
 
     // Step 3: GET current policy.
     const getResponse = await fetch(apiUrl, { headers: cfHeaders });
