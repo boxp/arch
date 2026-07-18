@@ -147,25 +147,43 @@ async function isRateLimited(env, ip) {
   return false;
 }
 
-// Adds an email to the Cloudflare Access policy.
+// Ensures the approved-emails D1 table exists.
+async function ensureApprovedEmailsTable(db) {
+  await db
+    .prepare(
+      "CREATE TABLE IF NOT EXISTS approved_emails (email TEXT PRIMARY KEY, approved_at INTEGER NOT NULL)"
+    )
+    .run();
+}
+
+// Adds an email to the Cloudflare Access policy using D1 as the strongly
+// consistent source of truth for approved emails.
 //
 // Safety model for concurrent approvals:
-//  1. The email is written to APPROVED_EMAILS KV before any API call, making
-//     the approval durable regardless of subsequent policy update races.
-//  2. Every PUT merges ALL KV-persisted approved emails into the policy so
+//  1. The email is atomically written to D1 (ACID, strongly consistent) before
+//     any Cloudflare API call, making the approval durable regardless of
+//     subsequent policy update races.
+//  2. Every PUT reads ALL approved emails from D1 (consistent snapshot) so
 //     that concurrent requests converge to the same complete set.
-//  3. After each PUT a fresh GET is issued (not the PUT response) to verify
-//     that ALL KV-persisted emails appear in the live policy. If any email is
-//     absent (e.g. overwritten by a concurrent PUT that read an older policy
-//     snapshot), the loop retries from step 2 with exponential backoff until
-//     the policy is consistent.
+//  3. After each PUT a fresh GET is issued to verify that ALL D1-persisted
+//     emails appear in the live policy. Because D1 is strongly consistent, the
+//     fresh re-read in the verify step always reflects any concurrently inserted
+//     rows — unlike KV which is eventually consistent. If any email is absent
+//     (e.g. overwritten by a concurrent PUT that read an older policy snapshot),
+//     the loop retries from step 2 with exponential backoff until convergence.
 const MAX_POLICY_RETRIES = 5;
 
 async function addEmailToAccessPolicy(env, email) {
   const normalizedEmail = email.trim().toLowerCase();
 
-  // Step 1: persist email to KV so it survives any subsequent race.
-  await env.APPROVED_EMAILS.put(`email:${normalizedEmail}`, "1");
+  await ensureApprovedEmailsTable(env.APPROVED_EMAILS_DB);
+
+  // Step 1: persist email to D1 atomically (strongly consistent).
+  await env.APPROVED_EMAILS_DB.prepare(
+    "INSERT OR IGNORE INTO approved_emails (email, approved_at) VALUES (?, ?)"
+  )
+    .bind(normalizedEmail, Date.now())
+    .run();
 
   const cfHeaders = {
     Authorization: `Bearer ${env.CF_API_TOKEN}`,
@@ -178,17 +196,12 @@ async function addEmailToAccessPolicy(env, email) {
       await new Promise((r) => setTimeout(r, 200 * Math.pow(2, attempt - 1)));
     }
 
-    // Step 2: load ALL approved emails from KV (includes any concurrent additions).
-    // KV list() returns at most 1,000 keys per call; paginate until list_complete.
-    const kvEmails = [];
-    let cursor;
-    do {
-      const kvList = await env.APPROVED_EMAILS.list({ prefix: "email:", ...(cursor ? { cursor } : {}) });
-      for (const k of kvList.keys) {
-        kvEmails.push(k.name.slice("email:".length));
-      }
-      cursor = kvList.list_complete ? undefined : kvList.cursor;
-    } while (cursor);
+    // Step 2: load ALL approved emails from D1 (strongly consistent — no
+    // eventual-consistency lag unlike KV).
+    const { results: dbRows } = await env.APPROVED_EMAILS_DB.prepare(
+      "SELECT email FROM approved_emails"
+    ).all();
+    const allApprovedEmails = dbRows.map((r) => r.email);
 
     // Step 3: GET current policy.
     const getResponse = await fetch(apiUrl, { headers: cfHeaders });
@@ -200,19 +213,19 @@ async function addEmailToAccessPolicy(env, email) {
       throw new Error("Invalid policy response from Cloudflare API");
     }
 
-    // Step 4: merge existing non-email rules + deduplicated email list from KV.
+    // Step 4: merge existing non-email rules + deduplicated email list from D1.
     const existingEmails = policy.include
       .filter((r) => r.email?.email)
       .map((r) => r.email.email.toLowerCase());
     const nonEmailRules = policy.include.filter((r) => !r.email?.email);
-    const allEmails = [...new Set([...existingEmails, ...kvEmails])];
+    const mergedEmails = [...new Set([...existingEmails, ...allApprovedEmails])];
 
     const updated = {
       name: policy.name,
       decision: policy.decision,
       include: [
         ...nonEmailRules,
-        ...allEmails.map((e) => ({ email: { email: e } })),
+        ...mergedEmails.map((e) => ({ email: { email: e } })),
       ],
       exclude: policy.exclude ?? [],
       require: policy.require ?? [],
@@ -228,25 +241,15 @@ async function addEmailToAccessPolicy(env, email) {
       throw new Error(`Cloudflare API PUT failed: ${putResponse.status}`);
     }
 
-    // Step 6: verify with a FRESH GET (not the PUT response) and a FRESH KV
-    // scan. Re-fetching KV here detects any email added concurrently during
-    // this iteration; a concurrent PUT that ran between step 2 and step 5
-    // might have read the same old policy snapshot and overwritten our PUT
-    // (dropping our email), or our PUT might have overwritten theirs. Either
-    // way, checking the live KV set—not the snapshot from step 2—ensures we
-    // catch any missing email and retry the full read-modify-write cycle.
-    const latestKvEmails = [];
-    let latestCursor;
-    do {
-      const latestList = await env.APPROVED_EMAILS.list({
-        prefix: "email:",
-        ...(latestCursor ? { cursor: latestCursor } : {}),
-      });
-      for (const k of latestList.keys) {
-        latestKvEmails.push(k.name.slice("email:".length));
-      }
-      latestCursor = latestList.list_complete ? undefined : latestList.cursor;
-    } while (latestCursor);
+    // Step 6: verify with a FRESH GET and a FRESH D1 read.
+    // Because D1 is strongly consistent, the re-read always reflects any emails
+    // inserted concurrently during this iteration. If another concurrent PUT
+    // overwrote our update (dropping our email or someone else's), the
+    // discrepancy is detected here and the full read-modify-write loop retries.
+    const { results: latestDbRows } = await env.APPROVED_EMAILS_DB.prepare(
+      "SELECT email FROM approved_emails"
+    ).all();
+    const latestApprovedEmails = latestDbRows.map((r) => r.email);
 
     const verifyResponse = await fetch(apiUrl, { headers: cfHeaders });
     if (!verifyResponse.ok) {
@@ -257,7 +260,7 @@ async function addEmailToAccessPolicy(env, email) {
       .filter((r) => r.email?.email)
       .map((r) => r.email.email.toLowerCase());
 
-    const allPresent = latestKvEmails.every((e) => verifiedEmails.includes(e));
+    const allPresent = latestApprovedEmails.every((e) => verifiedEmails.includes(e));
     if (allPresent) return;
   }
 

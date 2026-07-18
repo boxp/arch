@@ -3,9 +3,29 @@ resource "cloudflare_workers_kv_namespace" "pending_requests" {
   title      = "lolice-member-portal-pending-requests"
 }
 
-resource "cloudflare_workers_kv_namespace" "approved_emails" {
+# D1 database for strongly consistent approved-email storage.
+# Replacing the previous KV namespace which had eventual-consistency issues
+# that could cause concurrent approvals to lose each other's entries.
+resource "cloudflare_d1_database" "approved_emails" {
   account_id = var.account_id
-  title      = "lolice-member-portal-approved-emails"
+  name       = "lolice-member-portal-approved-emails"
+}
+
+# Read secrets from AWS SSM Parameter Store so that no dummy values are ever
+# deployed and terraform apply always reflects the current secret.
+# Prerequisites: run the following before first apply:
+#   aws ssm put-parameter --name /lolice-member-portal/CF_API_TOKEN \
+#     --value <token> --type SecureString --region ap-northeast-1
+#   aws ssm put-parameter --name /lolice-member-portal/RESEND_API_KEY \
+#     --value <key> --type SecureString --region ap-northeast-1
+data "aws_ssm_parameter" "cf_api_token" {
+  name            = "/lolice-member-portal/CF_API_TOKEN"
+  with_decryption = true
+}
+
+data "aws_ssm_parameter" "resend_api_key" {
+  name            = "/lolice-member-portal/RESEND_API_KEY"
+  with_decryption = true
 }
 
 resource "cloudflare_workers_script" "lolice_member_portal" {
@@ -19,9 +39,9 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     namespace_id = cloudflare_workers_kv_namespace.pending_requests.id
   }
 
-  kv_namespace_binding {
-    name         = "APPROVED_EMAILS"
-    namespace_id = cloudflare_workers_kv_namespace.approved_emails.id
+  d1_database_binding {
+    name        = "APPROVED_EMAILS_DB"
+    database_id = cloudflare_d1_database.approved_emails.id
   }
 
   plain_text_binding {
@@ -48,31 +68,20 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     name = "PORTAL_BASE_URL"
     text = "https://lolice.b0xp.io"
   }
-
 }
 
-# Secrets are managed as separate resources so their values are set manually
-# after first apply and never overwritten by Terraform.
 resource "cloudflare_workers_secret" "cf_api_token" {
   account_id  = var.account_id
   script_name = cloudflare_workers_script.lolice_member_portal.name
   name        = "CF_API_TOKEN"
-  secret_text = "dummy-value-to-be-updated-manually"
-
-  lifecycle {
-    ignore_changes = [secret_text]
-  }
+  secret_text = data.aws_ssm_parameter.cf_api_token.value
 }
 
 resource "cloudflare_workers_secret" "resend_api_key" {
   account_id  = var.account_id
   script_name = cloudflare_workers_script.lolice_member_portal.name
   name        = "RESEND_API_KEY"
-  secret_text = "dummy-value-to-be-updated-manually"
-
-  lifecycle {
-    ignore_changes = [secret_text]
-  }
+  secret_text = data.aws_ssm_parameter.resend_api_key.value
 }
 
 resource "cloudflare_worker_route" "lolice_member_portal" {
