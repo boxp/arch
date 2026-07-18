@@ -3,11 +3,6 @@ resource "cloudflare_workers_kv_namespace" "pending_requests" {
   title      = "lolice-member-portal-pending-requests"
 }
 
-resource "cloudflare_workers_kv_namespace" "approved_emails" {
-  account_id = var.account_id
-  title      = "lolice-member-portal-approved-emails"
-}
-
 resource "cloudflare_workers_script" "lolice_member_portal" {
   account_id = var.account_id
   name       = "lolice-member-portal"
@@ -17,6 +12,11 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
   kv_namespace_binding {
     name         = "PENDING_REQUESTS"
     namespace_id = cloudflare_workers_kv_namespace.pending_requests.id
+  }
+
+  durable_object_namespace_binding {
+    name       = "POLICY_UPDATER"
+    class_name = "PolicyUpdater"
   }
 
   plain_text_binding {
@@ -42,11 +42,6 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
   plain_text_binding {
     name = "PORTAL_BASE_URL"
     text = "https://lolice.b0xp.io"
-  }
-
-  kv_namespace_binding {
-    name         = "APPROVED_EMAILS"
-    namespace_id = cloudflare_workers_kv_namespace.approved_emails.id
   }
 
 }
