@@ -14,11 +14,6 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     namespace_id = cloudflare_workers_kv_namespace.pending_requests.id
   }
 
-  durable_object_namespace_binding {
-    name       = "POLICY_UPDATE_DO"
-    class_name = "PolicyUpdateDO"
-  }
-
   secret_text_binding {
     name = "CF_API_TOKEN"
     text = var.cf_api_token
@@ -54,10 +49,6 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     text = "https://lolice.b0xp.io"
   }
 
-  migrations {
-    tag         = "v1"
-    new_classes = ["PolicyUpdateDO"]
-  }
 }
 
 resource "cloudflare_worker_route" "lolice_member_portal" {

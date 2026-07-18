@@ -133,61 +133,25 @@ async function sendEmail(env, { to, subject, html }) {
   }
 }
 
-// Durable Object that serializes all Cloudflare Access Policy updates.
-// Because a single DO instance processes requests one at a time (JavaScript
-// single-threaded event loop), concurrent approvals are automatically queued
-// and each GET→PUT sees the result of the previous write.
-export class PolicyUpdateDO {
-  constructor(state, env) {
-    this.state = state;
-    this.env = env;
-  }
+// Adds an email to the Cloudflare Access policy using a read-modify-write loop
+// with post-write verification. If a concurrent approval overwrites the PUT,
+// the verify step detects the missing email and retries until the write is
+// confirmed present in the authoritative policy.
+async function addEmailToAccessPolicy(env, email) {
+  const normalizedEmail = email.trim().toLowerCase();
+  const cfHeaders = {
+    Authorization: `Bearer ${env.CF_API_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+  const url = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps/${env.CF_APP_ID}/policies/${env.CF_POLICY_ID}`;
 
-  async fetch(request) {
-    let body;
-    try {
-      body = await request.json();
-    } catch {
-      return new Response(JSON.stringify({ ok: false, error: "invalid request body" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
+  const MAX_ATTEMPTS = 5;
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+    const getResponse = await fetch(url, { headers: cfHeaders });
+    if (!getResponse.ok) {
+      throw new Error(`Cloudflare Access policy fetch failed: ${getResponse.status}`);
     }
-
-    const email = typeof body?.email === "string" ? body.email.trim().toLowerCase() : "";
-    if (!isValidEmail(email)) {
-      return new Response(JSON.stringify({ ok: false, error: "invalid email" }), {
-        status: 400,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    try {
-      await this._updatePolicy(email);
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (error) {
-      return new Response(JSON.stringify({ ok: false, error: error.message }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-  }
-
-  async _updatePolicy(normalizedEmail) {
-    const headers = {
-      Authorization: `Bearer ${this.env.CF_API_TOKEN}`,
-      "Content-Type": "application/json",
-    };
-    const url = `https://api.cloudflare.com/client/v4/accounts/${this.env.CF_ACCOUNT_ID}/access/apps/${this.env.CF_APP_ID}/policies/${this.env.CF_POLICY_ID}`;
-
-    const policyResponse = await fetch(url, { headers });
-    if (!policyResponse.ok) {
-      throw new Error(`Cloudflare Access policy fetch failed: ${policyResponse.status}`);
-    }
-
-    const { result: policy } = await policyResponse.json();
+    const { result: policy } = await getResponse.json();
     if (!policy || !Array.isArray(policy.include)) {
       throw new Error("Cloudflare Access policy response did not contain an include rule list");
     }
@@ -206,14 +170,28 @@ export class PolicyUpdateDO {
 
     const putResponse = await fetch(url, {
       method: "PUT",
-      headers,
+      headers: cfHeaders,
       body: JSON.stringify(updated),
     });
-
     if (!putResponse.ok) {
       throw new Error(`Cloudflare Access policy update failed: ${putResponse.status}`);
     }
+
+    // Verify the write is reflected; a concurrent PUT may have overwritten ours.
+    const verifyResponse = await fetch(url, { headers: cfHeaders });
+    if (!verifyResponse.ok) {
+      throw new Error(`Cloudflare Access policy verify fetch failed: ${verifyResponse.status}`);
+    }
+    const { result: verified } = await verifyResponse.json();
+    if (verified?.include?.some((r) => r.email?.email?.toLowerCase() === normalizedEmail)) {
+      return;
+    }
+
+    // Our change was overwritten by a concurrent PUT; back off and retry.
+    await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
   }
+
+  throw new Error("Failed to add email to Access policy after multiple retries");
 }
 
 // Max RATE_LIMIT_MAX requests per IP per hour to prevent admin email spam.
@@ -326,21 +304,7 @@ async function handleApproval(request, env) {
   if (pending.error) return pending.error;
 
   try {
-    // Route the policy update through the singleton Durable Object so that
-    // concurrent approvals are serialized and no email addition is lost.
-    const doId = env.POLICY_UPDATE_DO.idFromName("singleton");
-    const doStub = env.POLICY_UPDATE_DO.get(doId);
-    const doResponse = await doStub.fetch(
-      new Request("https://do/update", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email: pending.email }),
-      })
-    );
-    if (!doResponse.ok) {
-      const { error } = await doResponse.json();
-      throw new Error(error ?? "policy update failed");
-    }
+    await addEmailToAccessPolicy(env, pending.email);
 
     await sendEmail(env, {
       to: pending.email,
