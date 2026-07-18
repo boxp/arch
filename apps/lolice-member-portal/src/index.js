@@ -147,82 +147,97 @@ async function isRateLimited(env, ip) {
   return false;
 }
 
+// Adds an email to the Cloudflare Access policy.
+//
+// Safety model for concurrent approvals:
+//  1. The email is written to APPROVED_EMAILS KV before any API call, making
+//     the approval durable regardless of subsequent policy update races.
+//  2. Every PUT merges ALL KV-persisted approved emails into the policy so
+//     that concurrent requests converge to the same complete set.
+//  3. After each PUT a fresh GET is issued (not the PUT response) to verify
+//     that ALL KV-persisted emails appear in the live policy. If any email is
+//     absent (e.g. overwritten by a concurrent PUT that read an older policy
+//     snapshot), the loop retries from step 2 with exponential backoff until
+//     the policy is consistent.
+const MAX_POLICY_RETRIES = 5;
+
 async function addEmailToAccessPolicy(env, email) {
-  const id = env.POLICY_UPDATER.idFromName("singleton");
-  const stub = env.POLICY_UPDATER.get(id);
-  const response = await stub.fetch("https://do-internal/update-policy", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email: email.trim().toLowerCase() }),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    throw new Error(body.error ?? `Policy update failed: ${response.status}`);
-  }
-}
+  const normalizedEmail = email.trim().toLowerCase();
 
-class PolicyUpdater {
-  constructor(state, env) {
-    this.env = env;
-  }
+  // Step 1: persist email to KV so it survives any subsequent race.
+  await env.APPROVED_EMAILS.put(`email:${normalizedEmail}`, "1");
 
-  async fetch(request) {
-    try {
-      const { email } = await request.json();
-      const normalizedEmail = email.trim().toLowerCase();
+  const cfHeaders = {
+    Authorization: `Bearer ${env.CF_API_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+  const apiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps/${env.CF_APP_ID}/policies/${env.CF_POLICY_ID}`;
 
-      const cfHeaders = {
-        Authorization: `Bearer ${this.env.CF_API_TOKEN}`,
-        "Content-Type": "application/json",
-      };
-      const apiUrl = `https://api.cloudflare.com/client/v4/accounts/${this.env.CF_ACCOUNT_ID}/access/apps/${this.env.CF_APP_ID}/policies/${this.env.CF_POLICY_ID}`;
-
-      const getResponse = await fetch(apiUrl, { headers: cfHeaders });
-      if (!getResponse.ok) {
-        throw new Error(`Cloudflare API GET failed: ${getResponse.status}`);
-      }
-      const { result: policy } = await getResponse.json();
-      if (!policy || !Array.isArray(policy.include)) {
-        throw new Error("Invalid policy response from Cloudflare API");
-      }
-
-      const existingEmails = policy.include
-        .filter((r) => r.email?.email)
-        .map((r) => r.email.email.toLowerCase());
-      const nonEmailRules = policy.include.filter((r) => !r.email?.email);
-      const allEmails = [...new Set([...existingEmails, normalizedEmail])];
-
-      const updated = {
-        name: policy.name,
-        decision: policy.decision,
-        include: [
-          ...nonEmailRules,
-          ...allEmails.map((e) => ({ email: { email: e } })),
-        ],
-        exclude: policy.exclude ?? [],
-        require: policy.require ?? [],
-      };
-
-      const putResponse = await fetch(apiUrl, {
-        method: "PUT",
-        headers: cfHeaders,
-        body: JSON.stringify(updated),
-      });
-      if (!putResponse.ok) {
-        throw new Error(`Cloudflare API PUT failed: ${putResponse.status}`);
-      }
-
-      return new Response(JSON.stringify({ ok: true }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" },
-      });
-    } catch (error) {
-      return new Response(JSON.stringify({ ok: false, error: error.message }), {
-        status: 500,
-        headers: { "Content-Type": "application/json" },
-      });
+  for (let attempt = 0; attempt < MAX_POLICY_RETRIES; attempt++) {
+    if (attempt > 0) {
+      await new Promise((r) => setTimeout(r, 200 * Math.pow(2, attempt - 1)));
     }
+
+    // Step 2: load ALL approved emails from KV (includes any concurrent additions).
+    const kvList = await env.APPROVED_EMAILS.list({ prefix: "email:" });
+    const kvEmails = kvList.keys.map((k) => k.name.slice("email:".length));
+
+    // Step 3: GET current policy.
+    const getResponse = await fetch(apiUrl, { headers: cfHeaders });
+    if (!getResponse.ok) {
+      throw new Error(`Cloudflare API GET failed: ${getResponse.status}`);
+    }
+    const { result: policy } = await getResponse.json();
+    if (!policy || !Array.isArray(policy.include)) {
+      throw new Error("Invalid policy response from Cloudflare API");
+    }
+
+    // Step 4: merge existing non-email rules + deduplicated email list from KV.
+    const existingEmails = policy.include
+      .filter((r) => r.email?.email)
+      .map((r) => r.email.email.toLowerCase());
+    const nonEmailRules = policy.include.filter((r) => !r.email?.email);
+    const allEmails = [...new Set([...existingEmails, ...kvEmails])];
+
+    const updated = {
+      name: policy.name,
+      decision: policy.decision,
+      include: [
+        ...nonEmailRules,
+        ...allEmails.map((e) => ({ email: { email: e } })),
+      ],
+      exclude: policy.exclude ?? [],
+      require: policy.require ?? [],
+    };
+
+    // Step 5: PUT the merged policy.
+    const putResponse = await fetch(apiUrl, {
+      method: "PUT",
+      headers: cfHeaders,
+      body: JSON.stringify(updated),
+    });
+    if (!putResponse.ok) {
+      throw new Error(`Cloudflare API PUT failed: ${putResponse.status}`);
+    }
+
+    // Step 6: verify with a FRESH GET (not the PUT response) that ALL KV emails
+    // appear in the live policy. A concurrent PUT between our PUT and this GET
+    // could have overwritten our changes, so we check the complete KV set, not
+    // just our own email. If any are absent, retry from step 2.
+    const verifyResponse = await fetch(apiUrl, { headers: cfHeaders });
+    if (!verifyResponse.ok) {
+      throw new Error(`Cloudflare API verify-GET failed: ${verifyResponse.status}`);
+    }
+    const { result: verifiedPolicy } = await verifyResponse.json();
+    const verifiedEmails = (verifiedPolicy?.include ?? [])
+      .filter((r) => r.email?.email)
+      .map((r) => r.email.email.toLowerCase());
+
+    const allPresent = kvEmails.every((e) => verifiedEmails.includes(e));
+    if (allPresent) return;
   }
+
+  throw new Error("Failed to confirm all approved emails in Access policy after retries");
 }
 
 async function handleRequest(request, env) {
@@ -383,8 +398,6 @@ async function handleRejection(request, env) {
   await env.PENDING_REQUESTS.delete(pending.token);
   return htmlResponse("<h1>参加申請を却下しました。</h1><p>この申請は削除されました。</p>");
 }
-
-export { PolicyUpdater };
 
 export default {
   async fetch(request, env) {
