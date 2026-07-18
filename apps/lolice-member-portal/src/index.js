@@ -228,10 +228,26 @@ async function addEmailToAccessPolicy(env, email) {
       throw new Error(`Cloudflare API PUT failed: ${putResponse.status}`);
     }
 
-    // Step 6: verify with a FRESH GET (not the PUT response) that ALL KV emails
-    // appear in the live policy. A concurrent PUT between our PUT and this GET
-    // could have overwritten our changes, so we check the complete KV set, not
-    // just our own email. If any are absent, retry from step 2.
+    // Step 6: verify with a FRESH GET (not the PUT response) and a FRESH KV
+    // scan. Re-fetching KV here detects any email added concurrently during
+    // this iteration; a concurrent PUT that ran between step 2 and step 5
+    // might have read the same old policy snapshot and overwritten our PUT
+    // (dropping our email), or our PUT might have overwritten theirs. Either
+    // way, checking the live KV set—not the snapshot from step 2—ensures we
+    // catch any missing email and retry the full read-modify-write cycle.
+    const latestKvEmails = [];
+    let latestCursor;
+    do {
+      const latestList = await env.APPROVED_EMAILS.list({
+        prefix: "email:",
+        ...(latestCursor ? { cursor: latestCursor } : {}),
+      });
+      for (const k of latestList.keys) {
+        latestKvEmails.push(k.name.slice("email:".length));
+      }
+      latestCursor = latestList.list_complete ? undefined : latestList.cursor;
+    } while (latestCursor);
+
     const verifyResponse = await fetch(apiUrl, { headers: cfHeaders });
     if (!verifyResponse.ok) {
       throw new Error(`Cloudflare API verify-GET failed: ${verifyResponse.status}`);
@@ -241,7 +257,7 @@ async function addEmailToAccessPolicy(env, email) {
       .filter((r) => r.email?.email)
       .map((r) => r.email.email.toLowerCase());
 
-    const allPresent = kvEmails.every((e) => verifiedEmails.includes(e));
+    const allPresent = latestKvEmails.every((e) => verifiedEmails.includes(e));
     if (allPresent) return;
   }
 
