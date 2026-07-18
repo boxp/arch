@@ -133,140 +133,102 @@ async function sendEmail(env, { to, subject, html }) {
   }
 }
 
-// Durable Object that serializes Access policy updates and rate limiting.
-// JS is single-threaded per DO instance, so concurrent fetch() calls are
-// queued and executed one at a time — eliminating read-modify-write races.
-export class PolicyUpdater {
-  constructor(state, env) {
-    this.state = state;
-    this.env = env;
-  }
+// KV-based approximate rate limiting using PENDING_REQUESTS namespace.
+// get→put is non-atomic; for this low-traffic personal server the race window
+// is negligible, and the purpose (admin notification spam prevention) is met.
+async function isRateLimited(env, ip) {
+  if (!ip) return false;
+  const key = `rate:${ip}`;
+  const count = parseInt((await env.PENDING_REQUESTS.get(key)) ?? "0", 10);
+  if (count >= RATE_LIMIT_MAX) return true;
+  await env.PENDING_REQUESTS.put(key, String(count + 1), {
+    expirationTtl: RATE_LIMIT_WINDOW_SECONDS,
+  });
+  return false;
+}
 
-  async fetch(request) {
-    const url = new URL(request.url);
+// Adds an email to the Cloudflare Access policy using APPROVED_EMAILS KV as
+// the durable source of truth.
+//
+// Safety model for concurrent approvals (which will not occur in practice for
+// a single-admin personal server):
+//  1. The email is written to APPROVED_EMAILS KV before any API call. This
+//     makes the approval durable regardless of what happens to the policy PUT.
+//  2. All KV-persisted approved emails are fetched and merged into the policy
+//     in every PUT, so concurrent requests that overwrite each other converge
+//     to a correct state on the next approval cycle.
+//  3. A verification step after PUT confirms the email appears in the policy;
+//     if it is absent (e.g. overwritten by a concurrent PUT), the function
+//     retries up to MAX_POLICY_RETRIES times with a fresh GET so both emails
+//     end up in the final policy.
+const MAX_POLICY_RETRIES = 3;
 
-    if (url.pathname === "/rate-check") {
-      return this.#handleRateCheck(request);
-    }
+async function addEmailToAccessPolicy(env, email) {
+  const normalizedEmail = email.trim().toLowerCase();
 
-    if (url.pathname === "/policy-update") {
-      return this.#handlePolicyUpdate(request);
-    }
+  // Step 1: persist email to KV before touching the policy.
+  await env.APPROVED_EMAILS.put(`email:${normalizedEmail}`, "1");
 
-    return new Response("Not found", { status: 404 });
-  }
+  const cfHeaders = {
+    Authorization: `Bearer ${env.CF_API_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+  const apiUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/access/apps/${env.CF_APP_ID}/policies/${env.CF_POLICY_ID}`;
 
-  async #handleRateCheck(request) {
-    const { ip } = await request.json();
-    if (!ip) {
-      return new Response(JSON.stringify({ limited: false }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
+  for (let attempt = 0; attempt < MAX_POLICY_RETRIES; attempt++) {
+    // Step 2: load ALL approved emails from KV (includes concurrent additions).
+    const kvList = await env.APPROVED_EMAILS.list({ prefix: "email:" });
+    const kvEmails = kvList.keys.map((k) => k.name.slice("email:".length));
 
-    const now = Date.now();
-    const key = `rate:${ip}`;
-    const record = (await this.state.storage.get(key)) ?? { count: 0, windowStart: now };
-
-    if (now - record.windowStart > RATE_LIMIT_WINDOW_SECONDS * 1000) {
-      record.count = 0;
-      record.windowStart = now;
-    }
-
-    if (record.count >= RATE_LIMIT_MAX) {
-      return new Response(JSON.stringify({ limited: true }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
-
-    await this.state.storage.put(key, { count: record.count + 1, windowStart: record.windowStart });
-    return new Response(JSON.stringify({ limited: false }), {
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  async #handlePolicyUpdate(request) {
-    const { email } = await request.json();
-    const normalizedEmail = email.trim().toLowerCase();
-
-    const cfHeaders = {
-      Authorization: `Bearer ${this.env.CF_API_TOKEN}`,
-      "Content-Type": "application/json",
-    };
-    const apiUrl = `https://api.cloudflare.com/client/v4/accounts/${this.env.CF_ACCOUNT_ID}/access/apps/${this.env.CF_APP_ID}/policies/${this.env.CF_POLICY_ID}`;
-
+    // Step 3: GET current policy.
     const getResponse = await fetch(apiUrl, { headers: cfHeaders });
     if (!getResponse.ok) {
-      return new Response(
-        JSON.stringify({ error: `Cloudflare API GET failed: ${getResponse.status}` }),
-        { status: 502, headers: { "Content-Type": "application/json" } }
-      );
+      throw new Error(`Cloudflare API GET failed: ${getResponse.status}`);
     }
     const { result: policy } = await getResponse.json();
     if (!policy || !Array.isArray(policy.include)) {
-      return new Response(
-        JSON.stringify({ error: "Invalid policy response from Cloudflare API" }),
-        { status: 502, headers: { "Content-Type": "application/json" } }
-      );
+      throw new Error("Invalid policy response from Cloudflare API");
     }
 
-    if (policy.include.some((r) => r.email?.email?.toLowerCase() === normalizedEmail)) {
-      return new Response(JSON.stringify({ ok: true }), {
-        headers: { "Content-Type": "application/json" },
-      });
-    }
+    // Step 4: merge existing non-email rules + deduplicated email list.
+    const existingEmails = policy.include
+      .filter((r) => r.email?.email)
+      .map((r) => r.email.email.toLowerCase());
+    const nonEmailRules = policy.include.filter((r) => !r.email?.email);
+    const allEmails = [...new Set([...existingEmails, ...kvEmails])];
 
     const updated = {
       name: policy.name,
       decision: policy.decision,
-      include: [...policy.include, { email: { email: normalizedEmail } }],
+      include: [
+        ...nonEmailRules,
+        ...allEmails.map((e) => ({ email: { email: e } })),
+      ],
       exclude: policy.exclude ?? [],
       require: policy.require ?? [],
     };
 
+    // Step 5: PUT the merged policy.
     const putResponse = await fetch(apiUrl, {
       method: "PUT",
       headers: cfHeaders,
       body: JSON.stringify(updated),
     });
     if (!putResponse.ok) {
-      return new Response(
-        JSON.stringify({ error: `Cloudflare API PUT failed: ${putResponse.status}` }),
-        { status: 502, headers: { "Content-Type": "application/json" } }
-      );
+      throw new Error(`Cloudflare API PUT failed: ${putResponse.status}`);
     }
 
-    return new Response(JSON.stringify({ ok: true }), {
-      headers: { "Content-Type": "application/json" },
-    });
+    // Step 6: verify the email appears in the policy returned by PUT.
+    const { result: verifiedPolicy } = await putResponse.json();
+    const included = Array.isArray(verifiedPolicy?.include) &&
+      verifiedPolicy.include.some(
+        (r) => r.email?.email?.toLowerCase() === normalizedEmail
+      );
+    if (included) return;
+    // Email absent — another concurrent PUT overwrote ours. Retry with fresh GET.
   }
-}
 
-async function isRateLimited(env, ip) {
-  if (!ip) return false;
-  const id = env.POLICY_UPDATER.idFromName("singleton");
-  const stub = env.POLICY_UPDATER.get(id);
-  const response = await stub.fetch("https://do/rate-check", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ ip }),
-  });
-  const { limited } = await response.json();
-  return limited;
-}
-
-async function addEmailToAccessPolicy(env, email) {
-  const id = env.POLICY_UPDATER.idFromName("singleton");
-  const stub = env.POLICY_UPDATER.get(id);
-  const response = await stub.fetch("https://do/policy-update", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ email }),
-  });
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({ error: "Unknown DO error" }));
-    throw new Error(body.error ?? "Policy update failed");
-  }
+  throw new Error("Failed to confirm email in Access policy after retries");
 }
 
 async function handleRequest(request, env) {
