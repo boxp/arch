@@ -83,7 +83,7 @@ resource "null_resource" "verify_worker_secrets" {
   triggers = {
     script_hash = sha256(file("${path.module}/../../../../apps/lolice-member-portal/src/index.js"))
     # Re-run the post-deploy secret binding verification after the v5 state migration.
-    worker_settings_version = "v5-observability-applied"
+    worker_settings_version = "v5-observability-deployed"
   }
 
   provisioner "local-exec" {
