@@ -70,17 +70,17 @@ resource "null_resource" "worker_secrets" {
       ACCOUNT_ID="${var.account_id}"
       for SECRET in CF_API_TOKEN RESEND_API_KEY; do
         VALUE="$${!SECRET:-}"
-        if [ -z "$$VALUE" ]; then
-          echo "ERROR: $$SECRET environment variable is not set. Add LOLICE_$$SECRET as a GitHub Actions secret." >&2
+        if [ -z "$VALUE" ]; then
+          echo "ERROR: $SECRET environment variable is not set. Add LOLICE_$SECRET as a GitHub Actions secret." >&2
           exit 1
         fi
-        BODY=$(jq -n --arg name "$$SECRET" --arg text "$$VALUE" '{"name":$name,"text":$text,"type":"secret_text"}')
+        BODY=$(jq -n --arg name "$SECRET" --arg text "$VALUE" '{"name":$name,"text":$text,"type":"secret_text"}')
         curl -sf -X PUT \
-          "https://api.cloudflare.com/client/v4/accounts/$$ACCOUNT_ID/workers/scripts/lolice-member-portal/secrets" \
-          -H "Authorization: Bearer $$CLOUDFLARE_API_TOKEN" \
+          "https://api.cloudflare.com/client/v4/accounts/$ACCOUNT_ID/workers/scripts/lolice-member-portal/secrets" \
+          -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
           -H "Content-Type: application/json" \
-          -d "$$BODY"
-        echo "Set secret $$SECRET"
+          -d "$BODY"
+        echo "Set secret $SECRET"
       done
     BASH
   }
