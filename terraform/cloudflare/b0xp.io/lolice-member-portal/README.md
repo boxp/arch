@@ -1,29 +1,21 @@
 # lolice member portal Worker
 
 Terraform deploys the Worker script and its non-sensitive bindings.
-Worker secrets (`CF_API_TOKEN` and `RESEND_API_KEY`) are **not** stored in
-Terraform state. Instead, a `null_resource` provisioner reads them from
-AWS SSM Parameter Store and sets them directly via the Cloudflare API
-after each `terraform apply`.
 
-## Secrets source of truth: AWS SSM Parameter Store
+## Worker Secrets
 
-The following SSM parameters must exist before the first `terraform apply`:
+Worker secrets (`CF_API_TOKEN` and `RESEND_API_KEY`) are set manually via the
+Cloudflare Dashboard or Wrangler CLI and are **not managed by Terraform**.
 
-| SSM Parameter | Type | Description |
-|---|---|---|
-| `/lolice-member-portal/CF_API_TOKEN` | SecureString | Cloudflare API token (Zero Trust: Edit) |
-| `/lolice-member-portal/RESEND_API_KEY` | SecureString | Resend API key for email notifications |
+To set or rotate a secret:
+1. Go to Cloudflare Dashboard > Workers & Pages > lolice-member-portal > Settings > Variables
+2. Add or update the secret values under "Secrets"
 
-The `null_resource` provisioner reads these values with decryption via the
-AWS CLI (available in the tfaction runner) and pushes them to the Worker via
-the Cloudflare REST API. Secret values never touch Terraform state.
+After each `terraform apply` that changes the Worker script, `null_resource.verify_worker_secrets`
+automatically checks that both secrets are still bound. If they were removed by the apply,
+CI fails immediately — preventing silent breakage.
 
-## Rotating secrets
-
-To rotate a secret:
-1. Update the value in SSM Parameter Store.
-2. Run `terraform apply` — the provisioner re-applies secrets from SSM.
-
-> **Warning**: Do NOT update secrets via Wrangler CLI or the Cloudflare
-> Dashboard. The next `terraform apply` will overwrite them with the SSM values.
+| Secret name | Description |
+|---|---|
+| `CF_API_TOKEN` | Cloudflare API token (Zero Trust: Edit) |
+| `RESEND_API_KEY` | Resend API key for email notifications |
