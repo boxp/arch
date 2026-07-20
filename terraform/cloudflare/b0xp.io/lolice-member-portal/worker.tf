@@ -69,7 +69,7 @@ resource "null_resource" "worker_secrets" {
       set -euo pipefail
       ACCOUNT_ID="${var.account_id}"
       for SECRET in CF_API_TOKEN RESEND_API_KEY; do
-        VALUE=$${!SECRET}
+        VALUE="$${!SECRET:-}"
         if [ -z "$$VALUE" ]; then
           echo "ERROR: $$SECRET environment variable is not set. Add LOLICE_$$SECRET as a GitHub Actions secret." >&2
           exit 1
