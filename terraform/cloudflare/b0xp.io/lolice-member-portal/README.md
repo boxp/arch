@@ -1,30 +1,29 @@
 # lolice member portal Worker
 
-Terraform deploys the Worker script and its non-sensitive bindings. It does
-not manage Worker secrets: passing secret values through Terraform would store
-them in Terraform state.
+Terraform deploys the Worker script and its non-sensitive bindings.
+Worker secrets (`CF_API_TOKEN` and `RESEND_API_KEY`) are **not** stored in
+Terraform state. Instead, a `null_resource` provisioner reads them from
+AWS SSM Parameter Store and sets them directly via the Cloudflare API
+after each `terraform apply`.
 
-After the Worker has been created or updated, set the following secrets
-manually for the `lolice-member-portal` Worker:
+## Secrets source of truth: AWS SSM Parameter Store
 
-- `CF_API_TOKEN` — Cloudflare API token used to update the Access policy
-- `RESEND_API_KEY` — Resend API key used to send notification emails
+The following SSM parameters must exist before the first `terraform apply`:
 
-## Wrangler CLI
+| SSM Parameter | Type | Description |
+|---|---|---|
+| `/lolice-member-portal/CF_API_TOKEN` | SecureString | Cloudflare API token (Zero Trust: Edit) |
+| `/lolice-member-portal/RESEND_API_KEY` | SecureString | Resend API key for email notifications |
 
-Authenticate with an account that can edit the Worker, then run the following
-commands from this directory. Each command prompts for the value and does not
-write it to the shell history.
+The `null_resource` provisioner reads these values with decryption via the
+AWS CLI (available in the tfaction runner) and pushes them to the Worker via
+the Cloudflare REST API. Secret values never touch Terraform state.
 
-```sh
-wrangler secret put CF_API_TOKEN --name lolice-member-portal
-wrangler secret put RESEND_API_KEY --name lolice-member-portal
-```
+## Rotating secrets
 
-## Cloudflare Dashboard
+To rotate a secret:
+1. Update the value in SSM Parameter Store.
+2. Run `terraform apply` — the provisioner re-applies secrets from SSM.
 
-Open **Workers & Pages** → **lolice-member-portal** → **Settings** →
-**Variables and Secrets**, then add each value above as an encrypted secret.
-
-Repeat this step whenever either secret is rotated. Do not put secret values in
-Terraform variables, `plain_text_binding`, or `.tfvars` files.
+> **Warning**: Do NOT update secrets via Wrangler CLI or the Cloudflare
+> Dashboard. The next `terraform apply` will overwrite them with the SSM values.

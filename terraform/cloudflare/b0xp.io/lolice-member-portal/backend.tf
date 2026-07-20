@@ -12,5 +12,9 @@ terraform {
       source  = "cloudflare/cloudflare"
       version = "~> 4.52"
     }
+    null = {
+      source  = "hashicorp/null"
+      version = "~> 3.0"
+    }
   }
 }
