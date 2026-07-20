@@ -56,12 +56,11 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
 # Set Worker secrets from AWS SSM Parameter Store via Cloudflare API.
 # Values are read at apply-time by the local-exec provisioner and pushed
 # directly to the Worker — they are never stored in Terraform state.
-# Triggers re-run whenever the Worker script content changes so that secrets
-# are always re-applied after a script update (script updates otherwise
-# remove undeclared bindings).
+# Always re-apply secrets after every Terraform apply, because script updates
+# can remove undeclared bindings.
 resource "null_resource" "worker_secrets" {
   triggers = {
-    script_hash = sha256(file("${path.module}/../../../../apps/lolice-member-portal/src/index.js"))
+    always_run = timestamp()
   }
 
   provisioner "local-exec" {
@@ -76,11 +75,12 @@ resource "null_resource" "worker_secrets" {
           --query Parameter.Value \
           --output text \
           --region ap-northeast-1)
+        BODY=$(jq -n --arg name "$$SECRET" --arg text "$$VALUE" '{"name":$name,"text":$text,"type":"secret_text"}')
         curl -sf -X PUT \
           "https://api.cloudflare.com/client/v4/accounts/$$ACCOUNT_ID/workers/scripts/lolice-member-portal/secrets" \
           -H "Authorization: Bearer $$CLOUDFLARE_API_TOKEN" \
           -H "Content-Type: application/json" \
-          -d "{\"name\":\"$$SECRET\",\"text\":\"$$VALUE\",\"type\":\"secret_text\"}"
+          -d "$$BODY"
         echo "Set secret $$SECRET"
       done
     BASH
