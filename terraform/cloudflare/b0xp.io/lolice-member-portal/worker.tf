@@ -53,11 +53,11 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
   }
 }
 
-# Set Worker secrets from AWS SSM Parameter Store via Cloudflare API.
-# Values are read at apply-time by the local-exec provisioner and pushed
-# directly to the Worker — they are never stored in Terraform state.
-# Always re-apply secrets after every Terraform apply, because script updates
-# can remove undeclared bindings.
+# Set Worker secrets from GitHub Actions secrets via Cloudflare API.
+# Values are injected as environment variables (CF_API_TOKEN, RESEND_API_KEY)
+# by tfaction and pushed directly to the Worker — they are never stored in
+# Terraform state. Always re-apply secrets after every Terraform apply,
+# because script updates can remove undeclared bindings.
 resource "null_resource" "worker_secrets" {
   triggers = {
     always_run = timestamp()
@@ -69,12 +69,11 @@ resource "null_resource" "worker_secrets" {
       set -euo pipefail
       ACCOUNT_ID="${var.account_id}"
       for SECRET in CF_API_TOKEN RESEND_API_KEY; do
-        VALUE=$(aws ssm get-parameter \
-          --name "/lolice-member-portal/$$SECRET" \
-          --with-decryption \
-          --query Parameter.Value \
-          --output text \
-          --region ap-northeast-1)
+        VALUE=$${!SECRET}
+        if [ -z "$$VALUE" ]; then
+          echo "ERROR: $$SECRET environment variable is not set. Add LOLICE_$$SECRET as a GitHub Actions secret." >&2
+          exit 1
+        fi
         BODY=$(jq -n --arg name "$$SECRET" --arg text "$$VALUE" '{"name":$name,"text":$text,"type":"secret_text"}')
         curl -sf -X PUT \
           "https://api.cloudflare.com/client/v4/accounts/$$ACCOUNT_ID/workers/scripts/lolice-member-portal/secrets" \
