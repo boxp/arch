@@ -14,45 +14,62 @@ resource "cloudflare_d1_database" "approved_emails" {
 }
 
 resource "cloudflare_workers_script" "lolice_member_portal" {
-  account_id = var.account_id
-  name       = "lolice-member-portal"
-  content    = file("${path.module}/../../../../apps/lolice-member-portal/src/index.js")
-  module     = true
+  account_id  = var.account_id
+  script_name = "lolice-member-portal"
+  content     = file("${path.module}/../../../../apps/lolice-member-portal/src/index.js")
+  main_module = "index.js"
+  # Worker secrets are configured outside Terraform and must survive script
+  # uploads performed by this resource.
+  keep_bindings = ["secret_text"]
 
-  kv_namespace_binding {
-    name         = "PENDING_REQUESTS"
-    namespace_id = cloudflare_workers_kv_namespace.pending_requests.id
+  observability = {
+    enabled            = true
+    head_sampling_rate = 1
+    logs = {
+      enabled            = true
+      invocation_logs    = true
+      head_sampling_rate = 1
+      persist            = true
+    }
   }
 
-  d1_database_binding {
-    name        = "APPROVED_EMAILS_DB"
-    database_id = cloudflare_d1_database.approved_emails.id
-  }
-
-  plain_text_binding {
-    name = "ADMIN_EMAIL"
-    text = "tiyotiyouda@gmail.com"
-  }
-
-  plain_text_binding {
-    name = "CF_ACCOUNT_ID"
-    text = var.account_id
-  }
-
-  plain_text_binding {
-    name = "CF_APP_ID"
-    text = "ccb49999-7a12-476d-8724-0f4cc6a6c0cb"
-  }
-
-  plain_text_binding {
-    name = "CF_POLICY_ID"
-    text = "d807cdcb-141e-40f3-ac82-5b6f97468f19"
-  }
-
-  plain_text_binding {
-    name = "PORTAL_BASE_URL"
-    text = "https://lolice.b0xp.io"
-  }
+  bindings = [
+    {
+      name         = "PENDING_REQUESTS"
+      type         = "kv_namespace"
+      namespace_id = cloudflare_workers_kv_namespace.pending_requests.id
+    },
+    {
+      name        = "APPROVED_EMAILS_DB"
+      type        = "d1"
+      database_id = cloudflare_d1_database.approved_emails.id
+    },
+    {
+      name = "ADMIN_EMAIL"
+      type = "plain_text"
+      text = "tiyotiyouda@gmail.com"
+    },
+    {
+      name = "CF_ACCOUNT_ID"
+      type = "plain_text"
+      text = var.account_id
+    },
+    {
+      name = "CF_APP_ID"
+      type = "plain_text"
+      text = "ccb49999-7a12-476d-8724-0f4cc6a6c0cb"
+    },
+    {
+      name = "CF_POLICY_ID"
+      type = "plain_text"
+      text = "d807cdcb-141e-40f3-ac82-5b6f97468f19"
+    },
+    {
+      name = "PORTAL_BASE_URL"
+      type = "plain_text"
+      text = "https://lolice.b0xp.io"
+    },
+  ]
 }
 
 # Verify that required Worker secrets are still bound after each script update.
@@ -61,7 +78,8 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
 # secret is missing, so the issue is caught before the Worker silently breaks.
 resource "null_resource" "verify_worker_secrets" {
   triggers = {
-    script_hash = sha256(file("${path.module}/../../../../apps/lolice-member-portal/src/index.js"))
+    script_hash             = sha256(file("${path.module}/../../../../apps/lolice-member-portal/src/index.js"))
+    worker_settings_version = "v5-observability"
   }
 
   provisioner "local-exec" {
@@ -90,8 +108,8 @@ resource "null_resource" "verify_worker_secrets" {
   depends_on = [cloudflare_workers_script.lolice_member_portal]
 }
 
-resource "cloudflare_worker_route" "lolice_member_portal" {
-  zone_id     = "ec593206d0ef695c3aae3a4cb3173264"
-  pattern     = "lolice.b0xp.io/*"
-  script_name = cloudflare_workers_script.lolice_member_portal.name
+resource "cloudflare_workers_route" "lolice_member_portal" {
+  zone_id = "ec593206d0ef695c3aae3a4cb3173264"
+  pattern = "lolice.b0xp.io/*"
+  script  = cloudflare_workers_script.lolice_member_portal.script_name
 }
