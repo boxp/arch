@@ -78,8 +78,9 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
 # secret is missing, so the issue is caught before the Worker silently breaks.
 resource "null_resource" "verify_worker_secrets" {
   triggers = {
-    script_hash             = sha256(file("${path.module}/../../../../apps/lolice-member-portal/src/index.js"))
-    worker_settings_version = "v5-observability"
+    script_hash = sha256(file("${path.module}/../../../../apps/lolice-member-portal/src/index.js"))
+    # Re-run the post-deploy secret binding verification after the v5 state migration.
+    worker_settings_version = "v5-observability-applied"
   }
 
   provisioner "local-exec" {
