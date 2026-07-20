@@ -76,8 +76,8 @@ resource "null_resource" "verify_worker_secrets" {
           MISSING+=("$SECRET")
         fi
       done
-      if [ ${#MISSING[@]} -gt 0 ]; then
-        echo "ERROR: The following Worker secrets are missing after terraform apply: ${MISSING[*]}"
+      if [ $${#MISSING[@]} -gt 0 ]; then
+        echo "ERROR: The following Worker secrets are missing after terraform apply: $${MISSING[*]}"
         echo "Re-add them via: Cloudflare Dashboard > Workers & Pages > lolice-member-portal > Settings > Variables > Secrets"
         exit 1
       fi
