@@ -43,9 +43,9 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
       namespace_id = cloudflare_workers_kv_namespace.pending_requests.id
     },
     {
-      name        = "APPROVED_EMAILS_DB"
-      type        = "d1"
-      database_id = cloudflare_d1_database.approved_emails.id
+      name = "APPROVED_EMAILS_DB"
+      type = "d1"
+      id   = cloudflare_d1_database.approved_emails.id
     },
     {
       name = "ADMIN_EMAIL"
