@@ -55,6 +55,13 @@ drift_detection:
   num_of_issues: 1
   minimum_detection_interval: 1
 
+test_workflow:
+  plan_and_apply:
+    working_directories:
+      - terraform/cloudflare/b0xp.io/lolice-member-portal
+    changed_files:
+      - apps/lolice-member-portal/**
+
 terraform_command: terraform
 
 available_providers:
