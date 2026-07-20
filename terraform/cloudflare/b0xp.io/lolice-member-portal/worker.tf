@@ -11,6 +11,9 @@ resource "cloudflare_workers_kv_namespace" "pending_requests" {
 resource "cloudflare_d1_database" "approved_emails" {
   account_id = var.account_id
   name       = "lolice-member-portal-approved-emails"
+  read_replication = {
+    mode = "disabled"
+  }
 }
 
 resource "cloudflare_workers_script" "lolice_member_portal" {
