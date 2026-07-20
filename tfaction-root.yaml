@@ -85,27 +85,6 @@ target_groups:
   tfmigrate_apply_config:
     aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_apply
 
-- working_directory: terraform/cloudflare/b0xp.io/lolice-member-portal
-  aws_region: ap-northeast-1
-  s3_bucket_name_tfmigrate_history: 'tfaction-history'
-  template_dir: templates/cloudflare
-  terraform_command: terraform
-  drift_detection:
-    enabled: false
-  terraform_plan_config:
-    aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_terraform_plan
-  tfmigrate_plan_config:
-    aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_plan
-  terraform_apply_config:
-    aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_terraform_apply
-    secrets:
-    - env_name: CF_API_TOKEN
-      secret_name: LOLICE_CF_API_TOKEN
-    - env_name: RESEND_API_KEY
-      secret_name: LOLICE_RESEND_API_KEY
-  tfmigrate_apply_config:
-    aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_apply
-
 - working_directory: terraform/cloudflare/**
   aws_region: ap-northeast-1
   s3_bucket_name_tfmigrate_history: 'tfaction-history'
