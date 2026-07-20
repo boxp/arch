@@ -363,18 +363,43 @@ async function handleApproval(request, env) {
   const pending = await getPendingEmail(token, env);
   if (pending.error) return pending.error;
 
+  // Step 1: Update Access policy (critical — must succeed before proceeding).
   try {
     await addEmailToAccessPolicy(env, pending.email);
+  } catch (error) {
+    console.error("Failed to update Access policy", error);
+    return htmlResponse("<h1>承認処理に失敗しました。</h1><p>Cloudflare Access ポリシーの更新に失敗しました。時間をおいて同じリンクを再度開いてください。</p>", 502);
+  }
 
+  // Step 2: Policy update succeeded — delete token so the link cannot be reused.
+  await env.PENDING_REQUESTS.delete(pending.token);
+
+  // Step 3: Send notification email (non-critical — policy update already completed).
+  let emailError = null;
+  try {
     await sendEmail(env, {
       to: pending.email,
       subject: "[lolice] 参加が承認されました",
       html: `<p>lolice cluster への参加が承認されました。</p><p><a href="${env.PORTAL_BASE_URL}/guide.html">参加手順ページ</a>をご確認ください。</p>`,
     });
-    await env.PENDING_REQUESTS.delete(pending.token);
   } catch (error) {
-    console.error("Failed to approve membership request", error);
-    return htmlResponse("<h1>承認処理に失敗しました。</h1><p>時間をおいて同じリンクを再度開いてください。</p>", 502);
+    emailError = error;
+    console.error("Failed to send approval notification email (Access policy update already succeeded)", error);
+  }
+
+  if (emailError) {
+    const safeEmail = escapeHtml(pending.email);
+    return htmlResponse(`<!DOCTYPE html>
+<html lang="ja">
+<head><meta charset="utf-8"><title>承認完了（メール送信失敗）</title></head>
+<body>
+<h1>承認が完了しました</h1>
+<p><strong>${safeEmail}</strong> の Cloudflare Access ポリシーへの追加は<strong>成功</strong>しました。</p>
+<p>ただし、申請者への案内メールの送信に失敗しました。<br>
+参加者には手動で <a href="${env.PORTAL_BASE_URL}/guide.html">参加手順ページ</a> の URL をお知らせください。</p>
+<p><small>（このリンクは無効になりました。再送信が必要な場合は手動で案内してください。）</small></p>
+</body>
+</html>`);
   }
 
   return new Response(null, {
