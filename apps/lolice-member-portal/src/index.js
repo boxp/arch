@@ -129,7 +129,8 @@ async function sendEmail(env, { to, subject, html }) {
   });
 
   if (!response.ok) {
-    throw new Error(`Resend API request failed with status ${response.status}`);
+    const body = await response.text().catch(() => "(body unavailable)");
+    throw new Error(`Resend API request failed with status ${response.status}: ${body}`);
   }
 }
 
@@ -304,7 +305,10 @@ async function handleRequest(request, env) {
     });
   } catch (error) {
     await env.PENDING_REQUESTS.delete(token);
-    console.error("Failed to send approval email", error);
+    console.error("Failed to send approval email to admin", {
+      to: env.ADMIN_EMAIL,
+      errorMessage: error.message,
+    });
     return jsonResponse({ error: "申請メールの送信に失敗しました。時間をおいて再度お試しください。" }, 502);
   }
 
@@ -384,7 +388,10 @@ async function handleApproval(request, env) {
     });
   } catch (error) {
     emailError = error;
-    console.error("Failed to send approval notification email (Access policy update already succeeded)", error);
+    console.error("Failed to send approval notification email (Access policy update already succeeded)", {
+      to: pending.email,
+      errorMessage: error.message,
+    });
   }
 
   if (emailError) {
