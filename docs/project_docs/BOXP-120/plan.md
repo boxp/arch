@@ -14,4 +14,4 @@
 
 1. Cloudflare Dashboard で無効になっている Worker Observability を、Cloudflare provider v5 の `observability` 設定で有効化する。
 2. Workers Logs の永続化、Invocation Logs、および 100% の head sampling を設定し、`console.error` を Dashboard の Observability から確認可能にする。
-3. この専用ディレクトリの Cloudflare provider を v5.18 へ更新し、observability を Terraform の状態管理下に置く。既存 Worker の v4 state は provider がデコードできないため、tfmigrate で state entry のみを再 import する（Worker 本体は削除しない）。
+3. この専用ディレクトリの Cloudflare provider を v5.18 へ更新し、observability を Terraform の状態管理下に置く。既存 Worker と D1 の v4 state は provider がデコードできないため、tfmigrate で state entry のみを再 import する（リソース本体は削除しない）。
