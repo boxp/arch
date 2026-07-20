@@ -53,6 +53,41 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
   }
 }
 
+# Verify that required Worker secrets are still bound after each script update.
+# Uses $CLOUDFLARE_API_TOKEN (already available in the Terraform CI environment)
+# to list secret names — values are never exposed. Fails CI loudly if either
+# secret is missing, so the issue is caught before the Worker silently breaks.
+resource "null_resource" "verify_worker_secrets" {
+  triggers = {
+    script_hash = sha256(file("${path.module}/../../../../apps/lolice-member-portal/src/index.js"))
+  }
+
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-BASH
+      set -euo pipefail
+      SECRETS=$(curl -sf \
+        "https://api.cloudflare.com/client/v4/accounts/${var.account_id}/workers/scripts/lolice-member-portal/secrets" \
+        -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" \
+        | jq -r '.result[].name // empty')
+      MISSING=()
+      for SECRET in CF_API_TOKEN RESEND_API_KEY; do
+        if ! echo "$SECRETS" | grep -qx "$SECRET"; then
+          MISSING+=("$SECRET")
+        fi
+      done
+      if [ ${#MISSING[@]} -gt 0 ]; then
+        echo "ERROR: The following Worker secrets are missing after terraform apply: ${MISSING[*]}"
+        echo "Re-add them via: Cloudflare Dashboard > Workers & Pages > lolice-member-portal > Settings > Variables > Secrets"
+        exit 1
+      fi
+      echo "Worker secrets verified: CF_API_TOKEN and RESEND_API_KEY are present."
+    BASH
+  }
+
+  depends_on = [cloudflare_workers_script.lolice_member_portal]
+}
+
 resource "cloudflare_worker_route" "lolice_member_portal" {
   zone_id     = "ec593206d0ef695c3aae3a4cb3173264"
   pattern     = "lolice.b0xp.io/*"

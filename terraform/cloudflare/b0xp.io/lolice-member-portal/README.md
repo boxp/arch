@@ -11,9 +11,9 @@ To set or rotate a secret:
 1. Go to Cloudflare Dashboard > Workers & Pages > lolice-member-portal > Settings > Variables
 2. Add or update the secret values under "Secrets"
 
-> **Note**: When `terraform apply` updates the Worker script, manually-set secret bindings
-> that are not declared in Terraform may be removed. If secrets disappear after an apply,
-> re-add them via the Dashboard.
+After each `terraform apply` that changes the Worker script, `null_resource.verify_worker_secrets`
+automatically checks that both secrets are still bound. If they were removed by the apply,
+CI fails immediately — preventing silent breakage.
 
 | Secret name | Description |
 |---|---|
