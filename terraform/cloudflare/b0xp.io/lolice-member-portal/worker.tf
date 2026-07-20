@@ -1,19 +1,3 @@
-# Read secrets from AWS SSM Parameter Store so that Terraform always declares
-# the secret bindings. Without this, updating cloudflare_workers_script would
-# delete any manually-set CF_API_TOKEN / RESEND_API_KEY bindings.
-# Prerequisites: SSM parameters created by boxp before first apply:
-#   /lolice-member-portal/CF_API_TOKEN   (SecureString)
-#   /lolice-member-portal/RESEND_API_KEY (SecureString)
-data "aws_ssm_parameter" "cf_api_token" {
-  name            = "/lolice-member-portal/CF_API_TOKEN"
-  with_decryption = true
-}
-
-data "aws_ssm_parameter" "resend_api_key" {
-  name            = "/lolice-member-portal/RESEND_API_KEY"
-  with_decryption = true
-}
-
 resource "cloudflare_workers_kv_namespace" "pending_requests" {
   account_id = var.account_id
   title      = "lolice-member-portal-pending-requests"
@@ -67,16 +51,42 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
     name = "PORTAL_BASE_URL"
     text = "https://lolice.b0xp.io"
   }
+}
 
-  secret_text_binding {
-    name = "CF_API_TOKEN"
-    text = data.aws_ssm_parameter.cf_api_token.value
+# Set Worker secrets from AWS SSM Parameter Store via Cloudflare API.
+# Values are read at apply-time by the local-exec provisioner and pushed
+# directly to the Worker — they are never stored in Terraform state.
+# Triggers re-run whenever the Worker script content changes so that secrets
+# are always re-applied after a script update (script updates otherwise
+# remove undeclared bindings).
+resource "null_resource" "worker_secrets" {
+  triggers = {
+    script_hash = sha256(file("${path.module}/../../../../apps/lolice-member-portal/src/index.js"))
   }
 
-  secret_text_binding {
-    name = "RESEND_API_KEY"
-    text = data.aws_ssm_parameter.resend_api_key.value
+  provisioner "local-exec" {
+    interpreter = ["/bin/bash", "-c"]
+    command     = <<-BASH
+      set -euo pipefail
+      ACCOUNT_ID="${var.account_id}"
+      for SECRET in CF_API_TOKEN RESEND_API_KEY; do
+        VALUE=$(aws ssm get-parameter \
+          --name "/lolice-member-portal/$$SECRET" \
+          --with-decryption \
+          --query Parameter.Value \
+          --output text \
+          --region ap-northeast-1)
+        curl -sf -X PUT \
+          "https://api.cloudflare.com/client/v4/accounts/$$ACCOUNT_ID/workers/scripts/lolice-member-portal/secrets" \
+          -H "Authorization: Bearer $$CLOUDFLARE_API_TOKEN" \
+          -H "Content-Type: application/json" \
+          -d "{\"name\":\"$$SECRET\",\"text\":\"$$VALUE\",\"type\":\"secret_text\"}"
+        echo "Set secret $$SECRET"
+      done
+    BASH
   }
+
+  depends_on = [cloudflare_workers_script.lolice_member_portal]
 }
 
 resource "cloudflare_worker_route" "lolice_member_portal" {
