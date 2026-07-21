@@ -15,11 +15,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "hitohub_prod_tunnel"
   config = {
   ingress = [
     {
-      hostname = "${cloudflare_dns_record.hitohub_prod.name}.b0xp.io"
+      hostname = cloudflare_dns_record.hitohub_prod.name
       service  = "http://hitohub-frontend:3000"
     },
     {
-      hostname = "${cloudflare_dns_record.api_hitohub_prod.name}.b0xp.io"
+      hostname = cloudflare_dns_record.api_hitohub_prod.name
       service  = "http://hitohub-back-end:8080"
     },
     {

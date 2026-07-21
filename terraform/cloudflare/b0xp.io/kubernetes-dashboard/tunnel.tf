@@ -17,7 +17,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kubernetes_dashboard
   config = {
   ingress = [
     {
-      hostname = "${cloudflare_dns_record.kubernetes_dashboard.name}.b0xp.io"
+      hostname = cloudflare_dns_record.kubernetes_dashboard.name
       service  = "https://kubernetes-dashboard-lb.kube-dashboard:443"
     },
     {

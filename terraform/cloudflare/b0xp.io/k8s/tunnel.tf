@@ -15,11 +15,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
   config = {
     ingress = [
       {
-        hostname = "${cloudflare_dns_record.k8s.name}.b0xp.io"
+        hostname = cloudflare_dns_record.k8s.name
         service  = "http://argocd-server.argocd.svc.cluster.local:8080"
       },
       {
-        hostname = "${cloudflare_dns_record.codex_task_board.name}.b0xp.io"
+        hostname = cloudflare_dns_record.codex_task_board.name
         service  = "http://codex-task-board-dashboard.codex-workspace.svc.cluster.local:8080"
       },
       {

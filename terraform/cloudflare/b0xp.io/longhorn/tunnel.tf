@@ -15,7 +15,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "longhorn_tunnel" {
   config = {
   ingress = [
     {
-      hostname = "${cloudflare_dns_record.longhorn.name}.b0xp.io"
+      hostname = cloudflare_dns_record.longhorn.name
       service  = "http://longhorn-frontend:80"
     },
     {

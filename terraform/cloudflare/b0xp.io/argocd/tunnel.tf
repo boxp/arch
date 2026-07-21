@@ -15,7 +15,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "argocd_tunnel" {
   config = {
   ingress = [
     {
-      hostname = "${cloudflare_dns_record.argocd.name}.b0xp.io"
+      hostname = cloudflare_dns_record.argocd.name
       service  = "http://argocd-server:80"
     },
     {
@@ -57,7 +57,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "argocd_api_tunnel" {
   config = {
   ingress = [
     {
-      hostname = "${cloudflare_dns_record.argocd_api.name}.b0xp.io"
+      hostname = cloudflare_dns_record.argocd_api.name
       service  = "http://argocd-server.argocd.svc.cluster.local:80"
     },
     {

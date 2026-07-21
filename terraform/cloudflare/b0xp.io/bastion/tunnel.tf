@@ -15,7 +15,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "bastion" {
   config = {
   ingress = [
     {
-      hostname = "${cloudflare_dns_record.bastion.name}.b0xp.io"
+      hostname = cloudflare_dns_record.bastion.name
       service  = "ssh://localhost:2222"
     },
     {

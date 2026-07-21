@@ -1,8 +1,10 @@
 # Creates an Access application to control who can connect.
 resource "cloudflare_zero_trust_access_application" "k8s" {
-  zone_id = var.zone_id
-  name    = "Access application for k8s.b0xp.io"
-  domain  = "k8s.b0xp.io"
+  zone_id          = var.zone_id
+  name             = "Access application for k8s.b0xp.io"
+  domain           = "k8s.b0xp.io"
+  session_duration = "24h"
+  type             = "self_hosted"
 
   policies = [{ id = cloudflare_zero_trust_access_policy.github_actions_access.id }]
 }
