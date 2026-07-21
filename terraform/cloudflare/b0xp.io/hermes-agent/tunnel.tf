@@ -3,8 +3,8 @@ resource "random_password" "tunnel_secret" {
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "hermes_agent_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare hermes-agent tunnel"
+  account_id    = var.account_id
+  name          = "cloudflare hermes-agent tunnel"
   tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
@@ -13,18 +13,18 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "hermes_agent_tunnel"
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.hermes_agent_tunnel.id
   account_id = var.account_id
   config = {
-  ingress = [
-    {
-      hostname = cloudflare_dns_record.hermes_agent.name
-      service  = "http://127.0.0.1:9119"
-      origin_request = {
-      http_host_header = "127.0.0.1:9119"
-      }
-    },
-    {
-      service = "http_status:404"
-    },
-  ]
+    ingress = [
+      {
+        hostname = cloudflare_dns_record.hermes_agent.name
+        service  = "http://127.0.0.1:9119"
+        origin_request = {
+          http_host_header = "127.0.0.1:9119"
+        }
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
 
   }
 }
