@@ -130,7 +130,8 @@ const GUIDE_HTML = `<!doctype html>
       </table>
     </main>
   </body>
-</html>`;
+</html>
+`;
 
 function jsonResponse(body, status = 200) {
   return new Response(JSON.stringify(body), {
