@@ -152,4 +152,23 @@ describe("lolice member portal Worker", () => {
     expect(await response.text()).toContain("参加申請を却下しました");
     expect(env.PENDING_REQUESTS.delete).toHaveBeenCalledWith("token");
   });
+
+  it("serves guide.html with all game server addresses", async () => {
+    const env = createEnv();
+
+    const response = await worker.fetch(new Request("https://lolice.b0xp.io/guide.html"), env);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    const body = await response.text();
+    // 全ゲームサーバーのアドレスが含まれていることを確認（公開HTMLとWorker埋め込みHTMLの乖離を防ぐ回帰テスト）
+    expect(body).toContain("192.168.10.97:8211");   // PalWorld 1号機
+    expect(body).toContain("192.168.10.108:8211");  // PalWorld 2号機
+    expect(body).toContain("192.168.10.29:7777");   // ARK: Survival Ascended
+    expect(body).toContain("192.168.10.30:25565");  // Minecraft
+    // ゲーム名が含まれていることを確認
+    expect(body).toContain("PalWorld");
+    expect(body).toContain("ARK");
+    expect(body).toContain("Minecraft");
+  });
 });
