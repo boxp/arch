@@ -5,8 +5,8 @@ resource "random_password" "tunnel_secret" {
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "kubernetes_dashboard_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare kubernetes-dashboard tunnel"
+  account_id    = var.account_id
+  name          = "cloudflare kubernetes-dashboard tunnel"
   tunnel_secret = base64sha256(random_password.tunnel_secret.result)
 }
 
@@ -15,15 +15,15 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kubernetes_dashboard
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.kubernetes_dashboard_tunnel.id
   account_id = var.account_id
   config = {
-  ingress = [
-    {
-      hostname = cloudflare_dns_record.kubernetes_dashboard.name
-      service  = "https://kubernetes-dashboard-lb.kube-dashboard:443"
-    },
-    {
-      service = "http_status:404"
-    },
-  ]
+    ingress = [
+      {
+        hostname = cloudflare_dns_record.kubernetes_dashboard.name
+        service  = "https://kubernetes-dashboard-lb.kube-dashboard:443"
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
 
   }
 }
