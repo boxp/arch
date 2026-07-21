@@ -7,9 +7,15 @@ resource "cloudflare_zero_trust_access_application" "stable_diffusion" {
   policies         = [{ id = cloudflare_zero_trust_access_policy.stable_diffusion_github.id }]
 }
 
-data "cloudflare_zero_trust_access_identity_provider" "github" {
+data "cloudflare_zero_trust_access_identity_providers" "all" {
   account_id = var.account_id
-  filter     = {}
+}
+
+locals {
+  github_idp_id = [
+    for p in data.cloudflare_zero_trust_access_identity_providers.all.result :
+    p.id if p.type == "github"
+  ][0]
 }
 
 resource "cloudflare_zero_trust_access_policy" "stable_diffusion_github" {
@@ -18,7 +24,7 @@ resource "cloudflare_zero_trust_access_policy" "stable_diffusion_github" {
   decision   = "allow"
   include = [{
     login_method = {
-      id = data.cloudflare_zero_trust_access_identity_provider.github.id
+      id = local.github_idp_id
     }
   }]
 }
