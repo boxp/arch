@@ -18,6 +18,13 @@ label_prefixes:
   tfmigrate: "tfmigrate:" # default is "tfmigrate:"
   skip: "skip:" # default is "skip:"
 
+# GitHub labels are limited to 50 characters. Keep this one long-lived Worker
+# target below that limit so tfmigrate can be selected with a PR label.
+replace_target:
+  patterns:
+    - regexp: ^terraform/cloudflare/b0xp.io/lolice-member-portal$
+      replace: cloudflare/b0xp.io/lolice-member-portal
+
 aqua:
   update_checksum:
     # Update aqua-checksums.json in `setup` action
@@ -54,6 +61,13 @@ drift_detection:
   issue_repo_name: arch
   num_of_issues: 1
   minimum_detection_interval: 1
+
+test_workflow:
+  plan_and_apply:
+    working_directories:
+      - terraform/cloudflare/b0xp.io/lolice-member-portal
+    changed_files:
+      - apps/lolice-member-portal/**
 
 terraform_command: terraform
 
