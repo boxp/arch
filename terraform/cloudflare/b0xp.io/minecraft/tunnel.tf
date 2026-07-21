@@ -5,8 +5,8 @@ resource "random_password" "tunnel_secret" {
 
 # Minecraft BlueMap用のトンネルを作成
 resource "cloudflare_zero_trust_tunnel_cloudflared" "minecraft_map_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare minecraft-map tunnel"
+  account_id    = var.account_id
+  name          = "cloudflare minecraft-map tunnel"
   tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
@@ -15,17 +15,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "minecraft_map_tunnel
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.minecraft_map_tunnel.id
   account_id = var.account_id
   config = {
-  ingress = [
-    {
-      # Hostname from dns.tf
-      hostname = cloudflare_dns_record.minecraft_map.name
-      # Internal BlueMap service address
-      service = "http://minecraft-bluemap.minecraft.svc.cluster.local:8100"
-    },
-    {
-      service = "http_status:404"
-    },
-  ]
+    ingress = [
+      {
+        # Hostname from dns.tf
+        hostname = cloudflare_dns_record.minecraft_map.name
+        # Internal BlueMap service address
+        service = "http://minecraft-bluemap.minecraft.svc.cluster.local:8100"
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
 
   }
 }
