@@ -30,9 +30,5 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
   }
 }
 
-resource "cloudflare_zero_trust_tunnel_cloudflared_route" "codex_workspace" {
-  account_id = var.account_id
-  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id
-  network    = "192.168.10.98/32"
-  comment    = "lolice codex-workspace LoadBalancer for WARP access"
-}
+# cloudflare_zero_trust_tunnel_route (removed in v5) was removed from state via tfmigrate.
+# Re-add as cloudflare_zero_trust_tunnel_cloudflared_route after apply.
