@@ -13,19 +13,19 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id
   account_id = var.account_id
   config = {
-  ingress = [
-    {
-      hostname = "${cloudflare_dns_record.k8s.name}.b0xp.io"
-      service  = "http://argocd-server.argocd.svc.cluster.local:8080"
-    },
-    {
-      hostname = "${cloudflare_dns_record.codex_task_board.name}.b0xp.io"
-      service  = "http://codex-task-board-dashboard.codex-workspace.svc.cluster.local:8080"
-    },
-    {
-      service = "http_status:404"
-    },
-  ]
+    ingress = [
+      {
+        hostname = "${cloudflare_dns_record.k8s.name}.b0xp.io"
+        service  = "http://argocd-server.argocd.svc.cluster.local:8080"
+      },
+      {
+        hostname = "${cloudflare_dns_record.codex_task_board.name}.b0xp.io"
+        service  = "http://codex-task-board-dashboard.codex-workspace.svc.cluster.local:8080"
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
 
   }
 }
