@@ -26,7 +26,11 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
         service = "http_status:404"
       },
     ]
+    origin_request = {}
+  }
 
+  lifecycle {
+    ignore_changes = [created_at, source, version]
   }
 }
 
