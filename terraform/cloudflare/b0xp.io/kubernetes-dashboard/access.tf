@@ -5,7 +5,7 @@ resource "cloudflare_zero_trust_access_application" "kubernetes_dashboard" {
   domain           = "kubernetes-dashboard.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [cloudflare_zero_trust_access_policy.kubernetes_dashboard_policy.id]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.kubernetes_dashboard_policy.id }]
 }
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {

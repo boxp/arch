@@ -4,9 +4,7 @@ resource "cloudflare_zero_trust_access_application" "k8s" {
   name    = "Access application for k8s.b0xp.io"
   domain  = "k8s.b0xp.io"
 
-  policies = [
-    cloudflare_zero_trust_access_policy.github_actions_access.id
-  ]
+  policies = [{ id = cloudflare_zero_trust_access_policy.github_actions_access.id }]
 }
 
 resource "cloudflare_zero_trust_access_policy" "github_actions_access" {
@@ -27,7 +25,7 @@ resource "cloudflare_zero_trust_access_application" "codex_task_board" {
   domain           = "codex-task-board.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [cloudflare_zero_trust_access_policy.codex_task_board_policy.id]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.codex_task_board_policy.id }]
 }
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {

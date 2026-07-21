@@ -5,7 +5,7 @@ data "aws_ssm_parameter" "prometheus_operator_tunnel_secret" {
 resource "cloudflare_zero_trust_tunnel_cloudflared" "prometheus_operator_tunnel" {
   account_id = var.account_id
   name       = "cloudflare prometheus-operator tunnel"
-  secret     = sensitive(base64encode(data.aws_ssm_parameter.prometheus_operator_tunnel_secret.value))
+  tunnel_secret = sensitive(base64encode(data.aws_ssm_parameter.prometheus_operator_tunnel_secret.value))
 }
 
 # Creates the configuration for the tunnel.

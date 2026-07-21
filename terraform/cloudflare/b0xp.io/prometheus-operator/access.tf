@@ -5,7 +5,7 @@ resource "cloudflare_zero_trust_access_application" "grafana" {
   domain           = "grafana.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [cloudflare_zero_trust_access_policy.grafana_policy.id]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.grafana_policy.id }]
 }
 
 # Creates an Access application to control who can connect.
@@ -15,7 +15,7 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
   domain           = "prometheus-web.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [cloudflare_zero_trust_access_policy.prometheus_web_policy.id]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.prometheus_web_policy.id }]
 }
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {

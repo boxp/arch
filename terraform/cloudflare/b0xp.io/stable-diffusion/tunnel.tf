@@ -6,7 +6,7 @@ resource "random_password" "tunnel_secret" {
 resource "cloudflare_zero_trust_tunnel_cloudflared" "stable_diffusion" {
   account_id = var.account_id
   name       = "cloudflare stable-diffusion tunnel"
-  secret     = sensitive(base64sha256(random_password.tunnel_secret.result))
+  tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "stable_diffusion" {

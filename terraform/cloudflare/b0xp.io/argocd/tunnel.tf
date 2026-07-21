@@ -5,7 +5,7 @@ resource "random_password" "tunnel_secret" {
 resource "cloudflare_zero_trust_tunnel_cloudflared" "argocd_tunnel" {
   account_id = var.account_id
   name       = "cloudflare argocd tunnel"
-  secret     = sensitive(base64sha256(random_password.tunnel_secret.result))
+  tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
 # Creates the configuration for the tunnel.
@@ -34,7 +34,7 @@ resource "aws_ssm_parameter" "argocd_tunnel_token" {
 resource "cloudflare_zero_trust_tunnel_cloudflared" "argocd_api_tunnel" {
   account_id = var.account_id
   name       = "cloudflare argocd-api tunnel"
-  secret     = sensitive(base64sha256(random_password.tunnel_secret.result))
+  tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
 # API用トンネル設定

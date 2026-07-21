@@ -7,7 +7,7 @@ resource "random_password" "tunnel_secret" {
 resource "cloudflare_zero_trust_tunnel_cloudflared" "minecraft_map_tunnel" {
   account_id = var.account_id
   name       = "cloudflare minecraft-map tunnel"
-  secret     = sensitive(base64sha256(random_password.tunnel_secret.result))
+  tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
 # Minecraft BlueMap用トンネル設定

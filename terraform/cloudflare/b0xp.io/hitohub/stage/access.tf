@@ -5,7 +5,7 @@ resource "cloudflare_zero_trust_access_application" "hitohub_stage" {
   domain           = "hitohub-stage.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [cloudflare_zero_trust_access_policy.hitohub_stage_policy.id]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.hitohub_stage_policy.id }]
 }
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {

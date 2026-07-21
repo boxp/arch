@@ -7,7 +7,7 @@ resource "random_password" "tunnel_secret" {
 resource "cloudflare_zero_trust_tunnel_cloudflared" "kubernetes_dashboard_tunnel" {
   account_id = var.account_id
   name       = "cloudflare kubernetes-dashboard tunnel"
-  secret     = base64sha256(random_password.tunnel_secret.result)
+  tunnel_secret = base64sha256(random_password.tunnel_secret.result)
 }
 
 # Creates the configuration for the tunnel.

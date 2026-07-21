@@ -7,7 +7,7 @@ resource "random_password" "tunnel_secret" {
 resource "cloudflare_zero_trust_tunnel_cloudflared" "grafana_api_tunnel" { # Renamed from argocd_api_tunnel
   account_id = var.account_id
   name       = "cloudflare grafana-api tunnel" # Changed from argocd-api
-  secret     = sensitive(base64sha256(random_password.tunnel_secret.result))
+  tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
 # Grafana API用トンネル設定

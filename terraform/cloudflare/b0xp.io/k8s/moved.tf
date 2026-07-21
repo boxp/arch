@@ -22,3 +22,15 @@ moved {
   from = cloudflare_access_policy.codex_task_board_policy
   to   = cloudflare_zero_trust_access_policy.codex_task_board_policy
 }
+
+moved {
+  from = cloudflare_zero_trust_tunnel_route.codex_workspace
+  to   = cloudflare_zero_trust_tunnel_cloudflared_route.codex_workspace
+}
+
+removed {
+  from = cloudflare_zero_trust_split_tunnel.warp_include
+  lifecycle {
+    destroy = false
+  }
+}

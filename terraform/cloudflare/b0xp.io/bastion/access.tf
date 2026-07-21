@@ -10,7 +10,7 @@ resource "cloudflare_zero_trust_access_application" "bastion" {
   domain                    = "bastion.b0xp.io"
   type                      = "ssh"
   session_duration          = "24h"
-  policies                  = [cloudflare_zero_trust_access_policy.bastion.id]
+  policies                  = [{ id = cloudflare_zero_trust_access_policy.bastion.id }]
   service_auth_401_redirect = false
 }
 

@@ -10,7 +10,7 @@ resource "cloudflare_zero_trust_access_application" "grafana_api" {
   domain           = "grafana-api.b0xp.io" # Changed from argocd-api
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [cloudflare_zero_trust_access_policy.grafana_api_policy.id]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.grafana_api_policy.id }]
   # Enable service token authentication
   service_auth_401_redirect = false
 }

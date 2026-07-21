@@ -3,9 +3,9 @@ resource "random_password" "tunnel_secret" {
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "k8s_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare k8s tunnel"
-  secret     = sensitive(base64sha256(random_password.tunnel_secret.result))
+  account_id    = var.account_id
+  name          = "cloudflare k8s tunnel"
+  tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
 # Creates the configuration for the tunnel.
@@ -30,7 +30,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
   }
 }
 
-resource "cloudflare_zero_trust_tunnel_route" "codex_workspace" {
+resource "cloudflare_zero_trust_tunnel_cloudflared_route" "codex_workspace" {
   account_id = var.account_id
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id
   network    = "192.168.10.98/32"

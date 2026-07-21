@@ -5,7 +5,7 @@ resource "cloudflare_zero_trust_access_application" "argocd" {
   domain           = "argocd.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [cloudflare_zero_trust_access_policy.argocd_policy.id]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.argocd_policy.id }]
 }
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {
@@ -37,7 +37,7 @@ resource "cloudflare_zero_trust_access_application" "argocd_api" {
   domain           = "argocd-api.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [cloudflare_zero_trust_access_policy.argocd_api_policy.id]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.argocd_api_policy.id }]
 }
 
 # GitHub Action用のサービストークン
