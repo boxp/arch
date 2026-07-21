@@ -17,8 +17,8 @@ resource "cloudflare_zero_trust_access_application" "grafana_api" {
 
 # Model Context Protocol 用のサービストークン (Grafana API用)
 resource "cloudflare_zero_trust_access_service_token" "grafana_api_service_token" {
-  account_id           = var.account_id
-  name                 = "Model Context Protocol - Grafana API"
+  account_id = var.account_id
+  name       = "Model Context Protocol - Grafana API"
 
   # トークンローテーション設定
   lifecycle {
