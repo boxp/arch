@@ -28,9 +28,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kubernetes_dashboard
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "kubernetes_dashboard_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.kubernetes_dashboard_tunnel.id
+}
 resource "aws_ssm_parameter" "kubernetes_dashboard_tunnel_token" {
   name        = "kubernetes-dashboard-tunnel-token"
   description = "for kubernetes-dashboard tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.kubernetes_dashboard_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.kubernetes_dashboard_tunnel.token)
 }

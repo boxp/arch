@@ -29,9 +29,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "hermes_agent_tunnel"
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "hermes_agent_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.hermes_agent_tunnel.id
+}
 resource "aws_ssm_parameter" "hermes_agent_tunnel_token" {
   name        = "hermes-agent-tunnel-token"
   description = "for hermes-agent tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.hermes_agent_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.hermes_agent_tunnel.token)
 }

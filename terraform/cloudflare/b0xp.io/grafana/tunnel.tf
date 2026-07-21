@@ -31,9 +31,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "grafana_api_tunnel" 
 }
 
 # Grafana API用トンネルトークンをSSMに保存
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "grafana_api_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.grafana_api_tunnel.id
+}
 resource "aws_ssm_parameter" "grafana_api_tunnel_token" { # Renamed from argocd_api_tunnel_token
   name        = "grafana-api-tunnel-token"                # Changed from argocd-api
   description = "for grafana-api tunnel token"            # Changed from argocd-api
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.grafana_api_tunnel.tunnel_token) # Changed from argocd_api_tunnel
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.grafana_api_tunnel.token) # Changed from argocd_api_tunnel
 }

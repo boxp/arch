@@ -30,9 +30,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "hitohub_prod_tunnel"
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "hitohub_prod_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.hitohub_prod_tunnel.id
+}
 resource "aws_ssm_parameter" "hitohub_prod_tunnel_token" {
   name        = "hitohub-prod-tunnel-token"
   description = "for hitohub prod tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.hitohub_prod_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.hitohub_prod_tunnel.token)
 }

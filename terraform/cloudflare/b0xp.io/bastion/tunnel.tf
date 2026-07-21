@@ -26,9 +26,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "bastion" {
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "bastion" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.bastion.id
+}
 resource "aws_ssm_parameter" "tunnel_token" {
   name        = "bastion-tunnel-token"
   description = "Tunnel token for bastion pod"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.bastion.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.bastion.token)
 }

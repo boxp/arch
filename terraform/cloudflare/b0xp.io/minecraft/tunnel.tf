@@ -31,11 +31,16 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "minecraft_map_tunnel
 }
 
 # Minecraft BlueMap用トンネルトークンをSSMに保存
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "minecraft_map_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.minecraft_map_tunnel.id
+}
 resource "aws_ssm_parameter" "minecraft_tunnel_token" {
   name        = "minecraft-tunnel-token"
   description = "Cloudflare tunnel token for Minecraft BlueMap"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.minecraft_map_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.minecraft_map_tunnel.token)
 }
 
 # RCON password for Minecraft server administration

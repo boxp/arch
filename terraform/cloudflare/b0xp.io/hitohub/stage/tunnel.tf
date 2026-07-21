@@ -30,9 +30,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "hitohub_stage_tunnel
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "hitohub_stage_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.hitohub_stage_tunnel.id
+}
 resource "aws_ssm_parameter" "hitohub_stage_tunnel_token" {
   name        = "hitohub-stage-tunnel-token"
   description = "for hitohub stage tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.hitohub_stage_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.hitohub_stage_tunnel.token)
 }

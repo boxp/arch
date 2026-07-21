@@ -26,10 +26,15 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "stable_diffusion" {
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "stable_diffusion" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.stable_diffusion.id
+}
 resource "aws_ssm_parameter" "stable_diffusion_tunnel_token" {
   name        = "stable-diffusion-tunnel-token"
   description = "for stable-diffusion tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.stable_diffusion.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.stable_diffusion.token)
 }
 

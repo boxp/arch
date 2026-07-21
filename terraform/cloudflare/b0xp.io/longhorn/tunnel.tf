@@ -26,9 +26,14 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "longhorn_tunnel" {
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "longhorn_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.id
+}
 resource "aws_ssm_parameter" "longhorn_tunnel_token" {
   name        = "longhorn-tunnel-token"
   description = "for longhorn tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.longhorn_tunnel.token)
 }

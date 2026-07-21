@@ -26,11 +26,21 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "argocd_tunnel" {
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "argocd_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.argocd_tunnel.id
+}
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "argocd_api_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.argocd_api_tunnel.id
+}
 resource "aws_ssm_parameter" "argocd_tunnel_token" {
   name        = "argocd-tunnel-token"
   description = "for argocd tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.argocd_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.argocd_tunnel.token)
 }
 
 # API用のトンネルを作成
@@ -63,5 +73,5 @@ resource "aws_ssm_parameter" "argocd_api_tunnel_token" {
   name        = "argocd-api-tunnel-token"
   description = "for argocd-api tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_zero_trust_tunnel_cloudflared.argocd_api_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.argocd_api_tunnel.token)
 }
