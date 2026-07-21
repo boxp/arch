@@ -167,7 +167,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and reviewdog and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
-          CLOUDFLARE_ACCOUNT_ID: "1984a4314b3e75f3bedce97c7a8e0c81" # Required for v4->v5 state migration
           TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
       - uses: suzuki-shunsuke/tfaction@0627b0a1dfec9479a3fa73a5831be7979661b7eb # v2.0.4
@@ -178,7 +177,6 @@ jobs:
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and tfcmt and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
-          CLOUDFLARE_ACCOUNT_ID: "1984a4314b3e75f3bedce97c7a8e0c81" # Required for v4->v5 state migration
 
       - name: Create Renovate plan follow-up PR
         if: |
