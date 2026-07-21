@@ -2,7 +2,7 @@
 resource "cloudflare_dns_record" "k8s" {
   zone_id = var.zone_id
   name    = "k8s"
-  content = "\${cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id}.cfargotunnel.com"
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id}.cfargotunnel.com"
   type    = "CNAME"
   ttl     = 1
   proxied = true
@@ -20,7 +20,7 @@ resource "cloudflare_dns_record" "codex_workspace" {
 resource "cloudflare_dns_record" "codex_task_board" {
   zone_id = var.zone_id
   name    = "codex-task-board"
-  content = "\${cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id}.cfargotunnel.com"
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id}.cfargotunnel.com"
   type    = "CNAME"
   ttl     = 1
   proxied = true
