@@ -20,7 +20,7 @@ jobs:
           persist-credentials: false
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.0
+          aqua_version: v2.62.1
       - uses: suzuki-shunsuke/github-action-actionlint@4f0298e8f8b13fffbdc13207463d65e92205ad0c # v0.1.5
         with:
           actionlint_options: -config-file ${{ github.workspace }}/.github/actionlint.yaml
