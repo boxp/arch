@@ -15,7 +15,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "stable_diffusion" {
   config = {
   ingress = [
     {
-      hostname = cloudflare_dns_record.stable_diffusion.hostname
+      hostname = "${cloudflare_dns_record.stable_diffusion.name}.b0xp.io"
       service  = "http://stable-diffusion-webui.stable-diffusion.svc.cluster.local:7860"
     },
     {

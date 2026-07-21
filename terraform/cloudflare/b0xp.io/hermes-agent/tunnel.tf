@@ -15,7 +15,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "hermes_agent_tunnel"
   config = {
   ingress = [
     {
-      hostname = cloudflare_dns_record.hermes_agent.hostname
+      hostname = "${cloudflare_dns_record.hermes_agent.name}.b0xp.io"
       service  = "http://127.0.0.1:9119"
       origin_request = {
       http_host_header = "127.0.0.1:9119"

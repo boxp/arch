@@ -18,7 +18,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "grafana_api_tunnel" 
   ingress = [
     {
       # Hostname from dns.tf
-      hostname = cloudflare_dns_record.grafana_api.hostname # Changed from argocd_api
+      hostname = "${cloudflare_dns_record.grafana_api.name}.b0xp.io" # Changed from argocd_api
       # Internal Grafana service address (adjust if necessary)
       service = "http://grafana.monitoring.svc.cluster.local:3000" # Use 'grafana' service in 'monitoring' namespace
     },

@@ -18,7 +18,7 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "minecraft_map_tunnel
   ingress = [
     {
       # Hostname from dns.tf
-      hostname = cloudflare_dns_record.minecraft_map.hostname
+      hostname = "${cloudflare_dns_record.minecraft_map.name}.b0xp.io"
       # Internal BlueMap service address
       service = "http://minecraft-bluemap.minecraft.svc.cluster.local:8100"
     },
