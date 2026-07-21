@@ -9,6 +9,8 @@ resource "cloudflare_zero_trust_access_application" "grafana_api" {
   name             = "Access application for grafana-api.b0xp.io"
   domain           = "grafana-api.b0xp.io" # Changed from argocd-api
   session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [cloudflare_zero_trust_access_policy.grafana_api_policy.id]
   # Enable service token authentication
   service_auth_401_redirect = false
 }
@@ -30,14 +32,11 @@ resource "cloudflare_zero_trust_access_service_token" "grafana_api_service_token
 
 # サービストークンによるアクセスを許可するポリシー
 resource "cloudflare_zero_trust_access_policy" "grafana_api_policy" {
-  application_id = cloudflare_zero_trust_access_application.grafana_api.id # Changed from argocd_api
-  zone_id        = var.zone_id
+  account_id = var.account_id
   name           = "Model Context Protocol access policy for grafana-api.b0xp.io"
-  precedence     = "1"
   decision       = "non_identity" # Use non_identity for service tokens
   include {
     # Allow access from the specific service token
     service_token = [cloudflare_zero_trust_access_service_token.grafana_api_service_token.id] # Changed from github_action_token
   }
 }
-

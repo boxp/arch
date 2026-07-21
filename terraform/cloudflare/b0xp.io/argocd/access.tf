@@ -4,22 +4,22 @@ resource "cloudflare_zero_trust_access_application" "argocd" {
   name             = "Access application for argocd.b0xp.io"
   domain           = "argocd.b0xp.io"
   session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [cloudflare_zero_trust_access_policy.argocd_policy.id]
 }
 
-data "cloudflare_access_identity_provider" "github" {
-  zone_id = var.zone_id
+data "cloudflare_zero_trust_access_identity_provider" "github" {
+  account_id = var.account_id
   name    = "GitHub"
 }
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "argocd_policy" {
-  application_id = cloudflare_zero_trust_access_application.argocd.id
-  zone_id        = var.zone_id
+  account_id = var.account_id
   name           = "policy for argocd.b0xp.io"
-  precedence     = "1"
   decision       = "allow"
   include {
-    login_method = [data.cloudflare_access_identity_provider.github.id]
+    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
   }
 }
 
@@ -34,6 +34,8 @@ resource "cloudflare_zero_trust_access_application" "argocd_api" {
   name             = "Access application for argocd-api.b0xp.io"
   domain           = "argocd-api.b0xp.io"
   session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [cloudflare_zero_trust_access_policy.argocd_api_policy.id]
 }
 
 # GitHub Action用のサービストークン
@@ -53,10 +55,8 @@ resource "cloudflare_zero_trust_access_service_token" "github_action_token" {
 
 # サービストークンによるアクセスを許可するポリシー
 resource "cloudflare_zero_trust_access_policy" "argocd_api_policy" {
-  application_id = cloudflare_zero_trust_access_application.argocd_api.id
-  zone_id        = var.zone_id
+  account_id = var.account_id
   name           = "GitHub Actions access policy for argocd-api.b0xp.io"
-  precedence     = "1"
   decision       = "non_identity"
   include {
     service_token = [cloudflare_zero_trust_access_service_token.github_action_token.id]

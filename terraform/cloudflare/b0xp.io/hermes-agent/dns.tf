@@ -2,7 +2,7 @@
 resource "cloudflare_dns_record" "hermes_agent" {
   zone_id = var.zone_id
   name    = "hermes-agent"
-  value   = cloudflare_zero_trust_tunnel_cloudflared.hermes_agent_tunnel.cname
+  content = cloudflare_zero_trust_tunnel_cloudflared.hermes_agent_tunnel.cname
   type    = "CNAME"
   proxied = true
 }

@@ -4,20 +4,20 @@ resource "cloudflare_zero_trust_access_application" "moltworker" {
   name             = "Access application for moltworker.b0xp.io"
   domain           = "moltworker.b0xp.io"
   session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [cloudflare_zero_trust_access_policy.moltworker_policy.id]
 }
 
-data "cloudflare_access_identity_provider" "github" {
-  zone_id = var.zone_id
+data "cloudflare_zero_trust_access_identity_provider" "github" {
+  account_id = var.account_id
   name    = "GitHub"
 }
 
 resource "cloudflare_zero_trust_access_policy" "moltworker_policy" {
-  application_id = cloudflare_zero_trust_access_application.moltworker.id
-  zone_id        = var.zone_id
+  account_id = var.account_id
   name           = "policy for moltworker.b0xp.io"
-  precedence     = "1"
   decision       = "allow"
   include {
-    login_method = [data.cloudflare_access_identity_provider.github.id]
+    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
   }
 }

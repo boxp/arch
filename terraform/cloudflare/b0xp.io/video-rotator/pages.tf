@@ -14,7 +14,7 @@ resource "cloudflare_pages_project" "video_rotator" {
 resource "cloudflare_pages_domain" "video_rotator" {
   account_id   = var.account_id
   project_name = cloudflare_pages_project.video_rotator.name
-  domain       = local.custom_domain
+  name         = local.custom_domain
 }
 
 resource "cloudflare_pages_project" "video_rotator_dev" {
@@ -26,5 +26,5 @@ resource "cloudflare_pages_project" "video_rotator_dev" {
 resource "cloudflare_pages_domain" "video_rotator_dev" {
   account_id   = var.account_id
   project_name = cloudflare_pages_project.video_rotator_dev.name
-  domain       = local.dev_domain
+  name         = local.dev_domain
 }

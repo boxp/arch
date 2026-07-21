@@ -2,7 +2,7 @@
 resource "cloudflare_dns_record" "argocd" {
   zone_id = var.zone_id
   name    = "argocd"
-  value   = cloudflare_zero_trust_tunnel_cloudflared.argocd_tunnel.cname
+  content = cloudflare_zero_trust_tunnel_cloudflared.argocd_tunnel.cname
   type    = "CNAME"
   proxied = true
 }
@@ -11,7 +11,7 @@ resource "cloudflare_dns_record" "argocd" {
 resource "cloudflare_dns_record" "argocd_api" {
   zone_id = var.zone_id
   name    = "argocd-api"
-  value   = cloudflare_zero_trust_tunnel_cloudflared.argocd_api_tunnel.cname
+  content = cloudflare_zero_trust_tunnel_cloudflared.argocd_api_tunnel.cname
   type    = "CNAME"
   proxied = true
 }

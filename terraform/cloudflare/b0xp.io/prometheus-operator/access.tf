@@ -4,6 +4,8 @@ resource "cloudflare_zero_trust_access_application" "grafana" {
   name             = "Access application for grafana.b0xp.io"
   domain           = "grafana.b0xp.io"
   session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [cloudflare_zero_trust_access_policy.grafana_policy.id]
 }
 
 # Creates an Access application to control who can connect.
@@ -12,33 +14,31 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
   name             = "Access application for prometheus-web.b0xp.io"
   domain           = "prometheus-web.b0xp.io"
   session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [cloudflare_zero_trust_access_policy.prometheus_web_policy.id]
 }
 
-data "cloudflare_access_identity_provider" "github" {
-  zone_id = var.zone_id
+data "cloudflare_zero_trust_access_identity_provider" "github" {
+  account_id = var.account_id
   name    = "GitHub"
 }
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "grafana_policy" {
-  application_id = cloudflare_zero_trust_access_application.grafana.id
-  zone_id        = var.zone_id
+  account_id = var.account_id
   name           = "policy for grafana.b0xp.io"
-  precedence     = "1"
   decision       = "allow"
   include {
-    login_method = [data.cloudflare_access_identity_provider.github.id]
+    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
   }
 }
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "prometheus_web_policy" {
-  application_id = cloudflare_zero_trust_access_application.prometheus_web.id
-  zone_id        = var.zone_id
+  account_id = var.account_id
   name           = "policy for prometheus-web.b0xp.io"
-  precedence     = "1"
   decision       = "allow"
   include {
-    login_method = [data.cloudflare_access_identity_provider.github.id]
+    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
   }
 }

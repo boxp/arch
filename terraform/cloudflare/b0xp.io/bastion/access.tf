@@ -10,6 +10,7 @@ resource "cloudflare_zero_trust_access_application" "bastion" {
   domain                    = "bastion.b0xp.io"
   type                      = "ssh"
   session_duration          = "24h"
+  policies                  = [cloudflare_zero_trust_access_policy.bastion.id]
   service_auth_401_redirect = false
 }
 
@@ -29,10 +30,8 @@ resource "cloudflare_zero_trust_access_service_token" "github_actions" {
 
 # Access policy allowing service token authentication
 resource "cloudflare_zero_trust_access_policy" "bastion" {
-  application_id = cloudflare_zero_trust_access_application.bastion.id
-  zone_id        = var.zone_id
+  account_id = var.account_id
   name           = "GitHub Actions access policy for bastion"
-  precedence     = "1"
   decision       = "non_identity"
   include {
     service_token = [cloudflare_zero_trust_access_service_token.github_actions.id]

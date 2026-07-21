@@ -6,7 +6,7 @@ locals {
 resource "cloudflare_dns_record" "top" {
   zone_id = var.zone_id
   name    = "@"
-  value   = local.page
+  content = local.page
   type    = "CNAME"
   proxied = true
 }
@@ -14,7 +14,7 @@ resource "cloudflare_dns_record" "top" {
 resource "cloudflare_dns_record" "www" {
   zone_id = var.zone_id
   name    = "www"
-  value   = local.page
+  content = local.page
   type    = "CNAME"
   proxied = true
 }

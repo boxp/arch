@@ -4,21 +4,21 @@ resource "cloudflare_zero_trust_access_application" "kubernetes_dashboard" {
   name             = "Access application for kubernetes-dashboard.b0xp.io"
   domain           = "kubernetes-dashboard.b0xp.io"
   session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [cloudflare_zero_trust_access_policy.kubernetes_dashboard_policy.id]
 }
 
-data "cloudflare_access_identity_provider" "github" {
-  zone_id = var.zone_id
+data "cloudflare_zero_trust_access_identity_provider" "github" {
+  account_id = var.account_id
   name    = "GitHub"
 }
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "kubernetes_dashboard_policy" {
-  application_id = cloudflare_zero_trust_access_application.kubernetes_dashboard.id
-  zone_id        = var.zone_id
+  account_id = var.account_id
   name           = "policy for kubernetes-dashboard.b0xp.io"
-  precedence     = "1"
   decision       = "allow"
   include {
-    login_method = [data.cloudflare_access_identity_provider.github.id]
+    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
   }
 }
