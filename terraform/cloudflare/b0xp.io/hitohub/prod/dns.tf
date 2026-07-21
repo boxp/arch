@@ -4,6 +4,7 @@ resource "cloudflare_dns_record" "hitohub_prod" {
   name    = "hitohub"
   content = cloudflare_zero_trust_tunnel_cloudflared.hitohub_prod_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }
 
@@ -13,5 +14,6 @@ resource "cloudflare_dns_record" "api_hitohub_prod" {
   name    = "api-hitohub"
   content = cloudflare_zero_trust_tunnel_cloudflared.hitohub_prod_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

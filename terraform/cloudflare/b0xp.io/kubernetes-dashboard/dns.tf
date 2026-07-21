@@ -4,5 +4,6 @@ resource "cloudflare_dns_record" "kubernetes_dashboard" {
   name    = "kubernetes-dashboard"
   content = cloudflare_zero_trust_tunnel_cloudflared.kubernetes_dashboard_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

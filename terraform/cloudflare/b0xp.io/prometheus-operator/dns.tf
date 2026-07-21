@@ -4,6 +4,7 @@ resource "cloudflare_dns_record" "grafana" {
   name    = "grafana"
   content = cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }
 
@@ -13,5 +14,6 @@ resource "cloudflare_dns_record" "prometheus_web" {
   name    = "prometheus-web"
   content = cloudflare_zero_trust_tunnel_cloudflared.prometheus_operator_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

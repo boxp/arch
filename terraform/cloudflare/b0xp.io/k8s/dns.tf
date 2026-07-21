@@ -4,6 +4,7 @@ resource "cloudflare_dns_record" "k8s" {
   name    = "k8s"
   content = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }
 
@@ -12,6 +13,7 @@ resource "cloudflare_dns_record" "codex_workspace" {
   name    = "codex-workspace"
   content = "192.168.10.98"
   type    = "A"
+  ttl     = 1
   proxied = false
 }
 
@@ -20,5 +22,6 @@ resource "cloudflare_dns_record" "codex_task_board" {
   name    = "codex-task-board"
   content = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

@@ -4,6 +4,7 @@ resource "cloudflare_dns_record" "argocd" {
   name    = "argocd"
   content = cloudflare_zero_trust_tunnel_cloudflared.argocd_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }
 
@@ -13,5 +14,6 @@ resource "cloudflare_dns_record" "argocd_api" {
   name    = "argocd-api"
   content = cloudflare_zero_trust_tunnel_cloudflared.argocd_api_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

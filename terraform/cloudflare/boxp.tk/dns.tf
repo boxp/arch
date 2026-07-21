@@ -3,6 +3,7 @@ resource "cloudflare_dns_record" "root" {
   name    = "@"
   type    = "A"
   content = "192.0.2.1" # 全て転送するので、ダミーのIPアドレスにしておく
+  ttl     = 1
   proxied = true
 }
 
@@ -11,6 +12,7 @@ resource "cloudflare_dns_record" "www" {
   name    = "www"
   type    = "CNAME"
   content = "boxp.tk"
+  ttl     = 1
   proxied = true
 }
 
@@ -19,5 +21,6 @@ resource "cloudflare_dns_record" "hitohub" {
   name    = "hitohub"
   type    = "CNAME"
   content = "boxp.tk"
+  ttl     = 1
   proxied = true
 }

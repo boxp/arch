@@ -4,5 +4,6 @@ resource "cloudflare_dns_record" "hermes_agent" {
   name    = "hermes-agent"
   content = cloudflare_zero_trust_tunnel_cloudflared.hermes_agent_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

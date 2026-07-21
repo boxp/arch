@@ -4,5 +4,6 @@ resource "cloudflare_dns_record" "longhorn" {
   name    = "longhorn"
   content = cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

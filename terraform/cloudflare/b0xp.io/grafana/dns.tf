@@ -5,5 +5,6 @@ resource "cloudflare_dns_record" "grafana_api" { # Renamed from argocd_api
   # Points to the CNAME of the tunnel defined in tunnel.tf
   content = cloudflare_zero_trust_tunnel_cloudflared.grafana_api_tunnel.cname # Changed from argocd_api_tunnel
   type    = "CNAME"
+  ttl     = 1
   proxied = true # Must be proxied for Cloudflare Access
 }

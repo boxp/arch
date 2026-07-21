@@ -4,5 +4,6 @@ resource "cloudflare_dns_record" "bastion" {
   name    = "bastion"
   content = cloudflare_zero_trust_tunnel_cloudflared.bastion.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

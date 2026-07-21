@@ -3,5 +3,6 @@ resource "cloudflare_dns_record" "stable_diffusion" {
   name    = "sd-webui"
   content = cloudflare_zero_trust_tunnel_cloudflared.stable_diffusion.cname
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }

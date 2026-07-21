@@ -8,6 +8,7 @@ resource "cloudflare_dns_record" "top" {
   name    = "@"
   content = local.page
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }
 
@@ -16,5 +17,6 @@ resource "cloudflare_dns_record" "www" {
   name    = "www"
   content = local.page
   type    = "CNAME"
+  ttl     = 1
   proxied = true
 }
