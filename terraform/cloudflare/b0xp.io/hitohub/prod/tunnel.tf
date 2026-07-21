@@ -3,8 +3,8 @@ resource "random_password" "tunnel_secret" {
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "hitohub_prod_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare hitohub-prod tunnel"
+  account_id    = var.account_id
+  name          = "cloudflare hitohub-prod tunnel"
   tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
@@ -13,19 +13,19 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "hitohub_prod_tunnel"
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.hitohub_prod_tunnel.id
   account_id = var.account_id
   config = {
-  ingress = [
-    {
-      hostname = cloudflare_dns_record.hitohub_prod.name
-      service  = "http://hitohub-frontend:3000"
-    },
-    {
-      hostname = cloudflare_dns_record.api_hitohub_prod.name
-      service  = "http://hitohub-back-end:8080"
-    },
-    {
-      service = "http_status:404"
-    },
-  ]
+    ingress = [
+      {
+        hostname = cloudflare_dns_record.hitohub_prod.name
+        service  = "http://hitohub-frontend:3000"
+      },
+      {
+        hostname = cloudflare_dns_record.api_hitohub_prod.name
+        service  = "http://hitohub-back-end:8080"
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
 
   }
 }
