@@ -19,7 +19,6 @@ resource "cloudflare_zero_trust_access_application" "grafana_api" {
 resource "cloudflare_zero_trust_access_service_token" "grafana_api_service_token" {
   account_id           = var.account_id
   name                 = "Model Context Protocol - Grafana API"
-  min_days_for_renewal = 30
 
   # トークンローテーション設定
   lifecycle {

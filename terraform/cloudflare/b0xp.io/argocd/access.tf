@@ -50,7 +50,6 @@ resource "cloudflare_zero_trust_access_application" "argocd_api" {
 resource "cloudflare_zero_trust_access_service_token" "github_action_token" {
   account_id           = var.account_id
   name                 = "GitHub Action - ArgoCD API"
-  min_days_for_renewal = 30
 
   # トークンローテーション設定
   lifecycle {

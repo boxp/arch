@@ -18,7 +18,6 @@ resource "cloudflare_zero_trust_access_application" "bastion" {
 resource "cloudflare_zero_trust_access_service_token" "github_actions" {
   account_id           = var.account_id
   name                 = "GitHub Actions - Ansible Bastion"
-  min_days_for_renewal = 30
 
   lifecycle {
     create_before_destroy = true
