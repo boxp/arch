@@ -19,7 +19,7 @@ resource "cloudflare_zero_trust_access_policy" "github_actions_access" {
   }
 }
 
-resource "cloudflare_access_application" "codex_task_board" {
+resource "cloudflare_zero_trust_access_application" "codex_task_board" {
   zone_id          = var.zone_id
   name             = "Access application for codex-task-board.b0xp.io"
   domain           = "codex-task-board.b0xp.io"
@@ -31,8 +31,8 @@ data "cloudflare_access_identity_provider" "github" {
   name    = "GitHub"
 }
 
-resource "cloudflare_access_policy" "codex_task_board_policy" {
-  application_id = cloudflare_access_application.codex_task_board.id
+resource "cloudflare_zero_trust_access_policy" "codex_task_board_policy" {
+  application_id = cloudflare_zero_trust_access_application.codex_task_board.id
   zone_id        = var.zone_id
   name           = "policy for codex-task-board.b0xp.io"
   precedence     = "1"

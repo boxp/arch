@@ -1,5 +1,5 @@
 # Creates an Access application to control who can connect.
-resource "cloudflare_access_application" "longhorn" {
+resource "cloudflare_zero_trust_access_application" "longhorn" {
   zone_id          = var.zone_id
   name             = "Access application for longhorn.b0xp.io"
   domain           = "longhorn.b0xp.io"
@@ -12,8 +12,8 @@ data "cloudflare_access_identity_provider" "github" {
 }
 
 # Creates an Access policy for the application.
-resource "cloudflare_access_policy" "longhorn_policy" {
-  application_id = cloudflare_access_application.longhorn.id
+resource "cloudflare_zero_trust_access_policy" "longhorn_policy" {
+  application_id = cloudflare_zero_trust_access_application.longhorn.id
   zone_id        = var.zone_id
   name           = "policy for longhorn.b0xp.io"
   precedence     = "1"

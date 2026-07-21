@@ -1,5 +1,5 @@
 # Cloudflare Access application for the Moltworker.
-resource "cloudflare_access_application" "moltworker" {
+resource "cloudflare_zero_trust_access_application" "moltworker" {
   zone_id          = var.zone_id
   name             = "Access application for moltworker.b0xp.io"
   domain           = "moltworker.b0xp.io"
@@ -11,8 +11,8 @@ data "cloudflare_access_identity_provider" "github" {
   name    = "GitHub"
 }
 
-resource "cloudflare_access_policy" "moltworker_policy" {
-  application_id = cloudflare_access_application.moltworker.id
+resource "cloudflare_zero_trust_access_policy" "moltworker_policy" {
+  application_id = cloudflare_zero_trust_access_application.moltworker.id
   zone_id        = var.zone_id
   name           = "policy for moltworker.b0xp.io"
   precedence     = "1"

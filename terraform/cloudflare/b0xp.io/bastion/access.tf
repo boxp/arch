@@ -4,7 +4,7 @@ resource "time_rotating" "token_rotation" {
 }
 
 # Access application for bastion SSH
-resource "cloudflare_access_application" "bastion" {
+resource "cloudflare_zero_trust_access_application" "bastion" {
   zone_id                   = var.zone_id
   name                      = "Bastion SSH Access"
   domain                    = "bastion.b0xp.io"
@@ -14,7 +14,7 @@ resource "cloudflare_access_application" "bastion" {
 }
 
 # Service token for GitHub Actions
-resource "cloudflare_access_service_token" "github_actions" {
+resource "cloudflare_zero_trust_access_service_token" "github_actions" {
   account_id           = var.account_id
   name                 = "GitHub Actions - Ansible Bastion"
   min_days_for_renewal = 30
@@ -28,13 +28,13 @@ resource "cloudflare_access_service_token" "github_actions" {
 }
 
 # Access policy allowing service token authentication
-resource "cloudflare_access_policy" "bastion" {
-  application_id = cloudflare_access_application.bastion.id
+resource "cloudflare_zero_trust_access_policy" "bastion" {
+  application_id = cloudflare_zero_trust_access_application.bastion.id
   zone_id        = var.zone_id
   name           = "GitHub Actions access policy for bastion"
   precedence     = "1"
   decision       = "non_identity"
   include {
-    service_token = [cloudflare_access_service_token.github_actions.id]
+    service_token = [cloudflare_zero_trust_access_service_token.github_actions.id]
   }
 }

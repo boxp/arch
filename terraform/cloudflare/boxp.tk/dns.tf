@@ -1,4 +1,4 @@
-resource "cloudflare_record" "root" {
+resource "cloudflare_dns_record" "root" {
   zone_id = cloudflare_zone.boxp_tk.id
   name    = "@"
   type    = "A"
@@ -6,7 +6,7 @@ resource "cloudflare_record" "root" {
   proxied = true
 }
 
-resource "cloudflare_record" "www" {
+resource "cloudflare_dns_record" "www" {
   zone_id = cloudflare_zone.boxp_tk.id
   name    = "www"
   type    = "CNAME"
@@ -14,7 +14,7 @@ resource "cloudflare_record" "www" {
   proxied = true
 }
 
-resource "cloudflare_record" "hitohub" {
+resource "cloudflare_dns_record" "hitohub" {
   zone_id = cloudflare_zone.boxp_tk.id
   name    = "hitohub"
   type    = "CNAME"
