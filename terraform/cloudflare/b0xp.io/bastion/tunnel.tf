@@ -4,8 +4,8 @@ resource "random_password" "tunnel_secret" {
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "bastion" {
-  account_id = var.account_id
-  name       = "bastion tunnel for ansible"
+  account_id    = var.account_id
+  name          = "bastion tunnel for ansible"
   tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
@@ -13,15 +13,15 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "bastion" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.bastion.id
   account_id = var.account_id
   config = {
-  ingress = [
-    {
-      hostname = cloudflare_dns_record.bastion.name
-      service  = "ssh://localhost:2222"
-    },
-    {
-      service = "http_status:404"
-    },
-  ]
+    ingress = [
+      {
+        hostname = cloudflare_dns_record.bastion.name
+        service  = "ssh://localhost:2222"
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
 
   }
 }

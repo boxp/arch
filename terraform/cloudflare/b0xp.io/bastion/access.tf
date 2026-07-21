@@ -16,8 +16,8 @@ resource "cloudflare_zero_trust_access_application" "bastion" {
 
 # Service token for GitHub Actions
 resource "cloudflare_zero_trust_access_service_token" "github_actions" {
-  account_id           = var.account_id
-  name                 = "GitHub Actions - Ansible Bastion"
+  account_id = var.account_id
+  name       = "GitHub Actions - Ansible Bastion"
 
   lifecycle {
     create_before_destroy = true
