@@ -1,5 +1,10 @@
+import { readFileSync } from "fs";
+import { join, dirname } from "path";
+import { fileURLToPath } from "url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import worker from "./index.js";
+
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
 function createKv(entries = {}) {
   const values = new Map(Object.entries(entries));
@@ -151,5 +156,32 @@ describe("lolice member portal Worker", () => {
     expect(response.status).toBe(200);
     expect(await response.text()).toContain("参加申請を却下しました");
     expect(env.PENDING_REQUESTS.delete).toHaveBeenCalledWith("token");
+  });
+
+  it("serves guide.html with all game server addresses", async () => {
+    const env = createEnv();
+
+    const response = await worker.fetch(new Request("https://lolice.b0xp.io/guide.html"), env);
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("text/html");
+    const body = await response.text();
+    expect(body).toContain("192.168.10.97:8211");
+    expect(body).toContain("192.168.10.108:8211");
+    expect(body).toContain("192.168.10.29:7777");
+    expect(body).toContain("192.168.10.30:25565");
+    expect(body).toContain("PalWorld");
+    expect(body).toContain("ARK");
+    expect(body).toContain("Minecraft");
+  });
+
+  it("Worker GET /guide.html matches public/guide.html exactly", async () => {
+    const env = createEnv();
+    const publicGuideHtml = readFileSync(join(__dirname, "../public/guide.html"), "utf-8");
+
+    const response = await worker.fetch(new Request("https://lolice.b0xp.io/guide.html"), env);
+    const workerGuideHtml = await response.text();
+
+    expect(workerGuideHtml).toBe(publicGuideHtml);
   });
 });
