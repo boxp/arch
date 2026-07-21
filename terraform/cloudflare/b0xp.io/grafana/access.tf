@@ -33,10 +33,11 @@ resource "cloudflare_zero_trust_access_service_token" "grafana_api_service_token
 # サービストークンによるアクセスを許可するポリシー
 resource "cloudflare_zero_trust_access_policy" "grafana_api_policy" {
   account_id = var.account_id
-  name           = "Model Context Protocol access policy for grafana-api.b0xp.io"
-  decision       = "non_identity" # Use non_identity for service tokens
-  include {
-    # Allow access from the specific service token
-    service_token = [cloudflare_zero_trust_access_service_token.grafana_api_service_token.id] # Changed from github_action_token
-  }
+  name       = "Model Context Protocol access policy for grafana-api.b0xp.io"
+  decision   = "non_identity"
+  include = [{
+    service_token = {
+      token_id = cloudflare_zero_trust_access_service_token.grafana_api_service_token.id
+    }
+  }]
 }

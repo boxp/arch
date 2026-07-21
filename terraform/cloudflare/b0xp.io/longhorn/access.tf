@@ -10,15 +10,17 @@ resource "cloudflare_zero_trust_access_application" "longhorn" {
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {
   account_id = var.account_id
-  name    = "GitHub"
+  filter     = {}
 }
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "longhorn_policy" {
   account_id = var.account_id
-  name           = "policy for longhorn.b0xp.io"
-  decision       = "allow"
-  include {
-    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
-  }
+  name       = "policy for longhorn.b0xp.io"
+  decision   = "allow"
+  include = [{
+    login_method = {
+      id = data.cloudflare_zero_trust_access_identity_provider.github.id
+    }
+  }]
 }

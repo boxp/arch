@@ -10,15 +10,17 @@ resource "cloudflare_zero_trust_access_application" "hermes_agent" {
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {
   account_id = var.account_id
-  name    = "GitHub"
+  filter     = {}
 }
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "hermes_agent_policy" {
   account_id = var.account_id
-  name           = "policy for hermes-agent.b0xp.io"
-  decision       = "allow"
-  include {
-    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
-  }
+  name       = "policy for hermes-agent.b0xp.io"
+  decision   = "allow"
+  include = [{
+    login_method = {
+      id = data.cloudflare_zero_trust_access_identity_provider.github.id
+    }
+  }]
 }

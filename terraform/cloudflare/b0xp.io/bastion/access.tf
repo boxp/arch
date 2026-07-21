@@ -31,9 +31,11 @@ resource "cloudflare_zero_trust_access_service_token" "github_actions" {
 # Access policy allowing service token authentication
 resource "cloudflare_zero_trust_access_policy" "bastion" {
   account_id = var.account_id
-  name           = "GitHub Actions access policy for bastion"
-  decision       = "non_identity"
-  include {
-    service_token = [cloudflare_zero_trust_access_service_token.github_actions.id]
-  }
+  name       = "GitHub Actions access policy for bastion"
+  decision   = "non_identity"
+  include = [{
+    service_token = {
+      token_id = cloudflare_zero_trust_access_service_token.github_actions.id
+    }
+  }]
 }

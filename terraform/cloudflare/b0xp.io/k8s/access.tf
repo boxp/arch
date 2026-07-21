@@ -14,9 +14,11 @@ resource "cloudflare_zero_trust_access_policy" "github_actions_access" {
   name       = "GitHub Actions Access Policy"
   decision   = "allow"
 
-  include {
-    service_token = [var.service_token_id]
-  }
+  include = [{
+    service_token = {
+      token_id = var.service_token_id
+    }
+  }]
 }
 
 resource "cloudflare_zero_trust_access_application" "codex_task_board" {
@@ -30,14 +32,16 @@ resource "cloudflare_zero_trust_access_application" "codex_task_board" {
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {
   account_id = var.account_id
-  name    = "GitHub"
+  filter     = {}
 }
 
 resource "cloudflare_zero_trust_access_policy" "codex_task_board_policy" {
   account_id = var.account_id
-  name           = "policy for codex-task-board.b0xp.io"
-  decision       = "allow"
-  include {
-    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
-  }
+  name       = "policy for codex-task-board.b0xp.io"
+  decision   = "allow"
+  include = [{
+    login_method = {
+      id = data.cloudflare_zero_trust_access_identity_provider.github.id
+    }
+  }]
 }

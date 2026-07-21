@@ -9,14 +9,16 @@ resource "cloudflare_zero_trust_access_application" "stable_diffusion" {
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {
   account_id = var.account_id
-  name    = "GitHub"
+  filter     = {}
 }
 
 resource "cloudflare_zero_trust_access_policy" "stable_diffusion_github" {
   account_id = var.account_id
-  name           = "policy for sd-webui.b0xp.io"
-  decision       = "allow"
-  include {
-    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
-  }
+  name       = "policy for sd-webui.b0xp.io"
+  decision   = "allow"
+  include = [{
+    login_method = {
+      id = data.cloudflare_zero_trust_access_identity_provider.github.id
+    }
+  }]
 }

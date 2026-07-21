@@ -10,17 +10,19 @@ resource "cloudflare_zero_trust_access_application" "argocd" {
 
 data "cloudflare_zero_trust_access_identity_provider" "github" {
   account_id = var.account_id
-  name    = "GitHub"
+  filter     = {}
 }
 
 # Creates an Access policy for the application.
 resource "cloudflare_zero_trust_access_policy" "argocd_policy" {
   account_id = var.account_id
-  name           = "policy for argocd.b0xp.io"
-  decision       = "allow"
-  include {
-    login_method = [data.cloudflare_zero_trust_access_identity_provider.github.id]
-  }
+  name       = "policy for argocd.b0xp.io"
+  decision   = "allow"
+  include = [{
+    login_method = {
+      id = data.cloudflare_zero_trust_access_identity_provider.github.id
+    }
+  }]
 }
 
 # トークンローテーション設定
@@ -56,11 +58,13 @@ resource "cloudflare_zero_trust_access_service_token" "github_action_token" {
 # サービストークンによるアクセスを許可するポリシー
 resource "cloudflare_zero_trust_access_policy" "argocd_api_policy" {
   account_id = var.account_id
-  name           = "GitHub Actions access policy for argocd-api.b0xp.io"
-  decision       = "non_identity"
-  include {
-    service_token = [cloudflare_zero_trust_access_service_token.github_action_token.id]
-  }
+  name       = "GitHub Actions access policy for argocd-api.b0xp.io"
+  decision   = "non_identity"
+  include = [{
+    service_token = {
+      token_id = cloudflare_zero_trust_access_service_token.github_action_token.id
+    }
+  }]
 }
 
 # トークンIDをSSMに保存
