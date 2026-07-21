@@ -3,8 +3,8 @@ resource "random_password" "tunnel_secret" {
 }
 
 resource "cloudflare_zero_trust_tunnel_cloudflared" "argocd_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare argocd tunnel"
+  account_id    = var.account_id
+  name          = "cloudflare argocd tunnel"
   tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
@@ -13,15 +13,15 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "argocd_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.argocd_tunnel.id
   account_id = var.account_id
   config = {
-  ingress = [
-    {
-      hostname = cloudflare_dns_record.argocd.name
-      service  = "http://argocd-server:80"
-    },
-    {
-      service = "http_status:404"
-    },
-  ]
+    ingress = [
+      {
+        hostname = cloudflare_dns_record.argocd.name
+        service  = "http://argocd-server:80"
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
 
   }
 }
@@ -45,8 +45,8 @@ resource "aws_ssm_parameter" "argocd_tunnel_token" {
 
 # API用のトンネルを作成
 resource "cloudflare_zero_trust_tunnel_cloudflared" "argocd_api_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare argocd-api tunnel"
+  account_id    = var.account_id
+  name          = "cloudflare argocd-api tunnel"
   tunnel_secret = sensitive(base64sha256(random_password.tunnel_secret.result))
 }
 
@@ -55,15 +55,15 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "argocd_api_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.argocd_api_tunnel.id
   account_id = var.account_id
   config = {
-  ingress = [
-    {
-      hostname = cloudflare_dns_record.argocd_api.name
-      service  = "http://argocd-server.argocd.svc.cluster.local:80"
-    },
-    {
-      service = "http_status:404"
-    },
-  ]
+    ingress = [
+      {
+        hostname = cloudflare_dns_record.argocd_api.name
+        service  = "http://argocd-server.argocd.svc.cluster.local:80"
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
 
   }
 }

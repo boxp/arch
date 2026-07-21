@@ -48,8 +48,8 @@ resource "cloudflare_zero_trust_access_application" "argocd_api" {
 
 # GitHub Action用のサービストークン
 resource "cloudflare_zero_trust_access_service_token" "github_action_token" {
-  account_id           = var.account_id
-  name                 = "GitHub Action - ArgoCD API"
+  account_id = var.account_id
+  name       = "GitHub Action - ArgoCD API"
 
   # トークンローテーション設定
   lifecycle {
