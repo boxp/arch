@@ -14,17 +14,19 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "minecraft_map_tunnel" {
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "minecraft_map_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.minecraft_map_tunnel.id
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       # Hostname from dns.tf
       hostname = cloudflare_dns_record.minecraft_map.hostname
       # Internal BlueMap service address
       service = "http://minecraft-bluemap.minecraft.svc.cluster.local:8100"
-    }
-    # Default rule: return 404 for unmatched requests
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 

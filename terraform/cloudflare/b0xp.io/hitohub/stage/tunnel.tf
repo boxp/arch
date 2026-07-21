@@ -12,18 +12,21 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "hitohub_stage_tunnel" {
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "hitohub_stage_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.hitohub_stage_tunnel.id
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       hostname = cloudflare_dns_record.hitohub_stage.hostname
       service  = "http://hitohub-frontend:3000"
-    }
-    ingress_rule {
+    },
+    {
       hostname = cloudflare_dns_record.api_hitohub_stage.hostname
       service  = "http://hitohub-back-end:8080"
-    }
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 

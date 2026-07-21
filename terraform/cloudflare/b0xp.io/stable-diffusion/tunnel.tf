@@ -12,14 +12,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "stable_diffusion" {
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "stable_diffusion" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.stable_diffusion.id
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       hostname = cloudflare_dns_record.stable_diffusion.hostname
       service  = "http://stable-diffusion-webui.stable-diffusion.svc.cluster.local:7860"
-    }
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 

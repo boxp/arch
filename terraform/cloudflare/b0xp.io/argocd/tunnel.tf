@@ -12,14 +12,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "argocd_tunnel" {
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "argocd_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.argocd_tunnel.id
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       hostname = cloudflare_dns_record.argocd.hostname
       service  = "http://argocd-server:80"
-    }
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 
@@ -41,14 +44,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "argocd_api_tunnel" {
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "argocd_api_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.argocd_api_tunnel.id
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       hostname = cloudflare_dns_record.argocd_api.hostname
       service  = "http://argocd-server.argocd.svc.cluster.local:80"
-    }
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 

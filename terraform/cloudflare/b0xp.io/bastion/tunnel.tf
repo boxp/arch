@@ -12,14 +12,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "bastion" {
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "bastion" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.bastion.id
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       hostname = cloudflare_dns_record.bastion.hostname
       service  = "ssh://localhost:2222"
-    }
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 

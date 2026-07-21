@@ -12,14 +12,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "longhorn_tunnel" {
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "longhorn_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.longhorn_tunnel.id
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       hostname = cloudflare_dns_record.longhorn.hostname
       service  = "http://longhorn-frontend:80"
-    }
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 

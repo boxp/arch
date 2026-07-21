@@ -14,17 +14,19 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "grafana_api_tunnel" { # Ren
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "grafana_api_tunnel" { # Renamed from argocd_api_tunnel
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.grafana_api_tunnel.id     # Changed from argocd_api_tunnel
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       # Hostname from dns.tf
       hostname = cloudflare_dns_record.grafana_api.hostname # Changed from argocd_api
       # Internal Grafana service address (adjust if necessary)
       service = "http://grafana.monitoring.svc.cluster.local:3000" # Use 'grafana' service in 'monitoring' namespace
-    }
-    # Default rule: return 404 for unmatched requests
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 

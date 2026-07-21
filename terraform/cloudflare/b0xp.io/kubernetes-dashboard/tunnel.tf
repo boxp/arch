@@ -14,14 +14,17 @@ resource "cloudflare_zero_trust_tunnel_cloudflared" "kubernetes_dashboard_tunnel
 resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kubernetes_dashboard_tunnel" {
   tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.kubernetes_dashboard_tunnel.id
   account_id = var.account_id
-  config {
-    ingress_rule {
+  config = {
+  ingress = [
+    {
       hostname = cloudflare_dns_record.kubernetes_dashboard.hostname
       service  = "https://kubernetes-dashboard-lb.kube-dashboard:443"
-    }
-    ingress_rule {
+    },
+    {
       service = "http_status:404"
-    }
+    },
+  ]
+
   }
 }
 
