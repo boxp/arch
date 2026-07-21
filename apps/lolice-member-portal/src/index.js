@@ -28,7 +28,7 @@ const INDEX_HTML = `<!doctype html>
   <body>
     <main>
       <h1>lolice cluster - メンバー参加申請</h1>
-      <p>PalWorld ゲームサーバーへの参加を希望する方は、メールアドレスを入力してください。承認後に参加手順をお送りします。</p>
+      <p>lolice cluster のゲームサーバー（PalWorld・ARK: Survival Ascended・Minecraft など）への参加を希望する方は、メールアドレスを入力してください。承認後に接続手順をお送りします。</p>
       <form id="request-form">
         <label for="email">メールアドレス</label>
         <input id="email" name="email" type="email" autocomplete="email" required />
@@ -71,21 +71,63 @@ const GUIDE_HTML = `<!doctype html>
       :root { color-scheme: dark; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
       body { background: #111827; color: #f9fafb; line-height: 1.75; margin: 0; padding: 1.5rem; }
       main { background: #1f2937; border-radius: 16px; box-shadow: 0 20px 45px #0006; margin: 2rem auto; max-width: 720px; padding: 2rem; }
-      h1 { font-size: 1.7rem; } li { margin: 1rem 0; } a { color: #93c5fd; } code { background: #374151; border-radius: 4px; padding: .15rem .35rem; }
+      h1 { font-size: 1.7rem; } h2 { font-size: 1.2rem; margin-top: 2rem; } li { margin: 1rem 0; } a { color: #93c5fd; } code { background: #374151; border-radius: 4px; padding: .15rem .35rem; }
+      table { border-collapse: collapse; width: 100%; margin-top: 1rem; }
+      th, td { border: 1px solid #374151; padding: .6rem 1rem; text-align: left; }
+      th { background: #374151; font-weight: 600; }
+      tr:nth-child(even) { background: #111827; }
     </style>
   </head>
   <body>
     <main>
       <h1>lolice cluster - 参加手順</h1>
-      <p>参加承認後は、Cloudflare WARP を接続してから PalWorld の専用サーバーにアクセスしてください。</p>
+      <p>参加承認後は、Cloudflare WARP を接続してから各ゲームサーバーにアクセスしてください。</p>
       <ol>
         <li><strong>Cloudflare One Client をダウンロードします。</strong><br />Windows と Mac は <a href="https://developers.cloudflare.com/cloudflare-one/team-and-resources/devices/cloudflare-one-client/download/">Cloudflare One Client のダウンロードページ</a> を参照してください。iOS / Android は App Store または Google Play から Cloudflare One Client を入手してください。</li>
         <li>インストールが完了したら、Cloudflare One Client を起動します。</li>
         <li>チーム名に <code>boxp</code> と入力し、<strong>OK</strong> を押します。</li>
         <li>承認されたメールアドレスを入力し、届いた OTP（ワンタイムパスワード）で認証します。</li>
         <li>Cloudflare One Client の <strong>WARP 接続</strong>ボタンを押して接続します。</li>
-        <li>PalWorld を起動し、<strong>マルチプレイ</strong> → <strong>専用サーバー</strong> を選びます。サーバーアドレスに <code>192.168.10.97:8211</code> を入力して参加してください。</li>
+        <li>以下の「利用可能なゲームサーバー一覧」を参照して、プレイしたいゲームのサーバーに接続してください。</li>
       </ol>
+
+      <h2>利用可能なゲームサーバー一覧</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>ゲーム</th>
+            <th>アドレス:ポート</th>
+            <th>プロトコル</th>
+            <th>備考</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td>PalWorld（1号機）</td>
+            <td><code>192.168.10.97:8211</code></td>
+            <td>UDP</td>
+            <td>マルチプレイ → 専用サーバー からアドレスを入力</td>
+          </tr>
+          <tr>
+            <td>PalWorld（2号機）</td>
+            <td><code>192.168.10.108:8211</code></td>
+            <td>UDP</td>
+            <td>マルチプレイ → 専用サーバー からアドレスを入力</td>
+          </tr>
+          <tr>
+            <td>ARK: Survival Ascended</td>
+            <td><code>192.168.10.29:7777</code></td>
+            <td>UDP</td>
+            <td>サーバー名: onitiku-server、マップ: Ragnarok</td>
+          </tr>
+          <tr>
+            <td>Minecraft</td>
+            <td><code>192.168.10.30:25565</code></td>
+            <td>TCP</td>
+            <td>Fabric 1.21.1、サーバー名: lolice-minecraft</td>
+          </tr>
+        </tbody>
+      </table>
     </main>
   </body>
 </html>`;
