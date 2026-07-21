@@ -40,8 +40,3 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_route" "codex_workspace" {
   network    = "192.168.10.98/32"
   comment    = "lolice codex-workspace LoadBalancer for WARP access"
 }
-
-import {
-  to = cloudflare_zero_trust_tunnel_cloudflared_route.codex_workspace
-  id = "${var.account_id}/${cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id}/192.168.10.98%2F32"
-}
