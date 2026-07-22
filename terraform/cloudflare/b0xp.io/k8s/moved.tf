@@ -18,8 +18,10 @@ moved {
   to   = cloudflare_zero_trust_access_application.codex_task_board
 }
 
-moved {
+removed {
   from = cloudflare_access_policy.codex_task_board_policy
-  to   = cloudflare_zero_trust_access_policy.codex_task_board_policy
+  lifecycle {
+    destroy = false
+  }
 }
 

@@ -28,12 +28,16 @@ moved {
   to   = cloudflare_zero_trust_access_application.prometheus_web
 }
 
-moved {
+removed {
   from = cloudflare_access_policy.grafana_policy
-  to   = cloudflare_zero_trust_access_policy.grafana_policy
+  lifecycle {
+    destroy = false
+  }
 }
 
-moved {
+removed {
   from = cloudflare_access_policy.prometheus_web_policy
-  to   = cloudflare_zero_trust_access_policy.prometheus_web_policy
+  lifecycle {
+    destroy = false
+  }
 }

@@ -18,9 +18,11 @@ moved {
   to   = cloudflare_zero_trust_access_application.bastion
 }
 
-moved {
+removed {
   from = cloudflare_access_policy.bastion
-  to   = cloudflare_zero_trust_access_policy.bastion
+  lifecycle {
+    destroy = false
+  }
 }
 
 moved {
