@@ -25,7 +25,18 @@ provider "registry.terraform.io/hashicorp/aws" {
   constraints = "~> 6.0"
   hashes = [
     "h1:3OSTaIx7d6T+N6gwNtw0gR+IwExbHqb0y4v529Vey/4=",
+    "h1:6bYMRRHpKStH4H4rxnQXH1/HDliCEXS5lg+R/9p9Fb8=",
     "h1:99+MYIg/y3gmsZkhAcffwOpMat+liRJ8b+eyCIax6hk=",
+    "h1:9ULie3iUeMHEsiRLMdMHQGKnLZx5RdGglp+BkLSt5k4=",
+    "h1:QIQoZv637BE40vg7/0gf/5gQbY/ZTngSuJWDl7fJr2s=",
+    "h1:UYYLWHqPLdQa2oyYHB+OMZ8h0zfyZnHHnLvb/awHIGQ=",
+    "h1:gvdCpkT64YKZPvthNuuyrtWUiqLQlrk2WF4CD/JkLFc=",
+    "h1:qXm4uICRKLLvyi6G3WTc49tYttD4RXqwz8BClJOcQ9w=",
+    "h1:soOxetCECbwyQAatWnw6MvzBqPpY9ogXCho3euH/5yU=",
+    "h1:t1K0MlgakTzQEGP3dUjwkjcAUvcuuSGhbCr+hT0+IKw=",
+    "h1:tBAaeIprhWQmlsq/CoHLXWOLZZYRdCVA1wbNv2co55g=",
+    "h1:vZb5RF30/6hA3mcndC2Rjzif8lZjusw00gsH7d2zS2E=",
+    "h1:xOIHsmrHccixVXrdHpfat+ZpCs7YJ01Tngsep+yvdO0=",
     "h1:yM6149NHHl8NWU/OCIV2/x6tLrNgDTRKgR8cVrbk9BU=",
     "zh:1161fb2d032ad982587b2662a5229e5d06598c5b7fc5c86b2ad64d49225047cd",
     "zh:1f412b09bbece216da0ba08106f3bbb42d8c8971c02d032ab518629915086966",
