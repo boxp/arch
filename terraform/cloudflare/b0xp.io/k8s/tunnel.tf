@@ -40,3 +40,20 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_route" "codex_workspace" {
   network    = "192.168.10.98/32"
   comment    = "lolice codex-workspace LoadBalancer for WARP access"
 }
+
+# Look up the existing Cloudflare tunnel route to obtain its UUID for import.
+# The v4 state tracked this as cloudflare_zero_trust_tunnel_route (now removed via tfmigrate),
+# so we query the API to re-import it under the v5 resource type.
+data "cloudflare_zero_trust_tunnel_cloudflared_route" "codex_workspace" {
+  account_id = var.account_id
+  filter = {
+    tunnel_id      = cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id
+    network_subset = "192.168.10.98/32"
+    is_deleted     = false
+  }
+}
+
+import {
+  to = cloudflare_zero_trust_tunnel_cloudflared_route.codex_workspace
+  id = "${var.account_id}/${data.cloudflare_zero_trust_tunnel_cloudflared_route.codex_workspace.id}"
+}
