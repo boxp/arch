@@ -23,12 +23,3 @@ moved {
   to   = cloudflare_zero_trust_access_policy.codex_task_board_policy
 }
 
-# cloudflare_zero_trust_tunnel_route was a partial migration artifact;
-# the v5 resource is cloudflare_zero_trust_tunnel_cloudflared_route (see tunnel.tf).
-removed {
-  from = cloudflare_zero_trust_tunnel_route.codex_workspace
-  lifecycle {
-    destroy = false
-  }
-}
-
