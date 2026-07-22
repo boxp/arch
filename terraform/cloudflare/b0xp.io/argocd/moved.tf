@@ -38,20 +38,6 @@ moved {
   to   = cloudflare_zero_trust_access_application.argocd_api
 }
 
-removed {
-  from = cloudflare_access_policy.argocd_policy
-  lifecycle {
-    destroy = false
-  }
-}
-
-removed {
-  from = cloudflare_access_policy.argocd_api_policy
-  lifecycle {
-    destroy = false
-  }
-}
-
 moved {
   from = cloudflare_access_service_token.github_action_token
   to   = cloudflare_zero_trust_access_service_token.github_action_token

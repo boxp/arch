@@ -18,13 +18,6 @@ moved {
   to   = cloudflare_zero_trust_access_application.bastion
 }
 
-removed {
-  from = cloudflare_access_policy.bastion
-  lifecycle {
-    destroy = false
-  }
-}
-
 moved {
   from = cloudflare_access_service_token.github_actions
   to   = cloudflare_zero_trust_access_service_token.github_actions

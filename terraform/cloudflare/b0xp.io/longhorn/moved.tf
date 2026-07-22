@@ -18,9 +18,3 @@ moved {
   to   = cloudflare_zero_trust_access_application.longhorn
 }
 
-removed {
-  from = cloudflare_access_policy.longhorn_policy
-  lifecycle {
-    destroy = false
-  }
-}
