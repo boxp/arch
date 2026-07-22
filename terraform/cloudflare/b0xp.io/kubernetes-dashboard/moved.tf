@@ -18,3 +18,8 @@ moved {
   to   = cloudflare_zero_trust_access_application.kubernetes_dashboard
 }
 
+
+moved {
+  from = cloudflare_access_policy.kubernetes_dashboard_policy
+  to   = cloudflare_zero_trust_access_policy.kubernetes_dashboard_policy
+}

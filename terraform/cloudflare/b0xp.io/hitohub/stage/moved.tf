@@ -23,3 +23,8 @@ moved {
   to   = cloudflare_zero_trust_access_application.hitohub_stage
 }
 
+
+moved {
+  from = cloudflare_access_policy.hitohub_stage_policy
+  to   = cloudflare_zero_trust_access_policy.hitohub_stage_policy
+}

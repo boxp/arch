@@ -18,3 +18,8 @@ moved {
   to   = cloudflare_zero_trust_access_application.stable_diffusion
 }
 
+
+moved {
+  from = cloudflare_access_policy.stable_diffusion_github
+  to   = cloudflare_zero_trust_access_policy.stable_diffusion_github
+}

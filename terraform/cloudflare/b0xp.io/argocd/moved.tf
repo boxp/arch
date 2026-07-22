@@ -42,3 +42,13 @@ moved {
   from = cloudflare_access_service_token.github_action_token
   to   = cloudflare_zero_trust_access_service_token.github_action_token
 }
+
+moved {
+  from = cloudflare_access_policy.argocd_policy
+  to   = cloudflare_zero_trust_access_policy.argocd_policy
+}
+
+moved {
+  from = cloudflare_access_policy.argocd_api_policy
+  to   = cloudflare_zero_trust_access_policy.argocd_api_policy
+}

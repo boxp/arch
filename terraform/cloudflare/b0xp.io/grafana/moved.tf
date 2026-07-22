@@ -22,3 +22,8 @@ moved {
   from = cloudflare_access_service_token.grafana_api_service_token
   to   = cloudflare_zero_trust_access_service_token.grafana_api_service_token
 }
+
+moved {
+  from = cloudflare_access_policy.grafana_api_policy
+  to   = cloudflare_zero_trust_access_policy.grafana_api_policy
+}
