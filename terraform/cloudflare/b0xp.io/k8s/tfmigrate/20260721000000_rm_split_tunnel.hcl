@@ -9,5 +9,11 @@ migration "state" "rm_split_tunnel" {
     # can read the state without a schema error. The actual Cloudflare route object is not
     # destroyed (it remains in Cloudflare and is tracked by cloudflare_zero_trust_tunnel_cloudflared_route).
     "rm cloudflare_zero_trust_tunnel_route.codex_workspace",
+    # cloudflare_access_policy does not exist in v5 provider (scope changed from app to account).
+    # Remove from state here (before terraform plan runs) to avoid "no schema available" exit-code-1
+    # error which force=true cannot suppress. The replacement resource
+    # cloudflare_zero_trust_access_policy.codex_task_board_policy is defined in access.tf and
+    # will be created on apply.
+    "rm cloudflare_access_policy.codex_task_board_policy",
   ]
 }
