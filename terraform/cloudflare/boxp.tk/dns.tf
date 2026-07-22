@@ -1,6 +1,6 @@
 resource "cloudflare_dns_record" "root" {
   zone_id = cloudflare_zone.boxp_tk.id
-  name    = "@"
+  name    = "boxp.tk"
   type    = "A"
   content = "192.0.2.1" # 全て転送するので、ダミーのIPアドレスにしておく
   ttl     = 1
@@ -9,7 +9,7 @@ resource "cloudflare_dns_record" "root" {
 
 resource "cloudflare_dns_record" "www" {
   zone_id = cloudflare_zone.boxp_tk.id
-  name    = "www"
+  name    = "www.boxp.tk"
   type    = "CNAME"
   content = "boxp.tk"
   ttl     = 1
@@ -18,7 +18,7 @@ resource "cloudflare_dns_record" "www" {
 
 resource "cloudflare_dns_record" "hitohub" {
   zone_id = cloudflare_zone.boxp_tk.id
-  name    = "hitohub"
+  name    = "hitohub.boxp.tk"
   type    = "CNAME"
   content = "boxp.tk"
   ttl     = 1

@@ -5,7 +5,7 @@ locals {
 # Creates the CNAME record that routes b0xp.io to the cloudflare page.
 resource "cloudflare_dns_record" "top" {
   zone_id = var.zone_id
-  name    = "@"
+  name    = "b0xp.io"
   content = local.page
   type    = "CNAME"
   ttl     = 1
@@ -14,7 +14,7 @@ resource "cloudflare_dns_record" "top" {
 
 resource "cloudflare_dns_record" "www" {
   zone_id = var.zone_id
-  name    = "www"
+  name    = "www.b0xp.io"
   content = local.page
   type    = "CNAME"
   ttl     = 1
