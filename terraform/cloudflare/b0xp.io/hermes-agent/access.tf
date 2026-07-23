@@ -6,13 +6,23 @@ removed {
   }
 }
 
+# Remove stale v5 state entry that has old app-scoped ID from v4->v5 migration.
+# GitHub label limit (50 chars) prevents tfmigrate label for this long path,
+# so use removed+rename approach instead.
+removed {
+  from = cloudflare_zero_trust_access_policy.hermes_agent_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "cloudflare_zero_trust_access_application" "hermes_agent" {
   zone_id          = var.zone_id
   name             = "Access application for hermes-agent.b0xp.io"
   domain           = "hermes-agent.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [{ id = cloudflare_zero_trust_access_policy.hermes_agent_policy.id }]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.hermes_agent_access.id }]
 }
 
 data "cloudflare_zero_trust_access_identity_providers" "all" {
@@ -27,7 +37,7 @@ locals {
 }
 
 # Creates an Access policy for the application.
-resource "cloudflare_zero_trust_access_policy" "hermes_agent_policy" {
+resource "cloudflare_zero_trust_access_policy" "hermes_agent_access" {
   account_id = var.account_id
   name       = "policy for hermes-agent.b0xp.io"
   decision   = "allow"
