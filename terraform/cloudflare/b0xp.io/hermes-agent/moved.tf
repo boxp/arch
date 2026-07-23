@@ -17,9 +17,3 @@ moved {
   from = cloudflare_access_application.hermes_agent
   to   = cloudflare_zero_trust_access_application.hermes_agent
 }
-
-
-moved {
-  from = cloudflare_access_policy.hermes_agent_policy
-  to   = cloudflare_zero_trust_access_policy.hermes_agent_policy
-}
