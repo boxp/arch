@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
+HELPER="${ROOT_DIR}/docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
 
 fail() {
   echo "error: $*" >&2
@@ -1457,6 +1458,42 @@ test_invalid_reasoning_assignees_are_ignored() {
   done
 }
 
+test_concurrent_append_note_no_lost_writes() {
+  local tmp vault ticket_file
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  mkdir -p "${vault}/Tickets"
+  cat >"${vault}/Tickets/BOXP-999.md" <<'EOF'
+---
+id: BOXP-999
+type: task
+status: in-progress
+priority: medium
+assignee: codex
+repo:
+closed:
+---
+
+# BOXP-999: concurrent append test
+
+## Notes
+EOF
+  local n=5
+  local pids=()
+  for i in $(seq 1 "${n}"); do
+    bb "${HELPER}" append-note BOXP-999 --vault "${vault}" --source "test" --note "concurrent-note-${i}" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}"
+  done
+  ticket_file="${vault}/Tickets/BOXP-999.md"
+  for i in $(seq 1 "${n}"); do
+    grep -q "concurrent-note-${i}" "${ticket_file}" \
+      || fail "note ${i} was lost in concurrent append-note writes"
+  done
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_codex_sol_assignee_includes_delegation_policy
@@ -1499,5 +1536,6 @@ test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing
 test_invalid_reasoning_assignees_are_ignored
+test_concurrent_append_note_no_lost_writes
 
 echo "task-board-runner tests passed"
