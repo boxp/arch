@@ -148,6 +148,7 @@ target_groups:
   s3_bucket_name_tfmigrate_history: 'tfaction-history'
   template_dir: templates/aws
   terraform_command: terraform
+  skip_terraform: true
   drift_detection:
     enabled: false
   terraform_plan_config:
