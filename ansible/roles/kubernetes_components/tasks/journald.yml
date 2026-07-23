@@ -46,3 +46,4 @@
     state: absent
   become: true
   when: not (journald_persistent_storage | bool) and (journald_purge_persistent_logs | bool)
+  notify: Restart systemd-journald
