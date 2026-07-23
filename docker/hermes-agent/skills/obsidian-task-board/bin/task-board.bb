@@ -127,9 +127,13 @@
   (fs/create-dirs (fs/parent path))
   (spit (str path) content))
 
+(defn ticket-lock-dir []
+  (fs/path (System/getProperty "java.io.tmpdir") "task-board-locks"))
+
 (defn with-ticket-lock [ticket-path f]
-  (let [lock-file (str ticket-path ".lock")]
-    (fs/create-dirs (fs/parent lock-file))
+  (let [safe-name (str/replace (str (fs/file-name ticket-path)) #"[^a-zA-Z0-9._-]" "_")
+        lock-file (str (fs/path (ticket-lock-dir) (str safe-name ".lock")))]
+    (fs/create-dirs (ticket-lock-dir))
     (with-open [raf (RandomAccessFile. lock-file "rw")
                 channel (.getChannel raf)]
       (let [_lock (.lock channel)]

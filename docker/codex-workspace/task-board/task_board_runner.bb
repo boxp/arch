@@ -1055,11 +1055,14 @@
 (defn pr-gate-poll-seconds []
   (env-long "CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS" "15"))
 
-(defn pr-ci-grace-period-seconds []
-  ;; How long to wait for CI checks to appear before treating empty checks as
-  ;; "no CI configured" when mergeStateStatus=CLEAN. GitHub Actions typically
-  ;; queues runs within seconds, so 60s is a safe threshold.
-  (env-long "CODEX_TASK_BOARD_PR_CI_GRACE_SECONDS" "60"))
+(defn no-ci-repos []
+  ;; Explicit opt-in list of repos (owner/name) known to have no PR CI workflows.
+  ;; When a PR belongs to a listed repo and mergeStateStatus=CLEAN with no checks,
+  ;; the CI gate is skipped rather than relying on a time-based grace period.
+  ;; Set via CODEX_TASK_BOARD_NO_CI_REPOS=owner/repo1,owner/repo2
+  (let [val (env "CODEX_TASK_BOARD_NO_CI_REPOS" "")]
+    (when (seq val)
+      (set (map str/trim (str/split val #","))))))
 
 (defn run-string! [args opts]
   (let [proc @(p/process args (merge {:out :string :err :string} opts))]
@@ -1090,6 +1093,15 @@
 
        (seq env-profile)
        (conj "--profile" env-profile)))))
+
+(defn repo-from-pr-url [pr-url]
+  ;; Extract "owner/repo" from a GitHub PR URL like https://github.com/owner/repo/pull/N
+  (second (re-find #"github\.com/([^/]+/[^/]+)/pull/" (str pr-url))))
+
+(defn no-ci-repo? [pr-url]
+  (let [repos (no-ci-repos)
+        repo (repo-from-pr-url pr-url)]
+    (and (seq repos) repo (contains? repos repo))))
 
 (defn pr-view [pr-url]
   (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,isDraft,mergeStateStatus,statusCheckRollup"] {})
@@ -1174,13 +1186,12 @@
 
 (defn wait-for-pr-state! [pr-url]
   (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))
-        ci-grace-deadline (+ (System/currentTimeMillis) (* 1000 (pr-ci-grace-period-seconds)))]
+        skip-ci? (no-ci-repo? pr-url)]
     (loop []
       (let [pr (pr-view pr-url)
             merge (merge-state pr)
             ci (ci-state (:statusCheckRollup pr))
-            no-checks? (empty? (:statusCheckRollup pr))
-            past-ci-grace? (> (System/currentTimeMillis) ci-grace-deadline)]
+            no-checks? (empty? (:statusCheckRollup pr))]
         (cond
           (= :failed (:state merge))
           {:ok? false
@@ -1202,11 +1213,12 @@
            :url pr-url
            :message (str (:message merge) " " (:message ci))}
 
-          ;; After grace period: no checks + CLEAN merge = repo has no PR CI configured
-          (and past-ci-grace? no-checks? (= :passed (:state merge)))
+          ;; Explicit opt-in: repo is listed in CODEX_TASK_BOARD_NO_CI_REPOS and
+          ;; mergeStateStatus=CLEAN — skip CI gate without relying on timing.
+          (and skip-ci? no-checks? (= :passed (:state merge)))
           {:ok? true
            :url pr-url
-           :message (str (:message merge) " No CI checks configured for this PR (no workflows triggered after grace period).")}
+           :message (str (:message merge) " CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS.")}
 
           (> (System/currentTimeMillis) deadline)
           {:ok? false

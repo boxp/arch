@@ -1186,7 +1186,7 @@ test_review_with_empty_ci_rollup_times_out() {
   assert_file_contains "${vault}/Tickets/BOXP-407.md" 'No CI checks have been reported'
 }
 
-test_review_with_empty_ci_rollup_passes_after_grace_period() {
+test_review_with_empty_ci_rollup_passes_for_no_ci_repo() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
@@ -1198,12 +1198,32 @@ test_review_with_empty_ci_rollup_passes_after_grace_period() {
   write_board "${vault}" "- [ ] [[Tickets/BOXP-450|BOXP-450: no ci repo]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-450 in-progress codex boxp/example
 
-  # Short grace (1s) with longer timeout (10s): empty checks + CLEAN merge → passes after grace period
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=10 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_TASK_BOARD_PR_CI_GRACE_SECONDS=1 GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-empty-ci-grace.out
+  # Explicit opt-in: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS → empty checks + CLEAN merge passes immediately
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=10 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_TASK_BOARD_NO_CI_REPOS='boxp/example' GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-no-ci-repo.out
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-450\|BOXP-450: no ci repo\]\].*status::review'
   assert_file_contains "${vault}/Tickets/BOXP-450.md" '^status: review$'
-  assert_file_contains "${vault}/Tickets/BOXP-450.md" 'No CI checks configured'
+  assert_file_contains "${vault}/Tickets/BOXP-450.md" 'CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS'
+}
+
+test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-451|BOXP-451: ci timeout]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-451 in-progress codex boxp/example
+
+  # Without opt-in, empty checks with CLEAN merge should time out (not auto-pass)
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=3 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-ci-timeout.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-451\|BOXP-451: ci timeout\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-451.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-451.md" 'Timed out waiting for PR gates'
 }
 
 test_review_with_draft_pr_is_retried() {
@@ -1544,7 +1564,8 @@ test_review_with_multiple_pr_urls_blocks_on_second_failure
 test_review_gate_keeps_lock_heartbeat_active
 test_review_gate_passes_codex_model_profile_to_review
 test_review_with_empty_ci_rollup_times_out
-test_review_with_empty_ci_rollup_passes_after_grace_period
+test_review_with_empty_ci_rollup_passes_for_no_ci_repo
+test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in
 test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks
