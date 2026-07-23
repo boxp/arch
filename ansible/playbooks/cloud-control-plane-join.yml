@@ -5,6 +5,22 @@
 #   kubeadm init phase upload-certs --upload-certs
 #   kubeadm token create --print-join-command
 #
+# Network prerequisite — subnet router for LAN reachability:
+#   Cloud CP nodes join via kubeadm to cluster_vip (192.168.10.99), which is a
+#   LAN-only kube-vip address. Cloud nodes reach it through Tailscale via a
+#   subnet router that advertises 192.168.10.0/24. Before running this playbook:
+#
+#   1. Ensure a Tailscale subnet router is running on-prem with:
+#        tailscale up --advertise-routes=192.168.10.0/24 --authkey=<tag:subnet-router key>
+#      (The lolice Tailscale operator already deploys this Pod; verify with
+#       `kubectl -n tailscale-operator get pods`.)
+#
+#   2. The terraform/tailscale/lolice ACL autoApprovers.routes already approves
+#      192.168.10.0/24 for tag:subnet-router, so no manual approval is needed.
+#
+#   3. Verify cloud nodes can reach the VIP before running kubeadm join:
+#        tailscale ping 192.168.10.99   # from oracle-cp-1 or oracle-cp-2
+#
 # Usage:
 #   ansible-playbook playbooks/cloud-control-plane-join.yml \
 #     -i inventories/production \

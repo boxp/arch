@@ -79,6 +79,7 @@ available_providers:
   - name: registry.terraform.io/hashicorp/random
   - name: registry.terraform.io/hashicorp/time
   - name: registry.terraform.io/integrations/github
+  - name: registry.terraform.io/oracle/oci
   - name: registry.terraform.io/tailscale/tailscale
 
 target_groups:
@@ -141,6 +142,58 @@ target_groups:
     secrets:
     - env_name: GITHUB_TOKEN
       secret_name: GH_TOKEN_APPLY
+
+- working_directory: terraform/oci/**
+  aws_region: ap-northeast-1
+  s3_bucket_name_tfmigrate_history: 'tfaction-history'
+  template_dir: templates/aws
+  terraform_command: terraform
+  drift_detection:
+    enabled: false
+  terraform_plan_config:
+    aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_terraform_plan
+    secrets:
+    - env_name: TF_VAR_tenancy_ocid
+      secret_name: OCI_TENANCY_OCID
+    - env_name: TF_VAR_user_ocid
+      secret_name: OCI_USER_OCID
+    - env_name: TF_VAR_fingerprint
+      secret_name: OCI_FINGERPRINT
+    - env_name: TF_VAR_private_key
+      secret_name: OCI_PRIVATE_KEY
+  tfmigrate_plan_config:
+    aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_plan
+    secrets:
+    - env_name: TF_VAR_tenancy_ocid
+      secret_name: OCI_TENANCY_OCID
+    - env_name: TF_VAR_user_ocid
+      secret_name: OCI_USER_OCID
+    - env_name: TF_VAR_fingerprint
+      secret_name: OCI_FINGERPRINT
+    - env_name: TF_VAR_private_key
+      secret_name: OCI_PRIVATE_KEY
+  terraform_apply_config:
+    aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_terraform_apply
+    secrets:
+    - env_name: TF_VAR_tenancy_ocid
+      secret_name: OCI_TENANCY_OCID
+    - env_name: TF_VAR_user_ocid
+      secret_name: OCI_USER_OCID
+    - env_name: TF_VAR_fingerprint
+      secret_name: OCI_FINGERPRINT
+    - env_name: TF_VAR_private_key
+      secret_name: OCI_PRIVATE_KEY
+  tfmigrate_apply_config:
+    aws_assume_role_arn: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_tfmigrate_apply
+    secrets:
+    - env_name: TF_VAR_tenancy_ocid
+      secret_name: OCI_TENANCY_OCID
+    - env_name: TF_VAR_user_ocid
+      secret_name: OCI_USER_OCID
+    - env_name: TF_VAR_fingerprint
+      secret_name: OCI_FINGERPRINT
+    - env_name: TF_VAR_private_key
+      secret_name: OCI_PRIVATE_KEY
 
 - working_directory: terraform/tailscale/**
   aws_region: ap-northeast-1

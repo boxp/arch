@@ -28,9 +28,11 @@ resource "tailscale_acl" "this" {
           dst    = ["*:2379", "*:2380", "*:6443", "*:10250"]
         },
         # Allow on-prem nodes to reach cloud control plane (reverse direction).
+        # Restricted to authenticated tailnet members and known service tags
+        # to avoid granting etcd/kubelet access to every tagged device.
         {
           action = "accept"
-          src    = ["*"]
+          src    = ["autogroup:members", "tag:subnet-router", "tag:k8s-operator"]
           dst    = ["tag:cloud-control-plane:2379", "tag:cloud-control-plane:2380", "tag:cloud-control-plane:6443", "tag:cloud-control-plane:10250"]
         },
       ],
@@ -46,10 +48,15 @@ resource "tailscale_acl" "this" {
       ] : []
     )
 
-    autoApprovers = var.argocd_service_cluster_ip != "" ? {
-      routes = {
-        "${var.argocd_service_cluster_ip}/32" = ["tag:subnet-router"]
-      }
-    } : {}
+    autoApprovers = {
+      routes = merge(
+        # Allow tag:subnet-router nodes to advertise the lolice LAN subnet.
+        # Cloud CPs use --accept-routes so they can reach the VIP 192.168.10.99.
+        { "192.168.10.0/24" = ["tag:subnet-router"] },
+        var.argocd_service_cluster_ip != "" ? {
+          "${var.argocd_service_cluster_ip}/32" = ["tag:subnet-router"]
+        } : {}
+      )
+    }
   })
 }
