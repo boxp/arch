@@ -25,13 +25,11 @@ resource "cloudflare_dns_record" "hitohub" {
   proxied = true
 }
 
-# http_request_redirect phase は zone level では許可されないため account-level で定義する。
-# ルールの expression で hostname を絞り込むことで boxp.tk 専用のリダイレクトとして機能させる。
 resource "cloudflare_ruleset" "boxp_tk_redirects" {
-  account_id = var.account_id
-  name       = "boxp.tk redirects"
-  kind       = "root"
-  phase      = "http_request_redirect"
+  zone_id = cloudflare_zone.boxp_tk.id
+  name    = "boxp.tk redirects"
+  kind    = "zone"
+  phase   = "http_request_dynamic_redirect"
 
   rules = [
     {
