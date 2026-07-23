@@ -1640,6 +1640,90 @@ EOF
     || fail "expected >= 2 distinct lock files for cross-vault tickets (got ${lock_count}): separate vaults must not share a lock"
 }
 
+test_concurrent_board_update_no_lost_writes() {
+  local tmp vault rounds failures i pid1 pid2 board_content found_1 found_2
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  mkdir -p "${vault}/Tickets" "${vault}/Boards"
+
+  for id in BOXP-701 BOXP-702; do
+    title="ticket-${id}"
+    cat >"${vault}/Tickets/${id}.md" <<EOF
+---
+id: ${id}
+type: task
+status: backlog
+priority: medium
+assignee: boxp
+reporter: boxp
+project: BOXP
+epic:
+sprint:
+repo:
+estimate:
+created: 2026-01-01
+due:
+closed:
+tags:
+  - ticket
+---
+
+# ${id}: ${title}
+
+## Notes
+
+initial note.
+EOF
+  done
+
+  rounds=10
+  failures=0
+  for i in $(seq 1 "${rounds}"); do
+    # Reset board to initial state with both tickets in Backlog
+    cat >"${vault}/Boards/Task Board.md" <<'BOARD'
+# Task Board
+
+## Backlog
+
+- [ ] [[Tickets/BOXP-701|BOXP-701: ticket-BOXP-701]] #ticket status::backlog priority::medium
+- [ ] [[Tickets/BOXP-702|BOXP-702: ticket-BOXP-702]] #ticket status::backlog priority::medium
+
+## Ready
+
+## In Progress
+
+## Review
+
+## Blocked
+
+## Done
+BOARD
+    # Reset tickets to backlog
+    sed -i 's/^status: .*/status: backlog/' \
+      "${vault}/Tickets/BOXP-701.md" "${vault}/Tickets/BOXP-702.md"
+
+    # Run concurrent updates to different tickets
+    bb "${HELPER}" update BOXP-701 --vault "${vault}" --lane "In Progress" >/dev/null 2>&1 &
+    pid1=$!
+    bb "${HELPER}" update BOXP-702 --vault "${vault}" --lane "In Progress" >/dev/null 2>&1 &
+    pid2=$!
+    wait "${pid1}" || true
+    wait "${pid2}" || true
+
+    board_content="$(cat "${vault}/Boards/Task Board.md")"
+    found_1=0; found_2=0
+    echo "${board_content}" | grep -q "BOXP-701.*status::in-progress" && found_1=1 || true
+    echo "${board_content}" | grep -q "BOXP-702.*status::in-progress" && found_2=1 || true
+
+    if [ "${found_1}" -eq 0 ] || [ "${found_2}" -eq 0 ]; then
+      failures=$((failures + 1))
+    fi
+  done
+
+  [ "${failures}" -eq 0 ] \
+    || fail "concurrent board updates lost entries in ${failures}/${rounds} rounds"
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_codex_sol_assignee_includes_delegation_policy
@@ -1688,5 +1772,6 @@ test_assignee_reasoning_tick_routing
 test_invalid_reasoning_assignees_are_ignored
 test_concurrent_append_note_no_lost_writes
 test_cross_vault_lock_isolation
+test_concurrent_board_update_no_lost_writes
 
 echo "task-board-runner tests passed"
