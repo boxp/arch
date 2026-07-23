@@ -22,8 +22,3 @@ moved {
   from = cloudflare_access_service_token.github_actions
   to   = cloudflare_zero_trust_access_service_token.github_actions
 }
-
-moved {
-  from = cloudflare_access_policy.bastion
-  to   = cloudflare_zero_trust_access_policy.bastion
-}
