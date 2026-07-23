@@ -1,4 +1,11 @@
 # トークンローテーション設定
+removed {
+  from = cloudflare_access_policy.grafana_api_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "time_rotating" "token_rotation" {
   rotation_days = 90
 }
