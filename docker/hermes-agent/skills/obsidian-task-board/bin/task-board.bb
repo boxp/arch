@@ -2,7 +2,8 @@
 
 (ns task-board
   (:require [babashka.fs :as fs]
-            [clojure.string :as str]))
+            [clojure.string :as str])
+  (:import [java.io RandomAccessFile]))
 
 (def lanes
   {"Backlog" "backlog"
@@ -125,6 +126,14 @@
 (defn write-text! [path content]
   (fs/create-dirs (fs/parent path))
   (spit (str path) content))
+
+(defn with-ticket-lock [ticket-path f]
+  (let [lock-file (str ticket-path ".lock")]
+    (fs/create-dirs (fs/parent lock-file))
+    (with-open [raf (RandomAccessFile. lock-file "rw")
+                channel (.getChannel raf)]
+      (let [_lock (.lock channel)]
+        (f)))))
 
 (defn present [s]
   (when-not (str/blank? (str s)) s))
@@ -461,12 +470,17 @@
 (defn cmd-append-note [opts id]
   (let [vault (vault-path opts)
         note (or (:note opts) (die "append-note requires --note or --note-file"))
-        ticket (ticket-data vault id)
-        new-ticket (apply-ticket-update ticket {:append-note note :note-source (:source opts)})
+        path (ticket-path vault id)
         result {:action "append-note" :id id :source (or (:source opts) "hermes-agent") :dry-run (boolean (:dry-run opts))}]
-    (when-not (:dry-run opts)
-      (write-text! (ticket-path vault id) new-ticket))
-    (print-result opts result)))
+    (if (:dry-run opts)
+      (print-result opts result)
+      (do
+        (with-ticket-lock path
+          (fn []
+            (let [ticket (ticket-data vault id)
+                  new-ticket (apply-ticket-update ticket {:append-note note :note-source (:source opts)})]
+              (write-text! path new-ticket))))
+        (print-result opts result)))))
 
 (defn cmd-request-codex [opts id]
   (let [vault (vault-path opts)

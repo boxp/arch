@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
+HELPER="${ROOT_DIR}/docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
 
 fail() {
   echo "error: $*" >&2
@@ -1185,6 +1186,26 @@ test_review_with_empty_ci_rollup_times_out() {
   assert_file_contains "${vault}/Tickets/BOXP-407.md" 'No CI checks have been reported'
 }
 
+test_review_with_empty_ci_rollup_passes_after_grace_period() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-450|BOXP-450: no ci repo]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-450 in-progress codex boxp/example
+
+  # Short grace (1s) with longer timeout (10s): empty checks + CLEAN merge → passes after grace period
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=10 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_TASK_BOARD_PR_CI_GRACE_SECONDS=1 GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-empty-ci-grace.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-450\|BOXP-450: no ci repo\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-450.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-450.md" 'No CI checks configured'
+}
+
 test_review_with_draft_pr_is_retried() {
   local tmp vault state bin prompt_log
   tmp="$(mktemp -d)"
@@ -1321,6 +1342,71 @@ EOF
   assert_file_contains "${prompt_log}" 'Fill Plan with concrete implementation steps'
 }
 
+test_implement_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-603|BOXP-603: append-note]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-603 in-progress codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-append-note-codex.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-603'
+  assert_file_contains "${prompt_log}" 'milestone'
+}
+
+test_fable_implement_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-604|BOXP-604: fable append-note]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-604 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-append-note-fable.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-604'
+  assert_file_contains "${prompt_log}" 'milestone'
+  assert_file_contains "${prompt_log}" '\.claude/skills/obsidian-task-board'
+}
+
+test_groom_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-605|BOXP-605: groom append-note]] #ticket status::backlog"
+  write_ticket "${vault}" BOXP-605 backlog codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-append-note.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-605'
+  assert_file_contains "${prompt_log}" 'milestone'
+}
+
 test_assignee_model_routing() {
   bb "${RUNNER}" test
 }
@@ -1392,6 +1478,42 @@ test_invalid_reasoning_assignees_are_ignored() {
   done
 }
 
+test_concurrent_append_note_no_lost_writes() {
+  local tmp vault ticket_file
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  mkdir -p "${vault}/Tickets"
+  cat >"${vault}/Tickets/BOXP-999.md" <<'EOF'
+---
+id: BOXP-999
+type: task
+status: in-progress
+priority: medium
+assignee: codex
+repo:
+closed:
+---
+
+# BOXP-999: concurrent append test
+
+## Notes
+EOF
+  local n=5
+  local pids=()
+  for i in $(seq 1 "${n}"); do
+    bb "${HELPER}" append-note BOXP-999 --vault "${vault}" --source "test" --note "concurrent-note-${i}" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}"
+  done
+  ticket_file="${vault}/Tickets/BOXP-999.md"
+  for i in $(seq 1 "${n}"); do
+    grep -q "concurrent-note-${i}" "${ticket_file}" \
+      || fail "note ${i} was lost in concurrent append-note writes"
+  done
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_codex_sol_assignee_includes_delegation_policy
@@ -1422,14 +1544,19 @@ test_review_with_multiple_pr_urls_blocks_on_second_failure
 test_review_gate_keeps_lock_heartbeat_active
 test_review_gate_passes_codex_model_profile_to_review
 test_review_with_empty_ci_rollup_times_out
+test_review_with_empty_ci_rollup_passes_after_grace_period
 test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks
 test_review_gate_pass_after_retry_moves_review
 test_groom_prompt_contains_investigation_steps
+test_implement_prompt_includes_append_note
+test_fable_implement_prompt_includes_append_note
+test_groom_prompt_includes_append_note
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing
 test_invalid_reasoning_assignees_are_ignored
+test_concurrent_append_note_no_lost_writes
 
 echo "task-board-runner tests passed"

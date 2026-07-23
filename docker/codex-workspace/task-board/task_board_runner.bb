@@ -952,7 +952,8 @@
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
        "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
-       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\"\n\n"))
 
 (defn codex-sol-policy-prompt [agent]
   (str "High-cost model routing policy:\n"
@@ -962,7 +963,16 @@
        "- Do NOT delegate: tasks smaller than the delegation overhead, tasks requiring shared context or elevated permissions, and tasks requiring final judgment or acceptance.\n"
        "- If a delegated subtask fails, produces insufficient quality, or is unavailable: re-instruct once, verify the result, or handle it directly. Avoid recursive or unbounded delegation chains.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
-       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
+
+(defn append-note-instruction [agent ticket-id]
+  (let [helper (if (= "fable" agent)
+                 "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
+                 "~/.codex/skills/obsidian-task-board/bin/task-board.bb")]
+    (str "Progress logging: at each milestone during your work (investigation complete, approach decided, PR created, blocker encountered), "
+         "append a note to this ticket's Notes by running:\n"
+         "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
 (defn prompt-for [action ticket-id lane workspace agent]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
@@ -988,6 +998,7 @@
            "First investigate before writing: read ticket Notes and related Obsidian documents, inspect relevant GitHub repository state (issues, PRs, discussions via gh CLI), check related repo/git conventions, run Web searches for key technologies if needed, and for infra tickets check kubectl pod/deployment state; for performance/incident tickets check Grafana metrics.\n"
            "Then update the ticket file so Summary, Acceptance Criteria, Context, Plan, and Notes are specific enough for a human to review. Fill Context with investigation findings (system state, related docs, design rationale). Fill Plan with concrete implementation steps derived from findings.\n"
            "Keep the scope practical and preserve existing decisions.\n"
+           (append-note-instruction agent ticket-id)
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: review\n")
 
       :review-fix
@@ -995,6 +1006,7 @@
            "Goal: address review feedback or requested changes for this ticket.\n"
            "First inspect the ticket Notes, relevant repos, current git state, PR state if referenced, and tests.\n"
            "Do the requested work end to end where possible.\n"
+           (append-note-instruction agent ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n"
            "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n")
@@ -1004,6 +1016,7 @@
            "Goal: retry or re-investigate the blocked work.\n"
            "First verify whether the blocker is actually cleared. If still blocked, update Notes with the concrete blocker.\n"
            "Do the work end to end where possible.\n"
+           (append-note-instruction agent ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n")
 
@@ -1012,6 +1025,7 @@
            "Goal: implement or complete this ticket.\n"
            "First inspect the ticket Notes, relevant repos, current git state, and existing project conventions.\n"
            "Do the work end to end where possible, including focused validation.\n"
+           (append-note-instruction agent ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n"
            "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n"))))
@@ -1040,6 +1054,12 @@
 
 (defn pr-gate-poll-seconds []
   (env-long "CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS" "15"))
+
+(defn pr-ci-grace-period-seconds []
+  ;; How long to wait for CI checks to appear before treating empty checks as
+  ;; "no CI configured" when mergeStateStatus=CLEAN. GitHub Actions typically
+  ;; queues runs within seconds, so 60s is a safe threshold.
+  (env-long "CODEX_TASK_BOARD_PR_CI_GRACE_SECONDS" "60"))
 
 (defn run-string! [args opts]
   (let [proc @(p/process args (merge {:out :string :err :string} opts))]
@@ -1153,11 +1173,14 @@
        :message (str "GitHub mergeStateStatus=" (or state "missing") " is not review-ready.")})))
 
 (defn wait-for-pr-state! [pr-url]
-  (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))]
+  (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))
+        ci-grace-deadline (+ (System/currentTimeMillis) (* 1000 (pr-ci-grace-period-seconds)))]
     (loop []
       (let [pr (pr-view pr-url)
             merge (merge-state pr)
-            ci (ci-state (:statusCheckRollup pr))]
+            ci (ci-state (:statusCheckRollup pr))
+            no-checks? (empty? (:statusCheckRollup pr))
+            past-ci-grace? (> (System/currentTimeMillis) ci-grace-deadline)]
         (cond
           (= :failed (:state merge))
           {:ok? false
@@ -1178,6 +1201,12 @@
           {:ok? true
            :url pr-url
            :message (str (:message merge) " " (:message ci))}
+
+          ;; After grace period: no checks + CLEAN merge = repo has no PR CI configured
+          (and past-ci-grace? no-checks? (= :passed (:state merge)))
+          {:ok? true
+           :url pr-url
+           :message (str (:message merge) " No CI checks configured for this PR (no workflows triggered after grace period).")}
 
           (> (System/currentTimeMillis) deadline)
           {:ok? false
