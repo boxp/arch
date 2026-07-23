@@ -10,6 +10,7 @@
     mode: '2755'
   become: true
   when: journald_persistent_storage | bool
+  notify: Restart systemd-journald
 
 - name: Ensure journald drop-in directory exists
   ansible.builtin.file:
