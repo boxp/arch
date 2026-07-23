@@ -3,16 +3,15 @@
   hosts: all
   gather_facts: false
   tasks:
-    - name: Check if journald drop-in exists
-      ansible.builtin.stat:
-        path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+    - name: Read journald drop-in
+      ansible.builtin.slurp:
+        src: /etc/systemd/journald.conf.d/10-persistent-storage.conf
       register: journald_dropin
 
-    - name: Assert journald persistent-storage drop-in is absent
+    - name: Assert Storage=volatile is set when persistent storage is disabled
       ansible.builtin.assert:
         that:
-          - not journald_dropin.stat.exists
+          - "'Storage=volatile' in (journald_dropin.content | b64decode)"
         fail_msg: >-
-          journald persistent-storage drop-in must not exist when
-          journald_persistent_storage is false, but found
-          /etc/systemd/journald.conf.d/10-persistent-storage.conf
+          Storage=volatile must be set in drop-in when journald_persistent_storage
+          is false, but found: {{ journald_dropin.content | b64decode }}
