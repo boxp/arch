@@ -1321,6 +1321,71 @@ EOF
   assert_file_contains "${prompt_log}" 'Fill Plan with concrete implementation steps'
 }
 
+test_implement_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-603|BOXP-603: append-note]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-603 in-progress codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-append-note-codex.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-603'
+  assert_file_contains "${prompt_log}" 'milestone'
+}
+
+test_fable_implement_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-604|BOXP-604: fable append-note]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-604 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-append-note-fable.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-604'
+  assert_file_contains "${prompt_log}" 'milestone'
+  assert_file_contains "${prompt_log}" '\.claude/skills/obsidian-task-board'
+}
+
+test_groom_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-605|BOXP-605: groom append-note]] #ticket status::backlog"
+  write_ticket "${vault}" BOXP-605 backlog codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-append-note.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-605'
+  assert_file_contains "${prompt_log}" 'milestone'
+}
+
 test_assignee_model_routing() {
   bb "${RUNNER}" test
 }
@@ -1427,6 +1492,9 @@ test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks
 test_review_gate_pass_after_retry_moves_review
 test_groom_prompt_contains_investigation_steps
+test_implement_prompt_includes_append_note
+test_fable_implement_prompt_includes_append_note
+test_groom_prompt_includes_append_note
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing
