@@ -63,3 +63,17 @@
           exit 0
         mode: '0755'
       become: true
+
+    - name: Pre-create /var/log/journal to simulate existing persistent journal
+      ansible.builtin.file:
+        path: /var/log/journal
+        state: directory
+        mode: '2755'
+      become: true
+
+    - name: Create a sentinel file inside /var/log/journal to confirm non-destructive behavior
+      ansible.builtin.copy:
+        dest: /var/log/journal/.keep
+        content: "pre-existing log marker"
+        mode: '0644'
+      become: true

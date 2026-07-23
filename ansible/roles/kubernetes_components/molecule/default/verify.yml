@@ -189,5 +189,7 @@
       ansible.builtin.assert:
         that:
           - "'Storage=persistent' in (journald_dropin_content.content | b64decode)"
-        fail_msg: "journald drop-in does not contain Storage=persistent"
+          - "'SystemMaxUse=200M' in (journald_dropin_content.content | b64decode)"
+          - "'MaxRetentionSec=1month' in (journald_dropin_content.content | b64decode)"
+        fail_msg: "journald drop-in is missing Storage=persistent, SystemMaxUse=200M, or MaxRetentionSec=1month"
       when: journald_persistent_storage | bool
