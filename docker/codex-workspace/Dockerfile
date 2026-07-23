@@ -36,6 +36,7 @@ RUN apt-get update \
       lsb-release \
       locales \
       make \
+      mosh \
       openssh-server \
       ripgrep \
       sudo \
