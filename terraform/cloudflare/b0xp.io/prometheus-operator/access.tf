@@ -13,13 +13,28 @@ removed {
   }
 }
 
+# Remove stale v5 state entries that have old app-scoped IDs from v4->v5 migration.
+removed {
+  from = cloudflare_zero_trust_access_policy.grafana_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = cloudflare_zero_trust_access_policy.prometheus_web_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "cloudflare_zero_trust_access_application" "grafana" {
   zone_id          = var.zone_id
   name             = "Access application for grafana.b0xp.io"
   domain           = "grafana.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [{ id = cloudflare_zero_trust_access_policy.grafana_policy.id }]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.grafana_access.id }]
 }
 
 # Creates an Access application to control who can connect.
@@ -29,7 +44,7 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
   domain           = "prometheus-web.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [{ id = cloudflare_zero_trust_access_policy.prometheus_web_policy.id }]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.prometheus_web_access.id }]
 }
 
 data "cloudflare_zero_trust_access_identity_providers" "all" {
@@ -44,7 +59,7 @@ locals {
 }
 
 # Creates an Access policy for the application.
-resource "cloudflare_zero_trust_access_policy" "grafana_policy" {
+resource "cloudflare_zero_trust_access_policy" "grafana_access" {
   account_id = var.account_id
   name       = "policy for grafana.b0xp.io"
   decision   = "allow"
@@ -56,7 +71,7 @@ resource "cloudflare_zero_trust_access_policy" "grafana_policy" {
 }
 
 # Creates an Access policy for the application.
-resource "cloudflare_zero_trust_access_policy" "prometheus_web_policy" {
+resource "cloudflare_zero_trust_access_policy" "prometheus_web_access" {
   account_id = var.account_id
   name       = "policy for prometheus-web.b0xp.io"
   decision   = "allow"
