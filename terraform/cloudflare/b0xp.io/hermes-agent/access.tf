@@ -1,4 +1,11 @@
 # Creates an Access application to control who can connect.
+removed {
+  from = cloudflare_access_policy.hermes_agent_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "cloudflare_zero_trust_access_application" "hermes_agent" {
   zone_id          = var.zone_id
   name             = "Access application for hermes-agent.b0xp.io"

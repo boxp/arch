@@ -17,9 +17,3 @@ moved {
   from = cloudflare_access_application.longhorn
   to   = cloudflare_zero_trust_access_application.longhorn
 }
-
-
-moved {
-  from = cloudflare_access_policy.longhorn_policy
-  to   = cloudflare_zero_trust_access_policy.longhorn_policy
-}
