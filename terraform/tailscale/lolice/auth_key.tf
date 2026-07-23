@@ -28,7 +28,7 @@ resource "tailscale_tailnet_key" "cloud_control_plane" {
   ephemeral     = false
   preauthorized = true
   tags          = ["tag:cloud-control-plane"]
-  description   = "lolice Oracle Cloud control plane nodes (oracle-cp-1, oracle-cp-2)"
+  description   = "lolice OCI cloud control plane nodes"
 
   depends_on = [tailscale_acl.this]
 }
