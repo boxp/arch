@@ -3,10 +3,10 @@
 resource "tailscale_acl" "this" {
   acl = jsonencode({
     tagOwners = {
-      "tag:ci"                    = ["autogroup:admin"]
-      "tag:subnet-router"         = ["autogroup:admin"]
-      "tag:k8s-operator"          = ["autogroup:admin"]
-      "tag:cloud-control-plane"   = ["autogroup:admin"]
+      "tag:ci"                  = ["autogroup:admin"]
+      "tag:subnet-router"       = ["autogroup:admin"]
+      "tag:k8s-operator"        = ["autogroup:admin"]
+      "tag:cloud-control-plane" = ["autogroup:admin"]
     }
 
     acls = concat(
