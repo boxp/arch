@@ -1055,6 +1055,12 @@
 (defn pr-gate-poll-seconds []
   (env-long "CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS" "15"))
 
+(defn pr-ci-grace-period-seconds []
+  ;; How long to wait for CI checks to appear before treating empty checks as
+  ;; "no CI configured" when mergeStateStatus=CLEAN. GitHub Actions typically
+  ;; queues runs within seconds, so 60s is a safe threshold.
+  (env-long "CODEX_TASK_BOARD_PR_CI_GRACE_SECONDS" "60"))
+
 (defn run-string! [args opts]
   (let [proc @(p/process args (merge {:out :string :err :string} opts))]
     (if (zero? (:exit proc))
@@ -1167,11 +1173,14 @@
        :message (str "GitHub mergeStateStatus=" (or state "missing") " is not review-ready.")})))
 
 (defn wait-for-pr-state! [pr-url]
-  (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))]
+  (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))
+        ci-grace-deadline (+ (System/currentTimeMillis) (* 1000 (pr-ci-grace-period-seconds)))]
     (loop []
       (let [pr (pr-view pr-url)
             merge (merge-state pr)
-            ci (ci-state (:statusCheckRollup pr))]
+            ci (ci-state (:statusCheckRollup pr))
+            no-checks? (empty? (:statusCheckRollup pr))
+            past-ci-grace? (> (System/currentTimeMillis) ci-grace-deadline)]
         (cond
           (= :failed (:state merge))
           {:ok? false
@@ -1192,6 +1201,12 @@
           {:ok? true
            :url pr-url
            :message (str (:message merge) " " (:message ci))}
+
+          ;; After grace period: no checks + CLEAN merge = repo has no PR CI configured
+          (and past-ci-grace? no-checks? (= :passed (:state merge)))
+          {:ok? true
+           :url pr-url
+           :message (str (:message merge) " No CI checks configured for this PR (no workflows triggered after grace period).")}
 
           (> (System/currentTimeMillis) deadline)
           {:ok? false
