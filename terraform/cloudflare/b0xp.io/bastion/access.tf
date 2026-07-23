@@ -1,4 +1,11 @@
 # Token rotation configuration
+removed {
+  from = cloudflare_access_policy.bastion
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "time_rotating" "token_rotation" {
   rotation_days = 90
 }

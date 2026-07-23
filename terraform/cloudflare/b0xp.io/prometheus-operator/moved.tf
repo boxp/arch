@@ -27,14 +27,3 @@ moved {
   from = cloudflare_access_application.prometheus_web
   to   = cloudflare_zero_trust_access_application.prometheus_web
 }
-
-
-moved {
-  from = cloudflare_access_policy.grafana_policy
-  to   = cloudflare_zero_trust_access_policy.grafana_policy
-}
-
-moved {
-  from = cloudflare_access_policy.prometheus_web_policy
-  to   = cloudflare_zero_trust_access_policy.prometheus_web_policy
-}
