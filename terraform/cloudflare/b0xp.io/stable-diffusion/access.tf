@@ -1,3 +1,10 @@
+removed {
+  from = cloudflare_access_policy.stable_diffusion_github
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "cloudflare_zero_trust_access_application" "stable_diffusion" {
   zone_id          = var.zone_id
   name             = "Access application for sd-webui.b0xp.io"
