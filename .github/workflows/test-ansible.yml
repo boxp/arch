@@ -9,9 +9,53 @@ on:
         default: ${{ github.ref }}
 
 jobs:
-  test:
+  detect-roles:
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+      has-changes: ${{ steps.set-matrix.outputs.has-changes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
+
+      - name: Get changed files
+        id: changed-files
+        uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
+        with:
+          files: ansible/roles/**
+
+      - name: Set matrix
+        id: set-matrix
+        run: |
+          CHANGED_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
+
+          ROLES=()
+          if [ -n "$CHANGED_FILES" ]; then
+            while IFS= read -r role; do
+              [ -n "$role" ] && ROLES+=("$role")
+            done < <(echo "$CHANGED_FILES" | tr ' ' '\n' | grep "^ansible/roles/" | sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u)
+          fi
+
+          echo "Changed roles: ${ROLES[*]}"
+
+          if [ ${#ROLES[@]} -gt 0 ]; then
+            MATRIX=$(printf '%s\n' "${ROLES[@]}" | jq -R . | jq -sc .)
+            echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+            echo "has-changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "matrix=[]" >> "$GITHUB_OUTPUT"
+            echo "has-changes=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:
@@ -20,14 +64,6 @@ jobs:
         with:
           ref: ${{ inputs.ref }}
           persist-credentials: false
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4.2.0
-        with:
-          platforms: arm64
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4.2.0
 
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -48,78 +84,48 @@ jobs:
           source .venv/bin/activate
           ansible-lint
 
-      - name: Get changed files
-        id: changed-files
-        uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
+  test:
+    needs: [detect-roles, lint]
+    if: needs.detect-roles.outputs.has-changes == 'true'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      MOLECULE_DOCKER_PLATFORM: linux/arm64
+    strategy:
+      matrix:
+        role: ${{ fromJSON(needs.detect-roles.outputs.matrix) }}
+      fail-fast: false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
-          files: ansible/roles/**
+          ref: ${{ inputs.ref }}
+          persist-credentials: false
 
-      - name: Detect changed roles
-        id: changed-roles
+      - name: Set up Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@11f9893b081a58869d3b5fccaea48c9e9e46f990 # v8.3.2
+
+      - name: Install dependencies
         run: |
-          # Get changed files from previous step
-          CHANGED_FILES="${{ steps.changed-files.outputs.all_changed_files }}"
-          
-          echo "Changed files: $CHANGED_FILES"
-          
-          # Extract unique role names from changed files
-          CHANGED_ROLES=""
-          if [ -n "$CHANGED_FILES" ]; then
-            CHANGED_ROLES=$(echo "$CHANGED_FILES" | tr ' ' '\n' | grep "^ansible/roles/" | sed 's|^ansible/roles/||' | cut -d'/' -f1 | sort -u | tr '\n' ' ' | sed 's/[[:space:]]*$//')
-          fi
-          
-          echo "changed-files=$CHANGED_FILES"
-          echo "changed-roles=$CHANGED_ROLES"
-          
-          # Debug output
-          echo "Debug: CHANGED_FILES content:"
-          if [ -n "$CHANGED_FILES" ]; then
-            echo "$CHANGED_FILES" | tr ' ' '\n' | while read -r line; do
-              [ -n "$line" ] && echo "  File: $line"
-            done
-          else
-            echo "  No changed files"
-          fi
-          
-          echo "Debug: CHANGED_ROLES content:"
-          if [ -n "$CHANGED_ROLES" ]; then
-            echo "$CHANGED_ROLES" | tr ' ' '\n' | while read -r line; do
-              [ -n "$line" ] && echo "  Role: $line"
-            done
-          else
-            echo "  No changed roles"
-          fi
-          
-          # Set output for use in next step (space-separated for simplicity)
-          echo "roles=${CHANGED_ROLES}" >> "$GITHUB_OUTPUT"
+          cd "ansible"
+          uv sync
 
-      - name: Run Molecule tests for changed roles
+      - name: Run Molecule test for ${{ matrix.role }}
         run: |
           cd "ansible"
           source .venv/bin/activate
-          
-          # Get changed roles from previous step
-          CHANGED_ROLES="${{ steps.changed-roles.outputs.roles }}"
-          
-          if [ -z "$CHANGED_ROLES" ]; then
-            echo "No Ansible roles changed, skipping Molecule tests"
-            exit 0
+          role_path="roles/${{ matrix.role }}"
+          if [ -d "$role_path/molecule" ]; then
+            echo "Testing role: $role_path"
+            cd "$role_path"
+            molecule test
+          else
+            echo "No molecule tests found for role: $role_path, skipping"
           fi
-          
-          echo "Testing changed roles: $CHANGED_ROLES"
-          
-          # Test each changed role  
-          # Convert to array to handle spaces properly
-          read -ra ROLE_ARRAY <<< "$CHANGED_ROLES"
-          for role in "${ROLE_ARRAY[@]}"; do
-            role_path="roles/$role"
-            if [ -d "$role_path/molecule" ]; then
-              echo "Testing role: $role_path"
-              cd "$role_path"
-              # Set ARM64 platform for CI Orange Pi Zero 3 simulation
-              MOLECULE_DOCKER_PLATFORM=linux/arm64 molecule test
-              cd - > /dev/null
-            else
-              echo "No molecule tests found for role: $role_path"
-            fi
-          done
