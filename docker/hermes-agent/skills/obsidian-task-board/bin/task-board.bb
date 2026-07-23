@@ -2,7 +2,9 @@
 
 (ns task-board
   (:require [babashka.fs :as fs]
-            [clojure.string :as str]))
+            [clojure.string :as str])
+  (:import [java.io RandomAccessFile]
+           [java.security MessageDigest]))
 
 (def lanes
   {"Backlog" "backlog"
@@ -125,6 +127,25 @@
 (defn write-text! [path content]
   (fs/create-dirs (fs/parent path))
   (spit (str path) content))
+
+(defn ticket-lock-dir []
+  (fs/path (System/getProperty "java.io.tmpdir") "task-board-locks"))
+
+(defn canonical-path-hash [path]
+  (let [canonical (.getCanonicalPath (java.io.File. (str path)))
+        digest (MessageDigest/getInstance "SHA-256")
+        hash-bytes (.digest digest (.getBytes canonical "UTF-8"))]
+    (subs (apply str (map #(format "%02x" (bit-and % 0xff)) hash-bytes)) 0 16)))
+
+(defn with-ticket-lock [ticket-path f]
+  (let [safe-name (str/replace (str (fs/file-name ticket-path)) #"[^a-zA-Z0-9._-]" "_")
+        phash (canonical-path-hash ticket-path)
+        lock-file (str (fs/path (ticket-lock-dir) (str phash "-" safe-name ".lock")))]
+    (fs/create-dirs (ticket-lock-dir))
+    (with-open [raf (RandomAccessFile. lock-file "rw")
+                channel (.getChannel raf)]
+      (let [_lock (.lock channel)]
+        (f)))))
 
 (defn present [s]
   (when-not (str/blank? (str s)) s))
@@ -461,12 +482,17 @@
 (defn cmd-append-note [opts id]
   (let [vault (vault-path opts)
         note (or (:note opts) (die "append-note requires --note or --note-file"))
-        ticket (ticket-data vault id)
-        new-ticket (apply-ticket-update ticket {:append-note note :note-source (:source opts)})
+        path (ticket-path vault id)
         result {:action "append-note" :id id :source (or (:source opts) "hermes-agent") :dry-run (boolean (:dry-run opts))}]
-    (when-not (:dry-run opts)
-      (write-text! (ticket-path vault id) new-ticket))
-    (print-result opts result)))
+    (if (:dry-run opts)
+      (print-result opts result)
+      (do
+        (with-ticket-lock path
+          (fn []
+            (let [ticket (ticket-data vault id)
+                  new-ticket (apply-ticket-update ticket {:append-note note :note-source (:source opts)})]
+              (write-text! path new-ticket))))
+        (print-result opts result)))))
 
 (defn cmd-request-codex [opts id]
   (let [vault (vault-path opts)
