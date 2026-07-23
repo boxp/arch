@@ -6,13 +6,21 @@ removed {
   }
 }
 
+# Remove stale v5 state entry that has old app-scoped ID from v4->v5 migration.
+removed {
+  from = cloudflare_zero_trust_access_policy.kubernetes_dashboard_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "cloudflare_zero_trust_access_application" "kubernetes_dashboard" {
   zone_id          = var.zone_id
   name             = "Access application for kubernetes-dashboard.b0xp.io"
   domain           = "kubernetes-dashboard.b0xp.io"
   session_duration = "24h"
   type             = "self_hosted"
-  policies         = [{ id = cloudflare_zero_trust_access_policy.kubernetes_dashboard_policy.id }]
+  policies         = [{ id = cloudflare_zero_trust_access_policy.kubernetes_dashboard_access.id }]
 }
 
 data "cloudflare_zero_trust_access_identity_providers" "all" {
@@ -27,7 +35,7 @@ locals {
 }
 
 # Creates an Access policy for the application.
-resource "cloudflare_zero_trust_access_policy" "kubernetes_dashboard_policy" {
+resource "cloudflare_zero_trust_access_policy" "kubernetes_dashboard_access" {
   account_id = var.account_id
   name       = "policy for kubernetes-dashboard.b0xp.io"
   decision   = "allow"
