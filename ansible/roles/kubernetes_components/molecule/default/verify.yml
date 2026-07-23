@@ -2,6 +2,8 @@
 - name: Verify
   hosts: all
   gather_facts: true
+  vars:
+    journald_persistent_storage: true
   tasks:
     - name: Check if CRI-O is installed
       ansible.builtin.package_facts:
