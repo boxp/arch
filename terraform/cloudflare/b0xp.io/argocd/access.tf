@@ -1,4 +1,18 @@
 # Creates an Access application to control who can connect.
+removed {
+  from = cloudflare_access_policy.argocd_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
+removed {
+  from = cloudflare_access_policy.argocd_api_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "cloudflare_zero_trust_access_application" "argocd" {
   zone_id          = var.zone_id
   name             = "Access application for argocd.b0xp.io"
