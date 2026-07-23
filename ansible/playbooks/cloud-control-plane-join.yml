@@ -114,7 +114,7 @@
         daemon_reload: true
 
     - name: Load required kernel modules
-      ansible.builtin.modprobe:
+      community.general.modprobe:
         name: "{{ item }}"
         state: present
       loop:
@@ -165,20 +165,23 @@
         --certificate-key {{ kubeadm_certificate_key }}
         --apiserver-advertise-address={{ apiserver_advertise_address }}
       when: not kubelet_conf.stat.exists
-      register: kubeadm_join_result
+      changed_when: not kubelet_conf.stat.exists
+      notify:
+        - Show kubeadm join output
+        - Copy admin kubeconfig for ubuntu user
 
-    - name: Show kubeadm join output
-      ansible.builtin.debug:
-        var: kubeadm_join_result.stdout_lines
-      when: kubeadm_join_result is changed
-
-    - name: Set up kubeconfig for ubuntu user
+    - name: Set up kubeconfig directory for ubuntu user
       ansible.builtin.file:
         path: /home/ubuntu/.kube
         state: directory
         owner: ubuntu
         group: ubuntu
         mode: '0750'
+
+  handlers:
+    - name: Show kubeadm join output
+      ansible.builtin.debug:
+        msg: "kubeadm join completed successfully"
 
     - name: Copy admin kubeconfig for ubuntu user
       ansible.builtin.copy:
@@ -188,4 +191,3 @@
         group: ubuntu
         mode: '0600'
         remote_src: true
-      when: kubeadm_join_result is changed
