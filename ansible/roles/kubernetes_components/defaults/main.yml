@@ -69,3 +69,10 @@ sysctl_config:
 # Increased from default 100m CPU / 100Mi memory to accommodate ARM processor characteristics
 etcd_resource_requests_cpu: "200m"
 etcd_resource_requests_memory: "200Mi"
+
+# journald persistent storage configuration
+# Enabled by default to capture pre-reboot kernel/storage errors on control-plane nodes.
+# SD card failures (INC-2/INC-4/BOXP-127) erase volatile logs on reboot, making root-cause analysis impossible.
+journald_persistent_storage: true
+journald_system_max_use: "200M"
+journald_max_retention_sec: "1month"

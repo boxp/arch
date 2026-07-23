@@ -1,0 +1,32 @@
+---
+# Persist host logs so pre-reboot storage/kernel errors survive when media is still readable.
+# Bounded by journald_system_max_use to avoid exhausting the SD card on control-plane nodes.
+
+- name: Ensure persistent journald directory exists
+  ansible.builtin.file:
+    path: /var/log/journal
+    state: directory
+    mode: '2755'
+  become: true
+  when: journald_persistent_storage
+
+- name: Ensure journald drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d
+    state: directory
+    mode: '0755'
+  become: true
+  when: journald_persistent_storage
+
+- name: Configure bounded persistent journald storage
+  ansible.builtin.copy:
+    dest: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+    mode: '0644'
+    content: |
+      [Journal]
+      Storage=persistent
+      SystemMaxUse={{ journald_system_max_use }}
+      MaxRetentionSec={{ journald_max_retention_sec }}
+  become: true
+  when: journald_persistent_storage
+  notify: Restart systemd-journald

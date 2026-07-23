@@ -15,3 +15,6 @@
 
 - name: Include kubeadm configuration tasks
   ansible.builtin.include_tasks: kubeadm.yml
+
+- name: Include journald configuration tasks
+  ansible.builtin.include_tasks: journald.yml
