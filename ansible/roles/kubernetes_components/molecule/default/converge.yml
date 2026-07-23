@@ -8,3 +8,4 @@
     # Test-specific overrides for container environment
     kubernetes_disable_swap: false  # Skip swap operations in container
     kubernetes_enable_modules: false  # Skip module loading in container
+    journald_persistent_storage: true  # Validate the persistent-storage code path

@@ -1,0 +1,43 @@
+---
+- name: Verify journald purge path
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Check if role-managed journald drop-in was removed
+      ansible.builtin.stat:
+        path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+      register: journald_dropin
+
+    - name: Assert role-managed drop-in is absent
+      ansible.builtin.assert:
+        that:
+          - not journald_dropin.stat.exists
+        fail_msg: >-
+          /etc/systemd/journald.conf.d/10-persistent-storage.conf must be absent
+          when journald_persistent_storage is false.
+
+    - name: Check if /var/log/journal was purged
+      ansible.builtin.stat:
+        path: /var/log/journal
+      register: journal_dir
+
+    - name: Assert /var/log/journal was deleted when purge flag is set
+      ansible.builtin.assert:
+        that:
+          - not journal_dir.stat.exists
+        fail_msg: >-
+          /var/log/journal must be deleted when journald_purge_persistent_logs is true,
+          but the directory still exists.
+
+    - name: Check if sentinel file was purged
+      ansible.builtin.stat:
+        path: /var/log/journal/existing-log.journal
+      register: sentinel_file
+
+    - name: Assert sentinel file inside /var/log/journal was also deleted
+      ansible.builtin.assert:
+        that:
+          - not sentinel_file.stat.exists
+        fail_msg: >-
+          Sentinel file /var/log/journal/existing-log.journal must be deleted
+          when journald_purge_persistent_logs is true.

@@ -1,0 +1,10 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  roles:
+    - role: ../../../../kubernetes_components
+  vars:
+    kubernetes_disable_swap: false
+    kubernetes_enable_modules: false
+    journald_persistent_storage: false  # Validate the disabled (volatile) code path

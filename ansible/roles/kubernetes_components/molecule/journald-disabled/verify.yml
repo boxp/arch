@@ -1,0 +1,44 @@
+---
+- name: Verify journald disabled path
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Stat journald drop-in file
+      ansible.builtin.stat:
+        path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+      register: journald_dropin_stat
+
+    - name: Assert drop-in is absent when persistent storage is disabled
+      ansible.builtin.assert:
+        that:
+          - not journald_dropin_stat.stat.exists
+        fail_msg: >-
+          journald drop-in must be absent when journald_persistent_storage is false,
+          but the file exists at /etc/systemd/journald.conf.d/10-persistent-storage.conf
+
+    - name: Stat /var/log/journal directory
+      ansible.builtin.stat:
+        path: /var/log/journal
+      register: journal_dir_stat
+
+    - name: Assert /var/log/journal is preserved (non-destructive when disabled)
+      ansible.builtin.assert:
+        that:
+          - journal_dir_stat.stat.exists
+          - journal_dir_stat.stat.isdir
+        fail_msg: >-
+          /var/log/journal must be preserved when journald_persistent_storage is false —
+          the role must not destroy existing log data
+
+    - name: Stat sentinel file inside /var/log/journal
+      ansible.builtin.stat:
+        path: /var/log/journal/.keep
+      register: journal_keep_stat
+
+    - name: Assert sentinel file is preserved (pre-existing logs not deleted)
+      ansible.builtin.assert:
+        that:
+          - journal_keep_stat.stat.exists
+        fail_msg: >-
+          Pre-existing /var/log/journal/.keep was deleted — the role must not purge existing logs
+          unless journald_purge_persistent_logs is explicitly set to true

@@ -43,3 +43,13 @@
     - ansible_virtualization_type != "docker"
     - chroot_build is not defined or not chroot_build
   listen: "Restart kubelet"
+
+- name: Restart systemd-journald
+  ansible.builtin.systemd:
+    name: systemd-journald
+    state: restarted
+  become: true
+  when:
+    - ansible_virtualization_type != "docker"
+    - chroot_build is not defined or not chroot_build
+  listen: "Restart systemd-journald"
