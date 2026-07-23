@@ -74,5 +74,7 @@ etcd_resource_requests_memory: "200Mi"
 # Disabled by default; enable explicitly for control-plane nodes where persistent logs are needed.
 # See playbooks/control-plane.yml for the enabling override.
 journald_persistent_storage: false
+# Set to true only when removing existing persistent journal history is intended.
+journald_purge_persistent_logs: false
 journald_system_max_use: "200M"
 journald_max_retention_sec: "1month"
