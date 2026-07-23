@@ -1,4 +1,11 @@
 # Creates an Access application to control who can connect.
+removed {
+  from = cloudflare_access_policy.hitohub_stage_policy
+  lifecycle {
+    destroy = false
+  }
+}
+
 resource "cloudflare_zero_trust_access_application" "hitohub_stage" {
   zone_id          = var.zone_id
   name             = "Access application for hitohub-stage.b0xp.io"
