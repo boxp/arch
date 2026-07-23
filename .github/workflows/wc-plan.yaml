@@ -156,6 +156,7 @@ jobs:
               - name: registry.terraform.io/hashicorp/random
               - name: registry.terraform.io/hashicorp/time
               - name: registry.terraform.io/integrations/github
+              - name: registry.terraform.io/oracle/oci
               - name: registry.terraform.io/tailscale/tailscale
           GITHUB_TOKEN: ${{steps.pull_request_token.outputs.token}} # For github-comment
 
