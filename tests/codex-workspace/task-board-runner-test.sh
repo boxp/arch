@@ -1534,6 +1534,48 @@ EOF
   done
 }
 
+test_cross_vault_lock_isolation() {
+  local tmp vault_a vault_b lock_dir lock_count
+  tmp="$(mktemp -d)"
+  vault_a="${tmp}/vault-a"
+  vault_b="${tmp}/vault-b"
+  lock_dir="/tmp/task-board-locks"
+  mkdir -p "${vault_a}/Tickets" "${vault_b}/Tickets"
+  rm -f "${lock_dir}"/BOXP-888* 2>/dev/null || true
+
+  for vault in "${vault_a}" "${vault_b}"; do
+    cat >"${vault}/Tickets/BOXP-888.md" <<'EOF'
+---
+id: BOXP-888
+type: task
+status: in-progress
+priority: medium
+assignee: codex
+repo:
+closed:
+---
+
+# BOXP-888: cross-vault test
+
+## Notes
+EOF
+  done
+
+  bb "${HELPER}" append-note BOXP-888 --vault "${vault_a}" --source "test" --note "vault-a-note"
+  bb "${HELPER}" append-note BOXP-888 --vault "${vault_b}" --source "test" --note "vault-b-note"
+
+  grep -q "vault-a-note" "${vault_a}/Tickets/BOXP-888.md" \
+    || fail "vault-a note was not written"
+  grep -q "vault-b-note" "${vault_b}/Tickets/BOXP-888.md" \
+    || fail "vault-b note was not written"
+
+  # With path-hash prefixing each vault must produce a distinct lock file.
+  # Without path hashing both vaults would share one lock file (count == 1).
+  lock_count="$(ls "${lock_dir}" 2>/dev/null | grep -c 'BOXP-888' || echo 0)"
+  [ "${lock_count}" -ge 2 ] \
+    || fail "expected >= 2 distinct lock files for cross-vault tickets (got ${lock_count}): separate vaults must not share a lock"
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_codex_sol_assignee_includes_delegation_policy
@@ -1579,5 +1621,6 @@ test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing
 test_invalid_reasoning_assignees_are_ignored
 test_concurrent_append_note_no_lost_writes
+test_cross_vault_lock_isolation
 
 echo "task-board-runner tests passed"
