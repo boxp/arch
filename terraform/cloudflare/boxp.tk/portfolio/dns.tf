@@ -1,26 +1,3 @@
-resource "cloudflare_page_rule" "redirect_top" {
-  zone_id  = var.zone_id         # ドメインのzone ID
-  target   = "https://boxp.tk/*" # リダイレクト元
-  priority = 2                   # ルールの優先度
-
-  actions {
-    forwarding_url {
-      url         = "https://www.b0xp.io$1" # リダイレクト先URL
-      status_code = 301                     # 301リダイレクト
-    }
-  }
-}
-
-resource "cloudflare_page_rule" "redirect_www" {
-  zone_id  = var.zone_id             # ドメインのzone ID
-  target   = "https://www.boxp.tk/*" # リダイレクト元
-  priority = 1                       # ルールの優先度
-
-  actions {
-    forwarding_url {
-      url         = "https://www.b0xp.io$1" # リダイレクト先URL
-      status_code = 301                     # 301リダイレクト
-    }
-  }
-}
-
+# リダイレクトルールは親モジュール (boxp.tk) の cloudflare_ruleset.boxp_tk_redirects に統合済み。
+# zone-level の http_request_redirect phase ruleset は zone につき 1 つのみ許可されるため、
+# このモジュールでは ruleset を定義しない。
