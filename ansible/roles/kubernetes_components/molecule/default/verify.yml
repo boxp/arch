@@ -144,3 +144,37 @@
         that:
           - "'1.32' in kubectl_version.stdout"
         fail_msg: "Kubectl version is not as expected"
+
+    - name: Check if persistent journal directory exists
+      ansible.builtin.stat:
+        path: /var/log/journal
+      register: journal_dir
+
+    - name: Assert persistent journal directory exists
+      ansible.builtin.assert:
+        that:
+          - journal_dir.stat.exists
+          - journal_dir.stat.isdir
+        fail_msg: "/var/log/journal directory does not exist — journald persistent storage not configured"
+
+    - name: Check if journald drop-in config exists
+      ansible.builtin.stat:
+        path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+      register: journald_dropin
+
+    - name: Assert journald drop-in config exists
+      ansible.builtin.assert:
+        that:
+          - journald_dropin.stat.exists
+        fail_msg: "journald drop-in /etc/systemd/journald.conf.d/10-persistent-storage.conf does not exist"
+
+    - name: Read journald drop-in config
+      ansible.builtin.slurp:
+        path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+      register: journald_dropin_content
+
+    - name: Assert journald is configured for persistent storage
+      ansible.builtin.assert:
+        that:
+          - "'Storage=persistent' in (journald_dropin_content.content | b64decode)"
+        fail_msg: "journald drop-in does not contain Storage=persistent"
