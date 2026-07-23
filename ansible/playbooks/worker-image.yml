@@ -200,9 +200,9 @@
     - role: kubernetes_components
       tags: [kubernetes, k8s-components]
       vars:
-        kubernetes_version: "1.36.1"
+        kubernetes_version: "1.36.2"
         kubernetes_package_version: "1.36.1-1.1"
-        crio_version: "1.36.1"
+        crio_version: "1.36.2"
         crio_package_version: "1.36.1-1.1"
         kubelet_cluster_dns: "{{ cluster.dns }}"
         kubelet_cluster_domain: "{{ cluster.domain }}"

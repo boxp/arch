@@ -15,9 +15,9 @@
     cluster_dns: "{{ cluster.dns }}"
 
     # Kubernetes configuration
-    kubernetes_version: "1.36.1"
+    kubernetes_version: "1.36.2"
     kubernetes_package_version: "1.36.1-1.1"
-    crio_version: "1.36.1"
+    crio_version: "1.36.2"
 
     # Hardware configuration
     hardware_type: "orange_pi_zero3"
