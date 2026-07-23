@@ -25,13 +25,11 @@ resource "cloudflare_dns_record" "hitohub" {
   proxied = true
 }
 
-# zone-level の http_request_redirect phase entry-point ruleset は1つのみ許可されるため、
-# boxp.tk zone の全リダイレクトルールをここに集約する。
 resource "cloudflare_ruleset" "boxp_tk_redirects" {
   zone_id = cloudflare_zone.boxp_tk.id
   name    = "boxp.tk redirects"
   kind    = "zone"
-  phase   = "http_request_redirect"
+  phase   = "http_request_dynamic_redirect"
 
   rules = [
     {
