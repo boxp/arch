@@ -1,5 +1,5 @@
 ---
-- name: Prepare Orange Pi Zero 3 simulation environment
+- name: Prepare environment for journald purge scenario
   hosts: all
   gather_facts: true
   tasks:
@@ -8,7 +8,7 @@
         update_cache: true
       become: true
 
-    - name: Install required packages for Orange Pi Zero 3 simulation
+    - name: Install required packages
       ansible.builtin.package:
         name:
           - systemd
@@ -82,16 +82,16 @@
           MaxRetentionSec=1month
       become: true
 
-    - name: Pre-create /var/log/journal to simulate existing persistent journal
+    - name: Pre-create /var/log/journal directory (simulates existing persistent journal)
       ansible.builtin.file:
         path: /var/log/journal
         state: directory
         mode: '2755'
       become: true
 
-    - name: Create a sentinel file inside /var/log/journal to confirm non-destructive behavior
+    - name: Pre-create sentinel file inside /var/log/journal
       ansible.builtin.copy:
-        dest: /var/log/journal/.keep
-        content: "pre-existing log marker"
+        dest: /var/log/journal/existing-log.journal
+        content: "sentinel"
         mode: '0644'
       become: true

@@ -1,0 +1,11 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  roles:
+    - role: ../../../../kubernetes_components
+  vars:
+    kubernetes_disable_swap: false
+    kubernetes_enable_modules: false
+    journald_persistent_storage: false
+    journald_purge_persistent_logs: true  # Validate the explicit purge opt-in path
