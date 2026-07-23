@@ -91,6 +91,8 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+    env:
+      MOLECULE_DOCKER_PLATFORM: linux/arm64
     strategy:
       matrix:
         role: ${{ fromJSON(needs.detect-roles.outputs.matrix) }}
