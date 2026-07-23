@@ -3,7 +3,7 @@
 # across container restarts.
 
 import {
-  id = "1984a4314b3e75f3bedce97c7a8e0c81/moltbot-data"
+  id = "1984a4314b3e75f3bedce97c7a8e0c81/moltbot-data/"
   to = cloudflare_r2_bucket.moltworker_data
 }
 
