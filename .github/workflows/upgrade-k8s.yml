@@ -103,7 +103,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -151,7 +151,7 @@ jobs:
           fi
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -272,7 +272,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -304,7 +304,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-1'"
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -403,7 +403,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -435,7 +435,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -534,7 +534,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -566,7 +566,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to shanghai-3'"
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -664,7 +664,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -709,7 +709,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -805,7 +805,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -850,7 +850,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -946,7 +946,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -991,7 +991,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1087,7 +1087,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -1132,7 +1132,7 @@ jobs:
           ssh -o ConnectTimeout=60 "${CP_NODE}" "echo 'SSH connection successful to worker drain delegate shanghai-2'"
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
@@ -1229,7 +1229,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.61.0
+          aqua_version: v2.62.1
           working_directory: aqua
 
       - name: Setup SSH config
@@ -1258,7 +1258,7 @@ jobs:
           chmod 600 ~/.ssh/config
 
       - name: Set up Python
-        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 

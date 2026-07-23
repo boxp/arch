@@ -1,17 +1,17 @@
 FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
-ARG CODEX_VERSION=0.144.1
-ARG CLAUDE_CODE_VERSION=2.1.206
+ARG CODEX_VERSION=0.144.6
+ARG CLAUDE_CODE_VERSION=2.1.215
 ARG EVEN_TERMINAL_VERSION=0.8.1
-ARG PI_AGENT_VERSION=0.80.6
-ARG OBSIDIAN_HEADLESS_VERSION=0.0.12
+ARG PI_AGENT_VERSION=0.80.10
+ARG OBSIDIAN_HEADLESS_VERSION=0.0.13
 ARG GH_VERSION=2.96.0
 ARG GHQ_VERSION=1.10.1
 ARG GWQ_VERSION=0.1.1
-ARG CEEKER_VERSION=0.4.5
+ARG CEEKER_VERSION=0.5.0
 ARG BABASHKA_VERSION=1.12.218
-ARG LAZYGIT_VERSION=0.63.0
+ARG LAZYGIT_VERSION=0.63.1
 ARG YAZI_VERSION=26.5.6
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG KUBECTL_VERSION=1.36.2
@@ -138,19 +138,13 @@ COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
 COPY dotfiles-sync.sh /opt/codex-workspace/dotfiles-sync.sh
 COPY cron/ /opt/codex-workspace/cron/
 COPY task-board/ /opt/codex-workspace/task-board/
-COPY novel-board/ /opt/codex-workspace/novel-board/
 COPY recurring-events/ /opt/codex-workspace/recurring-events/
 COPY skills/ /opt/codex-workspace/skills/
-RUN install -m 0755 \
-      /opt/codex-workspace/novel-board/novel_agent_supervisor.sh \
-      /usr/local/bin/novel-agent-supervisor \
-    && chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
+RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && chmod 0755 /opt/codex-workspace/dotfiles-sync.sh \
     && find /opt/codex-workspace/cron -type f -name "*.sh" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/cron -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/task-board -type f -name "*.bb" -exec chmod 0755 {} + \
-    && find /opt/codex-workspace/novel-board -type f -name "*.bb" -exec chmod 0755 {} + \
-    && find /opt/codex-workspace/novel-board -type f -name "*.sh" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} +
 
 EXPOSE 2222 3456

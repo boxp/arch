@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
+HELPER="${ROOT_DIR}/docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
 
 fail() {
   echo "error: $*" >&2
@@ -1185,6 +1186,110 @@ test_review_with_empty_ci_rollup_times_out() {
   assert_file_contains "${vault}/Tickets/BOXP-407.md" 'No CI checks have been reported'
 }
 
+test_review_with_empty_ci_rollup_passes_for_no_ci_repo() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-450|BOXP-450: no ci repo]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-450 in-progress codex boxp/example
+
+  # Explicit opt-in: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS → empty checks + CLEAN merge passes immediately
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=10 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_TASK_BOARD_NO_CI_REPOS='boxp/example' GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-no-ci-repo.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-450\|BOXP-450: no ci repo\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-450.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-450.md" 'CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS'
+}
+
+test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-451|BOXP-451: ci timeout]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-451 in-progress codex boxp/example
+
+  # Without opt-in, empty checks with CLEAN merge should time out (not auto-pass)
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=3 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-ci-timeout.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-451\|BOXP-451: ci timeout\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-451.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-451.md" 'Timed out waiting for PR gates'
+}
+
+test_no_ci_repo_requires_clean_merge_state() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-452|BOXP-452: has hooks no ci]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-452 in-progress codex boxp/example
+
+  # NO_CI_REPOS should NOT skip CI when mergeStateStatus=HAS_HOOKS (only CLEAN is allowed)
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=3 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_TASK_BOARD_NO_CI_REPOS='boxp/example' GH_FAKE_MERGE_STATE=HAS_HOOKS GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-has-hooks-no-ci.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-452\|BOXP-452: has hooks no ci\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-452.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-452.md" 'Timed out waiting for PR gates'
+}
+
+test_canonical_path_hash_symlink_isolation() {
+  local tmp vault real_dir symlink_dir lock_dir
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  real_dir="${tmp}/real-vault"
+  symlink_dir="${tmp}/link-vault"
+  lock_dir="/tmp/task-board-locks"
+  mkdir -p "${real_dir}/Tickets"
+  ln -s "${real_dir}" "${symlink_dir}"
+
+  cat >"${real_dir}/Tickets/BOXP-889.md" <<'EOF'
+---
+id: BOXP-889
+type: task
+status: in-progress
+priority: medium
+assignee: codex
+repo:
+closed:
+---
+
+# BOXP-889: symlink test
+
+## Notes
+EOF
+
+  rm -f "${lock_dir}"/*BOXP-889* 2>/dev/null || true
+
+  bb "${HELPER}" append-note BOXP-889 --vault "${real_dir}" --source "test" --note "real-path-note"
+  bb "${HELPER}" append-note BOXP-889 --vault "${symlink_dir}" --source "test" --note "symlink-path-note"
+
+  grep -q "real-path-note" "${real_dir}/Tickets/BOXP-889.md" \
+    || fail "real-path note was not written"
+  grep -q "symlink-path-note" "${real_dir}/Tickets/BOXP-889.md" \
+    || fail "symlink-path note was not written"
+
+  # With getCanonicalPath, symlink and real path resolve to the same canonical path,
+  # producing only one lock file (not two distinct ones as with cross-vault).
+  local lock_count
+  lock_count="$(ls "${lock_dir}" 2>/dev/null | grep -c 'BOXP-889' || echo 0)"
+  [ "${lock_count}" -eq 1 ] \
+    || fail "expected exactly 1 lock file for symlink/real-path (got ${lock_count}): same canonical path must share a lock"
+}
+
 test_review_with_draft_pr_is_retried() {
   local tmp vault state bin prompt_log
   tmp="$(mktemp -d)"
@@ -1281,6 +1386,111 @@ test_review_gate_pass_after_retry_moves_review() {
   assert_file_not_contains "${state}/state.edn" 'BOXP-415'
 }
 
+test_groom_prompt_contains_investigation_steps() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}" "${vault}/Boards" "${vault}/Tickets"
+  make_fake_codex "${bin}"
+  cat >"${vault}/Boards/Task Board.md" <<'EOF'
+# Task Board
+
+## Backlog
+- [ ] [[Tickets/BOXP-600|BOXP-600: groom prompt]] #ticket status::backlog
+
+## Ready
+
+## In Progress
+
+## Blocked
+
+## Review
+
+## Done
+EOF
+  write_ticket "${vault}" BOXP-600 backlog codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-prompt.out
+
+  assert_file_contains "${prompt_log}" 'First investigate before writing'
+  assert_file_contains "${prompt_log}" 'Notes'
+  assert_file_contains "${prompt_log}" 'GitHub'
+  assert_file_contains "${prompt_log}" 'gh CLI'
+  assert_file_contains "${prompt_log}" 'Fill Context with investigation findings'
+  assert_file_contains "${prompt_log}" 'Fill Plan with concrete implementation steps'
+}
+
+test_implement_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-603|BOXP-603: append-note]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-603 in-progress codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-append-note-codex.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-603'
+  assert_file_contains "${prompt_log}" 'milestone'
+}
+
+test_fable_implement_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-604|BOXP-604: fable append-note]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-604 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-append-note-fable.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-604'
+  assert_file_contains "${prompt_log}" 'milestone'
+  assert_file_contains "${prompt_log}" '\.claude/skills/obsidian-task-board'
+}
+
+test_groom_prompt_includes_append_note() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-605|BOXP-605: groom append-note]] #ticket status::backlog"
+  write_ticket "${vault}" BOXP-605 backlog codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-append-note.out
+
+  assert_file_contains "${prompt_log}" 'append-note BOXP-605'
+  assert_file_contains "${prompt_log}" 'milestone'
+}
+
 test_assignee_model_routing() {
   bb "${RUNNER}" test
 }
@@ -1352,6 +1562,84 @@ test_invalid_reasoning_assignees_are_ignored() {
   done
 }
 
+test_concurrent_append_note_no_lost_writes() {
+  local tmp vault ticket_file
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  mkdir -p "${vault}/Tickets"
+  cat >"${vault}/Tickets/BOXP-999.md" <<'EOF'
+---
+id: BOXP-999
+type: task
+status: in-progress
+priority: medium
+assignee: codex
+repo:
+closed:
+---
+
+# BOXP-999: concurrent append test
+
+## Notes
+EOF
+  local n=5
+  local pids=()
+  for i in $(seq 1 "${n}"); do
+    bb "${HELPER}" append-note BOXP-999 --vault "${vault}" --source "test" --note "concurrent-note-${i}" &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "${pid}"
+  done
+  ticket_file="${vault}/Tickets/BOXP-999.md"
+  for i in $(seq 1 "${n}"); do
+    grep -q "concurrent-note-${i}" "${ticket_file}" \
+      || fail "note ${i} was lost in concurrent append-note writes"
+  done
+}
+
+test_cross_vault_lock_isolation() {
+  local tmp vault_a vault_b lock_dir lock_count
+  tmp="$(mktemp -d)"
+  vault_a="${tmp}/vault-a"
+  vault_b="${tmp}/vault-b"
+  lock_dir="/tmp/task-board-locks"
+  mkdir -p "${vault_a}/Tickets" "${vault_b}/Tickets"
+  rm -f "${lock_dir}"/BOXP-888* 2>/dev/null || true
+
+  for vault in "${vault_a}" "${vault_b}"; do
+    cat >"${vault}/Tickets/BOXP-888.md" <<'EOF'
+---
+id: BOXP-888
+type: task
+status: in-progress
+priority: medium
+assignee: codex
+repo:
+closed:
+---
+
+# BOXP-888: cross-vault test
+
+## Notes
+EOF
+  done
+
+  bb "${HELPER}" append-note BOXP-888 --vault "${vault_a}" --source "test" --note "vault-a-note"
+  bb "${HELPER}" append-note BOXP-888 --vault "${vault_b}" --source "test" --note "vault-b-note"
+
+  grep -q "vault-a-note" "${vault_a}/Tickets/BOXP-888.md" \
+    || fail "vault-a note was not written"
+  grep -q "vault-b-note" "${vault_b}/Tickets/BOXP-888.md" \
+    || fail "vault-b note was not written"
+
+  # With path-hash prefixing each vault must produce a distinct lock file.
+  # Without path hashing both vaults would share one lock file (count == 1).
+  lock_count="$(ls "${lock_dir}" 2>/dev/null | grep -c 'BOXP-888' || echo 0)"
+  [ "${lock_count}" -ge 2 ] \
+    || fail "expected >= 2 distinct lock files for cross-vault tickets (got ${lock_count}): separate vaults must not share a lock"
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_codex_sol_assignee_includes_delegation_policy
@@ -1382,13 +1670,23 @@ test_review_with_multiple_pr_urls_blocks_on_second_failure
 test_review_gate_keeps_lock_heartbeat_active
 test_review_gate_passes_codex_model_profile_to_review
 test_review_with_empty_ci_rollup_times_out
+test_review_with_empty_ci_rollup_passes_for_no_ci_repo
+test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in
+test_no_ci_repo_requires_clean_merge_state
+test_canonical_path_hash_symlink_isolation
 test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks
 test_review_gate_pass_after_retry_moves_review
+test_groom_prompt_contains_investigation_steps
+test_implement_prompt_includes_append_note
+test_fable_implement_prompt_includes_append_note
+test_groom_prompt_includes_append_note
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing
 test_invalid_reasoning_assignees_are_ignored
+test_concurrent_append_note_no_lost_writes
+test_cross_vault_lock_isolation
 
 echo "task-board-runner tests passed"

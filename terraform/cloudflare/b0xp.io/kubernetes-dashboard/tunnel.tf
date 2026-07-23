@@ -4,30 +4,38 @@ resource "random_password" "tunnel_secret" {
   special = false
 }
 
-resource "cloudflare_tunnel" "kubernetes_dashboard_tunnel" {
-  account_id = var.account_id
-  name       = "cloudflare kubernetes-dashboard tunnel"
-  secret     = base64sha256(random_password.tunnel_secret.result)
+resource "cloudflare_zero_trust_tunnel_cloudflared" "kubernetes_dashboard_tunnel" {
+  account_id    = var.account_id
+  name          = "cloudflare kubernetes-dashboard tunnel"
+  tunnel_secret = base64sha256(random_password.tunnel_secret.result)
 }
 
 # Creates the configuration for the tunnel.
-resource "cloudflare_tunnel_config" "kubernetes_dashboard_tunnel" {
-  tunnel_id  = cloudflare_tunnel.kubernetes_dashboard_tunnel.id
+resource "cloudflare_zero_trust_tunnel_cloudflared_config" "kubernetes_dashboard_tunnel" {
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.kubernetes_dashboard_tunnel.id
   account_id = var.account_id
-  config {
-    ingress_rule {
-      hostname = cloudflare_record.kubernetes_dashboard.hostname
-      service  = "https://kubernetes-dashboard-lb.kube-dashboard:443"
-    }
-    ingress_rule {
-      service = "http_status:404"
-    }
+  config = {
+    ingress = [
+      {
+        hostname = cloudflare_dns_record.kubernetes_dashboard.name
+        service  = "https://kubernetes-dashboard-lb.kube-dashboard:443"
+      },
+      {
+        service = "http_status:404"
+      },
+    ]
+
   }
 }
 
+
+data "cloudflare_zero_trust_tunnel_cloudflared_token" "kubernetes_dashboard_tunnel" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.kubernetes_dashboard_tunnel.id
+}
 resource "aws_ssm_parameter" "kubernetes_dashboard_tunnel_token" {
   name        = "kubernetes-dashboard-tunnel-token"
   description = "for kubernetes-dashboard tunnel token"
   type        = "SecureString"
-  value       = sensitive(cloudflare_tunnel.kubernetes_dashboard_tunnel.tunnel_token)
+  value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.kubernetes_dashboard_tunnel.token)
 }

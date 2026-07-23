@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.0"
+  required_version = ">= 1.5"
   backend "s3" {
     bucket = "tfaction-state"
     key    = "terraform/cloudflare/b0xp.io/k8s/v1/terraform.tfstate"
@@ -9,7 +9,7 @@ terraform {
   required_providers {
     cloudflare = {
       source  = "cloudflare/cloudflare"
-      version = "~> 4.52"
+      version = "~> 5.0"
     }
     random = {
       source  = "hashicorp/random"
