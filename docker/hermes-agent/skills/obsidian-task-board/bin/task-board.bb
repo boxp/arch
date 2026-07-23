@@ -132,7 +132,7 @@
   (fs/path (System/getProperty "java.io.tmpdir") "task-board-locks"))
 
 (defn canonical-path-hash [path]
-  (let [canonical (.getAbsolutePath (java.io.File. (str path)))
+  (let [canonical (.getCanonicalPath (java.io.File. (str path)))
         digest (MessageDigest/getInstance "SHA-256")
         hash-bytes (.digest digest (.getBytes canonical "UTF-8"))]
     (subs (apply str (map #(format "%02x" (bit-and % 0xff)) hash-bytes)) 0 16)))

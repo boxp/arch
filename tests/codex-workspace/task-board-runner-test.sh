@@ -1226,6 +1226,70 @@ test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in() {
   assert_file_contains "${vault}/Tickets/BOXP-451.md" 'Timed out waiting for PR gates'
 }
 
+test_no_ci_repo_requires_clean_merge_state() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-452|BOXP-452: has hooks no ci]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-452 in-progress codex boxp/example
+
+  # NO_CI_REPOS should NOT skip CI when mergeStateStatus=HAS_HOOKS (only CLEAN is allowed)
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=3 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_TASK_BOARD_NO_CI_REPOS='boxp/example' GH_FAKE_MERGE_STATE=HAS_HOOKS GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-has-hooks-no-ci.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-452\|BOXP-452: has hooks no ci\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-452.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-452.md" 'Timed out waiting for PR gates'
+}
+
+test_canonical_path_hash_symlink_isolation() {
+  local tmp vault real_dir symlink_dir lock_dir
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  real_dir="${tmp}/real-vault"
+  symlink_dir="${tmp}/link-vault"
+  lock_dir="/tmp/task-board-locks"
+  mkdir -p "${real_dir}/Tickets"
+  ln -s "${real_dir}" "${symlink_dir}"
+
+  cat >"${real_dir}/Tickets/BOXP-889.md" <<'EOF'
+---
+id: BOXP-889
+type: task
+status: in-progress
+priority: medium
+assignee: codex
+repo:
+closed:
+---
+
+# BOXP-889: symlink test
+
+## Notes
+EOF
+
+  rm -f "${lock_dir}"/*BOXP-889* 2>/dev/null || true
+
+  bb "${HELPER}" append-note BOXP-889 --vault "${real_dir}" --source "test" --note "real-path-note"
+  bb "${HELPER}" append-note BOXP-889 --vault "${symlink_dir}" --source "test" --note "symlink-path-note"
+
+  grep -q "real-path-note" "${real_dir}/Tickets/BOXP-889.md" \
+    || fail "real-path note was not written"
+  grep -q "symlink-path-note" "${real_dir}/Tickets/BOXP-889.md" \
+    || fail "symlink-path note was not written"
+
+  # With getCanonicalPath, symlink and real path resolve to the same canonical path,
+  # producing only one lock file (not two distinct ones as with cross-vault).
+  local lock_count
+  lock_count="$(ls "${lock_dir}" 2>/dev/null | grep -c 'BOXP-889' || echo 0)"
+  [ "${lock_count}" -eq 1 ] \
+    || fail "expected exactly 1 lock file for symlink/real-path (got ${lock_count}): same canonical path must share a lock"
+}
+
 test_review_with_draft_pr_is_retried() {
   local tmp vault state bin prompt_log
   tmp="$(mktemp -d)"
@@ -1608,6 +1672,8 @@ test_review_gate_passes_codex_model_profile_to_review
 test_review_with_empty_ci_rollup_times_out
 test_review_with_empty_ci_rollup_passes_for_no_ci_repo
 test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in
+test_no_ci_repo_requires_clean_merge_state
+test_canonical_path_hash_symlink_isolation
 test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks

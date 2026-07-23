@@ -1215,7 +1215,8 @@
 
           ;; Explicit opt-in: repo is listed in CODEX_TASK_BOARD_NO_CI_REPOS and
           ;; mergeStateStatus=CLEAN — skip CI gate without relying on timing.
-          (and skip-ci? no-checks? (= :passed (:state merge)))
+          ;; Only CLEAN is accepted here; HAS_HOOKS/BLOCKED/UNSTABLE still require real CI checks.
+          (and skip-ci? no-checks? (= "CLEAN" (some-> (:mergeStateStatus pr) str/upper-case)))
           {:ok? true
            :url pr-url
            :message (str (:message merge) " CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS.")}
