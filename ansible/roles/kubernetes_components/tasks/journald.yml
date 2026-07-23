@@ -32,13 +32,10 @@
   when: journald_persistent_storage | bool
   notify: Restart systemd-journald
 
-- name: Set journald to volatile storage when persistent storage is disabled
-  ansible.builtin.copy:
-    dest: /etc/systemd/journald.conf.d/10-persistent-storage.conf
-    mode: '0644'
-    content: |
-      [Journal]
-      Storage=volatile
+- name: Remove role-managed journald drop-in when persistent storage is disabled
+  ansible.builtin.file:
+    path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+    state: absent
   become: true
   when: not (journald_persistent_storage | bool)
   notify: Restart systemd-journald
