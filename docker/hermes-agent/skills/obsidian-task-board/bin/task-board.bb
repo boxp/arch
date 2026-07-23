@@ -3,7 +3,8 @@
 (ns task-board
   (:require [babashka.fs :as fs]
             [clojure.string :as str])
-  (:import [java.io RandomAccessFile]))
+  (:import [java.io RandomAccessFile]
+           [java.security MessageDigest]))
 
 (def lanes
   {"Backlog" "backlog"
@@ -127,9 +128,20 @@
   (fs/create-dirs (fs/parent path))
   (spit (str path) content))
 
+(defn ticket-lock-dir []
+  (fs/path (System/getProperty "java.io.tmpdir") "task-board-locks"))
+
+(defn canonical-path-hash [path]
+  (let [canonical (.getCanonicalPath (java.io.File. (str path)))
+        digest (MessageDigest/getInstance "SHA-256")
+        hash-bytes (.digest digest (.getBytes canonical "UTF-8"))]
+    (subs (apply str (map #(format "%02x" (bit-and % 0xff)) hash-bytes)) 0 16)))
+
 (defn with-ticket-lock [ticket-path f]
-  (let [lock-file (str ticket-path ".lock")]
-    (fs/create-dirs (fs/parent lock-file))
+  (let [safe-name (str/replace (str (fs/file-name ticket-path)) #"[^a-zA-Z0-9._-]" "_")
+        phash (canonical-path-hash ticket-path)
+        lock-file (str (fs/path (ticket-lock-dir) (str phash "-" safe-name ".lock")))]
+    (fs/create-dirs (ticket-lock-dir))
     (with-open [raf (RandomAccessFile. lock-file "rw")
                 channel (.getChannel raf)]
       (let [_lock (.lock channel)]
