@@ -1,9 +1,6 @@
 locals {
   compartment_id = var.compartment_ocid != "" ? var.compartment_ocid : var.tenancy_ocid
 
-  # Ubuntu 22.04 LTS (Jammy) for ARM64 in ap-tokyo-1.
-  # Use a data source to always pick the latest canonical image.
-  image_display_name = "Canonical-Ubuntu-22.04-aarch64"
 }
 
 data "oci_core_images" "ubuntu_22_arm64" {
