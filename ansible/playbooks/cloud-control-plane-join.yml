@@ -1,0 +1,209 @@
+---
+# Join Oracle Cloud ARM64 nodes as additional Kubernetes control plane members.
+#
+# Prerequisites (run manually on an existing CP before this playbook):
+#   kubeadm init phase upload-certs --upload-certs
+#   kubeadm token create --print-join-command
+#
+# Network prerequisite — subnet router for LAN reachability:
+#   Cloud CP nodes join via kubeadm to cluster_vip (192.168.10.99), which is a
+#   LAN-only kube-vip address. Cloud nodes reach it through Tailscale via a
+#   subnet router that advertises 192.168.10.0/24. Before running this playbook:
+#
+#   1. Ensure a Tailscale subnet router is running on-prem with:
+#        tailscale up --advertise-routes=192.168.10.0/24 --authkey=<tag:subnet-router key>
+#      (The lolice Tailscale operator already deploys this Pod; verify with
+#       `kubectl -n tailscale-operator get pods`.)
+#
+#   2. The terraform/tailscale/lolice ACL autoApprovers.routes already approves
+#      192.168.10.0/24 for tag:subnet-router, so no manual approval is needed.
+#
+#   3. Verify cloud nodes can reach the VIP before running kubeadm join:
+#        tailscale ping 192.168.10.99   # from oracle-cp-1 or oracle-cp-2
+#
+# Usage:
+#   ansible-playbook playbooks/cloud-control-plane-join.yml \
+#     -i inventories/production \
+#     -e kubeadm_token=<TOKEN> \
+#     -e kubeadm_ca_cert_hash=sha256:<HASH> \
+#     -e kubeadm_certificate_key=<CERT_KEY> \
+#     --limit cloud_control_plane
+
+- name: Prepare Oracle Cloud control plane nodes for Kubernetes
+  hosts: cloud_control_plane
+  become: true
+  gather_facts: true
+  serial: 1
+
+  vars:
+    kubeadm_token: ""
+    kubeadm_ca_cert_hash: ""
+    kubeadm_certificate_key: ""
+    # The Tailscale IP is used as the advertise address so on-prem nodes
+    # can reach this kubelet via VPN.
+    apiserver_advertise_address: "{{ node_ip }}"
+
+  pre_tasks:
+    - name: Validate required variables
+      ansible.builtin.assert:
+        that:
+          - kubeadm_token != ""
+          - kubeadm_ca_cert_hash != ""
+          - kubeadm_certificate_key != ""
+        fail_msg: "kubeadm_token, kubeadm_ca_cert_hash, and kubeadm_certificate_key must be provided."
+
+    - name: Wait for Tailscale to be up
+      ansible.builtin.command: tailscale status --json
+      register: ts_status
+      until: (ts_status.stdout | from_json).Self.Online | default(false)
+      retries: 30
+      delay: 10
+      changed_when: false
+
+  tasks:
+    - name: Install required packages
+      ansible.builtin.apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - gnupg
+        state: present
+        update_cache: true
+
+    - name: Add Kubernetes apt signing key
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version | regex_replace('^(\\d+\\.\\d+).*', '\\1') }}/deb/Release.key"
+        dest: /etc/apt/keyrings/kubernetes-apt-keyring.asc
+        mode: '0644'
+
+    - name: Add Kubernetes apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.asc] https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_version | regex_replace('^(\\d+\\.\\d+).*', '\\1') }}/deb/ /"
+        state: present
+        filename: kubernetes
+        update_cache: true
+
+    - name: Add CRI-O apt signing key
+      ansible.builtin.get_url:
+        url: "https://pkgs.k8s.io/addons:/cri-o:/stable:/v{{ crio_version | regex_replace('^(\\d+\\.\\d+).*', '\\1') }}/deb/Release.key"
+        dest: /etc/apt/keyrings/crio-apt-keyring.asc
+        mode: '0644'
+
+    - name: Add CRI-O apt repository
+      ansible.builtin.apt_repository:
+        repo: "deb [signed-by=/etc/apt/keyrings/crio-apt-keyring.asc] https://pkgs.k8s.io/addons:/cri-o:/stable:/v{{ crio_version | regex_replace('^(\\d+\\.\\d+).*', '\\1') }}/deb/ /"
+        state: present
+        filename: cri-o
+        update_cache: true
+
+    - name: Install CRI-O, kubelet, kubeadm, kubectl
+      ansible.builtin.apt:
+        name:
+          - "cri-o"
+          - "kubelet={{ kubernetes_package_version }}"
+          - "kubeadm={{ kubernetes_package_version }}"
+          - "kubectl={{ kubernetes_package_version }}"
+        state: present
+        update_cache: true
+
+    - name: Hold Kubernetes packages at installed version
+      ansible.builtin.dpkg_selections:
+        name: "{{ item }}"
+        selection: hold
+      loop:
+        - kubelet
+        - kubeadm
+        - kubectl
+
+    - name: Enable and start CRI-O
+      ansible.builtin.systemd:
+        name: crio
+        enabled: true
+        state: started
+        daemon_reload: true
+
+    - name: Enable kubelet service (kubeadm will start it)
+      ansible.builtin.systemd:
+        name: kubelet
+        enabled: true
+        daemon_reload: true
+
+    - name: Load required kernel modules
+      community.general.modprobe:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - overlay
+        - br_netfilter
+
+    - name: Persist kernel modules
+      ansible.builtin.copy:
+        dest: /etc/modules-load.d/k8s.conf
+        content: |
+          overlay
+          br_netfilter
+        mode: '0644'
+
+    - name: Set sysctl parameters for Kubernetes
+      ansible.posix.sysctl:
+        name: "{{ item.key }}"
+        value: "{{ item.value }}"
+        state: present
+        reload: true
+        sysctl_file: /etc/sysctl.d/99-kubernetes.conf
+      loop:
+        - { key: "net.bridge.bridge-nf-call-iptables", value: "1" }
+        - { key: "net.bridge.bridge-nf-call-ip6tables", value: "1" }
+        - { key: "net.ipv4.ip_forward", value: "1" }
+
+    - name: Disable swap
+      ansible.builtin.command: swapoff -a
+      changed_when: false
+
+    - name: Remove swap from /etc/fstab
+      ansible.builtin.replace:
+        path: /etc/fstab
+        regexp: '^([^#].*\s+swap\s+.*)$'
+        replace: '# \1'
+
+    - name: Check if node is already part of the cluster
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - name: Join cluster as additional control plane
+      ansible.builtin.command: >
+        kubeadm join {{ cluster_vip }}:6443
+        --token {{ kubeadm_token }}
+        --discovery-token-ca-cert-hash {{ kubeadm_ca_cert_hash }}
+        --control-plane
+        --certificate-key {{ kubeadm_certificate_key }}
+        --apiserver-advertise-address={{ apiserver_advertise_address }}
+      when: not kubelet_conf.stat.exists
+      changed_when: not kubelet_conf.stat.exists
+      notify:
+        - Show kubeadm join output
+        - Copy admin kubeconfig for ubuntu user
+
+    - name: Set up kubeconfig directory for ubuntu user
+      ansible.builtin.file:
+        path: /home/ubuntu/.kube
+        state: directory
+        owner: ubuntu
+        group: ubuntu
+        mode: '0750'
+
+  handlers:
+    - name: Show kubeadm join output
+      ansible.builtin.debug:
+        msg: "kubeadm join completed successfully"
+
+    - name: Copy admin kubeconfig for ubuntu user
+      ansible.builtin.copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/ubuntu/.kube/config
+        owner: ubuntu
+        group: ubuntu
+        mode: '0600'
+        remote_src: true
