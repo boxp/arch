@@ -1,10 +1,10 @@
 FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
-ARG CODEX_VERSION=0.144.6
-ARG CLAUDE_CODE_VERSION=2.1.215
+ARG CODEX_VERSION=0.145.0
+ARG CLAUDE_CODE_VERSION=2.1.217
 ARG EVEN_TERMINAL_VERSION=0.8.1
-ARG PI_AGENT_VERSION=0.80.10
+ARG PI_AGENT_VERSION=0.81.1
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.13
 ARG GH_VERSION=2.96.0
 ARG GHQ_VERSION=1.10.1
@@ -36,6 +36,7 @@ RUN apt-get update \
       lsb-release \
       locales \
       make \
+      mosh \
       openssh-server \
       ripgrep \
       sudo \
