@@ -8,14 +8,8 @@ resource "cloudflare_pages_project" "iikanji" {
   production_branch = "main"
 }
 
-resource "cloudflare_pages_domain" "iikanji_top" {
+resource "cloudflare_pages_domain" "iikanji_subdomain" {
   account_id   = var.account_id
   project_name = cloudflare_pages_project.iikanji.name
-  name         = "b0xp.io"
-}
-
-resource "cloudflare_pages_domain" "iikanji_www" {
-  account_id   = var.account_id
-  project_name = cloudflare_pages_project.iikanji.name
-  name         = "www.b0xp.io"
+  name         = "iikanji.b0xp.io"
 }
