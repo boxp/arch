@@ -36,28 +36,28 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.2/cloudflared-darwin-amd64.tgz",
-      "checksum": "4EE0D3B48A990A2F9B5FAEC5838F73EC1F400AA8E0A4864BE576ADFAFEC406CB",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.3/cloudflared-darwin-amd64.tgz",
+      "checksum": "70D1C8684FA6D14B5843787EC8D1EA8E18B23650E424F4EA43D849A506487C3B",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.2/cloudflared-darwin-arm64.tgz",
-      "checksum": "2086E51C61D6565781D84117A5007D0C826D03FFDC74ACB91C08C167F9F8CD7C",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.3/cloudflared-darwin-arm64.tgz",
+      "checksum": "90C5A4F914D705FD70C135DBA6D80B1791D254B08D6D4136301941F88330DD09",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.2/cloudflared-linux-amd64",
-      "checksum": "EC905EA7B7E327FF8ABDDE8CB64697A2152DE74DBCDBF6AEC9DB8364EB3886CD",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.3/cloudflared-linux-amd64",
+      "checksum": "9D71C677DB00134C1BD4144B7783486B654AD281B1EA62B4972098D19F770F17",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.2/cloudflared-linux-arm64",
-      "checksum": "405DF476437E027FC6D18729A5A77155C0A33A6082AEEE60A799A688F3052E66",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.3/cloudflared-linux-arm64",
+      "checksum": "65259E652A7BEA08BF5DF603233AB22B8BF3116AF8DF9F9206209AF6A1B955C0",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.2/cloudflared-windows-amd64.exe",
-      "checksum": "CDB5D4432F6AE1595654A692A51308B69D2BF7AF961F5578D9391837CF072DF9",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.7.3/cloudflared-windows-amd64.exe",
+      "checksum": "8635DA433B6DF8194746E88ED9D2589566C20E38BFC2A80E431A348B7C765841",
       "algorithm": "sha256"
     },
     {
@@ -291,8 +291,8 @@
       "algorithm": "sha256"
     },
     {
-      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.543.0/registry.yaml",
-      "checksum": "58C91D0122C2E753273917D847EA56A6BC3D33A789556385FDBAB10A249094C9",
+      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.544.0/registry.yaml",
+      "checksum": "ED73709C88FA03BE758F78C25A35C07D48E2FA9D19E407F89FC36989A306E111",
       "algorithm": "sha256"
     }
   ]

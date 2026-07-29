@@ -40,3 +40,21 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_route" "codex_workspace" {
   network    = "192.168.10.98/32"
   comment    = "lolice codex-workspace LoadBalancer for WARP access"
 }
+
+# Look up the existing route UUID so the import block below can import it into state.
+# The v4 state entry (cloudflare_zero_trust_tunnel_route.codex_workspace) was removed
+# via tfmigrate during the v4→v5 provider migration, leaving this route untracked.
+# Using both network_subset and network_superset ensures exactly the /32 is matched.
+data "cloudflare_zero_trust_tunnel_cloudflared_route" "codex_workspace" {
+  account_id = var.account_id
+  filter = {
+    network_subset   = "192.168.10.98/32"
+    network_superset = "192.168.10.98/32"
+    is_deleted       = false
+  }
+}
+
+import {
+  to = cloudflare_zero_trust_tunnel_cloudflared_route.codex_workspace
+  id = "${var.account_id}/${data.cloudflare_zero_trust_tunnel_cloudflared_route.codex_workspace.id}"
+}
