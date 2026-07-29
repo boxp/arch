@@ -21,7 +21,14 @@ RUN set -eux; \
     rm -rf "$tmp"
 
 COPY skills/ /opt/boxp/hermes-agent/skills/
+COPY patches/ /opt/boxp/hermes-agent/patches/
 
 RUN chmod 0644 /opt/boxp/hermes-agent/skills/obsidian-task-board/SKILL.md \
     && chmod 0755 /opt/boxp/hermes-agent/skills/obsidian-task-board/bin/task-board.bb \
     && chown -R root:root /opt/obsidian-headless /opt/boxp/hermes-agent/skills
+
+# Patch upstream scheduler.py: classify ENETUNREACH / Errno 101 as
+# "network unreachable" instead of falling into the generic "timeout" branch.
+# Without this, a blocked-IPv6-egress failure is misreported to the operator
+# as "provider timeout" (BOXP-137).
+RUN python3 /opt/boxp/hermes-agent/patches/fix-scheduler-network-unreachable.py
