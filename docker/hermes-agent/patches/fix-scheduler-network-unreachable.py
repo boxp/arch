@@ -10,7 +10,6 @@ before the generic timeout branch so the operator sees the real cause.
 See BOXP-137 for the incident that motivated this fix.
 """
 
-import re
 import sys
 
 PATH = "/opt/hermes/cron/scheduler.py"
@@ -21,7 +20,10 @@ NEW = (
     '    if (\n'
     '        "enetunreach" in lower\n'
     '        or "network is unreachable" in lower\n'
-    '        or re.search(r"errno[ _]?10[13]", lower)\n'
+    '        or "errno 101" in lower\n'
+    '        or "errno_101" in lower\n'
+    '        or "errno 103" in lower\n'
+    '        or "errno_103" in lower\n'
     '    ):\n'
     '        return (\n'
     '            f"⚠️ Cron \'{job_name}\' failed: network unreachable. "\n'
