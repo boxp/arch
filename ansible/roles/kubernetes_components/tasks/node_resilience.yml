@@ -1,0 +1,132 @@
+---
+# Node resilience for Orange Pi Zero 3 control-plane nodes.
+#
+# 2026-08-01 に shanghai-1 が microSD の I/O 破綻でハードハングし、3日間無応答のままだった。
+# その際 (1) 誰も復旧させられず (2) 原因を示すログが一切残らなかった、という2点を塞ぐ。
+#
+# 1) hardware watchdog  : PID1 ごとハングした場合に SoC watchdog でリセットさせる
+# 2) hung_task_panic    : ユーザ空間だけが I/O 待ちで全停止するケースを panic 経由で再起動させる
+# 3) armbian-ramlog 無効: /var/log を zram(RAM) から SD へ戻し、ハング直前のログを保全する
+#
+# 既定は無効。control-plane playbook 側で明示的に有効化する (journald.yml と同じ方式)。
+
+- name: Ensure systemd system.conf drop-in directory exists
+  ansible.builtin.file:
+    path: /etc/systemd/system.conf.d
+    state: directory
+    mode: '0755'
+  become: true
+  when: node_resilience_watchdog | bool
+
+# 値は sunxi-wdt の max_timeout=16 秒を超えないこと (defaults/main.yml の注記を参照)。
+# 超えると WDIOC_SETTIMEOUT が EINVAL になり、systemd が watchdog を閉じて無効化される。
+- name: Configure systemd hardware watchdog
+  ansible.builtin.copy:
+    dest: /etc/systemd/system.conf.d/10-watchdog.conf
+    mode: '0644'
+    content: |
+      [Manager]
+      RuntimeWatchdogSec={{ node_resilience_runtime_watchdog_sec }}
+      RebootWatchdogSec={{ node_resilience_reboot_watchdog_sec }}
+  become: true
+  when: node_resilience_watchdog | bool
+  notify: Reexec systemd
+
+- name: Remove role-managed watchdog drop-in when disabled
+  ansible.builtin.file:
+    path: /etc/systemd/system.conf.d/10-watchdog.conf
+    state: absent
+  become: true
+  when: not (node_resilience_watchdog | bool)
+  notify: Reexec systemd
+
+# hung_task_panic は panic を経由して再起動するため kernel.panic が 0 だと固まったままになる。
+# Armbian の既定は 10 だが、依存せずここで明示する。
+- name: Configure hung task panic sysctl
+  ansible.builtin.copy:
+    dest: /etc/sysctl.d/90-hung-task.conf
+    mode: '0644'
+    content: |
+      # Managed by ansible role kubernetes_components (node_resilience.yml)
+      kernel.hung_task_timeout_secs = {{ node_resilience_hung_task_timeout_secs }}
+      kernel.hung_task_panic = 1
+      kernel.panic = {{ node_resilience_panic_sec }}
+  become: true
+  when: node_resilience_hung_task_panic | bool
+  notify: Reload sysctl
+
+- name: Remove role-managed hung task sysctl when disabled
+  ansible.builtin.file:
+    path: /etc/sysctl.d/90-hung-task.conf
+    state: absent
+  become: true
+  when: not (node_resilience_hung_task_panic | bool)
+  notify: Reload sysctl
+
+# armbian-ramlog は /var/log を zram (RAM) に置き、/var/log.hdd への同期を clean shutdown 時にしか
+# 行わない。ハードハングするとハング直前のログが丸ごと消えるため、control-plane では無効化する。
+# 増加する書き込みは journald 実測 0.4 GB/日 で、etcd の 13 GB/日 に対して十分小さい。
+- name: Check if armbian-ramlog configuration exists
+  ansible.builtin.stat:
+    path: /etc/default/armbian-ramlog
+  register: armbian_ramlog_config
+  become: true
+
+# --target を付けない = /var/log 自身がマウントポイントの時だけ rc=0。
+# ramlog 停止後は /var/log は / の一部になり rc=1 になるため、これが有効/無効の判定になる。
+# SOURCE で判定すると、zram が使えない環境のフォールバック
+# (`mount -t tmpfs ... armbian-ramlog /var/log`) を取りこぼす。
+- name: Check whether /var/log is currently backed by armbian-ramlog
+  ansible.builtin.command: findmnt --noheadings --output SOURCE /var/log
+  register: var_log_mount
+  changed_when: false
+  failed_when: false
+  become: true
+  when:
+    - node_resilience_disable_armbian_ramlog | bool
+    - armbian_ramlog_config.stat.exists
+
+# 順序が重要。armbian-ramlog は先頭で `[ "$ENABLED" != true ] && exit 0` しており、
+# ENABLED=false にすると start だけでなく **stop も no-op** になる。
+# 先に設定を書き換えると、次のシャットダウン時の ExecStop が syncToDisk せずに終了し、
+# RAM 上にある「適用前ブートのログ」がそのまま失われる。
+# よってまだ有効なうちに stop を実行する。stop は syncToDisk + `umount -l` (lazy) なので、
+# /var/log を使用中のプロセスがいても失敗しない。これで再起動を待たずに
+# /var/log が SD 上のディレクトリに戻り、以降のログが永続化される。
+- name: Sync ramlog to disk and detach it before disabling
+  ansible.builtin.systemd:
+    name: armbian-ramlog
+    state: stopped
+  become: true
+  when:
+    - node_resilience_disable_armbian_ramlog | bool
+    - armbian_ramlog_config.stat.exists
+    - var_log_mount.rc | default(1) == 0
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+  # lazy umount 後も journald は元の fd を掴んだままなので、開き直させる。
+  notify: Restart systemd-journald
+
+- name: Disable armbian-ramlog so /var/log survives a hard hang
+  ansible.builtin.lineinfile:
+    path: /etc/default/armbian-ramlog
+    regexp: '^ENABLED='
+    line: 'ENABLED=false'
+    create: false
+  become: true
+  when:
+    - node_resilience_disable_armbian_ramlog | bool
+    - armbian_ramlog_config.stat.exists
+
+# ENABLED=false だけでもスクリプト側が何もしなくなるが、意図を明示するため unit も無効化する。
+- name: Disable armbian-ramlog service
+  ansible.builtin.systemd:
+    name: armbian-ramlog
+    enabled: false
+  become: true
+  when:
+    - node_resilience_disable_armbian_ramlog | bool
+    - armbian_ramlog_config.stat.exists
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+  failed_when: false

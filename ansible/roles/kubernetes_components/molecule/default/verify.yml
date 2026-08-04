@@ -4,6 +4,11 @@
   gather_facts: true
   vars:
     journald_persistent_storage: true
+    # Must mirror converge.yml — verify.yml is a separate play and does not see role defaults.
+    node_resilience_watchdog: true
+    node_resilience_hung_task_panic: true
+    node_resilience_runtime_watchdog_sec: "15"
+    node_resilience_reboot_watchdog_sec: "15"
   tasks:
     - name: Check if CRI-O is installed
       ansible.builtin.package_facts:
@@ -193,3 +198,85 @@
           - "'MaxRetentionSec=1month' in (journald_dropin_content.content | b64decode)"
         fail_msg: "journald drop-in is missing Storage=persistent, SystemMaxUse=200M, or MaxRetentionSec=1month"
       when: journald_persistent_storage | bool
+
+    - name: Check if systemd watchdog drop-in exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system.conf.d/10-watchdog.conf
+      register: watchdog_dropin
+
+    - name: Assert systemd watchdog drop-in exists when enabled
+      ansible.builtin.assert:
+        that:
+          - watchdog_dropin.stat.exists
+        fail_msg: >-
+          /etc/systemd/system.conf.d/10-watchdog.conf does not exist —
+          a hung node would stay unreachable instead of resetting itself
+      when: node_resilience_watchdog | bool
+
+    - name: Assert systemd watchdog drop-in is absent when disabled
+      ansible.builtin.assert:
+        that:
+          - not watchdog_dropin.stat.exists
+        fail_msg: "watchdog drop-in must be absent when node_resilience_watchdog is false"
+      when: not (node_resilience_watchdog | bool)
+
+    - name: Read systemd watchdog drop-in
+      ansible.builtin.slurp:
+        path: /etc/systemd/system.conf.d/10-watchdog.conf
+      register: watchdog_dropin_content
+      when: node_resilience_watchdog | bool
+
+    - name: Assert watchdog timeouts are configured
+      ansible.builtin.assert:
+        that:
+          - >-
+            'RuntimeWatchdogSec=' ~ node_resilience_runtime_watchdog_sec
+            in (watchdog_dropin_content.content | b64decode)
+          - >-
+            'RebootWatchdogSec=' ~ node_resilience_reboot_watchdog_sec
+            in (watchdog_dropin_content.content | b64decode)
+          # sunxi-wdt (H618) の max_timeout は 16 秒。超えると systemd が watchdog を無効化する。
+          - node_resilience_runtime_watchdog_sec | int > 0
+          - node_resilience_runtime_watchdog_sec | int <= 16
+          - node_resilience_reboot_watchdog_sec | int > 0
+          - node_resilience_reboot_watchdog_sec | int <= 16
+        fail_msg: >-
+          watchdog drop-in must carry the declared timeouts, and both must stay within
+          the 16s max_timeout of sunxi-wdt (otherwise systemd disables the watchdog)
+      when: node_resilience_watchdog | bool
+
+    - name: Check if hung task sysctl drop-in exists
+      ansible.builtin.stat:
+        path: /etc/sysctl.d/90-hung-task.conf
+      register: hung_task_dropin
+
+    - name: Assert hung task sysctl drop-in exists when enabled
+      ansible.builtin.assert:
+        that:
+          - hung_task_dropin.stat.exists
+        fail_msg: "/etc/sysctl.d/90-hung-task.conf does not exist"
+      when: node_resilience_hung_task_panic | bool
+
+    - name: Assert hung task sysctl drop-in is absent when disabled
+      ansible.builtin.assert:
+        that:
+          - not hung_task_dropin.stat.exists
+        fail_msg: "hung task sysctl drop-in must be absent when node_resilience_hung_task_panic is false"
+      when: not (node_resilience_hung_task_panic | bool)
+
+    - name: Read hung task sysctl drop-in
+      ansible.builtin.slurp:
+        path: /etc/sysctl.d/90-hung-task.conf
+      register: hung_task_dropin_content
+      when: node_resilience_hung_task_panic | bool
+
+    - name: Assert hung task panic is configured with a non-zero reboot timer
+      ansible.builtin.assert:
+        that:
+          - "'kernel.hung_task_panic = 1' in (hung_task_dropin_content.content | b64decode)"
+          - "'kernel.hung_task_timeout_secs = 300' in (hung_task_dropin_content.content | b64decode)"
+          - "'kernel.panic = 10' in (hung_task_dropin_content.content | b64decode)"
+        fail_msg: >-
+          hung task drop-in must set hung_task_panic=1 together with a non-zero kernel.panic,
+          otherwise the panic never reboots the board
+      when: node_resilience_hung_task_panic | bool

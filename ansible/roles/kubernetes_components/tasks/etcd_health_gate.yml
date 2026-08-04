@@ -1,0 +1,42 @@
+---
+# etcd メンバーがクラスタへ復帰したことを確認するゲート。
+#
+# serial: 1 で control-plane を 1 台ずつ処理する際、「次のノードへ進んでよい」と言えるのは
+# このノードの etcd が quorum に復帰した後だけ。TCP が開いただけでは足りないので
+# /health を見る (etcd の /health は quorum を要する読み取りを行う)。
+#
+# 呼び出し元:
+#   - tasks/kubeadm.yml        マニフェスト変更の直後
+#   - playbooks/control-plane.yml  post_tasks で flush_handlers の後
+#     (Restart crio / Restart kubelet は既定では play 末尾 = health 確認より後に走るため、
+#      前ノードの etcd が未復帰のまま次のバッチが始まってしまう)
+
+- name: Derive the etcd metrics probe target
+  ansible.builtin.set_fact:
+    etcd_metrics_scheme: "{{ etcd_listen_metrics_urls.split(',')[0].split('://')[0] }}"
+    etcd_metrics_port: "{{ etcd_listen_metrics_urls.split(',')[0].split(':')[-1] | int }}"
+    # 0.0.0.0 bind ならノード IP を叩く。
+    etcd_metrics_probe_host: >-
+      {{
+        (kubelet_node_ip | default('', true) or ansible_default_ipv4.address)
+        if '0.0.0.0' in etcd_listen_metrics_urls
+        else etcd_listen_metrics_urls.split(',')[0].split('//')[1].split(':')[0]
+      }}
+
+- name: Wait for the etcd member to rejoin the cluster and report healthy
+  ansible.builtin.uri:
+    url: "{{ etcd_metrics_scheme }}://{{ etcd_metrics_probe_host }}:{{ etcd_metrics_port }}/health"
+    return_content: true
+    status_code: [200, 503]
+    # https にした場合、etcd の metrics は etcd 自身のサーバ証明書を出す。
+    # ここは自ノード宛の健全性確認なので CA 検証は行わない。
+    validate_certs: false
+  become: true
+  throttle: 1
+  register: etcd_health_probe
+  until: >-
+    etcd_health_probe.status == 200
+    and (etcd_health_probe.json.health | default('false') | string) == 'true'
+  retries: 30
+  delay: 10
+  changed_when: false

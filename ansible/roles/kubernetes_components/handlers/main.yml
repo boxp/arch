@@ -44,6 +44,15 @@
     - chroot_build is not defined or not chroot_build
   listen: "Restart kubelet"
 
+- name: Reexec systemd
+  ansible.builtin.systemd:
+    daemon_reexec: true
+  become: true
+  when:
+    - ansible_virtualization_type != "docker"
+    - chroot_build is not defined or not chroot_build
+  listen: "Reexec systemd"
+
 - name: Restart systemd-journald
   ansible.builtin.systemd:
     name: systemd-journald
