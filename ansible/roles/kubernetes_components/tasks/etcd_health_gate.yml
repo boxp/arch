@@ -34,9 +34,13 @@
   become: true
   throttle: 1
   register: etcd_health_probe
+  # etcd の /health は Content-Type: text/plain で返す。uri モジュールが .json を埋めるのは
+  # JSON の Content-Type の時だけなので、.json を見ると常に undefined になり
+  # 「health は true なのに 30 回リトライして失敗」する (実機で発生)。content を自前で解釈する。
   until: >-
     etcd_health_probe.status == 200
-    and (etcd_health_probe.json.health | default('false') | string) == 'true'
+    and ((etcd_health_probe.content | default('{}') | from_json).health
+         | default('false') | string) == 'true'
   retries: 30
   delay: 10
   changed_when: false
