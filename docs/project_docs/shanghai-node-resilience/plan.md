@@ -192,6 +192,28 @@ kubectl -n kube-system exec etcd-shanghai-2 -- etcdctl \
 - [ ] Prometheus の `serviceMonitor/monitoring/etcd/0` が 3/3 up
 - [ ] `etcd_mvcc_db_total_size_in_bytes` が取得できること
 
+## 適用時に踏んだ罠 (2026-08-05)
+
+`Apply Ansible` ワークフロー (main への push で自動実行される) が shanghai-1 で失敗した。
+etcd マニフェストの更新までは成功し、health ゲートで 30 回リトライして落ちた。
+`serial: 1` により shanghai-2/3 のジョブは cancelled となり、**shanghai-1 だけが
+「etcd 部分は適用済み・A/B は未適用」という中途半端な状態**になった。
+
+失敗ログに残っていたレスポンスは期待通りだった:
+
+```
+status: 200
+content: {"health":"true","reason":""}
+content_type: text/plain; charset=utf-8
+```
+
+**真因: etcd の `/health` は `Content-Type: text/plain` を返す。**
+Ansible の `uri` モジュールが `.json` を埋めるのは JSON の Content-Type の時だけなので、
+`etcd_health_probe.json` は常に undefined になり `default('false')` に落ちていた。
+`.content` を `from_json` で自前解釈するよう修正。
+
+実機の応答をそのまま入れて、旧式 `False` / 新式 `True` を確認済み。
+
 ## 残課題
 
 - **C. etcd を SD から外す (USB SSD)** — 本命の恒久対策。別 PR
