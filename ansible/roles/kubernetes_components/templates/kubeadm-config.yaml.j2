@@ -2,21 +2,32 @@
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: ClusterConfiguration
 kubernetesVersion: v{{ kubernetes_version if (kubernetes_version | string).split('.') | length >= 3 else kubernetes_version ~ '.0' }}
-controlPlaneEndpoint: "{{ cluster_vip | default('') }}"
+# 🔥 稼働中クラスタの値と一致させること。
+#    以前は extraArgs の記法誤りで kubeadm が読めず実害が出ていなかったが、
+#    記法を直した以上、値がずれていると --config で流用した際にクラスタを壊す。
+#    2026-08-05 時点の kube-system/kubeadm-config に合わせてある。
+controlPlaneEndpoint: "{{ cluster_vip | default('') }}:6443"
 networking:
-  serviceSubnet: "10.96.0.0/12"
-  podSubnet: "10.244.0.0/16"
+  serviceSubnet: "{{ kubeadm_service_subnet }}"
+  podSubnet: "{{ kubeadm_pod_subnet }}"
   dnsDomain: "{{ kubelet_cluster_domain }}"
+# 🔥 v1beta4 の extraArgs は「マップ」ではなく「name/value のリスト」。
+#    マップで書くと kubeadm が
+#    `cannot unmarshal object into Go struct field ... of type []v1beta4.Arg`
+#    で読めず、ここでの宣言が一切効かない (実機の kubeadm config validate で確認)。
 etcd:
   local:
     extraArgs:
       # Increase heartbeat interval from default 100ms to 1000ms for ARM boards
-      heartbeat-interval: "1000"
+      - name: heartbeat-interval
+        value: "1000"
       # Increase election timeout from default 1000ms to 10000ms for ARM boards
-      election-timeout: "10000"
+      - name: election-timeout
+        value: "10000"
       # Expose metrics endpoint for Prometheus scraping.
       # 稼働中の静的 Pod マニフェストへの反映は tasks/kubeadm.yml が同じ変数から行う。
-      listen-metrics-urls: "{{ etcd_listen_metrics_urls }}"
+      - name: listen-metrics-urls
+        value: "{{ etcd_listen_metrics_urls }}"
     serverCertSANs:
       - localhost
       - 127.0.0.1
@@ -26,6 +37,19 @@ etcd:
     peerCertSANs:
       - localhost
       - 127.0.0.1
+{% if control_plane_metrics_bind_address | default(false) | bool %}
+# kubeadm 既定の 127.0.0.1 では Prometheus から scrape できず
+# KubeSchedulerDown / KubeControllerManagerDown が恒常的に firing になる。
+# ここに宣言しておかないと kubeadm upgrade でマニフェストが再生成された際に戻る。
+scheduler:
+  extraArgs:
+    - name: bind-address
+      value: "{{ control_plane_metrics_bind_value }}"
+controllerManager:
+  extraArgs:
+    - name: bind-address
+      value: "{{ control_plane_metrics_bind_value }}"
+{% endif %}
 apiServer:
   certSANs:
     - localhost
@@ -42,4 +66,6 @@ localAPIEndpoint:
 nodeRegistration:
   criSocket: unix:///var/run/crio/crio.sock
   kubeletExtraArgs:
-    node-ip: "{{ kubelet_node_ip }}"
+    # v1beta4 では name/value のリスト形式 (マップだと kubeadm が読めない)
+    - name: node-ip
+      value: "{{ kubelet_node_ip }}"

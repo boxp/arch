@@ -1,0 +1,182 @@
+---
+# kube-scheduler / kube-controller-manager を Prometheus から scrape できるようにする。
+#
+# kubeadm 既定の --bind-address=127.0.0.1 だとノード外から届かず、
+# KubeSchedulerDown / KubeControllerManagerDown が恒常的に firing になる。
+# 実機では 2026-07-04 から1ヶ月鳴りっぱなしだった。通知を有効にした直後に
+# この2件が届くことになり、「アラートは無視するもの」になってしまうため塞ぐ。
+#
+# 10259/10257 は RBAC 認証付きなので、LAN へ bind しても未認証では読めない。
+#
+# etcd と違って quorum を持たないが、どちらもリーダー選出で動いているため
+# 同時に全ノードを再起動すると一時的に停止する。playbook の serial: 1 で直列化される。
+
+- name: Check if control plane manifests exist
+  ansible.builtin.stat:
+    path: "/etc/kubernetes/manifests/{{ item }}.yaml"
+  register: control_plane_manifests
+  become: true
+  loop:
+    - kube-scheduler
+    - kube-controller-manager
+  loop_control:
+    label: "{{ item }}"
+  when:
+    - control_plane_metrics_bind_address | bool
+    - inventory_hostname in groups['control_plane'] | default([])
+
+# 変更前の原本をマニフェストディレクトリの外へ退避する。
+# 静的 Pod ディレクトリ内にバックアップを置くと kubelet がそれも Pod として読む。
+- name: Keep a pristine copy of the control plane manifests
+  ansible.builtin.copy:
+    src: "/etc/kubernetes/manifests/{{ item.item }}.yaml"
+    dest: "/var/backups/kubernetes-manifests/{{ item.item }}.yaml.orig"
+    remote_src: true
+    force: false
+    mode: '0600'
+  become: true
+  loop: "{{ control_plane_manifests.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when:
+    - control_plane_metrics_bind_address | bool
+    - item.stat.exists | default(false)
+
+- name: Bind control plane metrics to a reachable address
+  ansible.builtin.replace:
+    path: "/etc/kubernetes/manifests/{{ item.item }}.yaml"
+    regexp: '^(\s*)- --bind-address=.*$'
+    replace: '\1- --bind-address={{ control_plane_metrics_bind_value }}'
+  become: true
+  throttle: 1
+  register: control_plane_bind_address
+  loop: "{{ control_plane_manifests.results | default([]) }}"
+  loop_control:
+    label: "{{ item.item | default('') }}"
+  when:
+    - control_plane_metrics_bind_address | bool
+    - item.stat.exists | default(false)
+
+# kubelet が静的 Pod を入れ替えるのを待ってから次のノードへ進む。
+# 両コンポーネントともリーダー選出で動くので、復帰前に次を落とすと一時的に停止する。
+# 待機先は bind 値から導出する。0.0.0.0 のときだけ待つ実装にすると、
+# ノードの実アドレスを指定した場合に待機が丸ごとスキップされ、
+# kubelet の反映が非同期なぶん serial: 1 でも複数ノードの
+# scheduler / controller-manager が同時に落ちうる。
+- name: Wait for the control plane components to listen on the new address
+  ansible.builtin.wait_for:
+    host: "{{ control_plane_metrics_probe_host }}"
+    port: "{{ item }}"
+    delay: 5
+    timeout: 180
+  vars:
+    control_plane_metrics_probe_host: >-
+      {{
+        ((kubelet_node_ip | default('', true)) or ansible_default_ipv4.address)
+        if control_plane_metrics_bind_value == '0.0.0.0'
+        else control_plane_metrics_bind_value
+      }}
+  become: true
+  throttle: 1
+  loop:
+    - 10259
+    - 10257
+  when:
+    - control_plane_bind_address.changed | default(false)
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# ここまでは稼働中のマニフェストを直しただけ。kubeadm upgrade apply/node は --config なしで
+# 実行され kube-system/kubeadm-config の ClusterConfiguration を読むため、そのままだと
+# 次回アップグレードでマニフェストが再生成され bind-address が 127.0.0.1 に戻る。
+# ConfigMap にも保存しておく。
+#
+# ⚠️ ローカルのテンプレートを upload-config に渡してはいけない。テンプレートは実クラスタの
+#    設定の部分集合でしかなく、上書きすると certificatesDir や imageRepository、
+#    apiServer の authorization-mode などが失われる。
+#    必ず「稼働中の ClusterConfiguration を読み、必要なキーだけ足して」書き戻す。
+# クラスタ未初期化 (イメージビルド等) と、初期化済みクラスタでの API 障害を区別する。
+# 一律に failed_when: false にすると、取得に失敗しても play は成功し、
+# 静的 Pod だけ直って ConfigMap は未更新のまま = 次回 upgrade で戻る、を黙って通してしまう。
+- name: Check whether this node has an initialized control plane
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: kubeadm_admin_conf
+  become: true
+  run_once: true
+  when:
+    - control_plane_metrics_bind_address | bool
+    - inventory_hostname in groups['control_plane'] | default([])
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# 初期化済みなら失敗させる (failed_when を付けない)。
+- name: Read the live kubeadm ClusterConfiguration
+  ansible.builtin.command:
+    cmd: >-
+      kubectl --kubeconfig /etc/kubernetes/admin.conf
+      -n kube-system get cm kubeadm-config -o jsonpath={.data.ClusterConfiguration}
+  register: live_cluster_config
+  changed_when: false
+  become: true
+  run_once: true
+  when:
+    - control_plane_metrics_bind_address | bool
+    - kubeadm_admin_conf.stat.exists | default(false)
+
+# combine(recursive=True) はマップは再帰結合するが **リストは置換する**。
+# scheduler / controllerManager に別の extraArgs が入っていた場合、そのまま置き換えると
+# 次回の kubeadm upgrade でその引数が失われる。既存リストを残し bind-address だけ差し替える。
+- name: Build the merged ClusterConfiguration
+  ansible.builtin.set_fact:
+    kubeadm_cc_live: "{{ kubeadm_cc_live_parsed }}"
+    kubeadm_cc_merged: >-
+      {{
+        kubeadm_cc_live_parsed | combine({
+          'scheduler': {'extraArgs': kubeadm_cc_scheduler_args},
+          'controllerManager': {'extraArgs': kubeadm_cc_controller_args}
+        }, recursive=True)
+      }}
+  vars:
+    kubeadm_cc_live_parsed: "{{ live_cluster_config.stdout | from_yaml }}"
+    kubeadm_cc_want:
+      name: bind-address
+      value: "{{ control_plane_metrics_bind_value }}"
+    kubeadm_cc_scheduler_args: >-
+      {{
+        ((live_cluster_config.stdout | from_yaml).scheduler | default({}, true)).extraArgs | default([], true)
+        | rejectattr('name', 'equalto', 'bind-address') | list + [kubeadm_cc_want]
+      }}
+    kubeadm_cc_controller_args: >-
+      {{
+        ((live_cluster_config.stdout | from_yaml).controllerManager | default({}, true)).extraArgs | default([], true)
+        | rejectattr('name', 'equalto', 'bind-address') | list + [kubeadm_cc_want]
+      }}
+  run_once: true
+  when:
+    - control_plane_metrics_bind_address | bool
+    - (live_cluster_config.stdout | default('')) | length > 0
+
+# 判定は「ローカルファイルが変わったか」ではなく「稼働中の ConfigMap と違うか」で行う。
+# ファイルの changed で判定すると、ConfigMap 側だけ戻された場合や前回 upload に
+# 失敗してファイルだけ残った場合に、アップロードが黙って省略される。
+- name: Write the merged ClusterConfiguration
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/kubeadm-clusterconfig-merged.yaml
+    mode: '0600'
+    content: "{{ kubeadm_cc_merged | to_nice_yaml(indent=2) }}"
+  become: true
+  run_once: true
+  when:
+    - kubeadm_cc_merged is defined
+    - kubeadm_cc_merged != kubeadm_cc_live
+
+- name: Upload the ClusterConfiguration so kubeadm upgrade keeps the setting
+  ansible.builtin.command:
+    cmd: kubeadm init phase upload-config kubeadm --config /etc/kubernetes/kubeadm-clusterconfig-merged.yaml
+  become: true
+  run_once: true
+  changed_when: true
+  when:
+    - kubeadm_cc_merged is defined
+    - kubeadm_cc_merged != kubeadm_cc_live

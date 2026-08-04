@@ -23,6 +23,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "prometheus_operator_
         service  = "http://prometheus-k8s:9090"
       },
       {
+        hostname = cloudflare_dns_record.alertmanager.name
+        service  = "http://alertmanager-main.monitoring.svc.cluster.local:9093"
+      },
+      {
         service = "http_status:404"
       },
     ]

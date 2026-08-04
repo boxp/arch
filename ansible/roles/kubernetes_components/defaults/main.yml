@@ -105,3 +105,18 @@ node_resilience_hung_task_timeout_secs: 300
 node_resilience_panic_sec: 10
 # armbian-ramlog keeps /var/log on zram (RAM), which discards the logs that explain a hard hang.
 node_resilience_disable_armbian_ramlog: false
+
+# kube-scheduler / kube-controller-manager のメトリクス公開
+# kubeadm 既定は --bind-address=127.0.0.1 で、Prometheus から scrape できず
+# KubeSchedulerDown / KubeControllerManagerDown が恒常的に firing になる
+# (実機では 2026-07-04 から1ヶ月鳴りっぱなしだった)。
+# ポートは RBAC 認証付き (10259/10257) なので、LAN へ bind しても未認証アクセスはできない。
+# 対になる Service 定義: boxp/lolice の argoproj/prometheus-operator/control-plane-metrics-services.yaml
+control_plane_metrics_bind_address: false
+control_plane_metrics_bind_value: "0.0.0.0"
+
+# kubeadm ClusterConfiguration のネットワーク設定。
+# 🔥 稼働中クラスタ (kube-system/kubeadm-config) と一致させること。
+#    ずれたまま kubeadm upgrade --config などで流用するとクラスタを壊す。
+kubeadm_service_subnet: "10.96.0.0/12"
+kubeadm_pod_subnet: "192.178.0.0/16"

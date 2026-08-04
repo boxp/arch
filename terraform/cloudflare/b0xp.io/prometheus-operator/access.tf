@@ -47,6 +47,17 @@ resource "cloudflare_zero_trust_access_application" "prometheus_web" {
   policies         = [{ id = cloudflare_zero_trust_access_policy.prometheus_web_access.id }]
 }
 
+# Alertmanager はサイレンス操作ができ、インフラ構成も見えるため、
+# grafana / prometheus-web と同様に必ず Access で保護する。
+resource "cloudflare_zero_trust_access_application" "alertmanager" {
+  zone_id          = var.zone_id
+  name             = "Access application for alertmanager.b0xp.io"
+  domain           = "alertmanager.b0xp.io"
+  session_duration = "24h"
+  type             = "self_hosted"
+  policies         = [{ id = cloudflare_zero_trust_access_policy.alertmanager_access.id }]
+}
+
 data "cloudflare_zero_trust_access_identity_providers" "all" {
   account_id = var.account_id
 }
@@ -74,6 +85,18 @@ resource "cloudflare_zero_trust_access_policy" "grafana_access" {
 resource "cloudflare_zero_trust_access_policy" "prometheus_web_access" {
   account_id = var.account_id
   name       = "policy for prometheus-web.b0xp.io"
+  decision   = "allow"
+  include = [{
+    login_method = {
+      id = local.github_idp_id
+    }
+  }]
+}
+
+# Creates an Access policy for the application.
+resource "cloudflare_zero_trust_access_policy" "alertmanager_access" {
+  account_id = var.account_id
+  name       = "policy for alertmanager.b0xp.io"
   decision   = "allow"
   include = [{
     login_method = {

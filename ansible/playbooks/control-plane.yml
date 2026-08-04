@@ -120,6 +120,9 @@
         # armbian-ramlog が /var/log を zram に置くため、journald_persistent_storage が
         # 実際には永続化されていなかった。これを外して初めて上の設定が効く。
         node_resilience_disable_armbian_ramlog: true
+        # kubeadm 既定の bind-address=127.0.0.1 では scrape できず
+        # KubeSchedulerDown / KubeControllerManagerDown が恒常的に firing になる。
+        control_plane_metrics_bind_address: true
 
   post_tasks:
     # serial: 1 で次のノードへ進む前に、ハンドラ (Restart crio / Restart kubelet) を
