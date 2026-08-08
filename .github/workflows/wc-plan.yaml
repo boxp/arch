@@ -100,7 +100,7 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
+      - uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         id: setup
         with:
           action: setup
@@ -116,13 +116,13 @@ jobs:
           role-session-name: ${{ steps.setup.outputs.aws_role_session_name }}
           aws-region: ${{ steps.setup.outputs.aws_region }}
 
-      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
+      - uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         id: target-config
 
         with:
           action: get-target-config
 
-      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
+      - uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         with:
           action: terraform-init
           github_token: ${{steps.generate_token.outputs.token}}
@@ -160,7 +160,7 @@ jobs:
               - name: registry.terraform.io/tailscale/tailscale
           GITHUB_TOKEN: ${{steps.pull_request_token.outputs.token}} # For github-comment
 
-      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
+      - uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         with:
           action: test
           github_token: ${{steps.generate_token.outputs.token}}
@@ -170,7 +170,7 @@ jobs:
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
           TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
-      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
+      - uses: suzuki-shunsuke/tfaction@f62d11ce89de2aa26b00efaa266e449769f70442 # v2.1.0
         with:
           action: plan
           github_token: ${{steps.generate_token.outputs.token}}
