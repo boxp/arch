@@ -3,6 +3,13 @@
   hosts: all
   become: true
   gather_facts: true
+  # 3ノード構成の control plane を必ず1台ずつ処理する。
+  # 既定の linear strategy ではタスク単位で全ホストを横断するため、task 側の throttle: 1 だけでは
+  # 「全ホストのマニフェストを書き換えてから、全ホストの復旧を待つ」順序になり、
+  # etcd 静的 Pod が3台ほぼ同時に再起動して quorum を失う。
+  # Restart crio / Restart kubelet ハンドラにも同じ危険があるため play 単位で直列化する。
+  # serial: 1 は同時に max_fail_percentage 既定 0 と組み合わさり、1台失敗した時点で play が止まる。
+  serial: 1
   vars_files:
     - ../vars/nodes.yml
   vars:
@@ -107,3 +114,29 @@
         kubelet_cluster_domain: "{{ cluster_domain }}"
         kubelet_node_ip: "{{ node_ip }}"
         journald_persistent_storage: true
+        # 2026-08-01 の shanghai-1 ハング (3日間無応答) 対策。docs/project_docs/shanghai-node-resilience/plan.md
+        node_resilience_watchdog: true
+        node_resilience_hung_task_panic: true
+        # armbian-ramlog が /var/log を zram に置くため、journald_persistent_storage が
+        # 実際には永続化されていなかった。これを外して初めて上の設定が効く。
+        node_resilience_disable_armbian_ramlog: true
+        # kubeadm 既定の bind-address=127.0.0.1 では scrape できず
+        # KubeSchedulerDown / KubeControllerManagerDown が恒常的に firing になる。
+        control_plane_metrics_bind_address: true
+
+  post_tasks:
+    # serial: 1 で次のノードへ進む前に、ハンドラ (Restart crio / Restart kubelet) を
+    # ここで実行し切る。既定ではハンドラは play の最後、つまり role 内の etcd 健全性確認より
+    # 後に走るため、そのままでは「前ノードの etcd が未復帰のまま次のバッチが始まる」ことになり、
+    # 2 台目の etcd も再起動して quorum を失う。
+    - name: Flush handlers before verifying etcd health
+      ansible.builtin.meta: flush_handlers
+
+    # ハンドラによる crio/kubelet 再起動は静的 Pod を巻き込むので、改めて復帰を確認する。
+    - name: Verify this node's etcd rejoined before the next serial batch
+      ansible.builtin.include_role:
+        name: kubernetes_components
+        tasks_from: etcd_health_gate
+      when:
+        - inventory_hostname in groups['control_plane'] | default([])
+        - etcd_manifest.stat.exists | default(false)

@@ -9,3 +9,6 @@
     kubernetes_disable_swap: false  # Skip swap operations in container
     kubernetes_enable_modules: false  # Skip module loading in container
     journald_persistent_storage: true  # Validate the persistent-storage code path
+    node_resilience_watchdog: true  # Validate the watchdog drop-in code path
+    node_resilience_hung_task_panic: true  # Validate the hung-task sysctl code path
+    node_resilience_disable_armbian_ramlog: true  # No-op here: /etc/default/armbian-ramlog is absent

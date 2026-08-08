@@ -69,6 +69,11 @@ sysctl_config:
 # Increased from default 100m CPU / 100Mi memory to accommodate ARM processor characteristics
 etcd_resource_requests_cpu: "200m"
 etcd_resource_requests_memory: "200Mi"
+# Metrics listener for the monitoring/etcd ServiceMonitor (boxp/lolice).
+# Single source of truth: templates/kubeadm-config.yaml.j2 (新規クラスタ) と
+# tasks/kubeadm.yml (稼働中マニフェストへの追加・追従・待機ポート) の両方がこの値を使う。
+# ポート変更時は lolice 側の ServiceMonitor も合わせること。
+etcd_listen_metrics_urls: "http://0.0.0.0:2381"
 
 # journald persistent storage configuration
 # Disabled by default; enable explicitly for control-plane nodes where persistent logs are needed.
@@ -78,3 +83,40 @@ journald_persistent_storage: false
 journald_purge_persistent_logs: false
 journald_system_max_use: "200M"
 journald_max_retention_sec: "1month"
+
+# Node resilience configuration (see tasks/node_resilience.yml)
+# Disabled by default; enable explicitly for control-plane nodes.
+# See playbooks/control-plane.yml for the enabling override.
+#
+# Hardware watchdog: recovers a node whose PID1 itself is stuck.
+# 🔥 Orange Pi Zero 3 (H618) の sunxi-wdt は max_timeout=16 秒。
+#    実機確認: /sys/class/watchdog/watchdog0/timeout = 16、
+#    dmesg "sunxi-wdt 30090a0.watchdog: Watchdog enabled (timeout=16 sec, nowayout=0)"。
+#    これを超える値を指定すると WDIOC_SETTIMEOUT が EINVAL を返し、
+#    systemd は watchdog を諦めてデバイスを閉じる = 設定ファイルはできるのに無効になる。
+#    両方の値をハードウェア上限以下に保つこと。
+node_resilience_watchdog: false
+node_resilience_runtime_watchdog_sec: "15"
+node_resilience_reboot_watchdog_sec: "15"
+# hung_task_panic: recovers a node where userspace is wedged on I/O but PID1 still runs.
+# 300s is deliberately conservative — a task blocked that long on these boards is already dead.
+node_resilience_hung_task_panic: false
+node_resilience_hung_task_timeout_secs: 300
+node_resilience_panic_sec: 10
+# armbian-ramlog keeps /var/log on zram (RAM), which discards the logs that explain a hard hang.
+node_resilience_disable_armbian_ramlog: false
+
+# kube-scheduler / kube-controller-manager のメトリクス公開
+# kubeadm 既定は --bind-address=127.0.0.1 で、Prometheus から scrape できず
+# KubeSchedulerDown / KubeControllerManagerDown が恒常的に firing になる
+# (実機では 2026-07-04 から1ヶ月鳴りっぱなしだった)。
+# ポートは RBAC 認証付き (10259/10257) なので、LAN へ bind しても未認証アクセスはできない。
+# 対になる Service 定義: boxp/lolice の argoproj/prometheus-operator/control-plane-metrics-services.yaml
+control_plane_metrics_bind_address: false
+control_plane_metrics_bind_value: "0.0.0.0"
+
+# kubeadm ClusterConfiguration のネットワーク設定。
+# 🔥 稼働中クラスタ (kube-system/kubeadm-config) と一致させること。
+#    ずれたまま kubeadm upgrade --config などで流用するとクラスタを壊す。
+kubeadm_service_subnet: "10.96.0.0/12"
+kubeadm_pod_subnet: "192.178.0.0/16"

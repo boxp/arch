@@ -18,3 +18,9 @@
 
 - name: Include journald configuration tasks
   ansible.builtin.include_tasks: journald.yml
+
+- name: Include node resilience tasks
+  ansible.builtin.include_tasks: node_resilience.yml
+
+- name: Include control plane metrics tasks
+  ansible.builtin.include_tasks: control_plane_metrics.yml

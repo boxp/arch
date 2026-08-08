@@ -27,14 +27,78 @@
   when:
     - inventory_hostname in groups['control_plane'] | default([])
 
+# 静的 Pod が実際に再起動したかを PID の変化で判定するため、いずれの変更よりも先に控えておく。
+# crictl はノードによって入っていない (実機: shanghai-1 にはあるが shanghai-2 には無い) ので使わない。
+# pgrep -x はプロセス名の完全一致で、自分自身にはマッチしないため誤検出しない。
+- name: Record the running etcd PID before touching the manifest
+  ansible.builtin.command: pgrep -x etcd
+  register: etcd_pid_before
+  changed_when: false
+  failed_when: false
+  become: true
+  when:
+    - inventory_hostname in groups['control_plane'] | default([])
+    - etcd_manifest.stat.exists | default(false)
+
+# backup: true は使わない。バックアップは /etc/kubernetes/manifests 内にドット始まりでない
+# ファイルとして作られ、kubelet がそれも静的 Pod として読み込むため、同じ etcd Pod が
+# 二重に定義される。代わりに、いずれのマニフェスト変更よりも前に原本を一度だけ
+# マニフェストディレクトリの外へ退避する (force: false で冪等)。
+# copy は親ディレクトリを作らないので、先に用意する。
+- name: Ensure the manifest backup directory exists
+  ansible.builtin.file:
+    path: /var/backups/kubernetes-manifests
+    state: directory
+    mode: '0700'
+  become: true
+  when:
+    - inventory_hostname in groups['control_plane'] | default([])
+    - etcd_manifest.stat.exists | default(false)
+
+- name: Keep a pristine copy of the etcd manifest outside the static pod directory
+  ansible.builtin.copy:
+    src: /etc/kubernetes/manifests/etcd.yaml
+    dest: /var/backups/kubernetes-manifests/etcd.yaml.orig
+    remote_src: true
+    force: false
+    mode: '0600'
+  become: true
+  when:
+    - inventory_hostname in groups['control_plane'] | default([])
+    - etcd_manifest.stat.exists | default(false)
+
+# 旧実装の backup: true が残した etcd.yaml.<pid>.<date>~ が実機 3 ノードすべてに存在していた
+# (例: etcd.yaml.18548.2026-05-18@17:50:08~)。kubelet は /etc/kubernetes/manifests の
+# 非隠しファイルをすべて静的 Pod として読むため、放置すると etcd の重複定義が残り続ける。
+# backup: true を外すだけでは既存ファイルは消えないので、ここで外へ退避する。
+- name: Find stale Ansible backups left inside the static pod directory
+  ansible.builtin.find:
+    paths: /etc/kubernetes/manifests
+    patterns: '*~'
+    file_type: file
+  register: stale_manifest_backups
+  become: true
+  when:
+    - inventory_hostname in groups['control_plane'] | default([])
+
+- name: Move stale backups out of the static pod directory
+  ansible.builtin.command:
+    cmd: mv -n -- "{{ item.path }}" /var/backups/kubernetes-manifests/
+    removes: "{{ item.path }}"
+  become: true
+  register: stale_manifest_backups_moved
+  loop: "{{ stale_manifest_backups.files | default([]) }}"
+  loop_control:
+    label: "{{ item.path }}"
+
 - name: Update etcd CPU resource request in manifest
   ansible.builtin.lineinfile:
     path: /etc/kubernetes/manifests/etcd.yaml
     regexp: '^(\s+)cpu:\s+\d+m\s*$'
     line: '\1cpu: {{ etcd_resource_requests_cpu }}'
     backrefs: true
-    backup: true
   become: true
+  register: etcd_cpu_request
   when:
     - inventory_hostname in groups['control_plane'] | default([])
     - etcd_manifest.stat.exists | default(false)
@@ -46,6 +110,143 @@
     line: '\1memory: {{ etcd_resource_requests_memory }}'
     backrefs: true
   become: true
+  register: etcd_memory_request
   when:
     - inventory_hostname in groups['control_plane'] | default([])
     - etcd_manifest.stat.exists | default(false)
+
+# monitoring/etcd ServiceMonitor (boxp/lolice#319) は 3 ノードとも 2381 で
+# connection refused だった。実機を確認したところフラグ自体は存在し、
+# --listen-metrics-urls=http://127.0.0.1:2381 と **loopback にしか bind していない** ため、
+# ノード IP を叩く Prometheus から届いていなかった。
+# kubeadm-config.yaml.j2 の宣言が静的 Pod マニフェストへ反映されるのは
+# kubeadm init/upgrade の時だけなので、稼働中のマニフェストを冪等に揃える。
+- name: Read etcd manifest to check for the metrics listener
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/etcd.yaml
+  register: etcd_manifest_raw
+  become: true
+  when:
+    - inventory_hostname in groups['control_plane'] | default([])
+    - etcd_manifest.stat.exists | default(false)
+
+# --listen-peer-urls 行の字下げをそのまま流用するため lineinfile ではなく replace を使う。
+# 静的 Pod の再起動を伴うため 3 台同時に実行すると quorum を失う。throttle: 1 はこのタスク単体の
+# 同時実行しか抑えられず (linear strategy では全ホストがこのタスクを終えてから次のタスクへ進む)、
+# 直列化の本体は playbooks/control-plane.yml の serial: 1 が担う。
+- name: Add etcd metrics listener when the flag is missing entirely
+  ansible.builtin.replace:
+    path: /etc/kubernetes/manifests/etcd.yaml
+    regexp: '^(\s*)(- --listen-peer-urls=.*)$'
+    replace: '\1\2\n\1- --listen-metrics-urls={{ etcd_listen_metrics_urls }}'
+  become: true
+  throttle: 1
+  register: etcd_metrics_listener
+  when:
+    - inventory_hostname in groups['control_plane'] | default([])
+    - etcd_manifest.stat.exists | default(false)
+    # slurp がスキップされたホストでも評価が壊れないよう default を噛ませる
+    - '"--listen-metrics-urls" not in (etcd_manifest_raw.content | default("") | b64decode)'
+
+# 既存フラグを宣言値へ揃える。現行 3 ノードはここが実際の修正パスになる
+# (127.0.0.1 bind -> 0.0.0.0 bind)。値が一致していれば replace は no-op なので冪等。
+- name: Keep an existing etcd metrics listener in sync with the declared value
+  ansible.builtin.replace:
+    path: /etc/kubernetes/manifests/etcd.yaml
+    regexp: '^(\s*)- --listen-metrics-urls=.*$'
+    replace: '\1- --listen-metrics-urls={{ etcd_listen_metrics_urls }}'
+  become: true
+  throttle: 1
+  register: etcd_metrics_listener_sync
+  when:
+    - inventory_hostname in groups['control_plane'] | default([])
+    - etcd_manifest.stat.exists | default(false)
+    - '"--listen-metrics-urls" in (etcd_manifest_raw.content | default("") | b64decode)'
+
+# 静的 Pod を再起動させ得る変更はメトリクス設定だけではないので、CPU/メモリ要求の更新も含める。
+# 待機をメトリクス変更に限定すると、それ以外の変更時に kubelet が検知する前に
+# 次の serial バッチへ進み、複数ノードが同時に再起動して quorum を失う。
+#
+# ただし旧バックアップの移動は別扱いにする。*~ には kube-apiserver など etcd 以外の
+# バックアップも含まれ、それを動かしても etcd は再起動しない。これを一律に
+# 「再起動するはず」と扱うと PID 変化待ちが空振りして play 全体が止まる。
+# etcd の重複定義を消した場合に再起動するかどうかも kubelet 任せで確実ではないため、
+# バックアップ移動は「health だけ確認する」経路に回す。
+- name: Note whether the etcd static pod manifest changed
+  ansible.builtin.set_fact:
+    # etcd.yaml 自体を書き換えた = 確実に再起動する (PID 変化を必須にする)
+    etcd_manifest_edited: >-
+      {{
+        (etcd_cpu_request.changed | default(false))
+        or (etcd_memory_request.changed | default(false))
+        or (etcd_metrics_listener.changed | default(false))
+        or (etcd_metrics_listener_sync.changed | default(false))
+      }}
+    # etcd の重複定義を取り除いた = 再起動するかどうかは kubelet 次第 (health のみ確認)
+    etcd_backup_removed: >-
+      {{
+        (stale_manifest_backups_moved.results | default([]))
+        | selectattr('changed', 'defined')
+        | selectattr('changed')
+        | map(attribute='item.path')
+        | select('search', 'etcd[.]yaml[.]')
+        | list | length > 0
+      }}
+
+- name: Combine the etcd manifest change signals
+  ansible.builtin.set_fact:
+    etcd_manifest_changed: "{{ (etcd_manifest_edited | bool) or (etcd_backup_removed | bool) }}"
+
+# /health だけでは足りない。CPU/メモリ要求の変更が理由の場合、kubelet がマニフェストの
+# 変更を検知する前に「変更前の etcd」に対して即 healthy が返り、再起動を待たずに
+# 次の serial バッチへ進んでしまう。まず PID の入れ替わりを待つ。
+- name: Wait for kubelet to restart the etcd static pod  # noqa: no-handler
+  ansible.builtin.command: pgrep -x etcd
+  register: etcd_pid_after
+  changed_when: false
+  failed_when: false
+  become: true
+  throttle: 1
+  until:
+    - etcd_pid_after.stdout | trim | length > 0
+    - (etcd_pid_after.stdout | trim) != (etcd_pid_before.stdout | default('') | trim)
+  retries: 30
+  delay: 10
+  when:
+    - etcd_manifest_edited | bool
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# until が尽きた場合に黙って先へ進まないよう、明示的に落とす。
+- name: Assert the etcd static pod actually restarted
+  ansible.builtin.assert:
+    that:
+      - etcd_pid_after.stdout | trim | length > 0
+      - (etcd_pid_after.stdout | trim) != (etcd_pid_before.stdout | default('') | trim)
+    fail_msg: >-
+      etcd static pod did not restart after the manifest change.
+      Proceeding to the next node could restart several etcd members at once and lose quorum.
+  when:
+    - etcd_manifest_edited | bool
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# バックアップ移動だけが理由の場合、kubelet が重複定義の削除を検知して etcd を
+# 置き換えるのは非同期。直後に /health を見ると「まだ生きている古いプロセス」で
+# 即成功し、次の serial ホストの処理中にこのノードが落ちる。少し落ち着かせてから見る。
+- name: Let kubelet settle after removing a duplicate etcd manifest
+  ansible.builtin.wait_for:
+    timeout: 60
+  when:
+    - etcd_backup_removed | bool
+    - not (etcd_manifest_edited | bool)
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# 再起動しただけでは不十分。etcd はクラスタへ再参加して quorum を組む前でも listen し得る。
+- name: Verify the etcd member rejoined the cluster
+  ansible.builtin.include_tasks: etcd_health_gate.yml
+  when:
+    - etcd_manifest_changed | bool
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build

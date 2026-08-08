@@ -21,7 +21,7 @@ jobs:
 
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.1
+          aqua_version: v2.62.3
         env:
           AQUA_GITHUB_TOKEN: ${{github.token}}
 
@@ -40,7 +40,7 @@ jobs:
           repositories: >-
             ["${{github.event.repository.name}}"]
 
-      - uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
         id: pick-out-drift-issues
         with:
           action: pick-out-drift-issues
@@ -83,16 +83,16 @@ jobs:
 
       - uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.1
+          aqua_version: v2.62.3
         env:
           GITHUB_TOKEN: ${{github.token}}
 
-      - uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
         with:
           action: set-drift-env
           issue: ${{toJSON(matrix.issue)}}
 
-      - uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
         id: setup
         with:
           action: setup
@@ -107,12 +107,12 @@ jobs:
           role-session-name: ${{ steps.setup.outputs.aws_role_session_name }}
           aws-region: ${{ steps.setup.outputs.aws_region }}
 
-      - uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
         with:
           action: terraform-init
           github_token: ${{steps.generate_token.outputs.token}}
 
-      - uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
         with:
           action: test
           github_token: ${{steps.generate_token.outputs.token}}
@@ -120,14 +120,14 @@ jobs:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
           TRIVY_IGNOREFILE: ${{ github.workspace }}/.trivyignore
 
-      - uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
         with:
           action: plan
           github_token: ${{steps.generate_token.outputs.token}}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
 
-      - uses: suzuki-shunsuke/tfaction@d0d52eb8b2ff13d6e27ac9653d038df384e58827 # v2.0.5
+      - uses: suzuki-shunsuke/tfaction@4fc32a7692e857bad031bc9e0324e7135c45742b # v2.0.6
         if: always()
         with:
           action: update-drift-issue
