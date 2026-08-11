@@ -27,16 +27,18 @@ jobs:
       contents: write
     steps:
       - name: Checkout arch (Cross.toml のため)
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           path: arch
+          persist-credentials: false
 
       - name: Checkout openai/codex
-        uses: actions/checkout@v4
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: openai/codex
           ref: ${{ inputs.codex_ref }}
           path: codex
+          persist-credentials: false
 
       - name: Rust ツールチェーンと cross
         run: |
@@ -114,7 +116,7 @@ jobs:
           sha256sum "$RUNNER_TEMP/codex-armv7.gz" | tee "$RUNNER_TEMP/codex-armv7.gz.sha256"
 
       - name: 成果物を上げる
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: codex-armv7-${{ inputs.codex_ref }}
           path: |
@@ -124,7 +126,7 @@ jobs:
 
       - name: Release を作る
         if: ${{ inputs.make_release }}
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           tag_name: codex-armv7-${{ inputs.codex_ref }}
           files: |
