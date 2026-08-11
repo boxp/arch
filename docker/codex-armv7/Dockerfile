@@ -14,7 +14,7 @@
 #    V8_FROM_SOURCE=1 でビルドできる。そのため python3/clang/ninja も入れる。
 #    (musl は rusty_v8 が明示的に拒否するので使えない:
 #     "musl builds are only supported for x86_64 and aarch64")
-FROM ubuntu:20.04
+FROM ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN sed -i 's|^deb http|deb [arch=amd64] http|' /etc/apt/sources.list && \
