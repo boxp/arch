@@ -6,13 +6,22 @@ name: Build codex for armv7 (IS01)
 # 変換を自動化している。詳細は docker/codex-armv7/README.md を参照。
 
 on:
+  # Renovate が docker/codex-armv7/codex-version.env を更新して merge されたら
+  # 自動でビルドする。codex は更新が速く、そのたびに手で回すのは現実的でない。
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/codex-armv7/codex-version.env'
+      - 'docker/codex-armv7/Cross.toml'
+      - '.github/workflows/build-codex-armv7.yml'
   workflow_dispatch:
     inputs:
       codex_ref:
-        description: 'openai/codex の ref (tag / branch / commit)'
+        description: 'openai/codex の ref。空ならバージョンファイルに従う'
         required: false
         type: string
-        default: 'main'
+        default: ''
       make_release:
         description: 'GitHub Release を作る'
         required: false
@@ -25,6 +34,8 @@ jobs:
     timeout-minutes: 120
     permissions:
       contents: write
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
     steps:
       - name: Checkout arch (Cross.toml のため)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -32,11 +43,28 @@ jobs:
           path: arch
           persist-credentials: false
 
+      # 手動実行で ref を指定したときはそれを使い、無ければバージョンファイルに従う。
+      # push で発火したときは常にバージョンファイル。
+      - name: ビルドする ref を決める
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.codex_ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            echo "ref=$INPUT_REF" >> "$GITHUB_OUTPUT"
+            echo "手動指定: $INPUT_REF"
+          else
+            v=$(grep -E '^CODEX_VERSION=' arch/docker/codex-armv7/codex-version.env | cut -d= -f2)
+            test -n "$v" || { echo "::error::codex-version.env から版を取れない"; exit 1; }
+            echo "ref=rust-v$v" >> "$GITHUB_OUTPUT"
+            echo "バージョンファイル: rust-v$v"
+          fi
+
       - name: Checkout openai/codex
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: openai/codex
-          ref: ${{ inputs.codex_ref }}
+          ref: ${{ steps.ref.outputs.ref }}
           path: codex
           persist-credentials: false
 
@@ -118,17 +146,17 @@ jobs:
       - name: 成果物を上げる
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: codex-armv7-${{ inputs.codex_ref }}
+          name: codex-armv7-${{ steps.ref.outputs.ref }}
           path: |
             ${{ runner.temp }}/codex-armv7.gz
             ${{ runner.temp }}/codex-armv7.gz.sha256
           retention-days: 30
 
       - name: Release を作る
-        if: ${{ inputs.make_release }}
+        if: ${{ inputs.make_release || github.event_name == 'push' }}
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          tag_name: codex-armv7-${{ inputs.codex_ref }}
+          tag_name: codex-armv7-${{ steps.ref.outputs.ref }}
           files: |
             ${{ runner.temp }}/codex-armv7.gz
             ${{ runner.temp }}/codex-armv7.gz.sha256
