@@ -199,26 +199,40 @@ jobs:
       #    flutter_desktop/ と chromecast_video/ には入っているが、これらは
       #    ロケールを削った別データ。Chromium の icu リポジトリから本来の
       #    common 版を取る。
+      # 🚨 壁 10: ICU の main から取ると v8 crate 内の ICU より新しいデータに
+      #    なり得る。実際に ICU 77 のソースへ ICU 78 のデータを渡した結果、
+      #    assembly は icudt78_dat を定義する一方、icuuc は icudt77_dat を参照し
+      #    gen-regexp-special-case のリンクに失敗した。v8/DEPS が固定する ICU の
+      #    revision から取得し、データ内のシンボルもソースの major と照合する。
       - name: ICU のロケールデータを用意する
         run: |
           V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
           test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          icu_dep=$(grep -A1 -m1 "'third_party/icu':" "$V/v8/DEPS" | tail -1)
+          icu_rev=$(printf '%s\n' "$icu_dep" | grep -oE '[0-9a-f]{40}')
+          [[ "$icu_rev" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::v8/DEPS から ICU revision を取れない"; exit 1; }
           d="$V/third_party/icu/common"
-          if [ -f "$d/icudtl.dat" ]; then
-            echo "既にある"
-          else
-            mkdir -p "$d"
-            curl -sSfL "https://chromium.googlesource.com/chromium/deps/icu/+/refs/heads/main/common/icudtl.dat?format=TEXT" |
-              base64 -d > "$d/icudtl.dat"
-          fi
+          mkdir -p "$d"
+          curl -sSfL \
+            "https://chromium.googlesource.com/chromium/deps/icu/+/$icu_rev/common/icudtl.dat?format=TEXT" \
+            -o "$RUNNER_TEMP/icudtl.dat.b64"
+          base64 -d "$RUNNER_TEMP/icudtl.dat.b64" > "$d/icudtl.dat"
           test -s "$d/icudtl.dat" || { echo "::error::icudtl.dat を取得できない"; exit 1; }
           # 🚨 データ形式が合っているか確認する。crate 同梱の別バリアントと
-          #    先頭の識別子が一致することを見る。合わないと実行時に壊れる。
+          #    先頭の識別子と ICU major が一致することを見る。合わないと
+          #    リンク時または実行時に壊れる。
           ref="$V/third_party/icu/flutter_desktop/icudtl.dat"
           a=$(od -An -tx1 -N4 "$d/icudtl.dat" | tr -d ' ')
           b=$(od -An -tx1 -N4 "$ref" | tr -d ' ')
           echo "取得: $a / 同梱: $b"
           test "$a" = "$b" || { echo "::error::ICU データ形式が一致しない"; exit 1; }
+          icu_major=$(awk '/^#define U_ICU_VERSION_MAJOR_NUM / { print $3; exit }' \
+            "$V/third_party/icu/source/common/unicode/uvernum.h")
+          data_symbol=$(grep -aoE 'icudt[0-9]+l' "$d/icudtl.dat" | sort -u)
+          echo "ICU revision: $icu_rev / source: $icu_major / data: $data_symbol"
+          test "$data_symbol" = "icudt${icu_major}l" || {
+            echo "::error::ICU ソースとデータの major が一致しない"; exit 1; }
           ls -l "$d/icudtl.dat"
 
       # 🚨 壁 3: glibc の板挟み。既定イメージは新しすぎ (2.39 要求) / 古すぎ
