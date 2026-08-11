@@ -98,7 +98,16 @@ jobs:
           test -n "$ver" || { echo "::error::Cargo.lock から pagable の版を取れない"; exit 1; }
           echo "pagable $ver"
           mkdir -p "$RUNNER_TEMP/vendor"
-          curl -sSfL "https://crates.io/api/v1/crates/pagable/$ver/download" -o "$RUNNER_TEMP/pagable.tar.gz"
+          # 🚨 crates.io は User-Agent が無いと 403 を返す。手元では cargo の
+          #    キャッシュ経由だったので気付けなかった (実測で確認済み)。
+          #    静的配信も併用し、片方が落ちても続行できるようにする。
+          curl -sSfL -A "boxp-arch-ci (https://github.com/boxp/arch)" \
+            "https://static.crates.io/crates/pagable/pagable-$ver.crate" \
+            -o "$RUNNER_TEMP/pagable.tar.gz" ||
+          curl -sSfL -A "boxp-arch-ci (https://github.com/boxp/arch)" \
+            "https://crates.io/api/v1/crates/pagable/$ver/download" \
+            -o "$RUNNER_TEMP/pagable.tar.gz"
+          test -s "$RUNNER_TEMP/pagable.tar.gz" || { echo "::error::pagable を取得できない"; exit 1; }
           tar xzf "$RUNNER_TEMP/pagable.tar.gz" -C "$RUNNER_TEMP/vendor"
           src="$RUNNER_TEMP/vendor/pagable-$ver/src/pagable_arc.rs"
           test -f "$src" || { echo "::error::pagable_arc.rs が無い"; exit 1; }
