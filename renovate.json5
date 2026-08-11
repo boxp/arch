@@ -18,6 +18,19 @@
   prConcurrentLimit: 10,
   branchConcurrentLimit: 20,
   customManagers: [
+    // codex (IS01 armv7 クロスビルド用)。
+    // 🚨 alpha を拾わないよう ^rust-v<major>.<minor>.<patch>$ に限定する。
+    //    alpha は 1 日に複数出るため、追うと PR が溢れる。
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-armv7/codex-version\\.env$/"],
+      matchStrings: [
+        "CODEX_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "openai/codex",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^rust-v(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)$",
+    },
     // Kubernetes version (playbooks)
     {
       customType: "regex",
