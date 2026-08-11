@@ -6,7 +6,7 @@ IS01 (Sharp, ARMv7, Debian bookworm armhf) で codex を動かすためのビル
 ソースは Rust なのでクロスコンパイルできるが、32bit 固有の壁が 3 つある。
 アップデートのたびに手で直すのは現実的でないため、変換を自動化している。
 
-## 32bit で踏む 6 つの壁
+## 32bit で踏む 7 つの壁
 
 | 壁 | 内容 | 対処 |
 |---|---|---|
@@ -16,6 +16,7 @@ IS01 (Sharp, ARMv7, Debian bookworm armhf) で codex を動かすためのビル
 | `openssl-sys` | ターゲット (armhf) の OpenSSL が要る | 自前イメージに `libssl-dev:armhf` を入れる。⚠️ Ubuntu の armhf は `ports.ubuntu.com` にあり、素の sources.list では 404 |
 | **`rusty_v8`** | `code-mode` は `codex-code-mode-host` を要し、それは V8 に依存する。armv7 の**プリビルドが無い** (404)。musl は build.rs が明示的に拒否する (`musl builds are only supported for x86_64 and aarch64`) | **`V8_FROM_SOURCE=1`** でソースからビルドする。V8 のソースは crate に同梱 (79MB) されており、V8 自体は 32bit ARM を正式サポートしている |
 | **`v8_enable_sandbox`** | `codex-code-mode-runtime` がこの feature を有効化するが、sandbox は pointer compression を要求し、V8 の BUILD.gn が 32bit ARM を拒否する (`Sharing a pointer compression cage is only supported on x64, arm64, ...`) | armv7 のときだけ feature を外す。⚠️ **V8 のメモリ安全機構が 1 段減る** |
+| **V8 の sysroot** | `build.rs` の `maybe_install_sysroot("arm")` が壊れている。①`install-sysroot.py` が受け付ける名前は `armhf` で `arm` は無効 ②探すパスが `debian_sid_*` と古い (現在は `debian_bullseye_*`) ③ホスト用ツールに要る `amd64` 側を入れない | ビルド前に `install-sysroot.py --arch=amd64` と `--arch=armhf` を明示的に実行する |
 
 いずれも「64bit しか想定していないコード」で、32bit ARM が実質サポート外であることの現れ。
 
