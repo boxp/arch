@@ -241,10 +241,20 @@ jobs:
       #
       # 🚨 並列度を絞る。V8 のビルドは重く、無制限だとランナーのメモリを
       #    使い切って落ちる (手元の WSL を実際にクラッシュさせた)。
+      # 🚨 壁 9: V8 150.4.0 は Temporal を既定で有効にし、temporal_capi → ICU4X
+      #    Rust crate 群を依存に加える。v8 crate の publish 時には
+      #    third_party/rust/chromium_crates_io/vendor/ が除外されているため、
+      #    ICU4X の build.rs を Ninja が見つけられず必ず失敗する。
+      #    GN_ARGS で Temporal だけを切り、Intl (ICU4C) は維持する。code-mode は
+      #    Intl.DateTimeFormat を使うため壁 7 の ICU ロケールデータも必要なまま。
+      #    ⚠️ armv7 版では JavaScript の Temporal API が使えない。upstream の
+      #    code-mode グローバル一覧には Temporal があるが、通常の code-mode 実行と
+      #    Intl のロケール書式化は維持される。
       - name: クロスビルド
         working-directory: codex/codex-rs
         env:
           V8_FROM_SOURCE: '1'
+          GN_ARGS: v8_enable_temporal_support=false
           CARGO_BUILD_JOBS: '2'
           NINJA_STATUS: '[%f/%t] '
         run: |
