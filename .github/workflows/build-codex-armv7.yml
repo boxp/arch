@@ -162,6 +162,32 @@ jobs:
           fi
           grep -A1 'target_arch = "arm"' "$f"
 
+      # 🚨 壁 6: V8 のビルドには Chromium の sysroot が要る。
+      #    v8 crate の build.rs は maybe_install_sysroot("arm") を呼ぶが、
+      #      - install-sysroot.py が受け付ける名前は "armhf" で "arm" は無効
+      #      - 探すパスが debian_sid_* と古い (現在は debian_bullseye_*)
+      #      - ホスト用ツールのビルドに要る amd64 側を入れない
+      #    ため "Missing sysroot (//build/linux/debian_bullseye_amd64-sysroot)"
+      #    で gn gen が失敗する。ここで先に入れておく。
+      - name: V8 の sysroot を用意する
+        run: |
+          V=$(ls -d "$HOME/.cargo/registry/src"/*/v8-* 2>/dev/null | head -1)
+          if [ -z "$V" ]; then
+            echo "v8 crate がまだ展開されていない。fetch する"
+            (cd codex/codex-rs && cargo fetch --target armv7-unknown-linux-gnueabihf >/dev/null 2>&1 || true)
+            V=$(ls -d "$HOME/.cargo/registry/src"/*/v8-* 2>/dev/null | head -1)
+          fi
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          echo "v8 crate: $V"
+          s="$V/build/linux/sysroot_scripts/install-sysroot.py"
+          test -f "$s" || { echo "::error::install-sysroot.py が無い"; exit 1; }
+          # 🚨 crate は読み取り専用で展開されるので書けるようにする。
+          chmod -R u+w "$V"
+          for a in amd64 armhf; do
+            (cd "$V" && python3 build/linux/sysroot_scripts/install-sysroot.py --arch="$a")
+          done
+          ls -d "$V"/build/linux/debian_*-sysroot
+
       # 🚨 壁 3: glibc の板挟み。既定イメージは新しすぎ (2.39 要求) / 古すぎ
       #    (build script が動かない) のどちらかになる。Ubuntu 20.04 (2.31) の
       #    自前イメージを使う。実機は 2.36。
