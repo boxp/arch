@@ -1,19 +1,12 @@
-# 🚨 codex は openssl-sys を使うので、ターゲット(armhf)の OpenSSL が要る。
-#    cross の既定イメージには入っていないため、pre-build で追加する。
-#    (vendored feature は codex-cli の直接依存でないため指定できない)
-[target.armv7-unknown-linux-gnueabihf]
-# 🚨 既定イメージは新しい Ubuntu ベースで glibc 2.38/2.39 に対してリンクされる。
-#    実機の Debian bookworm は glibc 2.36 なので起動できない
-#    ("version `GLIBC_2.38' not found")。古いイメージに固定する。
-image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:0.2.5"
+# 🚨 musl を使う。gnueabihf は glibc の板挟みになって成立しなかった:
+#      新しいイメージ -> glibc 2.38/2.39 に対してリンクされ、実機 (Debian
+#                        bookworm / glibc 2.36) で "version `GLIBC_2.38' not
+#                        found" となり起動できない
+#      古いイメージ   -> ホスト側の glibc が古すぎて aws-lc-sys / zstd-sys の
+#                        build script (x86_64 バイナリ) が起動できない
+#    musl なら静的リンクになり glibc に一切依存しない。実測で GLIBC 参照 0 件。
+[target.armv7-unknown-linux-musleabihf]
 pre-build = [
-  "dpkg --add-architecture armhf",
   "apt-get update",
-  "apt-get install --assume-yes libssl-dev:armhf pkg-config",
-]
-
-[target.armv7-unknown-linux-gnueabihf.env]
-passthrough = [
-  "PKG_CONFIG_ALLOW_CROSS=1",
-  "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig",
+  "apt-get install --assume-yes pkg-config",
 ]

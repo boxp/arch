@@ -70,7 +70,7 @@ jobs:
 
       - name: Rust ツールチェーンと cross
         run: |
-          rustup target add armv7-unknown-linux-gnueabihf
+          rustup target add armv7-unknown-linux-musleabihf
           cargo install cross --git https://github.com/cross-rs/cross --locked
 
       # 🚨 壁 1: libc::SYS_* は 64bit では i64、32bit では i32。
@@ -88,7 +88,24 @@ jobs:
           test "$after" -ge "$before" || { echo "::error::変換できていない"; exit 1; }
           test "$(grep -c 'as i64 as i64' "$f")" = 0 || { echo "::error::二重キャスト"; exit 1; }
 
-      # 🚨 壁 2: pagable は 32bit の想定サイズを wasm32 の実測値で決め打ちしており
+      # 🚨 壁 2: upstream は musl 向けの vendored OpenSSL を x86_64 と aarch64 に
+      #    しか付けておらず armv7 が漏れている。無いと
+      #    "Could not find openssl via pkg-config" で止まる。
+      - name: musl の vendored OpenSSL に armv7 を足す
+        working-directory: codex/codex-rs
+        run: |
+          f=core/Cargo.toml
+          test -f "$f" || { echo "::error::$f が無い"; exit 1; }
+          if grep -q 'armv7-unknown-linux-musleabihf.dependencies' "$f"; then
+            echo "既に入っている"
+          else
+            grep -q 'aarch64-unknown-linux-musl.dependencies' "$f" ||
+              { echo "::error::aarch64 の指定が無い。upstream の構成が変わった"; exit 1; }
+            printf '\n# armv7 (IS01) 向けに追加\n[target.armv7-unknown-linux-musleabihf.dependencies]\nopenssl-sys = { workspace = true, features = ["vendored"] }\n' >> "$f"
+          fi
+          grep -A1 'armv7-unknown-linux-musleabihf.dependencies' "$f"
+
+      # 🚨 壁 3: pagable は 32bit の想定サイズを wasm32 の実測値で決め打ちしており
       #    armv7 では表明が外れる。表明を wasm32 限定に緩めた複製へ差し替える。
       #    assert_eq_size! はコンパイル時のサイズ確認のみで実行時の意味を持たない。
       - name: pagable の 32bit サイズ表明を緩める
@@ -123,31 +140,31 @@ jobs:
           grep -q "^pagable = " Cargo.toml || { echo "::error::pagable の差し替えが入っていない"; exit 1; }
           grep -A1 '^\[patch.crates-io\]' Cargo.toml | head -2
 
-      # 🚨 壁 3: 既定イメージは glibc 2.38/2.39 に対してリンクする。
+      # 🚨 壁 4: 既定イメージは glibc 2.38/2.39 に対してリンクする。
       #    実機の Debian bookworm は 2.36 なので起動できない。古いイメージに固定。
       - name: Cross.toml を置く
         run: cp arch/docker/codex-armv7/Cross.toml codex/codex-rs/Cross.toml
 
       - name: クロスビルド
         working-directory: codex/codex-rs
-        run: cross build --release -p codex-cli --target armv7-unknown-linux-gnueabihf
+        run: cross build --release -p codex-cli --target armv7-unknown-linux-musleabihf
 
       - name: 検証と圧縮
         working-directory: codex/codex-rs
         run: |
-          bin=target/armv7-unknown-linux-gnueabihf/release/codex
+          bin=target/armv7-unknown-linux-musleabihf/release/codex
           file "$bin" | tee /dev/stderr | grep -q "ELF 32-bit LSB.*ARM" ||
             { echo "::error::armv7 バイナリになっていない"; exit 1; }
-          # 🚨 実機の glibc は 2.36。それより新しい要求が残っていたら弾く。
-          if strings "$bin" | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -1 |
-             awk -F. '{ if ($2+0 > 36) exit 0; else exit 1 }'; then
-            echo "::error::glibc 2.36 より新しい要求が残っている"
-            strings "$bin" | grep -oE 'GLIBC_2\.[0-9]+' | sort -uV | tail -3
-            exit 1
-          fi
+          # 🚨 musl の静的リンクになっていることを確認する。動的リンクだと
+          #    実機の glibc 版に依存し、"version `GLIBC_2.38' not found" で
+          #    起動できない (gnueabihf で実際に踏んだ)。
+          file "$bin" | grep -q "statically linked" ||
+            { echo "::error::静的リンクになっていない"; exit 1; }
+          n=$(strings "$bin" | grep -c "GLIBC_" || true)
+          test "$n" = 0 || { echo "::error::GLIBC 参照が $n 件残っている"; exit 1; }
           cp "$bin" "$RUNNER_TEMP/codex-armv7"
-          docker run --rm -v "$RUNNER_TEMP:/w" ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:0.2.5 \
-            arm-linux-gnueabihf-strip /w/codex-armv7
+          docker run --rm -v "$RUNNER_TEMP:/w" ghcr.io/cross-rs/armv7-unknown-linux-musleabihf:0.2.5 \
+            arm-linux-musleabihf-strip /w/codex-armv7
           gzip -9 -c "$RUNNER_TEMP/codex-armv7" > "$RUNNER_TEMP/codex-armv7.gz"
           ls -lh "$RUNNER_TEMP/codex-armv7" "$RUNNER_TEMP/codex-armv7.gz"
           sha256sum "$RUNNER_TEMP/codex-armv7.gz" | tee "$RUNNER_TEMP/codex-armv7.gz.sha256"
