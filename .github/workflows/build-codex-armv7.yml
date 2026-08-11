@@ -193,6 +193,39 @@ jobs:
           done
           find "$V/build/linux" -maxdepth 1 -type d -name 'debian_*-sysroot' 
 
+      # 🚨 壁 11: rusty_v8 の cppgc FFI は最大 alignment を全アーキテクチャで
+      #    16 bytes と決め打ちし、alignas(16) の型を無条件に実体化する。
+      #    V8 本体の cppgc は kMaxSupportedAlignment = 2 * sizeof(void*) のため、
+      #    32bit ARM の上限は 8 bytes で static_assert が失敗する。64bit 時だけ
+      #    16-byte 分岐をコンパイルし、Rust 側の事前条件も V8 と同じ式にする。
+      - name: rusty_v8 の cppgc alignment 上限を 32bit に合わせる
+        run: |
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          c="$V/src/binding.cc"
+          r="$V/src/cppgc.rs"
+          test "$(grep -c '^class alignas(16) RustObjButAlign16 : public RustObj {};$' "$c")" = 1 || {
+            echo "::error::binding.cc の 16-byte alignment 型が想定と異なる"; exit 1; }
+          test "$(grep -c 'assert!(std::mem::align_of::<T>() <= 16);' "$r")" = 1 || {
+            echo "::error::cppgc.rs の alignment 上限が想定と異なる"; exit 1; }
+          guards_before=$(grep -c '^#if V8_TARGET_ARCH_64_BIT$' "$c") || :
+          perl -pi -e \
+            's/^(class alignas\(16\) RustObjButAlign16 : public RustObj \{\};)$/#if V8_TARGET_ARCH_64_BIT\n$1\n#endif/' \
+            "$c"
+          perl -0pi -e \
+            's{(  if \(alignment <= 16\) \{\n    return cppgc::MakeGarbageCollected<RustObjButAlign16>\(\n        heap->GetAllocationHandle\(\), cppgc::AdditionalBytes\(size\)\);\n  \})}{#if V8_TARGET_ARCH_64_BIT\n$1\n#endif}' \
+            "$c"
+          perl -pi -e \
+            's{// max alignment in cppgc is 16}{// cppgc supports twice the pointer size as its maximum alignment}; s{assert!\(std::mem::align_of::<T>\(\) <= 16\);}{assert!(std::mem::align_of::<T>() <= 2 * std::mem::size_of::<usize>());}' \
+            "$r"
+          guards_after=$(grep -c '^#if V8_TARGET_ARCH_64_BIT$' "$c")
+          test "$guards_after" -eq "$((guards_before + 2))" || {
+            echo "::error::binding.cc の 64bit ガードを追加できない"; exit 1; }
+          grep -q 'align_of::<T>() <= 2 \* std::mem::size_of::<usize>()' "$r" || {
+            echo "::error::cppgc.rs の alignment 上限を更新できない"; exit 1; }
+          sed -n '/RustObjButAlign16/,+18p' "$c"
+          grep -A1 'twice the pointer size' "$r"
+
       # 🚨 壁 7: ICU のロケールデータ (common/icudtl.dat) が crate に含まれない。
       #    third_party/icu/BUILD.gn は armv7 に対して data_dir="common" を選ぶが、
       #    crate 配布では common/ が空 (10.9MB あるため除外されている)。
