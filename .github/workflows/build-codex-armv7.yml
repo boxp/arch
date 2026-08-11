@@ -125,6 +125,43 @@ jobs:
 
       # 🚨 壁 3: 既定イメージは glibc 2.38/2.39 に対してリンクする。
       #    実機の Debian bookworm は 2.36 なので起動できない。古いイメージに固定。
+      # 🚨 壁 5: v8_enable_sandbox は 32bit ARM で使えない。sandbox は pointer
+      #    compression を要求するが、V8 の BUILD.gn が
+      #    "Sharing a pointer compression cage is only supported on x64,
+      #     arm64, ppc64, s390x, riscv64 and loong64" で拒否する。
+      #    ポインタ圧縮は 64bit ポインタを 32bit に縮める仕組みなので、
+      #    32bit では原理的に意味を持たない。
+      #    ⚠️ sandbox は V8 のメモリ安全機構。外すと信頼できない JS を実行する
+      #       際の防御が 1 段減る。IS01 は個人端末で code-mode が実行するのは
+      #       自分の指示に基づくコードなので許容する。
+      - name: armv7 では v8 の sandbox を外す
+        working-directory: codex/codex-rs
+        run: |
+          f=code-mode-runtime/Cargo.toml
+          test -f "$f" || { echo "::error::$f が無い。upstream の構成が変わった"; exit 1; }
+          if grep -q 'target_arch = "arm"' "$f"; then
+            echo "既に入っている"
+          else
+            grep -q 'features = \["v8_enable_sandbox"\]' "$f" ||
+              { echo "::error::v8_enable_sandbox の指定が見つからない"; exit 1; }
+            python3 - "$f" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          a = 'v8 = { workspace = true, features = ["v8_enable_sandbox"] }'
+          b = (
+              '[target.\'cfg(not(all(target_arch = "arm", target_pointer_width = "32")))\'.dependencies]\n'
+              'v8 = { workspace = true, features = ["v8_enable_sandbox"] }\n'
+              '\n'
+              '[target.\'cfg(all(target_arch = "arm", target_pointer_width = "32"))\'.dependencies]\n'
+              'v8 = { workspace = true }'
+          )
+          assert s.count(a) == 1, "v8_enable_sandbox の指定が 1 箇所でない"
+          open(p, "w").write(s.replace(a, b))
+          PY
+          fi
+          grep -A1 'target_arch = "arm"' "$f"
+
       # 🚨 壁 3: glibc の板挟み。既定イメージは新しすぎ (2.39 要求) / 古すぎ
       #    (build script が動かない) のどちらかになる。Ubuntu 20.04 (2.31) の
       #    自前イメージを使う。実機は 2.36。
