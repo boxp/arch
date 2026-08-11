@@ -193,6 +193,34 @@ jobs:
           done
           find "$V/build/linux" -maxdepth 1 -type d -name 'debian_*-sysroot' 
 
+      # 🚨 壁 7: ICU のロケールデータ (common/icudtl.dat) が crate に含まれない。
+      #    third_party/icu/BUILD.gn は armv7 に対して data_dir="common" を選ぶが、
+      #    crate 配布では common/ が空 (10.9MB あるため除外されている)。
+      #    flutter_desktop/ と chromecast_video/ には入っているが、これらは
+      #    ロケールを削った別データ。Chromium の icu リポジトリから本来の
+      #    common 版を取る。
+      - name: ICU のロケールデータを用意する
+        run: |
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          d="$V/third_party/icu/common"
+          if [ -f "$d/icudtl.dat" ]; then
+            echo "既にある"
+          else
+            mkdir -p "$d"
+            curl -sSfL "https://chromium.googlesource.com/chromium/deps/icu/+/refs/heads/main/common/icudtl.dat?format=TEXT" |
+              base64 -d > "$d/icudtl.dat"
+          fi
+          test -s "$d/icudtl.dat" || { echo "::error::icudtl.dat を取得できない"; exit 1; }
+          # 🚨 データ形式が合っているか確認する。crate 同梱の別バリアントと
+          #    先頭の識別子が一致することを見る。合わないと実行時に壊れる。
+          ref="$V/third_party/icu/flutter_desktop/icudtl.dat"
+          a=$(od -An -tx1 -N4 "$d/icudtl.dat" | tr -d ' ')
+          b=$(od -An -tx1 -N4 "$ref" | tr -d ' ')
+          echo "取得: $a / 同梱: $b"
+          test "$a" = "$b" || { echo "::error::ICU データ形式が一致しない"; exit 1; }
+          ls -l "$d/icudtl.dat"
+
       # 🚨 壁 3: glibc の板挟み。既定イメージは新しすぎ (2.39 要求) / 古すぎ
       #    (build script が動かない) のどちらかになる。Ubuntu 20.04 (2.31) の
       #    自前イメージを使う。実機は 2.36。
