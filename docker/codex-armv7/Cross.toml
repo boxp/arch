@@ -1,7 +1,7 @@
 # ビルドの母体は docker/codex-armv7/Dockerfile で作る自前イメージ。
 # 理由は Dockerfile 冒頭のコメントを参照 (glibc の板挟みと rusty_v8 の musl 拒否)。
 [target.armv7-unknown-linux-gnueabihf]
-image = "is01-cross-armv7:20.04"
+image = "is01-cross-armv7:bookworm"
 
 [target.armv7-unknown-linux-gnueabihf.env]
 passthrough = [

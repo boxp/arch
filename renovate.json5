@@ -236,14 +236,15 @@
         '/.*/',
       ],
     },
-    // 🚨 壁 12: codex armv7 は実機の glibc 2.36 との互換性のため Ubuntu
-    // 20.04 がビルド契約。tag 更新は focal 用 apt source とも矛盾するため禁止する。
+    // 🚨 壁 13: codex armv7 は実機の glibc 2.36 との互換性と amd64/armhf を
+    // 同一 repository から取るため Debian bookworm がビルド契約。
+    // tag 更新で release/glibc が変わるのは禁止する。
     // digest の更新は引き続き許可する。
     {
       matchFileNames: ["docker/codex-armv7/Dockerfile"],
       matchManagers: ["dockerfile"],
-      matchPackageNames: ["ubuntu"],
-      allowedVersions: "20.04",
+      matchPackageNames: ["debian"],
+      allowedVersions: "bookworm-slim",
     },
     {
       matchDatasources: ["terraform-provider"],
