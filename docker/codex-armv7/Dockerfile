@@ -14,7 +14,12 @@
 #    V8_FROM_SOURCE=1 でビルドできる。そのため python3/clang/ninja も入れる。
 #    (musl は rusty_v8 が明示的に拒否するので使えない:
 #     "musl builds are only supported for x86_64 and aarch64")
-FROM ubuntu:26.04@sha256:678c6550cc43645e08669028bc177f50be4e7c5b8cca677067b1914d4afc7a03
+#
+# 🚨 壁 12: Renovate が 20.04 を 26.04 (resolute) へ更新すると、glibc 2.43
+#    になって壁 3 の実機互換性を壊すうえ、focal armhf 用 sources.list と混在して
+#    resolute の armhf index を archive/security.ubuntu.com へ取りに行き 404 になる。
+#    20.04 の digest に固定し、Renovate 側でもこの Dockerfile だけ tag を制限する。
+FROM ubuntu:20.04@sha256:8feb4d8ca5354def3d8fce243717141ce31e2c428701f6682bd2fafe15388214
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN sed -i 's|^deb http|deb [arch=amd64] http|' /etc/apt/sources.list && \
