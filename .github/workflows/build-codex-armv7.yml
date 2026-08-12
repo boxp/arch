@@ -246,6 +246,27 @@ jobs:
           sed -n '/RustObjButAlign16/,+18p' "$c"
           grep -A1 'twice the pointer size' "$r"
 
+      # 🚨 壁 16: Rust の ARM EABI では TypeId は size 16 / alignment 4 だが、
+      #    u64 と u128 はともに alignment 8。v8 crate は TypeId の alignment が
+      #    u64 または u128 と同じだと表明するため Rust 側のコンパイルで停止する。
+      #    TypeIdHasher は TypeId::hash から write_u64 で渡された値を保持するだけで、
+      #    TypeId のメモリ表現や alignment を使わない。サイズ表明は維持し、該当する
+      #    ARM 32bit だけ alignment 表明を免除する。
+      - name: rusty_v8 の TypeId alignment 表明を ARM 32bit に合わせる
+        run: |
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          r="$V/src/isolate.rs"
+          test -f "$r" || { echo "::error::isolate.rs が無い"; exit 1; }
+          test "$(grep -c 'align_of::<TypeId>() == align_of::<u64>()' "$r")" = 1 || {
+            echo "::error::TypeId alignment 表明が想定と異なる"; exit 1; }
+          perl -0pi -e \
+            's{  assert!\(\n    align_of::<TypeId>\(\) == align_of::<u64>\(\)}{  assert!(\n    cfg!(all(target_arch = "arm", target_pointer_width = "32"))\n      || align_of::<TypeId>() == align_of::<u64>()}' \
+            "$r"
+          test "$(grep -c 'cfg!(all(target_arch = "arm", target_pointer_width = "32"))' "$r")" = 1 || {
+            echo "::error::ARM 32bit の TypeId alignment 免除を追加できない"; exit 1; }
+          sed -n '/const _: () = {/,/};/p' "$r"
+
       # 🚨 壁 7: ICU のロケールデータ (common/icudtl.dat) が crate に含まれない。
       #    third_party/icu/BUILD.gn は armv7 に対して data_dir="common" を選ぶが、
       #    crate 配布では common/ が空 (10.9MB あるため除外されている)。
