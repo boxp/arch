@@ -21,6 +21,13 @@
 #    index まで取得して 404 になる。既存 source の sed 修正は再発したので廃止し、
 #    amd64/armhf を同じ repository から配る Debian bookworm を母体にする。
 #    実機と同じ glibc 2.36 なので、壁 3 の実行時互換性も維持できる。
+#
+# 🚨 壁 14: V8 の x64 -> ARM32 クロスビルドでは、snapshot と generator を
+#    ターゲットと同じ 32bit 幅にするため clang_x86_v8_arm が選ばれる。そのため
+#    bytecode_builtins_list_generator は i386 ELF になり、amd64 専用イメージでは
+#    実体があっても 32bit ELF loader 不在により execve(2) が ENOENT を返す。
+#    libc6-i386 と lib32stdc++6 で amd64 ホスト上に 32bit loader と、generator
+#    が動的リンクする glibc/libstdc++/libgcc runtime を用意する。
 FROM debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241
 ENV DEBIAN_FRONTEND=noninteractive
 
@@ -28,7 +35,7 @@ RUN dpkg --add-architecture armhf && \
     apt-get update && \
     apt-get install --assume-yes --no-install-recommends \
       gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross \
-      libssl-dev:armhf pkg-config \
+      libc6-i386 lib32stdc++6 libssl-dev:armhf pkg-config \
       build-essential ca-certificates curl xz-utils git \
       python3 clang lld ninja-build cmake && \
     rm -rf /var/lib/apt/lists/*
