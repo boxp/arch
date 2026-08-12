@@ -310,6 +310,11 @@ jobs:
       #    ⚠️ armv7 版では JavaScript の Temporal API が使えない。upstream の
       #    code-mode グローバル一覧には Temporal があるが、通常の code-mode 実行と
       #    Intl のロケール書式化は維持される。
+      # 🚨 壁 15: V8 本体用の Clang 23 は自動取得されるが、build.rs の bindgen は
+      #    LIBCLANG_PATH が無いと Debian bookworm の system libclang を読む。
+      #    v8 150.4.0 の libc++ は Clang 21+ を要求するため builtin type traits の
+      #    解釈に失敗する。build.rs が build_v8() 内で先に取得する Chromium Rust
+      #    toolchain 同梱の libclang 23 を、同じ crate の相対位置から明示する。
       # 🚨 出力を絞ってからストリームする。V8 は 4000 以上のターゲットを持ち、
       #    素通しすると step のログが巨大になって `gh run view --log` が
       #    **0 行を返す**。実際に 2 時間 44 分走って失敗した run のログが
@@ -330,6 +335,10 @@ jobs:
           # 🚨 パイプの左側の失敗を拾うために pipefail が要る。
           #    これが無いと tee の成功で step が緑になる。
           set -o pipefail
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' -print -quit)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          export LIBCLANG_PATH="$V/third_party/rust-toolchain/lib"
+          echo "bindgen libclang: $LIBCLANG_PATH"
           cross build --release --jobs 2 \
             -p codex-cli -p codex-code-mode-host \
             --target armv7-unknown-linux-gnueabihf 2>&1 |

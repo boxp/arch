@@ -10,6 +10,10 @@ passthrough = [
   #    明示しない環境変数をコンテナへ渡さない。Temporal (Rust ICU4X) を armv7
   #    だけ無効にする指定をクロスビルド環境まで届ける。
   "GN_ARGS",
+  # 🚨 壁 15: rusty_v8 の bindgen が V8 同梱 libc++ を system libclang で読むと、
+  #    bookworm の Clang 14 では新しい builtin type traits を解釈できない。
+  #    workflow が指定する Chromium Rust toolchain の libclang 23 を届ける。
+  "LIBCLANG_PATH",
   "PKG_CONFIG_ALLOW_CROSS=1",
   "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig",
 ]
