@@ -14,6 +14,7 @@ on:
     paths:
       - 'docker/codex-armv7/codex-version.env'
       - 'docker/codex-armv7/Cross.toml'
+      - 'docker/codex-armv7/Dockerfile'
       - '.github/workflows/build-codex-armv7.yml'
   workflow_dispatch:
     inputs:
@@ -274,11 +275,17 @@ jobs:
       # 🚨 壁 13: Ubuntu の archive/ports 分割を sed で補正する方式は、ベース側の
       #    別 release source が armhf にも適用されて再度 404 になったため廃止する。
       #    Debian は amd64/armhf を同じ repository から取得できる。
+      # 🚨 壁 14: V8 は ARM32 用 snapshot/generator を clang_x86_v8_arm で
+      #    i386 ELF として作る。ファイルが存在しても 32bit ELF loader が無いと
+      #    実行時に ENOENT になる。さらに generator は i386 の libstdc++/libgcc に
+      #    動的リンクするため、loader の起動と各 runtime の解決を確認する。
       - name: クロスビルド用イメージを作る
         run: |
           docker build -t is01-cross-armv7:bookworm arch/docker/codex-armv7
           docker run --rm is01-cross-armv7:bookworm sh -ec \
             'test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.36";
+             test -x /lib/ld-linux.so.2; /lib/ld-linux.so.2 --help >/dev/null;
+             test -e /lib32/libstdc++.so.6; test -e /lib32/libgcc_s.so.1;
              command -v arm-linux-gnueabihf-gcc; command -v arm-linux-gnueabihf-g++;
              command -v python3; command -v ninja; command -v clang;
              command -v lld; command -v cmake'
