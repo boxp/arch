@@ -297,6 +297,12 @@ jobs:
       #    ⚠️ armv7 版では JavaScript の Temporal API が使えない。upstream の
       #    code-mode グローバル一覧には Temporal があるが、通常の code-mode 実行と
       #    Intl のロケール書式化は維持される。
+      # 🚨 出力を絞ってからストリームする。V8 は 4000 以上のターゲットを持ち、
+      #    素通しすると step のログが巨大になって `gh run view --log` が
+      #    **0 行を返す**。実際に 2 時間 44 分走って失敗した run のログが
+      #    一切取得できず、失敗内容を確認する手段が無くなった。
+      #    進捗行 ([N/M] ...) と cargo の rerun-if-changed を落とすだけで
+      #    桁が変わる。全文は常に $LOG に残し、失敗時だけ成果物として上げる。
       - name: クロスビルド
         working-directory: codex/codex-rs
         env:
@@ -304,12 +310,39 @@ jobs:
           GN_ARGS: v8_enable_temporal_support=false
           CARGO_BUILD_JOBS: '2'
           NINJA_STATUS: '[%f/%t] '
+          LOG: /tmp/cross-build.log
         run: |
           nproc
           free -g | head -2
+          # 🚨 パイプの左側の失敗を拾うために pipefail が要る。
+          #    これが無いと tee の成功で step が緑になる。
+          set -o pipefail
           cross build --release --jobs 2 \
             -p codex-cli -p codex-code-mode-host \
-            --target armv7-unknown-linux-gnueabihf
+            --target armv7-unknown-linux-gnueabihf 2>&1 |
+            tee "$LOG" |
+            grep -vE '^\s+\[[0-9]+/[0-9]+\]|cargo:rerun-if-changed='
+
+      # 🚨 失敗したときに何が起きたかを必ず取り出せるようにする。
+      #    step のログが巨大で取得できない事態を二度と起こさないため、
+      #    末尾を job のログに出しつつ全文を成果物にも残す。
+      - name: 失敗ログを残す
+        if: failure()
+        env:
+          LOG: /tmp/cross-build.log
+        run: |
+          echo '::group::クロスビルドの末尾 200 行'
+          tail -200 "$LOG" || echo 'ログが無い'
+          echo '::endgroup::'
+
+      - name: 失敗ログを成果物に上げる
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cross-build-log
+          path: /tmp/cross-build.log
+          retention-days: 7
+          if-no-files-found: warn
 
       - name: 検証と圧縮
         working-directory: codex/codex-rs
