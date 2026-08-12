@@ -194,6 +194,25 @@ jobs:
           done
           find "$V/build/linux" -maxdepth 1 -type d -name 'debian_*-sysroot' 
 
+      # 🚨 壁 15: V8 本体用の Chromium clang 23 と bindgen が動的に読む
+      #    libclang は別物。LIBCLANG_PATH が無いと Debian bookworm の古い
+      #    system libclang を読み、Clang 21+ 前提の V8 同梱 libc++ を解釈できない。
+      #    v8 crate は build_v8() の先頭で v8/DEPS に固定された Rust
+      #    toolchain を展開し、そこに対応する libclang.so も含む。
+      #    system clang を差し替えず、crate 自身の固定済み libclang を使う。
+      - name: V8 同梱の libclang を bindgen に使わせる
+        run: |
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          t="$V/tools/rust_toolchain.py"
+          test -f "$t" || { echo "::error::rust_toolchain.py が無い"; exit 1; }
+          (cd "$V" && python3 tools/rust_toolchain.py)
+          lib="$V/third_party/rust-toolchain/lib"
+          test -f "$lib/libclang.so" || {
+            echo "::error::V8 固定の Rust toolchain に libclang.so が無い"; exit 1; }
+          echo "LIBCLANG_PATH=$lib" >> "$GITHUB_ENV"
+          ls -l "$lib"/libclang.so*
+
       # 🚨 壁 11: rusty_v8 の cppgc FFI は最大 alignment を全アーキテクチャで
       #    16 bytes と決め打ちし、alignas(16) の型を無条件に実体化する。
       #    V8 本体の cppgc は kMaxSupportedAlignment = 2 * sizeof(void*) のため、
