@@ -12,8 +12,8 @@ IS01 (Sharp, ARMv7, Debian bookworm armhf) で codex を動かすためのビル
 |---|---|---|
 | `pagable` | 32bit の想定サイズを **wasm32 の実測値 (12 usize)** で決め打ちしており、armv7 の実レイアウト (10 usize) と合わずビルドが止まる | 表明を wasm32 限定に緩めた複製を `[patch.crates-io]` で差し替える |
 | `codex-linux-sandbox` | `libc::SYS_*` は 64bit では `i64`、**32bit では `i32`**。`i64` を要求する seccomp API と型が合わない | `libc::SYS_*` に `as i64` を付ける |
-| **glibc** | `cross` の既定イメージは新しい Ubuntu ベースで **glibc 2.38/2.39** に対してリンクする。実機の Debian bookworm は **2.36** なので起動できない。かといって古いイメージ (16.04 / 2.23) にすると、今度は**ホスト側が古すぎて `aws-lc-sys` / `zstd-sys` の build script (x86_64) が起動できない** | **Ubuntu 20.04 (glibc 2.31)** の自前イメージを使う (`Dockerfile`)。実機に載りつつホストも十分新しい |
-| `openssl-sys` | ターゲット (armhf) の OpenSSL が要る | 自前イメージに `libssl-dev:armhf` を入れる。⚠️ Ubuntu の armhf は `ports.ubuntu.com` にあり、素の sources.list では 404 |
+| **glibc** | `cross` の既定イメージは新しい Ubuntu ベースで **glibc 2.38/2.39** に対してリンクする。実機の Debian bookworm は **2.36** なので起動できない。かといって古いイメージ (16.04 / 2.23) にすると、今度は**ホスト側が古すぎて `aws-lc-sys` / `zstd-sys` の build script (x86_64) が起動できない** | 実機と同じ **Debian bookworm (glibc 2.36)** の自前イメージを使う (`Dockerfile`) |
+| `openssl-sys` | ターゲット (armhf) の OpenSSL が要る | 自前イメージに `libssl-dev:armhf` を入れる。Debian は amd64 と armhf を同じ repository から取得するため、Ubuntu の archive/ports 混在を避けられる |
 | **`rusty_v8`** | `code-mode` は `codex-code-mode-host` を要し、それは V8 に依存する。armv7 の**プリビルドが無い** (404)。musl は build.rs が明示的に拒否する (`musl builds are only supported for x86_64 and aarch64`) | **`V8_FROM_SOURCE=1`** でソースからビルドする。V8 のソースは crate に同梱 (79MB) されており、V8 自体は 32bit ARM を正式サポートしている |
 | **`v8_enable_sandbox`** | `codex-code-mode-runtime` がこの feature を有効化するが、sandbox は pointer compression を要求し、V8 の BUILD.gn が 32bit ARM を拒否する (`Sharing a pointer compression cage is only supported on x64, arm64, ...`) | armv7 のときだけ feature を外す。⚠️ **V8 のメモリ安全機構が 1 段減る** |
 | **V8 の sysroot** | `build.rs` の `maybe_install_sysroot("arm")` が壊れている。①`install-sysroot.py` が受け付ける名前は `armhf` で `arm` は無効 ②探すパスが `debian_sid_*` と古い (現在は `debian_bullseye_*`) ③ホスト用ツールに要る `amd64` 側を入れない | ビルド前に `install-sysroot.py --arch=amd64` と `--arch=armhf` を明示的に実行する |

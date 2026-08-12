@@ -269,13 +269,19 @@ jobs:
           ls -l "$d/icudtl.dat"
 
       # 🚨 壁 3: glibc の板挟み。既定イメージは新しすぎ (2.39 要求) / 古すぎ
-      #    (build script が動かない) のどちらかになる。Ubuntu 20.04 (2.31) の
-      #    自前イメージを使う。実機は 2.36。
+      #    (build script が動かない) のどちらかになる。実機と同じ glibc 2.36 の
+      #    Debian bookworm 自前イメージを使う。
+      # 🚨 壁 13: Ubuntu の archive/ports 分割を sed で補正する方式は、ベース側の
+      #    別 release source が armhf にも適用されて再度 404 になったため廃止する。
+      #    Debian は amd64/armhf を同じ repository から取得できる。
       - name: クロスビルド用イメージを作る
         run: |
-          docker build -t is01-cross-armv7:20.04 arch/docker/codex-armv7
-          docker run --rm is01-cross-armv7:20.04 sh -c \
-            'ldd --version | head -1; command -v arm-linux-gnueabihf-gcc python3 ninja clang'
+          docker build -t is01-cross-armv7:bookworm arch/docker/codex-armv7
+          docker run --rm is01-cross-armv7:bookworm sh -ec \
+            'test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.36";
+             command -v arm-linux-gnueabihf-gcc; command -v arm-linux-gnueabihf-g++;
+             command -v python3; command -v ninja; command -v clang;
+             command -v lld; command -v cmake'
 
       - name: Cross.toml を置く
         run: cp arch/docker/codex-armv7/Cross.toml codex/codex-rs/Cross.toml
@@ -364,7 +370,7 @@ jobs:
           done
           mkdir -p "$RUNNER_TEMP/out"
           cp "$D/codex" "$D/codex-code-mode-host" "$RUNNER_TEMP/out/"
-          docker run --rm -v "$RUNNER_TEMP/out:/w" is01-cross-armv7:20.04 sh -c \
+          docker run --rm -v "$RUNNER_TEMP/out:/w" is01-cross-armv7:bookworm sh -c \
             'arm-linux-gnueabihf-strip /w/codex /w/codex-code-mode-host'
           tar czf "$RUNNER_TEMP/codex-armv7.tar.gz" -C "$RUNNER_TEMP/out" codex codex-code-mode-host
           ls -lh "$RUNNER_TEMP/out" "$RUNNER_TEMP/codex-armv7.tar.gz"
