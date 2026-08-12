@@ -10,6 +10,9 @@ passthrough = [
   #    明示しない環境変数をコンテナへ渡さない。Temporal (Rust ICU4X) を armv7
   #    だけ無効にする指定をクロスビルド環境まで届ける。
   "GN_ARGS",
+  # 🚨 壁 15: bindgen が Debian の古い system libclang ではなく、
+  #    v8/DEPS に固定された Chromium Rust toolchain の libclang を読む。
+  "LIBCLANG_PATH",
   "PKG_CONFIG_ALLOW_CROSS=1",
   "PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig",
 ]
