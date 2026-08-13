@@ -39,7 +39,7 @@ jobs:
       ref: ${{ steps.ref.outputs.ref }}
     steps:
       - name: Checkout arch (バージョンファイルのため)
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           path: arch
           persist-credentials: false
@@ -60,7 +60,7 @@ jobs:
           echo "ビルドする ref: $ref"
 
       - name: Checkout sxyazi/yazi
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           repository: sxyazi/yazi
           ref: ${{ steps.ref.outputs.ref }}
