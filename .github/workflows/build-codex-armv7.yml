@@ -1,0 +1,442 @@
+name: Build codex for armv7 (IS01)
+
+# @openai/codex の公式配布は linux-x64 と linux-arm64 のみで 32bit ARM が無い。
+# IS01 (ARMv7 / Debian bookworm armhf) 用にクロスビルドする。
+# 32bit 固有の壁が 3 つあり、アップデートのたびに手で直すのは現実的でないため
+# 変換を自動化している。詳細は docker/codex-armv7/README.md を参照。
+
+on:
+  # Renovate が docker/codex-armv7/codex-version.env を更新して merge されたら
+  # 自動でビルドする。codex は更新が速く、そのたびに手で回すのは現実的でない。
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/codex-armv7/codex-version.env'
+      - 'docker/codex-armv7/Cross.toml'
+      - 'docker/codex-armv7/Dockerfile'
+      - '.github/workflows/build-codex-armv7.yml'
+  workflow_dispatch:
+    inputs:
+      codex_ref:
+        description: 'openai/codex の ref。空ならバージョンファイルに従う'
+        required: false
+        type: string
+        default: ''
+      make_release:
+        description: 'GitHub Release を作る'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    permissions:
+      contents: write
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - name: Checkout arch (Cross.toml のため)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: arch
+          persist-credentials: false
+
+      # 手動実行で ref を指定したときはそれを使い、無ければバージョンファイルに従う。
+      # push で発火したときは常にバージョンファイル。
+      - name: ビルドする ref を決める
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.codex_ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            echo "ref=$INPUT_REF" >> "$GITHUB_OUTPUT"
+            echo "手動指定: $INPUT_REF"
+          else
+            v=$(grep -E '^CODEX_VERSION=' arch/docker/codex-armv7/codex-version.env | cut -d= -f2)
+            test -n "$v" || { echo "::error::codex-version.env から版を取れない"; exit 1; }
+            echo "ref=rust-v$v" >> "$GITHUB_OUTPUT"
+            echo "バージョンファイル: rust-v$v"
+          fi
+
+      - name: Checkout openai/codex
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: openai/codex
+          ref: ${{ steps.ref.outputs.ref }}
+          path: codex
+          persist-credentials: false
+
+      - name: Rust ツールチェーンと cross
+        run: |
+          rustup target add armv7-unknown-linux-gnueabihf
+          cargo install cross --git https://github.com/cross-rs/cross --locked
+
+      # 🚨 壁 1: libc::SYS_* は 64bit では i64、32bit では i32。
+      #    seccomp 側が i64 を要求するので型が合わない。
+      #    パッチファイルだと upstream の変更で当たらなくなるため、変換で当てる。
+      - name: 32bit のシステムコール番号を i64 へ寄せる
+        working-directory: codex/codex-rs
+        run: |
+          f=linux-sandbox/src/landlock.rs
+          test -f "$f" || { echo "::error::$f が無い。upstream の構成が変わった"; exit 1; }
+          before=$(grep -c 'libc::SYS_' "$f")
+          perl -pi -e 's/(libc::SYS_[A-Za-z0-9_]+)(?!\s+as\b)/$1 as i64/g' "$f"
+          after=$(grep -c 'as i64' "$f")
+          echo "libc::SYS_* $before 箇所 -> as i64 $after 箇所"
+          test "$after" -ge "$before" || { echo "::error::変換できていない"; exit 1; }
+          test "$(grep -c 'as i64 as i64' "$f")" = 0 || { echo "::error::二重キャスト"; exit 1; }
+
+      # 🚨 壁 2: pagable は 32bit の想定サイズを wasm32 の実測値で決め打ちしており
+      #    armv7 では表明が外れる。表明を wasm32 限定に緩めた複製へ差し替える。
+      #    assert_eq_size! はコンパイル時のサイズ確認のみで実行時の意味を持たない。
+      - name: pagable の 32bit サイズ表明を緩める
+        working-directory: codex/codex-rs
+        run: |
+          ver=$(awk '/^name = "pagable"$/{f=1} f&&/^version = /{gsub(/[",]/,"",$3); print $3; exit}' Cargo.lock)
+          test -n "$ver" || { echo "::error::Cargo.lock から pagable の版を取れない"; exit 1; }
+          echo "pagable $ver"
+          mkdir -p "$RUNNER_TEMP/vendor"
+          # 🚨 crates.io は User-Agent が無いと 403 を返す。手元では cargo の
+          #    キャッシュ経由だったので気付けなかった (実測で確認済み)。
+          #    静的配信も併用し、片方が落ちても続行できるようにする。
+          curl -sSfL -A "boxp-arch-ci (https://github.com/boxp/arch)" \
+            "https://static.crates.io/crates/pagable/pagable-$ver.crate" \
+            -o "$RUNNER_TEMP/pagable.tar.gz" ||
+          curl -sSfL -A "boxp-arch-ci (https://github.com/boxp/arch)" \
+            "https://crates.io/api/v1/crates/pagable/$ver/download" \
+            -o "$RUNNER_TEMP/pagable.tar.gz"
+          test -s "$RUNNER_TEMP/pagable.tar.gz" || { echo "::error::pagable を取得できない"; exit 1; }
+          tar xzf "$RUNNER_TEMP/pagable.tar.gz" -C "$RUNNER_TEMP/vendor"
+          src="$RUNNER_TEMP/vendor/pagable-$ver/src/pagable_arc.rs"
+          test -f "$src" || { echo "::error::pagable_arc.rs が無い"; exit 1; }
+          grep -q '#\[cfg(target_pointer_width = "32")\]' "$src" || {
+            echo "::error::想定した cfg 行が無い。upstream が変わった"; exit 1; }
+          perl -pi -e 's/#\[cfg\(target_pointer_width = "32"\)\]/#[cfg(all(target_pointer_width = "32", target_arch = "wasm32"))]/' "$src"
+          rm -f "$RUNNER_TEMP/vendor/pagable-$ver/.cargo-checksum.json"
+          # 🚨 YAML のブロックスカラーは相対インデントを保つ。ここで python の
+          #    heredoc を使うと全行に空白が付いて IndentationError になる。
+          #    1 行で完結する perl を使う。
+          grep -q "^\[patch.crates-io\]" Cargo.toml || { echo "::error::[patch.crates-io] が無い"; exit 1; }
+          PAGABLE_DIR="$RUNNER_TEMP/vendor/pagable-$ver" perl -pi -e 's{^\[patch\.crates-io\]$}{"[patch.crates-io]\npagable = { path = \"$ENV{PAGABLE_DIR}\" }"}e' Cargo.toml
+          grep -q "^pagable = " Cargo.toml || { echo "::error::pagable の差し替えが入っていない"; exit 1; }
+          grep -A1 '^\[patch.crates-io\]' Cargo.toml | head -2
+
+      # 🚨 壁 3: 既定イメージは glibc 2.38/2.39 に対してリンクする。
+      #    実機の Debian bookworm は 2.36 なので起動できない。古いイメージに固定。
+      # 🚨 壁 5: v8_enable_sandbox は 32bit ARM で使えない。sandbox は pointer
+      #    compression を要求するが、V8 の BUILD.gn が
+      #    "Sharing a pointer compression cage is only supported on x64,
+      #     arm64, ppc64, s390x, riscv64 and loong64" で拒否する。
+      #    ポインタ圧縮は 64bit ポインタを 32bit に縮める仕組みなので、
+      #    32bit では原理的に意味を持たない。
+      #    ⚠️ sandbox は V8 のメモリ安全機構。外すと信頼できない JS を実行する
+      #       際の防御が 1 段減る。IS01 は個人端末で code-mode が実行するのは
+      #       自分の指示に基づくコードなので許容する。
+      - name: armv7 では v8 の sandbox を外す
+        working-directory: codex/codex-rs
+        run: |
+          f=code-mode-runtime/Cargo.toml
+          test -f "$f" || { echo "::error::$f が無い。upstream の構成が変わった"; exit 1; }
+          if grep -q 'target_arch = "arm"' "$f"; then
+            echo "既に入っている"
+          else
+            grep -q 'features = \["v8_enable_sandbox"\]' "$f" ||
+              { echo "::error::v8_enable_sandbox の指定が見つからない"; exit 1; }
+            python3 - "$f" <<'PY'
+          import sys
+          p = sys.argv[1]
+          s = open(p).read()
+          a = 'v8 = { workspace = true, features = ["v8_enable_sandbox"] }'
+          b = (
+              '[target.\'cfg(not(all(target_arch = "arm", target_pointer_width = "32")))\'.dependencies]\n'
+              'v8 = { workspace = true, features = ["v8_enable_sandbox"] }\n'
+              '\n'
+              '[target.\'cfg(all(target_arch = "arm", target_pointer_width = "32"))\'.dependencies]\n'
+              'v8 = { workspace = true }'
+          )
+          assert s.count(a) == 1, "v8_enable_sandbox の指定が 1 箇所でない"
+          open(p, "w").write(s.replace(a, b))
+          PY
+          fi
+          grep -A1 'target_arch = "arm"' "$f"
+
+      # 🚨 壁 6: V8 のビルドには Chromium の sysroot が要る。
+      #    v8 crate の build.rs は maybe_install_sysroot("arm") を呼ぶが、
+      #      - install-sysroot.py が受け付ける名前は "armhf" で "arm" は無効
+      #      - 探すパスが debian_sid_* と古い (現在は debian_bullseye_*)
+      #      - ホスト用ツールのビルドに要る amd64 側を入れない
+      #    ため "Missing sysroot (//build/linux/debian_bullseye_amd64-sysroot)"
+      #    で gn gen が失敗する。ここで先に入れておく。
+      - name: V8 の sysroot を用意する
+        run: |
+          # 🚨 ls ではなく find を使う (shellcheck SC2012)。
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' 2>/dev/null | head -1)
+          if [ -z "$V" ]; then
+            echo "v8 crate がまだ展開されていない。fetch する"
+            # 🚨 A && B || C は if-then-else ではない (shellcheck SC2015)。
+            #    cd の失敗まで || true に飲まれるので分けて書く。
+            cd codex/codex-rs || { echo "::error::codex-rs が無い"; exit 1; }
+            cargo fetch --target armv7-unknown-linux-gnueabihf >/dev/null 2>&1 || :
+            cd - >/dev/null || exit 1
+            V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' 2>/dev/null | head -1)
+          fi
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          echo "v8 crate: $V"
+          s="$V/build/linux/sysroot_scripts/install-sysroot.py"
+          test -f "$s" || { echo "::error::install-sysroot.py が無い"; exit 1; }
+          # 🚨 crate は読み取り専用で展開されるので書けるようにする。
+          chmod -R u+w "$V"
+          for a in amd64 armhf; do
+            (cd "$V" && python3 build/linux/sysroot_scripts/install-sysroot.py --arch="$a")
+          done
+          find "$V/build/linux" -maxdepth 1 -type d -name 'debian_*-sysroot' 
+
+      # 🚨 壁 15: V8 本体用の Chromium clang 23 と bindgen が動的に読む
+      #    libclang は別物。LIBCLANG_PATH が無いと Debian bookworm の古い
+      #    system libclang を読み、Clang 21+ 前提の V8 同梱 libc++ を解釈できない。
+      #    v8 crate は build_v8() の先頭で v8/DEPS に固定された Rust
+      #    toolchain を展開し、そこに対応する libclang.so も含む。
+      #    system clang を差し替えず、crate 自身の固定済み libclang を使う。
+      - name: V8 同梱の libclang を bindgen に使わせる
+        run: |
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          t="$V/tools/rust_toolchain.py"
+          test -f "$t" || { echo "::error::rust_toolchain.py が無い"; exit 1; }
+          (cd "$V" && python3 tools/rust_toolchain.py)
+          lib="$V/third_party/rust-toolchain/lib"
+          test -f "$lib/libclang.so" || {
+            echo "::error::V8 固定の Rust toolchain に libclang.so が無い"; exit 1; }
+          echo "LIBCLANG_PATH=$lib" >> "$GITHUB_ENV"
+          ls -l "$lib"/libclang.so*
+
+      # 🚨 壁 11: rusty_v8 の cppgc FFI は最大 alignment を全アーキテクチャで
+      #    16 bytes と決め打ちし、alignas(16) の型を無条件に実体化する。
+      #    V8 本体の cppgc は kMaxSupportedAlignment = 2 * sizeof(void*) のため、
+      #    32bit ARM の上限は 8 bytes で static_assert が失敗する。64bit 時だけ
+      #    16-byte 分岐をコンパイルし、Rust 側の事前条件も V8 と同じ式にする。
+      - name: rusty_v8 の cppgc alignment 上限を 32bit に合わせる
+        run: |
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          c="$V/src/binding.cc"
+          r="$V/src/cppgc.rs"
+          test "$(grep -c '^class alignas(16) RustObjButAlign16 : public RustObj {};$' "$c")" = 1 || {
+            echo "::error::binding.cc の 16-byte alignment 型が想定と異なる"; exit 1; }
+          test "$(grep -c 'assert!(std::mem::align_of::<T>() <= 16);' "$r")" = 1 || {
+            echo "::error::cppgc.rs の alignment 上限が想定と異なる"; exit 1; }
+          guards_before=$(grep -c '^#if V8_TARGET_ARCH_64_BIT$' "$c") || :
+          perl -pi -e \
+            's/^(class alignas\(16\) RustObjButAlign16 : public RustObj \{\};)$/#if V8_TARGET_ARCH_64_BIT\n$1\n#endif/' \
+            "$c"
+          perl -0pi -e \
+            's{(  if \(alignment <= 16\) \{\n    return cppgc::MakeGarbageCollected<RustObjButAlign16>\(\n        heap->GetAllocationHandle\(\), cppgc::AdditionalBytes\(size\)\);\n  \})}{#if V8_TARGET_ARCH_64_BIT\n$1\n#endif}' \
+            "$c"
+          perl -pi -e \
+            's{// max alignment in cppgc is 16}{// cppgc supports twice the pointer size as its maximum alignment}; s{assert!\(std::mem::align_of::<T>\(\) <= 16\);}{assert!(std::mem::align_of::<T>() <= 2 * std::mem::size_of::<usize>());}' \
+            "$r"
+          guards_after=$(grep -c '^#if V8_TARGET_ARCH_64_BIT$' "$c")
+          test "$guards_after" -eq "$((guards_before + 2))" || {
+            echo "::error::binding.cc の 64bit ガードを追加できない"; exit 1; }
+          grep -q 'align_of::<T>() <= 2 \* std::mem::size_of::<usize>()' "$r" || {
+            echo "::error::cppgc.rs の alignment 上限を更新できない"; exit 1; }
+          sed -n '/RustObjButAlign16/,+18p' "$c"
+          grep -A1 'twice the pointer size' "$r"
+
+      # 🚨 壁 16: Rust の ARM EABI では TypeId は size 16 / alignment 4 だが、
+      #    u64 と u128 はともに alignment 8。v8 crate は TypeId の alignment が
+      #    u64 または u128 と同じだと表明するため Rust 側のコンパイルで停止する。
+      #    TypeIdHasher は TypeId::hash から write_u64 で渡された値を保持するだけで、
+      #    TypeId のメモリ表現や alignment を使わない。サイズ表明は維持し、該当する
+      #    ARM 32bit だけ alignment 表明を免除する。
+      - name: rusty_v8 の TypeId alignment 表明を ARM 32bit に合わせる
+        run: |
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          r="$V/src/isolate.rs"
+          test -f "$r" || { echo "::error::isolate.rs が無い"; exit 1; }
+          test "$(grep -c 'align_of::<TypeId>() == align_of::<u64>()' "$r")" = 1 || {
+            echo "::error::TypeId alignment 表明が想定と異なる"; exit 1; }
+          perl -0pi -e \
+            's{  assert!\(\n    align_of::<TypeId>\(\) == align_of::<u64>\(\)}{  assert!(\n    cfg!(all(target_arch = "arm", target_pointer_width = "32"))\n      || align_of::<TypeId>() == align_of::<u64>()}' \
+            "$r"
+          test "$(grep -c 'cfg!(all(target_arch = "arm", target_pointer_width = "32"))' "$r")" = 1 || {
+            echo "::error::ARM 32bit の TypeId alignment 免除を追加できない"; exit 1; }
+          sed -n '/const _: () = {/,/};/p' "$r"
+
+      # 🚨 壁 7: ICU のロケールデータ (common/icudtl.dat) が crate に含まれない。
+      #    third_party/icu/BUILD.gn は armv7 に対して data_dir="common" を選ぶが、
+      #    crate 配布では common/ が空 (10.9MB あるため除外されている)。
+      #    flutter_desktop/ と chromecast_video/ には入っているが、これらは
+      #    ロケールを削った別データ。Chromium の icu リポジトリから本来の
+      #    common 版を取る。
+      # 🚨 壁 10: ICU の main から取ると v8 crate 内の ICU より新しいデータに
+      #    なり得る。実際に ICU 77 のソースへ ICU 78 のデータを渡した結果、
+      #    assembly は icudt78_dat を定義する一方、icuuc は icudt77_dat を参照し
+      #    gen-regexp-special-case のリンクに失敗した。v8/DEPS が固定する ICU の
+      #    revision から取得し、データ内のシンボルもソースの major と照合する。
+      - name: ICU のロケールデータを用意する
+        run: |
+          V=$(find "$HOME/.cargo/registry/src" -maxdepth 2 -type d -name 'v8-*' | head -1)
+          test -n "$V" || { echo "::error::v8 crate が見つからない"; exit 1; }
+          icu_dep=$(grep -A1 -m1 "'third_party/icu':" "$V/v8/DEPS" | tail -1)
+          icu_rev=$(printf '%s\n' "$icu_dep" | grep -oE '[0-9a-f]{40}')
+          [[ "$icu_rev" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "::error::v8/DEPS から ICU revision を取れない"; exit 1; }
+          d="$V/third_party/icu/common"
+          mkdir -p "$d"
+          curl -sSfL \
+            "https://chromium.googlesource.com/chromium/deps/icu/+/$icu_rev/common/icudtl.dat?format=TEXT" \
+            -o "$RUNNER_TEMP/icudtl.dat.b64"
+          base64 -d "$RUNNER_TEMP/icudtl.dat.b64" > "$d/icudtl.dat"
+          test -s "$d/icudtl.dat" || { echo "::error::icudtl.dat を取得できない"; exit 1; }
+          # 🚨 データ形式が合っているか確認する。crate 同梱の別バリアントと
+          #    先頭の識別子と ICU major が一致することを見る。合わないと
+          #    リンク時または実行時に壊れる。
+          ref="$V/third_party/icu/flutter_desktop/icudtl.dat"
+          a=$(od -An -tx1 -N4 "$d/icudtl.dat" | tr -d ' ')
+          b=$(od -An -tx1 -N4 "$ref" | tr -d ' ')
+          echo "取得: $a / 同梱: $b"
+          test "$a" = "$b" || { echo "::error::ICU データ形式が一致しない"; exit 1; }
+          icu_major=$(awk '/^#define U_ICU_VERSION_MAJOR_NUM / { print $3; exit }' \
+            "$V/third_party/icu/source/common/unicode/uvernum.h")
+          data_symbol=$(grep -aoE 'icudt[0-9]+l' "$d/icudtl.dat" | sort -u)
+          echo "ICU revision: $icu_rev / source: $icu_major / data: $data_symbol"
+          test "$data_symbol" = "icudt${icu_major}l" || {
+            echo "::error::ICU ソースとデータの major が一致しない"; exit 1; }
+          ls -l "$d/icudtl.dat"
+
+      # 🚨 壁 3: glibc の板挟み。既定イメージは新しすぎ (2.39 要求) / 古すぎ
+      #    (build script が動かない) のどちらかになる。実機と同じ glibc 2.36 の
+      #    Debian bookworm 自前イメージを使う。
+      # 🚨 壁 13: Ubuntu の archive/ports 分割を sed で補正する方式は、ベース側の
+      #    別 release source が armhf にも適用されて再度 404 になったため廃止する。
+      #    Debian は amd64/armhf を同じ repository から取得できる。
+      # 🚨 壁 14: V8 は ARM32 用 snapshot/generator を clang_x86_v8_arm で
+      #    i386 ELF として作る。ファイルが存在しても 32bit ELF loader が無いと
+      #    実行時に ENOENT になる。さらに generator は i386 の libstdc++/libgcc に
+      #    動的リンクするため、loader の起動と各 runtime の解決を確認する。
+      - name: クロスビルド用イメージを作る
+        run: |
+          docker build -t is01-cross-armv7:bookworm arch/docker/codex-armv7
+          docker run --rm is01-cross-armv7:bookworm sh -ec \
+            'test "$(getconf GNU_LIBC_VERSION)" = "glibc 2.36";
+             test -x /lib/ld-linux.so.2; /lib/ld-linux.so.2 --help >/dev/null;
+             test -e /lib32/libstdc++.so.6; test -e /lib32/libgcc_s.so.1;
+             command -v arm-linux-gnueabihf-gcc; command -v arm-linux-gnueabihf-g++;
+             command -v python3; command -v ninja; command -v clang;
+             command -v lld; command -v cmake'
+
+      - name: Cross.toml を置く
+        run: cp arch/docker/codex-armv7/Cross.toml codex/codex-rs/Cross.toml
+
+      # 🚨 壁 4: code-mode は codex-code-mode-host を要し、それは rusty_v8 に
+      #    依存する。armv7 のプリビルドは無い (404) が V8 のソースは crate に
+      #    同梱されているので V8_FROM_SOURCE=1 でビルドする。
+      #    V8 自体は 32bit ARM を正式サポートしており build.rs にも
+      #    target_cpu="arm" の分岐がある。
+      #
+      # 🚨 並列度を絞る。V8 のビルドは重く、無制限だとランナーのメモリを
+      #    使い切って落ちる (手元の WSL を実際にクラッシュさせた)。
+      # 🚨 壁 9: V8 150.4.0 は Temporal を既定で有効にし、temporal_capi → ICU4X
+      #    Rust crate 群を依存に加える。v8 crate の publish 時には
+      #    third_party/rust/chromium_crates_io/vendor/ が除外されているため、
+      #    ICU4X の build.rs を Ninja が見つけられず必ず失敗する。
+      #    GN_ARGS で Temporal だけを切り、Intl (ICU4C) は維持する。code-mode は
+      #    Intl.DateTimeFormat を使うため壁 7 の ICU ロケールデータも必要なまま。
+      #    ⚠️ armv7 版では JavaScript の Temporal API が使えない。upstream の
+      #    code-mode グローバル一覧には Temporal があるが、通常の code-mode 実行と
+      #    Intl のロケール書式化は維持される。
+      # 🚨 出力を絞ってからストリームする。V8 は 4000 以上のターゲットを持ち、
+      #    素通しすると step のログが巨大になって `gh run view --log` が
+      #    **0 行を返す**。実際に 2 時間 44 分走って失敗した run のログが
+      #    一切取得できず、失敗内容を確認する手段が無くなった。
+      #    進捗行 ([N/M] ...) と cargo の rerun-if-changed を落とすだけで
+      #    桁が変わる。全文は常に $LOG に残し、失敗時だけ成果物として上げる。
+      - name: クロスビルド
+        working-directory: codex/codex-rs
+        env:
+          V8_FROM_SOURCE: '1'
+          GN_ARGS: v8_enable_temporal_support=false
+          CARGO_BUILD_JOBS: '2'
+          NINJA_STATUS: '[%f/%t] '
+          LOG: /tmp/cross-build.log
+        run: |
+          nproc
+          free -g | head -2
+          # 🚨 パイプの左側の失敗を拾うために pipefail が要る。
+          #    これが無いと tee の成功で step が緑になる。
+          set -o pipefail
+          cross build --release --jobs 2 \
+            -p codex-cli -p codex-code-mode-host \
+            --target armv7-unknown-linux-gnueabihf 2>&1 |
+            tee "$LOG" |
+            grep -vE '^\s+\[[0-9]+/[0-9]+\]|cargo:rerun-if-changed='
+
+      # 🚨 失敗したときに何が起きたかを必ず取り出せるようにする。
+      #    step のログが巨大で取得できない事態を二度と起こさないため、
+      #    末尾を job のログに出しつつ全文を成果物にも残す。
+      - name: 失敗ログを残す
+        if: failure()
+        env:
+          LOG: /tmp/cross-build.log
+        run: |
+          echo '::group::クロスビルドの末尾 200 行'
+          tail -200 "$LOG" || echo 'ログが無い'
+          echo '::endgroup::'
+
+      - name: 失敗ログを成果物に上げる
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cross-build-log
+          path: /tmp/cross-build.log
+          retention-days: 7
+          if-no-files-found: warn
+
+      - name: 検証と圧縮
+        working-directory: codex/codex-rs
+        run: |
+          D=target/armv7-unknown-linux-gnueabihf/release
+          for b in codex codex-code-mode-host; do
+            test -f "$D/$b" || { echo "::error::$b がビルドされていない"; exit 1; }
+            file "$D/$b" | tee /dev/stderr | grep -q "ELF 32-bit LSB.*ARM" ||
+              { echo "::error::$b が armv7 バイナリになっていない"; exit 1; }
+            # 🚨 実機の glibc は 2.36。それより新しい要求が残っていたら弾く。
+            #    既定イメージ (2.39) でビルドすると実機で起動できず、27 分の
+            #    ビルドと 87MB の転送をやり直す羽目になった。CI で止める。
+            hi=$(strings "$D/$b" | grep -oE "GLIBC_2\.[0-9]+" | sort -uV | tail -1)
+            if [ -n "$hi" ] && [ "${hi#GLIBC_2.}" -gt 36 ]; then
+              echo "::error::$b が $hi を要求している (実機は 2.36)"
+              exit 1
+            fi
+            echo "$b: OK ${hi:-glibc 参照なし}"
+          done
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$D/codex" "$D/codex-code-mode-host" "$RUNNER_TEMP/out/"
+          docker run --rm -v "$RUNNER_TEMP/out:/w" is01-cross-armv7:bookworm sh -c \
+            'arm-linux-gnueabihf-strip /w/codex /w/codex-code-mode-host'
+          tar czf "$RUNNER_TEMP/codex-armv7.tar.gz" -C "$RUNNER_TEMP/out" codex codex-code-mode-host
+          ls -lh "$RUNNER_TEMP/out" "$RUNNER_TEMP/codex-armv7.tar.gz"
+          sha256sum "$RUNNER_TEMP/codex-armv7.tar.gz" | tee "$RUNNER_TEMP/codex-armv7.tar.gz.sha256"
+
+      - name: 成果物を上げる
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: codex-armv7-${{ steps.ref.outputs.ref }}
+          path: |
+            ${{ runner.temp }}/codex-armv7.tar.gz
+            ${{ runner.temp }}/codex-armv7.tar.gz.sha256
+          retention-days: 30
+
+      - name: Release を作る
+        if: ${{ inputs.make_release || github.event_name == 'push' }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: codex-armv7-${{ steps.ref.outputs.ref }}
+          files: |
+            ${{ runner.temp }}/codex-armv7.tar.gz
+            ${{ runner.temp }}/codex-armv7.tar.gz.sha256
