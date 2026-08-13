@@ -14,6 +14,7 @@ on:
       - main
     paths:
       - 'docker/yazi-armv7/yazi-version.env'
+      - 'docker/yazi-armv7/Cross.toml'
       - '.github/workflows/build-yazi-armv7.yml'
   workflow_dispatch:
     inputs:
@@ -70,6 +71,11 @@ jobs:
         run: |
           rustup target add armv7-unknown-linux-gnueabihf
           cargo install cross --locked --version 0.2.5
+
+      # 🚨 イメージを固定する。既定の :main は armhf sysroot が GLIBC_2.39 で、
+      #    実機 (glibc 2.36) では起動できないバイナリになる。手元で実際に踏んだ。
+      - name: Cross.toml を置く
+        run: cp arch/docker/yazi-armv7/Cross.toml yazi/Cross.toml
 
       # 🚨 出力を絞ってからストリームする。素通しすると step のログが巨大になり
       #    `gh run view --log` が 0 行を返す。codex のビルドで実際に踏んだ。
