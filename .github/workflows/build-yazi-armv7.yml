@@ -1,0 +1,133 @@
+name: Build yazi for armv7 (IS01)
+
+# yazi の公式配布に 32bit ARM が無い (aarch64 / i686 / riscv64 / sparc64 /
+# x86_64 のみ)。IS01 (ARMv7 / Debian bookworm armhf) 用にクロスビルドする。
+#
+# codex と違い yazi は純粋な Rust なので、cross の既定イメージでそのまま通る。
+# V8 のような 32bit 固有の作り込みは要らない。
+
+on:
+  # Renovate が docker/yazi-armv7/yazi-version.env を更新して merge されたら
+  # 自動でビルドする。
+  push:
+    branches:
+      - main
+    paths:
+      - 'docker/yazi-armv7/yazi-version.env'
+      - '.github/workflows/build-yazi-armv7.yml'
+  workflow_dispatch:
+    inputs:
+      yazi_ref:
+        description: 'sxyazi/yazi の ref。空ならバージョンファイルに従う'
+        required: false
+        type: string
+        default: ''
+      make_release:
+        description: 'GitHub Release を作る'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write
+    outputs:
+      ref: ${{ steps.ref.outputs.ref }}
+    steps:
+      - name: Checkout arch (バージョンファイルのため)
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          path: arch
+          persist-credentials: false
+
+      - name: ビルドする ref を決める
+        id: ref
+        env:
+          INPUT_REF: ${{ inputs.yazi_ref }}
+        run: |
+          if [ -n "$INPUT_REF" ]; then
+            ref="$INPUT_REF"
+          else
+            . arch/docker/yazi-armv7/yazi-version.env
+            test -n "${YAZI_VERSION:-}" || { echo '::error::YAZI_VERSION が空'; exit 1; }
+            ref="v$YAZI_VERSION"
+          fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "ビルドする ref: $ref"
+
+      - name: Checkout sxyazi/yazi
+        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5.0.0
+        with:
+          repository: sxyazi/yazi
+          ref: ${{ steps.ref.outputs.ref }}
+          path: yazi
+          persist-credentials: false
+
+      - name: Rust ツールチェーンと cross
+        run: |
+          rustup target add armv7-unknown-linux-gnueabihf
+          cargo install cross --locked --version 0.2.5
+
+      # 🚨 出力を絞ってからストリームする。素通しすると step のログが巨大になり
+      #    `gh run view --log` が 0 行を返す。codex のビルドで実際に踏んだ。
+      - name: クロスビルド
+        working-directory: yazi
+        env:
+          LOG: /tmp/cross-build.log
+        run: |
+          set -o pipefail
+          cross build --release --target armv7-unknown-linux-gnueabihf --jobs 2 2>&1 |
+            tee "$LOG" |
+            grep -vE '^\s+(Compiling|Downloaded|Checking)' || true
+
+      - name: 失敗ログを残す
+        if: failure()
+        env:
+          LOG: /tmp/cross-build.log
+        run: |
+          echo '::group::クロスビルドの末尾 200 行'
+          tail -200 "$LOG" || echo 'ログが無い'
+          echo '::endgroup::'
+
+      - name: 検証と圧縮
+        working-directory: yazi
+        run: |
+          D=target/armv7-unknown-linux-gnueabihf/release
+          for b in yazi ya; do
+            test -f "$D/$b" || { echo "::error::$b がビルドされていない"; exit 1; }
+            file "$D/$b" | tee /dev/stderr | grep -q "ELF 32-bit LSB.*ARM" ||
+              { echo "::error::$b が armv7 バイナリになっていない"; exit 1; }
+            # 🚨 実機の glibc は 2.36。それより新しい要求が残っていたら弾く。
+            hi=$(strings "$D/$b" | grep -oE "GLIBC_2\.[0-9]+" | sort -uV | tail -1)
+            if [ -n "$hi" ] && [ "${hi#GLIBC_2.}" -gt 36 ]; then
+              echo "::error::$b が $hi を要求している (実機は 2.36)"
+              exit 1
+            fi
+            echo "$b: OK ${hi:-glibc 参照なし}"
+          done
+          mkdir -p "$RUNNER_TEMP/out"
+          cp "$D/yazi" "$D/ya" "$RUNNER_TEMP/out/"
+          tar czf "$RUNNER_TEMP/yazi-armv7.tar.gz" -C "$RUNNER_TEMP/out" yazi ya
+          ls -lh "$RUNNER_TEMP/out" "$RUNNER_TEMP/yazi-armv7.tar.gz"
+          sha256sum "$RUNNER_TEMP/yazi-armv7.tar.gz" | tee "$RUNNER_TEMP/yazi-armv7.tar.gz.sha256"
+
+      - name: 成果物を上げる
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: yazi-armv7-${{ steps.ref.outputs.ref }}
+          path: |
+            ${{ runner.temp }}/yazi-armv7.tar.gz
+            ${{ runner.temp }}/yazi-armv7.tar.gz.sha256
+          retention-days: 30
+
+      - name: Release を作る
+        if: ${{ inputs.make_release || github.event_name == 'push' }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: yazi-armv7-${{ steps.ref.outputs.ref }}
+          files: |
+            ${{ runner.temp }}/yazi-armv7.tar.gz
+            ${{ runner.temp }}/yazi-armv7.tar.gz.sha256
