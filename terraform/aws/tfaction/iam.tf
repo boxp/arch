@@ -1,5 +1,5 @@
 module "aws" {
-  source = "github.com/suzuki-shunsuke/terraform-aws-tfaction?ref=v0.2.4"
+  source = "github.com/suzuki-shunsuke/terraform-aws-tfaction?ref=v0.2.5"
 
   name                             = "AWS"
   repo                             = "boxp/arch"
