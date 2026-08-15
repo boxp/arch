@@ -136,11 +136,13 @@
     - Restart crio
     - Restart kubelet
 
+# logrotate `maxsize` (not `size`): fires whenever the file exceeds the limit regardless of
+# the weekly schedule, so the disk-exhaustion guard is always active between weekly rotations.
 - name: Configure rsyslog logrotate maxsize limit
   ansible.builtin.lineinfile:
     path: /etc/logrotate.d/rsyslog
     regexp: '^\s*(?:size|maxsize)\s+'
-    line: "        maxsize {{ rsyslog_logrotate_max_size }}"
+    line: "        maxsize {{ rsyslog_logrotate_maxsize }}"
     insertafter: '^\{'
     create: false
   become: true

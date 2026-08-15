@@ -86,8 +86,10 @@ journald_purge_persistent_logs: false
 journald_system_max_use: "512M"
 journald_runtime_max_use: "256M"
 journald_max_retention_sec: "1month"
-# rsyslog logrotate size cap — mirrors the journald SystemMaxUse intent for syslog consumers.
-rsyslog_logrotate_max_size: "200M"
+# rsyslog logrotate maxsize cap (logrotate `maxsize` directive, NOT `size`) —
+# `maxsize` fires in addition to the time-based trigger; `size` would override it.
+# This prevents disk exhaustion between scheduled weekly rotations.
+rsyslog_logrotate_maxsize: "200M"
 
 # Node resilience configuration (see tasks/node_resilience.yml)
 # Disabled by default; enable explicitly for control-plane nodes.
