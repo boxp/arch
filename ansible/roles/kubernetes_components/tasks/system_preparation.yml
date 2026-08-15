@@ -136,11 +136,11 @@
     - Restart crio
     - Restart kubelet
 
-- name: Configure rsyslog logrotate size limit
+- name: Configure rsyslog logrotate maxsize limit
   ansible.builtin.lineinfile:
     path: /etc/logrotate.d/rsyslog
-    regexp: '^\s*size\s+'
-    line: "        size {{ rsyslog_logrotate_max_size }}"
+    regexp: '^\s*(?:size|maxsize)\s+'
+    line: "        maxsize {{ rsyslog_logrotate_max_size }}"
     insertafter: '^\{'
     create: false
   become: true

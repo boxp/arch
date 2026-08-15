@@ -205,11 +205,11 @@
         path: /etc/logrotate.d/rsyslog
       register: rsyslog_logrotate_content
 
-    - name: Assert rsyslog logrotate has size limit configured
+    - name: Assert rsyslog logrotate has maxsize limit configured
       ansible.builtin.assert:
         that:
-          - "'size 200M' in (rsyslog_logrotate_content.content | b64decode)"
-        fail_msg: "rsyslog logrotate config is missing size 200M — disk exhaustion guard not in place"
+          - "'maxsize 200M' in (rsyslog_logrotate_content.content | b64decode)"
+        fail_msg: "rsyslog logrotate config is missing maxsize 200M — disk exhaustion guard not in place"
 
     - name: Check if logrotate-rsyslog-hourly timer unit exists
       ansible.builtin.stat:
