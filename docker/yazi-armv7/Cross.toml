@@ -1,0 +1,10 @@
+# 🚨 イメージを固定する。既定の :main は armhf sysroot が GLIBC_2.39 で、
+#    実機 (IS01 / Debian bookworm armhf, glibc 2.36) では起動できないバイナリに
+#    なる。手元でビルドして実際に踏んだ。0.2.5 の armhf sysroot は GLIBC_2.23
+#    なので前方互換で動く。
+#
+#    codex の armv7 ビルドでも同じ壁を踏んでおり、あちらは Ubuntu 20.04 の
+#    自前イメージで回避している。yazi は純粋な Rust なので、cross の公式
+#    イメージを古い方に固定するだけで足りる。
+[target.armv7-unknown-linux-gnueabihf]
+image = "ghcr.io/cross-rs/armv7-unknown-linux-gnueabihf:0.2.5"
