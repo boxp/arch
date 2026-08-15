@@ -27,6 +27,7 @@
       [Journal]
       Storage=persistent
       SystemMaxUse={{ journald_system_max_use }}
+      RuntimeMaxUse={{ journald_runtime_max_use }}
       MaxRetentionSec={{ journald_max_retention_sec }}
   become: true
   when: journald_persistent_storage | bool

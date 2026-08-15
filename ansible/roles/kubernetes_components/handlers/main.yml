@@ -62,3 +62,16 @@
     - ansible_virtualization_type != "docker"
     - chroot_build is not defined or not chroot_build
   listen: "Restart systemd-journald"
+
+- name: Enable and start logrotate-rsyslog-hourly timer
+  ansible.builtin.systemd:
+    name: logrotate-rsyslog-hourly.timer
+    state: started
+    enabled: true
+    daemon_reload: true
+  become: true
+  when:
+    - ansible_virtualization_type != "docker"
+    - chroot_build is not defined or not chroot_build
+    - not ansible_check_mode
+  listen: "Enable and start logrotate-rsyslog-hourly timer"

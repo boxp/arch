@@ -49,3 +49,34 @@
           - disable_wireless_symlink.stat.islnk
           - disable_wireless_symlink.stat.lnk_source == '/etc/systemd/system/disable-wireless.service'
         fail_msg: "WiFi and Bluetooth disable service is not configured"
+
+    - name: Check if RA DNS drop-in directory exists
+      ansible.builtin.stat:
+        path: /etc/systemd/network/10-netplan-end0.network.d
+      register: ra_dns_dropin_dir
+
+    - name: Check if RA DNS drop-in file exists
+      ansible.builtin.stat:
+        path: /etc/systemd/network/10-netplan-end0.network.d/no-ra-dns.conf
+      register: ra_dns_dropin
+
+    - name: Assert RA DNS drop-in is deployed
+      ansible.builtin.assert:
+        that:
+          - ra_dns_dropin_dir.stat.exists
+          - ra_dns_dropin.stat.exists
+        fail_msg: >-
+          RA DNS drop-in /etc/systemd/network/10-netplan-end0.network.d/no-ra-dns.conf is missing —
+          IPv6 RA may add excess DNS servers past kubelet's 3-nameserver limit
+
+    - name: Read RA DNS drop-in content
+      ansible.builtin.slurp:
+        path: /etc/systemd/network/10-netplan-end0.network.d/no-ra-dns.conf
+      register: ra_dns_dropin_content
+
+    - name: Assert RA DNS drop-in disables UseDNS
+      ansible.builtin.assert:
+        that:
+          - "'[IPv6AcceptRA]' in (ra_dns_dropin_content.content | b64decode)"
+          - "'UseDNS=no' in (ra_dns_dropin_content.content | b64decode)"
+        fail_msg: "RA DNS drop-in exists but is missing [IPv6AcceptRA] / UseDNS=no"
