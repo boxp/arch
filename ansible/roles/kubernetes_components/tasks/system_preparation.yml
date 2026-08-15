@@ -162,6 +162,7 @@
       ExecStart=/usr/sbin/logrotate /etc/logrotate.d/rsyslog
   become: true
   when: ansible_facts['os_family'] == "Debian"
+  notify: Enable and start logrotate-rsyslog-hourly timer
 
 - name: Deploy hourly logrotate systemd timer for rsyslog
   ansible.builtin.copy:
