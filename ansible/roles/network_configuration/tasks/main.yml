@@ -127,3 +127,30 @@
     state: link
   become: true
   when: network_disable_wifi or network_disable_bluetooth
+
+- name: Ensure networkd drop-in directory for interface exists
+  ansible.builtin.file:
+    path: "/etc/systemd/network/10-netplan-{{ network_interface }}.network.d"
+    state: directory
+    mode: '0755'
+  become: true
+  when: network_disable_ra_dns | bool
+
+- name: Disable RA-advertised DNS via networkd drop-in
+  ansible.builtin.copy:
+    dest: "/etc/systemd/network/10-netplan-{{ network_interface }}.network.d/no-ra-dns.conf"
+    mode: '0644'
+    content: |
+      [IPv6AcceptRA]
+      UseDNS=no
+  become: true
+  when: network_disable_ra_dns | bool
+  notify: Restart systemd-networkd
+
+- name: Remove RA DNS drop-in when disabled
+  ansible.builtin.file:
+    path: "/etc/systemd/network/10-netplan-{{ network_interface }}.network.d/no-ra-dns.conf"
+    state: absent
+  become: true
+  when: not (network_disable_ra_dns | bool)
+  notify: Restart systemd-networkd

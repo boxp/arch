@@ -99,6 +99,21 @@ fi
 if [[ -n "${CLAUDE_FAKE_START_LOG:-}" ]]; then
   printf '%s %s\n' "${ticket}" "$(date +%s)" >>"${CLAUDE_FAKE_START_LOG}"
 fi
+if [[ -n "${CLAUDE_FAKE_PROGRESS_FILE:-}" ]]; then
+  for _ in $(seq 1 "${CLAUDE_FAKE_PROGRESS_COUNT:-1}"); do
+    sleep "${CLAUDE_FAKE_PROGRESS_INTERVAL:-0}"
+    printf '%s\n' 'fake agent progress' >>"${CLAUDE_FAKE_PROGRESS_FILE}"
+  done
+fi
+if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
+  if [[ "${CLAUDE_FAKE_CHILD_IGNORES_TERM:-false}" == true ]]; then
+    (trap '' TERM; sleep "${CLAUDE_FAKE_CHILD_SLEEP:-30}") &
+  else
+    sleep "${CLAUDE_FAKE_CHILD_SLEEP:-30}" &
+  fi
+  printf '%s\n' "$!" >"${CLAUDE_FAKE_CHILD_PID_FILE}"
+  wait "$!"
+fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
 printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
 EOF
@@ -297,6 +312,106 @@ test_fable_assignee_runs_via_claude() {
   assert_file_contains "${summary}" ':agent "fable"'
   assert_file_contains "${last_message}" '^TASK_BOARD_RESULT: done$'
   assert_file_contains "${events}" '^TASK_BOARD_RESULT: done$'
+}
+
+test_fable_agent_idle_timeout_retries() {
+  local tmp vault state bin summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-154|BOXP-154: stalled fable]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-154 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_SLEEP=2 \
+    CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-fable-timeout.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-154\|BOXP-154: stalled fable\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-154.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-154.md" 'No agent progress was logged before the idle timeout; the run was stopped and will be retried automatically'
+  summary="$(find "${state}/runs/BOXP-154" -name summary.edn -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" ':idle-timeout\? true'
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_SLEEP=2 \
+    CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-fable-timeout-retry.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-154\|BOXP-154: stalled fable\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-154.md" '^status: in-progress$'
+}
+
+test_fable_idle_timeout_stops_agent_children() {
+  local tmp vault state bin child_pid_file child_pid
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  child_pid_file="${tmp}/child.pid"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-156|BOXP-156: child process]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-156 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_CHILD_PID_FILE="${child_pid_file}" \
+    CLAUDE_FAKE_CHILD_SLEEP=30 \
+    CLAUDE_FAKE_CHILD_IGNORES_TERM=true \
+    CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-fable-child-timeout.out
+
+  child_pid="$(cat "${child_pid_file}")"
+  if kill -0 "${child_pid}" 2>/dev/null; then
+    fail "expected idle timeout to stop Fable child process ${child_pid}"
+  fi
+}
+
+test_invalid_idle_timeout_does_not_start_agent() {
+  local tmp vault state bin start_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  start_log="${tmp}/starts.log"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-158|BOXP-158: invalid timeout]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-158 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=-1 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-invalid-idle-timeout.out
+
+  [[ ! -e "${start_log}" ]] || fail "expected invalid idle timeout to prevent Fable startup"
+  assert_file_contains "${vault}/Tickets/BOXP-158.md" '^status: blocked$'
+}
+
+test_fable_progress_prevents_idle_timeout() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-155|BOXP-155: long fable]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-155 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROGRESS_FILE="${vault}/Tickets/BOXP-155.md" \
+    CLAUDE_FAKE_PROGRESS_COUNT=4 \
+    CLAUDE_FAKE_PROGRESS_INTERVAL=0.4 \
+    CLAUDE_FAKE_SLEEP=1 \
+    CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-fable-progress.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-155\|BOXP-155: long fable\]\].*status::done'
+  assert_file_contains "${vault}/Tickets/BOXP-155.md" '^status: done$'
 }
 
 test_codex_sol_assignee_includes_delegation_policy() {
@@ -1726,6 +1841,10 @@ BOARD
 
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
+test_fable_agent_idle_timeout_retries
+test_fable_idle_timeout_stops_agent_children
+test_invalid_idle_timeout_does_not_start_agent
+test_fable_progress_prevents_idle_timeout
 test_codex_sol_assignee_includes_delegation_policy
 test_codex_full_assignee_includes_delegation_policy
 test_unsupported_assignee_is_ignored

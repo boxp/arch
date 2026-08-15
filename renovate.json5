@@ -31,6 +31,18 @@
       datasourceTemplate: "github-releases",
       extractVersionTemplate: "^rust-v(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)$",
     },
+    // yazi (IS01 armv7 クロスビルド用)。
+    // yazi は armv7 のバイナリを配布していないのでこちらでビルドする。
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/yazi-armv7/yazi-version\\.env$/"],
+      matchStrings: [
+        "YAZI_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "sxyazi/yazi",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>[0-9]+\\.[0-9]+\\.[0-9]+)$",
+    },
     // Kubernetes version (playbooks)
     {
       customType: "regex",
