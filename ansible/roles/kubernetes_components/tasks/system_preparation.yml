@@ -135,3 +135,13 @@
   notify:
     - Restart crio
     - Restart kubelet
+
+- name: Configure rsyslog logrotate size limit
+  ansible.builtin.lineinfile:
+    path: /etc/logrotate.d/rsyslog
+    regexp: '^\s*size\s+'
+    line: "        size {{ rsyslog_logrotate_max_size }}"
+    insertafter: '^\{'
+    create: false
+  become: true
+  when: ansible_facts['os_family'] == "Debian"

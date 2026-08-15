@@ -81,8 +81,13 @@ etcd_listen_metrics_urls: "http://0.0.0.0:2381"
 journald_persistent_storage: false
 # Set to true only when removing existing persistent journal history is intended.
 journald_purge_persistent_logs: false
-journald_system_max_use: "200M"
+# SystemMaxUse=512M / RuntimeMaxUse=256M: BOXP-168 incident post-mortem —
+# unbound syslog filled the 29 GB eMMC in 40 days and triggered the sunxi-wdt hardware reset.
+journald_system_max_use: "512M"
+journald_runtime_max_use: "256M"
 journald_max_retention_sec: "1month"
+# rsyslog logrotate size cap — mirrors the journald SystemMaxUse intent for syslog consumers.
+rsyslog_logrotate_max_size: "200M"
 
 # Node resilience configuration (see tasks/node_resilience.yml)
 # Disabled by default; enable explicitly for control-plane nodes.
