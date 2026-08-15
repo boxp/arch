@@ -135,3 +135,49 @@
   notify:
     - Restart crio
     - Restart kubelet
+
+# logrotate `maxsize` (not `size`): fires whenever the file exceeds the limit regardless of
+# the weekly schedule, so the disk-exhaustion guard is always active between weekly rotations.
+- name: Configure rsyslog logrotate maxsize limit
+  ansible.builtin.lineinfile:
+    path: /etc/logrotate.d/rsyslog
+    regexp: '^\s*(?:size|maxsize)\s+'
+    line: "        maxsize {{ rsyslog_logrotate_maxsize }}"
+    insertafter: '^\{'
+    create: false
+  become: true
+  when: ansible_facts['os_family'] == "Debian"
+
+- name: Deploy hourly logrotate systemd service for rsyslog
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/logrotate-rsyslog-hourly.service
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Hourly logrotate for rsyslog (disk-exhaustion guard)
+      Documentation=https://github.com/boxp/arch
+
+      [Service]
+      Type=oneshot
+      ExecStart=/usr/sbin/logrotate /etc/logrotate.d/rsyslog
+  become: true
+  when: ansible_facts['os_family'] == "Debian"
+  notify: Enable and start logrotate-rsyslog-hourly timer
+
+- name: Deploy hourly logrotate systemd timer for rsyslog
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/logrotate-rsyslog-hourly.timer
+    mode: '0644'
+    content: |
+      [Unit]
+      Description=Run logrotate-rsyslog-hourly.service every hour
+
+      [Timer]
+      OnCalendar=hourly
+      Persistent=true
+
+      [Install]
+      WantedBy=timers.target
+  become: true
+  when: ansible_facts['os_family'] == "Debian"
+  notify: Enable and start logrotate-rsyslog-hourly timer

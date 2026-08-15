@@ -953,7 +953,7 @@
        "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
-       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\"\n\n"))
+       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
 
 (defn codex-sol-policy-prompt [agent]
   (str "High-cost model routing policy:\n"
@@ -971,6 +971,7 @@
                  "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
                  "~/.codex/skills/obsidian-task-board/bin/task-board.bb")]
     (str "Progress logging: at each milestone during your work (investigation complete, approach decided, PR created, blocker encountered), "
+         "and before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses during lengthy work, "
          "append a note to this ticket's Notes by running:\n"
          "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
@@ -1054,6 +1055,67 @@
 
 (defn pr-gate-poll-seconds []
   (env-long "CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS" "15"))
+
+(defn agent-idle-timeout-seconds []
+  ;; Task duration is not a useful failure signal: valid implementation work can
+  ;; take many hours.  Only interrupt an agent when neither its output nor the
+  ;; ticket itself has changed for this long. Set to 0 to disable the watchdog.
+  (let [seconds (env-long "CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS" "7200")]
+    (when (neg? seconds)
+      (throw (ex-info "CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS must not be negative"
+                      {:value seconds})))
+    seconds))
+
+(defn latest-modification-millis [paths]
+  (reduce max 0 (map (fn [path]
+                       (let [file (io/file (str path))]
+                         (if (.exists file) (.lastModified file) 0)))
+                     paths)))
+
+(defn signal-agent-process-group! [process signal]
+  ;; `run-agent!` starts the CLI through `setsid`, making its PID the process
+  ;; group ID. Signalling the negative PID covers all current and subsequently
+  ;; spawned children, including those created while the agent handles TERM.
+  (let [result @(p/process ["/bin/kill" (str "-" signal) "--"
+                            (str "-" (.pid process))]
+                           {:out :string :err :string})]
+    (when-not (zero? (:exit result))
+      (log! (str "failed to send " signal " to idle agent process group: "
+                 (str/trim (:err result)))))))
+
+(defn await-agent! [proc progress-paths idle-timeout-seconds]
+  (let [process (:proc proc)
+        started-at (System/currentTimeMillis)]
+    (loop [last-progress-at (max started-at (latest-modification-millis progress-paths))]
+      (if-not (.isAlive process)
+        {:proc @proc :idle-timeout? false}
+        (do
+          (Thread/sleep 1000)
+          (let [observed-at (latest-modification-millis progress-paths)
+                last-progress-at (max last-progress-at observed-at)
+                idle-millis (- (System/currentTimeMillis) last-progress-at)]
+            (cond
+              ;; The process can finish during the polling sleep. Check again
+              ;; immediately before the timeout action so a valid final response
+              ;; is not discarded as an idle retry.
+              (not (.isAlive process))
+              {:proc @proc :idle-timeout? false}
+
+              (and (pos? idle-timeout-seconds)
+                   (>= idle-millis (* 1000 idle-timeout-seconds)))
+              (do
+                (log! (str "stopping idle agent after " idle-timeout-seconds
+                           " seconds without progress"))
+                (do
+                  (signal-agent-process-group! process "TERM")
+                (Thread/sleep 5000)
+                  ;; Send KILL even if the agent itself exited: its process group
+                  ;; can still contain a TERM-resistant or late-created child.
+                  (signal-agent-process-group! process "KILL")
+                  {:proc @proc :idle-timeout? true}))
+
+              :else
+              (recur last-progress-at))))))))
 
 (defn no-ci-repos []
   ;; Explicit opt-in list of repos (owner/name) known to have no PR CI workflows.
@@ -1355,9 +1417,9 @@
     (fs/create-dirs dir)
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
-    (let [args (case agent
-                 "fable"
-                 (cond-> ["claude" "--print" "--output-format" "text"]
+    (let [agent-args (case agent
+                       "fable"
+                       (cond-> ["claude" "--print" "--output-format" "text"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-skip-permissions")
 
@@ -1368,7 +1430,7 @@
                    true
                    (into (fable-model-args)))
 
-                 (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
+                       (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
                           "--skip-git-repo-check"
                           "--output-last-message" (str last-message-path)]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
@@ -1386,11 +1448,13 @@
 
                    true
                    (conj "-")))
-          proc @(p/process args (cond-> {:in (io/file (str prompt-path))
-                                         :out (io/file (str stdout-path))
-                                         :err (io/file (str stderr-path))}
-                                  (= "fable" agent)
-                                  (assoc :dir (:workspace-dir workspace))))
+          idle-timeout-seconds (agent-idle-timeout-seconds)
+          proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
+                                              :out (io/file (str stdout-path))
+                                              :err (io/file (str stderr-path))}
+                                       (= "fable" agent)
+                                       (assoc :dir (:workspace-dir workspace))))
+          {:keys [proc idle-timeout?]} (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
           exit (:exit proc)
           _ (when (and (= "fable" agent) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path))
@@ -1404,9 +1468,15 @@
                     :agent agent
                     :lane lane
                     :exit-code exit
+                    :idle-timeout? idle-timeout?
                     :result marker
                     :finished-at (now-str)}))
-      {:exit exit :result marker :run-id run :dir (str dir) :last-message last-message})))
+      {:exit exit
+       :result marker
+       :run-id run
+       :dir (str dir)
+       :last-message last-message
+       :idle-timeout? idle-timeout?})))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (when (supported-assignee? assignee)
@@ -1437,10 +1507,14 @@
       :else
       intended)))
 
-(defn final-note [run-id next-status result last-message review-gate]
+(defn final-note [run-id next-status result last-message review-gate idle-timeout?]
   (let [base (str "Codex task-board run " run-id " finished with result " next-status ".")
         pr-urls (github-pr-urls last-message)]
     (cond
+      idle-timeout?
+      (str base " No agent progress was logged before the idle timeout; "
+           "the run was stopped and will be retried automatically.")
+
       (and (= "blocked" next-status)
            (not (#{"done" "blocked"} result))
            (not (:ok? review-gate)))
@@ -1484,7 +1558,7 @@
                 (move-card! ticket-id "in-progress")
                 (update-frontmatter! ticket-id {:status "in-progress"}))
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
-              (let [{:keys [exit result run-id dir last-message]} (run-agent! ticket-id action effective-lane assignee lock)
+              (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock)
                     intended (cond
                                (not (zero? exit)) "blocked"
                                (= :groom action) "ready"
@@ -1497,7 +1571,18 @@
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
                                       gate-result))
                                   {:ok? true})
-                    next-status (final-status action result exit review-gate)]
+                    next-status (if idle-timeout?
+                                  "in-progress"
+                                  (final-status action result exit review-gate))]
+                (when idle-timeout?
+                  (mark-run! ticket-id run-id :retrying
+                             {:action action
+                              :agent assignee
+                              :lane effective-lane
+                              :exit-code exit
+                              :result result
+                              :idle-timeout? true
+                              :finished-at (now-str)}))
                 (when (= "review" intended)
                   (mark-run! ticket-id run-id (cond
                                                 (:ok? review-gate) :succeeded
@@ -1516,7 +1601,7 @@
                 (update-frontmatter! ticket-id (cond-> {:status next-status
                                                          :assignee (if (= "in-progress" next-status) assignee "boxp")}
                                                   (= "done" next-status) (assoc :closed (today))))
-                (append-note! ticket-id (final-note run-id next-status result last-message review-gate))
+                (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                 true)
               (catch Exception e
                 (move-card! ticket-id "blocked")
