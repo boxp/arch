@@ -195,9 +195,32 @@
         that:
           - "'Storage=persistent' in (journald_dropin_content.content | b64decode)"
           - "'SystemMaxUse=512M' in (journald_dropin_content.content | b64decode)"
+          - "'RuntimeMaxUse=256M' in (journald_dropin_content.content | b64decode)"
           - "'MaxRetentionSec=1month' in (journald_dropin_content.content | b64decode)"
-        fail_msg: "journald drop-in is missing Storage=persistent, SystemMaxUse=512M, or MaxRetentionSec=1month"
+        fail_msg: "journald drop-in is missing Storage=persistent, SystemMaxUse=512M, RuntimeMaxUse=256M, or MaxRetentionSec=1month"
       when: journald_persistent_storage | bool
+
+    - name: Read rsyslog logrotate config
+      ansible.builtin.slurp:
+        path: /etc/logrotate.d/rsyslog
+      register: rsyslog_logrotate_content
+
+    - name: Assert rsyslog logrotate has size limit configured
+      ansible.builtin.assert:
+        that:
+          - "'size 200M' in (rsyslog_logrotate_content.content | b64decode)"
+        fail_msg: "rsyslog logrotate config is missing size 200M — disk exhaustion guard not in place"
+
+    - name: Check if logrotate-rsyslog-hourly timer unit exists
+      ansible.builtin.stat:
+        path: /etc/systemd/system/logrotate-rsyslog-hourly.timer
+      register: rsyslog_hourly_timer
+
+    - name: Assert hourly logrotate timer is deployed for rsyslog
+      ansible.builtin.assert:
+        that:
+          - rsyslog_hourly_timer.stat.exists
+        fail_msg: "logrotate-rsyslog-hourly.timer is missing — size limit only takes effect at daily logrotate without it"
 
     - name: Check if systemd watchdog drop-in exists
       ansible.builtin.stat:
