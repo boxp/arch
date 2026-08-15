@@ -73,4 +73,5 @@
   when:
     - ansible_virtualization_type != "docker"
     - chroot_build is not defined or not chroot_build
+    - not ansible_check_mode
   listen: "Enable and start logrotate-rsyslog-hourly timer"
