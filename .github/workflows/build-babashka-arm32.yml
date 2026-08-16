@@ -4,7 +4,7 @@ name: Build babashka for armv7 (IS01)
 # IS01 (ARMv7 / Debian bookworm armhf) 用に GraalVM native-image でクロスビルドする。
 #
 # アーキテクチャ:
-# - boxp/labs-openjdk: ARM32 JVMCI サポートを追加した OpenJDK フォーク
+# - boxp/labs-openjdk: ARM32 JVMCI サポートを追加した OpenJDK フォーク (ARM32デバイス上でのGraalVM実行に必要。クロスコンパイルホスト(x86)での本ワークフロー実行時は不要)
 # - boxp/graal: ARM32 SubstrateVM サポートを追加した GraalVM フォーク
 # - LLVM バックエンド経由で ARM32 native-image を生成する計画
 #
@@ -36,7 +36,7 @@ on:
         type: boolean
         default: false
       skip_native_image:
-        description: 'native-image ビルドをスキップして JVM 版のみビルド'
+        description: 'native-image ビルドをスキップして babashka uberjar のみを成果物として保存する (make_release=true とは併用不可)'
         required: false
         type: boolean
         default: false
@@ -56,14 +56,12 @@ jobs:
           path: arch
           persist-credentials: false
 
-      - name: Checkout boxp/labs-openjdk (ARM32 JVMCI fork)
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          repository: boxp/labs-openjdk
-          # ARM32 JVMCI 対応済みコミットを固定（再現可能ビルドのため）
-          ref: bc391db3d9ba93e9f5a12653bbacbe6e2f29299c
-          path: labs-openjdk
-          persist-credentials: false
+      - name: Validate inputs
+        if: ${{ inputs.skip_native_image && inputs.make_release }}
+        run: |
+          echo "Error: skip_native_image=true と make_release=true は同時に使用できません"
+          echo "リリースには native-image バイナリが必要です"
+          exit 1
 
       - name: Checkout boxp/graal (ARM32 SubstrateVM fork)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -305,6 +303,7 @@ jobs:
           name: babashka-arm32-${{ steps.version.outputs.version }}
           path: |
             babashka-arm32
+            babashka-build/
             build-output.log
           if-no-files-found: ignore
           retention-days: 30
