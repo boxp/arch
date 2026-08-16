@@ -44,7 +44,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 240
     permissions:
       contents: write
     outputs:
@@ -54,6 +54,20 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: arch
+          persist-credentials: false
+
+      - name: Checkout boxp/labs-openjdk (ARM32 JVMCI fork)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: boxp/labs-openjdk
+          path: labs-openjdk
+          persist-credentials: false
+
+      - name: Checkout boxp/graal (ARM32 SubstrateVM fork)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: boxp/graal
+          path: graal
           persist-credentials: false
 
       - name: Install cross-compilation tools
@@ -68,7 +82,9 @@ jobs:
             binfmt-support \
             zlib1g-dev \
             curl \
-            unzip
+            unzip \
+            python3 \
+            python3-pip
 
       - name: Determine babashka version
         id: version
@@ -78,36 +94,72 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
           else
-            LATEST=$(curl -s https://api.github.com/repos/babashka/babashka/releases/latest | jq -r .tag_name | sed 's/^v//')
+            RESPONSE=$(curl --fail -s https://api.github.com/repos/babashka/babashka/releases/latest)
+            LATEST=$(echo "$RESPONSE" | jq -re '.tag_name | ltrimstr("v")')
+            if [ -z "$LATEST" ] || [ "$LATEST" = "null" ]; then
+              echo "Error: babashka 最新バージョンの取得に失敗しました"
+              exit 1
+            fi
             echo "version=$LATEST" >> "$GITHUB_OUTPUT"
             echo "Latest babashka version: $LATEST"
           fi
 
-      - name: Download GraalVM CE (host x64)
+      - name: Install mx build tool
+        run: |
+          git clone --depth=1 https://github.com/graalvm/mx.git "$HOME/mx"
+          echo "$HOME/mx" >> "$GITHUB_PATH"
+
+      - name: Download GraalVM CE as boot JDK
         run: |
           GRAALVM_VERSION="21.0.2"
-          curl -L "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz" \
+          curl --fail -L \
+            "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz" \
             -o graalvm.tar.gz
           tar xzf graalvm.tar.gz
-          GRAALVM_DIR=$(ls -d graalvm-community-openjdk-${GRAALVM_VERSION}*)
-          echo "GRAALVM_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
+          GRAALVM_DIR=$(find . -maxdepth 1 -name "graalvm-community-openjdk-*" -type d | head -1)
+          echo "BOOT_JDK=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
           echo "$PWD/$GRAALVM_DIR/bin" >> "$GITHUB_PATH"
-          echo "GraalVM installed at: $PWD/$GRAALVM_DIR"
+          echo "GraalVM boot JDK installed at: $PWD/$GRAALVM_DIR"
 
-      - name: Install native-image
+      - name: Build native-image from boxp/graal source
         run: |
-          "$GRAALVM_HOME/bin/gu" install native-image || true
-          native-image --version
+          echo "=== boxp/graal から native-image をビルド ==="
+          echo "ARM32 SubstrateVM サポートを含む boxp/graal を使用します"
+          cd graal
+          # mx を使って substratevm スイートをビルド
+          mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30 || {
+            EXIT_CODE=$?
+            echo "::warning::boxp/graal ビルド失敗 (exit: $EXIT_CODE)"
+            echo "ARM32 LLVM バックエンドが未完成のため期待された状態です"
+            echo "フォールバック: boot JDK の native-image を使用します"
+            exit 0
+          }
+          # ビルド成功時: mx の native-image バイナリを PATH に追加
+          BUILT_NI=$(mx --primary-suite-path substratevm paths native-image 2>/dev/null || echo "")
+          if [ -n "$BUILT_NI" ] && [ -f "$BUILT_NI" ]; then
+            echo "NATIVE_IMAGE_BIN=$BUILT_NI" >> "$GITHUB_ENV"
+            echo "$(dirname "$BUILT_NI")" >> "$GITHUB_PATH"
+            echo "boxp/graal native-image: $BUILT_NI"
+          fi
+
+      - name: Install native-image (fallback if boxp/graal build failed)
+        run: |
+          if ! command -v native-image >/dev/null 2>&1; then
+            echo "boxp/graal ビルド未完了のため、boot JDK の gu から native-image をインストール"
+            "$BOOT_JDK/bin/gu" install native-image || true
+          fi
+          native-image --version || echo "::warning::native-image が利用不可"
 
       - name: Download babashka uberjar
         env:
           BB_VERSION: ${{ steps.version.outputs.version }}
         run: |
           mkdir -p babashka-build
-          curl -L "https://github.com/babashka/babashka/releases/download/v${BB_VERSION}/babashka-${BB_VERSION}-standalone.jar" \
+          curl --fail -L \
+            "https://github.com/babashka/babashka/releases/download/v${BB_VERSION}/babashka-${BB_VERSION}-standalone.jar" \
             -o "babashka-build/babashka-${BB_VERSION}-standalone.jar" || \
-          echo "Standalone jar not found, will build from source"
+          echo "::warning::Standalone jar が見つかりません。ソースビルドが必要です"
 
       - name: Setup Clojure (for building from source if needed)
         uses: DeLaGuardo/setup-clojure@bc7570e912b028bbcc22f457adec7fdf98e2f4ed # 12.5
@@ -120,6 +172,7 @@ jobs:
         if: ${{ !inputs.skip_native_image }}
         env:
           BB_VERSION: ${{ steps.version.outputs.version }}
+          MAKE_RELEASE: ${{ inputs.make_release }}
           CC: arm-linux-gnueabihf-gcc
           CXX: arm-linux-gnueabihf-g++
           AR: arm-linux-gnueabihf-ar
@@ -132,41 +185,64 @@ jobs:
 
           JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
           if [ -z "$JAR_FILE" ]; then
+            if [ "${MAKE_RELEASE}" = "true" ]; then
+              echo "Error: リリースビルドで babashka jar が見つかりません"
+              exit 1
+            fi
             echo "::warning::babashka jar が見つかりません。ビルドをスキップします"
             exit 0
           fi
 
-          native-image \
-            --target=linux-arm \
-            -H:CompilerBackend=llvm \
-            --no-fallback \
-            --features=clj_easy.graal.nativeimage.PicocliAOTFeature \
-            -H:Name=babashka-arm32 \
-            -cp "$JAR_FILE" \
-            babashka.main \
-            2>&1 | tee build-output.log || {
+          run_native_image() {
+            native-image \
+              --target=linux-arm \
+              -H:CompilerBackend=llvm \
+              --no-fallback \
+              --features=clj_easy.graal.nativeimage.PicocliAOTFeature \
+              -H:Name=babashka-arm32 \
+              -cp "$JAR_FILE" \
+              babashka.main \
+              2>&1 | tee build-output.log
+          }
+
+          if [ "${MAKE_RELEASE}" = "true" ]; then
+            echo "リリースビルド: native-image の成功を必須とします"
+            run_native_image
+          else
+            run_native_image || {
               EXIT_CODE=$?
               echo "::warning::ARM32 native-image ビルド失敗 (exit: $EXIT_CODE)"
               echo "これは期待された状態です。ARM32 LLVM バックエンドの実装が完成したら"
               echo "このワークフローを再実行してください。"
               tail -50 build-output.log
-              true
             }
+          fi
 
       - name: Test with qemu-arm
+        env:
+          MAKE_RELEASE: ${{ inputs.make_release }}
         run: |
           if [ -f babashka-arm32 ]; then
             echo "=== qemu-arm でテスト ==="
-            qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version || \
-              echo "::warning::qemu-arm テスト失敗"
-
-            qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
-              -e '(println "Hello from ARM32 babashka!")' || \
-              echo "::warning::Hello World テスト失敗"
-
+            if [ "${MAKE_RELEASE}" = "true" ]; then
+              echo "リリースビルド: qemu-arm テストの成功を必須とします"
+              qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version
+              qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
+                -e '(println "Hello from ARM32 babashka!")'
+            else
+              qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version || \
+                echo "::warning::qemu-arm --version テスト失敗"
+              qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
+                -e '(println "Hello from ARM32 babashka!")' || \
+                echo "::warning::Hello World テスト失敗"
+            fi
             ls -lh babashka-arm32
             file babashka-arm32
           else
+            if [ "${MAKE_RELEASE}" = "true" ]; then
+              echo "Error: リリースビルドで babashka-arm32 バイナリが生成されていません"
+              exit 1
+            fi
             echo "babashka-arm32 バイナリが存在しません"
             echo "ARM32 native-image のビルドに成功した場合、ここで動作確認を行います"
           fi
@@ -191,7 +267,7 @@ jobs:
           body: |
             IS01 (ARMv7 / armhf) 向け babashka ${{ steps.version.outputs.version }} native-image バイナリ。
 
-            ## 依存フォーク
+            ## 使用フォーク
             - [boxp/labs-openjdk](https://github.com/boxp/labs-openjdk): ARM32 JVMCI 対応
             - [boxp/graal](https://github.com/boxp/graal): ARM32 SubstrateVM 対応
 
