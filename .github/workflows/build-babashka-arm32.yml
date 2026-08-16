@@ -60,6 +60,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: boxp/labs-openjdk
+          # ARM32 JVMCI 対応済みコミットを固定（再現可能ビルドのため）
+          ref: bc391db3d9ba93e9f5a12653bbacbe6e2f29299c
           path: labs-openjdk
           persist-credentials: false
 
@@ -67,6 +69,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: boxp/graal
+          # ARM32 SubstrateVM スタブ対応済みコミットを固定（再現可能ビルドのため）
+          ref: 13c6f1fd9f6337d2327a669e009bf2db7f43b7b0
           path: graal
           persist-credentials: false
 
@@ -106,7 +110,9 @@ jobs:
 
       - name: Install mx build tool
         run: |
-          git clone --depth=1 https://github.com/graalvm/mx.git "$HOME/mx"
+          # mx のコミット SHA を固定して再現可能ビルドを保証する
+          git clone https://github.com/graalvm/mx.git "$HOME/mx"
+          git -C "$HOME/mx" checkout 2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
           echo "$HOME/mx" >> "$GITHUB_PATH"
 
       - name: Download GraalVM CE as boot JDK
