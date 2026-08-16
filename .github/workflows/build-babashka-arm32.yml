@@ -284,6 +284,19 @@ jobs:
           echo "使用 BOOT_JDK: $BOOT_JDK"
           find "$BOOT_JDK" -name "*.a" | head -5 && echo "static-libs 確認OK" || echo "::warning::static-libs が見つかりません"
 
+          # mx の module archiving は /usr/lib/jvm/temurin-25-jdk-amd64/jmods を参照する
+          # このパスに jmods がなければ BOOT_JDK からシンボリックリンクを作成する
+          SYSTEM_JDK_JMODS="/usr/lib/jvm/temurin-25-jdk-amd64/jmods"
+          if [ ! -d "$SYSTEM_JDK_JMODS" ] && [ -d "$BOOT_JDK/jmods" ]; then
+            echo "Creating jmods symlink: $BOOT_JDK/jmods -> $SYSTEM_JDK_JMODS"
+            sudo mkdir -p "$(dirname "$SYSTEM_JDK_JMODS")"
+            sudo ln -sfn "$BOOT_JDK/jmods" "$SYSTEM_JDK_JMODS"
+            ls "$SYSTEM_JDK_JMODS" | head -3 && echo "jmods symlink OK"
+          elif [ -d "$SYSTEM_JDK_JMODS" ]; then
+            echo "System JDK jmods already exists: $SYSTEM_JDK_JMODS"
+            ls "$SYSTEM_JDK_JMODS" | head -3
+          fi
+
           set -o pipefail
           if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
             echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
