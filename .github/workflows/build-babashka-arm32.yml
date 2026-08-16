@@ -69,7 +69,8 @@ jobs:
         with:
           repository: boxp/llvm-project
           # ARM32 Statepoints/StackMap/PatchPoint 対応済みコミットを固定（再現可能ビルドのため）
-          ref: a97f775704860e7923e198162650488715197add
+          # NOP opcode fix (t2NOP/NOP → emitInt32) merged in PR#2
+          ref: 432549bc1e76f58a65a2e86fd06638c770b78b36
           path: llvm-project
           persist-credentials: false
 
@@ -197,11 +198,14 @@ jobs:
       - name: Download plain OpenJDK as boot JDK (for mx build)
         run: |
           # mx は GraalVM CE を boot JDK として受け付けないため plain OpenJDK を使用
-          # boxp/graal は JDK 21 互換（labs-openjdk ベース）
-          TEMURIN_API="https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
+          # boxp/graal (oracle/graal フォーク) は JDK 25 以上を要求する
+          TEMURIN_API="https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse"
           curl --fail -L "$TEMURIN_API" -o openjdk.tar.gz
           tar xzf openjdk.tar.gz
-          JDK_DIR=$(find . -maxdepth 1 -name "jdk-21*" -type d | head -1)
+          JDK_DIR=$(find . -maxdepth 1 -name "jdk-25*" -o -name "jdk-25.*" -type d 2>/dev/null | head -1)
+          if [ -z "$JDK_DIR" ]; then
+            JDK_DIR=$(find . -maxdepth 1 -type d -name "jdk-2*" | sort -r | head -1)
+          fi
           echo "BOOT_JDK=$PWD/$JDK_DIR" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$PWD/$JDK_DIR" >> "$GITHUB_ENV"
           echo "$PWD/$JDK_DIR/bin" >> "$GITHUB_PATH"
