@@ -43,3 +43,9 @@ My infrastructure as code project - 複数のクラウドプロバイダー（AW
 ### 関連プロジェクト
 
 このインフラストラクチャは [lolice](https://github.com/boxp/lolice) Kubernetesプロジェクトの基盤として機能し、アプリケーションのデプロイメントとオーケストレーションをサポートしています。
+
+## ARM32 Babashka ビルドパイプライン
+
+`.github/workflows/build-babashka-arm32.yml` は、IS01 向け ARMv7/armhf babashka native-image のクロスビルドを試行する手動実行可能なワークフローです。Ubuntu ランナー上で ARM クロスコンパイラと `qemu-arm` を導入し、GraalVM CE 21.0.2（x64）をホストとして利用します。
+
+ARM32 向け GraalVM LLVM バックエンドは開発中のため、native-image または `qemu-arm` の失敗は警告として記録され、ワークフロー自体は成功扱いで完了します。ビルドが生成された場合は、`qemu-arm -L /usr/arm-linux-gnueabihf` で `--version` と簡単な評価式を検証し、成果物としてアップロードします。
