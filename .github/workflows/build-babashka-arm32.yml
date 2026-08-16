@@ -138,9 +138,10 @@ jobs:
 
       - name: Build boxp/llvm-project (ARM32 Statepoints, continue-on-error)
         continue-on-error: true
+        timeout-minutes: 45
         run: |
           echo "=== boxp/llvm-project のビルド (ARM32 ターゲット付き) ==="
-          echo "注意: LLVM ビルドは CI で最大 2 時間かかります。continue-on-error=true で実行します"
+          echo "注意: LLVM ビルドは CI で最大 45 分を限度とします。continue-on-error=true で実行します"
           cd llvm-project
           cmake -S llvm -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -328,7 +329,7 @@ jobs:
             native-image \
               -H:CompilerBackend=llvm \
               "-H:LLVMToolchainPath=${LLVM_TC_PATH}" \
-              --target=linux-arm \
+              "-H:Platform=org.graalvm.nativeimage.Platform\$LINUX_ARM32HF" \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
