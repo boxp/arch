@@ -213,9 +213,16 @@ jobs:
           " 2>/dev/null || echo "")
           echo "Temurin 25 JDK URL: $JDK_URL"
           curl --fail -L "$JDK_URL" -o temurin25-jdk.tar.gz
+          # tarball内のトップレベル構造を確認
+          echo "=== tarball top-level structure ==="
+          tar tzf temurin25-jdk.tar.gz | head -20
           mkdir -p /opt/temurin25
           tar xzf temurin25-jdk.tar.gz -C /opt/temurin25 --strip-components=1
-          echo "jmods count: $(ls /opt/temurin25/jmods 2>/dev/null | wc -l)"
+          echo "=== /opt/temurin25 top-level ==="
+          ls /opt/temurin25/ | head -10
+          echo "jmods dir exists: $(test -d /opt/temurin25/jmods && echo YES || echo NO)"
+          echo "jmods count: $(find /opt/temurin25 -name '*.jmod' | wc -l)"
+          find /opt/temurin25 -name "*.jmod" | head -3
           echo "BOOT_JDK=/opt/temurin25" >> "$GITHUB_ENV"
           echo "JAVA_HOME=/opt/temurin25" >> "$GITHUB_ENV"
           echo "/opt/temurin25/bin" >> "$GITHUB_PATH"
