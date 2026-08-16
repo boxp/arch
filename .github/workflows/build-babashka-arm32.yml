@@ -141,6 +141,7 @@ jobs:
           # ARM32 向け native-image ビルドを試みる
           # --target オプションは GraalVM の完全な ARM32 LLVM バックエンドが必要
           native-image \
+            --target=linux-arm \
             -H:CompilerBackend=llvm \
             --no-fallback \
             --features=clj_easy.graal.nativeimage.PicocliAOTFeature \
