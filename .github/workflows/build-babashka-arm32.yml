@@ -47,11 +47,14 @@ jobs:
     timeout-minutes: 180
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.version.outputs.version }}
     steps:
       - name: Checkout arch
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: arch
+          persist-credentials: false
 
       - name: Install cross-compilation tools
         run: |
@@ -75,7 +78,6 @@ jobs:
           if [ -n "$INPUT_VERSION" ]; then
             echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
           else
-            # 最新リリースを取得
             LATEST=$(curl -s https://api.github.com/repos/babashka/babashka/releases/latest | jq -r .tag_name | sed 's/^v//')
             echo "version=$LATEST" >> "$GITHUB_OUTPUT"
             echo "Latest babashka version: $LATEST"
@@ -83,8 +85,6 @@ jobs:
 
       - name: Download GraalVM CE (host x64)
         run: |
-          # ホスト (x64) 用の標準 GraalVM CE をダウンロード
-          # native-image ビルドはホスト上で実行し、ARM32 バイナリを生成する
           GRAALVM_VERSION="21.0.2"
           curl -L "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz" \
             -o graalvm.tar.gz
@@ -105,14 +105,12 @@ jobs:
           BB_VERSION: ${{ steps.version.outputs.version }}
         run: |
           mkdir -p babashka-build
-          # babashka のソースとuberjarをダウンロード
           curl -L "https://github.com/babashka/babashka/releases/download/v${BB_VERSION}/babashka-${BB_VERSION}-standalone.jar" \
             -o "babashka-build/babashka-${BB_VERSION}-standalone.jar" || \
-          # スタンドアロン jar がない場合はソースからビルド
           echo "Standalone jar not found, will build from source"
 
       - name: Setup Clojure (for building from source if needed)
-        uses: DeLaGuardo/setup-clojure@12.5
+        uses: DeLaGuardo/setup-clojure@bc7570e912b028bbcc22f457adec7fdf98e2f4ed # 12.5
         with:
           lein: latest
           cli: latest
@@ -138,8 +136,6 @@ jobs:
             exit 0
           fi
 
-          # ARM32 向け native-image ビルドを試みる
-          # --target オプションは GraalVM の完全な ARM32 LLVM バックエンドが必要
           native-image \
             --target=linux-arm \
             -H:CompilerBackend=llvm \
@@ -153,8 +149,7 @@ jobs:
               echo "::warning::ARM32 native-image ビルド失敗 (exit: $EXIT_CODE)"
               echo "これは期待された状態です。ARM32 LLVM バックエンドの実装が完成したら"
               echo "このワークフローを再実行してください。"
-              cat build-output.log | tail -50
-              # 失敗してもワークフローは継続
+              tail -50 build-output.log
               true
             }
 
@@ -169,7 +164,6 @@ jobs:
               -e '(println "Hello from ARM32 babashka!")' || \
               echo "::warning::Hello World テスト失敗"
 
-            # バイナリサイズを確認
             ls -lh babashka-arm32
             file babashka-arm32
           else
@@ -178,7 +172,7 @@ jobs:
           fi
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: babashka-arm32-${{ steps.version.outputs.version }}
@@ -186,29 +180,27 @@ jobs:
             babashka-arm32
             build-output.log
           if-no-files-found: ignore
+          retention-days: 30
 
-      - name: Create GitHub Release
+      - name: Release を作る
         if: ${{ inputs.make_release && hashFiles('babashka-arm32') != '' }}
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          BB_VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          gh release create "babashka-arm32-v${BB_VERSION}" \
-            --repo boxp/arch \
-            --title "babashka ${BB_VERSION} for ARMv7 (IS01)" \
-            --notes "IS01 (ARMv7 / armhf) 向け babashka ${BB_VERSION} native-image バイナリ。
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
+        with:
+          tag_name: babashka-arm32-v${{ steps.version.outputs.version }}
+          name: babashka ${{ steps.version.outputs.version }} for ARMv7 (IS01)
+          body: |
+            IS01 (ARMv7 / armhf) 向け babashka ${{ steps.version.outputs.version }} native-image バイナリ。
 
-## 依存フォーク
-- [boxp/labs-openjdk](https://github.com/boxp/labs-openjdk): ARM32 JVMCI 対応
-- [boxp/graal](https://github.com/boxp/graal): ARM32 SubstrateVM 対応
+            ## 依存フォーク
+            - [boxp/labs-openjdk](https://github.com/boxp/labs-openjdk): ARM32 JVMCI 対応
+            - [boxp/graal](https://github.com/boxp/graal): ARM32 SubstrateVM 対応
 
-## 動作確認
-\`\`\`bash
-# qemu-arm でテスト
-qemu-arm -L /usr/arm-linux-gnueabihf ./babashka --version
+            ## 動作確認
+            ```bash
+            # qemu-arm でテスト
+            qemu-arm -L /usr/arm-linux-gnueabihf ./babashka --version
 
-# IS01 実機でテスト
-./babashka --version
-\`\`\`
-            " \
-            babashka-arm32 || true
+            # IS01 実機でテスト
+            ./babashka --version
+            ```
+          files: babashka-arm32
