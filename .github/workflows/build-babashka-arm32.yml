@@ -76,8 +76,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: boxp/graal
-          # ARM32 SubstrateVM スタブ対応済みコミットを固定（再現可能ビルドのため）
-          ref: 13c6f1fd9f6337d2327a669e009bf2db7f43b7b0
+          # ARM32 SubstrateVM + suite.py arm32モジュール登録済みコミットを固定（再現可能ビルドのため）
+          ref: d0dc7008ef0f96fd9c0e906468d7271b22034a26
           path: graal
           persist-credentials: false
 
