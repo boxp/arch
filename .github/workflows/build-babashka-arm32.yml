@@ -270,33 +270,13 @@ jobs:
           echo "LLVM_TOOLCHAIN_PATH=$LLVM_PATH" >> "$GITHUB_ENV"
 
           cd graal
-          # Temurin JDK 25 には mx が期待する静的 JDK ライブラリがないため、
-          # まず GraalVM Labs JDK を boot JDK として取得する。
-          LABS_JDK=""
-          if FETCH_JDK_OUTPUT=$(mx fetch-jdk --java-distribution labsjdk-ce-25 --to /tmp/labs-jdk 2>&1); then
-            echo "$FETCH_JDK_OUTPUT"
-            LABS_JDK=$(printf '%s\n' "$FETCH_JDK_OUTPUT" | grep -E 'JAVA_HOME=' | tail -1 | cut -d= -f2-)
-            if [ -z "$LABS_JDK" ]; then
-              LABS_JDK=$(find /tmp/labs-jdk -type f -path '*/bin/java' -printf '%h\n' 2>/dev/null | head -1 | xargs -r dirname)
-            fi
-          else
-            echo "::warning::Labs JDK の取得に失敗しました。JvmFuncsFallbacksBuildTask を除外して続行します"
-            echo "$FETCH_JDK_OUTPUT"
-          fi
-
-          MX_BUILD_ARGS=(--primary-suite-path substratevm --java-home "$BOOT_JDK" build)
-          if [ -n "$LABS_JDK" ] && [ -d "$LABS_JDK" ]; then
-            echo "Labs JDK を使用: $LABS_JDK"
-            export JAVA_HOME="$LABS_JDK"
-            export BOOT_JDK="$LABS_JDK"
-            MX_BUILD_ARGS=(--primary-suite-path substratevm --java-home "$BOOT_JDK" build)
-          else
-            echo "::warning::Labs JDK を検出できません。svm-jvmfuncs-fallback-builder を除外します"
-            MX_BUILD_ARGS+=(--excludes svm-jvmfuncs-fallback-builder)
-          fi
+          # Temurin 25 static-libs は前ステップでマージ済み
+          # svm-jvmfuncs-fallback-builder が JVM_* シンボルを見つけられるはず
+          echo "使用 BOOT_JDK: $BOOT_JDK"
+          find "$BOOT_JDK" -name "*.a" | head -5 && echo "static-libs 確認OK" || echo "::warning::static-libs が見つかりません"
 
           set -o pipefail
-          if mx "${MX_BUILD_ARGS[@]}" 2>&1 | tail -30; then
+          if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
             echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
             # mx graalvm-home 経由で native-image バイナリを取得（最も確実な方法）
             GRAALVM_HOME=$(mx --primary-suite-path substratevm graalvm-home 2>/dev/null || echo "")
