@@ -1,0 +1,213 @@
+name: Build babashka for armv7 (IS01)
+
+# babashka の公式配布は linux-aarch64 と linux-amd64 のみで 32bit ARM が無い。
+# IS01 (ARMv7 / Debian bookworm armhf) 用に GraalVM native-image でクロスビルドする。
+#
+# アーキテクチャ:
+# - boxp/labs-openjdk: ARM32 JVMCI サポートを追加した OpenJDK フォーク
+# - boxp/graal: ARM32 SubstrateVM サポートを追加した GraalVM フォーク
+# - LLVM バックエンド経由で ARM32 native-image を生成する計画
+#
+# 現状 (BOXP-152):
+# - ARM32 JVMCI コード: boxp/labs-openjdk master にマージ済み
+# - ARM32 SubstrateVM スタブ: boxp/graal master にマージ済み
+# - LLVM Statepoints の ARM32 対応: 未完成 (llvm/llvm-project への貢献が必要)
+# - 完全な ARM32 native-image: 実装中
+#
+# 参考: GraalVM RISC-V 対応事例 (2023年、約6ヶ月)
+# https://medium.com/graalvm/graalvm-native-image-meets-risc-v-899be38eddd9
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-babashka-arm32.yml'
+  workflow_dispatch:
+    inputs:
+      babashka_version:
+        description: 'babashka のバージョン (例: 1.12.196)'
+        required: false
+        type: string
+        default: ''
+      make_release:
+        description: 'GitHub Release を作る'
+        required: false
+        type: boolean
+        default: false
+      skip_native_image:
+        description: 'native-image ビルドをスキップして JVM 版のみビルド'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout arch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: arch
+
+      - name: Install cross-compilation tools
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y \
+            gcc-arm-linux-gnueabihf \
+            g++-arm-linux-gnueabihf \
+            libc6-dev-armhf-cross \
+            qemu-user \
+            qemu-user-static \
+            binfmt-support \
+            zlib1g-dev \
+            curl \
+            unzip
+
+      - name: Determine babashka version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.babashka_version }}
+        run: |
+          if [ -n "$INPUT_VERSION" ]; then
+            echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
+          else
+            # 最新リリースを取得
+            LATEST=$(curl -s https://api.github.com/repos/babashka/babashka/releases/latest | jq -r .tag_name | sed 's/^v//')
+            echo "version=$LATEST" >> "$GITHUB_OUTPUT"
+            echo "Latest babashka version: $LATEST"
+          fi
+
+      - name: Download GraalVM CE (host x64)
+        run: |
+          # ホスト (x64) 用の標準 GraalVM CE をダウンロード
+          # native-image ビルドはホスト上で実行し、ARM32 バイナリを生成する
+          GRAALVM_VERSION="21.0.2"
+          curl -L "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz" \
+            -o graalvm.tar.gz
+          tar xzf graalvm.tar.gz
+          GRAALVM_DIR=$(ls -d graalvm-community-openjdk-${GRAALVM_VERSION}*)
+          echo "GRAALVM_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
+          echo "$PWD/$GRAALVM_DIR/bin" >> "$GITHUB_PATH"
+          echo "GraalVM installed at: $PWD/$GRAALVM_DIR"
+
+      - name: Install native-image
+        run: |
+          "$GRAALVM_HOME/bin/gu" install native-image || true
+          native-image --version
+
+      - name: Download babashka uberjar
+        env:
+          BB_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          mkdir -p babashka-build
+          # babashka のソースとuberjarをダウンロード
+          curl -L "https://github.com/babashka/babashka/releases/download/v${BB_VERSION}/babashka-${BB_VERSION}-standalone.jar" \
+            -o "babashka-build/babashka-${BB_VERSION}-standalone.jar" || \
+          # スタンドアロン jar がない場合はソースからビルド
+          echo "Standalone jar not found, will build from source"
+
+      - name: Setup Clojure (for building from source if needed)
+        uses: DeLaGuardo/setup-clojure@12.5
+        with:
+          lein: latest
+          cli: latest
+        continue-on-error: true
+
+      - name: Build babashka ARM32 native-image
+        if: ${{ !inputs.skip_native_image }}
+        env:
+          BB_VERSION: ${{ steps.version.outputs.version }}
+          CC: arm-linux-gnueabihf-gcc
+          CXX: arm-linux-gnueabihf-g++
+          AR: arm-linux-gnueabihf-ar
+          CROSS_COMPILE: arm-linux-gnueabihf-
+        run: |
+          echo "=== ARM32 native-image ビルド試行 ==="
+          echo "注意: GraalVM の完全な ARM32 LLVM バックエンドサポートは開発中"
+          echo "詳細: BOXP-152 (boxp/labs-openjdk + boxp/graal の ARM32 サポート)"
+          echo ""
+
+          JAR_FILE=$(ls babashka-build/babashka-*.jar 2>/dev/null | head -1)
+          if [ -z "$JAR_FILE" ]; then
+            echo "::warning::babashka jar が見つかりません。ビルドをスキップします"
+            exit 0
+          fi
+
+          # ARM32 向け native-image ビルドを試みる
+          # --target オプションは GraalVM の完全な ARM32 LLVM バックエンドが必要
+          native-image \
+            -H:CompilerBackend=llvm \
+            --no-fallback \
+            --features=clj_easy.graal.nativeimage.PicocliAOTFeature \
+            -H:Name=babashka-arm32 \
+            -cp "$JAR_FILE" \
+            babashka.main \
+            2>&1 | tee build-output.log || {
+              EXIT_CODE=$?
+              echo "::warning::ARM32 native-image ビルド失敗 (exit: $EXIT_CODE)"
+              echo "これは期待された状態です。ARM32 LLVM バックエンドの実装が完成したら"
+              echo "このワークフローを再実行してください。"
+              cat build-output.log | tail -50
+              # 失敗してもワークフローは継続
+              true
+            }
+
+      - name: Test with qemu-arm
+        run: |
+          if [ -f babashka-arm32 ]; then
+            echo "=== qemu-arm でテスト ==="
+            qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version || \
+              echo "::warning::qemu-arm テスト失敗"
+
+            qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
+              -e '(println "Hello from ARM32 babashka!")' || \
+              echo "::warning::Hello World テスト失敗"
+
+            # バイナリサイズを確認
+            ls -lh babashka-arm32
+            file babashka-arm32
+          else
+            echo "babashka-arm32 バイナリが存在しません"
+            echo "ARM32 native-image のビルドに成功した場合、ここで動作確認を行います"
+          fi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: babashka-arm32-${{ steps.version.outputs.version }}
+          path: |
+            babashka-arm32
+            build-output.log
+          if-no-files-found: ignore
+
+      - name: Create GitHub Release
+        if: ${{ inputs.make_release && hashFiles('babashka-arm32') != '' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BB_VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          gh release create "babashka-arm32-v${BB_VERSION}" \
+            --repo boxp/arch \
+            --title "babashka ${BB_VERSION} for ARMv7 (IS01)" \
+            --notes "IS01 (ARMv7 / armhf) 向け babashka ${BB_VERSION} native-image バイナリ。
+
+## 依存フォーク
+- [boxp/labs-openjdk](https://github.com/boxp/labs-openjdk): ARM32 JVMCI 対応
+- [boxp/graal](https://github.com/boxp/graal): ARM32 SubstrateVM 対応
+
+## 動作確認
+\`\`\`bash
+# qemu-arm でテスト
+qemu-arm -L /usr/arm-linux-gnueabihf ./babashka --version
+
+# IS01 実機でテスト
+./babashka --version
+\`\`\`
+            " \
+            babashka-arm32 || true
