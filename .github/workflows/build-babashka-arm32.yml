@@ -68,7 +68,8 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: boxp/llvm-project
-          ref: master
+          # ARM32 Statepoints/StackMap/PatchPoint 対応済みコミットを固定（再現可能ビルドのため）
+          ref: a97f775704860e7923e198162650488715197add
           path: llvm-project
           persist-credentials: false
 
