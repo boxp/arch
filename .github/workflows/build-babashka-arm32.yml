@@ -121,10 +121,11 @@ jobs:
         run: |
           echo "=== LLVM ARM32 Statepoint 検証 (boxp/llvm-project) ==="
           # システム LLVM 17 で ARM32 statepoint IR をコンパイルしてスモークテスト
+          # LLVM 17 の statepoint 構文: token 型を返す intrinsic
           cat > /tmp/test-statepoint.ll << 'EOF'
-          declare void @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
+          declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
           define void @test() gc "statepoint-example" {
-            call void (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr null, i32 0, i32 0)
+            %sp = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr null, i32 0, i32 0)
             ret void
           }
           EOF
@@ -136,12 +137,25 @@ jobs:
           echo "boxp/llvm-project の ARM32 Statepoint コミットを確認..."
           git -C llvm-project log --oneline -5
 
+      - name: Cache boxp/llvm-project build
+        id: llvm-cache
+        uses: actions/cache@1bd1e32a3bdc45362d1e726936510720a7c30a57 # v4.2.0
+        with:
+          path: llvm-project/build
+          key: llvm-arm32-statepoints-${{ hashFiles('llvm-project/llvm/lib/Target/ARM/ARMAsmPrinter.cpp', 'llvm-project/llvm/lib/Target/ARM/ARMAsmPrinter.h') }}
+
       - name: Build boxp/llvm-project (ARM32 Statepoints, continue-on-error)
         continue-on-error: true
-        timeout-minutes: 45
+        timeout-minutes: 90
         run: |
           echo "=== boxp/llvm-project のビルド (ARM32 ターゲット付き) ==="
-          echo "注意: LLVM ビルドは CI で最大 45 分を限度とします。continue-on-error=true で実行します"
+          if [ "${{ steps.llvm-cache.outputs.cache-hit }}" = "true" ] && [ -f llvm-project/build/bin/llc ]; then
+            echo "キャッシュヒット: boxp/llvm-project ビルド済み"
+            echo "LLVM_CUSTOM_BUILD_SUCCESS=true" >> "$GITHUB_ENV"
+            echo "LLVM_CUSTOM_PREFIX=$PWD/llvm-project/build" >> "$GITHUB_ENV"
+            exit 0
+          fi
+          echo "注意: LLVM ビルドは CI で最大 90 分を限度とします。continue-on-error=true で実行します"
           cd llvm-project
           cmake -S llvm -B build \
             -DCMAKE_BUILD_TYPE=Release \
@@ -182,16 +196,19 @@ jobs:
 
       - name: Download GraalVM CE as boot JDK
         run: |
-          GRAALVM_VERSION="21.0.2"
+          # boxp/graal master は JDK 25 以上を要求するため GraalVM CE 25.0.2 を使用
+          GRAALVM_VERSION="25.0.2"
           curl --fail -L \
             "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz" \
             -o graalvm.tar.gz
           tar xzf graalvm.tar.gz
-          GRAALVM_DIR=$(find . -maxdepth 1 -name "graalvm-community-openjdk-*" -type d | head -1)
+          # GraalVM CE 25 は graalvm-community-openjdk-25.x.x 形式のディレクトリを使用
+          GRAALVM_DIR=$(find . -maxdepth 1 \( -name "graalvm-community-openjdk-*" -o -name "graalvm-community-jdk-*" \) -type d | head -1)
           echo "BOOT_JDK=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
           echo "$PWD/$GRAALVM_DIR/bin" >> "$GITHUB_PATH"
           echo "GraalVM boot JDK installed at: $PWD/$GRAALVM_DIR"
+          java -version
 
       - name: Build native-image from boxp/graal source
         env:
@@ -272,8 +289,9 @@ jobs:
               echo "ARM32 LLVM バックエンドが完成してから再実行してください"
               exit 1
             fi
-            echo "boxp/graal ビルド未完了のため、boot JDK の gu から native-image をインストール"
-            "$BOOT_JDK/bin/gu" install native-image || true
+            # GraalVM CE 25 は native-image を標準バンドル (gu は不要/削除済み)
+            echo "boxp/graal ビルド未完了のため、boot JDK の native-image を使用"
+            # gu は GraalVM CE 22+ で廃止。native-image は既にバンドル済み
           fi
           native-image --version || echo "::warning::native-image が利用不可"
 
