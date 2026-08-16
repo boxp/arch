@@ -194,21 +194,32 @@ jobs:
           git -C "$HOME/mx" checkout 2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
           echo "$HOME/mx" >> "$GITHUB_PATH"
 
-      - name: Download GraalVM CE as boot JDK
+      - name: Download plain OpenJDK as boot JDK (for mx build)
         run: |
-          # boxp/graal master は JDK 25 以上を要求するため GraalVM CE 25.0.2 を使用
+          # mx は GraalVM CE を boot JDK として受け付けないため plain OpenJDK を使用
+          # boxp/graal は JDK 21 互換（labs-openjdk ベース）
+          TEMURIN_API="https://api.adoptium.net/v3/binary/latest/21/ga/linux/x64/jdk/hotspot/normal/eclipse"
+          curl --fail -L "$TEMURIN_API" -o openjdk.tar.gz
+          tar xzf openjdk.tar.gz
+          JDK_DIR=$(find . -maxdepth 1 -name "jdk-21*" -type d | head -1)
+          echo "BOOT_JDK=$PWD/$JDK_DIR" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$PWD/$JDK_DIR" >> "$GITHUB_ENV"
+          echo "$PWD/$JDK_DIR/bin" >> "$GITHUB_PATH"
+          echo "Plain OpenJDK installed at: $PWD/$JDK_DIR"
+          java -version
+
+      - name: Download GraalVM CE for native-image (fallback)
+        run: |
+          # native-image フォールバック用に GraalVM CE 25.0.2 を別途取得
           GRAALVM_VERSION="25.0.2"
           curl --fail -L \
             "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz" \
             -o graalvm.tar.gz
           tar xzf graalvm.tar.gz
-          # GraalVM CE 25 は graalvm-community-openjdk-25.x.x 形式のディレクトリを使用
           GRAALVM_DIR=$(find . -maxdepth 1 \( -name "graalvm-community-openjdk-*" -o -name "graalvm-community-jdk-*" \) -type d | head -1)
-          echo "BOOT_JDK=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
-          echo "JAVA_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
-          echo "$PWD/$GRAALVM_DIR/bin" >> "$GITHUB_PATH"
-          echo "GraalVM boot JDK installed at: $PWD/$GRAALVM_DIR"
-          java -version
+          echo "GRAALVM_CE_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
+          echo "GraalVM CE installed at: $PWD/$GRAALVM_DIR"
+          "$PWD/$GRAALVM_DIR/bin/native-image" --version
 
       - name: Build native-image from boxp/graal source
         env:
@@ -289,9 +300,9 @@ jobs:
               echo "ARM32 LLVM バックエンドが完成してから再実行してください"
               exit 1
             fi
-            # GraalVM CE 25 は native-image を標準バンドル (gu は不要/削除済み)
-            echo "boxp/graal ビルド未完了のため、boot JDK の native-image を使用"
-            # gu は GraalVM CE 22+ で廃止。native-image は既にバンドル済み
+            # GraalVM CE の native-image をフォールバックとして使用
+            echo "$GRAALVM_CE_HOME/bin" >> "$GITHUB_PATH"
+            echo "GraalVM CE の native-image をフォールバックとして使用: $GRAALVM_CE_HOME/bin/native-image"
           fi
           native-image --version || echo "::warning::native-image が利用不可"
 
