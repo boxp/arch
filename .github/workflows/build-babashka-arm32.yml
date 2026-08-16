@@ -196,46 +196,47 @@ jobs:
           echo "$HOME/mx" >> "$GITHUB_PATH"
 
       - name: Setup JDK 25 as boot JDK (for mx build)
-        uses: actions/setup-java@cf277c60eb25467037889841efdb72551f06f6c3 # v4
+        uses: actions/setup-java@v4
         with:
           distribution: 'temurin'
           java-version: '25'
-        # actions/setup-java が JAVA_HOME を適切に設定し jmods も含まれる
+          # tool-cache を強制使用 (system JDK にはjmodsがない場合があるため)
+          check-latest: false
 
       - name: Configure boot JDK env vars and download static-libs
         run: |
-          # actions/setup-java が設定した JAVA_HOME を BOOT_JDK に流用
+          # tool-cache版 JAVA_HOME を取得 (system JDK ではなく)
+          # Renovate SHA pinがsystem JDKを使う場合があるため明示的にtool-cacheを探す
+          TOOLCACHE_JDK=$(find /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk -maxdepth 3 -name "release" -path "*/25*" 2>/dev/null | xargs dirname | head -1)
+          if [ -n "$TOOLCACHE_JDK" ] && [ -d "$TOOLCACHE_JDK/jmods" ]; then
+            echo "Tool-cache JDK with jmods: $TOOLCACHE_JDK"
+            export JAVA_HOME="$TOOLCACHE_JDK"
+            echo "JAVA_HOME=$TOOLCACHE_JDK" >> "$GITHUB_ENV"
+            echo "$TOOLCACHE_JDK/bin" >> "$GITHUB_PATH"
+          fi
+
           echo "BOOT_JDK=$JAVA_HOME" >> "$GITHUB_ENV"
           echo "BOOT_JDK設定: $JAVA_HOME"
           java -version
-          # jmods が存在するか確認
           ls "$JAVA_HOME/jmods" | head -3 && echo "jmods: OK" || echo "::warning::jmods が見つかりません"
-          # バージョン文字列を保存 (static-libs ダウンロードに使用)
-          JDK_BUILD=$(ls "$JAVA_HOME/release" 2>/dev/null | head -1 || basename "$JAVA_HOME")
-          # JAVA_HOME からバージョンを取得 (例: /opt/hostedtoolcache/Java_Temurin_jdk/25.0.4+7/x64)
-          JDK_VERSION=$(basename "$(dirname "$JAVA_HOME")" | sed 's/+/_/; s/+/%2B/')
-          echo "Detected JDK version for static-libs: $JDK_VERSION"
+
           # Temurin 25 static-libs を JAVA_HOME にマージ (svm-jvmfuncs-fallback-builder 用)
-          JDK_VERSION_RAW=$(basename "$(dirname "$JAVA_HOME")")  # e.g., 25.0.4-7 (setup-java uses '-')
-          # actions/setup-java uses '-' as build separator; Adoptium URL uses '+' → '%2B' (tag) or '_' (filename)
-          JDK_VERSION_PLUS=$(echo "$JDK_VERSION_RAW" | sed 's/-\([0-9][0-9]*\)$/+\1/')  # 25.0.4+7
-          JDK_VERSION_ENCODED=$(echo "$JDK_VERSION_PLUS" | sed 's/+/%2B/')               # 25.0.4%2B7
-          JDK_VERSION_FLAT=$(echo "$JDK_VERSION_PLUS" | tr '+' '_')                      # 25.0.4_7
-          STATIC_LIBS_URL="https://github.com/adoptium/temurin25-binaries/releases/download/jdk-${JDK_VERSION_ENCODED}/OpenJDK25U-static-libs-glibc_x64_linux_hotspot_${JDK_VERSION_FLAT}.tar.gz"
-          echo "Downloading Temurin 25 static-libs from: $STATIC_LIBS_URL"
-          if curl --fail -L "$STATIC_LIBS_URL" -o static-libs.tar.gz 2>/dev/null; then
+          # Adoptium GitHub API で最新の static-libs URL を取得 (バージョン変換の問題を回避)
+          STATIC_LIBS_URL=$(curl -s "https://api.github.com/repos/adoptium/temurin25-binaries/releases/latest" \
+            | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if 'static-libs-glibc' in a['name'] and 'linux' in a['name'] and 'x64' in a['name'] and not 'musl' in a['name'] and a['name'].endswith('.tar.gz')][0])" 2>/dev/null || echo "")
+          echo "Temurin 25 static-libs URL: $STATIC_LIBS_URL"
+          if [ -n "$STATIC_LIBS_URL" ] && curl --fail -L "$STATIC_LIBS_URL" -o static-libs.tar.gz 2>/dev/null; then
             STATIC_TMP=$(mktemp -d)
             tar xzf static-libs.tar.gz -C "$STATIC_TMP"
             STATIC_JDK_DIR=$(find "$STATIC_TMP" -maxdepth 1 -type d -name "jdk-*" | head -1)
             if [ -n "$STATIC_JDK_DIR" ]; then
               cp -r "$STATIC_JDK_DIR/." "$JAVA_HOME/"
               echo "static-libs を $JAVA_HOME にマージしました"
-              echo "静的ライブラリ一覧 (先頭5件):"
               find "$JAVA_HOME" -name "*.a" | head -5
             fi
             rm -rf "$STATIC_TMP" static-libs.tar.gz
           else
-            echo "::warning::static-libs の取得に失敗しました。JDK version: $JDK_VERSION_RAW"
+            echo "::warning::static-libs の取得に失敗。svm-jvmfuncs-fallback-builder はシンボルなしで動作（mx_substratevm.py修正済み）"
           fi
 
       - name: Download GraalVM CE for native-image (fallback)
