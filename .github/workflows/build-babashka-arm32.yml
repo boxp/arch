@@ -130,7 +130,7 @@ jobs:
           echo "詳細: BOXP-152 (boxp/labs-openjdk + boxp/graal の ARM32 サポート)"
           echo ""
 
-          JAR_FILE=$(ls babashka-build/babashka-*.jar 2>/dev/null | head -1)
+          JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
           if [ -z "$JAR_FILE" ]; then
             echo "::warning::babashka jar が見つかりません。ビルドをスキップします"
             exit 0
