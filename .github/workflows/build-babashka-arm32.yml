@@ -285,17 +285,14 @@ jobs:
           find "$BOOT_JDK" -name "*.a" | head -5 && echo "static-libs 確認OK" || echo "::warning::static-libs が見つかりません"
 
           # mx の module archiving は /usr/lib/jvm/temurin-25-jdk-amd64/jmods を参照する
-          # このパスに jmods がなければ BOOT_JDK からシンボリックリンクを作成する
-          SYSTEM_JDK_JMODS="/usr/lib/jvm/temurin-25-jdk-amd64/jmods"
-          if [ ! -d "$SYSTEM_JDK_JMODS" ] && [ -d "$BOOT_JDK/jmods" ]; then
-            echo "Creating jmods symlink: $BOOT_JDK/jmods -> $SYSTEM_JDK_JMODS"
-            sudo mkdir -p "$(dirname "$SYSTEM_JDK_JMODS")"
-            sudo ln -sfn "$BOOT_JDK/jmods" "$SYSTEM_JDK_JMODS"
-            ls "$SYSTEM_JDK_JMODS" | head -3 && echo "jmods symlink OK"
-          elif [ -d "$SYSTEM_JDK_JMODS" ]; then
-            echo "System JDK jmods already exists: $SYSTEM_JDK_JMODS"
-            ls "$SYSTEM_JDK_JMODS" | head -3
-          fi
+          # BOOT_JDK の jmods をシンボリックリンクで提供する (条件なし)
+          echo "=== jmods symlink setup ==="
+          echo "BOOT_JDK/jmods: $(ls $BOOT_JDK/jmods 2>/dev/null | wc -l) files"
+          echo "/usr/lib/jvm/ contents:"
+          ls -la /usr/lib/jvm/ 2>/dev/null | head -10 || true
+          sudo mkdir -p /usr/lib/jvm/temurin-25-jdk-amd64 2>/dev/null || true
+          sudo ln -sfn "$BOOT_JDK/jmods" /usr/lib/jvm/temurin-25-jdk-amd64/jmods 2>/dev/null && echo "jmods symlink created" || echo "::warning::jmods symlink failed"
+          ls /usr/lib/jvm/temurin-25-jdk-amd64/jmods 2>/dev/null | head -3 && echo "jmods symlink OK" || echo "::warning::jmods at system path still missing"
 
           set -o pipefail
           if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
