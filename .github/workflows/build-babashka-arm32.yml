@@ -195,39 +195,29 @@ jobs:
           git -C "$HOME/mx" checkout 2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
           echo "$HOME/mx" >> "$GITHUB_PATH"
 
-      - name: Download Temurin 25 JDK with jmods as boot JDK
+      - name: Install Temurin 25 JDK with jmods as boot JDK
         run: |
-          # actions/setup-java の tool-cache JDK は jmods が空のため直接ダウンロードする
-          # mx の VMACCESS_GUEST archiving に jmods が必要
-          RELEASE_JSON=$(curl -s "https://api.github.com/repos/adoptium/temurin25-binaries/releases/latest")
-          JDK_URL=$(echo "$RELEASE_JSON" | python3 -c "
-          import json,sys
-          d=json.load(sys.stdin)
-          matches=[a['browser_download_url'] for a in d.get('assets',[])
-                   if 'jdk' in a['name'] and 'linux' in a['name'] and 'x64' in a['name']
-                   and 'hotspot' in a['name'] and a['name'].endswith('.tar.gz')
-                   and 'sources' not in a['name'] and 'debug' not in a['name']
-                   and 'static' not in a['name'] and 'alpine' not in a['name']
-                   and 'musl' not in a['name']]
-          print(matches[0] if matches else '')
-          " 2>/dev/null || echo "")
-          echo "Temurin 25 JDK URL: $JDK_URL"
-          curl --fail -L "$JDK_URL" -o temurin25-jdk.tar.gz
-          # tarball内のトップレベル構造を確認
-          echo "=== tarball top-level structure ==="
-          tar tzf temurin25-jdk.tar.gz | head -20
-          mkdir -p /opt/temurin25
-          tar xzf temurin25-jdk.tar.gz -C /opt/temurin25 --strip-components=1
-          echo "=== /opt/temurin25 top-level ==="
-          ls /opt/temurin25/ | head -10
-          echo "jmods dir exists: $(test -d /opt/temurin25/jmods && echo YES || echo NO)"
-          echo "jmods count: $(find /opt/temurin25 -name '*.jmod' | wc -l)"
-          find /opt/temurin25 -name "*.jmod" | head -3
-          echo "BOOT_JDK=/opt/temurin25" >> "$GITHUB_ENV"
-          echo "JAVA_HOME=/opt/temurin25" >> "$GITHUB_ENV"
-          echo "/opt/temurin25/bin" >> "$GITHUB_PATH"
-          rm temurin25-jdk.tar.gz
-          /opt/temurin25/bin/java -version
+          # Temurin tarball には jmods が含まれていないため apt-get でインストールする
+          echo "=== 現在のシステムJDK状況 ==="
+          ls -la /usr/lib/jvm/ | grep temurin-25 || true
+          find / -name "java.base.jmod" 2>/dev/null | head -3 || true
+          echo "=== Temurin 25 を apt でインストール ==="
+          sudo apt-get update -q
+          sudo apt-get install -y temurin-25-jdk 2>/dev/null || sudo apt-get install -y openjdk-25-jdk 2>/dev/null || true
+          # インストール後の jmods を確認
+          BOOT_JDK=$(update-java-alternatives -l 2>/dev/null | grep -E "25" | awk '{print $3}' | head -1)
+          if [ -z "$BOOT_JDK" ]; then
+            BOOT_JDK=$(find /usr/lib/jvm -maxdepth 1 -type d -name "*25*" | head -1)
+          fi
+          if [ -z "$BOOT_JDK" ]; then
+            BOOT_JDK=$(find / -maxdepth 6 -name "java.base.jmod" 2>/dev/null | head -1 | xargs dirname 2>/dev/null | xargs dirname 2>/dev/null)
+          fi
+          echo "Detected BOOT_JDK: $BOOT_JDK"
+          ls "$BOOT_JDK/jmods" 2>/dev/null | wc -l && echo "jmods OK" || echo "::warning::jmods still missing"
+          echo "BOOT_JDK=$BOOT_JDK" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=$BOOT_JDK" >> "$GITHUB_ENV"
+          echo "$BOOT_JDK/bin" >> "$GITHUB_PATH"
+          "$BOOT_JDK/bin/java" -version
 
       - name: Download Temurin 25 static-libs and configure BOOT_JDK
         run: |
