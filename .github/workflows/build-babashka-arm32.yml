@@ -195,48 +195,45 @@ jobs:
           git -C "$HOME/mx" checkout 2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
           echo "$HOME/mx" >> "$GITHUB_PATH"
 
-      - name: Download plain OpenJDK as boot JDK (for mx build)
-        run: |
-          # mx は GraalVM CE を boot JDK として受け付けないため plain OpenJDK を使用
-          # boxp/graal (oracle/graal フォーク) は JDK 25 以上を要求する
-          TEMURIN_API="https://api.adoptium.net/v3/binary/latest/25/ga/linux/x64/jdk/hotspot/normal/eclipse"
-          curl --fail -L "$TEMURIN_API" -o openjdk.tar.gz
-          tar xzf openjdk.tar.gz
-          JDK_DIR=$(find . -maxdepth 1 -type d -name "jdk-25*" | head -1)
-          if [ -z "$JDK_DIR" ]; then
-            JDK_DIR=$(find . -maxdepth 1 -type d -name "jdk-2*" | sort -r | head -1)
-          fi
-          echo "BOOT_JDK=$PWD/$JDK_DIR" >> "$GITHUB_ENV"
-          echo "JAVA_HOME=$PWD/$JDK_DIR" >> "$GITHUB_ENV"
-          echo "$PWD/$JDK_DIR/bin" >> "$GITHUB_PATH"
-          echo "Plain OpenJDK installed at: $PWD/$JDK_DIR"
-          java -version
-          # バージョン文字列を保存 (static-libs ダウンロードに使用)
-          JDK_VERSION=$(basename "$JDK_DIR" | sed 's/jdk-//')
-          echo "TEMURIN_JDK_VERSION=$JDK_VERSION" >> "$GITHUB_ENV"
+      - name: Setup JDK 25 as boot JDK (for mx build)
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '25'
+        # actions/setup-java が JAVA_HOME を適切に設定し jmods も含まれる
 
-      - name: Download Temurin 25 static-libs (for JvmFuncsFallbacksBuildTask)
+      - name: Configure boot JDK env vars and download static-libs
         run: |
-          # svm-jvmfuncs-fallback-builder は JDK の静的ライブラリ (*.a) を必要とする
-          # Temurin は static-libs を別バンドルで提供しているため、JDK ディレクトリにマージする
-          JDK_VERSION="${TEMURIN_JDK_VERSION}"  # e.g., 25.0.4+7
-          JDK_VERSION_ENCODED=$(echo "$JDK_VERSION" | sed 's/+/%2B/')
-          JDK_VERSION_FLAT=$(echo "$JDK_VERSION" | tr '+' '_')
+          # actions/setup-java が設定した JAVA_HOME を BOOT_JDK に流用
+          echo "BOOT_JDK=$JAVA_HOME" >> "$GITHUB_ENV"
+          echo "BOOT_JDK設定: $JAVA_HOME"
+          java -version
+          # jmods が存在するか確認
+          ls "$JAVA_HOME/jmods" | head -3 && echo "jmods: OK" || echo "::warning::jmods が見つかりません"
+          # バージョン文字列を保存 (static-libs ダウンロードに使用)
+          JDK_BUILD=$(ls "$JAVA_HOME/release" 2>/dev/null | head -1 || basename "$JAVA_HOME")
+          # JAVA_HOME からバージョンを取得 (例: /opt/hostedtoolcache/Java_Temurin_jdk/25.0.4+7/x64)
+          JDK_VERSION=$(basename "$(dirname "$JAVA_HOME")" | sed 's/+/_/; s/+/%2B/')
+          echo "Detected JDK version for static-libs: $JDK_VERSION"
+          # Temurin 25 static-libs を JAVA_HOME にマージ (svm-jvmfuncs-fallback-builder 用)
+          JDK_VERSION_RAW=$(basename "$(dirname "$JAVA_HOME")")  # e.g., 25.0.4+7
+          JDK_VERSION_ENCODED=$(echo "$JDK_VERSION_RAW" | sed 's/+/%2B/')
+          JDK_VERSION_FLAT=$(echo "$JDK_VERSION_RAW" | tr '+' '_')
           STATIC_LIBS_URL="https://github.com/adoptium/temurin25-binaries/releases/download/jdk-${JDK_VERSION_ENCODED}/OpenJDK25U-static-libs-glibc_x64_linux_hotspot_${JDK_VERSION_FLAT}.tar.gz"
           echo "Downloading Temurin 25 static-libs from: $STATIC_LIBS_URL"
           if curl --fail -L "$STATIC_LIBS_URL" -o static-libs.tar.gz 2>/dev/null; then
             STATIC_TMP=$(mktemp -d)
             tar xzf static-libs.tar.gz -C "$STATIC_TMP"
             STATIC_JDK_DIR=$(find "$STATIC_TMP" -maxdepth 1 -type d -name "jdk-*" | head -1)
-            if [ -n "$STATIC_JDK_DIR" ] && [ -n "$BOOT_JDK" ]; then
-              cp -r "$STATIC_JDK_DIR/." "$BOOT_JDK/"
-              echo "static-libs を $BOOT_JDK にマージしました"
+            if [ -n "$STATIC_JDK_DIR" ]; then
+              cp -r "$STATIC_JDK_DIR/." "$JAVA_HOME/"
+              echo "static-libs を $JAVA_HOME にマージしました"
               echo "静的ライブラリ一覧 (先頭5件):"
-              find "$BOOT_JDK" -name "*.a" | head -5
+              find "$JAVA_HOME" -name "*.a" | head -5
             fi
             rm -rf "$STATIC_TMP" static-libs.tar.gz
           else
-            echo "::warning::static-libs の取得に失敗しました。svm-jvmfuncs-fallback-builder がスキップされる可能性があります"
+            echo "::warning::static-libs の取得に失敗しました。JDK version: $JDK_VERSION_RAW"
           fi
 
       - name: Download GraalVM CE for native-image (fallback)
