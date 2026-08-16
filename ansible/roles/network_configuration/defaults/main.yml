@@ -10,3 +10,8 @@ network_dns_servers:
   - 8.8.4.4
 network_disable_wifi: true
 network_disable_bluetooth: true
+# Disable DNS from Router Advertisement RDNSS options.
+# kubelet caps /etc/resolv.conf at 3 nameservers; RA-advertised IPv6 DNS pushes past that limit
+# and triggers high-frequency "Nameserver limits exceeded" log spam, causing disk exhaustion.
+# (BOXP-168: this filled a 29 GB eMMC in 40 days and triggered a hardware watchdog reset.)
+network_disable_ra_dns: true
