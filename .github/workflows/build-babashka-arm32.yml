@@ -199,7 +199,7 @@ jobs:
               --target=linux-arm \
               -H:CompilerBackend=llvm \
               --no-fallback \
-              --features=clj_easy.graal.nativeimage.PicocliAOTFeature \
+              --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
               -cp "$JAR_FILE" \
               babashka.main \
@@ -275,9 +275,9 @@ jobs:
             ## 動作確認
             ```bash
             # qemu-arm でテスト
-            qemu-arm -L /usr/arm-linux-gnueabihf ./babashka --version
+            qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version
 
             # IS01 実機でテスト
-            ./babashka --version
+            ./babashka-arm32 --version
             ```
           files: babashka-arm32
