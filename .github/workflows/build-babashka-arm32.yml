@@ -195,42 +195,43 @@ jobs:
           git -C "$HOME/mx" checkout 2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
           echo "$HOME/mx" >> "$GITHUB_PATH"
 
-      - name: Setup JDK 25 as boot JDK (for mx build)
-        uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '25'
-          # tool-cache を強制使用 (system JDK にはjmodsがない場合があるため)
-          check-latest: false
-
-      - name: Configure boot JDK env vars and download static-libs
+      - name: Download Temurin 25 JDK with jmods as boot JDK
         run: |
-          # tool-cache版 JAVA_HOME を取得 (system JDK ではなく)
-          # Renovate SHA pinがsystem JDKを使う場合があるため明示的にtool-cacheを探す
-          TOOLCACHE_JDK=$(find /opt/hostedtoolcache/Java_Temurin-Hotspot_jdk -maxdepth 3 -name "release" -path "*/25*" 2>/dev/null | xargs dirname | head -1)
-          if [ -n "$TOOLCACHE_JDK" ] && [ -d "$TOOLCACHE_JDK/jmods" ]; then
-            echo "Tool-cache JDK with jmods: $TOOLCACHE_JDK"
-            export JAVA_HOME="$TOOLCACHE_JDK"
-            echo "JAVA_HOME=$TOOLCACHE_JDK" >> "$GITHUB_ENV"
-            echo "$TOOLCACHE_JDK/bin" >> "$GITHUB_PATH"
-          fi
+          # actions/setup-java の tool-cache JDK は jmods が空のため直接ダウンロードする
+          # mx の VMACCESS_GUEST archiving に jmods が必要
+          RELEASE_JSON=$(curl -s "https://api.github.com/repos/adoptium/temurin25-binaries/releases/latest")
+          JDK_URL=$(echo "$RELEASE_JSON" | python3 -c "
+          import json,sys
+          d=json.load(sys.stdin)
+          matches=[a['browser_download_url'] for a in d.get('assets',[])
+                   if 'jdk' in a['name'] and 'linux' in a['name'] and 'x64' in a['name']
+                   and 'hotspot' in a['name'] and a['name'].endswith('.tar.gz')
+                   and 'sources' not in a['name'] and 'debug' not in a['name']
+                   and 'static' not in a['name']]
+          print(matches[0] if matches else '')
+          " 2>/dev/null || echo "")
+          echo "Temurin 25 JDK URL: $JDK_URL"
+          curl --fail -L "$JDK_URL" -o temurin25-jdk.tar.gz
+          mkdir -p /opt/temurin25
+          tar xzf temurin25-jdk.tar.gz -C /opt/temurin25 --strip-components=1
+          echo "jmods count: $(ls /opt/temurin25/jmods 2>/dev/null | wc -l)"
+          echo "BOOT_JDK=/opt/temurin25" >> "$GITHUB_ENV"
+          echo "JAVA_HOME=/opt/temurin25" >> "$GITHUB_ENV"
+          echo "/opt/temurin25/bin" >> "$GITHUB_PATH"
+          rm temurin25-jdk.tar.gz
+          /opt/temurin25/bin/java -version
 
-          echo "BOOT_JDK=$JAVA_HOME" >> "$GITHUB_ENV"
-          echo "BOOT_JDK設定: $JAVA_HOME"
-          java -version
-          ls "$JAVA_HOME/jmods" | head -3 && echo "jmods: OK" || echo "::warning::jmods が見つかりません"
+      - name: Download Temurin 25 static-libs and configure BOOT_JDK
+        run: |
+          echo "BOOT_JDK設定: $BOOT_JDK"
+          echo "jmods count: $(ls $BOOT_JDK/jmods 2>/dev/null | wc -l)"
+          ls "$BOOT_JDK/jmods" | head -3 && echo "jmods: OK" || echo "::warning::jmods が見つかりません"
 
-          # mx の module archiving はシステムJDK (/usr/lib/jvm/temurin-25-jdk-amd64) の jmods を参照する場合がある
-          # そのディレクトリに jmods をシンボリックリンクして解決する
-          SYSTEM_JDK=$(find /usr/lib/jvm -maxdepth 1 -type d -name "temurin-25-jdk-*" 2>/dev/null | head -1)
-          if [ -n "$SYSTEM_JDK" ] && [ ! -d "$SYSTEM_JDK/jmods" ] && [ -d "$JAVA_HOME/jmods" ]; then
-            echo "Symlinking jmods: $JAVA_HOME/jmods -> $SYSTEM_JDK/jmods"
-            sudo ln -sfn "$JAVA_HOME/jmods" "$SYSTEM_JDK/jmods"
-            ls "$SYSTEM_JDK/jmods" | head -3 && echo "system JDK jmods symlink: OK"
-          fi
+          # mx の module archiving がシステムJDKパスを参照する場合があるため symlink
+          sudo mkdir -p /usr/lib/jvm/temurin-25-jdk-amd64
+          sudo ln -sfn "$BOOT_JDK/jmods" /usr/lib/jvm/temurin-25-jdk-amd64/jmods 2>/dev/null && echo "system jmods symlink OK" || true
 
-          # Temurin 25 static-libs を JAVA_HOME にマージ (svm-jvmfuncs-fallback-builder 用)
-          # Adoptium GitHub API で最新の static-libs URL を取得 (バージョン変換の問題を回避)
+          # Temurin 25 static-libs を BOOT_JDK にマージ (svm-jvmfuncs-fallback-builder 用)
           STATIC_LIBS_URL=$(curl -s "https://api.github.com/repos/adoptium/temurin25-binaries/releases/latest" \
             | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if 'static-libs-glibc' in a['name'] and 'linux' in a['name'] and 'x64' in a['name'] and not 'musl' in a['name'] and a['name'].endswith('.tar.gz')][0])" 2>/dev/null || echo "")
           echo "Temurin 25 static-libs URL: $STATIC_LIBS_URL"
@@ -239,9 +240,9 @@ jobs:
             tar xzf static-libs.tar.gz -C "$STATIC_TMP"
             STATIC_JDK_DIR=$(find "$STATIC_TMP" -maxdepth 1 -type d -name "jdk-*" | head -1)
             if [ -n "$STATIC_JDK_DIR" ]; then
-              cp -r "$STATIC_JDK_DIR/." "$JAVA_HOME/"
-              echo "static-libs を $JAVA_HOME にマージしました"
-              find "$JAVA_HOME" -name "*.a" | head -5
+              cp -r "$STATIC_JDK_DIR/." "$BOOT_JDK/"
+              echo "static-libs を $BOOT_JDK にマージしました"
+              find "$BOOT_JDK" -name "*.a" | head -5
             fi
             rm -rf "$STATIC_TMP" static-libs.tar.gz
           else
