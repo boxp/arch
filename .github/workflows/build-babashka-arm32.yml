@@ -148,7 +148,7 @@ jobs:
             -DCMAKE_C_COMPILER=clang-17 \
             -DCMAKE_CXX_COMPILER=clang++-17 \
             -G Ninja
-          cmake --build build --target llc llvm-mc llvm-objdump -- -j$(nproc) && \
+          cmake --build build --target llc llvm-mc llvm-objdump -- "-j$(nproc)" && \
             echo "LLVM_CUSTOM_BUILD_SUCCESS=true" >> "$GITHUB_ENV" && \
             echo "LLVM_CUSTOM_PREFIX=$PWD/build" >> "$GITHUB_ENV" || \
             echo "::warning::boxp/llvm-project ビルド失敗。システム LLVM 17 にフォールバックします"
@@ -309,7 +309,8 @@ jobs:
           echo ""
 
           # LLVM ツールチェーンパスを確認
-          LLVM_TC_PATH="${LLVM_TOOLCHAIN_PATH:-$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo /usr/lib/llvm-17)}"
+          LLVM_TC_PATH_DEFAULT=$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo "/usr/lib/llvm-17")
+          LLVM_TC_PATH="${LLVM_TOOLCHAIN_PATH:-$LLVM_TC_PATH_DEFAULT}"
           echo "使用する LLVM ツールチェーンパス: $LLVM_TC_PATH"
 
           JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
