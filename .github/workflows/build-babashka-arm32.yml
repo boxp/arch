@@ -213,7 +213,21 @@ jobs:
             BOOT_JDK=$(find / -maxdepth 6 -name "java.base.jmod" 2>/dev/null | head -1 | xargs dirname 2>/dev/null | xargs dirname 2>/dev/null)
           fi
           echo "Detected BOOT_JDK: $BOOT_JDK"
-          ls "$BOOT_JDK/jmods" 2>/dev/null | wc -l && echo "jmods OK" || echo "::warning::jmods still missing"
+          JMODS_COUNT=$(find "$BOOT_JDK/jmods" -name "*.jmod" 2>/dev/null | wc -l)
+          echo "jmods count: $JMODS_COUNT"
+          if [ "$JMODS_COUNT" -eq 0 ]; then
+            # Temurin 25 の jmods は空。JDK 21 の jmods を JDK 25 ディレクトリにシンボリックリンク
+            # (mx の module archiving に必要な基本モジュールは JDK 21 と互換性がある)
+            JDK21_JMODS="/usr/lib/jvm/temurin-21-jdk-amd64/jmods"
+            if [ -d "$JDK21_JMODS" ] && [ "$(ls $JDK21_JMODS | wc -l)" -gt "0" ]; then
+              echo "JDK 21 の jmods を JDK 25 ディレクトリにシンボリックリンク"
+              sudo rm -rf "$BOOT_JDK/jmods"
+              sudo ln -sfn "$JDK21_JMODS" "$BOOT_JDK/jmods"
+              echo "jmods symlink OK: $(ls $BOOT_JDK/jmods | wc -l) files"
+            else
+              echo "::warning::JDK 21 の jmods も見つかりません"
+            fi
+          fi
           echo "BOOT_JDK=$BOOT_JDK" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$BOOT_JDK" >> "$GITHUB_ENV"
           echo "$BOOT_JDK/bin" >> "$GITHUB_PATH"
