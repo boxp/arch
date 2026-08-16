@@ -178,6 +178,7 @@ jobs:
           AR: arm-linux-gnueabihf-ar
           CROSS_COMPILE: arm-linux-gnueabihf-
         run: |
+          set -o pipefail
           echo "=== ARM32 native-image ビルド試行 ==="
           echo "注意: GraalVM の完全な ARM32 LLVM バックエンドサポートは開発中"
           echo "詳細: BOXP-152 (boxp/labs-openjdk + boxp/graal の ARM32 サポート)"
