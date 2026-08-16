@@ -123,29 +123,71 @@ jobs:
           echo "GraalVM boot JDK installed at: $PWD/$GRAALVM_DIR"
 
       - name: Build native-image from boxp/graal source
+        env:
+          MAKE_RELEASE: ${{ inputs.make_release }}
         run: |
           echo "=== boxp/graal から native-image をビルド ==="
           echo "ARM32 SubstrateVM サポートを含む boxp/graal を使用します"
           cd graal
           # mx を使って substratevm スイートをビルド
-          mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30 || {
+          if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
+            echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
+            # mx graalvm-home 経由で native-image バイナリを取得（最も確実な方法）
+            GRAALVM_HOME=$(mx --primary-suite-path substratevm graalvm-home 2>/dev/null || echo "")
+            BUILT_NI=""
+            if [ -n "$GRAALVM_HOME" ] && [ -f "$GRAALVM_HOME/bin/native-image" ]; then
+              BUILT_NI="$GRAALVM_HOME/bin/native-image"
+              echo "graalvm-home 経由で発見: $BUILT_NI"
+            else
+              # フォールバック: mxbuild ディレクトリを直接検索
+              BUILT_NI=$(find . -path "*/mxbuild/*/native-image" -perm /111 -type f 2>/dev/null | head -1)
+              if [ -n "$BUILT_NI" ]; then
+                echo "mxbuild 経由で発見: $BUILT_NI"
+              else
+                # 最終フォールバック: ビルドディレクトリ全体を検索
+                BUILT_NI=$(find . -name "native-image" -perm /111 -type f 2>/dev/null | head -1)
+                if [ -n "$BUILT_NI" ]; then
+                  echo "ディレクトリ検索で発見: $BUILT_NI"
+                fi
+              fi
+            fi
+
+            if [ -n "$BUILT_NI" ] && [ -f "$BUILT_NI" ]; then
+              echo "NATIVE_IMAGE_BIN=$BUILT_NI" >> "$GITHUB_ENV"
+              echo "GRAALVM_BUILD_SUCCESS=true" >> "$GITHUB_ENV"
+              dirname "$BUILT_NI" >> "$GITHUB_PATH"
+              echo "boxp/graal native-image を設定: $BUILT_NI"
+            else
+              echo "GRAALVM_BUILD_SUCCESS=false" >> "$GITHUB_ENV"
+              echo "::warning::boxp/graal ビルド成功しましたが native-image バイナリが見つかりません"
+              if [ "${MAKE_RELEASE}" = "true" ]; then
+                echo "Error: リリースビルドで boxp/graal の native-image バイナリが見つかりませんでした"
+                exit 1
+              fi
+            fi
+          else
             EXIT_CODE=$?
+            echo "GRAALVM_BUILD_SUCCESS=false" >> "$GITHUB_ENV"
             echo "::warning::boxp/graal ビルド失敗 (exit: $EXIT_CODE)"
             echo "ARM32 LLVM バックエンドが未完成のため期待された状態です"
-            echo "フォールバック: boot JDK の native-image を使用します"
-            exit 0
-          }
-          # ビルド成功時: mx の native-image バイナリを PATH に追加
-          BUILT_NI=$(mx --primary-suite-path substratevm paths native-image 2>/dev/null || echo "")
-          if [ -n "$BUILT_NI" ] && [ -f "$BUILT_NI" ]; then
-            echo "NATIVE_IMAGE_BIN=$BUILT_NI" >> "$GITHUB_ENV"
-            dirname "$BUILT_NI" >> "$GITHUB_PATH"
-            echo "boxp/graal native-image: $BUILT_NI"
+            if [ "${MAKE_RELEASE}" = "true" ]; then
+              echo "Error: リリースビルドで boxp/graal のビルドが失敗しました"
+              exit 1
+            fi
           fi
 
       - name: Install native-image (fallback if boxp/graal build failed)
+        env:
+          MAKE_RELEASE: ${{ inputs.make_release }}
         run: |
-          if ! command -v native-image >/dev/null 2>&1; then
+          if [ "${GRAALVM_BUILD_SUCCESS}" = "true" ] && command -v native-image >/dev/null 2>&1; then
+            echo "boxp/graal の native-image を使用: $(which native-image)"
+          else
+            if [ "${MAKE_RELEASE}" = "true" ]; then
+              echo "Error: リリースビルドで boxp/graal の native-image が利用できません"
+              echo "ARM32 LLVM バックエンドが完成してから再実行してください"
+              exit 1
+            fi
             echo "boxp/graal ビルド未完了のため、boot JDK の gu から native-image をインストール"
             "$BOOT_JDK/bin/gu" install native-image || true
           fi
