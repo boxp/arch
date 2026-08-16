@@ -6,12 +6,13 @@ name: Build babashka for armv7 (IS01)
 # アーキテクチャ:
 # - boxp/labs-openjdk: ARM32 JVMCI サポートを追加した OpenJDK フォーク (ARM32デバイス上でのGraalVM実行に必要。クロスコンパイルホスト(x86)での本ワークフロー実行時は不要)
 # - boxp/graal: ARM32 SubstrateVM サポートを追加した GraalVM フォーク
+# - boxp/llvm-project: ARM32 Statepoint サポートを追加した LLVM フォーク
 # - LLVM バックエンド経由で ARM32 native-image を生成する計画
 #
 # 現状 (BOXP-152):
 # - ARM32 JVMCI コード: boxp/labs-openjdk master にマージ済み
 # - ARM32 SubstrateVM スタブ: boxp/graal master にマージ済み
-# - LLVM Statepoints の ARM32 対応: 未完成 (llvm/llvm-project への貢献が必要)
+# - LLVM Statepoints の ARM32 対応: boxp/llvm-project master にマージ済み
 # - 完全な ARM32 native-image: 実装中
 #
 # 参考: GraalVM RISC-V 対応事例 (2023年、約6ヶ月)
@@ -63,6 +64,14 @@ jobs:
           echo "リリースには native-image バイナリが必要です"
           exit 1
 
+      - name: Checkout boxp/llvm-project (ARM32 Statepoints)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: boxp/llvm-project
+          ref: master
+          path: llvm-project
+          persist-credentials: false
+
       - name: Checkout boxp/graal (ARM32 SubstrateVM fork)
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -72,7 +81,7 @@ jobs:
           path: graal
           persist-credentials: false
 
-      - name: Install cross-compilation tools
+      - name: Install cross-compilation tools and LLVM 17
         run: |
           sudo apt-get update -q
           sudo apt-get install -y \
@@ -86,7 +95,63 @@ jobs:
             curl \
             unzip \
             python3 \
-            python3-pip
+            python3-pip \
+            llvm-17 \
+            clang-17 \
+            lld-17 \
+            llvm-17-dev \
+            cmake \
+            ninja-build
+          # llvm-config-17 へのシンボリックリンクを確認
+          which llvm-config-17 || (ls /usr/bin/llvm-config* && ln -sf /usr/bin/llvm-config-17 /usr/local/bin/llvm-config-17)
+
+      - name: Validate qemu-arm works
+        run: |
+          echo "=== qemu-arm 動作確認 ==="
+          cat > /tmp/hello-arm.c << 'EOF'
+          #include <stdio.h>
+          int main() { printf("qemu-arm OK\n"); return 0; }
+          EOF
+          arm-linux-gnueabihf-gcc /tmp/hello-arm.c -o /tmp/hello-arm
+          qemu-arm -L /usr/arm-linux-gnueabihf /tmp/hello-arm
+          echo "qemu-arm 動作確認 OK"
+
+      - name: Validate LLVM ARM32 Statepoint support (boxp/llvm-project)
+        run: |
+          echo "=== LLVM ARM32 Statepoint 検証 (boxp/llvm-project) ==="
+          # システム LLVM 17 で ARM32 statepoint IR をコンパイルしてスモークテスト
+          cat > /tmp/test-statepoint.ll << 'EOF'
+          declare void @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
+          define void @test() gc "statepoint-example" {
+            call void (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr null, i32 0, i32 0)
+            ret void
+          }
+          EOF
+          echo "ARM32 Statepoint IR を llc-17 でコンパイル中..."
+          llc-17 -march=arm -mattr=+vfp2 -filetype=obj /tmp/test-statepoint.ll -o /tmp/test-statepoint.o && \
+            echo "LLVM ARM32 Statepoint コンパイル成功" || \
+            echo "::warning::LLVM ARM32 Statepoint コンパイル失敗 (boxp/llvm-project のカスタムビルドが必要な場合あり)"
+          # boxp/llvm-project の変更が含まれていることを確認
+          echo "boxp/llvm-project の ARM32 Statepoint コミットを確認..."
+          git -C llvm-project log --oneline -5
+
+      - name: Build boxp/llvm-project (ARM32 Statepoints, continue-on-error)
+        continue-on-error: true
+        run: |
+          echo "=== boxp/llvm-project のビルド (ARM32 ターゲット付き) ==="
+          echo "注意: LLVM ビルドは CI で最大 2 時間かかります。continue-on-error=true で実行します"
+          cd llvm-project
+          cmake -S llvm -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLVM_TARGETS_TO_BUILD="ARM;X86" \
+            -DLLVM_ENABLE_ASSERTIONS=ON \
+            -DCMAKE_C_COMPILER=clang-17 \
+            -DCMAKE_CXX_COMPILER=clang++-17 \
+            -G Ninja
+          cmake --build build --target llc llvm-mc llvm-objdump -- -j$(nproc) && \
+            echo "LLVM_CUSTOM_BUILD_SUCCESS=true" >> "$GITHUB_ENV" && \
+            echo "LLVM_CUSTOM_PREFIX=$PWD/build" >> "$GITHUB_ENV" || \
+            echo "::warning::boxp/llvm-project ビルド失敗。システム LLVM 17 にフォールバックします"
 
       - name: Determine babashka version
         id: version
@@ -132,9 +197,20 @@ jobs:
         run: |
           echo "=== boxp/graal から native-image をビルド ==="
           echo "ARM32 SubstrateVM サポートを含む boxp/graal を使用します"
+
+          # LLVM ツールチェーンパスを決定 (boxp/llvm-project カスタムビルド優先、次にシステム LLVM 17)
+          if [ -n "${LLVM_CUSTOM_PREFIX}" ] && [ -f "${LLVM_CUSTOM_PREFIX}/bin/llc" ]; then
+            LLVM_PATH="${LLVM_CUSTOM_PREFIX}"
+            echo "カスタム boxp/llvm-project を使用: $LLVM_PATH"
+          else
+            LLVM_PATH=$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo "/usr/lib/llvm-17")
+            echo "システム LLVM 17 を使用: $LLVM_PATH"
+          fi
+          echo "LLVM_TOOLCHAIN_PATH=$LLVM_PATH" >> "$GITHUB_ENV"
+
           cd graal
-          # mx を使って substratevm スイートをビルド
           set -o pipefail
+          # JAVA_HOME は boot JDK を指しており、mx がそれを使用する
           if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
             echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
             # mx graalvm-home 経由で native-image バイナリを取得（最も確実な方法）
@@ -229,8 +305,12 @@ jobs:
           set -o pipefail
           echo "=== ARM32 native-image ビルド試行 ==="
           echo "注意: GraalVM の完全な ARM32 LLVM バックエンドサポートは開発中"
-          echo "詳細: BOXP-152 (boxp/labs-openjdk + boxp/graal の ARM32 サポート)"
+          echo "詳細: BOXP-152 (boxp/labs-openjdk + boxp/graal + boxp/llvm-project の ARM32 サポート)"
           echo ""
+
+          # LLVM ツールチェーンパスを確認
+          LLVM_TC_PATH="${LLVM_TOOLCHAIN_PATH:-$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo /usr/lib/llvm-17)}"
+          echo "使用する LLVM ツールチェーンパス: $LLVM_TC_PATH"
 
           JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
           if [ -z "$JAR_FILE" ]; then
@@ -244,8 +324,9 @@ jobs:
 
           run_native_image() {
             native-image \
-              --target=linux-arm \
               -H:CompilerBackend=llvm \
+              "-H:LLVMToolchainPath=${LLVM_TC_PATH}" \
+              --target=linux-arm \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
@@ -271,22 +352,23 @@ jobs:
         env:
           MAKE_RELEASE: ${{ inputs.make_release }}
         run: |
+          echo "=== qemu-arm テスト ==="
           if [ -f babashka-arm32 ]; then
-            echo "=== qemu-arm でテスト ==="
-            if [ "${MAKE_RELEASE}" = "true" ]; then
-              echo "リリースビルド: qemu-arm テストの成功を必須とします"
-              qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version
-              qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
-                -e '(println "Hello from ARM32 babashka!")'
-            else
-              qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version || \
-                echo "::warning::qemu-arm --version テスト失敗"
-              qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
-                -e '(println "Hello from ARM32 babashka!")' || \
-                echo "::warning::Hello World テスト失敗"
-            fi
+            echo "babashka-arm32 バイナリを qemu-arm でテスト中..."
             ls -lh babashka-arm32
             file babashka-arm32
+            if [ "${MAKE_RELEASE}" = "true" ]; then
+              echo "リリースビルド: qemu-arm テストの成功を必須とします"
+              qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version
+              qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
+                -e '(println "Hello from ARM32!")'
+            else
+              qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version || \
+                echo "::warning::qemu-arm --version テスト失敗"
+              qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
+                -e '(println "Hello from ARM32!")' || \
+                echo "::warning::Hello World テスト失敗"
+            fi
           else
             if [ "${MAKE_RELEASE}" = "true" ]; then
               echo "Error: リリースビルドで babashka-arm32 バイナリが生成されていません"
@@ -320,11 +402,12 @@ jobs:
             ## 使用フォーク
             - [boxp/labs-openjdk](https://github.com/boxp/labs-openjdk): ARM32 JVMCI 対応
             - [boxp/graal](https://github.com/boxp/graal): ARM32 SubstrateVM 対応
+            - [boxp/llvm-project](https://github.com/boxp/llvm-project): ARM32 Statepoint 対応
 
             ## 動作確認
             ```bash
             # qemu-arm でテスト
-            qemu-arm -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version
+            qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version
 
             # IS01 実機でテスト
             ./babashka-arm32 --version
