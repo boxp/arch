@@ -139,7 +139,7 @@ jobs:
           BUILT_NI=$(mx --primary-suite-path substratevm paths native-image 2>/dev/null || echo "")
           if [ -n "$BUILT_NI" ] && [ -f "$BUILT_NI" ]; then
             echo "NATIVE_IMAGE_BIN=$BUILT_NI" >> "$GITHUB_ENV"
-            echo "$(dirname "$BUILT_NI")" >> "$GITHUB_PATH"
+            dirname "$BUILT_NI" >> "$GITHUB_PATH"
             echo "boxp/graal native-image: $BUILT_NI"
           fi
 
