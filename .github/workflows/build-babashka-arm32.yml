@@ -220,6 +220,15 @@ jobs:
           java -version
           ls "$JAVA_HOME/jmods" | head -3 && echo "jmods: OK" || echo "::warning::jmods が見つかりません"
 
+          # mx の module archiving はシステムJDK (/usr/lib/jvm/temurin-25-jdk-amd64) の jmods を参照する場合がある
+          # そのディレクトリに jmods をシンボリックリンクして解決する
+          SYSTEM_JDK=$(find /usr/lib/jvm -maxdepth 1 -type d -name "temurin-25-jdk-*" 2>/dev/null | head -1)
+          if [ -n "$SYSTEM_JDK" ] && [ ! -d "$SYSTEM_JDK/jmods" ] && [ -d "$JAVA_HOME/jmods" ]; then
+            echo "Symlinking jmods: $JAVA_HOME/jmods -> $SYSTEM_JDK/jmods"
+            sudo ln -sfn "$JAVA_HOME/jmods" "$SYSTEM_JDK/jmods"
+            ls "$SYSTEM_JDK/jmods" | head -3 && echo "system JDK jmods symlink: OK"
+          fi
+
           # Temurin 25 static-libs を JAVA_HOME にマージ (svm-jvmfuncs-fallback-builder 用)
           # Adoptium GitHub API で最新の static-libs URL を取得 (バージョン変換の問題を回避)
           STATIC_LIBS_URL=$(curl -s "https://api.github.com/repos/adoptium/temurin25-binaries/releases/latest" \
