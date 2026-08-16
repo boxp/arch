@@ -207,7 +207,8 @@ jobs:
                    if 'jdk' in a['name'] and 'linux' in a['name'] and 'x64' in a['name']
                    and 'hotspot' in a['name'] and a['name'].endswith('.tar.gz')
                    and 'sources' not in a['name'] and 'debug' not in a['name']
-                   and 'static' not in a['name']]
+                   and 'static' not in a['name'] and 'alpine' not in a['name']
+                   and 'musl' not in a['name']]
           print(matches[0] if matches else '')
           " 2>/dev/null || echo "")
           echo "Temurin 25 JDK URL: $JDK_URL"
