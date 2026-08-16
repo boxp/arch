@@ -79,7 +79,7 @@ jobs:
         with:
           repository: boxp/graal
           # ARM32 SubstrateVM + suite.py arm32モジュール登録済みコミットを固定（再現可能ビルドのため）
-          ref: d0dc7008ef0f96fd9c0e906468d7271b22034a26
+          ref: a2826aca71ec7200b902889ff6a41c5cdc11799f
           path: graal
           persist-credentials: false
 
@@ -216,9 +216,11 @@ jobs:
           JDK_VERSION=$(basename "$(dirname "$JAVA_HOME")" | sed 's/+/_/; s/+/%2B/')
           echo "Detected JDK version for static-libs: $JDK_VERSION"
           # Temurin 25 static-libs を JAVA_HOME にマージ (svm-jvmfuncs-fallback-builder 用)
-          JDK_VERSION_RAW=$(basename "$(dirname "$JAVA_HOME")")  # e.g., 25.0.4+7
-          JDK_VERSION_ENCODED=$(echo "$JDK_VERSION_RAW" | sed 's/+/%2B/')
-          JDK_VERSION_FLAT=$(echo "$JDK_VERSION_RAW" | tr '+' '_')
+          JDK_VERSION_RAW=$(basename "$(dirname "$JAVA_HOME")")  # e.g., 25.0.4-7 (setup-java uses '-')
+          # actions/setup-java uses '-' as build separator; Adoptium URL uses '+' → '%2B' (tag) or '_' (filename)
+          JDK_VERSION_PLUS=$(echo "$JDK_VERSION_RAW" | sed 's/-\([0-9][0-9]*\)$/+\1/')  # 25.0.4+7
+          JDK_VERSION_ENCODED=$(echo "$JDK_VERSION_PLUS" | sed 's/+/%2B/')               # 25.0.4%2B7
+          JDK_VERSION_FLAT=$(echo "$JDK_VERSION_PLUS" | tr '+' '_')                      # 25.0.4_7
           STATIC_LIBS_URL="https://github.com/adoptium/temurin25-binaries/releases/download/jdk-${JDK_VERSION_ENCODED}/OpenJDK25U-static-libs-glibc_x64_linux_hotspot_${JDK_VERSION_FLAT}.tar.gz"
           echo "Downloading Temurin 25 static-libs from: $STATIC_LIBS_URL"
           if curl --fail -L "$STATIC_LIBS_URL" -o static-libs.tar.gz 2>/dev/null; then
