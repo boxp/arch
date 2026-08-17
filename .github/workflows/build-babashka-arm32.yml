@@ -259,12 +259,6 @@ jobs:
           echo "使用 BOOT_JDK: $BOOT_JDK"
 
           set -o pipefail
-          echo "=== Build LLVM backend module explicitly ==="
-          if ! mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build -p com.oracle.svm.core.graal.llvm 2>&1 | tail -30; then
-            echo "::error::LLVM backend module の明示ビルドに失敗しました"
-            exit 1
-          fi
-
           if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
             echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
             echo "=== LLVM backend module check ==="
