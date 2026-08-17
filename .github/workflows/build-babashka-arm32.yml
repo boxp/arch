@@ -130,9 +130,10 @@ jobs:
           # システム LLVM 17 で ARM32 statepoint IR をコンパイルしてスモークテスト
           # LLVM 17 の statepoint 構文: token 型を返す intrinsic
           cat > /tmp/test-statepoint.ll << 'EOF'
+          declare void @dummy_callee()
           declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
           define void @test() gc "statepoint-example" {
-            %sp = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr null, i32 0, i32 0)
+            %sp = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr elementtype(void ()) @dummy_callee, i32 0, i32 0)
             ret void
           }
           EOF
@@ -275,13 +276,17 @@ jobs:
           echo "ARM32 SubstrateVM サポートを含む boxp/graal を使用します"
 
           # LLVM バックエンドモジュールのビルドに必要。mx はこの環境変数を参照する。
-          export LLVM_TOOLCHAIN_PATH="${LLVM_CUSTOM_PREFIX:-/usr/lib/llvm-17}"
+          if [ -z "${LLVM_CUSTOM_PREFIX:-}" ]; then
+            echo "Error: LLVM_CUSTOM_PREFIX が設定されていません。boxp/llvm-project ビルドに失敗した可能性があります"
+            exit 1
+          fi
+          export LLVM_TOOLCHAIN_PATH="${LLVM_CUSTOM_PREFIX}"
           echo "LLVM_TOOLCHAIN_PATH=$LLVM_TOOLCHAIN_PATH" >> "$GITHUB_ENV"
           echo "LLVM ツールチェーンを使用: $LLVM_TOOLCHAIN_PATH"
 
           # カスタム LLVM の共有ライブラリを mx が見つけられるようにする。
           if [ -d "${LLVM_CUSTOM_PREFIX}/lib" ]; then
-            export LD_LIBRARY_PATH="${LLVM_CUSTOM_PREFIX}/lib:${LD_LIBRARY_PATH}"
+            export LD_LIBRARY_PATH="${LLVM_CUSTOM_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
           fi
 
           cd graal
