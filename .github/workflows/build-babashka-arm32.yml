@@ -85,9 +85,12 @@ jobs:
 
       - name: Install cross-compilation tools and LLVM 17
         run: |
-          # ARM32 (armhf) JDK をマルチアーキテクチャでインストール (static libs取得)
+          # armhf (ARM32) multiarch パッケージを ports.ubuntu.com から取得
           sudo dpkg --add-architecture armhf
-          sudo apt-get update -q
+          # Ubuntu Noble の armhf は ports.ubuntu.com にある
+          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main universe" | sudo tee /etc/apt/sources.list.d/ubuntu-ports-armhf.list
+          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe" | sudo tee -a /etc/apt/sources.list.d/ubuntu-ports-armhf.list
+          sudo apt-get update -q || true
           sudo apt-get install -y openjdk-21-jdk:armhf 2>/dev/null || true
           # ARM32 static libs の場所を確認
           find /usr/lib/jvm -name "libjava.a" 2>/dev/null | head -5 || true
