@@ -342,6 +342,11 @@ jobs:
           echo "詳細: BOXP-152 (boxp/labs-openjdk + boxp/graal + boxp/llvm-project の ARM32 サポート)"
           echo ""
 
+          echo "=== native-image version ==="
+          native-image --version
+          echo "=== native-image expert options (Platform related) ==="
+          native-image --expert-options-all 2>&1 | grep -i "platform\|target\|llvm\|backend" | head -20 || true
+
           # LLVM ツールチェーンパスを確認
           LLVM_TC_PATH_DEFAULT=$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo "/usr/lib/llvm-17")
           LLVM_TC_PATH="${LLVM_TOOLCHAIN_PATH:-$LLVM_TC_PATH_DEFAULT}"
@@ -353,6 +358,17 @@ jobs:
             echo "LLVMToolchainPath は利用不可。PATH から LLVM を検出します"
             export PATH="${LLVM_TC_PATH}/bin:${PATH}"
           fi
+
+          # ARM32 Platform オプションを確認
+          PLATFORM_OPT=()
+          if native-image --expert-options-all 2>&1 | grep -q "Platform"; then
+            echo "=== Available Platform-related options ==="
+            native-image --expert-options-all 2>&1 | grep -i "Platform" | head -10
+            PLATFORM_OPT=("-H:Platform=org.graalvm.nativeimage.Platform\$LINUX_ARM32HF")
+          elif native-image --help 2>&1 | grep -q "\-\-target"; then
+            PLATFORM_OPT=("--target=arm-linux-gnueabihf")
+          fi
+          echo "Platform options: ${PLATFORM_OPT[@]}"
 
           JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
           if [ -z "$JAR_FILE" ]; then
@@ -368,7 +384,7 @@ jobs:
             native-image \
               -H:CompilerBackend=llvm \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
-              "-H:Platform=org.graalvm.nativeimage.Platform\$LINUX_ARM32HF" \
+              "${PLATFORM_OPT[@]}" \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
