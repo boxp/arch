@@ -395,7 +395,7 @@ jobs:
             native-image \
               -H:CompilerBackend=llvm \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
-              "${PLATFORM_OPT[@]}" \
+              -H:+DumpTargetInfo \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
