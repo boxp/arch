@@ -195,71 +195,20 @@ jobs:
           git -C "$HOME/mx" checkout 2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
           echo "$HOME/mx" >> "$GITHUB_PATH"
 
-      - name: Install Temurin 25 JDK with jmods as boot JDK
+      - name: Install labs-openjdk jvmci-25.3-b21 as boot JDK
         run: |
-          # Temurin tarball には jmods が含まれていないため apt-get でインストールする
-          echo "=== 現在のシステムJDK状況 ==="
-          ls -la /usr/lib/jvm/ | grep temurin-25 || true
-          find / -name "java.base.jmod" 2>/dev/null | head -3 || true
-          echo "=== Temurin 25 を apt でインストール ==="
-          sudo apt-get update -q
-          sudo apt-get install -y temurin-25-jdk 2>/dev/null || sudo apt-get install -y openjdk-25-jdk 2>/dev/null || true
-          # インストール後の jmods を確認
-          BOOT_JDK=$(update-java-alternatives -l 2>/dev/null | grep -E "25" | awk '{print $3}' | head -1)
-          if [ -z "$BOOT_JDK" ]; then
-            BOOT_JDK=$(find /usr/lib/jvm -maxdepth 1 -type d -name "*25*" | head -1)
-          fi
-          if [ -z "$BOOT_JDK" ]; then
-            BOOT_JDK=$(find / -maxdepth 6 -name "java.base.jmod" 2>/dev/null | head -1 | xargs dirname 2>/dev/null | xargs dirname 2>/dev/null)
-          fi
-          echo "Detected BOOT_JDK: $BOOT_JDK"
-          JMODS_COUNT=$(find "$BOOT_JDK/jmods" -name "*.jmod" 2>/dev/null | wc -l)
-          echo "jmods count: $JMODS_COUNT"
-          if [ "$JMODS_COUNT" -eq 0 ]; then
-            # Temurin 25 の jmods は空。JDK 21 の jmods を JDK 25 ディレクトリにシンボリックリンク
-            # (mx の module archiving に必要な基本モジュールは JDK 21 と互換性がある)
-            JDK21_JMODS="/usr/lib/jvm/temurin-21-jdk-amd64/jmods"
-            if [ -d "$JDK21_JMODS" ] && [ "$(ls $JDK21_JMODS | wc -l)" -gt "0" ]; then
-              echo "JDK 21 の jmods を JDK 25 ディレクトリにシンボリックリンク"
-              sudo rm -rf "$BOOT_JDK/jmods"
-              sudo ln -sfn "$JDK21_JMODS" "$BOOT_JDK/jmods"
-              echo "jmods symlink OK: $(ls $BOOT_JDK/jmods | wc -l) files"
-            else
-              echo "::warning::JDK 21 の jmods も見つかりません"
-            fi
-          fi
+          echo "=== labs-openjdk jvmci-25.3-b21 (linux-amd64) をインストール ==="
+          LABSJDK_URL="https://github.com/graalvm/labs-openjdk/releases/download/jvmci-25.3-b21/labsjdk-ce-25.0.4.1%2B0-jvmci-25.3-b21-linux-amd64.tar.gz"
+          curl --fail -L "$LABSJDK_URL" -o labsjdk.tar.gz
+          tar xzf labsjdk.tar.gz
+          rm labsjdk.tar.gz
+          BOOT_JDK_DIR=$(find . -maxdepth 1 -type d -name "labsjdk-*" | head -1)
+          BOOT_JDK="$PWD/$BOOT_JDK_DIR"
           echo "BOOT_JDK=$BOOT_JDK" >> "$GITHUB_ENV"
           echo "JAVA_HOME=$BOOT_JDK" >> "$GITHUB_ENV"
           echo "$BOOT_JDK/bin" >> "$GITHUB_PATH"
           "$BOOT_JDK/bin/java" -version
-
-      - name: Download Temurin 25 static-libs and configure BOOT_JDK
-        run: |
-          echo "BOOT_JDK設定: $BOOT_JDK"
           echo "jmods count: $(ls $BOOT_JDK/jmods 2>/dev/null | wc -l)"
-          ls "$BOOT_JDK/jmods" | head -3 && echo "jmods: OK" || echo "::warning::jmods が見つかりません"
-
-          # mx の module archiving がシステムJDKパスを参照する場合があるため symlink
-          sudo mkdir -p /usr/lib/jvm/temurin-25-jdk-amd64
-          sudo ln -sfn "/usr/lib/jvm/temurin-21-jdk-amd64/jmods" /usr/lib/jvm/temurin-25-jdk-amd64/jmods 2>/dev/null && echo "system jmods symlink OK" || true
-
-          # Temurin 25 static-libs を BOOT_JDK にマージ (svm-jvmfuncs-fallback-builder 用)
-          STATIC_LIBS_URL=$(curl -s "https://api.github.com/repos/adoptium/temurin25-binaries/releases/latest" \
-            | python3 -c "import json,sys; d=json.load(sys.stdin); print([a['browser_download_url'] for a in d.get('assets',[]) if 'static-libs-glibc' in a['name'] and 'linux' in a['name'] and 'x64' in a['name'] and not 'musl' in a['name'] and a['name'].endswith('.tar.gz')][0])" 2>/dev/null || echo "")
-          echo "Temurin 25 static-libs URL: $STATIC_LIBS_URL"
-          if [ -n "$STATIC_LIBS_URL" ] && curl --fail -L "$STATIC_LIBS_URL" -o static-libs.tar.gz 2>/dev/null; then
-            STATIC_TMP=$(mktemp -d)
-            tar xzf static-libs.tar.gz -C "$STATIC_TMP"
-            STATIC_JDK_DIR=$(find "$STATIC_TMP" -maxdepth 1 -type d -name "jdk-*" | head -1)
-            if [ -n "$STATIC_JDK_DIR" ]; then
-              cp -r "$STATIC_JDK_DIR/." "$BOOT_JDK/"
-              echo "static-libs を $BOOT_JDK にマージしました"
-              find "$BOOT_JDK" -name "*.a" | head -5
-            fi
-            rm -rf "$STATIC_TMP" static-libs.tar.gz
-          else
-            echo "::warning::static-libs の取得に失敗。svm-jvmfuncs-fallback-builder はシンボルなしで動作（mx_substratevm.py修正済み）"
-          fi
 
       - name: Download GraalVM CE for native-image (fallback)
         run: |
@@ -292,20 +241,7 @@ jobs:
           echo "LLVM_TOOLCHAIN_PATH=$LLVM_PATH" >> "$GITHUB_ENV"
 
           cd graal
-          # Temurin 25 static-libs は前ステップでマージ済み
-          # svm-jvmfuncs-fallback-builder が JVM_* シンボルを見つけられるはず
           echo "使用 BOOT_JDK: $BOOT_JDK"
-          find "$BOOT_JDK" -name "*.a" | head -5 && echo "static-libs 確認OK" || echo "::warning::static-libs が見つかりません"
-
-          # mx の module archiving は /usr/lib/jvm/temurin-25-jdk-amd64/jmods を参照する
-          # BOOT_JDK の jmods をシンボリックリンクで提供する (条件なし)
-          echo "=== jmods symlink setup ==="
-          echo "BOOT_JDK/jmods: $(ls $BOOT_JDK/jmods 2>/dev/null | wc -l) files"
-          echo "/usr/lib/jvm/ contents:"
-          ls -la /usr/lib/jvm/ 2>/dev/null | head -10 || true
-          sudo mkdir -p /usr/lib/jvm/temurin-25-jdk-amd64 2>/dev/null || true
-          sudo ln -sfn "/usr/lib/jvm/temurin-21-jdk-amd64/jmods" /usr/lib/jvm/temurin-25-jdk-amd64/jmods 2>/dev/null && echo "jmods symlink created" || echo "::warning::jmods symlink failed"
-          ls /usr/lib/jvm/temurin-25-jdk-amd64/jmods 2>/dev/null | head -3 && echo "jmods symlink OK" || echo "::warning::jmods at system path still missing"
 
           set -o pipefail
           if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
