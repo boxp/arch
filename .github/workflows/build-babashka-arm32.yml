@@ -104,6 +104,8 @@ jobs:
             llvm-17-dev \
             cmake \
             ninja-build
+          # ARM32 クロスビルドに必要なライブラリ
+          sudo apt-get install -y libasound2-dev 2>/dev/null || true
           # llvm-config-17 へのシンボリックリンクを確認
           which llvm-config-17 || (ls /usr/bin/llvm-config* && ln -sf /usr/bin/llvm-config-17 /usr/local/bin/llvm-config-17)
 
@@ -256,6 +258,8 @@ jobs:
             --with-debug-level=release \
             --with-boot-jdk="$BOOT_JDK_PATH" \
             --disable-warnings-as-errors \
+            --disable-headful \
+            --enable-headless-only \
             2>&1 | tail -30 || { echo "::warning::configure failed, skipping ARM32 static libs"; exit 0; }
 
           # static-libs-image をビルド (libjava.a 等を生成)
