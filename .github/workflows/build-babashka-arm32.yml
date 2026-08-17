@@ -133,7 +133,7 @@ jobs:
           declare void @dummy_callee()
           declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
           define void @test() gc "statepoint-example" {
-            %sp = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr elementtype(void ()) @dummy_callee, i32 0, i32 0)
+            %sp = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr elementtype(void ()) @dummy_callee, i32 0, i32 0, i32 0, i32 0)
             ret void
           }
           EOF
