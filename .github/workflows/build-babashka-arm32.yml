@@ -347,7 +347,8 @@ jobs:
           LLVM_TC_PATH="${LLVM_TOOLCHAIN_PATH:-$LLVM_TC_PATH_DEFAULT}"
           echo "使用する LLVM ツールチェーンパス: $LLVM_TC_PATH"
           LLVM_TOOLCHAIN_OPT=()
-          if native-image --expert-options-all 2>&1 | grep -q 'LLVMToolchainPath'; then
+          NATIVE_IMAGE_EXPERT_OPTIONS=$(native-image --expert-options-all 2>&1 || true)
+          if grep -q 'LLVMToolchainPath' <<< "$NATIVE_IMAGE_EXPERT_OPTIONS"; then
             LLVM_TOOLCHAIN_OPT=("-H:LLVMToolchainPath=${LLVM_TC_PATH}")
           else
             echo "LLVMToolchainPath は利用不可。PATH から LLVM を検出します"
@@ -364,38 +365,24 @@ jobs:
             exit 0
           fi
 
-          # native-image の全 expert options を確認
-          echo "=== native-image --expert-options-all (Platform/target/Backend 関連) ==="
-          native-image --expert-options-all 2>&1 | grep -iE "Platform|Target|Backend|Arch" | head -30 || true
-
-          echo ""
-          echo "=== native-image --list-configurations (利用可能な Platform 一覧) ==="
-          native-image --list-configurations 2>&1 | head -20 || true
-
-          echo ""
-          echo "=== native-image --help-extra (詳細オプション) ==="
-          native-image --help-extra 2>&1 | grep -iE "Platform|target|arch" | head -20 || true
-
-          # ARM32 Platform オプションを確認
-          ALL_EXPERT_OPTS=$(native-image --expert-options-all 2>&1)
-          echo "=== Available Platform-related options ==="
-          echo "$ALL_EXPERT_OPTS" | grep -iE "Platform|Target|Arch" | head -20
-          if echo "$ALL_EXPERT_OPTS" | grep -q "^  Platform"; then
-            PLATFORM_OPT=("-H:Platform=org.graalvm.nativeimage.Platform\$LINUX_ARM32HF")
-          elif echo "$ALL_EXPERT_OPTS" | grep -q "^  TargetPlatform"; then
-            PLATFORM_OPT=("-H:TargetPlatform=linux-armhf")
-          elif native-image --help 2>&1 | grep -q "\-\-target"; then
-            PLATFORM_OPT=("--target=arm-linux-gnueabihf")
+          native-image --version
+          if native-image --target=linux-armhf --version; then
+            echo "--target=linux-armhf is accepted"
           else
-            PLATFORM_OPT=()
+            echo "::warning::--target=linux-armhf was not accepted"
           fi
-          echo "Detected platform option: ${PLATFORM_OPT[@]}"
+
+          # ARM32 ターゲット指定
+          # --target=linux-armhf を試みる (GraalVM native-image の標準的なクロスコンパイル指定方法)
+          PLATFORM_OPT=("--target=linux-armhf")
+          echo "Using platform option: ${PLATFORM_OPT[@]}"
 
           run_native_image() {
+            set -o pipefail
             native-image \
               -H:CompilerBackend=llvm \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
-              -H:+DumpTargetInfo \
+              --target=linux-armhf \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
