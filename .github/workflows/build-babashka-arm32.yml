@@ -423,6 +423,7 @@ jobs:
               "${LLVM_TOOLCHAIN_OPT[@]}" \
               "${LLVM_BACKEND_OPT[@]}" \
               --target=linux-arm32 \
+              -H:-CheckToolchain \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
