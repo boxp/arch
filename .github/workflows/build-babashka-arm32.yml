@@ -85,16 +85,7 @@ jobs:
 
       - name: Install cross-compilation tools and LLVM 17
         run: |
-          # armhf (ARM32) multiarch パッケージを ports.ubuntu.com から取得
-          sudo dpkg --add-architecture armhf
-          # Ubuntu Noble の armhf は ports.ubuntu.com にある
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main universe" | sudo tee /etc/apt/sources.list.d/ubuntu-ports-armhf.list
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main universe" | sudo tee -a /etc/apt/sources.list.d/ubuntu-ports-armhf.list
           sudo apt-get update -q || true
-          sudo apt-get install -y openjdk-21-jdk:armhf 2>/dev/null || true
-          # ARM32 static libs の場所を確認
-          find /usr/lib/jvm -name "libjava.a" 2>/dev/null | head -5 || true
-          find /usr/lib/jvm -name "libnio.a" 2>/dev/null | head -5 || true
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
@@ -231,6 +222,61 @@ jobs:
           echo "GRAALVM_CE_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
           echo "GraalVM CE installed at: $PWD/$GRAALVM_DIR"
           "$PWD/$GRAALVM_DIR/bin/native-image" --version
+
+      - name: Build ARM32 static JDK libraries from boxp/labs-openjdk
+        timeout-minutes: 90
+        continue-on-error: true
+        run: |
+          echo "=== boxp/labs-openjdk を ARM32 クロスビルドして static JDK ライブラリを生成 ==="
+
+          # boxp/labs-openjdk は既にチェックアウト済みのはず
+          # (Checkout boxp/labs-openjdk ステップがある場合)
+          # 存在しない場合は最新の labs-openjdk を使用
+          LABS_DIR=""
+          if [ -d "labs-openjdk" ]; then
+            LABS_DIR="labs-openjdk"
+          else
+            # graalvm/labs-openjdk jvmci-25.3-b21 をクローン
+            git clone --depth=1 --branch jvmci-25.3-b21 https://github.com/graalvm/labs-openjdk.git labs-openjdk-arm32
+            LABS_DIR="labs-openjdk-arm32"
+          fi
+
+          cd "$LABS_DIR"
+
+          # ARM32 クロスビルドの設定
+          BOOT_JDK_PATH="$BOOT_JDK"
+          if [ -z "$BOOT_JDK_PATH" ]; then
+            BOOT_JDK_PATH=$(dirname $(which java))/../
+          fi
+
+          # configure でARM32クロスコンパイルを設定
+          bash configure \
+            --openjdk-target=arm-linux-gnueabihf \
+            --with-jvm-variants=server \
+            --with-debug-level=release \
+            --with-boot-jdk="$BOOT_JDK_PATH" \
+            --disable-warnings-as-errors \
+            2>&1 | tail -30 || { echo "::warning::configure failed, skipping ARM32 static libs"; exit 0; }
+
+          # static-libs-image をビルド (libjava.a 等を生成)
+          make CONF=linux-arm-server-release static-libs-image 2>&1 | tail -30 || {
+            echo "::warning::static-libs-image build failed"
+            exit 0
+          }
+
+          # 生成されたライブラリを確認してコピー
+          find . -name "libjava.a" -o -name "libnio.a" -o -name "libnet.a" 2>/dev/null | head -10
+
+          GRAALVM_LIB=$(find /home/runner/work/arch/arch/graal -name 'graalvm-*' -type d 2>/dev/null | head -1)/lib
+          if [ -n "$GRAALVM_LIB" ] && [ -d "$GRAALVM_LIB" ]; then
+            find . \( -name "libjava.a" -o -name "libnio.a" -o -name "libnet.a" -o -name "libzip.a" \) 2>/dev/null | while read lib; do
+              cp "$lib" "$GRAALVM_LIB/" && echo "Copied: $lib" || true
+            done
+            echo "=== GRAALVM_LIB static libs ==="
+            ls "$GRAALVM_LIB"/*.a 2>/dev/null | head -10 || echo "No .a files"
+          fi
+
+          cd ..
 
       - name: Build native-image from boxp/graal source
         env:
@@ -401,22 +447,6 @@ jobs:
           LLVM_BACKEND_OPT=()
           if [ -n "${LLVM_BACKEND_TOOL_PATH}" ]; then
             LLVM_BACKEND_OPT=("--tool:llvm-backend=${LLVM_BACKEND_TOOL_PATH}")
-          fi
-
-          # ARM32 static JDK ライブラリを graalvm-home/lib にコピー
-          ARMHF_JDK=$(find /usr/lib/jvm -maxdepth 1 -type d -name "*21*armhf*" | head -1)
-          if [ -n "$ARMHF_JDK" ]; then
-            echo "ARM32 JDK found: $ARMHF_JDK"
-            GRAALVM_LIB=$(find /home/runner/work/arch/arch/graal -name 'graalvm-*' -type d 2>/dev/null | head -1)/lib
-            if [ -n "$GRAALVM_LIB" ]; then
-              # static JDK ライブラリ (libjava.a 等) をコピー
-              find "$ARMHF_JDK" -name "*.a" 2>/dev/null | while read lib; do
-                cp "$lib" "$GRAALVM_LIB/" 2>/dev/null && echo "Copied: $lib" || true
-              done
-              ls "$GRAALVM_LIB"/*.a 2>/dev/null | head -10 || echo "No .a files in GRAALVM_LIB"
-            fi
-          else
-            echo "::warning::ARM32 JDK (openjdk-21-jdk:armhf) not found"
           fi
 
           JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
