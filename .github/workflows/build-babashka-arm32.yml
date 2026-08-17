@@ -379,15 +379,15 @@ jobs:
           fi
 
           native-image --version
-          if native-image --target=linux-armhf --version; then
-            echo "--target=linux-armhf is accepted"
+          if native-image --target=linux-arm32 --version; then
+            echo "--target=linux-arm32 is accepted"
           else
-            echo "::warning::--target=linux-armhf was not accepted"
+            echo "::warning::--target=linux-arm32 was not accepted"
           fi
 
           # ARM32 ターゲット指定
-          # --target=linux-armhf を試みる (GraalVM native-image の標準的なクロスコンパイル指定方法)
-          PLATFORM_OPT=("--target=linux-armhf")
+          # Platform.ARM32.getArchitecture() が返す arm32 を指定する
+          PLATFORM_OPT=("--target=linux-arm32")
           echo "Using platform option: ${PLATFORM_OPT[@]}"
 
           run_native_image() {
@@ -395,7 +395,7 @@ jobs:
             native-image \
               -H:CompilerBackend=llvm \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
-              --target=linux-armhf \
+              --target=linux-arm32 \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
