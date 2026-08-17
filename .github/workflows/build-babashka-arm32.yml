@@ -376,8 +376,13 @@ jobs:
           # LLVM バックエンドツールパスを特定
           LLVM_BACKEND_TOOL_PATH=""
           if [ -n "${NATIVE_IMAGE_BIN}" ]; then
-            GRAALVM_HOME_DIR=$(dirname "$(dirname "${NATIVE_IMAGE_BIN}")")
+            # native-image は lib/svm/bin/native-image にある
+            # GRAALVM_HOME は bin の 3つ上のディレクトリ
+            GRAALVM_HOME_DIR=$(cd "$(dirname "${NATIVE_IMAGE_BIN}")/../../.." && pwd)
             CANDIDATE="${GRAALVM_HOME_DIR}/lib/svm/tools/llvm-backend"
+            echo "GRAALVM_HOME_DIR: ${GRAALVM_HOME_DIR}"
+            echo "LLVM backend candidate: ${CANDIDATE}"
+            echo "LLVM backend exists: $(test -d "${CANDIDATE}" && echo YES || echo NO)"
             if [ -d "${CANDIDATE}" ]; then
               LLVM_BACKEND_TOOL_PATH="${CANDIDATE}"
               echo "LLVM バックエンドツールパス: ${LLVM_BACKEND_TOOL_PATH}"
