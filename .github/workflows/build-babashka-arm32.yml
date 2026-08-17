@@ -262,8 +262,8 @@ jobs:
           if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
             echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
             echo "=== LLVM backend module check ==="
-            find . -name "*.jar" -path "*/llvm*" 2>/dev/null | head -10
-            find . -path "*/mxbuild/*/llvm*" 2>/dev/null | head -10
+            find . -name "*.jar" -path "*/llvm*" 2>/dev/null | head -10 || true
+            find . -path "*/mxbuild/*/llvm*" 2>/dev/null | head -10 || true
             # mx graalvm-home 経由で native-image バイナリを取得（最も確実な方法）
             GRAALVM_HOME=$(mx --primary-suite-path substratevm graalvm-home 2>/dev/null || echo "")
             BUILT_NI=""
