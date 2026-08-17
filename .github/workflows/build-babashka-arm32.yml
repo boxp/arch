@@ -241,6 +241,19 @@ jobs:
           echo "LLVM_TOOLCHAIN_PATH=$LLVM_PATH" >> "$GITHUB_ENV"
 
           cd graal
+          # LLVM バックエンドのビルドに必要なツールチェーンをパスに追加
+          if [ -n "${LLVM_CUSTOM_PREFIX}" ] && [ -d "${LLVM_CUSTOM_PREFIX}/bin" ]; then
+            export PATH="${LLVM_CUSTOM_PREFIX}/bin:${PATH}"
+            export LLVM_TOOLCHAIN="${LLVM_CUSTOM_PREFIX}"
+            echo "Added custom LLVM to PATH: ${LLVM_CUSTOM_PREFIX}/bin"
+          elif [ -d "/usr/lib/llvm-17/bin" ]; then
+            export PATH="/usr/lib/llvm-17/bin:${PATH}"
+            export LLVM_TOOLCHAIN="/usr/lib/llvm-17"
+            echo "Added system LLVM 17 to PATH"
+          fi
+          # llvm-config が使えることを確認
+          which llvm-config 2>/dev/null || which llvm-config-17 2>/dev/null && echo "LLVM config found" || echo "::warning::llvm-config not found"
+
           echo "使用 BOOT_JDK: $BOOT_JDK"
 
           set -o pipefail
