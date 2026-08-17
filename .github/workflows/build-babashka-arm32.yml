@@ -230,15 +230,15 @@ jobs:
           echo "=== boxp/graal から native-image をビルド ==="
           echo "ARM32 SubstrateVM サポートを含む boxp/graal を使用します"
 
-          # LLVM ツールチェーンパスを決定 (boxp/llvm-project カスタムビルド優先、次にシステム LLVM 17)
-          if [ -n "${LLVM_CUSTOM_PREFIX}" ] && [ -f "${LLVM_CUSTOM_PREFIX}/bin/llc" ]; then
-            LLVM_PATH="${LLVM_CUSTOM_PREFIX}"
-            echo "カスタム boxp/llvm-project を使用: $LLVM_PATH"
-          else
-            LLVM_PATH=$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo "/usr/lib/llvm-17")
-            echo "システム LLVM 17 を使用: $LLVM_PATH"
+          # LLVM バックエンドモジュールのビルドに必要。mx はこの環境変数を参照する。
+          export LLVM_TOOLCHAIN_PATH="${LLVM_CUSTOM_PREFIX:-/usr/lib/llvm-17}"
+          echo "LLVM_TOOLCHAIN_PATH=$LLVM_TOOLCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "LLVM ツールチェーンを使用: $LLVM_TOOLCHAIN_PATH"
+
+          # カスタム LLVM の共有ライブラリを mx が見つけられるようにする。
+          if [ -n "${LLVM_CUSTOM_PREFIX}" ] && [ -d "${LLVM_CUSTOM_PREFIX}/lib" ]; then
+            export LD_LIBRARY_PATH="${LLVM_CUSTOM_PREFIX}/lib:${LD_LIBRARY_PATH}"
           fi
-          echo "LLVM_TOOLCHAIN_PATH=$LLVM_PATH" >> "$GITHUB_ENV"
 
           cd graal
           # LLVM バックエンドのビルドに必要なツールチェーンをパスに追加
@@ -253,12 +253,23 @@ jobs:
           fi
           # llvm-config が使えることを確認
           which llvm-config 2>/dev/null || which llvm-config-17 2>/dev/null && echo "LLVM config found" || echo "::warning::llvm-config not found"
+          echo "LLVM_TOOLCHAIN_PATH=$LLVM_TOOLCHAIN_PATH"
+          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}"
 
           echo "使用 BOOT_JDK: $BOOT_JDK"
 
           set -o pipefail
+          echo "=== Build LLVM backend module explicitly ==="
+          if ! mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build -p com.oracle.svm.core.graal.llvm 2>&1 | tail -30; then
+            echo "::error::LLVM backend module の明示ビルドに失敗しました"
+            exit 1
+          fi
+
           if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
             echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
+            echo "=== LLVM backend module check ==="
+            find . -name "*.jar" -path "*/llvm*" 2>/dev/null | head -10
+            find . -path "*/mxbuild/*/llvm*" 2>/dev/null | head -10
             # mx graalvm-home 経由で native-image バイナリを取得（最も確実な方法）
             GRAALVM_HOME=$(mx --primary-suite-path substratevm graalvm-home 2>/dev/null || echo "")
             BUILT_NI=""
