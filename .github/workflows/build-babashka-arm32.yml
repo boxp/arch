@@ -85,7 +85,13 @@ jobs:
 
       - name: Install cross-compilation tools and LLVM 17
         run: |
+          # ARM32 (armhf) JDK をマルチアーキテクチャでインストール (static libs取得)
+          sudo dpkg --add-architecture armhf
           sudo apt-get update -q
+          sudo apt-get install -y openjdk-21-jdk:armhf 2>/dev/null || true
+          # ARM32 static libs の場所を確認
+          find /usr/lib/jvm -name "libjava.a" 2>/dev/null | head -5 || true
+          find /usr/lib/jvm -name "libnio.a" 2>/dev/null | head -5 || true
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
@@ -392,6 +398,22 @@ jobs:
           LLVM_BACKEND_OPT=()
           if [ -n "${LLVM_BACKEND_TOOL_PATH}" ]; then
             LLVM_BACKEND_OPT=("--tool:llvm-backend=${LLVM_BACKEND_TOOL_PATH}")
+          fi
+
+          # ARM32 static JDK ライブラリを graalvm-home/lib にコピー
+          ARMHF_JDK=$(find /usr/lib/jvm -maxdepth 1 -type d -name "*21*armhf*" | head -1)
+          if [ -n "$ARMHF_JDK" ]; then
+            echo "ARM32 JDK found: $ARMHF_JDK"
+            GRAALVM_LIB=$(find /home/runner/work/arch/arch/graal -name 'graalvm-*' -type d 2>/dev/null | head -1)/lib
+            if [ -n "$GRAALVM_LIB" ]; then
+              # static JDK ライブラリ (libjava.a 等) をコピー
+              find "$ARMHF_JDK" -name "*.a" 2>/dev/null | while read lib; do
+                cp "$lib" "$GRAALVM_LIB/" 2>/dev/null && echo "Copied: $lib" || true
+              done
+              ls "$GRAALVM_LIB"/*.a 2>/dev/null | head -10 || echo "No .a files in GRAALVM_LIB"
+            fi
+          else
+            echo "::warning::ARM32 JDK (openjdk-21-jdk:armhf) not found"
           fi
 
           JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
