@@ -373,6 +373,22 @@ jobs:
             export PATH="${LLVM_TC_PATH}/bin:${PATH}"
           fi
 
+          # LLVM バックエンドツールパスを特定
+          LLVM_BACKEND_TOOL_PATH=""
+          if [ -n "${NATIVE_IMAGE_BIN}" ]; then
+            GRAALVM_HOME_DIR=$(dirname "$(dirname "${NATIVE_IMAGE_BIN}")")
+            CANDIDATE="${GRAALVM_HOME_DIR}/lib/svm/tools/llvm-backend"
+            if [ -d "${CANDIDATE}" ]; then
+              LLVM_BACKEND_TOOL_PATH="${CANDIDATE}"
+              echo "LLVM バックエンドツールパス: ${LLVM_BACKEND_TOOL_PATH}"
+            fi
+          fi
+          # LLVM バックエンドオプションを設定
+          LLVM_BACKEND_OPT=()
+          if [ -n "${LLVM_BACKEND_TOOL_PATH}" ]; then
+            LLVM_BACKEND_OPT=("--tool:llvm-backend=${LLVM_BACKEND_TOOL_PATH}")
+          fi
+
           JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
           if [ -z "$JAR_FILE" ]; then
             if [ "${MAKE_RELEASE}" = "true" ]; then
@@ -400,6 +416,7 @@ jobs:
             native-image \
               -H:CompilerBackend=llvm \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
+              "${LLVM_BACKEND_OPT[@]}" \
               --target=linux-arm32 \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
