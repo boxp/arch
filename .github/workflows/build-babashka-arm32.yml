@@ -364,6 +364,9 @@ jobs:
           LLVM_TC_PATH_DEFAULT=$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo "/usr/lib/llvm-17")
           LLVM_TC_PATH="${LLVM_TOOLCHAIN_PATH:-$LLVM_TC_PATH_DEFAULT}"
           echo "使用する LLVM ツールチェーンパス: $LLVM_TC_PATH"
+          ARMHF_C_LIBRARY_PATH="/usr/arm-linux-gnueabihf/lib"
+          echo "ARM32 C ライブラリ検索パス: $ARMHF_C_LIBRARY_PATH"
+          find /usr/arm-linux-gnueabihf -name "*.a" -type f 2>/dev/null | head -20 || true
           LLVM_TOOLCHAIN_OPT=()
           NATIVE_IMAGE_EXPERT_OPTIONS=$(native-image --expert-options-all 2>&1 || true)
           if grep -q 'LLVMToolchainPath' <<< "$NATIVE_IMAGE_EXPERT_OPTIONS"; then
@@ -422,6 +425,7 @@ jobs:
               -H:CompilerBackend=llvm \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
               "${LLVM_BACKEND_OPT[@]}" \
+              "-H:CLibraryPath=${ARMHF_C_LIBRARY_PATH}" \
               --target=linux-arm32 \
               -H:-CheckToolchain \
               --no-fallback \
