@@ -251,7 +251,21 @@ jobs:
             BOOT_JDK_PATH=$(dirname $(which java))/../
           fi
 
-          sudo apt-get install -y libasound2-dev 2>/dev/null || true
+          sudo apt-get install -y \
+            libasound2-dev \
+            libcups2-dev \
+            libfontconfig1-dev \
+            libx11-dev \
+            libxext-dev \
+            libxrender-dev \
+            libxrandr-dev \
+            libxtst-dev \
+            libxt-dev \
+            libxkbfile-dev \
+            libfreetype6-dev \
+            libpng-dev \
+            libharfbuzz-dev \
+            2>/dev/null || true
 
           # configure でARM32クロスコンパイルを設定
           bash configure \
