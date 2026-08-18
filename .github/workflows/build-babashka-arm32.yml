@@ -443,12 +443,20 @@ jobs:
           PLATFORM_OPT=("--target=linux-arm32")
           echo "Using platform option: ${PLATFORM_OPT[@]}"
 
+          # ARM32クロスコンパイルではCAnnotationProcessorCache.UseCAPCacheが
+          # 自動的にtrueになる（クロスアーキテクチャビルド検出）。
+          # NewCAPCache+QueryIfNotInCAPCacheを使って、ARM32向けC構造体サイズを
+          # binfmt_misc経由のqemu-armで透過的に計算・キャッシュさせる。
+          mkdir -p /tmp/arm32-capcache
+
           run_native_image() {
             set -o pipefail
             native-image \
               -H:CompilerBackend=llvm \
               -H:CLibraryPath="$GITHUB_WORKSPACE/arm32-static-libs" \
-              -H:-UseCAPCache \
+              -H:+NewCAPCache \
+              -H:CAPCacheDir=/tmp/arm32-capcache \
+              -H:+QueryIfNotInCAPCache \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
               "${LLVM_BACKEND_OPT[@]}" \
               --target=linux-arm32 \
