@@ -115,11 +115,11 @@ jobs:
           done
 
           # ports.ubuntu.com から armhf パッケージを取得するソースを追加
-          cat << 'SOURCES_EOF' | sudo tee /etc/apt/sources.list.d/armhf-ports.list
-deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe
-deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe
-deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe
-SOURCES_EOF
+          printf '%s\n' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe' \
+            | sudo tee /etc/apt/sources.list.d/armhf-ports.list > /dev/null
 
           sudo apt-get update -q
           sudo apt-get install -y \
@@ -288,19 +288,21 @@ SOURCES_EOF
           # --with-boot-jdk: ホスト用 JDK (labs-openjdk jvmci-25.3-b21 / JDK 25)
           # クロスコンパイルのため ARM32 ブート JDK は不要
           # dpkg multiarch で /usr/lib/arm-linux-gnueabihf/ に armhf ライブラリがインストール済み
-          ARMHF_SYSROOT="/usr/arm-linux-gnueabihf"
+          #
+          # --with-jvm-variants=zero: ARM32 は server JVM をサポートしない場合があるため
+          #   zero JVM (interpreter-only) を指定。static-libs-image ビルドには影響しない。
+          #
+          # PKG_CONFIG: armhf マルチアーキテクチャのライブラリを検出するために必要
+          export PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
+          export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig
+
           bash configure \
             --with-boot-jdk="$BOOT_JDK" \
             --openjdk-target=arm-linux-gnueabihf \
-            --with-jvm-variants=server \
+            --with-jvm-variants=zero \
             --with-debug-level=release \
             --disable-warnings-as-errors \
             --disable-precompiled-headers \
-            --with-alsa=/usr \
-            --with-fontconfig=/usr \
-            --with-freetype=/usr \
-            --with-cups=/usr \
-            --with-x=/usr \
             --with-extra-cflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard" \
             --with-extra-cxxflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
 
