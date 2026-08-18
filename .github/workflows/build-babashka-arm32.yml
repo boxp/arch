@@ -434,6 +434,19 @@ jobs:
             exit 1
           fi
 
+          # babashka JARから -H:+ForeignAPISupport を除去（LLVMバックエンド非対応）
+          echo "babashka JAR をパッチ中 (ForeignAPISupport 除去)..."
+          mkdir -p /tmp/bb-jar-patched
+          unzip -q "$JAR_FILE" -d /tmp/bb-jar-patched/
+          PROPS_FILE="/tmp/bb-jar-patched/META-INF/native-image/babashka/babashka/native-image.properties"
+          if [ -f "$PROPS_FILE" ]; then
+            sed -i 's/-H:+ForeignAPISupport *\\*//g' "$PROPS_FILE"
+            echo "ForeignAPISupport を除去しました"
+          fi
+          cd /tmp/bb-jar-patched && zip -q -r /tmp/bb-arm32-patched.jar . && cd -
+          JAR_FILE="/tmp/bb-arm32-patched.jar"
+          echo "パッチ済み JAR: $JAR_FILE"
+
           native-image --version
           native-image --target=linux-arm32 --version
           echo "--target=linux-arm32 is accepted"
