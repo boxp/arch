@@ -484,11 +484,10 @@ jobs:
             [ -f "$qfile" ] || continue
             base=$(basename "$qfile" .c)
 
-            # ARM32クロスコンパイル（sysroot + GraalVM headers）
+            # ARM32クロスコンパイル（sysrootなし - Ubuntu cross-gcc は自動でsysrootを解決）
             echo "  Compiling: $base"
             if arm-linux-gnueabihf-gcc \
                 "$qfile" \
-                --sysroot=/usr/arm-linux-gnueabihf \
                 -I/usr/arm-linux-gnueabihf/include \
                 -I"${NATIVE_IMAGE_HOME}/include" \
                 -I"${NATIVE_IMAGE_HOME}/lib/svm/clibraries/linux-arm32/include" \
@@ -507,7 +506,7 @@ jobs:
             else
               FAILED=$((FAILED+1))
               echo "  Compile error for $base:"
-              head -5 /tmp/arm32-query/${base}.err 2>/dev/null || true
+              cat /tmp/arm32-query/${base}.err 2>/dev/null || true
             fi
           done
           echo "コンパイル成功: ${COMPILED}, キャッシュ生成: ${CACHED}, 失敗: ${FAILED}"
