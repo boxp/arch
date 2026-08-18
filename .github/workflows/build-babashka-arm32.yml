@@ -535,6 +535,7 @@ jobs:
               --target=linux-arm32 \
               -H:-CheckToolchain \
               --no-fallback \
+              -H:-ForeignAPISupport \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
               -cp "$JAR_FILE" \
