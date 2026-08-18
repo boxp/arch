@@ -443,14 +443,12 @@ jobs:
           PLATFORM_OPT=("--target=linux-arm32")
           echo "Using platform option: ${PLATFORM_OPT[@]}"
 
-          mkdir -p /tmp/graal-capcache
-
           run_native_image() {
             set -o pipefail
             native-image \
               -H:CompilerBackend=llvm \
               -H:CLibraryPath="$GITHUB_WORKSPACE/arm32-static-libs" \
-              -H:CAPCacheDir=/tmp/graal-capcache \
+              -H:-UseCAPCache \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
               "${LLVM_BACKEND_OPT[@]}" \
               --target=linux-arm32 \
