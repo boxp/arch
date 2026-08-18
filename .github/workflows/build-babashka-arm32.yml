@@ -453,9 +453,12 @@ jobs:
           echo "=== Step 1: ARM32 CAPキャッシュ用クエリコードを生成 ==="
           # ExitAfterQueryCodeGenerationは非ゼロで終了する（正常）
           # QueryIfNotInCAPCache=true: キャッシュミス時にエラーを投げずにクエリコード生成フローに進む
+          # LLVMバックエンドオプションを含める必要がある（--target=linux-arm32に必須）
           native-image \
             -H:CompilerBackend=llvm \
             -H:CLibraryPath="$GITHUB_WORKSPACE/arm32-static-libs" \
+            "${LLVM_TOOLCHAIN_OPT[@]}" \
+            "${LLVM_BACKEND_OPT[@]}" \
             --target=linux-arm32 \
             -H:-CheckToolchain \
             -H:+ExitAfterQueryCodeGeneration \
