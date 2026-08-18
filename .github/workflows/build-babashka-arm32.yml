@@ -149,7 +149,8 @@ jobs:
             libxrender-dev:armhf \
             libxrandr-dev:armhf \
             libxtst-dev:armhf \
-            libxt-dev:armhf
+            libxt-dev:armhf \
+            libffi-dev:armhf
           # llvm-config-17 へのシンボリックリンクを確認
           if ! command -v llvm-config-17 >/dev/null 2>&1; then
             ls /usr/bin/llvm-config*
