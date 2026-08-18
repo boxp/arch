@@ -45,7 +45,7 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 240
+    timeout-minutes: 360
     permissions:
       contents: write
     outputs:
@@ -79,12 +79,48 @@ jobs:
         with:
           repository: boxp/graal
           # ARM32 SubstrateVM + suite.py arm32モジュール登録済みコミットを固定（再現可能ビルドのため）
-          ref: 7ae60478021899dbe99f93dfab6761afd3823020
+          ref: 74d24c145ed46588e243a722e682c1b6307710be
           path: graal
           persist-credentials: false
 
       - name: Install cross-compilation tools and LLVM 17
         run: |
+          set -euo pipefail
+          # ARM32 クロスコンパイル用に armhf マルチアーキテクチャを追加
+          sudo dpkg --add-architecture armhf
+
+          # security.ubuntu.com は armhf パッケージを提供していないため、
+          # 既存の apt ソースを amd64 専用に制限する。
+          # Ubuntu Noble (24.04) は DEB822 形式と legacy 形式の両方が存在する可能性がある。
+
+          # DEB822 形式 (ubuntu.sources) の処理
+          for sources_file in /etc/apt/sources.list.d/*.sources; do
+            if [ -f "$sources_file" ]; then
+              if ! grep -q "^Architectures:" "$sources_file"; then
+                sudo sed -i '/^Types: deb/a Architectures: amd64 i386' "$sources_file"
+              fi
+            fi
+          done
+
+          # legacy .list 形式の処理: security.ubuntu.com を amd64 に制限
+          if [ -f /etc/apt/sources.list ]; then
+            sudo sed -i 's|^deb https://security.ubuntu.com|deb [arch=amd64] https://security.ubuntu.com|g' \
+              /etc/apt/sources.list
+          fi
+          for list_file in /etc/apt/sources.list.d/*.list; do
+            if [ -f "$list_file" ]; then
+              sudo sed -i 's|^deb https\?://[^ ]*ubuntu\.com|deb [arch=amd64] &|g; s|\[arch=amd64\] deb |deb [arch=amd64] |g' \
+                "$list_file" 2>/dev/null || true
+            fi
+          done
+
+          # ports.ubuntu.com から armhf パッケージを取得するソースを追加
+          printf '%s\n' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe' \
+            'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe' \
+            | sudo tee /etc/apt/sources.list.d/armhf-ports.list > /dev/null
+
           sudo apt-get update -q
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf \
@@ -103,12 +139,27 @@ jobs:
             lld-17 \
             llvm-17-dev \
             cmake \
-            ninja-build
+            ninja-build \
+            libasound2-dev:armhf \
+            libfontconfig1-dev:armhf \
+            libfreetype6-dev:armhf \
+            libcups2-dev:armhf \
+            libx11-dev:armhf \
+            libxext-dev:armhf \
+            libxrender-dev:armhf \
+            libxrandr-dev:armhf \
+            libxtst-dev:armhf \
+            libxt-dev:armhf \
+            libffi-dev:armhf
           # llvm-config-17 へのシンボリックリンクを確認
-          which llvm-config-17 || (ls /usr/bin/llvm-config* && ln -sf /usr/bin/llvm-config-17 /usr/local/bin/llvm-config-17)
+          if ! command -v llvm-config-17 >/dev/null 2>&1; then
+            ls /usr/bin/llvm-config*
+            sudo ln -sf /usr/bin/llvm-config-17 /usr/local/bin/llvm-config-17
+          fi
 
       - name: Validate qemu-arm works
         run: |
+          set -euo pipefail
           echo "=== qemu-arm 動作確認 ==="
           cat > /tmp/hello-arm.c << 'EOF'
           #include <stdio.h>
@@ -120,23 +171,16 @@ jobs:
 
       - name: Validate LLVM ARM32 Statepoint support (boxp/llvm-project)
         run: |
-          echo "=== LLVM ARM32 Statepoint 検証 (boxp/llvm-project) ==="
-          # システム LLVM 17 で ARM32 statepoint IR をコンパイルしてスモークテスト
-          # LLVM 17 の statepoint 構文: token 型を返す intrinsic
-          cat > /tmp/test-statepoint.ll << 'EOF'
-          declare token @llvm.experimental.gc.statepoint.p0(i64, i32, ptr, i32, i32, ...)
-          define void @test() gc "statepoint-example" {
-            %sp = call token (i64, i32, ptr, i32, i32, ...) @llvm.experimental.gc.statepoint.p0(i64 0, i32 0, ptr null, i32 0, i32 0)
-            ret void
-          }
-          EOF
-          echo "ARM32 Statepoint IR を llc-17 でコンパイル中..."
-          llc-17 -march=arm -mattr=+vfp2 -filetype=obj /tmp/test-statepoint.ll -o /tmp/test-statepoint.o && \
-            echo "LLVM ARM32 Statepoint コンパイル成功" || \
-            echo "::warning::LLVM ARM32 Statepoint コンパイル失敗 (boxp/llvm-project のカスタムビルドが必要な場合あり)"
-          # boxp/llvm-project の変更が含まれていることを確認
+          set -euo pipefail
+          echo "=== boxp/llvm-project ARM32 Statepoint 変更確認 ==="
+          # システムLLVM 17はARM32 Statepointsでクラッシュする（それがboxp/llvm-projectを使う理由）
+          # カスタムビルド後にARMAsmPrinter.cppを使った実際のテストを行う
           echo "boxp/llvm-project の ARM32 Statepoint コミットを確認..."
           git -C llvm-project log --oneline -5
+          # ARM32 Statepoint実装ファイルの存在確認
+          ls llvm-project/llvm/lib/Target/ARM/ARMAsmPrinter.cpp
+          grep -c "statepoint\|StackMap\|PatchPoint" llvm-project/llvm/lib/Target/ARM/ARMAsmPrinter.cpp || true
+          echo "boxp/llvm-project ARM32変更の確認完了"
 
       - name: Cache boxp/llvm-project build
         id: llvm-cache
@@ -145,36 +189,35 @@ jobs:
           path: llvm-project/build
           key: llvm-arm32-statepoints-${{ hashFiles('llvm-project/llvm/lib/Target/ARM/ARMAsmPrinter.cpp', 'llvm-project/llvm/lib/Target/ARM/ARMAsmPrinter.h') }}
 
-      - name: Build boxp/llvm-project (ARM32 Statepoints, continue-on-error)
-        continue-on-error: true
+      - name: Build boxp/llvm-project (ARM32 Statepoints)
         timeout-minutes: 90
         run: |
+          set -euo pipefail
           echo "=== boxp/llvm-project のビルド (ARM32 ターゲット付き) ==="
           if [ "${{ steps.llvm-cache.outputs.cache-hit }}" = "true" ] && [ -f llvm-project/build/bin/llc ]; then
             echo "キャッシュヒット: boxp/llvm-project ビルド済み"
             echo "LLVM_CUSTOM_BUILD_SUCCESS=true" >> "$GITHUB_ENV"
             echo "LLVM_CUSTOM_PREFIX=$PWD/llvm-project/build" >> "$GITHUB_ENV"
-            exit 0
+          else
+            cd llvm-project
+            cmake -S llvm -B build \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DLLVM_TARGETS_TO_BUILD="ARM;X86" \
+              -DLLVM_ENABLE_ASSERTIONS=ON \
+              -DCMAKE_C_COMPILER=clang-17 \
+              -DCMAKE_CXX_COMPILER=clang++-17 \
+              -G Ninja
+            cmake --build build --target llc llvm-mc llvm-objdump -- "-j$(nproc)"
+            echo "LLVM_CUSTOM_BUILD_SUCCESS=true" >> "$GITHUB_ENV"
+            echo "LLVM_CUSTOM_PREFIX=$PWD/build" >> "$GITHUB_ENV"
           fi
-          echo "注意: LLVM ビルドは CI で最大 90 分を限度とします。continue-on-error=true で実行します"
-          cd llvm-project
-          cmake -S llvm -B build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DLLVM_TARGETS_TO_BUILD="ARM;X86" \
-            -DLLVM_ENABLE_ASSERTIONS=ON \
-            -DCMAKE_C_COMPILER=clang-17 \
-            -DCMAKE_CXX_COMPILER=clang++-17 \
-            -G Ninja
-          cmake --build build --target llc llvm-mc llvm-objdump -- "-j$(nproc)" && \
-            echo "LLVM_CUSTOM_BUILD_SUCCESS=true" >> "$GITHUB_ENV" && \
-            echo "LLVM_CUSTOM_PREFIX=$PWD/build" >> "$GITHUB_ENV" || \
-            echo "::warning::boxp/llvm-project ビルド失敗。システム LLVM 17 にフォールバックします"
 
       - name: Determine babashka version
         id: version
         env:
           INPUT_VERSION: ${{ inputs.babashka_version }}
         run: |
+          set -euo pipefail
           if [ -n "$INPUT_VERSION" ]; then
             echo "version=$INPUT_VERSION" >> "$GITHUB_OUTPUT"
           else
@@ -190,6 +233,7 @@ jobs:
 
       - name: Install mx build tool
         run: |
+          set -euo pipefail
           # mx のコミット SHA を固定して再現可能ビルドを保証する
           git clone https://github.com/graalvm/mx.git "$HOME/mx"
           git -C "$HOME/mx" checkout 2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
@@ -197,6 +241,7 @@ jobs:
 
       - name: Install labs-openjdk jvmci-25.3-b21 as boot JDK
         run: |
+          set -euo pipefail
           echo "=== labs-openjdk jvmci-25.3-b21 (linux-amd64) をインストール ==="
           LABSJDK_URL="https://github.com/graalvm/labs-openjdk/releases/download/jvmci-25.3-b21/labsjdk-ce-25.0.4.1%2B0-jvmci-25.3-b21-linux-amd64.tar.gz"
           curl --fail -L "$LABSJDK_URL" -o labsjdk.tar.gz
@@ -208,146 +253,151 @@ jobs:
           echo "JAVA_HOME=$BOOT_JDK" >> "$GITHUB_ENV"
           echo "$BOOT_JDK/bin" >> "$GITHUB_PATH"
           "$BOOT_JDK/bin/java" -version
-          echo "jmods count: $(ls $BOOT_JDK/jmods 2>/dev/null | wc -l)"
+          echo "jmods count: $(ls "$BOOT_JDK/jmods" | wc -l)"
 
-      - name: Download GraalVM CE for native-image (fallback)
+      - name: Setup QEMU for ARM32 Docker
         run: |
-          # native-image フォールバック用に GraalVM CE 25.0.2 を別途取得
-          GRAALVM_VERSION="25.0.2"
-          curl --fail -L \
-            "https://github.com/graalvm/graalvm-ce-builds/releases/download/jdk-${GRAALVM_VERSION}/graalvm-community-jdk-${GRAALVM_VERSION}_linux-x64_bin.tar.gz" \
-            -o graalvm.tar.gz
-          tar xzf graalvm.tar.gz
-          GRAALVM_DIR=$(find . -maxdepth 1 \( -name "graalvm-community-openjdk-*" -o -name "graalvm-community-jdk-*" \) -type d | head -1)
-          echo "GRAALVM_CE_HOME=$PWD/$GRAALVM_DIR" >> "$GITHUB_ENV"
-          echo "GraalVM CE installed at: $PWD/$GRAALVM_DIR"
-          "$PWD/$GRAALVM_DIR/bin/native-image" --version
+          set -euo pipefail
+          docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
+          echo "QEMU ARM32 セットアップ完了"
+
+      - name: Cache ARM32 JDK static libs
+        id: arm32-static-libs-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: arm32-static-libs
+          key: arm32-static-libs-labsjdk-jvmci-25-3-b21-cross-v1
+
+      - name: Build ARM32 JDK static libs (cross-compile on x86)
+        if: steps.arm32-static-libs-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 90
+        run: |
+          set -euo pipefail
+          echo "=== ARM32 JDK static libs を x86 でクロスコンパイル ==="
+          echo "QEMU Docker を使わず x86 ホスト上でクロスコンパイルする方式"
+          mkdir -p "$GITHUB_WORKSPACE/arm32-static-libs"
+
+          # labs-openjdk ソースを取得 (ARM32 static libs ビルド用)
+          git clone --depth 1 \
+            --branch jvmci-25.3-b21 \
+            https://github.com/graalvm/labs-openjdk.git labsjdk-src-arm32
+
+          cd labsjdk-src-arm32
+
+          # ARM32 向けクロスコンパイル設定
+          # --openjdk-target: ARM32 (armhf) をターゲットに指定
+          # --with-boot-jdk: ホスト用 JDK (labs-openjdk jvmci-25.3-b21 / JDK 25)
+          # クロスコンパイルのため ARM32 ブート JDK は不要
+          # dpkg multiarch で /usr/lib/arm-linux-gnueabihf/ に armhf ライブラリがインストール済み
+          #
+          # --with-jvm-variants=zero: ARM32 は server JVM をサポートしない場合があるため
+          #   zero JVM (interpreter-only) を指定。static-libs-image ビルドには影響しない。
+          #
+          # PKG_CONFIG: armhf マルチアーキテクチャのライブラリを検出するために必要
+          export PKG_CONFIG_PATH=/usr/lib/arm-linux-gnueabihf/pkgconfig:/usr/share/pkgconfig
+          export PKG_CONFIG_LIBDIR=/usr/lib/arm-linux-gnueabihf/pkgconfig
+
+          bash configure \
+            --with-boot-jdk="$BOOT_JDK" \
+            --openjdk-target=arm-linux-gnueabihf \
+            --with-jvm-variants=zero \
+            --with-debug-level=release \
+            --disable-warnings-as-errors \
+            --disable-precompiled-headers \
+            --with-extra-cflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard" \
+            --with-extra-cxxflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
+
+          set -o pipefail
+          make JOBS="$(nproc)" static-libs-image 2>&1 | tail -50
+
+          # static libs をコピー
+          find build -name "*.a" -path "*/static-libs/*" -exec cp {} "$GITHUB_WORKSPACE/arm32-static-libs/" \;
+          echo "ARM32 static libs ビルド完了:"
+          ls "$GITHUB_WORKSPACE/arm32-static-libs/"
 
       - name: Build native-image from boxp/graal source
-        env:
-          MAKE_RELEASE: ${{ inputs.make_release }}
         run: |
+          set -euo pipefail
           echo "=== boxp/graal から native-image をビルド ==="
           echo "ARM32 SubstrateVM サポートを含む boxp/graal を使用します"
 
-          # LLVM ツールチェーンパスを決定 (boxp/llvm-project カスタムビルド優先、次にシステム LLVM 17)
-          if [ -n "${LLVM_CUSTOM_PREFIX}" ] && [ -f "${LLVM_CUSTOM_PREFIX}/bin/llc" ]; then
-            LLVM_PATH="${LLVM_CUSTOM_PREFIX}"
-            echo "カスタム boxp/llvm-project を使用: $LLVM_PATH"
-          else
-            LLVM_PATH=$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo "/usr/lib/llvm-17")
-            echo "システム LLVM 17 を使用: $LLVM_PATH"
+          # LLVM バックエンドモジュールのビルドに必要。mx はこの環境変数を参照する。
+          if [ -z "${LLVM_CUSTOM_PREFIX:-}" ]; then
+            echo "Error: LLVM_CUSTOM_PREFIX が設定されていません。boxp/llvm-project ビルドに失敗した可能性があります"
+            exit 1
           fi
-          echo "LLVM_TOOLCHAIN_PATH=$LLVM_PATH" >> "$GITHUB_ENV"
+          export LLVM_TOOLCHAIN_PATH="${LLVM_CUSTOM_PREFIX}"
+          echo "LLVM_TOOLCHAIN_PATH=$LLVM_TOOLCHAIN_PATH" >> "$GITHUB_ENV"
+          echo "LLVM ツールチェーンを使用: $LLVM_TOOLCHAIN_PATH"
+
+          # カスタム LLVM の共有ライブラリを mx が見つけられるようにする。
+          if [ -d "${LLVM_CUSTOM_PREFIX}/lib" ]; then
+            export LD_LIBRARY_PATH="${LLVM_CUSTOM_PREFIX}/lib:${LD_LIBRARY_PATH:-}"
+          fi
 
           cd graal
+          # LLVM バックエンドのビルドに必要なツールチェーンをパスに追加
+          if [ -d "${LLVM_CUSTOM_PREFIX}/bin" ]; then
+            export PATH="${LLVM_CUSTOM_PREFIX}/bin:${PATH}"
+            export LLVM_TOOLCHAIN="${LLVM_CUSTOM_PREFIX}"
+            echo "Added custom LLVM to PATH: ${LLVM_CUSTOM_PREFIX}/bin"
+          else
+            echo "Error: custom LLVM build directory is unavailable: ${LLVM_CUSTOM_PREFIX}"
+            exit 1
+          fi
+          # llvm-config が使えることを確認
+          command -v llvm-config >/dev/null 2>&1 || command -v llvm-config-17 >/dev/null 2>&1
+          echo "LLVM config found"
+          echo "LLVM_TOOLCHAIN_PATH=$LLVM_TOOLCHAIN_PATH"
+          echo "LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-<unset>}"
+
           echo "使用 BOOT_JDK: $BOOT_JDK"
 
           set -o pipefail
-          if mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30; then
-            echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
-            # mx graalvm-home 経由で native-image バイナリを取得（最も確実な方法）
-            GRAALVM_HOME=$(mx --primary-suite-path substratevm graalvm-home 2>/dev/null || echo "")
-            BUILT_NI=""
-            if [ -n "$GRAALVM_HOME" ] && [ -f "$GRAALVM_HOME/bin/native-image" ]; then
-              BUILT_NI="$GRAALVM_HOME/bin/native-image"
-              echo "graalvm-home 経由で発見: $BUILT_NI"
-            else
-              # フォールバック: mxbuild ディレクトリを直接検索
-              BUILT_NI=$(find . -path "*/mxbuild/*/native-image" -perm /111 -type f 2>/dev/null | head -1)
-              if [ -n "$BUILT_NI" ]; then
-                echo "mxbuild 経由で発見: $BUILT_NI"
-              else
-                # 最終フォールバック: ビルドディレクトリ全体を検索
-                BUILT_NI=$(find . -name "native-image" -perm /111 -type f 2>/dev/null | head -1)
-                if [ -n "$BUILT_NI" ]; then
-                  echo "ディレクトリ検索で発見: $BUILT_NI"
-                fi
-              fi
-            fi
-
-            if [ -n "$BUILT_NI" ] && [ -f "$BUILT_NI" ]; then
-              BUILT_NI=$(realpath "$BUILT_NI")
-              echo "NATIVE_IMAGE_BIN=$BUILT_NI" >> "$GITHUB_ENV"
-              echo "GRAALVM_BUILD_SUCCESS=true" >> "$GITHUB_ENV"
-              dirname "$BUILT_NI" >> "$GITHUB_PATH"
-              echo "boxp/graal native-image を設定: $BUILT_NI"
-            else
-              echo "GRAALVM_BUILD_SUCCESS=false" >> "$GITHUB_ENV"
-              echo "::warning::boxp/graal ビルド成功しましたが native-image バイナリが見つかりません"
-              if [ "${MAKE_RELEASE}" = "true" ]; then
-                echo "Error: リリースビルドで boxp/graal の native-image バイナリが見つかりませんでした"
-                exit 1
-              fi
-            fi
-          else
-            EXIT_CODE=$?
-            echo "GRAALVM_BUILD_SUCCESS=false" >> "$GITHUB_ENV"
-            echo "::warning::boxp/graal ビルド失敗 (exit: $EXIT_CODE)"
-            echo "ARM32 LLVM バックエンドが未完成のため期待された状態です"
-            if [ "${MAKE_RELEASE}" = "true" ]; then
-              echo "Error: リリースビルドで boxp/graal のビルドが失敗しました"
-              exit 1
-            fi
+          mx --primary-suite-path substratevm --java-home "$BOOT_JDK" build 2>&1 | tail -30
+          echo "boxp/graal ビルド成功。native-image バイナリを検索中..."
+          GRAALVM_HOME=$(mx --primary-suite-path substratevm graalvm-home)
+          BUILT_NI="$GRAALVM_HOME/bin/native-image"
+          if [ ! -f "$BUILT_NI" ]; then
+            echo "Error: boxp/graal ビルド後に native-image バイナリが見つかりません: $BUILT_NI"
+            exit 1
           fi
-
-      - name: Install native-image (fallback if boxp/graal build failed)
-        env:
-          MAKE_RELEASE: ${{ inputs.make_release }}
-        run: |
-          if [ "${GRAALVM_BUILD_SUCCESS}" = "true" ] && command -v native-image >/dev/null 2>&1; then
-            echo "boxp/graal の native-image を使用: $(which native-image)"
-          else
-            if [ "${MAKE_RELEASE}" = "true" ]; then
-              echo "Error: リリースビルドで boxp/graal の native-image が利用できません"
-              echo "ARM32 LLVM バックエンドが完成してから再実行してください"
-              exit 1
-            fi
-            # GraalVM CE の native-image をフォールバックとして使用
-            echo "$GRAALVM_CE_HOME/bin" >> "$GITHUB_PATH"
-            echo "GraalVM CE の native-image をフォールバックとして使用: $GRAALVM_CE_HOME/bin/native-image"
-          fi
-          native-image --version || echo "::warning::native-image が利用不可"
+          BUILT_NI=$(realpath "$BUILT_NI")
+          echo "NATIVE_IMAGE_BIN=$BUILT_NI" >> "$GITHUB_ENV"
+          dirname "$BUILT_NI" >> "$GITHUB_PATH"
+          echo "boxp/graal native-image を設定: $BUILT_NI"
+          "$BUILT_NI" --version
 
       - name: Download babashka uberjar
         env:
           BB_VERSION: ${{ steps.version.outputs.version }}
         run: |
+          set -euo pipefail
           mkdir -p babashka-build
           curl --fail -L \
             "https://github.com/babashka/babashka/releases/download/v${BB_VERSION}/babashka-${BB_VERSION}-standalone.jar" \
-            -o "babashka-build/babashka-${BB_VERSION}-standalone.jar" || \
-          echo "::warning::Standalone jar が見つかりません。ソースビルドが必要です"
-
-      - name: Setup Clojure (for building from source if needed)
-        uses: DeLaGuardo/setup-clojure@bc7570e912b028bbcc22f457adec7fdf98e2f4ed # 12.5
-        with:
-          lein: latest
-          cli: latest
-        continue-on-error: true
+            -o "babashka-build/babashka-${BB_VERSION}-standalone.jar"
 
       - name: Build babashka ARM32 native-image
         if: ${{ !inputs.skip_native_image }}
         env:
           BB_VERSION: ${{ steps.version.outputs.version }}
-          MAKE_RELEASE: ${{ inputs.make_release }}
           CC: arm-linux-gnueabihf-gcc
           CXX: arm-linux-gnueabihf-g++
           AR: arm-linux-gnueabihf-ar
           CROSS_COMPILE: arm-linux-gnueabihf-
         run: |
-          set -o pipefail
+          set -euo pipefail
           echo "=== ARM32 native-image ビルド試行 ==="
           echo "注意: GraalVM の完全な ARM32 LLVM バックエンドサポートは開発中"
           echo "詳細: BOXP-152 (boxp/labs-openjdk + boxp/graal + boxp/llvm-project の ARM32 サポート)"
           echo ""
 
           # LLVM ツールチェーンパスを確認
-          LLVM_TC_PATH_DEFAULT=$(llvm-config-17 --prefix 2>/dev/null || llvm-config --prefix 2>/dev/null || echo "/usr/lib/llvm-17")
-          LLVM_TC_PATH="${LLVM_TOOLCHAIN_PATH:-$LLVM_TC_PATH_DEFAULT}"
+          LLVM_TC_PATH="${LLVM_TOOLCHAIN_PATH}"
           echo "使用する LLVM ツールチェーンパス: $LLVM_TC_PATH"
           LLVM_TOOLCHAIN_OPT=()
-          NATIVE_IMAGE_EXPERT_OPTIONS=$(native-image --expert-options-all 2>&1 || true)
+          NATIVE_IMAGE_EXPERT_OPTIONS=$(native-image --expert-options-all 2>&1)
           if grep -q 'LLVMToolchainPath' <<< "$NATIVE_IMAGE_EXPERT_OPTIONS"; then
             LLVM_TOOLCHAIN_OPT=("-H:LLVMToolchainPath=${LLVM_TC_PATH}")
           else
@@ -355,34 +405,120 @@ jobs:
             export PATH="${LLVM_TC_PATH}/bin:${PATH}"
           fi
 
+          # LLVM バックエンドツールパスを特定
+          LLVM_BACKEND_TOOL_PATH=""
+          if [ -n "${NATIVE_IMAGE_BIN}" ]; then
+            # native-image は lib/svm/bin/native-image にある
+            # GRAALVM_HOME は bin の 3つ上のディレクトリ
+            GRAALVM_HOME_DIR=$(cd "$(dirname "${NATIVE_IMAGE_BIN}")/../../.." && pwd)
+            CANDIDATE="${GRAALVM_HOME_DIR}/lib/svm/tools/llvm-backend"
+            echo "GRAALVM_HOME_DIR: ${GRAALVM_HOME_DIR}"
+            echo "LLVM backend candidate: ${CANDIDATE}"
+            if [ -d "${CANDIDATE}" ]; then
+              echo "LLVM backend exists: YES"
+              LLVM_BACKEND_TOOL_PATH="${CANDIDATE}"
+              echo "LLVM バックエンドツールパス: ${LLVM_BACKEND_TOOL_PATH}"
+            else
+              echo "LLVM backend exists: NO"
+            fi
+          fi
+          # LLVM バックエンドオプションを設定
+          LLVM_BACKEND_OPT=()
+          if [ -n "${LLVM_BACKEND_TOOL_PATH}" ]; then
+            LLVM_BACKEND_OPT=("--tool:llvm-backend=${LLVM_BACKEND_TOOL_PATH}")
+          fi
+
           JAR_FILE=$(find babashka-build -name "babashka-*.jar" 2>/dev/null | head -1)
           if [ -z "$JAR_FILE" ]; then
-            if [ "${MAKE_RELEASE}" = "true" ]; then
-              echo "Error: リリースビルドで babashka jar が見つかりません"
-              exit 1
-            fi
-            echo "::warning::babashka jar が見つかりません。ビルドをスキップします"
-            exit 0
+            echo "Error: babashka jar が見つかりません"
+            exit 1
           fi
 
           native-image --version
-          if native-image --target=linux-armhf --version; then
-            echo "--target=linux-armhf is accepted"
-          else
-            echo "::warning::--target=linux-armhf was not accepted"
-          fi
+          native-image --target=linux-arm32 --version
+          echo "--target=linux-arm32 is accepted"
 
           # ARM32 ターゲット指定
-          # --target=linux-armhf を試みる (GraalVM native-image の標準的なクロスコンパイル指定方法)
-          PLATFORM_OPT=("--target=linux-armhf")
+          # Platform.ARM32.getArchitecture() が返す arm32 を指定する
+          PLATFORM_OPT=("--target=linux-arm32")
           echo "Using platform option: ${PLATFORM_OPT[@]}"
 
+          # ARM32クロスコンパイルではCAnnotationProcessorCache.UseCAPCacheが
+          # 自動的にtrueになる（クロスアーキテクチャビルド検出）。
+          # ExitAfterQueryCodeGenerationを使って ARM32用のC構造体クエリコードを生成し、
+          # arm-linux-gnueabihf-gcc+qemu-armで実行してARM32固有のCAPキャッシュを作成する。
+          NATIVE_IMAGE_HOME=$(cd "$(dirname "${NATIVE_IMAGE_BIN}")/../../.." && pwd)
+          mkdir -p /tmp/arm32-query /tmp/arm32-capcache
+
+          echo "=== Step 1: ARM32 CAPキャッシュ用クエリコードを生成 ==="
+          # ExitAfterQueryCodeGenerationは非ゼロで終了する（正常）
+          # QueryIfNotInCAPCache=true: キャッシュミス時にエラーを投げずにクエリコード生成フローに進む
+          # LLVMバックエンドオプションを含める必要がある（--target=linux-arm32に必須）
+          native-image \
+            -H:CompilerBackend=llvm \
+            -H:CLibraryPath="$GITHUB_WORKSPACE/arm32-static-libs" \
+            "${LLVM_TOOLCHAIN_OPT[@]}" \
+            "${LLVM_BACKEND_OPT[@]}" \
+            --target=linux-arm32 \
+            -H:-CheckToolchain \
+            -H:+ExitAfterQueryCodeGeneration \
+            -H:+QueryIfNotInCAPCache \
+            -H:QueryCodeDir=/tmp/arm32-query \
+            -H:CAPCacheDir=/tmp/arm32-capcache \
+            -H:+NewCAPCache \
+            -H:Name=babashka-arm32 \
+            -cp "$JAR_FILE" \
+            babashka.main 2>&1 || true
+
+          QUERY_C_COUNT=$(find /tmp/arm32-query -name "*.c" | wc -l)
+          echo "生成されたクエリファイル数: ${QUERY_C_COUNT}"
+
+          echo "=== Step 2: クエリコードをARM32でコンパイル・実行してキャッシュ生成 ==="
+          COMPILED=0
+          CACHED=0
+          FAILED=0
+          for qfile in /tmp/arm32-query/*.c; do
+            [ -f "$qfile" ] || continue
+            base=$(basename "$qfile" .c)
+
+            # ARM32クロスコンパイル（sysroot + GraalVM headers）
+            if arm-linux-gnueabihf-gcc \
+                "$qfile" \
+                --sysroot=/usr/arm-linux-gnueabihf \
+                -I/usr/arm-linux-gnueabihf/include \
+                -I"${NATIVE_IMAGE_HOME}/include" \
+                -I"${NATIVE_IMAGE_HOME}/lib/svm/clibraries/linux-arm32/include" \
+                -lm \
+                -o "/tmp/arm32-query/${base}" 2>/dev/null; then
+              COMPILED=$((COMPILED+1))
+              # qemu-armで実行してCAPキャッシュを生成
+              if qemu-arm -L /usr/arm-linux-gnueabihf \
+                  "/tmp/arm32-query/${base}" \
+                  > "/tmp/arm32-capcache/${base}.cap" 2>/dev/null; then
+                CACHED=$((CACHED+1))
+              else
+                FAILED=$((FAILED+1))
+                rm -f "/tmp/arm32-capcache/${base}.cap"
+              fi
+            else
+              FAILED=$((FAILED+1))
+            fi
+          done
+          echo "コンパイル成功: ${COMPILED}, キャッシュ生成: ${CACHED}, 失敗: ${FAILED}"
+          echo "CAPキャッシュファイル: $(find /tmp/arm32-capcache -name '*.cap' | wc -l) 件"
+
+          echo "=== Step 3: ARM32 native-imageビルド（CAPキャッシュ使用） ==="
           run_native_image() {
             set -o pipefail
             native-image \
               -H:CompilerBackend=llvm \
+              -H:CLibraryPath="$GITHUB_WORKSPACE/arm32-static-libs" \
+              -H:CAPCacheDir=/tmp/arm32-capcache \
+              -H:+QueryIfNotInCAPCache \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
-              --target=linux-armhf \
+              "${LLVM_BACKEND_OPT[@]}" \
+              --target=linux-arm32 \
+              -H:-CheckToolchain \
               --no-fallback \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
@@ -391,48 +527,23 @@ jobs:
               2>&1 | tee build-output.log
           }
 
-          if [ "${MAKE_RELEASE}" = "true" ]; then
-            echo "リリースビルド: native-image の成功を必須とします"
-            run_native_image
-          else
-            run_native_image || {
-              EXIT_CODE=$?
-              echo "::warning::ARM32 native-image ビルド失敗 (exit: $EXIT_CODE)"
-              echo "これは期待された状態です。ARM32 LLVM バックエンドの実装が完成したら"
-              echo "このワークフローを再実行してください。"
-              tail -50 build-output.log
-            }
-          fi
+          run_native_image
 
       - name: Test with qemu-arm
-        env:
-          MAKE_RELEASE: ${{ inputs.make_release }}
+        if: ${{ !inputs.skip_native_image }}
         run: |
+          set -euo pipefail
           echo "=== qemu-arm テスト ==="
-          if [ -f babashka-arm32 ]; then
-            echo "babashka-arm32 バイナリを qemu-arm でテスト中..."
-            ls -lh babashka-arm32
-            file babashka-arm32
-            if [ "${MAKE_RELEASE}" = "true" ]; then
-              echo "リリースビルド: qemu-arm テストの成功を必須とします"
-              qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version
-              qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
-                -e '(println "Hello from ARM32!")'
-            else
-              qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version || \
-                echo "::warning::qemu-arm --version テスト失敗"
-              qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
-                -e '(println "Hello from ARM32!")' || \
-                echo "::warning::Hello World テスト失敗"
-            fi
-          else
-            if [ "${MAKE_RELEASE}" = "true" ]; then
-              echo "Error: リリースビルドで babashka-arm32 バイナリが生成されていません"
-              exit 1
-            fi
-            echo "babashka-arm32 バイナリが存在しません"
-            echo "ARM32 native-image のビルドに成功した場合、ここで動作確認を行います"
+          if [ ! -f babashka-arm32 ]; then
+            echo "Error: babashka-arm32 バイナリが生成されていません"
+            exit 1
           fi
+          echo "babashka-arm32 バイナリを qemu-arm でテスト中..."
+          ls -lh babashka-arm32
+          file babashka-arm32
+          qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 --version
+          qemu-arm-static -L /usr/arm-linux-gnueabihf ./babashka-arm32 \
+            -e '(println "Hello from ARM32!")'
 
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
