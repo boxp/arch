@@ -79,7 +79,7 @@ jobs:
         with:
           repository: boxp/graal
           # ARM32 SubstrateVM + suite.py arm32モジュール登録済みコミットを固定（再現可能ビルドのため）
-          ref: a7640ec060740c952e951a057648d75d0748a0da
+          ref: 6407bae16ccd89e2d391c9c68ced75509109a1a8
           path: graal
           persist-credentials: false
 
