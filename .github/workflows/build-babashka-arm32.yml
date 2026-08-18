@@ -477,6 +477,10 @@ jobs:
           head -30 /tmp/arm32-query/*.c 2>/dev/null | head -50 || true
 
           echo "=== Step 2: クエリコードをARM32でコンパイル・実行してキャッシュ生成 ==="
+          # ARM32 GCCの内部インクルードパスを取得（unwind.h等が含まれる）
+          ARM_GCC_INCLUDES=$(arm-linux-gnueabihf-gcc --print-file-name=include 2>/dev/null || echo "")
+          echo "ARM GCC includes: ${ARM_GCC_INCLUDES}"
+
           COMPILED=0
           CACHED=0
           FAILED=0
@@ -484,13 +488,19 @@ jobs:
             [ -f "$qfile" ] || continue
             base=$(basename "$qfile" .c)
 
-            # ARM32クロスコンパイル（sysrootなし - Ubuntu cross-gcc は自動でsysrootを解決）
+            # ARM32クロスコンパイル
+            # - GraalVM include/linux: jni_md.h (JNI platform header)
+            # - ARM GCC internal includes: unwind.h, etc.
             echo "  Compiling: $base"
+            EXTRA_INCLUDES=()
+            [ -n "$ARM_GCC_INCLUDES" ] && EXTRA_INCLUDES+=("-I${ARM_GCC_INCLUDES}")
             if arm-linux-gnueabihf-gcc \
                 "$qfile" \
                 -I/usr/arm-linux-gnueabihf/include \
                 -I"${NATIVE_IMAGE_HOME}/include" \
+                -I"${NATIVE_IMAGE_HOME}/include/linux" \
                 -I"${NATIVE_IMAGE_HOME}/lib/svm/clibraries/linux-arm32/include" \
+                "${EXTRA_INCLUDES[@]}" \
                 -lm \
                 -o "/tmp/arm32-query/${base}" 2>/tmp/arm32-query/${base}.err; then
               COMPILED=$((COMPILED+1))
