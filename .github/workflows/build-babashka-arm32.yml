@@ -308,7 +308,7 @@ jobs:
             --with-extra-cxxflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
 
           set -o pipefail
-          make static-libs-image -j"$(nproc)" 2>&1 | tail -50
+          make JOBS="$(nproc)" static-libs-image 2>&1 | tail -50
 
           # static libs をコピー
           find build -name "*.a" -path "*/static-libs/*" -exec cp {} "$GITHUB_WORKSPACE/arm32-static-libs/" \;
