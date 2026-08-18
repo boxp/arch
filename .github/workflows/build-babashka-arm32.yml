@@ -220,46 +220,45 @@ jobs:
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: arm32-static-libs
-          key: arm32-static-libs-labsjdk-jvmci-25-3-b21-v1
+          key: arm32-static-libs-labsjdk-jvmci-25-3-b21-cross-v1
 
-      - name: Build ARM32 JDK static libs in QEMU Docker
+      - name: Build ARM32 JDK static libs (cross-compile on x86)
         if: steps.arm32-static-libs-cache.outputs.cache-hit != 'true'
-        timeout-minutes: 200
+        timeout-minutes: 90
         run: |
           set -euo pipefail
-          echo "=== QEMU ARM32 Docker コンテナで JDK static-libs-image をビルド ==="
+          echo "=== ARM32 JDK static libs を x86 でクロスコンパイル ==="
+          echo "QEMU Docker を使わず x86 ホスト上でクロスコンパイルする方式"
           mkdir -p "$GITHUB_WORKSPACE/arm32-static-libs"
-          docker run --platform linux/arm/v7 --rm \
-            -v "$GITHUB_WORKSPACE/arm32-static-libs:/output" \
-            ubuntu:22.04 \
-            bash -c "
-              set -euo pipefail
-              apt-get update -q
-              apt-get install -y \
-                build-essential autoconf zip unzip wget git \
-                libx11-dev libxext-dev libxrender-dev libxrandr-dev libxtst-dev libxt-dev \
-                libcups2-dev libfontconfig1-dev libfreetype6-dev libasound2-dev libpng-dev \
-                openjdk-21-jdk
-              BOOT_JDK=\$(dirname \$(dirname \$(readlink -f \$(which javac))))
-              echo \"Boot JDK: \$BOOT_JDK\"
-              wget -q -O labsjdk.tar.gz \
-                'https://github.com/graalvm/labs-openjdk/archive/refs/tags/jvmci-25.3-b21.tar.gz'
-              tar xzf labsjdk.tar.gz
-              cd labs-openjdk-jvmci-25.3-b21
-              bash configure \
-                --with-boot-jdk=\"\$BOOT_JDK\" \
-                --disable-warnings-as-errors \
-                --with-jvm-variants=server \
-                --with-debug-level=release \
-                --disable-precompiled-headers \
-                2>&1 | tail -20
-              make static-libs-image -j\$(nproc) 2>&1 | tail -50
-              find build -name '*.a' -exec cp {} /output/ \;
-              echo 'Built static libs:'
-              ls /output/
-            "
-          echo "=== ARM32 static libs ビルド完了 ==="
-          ls arm32-static-libs/
+
+          # labs-openjdk ソースを取得 (ARM32 static libs ビルド用)
+          git clone --depth 1 \
+            --branch jvmci-25.3-b21 \
+            https://github.com/graalvm/labs-openjdk.git labsjdk-src-arm32
+
+          cd labsjdk-src-arm32
+
+          # ARM32 向けクロスコンパイル設定
+          # --openjdk-target: ARM32 (armhf) をターゲットに指定
+          # --with-boot-jdk: ホスト用 JDK (labs-openjdk jvmci-25.3-b21 / JDK 25)
+          # クロスコンパイルのため ARM32 ブート JDK は不要
+          bash configure \
+            --with-boot-jdk="$BOOT_JDK" \
+            --openjdk-target=arm-linux-gnueabihf \
+            --with-jvm-variants=server \
+            --with-debug-level=release \
+            --disable-warnings-as-errors \
+            --disable-precompiled-headers \
+            --with-extra-cflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard" \
+            --with-extra-cxxflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
+
+          set -o pipefail
+          make static-libs-image -j"$(nproc)" 2>&1 | tail -50
+
+          # static libs をコピー
+          find build -name "*.a" -path "*/static-libs/*" -exec cp {} "$GITHUB_WORKSPACE/arm32-static-libs/" \;
+          echo "ARM32 static libs ビルド完了:"
+          ls "$GITHUB_WORKSPACE/arm32-static-libs/"
 
       - name: Build native-image from boxp/graal source
         run: |
