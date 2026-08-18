@@ -86,6 +86,11 @@ jobs:
       - name: Install cross-compilation tools and LLVM 17
         run: |
           set -euo pipefail
+          # ARM32 クロスコンパイル用に armhf マルチアーキテクチャを追加
+          sudo dpkg --add-architecture armhf
+          # ports.ubuntu.com から armhf パッケージを取得するソースを追加
+          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse" \
+            | sudo tee /etc/apt/sources.list.d/armhf-ports.list
           sudo apt-get update -q
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf \
@@ -104,7 +109,17 @@ jobs:
             lld-17 \
             llvm-17-dev \
             cmake \
-            ninja-build
+            ninja-build \
+            libasound2-dev:armhf \
+            libfontconfig1-dev:armhf \
+            libfreetype6-dev:armhf \
+            libcups2-dev:armhf \
+            libx11-dev:armhf \
+            libxext-dev:armhf \
+            libxrender-dev:armhf \
+            libxrandr-dev:armhf \
+            libxtst-dev:armhf \
+            libxt-dev:armhf
           # llvm-config-17 へのシンボリックリンクを確認
           if ! command -v llvm-config-17 >/dev/null 2>&1; then
             ls /usr/bin/llvm-config*
@@ -242,6 +257,8 @@ jobs:
           # --openjdk-target: ARM32 (armhf) をターゲットに指定
           # --with-boot-jdk: ホスト用 JDK (labs-openjdk jvmci-25.3-b21 / JDK 25)
           # クロスコンパイルのため ARM32 ブート JDK は不要
+          # dpkg multiarch で /usr/lib/arm-linux-gnueabihf/ に armhf ライブラリがインストール済み
+          ARMHF_SYSROOT="/usr/arm-linux-gnueabihf"
           bash configure \
             --with-boot-jdk="$BOOT_JDK" \
             --openjdk-target=arm-linux-gnueabihf \
@@ -249,6 +266,11 @@ jobs:
             --with-debug-level=release \
             --disable-warnings-as-errors \
             --disable-precompiled-headers \
+            --with-alsa=/usr \
+            --with-fontconfig=/usr \
+            --with-freetype=/usr \
+            --with-cups=/usr \
+            --with-x=/usr \
             --with-extra-cflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard" \
             --with-extra-cxxflags="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
 
