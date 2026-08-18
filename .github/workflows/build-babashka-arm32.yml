@@ -88,9 +88,39 @@ jobs:
           set -euo pipefail
           # ARM32 クロスコンパイル用に armhf マルチアーキテクチャを追加
           sudo dpkg --add-architecture armhf
+
+          # security.ubuntu.com は armhf パッケージを提供していないため、
+          # 既存の apt ソースを amd64 専用に制限する。
+          # Ubuntu Noble (24.04) は DEB822 形式と legacy 形式の両方が存在する可能性がある。
+
+          # DEB822 形式 (ubuntu.sources) の処理
+          for sources_file in /etc/apt/sources.list.d/*.sources; do
+            if [ -f "$sources_file" ]; then
+              if ! grep -q "^Architectures:" "$sources_file"; then
+                sudo sed -i '/^Types: deb/a Architectures: amd64 i386' "$sources_file"
+              fi
+            fi
+          done
+
+          # legacy .list 形式の処理: security.ubuntu.com を amd64 に制限
+          if [ -f /etc/apt/sources.list ]; then
+            sudo sed -i 's|^deb https://security.ubuntu.com|deb [arch=amd64] https://security.ubuntu.com|g' \
+              /etc/apt/sources.list
+          fi
+          for list_file in /etc/apt/sources.list.d/*.list; do
+            if [ -f "$list_file" ]; then
+              sudo sed -i 's|^deb https\?://[^ ]*ubuntu\.com|deb [arch=amd64] &|g; s|\[arch=amd64\] deb |deb [arch=amd64] |g' \
+                "$list_file" 2>/dev/null || true
+            fi
+          done
+
           # ports.ubuntu.com から armhf パッケージを取得するソースを追加
-          echo "deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe multiverse" \
-            | sudo tee /etc/apt/sources.list.d/armhf-ports.list
+          cat << 'SOURCES_EOF' | sudo tee /etc/apt/sources.list.d/armhf-ports.list
+deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble main restricted universe
+deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-updates main restricted universe
+deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe
+SOURCES_EOF
+
           sudo apt-get update -q
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf \
