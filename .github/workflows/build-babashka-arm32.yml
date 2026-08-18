@@ -79,7 +79,7 @@ jobs:
         with:
           repository: boxp/graal
           # ARM32 SubstrateVM + suite.py arm32モジュール登録済みコミットを固定（再現可能ビルドのため）
-          ref: a606ae00e6fb1e6318750a2b2ca6cade23027600
+          ref: 81bf02941a33513bdb8e41212ae01784516e2183
           path: graal
           persist-credentials: false
 
@@ -445,16 +445,89 @@ jobs:
 
           # ARM32クロスコンパイルではCAnnotationProcessorCache.UseCAPCacheが
           # 自動的にtrueになる（クロスアーキテクチャビルド検出）。
-          # NewCAPCache+QueryIfNotInCAPCacheを使って、ARM32向けC構造体サイズを
-          # binfmt_misc経由のqemu-armで透過的に計算・キャッシュさせる。
-          mkdir -p /tmp/arm32-capcache
+          # ExitAfterQueryCodeGenerationを使って ARM32用のC構造体クエリコードを生成し、
+          # arm-linux-gnueabihf-gcc+qemu-armで実行してARM32固有のCAPキャッシュを作成する。
+          NATIVE_IMAGE_HOME=$(cd "$(dirname "${NATIVE_IMAGE_BIN}")/../../.." && pwd)
+          mkdir -p /tmp/arm32-query /tmp/arm32-capcache
 
+          echo "=== Step 1: ARM32 CAPキャッシュ用クエリコードを生成 ==="
+          # ExitAfterQueryCodeGenerationは非ゼロで終了する（正常）
+          # QueryIfNotInCAPCache=true: キャッシュミス時にエラーを投げずにクエリコード生成フローに進む
+          # LLVMバックエンドオプションを含める必要がある（--target=linux-arm32に必須）
+          native-image \
+            -H:CompilerBackend=llvm \
+            -H:CLibraryPath="$GITHUB_WORKSPACE/arm32-static-libs" \
+            "${LLVM_TOOLCHAIN_OPT[@]}" \
+            "${LLVM_BACKEND_OPT[@]}" \
+            --target=linux-arm32 \
+            -H:-CheckToolchain \
+            -H:+ExitAfterQueryCodeGeneration \
+            -H:+QueryIfNotInCAPCache \
+            -H:QueryCodeDir=/tmp/arm32-query \
+            -H:CAPCacheDir=/tmp/arm32-capcache \
+            -H:+NewCAPCache \
+            -H:Name=babashka-arm32 \
+            -cp "$JAR_FILE" \
+            babashka.main 2>&1 || true
+
+          QUERY_C_COUNT=$(find /tmp/arm32-query -name "*.c" | wc -l)
+          echo "生成されたクエリファイル数: ${QUERY_C_COUNT}"
+          ls /tmp/arm32-query/*.c 2>/dev/null || true
+          # 最初のクエリファイルの内容を表示（デバッグ用）
+          head -30 /tmp/arm32-query/*.c 2>/dev/null | head -50 || true
+
+          echo "=== Step 2: クエリコードをARM32でコンパイル・実行してキャッシュ生成 ==="
+          # ARM32 GCCの内部インクルードパスを取得（unwind.h等が含まれる）
+          ARM_GCC_INCLUDES=$(arm-linux-gnueabihf-gcc --print-file-name=include 2>/dev/null || echo "")
+          echo "ARM GCC includes: ${ARM_GCC_INCLUDES}"
+
+          COMPILED=0
+          CACHED=0
+          FAILED=0
+          for qfile in /tmp/arm32-query/*.c; do
+            [ -f "$qfile" ] || continue
+            base=$(basename "$qfile" .c)
+
+            # ARM32クロスコンパイル
+            # - GraalVM include/linux: jni_md.h (JNI platform header)
+            # - ARM GCC internal includes: unwind.h, etc.
+            echo "  Compiling: $base"
+            EXTRA_INCLUDES=()
+            [ -n "$ARM_GCC_INCLUDES" ] && EXTRA_INCLUDES+=("-I${ARM_GCC_INCLUDES}")
+            if arm-linux-gnueabihf-gcc \
+                "$qfile" \
+                -I/usr/arm-linux-gnueabihf/include \
+                -I"${NATIVE_IMAGE_HOME}/include" \
+                -I"${NATIVE_IMAGE_HOME}/include/linux" \
+                -I"${NATIVE_IMAGE_HOME}/lib/svm/clibraries/linux-arm32/include" \
+                "${EXTRA_INCLUDES[@]}" \
+                -lm \
+                -o "/tmp/arm32-query/${base}" 2>/tmp/arm32-query/${base}.err; then
+              COMPILED=$((COMPILED+1))
+              # qemu-armで実行してCAPキャッシュを生成
+              if qemu-arm -L /usr/arm-linux-gnueabihf \
+                  "/tmp/arm32-query/${base}" \
+                  > "/tmp/arm32-capcache/${base}.cap" 2>/dev/null; then
+                CACHED=$((CACHED+1))
+              else
+                FAILED=$((FAILED+1))
+                rm -f "/tmp/arm32-capcache/${base}.cap"
+              fi
+            else
+              FAILED=$((FAILED+1))
+              echo "  Compile error for $base:"
+              cat /tmp/arm32-query/${base}.err 2>/dev/null || true
+            fi
+          done
+          echo "コンパイル成功: ${COMPILED}, キャッシュ生成: ${CACHED}, 失敗: ${FAILED}"
+          echo "CAPキャッシュファイル: $(find /tmp/arm32-capcache -name '*.cap' | wc -l) 件"
+
+          echo "=== Step 3: ARM32 native-imageビルド（CAPキャッシュ使用） ==="
           run_native_image() {
             set -o pipefail
             native-image \
               -H:CompilerBackend=llvm \
               -H:CLibraryPath="$GITHUB_WORKSPACE/arm32-static-libs" \
-              -H:+NewCAPCache \
               -H:CAPCacheDir=/tmp/arm32-capcache \
               -H:+QueryIfNotInCAPCache \
               "${LLVM_TOOLCHAIN_OPT[@]}" \
@@ -462,6 +535,7 @@ jobs:
               --target=linux-arm32 \
               -H:-CheckToolchain \
               --no-fallback \
+              -H:-ForeignAPISupport \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
               -cp "$JAR_FILE" \
