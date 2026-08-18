@@ -465,7 +465,7 @@ jobs:
             -H:+NewCAPCache \
             -H:Name=babashka-arm32 \
             -cp "$JAR_FILE" \
-            babashka.main 2>&1 | tail -10 || true
+            babashka.main 2>&1 || true
 
           QUERY_C_COUNT=$(find /tmp/arm32-query -name "*.c" | wc -l)
           echo "生成されたクエリファイル数: ${QUERY_C_COUNT}"
