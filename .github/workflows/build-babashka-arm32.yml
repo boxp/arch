@@ -472,6 +472,9 @@ jobs:
 
           QUERY_C_COUNT=$(find /tmp/arm32-query -name "*.c" | wc -l)
           echo "生成されたクエリファイル数: ${QUERY_C_COUNT}"
+          ls /tmp/arm32-query/*.c 2>/dev/null || true
+          # 最初のクエリファイルの内容を表示（デバッグ用）
+          head -30 /tmp/arm32-query/*.c 2>/dev/null | head -50 || true
 
           echo "=== Step 2: クエリコードをARM32でコンパイル・実行してキャッシュ生成 ==="
           COMPILED=0
@@ -482,6 +485,7 @@ jobs:
             base=$(basename "$qfile" .c)
 
             # ARM32クロスコンパイル（sysroot + GraalVM headers）
+            echo "  Compiling: $base"
             if arm-linux-gnueabihf-gcc \
                 "$qfile" \
                 --sysroot=/usr/arm-linux-gnueabihf \
@@ -489,7 +493,7 @@ jobs:
                 -I"${NATIVE_IMAGE_HOME}/include" \
                 -I"${NATIVE_IMAGE_HOME}/lib/svm/clibraries/linux-arm32/include" \
                 -lm \
-                -o "/tmp/arm32-query/${base}" 2>/dev/null; then
+                -o "/tmp/arm32-query/${base}" 2>/tmp/arm32-query/${base}.err; then
               COMPILED=$((COMPILED+1))
               # qemu-armで実行してCAPキャッシュを生成
               if qemu-arm -L /usr/arm-linux-gnueabihf \
@@ -502,6 +506,8 @@ jobs:
               fi
             else
               FAILED=$((FAILED+1))
+              echo "  Compile error for $base:"
+              head -5 /tmp/arm32-query/${base}.err 2>/dev/null || true
             fi
           done
           echo "コンパイル成功: ${COMPILED}, キャッシュ生成: ${CACHED}, 失敗: ${FAILED}"
