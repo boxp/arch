@@ -1563,6 +1563,7 @@ test_review_with_draft_pr_is_retried() {
   assert_file_contains "${vault}/Tickets/BOXP-408.md" '^assignee: codex$'
   assert_file_contains "${vault}/Tickets/BOXP-408.md" 'Review gate failed \(mergeability\)'
   assert_file_contains "${vault}/Tickets/BOXP-408.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_contains "${vault}/Tickets/BOXP-408.md" 'Safe diagnostic: .*/pr-gate-diagnostic\.edn \(category=mergeability; detail=The PR is not mergeable yet\.'
   assert_file_not_contains "${vault}/Tickets/BOXP-408.md" 'still a draft'
 
   PATH="${bin}:$PATH" GH_FAKE_IS_DRAFT=true CODEX_FAKE_PROMPT_LOG="${prompt_log}" CODEX_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-review-draft-retry-prompt.out
@@ -1571,6 +1572,7 @@ test_review_with_draft_pr_is_retried() {
   assert_file_contains "${prompt_log}" 'Target PR URL: https://github.com/boxp/example/pull/123'
   assert_file_contains "${prompt_log}" 'Failed gate: mergeability'
   assert_file_contains "${prompt_log}" 'Failure reason: PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_contains "${prompt_log}" 'Safe diagnostic: .*/pr-gate-diagnostic\.edn \(category=mergeability; detail=The PR is not mergeable yet\.'
   assert_file_contains "${prompt_log}" 'Previous run summary: .*/summary.edn'
   assert_file_contains "${prompt_log}" 'Expected completion state: update the same PR'
 }
@@ -1597,7 +1599,7 @@ test_review_with_behind_merge_state_times_out() {
 }
 
 test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes() {
-  local tmp vault state bin
+  local tmp vault state bin diagnostic
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -1612,8 +1614,15 @@ test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-454\|BOXP-454: retry note redaction\]\].*status::in-progress'
   assert_file_contains "${vault}/Tickets/BOXP-454.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_contains "${vault}/Tickets/BOXP-454.md" 'category=ci-check-failure; detail=One or more required CI checks failed\.'
   assert_file_not_contains "${vault}/Tickets/BOXP-454.md" 'super-secret-token'
   assert_file_not_contains "${vault}/Tickets/BOXP-454.md" 'unit-token='
+  assert_run_summary_contains "${state}" BOXP-454 ':diagnostic \{:path ".*/pr-gate-diagnostic\.edn", :category "ci-check-failure"'
+  diagnostic="$(find "${state}/runs/BOXP-454" -name pr-gate-diagnostic.edn -print | head -n 1)"
+  [[ -n "${diagnostic}" ]] || fail "expected a safe PR gate diagnostic artifact"
+  assert_file_contains "${diagnostic}" ':category "ci-check-failure"'
+  assert_file_not_contains "${diagnostic}" 'super-secret-token'
+  assert_file_not_contains "${diagnostic}" 'unit-token='
 }
 
 test_review_gate_retry_limit_blocks() {

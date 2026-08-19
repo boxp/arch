@@ -822,7 +822,41 @@
   ;; structured status so run summaries and retry state never copy secrets.
   (select-keys review-gate [:ok? :gate :url :retryable? :retry-count
                             :retry-limit :retry-exhausted? :checked-pr-urls
-                            :pr-urls]))
+                            :pr-urls :diagnostic]))
+
+(defn pr-gate-diagnostic [review-gate]
+  ;; A gate's :message may contain gh stderr or review-agent text.  Keep a
+  ;; useful but entirely derived diagnosis: it identifies the failing class
+  ;; and next action without retaining any untrusted diagnostic text.
+  (let [gate (:gate review-gate)]
+    {:format-version 1
+     :gate (some-> gate name)
+     :pr-url (:url review-gate)
+     :category (case gate
+                 :ci "ci-check-failure"
+                 :mergeability "mergeability"
+                 :conflict "merge-conflict"
+                 :codex-review "codex-review-findings"
+                 :pr-url "missing-pr-url"
+                 :pr-gate "pr-gate-api-error"
+                 "pr-gate-failure")
+     :detail (case gate
+               :ci "One or more required CI checks failed. Inspect the PR checks."
+               :mergeability "The PR is not mergeable yet. Inspect its merge state."
+               :conflict "The PR has merge conflicts. Resolve conflicts and update the PR."
+               :codex-review "Codex review reported actionable findings. Inspect the review artifact."
+               :pr-url "Review was requested without a GitHub PR URL."
+               :pr-gate "PR gate evaluation failed. Re-run the gate after checking GitHub availability."
+               "PR gate failed; inspect the PR and referenced run artifacts.")}))
+
+(defn persist-pr-gate-diagnostic! [ticket-id run-id review-gate]
+  (when (and (not (:ok? review-gate)) (:gate review-gate))
+    (let [path (fs/path (run-dir ticket-id run-id) "pr-gate-diagnostic.edn")
+          diagnostic (assoc (pr-gate-diagnostic review-gate) :recorded-at (now-str))]
+      (write-edn-file! path diagnostic)
+      {:path (str path)
+       :category (:category diagnostic)
+       :detail (:detail diagnostic)})))
 
 (defn persisted-review-gate-reason [review-gate]
   (cond
@@ -850,11 +884,14 @@
            last))))
 
 (defn pr-gate-retry-prompt [ticket-id]
-  (when-let [{:keys [pr-url gate message run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
+  (when-let [{:keys [pr-url gate message diagnostic run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
     (str "Pending PR gate retry instruction:\n"
          "- Target PR URL: " pr-url "\n"
          "- Failed gate: " gate "\n"
          "- Failure reason: " message "\n"
+         (when diagnostic
+           (str "- Safe diagnostic: " (:path diagnostic)
+                " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ")\n"))
          "- Retry agent: " (or agent "codex") "\n"
          "- Retry count for this same PR/gate/reason: " count "/" limit "\n"
          "- Previous run summary: " run-dir "/summary.edn\n"
@@ -871,6 +908,7 @@
         record {:pr-url (:url review-gate)
                 :gate (some-> (:gate review-gate) name)
                 :message (persisted-review-gate-reason review-gate)
+                :diagnostic (:diagnostic review-gate)
                 :run-id run-id
                 :run-dir (str (run-dir ticket-id run-id))
                 :agent agent
@@ -1549,7 +1587,10 @@
              (str " (" (name gate) ")"))
            (when-let [url (:url review-gate)]
              (str " for " url))
-           ": " (persisted-review-gate-reason review-gate))
+           ": " (persisted-review-gate-reason review-gate)
+           (when-let [diagnostic (:diagnostic review-gate)]
+             (str " Safe diagnostic: " (:path diagnostic)
+                  " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ").")))
 
       (and (= "in-progress" next-status)
            (not (:ok? review-gate))
@@ -1560,6 +1601,9 @@
            (when-let [url (:url review-gate)]
              (str " for " url))
            ": " (persisted-review-gate-reason review-gate)
+           (when-let [diagnostic (:diagnostic review-gate)]
+             (str " Safe diagnostic: " (:path diagnostic)
+                  " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ")."))
            " Retrying with Codex instruction "
            (:retry-count review-gate) "/" (:retry-limit review-gate) ".")
 
@@ -1682,7 +1726,9 @@
                                (#{"done" "review" "blocked"} result) result
                                :else "review")
                     review-gate (if (= "review" intended)
-                                  (let [gate-result (review-gate! dir last-message)]
+                                  (let [gate-result (review-gate! dir last-message)
+                                        gate-result (assoc gate-result :diagnostic
+                                                           (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
                                     (if (and (not (:ok? gate-result))
                                              (:retryable? gate-result))
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
