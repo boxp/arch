@@ -1585,7 +1585,28 @@ test_review_with_behind_merge_state_times_out() {
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-409\|BOXP-409: behind\]\].*status::in-progress'
   assert_file_contains "${vault}/Tickets/BOXP-409.md" '^status: in-progress$'
   assert_file_contains "${vault}/Tickets/BOXP-409.md" 'Review gate failed \(mergeability\)'
-  assert_file_contains "${vault}/Tickets/BOXP-409.md" 'mergeStateStatus=BEHIND'
+  assert_file_contains "${vault}/Tickets/BOXP-409.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-409.md" 'mergeStateStatus=BEHIND'
+}
+
+test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-454|BOXP-454: retry note redaction]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-454 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit-token=super-secret-token","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-retry-note-redaction.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-454\|BOXP-454: retry note redaction\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-454.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-454.md" 'super-secret-token'
+  assert_file_not_contains "${vault}/Tickets/BOXP-454.md" 'unit-token='
 }
 
 test_review_gate_retry_limit_blocks() {
@@ -2042,6 +2063,7 @@ test_no_ci_repo_requires_clean_merge_state
 test_canonical_path_hash_symlink_isolation
 test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
+test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes
 test_review_gate_retry_limit_blocks
 test_review_gate_retry_limit_is_scoped_to_failure_reason
 test_review_gate_pass_after_retry_moves_review

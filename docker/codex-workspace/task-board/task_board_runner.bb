@@ -1549,7 +1549,7 @@
              (str " (" (name gate) ")"))
            (when-let [url (:url review-gate)]
              (str " for " url))
-           ": " (:message review-gate))
+           ": " (persisted-review-gate-reason review-gate))
 
       (and (= "in-progress" next-status)
            (not (:ok? review-gate))
@@ -1559,7 +1559,7 @@
              (str " (" (name gate) ")"))
            (when-let [url (:url review-gate)]
              (str " for " url))
-           ": " (:message review-gate)
+           ": " (persisted-review-gate-reason review-gate)
            " Retrying with Codex instruction "
            (:retry-count review-gate) "/" (:retry-limit review-gate) ".")
 
