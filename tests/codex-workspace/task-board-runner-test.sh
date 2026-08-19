@@ -1613,6 +1613,29 @@ test_review_gate_retry_limit_blocks() {
   assert_run_summary_contains "${state}" BOXP-414 ':retry-exhausted\? true'
 }
 
+test_review_gate_retry_limit_is_scoped_to_failure_reason() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-453|BOXP-453: retry reason scope]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-453 in-progress codex boxp/example
+
+  # Two identical failures consume their own budget. A distinct CI failure
+  # must start at 1/2 instead of incorrectly blocking on the third run.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=2 GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-retry-reason-unit-1.out
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=2 GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-retry-reason-unit-2.out
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=2 GH_FAKE_CHECKS='[{"name":"integration","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-retry-reason-integration.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-453\|BOXP-453: retry reason scope\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-453.md" 'Retrying with Codex instruction 1/2'
+  assert_file_not_contains "${vault}/Tickets/BOXP-453.md" 'category=pr-gate-retry-limit'
+}
+
 test_review_gate_pass_after_retry_moves_review() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -2020,6 +2043,7 @@ test_canonical_path_hash_symlink_isolation
 test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
 test_review_gate_retry_limit_blocks
+test_review_gate_retry_limit_is_scoped_to_failure_reason
 test_review_gate_pass_after_retry_moves_review
 test_groom_prompt_contains_investigation_steps
 test_implement_prompt_includes_append_note

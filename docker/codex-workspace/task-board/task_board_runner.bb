@@ -831,8 +831,16 @@
     :else "reason unavailable"))
 
 (defn retry-fingerprint [review-gate]
-  ;; Do not use the diagnostic message here: this key is persisted in state.
-  (str (:url review-gate) "|" (some-> (:gate review-gate) name)))
+  ;; The key is persisted in state, so retain no diagnostic text.  Its digest
+  ;; still distinguishes separate failures of the same PR gate, preventing a
+  ;; new failure from consuming the retry budget of an earlier one.
+  (let [digest (java.security.MessageDigest/getInstance "SHA-256")
+        reason (str (or (:message review-gate) "reason unavailable"))
+        reason-hash (->> (.digest digest (.getBytes reason "UTF-8"))
+                         (map #(format "%02x" (bit-and 0xff %)))
+                         (apply str))]
+    (str (:url review-gate) "|" (some-> (:gate review-gate) name)
+         "|" reason-hash)))
 
 (defn latest-pr-gate-retry [ticket-id]
   (let [retries (get-in (runner-state) [:pr-gate-retries ticket-id])]
