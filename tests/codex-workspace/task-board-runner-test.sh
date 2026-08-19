@@ -1076,6 +1076,7 @@ test_fable_reported_blocked_is_audited() {
   assert_file_contains "${vault}/Tickets/BOXP-302.md" 'reason=Agent returned TASK_BOARD_RESULT: blocked'
   assert_file_not_contains "${vault}/Tickets/BOXP-302.md" 'do-not-expose'
   assert_file_contains "${vault}/Tickets/BOXP-302.md" 'inspect run artifacts:'
+  assert_run_summary_contains "${state}" BOXP-302 ':status :blocked'
 }
 
 test_blocker_note_failure_keeps_current_lane() {
@@ -1116,6 +1117,7 @@ test_runner_internal_error_is_audited() {
   assert_file_contains "${vault}/Tickets/BOXP-304.md" 'reason=forced runner internal error token=\[REDACTED\]'
   assert_file_not_contains "${vault}/Tickets/BOXP-304.md" 'super-secret-token'
   assert_file_contains "${vault}/Tickets/BOXP-304.md" 'inspect run artifacts:'
+  assert_run_summary_contains "${state}" BOXP-304 ':status :blocked'
 }
 
 test_blocker_reason_redacts_github_pat_and_spaced_api_key() {

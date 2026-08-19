@@ -1610,6 +1610,16 @@
 
 (defn block-ticket! [ticket-id run-id action result exit review-gate exception]
   (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
+    ;; run-agent! records a zero-exit agent as succeeded before its result is
+    ;; interpreted. Correct that provisional status whenever the final
+    ;; transition is Blocked so the referenced summary matches the Notes.
+    (mark-run! ticket-id run-id :blocked
+               {:action action
+                :exit-code exit
+                :result result
+                :review-gate review-gate
+                :blocker-category (blocker-category result exit review-gate exception)
+                :finished-at (now-str)})
     (move-card! ticket-id "blocked")
     (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
     true))
