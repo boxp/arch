@@ -860,7 +860,7 @@
 
 (defn persisted-review-gate-reason [review-gate]
   (cond
-    (:ok? review-gate) "PR gates passed."
+    (:ok? review-gate) "Review gates passed."
     (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
     :else "reason unavailable"))
 

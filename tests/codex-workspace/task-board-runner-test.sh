@@ -1391,7 +1391,7 @@ test_review_with_multiple_pr_urls_checks_all() {
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-410\|BOXP-410: multiple prs\]\].*status::review'
   assert_file_contains "${vault}/Tickets/BOXP-410.md" '^status: review$'
   assert_file_contains "${vault}/Tickets/BOXP-410.md" 'PR: https://github.com/boxp/example/pull/123, https://github.com/boxp/example/pull/456'
-  assert_file_contains "${vault}/Tickets/BOXP-410.md" 'PR gates passed\.'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" 'Review gates passed\.'
   assert_file_not_contains "${vault}/Tickets/BOXP-410.md" 'GitHub mergeStateStatus'
   summary="$(find "${state}/runs/BOXP-410" -name summary.edn -print | sort | tail -n 1)"
   assert_file_contains "${summary}" ':checked-pr-urls \["https://github.com/boxp/example/pull/123" "https://github.com/boxp/example/pull/456"\]'
