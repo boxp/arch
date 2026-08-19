@@ -817,8 +817,22 @@
 (defn pr-gate-retry-limit []
   (env-long "CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT" "2"))
 
+(defn persisted-review-gate [review-gate]
+  ;; Gate results can contain CLI stderr or review-agent text. Persist only
+  ;; structured status so run summaries and retry state never copy secrets.
+  (select-keys review-gate [:ok? :gate :url :retryable? :retry-count
+                            :retry-limit :retry-exhausted? :checked-pr-urls
+                            :pr-urls]))
+
+(defn persisted-review-gate-reason [review-gate]
+  (cond
+    (:ok? review-gate) "PR gates passed."
+    (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
+    :else "reason unavailable"))
+
 (defn retry-fingerprint [review-gate]
-  (str (:url review-gate) "|" (some-> (:gate review-gate) name) "|" (:message review-gate)))
+  ;; Do not use the diagnostic message here: this key is persisted in state.
+  (str (:url review-gate) "|" (some-> (:gate review-gate) name)))
 
 (defn latest-pr-gate-retry [ticket-id]
   (let [retries (get-in (runner-state) [:pr-gate-retries ticket-id])]
@@ -848,7 +862,7 @@
         count (inc (long (or (:count current) 0)))
         record {:pr-url (:url review-gate)
                 :gate (some-> (:gate review-gate) name)
-                :message (:message review-gate)
+                :message (persisted-review-gate-reason review-gate)
                 :run-id run-id
                 :run-dir (str (run-dir ticket-id run-id))
                 :agent agent
@@ -1622,7 +1636,7 @@
                {:action action
                 :exit-code exit
                 :result result
-                :review-gate review-gate
+                :review-gate (persisted-review-gate review-gate)
                 :blocker-category (blocker-category result exit review-gate exception)
                 :blocker-reason (blocker-safe-reason result exit review-gate exception)
                 :finished-at (now-str)})
@@ -1688,7 +1702,7 @@
                               :lane effective-lane
                               :exit-code exit
                               :result result
-                              :review-gate review-gate
+                              :review-gate (persisted-review-gate review-gate)
                               :finished-at (now-str)}))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))

@@ -1239,6 +1239,8 @@ test_pr_gate_api_failure_is_audited() {
   assert_file_contains "${vault}/Tickets/BOXP-417.md" 'reason='
   assert_file_not_contains "${vault}/Tickets/BOXP-417.md" 'super-secret-token'
   assert_file_contains "${vault}/Tickets/BOXP-417.md" 'inspect run artifacts:'
+  assert_run_summary_contains "${state}" BOXP-417 ':gate :pr-gate'
+  assert_file_not_contains "$(find "${state}/runs/BOXP-417" -name summary.edn -print | sort | tail -n 1)" 'super-secret-token'
 }
 
 test_fable_review_gate_retry_keeps_fable_assignee() {
