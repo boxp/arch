@@ -1563,7 +1563,7 @@ test_review_with_draft_pr_is_retried() {
   assert_file_contains "${prompt_log}" 'Pending PR gate retry instruction'
   assert_file_contains "${prompt_log}" 'Target PR URL: https://github.com/boxp/example/pull/123'
   assert_file_contains "${prompt_log}" 'Failed gate: mergeability'
-  assert_file_contains "${prompt_log}" 'Failure reason: GitHub reports this PR is still a draft'
+  assert_file_contains "${prompt_log}" 'Failure reason: PR gate failed; inspect the referenced run artifacts\.'
   assert_file_contains "${prompt_log}" 'Previous run summary: .*/summary.edn'
   assert_file_contains "${prompt_log}" 'Expected completion state: update the same PR'
 }
