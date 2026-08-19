@@ -85,7 +85,7 @@ jobs:
 
       - name: Check ARM32 JDK static libs cache (early, before apt-get)
         id: arm32-static-libs-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: arm32-static-libs
           key: arm32-static-libs-labsjdk-jvmci-25-3-b21-cross-v1
@@ -214,7 +214,7 @@ jobs:
 
       - name: Cache boxp/llvm-project build
         id: llvm-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: llvm-project/build
           key: llvm-arm32-statepoints-${{ hashFiles('llvm-project/llvm/lib/Target/ARM/ARMAsmPrinter.cpp', 'llvm-project/llvm/lib/Target/ARM/ARMAsmPrinter.h') }}
