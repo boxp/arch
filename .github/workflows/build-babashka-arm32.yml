@@ -84,6 +84,7 @@ jobs:
           persist-credentials: false
 
       - name: Install cross-compilation tools and LLVM 17
+        timeout-minutes: 25
         run: |
           set -euo pipefail
           # ARM32 クロスコンパイル用に armhf マルチアーキテクチャを追加
@@ -121,8 +122,15 @@ jobs:
             'deb [arch=armhf] http://ports.ubuntu.com/ubuntu-ports noble-security main restricted universe' \
             | sudo tee /etc/apt/sources.list.d/armhf-ports.list > /dev/null
 
-          sudo apt-get update -q
-          sudo apt-get install -y \
+          # apt-get update をリトライ付きで実行
+          for i in 1 2 3; do
+            sudo apt-get update -q -o Acquire::Retries=3 -o Acquire::http::Timeout=30 && break
+            echo "apt-get update 失敗 (試行 $i/3)、リトライ中..."
+            sleep 10
+          done
+
+          # amd64 パッケージを先にインストール（通常の Ubuntu mirrors から取得）
+          sudo apt-get install -y -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
             libc6-dev-armhf-cross \
@@ -139,18 +147,26 @@ jobs:
             lld-17 \
             llvm-17-dev \
             cmake \
-            ninja-build \
-            libasound2-dev:armhf \
-            libfontconfig1-dev:armhf \
-            libfreetype6-dev:armhf \
-            libcups2-dev:armhf \
-            libx11-dev:armhf \
-            libxext-dev:armhf \
-            libxrender-dev:armhf \
-            libxrandr-dev:armhf \
-            libxtst-dev:armhf \
-            libxt-dev:armhf \
-            libffi-dev:armhf
+            ninja-build
+
+          # armhf パッケージ（ports.ubuntu.com から取得、リトライ付き）
+          for i in 1 2 3; do
+            sudo apt-get install -y -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
+              libasound2-dev:armhf \
+              libfontconfig1-dev:armhf \
+              libfreetype6-dev:armhf \
+              libcups2-dev:armhf \
+              libx11-dev:armhf \
+              libxext-dev:armhf \
+              libxrender-dev:armhf \
+              libxrandr-dev:armhf \
+              libxtst-dev:armhf \
+              libxt-dev:armhf \
+              libffi-dev:armhf && break
+            echo "armhf パッケージインストール失敗 (試行 $i/3)、リトライ中..."
+            sleep 15
+          done
+
           # llvm-config-17 へのシンボリックリンクを確認
           if ! command -v llvm-config-17 >/dev/null 2>&1; then
             ls /usr/bin/llvm-config*
