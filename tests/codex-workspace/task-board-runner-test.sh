@@ -1507,7 +1507,7 @@ test_review_with_empty_ci_rollup_passes_for_no_ci_repo() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-450\|BOXP-450: no ci repo\]\].*status::review'
   assert_file_contains "${vault}/Tickets/BOXP-450.md" '^status: review$'
-  assert_file_contains "${vault}/Tickets/BOXP-450.md" 'CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS'
+  assert_file_contains "${vault}/Tickets/BOXP-450.md" 'Review gates passed\.'
 }
 
 test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in() {
