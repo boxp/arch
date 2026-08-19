@@ -494,6 +494,20 @@ jobs:
           ARM_GCC_INCLUDES=$(arm-linux-gnueabihf-gcc --print-file-name=include 2>/dev/null || echo "")
           echo "ARM GCC includes: ${ARM_GCC_INCLUDES}"
 
+          # LLVMDirectives.c が参照する _URC_FATAL_PHASE1_ERROR 等の Itanium C++ ABI enum 値を
+          # 明示的に定義する（ARM32 クロスコンパイラの unwind.h に含まれない場合のフォールバック）
+          UNWIND_DEFINES=(
+            "-D_URC_NO_REASON=0"
+            "-D_URC_FOREIGN_EXCEPTION_CAUGHT=1"
+            "-D_URC_FATAL_PHASE2_ERROR=2"
+            "-D_URC_FATAL_PHASE1_ERROR=3"
+            "-D_URC_NORMAL_STOP=4"
+            "-D_URC_END_OF_STACK=5"
+            "-D_URC_HANDLER_FOUND=6"
+            "-D_URC_INSTALL_CONTEXT=7"
+            "-D_URC_CONTINUE_UNWIND=8"
+          )
+
           COMPILED=0
           CACHED=0
           FAILED=0
@@ -504,6 +518,7 @@ jobs:
             # ARM32クロスコンパイル
             # - GraalVM include/linux: jni_md.h (JNI platform header)
             # - ARM GCC internal includes: unwind.h, etc.
+            # - UNWIND_DEFINES: Itanium C++ ABI enum 値 (unwind.h に含まれない場合のフォールバック)
             echo "  Compiling: $base"
             EXTRA_INCLUDES=()
             [ -n "$ARM_GCC_INCLUDES" ] && EXTRA_INCLUDES+=("-I${ARM_GCC_INCLUDES}")
@@ -514,6 +529,7 @@ jobs:
                 -I"${NATIVE_IMAGE_HOME}/include/linux" \
                 -I"${NATIVE_IMAGE_HOME}/lib/svm/clibraries/linux-arm32/include" \
                 "${EXTRA_INCLUDES[@]}" \
+                "${UNWIND_DEFINES[@]}" \
                 -lm \
                 -o "/tmp/arm32-query/${base}" 2>/tmp/arm32-query/${base}.err; then
               COMPILED=$((COMPILED+1))
@@ -535,6 +551,9 @@ jobs:
           echo "コンパイル成功: ${COMPILED}, キャッシュ生成: ${CACHED}, 失敗: ${FAILED}"
           echo "CAPキャッシュファイル: $(find /tmp/arm32-capcache -name '*.cap' | wc -l) 件"
 
+          echo "=== babashka native-image.properties の内容を確認 ==="
+          cat "/tmp/bb-jar-patched/META-INF/native-image/babashka/babashka/native-image.properties" 2>/dev/null || echo "Not found"
+
           echo "=== Step 3: ARM32 native-imageビルド（CAPキャッシュ使用） ==="
           run_native_image() {
             set -o pipefail
@@ -550,6 +569,7 @@ jobs:
               --no-fallback \
               -H:-ForeignAPISupport \
               --gc=serial \
+              --initialize-at-build-time=com.fasterxml.jackson \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
               -cp "$JAR_FILE" \
