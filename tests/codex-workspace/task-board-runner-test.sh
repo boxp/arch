@@ -1282,7 +1282,8 @@ test_review_with_ci_failure_is_blocked() {
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-404\|BOXP-404: ci fail\]\].*status::in-progress'
   assert_file_contains "${vault}/Tickets/BOXP-404.md" '^status: in-progress$'
   assert_file_contains "${vault}/Tickets/BOXP-404.md" 'Review gate failed \(ci\)'
-  assert_file_contains "${vault}/Tickets/BOXP-404.md" 'unit=FAILURE'
+  assert_file_contains "${vault}/Tickets/BOXP-404.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-404.md" 'unit=FAILURE'
 }
 
 test_review_with_codex_review_issue_is_blocked() {
@@ -1302,7 +1303,8 @@ test_review_with_codex_review_issue_is_blocked() {
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-405\|BOXP-405: review issue\]\].*status::in-progress'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: in-progress$'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Review gate failed \(codex-review\)'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'missing regression test'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'missing regression test'
 }
 
 test_review_with_pr_and_none_marker_checks_pr() {
@@ -1361,7 +1363,8 @@ test_review_with_multiple_pr_urls_blocks_on_second_failure() {
   assert_file_contains "${vault}/Tickets/BOXP-411.md" '^status: in-progress$'
   assert_file_contains "${vault}/Tickets/BOXP-411.md" 'Review gate failed \(ci\)'
   assert_file_contains "${vault}/Tickets/BOXP-411.md" 'https://github.com/boxp/example/pull/456'
-  assert_file_contains "${vault}/Tickets/BOXP-411.md" 'integration=FAILURE'
+  assert_file_contains "${vault}/Tickets/BOXP-411.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-411.md" 'integration=FAILURE'
 }
 
 test_review_gate_keeps_lock_heartbeat_active() {
@@ -1430,7 +1433,8 @@ test_review_with_empty_ci_rollup_times_out() {
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-407\|BOXP-407: no checks yet\]\].*status::in-progress'
   assert_file_contains "${vault}/Tickets/BOXP-407.md" '^status: in-progress$'
   assert_file_contains "${vault}/Tickets/BOXP-407.md" 'Review gate failed \(ci\)'
-  assert_file_contains "${vault}/Tickets/BOXP-407.md" 'No CI checks have been reported'
+  assert_file_contains "${vault}/Tickets/BOXP-407.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-407.md" 'No CI checks have been reported'
 }
 
 test_review_with_empty_ci_rollup_passes_for_no_ci_repo() {
@@ -1470,7 +1474,8 @@ test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-451\|BOXP-451: ci timeout\]\].*status::in-progress'
   assert_file_contains "${vault}/Tickets/BOXP-451.md" '^status: in-progress$'
-  assert_file_contains "${vault}/Tickets/BOXP-451.md" 'Timed out waiting for PR gates'
+  assert_file_contains "${vault}/Tickets/BOXP-451.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-451.md" 'Timed out waiting for PR gates'
 }
 
 test_no_ci_repo_requires_clean_merge_state() {
@@ -1490,7 +1495,8 @@ test_no_ci_repo_requires_clean_merge_state() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-452\|BOXP-452: has hooks no ci\]\].*status::in-progress'
   assert_file_contains "${vault}/Tickets/BOXP-452.md" '^status: in-progress$'
-  assert_file_contains "${vault}/Tickets/BOXP-452.md" 'Timed out waiting for PR gates'
+  assert_file_contains "${vault}/Tickets/BOXP-452.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-452.md" 'Timed out waiting for PR gates'
 }
 
 test_canonical_path_hash_symlink_isolation() {
@@ -1556,7 +1562,8 @@ test_review_with_draft_pr_is_retried() {
   assert_file_contains "${vault}/Tickets/BOXP-408.md" '^status: in-progress$'
   assert_file_contains "${vault}/Tickets/BOXP-408.md" '^assignee: codex$'
   assert_file_contains "${vault}/Tickets/BOXP-408.md" 'Review gate failed \(mergeability\)'
-  assert_file_contains "${vault}/Tickets/BOXP-408.md" 'still a draft'
+  assert_file_contains "${vault}/Tickets/BOXP-408.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-408.md" 'still a draft'
 
   PATH="${bin}:$PATH" GH_FAKE_IS_DRAFT=true CODEX_FAKE_PROMPT_LOG="${prompt_log}" CODEX_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-review-draft-retry-prompt.out
 
