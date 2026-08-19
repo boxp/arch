@@ -89,6 +89,7 @@ jobs:
         with:
           path: arm32-static-libs
           key: arm32-static-libs-labsjdk-jvmci-25-3-b21-cross-v1
+          save-always: true
 
       - name: Install cross-compilation tools and LLVM 17 (amd64 only)
         timeout-minutes: 15
