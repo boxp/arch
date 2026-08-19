@@ -1554,7 +1554,7 @@
                   str
                   (str/replace #"[\r\n\t]+" " ")
                   (str/replace #"(?i)(authorization:\s*(?:bearer\s+)?)[^\s]+" "$1[REDACTED]")
-                  (str/replace #"(?i)(token|secret|password|api(?:[_-]|\s)+key|credential)\s*[=:]\s*[^\s,;]+" "$1=[REDACTED]")
+                  (str/replace #"(?i)\b[A-Z0-9_]*(?:token|secret|password|api(?:[_-]|\s)+key|credential)[A-Z0-9_]*\s*[=:]\s*[^\s,;]+" "[REDACTED]")
                   (str/replace #"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b" "[REDACTED]"))]
     (if (str/blank? (str/trim value))
       "reason unavailable"
@@ -1569,6 +1569,16 @@
     (:gate review-gate) (str "pr-gate-" (name (:gate review-gate)))
     :else "reason-unavailable"))
 
+(defn blocker-safe-reason [result exit review-gate exception]
+  ;; Do not copy agent, CLI, or exception text into user-visible Notes or run
+  ;; summaries.  Those strings are untrusted and can contain credentials.
+  (cond
+    exception "Runner internal error; inspect the referenced run artifacts."
+    (not (zero? (long (or exit 0)))) "Agent process exited unsuccessfully; inspect the referenced run artifacts."
+    (= "blocked" result) "Agent reported blocked; inspect the referenced run artifacts."
+    (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
+    :else "reason unavailable"))
+
 (defn blocker-note [ticket-id run-id action category reason]
   (let [dir (str (run-dir ticket-id run-id))]
     (str "Blocked transition recorded: ticket=" ticket-id
@@ -1582,12 +1592,7 @@
 
 (defn record-blocked-transition! [ticket-id run-id action result exit review-gate exception]
   (let [category (blocker-category result exit review-gate exception)
-        reason (or (some-> exception .getMessage)
-                   (:message review-gate)
-                   (when (= "blocked" result) "Agent returned TASK_BOARD_RESULT: blocked.")
-                   (when (not (zero? (long (or exit 0))))
-                     (str "Agent process exited with code " exit "."))
-                   "reason unavailable")]
+        reason (blocker-safe-reason result exit review-gate exception)]
     (try
       (append-note! ticket-id (blocker-note ticket-id run-id action category reason))
       true
@@ -1599,13 +1604,13 @@
                      {:action action
                       :blocker-category category
                       :blocker-reason (sanitize-blocker-reason reason)
-                      :notes-error (sanitize-blocker-reason (.getMessage e))
+                      :notes-error "blocker Notes write failed"
                       :finished-at (now-str)})
           (catch Exception mark-error
             (log! (str "could not record blocker note failure for " ticket-id "/" run-id
                        ": " (.getMessage mark-error)))))
         (log! (str "blocked transition withheld for " ticket-id "/" run-id
-                   " because Notes recording failed: " (sanitize-blocker-reason (.getMessage e))))
+                   " because Notes recording failed"))
         false))))
 
 (defn block-ticket! [ticket-id run-id action result exit review-gate exception]
@@ -1617,12 +1622,16 @@
                {:action action
                 :exit-code exit
                 :result result
-                :review-gate review-gate
                 :blocker-category (blocker-category result exit review-gate exception)
+                :blocker-reason (blocker-safe-reason result exit review-gate exception)
                 :finished-at (now-str)})
     (move-card! ticket-id "blocked")
     (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
     true))
+
+(defn restore-card-state! [ticket-id status assignee]
+  (move-card! ticket-id status)
+  (update-frontmatter! ticket-id {:status status :assignee assignee}))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
@@ -1683,7 +1692,8 @@
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
                 (if (= "blocked" next-status)
-                  (block-ticket! ticket-id run-id action result exit review-gate nil)
+                  (when-not (block-ticket! ticket-id run-id action result exit review-gate nil)
+                    (restore-card-state! ticket-id status assignee))
                   (do
                     (move-card! ticket-id next-status)
                     (update-frontmatter! ticket-id (cond-> {:status next-status
@@ -1692,7 +1702,8 @@
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))))
                 true)
               (catch Exception e
-                (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                (when-not (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                  (restore-card-state! ticket-id status assignee))
                 true)
               (finally
                 (reset! stop? true)

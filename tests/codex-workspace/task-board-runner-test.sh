@@ -1073,7 +1073,7 @@ test_fable_reported_blocked_is_audited() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-302\|BOXP-302: fable blocked\]\].*status::blocked'
   assert_file_contains "${vault}/Tickets/BOXP-302.md" 'category=agent-reported-blocked'
-  assert_file_contains "${vault}/Tickets/BOXP-302.md" 'reason=Agent returned TASK_BOARD_RESULT: blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-302.md" 'reason=Agent reported blocked; inspect the referenced run artifacts'
   assert_file_not_contains "${vault}/Tickets/BOXP-302.md" 'do-not-expose'
   assert_file_contains "${vault}/Tickets/BOXP-302.md" 'inspect run artifacts:'
   assert_run_summary_contains "${state}" BOXP-302 ':status :blocked'
@@ -1114,7 +1114,7 @@ test_runner_internal_error_is_audited() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-304\|BOXP-304: runner error\]\].*status::blocked'
   assert_file_contains "${vault}/Tickets/BOXP-304.md" 'category=runner-internal-error'
-  assert_file_contains "${vault}/Tickets/BOXP-304.md" 'reason=forced runner internal error token=\[REDACTED\]'
+  assert_file_contains "${vault}/Tickets/BOXP-304.md" 'reason=Runner internal error; inspect the referenced run artifacts'
   assert_file_not_contains "${vault}/Tickets/BOXP-304.md" 'super-secret-token'
   assert_file_contains "${vault}/Tickets/BOXP-304.md" 'inspect run artifacts:'
   assert_run_summary_contains "${state}" BOXP-304 ':status :blocked'
@@ -1135,9 +1135,28 @@ test_blocker_reason_redacts_github_pat_and_spaced_api_key() {
     CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE='GitHub API failed: github_pat_abcdefghijklmnopqrstuvwxyz123456 API key: spaced-secret-value' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-blocker-credential-redaction.out
 
-  assert_file_contains "${vault}/Tickets/BOXP-305.md" 'reason=GitHub API failed: \[REDACTED\] API key=\[REDACTED\]'
+  assert_file_contains "${vault}/Tickets/BOXP-305.md" 'reason=Runner internal error; inspect the referenced run artifacts'
   assert_file_not_contains "${vault}/Tickets/BOXP-305.md" 'abcdefghijklmnopqrstuvwxyz123456'
   assert_file_not_contains "${vault}/Tickets/BOXP-305.md" 'spaced-secret-value'
+}
+
+test_blocker_note_failure_restores_original_lane() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-306|BOXP-306: restore review]] #ticket status::review"
+  write_ticket "${vault}" BOXP-306 review codex
+  bb "${HELPER}" update BOXP-306 --vault "${vault}" --lane Review >/dev/null
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-blocker-note-restore.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-306\|BOXP-306: test ticket\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-306.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-306.md" '^assignee: codex$'
 }
 
 test_review_with_pr_url_is_noted() {
@@ -1978,6 +1997,7 @@ test_fable_reported_blocked_is_audited
 test_blocker_note_failure_keeps_current_lane
 test_runner_internal_error_is_audited
 test_blocker_reason_redacts_github_pat_and_spaced_api_key
+test_blocker_note_failure_restores_original_lane
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates
 test_review_with_conflict_is_blocked
