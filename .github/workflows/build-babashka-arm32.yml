@@ -79,7 +79,7 @@ jobs:
         with:
           repository: boxp/graal
           # ARM32 SubstrateVM + suite.py arm32モジュール登録済みコミットを固定（再現可能ビルドのため）
-          ref: 74d24c145ed46588e243a722e682c1b6307710be
+          ref: 6407bae16ccd89e2d391c9c68ced75509109a1a8
           path: graal
           persist-credentials: false
 
@@ -434,6 +434,19 @@ jobs:
             exit 1
           fi
 
+          # babashka JARから -H:+ForeignAPISupport を除去（LLVMバックエンド非対応）
+          echo "babashka JAR をパッチ中 (ForeignAPISupport 除去)..."
+          mkdir -p /tmp/bb-jar-patched
+          unzip -q "$JAR_FILE" -d /tmp/bb-jar-patched/
+          PROPS_FILE="/tmp/bb-jar-patched/META-INF/native-image/babashka/babashka/native-image.properties"
+          if [ -f "$PROPS_FILE" ]; then
+            sed -i 's/-H:+ForeignAPISupport *\\*//g' "$PROPS_FILE"
+            echo "ForeignAPISupport を除去しました"
+          fi
+          cd /tmp/bb-jar-patched && zip -q -r /tmp/bb-arm32-patched.jar . && cd -
+          JAR_FILE="/tmp/bb-arm32-patched.jar"
+          echo "パッチ済み JAR: $JAR_FILE"
+
           native-image --version
           native-image --target=linux-arm32 --version
           echo "--target=linux-arm32 is accepted"
@@ -472,8 +485,29 @@ jobs:
 
           QUERY_C_COUNT=$(find /tmp/arm32-query -name "*.c" | wc -l)
           echo "生成されたクエリファイル数: ${QUERY_C_COUNT}"
+          ls /tmp/arm32-query/*.c 2>/dev/null || true
+          # 最初のクエリファイルの内容を表示（デバッグ用）
+          head -30 /tmp/arm32-query/*.c 2>/dev/null | head -50 || true
 
           echo "=== Step 2: クエリコードをARM32でコンパイル・実行してキャッシュ生成 ==="
+          # ARM32 GCCの内部インクルードパスを取得（unwind.h等が含まれる）
+          ARM_GCC_INCLUDES=$(arm-linux-gnueabihf-gcc --print-file-name=include 2>/dev/null || echo "")
+          echo "ARM GCC includes: ${ARM_GCC_INCLUDES}"
+
+          # LLVMDirectives.c が参照する _URC_FATAL_PHASE1_ERROR 等の Itanium C++ ABI enum 値を
+          # 明示的に定義する（ARM32 クロスコンパイラの unwind.h に含まれない場合のフォールバック）
+          UNWIND_DEFINES=(
+            "-D_URC_NO_REASON=0"
+            "-D_URC_FOREIGN_EXCEPTION_CAUGHT=1"
+            "-D_URC_FATAL_PHASE2_ERROR=2"
+            "-D_URC_FATAL_PHASE1_ERROR=3"
+            "-D_URC_NORMAL_STOP=4"
+            "-D_URC_END_OF_STACK=5"
+            "-D_URC_HANDLER_FOUND=6"
+            "-D_URC_INSTALL_CONTEXT=7"
+            "-D_URC_CONTINUE_UNWIND=8"
+          )
+
           COMPILED=0
           CACHED=0
           FAILED=0
@@ -481,15 +515,23 @@ jobs:
             [ -f "$qfile" ] || continue
             base=$(basename "$qfile" .c)
 
-            # ARM32クロスコンパイル（sysroot + GraalVM headers）
+            # ARM32クロスコンパイル
+            # - GraalVM include/linux: jni_md.h (JNI platform header)
+            # - ARM GCC internal includes: unwind.h, etc.
+            # - UNWIND_DEFINES: Itanium C++ ABI enum 値 (unwind.h に含まれない場合のフォールバック)
+            echo "  Compiling: $base"
+            EXTRA_INCLUDES=()
+            [ -n "$ARM_GCC_INCLUDES" ] && EXTRA_INCLUDES+=("-I${ARM_GCC_INCLUDES}")
             if arm-linux-gnueabihf-gcc \
                 "$qfile" \
-                --sysroot=/usr/arm-linux-gnueabihf \
                 -I/usr/arm-linux-gnueabihf/include \
                 -I"${NATIVE_IMAGE_HOME}/include" \
+                -I"${NATIVE_IMAGE_HOME}/include/linux" \
                 -I"${NATIVE_IMAGE_HOME}/lib/svm/clibraries/linux-arm32/include" \
+                "${EXTRA_INCLUDES[@]}" \
+                "${UNWIND_DEFINES[@]}" \
                 -lm \
-                -o "/tmp/arm32-query/${base}" 2>/dev/null; then
+                -o "/tmp/arm32-query/${base}" 2>/tmp/arm32-query/${base}.err; then
               COMPILED=$((COMPILED+1))
               # qemu-armで実行してCAPキャッシュを生成
               if qemu-arm -L /usr/arm-linux-gnueabihf \
@@ -502,10 +544,15 @@ jobs:
               fi
             else
               FAILED=$((FAILED+1))
+              echo "  Compile error for $base:"
+              cat /tmp/arm32-query/${base}.err 2>/dev/null || true
             fi
           done
           echo "コンパイル成功: ${COMPILED}, キャッシュ生成: ${CACHED}, 失敗: ${FAILED}"
           echo "CAPキャッシュファイル: $(find /tmp/arm32-capcache -name '*.cap' | wc -l) 件"
+
+          echo "=== babashka native-image.properties の内容を確認 ==="
+          cat "/tmp/bb-jar-patched/META-INF/native-image/babashka/babashka/native-image.properties" 2>/dev/null || echo "Not found"
 
           echo "=== Step 3: ARM32 native-imageビルド（CAPキャッシュ使用） ==="
           run_native_image() {
@@ -520,6 +567,9 @@ jobs:
               --target=linux-arm32 \
               -H:-CheckToolchain \
               --no-fallback \
+              -H:-ForeignAPISupport \
+              --gc=serial \
+              --initialize-at-build-time=com.fasterxml.jackson \
               --features=babashka.impl.CharsetsFeature,clj_easy.graal_build_time.InitClojureClasses \
               -H:Name=babashka-arm32 \
               -cp "$JAR_FILE" \
