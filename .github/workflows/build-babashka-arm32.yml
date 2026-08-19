@@ -582,6 +582,7 @@ jobs:
 
           # LLVMDirectives.c が参照する _URC_FATAL_PHASE1_ERROR 等の Itanium C++ ABI enum 値を
           # 明示的に定義する（ARM32 クロスコンパイラの unwind.h に含まれない場合のフォールバック）
+          # ARM32 EABI拡張の _URC_FAILURE=9 も追加（GCC ARM unwind.h内部で参照される）
           UNWIND_DEFINES=(
             "-D_URC_NO_REASON=0"
             "-D_URC_FOREIGN_EXCEPTION_CAUGHT=1"
@@ -592,6 +593,7 @@ jobs:
             "-D_URC_HANDLER_FOUND=6"
             "-D_URC_INSTALL_CONTEXT=7"
             "-D_URC_CONTINUE_UNWIND=8"
+            "-D_URC_FAILURE=9"
           )
 
           COMPILED=0
