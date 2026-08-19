@@ -1051,7 +1051,7 @@ test_review_without_pr_is_blocked() {
   assert_file_contains "${vault}/Boards/Task Board.md" '## Blocked'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::blocked'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: blocked$'
-  assert_file_contains "${vault}/Tickets/BOXP-301.md" 'Review was requested without a GitHub PR URL'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" 'reason=PR gate failed; inspect the referenced run artifacts\.'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'Blocked transition recorded: ticket=BOXP-301; run='
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'action=implement; at=.*category=pr-gate-pr-url'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'inspect run artifacts: .*/summary\.edn, .*/last-message\.md, .*/events\.jsonl, .*/stderr\.log'
