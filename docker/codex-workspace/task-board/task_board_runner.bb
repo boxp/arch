@@ -1424,20 +1424,19 @@
                 (assoc pr-state
                        :checked-pr-urls passed
                        :pr-urls pr-urls)
-                (let [review (run-codex-review! run-dir pr-url)
-                      passed-message (str pr-url ": " (:message pr-state) " " (:message review))]
+                (let [review (run-codex-review! run-dir pr-url)]
                   (if-not (:ok? review)
                     (assoc review
                            :checked-pr-urls passed
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
-                    (recur (rest remaining) (conj passed passed-message))))))
+                    ;; This field is persisted in summaries, so it must remain a
+                    ;; URL list rather than carrying arbitrary check/review text.
+                    (recur (rest remaining) (conj passed pr-url))))))
             {:ok? true
              :pr-urls pr-urls
-             :message (str "All PR gates passed for "
-                           (count pr-urls)
-                           " PR(s): "
-                           (str/join " | " passed))}))
+             :checked-pr-urls passed
+             :message "PR gates passed."}))
 
         (no-repo-review-marker? last-message)
         {:ok? true
@@ -1608,7 +1607,8 @@
            (:retry-count review-gate) "/" (:retry-limit review-gate) ".")
 
       (and (= "review" next-status) (seq pr-urls))
-      (str base " PR: " (str/join ", " pr-urls) ". Review gates passed: " (:message review-gate))
+      (str base " PR: " (str/join ", " pr-urls) ". "
+           (persisted-review-gate-reason review-gate))
 
       :else
       base)))
