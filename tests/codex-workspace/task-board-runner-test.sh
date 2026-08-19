@@ -1159,6 +1159,26 @@ test_blocker_note_failure_restores_original_lane() {
   assert_file_contains "${vault}/Tickets/BOXP-306.md" '^assignee: codex$'
 }
 
+test_blocked_state_failure_records_a_single_audit_note_and_restores_lane() {
+  local tmp vault state bin note_count
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-307|BOXP-307: state failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-307 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-blocked-state-failure.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-307\|BOXP-307: state failure\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-307.md" '^status: in-progress$'
+  note_count="$(grep -c 'Blocked transition recorded: ticket=BOXP-307;' "${vault}/Tickets/BOXP-307.md")"
+  [[ "${note_count}" -eq 1 ]] || fail "expected one blocked audit note, got ${note_count}"
+  assert_file_contains /tmp/task-board-blocked-state-failure.out 'blocked transition state update failed'
+}
+
 test_review_with_pr_url_is_noted() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -2060,6 +2080,7 @@ test_blocker_note_failure_keeps_current_lane
 test_runner_internal_error_is_audited
 test_blocker_reason_redacts_github_pat_and_spaced_api_key
 test_blocker_note_failure_restores_original_lane
+test_blocked_state_failure_records_a_single_audit_note_and_restores_lane
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates
 test_review_with_conflict_is_blocked

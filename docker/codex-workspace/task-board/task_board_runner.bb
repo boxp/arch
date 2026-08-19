@@ -1649,6 +1649,7 @@
   (let [dir (str (run-dir ticket-id run-id))]
     (str "Blocked transition recorded: ticket=" ticket-id
          "; run=" run-id
+         "; transition-id=" ticket-id "/" run-id
          "; action=" (name action)
          "; at=" (now-str)
          "; category=" category
@@ -1656,11 +1657,20 @@
          "; inspect run artifacts: " dir "/summary.edn, " dir "/last-message.md, "
          dir "/events.jsonl, " dir "/stderr.log.")))
 
+(defn blocked-transition-recorded? [ticket-id run-id]
+  ;; The note is the durable audit boundary.  If a later state transition
+  ;; throws and the outer error handler retries, do not append a second audit
+  ;; note for the same run.
+  (let [marker (str "transition-id=" ticket-id "/" run-id)]
+    (and (fs/exists? (ticket-path ticket-id))
+         (some #(str/includes? % marker) (read-lines (ticket-path ticket-id))))))
+
 (defn record-blocked-transition! [ticket-id run-id action result exit review-gate exception]
   (let [category (blocker-category result exit review-gate exception)
         reason (blocker-safe-reason result exit review-gate exception)]
     (try
-      (append-note! ticket-id (blocker-note ticket-id run-id action category reason))
+      (when-not (blocked-transition-recorded? ticket-id run-id)
+        (append-note! ticket-id (blocker-note ticket-id run-id action category reason)))
       true
       (catch Exception e
         ;; A Blocked card without this audit record is worse than leaving the
@@ -1681,20 +1691,31 @@
 
 (defn block-ticket! [ticket-id run-id action result exit review-gate exception]
   (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
-    ;; run-agent! records a zero-exit agent as succeeded before its result is
-    ;; interpreted. Correct that provisional status whenever the final
-    ;; transition is Blocked so the referenced summary matches the Notes.
-    (mark-run! ticket-id run-id :blocked
-               {:action action
-                :exit-code exit
-                :result result
-                :review-gate (persisted-review-gate review-gate)
-                :blocker-category (blocker-category result exit review-gate exception)
-                :blocker-reason (blocker-safe-reason result exit review-gate exception)
-                :finished-at (now-str)})
-    (move-card! ticket-id "blocked")
-    (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
-    true))
+    ;; Keep the post-audit transition inside this boundary.  Otherwise a
+    ;; failure here escapes to process-card!'s catch, which invokes this
+    ;; function again and can duplicate the audit record.
+    (try
+      ;; run-agent! records a zero-exit agent as succeeded before its result is
+      ;; interpreted. Correct that provisional status whenever the final
+      ;; transition is Blocked so the referenced summary matches the Notes.
+      (mark-run! ticket-id run-id :blocked
+                 {:action action
+                  :exit-code exit
+                  :result result
+                  :review-gate (persisted-review-gate review-gate)
+                  :blocker-category (blocker-category result exit review-gate exception)
+                  :blocker-reason (blocker-safe-reason result exit review-gate exception)
+                  :finished-at (now-str)})
+      (move-card! ticket-id "blocked")
+      ;; Deterministic black-box failure hook; unset in deployment.
+      (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
+        (throw (ex-info "forced blocked state update failure" {})))
+      (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+      true
+      (catch Exception e
+        (log! (str "blocked transition state update failed for " ticket-id "/" run-id
+                   "; preserving/restoring the prior card state: " (.getMessage e)))
+        false))))
 
 (defn restore-card-state! [ticket-id status assignee]
   (move-card! ticket-id status)
