@@ -417,6 +417,10 @@
 
 (defn append-note! [ticket-id note]
   (locking (ticket-mutex ticket-id)
+    ;; Deterministic black-box failure hook; unset in deployment.
+    (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE"))
+               (str/includes? note "Blocked transition recorded:"))
+      (throw (ex-info "forced blocker Notes write failure" {})))
     (let [path (ticket-path ticket-id)
           lines (vec (read-lines path))
           bullet (str "- " (today) ": " note)
@@ -1543,6 +1547,73 @@
       :else
       base)))
 
+(defn sanitize-blocker-reason [reason]
+  ;; Notes are user-visible. Keep a compact diagnosis while never copying agent
+  ;; output or stderr verbatim, because either can contain credentials.
+  (let [value (-> (or reason "reason unavailable")
+                  str
+                  (str/replace #"[\r\n\t]+" " ")
+                  (str/replace #"(?i)(authorization:\s*(?:bearer\s+)?)[^\s]+" "$1[REDACTED]")
+                  (str/replace #"(?i)(token|secret|password|api[_-]?key|credential)\s*[=:]\s*[^\s,;]+" "$1=[REDACTED]")
+                  (str/replace #"\b(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b" "[REDACTED]"))]
+    (if (str/blank? (str/trim value))
+      "reason unavailable"
+      (subs value 0 (min 600 (count value))))))
+
+(defn blocker-category [result exit review-gate exception]
+  (cond
+    exception "runner-internal-error"
+    (not (zero? (long (or exit 0)))) "agent-process-error"
+    (= "blocked" result) "agent-reported-blocked"
+    (:retry-exhausted? review-gate) "pr-gate-retry-limit"
+    (:gate review-gate) (str "pr-gate-" (name (:gate review-gate)))
+    :else "reason-unavailable"))
+
+(defn blocker-note [ticket-id run-id action category reason]
+  (let [dir (str (run-dir ticket-id run-id))]
+    (str "Blocked transition recorded: ticket=" ticket-id
+         "; run=" run-id
+         "; action=" (name action)
+         "; at=" (now-str)
+         "; category=" category
+         "; reason=" (sanitize-blocker-reason reason)
+         "; inspect run artifacts: " dir "/summary.edn, " dir "/last-message.md, "
+         dir "/events.jsonl, " dir "/stderr.log.")))
+
+(defn record-blocked-transition! [ticket-id run-id action result exit review-gate exception]
+  (let [category (blocker-category result exit review-gate exception)
+        reason (or (some-> exception .getMessage)
+                   (:message review-gate)
+                   (when (= "blocked" result) "Agent returned TASK_BOARD_RESULT: blocked.")
+                   (when (not (zero? (long (or exit 0))))
+                     (str "Agent process exited with code " exit "."))
+                   "reason unavailable")]
+    (try
+      (append-note! ticket-id (blocker-note ticket-id run-id action category reason))
+      true
+      (catch Exception e
+        ;; A Blocked card without this audit record is worse than leaving the
+        ;; current lane intact. Persist the failure where operators can inspect it.
+        (try
+          (mark-run! ticket-id run-id :blocker-note-failed
+                     {:action action
+                      :blocker-category category
+                      :blocker-reason (sanitize-blocker-reason reason)
+                      :notes-error (sanitize-blocker-reason (.getMessage e))
+                      :finished-at (now-str)})
+          (catch Exception mark-error
+            (log! (str "could not record blocker note failure for " ticket-id "/" run-id
+                       ": " (.getMessage mark-error)))))
+        (log! (str "blocked transition withheld for " ticket-id "/" run-id
+                   " because Notes recording failed: " (sanitize-blocker-reason (.getMessage e))))
+        false))))
+
+(defn block-ticket! [ticket-id run-id action result exit review-gate exception]
+  (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
+    (move-card! ticket-id "blocked")
+    (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+    true))
+
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
@@ -1559,6 +1630,9 @@
                 (update-frontmatter! ticket-id {:status "in-progress"}))
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
               (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock)
+                    _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
+                        ;; Deterministic black-box failure hook; unset in deployment.
+                        (throw (ex-info "forced runner internal error token=super-secret-token" {})))
                     intended (cond
                                (not (zero? exit)) "blocked"
                                (= :groom action) "ready"
@@ -1597,16 +1671,17 @@
                               :finished-at (now-str)}))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
-                (move-card! ticket-id next-status)
-                (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                         :assignee (if (= "in-progress" next-status) assignee "boxp")}
-                                                  (= "done" next-status) (assoc :closed (today))))
-                (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
+                (if (= "blocked" next-status)
+                  (block-ticket! ticket-id run-id action result exit review-gate nil)
+                  (do
+                    (move-card! ticket-id next-status)
+                    (update-frontmatter! ticket-id (cond-> {:status next-status
+                                                             :assignee (if (= "in-progress" next-status) assignee "boxp")}
+                                                      (= "done" next-status) (assoc :closed (today))))
+                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))))
                 true)
               (catch Exception e
-                (move-card! ticket-id "blocked")
-                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
-                (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " failed: " (.getMessage e)))
+                (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
                 true)
               (finally
                 (reset! stop? true)

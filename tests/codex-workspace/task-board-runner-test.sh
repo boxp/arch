@@ -126,6 +126,11 @@ make_fake_gh() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${GH_FAKE_FAIL:-false}" == true ]]; then
+  echo "gh api failed: token=super-secret-token" >&2
+  exit 1
+fi
+
 if [[ "$1 $2" == "pr view" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9]+$ ]]; then
   if [[ -n "${GH_FAKE_LOCK_MTIME_LOG:-}" && -n "${GH_FAKE_LOCK_FILE:-}" ]]; then
     before="$(stat -c %Y "${GH_FAKE_LOCK_FILE}")"
@@ -1047,7 +1052,70 @@ test_review_without_pr_is_blocked() {
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::blocked'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: blocked$'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'Review was requested without a GitHub PR URL'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" 'Blocked transition recorded: ticket=BOXP-301; run='
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" 'action=implement; at=.*category=pr-gate-pr-url'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" 'inspect run artifacts: .*/summary\.edn, .*/last-message\.md, .*/events\.jsonl, .*/stderr\.log'
   assert_file_not_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::review'
+}
+
+test_fable_reported_blocked_is_audited() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-302|BOXP-302: fable blocked]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-302 in-progress fable
+
+  PATH="${bin}:$PATH" CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked\napi_key=do-not-expose' run_tick "${vault}" "${state}" env >/tmp/task-board-fable-blocked.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-302\|BOXP-302: fable blocked\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-302.md" 'category=agent-reported-blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-302.md" 'reason=Agent returned TASK_BOARD_RESULT: blocked'
+  assert_file_not_contains "${vault}/Tickets/BOXP-302.md" 'do-not-expose'
+  assert_file_contains "${vault}/Tickets/BOXP-302.md" 'inspect run artifacts:'
+}
+
+test_blocker_note_failure_keeps_current_lane() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-303|BOXP-303: notes failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-303 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-blocker-note-failure.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-303\|BOXP-303: notes failure\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-303.md" '^status: in-progress$'
+  assert_file_not_contains "${vault}/Tickets/BOXP-303.md" 'Blocked transition recorded:'
+  assert_run_summary_contains "${state}" BOXP-303 ':status :blocker-note-failed'
+  assert_file_contains /tmp/task-board-blocker-note-failure.out 'blocked transition withheld'
+}
+
+test_runner_internal_error_is_audited() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-304|BOXP-304: runner error]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-304 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION=true run_tick "${vault}" "${state}" env >/tmp/task-board-runner-internal-error.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-304\|BOXP-304: runner error\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-304.md" 'category=runner-internal-error'
+  assert_file_contains "${vault}/Tickets/BOXP-304.md" 'reason=forced runner internal error token=\[REDACTED\]'
+  assert_file_not_contains "${vault}/Tickets/BOXP-304.md" 'super-secret-token'
+  assert_file_contains "${vault}/Tickets/BOXP-304.md" 'inspect run artifacts:'
 }
 
 test_review_with_pr_url_is_noted() {
@@ -1109,6 +1177,27 @@ test_review_with_conflict_is_blocked() {
   assert_file_contains "${vault}/Tickets/BOXP-403.md" 'Retrying with Codex instruction 1/2'
   assert_run_summary_contains "${state}" BOXP-403 ':gate :conflict'
   assert_run_summary_contains "${state}" BOXP-403 ':status :retrying'
+}
+
+test_pr_gate_api_failure_is_audited() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-417|BOXP-417: pr api failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-417 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_FAIL=true CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-pr-api-failure.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-417\|BOXP-417: pr api failure\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-417.md" 'category=pr-gate-pr-gate'
+  assert_file_contains "${vault}/Tickets/BOXP-417.md" 'reason='
+  assert_file_not_contains "${vault}/Tickets/BOXP-417.md" 'super-secret-token'
+  assert_file_contains "${vault}/Tickets/BOXP-417.md" 'inspect run artifacts:'
 }
 
 test_fable_review_gate_retry_keeps_fable_assignee() {
@@ -1476,6 +1565,8 @@ test_review_gate_retry_limit_blocks() {
   assert_file_contains "${vault}/Tickets/BOXP-414.md" '^status: blocked$'
   assert_file_contains "${vault}/Tickets/BOXP-414.md" '^assignee: boxp$'
   assert_file_contains "${vault}/Tickets/BOXP-414.md" 'Review gate failed \(ci\)'
+  assert_file_contains "${vault}/Tickets/BOXP-414.md" 'category=pr-gate-retry-limit'
+  assert_file_contains "${vault}/Tickets/BOXP-414.md" 'inspect run artifacts:'
   assert_run_summary_contains "${state}" BOXP-414 ':retry-exhausted\? true'
 }
 
@@ -1861,9 +1952,13 @@ test_shutdown_marker_waits_for_late_matching_lock
 test_shutdown_marker_survives_late_second_lock
 test_terminated_owner_cannot_create_lock_after_marker_cleanup
 test_review_without_pr_is_blocked
+test_fable_reported_blocked_is_audited
+test_blocker_note_failure_keeps_current_lane
+test_runner_internal_error_is_audited
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates
 test_review_with_conflict_is_blocked
+test_pr_gate_api_failure_is_audited
 test_fable_review_gate_retry_keeps_fable_assignee
 test_review_with_ci_failure_is_blocked
 test_review_with_codex_review_issue_is_blocked
