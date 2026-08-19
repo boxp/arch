@@ -1176,6 +1176,9 @@ test_blocked_state_failure_records_a_single_audit_note_and_restores_lane() {
   assert_file_contains "${vault}/Tickets/BOXP-307.md" '^status: in-progress$'
   note_count="$(grep -c 'Blocked transition recorded: ticket=BOXP-307;' "${vault}/Tickets/BOXP-307.md")"
   [[ "${note_count}" -eq 1 ]] || fail "expected one blocked audit note, got ${note_count}"
+  assert_run_summary_contains "${state}" BOXP-307 ':status :succeeded'
+  summary="$(find "${state}/runs/BOXP-307" -name summary.edn -print | sort | tail -n 1)"
+  assert_file_not_contains "${summary}" ':status :blocked'
   assert_file_contains /tmp/task-board-blocked-state-failure.out 'blocked transition state update failed'
 }
 

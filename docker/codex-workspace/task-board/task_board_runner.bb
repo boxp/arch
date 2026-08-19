@@ -1695,9 +1695,18 @@
     ;; failure here escapes to process-card!'s catch, which invokes this
     ;; function again and can duplicate the audit record.
     (try
+      ;; Do not confirm the run as blocked until both durable ticket states
+      ;; have been updated.  A later card/frontmatter failure is recovered to
+      ;; the prior lane by process-card!, so recording :blocked beforehand
+      ;; would leave summary.edn contradicting the restored ticket state.
+      (move-card! ticket-id "blocked")
+      ;; Deterministic black-box failure hook; unset in deployment.
+      (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
+        (throw (ex-info "forced blocked state update failure" {})))
+      (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
       ;; run-agent! records a zero-exit agent as succeeded before its result is
-      ;; interpreted. Correct that provisional status whenever the final
-      ;; transition is Blocked so the referenced summary matches the Notes.
+      ;; interpreted. Correct that provisional status only after the Blocked
+      ;; transition itself has succeeded.
       (mark-run! ticket-id run-id :blocked
                  {:action action
                   :exit-code exit
@@ -1706,11 +1715,6 @@
                   :blocker-category (blocker-category result exit review-gate exception)
                   :blocker-reason (blocker-safe-reason result exit review-gate exception)
                   :finished-at (now-str)})
-      (move-card! ticket-id "blocked")
-      ;; Deterministic black-box failure hook; unset in deployment.
-      (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
-        (throw (ex-info "forced blocked state update failure" {})))
-      (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
       true
       (catch Exception e
         (log! (str "blocked transition state update failed for " ticket-id "/" run-id
