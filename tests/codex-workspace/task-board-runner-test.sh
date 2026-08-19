@@ -1118,6 +1118,26 @@ test_runner_internal_error_is_audited() {
   assert_file_contains "${vault}/Tickets/BOXP-304.md" 'inspect run artifacts:'
 }
 
+test_blocker_reason_redacts_github_pat_and_spaced_api_key() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-305|BOXP-305: credential redaction]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-305 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION=true \
+    CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE='GitHub API failed: github_pat_abcdefghijklmnopqrstuvwxyz123456 API key: spaced-secret-value' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-blocker-credential-redaction.out
+
+  assert_file_contains "${vault}/Tickets/BOXP-305.md" 'reason=GitHub API failed: \[REDACTED\] API key=\[REDACTED\]'
+  assert_file_not_contains "${vault}/Tickets/BOXP-305.md" 'abcdefghijklmnopqrstuvwxyz123456'
+  assert_file_not_contains "${vault}/Tickets/BOXP-305.md" 'spaced-secret-value'
+}
+
 test_review_with_pr_url_is_noted() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -1955,6 +1975,7 @@ test_review_without_pr_is_blocked
 test_fable_reported_blocked_is_audited
 test_blocker_note_failure_keeps_current_lane
 test_runner_internal_error_is_audited
+test_blocker_reason_redacts_github_pat_and_spaced_api_key
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates
 test_review_with_conflict_is_blocked

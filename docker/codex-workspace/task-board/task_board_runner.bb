@@ -1554,8 +1554,8 @@
                   str
                   (str/replace #"[\r\n\t]+" " ")
                   (str/replace #"(?i)(authorization:\s*(?:bearer\s+)?)[^\s]+" "$1[REDACTED]")
-                  (str/replace #"(?i)(token|secret|password|api[_-]?key|credential)\s*[=:]\s*[^\s,;]+" "$1=[REDACTED]")
-                  (str/replace #"\b(?:gh[pousr]_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b" "[REDACTED]"))]
+                  (str/replace #"(?i)(token|secret|password|api(?:[_-]|\s)+key|credential)\s*[=:]\s*[^\s,;]+" "$1=[REDACTED]")
+                  (str/replace #"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b" "[REDACTED]"))]
     (if (str/blank? (str/trim value))
       "reason unavailable"
       (subs value 0 (min 600 (count value))))))
@@ -1632,7 +1632,8 @@
               (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock)
                     _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
                         ;; Deterministic black-box failure hook; unset in deployment.
-                        (throw (ex-info "forced runner internal error token=super-secret-token" {})))
+                        (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
+                                             "forced runner internal error token=super-secret-token") {})))
                     intended (cond
                                (not (zero? exit)) "blocked"
                                (= :groom action) "ready"
