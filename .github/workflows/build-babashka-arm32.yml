@@ -83,8 +83,15 @@ jobs:
           path: graal
           persist-credentials: false
 
-      - name: Install cross-compilation tools and LLVM 17
-        timeout-minutes: 25
+      - name: Check ARM32 JDK static libs cache (early, before apt-get)
+        id: arm32-static-libs-cache
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
+        with:
+          path: arm32-static-libs
+          key: arm32-static-libs-labsjdk-jvmci-25-3-b21-cross-v1
+
+      - name: Install cross-compilation tools and LLVM 17 (amd64 only)
+        timeout-minutes: 15
         run: |
           set -euo pipefail
           # ARM32 クロスコンパイル用に armhf マルチアーキテクチャを追加
@@ -129,7 +136,7 @@ jobs:
             sleep 10
           done
 
-          # amd64 パッケージを先にインストール（通常の Ubuntu mirrors から取得）
+          # amd64 パッケージをインストール（通常の Ubuntu mirrors から取得、高速）
           sudo apt-get install -y -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
@@ -149,7 +156,20 @@ jobs:
             cmake \
             ninja-build
 
-          # armhf パッケージ（ports.ubuntu.com から取得、リトライ付き）
+          # llvm-config-17 へのシンボリックリンクを確認
+          if ! command -v llvm-config-17 >/dev/null 2>&1; then
+            ls /usr/bin/llvm-config*
+            sudo ln -sf /usr/bin/llvm-config-17 /usr/local/bin/llvm-config-17
+          fi
+
+      - name: Install armhf dev packages for JDK cross-compilation
+        # ARM32 JDK static libs のビルドに必要な armhf ライブラリ。
+        # キャッシュヒット時はスキップして ports.ubuntu.com の低速ダウンロードを回避。
+        if: steps.arm32-static-libs-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          echo "ARM32 JDK static libs cache miss: armhf dev パッケージをインストール"
           for i in 1 2 3; do
             sudo apt-get install -y -o Acquire::Retries=3 -o Acquire::http::Timeout=60 \
               libasound2-dev:armhf \
@@ -166,12 +186,6 @@ jobs:
             echo "armhf パッケージインストール失敗 (試行 $i/3)、リトライ中..."
             sleep 15
           done
-
-          # llvm-config-17 へのシンボリックリンクを確認
-          if ! command -v llvm-config-17 >/dev/null 2>&1; then
-            ls /usr/bin/llvm-config*
-            sudo ln -sf /usr/bin/llvm-config-17 /usr/local/bin/llvm-config-17
-          fi
 
       - name: Validate qemu-arm works
         run: |
@@ -276,13 +290,6 @@ jobs:
           set -euo pipefail
           docker run --rm --privileged multiarch/qemu-user-static --reset -p yes
           echo "QEMU ARM32 セットアップ完了"
-
-      - name: Cache ARM32 JDK static libs
-        id: arm32-static-libs-cache
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: arm32-static-libs
-          key: arm32-static-libs-labsjdk-jvmci-25-3-b21-cross-v1
 
       - name: Build ARM32 JDK static libs (cross-compile on x86)
         if: steps.arm32-static-libs-cache.outputs.cache-hit != 'true'
