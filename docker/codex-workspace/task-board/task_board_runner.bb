@@ -1771,11 +1771,17 @@
                               :result result
                               :idle-timeout? true
                               :finished-at (now-str)}))
-                (when (= "review" intended)
+                ;; A non-retryable review-gate failure reaches block-ticket!.
+                ;; Let that function write :blocked only after the card and
+                ;; frontmatter transition have both succeeded.  Writing it
+                ;; here would leave summary.edn at :blocked when a later
+                ;; blocked-state failure restores the original lane.
+                (when (and (= "review" intended)
+                           (not= "blocked" next-status))
                   (mark-run! ticket-id run-id (cond
                                                 (:ok? review-gate) :succeeded
                                                 (= "in-progress" next-status) :retrying
-                                                :else :blocked)
+                                                :else :succeeded)
                              {:action action
                               :agent assignee
                               :lane effective-lane

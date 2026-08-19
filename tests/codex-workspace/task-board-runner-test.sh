@@ -1182,6 +1182,32 @@ test_blocked_state_failure_records_a_single_audit_note_and_restores_lane() {
   assert_file_contains /tmp/task-board-blocked-state-failure.out 'blocked transition state update failed'
 }
 
+test_nonretryable_pr_gate_blocked_state_failure_keeps_summary_consistent() {
+  local tmp vault state bin summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-308|BOXP-308: nonretryable gate state failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-308 in-progress codex
+
+  # A review result without a PR URL is a non-retryable :pr-url gate
+  # failure.  The forced Blocked-state failure must restore the ticket while
+  # keeping the provisional succeeded summary, rather than persisting :blocked.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE=true \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-nonretryable-gate-state-failure.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-308\|BOXP-308: nonretryable gate state failure\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-308.md" '^status: in-progress$'
+  summary="$(find "${state}/runs/BOXP-308" -name summary.edn -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" ':status :succeeded'
+  assert_file_not_contains "${summary}" ':status :blocked'
+  assert_file_contains /tmp/task-board-nonretryable-gate-state-failure.out 'blocked transition state update failed'
+}
+
 test_review_with_pr_url_is_noted() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -2084,6 +2110,7 @@ test_runner_internal_error_is_audited
 test_blocker_reason_redacts_github_pat_and_spaced_api_key
 test_blocker_note_failure_restores_original_lane
 test_blocked_state_failure_records_a_single_audit_note_and_restores_lane
+test_nonretryable_pr_gate_blocked_state_failure_keeps_summary_consistent
 test_review_with_pr_url_is_noted
 test_review_without_repo_marker_skips_pr_gates
 test_review_with_conflict_is_blocked
