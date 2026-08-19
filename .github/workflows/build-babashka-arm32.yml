@@ -368,6 +368,76 @@ jobs:
           echo "boxp/graal native-image を設定: $BUILT_NI"
           "$BUILT_NI" --version
 
+      - name: Cross-compile ARM32 clibraries for native-image
+        run: |
+          set -euo pipefail
+          echo "=== ARM32 clibraries クロスコンパイル ==="
+          echo "GraalVM native-image が linux-arm32/glibc/ 以下の SVM C ライブラリを必要とするため作成します"
+
+          # NATIVE_IMAGE_BIN から GraalVM ディストリビューションパスを取得
+          GRAALVM_HOME_DIR=$(cd "$(dirname "${NATIVE_IMAGE_BIN}")/../../.." && pwd)
+          ARM32_CLIB_DIR="${GRAALVM_HOME_DIR}/lib/svm/clibraries/linux-arm32/glibc"
+          mkdir -p "${ARM32_CLIB_DIR}"
+          echo "ARM32 clibraries dir: ${ARM32_CLIB_DIR}"
+
+          # 参考: linux-amd64 の clibraries 内容を表示
+          AMD64_CLIB_DIR="${GRAALVM_HOME_DIR}/lib/svm/clibraries/linux-amd64/glibc"
+          if [ -d "${AMD64_CLIB_DIR}" ]; then
+            echo "linux-amd64 clibraries (参考):"
+            ls "${AMD64_CLIB_DIR}/"
+          fi
+
+          ARM32_CC="arm-linux-gnueabihf-gcc"
+          ARM32_AR="arm-linux-gnueabihf-ar"
+          CFLAGS="-g -gdwarf-5 -fPIC -O2 -D_LITTLE_ENDIAN -ffunction-sections -fdata-sections -fvisibility=hidden -D_FORTIFY_SOURCE=0"
+
+          # --- libchelper.a をクロスコンパイル ---
+          LIBCHELPER_SRC="graal/substratevm/src/com.oracle.svm.native.libchelper"
+          LIBCHELPER_BUILD="/tmp/arm32-libchelper-obj"
+          mkdir -p "${LIBCHELPER_BUILD}"
+
+          echo "libchelper を ARM32 向けにコンパイル中..."
+          for c_file in "${LIBCHELPER_SRC}/src/"*.c; do
+            basename_c="${c_file##*/}"
+            obj_file="${LIBCHELPER_BUILD}/${basename_c%.c}.o"
+            echo "  Compiling ${basename_c}..."
+            ${ARM32_CC} ${CFLAGS} \
+              -I"${LIBCHELPER_SRC}/include" \
+              -c "${c_file}" -o "${obj_file}" 2>&1 || {
+              echo "  Warning: ${basename_c} のコンパイルをスキップ (ARM32 非対応)"
+            }
+          done
+
+          OBJ_FILES=($(find "${LIBCHELPER_BUILD}" -name "*.o" 2>/dev/null || true))
+          if [ ${#OBJ_FILES[@]} -gt 0 ]; then
+            ${ARM32_AR} rcs "${ARM32_CLIB_DIR}/libchelper.a" "${OBJ_FILES[@]}"
+            echo "libchelper.a 作成成功: $(ls -la "${ARM32_CLIB_DIR}/libchelper.a")"
+          else
+            echo "Error: libchelper.a のオブジェクトファイルが生成されませんでした"
+            exit 1
+          fi
+
+          # --- libjvm.a をクロスコンパイル (JDK headers はアーキテクチャ非依存) ---
+          JVM_SRC="graal/substratevm/src/com.oracle.svm.native.jvm.posix"
+          JVM_BUILD="/tmp/arm32-libjvm-obj"
+          mkdir -p "${JVM_BUILD}"
+
+          JDK_HEADERS="${BOOT_JDK}/include"
+          JDK_HEADERS_LINUX="${BOOT_JDK}/include/linux"
+
+          echo "libjvm (JvmFuncs.c) を ARM32 向けにコンパイル中..."
+          ${ARM32_CC} ${CFLAGS} -D_GNU_SOURCE \
+            -I"${JDK_HEADERS}" \
+            -I"${JDK_HEADERS_LINUX}" \
+            -c "${JVM_SRC}/src/JvmFuncs.c" \
+            -o "${JVM_BUILD}/JvmFuncs.o" 2>&1 && {
+            ${ARM32_AR} rcs "${ARM32_CLIB_DIR}/libjvm.a" "${JVM_BUILD}/JvmFuncs.o"
+            echo "libjvm.a 作成成功"
+          } || echo "Warning: libjvm.a のコンパイルをスキップ"
+
+          echo "=== ARM32 clibraries 完成 ==="
+          ls -la "${ARM32_CLIB_DIR}/"
+
       - name: Download babashka uberjar
         env:
           BB_VERSION: ${{ steps.version.outputs.version }}
@@ -630,3 +700,4 @@ jobs:
             ./babashka-arm32 --version
             ```
           files: babashka-arm32
+
