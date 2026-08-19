@@ -1622,6 +1622,7 @@
                {:action action
                 :exit-code exit
                 :result result
+                :review-gate review-gate
                 :blocker-category (blocker-category result exit review-gate exception)
                 :blocker-reason (blocker-safe-reason result exit review-gate exception)
                 :finished-at (now-str)})
