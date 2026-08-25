@@ -13,6 +13,8 @@ concurrency:
 
 jobs:
   snapshot:
+    outputs:
+      etcd_image: ${{ steps.etcd-image.outputs.image }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -85,6 +87,14 @@ jobs:
             --limit shanghai-1 --tags etcd_snapshot -e "ansible_ssh_common_args=''" \
             -e "etcd_snapshot_local_dir=$SNAPSHOT_DIR"
 
+      - name: Read source etcd image for restore validation
+        id: etcd-image
+        run: |
+          set -euo pipefail
+          image="$(tr -d '\n' < "$SNAPSHOT_DIR/etcd-image.txt")"
+          test -n "$image"
+          printf 'image=%s\n' "$image" >> "$GITHUB_OUTPUT"
+
       - name: Upload encrypted snapshot to isolated storage
         run: |
           set -euo pipefail
@@ -105,7 +115,7 @@ jobs:
     env:
       SNAPSHOT_BUCKET: arch-etcd-snapshots
       SNAPSHOT_PREFIX: scheduled
-      ETCD_IMAGE: registry.k8s.io/etcd:3.5.16-0
+      ETCD_IMAGE: ${{ needs.snapshot.outputs.etcd_image }}
     steps:
       - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
         with:
@@ -126,8 +136,9 @@ jobs:
         run: |
           set -euo pipefail
           docker pull "$ETCD_IMAGE"
-          docker run --rm --mount "type=bind,source=${{ steps.snapshot.outputs.path }},target=/snapshot.db,readonly" \
-            "$ETCD_IMAGE" etcdutl snapshot restore /snapshot.db --data-dir=/tmp/etcd-restore-validation
+          docker run --rm --entrypoint etcdutl \
+            --mount "type=bind,source=${{ steps.snapshot.outputs.path }},target=/snapshot.db,readonly" \
+            "$ETCD_IMAGE" snapshot restore /snapshot.db --data-dir=/tmp/etcd-restore-validation
 
   alert:
     needs: [snapshot, restore-validation]

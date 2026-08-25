@@ -19,3 +19,4 @@
 - Molecule の controller 側取得先は `prepare.yml` でシナリオ開始時に削除する。`converge.yml` 内で削除すると idempotence pass が二度目の fetch を必ず変更扱いにするため、準備フェーズに限定する。
 - Cloudflare Access 経由の SSH 前に既存 Aqua 定義の `cloudflared` を導入し、alert job の `gh issue` 呼び出しは `GITHUB_REPOSITORY` を明示する。
 - 隔離バックアップの controller fetch が成功したら、control plane の再ステージ用ファイルを削除する。Longhorn PVC と controller 側コピーは保持し、日次実行で control plane のディスクを消費しないことを Molecule で検証する。
+- 復元検証は固定の etcdutl image を使わず、snapshot を生成した static etcd Pod の image を controller 側メタデータとして同時に記録し、その image で実行する。Molecule は取得・記録される image を検証し、workflow はその値を restore job へ渡す。

@@ -113,6 +113,19 @@
           - isolated_snapshots.files[0].size > 0
         fail_msg: "Verified etcd snapshot was not fetched to the isolated controller directory"
 
+    - name: Read snapshot-compatible etcd image metadata
+      ansible.builtin.slurp:
+        src: /tmp/isolated-etcd-snapshots/etcd-image.txt
+      delegate_to: localhost
+      become: false
+      register: isolated_etcd_image
+
+    - name: Assert the isolated snapshot records the source etcd image
+      ansible.builtin.assert:
+        that:
+          - (isolated_etcd_image.content | b64decode | trim) == 'registry.k8s.io/etcd:3.6.0-0'
+        fail_msg: "The isolated snapshot did not record the source static etcd image"
+
     - name: Check isolated backup staging snapshot was removed from control plane
       ansible.builtin.stat:
         path: "/var/lib/etcd-snapshots/{{ isolated_snapshots.files[0].path | basename }}"

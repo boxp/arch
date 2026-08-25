@@ -206,6 +206,44 @@
   no_log: true
   tags: [etcd_snapshot]
 
+- name: Get image used by the static etcd pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
+      - -n
+      - kube-system
+      - get
+      - pod
+      - "etcd-{{ inventory_hostname }}"
+      - -o
+      - "jsonpath={.spec.containers[?(@.name==\"etcd\")].image}"
+  become: true
+  changed_when: false
+  register: etcd_snapshot_image
+  when: etcd_snapshot_local_dir | length > 0
+  tags: [etcd_snapshot]
+
+- name: Assert the static etcd pod image was discovered
+  ansible.builtin.assert:
+    that:
+      - etcd_snapshot_image.stdout | trim | length > 0
+      - etcd_snapshot_image.stdout | trim is match('^\S+$')
+    fail_msg: "Could not discover the image of static etcd pod etcd-{{ inventory_hostname }}"
+  when: etcd_snapshot_local_dir | length > 0
+  tags: [etcd_snapshot]
+
+- name: Record the snapshot-compatible etcd image on isolated backup controller
+  ansible.builtin.copy:
+    content: "{{ etcd_snapshot_image.stdout | trim }}\n"
+    dest: "{{ etcd_snapshot_local_dir }}/etcd-image.txt"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: etcd_snapshot_local_dir | length > 0
+  tags: [etcd_snapshot]
+
 - name: Remove isolated backup staging snapshot from control plane host
   ansible.builtin.command:
     argv:

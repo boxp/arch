@@ -149,6 +149,9 @@
             *"get pod"*"app.kubernetes.io/name=etcd-snapshot-store"*"jsonpath"*)
               echo -n "etcd-snapshot-store-test"
               ;;
+            *"get pod etcd-"*"jsonpath"*)
+              echo -n "registry.k8s.io/etcd:3.6.0-0"
+              ;;
             *"drain"*)
               echo "node/control-plane-test cordoned"
               echo "node/control-plane-test drained"
