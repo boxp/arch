@@ -453,12 +453,12 @@ jobs:
           JDK_HEADERS_LINUX="${BOOT_JDK}/include/linux"
 
           echo "libjvm (JvmFuncs.c) を ARM32 向けにコンパイル中..."
-          ${ARM32_CC} ${CFLAGS} -D_GNU_SOURCE \
+          "$ARM32_CC" "${CFLAGS[@]}" -D_GNU_SOURCE \
             -I"${JDK_HEADERS}" \
             -I"${JDK_HEADERS_LINUX}" \
             -c "${JVM_SRC}/src/JvmFuncs.c" \
             -o "${JVM_BUILD}/JvmFuncs.o" 2>&1 && {
-            ${ARM32_AR} rcs "${ARM32_CLIB_DIR}/libjvm.a" "${JVM_BUILD}/JvmFuncs.o"
+            "$ARM32_AR" rcs "${ARM32_CLIB_DIR}/libjvm.a" "${JVM_BUILD}/JvmFuncs.o"
             echo "libjvm.a 作成成功"
           } || echo "Warning: libjvm.a のコンパイルをスキップ"
 
