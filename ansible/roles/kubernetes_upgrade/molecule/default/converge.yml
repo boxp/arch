@@ -3,6 +3,15 @@
   hosts: all
   become: true
   tasks:
+    # fetch writes to the Ansible controller.  Make each Molecule run
+    # independent of artifacts left by an earlier run on that controller.
+    - name: Remove stale isolated etcd snapshots from the controller
+      ansible.builtin.file:
+        path: /tmp/isolated-etcd-snapshots
+        state: absent
+      delegate_to: localhost
+      become: false
+
     # Test pre_checks tasks
     - name: Run pre-upgrade checks
       ansible.builtin.include_role:

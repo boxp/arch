@@ -13,3 +13,7 @@
 1. Ansible role の Molecule test で PVC 検証済み snapshot の controller fetch を検証する。
 2. `ansible-lint` と `actionlint` で automation/config を検証する。
 3. runbook に RPO/RTO、restore、rollback と production 操作の承認境界を明記する。
+
+## レビュー対応
+
+- Molecule の controller 側取得先は converge の開始時に削除する。これにより、同じ controller での再実行時にも今回の fetch だけを `verify.yml` の `matched == 1` 検証対象にできる。
