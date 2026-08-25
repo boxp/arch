@@ -179,6 +179,33 @@
   changed_when: false
   tags: [etcd_snapshot]
 
+- name: Stage verified etcd snapshot from Longhorn PVC for isolated backup
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl --kubeconfig={{ kubeconfig_path | quote }} {{ kubectl_api_server_arg }} \
+      -n {{ etcd_snapshot_store_namespace | quote }} \
+      exec {{ _etcd_snapshot_store_pod | quote }} -- \
+      cat {{ (etcd_snapshot_store_mount_path ~ "/" ~ _etcd_snapshot_filename) | quote }} \
+      > {{ (_etcd_snapshot_remote_path | dirname) | quote }}/{{ _etcd_snapshot_filename | quote }}
+  args:
+    executable: /bin/bash
+  become: true
+  changed_when: false
+  when: etcd_snapshot_local_dir | length > 0
+  no_log: true
+  tags: [etcd_snapshot]
+
+- name: Fetch verified etcd snapshot to isolated backup controller
+  ansible.builtin.fetch:
+    src: "{{ (_etcd_snapshot_remote_path | dirname) }}/{{ _etcd_snapshot_filename }}"
+    dest: "{{ etcd_snapshot_local_dir }}/"
+    flat: true
+    validate_checksum: true
+  become: true
+  when: etcd_snapshot_local_dir | length > 0
+  no_log: true
+  tags: [etcd_snapshot]
+
 - name: Prune old etcd snapshots from Longhorn PVC
   ansible.builtin.command:
     argv:

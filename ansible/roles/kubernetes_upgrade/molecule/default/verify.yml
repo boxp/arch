@@ -95,6 +95,19 @@
           - pvc_snapshots.files | selectattr('size', 'gt', 0) | list | length > 0
         fail_msg: "etcd snapshot was not stored in the PVC mount"
 
+    - name: Find isolated controller snapshots
+      ansible.builtin.find:
+        paths: /tmp/isolated-etcd-snapshots
+        patterns: "pre-upgrade-*.db"
+      register: isolated_snapshots
+
+    - name: Assert verified snapshot was fetched for isolated backup
+      ansible.builtin.assert:
+        that:
+          - isolated_snapshots.matched == 1
+          - isolated_snapshots.files[0].size > 0
+        fail_msg: "Verified etcd snapshot was not fetched to the isolated controller directory"
+
     # Verify etcd certificate paths exist (mock)
     - name: Check etcd CA certificate exists
       ansible.builtin.stat:

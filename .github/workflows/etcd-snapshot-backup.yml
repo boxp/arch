@@ -1,0 +1,142 @@
+name: Etcd snapshot backup
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 2 * * *'
+
+permissions: {}
+
+concurrency:
+  group: etcd-snapshot-backup
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SNAPSHOT_DIR: ${{ runner.temp }}/etcd-snapshots
+      SNAPSHOT_BUCKET: arch-etcd-snapshots
+      SNAPSHOT_PREFIX: scheduled
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Set up Cloudflare Access credentials
+        run: |
+          set -euo pipefail
+          cf_id="$(aws ssm get-parameter --name bastion-cf-access-client-id --with-decryption --query Parameter.Value --output text)"
+          cf_secret="$(aws ssm get-parameter --name bastion-cf-access-client-secret --with-decryption --query Parameter.Value --output text)"
+          echo "::add-mask::$cf_id"
+          echo "::add-mask::$cf_secret"
+          printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' "$cf_id" "$cf_secret" >> "$GITHUB_ENV"
+
+      - name: Set up SSH connection
+        run: |
+          set -euo pipefail
+          install -d -m 700 ~/.ssh
+          printf '%s\n' '${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}' > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          cat >> ~/.ssh/config <<'EOF'
+          Host bastion
+            HostName bastion.b0xp.io
+            User ansible
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
+            StrictHostKeyChecking accept-new
+          Host 192.168.10.102
+            HostName 192.168.10.102
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          chmod 600 ~/.ssh/config
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: '3.12'
+
+      - uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
+      - name: Create, verify, and fetch snapshot
+        run: |
+          set -euo pipefail
+          mkdir -p "$SNAPSHOT_DIR"
+          cd ansible
+          uv sync
+          uv run ansible-playbook -i inventories/production/hosts.yml playbooks/upgrade-k8s.yml \
+            --limit shanghai-1 --tags etcd_snapshot -e "ansible_ssh_common_args=''" \
+            -e "etcd_snapshot_local_dir=$SNAPSHOT_DIR"
+
+      - name: Upload encrypted snapshot to isolated storage
+        run: |
+          set -euo pipefail
+          snapshot="$(find "$SNAPSHOT_DIR" -maxdepth 1 -type f -name 'pre-upgrade-*.db' -size +0c -print -quit)"
+          test -n "$snapshot"
+          object_key="$SNAPSHOT_PREFIX/$(basename "$snapshot")"
+          aws s3 cp "$snapshot" "s3://$SNAPSHOT_BUCKET/$object_key" --sse AES256 --only-show-errors
+          encryption="$(aws s3api head-object --bucket "$SNAPSHOT_BUCKET" --key "$object_key" --query ServerSideEncryption --output text)"
+          test "$encryption" = AES256
+
+  restore-validation:
+    needs: snapshot
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SNAPSHOT_BUCKET: arch-etcd-snapshots
+      SNAPSHOT_PREFIX: scheduled
+      ETCD_IMAGE: registry.k8s.io/etcd:3.5.16-0
+    steps:
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
+          aws-region: ap-northeast-1
+
+      - name: Download latest isolated snapshot
+        id: snapshot
+        run: |
+          set -euo pipefail
+          key="$(aws s3api list-objects-v2 --bucket "$SNAPSHOT_BUCKET" --prefix "$SNAPSHOT_PREFIX/" --query 'reverse(sort_by(Contents,&LastModified))[0].Key' --output text)"
+          test -n "$key" && test "$key" != None
+          filename="$(basename "$key")"
+          aws s3 cp "s3://$SNAPSHOT_BUCKET/$key" "$RUNNER_TEMP/$filename" --only-show-errors
+          printf 'path=%s\n' "$RUNNER_TEMP/$filename" >> "$GITHUB_OUTPUT"
+
+      - name: Restore snapshot in isolated temporary data directory
+        run: |
+          set -euo pipefail
+          docker pull "$ETCD_IMAGE"
+          docker run --rm --mount "type=bind,source=${{ steps.snapshot.outputs.path }},target=/snapshot.db,readonly" \
+            "$ETCD_IMAGE" etcdutl snapshot restore /snapshot.db --data-dir=/tmp/etcd-restore-validation
+
+  alert:
+    needs: [snapshot, restore-validation]
+    if: ${{ failure() }}
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Create or retain backup failure alert
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          title='etcd snapshot automation failed'
+          existing="$(gh issue list --state open --search \"$title in:title\" --json number --jq '.[0].number')"
+          if [ -z "$existing" ]; then
+            gh issue create --title "$title" --body "The scheduled etcd snapshot, integrity, isolated-storage, or restore-validation job failed. Inspect ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} before attempting any production recovery."
+          fi
