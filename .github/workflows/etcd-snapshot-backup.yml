@@ -19,7 +19,7 @@ jobs:
       contents: read
       id-token: write
     env:
-      SNAPSHOT_DIR: ${{ runner.temp }}/etcd-snapshots
+      SNAPSHOT_DIR: $RUNNER_TEMP/etcd-snapshots
       SNAPSHOT_BUCKET: arch-etcd-snapshots
       SNAPSHOT_PREFIX: scheduled
     steps:
