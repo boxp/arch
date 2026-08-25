@@ -284,7 +284,7 @@ jobs:
           echo "JAVA_HOME=$BOOT_JDK" >> "$GITHUB_ENV"
           echo "$BOOT_JDK/bin" >> "$GITHUB_PATH"
           "$BOOT_JDK/bin/java" -version
-          echo "jmods count: $(ls "$BOOT_JDK/jmods" | wc -l)"
+          echo "jmods count: $(find "$BOOT_JDK/jmods" -maxdepth 1 -type f | wc -l)"
 
       - name: Setup QEMU for ARM32 Docker
         run: |
@@ -413,7 +413,10 @@ jobs:
 
           ARM32_CC="arm-linux-gnueabihf-gcc"
           ARM32_AR="arm-linux-gnueabihf-ar"
-          CFLAGS="-g -gdwarf-5 -fPIC -O2 -D_LITTLE_ENDIAN -ffunction-sections -fdata-sections -fvisibility=hidden -D_FORTIFY_SOURCE=0"
+          CFLAGS=(
+            -g -gdwarf-5 -fPIC -O2 -D_LITTLE_ENDIAN -ffunction-sections
+            -fdata-sections -fvisibility=hidden -D_FORTIFY_SOURCE=0
+          )
 
           # --- libchelper.a をクロスコンパイル ---
           LIBCHELPER_SRC="graal/substratevm/src/com.oracle.svm.native.libchelper"
@@ -425,7 +428,7 @@ jobs:
             basename_c="${c_file##*/}"
             obj_file="${LIBCHELPER_BUILD}/${basename_c%.c}.o"
             echo "  Compiling ${basename_c}..."
-            ${ARM32_CC} ${CFLAGS} \
+            "$ARM32_CC" "${CFLAGS[@]}" \
               -I"${LIBCHELPER_SRC}/include" \
               -c "${c_file}" -o "${obj_file}" 2>&1 || {
               echo "  Warning: ${basename_c} のコンパイルをスキップ (ARM32 非対応)"
@@ -434,7 +437,7 @@ jobs:
 
           mapfile -t OBJ_FILES < <(find "${LIBCHELPER_BUILD}" -name "*.o" 2>/dev/null)
           if [ ${#OBJ_FILES[@]} -gt 0 ]; then
-            ${ARM32_AR} rcs "${ARM32_CLIB_DIR}/libchelper.a" "${OBJ_FILES[@]}"
+            "$ARM32_AR" rcs "${ARM32_CLIB_DIR}/libchelper.a" "${OBJ_FILES[@]}"
             echo "libchelper.a 作成成功: $(ls -la "${ARM32_CLIB_DIR}/libchelper.a")"
           else
             echo "Error: libchelper.a のオブジェクトファイルが生成されませんでした"
@@ -627,7 +630,7 @@ jobs:
                 "${EXTRA_INCLUDES[@]}" \
                 "${UNWIND_DEFINES[@]}" \
                 -lm \
-                -o "/tmp/arm32-query/${base}" 2>/tmp/arm32-query/${base}.err; then
+                -o "/tmp/arm32-query/${base}" 2>"/tmp/arm32-query/${base}.err"; then
               COMPILED=$((COMPILED+1))
               # qemu-armで実行してCAPキャッシュを生成
               if qemu-arm -L /usr/arm-linux-gnueabihf \
@@ -641,7 +644,7 @@ jobs:
             else
               FAILED=$((FAILED+1))
               echo "  Compile error for $base:"
-              cat /tmp/arm32-query/${base}.err 2>/dev/null || true
+              cat "/tmp/arm32-query/${base}.err" 2>/dev/null || true
             fi
           done
           echo "コンパイル成功: ${COMPILED}, キャッシュ生成: ${CACHED}, 失敗: ${FAILED}"

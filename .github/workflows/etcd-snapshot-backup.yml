@@ -137,7 +137,7 @@ jobs:
         run: |
           set -euo pipefail
           title='etcd snapshot automation failed'
-          existing="$(gh issue list --state open --search \"$title in:title\" --json number --jq '.[0].number')"
+          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
           if [ -z "$existing" ]; then
             gh issue create --title "$title" --body "The scheduled etcd snapshot, integrity, isolated-storage, or restore-validation job failed. Inspect ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} before attempting any production recovery."
           fi
