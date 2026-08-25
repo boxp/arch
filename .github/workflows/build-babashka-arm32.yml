@@ -432,7 +432,7 @@ jobs:
             }
           done
 
-          OBJ_FILES=($(find "${LIBCHELPER_BUILD}" -name "*.o" 2>/dev/null || true))
+          mapfile -t OBJ_FILES < <(find "${LIBCHELPER_BUILD}" -name "*.o" 2>/dev/null)
           if [ ${#OBJ_FILES[@]} -gt 0 ]; then
             ${ARM32_AR} rcs "${ARM32_CLIB_DIR}/libchelper.a" "${OBJ_FILES[@]}"
             echo "libchelper.a 作成成功: $(ls -la "${ARM32_CLIB_DIR}/libchelper.a")"
@@ -548,7 +548,7 @@ jobs:
           # ARM32 ターゲット指定
           # Platform.ARM32.getArchitecture() が返す arm32 を指定する
           PLATFORM_OPT=("--target=linux-arm32")
-          echo "Using platform option: ${PLATFORM_OPT[@]}"
+          echo "Using platform option: ${PLATFORM_OPT[*]}"
 
           # ARM32クロスコンパイルではCAnnotationProcessorCache.UseCAPCacheが
           # 自動的にtrueになる（クロスアーキテクチャビルド検出）。
@@ -726,4 +726,3 @@ jobs:
             ./babashka-arm32 --version
             ```
           files: babashka-arm32
-
