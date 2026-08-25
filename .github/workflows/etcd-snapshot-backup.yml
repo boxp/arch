@@ -41,6 +41,12 @@ jobs:
           echo "::add-mask::$cf_secret"
           printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' "$cf_id" "$cf_secret" >> "$GITHUB_ENV"
 
+      - name: Install aqua
+        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        with:
+          aqua_version: v2.62.3
+          working_directory: aqua
+
       - name: Set up SSH connection
         run: |
           set -euo pipefail
@@ -137,7 +143,7 @@ jobs:
         run: |
           set -euo pipefail
           title='etcd snapshot automation failed'
-          existing="$(gh issue list --state open --search "$title in:title" --json number --jq '.[0].number')"
+          existing="$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "$title in:title" --json number --jq '.[0].number')"
           if [ -z "$existing" ]; then
-            gh issue create --title "$title" --body "The scheduled etcd snapshot, integrity, isolated-storage, or restore-validation job failed. Inspect ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} before attempting any production recovery."
+            gh issue create --repo "$GITHUB_REPOSITORY" --title "$title" --body "The scheduled etcd snapshot, integrity, isolated-storage, or restore-validation job failed. Inspect ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} before attempting any production recovery."
           fi

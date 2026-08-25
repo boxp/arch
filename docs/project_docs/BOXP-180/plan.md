@@ -17,3 +17,4 @@
 ## レビュー対応
 
 - Molecule の controller 側取得先は `prepare.yml` でシナリオ開始時に削除する。`converge.yml` 内で削除すると idempotence pass が二度目の fetch を必ず変更扱いにするため、準備フェーズに限定する。
+- Cloudflare Access 経由の SSH 前に既存 Aqua 定義の `cloudflared` を導入し、alert job の `gh issue` 呼び出しは `GITHUB_REPOSITORY` を明示する。
