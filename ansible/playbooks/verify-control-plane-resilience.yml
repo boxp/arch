@@ -1,0 +1,215 @@
+---
+# Read-only post-apply verification for control-plane journal persistence and hardware watchdog.
+#
+# Run AFTER playbooks/control-plane.yml has been applied to a live node:
+#   ansible-playbook -i inventories/production playbooks/verify-control-plane-resilience.yml
+#
+# Checks the EFFECTIVE state (not just configuration files) and writes a machine-readable
+# JSON artifact to {{ verify_artifact_path }} on the controller.
+#
+# Conditions that cause this playbook to FAIL (not warn):
+#   - journald Storage is not "persistent" in the running daemon
+#   - /var/log/journal directory is absent
+#   - RuntimeWatchdogUSec is 0 (watchdog configured but not activated by systemd)
+#   - /dev/watchdog is absent when watchdog is expected
+#
+# This playbook makes NO changes to the target host.
+
+- name: Verify control-plane journal persistence and hardware watchdog
+  hosts: all
+  gather_facts: true
+  become: true
+  vars:
+    # Local path on the Ansible controller where the JSON artifact is written.
+    verify_artifact_dir: "{{ playbook_dir }}/../.verify-artifacts"
+    verify_artifact_path: >-
+      {{ verify_artifact_dir }}/control-plane-resilience-{{ inventory_hostname }}.json
+
+  tasks:
+    # ── journald Storage effective value ──────────────────────────────────────
+
+    - name: Check if /var/log/journal directory exists
+      ansible.builtin.stat:
+        path: /var/log/journal
+      register: journal_dir_stat
+
+    - name: Read journald drop-in config
+      ansible.builtin.slurp:
+        path: /etc/systemd/journald.conf.d/10-persistent-storage.conf
+      register: journald_dropin_slurp
+      failed_when: false
+
+    - name: Determine journald Storage effective value via journalctl
+      ansible.builtin.command: journalctl --header --no-pager
+      register: journalctl_header
+      changed_when: false
+      failed_when: false
+
+    - name: List journal boots to check for previous-boot records
+      ansible.builtin.command: journalctl --list-boots --no-pager
+      register: journalctl_boots
+      changed_when: false
+      failed_when: false
+
+    # ── hardware watchdog ─────────────────────────────────────────────────────
+
+    - name: Check if /dev/watchdog exists
+      ansible.builtin.stat:
+        path: /dev/watchdog
+      register: watchdog_dev_stat
+
+    - name: Read RuntimeWatchdogUSec from running systemd
+      ansible.builtin.command: systemctl show --property=RuntimeWatchdogUSec --value  # noqa: command-instead-of-module
+      register: runtime_watchdog_usec
+      changed_when: false
+      failed_when: false
+
+    - name: Read watchdog drop-in config
+      ansible.builtin.slurp:
+        path: /etc/systemd/system.conf.d/10-watchdog.conf
+      register: watchdog_dropin_slurp
+      failed_when: false
+
+    # ── armbian-ramlog state ──────────────────────────────────────────────────
+
+    - name: Check if armbian-ramlog config exists
+      ansible.builtin.stat:
+        path: /etc/default/armbian-ramlog
+      register: armbian_ramlog_stat
+
+    - name: Read armbian-ramlog ENABLED setting
+      ansible.builtin.command: grep -E '^ENABLED=' /etc/default/armbian-ramlog
+      register: armbian_ramlog_enabled
+      changed_when: false
+      failed_when: false
+      when: armbian_ramlog_stat.stat.exists
+
+    - name: Check whether /var/log is currently backed by armbian-ramlog
+      ansible.builtin.command: findmnt --noheadings --output SOURCE /var/log
+      register: var_log_mount
+      changed_when: false
+      failed_when: false
+
+    # ── assertions (fail loudly on misconfiguration) ──────────────────────────
+
+    - name: Assert /var/log/journal directory exists
+      ansible.builtin.assert:
+        that:
+          - journal_dir_stat.stat.exists
+          - journal_dir_stat.stat.isdir
+        fail_msg: >-
+          /var/log/journal does not exist — journald persistent storage is NOT active.
+          Pre-reboot logs will be lost on the next boot.
+
+    - name: Assert journald drop-in sets Storage=persistent
+      ansible.builtin.assert:
+        that:
+          - journald_dropin_slurp.content is defined
+          - "'Storage=persistent' in (journald_dropin_slurp.content | b64decode)"
+        fail_msg: >-
+          /etc/systemd/journald.conf.d/10-persistent-storage.conf is absent or does not
+          contain Storage=persistent — journald may be running in volatile mode.
+
+    - name: Assert previous boot journal records exist
+      ansible.builtin.assert:
+        that:
+          - journalctl_boots.stdout_lines | length > 1
+        fail_msg: >-
+          Only one boot entry found in journalctl --list-boots.
+          Either this is the first boot after setup, or the persistent journal is not
+          recording previous boots. Verify /var/log/journal is on persistent storage
+          and is not backed by armbian-ramlog (zram).
+      when: journalctl_boots.rc == 0
+
+    - name: Assert /dev/watchdog exists
+      ansible.builtin.assert:
+        that:
+          - watchdog_dev_stat.stat.exists
+        fail_msg: >-
+          /dev/watchdog does not exist — the hardware watchdog cannot activate even if
+          the drop-in is present. Ensure sunxi-wdt (H618) or an equivalent driver is loaded.
+
+    - name: Assert RuntimeWatchdogUSec is non-zero (watchdog actually activated by systemd)
+      ansible.builtin.assert:
+        that:
+          - runtime_watchdog_usec.stdout | trim != '0'
+          - runtime_watchdog_usec.stdout | trim != ''
+        fail_msg: >-
+          RuntimeWatchdogUSec={{ runtime_watchdog_usec.stdout | trim }}.
+          The watchdog drop-in is present but systemd has NOT activated the watchdog.
+          Possible causes: /dev/watchdog absent, WDIOC_SETTIMEOUT EINVAL (timeout exceeds
+          sunxi-wdt max_timeout=16s), or systemd daemon-reexec has not been run yet.
+      when: runtime_watchdog_usec.rc == 0
+
+    - name: Assert armbian-ramlog is not backing /var/log
+      ansible.builtin.assert:
+        that:
+          - var_log_mount.rc != 0 or var_log_mount.stdout | trim == ''
+        fail_msg: >-
+          /var/log is still mounted by armbian-ramlog ({{ var_log_mount.stdout | trim }}).
+          journald persistent storage will be written to zram and lost on hard hang.
+          Ensure armbian-ramlog has been stopped and disabled (node_resilience_disable_armbian_ramlog).
+
+    # ── collect results into machine-readable artifact ─────────────────────────
+
+    - name: Compute previous_boot_exists
+      ansible.builtin.set_fact:
+        _previous_boot_exists: "{{ journalctl_boots.stdout_lines | length > 1 }}"
+      when: journalctl_boots.rc == 0
+
+    - name: Collect verification results
+      ansible.builtin.set_fact:
+        resilience_verify_result:
+          host: "{{ inventory_hostname }}"
+          journald:
+            var_log_journal_exists: "{{ journal_dir_stat.stat.exists }}"
+            dropin_storage_persistent: >-
+              {{
+                journald_dropin_slurp.content is defined and
+                'Storage=persistent' in (journald_dropin_slurp.content | b64decode)
+              }}
+            previous_boot_exists: "{{ _previous_boot_exists | default(false) }}"
+            boot_count: "{{ journalctl_boots.stdout_lines | length if journalctl_boots.rc == 0 else 0 }}"
+          watchdog:
+            device_exists: "{{ watchdog_dev_stat.stat.exists }}"
+            device_path: /dev/watchdog
+            runtime_watchdog_usec: "{{ runtime_watchdog_usec.stdout | trim if runtime_watchdog_usec.rc == 0 else 'unavailable' }}"
+            runtime_watchdog_active: >-
+              {{
+                runtime_watchdog_usec.rc == 0 and
+                runtime_watchdog_usec.stdout | trim != '' and
+                runtime_watchdog_usec.stdout | trim != '0'
+              }}
+            dropin_exists: "{{ watchdog_dropin_slurp.content is defined }}"
+          armbian_ramlog:
+            config_exists: "{{ armbian_ramlog_stat.stat.exists }}"
+            enabled: >-
+              {{
+                armbian_ramlog_stat.stat.exists and
+                armbian_ramlog_enabled is defined and
+                armbian_ramlog_enabled.rc == 0 and
+                'ENABLED=true' in armbian_ramlog_enabled.stdout
+              }}
+            var_log_mounted_by_ramlog: >-
+              {{ var_log_mount.rc == 0 and var_log_mount.stdout | trim != '' }}
+
+    - name: Show verification summary
+      ansible.builtin.debug:
+        var: resilience_verify_result
+
+    - name: Ensure local artifact directory exists
+      ansible.builtin.file:
+        path: "{{ verify_artifact_dir }}"
+        state: directory
+        mode: '0755'
+      delegate_to: localhost
+      become: false
+      run_once: false
+
+    - name: Write machine-readable JSON artifact
+      ansible.builtin.copy:
+        content: "{{ resilience_verify_result | to_nice_json }}\n"
+        dest: "{{ verify_artifact_path }}"
+        mode: '0644'
+      delegate_to: localhost
+      become: false
