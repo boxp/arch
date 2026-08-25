@@ -127,6 +127,7 @@ jobs:
     needs: [snapshot, restore-validation]
     if: ${{ failure() }}
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     permissions:
       issues: write
     steps:
