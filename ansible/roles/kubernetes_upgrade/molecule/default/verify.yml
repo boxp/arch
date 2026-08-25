@@ -100,6 +100,11 @@
         paths: /tmp/isolated-etcd-snapshots
         patterns: "pre-upgrade-*.db"
       register: isolated_snapshots
+      # fetch writes to the Ansible controller, not the managed Molecule
+      # container.  Check it on the controller to exercise that isolation
+      # boundary accurately.
+      delegate_to: localhost
+      become: false
 
     - name: Assert verified snapshot was fetched for isolated backup
       ansible.builtin.assert:
