@@ -113,6 +113,17 @@
           - isolated_snapshots.files[0].size > 0
         fail_msg: "Verified etcd snapshot was not fetched to the isolated controller directory"
 
+    - name: Check isolated backup staging snapshot was removed from control plane
+      ansible.builtin.stat:
+        path: "/var/lib/etcd-snapshots/{{ isolated_snapshots.files[0].path | basename }}"
+      register: isolated_backup_staging_snapshot
+
+    - name: Assert isolated backup staging snapshot was removed from control plane
+      ansible.builtin.assert:
+        that:
+          - not isolated_backup_staging_snapshot.stat.exists
+        fail_msg: "Isolated backup staging snapshot was not removed from the control plane"
+
     # Verify etcd certificate paths exist (mock)
     - name: Check etcd CA certificate exists
       ansible.builtin.stat:
