@@ -3,6 +3,16 @@
   hosts: all
   gather_facts: true
   tasks:
+    # fetch writes to the Ansible controller. Clear artifacts once per
+    # Molecule scenario, before converge; doing it in converge breaks the
+    # idempotence pass, which invokes converge a second time.
+    - name: Remove stale isolated etcd snapshots from the controller
+      ansible.builtin.file:
+        path: /tmp/isolated-etcd-snapshots
+        state: absent
+      delegate_to: localhost
+      become: false
+
     - name: Update package cache
       ansible.builtin.package:
         update_cache: true

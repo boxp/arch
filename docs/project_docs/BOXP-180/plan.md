@@ -16,4 +16,4 @@
 
 ## レビュー対応
 
-- Molecule の controller 側取得先は converge の開始時に削除する。これにより、同じ controller での再実行時にも今回の fetch だけを `verify.yml` の `matched == 1` 検証対象にできる。
+- Molecule の controller 側取得先は `prepare.yml` でシナリオ開始時に削除する。`converge.yml` 内で削除すると idempotence pass が二度目の fetch を必ず変更扱いにするため、準備フェーズに限定する。
