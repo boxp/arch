@@ -40,6 +40,34 @@
   when: not (node_resilience_watchdog | bool)
   notify: Reexec systemd
 
+# /dev/watchdog が存在しない場合、drop-in が書かれても systemd は watchdog を有効化できない。
+# サイレントに成功扱いにせず、明示的に失敗させる。Docker/chroot は watchdog 不在が正常なので除外。
+- name: Check watchdog device exists on real hardware
+  ansible.builtin.stat:
+    path: /dev/watchdog
+  register: watchdog_device_stat
+  become: true
+  when:
+    - node_resilience_watchdog | bool
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+- name: Fail if watchdog device is absent (do not silently treat missing device as success)
+  ansible.builtin.assert:
+    that:
+      - watchdog_device_stat.stat.exists
+    fail_msg: >-
+      /dev/watchdog does not exist on this host.
+      The drop-in /etc/systemd/system.conf.d/10-watchdog.conf has been written
+      but the hardware watchdog CANNOT activate — a hung node will NOT auto-reset.
+      Ensure the sunxi-wdt (H618) driver is loaded and the device node is present
+      before setting node_resilience_watchdog: true.
+  when:
+    - node_resilience_watchdog | bool
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+    - watchdog_device_stat is defined
+
 # hung_task_panic は panic を経由して再起動するため kernel.panic が 0 だと固まったままになる。
 # Armbian の既定は 10 だが、依存せずここで明示する。
 - name: Configure hung task panic sysctl
