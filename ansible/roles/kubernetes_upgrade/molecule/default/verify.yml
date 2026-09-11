@@ -95,6 +95,48 @@
           - pvc_snapshots.files | selectattr('size', 'gt', 0) | list | length > 0
         fail_msg: "etcd snapshot was not stored in the PVC mount"
 
+    - name: Find isolated controller snapshots
+      ansible.builtin.find:
+        paths: /tmp/isolated-etcd-snapshots
+        patterns: "pre-upgrade-*.db"
+      register: isolated_snapshots
+      # fetch writes to the Ansible controller, not the managed Molecule
+      # container.  Check it on the controller to exercise that isolation
+      # boundary accurately.
+      delegate_to: localhost
+      become: false
+
+    - name: Assert verified snapshot was fetched for isolated backup
+      ansible.builtin.assert:
+        that:
+          - isolated_snapshots.matched == 1
+          - isolated_snapshots.files[0].size > 0
+        fail_msg: "Verified etcd snapshot was not fetched to the isolated controller directory"
+
+    - name: Read snapshot-compatible etcd image metadata
+      ansible.builtin.slurp:
+        src: /tmp/isolated-etcd-snapshots/etcd-image.txt
+      delegate_to: localhost
+      become: false
+      register: isolated_etcd_image
+
+    - name: Assert the isolated snapshot records the source etcd image
+      ansible.builtin.assert:
+        that:
+          - (isolated_etcd_image.content | b64decode | trim) == 'registry.k8s.io/etcd:3.6.0-0'
+        fail_msg: "The isolated snapshot did not record the source static etcd image"
+
+    - name: Check isolated backup staging snapshot was removed from control plane
+      ansible.builtin.stat:
+        path: "/var/lib/etcd-snapshots/{{ isolated_snapshots.files[0].path | basename }}"
+      register: isolated_backup_staging_snapshot
+
+    - name: Assert isolated backup staging snapshot was removed from control plane
+      ansible.builtin.assert:
+        that:
+          - not isolated_backup_staging_snapshot.stat.exists
+        fail_msg: "Isolated backup staging snapshot was not removed from the control plane"
+
     # Verify etcd certificate paths exist (mock)
     - name: Check etcd CA certificate exists
       ansible.builtin.stat:

@@ -25,6 +25,10 @@ etcd_snapshot_pod_dir: /var/lib/etcd
 etcd_snapshot_cleanup_pod_file: true
 etcd_snapshot_cleanup_host_file: false
 etcd_snapshot_force: false
+# When set by a CI controller, copy the verified snapshot to this controller-local
+# directory.  Keep this empty for normal upgrade runs so snapshot bytes never
+# leave the control plane unless the dedicated backup workflow requests it.
+etcd_snapshot_local_dir: ""
 etcd_snapshot_store_namespace: etcd-snapshots
 etcd_snapshot_store_pod_selector: app.kubernetes.io/name=etcd-snapshot-store
 etcd_snapshot_store_mount_path: /snapshots
