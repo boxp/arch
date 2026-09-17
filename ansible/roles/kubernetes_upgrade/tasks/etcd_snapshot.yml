@@ -179,6 +179,83 @@
   changed_when: false
   tags: [etcd_snapshot]
 
+- name: Stage verified etcd snapshot from Longhorn PVC for isolated backup
+  ansible.builtin.shell: |
+    set -o pipefail
+    kubectl --kubeconfig={{ kubeconfig_path | quote }} {{ kubectl_api_server_arg }} \
+      -n {{ etcd_snapshot_store_namespace | quote }} \
+      exec {{ _etcd_snapshot_store_pod | quote }} -- \
+      cat {{ (etcd_snapshot_store_mount_path ~ "/" ~ _etcd_snapshot_filename) | quote }} \
+      > {{ (_etcd_snapshot_remote_path | dirname) | quote }}/{{ _etcd_snapshot_filename | quote }}
+  args:
+    executable: /bin/bash
+  become: true
+  changed_when: false
+  when: etcd_snapshot_local_dir | length > 0
+  no_log: true
+  tags: [etcd_snapshot]
+
+- name: Fetch verified etcd snapshot to isolated backup controller
+  ansible.builtin.fetch:
+    src: "{{ (_etcd_snapshot_remote_path | dirname) }}/{{ _etcd_snapshot_filename }}"
+    dest: "{{ etcd_snapshot_local_dir }}/"
+    flat: true
+    validate_checksum: true
+  become: true
+  when: etcd_snapshot_local_dir | length > 0
+  no_log: true
+  tags: [etcd_snapshot]
+
+- name: Get image used by the static etcd pod
+  ansible.builtin.command:
+    argv:
+      - kubectl
+      - "--kubeconfig={{ kubeconfig_path }}"
+      - "{{ kubectl_api_server_arg }}"
+      - -n
+      - kube-system
+      - get
+      - pod
+      - "etcd-{{ inventory_hostname }}"
+      - -o
+      - "jsonpath={.spec.containers[?(@.name==\"etcd\")].image}"
+  become: true
+  changed_when: false
+  register: etcd_snapshot_image
+  when: etcd_snapshot_local_dir | length > 0
+  tags: [etcd_snapshot]
+
+- name: Assert the static etcd pod image was discovered
+  ansible.builtin.assert:
+    that:
+      - etcd_snapshot_image.stdout | trim | length > 0
+      - etcd_snapshot_image.stdout | trim is match('^\S+$')
+    fail_msg: "Could not discover the image of static etcd pod etcd-{{ inventory_hostname }}"
+  when: etcd_snapshot_local_dir | length > 0
+  tags: [etcd_snapshot]
+
+- name: Record the snapshot-compatible etcd image on isolated backup controller
+  ansible.builtin.copy:
+    content: "{{ etcd_snapshot_image.stdout | trim }}\n"
+    dest: "{{ etcd_snapshot_local_dir }}/etcd-image.txt"
+    mode: '0600'
+  delegate_to: localhost
+  become: false
+  when: etcd_snapshot_local_dir | length > 0
+  tags: [etcd_snapshot]
+
+- name: Remove isolated backup staging snapshot from control plane host
+  ansible.builtin.command:
+    argv:
+      - rm
+      - -f
+      - "{{ (_etcd_snapshot_remote_path | dirname) }}/{{ _etcd_snapshot_filename }}"
+  become: true
+  changed_when: false
+  when: etcd_snapshot_local_dir | length > 0
+  no_log: true
+  tags: [etcd_snapshot]
+
 - name: Prune old etcd snapshots from Longhorn PVC
   ansible.builtin.command:
     argv:

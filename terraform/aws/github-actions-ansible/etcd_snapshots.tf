@@ -52,6 +52,27 @@ resource "aws_s3_bucket_lifecycle_configuration" "etcd_snapshots" {
       days_after_initiation = 7
     }
   }
+
+  rule {
+    id     = "expire-scheduled-etcd-snapshots"
+    status = "Enabled"
+
+    filter {
+      prefix = "scheduled/"
+    }
+
+    expiration {
+      days = 30
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30
+    }
+
+    abort_incomplete_multipart_upload {
+      days_after_initiation = 7
+    }
+  }
 }
 
 resource "aws_iam_policy" "etcd_snapshot_s3_write" {
@@ -78,7 +99,8 @@ resource "aws_iam_policy" "etcd_snapshot_s3_write" {
         Condition = {
           StringLike = {
             "s3:prefix" = [
-              "kubernetes-upgrade/*"
+              "kubernetes-upgrade/*",
+              "scheduled/*"
             ]
           }
         }
@@ -90,7 +112,10 @@ resource "aws_iam_policy" "etcd_snapshot_s3_write" {
           "s3:GetObject",
           "s3:PutObject"
         ]
-        Resource = "${aws_s3_bucket.etcd_snapshots.arn}/kubernetes-upgrade/*"
+        Resource = [
+          "${aws_s3_bucket.etcd_snapshots.arn}/kubernetes-upgrade/*",
+          "${aws_s3_bucket.etcd_snapshots.arn}/scheduled/*"
+        ]
       }
     ]
   })
