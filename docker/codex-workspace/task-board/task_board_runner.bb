@@ -21,15 +21,17 @@
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
 (def assignee->model
-  ;; GPT-5.6 performance order: Sol > Terra > Luna.
+  ;; Model performance order: gpt-6-astra > gpt-5.6-sol > gpt-5.6-terra > gpt-5.6-luna.
   ;; codex (default) / codex-terra route to Terra (GPT-5.5-equivalent, cost-efficient default).
-  ;; codex-sol / codex-full route to Sol (highest-performance, complex tasks only).
+  ;; codex-sol / codex-full route to Sol (highest-performance GPT-5.6, complex tasks only).
   ;; codex-mini routes to Luna (lightweight tier).
+  ;; codex-astra routes to gpt-6-astra (GPT-6 generation, most capable, highest cost).
   {"codex"       "gpt-5.6-terra"
    "codex-sol"   "gpt-5.6-sol"
    "codex-full"  "gpt-5.6-sol"
    "codex-terra" "gpt-5.6-terra"
-   "codex-mini"  "gpt-5.6-luna"})
+   "codex-mini"  "gpt-5.6-luna"
+   "codex-astra" "gpt-6-astra"})
 
 (def reasoning-levels #{"minimal" "low" "medium" "high" "xhigh"})
 
@@ -950,7 +952,7 @@
   (str "Fable routing policy:\n"
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
-       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Reserve gpt-6-astra (via codex-astra assignee) for the most demanding tasks requiring the highest capability. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
@@ -962,6 +964,17 @@
        "- Delegate independent investigation, implementation, and verification to lower-cost models whenever practical. Use the codex (gpt-5.6-terra) assignee as the default delegation route, unless CODEX_TASK_BOARD_MODEL overrides it.\n"
        "- Do NOT delegate: tasks smaller than the delegation overhead, tasks requiring shared context or elevated permissions, and tasks requiring final judgment or acceptance.\n"
        "- If a delegated subtask fails, produces insufficient quality, or is unavailable: re-instruct once, verify the result, or handle it directly. Avoid recursive or unbounded delegation chains.\n"
+       "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
+
+(defn codex-astra-policy-prompt [agent]
+  (str "Highest-capability model routing policy:\n"
+       "- You are the " agent " top-tier entry point for this Task Board run. You run on gpt-6-astra, the most capable and highest-cost model available.\n"
+       "- Reserve your own compute for the most demanding subtasks: complex reasoning, cross-cutting architectural decisions, synthesis of ambiguous requirements, and final acceptance checks.\n"
+       "- Aggressively delegate to lower-cost models for any work that does not require gpt-6-astra capability. Use codex-sol (gpt-5.6-sol) for high-complexity subtasks, codex (gpt-5.6-terra) for standard implementation and investigation.\n"
+       "- Do NOT delegate: tasks requiring your full reasoning capacity, tasks with shared context that cannot be serialized, and final quality judgments.\n"
+       "- If a delegated subtask fails or produces insufficient quality: re-instruct with clearer requirements once, then escalate to a higher-tier model or handle directly. Avoid unbounded delegation chains.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
@@ -989,6 +1002,7 @@
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
                     (when (contains? #{"codex-sol" "codex-full"} agent) (codex-sol-policy-prompt agent))
+                    (when (= "codex-astra" agent) (codex-astra-policy-prompt agent))
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
                              "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
@@ -1739,7 +1753,8 @@
                                        ["codex-sol"   "gpt-5.6-sol"]
                                        ["codex-full"  "gpt-5.6-sol"]
                                        ["codex-terra" "gpt-5.6-terra"]
-                                       ["codex-mini"  "gpt-5.6-luna"]]]
+                                       ["codex-mini"  "gpt-5.6-luna"]
+                                       ["codex-astra" "gpt-6-astra"]]]
       (let [actual-model (get-codex-model assignee nil)]
         (if (= actual-model expected-model)
           (println (str "PASS: " assignee " -> " actual-model))
