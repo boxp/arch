@@ -13,13 +13,13 @@ fail() {
 assert_file_contains() {
   local file="$1"
   local pattern="$2"
-  grep -Eq "$pattern" "$file" || fail "expected ${file} to match ${pattern}"
+  grep -Eq -- "$pattern" "$file" || fail "expected ${file} to match ${pattern}"
 }
 
 assert_file_not_contains() {
   local file="$1"
   local pattern="$2"
-  if grep -Eq "$pattern" "$file"; then
+  if grep -Eq -- "$pattern" "$file"; then
     fail "expected ${file} not to match ${pattern}"
   fi
 }
