@@ -13,13 +13,13 @@ fail() {
 assert_file_contains() {
   local file="$1"
   local pattern="$2"
-  grep -Eq "$pattern" "$file" || fail "expected ${file} to match ${pattern}"
+  grep -Eq -- "$pattern" "$file" || fail "expected ${file} to match ${pattern}"
 }
 
 assert_file_not_contains() {
   local file="$1"
   local pattern="$2"
-  if grep -Eq "$pattern" "$file"; then
+  if grep -Eq -- "$pattern" "$file"; then
     fail "expected ${file} not to match ${pattern}"
   fi
 }
@@ -1859,7 +1859,7 @@ test_assignee_model_routing() {
 
 test_assignee_model_tick_routing() {
   local tmp vault state bin args_log assignee expected_model
-  local pairs=("codex:gpt-5.6-terra" "codex-sol:gpt-5.6-sol" "codex-full:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna")
+  local pairs=("codex:gpt-5.6-terra" "codex-sol:gpt-5.6-sol" "codex-full:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna" "codex-astra:gpt-6-astra")
   for pair in "${pairs[@]}"; do
     assignee="${pair%%:*}"
     expected_model="${pair##*:}"
@@ -1887,6 +1887,9 @@ test_assignee_reasoning_tick_routing() {
     "codex-full-medium:gpt-5.6-sol:medium"
     "codex-terra-high:gpt-5.6-terra:high"
     "codex-mini-xhigh:gpt-5.6-luna:xhigh"
+    "codex-astra-low:gpt-6-astra:low"
+    "codex-astra-medium:gpt-6-astra:medium"
+    "codex-astra-high:gpt-6-astra:high"
   )
   for pair in "${pairs[@]}"; do
     IFS=: read -r assignee expected_model level <<<"${pair}"
@@ -1907,7 +1910,7 @@ test_assignee_reasoning_tick_routing() {
 
 test_invalid_reasoning_assignees_are_ignored() {
   local tmp vault state bin args_log assignee
-  local assignees=("codex-terra-ultra" "unknown-high" "fable-high")
+  local assignees=("codex-terra-ultra" "unknown-high" "fable-high" "codex-astra-minimal" "codex-astra-xhigh")
   for assignee in "${assignees[@]}"; do
     tmp="$(mktemp -d)"
     vault="${tmp}/vault"
@@ -1921,6 +1924,46 @@ test_invalid_reasoning_assignees_are_ignored() {
     PATH="${bin}:$PATH" CODEX_FAKE_ARG_LOG="${args_log}" run_tick "${vault}" "${state}" env >"/tmp/task-board-invalid-reasoning-${assignee}.out"
     [[ ! -e "${args_log}" ]] || fail "expected codex not to start for invalid assignee ${assignee}"
     [[ ! -d "${state}/runs/BOXP-502" ]] || fail "expected no run directory for invalid assignee ${assignee}"
+  done
+}
+
+test_codex_astra_assignee_includes_delegation_policy() {
+  local tmp vault state bin prompt_log args_log summary last_message assignee
+  for assignee in "codex-astra" "codex-astra-high"; do
+    tmp="$(mktemp -d)"
+    vault="${tmp}/vault"
+    state="${tmp}/state"
+    bin="${tmp}/bin"
+    prompt_log="${tmp}/codex-prompt.log"
+    args_log="${tmp}/codex-args.log"
+    mkdir -p "${bin}"
+    make_fake_codex "${bin}"
+    make_fake_gh "${bin}"
+    write_board "${vault}" "- [ ] [[Tickets/BOXP-160|BOXP-160: codex-astra]] #ticket status::in-progress"
+    write_ticket "${vault}" BOXP-160 in-progress "${assignee}"
+
+    PATH="${bin}:$PATH" \
+      CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+      CODEX_FAKE_ARG_LOG="${args_log}" \
+      CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+      run_tick "${vault}" "${state}" env >"/tmp/task-board-codex-astra-${assignee}.out"
+
+    assert_file_contains "${prompt_log}" "^Task Board assignee/agent: ${assignee}$"
+    assert_file_contains "${prompt_log}" 'Highest-capability model routing policy'
+    assert_file_contains "${prompt_log}" 'You are the '"${assignee}"' top-tier entry point'
+    assert_file_contains "${prompt_log}" 'gpt-6-astra'
+    assert_file_contains "${prompt_log}" 'Aggressively delegate to lower-cost models'
+    assert_file_contains "${args_log}" "exec.*--model gpt-6-astra"
+    assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-160\|BOXP-160: codex-astra\]\].*status::done'
+    assert_file_contains "${vault}/Tickets/BOXP-160.md" '^status: done$'
+    summary="$(find "${state}/runs/BOXP-160" -name summary.edn -print | sort | tail -n 1)"
+    last_message="$(find "${state}/runs/BOXP-160" -name last-message.md -print | sort | tail -n 1)"
+    assert_file_contains "${summary}" ':agent "'"${assignee}"'"'
+    assert_file_contains "${last_message}" '^TASK_BOARD_RESULT: done$'
+    if [[ "${assignee}" == "codex-astra-high" ]]; then
+      assert_file_contains "${args_log}" '-c model_reasoning_effort=high'
+    fi
+    rm -rf "${tmp}"
   done
 }
 
@@ -2146,6 +2189,7 @@ test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing
 test_invalid_reasoning_assignees_are_ignored
+test_codex_astra_assignee_includes_delegation_policy
 test_concurrent_append_note_no_lost_writes
 test_cross_vault_lock_isolation
 test_concurrent_board_update_no_lost_writes
