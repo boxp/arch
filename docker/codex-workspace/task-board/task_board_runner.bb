@@ -991,6 +991,7 @@
 (defn prompt-for [action ticket-id lane workspace agent]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
+        base-agent (:base-assignee (parse-codex-assignee agent))
         common (str "You are running inside codex-workspace as an automated Task Board worker.\n"
                     "Respond in Japanese when editing notes or summaries for the user.\n"
                     "Task Board lane is the source of truth. Do not move Task Board cards directly; the runner will do that after this run.\n"
@@ -1001,8 +1002,8 @@
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
-                    (when (contains? #{"codex-sol" "codex-full"} agent) (codex-sol-policy-prompt agent))
-                    (when (= "codex-astra" agent) (codex-astra-policy-prompt agent))
+                    (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
+                    (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
                              "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
@@ -1798,6 +1799,14 @@
         (do
           (println (str "FAIL: invalid assignee was supported: " assignee))
           (swap! failures conj assignee))))
+    ;; Test: codex-astra suffix assignees resolve to codex-astra base for policy injection
+    (doseq [assignee ["codex-astra" "codex-astra-low" "codex-astra-medium" "codex-astra-high" "codex-astra-xhigh"]]
+      (let [base (:base-assignee (parse-codex-assignee assignee))]
+        (if (= "codex-astra" base)
+          (println (str "PASS: " assignee " -> base-assignee=" base " (astra policy applies)"))
+          (do
+            (println (str "FAIL: " assignee " expected base-assignee=codex-astra actual=" base))
+            (swap! failures conj (str "astra-base:" assignee))))))
     (let [args (codex-model-profile-args "codex-full" "gpt-test-override" nil)
           actual-model (arg-value args "--model")]
       (if (= actual-model "gpt-test-override")
