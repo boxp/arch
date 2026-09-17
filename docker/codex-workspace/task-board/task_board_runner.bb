@@ -35,6 +35,13 @@
 
 (def reasoning-levels #{"minimal" "low" "medium" "high" "xhigh"})
 
+;; gpt-6-astra supports only low/medium/high reasoning efforts.
+(def astra-reasoning-levels #{"low" "medium" "high"})
+
+;; Per-assignee override; assignees not listed here accept all reasoning-levels.
+(def assignee->reasoning-levels
+  {"codex-astra" astra-reasoning-levels})
+
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
@@ -70,10 +77,11 @@
     :else
     (when-let [[_ base-assignee reasoning-effort]
                (re-matches #"^(.*)-([^-]+)$" (or assignee ""))]
-      (when (and (contains? assignee->model base-assignee)
-                 (contains? reasoning-levels reasoning-effort))
-        {:base-assignee base-assignee
-         :reasoning-effort reasoning-effort}))))
+      (let [allowed-levels (get assignee->reasoning-levels base-assignee reasoning-levels)]
+        (when (and (contains? assignee->model base-assignee)
+                   (contains? allowed-levels reasoning-effort))
+          {:base-assignee base-assignee
+           :reasoning-effort reasoning-effort})))))
 
 (defn supported-assignee? [assignee]
   (or (= "fable" assignee)
@@ -1763,7 +1771,7 @@
             (println (str "FAIL: " assignee " expected=" expected-model " actual=" actual-model))
             (swap! failures conj assignee)))))
     (doseq [[base-assignee expected-model] assignee->model
-            reasoning-effort reasoning-levels]
+            reasoning-effort (get assignee->reasoning-levels base-assignee reasoning-levels)]
       (let [assignee (str base-assignee "-" reasoning-effort)
             args (codex-model-profile-args assignee nil nil)
             actual-model (arg-value args "--model")
@@ -1793,14 +1801,15 @@
           (do
             (println (str "FAIL: " lane " expected action=" expected-action " actual=" action))
             (swap! failures conj lane)))))
-    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"]]
+    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"
+                      "codex-astra-minimal" "codex-astra-xhigh"]]
       (if (not (supported-assignee? assignee))
         (println (str "PASS: unsupported assignee ignored: " assignee))
         (do
           (println (str "FAIL: invalid assignee was supported: " assignee))
           (swap! failures conj assignee))))
-    ;; Test: codex-astra suffix assignees resolve to codex-astra base for policy injection
-    (doseq [assignee ["codex-astra" "codex-astra-low" "codex-astra-medium" "codex-astra-high" "codex-astra-xhigh"]]
+    ;; Test: codex-astra suffix assignees (valid levels only) resolve to codex-astra base for policy injection
+    (doseq [assignee ["codex-astra" "codex-astra-low" "codex-astra-medium" "codex-astra-high"]]
       (let [base (:base-assignee (parse-codex-assignee assignee))]
         (if (= "codex-astra" base)
           (println (str "PASS: " assignee " -> base-assignee=" base " (astra policy applies)"))
