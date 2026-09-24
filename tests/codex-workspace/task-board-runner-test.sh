@@ -303,6 +303,8 @@ test_fable_assignee_runs_via_claude() {
   assert_file_not_contains "${args_log}" 'BOXP-150'
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: fable$'
   assert_file_contains "${prompt_log}" 'Fable routing policy'
+  assert_file_contains "${prompt_log}" 'gpt-6-astra'
+  assert_file_contains "${prompt_log}" 'codex-astra'
   assert_file_contains "${prompt_log}" 'Delegate long investigation, implementation, file editing, and test execution to Codex'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-150\|BOXP-150: fable\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-150.md" '^status: done$'
@@ -441,6 +443,28 @@ test_codex_sol_assignee_includes_delegation_policy() {
   last_message="$(find "${state}/runs/BOXP-152" -name last-message.md -print | sort | tail -n 1)"
   assert_file_contains "${summary}" ':agent "codex-sol"'
   assert_file_contains "${last_message}" '^TASK_BOARD_RESULT: done$'
+}
+
+test_codex_astra_assignee_includes_delegation_policy() {
+  local tmp vault state bin prompt_log assignee
+  for assignee in codex-astra codex-astra-low codex-astra-medium codex-astra-high; do
+    tmp="$(mktemp -d)"
+    vault="${tmp}/vault"
+    state="${tmp}/state"
+    bin="${tmp}/bin"
+    prompt_log="${tmp}/codex-prompt.log"
+    mkdir -p "${bin}"
+    make_fake_codex "${bin}"
+    write_board "${vault}" "- [ ] [[Tickets/BOXP-153|BOXP-153: codex-astra]] #ticket status::in-progress"
+    write_ticket "${vault}" BOXP-153 in-progress "${assignee}"
+    PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+      run_tick "${vault}" "${state}" env >"/tmp/task-board-policy-${assignee}.out"
+    assert_file_contains "${prompt_log}" 'Highest-capability model routing policy'
+    assert_file_contains "${prompt_log}" "You are the ${assignee} top-tier entry point"
+    assert_file_contains "${prompt_log}" 'gpt-6-astra'
+    assert_file_contains "${prompt_log}" 'Aggressively delegate to lower-cost models'
+    assert_file_contains "${vault}/Tickets/BOXP-153.md" '^status: done$'
+  done
 }
 
 test_codex_full_assignee_includes_delegation_policy() {
@@ -1612,7 +1636,7 @@ test_assignee_model_routing() {
 
 test_assignee_model_tick_routing() {
   local tmp vault state bin args_log assignee expected_model
-  local pairs=("codex:gpt-5.6-terra" "codex-sol:gpt-5.6-sol" "codex-full:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna")
+  local pairs=("codex:gpt-5.6-terra" "codex-sol:gpt-5.6-sol" "codex-full:gpt-5.6-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna" "codex-astra:gpt-6-astra")
   for pair in "${pairs[@]}"; do
     assignee="${pair%%:*}"
     expected_model="${pair##*:}"
@@ -1640,6 +1664,9 @@ test_assignee_reasoning_tick_routing() {
     "codex-full-medium:gpt-5.6-sol:medium"
     "codex-terra-high:gpt-5.6-terra:high"
     "codex-mini-xhigh:gpt-5.6-luna:xhigh"
+    "codex-astra-low:gpt-6-astra:low"
+    "codex-astra-medium:gpt-6-astra:medium"
+    "codex-astra-high:gpt-6-astra:high"
   )
   for pair in "${pairs[@]}"; do
     IFS=: read -r assignee expected_model level <<<"${pair}"
@@ -1660,7 +1687,7 @@ test_assignee_reasoning_tick_routing() {
 
 test_invalid_reasoning_assignees_are_ignored() {
   local tmp vault state bin args_log assignee
-  local assignees=("codex-terra-ultra" "unknown-high" "fable-high")
+  local assignees=("codex-terra-ultra" "unknown-high" "fable-high" "codex-astra-minimal" "codex-astra-xhigh")
   for assignee in "${assignees[@]}"; do
     tmp="$(mktemp -d)"
     vault="${tmp}/vault"
@@ -1847,6 +1874,7 @@ test_invalid_idle_timeout_does_not_start_agent
 test_fable_progress_prevents_idle_timeout
 test_codex_sol_assignee_includes_delegation_policy
 test_codex_full_assignee_includes_delegation_policy
+test_codex_astra_assignee_includes_delegation_policy
 test_unsupported_assignee_is_ignored
 test_stale_lock_recovers
 test_planned_shutdown_lock_recovers_immediately

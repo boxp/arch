@@ -21,17 +21,24 @@
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
 (def assignee->model
+  ;; GPT-6 Astra is the highest-capability route and reserves its own capacity
+  ;; for cross-cutting decisions and final acceptance.
   ;; GPT-5.6 performance order: Sol > Terra > Luna.
   ;; codex (default) / codex-terra route to Terra (GPT-5.5-equivalent, cost-efficient default).
   ;; codex-sol / codex-full route to Sol (highest-performance, complex tasks only).
   ;; codex-mini routes to Luna (lightweight tier).
-  {"codex"       "gpt-5.6-terra"
+  {"codex-astra" "gpt-6-astra"
+   "codex"       "gpt-5.6-terra"
    "codex-sol"   "gpt-5.6-sol"
    "codex-full"  "gpt-5.6-sol"
    "codex-terra" "gpt-5.6-terra"
    "codex-mini"  "gpt-5.6-luna"})
 
 (def reasoning-levels #{"minimal" "low" "medium" "high" "xhigh"})
+
+(def assignee->reasoning-levels
+  (assoc (zipmap (keys assignee->model) (repeat reasoning-levels))
+         "codex-astra" #{"low" "medium" "high"}))
 
 (def board-mutex (Object.))
 (def log-mutex (Object.))
@@ -69,7 +76,8 @@
     (when-let [[_ base-assignee reasoning-effort]
                (re-matches #"^(.*)-([^-]+)$" (or assignee ""))]
       (when (and (contains? assignee->model base-assignee)
-                 (contains? reasoning-levels reasoning-effort))
+                 (contains? (get assignee->reasoning-levels base-assignee)
+                            reasoning-effort))
         {:base-assignee base-assignee
          :reasoning-effort reasoning-effort}))))
 
@@ -950,7 +958,7 @@
   (str "Fable routing policy:\n"
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
-       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks, and reserve gpt-6-astra (via the codex-astra assignee) for work requiring the highest capability, cross-cutting decisions, or final acceptance. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
@@ -966,6 +974,17 @@
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
 
+(defn codex-astra-policy-prompt [agent]
+  (str "Highest-capability model routing policy:\n"
+       "- You are the " agent " top-tier entry point for this Task Board run. You run on gpt-6-astra, the most capable and highest-cost model available.\n"
+       "- Reserve your own compute for the most demanding subtasks: complex reasoning, cross-cutting architectural decisions, synthesis of ambiguous requirements, and final acceptance checks.\n"
+       "- Aggressively delegate to lower-cost models for any work that does not require gpt-6-astra capability. Use codex-sol (gpt-5.6-sol) for high-complexity subtasks and codex (gpt-5.6-terra) for standard implementation and investigation.\n"
+       "- Do NOT delegate: tasks requiring your full reasoning capacity, tasks with shared context that cannot be serialized, and final quality judgments.\n"
+       "- If a delegated subtask fails or produces insufficient quality: re-instruct with clearer requirements once, then escalate to a higher-tier model or handle directly. Avoid unbounded delegation chains.\n"
+       "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n\n"))
+
 (defn append-note-instruction [agent ticket-id]
   (let [helper (if (= "fable" agent)
                  "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
@@ -978,6 +997,7 @@
 (defn prompt-for [action ticket-id lane workspace agent]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
+        base-assignee (:base-assignee (parse-codex-assignee agent))
         common (str "You are running inside codex-workspace as an automated Task Board worker.\n"
                     "Respond in Japanese when editing notes or summaries for the user.\n"
                     "Task Board lane is the source of truth. Do not move Task Board cards directly; the runner will do that after this run.\n"
@@ -989,6 +1009,7 @@
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
                     (when (contains? #{"codex-sol" "codex-full"} agent) (codex-sol-policy-prompt agent))
+                    (when (= "codex-astra" base-assignee) (codex-astra-policy-prompt agent))
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
                              "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
@@ -1735,7 +1756,8 @@
           (println (str "FAIL: same-second run IDs must be unique: " first-id " / " second-id))
           (swap! failures conj "same-second run ID uniqueness"))))
 
-    (doseq [[assignee expected-model] [["codex"       "gpt-5.6-terra"]
+    (doseq [[assignee expected-model] [["codex-astra" "gpt-6-astra"]
+                                       ["codex"       "gpt-5.6-terra"]
                                        ["codex-sol"   "gpt-5.6-sol"]
                                        ["codex-full"  "gpt-5.6-sol"]
                                        ["codex-terra" "gpt-5.6-terra"]
@@ -1747,7 +1769,7 @@
             (println (str "FAIL: " assignee " expected=" expected-model " actual=" actual-model))
             (swap! failures conj assignee)))))
     (doseq [[base-assignee expected-model] assignee->model
-            reasoning-effort reasoning-levels]
+            reasoning-effort (get assignee->reasoning-levels base-assignee)]
       (let [assignee (str base-assignee "-" reasoning-effort)
             args (codex-model-profile-args assignee nil nil)
             actual-model (arg-value args "--model")
@@ -1777,7 +1799,7 @@
           (do
             (println (str "FAIL: " lane " expected action=" expected-action " actual=" action))
             (swap! failures conj lane)))))
-    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"]]
+    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "codex-astra-minimal" "codex-astra-xhigh" "unknown-high" "fable-high"]]
       (if (not (supported-assignee? assignee))
         (println (str "PASS: unsupported assignee ignored: " assignee))
         (do
