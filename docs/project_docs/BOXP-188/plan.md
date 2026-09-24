@@ -30,3 +30,12 @@ Astra自体の利用可能reasoning設定とrunnerで許可するsuffixは区別
 - subreaperラッパー配下で`bash tests/codex-workspace/task-board-runner-test.sh`: 全件成功（`task-board-runner tests passed`、終了コード0）。
 - `codex review -c 'model="gpt-5.6-terra"' --uncommitted`: 指摘なし。
 - `git diff --check`: 成功。
+
+## PR競合の解消（2026-09-24）
+
+- PR #12902 の競合ゲート失敗を受け、既存PR headへ最新mainをmergeした。
+- mainにもAstraのモデル割り当て、reasoning制限、専用policyとsuffix対応、内蔵テストが追加されていたため、mainの実装を採用した。Astraの進捗ログには実際のagent名をsourceとして指定する改善を保持した。
+- 自動マージで同名のAstra policy統合テストが重複したため1つに統合し、low/medium/high全てのpolicyとreasoning引数を検証する。FableのAstra案内のassertionも保持した。
+- Terraにrunnerの競合解消を委譲し、親がshellテスト統合と最終確認を担当した。
+- 再検証: 内蔵テストとsubreaper配下のshell統合テストが全件成功（終了コード0）。Terraによる最終差分レビューは `CODEX_REVIEW_RESULT: clean`。`git diff --check`も成功。
+- Trivyは同梱定義で再実行し終了コード0。変更対象外のDockerfileの13件（HIGH 5/LOW 8）は引き続き検出される。

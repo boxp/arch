@@ -48,7 +48,7 @@ RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
       -DGGML_VULKAN=OFF \
       -DLLAMA_BUILD_SERVER=ON \
       -DLLAMA_CURL=OFF \
-      -DGGML_NATIVE=ON \
+      -DGGML_NATIVE=OFF \
       -DCMAKE_C_COMPILER=icx \
       -DCMAKE_CXX_COMPILER=icpx \
     && cmake --build /src/llama.cpp/build-sycl --target llama-server -j"$(nproc)" \
