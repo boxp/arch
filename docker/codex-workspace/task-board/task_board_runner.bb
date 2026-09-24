@@ -1049,7 +1049,7 @@
        "- If a delegated subtask fails or produces insufficient quality: re-instruct with clearer requirements once, then escalate to a higher-tier model or handle directly. Avoid unbounded delegation chains.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
-       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
+       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n\n"))
 
 (defn append-note-instruction [agent ticket-id]
   (let [helper (if (= "fable" agent)
@@ -1955,12 +1955,12 @@
           (println (str "FAIL: same-second run IDs must be unique: " first-id " / " second-id))
           (swap! failures conj "same-second run ID uniqueness"))))
 
-    (doseq [[assignee expected-model] [["codex"       "gpt-5.6-terra"]
+    (doseq [[assignee expected-model] [["codex-astra" "gpt-6-astra"]
+                                       ["codex"       "gpt-5.6-terra"]
                                        ["codex-sol"   "gpt-5.6-sol"]
                                        ["codex-full"  "gpt-5.6-sol"]
                                        ["codex-terra" "gpt-5.6-terra"]
-                                       ["codex-mini"  "gpt-5.6-luna"]
-                                       ["codex-astra" "gpt-6-astra"]]]
+                                       ["codex-mini"  "gpt-5.6-luna"]]]
       (let [actual-model (get-codex-model assignee nil)]
         (if (= actual-model expected-model)
           (println (str "PASS: " assignee " -> " actual-model))

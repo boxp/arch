@@ -308,6 +308,8 @@ test_fable_assignee_runs_via_claude() {
   assert_file_not_contains "${args_log}" 'BOXP-150'
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: fable$'
   assert_file_contains "${prompt_log}" 'Fable routing policy'
+  assert_file_contains "${prompt_log}" 'gpt-6-astra'
+  assert_file_contains "${prompt_log}" 'codex-astra'
   assert_file_contains "${prompt_log}" 'Delegate long investigation, implementation, file editing, and test execution to Codex'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-150\|BOXP-150: fable\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-150.md" '^status: done$'
@@ -1929,7 +1931,7 @@ test_invalid_reasoning_assignees_are_ignored() {
 
 test_codex_astra_assignee_includes_delegation_policy() {
   local tmp vault state bin prompt_log args_log summary last_message assignee
-  for assignee in "codex-astra" "codex-astra-high"; do
+  for assignee in "codex-astra" "codex-astra-low" "codex-astra-medium" "codex-astra-high"; do
     tmp="$(mktemp -d)"
     vault="${tmp}/vault"
     state="${tmp}/state"
@@ -1960,8 +1962,8 @@ test_codex_astra_assignee_includes_delegation_policy() {
     last_message="$(find "${state}/runs/BOXP-160" -name last-message.md -print | sort | tail -n 1)"
     assert_file_contains "${summary}" ':agent "'"${assignee}"'"'
     assert_file_contains "${last_message}" '^TASK_BOARD_RESULT: done$'
-    if [[ "${assignee}" == "codex-astra-high" ]]; then
-      assert_file_contains "${args_log}" '-c model_reasoning_effort=high'
+    if [[ "${assignee}" == codex-astra-* ]]; then
+      assert_file_contains "${args_log}" "-c model_reasoning_effort=${assignee##*-}"
     fi
     rm -rf "${tmp}"
   done
