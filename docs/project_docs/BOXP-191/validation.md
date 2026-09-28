@@ -30,3 +30,7 @@ upgrade/apply両workflowが警告なしで成功。`ghalint 1.5.6 run`も成功�
   exit 4 で失敗した。既存workflowはstderrを出力もartifact保存もしなかったため、原因を
   推測せず、失敗時のstderrをActions logへ表示しplan artifactを `always()` で保存する。
   失敗をskipや成功へ変更していない。再実行結果で実原因を確認する。
+- このretry修正後の全workflow `actionlint` / `ghalint` はローカルツールが未導入のため
+  未実行である。Docker bind mountもこの実行環境では空のディレクトリとして見えるため、
+  GitHub Actions の再実行を検証根拠とする。前段のactionlint成功記録は当時の
+  upgrade/apply workflowに限る。
