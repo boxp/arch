@@ -31,6 +31,8 @@ provisioner:
         kubernetes_upgrade_version: "1.35.1"
         kubernetes_upgrade_package: "1.35.1-1.1"
         crio_upgrade_version: "1.35.0"
+        crio_upgrade_package: "1.35.0-1.1"
+        etcd_snapshot_store_min_free_bytes: 0
         node_role: "control_plane"
         is_first_control_plane: true
         cluster_vip: "127.0.0.1"
