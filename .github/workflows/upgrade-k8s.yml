@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       execution_id:
-        description: 'Unique execution ledger ID (UTC timestamp or approved change ID)'
+        description: 'Ledger correlation ID; primary identity is GitHub run ID + attempt'
         required: true
       kubernetes_version:
         description: 'Target Kubernetes version (e.g., 1.36.1)'
@@ -78,11 +78,11 @@ jobs:
           [[ "$CRIO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
             echo "::error::crio_version must be X.Y.Z"; exit 1;
           }
-          [[ "$K8S_PACKAGE" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.+:~-]+$ ]] || {
-            echo "::error::kubernetes_package has an invalid Debian revision"; exit 1;
+          [[ "$K8S_PACKAGE" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::kubernetes_package must use the supported numeric revision X.Y"; exit 1;
           }
-          [[ "$CRIO_PACKAGE" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.+:~-]+$ ]] || {
-            echo "::error::crio_package has an invalid Debian revision"; exit 1;
+          [[ "$CRIO_PACKAGE" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::crio_package must use the supported numeric revision X.Y"; exit 1;
           }
           [[ "${K8S_PACKAGE%%-*}" = "$K8S_VERSION" ]] || {
             echo "::error::kubernetes package/version mismatch"; exit 1;
@@ -102,7 +102,7 @@ jobs:
           {
             echo "### Dispatch identity"
             echo "- execution_id: \`${EXECUTION_ID}\`"
-            echo "- run: \`${GITHUB_RUN_ID}\` attempt \`${GITHUB_RUN_ATTEMPT}\`"
+            echo "- primary identity (run ID + attempt): \`${GITHUB_RUN_ID}\` attempt \`${GITHUB_RUN_ATTEMPT}\`"
             echo "- ref/SHA: \`${GITHUB_REF}\` / \`${GITHUB_SHA}\`"
             echo "- target: \`${TARGET_NODE}\` (dry_run=${{ inputs.dry_run }})"
             echo "- Kubernetes: \`${K8S_VERSION}\` / \`${K8S_PACKAGE}\`"

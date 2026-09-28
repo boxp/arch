@@ -20,3 +20,13 @@ upgrade/apply両workflowが警告なしで成功。`ghalint 1.5.6 run`も成功�
 独立Codexレビューで指摘されたdry-run候補確認skipは`check_mode: false`へ修正。
 ただしcheck modeはAPT repo/cacheを書き換えないため、既存cacheに候補がなければ不合格となる。
 対象新repoの依存解決成功を意味せず、別の事前APT検証gateが必要。
+
+## 2026-09-28 CI gate retry
+
+- PR #12903 の全体 actionlint は、変更対象外だった `build-babashka-arm32.yml` の
+  ShellCheck 7件（SC2012、SC2086、SC2207、SC2145）で失敗した。`find`、配列展開、
+  `mapfile -d ''` に置換し、ファイル名の空白を含む入力も安全に扱うよう修正した。
+- Plan Ansible の shanghai-2 は SSH 事前確認後に `control-plane.yml --check --diff` が
+  exit 4 で失敗した。既存workflowはstderrを出力もartifact保存もしなかったため、原因を
+  推測せず、失敗時のstderrをActions logへ表示しplan artifactを `always()` で保存する。
+  失敗をskipや成功へ変更していない。再実行結果で実原因を確認する。

@@ -23,6 +23,9 @@ class UpgradeInputTest(unittest.TestCase):
     def test_invalid_selection_versions_and_identifiers_fail(self):
         for values in [dict(TARGET_NODE='all'), dict(TARGET_NODE='golyat-5'),
                        dict(K8S_VERSION='1.37'), dict(K8S_PACKAGE='1.36.1-1.1'),
+                       dict(K8S_PACKAGE='1.37.1-1.1~rc1'),
+                       dict(CRIO_PACKAGE='1.37.1-3.1+build'),
+                       dict(CRIO_PACKAGE='1.37.1-3'),
                        dict(CRIO_PACKAGE='1.37.1*'), dict(CRIO_PACKAGE=''),
                        dict(CRIO_VERSION='1.36.1', CRIO_PACKAGE='1.36.1-3.1'),
                        dict(EXECUTION_ID=''), dict(EXECUTION_ID='$(exit 0)'),

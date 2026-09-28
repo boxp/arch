@@ -2,7 +2,7 @@
 
 - 本番実行はNo-Goのままとし、PR #10832が管理するKubernetes通常baselineを変更しない。
 - Kubernetes更新と通常Ansible Applyを同一の本番cluster concurrency groupで直列化する。
-- 一意な実行IDを必須にし、dispatch入力、ref、SHA、run ID、attemptをrun summaryへ記録する。
+- 台帳の相関IDを必須にし、GitHub run IDとattemptの組を一意な主識別子として、dispatch入力、ref、SHA、run ID、attemptをrun summaryへ記録する。
 - KubernetesとCRI-Oで一致する厳密なpackage revisionを必須にし、wildcardによるpackage解決を禁止する。
 - worker drainに加えてsetup、更新、health check、復旧余裕を確保できるよう更新jobのtimeoutを延長する。
 - snapshot PVCの空き容量を転送前に検査し、atomic renameで公開する。7台の作業中はretentionを無効化し、最初の復旧点を最終安定まで保全する。
@@ -27,3 +27,9 @@ GitHub Actions concurrencyは複数のmutation workflowが同時にrunningにな
 
 独立レビューのretention恒久化懸念は上記の明示的終了gateで扱う。全台安定を知らない
 個別node workflowへ自動pruneを追加すると保全要件を破るため、既定値の変更や自動cleanupは行わない。
+
+## 再試行時の入力・識別検証
+
+- workflow入力gateのpackage形式をrole pre-checkと同じ `X.Y.Z-N.N` に統一する。他のDebian revisionを許可する変更は両gateを同時に行う。
+- `execution_id` は作業前に決める相関IDであり、一意性や冪等性を保証しない。実行の主識別子はGitHub run IDとattemptの組で、台帳には両方を必ず保存する。同じ相関IDのrunが複数見つかった場合は一つを推測で選ばず後続操作を停止して照合する。
+- 相関IDを再利用したdispatchやGitHub rerunは再実行を防止しない。unknown状態ではrun ID/attemptと実機状態の照合が終わるまで再送しない。
