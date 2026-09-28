@@ -18,8 +18,8 @@
 親担当追試: `rhysd/actionlint:1.7.7`コンテナへworkflow本文をstdinで渡し、変更した
 upgrade/apply両workflowが警告なしで成功。`ghalint 1.5.6 run`も成功。
 独立Codexレビューで指摘されたdry-run候補確認skipは`check_mode: false`へ修正。
-ただしcheck modeはAPT repo/cacheを書き換えないため、既存cacheに候補がなければ不合格となる。
-対象新repoの依存解決成功を意味せず、別の事前APT検証gateが必要。
+この旧実装には既存cacheに依存した誤判定が残っており、正式review gateで不合格となった。
+下記の再試行で対象repo専用の隔離APT gateへ置き換える。過去の成功記録は新版の検証を代替しない。
 
 ## 2026-09-28 CI gate retry
 
@@ -34,3 +34,16 @@ upgrade/apply両workflowが警告なしで成功。`ghalint 1.5.6 run`も成功�
   未実行である。Docker bind mountもこの実行環境では空のディレクトリとして見えるため、
   GitHub Actions の再実行を検証根拠とする。前段のactionlint成功記録は当時の
   upgrade/apply workflowに限る。
+
+## 2026-09-28 正式codex-review指摘への再試行
+
+- 指摘: check modeでは対象source/cache更新がskipされ、既存cacheへのmadison照合が誤合格/誤不合格になる。
+- 対応: 対象repoの署名付き索引を一時APT設定/cacheで取得し、指定revisionを照合する。ホストAPT状態を変更しない事前gateを通常/check modeの両方で実行する。
+- GitHub Test Ansibleのlint jobへ`ansible/tests/test_*.py`を追加し、入力/事前gate回帰を継続実行する。
+- Trivy 0.74.0は`--skip-check-update`で内蔵checksによるscanを完走（65 config、13 findings）。既存指摘を含み、クリーン合格や最新checksの検証とはしない。
+
+- check-mode専用playbookをMolecule containerで実行し、正常解決・未存在revision拒否・到達不能repo拒否・署名なしRelease拒否・cleanup成功（ok58/failed0/rescued3/changed0）を確認。
+- APT_CONFIGは設定を最初に読み込む（[Debian apt.conf(5)](https://manpages.debian.org/bookworm/apt/apt.conf.5.en.html#DESCRIPTION)）。後読みによるhook残存という独立review指摘は仕様と異なる。host hookを実行しない回帰fixtureも追加し確認する。
+- host APT hook sentinelを含む最終check-mode単独追試はok62/failed0/rescued3/changed0。ホストhook非実行を確認した。
+- Moleculeのcheckはconverge playbookを`--check`で実行するため、converge.ymlの条件付きimportから専用回帰を呼ぶ。checkを通常convergeより前へ配置し、候補未cacheの状態でも検証する。
+- 最新変更のansible-lint production profileは違反0、syntax-check・入力unit3件・変更workflow actionlint/ghalint・diff-check成功。

@@ -12,6 +12,10 @@
       wildcard package resolution is not permitted.
   tags: [pre_checks]
 
+- name: Verify exact target packages before drain or host APT changes
+  ansible.builtin.include_tasks: apt_preflight.yml
+  tags: [pre_checks]
+
 - name: Verify current kubernetes version
   ansible.builtin.command: kubelet --version
   register: current_kubelet_version

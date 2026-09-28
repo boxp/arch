@@ -14,7 +14,7 @@
 
 GitHub Actions concurrencyは複数のmutation workflowが同時にrunningになることを防ぐ。一方で、GitHubは古いpending runを置換する場合があり、runner終了後にremote processが残っていないことも証明しない。各本番dispatch前にworkflowのrun/attemptとhost上のprocess/package状態を照合し、queuedまたはunknown状態を再送の根拠にしない。
 
-候補packageのAPT解決はrepository切替後のread-only taskをcheck modeでも実行して厳密照合するため、production dry-runを実行するまでは未検証である。CNI/CSI互換性、復旧演習、A/B/C試験、作業窓、例外受容も未達であり、このautomation準備を本番Goまたはticket完了として扱わない。
+候補packageの指定revisionは、対象repository専用の一時APT source/cacheで署名付き索引を取得して照合する。check modeでもこの事前gateを実行し、通常のホストAPT設定・cache・package状態は変更しない。本番対象ホストでの実行と全依存解決は、許可された検証を行うまで未達である。CNI/CSI互換性、復旧演習、A/B/C試験、作業窓、例外受容も未達であり、このautomation準備を本番Goまたはticket完了として扱わない。
 
 ## snapshot保全の終了条件
 
@@ -33,3 +33,15 @@ GitHub Actions concurrencyは複数のmutation workflowが同時にrunningにな
 - workflow入力gateのpackage形式をrole pre-checkと同じ `X.Y.Z-N.N` に統一する。他のDebian revisionを許可する変更は両gateを同時に行う。
 - `execution_id` は作業前に決める相関IDであり、一意性や冪等性を保証しない。実行の主識別子はGitHub run IDとattemptの組で、台帳には両方を必ず保存する。同じ相関IDのrunが複数見つかった場合は一つを推測で選ばず後続操作を停止して照合する。
 - 相関IDを再利用したdispatchやGitHub rerunは再実行を防止しない。unknown状態ではrun ID/attemptと実機状態の照合が終わるまで再送しない。
+
+## 正式review gateへの対応（2026-09-28）
+
+- dry-runではAPT source更新がskipされる一方、旧実装の`apt-cache madison`はホストの既存cacheを参照していた。既存cache次第の誤合格・誤不合格を修正する。
+- 対象minorの署名付きAPT索引とexact revisionを一時ディレクトリ内で検証する。通常実行とcheck modeで同じgateを通し、取得/署名/指定revisionの失敗は停止条件とする。
+- 一時データは成功・失敗ともcleanupし、ホストのsource、trusted key、cache、dpkg状態を検証のために変更しない。
+- 回帰試験では未cacheの対象revision、対象repoにないrevision、取得/署名エラー、隔離とcleanupを確認する。fixtureの成功を候補1.37や本番ホストの依存解決成功へ換算しない。
+
+今回のpackage入力契約は確認済み候補の`1.37.1-1.1` / `1.37.1-3.1`と既存Molecule
+fixtureに合わせた`X.Y.Z-N.N`である。OBS全ディストリビューションの任意revision形式への
+対応は主張しない。将来候補が異なる形式になった場合はworkflow/roleの両gateを同時に
+変更して検証する。未知形式を推測で通す代わりに、現時点では入力gateで停止する。

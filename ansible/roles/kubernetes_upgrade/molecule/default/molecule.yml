@@ -42,5 +42,20 @@ provisioner:
         ansible_remote_tmp: /tmp/.ansible/tmp
         hardware_type: orange_pi_zero3
         architecture: arm64
+scenario:
+  test_sequence:
+    - dependency
+    - cleanup
+    - destroy
+    - syntax
+    - create
+    - prepare
+    - check
+    - converge
+    - idempotence
+    - side_effect
+    - verify
+    - cleanup
+    - destroy
 verifier:
   name: ansible

@@ -4,6 +4,15 @@ kubernetes_upgrade_version: ""       # e.g., "1.35.1"
 kubernetes_upgrade_package: ""       # e.g., "1.35.1-1.1"
 crio_upgrade_version: ""             # e.g., "1.35.1"
 crio_upgrade_package: ""             # exact apt revision, e.g., "1.35.1-1.1"
+kubernetes_upgrade_apt_preflight_temp_root: /var/tmp
+kubernetes_upgrade_apt_preflight_kubernetes_key_url: >-
+  https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_upgrade_version.split('.')[:2] | join('.') }}/deb/Release.key
+kubernetes_upgrade_apt_preflight_crio_key_url: >-
+  https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/deb/Release.key
+kubernetes_upgrade_apt_preflight_kubernetes_repository: >-
+  https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_upgrade_version.split('.')[:2] | join('.') }}/deb/
+kubernetes_upgrade_apt_preflight_crio_repository: >-
+  https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/deb/
 
 # Previous versions (for rollback reference — actual rollback uses etcd snapshot)
 kubernetes_previous_version: ""      # e.g., "1.34"
