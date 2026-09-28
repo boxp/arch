@@ -551,7 +551,7 @@ jobs:
           # ARM32 ターゲット指定
           # Platform.ARM32.getArchitecture() が返す arm32 を指定する
           PLATFORM_OPT=("--target=linux-arm32")
-          echo "Using platform option: ${PLATFORM_OPT[@]}"
+          printf 'Using platform option: %s\n' "${PLATFORM_OPT[*]}"
 
           # ARM32クロスコンパイルではCAnnotationProcessorCache.UseCAPCacheが
           # 自動的にtrueになる（クロスアーキテクチャビルド検出）。
@@ -630,7 +630,7 @@ jobs:
                 "${EXTRA_INCLUDES[@]}" \
                 "${UNWIND_DEFINES[@]}" \
                 -lm \
-                -o "/tmp/arm32-query/${base}" 2>/tmp/arm32-query/${base}.err; then
+                -o "/tmp/arm32-query/${base}" 2>"/tmp/arm32-query/${base}.err"; then
               COMPILED=$((COMPILED+1))
               # qemu-armで実行してCAPキャッシュを生成
               if qemu-arm -L /usr/arm-linux-gnueabihf \
@@ -644,7 +644,7 @@ jobs:
             else
               FAILED=$((FAILED+1))
               echo "  Compile error for $base:"
-              cat /tmp/arm32-query/${base}.err 2>/dev/null || true
+              cat "/tmp/arm32-query/${base}.err" 2>/dev/null || true
             fi
           done
           echo "コンパイル成功: ${COMPILED}, キャッシュ生成: ${CACHED}, 失敗: ${FAILED}"
