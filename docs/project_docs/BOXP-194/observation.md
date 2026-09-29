@@ -51,6 +51,41 @@ Armbian-unofficial 25.08.0-trunk noble / arm64。単一のUbuntu/architecture検
 - Argo CD Application は全て `argocd` namespace にある。正常でない status は `argocd/arc-controller`、`argocd/descheduler`、`argocd/longhorn`、`argocd/prometheus-operator`、`argocd/prometheus-operator-crd`、`argocd/reloader` が `OutOfSync, Healthy`、`argocd/hermes-agent` が `Synced, Degraded`、`argocd/tidb-operator` が `Unknown, Healthy`。
 - `stage-hitohub` では `statefulset/tidb-cluster-pd` が `0/1`、Pod `tidb-cluster-pd-0` が `0/1 CrashLoopBackOff`（観測時 restart 23888）、`statefulset/tidb-cluster-tidb` が `0/1`、Pod `tidb-cluster-tidb-0` が `1/2 CrashLoopBackOff`（restart 68）である。これら、`hermes-agent` ExternalSecret の参照 Secret 不在、control-plane を含む複数 Pod の `DNSConfigForming` は、本観測時点の既存異常・例外受容の具体的な対象として扱い、更新起因の異常と混同しない。
 
-## 判定
+## 初回判定（09:19 UTC）
 
 API と全ノードの Ready、kube-vip Pod/DaemonSet、Longhorn PVC/Volume、snapshot store Pod/PVC の基礎状態は read-only で確認できた。ただし etcd member health、snapshot 非空性・整合性、PVC から復旧 host への実取得、restore 演習は未確認であり、開始 gate を満たしたとは判定しない。更新時には worker 自身が golyat-4 に配置されていることを前提に、別実行主体へ移すか、監視と台帳継続の方法を先に確定する必要がある。
+
+## 10:19 UTC以降の権限済みSSH経路による追跡観測
+
+ユーザー回答で全7台のSSH TCP/22到達が許可された後、現在のCodex Podから各ノードへ
+`hostname`だけを実行し、7/7成功した。shanghai-1の既存admin kubeconfigをsudoで用い、
+API `/readyz` は `ok`、static etcd Pod 3件はReadyだった。権限追加やSecret取得は行っていない。
+
+各etcd Pod内の既存healthcheck client証明書で `endpoint health` と `endpoint status` を実行した。
+3 member全てがproposal commit成功、learnerなし、raft term 5266で、shanghai-3がleaderだった。
+観測時のversionはshanghai-1が3.6.4、shanghai-2/3が3.6.8、applied indexは全memberで
+進行しており、errors欄は空だった。これによりmember healthの未確認は解消したが、version混在は
+既存状態として引き続き記録する。
+
+初回確認時、snapshot PVCは`lost+found`のみでsnapshotが0件だった。10:21:02 UTCに
+`etcd_snapshot_store_retention_count=0`を指定し、既存`etcd_snapshot` roleをshanghai-1だけで実行した。
+roleはsnapshot save/status、hostへのmove、PVC容量確認、size一致、`.part`からのatomic publish、
+非空確認まで成功し、pruneはskipした。保存した最初の復旧点は次の通り。
+
+- filename: `pre-upgrade-20260929T102102.db`
+- PVC path: `/snapshots/pre-upgrade-20260929T102102.db`
+- shanghai-1保全copy: `/var/lib/etcd-snapshots/pre-upgrade-20260929T102102.db`
+- size: 88,285,216 bytes
+- SHA-256: `f6eee8e743fe6d1e7149a61cd72a6ee7e7dd5b8eef6443bbebe90561002eb36d`
+- filesystem: 10 GiB中約9.7 GiB available、retention=0で削除なし
+
+10:24 UTCにPVCからshanghai-2の一意な一時pathへ取得し、SHA-256一致を確認した。
+同Pod imageの`etcdutl 3.6.8`でstatusはhash `4453a47d`、revision `743902070`、
+4,679 keys、total size 88 MB、storage version 3.6.0。別data-dirへの隔離restoreが成功し、
+`member/snap/db` 88,285,184 bytesを確認した。検証用snapshot copyとrestore directoryだけを削除し、
+PVC原本とshanghai-1保全copyは残した。これは取得・隔離restore経路の検証であり、障害時の
+cluster-wide復旧許可やlegacy `rollback.yml`の承認ではない。
+
+更新開始判定はなおNo-Goである。既存異常の明示的な受容者・理由・期限と、golyat-4更新後の
+1時間観測を継続する外部監視・連絡主体が未確定である。本番update/drain/Applyとdry-run dispatchは
+実施していない。

@@ -45,13 +45,13 @@ Calico/Longhornのminor更新は含めない。1.37のsupport、#141572、kind 1
 7. 全台安定後にproduction inventory、各playbook、worker-imageの版とpackageを一致させる。
    lint、x86/native ARM64 Molecule、Plan、レビュー、通常Applyを確認する。
 
-## 本番開始gate（全て未確定または未完了）
+## 本番開始gate
 
 | 項目 | 必要な記録 |
 |---|---|
 | 候補 | Kubernetes/CRI-O release、exact package、署名、hash、各architecture解決、image digest |
-| 作業窓 | UTC開始/終了、復旧余裕、連絡経路 |
-| 停止・観測 | GPU/local-llm最大停止時間、各台/全台観測時間 |
+| 作業窓 | 2026-09-29回答は「いつでも可」。各dispatch前に復旧余裕と連絡経路を再確認する |
+| 停止・観測 | GPU/local-llmは更新完了まで停止可。各ノード更新後1時間、さらに全7台完了後1時間を短縮せず観測する |
 | 既存異常 | namespace/resource、理由、受容者、期限 |
 | 実行主体 | golyat-4のdrain後も継続するクラスタ外実行・監視環境、台帳引継ぎ |
 | 復旧 | 非空snapshot/status、PKI、障害時取得、隔離restore、最初の復旧点保全 |
@@ -101,3 +101,18 @@ snapshot非空性・restore取得経路と運用条件は未達のまま残す�
   `--tags pre_checks`は`--limit`なしであり、対象個別jobでは`--limit`付きのroleが動く。
   「pre-check全体がCP-1だけ」という解釈はしない。台帳にはホスト名ごとの
   APT preflight結果とcluster-wideの確認結果を分けて残す。
+
+## 10:17 UTC以降の運用回答と再確認
+
+- 作業窓は「いつでも可」。GPU/local-llmは現在未使用で、全更新完了後に復帰できればよい。
+  「観測は1hourぐらい」は短縮せず、保守的に各ノード更新後1時間と全7台完了後1時間の
+  両方へ適用する。観測中に新規異常があれば後続を停止する。
+- 現在のCodex Podから全7台へSSH TCP/22で `hostname` が成功した。更新workflowは
+  GitHub-hosted `ubuntu-latest` で実行され、更新前に全7台へのSSHを必須確認するため、
+  golyat-4上のCodex Podに更新処理自体は依存しない。ただしgolyat-4更新後の1時間観測を
+  誰が継続し、どの連絡経路でGo/No-Goを記録するかはdispatch前に明記する。
+- 既存異常の受容者・理由・期限は未回答であり、`observation.md`記載の異常を黙示受容しない。
+  ここが未確定の間はdry-runを含むupgrade workflowをdispatchしない。
+- 10:21 UTCに既存roleをshanghai-1限定、retention=0で実行し、最初の復旧点を作成した。
+  10:24 UTCにPVCからshanghai-2へ取得し、statusと隔離restoreを確認した。詳細は
+  `observation.md`と`execution-ledger.md`に固定する。update/drain/Applyは実施していない。

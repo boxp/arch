@@ -13,6 +13,13 @@ Kubernetes と CRI-O の patch は一致しない。Kubernetes `1.36.5` と CRI-
 
 上流 release の確認元は [Kubernetes releases](https://github.com/kubernetes/kubernetes/releases) と [CRI-O releases](https://github.com/cri-o/cri-o/releases) の GitHub API である。`tag_name` を v1.36 に限定して列挙し、降順先頭がそれぞれ [Kubernetes v1.36.5](https://github.com/kubernetes/kubernetes/releases/tag/v1.36.5) と [CRI-O v1.36.6](https://github.com/cri-o/cri-o/releases/tag/v1.36.6) であることを確認した。取得時刻は 2026-09-29T09:25:38Z UTC である。
 
+10:25 UTCに公式Git refとrelease APIを再確認した。Kubernetes `v1.36.5`のannotated tagは
+`2bbef7e8ec09524ece1462001981a850e381b93f`、peeled commitは
+`ad950d1cc78b0183c476bd4d3f1934c104229727`。CRI-O `v1.36.6`のtag/commitはそれぞれ
+`a145eef01f2d3a17a29e606a208c9d672246d2aa` / `9209fd24af47bd91ffa36f0d47edb7729783be00`。
+release APIのv1.36系先頭も同じtagだった。よって技術候補をKubernetes `1.36.5-1.1`、
+CRI-O `1.36.6-3.1`へ固定する。ただし運用Goを意味せず、dispatch直前にも再確認する。
+
 ## 署名済み APT 索引
 
 | 配布元 | source | `InRelease` の署名鍵 fingerprint | 署名日時 (UTC) | 結果 |
@@ -55,9 +62,28 @@ registry.k8s.io/pause:3.10.2
 registry.k8s.io/etcd:3.6.8-0
 ```
 
-`registry.k8s.io` は manifest request を `asia-northeast1-docker.pkg.dev` へ 307 redirect したが、この環境から redirect 先への TCP connection が 30 秒で timeout した。Docker daemon は利用できるが Buildx は未導入で、`docker manifest inspect` も registry 接続を完了できなかった。独立して Google Artifact Registry の `us-central1` / `europe-west4` endpoint も connection timeout（5 秒、exit 28）だった。このため上記 7 image の manifest-list / per-architecture digest は未確認であり、digest pin の根拠にはできない。
+`registry.k8s.io` はCodex Podからのmanifest requestを`asia-northeast1-docker.pkg.dev`へ307 redirectしたが、
+redirect先へのTCP connectionがtimeoutした。そこで実際にimageを消費するノードのCRI-O経路で
+候補tagをpullし、`crictl inspecti`の`repoDigests`とimage IDを記録した。これはimage cacheへの
+非破壊な追加であり、Pod再作成、manifest変更、control-plane更新は行っていない。
 
-`kubeadm` の候補 list に `etcd:3.6.8-0` が含まれても、稼働中の stacked etcd image を更新してよい根拠にはならない。今回の既存 role は `--etcd-upgrade=false` で etcd を保持する方針であり、候補 list の etcd tag はその方針と異なる自動更新対象ではない。現行 etcd image / digest、既存 snapshot、quorum 状態は本調査の対象外で未確認である。digest と etcd 方針の検証が完了するまで、image の変更や pull は行わない。
+| image | 実解決arch | RepoDigests（index / architecture manifest。出力順はruntime依存） | image ID |
+|---|---|---|---|
+| kube-apiserver:v1.36.5 | arm64 | `4b3e69973a1d58d3c1f670d3477a9b9f14a03a271823113e8e0c9a333eb84f48`, `fd2aeee57db21e3e988ae7845dd549f8fdc036a3de985dc70aad4a69ad8ceb5a` | `54bb97b57920cdc06fcded2c46a3b29681ddf841602f9b1bb35c0c63c40c9029` |
+| kube-controller-manager:v1.36.5 | arm64 | `15f8587dc75f4f473bcff3c514193f192924e1e087936556bec94b5c087a32c3`, `2d717af134451db77ea053c3426bc82edc0e55415eb36e1260313c636ebe9a4d` | `8e3df1f43fc0b1a788ab900fa25fe46c3470c86e6885346209656ed66978107e` |
+| kube-scheduler:v1.36.5 | arm64 | `3804f66442962cefbe11fcd5330d5e7a797bfb3dc8535c322d005637b404a85f`, `a09834fd62d185544da5ab50c137af000a72b933098fbdda822d391df1566ea0` | `c92947fa85446661bd58f061bc43b86e7ec268e3c52c91bcdd684fbfbf771e8f` |
+| kube-proxy:v1.36.5 | arm64 | `5f180e85f05b5b0949fc9d2886ca536c2aa8b8a3b8302b58e7d49c4a645f97a9`, `69a64a13f7159f977d9be0b63c915d1814edd281e2514d2a22bd9a5536237a0a` | `cb6ced62b0f2d15f4950756e2d42073e301a79a03ec6fa2e64015bf8a99d79d2` |
+| kube-proxy:v1.36.5 | amd64 | `54f6c76e0413be01177617704c8b6e2c291a4ec2226a944216b62d5ac1d625df`, `5f180e85f05b5b0949fc9d2886ca536c2aa8b8a3b8302b58e7d49c4a645f97a9` | `a83c93aedd6acfab8933b1e95ad2f47ba024acb3f247919688f075cc992e23e3` |
+| pause:3.10.2 | arm64 | `a433214620b407678934ebd69690a9ed6066247231eacfba181fab20dbc3dbf1`, `f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4` | `3884a337192318652b28de0de1aeb07f446a14f220feb5066f03e93f23ea3b60` |
+| pause:3.10.2 | amd64 | `412c4a7219cb8a299a37337f3d87810c5340095322e15594a1637785adad0f17`, `f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4` | `4a83b15d3ecfe0d916b2d0a7991bc2854a629b8097017c2ee1ff65b30ae4c07c` |
+
+`kube-proxy`と`pause`は両architectureで共通RepoDigestが一致し、architecture固有digestと
+image IDが異なることを確認した。control-plane imageは実配置先のarm64で解決した。
+`coredns/coredns:v1.14.2`は既にclusterのdesired imageと一致し、arm64 cacheのRepoDigestsは
+`3c5a66ca0d50fbd3ddb862857ce2a01a9d74dd409aea4b1fde83a9c68c598754`と
+`e7e6440cfd1e919280958f5b5a6ab2b184d385bba774c12ad2a9e1e4183f90d9`だった。
+
+`kubeadm` の候補 list に `etcd:3.6.8-0` が含まれても、稼働中の stacked etcd image を更新してよい根拠にはならない。今回の既存 role は `--etcd-upgrade=false` で etcd を保持する方針であり、候補 list の etcd tag はその方針と異なる自動更新対象ではない。shanghai-1は既存3.6.4、shanghai-2/3は既存3.6.8で、member healthとsnapshot/restoreは`observation.md`に記録した。3.6.8-0 arm64 cacheのRepoDigestsは`397189418d1a00e500c0605ad18d1baf3b541a1004d768448c367e48071622e5`と`82bf8bc50b9a953f8b477adb63f12637229d8044e85b21501a3c6a4be59afbb8`。本票ではetcd imageを変更しない。
 
 ## 再現コマンドの要点
 
@@ -78,5 +104,6 @@ done
 隔離solverは各target専用のsource/statusと `APT::Architecture` を指定して
 `apt-get --simulate install kubeadm=1.36.5-1.1 kubelet=1.36.5-1.1 kubectl=1.36.5-1.1 cri-o=1.36.6-3.1`
 を実行した。APT設定の無効化先 `etc/apt/-/` が存在しない警告は残るが、全3 targetのexitは0。
-本記録の検証は配布物と空のpackage状態でのbase OS依存解決までであり、本番 dry-run、
-package install、container pull、cluster 操作、snapshot / etcd 検証、workflow dispatch は行っていない。
+本記録のpackage検証は配布物と空のpackage状態でのbase OS依存解決までである。上記の
+container pullは実ノードのcache追加とdigest実解決に限り、本番dry-run、package install、
+Pod再作成、workflow dispatchは行っていない。

@@ -1,4 +1,4 @@
-# BOXP-194 実行台帳（未開始）
+# BOXP-194 実行台帳（更新未開始）
 
 本票の本番update/dry-run dispatchは未実施。以下は空欄の代わりに「未実施」を明記した台帳であり、
 成功記録ではない。候補の固定根拠は `packages.md`、更新前のGET観測は `observation.md` を参照。
@@ -31,6 +31,18 @@
 - 失敗時は後続停止・remote処理照合・復旧結果を記入。unknownを無条件再送しない。
 
 全台後: baseline/image追従PR、CI、通常Apply、監視収束、snapshot保持/cleanupの結果を記入。
+
+## 更新前復旧点と経路検証
+
+| UTC | 操作 | 対象/SHA | 結果 |
+|---|---|---|---|
+| 10:19-10:20 | SSH/API/etcd read-only観測 | 全7台、etcd 3 member | SSH 7/7、API ready、endpoint health 3/3成功 |
+| 10:21:02-10:21:49 | snapshot role、retention=0 | shanghai-1、現在のPR基点 | `pre-upgrade-20260929T102102.db`を作成・status・size一致・atomic publish・非空確認、failed=0 |
+| 10:23 | PVC原本のsize/hash | 88,285,216 bytes | SHA-256 `f6eee8e743fe6d1e7149a61cd72a6ee7e7dd5b8eef6443bbebe90561002eb36d` |
+| 10:24 | PVCからshanghai-2へ取得、隔離restore | etcdutl 3.6.8 | hash `4453a47d`、revision `743902070`、4,679 keys、restore成功 |
+
+検証用copy/data-dirだけを削除し、PVC原本とshanghai-1の保全copyを残した。
+上表はupdate workflowのrun/attemptではなく、復旧gateの事前証跡である。
 
 追加の必須照合:
 

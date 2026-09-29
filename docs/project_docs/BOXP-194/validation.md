@@ -44,3 +44,19 @@ Draft PR [#12934](https://github.com/boxp/arch/pull/12934) の初回head
 [pull_request_target](https://github.com/boxp/arch/actions/runs/36551095051)がsuccess。
 後者のpath-filter・hide-comment・setupは成功、test-ansibleとTerraform Plan等はskipped。
 Ansible Planは発火しなかった。レビュー対応後のheadのCI状態はPRとticket Notesへ記録する。
+
+## 10:17 UTC以降の再開run
+
+今回のrun用worktreeは古い`e53ce4e8f`から作成されていたため、cleanを確認して最新main
+`9ede8bc10`へfast-forwardし、PR #12934の既存2 commitをmergeした。最新mainには
+PR #12903のupgrade safety実装が含まれる。今回の追加差分も台帳だけで、runtime設定は変更しない。
+
+権限済みSSH経路から全7台の到達、API ready、etcd 3 member health/status、最初のsnapshot作成、
+PVCから別control-planeへの取得、SHA-256一致、status、隔離restoreを確認した。実ノードのCRI-Oで
+候補imageをpullし、arm64 control-planeとamd64/arm64 worker imageのRepoDigestを記録した。
+本番update/drain/Applyおよびupgrade workflowのdry-run dispatchは実施していない。
+
+gpt-5.6-terraへの独立調査では、PR #12934のCI成功とdocs-only skip、既存roleのsnapshot read/write
+境界、GitHub-hosted runnerのSSH経路を照合した。指摘時点で未達だったetcd/snapshot/image digestは
+上記の追跡検証で解消した。一方、native ARM64 Molecule、既存異常の例外受容、golyat-4更新後の
+外部監視・連絡主体は未達で、開始判定はNo-Goのままである。
