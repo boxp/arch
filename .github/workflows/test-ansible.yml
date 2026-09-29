@@ -78,6 +78,10 @@ jobs:
           cd "ansible"
           uv sync
 
+      - name: Test upgrade input and preflight gates
+        working-directory: ansible
+        run: uv run python -m unittest discover -s tests -p 'test_*.py' -v
+
       - name: Run ansible-lint
         run: |
           cd "ansible"

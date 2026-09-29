@@ -7,6 +7,10 @@ on:
       - 'ansible/**'
       - '.github/workflows/apply-ansible.yml'
 
+concurrency:
+  group: lolice-production-cluster-mutation
+  cancel-in-progress: false
+
 jobs:
   apply:
     runs-on: ubuntu-latest
