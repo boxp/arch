@@ -79,8 +79,9 @@ BOXP-195での操作であり、今回runでCloseしたものではない。
 
 再開指示に従い、まず台帳を独立レビューしてDraft PRへ公開し、適用されるCIを確認する。
 既存automationは同minor別patch入力に対応しており、現時点で追加runtime変更は不要。
-本番dispatch・update・drain・Applyは禁止。image digest、ARM64実行、etcd member検証、
-snapshot非空性・restore取得経路と運用条件は未達のまま残す。
+この時点では本番dispatch・update・drain・Applyを禁止し、image digest、ARM64実行、
+etcd member検証、snapshot非空性・restore取得経路と運用条件を未達として残した。
+10:17 UTC以降の追跡結果は末尾の節を正とする。
 
 ## 手動gateと既存automationの保証範囲
 
@@ -110,7 +111,9 @@ snapshot非空性・restore取得経路と運用条件は未達のまま残す�
 - 現在のCodex Podから全7台へSSH TCP/22で `hostname` が成功した。更新workflowは
   GitHub-hosted `ubuntu-latest` で実行され、更新前に全7台へのSSHを必須確認するため、
   golyat-4上のCodex Podに更新処理自体は依存しない。ただしgolyat-4更新後の1時間観測を
-  誰が継続し、どの連絡経路でGo/No-Goを記録するかはdispatch前に明記する。
+  誰が継続し、どの連絡経路でGo/No-Goを記録するかはdispatch前に明記する。今回成功したのは
+  Codex PodからのSSHであり、GitHub-hosted runnerからの認証済みSSHは未実証なので、最初の
+  dry-runでworkflow自身の全7台SSH pre-check成功を台帳へ保存する。
 - 既存異常の受容者・理由・期限は未回答であり、`observation.md`記載の異常を黙示受容しない。
   ここが未確定の間はdry-runを含むupgrade workflowをdispatchしない。
 - 10:21 UTCに既存roleをshanghai-1限定、retention=0で実行し、最初の復旧点を作成した。

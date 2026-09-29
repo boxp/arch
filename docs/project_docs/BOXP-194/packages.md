@@ -1,6 +1,8 @@
 # BOXP-194 パッケージ候補・配布物の事前検証
 
-検証日時: 2026-09-29 UTC。本番ホスト、ホスト APT 設定、cluster、workflow dispatch を変更せずに行った外部配布物の調査記録である。
+検証日時: 2026-09-29 UTC。APT署名・package解決は本番ホスト、ホストAPT設定、cluster、
+workflow dispatchを変更せず隔離環境で行った。後続のimage digest確認では実ノードのCRI-O cacheへ
+候補imageを追加したが、Pod、manifest、package、serviceは変更していない。
 
 ## 結論
 
@@ -64,18 +66,21 @@ registry.k8s.io/etcd:3.6.8-0
 
 `registry.k8s.io` はCodex Podからのmanifest requestを`asia-northeast1-docker.pkg.dev`へ307 redirectしたが、
 redirect先へのTCP connectionがtimeoutした。そこで実際にimageを消費するノードのCRI-O経路で
-候補tagをpullし、`crictl inspecti`の`repoDigests`とimage IDを記録した。これはimage cacheへの
-非破壊な追加であり、Pod再作成、manifest変更、control-plane更新は行っていない。
+候補tagをpullし、`crictl inspecti`の`repoDigests`とimage IDを記録した。image cacheの使用量は
+増加したが、Pod再作成、manifest変更、control-plane更新は行っていない。
 
-| image | 実解決arch | RepoDigests（index / architecture manifest。出力順はruntime依存） | image ID |
+表中のdigestは、image列のrepositoryに`@sha256:`を付けた完全なRepoDigestとして
+`crictl inspecti`が返した値である。2値のindex/platform対応は出力だけでは断定せず、raw 2値を保存する。
+
+| image | 取得ノード / arch | RepoDigest SHA-256（raw、順不同） | image ID |
 |---|---|---|---|
-| kube-apiserver:v1.36.5 | arm64 | `4b3e69973a1d58d3c1f670d3477a9b9f14a03a271823113e8e0c9a333eb84f48`, `fd2aeee57db21e3e988ae7845dd549f8fdc036a3de985dc70aad4a69ad8ceb5a` | `54bb97b57920cdc06fcded2c46a3b29681ddf841602f9b1bb35c0c63c40c9029` |
-| kube-controller-manager:v1.36.5 | arm64 | `15f8587dc75f4f473bcff3c514193f192924e1e087936556bec94b5c087a32c3`, `2d717af134451db77ea053c3426bc82edc0e55415eb36e1260313c636ebe9a4d` | `8e3df1f43fc0b1a788ab900fa25fe46c3470c86e6885346209656ed66978107e` |
-| kube-scheduler:v1.36.5 | arm64 | `3804f66442962cefbe11fcd5330d5e7a797bfb3dc8535c322d005637b404a85f`, `a09834fd62d185544da5ab50c137af000a72b933098fbdda822d391df1566ea0` | `c92947fa85446661bd58f061bc43b86e7ec268e3c52c91bcdd684fbfbf771e8f` |
-| kube-proxy:v1.36.5 | arm64 | `5f180e85f05b5b0949fc9d2886ca536c2aa8b8a3b8302b58e7d49c4a645f97a9`, `69a64a13f7159f977d9be0b63c915d1814edd281e2514d2a22bd9a5536237a0a` | `cb6ced62b0f2d15f4950756e2d42073e301a79a03ec6fa2e64015bf8a99d79d2` |
-| kube-proxy:v1.36.5 | amd64 | `54f6c76e0413be01177617704c8b6e2c291a4ec2226a944216b62d5ac1d625df`, `5f180e85f05b5b0949fc9d2886ca536c2aa8b8a3b8302b58e7d49c4a645f97a9` | `a83c93aedd6acfab8933b1e95ad2f47ba024acb3f247919688f075cc992e23e3` |
-| pause:3.10.2 | arm64 | `a433214620b407678934ebd69690a9ed6066247231eacfba181fab20dbc3dbf1`, `f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4` | `3884a337192318652b28de0de1aeb07f446a14f220feb5066f03e93f23ea3b60` |
-| pause:3.10.2 | amd64 | `412c4a7219cb8a299a37337f3d87810c5340095322e15594a1637785adad0f17`, `f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4` | `4a83b15d3ecfe0d916b2d0a7991bc2854a629b8097017c2ee1ff65b30ae4c07c` |
+| kube-apiserver:v1.36.5 | shanghai-1 / arm64 | `4b3e69973a1d58d3c1f670d3477a9b9f14a03a271823113e8e0c9a333eb84f48`, `fd2aeee57db21e3e988ae7845dd549f8fdc036a3de985dc70aad4a69ad8ceb5a` | `54bb97b57920cdc06fcded2c46a3b29681ddf841602f9b1bb35c0c63c40c9029` |
+| kube-controller-manager:v1.36.5 | shanghai-1 / arm64 | `15f8587dc75f4f473bcff3c514193f192924e1e087936556bec94b5c087a32c3`, `2d717af134451db77ea053c3426bc82edc0e55415eb36e1260313c636ebe9a4d` | `8e3df1f43fc0b1a788ab900fa25fe46c3470c86e6885346209656ed66978107e` |
+| kube-scheduler:v1.36.5 | shanghai-1 / arm64 | `3804f66442962cefbe11fcd5330d5e7a797bfb3dc8535c322d005637b404a85f`, `a09834fd62d185544da5ab50c137af000a72b933098fbdda822d391df1566ea0` | `c92947fa85446661bd58f061bc43b86e7ec268e3c52c91bcdd684fbfbf771e8f` |
+| kube-proxy:v1.36.5 | shanghai-1 / arm64 | `5f180e85f05b5b0949fc9d2886ca536c2aa8b8a3b8302b58e7d49c4a645f97a9`, `69a64a13f7159f977d9be0b63c915d1814edd281e2514d2a22bd9a5536237a0a` | `cb6ced62b0f2d15f4950756e2d42073e301a79a03ec6fa2e64015bf8a99d79d2` |
+| kube-proxy:v1.36.5 | golyat-1 / amd64 | `54f6c76e0413be01177617704c8b6e2c291a4ec2226a944216b62d5ac1d625df`, `5f180e85f05b5b0949fc9d2886ca536c2aa8b8a3b8302b58e7d49c4a645f97a9` | `a83c93aedd6acfab8933b1e95ad2f47ba024acb3f247919688f075cc992e23e3` |
+| pause:3.10.2 | shanghai-1 / arm64 | `a433214620b407678934ebd69690a9ed6066247231eacfba181fab20dbc3dbf1`, `f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4` | `3884a337192318652b28de0de1aeb07f446a14f220feb5066f03e93f23ea3b60` |
+| pause:3.10.2 | golyat-1 / amd64 | `412c4a7219cb8a299a37337f3d87810c5340095322e15594a1637785adad0f17`, `f548e0e8e3dc1896ca956272154dde3314e8cc4fde0a57577ee9fa1c63f5baf4` | `4a83b15d3ecfe0d916b2d0a7991bc2854a629b8097017c2ee1ff65b30ae4c07c` |
 
 `kube-proxy`と`pause`は両architectureで共通RepoDigestが一致し、architecture固有digestと
 image IDが異なることを確認した。control-plane imageは実配置先のarm64で解決した。
