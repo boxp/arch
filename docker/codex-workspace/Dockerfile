@@ -2,7 +2,7 @@ FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e57
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
 ARG CODEX_VERSION=0.153.4
-ARG CLAUDE_CODE_VERSION=2.1.283
+ARG CLAUDE_CODE_VERSION=2.1.284
 ARG EVEN_TERMINAL_VERSION=0.8.1
 ARG PI_AGENT_VERSION=0.85.1
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
@@ -19,6 +19,7 @@ ARG KUSTOMIZE_VERSION=5.8.1
 ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV CODEX_TASK_BOARD_CLAUDE_BIN=/usr/bin/claude
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
