@@ -31,3 +31,12 @@
 - 失敗時は後続停止・remote処理照合・復旧結果を記入。unknownを無条件再送しない。
 
 全台後: baseline/image追従PR、CI、通常Apply、監視収束、snapshot保持/cleanupの結果を記入。
+
+追加の必須照合:
+
+- dry-runの成功は実導入・期待版・更新後healthの成功ではない。各ホストのAPT preflightと
+  cluster-wide pre-checkの実行ホスト・結果を分けて保存する。
+- 本番の各dispatch直前に先行全ノードの成功run/attempt・実測版・観測完了を照合する。
+  順序は手動gateであり、workflowの依存jobがskippedでも合格と見なさない。
+- 復旧点が新規か同日snapshot再利用かを記録する。非空性だけでなくstatus/hash/revision・
+  取得・隔離restoreの証跡が必要。未取得なら復旧gateは未達。

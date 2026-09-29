@@ -81,3 +81,23 @@ BOXP-195での操作であり、今回runでCloseしたものではない。
 既存automationは同minor別patch入力に対応しており、現時点で追加runtime変更は不要。
 本番dispatch・update・drain・Applyは禁止。image digest、ARM64実行、etcd member検証、
 snapshot非空性・restore取得経路と運用条件は未達のまま残す。
+
+## 手動gateと既存automationの保証範囲
+
+- dry-runはcheck-modeの到達性・入力・候補package解決の検証であり、候補版の実導入や
+  更新後healthの検証ではない。`health_check.yml`はcheck-mode中の版不一致を失敗にしない。
+  全7台のdry-run成功後も、各台の本番更新後に実測版と全health gateを別に確認する。
+- workflowは対象ノードを個別選択でき、先行jobがskippedでも後続対象jobを実行できる。
+  ノード順序と台間の観測時間は自動強制されない。実行者は各dispatch直前に、確定順序の
+  先行全ノードについて成功run/attempt、実測版、復旧・観測完了を台帳で照合する。
+  不明・未完了なら次台をdispatchしない。`target_node=all`を本票では使わない。
+- snapshot roleは同日PVC snapshotを再利用でき、再利用時の自動検証は非空性のみ。
+  status/hash/revision・鮮度・restore可能性を自動保証しない。新規snapshot作成や
+  retention=0だけでも復旧gateの合格にならない。開始前に実際に保全する最初の復旧点を
+  明示し、権限のあるクラスタ外主体がstatus/hash/revision、取得経路、隔離restoreを
+  検証・記録する。再利用する場合もこの証跡を必須とし、満たせなければ開始しない。
+- cluster-wide pre-check playは`control_plane[0]`だが、各対象roleの`tasks/main.yml`も
+  `pre_checks.yml`をincludeし、`apt_preflight.yml`を実行する。workflow前段の
+  `--tags pre_checks`は`--limit`なしであり、対象個別jobでは`--limit`付きのroleが動く。
+  「pre-check全体がCP-1だけ」という解釈はしない。台帳にはホスト名ごとの
+  APT preflight結果とcluster-wideの確認結果を分けて残す。

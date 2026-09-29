@@ -32,3 +32,15 @@
 65 config / 13 findings（HIGH 5、LOW 8）で前回と一致した。clean合格ではない。
 PRは台帳のみの変更であり、Ansible PlanとARM64 Moleculeはpath条件の対象外。
 CIのskipを本番Plan・ARM64 gateの合格へ読み替えない。
+
+独立レビューはgpt-5.6-terraへ委譲した。dry-runの保証範囲、手動の順序照合、
+snapshot再利用時の追加検証をplanと台帳に反映した。CP-1のみでpre-checkされるという
+指摘は、各node roleの`tasks/main.yml`からのincludeとworkflowのタグ選択を照合し不採用。
+対象別APT preflightとcluster-wide確認を区別して記録するよう明確化した。
+
+Draft PR [#12934](https://github.com/boxp/arch/pull/12934) の初回head
+`bcec99b41ff853e729e8d121616dbbccc7cbc0fb`では
+[Gitleaks](https://github.com/boxp/arch/actions/runs/36551093700)と
+[pull_request_target](https://github.com/boxp/arch/actions/runs/36551095051)がsuccess。
+後者のpath-filter・hide-comment・setupは成功、test-ansibleとTerraform Plan等はskipped。
+Ansible Planは発火しなかった。レビュー対応後のheadのCI状態はPRとticket Notesへ記録する。
