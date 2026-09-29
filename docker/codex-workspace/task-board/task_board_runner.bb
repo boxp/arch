@@ -83,8 +83,17 @@
           {:base-assignee base-assignee
            :reasoning-effort reasoning-effort})))))
 
-(defn supported-assignee? [assignee]
+(def claude-assignee->model
+  {"claude-fable" "claude-fable-5-1"
+   "claude-opus" "claude-opus-5-5"
+   "claude-sonnet" "claude-sonnet-5-5"})
+
+(defn claude-assignee? [assignee]
   (or (= "fable" assignee)
+      (contains? claude-assignee->model assignee)))
+
+(defn supported-assignee? [assignee]
+  (or (claude-assignee? assignee)
       (some? (parse-codex-assignee assignee))))
 
 (defn root []
@@ -533,12 +542,19 @@
    #(delete-lock-if-matches-under-guard! ticket-id expected)))
 
 (defn mark-run! [ticket-id run-id status extra]
-  (let [summary (merge {:ticket ticket-id
+  (let [path (fs/path (run-dir ticket-id run-id) "summary.edn")
+        ;; Later lifecycle transitions replace the summary. Keep the selected
+        ;; assignee so failed and blocked runs remain attributable in history.
+        previous-agent (try
+                         (select-keys (read-edn-file path {}) [:agent])
+                         (catch Exception _ {}))
+        summary (merge previous-agent
+                       {:ticket ticket-id
                         :run-id run-id
                         :status status
                         :updated-at (now-str)}
                        extra)]
-    (write-edn-file! (fs/path (run-dir ticket-id run-id) "summary.edn") summary)))
+    (write-edn-file! path summary)))
 
 (defn close-interrupted-lock! [ticket-id lock reason note]
   (when-let [interrupted-run (:run-id lock)]
@@ -1029,6 +1045,12 @@
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
 
+(defn claude-policy-prompt [agent]
+  (str "Claude Code routing policy:\n"
+       "- You are the " agent " entry point for this Task Board run. Complete the task using the explicitly selected Claude model.\n"
+       "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
+
 (defn codex-sol-policy-prompt [agent]
   (str "High-cost model routing policy:\n"
        "- You are the " agent " high-cost entry point for this Task Board run.\n"
@@ -1052,7 +1074,7 @@
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n\n"))
 
 (defn append-note-instruction [agent ticket-id]
-  (let [helper (if (= "fable" agent)
+  (let [helper (if (claude-assignee? agent)
                  "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
                  "~/.codex/skills/obsidian-task-board/bin/task-board.bb")]
     (str "Progress logging: at each milestone during your work (investigation complete, approach decided, PR created, blocker encountered), "
@@ -1074,6 +1096,7 @@
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
+                    (when (contains? claude-assignee->model agent) (claude-policy-prompt agent))
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
                     (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     "Ticket contents:\n\n" ticket-text "\n\n")
@@ -1478,7 +1501,7 @@
 
 (defn fable-model-args []
   ;; Fable runs via the `claude` CLI. Model defaults to claude CLI's built-in default
-  ;; (claude-sonnet-4-6) unless CODEX_TASK_BOARD_FABLE_MODEL overrides it.
+  ;; or account configuration unless CODEX_TASK_BOARD_FABLE_MODEL overrides it.
   (let [model (System/getenv "CODEX_TASK_BOARD_FABLE_MODEL")
         agent (env "CODEX_TASK_BOARD_FABLE_AGENT" "fable")
         extra (System/getenv "CODEX_TASK_BOARD_FABLE_EXTRA_ARGS")]
@@ -1492,6 +1515,11 @@
       (seq extra)
       (into (str/split extra #"\s+")))))
 
+(defn claude-model-args [agent]
+  (if (= "fable" agent)
+    (fable-model-args)
+    ["--model" (get claude-assignee->model agent)]))
+
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
@@ -1503,9 +1531,8 @@
     (fs/create-dirs dir)
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
-    (let [agent-args (case agent
-                       "fable"
-                       (cond-> ["claude" "--print" "--output-format" "text"]
+    (let [agent-args (if (claude-assignee? agent)
+                       (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "text"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-skip-permissions")
 
@@ -1514,7 +1541,7 @@
                                  (cons (vault) (workspace-add-dirs workspace))))
 
                    true
-                   (into (fable-model-args)))
+                   (into (claude-model-args agent)))
 
                        (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
                           "--skip-git-repo-check"
@@ -1538,11 +1565,11 @@
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
                                               :out (io/file (str stdout-path))
                                               :err (io/file (str stderr-path))}
-                                       (= "fable" agent)
+                                       (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
           {:keys [proc idle-timeout?]} (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
           exit (:exit proc)
-          _ (when (and (= "fable" agent) (fs/exists? stdout-path))
+          _ (when (and (claude-assignee? agent) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path))
                        (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path)
@@ -1955,6 +1982,23 @@
           (println (str "FAIL: same-second run IDs must be unique: " first-id " / " second-id))
           (swap! failures conj "same-second run ID uniqueness"))))
 
+    (doseq [[assignee expected-model] claude-assignee->model]
+      (let [args (claude-model-args assignee)
+            actual-model (arg-value args "--model")]
+        (if (and (= expected-model actual-model)
+                 (supported-assignee? assignee)
+                 (not-any? #{"--agent"} args))
+          (println (str "PASS: " assignee " -> " actual-model " without legacy fable agent"))
+          (do
+            (println (str "FAIL: " assignee " expected=" expected-model " args=" args))
+            (swap! failures conj assignee)))))
+    (if (and (claude-assignee? "fable")
+             (not (contains? claude-assignee->model "fable")))
+      (println "PASS: legacy fable remains a separate Claude route")
+      (do
+        (println "FAIL: legacy fable must remain separate from explicit Claude model mappings")
+        (swap! failures conj "legacy fable route")))
+
     (doseq [[assignee expected-model] [["codex-astra" "gpt-6-astra"]
                                        ["codex"       "gpt-5.6-terra"]
                                        ["codex-sol"   "gpt-5.6-sol"]
@@ -1999,6 +2043,7 @@
             (println (str "FAIL: " lane " expected action=" expected-action " actual=" action))
             (swap! failures conj lane)))))
     (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"
+                      "claude-opus-high" "claude-sonnet-5-5" "claude-unknown"
                       "codex-astra-minimal" "codex-astra-xhigh"]]
       (if (not (supported-assignee? assignee))
         (println (str "PASS: unsupported assignee ignored: " assignee))

@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# CI and local images may pin the real Claude executable. Tests must always use
+# their temporary fake unless a test deliberately supplies a pinned fake path.
+unset CODEX_TASK_BOARD_CLAUDE_BIN
+unset CODEX_TASK_BOARD_FABLE_MODEL
+unset CODEX_TASK_BOARD_FABLE_AGENT
+unset CODEX_TASK_BOARD_FABLE_EXTRA_ARGS
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
 HELPER="${ROOT_DIR}/docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
@@ -90,9 +97,16 @@ set -euo pipefail
 if [[ -n "${CLAUDE_FAKE_ARG_LOG:-}" ]]; then
   printf '%s\n' "$*" >>"${CLAUDE_FAKE_ARG_LOG}"
 fi
+if [[ -n "${CLAUDE_FAKE_EXECUTABLE_LOG:-}" ]]; then
+  printf '%s\n' "$0" >>"${CLAUDE_FAKE_EXECUTABLE_LOG}"
+fi
 
 prompt="$(cat)"
 ticket="$(printf '%s\n' "${prompt}" | sed -n 's/^Ticket: //p' | head -n 1)"
+if [[ -n "${CLAUDE_FAKE_ARG_LOG_DIR:-}" ]]; then
+  mkdir -p "${CLAUDE_FAKE_ARG_LOG_DIR}"
+  printf '%s\n' "$*" >"${CLAUDE_FAKE_ARG_LOG_DIR}/${ticket}.log"
+fi
 if [[ -n "${CLAUDE_FAKE_PROMPT_LOG:-}" ]]; then
   printf '%s\n' "${prompt}" >>"${CLAUDE_FAKE_PROMPT_LOG}"
 fi
@@ -116,6 +130,7 @@ if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
 fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
 printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+exit "${CLAUDE_FAKE_EXIT:-0}"
 EOF
   chmod +x "${bin_dir}/claude"
 }
@@ -305,6 +320,7 @@ test_fable_assignee_runs_via_claude() {
     run_tick "${vault}" "${state}" env >/tmp/task-board-fable.out
 
   assert_file_contains "${args_log}" '.*--print --output-format text.*--agent fable'
+  assert_file_not_contains "${args_log}" '--model'
   assert_file_not_contains "${args_log}" 'BOXP-150'
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: fable$'
   assert_file_contains "${prompt_log}" 'Fable routing policy'
@@ -319,6 +335,126 @@ test_fable_assignee_runs_via_claude() {
   assert_file_contains "${summary}" ':agent "fable"'
   assert_file_contains "${last_message}" '^TASK_BOARD_RESULT: done$'
   assert_file_contains "${events}" '^TASK_BOARD_RESULT: done$'
+}
+
+test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
+  local tmp vault state path_bin pinned_bin args_log args_dir prompt_log executable_log assignee model ticket
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  path_bin="${tmp}/path-bin"
+  pinned_bin="${tmp}/pinned-bin"
+  args_log="${tmp}/claude-args.log"
+  args_dir="${tmp}/claude-args"
+  prompt_log="${tmp}/claude-prompt.log"
+  executable_log="${tmp}/claude-executable.log"
+  mkdir -p "${path_bin}" "${pinned_bin}"
+  make_fake_claude "${path_bin}"
+  make_fake_claude "${pinned_bin}"
+
+  for assignee in claude-fable claude-opus claude-sonnet; do
+    case "${assignee}" in
+      claude-fable) model=claude-fable-5-1; ticket=BOXP-163 ;;
+      claude-opus) model=claude-opus-5-5; ticket=BOXP-164 ;;
+      claude-sonnet) model=claude-sonnet-5-5; ticket=BOXP-165 ;;
+    esac
+    write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: ${assignee}]] #ticket status::in-progress"
+    write_ticket "${vault}" "${ticket}" in-progress "${assignee}"
+
+    PATH="${path_bin}:$PATH" \
+      CODEX_TASK_BOARD_CLAUDE_BIN="${pinned_bin}/claude" \
+      CLAUDE_FAKE_ARG_LOG="${args_log}" \
+      CLAUDE_FAKE_ARG_LOG_DIR="${args_dir}" \
+      CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+      CLAUDE_FAKE_EXECUTABLE_LOG="${executable_log}" \
+      CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+      run_tick "${vault}" "${state}" env >/tmp/task-board-"${assignee}".out
+
+    assert_file_contains "${args_dir}/${ticket}.log" "--model ${model}"
+    assert_file_not_contains "${args_dir}/${ticket}.log" '--agent'
+    assert_file_contains "${prompt_log}" "^Task Board assignee/agent: ${assignee}$"
+    assert_file_contains "${prompt_log}" 'Claude Code routing policy'
+    assert_file_contains "${prompt_log}" "~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note ${ticket}"
+    assert_run_summary_contains "${state}" "${ticket}" ":agent \"${assignee}\""
+    assert_run_summary_contains "${state}" "${ticket}" ':status :succeeded'
+    assert_run_summary_contains "${state}" "${ticket}" ':exit-code 0'
+    assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: done$'
+  done
+
+  [[ "$(sort -u "${executable_log}")" == "${pinned_bin}/claude" ]] \
+    || fail 'expected explicit Claude binary to win over PATH shadow'
+}
+
+test_fable_model_environment_is_legacy_only() {
+  local tmp vault state bin args_log args_dir
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  args_log="${tmp}/claude-args.log"
+  args_dir="${tmp}/claude-args"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-159|BOXP-159: legacy fable]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-160|BOXP-160: fixed opus]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-159 in-progress fable
+  write_ticket "${vault}" BOXP-160 in-progress claude-opus
+
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_FABLE_MODEL=legacy-fable-model \
+    CODEX_TASK_BOARD_FABLE_AGENT=legacy-fable-agent \
+    CODEX_TASK_BOARD_FABLE_EXTRA_ARGS='--model legacy-extra-model' \
+    CLAUDE_FAKE_ARG_LOG="${args_log}" \
+    CLAUDE_FAKE_ARG_LOG_DIR="${args_dir}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-fable-model-scope.out
+
+  assert_file_contains "${args_dir}/BOXP-159.log" '--model legacy-fable-model'
+  assert_file_contains "${args_dir}/BOXP-159.log" '--agent legacy-fable-agent'
+  assert_file_contains "${args_dir}/BOXP-159.log" '--model legacy-extra-model'
+  assert_file_contains "${args_dir}/BOXP-160.log" '--model claude-opus-5-5'
+  assert_file_not_contains "${args_dir}/BOXP-160.log" '--agent'
+  assert_file_not_contains "${args_dir}/BOXP-160.log" 'legacy-fable-model'
+  assert_file_not_contains "${args_dir}/BOXP-160.log" 'legacy-extra-model'
+}
+
+test_explicit_claude_error_and_review_markers_are_processed() {
+  local tmp vault state bin summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-161|BOXP-161: claude error]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-161 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_EXIT=1 run_tick "${vault}" "${state}" env >/tmp/task-board-claude-error.out
+  assert_file_contains "${vault}/Tickets/BOXP-161.md" '^status: blocked$'
+  assert_run_summary_contains "${state}" BOXP-161 ':agent "claude-sonnet"'
+  assert_run_summary_contains "${state}" BOXP-161 ':status :blocked'
+  assert_run_summary_contains "${state}" BOXP-161 ':exit-code 1'
+
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-162|BOXP-162: claude review]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-162 in-progress claude-opus
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-claude-review.out
+  assert_file_contains "${vault}/Tickets/BOXP-162.md" '^status: review$'
+  assert_run_summary_contains "${state}" BOXP-162 ':agent "claude-opus"'
+  summary="$(find "${state}/runs/BOXP-162" -name last-message.md -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" '^TASK_BOARD_RESULT: review$'
+
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-166|BOXP-166: missing marker]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-166 in-progress claude-fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_MESSAGE='completed without a task board marker' run_tick "${vault}" "${state}" env >/tmp/task-board-claude-missing-marker.out
+  assert_file_contains "${vault}/Tickets/BOXP-166.md" '^status: blocked$'
+  assert_run_summary_contains "${state}" BOXP-166 ':blocker-category "pr-gate-pr-url"'
+
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-167|BOXP-167: blocked marker]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-167 in-progress claude-fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-claude-blocked-marker.out
+  assert_file_contains "${vault}/Tickets/BOXP-167.md" '^status: blocked$'
 }
 
 test_fable_agent_idle_timeout_retries() {
@@ -353,7 +489,7 @@ test_fable_agent_idle_timeout_retries() {
 }
 
 test_fable_idle_timeout_stops_agent_children() {
-  local tmp vault state bin child_pid_file child_pid
+  local tmp vault state bin child_pid_file child_pid child_state
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
@@ -373,7 +509,11 @@ test_fable_idle_timeout_stops_agent_children() {
 
   child_pid="$(cat "${child_pid_file}")"
   if kill -0 "${child_pid}" 2>/dev/null; then
-    fail "expected idle timeout to stop Fable child process ${child_pid}"
+    # The process group is stopped correctly, but its orphaned child can remain
+    # as a zombie until PID 1 reaps it. A zombie has no running agent process.
+    child_state="$(ps -o stat= -p "${child_pid}" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "${child_state}" == Z* ]] || ! kill -0 "${child_pid}" 2>/dev/null \
+      || fail "expected idle timeout to stop Fable child process ${child_pid} (state=${child_state:-unknown})"
   fi
 }
 
@@ -490,8 +630,10 @@ test_unsupported_assignee_is_ignored() {
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   make_fake_claude "${bin}"
-  write_board "${vault}" "- [ ] [[Tickets/BOXP-151|BOXP-151: human]] #ticket status::in-progress"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-151|BOXP-151: human]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-168|BOXP-168: invalid Claude route]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-151 in-progress boxp
+  write_ticket "${vault}" BOXP-168 in-progress claude-unknown
 
   PATH="${bin}:$PATH" \
     CODEX_FAKE_START_LOG="${codex_log}" \
@@ -501,7 +643,9 @@ test_unsupported_assignee_is_ignored() {
   [[ ! -e "${codex_log}" ]] || fail "expected codex not to start for unsupported assignee"
   [[ ! -e "${claude_log}" ]] || fail "expected claude not to start for unsupported assignee"
   [[ ! -d "${state}/runs/BOXP-151" ]] || fail "expected no run directory for unsupported assignee"
+  [[ ! -d "${state}/runs/BOXP-168" ]] || fail "expected no run directory for invalid Claude assignee"
   assert_file_contains "${vault}/Tickets/BOXP-151.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-168.md" '^status: in-progress$'
   assert_file_contains /tmp/task-board-unsupported-assignee.out 'no supported-agent-assigned Task Board tickets'
 }
 
@@ -2133,6 +2277,9 @@ BOARD
 
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
+test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
+test_fable_model_environment_is_legacy_only
+test_explicit_claude_error_and_review_markers_are_processed
 test_fable_agent_idle_timeout_retries
 test_fable_idle_timeout_stops_agent_children
 test_invalid_idle_timeout_does_not_start_agent
