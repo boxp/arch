@@ -27,3 +27,7 @@ PR #13032のimage buildは既存のeven-terminal/node-ptyが要求するC++コ�
 ## codex-review gate再試行
 
 前回のP1指摘（Aqua/Terraformの無関係なバージョン巻戻し）に対応し、最新mainを既存PRへ通常mergeする。mainとの最終diffに依存import/checksumの変更がないことを確認し、validator・既存runner・recurring-eventsのテストとPR全体の独立レビュー、更新headのCIを再検証する。force-pushや別PR作成は行わない。
+
+## テストnamespaceロードのreview再試行
+
+前回のP1指摘（`load-file`後の`require`がclasspath上のライブラリを探索する懸念）に対応し、テストnamespaceを明示してロード済みvalidatorへ直接aliasを設定する。現行Babashkaでは修正前も成功しているが、`.bb`をclasspath libraryとして扱う必要をなくす。CI指定のBabashka 1.12.218とローカル版でvalidatorを実行し、既存runner・recurring-events、独立レビューと更新headの全CIを確認する。

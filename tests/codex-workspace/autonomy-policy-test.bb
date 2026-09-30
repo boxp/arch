@@ -6,7 +6,9 @@
 
 (def root (-> (io/file *file*) .getParentFile .getParentFile .getParent))
 (load-file (str root "/docker/codex-workspace/task-board/autonomy_policy.bb"))
-(require '[autonomy-policy :as policy])
+;; The validator is a .bb script loaded explicitly, not a classpath library.
+(in-ns 'autonomy-policy-test)
+(alias 'policy 'autonomy-policy)
 
 (def fixture-dir (str root "/tests/codex-workspace/fixtures/autonomy/"))
 (defn fixture [name] (read-string (slurp (str fixture-dir name ".edn"))))
