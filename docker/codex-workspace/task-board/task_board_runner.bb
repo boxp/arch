@@ -1969,7 +1969,7 @@
     ;; Versioned projections cannot affect legacy candidate selection while off.
     ;; Include every existing route and lane, plus unsupported/new v2 routes.
     (doseq [[lane status] lane->status
-            assignee (concat (keys assignee->model)
+            assignee (concat (keys assignee->model) (keys claude-assignee->model)
                              ["fable" "codex-sol-high" "claude-fable" "unknown"])
             intent ["run" "pause" "cancel" "wait-human"]]
       (let [expected (when (supported-assignee? assignee)
