@@ -1,0 +1,12 @@
+PASS kubelet 1.36.5-1.1 amd64 dd46254567ee60672c0737a4b5392fae7f3419a876ab6885c48178501ac2fd64: signed-index/raw-deb/prior-ledger一致
+PASS kubectl 1.36.5-1.1 amd64 e633cdbcb535b0fdf8bd9aa643cfd0ad080889fddb6794d2af0bbaaf110e7956: signed-index/raw-deb/prior-ledger一致
+PASS kubeadm 1.36.5-1.1 amd64 bbb6899335ca6890be4c007e10c66303f68281d342f2e7345db9c03cd5175da9: signed-index/raw-deb/prior-ledger一致
+PASS cri-o 1.36.6-3.1 amd64 eab2589f0e6ce4a2f64eec531932ef9f04b9e530233ce2d1cab0c451f6c00e66: signed-index/raw-deb/prior-ledger一致
+INDEX pkgs.k8s.io_core:_stable:_v1.36_deb_Packages 9d60cc41640cc8e54ec7263dc1cab17ebc35c08704523be09ff50e7c1dd066f5 prior_match=False
+INDEX download.opensuse.org_repositories_isv:_cri-o:_stable:_v1.36_deb_Packages fa4857d533b53ce7ee1af7ea9fa5a00313d03da002204cd1152bdc8767f8381d prior_match=False
+PASS kubectl 1.36.5-1.1 arm64 65cdaa8817b252ef493768ba8976b292eccddcfd3d5e9b6d24bbb67ec58027fb: signed-index/raw-deb/prior-ledger一致
+PASS kubeadm 1.36.5-1.1 arm64 d08b7af27b50d539d91d9c5af69f73feff0e59455fe74d478e0a009cc2bdf260: signed-index/raw-deb/prior-ledger一致
+PASS cri-o 1.36.6-3.1 arm64 f3331b9bf9a0de8d59d50b26efdfe37f6e91c33dabcf334455832f8010f3aafb: signed-index/raw-deb/prior-ledger一致
+PASS kubelet 1.36.5-1.1 arm64 946ae8079938f6be46ec48ff317005d03c87de09a5b557627f348a11c080e0ef: signed-index/raw-deb/prior-ledger一致
+INDEX pkgs.k8s.io_core:_stable:_v1.36_deb_Packages 9d60cc41640cc8e54ec7263dc1cab17ebc35c08704523be09ff50e7c1dd066f5 prior_match=False
+INDEX download.opensuse.org_repositories_isv:_cri-o:_stable:_v1.36_deb_Packages fa4857d533b53ce7ee1af7ea9fa5a00313d03da002204cd1152bdc8767f8381d prior_match=False
