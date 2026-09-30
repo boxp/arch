@@ -30,3 +30,9 @@ PR全体の独立レビュー追加指摘: I6のACをローカルmock/契約検�
 今回の検証: 4文書のリンク/フェンス・5 YAML例parse・git diff --check成功。低コストgpt-5.6-terra CLIの全文入力による独立レビューはcleanで、旧writer fencingと対称rollbackを確認。terra_workerは利用不可、review skillsは未検出、Trivyは実行ファイル不在。本番操作は行っていない。
 
 全体レビュー追加指摘: 目的とscopeの一致に必要な不変要求snapshot・ticket要求版・SHA-256をcontrol原本の必須fieldにし、ownerだけが新要求を発行する契約を追加。I1/I2/I3に改変/別目的/agent本文変更の拒否とNotes更新の非影響を記載。digestを意味的達成の証明にせず、固定ACに対するinspectを必須とした。
+
+今回のPR gate指摘対応: `claude-fable` 新routeの実装責務をI2へ明示。supported-assignee・起動分岐・明示 `claude-fable-5-1` model/profile・helper/prompt/output/retryの整合、旧route新規/再試行拒否、fixture CLI smokeをAC/testとした。I7には当該成果を含むimageと実CLI smokeの配布gateを追加。親ticketは文書のみでrunner/既存cardを変更しない。
+
+独立レビュー追加対応: control API/interface・mock/CAS契約のI3をI2より先へ依存順を修正。新routeの起動をowner選択済み新規v2 canaryに限定し、legacy/opt-in不在/state不正/canary未許可の0起動testと、shadow/有効化後の旧route拒否境界を追記。
+
+最終検証: 4文書のローカルリンク・見出し/行anchor・コードフェンス、5 YAML例parse、git diff --check成功。gpt-5.6-terra CLIへ全文入力で独立レビューを委譲し、追加2指摘を修正後の再レビューは `CODEX_REVIEW_RESULT: clean`。terra_workerは利用不可。Trivyは未インストール。runtime実装は変更せず、後続I2/I7に検証責務を記載した。

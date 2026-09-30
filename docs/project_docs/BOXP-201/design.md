@@ -8,7 +8,7 @@ agentが understand → act → inspect → clarify → adjust を方針境界�
 
 ## 現状の根拠と人手待ち
 
-調査基準はarch commit `e53ce4e8f`（今回worktree）と2026-09-30のvault `Projects/codex-task-board-runner/spec.md`、BOXP-201/192/42のNotes。稼働imageの実装をこのcommitと同一とは断定しない。vault仕様にはclaude-*がある一方、この基準commitの`assignee->model`にはCodex系と互換fableだけがある。移行前にimage digest/CLI/対応routeをread-only確認する。新規Claude割当は`claude-fable`（`claude-fable-5-1`）を使い、旧`fable`は新規割当禁止。新routeの利用は配布確認後。
+調査基準はarch commit `e53ce4e8f`（今回worktree）と2026-09-30のvault `Projects/codex-task-board-runner/spec.md`、BOXP-201/192/42のNotes。稼働imageの実装をこのcommitと同一とは断定しない。vault仕様にはclaude-*がある一方、この基準commitの`assignee->model`にはCodex系と互換fableだけがある。移行前にimage digest/CLI/対応routeをread-only確認する。新規Claude割当は`claude-fable`（`claude-fable-5-1`）を使い、旧`fable`は新規割当禁止。新routeの実装は[分割ticket I2](implementation-tickets.md#i2-execution-intent停止優先とclaude-route実装)が担当し、候補判定・Claude起動分岐・明示model/profile・helper/prompt・retryを一貫して対応させる。旧routeの新規/再試行候補は拒否し、既存cardの個別移行はowner判断とする。新routeの対象はownerが選択した新規v2 canaryの有効なopt-in/control原本一致に限定し、legacy ticketでは起動しない。I7でその実装を含むimageの実CLI smokeと配布確認を通過するまで新routeを有効化しない。
 
 | 現動作・根拠 | 人間の負荷・設計への示唆 |
 | --- | --- |
