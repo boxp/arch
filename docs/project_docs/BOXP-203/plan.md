@@ -19,3 +19,7 @@ BOXP-201のI1としてversion付きの実行intent/control、Decision Packet、r
 ## 配布とrollback
 
 本ticketはライブラリとfixtureのみ。featureは環境変数を指定しても有効化できない。Deployment、Argo、cron、credential、既存ticketを変更せず、永続state migrationもしない。rollbackは本PRのmerge commitをrevertするだけでよい。
+
+## CI gate再試行
+
+PR #13032のimage buildは既存のeven-terminal/node-ptyが要求するC++コンパイラ不足で失敗した。全CI成功の受け入れ条件を満たすため、Dockerfileの既存makeをbuild-essentialに置き換え、node-gypが使うpython3を明示する。バージョンやrunner設定は変更しない。PR buildはpush無効なので本番配布は行わない。対象テスト、追加差分レビュー、GitHub image buildを確認して同じPRを更新する。

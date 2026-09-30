@@ -25,6 +25,7 @@ SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       bash-completion \
+      build-essential \
       ca-certificates \
       chromium \
       curl \
@@ -36,9 +37,9 @@ RUN apt-get update \
       less \
       lsb-release \
       locales \
-      make \
       mosh \
       openssh-server \
+      python3 \
       ripgrep \
       sudo \
       tar \
