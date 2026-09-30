@@ -104,7 +104,7 @@ status: pending
 
 `owner: boxp`は宛先表示、packetの`status`は投影だけであり、いずれも権限を付与しない。agent/runner/helperによるpacket・Notes・frontmatterの編集、`resolved`の記載、owner名の自己申告は承認として受理しない。自由文コメントやPR merge/green CIも承認eventの代用にしない。
 
-I6で、agent実行環境とは別の信頼境界にowner専用承認サービスとappend-only承認storeを置く。ownerが認証済みセッションで対象packetの内容・option・head/revisionを確認し選択する。サービスは認証providerの不変subject IDを取得し、owner allowlistと照合して署名eventを発行する。表示名からactorを決めない。runner/agentのcredentialは発行・更新・削除APIを呼べず、署名鍵・store書込権限・ownerセッションを持たない。vault内コピーは表示用で、承認の原本ではない。分離を実証できるまではhuman-dependent effectを実装・有効化しない。
+I6ではowner専用承認サービスとappend-only承認storeの契約をmockで検証し、実owner回答や本番承認は扱わない。I7の別repo/別PRで実サービス/storeを実装・配置し、agent実行環境とは別の信頼境界に置く。ownerが認証済みセッションで対象packetの内容・option・head/revisionを確認し選択する。サービスは認証providerの不変subject IDを取得し、owner allowlistと照合して署名eventを発行する。表示名からactorを決めない。runner/agentのcredentialは発行・更新・削除APIを呼べず、署名鍵・store書込権限・ownerセッションを持たない。vault内コピーは表示用で、承認の原本ではない。分離を実証できるまではhuman-dependent effectを実装・有効化しない。
 
 承認event最小例（synthetic、実際の許可ではない）:
 
