@@ -32,4 +32,4 @@ tests/codex-workspace/task-board-runner-test.sh
 tests/codex-workspace/recurring-events-test.sh
 ```
 
-CIは既存Task Board runner workflowに新validator testを加える。Deployment/Argo/cron/credential/既存ticketの変更、永続state migrationはない。rollbackはPRのmerge commitを通常のrevert PRで戻すだけでよい。
+CIは既存Task Board runner workflowに新validator testを加える。Deployment/Argo/cron/credential/既存ticketの変更、永続state migrationはない。ソースのrollbackはPRのmerge commitを通常のrevert PRで戻す。今回のPR buildはimage push無効だが、mainへmerge後は既存workflowがGHCRへイメージを公開する。ソースのrevertは公開済みイメージや稼働環境の自動巻戻しを保証せず、稼働環境の切戻しには別途確認・操作が必要。
