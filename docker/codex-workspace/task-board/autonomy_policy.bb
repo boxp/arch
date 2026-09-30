@@ -55,6 +55,15 @@
 (def ^:private notification-detail-keys
   #{:digest_minutes :dedupe_key :immediate :reminder_hours :max_reminders})
 
+;; Resolve string keys through an already bounded registry; never intern an
+;; arbitrary external string before the schema's exact-key check.
+(def ^:private string->schema-key
+  (into {} (map (fn [k] [(name k) k])
+                (concat control-keys objective-keys scope-keys budget-keys
+                        decision-keys option-keys retry-keys retry-condition-keys
+                        notification-keys wip-keys notification-budget-keys
+                        notification-detail-keys))))
+
 (def ^:private routes
   ;; This is the v2 schema registry, not execution authorization. It deliberately
   ;; does not inherit additional routes from legacy runner configuration.
@@ -81,7 +90,8 @@
     (reduce-kv (fn [out k v]
                  (let [key (cond
                              (and (keyword? k) (nil? (namespace k))) k
-                            (string? k) (keyword k)
+                             (string? k) (or (get string->schema-key k)
+                                             (fail! :invalid-schema))
                              :else (fail! :invalid-schema))]
                    (require! (nil? (namespace key)) :invalid-schema)
                    (require! (not (contains? out key)) :invalid-schema)

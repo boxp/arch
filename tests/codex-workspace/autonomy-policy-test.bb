@@ -1,6 +1,7 @@
 #!/usr/bin/env bb
 (ns autonomy-policy-test
   (:require [clojure.test :refer [deftest is testing run-tests]]
+            [clojure.walk :as walk]
             [clojure.java.io :as io]))
 
 (def root (-> (io/file *file*) .getParentFile .getParentFile .getParent))
@@ -82,6 +83,17 @@
                       (update decision :options
                               #(assoc % 0 (dissoc (first %) field))) decision-context))
           (str "missing decision-option field " field)))))
+
+(deftest string-keyed-schemas-are-bounded-and-compatible
+  (is (valid? (policy/validate-control (walk/stringify-keys control) context)))
+  (is (valid? (policy/validate-decision
+                (walk/stringify-keys decision)
+                (assoc decision-context :control (walk/stringify-keys control)))))
+  (is (valid? (policy/validate-retry (walk/stringify-keys retry-contract)
+                                   (assoc decision-context :control (walk/stringify-keys control)))))
+  (is (valid? (policy/validate-notification (walk/stringify-keys notification) context)))
+  (is (invalid? (policy/validate-control
+                  (assoc (walk/stringify-keys control) "unknown/private-key" "value") context))))
 
 (deftest version-route-and-probe-fail-closed
   (is (invalid? (policy/validate-control (assoc control :schema_version 99) context)))
