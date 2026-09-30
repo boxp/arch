@@ -1,3 +1,9 @@
+# 2026-09-30 追跡観測
+
+現在の観測とAPI不安定はrun-20260930.mdおよびevidence-20260930のincident/recoveryログを参照。全7台dry-run後の直接API反復観測でCP3 readyzがHTTP500/etcd-readiness failedとなり、本番未開始でNo-Go。旧記録の形式的gateはplan.md冒頭の03:11指示で置き換える。
+
+---
+
 # BOXP-194 現行クラスタ観測台帳
 
 観測日時: 2026-09-29T09:19:01Z（UTC）

@@ -1,3 +1,19 @@
+# 2026-09-30 現在の実行台帳
+
+本番update/drain/Applyは全台未開始。全7台check-modeは成功したが、反復観測でCP3 readyz HTTP500/etcd-readiness failedを確認したため開始No-Go。詳細はrun-20260930.md。以下の旧台帳は履歴。
+
+| 対象 | dry-run証跡/SHA | 本番run | gate |
+|---|---|---|---|
+| shanghai-1 | GitHub36663600324/attempt1、2ecf970a9、SUCCESS | 未開始 | 現行API異常でNo-Go |
+| shanghai-2 | local six-node-check、2ecf970a9、failed0 | 未開始 | 同上 |
+| shanghai-3 | local six-node-check、2ecf970a9、failed0 | 未開始 | 同上 |
+| golyat-1 | local six-node-check、2ecf970a9、failed0 | 未開始 | 同上 |
+| golyat-2 | local six-node-check、2ecf970a9、failed0 | 未開始 | 同上 |
+| golyat-3 | local six-node-check、2ecf970a9、failed0 | 未開始 | 同上 |
+| golyat-4 | local six-node-check、2ecf970a9、failed0、委譲先API遅延検出 | 未開始 | 同上 |
+
+---
+
 # BOXP-194 実行台帳（更新未開始）
 
 本票の本番update/dry-run dispatchは未実施。以下は空欄の代わりに「未実施」を明記した台帳であり、

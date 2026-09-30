@@ -1,3 +1,9 @@
+# 2026-09-30 現在の検証結果
+
+今回の実行はrun-20260930.mdを参照。全7台dry-run成功、新規snapshot取得・隔離restore、release/APT署名/8deb hash/両architecture solver再確認、watch script fixtures/CPホストService取得・HTTP・model args検証成功。本番更新と全台後約1h観測はAPI/etcd-readiness不安定により未開始。以下は過去runの検証履歴であり、旧必須gateはplan.md冒頭の最新指示で置き換える。
+
+---
+
 # BOXP-194 検証状況
 
 対象automationのSHAは `b59398473a85f30bf498ca7c9425217fe35323dd`。

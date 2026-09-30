@@ -1,0 +1,232 @@
+{
+    "apiVersion": "v1",
+    "items": [
+        {
+            "apiVersion": "v1",
+            "count": 42402,
+            "eventTime": null,
+            "firstTimestamp": "2026-08-24T03:58:44Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "kind": "Pod",
+                "name": "kube-apiserver-shanghai-2",
+                "namespace": "kube-system",
+                "uid": "2676fe9bb1366a0e6f6e954db98d9094"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-09-30T03:39:48Z",
+            "message": "Nameserver limits were exceeded, some nameservers have been omitted, the applied nameserver line is: 8.8.8.8 8.8.4.4 2404:1a8:7f01:b::3",
+            "metadata": {
+                "creationTimestamp": "2026-08-24T03:59:44Z",
+                "name": "kube-apiserver-shanghai-2.18cea1ba6356b2fc",
+                "namespace": "kube-system",
+                "resourceVersion": "744466298",
+                "uid": "a6b2fbbc-f6e8-4fe8-a111-d0f48a7531d4"
+            },
+            "reason": "DNSConfigForming",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "shanghai-2",
+            "source": {
+                "component": "kubelet",
+                "host": "shanghai-2"
+            },
+            "type": "Warning"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 12,
+            "eventTime": null,
+            "firstTimestamp": "2026-08-24T03:58:44Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{kube-apiserver}",
+                "kind": "Pod",
+                "name": "kube-apiserver-shanghai-2",
+                "namespace": "kube-system",
+                "uid": "2676fe9bb1366a0e6f6e954db98d9094"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-09-30T03:39:27Z",
+            "message": "Container image \"registry.k8s.io/kube-apiserver:v1.36.1\" already present on machine and can be accessed by the pod",
+            "metadata": {
+                "creationTimestamp": "2026-09-30T03:39:42Z",
+                "name": "kube-apiserver-shanghai-2.18cea1ba6a7471d9",
+                "namespace": "kube-system",
+                "resourceVersion": "744466233",
+                "uid": "c9e9e01e-98a4-48d7-8136-59d6c2be276f"
+            },
+            "reason": "Pulled",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "shanghai-2",
+            "source": {
+                "component": "kubelet",
+                "host": "shanghai-2"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 12,
+            "eventTime": null,
+            "firstTimestamp": "2026-08-24T03:58:44Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{kube-apiserver}",
+                "kind": "Pod",
+                "name": "kube-apiserver-shanghai-2",
+                "namespace": "kube-system",
+                "uid": "2676fe9bb1366a0e6f6e954db98d9094"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-09-30T03:39:27Z",
+            "message": "Container created",
+            "metadata": {
+                "creationTimestamp": "2026-09-30T03:39:42Z",
+                "name": "kube-apiserver-shanghai-2.18cea1ba79eaaab2",
+                "namespace": "kube-system",
+                "resourceVersion": "744466234",
+                "uid": "4fbfa519-2550-44a2-b680-3aa8e66903b1"
+            },
+            "reason": "Created",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "shanghai-2",
+            "source": {
+                "component": "kubelet",
+                "host": "shanghai-2"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 12,
+            "eventTime": null,
+            "firstTimestamp": "2026-08-24T03:58:44Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{kube-apiserver}",
+                "kind": "Pod",
+                "name": "kube-apiserver-shanghai-2",
+                "namespace": "kube-system",
+                "uid": "2676fe9bb1366a0e6f6e954db98d9094"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-09-30T03:39:27Z",
+            "message": "Container started",
+            "metadata": {
+                "creationTimestamp": "2026-09-30T03:39:43Z",
+                "name": "kube-apiserver-shanghai-2.18cea1ba7c5c70c7",
+                "namespace": "kube-system",
+                "resourceVersion": "744466237",
+                "uid": "b8548360-cd54-47a5-aeb6-ca8d8e9d782f"
+            },
+            "reason": "Started",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "shanghai-2",
+            "source": {
+                "component": "kubelet",
+                "host": "shanghai-2"
+            },
+            "type": "Normal"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 421,
+            "eventTime": null,
+            "firstTimestamp": "2026-08-29T00:00:19Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{kube-apiserver}",
+                "kind": "Pod",
+                "name": "kube-apiserver-shanghai-2",
+                "namespace": "kube-system",
+                "uid": "2676fe9bb1366a0e6f6e954db98d9094"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-09-30T03:10:13Z",
+            "message": "Readiness probe failed: HTTP probe failed with statuscode: 500",
+            "metadata": {
+                "creationTimestamp": "2026-09-30T03:10:13Z",
+                "name": "kube-apiserver-shanghai-2.18d01d9eab89f01d",
+                "namespace": "kube-system",
+                "resourceVersion": "744450283",
+                "uid": "dd730902-0b1b-47bd-992a-3dfb886e64eb"
+            },
+            "reason": "Unhealthy",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "shanghai-2",
+            "source": {
+                "component": "kubelet",
+                "host": "shanghai-2"
+            },
+            "type": "Warning"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 138,
+            "eventTime": null,
+            "firstTimestamp": "2026-08-29T15:35:20Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{kube-apiserver}",
+                "kind": "Pod",
+                "name": "kube-apiserver-shanghai-2",
+                "namespace": "kube-system",
+                "uid": "2676fe9bb1366a0e6f6e954db98d9094"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-09-30T03:05:15Z",
+            "message": "Liveness probe failed: HTTP probe failed with statuscode: 500",
+            "metadata": {
+                "creationTimestamp": "2026-09-30T03:05:18Z",
+                "name": "kube-apiserver-shanghai-2.18d050a4afd10a6a",
+                "namespace": "kube-system",
+                "resourceVersion": "744447788",
+                "uid": "c7605ddc-7ccf-4a13-820e-813047f13fb7"
+            },
+            "reason": "Unhealthy",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "shanghai-2",
+            "source": {
+                "component": "kubelet",
+                "host": "shanghai-2"
+            },
+            "type": "Warning"
+        },
+        {
+            "apiVersion": "v1",
+            "count": 11,
+            "eventTime": null,
+            "firstTimestamp": "2026-09-02T06:52:15Z",
+            "involvedObject": {
+                "apiVersion": "v1",
+                "fieldPath": "spec.containers{kube-apiserver}",
+                "kind": "Pod",
+                "name": "kube-apiserver-shanghai-2",
+                "namespace": "kube-system",
+                "uid": "2676fe9bb1366a0e6f6e954db98d9094"
+            },
+            "kind": "Event",
+            "lastTimestamp": "2026-09-30T03:38:55Z",
+            "message": "Container kube-apiserver failed liveness probe, will be restarted",
+            "metadata": {
+                "creationTimestamp": "2026-09-30T03:39:42Z",
+                "name": "kube-apiserver-shanghai-2.18d16e6b81f508a0",
+                "namespace": "kube-system",
+                "resourceVersion": "744466231",
+                "uid": "1b66cb65-2892-4f38-a60a-ffe887ea25c9"
+            },
+            "reason": "Killing",
+            "reportingComponent": "kubelet",
+            "reportingInstance": "shanghai-2",
+            "source": {
+                "component": "kubelet",
+                "host": "shanghai-2"
+            },
+            "type": "Normal"
+        }
+    ],
+    "kind": "List",
+    "metadata": {
+        "resourceVersion": ""
+    }
+}

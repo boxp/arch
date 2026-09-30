@@ -5,12 +5,12 @@
 - 実施直前にAPI、全7ノード、etcd全member、Longhorn、ネットワークの現状を再観測し、既存異常と新規悪化を区別する。
 - 新規etcd snapshotをforce=true/retention=0で取得し、非空性、SHA-256、status、別control-planeへの取得と隔離restoreを検証する。最初の復旧点を保持し、legacy rollback.ymlや単純package downgradeは実行しない。
 - 固定候補はKubernetes 1.36.5-1.1、CRI-O 1.36.6-3.1。署名/hash/両architecture解決と公式releaseを再確認する。
-- 最新mainの同一SHAを確認して全7台dry-run後、1台ずつ本番実行する。各台でpreflight/health、Ready/uncordon、版、API/VIP/etcd、Longhorn/PVC、DNS/NetworkPolicy、主要workloadを確認して次台へ進む。
+- 対象SHAと実行automationの一致を確認して全7台dry-run後、1台ずつ本番実行する。各台でpreflight/health、Ready/uncordon、版、API/VIP/etcd、Longhorn/PVC、DNS/NetworkPolicy、主要workloadを確認して次台へ進む。
 - golyat-4はGitHub-hosted runner/SSH経路を用い、GPU推論復帰を確認する。全台完了後は約1時間の自動観測を実施する。旧計画の各台1時間待機は最新指示に置き換える。
 - 新規/悪化したcontrol-plane・etcd・API・Longhorn・ネットワーク異常、または実行失敗で後続を停止する。無条件再送、強制eviction、PDB削除は行わない。
 - 実行台帳を更新し、baseline/image追従と通常Applyまで確認する。未完了をDoneにしない。
 
-今回の実測証跡はrun-20260930.mdに記録する。
+今回の実測証跡はrun-20260930.mdに記録する。全7台dry-runは成功したが、回復確認中にCP3のAPI readyzがHTTP500/etcd-readiness failedとなったため、本番開始判定はNo-Go。形式的な旧gateを復活させず、API/etcd不安定の解消と再観測後に再開する。
 
 ---
 

@@ -1,0 +1,1521 @@
+
+PLAY [Pre-upgrade validation and optional etcd snapshot] ***********************
+skipping: no hosts matched
+
+PLAY [Upgrade first control plane (shanghai-1)] ********************************
+skipping: no hosts matched
+
+PLAY [Upgrade secondary control planes] ****************************************
+
+TASK [Gathering Facts] *********************************************************
+Wednesday 30 September 2026  03:29:44 +0000 (0:00:00.006)       0:00:00.006 *** 
+ok: [shanghai-2]
+
+TASK [Create containers registries configuration directory] ********************
+Wednesday 30 September 2026  03:29:51 +0000 (0:00:07.082)       0:00:07.089 *** 
+ok: [shanghai-2]
+
+TASK [Configure containers short-name mode] ************************************
+Wednesday 30 September 2026  03:29:53 +0000 (0:00:02.008)       0:00:09.097 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Run pre-upgrade checks] *****************************
+Wednesday 30 September 2026  03:29:57 +0000 (0:00:03.630)       0:00:12.728 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/pre_checks.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Validate exact upgrade version inputs] **************
+Wednesday 30 September 2026  03:29:57 +0000 (0:00:00.030)       0:00:12.758 *** 
+ok: [shanghai-2] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Verify exact target packages before drain or host APT changes] ***
+Wednesday 30 September 2026  03:29:57 +0000 (0:00:00.032)       0:00:12.790 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/apt_preflight.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Create temporary directory for APT preflight] *******
+Wednesday 30 September 2026  03:29:57 +0000 (0:00:00.039)       0:00:12.830 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Allow APT sandbox access to temporary preflight state] ***
+Wednesday 30 September 2026  03:29:59 +0000 (0:00:01.678)       0:00:14.509 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Create isolated APT state directories] **************
+Wednesday 30 September 2026  03:30:01 +0000 (0:00:01.860)       0:00:16.369 *** 
+ok: [shanghai-2] => (item=lists)
+ok: [shanghai-2] => (item=archives)
+ok: [shanghai-2] => (item=cache)
+
+TASK [kubernetes_upgrade : Download target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:30:07 +0000 (0:00:06.032)       0:00:22.401 *** 
+ok: [shanghai-2] => (item={'name': 'kubernetes', 'url': 'https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key'})
+ok: [shanghai-2] => (item={'name': 'crio', 'url': 'https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb/Release.key'})
+
+TASK [kubernetes_upgrade : Convert target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:30:14 +0000 (0:00:07.234)       0:00:29.636 *** 
+ok: [shanghai-2] => (item=kubernetes)
+ok: [shanghai-2] => (item=crio)
+
+TASK [kubernetes_upgrade : Configure isolated APT sources and state] ***********
+Wednesday 30 September 2026  03:30:18 +0000 (0:00:03.966)       0:00:33.602 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Configure isolated target repository source list] ***
+Wednesday 30 September 2026  03:30:22 +0000 (0:00:04.449)       0:00:38.052 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Update isolated APT lists from target repositories] ***
+Wednesday 30 September 2026  03:30:27 +0000 (0:00:04.300)       0:00:42.352 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Resolve exact revisions from isolated APT lists] ****
+Wednesday 30 September 2026  03:30:31 +0000 (0:00:04.061)       0:00:46.414 *** 
+ok: [shanghai-2] => (item={'name': 'kubeadm', 'version': '1.36.5-1.1'})
+ok: [shanghai-2] => (item={'name': 'kubelet', 'version': '1.36.5-1.1'})
+ok: [shanghai-2] => (item={'name': 'kubectl', 'version': '1.36.5-1.1'})
+ok: [shanghai-2] => (item={'name': 'cri-o', 'version': '1.36.6-3.1'})
+
+TASK [kubernetes_upgrade : Remove isolated APT preflight state] ****************
+Wednesday 30 September 2026  03:30:39 +0000 (0:00:08.209)       0:00:54.623 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Mark isolated APT preflight as complete] ************
+Wednesday 30 September 2026  03:30:41 +0000 (0:00:02.048)       0:00:56.672 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify current kubernetes version] ******************
+Wednesday 30 September 2026  03:30:41 +0000 (0:00:00.025)       0:00:56.697 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health] *************************
+Wednesday 30 September 2026  03:30:45 +0000 (0:00:03.465)       0:01:00.163 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify all nodes are Ready] *************************
+Wednesday 30 September 2026  03:30:50 +0000 (0:00:05.253)       0:01:05.416 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade first control plane] ************************
+Wednesday 30 September 2026  03:30:52 +0000 (0:00:02.144)       0:01:07.561 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade secondary control plane] ********************
+Wednesday 30 September 2026  03:30:52 +0000 (0:00:00.033)       0:01:07.594 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_control_plane_secondary.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Drain control plane node] ***************************
+Wednesday 30 September 2026  03:30:52 +0000 (0:00:00.048)       0:01:07.643 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Update apt source and install packages] *************
+Wednesday 30 September 2026  03:30:54 +0000 (0:00:01.939)       0:01:09.582 *** 
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: ansible.builtin.apt_key has been deprecated. Use deb822_repository instead. This feature will be removed from ansible-core version 2.25.
+Origin: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml:33:3
+
+31
+32 - name: Import Kubernetes apt repository GPG key for target version
+33   ansible.builtin.apt_key:
+     ^ column 3
+
+[DEPRECATION WARNING]: ansible.builtin.apt_key has been deprecated. Use deb822_repository instead. This feature will be removed from ansible-core version 2.25.
+Origin: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml:40:3
+
+38
+39 - name: Import CRI-O apt repository GPG key for target version
+40   ansible.builtin.apt_key:
+     ^ column 3
+
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Verify exact target packages for standalone APT-source runs] ***
+Wednesday 30 September 2026  03:30:54 +0000 (0:00:00.034)       0:01:09.616 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Configure Kubernetes apt repository for target version] ***
+Wednesday 30 September 2026  03:30:54 +0000 (0:00:00.029)       0:01:09.645 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Configure CRI-O apt repository for target version] ***
+Wednesday 30 September 2026  03:30:58 +0000 (0:00:03.995)       0:01:13.641 *** 
+changed: [shanghai-2]
+
+TASK [kubernetes_upgrade : Remove duplicate CRI-O version-specific apt repository] ***
+Wednesday 30 September 2026  03:31:02 +0000 (0:00:03.691)       0:01:17.332 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Import Kubernetes apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:31:03 +0000 (0:00:01.722)       0:01:19.055 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Import CRI-O apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:31:08 +0000 (0:00:04.732)       0:01:23.787 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Update apt cache] ***********************************
+Wednesday 30 September 2026  03:31:13 +0000 (0:00:05.002)       0:01:28.790 *** 
+changed: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade CRI-O] **************************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:09.887)       0:01:38.677 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Apply CRI-O restart before continuing control plane upgrade] ***
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.024)       0:01:38.702 *** 
+
+TASK [kubernetes_upgrade : Unhold kubeadm] *************************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.005)       0:01:38.708 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Install target kubeadm version] *********************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.013)       0:01:38.721 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Hold kubeadm] ***************************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.019)       0:01:38.740 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Run kubeadm upgrade node] ***************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.012)       0:01:38.753 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade kubelet and kubectl] ************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.014)       0:01:38.767 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_kubelet_kubectl.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Unhold kubelet] *************************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.030)       0:01:38.798 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Unhold kubectl] *************************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.018)       0:01:38.817 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Install target kubelet version] *********************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.015)       0:01:38.832 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Install target kubectl version] *********************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.013)       0:01:38.845 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Hold kubelet] ***************************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.013)       0:01:38.859 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Hold kubectl] ***************************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.013)       0:01:38.873 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Restart kubelet] ************************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.020)       0:01:38.893 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Wait for kube-apiserver before uncordon] ************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.018)       0:01:38.912 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Uncordon control plane node] ************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.019)       0:01:38.931 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify node health] *********************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.017)       0:01:38.949 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:31:23 +0000 (0:00:00.020)       0:01:38.970 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:31:26 +0000 (0:00:02.954)       0:01:41.925 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:31:30 +0000 (0:00:03.206)       0:01:45.131 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:31:32 +0000 (0:00:02.627)       0:01:47.758 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade worker node] ********************************
+Wednesday 30 September 2026  03:31:35 +0000 (0:00:02.747)       0:01:50.506 *** 
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Run post-upgrade health check] **********************
+Wednesday 30 September 2026  03:31:35 +0000 (0:00:00.019)       0:01:50.525 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:31:35 +0000 (0:00:00.030)       0:01:50.556 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:31:37 +0000 (0:00:02.205)       0:01:52.762 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:31:39 +0000 (0:00:02.147)       0:01:54.910 *** 
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:31:42 +0000 (0:00:02.492)       0:01:57.402 *** 
+ok: [shanghai-2]
+
+PLAY [Upgrade secondary control planes] ****************************************
+
+TASK [Gathering Facts] *********************************************************
+Wednesday 30 September 2026  03:31:45 +0000 (0:00:03.553)       0:02:00.955 *** 
+ok: [shanghai-3]
+
+TASK [Create containers registries configuration directory] ********************
+Wednesday 30 September 2026  03:31:52 +0000 (0:00:07.124)       0:02:08.080 *** 
+ok: [shanghai-3]
+
+TASK [Configure containers short-name mode] ************************************
+Wednesday 30 September 2026  03:31:54 +0000 (0:00:01.776)       0:02:09.856 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Run pre-upgrade checks] *****************************
+Wednesday 30 September 2026  03:31:58 +0000 (0:00:04.046)       0:02:13.902 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/pre_checks.yml for shanghai-3
+
+TASK [kubernetes_upgrade : Validate exact upgrade version inputs] **************
+Wednesday 30 September 2026  03:31:58 +0000 (0:00:00.030)       0:02:13.933 *** 
+ok: [shanghai-3] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Verify exact target packages before drain or host APT changes] ***
+Wednesday 30 September 2026  03:31:58 +0000 (0:00:00.024)       0:02:13.958 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/apt_preflight.yml for shanghai-3
+
+TASK [kubernetes_upgrade : Create temporary directory for APT preflight] *******
+Wednesday 30 September 2026  03:31:58 +0000 (0:00:00.033)       0:02:13.991 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Allow APT sandbox access to temporary preflight state] ***
+Wednesday 30 September 2026  03:32:00 +0000 (0:00:01.785)       0:02:15.777 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Create isolated APT state directories] **************
+Wednesday 30 September 2026  03:32:02 +0000 (0:00:01.865)       0:02:17.643 *** 
+ok: [shanghai-3] => (item=lists)
+ok: [shanghai-3] => (item=archives)
+ok: [shanghai-3] => (item=cache)
+
+TASK [kubernetes_upgrade : Download target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:32:07 +0000 (0:00:05.304)       0:02:22.947 *** 
+ok: [shanghai-3] => (item={'name': 'kubernetes', 'url': 'https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key'})
+ok: [shanghai-3] => (item={'name': 'crio', 'url': 'https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb/Release.key'})
+
+TASK [kubernetes_upgrade : Convert target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:32:14 +0000 (0:00:06.464)       0:02:29.412 *** 
+ok: [shanghai-3] => (item=kubernetes)
+ok: [shanghai-3] => (item=crio)
+
+TASK [kubernetes_upgrade : Configure isolated APT sources and state] ***********
+Wednesday 30 September 2026  03:32:19 +0000 (0:00:04.866)       0:02:34.279 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Configure isolated target repository source list] ***
+Wednesday 30 September 2026  03:32:22 +0000 (0:00:03.796)       0:02:38.075 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Update isolated APT lists from target repositories] ***
+Wednesday 30 September 2026  03:32:26 +0000 (0:00:03.853)       0:02:41.928 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Resolve exact revisions from isolated APT lists] ****
+Wednesday 30 September 2026  03:32:31 +0000 (0:00:04.966)       0:02:46.895 *** 
+ok: [shanghai-3] => (item={'name': 'kubeadm', 'version': '1.36.5-1.1'})
+ok: [shanghai-3] => (item={'name': 'kubelet', 'version': '1.36.5-1.1'})
+ok: [shanghai-3] => (item={'name': 'kubectl', 'version': '1.36.5-1.1'})
+ok: [shanghai-3] => (item={'name': 'cri-o', 'version': '1.36.6-3.1'})
+
+TASK [kubernetes_upgrade : Remove isolated APT preflight state] ****************
+Wednesday 30 September 2026  03:32:39 +0000 (0:00:07.963)       0:02:54.858 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Mark isolated APT preflight as complete] ************
+Wednesday 30 September 2026  03:32:41 +0000 (0:00:01.914)       0:02:56.772 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify current kubernetes version] ******************
+Wednesday 30 September 2026  03:32:41 +0000 (0:00:00.026)       0:02:56.799 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health] *************************
+Wednesday 30 September 2026  03:32:46 +0000 (0:00:04.675)       0:03:01.475 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify all nodes are Ready] *************************
+Wednesday 30 September 2026  03:32:55 +0000 (0:00:09.167)       0:03:10.642 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Upgrade first control plane] ************************
+Wednesday 30 September 2026  03:33:09 +0000 (0:00:13.754)       0:03:24.397 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Upgrade secondary control plane] ********************
+Wednesday 30 September 2026  03:33:09 +0000 (0:00:00.033)       0:03:24.430 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_control_plane_secondary.yml for shanghai-3
+
+TASK [kubernetes_upgrade : Drain control plane node] ***************************
+Wednesday 30 September 2026  03:33:09 +0000 (0:00:00.051)       0:03:24.481 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Update apt source and install packages] *************
+Wednesday 30 September 2026  03:33:13 +0000 (0:00:04.369)       0:03:28.851 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml for shanghai-3
+
+TASK [kubernetes_upgrade : Verify exact target packages for standalone APT-source runs] ***
+Wednesday 30 September 2026  03:33:13 +0000 (0:00:00.036)       0:03:28.887 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Configure Kubernetes apt repository for target version] ***
+Wednesday 30 September 2026  03:33:13 +0000 (0:00:00.017)       0:03:28.905 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Configure CRI-O apt repository for target version] ***
+Wednesday 30 September 2026  03:33:18 +0000 (0:00:04.662)       0:03:33.567 *** 
+changed: [shanghai-3]
+
+TASK [kubernetes_upgrade : Remove duplicate CRI-O version-specific apt repository] ***
+Wednesday 30 September 2026  03:33:23 +0000 (0:00:05.203)       0:03:38.770 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Import Kubernetes apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:33:25 +0000 (0:00:02.172)       0:03:40.942 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Import CRI-O apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:33:36 +0000 (0:00:10.676)       0:03:51.619 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Update apt cache] ***********************************
+Wednesday 30 September 2026  03:33:43 +0000 (0:00:07.283)       0:03:58.902 *** 
+changed: [shanghai-3]
+
+TASK [kubernetes_upgrade : Upgrade CRI-O] **************************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:15.623)       0:04:14.526 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Apply CRI-O restart before continuing control plane upgrade] ***
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.026)       0:04:14.552 *** 
+
+TASK [kubernetes_upgrade : Unhold kubeadm] *************************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.004)       0:04:14.556 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Install target kubeadm version] *********************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.021)       0:04:14.578 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Hold kubeadm] ***************************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.020)       0:04:14.598 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Run kubeadm upgrade node] ***************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.021)       0:04:14.619 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Upgrade kubelet and kubectl] ************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.014)       0:04:14.634 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_kubelet_kubectl.yml for shanghai-3
+
+TASK [kubernetes_upgrade : Unhold kubelet] *************************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.019)       0:04:14.653 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Unhold kubectl] *************************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.018)       0:04:14.671 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Install target kubelet version] *********************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.011)       0:04:14.683 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Install target kubectl version] *********************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.017)       0:04:14.700 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Hold kubelet] ***************************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.018)       0:04:14.719 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Hold kubectl] ***************************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.022)       0:04:14.741 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Restart kubelet] ************************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.021)       0:04:14.762 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Wait for kube-apiserver before uncordon] ************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.017)       0:04:14.780 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Uncordon control plane node] ************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.018)       0:04:14.798 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify node health] *********************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.021)       0:04:14.820 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for shanghai-3
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:33:59 +0000 (0:00:00.025)       0:04:14.845 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:34:48 +0000 (0:00:49.089)       0:05:03.934 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:34:58 +0000 (0:00:09.746)       0:05:13.681 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:35:01 +0000 (0:00:03.093)       0:05:16.775 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Upgrade worker node] ********************************
+Wednesday 30 September 2026  03:35:06 +0000 (0:00:04.540)       0:05:21.316 *** 
+skipping: [shanghai-3]
+
+TASK [kubernetes_upgrade : Run post-upgrade health check] **********************
+Wednesday 30 September 2026  03:35:06 +0000 (0:00:00.019)       0:05:21.336 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for shanghai-3
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:35:06 +0000 (0:00:00.031)       0:05:21.367 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:35:08 +0000 (0:00:02.103)       0:05:23.471 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:35:10 +0000 (0:00:02.009)       0:05:25.481 *** 
+ok: [shanghai-3]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:35:12 +0000 (0:00:02.048)       0:05:27.529 *** 
+ok: [shanghai-3]
+
+PLAY [Upgrade worker nodes] ****************************************************
+
+TASK [Gathering Facts] *********************************************************
+Wednesday 30 September 2026  03:35:14 +0000 (0:00:02.553)       0:05:30.082 *** 
+ok: [golyat-1]
+
+TASK [Create containers registries configuration directory] ********************
+Wednesday 30 September 2026  03:35:16 +0000 (0:00:01.497)       0:05:31.580 *** 
+ok: [golyat-1]
+
+TASK [Configure containers short-name mode] ************************************
+Wednesday 30 September 2026  03:35:16 +0000 (0:00:00.303)       0:05:31.883 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Run pre-upgrade checks] *****************************
+Wednesday 30 September 2026  03:35:17 +0000 (0:00:00.637)       0:05:32.521 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/pre_checks.yml for golyat-1
+
+TASK [kubernetes_upgrade : Validate exact upgrade version inputs] **************
+Wednesday 30 September 2026  03:35:17 +0000 (0:00:00.030)       0:05:32.552 *** 
+ok: [golyat-1] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Verify exact target packages before drain or host APT changes] ***
+Wednesday 30 September 2026  03:35:17 +0000 (0:00:00.024)       0:05:32.576 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/apt_preflight.yml for golyat-1
+
+TASK [kubernetes_upgrade : Create temporary directory for APT preflight] *******
+Wednesday 30 September 2026  03:35:17 +0000 (0:00:00.039)       0:05:32.615 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Allow APT sandbox access to temporary preflight state] ***
+Wednesday 30 September 2026  03:35:17 +0000 (0:00:00.312)       0:05:32.928 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Create isolated APT state directories] **************
+Wednesday 30 September 2026  03:35:18 +0000 (0:00:00.280)       0:05:33.208 *** 
+ok: [golyat-1] => (item=lists)
+ok: [golyat-1] => (item=archives)
+ok: [golyat-1] => (item=cache)
+
+TASK [kubernetes_upgrade : Download target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:35:18 +0000 (0:00:00.870)       0:05:34.078 *** 
+ok: [golyat-1] => (item={'name': 'kubernetes', 'url': 'https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key'})
+ok: [golyat-1] => (item={'name': 'crio', 'url': 'https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb/Release.key'})
+
+TASK [kubernetes_upgrade : Convert target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:35:20 +0000 (0:00:01.786)       0:05:35.865 *** 
+ok: [golyat-1] => (item=kubernetes)
+ok: [golyat-1] => (item=crio)
+
+TASK [kubernetes_upgrade : Configure isolated APT sources and state] ***********
+Wednesday 30 September 2026  03:35:21 +0000 (0:00:00.586)       0:05:36.452 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Configure isolated target repository source list] ***
+Wednesday 30 September 2026  03:35:21 +0000 (0:00:00.628)       0:05:37.080 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Update isolated APT lists from target repositories] ***
+Wednesday 30 September 2026  03:35:22 +0000 (0:00:00.635)       0:05:37.716 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Resolve exact revisions from isolated APT lists] ****
+Wednesday 30 September 2026  03:35:24 +0000 (0:00:01.875)       0:05:39.592 *** 
+ok: [golyat-1] => (item={'name': 'kubeadm', 'version': '1.36.5-1.1'})
+ok: [golyat-1] => (item={'name': 'kubelet', 'version': '1.36.5-1.1'})
+ok: [golyat-1] => (item={'name': 'kubectl', 'version': '1.36.5-1.1'})
+ok: [golyat-1] => (item={'name': 'cri-o', 'version': '1.36.6-3.1'})
+
+TASK [kubernetes_upgrade : Remove isolated APT preflight state] ****************
+Wednesday 30 September 2026  03:35:25 +0000 (0:00:01.205)       0:05:40.797 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Mark isolated APT preflight as complete] ************
+Wednesday 30 September 2026  03:35:25 +0000 (0:00:00.295)       0:05:41.093 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Verify current kubernetes version] ******************
+Wednesday 30 September 2026  03:35:26 +0000 (0:00:00.031)       0:05:41.124 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health] *************************
+Wednesday 30 September 2026  03:35:26 +0000 (0:00:00.353)       0:05:41.478 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Verify all nodes are Ready] *************************
+Wednesday 30 September 2026  03:35:26 +0000 (0:00:00.012)       0:05:41.491 *** 
+ok: [golyat-1 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Upgrade first control plane] ************************
+Wednesday 30 September 2026  03:35:32 +0000 (0:00:05.694)       0:05:47.185 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Upgrade secondary control plane] ********************
+Wednesday 30 September 2026  03:35:32 +0000 (0:00:00.029)       0:05:47.214 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Upgrade worker node] ********************************
+Wednesday 30 September 2026  03:35:32 +0000 (0:00:00.033)       0:05:47.248 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_worker.yml for golyat-1
+
+TASK [kubernetes_upgrade : Drain worker node] **********************************
+Wednesday 30 September 2026  03:35:32 +0000 (0:00:00.041)       0:05:47.289 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Update apt source and install packages] *************
+Wednesday 30 September 2026  03:35:32 +0000 (0:00:00.046)       0:05:47.336 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml for golyat-1
+
+TASK [kubernetes_upgrade : Verify exact target packages for standalone APT-source runs] ***
+Wednesday 30 September 2026  03:35:32 +0000 (0:00:00.031)       0:05:47.367 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Configure Kubernetes apt repository for target version] ***
+Wednesday 30 September 2026  03:35:32 +0000 (0:00:00.033)       0:05:47.401 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Configure CRI-O apt repository for target version] ***
+Wednesday 30 September 2026  03:35:32 +0000 (0:00:00.569)       0:05:47.970 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Remove duplicate CRI-O version-specific apt repository] ***
+Wednesday 30 September 2026  03:35:33 +0000 (0:00:00.573)       0:05:48.544 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Import Kubernetes apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:35:33 +0000 (0:00:00.316)       0:05:48.860 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Import CRI-O apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:35:34 +0000 (0:00:00.858)       0:05:49.719 *** 
+ok: [golyat-1]
+
+TASK [kubernetes_upgrade : Update apt cache] ***********************************
+Wednesday 30 September 2026  03:35:36 +0000 (0:00:01.428)       0:05:51.147 *** 
+changed: [golyat-1]
+
+TASK [kubernetes_upgrade : Upgrade CRI-O] **************************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:01.363)       0:05:52.510 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Apply CRI-O restart before continuing worker upgrade] ***
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.023)       0:05:52.534 *** 
+
+TASK [kubernetes_upgrade : Unhold kubeadm] *************************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.004)       0:05:52.538 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Install target kubeadm version] *********************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.019)       0:05:52.558 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Hold kubeadm] ***************************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.020)       0:05:52.578 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Run kubeadm upgrade node] ***************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.021)       0:05:52.599 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Upgrade kubelet and kubectl] ************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.022)       0:05:52.621 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_kubelet_kubectl.yml for golyat-1
+
+TASK [kubernetes_upgrade : Unhold kubelet] *************************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.031)       0:05:52.653 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Unhold kubectl] *************************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.017)       0:05:52.670 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Install target kubelet version] *********************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.022)       0:05:52.692 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Install target kubectl version] *********************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.017)       0:05:52.710 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Hold kubelet] ***************************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.017)       0:05:52.728 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Hold kubectl] ***************************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.023)       0:05:52.752 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Restart kubelet] ************************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.025)       0:05:52.778 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Reboot worker node] *********************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.028)       0:05:52.806 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Uncordon worker node] *******************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.022)       0:05:52.829 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Verify node health] *********************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.045)       0:05:52.874 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for golyat-1
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:35:37 +0000 (0:00:00.026)       0:05:52.900 *** 
+ok: [golyat-1 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:35:40 +0000 (0:00:02.464)       0:05:55.365 *** 
+ok: [golyat-1 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:35:42 +0000 (0:00:02.703)       0:05:58.068 *** 
+ok: [golyat-1 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:35:45 +0000 (0:00:02.550)       0:06:00.619 *** 
+skipping: [golyat-1]
+
+TASK [kubernetes_upgrade : Run post-upgrade health check] **********************
+Wednesday 30 September 2026  03:35:45 +0000 (0:00:00.019)       0:06:00.638 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for golyat-1
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:35:45 +0000 (0:00:00.036)       0:06:00.675 *** 
+ok: [golyat-1 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:35:48 +0000 (0:00:02.585)       0:06:03.260 *** 
+ok: [golyat-1 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:35:50 +0000 (0:00:02.498)       0:06:05.758 *** 
+ok: [golyat-1 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:35:53 +0000 (0:00:02.436)       0:06:08.195 *** 
+skipping: [golyat-1]
+
+PLAY [Upgrade worker nodes] ****************************************************
+
+TASK [Gathering Facts] *********************************************************
+Wednesday 30 September 2026  03:35:53 +0000 (0:00:00.030)       0:06:08.226 *** 
+ok: [golyat-2]
+
+TASK [Create containers registries configuration directory] ********************
+Wednesday 30 September 2026  03:35:56 +0000 (0:00:03.149)       0:06:11.376 *** 
+ok: [golyat-2]
+
+TASK [Configure containers short-name mode] ************************************
+Wednesday 30 September 2026  03:35:56 +0000 (0:00:00.349)       0:06:11.725 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Run pre-upgrade checks] *****************************
+Wednesday 30 September 2026  03:35:57 +0000 (0:00:00.749)       0:06:12.475 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/pre_checks.yml for golyat-2
+
+TASK [kubernetes_upgrade : Validate exact upgrade version inputs] **************
+Wednesday 30 September 2026  03:35:57 +0000 (0:00:00.032)       0:06:12.508 *** 
+ok: [golyat-2] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Verify exact target packages before drain or host APT changes] ***
+Wednesday 30 September 2026  03:35:57 +0000 (0:00:00.027)       0:06:12.535 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/apt_preflight.yml for golyat-2
+
+TASK [kubernetes_upgrade : Create temporary directory for APT preflight] *******
+Wednesday 30 September 2026  03:35:57 +0000 (0:00:00.026)       0:06:12.562 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Allow APT sandbox access to temporary preflight state] ***
+Wednesday 30 September 2026  03:35:57 +0000 (0:00:00.328)       0:06:12.890 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Create isolated APT state directories] **************
+Wednesday 30 September 2026  03:35:58 +0000 (0:00:00.370)       0:06:13.261 *** 
+ok: [golyat-2] => (item=lists)
+ok: [golyat-2] => (item=archives)
+ok: [golyat-2] => (item=cache)
+
+TASK [kubernetes_upgrade : Download target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:35:59 +0000 (0:00:00.978)       0:06:14.239 *** 
+ok: [golyat-2] => (item={'name': 'kubernetes', 'url': 'https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key'})
+ok: [golyat-2] => (item={'name': 'crio', 'url': 'https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb/Release.key'})
+
+TASK [kubernetes_upgrade : Convert target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:36:02 +0000 (0:00:03.030)       0:06:17.270 *** 
+ok: [golyat-2] => (item=kubernetes)
+ok: [golyat-2] => (item=crio)
+
+TASK [kubernetes_upgrade : Configure isolated APT sources and state] ***********
+Wednesday 30 September 2026  03:36:02 +0000 (0:00:00.679)       0:06:17.950 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Configure isolated target repository source list] ***
+Wednesday 30 September 2026  03:36:03 +0000 (0:00:00.702)       0:06:18.652 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Update isolated APT lists from target repositories] ***
+Wednesday 30 September 2026  03:36:04 +0000 (0:00:00.786)       0:06:19.438 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Resolve exact revisions from isolated APT lists] ****
+Wednesday 30 September 2026  03:36:07 +0000 (0:00:02.911)       0:06:22.349 *** 
+ok: [golyat-2] => (item={'name': 'kubeadm', 'version': '1.36.5-1.1'})
+ok: [golyat-2] => (item={'name': 'kubelet', 'version': '1.36.5-1.1'})
+ok: [golyat-2] => (item={'name': 'kubectl', 'version': '1.36.5-1.1'})
+ok: [golyat-2] => (item={'name': 'cri-o', 'version': '1.36.6-3.1'})
+
+TASK [kubernetes_upgrade : Remove isolated APT preflight state] ****************
+Wednesday 30 September 2026  03:36:08 +0000 (0:00:01.353)       0:06:23.703 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Mark isolated APT preflight as complete] ************
+Wednesday 30 September 2026  03:36:08 +0000 (0:00:00.390)       0:06:24.094 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Verify current kubernetes version] ******************
+Wednesday 30 September 2026  03:36:09 +0000 (0:00:00.030)       0:06:24.125 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health] *************************
+Wednesday 30 September 2026  03:36:09 +0000 (0:00:00.426)       0:06:24.551 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Verify all nodes are Ready] *************************
+Wednesday 30 September 2026  03:36:09 +0000 (0:00:00.022)       0:06:24.574 *** 
+ok: [golyat-2 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Upgrade first control plane] ************************
+Wednesday 30 September 2026  03:36:12 +0000 (0:00:02.682)       0:06:27.257 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Upgrade secondary control plane] ********************
+Wednesday 30 September 2026  03:36:12 +0000 (0:00:00.036)       0:06:27.293 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Upgrade worker node] ********************************
+Wednesday 30 September 2026  03:36:12 +0000 (0:00:00.035)       0:06:27.329 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_worker.yml for golyat-2
+
+TASK [kubernetes_upgrade : Drain worker node] **********************************
+Wednesday 30 September 2026  03:36:12 +0000 (0:00:00.040)       0:06:27.369 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Update apt source and install packages] *************
+Wednesday 30 September 2026  03:36:12 +0000 (0:00:00.027)       0:06:27.396 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml for golyat-2
+
+TASK [kubernetes_upgrade : Verify exact target packages for standalone APT-source runs] ***
+Wednesday 30 September 2026  03:36:12 +0000 (0:00:00.021)       0:06:27.417 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Configure Kubernetes apt repository for target version] ***
+Wednesday 30 September 2026  03:36:12 +0000 (0:00:00.035)       0:06:27.453 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Configure CRI-O apt repository for target version] ***
+Wednesday 30 September 2026  03:36:13 +0000 (0:00:00.750)       0:06:28.204 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Remove duplicate CRI-O version-specific apt repository] ***
+Wednesday 30 September 2026  03:36:13 +0000 (0:00:00.723)       0:06:28.927 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Import Kubernetes apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:36:14 +0000 (0:00:00.340)       0:06:29.267 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Import CRI-O apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:36:15 +0000 (0:00:00.997)       0:06:30.264 *** 
+ok: [golyat-2]
+
+TASK [kubernetes_upgrade : Update apt cache] ***********************************
+Wednesday 30 September 2026  03:36:17 +0000 (0:00:02.019)       0:06:32.284 *** 
+changed: [golyat-2]
+
+TASK [kubernetes_upgrade : Upgrade CRI-O] **************************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:01.526)       0:06:33.810 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Apply CRI-O restart before continuing worker upgrade] ***
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.026)       0:06:33.836 *** 
+
+TASK [kubernetes_upgrade : Unhold kubeadm] *************************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.006)       0:06:33.843 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Install target kubeadm version] *********************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.018)       0:06:33.861 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Hold kubeadm] ***************************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.018)       0:06:33.880 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Run kubeadm upgrade node] ***************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.018)       0:06:33.899 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Upgrade kubelet and kubectl] ************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.023)       0:06:33.923 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_kubelet_kubectl.yml for golyat-2
+
+TASK [kubernetes_upgrade : Unhold kubelet] *************************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.034)       0:06:33.957 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Unhold kubectl] *************************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.023)       0:06:33.980 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Install target kubelet version] *********************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.022)       0:06:34.003 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Install target kubectl version] *********************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.018)       0:06:34.021 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Hold kubelet] ***************************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.022)       0:06:34.043 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Hold kubectl] ***************************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.023)       0:06:34.066 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Restart kubelet] ************************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.022)       0:06:34.089 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Reboot worker node] *********************************
+Wednesday 30 September 2026  03:36:18 +0000 (0:00:00.019)       0:06:34.108 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Uncordon worker node] *******************************
+Wednesday 30 September 2026  03:36:19 +0000 (0:00:00.023)       0:06:34.131 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Verify node health] *********************************
+Wednesday 30 September 2026  03:36:19 +0000 (0:00:00.028)       0:06:34.160 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for golyat-2
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:36:19 +0000 (0:00:00.029)       0:06:34.189 *** 
+ok: [golyat-2 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:36:22 +0000 (0:00:03.297)       0:06:37.487 *** 
+ok: [golyat-2 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:36:25 +0000 (0:00:02.742)       0:06:40.230 *** 
+ok: [golyat-2 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:36:27 +0000 (0:00:02.515)       0:06:42.745 *** 
+skipping: [golyat-2]
+
+TASK [kubernetes_upgrade : Run post-upgrade health check] **********************
+Wednesday 30 September 2026  03:36:27 +0000 (0:00:00.020)       0:06:42.765 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for golyat-2
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:36:27 +0000 (0:00:00.033)       0:06:42.798 *** 
+ok: [golyat-2 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:36:30 +0000 (0:00:02.502)       0:06:45.301 *** 
+ok: [golyat-2 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:36:33 +0000 (0:00:02.941)       0:06:48.242 *** 
+ok: [golyat-2 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:36:35 +0000 (0:00:02.695)       0:06:50.938 *** 
+skipping: [golyat-2]
+
+PLAY [Upgrade worker nodes] ****************************************************
+
+TASK [Gathering Facts] *********************************************************
+Wednesday 30 September 2026  03:36:35 +0000 (0:00:00.028)       0:06:50.966 *** 
+ok: [golyat-3]
+
+TASK [Create containers registries configuration directory] ********************
+Wednesday 30 September 2026  03:36:38 +0000 (0:00:02.817)       0:06:53.784 *** 
+ok: [golyat-3]
+
+TASK [Configure containers short-name mode] ************************************
+Wednesday 30 September 2026  03:36:38 +0000 (0:00:00.296)       0:06:54.081 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Run pre-upgrade checks] *****************************
+Wednesday 30 September 2026  03:36:39 +0000 (0:00:00.672)       0:06:54.753 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/pre_checks.yml for golyat-3
+
+TASK [kubernetes_upgrade : Validate exact upgrade version inputs] **************
+Wednesday 30 September 2026  03:36:39 +0000 (0:00:00.037)       0:06:54.790 *** 
+ok: [golyat-3] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Verify exact target packages before drain or host APT changes] ***
+Wednesday 30 September 2026  03:36:39 +0000 (0:00:00.030)       0:06:54.821 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/apt_preflight.yml for golyat-3
+
+TASK [kubernetes_upgrade : Create temporary directory for APT preflight] *******
+Wednesday 30 September 2026  03:36:39 +0000 (0:00:00.030)       0:06:54.851 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Allow APT sandbox access to temporary preflight state] ***
+Wednesday 30 September 2026  03:36:39 +0000 (0:00:00.261)       0:06:55.113 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Create isolated APT state directories] **************
+Wednesday 30 September 2026  03:36:40 +0000 (0:00:00.278)       0:06:55.391 *** 
+ok: [golyat-3] => (item=lists)
+ok: [golyat-3] => (item=archives)
+ok: [golyat-3] => (item=cache)
+
+TASK [kubernetes_upgrade : Download target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:36:41 +0000 (0:00:00.817)       0:06:56.208 *** 
+ok: [golyat-3] => (item={'name': 'kubernetes', 'url': 'https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key'})
+ok: [golyat-3] => (item={'name': 'crio', 'url': 'https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb/Release.key'})
+
+TASK [kubernetes_upgrade : Convert target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:36:42 +0000 (0:00:01.826)       0:06:58.035 *** 
+ok: [golyat-3] => (item=kubernetes)
+ok: [golyat-3] => (item=crio)
+
+TASK [kubernetes_upgrade : Configure isolated APT sources and state] ***********
+Wednesday 30 September 2026  03:36:43 +0000 (0:00:00.566)       0:06:58.601 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Configure isolated target repository source list] ***
+Wednesday 30 September 2026  03:36:44 +0000 (0:00:00.637)       0:06:59.239 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Update isolated APT lists from target repositories] ***
+Wednesday 30 September 2026  03:36:44 +0000 (0:00:00.618)       0:06:59.858 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Resolve exact revisions from isolated APT lists] ****
+Wednesday 30 September 2026  03:36:46 +0000 (0:00:01.820)       0:07:01.678 *** 
+ok: [golyat-3] => (item={'name': 'kubeadm', 'version': '1.36.5-1.1'})
+ok: [golyat-3] => (item={'name': 'kubelet', 'version': '1.36.5-1.1'})
+ok: [golyat-3] => (item={'name': 'kubectl', 'version': '1.36.5-1.1'})
+ok: [golyat-3] => (item={'name': 'cri-o', 'version': '1.36.6-3.1'})
+
+TASK [kubernetes_upgrade : Remove isolated APT preflight state] ****************
+Wednesday 30 September 2026  03:36:47 +0000 (0:00:01.178)       0:07:02.857 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Mark isolated APT preflight as complete] ************
+Wednesday 30 September 2026  03:36:48 +0000 (0:00:00.307)       0:07:03.165 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Verify current kubernetes version] ******************
+Wednesday 30 September 2026  03:36:48 +0000 (0:00:00.033)       0:07:03.198 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health] *************************
+Wednesday 30 September 2026  03:36:48 +0000 (0:00:00.342)       0:07:03.541 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Verify all nodes are Ready] *************************
+Wednesday 30 September 2026  03:36:48 +0000 (0:00:00.029)       0:07:03.570 *** 
+ok: [golyat-3 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Upgrade first control plane] ************************
+Wednesday 30 September 2026  03:36:50 +0000 (0:00:02.331)       0:07:05.901 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Upgrade secondary control plane] ********************
+Wednesday 30 September 2026  03:36:50 +0000 (0:00:00.031)       0:07:05.933 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Upgrade worker node] ********************************
+Wednesday 30 September 2026  03:36:50 +0000 (0:00:00.033)       0:07:05.966 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_worker.yml for golyat-3
+
+TASK [kubernetes_upgrade : Drain worker node] **********************************
+Wednesday 30 September 2026  03:36:50 +0000 (0:00:00.037)       0:07:06.004 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Update apt source and install packages] *************
+Wednesday 30 September 2026  03:36:50 +0000 (0:00:00.036)       0:07:06.040 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml for golyat-3
+
+TASK [kubernetes_upgrade : Verify exact target packages for standalone APT-source runs] ***
+Wednesday 30 September 2026  03:36:50 +0000 (0:00:00.033)       0:07:06.073 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Configure Kubernetes apt repository for target version] ***
+Wednesday 30 September 2026  03:36:50 +0000 (0:00:00.018)       0:07:06.091 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Configure CRI-O apt repository for target version] ***
+Wednesday 30 September 2026  03:36:51 +0000 (0:00:00.626)       0:07:06.718 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Remove duplicate CRI-O version-specific apt repository] ***
+Wednesday 30 September 2026  03:36:52 +0000 (0:00:00.594)       0:07:07.312 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Import Kubernetes apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:36:52 +0000 (0:00:00.298)       0:07:07.611 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Import CRI-O apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:36:53 +0000 (0:00:00.827)       0:07:08.438 *** 
+ok: [golyat-3]
+
+TASK [kubernetes_upgrade : Update apt cache] ***********************************
+Wednesday 30 September 2026  03:36:54 +0000 (0:00:01.376)       0:07:09.815 *** 
+changed: [golyat-3]
+
+TASK [kubernetes_upgrade : Upgrade CRI-O] **************************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:01.311)       0:07:11.126 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Apply CRI-O restart before continuing worker upgrade] ***
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.025)       0:07:11.152 *** 
+
+TASK [kubernetes_upgrade : Unhold kubeadm] *************************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.007)       0:07:11.159 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Install target kubeadm version] *********************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.022)       0:07:11.182 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Hold kubeadm] ***************************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.022)       0:07:11.205 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Run kubeadm upgrade node] ***************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.014)       0:07:11.219 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Upgrade kubelet and kubectl] ************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.016)       0:07:11.236 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_kubelet_kubectl.yml for golyat-3
+
+TASK [kubernetes_upgrade : Unhold kubelet] *************************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.030)       0:07:11.266 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Unhold kubectl] *************************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.022)       0:07:11.288 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Install target kubelet version] *********************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.015)       0:07:11.303 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Install target kubectl version] *********************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.024)       0:07:11.327 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Hold kubelet] ***************************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.016)       0:07:11.344 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Hold kubectl] ***************************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.021)       0:07:11.366 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Restart kubelet] ************************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.038)       0:07:11.404 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Reboot worker node] *********************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.021)       0:07:11.426 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Uncordon worker node] *******************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.017)       0:07:11.444 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Verify node health] *********************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.026)       0:07:11.470 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for golyat-3
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:36:56 +0000 (0:00:00.034)       0:07:11.504 *** 
+ok: [golyat-3 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:36:59 +0000 (0:00:02.623)       0:07:14.128 *** 
+ok: [golyat-3 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:37:01 +0000 (0:00:02.712)       0:07:16.840 *** 
+ok: [golyat-3 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:37:04 +0000 (0:00:02.526)       0:07:19.366 *** 
+skipping: [golyat-3]
+
+TASK [kubernetes_upgrade : Run post-upgrade health check] **********************
+Wednesday 30 September 2026  03:37:04 +0000 (0:00:00.022)       0:07:19.389 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for golyat-3
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:37:04 +0000 (0:00:00.030)       0:07:19.419 *** 
+ok: [golyat-3 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:37:06 +0000 (0:00:02.432)       0:07:21.852 *** 
+ok: [golyat-3 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:37:08 +0000 (0:00:02.238)       0:07:24.090 *** 
+ok: [golyat-3 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:37:11 +0000 (0:00:02.048)       0:07:26.138 *** 
+skipping: [golyat-3]
+
+PLAY [Upgrade worker nodes] ****************************************************
+
+TASK [Gathering Facts] *********************************************************
+Wednesday 30 September 2026  03:37:11 +0000 (0:00:00.028)       0:07:26.167 *** 
+ok: [golyat-4]
+
+TASK [Create containers registries configuration directory] ********************
+Wednesday 30 September 2026  03:37:14 +0000 (0:00:03.351)       0:07:29.518 *** 
+ok: [golyat-4]
+
+TASK [Configure containers short-name mode] ************************************
+Wednesday 30 September 2026  03:37:14 +0000 (0:00:00.280)       0:07:29.798 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Run pre-upgrade checks] *****************************
+Wednesday 30 September 2026  03:37:15 +0000 (0:00:00.435)       0:07:30.233 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/pre_checks.yml for golyat-4
+
+TASK [kubernetes_upgrade : Validate exact upgrade version inputs] **************
+Wednesday 30 September 2026  03:37:15 +0000 (0:00:00.028)       0:07:30.262 *** 
+ok: [golyat-4] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Verify exact target packages before drain or host APT changes] ***
+Wednesday 30 September 2026  03:37:15 +0000 (0:00:00.027)       0:07:30.289 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/apt_preflight.yml for golyat-4
+
+TASK [kubernetes_upgrade : Create temporary directory for APT preflight] *******
+Wednesday 30 September 2026  03:37:15 +0000 (0:00:00.026)       0:07:30.316 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Allow APT sandbox access to temporary preflight state] ***
+Wednesday 30 September 2026  03:37:15 +0000 (0:00:00.167)       0:07:30.483 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Create isolated APT state directories] **************
+Wednesday 30 September 2026  03:37:15 +0000 (0:00:00.172)       0:07:30.655 *** 
+ok: [golyat-4] => (item=lists)
+ok: [golyat-4] => (item=archives)
+ok: [golyat-4] => (item=cache)
+
+TASK [kubernetes_upgrade : Download target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:37:16 +0000 (0:00:00.505)       0:07:31.161 *** 
+ok: [golyat-4] => (item={'name': 'kubernetes', 'url': 'https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key'})
+ok: [golyat-4] => (item={'name': 'crio', 'url': 'https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb/Release.key'})
+
+TASK [kubernetes_upgrade : Convert target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  03:37:18 +0000 (0:00:02.108)       0:07:33.269 *** 
+ok: [golyat-4] => (item=kubernetes)
+ok: [golyat-4] => (item=crio)
+
+TASK [kubernetes_upgrade : Configure isolated APT sources and state] ***********
+Wednesday 30 September 2026  03:37:18 +0000 (0:00:00.382)       0:07:33.652 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Configure isolated target repository source list] ***
+Wednesday 30 September 2026  03:37:18 +0000 (0:00:00.401)       0:07:34.054 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Update isolated APT lists from target repositories] ***
+Wednesday 30 September 2026  03:37:19 +0000 (0:00:00.388)       0:07:34.442 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Resolve exact revisions from isolated APT lists] ****
+Wednesday 30 September 2026  03:37:21 +0000 (0:00:01.906)       0:07:36.349 *** 
+ok: [golyat-4] => (item={'name': 'kubeadm', 'version': '1.36.5-1.1'})
+ok: [golyat-4] => (item={'name': 'kubelet', 'version': '1.36.5-1.1'})
+ok: [golyat-4] => (item={'name': 'kubectl', 'version': '1.36.5-1.1'})
+ok: [golyat-4] => (item={'name': 'cri-o', 'version': '1.36.6-3.1'})
+
+TASK [kubernetes_upgrade : Remove isolated APT preflight state] ****************
+Wednesday 30 September 2026  03:37:23 +0000 (0:00:01.773)       0:07:38.123 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Mark isolated APT preflight as complete] ************
+Wednesday 30 September 2026  03:37:23 +0000 (0:00:00.196)       0:07:38.319 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Verify current kubernetes version] ******************
+Wednesday 30 September 2026  03:37:23 +0000 (0:00:00.027)       0:07:38.347 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health] *************************
+Wednesday 30 September 2026  03:37:23 +0000 (0:00:00.224)       0:07:38.571 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Verify all nodes are Ready] *************************
+Wednesday 30 September 2026  03:37:23 +0000 (0:00:00.026)       0:07:38.598 *** 
+ok: [golyat-4 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Upgrade first control plane] ************************
+Wednesday 30 September 2026  03:37:26 +0000 (0:00:02.901)       0:07:41.499 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Upgrade secondary control plane] ********************
+Wednesday 30 September 2026  03:37:26 +0000 (0:00:00.035)       0:07:41.535 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Upgrade worker node] ********************************
+Wednesday 30 September 2026  03:37:26 +0000 (0:00:00.031)       0:07:41.567 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_worker.yml for golyat-4
+
+TASK [kubernetes_upgrade : Drain worker node] **********************************
+Wednesday 30 September 2026  03:37:26 +0000 (0:00:00.044)       0:07:41.611 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Update apt source and install packages] *************
+Wednesday 30 September 2026  03:37:26 +0000 (0:00:00.024)       0:07:41.635 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml for golyat-4
+
+TASK [kubernetes_upgrade : Verify exact target packages for standalone APT-source runs] ***
+Wednesday 30 September 2026  03:37:26 +0000 (0:00:00.024)       0:07:41.660 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Configure Kubernetes apt repository for target version] ***
+Wednesday 30 September 2026  03:37:26 +0000 (0:00:00.018)       0:07:41.679 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Configure CRI-O apt repository for target version] ***
+Wednesday 30 September 2026  03:37:26 +0000 (0:00:00.414)       0:07:42.093 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Remove duplicate CRI-O version-specific apt repository] ***
+Wednesday 30 September 2026  03:37:27 +0000 (0:00:00.379)       0:07:42.473 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Import Kubernetes apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:37:27 +0000 (0:00:00.201)       0:07:42.675 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Import CRI-O apt repository GPG key for target version] ***
+Wednesday 30 September 2026  03:37:28 +0000 (0:00:00.641)       0:07:43.317 *** 
+ok: [golyat-4]
+
+TASK [kubernetes_upgrade : Update apt cache] ***********************************
+Wednesday 30 September 2026  03:37:29 +0000 (0:00:01.150)       0:07:44.467 *** 
+changed: [golyat-4]
+
+TASK [kubernetes_upgrade : Upgrade CRI-O] **************************************
+Wednesday 30 September 2026  03:37:29 +0000 (0:00:00.591)       0:07:45.059 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Apply CRI-O restart before continuing worker upgrade] ***
+Wednesday 30 September 2026  03:37:29 +0000 (0:00:00.019)       0:07:45.078 *** 
+
+TASK [kubernetes_upgrade : Unhold kubeadm] *************************************
+Wednesday 30 September 2026  03:37:29 +0000 (0:00:00.003)       0:07:45.081 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Install target kubeadm version] *********************
+Wednesday 30 September 2026  03:37:29 +0000 (0:00:00.018)       0:07:45.100 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Hold kubeadm] ***************************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.025)       0:07:45.126 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Run kubeadm upgrade node] ***************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.022)       0:07:45.149 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Upgrade kubelet and kubectl] ************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.031)       0:07:45.180 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/upgrade_kubelet_kubectl.yml for golyat-4
+
+TASK [kubernetes_upgrade : Unhold kubelet] *************************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.033)       0:07:45.213 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Unhold kubectl] *************************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.023)       0:07:45.236 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Install target kubelet version] *********************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.024)       0:07:45.261 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Install target kubectl version] *********************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.015)       0:07:45.276 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Hold kubelet] ***************************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.021)       0:07:45.298 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Hold kubectl] ***************************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.017)       0:07:45.315 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Restart kubelet] ************************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.027)       0:07:45.342 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Reboot worker node] *********************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.024)       0:07:45.366 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Uncordon worker node] *******************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.013)       0:07:45.380 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Verify node health] *********************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.039)       0:07:45.419 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for golyat-4
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:37:30 +0000 (0:00:00.030)       0:07:45.450 *** 
+ok: [golyat-4 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:37:33 +0000 (0:00:03.255)       0:07:48.705 *** 
+ok: [golyat-4 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:39:02 +0000 (0:01:29.368)       0:09:18.074 *** 
+ok: [golyat-4 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:39:09 +0000 (0:00:06.873)       0:09:24.948 *** 
+skipping: [golyat-4]
+
+TASK [kubernetes_upgrade : Run post-upgrade health check] **********************
+Wednesday 30 September 2026  03:39:09 +0000 (0:00:00.027)       0:09:24.975 *** 
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T031239Z-dc318004-688e-4908-a5ec-1ecb8b395da6/frozen-2ecf970a9/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for golyat-4
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  03:39:09 +0000 (0:00:00.025)       0:09:25.001 *** 
+FAILED - RETRYING: [golyat-4 -> shanghai-2]: kubernetes_upgrade : Wait for node to be Ready (29 retries left).
+FAILED - RETRYING: [golyat-4 -> shanghai-2]: kubernetes_upgrade : Wait for node to be Ready (28 retries left).
+FAILED - RETRYING: [golyat-4 -> shanghai-2]: kubernetes_upgrade : Wait for node to be Ready (27 retries left).
+ok: [golyat-4 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  03:39:53 +0000 (0:00:44.007)       0:10:09.008 *** 
+ok: [golyat-4 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  03:39:56 +0000 (0:00:02.356)       0:10:11.365 *** 
+ok: [golyat-4 -> shanghai-2(192.168.10.103)]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  03:39:58 +0000 (0:00:02.293)       0:10:13.658 *** 
+skipping: [golyat-4]
+
+PLAY [Post-upgrade control-plane health check] *********************************
+
+PLAY [Post-upgrade worker health check] ****************************************
+
+PLAY RECAP *********************************************************************
+golyat-1                   : ok=36   changed=1    unreachable=0    failed=0    skipped=21   rescued=0    ignored=0   
+golyat-2                   : ok=36   changed=1    unreachable=0    failed=0    skipped=21   rescued=0    ignored=0   
+golyat-3                   : ok=36   changed=1    unreachable=0    failed=0    skipped=21   rescued=0    ignored=0   
+golyat-4                   : ok=36   changed=1    unreachable=0    failed=0    skipped=21   rescued=0    ignored=0   
+shanghai-2                 : ok=39   changed=2    unreachable=0    failed=0    skipped=18   rescued=0    ignored=0   
+shanghai-3                 : ok=39   changed=2    unreachable=0    failed=0    skipped=18   rescued=0    ignored=0   
+
+
+TASKS RECAP ********************************************************************
+Wednesday 30 September 2026  03:39:58 +0000 (0:00:00.036)       0:10:13.694 *** 
+=============================================================================== 
+kubernetes_upgrade : Verify kubelet version on node -------------------- 89.37s
+kubernetes_upgrade : Wait for node to be Ready ------------------------- 49.09s
+kubernetes_upgrade : Wait for node to be Ready ------------------------- 44.01s
+kubernetes_upgrade : Update apt cache ---------------------------------- 15.62s
+kubernetes_upgrade : Verify all nodes are Ready ------------------------ 13.75s
+kubernetes_upgrade : Import Kubernetes apt repository GPG key for target version -- 10.68s
+kubernetes_upgrade : Update apt cache ----------------------------------- 9.89s
+kubernetes_upgrade : Verify kubelet version on node --------------------- 9.75s
+kubernetes_upgrade : Verify etcd cluster health ------------------------- 9.17s
+kubernetes_upgrade : Resolve exact revisions from isolated APT lists ---- 8.21s
+kubernetes_upgrade : Resolve exact revisions from isolated APT lists ---- 7.96s
+Configure containers short-name mode ------------------------------------ 7.68s
+kubernetes_upgrade : Import CRI-O apt repository GPG key for target version --- 7.28s
+kubernetes_upgrade : Download target repository signing keys for isolated APT preflight --- 7.23s
+Gathering Facts --------------------------------------------------------- 7.12s
+Gathering Facts --------------------------------------------------------- 7.08s
+kubernetes_upgrade : Verify node conditions (no pressure) --------------- 6.87s
+kubernetes_upgrade : Download target repository signing keys for isolated APT preflight --- 6.46s
+kubernetes_upgrade : Create isolated APT state directories -------------- 6.03s
+kubernetes_upgrade : Verify all nodes are Ready ------------------------- 5.69s
