@@ -78,9 +78,11 @@ pause/cancelは新規起動を直ちに抑止。走行中は次の安全checkpoi
 
 自由文の大きなplan承認に代え、必要な一決定を構造化する。最小fields: schema_version、id、ticket、control_revision、question、recommended_option、options、evidence_refs、impact、rollback、scope、artifact_head、owner、expires_at、status。各optionは具体的な効果を持ち、owner回答はoption_id/decision_id/head/revisionに結びつく。pending/resolved/expired/supersededを区別。期限切れ・head変更・scope変更は旧許可を無効化。高リスク実行許可は対象操作一回限り、実行eventと連結する。
 
+以下はschema説明用の未発行テンプレートであり、ownerへの承認要求ではない。`artifact_head`・`expires_at`のプレースホルダと`status: pending`は記述例で、判断の記録や実行許可に使用できない。発行時は対象commitの完全SHA、現在のcontrol revision、具体的なUTC期限を確定し、I6の認証経路へ登録する。今回の[owner向け要約](decision-packet.md)は設計方針のレビュー依頼であり、このテンプレートを発行しない。
+
 ```yaml
 schema_version: 1
-id: BOXP-201/D1
+id: example/D1
 ticket: BOXP-201
 control_revision: 1
 question: "新規ticketだけをv2 opt-in canaryの対象にするか"

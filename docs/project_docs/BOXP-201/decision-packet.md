@@ -1,5 +1,7 @@
 # Owner向けDecision Packet — BOXP-201
 
+**種別**: 設計レビュー用の要約。実行承認を要求する発行済みpacketではない。[設計のYAML例](design.md#decision-packet契約)も未発行テンプレートであり、head・期限のプレースホルダを含むため承認の記録には使用できない。
+
 **今回の一決定**: v2の初回対象を「新規canaryのみ」とする方針で進めるか。
 
 **推奨**: 新規canaryのみ。既存ticketの停止状態・scopeを推測しないで検証できる。代替はshadow-onlyを維持し、起動差分の観測だけを続ける。
@@ -10,7 +12,7 @@
 
 **rollback**: 限定配布の際に受付停止→canary pause→checkpoint/drain→journal保存→legacy復帰前の起動抑止確認を実施する。詳細は[設計](design.md)。
 
-**レビュー成果**: [計画](plan.md)・[設計とschema例](design.md)・[実装ticket本文案](implementation-tickets.md)。このpacketの許可対象はレビュー対象commitの移行方針だけ。未回答/期限切れは許可を意味せず、次の安全な設計/fixture作業は進められる。本番配布直前に対象head/revision/期限付きpacketを発行する。回答は[認証と承認event契約](design.md#回答の認証と承認event)に従うowner専用経路で記録し、packetのstatusやowner名の記載だけでは許可しない。この要約自体は承認eventではない。
+**レビュー成果**: [計画](plan.md)・[設計とschema例](design.md)・[実装ticket本文案](implementation-tickets.md)。今回求めるのは移行方針への設計フィードバックだけであり、回答から実行許可を生成しない。未回答も許可を意味せず、独立した安全な設計/fixture作業は進められる。I6/I7で認証経路と分離を検証した後、本番配布直前に対象commitの完全SHA・現在のcontrol revision・具体的なUTC期限を確定した別packetを発行する。その承認は[認証と承認event契約](design.md#回答の認証と承認event)に従うowner専用経路で記録し、packetのstatusやowner名の記載だけでは許可しない。この要約自体は承認eventではない。
 
 **後続でownerが判断する未解決事項**（今すべての回答を求めない）:
 
