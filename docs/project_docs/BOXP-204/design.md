@@ -49,11 +49,23 @@ Claude公式[Authentication](https://code.claude.com/docs/en/authentication)で�
 
 **RWOと1 replicaはプロセス間排他ではない。** cronのjob別lock、Task Boardのticket/repo lockもprovider sessionの排他ではない。workspace対話CLI、cron、runner、委譲CLI、維持job、外部machineを同じ認証sessionの利用者として数える。
 
-初期案はproviderごとの全利用者直列化。共有PVC内の安定したlock fileにflock等を取り、診断→実際の公式CLI利用→更新済みauth保存→終了まで保持する。refreshだけでなくrun全体を直列化し、CLIの子processも同じ所有期間に含める。待機は最大15分、起動せず延期し、Boardはrunner契約で処理する。lock fileを消して復旧せず、所有process終了とdrainを確認する。PVC filesystemのlockセマンティクスをfake/隔離canaryで検証する。別machineやwrapperを迂回する利用者が残れば安全な直列化とはみなさず導入停止。
+初期案は認証sessionごとの全利用者直列化。同sessionの全利用者が同じPVCの同一lock/stateを使う場合に限り、共有PVC内の安定したlock fileにflock等を取り、診断→実際の公式CLI利用→更新済みauth保存→終了まで保持する。refreshだけでなくrun全体を直列化し、CLIの子processも同じ所有期間に含める。待機は最大15分、起動せず延期し、Boardはrunner契約で処理する。lock fileを消して復旧せず、所有process終了とdrainを確認する。PVC filesystemのlockセマンティクスをfake/隔離canaryで検証する。別machineやwrapperを迂回する利用者が残れば安全な直列化とはみなさず導入停止。
 
 外部の委譲CLIは同じsessionの親CLIが生きたまま起動しない。親がlockを保持して子の再取得を待つ形は禁止し、lock継承だけで親子のAPI並列利用を許す形も禁止する。同sessionの後続CLIは親をcheckpoint/終了しlock解放後に直列起動する。並行委譲が必要なら独立発行sessionを割り当てる。異providerも親の利用lockを持ちながら別provider lockを取得して子を待たない（入れ子取得禁止）。review gateは本作業CLI終了・lock解放後に実行する。公式CLI内部のsubagent機構と外部CLI委譲を区別し、内部並列を安全に制御できない維持streamは採用しない。
 
 代替はownerが公式ログインで独立発行したsessionごとのCODEX_HOME/CLAUDE_CONFIG_DIR・保存領域。**同じrefresh tokenを別directoryへコピーしても独立sessionにならない。** 実効sourceを確認してから切り替える。Codexの更新ファイルは同じPVCへ残し、古いSecret seedで毎起動上書きしない。missingの場合も自動seed復元せずowner復旧にする。
+
+## 認証sessionの共有状態と導入条件
+
+lock・retry budget・hold・有効性根拠・通知dedupeの管理単位は、provider名やHOMEではなく**認証session**。ownerが非秘密の不透明な`session_ref`（ランダムUUID）を割り当て、providerと利用者の対応を管理する。出力/path構築ではUUID形式とowner台帳の登録を検証し、任意の入力文字列は採用しない。token/hash/fingerprint/account IDから生成しない。同じsessionを別HOME/config/PVCへコピーした場合も同じrefを使う。独立発行を確認できたsessionだけ別refにする。対応が不明な利用者はunknown/holdで、勝手に新refと新budgetを作らない。provider受付はrouteのsession状態を参照し、他providerには伝播させない。
+
+正本は、同sessionの全利用者が到達する**共有・耐久ストア**のsession recordとする。retry counter/初回時刻/deadline、hold latch、owner再開epoch、validity evidence、sink別dedupe/再送予算をまとめて保持する。通常のhealthy/expiringの定期検査を再診断予算の消費にしない。session利用lock内の初回検査でunknownになった時点（検査crash/timeoutを含む）をattempt 1としてatomicにepisode開始を記録し、初回時刻からdeadlineを固定する。未完了の初回検査予約は次の利用者がunknown episodeとして回収し、なかったことにしない。episode中の利用者は再検査開始前にatomicにattemptを予約し、失敗・timeout・process crashもその一回に数える。予約後にcounterを戻さない。deadlineとepochを各利用者が初期化せず、ownerの明示再開だけが新epochを作る。定期診断/run preflight/cron/ticket/review/対話CLIが同じrecordを参照する。新HOME・新Pod・別PVC・別machine・別ticketでも予算やholdをリセットしない。
+
+全利用者が同一PVC上で動く限定構成では、owner指定の共通絶対path（候補 `/home/boxp/.codex-workspace/auth-health/sessions/{session_ref}.json`）を正本にできる。`$HOME`から利用者ごとに解決しない。0600・親0700、同一UIDまたは承認済みアクセス方式、安定したsession lockとatomic replaceで更新し、filesystemの排他/耐久性を検証する。ローカルHOMEのcacheは表示専用で受付判断に使わない。
+
+別machine/別PVCも同sessionを利用する構成で、このPVCのlock/stateを共有できなければローカルfile方式は採用不可。別途承認する共有controller/storeが、session単位の排他lease・fencing、transaction/CASによる予算予約、耐久hold/dedupe、時計/deadlineと障害回復を保証する必要がある。CLI利用中も同じ排他domainでlockを保持し、lease喪失時は新requestを止めてdrainする。stale cache/local lockへのfallback、ネットワーク分断時の両側実行は禁止。
+
+**enforcement導入条件**はownerが同sessionの全利用者を列挙し、lockと状態の共有範囲が一致し、全起動経路が迂回せず参加することをfake/隔離canaryで証明すること。到達不能な利用者、未管理の外部machine、wrapper迂回、session対応不明が一つでも残る場合、そのsessionにはenforcementを導入せずread-only shadowまでに留める。先に利用者を停止/drainするか、ownerが独立sessionを発行し、再確認する。導入後のstore到達不能/破損/書込不能/lease喪失はunknown/holdとして新規本作業と再診断予約を停止し、ローカルの新予算を作らない。状態喪失も新規初期化で復旧せずowner待ちにする。
 
 ## 診断契約
 
@@ -73,16 +85,16 @@ Claude公式[Authentication](https://code.claude.com/docs/en/authentication)で�
 
 access期限経過だけではexpiredにしない。公式内蔵refreshの余地があるがrefresh可能期間/成功根拠がなければunknownで停止。明示承認を受けた更新確認だけ実施可。独自refresh・無意味な定期model request・public repo向け維持例の転用は不可。
 
-unknown再診断は最初の検査を含め最大3回、初回から15分以内（例0分/5分/10分、各検査timeout 30秒）。ネットワーク/429/5xx/lockを含む。providerごとの永続counter/deadlineを全利用者で共有し、cronの次回・Pod再作成・新ticketでbudgetをリセットしない。15分経過か3回でholdを固定しowner待ち。形式/権限/非対応/禁止方式は最初からowner待ち。認証失敗をPR gate retryやidle retryに渡して再起動しない。
+unknown再診断は最初の検査を含め最大3回、初回から15分以内（例0分/5分/10分、各検査timeout 30秒）。ネットワーク/429/5xx/lockを含む。認証sessionの共有耐久recordでcounter/deadlineを全利用者が共有し（上記のatomic予約）、cronの次回・Pod再作成・新ticketでbudgetをリセットしない。unknown episode開始後は診断がhealthyに戻ってもholdを自動解除せず、owner再開まで同じbudgetを保持する。15分経過か3回で再診断を停止しowner待ち。形式/権限/非対応/禁止方式は最初からowner待ち。認証失敗をPR gate retryやidle retryに渡して再起動しない。
 
 ## 出力・通知・進行中run
 
-出力は自由文をredactするのでなく**許可項目から再生成**する。共通schemaはprovider(enum)、method(enum subscription-login/subscription-long-token/unconfirmed)、cli_version(数値版だけ)、checked_at(UTC)、state(enum)、admission、reason(enum)、expiry_kind(login/long-token/access/unknown)、expiry_known(boolean)、expiry_at(検証済みUTC/null)、validity、evidence_at、attempt_count、retry_deadline、notification_band(72h/24h/expired/none)のみ。未知fieldは捨てる。値の不正も固定reasonへ変換し、入力文字列を例外に埋め込まない。
+出力は自由文をredactするのでなく**許可項目から再生成**する。共通schemaはprovider(enum)、session_ref(owner割当の非秘密ref)、method(enum subscription-login/subscription-long-token/unconfirmed)、cli_version(数値版だけ)、checked_at(UTC)、state(enum)、admission、reason(enum)、expiry_kind(login/long-token/access/unknown)、expiry_known(boolean)、expiry_at(検証済みUTC/null)、validity、evidence_at、attempt_count、retry_deadline、notification_band(72h/24h/expired/none)のみ。未知fieldは捨てる。値の不正も固定reasonへ変換し、入力文字列を例外に埋め込まない。
 
-初期reasonは`expiry-unknown`、`login-expired`、`refresh-rejected`、`credential-missing`、`permission-denied`、`schema-unsupported`、`cli-unsupported`、`network-unverified`、`refresh-contention`、`clock-unverified`、`policy-disallowed`、`inspection-unapproved`、`internal-error`。path/email/org/account ID/生stderr/stdout/credential本文/token/refresh token/API key/cookie/認証URLは出さない。CLI subprocessのstdout/stderrはboundedなメモリpipeで受け、tee/tempfile/log保存をしない。shell tracingを無効にしcore dumpも抑止。B統合では認証起動診断のstdout/stderrを既存events.jsonl/stderr.log/last-messageへ書く前にメモリ内で分類し、認証失敗出力は固定schemaに置き換える。認証診断を既存生ログ経路へ流したままenforcementを有効にしない。後続はBOXP-202の安全分類を再利用し、そのAPIが未完成なら統合を待つ。
+初期reasonは`expiry-unknown`、`login-expired`、`refresh-rejected`、`credential-missing`、`permission-denied`、`schema-unsupported`、`cli-unsupported`、`network-unverified`、`refresh-contention`、`clock-unverified`、`policy-disallowed`、`inspection-unapproved`、`session-unmapped`、`state-unavailable`、`lease-lost`、`internal-error`。path/email/org/account ID/生stderr/stdout/credential本文/token/refresh token/API key/cookie/認証URLは出さない。CLI subprocessのstdout/stderrはboundedなメモリpipeで受け、tee/tempfile/log保存をしない。shell tracingを無効にしcore dumpも抑止。B統合では認証起動診断のstdout/stderrを既存events.jsonl/stderr.log/last-messageへ書く前にメモリ内で分類し、認証失敗出力は固定schemaに置き換える。認証診断を既存生ログ経路へ流したままenforcementを有効にしない。後続はBOXP-202の安全分類を再利用し、そのAPIが未完成なら統合を待つ。
 
-ローカル状態案は`$HOME/.codex-workspace/auth-health/{provider}.json`（0600、親0700、atomic replace）。schema出力とcontrollerのretry/dedupe情報だけを保存、credential fingerprint/hashも保存しない。書込不能/壊れたstateはunknown/hold、過去healthyを信頼しない。TTL切れはhold。記録と通知のlockは短く、長いCLI利用lockと同じ順序で取りdeadlockを防ぐ。
+状態の正本は上記session共有ストア。schema出力とcontroller情報だけを保存し、credential fingerprint/hashも保存しない。shadowのローカル出力は観測用で、全利用者の予算/holdを共有できた証拠にはしない。書込不能/壊れたstateはunknown/hold、過去healthyを信頼しない。TTL切れはhold。記録と通知のlockは短く、長いsession利用lockと同じ順序で取りdeadlockを防ぐ。
 
-既知login/長期token期限72h/24h前と確定失効/状態変化をローカル状態・対象ticket Notesへ通知する初期案。同じprovider/state/reason/expiry_kind/期限/bandをdedupe keyとし、一度だけ出す。初回観測が24h以下なら24h通知一件、過去72h通知を追送しない。定期診断は固定owner向けローカル状態へ、runのholdは該当Notesへhelperで一度追記。再起動後もdedupeを保持し、sink失敗は成功扱いにせず有界再送、失敗で本作業を再起動しない。外部通知はboxpが経路・内容・頻度を別承認するまで無効。
+既知login/長期token期限72h/24h前と確定失効/状態変化をローカル状態・対象ticket Notesへ通知する初期案。同じsession_ref/owner再開epoch/provider/state/reason/expiry_kind/期限/band/sinkをdedupe keyとし、一度だけ出す。初回観測が24h以下なら24h通知一件、過去72h通知を追送しない。定期診断は固定owner向けローカル状態へ、runのholdは該当Notesへhelperで一度追記。dedupeは正本でatomic予約し、別HOME/別machineの通知もまとめる。sink失敗/送信後crashでは厳密な一回配送を保証できないため、sinkのidempotency対応を確認し、非対応なら不確定送信をowner確認待ちにして自動再送しない。再起動後もdedupeを保持し、sink失敗は成功扱いにせず有界再送、失敗で本作業を再起動しない。外部通知はboxpが経路・内容・頻度を別承認するまで無効。
 
 進行中runは期限接近だけで強制killしない。確定失効/失効疑いを受けた場合は新しいprovider request/委譲開始を止め、既に返ったローカル成果をcheckpointしてdrainする。制御できないCLIは既存runner停止機構で上限付き終了（初期grace 60秒、process group終了を確認）し、部分成果と固定reasonだけ記録する。認証変更は全利用者drain後。認証エラーでの無限retry、他providerへの自動route切替、課金方式切替は禁止。実装はrunnerの終了/lock/finally経路へ統合し、helper/診断からBoardを直接動かさない。再開はownerの公式再ログイン、方式/保存/有効性の確認、承認済みcanary成功、明示再開指示をすべて満たした時だけ（自動healthy復帰だけではhold解除しない）。

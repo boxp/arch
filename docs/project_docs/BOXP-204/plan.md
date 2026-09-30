@@ -23,6 +23,13 @@
 - terra_workerの起動は利用不能だったためexplorerへコード調査を委譲。親が公式根拠・チケットとの整合を確認した。独立レビューのprovider lock自己待ち指摘を反映し、同session委譲の直列化/独立session必須・入れ子lock禁止を追記した。
 - 文書のlocal link、code fence、秘密値パターン、git diff --checkを検証。runtime試験/実provider probeは未実施。GitHubでarchのPUBLIC可視性を確認し、公式CI/CD維持例を同repoへ適用しない制約を反映した。
 
+## PR gate再試行（2026-09-30）
+
+- PR #13043のcodex-review P1（lockの全利用者範囲とHOME別retry/hold状態の不一致）に対応する。同PR head 0a13eebbcを今回の専用worktreeへfast-forwardし、同じPR branchへ追加commitをpushする。
+- 認証session単位の非秘密refと共有耐久正本、atomicな再診断予算予約、lock/state範囲一致、全利用者が参加できない場合のenforcement導入禁止をdesignに追加。分割案・fakeテスト・owner再開を同じ契約に揃える。
+- 最終検証: local link/code fence/秘密値パターンとgit diff --checkが成功。terra_worker利用不能のため低コストlunaへ独立レビューを委譲し、正常検査とunknown episode予算の区別を補足後、追加指摘なしを確認した。
+- review skillsはdotfilesのSKILL.mdを参照。別CLIの認証更新を避け、独立チームagentに文書レビューを委譲する。最終PR gateはrunnerが実施する。credential操作/実provider probeは実行しない。
+
 ## 承認境界
 
 設計PRのレビュー/mergeから、credential読取り・変更、login/refresh probe、Secret注入、外部通知、provider操作、rolloutの実行許可を推論しない。fakeテストと秘密値を扱わない設計は先行できる。採用実装と実環境操作は対象commit・provider・利用者・期限・rollbackを特定した別承認で行う。

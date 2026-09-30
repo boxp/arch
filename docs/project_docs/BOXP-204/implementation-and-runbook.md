@@ -6,9 +6,9 @@
 
 | 分割 | 対象ファイル/責務 | 依存・完了条件 |
 | --- | --- | --- |
-| A: arch診断 | 新設候補 `docker/codex-workspace/auth/auth_health.bb` とfake tests。CLI版ごとのadapter、方式/期限種別、allowlist出力、state/retry/dedupe永続化 | [状態契約](design.md#診断契約)をfixtureで再現。実credentialは読まない。status/API有効性の分離とpolicy拒否を実装。read-only shadowに限定して先行可能 |
+| A: arch診断 | 新設候補 `docker/codex-workspace/auth/auth_health.bb` とfake tests。CLI版ごとのadapter、方式/期限種別、allowlist出力、認証session共有耐久storeのstate/retry/dedupeとatomic予約 | [状態契約](design.md#診断契約)をfixtureで再現。実credentialは読まない。status/API有効性の分離とpolicy拒否を実装。read-only shadowに限定して先行可能 |
 | B: arch起動gate | `task-board/task_board_runner.bb`、`cron/run-codex-cron.sh`、必要なら `cron/scheduler.bb`。同provider admission、unknown有界再診断、起動前lock、進行中の安全停止 | A、BOXP-202のstdout/stderr安全分類が前提。runner lane/lock/result契約を保持。provider holdからPR gate/idleの無限retryへ入らない |
-| C: arch/lolice永続化・排他 | arch `entrypoint.sh` / Dockerfile、lolice `argoproj/codex-workspace/deployment.yaml`。実効CLI/UID/HOME固定、全利用者wrapper、独立sessionまたは直列stream、PVC継承 | 他repoは専用worktree/別PR。shared checkout編集不可。別machine/対話/委譲CLIを含め排他網羅性を証明。Secret/credential変更/rolloutは別承認 |
+| C: arch/lolice永続化・排他 | arch `entrypoint.sh` / Dockerfile、lolice `argoproj/codex-workspace/deployment.yaml`。実効CLI/UID/HOME固定、全利用者wrapper、共通lock/state domain、独立sessionまたは直列stream、PVC継承 | 他repoは専用worktree/別PR。shared checkout編集不可。別machine/対話/委譲CLIを含めlockとretry/hold状態の共有範囲一致・網羅性を証明。Secret/credential変更/rolloutは別承認 |
 | D: owner復旧・運用 | 本runbook、owner向け実操作packet、必要ならvault Projectへレビュー済み設計を同期 | 通知経路、owner/代行、72h/24h・1hの初期値、認証読取り範囲、canary/再開条件を確認。認証操作はownerが実施 |
 
 BOXP-202は旧fable未定義agent、Claude route/CLI固定、stdoutのみを含む起動失敗分類と実障害復旧を担当。本票は事前診断/期限予防、認証更新の永続化と排他、provider受付制御を担当する。BOXP-192のPR gate修正、BOXP-201の自律運転/承認storeを重複実装しない。現mainのblocker-safe-reasonは固定文だがprovider分類は未実装。regexで生ログをredactするだけでは本票のallowlist契約を満たさない。
@@ -32,12 +32,16 @@ providerに接続しないfake CLI/credentialだけを使い、sandbox HOME・co
 | 破損JSON、未知schema、権限、symlink、不明CLI版 | unknown/hold、入力の値/pathを出さない |
 | status exit 0 + model 401、stdoutだけauth失敗 | 有効性unverified、BOXP-202分類を使う。認証失敗をPR retryにしない |
 | network timeout/429/5xx/refresh lock | provider共有budget内で最大3回/15分、1検査30秒。上限到達後本作業0 |
+| healthy定期検査/unknown初回crash/回復観測 | 複数回のhealthy定期検査後もretry budgetは未消費、最初のunknown episodeは合計3回/15分。初回crashもunknown attempt 1、回復観測だけでhold/budgetを解除しない |
 | retry中のcron次回、別ticket、Pod再起動 | counter/deadline/holdを引き継ぐ。budgetを更新しない |
 | API key/env/helper/Console/cloud/custom provider | policy-disallowed/hold、helper起動0、fallback/課金方式切替0。環境変数の値を表示しない |
 | 独立sessionと同じtokenのdirectoryコピー | コピーだけの分離を拒否。全利用者とreview gateの同session同時CLI実行0 |
 | 親CLIからの同session子CLI/異provider入れ子 | 起動を拒否し自己待ち/相互待ち0。独立session委譲と親終了後のreviewは可能 |
 | PVC再利用/image更新/古いseed | 更新済みfake credential保持。自動seed上書き0、lock inodeの途中削除0 |
 | 通知再起動/重複/状態変化/sink失敗 | 同一key重複0、24h初回は一件、状態変化は通知。外部sink未承認なら呼出0 |
+| 別HOME/別PVC/別machineで同session | 共通session_ref/正本を参照し、合計attempt最大3回/15分、hold/epoch/通知dedupeを共有。独立sessionのbudgetとは分離 |
+| 同時予約/process crash/ネットワーク分断 | atomic予約で上限超過0、予約後crashも消費。store到達不能/lease喪失で新run・再診断0、local fallback/新budget生成0 |
+| 未管理利用者/共通store未到達/対応不明 | 同sessionへのenforcement導入0、shadow限定。ownerによるdrain/独立発行と網羅性確認まで導入不可 |
 | state破損/書込不能/clock逆行 | 過去healthyへ戻らずunknown/hold。固定reason出力 |
 | 進行中失効/owner再開前 | 新request/委譲0、grace後process group drain、部分成果保持、hold自動解除0 |
 | Claude正常/Codex review hold | Claude本作業を全停止しない、Codex review起動0、review完了へ偽装0 |
@@ -50,7 +54,7 @@ A/B/C実装時は新設auth fixtureに加えて既存 `tests/codex-workspace/tas
 
 1. 設計レビュー: owner/通知先/時間値、PUBLICのarch workflowへCodex公式CI/CD維持例を適用しない制約、実効方式の読取り範囲、排他案を確認。設計mergeを操作許可にしない。
 2. Aのfake/漏洩試験後、別承認されたread-only shadow。model request/refreshを起こさずlocal stateだけ出力。unknownが続く原因と版対応を評価。
-3. 全利用者のmetadata inventoryとlock互換性を確認。BOXP-202の分類API完成後、新規隔離canaryの1 provider/1 workerにenforcement導入。Bのコードでlegacy lane/lockを維持できることをfakeで確認。
+3. 全利用者のmetadata inventory、session_ref対応、共通耐久storeとlockの範囲一致・到達性・互換性を確認。別HOME/別machineを含め一利用者でも網羅できなければ当該sessionはshadowのみ、enforcement導入不可。BOXP-202の分類API完成後、新規隔離canaryの1 provider/1 workerにenforcement導入。Bのコードでlegacy lane/lockを維持できることをfakeで確認。
 4. 再認証/Secret保存/公式更新確認が必要なら対象操作を別packetに固定。ownerによる独立session発行または全利用者drain後の直列化、更新ファイル永続化を確認。
 5. 限定配布の結果をレビューし、別承認で他provider/全利用者へ拡大。外部通知は経路承認後に別段階で有効化。
 
@@ -59,12 +63,12 @@ rollbackはまず該当providerの新規受付停止、維持job停止、進行�
 ## Owner復旧runbook（手順案・未実行）
 
 1. **状態確認**: provider/固定reason/検査時刻/期限種別だけ確認する。Ready/SSH成功では判定しない。同じ実効UID/HOME/config/固定CLIをmetadataから特定する。read-onlyの範囲を超えるcredential読取り/status/probeは別承認。
-2. **停止/drain**: 該当providerの受付をholdし、workspace対話・cron・Task Board・review gate・委譲CLI・外部machineを停止/drainする。Board laneの操作はrunnerのみ。進行中runの部分成果を保持し、provider lock所有者終了を確認する。credential削除・lock file削除を行わない。
+2. **停止/drain**: 該当providerの受付をholdし、workspace対話・cron・Task Board・review gate・委譲CLI・外部machineを停止/drainする。Board laneの操作はrunnerのみ。進行中runの部分成果を保持し、同sessionの全lock/lease所有者終了を確認する。共有正本のholdが全利用者へ適用されることを確認し、到達不能な利用者は別途停止/drainするまで復旧を進めない。credential削除・lock file削除を行わない。
 3. **公式subscription再ログイン**: ownerが秘密値を記録しない専用端末で実施。Codexは対象CODEX_HOMEとUIDで公式 `codex login` のsubscription browser flow。Claudeは対象CLAUDE_CONFIG_DIRとUIDで公式 `claude auth login` または対話 `/login` のsubscription flow。Console選択/`--console`/API key経路は禁止。認証URLもNotes/PRへ転載しない。logout/credential削除が必要な場合は破壊範囲を別承認。
 4. **長期token採用時のみ**: Claude `setup-token` はownerの専用端末で公式subscription認可。出力はagentログに通さずapproved secret経路へ保存。固定tokenの期限・保存ownerを非秘密台帳で管理する。期限が迫ったら公式再発行が必要、非対話独自refreshは使わない。今回は採用/実行していない。
 5. **保存確認**: ownerまたは承認されたadapterが選択方式をsubscriptionと確認し、更新済みcredentialの保存先・所有権・permission/ACLをmetadataだけで照合する。Codex 0660の扱いはowner判断。古いseedを再投入しない。Pod再作成後の同PVC/更新保存検証は別承認のcanary。
 6. **小規模canary**: 対象provider/CLI/UID/config/実行window、request数/費用・timeout上限、出力allowlistを特定して別承認する。秘密や本作業を含まない公式CLIの最小runを一回。独自provider API probeを作らない。失敗ならholdのままowner調査、再試行予算を増やさない。
-7. **明示再開**: 方式・期限・有効性・排他・永続化が確認でき、canary成功を安全なrun ID/固定結果だけ残した後、ownerが対象providerの再開を明示する。期限取得不能ならunknown継続、healthyへ推測で戻さない。hold解除とretry budgetの新epochはownerの再開指示にだけ紐付ける。停止した票の再実行はrunner契約で行う。
+7. **明示再開**: 方式・期限・有効性・排他・永続化が確認でき、canary成功を安全なrun ID/固定結果だけ残した後、ownerが対象providerの再開を明示する。期限取得不能ならunknown継続、healthyへ推測で戻さない。hold解除とretry budgetの新epochはownerの再開指示にだけ紐付け、同sessionの共有正本へatomicに反映する。新HOME/別machine側で独自に解除/初期化しない。停止した票の再実行はrunner契約で行う。
 
 ## 未確定事項と承認packetの入力
 
