@@ -119,7 +119,14 @@ Projects/codex-task-board-runner/spec.md
 
 ### Codex assignee と reasoning level
 
-既存の `codex`、`codex-sol`、`codex-full`、`codex-terra`、`codex-mini` はそのまま使用できます。これらには必要に応じて `-minimal`、`-low`、`-medium`、`-high`、`-xhigh` を付加できます。例えば `assignee: codex-sol-high` は Sol モデルを選び、Codex CLI に `model_reasoning_effort=high` を明示します。
+既存の `codex`、`codex-sol`、`codex-full`、`codex-terra`、`codex-mini`、`codex-astra` はそのまま使用できます。割当先モデルは次のとおりです。
+
+- `codex` / `codex-terra`: `gpt-5.6-terra`（既定、コスト重視）
+- `codex-sol` / `codex-full`: `gpt-6.1-sol`（高難度タスク向け）
+- `codex-mini`: `gpt-5.6-luna`（軽量）
+- `codex-astra`: `gpt-6-astra`（最高性能・最高コスト）
+
+これらには必要に応じて `-minimal`、`-low`、`-medium`、`-high`、`-xhigh` を付加できます。ただし `codex-sol` / `codex-full` は `-low`、`-medium`、`-high`、`-xhigh` のみ、`codex-astra` は `-low`、`-medium`、`-high` のみ有効です。例えば `assignee: codex-sol-high` は `gpt-6.1-sol` を選び、Codex CLI に `model_reasoning_effort=high` を明示します。
 
 サフィックスなしの既存名は runner から reasoning を強制せず、Codex の既存設定を使います。未知のベース名または許容外の suffix は実行対象になりません。`fable` は reasoning suffix を受け付けず、従来どおり `fable` のみが有効です。
 
