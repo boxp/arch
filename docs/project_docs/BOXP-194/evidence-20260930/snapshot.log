@@ -3,97 +3,97 @@ warning: The `tool.uv.dev-dependencies` field (used in `pyproject.toml`) is depr
 PLAY [Pre-upgrade validation and optional etcd snapshot] ***********************
 
 TASK [Gathering Facts] *********************************************************
-Wednesday 30 September 2026  03:14:47 +0000 (0:00:00.014)       0:00:00.014 *** 
+Wednesday 30 September 2026  03:14:47 +0000 (0:00:00.014)       0:00:00.014 ***
 ok: [shanghai-1]
 
 TASK [Take etcd snapshot] ******************************************************
-Wednesday 30 September 2026  03:14:54 +0000 (0:00:06.931)       0:00:06.946 *** 
+Wednesday 30 September 2026  03:14:54 +0000 (0:00:06.931)       0:00:06.946 ***
 included: kubernetes_upgrade for shanghai-1
 
 TASK [kubernetes_upgrade : Create etcd snapshot directory on control plane host] ***
-Wednesday 30 September 2026  03:14:54 +0000 (0:00:00.042)       0:00:06.988 *** 
+Wednesday 30 September 2026  03:14:54 +0000 (0:00:00.042)       0:00:06.988 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Set etcd snapshot paths] ****************************
-Wednesday 30 September 2026  03:14:56 +0000 (0:00:01.715)       0:00:08.703 *** 
+Wednesday 30 September 2026  03:14:56 +0000 (0:00:01.715)       0:00:08.703 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Wait for etcd snapshot store pod] *******************
-Wednesday 30 September 2026  03:14:56 +0000 (0:00:00.031)       0:00:08.735 *** 
+Wednesday 30 September 2026  03:14:56 +0000 (0:00:00.031)       0:00:08.735 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Get ready etcd snapshot store pod] ******************
-Wednesday 30 September 2026  03:14:58 +0000 (0:00:02.380)       0:00:11.115 *** 
+Wednesday 30 September 2026  03:14:58 +0000 (0:00:02.380)       0:00:11.115 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Set etcd snapshot store pod name] *******************
-Wednesday 30 September 2026  03:15:00 +0000 (0:00:01.996)       0:00:13.111 *** 
+Wednesday 30 September 2026  03:15:00 +0000 (0:00:01.996)       0:00:13.111 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Find existing etcd snapshot in Longhorn PVC for today] ***
-Wednesday 30 September 2026  03:15:00 +0000 (0:00:00.030)       0:00:13.141 *** 
+Wednesday 30 September 2026  03:15:00 +0000 (0:00:00.030)       0:00:13.141 ***
 skipping: [shanghai-1]
 
 TASK [kubernetes_upgrade : Reuse existing etcd snapshot in Longhorn PVC for today] ***
-Wednesday 30 September 2026  03:15:00 +0000 (0:00:00.033)       0:00:13.175 *** 
+Wednesday 30 September 2026  03:15:00 +0000 (0:00:00.033)       0:00:13.175 ***
 skipping: [shanghai-1]
 
 TASK [kubernetes_upgrade : Take etcd snapshot inside etcd pod] *****************
-Wednesday 30 September 2026  03:15:00 +0000 (0:00:00.033)       0:00:13.208 *** 
+Wednesday 30 September 2026  03:15:00 +0000 (0:00:00.033)       0:00:13.208 ***
 changed: [shanghai-1]
 
 TASK [kubernetes_upgrade : Verify etcd snapshot integrity inside etcd pod] *****
-Wednesday 30 September 2026  03:15:14 +0000 (0:00:14.290)       0:00:27.499 *** 
+Wednesday 30 September 2026  03:15:14 +0000 (0:00:14.290)       0:00:27.499 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Move etcd snapshot from host-mounted etcd data directory] ***
-Wednesday 30 September 2026  03:15:16 +0000 (0:00:02.134)       0:00:29.634 *** 
+Wednesday 30 September 2026  03:15:16 +0000 (0:00:02.134)       0:00:29.634 ***
 changed: [shanghai-1]
 
 TASK [kubernetes_upgrade : Read snapshot and PVC capacity in bytes] ************
-Wednesday 30 September 2026  03:15:18 +0000 (0:00:01.617)       0:00:31.252 *** 
+Wednesday 30 September 2026  03:15:18 +0000 (0:00:01.617)       0:00:31.252 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Require capacity for snapshot and safety reserve] ***
-Wednesday 30 September 2026  03:15:20 +0000 (0:00:02.100)       0:00:33.352 *** 
+Wednesday 30 September 2026  03:15:20 +0000 (0:00:02.100)       0:00:33.352 ***
 ok: [shanghai-1] => {
     "changed": false,
     "msg": "All assertions passed"
 }
 
 TASK [kubernetes_upgrade : Stream etcd snapshot into temporary file] ***********
-Wednesday 30 September 2026  03:15:20 +0000 (0:00:00.045)       0:00:33.397 *** 
+Wednesday 30 September 2026  03:15:20 +0000 (0:00:00.045)       0:00:33.397 ***
 changed: [shanghai-1]
 
 TASK [kubernetes_upgrade : Read uploaded temporary snapshot size] **************
-Wednesday 30 September 2026  03:15:29 +0000 (0:00:08.596)       0:00:41.994 *** 
+Wednesday 30 September 2026  03:15:29 +0000 (0:00:08.596)       0:00:41.994 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Require complete snapshot transfer] *****************
-Wednesday 30 September 2026  03:15:31 +0000 (0:00:02.178)       0:00:44.172 *** 
+Wednesday 30 September 2026  03:15:31 +0000 (0:00:02.178)       0:00:44.172 ***
 ok: [shanghai-1] => {
     "changed": false,
     "msg": "All assertions passed"
 }
 
 TASK [kubernetes_upgrade : Publish verified snapshot atomically] ***************
-Wednesday 30 September 2026  03:15:31 +0000 (0:00:00.029)       0:00:44.202 *** 
+Wednesday 30 September 2026  03:15:31 +0000 (0:00:00.029)       0:00:44.202 ***
 changed: [shanghai-1]
 
 TASK [kubernetes_upgrade : Verify selected etcd snapshot exists in Longhorn PVC] ***
-Wednesday 30 September 2026  03:15:33 +0000 (0:00:02.072)       0:00:46.275 *** 
+Wednesday 30 September 2026  03:15:33 +0000 (0:00:02.072)       0:00:46.275 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Prune old etcd snapshots from Longhorn PVC] *********
-Wednesday 30 September 2026  03:15:35 +0000 (0:00:02.186)       0:00:48.462 *** 
+Wednesday 30 September 2026  03:15:35 +0000 (0:00:02.186)       0:00:48.462 ***
 skipping: [shanghai-1]
 
 TASK [kubernetes_upgrade : Remove temporary etcd snapshot from host-mounted etcd data directory] ***
-Wednesday 30 September 2026  03:15:35 +0000 (0:00:00.032)       0:00:48.494 *** 
+Wednesday 30 September 2026  03:15:35 +0000 (0:00:00.032)       0:00:48.494 ***
 ok: [shanghai-1]
 
 TASK [kubernetes_upgrade : Remove temporary etcd snapshot from control plane host] ***
-Wednesday 30 September 2026  03:15:37 +0000 (0:00:01.628)       0:00:50.123 *** 
+Wednesday 30 September 2026  03:15:37 +0000 (0:00:01.628)       0:00:50.123 ***
 skipping: [shanghai-1]
 
 PLAY [Upgrade first control plane (shanghai-1)] ********************************
@@ -110,12 +110,12 @@ PLAY [Post-upgrade worker health check] ****************************************
 skipping: no hosts matched
 
 PLAY RECAP *********************************************************************
-shanghai-1                 : ok=18   changed=4    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0   
+shanghai-1                 : ok=18   changed=4    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
 
 
 TASKS RECAP ********************************************************************
-Wednesday 30 September 2026  03:15:37 +0000 (0:00:00.049)       0:00:50.173 *** 
-=============================================================================== 
+Wednesday 30 September 2026  03:15:37 +0000 (0:00:00.049)       0:00:50.173 ***
+===============================================================================
 kubernetes_upgrade : Take etcd snapshot inside etcd pod ---------------- 14.29s
 kubernetes_upgrade : Stream etcd snapshot into temporary file ----------- 8.60s
 Gathering Facts --------------------------------------------------------- 6.93s
