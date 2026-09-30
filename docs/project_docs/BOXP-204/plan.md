@@ -30,6 +30,14 @@
 - 最終検証: local link/code fence/秘密値パターンとgit diff --checkが成功。terra_worker利用不能のため低コストlunaへ独立レビューを委譲し、正常検査とunknown episode予算の区別を補足後、追加指摘なしを確認した。
 - review skillsはdotfilesのSKILL.mdを参照。別CLIの認証更新を避け、独立チームagentに文書レビューを委譲する。最終PR gateはrunnerが実施する。credential操作/実provider probeは実行しない。
 
+## PR gate再試行・lock inode修正（2026-09-30）
+
+- 前回gateのJSON atomic replace/flock inode指摘に対応。同PR head b9c3f121aを今回の専用worktreeへfast-forwardした。
+- 状態JSONとは別の永続`{session_ref}.lock`を固定し、replace/delete/再作成禁止、lock取得後のJSON再読取、予約の耐久化順序と欠損時holdを明記する。
+- JSON replace前後に複数processが待機するfake受入テスト、inode不変、最新予約/hold共有、crash/cleanup/rollbackでのlock保全を追加する。文書のみを更新し、実credential/CLI probeは行わない。
+
+- 検証: 文書参照/code fence/秘密値パターンとdiff checkが成功。一時directory上の2 subprocessでJSON replace中の排他、lock inode不変、解放後の最新状態読取を確認（実PVCの保証ではない）。Python既定forkserverではstdinスクリプトを読み直せないためsubprocess方式へ修正した。独立lunaレビューの欠損復旧不整合を反映し、旧path再作成ではなく全停止後の新domain移行・予算保持へ統一した。
+
 ## 承認境界
 
 設計PRのレビュー/mergeから、credential読取り・変更、login/refresh probe、Secret注入、外部通知、provider操作、rolloutの実行許可を推論しない。fakeテストと秘密値を扱わない設計は先行できる。採用実装と実環境操作は対象commit・provider・利用者・期限・rollbackを特定した別承認で行う。

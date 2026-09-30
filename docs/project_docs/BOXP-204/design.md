@@ -49,7 +49,7 @@ Claude公式[Authentication](https://code.claude.com/docs/en/authentication)で�
 
 **RWOと1 replicaはプロセス間排他ではない。** cronのjob別lock、Task Boardのticket/repo lockもprovider sessionの排他ではない。workspace対話CLI、cron、runner、委譲CLI、維持job、外部machineを同じ認証sessionの利用者として数える。
 
-初期案は認証sessionごとの全利用者直列化。同sessionの全利用者が同じPVCの同一lock/stateを使う場合に限り、共有PVC内の安定したlock fileにflock等を取り、診断→実際の公式CLI利用→更新済みauth保存→終了まで保持する。refreshだけでなくrun全体を直列化し、CLIの子processも同じ所有期間に含める。待機は最大15分、起動せず延期し、Boardはrunner契約で処理する。lock fileを消して復旧せず、所有process終了とdrainを確認する。PVC filesystemのlockセマンティクスをfake/隔離canaryで検証する。別machineやwrapperを迂回する利用者が残れば安全な直列化とはみなさず導入停止。
+初期案は認証sessionごとの全利用者直列化。同sessionの全利用者が同じPVCの同一lock/stateを使う場合に限り、共有PVC内の状態JSONとは別の永続`{session_ref}.lock`ファイルにflock等を取り、診断→実際の公式CLI利用→更新済みauth保存→終了まで保持する。refreshだけでなくrun全体を直列化し、CLIの子processも同じ所有期間に含める。待機は最大15分、起動せず延期し、Boardはrunner契約で処理する。lock fileを消して復旧せず、所有process終了とdrainを確認する。PVC filesystemのlockセマンティクスをfake/隔離canaryで検証する。別machineやwrapperを迂回する利用者が残れば安全な直列化とはみなさず導入停止。
 
 外部の委譲CLIは同じsessionの親CLIが生きたまま起動しない。親がlockを保持して子の再取得を待つ形は禁止し、lock継承だけで親子のAPI並列利用を許す形も禁止する。同sessionの後続CLIは親をcheckpoint/終了しlock解放後に直列起動する。並行委譲が必要なら独立発行sessionを割り当てる。異providerも親の利用lockを持ちながら別provider lockを取得して子を待たない（入れ子取得禁止）。review gateは本作業CLI終了・lock解放後に実行する。公式CLI内部のsubagent機構と外部CLI委譲を区別し、内部並列を安全に制御できない維持streamは採用しない。
 
@@ -61,7 +61,9 @@ lock・retry budget・hold・有効性根拠・通知dedupeの管理単位は、
 
 正本は、同sessionの全利用者が到達する**共有・耐久ストア**のsession recordとする。retry counter/初回時刻/deadline、hold latch、owner再開epoch、validity evidence、sink別dedupe/再送予算をまとめて保持する。通常のhealthy/expiringの定期検査を再診断予算の消費にしない。session利用lock内の初回検査でunknownになった時点（検査crash/timeoutを含む）をattempt 1としてatomicにepisode開始を記録し、初回時刻からdeadlineを固定する。未完了の初回検査予約は次の利用者がunknown episodeとして回収し、なかったことにしない。episode中の利用者は再検査開始前にatomicにattemptを予約し、失敗・timeout・process crashもその一回に数える。予約後にcounterを戻さない。deadlineとepochを各利用者が初期化せず、ownerの明示再開だけが新epochを作る。定期診断/run preflight/cron/ticket/review/対話CLIが同じrecordを参照する。新HOME・新Pod・別PVC・別machine・別ticketでも予算やholdをリセットしない。
 
-全利用者が同一PVC上で動く限定構成では、owner指定の共通絶対path（候補 `/home/boxp/.codex-workspace/auth-health/sessions/{session_ref}.json`）を正本にできる。`$HOME`から利用者ごとに解決しない。0600・親0700、同一UIDまたは承認済みアクセス方式、安定したsession lockとatomic replaceで更新し、filesystemの排他/耐久性を検証する。ローカルHOMEのcacheは表示専用で受付判断に使わない。
+全利用者が同一PVC上で動く限定構成では、owner指定の共通絶対path（候補 `/home/boxp/.codex-workspace/auth-health/sessions/{session_ref}.json`）を正本にできる。`$HOME`から利用者ごとに解決しない。0600・親0700、同一UIDまたは承認済みアクセス方式とする。lock対象は同じ共通directoryの別ファイル`{session_ref}.lock`（0600）に固定し、状態JSONをflock対象にしない。lockファイルはownerによる初期provision後、運用・cleanup・rollback・復旧・Pod/image更新のいずれでもreplace/rename/unlink/deleteせず、truncateも行わない。同じpathの再作成でinodeを差し替えることは禁止する。全利用者はこの同一inodeのfdで排他を取り、CLI利用終了まで保持する。欠損/権限不備はunknown/holdで、利用者が自動再作成しない。欠損復旧は全利用者/旧fd保持processの停止を証明し、ownerの別承認で新directory/pathの排他domainへ全利用者を切り替える手順に限る。既存hold/epoch/budget/dedupeを引き継ぎ、旧pathを再作成せず、正本を回収できなければowner待ちを継続する。
+
+状態JSONの更新はlock保持中だけ行う。取得後に正本JSONをpathから開き直して読み、hold/epoch/budgetを再評価して予約し、同directoryの0600一時ファイルへ書込・fsync→JSONだけatomic rename/replace→親directory fsyncを行い、耐久化完了前には診断/CLIを起動しない。更新前に開いたJSONのfdやcacheを次の予約に再利用しない。JSONのinodeが替わってもlockのinode/fdは変わらないため、後続利用者は同じlockに待機する。失敗時はunknown/holdとして停止し、旧状態で受付を継続しない。filesystemの排他/耐久性を検証する。ローカルHOMEのcacheは表示専用で受付判断に使わない。
 
 別machine/別PVCも同sessionを利用する構成で、このPVCのlock/stateを共有できなければローカルfile方式は採用不可。別途承認する共有controller/storeが、session単位の排他lease・fencing、transaction/CASによる予算予約、耐久hold/dedupe、時計/deadlineと障害回復を保証する必要がある。CLI利用中も同じ排他domainでlockを保持し、lease喪失時は新requestを止めてdrainする。stale cache/local lockへのfallback、ネットワーク分断時の両側実行は禁止。
 
