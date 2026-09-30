@@ -7,6 +7,10 @@ on:
       - 'ansible/**'
       - '.github/workflows/apply-ansible.yml'
 
+concurrency:
+  group: lolice-production-cluster-mutation
+  cancel-in-progress: false
+
 jobs:
   apply:
     runs-on: ubuntu-latest
@@ -28,7 +32,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -75,7 +79,7 @@ jobs:
       - name: Install aqua
         uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.63.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -114,7 +118,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |

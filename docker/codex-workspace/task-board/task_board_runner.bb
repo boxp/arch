@@ -21,17 +21,31 @@
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
 (def assignee->model
-  ;; GPT-5.6 performance order: Sol > Terra > Luna.
+  ;; Model performance order: gpt-6-astra > gpt-6.1-sol > gpt-5.6-terra > gpt-5.6-luna.
   ;; codex (default) / codex-terra route to Terra (GPT-5.5-equivalent, cost-efficient default).
-  ;; codex-sol / codex-full route to Sol (highest-performance, complex tasks only).
+  ;; codex-sol / codex-full route to gpt-6.1-sol (GPT-6.1 Sol, nearly matches Astra at lower cost; complex tasks only).
   ;; codex-mini routes to Luna (lightweight tier).
+  ;; codex-astra routes to gpt-6-astra (GPT-6 generation, most capable, highest cost).
   {"codex"       "gpt-5.6-terra"
-   "codex-sol"   "gpt-5.6-sol"
-   "codex-full"  "gpt-5.6-sol"
+   "codex-sol"   "gpt-6.1-sol"
+   "codex-full"  "gpt-6.1-sol"
    "codex-terra" "gpt-5.6-terra"
-   "codex-mini"  "gpt-5.6-luna"})
+   "codex-mini"  "gpt-5.6-luna"
+   "codex-astra" "gpt-6-astra"})
 
 (def reasoning-levels #{"minimal" "low" "medium" "high" "xhigh"})
+
+;; gpt-6-astra supports only low/medium/high reasoning efforts.
+(def astra-reasoning-levels #{"low" "medium" "high"})
+
+;; gpt-6.1-sol rejects minimal; runner exposes low/medium/high/xhigh.
+(def sol-reasoning-levels #{"low" "medium" "high" "xhigh"})
+
+;; Per-assignee override; assignees not listed here accept all reasoning-levels.
+(def assignee->reasoning-levels
+  {"codex-astra" astra-reasoning-levels
+   "codex-sol"   sol-reasoning-levels
+   "codex-full"  sol-reasoning-levels})
 
 (def board-mutex (Object.))
 (def log-mutex (Object.))
@@ -68,13 +82,23 @@
     :else
     (when-let [[_ base-assignee reasoning-effort]
                (re-matches #"^(.*)-([^-]+)$" (or assignee ""))]
-      (when (and (contains? assignee->model base-assignee)
-                 (contains? reasoning-levels reasoning-effort))
-        {:base-assignee base-assignee
-         :reasoning-effort reasoning-effort}))))
+      (let [allowed-levels (get assignee->reasoning-levels base-assignee reasoning-levels)]
+        (when (and (contains? assignee->model base-assignee)
+                   (contains? allowed-levels reasoning-effort))
+          {:base-assignee base-assignee
+           :reasoning-effort reasoning-effort})))))
+
+(def claude-assignee->model
+  {"claude-fable" "claude-fable-5-1"
+   "claude-opus" "claude-opus-5-5"
+   "claude-sonnet" "claude-sonnet-5-5"})
+
+(defn claude-assignee? [assignee]
+  (or (= "fable" assignee)
+      (contains? claude-assignee->model assignee)))
 
 (defn supported-assignee? [assignee]
-  (or (= "fable" assignee)
+  (or (claude-assignee? assignee)
       (some? (parse-codex-assignee assignee))))
 
 (defn root []
@@ -417,6 +441,10 @@
 
 (defn append-note! [ticket-id note]
   (locking (ticket-mutex ticket-id)
+    ;; Deterministic black-box failure hook; unset in deployment.
+    (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE"))
+               (str/includes? note "Blocked transition recorded:"))
+      (throw (ex-info "forced blocker Notes write failure" {})))
     (let [path (ticket-path ticket-id)
           lines (vec (read-lines path))
           bullet (str "- " (today) ": " note)
@@ -519,12 +547,19 @@
    #(delete-lock-if-matches-under-guard! ticket-id expected)))
 
 (defn mark-run! [ticket-id run-id status extra]
-  (let [summary (merge {:ticket ticket-id
+  (let [path (fs/path (run-dir ticket-id run-id) "summary.edn")
+        ;; Later lifecycle transitions replace the summary. Keep the selected
+        ;; assignee so failed and blocked runs remain attributable in history.
+        previous-agent (try
+                         (select-keys (read-edn-file path {}) [:agent])
+                         (catch Exception _ {}))
+        summary (merge previous-agent
+                       {:ticket ticket-id
                         :run-id run-id
                         :status status
                         :updated-at (now-str)}
                        extra)]
-    (write-edn-file! (fs/path (run-dir ticket-id run-id) "summary.edn") summary)))
+    (write-edn-file! path summary)))
 
 (defn close-interrupted-lock! [ticket-id lock reason note]
   (when-let [interrupted-run (:run-id lock)]
@@ -813,8 +848,64 @@
 (defn pr-gate-retry-limit []
   (env-long "CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT" "2"))
 
+(defn persisted-review-gate [review-gate]
+  ;; Gate results can contain CLI stderr or review-agent text. Persist only
+  ;; structured status so run summaries and retry state never copy secrets.
+  (select-keys review-gate [:ok? :gate :url :retryable? :retry-count
+                            :retry-limit :retry-exhausted? :checked-pr-urls
+                            :pr-urls :diagnostic]))
+
+(defn pr-gate-diagnostic [review-gate]
+  ;; A gate's :message may contain gh stderr or review-agent text.  Keep a
+  ;; useful but entirely derived diagnosis: it identifies the failing class
+  ;; and next action without retaining any untrusted diagnostic text.
+  (let [gate (:gate review-gate)]
+    {:format-version 1
+     :gate (some-> gate name)
+     :pr-url (:url review-gate)
+     :category (case gate
+                 :ci "ci-check-failure"
+                 :mergeability "mergeability"
+                 :conflict "merge-conflict"
+                 :codex-review "codex-review-findings"
+                 :pr-url "missing-pr-url"
+                 :pr-gate "pr-gate-api-error"
+                 "pr-gate-failure")
+     :detail (case gate
+               :ci "One or more required CI checks failed. Inspect the PR checks."
+               :mergeability "The PR is not mergeable yet. Inspect its merge state."
+               :conflict "The PR has merge conflicts. Resolve conflicts and update the PR."
+               :codex-review "Codex review reported actionable findings. Inspect the review artifact."
+               :pr-url "Review was requested without a GitHub PR URL."
+               :pr-gate "PR gate evaluation failed. Re-run the gate after checking GitHub availability."
+               "PR gate failed; inspect the PR and referenced run artifacts.")}))
+
+(defn persist-pr-gate-diagnostic! [ticket-id run-id review-gate]
+  (when (and (not (:ok? review-gate)) (:gate review-gate))
+    (let [path (fs/path (run-dir ticket-id run-id) "pr-gate-diagnostic.edn")
+          diagnostic (assoc (pr-gate-diagnostic review-gate) :recorded-at (now-str))]
+      (write-edn-file! path diagnostic)
+      {:path (str path)
+       :category (:category diagnostic)
+       :detail (:detail diagnostic)})))
+
+(defn persisted-review-gate-reason [review-gate]
+  (cond
+    (:ok? review-gate) "Review gates passed."
+    (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
+    :else "reason unavailable"))
+
 (defn retry-fingerprint [review-gate]
-  (str (:url review-gate) "|" (some-> (:gate review-gate) name) "|" (:message review-gate)))
+  ;; The key is persisted in state, so retain no diagnostic text.  Its digest
+  ;; still distinguishes separate failures of the same PR gate, preventing a
+  ;; new failure from consuming the retry budget of an earlier one.
+  (let [digest (java.security.MessageDigest/getInstance "SHA-256")
+        reason (str (or (:message review-gate) "reason unavailable"))
+        reason-hash (->> (.digest digest (.getBytes reason "UTF-8"))
+                         (map #(format "%02x" (bit-and 0xff %)))
+                         (apply str))]
+    (str (:url review-gate) "|" (some-> (:gate review-gate) name)
+         "|" reason-hash)))
 
 (defn latest-pr-gate-retry [ticket-id]
   (let [retries (get-in (runner-state) [:pr-gate-retries ticket-id])]
@@ -824,11 +915,14 @@
            last))))
 
 (defn pr-gate-retry-prompt [ticket-id]
-  (when-let [{:keys [pr-url gate message run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
+  (when-let [{:keys [pr-url gate message diagnostic run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
     (str "Pending PR gate retry instruction:\n"
          "- Target PR URL: " pr-url "\n"
          "- Failed gate: " gate "\n"
          "- Failure reason: " message "\n"
+         (when diagnostic
+           (str "- Safe diagnostic: " (:path diagnostic)
+                " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ")\n"))
          "- Retry agent: " (or agent "codex") "\n"
          "- Retry count for this same PR/gate/reason: " count "/" limit "\n"
          "- Previous run summary: " run-dir "/summary.edn\n"
@@ -844,7 +938,8 @@
         count (inc (long (or (:count current) 0)))
         record {:pr-url (:url review-gate)
                 :gate (some-> (:gate review-gate) name)
-                :message (:message review-gate)
+                :message (persisted-review-gate-reason review-gate)
+                :diagnostic (:diagnostic review-gate)
                 :run-id run-id
                 :run-dir (str (run-dir ticket-id run-id))
                 :agent agent
@@ -950,10 +1045,16 @@
   (str "Fable routing policy:\n"
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
-       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-6.1-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Reserve gpt-6-astra (via codex-astra assignee) for the most demanding tasks requiring the highest capability. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
+
+(defn claude-policy-prompt [agent]
+  (str "Claude Code routing policy:\n"
+       "- You are the " agent " entry point for this Task Board run. Complete the task using the explicitly selected Claude model.\n"
+       "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 
 (defn codex-sol-policy-prompt [agent]
   (str "High-cost model routing policy:\n"
@@ -966,8 +1067,19 @@
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
 
+(defn codex-astra-policy-prompt [agent]
+  (str "Highest-capability model routing policy:\n"
+       "- You are the " agent " top-tier entry point for this Task Board run. You run on gpt-6-astra, the most capable and highest-cost model available.\n"
+       "- Reserve your own compute for the most demanding subtasks: complex reasoning, cross-cutting architectural decisions, synthesis of ambiguous requirements, and final acceptance checks.\n"
+       "- Aggressively delegate to lower-cost models for any work that does not require gpt-6-astra capability. Use codex-sol (gpt-6.1-sol) for high-complexity subtasks, codex (gpt-5.6-terra) for standard implementation and investigation.\n"
+       "- Do NOT delegate: tasks requiring your full reasoning capacity, tasks with shared context that cannot be serialized, and final quality judgments.\n"
+       "- If a delegated subtask fails or produces insufficient quality: re-instruct with clearer requirements once, then escalate to a higher-tier model or handle directly. Avoid unbounded delegation chains.\n"
+       "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n\n"))
+
 (defn append-note-instruction [agent ticket-id]
-  (let [helper (if (= "fable" agent)
+  (let [helper (if (claude-assignee? agent)
                  "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
                  "~/.codex/skills/obsidian-task-board/bin/task-board.bb")]
     (str "Progress logging: at each milestone during your work (investigation complete, approach decided, PR created, blocker encountered), "
@@ -978,6 +1090,7 @@
 (defn prompt-for [action ticket-id lane workspace agent]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
+        base-agent (:base-assignee (parse-codex-assignee agent))
         common (str "You are running inside codex-workspace as an automated Task Board worker.\n"
                     "Respond in Japanese when editing notes or summaries for the user.\n"
                     "Task Board lane is the source of truth. Do not move Task Board cards directly; the runner will do that after this run.\n"
@@ -988,7 +1101,9 @@
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
-                    (when (contains? #{"codex-sol" "codex-full"} agent) (codex-sol-policy-prompt agent))
+                    (when (contains? claude-assignee->model agent) (claude-policy-prompt agent))
+                    (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
+                    (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
                              "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
@@ -1360,20 +1475,19 @@
                 (assoc pr-state
                        :checked-pr-urls passed
                        :pr-urls pr-urls)
-                (let [review (run-codex-review! run-dir pr-url)
-                      passed-message (str pr-url ": " (:message pr-state) " " (:message review))]
+                (let [review (run-codex-review! run-dir pr-url)]
                   (if-not (:ok? review)
                     (assoc review
                            :checked-pr-urls passed
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
-                    (recur (rest remaining) (conj passed passed-message))))))
+                    ;; This field is persisted in summaries, so it must remain a
+                    ;; URL list rather than carrying arbitrary check/review text.
+                    (recur (rest remaining) (conj passed pr-url))))))
             {:ok? true
              :pr-urls pr-urls
-             :message (str "All PR gates passed for "
-                           (count pr-urls)
-                           " PR(s): "
-                           (str/join " | " passed))}))
+             :checked-pr-urls passed
+             :message "PR gates passed."}))
 
         (no-repo-review-marker? last-message)
         {:ok? true
@@ -1392,7 +1506,7 @@
 
 (defn fable-model-args []
   ;; Fable runs via the `claude` CLI. Model defaults to claude CLI's built-in default
-  ;; (claude-sonnet-4-6) unless CODEX_TASK_BOARD_FABLE_MODEL overrides it.
+  ;; or account configuration unless CODEX_TASK_BOARD_FABLE_MODEL overrides it.
   (let [model (System/getenv "CODEX_TASK_BOARD_FABLE_MODEL")
         agent (env "CODEX_TASK_BOARD_FABLE_AGENT" "fable")
         extra (System/getenv "CODEX_TASK_BOARD_FABLE_EXTRA_ARGS")]
@@ -1406,6 +1520,11 @@
       (seq extra)
       (into (str/split extra #"\s+")))))
 
+(defn claude-model-args [agent]
+  (if (= "fable" agent)
+    (fable-model-args)
+    ["--model" (get claude-assignee->model agent)]))
+
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
@@ -1417,9 +1536,8 @@
     (fs/create-dirs dir)
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
-    (let [agent-args (case agent
-                       "fable"
-                       (cond-> ["claude" "--print" "--output-format" "text"]
+    (let [agent-args (if (claude-assignee? agent)
+                       (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "text"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-skip-permissions")
 
@@ -1428,7 +1546,7 @@
                                  (cons (vault) (workspace-add-dirs workspace))))
 
                    true
-                   (into (fable-model-args)))
+                   (into (claude-model-args agent)))
 
                        (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
                           "--skip-git-repo-check"
@@ -1452,11 +1570,11 @@
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
                                               :out (io/file (str stdout-path))
                                               :err (io/file (str stderr-path))}
-                                       (= "fable" agent)
+                                       (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
           {:keys [proc idle-timeout?]} (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
           exit (:exit proc)
-          _ (when (and (= "fable" agent) (fs/exists? stdout-path))
+          _ (when (and (claude-assignee? agent) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path))
                        (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path)
@@ -1523,7 +1641,10 @@
              (str " (" (name gate) ")"))
            (when-let [url (:url review-gate)]
              (str " for " url))
-           ": " (:message review-gate))
+           ": " (persisted-review-gate-reason review-gate)
+           (when-let [diagnostic (:diagnostic review-gate)]
+             (str " Safe diagnostic: " (:path diagnostic)
+                  " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ").")))
 
       (and (= "in-progress" next-status)
            (not (:ok? review-gate))
@@ -1533,15 +1654,131 @@
              (str " (" (name gate) ")"))
            (when-let [url (:url review-gate)]
              (str " for " url))
-           ": " (:message review-gate)
+           ": " (persisted-review-gate-reason review-gate)
+           (when-let [diagnostic (:diagnostic review-gate)]
+             (str " Safe diagnostic: " (:path diagnostic)
+                  " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ")."))
            " Retrying with Codex instruction "
            (:retry-count review-gate) "/" (:retry-limit review-gate) ".")
 
       (and (= "review" next-status) (seq pr-urls))
-      (str base " PR: " (str/join ", " pr-urls) ". Review gates passed: " (:message review-gate))
+      (str base " PR: " (str/join ", " pr-urls) ". "
+           (persisted-review-gate-reason review-gate))
 
       :else
       base)))
+
+(defn sanitize-blocker-reason [reason]
+  ;; Notes are user-visible. Keep a compact diagnosis while never copying agent
+  ;; output or stderr verbatim, because either can contain credentials.
+  (let [value (-> (or reason "reason unavailable")
+                  str
+                  (str/replace #"[\r\n\t]+" " ")
+                  (str/replace #"(?i)(authorization:\s*(?:bearer\s+)?)[^\s]+" "$1[REDACTED]")
+                  (str/replace #"(?i)\b[A-Z0-9_]*(?:token|secret|password|api(?:[_-]|\s)+key|credential)[A-Z0-9_]*\s*[=:]\s*[^\s,;]+" "[REDACTED]")
+                  (str/replace #"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b" "[REDACTED]"))]
+    (if (str/blank? (str/trim value))
+      "reason unavailable"
+      (subs value 0 (min 600 (count value))))))
+
+(defn blocker-category [result exit review-gate exception]
+  (cond
+    exception "runner-internal-error"
+    (not (zero? (long (or exit 0)))) "agent-process-error"
+    (= "blocked" result) "agent-reported-blocked"
+    (:retry-exhausted? review-gate) "pr-gate-retry-limit"
+    (:gate review-gate) (str "pr-gate-" (name (:gate review-gate)))
+    :else "reason-unavailable"))
+
+(defn blocker-safe-reason [result exit review-gate exception]
+  ;; Do not copy agent, CLI, or exception text into user-visible Notes or run
+  ;; summaries.  Those strings are untrusted and can contain credentials.
+  (cond
+    exception "Runner internal error; inspect the referenced run artifacts."
+    (not (zero? (long (or exit 0)))) "Agent process exited unsuccessfully; inspect the referenced run artifacts."
+    (= "blocked" result) "Agent reported blocked; inspect the referenced run artifacts."
+    (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
+    :else "reason unavailable"))
+
+(defn blocker-note [ticket-id run-id action category reason]
+  (let [dir (str (run-dir ticket-id run-id))]
+    (str "Blocked transition recorded: ticket=" ticket-id
+         "; run=" run-id
+         "; transition-id=" ticket-id "/" run-id
+         "; action=" (name action)
+         "; at=" (now-str)
+         "; category=" category
+         "; reason=" (sanitize-blocker-reason reason)
+         "; inspect run artifacts: " dir "/summary.edn, " dir "/last-message.md, "
+         dir "/events.jsonl, " dir "/stderr.log.")))
+
+(defn blocked-transition-recorded? [ticket-id run-id]
+  ;; The note is the durable audit boundary.  If a later state transition
+  ;; throws and the outer error handler retries, do not append a second audit
+  ;; note for the same run.
+  (let [marker (str "transition-id=" ticket-id "/" run-id)]
+    (and (fs/exists? (ticket-path ticket-id))
+         (some #(str/includes? % marker) (read-lines (ticket-path ticket-id))))))
+
+(defn record-blocked-transition! [ticket-id run-id action result exit review-gate exception]
+  (let [category (blocker-category result exit review-gate exception)
+        reason (blocker-safe-reason result exit review-gate exception)]
+    (try
+      (when-not (blocked-transition-recorded? ticket-id run-id)
+        (append-note! ticket-id (blocker-note ticket-id run-id action category reason)))
+      true
+      (catch Exception e
+        ;; A Blocked card without this audit record is worse than leaving the
+        ;; current lane intact. Persist the failure where operators can inspect it.
+        (try
+          (mark-run! ticket-id run-id :blocker-note-failed
+                     {:action action
+                      :blocker-category category
+                      :blocker-reason (sanitize-blocker-reason reason)
+                      :notes-error "blocker Notes write failed"
+                      :finished-at (now-str)})
+          (catch Exception mark-error
+            (log! (str "could not record blocker note failure for " ticket-id "/" run-id
+                       ": " (.getMessage mark-error)))))
+        (log! (str "blocked transition withheld for " ticket-id "/" run-id
+                   " because Notes recording failed"))
+        false))))
+
+(defn block-ticket! [ticket-id run-id action result exit review-gate exception]
+  (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
+    ;; Keep the post-audit transition inside this boundary.  Otherwise a
+    ;; failure here escapes to process-card!'s catch, which invokes this
+    ;; function again and can duplicate the audit record.
+    (try
+      ;; Do not confirm the run as blocked until both durable ticket states
+      ;; have been updated.  A later card/frontmatter failure is recovered to
+      ;; the prior lane by process-card!, so recording :blocked beforehand
+      ;; would leave summary.edn contradicting the restored ticket state.
+      (move-card! ticket-id "blocked")
+      ;; Deterministic black-box failure hook; unset in deployment.
+      (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
+        (throw (ex-info "forced blocked state update failure" {})))
+      (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+      ;; run-agent! records a zero-exit agent as succeeded before its result is
+      ;; interpreted. Correct that provisional status only after the Blocked
+      ;; transition itself has succeeded.
+      (mark-run! ticket-id run-id :blocked
+                 {:action action
+                  :exit-code exit
+                  :result result
+                  :review-gate (persisted-review-gate review-gate)
+                  :blocker-category (blocker-category result exit review-gate exception)
+                  :blocker-reason (blocker-safe-reason result exit review-gate exception)
+                  :finished-at (now-str)})
+      true
+      (catch Exception e
+        (log! (str "blocked transition state update failed for " ticket-id "/" run-id
+                   "; preserving/restoring the prior card state: " (.getMessage e)))
+        false))))
+
+(defn restore-card-state! [ticket-id status assignee]
+  (move-card! ticket-id status)
+  (update-frontmatter! ticket-id {:status status :assignee assignee}))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
@@ -1559,13 +1796,19 @@
                 (update-frontmatter! ticket-id {:status "in-progress"}))
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
               (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock)
+                    _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
+                        ;; Deterministic black-box failure hook; unset in deployment.
+                        (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
+                                             "forced runner internal error token=super-secret-token") {})))
                     intended (cond
                                (not (zero? exit)) "blocked"
                                (= :groom action) "ready"
                                (#{"done" "review" "blocked"} result) result
                                :else "review")
                     review-gate (if (= "review" intended)
-                                  (let [gate-result (review-gate! dir last-message)]
+                                  (let [gate-result (review-gate! dir last-message)
+                                        gate-result (assoc gate-result :diagnostic
+                                                           (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
                                     (if (and (not (:ok? gate-result))
                                              (:retryable? gate-result))
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
@@ -1583,30 +1826,39 @@
                               :result result
                               :idle-timeout? true
                               :finished-at (now-str)}))
-                (when (= "review" intended)
+                ;; A non-retryable review-gate failure reaches block-ticket!.
+                ;; Let that function write :blocked only after the card and
+                ;; frontmatter transition have both succeeded.  Writing it
+                ;; here would leave summary.edn at :blocked when a later
+                ;; blocked-state failure restores the original lane.
+                (when (and (= "review" intended)
+                           (not= "blocked" next-status))
                   (mark-run! ticket-id run-id (cond
                                                 (:ok? review-gate) :succeeded
                                                 (= "in-progress" next-status) :retrying
-                                                :else :blocked)
+                                                :else :succeeded)
                              {:action action
                               :agent assignee
                               :lane effective-lane
                               :exit-code exit
                               :result result
-                              :review-gate review-gate
+                              :review-gate (persisted-review-gate review-gate)
                               :finished-at (now-str)}))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
-                (move-card! ticket-id next-status)
-                (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                         :assignee (if (= "in-progress" next-status) assignee "boxp")}
-                                                  (= "done" next-status) (assoc :closed (today))))
-                (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
+                (if (= "blocked" next-status)
+                  (when-not (block-ticket! ticket-id run-id action result exit review-gate nil)
+                    (restore-card-state! ticket-id status assignee))
+                  (do
+                    (move-card! ticket-id next-status)
+                    (update-frontmatter! ticket-id (cond-> {:status next-status
+                                                             :assignee (if (= "in-progress" next-status) assignee "boxp")}
+                                                      (= "done" next-status) (assoc :closed (today))))
+                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))))
                 true)
               (catch Exception e
-                (move-card! ticket-id "blocked")
-                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
-                (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " failed: " (.getMessage e)))
+                (when-not (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                  (restore-card-state! ticket-id status assignee))
                 true)
               (finally
                 (reset! stop? true)
@@ -1735,9 +1987,27 @@
           (println (str "FAIL: same-second run IDs must be unique: " first-id " / " second-id))
           (swap! failures conj "same-second run ID uniqueness"))))
 
-    (doseq [[assignee expected-model] [["codex"       "gpt-5.6-terra"]
-                                       ["codex-sol"   "gpt-5.6-sol"]
-                                       ["codex-full"  "gpt-5.6-sol"]
+    (doseq [[assignee expected-model] claude-assignee->model]
+      (let [args (claude-model-args assignee)
+            actual-model (arg-value args "--model")]
+        (if (and (= expected-model actual-model)
+                 (supported-assignee? assignee)
+                 (not-any? #{"--agent"} args))
+          (println (str "PASS: " assignee " -> " actual-model " without legacy fable agent"))
+          (do
+            (println (str "FAIL: " assignee " expected=" expected-model " args=" args))
+            (swap! failures conj assignee)))))
+    (if (and (claude-assignee? "fable")
+             (not (contains? claude-assignee->model "fable")))
+      (println "PASS: legacy fable remains a separate Claude route")
+      (do
+        (println "FAIL: legacy fable must remain separate from explicit Claude model mappings")
+        (swap! failures conj "legacy fable route")))
+
+    (doseq [[assignee expected-model] [["codex-astra" "gpt-6-astra"]
+                                       ["codex"       "gpt-5.6-terra"]
+                                       ["codex-sol"   "gpt-6.1-sol"]
+                                       ["codex-full"  "gpt-6.1-sol"]
                                        ["codex-terra" "gpt-5.6-terra"]
                                        ["codex-mini"  "gpt-5.6-luna"]]]
       (let [actual-model (get-codex-model assignee nil)]
@@ -1746,8 +2016,9 @@
           (do
             (println (str "FAIL: " assignee " expected=" expected-model " actual=" actual-model))
             (swap! failures conj assignee)))))
+    ;; Only iterate levels allowed per assignee (e.g. no minimal for sol/astra); rejected suffixes are checked below.
     (doseq [[base-assignee expected-model] assignee->model
-            reasoning-effort reasoning-levels]
+            reasoning-effort (get assignee->reasoning-levels base-assignee reasoning-levels)]
       (let [assignee (str base-assignee "-" reasoning-effort)
             args (codex-model-profile-args assignee nil nil)
             actual-model (arg-value args "--model")
@@ -1777,12 +2048,23 @@
           (do
             (println (str "FAIL: " lane " expected action=" expected-action " actual=" action))
             (swap! failures conj lane)))))
-    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"]]
+    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"
+                      "claude-opus-high" "claude-sonnet-5-5" "claude-unknown"
+                      "codex-astra-minimal" "codex-astra-xhigh"
+                      "codex-sol-minimal" "codex-full-minimal"]]
       (if (not (supported-assignee? assignee))
         (println (str "PASS: unsupported assignee ignored: " assignee))
         (do
           (println (str "FAIL: invalid assignee was supported: " assignee))
           (swap! failures conj assignee))))
+    ;; Test: codex-astra suffix assignees (valid levels only) resolve to codex-astra base for policy injection
+    (doseq [assignee ["codex-astra" "codex-astra-low" "codex-astra-medium" "codex-astra-high"]]
+      (let [base (:base-assignee (parse-codex-assignee assignee))]
+        (if (= "codex-astra" base)
+          (println (str "PASS: " assignee " -> base-assignee=" base " (astra policy applies)"))
+          (do
+            (println (str "FAIL: " assignee " expected base-assignee=codex-astra actual=" base))
+            (swap! failures conj (str "astra-base:" assignee))))))
     (let [args (codex-model-profile-args "codex-full" "gpt-test-override" nil)
           actual-model (arg-value args "--model")]
       (if (= actual-model "gpt-test-override")
