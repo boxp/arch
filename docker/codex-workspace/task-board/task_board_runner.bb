@@ -33,6 +33,10 @@
 
 (def reasoning-levels #{"minimal" "low" "medium" "high" "xhigh"})
 
+;; I1 introduces only a structural validator. Activation requires the later
+;; authenticated control/writer gates; no environment value can enable it here.
+(defn autonomy-v2-enabled? [] false)
+
 (def board-mutex (Object.))
 (def log-mutex (Object.))
 
@@ -1708,6 +1712,25 @@
 
 (defn run-tests! []
   (let [failures (atom [])]
+    (when (autonomy-v2-enabled?)
+      (swap! failures conj "I1 autonomy v2 must remain disabled"))
+    ;; Versioned projections cannot affect legacy candidate selection while off.
+    ;; Include every existing route and lane, plus unsupported/new v2 routes.
+    (doseq [[lane status] lane->status
+            assignee (concat (keys assignee->model)
+                             ["fable" "codex-sol-high" "claude-fable" "unknown"])
+            intent ["run" "pause" "cancel" "wait-human"]]
+      (let [expected (when (supported-assignee? assignee)
+                       (get {"backlog" :groom "ready" :implement
+                             "in-progress" :implement "review" :review-fix
+                             "blocked" :blocked-retry} status))
+            action (candidate-action {:lane lane :status status
+                                      :autonomy_version 2 :execution_intent intent
+                                      :control_revision "malformed"}
+                                     assignee)]
+        (when (not= expected action)
+          (swap! failures conj "feature-off candidate compatibility"))))
+    (println "PASS: autonomy v2 remains off; legacy lane/route/intent matrix is unchanged")
     (let [calls (atom [])]
       (try
         (with-redefs [install-shutdown-hook! #(swap! calls conj :install-shutdown-hook)
