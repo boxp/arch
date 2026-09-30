@@ -2016,6 +2016,7 @@
           (do
             (println (str "FAIL: " assignee " expected=" expected-model " actual=" actual-model))
             (swap! failures conj assignee)))))
+    ;; Only iterate levels allowed per assignee (e.g. no minimal for sol/astra); rejected suffixes are checked below.
     (doseq [[base-assignee expected-model] assignee->model
             reasoning-effort (get assignee->reasoning-levels base-assignee reasoning-levels)]
       (let [assignee (str base-assignee "-" reasoning-effort)
