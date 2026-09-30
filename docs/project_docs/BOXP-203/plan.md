@@ -23,3 +23,7 @@ BOXP-201のI1としてversion付きの実行intent/control、Decision Packet、r
 ## CI gate再試行
 
 PR #13032のimage buildは既存のeven-terminal/node-ptyが要求するC++コンパイラ不足で失敗した。全CI成功の受け入れ条件を満たすため、Dockerfileの既存makeをbuild-essentialに置き換え、node-gypが使うpython3を明示する。バージョンやrunner設定は変更しない。この実行はPR buildのみでpush無効。mainへmerge後は既存workflowがGHCRへイメージを公開する。対象テスト、追加差分レビュー、GitHub image buildを確認して同じPRを更新する。
+
+## codex-review gate再試行
+
+前回のP1指摘（Aqua/Terraformの無関係なバージョン巻戻し）に対応し、最新mainを既存PRへ通常mergeする。mainとの最終diffに依存import/checksumの変更がないことを確認し、validator・既存runner・recurring-eventsのテストとPR全体の独立レビュー、更新headのCIを再検証する。force-pushや別PR作成は行わない。
