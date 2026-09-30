@@ -20,7 +20,7 @@
 
 ## GitHub Actions / Terraform WIFのbootstrap
 
-[公式WIF](https://tailscale.com/docs/features/workload-identity-federation)のTrust CredentialをownerがTailscale Adminで作成する。candidateは`.github/workflows/tailscale-wif-plan.yaml`の手動dispatch専用とし、main以外では実行しない。
+[公式WIF](https://tailscale.com/docs/features/workload-identity-federation)のTrust Credentialを、既存認証でTerraformから先に作成する。認証に使うTerraform provider設定と、Tailscale側に作成する`tailscale_federated_identity`リソースは別物である。client IDとaudienceは作成後に確定するため、未作成のWIFをbootstrap自身の認証には使えない。candidateは`.github/workflows/tailscale-wif-plan.yaml`の手動dispatch専用とし、main以外では実行しない。
 
 Trust条件は次の完全一致を設定する。workflow名だけへの照合やrepository全体への許可に緩めない。
 
@@ -32,7 +32,17 @@ Trust条件は次の完全一致を設定する。workflow名だけへの照合�
 | custom claim: ref | `refs/heads/main` |
 | custom claim: event_name | `workflow_dispatch` |
 | custom claim: workflow_ref | `boxp/arch/.github/workflows/tailscale-wif-plan.yaml@refs/heads/main` |
-| audience | ownerがTrust Credentialに設定する専用audienceとGitHub変数の値を一致させる |
+| audience | Tailscaleが作成時に生成する専用audienceを個別outputからGitHub変数へ登録する |
+
+### Terraformによる初回作成と非secret設定の受け渡し
+
+`wif.tf`の`tailscale_federated_identity.github_actions_arch_plan`がarch専用Trustである。既存の`github_actions_argocd_diff`はboxp/lolice用なので使用しない。[provider v0.29.2のresource仕様](https://github.com/tailscale/terraform-provider-tailscale/blob/v0.29.2/docs/resources/federated_identity.md)に従い、audienceは指定せずTailscaleによる生成値を使う。read scopeと`tag:subnet-router`だけを付与し、タグ登録済みACLへの依存を定義する。
+
+1. ownerがレビュー済みmainのコードで、既存API keyとAWS backend認証を安全な実行環境から供給する。値を表示・CLI引数へ記載しない。この時点でproviderをWIF専用へ切り替えず、旧keyもrevokeしない。
+2. bootstrapは`terraform plan -target=tailscale_federated_identity.github_actions_arch_plan -input=false -lock-timeout=60s`、確認後は同targetの`terraform apply`を使う。一時的なbootstrapに限定したtarget操作であり、通常の継続運用に使わない。依存ACLが含まれるため、対象Trustの追加と承認済み依存以外に変更があれば停止する。module全体のapplyはauth key再発行やSSM更新を巻き込む可能性があるので禁止する。plan/applyの診断も安全な実行環境内だけで扱い、ログ・artifact・PR・Notesへ転記しない。state/Secret本文は閲覧しない。
+3. 作成後に`terraform output -raw arch_plan_wif_client_id`と`terraform output -raw arch_plan_wif_audience`だけを個別に取得する。引数なしの`terraform output`、`terraform output -json`、state pull/showは使わない。非secretの2項目をそれぞれ同名の用途のGitHub repository variablesへ登録する。
+4. 管理画面で作成済みなら二重作成せず、ownerがresourceへimportして定義を照合する。importはstate変更を伴うため安全な実行環境で行い、生出力を共有しない。
+5. apply失敗・変数登録失敗時はcandidateを実行せず旧認証を維持する。作成済みTrustは誤って再作成せずmetadataだけで確認する。不要となったTrustの削除は対象resourceのみを別途レビューし、module全体のdestroyを使わない。初回作成成功はWIF認証成功の証拠ではない。
 
 GitHub repository variablesへ`TAILSCALE_WIF_PLAN_CLIENT_ID`と`TAILSCALE_WIF_PLAN_AUDIENCE`を登録する。これらは非secret設定であり、credential値の貼り付け先ではない。candidateには`TAILSCALE_API_KEY`、OAuth secret、その他既存secretを渡さない。candidateにはGitHub Environment protectionを設定していないため、main以外を拒否するworkflow条件と上記Trust条件が境界である。今後environmentによる承認を採用する場合はsubjectの変化も含めて別レビューする。
 
@@ -42,7 +52,7 @@ GitHub repository variablesへ`TAILSCALE_WIF_PLAN_CLIENT_ID`と`TAILSCALE_WIF_PL
 
 bootstrap・切替の検証順序は次の通り。
 
-1. PRをレビューし、candidateと保護条件をmainへ反映する。ownerがTrust条件・scope・tagを確認してAdmin側credentialを作成し、非secret変数を登録する。旧keyは維持する。
+1. PRをレビューし、candidateとTrust resourceをmainへ反映する。上記Terraform bootstrapでTrustを作成し、個別outputから非secret変数を登録する。旧keyは維持する。
 2. mainの手動dispatchでcandidateを実行する。OIDC交換、read-only API operation、対象`terraform/tailscale/lolice`のplanが成功することを確認する。`terraform plan`のstdout/stderrは`/dev/null`へ破棄し、exit codeのみ扱う。exit code 0と2はplan成功、1は失敗。plan出力・state・JSON・ログfile・artifactを作成／公開しない。planにはSSM値等が入り得るため、コメント投稿も禁止する。
 3. 成功証跡はrun URL、main commit SHA、実行日時、pass/failとexit code、利用した設定versionのみ残す。JWT/APIレスポンス/plan本文を証跡に含めない。candidate失敗時はclaim、audience、scopeの設定差を値の露出なしで確認し、旧CIを継続する。
 4. 既存production CIの移行は別のreviewable変更として作成する。PR用plan、main apply、tfmigrate各用途の必要scopeとclaimを分け、applyのwrite権限をcandidateへ付与しない。PR/fork実行では信頼していないコードへcredentialを渡す設計を避け、承認・checkout対象を具体化する。
@@ -100,9 +110,15 @@ subnet router auth keyはTerraform管理下にあり、SSM値やkey resourceの�
 ## 次に必要な完了証跡
 
 - ownerによるactive credentialと実expiry/scope/tagのmetadata棚卸し。
-- Admin bootstrapと非secretGitHub variables設定、mainでのcandidate WIF plan成功run。
+- Terraform bootstrapと非secretGitHub variables設定、mainでのcandidate WIF plan成功run。
 - consumer別production CI移行PRと成功run、旧key参照撤去、検証後revoke。
 - Operatorの別ticketでのOIDC公開要件判断と検証。未充足ならOAuth運用継続。
 - 手動期限運用のowner確認。自動化する場合だけ実配備・dry-run candidate証跡を追加。
 
 credential値、token、state、plan本文、Secret本文、private endpointを完了証跡に含めない。
+
+## 2026-09-30 再調査の証跡
+
+- PR #13019はOpenで、candidate workflowはmain未配備、WIF repository variablesは未設定（値の取得なし）。
+- 既存API key経路の後続[CI run 36674011555](https://github.com/boxp/arch/actions/runs/36674011555)はsetup/対象planとも成功（job結果metadataで確認）。前回のsetup失敗は現在の継続blockerではない。この成功はWIF成功を証明しない。
+- 本runはTerraform bootstrap定義の追加まで。実apply・Trust作成・変数登録・実WIF plan・旧key revokeは未実施。Operator公開OIDC条件も未検証。

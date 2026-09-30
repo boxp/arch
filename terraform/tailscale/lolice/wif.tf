@@ -23,3 +23,30 @@ resource "tailscale_federated_identity" "github_actions_argocd_diff" {
   # ACL must be applied first so that tag:ci is recognised.
   depends_on = [tailscale_acl.this]
 }
+
+# Bootstrap with the existing authentication before configuring the candidate
+# workflow. This read-only identity cannot create or rotate other credentials.
+resource "tailscale_federated_identity" "github_actions_arch_plan" {
+  description = "GitHub Actions arch read only plan"
+  issuer      = "https://token.actions.githubusercontent.com"
+  subject     = "repo:boxp/arch:ref:refs/heads/main"
+
+  # Omit audience so Tailscale generates it; expose only that non-secret value.
+  scopes = [
+    "policy_file:read",
+    "devices:core:read",
+    "devices:posture_attributes:read",
+    "auth_keys:read",
+    "federated_keys:read",
+  ]
+  tags = ["tag:subnet-router"]
+
+  custom_claim_rules = {
+    repository   = "boxp/arch"
+    ref          = "refs/heads/main"
+    event_name   = "workflow_dispatch"
+    workflow_ref = "boxp/arch/.github/workflows/tailscale-wif-plan.yaml@refs/heads/main"
+  }
+
+  depends_on = [tailscale_acl.this]
+}

@@ -17,3 +17,7 @@ Tailscale管理認証をWIFへ段階移行する。今回はbootstrap前の検�
 ## 移行完了条件
 
 read-only API/実plan成功、信頼境界を保つproduction CIへのWIF接続、apply/tfmigrateを含む全consumer検証後に旧keyをrevokeする。PR作成や静的検証だけを移行完了とは扱わない。
+
+## owner指摘への対応（2026-09-30）
+
+client ID/audienceはTrust作成後の値であるため、arch専用`tailscale_federated_identity`と個別の非secret outputを追加する。既存認証を維持して対象resourceだけをbootstrapし、変数登録後にmain限定candidateを実行する。依存ACLの差分を確認し、auth key/SSMを巻き込むmodule全体applyは行わない。実applyとWIF認証成功は未確認として報告する。
