@@ -1,0 +1,2 @@
+NAME                                   READY   STATUS    RESTARTS   AGE   IP                NODE       NOMINATED NODE   READINESS GATES
+etcd-snapshot-store-79ddfbf6c6-mjd7s   1/1     Running   0          98d   192.178.151.223   golyat-3   <none>           <none>

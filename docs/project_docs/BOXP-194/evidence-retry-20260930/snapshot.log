@@ -1,0 +1,137 @@
+warning: The `tool.uv.dev-dependencies` field (used in `pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+Using CPython 3.14.4 interpreter at: /usr/bin/python3.14
+Creating virtual environment at: .venv
+Installed 54 packages in 328ms
+
+PLAY [Pre-upgrade validation and optional etcd snapshot] ***********************
+
+TASK [Take etcd snapshot] ******************************************************
+Wednesday 30 September 2026  04:17:05 +0000 (0:00:00.014)       0:00:00.014 ***
+included: kubernetes_upgrade for shanghai-1
+
+TASK [kubernetes_upgrade : Create etcd snapshot directory on control plane host] ***
+Wednesday 30 September 2026  04:17:05 +0000 (0:00:00.025)       0:00:00.040 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Set etcd snapshot paths] ****************************
+Wednesday 30 September 2026  04:17:09 +0000 (0:00:03.940)       0:00:03.981 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Wait for etcd snapshot store pod] *******************
+Wednesday 30 September 2026  04:17:09 +0000 (0:00:00.032)       0:00:04.013 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Get ready etcd snapshot store pod] ******************
+Wednesday 30 September 2026  04:17:12 +0000 (0:00:02.406)       0:00:06.420 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Set etcd snapshot store pod name] *******************
+Wednesday 30 September 2026  04:17:14 +0000 (0:00:02.116)       0:00:08.537 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Find existing etcd snapshot in Longhorn PVC for today] ***
+Wednesday 30 September 2026  04:17:14 +0000 (0:00:00.030)       0:00:08.567 ***
+skipping: [shanghai-1]
+
+TASK [kubernetes_upgrade : Reuse existing etcd snapshot in Longhorn PVC for today] ***
+Wednesday 30 September 2026  04:17:14 +0000 (0:00:00.027)       0:00:08.595 ***
+skipping: [shanghai-1]
+
+TASK [kubernetes_upgrade : Take etcd snapshot inside etcd pod] *****************
+Wednesday 30 September 2026  04:17:14 +0000 (0:00:00.021)       0:00:08.617 ***
+changed: [shanghai-1]
+
+TASK [kubernetes_upgrade : Verify etcd snapshot integrity inside etcd pod] *****
+Wednesday 30 September 2026  04:17:31 +0000 (0:00:17.719)       0:00:26.336 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Move etcd snapshot from host-mounted etcd data directory] ***
+Wednesday 30 September 2026  04:17:35 +0000 (0:00:03.128)       0:00:29.465 ***
+changed: [shanghai-1]
+
+TASK [kubernetes_upgrade : Read snapshot and PVC capacity in bytes] ************
+Wednesday 30 September 2026  04:17:37 +0000 (0:00:02.068)       0:00:31.534 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Require capacity for snapshot and safety reserve] ***
+Wednesday 30 September 2026  04:17:40 +0000 (0:00:02.898)       0:00:34.432 ***
+ok: [shanghai-1] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Stream etcd snapshot into temporary file] ***********
+Wednesday 30 September 2026  04:17:40 +0000 (0:00:00.039)       0:00:34.471 ***
+changed: [shanghai-1]
+
+TASK [kubernetes_upgrade : Read uploaded temporary snapshot size] **************
+Wednesday 30 September 2026  04:17:49 +0000 (0:00:09.197)       0:00:43.669 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Require complete snapshot transfer] *****************
+Wednesday 30 September 2026  04:17:53 +0000 (0:00:03.782)       0:00:47.452 ***
+ok: [shanghai-1] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Publish verified snapshot atomically] ***************
+Wednesday 30 September 2026  04:17:53 +0000 (0:00:00.048)       0:00:47.500 ***
+changed: [shanghai-1]
+
+TASK [kubernetes_upgrade : Verify selected etcd snapshot exists in Longhorn PVC] ***
+Wednesday 30 September 2026  04:17:56 +0000 (0:00:03.044)       0:00:50.545 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Prune old etcd snapshots from Longhorn PVC] *********
+Wednesday 30 September 2026  04:17:59 +0000 (0:00:02.901)       0:00:53.447 ***
+skipping: [shanghai-1]
+
+TASK [kubernetes_upgrade : Remove temporary etcd snapshot from host-mounted etcd data directory] ***
+Wednesday 30 September 2026  04:17:59 +0000 (0:00:00.037)       0:00:53.484 ***
+ok: [shanghai-1]
+
+TASK [kubernetes_upgrade : Remove temporary etcd snapshot from control plane host] ***
+Wednesday 30 September 2026  04:18:00 +0000 (0:00:01.862)       0:00:55.347 ***
+skipping: [shanghai-1]
+
+PLAY [Upgrade first control plane (shanghai-1)] ********************************
+
+PLAY [Upgrade secondary control planes] ****************************************
+skipping: no hosts matched
+
+PLAY [Upgrade worker nodes] ****************************************************
+skipping: no hosts matched
+
+PLAY [Post-upgrade control-plane health check] *********************************
+
+PLAY [Post-upgrade worker health check] ****************************************
+skipping: no hosts matched
+
+PLAY RECAP *********************************************************************
+shanghai-1                 : ok=17   changed=4    unreachable=0    failed=0    skipped=4    rescued=0    ignored=0
+
+
+TASKS RECAP ********************************************************************
+Wednesday 30 September 2026  04:18:01 +0000 (0:00:00.051)       0:00:55.398 ***
+===============================================================================
+kubernetes_upgrade : Take etcd snapshot inside etcd pod ---------------- 17.72s
+kubernetes_upgrade : Stream etcd snapshot into temporary file ----------- 9.20s
+kubernetes_upgrade : Create etcd snapshot directory on control plane host --- 3.94s
+kubernetes_upgrade : Read uploaded temporary snapshot size -------------- 3.78s
+kubernetes_upgrade : Verify etcd snapshot integrity inside etcd pod ----- 3.13s
+kubernetes_upgrade : Publish verified snapshot atomically --------------- 3.04s
+kubernetes_upgrade : Verify selected etcd snapshot exists in Longhorn PVC --- 2.90s
+kubernetes_upgrade : Read snapshot and PVC capacity in bytes ------------ 2.90s
+kubernetes_upgrade : Wait for etcd snapshot store pod ------------------- 2.41s
+kubernetes_upgrade : Get ready etcd snapshot store pod ------------------ 2.12s
+kubernetes_upgrade : Move etcd snapshot from host-mounted etcd data directory --- 2.07s
+kubernetes_upgrade : Remove temporary etcd snapshot from host-mounted etcd data directory --- 1.86s
+kubernetes_upgrade : Remove temporary etcd snapshot from control plane host --- 0.05s
+kubernetes_upgrade : Require complete snapshot transfer ----------------- 0.05s
+kubernetes_upgrade : Require capacity for snapshot and safety reserve --- 0.04s
+kubernetes_upgrade : Prune old etcd snapshots from Longhorn PVC --------- 0.04s
+kubernetes_upgrade : Set etcd snapshot paths ---------------------------- 0.03s
+kubernetes_upgrade : Set etcd snapshot store pod name ------------------- 0.03s
+kubernetes_upgrade : Find existing etcd snapshot in Longhorn PVC for today --- 0.03s
+Take etcd snapshot ------------------------------------------------------ 0.03s

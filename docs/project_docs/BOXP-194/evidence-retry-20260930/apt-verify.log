@@ -1,0 +1,158 @@
+  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
+                                 Dload  Upload  Total   Spent   Left   Speed
+
+  0      0   0      0   0      0      0      0                              0
+100    138 100    138   0      0    675      0                              0
+100    138 100    138   0      0    675      0                              0
+
+  0      0   0      0   0      0      0      0                              0
+100   1738 100   1738   0      0   6844      0                              0
+100   1738 100   1738   0      0   6842      0                              0
+100   1738 100   1738   0      0   6840      0                              0
+  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
+                                 Dload  Upload  Total   Spent   Left   Speed
+
+  0      0   0      0   0      0      0      0                              0
+100    138 100    138   0      0    706      0                              0
+100    138 100    138   0      0    705      0                              0
+
+  0      0   0      0   0      0      0      0                              0
+100   1227 100   1227   0      0   5069      0                              0
+100   1227 100   1227   0      0   5068      0                              0
+100   1227 100   1227   0      0   5067      0                              0
+[GNUPG:] NEWSIG
+gpgv: Signature made Wed 23 Sep 2026 06:59:53 PM UTC
+gpgv:                using RSA key DE15B14486CD377B9E876E1A234654DA9A296436
+[GNUPG:] KEY_CONSIDERED DE15B14486CD377B9E876E1A234654DA9A296436 0
+[GNUPG:] SIG_ID LXSJOFNdkXtp2nfPgtGd5doSw6c 2026-09-23 1790189993
+[GNUPG:] GOODSIG 234654DA9A296436 isv:kubernetes OBS Project <isv:kubernetes@build.opensuse.org>
+gpgv: Good signature from "isv:kubernetes OBS Project <isv:kubernetes@build.opensuse.org>"
+[GNUPG:] VALIDSIG DE15B14486CD377B9E876E1A234654DA9A296436 2026-09-23 1790189993 0 4 0 1 8 01 DE15B14486CD377B9E876E1A234654DA9A296436
+1b51686a90ff3c9e5101cb1f155cd2cf75e06fbc70e46074c1379dbeac910686  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/kubernetes.InRelease
+  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
+                                 Dload  Upload  Total   Spent   Left   Speed
+
+  0      0   0      0   0      0      0      0                              0
+100   2448 100   2448   0      0   2661      0                              0
+100   2448 100   2448   0      0   2661      0                              0
+100   2448 100   2448   0      0   2661      0                              0
+  % Total    % Received % Xferd  Average Speed  Time    Time    Time   Current
+                                 Dload  Upload  Total   Spent   Left   Speed
+
+  0      0   0      0   0      0      0      0                              0
+100   1547 100   1547   0      0   1829      0                              0
+100   1547 100   1547   0      0   1829      0                              0
+100   1547 100   1547   0      0   1829      0                              0
+[GNUPG:] NEWSIG
+gpgv: Signature made Tue 22 Sep 2026 08:40:51 AM UTC
+gpgv:                using RSA key 85B67D5C50100B1AC8CEFE49CBA9C85640A2B579
+[GNUPG:] KEY_CONSIDERED 85B67D5C50100B1AC8CEFE49CBA9C85640A2B579 0
+[GNUPG:] SIG_ID 8NoB6uerMS1HaC3IGMndpPu2Ix8 2026-09-22 1790066451
+[GNUPG:] GOODSIG CBA9C85640A2B579 isv:cri-o OBS Project <isv:cri-o@build.opensuse.org>
+gpgv: Good signature from "isv:cri-o OBS Project <isv:cri-o@build.opensuse.org>"
+[GNUPG:] VALIDSIG 85B67D5C50100B1AC8CEFE49CBA9C85640A2B579 2026-09-22 1790066451 0 4 0 1 8 01 85B67D5C50100B1AC8CEFE49CBA9C85640A2B579
+64d8e3b2450630aa2971ed4f00e4507160b0712146bcd7df7d952a66349313e5  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/crio.InRelease
+Get:1 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  InRelease [1,227 B]
+Get:2 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  Packages [9,460 B]
+Get:3 https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  InRelease [1,547 B]
+Get:4 https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages [3,400 B]
+Fetched 15.6 kB in 1s (11.2 kB/s)
+Reading package lists...
+   kubeadm | 1.36.5-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.4-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.3-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.2-2.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.1-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.0-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.5-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.4-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.3-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.2-2.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.1-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.0-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.5-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.4-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.3-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.2-2.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.1-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.0-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.6-3.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.5-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.4-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.3-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.2-2.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.1-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.0-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+Get:1 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  kubeadm 1.36.5-1.1 [12.6 MB]
+Get:2 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  kubectl 1.36.5-1.1 [11.8 MB]
+Get:3 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  kubelet 1.36.5-1.1 [13.4 MB]
+Get:4 https://mirror.aardsoft.fi/opensuse/repositories/isv%3A/cri-o%3A/stable%3A/v1.36/deb  cri-o 1.36.6-3.1 [27.8 MB]
+Fetched 65.6 MB in 11s (5,829 kB/s)
+eab2589f0e6ce4a2f64eec531932ef9f04b9e530233ce2d1cab0c451f6c00e66  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/amd64/debs/cri-o_1.36.6-3.1_amd64.deb
+Package: cri-o
+Version: 1.36.6-3.1
+Architecture: amd64
+bbb6899335ca6890be4c007e10c66303f68281d342f2e7345db9c03cd5175da9  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/amd64/debs/kubeadm_1.36.5-1.1_amd64.deb
+Package: kubeadm
+Version: 1.36.5-1.1
+Architecture: amd64
+e633cdbcb535b0fdf8bd9aa643cfd0ad080889fddb6794d2af0bbaaf110e7956  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/amd64/debs/kubectl_1.36.5-1.1_amd64.deb
+Package: kubectl
+Version: 1.36.5-1.1
+Architecture: amd64
+dd46254567ee60672c0737a4b5392fae7f3419a876ab6885c48178501ac2fd64  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/amd64/debs/kubelet_1.36.5-1.1_amd64.deb
+Package: kubelet
+Version: 1.36.5-1.1
+Architecture: amd64
+Get:1 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  InRelease [1,227 B]
+Get:2 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  Packages [9,460 B]
+Get:3 https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  InRelease [1,547 B]
+Get:4 https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages [3,400 B]
+Fetched 15.6 kB in 2s (10.4 kB/s)
+Reading package lists...
+   kubeadm | 1.36.5-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.4-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.3-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.2-2.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.1-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubeadm | 1.36.0-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.5-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.4-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.3-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.2-2.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.1-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubelet | 1.36.0-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.5-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.4-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.3-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.2-2.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.1-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+   kubectl | 1.36.0-1.1 | https://pkgs.k8s.io/core:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.6-3.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.5-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.4-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.3-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.2-2.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.1-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+     cri-o | 1.36.0-1.1 | https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb  Packages
+Get:1 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  kubeadm 1.36.5-1.1 [10.7 MB]
+Get:2 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  kubectl 1.36.5-1.1 [9,954 kB]
+Get:3 https://prod-cdn.packages.k8s.io/repositories/isv:/kubernetes:/core:/stable:/v1.36/deb  kubelet 1.36.5-1.1 [11.2 MB]
+Get:4 https://mirror.aardsoft.fi/opensuse/repositories/isv%3A/cri-o%3A/stable%3A/v1.36/deb  cri-o 1.36.6-3.1 [22.7 MB]
+Fetched 54.6 MB in 11s (5,015 kB/s)
+f3331b9bf9a0de8d59d50b26efdfe37f6e91c33dabcf334455832f8010f3aafb  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/arm64/debs/cri-o_1.36.6-3.1_arm64.deb
+Package: cri-o
+Version: 1.36.6-3.1
+Architecture: arm64
+d08b7af27b50d539d91d9c5af69f73feff0e59455fe74d478e0a009cc2bdf260  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/arm64/debs/kubeadm_1.36.5-1.1_arm64.deb
+Package: kubeadm
+Version: 1.36.5-1.1
+Architecture: arm64
+65cdaa8817b252ef493768ba8976b292eccddcfd3d5e9b6d24bbb67ec58027fb  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/arm64/debs/kubectl_1.36.5-1.1_arm64.deb
+Package: kubectl
+Version: 1.36.5-1.1
+Architecture: arm64
+946ae8079938f6be46ec48ff317005d03c87de09a5b557627f348a11c080e0ef  /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/evidence-retry/packages/arm64/debs/kubelet_1.36.5-1.1_arm64.deb
+Package: kubelet
+Version: 1.36.5-1.1
+Architecture: arm64

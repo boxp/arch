@@ -1,0 +1,276 @@
+warning: The `tool.uv.dev-dependencies` field (used in `pyproject.toml`) is deprecated and will be removed in a future release; use `dependency-groups.dev` instead
+Using CPython 3.14.4 interpreter at: /usr/bin/python3.14
+Creating virtual environment at: .venv
+Installed 54 packages in 338ms
+
+PLAY [Pre-upgrade validation and optional etcd snapshot] ***********************
+skipping: no hosts matched
+
+PLAY [Upgrade first control plane (shanghai-1)] ********************************
+skipping: no hosts matched
+
+PLAY [Upgrade secondary control planes] ****************************************
+
+TASK [Gathering Facts] *********************************************************
+Wednesday 30 September 2026  04:21:25 +0000 (0:00:00.016)       0:00:00.016 ***
+ok: [shanghai-2]
+
+TASK [Create containers registries configuration directory] ********************
+Wednesday 30 September 2026  04:21:31 +0000 (0:00:05.255)       0:00:05.272 ***
+ok: [shanghai-2]
+
+TASK [Configure containers short-name mode] ************************************
+Wednesday 30 September 2026  04:21:32 +0000 (0:00:01.729)       0:00:07.001 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Run pre-upgrade checks] *****************************
+Wednesday 30 September 2026  04:21:36 +0000 (0:00:03.443)       0:00:10.445 ***
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/pre_checks.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Validate exact upgrade version inputs] **************
+Wednesday 30 September 2026  04:21:36 +0000 (0:00:00.035)       0:00:10.480 ***
+ok: [shanghai-2] => {
+    "changed": false,
+    "msg": "All assertions passed"
+}
+
+TASK [kubernetes_upgrade : Verify exact target packages before drain or host APT changes] ***
+Wednesday 30 September 2026  04:21:36 +0000 (0:00:00.036)       0:00:10.516 ***
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/apt_preflight.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Create temporary directory for APT preflight] *******
+Wednesday 30 September 2026  04:21:36 +0000 (0:00:00.028)       0:00:10.545 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Allow APT sandbox access to temporary preflight state] ***
+Wednesday 30 September 2026  04:21:38 +0000 (0:00:01.740)       0:00:12.286 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Create isolated APT state directories] **************
+Wednesday 30 September 2026  04:21:40 +0000 (0:00:02.429)       0:00:14.716 ***
+ok: [shanghai-2] => (item=lists)
+ok: [shanghai-2] => (item=archives)
+ok: [shanghai-2] => (item=cache)
+
+TASK [kubernetes_upgrade : Download target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  04:21:46 +0000 (0:00:05.504)       0:00:20.221 ***
+ok: [shanghai-2] => (item={'name': 'kubernetes', 'url': 'https://pkgs.k8s.io/core:/stable:/v1.36/deb/Release.key'})
+ok: [shanghai-2] => (item={'name': 'crio', 'url': 'https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v1.36/deb/Release.key'})
+
+TASK [kubernetes_upgrade : Convert target repository signing keys for isolated APT preflight] ***
+Wednesday 30 September 2026  04:21:53 +0000 (0:00:07.130)       0:00:27.351 ***
+ok: [shanghai-2] => (item=kubernetes)
+ok: [shanghai-2] => (item=crio)
+
+TASK [kubernetes_upgrade : Configure isolated APT sources and state] ***********
+Wednesday 30 September 2026  04:21:56 +0000 (0:00:03.399)       0:00:30.750 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Configure isolated target repository source list] ***
+Wednesday 30 September 2026  04:22:00 +0000 (0:00:03.928)       0:00:34.678 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Update isolated APT lists from target repositories] ***
+Wednesday 30 September 2026  04:22:04 +0000 (0:00:03.660)       0:00:38.338 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Resolve exact revisions from isolated APT lists] ****
+Wednesday 30 September 2026  04:22:07 +0000 (0:00:03.831)       0:00:42.170 ***
+ok: [shanghai-2] => (item={'name': 'kubeadm', 'version': '1.36.5-1.1'})
+ok: [shanghai-2] => (item={'name': 'kubelet', 'version': '1.36.5-1.1'})
+ok: [shanghai-2] => (item={'name': 'kubectl', 'version': '1.36.5-1.1'})
+ok: [shanghai-2] => (item={'name': 'cri-o', 'version': '1.36.6-3.1'})
+
+TASK [kubernetes_upgrade : Remove isolated APT preflight state] ****************
+Wednesday 30 September 2026  04:22:15 +0000 (0:00:07.411)       0:00:49.581 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Mark isolated APT preflight as complete] ************
+Wednesday 30 September 2026  04:22:17 +0000 (0:00:02.019)       0:00:51.600 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify current kubernetes version] ******************
+Wednesday 30 September 2026  04:22:17 +0000 (0:00:00.028)       0:00:51.628 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health] *************************
+Wednesday 30 September 2026  04:22:20 +0000 (0:00:02.672)       0:00:54.301 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify all nodes are Ready] *************************
+Wednesday 30 September 2026  04:22:23 +0000 (0:00:02.995)       0:00:57.297 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade first control plane] ************************
+Wednesday 30 September 2026  04:22:25 +0000 (0:00:02.228)       0:00:59.526 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade secondary control plane] ********************
+Wednesday 30 September 2026  04:22:25 +0000 (0:00:00.031)       0:00:59.558 ***
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/upgrade_control_plane_secondary.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Drain control plane node] ***************************
+Wednesday 30 September 2026  04:22:25 +0000 (0:00:00.043)       0:00:59.602 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Update apt source and install packages] *************
+Wednesday 30 September 2026  04:22:27 +0000 (0:00:01.741)       0:01:01.343 ***
+[WARNING]: Deprecation warnings can be disabled by setting `deprecation_warnings=False` in ansible.cfg.
+[DEPRECATION WARNING]: ansible.builtin.apt_key has been deprecated. Use deb822_repository instead. This feature will be removed from ansible-core version 2.25.
+Origin: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml:33:3
+
+31
+32 - name: Import Kubernetes apt repository GPG key for target version
+33   ansible.builtin.apt_key:
+     ^ column 3
+
+[DEPRECATION WARNING]: ansible.builtin.apt_key has been deprecated. Use deb822_repository instead. This feature will be removed from ansible-core version 2.25.
+Origin: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml:40:3
+
+38
+39 - name: Import CRI-O apt repository GPG key for target version
+40   ansible.builtin.apt_key:
+     ^ column 3
+
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/upgrade_apt_source.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Verify exact target packages for standalone APT-source runs] ***
+Wednesday 30 September 2026  04:22:27 +0000 (0:00:00.044)       0:01:01.387 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Configure Kubernetes apt repository for target version] ***
+Wednesday 30 September 2026  04:22:27 +0000 (0:00:00.019)       0:01:01.407 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Configure CRI-O apt repository for target version] ***
+Wednesday 30 September 2026  04:22:31 +0000 (0:00:03.902)       0:01:05.310 ***
+changed: [shanghai-2]
+
+TASK [kubernetes_upgrade : Remove duplicate CRI-O version-specific apt repository] ***
+Wednesday 30 September 2026  04:22:35 +0000 (0:00:04.249)       0:01:09.559 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Import Kubernetes apt repository GPG key for target version] ***
+Wednesday 30 September 2026  04:22:37 +0000 (0:00:01.803)       0:01:11.363 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Import CRI-O apt repository GPG key for target version] ***
+Wednesday 30 September 2026  04:22:40 +0000 (0:00:03.430)       0:01:14.794 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Update apt cache] ***********************************
+Wednesday 30 September 2026  04:22:44 +0000 (0:00:03.874)       0:01:18.669 ***
+changed: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade CRI-O] **************************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:08.955)       0:01:27.624 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Apply CRI-O restart before continuing control plane upgrade] ***
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.028)       0:01:27.653 ***
+
+TASK [kubernetes_upgrade : Unhold kubeadm] *************************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.005)       0:01:27.658 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Install target kubeadm version] *********************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.020)       0:01:27.679 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Hold kubeadm] ***************************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.015)       0:01:27.694 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Run kubeadm upgrade node] ***************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.014)       0:01:27.709 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade kubelet and kubectl] ************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.013)       0:01:27.722 ***
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/upgrade_kubelet_kubectl.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Unhold kubelet] *************************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.030)       0:01:27.753 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Unhold kubectl] *************************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.021)       0:01:27.774 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Install target kubelet version] *********************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.017)       0:01:27.792 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Install target kubectl version] *********************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.014)       0:01:27.807 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Hold kubelet] ***************************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.021)       0:01:27.828 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Hold kubectl] ***************************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.021)       0:01:27.849 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Restart kubelet] ************************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.018)       0:01:27.868 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Wait for kube-apiserver before uncordon] ************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.021)       0:01:27.889 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Uncordon control plane node] ************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.024)       0:01:27.914 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify node health] *********************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.024)       0:01:27.939 ***
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  04:22:53 +0000 (0:00:00.030)       0:01:27.969 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  04:22:55 +0000 (0:00:01.950)       0:01:29.919 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  04:22:57 +0000 (0:00:01.963)       0:01:31.882 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  04:22:59 +0000 (0:00:01.965)       0:01:33.848 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Upgrade worker node] ********************************
+Wednesday 30 September 2026  04:23:01 +0000 (0:00:02.156)       0:01:36.004 ***
+skipping: [shanghai-2]
+
+TASK [kubernetes_upgrade : Run post-upgrade health check] **********************
+Wednesday 30 September 2026  04:23:01 +0000 (0:00:00.016)       0:01:36.021 ***
+included: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9/frozen-dc7b76d33/ansible/roles/kubernetes_upgrade/tasks/health_check.yml for shanghai-2
+
+TASK [kubernetes_upgrade : Wait for node to be Ready] **************************
+Wednesday 30 September 2026  04:23:01 +0000 (0:00:00.027)       0:01:36.049 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify kubelet version on node] *********************
+Wednesday 30 September 2026  04:23:03 +0000 (0:00:01.974)       0:01:38.024 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify node conditions (no pressure)] ***************
+Wednesday 30 September 2026  04:23:06 +0000 (0:00:02.467)       0:01:40.491 ***
+ok: [shanghai-2]
+
+TASK [kubernetes_upgrade : Verify etcd cluster health (control plane only)] ****
+Wednesday 30 September 2026  04:23:08 +0000 (0:00:02.510)       0:01:43.001 ***
+ok: [shanghai-2]
+
+PLAY [Upgrade secondary control planes] ****************************************
+
+TASK [Gathering Facts] *********************************************************
+Wednesday 30 September 2026  04:23:11 +0000 (0:00:02.455)       0:01:45.457 ***
+[ERROR]: User interrupted execution

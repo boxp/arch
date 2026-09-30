@@ -1,3 +1,9 @@
+# 2026-09-30 04:11 UTC再試行の参照
+
+最新runは[run-retry-20260930.md](run-retry-20260930.md)。04:13〜04:16 UTCの5連続health成功、release/APT署名・全8deb再照合、新規snapshot/隔離restoreを記録した。snapshot名のfact cache再利用による03:14:52copy上書きも明記した。04:24〜04:25 UTCにCP3 direct API/kubelet TLS timeoutとNotReadyが再発し、最終判定はNo-Go。今回dry-runは中断、本番全7台更新は未開始。以下のNo-Go記述は03:45 UTCの前回実測に基づく履歴であり、今回判断とは区別する。
+
+---
+
 # 2026-09-30 追跡観測
 
 現在の観測とAPI不安定はrun-20260930.mdおよびevidence-20260930のincident/recoveryログを参照。全7台dry-run後の直接API反復観測でCP3 readyzがHTTP500/etcd-readiness failedとなり、本番未開始でNo-Go。旧記録の形式的gateはplan.md冒頭の03:11指示で置き換える。
