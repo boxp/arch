@@ -10,7 +10,7 @@
 
 **影響**: 方針選択後、[分割ticket I1〜I7](implementation-tickets.md)を別途作成・検証する。今回の文書PRからrunner/Deployment/Argo/cron/既存ticketへの実行効果はない。本番配布許可はこの判断に含めない。
 
-**rollback**: 限定配布の際に受付停止→canary pause→checkpoint/drain→journal保存→legacy復帰前の起動抑止確認を実施する。詳細は[設計](design.md)。
+**rollback**: 限定配布の際に受付停止→canary pause→checkpoint/drain→journal保存→新writerのreplica=0・全process停止/権限剥奪→次世代発行→legacy入力からv2対象の隔離確認を実施する。詳細は[設計](design.md)。
 
 **レビュー成果**: [計画](plan.md)・[設計とschema例](design.md)・[実装ticket本文案](implementation-tickets.md)。今回求めるのは移行方針への設計フィードバックだけであり、回答から実行許可を生成しない。未回答も許可を意味せず、独立した安全な設計/fixture作業は進められる。I6/I7で認証経路と分離を検証した後、本番配布直前に対象commitの完全SHA・現在のcontrol revision・具体的なUTC期限を確定した別packetを発行する。その承認は[認証と承認event契約](design.md#回答の認証と承認event)に従うowner専用経路で記録し、packetのstatusやowner名の記載だけでは許可しない。この要約自体は承認eventではない。
 

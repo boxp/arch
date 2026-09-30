@@ -60,6 +60,12 @@ lane名は互換維持。laneは次の能力/待機条件、実行意図は別�
 schema_version: 2
 ticket: BOXP-201
 revision: 1
+writer_generation: 1
+objective:
+  id: BOXP-201-design
+  ticket_version: 1
+  requirements: "Task Boardの自律ループ設計と分割ticket案を文書化する。本番runnerと既存cardは変更しない。"
+  requirements_sha256: "1270a5708a678ee59076a847444f29718c28f9bcb27ace0f330ed576440b63c6"
 intent: run                 # run | pause | cancel | wait-human
 agent_route: codex
 scope:
@@ -73,6 +79,8 @@ budget: {max_steps: 6, max_wall_minutes: 60}
 実ticket frontmatterのopt-in候補は`autonomy_version: 2`、`execution_intent: run`、`control_revision: 1`。構造化stateとのrevision不一致は開始しない。assigneeはroute表示に限定し、v2でboxpへ戻すことを停止信号にしない。未対応routeは起動せず、安全なdiagnosticとdecisionを作る。
 
 制御原本はagentから書込不可のcontrol storeとし、vault/sidecar内の値は表示用投影に限定する。I3の認証済みcontrol APIだけが単調増加revisionとactor subject・変更内容・旧revisionを連結した不変eventをCAS保存する。owner専用経路だけがscope拡大、runへの停止解除、route変更、budget増加・新budget epochの発行を行える。runner専用identityは既存scope内の進捗/attempt消費、pause/cancel/wait-humanへの制限強化のみ可能。agent、古いrun、認証なしhelperの変更は拒否し、原本取得不能/投影不一致なら起動しない。helperはowner認証済みAPIへの要求またはdry-runだけを行い、ファイル編集は認可にならない。revision更新だけでは消費budgetをリセットせず、消費はticketとbudget epochに累積する。I7でcontrol API/storeの実配置とagent書込拒否も確認するまでv2起動を有効化しない。
+
+目的/要求はowner管理のcontrol原本に不変snapshotとして保存する。`objective.id`、`ticket_version`（ownerが確定した要求版）、`requirements`、`requirements_sha256`を必須とし、例のdigestはrequirements文字列のUTF-8 bytesのSHA-256。実際のsnapshotはSummary/ACと明示制約を含む正規化テキストとし、Notes/lane/assigneeの表示更新を要求変更に含めない。owner専用経路だけが新要求版を発行でき、発行時にcontrol revisionを進め、旧decision/retry条件を無効にする。run開始と各step前に原本の要求版/digest、promptに渡すsnapshot、現在ticketの要求部分を照合し、改変/欠落/不一致なら起動せずwait-human。agentがticket本文を書き換えて目的を拡張することを認可にしない。digest一致は意味的な目的達成の証明ではないため、inspectでは成果diffを固定AC/制約と照合し、目的逸脱が疑われればclarifyし依存stepを止める。
 
 pause/cancelは新規起動を直ちに抑止。走行中は次の安全checkpointで停止し、実行中の不可逆処理を盲目的killしない。cancelは残retry予約も無効化する。期限超過はwait-humanとし、時間経過から承認を推定しない。
 
@@ -195,7 +203,7 @@ WIPはownerをまたぐ永続slotで取得、lease heartbeatとticket lockのown
 
 ## 互換性、競合と監査
 
-- **互換**: feature offは現候補判定とresult markerを維持。`TASK_BOARD_RESULT`とPR URL/none規約・PR gateは変更しない。v2 state未対応/不正はlegacy推定で起動せず診断する。旧runnerはv2を理解せずassigneeで起動し得るため、mixed-version writer運用は禁止。導入時に旧ownerをdrainしlease失効を確認、新ownerだけをactivateする。flag offだけでv2 cardのagent担当をlegacyへ露出させない。
+- **互換**: feature offは現候補判定とresult markerを維持。`TASK_BOARD_RESULT`とPR URL/none規約・PR gateは変更しない。v2 state未対応/不正はlegacy推定で起動せず診断する。旧runnerはv2を理解せずassigneeで起動し得るため、mixed-version writer運用は禁止。導入時は下記の世代切替gateで旧writerの停止・権限剥奪を確認し、新世代だけをactivateする。lease失効だけを停止証拠にしない。flag offだけでv2 cardのagent担当をlegacyへ露出させない。
 - **race**: 現ticket FileLockはlock取得/解放の跨process保護。Board書込みmutexはJVM内であり、helper/別ownerとのBoard更新全体をserializableにはしない。共通vault writer lock、control revision比較、temp+atomic rename、write-ahead transition journalをhelperにも導入。起動候補のsnapshotをlock取得後に再確認。途中のowner pause/lane変更と古いrun終了が競合したら、古い結果をartifactに残し状態投影しない。
 - **状態の正**: Board laneが常にstatusのsource of truth。stateは予約/証跡、lane巻戻し根拠にしない。laneとticketの二ファイル更新は原子的でないため、journalでintent/revision/before/afterを記録し再起動時は現在laneを読んで整合する。human変更と競合する未完了journalは勝手にreplayしない。
 - **外部資源**: ticket lock以外にrepo/PR/head/resource keyで競合管理。repo slotだけでは外部apply等を保護できない。read-only probeとworktreeは並行可、高リスクeffectはdecision許可とidempotency keyが必須。実行後のcrashは効果をqueryで確認、確認不能なら人間へ。exactly-onceは保証しない。
@@ -203,15 +211,30 @@ WIPはownerをまたぐ永続slotで取得、lease heartbeatとticket lockのown
 - **監査**: eventにevent_id/ticket/run/owner/instance/control_revision/policy_version/scope_hash/decision_id/head/action/outcome/timestampを記録。categoryと安全な要約のみ公開。decision→実行→検査の連結を追跡可能にする。journal/outboxは制限権限の永続領域、保存期限と削除手順は別ticketで設定。削除時もredacted監査要約は残す。
 - **credential/redaction**: raw run log、stderr、prompt、credential、Secret、private endpointはNotes/PRに保存禁止。公開diagnosticは固定category/registry ID/許可repoのartifact linkだけをallowlistで生成。token/URL/query/任意exception文をblacklist置換だけで安全と判定しない。probeはregistryで許可したAPIのみ、secret値は環境/専用store参照でpacketに含めない。公開前にsentinel秘密入りfixtureとfail-closedテストを行う。
 
+### writer世代切替gate（I7）
+
+旧runner/helperはleaseやv2 revisionを検証しないため、アプリ内の世代番号だけではfenceできない。I7は配布制御と実権限で旧writerを隔離する。writer inventoryには全Deployment/replica、別hostのrunner、cron/recurring起動元、installed helper、実行中agentとその子processを含める。対象はBoard/ticket/state/journalの書込、control APIのmutation、agent起動、repo/外部effectのcredential・mount。未知のwriterや剥奪できない共有identityがあれば切替を中止する。
+
+切替はownerが許可したwindowで次の順序を守る。
+
+1. 新旧の新規受付と全起動元を停止し、旧runを安全checkpointまでdrainする。結果不明のeffectを再実行せず隔離し、journal/stateを保存する。
+2. **旧Deploymentのreplicaを0**にし、Argoの再同期・HPA・cron等による再生成も抑止する。全hostで旧Pod/process、helper、agent子processの不在を確認する。停止が確認できないものが一つでもあれば新writerを有効化しない。
+3. 旧世代の書込mount/ACLとAPI・起動・effect権限を剥奪し、共有credentialは更新して旧credentialを失効させる。旧identityによる書込み・agent起動要求が実境界で拒否されることを確認する。raw credentialは記録しない。既存書込FDや起動済み子processは権限更新だけでは止まらないため、process不在確認を省略しない。
+4. 制御原本に単調増加の`writer_generation`をowner専用操作で発行し、専用identityにその世代の権限だけを付与する。新runner/helperは候補判定・起動・各write/commit時に現在世代と照合し、control APIも旧世代の要求を拒否する。停止確認・権限剥奪・世代照合の安全な証跡を保存後にのみ新writerをactivateする。lease失効はslot回収の追加条件で、世代切替gateの代替ではない。
+
+旧binaryを旧identityで再起動させる否定testでも書込み/起動不能を確認する。replicaが復活、旧process残存、剥奪未完了、generation不一致、control原本取得不能のいずれかならactivate禁止。shadowはread-only権限で行いwriterに昇格させない。既存ticketのlane変更を旧writer排除手段にしない。
+
+切戻しも新writer受付停止→checkpoint/journal保存→新Deployment replica=0と全process不在→新世代権限剥奪→次の世代発行の順で行う。旧binaryは新しい専用identityでのみ復帰し、失効済みcredentialを再有効化しない。legacyにはv2 cardを認可で隠す機能がないため、v2対象を含むBoard/vaultをlegacyのread/write/起動入力から隔離したことを必須gateにする。実装済みの隔離手段がなければlegacy復帰を中止し、両writer停止のままownerへpacketを提示する。flag offやv2 pauseだけでは旧binaryの起動を防げない。
+
 ## 移行と受け入れ検証
 
 1. schema/validatorとredactionをfixtureで実装。legacy不変、malformedはfail closed。
 2. shadow候補評価: 実行/Board mutationなし、対象ticketをread-only分類し旧判定との差を集計。人手依頼数、安全な継続候補数、false-start、retry回数、通知件数を計測。
-3. ownerが新規canaryを選択。旧writer drainの確認後、限定scopeでv2 opt-in。既存ticketは無変更。global=2/per_repo=1、budgetを小さく始める。
+3. ownerが新規canaryを選択。writer世代切替gate（旧replica=0・全process停止・旧権限剥奪・新世代確認）を通過後、限定scopeでv2 opt-in。既存ticketは無変更。global=2/per_repo=1、budgetを小さく始める。
 4. pause競合・再起動・通知重複・agent失敗・redactionの故障注入を通過後に範囲拡大を別decisionで判断。
 5. 既存ticketは一件ごとにsnapshot/dry-run/diffを提示しownerが移行対象を選ぶ。laneからscopeやrun intentを推定しない。現在停止条件を維持、Doneは対象外。
 
-rollbackは新規受付停止→v2 canary pause→安全checkpoint待機→state/journal保存→v2専用writer drain→旧writerを戻す前に対象cardの起動抑止を個別確認。既存ticketの一括lane/assignee変更やstate削除をrollbackと呼ばない。本番配布・Argo・cron変更は[実装ticket I7](implementation-tickets.md#i7-限定配布と移行運用)でのみ行う。
+rollbackは新規受付停止→v2 canary pause→安全checkpoint待機→state/journal保存→v2専用writerの停止/権限剥奪→次世代発行→旧writerを戻す前にv2対象の入力隔離と起動抑止を個別確認。上記gateを満たせなければ停止を維持する。既存ticketの一括lane/assignee変更やstate削除をrollbackと呼ばない。本番配布・Argo・cron変更は[実装ticket I7](implementation-tickets.md#i7-限定配布と移行運用)でのみ行う。
 
 設計レビューの確認項目: stopped ticket起動0、未許可effect0、同ticket/資源重複effect0、budget超過再試行0、公開秘密sentinel0、未回答の自動承認0。時間短縮だけを成功条件にしない。
 

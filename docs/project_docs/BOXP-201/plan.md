@@ -24,3 +24,9 @@ PR gate再試行: P1「Decision Packetの自己承認防止」を修正。packet
 PR全体の独立レビュー追加指摘: I6のACをローカルmock/契約検証へ限定し、実サービス/store実装・配置とcredential分離はI7の責務と明示。配置先・運用責任者確定までI7未完了、human-dependent effect無効とする。
 
 追加独立指摘対応: issuance=templateを承認/実行入力で拒否し、issuedもhead/期限の具体値を検証。制御原本はagent書込不可、owner/runnerの変更権限と単調revision/event、budget epochを越えない消費累積を明記。I1/I2/I3/I6/I7へ拒否testと配布gateを追加。
+
+今回のPR gate指摘対応: lease非対応の旧runnerに対するwriter fencingを明文化。I7に旧Deployment replica=0・全起動元抑止・全host/helper/agent子process不在・旧credential/mount/起動権限剥奪・単調writer_generationの必須gateと否定testを追加した。切戻しも対称に停止/剥奪し、legacyからv2対象を隔離できなければ復帰しない。文書だけの変更であり、これらの本番操作は後続I7の別PR/owner判断で行う。
+
+今回の検証: 4文書のリンク/フェンス・5 YAML例parse・git diff --check成功。低コストgpt-5.6-terra CLIの全文入力による独立レビューはcleanで、旧writer fencingと対称rollbackを確認。terra_workerは利用不可、review skillsは未検出、Trivyは実行ファイル不在。本番操作は行っていない。
+
+全体レビュー追加指摘: 目的とscopeの一致に必要な不変要求snapshot・ticket要求版・SHA-256をcontrol原本の必須fieldにし、ownerだけが新要求を発行する契約を追加。I1/I2/I3に改変/別目的/agent本文変更の拒否とNotes更新の非影響を記載。digestを意味的達成の証明にせず、固定ACに対するinspectを必須とした。
