@@ -22,3 +22,5 @@ PR gate再試行: P1「Decision Packetの自己承認防止」を修正。packet
 今回の再検証: 4文書のリンク/フェンス、5件YAML例parse、git diff --checkを通過。gpt-5.6-terra独立レビューはsandboxの読取エラー後に全文と差分を入力して再実行し、`CODEX_REVIEW_RESULT: clean`。Trivyは引き続き実行ファイル不在。
 
 PR全体の独立レビュー追加指摘: I6のACをローカルmock/契約検証へ限定し、実サービス/store実装・配置とcredential分離はI7の責務と明示。配置先・運用責任者確定までI7未完了、human-dependent effect無効とする。
+
+追加独立指摘対応: issuance=templateを承認/実行入力で拒否し、issuedもhead/期限の具体値を検証。制御原本はagent書込不可、owner/runnerの変更権限と単調revision/event、budget epochを越えない消費累積を明記。I1/I2/I3/I6/I7へ拒否testと配布gateを追加。

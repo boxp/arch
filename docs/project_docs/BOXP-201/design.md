@@ -72,16 +72,19 @@ budget: {max_steps: 6, max_wall_minutes: 60}
 
 実ticket frontmatterのopt-in候補は`autonomy_version: 2`、`execution_intent: run`、`control_revision: 1`。構造化stateとのrevision不一致は開始しない。assigneeはroute表示に限定し、v2でboxpへ戻すことを停止信号にしない。未対応routeは起動せず、安全なdiagnosticとdecisionを作る。
 
+制御原本はagentから書込不可のcontrol storeとし、vault/sidecar内の値は表示用投影に限定する。I3の認証済みcontrol APIだけが単調増加revisionとactor subject・変更内容・旧revisionを連結した不変eventをCAS保存する。owner専用経路だけがscope拡大、runへの停止解除、route変更、budget増加・新budget epochの発行を行える。runner専用identityは既存scope内の進捗/attempt消費、pause/cancel/wait-humanへの制限強化のみ可能。agent、古いrun、認証なしhelperの変更は拒否し、原本取得不能/投影不一致なら起動しない。helperはowner認証済みAPIへの要求またはdry-runだけを行い、ファイル編集は認可にならない。revision更新だけでは消費budgetをリセットせず、消費はticketとbudget epochに累積する。I7でcontrol API/storeの実配置とagent書込拒否も確認するまでv2起動を有効化しない。
+
 pause/cancelは新規起動を直ちに抑止。走行中は次の安全checkpointで停止し、実行中の不可逆処理を盲目的killしない。cancelは残retry予約も無効化する。期限超過はwait-humanとし、時間経過から承認を推定しない。
 
 ## Decision Packet契約
 
-自由文の大きなplan承認に代え、必要な一決定を構造化する。最小fields: schema_version、id、ticket、control_revision、question、recommended_option、options、evidence_refs、impact、rollback、scope、artifact_head、owner、expires_at、status。各optionは具体的な効果を持ち、owner回答はoption_id/decision_id/head/revisionに結びつく。pending/resolved/expired/supersededを区別。期限切れ・head変更・scope変更は旧許可を無効化。高リスク実行許可は対象操作一回限り、実行eventと連結する。
+自由文の大きなplan承認に代え、必要な一決定を構造化する。最小fields: schema_version、issuance、id、ticket、control_revision、question、recommended_option、options、evidence_refs、impact、rollback、scope、artifact_head、owner、expires_at、status。各optionは具体的な効果を持ち、owner回答はoption_id/decision_id/head/revisionに結びつく。pending/resolved/expired/supersededを区別。期限切れ・head変更・scope変更は旧許可を無効化。高リスク実行許可は対象操作一回限り、実行eventと連結する。
 
-以下はschema説明用の未発行テンプレートであり、ownerへの承認要求ではない。`artifact_head`・`expires_at`のプレースホルダと`status: pending`は記述例で、判断の記録や実行許可に使用できない。発行時は対象commitの完全SHA、現在のcontrol revision、具体的なUTC期限を確定し、I6の認証経路へ登録する。今回の[owner向け要約](decision-packet.md)は設計方針のレビュー依頼であり、このテンプレートを発行しない。
+以下はschema説明用の未発行テンプレートであり、ownerへの承認要求ではない。`artifact_head`・`expires_at`のプレースホルダと`status: pending`は記述例で、判断の記録や実行許可に使用できない。発行時は対象commitの完全SHA、現在のcontrol revision、具体的なUTC期限を確定し、I6の認証経路へ登録する。`issuance: template`は承認store登録・実行・approval event照合で必ず拒否する。`issued`でも完全SHAでないhead、具体UTC日時でない期限、プレースホルダは拒否する。今回の[owner向け要約](decision-packet.md)は設計方針のレビュー依頼であり、このテンプレートを発行しない。
 
 ```yaml
 schema_version: 1
+issuance: template          # template | issued
 id: example/D1
 ticket: BOXP-201
 control_revision: 1

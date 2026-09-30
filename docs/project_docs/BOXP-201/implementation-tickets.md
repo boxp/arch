@@ -10,7 +10,7 @@
 
 **対象path**: `boxp/arch: docker/codex-workspace/task-board/task_board_runner.bb`、新規 `docker/codex-workspace/task-board/autonomy_policy.bb`、`tests/codex-workspace/task-board-runner-test.sh`、新規fixture `tests/codex-workspace/fixtures/autonomy/`。vault仕様更新は別成果としてdiffを提示。
 
-**test**: valid/invalid/version mismatch、path traversal、禁止operation、private URL、synthetic token/Secretを含むexceptionの公開抑止。現model-profile/candidate-action black-box回帰。schema例がvalidatorを通ること。
+**test**: valid/invalid/version mismatch、path traversal、禁止operation、private URL、synthetic token/Secretを含むexceptionの公開抑止。現model-profile/candidate-action black-box回帰。発行済みの具体値fixtureのみvalidatorを通ること。issuance=templateとプレースホルダhead/期限は発行・実行入力として拒否。
 
 **rollout/rollback**: flag offのままlibrary導入、fixtureのみ。revertで戻す、永続state formatの書換なし。
 
@@ -22,7 +22,7 @@
 
 **対象path**: arch `docker/codex-workspace/task-board/task_board_runner.bb` のcandidate-action/process-card!/candidate-cards、I1 library、`tests/codex-workspace/task-board-runner-test.sh`。
 
-**test**: 全lane×intent×supported/unsupported route、候補取得後pause、実行中lane変更、old head decision、missing state、shadowが起動せずファイル不変。legacy result/PR URL/none回帰。
+**test**: agent・古いrun・未認証helperによる未認可revision/scope/intent変更を拒否、原本取得不能で起動0、revision更新だけでbudget消費をリセットしない。全lane×intent×supported/unsupported route、候補取得後pause、実行中lane変更、old head decision、missing state、shadowが起動せずファイル不変。legacy result/PR URL/none回帰。
 
 **rollout/rollback**: shadow-onlyで比較summary生成。feature offでlegacy維持。v2実行が始まった後のlegacy復帰はI7手順必須で、単なるflag offにしない。
 
@@ -30,11 +30,11 @@
 
 ## I3: 共通writer lock・transition journalと安全なhelper
 
-**成果/AC**: Board/ticket/stateを共通vault writer lockで更新。revision CAS、atomic rename、write-ahead journal、current lane優先のrecover。helperにintent/decision/retryのdry-run操作を追加。未対応旧writerと同時書込みしない。
+**成果/AC**: 制御原本の認証済みAPI・store・actor別権限・単調revision/event契約をmock検証し、agent書込可能な投影を認可に使わない。実API/store配置はI7。Board/ticket/stateを共通vault writer lockで更新。revision CAS、atomic rename、write-ahead journal、current lane優先のrecover。helperにintent/decision/retryのdry-run操作を追加。未対応旧writerと同時書込みしない。
 
 **対象path**: arch `docker/codex-workspace/task-board/task_board_runner.bb`、`docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb`、`tests/codex-workspace/task-board-runner-test.sh`。他installed helperへの配布先はread-only inventoryで確認してI7へ引き継ぐ。
 
-**test**: 2 process＋helperの同時Notes/frontmatter/Board更新で追記消失0、duplicate card/欠落ticketを自動修復しない、journal各write間kill、owner変更と回復競合、lease盗取後の古いworker終了、dry-run不変。stale/corrupt/planned shutdown既存回帰。
+**test**: 未認可agent/古いrun/helperによるrevision・scope・停止解除拒否、runnerによる権限拡大拒否、revision巻戻し拒否、revision変更後も同budget epochの累積消費維持。2 process＋helperの同時Notes/frontmatter/Board更新で追記消失0、duplicate card/欠落ticketを自動修復しない、journal各write間kill、owner変更と回復競合、lease盗取後の古いworker終了、dry-run不変。stale/corrupt/planned shutdown既存回帰。
 
 **rollout/rollback**: temp vault/複数processでのみ有効化。新writer journalを旧writerへ誤解釈させず保存。切戻し前にdrain、未完了transitionを現在laneと照合して個別解決。
 
@@ -70,7 +70,7 @@
 
 **対象path**: arch I1 library、`docker/codex-workspace/task-board/task_board_runner.bb`、helper `docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb`、`tests/codex-workspace/task-board-runner-test.sh`。新規 `docker/codex-workspace/task-board/approval_verifier.bb` と `tests/codex-workspace/fixtures/autonomy/approval/`。owner専用承認サービス/storeはI6でAPI・署名・権限分離契約とmockを設計検証し、配置/credentialはI7の別repo/別PR。vault `Projects/codex-task-board-runner/spec.md` は承認対象diffとして別途提示。
 
-**test**: 以下はtemp vault・mock API/store・synthetic identity/署名による契約testであり、実環境の権限分離証明はI7で行う。同blocker3回をdigest一件、restart後dedupe、delivery failure/retry、未回答/期限切れ/head変更でeffect不許可、agentのpacket/status更新・owner名偽装・未検証resolvedを不許可、agent/runner credentialで承認API書込不可、偽署名/未知issuer/誤audience/非owner subject/改変option・scope・packet digest/未来発行/失効/原本取得不能を拒否。正規owner署名の一致eventのみ許可し、並行消費で一回だけ、crash後も再消費不可。decision replay防止、secret sentinelがNotes/PR/通知に出ない、audit連結、packetなしの独立可逆作業は継続。
+**test**: templateの承認store登録/approval event照合を拒否し、issuedでもプレースホルダを拒否。以下はtemp vault・mock API/store・synthetic identity/署名による契約testであり、実環境の権限分離証明はI7で行う。同blocker3回をdigest一件、restart後dedupe、delivery failure/retry、未回答/期限切れ/head変更でeffect不許可、agentのpacket/status更新・owner名偽装・未検証resolvedを不許可、agent/runner credentialで承認API書込不可、偽署名/未知issuer/誤audience/非owner subject/改変option・scope・packet digest/未来発行/失効/原本取得不能を拒否。正規owner署名の一致eventのみ許可し、並行消費で一回だけ、crash後も再消費不可。decision replay防止、secret sentinelがNotes/PR/通知に出ない、audit連結、packetなしの独立可逆作業は継続。
 
 **rollout/rollback**: temp vault Notesとローカルoutboxのみ。external connector通知は許可先決定後の別変更。rollbackはdelivery無効、outboxとauditを保持し既送信を巻き戻さない。
 
@@ -78,11 +78,11 @@
 
 ## I7: 限定配布と移行運用
 
-**成果/AC**: I6の契約を満たす実owner承認サービス/storeを別repo/別PRで実装・配置し、owner認証provider・鍵・allowlistを構成する。配置先と運用責任者をownerが確定するまでI7を完了扱いせず、human-dependent effectを無効に保つ。配布済みroute/image digest/CLIと全writer inventoryを確認。旧owner drain→lease失効→新writerのみactivate。canary有効化前に実環境でowner承認サービス/storeとagent/runnerのcredential・trust境界分離を必須gateとして実証し、安全な結果要約を監査へ保存。未確認/失敗時はhuman-dependent effectを有効化しない。新規canary一件でfault injection/観測後、拡大は別decision。既存ticketはdry-run diffとowner選択後の個別移行のみ。
+**成果/AC**: I6の契約を満たす実owner承認サービス/storeとI3のcontrol API/storeを別repo/別PRで実装・配置し、owner認証provider・鍵・allowlistを構成する。配置先と運用責任者をownerが確定するまでI7を完了扱いせず、human-dependent effectを無効に保つ。配布済みroute/image digest/CLIと全writer inventoryを確認。旧owner drain→lease失効→新writerのみactivate。canary有効化前に実環境でowner承認サービス/storeとagent/runnerのcredential・trust境界分離を必須gateとして実証し、安全な結果要約を監査へ保存。未確認/失敗時はhuman-dependent effectを有効化しない。新規canary一件でfault injection/観測後、拡大は別decision。既存ticketはdry-run diffとowner選択後の個別移行のみ。
 
 **対象path**: arch `docker/codex-workspace/Dockerfile`、`.github/workflows/test-codex-task-board-runner.yml`、`docker/codex-workspace/cron/scheduler.bb`、`docker/codex-workspace/recurring-events/recurring_events.bb`、`docker/codex-workspace/skills/` の関連helper/運用docs。lolice `argoproj/codex-workspace/deployment.yaml` は**別repo/別PR**。vault `Projects/codex-task-board-runner/spec.md` と新規canary ticketはhelperで個別操作。cron/recurring連携の変更は必要性確認後の別PRとし重複pollを避ける。
 
-**test**: image/CLI/route smoke、旧writer排除、新規canaryの安全修正→CI→Review、Blocked条件成立、pause/restart/redaction、global WIP、packet期限、notification dedupe、rollback rehearsal。実際のagent/runner identityで署名鍵読取、承認API発行/更新/削除、承認store書込/削除、trust鍵/owner allowlist変更、ownerセッション取得を試み全件拒否を確認（secret値を出力しない）。正規owner eventの検証成功と、改変/自己申告resolved/原本取得不能の拒否も配置済みverifierで確認。停止ticket0起動、未許可effect0、秘密公開0を必須条件にする。
+**test**: 実agentからcontrol API/storeの書込とowner-only制御変更を拒否、runnerのscope拡大/停止解除/budgetリセット拒否。image/CLI/route smoke、旧writer排除、新規canaryの安全修正→CI→Review、Blocked条件成立、pause/restart/redaction、global WIP、packet期限、notification dedupe、rollback rehearsal。実際のagent/runner identityで署名鍵読取、承認API発行/更新/削除、承認store書込/削除、trust鍵/owner allowlist変更、ownerセッション取得を試み全件拒否を確認（secret値を出力しない）。正規owner eventの検証成功と、改変/自己申告resolved/原本取得不能の拒否も配置済みverifierで確認。停止ticket0起動、未許可effect0、秘密公開0を必須条件にする。
 
 **rollout/rollback**: read-only inventory→shadowの差分検査→ownerが対象とwindowを選択→限定image/Deployment配布→承認経路分離の必須gate確認→canary有効化→観測。失敗時は新規受付停止、v2 pause/checkpoint、journal保存、drain、旧writer復帰前にv2 card起動抑止確認。既存card一括変更は禁止。Argo sync/Deployment rollout/cron有効化は個別decisionが必要。
 
