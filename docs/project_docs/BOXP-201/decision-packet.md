@@ -10,11 +10,12 @@
 
 **rollback**: 限定配布の際に受付停止→canary pause→checkpoint/drain→journal保存→legacy復帰前の起動抑止確認を実施する。詳細は[設計](design.md)。
 
-**レビュー成果**: [計画](plan.md)・[設計とschema例](design.md)・[実装ticket本文案](implementation-tickets.md)。このpacketの許可対象はレビュー対象commitの移行方針だけ。未回答/期限切れは許可を意味せず、次の安全な設計/fixture作業は進められる。本番配布直前に対象head/revision/期限付きpacketを発行する。
+**レビュー成果**: [計画](plan.md)・[設計とschema例](design.md)・[実装ticket本文案](implementation-tickets.md)。このpacketの許可対象はレビュー対象commitの移行方針だけ。未回答/期限切れは許可を意味せず、次の安全な設計/fixture作業は進められる。本番配布直前に対象head/revision/期限付きpacketを発行する。回答は[認証と承認event契約](design.md#回答の認証と承認event)に従うowner専用経路で記録し、packetのstatusやowner名の記載だけでは許可しない。この要約自体は承認eventではない。
 
 **後続でownerが判断する未解決事項**（今すべての回答を求めない）:
 
 - canary対象repo/ticketと実行window。既存ticket移行は個別選択。
 - 初期global WIP=2、per_repo=1、6step/60分、retry最大3回の上限。費用上限は計測後に別途設定。
 - digest 60分・24時間後reminder一度の通知先、監査artifactの保存期限/アクセス権。外部送信は明示許可後。
+- owner認証provider・不変subject登録、署名方式、agent書込不可の承認store/サービス配置。分離の検証前にhuman-dependent effectは有効化しない。
 - 将来の低リスクmerge許可を検討するか。初期policyではmerge/deploy/applyはhuman decisionを維持する。

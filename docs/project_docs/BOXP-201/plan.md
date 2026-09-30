@@ -11,3 +11,8 @@
 成果: [設計](design.md)、[分割ticket案](implementation-tickets.md)、[owner用Decision Packet](decision-packet.md)。
 
 検証: 4文書のローカルリンク/コードフェンス、4件のYAML例のparse、差分レビュー、git diff --check。実装変更なしのためrunner回帰testは今回実行せず、後続ticketに必須testを記載。全体security checkの`trivy config .`はcommand not foundで未実施。要求されたcodex-review/codex-review-fileスキルとterra_worker委譲先が利用できず、直接レビューした。
+
+PR gate再試行: P1「Decision Packetの自己承認防止」を修正。packet statusと承認権限を分離し、owner専用認証経路・署名付き不変event・専用store・現在head/revision/scopeの照合・一回消費を設計へ追加。I6に偽装/未検証resolved/署名不正/認証経路へのagent書込/並行消費の拒否testを追加し、owner packetにも境界を明記する。文書のみで本番承認経路は作成しない。
+
+再検証: リンク/フェンスと5件のYAML例parse（bb clj-yaml）、diff checkを通過。低コストCodex CLI（gpt-5.6-terra）へ独立レビューを委譲し、I7の実環境credential分離gate不足を検出、canary有効化前の必須AC/否定testとして追記した。
+最終独立レビュー: gpt-5.6-terraが `CODEX_REVIEW_RESULT: clean` を返し、既知の自己承認防止とI7の分離gateを確認。

@@ -98,6 +98,36 @@ expires_at: "<発行から7日後UTC>"
 status: pending
 ```
 
+### 回答の認証と承認event
+
+`owner: boxp`は宛先表示、packetの`status`は投影だけであり、いずれも権限を付与しない。agent/runner/helperによるpacket・Notes・frontmatterの編集、`resolved`の記載、owner名の自己申告は承認として受理しない。自由文コメントやPR merge/green CIも承認eventの代用にしない。
+
+I6で、agent実行環境とは別の信頼境界にowner専用承認サービスとappend-only承認storeを置く。ownerが認証済みセッションで対象packetの内容・option・head/revisionを確認し選択する。サービスは認証providerの不変subject IDを取得し、owner allowlistと照合して署名eventを発行する。表示名からactorを決めない。runner/agentのcredentialは発行・更新・削除APIを呼べず、署名鍵・store書込権限・ownerセッションを持たない。vault内コピーは表示用で、承認の原本ではない。分離を実証できるまではhuman-dependent effectを実装・有効化しない。
+
+承認event最小例（synthetic、実際の許可ではない）:
+
+```yaml
+schema_version: 1
+event_id: approval-example-1
+decision_id: BOXP-201/D1
+option_id: new-only
+actor_subject: "<認証providerのowner subject ID>"
+issuer: owner-approval-service
+issued_at: "<認証回答のUTC timestamp>"
+expires_at: "<packet期限以下のUTC timestamp>"
+artifact_head: "<review対象commit>"
+control_revision: 1
+packet_digest: "<question/options/impact/rollback/scopeを含むcanonical digest>"
+scope_hash: "<許可対象scope hash>"
+operation: select-migration-policy
+audience: task-board-authorization-v1
+signature: "<サービス署名。秘密鍵は専用store外へ出さない>"
+```
+
+runnerは専用storeから原本をread-only取得し、配布済みtrust設定でissuer/署名/audience/認証actorのowner権限を検証する。trust鍵/owner allowlistはvaultやagentが変更できない。event ID・decision ID・option ID・packet digest・head・revision・scope・operationが現在の要求と一致し、発行時刻/期限が有効で、失効・supersede・既消費でない場合だけ当該stepへ限定許可する。依存サービス停止、署名不正、actor不明、検証不能はfail closed。高リスクeffectは資源lock内で再検証し、event IDの一回消費を永続journalへCASで予約してから実行eventに連結する。実行途中crashは消費を戻して再実行せず、既存の効果確認手順へ進む。単なる方針選択eventはmerge/deploy許可にならない。
+
+監査原本には署名付き承認eventと消費/失効eventを不変保存する。Notes/PRには検証済みevent ID・decision ID・安全な結果要約だけを投影し、認証session/token・秘密鍵・raw認証logを保存しない。署名方式、provider、storeとowner subject登録手順はI6のowner判断、配置とcredential分離はI7の別PRで確認する。
+
 ownerが未回答でも、同scopeの可逆編集/検証は続行可能。高リスクのdependent stepは止める。独立作業を止めるpacketを乱発しない。実際のowner向け要約は[decision-packet.md](decision-packet.md)。
 
 ## Blocked retry contract
