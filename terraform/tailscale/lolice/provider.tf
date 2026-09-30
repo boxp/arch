@@ -1,5 +1,8 @@
 provider "tailscale" {
-  # api_key and tailnet pulled from $TAILSCALE_API_KEY and $TAILSCALE_TAILNET
+  # Authentication is supplied by the execution environment.
+  # WIF candidate: TAILSCALE_OAUTH_CLIENT_ID + TAILSCALE_AUDIENCE (v0.29.2
+  # discovers GitHub OIDC). Do not supply TAILSCALE_API_KEY at the same time.
+  # Legacy tfaction jobs retain API-key authentication until verified cutover.
 }
 
 provider "aws" {
