@@ -2000,7 +2000,9 @@ test_groom_prompt_includes_append_note() {
 }
 
 test_assignee_model_routing() {
-  bb "${RUNNER}" test
+  CODEX_TASK_BOARD_AUTONOMY_V2=false bb "${RUNNER}" test
+  # I1 deliberately has no activation switch, even with a requested opt-in.
+  CODEX_TASK_BOARD_AUTONOMY_V2=true bb "${RUNNER}" test >/dev/null
 }
 
 test_assignee_model_tick_routing() {

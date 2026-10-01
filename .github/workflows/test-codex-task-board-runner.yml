@@ -46,3 +46,4 @@ jobs:
           sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
       - run: tests/codex-workspace/task-board-runner-test.sh
       - run: tests/codex-workspace/recurring-events-test.sh
+      - run: bb tests/codex-workspace/autonomy-policy-test.bb
