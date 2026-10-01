@@ -39,10 +39,20 @@ for workflow in "$@"; do
 
   # 照会に失敗したら「未実行なし」と誤認しないよう、ここで異常終了させる。
   # status=completed を API に渡すと古い run だけが返ったことがあるため、完了の絞り込みは jq で行う。
-  runs="$(
-    gh api "repos/${REPO}/actions/workflows/${workflow}/runs?per_page=${LIMIT}" \
-      --jq '.workflow_runs[] | select(.status == "completed") | [.id, .created_at, .conclusion, .head_sha, .html_url] | @tsv'
-  )"
+  # 実行中の run を除くと LIMIT 件に足りないことがあるので、足りるまで次のページを読む。
+  runs=""
+  page=1
+  while :; do
+    page_runs="$(
+      gh api "repos/${REPO}/actions/workflows/${workflow}/runs?per_page=100&page=${page}" \
+        --jq '.workflow_runs[] | [.status, .id, .created_at, .conclusion, .head_sha, .html_url] | @tsv'
+    )"
+    [ -n "$page_runs" ] || break
+    runs+="$(awk -F'\t' -v OFS='\t' '$1 == "completed" { print $2, $3, $4, $5, $6 }' <<< "$page_runs")"$'\n'
+    [ "$(awk 'NF { c++ } END { print c + 0 }' <<< "$runs")" -lt "$LIMIT" ] || break
+    page=$((page + 1))
+  done
+  runs="$(awk -v n="$LIMIT" 'NF && c < n { print; c++ }' <<< "$runs")"
 
   while IFS=$'\t' read -r id created conclusion sha url; do
     [ -n "$id" ] || continue
