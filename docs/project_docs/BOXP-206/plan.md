@@ -49,6 +49,7 @@ lolice clusterのTailscale Operatorを、OAuth client secretからWorkload Ident
 - JWKSに含まれるのは公開鍵と鍵IDで、秘密鍵（`sa.key`）は含まれない。公開ファイルは `kubectl get --raw /openid/v1/jwks` の出力から作り、control planeの鍵ファイルを直接読まない。
 - 静的ホストは既存の慣例（`terraform/cloudflare/b0xp.io/` 配下、またはAWS）に合わせてTerraformで管理する。配信方式はホスト名と合わせてownerが決める。
 - `--service-account-jwks-uri` を公開JWKSのURLに設定し、apiserverが返すdiscovery文書と公開文書を一致させる。
+- 2 pathの応答には明示的な `Cache-Control` を付け、Terraformで管理する。値は `public, max-age=300` を上限とし、CDNのedge cacheも同じ5分以内にする（CDNの既定TTLに任せない）。配信方式がこの指定をできない場合は、その方式を採らない。この値を「公開側の最大キャッシュTTL」と呼び、鍵rotationの待機時間の基準にする。
 
 ### 鍵rotationへの追従
 
@@ -56,11 +57,13 @@ lolice clusterのTailscale Operatorを、OAuth client secretからWorkload Ident
 - 公開JWKSが古いと、WIFのtoken exchangeだけが失敗する。クラスタ内の認証には影響しない。
 - 鍵をrotationするときは、旧鍵と新鍵の両方を検証できる期間を挟む。旧鍵をすぐ外すと、旧鍵で署名済みのtokenがクラスタ内の認証でもWIFのtoken exchangeでも拒否される。次の順序で行い、BOXP-200 runbookへ追記する。
   1. 新しい鍵ペアを作る。全control planeのkube-apiserverで `--service-account-key-file` を旧公開鍵と新公開鍵の2つにする（1台ずつ）。署名鍵（`--service-account-signing-key-file`）はまだ旧鍵のままにする。
-  2. 公開JWKSを旧公開鍵と新公開鍵の両方を含む内容に更新する。クラスタのJWKS（`kubectl get --raw /openid/v1/jwks`）と鍵IDの集合が一致することを確認する。
-  3. 全control planeで署名鍵を新鍵へ切り替える（1台ずつ。kube-controller-managerの `--service-account-private-key-file` も同じ鍵にする）。手順1と2が全台・公開側で終わる前に切り替えない。
-  4. 旧鍵で署名されたtokenが全て失効するまで、旧公開鍵をapiserverの `--service-account-key-file` と公開JWKSの両方に残す。projected tokenは既定で約1時間で更新されるが、延長有効期限（`--service-account-extend-token-expiration`、最長1年）を持つtokenと、期限の無いlegacyのSecret型tokenがある。旧鍵のtokenを使うworkloadが無いこと（Podの再作成、legacy tokenの再発行）を確認してから次へ進む。
-  5. 旧公開鍵をapiserverから外し（1台ずつ）、その後に公開JWKSからも外す。
-- 公開JWKSは、apiserverが検証に使う公開鍵の集合と常に同じか、それより広い状態を保つ。鍵を足すときは公開側が先、外すときは公開側が後になる。
+  2. 公開JWKSを旧公開鍵と新公開鍵の両方を含む内容に更新する。クラスタのJWKS（`kubectl get --raw /openid/v1/jwks`）と鍵IDの集合が一致することを確認する。CDNにcache purgeがあれば、更新直後に2 pathをpurgeする。
+  3. 新鍵が利用者へ伝わるまで待つ。待機時間は、公開側の最大キャッシュTTL（5分）に、Tailscale側がJWKSを保持する時間を足したものとする。Tailscale側の保持時間は未確認なので、確認できるまでは手順2の完了から24時間待つ。待機後、クラスタ外から公開JWKSを取得し、新鍵の鍵IDが含まれること、応答の `Cache-Control` が仕様の値であること、`Age` がmax-ageを超えていないことを確認する。
+  4. 全control planeで署名鍵を新鍵へ切り替える（1台ずつ。kube-controller-managerの `--service-account-private-key-file` も同じ鍵にする）。手順1〜3が全台・公開側で終わる前に切り替えない。
+  5. 切替後、Operator Podを再起動し、新鍵で署名されたtokenでWIFのtoken exchangeが成功すること（ログに認証エラーが無く、reconcileが進むこと）を確認する。失敗する場合は署名鍵を旧鍵へ戻す。旧公開鍵はapiserverと公開JWKSの両方に残っているので、戻すだけで復旧する。原因（公開JWKSの内容、cache、Tailscale側の保持）を解消してから手順3へ戻る。
+  6. 旧鍵で署名されたtokenが全て失効するまで、旧公開鍵をapiserverの `--service-account-key-file` と公開JWKSの両方に残す。projected tokenは既定で約1時間で更新されるが、延長有効期限（`--service-account-extend-token-expiration`、最長1年）を持つtokenと、期限の無いlegacyのSecret型tokenがある。旧鍵のtokenを使うworkloadが無いこと（Podの再作成、legacy tokenの再発行）を確認してから次へ進む。
+  7. 旧公開鍵をapiserverから外し（1台ずつ）、その後に公開JWKSからも外す。
+- 公開JWKSは、apiserverが署名に使う鍵を常に含み、apiserverが検証に使う公開鍵の集合と同じか、それより広い状態を保つ。新しい鍵は、署名に使い始める前に公開してcacheの伝播を待つ。鍵を外すときは公開側を後にする。
 - 公開JWKSとクラスタのJWKS（`kubectl get --raw /openid/v1/jwks`）の差分確認を、BOXP-200 runbookの四半期棚卸しへ追加する。
 
 ## issuer変更の影響
@@ -116,6 +119,7 @@ merge後に確認する。
 
 1. 静的ホストをTerraformで作成し、2ファイルを配置する。
 2. クラスタ外から未認証で2 pathが取得でき、他のpathが取得できないことを確認する。公開JWKSの鍵IDがクラスタのJWKSと一致することを確認する。
+3. 2 pathの応答ヘッダーの `Cache-Control` が仕様の値（max-age 300以下）であること、ファイルを更新してから5分以内に新しい内容が返ることを確認する。
 
 この時点ではクラスタに変更は無く、ホストを削除すれば元に戻る。
 
@@ -227,6 +231,7 @@ OAuth clientをrevokeした後（手順6）はOAuth経路へ戻せない。revok
 - 22 minorを飛ばしたOperator更新の可否（公式に記載なし）
 - Connector / ProxyGroup等のCRの有無（調査時の権限では一覧できなかった）
 - 公開issuerのホスト名と配信方式
+- Tailscale側がissuerのJWKSを保持する時間（鍵rotationの待機時間に影響する。確認できるまで24時間待つ）
 
 ## secretの扱い
 
