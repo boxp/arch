@@ -1884,6 +1884,521 @@
                    (some? (candidate-action card (ticket-assignee ticket-id)))))
          vec)))
 
+;; ---------------------------------------------------------------------------
+;; Run workspace pruning (BOXP-209)
+;;
+;; Every run leaves `workspaces/<ticket>/<run-id>/` plus a worktree and a
+;; `codex-task-board/<ticket>-<run-id>` branch in the source repository. Nothing
+;; else removes them, so the loop periodically prunes the run workspaces of
+;; tickets that have been done for longer than the retention period. A run is
+;; only deleted when every checkout in it is clean and all of its local commits
+;; exist on GitHub; anything that cannot be verified is kept and logged.
+;; ---------------------------------------------------------------------------
+
+(def default-workspace-retention-days 3)
+(def default-workspace-prune-interval-seconds 21600)
+(def max-unpushed-commits-per-checkout 200)
+
+(defn parse-prune-enabled [value]
+  (let [v (some-> value str/trim str/lower-case)]
+    (cond
+      (or (nil? v) (= "" v)) {:value true}
+      (contains? #{"1" "true" "yes" "on"} v) {:value true}
+      (contains? #{"0" "false" "no" "off"} v) {:value false}
+      :else {:value true :invalid? true})))
+
+(defn parse-bounded-long [value default minimum]
+  (if (str/blank? value)
+    {:value default}
+    (let [parsed (try
+                   (Long/parseLong (str/trim value))
+                   (catch Exception _ nil))]
+      (if (and parsed (>= parsed minimum))
+        {:value parsed}
+        {:value default :invalid? true}))))
+
+(def warned-prune-settings (atom #{}))
+
+(defn prune-setting [k parse]
+  ;; Unlike CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS, a bad value here must
+  ;; not stop the runner: fall back to the default and warn once per value.
+  (let [raw (System/getenv k)
+        {:keys [value invalid?]} (parse raw)]
+    (when (and invalid? (not (contains? @warned-prune-settings [k raw])))
+      (swap! warned-prune-settings conj [k raw])
+      (log! (str "prune: warning invalid " k "=" (pr-str raw) ", using default " value)))
+    value))
+
+(defn workspace-prune-enabled? []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_PRUNE" parse-prune-enabled))
+
+(defn workspace-retention-days []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_RETENTION_DAYS"
+                 #(parse-bounded-long % default-workspace-retention-days 0)))
+
+(defn workspace-prune-interval-seconds []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_PRUNE_INTERVAL_SECONDS"
+                 #(parse-bounded-long % default-workspace-prune-interval-seconds 1)))
+
+(defn workspaces-dir []
+  (fs/path (root) "workspaces"))
+
+(def run-id-timestamp-formatter
+  (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss'Z'"))
+
+(defn run-id-instant [run-id]
+  ;; Runs created before unique-run-id have no UUID suffix.
+  (when-let [[_ timestamp] (re-matches #"^(\d{8}T\d{6}Z)(?:-.+)?$" (str run-id))]
+    (try
+      (.toInstant (java.time.LocalDateTime/parse timestamp run-id-timestamp-formatter)
+                  java.time.ZoneOffset/UTC)
+      (catch Exception _ nil))))
+
+(defn parse-closed-date [value]
+  (try
+    (java.time.LocalDate/parse (str/replace (str/trim (str value)) #"^[\"']|[\"']$" ""))
+    (catch Exception _ nil)))
+
+(defn prune-ticket-decision
+  "Ticket-level eligibility from frontmatter. `closed` alone is not trusted:
+  reopened tickets keep a stale `closed`, so it only counts with status done."
+  [frontmatter today-date retention-days]
+  (let [status (some-> (:status frontmatter) str/trim)
+        closed (parse-closed-date (:closed frontmatter))]
+    (cond
+      (nil? frontmatter) {:eligible? false :reason "ticket-missing"}
+      (not= "done" status) {:eligible? false :reason "not-done"}
+      (nil? closed) {:eligible? false :reason "closed-missing"}
+      (.isAfter closed (.minusDays today-date retention-days))
+      {:eligible? false :reason "within-retention"}
+      :else {:eligible? true})))
+
+(defn prune-run-decision
+  "Run-level eligibility. The run-id timestamp keeps the grace period for a
+  ticket that was reopened and finished again while `closed` stayed old."
+  [run-id now-instant retention-days]
+  (let [started (run-id-instant run-id)]
+    (cond
+      (nil? started) {:eligible? false :reason "run-id-timestamp-unparseable"}
+      (.isAfter started (.minus now-instant (java.time.Duration/ofDays retention-days)))
+      {:eligible? false :reason "within-retention"}
+      :else {:eligible? true})))
+
+(defn github-repo-from-remote-url [url]
+  (when-let [[_ owner repo]
+             (re-find #"^(?:(?:https?|ssh|git)://(?:[^@/\s]+@)?|[^@/\s]+@)github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+                      (str/trim (str url)))]
+    (str owner "/" repo)))
+
+(defn command-result
+  "Runs a command without throwing. Timeouts and spawn failures are reported
+  as a non-zero exit so callers treat them as `could not verify`."
+  ([args] (command-result args {}))
+  ([args {:keys [timeout-seconds] :or {timeout-seconds 120}}]
+   (try
+     (let [proc (p/process args {:out :string
+                                 :err :string
+                                 :extra-env {"GIT_OPTIONAL_LOCKS" "0"}})
+           result (deref proc (* 1000 timeout-seconds) ::timeout)]
+       (if (= ::timeout result)
+         (do
+           (p/destroy-tree proc)
+           {:exit -1 :out "" :err (str "timed out after " timeout-seconds "s")})
+         {:exit (:exit result) :out (or (:out result) "") :err (or (:err result) "")}))
+     (catch Exception e
+       {:exit -1 :out "" :err (str (.getMessage e))}))))
+
+(defn one-line [text]
+  ;; Keeps every prune log entry on a single line.
+  (str/trim (str/replace (str text) #"\s+" " ")))
+
+(defn github-commit-status
+  "Returns :exists, :missing or :unknown. Local remote-tracking refs are often
+  stale, so GitHub is asked directly; results are cached for one prune pass."
+  [cache repo sha]
+  (let [k [repo sha]]
+    (or (get @cache k)
+        (let [{:keys [exit out err]} (command-result
+                                      ["gh" "api" (str "repos/" repo "/commits/" sha) "--jq" ".sha"]
+                                      {:timeout-seconds 60})
+              status (cond
+                       (and (zero? exit) (= sha (str/trim out))) :exists
+                       (re-find #"HTTP (404|422)" (str err out)) :missing
+                       :else :unknown)]
+          (swap! cache assoc k status)
+          status))))
+
+(defn find-checkouts
+  "Directories under `dir` that contain `.git` (file or directory), deepest
+  first. Symlinks are not followed and `.git` itself is not descended into,
+  but the rest of a checkout is: a clone nested inside another checkout (for
+  example one the parent gitignores) is invisible to the parent's
+  `git status` and has to be inspected on its own."
+  [dir]
+  (let [found (volatile! [])]
+    (letfn [(git-entry? [entry] (= ".git" (fs/file-name entry)))
+            (visit [current]
+              (let [entries (fs/list-dir current)]
+                (when (some git-entry? entries)
+                  (vswap! found conj current))
+                ;; Keep walking below a checkout; only `.git` is skipped.
+                (doseq [entry entries
+                        :when (and (not (git-entry? entry))
+                                   (fs/directory? entry {:nofollow-links true}))]
+                  (visit entry))))]
+      (visit dir))
+    ;; Deepest first so a nested worktree is detached before its parent goes.
+    (vec (sort-by (fn [path] [(- (count (seq (fs/path path)))) (str path)]) @found))))
+
+(defn inspect-checkout
+  "Returns {:hold reason} when the checkout must be kept, otherwise its repo
+  and, for a worktree of a repository outside the run, :external-common-dir."
+  [run-real checkout gh-cache]
+  (let [git (fn [& args] (command-result (into ["git" "-C" (str checkout)] args)))
+        toplevel (git "rev-parse" "--show-toplevel")
+        git-dir (git-path checkout "--git-dir")
+        common-dir (git-path checkout "--git-common-dir")]
+    (cond
+      (or (not (zero? (:exit toplevel))) (nil? git-dir) (nil? common-dir))
+      {:hold "git-error"}
+
+      (not= (fs/real-path (str/trim (:out toplevel))) (fs/real-path checkout))
+      {:hold "git-toplevel-mismatch"}
+
+      :else
+      (let [git-dir (fs/real-path git-dir)
+            common-dir (fs/real-path common-dir)
+            linked? (not= git-dir common-dir)
+            ;; A clone whose git dir lives in the run loses every local ref
+            ;; and reflog when the run is deleted, so all of them count. A
+            ;; worktree only loses its own HEAD and that HEAD's reflog.
+            owned-clone? (and (not linked?) (fs/starts-with? git-dir run-real))
+            status (git "status" "--porcelain")
+            origin (git "remote" "get-url" "origin")
+            repo (when (zero? (:exit origin))
+                   (github-repo-from-remote-url (:out origin)))
+            stash (when owned-clone?
+                    (git "rev-parse" "--verify" "--quiet" "refs/stash"))
+            ;; Commits dropped by reset, amend or rebase stay recoverable
+            ;; through the reflog until the run is deleted.
+            reflog (apply git "log" "-g" "--format=%H" (if owned-clone? ["--all"] ["HEAD"]))
+            reflog-shas (distinct (remove str/blank? (str/split-lines (:out reflog))))
+            rev-list (apply git "rev-list"
+                            (str "--max-count=" (inc max-unpushed-commits-per-checkout))
+                            (concat ["HEAD"]
+                                    (if owned-clone? ["--all" "--reflog"] reflog-shas)
+                                    ["--not" "--remotes"]))
+            ;; Remote-tracking refs can be stale or belong to another remote,
+            ;; so they are no proof by themselves: the tips are always checked
+            ;; on GitHub, which also covers every ancestor.
+            tips (apply git "rev-parse" "HEAD"
+                        (when owned-clone? ["--branches"]))
+            shas (distinct (remove str/blank? (concat (str/split-lines (:out tips))
+                                                      reflog-shas
+                                                      (str/split-lines (:out rev-list)))))]
+        (cond
+          (not (zero? (:exit status))) {:hold "git-error"}
+          (not (str/blank? (:out status))) {:hold "uncommitted-changes"}
+          (nil? repo) {:hold "origin-not-github"}
+          (and stash (zero? (:exit stash))) {:hold "stash-present"}
+          (some #(not (zero? (:exit %))) [tips reflog rev-list]) {:hold "git-error"}
+          (> (count shas) max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
+          :else
+          (or (some (fn [sha]
+                      (case (github-commit-status gh-cache repo sha)
+                        :exists nil
+                        :missing {:hold (str "commit-not-on-github sha=" sha)}
+                        {:hold (str "github-check-failed sha=" sha)}))
+                    shas)
+              {:repo repo
+               :external-common-dir (when (and linked?
+                                               (not (fs/starts-with? common-dir run-real)))
+                                      (str common-dir))}))))))
+
+(defn safe-run-workspace-path?
+  "True only when `run-path` really is <root>/workspaces/<ticket>/<run-id>."
+  [ticket-id run-id run-path]
+  (and (fs/directory? run-path {:nofollow-links true})
+       (= (fs/real-path run-path)
+          (fs/path (fs/real-path (workspaces-dir)) ticket-id run-id))))
+
+(defn prune-run-branch!
+  "Deletes the run's own branch from the source repository only when its tip
+  and every commit in its reflog (which goes away with the branch) are on
+  GitHub. Branches with any other name are never touched."
+  [{:keys [dry-run? gh-cache stats]} common-dir repo branch]
+  (let [git (fn [& args] (command-result (into ["git" "--git-dir" common-dir] args)))
+        ref (str "refs/heads/" branch)
+        tip (git "rev-parse" "--verify" "--quiet" ref)
+        sha (str/trim (:out tip))
+        on-github? (fn [sha] (= :exists (github-commit-status gh-cache repo sha)))
+        keep! (fn [reason] (log! (str "prune: keep-branch " common-dir " " branch " reason=" reason)))]
+    (when (and (zero? (:exit tip)) (not (str/blank? sha)))
+      (if-let [reason (if-not (on-github? sha)
+                        (str "tip-not-on-github sha=" sha)
+                        (let [reflog (git "log" "-g" "--format=%H" ref)
+                              reflog-shas (distinct (remove str/blank? (str/split-lines (:out reflog))))]
+                          (cond
+                            (not (zero? (:exit reflog))) "git-error"
+                            (> (count reflog-shas) max-unpushed-commits-per-checkout) "too-many-reflog-commits"
+                            :else (some #(when-not (on-github? %)
+                                           (str "reflog-commit-not-on-github sha=" %))
+                                        reflog-shas))))]
+        (keep! reason)
+        (if dry-run?
+          (do
+            (swap! stats update :branches inc)
+            (log! (str "prune: delete-branch " common-dir " " branch " (dry-run)")))
+          (let [deleted (git "branch" "-D" branch)]
+            (if (zero? (:exit deleted))
+              (do
+                (swap! stats update :branches inc)
+                (log! (str "prune: delete-branch " common-dir " " branch)))
+              (keep! (str "branch-delete-failed " (one-line (:err deleted)))))))))))
+
+(defn delete-run-workspace!
+  "Returns nil on success or a hold reason when the run could not be removed."
+  [{:keys [affected-repos]} run-path checkouts]
+  (or (some (fn [{:keys [path external-common-dir]}]
+              (when external-common-dir
+                (swap! affected-repos conj external-common-dir)
+                (let [removed (command-result
+                               ["git" "--git-dir" external-common-dir
+                                "worktree" "remove" "--force" (str path)]
+                               {:timeout-seconds 600})]
+                  (when-not (zero? (:exit removed))
+                    (str "worktree-remove-failed checkout=" path " " (one-line (:err removed)))))))
+            checkouts)
+      (try
+        (fs/delete-tree run-path)
+        nil
+        (catch Exception e
+          (str "delete-failed " (one-line (.getMessage e)))))))
+
+(defn ticket-frontmatter-or-nil [ticket-id]
+  ;; `ticket-frontmatter` exits the process on a missing file; pruning also
+  ;; visits workspace directories whose ticket no longer exists.
+  (let [path (ticket-path ticket-id)]
+    (when (fs/exists? path)
+      (try
+        (frontmatter-map (vec (str/split-lines (slurp (str path)))))
+        (catch Exception _ nil)))))
+
+(defn board-card-lanes
+  "Headings of the lanes holding the ticket's cards (empty when it has no
+  card), or nil when the board cannot be read. Unlike parse-board-cards this
+  also sees lanes the runner does not manage, such as Draft."
+  [ticket-id]
+  (try
+    (let [path (board-path)]
+      (when (fs/exists? path)
+        ;; board-mutex keeps a half-written board from this JVM out of the read.
+        (let [lines (locking board-mutex
+                      (str/split-lines (slurp (str path))))]
+          (:lanes (reduce (fn [{:keys [lane] :as acc} line]
+                            (if-let [[_ heading] (re-matches #"##\s+(.*?)\s*" line)]
+                              (assoc acc :lane heading)
+                              (cond-> acc
+                                (and (card-line? line) (= ticket-id (ticket-id-from-card line)))
+                                (update :lanes conj lane))))
+                          {:lane nil :lanes []}
+                          lines)))))
+    (catch Exception _ nil)))
+
+(defn prune-ticket-status [{:keys [today-date retention-days]} ticket-id]
+  (let [card-lanes (board-card-lanes ticket-id)]
+    (cond
+      (fs/exists? (lock-path ticket-id)) {:eligible? false :reason "locked"}
+      (nil? card-lanes) {:eligible? false :reason "board-unreadable"}
+      ;; The board lane is the source of truth and frontmatter only follows at
+      ;; the next sync, so a card moved out of Done wins over `status: done`.
+      ;; Tickets without a card are judged by frontmatter alone.
+      (some #(not= "Done" %) card-lanes) {:eligible? false :reason "not-done"}
+      :else (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id) today-date retention-days))))
+
+(defn prune-run-under-guard!
+  "Must run inside with-ticket-lock-guard so no run of the ticket can start
+  between the lock check and the deletion. Returns {:result ...}."
+  [{:keys [dry-run? now-instant retention-days gh-cache planned] :as ctx} ticket-id run-id]
+  (let [run-path (run-workspace-dir ticket-id run-id)
+        ticket (prune-ticket-status ctx ticket-id)
+        run (prune-run-decision run-id now-instant retention-days)
+        hold (fn [reason] {:result :held :reason reason})]
+    (cond
+      (not (fs/exists? run-path {:nofollow-links true})) {:result :gone}
+      (not (:eligible? ticket)) {:result :ticket-skipped :reason (:reason ticket)}
+      (= "within-retention" (:reason run)) {:result :recent}
+      (not (:eligible? run)) (hold (:reason run))
+      (not (safe-run-workspace-path? ticket-id run-id run-path)) (hold "unsafe-path")
+      :else
+      (let [run-real (fs/real-path run-path)
+            checkouts (mapv (fn [checkout]
+                              (assoc (inspect-checkout run-real checkout gh-cache) :path checkout))
+                            (find-checkouts run-path))
+            held (first (filter :hold checkouts))
+            branch (ticket-worktree-branch ticket-id run-id)
+            branch-repos (distinct (keep (fn [{:keys [external-common-dir repo]}]
+                                           (when external-common-dir
+                                             [external-common-dir repo]))
+                                         checkouts))
+            ;; Inspection can take a while (GitHub lookups); look once more
+            ;; for a reopened ticket right before anything is removed.
+            recheck (delay (prune-ticket-status ctx ticket-id))]
+        (cond
+          held
+          (hold (str (:hold held) " checkout=" (fs/relativize run-path (:path held))))
+
+          dry-run?
+          (do
+            (swap! planned conj (str run-path))
+            (log! (str "prune: delete " run-path " (dry-run)"))
+            (doseq [[common-dir repo] branch-repos]
+              (prune-run-branch! ctx common-dir repo branch))
+            {:result :deleted})
+
+          (not (:eligible? @recheck))
+          {:result :ticket-skipped :reason (:reason @recheck)}
+
+          :else
+          (if-let [reason (delete-run-workspace! ctx run-path checkouts)]
+            (hold reason)
+            (do
+              (log! (str "prune: delete " run-path))
+              (doseq [[common-dir repo] branch-repos]
+                (prune-run-branch! ctx common-dir repo branch))
+              {:result :deleted})))))))
+
+(defn child-directories [dir]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter #(fs/directory? % {:nofollow-links true}))
+         (sort-by str)
+         vec)
+    []))
+
+(defn prune-ticket-workspaces! [{:keys [stats stop?] :as ctx} ticket-id]
+  (let [skip-ticket! (fn [reason]
+                       (swap! stats update-in [:skipped reason] (fnil inc 0)))
+        pre (prune-ticket-status ctx ticket-id)
+        run-ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))]
+    (cond
+      (empty? run-ids) nil
+      (not (:eligible? pre)) (skip-ticket! (:reason pre))
+      :else
+      (loop [[run-id & more] run-ids]
+        (when (and run-id (not (stop?)))
+          (let [run-path (run-workspace-dir ticket-id run-id)
+                {:keys [result reason]}
+                (try
+                  (with-ticket-lock-guard
+                   ticket-id
+                   #(prune-run-under-guard! ctx ticket-id run-id))
+                  (catch Exception e
+                    {:result :held :reason (str "error " (one-line (.getMessage e)))}))]
+            (case result
+              :deleted (swap! stats update :deleted inc)
+              :recent (swap! stats update :recent inc)
+              :held (do
+                      (swap! stats update :held inc)
+                      (log! (str "prune: hold " run-path " reason=" reason)))
+              :ticket-skipped (skip-ticket! reason)
+              nil)
+            (when-not (= :ticket-skipped result)
+              (recur more))))))))
+
+(defn prune-empty-ticket-dir!
+  "Removes workspaces/<ticket>/ once no run is left, whatever the ticket status.
+  The delete is non-recursive, so a directory that is not empty is never touched."
+  [{:keys [dry-run? planned stats]} ticket-dir]
+  (let [ticket-id (fs/file-name ticket-dir)]
+    (with-ticket-lock-guard
+     ticket-id
+     (fn []
+       (when (and (fs/directory? ticket-dir {:nofollow-links true})
+                  (not (fs/exists? (lock-path ticket-id))))
+         (let [entries (fs/list-dir ticket-dir)]
+           (cond
+             (and dry-run? (every? #(contains? @planned (str %)) entries))
+             (do
+               (swap! stats update :empty-dirs inc)
+               (log! (str "prune: delete-empty " ticket-dir " (dry-run)")))
+
+             (and (not dry-run?) (empty? entries))
+             (do
+               (fs/delete ticket-dir)
+               (swap! stats update :empty-dirs inc)
+               (log! (str "prune: delete-empty " ticket-dir))))))))))
+
+(defn prune-workspaces!
+  ([] (prune-workspaces! {}))
+  ([{:keys [dry-run? stop?] :or {dry-run? false stop? (constantly false)}}]
+   (let [retention-days (workspace-retention-days)
+         ctx {:dry-run? dry-run?
+              :stop? stop?
+              :retention-days retention-days
+              :today-date (java.time.LocalDate/now java.time.ZoneOffset/UTC)
+              :now-instant (now)
+              :gh-cache (atom {})
+              :affected-repos (atom #{})
+              :planned (atom #{})
+              :stats (atom {:deleted 0 :held 0 :recent 0 :branches 0 :empty-dirs 0 :skipped {}})}
+         guarded (fn [label path f]
+                   (try
+                     (f)
+                     (catch Exception e
+                       (log! (str "prune: error " label " " path " " (one-line (.getMessage e)))))))]
+     (log! (str "prune: start retention-days=" retention-days " dry-run=" dry-run?))
+     (doseq [ticket-dir (child-directories (workspaces-dir))
+             :when (not (stop?))]
+       (guarded "ticket" ticket-dir
+                #(prune-ticket-workspaces! ctx (fs/file-name ticket-dir))))
+     (doseq [ticket-dir (child-directories (workspaces-dir))
+             :when (not (stop?))]
+       (guarded "empty-dir" ticket-dir
+                #(prune-empty-ticket-dir! ctx ticket-dir)))
+     (doseq [common-dir (sort @(:affected-repos ctx))]
+       (let [pruned (command-result ["git" "--git-dir" common-dir "worktree" "prune"])]
+         (when-not (zero? (:exit pruned))
+           (log! (str "prune: error worktree-prune " common-dir " " (one-line (:err pruned)))))))
+     (when (stop?)
+       (log! "prune: stopped early because the runner is draining"))
+     (let [{:keys [deleted held recent branches empty-dirs skipped]} @(:stats ctx)]
+       (log! (str "prune: summary deleted=" deleted
+                  " held=" held
+                  " skipped=" (reduce + 0 (vals skipped))
+                  " recent-runs=" recent
+                  " branches=" branches
+                  " empty-dirs=" empty-dirs
+                  " dry-run=" dry-run?
+                  (when (seq skipped)
+                    (str " skipped-detail="
+                         (str/join "," (map (fn [[reason n]] (str reason ":" n))
+                                            (sort-by key skipped)))))))
+       @(:stats ctx)))))
+
+;; Background prune started by `loop!`. The last start time lives only in this
+;; JVM: state.edn is shared with pr-gate-retries and is not written atomically,
+;; and one extra idempotent pass after a pod restart is harmless.
+(def workspace-prune-run (atom {:future nil :last-started-nanos nil}))
+
+(defn workspace-prune-due? [{:keys [future last-started-nanos]} now-nanos interval-seconds]
+  (and (or (nil? future) (realized? future))
+       (or (nil? last-started-nanos)
+           (>= (- now-nanos last-started-nanos) (* interval-seconds 1000000000)))))
+
+(defn maybe-start-workspace-prune! []
+  (when (and (workspace-prune-enabled?)
+             (workspace-prune-due? @workspace-prune-run (System/nanoTime)
+                                   (workspace-prune-interval-seconds))
+             (not (draining?)))
+    (reset! workspace-prune-run
+            {:last-started-nanos (System/nanoTime)
+             :future (future
+                       (try
+                         (prune-workspaces! {:stop? draining?})
+                         (catch Throwable t
+                           (log! (str "prune: failed: " (.getMessage t))))))})))
+
 ;; Map of ticket-id -> future for currently running process-card! calls.
 ;; Persists across tick! invocations so the loop can detect new candidates
 ;; without blocking on already-running tickets.
@@ -1945,17 +2460,27 @@
   (activate-owner!)
   (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)
              ", owner=" (owner-id) ", instance=" runner-instance-id))
+  (log! (if (workspace-prune-enabled?)
+          (str "workspace prune enabled, retention-days=" (workspace-retention-days)
+               ", interval-seconds=" (workspace-prune-interval-seconds))
+          "workspace prune disabled by CODEX_TASK_BOARD_WORKSPACE_PRUNE"))
   (loop []
     (try
       (tick!)
       (catch Exception e
         (binding [*out* *err*]
           (println (str "task-board tick failed: " (.getMessage e))))))
+    ;; After the tick so the first pass never delays startup; one-shot `tick`
+    ;; does not prune.
+    (try
+      (maybe-start-workspace-prune!)
+      (catch Exception e
+        (log! (str "prune: failed to start: " (.getMessage e)))))
     (Thread/sleep (* 1000 (Long/parseLong (env "CODEX_TASK_BOARD_POLL_SECONDS" "60"))))
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick|loop|sync|prepare-shutdown|recover>")
+  (println "usage: task_board_runner.bb <tick|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -2220,6 +2745,78 @@
             :else
             (println "PASS: mutex prevented concurrent write race; both frontmatter and note preserved")))))
 
+    ;; Test: workspace prune eligibility, settings and scheduling (pure functions)
+    (let [today-date (java.time.LocalDate/parse "2026-10-01")
+          now-instant (java.time.Instant/parse "2026-10-01T12:00:00Z")
+          cases [["prune: missing ticket is not eligible"
+                  (prune-ticket-decision nil today-date 3)
+                  {:eligible? false :reason "ticket-missing"}]
+                 ["prune: done ticket closed exactly retention days ago is eligible"
+                  (prune-ticket-decision {:status "done" :closed "2026-09-28"} today-date 3)
+                  {:eligible? true}]
+                 ["prune: done ticket inside retention is not eligible"
+                  (prune-ticket-decision {:status "done" :closed "2026-09-29"} today-date 3)
+                  {:eligible? false :reason "within-retention"}]
+                 ["prune: stale closed on a non-done ticket is not eligible"
+                  (prune-ticket-decision {:status "blocked" :closed "2026-07-15"} today-date 3)
+                  {:eligible? false :reason "not-done"}]
+                 ["prune: done ticket without closed is not eligible"
+                  (prune-ticket-decision {:status "done" :closed ""} today-date 3)
+                  {:eligible? false :reason "closed-missing"}]
+                 ["prune: old run is eligible"
+                  (prune-run-decision "20260928T120000Z-a8f301d6-92b8-4218-b605-b9680d35ff4a" now-instant 3)
+                  {:eligible? true}]
+                 ["prune: run inside retention is not eligible"
+                  (prune-run-decision "20260928T120001Z-a8f301d6-92b8-4218-b605-b9680d35ff4a" now-instant 3)
+                  {:eligible? false :reason "within-retention"}]
+                 ["prune: legacy run id without UUID suffix is eligible"
+                  (prune-run-decision "20260709T124714Z" now-instant 3)
+                  {:eligible? true}]
+                 ["prune: run without timestamp is not eligible"
+                  (prune-run-decision "manual-run" now-instant 3)
+                  {:eligible? false :reason "run-id-timestamp-unparseable"}]
+                 ["prune: ssh origin maps to owner/repo"
+                  (github-repo-from-remote-url "git@github.com:boxp/arch.git\n")
+                  "boxp/arch"]
+                 ["prune: https origin maps to owner/repo"
+                  (github-repo-from-remote-url "https://github.com/boxp/is01-linux")
+                  "boxp/is01-linux"]
+                 ["prune: non-GitHub origin is rejected"
+                  (github-repo-from-remote-url "https://notgithub.com/boxp/arch.git")
+                  nil]
+                 ["prune: local path origin is rejected"
+                  (github-repo-from-remote-url "/tmp/github.com/boxp/arch")
+                  nil]
+                 ["prune: enabled by default" (parse-prune-enabled nil) {:value true}]
+                 ["prune: 0 disables" (parse-prune-enabled "0") {:value false}]
+                 ["prune: invalid enabled flag falls back to default"
+                  (parse-prune-enabled "maybe") {:value true :invalid? true}]
+                 ["prune: retention days parsed" (parse-bounded-long "7" 3 0) {:value 7}]
+                 ["prune: negative retention falls back to default"
+                  (parse-bounded-long "-1" 3 0) {:value 3 :invalid? true}]
+                 ["prune: non-numeric interval falls back to default"
+                  (parse-bounded-long "6h" 21600 1) {:value 21600 :invalid? true}]
+                 ["prune: first pass is due"
+                  (workspace-prune-due? {:future nil :last-started-nanos nil} 0 21600) true]
+                 ["prune: not due before the interval"
+                  (workspace-prune-due? {:future (doto (promise) (deliver :done)) :last-started-nanos 0}
+                                        (* 21599 1000000000) 21600)
+                  false]
+                 ["prune: due after the interval"
+                  (workspace-prune-due? {:future (doto (promise) (deliver :done)) :last-started-nanos 0}
+                                        (* 21600 1000000000) 21600)
+                  true]
+                 ["prune: not due while the previous pass is running"
+                  (workspace-prune-due? {:future (promise) :last-started-nanos 0}
+                                        (* 99999 1000000000) 21600)
+                  false]]]
+      (doseq [[label actual expected] cases]
+        (if (= expected actual)
+          (println (str "PASS: " label))
+          (do
+            (println (str "FAIL: " label " expected=" (pr-str expected) " actual=" (pr-str actual)))
+            (swap! failures conj label)))))
+
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
       (println "All tests passed."))))
@@ -2237,5 +2834,9 @@
   "sync" (do (ensure-root!) (sync-all!))
   "prepare-shutdown" (prepare-shutdown!)
   "recover" (recover-locks!)
+  "prune-workspaces" (let [args (rest *command-line-args*)]
+                       (when-not (contains? #{[] ["--dry-run"]} (vec args))
+                         (usage))
+                       (prune-workspaces! {:dry-run? (= ["--dry-run"] (vec args))}))
   "test" (run-tests!)
   (usage))

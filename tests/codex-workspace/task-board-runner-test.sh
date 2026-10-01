@@ -196,6 +196,19 @@ if [[ "$1 $2" == "pr diff" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9
   exit 0
 fi
 
+if [[ "$1" == "api" && "$2" =~ ^repos/boxp/example/commits/([0-9a-f]{40})$ ]]; then
+  sha="${BASH_REMATCH[1]}"
+  if [[ -n "${GH_FAKE_API_LOG:-}" ]]; then
+    printf '%s\n' "${sha}" >>"${GH_FAKE_API_LOG}"
+  fi
+  if [[ -n "${GH_FAKE_KNOWN_SHAS:-}" ]] && grep -qx "${sha}" "${GH_FAKE_KNOWN_SHAS}"; then
+    printf '%s\n' "${sha}"
+    exit 0
+  fi
+  echo "gh: Not Found (HTTP 404)" >&2
+  exit 1
+fi
+
 echo "unexpected gh invocation: $*" >&2
 exit 1
 EOF
@@ -2278,6 +2291,593 @@ BOARD
     || fail "concurrent board updates lost entries in ${failures}/${rounds} rounds"
 }
 
+prune_git() {
+  git -c user.name=prune-test -c user.email=prune-test@example.com -c commit.gpgsign=false "$@"
+}
+
+make_prune_source_repo() {
+  local source="$1"
+  git init -q -b main "${source}"
+  prune_git -C "${source}" commit -q --allow-empty -m init
+  git -C "${source}" remote add origin https://github.com/boxp/example.git
+  # Pretend the initial commit was fetched from GitHub.
+  git -C "${source}" update-ref refs/remotes/origin/main HEAD
+}
+
+write_prune_ticket() {
+  local vault="$1"
+  local ticket="$2"
+  local status="$3"
+  local closed="$4"
+  write_ticket "${vault}" "${ticket}" "${status}" codex boxp/example
+  sed -i "s/^closed:.*/closed: ${closed}/" "${vault}/Tickets/${ticket}.md"
+}
+
+# Adds a run worktree the same way prepare-repo-worktree! does and prints its path.
+add_prune_run() {
+  local state="$1"
+  local source="$2"
+  local ticket="$3"
+  local run="$4"
+  local checkout="${state}/workspaces/${ticket}/${run}/ghq/github.com/boxp/example"
+  mkdir -p "$(dirname "${checkout}")"
+  git -C "${source}" worktree add -q -b "codex-task-board/${ticket}-${run}" "${checkout}" HEAD
+  printf '%s\n' "${checkout}"
+}
+
+# Commits a file in a checkout and prints the new commit SHA.
+prune_commit() {
+  local checkout="$1"
+  local name="$2"
+  printf '%s\n' "${name}" >"${checkout}/${name}"
+  git -C "${checkout}" add "${name}"
+  prune_git -C "${checkout}" commit -q -m "${name}"
+  git -C "${checkout}" rev-parse HEAD
+}
+
+run_prune() {
+  local vault="$1"
+  local state_root="$2"
+  shift 2
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+  CODEX_TASK_BOARD_ROOT="${state_root}" \
+  bb "${RUNNER}" prune-workspaces "$@"
+}
+
+test_prune_workspaces() {
+  local tmp vault state bin source known out old recent today ws co ticket clone snapshot
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  recent="$(date -u +%Y%m%dT%H%M%SZ)-00000000-0000-0000-0000-000000000000"
+  today="$(date -u +%Y-%m-%d)"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-301/${old}"
+  : >"${known}"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  git -C "${source}" rev-parse HEAD >>"${known}"
+  write_board "${vault}" ""
+
+  # BOXP-301: old done, clean, commit is on GitHub -> run, branch and ticket dir are deleted.
+  # A second checkout (independent clone outside ghq/) and a loose file go with the run.
+  write_prune_ticket "${vault}" BOXP-301 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-301 "${old}")"
+  prune_commit "${co}" pushed >>"${known}"
+  git clone -q "${source}" "${ws}/BOXP-301/${old}/scratch/clone"
+  git -C "${ws}/BOXP-301/${old}/scratch/clone" remote set-url origin git@github.com:boxp/example.git
+  printf 'memo\n' >"${ws}/BOXP-301/${old}/notes.txt"
+  printf '{:status :succeeded}\n' >"${state}/runs/BOXP-301/${old}/summary.edn"
+
+  # BOXP-302: done but closed today -> kept.
+  write_prune_ticket "${vault}" BOXP-302 done "${today}"
+  add_prune_run "${state}" "${source}" BOXP-302 "${old}" >/dev/null
+
+  # BOXP-303: review with a stale closed date -> kept.
+  write_prune_ticket "${vault}" BOXP-303 review 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-303 "${old}" >/dev/null
+
+  # BOXP-304: old done but locked -> kept. The lock is written after the tick
+  # below, which would otherwise recover it as stale.
+  write_prune_ticket "${vault}" BOXP-304 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-304 "${old}" >/dev/null
+
+  # BOXP-305: old done with an untracked file -> held.
+  write_prune_ticket "${vault}" BOXP-305 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-305 "${old}")"
+  printf 'wip\n' >"${co}/untracked.txt"
+
+  # BOXP-306: old done with a commit that is not on GitHub -> held.
+  write_prune_ticket "${vault}" BOXP-306 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-306 "${old}")"
+  prune_commit "${co}" unpushed >/dev/null
+
+  # BOXP-307: old done, HEAD detached at a pushed commit while the run branch
+  # points to a local-only commit the worktree never had checked out -> run
+  # deleted, branch kept.
+  write_prune_ticket "${vault}" BOXP-307 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-307 "${old}")"
+  git -C "${co}" checkout -q --detach
+  git -C "${source}" update-ref "refs/heads/codex-task-board/BOXP-307-${old}" \
+    "$(prune_git -C "${source}" commit-tree -m local-only -p HEAD 'HEAD^{tree}')"
+
+  # BOXP-308: empty directory without a ticket file -> deleted.
+  mkdir -p "${ws}/BOXP-308"
+
+  # BOXP-309: non-empty directory without a ticket file -> kept.
+  add_prune_run "${state}" "${source}" BOXP-309 "${old}" >/dev/null
+
+  # BOXP-310: old closed date but a recent run (reopened ticket) -> kept.
+  write_prune_ticket "${vault}" BOXP-310 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-310 "${recent}" >/dev/null
+
+  # BOXP-311: old done, origin is not GitHub -> held.
+  write_prune_ticket "${vault}" BOXP-311 done 2020-01-01
+  mkdir -p "${ws}/BOXP-311/${old}"
+  git clone -q "${source}" "${ws}/BOXP-311/${old}/clone"
+
+  # BOXP-312: old done, independent clone with a local-only branch other than HEAD -> held.
+  write_prune_ticket "${vault}" BOXP-312 done 2020-01-01
+  mkdir -p "${ws}/BOXP-312/${old}"
+  clone="${ws}/BOXP-312/${old}/clone"
+  git clone -q "${source}" "${clone}"
+  git -C "${clone}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${clone}" checkout -q -b side
+  prune_commit "${clone}" side-only >/dev/null
+  git -C "${clone}" checkout -q main
+
+  # BOXP-315: old done, independent clone with a local-only commit that only a tag points to -> held.
+  write_prune_ticket "${vault}" BOXP-315 done 2020-01-01
+  mkdir -p "${ws}/BOXP-315/${old}"
+  clone="${ws}/BOXP-315/${old}/clone"
+  git clone -q "${source}" "${clone}"
+  git -C "${clone}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${clone}" checkout -q --detach
+  prune_commit "${clone}" tag-only >/dev/null
+  git -C "${clone}" tag local-release
+  git -C "${clone}" checkout -q main
+
+  # BOXP-314: old done, HEAD is covered by a stale remote-tracking ref but the
+  # commit is gone from GitHub -> held. Tracking refs alone are not proof.
+  write_prune_ticket "${vault}" BOXP-314 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-314 "${old}")"
+  git -C "${source}" update-ref refs/remotes/origin/stale "$(prune_commit "${co}" force-pushed-away)"
+
+  # A one-shot tick must not prune.
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >"${tmp}/tick.out"
+  [[ -d "${ws}/BOXP-301/${old}" ]] || fail "one-shot tick must not prune workspaces"
+  assert_file_not_contains "${tmp}/tick.out" 'prune:'
+  printf '{:ticket "BOXP-304"}\n' >"${state}/locks/BOXP-304.edn"
+
+  # Dry run reports the plan and deletes nothing.
+  snapshot="$(cd "${state}" && find workspaces locks runs | sort)"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
+    || fail "prune-workspaces --dry-run failed"
+  [[ "$(cd "${state}" && find workspaces locks runs | sort)" == "${snapshot}" ]] \
+    || fail "dry run must not change workspaces, locks or runs"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-301-${old}" \
+    || fail "dry run must not delete branches"
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-301/${old} \\(dry-run\\)$"
+  assert_file_contains "${out}" "^prune: delete-empty ${ws}/BOXP-301 \\(dry-run\\)$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-305/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-306/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" '^prune: summary deleted=2 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1$'
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_API_LOG="${tmp}/api.log" \
+    run_prune "${vault}" "${state}" >"${out}" || fail "prune-workspaces failed"
+
+  [[ ! -e "${ws}/BOXP-301" ]] || fail "expected old done clean run and its ticket directory to be deleted"
+  if git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-301-${old}"; then
+    fail "expected run branch with a pushed tip to be deleted"
+  fi
+  [[ -d "${ws}/BOXP-302/${old}" ]] || fail "expected done run inside retention to remain"
+  [[ -d "${ws}/BOXP-303/${old}" ]] || fail "expected non-done run to remain"
+  [[ -d "${ws}/BOXP-304/${old}" ]] || fail "expected locked ticket run to remain"
+  [[ -f "${ws}/BOXP-305/${old}/ghq/github.com/boxp/example/untracked.txt" ]] \
+    || fail "expected run with uncommitted changes to remain"
+  [[ -d "${ws}/BOXP-306/${old}" ]] || fail "expected run with a commit missing on GitHub to remain"
+  [[ ! -e "${ws}/BOXP-307" ]] || fail "expected run with pushed HEAD to be deleted"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-307-${old}" \
+    || fail "expected run branch with a local-only tip to remain"
+  [[ ! -e "${ws}/BOXP-308" ]] || fail "expected empty ticket directory to be deleted"
+  [[ -d "${ws}/BOXP-309/${old}" ]] || fail "expected run of a missing ticket to remain"
+  [[ -d "${ws}/BOXP-310/${recent}" ]] || fail "expected recent run of an old done ticket to remain"
+  [[ -d "${ws}/BOXP-311/${old}" ]] || fail "expected run with a non-GitHub origin to remain"
+  [[ -d "${ws}/BOXP-312/${old}" ]] || fail "expected clone with a local-only branch to remain"
+  [[ -d "${ws}/BOXP-315/${old}" ]] || fail "expected clone with a local-only tag to remain"
+  [[ -d "${ws}/BOXP-314/${old}" ]] || fail "expected run whose HEAD is only on a stale tracking ref to remain"
+  for ticket in BOXP-301 BOXP-307; do
+    if git -C "${source}" worktree list --porcelain | grep -q "/workspaces/${ticket}/"; then
+      fail "expected ${ticket} worktree to be unregistered from the source repository"
+    fi
+  done
+  git -C "${source}" worktree list --porcelain | grep -q "/workspaces/BOXP-305/" \
+    || fail "expected held worktree to stay registered"
+  [[ -f "${state}/runs/BOXP-301/${old}/summary.edn" ]] || fail "prune must not touch runs/"
+  [[ -f "${state}/locks/BOXP-304.edn" ]] || fail "prune must not touch locks/"
+  [[ ! -e "${state}/state.edn" ]] || fail "prune must not write state.edn"
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-301/${old}$"
+  assert_file_contains "${out}" "^prune: delete-branch ${source}/.git codex-task-board/BOXP-301-${old}$"
+  assert_file_contains "${out}" "^prune: keep-branch ${source}/.git codex-task-board/BOXP-307-${old} reason=tip-not-on-github "
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-311/${old} reason=origin-not-github checkout=clone$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-312/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=clone$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-314/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" '^prune: summary deleted=2 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=false '
+  # Each SHA is looked up at most once per pass.
+  [[ -z "$(sort "${tmp}/api.log" | uniq -d)" ]] || fail "expected GitHub lookups to be cached per prune pass"
+
+  # A second pass is idempotent and keeps reporting held runs.
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "second prune-workspaces failed"
+  assert_file_contains "${out}" '^prune: summary deleted=0 held=6 skipped=4 recent-runs=1 branches=0 empty-dirs=0 dry-run=false '
+
+  # gh failures (auth, rate limit, network) are not treated as proof either way.
+  write_prune_ticket "${vault}" BOXP-313 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-313 "${old}")"
+  prune_commit "${co}" pushed-313 >>"${known}"
+  cat >"${bin}/gh" <<'EOF'
+#!/usr/bin/env bash
+echo "gh: API rate limit exceeded (HTTP 403)" >&2
+exit 1
+EOF
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces with failing gh failed"
+  [[ -d "${ws}/BOXP-313/${old}" ]] || fail "expected run to remain when gh cannot verify commits"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-313/${old} reason=github-check-failed sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
+}
+
+# Adds `count` empty commits to a checkout.
+prune_empty_commits() {
+  local checkout="$1"
+  local count="$2"
+  local i
+  for ((i = 0; i < count; i++)); do
+    prune_git -C "${checkout}" commit -q --allow-empty -m "empty ${i}"
+  done
+}
+
+test_prune_holds_checkout_over_commit_limit() {
+  local tmp vault state bin source known out old ws co
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  write_board "${vault}" ""
+
+  # The commit the worktree was created at is in the HEAD reflog, so it counts
+  # towards the limit together with the unpushed commits.
+  # BOXP-331: exactly 200 commits to verify, all on GitHub -> deleted.
+  write_prune_ticket "${vault}" BOXP-331 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-331 "${old}")"
+  prune_empty_commits "${co}" 199
+  git -C "${co}" log -g --format=%H HEAD | sort -u >"${known}"
+  [[ "$(wc -l <"${known}")" -eq 200 ]] || fail "expected 200 commits to verify in the fixture"
+
+  # BOXP-332: 201 commits to verify -> held without asking GitHub about any of them.
+  write_prune_ticket "${vault}" BOXP-332 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-332 "${old}")"
+  prune_empty_commits "${co}" 200
+  git -C "${co}" rev-list HEAD --not --remotes >"${tmp}/over-limit-shas"
+  cat "${tmp}/over-limit-shas" >>"${known}"
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_API_LOG="${tmp}/api.log" \
+    run_prune "${vault}" "${state}" >"${out}" || fail "prune-workspaces at the commit limit failed"
+
+  [[ ! -e "${ws}/BOXP-331" ]] || fail "expected run with exactly 200 commits to verify to be deleted"
+  [[ -d "${ws}/BOXP-332/${old}" ]] || fail "expected run with 201 commits to verify to remain"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-332/${old} reason=too-many-unpushed-commits checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" '^prune: summary deleted=1 held=1 '
+  if grep -qxFf "${tmp}/over-limit-shas" "${tmp}/api.log"; then
+    fail "expected no GitHub lookups for a checkout over the commit limit"
+  fi
+}
+
+test_prune_inspects_nested_checkouts() {
+  local tmp vault state bin source known out old ws co nested ticket
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  # The parent checkout ignores vendor/, so its own git status never shows
+  # what a clone placed there contains.
+  printf 'vendor/\n' >"${source}/.gitignore"
+  git -C "${source}" add .gitignore
+  prune_git -C "${source}" commit -q -m ignore-vendor
+  git -C "${source}" update-ref refs/remotes/origin/main HEAD
+  git -C "${source}" rev-parse HEAD >"${known}"
+  write_board "${vault}" ""
+
+  # BOXP-341: gitignored nested clone with an untracked file -> held.
+  write_prune_ticket "${vault}" BOXP-341 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-341 "${old}")"
+  nested="${co}/vendor/clone"
+  git clone -q "${source}" "${nested}"
+  git -C "${nested}" remote set-url origin https://github.com/boxp/example.git
+  printf 'wip\n' >"${nested}/untracked.txt"
+  [[ -z "$(git -C "${co}" status --porcelain)" ]] || fail "expected the parent checkout to ignore the nested clone"
+
+  # BOXP-342: gitignored nested clone with a commit that is not on GitHub -> held.
+  write_prune_ticket "${vault}" BOXP-342 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-342 "${old}")"
+  nested="${co}/vendor/clone"
+  git clone -q "${source}" "${nested}"
+  git -C "${nested}" remote set-url origin https://github.com/boxp/example.git
+  prune_commit "${nested}" nested-unpushed >/dev/null
+
+  # BOXP-343: gitignored nested clone with a stash -> held.
+  write_prune_ticket "${vault}" BOXP-343 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-343 "${old}")"
+  nested="${co}/vendor/clone"
+  git clone -q "${source}" "${nested}"
+  git -C "${nested}" remote set-url origin https://github.com/boxp/example.git
+  printf 'vendor/\nstashed\n' >"${nested}/.gitignore"
+  prune_git -C "${nested}" stash -q
+
+  # BOXP-344: clean nested clone and a clean nested worktree of the source
+  # repository, all on GitHub -> deleted, both worktrees unregistered.
+  write_prune_ticket "${vault}" BOXP-344 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-344 "${old}")"
+  git clone -q "${source}" "${co}/vendor/clone"
+  git -C "${co}/vendor/clone" remote set-url origin https://github.com/boxp/example.git
+  git -C "${source}" worktree add -q --detach "${co}/vendor/worktree" HEAD
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
+    || fail "prune-workspaces --dry-run with nested checkouts failed"
+  assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces with nested checkouts failed"
+
+  [[ -f "${ws}/BOXP-341/${old}/ghq/github.com/boxp/example/vendor/clone/untracked.txt" ]] \
+    || fail "expected run with uncommitted changes in a nested clone to remain"
+  [[ -f "${ws}/BOXP-342/${old}/ghq/github.com/boxp/example/vendor/clone/nested-unpushed" ]] \
+    || fail "expected run with an unpushed commit in a nested clone to remain"
+  git -C "${ws}/BOXP-343/${old}/ghq/github.com/boxp/example/vendor/clone" rev-parse -q --verify refs/stash >/dev/null \
+    || fail "expected run with a stash in a nested clone to remain"
+  [[ ! -e "${ws}/BOXP-344" ]] || fail "expected run with clean nested checkouts to be deleted"
+  if git -C "${source}" worktree list --porcelain | grep -q "/workspaces/BOXP-344/"; then
+    fail "expected nested and parent worktrees to be unregistered from the source repository"
+  fi
+  for ticket in BOXP-341 BOXP-342 BOXP-343; do
+    git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/${ticket}-${old}" \
+      || fail "expected the branch of held run ${ticket} to remain"
+  done
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-341/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example/vendor/clone$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-342/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example/vendor/clone$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-343/${old} reason=stash-present checkout=ghq/github.com/boxp/example/vendor/clone$"
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-344/${old}$"
+  assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+}
+
+test_prune_checks_reflog_commits() {
+  local tmp vault state bin source known out old ws co clone branch dropped
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  git -C "${source}" rev-parse HEAD >"${known}"
+  write_board "${vault}" ""
+
+  # BOXP-351: independent clone whose only local commit was dropped by
+  # `git reset --hard` and survives in the reflog alone -> held.
+  write_prune_ticket "${vault}" BOXP-351 done 2020-01-01
+  mkdir -p "${ws}/BOXP-351/${old}"
+  clone="${ws}/BOXP-351/${old}/clone"
+  git clone -q "${source}" "${clone}"
+  git -C "${clone}" remote set-url origin https://github.com/boxp/example.git
+  prune_commit "${clone}" reset-away >/dev/null
+  git -C "${clone}" reset -q --hard HEAD~1
+  [[ -z "$(git -C "${clone}" rev-list HEAD --branches --tags --not --remotes)" ]] \
+    || fail "expected the dropped commit to be reachable from the reflog only"
+
+  # BOXP-352: the same in a run worktree, whose HEAD reflog goes away with it -> held.
+  write_prune_ticket "${vault}" BOXP-352 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-352 "${old}")"
+  prune_commit "${co}" reset-away >/dev/null
+  git -C "${co}" reset -q --hard HEAD~1
+
+  # BOXP-353: amended in a worktree, and the commit from before the amend is
+  # on GitHub as well -> run and branch deleted.
+  write_prune_ticket "${vault}" BOXP-353 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-353 "${old}")"
+  prune_commit "${co}" amended >>"${known}"
+  prune_git -C "${co}" commit -q --amend -m amended-again
+  git -C "${co}" rev-parse HEAD >>"${known}"
+
+  # BOXP-354: the worktree only ever saw pushed commits, but the run branch
+  # was moved to a local-only commit and back from the source repository ->
+  # run deleted, branch (and with it the branch reflog) kept.
+  write_prune_ticket "${vault}" BOXP-354 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-354 "${old}" >/dev/null
+  branch="refs/heads/codex-task-board/BOXP-354-${old}"
+  dropped="$(prune_git -C "${source}" commit-tree -m dropped -p HEAD 'HEAD^{tree}')"
+  git -C "${source}" update-ref -m test "${branch}" "${dropped}"
+  git -C "${source}" update-ref -m test "${branch}" HEAD
+  git -C "${source}" log -g --format=%H "${branch}" | grep -qx "${dropped}" \
+    || fail "expected the dropped commit in the run branch reflog"
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
+    || fail "prune-workspaces --dry-run with reflog-only commits failed"
+  assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces with reflog-only commits failed"
+
+  [[ -n "$(git -C "${ws}/BOXP-351/${old}/clone" log -g --format=%H --grep-reflog='commit: reset-away' HEAD)" ]] \
+    || fail "expected clone with a commit left only in the reflog to remain"
+  [[ -n "$(git -C "${ws}/BOXP-352/${old}/ghq/github.com/boxp/example" log -g --format=%H --grep-reflog='commit: reset-away' HEAD)" ]] \
+    || fail "expected worktree with a commit left only in the reflog to remain"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-352-${old}" \
+    || fail "expected the branch of a held run to remain"
+  [[ ! -e "${ws}/BOXP-353" ]] || fail "expected run whose reflog commits are all on GitHub to be deleted"
+  if git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-353-${old}"; then
+    fail "expected run branch whose reflog commits are all on GitHub to be deleted"
+  fi
+  [[ ! -e "${ws}/BOXP-354" ]] || fail "expected run whose worktree only saw pushed commits to be deleted"
+  git -C "${source}" log -g --format=%H "${branch}" | grep -qx "${dropped}" \
+    || fail "expected run branch with a local-only commit in its reflog to remain"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-351/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=clone$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-352/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" "^prune: delete-branch ${source}/.git codex-task-board/BOXP-353-${old}$"
+  assert_file_contains "${out}" "^prune: keep-branch ${source}/.git codex-task-board/BOXP-354-${old} reason=reflog-commit-not-on-github sha=${dropped}$"
+  assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
+}
+
+test_prune_respects_board_lane() {
+  local tmp vault state bin source known out old ws
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  git -C "${source}" rev-parse HEAD >"${known}"
+
+  # BOXP-361: frontmatter still says done, but the card was moved back to
+  # In Progress and no sync has run since -> kept.
+  # BOXP-362: card in Done and frontmatter done -> deleted.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-361|BOXP-361: reopened]] #ticket status::in-progress"
+  printf '%s\n' "- [x] [[Tickets/BOXP-362|BOXP-362: finished]] #ticket status::done" >>"${vault}/Boards/Task Board.md"
+  write_prune_ticket "${vault}" BOXP-361 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-361 "${old}" >/dev/null
+  write_prune_ticket "${vault}" BOXP-362 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-362 "${old}" >/dev/null
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces with a reopened card failed"
+  [[ -d "${ws}/BOXP-361/${old}" ]] || fail "expected run of a ticket whose card left Done to remain"
+  [[ ! -e "${ws}/BOXP-362" ]] || fail "expected run of a ticket whose card is in Done to be deleted"
+  assert_file_contains "${out}" '^prune: summary deleted=1 held=0 skipped=1 .* skipped-detail=not-done:1$'
+
+  # Without a readable board nothing is deleted.
+  write_prune_ticket "${vault}" BOXP-363 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-363 "${old}" >/dev/null
+  rm "${vault}/Boards/Task Board.md"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces without a board failed"
+  [[ -d "${ws}/BOXP-363/${old}" ]] || fail "expected run to remain when the board is missing"
+  assert_file_contains "${out}" '^prune: summary deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2$'
+}
+
+test_prune_invalid_settings_fall_back_to_defaults() {
+  local tmp vault state out
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  out="${tmp}/prune.out"
+  write_board "${vault}" ""
+
+  CODEX_TASK_BOARD_WORKSPACE_RETENTION_DAYS=soon \
+    run_prune "${vault}" "${state}" --dry-run >"${out}" || fail "prune with invalid retention failed"
+  assert_file_contains "${out}" '^prune: warning invalid CODEX_TASK_BOARD_WORKSPACE_RETENTION_DAYS="soon", using default 3$'
+  assert_file_contains "${out}" '^prune: start retention-days=3 dry-run=true$'
+
+  CODEX_TASK_BOARD_WORKSPACE_RETENTION_DAYS=10 \
+    run_prune "${vault}" "${state}" --dry-run >"${out}" || fail "prune with custom retention failed"
+  assert_file_contains "${out}" '^prune: start retention-days=10 dry-run=true$'
+  assert_file_not_contains "${out}" 'warning'
+}
+
+# Starts `loop` with a prunable run; the runner PID is written to ${tmp}/runner.pid.
+start_prune_loop() {
+  local tmp="$1"
+  shift
+  local vault="${tmp}/vault" state="${tmp}/state" bin="${tmp}/bin" source="${tmp}/source"
+  local old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  mkdir -p "${bin}"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  git -C "${source}" rev-parse HEAD >"${tmp}/known-shas"
+  write_board "${vault}" ""
+  write_prune_ticket "${vault}" BOXP-321 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-321 "${old}" >/dev/null
+
+  PATH="${bin}:$PATH" \
+    GH_FAKE_KNOWN_SHAS="${tmp}/known-shas" \
+    CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=prune-pod \
+    CODEX_TASK_BOARD_POLL_SECONDS=1 \
+    "$@" bb "${RUNNER}" loop >"${tmp}/runner.out" 2>&1 &
+  printf '%s\n' "$!" >"${tmp}/runner.pid"
+}
+
+stop_prune_loop() {
+  local pid
+  pid="$(cat "$1/runner.pid")"
+  kill -TERM "${pid}" 2>/dev/null || true
+  wait "${pid}" 2>/dev/null || true
+}
+
+test_loop_prunes_in_background() {
+  local tmp attempt
+  tmp="$(mktemp -d)"
+  start_prune_loop "${tmp}" env CODEX_TASK_BOARD_WORKSPACE_PRUNE_INTERVAL_SECONDS=2
+
+  # The interval is 2s, so a second pass proves the schedule repeats.
+  for attempt in $(seq 1 150); do
+    [[ "$(grep -c '^prune: summary ' "${tmp}/runner.out" || true)" -ge 2 ]] && break
+    sleep 0.1
+  done
+  stop_prune_loop "${tmp}"
+
+  [[ ! -e "${tmp}/state/workspaces/BOXP-321" ]] || fail "expected loop to prune the old done run"
+  assert_file_contains "${tmp}/runner.out" '^workspace prune enabled, retention-days=3, interval-seconds=2$'
+  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=1 held=0 skipped=0 recent-runs=0 branches=1 '
+  assert_file_contains "${tmp}/runner.out" '^prune: summary deleted=0 held=0 skipped=0 '
+}
+
+test_loop_prune_can_be_disabled() {
+  local tmp attempt
+  tmp="$(mktemp -d)"
+  start_prune_loop "${tmp}" env CODEX_TASK_BOARD_WORKSPACE_PRUNE=0
+
+  for attempt in $(seq 1 150); do
+    [[ "$(grep -c '^no supported-agent-assigned Task Board tickets$' "${tmp}/runner.out" || true)" -ge 3 ]] && break
+    sleep 0.1
+  done
+  stop_prune_loop "${tmp}"
+
+  [[ -d "${tmp}/state/workspaces/BOXP-321" ]] || fail "expected disabled prune to keep the run"
+  assert_file_contains "${tmp}/runner.out" '^workspace prune disabled by CODEX_TASK_BOARD_WORKSPACE_PRUNE$'
+  assert_file_not_contains "${tmp}/runner.out" '^prune: '
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
@@ -2345,5 +2945,13 @@ test_codex_astra_assignee_includes_delegation_policy
 test_concurrent_append_note_no_lost_writes
 test_cross_vault_lock_isolation
 test_concurrent_board_update_no_lost_writes
+test_prune_workspaces
+test_prune_holds_checkout_over_commit_limit
+test_prune_inspects_nested_checkouts
+test_prune_checks_reflog_commits
+test_prune_respects_board_lane
+test_prune_invalid_settings_fall_back_to_defaults
+test_loop_prunes_in_background
+test_loop_prune_can_be_disabled
 
 echo "task-board-runner tests passed"
