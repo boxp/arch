@@ -7,11 +7,11 @@
 | 段階 | 内容 | 状態 |
 | --- | --- | --- |
 | 1 | read-only Trustのbootstrapと、main限定の手動dispatchによるWIF plan | 完了（[run 36833143596](https://github.com/boxp/arch/actions/runs/36833143596)、変更なしで成功） |
-| 2 | 本番CI用Trust（plan用read-only、apply用write）の作成と、変数で切り替わるworkflowの反映 | このPR。merge後のapplyは従来のAPI key経路で動く |
-| 3 | ownerが非secretのclient IDを変数へ登録し、PRのplanとmainのapplyをWIFで成功させる | 未実施 |
+| 2 | 本番CI用Trust（plan用read-only、apply用write）の作成と、変数で切り替わるworkflowの反映 | 完了（PR #13077、[apply run 36836072383](https://github.com/boxp/arch/actions/runs/36836072383)でTrustを2つ作成） |
+| 3 | 非secretのclient IDを変数へ登録し、PRのplanとmainのapplyをWIFで成功させる | 変数2つは登録済み。PRのplanはWIFで成功（[run 36837940627](https://github.com/boxp/arch/actions/runs/36837940627)、変更なし）。applyはPR #13089のmerge後に確認する |
 | 4 | API keyの参照を削除するPR、API keyのrevoke、revoke後の再検証 | 未実施 |
 
-担当ownerはboxp。以下の棚卸しはリポジトリの設定とGitHub登録metadataを根拠にした利用主体一覧である。GitHubにはSecret名`TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`、変数名`TAILSCALE_WIF_PLAN_CLIENT_ID`と`TAILSCALE_WIF_PLAN_AUDIENCE`の登録がある。Environmentは未登録である。Secretの値は閲覧していない。実際にactiveなcredentialの全数・最終利用日時・有効期限・実scopeは、値を表示しないTailscale管理画面のmetadata確認が未実施のため未確定である。登録が存在することと現在利用中であることを区別する。
+担当ownerはboxp。以下の棚卸しはリポジトリの設定とGitHub登録metadataを根拠にした利用主体一覧である。GitHubにはSecret名`TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`、変数名`TAILSCALE_WIF_PLAN_CLIENT_ID`、`TAILSCALE_WIF_PLAN_AUDIENCE`、`TAILSCALE_WIF_CI_PLAN_CLIENT_ID`、`TAILSCALE_WIF_APPLY_CLIENT_ID`の登録がある。Environmentは未登録である。Secretの値は閲覧していない。実際にactiveなcredentialの全数・最終利用日時・有効期限・実scopeは、値を表示しないTailscale管理画面のmetadata確認が未実施のため未確定である。登録が存在することと現在利用中であることを区別する。
 
 ## 値を扱わないソース棚卸し
 
@@ -101,7 +101,7 @@ audienceの変数は不要である。Tailscaleが生成するaudienceは`api.ta
 
 providerは空文字の環境変数を未設定として扱う（v0.29.2の`Configure`を確認）。両方が設定された場合は`Provider credentials error`で失敗し、黙って片方を使うことはない。
 
-### 切替手順（owner）
+### 切替手順
 
 1. このPRをmergeする。applyは従来のAPI key経路で動き、Trustを2つ作成する。PRのplanが「Trust 2つの追加とoutputの追加」だけであることをmerge前に確認する。auth keyやSSMの変更が含まれていたら止める。
 2. client IDを取得する。applyコメントのOutputs、Tailscale管理画面のTrust credentials、または`terraform output -raw arch_ci_plan_wif_client_id` / `arch_apply_wif_client_id`のいずれかを使う。client IDは非secretである。引数なしの`terraform output`やstateの表示は使わない。
@@ -181,7 +181,9 @@ auth keyの期限は2026-12-30（UTC）である。PR #13077のplanが表示し�
 
 ## 次に必要な完了証跡
 
-- ownerによる「切替手順」の3〜6（変数登録、WIFでのplanとapplyの成功run、API key参照の削除、revoke、revoke後の再検証）。
+- 「切替手順」4の残り：PR #13089をmergeし、applyがWIFで成功することを確認する。
+- 「切替手順」5：API key参照を削除するPR。`setup`と`test`のstepへ渡している`toJSON(secrets)`もこのPRで外す。
+- ownerによる「切替手順」6（API keyのrevoke、Secretの削除、revoke後の再検証）。
 - ownerによるactive credentialと実expiry/scope/tagのmetadata棚卸し。
 - BOXP-206でのOperator WIFの可否判断。決まるまでOAuth運用を続ける。
 - `apply.yaml`が全Secretをterraformへ渡している既存挙動の是正（別ticketの提案）。
@@ -200,3 +202,8 @@ credential値、token、state、plan本文、Secret本文、private endpointを�
 - 変数`TAILSCALE_WIF_PLAN_CLIENT_ID`と`TAILSCALE_WIF_PLAN_AUDIENCE`の登録を名前で確認した。
 - [手動dispatch run 36833143596](https://github.com/boxp/arch/actions/runs/36833143596)（main `66fc04a0e`）は全step成功で、結果は`WIF read-only plan succeeded: no changes.`。API keyを渡さないjobで実stateをrefreshするplanが通ったので、read-onlyの5 scopeでこのmoduleのplanができることを確認できた。
 - 確認はjobとstepの結果、workflowが出力する固定文言、PRコメントの要約行だけで行った。plan本文、state、Secretは取得していない。
+- PR #13077は2026-10-01にmerge済み。[apply run 36836072383](https://github.com/boxp/arch/actions/runs/36836072383)はAPI key経路で成功し、Trustを2つ追加した（変更・削除は0）。
+- 変数`TAILSCALE_WIF_CI_PLAN_CLIENT_ID`を登録し、PR #13089（`provider.tf`のコメントだけを変更）でplanを実行した。[run 36837940627](https://github.com/boxp/arch/actions/runs/36837940627)のplan jobは成功し、結果は`No changes`。jobの`env:`で`TAILSCALE_OAUTH_CLIENT_ID`と`TAILSCALE_AUDIENCE`が空でないこと、`terraform-init`と`plan`のstepの`secrets`入力が`{}`であることを確認した。`pull_request_target`のtokenがplan用Trustの条件（`repo:boxp/arch:*`、`event_name`、`workflow_ref`、`job_workflow_ref`）に一致することも、この成功で確認できた。
+- 同じjobの`setup`と`test`のstepは、WIFモードでも`toJSON(secrets)`を受け取っている。どちらもTailscale providerの認証には使わないが、API keyの値はstepへ渡っている。「切替手順」5で外す。
+- plan成功の後に変数`TAILSCALE_WIF_APPLY_CLIENT_ID`を登録した。applyのWIF検証はPR #13089のmerge後に行う。失敗した場合は`gh variable delete TAILSCALE_WIF_APPLY_CLIENT_ID --repo boxp/arch`でAPI key経路へ戻し、applyを再実行する。
+- API keyのrevoke、Secretの削除は行っていない。
