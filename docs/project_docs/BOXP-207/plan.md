@@ -67,6 +67,9 @@ cron が `action_required` だけを見ている場合、`failure`（jobs 0 件�
 
 07-16 以降の `apply.yaml` の変更 16 回のうち 14 回は Renovate の更新で、automerge されていた。`renovate.json5` に `.github/workflows/**` を対象とする packageRule を追加し、週 1 回・1 PR に集約して automerge を無効にする。merge した人がその場で承認まで行う。
 
+- `groupName` で 1 PR にまとめ、`separateMajorMinor: false` で major 更新が別 PR に分かれないようにする。
+- `schedule` は PR を新しく作れる時間帯を月曜 02:00〜08:59 JST に限るだけで、週 1 本を保証しない。時間帯の中で merge すると、同じ時間帯に 2 本目の PR が作られ得る。そのため作成の時間帯を merge しない早朝に置き、「merge は月曜 09:00 JST 以降に週 1 本だけ」という運用を [runbook.md](runbook.md) に定める。
+
 変更回数は減るが、変更のたびに承認が必要なことは変わらない。
 
 ### 4. toJSON(secrets) の除去（別 PR）

@@ -79,4 +79,13 @@ boxp/arch では次のように現れる。
 
 ## 止まり始める回数を減らす設定
 
-`renovate.json5` で、`.github/workflows/**` の更新を週 1 回・1 PR にまとめ、automerge を無効にしている。merge する人が、その場で上の復旧手順 1〜4 まで行う。
+`renovate.json5` で、`.github/workflows/**` の更新を 1 つの PR（「GitHub Actions workflows」）にまとめ、automerge を無効にしている。major 更新も同じ PR に入る。
+
+Renovate がこの PR を新しく作れるのは、月曜 02:00〜08:59 JST だけである。すでに開いている PR には、時間帯の外でも新しい更新が追加される。
+
+設定だけでは週 1 本を保証できない。時間帯の中で PR を merge すると、同じ時間帯の次の実行で 2 本目の PR が作られ得る。次の運用で週 1 本にする。
+
+- workflow 更新の PR は、月曜 09:00 JST 以降に merge する。時間帯の外で merge すれば、次の PR ができるのは翌週の月曜になる。
+- merge するのは週に 1 本だけにする。同じ週に 2 本目の PR ができていた場合は merge せず、翌週の月曜 09:00 JST 以降に merge する。その間の更新は同じ PR に追加される。
+- merge した人が、その場で上の復旧手順 1〜4 まで行う。
+- 急ぎの更新（脆弱性の修正など）は週 1 本の例外として merge してよい。その場合も、merge 後に復旧手順を行う。
