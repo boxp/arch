@@ -54,7 +54,13 @@ lolice clusterのTailscale Operatorを、OAuth client secretからWorkload Ident
 
 - SA署名鍵はkubeadmの `sa.key` / `sa.pub`。kubeadmは証明書更新時もこの鍵をrotationしないので、JWKSが変わるのは手動rotation時だけである。
 - 公開JWKSが古いと、WIFのtoken exchangeだけが失敗する。クラスタ内の認証には影響しない。
-- 鍵をrotationするときは、新しい公開鍵を含むJWKSを先に公開し、その後にapiserverの署名鍵を切り替える。この順序をBOXP-200 runbookへ追記する。
+- 鍵をrotationするときは、旧鍵と新鍵の両方を検証できる期間を挟む。旧鍵をすぐ外すと、旧鍵で署名済みのtokenがクラスタ内の認証でもWIFのtoken exchangeでも拒否される。次の順序で行い、BOXP-200 runbookへ追記する。
+  1. 新しい鍵ペアを作る。全control planeのkube-apiserverで `--service-account-key-file` を旧公開鍵と新公開鍵の2つにする（1台ずつ）。署名鍵（`--service-account-signing-key-file`）はまだ旧鍵のままにする。
+  2. 公開JWKSを旧公開鍵と新公開鍵の両方を含む内容に更新する。クラスタのJWKS（`kubectl get --raw /openid/v1/jwks`）と鍵IDの集合が一致することを確認する。
+  3. 全control planeで署名鍵を新鍵へ切り替える（1台ずつ。kube-controller-managerの `--service-account-private-key-file` も同じ鍵にする）。手順1と2が全台・公開側で終わる前に切り替えない。
+  4. 旧鍵で署名されたtokenが全て失効するまで、旧公開鍵をapiserverの `--service-account-key-file` と公開JWKSの両方に残す。projected tokenは既定で約1時間で更新されるが、延長有効期限（`--service-account-extend-token-expiration`、最長1年）を持つtokenと、期限の無いlegacyのSecret型tokenがある。旧鍵のtokenを使うworkloadが無いこと（Podの再作成、legacy tokenの再発行）を確認してから次へ進む。
+  5. 旧公開鍵をapiserverから外し（1台ずつ）、その後に公開JWKSからも外す。
+- 公開JWKSは、apiserverが検証に使う公開鍵の集合と常に同じか、それより広い状態を保つ。鍵を足すときは公開側が先、外すときは公開側が後になる。
 - 公開JWKSとクラスタのJWKS（`kubectl get --raw /openid/v1/jwks`）の差分確認を、BOXP-200 runbookの四半期棚卸しへ追加する。
 
 ## issuer変更の影響
@@ -158,14 +164,27 @@ merge後に確認する。
    | --- | --- |
    | issuer | `https://<公開ホスト名>` |
    | subject | `system:serviceaccount:tailscale-operator:operator` |
-   | audience | 指定しない（Tailscaleが `api.tailscale.com/<client ID>` を生成する） |
+   | audience | 指定しない。Tailscaleが `api.tailscale.com/<client ID>` の形式で生成する。生成された値はresourceの `audience` 属性で、client IDは `id` 属性で読める |
    | scopes | `auth_keys`、`devices:core`、Services（管理画面の General/Services のwrite） |
    | tags | `tag:k8s-operator` |
 
    scopeは公式のOperator WIF手順が要求する3つ（General/Services、Devices/Core、Keys/Auth Keys のwrite）を初回から全て付与する。Services scopeを外した構成は公式にサポートされておらず、切替直後にexposeのreconcileが権限不足で失敗するおそれがあるため、推測で減らさない。ticketのACはscopeを `auth_keys`・`devices:core` としているが、公式要件に合わせてServicesを加える（ACとの差分としてownerの確認を受ける）。ServicesのAPI scope識別子は実装時にprovider文書と `terraform plan` で確定する。Services scopeを後から外すかどうかは、WIF切替が安定した後に別途検証して決める。
-2. boxp/loliceの `helm/values.yaml` から `oauthSecretVolume` を外し、`oauth.clientId` と `oauth.audience` を設定する。client IDはsecretではない。chartは `oauthSecretVolume` があると `oauth.audience` を無視するので、OAuthとWIFは同時に使えない。
-3. ExternalSecret、SSM parameter、OAuth client本体は残したまま切り替える。
-4. merge後に確認する。
+2. Trust Credentialのclient IDとaudienceを `terraform/tailscale/lolice/outputs.tf` のoutputにする（既存の `arch_plan_wif_audience` と同じ形。どちらも非secret）。apply後のoutputから実際の値を取得する。audienceの値を形式から手で組み立てない。
+3. boxp/loliceの `helm/values.yaml` から `oauthSecretVolume` を外し、次の2つを設定する。chartは `oauthSecretVolume` があると `oauth.audience` を無視するので、OAuthとWIFは同時に使えない。`oauth.clientSecret` は設定しない（設定すると `oauth.audience` より優先される）。
+
+   | key | 値 |
+   | --- | --- |
+   | `oauth.clientId` | 手順2のoutputのclient ID |
+   | `oauth.audience` | 手順2のoutputのaudience（`api.tailscale.com/<client ID>` の形式）。Trust Credentialの `audience` 属性と完全一致させる |
+
+   chartは `oauth.audience` を、Operator Podへmountするprojected ServiceAccount tokenの `audience` にそのまま使う。未設定だとchartはOAuth secretのmountへ戻り、値がTrust Credentialと違うとtoken exchangeが失敗する。
+4. merge前に、audienceの一致を確認する。
+   - `helm template` の出力で、Operator Deploymentに `oidc-jwt` のprojected volumeがあり、その `audience` が手順2のoutputと同じ文字列である
+   - 同じ出力で、env `CLIENT_ID` が手順2のoutputのclient IDであり、`CLIENT_ID_FILE` / `CLIENT_SECRET_FILE` と `oauth` volumeが無い
+   - `terraform plan` が差分なしで、Trust Credentialのissuer・subjectが段階2後のクラスタの値（公開issuer URL、`system:serviceaccount:tailscale-operator:operator`）と同じである
+5. ExternalSecret、SSM parameter、OAuth client本体は残したまま切り替える。
+6. merge後に確認する。
+   - 稼働中のOperator Podのprojected volumeの `audience`（`kubectl get pod -o yaml` で読める。tokenの中身は読まない）が手順2のoutputと同じである
    - OperatorがWIFで起動し、ログに認証エラーが無い
    - Operatorを再起動しても再認証できる
    - expose対象の再reconcile（proxyの再作成または新規expose）が成功する
