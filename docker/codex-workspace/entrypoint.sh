@@ -247,6 +247,64 @@ ssh-keygen -A
 
 cd /home/boxp
 
+even_terminal_port="${EVEN_TERMINAL_PORT:-3456}"
+even_terminal_cwd="${EVEN_TERMINAL_CWD:-/home/boxp}"
+even_terminal_provider="${EVEN_TERMINAL_PROVIDER:-codex}"
+even_terminal_interface="${EVEN_TERMINAL_INTERFACE:-eth0}"
+
+# even-terminal >= 0.10 runs an interactive setup wizard when its config file
+# is missing and exits 1 without a TTY, which takes the whole container down.
+# `even-terminal config` cannot create the file either, so seed a minimal one.
+# An existing config is left untouched; the env-derived values below are passed
+# as CLI flags, which take precedence over the config file.
+configure_even_terminal() {
+  local config_dir=/home/boxp/.even-terminal
+  local config="${config_dir}/config.json"
+  local tmp="${config}.tmp"
+  local token="${EVEN_TERMINAL_TOKEN:-}"
+
+  /usr/sbin/runuser -u boxp -- install -d -m 0700 "${config_dir}"
+  if [[ -e "${config}" ]]; then
+    return
+  fi
+
+  if [[ -z "${token}" ]]; then
+    token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  fi
+
+  (
+    umask 077
+    EVEN_TERMINAL_CONFIG_TOKEN="${token}" jq -n \
+      --arg provider "${even_terminal_provider}" \
+      --arg cwd "${even_terminal_cwd}" \
+      --arg interface "${even_terminal_interface}" \
+      --argjson port "${even_terminal_port}" \
+      '{
+        version: 1,
+        provider: $provider,
+        cwd: $cwd,
+        network: {mode: "interface", name: $interface},
+        port: $port,
+        token: $ENV.EVEN_TERMINAL_CONFIG_TOKEN
+      }' >"${tmp}"
+  )
+  chown boxp:boxp "${tmp}"
+  chmod 0600 "${tmp}"
+  mv "${tmp}" "${config}"
+}
+
+configure_even_terminal
+
+# even-terminal >= 0.10 only binds to RFC1918 addresses by default and falls
+# back to 127.0.0.1 otherwise. Pod IPs are outside those ranges, so bind to the
+# pod interface explicitly to stay reachable through the Service.
+interface_args=()
+if [[ -e "/sys/class/net/${even_terminal_interface}" ]]; then
+  interface_args=(--interface "${even_terminal_interface}")
+else
+  echo "codex-workspace-entrypoint: interface ${even_terminal_interface} not found; even-terminal falls back to LAN auto-detection" >&2
+fi
+
 token_args=()
 if [[ -n "${EVEN_TERMINAL_TOKEN:-}" ]]; then
   token_args=(--token "${EVEN_TERMINAL_TOKEN}")
@@ -255,8 +313,9 @@ fi
 exec /usr/sbin/runuser -u boxp \
   --whitelist-environment=DOCKER_HOST,DOCKER_BUILDKIT,EDITOR,VISUAL,ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CODE_OAUTH_TOKEN,CLAUDE_CODE_USE_BEDROCK,CLAUDE_CODE_USE_VERTEX,CLAUDE_CODE_USE_FOUNDRY,GRAFANA_URL,GRAFANA_SERVICE_ACCOUNT_TOKEN,GEMINI_API_KEY,CODEX_TASK_BOARD_VAULT,CODEX_CRON_ROOT,KUBECONFIG \
   -- env HOME=/home/boxp even-terminal \
-  --port "${EVEN_TERMINAL_PORT:-3456}" \
-  --cwd "${EVEN_TERMINAL_CWD:-/home/boxp}" \
-  --provider "${EVEN_TERMINAL_PROVIDER:-codex}" \
+  --port "${even_terminal_port}" \
+  --cwd "${even_terminal_cwd}" \
+  --provider "${even_terminal_provider}" \
   --name "${EVEN_TERMINAL_NAME:-lolice-codex-workspace}" \
+  "${interface_args[@]}" \
   "${token_args[@]}"

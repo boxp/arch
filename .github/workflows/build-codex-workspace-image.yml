@@ -5,7 +5,10 @@ on:
     branches: [main]
     paths: ['docker/codex-workspace/**']
   pull_request:
-    paths: ['docker/codex-workspace/**']
+    paths:
+      - 'docker/codex-workspace/**'
+      - 'tests/codex-workspace/even-terminal-smoke-test.sh'
+      - '.github/workflows/build-codex-workspace-image.yml'
   workflow_dispatch: {}
 
 jobs:
@@ -33,6 +36,17 @@ jobs:
             type=raw,value={{date 'YYYYMMDDHHmm'}},enable={{is_default_branch}}
             type=sha,prefix=sha-,format=short
             type=raw,value=latest,enable={{is_default_branch}}
+      # Build into the local Docker daemon first and boot it, so an image whose
+      # entrypoint cannot start even-terminal never gets pushed (BOXP-205).
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: docker/codex-workspace
+          load: true
+          tags: codex-workspace:smoke-test
+          cache-from: type=gha
+          platforms: linux/amd64
+      - name: Smoke test even-terminal startup
+        run: tests/codex-workspace/even-terminal-smoke-test.sh codex-workspace:smoke-test
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker/codex-workspace
