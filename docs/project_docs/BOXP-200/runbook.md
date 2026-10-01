@@ -9,7 +9,7 @@
 | 1 | read-only Trustのbootstrapと、main限定の手動dispatchによるWIF plan | 完了（[run 36833143596](https://github.com/boxp/arch/actions/runs/36833143596)、変更なしで成功） |
 | 2 | 本番CI用Trust（plan用read-only、apply用write）の作成と、変数で切り替わるworkflowの反映 | 完了（PR #13077、[apply run 36836072383](https://github.com/boxp/arch/actions/runs/36836072383)でTrustを2つ作成） |
 | 3 | 非secretのclient IDを変数へ登録し、PRのplanとmainのapplyをWIFで成功させる | 変数2つは登録済み。PRのplanはWIFで成功（[run 36837940627](https://github.com/boxp/arch/actions/runs/36837940627)、変更なし）。applyはPR #13089のmerge後に確認する |
-| 4 | API keyの参照を削除するPR | PR #13090をDraftで用意済み。段階3のapplyがWIFで成功してからmergeする |
+| 4 | API keyの参照を削除するPR | PR #13090を用意済み（Draftは解除済み）。段階3のapplyがWIFで成功してからmergeする |
 | 5 | API keyのrevoke、Secretの削除、revoke後の再検証 | 未実施（owner） |
 
 担当ownerはboxp。以下の棚卸しはリポジトリの設定とGitHub登録metadataを根拠にした利用主体一覧である。GitHubにはSecret名`TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`、変数名`TAILSCALE_WIF_PLAN_CLIENT_ID`、`TAILSCALE_WIF_PLAN_AUDIENCE`、`TAILSCALE_WIF_CI_PLAN_CLIENT_ID`、`TAILSCALE_WIF_APPLY_CLIENT_ID`の登録がある。Environmentは未登録である。Secretの値は閲覧していない。実際にactiveなcredentialの全数・最終利用日時・有効期限・実scopeは、値を表示しないTailscale管理画面のmetadata確認が未実施のため未確定である。登録が存在することと現在利用中であることを区別する。
@@ -215,5 +215,5 @@ credential値、token、state、plan本文、Secret本文、private endpointを�
 - 変数`TAILSCALE_WIF_CI_PLAN_CLIENT_ID`を登録し、PR #13089（`provider.tf`のコメントだけを変更）でplanを実行した。[run 36837940627](https://github.com/boxp/arch/actions/runs/36837940627)のplan jobは成功し、結果は`No changes`。jobの`env:`で`TAILSCALE_OAUTH_CLIENT_ID`と`TAILSCALE_AUDIENCE`が空でないこと、`terraform-init`と`plan`のstepの`secrets`入力が`{}`であることを確認した。`pull_request_target`のtokenがplan用Trustの条件（`repo:boxp/arch:*`、`event_name`、`workflow_ref`、`job_workflow_ref`）に一致することも、この成功で確認できた。
 - 同じjobの`setup`と`test`のstepは、WIFモードでも`toJSON(secrets)`を受け取っている。どちらもTailscale providerの認証には使わないが、API keyの値はstepへ渡っている。「切替手順」5で外す。
 - plan成功の後に変数`TAILSCALE_WIF_APPLY_CLIENT_ID`を登録した。applyのWIF検証はPR #13089のmerge後に行う。失敗した場合は`gh variable delete TAILSCALE_WIF_APPLY_CLIENT_ID --repo boxp/arch`でAPI key経路へ戻し、applyを再実行する。
-- API key参照を削除するPR #13090をDraftで用意した。tfaction v2.3.2のソースで、`secrets`入力を読むのは`setup` / `terraform-init` / `plan` / `apply`だけで、`test`は読まないこと、`tfaction-root.yaml`の対応表は`output-github-secrets`だけが参照することを確認した。このため、Tailscale対象の全stepへ`{}`を渡しても、対応表を消しても、terraformへ届く環境変数はWIFモードの現状と変わらない。
+- API key参照を削除するPR #13090を用意した（Task Boardのreview gateのためDraftは解除したが、merge条件は段階3のWIF apply成功後のまま）。tfaction v2.3.2のソースで、`secrets`入力を読むのは`setup` / `terraform-init` / `plan` / `apply`だけで、`test`は読まないこと、`tfaction-root.yaml`の対応表は`output-github-secrets`だけが参照することを確認した。このため、Tailscale対象の全stepへ`{}`を渡しても、対応表を消しても、terraformへ届く環境変数はWIFモードの現状と変わらない。
 - API keyのrevoke、Secretの削除は行っていない。
