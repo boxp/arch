@@ -268,6 +268,15 @@
       matchDatasources: ["custom.cursor-agent"],
       extractVersion: "downloads\\.cursor\\.com/lab/(?<version>[^/]+)/\\$\\{OS\\}/\\$\\{ARCH\\}/agent-cli-package\\.tar\\.gz"
     },
+    // even-terminal は 0.x のため minor 更新でも起動仕様が変わり得る (BOXP-205:
+    // 0.10 で config.json 必須化 + bind 先変更により codex-workspace が crash loop)。
+    // image build は required check ではないので、Build Codex Workspace Image の
+    // smoke test 成功を確認してから手動 merge する。
+    {
+      matchPackageNames: ["@evenrealities/even-terminal"],
+      automerge: false,
+      addLabels: ["manual-review-required"]
+    },
     // Kubernetes components (manual review required)
     {
       matchManagers: ["custom.regex"],
