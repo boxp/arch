@@ -22,7 +22,7 @@
 | 対象 | 変更 |
 | --- | --- |
 | `docker/codex-workspace/Dockerfile` | `EVEN_TERMINAL_VERSION` を 0.10.5 へ更新 |
-| `docker/codex-workspace/entrypoint.sh` | `~/.even-terminal/config.json` が無い場合のみ `jq` で最小 config を生成（`boxp` 権限で `mktemp` → `mv`、mode 0600。dir は `boxp` 書き込み可のため root では書かない）。既存 config は上書きしない |
+| `docker/codex-workspace/entrypoint.sh` | `~/.even-terminal/config.json` が無い場合のみ `jq` で最小 config を生成（`boxp` 権限で `mktemp` → `ln`（hard link による排他的な配置）、mode 0600。dir は `boxp` 書き込み可のため root では書かない）。既存 config は上書きしない（存在確認後に作られた場合も `ln` が失敗するだけで置き換えない） |
 | `docker/codex-workspace/entrypoint.sh` | 起動引数に `--interface "${EVEN_TERMINAL_INTERFACE:-eth0}"` を追加 |
 | `tests/codex-workspace/even-terminal-smoke-test.sh` | build 済み image を TTY なし・空の HOME で起動し、eth0 アドレス:3456 の応答を確認する smoke test |
 | `.github/workflows/build-codex-workspace-image.yml` | push 前に image を load して smoke test を実行（PR / main push / dispatch 共通） |

@@ -294,7 +294,13 @@ configure_even_terminal() {
           port: $port,
           token: $ENV.EVEN_TERMINAL_CONFIG_TOKEN
         }'\'' >"${tmp}"
-      mv -fT "${tmp}" "${config_dir}/config.json"
+      # Publish with link(2): it is atomic and fails if config.json already
+      # exists, so a config created since the check above is never replaced.
+      if ! ln -T "${tmp}" "${config_dir}/config.json" 2>/dev/null \
+        && [[ ! -e "${config_dir}/config.json" ]]; then
+        echo "codex-workspace-entrypoint: failed to create ${config_dir}/config.json" >&2
+        exit 1
+      fi
     ' bash \
     "${config_dir}" \
     "${even_terminal_provider}" \
