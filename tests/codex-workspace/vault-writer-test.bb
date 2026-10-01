@@ -528,39 +528,115 @@
               (str/join " " (map #(str "'" % "'")
                                  (concat ["bb" helper-script] args ["--vault" (:vault env)])))))
 
+(def control-fixture
+  (read-string (slurp (str root "/tests/codex-workspace/fixtures/autonomy/control.edn"))))
+
+(defn helper-request
+  "The request a helper dry-run previews, exactly as it would be submitted."
+  [env & args]
+  (let [result (apply helper env (concat args ["--dry-run"]))]
+    (assert (zero? (:exit result)) (:err result))
+    (read-string (:out result))))
+
+(deftest helper-control-preview-is-accepted-by-the-control-store
+  (let [env (new-vault)
+        owner "synthetic-owner-credential"
+        runner "synthetic-runner-credential"
+        store (control/init-store!
+               (control/open-store
+                {:dir (:store-dir env)
+                 :principals {owner {:subject "synthetic-owner-subject" :role :owner}
+                              runner {:subject "synthetic-runner-subject" :role :runner}}
+                 :allowed-repos ["boxp/arch"]
+                 :allowed-paths ["docs/project_docs/BOXP-203/"]
+                 :now (constantly "2026-09-30T10:00:00Z")}))
+        credential {"owner" owner "runner" runner}
+        other {"owner" runner "runner" owner}
+        submit (fn [expected-revision & args]
+                 (let [{:keys [request requires-actor]}
+                       (apply helper-request env "control-intent" "BOXP-901"
+                              "--expected-revision" (str expected-revision) args)]
+                   (is (rejected? :forbidden
+                                  (control/request! store (other requires-actor) request))
+                       "the other role cannot send the previewed request")
+                   (control/request! store (credential requires-actor) request)))
+        intent #(get-in (control/read-control store owner "BOXP-901") [:control :intent])]
+    (is (ok? (control/request! store owner {:op :issue-writer-generation :expected-generation 0})))
+    (is (ok? (control/request! store owner
+                               {:op :issue-control
+                                :ticket "BOXP-901"
+                                :objective-id "BOXP-901-synthetic"
+                                :requirements (get-in control-fixture [:objective :requirements])
+                                :intent "run"
+                                :agent_route "codex"
+                                :scope (:scope control-fixture)
+                                :budget {:max_steps 3 :max_wall_minutes 60}})))
+    (testing "runner previews map to :restrict-intent with its writer generation"
+      (let [result (submit 1 "--intent" "pause" "--actor" "runner" "--writer-generation" "1")]
+        (is (ok? result))
+        (is (= 2 (:revision result)))
+        (is (= "pause" (intent)))))
+    (testing "owner previews map to :update-control, including the return to run"
+      (is (ok? (submit 2 "--intent" "run")))
+      (is (= "run" (intent)))
+      (is (ok? (submit 3 "--intent" "wait-human" "--actor" "owner")))
+      (is (= "wait-human" (intent))))
+    (testing "a stale preview is a CAS conflict, not an invalid request"
+      (is (rejected? :conflict (submit 3 "--intent" "cancel")))
+      (is (rejected? :stale-generation
+                     (submit 4 "--intent" "cancel" "--actor" "runner" "--writer-generation" "2"))))
+    (is (= "wait-human" (intent)))))
+
 (deftest helper-control-commands-are-dry-run-only
   (let [env (new-vault)
         before (vault-snapshot env)]
-    (testing "previews name the request and the required actor without writing"
+    (testing "previews name the store operation and its single allowed actor without writing"
       (doseq [[args expected]
-              [[["control-intent" "BOXP-901" "--intent" "pause" "--expected-revision" "3" "--dry-run"]
-                [":op \"set-intent\"" ":intent \"pause\"" ":requires-actor \"runner-or-owner\""]]
-               [["control-intent" "BOXP-901" "--intent" "run" "--expected-revision" "3" "--dry-run"]
-                [":requires-actor \"owner\""]]
-               [["control-decision" "BOXP-901" "--decision-id" "BOXP-901/D1" "--option-id" "new-only"
-                 "--expected-revision" "3" "--dry-run"]
-                [":op \"answer-decision\"" ":option-id \"new-only\"" ":requires-actor \"owner\""]]
-               [["control-retry" "BOXP-901" "--retry-op" "cancel" "--expected-revision" "3" "--dry-run"]
-                [":op \"cancel-retry\"" ":requires-actor \"runner-or-owner\""]]
-               [["control-retry" "BOXP-901" "--retry-op" "reschedule" "--expected-revision" "3" "--dry-run"]
-                [":requires-actor \"owner\""]]]]
-        (let [result (apply helper env args)]
-          (is (zero? (:exit result)) (:err result))
-          (doseq [fragment (concat expected [":dry-run true" ":writes []" ":expected-revision 3"
-                                             ":lane \"Ready\"" "\"control_revision\" \"3\""])]
-            (is (str/includes? (:out result) fragment) fragment)))))
+              [[["--intent" "pause"]
+                {:request {:op :update-control :ticket "BOXP-901" :expected-revision 3
+                           :intent "pause"}
+                 :requires-actor "owner"}]
+               [["--intent" "run" "--actor" "owner"]
+                {:request {:op :update-control :ticket "BOXP-901" :expected-revision 3
+                           :intent "run"}
+                 :requires-actor "owner"}]
+               [["--intent" "cancel" "--actor" "runner" "--writer-generation" "7"]
+                {:request {:op :restrict-intent :ticket "BOXP-901" :expected-revision 3
+                           :writer-generation 7 :intent "cancel"}
+                 :requires-actor "runner"}]]]
+        (let [result (apply helper-request env "control-intent" "BOXP-901"
+                            "--expected-revision" "3" args)]
+          (is (= (merge expected {:action "control-intent" :id "BOXP-901" :dry-run true
+                                  :lane "Ready" :projection {"control_revision" "3"}
+                                  :writes []})
+                 result)))))
+    (testing "--json names the same operation"
+      (let [result (helper env "control-intent" "BOXP-901" "--intent" "pause"
+                           "--expected-revision" "3" "--dry-run" "--json")]
+        (is (zero? (:exit result)) (:err result))
+        (is (str/includes? (:out result) "\"op\":\"update-control\""))))
     (testing "without --dry-run, or with invalid input, the helper refuses"
       (doseq [args [["control-intent" "BOXP-901" "--intent" "pause" "--expected-revision" "3"]
-                    ["control-decision" "BOXP-901" "--decision-id" "D1" "--option-id" "o"
-                     "--expected-revision" "3"]
-                    ["control-retry" "BOXP-901" "--retry-op" "cancel" "--expected-revision" "3"]
                     ["control-intent" "BOXP-901" "--intent" "resume" "--expected-revision" "3" "--dry-run"]
                     ["control-intent" "BOXP-901" "--intent" "pause" "--dry-run"]
                     ["control-intent" "BOXP-901" "--intent" "pause" "--expected-revision" "0" "--dry-run"]
-                    ["control-decision" "BOXP-901" "--decision-id" "../D1" "--option-id" "o"
+                    ["control-intent" "BOXP-999" "--intent" "pause" "--expected-revision" "3" "--dry-run"]
+                    ;; The runner identity can only tighten, and only with its generation.
+                    ["control-intent" "BOXP-901" "--intent" "run" "--actor" "runner"
+                     "--writer-generation" "1" "--expected-revision" "3" "--dry-run"]
+                    ["control-intent" "BOXP-901" "--intent" "pause" "--actor" "runner"
                      "--expected-revision" "3" "--dry-run"]
-                    ["control-retry" "BOXP-901" "--retry-op" "reset" "--expected-revision" "3" "--dry-run"]
-                    ["control-intent" "BOXP-999" "--intent" "pause" "--expected-revision" "3" "--dry-run"]]]
+                    ["control-intent" "BOXP-901" "--intent" "pause" "--actor" "runner"
+                     "--writer-generation" "0" "--expected-revision" "3" "--dry-run"]
+                    ["control-intent" "BOXP-901" "--intent" "pause" "--actor" "owner"
+                     "--writer-generation" "1" "--expected-revision" "3" "--dry-run"]
+                    ["control-intent" "BOXP-901" "--intent" "pause" "--actor" "agent"
+                     "--expected-revision" "3" "--dry-run"]
+                    ;; No control store operation exists for these yet.
+                    ["control-decision" "BOXP-901" "--decision-id" "D1" "--option-id" "o"
+                     "--expected-revision" "3" "--dry-run"]
+                    ["control-retry" "BOXP-901" "--retry-op" "cancel" "--expected-revision" "3"
+                     "--dry-run"]]]
         (let [result (apply helper env args)]
           (is (= 1 (:exit result)) (pr-str args))
           (is (= "" (:out result))))))

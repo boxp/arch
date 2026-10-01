@@ -72,7 +72,14 @@ control原本のinterfaceと、actor・revision・世代の契約を固定する
 
 `TASK_BOARD_VAULT_WRITER_LOCK_DIR` を設定した場合だけ、runnerのBoard/ticket書込みとhelperの書込commandが同じ `vault-writer.lock` を取得する。未設定なら従来どおり。runnerでは既存のJVM内mutexの内側、helperでは既存のper-file lockの外側で取得する。opt-in時の `sync` は、ticketごとにlock内でBoardのlaneを読み直してから `status` を投影する。lock内から他のlockを取らないこと。全writerを同時に切り替える手順はI7で扱い、一部のwriterだけにopt-inした状態を本番で作らない。
 
-helperの `control-intent` / `control-decision` / `control-retry` は `--dry-run` 専用で、control APIへ送る要求と必要なactor（owner / runner-or-owner）を表示するだけ。vaultには書込まない。
+helperの `control-intent` は `--dry-run` 専用で、control APIへ送る要求と、それを送れる唯一のactorを表示するだけ。vaultには書込まない。表示する `:request` は上表のoperationと同じop名・同じkey集合で、storeの `request!` がそのまま受理する。
+
+| `--actor` | 表示するoperation | 制約 |
+| --- | --- | --- |
+| `owner`（既定） | `:update-control`（`:ticket` `:expected-revision` `:intent`） | intentは `run` / `pause` / `cancel` / `wait-human` |
+| `runner` | `:restrict-intent`（`:ticket` `:expected-revision` `:writer-generation` `:intent`） | `--writer-generation` 必須。intentは `pause` / `cancel` / `wait-human` のみ |
+
+decision回答とretry変更（取消・再予定）に対応するoperationは、このPRのcontrol storeに存在しない。受理されない要求を案内しないよう、helperにもpreviewを置かない。operationを定義するI4（retry）/ I6（decision）で、storeとhelper previewを同時に追加する。
 
 ## 検証
 

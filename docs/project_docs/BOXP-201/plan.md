@@ -15,7 +15,7 @@
 1. `vault_writer.bb`: 共通vault writer lock、temp+fsync+atomic rename、checksum付きwrite-ahead transition journal、現在lane優先のrecover、writer世代照合。
 2. `autonomy_control.bb`: control storeのlocal mock。credential登録からのactor解決、owner/runner別権限、revision CAS、hash-chainの追記専用event、writer_generationの単調発行、objective snapshotの版管理、budget epoch累積。
 3. runner（`move-card!` / `sync-board-statuses!` / `update-frontmatter!` / `append-note!`）とhelperの書込commandをopt-inの共通lockで包む。
-4. helperに `control-intent` / `control-decision` / `control-retry` のdry-run専用操作を追加する。
+4. helperに `control-intent` のdry-run専用操作を追加する。表示する要求はcontrol storeがそのまま受理する形（ownerは `:update-control`、runnerは `:restrict-intent`）に限る。decision回答とretry変更はstoreのoperationが未定義のため、previewもI4 / I6でoperationと同時に追加する。
 5. テスト: control契約、複数process＋helper＋runner syncの同時更新、journal各write間のkill、owner変更との回復競合、世代切替、lease喪失、dry-run不変。CIへ追加する。
 
 契約の詳細は [i3-writer-control.md](i3-writer-control.md)。

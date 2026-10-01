@@ -94,9 +94,8 @@
           "--source" (recur (nnext xs) (assoc opts :source (first more)))
           "--intent" (recur (nnext xs) (assoc opts :intent (first more)))
           "--expected-revision" (recur (nnext xs) (assoc opts :expected-revision (first more)))
-          "--decision-id" (recur (nnext xs) (assoc opts :decision-id (first more)))
-          "--option-id" (recur (nnext xs) (assoc opts :option-id (first more)))
-          "--retry-op" (recur (nnext xs) (assoc opts :retry-op (first more)))
+          "--actor" (recur (nnext xs) (assoc opts :actor (first more)))
+          "--writer-generation" (recur (nnext xs) (assoc opts :writer-generation (first more)))
           "--priority" (recur (nnext xs) (assoc opts :priority (first more)))
           "--assignee" (recur (nnext xs) (assoc opts :assignee (first more)))
           "--repo" (recur (nnext xs) (assoc opts :repo (first more)))
@@ -592,54 +591,55 @@
                      [k value]))
                  ["autonomy_version" "execution_intent" "control_revision"])))
 
-(defn safe-control-token [value flag]
-  (when-not (and value (re-matches #"[A-Za-z0-9][A-Za-z0-9._/-]{0,159}" value)
-                 (not (str/includes? value "..")))
-    (die (str flag " must be a plain identifier")))
-  value)
+(def restrictive-intents #{"pause" "cancel" "wait-human"})
 
-(defn control-request [opts kind]
-  (let [intents {"pause" "runner-or-owner" "cancel" "runner-or-owner"
-                 "wait-human" "runner-or-owner" "run" "owner"}
-        retry-ops {"cancel" "runner-or-owner" "reschedule" "owner"}]
-    (case kind
-      "intent" (let [intent (:intent opts)]
-                 (when-not (contains? intents intent)
-                   (die "control-intent requires --intent run, pause, cancel, or wait-human"))
-                 {:request {:op "set-intent" :intent intent} :requires-actor (intents intent)})
-      "decision" {:request {:op "answer-decision"
-                            :decision-id (safe-control-token (:decision-id opts) "--decision-id")
-                            :option-id (safe-control-token (:option-id opts) "--option-id")}
-                  :requires-actor "owner"}
-      "retry" (let [retry-op (:retry-op opts)]
-                (when-not (contains? retry-ops retry-op)
-                  (die "control-retry requires --retry-op cancel or reschedule"))
-                {:request {:op (str retry-op "-retry")} :requires-actor (retry-ops retry-op)}))))
+;; The previewed request must be one the control store accepts as-is: the op
+;; name, the exact key set, and the single role allowed to send it. An owner
+;; changes intent with :update-control; the runner identity can only tighten it
+;; with :restrict-intent, bound to its writer generation.
+(defn control-intent-request [opts]
+  (let [intent (:intent opts)
+        actor (or (:actor opts) "owner")
+        generation (:writer-generation opts)]
+    (when-not (contains? (conj restrictive-intents "run") intent)
+      (die "control-intent requires --intent run, pause, cancel, or wait-human"))
+    (case actor
+      "owner" (do (when generation
+                    (die "--writer-generation only applies to --actor runner"))
+                  {:op :update-control :intent intent})
+      "runner" (do (when-not (contains? restrictive-intents intent)
+                     (die "--actor runner can only request --intent pause, cancel, or wait-human"))
+                   (when-not (and generation (re-matches #"[1-9][0-9]{0,8}" generation))
+                     (die "--actor runner requires --writer-generation <positive integer>"))
+                   {:op :restrict-intent :intent intent
+                    :writer-generation (parse-long generation)})
+      (die "control-intent requires --actor owner or runner"))))
 
 ;; Dry-run only. The control original lives behind an authenticated API that is
-;; not deployed yet; this helper never edits a file to express intent, a
-;; decision, or a retry change, because a file edit is not an authorization.
-(defn cmd-control [opts id kind]
+;; not deployed yet; this helper never edits a file to express intent, because
+;; a file edit is not an authorization. Decision answers and retry changes have
+;; no control store operation yet, so there is nothing to preview for them.
+(defn cmd-control-intent [opts id]
   (when-not (:dry-run opts)
-    (die (str "control-" kind " only supports --dry-run: the authenticated control API is not deployed, and editing vault files never grants authorization")))
+    (die "control-intent only supports --dry-run: the authenticated control API is not deployed, and editing vault files never grants authorization"))
   (let [revision (:expected-revision opts)
         _ (when-not (and revision (re-matches #"[1-9][0-9]{0,8}" revision))
-            (die (str "control-" kind " requires --expected-revision <positive integer>")))
-        {:keys [request requires-actor]} (control-request opts kind)
+            (die "control-intent requires --expected-revision <positive integer>"))
+        request (control-intent-request opts)
         vault (vault-path opts)
         ticket (ticket-data vault id)
         card (card-for (read-text (board-path vault)) id)]
-    (print-result opts {:action (str "control-" kind)
+    (print-result opts {:action "control-intent"
                         :id id
                         :dry-run true
                         :request (assoc request :ticket id :expected-revision (parse-long revision))
-                        :requires-actor requires-actor
+                        :requires-actor (or (:actor opts) "owner")
                         :lane (:lane card)
                         :projection (frontmatter-projection ticket)
                         :writes []})))
 
 (defn usage []
-  (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|delete|control-intent|control-decision|control-retry> [args]"))
+  (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|delete|control-intent> [args]"))
 
 (defn -main [& args]
   (let [cmd (first args)
@@ -657,9 +657,7 @@
                         (with-vault-writer-lock #(cmd-request-codex opts id)))
       "delete" (let [id (or id (die "delete requires ticket id"))]
                  (with-vault-writer-lock #(cmd-delete opts id)))
-      "control-intent" (cmd-control opts (or id (die "control-intent requires ticket id")) "intent")
-      "control-decision" (cmd-control opts (or id (die "control-decision requires ticket id")) "decision")
-      "control-retry" (cmd-control opts (or id (die "control-retry requires ticket id")) "retry")
+      "control-intent" (cmd-control-intent opts (or id (die "control-intent requires ticket id")))
       (usage))))
 
 (apply -main *command-line-args*)
