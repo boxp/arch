@@ -16,10 +16,6 @@ on:
         required: true
       gh_cloudflare_api_token:
         required: true
-      TAILSCALE_API_KEY:
-        required: false
-      TAILSCALE_TAILNET:
-        required: false
 
 jobs:
   plan:
@@ -33,9 +29,9 @@ jobs:
       TFACTION_TARGET: ${{matrix.target.target}}
       TFACTION_JOB_TYPE: ${{matrix.target.job_type}}
       TFACTION_SKIP_TERRAFORM: ${{matrix.target.skip_terraform}}
-      # Tailscale WIF (BOXP-200): used for Tailscale targets once the non-secret
-      # client ID variable is registered. Delete the variable to fall back to the
-      # legacy API key. Tailscale generates the audience from the client ID.
+      # Tailscale WIF (BOXP-200): Tailscale targets authenticate only with the
+      # read-only trust credential named by the non-secret client ID variable.
+      # Tailscale generates the audience from the client ID.
       TAILSCALE_OAUTH_CLIENT_ID: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && vars.TAILSCALE_WIF_CI_PLAN_CLIENT_ID || '' }}
       TAILSCALE_AUDIENCE: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && vars.TAILSCALE_WIF_CI_PLAN_CLIENT_ID != '' && format('api.tailscale.com/{0}', vars.TAILSCALE_WIF_CI_PLAN_CLIENT_ID) || '' }}
       GH_COMMENT_SHA1: ${{inputs.ref}}
@@ -110,7 +106,8 @@ jobs:
         with:
           action: setup
           github_token: ${{steps.generate_token.outputs.token}}
-          secrets: ${{toJSON(secrets)}}
+          # Tailscale targets use WIF and receive no secret.
+          secrets: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && '{}' || toJSON(secrets) }}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider
 
@@ -131,8 +128,8 @@ jobs:
         with:
           action: terraform-init
           github_token: ${{steps.generate_token.outputs.token}}
-          # WIF mode passes no secret, so the API key never reaches terraform.
-          secrets: ${{ env.TAILSCALE_OAUTH_CLIENT_ID != '' && '{}' || toJSON(secrets) }}
+          # Tailscale targets use WIF and receive no secret.
+          secrets: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && '{}' || toJSON(secrets) }}
       - name: Generate token (pull request write)
         id: pull_request_token
         uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
@@ -170,7 +167,8 @@ jobs:
         with:
           action: test
           github_token: ${{steps.generate_token.outputs.token}}
-          secrets: ${{toJSON(secrets)}}
+          # Tailscale targets use WIF and receive no secret.
+          secrets: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && '{}' || toJSON(secrets) }}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and reviewdog and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
@@ -180,8 +178,8 @@ jobs:
         with:
           action: plan
           github_token: ${{steps.generate_token.outputs.token}}
-          # WIF mode passes no secret, so the API key never reaches terraform.
-          secrets: ${{ env.TAILSCALE_OAUTH_CLIENT_ID != '' && '{}' || toJSON(secrets) }}
+          # Tailscale targets use WIF and receive no secret.
+          secrets: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && '{}' || toJSON(secrets) }}
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and tfcmt and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider

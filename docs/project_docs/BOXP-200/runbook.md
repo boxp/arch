@@ -2,14 +2,15 @@
 
 ## 現在の到達点
 
-2026-10-01時点の段階は次の通り。旧API keyは、段階4の検証が終わるまでrevokeしない。
+2026-10-01時点の段階は次の通り。旧API keyは、段階4のmerge後のapplyがWIFで成功するまでrevokeしない。
 
 | 段階 | 内容 | 状態 |
 | --- | --- | --- |
 | 1 | read-only Trustのbootstrapと、main限定の手動dispatchによるWIF plan | 完了（[run 36833143596](https://github.com/boxp/arch/actions/runs/36833143596)、変更なしで成功） |
 | 2 | 本番CI用Trust（plan用read-only、apply用write）の作成と、変数で切り替わるworkflowの反映 | 完了（PR #13077、[apply run 36836072383](https://github.com/boxp/arch/actions/runs/36836072383)でTrustを2つ作成） |
 | 3 | 非secretのclient IDを変数へ登録し、PRのplanとmainのapplyをWIFで成功させる | 変数2つは登録済み。PRのplanはWIFで成功（[run 36837940627](https://github.com/boxp/arch/actions/runs/36837940627)、変更なし）。applyはPR #13089のmerge後に確認する |
-| 4 | API keyの参照を削除するPR、API keyのrevoke、revoke後の再検証 | 未実施 |
+| 4 | API keyの参照を削除するPR | PR #13090をDraftで用意済み。段階3のapplyがWIFで成功してからmergeする |
+| 5 | API keyのrevoke、Secretの削除、revoke後の再検証 | 未実施（owner） |
 
 担当ownerはboxp。以下の棚卸しはリポジトリの設定とGitHub登録metadataを根拠にした利用主体一覧である。GitHubにはSecret名`TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`、変数名`TAILSCALE_WIF_PLAN_CLIENT_ID`、`TAILSCALE_WIF_PLAN_AUDIENCE`、`TAILSCALE_WIF_CI_PLAN_CLIENT_ID`、`TAILSCALE_WIF_APPLY_CLIENT_ID`の登録がある。Environmentは未登録である。Secretの値は閲覧していない。実際にactiveなcredentialの全数・最終利用日時・有効期限・実scopeは、値を表示しないTailscale管理画面のmetadata確認が未実施のため未確定である。登録が存在することと現在利用中であることを区別する。
 
@@ -18,7 +19,7 @@
 | 利用主体 / 種別 | 確認できた設定と根拠 | active / scope / expiryの未確認点 |
 | --- | --- | --- |
 | boxp/arch Terraform・tfmigrate / API key | `terraform/tailscale/lolice/provider.tf`はenv認証。`apply.yaml`と`wc-plan.yaml`がtfactionの`secrets`入力へ渡したSecretが、名前のまま環境変数としてterraformへ届く（詳細は「本番CIのWIF切替」）。`test.yaml` → `wc-test.yaml` → `wc-plan.yaml`がsecretを受け渡す。GitHubにSecret名`TAILSCALE_API_KEY`の登録を確認済み | 値・発行者・実有効期限は未確認。API keyを細粒度scope付きcredentialとみなさない。WIF切替の完了後にrevokeする |
-| 今後のTailscale Terraform生成元 / API key | `templates/tailscale/provider.tf`もAPI key envに言及 | テンプレート自体はactive consumerではない。将来の移行時に設定伝播も確認する |
+| 今後のTailscale Terraform生成元 / API key | `templates/tailscale/provider.tf`はAPI key envに言及していた。PR #13090でWIFの記述へ変える | テンプレート自体はactive consumerではない。将来の移行時に設定伝播も確認する |
 | lolice Kubernetes Operator / OAuth | `terraform/tailscale/lolice/oauth.tf`は手動作成とSSM SecureString保存を指定。コメントの最小権限はauth_keys・devices write、tag:k8s-operator。値はplaceholder、`ignore_changes = [value]`。Operatorはnamespace `tailscale-operator`でv1.80.3が稼働（2026-10-01、Deploymentのmetadataで確認） | 実scope・実client・最終利用・SSMとSecretの同期は未確認。コメントは付与済み権限の証明ではない。固有のexpiryはなく、四半期の棚卸しで確認する。WIF化の判断はBOXP-206 |
 | lolice subnet router / auth key | `auth_key.tf`はreusable、ephemeral、preauthorized、tag:subnet-router。SSM SecureStringへ保存。2026-10-01のapplyで再発行された（PRのplan要約で確認） | 期限は発行から90日（provider既定）で、2026-12-30頃。実値はoutput `subnet_router_auth_key_expires_at`で確認する。再登録時の消費経路は未確認。ephemeralはauth keyの期限管理の代わりではない |
 | boxp/lolice ArgoCD diff / 既存WIF | `wif.tf`と`variables.tf`にGitHub issuer、boxp/lolice pull_request subject、workflow名ArgoCD Diff Check、auth_keys・devices:core、tag:ciを定義 | 定義がapply済みか、workflowが利用中か、実claim・scope一致は未確認。arch用のTrust Credentialとして流用しない |
@@ -101,21 +102,29 @@ audienceの変数は不要である。Tailscaleが生成するaudienceは`api.ta
 
 providerは空文字の環境変数を未設定として扱う（v0.29.2の`Configure`を確認）。両方が設定された場合は`Provider credentials error`で失敗し、黙って片方を使うことはない。
 
+上の表はPR #13077からPR #13090のmerge前までの挙動である。PR #13090のmerge後は従来モードがなくなる。
+
+- `terraform/tailscale/`配下の対象では、`setup` / `terraform-init` / `test` / `plan` / `apply`のすべてのtfaction stepへ`secrets: {}`を渡す。変数の有無では分岐しない。
+- `test.yaml` → `wc-test.yaml` → `wc-plan.yaml`の`TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`の受け渡しをやめる。reusable workflowの`secrets`には呼び出し側が渡したSecretしか入らないので、PRのplan jobにはAPI keyがどの対象でも届かなくなる。
+- `tfaction-root.yaml`の`secrets`対応表を削除する。`output-github-secrets`を使っていないため、挙動は変わらない。
+- 変数が未登録、または消された場合、Tailscale対象のplan・applyは認証情報なしで失敗する。API keyへは戻らない。
+- `apply.yaml`のTailscale以外の対象は、GitHubのSecret `TAILSCALE_API_KEY`を削除するまで`toJSON(secrets)`経由でAPI keyを受け取り続ける。Secretの削除（手順6）で解消する。
+
 ### 切替手順
 
 1. このPRをmergeする。applyは従来のAPI key経路で動き、Trustを2つ作成する。PRのplanが「Trust 2つの追加とoutputの追加」だけであることをmerge前に確認する。auth keyやSSMの変更が含まれていたら止める。
 2. client IDを取得する。applyコメントのOutputs、Tailscale管理画面のTrust credentials、または`terraform output -raw arch_ci_plan_wif_client_id` / `arch_apply_wif_client_id`のいずれかを使う。client IDは非secretである。引数なしの`terraform output`やstateの表示は使わない。
 3. `gh variable set TAILSCALE_WIF_CI_PLAN_CLIENT_ID --repo boxp/arch`で登録する。`terraform/tailscale/lolice`のコメントだけを変えるPRを作り、planの成功を確認する。plan jobのログ冒頭の`env:`で`TAILSCALE_OAUTH_CLIENT_ID`が空でないことがWIFモードの証跡になる。
 4. `gh variable set TAILSCALE_WIF_APPLY_CLIENT_ID --repo boxp/arch`で登録し、手順3のPRをmergeしてapplyの成功を確認する。
-5. API keyの参照を削除するPRを作る。対象は`test.yaml` / `wc-test.yaml` / `wc-plan.yaml`の`TAILSCALE_API_KEY`受け渡し、`tfaction-root.yaml`の`TAILSCALE_API_KEY`対応、`templates/tailscale/provider.tf`のコメント、workflowの従来モードへの分岐。このPRのplanとapplyがWIFで成功することを確認する。
-6. Tailscale管理画面でAPI keyの最終利用日時が手順3より前で止まっていることを確認してからrevokeし、GitHubのSecret `TAILSCALE_API_KEY`を削除する。手動dispatchのWIF planと、任意のPRのplanを再実行して成功を確認する。
+5. API keyの参照を削除するPR（#13090）を、手順4のapplyがWIFで成功した後にmergeする。対象は`test.yaml` / `wc-test.yaml` / `wc-plan.yaml`の`TAILSCALE_API_KEY`受け渡し、`tfaction-root.yaml`の`TAILSCALE_API_KEY`対応、`provider.tf`と`templates/tailscale/provider.tf`のコメント、workflowの従来モードへの分岐。`pull_request_target`はmainのworkflowで動くため、このPR自身のplanは変更前の`wc-plan.yaml`で実行される。変更後のworkflowは、merge後のapply（`provider.tf`のコメント変更で起動する）と、その後に作る`terraform/tailscale/`配下のPRのplanで確認する。
+6. Tailscale管理画面でAPI keyの最終利用日時が手順4のapplyより前で止まっていることを確認してからrevokeし、GitHubのSecret `TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`を削除する。手動dispatchのWIF planと、`terraform/tailscale/`配下を変更するPRのplanを実行して成功を確認する。
 
 失敗時の復旧:
 
 | 時点 | 復旧 |
 | --- | --- |
 | 手順3・4で失敗（revoke前） | `gh variable delete`で該当変数を消すと次の実行からAPI key経路へ戻る。コードのrevertは不要。失敗の原因はclaim・scopeの設定差として調べ、scopeを`all`へ広げない |
-| 手順5のmerge後、revoke前 | PRをrevertし、変数を消す |
+| 手順5のmerge後、revoke前 | WIFのまま直せる不具合（workflowの記述誤りなど）は修正PRで直す。API key経路へ戻す必要がある場合は、PR #13090をrevertしてから該当変数を消す。revertだけではWIFモードのままで、変数だけを消すと認証情報なしで失敗する |
 | revoke後 | 旧keyは復活できない。管理画面でTrustの条件を直すか、期限の短い復旧用API keyを発行してSecretへ登録し、変数を消して従来モードで直す。復旧後にそのkeyもrevokeする |
 
 apply用Trustは自分自身をこのmoduleで管理している。`github_actions_arch_apply`のclaim条件やscopeを変えるPRは、apply後に次のapplyが通らなくなる可能性があるため、管理画面から直せる状態で行う。
@@ -182,7 +191,7 @@ auth keyの期限は2026-12-30（UTC）である。PR #13077のplanが表示し�
 ## 次に必要な完了証跡
 
 - 「切替手順」4の残り：PR #13089をmergeし、applyがWIFで成功することを確認する。
-- 「切替手順」5：API key参照を削除するPR。`setup`と`test`のstepへ渡している`toJSON(secrets)`もこのPRで外す。
+- 「切替手順」5：PR #13090をmergeし、applyがWIFで成功することを確認する。PR #13089のapply成功が前提である。
 - ownerによる「切替手順」6（API keyのrevoke、Secretの削除、revoke後の再検証）。
 - ownerによるactive credentialと実expiry/scope/tagのmetadata棚卸し。
 - BOXP-206でのOperator WIFの可否判断。決まるまでOAuth運用を続ける。
@@ -206,4 +215,5 @@ credential値、token、state、plan本文、Secret本文、private endpointを�
 - 変数`TAILSCALE_WIF_CI_PLAN_CLIENT_ID`を登録し、PR #13089（`provider.tf`のコメントだけを変更）でplanを実行した。[run 36837940627](https://github.com/boxp/arch/actions/runs/36837940627)のplan jobは成功し、結果は`No changes`。jobの`env:`で`TAILSCALE_OAUTH_CLIENT_ID`と`TAILSCALE_AUDIENCE`が空でないこと、`terraform-init`と`plan`のstepの`secrets`入力が`{}`であることを確認した。`pull_request_target`のtokenがplan用Trustの条件（`repo:boxp/arch:*`、`event_name`、`workflow_ref`、`job_workflow_ref`）に一致することも、この成功で確認できた。
 - 同じjobの`setup`と`test`のstepは、WIFモードでも`toJSON(secrets)`を受け取っている。どちらもTailscale providerの認証には使わないが、API keyの値はstepへ渡っている。「切替手順」5で外す。
 - plan成功の後に変数`TAILSCALE_WIF_APPLY_CLIENT_ID`を登録した。applyのWIF検証はPR #13089のmerge後に行う。失敗した場合は`gh variable delete TAILSCALE_WIF_APPLY_CLIENT_ID --repo boxp/arch`でAPI key経路へ戻し、applyを再実行する。
+- API key参照を削除するPR #13090をDraftで用意した。tfaction v2.3.2のソースで、`secrets`入力を読むのは`setup` / `terraform-init` / `plan` / `apply`だけで、`test`は読まないこと、`tfaction-root.yaml`の対応表は`output-github-secrets`だけが参照することを確認した。このため、Tailscale対象の全stepへ`{}`を渡しても、対応表を消しても、terraformへ届く環境変数はWIFモードの現状と変わらない。
 - API keyのrevoke、Secretの削除は行っていない。
