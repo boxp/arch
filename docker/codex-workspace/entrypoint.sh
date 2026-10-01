@@ -260,7 +260,6 @@ even_terminal_interface="${EVEN_TERMINAL_INTERFACE:-eth0}"
 configure_even_terminal() {
   local config_dir=/home/boxp/.even-terminal
   local config="${config_dir}/config.json"
-  local tmp="${config}.tmp"
   local token="${EVEN_TERMINAL_TOKEN:-}"
 
   /usr/sbin/runuser -u boxp -- install -d -m 0700 "${config_dir}"
@@ -272,25 +271,42 @@ configure_even_terminal() {
     token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
   fi
 
-  (
-    umask 077
-    EVEN_TERMINAL_CONFIG_TOKEN="${token}" jq -n \
-      --arg provider "${even_terminal_provider}" \
-      --arg cwd "${even_terminal_cwd}" \
-      --arg interface "${even_terminal_interface}" \
-      --argjson port "${even_terminal_port}" \
-      '{
-        version: 1,
-        provider: $provider,
-        cwd: $cwd,
-        network: {mode: "interface", name: $interface},
-        port: $port,
-        token: $ENV.EVEN_TERMINAL_CONFIG_TOKEN
-      }' >"${tmp}"
-  )
-  chown boxp:boxp "${tmp}"
-  chmod 0600 "${tmp}"
-  mv "${tmp}" "${config}"
+  # The directory is writable by boxp, so write the file as boxp (never as
+  # root) to keep a planted symlink from redirecting a privileged write. The
+  # token goes through the environment to stay out of the process arguments.
+  # shellcheck disable=SC2016
+  EVEN_TERMINAL_CONFIG_TOKEN="${token}" /usr/sbin/runuser -u boxp -- \
+    bash -euo pipefail -c '
+      config_dir="$1"
+      umask 077
+      tmp="$(mktemp "${config_dir}/config.json.XXXXXX")"
+      trap '\''rm -f "${tmp}"'\'' EXIT
+      jq -n \
+        --arg provider "$2" \
+        --arg cwd "$3" \
+        --arg interface "$4" \
+        --argjson port "$5" \
+        '\''{
+          version: 1,
+          provider: $provider,
+          cwd: $cwd,
+          network: {mode: "interface", name: $interface},
+          port: $port,
+          token: $ENV.EVEN_TERMINAL_CONFIG_TOKEN
+        }'\'' >"${tmp}"
+      # Publish with link(2): it is atomic and fails if config.json already
+      # exists, so a config created since the check above is never replaced.
+      if ! ln -T "${tmp}" "${config_dir}/config.json" 2>/dev/null \
+        && [[ ! -e "${config_dir}/config.json" ]]; then
+        echo "codex-workspace-entrypoint: failed to create ${config_dir}/config.json" >&2
+        exit 1
+      fi
+    ' bash \
+    "${config_dir}" \
+    "${even_terminal_provider}" \
+    "${even_terminal_cwd}" \
+    "${even_terminal_interface}" \
+    "${even_terminal_port}"
 }
 
 configure_even_terminal
