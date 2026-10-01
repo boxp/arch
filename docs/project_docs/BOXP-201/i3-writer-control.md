@@ -61,7 +61,7 @@ control原本のinterfaceと、actor・revision・世代の契約を固定する
 | `:issue-control` | owner | 世代発行済み、ticketにcontrolが無い。revision・世代・digestはstoreが決める |
 | `:update-control` | owner | `:expected-revision` のCAS。intent / route / scope / budget / requirements / `:new-budget-epoch` |
 | `:restrict-intent` | runner | 現在世代、revisionのCAS。`pause` / `cancel` / `wait-human` への変更のみ。`cancel` からは変更不可 |
-| `:consume-budget` | runner | 現在世代、idempotency key。stepの予約は `run` intent・revision一致・残budget内のみ |
+| `:consume-budget` | runner | 現在世代、idempotency key。stepの予約は `run` intent・revision一致・残budget内のみ（同時に計上する `wall_minutes` を含めて上限以下）。開始済みstepの経過時間（`steps` 0）は常に記録する |
 
 - 未登録credentialは `:unauthenticated`、権限のないroleは `:forbidden`、古いrevisionは `:conflict`、古い世代は `:stale-generation`。agent roleは読取のみ。
 - 保存するcontrolはすべてI1の `validate-control` を、store側に設定した許可repo/pathで通過したものに限る。

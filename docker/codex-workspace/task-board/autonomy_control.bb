@@ -323,14 +323,17 @@
         ::duplicate
         (do
           ;; Reserving a step is a start decision: it is bound to the revision
-          ;; snapshot, a run intent and the remaining budget. Elapsed wall time
-          ;; of an already started step is always recorded.
+          ;; snapshot, a run intent and the remaining budget, including any wall
+          ;; time charged with the reservation. Elapsed wall time of an already
+          ;; started step (steps 0) is always recorded.
           (when (pos? steps)
             (expected-revision! entry (:expected-revision request))
             (when-not (= "run" (:intent control)) (reject! :forbidden))
-            (when (or (> (+ (:steps consumed) steps) (get-in control [:budget :max_steps]))
-                      (>= (:wall_minutes consumed) (get-in control [:budget :max_wall_minutes])))
-              (reject! :budget-exceeded)))
+            (let [max-wall (get-in control [:budget :max_wall_minutes])]
+              (when (or (> (+ (:steps consumed) steps) (get-in control [:budget :max_steps]))
+                        (>= (:wall_minutes consumed) max-wall)
+                        (> (+ (:wall_minutes consumed) wall_minutes) max-wall))
+                (reject! :budget-exceeded))))
           (event-for actor :consume-budget ticket (:revision control)
                      (-> entry
                          (update-in [:consumed :steps] + steps)

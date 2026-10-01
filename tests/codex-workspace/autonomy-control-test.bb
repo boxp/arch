@@ -276,8 +276,16 @@
       (is (true? (:duplicate? (consume runner {:idempotency-key "run-2/step-1" :steps 2
                                                :expected-revision 4})))
           "keys from the previous epoch cannot be replayed into the new one")
-      (is (ok? (consume runner {:idempotency-key "run-4/step-1" :steps 1 :wall_minutes 60
+      (is (rejected? :budget-exceeded (consume runner {:idempotency-key "run-4/step-1" :steps 1
+                                                       :wall_minutes 61 :expected-revision 4}))
+          "a reservation cannot charge more wall time than remains")
+      (is (= {:steps 0 :wall_minutes 0} (consumed)))
+      (is (ok? (consume runner {:idempotency-key "run-4/step-1" :steps 1 :wall_minutes 50
                                 :expected-revision 4})))
+      (is (rejected? :budget-exceeded (consume runner {:idempotency-key "run-4/step-2" :steps 1
+                                                       :wall_minutes 11 :expected-revision 4})))
+      (is (ok? (consume runner {:idempotency-key "run-4/step-1-wall" :wall_minutes 10})))
+      (is (= {:steps 1 :wall_minutes 60} (consumed)))
       (is (rejected? :budget-exceeded (consume runner {:idempotency-key "run-4/step-2" :steps 1
                                                        :expected-revision 4}))
           "exhausted wall budget blocks further steps"))))
