@@ -109,6 +109,11 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 不正な値のときは既定値を使い、`prune: warning invalid <変数>="<値>", using default <既定値>` を
 値ごとに 1 回だけ出す。既定値のまま動くので `boxp/lolice` の manifest 変更は不要。
 
+値を変えるときは `boxp/lolice` の `argoproj/codex-workspace/deployment.yaml` で `task-board-runner`
+コンテナの `env` に足す。このコンテナは `command:` で `task_board_runner.bb loop` を直接起動していて
+image の entrypoint（`entrypoint.sh` の `runuser --whitelist-environment`）を通らないので、
+既存の `CODEX_TASK_BOARD_POLL_SECONDS` などと同じく entrypoint 側の許可リストへの追加は要らない。
+
 ## 手動実行
 
 ```
