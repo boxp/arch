@@ -15,11 +15,17 @@
 #
 # Exit status:
 #   0  どの workflow も最新の完了 run は実行されている
+#   1  GitHub API の照会に失敗した、または LIMIT が不正
 #   2  最新の完了 run が未実行の workflow がある（承認が必要）
 set -euo pipefail
 
 REPO="${REPO:-boxp/arch}"
 LIMIT="${LIMIT:-30}"
+
+if ! [[ "$LIMIT" =~ ^[0-9]+$ ]] || [ "$LIMIT" -lt 1 ] || [ "$LIMIT" -gt 100 ]; then
+  echo "LIMIT must be an integer between 1 and 100: ${LIMIT}" >&2
+  exit 1
+fi
 
 if [ "$#" -eq 0 ]; then
   set -- apply.yaml test.yaml
@@ -31,7 +37,14 @@ for workflow in "$@"; do
   latest_state=""
   blocked_count=0
 
+  # 照会に失敗したら「未実行なし」と誤認しないよう、ここで異常終了させる。
+  runs="$(
+    gh api "repos/${REPO}/actions/workflows/${workflow}/runs?per_page=${LIMIT}&status=completed" \
+      --jq '.workflow_runs[] | [.id, .created_at, .conclusion, .head_sha, .html_url] | @tsv'
+  )"
+
   while IFS=$'\t' read -r id created conclusion sha url; do
+    [ -n "$id" ] || continue
     state="ran"
     case "$conclusion" in
       action_required)
@@ -52,10 +65,7 @@ for workflow in "$@"; do
       blocked_count=$((blocked_count + 1))
       printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$workflow" "$id" "$created" "$conclusion" "${sha:0:9}" "$url"
     fi
-  done < <(
-    gh api "repos/${REPO}/actions/workflows/${workflow}/runs?per_page=${LIMIT}&status=completed" \
-      --jq '.workflow_runs[] | [.id, .created_at, .conclusion, .head_sha, .html_url] | @tsv'
-  )
+  done <<< "$runs"
 
   echo "# ${workflow}: latest=${latest_state:-none} blocked=${blocked_count} (直近 ${LIMIT} 件)" >&2
   if [ "$latest_state" = "blocked" ]; then
