@@ -2,18 +2,25 @@
 
 ## 現在の到達点
 
-この変更はPRレビュー用のprepare段階であり、認証移行の完了を意味しない。Trust Credentialのbootstrap、GitHub変数登録、WIFによる実API read、実stateをrefreshするTerraform plan、既存production CIのWIF切替・成功確認、旧credentialのrevokeは未実施である。既存CIのAPI key経路を維持する。candidateだけの成功で旧keyを削除してはならない。
+2026-10-01時点の段階は次の通り。旧API keyは、段階4の検証が終わるまでrevokeしない。
 
-担当ownerはboxp。以下の棚卸しはリポジトリの設定とGitHub登録metadataを根拠にした利用主体一覧である。GitHubにはSecret名`TAILSCALE_API_KEY`の登録があることを確認済みで、repository variablesは空、Environmentも未登録である。Secretの値は閲覧していない。実際にactiveなcredentialの全数・最終利用日時・有効期限・実scopeは、値を表示しないTailscale管理画面のmetadata確認が未実施のため未確定である。登録が存在することと現在利用中であることを区別する。
+| 段階 | 内容 | 状態 |
+| --- | --- | --- |
+| 1 | read-only Trustのbootstrapと、main限定の手動dispatchによるWIF plan | 完了（[run 36833143596](https://github.com/boxp/arch/actions/runs/36833143596)、変更なしで成功） |
+| 2 | 本番CI用Trust（plan用read-only、apply用write）の作成と、変数で切り替わるworkflowの反映 | このPR。merge後のapplyは従来のAPI key経路で動く |
+| 3 | ownerが非secretのclient IDを変数へ登録し、PRのplanとmainのapplyをWIFで成功させる | 未実施 |
+| 4 | API keyの参照を削除するPR、API keyのrevoke、revoke後の再検証 | 未実施 |
+
+担当ownerはboxp。以下の棚卸しはリポジトリの設定とGitHub登録metadataを根拠にした利用主体一覧である。GitHubにはSecret名`TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`、変数名`TAILSCALE_WIF_PLAN_CLIENT_ID`と`TAILSCALE_WIF_PLAN_AUDIENCE`の登録がある。Environmentは未登録である。Secretの値は閲覧していない。実際にactiveなcredentialの全数・最終利用日時・有効期限・実scopeは、値を表示しないTailscale管理画面のmetadata確認が未実施のため未確定である。登録が存在することと現在利用中であることを区別する。
 
 ## 値を扱わないソース棚卸し
 
 | 利用主体 / 種別 | 確認できた設定と根拠 | active / scope / expiryの未確認点 |
 | --- | --- | --- |
-| boxp/arch Terraform・tfmigrate / API key | `terraform/tailscale/lolice/provider.tf`はenv認証。`tfaction-root.yaml`の`terraform/tailscale/**`に対するTerraform plan/apply、tfmigrate plan/applyで`TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`を注入する。`test.yaml` → `wc-test.yaml` → `wc-plan.yaml`がsecretを受け渡す。GitHubにSecret名`TAILSCALE_API_KEY`の登録を確認済み | 値・実利用・発行者・実有効期限は未確認。API keyを細粒度scope付きcredentialとみなさない |
+| boxp/arch Terraform・tfmigrate / API key | `terraform/tailscale/lolice/provider.tf`はenv認証。`apply.yaml`と`wc-plan.yaml`がtfactionの`secrets`入力へ渡したSecretが、名前のまま環境変数としてterraformへ届く（詳細は「本番CIのWIF切替」）。`test.yaml` → `wc-test.yaml` → `wc-plan.yaml`がsecretを受け渡す。GitHubにSecret名`TAILSCALE_API_KEY`の登録を確認済み | 値・発行者・実有効期限は未確認。API keyを細粒度scope付きcredentialとみなさない。WIF切替の完了後にrevokeする |
 | 今後のTailscale Terraform生成元 / API key | `templates/tailscale/provider.tf`もAPI key envに言及 | テンプレート自体はactive consumerではない。将来の移行時に設定伝播も確認する |
-| lolice Kubernetes Operator / OAuth | `terraform/tailscale/lolice/oauth.tf`は手動作成とSSM SecureString保存を指定。コメントの最小権限はauth_keys・devices write、tag:k8s-operator。値はplaceholder、`ignore_changes = [value]`。SSMタグはProject/Purposeのみ | Operator実version・実scope・実client・最終利用・SSMとSecretの同期は未確認。コメントは付与済み権限の証明ではない。expiry metadataなし |
-| lolice subnet router / auth key | `auth_key.tf`はreusable、ephemeral、preauthorized、tag:subnet-router。SSM SecureStringへ保存 | 実keyのactive状態・expiry・再登録時の消費経路は未確認。Terraformにexpiry指定なし。ephemeralはauth keyの期限管理の代わりではない |
+| lolice Kubernetes Operator / OAuth | `terraform/tailscale/lolice/oauth.tf`は手動作成とSSM SecureString保存を指定。コメントの最小権限はauth_keys・devices write、tag:k8s-operator。値はplaceholder、`ignore_changes = [value]`。Operatorはnamespace `tailscale-operator`でv1.80.3が稼働（2026-10-01、Deploymentのmetadataで確認） | 実scope・実client・最終利用・SSMとSecretの同期は未確認。コメントは付与済み権限の証明ではない。固有のexpiryはなく、四半期の棚卸しで確認する。WIF化の判断はBOXP-206 |
+| lolice subnet router / auth key | `auth_key.tf`はreusable、ephemeral、preauthorized、tag:subnet-router。SSM SecureStringへ保存。2026-10-01のapplyで再発行された（PRのplan要約で確認） | 期限は発行から90日（provider既定）で、2026-12-30頃。実値はoutput `subnet_router_auth_key_expires_at`で確認する。再登録時の消費経路は未確認。ephemeralはauth keyの期限管理の代わりではない |
 | boxp/lolice ArgoCD diff / 既存WIF | `wif.tf`と`variables.tf`にGitHub issuer、boxp/lolice pull_request subject、workflow名ArgoCD Diff Check、auth_keys・devices:core、tag:ciを定義 | 定義がapply済みか、workflowが利用中か、実claim・scope一致は未確認。arch用のTrust Credentialとして流用しない |
 
 実inventoryを確定する際は管理画面のcredential一覧metadataのみを使い、consumerの論理名、種別、owner、scope/tag、発行・期限・最終利用日時、確認日時を記録する。値、token、Secret本文、Terraform state、private endpointを開かない。metadata取得APIが本文に機密情報を含む場合は生レスポンスをログに出さず、許可された日時・状態だけを扱う。確認できないexpiryを推測せず`unknown`とし、当日owner調査対象にする。
@@ -61,19 +68,71 @@ bootstrap・切替の検証順序は次の通り。
 
 revoke前の障害時は旧経路へ戻す変更をrevertし、既存keyによるCIを継続する。候補Trust Credentialを使うjobを止め、原因修正まで権限を拡張しない。revoke後に旧keyは復活できないため、ownerが限定consumer向けの新しい復旧credentialを安全なsecret経路で発行するか、Trust設定を修正する。機密値をNotes・PR・CLI引数・shell historyに貼らない。復旧成功後、復旧用credentialも検証してからrevokeする。
 
+## 本番CI（tfaction）のWIF切替
+
+### 認証がterraformへ届く経路
+
+`suzuki-shunsuke/tfaction` v2.3.2の`terraform-init` / `plan` / `apply`は、`secrets`入力のJSONを「環境変数名 → 値」としてそのままterraformのprocessへ渡す。これまでAPI keyが届いていたのは、Secret名`TAILSCALE_API_KEY`がproviderの環境変数名と同じだからである。`tfaction-root.yaml`の`secrets`対応表は`output-github-secrets` actionを使う場合だけ参照されるため、現行workflowでは使われていない。
+
+`apply.yaml`は`toJSON(secrets)`を渡しており、Tailscale以外の対象でもrepositoryの全Secretがterraformのprocessへ渡っている。これは今回の変更範囲外の既存挙動で、別ticketでの是正を提案する。WIFモードのTailscale対象では`{}`を渡すので、この露出はなくなる。
+
+### Trust Credentialと変数
+
+| 用途 | resource | scope / tag | 追加のclaim条件 | 変数 |
+| --- | --- | --- | --- | --- |
+| 手動の検証 | `github_actions_arch_plan` | read-only / `tag:subnet-router` | `event_name=workflow_dispatch`、`workflow_ref`は`tailscale-wif-plan.yaml` | `TAILSCALE_WIF_PLAN_CLIENT_ID`、`TAILSCALE_WIF_PLAN_AUDIENCE` |
+| PRのplan・tfmigrate plan | `github_actions_arch_ci_plan` | read-only（手動検証と同じ5 scope）/ `tag:subnet-router` | `event_name=pull_request_target`、`workflow_ref`は`test.yaml`、`job_workflow_ref`は`wc-plan.yaml` | `TAILSCALE_WIF_CI_PLAN_CLIENT_ID` |
+| mainのapply・tfmigrate apply | `github_actions_arch_apply` | `policy_file`、`devices:core:read`、`devices:posture_attributes`、`auth_keys`、`federated_keys` / `tag:subnet-router`、`tag:ci` | `event_name=push`、`workflow_ref`は`apply.yaml` | `TAILSCALE_WIF_APPLY_CLIENT_ID` |
+
+3つともissuerはGitHub Actions、`repository=boxp/arch`を条件にする。手動検証用とapply用は、subjectを`repo:boxp/arch:ref:refs/heads/main`、`ref`を`refs/heads/main`に固定する。plan用だけはsubjectを`repo:boxp/arch:*`とし、`ref`を条件にしない。`pull_request_target`で発行されるtokenの`sub`と`ref`の形式をGitHubが文書化しておらず、実tokenで確認できていないためである。代わりに`event_name`と、`@refs/heads/main`まで含めた`workflow_ref`・`job_workflow_ref`で限定する。`pull_request_target`はbase branchのworkflowで動くため、PR側でworkflowを書き換えてもこの条件は満たせない。mainでないbaseへのPRは`workflow_ref`が一致しない。一方でPRのTerraformコードはplan中に実行されるので、plan用のTrustはread-onlyに限定する。API keyをPRのplanへ渡していた従来より権限は小さくなる。
+
+apply用のscopeは、このmoduleが管理するresource（ACL、auth key、Trust Credential）に対応する。`policy_file`には`devices:core:read`と`devices:posture_attributes`が必要という[公式のscope一覧](https://tailscale.com/docs/reference/trust-credentials)に従った。`tag:ci`は`github_actions_argocd_diff`が付与するtagである。apply用Trustは`devices:core`のwriteを持たない。`github_actions_argocd_diff`（`devices:core`を付与する）を作り直す変更が権限不足で失敗した場合は、自動でscopeを広げず、変更内容をレビューした上で一時的な権限追加か管理画面での操作を選ぶ。
+
+audienceの変数は不要である。Tailscaleが生成するaudienceは`api.tailscale.com/<client ID>`の形式で（[公式WIF](https://tailscale.com/docs/features/workload-identity-federation)）、workflowがclient IDから組み立てる。登録済みの`TAILSCALE_WIF_PLAN_*`でこの形式と一致することを確認した。
+
+### workflowの切替条件
+
+`wc-plan.yaml`と`apply.yaml`は、対象が`terraform/tailscale/`配下で、かつ対応する変数が空でないときだけWIFモードになる。
+
+| モード | terraformへ渡る認証 |
+| --- | --- |
+| 変数なし（従来） | `toJSON(secrets)`経由の`TAILSCALE_API_KEY`と`TAILSCALE_TAILNET`。`TAILSCALE_OAUTH_CLIENT_ID`と`TAILSCALE_AUDIENCE`は空 |
+| 変数あり（WIF） | `TAILSCALE_OAUTH_CLIENT_ID`と`TAILSCALE_AUDIENCE`。`secrets`は`{}`なのでAPI keyは渡らない。tailnetは認証主体から決まる |
+
+providerは空文字の環境変数を未設定として扱う（v0.29.2の`Configure`を確認）。両方が設定された場合は`Provider credentials error`で失敗し、黙って片方を使うことはない。
+
+### 切替手順（owner）
+
+1. このPRをmergeする。applyは従来のAPI key経路で動き、Trustを2つ作成する。PRのplanが「Trust 2つの追加とoutputの追加」だけであることをmerge前に確認する。auth keyやSSMの変更が含まれていたら止める。
+2. client IDを取得する。applyコメントのOutputs、Tailscale管理画面のTrust credentials、または`terraform output -raw arch_ci_plan_wif_client_id` / `arch_apply_wif_client_id`のいずれかを使う。client IDは非secretである。引数なしの`terraform output`やstateの表示は使わない。
+3. `gh variable set TAILSCALE_WIF_CI_PLAN_CLIENT_ID --repo boxp/arch`で登録する。`terraform/tailscale/lolice`のコメントだけを変えるPRを作り、planの成功を確認する。plan jobのログ冒頭の`env:`で`TAILSCALE_OAUTH_CLIENT_ID`が空でないことがWIFモードの証跡になる。
+4. `gh variable set TAILSCALE_WIF_APPLY_CLIENT_ID --repo boxp/arch`で登録し、手順3のPRをmergeしてapplyの成功を確認する。
+5. API keyの参照を削除するPRを作る。対象は`test.yaml` / `wc-test.yaml` / `wc-plan.yaml`の`TAILSCALE_API_KEY`受け渡し、`tfaction-root.yaml`の`TAILSCALE_API_KEY`対応、`templates/tailscale/provider.tf`のコメント、workflowの従来モードへの分岐。このPRのplanとapplyがWIFで成功することを確認する。
+6. Tailscale管理画面でAPI keyの最終利用日時が手順3より前で止まっていることを確認してからrevokeし、GitHubのSecret `TAILSCALE_API_KEY`を削除する。手動dispatchのWIF planと、任意のPRのplanを再実行して成功を確認する。
+
+失敗時の復旧:
+
+| 時点 | 復旧 |
+| --- | --- |
+| 手順3・4で失敗（revoke前） | `gh variable delete`で該当変数を消すと次の実行からAPI key経路へ戻る。コードのrevertは不要。失敗の原因はclaim・scopeの設定差として調べ、scopeを`all`へ広げない |
+| 手順5のmerge後、revoke前 | PRをrevertし、変数を消す |
+| revoke後 | 旧keyは復活できない。管理画面でTrustの条件を直すか、期限の短い復旧用API keyを発行してSecretへ登録し、変数を消して従来モードで直す。復旧後にそのkeyもrevokeする |
+
+apply用Trustは自分自身をこのmoduleで管理している。`github_actions_arch_apply`のclaim条件やscopeを変えるPRは、apply後に次のapplyが通らなくなる可能性があるため、管理画面から直せる状態で行う。
+
 ## Operator WIFの前提と分離判断
 
-Operator WIFは今回は実装しない。[公式Operator WIF手順](https://tailscale.com/docs/kubernetes-operator/manage-and-configure/workload-identity-federation)は公開到達可能なOIDC discoveryを前提とする。archのkubeadm templateにissuer/JWKSの明示overrideはなく、Operator Deployment・ServiceAccount定義も本repoにはない。これは実クラスタの非対応を断定する材料ではなく、次の検証が未実施であるというblockerである。
+Operator WIFは実装しない。[公式Operator WIF手順](https://tailscale.com/docs/kubernetes-operator/manage-and-configure/workload-identity-federation)は公開到達可能なOIDC discoveryを前提とするが、2026-10-01のread-only確認で前提を満たさないと分かった。判断と設計はBOXP-206へ分離した。
 
-| 前提 | 現状 / ownerが必要な証跡 |
+| 前提 | 確認結果（2026-10-01） |
 | --- | --- |
-| issuer | 実ServiceAccount tokenのissuerとdiscoveryのissuer一致を未確認。token本文やprivate URLを記録せず一致／不一致のみ記録 |
-| discovery・JWKS | Tailscale側相当のクラスタ外経路から認証なしで取得できること、TLS検証とJWKSの鍵更新に追従することを未確認 |
-| audience | projected tokenとTrustのaudienceの対応を未確認。GitHub用audienceを流用せず実versionの公式手順に従う |
-| subject | 実namespace/ServiceAccountからsubjectを確定する。公式例の`system:serviceaccount:tailscale:operator`は実配置の証明ではない |
-| rollout | Operator version、必要scope/tag、SSM/External Secrets消費経路、既存OAuthへのrollbackを未確認 |
+| issuer | クラスタのOIDC discoveryが返すissuerはkubeadm既定の`https://kubernetes.default.svc.cluster.local`。クラスタ外から名前解決も到達もできない |
+| discovery・JWKS | JWKSの参照先はクラスタ内部アドレス（値は記録しない）。公開経路はない |
+| subject | Operatorはnamespace `tailscale-operator`、ServiceAccount `operator`。subjectは`system:serviceaccount:tailscale-operator:operator`になる |
+| Operator version | image `tailscale/k8s-operator:v1.80.3`。WIF対応versionへの更新要否はBOXP-206で確認する |
+| audience・rollout | 未検証。公開issuerが決まってから設計する |
 
-公開discovery用RBAC・ネットワーク変更、Secret更新、OAuth client削除は今回行わない。owner boxpはクラスタ検証・公開可否の別ticketを作り、対象と影響、rollbackを明記して検討する。それまでOAuthのrotation運用を継続する。未確認のままWIF有効化済みと記載しない。
+確認はdiscovery文書のissuerとDeploymentのmetadataだけで行い、ServiceAccount tokenやSecretは読んでいない。issuerの変更はkube-apiserverの設定変更で、既存のServiceAccount token利用者すべてに影響する。公開discovery用のRBAC・ネットワーク変更、Secret更新、OAuth client削除は行っていない。BOXP-206で可否が決まるまでOAuth clientの運用を続ける。
 
 ## 残存credentialのmetadataと期限監視
 
@@ -103,17 +162,29 @@ subnet router auth keyはTerraform管理下にあり、SSM値やkey resourceの�
 
 ## 通知の実配備状況
 
-このタスクではRecurring Eventを作成していない。`docs/project_docs/BOXP-73-recurring-events/plan.md`にevaluatorとdisabled dry-runの設計があるが、それだけでは稼働中環境のevaluator・cron実配備の証明にならない。本runでは実配備とdry-run candidateを未確認であり、自動通知済みと主張しない。
+Recurring Eventsのevaluatorとcronは配備済みである。2026-10-01に次を確認した。
 
-当面はowner boxpの毎週metadata確認と、期限確定時の手動T-30/T-7 ticketを代替運用にする。cron導入を別途行う場合は、実環境のevaluator起動可否、同vaultを読むscheduler、job enabled状態、次回実行時刻、dry-runで期待するticket candidateと重複抑止を確認してから有効化する。dry-runは本番secretにアクセスせずexpiry metadataのみを使う。
+- evaluator: `/opt/codex-workspace/recurring-events/recurring_events.bb`が存在し、dry-runが動く。
+- cron: `recurring-events-apply`がenabledで、毎日08:00 JSTに実行される。直近の実行は2026-10-01 08:00 JST。
+
+vaultの`Infrastructure/Recurring Events/Events/`へ次の3イベントを作成した。
+
+| イベント | 起票条件 | dry-runで確認したcandidate |
+| --- | --- | --- |
+| `tailscale-subnet-router-auth-key-rotation` | auth keyの期限（2026-12-30）の30日前 | `--today 2026-11-30`でcandidate |
+| `tailscale-subnet-router-auth-key-rotation-final-check` | 同じ期限の7日前 | `--today 2026-12-23`でcandidate |
+| `tailscale-credential-review` | 四半期の初日の7日前。期限を持たないOAuth clientなどの棚卸し | `--today 2026-12-25`で2027-01-01分がcandidate |
+
+現在日のdry-runでは、auth keyの2イベントは`not-yet`である。`tailscale-credential-review`の2026-10-01分は当日だけcandidateになるが、次のcron実行は翌日なので起票されない。今回の棚卸しはBOXP-200で代替し、初回の自動起票は2027-01-01分になる。
+
+auth keyの期限は2026-12-30（UTC）である。PR #13077のplanが表示したoutput `subnet_router_auth_key_expires_at`で確認した。rotationのたびに次の期限をoccurrenceへ追加する必要があり、起票されるticketのAcceptance Criteriaに含めた。
 
 ## 次に必要な完了証跡
 
+- ownerによる「切替手順」の3〜6（変数登録、WIFでのplanとapplyの成功run、API key参照の削除、revoke、revoke後の再検証）。
 - ownerによるactive credentialと実expiry/scope/tagのmetadata棚卸し。
-- Terraform bootstrapと非secretGitHub variables設定、mainでのcandidate WIF plan成功run。
-- consumer別production CI移行PRと成功run、旧key参照撤去、検証後revoke。
-- Operatorの別ticketでのOIDC公開要件判断と検証。未充足ならOAuth運用継続。
-- 手動期限運用のowner確認。自動化する場合だけ実配備・dry-run candidate証跡を追加。
+- BOXP-206でのOperator WIFの可否判断。決まるまでOAuth運用を続ける。
+- `apply.yaml`が全Secretをterraformへ渡している既存挙動の是正（別ticketの提案）。
 
 credential値、token、state、plan本文、Secret本文、private endpointを完了証跡に含めない。
 
@@ -122,3 +193,10 @@ credential値、token、state、plan本文、Secret本文、private endpointを�
 - PR #13019はOpenで、candidate workflowはmain未配備、WIF repository variablesは未設定（値の取得なし）。
 - 既存API key経路の後続[CI run 36674011555](https://github.com/boxp/arch/actions/runs/36674011555)はsetup/対象planとも成功（job結果metadataで確認）。前回のsetup失敗は現在の継続blockerではない。この成功はWIF成功を証明しない。
 - 本runはTerraform bootstrap定義の追加まで。実apply・Trust作成・変数登録・実WIF plan・旧key revokeは未実施。Operator公開OIDC条件も未検証。
+
+## 2026-10-01 の証跡
+
+- PR #13019は2026-10-01にmerge済み。直後の[apply run 36816838549](https://github.com/boxp/arch/actions/runs/36816838549)はplan fileの読み込みに失敗し、tfactionが作成したfollow-up PR #13065の[apply run 36831463437](https://github.com/boxp/arch/actions/runs/36831463437)が成功した。PRのplan要約によると、このapplyはTrustの作成に加えてsubnet router auth keyの再発行とSSM parameterの更新を含む。旧keyが無効になっていたため、providerの既定動作で再作成された。
+- 変数`TAILSCALE_WIF_PLAN_CLIENT_ID`と`TAILSCALE_WIF_PLAN_AUDIENCE`の登録を名前で確認した。
+- [手動dispatch run 36833143596](https://github.com/boxp/arch/actions/runs/36833143596)（main `66fc04a0e`）は全step成功で、結果は`WIF read-only plan succeeded: no changes.`。API keyを渡さないjobで実stateをrefreshするplanが通ったので、read-onlyの5 scopeでこのmoduleのplanができることを確認できた。
+- 確認はjobとstepの結果、workflowが出力する固定文言、PRコメントの要約行だけで行った。plan本文、state、Secretは取得していない。

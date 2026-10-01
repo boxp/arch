@@ -21,3 +21,15 @@ read-only API/実plan成功、信頼境界を保つproduction CIへのWIF接続�
 ## owner指摘への対応（2026-09-30）
 
 client ID/audienceはTrust作成後の値であるため、arch専用`tailscale_federated_identity`と個別の非secret outputを追加する。既存認証を維持して対象resourceだけをbootstrapし、変数登録後にmain限定candidateを実行する。依存ACLの差分を確認し、auth key/SSMを巻き込むmodule全体applyは行わない。実applyとWIF認証成功は未確認として報告する。
+
+## 本番CIの切替（2026-10-01）
+
+手動dispatchのWIF planが成功したので、tfactionのplan/applyをWIFへ切り替える。
+
+1. PRのplan用（read-only）とmainのapply用（write）のTrust Credentialを分けて追加する。claim条件はevent、workflow、refで限定する。
+2. `wc-plan.yaml`と`apply.yaml`は、非secretの変数`TAILSCALE_WIF_CI_PLAN_CLIENT_ID` / `TAILSCALE_WIF_APPLY_CLIENT_ID`が登録されているときだけWIFを使う。変数を消せばAPI key経路へ戻る。
+3. このPRのmerge後、ownerが変数を登録してplanとapplyの成功を確認する。その後にAPI keyの参照を削除し、revokeする。
+4. Operatorは公開OIDC issuerの前提を満たさないため実装せず、BOXP-206へ分離する。
+5. 残存credentialの期限通知はRecurring Eventsへ登録し、dry-runでcandidateを確認する。
+
+手順と復旧は`runbook.md`の「本番CI（tfaction）のWIF切替」に記載する。
