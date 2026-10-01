@@ -1959,11 +1959,13 @@ test_prune_workspaces() {
   prune_commit "${co}" unpushed >/dev/null
 
   # BOXP-307: old done, HEAD detached at a pushed commit while the run branch
-  # still has a local-only commit -> run deleted, branch kept.
+  # points to a local-only commit the worktree never had checked out -> run
+  # deleted, branch kept.
   write_prune_ticket "${vault}" BOXP-307 done 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-307 "${old}")"
-  prune_commit "${co}" local-only >/dev/null
-  git -C "${co}" checkout -q --detach refs/remotes/origin/main
+  git -C "${co}" checkout -q --detach
+  git -C "${source}" update-ref "refs/heads/codex-task-board/BOXP-307-${old}" \
+    "$(prune_git -C "${source}" commit-tree -m local-only -p HEAD 'HEAD^{tree}')"
 
   # BOXP-308: empty directory without a ticket file -> deleted.
   mkdir -p "${ws}/BOXP-308"
@@ -2116,17 +2118,19 @@ test_prune_holds_checkout_over_commit_limit() {
   make_prune_source_repo "${source}"
   write_board "${vault}" ""
 
+  # The commit the worktree was created at is in the HEAD reflog, so it counts
+  # towards the limit together with the unpushed commits.
   # BOXP-331: exactly 200 commits to verify, all on GitHub -> deleted.
   write_prune_ticket "${vault}" BOXP-331 done 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-331 "${old}")"
-  prune_empty_commits "${co}" 200
-  git -C "${co}" rev-list HEAD --not --remotes >"${known}"
-  [[ "$(wc -l <"${known}")" -eq 200 ]] || fail "expected 200 unpushed commits in the fixture"
+  prune_empty_commits "${co}" 199
+  git -C "${co}" log -g --format=%H HEAD | sort -u >"${known}"
+  [[ "$(wc -l <"${known}")" -eq 200 ]] || fail "expected 200 commits to verify in the fixture"
 
   # BOXP-332: 201 commits to verify -> held without asking GitHub about any of them.
   write_prune_ticket "${vault}" BOXP-332 done 2020-01-01
   co="$(add_prune_run "${state}" "${source}" BOXP-332 "${old}")"
-  prune_empty_commits "${co}" 201
+  prune_empty_commits "${co}" 200
   git -C "${co}" rev-list HEAD --not --remotes >"${tmp}/over-limit-shas"
   cat "${tmp}/over-limit-shas" >>"${known}"
 
@@ -2225,6 +2229,88 @@ test_prune_inspects_nested_checkouts() {
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-343/${old} reason=stash-present checkout=ghq/github.com/boxp/example/vendor/clone$"
   assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-344/${old}$"
   assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+}
+
+test_prune_checks_reflog_commits() {
+  local tmp vault state bin source known out old ws co clone branch dropped
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  git -C "${source}" rev-parse HEAD >"${known}"
+  write_board "${vault}" ""
+
+  # BOXP-351: independent clone whose only local commit was dropped by
+  # `git reset --hard` and survives in the reflog alone -> held.
+  write_prune_ticket "${vault}" BOXP-351 done 2020-01-01
+  mkdir -p "${ws}/BOXP-351/${old}"
+  clone="${ws}/BOXP-351/${old}/clone"
+  git clone -q "${source}" "${clone}"
+  git -C "${clone}" remote set-url origin https://github.com/boxp/example.git
+  prune_commit "${clone}" reset-away >/dev/null
+  git -C "${clone}" reset -q --hard HEAD~1
+  [[ -z "$(git -C "${clone}" rev-list HEAD --branches --tags --not --remotes)" ]] \
+    || fail "expected the dropped commit to be reachable from the reflog only"
+
+  # BOXP-352: the same in a run worktree, whose HEAD reflog goes away with it -> held.
+  write_prune_ticket "${vault}" BOXP-352 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-352 "${old}")"
+  prune_commit "${co}" reset-away >/dev/null
+  git -C "${co}" reset -q --hard HEAD~1
+
+  # BOXP-353: amended in a worktree, and the commit from before the amend is
+  # on GitHub as well -> run and branch deleted.
+  write_prune_ticket "${vault}" BOXP-353 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-353 "${old}")"
+  prune_commit "${co}" amended >>"${known}"
+  prune_git -C "${co}" commit -q --amend -m amended-again
+  git -C "${co}" rev-parse HEAD >>"${known}"
+
+  # BOXP-354: the worktree only ever saw pushed commits, but the run branch
+  # was moved to a local-only commit and back from the source repository ->
+  # run deleted, branch (and with it the branch reflog) kept.
+  write_prune_ticket "${vault}" BOXP-354 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-354 "${old}" >/dev/null
+  branch="refs/heads/codex-task-board/BOXP-354-${old}"
+  dropped="$(prune_git -C "${source}" commit-tree -m dropped -p HEAD 'HEAD^{tree}')"
+  git -C "${source}" update-ref -m test "${branch}" "${dropped}"
+  git -C "${source}" update-ref -m test "${branch}" HEAD
+  git -C "${source}" log -g --format=%H "${branch}" | grep -qx "${dropped}" \
+    || fail "expected the dropped commit in the run branch reflog"
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
+    || fail "prune-workspaces --dry-run with reflog-only commits failed"
+  assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces with reflog-only commits failed"
+
+  [[ -n "$(git -C "${ws}/BOXP-351/${old}/clone" log -g --format=%H --grep-reflog='commit: reset-away' HEAD)" ]] \
+    || fail "expected clone with a commit left only in the reflog to remain"
+  [[ -n "$(git -C "${ws}/BOXP-352/${old}/ghq/github.com/boxp/example" log -g --format=%H --grep-reflog='commit: reset-away' HEAD)" ]] \
+    || fail "expected worktree with a commit left only in the reflog to remain"
+  git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-352-${old}" \
+    || fail "expected the branch of a held run to remain"
+  [[ ! -e "${ws}/BOXP-353" ]] || fail "expected run whose reflog commits are all on GitHub to be deleted"
+  if git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/BOXP-353-${old}"; then
+    fail "expected run branch whose reflog commits are all on GitHub to be deleted"
+  fi
+  [[ ! -e "${ws}/BOXP-354" ]] || fail "expected run whose worktree only saw pushed commits to be deleted"
+  git -C "${source}" log -g --format=%H "${branch}" | grep -qx "${dropped}" \
+    || fail "expected run branch with a local-only commit in its reflog to remain"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-351/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=clone$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-352/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" "^prune: delete-branch ${source}/.git codex-task-board/BOXP-353-${old}$"
+  assert_file_contains "${out}" "^prune: keep-branch ${source}/.git codex-task-board/BOXP-354-${old} reason=reflog-commit-not-on-github sha=${dropped}$"
+  assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
 }
 
 test_prune_invalid_settings_fall_back_to_defaults() {
@@ -2367,6 +2453,7 @@ test_concurrent_board_update_no_lost_writes
 test_prune_workspaces
 test_prune_holds_checkout_over_commit_limit
 test_prune_inspects_nested_checkouts
+test_prune_checks_reflog_commits
 test_prune_invalid_settings_fall_back_to_defaults
 test_loop_prunes_in_background
 test_loop_prune_can_be_disabled

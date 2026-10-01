@@ -21,16 +21,21 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 | run 配下の全 checkout で `git status --porcelain` が空 | checkout は `.git`（ファイル / ディレクトリ）を持つディレクトリ。`ghq/github.com/<owner>/<repo>` 以外に agent が作った clone も含む。checkout の中も `.git` 以外は探索を続けるので、親から gitignore された入れ子の clone / worktree も 1 つの checkout として検査する（親の `git status` には出ないため）。symlink はたどらない |
 | 各 checkout の `git rev-list HEAD --not --remotes` の全コミットが GitHub 上にある | `gh api repos/<owner>/<repo>/commits/<sha> --jq .sha` の出力が SHA と一致したときだけ「ある」と扱う |
 
-チケットで決めた条件に加えて、データを失わない側に 3 点だけ厳しくしている。
+チケットで決めた条件に加えて、データを失わない側に 4 点だけ厳しくしている。
 
 - remote 追跡 ref は古かったり GitHub 以外の remote のものだったりするので、それだけでは GitHub 上に
   あることの証明にしない。`rev-list` の結果が空でも、`HEAD` のコミット自体は必ず `gh api` で確認する
   （tip が GitHub にあれば祖先もすべてある）。SHA ごとにキャッシュするので、同じ `main` から切った
   run が多くても呼び出しは 1 回で済む。
-- run の中に git ディレクトリごと置かれた独立 clone は、run を消すとローカルブランチと stash も
-  すべて消える。そのため独立 clone では `HEAD` に加えて全ローカルブランチとタグ（`--branches --tags`）を確認し、
+- run の中に git ディレクトリごと置かれた独立 clone は、run を消すとローカルの ref と stash も
+  すべて消える。そのため独立 clone では `HEAD` に加えて全 ref（`--all`。ブランチ、タグ、その他の ref）を確認し、
   stash があれば保留にする。worktree は元リポジトリ側にブランチと stash が残るので `HEAD` だけを見る。
-- `gh api` で確認が必要なコミット（tip と remote 追跡 ref にないコミット）が 1 checkout あたり 200 件を超える場合は、1 件も確認せず保留にする
+- `git reset --hard`、`commit --amend`、rebase で捨てたコミットは reflog から復元できるが、reflog は
+  run（独立 clone なら全 reflog、worktree ならその worktree の `HEAD` の reflog）と一緒に消える。
+  そのため reflog に載っているコミット（`git log -g`）とその祖先も確認対象にし、GitHub にないものが
+  1 つでもあれば保留にする。push 済みのコミットを amend / rebase した場合は、元のコミットも GitHub に
+  残っているので保留にならない。
+- `gh api` で確認が必要なコミット（tip、reflog のコミット、remote 追跡 ref にないコミット）が 1 checkout あたり 200 件を超える場合は、1 件も確認せず保留にする
   （remote ref が無い clone で API を使い切らないため）。
 
 ### 保留（hold）の理由
@@ -40,7 +45,7 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 | reason | 意味 |
 | --- | --- |
 | `uncommitted-changes` | 未コミット変更または untracked ファイルがある |
-| `commit-not-on-github sha=…` | GitHub が 404 / 422 を返した |
+| `commit-not-on-github sha=…` | GitHub が 404 / 422 を返した（reflog にだけ残っているコミットも含む） |
 | `github-check-failed sha=…` | `gh` が認証切れ・rate limit・ネットワークエラー・タイムアウトなどで確認できなかった |
 | `origin-not-github` | origin がない、または GitHub の URL ではない |
 | `stash-present` | 独立 clone に stash がある |
@@ -58,7 +63,8 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
    `<root>/workspaces/<ticket>/<run-id>` と一致することを確認する。独立 clone、gitignore 済みの
    ビルド成果物、run 直下に置かれたメモ類は run ごと消える。
 3. その run のブランチ `codex-task-board/<ticket>-<run-id>` を、tip が GitHub 上にあるときだけ
-   `git branch -D` する。それ以外の名前のブランチには触らない。
+   `git branch -D` する。ブランチを消すとブランチの reflog も消えるので、reflog に GitHub にない
+   コミットがある場合（または 200 件を超える場合）もブランチを残す。それ以外の名前のブランチには触らない。
 4. 全チケットの処理後、空になった `workspaces/<ticket>/` を非再帰の delete で削除する
    （チケットファイルがない・done でないチケットの空ディレクトリも対象。空でなければ触らない）。
 5. worktree を外した元リポジトリごとに `git worktree prune` を実行する。
@@ -116,6 +122,7 @@ prune: start retention-days=3 dry-run=false
 prune: delete <run パス>
 prune: delete-branch <元リポジトリの git dir> <ブランチ>
 prune: keep-branch <元リポジトリの git dir> <ブランチ> reason=tip-not-on-github sha=<sha>
+prune: keep-branch <元リポジトリの git dir> <ブランチ> reason=reflog-commit-not-on-github sha=<sha>
 prune: hold <run パス> reason=<理由> checkout=<相対パス>
 prune: delete-empty <チケットディレクトリ>
 prune: summary deleted=N held=M skipped=K recent-runs=R branches=B empty-dirs=E dry-run=false skipped-detail=locked:1,not-done:31,within-retention:17
@@ -138,6 +145,9 @@ prune: summary deleted=N held=M skipped=K recent-runs=R branches=B empty-dirs=E 
     push されていない別ブランチまたはタグあり / HEAD が古い remote 追跡 ref にしかない / `gh` がエラー、
     の run は残り、理由がログに出る
   - HEAD は push 済みだが run ブランチの tip が GitHub にない場合、run は消えてブランチは残る
+  - `git reset --hard` で捨てて reflog にだけ残る未 push コミットがある独立 clone / worktree は残る。
+    amend 前のコミットも GitHub にあれば消える。run ブランチの reflog にだけ未 push コミットがある場合、
+    run は消えてブランチは残る
   - `--dry-run` は何も消さない。one-shot `tick` は prune しない
   - `runs/`、`locks/`、`state.edn` は変わらない。2 回目の実行は冪等
   - 不正な設定値は警告 + 既定値。`loop` は間隔ごとに prune を繰り返し、`…_PRUNE=0` で止まる
@@ -151,6 +161,13 @@ prune: summary deleted=N held=M skipped=K recent-runs=R branches=B empty-dirs=E 
 - PVC 容量アラート（BOXP-94）、`write-lines!` のアトミック化（BOXP-93）。
 
 ## 既知の制限
+
+- どの ref からも reflog からも到達できない dangling オブジェクト（`git stash drop` 後の stash、
+  reflog の期限切れ後のコミットなど）は確認しない。git 自身が gc で消す対象であり、通常の操作では
+  復元できないため。
+- 独立 clone の中の linked worktree の reflog は、clone 側の `--reflog` で確認する。run の外に
+  git ディレクトリを置いた checkout（`--separate-git-dir`）は run を消しても ref と reflog が残るので、
+  worktree と同じく `HEAD` とその reflog だけを見る。
 
 - run の中の bare リポジトリ（`.git` を持たない）は checkout として検査せず、通常のファイルと
   同じく run ごと削除する。

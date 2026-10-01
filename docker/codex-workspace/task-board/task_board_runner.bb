@@ -1814,7 +1814,8 @@
             common-dir (fs/real-path common-dir)
             linked? (not= git-dir common-dir)
             ;; A clone whose git dir lives in the run loses every local ref
-            ;; when the run is deleted, so all branches, tags and the stash count.
+            ;; and reflog when the run is deleted, so all of them count. A
+            ;; worktree only loses its own HEAD and that HEAD's reflog.
             owned-clone? (and (not linked?) (fs/starts-with? git-dir run-real))
             status (git "status" "--porcelain")
             origin (git "remote" "get-url" "origin")
@@ -1822,10 +1823,14 @@
                    (github-repo-from-remote-url (:out origin)))
             stash (when owned-clone?
                     (git "rev-parse" "--verify" "--quiet" "refs/stash"))
+            ;; Commits dropped by reset, amend or rebase stay recoverable
+            ;; through the reflog until the run is deleted.
+            reflog (apply git "log" "-g" "--format=%H" (if owned-clone? ["--all"] ["HEAD"]))
+            reflog-shas (distinct (remove str/blank? (str/split-lines (:out reflog))))
             rev-list (apply git "rev-list"
                             (str "--max-count=" (inc max-unpushed-commits-per-checkout))
                             (concat ["HEAD"]
-                                    (when owned-clone? ["--branches" "--tags"])
+                                    (if owned-clone? ["--all" "--reflog"] reflog-shas)
                                     ["--not" "--remotes"]))
             ;; Remote-tracking refs can be stale or belong to another remote,
             ;; so they are no proof by themselves: the tips are always checked
@@ -1833,13 +1838,14 @@
             tips (apply git "rev-parse" "HEAD"
                         (when owned-clone? ["--branches"]))
             shas (distinct (remove str/blank? (concat (str/split-lines (:out tips))
+                                                      reflog-shas
                                                       (str/split-lines (:out rev-list)))))]
         (cond
           (not (zero? (:exit status))) {:hold "git-error"}
           (not (str/blank? (:out status))) {:hold "uncommitted-changes"}
           (nil? repo) {:hold "origin-not-github"}
           (and stash (zero? (:exit stash))) {:hold "stash-present"}
-          (or (not (zero? (:exit tips))) (not (zero? (:exit rev-list)))) {:hold "git-error"}
+          (some #(not (zero? (:exit %))) [tips reflog rev-list]) {:hold "git-error"}
           (> (count shas) max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
           :else
           (or (some (fn [sha]
@@ -1862,14 +1868,27 @@
 
 (defn prune-run-branch!
   "Deletes the run's own branch from the source repository only when its tip
-  is on GitHub. Branches with any other name are never touched."
+  and every commit in its reflog (which goes away with the branch) are on
+  GitHub. Branches with any other name are never touched."
   [{:keys [dry-run? gh-cache stats]} common-dir repo branch]
   (let [git (fn [& args] (command-result (into ["git" "--git-dir" common-dir] args)))
-        tip (git "rev-parse" "--verify" "--quiet" (str "refs/heads/" branch))
-        sha (str/trim (:out tip))]
+        ref (str "refs/heads/" branch)
+        tip (git "rev-parse" "--verify" "--quiet" ref)
+        sha (str/trim (:out tip))
+        on-github? (fn [sha] (= :exists (github-commit-status gh-cache repo sha)))
+        keep! (fn [reason] (log! (str "prune: keep-branch " common-dir " " branch " reason=" reason)))]
     (when (and (zero? (:exit tip)) (not (str/blank? sha)))
-      (if (not= :exists (github-commit-status gh-cache repo sha))
-        (log! (str "prune: keep-branch " common-dir " " branch " reason=tip-not-on-github sha=" sha))
+      (if-let [reason (if-not (on-github? sha)
+                        (str "tip-not-on-github sha=" sha)
+                        (let [reflog (git "log" "-g" "--format=%H" ref)
+                              reflog-shas (distinct (remove str/blank? (str/split-lines (:out reflog))))]
+                          (cond
+                            (not (zero? (:exit reflog))) "git-error"
+                            (> (count reflog-shas) max-unpushed-commits-per-checkout) "too-many-reflog-commits"
+                            :else (some #(when-not (on-github? %)
+                                           (str "reflog-commit-not-on-github sha=" %))
+                                        reflog-shas))))]
+        (keep! reason)
         (if dry-run?
           (do
             (swap! stats update :branches inc)
@@ -1879,8 +1898,7 @@
               (do
                 (swap! stats update :branches inc)
                 (log! (str "prune: delete-branch " common-dir " " branch)))
-              (log! (str "prune: keep-branch " common-dir " " branch
-                         " reason=branch-delete-failed " (one-line (:err deleted)))))))))))
+              (keep! (str "branch-delete-failed " (one-line (:err deleted)))))))))))
 
 (defn delete-run-workspace!
   "Returns nil on success or a hold reason when the run could not be removed."
