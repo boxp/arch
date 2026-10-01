@@ -112,7 +112,7 @@ providerは空文字の環境変数を未設定として扱う（v0.29.2の`Conf
 
 ### 切替手順
 
-手順1〜3は2026-10-01に実施済みで、証跡は「現在の到達点」と「2026-10-01 の証跡」にある。PR #13090は手順5にあたり、Trustは作成しない。
+手順1〜3は2026-10-01に実施済みで、証跡は「現在の到達点」と「2026-10-01 の証跡」にある。PR #13089は手順3の検証用PRで、Trustは作成しない。PR #13089のmerge後のapplyは手順4にあたり、WIF経路で動く。PR #13090は手順5にあたり、Trustは作成しない。
 
 1. 【完了】Trustを追加するPR（#13077）をmergeする。applyは従来のAPI key経路で動き、Trustを2つ作成する。PRのplanが「Trust 2つの追加とoutputの追加」だけであることをmerge前に確認する。auth keyやSSMの変更が含まれていたら止める。
 2. 【完了】client IDを取得する。PR #13077のapplyコメントのOutputs、Tailscale管理画面のTrust credentials、または`terraform output -raw arch_ci_plan_wif_client_id` / `arch_apply_wif_client_id`のいずれかを使う。client IDは非secretである。引数なしの`terraform output`やstateの表示は使わない。
