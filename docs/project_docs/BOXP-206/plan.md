@@ -159,10 +159,10 @@ merge後に確認する。
    | issuer | `https://<公開ホスト名>` |
    | subject | `system:serviceaccount:tailscale-operator:operator` |
    | audience | 指定しない（Tailscaleが `api.tailscale.com/<client ID>` を生成する） |
-   | scopes | `auth_keys`、`devices:core` |
+   | scopes | `auth_keys`、`devices:core`、Services（管理画面の General/Services のwrite） |
    | tags | `tag:k8s-operator` |
 
-   公式手順はServices scopeのwriteも要求している。Tailscale Services（ProxyGroupによるHA ingress等）用と見ており、現状の使い方（Service expose 1件）では不要と推測しているが、未検証である。最小権限で始め、手順4の確認でOperatorの起動またはreconcileが権限不足で失敗した場合は、Services scopeを追加して再確認する。その間はOAuth経路へ戻しておく。
+   scopeは公式のOperator WIF手順が要求する3つ（General/Services、Devices/Core、Keys/Auth Keys のwrite）を初回から全て付与する。Services scopeを外した構成は公式にサポートされておらず、切替直後にexposeのreconcileが権限不足で失敗するおそれがあるため、推測で減らさない。ticketのACはscopeを `auth_keys`・`devices:core` としているが、公式要件に合わせてServicesを加える（ACとの差分としてownerの確認を受ける）。ServicesのAPI scope識別子は実装時にprovider文書と `terraform plan` で確定する。Services scopeを後から外すかどうかは、WIF切替が安定した後に別途検証して決める。
 2. boxp/loliceの `helm/values.yaml` から `oauthSecretVolume` を外し、`oauth.clientId` と `oauth.audience` を設定する。client IDはsecretではない。chartは `oauthSecretVolume` があると `oauth.audience` を無視するので、OAuthとWIFは同時に使えない。
 3. ExternalSecret、SSM parameter、OAuth client本体は残したまま切り替える。
 4. merge後に確認する。
@@ -203,7 +203,7 @@ OAuth clientをrevokeした後（手順6）はOAuth経路へ戻せない。revok
 
 ## 未確認事項
 
-- 更新後のOperatorがServices scope無しで起動・reconcileできるか
+- ServicesのAPI scope識別子（Terraform providerでの指定値）
 - issuerを複数指定したときの既定audienceの実挙動（段階1で確認する）
 - 22 minorを飛ばしたOperator更新の可否（公式に記載なし）
 - Connector / ProxyGroup等のCRの有無（調査時の権限では一覧できなかった）
