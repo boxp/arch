@@ -1,0 +1,76 @@
+name: Tailscale WIF read-only plan
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  plan:
+    # Never grant a management identity to PR code or a selectable checkout ref.
+    if: github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      TF_IN_AUTOMATION: 'true'
+      TF_INPUT: 'false'
+      TF_LOG: 'OFF'
+      TAILSCALE_API_KEY: ''
+      TAILSCALE_OAUTH_CLIENT_SECRET: ''
+      TAILSCALE_IDENTITY_TOKEN: ''
+      TAILSCALE_OAUTH_CLIENT_ID: ${{ vars.TAILSCALE_WIF_PLAN_CLIENT_ID }}
+      TAILSCALE_AUDIENCE: ${{ vars.TAILSCALE_WIF_PLAN_AUDIENCE }}
+      # The identity selects its own tailnet; no tailnet secret is required.
+    defaults:
+      run:
+        shell: bash
+        working-directory: terraform/tailscale/lolice
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check bootstrap metadata
+        run: |
+          set -euo pipefail
+          if [[ -z "$TAILSCALE_OAUTH_CLIENT_ID" || -z "$TAILSCALE_AUDIENCE" ]]; then
+            echo '::error::Set the reviewed WIF plan client ID and audience variables first.'
+            exit 1
+          fi
+
+      - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4
+        with:
+          terraform_version: 1.15.8
+          terraform_wrapper: false
+
+      - uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        with:
+          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Terraform_AWS_terraform_plan
+          role-session-name: tailscale-wif-plan
+          aws-region: ap-northeast-1
+
+      - name: Validate and plan without publishing state or resource values
+        run: |
+          set -euo pipefail
+          # Provider v0.29.2 discovers GitHub OIDC using client ID + audience.
+          # Suppress diagnostics too: they may contain state or private endpoints.
+          # No saved plan, logs, PR comments, or artifacts are produced.
+          if ! terraform init -input=false -lockfile=readonly >/dev/null 2>&1; then
+            echo '::error::Terraform init failed; investigate in a secure operator session.'
+            exit 1
+          fi
+          if ! terraform validate >/dev/null 2>&1; then
+            echo '::error::Terraform validate failed.'
+            exit 1
+          fi
+          result=0
+          terraform plan -input=false -lock=false -detailed-exitcode >/dev/null 2>&1 || result=$?
+          case "$result" in
+            0) echo 'WIF read-only plan succeeded: no changes.' ;;
+            2) echo 'WIF read-only plan succeeded: changes require separate review.' ;;
+            *) echo '::error::WIF plan failed; keep the old credential and investigate securely.'; exit 1 ;;
+          esac
