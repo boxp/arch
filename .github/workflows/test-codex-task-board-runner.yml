@@ -8,6 +8,7 @@ on:
       - docker/codex-workspace/entrypoint.sh
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/recurring-events/**
+      - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
       - .github/workflows/test-codex-task-board-runner.yml
   push:
@@ -18,6 +19,7 @@ on:
       - docker/codex-workspace/entrypoint.sh
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/recurring-events/**
+      - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
       - .github/workflows/test-codex-task-board-runner.yml
   workflow_dispatch: {}
@@ -47,3 +49,5 @@ jobs:
       - run: tests/codex-workspace/task-board-runner-test.sh
       - run: tests/codex-workspace/recurring-events-test.sh
       - run: bb tests/codex-workspace/autonomy-policy-test.bb
+      - run: bb tests/codex-workspace/autonomy-control-test.bb
+      - run: bb tests/codex-workspace/vault-writer-test.bb

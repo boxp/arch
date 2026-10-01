@@ -104,6 +104,16 @@ Delete dry-run:
   --dry-run
 ```
 
+Preview a control request (dry-run only):
+
+```bash
+"$TASK_BOARD_HELPER" control-intent BOXP-55 --intent pause --expected-revision 3 --dry-run
+"$TASK_BOARD_HELPER" control-decision BOXP-55 --decision-id BOXP-55/D1 --option-id new-only --expected-revision 3 --dry-run
+"$TASK_BOARD_HELPER" control-retry BOXP-55 --retry-op cancel --expected-revision 3 --dry-run
+```
+
+These commands only print the request that an authenticated control API would receive and which actor it requires. They never write to the vault and refuse to run without `--dry-run`: editing a ticket, Notes, or frontmatter is not an authorization for autonomy v2 intent, decisions, or retries.
+
 ## Codex Request Workflow
 
 - Backlog: requirements grooming request. Keep the card in `Backlog`, set `assignee: codex`, and append the request to Notes.

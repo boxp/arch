@@ -92,6 +92,11 @@
           "--note" (recur (nnext xs) (assoc opts :note (first more)))
           "--note-file" (recur (nnext xs) (assoc opts :note (slurp (first more))))
           "--source" (recur (nnext xs) (assoc opts :source (first more)))
+          "--intent" (recur (nnext xs) (assoc opts :intent (first more)))
+          "--expected-revision" (recur (nnext xs) (assoc opts :expected-revision (first more)))
+          "--decision-id" (recur (nnext xs) (assoc opts :decision-id (first more)))
+          "--option-id" (recur (nnext xs) (assoc opts :option-id (first more)))
+          "--retry-op" (recur (nnext xs) (assoc opts :retry-op (first more)))
           "--priority" (recur (nnext xs) (assoc opts :priority (first more)))
           "--assignee" (recur (nnext xs) (assoc opts :assignee (first more)))
           "--repo" (recur (nnext xs) (assoc opts :repo (first more)))
@@ -149,6 +154,20 @@
 
 (defn with-ticket-lock [ticket-path f] (with-file-lock ticket-path f))
 (defn with-board-lock [board-path f] (with-file-lock board-path f))
+
+;; BOXP-201 I3: opt-in lock shared with the runner and vault_writer.bb. Unset in
+;; deployment, where the per-file locks above behave exactly as before. It is
+;; taken before any per-file lock.
+(defn with-vault-writer-lock [f]
+  (let [dir (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR")]
+    (if (str/blank? dir)
+      (f)
+      (do
+        (fs/create-dirs dir)
+        (with-open [raf (RandomAccessFile. (str (fs/path dir "vault-writer.lock")) "rw")
+                    channel (.getChannel raf)]
+          (let [_lock (.lock channel)]
+            (f)))))))
 
 (defn present [s]
   (when-not (str/blank? (str s)) s))
@@ -567,8 +586,60 @@
               (reset! result-atom result))))))
     (print-result opts @result-atom)))
 
+(defn frontmatter-projection [ticket]
+  (into {} (keep (fn [k]
+                   (when-let [value (present (fm-get (:frontmatter-lines ticket) k))]
+                     [k value]))
+                 ["autonomy_version" "execution_intent" "control_revision"])))
+
+(defn safe-control-token [value flag]
+  (when-not (and value (re-matches #"[A-Za-z0-9][A-Za-z0-9._/-]{0,159}" value)
+                 (not (str/includes? value "..")))
+    (die (str flag " must be a plain identifier")))
+  value)
+
+(defn control-request [opts kind]
+  (let [intents {"pause" "runner-or-owner" "cancel" "runner-or-owner"
+                 "wait-human" "runner-or-owner" "run" "owner"}
+        retry-ops {"cancel" "runner-or-owner" "reschedule" "owner"}]
+    (case kind
+      "intent" (let [intent (:intent opts)]
+                 (when-not (contains? intents intent)
+                   (die "control-intent requires --intent run, pause, cancel, or wait-human"))
+                 {:request {:op "set-intent" :intent intent} :requires-actor (intents intent)})
+      "decision" {:request {:op "answer-decision"
+                            :decision-id (safe-control-token (:decision-id opts) "--decision-id")
+                            :option-id (safe-control-token (:option-id opts) "--option-id")}
+                  :requires-actor "owner"}
+      "retry" (let [retry-op (:retry-op opts)]
+                (when-not (contains? retry-ops retry-op)
+                  (die "control-retry requires --retry-op cancel or reschedule"))
+                {:request {:op (str retry-op "-retry")} :requires-actor (retry-ops retry-op)}))))
+
+;; Dry-run only. The control original lives behind an authenticated API that is
+;; not deployed yet; this helper never edits a file to express intent, a
+;; decision, or a retry change, because a file edit is not an authorization.
+(defn cmd-control [opts id kind]
+  (when-not (:dry-run opts)
+    (die (str "control-" kind " only supports --dry-run: the authenticated control API is not deployed, and editing vault files never grants authorization")))
+  (let [revision (:expected-revision opts)
+        _ (when-not (and revision (re-matches #"[1-9][0-9]{0,8}" revision))
+            (die (str "control-" kind " requires --expected-revision <positive integer>")))
+        {:keys [request requires-actor]} (control-request opts kind)
+        vault (vault-path opts)
+        ticket (ticket-data vault id)
+        card (card-for (read-text (board-path vault)) id)]
+    (print-result opts {:action (str "control-" kind)
+                        :id id
+                        :dry-run true
+                        :request (assoc request :ticket id :expected-revision (parse-long revision))
+                        :requires-actor requires-actor
+                        :lane (:lane card)
+                        :projection (frontmatter-projection ticket)
+                        :writes []})))
+
 (defn usage []
-  (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|delete> [args]"))
+  (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|delete|control-intent|control-decision|control-retry> [args]"))
 
 (defn -main [& args]
   (let [cmd (first args)
@@ -577,11 +648,18 @@
     (case cmd
       "list" (cmd-list opts)
       "show" (cmd-show opts (or id (die "show requires ticket id")))
-      "create" (cmd-create opts)
-      "update" (cmd-update opts (or id (die "update requires ticket id")))
-      "append-note" (cmd-append-note opts (or id (die "append-note requires ticket id")))
-      "request-codex" (cmd-request-codex opts (or id (die "request-codex requires ticket id")))
-      "delete" (cmd-delete opts (or id (die "delete requires ticket id")))
+      "create" (with-vault-writer-lock #(cmd-create opts))
+      "update" (let [id (or id (die "update requires ticket id"))]
+                 (with-vault-writer-lock #(cmd-update opts id)))
+      "append-note" (let [id (or id (die "append-note requires ticket id"))]
+                      (with-vault-writer-lock #(cmd-append-note opts id)))
+      "request-codex" (let [id (or id (die "request-codex requires ticket id"))]
+                        (with-vault-writer-lock #(cmd-request-codex opts id)))
+      "delete" (let [id (or id (die "delete requires ticket id"))]
+                 (with-vault-writer-lock #(cmd-delete opts id)))
+      "control-intent" (cmd-control opts (or id (die "control-intent requires ticket id")) "intent")
+      "control-decision" (cmd-control opts (or id (die "control-decision requires ticket id")) "decision")
+      "control-retry" (cmd-control opts (or id (die "control-retry requires ticket id")) "retry")
       (usage))))
 
 (apply -main *command-line-args*)
