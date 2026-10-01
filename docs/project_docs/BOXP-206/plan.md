@@ -162,7 +162,7 @@ merge後に確認する。
    | scopes | `auth_keys`、`devices:core` |
    | tags | `tag:k8s-operator` |
 
-   公式手順はServices scopeも挙げているが、現状の使い方（Service expose 1件）では不要と見ている。必要と確認できた場合だけ追加する。
+   公式手順はServices scopeのwriteも要求している。Tailscale Services（ProxyGroupによるHA ingress等）用と見ており、現状の使い方（Service expose 1件）では不要と推測しているが、未検証である。最小権限で始め、手順4の確認でOperatorの起動またはreconcileが権限不足で失敗した場合は、Services scopeを追加して再確認する。その間はOAuth経路へ戻しておく。
 2. boxp/loliceの `helm/values.yaml` から `oauthSecretVolume` を外し、`oauth.clientId` と `oauth.audience` を設定する。client IDはsecretではない。chartは `oauthSecretVolume` があると `oauth.audience` を無視するので、OAuthとWIFは同時に使えない。
 3. ExternalSecret、SSM parameter、OAuth client本体は残したまま切り替える。
 4. merge後に確認する。
