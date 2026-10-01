@@ -30,7 +30,7 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 - run の中に git ディレクトリごと置かれた独立 clone は、run を消すとローカルブランチと stash も
   すべて消える。そのため独立 clone では `HEAD` に加えて全ローカルブランチとタグ（`--branches --tags`）を確認し、
   stash があれば保留にする。worktree は元リポジトリ側にブランチと stash が残るので `HEAD` だけを見る。
-- GitHub にないコミットが 1 checkout あたり 200 件を超える場合は確認せず保留にする
+- `gh api` で確認が必要なコミット（tip と remote 追跡 ref にないコミット）が 1 checkout あたり 200 件を超える場合は、1 件も確認せず保留にする
   （remote ref が無い clone で API を使い切らないため）。
 
 ### 保留（hold）の理由
@@ -44,7 +44,7 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 | `github-check-failed sha=…` | `gh` が認証切れ・rate limit・ネットワークエラー・タイムアウトなどで確認できなかった |
 | `origin-not-github` | origin がない、または GitHub の URL ではない |
 | `stash-present` | 独立 clone に stash がある |
-| `too-many-unpushed-commits` | 未確認コミットが 200 件を超える |
+| `too-many-unpushed-commits` | 確認が必要なコミットが 200 件を超える（ちょうど 200 件までは確認する） |
 | `git-error` / `git-toplevel-mismatch` | git コマンドが失敗した、または `.git` が壊れている |
 | `run-id-timestamp-unparseable` | run-id からタイムスタンプを読めない |
 | `unsafe-path` | 実パスが `<root>/workspaces/<ticket>/<run-id>` と一致しない（symlink など） |

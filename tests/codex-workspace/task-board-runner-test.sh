@@ -2090,6 +2090,58 @@ EOF
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-313/${old} reason=github-check-failed sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
 }
 
+# Adds `count` empty commits to a checkout.
+prune_empty_commits() {
+  local checkout="$1"
+  local count="$2"
+  local i
+  for ((i = 0; i < count; i++)); do
+    prune_git -C "${checkout}" commit -q --allow-empty -m "empty ${i}"
+  done
+}
+
+test_prune_holds_checkout_over_commit_limit() {
+  local tmp vault state bin source known out old ws co
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  write_board "${vault}" ""
+
+  # BOXP-331: exactly 200 commits to verify, all on GitHub -> deleted.
+  write_prune_ticket "${vault}" BOXP-331 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-331 "${old}")"
+  prune_empty_commits "${co}" 200
+  git -C "${co}" rev-list HEAD --not --remotes >"${known}"
+  [[ "$(wc -l <"${known}")" -eq 200 ]] || fail "expected 200 unpushed commits in the fixture"
+
+  # BOXP-332: 201 commits to verify -> held without asking GitHub about any of them.
+  write_prune_ticket "${vault}" BOXP-332 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-332 "${old}")"
+  prune_empty_commits "${co}" 201
+  git -C "${co}" rev-list HEAD --not --remotes >"${tmp}/over-limit-shas"
+  cat "${tmp}/over-limit-shas" >>"${known}"
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_API_LOG="${tmp}/api.log" \
+    run_prune "${vault}" "${state}" >"${out}" || fail "prune-workspaces at the commit limit failed"
+
+  [[ ! -e "${ws}/BOXP-331" ]] || fail "expected run with exactly 200 commits to verify to be deleted"
+  [[ -d "${ws}/BOXP-332/${old}" ]] || fail "expected run with 201 commits to verify to remain"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-332/${old} reason=too-many-unpushed-commits checkout=ghq/github.com/boxp/example$"
+  assert_file_contains "${out}" '^prune: summary deleted=1 held=1 '
+  if grep -qxFf "${tmp}/over-limit-shas" "${tmp}/api.log"; then
+    fail "expected no GitHub lookups for a checkout over the commit limit"
+  fi
+}
+
 test_prune_invalid_settings_fall_back_to_defaults() {
   local tmp vault state out
   tmp="$(mktemp -d)"
@@ -2228,6 +2280,7 @@ test_concurrent_append_note_no_lost_writes
 test_cross_vault_lock_isolation
 test_concurrent_board_update_no_lost_writes
 test_prune_workspaces
+test_prune_holds_checkout_over_commit_limit
 test_prune_invalid_settings_fall_back_to_defaults
 test_loop_prunes_in_background
 test_loop_prune_can_be_disabled

@@ -1834,7 +1834,7 @@
           (nil? repo) {:hold "origin-not-github"}
           (and stash (zero? (:exit stash))) {:hold "stash-present"}
           (or (not (zero? (:exit tips))) (not (zero? (:exit rev-list)))) {:hold "git-error"}
-          (> (count shas) (inc max-unpushed-commits-per-checkout)) {:hold "too-many-unpushed-commits"}
+          (> (count shas) max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
           :else
           (or (some (fn [sha]
                       (case (github-commit-status gh-cache repo sha)
