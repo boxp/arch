@@ -56,7 +56,9 @@ resource "tailscale_federated_identity" "github_actions_arch_plan" {
 resource "tailscale_federated_identity" "github_actions_arch_ci_plan" {
   description = "GitHub Actions arch tfaction plan read only"
   issuer      = "https://token.actions.githubusercontent.com"
-  subject     = "repo:boxp/arch:ref:refs/heads/main"
+  # GitHub does not document the sub format for pull_request_target, so match
+  # the repository here and pin the event and base-branch workflows below.
+  subject = "repo:boxp/arch:*"
 
   scopes = [
     "policy_file:read",
@@ -69,7 +71,6 @@ resource "tailscale_federated_identity" "github_actions_arch_ci_plan" {
 
   custom_claim_rules = {
     repository       = "boxp/arch"
-    ref              = "refs/heads/main"
     event_name       = "pull_request_target"
     workflow_ref     = "boxp/arch/.github/workflows/test.yaml@refs/heads/main"
     job_workflow_ref = "boxp/arch/.github/workflows/wc-plan.yaml@refs/heads/main"
