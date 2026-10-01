@@ -37,7 +37,7 @@ jobs:
         env:
           AQUA_GITHUB_TOKEN: ${{steps.generate_token.outputs.token}}
 
-      - uses: suzuki-shunsuke/tfaction@93bf76c239f5120cf83ec5149a1591c25412f9b4 # v2.1.1
+      - uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
         with:
           action: create-drift-issues
           github_token: ${{steps.generate_token.outputs.token}}
