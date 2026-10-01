@@ -15,13 +15,14 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 | 条件 | 補足 |
 | --- | --- |
 | チケットファイルがあり `status: done` | done 以外でも `closed` が残っているチケットがあるため、必ず `status` と組み合わせる |
+| Task Board にカードがあるなら、すべて Done レーンにある | レーンが source of truth で、frontmatter は次の sync まで古いままになる。Done から戻されたカード（Draft など runner が扱わないレーンも含む）は frontmatter が `done` でも対象外。カードがないチケットは frontmatter だけで判定する。board を読めないときは何も消さない（`board-unreadable`） |
 | `closed` が今日（UTC）から保持日数以上前 | 既定 3 日 |
 | run-id 先頭のタイムスタンプも保持日数以上前 | 古い `closed` のまま再オープン → 再 done されたチケットの猶予を守る。UUID なしの旧形式 run-id（`20260709T124714Z`）も読める |
 | `locks/<ticket>.edn` がない | 判定と削除は `with-ticket-lock-guard` の中で行い、`acquire-lock!` と排他 |
 | run 配下の全 checkout で `git status --porcelain` が空 | checkout は `.git`（ファイル / ディレクトリ）を持つディレクトリ。`ghq/github.com/<owner>/<repo>` 以外に agent が作った clone も含む。checkout の中も `.git` 以外は探索を続けるので、親から gitignore された入れ子の clone / worktree も 1 つの checkout として検査する（親の `git status` には出ないため）。symlink はたどらない |
 | 各 checkout の `git rev-list HEAD --not --remotes` の全コミットが GitHub 上にある | `gh api repos/<owner>/<repo>/commits/<sha> --jq .sha` の出力が SHA と一致したときだけ「ある」と扱う |
 
-チケットで決めた条件に加えて、データを失わない側に 4 点だけ厳しくしている。
+チケットで決めた条件に加えて、データを失わない側に厳しくしている点（上の表の board の条件のほかに 4 点）。
 
 - remote 追跡 ref は古かったり GitHub 以外の remote のものだったりするので、それだけでは GitHub 上に
   あることの証明にしない。`rev-list` の結果が空でも、`HEAD` のコミット自体は必ず `gh api` で確認する
@@ -75,8 +76,9 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 
 ## 排他
 
-- ロック確認・チケット状態の再確認・checkout の検査・削除は、run 1 つごとに `with-ticket-lock-guard`
-  の中で行う。`acquire-lock!` は同じ guard の中でロックファイルを作るので、削除中に同じチケットの
+- ロック確認・チケット状態（board のレーンと frontmatter）の再確認・checkout の検査・削除は、run 1 つごとに
+  `with-ticket-lock-guard` の中で行う。checkout の検査（`gh api` を含む）には時間がかかり得るので、
+  削除の直前にもう一度ロックとチケット状態を確認する。`acquire-lock!` は同じ guard の中でロックファイルを作るので、削除中に同じチケットの
   run が始まることはない。
 - guard を取る単位を run にしているのは、guard が JVM 内の stripe ロックを兼ねており、同じチケットの
   frontmatter 更新（毎 tick の `sync-ticket-statuses!`）が待たされるため。待ちは run 1 つ分の検査と
@@ -141,6 +143,7 @@ prune: summary deleted=N held=M skipped=K recent-runs=R branches=B empty-dirs=E 
   （指定した SHA だけ成功を返す）で、次を確認する。
   - 古い done の clean な run が消え、ブランチ・worktree 登録・空のチケットディレクトリも消える
   - 猶予内の done / done 以外 / ロック中 / チケットファイルなし / 再 done 後の新しい run は残る
+  - frontmatter が done のままでもカードが Done 以外のレーンにあれば残る。board がなければ何も消さない
   - 未コミット変更あり / GitHub にないコミットあり / origin が GitHub でない / 独立 clone に
     push されていない別ブランチまたはタグあり / HEAD が古い remote 追跡 ref にしかない / `gh` がエラー、
     の run は残り、理由がログに出る

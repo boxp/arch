@@ -1928,10 +1928,37 @@
         (frontmatter-map (vec (str/split-lines (slurp (str path)))))
         (catch Exception _ nil)))))
 
+(defn board-card-lanes
+  "Headings of the lanes holding the ticket's cards (empty when it has no
+  card), or nil when the board cannot be read. Unlike parse-board-cards this
+  also sees lanes the runner does not manage, such as Draft."
+  [ticket-id]
+  (try
+    (let [path (board-path)]
+      (when (fs/exists? path)
+        ;; board-mutex keeps a half-written board from this JVM out of the read.
+        (let [lines (locking board-mutex
+                      (str/split-lines (slurp (str path))))]
+          (:lanes (reduce (fn [{:keys [lane] :as acc} line]
+                            (if-let [[_ heading] (re-matches #"##\s+(.*?)\s*" line)]
+                              (assoc acc :lane heading)
+                              (cond-> acc
+                                (and (card-line? line) (= ticket-id (ticket-id-from-card line)))
+                                (update :lanes conj lane))))
+                          {:lane nil :lanes []}
+                          lines)))))
+    (catch Exception _ nil)))
+
 (defn prune-ticket-status [{:keys [today-date retention-days]} ticket-id]
-  (if (fs/exists? (lock-path ticket-id))
-    {:eligible? false :reason "locked"}
-    (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id) today-date retention-days)))
+  (let [card-lanes (board-card-lanes ticket-id)]
+    (cond
+      (fs/exists? (lock-path ticket-id)) {:eligible? false :reason "locked"}
+      (nil? card-lanes) {:eligible? false :reason "board-unreadable"}
+      ;; The board lane is the source of truth and frontmatter only follows at
+      ;; the next sync, so a card moved out of Done wins over `status: done`.
+      ;; Tickets without a card are judged by frontmatter alone.
+      (some #(not= "Done" %) card-lanes) {:eligible? false :reason "not-done"}
+      :else (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id) today-date retention-days))))
 
 (defn prune-run-under-guard!
   "Must run inside with-ticket-lock-guard so no run of the ticket can start
@@ -1957,7 +1984,10 @@
             branch-repos (distinct (keep (fn [{:keys [external-common-dir repo]}]
                                            (when external-common-dir
                                              [external-common-dir repo]))
-                                         checkouts))]
+                                         checkouts))
+            ;; Inspection can take a while (GitHub lookups); look once more
+            ;; for a reopened ticket right before anything is removed.
+            recheck (delay (prune-ticket-status ctx ticket-id))]
         (cond
           held
           (hold (str (:hold held) " checkout=" (fs/relativize run-path (:path held))))
@@ -1969,6 +1999,9 @@
             (doseq [[common-dir repo] branch-repos]
               (prune-run-branch! ctx common-dir repo branch))
             {:result :deleted})
+
+          (not (:eligible? @recheck))
+          {:result :ticket-skipped :reason (:reason @recheck)}
 
           :else
           (if-let [reason (delete-run-workspace! ctx run-path checkouts)]

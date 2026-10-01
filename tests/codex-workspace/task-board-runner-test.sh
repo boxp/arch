@@ -2313,6 +2313,48 @@ test_prune_checks_reflog_commits() {
   assert_file_contains "${out}" '^prune: summary deleted=2 held=2 skipped=0 recent-runs=0 branches=1 '
 }
 
+test_prune_respects_board_lane() {
+  local tmp vault state bin source known out old ws
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  git -C "${source}" rev-parse HEAD >"${known}"
+
+  # BOXP-361: frontmatter still says done, but the card was moved back to
+  # In Progress and no sync has run since -> kept.
+  # BOXP-362: card in Done and frontmatter done -> deleted.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-361|BOXP-361: reopened]] #ticket status::in-progress"
+  printf '%s\n' "- [x] [[Tickets/BOXP-362|BOXP-362: finished]] #ticket status::done" >>"${vault}/Boards/Task Board.md"
+  write_prune_ticket "${vault}" BOXP-361 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-361 "${old}" >/dev/null
+  write_prune_ticket "${vault}" BOXP-362 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-362 "${old}" >/dev/null
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces with a reopened card failed"
+  [[ -d "${ws}/BOXP-361/${old}" ]] || fail "expected run of a ticket whose card left Done to remain"
+  [[ ! -e "${ws}/BOXP-362" ]] || fail "expected run of a ticket whose card is in Done to be deleted"
+  assert_file_contains "${out}" '^prune: summary deleted=1 held=0 skipped=1 .* skipped-detail=not-done:1$'
+
+  # Without a readable board nothing is deleted.
+  write_prune_ticket "${vault}" BOXP-363 done 2020-01-01
+  add_prune_run "${state}" "${source}" BOXP-363 "${old}" >/dev/null
+  rm "${vault}/Boards/Task Board.md"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces without a board failed"
+  [[ -d "${ws}/BOXP-363/${old}" ]] || fail "expected run to remain when the board is missing"
+  assert_file_contains "${out}" '^prune: summary deleted=0 held=0 skipped=2 .* skipped-detail=board-unreadable:2$'
+}
+
 test_prune_invalid_settings_fall_back_to_defaults() {
   local tmp vault state out
   tmp="$(mktemp -d)"
@@ -2454,6 +2496,7 @@ test_prune_workspaces
 test_prune_holds_checkout_over_commit_limit
 test_prune_inspects_nested_checkouts
 test_prune_checks_reflog_commits
+test_prune_respects_board_lane
 test_prune_invalid_settings_fall_back_to_defaults
 test_loop_prunes_in_background
 test_loop_prune_can_be_disabled
