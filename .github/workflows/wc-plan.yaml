@@ -106,8 +106,9 @@ jobs:
         with:
           action: setup
           github_token: ${{steps.generate_token.outputs.token}}
-          # Tailscale targets use WIF and receive no secret.
-          secrets: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && '{}' || toJSON(secrets) }}
+          # No target needs a GitHub Secret here (BOXP-207). If one does, pass a JSON
+          # object with only the required names instead of the whole secrets context.
+          secrets: '{}'
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider
 
@@ -128,8 +129,9 @@ jobs:
         with:
           action: terraform-init
           github_token: ${{steps.generate_token.outputs.token}}
-          # Tailscale targets use WIF and receive no secret.
-          secrets: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && '{}' || toJSON(secrets) }}
+          # No target needs a GitHub Secret here (BOXP-207). If one does, pass a JSON
+          # object with only the required names instead of the whole secrets context.
+          secrets: '{}'
       - name: Generate token (pull request write)
         id: pull_request_token
         uses: tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a # v2.1.0
@@ -167,8 +169,9 @@ jobs:
         with:
           action: test
           github_token: ${{steps.generate_token.outputs.token}}
-          # Tailscale targets use WIF and receive no secret.
-          secrets: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && '{}' || toJSON(secrets) }}
+          # No target needs a GitHub Secret here (BOXP-207). If one does, pass a JSON
+          # object with only the required names instead of the whole secrets context.
+          secrets: '{}'
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and reviewdog and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider
@@ -178,8 +181,9 @@ jobs:
         with:
           action: plan
           github_token: ${{steps.generate_token.outputs.token}}
-          # Tailscale targets use WIF and receive no secret.
-          secrets: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && '{}' || toJSON(secrets) }}
+          # No target needs a GitHub Secret here (BOXP-207). If one does, pass a JSON
+          # object with only the required names instead of the whole secrets context.
+          secrets: '{}'
         env:
           GITHUB_TOKEN: ${{steps.generate_token.outputs.token}} # For GitHub Provider and tfcmt and github-comment
           CLOUDFLARE_API_TOKEN: ${{secrets.gh_cloudflare_api_token}} # For cloudflare provider

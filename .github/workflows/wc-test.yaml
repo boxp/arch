@@ -13,8 +13,6 @@ on:
         required: false
       gh_cloudflare_api_token:
         required: false
-      secrets:
-        required: false
 
 env:
   TFACTION_IS_APPLY: 'false'
