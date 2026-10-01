@@ -71,7 +71,7 @@ cron が `action_required` だけを見ている場合、`failure`（jobs 0 件�
 
 ### 4. toJSON(secrets) の除去（別 PR）
 
-`apply.yaml` の `toJSON(secrets)` を、tfaction が実際に必要とする secret だけの JSON に置き換える。tfaction の設定で secret を参照しているのは `tfaction-root.yaml` の `terraform/github/**`（`GH_TOKEN_APPLY`）だけである。
+`apply.yaml` の `toJSON(secrets)` を `'{}'` に置き換える（PR #13097）。tfaction v2.3.2 は `secrets` 入力の全キーを terraform の環境変数にするため、現状はリポジトリの全 Secret が terraform に渡っている。terraform が環境変数で必要とするのは `CLOUDFLARE_API_TOKEN` だけで、これは apply step の `env` で渡している。`tfaction-root.yaml` で Secret を参照する `terraform/github/**`（`GH_TOKEN_APPLY`）には、該当する target も Secret の登録もない。
 
 この変更は `apply.yaml` を変えるため、merge 時に 1 回は未実行になる可能性がある。効果は、その後の `apply.yaml` 変更（次の Renovate の週次 PR）で未実行が再発するかどうかで判定する。切り分けを明確にするため、この PR とは別の PR にする。`wc-plan.yaml` / `test.yaml` は、`apply.yaml` で効果を確認してから同じ変更をする。
 
