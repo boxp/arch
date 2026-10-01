@@ -1808,7 +1808,7 @@
             common-dir (fs/real-path common-dir)
             linked? (not= git-dir common-dir)
             ;; A clone whose git dir lives in the run loses every local ref
-            ;; when the run is deleted, so all branches and the stash count.
+            ;; when the run is deleted, so all branches, tags and the stash count.
             owned-clone? (and (not linked?) (fs/starts-with? git-dir run-real))
             status (git "status" "--porcelain")
             origin (git "remote" "get-url" "origin")
@@ -1819,7 +1819,7 @@
             rev-list (apply git "rev-list"
                             (str "--max-count=" (inc max-unpushed-commits-per-checkout))
                             (concat ["HEAD"]
-                                    (when owned-clone? ["--branches"])
+                                    (when owned-clone? ["--branches" "--tags"])
                                     ["--not" "--remotes"]))
             ;; Remote-tracking refs can be stale or belong to another remote,
             ;; so they are no proof by themselves: the tips are always checked

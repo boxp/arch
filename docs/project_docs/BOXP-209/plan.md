@@ -28,7 +28,7 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
   （tip が GitHub にあれば祖先もすべてある）。SHA ごとにキャッシュするので、同じ `main` から切った
   run が多くても呼び出しは 1 回で済む。
 - run の中に git ディレクトリごと置かれた独立 clone は、run を消すとローカルブランチと stash も
-  すべて消える。そのため独立 clone では `HEAD` に加えて全ローカルブランチ（`--branches`）を確認し、
+  すべて消える。そのため独立 clone では `HEAD` に加えて全ローカルブランチとタグ（`--branches --tags`）を確認し、
   stash があれば保留にする。worktree は元リポジトリ側にブランチと stash が残るので `HEAD` だけを見る。
 - GitHub にないコミットが 1 checkout あたり 200 件を超える場合は確認せず保留にする
   （remote ref が無い clone で API を使い切らないため）。
@@ -134,7 +134,7 @@ prune: summary deleted=N held=M skipped=K recent-runs=R branches=B empty-dirs=E 
   - 古い done の clean な run が消え、ブランチ・worktree 登録・空のチケットディレクトリも消える
   - 猶予内の done / done 以外 / ロック中 / チケットファイルなし / 再 done 後の新しい run は残る
   - 未コミット変更あり / GitHub にないコミットあり / origin が GitHub でない / 独立 clone に
-    push されていない別ブランチあり / HEAD が古い remote 追跡 ref にしかない / `gh` がエラー、
+    push されていない別ブランチまたはタグあり / HEAD が古い remote 追跡 ref にしかない / `gh` がエラー、
     の run は残り、理由がログに出る
   - HEAD は push 済みだが run ブランチの tip が GitHub にない場合、run は消えてブランチは残る
   - `--dry-run` は何も消さない。one-shot `tick` は prune しない

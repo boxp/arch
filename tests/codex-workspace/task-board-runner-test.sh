@@ -1990,6 +1990,17 @@ test_prune_workspaces() {
   prune_commit "${clone}" side-only >/dev/null
   git -C "${clone}" checkout -q main
 
+  # BOXP-315: old done, independent clone with a local-only commit that only a tag points to -> held.
+  write_prune_ticket "${vault}" BOXP-315 done 2020-01-01
+  mkdir -p "${ws}/BOXP-315/${old}"
+  clone="${ws}/BOXP-315/${old}/clone"
+  git clone -q "${source}" "${clone}"
+  git -C "${clone}" remote set-url origin https://github.com/boxp/example.git
+  git -C "${clone}" checkout -q --detach
+  prune_commit "${clone}" tag-only >/dev/null
+  git -C "${clone}" tag local-release
+  git -C "${clone}" checkout -q main
+
   # BOXP-314: old done, HEAD is covered by a stale remote-tracking ref but the
   # commit is gone from GitHub -> held. Tracking refs alone are not proof.
   write_prune_ticket "${vault}" BOXP-314 done 2020-01-01
@@ -2014,7 +2025,7 @@ test_prune_workspaces() {
   assert_file_contains "${out}" "^prune: delete-empty ${ws}/BOXP-301 \\(dry-run\\)$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-305/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-306/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=5 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1$'
+  assert_file_contains "${out}" '^prune: summary deleted=2 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=true skipped-detail=locked:1,not-done:1,ticket-missing:1,within-retention:1$'
 
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" GH_FAKE_API_LOG="${tmp}/api.log" \
     run_prune "${vault}" "${state}" >"${out}" || fail "prune-workspaces failed"
@@ -2037,6 +2048,7 @@ test_prune_workspaces() {
   [[ -d "${ws}/BOXP-310/${recent}" ]] || fail "expected recent run of an old done ticket to remain"
   [[ -d "${ws}/BOXP-311/${old}" ]] || fail "expected run with a non-GitHub origin to remain"
   [[ -d "${ws}/BOXP-312/${old}" ]] || fail "expected clone with a local-only branch to remain"
+  [[ -d "${ws}/BOXP-315/${old}" ]] || fail "expected clone with a local-only tag to remain"
   [[ -d "${ws}/BOXP-314/${old}" ]] || fail "expected run whose HEAD is only on a stale tracking ref to remain"
   for ticket in BOXP-301 BOXP-307; do
     if git -C "${source}" worktree list --porcelain | grep -q "/workspaces/${ticket}/"; then
@@ -2054,14 +2066,14 @@ test_prune_workspaces() {
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-311/${old} reason=origin-not-github checkout=clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-312/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=clone$"
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-314/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
-  assert_file_contains "${out}" '^prune: summary deleted=2 held=5 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=false '
+  assert_file_contains "${out}" '^prune: summary deleted=2 held=6 skipped=4 recent-runs=1 branches=1 empty-dirs=3 dry-run=false '
   # Each SHA is looked up at most once per pass.
   [[ -z "$(sort "${tmp}/api.log" | uniq -d)" ]] || fail "expected GitHub lookups to be cached per prune pass"
 
   # A second pass is idempotent and keeps reporting held runs.
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
     || fail "second prune-workspaces failed"
-  assert_file_contains "${out}" '^prune: summary deleted=0 held=5 skipped=4 recent-runs=1 branches=0 empty-dirs=0 dry-run=false '
+  assert_file_contains "${out}" '^prune: summary deleted=0 held=6 skipped=4 recent-runs=1 branches=0 empty-dirs=0 dry-run=false '
 
   # gh failures (auth, rate limit, network) are not treated as proof either way.
   write_prune_ticket "${vault}" BOXP-313 done 2020-01-01
