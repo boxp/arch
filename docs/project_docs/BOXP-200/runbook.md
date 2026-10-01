@@ -103,11 +103,13 @@ providerは空文字の環境変数を未設定として扱う（v0.29.2の`Conf
 
 ### 切替手順
 
-1. このPRをmergeする。applyは従来のAPI key経路で動き、Trustを2つ作成する。PRのplanが「Trust 2つの追加とoutputの追加」だけであることをmerge前に確認する。auth keyやSSMの変更が含まれていたら止める。
-2. client IDを取得する。applyコメントのOutputs、Tailscale管理画面のTrust credentials、または`terraform output -raw arch_ci_plan_wif_client_id` / `arch_apply_wif_client_id`のいずれかを使う。client IDは非secretである。引数なしの`terraform output`やstateの表示は使わない。
-3. `gh variable set TAILSCALE_WIF_CI_PLAN_CLIENT_ID --repo boxp/arch`で登録する。`terraform/tailscale/lolice`のコメントだけを変えるPRを作り、planの成功を確認する。plan jobのログ冒頭の`env:`で`TAILSCALE_OAUTH_CLIENT_ID`が空でないことがWIFモードの証跡になる。
-4. `gh variable set TAILSCALE_WIF_APPLY_CLIENT_ID --repo boxp/arch`で登録し、手順3のPRをmergeしてapplyの成功を確認する。
-5. API keyの参照を削除するPRを作る。対象は`test.yaml` / `wc-test.yaml` / `wc-plan.yaml`の`TAILSCALE_API_KEY`受け渡し、`tfaction-root.yaml`の`TAILSCALE_API_KEY`対応、`templates/tailscale/provider.tf`のコメント、workflowの従来モードへの分岐。このPRのplanとapplyがWIFで成功することを確認する。
+手順1〜3は2026-10-01に実施済みで、証跡は「現在の到達点」と「2026-10-01 の証跡」にある。PR #13089は手順3の検証用PRで、Trustは作成しない。PR #13089のmerge後のapplyは手順4にあたり、WIF経路で動く。
+
+1. 【完了】Trustを追加するPR（#13077）をmergeする。applyは従来のAPI key経路で動き、Trustを2つ作成する。PRのplanが「Trust 2つの追加とoutputの追加」だけであることをmerge前に確認する。auth keyやSSMの変更が含まれていたら止める。
+2. 【完了】client IDを取得する。PR #13077のapplyコメントのOutputs、Tailscale管理画面のTrust credentials、または`terraform output -raw arch_ci_plan_wif_client_id` / `arch_apply_wif_client_id`のいずれかを使う。client IDは非secretである。引数なしの`terraform output`やstateの表示は使わない。
+3. 【完了】`gh variable set TAILSCALE_WIF_CI_PLAN_CLIENT_ID --repo boxp/arch`で登録する。`terraform/tailscale/lolice`のコメントだけを変えるPR（#13089）を作り、planの成功を確認する。plan jobのログ冒頭の`env:`で`TAILSCALE_OAUTH_CLIENT_ID`が空でないことがWIFモードの証跡になる。
+4. 【変数は登録済み、applyは未確認】`gh variable set TAILSCALE_WIF_APPLY_CLIENT_ID --repo boxp/arch`で登録し、手順3のPR（#13089）をmergeしてapplyの成功を確認する。このapplyはWIF経路（apply用Trust）で動く。
+5. API keyの参照を削除するPRを、手順4のapplyがWIFで成功した後に作る。対象は`test.yaml` / `wc-test.yaml` / `wc-plan.yaml`の`TAILSCALE_API_KEY`受け渡し、`tfaction-root.yaml`の`TAILSCALE_API_KEY`対応、`templates/tailscale/provider.tf`のコメント、workflowの従来モードへの分岐。そのPRのplanとapplyがWIFで成功することを確認する。
 6. Tailscale管理画面でAPI keyの最終利用日時が手順3より前で止まっていることを確認してからrevokeし、GitHubのSecret `TAILSCALE_API_KEY`を削除する。手動dispatchのWIF planと、任意のPRのplanを再実行して成功を確認する。
 
 失敗時の復旧:
@@ -158,7 +160,7 @@ T-30/T-7は実期限・rotation_due_atのそれぞれからUTC日付で算出す
 5. 全切替先とrollback期間をownerが確認し、旧credentialの最終利用metadataを調べてからrevokeする。old client/keyの削除が既存nodeの継続利用を保証するとはみなさない。revoke後の新規認証を再検証し、台帳とticketの状態を更新する。
 6. revoke後の復旧は旧credentialを再利用せず、最小権限の新credential発行またはWIF修正で行う。復旧credentialの削除予定もticketへ記載する。
 
-subnet router auth keyはTerraform管理下にあり、SSM値やkey resourceの更新はapplyを伴う。本PRはrotationのapplyやSecret更新を行わない。metadata運用だけを追加して値の管理責任をTerraformと手作業で二重化しない。
+subnet router auth keyはTerraform管理下にあり、SSM値やkey resourceの更新はapplyを伴う。BOXP-200の各PR（#13019、#13077、#13089）はrotationのapplyやSecret更新を行わない。metadata運用だけを追加して値の管理責任をTerraformと手作業で二重化しない。
 
 ## 通知の実配備状況
 
@@ -182,7 +184,7 @@ auth keyの期限は2026-12-30（UTC）である。PR #13077のplanが表示し�
 ## 次に必要な完了証跡
 
 - 「切替手順」4の残り：PR #13089をmergeし、applyがWIFで成功することを確認する。
-- 「切替手順」5：API key参照を削除するPR。`setup`と`test`のstepへ渡している`toJSON(secrets)`もこのPRで外す。
+- 「切替手順」5：API key参照を削除するPR。`setup`と`test`のstepへ渡している`toJSON(secrets)`もそのPRで外す。
 - ownerによる「切替手順」6（API keyのrevoke、Secretの削除、revoke後の再検証）。
 - ownerによるactive credentialと実expiry/scope/tagのmetadata棚卸し。
 - BOXP-206でのOperator WIFの可否判断。決まるまでOAuth運用を続ける。

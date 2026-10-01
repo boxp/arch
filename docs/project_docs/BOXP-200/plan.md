@@ -28,7 +28,7 @@ client ID/audienceはTrust作成後の値であるため、arch専用`tailscale_
 
 1. PRのplan用（read-only）とmainのapply用（write）のTrust Credentialを分けて追加する。claim条件はevent、workflow、refで限定する。
 2. `wc-plan.yaml`と`apply.yaml`は、非secretの変数`TAILSCALE_WIF_CI_PLAN_CLIENT_ID` / `TAILSCALE_WIF_APPLY_CLIENT_ID`が登録されているときだけWIFを使う。変数を消せばAPI key経路へ戻る。
-3. このPRのmerge後、ownerが変数を登録してplanとapplyの成功を確認する。その後にAPI keyの参照を削除し、revokeする。
+3. Trustを追加するPR（#13077）のmerge後、ownerが変数を登録してplanとapplyの成功を確認する。その後にAPI keyの参照を削除し、revokeする。
 4. Operatorは公開OIDC issuerの前提を満たさないため実装せず、BOXP-206へ分離する。
 5. 残存credentialの期限通知はRecurring Eventsへ登録し、dry-runでcandidateを確認する。
 
