@@ -41,6 +41,11 @@ jobs:
       TFACTION_TARGET: ${{matrix.target.target}}
       TFACTION_JOB_TYPE: ${{matrix.target.job_type}}
       TFACTION_SKIP_TERRAFORM: ${{matrix.target.skip_terraform}}
+      # Tailscale WIF (BOXP-200): used for Tailscale targets once the non-secret
+      # client ID variable is registered. Delete the variable to fall back to the
+      # legacy API key. Tailscale generates the audience from the client ID.
+      TAILSCALE_OAUTH_CLIENT_ID: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && vars.TAILSCALE_WIF_APPLY_CLIENT_ID || '' }}
+      TAILSCALE_AUDIENCE: ${{ startsWith(matrix.target.target, 'terraform/tailscale/') && vars.TAILSCALE_WIF_APPLY_CLIENT_ID != '' && format('api.tailscale.com/{0}', vars.TAILSCALE_WIF_APPLY_CLIENT_ID) || '' }}
     permissions:
       id-token: write # For OIDC
       contents: read # To checkout a private repository
@@ -163,13 +168,15 @@ jobs:
         with:
           action: terraform-init
           github_token: ${{ steps.apply_token.outputs.token }}
-          secrets: ${{ toJSON(secrets) }}
+          # WIF mode passes no secret, so the API key never reaches terraform.
+          secrets: ${{ env.TAILSCALE_OAUTH_CLIENT_ID != '' && '{}' || toJSON(secrets) }}
 
       - uses: suzuki-shunsuke/tfaction@e71f80efd3d0eeaca305cb93267e7274d9c6f8c9 # v2.3.2
         with:
           action: apply
           github_token: ${{ steps.apply_token.outputs.token }}
-          secrets: ${{ toJSON(secrets) }}
+          # WIF mode passes no secret, so the API key never reaches terraform.
+          secrets: ${{ env.TAILSCALE_OAUTH_CLIENT_ID != '' && '{}' || toJSON(secrets) }}
         env:
           CLOUDFLARE_API_TOKEN: ${{secrets.CLOUDFLARE_API_TOKEN}} # For cloudflare provider
 
