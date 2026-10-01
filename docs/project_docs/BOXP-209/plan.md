@@ -18,7 +18,7 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 | `closed` が今日（UTC）から保持日数以上前 | 既定 3 日 |
 | run-id 先頭のタイムスタンプも保持日数以上前 | 古い `closed` のまま再オープン → 再 done されたチケットの猶予を守る。UUID なしの旧形式 run-id（`20260709T124714Z`）も読める |
 | `locks/<ticket>.edn` がない | 判定と削除は `with-ticket-lock-guard` の中で行い、`acquire-lock!` と排他 |
-| run 配下の全 checkout で `git status --porcelain` が空 | checkout は `.git`（ファイル / ディレクトリ）を持つディレクトリ。`ghq/github.com/<owner>/<repo>` 以外に agent が作った clone も含む。symlink はたどらない |
+| run 配下の全 checkout で `git status --porcelain` が空 | checkout は `.git`（ファイル / ディレクトリ）を持つディレクトリ。`ghq/github.com/<owner>/<repo>` 以外に agent が作った clone も含む。checkout の中も `.git` 以外は探索を続けるので、親から gitignore された入れ子の clone / worktree も 1 つの checkout として検査する（親の `git status` には出ないため）。symlink はたどらない |
 | 各 checkout の `git rev-list HEAD --not --remotes` の全コミットが GitHub 上にある | `gh api repos/<owner>/<repo>/commits/<sha> --jq .sha` の出力が SHA と一致したときだけ「ある」と扱う |
 
 チケットで決めた条件に加えて、データを失わない側に 3 点だけ厳しくしている。
@@ -53,6 +53,7 @@ Task Board runner（`docker/codex-workspace/task-board/task_board_runner.bb`）�
 ## 削除の手順
 
 1. 元リポジトリが run の外にある worktree は `git --git-dir <元リポジトリ> worktree remove --force` で外す。
+   入れ子になっている場合は深い方から外す。
 2. run ディレクトリを `fs/delete-tree` で削除する。直前に、実パスが
    `<root>/workspaces/<ticket>/<run-id>` と一致することを確認する。独立 clone、gitignore 済みの
    ビルド成果物、run 直下に置かれたメモ類は run ごと消える。

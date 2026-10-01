@@ -2142,6 +2142,91 @@ test_prune_holds_checkout_over_commit_limit() {
   fi
 }
 
+test_prune_inspects_nested_checkouts() {
+  local tmp vault state bin source known out old ws co nested ticket
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  source="${tmp}/source"
+  known="${tmp}/known-shas"
+  out="${tmp}/prune.out"
+  old="20200101T000000Z-00000000-0000-0000-0000-000000000000"
+  ws="${state}/workspaces"
+  mkdir -p "${bin}" "${state}/locks"
+  make_fake_gh "${bin}"
+  make_prune_source_repo "${source}"
+  # The parent checkout ignores vendor/, so its own git status never shows
+  # what a clone placed there contains.
+  printf 'vendor/\n' >"${source}/.gitignore"
+  git -C "${source}" add .gitignore
+  prune_git -C "${source}" commit -q -m ignore-vendor
+  git -C "${source}" update-ref refs/remotes/origin/main HEAD
+  git -C "${source}" rev-parse HEAD >"${known}"
+  write_board "${vault}" ""
+
+  # BOXP-341: gitignored nested clone with an untracked file -> held.
+  write_prune_ticket "${vault}" BOXP-341 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-341 "${old}")"
+  nested="${co}/vendor/clone"
+  git clone -q "${source}" "${nested}"
+  git -C "${nested}" remote set-url origin https://github.com/boxp/example.git
+  printf 'wip\n' >"${nested}/untracked.txt"
+  [[ -z "$(git -C "${co}" status --porcelain)" ]] || fail "expected the parent checkout to ignore the nested clone"
+
+  # BOXP-342: gitignored nested clone with a commit that is not on GitHub -> held.
+  write_prune_ticket "${vault}" BOXP-342 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-342 "${old}")"
+  nested="${co}/vendor/clone"
+  git clone -q "${source}" "${nested}"
+  git -C "${nested}" remote set-url origin https://github.com/boxp/example.git
+  prune_commit "${nested}" nested-unpushed >/dev/null
+
+  # BOXP-343: gitignored nested clone with a stash -> held.
+  write_prune_ticket "${vault}" BOXP-343 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-343 "${old}")"
+  nested="${co}/vendor/clone"
+  git clone -q "${source}" "${nested}"
+  git -C "${nested}" remote set-url origin https://github.com/boxp/example.git
+  printf 'vendor/\nstashed\n' >"${nested}/.gitignore"
+  prune_git -C "${nested}" stash -q
+
+  # BOXP-344: clean nested clone and a clean nested worktree of the source
+  # repository, all on GitHub -> deleted, both worktrees unregistered.
+  write_prune_ticket "${vault}" BOXP-344 done 2020-01-01
+  co="$(add_prune_run "${state}" "${source}" BOXP-344 "${old}")"
+  git clone -q "${source}" "${co}/vendor/clone"
+  git -C "${co}/vendor/clone" remote set-url origin https://github.com/boxp/example.git
+  git -C "${source}" worktree add -q --detach "${co}/vendor/worktree" HEAD
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" --dry-run >"${out}" \
+    || fail "prune-workspaces --dry-run with nested checkouts failed"
+  assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" run_prune "${vault}" "${state}" >"${out}" \
+    || fail "prune-workspaces with nested checkouts failed"
+
+  [[ -f "${ws}/BOXP-341/${old}/ghq/github.com/boxp/example/vendor/clone/untracked.txt" ]] \
+    || fail "expected run with uncommitted changes in a nested clone to remain"
+  [[ -f "${ws}/BOXP-342/${old}/ghq/github.com/boxp/example/vendor/clone/nested-unpushed" ]] \
+    || fail "expected run with an unpushed commit in a nested clone to remain"
+  git -C "${ws}/BOXP-343/${old}/ghq/github.com/boxp/example/vendor/clone" rev-parse -q --verify refs/stash >/dev/null \
+    || fail "expected run with a stash in a nested clone to remain"
+  [[ ! -e "${ws}/BOXP-344" ]] || fail "expected run with clean nested checkouts to be deleted"
+  if git -C "${source}" worktree list --porcelain | grep -q "/workspaces/BOXP-344/"; then
+    fail "expected nested and parent worktrees to be unregistered from the source repository"
+  fi
+  for ticket in BOXP-341 BOXP-342 BOXP-343; do
+    git -C "${source}" show-ref --verify -q "refs/heads/codex-task-board/${ticket}-${old}" \
+      || fail "expected the branch of held run ${ticket} to remain"
+  done
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-341/${old} reason=uncommitted-changes checkout=ghq/github.com/boxp/example/vendor/clone$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-342/${old} reason=commit-not-on-github sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example/vendor/clone$"
+  assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-343/${old} reason=stash-present checkout=ghq/github.com/boxp/example/vendor/clone$"
+  assert_file_contains "${out}" "^prune: delete ${ws}/BOXP-344/${old}$"
+  assert_file_contains "${out}" '^prune: summary deleted=1 held=3 '
+}
+
 test_prune_invalid_settings_fall_back_to_defaults() {
   local tmp vault state out
   tmp="$(mktemp -d)"
@@ -2281,6 +2366,7 @@ test_cross_vault_lock_isolation
 test_concurrent_board_update_no_lost_writes
 test_prune_workspaces
 test_prune_holds_checkout_over_commit_limit
+test_prune_inspects_nested_checkouts
 test_prune_invalid_settings_fall_back_to_defaults
 test_loop_prunes_in_background
 test_loop_prune_can_be_disabled

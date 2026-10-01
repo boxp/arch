@@ -1773,20 +1773,26 @@
           status))))
 
 (defn find-checkouts
-  "Directories under `dir` that contain `.git` (file or directory). Symlinks
-  are not followed and `.git` itself is not descended into."
+  "Directories under `dir` that contain `.git` (file or directory), deepest
+  first. Symlinks are not followed and `.git` itself is not descended into,
+  but the rest of a checkout is: a clone nested inside another checkout (for
+  example one the parent gitignores) is invisible to the parent's
+  `git status` and has to be inspected on its own."
   [dir]
   (let [found (volatile! [])]
-    (letfn [(visit [current]
-              (doseq [entry (fs/list-dir current)]
-                (cond
-                  (= ".git" (fs/file-name entry))
-                  (vswap! found conj current)
-
-                  (fs/directory? entry {:nofollow-links true})
+    (letfn [(git-entry? [entry] (= ".git" (fs/file-name entry)))
+            (visit [current]
+              (let [entries (fs/list-dir current)]
+                (when (some git-entry? entries)
+                  (vswap! found conj current))
+                ;; Keep walking below a checkout; only `.git` is skipped.
+                (doseq [entry entries
+                        :when (and (not (git-entry? entry))
+                                   (fs/directory? entry {:nofollow-links true}))]
                   (visit entry))))]
       (visit dir))
-    @found))
+    ;; Deepest first so a nested worktree is detached before its parent goes.
+    (vec (sort-by (fn [path] [(- (count (seq (fs/path path)))) (str path)]) @found))))
 
 (defn inspect-checkout
   "Returns {:hold reason} when the checkout must be kept, otherwise its repo
