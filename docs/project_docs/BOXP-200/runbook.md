@@ -177,7 +177,7 @@ vaultの`Infrastructure/Recurring Events/Events/`へ次の3イベントを作成
 
 現在日のdry-runでは、auth keyの2イベントは`not-yet`である。`tailscale-credential-review`の2026-10-01分は当日だけcandidateになるが、次のcron実行は翌日なので起票されない。今回の棚卸しはBOXP-200で代替し、初回の自動起票は2027-01-01分になる。
 
-auth keyの期限2026-12-30は、2026-10-01のapplyでの再発行日にproviderの既定expiry（90日）を足した導出値である。実際の値は、このPRで追加するoutput `subnet_router_auth_key_expires_at`か管理画面で確認し、違っていればイベントのoccurrenceを直す。rotationのたびに次の期限をoccurrenceへ追加する必要があり、起票されるticketのAcceptance Criteriaに含めた。
+auth keyの期限は2026-12-30（UTC）である。PR #13077のplanが表示したoutput `subnet_router_auth_key_expires_at`で確認した。rotationのたびに次の期限をoccurrenceへ追加する必要があり、起票されるticketのAcceptance Criteriaに含めた。
 
 ## 次に必要な完了証跡
 
