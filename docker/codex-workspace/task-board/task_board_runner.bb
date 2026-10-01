@@ -85,9 +85,13 @@
 (def vault-writer-mutex (Object.))
 (def ^:dynamic *vault-writer-lock-held* false)
 
-(defn with-vault-writer-lock [f]
+(defn vault-writer-lock-dir []
   (let [dir (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR")]
-    (if (or (str/blank? dir) *vault-writer-lock-held*)
+    (when-not (str/blank? dir) dir)))
+
+(defn with-vault-writer-lock [f]
+  (let [dir (vault-writer-lock-dir)]
+    (if (or (nil? dir) *vault-writer-lock-held*)
       (f)
       (locking vault-writer-mutex
         (fs/create-dirs dir)
@@ -488,14 +492,27 @@
                          (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
          (write-lines! path new-lines))))))
 
+(defn project-ticket-status! [ticket-id {:keys [status done]}]
+  (update-frontmatter! ticket-id (cond-> {:status status}
+                                   (= "done" status) (assoc :closed (or done (today))))))
+
 (defn sync-ticket-statuses! []
   (let [lines (vec (read-lines (board-path)))]
-    (doseq [{:keys [ticket-id status done]} (parse-board-cards lines)
+    (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
             :let [path (ticket-path ticket-id)]
             :when (fs/exists? path)]
-      (let [updates (cond-> {:status status}
-                      (= "done" status) (assoc :closed (or done (today))))]
-        (update-frontmatter! ticket-id updates)))))
+      (if (vault-writer-lock-dir)
+        ;; With the shared lock, another writer may move the card after the
+        ;; snapshot above. Re-read the lane inside the lock so a stale status is
+        ;; never projected. Lock order stays ticket mutex, then vault lock.
+        (locking (ticket-mutex ticket-id)
+          (with-vault-writer-lock
+           (fn []
+             (when-let [current (first (filter #(= ticket-id (:ticket-id %))
+                                               (parse-board-cards (vec (read-lines (board-path))))))]
+               (when (fs/exists? path)
+                 (project-ticket-status! ticket-id current))))))
+        (project-ticket-status! ticket-id card)))))
 
 (defn sync-all! []
   (sync-board-statuses!)
@@ -2011,7 +2028,7 @@
           (swap! failures conj "feature-off candidate compatibility"))))
     (println "PASS: autonomy v2 remains off; legacy lane/route/intent matrix is unchanged")
     ;; The shared vault writer lock is opt-in; unset, it must be a pass-through.
-    (when (and (str/blank? (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR"))
+    (when (and (nil? (vault-writer-lock-dir))
                (not= :value (with-vault-writer-lock (fn [] (if *vault-writer-lock-held* :locked :value)))))
       (swap! failures conj "vault writer lock must be a pass-through when not opted in"))
     (let [calls (atom [])]

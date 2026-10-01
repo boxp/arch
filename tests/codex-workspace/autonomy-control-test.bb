@@ -391,6 +391,9 @@
              (mapv :actor-subject (take-last 2 events))))
       (is (= [[1 2] [2 3]]
              (mapv (juxt :previous-revision :revision) (take-last 2 events)))))
+    (is (not (str/includes? (pr-str (control/events store owner)) secret))
+        "the audit view carries attribution, never the requirements snapshot")
+    (is (not-any? :entry (:events (control/events store runner))))
     (is (rejected? :forbidden (control/events store agent)))
     (let [output (java.io.StringWriter.)
           results (binding [*out* output *err* output]

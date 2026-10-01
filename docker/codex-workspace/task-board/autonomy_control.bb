@@ -414,15 +414,21 @@
          (ok {:revision (get-in entry [:control :revision])
               :generation (:generation state)}))))))
 
+(def ^:private audit-keys
+  [:seq :event-id :at :op :ticket :actor-subject :actor-role
+   :previous-revision :revision :generation])
+
 (defn events
-  "Audit read of the append-only event log (owner and runner identities only)."
+  "Audit read of the append-only event log (owner and runner identities only).
+  Only attribution metadata is returned; the stored control, including the
+  requirements snapshot, is never part of the audit view."
   [store credential]
   (locked
    store
    (fn []
      (let [log (load-log store)]
        (require-role! (actor! store credential) #{:owner :runner})
-       (ok {:events (:events log)})))))
+       (ok {:events (mapv #(select-keys % audit-keys) (:events log))})))))
 
 ;; --- projection and objective checks -------------------------------------------
 

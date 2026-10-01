@@ -423,13 +423,14 @@
                (worker env "moves" "delta" "BOXP-903" n)
                (shell-loop env n (str "bb '" helper-script "' append-note BOXP-901 --vault '"
                                       (:vault env) "' --source helper --note \"helper-note-$i\" >/dev/null"))
-               (shell-loop env n (str "bb '" helper-script "' update BOXP-904 --vault '"
-                                      (:vault env) "' --priority high >/dev/null"))
+               ;; The helper moves a card while the runner's sync projects statuses.
+               (shell-loop env n (str "if (( i % 2 )); then lane=Review; else lane=Ready; fi; "
+                                      "bb '" helper-script "' update BOXP-904 --vault '" (:vault env)
+                                      "' --lane \"$lane\" --priority high >/dev/null"))
                (shell-loop env n (str "bb '" runner-script "' sync >/dev/null"))]
         results (mapv deref procs)]
     (doseq [result results]
       (is (zero? (:exit result)) (:err result)))
-    (is (zero? (:exit @(shell-loop env 1 (str "bb '" runner-script "' sync >/dev/null")))))
     (let [shared (ticket env "BOXP-901")]
       (doseq [i (range 1 (inc n))]
         (is (= 1 (occurrences shared (str "- note alpha " i "\n"))))
@@ -444,6 +445,9 @@
       (doseq [i (range 1 (inc n))]
         (is (= 1 (occurrences (ticket env id) (str "- move " name " " i "\n"))))))
     (is (str/includes? (ticket env "BOXP-904") "\npriority: high\n"))
+    (is (= "Review" (lane-of env "BOXP-904")))
+    (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n")
+        "the ticket status follows the final lane")
     (doseq [id tickets]
       (is (= 1 (occurrences (board env) (str "[[Tickets/" id "|"))) "exactly one card per ticket"))
     (is (= [] (pending (new-writer env))))

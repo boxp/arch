@@ -63,14 +63,14 @@ control原本のinterfaceと、actor・revision・世代の契約を固定する
 - 保存するcontrolはすべてI1の `validate-control` を、store側に設定した許可repo/pathで通過したものに限る。
 - requirementsの変更は `ticket_version` を進め、digestを再計算する。decision / retry contractは `control_revision` に固定されているため、revisionの更新で旧版は無効になる。
 - budget消費はticketとbudget epochに累積する。revisionの更新では戻らず、ownerが明示した `:new-budget-epoch` だけが新しいepochを開始する。過去epochのidempotency keyは再利用できない。
-- eventは `seq`・`event-id`・actor subject/role・`previous-revision`・`revision` を持ち、行ごとのhash chainで連結する。再生時に連番、世代+1、revisionの連続を検査し、不整合は `:unavailable`。
+- eventは `seq`・`event-id`・actor subject/role・`previous-revision`・`revision` を持ち、行ごとのhash chainで連結する。再生時に連番、世代+1、revisionの連続を検査し、不整合は `:unavailable`。監査用の `events` はこれらの帰属情報だけを返し、保存したcontrol（requirements snapshotを含む）は返さない。
 - `read-control` / `verify-writer` / `authorize-write` は呼出側が保持する `:min-revision` / `:min-generation`（既に観測した最大値）を受け取り、storeがそれより小さい値を返したら `:rollback-detected`。
 - `authorize-write` は起動・書込み直前の照合で、store世代・controlの `writer_generation`・要求の世代・revisionがすべて一致した場合だけ成功する。世代を進めた後、旧世代で発行したcontrolはownerが再発行するまで使えない。
 - `verify-projection` はticket frontmatter（`autonomy_version` / `execution_intent` / `control_revision`）と原本の一致を確認する。一致は何も許可せず、不一致は起動を止める。
 
 ## runner / helperのopt-in lock
 
-`TASK_BOARD_VAULT_WRITER_LOCK_DIR` を設定した場合だけ、runnerのBoard/ticket書込みとhelperの書込commandが同じ `vault-writer.lock` を取得する。未設定なら従来どおり。runnerでは既存のJVM内mutexの内側、helperでは既存のper-file lockの外側で取得する。lock内から他のlockを取らないこと。全writerを同時に切り替える手順はI7で扱い、一部のwriterだけにopt-inした状態を本番で作らない。
+`TASK_BOARD_VAULT_WRITER_LOCK_DIR` を設定した場合だけ、runnerのBoard/ticket書込みとhelperの書込commandが同じ `vault-writer.lock` を取得する。未設定なら従来どおり。runnerでは既存のJVM内mutexの内側、helperでは既存のper-file lockの外側で取得する。opt-in時の `sync` は、ticketごとにlock内でBoardのlaneを読み直してから `status` を投影する。lock内から他のlockを取らないこと。全writerを同時に切り替える手順はI7で扱い、一部のwriterだけにopt-inした状態を本番で作らない。
 
 helperの `control-intent` / `control-decision` / `control-retry` は `--dry-run` 専用で、control APIへ送る要求と必要なactor（owner / runner-or-owner）を表示するだけ。vaultには書込まない。
 
