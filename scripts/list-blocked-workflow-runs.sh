@@ -38,9 +38,10 @@ for workflow in "$@"; do
   blocked_count=0
 
   # 照会に失敗したら「未実行なし」と誤認しないよう、ここで異常終了させる。
+  # status=completed を API に渡すと古い run だけが返ったことがあるため、完了の絞り込みは jq で行う。
   runs="$(
-    gh api "repos/${REPO}/actions/workflows/${workflow}/runs?per_page=${LIMIT}&status=completed" \
-      --jq '.workflow_runs[] | [.id, .created_at, .conclusion, .head_sha, .html_url] | @tsv'
+    gh api "repos/${REPO}/actions/workflows/${workflow}/runs?per_page=${LIMIT}" \
+      --jq '.workflow_runs[] | select(.status == "completed") | [.id, .created_at, .conclusion, .head_sha, .html_url] | @tsv'
   )"
 
   while IFS=$'\t' read -r id created conclusion sha url; do
