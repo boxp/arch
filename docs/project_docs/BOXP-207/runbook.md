@@ -12,7 +12,7 @@ boxp/arch では次のように現れる。
 - 同じ内容の `apply.yaml` の run を 1 件承認すると、次に `apply.yaml` が変わるまでは通常どおり実行される。
 - 承認前に積まれた run は、承認後も自動では実行されない。
 - `test.yaml`（`pull_request_target`）でも、`wc-plan.yaml` を変更した PR #13090 の merge 後に同じことが 1 回起きた。
-- `apply.yaml` から `toJSON(secrets)` を外した PR #13097 の merge（2026-10-01 11:55 UTC）では、`apply.yaml` が変わったのに止まらなかった。07-30 以降で止まらなかった変更はこの 1 回だけである。今後も止まらないかは、次の `apply.yaml` 変更で確かめる（下の「toJSON(secrets) を外した結果」）。
+- `toJSON(secrets)` を外した PR #13097（`apply.yaml`）と #13108（`wc-plan.yaml` / `test.yaml`）の merge では、workflow file が変わったのに止まらなかった。07-30 以降で止まらなかった変更はこの 2 回だけである。今後も止まらないかは、次の workflow 変更で確かめる（下の「toJSON(secrets) を外した結果」）。
 
 実行されなかった run は jobs が 0 件で、数秒で終わる。表示は 2 通りあり、時期によって切り替わる。
 
@@ -82,12 +82,13 @@ boxp/arch では次のように現れる。
 
 | 変更 | merge (UTC) | 変更後の最初の run | secrets `'{}'` での terraform 実行 |
 | --- | --- | --- | --- |
-| #13097 `apply.yaml` | 2026-10-01 11:55 | [36858414109](https://github.com/boxp/arch/actions/runs/36858414109) が承認なしで実行された（attempt 1、success） | 未確認。この run と次の run は変更された target がなく、apply job は skipped だった |
-| #13108 `wc-plan.yaml` / `test.yaml` | 未 merge | - | - |
+| #13097 `apply.yaml` | 2026-10-01 11:55 | [36858414109](https://github.com/boxp/arch/actions/runs/36858414109) が承認なしで実行された（attempt 1、success） | aws は成功。[36859447281](https://github.com/boxp/arch/actions/runs/36859447281)（`terraform/aws/github-actions-ansible`）と [36859501855](https://github.com/boxp/arch/actions/runs/36859501855)（`terraform/aws/gpu-worker-images`）の apply job が success。cloudflare は未確認 |
+| #13108 `wc-plan.yaml` / `test.yaml` | 2026-10-01 12:02 | 直後の `pull_request_target` run（12:02:23 以降、Renovate の PR）が承認なしで実行された（attempt 1） | aws は成功。[36859210394](https://github.com/boxp/arch/actions/runs/36859210394) と [36859248045](https://github.com/boxp/arch/actions/runs/36859248045) の plan job が success。cloudflare は未確認 |
 
 - それまでは、`toJSON(secrets)` を含む `apply.yaml` の変更 11 回すべてで、変更後の最初の run から止まっていた。同じ Renovate の PR で変更された、`toJSON(secrets)` を含まない workflow（`apply-ansible.yml` など）は止まっていなかった。
-- 止まらなかった観察は 1 回だけである。次に `apply.yaml` が変わったとき（Renovate の週次 PR など）にも止まらなければ、この記述が原因だったと考えてよい。止まった場合は、この節に記録して上の復旧手順を行う。
-- #13097 の後、target を変更する最初の merge で、aws と cloudflare の apply が success することを確認する。Secret が足りずに失敗した場合は、`secrets` に必要な名前だけを入れた JSON を渡す（`apply.yaml` のコメントを参照）。
+- #13108 の後、`.github/workflows/` に `toJSON(secrets)` は残っていない。
+- 止まらなかった観察は、同じ日の 2 回だけである。どちらも `toJSON(secrets)` を外す変更そのものだった。外した後の workflow file を別の理由で変更したとき（Renovate の週次 PR など）にも止まらなければ、この記述が原因だったと考えてよい。止まった場合は、この節に記録して上の復旧手順を行う。
+- cloudflare の target を変更する最初の PR で、plan と apply が success することを確認する。`CLOUDFLARE_API_TOKEN` は step の `env` で渡しており、今回の変更の対象ではない。Secret が足りずに失敗した場合は、`secrets` に必要な名前だけを入れた JSON を渡す（workflow のコメントを参照）。
 - 結果が出たら、この表と BOXP-207 の Notes に追記する。
 
 ## 止まり始める回数を減らす設定

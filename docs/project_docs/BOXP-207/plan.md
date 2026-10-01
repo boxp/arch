@@ -78,7 +78,7 @@ cron が `action_required` だけを見ている場合、`failure`（jobs 0 件�
 
 この変更は `apply.yaml` を変えるため、merge 時に 1 回は未実行になる可能性がある。効果は、その後の `apply.yaml` 変更（次の Renovate の週次 PR）で未実行が再発するかどうかで判定する。切り分けを明確にするため、この PR とは別の PR にする。`wc-plan.yaml` / `test.yaml` は、`apply.yaml` で効果を確認してから同じ変更をする。
 
-結果（2026-10-01）: #13097 は 11:55 UTC に merge された。予想と違い、merge 直後の apply run は承認なしで実行された。07-30 以降の `apply.yaml` 変更で止まらなかったのは、この 1 回だけである。これを受けて、`wc-plan.yaml` / `test.yaml` の同じ変更を PR #13108 にした。経過は [runbook.md](runbook.md) の「toJSON(secrets) を外した結果」に記録する。
+結果（2026-10-01）: #13097 は 11:55 UTC に merge された。予想と違い、merge 直後の apply run は承認なしで実行された。07-30 以降の `apply.yaml` 変更で止まらなかったのは、この 1 回だけである。これを受けて、`wc-plan.yaml` / `test.yaml` の同じ変更を PR #13108 にした。#13108 は 12:02 UTC に merge され、直後の `pull_request_target` run も承認なしで実行された。その後の aws target の plan と apply は、secrets `'{}'` で成功している。経過は [runbook.md](runbook.md) の「toJSON(secrets) を外した結果」に記録する。
 
 ### 5. 棚卸しと手順書
 
@@ -94,6 +94,5 @@ cron が `action_required` だけを見ている場合、`failure`（jobs 0 件�
 ## 残る作業
 
 - Hermes の cron の条件に `failure`（jobs 0 件）を加える（owner / hermes-agent）
-- `toJSON(secrets)` 除去後の確認: target を変更する merge で apply が success するか、次の `apply.yaml` 変更で未実行が再発するか
-- `wc-plan.yaml` / `test.yaml` の `toJSON(secrets)` 除去（PR #13108）を、承認できるタイミングで merge して結果を記録する
+- `toJSON(secrets)` 除去後の確認: cloudflare の target で plan / apply が success するか、次の workflow 変更（Renovate の週次 PR など）で未実行が再発するか
 - `action_required` の run を `gh run rerun` で実行できるかの確認（boxp の了承を得て、no-op 見込みの 1 件で試す）
