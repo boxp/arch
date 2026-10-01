@@ -66,6 +66,27 @@
 (defn revision [store]
   (:revision (control/read-control store owner ticket)))
 
+(deftest initialization-never-truncates-an-existing-log
+  (let [store (issued-store)
+        log #(slurp (str (fs/path (:dir store) control/events-file-name)))
+        before (log)]
+    (is (not (str/blank? before)))
+    (run! deref (mapv (fn [_] (future (control/init-store! store))) (range 8)))
+    (is (= before (log)))
+    (is (= 1 (revision store)))
+    (testing "initializers racing with the first requests keep every event"
+      (let [fresh (control/open-store {:dir (str (fs/path (fs/create-temp-dir
+                                                           {:prefix "autonomy-control-"})
+                                                          "store"))
+                                       :principals principals})
+            inits (mapv (fn [_] (future (control/init-store! fresh))) (range 8))]
+        (control/init-store! fresh)
+        (is (ok? (control/request! fresh owner {:op :issue-writer-generation
+                                                :expected-generation 0})))
+        (run! deref inits)
+        (control/init-store! fresh)
+        (is (= 1 (:generation (control/verify-writer fresh runner {:generation 1}))))))))
+
 (deftest writer-generation-is-owner-issued-and-monotonic
   (let [store (new-store)]
     (is (rejected? :stale-generation (control/request! store owner issue-request))

@@ -10,7 +10,9 @@
   (:require [babashka.fs :as fs]
             [clojure.edn :as edn]
             [clojure.string :as str])
-  (:import [java.time Instant]))
+  (:import [java.nio.file FileAlreadyExistsException Files]
+           [java.nio.file.attribute FileAttribute]
+           [java.time Instant]))
 
 ;; Sibling .bb scripts are loaded explicitly; they are not classpath libraries.
 (let [dir (fs/parent *file*)]
@@ -72,11 +74,16 @@
 
 (defn init-store!
   "Provision an empty event log. Reads and requests never create one, so a
-  missing original is unavailable rather than silently empty."
+  missing original is unavailable rather than silently empty. Creation happens
+  under the store lock and only when the log is absent, so a late or repeated
+  initializer can never truncate a log that already has events."
   [store]
   (fs/create-dirs (:dir store))
-  (when-not (fs/exists? (events-path store))
-    (spit (str (events-path store)) ""))
+  (writer/with-file-lock (:dir store) lock-file-name
+    (fn []
+      (try
+        (Files/createFile (events-path store) (make-array FileAttribute 0))
+        (catch FileAlreadyExistsException _ nil))))
   store)
 
 ;; --- event log --------------------------------------------------------------
