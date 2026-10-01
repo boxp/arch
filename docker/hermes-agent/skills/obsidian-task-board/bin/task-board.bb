@@ -157,9 +157,10 @@
 ;; BOXP-201 I3: opt-in lock shared with the runner and vault_writer.bb. Unset in
 ;; deployment, where the per-file locks above behave exactly as before. It is
 ;; taken before any per-file lock.
-(defn with-vault-writer-lock [f]
+(defn with-vault-writer-lock [opts f]
   (let [dir (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR")]
-    (if (str/blank? dir)
+    ;; A dry-run writes nothing, so it must not create the lock dir or file either.
+    (if (or (str/blank? dir) (:dry-run opts))
       (f)
       (do
         (fs/create-dirs dir)
@@ -648,15 +649,15 @@
     (case cmd
       "list" (cmd-list opts)
       "show" (cmd-show opts (or id (die "show requires ticket id")))
-      "create" (with-vault-writer-lock #(cmd-create opts))
+      "create" (with-vault-writer-lock opts #(cmd-create opts))
       "update" (let [id (or id (die "update requires ticket id"))]
-                 (with-vault-writer-lock #(cmd-update opts id)))
+                 (with-vault-writer-lock opts #(cmd-update opts id)))
       "append-note" (let [id (or id (die "append-note requires ticket id"))]
-                      (with-vault-writer-lock #(cmd-append-note opts id)))
+                      (with-vault-writer-lock opts #(cmd-append-note opts id)))
       "request-codex" (let [id (or id (die "request-codex requires ticket id"))]
-                        (with-vault-writer-lock #(cmd-request-codex opts id)))
+                        (with-vault-writer-lock opts #(cmd-request-codex opts id)))
       "delete" (let [id (or id (die "delete requires ticket id"))]
-                 (with-vault-writer-lock #(cmd-delete opts id)))
+                 (with-vault-writer-lock opts #(cmd-delete opts id)))
       "control-intent" (cmd-control-intent opts (or id (die "control-intent requires ticket id")))
       (usage))))
 

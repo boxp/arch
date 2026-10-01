@@ -30,9 +30,13 @@
 | 現在の状態 | 結果 |
 | --- | --- |
 | カードが `from-lane` のまま | `:aborted`。何も適用されていないので書込まない |
-| カードが `to-lane` で、`control_revision` の投影が記録時と同じ | `:recovered`。ticketへの投影を冪等に完了する（他writerが追記したNotesは保持） |
+| カードが `to-lane`、`control_revision` の投影が記録時と同じで、ticket本文が記録時（`:ticket-sha256`）と同一 | `:recovered`。ticketへの投影を完了する |
+| 同上だがticket本文が記録時から変わっており、記録したfrontmatterの各値が既に入っている（ticket書込み後の中断、または呼出側frontmatter無し） | `:recovered`。現在laneの `status` とNotes 1行だけを冪等に補う。他writerの値は上書きしない（追記されたNotesも保持） |
+| 同上だがticket本文が変わっており、記録したfrontmatterが未反映または別の値 | `:superseded`。journalの古い値で後続writerの更新を上書きしないため再生しない |
 | laneまたは `control_revision` が別の値へ変わった | `:superseded`。再生しない。現在のlaneが正 |
 | カード重複・カード欠落・ticket欠落 | 未解決のまま報告する。自動修復しない |
+
+`:superseded` ではticketの `status` 投影とtransitionのNotes行は補われない。`status` は現在laneからの `sync` で再投影され、transitionの内容はjournalに残る。
 
 未解決entryがあるticketへの新しい `transition!` / `update-ticket!` は `:unresolved-journal` で拒否する。他ticketは継続できる。
 
@@ -70,7 +74,7 @@ control原本のinterfaceと、actor・revision・世代の契約を固定する
 
 ## runner / helperのopt-in lock
 
-`TASK_BOARD_VAULT_WRITER_LOCK_DIR` を設定した場合だけ、runnerのBoard/ticket書込みとhelperの書込commandが同じ `vault-writer.lock` を取得する。未設定なら従来どおり。runnerでは既存のJVM内mutexの内側、helperでは既存のper-file lockの外側で取得する。opt-in時の `sync` は、ticketごとにlock内でBoardのlaneを読み直してから `status` を投影する。lock内から他のlockを取らないこと。全writerを同時に切り替える手順はI7で扱い、一部のwriterだけにopt-inした状態を本番で作らない。
+`TASK_BOARD_VAULT_WRITER_LOCK_DIR` を設定した場合だけ、runnerのBoard/ticket書込みとhelperの書込commandが同じ `vault-writer.lock` を取得する。未設定なら従来どおり。helperの `--dry-run` は何も書かないため、lock directoryやlock fileも作らない。runnerでは既存のJVM内mutexの内側、helperでは既存のper-file lockの外側で取得する。opt-in時の `sync` は、ticketごとにlock内でBoardのlaneを読み直してから `status` を投影する。lock内から他のlockを取らないこと。全writerを同時に切り替える手順はI7で扱い、一部のwriterだけにopt-inした状態を本番で作らない。
 
 helperの `control-intent` は `--dry-run` 専用で、control APIへ送る要求と、それを送れる唯一のactorを表示するだけ。vaultには書込まない。表示する `:request` は上表のoperationと同じop名・同じkey集合で、storeの `request!` がそのまま受理する。
 

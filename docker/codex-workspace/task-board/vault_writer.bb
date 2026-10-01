@@ -495,6 +495,8 @@
                    :from-lane from-lane
                    :to-lane to-lane
                    :expected-revision expected-revision
+                   ;; Recovery replays :frontmatter only over this exact content.
+                   :ticket-sha256 (sha256 ticket-content)
                    :frontmatter (or frontmatter {})
                    :note note
                    :writer-generation (:generation writer)
@@ -530,16 +532,25 @@
           (= lane (:from-lane record)) :aborted
 
           ;; Board applied and no competing control change: finish the projection.
+          ;; The journaled frontmatter is older than any later writer's update, so
+          ;; it is replayed only over the content the transition was prepared
+          ;; against. On a changed ticket, recovery may still add the status of
+          ;; the current lane and the note, which overwrite nobody's value.
           (and (= lane (:to-lane record))
                (or (nil? (:expected-revision record))
                    (= (:expected-revision record) (ticket-revision content))))
-          (let [updated (edit-ticket content (ticket-edit-of record))]
-            (when (not= content updated)
-              (checked-write! writer ticket-file updated))
-            :recovered)
+          (let [lines (vec (split-lines content))
+                updated (edit-ticket content (ticket-edit-of record))]
+            (if (or (= (:ticket-sha256 record) (sha256 content))
+                    (every? (fn [[k v]] (= v (frontmatter-value lines k)))
+                            (:frontmatter record)))
+              (do (when (not= content updated)
+                    (checked-write! writer ticket-file updated))
+                  :recovered)
+              :superseded))
 
-          ;; The lane or control revision was changed by someone else. Never
-          ;; replay over it; the current lane stays authoritative.
+          ;; The lane, control revision or ticket was changed by someone else.
+          ;; Never replay over it; the current lane stays authoritative.
           :else :superseded)))))
 
 (defn recover!

@@ -359,6 +359,37 @@
       (let [before (vault-snapshot env)]
         (is (= [:superseded] (mapv :outcome (:outcomes (writer/recover! w)))))
         (is (= before (vault-snapshot env))))))
+  (testing "another writer updated the ticket after the crash"
+    (let [reassign (assoc to-review :frontmatter {"assignee" "codex-sol"})]
+      (doseq [[label change] [["the same frontmatter key"
+                               #(str/replace % "assignee: boxp" "assignee: claude-fable")]
+                              ["an unrelated part of the ticket" #(str % "- concurrent note\n")]]]
+        (testing label
+          (let [env (new-vault)
+                w (new-writer env)]
+            (is (= :killed (crashed-transition! env :after-board reassign)))
+            (spit (ticket-file env "BOXP-904") (change (ticket env "BOXP-904")))
+            (let [before (vault-snapshot env)]
+              (is (= [:superseded] (mapv :outcome (:outcomes (writer/recover! w)))))
+              (is (= before (vault-snapshot env))
+                  "the journaled frontmatter is not replayed over a changed ticket")
+              (is (= [] (pending w)))))))
+      (testing "an untouched ticket still gets the journaled frontmatter"
+        (let [env (new-vault)
+              w (new-writer env)]
+          (is (= :killed (crashed-transition! env :after-board reassign)))
+          (is (= [:recovered] (mapv :outcome (:outcomes (writer/recover! w)))))
+          (is (str/includes? (ticket env "BOXP-904") "\nassignee: codex-sol\n"))
+          (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n"))))
+      (testing "a later update made after the ticket write is kept"
+        (let [env (new-vault)
+              w (new-writer env)]
+          (is (= :killed (crashed-transition! env :after-ticket reassign)))
+          (spit (ticket-file env "BOXP-904")
+                (str/replace (ticket env "BOXP-904") "assignee: codex-sol" "assignee: claude-fable"))
+          (let [before (vault-snapshot env)]
+            (is (= [:superseded] (mapv :outcome (:outcomes (writer/recover! w)))))
+            (is (= before (vault-snapshot env))))))))
   (testing "a broken vault stays pending for a human"
     (let [env (new-vault)
           w (new-writer env)]
@@ -586,6 +617,29 @@
       (is (rejected? :stale-generation
                      (submit 4 "--intent" "cancel" "--actor" "runner" "--writer-generation" "2"))))
     (is (= "wait-human" (intent)))))
+
+(deftest helper-dry-run-does-not-create-the-shared-lock
+  (let [env (new-vault)
+        before (vault-snapshot env)
+        run (fn [& args]
+              @(p/process {:out :string :err :string
+                           :extra-env {"TASK_BOARD_VAULT_WRITER_LOCK_DIR" (:state-dir env)}}
+                          (str/join " " (map #(str "'" % "'")
+                                             (concat ["bb" helper-script] args
+                                                     ["--vault" (:vault env)])))))]
+    (doseq [args [["create" "--title" "Synthetic" "--lane" "Backlog" "--dry-run"]
+                  ["update" "BOXP-901" "--priority" "high" "--dry-run"]
+                  ["append-note" "BOXP-901" "--note" "synthetic" "--dry-run"]
+                  ["request-codex" "BOXP-901" "--lane" "Ready" "--note" "synthetic" "--dry-run"]
+                  ["delete" "BOXP-901" "--dry-run"]]]
+      (let [result (apply run args)]
+        (is (zero? (:exit result)) (str (pr-str args) (:err result)))
+        (is (str/includes? (:out result) ":dry-run true"))))
+    (is (= before (vault-snapshot env)))
+    (is (not (fs/exists? (:state-dir env))) "no lock dir or lock file is created")
+    (testing "a real write still takes the shared lock"
+      (is (zero? (:exit (run "append-note" "BOXP-901" "--note" "synthetic"))))
+      (is (fs/exists? (fs/path (:state-dir env) writer/lock-file-name))))))
 
 (deftest helper-control-commands-are-dry-run-only
   (let [env (new-vault)
