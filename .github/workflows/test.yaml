@@ -118,8 +118,6 @@ jobs:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
       gh_cloudflare_api_token: ${{secrets.CLOUDFLARE_API_TOKEN}}
-      TAILSCALE_API_KEY: ${{secrets.TAILSCALE_API_KEY}}
-      TAILSCALE_TAILNET: ${{secrets.TAILSCALE_TAILNET}}
       secrets: ${{toJSON(secrets)}}
 
   test-ansible:
