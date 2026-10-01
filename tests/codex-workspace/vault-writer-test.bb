@@ -232,8 +232,7 @@
         (is (rejected? :stale-generation (writer/transition! w to-review)))
         (is (rejected? :stale-generation (writer/update-ticket! w {:ticket "BOXP-904" :note "- x"})))
         (is (rejected? :stale-generation (writer/recover! w)))
-        (is (rejected? :stale-generation
-                       (writer/write-state! w (fs/path (:state-dir env) "state.edn") identity)))))
+        (is (rejected? :stale-generation (writer/write-state! w "state.edn" identity)))))
     (testing "an unreachable control original fails closed"
       (is (rejected? :unavailable
                      (writer/transition!
@@ -250,15 +249,40 @@
     (is (= "" (journal env)))))
 
 (deftest generation-change-during-a-transition
-  (testing "before the Board write the entry is closed and nothing is written"
+  (testing "before the Board write the fenced writer writes nothing more, not even the journal"
     (let [env (new-vault)
           current (atom 1)
           w (new-writer env {:verify-generation #(= @current %)
                              :failpoint #(when (= :after-prepare %) (reset! current 2))})
+          new (new-writer env {:generation 2 :verify-generation #(= @current %)})
           before (vault-snapshot env)]
       (is (rejected? :stale-generation (writer/transition! w to-review)))
       (is (= before (vault-snapshot env)))
-      (is (= [] (pending (new-writer env {:generation 2 :verify-generation #(= 2 %)}))))))
+      (is (= 1 (count (str/split-lines (journal env)))) "only the prepared record exists")
+      (is (= [:aborted] (mapv :outcome (:outcomes (writer/recover! new)))))
+      (is (= before (vault-snapshot env)))
+      (is (= [] (pending new)))))
+  (testing "a generation change during recovery stops the old writer mid-way"
+    (let [env (new-vault)
+          current (atom 1)
+          checks (atom 0)
+          other {:ticket "BOXP-903" :from-lane "Ready" :to-lane "Review" :note "- other"}]
+      (is (= :killed (crashed-transition! env :after-board to-review)))
+      (is (= :killed (crashed-transition! env :after-board other)))
+      ;; recover! verifies once on entry; the generation changes right after.
+      (let [old (new-writer env {:verify-generation (fn [generation]
+                                                      (when (= 2 (swap! checks inc))
+                                                        (reset! current 2))
+                                                      (= @current generation))})
+            before (vault-snapshot env)
+            journal-before (journal env)]
+        (is (rejected? :stale-generation (writer/recover! old)))
+        (is (= before (vault-snapshot env)) "no ticket was projected by the fenced writer")
+        (is (= journal-before (journal env)) "and no terminal record was appended"))
+      (let [new (new-writer env {:generation 2 :verify-generation #(= @current %)})]
+        (is (= [:recovered :recovered] (mapv :outcome (:outcomes (writer/recover! new)))))
+        (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n"))
+        (is (str/includes? (ticket env "BOXP-903") "\nstatus: review\n")))))
   (testing "after the Board write the old writer stops and the new generation recovers"
     (let [env (new-vault)
           current (atom 1)
@@ -379,9 +403,20 @@
         w (new-writer env)
         path (fs/path (:state-dir env) "state.edn")]
     (run! deref (mapv (fn [_] (future (dotimes [_ 10]
-                                        (writer/write-state! w path #(update (or % {}) :n (fnil inc 0))))))
+                                        (writer/write-state! w "state.edn"
+                                                             #(update (or % {}) :n (fnil inc 0))))))
                       (range 6)))
-    (is (= {:n 60} (read-string (slurp (str path)))))))
+    (is (= {:n 60} (read-string (slurp (str path)))))
+    (testing "only plain file names inside the state dir are writable"
+      (let [before (vault-snapshot env)
+            journal-before (journal env)]
+        (doseq [file-name ["../vault/Tickets/BOXP-904.md" "sub/state.edn"
+                           (ticket-file env "BOXP-904") "" ".hidden"
+                           writer/journal-file-name writer/lock-file-name nil]]
+          (is (rejected? :invalid-request (writer/write-state! w file-name (constantly {:n 0})))))
+        (is (= before (vault-snapshot env)))
+        (is (= journal-before (journal env)))
+        (is (= {:n 60} (read-string (slurp (str path)))))))))
 
 ;; --- separate processes ------------------------------------------------------
 

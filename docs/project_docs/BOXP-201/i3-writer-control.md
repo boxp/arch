@@ -12,7 +12,7 @@
 | `atomic-write!` | 同一directoryのtempへ書いてfsyncし、atomic renameで置換。既存permissionを引き継ぐ |
 | `update-ticket!` | frontmatterの単純scalar更新とNotesへの1行追記。`:expected-revision` は投影された `control_revision` とのCAS |
 | `transition!` | カードのlane移動とticketへの投影。`:from-lane` と `:expected-revision` をlock内で再確認する |
-| `write-state!` | EDN stateの直列化されたswap |
+| `write-state!` | state dir直下の単純なファイル名に限ったEDN stateの直列化swap。lock・journalは対象外 |
 | `recover!` / `pending-transitions` | 未完了transitionの解決と一覧 |
 
 ### transition journal
@@ -21,11 +21,11 @@
 
 1. lock内で世代・未解決journal・`:guard`（lease保持の確認など）・カードが1枚であること・lane・revisionを確認する。
 2. `:prepared` recordを追記してfsyncする。
-3. 世代を再確認してBoardを書く。Board laneが正であるため先に書く。
+3. 世代を再確認してBoardを書く。Board laneが正であるため先に書く。世代が変わっていたら以後journalを含め何も書かず、entryは `:prepared` のまま現在世代の `recover!` に委ねる。
 4. 世代を再確認してticket（frontmatterの `status` と指定key、Notes 1行）を書く。
 5. `:committed` recordを追記する。
 
-`recover!` は現在世代のwriterだけが実行でき、`:prepared` のまま残ったentryを**現在のlane**と照合する。
+`recover!` は現在世代のwriterだけが実行でき、各ticket書込みと各journal追記の直前にも世代を再確認して、失効した時点で中断する。`:prepared` のまま残ったentryを**現在のlane**と照合する。
 
 | 現在の状態 | 結果 |
 | --- | --- |

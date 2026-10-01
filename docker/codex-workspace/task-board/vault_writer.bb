@@ -337,7 +337,10 @@
         {:records good
          :good-bytes (reduce + (map #(inc (count (.getBytes ^String % "UTF-8"))) good-lines))}))))
 
+(declare verify-generation!)
+
 (defn- append-journal! [writer record]
+  (verify-generation! writer)
   (let [{:keys [good-bytes]} (read-journal writer)
         body (pr-str (assoc record :journal-version journal-version))
         line (str (sha256 body) " " body "\n")]
@@ -378,6 +381,12 @@
                    (and (fn? verify) (true? (verify (:generation writer))))
                    (catch Exception _ (reject! :unavailable)))]
     (when-not current? (reject! :stale-generation))))
+
+(defn- checked-write!
+  "Every vault or state write re-verifies the writer generation first."
+  [writer path content]
+  (verify-generation! writer)
+  (atomic-write! path content))
 
 (defn- now-str [writer]
   (str ((:now writer))))
@@ -421,21 +430,28 @@
            _ (check-revision! content expected-revision)
            updated (edit-ticket content {:frontmatter frontmatter :note note})]
        (when (not= content updated)
-         (atomic-write! (ticket-path writer ticket) updated))
+         (checked-write! writer (ticket-path writer ticket) updated))
        (ok)))))
 
 (defn write-state!
   "Serializable swap of an EDN state file: (f old) under the vault lock, written
-  atomically. old is nil when the file does not exist."
-  [writer path f]
+  atomically. file-name is a plain name directly inside the writer's state dir;
+  the lock and journal files cannot be targeted. old is nil when the file does
+  not exist."
+  [writer file-name f]
   (locked
    writer
    (fn []
+     (when-not (and (string? file-name)
+                    (re-matches #"[A-Za-z0-9][A-Za-z0-9._-]{0,99}" file-name)
+                    (not (contains? #{lock-file-name journal-file-name} file-name))
+                    (fn? f))
+       (reject! :invalid-request))
      (verify-generation! writer)
-     (let [old (when (fs/exists? path) (edn/read-string (slurp (str path))))
+     (let [path (fs/path (:state-dir writer) file-name)
+           old (when (fs/exists? path) (edn/read-string (slurp (str path))))
            new (f old)]
-       (fs/create-dirs (fs/parent path))
-       (atomic-write! path (str (pr-str new) "\n"))
+       (checked-write! writer path (str (pr-str new) "\n"))
        (ok)))))
 
 (defn- ticket-edit-of [record]
@@ -488,19 +504,13 @@
            failpoint (:failpoint writer)]
        (append-journal! writer record)
        (failpoint :after-prepare)
-       (try
-         (verify-generation! writer)
-         (catch clojure.lang.ExceptionInfo e
-           ;; Nothing reached the vault yet, so the entry can be closed here.
-           (append-journal! writer {:id (:id record) :phase :aborted :at (now-str writer)})
-           (throw e)))
-       (atomic-write! (board-path writer) new-board)
+       ;; A generation change at any later step stops this writer immediately:
+       ;; it writes nothing more, not even a journal record, and the entry stays
+       ;; prepared for the current generation's recover!.
+       (checked-write! writer (board-path writer) new-board)
        (failpoint :after-board)
-       ;; A generation change here leaves the entry prepared for the current
-       ;; generation's recover!; this writer must not write again.
-       (verify-generation! writer)
        (when (not= ticket-content new-ticket)
-         (atomic-write! (ticket-path writer ticket) new-ticket))
+         (checked-write! writer (ticket-path writer ticket) new-ticket))
        (failpoint :after-ticket)
        (append-journal! writer {:id (:id record) :phase :committed :at (now-str writer)})
        (ok {:transition-id (:id record)})))))
@@ -525,7 +535,7 @@
                    (= (:expected-revision record) (ticket-revision content))))
           (let [updated (edit-ticket content (ticket-edit-of record))]
             (when (not= content updated)
-              (atomic-write! ticket-file updated))
+              (checked-write! writer ticket-file updated))
             :recovered)
 
           ;; The lane or control revision was changed by someone else. Never
@@ -544,7 +554,13 @@
            outcomes (mapv (fn [record]
                             (let [phase (try
                                           (recover-record! writer record)
-                                          (catch clojure.lang.ExceptionInfo _ nil))]
+                                          (catch clojure.lang.ExceptionInfo e
+                                            ;; Only a broken vault leaves the entry
+                                            ;; for a human. A lost generation or an
+                                            ;; unavailable verifier stops recovery.
+                                            (when-not (= :invalid-vault-state
+                                                         (::category (ex-data e)))
+                                              (throw e))))]
                               (when phase
                                 (append-journal! writer {:id (:id record)
                                                          :phase phase
