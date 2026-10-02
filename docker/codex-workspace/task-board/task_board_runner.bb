@@ -1929,6 +1929,63 @@
          vec)))
 
 ;; ---------------------------------------------------------------------------
+;; Autonomy v2 shadow comparison (BOXP-201 I2)
+;;
+;; Opt-in and read-only towards the vault: each tick records how the v2 intent
+;; rules would judge every Board card next to the legacy candidate rule. It never
+;; starts, stops or re-routes a ticket, and legacy candidates are computed before
+;; and independently of it. Unset in deployment.
+;; ---------------------------------------------------------------------------
+
+(def runner-script-dir (some-> *file* fs/parent str))
+
+(defn autonomy-shadow-enabled? []
+  (= "true" (System/getenv "CODEX_TASK_BOARD_AUTONOMY_SHADOW")))
+
+(defn autonomy-shadow-path []
+  (fs/path (root) "autonomy-shadow" "latest.edn"))
+
+(def autonomy-intent-ns
+  (delay
+    (when-not (find-ns 'autonomy-intent)
+      (binding [*ns* *ns*]
+        (load-file (str (fs/path runner-script-dir "autonomy_intent.bb")))))
+    (find-ns 'autonomy-intent)))
+
+(defn autonomy-shadow-control
+  ;; No control API or owner canary selection exists before the I7 rollout, so
+  ;; every v2 claim is reported as not startable instead of being guessed.
+  [_ticket-id]
+  {:control-result {:ok? false}
+   :canary-tickets #{}
+   :policy-context nil})
+
+(defn autonomy-shadow-report []
+  (let [shadow-entry (ns-resolve @autonomy-intent-ns 'shadow-entry)
+        shadow-summary (ns-resolve @autonomy-intent-ns 'shadow-summary)
+        cards (parse-board-cards (vec (read-lines (board-path))))]
+    (shadow-summary
+     (mapv (fn [{:keys [ticket-id] :as card}]
+             (let [path (ticket-path ticket-id)
+                   ticket-text (when (fs/exists? path) (slurp (str path)))
+                   fm (if ticket-text (frontmatter-map (str/split-lines ticket-text)) {})]
+               (shadow-entry (merge (autonomy-shadow-control ticket-id)
+                                    {:card (select-keys card [:ticket-id :status])
+                                     :frontmatter fm
+                                     :ticket-text ticket-text
+                                     :legacy-action (candidate-action card (:assignee fm))}))))
+           cards))))
+
+(defn maybe-write-autonomy-shadow! []
+  (when (autonomy-shadow-enabled?)
+    (try
+      (write-edn-file! (autonomy-shadow-path)
+                       (assoc (autonomy-shadow-report) :generated-at (now-str)))
+      (catch Exception e
+        ;; Ticket text passes through the evaluation; log the failure class only.
+        (log! (str "autonomy shadow evaluation failed: " (.getName (class e))))))))
+
+;; ---------------------------------------------------------------------------
 ;; Run workspace pruning (BOXP-209)
 ;;
 ;; Every run leaves `workspaces/<ticket>/<run-id>/` plus a worktree and a
@@ -2470,6 +2527,7 @@
             in-flight-ids (set (keys @in-flight-futures))
             candidates (candidate-cards)
             new-candidates (remove #(contains? in-flight-ids (:ticket-id %)) candidates)]
+        (maybe-write-autonomy-shadow!)
         (doseq [card new-candidates]
           (let [f (future
                     (log! (str "processing " (:ticket-id card) " from " (:lane card)))
@@ -2556,6 +2614,61 @@
     (when (and (nil? (vault-writer-lock-dir))
                (not= :value (with-vault-writer-lock (fn [] (if *vault-writer-lock-held* :locked :value)))))
       (swap! failures conj "vault writer lock must be a pass-through when not opted in"))
+    ;; I2: the v2 launch contract names the same explicit Claude model the runner
+    ;; passes today, and never maps the retired or non-v2 Claude routes.
+    (let [launch-spec (ns-resolve @autonomy-intent-ns 'launch-spec)
+          claude-spec (launch-spec "claude-fable")]
+      (if (and (= (claude-model-args "claude-fable") (:args claude-spec))
+               (= "claude-fable-5-1" (:model claude-spec))
+               (every? #(nil? (launch-spec %)) ["fable" "claude-opus" "claude-sonnet" "claude-unknown" "unknown" nil])
+               (every? #(and (supported-assignee? %) (= :codex (:cli (launch-spec %))))
+                       ["codex" "codex-sol" "codex-full" "codex-terra" "codex-mini" "codex-sol-high"]))
+        (println "PASS: v2 launch contract matches the explicit claude-fable route and rejects legacy fable")
+        (do
+          (println "FAIL: v2 launch contract must match runner routes")
+          (swap! failures conj "v2 launch contract"))))
+    ;; I2: the shadow comparison is opt-in, never changes the vault, and reports a
+    ;; v2 claim as not startable while no control original can be read.
+    (let [tmp-dir (fs/create-temp-dir)
+          board (fs/path tmp-dir "Task Board.md")
+          ticket (fn [id fm-lines]
+                   (spit (str (fs/path tmp-dir (str id ".md")))
+                         (str "---\nid: " id "\n" fm-lines "---\n\n## Summary\n\nsentinel-requirement-text\n\n"
+                              "## Acceptance Criteria\n\n- [ ] Done\n\n## Notes\n")))
+          snapshot (fn [] (into {} (map (fn [f] [(str f) (slurp (str f))]) (fs/glob tmp-dir "*.md"))))]
+      (spit (str board)
+            (str "## Ready\n- [ ] [[Tickets/BOXP-1|BOXP-1: legacy]] #ticket\n"
+                 "- [ ] [[Tickets/BOXP-2|BOXP-2: v2 claim]] #ticket\n"
+                 "- [ ] [[Tickets/BOXP-3|BOXP-3: retired route]] #ticket\n"
+                 "- [ ] [[Tickets/BOXP-4|BOXP-4: human]] #ticket\n"
+                 "- [ ] [[Tickets/BOXP-5|BOXP-5: missing ticket]] #ticket\n"))
+      (ticket "BOXP-1" "assignee: claude-fable\n")
+      (ticket "BOXP-2" "assignee: claude-fable\nautonomy_version: 2\nexecution_intent: run\ncontrol_revision: 1\n")
+      (ticket "BOXP-3" "assignee: fable\n")
+      (ticket "BOXP-4" "assignee: boxp\n")
+      (with-redefs [board-path (fn [] board)
+                    tickets-dir (fn [] tmp-dir)
+                    root (fn [] (str (fs/path tmp-dir "state")))]
+        (let [before (snapshot)
+              disabled-result (maybe-write-autonomy-shadow!)
+              disabled-file? (fs/exists? (autonomy-shadow-path))
+              report (autonomy-shadow-report)
+              by-ticket (into {} (map (juxt :ticket identity) (:entries report)))
+              expected {"BOXP-1" [true :implement "legacy" false]
+                        "BOXP-2" [false nil "not-canary" true]
+                        "BOXP-3" [false nil "legacy-route-retired" true]
+                        "BOXP-4" [false nil "no-legacy-action" false]
+                        "BOXP-5" [false nil "no-legacy-action" false]}]
+          (if (and (or (autonomy-shadow-enabled?) (and (nil? disabled-result) (not disabled-file?)))
+                   (= before (snapshot))
+                   (= expected (into {} (map (fn [[id e]] [id [(:start? e) (:action e) (:diagnostic e) (:differs? e)]])
+                                             by-ticket)))
+                   (= 2 (:differing report))
+                   (not (str/includes? (pr-str report) "sentinel-requirement-text")))
+            (println "PASS: autonomy shadow is opt-in, leaves the vault unchanged and never starts an unverified v2 claim")
+            (do
+              (println (str "FAIL: autonomy shadow report mismatch: " (pr-str (dissoc report :entries)) " " (pr-str by-ticket)))
+              (swap! failures conj "autonomy shadow report"))))))
     (let [calls (atom [])]
       (try
         (with-redefs [install-shutdown-hook! #(swap! calls conj :install-shutdown-hook)
