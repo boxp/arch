@@ -78,6 +78,29 @@
 (defn env [k default]
   (or (System/getenv k) default))
 
+;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
+;; Board/ticket read-modify-write cycles serialize across processes. Unset in
+;; deployment, where writes behave exactly as before; every writer moves onto it
+;; together at the I7 writer-generation switch.
+(def vault-writer-mutex (Object.))
+(def ^:dynamic *vault-writer-lock-held* false)
+
+(defn vault-writer-lock-dir []
+  (let [dir (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR")]
+    (when-not (str/blank? dir) dir)))
+
+(defn with-vault-writer-lock [f]
+  (let [dir (vault-writer-lock-dir)]
+    (if (or (nil? dir) *vault-writer-lock-held*)
+      (f)
+      (locking vault-writer-mutex
+        (fs/create-dirs dir)
+        (with-open [file (java.io.RandomAccessFile. (str (fs/path dir "vault-writer.lock")) "rw")
+                    channel (.getChannel file)]
+          (let [_file-lock (.lock channel)]
+            (binding [*vault-writer-lock-held* true]
+              (f))))))))
+
 (defn parse-codex-assignee [assignee]
   (cond
     (contains? assignee->model assignee)
@@ -372,31 +395,35 @@
 
 (defn move-card! [ticket-id target-status]
   (locking board-mutex
-    (let [path (board-path)
-          lines (vec (read-lines path))
-          card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
-          target-lane (or (status->lane target-status)
-                          (fail (str "invalid target status: " target-status)))]
-      (when-not card
-        (fail (str "ticket card not found: " ticket-id)))
-      (let [new-line (normalize-card-line (:line card) target-status)
-            without (remove-index lines (:idx card))
-            moved (insert-after-heading without target-lane new-line)]
-        (write-lines! path moved)))))
+    (with-vault-writer-lock
+     (fn []
+       (let [path (board-path)
+             lines (vec (read-lines path))
+             card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
+             target-lane (or (status->lane target-status)
+                             (fail (str "invalid target status: " target-status)))]
+         (when-not card
+           (fail (str "ticket card not found: " ticket-id)))
+         (let [new-line (normalize-card-line (:line card) target-status)
+               without (remove-index lines (:idx card))
+               moved (insert-after-heading without target-lane new-line)]
+           (write-lines! path moved)))))))
 
 (defn sync-board-statuses! []
   (locking board-mutex
-    (let [path (board-path)
-          lines (vec (read-lines path))
-          cards (parse-board-cards lines)
-          updates (into {} (map (fn [{:keys [idx line status]}]
-                                  [idx (normalize-card-line line status)])
-                                cards))
-          new-lines (mapv (fn [idx line] (get updates idx line))
-                          (range (count lines))
-                          lines)]
-      (when (not= lines new-lines)
-        (write-lines! path new-lines)))))
+    (with-vault-writer-lock
+     (fn []
+       (let [path (board-path)
+             lines (vec (read-lines path))
+             cards (parse-board-cards lines)
+             updates (into {} (map (fn [{:keys [idx line status]}]
+                                     [idx (normalize-card-line line status)])
+                                   cards))
+             new-lines (mapv (fn [idx line] (get updates idx line))
+                             (range (count lines))
+                             lines)]
+         (when (not= lines new-lines)
+           (write-lines! path new-lines)))))))
 
 (defn ticket-path [ticket-id]
   (fs/path (tickets-dir) (str ticket-id ".md")))
@@ -426,19 +453,21 @@
 
 (defn update-frontmatter! [ticket-id updates]
   (locking (ticket-mutex ticket-id)
-    (let [path (ticket-path ticket-id)
-          lines (vec (read-lines path))
-          {:keys [end]} (or (frontmatter-range lines)
-                            (fail (str "missing frontmatter: " path)))
-          before (subvec lines 0 (inc end))
-          body (subvec lines (inc end))
-          fm-lines (subvec before 1 end)
-          new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
-                         fm-lines
-                         updates)
-          new-lines (vec (concat ["---"] new-fm ["---"] body))]
-      (when (not= lines new-lines)
-        (write-lines! path new-lines)))))
+    (with-vault-writer-lock
+     (fn []
+       (let [path (ticket-path ticket-id)
+             lines (vec (read-lines path))
+             {:keys [end]} (or (frontmatter-range lines)
+                               (fail (str "missing frontmatter: " path)))
+             before (subvec lines 0 (inc end))
+             body (subvec lines (inc end))
+             fm-lines (subvec before 1 end)
+             new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
+                            fm-lines
+                            updates)
+             new-lines (vec (concat ["---"] new-fm ["---"] body))]
+         (when (not= lines new-lines)
+           (write-lines! path new-lines)))))))
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
@@ -449,26 +478,41 @@
     (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE"))
                (str/includes? note "Blocked transition recorded:"))
       (throw (ex-info "forced blocker Notes write failure" {})))
-    (let [path (ticket-path ticket-id)
-          lines (vec (read-lines path))
-          bullet (str "- " (today) ": " note)
-          idx (or (section-index lines "## Notes") (dec (count lines)))
-          insert-idx (if (= "## Notes" (nth lines idx))
-                       (count lines)
-                       (count lines))
-          new-lines (if (some #(= bullet %) lines)
-                      lines
-                      (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-      (write-lines! path new-lines))))
+    (with-vault-writer-lock
+     (fn []
+       (let [path (ticket-path ticket-id)
+             lines (vec (read-lines path))
+             bullet (str "- " (today) ": " note)
+             idx (or (section-index lines "## Notes") (dec (count lines)))
+             insert-idx (if (= "## Notes" (nth lines idx))
+                          (count lines)
+                          (count lines))
+             new-lines (if (some #(= bullet %) lines)
+                         lines
+                         (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
+         (write-lines! path new-lines))))))
+
+(defn project-ticket-status! [ticket-id {:keys [status done]}]
+  (update-frontmatter! ticket-id (cond-> {:status status}
+                                   (= "done" status) (assoc :closed (or done (today))))))
 
 (defn sync-ticket-statuses! []
   (let [lines (vec (read-lines (board-path)))]
-    (doseq [{:keys [ticket-id status done]} (parse-board-cards lines)
+    (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
             :let [path (ticket-path ticket-id)]
             :when (fs/exists? path)]
-      (let [updates (cond-> {:status status}
-                      (= "done" status) (assoc :closed (or done (today))))]
-        (update-frontmatter! ticket-id updates)))))
+      (if (vault-writer-lock-dir)
+        ;; With the shared lock, another writer may move the card after the
+        ;; snapshot above. Re-read the lane inside the lock so a stale status is
+        ;; never projected. Lock order stays ticket mutex, then vault lock.
+        (locking (ticket-mutex ticket-id)
+          (with-vault-writer-lock
+           (fn []
+             (when-let [current (first (filter #(= ticket-id (:ticket-id %))
+                                               (parse-board-cards (vec (read-lines (board-path))))))]
+               (when (fs/exists? path)
+                 (project-ticket-status! ticket-id current))))))
+        (project-ticket-status! ticket-id card)))))
 
 (defn sync-all! []
   (sync-board-statuses!)
@@ -2508,6 +2552,10 @@
         (when (not= expected action)
           (swap! failures conj "feature-off candidate compatibility"))))
     (println "PASS: autonomy v2 remains off; legacy lane/route/intent matrix is unchanged")
+    ;; The shared vault writer lock is opt-in; unset, it must be a pass-through.
+    (when (and (nil? (vault-writer-lock-dir))
+               (not= :value (with-vault-writer-lock (fn [] (if *vault-writer-lock-held* :locked :value)))))
+      (swap! failures conj "vault writer lock must be a pass-through when not opted in"))
     (let [calls (atom [])]
       (try
         (with-redefs [install-shutdown-hook! #(swap! calls conj :install-shutdown-hook)
