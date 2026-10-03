@@ -1,0 +1,66 @@
+[
+  {
+    "Package": "cri-o",
+    "Version": "1.36.6-3.1",
+    "Architecture": "amd64",
+    "sha256": "eab2589f0e6ce4a2f64eec531932ef9f04b9e530233ce2d1cab0c451f6c00e66",
+    "signed_index_match": true,
+    "previous_ledger_match": true
+  },
+  {
+    "Package": "kubectl",
+    "Version": "1.36.5-1.1",
+    "Architecture": "amd64",
+    "sha256": "e633cdbcb535b0fdf8bd9aa643cfd0ad080889fddb6794d2af0bbaaf110e7956",
+    "signed_index_match": true,
+    "previous_ledger_match": true
+  },
+  {
+    "Package": "kubelet",
+    "Version": "1.36.5-1.1",
+    "Architecture": "amd64",
+    "sha256": "dd46254567ee60672c0737a4b5392fae7f3419a876ab6885c48178501ac2fd64",
+    "signed_index_match": true,
+    "previous_ledger_match": true
+  },
+  {
+    "Package": "kubeadm",
+    "Version": "1.36.5-1.1",
+    "Architecture": "amd64",
+    "sha256": "bbb6899335ca6890be4c007e10c66303f68281d342f2e7345db9c03cd5175da9",
+    "signed_index_match": true,
+    "previous_ledger_match": true
+  },
+  {
+    "Package": "kubelet",
+    "Version": "1.36.5-1.1",
+    "Architecture": "arm64",
+    "sha256": "946ae8079938f6be46ec48ff317005d03c87de09a5b557627f348a11c080e0ef",
+    "signed_index_match": true,
+    "previous_ledger_match": true
+  },
+  {
+    "Package": "cri-o",
+    "Version": "1.36.6-3.1",
+    "Architecture": "arm64",
+    "sha256": "f3331b9bf9a0de8d59d50b26efdfe37f6e91c33dabcf334455832f8010f3aafb",
+    "signed_index_match": true,
+    "previous_ledger_match": true
+  },
+  {
+    "Package": "kubeadm",
+    "Version": "1.36.5-1.1",
+    "Architecture": "arm64",
+    "sha256": "d08b7af27b50d539d91d9c5af69f73feff0e59455fe74d478e0a009cc2bdf260",
+    "signed_index_match": true,
+    "previous_ledger_match": true
+  },
+  {
+    "Package": "kubectl",
+    "Version": "1.36.5-1.1",
+    "Architecture": "arm64",
+    "sha256": "65cdaa8817b252ef493768ba8976b292eccddcfd3d5e9b6d24bbb67ec58027fb",
+    "signed_index_match": true,
+    "previous_ledger_match": true
+  }
+]

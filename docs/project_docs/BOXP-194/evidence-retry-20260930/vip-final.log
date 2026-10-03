@@ -1,0 +1,13 @@
+Wed Sep 30 04:25:53 AM UTC 2026
+okNAME         STATUS     ROLES           AGE      VERSION   INTERNAL-IP      EXTERNAL-IP   OS-IMAGE                                 KERNEL-VERSION                    CONTAINER-RUNTIME
+golyat-1     Ready      <none>          2y207d   v1.36.1   192.168.10.101   <none>        Ubuntu 22.04.5 LTS                       5.15.0-185-generic (amd64)        cri-o://1.36.1
+golyat-2     Ready      <none>          2y173d   v1.36.1   192.168.10.105   <none>        Ubuntu 22.04.5 LTS                       5.15.0-181-generic (amd64)        cri-o://1.36.1
+golyat-3     Ready      <none>          2y157d   v1.36.1   192.168.10.106   <none>        Ubuntu 22.04.5 LTS                       5.15.0-181-generic (amd64)        cri-o://1.36.1
+golyat-4     Ready      <none>          93d      v1.36.2   192.168.10.107   <none>        Ubuntu 24.04.4 LTS                       6.8.0-124-generic (amd64)         cri-o://1.36.1
+shanghai-1   Ready      control-plane   264d     v1.36.1   192.168.10.102   <none>        Armbian-unofficial 25.08.0-trunk noble   6.12.35-current-sunxi64 (arm64)   cri-o://1.36.1
+shanghai-2   Ready      control-plane   86d      v1.36.1   192.168.10.103   <none>        Armbian-unofficial 25.08.0-trunk noble   6.12.35-current-sunxi64 (arm64)   cri-o://1.36.2
+shanghai-3   NotReady   control-plane   92d      v1.36.1   192.168.10.104   <none>        Armbian-unofficial 25.08.0-trunk noble   6.12.35-current-sunxi64 (arm64)   cri-o://1.36.1
+NAME                        READY   STATUS    RESTARTS       AGE   IP               NODE         NOMINATED NODE   READINESS GATES
+kube-apiserver-shanghai-1   1/1     Running   75 (75m ago)   99d   192.168.10.102   shanghai-1   <none>           <none>
+kube-apiserver-shanghai-2   1/1     Running   48 (46m ago)   86d   192.168.10.103   shanghai-2   <none>           <none>
+kube-apiserver-shanghai-3   1/1     Running   59 (11h ago)   92d   192.168.10.104   shanghai-3   <none>           <none>

@@ -1,0 +1,81 @@
+OpenAI Codex v0.159.2
+--------
+workdir: /home/boxp/.codex-task-board/workspaces/BOXP-194/20260930T041153Z-643d91dd-c7fc-4ff8-b5e9-e18d609bcfa9
+model: gpt-5.6-terra
+provider: openai
+approval: never
+sandbox: danger-full-access
+reasoning effort: medium
+reasoning summaries: none
+session id: 01a0f08d-38f4-7cd0-96ec-f8f0cccae8c5
+--------
+user
+独立ファイルレビュー。以下2fileの内容だけを読み、現行etcdやsnapshotを破壊する操作、false-pass、read-only healthの欠落に絞りP0/P1/P2を報告。ファイル変更/SSH/dispatch/再帰review禁止。これは前回内容未添付だった依頼の再指示。restore.shは独立copy/data-dirの隔離restore専用、実行成功済み。etcd status/PVC/先頭復旧点hashは別ログで確認済み。healthは出力のNode/Longhorn/etcを親が検査する観測scriptで、exit0単独で全condition合格とは扱っていない。旧例外受容/native ARM64/人手監視をgateへ復活させない。
+
+FILE restore.sh
+set -euo pipefail
+K=(sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=30s)
+SNAP=pre-upgrade-20260930T041850.db
+COPY=/var/lib/etcd/BOXP-194-20260930T041153Z-restore-check.db
+RESTORE=/var/lib/etcd/BOXP-194-20260930T041153Z-isolated-restore
+sudo -n test ! -e "$COPY"
+sudo -n test ! -e "$RESTORE"
+STORE=$("${K[@]}" -n etcd-snapshots get pod -l app.kubernetes.io/name=etcd-snapshot-store -o jsonpath='{.items[0].metadata.name}')
+"${K[@]}" -n etcd-snapshots exec "$STORE" -- stat -c %s /snapshots/$SNAP
+EXPECTED=$("${K[@]}" -n etcd-snapshots exec "$STORE" -- sha256sum /snapshots/$SNAP)
+printf '%s\n' "$EXPECTED"
+"${K[@]}" -n etcd-snapshots exec "$STORE" -- cat /snapshots/$SNAP | sudo -n tee "$COPY" > /dev/null
+ACTUAL=$(sudo -n sha256sum "$COPY")
+printf '%s\n' "$ACTUAL"
+test "${EXPECTED%% *}" = "${ACTUAL%% *}"
+sudo -n test -s "$COPY"
+"${K[@]}" -n kube-system exec etcd-shanghai-2 -- etcdutl snapshot status "$COPY" --write-out=table
+"${K[@]}" -n kube-system exec etcd-shanghai-2 -- etcdutl snapshot restore "$COPY" --data-dir="$RESTORE"
+sudo -n stat -c %s "$RESTORE/member/snap/db"
+
+FILE observe.py
+import subprocess,json,datetime,time
+from pathlib import Path
+remote=r'''date -u +%FT%TZ
+for host in 192.168.10.102 192.168.10.103 192.168.10.104; do
+ echo "DIRECT_API=$host"
+ sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=15s --server=https://$host:6443 get --raw=/readyz?verbose || exit 1
+done
+echo VIP_API
+sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=15s get --raw=/readyz || exit 1
+sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=15s get nodes -o wide || exit 1
+sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=15s -n kube-system get pods -o wide || exit 1
+sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=15s -n longhorn-system get volumes.longhorn.io -o custom-columns=NAME:.metadata.name,HEALTH:.status.robustness,STATE:.status.state || exit 1
+for node in shanghai-1 shanghai-2 shanghai-3; do
+ echo "ETCD=$node"
+ sudo -n kubectl --kubeconfig=/etc/kubernetes/admin.conf --request-timeout=20s -n kube-system exec etcd-$node -- etcdctl endpoint health --endpoints=https://127.0.0.1:2379 --cacert=/etc/kubernetes/pki/etcd/ca.crt --cert=/etc/kubernetes/pki/etcd/healthcheck-client.crt --key=/etc/kubernetes/pki/etcd/healthcheck-client.key || exit 1
+done
+'''
+with Path('evidence-retry/observe.jsonl').open('a') as f:
+ for sample in range(5):
+  r=subprocess.run(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=10','boxp@192.168.10.102','bash','-s'],input=remote,text=True,capture_output=True,timeout=180)
+  record={'utc':datetime.datetime.now(datetime.timezone.utc).isoformat(),'sample':sample,'exit':r.returncode,'stdout':r.stdout,'stderr':r.stderr}
+  f.write(json.dumps(record)+'\n'); f.flush()
+  print(json.dumps(record),flush=True)
+  if r.returncode: break
+  if sample<4: time.sleep(45)
+
+codex
+P0: なし。現行 etcd の data-dir や既存 snapshot を上書き・削除する操作はありません。restore は事前に不在確認した独立 COPY/RESTORE パスだけへ書き込みます。
+
+P1: なし。health の exit 0 を全条件合格と見なさず親側で出力を検査する前提なら、`get` 出力だけを成功扱いする false-pass はこの2ファイル単独にはありません。etcd health も `endpoint health` による read-only 観測です。
+
+P2:
+
+- `restore.sh` の `get pod -l … -o jsonpath='{.items[0]…}'` は一致 Pod 数を検証せず、API の並び順に依存します。複数の snapshot-store Pod が存在し得るなら、意図しない Pod の同名 snapshot を検査・復元対象に選ぶ余地があります。selector が常に単一 Pod である運用保証があるなら問題ありません。
+- `test ! -e` と後続の `tee`／`snapshot restore` の間には TOCTOU が残ります。ただし、専用ホスト・一実行者の前提では実害は低く、現行 etcd を壊す経路にはなりません。
+tokens used
+13,904
+P0: なし。現行 etcd の data-dir や既存 snapshot を上書き・削除する操作はありません。restore は事前に不在確認した独立 COPY/RESTORE パスだけへ書き込みます。
+
+P1: なし。health の exit 0 を全条件合格と見なさず親側で出力を検査する前提なら、`get` 出力だけを成功扱いする false-pass はこの2ファイル単独にはありません。etcd health も `endpoint health` による read-only 観測です。
+
+P2:
+
+- `restore.sh` の `get pod -l … -o jsonpath='{.items[0]…}'` は一致 Pod 数を検証せず、API の並び順に依存します。複数の snapshot-store Pod が存在し得るなら、意図しない Pod の同名 snapshot を検査・復元対象に選ぶ余地があります。selector が常に単一 Pod である運用保証があるなら問題ありません。
+- `test ! -e` と後続の `tee`／`snapshot restore` の間には TOCTOU が残ります。ただし、専用ホスト・一実行者の前提では実害は低く、現行 etcd を壊す経路にはなりません。

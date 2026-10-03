@@ -1,0 +1,4 @@
+https://192.168.10.99:6443okNAME                        READY   STATUS    RESTARTS         AGE   IP               NODE         NOMINATED NODE   READINESS GATES
+kube-apiserver-shanghai-1   1/1     Running   75 (35m ago)     99d   192.168.10.102   shanghai-1   <none>           <none>
+kube-apiserver-shanghai-2   1/1     Running   48 (6m35s ago)   86d   192.168.10.103   shanghai-2   <none>           <none>
+kube-apiserver-shanghai-3   1/1     Running   59 (11h ago)     92d   192.168.10.104   shanghai-3   <none>           <none>

@@ -1,0 +1,440 @@
+{
+    "apiVersion": "v1",
+    "kind": "Pod",
+    "metadata": {
+        "annotations": {
+            "kubeadm.kubernetes.io/kube-apiserver.advertise-address.endpoint": "192.168.10.103:6443",
+            "kubernetes.io/config.hash": "2676fe9bb1366a0e6f6e954db98d9094",
+            "kubernetes.io/config.mirror": "2676fe9bb1366a0e6f6e954db98d9094",
+            "kubernetes.io/config.seen": "2026-07-05T17:30:39.509179129Z",
+            "kubernetes.io/config.source": "file"
+        },
+        "creationTimestamp": "2026-07-05T17:32:29Z",
+        "generation": 1,
+        "labels": {
+            "component": "kube-apiserver",
+            "tier": "control-plane"
+        },
+        "name": "kube-apiserver-shanghai-2",
+        "namespace": "kube-system",
+        "ownerReferences": [
+            {
+                "apiVersion": "v1",
+                "controller": true,
+                "kind": "Node",
+                "name": "shanghai-2",
+                "uid": "8c3b3f6b-76ef-4579-b041-56b1000cda6d"
+            }
+        ],
+        "resourceVersion": "744466302",
+        "uid": "255ad202-4e62-468e-aeb7-1ba57f85274a"
+    },
+    "spec": {
+        "containers": [
+            {
+                "command": [
+                    "kube-apiserver",
+                    "--advertise-address=192.168.10.103",
+                    "--allow-privileged=true",
+                    "--client-ca-file=/etc/kubernetes/pki/ca.crt",
+                    "--enable-admission-plugins=NodeRestriction",
+                    "--enable-bootstrap-token-auth=true",
+                    "--etcd-cafile=/etc/kubernetes/pki/etcd/ca.crt",
+                    "--etcd-certfile=/etc/kubernetes/pki/apiserver-etcd-client.crt",
+                    "--etcd-keyfile=/etc/kubernetes/pki/apiserver-etcd-client.key",
+                    "--etcd-servers=https://127.0.0.1:2379",
+                    "--kubelet-client-certificate=/etc/kubernetes/pki/apiserver-kubelet-client.crt",
+                    "--kubelet-client-key=/etc/kubernetes/pki/apiserver-kubelet-client.key",
+                    "--kubelet-preferred-address-types=InternalIP,ExternalIP,Hostname",
+                    "--proxy-client-cert-file=/etc/kubernetes/pki/front-proxy-client.crt",
+                    "--proxy-client-key-file=/etc/kubernetes/pki/front-proxy-client.key",
+                    "--requestheader-allowed-names=front-proxy-client",
+                    "--requestheader-client-ca-file=/etc/kubernetes/pki/front-proxy-ca.crt",
+                    "--requestheader-extra-headers-prefix=X-Remote-Extra-",
+                    "--requestheader-group-headers=X-Remote-Group",
+                    "--requestheader-username-headers=X-Remote-User",
+                    "--secure-port=6443",
+                    "--service-account-issuer=https://kubernetes.default.svc.cluster.local",
+                    "--service-account-key-file=/etc/kubernetes/pki/sa.pub",
+                    "--service-account-signing-key-file=/etc/kubernetes/pki/sa.key",
+                    "--service-cluster-ip-range=10.96.0.0/12",
+                    "--tls-cert-file=/etc/kubernetes/pki/apiserver.crt",
+                    "--tls-private-key-file=/etc/kubernetes/pki/apiserver.key",
+                    "--authorization-mode=Node,RBAC"
+                ],
+                "image": "registry.k8s.io/kube-apiserver:v1.36.1",
+                "imagePullPolicy": "IfNotPresent",
+                "livenessProbe": {
+                    "failureThreshold": 8,
+                    "httpGet": {
+                        "host": "192.168.10.103",
+                        "path": "/livez",
+                        "port": "probe-port",
+                        "scheme": "HTTPS"
+                    },
+                    "initialDelaySeconds": 10,
+                    "periodSeconds": 10,
+                    "successThreshold": 1,
+                    "timeoutSeconds": 15
+                },
+                "name": "kube-apiserver",
+                "ports": [
+                    {
+                        "containerPort": 6443,
+                        "hostPort": 6443,
+                        "name": "probe-port",
+                        "protocol": "TCP"
+                    }
+                ],
+                "readinessProbe": {
+                    "failureThreshold": 3,
+                    "httpGet": {
+                        "host": "192.168.10.103",
+                        "path": "/readyz",
+                        "port": "probe-port",
+                        "scheme": "HTTPS"
+                    },
+                    "periodSeconds": 1,
+                    "successThreshold": 1,
+                    "timeoutSeconds": 15
+                },
+                "resources": {
+                    "requests": {
+                        "cpu": "250m"
+                    }
+                },
+                "startupProbe": {
+                    "failureThreshold": 24,
+                    "httpGet": {
+                        "host": "192.168.10.103",
+                        "path": "/livez",
+                        "port": "probe-port",
+                        "scheme": "HTTPS"
+                    },
+                    "initialDelaySeconds": 10,
+                    "periodSeconds": 10,
+                    "successThreshold": 1,
+                    "timeoutSeconds": 15
+                },
+                "terminationMessagePath": "/dev/termination-log",
+                "terminationMessagePolicy": "File",
+                "volumeMounts": [
+                    {
+                        "mountPath": "/etc/ssl/certs",
+                        "name": "ca-certs",
+                        "readOnly": true
+                    },
+                    {
+                        "mountPath": "/etc/ca-certificates",
+                        "name": "etc-ca-certificates",
+                        "readOnly": true
+                    },
+                    {
+                        "mountPath": "/etc/kubernetes/pki",
+                        "name": "k8s-certs",
+                        "readOnly": true
+                    },
+                    {
+                        "mountPath": "/usr/local/share/ca-certificates",
+                        "name": "usr-local-share-ca-certificates",
+                        "readOnly": true
+                    },
+                    {
+                        "mountPath": "/usr/share/ca-certificates",
+                        "name": "usr-share-ca-certificates",
+                        "readOnly": true
+                    }
+                ]
+            }
+        ],
+        "dnsPolicy": "ClusterFirst",
+        "enableServiceLinks": true,
+        "hostNetwork": true,
+        "nodeName": "shanghai-2",
+        "preemptionPolicy": "PreemptLowerPriority",
+        "priority": 2000001000,
+        "priorityClassName": "system-node-critical",
+        "restartPolicy": "Always",
+        "schedulerName": "default-scheduler",
+        "securityContext": {
+            "seccompProfile": {
+                "type": "RuntimeDefault"
+            }
+        },
+        "terminationGracePeriodSeconds": 30,
+        "tolerations": [
+            {
+                "effect": "NoExecute",
+                "operator": "Exists"
+            }
+        ],
+        "volumes": [
+            {
+                "hostPath": {
+                    "path": "/etc/ssl/certs",
+                    "type": "DirectoryOrCreate"
+                },
+                "name": "ca-certs"
+            },
+            {
+                "hostPath": {
+                    "path": "/etc/ca-certificates",
+                    "type": "DirectoryOrCreate"
+                },
+                "name": "etc-ca-certificates"
+            },
+            {
+                "hostPath": {
+                    "path": "/etc/kubernetes/pki",
+                    "type": "DirectoryOrCreate"
+                },
+                "name": "k8s-certs"
+            },
+            {
+                "hostPath": {
+                    "path": "/usr/local/share/ca-certificates",
+                    "type": "DirectoryOrCreate"
+                },
+                "name": "usr-local-share-ca-certificates"
+            },
+            {
+                "hostPath": {
+                    "path": "/usr/share/ca-certificates",
+                    "type": "DirectoryOrCreate"
+                },
+                "name": "usr-share-ca-certificates"
+            }
+        ]
+    },
+    "status": {
+        "allocatedResources": {
+            "cpu": "250m"
+        },
+        "conditions": [
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-08-24T03:58:44Z",
+                "status": "True",
+                "type": "PodReadyToStartContainers"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-08-24T03:58:43Z",
+                "status": "True",
+                "type": "Initialized"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-09-30T03:39:48Z",
+                "status": "True",
+                "type": "Ready"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-09-30T03:39:48Z",
+                "status": "True",
+                "type": "ContainersReady"
+            },
+            {
+                "lastProbeTime": null,
+                "lastTransitionTime": "2026-08-24T03:58:43Z",
+                "status": "True",
+                "type": "PodScheduled"
+            }
+        ],
+        "containerStatuses": [
+            {
+                "allocatedResources": {
+                    "cpu": "250m"
+                },
+                "containerID": "cri-o://e7cc7f56130ed44d9a4c39bf6c9a892c1bcd453b625ce1267d7156b344fcb1ac",
+                "image": "registry.k8s.io/kube-apiserver:v1.36.1",
+                "imageID": "registry.k8s.io/kube-apiserver@sha256:2460df74307cafacf674573c88df511aeb1aece9daa7fbd968fe27cb1c8c4588",
+                "lastState": {
+                    "terminated": {
+                        "containerID": "cri-o://451b4cc0f1ce8f2e589f340dd2cff00858789fc1f64a9c587bb49b0276cf0593",
+                        "exitCode": 137,
+                        "finishedAt": "2026-09-30T03:39:26Z",
+                        "reason": "Error",
+                        "startedAt": "2026-09-29T19:52:10Z"
+                    }
+                },
+                "name": "kube-apiserver",
+                "ready": true,
+                "resources": {
+                    "requests": {
+                        "cpu": "250m"
+                    }
+                },
+                "restartCount": 48,
+                "started": true,
+                "state": {
+                    "running": {
+                        "startedAt": "2026-09-30T03:39:27Z"
+                    }
+                },
+                "user": {
+                    "linux": {
+                        "gid": 0,
+                        "supplementalGroups": [
+                            0
+                        ],
+                        "uid": 0
+                    }
+                },
+                "volumeMounts": [
+                    {
+                        "mountPath": "/etc/ssl/certs",
+                        "name": "ca-certs",
+                        "readOnly": true,
+                        "recursiveReadOnly": "Disabled"
+                    },
+                    {
+                        "mountPath": "/etc/ca-certificates",
+                        "name": "etc-ca-certificates",
+                        "readOnly": true,
+                        "recursiveReadOnly": "Disabled"
+                    },
+                    {
+                        "mountPath": "/etc/kubernetes/pki",
+                        "name": "k8s-certs",
+                        "readOnly": true,
+                        "recursiveReadOnly": "Disabled"
+                    },
+                    {
+                        "mountPath": "/usr/local/share/ca-certificates",
+                        "name": "usr-local-share-ca-certificates",
+                        "readOnly": true,
+                        "recursiveReadOnly": "Disabled"
+                    },
+                    {
+                        "mountPath": "/usr/share/ca-certificates",
+                        "name": "usr-share-ca-certificates",
+                        "readOnly": true,
+                        "recursiveReadOnly": "Disabled"
+                    }
+                ]
+            }
+        ],
+        "hostIP": "192.168.10.103",
+        "hostIPs": [
+            {
+                "ip": "192.168.10.103"
+            }
+        ],
+        "phase": "Running",
+        "podIP": "192.168.10.103",
+        "podIPs": [
+            {
+                "ip": "192.168.10.103"
+            }
+        ],
+        "qosClass": "Burstable",
+        "resources": {
+            "requests": {
+                "cpu": "250m"
+            }
+        },
+        "startTime": "2026-08-24T03:58:43Z"
+    }
+}
+E0930 03:38:59.307244       1 timeout.go:140] "Post-timeout activity" logger="UnhandledError" timeElapsed="3.750366ms" method="GET" path="/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/plndr-cp-lock" result=null
+W0930 03:38:59.945008       1 handler_proxy.go:100] no RequestInfo found in the context
+E0930 03:38:59.945200       1 controller.go:157] "Unhandled Error" err=<
+	Error updating APIService "v3.projectcalico.org" with err: failed to download v3.projectcalico.org: failed to retrieve openAPI spec, http error: ResponseCode: 503, Body: service unavailable
+	, Header: map[Content-Type:[text/plain; charset=utf-8] X-Content-Type-Options:[nosniff]]
+ > logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:00.005171Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d7701bc20/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:00.005657       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+E0930 03:39:00.007516       1 controller.go:251] "Failed to update lease" err="etcdserver: request timed out"
+{"level":"warn","ts":"2026-09-30T03:39:00.040464Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d732370e0/127.0.0.1:2379","method":"/etcdserverpb.Lease/LeaseGrant","attempt":4,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+{"level":"warn","ts":"2026-09-30T03:39:00.204533Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d98babc20/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:00.206817       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:00.278743Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d8ffcd2c0/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+{"level":"warn","ts":"2026-09-30T03:39:00.278743Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d72dac000/127.0.0.1:2379","method":"/etcdserverpb.KV/Range","attempt":0,"error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
+E0930 03:39:00.279174       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+W0930 03:39:00.331758       1 handler_proxy.go:100] no RequestInfo found in the context
+E0930 03:39:00.331966       1 controller.go:157] "Unhandled Error" err=<
+	Error updating APIService "v3.projectcalico.org" with err: failed to download v3.projectcalico.org: failed to retrieve openAPI spec, http error: ResponseCode: 503, Body: service unavailable
+	, Header: map[Content-Type:[text/plain; charset=utf-8] X-Content-Type-Options:[nosniff]]
+ > logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:01.053812Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d9c3d4f00/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:01.054549       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:01.294351Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d7701bc20/127.0.0.1:2379","method":"/etcdserverpb.KV/Range","attempt":0,"error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
+E0930 03:39:01.294936       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: context.deadlineExceededError{}: context deadline exceeded" logger="UnhandledError"
+E0930 03:39:01.295280       1 writers.go:123] "Unhandled Error" err="apiserver was unable to write a JSON response: http: Handler timeout" logger="UnhandledError"
+E0930 03:39:01.296457       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: &errors.errorString{s:\"http: Handler timeout\"}: http: Handler timeout" logger="UnhandledError"
+E0930 03:39:01.296595       1 writers.go:136] "Unhandled Error" err="apiserver was unable to write a fallback JSON response: http: Handler timeout" logger="UnhandledError"
+E0930 03:39:01.298436       1 timeout.go:140] "Post-timeout activity" logger="UnhandledError" timeElapsed="3.800991ms" method="GET" path="/apis/coordination.k8s.io/v1/namespaces/kube-system/leases/plndr-svcs-lock" result=null
+{"level":"warn","ts":"2026-09-30T03:39:01.883231Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d9c3d4f00/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:01.883644       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:02.080684Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d73576f00/127.0.0.1:2379","method":"/etcdserverpb.Lease/LeaseGrant","attempt":2,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+{"level":"warn","ts":"2026-09-30T03:39:02.312396Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d73100000/127.0.0.1:2379","method":"/etcdserverpb.KV/Range","attempt":0,"error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
+{"level":"warn","ts":"2026-09-30T03:39:02.879702Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d7bc80f00/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:02.880200       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+E0930 03:39:02.882087       1 remote_available_controller.go:471] "Unhandled Error" err="v3.projectcalico.org failed with: etcdserver: request timed out" logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:03.316909Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d73c952c0/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:03.317620       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:03.466146Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d73c952c0/127.0.0.1:2379","method":"/etcdserverpb.KV/Range","attempt":0,"error":"rpc error: code = Canceled desc = context canceled"}
+E0930 03:39:03.466513       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: &errors.errorString{s:\"context canceled\"}: context canceled" logger="UnhandledError"
+E0930 03:39:03.466810       1 writers.go:123] "Unhandled Error" err="apiserver was unable to write a JSON response: http: Handler timeout" logger="UnhandledError"
+E0930 03:39:03.467726       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: &errors.errorString{s:\"http: Handler timeout\"}: http: Handler timeout" logger="UnhandledError"
+E0930 03:39:03.468992       1 writers.go:136] "Unhandled Error" err="apiserver was unable to write a fallback JSON response: http: Handler timeout" logger="UnhandledError"
+E0930 03:39:03.469696       1 timeout.go:140] "Post-timeout activity" logger="UnhandledError" timeElapsed="3.393116ms" method="GET" path="/api/v1/nodes/golyat-4" result=null
+{"level":"warn","ts":"2026-09-30T03:39:03.771004Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d8ffcd2c0/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:03.771773       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:03.858265Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d9c3d4f00/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:03.858711       1 status.go:71] "Unhandled Error" err="apiserver received an error that is not an metav1.Status: rpctypes.EtcdError{code:0xe, desc:\"etcdserver: request timed out\"}: etcdserver: request timed out" logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:04.313842Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d72dac000/127.0.0.1:2379","method":"/etcdserverpb.KV/Range","attempt":0,"error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
+{"level":"warn","ts":"2026-09-30T03:39:04.418179Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d7317af00/127.0.0.1:2379","method":"/etcdserverpb.Lease/LeaseGrant","attempt":3,"error":"rpc error: code = Unavailable desc = etcdserver: request timed out"}
+E0930 03:39:04.828304       1 controller.go:251] "Failed to update lease" err="Operation cannot be fulfilled on leases.coordination.k8s.io \"apiserver-fh2txs655rgpkov54p6cfipjsy\": the object has been modified; please apply your changes to the latest version and try again"
+{"level":"warn","ts":"2026-09-30T03:39:04.969165Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d73576f00/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
+E0930 03:39:04.970218       1 finisher.go:175] "Unhandled Error" err="FinishRequest: post-timeout activity - time-elapsed: 21.125µs, panicked: false, err: context deadline exceeded, panic-reason: <nil>" logger="UnhandledError"
+{"level":"warn","ts":"2026-09-30T03:39:05.410017Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d73576f00/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
+{"level":"warn","ts":"2026-09-30T03:39:05.410421Z","logger":"etcd-client","caller":"v3@v3.6.8/retry_interceptor.go:65","msg":"retrying of unary invoker failed","target":"etcd-endpoints://0x7c0d73576f00/127.0.0.1:2379","method":"/etcdserverpb.KV/Txn","attempt":0,"error":"rpc error: code = DeadlineExceeded desc = context deadline exceeded"}
+E0930 03:39:05.411150       1 finisher.go:175] "Unhandled Error" err="FinishRequest: post-timeout activity - time-elapsed: 20.625µs, panicked: false, err: context deadline exceeded, panic-reason: <nil>" logger="UnhandledError"
+E0930 03:39:05.411896       1 finisher.go:175] "Unhandled Error" err="FinishRequest: post-timeout activity - time-elapsed: 21.792µs, panicked: false, err: context deadline exceeded, panic-reason: <nil>" logger="UnhandledError"
+I0930 03:39:06.020937       1 controller.go:171] "failed to update lease using latest lease, fallback to ensure lease" err="failed 5 attempts to update lease"
+I0930 03:39:07.167327       1 peer_endpoint_lease.go:175] Shutting down peer endpoint lease reconciler
+W0930 03:39:08.029931       1 lease.go:265] Resetting endpoints for master service "kubernetes" to [192.168.10.102 192.168.10.103 192.168.10.104]
+I0930 03:39:08.166538       1 controller.go:136] "Cleaning up lease on exit" lease="kube-system/apiserver-fh2txs655rgpkov54p6cfipjsy"
+I0930 03:39:08.543042       1 controller.go:128] Shutting down kubernetes service endpoint reconciler
+W0930 03:39:09.553299       1 lease.go:265] Resetting endpoints for master service "kubernetes" to [192.168.10.102 192.168.10.104]
+I0930 03:39:09.995747       1 gc_controller.go:98] "Shutting down apiserver lease garbage collector"
+I0930 03:39:10.043931       1 cluster_authentication_trust_controller.go:482] Shutting down cluster_authentication_trust_controller controller
+I0930 03:39:10.044829       1 storage_flowcontrol.go:165] APF bootstrap ensurer is exiting
+I0930 03:39:10.079203       1 default_servicecidr_controller.go:113] "Shutting down" controller="kubernetes-service-cidr-controller"
+I0930 03:39:10.094832       1 dynamic_cafile_content.go:175] "Shutting down controller" name="client-ca-bundle::/etc/kubernetes/pki/ca.crt"
+I0930 03:39:10.096117       1 object_count_tracker.go:141] "StorageObjectCountTracker pruner is exiting"
+I0930 03:39:10.100954       1 dynamic_cafile_content.go:175] "Shutting down controller" name="request-header::/etc/kubernetes/pki/front-proxy-ca.crt"
+I0930 03:39:10.122436       1 dynamic_serving_content.go:149] "Shutting down controller" name="aggregator-proxy-cert::/etc/kubernetes/pki/front-proxy-client.crt::/etc/kubernetes/pki/front-proxy-client.key"
+I0930 03:39:10.122701       1 controller.go:95] "Shutting down OpenAPI V3 AggregationController"
+I0930 03:39:10.122797       1 controller.go:93] "Shutting down OpenAPI AggregationController"
+I0930 03:39:10.122917       1 dynamic_cafile_content.go:175] "Shutting down controller" name="client-ca-bundle::/etc/kubernetes/pki/ca.crt"
+I0930 03:39:10.124236       1 tlsconfig.go:258] "Shutting down DynamicServingCertificateController"
+I0930 03:39:10.130263       1 repairip.go:246] Shutting down ipallocator-repair-controller
+I0930 03:39:10.133981       1 secure_serving.go:262] Stopped listening on [::]:6443
+I0930 03:39:10.137677       1 customresource_discovery_controller.go:332] Shutting down DiscoveryController
+I0930 03:39:10.149806       1 controller.go:120] Shutting down OpenAPI V3 controller
+I0930 03:39:10.149974       1 dynamic_serving_content.go:149] "Shutting down controller" name="serving-cert::/etc/kubernetes/pki/apiserver.crt::/etc/kubernetes/pki/apiserver.key"
+I0930 03:39:10.150858       1 dynamic_cafile_content.go:175] "Shutting down controller" name="request-header::/etc/kubernetes/pki/front-proxy-ca.crt"
+I0930 03:39:10.156945       1 apiapproval_controller.go:208] Shutting down KubernetesAPIApprovalPolicyConformantConditionController
+I0930 03:39:10.157120       1 nonstructuralschema_controller.go:214] Shutting down NonStructuralSchemaConditionController
+I0930 03:39:10.157261       1 naming_controller.go:316] Shutting down NamingConditionController
+I0930 03:39:10.158590       1 crd_finalizer.go:288] "Shutting down CRDFinalizer"
+I0930 03:39:10.159102       1 crdregistration_controller.go:145] Shutting down crd-autoregister controller
+I0930 03:39:10.160176       1 autoregister_controller.go:168] Shutting down autoregister controller
+I0930 03:39:10.162821       1 remote_available_controller.go:450] Shutting down RemoteAvailability controller
+I0930 03:39:10.163075       1 apiservice_controller.go:134] Shutting down APIServiceRegistrationController
+I0930 03:39:10.163280       1 system_namespaces_controller.go:76] Shutting down system namespaces controller
+I0930 03:39:10.163412       1 local_available_controller.go:172] Shutting down LocalAvailability controller
+I0930 03:39:10.163790       1 apf_controller.go:389] Shutting down API Priority and Fairness config worker
+I0930 03:39:10.185905       1 controller.go:170] Shutting down OpenAPI controller
+I0930 03:39:10.194890       1 controller.go:140] "Ending legacy_token_tracking_controller"
+I0930 03:39:10.195048       1 controller.go:141] "Shutting down legacy_token_tracking_controller"
+I0930 03:39:10.236212       1 controller.go:157] Shutting down quota evaluator
+I0930 03:39:10.236326       1 controller.go:176] quota evaluator worker shutdown
+I0930 03:39:10.260607       1 controller.go:176] quota evaluator worker shutdown
+I0930 03:39:10.260777       1 controller.go:176] quota evaluator worker shutdown
+I0930 03:39:10.260808       1 controller.go:176] quota evaluator worker shutdown
+I0930 03:39:10.260838       1 controller.go:176] quota evaluator worker shutdown
