@@ -1,4 +1,4 @@
-# BOXP-201 実装計画（I3: 共通writer lock・transition journal・control store契約）
+# BOXP-201 実装計画（I3: writer・control store契約 / I2: execution intent）
 
 ## 目的と境界
 
@@ -25,3 +25,15 @@
 mainへのmergeで既存workflowがcodex-workspace imageをbuild・公開するが、追加libraryは未使用、lockは未opt-inのため動作は変わらない。helperは配布先（hermes-agent image、各agentのskill directory）へ別途同期されるまで旧版のまま動く。旧helperは新commandを持たないだけで、既存commandの互換性は維持する。
 
 rollbackはこのPRのmerge commitをrevertする。journal・control storeは実環境に作成されないため、戻す永続stateはない。公開済みimageや稼働環境の切戻しはrevertでは自動的に行われない。
+
+## I2: execution intent・停止優先・shadow比較（2026-10-02）
+
+I3のmerge（PR #13122）後、依存順の次段としてI2を別PRで実装する。境界はI3と同じで、v2は常時off、Deployment / Argo / cron / credential / 既存ticket・カードは変更しない。
+
+1. `autonomy_intent.bb`: control原本に基づく候補判定（`evaluate`）、route→起動方法（`launch-spec`）、lock後の再確認（`confirm-start`）、run終了時の投影可否（`finish-projection`）、decisionの有効性（`decision-current?`）、shadow比較。すべて純粋関数。
+2. runner: opt-in（`CODEX_TASK_BOARD_AUTONOMY_SHADOW=true`）のshadow比較をtickに追加し、結果をrunner rootへ保存する。legacyの候補判定・起動・result marker・PR gateは変更しない。
+3. テスト: mock control storeでの契約テスト、runner self-test、黒箱テスト（shadowのoff / on、`claude-fable` のretryでrouteを保持）。CIへ追加する。
+
+契約の詳細と、設計からの差分（legacyの `claude-fable` の扱い）は [i2-execution-intent.md](i2-execution-intent.md)。
+
+配布とrollback: mergeでcodex-workspace imageがbuild・公開されるが、shadowは未opt-inのため動作は変わらない。rollbackはmerge commitのrevert。shadowを有効にした環境があれば `autonomy-shadow/latest.edn` が残るだけで、戻す永続stateはない。
