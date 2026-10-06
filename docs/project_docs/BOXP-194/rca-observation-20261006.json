@@ -1327,6 +1327,7 @@
       "CP3" : 8,
       "total" : 25,
       "inside_lc_window" : 14,
+      "unit_note" : "counted from restart buckets (25) that fall in any leader-change match window (end-15m..end+10m); differs from class A (22) which counts leader-change buckets having a restart in end-5m..end+15m",
       "outside_lc_window" : 11
     },
     "any_cp_memstall" : 42,
