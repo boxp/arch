@@ -1466,7 +1466,7 @@
     "memory_pressure_to_etcd_stall_to_leader_change" : "medium (in-window correlation 42/46; strict-prior precedence 25/46 = 54%, 3-12x enrichment; reverse causality not excluded for the other 21)",
     "apiserver_sigkill_as_necessary_step" : "rejected (24/46 leader changes without restart; 11/25 restarts without leader change)",
     "trigger_since_0929" : "medium-low",
-    "reverse_causality_leader_change_to_memory_pressure" : "not excluded (21/46 show stall only concurrent/after)"
+    "reverse_causality_leader_change_to_memory_pressure" : "not excluded (17/46 show stall only concurrent/after; 4/46 no stall detected in any window)"
   },
   "scope" : "read-only RCA follow-up; no upgrade, drain, apply, reboot, restore, or manifest change",
   "today_events_utc" : [ {
@@ -1714,6 +1714,6 @@
         "E_buckets" : [ "2026-09-29T01:05:00Z", "2026-09-29T05:00:00Z", "2026-09-29T16:35:00Z", "2026-09-29T19:00:00Z", "2026-09-30T02:00:00Z", "2026-09-30T02:10:00Z", "2026-09-30T02:30:00Z", "2026-10-01T05:00:00Z", "2026-10-01T06:30:00Z", "2026-10-01T06:40:00Z", "2026-10-01T22:25:00Z", "2026-10-02T05:55:00Z", "2026-10-02T15:10:00Z", "2026-10-03T15:00:00Z", "2026-10-05T00:00:00Z", "2026-10-06T01:05:00Z" ]
       }
     },
-    "conclusion" : "memory stall precedes leader change in 25/46 (54%); in remaining 21 it is only concurrent or subsequent, so causal direction is undetermined for those; mechanism confidence lowered to medium"
+    "conclusion" : "memory stall precedes leader change in 25/46 (54%); of the remaining 21, 17 show stall only concurrent/after within the rev1 window (causal direction undetermined) and 4 show no stall even within the rev1 window (class E, unexplained); mechanism confidence lowered to medium"
   }
 }
