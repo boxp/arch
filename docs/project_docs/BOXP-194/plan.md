@@ -21,3 +21,7 @@ RCA PR #13021はレビュー指摘なしでmergeされていたため、残っ�
 4. 結果を[rca-20261006.md](rca-20261006.md)と[rca-observation-20261006.json](rca-observation-20261006.json)に保存し、docs-only PRでReviewへ提出する。復旧案は提案のみで未実施。
 
 結論は「control-planeのメモリ逼迫（apiserver WSS約2GiB超、MemAvailable約200〜300MiB、swapなし）→major page fault→同一eMMC上のetcd停滞→liveness失敗でapiserver SIGKILL→leader change」の連鎖。Kubernetes 1.36 patch更新の再開は、復旧案の実施とleader change / 再起動の収束を確認するまで推奨しない。
+
+### 2026-10-06 改訂（codex-review指摘対応、読み取り専用）
+
+PR #13308へのCodexレビューで「全leader change / apiserver再起動で同一連鎖を高確度で確認」という結論が、広い横断条件（major fault / iowait / MemAvailable低下 / scrape欠落のいずれか）にしか裏付けられていないと指摘された。対応としてPrometheusの範囲クエリ（集計値のみ、Kubernetes APIへの追加GETはPrometheus Pod名確認1回とexecのみ）でleader changeバケット46件をイベント単位に分類し直し、観測事実と仮説を分離した。結果、apiserver再起動はleader changeの必要条件ではない（46件中24件は再起動なし、再起動25バケット中11件はleader changeなし）として連鎖の記述を撤回し、「メモリ逼迫→etcd停滞→leader change」の確度を高から中〜高へ下げ、未説明4件を明記した。復旧案と更新再開条件は提案のまま未実施で、本番操作は行っていない。
