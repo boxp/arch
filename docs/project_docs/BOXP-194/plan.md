@@ -41,3 +41,14 @@ PR #13308へのCodexレビューで「全leader change / apiserver再起動で�
 ### 2026-10-06 改訂5（codex-review 5巡目指摘対応、読み取り専用）
 
 改訂4に対するCodexレビューで、「復旧・再開の安全条件」の案1がstatic Pod manifestへのmemory request追加をapiserverのメモリ圧迫低減策として列挙しているが、requestだけでは使用量は上限されずkubeletのallocatable / eviction判定が変わるだけで逼迫は減らない、と指摘された。対応として案1を「apiserverの使用量そのものを下げる手段（恒常負荷削減、watch cache縮小）」と「request / limit・kubelet予約の設計（使用量は下げない。limitはOOM-killという別経路の再起動を招き、`systemReserved` / `evictionHard`はallocatableを減らして他Podのevictionを早めるだけで、critical priorityのstatic Podも退避されないことは保証されない）」に分離し、後者を単独の負荷低減策として提示しないよう改めた。さらにCLI独立レビュー（改訂5の1巡目）で、`--target-ram-mb`はv1.24で削除済み、`--default-watch-cache-size`は1.36のflag一覧に存在しない、`--watch-cache-sizes`は組み込みリソースの`#0`による無効化だけが有効でCRDに効かない、memory requestはallocatable計算を変えない、critical priorityのstatic Podも退避されないとは保証されない、という4点を指摘された。上流のkube-apiserver flag一覧で確認のうえ、案1を「オブジェクト数・サイズの削減による常駐量の削減」「要求負荷・更新量の削減（常駐量は直接減らない）」「組み込みリソース限定のwatch cache無効化（etcd負荷増の代償を明記）」に書き直し、request / limit・予約の記述を訂正した。2巡目で、static Podの退避順位に効くのは`spec.priority`の実値である点、要求負荷削減とwatch cache常駐量削減の区別、plan.md側に残っていた`--target-ram-mb`の旧記述も訂正した。なお、レビュー5巡目で「critical static Podは公式にeviction対象外であり、退避されない保証はないという記述は不正確」との指摘があったが、v1.36公式のNode-pressure Evictionページ「Self healing for static pods」節は資源圧迫下でkubeletがstatic Podを退避し得ると記す一方、Guaranteed Scheduling For Critical Add-On Podsはcriticalなstatic Podはevictされないと記しており公式文書間で一致しない。6巡目の指摘に従い、どちらかに断定せず両文書を出典として併記し、kubeadmが生成する`priority: 2000001000`と`priorityClassName`の両フィールドとkubeletの実挙動を確認対象とする記述に改めた。集計値・確度評価・結論は変更なし。復旧案と更新再開条件は提案のまま未実施で、本番操作は行っていない。
+
+## 2026-10-06 追補（Decision Packet、読み取り専用）
+
+2026-10-06 09:57 / 10:00 UTCのowner指示で、Orange Pi Zero 3級の低リソースCPに「異常ゼロ」を求めず、許容する短時間自己回復の揺らぎと更新を止める異常を、現行baselineとread-only観測から定義することが本runの範囲になった。前回までの禁止事項（update / drain / Apply、package / manifest / Argo / cron変更、reboot、Pod / Node削除、etcd操作・restore、Secret参照、設定変更）は維持した。
+
+1. Prometheus 32.4日分（2026-09-04〜10-06）を、停止級事象の継続時間（1分解像度）と揺らぎ級事象の日次件数で集計し、現在値（10-06 05:15〜10:05 UTC）と比較する。
+2. 3CPの実効設定（etcd / apiserver manifestのflag、kubelet設定、sysctl、zram、ストレージ）とkubeadm-config ConfigMap、既存PrometheusRuleを読み取り、Ansible宣言との差分を確認する。
+3. 最小Go/No-Go基準（開始条件・停止条件・許容する揺らぎ・Halt後の扱い）、現在値とbaselineの比較、hardwareを替えない低リスク改善候補（期待効果・副作用・rollback・検証）を[decision-packet-20261006.md](decision-packet-20261006.md)に整理し、集計値を[baseline-observation-20261006.json](baseline-observation-20261006.json)に保存してdocs-only PRでReviewへ提出する。
+4. 改善候補の実施と1.36 patch更新の再開はownerの判断（Decision Packet 0章 D1〜D4）を待ち、本runでは実施しない。
+
+結果の要点: 停止級事象（API全断、etcd全memberのleaderなし）は32日間で3回・各2分以内、CP NotReady 5分超は9回。揺らぎ級（leader change 0〜20/日、component再起動0〜16/日）は自己回復している。新規事実として、3CPのkubelet常駐メモリが約12〜14MiB/日で単調増加（約200→650MiB、再起動なし38〜48日）していること、etcdのheartbeat / election timeoutがAnsible宣言（1000 / 10000ms）と異なり実機・ConfigMapとも既定（100 / 1000ms）であることを確認した。
