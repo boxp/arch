@@ -1,0 +1,75 @@
+{
+  "scope": "read-only RCA follow-up; no upgrade, drain, apply, reboot, restore, or manifest change",
+  "observed_utc": "2026-10-06T04:37:00Z/2026-10-06T05:20:00Z",
+  "sources": [
+    "kubernetes API GET",
+    "ssh journal pattern counts (no raw logs)",
+    "prometheus promtool aggregates (retention 31d)",
+    "etcdctl endpoint status/health read-only"
+  ],
+  "current_state": {
+    "nodes_ready": 7,
+    "direct_readyz_ok": ["CP1", "CP2", "CP3"],
+    "vip_readyz_ok": true,
+    "etcd": {"members_healthy": 3, "raft_term": 5327, "leader": "CP3", "learners": 0, "db_size_mb": [98, 102, 108]},
+    "apiserver_restarts": {"CP1": 84, "CP2": 56, "CP3": 68},
+    "apiserver_restarts_20260930_0529": {"CP1": 75, "CP2": 48, "CP3": 60},
+    "apiserver_last_termination": {"CP1": "2026-10-06T03:39:12Z exit137", "CP2": "2026-10-06T00:59:54Z exit137", "CP3": "2026-10-06T03:05:00Z exit137"},
+    "lease_transitions": {"kube-vip": 4558, "kube-controller-manager": 3157, "kube-scheduler": 3114},
+    "longhorn_volumes_healthy": 18,
+    "host": {"uptime_days": [37, 43, 47], "kernel_oom": 0, "kernel_io_error": 0, "kernel_rcu_stall": 0, "link_events": 0, "thermal_c_max": 69, "cpufreq_khz": 1416000},
+    "memory_mib": {"total": 3923, "anon": {"CP1": 2163, "CP2": 2889, "CP3": 2883}, "available": {"CP1": 1571, "CP2": 867, "CP3": 876}, "apiserver_wss": {"CP1": 858, "CP2": 1680, "CP3": 1442}},
+    "emmc_await_ms_5s_sample": {"read": 30, "write": 12},
+    "leftover_failed_pods_default_ns": {"node-debugger": 5}
+  },
+  "today_events_utc": [
+    {"window": "00:57-01:07", "cp_stalled": "CP2", "apiserver_exit137": "00:59:54", "controllers_restarted": ["kcm CP1/CP3", "scheduler CP1", "kube-vip CP2"]},
+    {"window": "03:03-03:05", "cp_stalled": "CP3", "apiserver_exit137": "03:05:00", "node_ready_retransition": ["CP3", "golyat-1..4"]},
+    {"window": "03:30-03:39", "cp_stalled": "CP1", "apiserver_exit137": "03:39:12", "etcd_slow_apply_count": 361, "etcd_slow_apply_max_s": 51.2},
+    {"window": "04:20-04:25", "cp_stalled": "CP2", "etcd_slow_apply_count": 162, "etcd_slow_apply_max_s": 22.3, "kcm_leader_change": "04:21:33", "controllers_restarted": ["kcm CP2", "scheduler CP2", "kube-vip CP3", "longhorn csi x4", "tigera-operator", "tidb-controller-manager"]}
+  ],
+  "kubelet_journal_since_0929": {
+    "lease_update_failures": {"CP1": 137, "CP2": 128, "CP3": 148},
+    "pleg_unhealthy": {"CP1": 32, "CP2": 29, "CP3": 20},
+    "memory_pressure_msgs": {"CP1": 16, "CP2": 20, "CP3": 12},
+    "evictions": 0
+  },
+  "leader_change_buckets_7d": {
+    "count": 41,
+    "all_have_one_cp_with": "pgmajfault 85-220/s or iowait 0.1-0.5 or MemAvailable 300-500MiB or scrape gap",
+    "typical_stalled_cp_before_after": {"apiserver_wss_mib": [2000, 850], "mem_available_mib": [450, 1600]},
+    "cpu_system_share_max": 0.11,
+    "cpu_softirq_share_max": 0.05,
+    "nic_rx_errors": 0
+  },
+  "daily_30d": {
+    "leader_changes_per_member_avg": {"0906_0928_range": [0, 7], "0929_1005": [8, 10, 18, 13, 5, 8, 0]},
+    "apiserver_restarts_sum": {"0906_0928_range": [0, 4], "0929_1005": [2, 3, 8, 4, 5, 4, 1]},
+    "apiserver_wss_max_mib_range": [1150, 2645],
+    "cp_mem_available_min_mib_typical": [220, 320],
+    "pgmajfault_max_per_s_range": [0, 250],
+    "wal_fsync_p99_median_ms": {"CP1": [36, 48], "CP2": [12, 14], "CP3": [10, 14]},
+    "apiserver_rps_median": 50,
+    "http_429": {"1001": 17449, "1002": 4285, "hour_utc": 7},
+    "pods_list_get_per_day": {"before_1002": [24600, 26300], "from_1002": [42000, 48500]},
+    "agent_pods_cpu_cores_max": {"0906_0927": [0.07, 0.26], "0928": 0.43, "0929": 0.68, "0930": 0.88, "1001": 0.47, "1002_1005": [0.08, 0.12]}
+  },
+  "request_mix_7d_top": {
+    "PUT leases": 3429790,
+    "GET leases": 2382299,
+    "POST subjectaccessreviews": 1657296,
+    "GET customresourcedefinitions": 916150,
+    "PATCH applications": 493964,
+    "APPLY customresourcedefinitions": 457738,
+    "POST tokenreviews": 364966,
+    "POST events": 280018,
+    "LIST pods": 197937,
+    "LIST networkpolicies": 183488,
+    "LIST stagedkubernetesnetworkpolicies": 137333,
+    "LIST nodes": 111635
+  },
+  "crd": {"total": 123, "apply_per_day_30d": [65000, 70600], "managed_fields_last_apply": "2026-07-14", "argocd_apps_with_crds": 10},
+  "cronjobs_utc": {"longhorn_backup": "00:00", "snapshot_cleanup": "01:30", "filesystem_trim": "02:00", "etcd_defrag": "Sat 19:00", "descheduler": "*/2", "ecr_token": "*/10h"},
+  "excluded": ["oom_killer", "host_reboot", "kubelet_or_crio_restart", "emmc_io_error", "physical_network", "disk_capacity", "etcd_quota", "etcd_quorum_loss", "k8s_patch_regression", "cronjob_schedule", "thermal_throttle"],
+  "root_cause_confidence": {"memory_pressure_chain": "high", "trigger_since_0929": "medium-low"}
+}
