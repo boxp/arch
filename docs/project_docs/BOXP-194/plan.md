@@ -16,11 +16,11 @@ update/drain/Apply、workflow dispatch、snapshot作成/restore、package変更�
 RCA PR #13021はレビュー指摘なしでmergeされていたため、残っていた「根本原因の確度」「追加観測」「復旧 / 更新再開の安全条件」を埋めることを本runの範囲とした。2026-09-30 04:15 / 04:39の禁止事項（update / drain / Apply、reboot、Pod / Node削除、etcd member操作、restore、manifest変更、Argo sync、Secret参照）は維持した。
 
 1. 現在状態をAPI GETとSSH（journalパターン件数）で再観測し、当日の4イベントをUTC時系列化する。
-2. monitoring namespaceのPrometheus 31日履歴をpromtoolの集計値だけで取得し、leader change全41バケットについてCPごとのメモリ / fault / IO / CPU / apiserver WSSを照合する。
+2. monitoring namespaceのPrometheus 31日履歴をpromtoolの集計値だけで取得し、leader change全41バケットについてCPごとのメモリ / fault / IO / CPU / apiserver WSSを照合する。（初版時点の記述。バケット数は改訂で46件に訂正、下記「2026-10-06 改訂」参照）
 3. 30日トレンドとapiserver要求構成（verb / resource）から恒常負荷と09-29以降の変化を分ける。
 4. 結果を[rca-20261006.md](rca-20261006.md)と[rca-observation-20261006.json](rca-observation-20261006.json)に保存し、docs-only PRでReviewへ提出する。復旧案は提案のみで未実施。
 
-結論は「control-planeのメモリ逼迫（apiserver WSS約2GiB超、MemAvailable約200〜300MiB、swapなし）→major page fault→同一eMMC上のetcd停滞→liveness失敗でapiserver SIGKILL→leader change」の連鎖。Kubernetes 1.36 patch更新の再開は、復旧案の実施とleader change / 再起動の収束を確認するまで推奨しない。
+【初版時点の結論・改訂で撤回済み】初版の結論は「control-planeのメモリ逼迫（apiserver WSS約2GiB超、MemAvailable約200〜300MiB、swapなし）→major page fault→同一eMMC上のetcd停滞→liveness失敗でapiserver SIGKILL→leader change」の連鎖だった。下記「2026-10-06 改訂」でapiserver SIGKILLを必要条件とする記述を撤回し、確度を中〜高へ見直した。Kubernetes 1.36 patch更新の再開は、復旧案の実施とleader change / 再起動の収束を確認するまで推奨しない。
 
 ### 2026-10-06 改訂（codex-review指摘対応、読み取り専用）
 

@@ -1279,7 +1279,7 @@
   },
   "root_cause_confidence" : {
     "memory_pressure_structural" : "high (observed)",
-    "memory_pressure_to_etcd_stall_to_leader_change" : "medium-high (correlational, 42/46, 6-10x enrichment)",
+    "memory_pressure_to_etcd_stall_to_leader_change" : "medium-high (correlational, 42/46, 7-12x enrichment)",
     "apiserver_sigkill_as_necessary_step" : "rejected (24/46 leader changes without restart; 11/25 restarts without leader change)",
     "trigger_since_0929" : "medium-low"
   },
