@@ -51,4 +51,15 @@ PR #13308へのCodexレビューで「全leader change / apiserver再起動で�
 3. 最小Go/No-Go基準（開始条件・停止条件・許容する揺らぎ・Halt後の扱い）、現在値とbaselineの比較、hardwareを替えない低リスク改善候補（期待効果・副作用・rollback・検証）を[decision-packet-20261006.md](decision-packet-20261006.md)に整理し、集計値を[baseline-observation-20261006.json](baseline-observation-20261006.json)に保存してdocs-only PRでReviewへ提出する。
 4. 改善候補の実施と1.36 patch更新の再開はownerの判断（Decision Packet 0章 D1〜D4）を待ち、本runでは実施しない。
 
-結果の要点: 停止級事象（API全断、etcd全memberのleaderなし）は32日間で3回・各2分以内、CP NotReady 5分超は9回。揺らぎ級（leader change 0〜20/日、component再起動0〜16/日）は自己回復している。新規事実として、3CPのkubelet常駐メモリが約12〜14MiB/日で単調増加（約200→650MiB、再起動なし38〜48日）していること、etcdのheartbeat / election timeoutがAnsible宣言（1000 / 10000ms）と異なり実機・ConfigMapとも既定（100 / 1000ms）であることを確認した。
+結果の要点: 停止級事象（監視経路からapiserver 3台すべてが観測不能、etcd全memberのleaderなし。前者はAPI停止の実績ではない）は32日間で3回・各2分以内、CP NotReady 5分超は9回。揺らぎ級（leader change 0〜20/日、component再起動0〜16/日）は自己回復している。新規事実として、3CPのkubelet常駐メモリが約12〜14MiB/日で単調増加（約200→650MiB、再起動なし38〜48日）していること、etcdのheartbeat / election timeoutがAnsible宣言（1000 / 10000ms）と異なり実機・ConfigMapとも既定（100 / 1000ms）であることを確認した。
+
+### 2026-10-06 改訂（Decision Packet codex-review指摘対応、読み取り専用）
+
+PR #13338へのCodexレビューで2点の指摘を受けた。(1) 「apiserver 3台すべてscrape不可」を「全API断」として更新可否（D4、6章）の根拠にしているが、scrape断はPrometheus・ネットワーク・scrape経路の障害でも起こり、VIP / 各CP直接の`readyz`履歴がないため、API可用性の実績として結論づけるのは不正確。(2) H6の「degradedが15分以上継続」は日別の延べ時間しか根拠がなく、単一volumeの連続degraded時間を検証していない。
+
+対応（新規Prometheus範囲クエリ12本、集計値のみ、本番操作なし）:
+
+1. 「3台すべてscrape不可」の3窓で、Prometheus自身のscrape / 取り込み率、CP上のetcd / kubelet / node-exporter、worker 4台のnode-exporter、container再起動を30秒解像度で照合した（Decision Packet 2.1.1）。Prometheusは3窓とも稼働し、apiserverの`up`=0は各CPで0〜2分に留まり、「3台すべて不可」は系列欠落を含む。同時にworker 4台のnode-exporterも到達不能になっており、監視経路からクラスタ全体の到達性が揺らいでいた。一方、同一窓内にapiserver 2〜3台（3台すべて不可のバケットから+1.0〜+6.5分）とkube-vip 2 Pod（−6.5〜+4.0分）の再起動カウンタ増加も記録されているが、同時性・因果は確定できない。結論として「監視経路からapiserver 3台を観測できなかった時間」へ言い換え、API停止の実績とはせず、D4 / 2.1 / H2 / 3.4 / 6章 / 7章の表現を修正した。更新中はrunnerが30秒間隔でVIP / 直接readyzを記録し（3.5、改善候補A2を追加）、scrape断は補助指標にする。readyz記録は既存workflowに未実装（既存のreadyz確認は各CP更新直後の1回限り）のため、開始条件G6として「A2実装済み」を追加し、実装は別ticketへ分離した。
+2. `longhorn_volume_robustness`をvolume別に連続runへ分けた（Decision Packet 2.1.2）。8 run・6 volume・67サンプルで合計は既存集計と一致し、単一volumeの連続degraded最長は13.0分（10-02 09:07 UTC、Prometheus DB volume）、faultedは0。H6を「更新中ノード上のreplicaで説明できないdegraded 15分以上」「更新ノード復帰後もdegradedが15分以上残る」に分け、超過時のLonghorn API確認手順（rebuild進行中なら5分延長）と5分間隔の記録手順を明記した。baselineにdrain期間が含まれないことも明記し、drain起因のdegradedは3.3の許容範囲に追加した。
+
+集計値・確度評価は変えていない。D3 / D4と6章の結論にはG6（readyz記録の実装）を更新再開の必須条件として追加した。
