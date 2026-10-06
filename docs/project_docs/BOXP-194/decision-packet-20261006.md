@@ -9,7 +9,7 @@
 | D1 | 3章の最小Go/No-Go基準（開始条件・停止条件・許容する揺らぎ）を採用するか | 採用を推奨。しきい値は原則としてbaseline実績の最長値を上回る位置に置き、更新中に「baseline内の揺らぎ」で止まらないようにした。ただし冗長性を失う事象（H2 / H4）はbaselineより短い安全側の運用上限にしている |
 | D2 | 観測時間の配分 | 各CP更新後30分、各worker更新後15分、worker-4（GPU）更新後30分（GPU推論確認を含む）、全7台完了後60分（自動観測）。ownerの「1時間ぐらい」を全台完了後の観測に割り当てる解釈であり、各ノード1時間にする場合は合計で約8時間になる |
 | D3 | 更新前に実施する改善候補 | 5章のK1（kubelet再起動による常駐メモリ回収）は更新手順自体に含まれるため追加作業なし。E1（etcd heartbeat / election timeoutの実機反映とkubeadm-config整合）は更新と同じ静的Pod再生成を伴うため、更新の前後どちらで行うかを決める。他は更新後に別ticketで扱う |
-| D4 | 1.36 patch更新の再開可否 | 現baselineでは「停止級事象は32日間で3回・各2分以内、揺らぎ級は自己回復」であり、3章の基準で監視すれば1台ずつの更新は実行可能と判断する。再開はownerの明示指示で行う |
+| D4 | 1.36 patch更新の再開可否 | 現baselineでは「全API断 / etcd quorum喪失相当の事象は32日間で3回・各2分以内（CP NotReadyの5分超は9回・最長11分）、揺らぎ級は自己回復」であり、3章の基準で監視すれば1台ずつの更新は実行可能と判断する。再開はownerの明示指示で行う |
 
 ## 1. baselineの定義と取得範囲
 
@@ -117,7 +117,7 @@
 
 ### 3.5 既存alertとの対応と自動判定
 
-H1 / H3 / H5の一部は既存PrometheusRule `control-plane-node-rules`（BOXP-179）で既にalert化されている。H2 / H4 / H7とG2 / G3は未定義なので、5章A1として「記録用rule」を提案する。更新workflowでの自動判定は、まずPrometheus即時クエリ（`count(up{job="etcd"}==1)`、`sum(up{job="apiserver"})`、`kube_node_status_condition`、`increase(etcd_server_leader_changes_seen_total[30m])`）で代替できる。
+H1 / H3 / H5の一部は既存PrometheusRule `control-plane-node-rules`（BOXP-179）で既にalert化されている。H2 / H4 / H7とG2 / G3は未定義なので、5章A1として「記録用rule」を提案する。A1はH2 / H4 / H7とG2のleader change・component再起動・NotReady件数、G3のCP逼迫（MemAvailable<256MiB & major fault>50/s）を補助的に判定するもので、G1のVIP readyzやG3の「>400MiB・<50/秒が10分継続」はdispatch前のPrometheus即時クエリ / 直接readyzで別途確認する。更新workflowでの自動判定は、まずPrometheus即時クエリ（`count(up{job="etcd"}==1)`、`sum(up{job="apiserver"})`、`kube_node_status_condition`、`increase(etcd_server_leader_changes_seen_total[30m])`）で代替できる。
 
 ## 4. 本runで新たに確認した事実
 
@@ -165,7 +165,7 @@ H1 / H3 / H5の一部は既存PrometheusRule `control-plane-node-rules`（BOXP-1
 
 ## 6. 1.36 patch更新再開に関する評価
 
-- baselineの停止級事象は32日間で3エピソード（各2分以内）で、いずれも更新作業とは無関係に起きている。この頻度では、1台あたり30〜60分の更新 / 観測窓に当たる確率は低く、当たった場合も3.4の「30分以内の自己回復」で再開できる。
+- baselineのうち全API断 / etcd quorum喪失相当の事象は32日間で3エピソード（各2分以内）で、いずれも更新作業とは無関係に起きている。CP NotReadyの5分超（9回、最長11分）と2台以上のapiserver同時断（10回、最長6分）はこれより多く、H2〜H4でHaltし3.4で再開する運用を前提にする。この頻度では、1台あたり30〜60分の更新 / 観測窓に当たる確率は低く、当たった場合も3.4の「30分以内の自己回復」で再開できる。
 - 更新手順のdrain / kubelet再起動 / 静的Pod再生成はCPのメモリ逼迫を一時的に強める可能性がある。K1の効果（kubelet常駐回収）が実測通りなら更新後のCPは更新前より余裕が増えると期待できるが、これは仮説で、1台目の更新後に実測して2台目以降の判断材料にする。CP1→CP2→CP3の順で1台ずつ進めれば、常に2台のetcd memberが安定側にある。
 - 一方、E1を更新後に回す場合、更新中のetcd election timeoutは既定1秒のままで、baselineと同じ頻度のleader changeを許容しながら進めることになる（3.3の範囲）。
 - したがって更新再開の阻害要因は「異常ゼロでないこと」ではなく、G4（実施直前snapshot）とG5（固定SHA dry-run）の再実施、およびD1〜D3のowner判断である。
