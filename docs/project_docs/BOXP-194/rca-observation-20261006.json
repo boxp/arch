@@ -1464,7 +1464,7 @@
   "root_cause_confidence" : {
     "memory_pressure_structural" : "high (observed)",
     "memory_pressure_to_etcd_stall_to_leader_change" : "medium (in-window correlation 42/46; strict-prior precedence 25/46 = 54%, 3-12x enrichment; reverse causality not excluded for the other 21)",
-    "apiserver_sigkill_as_necessary_step" : "rejected (24/46 leader changes without restart; 11/25 restarts without leader change)",
+    "apiserver_sigkill_as_necessary_step" : "rejected (24/46 leader-change buckets without restart; restart side: 12/23 unique restart buckets (12/25 cp_x_bucket, 11/20 episodes) without leader change)",
     "trigger_since_0929" : "medium-low",
     "reverse_causality_leader_change_to_memory_pressure" : "not excluded (17/46 show stall only concurrent/after; 4/46 no stall detected in any window)"
   },
@@ -1493,7 +1493,7 @@
     "kcm_leader_change" : "04:21:33",
     "controllers_restarted" : [ "kcm CP2", "scheduler CP2", "kube-vip CP3", "longhorn csi x4", "tigera-operator", "tidb-controller-manager" ]
   } ],
-  "observed_utc" : "2026-10-06T04:37:00Z/2026-10-06T05:20:00Z; event-level revision 2026-10-06T05:20:00Z/2026-10-06T05:45:00Z; prior-only re-aggregation (offline, same data) 2026-10-06T05:45:00Z/2026-10-06T06:10:00Z",
+  "observed_utc" : "2026-10-06T04:37:00Z/2026-10-06T05:20:00Z; event-level revision 2026-10-06T05:20:00Z/2026-10-06T05:45:00Z; prior-only re-aggregation (offline, same data) 2026-10-06T05:45:00Z/2026-10-06T06:10:00Z; restart-unit normalization rev3 (offline, same data) 2026-10-06T06:00:00Z/2026-10-06T06:20:00Z",
   "crd" : {
     "total" : 123,
     "apply_per_day_30d" : [ 65000, 70600 ],
@@ -1507,13 +1507,31 @@
       "CP3" : 7
     },
     "apiserver_restart_buckets_7d" : {
+      "unit" : "cp_x_bucket (sum of per-CP 5m buckets with restart increase >= 0.5); NOT unique time buckets",
       "CP1" : 9,
       "CP2" : 8,
       "CP3" : 8,
-      "total" : 25,
-      "inside_lc_window" : 14,
-      "unit_note" : "counted from restart buckets (25) that fall in any leader-change match window (end-15m..end+10m); differs from class A (22) which counts leader-change buckets having a restart in end-5m..end+15m",
-      "outside_lc_window" : 11
+      "total_cp_x_bucket" : 25,
+      "unique_time_buckets" : 23,
+      "multi_cp_buckets" : [ {
+        "bucket_end_utc" : "2026-10-01T07:55:00Z",
+        "cps" : [ "CP1", "CP2", "CP3" ]
+      } ],
+      "episodes_merged_consecutive_buckets" : 20,
+      "episodes_spanning_2_buckets" : [ "2026-10-01T05:15/05:20 (CP1,CP2)", "2026-10-02T07:45/07:50 (CP1,CP2)", "2026-10-04T11:00/11:05 (CP1,CP3)" ],
+      "inside_lc_window" : {
+        "cp_x_bucket" : 13,
+        "unique_time_buckets" : 11,
+        "episodes" : 9
+      },
+      "outside_lc_window" : {
+        "cp_x_bucket" : 12,
+        "unique_time_buckets" : 12,
+        "episodes" : 11
+      },
+      "lc_window_definition" : "restart bucket end t is inside if any leader-change bucket end e satisfies e-15m <= t <= e+10m (closed interval)",
+      "rev1_rev2_note" : "rev1/rev2 reported 14 inside / 11 outside as 'buckets'; those were cp_x_bucket counts; the 1-count difference comes from window edge treatment (rev1 edge rule not reproducible from stored aggregates); rev3 uses the closed interval above; corrected in rev3 (2026-10-06, same 05:19Z data, no new queries)",
+      "unit_note" : "counted from restart side; differs from class A (22) which counts leader-change buckets (46, time-bucket unit) having a restart in end-5m..end+15m. Denominators differ; do not compare directly"
     },
     "any_cp_memstall" : 42,
     "E_buckets_pgmajfault_max_per_s_range" : [ 29, 80 ],
