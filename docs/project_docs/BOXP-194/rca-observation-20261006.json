@@ -23,7 +23,11 @@
       "pgmajfault_max_per_s" : 53.7,
       "iowait_max_pct" : 11,
       "slow_apply_count" : 529
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-09-29T01:25:00Z",
     "class" : "C",
@@ -48,7 +52,11 @@
       "pgmajfault_max_per_s" : 17.3,
       "iowait_max_pct" : 1,
       "slow_apply_count" : 139
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2" ]
   }, {
     "bucket_end_utc" : "2026-09-29T05:00:00Z",
     "class" : "E",
@@ -73,7 +81,11 @@
       "pgmajfault_max_per_s" : 6.7,
       "iowait_max_pct" : 0,
       "slow_apply_count" : 92
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "E",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-09-29T05:20:00Z",
     "class" : "C",
@@ -98,7 +110,11 @@
       "pgmajfault_max_per_s" : 50.0,
       "iowait_max_pct" : 8,
       "slow_apply_count" : 486
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-09-29T05:25:00Z",
     "class" : "C",
@@ -123,7 +139,11 @@
       "pgmajfault_max_per_s" : 50.0,
       "iowait_max_pct" : 8,
       "slow_apply_count" : 486
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2", "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-09-29T16:35:00Z",
     "class" : "A",
@@ -148,7 +168,11 @@
       "pgmajfault_max_per_s" : 47.0,
       "iowait_max_pct" : 4,
       "slow_apply_count" : 901
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "B",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-09-29T19:00:00Z",
     "class" : "C",
@@ -173,7 +197,11 @@
       "pgmajfault_max_per_s" : 27.1,
       "iowait_max_pct" : 1,
       "slow_apply_count" : 80
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "E",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-09-29T19:20:00Z",
     "class" : "C",
@@ -198,7 +226,11 @@
       "pgmajfault_max_per_s" : 27.1,
       "iowait_max_pct" : 1,
       "slow_apply_count" : 331
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2" ]
   }, {
     "bucket_end_utc" : "2026-09-30T02:00:00Z",
     "class" : "C",
@@ -223,7 +255,11 @@
       "pgmajfault_max_per_s" : 47.1,
       "iowait_max_pct" : 3,
       "slow_apply_count" : 491
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "E",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-09-30T02:10:00Z",
     "class" : "C",
@@ -248,7 +284,11 @@
       "pgmajfault_max_per_s" : 47.1,
       "iowait_max_pct" : 3,
       "slow_apply_count" : 489
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1" ]
   }, {
     "bucket_end_utc" : "2026-09-30T02:30:00Z",
     "class" : "C",
@@ -273,7 +313,11 @@
       "pgmajfault_max_per_s" : 37.1,
       "iowait_max_pct" : 2,
       "slow_apply_count" : 233
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "E",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-09-30T03:00:00Z",
     "class" : "A",
@@ -298,7 +342,11 @@
       "pgmajfault_max_per_s" : 97.4,
       "iowait_max_pct" : 5,
       "slow_apply_count" : 478
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP1" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1" ]
   }, {
     "bucket_end_utc" : "2026-09-30T03:10:00Z",
     "class" : "A",
@@ -323,7 +371,11 @@
       "pgmajfault_max_per_s" : 136.3,
       "iowait_max_pct" : 14,
       "slow_apply_count" : 1580
-    } ]
+    } ],
+    "strict_prior_class" : "D",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-09-30T03:15:00Z",
     "class" : "A",
@@ -348,7 +400,11 @@
       "pgmajfault_max_per_s" : 136.3,
       "iowait_max_pct" : 14,
       "slow_apply_count" : 1833
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP3" ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-09-30T03:20:00Z",
     "class" : "A",
@@ -373,7 +429,11 @@
       "pgmajfault_max_per_s" : 136.3,
       "iowait_max_pct" : 14,
       "slow_apply_count" : 1820
-    } ]
+    } ],
+    "strict_prior_class" : "A",
+    "strict_prior_memory_stall_cps" : [ "CP3" ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-09-30T04:20:00Z",
     "class" : "C",
@@ -398,7 +458,11 @@
       "pgmajfault_max_per_s" : 147.0,
       "iowait_max_pct" : 11,
       "slow_apply_count" : 1603
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-09-30T04:25:00Z",
     "class" : "C",
@@ -423,7 +487,11 @@
       "pgmajfault_max_per_s" : 79.5,
       "iowait_max_pct" : 4,
       "slow_apply_count" : 821
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-01T05:00:00Z",
     "class" : "A",
@@ -448,7 +516,11 @@
       "pgmajfault_max_per_s" : 12.4,
       "iowait_max_pct" : 1,
       "slow_apply_count" : 112
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "E",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-10-01T05:40:00Z",
     "class" : "C",
@@ -473,7 +545,11 @@
       "pgmajfault_max_per_s" : 106.0,
       "iowait_max_pct" : 9,
       "slow_apply_count" : 1992
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-01T06:05:00Z",
     "class" : "A",
@@ -498,7 +574,11 @@
       "pgmajfault_max_per_s" : 250.0,
       "iowait_max_pct" : 58,
       "slow_apply_count" : 1552
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP1", "CP3" ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-01T06:30:00Z",
     "class" : "E",
@@ -523,7 +603,11 @@
       "pgmajfault_max_per_s" : 34.5,
       "iowait_max_pct" : 2,
       "slow_apply_count" : 272
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "E",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-10-01T06:40:00Z",
     "class" : "E",
@@ -548,7 +632,11 @@
       "pgmajfault_max_per_s" : 99.8,
       "iowait_max_pct" : 11,
       "slow_apply_count" : 863
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "E",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-10-01T07:45:00Z",
     "class" : "A",
@@ -573,7 +661,11 @@
       "pgmajfault_max_per_s" : 219.1,
       "iowait_max_pct" : 42,
       "slow_apply_count" : 2097
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2", "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-01T07:50:00Z",
     "class" : "A",
@@ -598,7 +690,11 @@
       "pgmajfault_max_per_s" : 219.1,
       "iowait_max_pct" : 42,
       "slow_apply_count" : 2082
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2", "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-01T07:55:00Z",
     "class" : "A",
@@ -623,7 +719,11 @@
       "pgmajfault_max_per_s" : 219.1,
       "iowait_max_pct" : 42,
       "slow_apply_count" : 2029
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2" ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2" ]
   }, {
     "bucket_end_utc" : "2026-10-01T22:25:00Z",
     "class" : "A",
@@ -648,7 +748,11 @@
       "pgmajfault_max_per_s" : 81.8,
       "iowait_max_pct" : 7,
       "slow_apply_count" : 818
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-01T22:30:00Z",
     "class" : "A",
@@ -673,7 +777,11 @@
       "pgmajfault_max_per_s" : 81.8,
       "iowait_max_pct" : 7,
       "slow_apply_count" : 814
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP3" ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-02T05:55:00Z",
     "class" : "E",
@@ -698,7 +806,11 @@
       "pgmajfault_max_per_s" : 18.4,
       "iowait_max_pct" : 1,
       "slow_apply_count" : 82
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "E",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-10-02T07:25:00Z",
     "class" : "C",
@@ -723,7 +835,11 @@
       "pgmajfault_max_per_s" : 109.8,
       "iowait_max_pct" : 15,
       "slow_apply_count" : 1071
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1", "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-02T07:30:00Z",
     "class" : "A",
@@ -748,7 +864,11 @@
       "pgmajfault_max_per_s" : 109.8,
       "iowait_max_pct" : 15,
       "slow_apply_count" : 1380
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP1", "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1", "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-02T07:35:00Z",
     "class" : "A",
@@ -773,7 +893,11 @@
       "pgmajfault_max_per_s" : 109.8,
       "iowait_max_pct" : 15,
       "slow_apply_count" : 2104
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP1", "CP2", "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1", "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-02T07:40:00Z",
     "class" : "A",
@@ -798,7 +922,11 @@
       "pgmajfault_max_per_s" : 109.8,
       "iowait_max_pct" : 15,
       "slow_apply_count" : 2171
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP1", "CP2", "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1", "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-02T07:45:00Z",
     "class" : "A",
@@ -823,7 +951,11 @@
       "pgmajfault_max_per_s" : 72.1,
       "iowait_max_pct" : 2,
       "slow_apply_count" : 1434
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP1", "CP2", "CP3" ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1", "CP2", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-02T15:10:00Z",
     "class" : "C",
@@ -848,7 +980,11 @@
       "pgmajfault_max_per_s" : 23.1,
       "iowait_max_pct" : 1,
       "slow_apply_count" : 62
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2" ]
   }, {
     "bucket_end_utc" : "2026-10-03T00:35:00Z",
     "class" : "C",
@@ -873,7 +1009,11 @@
       "pgmajfault_max_per_s" : 77.0,
       "iowait_max_pct" : 10,
       "slow_apply_count" : 568
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1", "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-03T13:30:00Z",
     "class" : "C",
@@ -898,7 +1038,11 @@
       "pgmajfault_max_per_s" : 46.5,
       "iowait_max_pct" : 5,
       "slow_apply_count" : 1200
-    } ]
+    } ],
+    "strict_prior_class" : "D",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "D",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-10-03T13:35:00Z",
     "class" : "A",
@@ -923,7 +1067,11 @@
       "pgmajfault_max_per_s" : 46.5,
       "iowait_max_pct" : 5,
       "slow_apply_count" : 1193
-    } ]
+    } ],
+    "strict_prior_class" : "D",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2" ]
   }, {
     "bucket_end_utc" : "2026-10-03T15:00:00Z",
     "class" : "A",
@@ -948,7 +1096,11 @@
       "pgmajfault_max_per_s" : 59.6,
       "iowait_max_pct" : 2,
       "slow_apply_count" : 470
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "D",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-10-03T15:55:00Z",
     "class" : "C",
@@ -973,7 +1125,11 @@
       "pgmajfault_max_per_s" : 75.4,
       "iowait_max_pct" : 8,
       "slow_apply_count" : 708
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP3" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP3" ]
   }, {
     "bucket_end_utc" : "2026-10-04T00:55:00Z",
     "class" : "C",
@@ -998,7 +1154,11 @@
       "pgmajfault_max_per_s" : 0.1,
       "iowait_max_pct" : 1,
       "slow_apply_count" : 21
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2" ]
   }, {
     "bucket_end_utc" : "2026-10-04T11:00:00Z",
     "class" : "A",
@@ -1023,7 +1183,11 @@
       "pgmajfault_max_per_s" : 59.9,
       "iowait_max_pct" : 8,
       "slow_apply_count" : 1551
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP1" ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1" ]
   }, {
     "bucket_end_utc" : "2026-10-04T11:05:00Z",
     "class" : "A",
@@ -1048,7 +1212,11 @@
       "pgmajfault_max_per_s" : 59.9,
       "iowait_max_pct" : 8,
       "slow_apply_count" : 1547
-    } ]
+    } ],
+    "strict_prior_class" : "B",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1" ]
   }, {
     "bucket_end_utc" : "2026-10-05T00:00:00Z",
     "class" : "C",
@@ -1073,7 +1241,11 @@
       "pgmajfault_max_per_s" : 96.1,
       "iowait_max_pct" : 16,
       "slow_apply_count" : 709
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2" ]
   }, {
     "bucket_end_utc" : "2026-10-06T01:05:00Z",
     "class" : "A",
@@ -1098,7 +1270,11 @@
       "pgmajfault_max_per_s" : 125.0,
       "iowait_max_pct" : 10,
       "slow_apply_count" : 910
-    } ]
+    } ],
+    "strict_prior_class" : "E",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "B",
+    "concurrent_upto_end_memory_stall_cps" : [ ]
   }, {
     "bucket_end_utc" : "2026-10-06T01:10:00Z",
     "class" : "A",
@@ -1123,7 +1299,11 @@
       "pgmajfault_max_per_s" : 125.0,
       "iowait_max_pct" : 10,
       "slow_apply_count" : 956
-    } ]
+    } ],
+    "strict_prior_class" : "B",
+    "strict_prior_memory_stall_cps" : [ ],
+    "concurrent_upto_end_class" : "A",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP1" ]
   }, {
     "bucket_end_utc" : "2026-10-06T04:25:00Z",
     "class" : "C",
@@ -1148,7 +1328,11 @@
       "pgmajfault_max_per_s" : 8.2,
       "iowait_max_pct" : 1,
       "slow_apply_count" : 117
-    } ]
+    } ],
+    "strict_prior_class" : "C",
+    "strict_prior_memory_stall_cps" : [ "CP2" ],
+    "concurrent_upto_end_class" : "C",
+    "concurrent_upto_end_memory_stall_cps" : [ "CP2" ]
   } ],
   "request_mix_7d_top" : {
     "POST events" : 280018,
@@ -1279,9 +1463,10 @@
   },
   "root_cause_confidence" : {
     "memory_pressure_structural" : "high (observed)",
-    "memory_pressure_to_etcd_stall_to_leader_change" : "medium-high (correlational, 42/46, 7-12x enrichment)",
+    "memory_pressure_to_etcd_stall_to_leader_change" : "medium (in-window correlation 42/46; strict-prior precedence 25/46 = 54%, 3-12x enrichment; reverse causality not excluded for the other 21)",
     "apiserver_sigkill_as_necessary_step" : "rejected (24/46 leader changes without restart; 11/25 restarts without leader change)",
-    "trigger_since_0929" : "medium-low"
+    "trigger_since_0929" : "medium-low",
+    "reverse_causality_leader_change_to_memory_pressure" : "not excluded (21/46 show stall only concurrent/after)"
   },
   "scope" : "read-only RCA follow-up; no upgrade, drain, apply, reboot, restore, or manifest change",
   "today_events_utc" : [ {
@@ -1308,7 +1493,7 @@
     "kcm_leader_change" : "04:21:33",
     "controllers_restarted" : [ "kcm CP2", "scheduler CP2", "kube-vip CP3", "longhorn csi x4", "tigera-operator", "tidb-controller-manager" ]
   } ],
-  "observed_utc" : "2026-10-06T04:37:00Z/2026-10-06T05:20:00Z; event-level revision 2026-10-06T05:20:00Z/2026-10-06T05:45:00Z",
+  "observed_utc" : "2026-10-06T04:37:00Z/2026-10-06T05:20:00Z; event-level revision 2026-10-06T05:20:00Z/2026-10-06T05:45:00Z; prior-only re-aggregation (offline, same data) 2026-10-06T05:45:00Z/2026-10-06T06:10:00Z",
   "crd" : {
     "total" : 123,
     "apply_per_day_30d" : [ 65000, 70600 ],
@@ -1388,7 +1573,9 @@
       "D_gap_only" : 0,
       "E_none" : 4
     },
-    "cpu_softirq_share_max" : 0.05
+    "cpu_softirq_share_max" : 0.05,
+    "window_note" : "window is 2026-09-29T00:00Z..2026-10-06T05:15Z = 7d 5h 15m (documented as '7 days' in rev1; corrected in rev2)",
+    "match_window_note" : "end-15m..end+10m includes post-event samples; counts are in-window correlation, not precedence. See leader_change_prior_only_reaggregation."
   },
   "kubelet_journal_since_0929" : {
     "lease_update_failures" : {
@@ -1407,5 +1594,126 @@
       "CP3" : 12
     },
     "evictions" : 0
+  },
+  "leader_change_prior_only_reaggregation" : {
+    "purpose" : "codex-review rev2: exclude reverse causality by matching only samples preceding the leader-change bucket",
+    "data_source" : "same promtool range-query outputs fetched 2026-10-06T05:19Z; no new Prometheus or Kubernetes API queries",
+    "windows" : {
+      "end-15m..end+10m (rev1)" : {
+        "any_cp_memstall" : 42,
+        "any_cp_memstall_pct" : 91,
+        "classes" : {
+          "A" : 22,
+          "B" : 0,
+          "C" : 20,
+          "D" : 0,
+          "E" : 4
+        },
+        "baseline_stall_share_pct" : {
+          "inside" : {
+            "CP1" : 3.4,
+            "CP2" : 8.5,
+            "CP3" : 8.3
+          },
+          "outside" : {
+            "CP1" : 0.5,
+            "CP2" : 0.8,
+            "CP3" : 0.7
+          }
+        },
+        "note" : "restart criterion in rev1 used end-5m..end+15m"
+      },
+      "end-15m..end (concurrent)" : {
+        "any_cp_memstall" : 34,
+        "any_cp_memstall_pct" : 74,
+        "classes" : {
+          "A" : 9,
+          "B" : 2,
+          "C" : 25,
+          "D" : 2,
+          "E" : 8
+        },
+        "baseline_stall_share_pct" : {
+          "inside" : {
+            "CP1" : 3.9,
+            "CP2" : 10.8,
+            "CP3" : 9.8
+          },
+          "outside" : {
+            "CP1" : 0.5,
+            "CP2" : 0.9,
+            "CP3" : 0.8
+          }
+        },
+        "memstall_cp_counts" : {
+          "CP1" : 12,
+          "CP2" : 17,
+          "CP3" : 21
+        }
+      },
+      "end-30m..end-5m (prior)" : {
+        "any_cp_memstall" : 33,
+        "any_cp_memstall_pct" : 72,
+        "classes" : {
+          "A" : 4,
+          "B" : 1,
+          "C" : 29,
+          "D" : 2,
+          "E" : 10
+        },
+        "baseline_stall_share_pct" : {
+          "inside" : {
+            "CP1" : 1.7,
+            "CP2" : 6.8,
+            "CP3" : 9.9
+          },
+          "outside" : {
+            "CP1" : 0.6,
+            "CP2" : 1.0,
+            "CP3" : 0.6
+          }
+        },
+        "memstall_cp_counts" : {
+          "CP1" : 15,
+          "CP2" : 17,
+          "CP3" : 20
+        }
+      },
+      "end-15m..end-5m (strict prior)" : {
+        "any_cp_memstall" : 25,
+        "any_cp_memstall_pct" : 54,
+        "classes" : {
+          "A" : 1,
+          "B" : 2,
+          "C" : 24,
+          "D" : 3,
+          "E" : 16
+        },
+        "baseline_stall_share_pct" : {
+          "inside" : {
+            "CP1" : 2.0,
+            "CP2" : 9.9,
+            "CP3" : 10.6
+          },
+          "outside" : {
+            "CP1" : 0.7,
+            "CP2" : 1.1,
+            "CP3" : 0.9
+          }
+        },
+        "memstall_cp_counts" : {
+          "CP1" : 7,
+          "CP2" : 13,
+          "CP3" : 16
+        },
+        "restart_cp_counts" : {
+          "CP1" : 2,
+          "CP2" : 1,
+          "CP3" : 0
+        },
+        "E_buckets" : [ "2026-09-29T01:05:00Z", "2026-09-29T05:00:00Z", "2026-09-29T16:35:00Z", "2026-09-29T19:00:00Z", "2026-09-30T02:00:00Z", "2026-09-30T02:10:00Z", "2026-09-30T02:30:00Z", "2026-10-01T05:00:00Z", "2026-10-01T06:30:00Z", "2026-10-01T06:40:00Z", "2026-10-01T22:25:00Z", "2026-10-02T05:55:00Z", "2026-10-02T15:10:00Z", "2026-10-03T15:00:00Z", "2026-10-05T00:00:00Z", "2026-10-06T01:05:00Z" ]
+      }
+    },
+    "conclusion" : "memory stall precedes leader change in 25/46 (54%); in remaining 21 it is only concurrent or subsequent, so causal direction is undetermined for those; mechanism confidence lowered to medium"
   }
 }
