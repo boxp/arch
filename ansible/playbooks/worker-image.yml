@@ -58,7 +58,9 @@
 
     - name: Install extra modules for installed generic kernels
       ansible.builtin.apt:
-        name: "{{ worker_generic_kernel_modules.files | map(attribute='path') | map('basename') | map('regex_replace', '^(.*)$', 'linux-modules-extra-\\1') | list }}"
+        name: >-
+          {{ worker_generic_kernel_modules.files | map(attribute='path') | map('basename')
+          | map('regex_replace', '^(.*)$', 'linux-modules-extra-\1') | list }}
         state: present
         update_cache: true
       when:
