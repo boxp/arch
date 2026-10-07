@@ -270,6 +270,8 @@ bb -e '
         (check (re-find #"--halt-after 180" (:run (nth steps i-start))) (str (name job) ": halt-after must be 180s"))
         (check (re-find #"--interval 30" (:run (nth steps i-start))) (str (name job) ": interval must be 30s"))
         (check (re-find #"HALT" (:run (nth steps i-stop))) (str (name job) ": evaluation must check the HALT marker"))
+        (check (re-find #"WATCH_RC" (:run (nth steps i-stop))) (str (name job) ": evaluation must check the watcher exit code"))
+        (check (re-find #"echo \"\$WATCH_RC\" > \"\$READYZ_WATCH_DIR/rc\"" (:run (nth steps i-start))) (str (name job) ": watcher exit code must be recorded"))
         (check (re-find #"exit 2" (:run (nth steps i-stop))) (str (name job) ": evaluation must fail the job on HALT"))
         (check (= (str "readyz-watch-" node) (get-in (nth steps i-upload) [:with :name])) (str (name job) ": artifact name")))))
   (let [steps (get-in jobs [:post-check :steps])
@@ -282,7 +284,8 @@ bb -e '
       (check (= "inputs.readyz_watch" (:if (nth steps i-obs))) "post-check: observation must be gated by inputs.readyz_watch")
       (check (re-find #"--duration" (:run (nth steps i-obs))) "post-check: observation must use --duration")
       (check (not (re-find #"--updating-node" (:run (nth steps i-obs)))) "post-check: observation must not exclude any CP")
-      (check (>= (get-in jobs [:post-check :timeout-minutes]) 75) "post-check: timeout must cover a 60 min observation window")))
+      (check (re-find #"-gt 60" (:run (nth steps i-obs))) "post-check: observation window must be capped at 60 min")
+      (check (>= (get-in jobs [:post-check :timeout-minutes]) 90) "post-check: timeout must cover setup + a 60 min observation window")))
   (doseq [e @errors] (println "workflow check failed:" e))
   (System/exit (if (empty? @errors) 0 1)))
 ' "$WORKFLOW" || fail "workflow structure check failed"

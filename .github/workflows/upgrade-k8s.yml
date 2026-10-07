@@ -33,7 +33,7 @@ on:
         type: boolean
         default: false
       readyz_observe_minutes:
-        description: 'BOXP-213: post-upgrade readyz observation window in minutes (empty = CP/golyat-4 30, worker 15; 0 = skip)'
+        description: 'BOXP-213: post-upgrade readyz observation window in minutes, 0-60 (empty = CP/golyat-4 30, worker 15; 0 = skip)'
         type: string
         default: ''
 
@@ -355,15 +355,22 @@ jobs:
           for CP_NAME in $CONTROL_PLANE_NODES; do
             CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
           done
-          READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
-            --vip "vip=${CLUSTER_VIP}" \
-            "${CP_ARGS[@]}" \
-            --updating-node shanghai-1 \
-            --interval 30 \
-            --halt-after 180 \
-            --stop-file "$READYZ_WATCH_DIR/stop" \
-            --out-dir "$READYZ_WATCH_DIR" \
-            > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null &
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node shanghai-1 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
           echo $! > "$READYZ_WATCH_DIR/pid"
           echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node shanghai-1)"
 
@@ -400,6 +407,7 @@ jobs:
               sleep 1
             done
           fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
           echo "::group::readyz watch log"
           cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
           echo "::endgroup::"
@@ -408,9 +416,19 @@ jobs:
             cat "$READYZ_WATCH_DIR/readyz-summary.json"
             echo "::endgroup::"
           fi
-          if [ -f "$READYZ_WATCH_DIR/HALT" ]; then
-            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT"). API redundancy was lost for >= 3 minutes while upgrading shanghai-1. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading shanghai-1. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
             exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for shanghai-1 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for shanghai-1 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
           fi
           echo "::notice::readyz watch for shanghai-1 finished without HALT"
 
@@ -565,15 +583,22 @@ jobs:
           for CP_NAME in $CONTROL_PLANE_NODES; do
             CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
           done
-          READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
-            --vip "vip=${CLUSTER_VIP}" \
-            "${CP_ARGS[@]}" \
-            --updating-node shanghai-2 \
-            --interval 30 \
-            --halt-after 180 \
-            --stop-file "$READYZ_WATCH_DIR/stop" \
-            --out-dir "$READYZ_WATCH_DIR" \
-            > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null &
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node shanghai-2 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
           echo $! > "$READYZ_WATCH_DIR/pid"
           echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node shanghai-2)"
 
@@ -610,6 +635,7 @@ jobs:
               sleep 1
             done
           fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
           echo "::group::readyz watch log"
           cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
           echo "::endgroup::"
@@ -618,9 +644,19 @@ jobs:
             cat "$READYZ_WATCH_DIR/readyz-summary.json"
             echo "::endgroup::"
           fi
-          if [ -f "$READYZ_WATCH_DIR/HALT" ]; then
-            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT"). API redundancy was lost for >= 3 minutes while upgrading shanghai-2. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading shanghai-2. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
             exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for shanghai-2 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for shanghai-2 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
           fi
           echo "::notice::readyz watch for shanghai-2 finished without HALT"
 
@@ -775,15 +811,22 @@ jobs:
           for CP_NAME in $CONTROL_PLANE_NODES; do
             CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
           done
-          READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
-            --vip "vip=${CLUSTER_VIP}" \
-            "${CP_ARGS[@]}" \
-            --updating-node shanghai-3 \
-            --interval 30 \
-            --halt-after 180 \
-            --stop-file "$READYZ_WATCH_DIR/stop" \
-            --out-dir "$READYZ_WATCH_DIR" \
-            > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null &
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node shanghai-3 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
           echo $! > "$READYZ_WATCH_DIR/pid"
           echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node shanghai-3)"
 
@@ -820,6 +863,7 @@ jobs:
               sleep 1
             done
           fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
           echo "::group::readyz watch log"
           cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
           echo "::endgroup::"
@@ -828,9 +872,19 @@ jobs:
             cat "$READYZ_WATCH_DIR/readyz-summary.json"
             echo "::endgroup::"
           fi
-          if [ -f "$READYZ_WATCH_DIR/HALT" ]; then
-            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT"). API redundancy was lost for >= 3 minutes while upgrading shanghai-3. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading shanghai-3. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
             exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for shanghai-3 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for shanghai-3 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
           fi
           echo "::notice::readyz watch for shanghai-3 finished without HALT"
 
@@ -997,15 +1051,22 @@ jobs:
           for CP_NAME in $CONTROL_PLANE_NODES; do
             CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
           done
-          READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
-            --vip "vip=${CLUSTER_VIP}" \
-            "${CP_ARGS[@]}" \
-            --updating-node golyat-1 \
-            --interval 30 \
-            --halt-after 180 \
-            --stop-file "$READYZ_WATCH_DIR/stop" \
-            --out-dir "$READYZ_WATCH_DIR" \
-            > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null &
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node golyat-1 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
           echo $! > "$READYZ_WATCH_DIR/pid"
           echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node golyat-1)"
 
@@ -1040,6 +1101,7 @@ jobs:
               sleep 1
             done
           fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
           echo "::group::readyz watch log"
           cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
           echo "::endgroup::"
@@ -1048,9 +1110,19 @@ jobs:
             cat "$READYZ_WATCH_DIR/readyz-summary.json"
             echo "::endgroup::"
           fi
-          if [ -f "$READYZ_WATCH_DIR/HALT" ]; then
-            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT"). API redundancy was lost for >= 3 minutes while upgrading golyat-1. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading golyat-1. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
             exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for golyat-1 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for golyat-1 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
           fi
           echo "::notice::readyz watch for golyat-1 finished without HALT"
 
@@ -1217,15 +1289,22 @@ jobs:
           for CP_NAME in $CONTROL_PLANE_NODES; do
             CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
           done
-          READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
-            --vip "vip=${CLUSTER_VIP}" \
-            "${CP_ARGS[@]}" \
-            --updating-node golyat-2 \
-            --interval 30 \
-            --halt-after 180 \
-            --stop-file "$READYZ_WATCH_DIR/stop" \
-            --out-dir "$READYZ_WATCH_DIR" \
-            > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null &
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node golyat-2 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
           echo $! > "$READYZ_WATCH_DIR/pid"
           echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node golyat-2)"
 
@@ -1260,6 +1339,7 @@ jobs:
               sleep 1
             done
           fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
           echo "::group::readyz watch log"
           cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
           echo "::endgroup::"
@@ -1268,9 +1348,19 @@ jobs:
             cat "$READYZ_WATCH_DIR/readyz-summary.json"
             echo "::endgroup::"
           fi
-          if [ -f "$READYZ_WATCH_DIR/HALT" ]; then
-            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT"). API redundancy was lost for >= 3 minutes while upgrading golyat-2. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading golyat-2. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
             exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for golyat-2 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for golyat-2 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
           fi
           echo "::notice::readyz watch for golyat-2 finished without HALT"
 
@@ -1437,15 +1527,22 @@ jobs:
           for CP_NAME in $CONTROL_PLANE_NODES; do
             CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
           done
-          READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
-            --vip "vip=${CLUSTER_VIP}" \
-            "${CP_ARGS[@]}" \
-            --updating-node golyat-3 \
-            --interval 30 \
-            --halt-after 180 \
-            --stop-file "$READYZ_WATCH_DIR/stop" \
-            --out-dir "$READYZ_WATCH_DIR" \
-            > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null &
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node golyat-3 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
           echo $! > "$READYZ_WATCH_DIR/pid"
           echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node golyat-3)"
 
@@ -1480,6 +1577,7 @@ jobs:
               sleep 1
             done
           fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
           echo "::group::readyz watch log"
           cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
           echo "::endgroup::"
@@ -1488,9 +1586,19 @@ jobs:
             cat "$READYZ_WATCH_DIR/readyz-summary.json"
             echo "::endgroup::"
           fi
-          if [ -f "$READYZ_WATCH_DIR/HALT" ]; then
-            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT"). API redundancy was lost for >= 3 minutes while upgrading golyat-3. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading golyat-3. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
             exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for golyat-3 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for golyat-3 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
           fi
           echo "::notice::readyz watch for golyat-3 finished without HALT"
 
@@ -1657,15 +1765,22 @@ jobs:
           for CP_NAME in $CONTROL_PLANE_NODES; do
             CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
           done
-          READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
-            --vip "vip=${CLUSTER_VIP}" \
-            "${CP_ARGS[@]}" \
-            --updating-node golyat-4 \
-            --interval 30 \
-            --halt-after 180 \
-            --stop-file "$READYZ_WATCH_DIR/stop" \
-            --out-dir "$READYZ_WATCH_DIR" \
-            > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null &
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node golyat-4 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
           echo $! > "$READYZ_WATCH_DIR/pid"
           echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node golyat-4)"
 
@@ -1700,6 +1815,7 @@ jobs:
               sleep 1
             done
           fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
           echo "::group::readyz watch log"
           cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
           echo "::endgroup::"
@@ -1708,9 +1824,19 @@ jobs:
             cat "$READYZ_WATCH_DIR/readyz-summary.json"
             echo "::endgroup::"
           fi
-          if [ -f "$READYZ_WATCH_DIR/HALT" ]; then
-            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT"). API redundancy was lost for >= 3 minutes while upgrading golyat-4. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading golyat-4. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
             exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for golyat-4 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for golyat-4 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
           fi
           echo "::notice::readyz watch for golyat-4 finished without HALT"
 
@@ -1734,8 +1860,8 @@ jobs:
     needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3, upgrade-worker-1, upgrade-worker-2, upgrade-worker-3, upgrade-worker-4]
     if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-1.result == 'skipped') && (needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-2.result == 'skipped') && (needs.upgrade-worker-3.result == 'success' || needs.upgrade-worker-3.result == 'skipped') && (needs.upgrade-worker-4.result == 'success' || needs.upgrade-worker-4.result == 'skipped') && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-3.result == 'success' || needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-3.result == 'success' || needs.upgrade-worker-4.result == 'success')
     runs-on: ubuntu-latest
-    # 15 min health check + up to 60 min readyz observation window (readyz_observe_minutes)
-    timeout-minutes: 80
+    # setup + health check (~15 min) + readyz observation window (readyz_observe_minutes, max 60) + upload
+    timeout-minutes: 100
     permissions:
       id-token: write
       contents: read
@@ -1889,8 +2015,8 @@ jobs:
               *) OBSERVE_MINUTES=15 ;;
             esac
           fi
-          if ! [[ "$OBSERVE_MINUTES" =~ ^[0-9]+$ ]]; then
-            echo "::error::readyz_observe_minutes must be a non-negative integer (got '$OBSERVE_MINUTES')"
+          if ! [[ "$OBSERVE_MINUTES" =~ ^[0-9]+$ ]] || [ "$OBSERVE_MINUTES" -gt 60 ]; then
+            echo "::error::readyz_observe_minutes must be an integer between 0 and 60 (got '$OBSERVE_MINUTES'); the job timeout only covers a 60 minute window"
             exit 1
           fi
           if [ "$OBSERVE_MINUTES" -eq 0 ]; then
