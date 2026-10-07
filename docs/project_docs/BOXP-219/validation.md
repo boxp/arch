@@ -49,7 +49,25 @@ collectionを同一の版数として比較しない。
 
 Docker29.8.2 / Linux x86_64 / cgroup v2、privileged、cgroupns=host、
 /sys/fs/cgroupの書込とsystemd runningを隔離probeで確認。
-CIのARM64との一致は未検証。amd64で全4role/6scenarioを実行し、結果を追記する。
+CIのARM64との一致は未検証。binfmt登録のないamd64 workerで全4role/6scenarioを実行し、すべて成功した。
+全scenarioのimageは `geerlingguy/docker-ubuntu2404-ansible:latest`（pre_build_image=true）。
+
+| role | scenario | converge | idempotence | verify |
+| --- | --- | --- | --- | --- |
+| user_management | default | 成功 | 成功 | 成功 |
+| network_configuration | default | 成功 | 成功 | 成功 |
+| kubernetes_components | default | 成功 | 成功 | 成功 |
+| kubernetes_components | journald-disabled | 成功 | 成功 | 成功 |
+| kubernetes_components | journald-purge | 成功 | 成功 | 成功 |
+| kubernetes_upgrade | default | 成功 | 成功 | 成功 |
+
+各roleで `.venv/bin` をPATHに追加して `MOLECULE_DOCKER_PLATFORM=linux/amd64 molecule test --all` を実施し、全role終了0。
+upgrade実行中のコンテナでもPID1=systemd、systemd running、cgroup v2を確認した。
+destroy後、instance/control-plane-testのテストコンテナは残存していない。
+Moleculeのscenario-local requirements.yml/collections.yml欠落警告は既存設定に由来し、
+別途確認した外部Galaxy取得と区別する。side_effect/cleanup playbookのmissing警告も記録されるが、
+上記converge/idempotence/verifyはすべて実行され成功している。
+ログ: run workspaceの `artifacts/molecule/*-rerun.log`、`summary.md`、`rerun-results.txt`、`runtime-container.txt`。
 レビューCLIのuv runが共有venvを再作成した初回実行は無効とし、
 レビュー用venvを隔離してPython3.12で再実行した結果を採用する。
 lock/pyprojectだけの変更では既存CIのrole matrixはskipになる。skipは成功と扱わない。
@@ -90,3 +108,15 @@ GitHub Actionsの変更はない。
 
 codex-review: Codex CLI gpt-5.6-terraによる差分レビューは指摘なし。
 codex-review-file: PR本文のMolecule検証中表現を明確にする指摘を受け、最終結果と未達条件を記載して対応。
+
+## PR CIと引継ぎ
+
+コードcommit `7d1979603` のPR CIでAnsible lint、video-rotator build、gitleaks、全4ノードのcheck-mode planは成功。
+MoleculeのCI jobはskipであり、上記amd64の実行結果が検証証跡となる。
+計画・検証の最終追記は文書のみの追加commit。追加commitのCI結果はPR checksを確認する。
+
+低コストagentにvideo-rotatorの対象lock更新/Node検証およびMolecule実行を委譲し、
+親agentがAnsible依存更新、全advisory範囲照合、Trivy比較、レビュー結果の統合と最終確認を担当した。
+
+未完了: ローカルPython3.10継続要否の確認、PRのレビュー/マージ、マージ後の対象アラート閉鎖確認。
+PR時点では対象3件openを維持しており、完了解消とは扱わない。
