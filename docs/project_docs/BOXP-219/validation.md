@@ -32,7 +32,7 @@ Python3.12.14 / uv0.12.5 / ansible-lint26.8.0 / Molecule26.8.0 / molecule-plugin
 - `uv run --locked --python 3.12 python -m unittest discover -s tests -p 'test_*.py' -v`: 3テスト成功。
 
 変更前mainのlintはworker-image.yml:61の行長166文字について警告1件（終了0）。
-同じ式をfolded scalarへ折り返し、YAML読込後の構造が空白正規化を除いて同一であることも確認。
+folded scalarへ折り返して警告を解消。後述のレビュー再試行では、後方参照を不要にする式へ変更した。
 
 ## Galaxy collection
 
@@ -120,3 +120,23 @@ MoleculeのCI jobはskipであり、上記amd64の実行結果が検証証跡と
 
 未完了: ローカルPython3.10継続要否の確認、PRのレビュー/マージ、マージ後の対象アラート閉鎖確認。
 PR時点では対象3件openを維持しており、完了解消とは扱わない。
+
+## codex-reviewゲート再試行（2026-10-07 UTC）
+
+前回runnerレビューはworker-image.ymlの置換文字列について、\1が制御文字になるとの指摘だった。
+core2.21.5の`DataLoader`と`Templar`で実プレイブックのAPT引数を検証すると、
+現行の単一backslashは期待するパッケージ名を生成し、指摘どおり二重化した場合は
+文字列\1が残って失敗することを確認した。Ansibleのテンプレート処理と素のJinjaの違いに注意が必要。
+
+後方参照を使わず、`regex_replace('^', 'linux-modules-extra-')`で接頭辞を付ける式へ変更した。
+`tests/test_worker_image_packages.py`は実プレイブックを読み、テンプレートとして信頼済みとした上で、
+空・単一・複数のカーネルに対するAPTパッケージ名を検証する。ホスト接続・APT操作は行わない。
+
+- Python3.12.14 / core2.21.5でlocked sync成功、unittest全4テスト成功。
+- `cd ansible && uv run --locked --python 3.12 ansible-lint`: 70ファイル、0 failure/0 warning。
+  repo rootからの初回実行ではansible/.ansible-lintが適用されず既存違反が出たため、
+  指定のansibleディレクトリで設定を適用して再実行した。
+- Trivy内蔵チェックの全体再走査はLOW8/HIGH5の13件で前回と完全一致、新規0件。
+- role・依存lock・Node lockの追加変更なし。前回の全6Molecule/Node検証証跡を維持。
+
+今回の変更に関するlint・レビュー・最終CI結果はPR本文とチケットNotesに記録する。
