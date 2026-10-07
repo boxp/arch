@@ -73,6 +73,8 @@ done
 [[ -n "$OUT_DIR" ]] || { echo "readyz-watch: --out-dir is required" >&2; usage; }
 for v in INTERVAL HALT_AFTER DURATION PORT; do
   [[ "${!v}" =~ ^[0-9]+$ ]] || { echo "readyz-watch: --${v,,} must be a non-negative integer" >&2; usage; }
+  # Force base-10 so a leading zero (e.g. "0180") is not read as octal by $(( )) / [[ -gt ]].
+  printf -v "$v" '%d' "$((10#${!v}))"
 done
 [[ "$DURATION" -gt 0 || -n "$STOP_FILE" ]] || { echo "readyz-watch: --duration or --stop-file is required" >&2; usage; }
 command -v jq >/dev/null 2>&1 || { echo "readyz-watch: jq is required" >&2; exit 64; }

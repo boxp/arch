@@ -221,6 +221,53 @@ for d in all-ok sustained-vip probe-unreachable stop-file; do
   assert_file_not_contains "$TMP/$d/stdout.log" '10\.0\.0\.|192\.168\.|bastion|b0xp\.io|CF-Access'
 done
 
+echo "== case: leading-zero numeric options are decimal, not octal"
+# "0300"/"0180" would make $(( )) / [[ -gt ]] fail with "value too great for base" if read as octal.
+run_watch leading-zero all-ok.schedule --duration 0300 --halt-after 0180 --interval 030 --updating-node shanghai-1
+assert_eq "$RC" 0 "exit code"
+assert_eq "$(summary .verdict)" ok "verdict"
+assert_eq "$(summary .ticks)" 10 "ticks (0300s / 030s)"
+assert_eq "$(summary .duration_seconds)" 300 "duration normalized to decimal"
+assert_eq "$(summary .halt_after_seconds)" 180 "halt_after normalized to decimal"
+assert_eq "$(summary .interval_seconds)" 30 "interval normalized to decimal"
+
+echo "== case: post-check readyz_observe_minutes validation (leading zero, bounds, default)"
+command -v bb >/dev/null 2>&1 || fail "babashka (bb) is required for the workflow structure check"
+# Extract the observation step's input validation (everything before the watcher is invoked) and run it in isolation.
+# shellcheck disable=SC2016 # Clojure source, not shell
+bb -e '
+(require (quote [clj-yaml.core :as yaml]))
+(let [wf (yaml/parse-string (slurp (first *command-line-args*)))
+      steps (get-in wf [:jobs :post-check :steps])
+      step (first (filter #(= (:name %) "Post-upgrade readyz observation") steps))]
+  (print (:run step)))' "$WORKFLOW" | sed '/mkdir -p "\$READYZ_WATCH_DIR"/,$d' >"$TMP/observe-validate.sh"
+grep -q 'OBSERVE_MINUTES' "$TMP/observe-validate.sh" || fail "could not extract readyz_observe_minutes validation from the workflow"
+validate_minutes() {
+  # Prints the normalized OBSERVE_MINUTES on success; exit code reflects the validation result.
+  local minutes="$1" node="$2"
+  OBSERVE_MINUTES="$minutes" TARGET_NODE="$node" bash -c "$(cat "$TMP/observe-validate.sh"); echo \"\$OBSERVE_MINUTES\""
+}
+set +e
+out_08="$(validate_minutes 08 golyat-1 2>/dev/null)"; rc_08=$?
+out_060="$(validate_minutes 060 golyat-1 2>/dev/null)"; rc_060=$?
+validate_minutes 0 golyat-1 >/dev/null 2>&1; rc_0=$?
+validate_minutes 61 golyat-1 >/dev/null 2>&1; rc_61=$?
+validate_minutes 1e2 golyat-1 >/dev/null 2>&1; rc_bad=$?
+out_cp="$(validate_minutes "" shanghai-1 2>/dev/null)"; rc_cp=$?
+out_worker="$(validate_minutes "" golyat-1 2>/dev/null)"; rc_worker=$?
+set -e
+assert_eq "$rc_08" 0 "08 must be accepted"
+assert_eq "$out_08" 8 "08 must be read as decimal 8"
+assert_eq "$rc_060" 0 "060 must be accepted"
+assert_eq "$out_060" 60 "060 must be read as decimal 60 (upper bound)"
+assert_eq "$rc_0" 0 "0 skips observation"
+assert_eq "$rc_61" 1 "61 exceeds the 60 minute cap"
+assert_eq "$rc_bad" 1 "non-integer must be rejected"
+assert_eq "$rc_cp" 0 "default for control plane"
+assert_eq "$out_cp" 30 "control plane default window"
+assert_eq "$rc_worker" 0 "default for worker"
+assert_eq "$out_worker" 15 "worker default window"
+
 echo "== case: usage errors"
 set +e
 "$WATCH" --vip "vip=$VIP_IP" --out-dir "$TMP/usage" --duration 10 >/dev/null 2>&1; rc1=$?

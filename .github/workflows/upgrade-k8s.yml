@@ -2015,7 +2015,13 @@ jobs:
               *) OBSERVE_MINUTES=15 ;;
             esac
           fi
-          if ! [[ "$OBSERVE_MINUTES" =~ ^[0-9]+$ ]] || [ "$OBSERVE_MINUTES" -gt 60 ]; then
+          if ! [[ "$OBSERVE_MINUTES" =~ ^[0-9]+$ ]]; then
+            echo "::error::readyz_observe_minutes must be an integer between 0 and 60 (got '$OBSERVE_MINUTES'); the job timeout only covers a 60 minute window"
+            exit 1
+          fi
+          # Force base-10: a leading zero (e.g. "08") would otherwise be read as octal by $(( )).
+          OBSERVE_MINUTES=$((10#${OBSERVE_MINUTES}))
+          if [ "$OBSERVE_MINUTES" -gt 60 ]; then
             echo "::error::readyz_observe_minutes must be an integer between 0 and 60 (got '$OBSERVE_MINUTES'); the job timeout only covers a 60 minute window"
             exit 1
           fi
