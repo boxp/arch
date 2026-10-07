@@ -192,6 +192,17 @@
       datasourceTemplate: "github-releases",
       extractVersionTemplate: "^v(?<version>.*)$"
     },
+    // trivy (BOXP-217 月次セキュリティ診断用)
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],
+      matchStrings: [
+        "ARG TRIVY_VERSION=(?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "aquasecurity/trivy",
+      datasourceTemplate: "github-releases",
+      extractVersionTemplate: "^v(?<version>.*)$"
+    },
     {
       customType: "regex",
       managerFilePatterns: ["/^docker/codex-workspace/Dockerfile$/"],

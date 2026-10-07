@@ -16,6 +16,7 @@ ARG YAZI_VERSION=26.5.6
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG KUBECTL_VERSION=1.36.3
 ARG KUSTOMIZE_VERSION=5.8.1
+ARG TRIVY_VERSION=0.75.0
 ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -94,6 +95,9 @@ RUN set -eux; \
     download "https://github.com/kubernetes-sigs/kustomize/releases/download/kustomize/v${KUSTOMIZE_VERSION}/kustomize_v${KUSTOMIZE_VERSION}_linux_amd64.tar.gz" "$tmp/kustomize.tar.gz"; \
     tar -xzf "$tmp/kustomize.tar.gz" -C "$tmp"; \
     install -m 0755 "$tmp/kustomize" /usr/local/bin/kustomize; \
+    download "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" "$tmp/trivy.tar.gz"; \
+    tar -xzf "$tmp/trivy.tar.gz" -C "$tmp" trivy; \
+    install -m 0755 "$tmp/trivy" /usr/local/bin/trivy; \
     rm -rf "$tmp"
 
 RUN set -eux; \
@@ -133,6 +137,8 @@ ENV LANG=en_US.UTF-8 \
     PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH=/usr/bin/chromium \
     EDITOR=vim \
     VISUAL=vim \
+    TRIVY_DB_REPOSITORY=ghcr.io/aquasecurity/trivy-db:2 \
+    TRIVY_JAVA_DB_REPOSITORY=ghcr.io/aquasecurity/trivy-java-db:1 \
     PATH=/home/boxp/.local/bin:/home/boxp/go/bin:/usr/local/bin:/usr/bin:/bin
 
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
