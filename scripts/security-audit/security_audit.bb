@@ -188,8 +188,10 @@
   (if tag-prefix
     (let [r (sh-json "gh" "api" (str "repos/" gh "/tags?per_page=100") "--paginate")]
       (when-not (err? r)
+        ;; releases/latest と同様にプレリリース (-rc.1 等のサフィックス付き) は除外し、安定版タグのみ比較する
         (->> r (map :name) (filter #(str/starts-with? % tag-prefix))
-             (keep (fn [t] (when-let [c (version-core (subs t (count tag-prefix)))] [c t])))
+             (keep (fn [t] (when (re-matches #"\d+\.\d+\.\d+" (subs t (count tag-prefix)))
+                             [(version-core (subs t (count tag-prefix))) t])))
              (sort-by first #(version-compare %2 %1)) first second)))
     (let [r (sh-json "gh" "api" (str "repos/" gh "/releases/latest"))]
       (if (err? r) nil (:tag_name r)))))
