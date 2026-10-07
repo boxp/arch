@@ -4,6 +4,7 @@
 ;; 使い方:
 ;;   bb scripts/security-audit/security_audit.bb [--out report.md] [--arch-root PATH]
 ;;        [--skip-github] [--skip-kev] [--kev-file PATH] [--trivy] [--images-out PATH]
+;;        [--repos owner/a,owner/b] [--all-advisories]
 ;;
 ;; 前提: kubectl (read-only), gh (repo:security_events 読み取り可), curl, jq 不要。
 ;; 出力は Markdown。Secret 本文・credential・Node の内部 IP は出力しない。
@@ -183,23 +184,85 @@
   (let [r (sh-json "gh" "api" (str "repos/" repo "/releases/latest"))]
     (if (err? r) nil (:tag_name r))))
 
-(defn gh-advisories [repo]
-  (let [r (sh-json "gh" "api" (str "repos/" repo "/security-advisories?state=published&per_page=100"))]
-    (if (err? r) [] r)))
+(defn gh-advisories
+  "published GHSA の一覧。取得失敗時は {::error ...} をそのまま返す (0件と区別する)。"
+  [repo]
+  (sh-json "gh" "api" (str "repos/" repo "/security-advisories?state=published&per_page=100")))
+
+(def ^:private ver-re "v?(\\d+\\.\\d+(?:\\.\\d+)?)(?:[-+][\\w.]+)?")
+
+(defn- parse-piece
+  "range 文字列の 1 片 (',' / 'and' で分割済み) を制約グループ (OR の 1 要素) のリストにする。"
+  [piece]
+  (let [r (str/trim piece)
+        cmp (re-seq (re-pattern (str "(>=|<=|>|<|=)\\s*" ver-re)) r)
+        span (re-find (re-pattern (str "^" ver-re "\\s*(?:-|through|to)\\s*" ver-re "$")) r)
+        before (re-find (re-pattern (str "(?i)^all versions (?:prior to|until|before)\\s*" ver-re)) r)
+        single (re-find (re-pattern (str "^" ver-re "$")) r)]
+    (cond
+      ;; '>=9.2.0 <9.2.10 >=9.3.0 <9.3.4' のように下限が再登場したら別グループにする
+      (seq cmp) (->> cmp
+                     (map (fn [[_ op v]] [op (version-core v)]))
+                     (reduce (fn [groups [op v :as c]]
+                               (if (and (#{">=" ">" "="} op) (some #(#{">=" ">" "="} (first %)) (peek groups)))
+                                 (conj groups [c])
+                                 (conj (pop groups) (conj (peek groups) c))))
+                             [[]])
+                     (remove empty?))
+      span [[[">=" (version-core (nth span 1))] ["<=" (version-core (nth span 2))]]]
+      before [[["<" (version-core (nth before 1))]]]
+      single [[["=" (version-core (nth single 1))]]]
+      :else nil)))
+
+(defn parse-range
+  "GHSA の vulnerable_version_range (自由記述) を OR グループのリスト [[[op core] ...] ...] に変換する。
+   対応: '>= 1.2.0, < 1.3.0' / '>=9.2.0 <9.2.10 >=9.3.0 <9.3.4' / '3.2.0 through 3.2.11, 3.3.9, and 3.4.1' /
+   'All versions prior to 1.7.14 and 1.8.7' / '< 3.0.0' / 単一版。解釈できない片が 1 つでもあれば nil。"
+  [range-str]
+  (let [r (str/trim (str range-str))
+        ;; ',' と ' and ' で分割。ただし '>= a, < b' のような比較子の列は 1 片として扱う
+        pieces (if (re-find #"(>=|<=|>|<)" r)
+                 [(str/replace r #"\s*,\s*" " ")]
+                 (->> (str/split r #"\s*,\s*|\s+and\s+")
+                      (map #(str/replace % #"^(?i)and\s+" ""))
+                      (remove str/blank?)))
+        parsed (map parse-piece pieces)]
+    (when (and (seq parsed) (every? some? parsed))
+      (vec (apply concat parsed)))))
+
+(defn in-range? [running-core groups]
+  (some (fn [group]
+          (every? (fn [[op v]]
+                    (let [c (version-compare running-core v)]
+                      (case op ">=" (>= c 0) ">" (pos? c) "<=" (<= c 0) "<" (neg? c) "=" (zero? c) false)))
+                  group))
+        groups))
 
 (defn affected?
-  "GHSA の patched_versions / vulnerable_version_range を見て稼働版が未修正か粗く判定する。
-   patched_versions 中の最大 minor 系列と比較できない場合は :unknown。"
+  "稼働版が GHSA の影響を受けるか。
+   - vulnerable_version_range を解釈し、範囲外なら :fixed。
+   - 範囲内なら patched_versions の同系列 (major.minor) パッチ版と比較し、未満なら :affected、以上なら :fixed。
+     同系列のパッチが無く上位系列のパッチもすべて稼働版より古ければ :fixed、patched が無ければ :unknown。
+   - 範囲が解釈できない場合は、patched_versions の最大値より稼働版が新しければ :fixed、それ以外は :unknown。"
   [running-core adv]
-  (let [vulns (:vulnerabilities adv)
-        patched (->> vulns (mapcat #(str/split (str (:patched_versions %)) #"[,\s]+")) (map version-core) (remove nil?))]
-    (cond
-      (nil? running-core) :unknown
-      (empty? patched) :unknown
-      ;; 同じ major.minor 系列のパッチ版があればそれと比較、無ければ最大版と比較
-      :else (let [same (filter #(= (take 2 %) (take 2 running-core)) patched)
-                  target (if (seq same) (apply max-key #(nth % 2) same) (first (sort-by identity #(version-compare %2 %1) patched)))]
-              (if (neg? (version-compare running-core target)) :affected :fixed)))))
+  (if (nil? running-core)
+    :unknown
+    (let [vulns (:vulnerabilities adv)
+          ranges (map #(parse-range (:vulnerable_version_range %)) vulns)
+          patched (->> vulns (mapcat #(str/split (str (:patched_versions %)) #"[,\s]+")) (map version-core) (remove nil?))
+          same-series (filter #(= (take 2 %) (take 2 running-core)) patched)
+          max-patched (when (seq patched) (first (sort-by identity #(version-compare %2 %1) patched)))
+          newer-than-all-patched? (and max-patched (pos? (version-compare running-core max-patched)))
+          patched-verdict (cond
+                            (seq same-series) (if (neg? (version-compare running-core (apply max-key #(nth % 2) same-series))) :affected :fixed)
+                            newer-than-all-patched? :fixed
+                            (seq patched) :affected
+                            :else :unknown)]
+      (cond
+        (and (seq ranges) (every? some? ranges))
+        (if (some #(in-range? running-core %) ranges) patched-verdict :fixed)
+        newer-than-all-patched? :fixed
+        :else :unknown))))
 
 (defn collect-nday [images kev opts]
   (let [kev-idx (kev-index kev)
@@ -207,32 +270,47 @@
                       :let [tags (->> images (filter #(re-find (:match c) (:repo %))) (map #(or (:tag %) "(digest-only)")) distinct sort)]
                       :when (seq tags)]
                   (assoc c :tags tags))
+        worst (fn [verdicts] (cond (some #{:affected} verdicts) :affected (some #{:unknown} verdicts) :unknown :else :fixed))
         rows (for [c running
                    :let [latest (when-not (:skip-github opts) (gh-latest (:gh c)))
-                         advs (if (:skip-github opts) [] (gh-advisories (:gh c)))
-                         running-core (version-core (first (:tags c)))
+                         advs-raw (if (:skip-github opts) [] (gh-advisories (:gh c)))
+                         ghsa-error (when (err? advs-raw) (::error advs-raw))
+                         advs (if ghsa-error [] advs-raw)
+                         cores (map version-core (:tags c))
+                         unparsed (seq (filter #(nil? (version-core %)) (:tags c)))
                          latest-core (version-core latest)
-                         behind (cond (or (nil? running-core) (nil? latest-core)) "?"
-                                      (neg? (version-compare running-core latest-core)) "**behind**"
+                         behind (cond (nil? latest-core) "?"
+                                      (some #(and % (neg? (version-compare % latest-core))) cores) "**behind**"
+                                      unparsed "? (unparsable tag)"
                                       :else "ok")
-                         open (filter #(= :affected (affected? running-core %)) advs)
-                         unknown (filter #(= :unknown (affected? running-core %)) advs)
-                         kev-hits (->> advs (remove #(= :fixed (affected? running-core %))) (keep :cve_id) (filter kev-idx))
+                         ;; 全稼働タグで評価し最悪の結果を採用。解釈不能タグ (latest 等) は unknown 扱い。
+                         verdict (fn [a] (worst (map #(affected? % a) (if unparsed (conj (vec cores) nil) cores))))
+                         open (filter #(= :affected (verdict %)) advs)
+                         unknown (filter #(= :unknown (verdict %)) advs)
+                         kev-hits (->> advs (remove #(= :fixed (verdict %))) (keep :cve_id) (filter kev-idx))
                          kev-vendor (->> (:vulnerabilities kev) (filter #(re-find (:kev-vendor c) (str (:vendorProject %) " " (:product %)))) (map :cveID))]]
-               {:c c :latest latest :behind behind :open open :unknown unknown :kev-hits kev-hits :kev-vendor kev-vendor})
+               {:c c :latest latest :behind behind :open open :unknown unknown :kev-hits kev-hits :kev-vendor kev-vendor :ghsa-error ghsa-error :verdict verdict})
         table (md-table ["component" "running tag(s)" "upstream latest" "status" "GHSA affecting running" "KEV (CVE in GHSA, not fixed for running)" "KEV (vendor/product match)"]
-                        (for [{:keys [c latest behind open kev-hits kev-vendor]} rows]
+                        (for [{:keys [c latest behind open kev-hits kev-vendor ghsa-error]} rows]
                           [(:name c) (str/join ", " (map #(str "`" % "`") (:tags c))) (or latest "?") behind
-                           (if (seq open) (str "**" (count open) "**: " (str/join ", " (map #(or (:cve_id %) (:ghsa_id %)) open))) "0")
+                           (cond ghsa-error "**GHSA fetch failed** (manual check)"
+                                 (:skip-github opts) "skipped"
+                                 (seq open) (str "**" (count open) "**: " (str/join ", " (map #(or (:cve_id %) (:ghsa_id %)) open)))
+                                 :else "0")
                            (if (seq kev-hits) (str "**" (str/join ", " kev-hits) "**") "-")
                            (if (seq kev-vendor) (str/join ", " (take 8 kev-vendor)) "-")]))
-        detail (for [{:keys [c open unknown]} rows :when (or (seq open) (seq unknown))]
+        cutoff (str (.minusDays (java.time.LocalDate/now) 540))
+        recent? (fn [a] (or (:all-advisories opts) (pos? (compare (str (:published_at a)) cutoff))))
+        detail (for [{:keys [c open unknown verdict]} rows :when (or (seq open) (seq unknown))
+                     :let [old-unknown (remove recent? unknown)]]
                  (str "### " (:name c) " (running " (str/join ", " (:tags c)) ")\n\n"
-                      (md-table ["ghsa" "cve" "severity" "published" "patched versions" "judgement" "summary"]
-                                (for [a (concat open unknown)]
+                      (when (seq old-unknown)
+                        (str "- 18 か月より前に公開された判定不能 advisory " (count old-unknown) " 件は省略 (`--all-advisories` で表示)\n\n"))
+                      (md-table ["ghsa" "cve" "severity" "published" "vulnerable range → patched" "judgement" "summary"]
+                                (for [a (concat open (filter recent? unknown))]
                                   [(:ghsa_id a) (or (:cve_id a) "-") (:severity a) (subs (str (:published_at a)) 0 10)
-                                   (str/join "; " (map #(str (:patched_versions %)) (:vulnerabilities a)))
-                                   (name (affected? (version-core (first (:tags c))) a))
+                                   (str/join "; " (map #(str (:vulnerable_version_range %) " → " (:patched_versions %)) (:vulnerabilities a)))
+                                   (name (verdict a))
                                    (str/replace (str (:summary a)) #"\n" " ")]))))]
     (str
      (section "0. n-day / known-vulnerability check (PRIORITY)"
@@ -241,7 +319,7 @@
                      "- CISA KEV feed: **not loaded** (skipped or fetch failed) — KEV 照合は手動で行う\n")
                    (if (:skip-github opts) "- GitHub releases / GHSA: skipped\n" "")
                    "\n" table
-                   (note "判定: KEV 列に CVE があれば無条件 **Critical** (即時起票)。`GHSA affecting running` が 1 以上で severity critical/high なら **High** 以上。`behind` のみは Medium (パッチ追従)。`judgement=unknown` は patched_versions を機械判定できなかったもので、手動確認する。")
+                   (note "判定: KEV 列に CVE があれば無条件 **Critical** (即時起票)。`GHSA affecting running` が 1 以上で severity critical/high なら **High** 以上。`behind` のみは Medium (パッチ追従)。`judgement=unknown` は vulnerable range / patched_versions を機械判定できなかったもの、`GHSA fetch failed` は API 取得失敗 (0件ではない) で、いずれも手動確認する。")
                    "\n" (str/join "\n" detail))))))
 
 ;; -------- workload hardening
@@ -384,6 +462,7 @@
           "--skip-github" (recur (rest a) (assoc m :skip-github true))
           "--skip-kev" (recur (rest a) (assoc m :skip-kev true))
           "--trivy" (recur (rest a) (assoc m :trivy true))
+          "--all-advisories" (recur (rest a) (assoc m :all-advisories true))
           "--help" (do (println (second (str/split (slurp *file*) #";; 使い方:\n|\n;; 前提"))) (System/exit 0))
           (do (binding [*out* *err*] (println "unknown arg" k)) (System/exit 2)))))))
 
@@ -393,12 +472,17 @@
 (defn -main [& args]
   (let [opts (parse-args args)
         arch-root (or (:arch-root opts) (script-arch-root))
-        pods (kubectl-json "get" "pods" "-A")
-        _ (when (err? pods) (binding [*out* *err*] (println "kubectl get pods failed:" (::error pods))) (System/exit 1))
-        svcs (kubectl-json "get" "svc" "-A")
-        nss (kubectl-json "get" "ns")
-        netpols (kubectl-json "get" "networkpolicies" "-A")
-        crbs (kubectl-json "get" "clusterrolebindings")
+        must (fn [what & args]
+               (let [r (apply kubectl-json args)]
+                 (when (err? r)
+                   (binding [*out* *err*] (println "required collection failed:" what (::error r)))
+                   (System/exit 1))
+                 r))
+        pods (must "pods" "get" "pods" "-A")
+        svcs (must "services" "get" "svc" "-A")
+        nss (must "namespaces" "get" "ns")
+        netpols (must "networkpolicies" "get" "networkpolicies" "-A")
+        crbs (must "clusterrolebindings" "get" "clusterrolebindings")
         kev (load-kev opts)
         exposure (collect-exposure pods svcs arch-root)
         [exposure-md exposure-data] exposure

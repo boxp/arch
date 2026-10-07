@@ -1,7 +1,7 @@
 # BOXP-217 初回セキュリティ診断ベースライン（2026-10）
 
 - 実施日: 2026-10-07（codex-workspace、claude-fable）
-- 実行: `bb scripts/security-audit/security_audit.bb --out /tmp/report.md --images-out /tmp/images.txt`（KEV feed 2026-10-04 版、1734 entries）
+- 実行: `bb scripts/security-audit/security_audit.bb --out /tmp/report.md --images-out /tmp/images.txt`（KEV feed 2026-10-04 版、1734 entries）。codex review 指摘（収集失敗の fail-fast、全稼働タグ評価、GHSA 取得失敗の明示、vulnerable range 解釈）を反映した版で再実行し、判定結果は同じ
 - 本書は runbook §3 の線引きに従い、Secret / credential / ノード内部 IP / ECR アカウント ID を含めない。
 
 ## 判定サマリ
@@ -32,7 +32,7 @@
 | Kubernetes Dashboard API | 1.3.0 | chart 7.14.0 | 0 | なし |
 | Kong | 3.6 | 3.9.3 | 0 | なし |
 | TiDB | v7.5.1 | v7.5.8 | 0 | なし |
-| dex | v2.45.1 | v2.45.1 | 0（GHSA-7qjx-gp9h-65qj は patched_versions 無しで `unknown`。token-exchange endpoint の AllowedConnectors 未適用。Argo CD の dex は token-exchange を使わないため影響なしと判断） | なし |
+| dex | v2.45.1 | v2.45.1 | 0（GHSA-7qjx-gp9h-65qj token-exchange endpoint の AllowedConnectors 未適用は patched_versions 無し。Argo CD の dex は token-exchange を使わないため影響なしと判断） | なし |
 | kube-vip | v1.2.4 | v1.2.4 | 0 | なし |
 | kube-apiserver | v1.36.1 | v1.37.1 | 0 | なし |
 | Prometheus | v3.14.0 | v3.15.0 | 0 | なし |
