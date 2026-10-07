@@ -16,7 +16,7 @@
 | Medium | PSA enforce 未設定 namespace: Pod を持つ 27 ns（argocd, monitoring, prod/stage-hitohub, kube-dashboard, longhorn-system, palserver 等）。enforce ありは bastion / calico-* / codex-workspace / tailscale-operator / tigera-operator のみ | Notes 記録。露出 ns（hitohub, argocd, monitoring, kube-dashboard）から `warn`→`enforce baseline` を段階導入する方針を次回診断で再評価 |
 | Medium | kube-apiserver: `--audit-log-path` / `--audit-policy-file` 未設定、`--enable-admission-plugins=NodeRestriction` のみ、`--allow-privileged=true`、`--encryption-provider-config` 未設定 | Notes 記録。BOXP-190（upgrade planning）で kubeadm ClusterConfiguration へ audit 設定を足す検討 |
 | Medium | NetworkPolicy 未適用 namespace: Pod を持つ 27 ns（argocd / monitoring / calico 系以外すべて）。GlobalNetworkPolicy 0 件 | Notes 記録 |
-| Medium | upstream 版遅れ: Longhorn v1.9.1（latest v1.13.0）、Kubernetes Dashboard API 1.3.0（chart 7.14.0）、Kong 3.6（3.9.3）、TiDB v7.5.1（v7.5.8、LTS 系列内）、Loki 3.4.2（v3.7.8）、Kubernetes v1.36.1（v1.37.1）、Grafana 13.2.2（v13.2.3）、Tailscale v1.102.4（v1.102.5）、Prometheus v3.14.0（v3.15.0） | Notes 記録。GHSA で稼働版に未修正の advisory は 0 件。TiDB / Kong はメジャー遅れのため追従方針を BOXP-217 Notes で決める |
+| Medium | upstream 版遅れ: Longhorn v1.9.1（latest v1.13.0）、Kubernetes Dashboard API 1.3.0（api/v1.14.0）、Kong 3.6（3.9.3）、TiDB v7.5.1（v7.5.8、LTS 系列内）、Loki 3.4.2（v3.7.8）、Kubernetes v1.36.1（v1.37.1）、Grafana 13.2.2（v13.2.3）、Tailscale v1.102.4（v1.102.5）、Prometheus v3.14.0（v3.15.0） | Notes 記録。GHSA で稼働版に未修正の advisory は 0 件。TiDB / Kong はメジャー遅れのため追従方針を BOXP-217 Notes で決める |
 | Medium | Argo CD: OutOfSync = arc-controller, descheduler, prometheus-operator, prometheus-operator-crd, reloader。Degraded = hermes-agent。Unknown = tidb-operator。ark-survival-ascended は status 無し | Notes 記録 |
 | Low | digest 未固定 image 91 / 97（ユニーク） | 件数のみ記録 |
 
@@ -29,7 +29,7 @@
 | Longhorn manager | v1.9.1 | v1.13.0 | 0 | なし |
 | cloudflared | 2026.10.0 / latest / 1517-bb29a0e19437 | 2026.10.0 | 0（GHSA 2 件は installer のローカル権限昇格で container には非該当） | なし |
 | Tailscale operator / proxy | v1.102.4 | v1.102.5 | 0 | なし |
-| Kubernetes Dashboard API | 1.3.0 | chart 7.14.0 | 0 | なし |
+| Kubernetes Dashboard API | 1.3.0 | api/v1.14.0 | 0 | なし |
 | Kong | 3.6 | 3.9.3 | 0 | なし |
 | TiDB | v7.5.1 | v7.5.8 | 0 | なし |
 | dex | v2.45.1 | v2.45.1 | 0（GHSA-7qjx-gp9h-65qj token-exchange endpoint の AllowedConnectors 未適用は patched_versions 無し。Argo CD の dex は token-exchange を使わないため影響なしと判断） | なし |

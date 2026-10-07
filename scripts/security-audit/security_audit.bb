@@ -84,7 +84,8 @@
    {:name "cloudflared" :match #"cloudflare/cloudflared" :gh "cloudflare/cloudflared" :kev-vendor #"(?i)cloudflare"}
    {:name "Tailscale operator" :match #"tailscale/k8s-operator" :gh "tailscale/tailscale" :kev-vendor #"(?i)tailscale"}
    {:name "Tailscale proxy" :match #"tailscale/tailscale" :gh "tailscale/tailscale" :kev-vendor #"(?i)tailscale"}
-   {:name "Kubernetes Dashboard API" :match #"kubernetesui/dashboard-api" :gh "kubernetes/dashboard" :kev-vendor #"(?i)kubernetes"}
+   ;; kubernetes/dashboard の Release は Helm chart (kubernetes-dashboard-7.x) なので、api/vX.Y.Z タグで比較する
+   {:name "Kubernetes Dashboard API" :match #"kubernetesui/dashboard-api" :gh "kubernetes/dashboard" :tag-prefix "api/v" :kev-vendor #"(?i)kubernetes"}
    {:name "Kong (dashboard gateway)" :match #"(?:^|/)kong(?::|$)" :gh "Kong/kong" :kev-vendor #"(?i)kong"}
    {:name "TiDB" :match #"pingcap/tidb(?::|$)" :gh "pingcap/tidb" :kev-vendor #"(?i)pingcap|tidb"}
    {:name "dex" :match #"dexidp/dex" :gh "dexidp/dex" :kev-vendor #"(?i)dexidp|\bdex\b"}
@@ -180,9 +181,18 @@
 (defn kev-index [kev]
   (into {} (map (fn [v] [(:cveID v) v]) (:vulnerabilities kev))))
 
-(defn gh-latest [repo]
-  (let [r (sh-json "gh" "api" (str "repos/" repo "/releases/latest"))]
-    (if (err? r) nil (:tag_name r))))
+(defn gh-latest
+  "upstream 最新版タグ。:tag-prefix があるコンポーネント (monorepo で Release がサブコンポーネント版と
+   一致しないもの) は releases/latest ではなく prefix 付きタグの最大版を返す。取得失敗時は nil。"
+  [{:keys [gh tag-prefix]}]
+  (if tag-prefix
+    (let [r (sh-json "gh" "api" (str "repos/" gh "/tags?per_page=100") "--paginate")]
+      (when-not (err? r)
+        (->> r (map :name) (filter #(str/starts-with? % tag-prefix))
+             (keep (fn [t] (when-let [c (version-core (subs t (count tag-prefix)))] [c t])))
+             (sort-by first #(version-compare %2 %1)) first second)))
+    (let [r (sh-json "gh" "api" (str "repos/" gh "/releases/latest"))]
+      (if (err? r) nil (:tag_name r)))))
 
 (defn gh-advisories
   "published GHSA の一覧。取得失敗時は {::error ...} をそのまま返す (0件と区別する)。"
@@ -220,13 +230,21 @@
    'All versions prior to 1.7.14 and 1.8.7' / '< 3.0.0' / 単一版。解釈できない片が 1 つでもあれば nil。"
   [range-str]
   (let [r (str/trim (str range-str))
+        ;; 'All versions prior to 1.7.14 and 1.8.7' は各メンテナンス系列の上限を列挙した表現。
+        ;; 安全側に '< 1.7.14 OR < 1.8.7' (= 最大値未満すべて) と解釈し、系列内のパッチ有無は
+        ;; affected? が patched_versions で判定する。
+        before-many (re-find (re-pattern (str "(?i)^all versions (?:prior to|until|before)\\s+(" ver-re "(?:(?:\\s*,\\s*|\\s+and\\s+|\\s*,\\s*and\\s+)" ver-re ")+)$")) r)
         ;; ',' と ' and ' で分割。ただし '>= a, < b' のような比較子の列は 1 片として扱う
         pieces (if (re-find #"(>=|<=|>|<)" r)
                  [(str/replace r #"\s*,\s*" " ")]
                  (->> (str/split r #"\s*,\s*|\s+and\s+")
                       (map #(str/replace % #"^(?i)and\s+" ""))
                       (remove str/blank?)))
-        parsed (map parse-piece pieces)]
+        parsed (if before-many
+                 [(->> (re-seq (re-pattern ver-re) (second before-many))
+                       (map (fn [[_ v]] [["<" (version-core v)]]))
+                       vec)]
+                 (map parse-piece pieces))]
     (when (and (seq parsed) (every? some? parsed))
       (vec (apply concat parsed)))))
 
@@ -272,7 +290,7 @@
                   (assoc c :tags tags))
         worst (fn [verdicts] (cond (some #{:affected} verdicts) :affected (some #{:unknown} verdicts) :unknown :else :fixed))
         rows (for [c running
-                   :let [latest (when-not (:skip-github opts) (gh-latest (:gh c)))
+                   :let [latest (when-not (:skip-github opts) (gh-latest c))
                          advs-raw (if (:skip-github opts) [] (gh-advisories (:gh c)))
                          ghsa-error (when (err? advs-raw) (::error advs-raw))
                          advs (if ghsa-error [] advs-raw)
