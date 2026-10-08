@@ -303,3 +303,15 @@
           hung task drop-in must set hung_task_panic=1 together with a non-zero kernel.panic,
           otherwise the panic never reboots the board
       when: node_resilience_hung_task_panic | bool
+
+    # Watchdog device check: in Docker the device is absent, so the assert task in
+    # node_resilience.yml is skipped (guarded by ansible_virtualization_type != "docker").
+    # Verify the drop-in was written correctly — the device-existence assertion is not
+    # exercised here because it only runs on real hardware.
+    - name: Confirm watchdog drop-in was written (device-check skip is expected in Docker)
+      ansible.builtin.assert:
+        that:
+          - watchdog_dropin.stat.exists
+        fail_msg: >-
+          watchdog drop-in was not written even though node_resilience_watchdog is true
+      when: node_resilience_watchdog | bool
