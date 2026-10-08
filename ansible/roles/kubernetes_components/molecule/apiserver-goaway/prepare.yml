@@ -1,0 +1,88 @@
+---
+- name: Prepare a control-plane node simulation with a kubeadm-style apiserver manifest
+  hosts: all
+  gather_facts: true
+  tasks:
+    - name: Update package cache
+      ansible.builtin.package:
+        update_cache: true
+      become: true
+
+    - name: Install required packages for the simulation
+      ansible.builtin.package:
+        name:
+          - systemd
+          - dbus
+          - init
+          - iproute2
+          - kmod
+          - procps
+          - curl
+          - gnupg
+          - ca-certificates
+        state: present
+      become: true
+
+    - name: Create kernel modules directory
+      ansible.builtin.file:
+        path: /lib/modules
+        state: directory
+        mode: '0755'
+      become: true
+
+    - name: Create mock kernel modules for testing
+      ansible.builtin.shell: |
+        set -o pipefail
+        mkdir -p /lib/modules/$(uname -r)
+        touch /lib/modules/$(uname -r)/modules.dep
+        touch /lib/modules/$(uname -r)/modules.symbols
+      become: true
+      changed_when: false
+      failed_when: false
+
+    - name: Mock modprobe for container environment
+      ansible.builtin.copy:
+        dest: /usr/local/bin/modprobe
+        content: |
+          #!/bin/bash
+          echo "Mock modprobe: $*"
+          exit 0
+        mode: '0755'
+      become: true
+
+    - name: Create the static pod directory
+      ansible.builtin.file:
+        path: /etc/kubernetes/manifests
+        state: directory
+        mode: '0755'
+      become: true
+
+    # kubeadm が生成する kube-apiserver.yaml の抜粋。--secure-port 行の字下げ (4 スペース) と
+    # 既存フラグが残ることを検証するため、authorization-mode を含めておく。
+    - name: Write a kubeadm-style kube-apiserver static pod manifest without the goaway flag
+      ansible.builtin.copy:
+        dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+        mode: '0600'
+        content: |
+          apiVersion: v1
+          kind: Pod
+          metadata:
+            labels:
+              component: kube-apiserver
+              tier: control-plane
+            name: kube-apiserver
+            namespace: kube-system
+          spec:
+            containers:
+            - command:
+              - kube-apiserver
+              - --advertise-address=192.168.10.102
+              - --allow-privileged=true
+              - --authorization-mode=Node,RBAC
+              - --secure-port=6443
+              - --service-cluster-ip-range=10.96.0.0/12
+              image: registry.k8s.io/kube-apiserver:v1.36.1
+              name: kube-apiserver
+            hostNetwork: true
+            priorityClassName: system-node-critical
+      become: true

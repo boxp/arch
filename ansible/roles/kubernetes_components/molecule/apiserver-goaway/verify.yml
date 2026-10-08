@@ -1,0 +1,78 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    # converge.yml と揃える (verify は別 play で role defaults を見ない)。
+    apiserver_goaway_chance: "0.001"
+  tasks:
+    - name: Read the kube-apiserver manifest
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/manifests/kube-apiserver.yaml
+      register: apiserver_manifest_content
+      become: true
+
+    - name: Decode the manifest
+      ansible.builtin.set_fact:
+        apiserver_manifest_text: "{{ apiserver_manifest_content.content | b64decode }}"
+        apiserver_manifest_lines: "{{ (apiserver_manifest_content.content | b64decode).split('\n') }}"
+
+    - name: Assert the goaway flag was added exactly once with the declared value
+      ansible.builtin.assert:
+        that:
+          - apiserver_manifest_lines | select('match', '^\s*- --goaway-chance=') | list | length == 1
+          - ("- --goaway-chance=" ~ apiserver_goaway_chance) in apiserver_manifest_text
+        fail_msg: "--goaway-chance is missing, duplicated, or has an unexpected value"
+
+    # idempotence (molecule の 2 回目の converge) で重複追加されないことは上の「exactly once」が担う。
+    - name: Assert the flag follows --secure-port with the same indentation
+      ansible.builtin.assert:
+        that:
+          - "'    - --secure-port=6443\n    - --goaway-chance=' in apiserver_manifest_text"
+        fail_msg: "--goaway-chance was not inserted right after --secure-port with matching indentation"
+
+    - name: Assert the pre-existing flags survived
+      ansible.builtin.assert:
+        that:
+          - "'- --authorization-mode=Node,RBAC' in apiserver_manifest_text"
+          - "'- --advertise-address=192.168.10.102' in apiserver_manifest_text"
+        fail_msg: "existing kube-apiserver flags were altered"
+
+    - name: Assert the manifest is still a valid Pod document
+      ansible.builtin.assert:
+        that:
+          - (apiserver_manifest_text | from_yaml).kind == 'Pod'
+          - ((apiserver_manifest_text | from_yaml).spec.containers[0].command | select('match', '^--goaway-chance=') | list | length) == 1
+        fail_msg: "the edited manifest no longer parses as a Pod with a single --goaway-chance arg"
+
+    - name: Check the pristine backup
+      ansible.builtin.stat:
+        path: /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig
+      register: apiserver_backup
+      become: true
+
+    - name: Read the pristine backup
+      ansible.builtin.slurp:
+        src: /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig
+      register: apiserver_backup_content
+      become: true
+
+    - name: Assert the backup exists outside the static pod directory and predates the edit
+      ansible.builtin.assert:
+        that:
+          - apiserver_backup.stat.exists
+          - apiserver_backup.stat.mode == '0600'
+          - "'--goaway-chance' not in (apiserver_backup_content.content | b64decode)"
+        fail_msg: "the pristine kube-apiserver backup is missing or already contains the flag"
+
+    - name: Find stray files inside the static pod directory
+      ansible.builtin.find:
+        paths: /etc/kubernetes/manifests
+        file_type: file
+      register: static_pod_files
+
+    - name: Assert no backup was left inside the static pod directory
+      ansible.builtin.assert:
+        that:
+          - static_pod_files.files | map(attribute='path') | list == ['/etc/kubernetes/manifests/kube-apiserver.yaml']
+        fail_msg: "unexpected files in /etc/kubernetes/manifests (kubelet would load them as static pods)"
