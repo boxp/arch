@@ -167,6 +167,20 @@
         loop_var: reject_case
         label: "{{ reject_case.value }}"
 
+    # 新規 control plane 構築では kubeadm-config.yaml.j2 が値をそのまま書き出すため、
+    # 検証 (apiserver_goaway_validate.yml) が kubeadm.yml より前に include されている順序を固定する。
+    - name: Read the role task order
+      ansible.builtin.set_fact:
+        role_main_tasks: "{{ lookup('file', playbook_dir ~ '/../../tasks/main.yml') | regex_findall('include_tasks:\\s*(\\S+)') }}"
+
+    - name: Assert the goaway validation runs before the kubeadm config is rendered
+      ansible.builtin.assert:
+        that:
+          - "'apiserver_goaway_validate.yml' in role_main_tasks"
+          - role_main_tasks.index('apiserver_goaway_validate.yml') < role_main_tasks.index('kubeadm.yml')
+          - role_main_tasks.index('kubeadm.yml') < role_main_tasks.index('apiserver_goaway.yml')
+        fail_msg: "tasks/main.yml must include apiserver_goaway_validate.yml before kubeadm.yml: {{ role_main_tasks }}"
+
     # ---- 非標準マニフェストの正規化 (codex-review 4 回目 P2 対応) ----
     # フラグの有無を部分文字列で判定していると、コメントやアノテーションに "--goaway-chance" が
     # あるだけで command へ追加されず、重複行があれば重複のまま残る。行単位判定で

@@ -22,29 +22,11 @@
 # apiserver は quorum を持たないが、3 台同時に再起動すると API が止まる。
 # 直列化の本体は playbooks/control-plane.yml の serial: 1 で、本ファイルの throttle: 1 は補助。
 
-# Ansible の float フィルタは数値でない文字列 ("invalid" 等) を 0.0 にするため、範囲チェックだけでは
-# 不正値がマニフェストへそのまま書かれ kube-apiserver が crash-loop する。元の値が 10 進の有限数
-# (例: "0", "0.001") であることを先に検証する。指数表記や nan/inf は意図的に拒否する。
-- name: Validate the goaway chance is a plain decimal number
-  ansible.builtin.assert:
-    that:
-      - apiserver_goaway_chance | string is match('^[0-9]+(\\.[0-9]+)?$')
-    fail_msg: >-
-      apiserver_goaway_chance must be a plain decimal number such as "0" or "0.001"
-      (it is written verbatim into the kube-apiserver static pod manifest). Got: {{ apiserver_goaway_chance }}
-  when:
-    - apiserver_goaway_chance_enabled | bool
-
-- name: Validate the goaway chance is within the range kube-apiserver accepts
-  ansible.builtin.assert:
-    that:
-      - apiserver_goaway_chance | float >= 0
-      - apiserver_goaway_chance | float <= 0.02
-    fail_msg: >-
-      apiserver_goaway_chance must be between 0 and 0.02 (kube-apiserver rejects anything else
-      and the static pod would crash-loop). Got: {{ apiserver_goaway_chance }}
-  when:
-    - apiserver_goaway_chance_enabled | bool
+# 値の検証は apiserver_goaway_validate.yml に分離し、tasks/main.yml では kubeadm.yml
+# (kubeadm-config.yaml.j2 の書き出し) より前にも include する。ここでの include は
+# tasks_from でこのファイルだけを呼んだ場合にも検証を通すため。
+- name: Validate the goaway chance before touching any manifest
+  ansible.builtin.include_tasks: apiserver_goaway_validate.yml
 
 - name: Check if the kube-apiserver manifest exists
   ansible.builtin.stat:

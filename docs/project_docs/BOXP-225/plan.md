@@ -62,6 +62,12 @@ kube-apiserver の `--goaway-chance=0.001`（上流推奨開始値、上限 0.02
   (c) initContainer / sidecar の command に `--secure-port` / `--goaway-chance=0.009` がある、のそれぞれで kube-apiserver の command だけが
   1 行に正規化され、他コンテナの command と周辺行が不変で、2 回目が no-op になることを検証
 
+- 値検証を `tasks/apiserver_goaway_validate.yml` に分離し、`tasks/main.yml` で `kubeadm.yml`（`kubeadm-config.yaml.j2` の書き出し）より前に
+  include する（`apiserver_goaway.yml` も同じファイルを include するので `tasks_from` 単独実行でも検証される）。従来は検証が
+  `apiserver_goaway.yml` にしか無く、新規 control plane 構築（`kubeadm init --config`）では不正値が先にテンプレートへ書き出されて
+  init 失敗 / crash-loop になり得た（自己確認 codex review の P2 対応）。molecule verify に `tasks/main.yml` の include 順
+  （validate < kubeadm < apiserver_goaway）を固定する assert を追加
+
 ## 安全条件
 
 - 既定 false なので、この PR の merge で本番に変化はない（apply-ansible.yml は既存タスクの no-op 再実行）。
