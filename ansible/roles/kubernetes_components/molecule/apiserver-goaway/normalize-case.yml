@@ -38,7 +38,9 @@
   ansible.builtin.assert:
     that:
       # kube-apiserver コンテナの command に限って数える (sidecar 側の同名フラグは数えない)
-      - (normalize_case_apiserver_command | select('match', '^--goaway-chance=') | list) == ['--goaway-chance=' ~ apiserver_goaway_chance]
+      # "=" 形式も分離形式 ("--goaway-chance" + 値) も残らず、宣言値 1 つだけになる
+      - (normalize_case_apiserver_command | select('match', '^--goaway-chance') | list) == ['--goaway-chance=' ~ apiserver_goaway_chance]
+      - normalize_case.stale_values | default([]) | intersect(normalize_case_apiserver_command) | length == 0
       - "('    - --secure-port=6443\n    - --goaway-chance=' ~ apiserver_goaway_chance ~ '\n') in normalize_case_text"
       - apiserver_manifest_edited | bool
     fail_msg: "{{ normalize_case.name }}: the flag was not normalized to a single command line: {{ normalize_case_text }}"

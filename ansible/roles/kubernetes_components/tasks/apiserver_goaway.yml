@@ -120,9 +120,29 @@
   when:
     - apiserver_goaway_applicable | bool
 
-# 望ましい command = 既存の --goaway-chance= 要素をすべて除き、--secure-port= 直後 (無ければ末尾) に
-# 宣言値を 1 つ入れたもの。既存要素の順序はそのまま。重複・値違い・空白違いはここで 1 つに正規化される。
+# 望ましい command = 既存の goaway 指定をすべて除き、--secure-port= 直後 (無ければ末尾) に宣言値を
+# 1 つ入れたもの。既存要素の順序はそのまま。除く対象は "--goaway-chance=VALUE" 形式と、pflag が受け付ける
+# 分離形式 "--goaway-chance" + 次要素 "VALUE" の両方 (後者を残すと後続の古い値が新しい指定を上書きする)。
+# 重複・値違い・空白違い・形式違いはここで 1 つに正規化される。
 # (ansible-lint の jinja[invalid] は mock 変数を文字列として評価するための偽陽性。実行時は list)
+- name: Strip every existing goaway chance flag from the kube-apiserver command
+  ansible.builtin.set_fact:
+    apiserver_goaway_command_base: >-
+      {%- set ns = namespace(out=[], skip_value=false) -%}
+      {%- for arg in apiserver_goaway_command -%}
+        {%- if ns.skip_value -%}
+          {%- set ns.skip_value = false -%}
+        {%- elif arg == '--goaway-chance' -%}
+          {%- set ns.skip_value = true -%}
+        {%- elif arg is match('^--goaway-chance=') -%}
+        {%- else -%}
+          {%- set ns.out = ns.out + [arg] -%}
+        {%- endif -%}
+      {%- endfor -%}
+      {{ ns.out }}
+  when:
+    - apiserver_goaway_applicable | bool
+
 - name: Build the desired kube-apiserver command with a single goaway chance flag  # noqa: jinja[invalid]
   ansible.builtin.set_fact:
     apiserver_goaway_command_desired: >-
@@ -135,7 +155,6 @@
       }}
   vars:
     apiserver_goaway_flag: "--goaway-chance={{ apiserver_goaway_chance }}"
-    apiserver_goaway_command_base: "{{ apiserver_goaway_command | reject('match', '^--goaway-chance=') | list }}"
     apiserver_goaway_secure_port: "{{ apiserver_goaway_command_base | select('match', '^--secure-port=') | list }}"
   when:
     - apiserver_goaway_applicable | bool
@@ -182,7 +201,7 @@
 - name: Assert the kube-apiserver command carries exactly one goaway chance flag and other containers are untouched
   ansible.builtin.assert:
     that:
-      - (apiserver_goaway_command_after | select('match', '^--goaway-chance=') | list) == ['--goaway-chance=' ~ apiserver_goaway_chance]
+      - (apiserver_goaway_command_after | select('match', '^--goaway-chance') | list) == ['--goaway-chance=' ~ apiserver_goaway_chance]
       - apiserver_goaway_command_after == apiserver_goaway_command_desired
       - (apiserver_goaway_manifest_after.spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | list)
         == (apiserver_goaway_manifest.spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | list)

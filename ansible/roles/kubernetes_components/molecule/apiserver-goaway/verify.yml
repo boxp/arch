@@ -185,7 +185,7 @@
     # フラグの有無を部分文字列で判定していると、コメントやアノテーションに "--goaway-chance" が
     # あるだけで command へ追加されず、重複行があれば重複のまま残る。行単位判定で
     # (a) コメント/アノテーション混入でも command に 1 行追加される
-    # (b) 重複行 (値違い・"-" 後の空白違い) が 1 行に正規化される
+    # (b) 重複 (値違い・"-" 後の空白違い・分離形式 "--goaway-chance" + 値) が 1 つに正規化される
     # (c) 先行する initContainer / sidecar の command に "kube-apiserver" / --secure-port / --goaway-chance が
     #     あっても、name: kube-apiserver コンテナの command だけが編集され他コンテナは不変
     # ことと、いずれも 2 回目が no-op になることを確認する。
@@ -222,6 +222,8 @@
               priorityClassName: system-node-critical
         - name: duplicated-flag-lines
           keep: "- --service-cluster-ip-range=10.96.0.0/12"
+          # 分離形式の古い値が command に残っていないことも確認する
+          stale_values: ["0.004"]
           manifest: |
             apiVersion: v1
             kind: Pod
@@ -243,6 +245,8 @@
                 - --goaway-chance=0.003
                 - --service-cluster-ip-range=10.96.0.0/12
                 - --goaway-chance=0.001
+                - --goaway-chance
+                - "0.004"
                 image: registry.k8s.io/kube-apiserver:v1.36.1
                 name: kube-apiserver
               hostNetwork: true
