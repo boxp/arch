@@ -179,6 +179,9 @@
 # ConfigMap にも保存しないと次回アップグレードでフラグが消える。
 # ⚠️ ローカルのテンプレートを upload-config に渡してはいけない (control_plane_metrics.yml 参照)。
 #    必ず「稼働中の ClusterConfiguration を読み、必要なキーだけ足して」書き戻す。
+# ゲートは admin.conf の有無だけにする (docker / chroot の除外条件を付けない)。
+# molecule の apiserver-goaway シナリオは admin.conf と kubectl / kubeadm をモックしてこの経路を通し、
+# 既存 apiServer.extraArgs の保持・goaway-chance の追加・2 回目 no-op を CI で検証する。
 - name: Check whether this node has an initialized control plane (goaway)
   ansible.builtin.stat:
     path: /etc/kubernetes/admin.conf
@@ -187,8 +190,6 @@
   run_once: true
   when:
     - apiserver_goaway_applicable | bool
-    - ansible_virtualization_type | default('') != "docker"
-    - chroot_build is not defined or not chroot_build
 
 - name: Read the live kubeadm ClusterConfiguration (goaway)
   ansible.builtin.command:

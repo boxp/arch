@@ -76,3 +76,75 @@
         that:
           - static_pod_files.files | map(attribute='path') | list == ['/etc/kubernetes/manifests/kube-apiserver.yaml']
         fail_msg: "unexpected files in /etc/kubernetes/manifests (kubelet would load them as static pods)"
+
+    # ---- kube-system/kubeadm-config への保存経路 (mock kubectl / kubeadm 経由) ----
+    - name: Read the ClusterConfiguration held by the mock kubeadm store
+      ansible.builtin.slurp:
+        src: /var/lib/molecule-kubeadm/ClusterConfiguration.yaml
+      register: cc_store_content
+      become: true
+
+    - name: Read the upload-config log left by the mock kubeadm
+      ansible.builtin.slurp:
+        src: /var/lib/molecule-kubeadm/upload-config.log
+      register: cc_upload_log
+      become: true
+
+    - name: Parse the stored ClusterConfiguration
+      ansible.builtin.set_fact:
+        cc_stored: "{{ cc_store_content.content | b64decode | from_yaml }}"
+        cc_upload_lines: "{{ (cc_upload_log.content | b64decode).splitlines() }}"
+
+    - name: Assert goaway-chance was appended to apiServer.extraArgs exactly once, keeping existing args
+      ansible.builtin.assert:
+        that:
+          - cc_stored.apiServer.extraArgs | map(attribute='name') | list == ['authorization-mode', 'goaway-chance']
+          - (cc_stored.apiServer.extraArgs | selectattr('name', 'equalto', 'authorization-mode') | map(attribute='value') | list) == ['Node,RBAC']
+          - (cc_stored.apiServer.extraArgs | selectattr('name', 'equalto', 'goaway-chance') | map(attribute='value') | list) == [apiserver_goaway_chance]
+        fail_msg: "apiServer.extraArgs in the uploaded ClusterConfiguration is wrong: {{ cc_stored.apiServer.extraArgs | default('missing') }}"
+
+    - name: Assert the rest of the ClusterConfiguration survived the merge untouched
+      ansible.builtin.assert:
+        that:
+          - cc_stored.kind == 'ClusterConfiguration'
+          - cc_stored.apiVersion == 'kubeadm.k8s.io/v1beta4'
+          - cc_stored.kubernetesVersion == 'v1.36.1'
+          - cc_stored.controlPlaneEndpoint == '192.168.10.100:6443'
+          - cc_stored.apiServer.certSANs == ['192.168.10.100', 'k8s.example.internal']
+          - "cc_stored.controllerManager.extraArgs == [{'name': 'bind-address', 'value': '0.0.0.0'}]"
+          - cc_stored.etcd.local.dataDir == '/var/lib/etcd'
+          - "cc_stored.etcd.local.extraArgs == [{'name': 'listen-metrics-urls', 'value': 'http://0.0.0.0:2381'}]"
+          - cc_stored.networking.podSubnet == '10.244.0.0/16'
+          - cc_stored.networking.serviceSubnet == '10.96.0.0/12'
+          - cc_stored.certificatesDir == '/etc/kubernetes/pki'
+          - cc_stored.imageRepository == 'registry.k8s.io'
+        fail_msg: "keys other than apiServer.extraArgs changed in the uploaded ClusterConfiguration"
+
+    # molecule test は converge → idempotence (2 回目の converge) → verify の順なので、
+    # ここで upload が 1 回だけなら「2 回目は live と一致して書き戻さない」ことが確認できる。
+    - name: Assert upload-config ran exactly once across converge and idempotence
+      ansible.builtin.assert:
+        that:
+          - cc_upload_lines | length == 1
+          - cc_upload_lines[0] is match('^upload-config /etc/kubernetes/kubeadm-clusterconfig-goaway-merged\.yaml ')
+        fail_msg: "expected exactly one upload-config call, got: {{ cc_upload_lines }}"
+
+    - name: Check the merged ClusterConfiguration file handed to kubeadm
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubeadm-clusterconfig-goaway-merged.yaml
+      register: cc_merged_file
+      become: true
+
+    - name: Read the merged ClusterConfiguration file handed to kubeadm
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/kubeadm-clusterconfig-goaway-merged.yaml
+      register: cc_merged_content
+      become: true
+
+    - name: Assert the merged file is root-only and matches what was uploaded
+      ansible.builtin.assert:
+        that:
+          - cc_merged_file.stat.exists
+          - cc_merged_file.stat.mode == '0600'
+          - (cc_merged_content.content | b64decode | from_yaml) == cc_stored
+        fail_msg: "the merged ClusterConfiguration file is missing, too permissive, or differs from the uploaded one"

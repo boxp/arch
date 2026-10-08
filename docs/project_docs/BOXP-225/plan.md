@@ -40,7 +40,11 @@ kube-apiserver の `--goaway-chance=0.001`（上流推奨開始値、上限 0.02
 - `roles/kubernetes_components/templates/kubeadm-config.yaml.j2`: 有効時に `apiServer.extraArgs` へ同じ値を宣言（新規クラスタ / `--config` 利用時も宣言と実機が一致する。codex-review P2 指摘対応）
 - `playbooks/control-plane.yml`: 有効化行をコメントで用意（**有効化しない**）
 - `roles/kubernetes_components/molecule/apiserver-goaway/`（新規）: kubeadm 形式の模擬マニフェストに対して
-  追加・冪等性・字下げ・既存フラグ保持・Pod として parse 可能・原本退避・静的 Pod ディレクトリに余計なファイルなしを検証
+  追加・冪等性・字下げ・既存フラグ保持・Pod として parse 可能・原本退避・静的 Pod ディレクトリに余計なファイルなしを検証。
+  さらに admin.conf（ダミー）・ClusterConfiguration ストア・mock `kubectl` / `kubeadm` を prepare で用意し、
+  kubeadm-config ConfigMap への保存経路（稼働中の値を読み、既存 `apiServer.extraArgs` を保持したまま `goaway-chance` を 1 件追加、
+  他セクション不変、converge + idempotence で upload-config が 1 回だけ、merged ファイルが 0600 で upload 内容と一致）も
+  CI で検証する（codex-review 2 回目 P2 指摘対応。実機側は admin.conf の有無だけをゲートにし挙動不変）
 
 ## 安全条件
 
