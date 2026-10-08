@@ -50,6 +50,14 @@ kube-apiserver の `--goaway-chance=0.001`（上流推奨開始値、上限 0.02
   kube-apiserver が crash-loop し得た（codex-review 3 回目 P2 指摘対応）。molecule verify に `reject-case.yml` を追加し、
   `invalid` / `1e-3` / `nan` / `-0.001`（形式）と `0.5`（範囲）が期待メッセージで止まり、converge 済みマニフェストが変わらないことを検証
 
+- `tasks/apiserver_goaway.yml` のフラグ有無判定: マニフェスト全体の部分文字列検索 (`"--goaway-chance" in manifest`) をやめ、
+  command 要素の行 (`^[ \t]*-[ \t]+--goaway-chance=`) を `regex_findall(multiline=True)` で数える。0 行なら `--secure-port` 直後に追加、
+  1 行なら値と `-` 後の空白をその行で正規化、2 行以上なら全行を削除して 1 行追加し直す。編集後に再読込し「宣言値の行がちょうど 1 行」を
+  assert する（`--secure-port` 行が無く追加できない場合も kubelet 再起動前に停止）。部分文字列判定だとコメント/アノテーションに同じ文字列が
+  あるだけで未適用のまま、重複行は重複のまま残っていた（codex-review 4 回目 P2 指摘対応）。molecule verify に `normalize-case.yml` を追加し、
+  (a) コメント + アノテーション混入 (b) 値違い・空白違いの重複 3 行、のそれぞれで command の行が 1 行に正規化され、周辺行が保持され、
+  2 回目が no-op になることを検証
+
 ## 安全条件
 
 - 既定 false なので、この PR の merge で本番に変化はない（apply-ansible.yml は既存タスクの no-op 再実行）。

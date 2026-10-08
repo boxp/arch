@@ -1,7 +1,9 @@
 ---
 - name: Verify
   hosts: all
-  gather_facts: false
+  # normalize-case.yml は role のタスクでマニフェストを実際に書き換えるため、
+  # docker 環境での PID 待ち除外 (ansible_virtualization_type) に facts が要る。
+  gather_facts: true
   vars:
     # converge.yml と揃える (verify は別 play で role defaults を見ない)。
     apiserver_goaway_chance: "0.001"
@@ -164,3 +166,70 @@
       loop_control:
         loop_var: reject_case
         label: "{{ reject_case.value }}"
+
+    # ---- 非標準マニフェストの正規化 (codex-review 4 回目 P2 対応) ----
+    # フラグの有無を部分文字列で判定していると、コメントやアノテーションに "--goaway-chance" が
+    # あるだけで command へ追加されず、重複行があれば重複のまま残る。行単位判定で
+    # (a) コメント/アノテーション混入でも command に 1 行追加される
+    # (b) 重複行 (値違い・"-" 後の空白違い) が 1 行に正規化される
+    # ことと、どちらも 2 回目が no-op になることを確認する。
+    - name: Verify non-standard manifests are normalized to a single command flag line
+      ansible.builtin.include_tasks: normalize-case.yml
+      loop:
+        - name: comment-and-annotation-mention
+          keep: "# note: --goaway-chance=0.009 is managed by ansible"
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              annotations:
+                example.invalid/note: "--goaway-chance=0.009 is managed by ansible"
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              containers:
+              - command:
+                - kube-apiserver
+                # note: --goaway-chance=0.009 is managed by ansible
+                - --advertise-address=192.168.10.102
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --service-cluster-ip-range=10.96.0.0/12
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+        - name: duplicated-flag-lines
+          keep: "- --service-cluster-ip-range=10.96.0.0/12"
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              containers:
+              - command:
+                - kube-apiserver
+                - --advertise-address=192.168.10.102
+                -   --goaway-chance=0.002
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --goaway-chance=0.003
+                - --service-cluster-ip-range=10.96.0.0/12
+                - --goaway-chance=0.001
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+      loop_control:
+        loop_var: normalize_case
+        label: "{{ normalize_case.name }}"

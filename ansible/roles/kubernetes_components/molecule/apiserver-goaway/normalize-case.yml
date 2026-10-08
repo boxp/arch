@@ -1,0 +1,80 @@
+---
+# verify.yml から 1 ケースずつ呼ばれる。非標準状態のマニフェスト (コメント混入・重複行) に対して
+# role を有効化し、command にフラグ行が宣言値でちょうど 1 行になることを確認する (codex-review P2)。
+# 各ケースは converge 済みのマニフェストを退避し、終わったら元に戻す。
+- name: "Save the converged manifest ({{ normalize_case.name }})"
+  ansible.builtin.copy:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+    dest: /var/tmp/kube-apiserver.yaml.converged
+    remote_src: true
+    mode: '0600'
+  become: true
+
+- name: "Write the non-standard manifest ({{ normalize_case.name }})"
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    mode: '0600'
+    content: "{{ normalize_case.manifest }}"
+  become: true
+
+- name: "Run the goaway tasks against it ({{ normalize_case.name }})"
+  ansible.builtin.include_role:
+    name: ../../../../kubernetes_components
+    tasks_from: apiserver_goaway.yml
+  vars:
+    apiserver_goaway_chance_enabled: true
+
+- name: "Read the manifest after the run ({{ normalize_case.name }})"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: normalize_case_manifest
+  become: true
+
+- name: "Decode the manifest ({{ normalize_case.name }})"
+  ansible.builtin.set_fact:
+    normalize_case_text: "{{ normalize_case_manifest.content | b64decode }}"
+
+- name: "Assert the command carries the flag exactly once with the declared value ({{ normalize_case.name }})"
+  ansible.builtin.assert:
+    that:
+      - normalize_case_text | regex_findall('^[ \\t]*-[ \\t]+--goaway-chance=.*$', multiline=True) | length == 1
+      - "('    - --secure-port=6443\n    - --goaway-chance=' ~ apiserver_goaway_chance ~ '\n') in normalize_case_text"
+      - ((normalize_case_text | from_yaml).spec.containers[0].command | select('match', '^--goaway-chance=') | list) == ['--goaway-chance=' ~ apiserver_goaway_chance]
+      - apiserver_manifest_edited | bool
+    fail_msg: "{{ normalize_case.name }}: the flag was not normalized to a single command line: {{ normalize_case_text }}"
+
+- name: "Assert the surrounding content survived ({{ normalize_case.name }})"
+  ansible.builtin.assert:
+    that:
+      - normalize_case.keep in normalize_case_text
+      - "'- --authorization-mode=Node,RBAC' in normalize_case_text"
+      - (normalize_case_text | from_yaml).kind == 'Pod'
+    fail_msg: "{{ normalize_case.name }}: unrelated content was altered: {{ normalize_case_text }}"
+
+- name: "Run the goaway tasks a second time ({{ normalize_case.name }})"
+  ansible.builtin.include_role:
+    name: ../../../../kubernetes_components
+    tasks_from: apiserver_goaway.yml
+  vars:
+    apiserver_goaway_chance_enabled: true
+
+- name: "Read the manifest after the second run ({{ normalize_case.name }})"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: normalize_case_manifest_again
+  become: true
+
+- name: "Assert the second run is a no-op ({{ normalize_case.name }})"
+  ansible.builtin.assert:
+    that:
+      - not (apiserver_manifest_edited | bool)
+      - (normalize_case_manifest_again.content | b64decode) == normalize_case_text
+    fail_msg: "{{ normalize_case.name }}: the second run changed the manifest again"
+
+- name: "Restore the converged manifest ({{ normalize_case.name }})"
+  ansible.builtin.copy:
+    src: /var/tmp/kube-apiserver.yaml.converged
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    remote_src: true
+    mode: '0600'
+  become: true
