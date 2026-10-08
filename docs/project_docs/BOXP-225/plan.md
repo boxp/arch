@@ -45,6 +45,10 @@ kube-apiserver の `--goaway-chance=0.001`（上流推奨開始値、上限 0.02
   kubeadm-config ConfigMap への保存経路（稼働中の値を読み、既存 `apiServer.extraArgs` を保持したまま `goaway-chance` を 1 件追加、
   他セクション不変、converge + idempotence で upload-config が 1 回だけ、merged ファイルが 0600 で upload 内容と一致）も
   CI で検証する（codex-review 2 回目 P2 指摘対応。実機側は admin.conf の有無だけをゲートにし挙動不変）
+- `tasks/apiserver_goaway.yml` の入力検証: 範囲チェック（0〜0.02）の前に、値が 10 進の有限数（`^[0-9]+(\.[0-9]+)?$`）であることを
+  assert する。Ansible の `float` フィルタは `"invalid"` を 0.0 にするため範囲チェックをすり抜け、文字列がそのままマニフェストへ書かれて
+  kube-apiserver が crash-loop し得た（codex-review 3 回目 P2 指摘対応）。molecule verify に `reject-case.yml` を追加し、
+  `invalid` / `1e-3` / `nan` / `-0.001`（形式）と `0.5`（範囲）が期待メッセージで止まり、converge 済みマニフェストが変わらないことを検証
 
 ## 安全条件
 
@@ -57,6 +61,7 @@ kube-apiserver の `--goaway-chance=0.001`（上流推奨開始値、上限 0.02
 ## 検証
 
 - `ansible-lint`（production profile）: Passed
+- 入力検証の単体確認（localhost、include_role tasks_from）: `0` / `0.001` / `0.02` / `0.0010` 受理、`invalid` / `1e-3` / `nan` / `inf` / `-0.001` は形式で拒否、`0.5` は範囲で拒否
 - ClusterConfiguration merge を live の ConfigMap 内容に対してオフラインで再現し、`apiServer.extraArgs` 以外のキーが
   不変で、2 回目は no-op になることを確認
 - `molecule test -s apiserver-goaway`（amd64 ローカル、CI は arm64 で `molecule test --all`）

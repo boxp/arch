@@ -148,3 +148,19 @@
           - cc_merged_file.stat.mode == '0600'
           - (cc_merged_content.content | b64decode | from_yaml) == cc_stored
         fail_msg: "the merged ClusterConfiguration file is missing, too permissive, or differs from the uploaded one"
+
+    # ---- 不正値の拒否 (codex-review 3 回目 P2 対応) ----
+    # Ansible の float フィルタは "invalid" を 0.0 にするため、範囲チェックだけだと不正な文字列が
+    # そのままマニフェストに書かれ kube-apiserver が crash-loop する。数値形式チェックで止まること、
+    # 範囲外も止まること、どちらも converge 済みのマニフェストを変えないことを確認する。
+    - name: Verify invalid goaway values are rejected before touching the manifest
+      ansible.builtin.include_tasks: reject-case.yml
+      loop:
+        - { value: "invalid", expect: "must be a plain decimal number" }
+        - { value: "1e-3", expect: "must be a plain decimal number" }
+        - { value: "nan", expect: "must be a plain decimal number" }
+        - { value: "0.5", expect: "must be between 0 and 0.02" }
+        - { value: "-0.001", expect: "must be a plain decimal number" }
+      loop_control:
+        loop_var: reject_case
+        label: "{{ reject_case.value }}"
