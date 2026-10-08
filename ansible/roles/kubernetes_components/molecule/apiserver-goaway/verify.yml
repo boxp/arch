@@ -172,7 +172,9 @@
     # あるだけで command へ追加されず、重複行があれば重複のまま残る。行単位判定で
     # (a) コメント/アノテーション混入でも command に 1 行追加される
     # (b) 重複行 (値違い・"-" 後の空白違い) が 1 行に正規化される
-    # ことと、どちらも 2 回目が no-op になることを確認する。
+    # (c) initContainer / sidecar の command に --secure-port / --goaway-chance があっても、
+    #     kube-apiserver コンテナの command だけが編集され sidecar 側は不変
+    # ことと、いずれも 2 回目が no-op になることを確認する。
     - name: Verify non-standard manifests are normalized to a single command flag line
       ansible.builtin.include_tasks: normalize-case.yml
       loop:
@@ -226,6 +228,42 @@
                 - --goaway-chance=0.003
                 - --service-cluster-ip-range=10.96.0.0/12
                 - --goaway-chance=0.001
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+        - name: sidecar-and-init-container-mention
+          keep: "- --goaway-chance=0.009"
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              initContainers:
+              - command:
+                - /bin/wait-for-etcd
+                - --secure-port=6443
+                image: registry.example.invalid/wait-for-etcd:1
+                name: wait-for-etcd
+              containers:
+              - command:
+                - /bin/audit-shipper
+                - --secure-port=6443
+                - --goaway-chance=0.009
+                image: registry.example.invalid/audit-shipper:1
+                name: audit-shipper
+              - command:
+                - kube-apiserver
+                - --advertise-address=192.168.10.102
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --service-cluster-ip-range=10.96.0.0/12
                 image: registry.k8s.io/kube-apiserver:v1.36.1
                 name: kube-apiserver
               hostNetwork: true

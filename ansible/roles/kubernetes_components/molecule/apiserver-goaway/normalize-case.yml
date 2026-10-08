@@ -37,11 +37,17 @@
 - name: "Assert the command carries the flag exactly once with the declared value ({{ normalize_case.name }})"
   ansible.builtin.assert:
     that:
-      - normalize_case_text | regex_findall('^[ \\t]*-[ \\t]+--goaway-chance=.*$', multiline=True) | length == 1
+      # kube-apiserver コンテナの command に限って数える (sidecar 側の同名フラグは数えない)
+      - (normalize_case_apiserver_command | select('match', '^--goaway-chance=') | list) == ['--goaway-chance=' ~ apiserver_goaway_chance]
       - "('    - --secure-port=6443\n    - --goaway-chance=' ~ apiserver_goaway_chance ~ '\n') in normalize_case_text"
-      - ((normalize_case_text | from_yaml).spec.containers[0].command | select('match', '^--goaway-chance=') | list) == ['--goaway-chance=' ~ apiserver_goaway_chance]
       - apiserver_manifest_edited | bool
     fail_msg: "{{ normalize_case.name }}: the flag was not normalized to a single command line: {{ normalize_case_text }}"
+  vars:
+    normalize_case_apiserver_command: >-
+      {{
+        (normalize_case_text | from_yaml).spec.containers
+        | selectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | first
+      }}
 
 - name: "Assert the surrounding content survived ({{ normalize_case.name }})"
   ansible.builtin.assert:
@@ -49,6 +55,11 @@
       - normalize_case.keep in normalize_case_text
       - "'- --authorization-mode=Node,RBAC' in normalize_case_text"
       - (normalize_case_text | from_yaml).kind == 'Pod'
+      # kube-apiserver 以外のコンテナの command は一切変わらない
+      - ((normalize_case_text | from_yaml).spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | list)
+        == ((normalize_case.manifest | from_yaml).spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | list)
+      - ((normalize_case_text | from_yaml).spec.initContainers | default([]) | map(attribute='command') | list)
+        == ((normalize_case.manifest | from_yaml).spec.initContainers | default([]) | map(attribute='command') | list)
     fail_msg: "{{ normalize_case.name }}: unrelated content was altered: {{ normalize_case_text }}"
 
 - name: "Run the goaway tasks a second time ({{ normalize_case.name }})"

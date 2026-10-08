@@ -104,50 +104,79 @@
   when:
     - apiserver_goaway_applicable | bool
 
-# フラグの有無は「command 要素の行」(^<indent>- --goaway-chance=) だけで判定する。
-# マニフェスト全体の部分文字列検索だと、コメントやアノテーションに同じ文字列があるだけで
-# 「既存フラグあり」と誤認して command へ追加せず、apiserver に設定が届かない (codex-review P2)。
-- name: Count the goaway flag lines in the kube-apiserver command
+# フラグの有無は YAML として解析した kube-apiserver コンテナ (name: kube-apiserver) の command だけで数える。
+# マニフェスト全体の部分文字列検索だと、コメント・アノテーション・sidecar / initContainer に同じ文字列が
+# あるだけで「既存フラグあり」と誤認して command へ追加せず、apiserver に設定が届かない (codex-review P2)。
+- name: Parse the kube-apiserver manifest and locate the apiserver container command
   ansible.builtin.set_fact:
-    apiserver_goaway_flag_lines: >-
+    apiserver_goaway_command: >-
       {{
-        (apiserver_manifest_raw.content | default('') | b64decode)
-        | regex_findall('^[ \\t]*-[ \\t]+--goaway-chance=.*$', multiline=True)
+        (apiserver_manifest_raw.content | default('') | b64decode | from_yaml).spec.containers | default([])
+        | selectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | first | default([])
       }}
   when:
     - apiserver_goaway_applicable | bool
 
+- name: Assert the manifest has a kube-apiserver container whose command starts with kube-apiserver
+  ansible.builtin.assert:
+    that:
+      - apiserver_goaway_command | length > 0
+      - apiserver_goaway_command[0] == 'kube-apiserver'
+    fail_msg: >-
+      /etc/kubernetes/manifests/kube-apiserver.yaml has no container named kube-apiserver whose
+      command starts with "kube-apiserver"; refusing to edit it. Got: {{ apiserver_goaway_command }}
+  when:
+    - apiserver_goaway_applicable | bool
+
+- name: Count the goaway flag entries in the kube-apiserver command
+  ansible.builtin.set_fact:
+    apiserver_goaway_flag_entries: "{{ apiserver_goaway_command | select('match', '^--goaway-chance=') | list }}"
+  when:
+    - apiserver_goaway_applicable | bool
+
+# テキスト編集は kube-apiserver コンテナの command ブロックだけに限定する:
+#   after  = "- kube-apiserver" 行 (command の先頭要素、kubeadm が必ず出力する)
+#   before = その後に最初に現れる「- や # で始まらない」行 (kubeadm では image: 行) = command リストの終端
+# replace の after/before は DOTALL・非 MULTILINE なので、行頭は "\n" で表す。
+# sidecar / initContainer の command に同名フラグがあっても、この範囲の外なので触らない。
+
 # 既存フラグ行が複数ある (手作業の重複など) 場合は全行を消してから 1 行だけ追加し直す。
 # 値だけ揃えて重複を残すと kube-apiserver は最後の指定を採用するが、宣言と実機の対応が曖昧になる。
-- name: Drop duplicated goaway chance flag lines before re-adding a single one
+- name: Drop duplicated goaway chance flag lines from the kube-apiserver command
   ansible.builtin.replace:
     path: /etc/kubernetes/manifests/kube-apiserver.yaml
-    regexp: '^[ \t]*-[ \t]+--goaway-chance=[^\n]*(?:\n|\Z)'
+    after: '\n[ \t]*- kube-apiserver[ \t]*(?=\n)'
+    before: '\n[ \t]*[^-#\s]'
+    regexp: '\n[ \t]*-[ \t]+--goaway-chance=[^\n]*'
     replace: ''
   become: true
   throttle: 1
   register: apiserver_goaway_deduped
   when:
     - apiserver_goaway_applicable | bool
-    - apiserver_goaway_flag_lines | default([]) | length > 1
+    - apiserver_goaway_flag_entries | default([]) | length > 1
 
 # --secure-port は kubeadm が常に出力する行なので、その字下げを流用して直後に追加する。
-- name: Add the goaway chance flag when it is missing from the command
+- name: Add the goaway chance flag to the kube-apiserver command when it is missing
   ansible.builtin.replace:
     path: /etc/kubernetes/manifests/kube-apiserver.yaml
-    regexp: '^(\s*)(- --secure-port=.*)$'
+    after: '\n[ \t]*- kube-apiserver[ \t]*(?=\n)'
+    before: '\n[ \t]*[^-#\s]'
+    regexp: '^([ \t]*)(- --secure-port=.*)$'
     replace: '\1\2\n\1- --goaway-chance={{ apiserver_goaway_chance }}'
   become: true
   throttle: 1
   register: apiserver_goaway_added
   when:
     - apiserver_goaway_applicable | bool
-    - apiserver_goaway_flag_lines | default([]) | length != 1
+    - apiserver_goaway_flag_entries | default([]) | length != 1
 
-# 1 行だけある場合は値 (と "-" 直後の空白) をその行で正規化する。
+# 1 つだけある場合は値 (と "-" 直後の空白) をその行で正規化する。
 - name: Keep the single existing goaway chance flag line in sync with the declared value
   ansible.builtin.replace:
     path: /etc/kubernetes/manifests/kube-apiserver.yaml
+    after: '\n[ \t]*- kube-apiserver[ \t]*(?=\n)'
+    before: '\n[ \t]*[^-#\s]'
     regexp: '^([ \t]*)-[ \t]+--goaway-chance=.*$'
     replace: '\1- --goaway-chance={{ apiserver_goaway_chance }}'
   become: true
@@ -155,7 +184,7 @@
   register: apiserver_goaway_synced
   when:
     - apiserver_goaway_applicable | bool
-    - apiserver_goaway_flag_lines | default([]) | length == 1
+    - apiserver_goaway_flag_entries | default([]) | length == 1
 
 - name: Note whether the kube-apiserver manifest changed
   ansible.builtin.set_fact:
@@ -166,7 +195,7 @@
         or (apiserver_goaway_synced.changed | default(false))
       }}
 
-# 編集結果を読み直し、command にフラグ行が宣言値でちょうど 1 行あることを確かめる。
+# 編集結果を YAML として読み直し、kube-apiserver コンテナの command にフラグが宣言値でちょうど 1 つあることを確かめる。
 # (--secure-port 行が無い等で追加できなかった場合に、kubelet が再起動する前にここで止める)
 - name: Re-read the kube-apiserver manifest after editing
   ansible.builtin.slurp:
@@ -176,19 +205,19 @@
   when:
     - apiserver_goaway_applicable | bool
 
-- name: Assert the kube-apiserver command carries exactly one goaway chance flag line
+- name: Assert the kube-apiserver command carries exactly one goaway chance flag with the declared value
   ansible.builtin.assert:
     that:
-      - apiserver_goaway_flag_lines_after | length == 1
-      - apiserver_goaway_flag_lines_after[0] | trim == ("- --goaway-chance=" ~ apiserver_goaway_chance)
+      - apiserver_goaway_flag_entries_after == ['--goaway-chance=' ~ apiserver_goaway_chance]
     fail_msg: >-
-      expected exactly one "- --goaway-chance={{ apiserver_goaway_chance }}" line in the kube-apiserver
-      command, found: {{ apiserver_goaway_flag_lines_after }}
+      expected exactly one "--goaway-chance={{ apiserver_goaway_chance }}" entry in the kube-apiserver
+      container command, found: {{ apiserver_goaway_flag_entries_after }}
   vars:
-    apiserver_goaway_flag_lines_after: >-
+    apiserver_goaway_flag_entries_after: >-
       {{
-        (apiserver_manifest_edited_raw.content | default('') | b64decode)
-        | regex_findall('^[ \\t]*-[ \\t]+--goaway-chance=.*$', multiline=True)
+        (apiserver_manifest_edited_raw.content | default('') | b64decode | from_yaml).spec.containers | default([])
+        | selectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | first | default([])
+        | select('match', '^--goaway-chance=') | list
       }}
   when:
     - apiserver_goaway_applicable | bool
