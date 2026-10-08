@@ -13,6 +13,10 @@
 - name: Include kubelet configuration tasks
   ansible.builtin.include_tasks: kubelet.yml
 
+# kubeadm-config.yaml.j2 が apiserver_goaway_chance をそのまま書き出すため、テンプレート生成より前に検証する。
+- name: Validate kube-apiserver goaway settings before rendering the kubeadm config
+  ansible.builtin.include_tasks: apiserver_goaway_validate.yml
+
 - name: Include kubeadm configuration tasks
   ansible.builtin.include_tasks: kubeadm.yml
 
@@ -24,3 +28,6 @@
 
 - name: Include control plane metrics tasks
   ansible.builtin.include_tasks: control_plane_metrics.yml
+
+- name: Include kube-apiserver goaway (HTTP/2 rebalancing) tasks
+  ansible.builtin.include_tasks: apiserver_goaway.yml

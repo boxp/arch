@@ -127,3 +127,19 @@ control_plane_metrics_bind_value: "0.0.0.0"
 #    ずれたまま kubeadm upgrade --config などで流用するとクラスタを壊す。
 kubeadm_service_subnet: "10.96.0.0/12"
 kubeadm_pod_subnet: "192.178.0.0/16"
+
+# kube-apiserver の HTTP/2 接続再分散 (--goaway-chance)。BOXP-225。
+# 3 台の apiserver が同時に再起動すると、in-cluster の watch クライアント (HTTP/2 で 1 本の接続に
+# 数百 watch を多重化) が「最初に戻った apiserver」へ集中し、以後は再起動まで動かない。
+# 実機 (2026-10-08) では long-running request が CP1 1,054 / CP2 81 / CP3 518 と偏り、
+# apiserver RSS が watch 1 本あたり約 0.7MiB 増え、偏った 1 台だけが慢性的なメモリ逼迫
+# (ページキャッシュ圧縮 → etcd bbolt の major fault → eMMC 読み込み) に陥っていた。
+# goaway-chance は要求のうち指定割合に GOAWAY を返し、クライアントを LB (kubernetes Service /
+# kube-proxy) 経由で再接続させて偏りを時間とともにならす、apiserver 組み込みの仕組み。
+# 上流推奨の開始値は 0.001 (1/1000 要求)、上限は 0.02。単一 apiserver や LB なし構成では有効にしない。
+# 🔥 既定は無効。有効化は Decision Packet (Obsidian: Projects/lolice-k8s-1.36-upgrade/research/
+#    boxp-225-cp-memory-watch-skew-20261008) で owner が判断し、playbooks/control-plane.yml 側で
+#    1 行だけ切り替える。本番 main への merge は apply-ansible.yml を起動するため、
+#    有効化 PR の merge = 本番適用 (serial: 1 で 1 台ずつ apiserver が再起動する) になる。
+apiserver_goaway_chance_enabled: false
+apiserver_goaway_chance: "0.001"

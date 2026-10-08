@@ -123,6 +123,10 @@
         # kubeadm 既定の bind-address=127.0.0.1 では scrape できず
         # KubeSchedulerDown / KubeControllerManagerDown が恒常的に firing になる。
         control_plane_metrics_bind_address: true
+        # kube-apiserver --goaway-chance (HTTP/2 watch の再分散、BOXP-225)。
+        # 既定 false。owner が Decision Packet で承認した時点で true に切り替える
+        # (この行の merge = apply-ansible.yml による本番適用で、serial: 1 で apiserver が 1 台ずつ再起動する)。
+        # apiserver_goaway_chance_enabled: true
 
   post_tasks:
     # serial: 1 で次のノードへ進む前に、ハンドラ (Restart crio / Restart kubelet) を
