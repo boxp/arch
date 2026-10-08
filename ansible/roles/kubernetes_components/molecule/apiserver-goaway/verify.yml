@@ -186,14 +186,15 @@
     # あるだけで command へ追加されず、重複行があれば重複のまま残る。行単位判定で
     # (a) コメント/アノテーション混入でも command に 1 行追加される
     # (b) 重複行 (値違い・"-" 後の空白違い) が 1 行に正規化される
-    # (c) initContainer / sidecar の command に --secure-port / --goaway-chance があっても、
-    #     kube-apiserver コンテナの command だけが編集され sidecar 側は不変
+    # (c) 先行する initContainer / sidecar の command に "kube-apiserver" / --secure-port / --goaway-chance が
+    #     あっても、name: kube-apiserver コンテナの command だけが編集され他コンテナは不変
     # ことと、いずれも 2 回目が no-op になることを確認する。
     - name: Verify non-standard manifests are normalized to a single command flag line
       ansible.builtin.include_tasks: normalize-case.yml
       loop:
         - name: comment-and-annotation-mention
-          keep: "# note: --goaway-chance=0.009 is managed by ansible"
+          # コメント行は構造化更新で残らない (kubeadm も書かない)。アノテーションは残る。
+          keep: "example.invalid/note: --goaway-chance=0.009 is managed by ansible"
           manifest: |
             apiVersion: v1
             kind: Pod
@@ -260,8 +261,9 @@
             spec:
               initContainers:
               - command:
-                - /bin/wait-for-etcd
+                - kube-apiserver
                 - --secure-port=6443
+                - --goaway-chance=0.009
                 image: registry.example.invalid/wait-for-etcd:1
                 name: wait-for-etcd
               containers:

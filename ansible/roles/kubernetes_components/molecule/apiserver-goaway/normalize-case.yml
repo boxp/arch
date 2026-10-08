@@ -55,6 +55,7 @@
       - normalize_case.keep in normalize_case_text
       - "'- --authorization-mode=Node,RBAC' in normalize_case_text"
       - (normalize_case_text | from_yaml).kind == 'Pod'
+      - (normalize_case_text | from_yaml).metadata == (normalize_case.manifest | from_yaml).metadata
       # kube-apiserver 以外のコンテナの command は一切変わらない
       - ((normalize_case_text | from_yaml).spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | list)
         == ((normalize_case.manifest | from_yaml).spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | map(attribute='command') | list)

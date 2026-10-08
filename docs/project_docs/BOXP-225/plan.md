@@ -50,18 +50,17 @@ kube-apiserver の `--goaway-chance=0.001`（上流推奨開始値、上限 0.02
   kube-apiserver が crash-loop し得た（codex-review 3 回目 P2 指摘対応）。molecule verify に `reject-case.yml` を追加し、
   `invalid` / `1e-3` / `nan` / `-0.001`（形式）と `0.5`（範囲）が期待メッセージで止まり、converge 済みマニフェストが変わらないことを検証
 
-- `tasks/apiserver_goaway.yml` のフラグ有無判定: マニフェスト全体の部分文字列検索 (`"--goaway-chance" in manifest`) をやめ、
-  YAML として解析した `name: kube-apiserver` コンテナの `command` 内の `--goaway-chance=` 要素だけを数える（コンテナが無い/先頭が
-  `kube-apiserver` でなければ編集せず停止）。テキスト編集は `replace` の `after`（`- kube-apiserver` 行）/ `before`（その後最初の
-  `-`・`#` 以外で始まる行 = kubeadm では `image:`）で kube-apiserver の command ブロックに限定。0 個なら `--secure-port` 直後に追加、
-  1 個なら値と `-` 後の空白をその行で正規化、2 個以上なら全行を削除して 1 行追加し直す。編集後に再解析し「kube-apiserver の command に
-  宣言値の要素がちょうど 1 つ」を assert する（`--secure-port` 行が無く追加できない場合も kubelet 再起動前に停止）。
-  部分文字列判定だとコメント/アノテーション/sidecar に同じ文字列があるだけで未適用のまま、重複行は重複のまま残っていた
-  （codex-review 4 回目 P2 指摘 + 自己確認 codex review の P2「編集対象を kube-apiserver コンテナに限定」対応）。
-  molecule verify に `normalize-case.yml` を追加し、(a) コメント + アノテーション混入 (b) 値違い・空白違いの重複 3 行
-  (c) initContainer / sidecar の command に `--secure-port` / `--goaway-chance=0.009` がある、のそれぞれで kube-apiserver の command だけが
-  1 行に正規化され、他コンテナの command と周辺行が不変で、2 回目が no-op になることを検証
-
+- `tasks/apiserver_goaway.yml` のフラグ判定と編集: マニフェスト全体の部分文字列検索 + 正規表現編集をやめ、YAML として解析した
+  `name: kube-apiserver` コンテナ（ちょうど 1 つ、command 先頭が `kube-apiserver` であることを assert）の `command` に対して
+  「既存の `--goaway-chance=` 要素をすべて除き、`--secure-port=` 直後（無ければ末尾）に宣言値を 1 つ入れた」望ましい command を作り、
+  現状と異なる場合だけその command を差し替えたマニフェスト全体を `to_nice_yaml(indent=2, width=4096)` で書き戻す（構造化更新。
+  kubeadm と同じ整形。手作業コメントは残らないが原本は退避済み）。書き戻し後に再解析し「kube-apiserver の command に宣言値の要素が
+  ちょうど 1 つ」「他のコンテナ / initContainers が不変」を assert する。従来はコメント / アノテーション / sidecar に同じ文字列や
+  `- kube-apiserver` 行があるだけで未適用・編集範囲ずれ・重複残りが起き得た（codex-review 4 回目 P2 指摘 + 自己確認 codex review の
+  P2 2 件「編集対象を kube-apiserver コンテナに限定」対応）。molecule verify に `normalize-case.yml` を追加し、
+  (a) コメント + アノテーション混入 (b) 値違い・空白違いの重複 3 行 (c) 先行する initContainer の command が `kube-apiserver` で始まり
+  `--secure-port` / `--goaway-chance=0.009` を持ち、sidecar も同名フラグを持つ、のそれぞれで kube-apiserver の command だけが 1 つに
+  正規化され、metadata・他コンテナの command が不変で、2 回目が no-op になることを検証
 - 値検証を `tasks/apiserver_goaway_validate.yml` に分離し、`tasks/main.yml` で `kubeadm.yml`（`kubeadm-config.yaml.j2` の書き出し）より前に
   include する（`apiserver_goaway.yml` も同じファイルを include するので `tasks_from` 単独実行でも検証される）。従来は検証が
   `apiserver_goaway.yml` にしか無く、新規 control plane 構築（`kubeadm init --config`）では不正値が先にテンプレートへ書き出されて
