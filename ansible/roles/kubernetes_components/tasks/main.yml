@@ -17,6 +17,10 @@
 - name: Validate kube-apiserver goaway settings before rendering the kubeadm config
   ansible.builtin.include_tasks: apiserver_goaway_validate.yml
 
+# kubeadm-config.yaml.j2 が apiserver_gomemlimit をそのまま extraEnvs へ書き出すため、こちらも前に検証する。
+- name: Validate kube-apiserver GOMEMLIMIT settings before rendering the kubeadm config
+  ansible.builtin.include_tasks: apiserver_gomemlimit_validate.yml
+
 - name: Include kubeadm configuration tasks
   ansible.builtin.include_tasks: kubeadm.yml
 
@@ -31,3 +35,6 @@
 
 - name: Include kube-apiserver goaway (HTTP/2 rebalancing) tasks
   ansible.builtin.include_tasks: apiserver_goaway.yml
+
+- name: Include kube-apiserver GOMEMLIMIT (Go soft memory limit) tasks
+  ansible.builtin.include_tasks: apiserver_gomemlimit.yml

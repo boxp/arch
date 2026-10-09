@@ -128,6 +128,12 @@
         # 本番適用で、serial: 1 で apiserver が shanghai-1 → 2 → 3 の順に 1 台ずつ再起動する。
         # rollback は値を "0" にする (apiserver_goaway_chance: "0")。フラグは残り、同じ経路で戻せる。
         apiserver_goaway_chance_enabled: true
+        # kube-apiserver GOMEMLIMIT=1536MiB (Go ランタイムの soft memory limit、BOXP-225 M1)。
+        # W1 後も 3 台とも apiserver のヒープピーク (live heap の 2 倍、最大 1.8GiB) がページキャッシュを押し出し
+        # etcd の major fault / commit 遅延を起こしていたため、owner の包括承認 (2026-10-09) により有効化。
+        # この行の merge = apply-ansible.yml による本番適用で、serial: 1 で apiserver が 1 台ずつ再起動する。
+        # rollback は値を "off" にする (apiserver_gomemlimit: "off")。env は残り、同じ経路で戻せる。
+        apiserver_gomemlimit_enabled: true
 
   post_tasks:
     # serial: 1 で次のノードへ進む前に、ハンドラ (Restart crio / Restart kubelet) を

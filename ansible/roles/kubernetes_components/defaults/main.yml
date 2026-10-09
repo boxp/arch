@@ -143,3 +143,17 @@ kubeadm_pod_subnet: "192.178.0.0/16"
 #    有効化 PR の merge = 本番適用 (serial: 1 で 1 台ずつ apiserver が再起動する) になる。
 apiserver_goaway_chance_enabled: false
 apiserver_goaway_chance: "0.001"
+
+# kube-apiserver の Go ランタイム soft memory limit (環境変数 GOMEMLIMIT)。BOXP-225 M1。
+# W1 (--goaway-chance) で watch の偏りは均されたが、2026-10-09 の実測では 3 台とも apiserver の
+# Go heap goal が最大 1.8GiB (runtime sys 2.07〜2.38GiB) まで伸び、MemAvailable 10 分最小が
+# 324〜356MiB まで落ちた。既定 GOGC=100 では heap が live heap (7 日最大 977〜1,030MiB) の 2 倍まで
+# 伸びてから GC が走り、そのピークがページキャッシュを押し出して etcd bbolt の major fault を起こす。
+# GOMEMLIMIT は Go ランタイムの soft limit で、limit に近づくと GC を前倒しし、使っていないヒープを OS へ
+# 返す。cgroup memory limit (OOM-kill 経路) ではなく、limit を超えても kill されない (GC CPU は 50% で頭打ち)。
+# 値は live heap 最大 + 非 heap ランタイム (約 1.25GiB) に対して余裕を持たせた 1536MiB。
+# 形式は Go が受け付ける整数 + 単位 (B / KiB / MiB / GiB) か、無効化の "off" (rollback 用)。
+# 🔥 既定は無効。有効化は playbooks/control-plane.yml 側で切り替える。本番 main への merge は
+#    apply-ansible.yml を起動し、serial: 1 で apiserver が 1 台ずつ再起動する。
+apiserver_gomemlimit_enabled: false
+apiserver_gomemlimit: "1536MiB"
