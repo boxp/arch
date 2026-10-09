@@ -203,4 +203,5 @@ role defaults は off のまま）。194 の再開・P2・etcd tuning・swap・�
 - 副作用: この workflow ファイル自体が `on.push.paths` に含まれるため、**merge で Apply Ansible が 1 回走る**（4 ノード直列、ansible/ 不変なので changed は apt cache 程度、apiserver 再起動なし）。その run で本 step が初めて実機で動く。
 - rollback: revert のみ（クラスタ側の状態は変わらない）。
 - codex review 指摘対応: 各 SSH probe を `timeout`（最大 60 秒、かつ残り待機時間を超えない）で上限付きにし、poll の sleep も残り待機時間を超えないようにした（`ConnectTimeout` は接続までしか効かず、remote 側が hang すると待機上限を超えるため）。同じ形の plan 側（`plan-ansible.yml`、P2）にも同じ修正を入れた。
+- codex review 指摘対応（Task Board gate、run `20261009T132051Z-87ec5126`）: 最終 sleep 後（`SECONDS == DEADLINE`）にループ先頭で 1 秒の probe が余分に走り、宣言した最大待機時間を超えていた。ループ先頭で「初回 probe 以外かつ deadline 到達」なら break するようにした（apply / plan 両方、plan 側に `START` を追加）。待機上限 0 でも初回 probe は 1 回走る。mock で wait=5/poll=2 の経過が 5 秒ちょうど（probe 3 回→deadline 時の probe なし）、wait=0 で probe 1 回を確認。
 - 検証: actionlint（Docker `rhysd/actionlint`）両 workflow OK、step script を抜き出して ssh を mock した 6 ケース（worker 素通り / CP 充足 / CP 回復待ち / CP 未回復で warning 続行 / ssh 失敗後回復 / remote hang を timeout で打ち切り）。

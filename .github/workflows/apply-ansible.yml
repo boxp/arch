@@ -136,6 +136,11 @@ jobs:
           DEADLINE=$(( SECONDS + CP_APPLY_HEADROOM_WAIT_SECONDS ))
           LAST_MIB="unknown"
           while :; do
+            # 最終 sleep 後 (SECONDS == DEADLINE) に余分な probe を走らせず、宣言した最大待機時間を超えない
+            # (初回 probe は待機上限が 0 でも 1 回は実行する)
+            if [ "$SECONDS" -gt "$START" ] && [ "$SECONDS" -ge "$DEADLINE" ]; then
+              break
+            fi
             # 各 probe を timeout で上限付きにし、残り待機時間も超えないようにする
             # (ConnectTimeout は接続までしか効かず、remote 側が hang すると待機上限を超えるため)
             PROBE_TIMEOUT=$(( DEADLINE - SECONDS ))
