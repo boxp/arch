@@ -192,3 +192,16 @@ role defaults は off のまま）。194 の再開・P2・etcd tuning・swap・�
 
 - actionlint v1.7.12 OK、headroom step の shell をローカルで ssh を mock して 4 ケース（閾値以上 / 未満 / 読取不能 / worker）確認。
 - 本 PR 自体の plan run（直列）で、各 CP の plan 中の MemAvailable / leader change / major fault を worker-4 の Prometheus 経由で観測する。
+
+## P2b: apply-ansible の control plane memory headroom 待機（2026-10-09、claude-fable run `20261009T114355Z-004a4276`）
+
+- 目的: P2（plan 側、PR #13491）で残した apply 側のガード。CP 上の Ansible 実行が M1 後に残る唯一の観測済み stall 要因（apply 中 08:09 の leader change 1 回、plan 中の CP3 269MiB）であるため、Apply の直前にも MemAvailable の余力を待つ。
+- 変更: `.github/workflows/apply-ansible.yml` のみ。`Verify SSH connectivity` の直後に `Wait for control plane memory headroom` step を追加。
+  - `shanghai-*` のみ対象（`golyat-4` は素通り）。`/proc/meminfo` の MemAvailable を SSH で読み、`CP_APPLY_MIN_MEMAVAILABLE_MIB`（600）未満なら `CP_APPLY_HEADROOM_POLL_SECONDS`（30）ごとに最大 `CP_APPLY_HEADROOM_WAIT_SECONDS`（300）待つ。
+  - **wait 型**: 上限を超えても skip / fail はせず、`::warning::` を出して従来どおり続行する。Apply を途中で止めると部分適用になり、`fail-fast: true` で後続ノードも止まるため。plan 側（skip 型）とはここが違う。
+  - job の `timeout-minutes: 30` に対し最大 5 分の待機（従来の各ノード 10 分程度 + 5 分）。
+- 副作用: この workflow ファイル自体が `on.push.paths` に含まれるため、**merge で Apply Ansible が 1 回走る**（4 ノード直列、ansible/ 不変なので changed は apt cache 程度、apiserver 再起動なし）。その run で本 step が初めて実機で動く。
+- rollback: revert のみ（クラスタ側の状態は変わらない）。
+- codex review 指摘対応: 各 SSH probe を `timeout`（最大 60 秒、かつ残り待機時間を超えない）で上限付きにし、poll の sleep も残り待機時間を超えないようにした（`ConnectTimeout` は接続までしか効かず、remote 側が hang すると待機上限を超えるため）。同じ形の plan 側（`plan-ansible.yml`、P2）にも同じ修正を入れた。
+- codex review 指摘対応（Task Board gate、run `20261009T132051Z-87ec5126`）: 最終 sleep 後（`SECONDS == DEADLINE`）にループ先頭で 1 秒の probe が余分に走り、宣言した最大待機時間を超えていた。ループ先頭で「初回 probe 以外かつ deadline 到達」なら break するようにした（apply / plan 両方、plan 側に `START` を追加）。待機上限 0 でも初回 probe は 1 回走る。mock で wait=5/poll=2 の経過が 5 秒ちょうど（probe 3 回→deadline 時の probe なし）、wait=0 で probe 1 回を確認。
+- 検証: actionlint（Docker `rhysd/actionlint`）両 workflow OK、step script を抜き出して ssh を mock した 6 ケース（worker 素通り / CP 充足 / CP 回復待ち / CP 未回復で warning 続行 / ssh 失敗後回復 / remote hang を timeout で打ち切り）。
