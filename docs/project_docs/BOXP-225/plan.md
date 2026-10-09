@@ -114,3 +114,55 @@ owner 指示（2026-10-08 15:41 UTC、hermes-agent 経由「いや進めてほ�
 - rollback: `apiserver_goaway_chance: "0"` を同じ経路（PR merge → apply）で適用。フラグは残して値 0（無効）にする。
 - 観測: 最後の apiserver 再起動から最低 60 分（過去の 10〜15 分再発周期を超える）、Decision Packet §7 の成立条件で評価し、
   24h 後に 7 日区分表と比較する案を残す。結果は Obsidian `research/boxp-225-cp-memory-watch-skew-20261008/` に保存。
+
+## M1: kube-apiserver `GOMEMLIMIT=1536MiB`（2026-10-09、claude-fable run `20261009T065939Z-1cb11a47`）
+
+owner の包括承認（2026-10-09 06:56 UTC、hermes-agent 経由「承認なしで進めて大丈夫。安定化できるまで試行錯誤」）に基づき、
+W1 の次の対策として M1 を実装し、同じ PR で有効化する（Apply の回数を 1 回に抑え、CP 上の Ansible 負荷を減らすため。
+role defaults は off のまま）。194 の再開・P2・etcd tuning・swap・無関係対象の変更は含めない。
+
+### 根拠（W1 後の live 再観測、03:45〜07:01 UTC、worker-4 の Prometheus 経由、CP への exec なし）
+
+- W1 で watch は CP1 399 / CP2 750 / CP3 607 と均されたが、3 台とも apiserver の Go heap goal（`go_gc_heap_goal_bytes`）が
+  最大 1,826MiB、ランタイム総量（`go_memstats_sys_bytes`）が 2,058〜2,073MiB まで伸び、ノードの MemAvailable 10 分最小が
+  CP1 327 / CP2 324 / CP3 356MiB、ページキャッシュが 267MiB まで縮んだ（05:45 以降は CP2 / CP3 も床割れ）。
+  04:50〜04:52 には CP1 でヒープが 2 分で +740MiB → major fault 216/s → etcd commit p99 1 秒 → leader / VIP 移動（kill なし）。
+- 既定 GOGC=100 では heap goal = live heap × 2。live heap（`go_gc_heap_live_bytes`）の 7 日最大は CP1 977 / CP2 997 / CP3 1,030MiB
+  （p99 926 / 970 / 960）、非 heap ランタイム（sys − heap_sys）最大 190〜217MiB。偏りが無くてもピークは約 2GiB になる。
+- GOMEMLIMIT は Go ランタイムの soft limit。limit に近づくと GC を前倒しし、使っていないヒープを OS へ返す。cgroup memory limit
+  （OOM-kill 経路）ではなく、超えても kill されない（GC CPU は 50% で頭打ち）。kube-apiserver は `debug.SetMemoryLimit` を
+  呼ばないので環境変数がそのまま効き、反映は `go_gc_gomemlimit_bytes` で確認できる（現在 8796093022208 = 無制限）。
+- 値 1536MiB: live 最大 + 非 heap（約 1.25GiB）の 1.23 倍。live が p99 の時に GC 1 サイクルあたりの割当余地は約 360MiB
+  （既定の約 960MiB に対し GC 頻度約 2.7 倍）、GC CPU は現状 0.1〜0.5 core / 4 core なので最悪でも 1 core 程度。
+  ランタイム総量のピークは 2.07〜2.38GiB → 1.5GiB 以下になり、ページキャッシュへ約 500〜800MiB の余地ができる見込み。
+  1792MiB は GC 負荷が軽いが余地が 270〜590MiB にとどまるため、まず 1536MiB で観測し、GC CPU が持続的に 25% を超える /
+  API p99 が悪化するなら 1792MiB へ上げる（同じ経路、apiserver 1 台ずつ再起動）。
+
+### 変更内容
+
+- `roles/kubernetes_components/defaults/main.yml`: `apiserver_gomemlimit_enabled: false`、`apiserver_gomemlimit: "1536MiB"`
+- `roles/kubernetes_components/tasks/apiserver_gomemlimit_validate.yml`（新規）: 形式（整数 + B/KiB/MiB/GiB、または rollback 用の `off`）と
+  範囲（1024〜3072MiB）を assert。小数・指数・単位なし・10 進単位（MB）・大文字 OFF は拒否。`tasks/main.yml` で `kubeadm.yml` より前に include
+- `roles/kubernetes_components/tasks/apiserver_gomemlimit.yml`（新規）: `apiserver_goaway.yml` と同じ構造化更新
+  1. `/etc/kubernetes/manifests/kube-apiserver.yaml` を YAML として解析し、`name: kube-apiserver` コンテナの `env` から既存の GOMEMLIMIT
+     （重複・valueFrom 形式を含む）をすべて除いて宣言値を 1 つ足す。他の env・command・他コンテナ・initContainers・metadata は不変を assert。
+     原本退避（既存の `.orig` があれば保持）、PID 変化 + `/readyz` 200 待ち、check mode では書かずに「変更あり」のみ報告
+  2. `kube-system/kubeadm-config` の ClusterConfiguration（v1beta4）を読み、`apiServer.extraEnvs` に GOMEMLIMIT だけ差し替えて
+     `kubeadm init phase upload-config kubeadm` で書き戻す（次回 `kubeadm upgrade` で消えない）
+- `roles/kubernetes_components/templates/kubeadm-config.yaml.j2`: 有効時に `apiServer.extraEnvs` へ同じ値を宣言（新規クラスタ / `--config` 利用時）
+- `playbooks/control-plane.yml`: `apiserver_gomemlimit_enabled: true`（**この PR で有効化**。merge = apply-ansible.yml による本番適用）
+- `roles/kubernetes_components/molecule/apiserver-gomemlimit/`（新規、prepare は `apiserver-goaway` のものを共用）:
+  env の追加（exactly once）・command / image / metadata 不変・goaway 無効のまま・原本退避・静的 Pod ディレクトリに余計なファイルなし・
+  ClusterConfiguration の `extraEnvs` 追加と `extraArgs` / 他セクション保持・upload-config 1 回・merged ファイル 0600、
+  不正値 7 件の拒否、include 順、正規化 3 ケース（重複 + 他 env 混在 / sidecar + initContainer の同名 env / rollback 値 `off`）、check mode
+
+### 適用・停止・rollback・観測
+
+- 適用: PR merge → apply-ansible.yml が shanghai-1 → 2 → 3（→ golyat-4 は対象外で no-op）の順に 1 台ずつ apiserver を再起動（PID 変化 +
+  readyz 200 + etcd health gate）。直前に G1 / G2 相当（7 Node Ready、etcd leader、apiserver up 3/3、5xx 0、並行 workflow なし）を確認。
+- 停止: readyz が 5 分以内に 200 に戻らない / etcd health gate 不成立で `fail-fast`。観測側で apiserver up ≤ 1、etcd leader なし、
+  5xx > 5% が 5 分継続、GC CPU（`go_cpu_classes_gc_total_cpu_seconds_total`）が 1 台で 2 core 超を 5 分継続なら `gh run cancel`。
+- rollback: `apiserver_gomemlimit: "off"` を同じ経路で apply（env は残り Go ランタイムは limit なし）。または 1792MiB へ緩和。
+- 観測: 最後の再起動から最低 60 分、`go_gc_gomemlimit_bytes` = 1610612736 の反映確認、`go_memstats_sys_bytes` / RSS のピーク、
+  MemAvailable 10 分最小（目標: 3 台とも 450MiB 超を 60 分継続）、node / etcd major fault、etcd commit p99、GC CPU、API p99、5xx、
+  leader change、Node Ready。結果は Obsidian `research/boxp-225-cp-memory-watch-skew-20261008/m1-gomemlimit-20261009.md` に保存。
