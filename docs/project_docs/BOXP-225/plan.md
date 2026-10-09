@@ -166,3 +166,29 @@ role defaults は off のまま）。194 の再開・P2・etcd tuning・swap・�
 - 観測: 最後の再起動から最低 60 分、`go_gc_gomemlimit_bytes` = 1610612736 の反映確認、`go_memstats_sys_bytes` / RSS のピーク、
   MemAvailable 10 分最小（目標: 3 台とも 450MiB 超を 60 分継続）、node / etcd major fault、etcd commit p99、GC CPU、API p99、5xx、
   leader change、Node Ready。結果は Obsidian `research/boxp-225-cp-memory-watch-skew-20261008/m1-gomemlimit-20261009.md` に保存。
+
+## P2: plan-ansible の control plane 保護（2026-10-09、claude-fable run `20261009T101832Z-1ec49c48`）
+
+### 根拠
+
+- post-merge-observation-20261008 §3: 10-08 の apiserver kill 3 回中 2 回、etcd leader change 7 回中 6 回は、その CP で Ansible plan / apply を実行中に発生（plan 中の sysctl template タスクが通常 6〜10 秒のところ 100〜122 秒 stall）。
+- W1 / M1 の適用時も、apply 開始直後の leader change（03:27、03:38、08:09）と plan 終了直後の CP3 MemAvailable 269MiB（07:45）が観測された。
+- M1 後は MemAvailable の床が 900MiB 超になったが、plan は 3 台の CP で同時に走るため、逼迫時に 3 台同時 stall → etcd quorum 喪失のリスクが残る。
+
+### 変更内容（`.github/workflows/plan-ansible.yml` のみ。`ansible/**` は触らないので merge で Apply Ansible は走らない）
+
+- (a) `strategy.max-parallel: 1`: plan を shanghai-1 → 2 → 3 → golyat-4 の順に 1 台ずつ実行（apply-ansible と同じ）。CI は最大約 9 分 → 約 30 分に延びる。
+- (b) `Check control plane memory headroom` step: CP では SSH 疎通確認のあと `/proc/meminfo` の MemAvailable を読み、
+  `CP_PLAN_MIN_MEMAVAILABLE_MIB`（600）未満なら `CP_PLAN_HEADROOM_POLL_SECONDS`（30）ごとに `CP_PLAN_HEADROOM_WAIT_SECONDS`（300）まで待つ。
+  戻らなければ plan を skip し、SSH 不達と同じ形式の fmt.json（playbook `cp-memory-headroom`、skipped 1、unreachable 0）を残す。worker（golyat-*）は確認なしで続行。
+- 閾値 600MiB の根拠: 10-08〜09 に stall / kill が起きたときの MemAvailable 10 分最小は 269〜588MiB、M1 後の床は 915MiB 以上。通常時は待機に入らず、逼迫時だけ止める。
+
+### 副作用・rollback
+
+- plan 結果が欠ける CP が出うる（コメントに `cp-memory-headroom` として表示）。その場合は余力が戻ってから re-run する。apply-ansible 側には同じガードを入れていない（apply は merge 後に 1 台ずつ走り、fail-fast で止まると部分適用になるため、別途 wait 型のガードを検討）。
+- rollback: 本 workflow の変更を revert するだけ（CP の状態は変わらない）。
+
+### 検証
+
+- actionlint v1.7.12 OK、headroom step の shell をローカルで ssh を mock して 4 ケース（閾値以上 / 未満 / 読取不能 / worker）確認。
+- 本 PR 自体の plan run（直列）で、各 CP の plan 中の MemAvailable / leader change / major fault を worker-4 の Prometheus 経由で観測する。
