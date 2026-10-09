@@ -82,3 +82,35 @@ kube-apiserver の `--goaway-chance=0.001`（上流推奨開始値、上限 0.02
 - ClusterConfiguration merge を live の ConfigMap 内容に対してオフラインで再現し、`apiServer.extraArgs` 以外のキーが
   不変で、2 回目は no-op になることを確認
 - `molecule test -s apiserver-goaway`（amd64 ローカル、CI は arm64 で `molecule test --all`）
+
+## 有効化（W1 live 適用、2026-10-09、claude-fable run `20261009T023442Z-2bd04c6b`）
+
+owner 指示（2026-10-08 15:41 UTC、hermes-agent 経由「いや進めてほしい」）に基づき、W1 を実際に有効化して持続観測まで進める。
+対象は Decision Packet §0 / §6 で特定した 3CP（shanghai-1 → 2 → 3、`serial: 1` + apply-ansible の `max-parallel: 1`）のみ。
+194 の再開・P2（plan 直列化）・etcd tuning・swap・無関係対象の変更は含めない。
+
+### 変更内容
+
+- `playbooks/control-plane.yml`: `apiserver_goaway_chance_enabled: true`（コメントアウトを解除、値は既定の `"0.001"`）。
+  この PR の merge = apply-ansible.yml による本番適用で、各 CP で kube-apiserver が 1 回ずつ再起動する（PID 変化 + `/readyz` 200 + etcd health gate を待ってから次のノード）。
+- `tasks/apiserver_goaway.yml`: check mode（plan-ansible.yml の `--check --diff`）では `copy` が「変更あり」を返すだけでファイルを書かないため、
+  再読込後の assert・PID 変化待ち・readyz 待ちに `not ansible_check_mode` を付けた。これが無いと有効化 PR の plan が
+  「宣言値のフラグがちょうど 1 つ」の assert で必ず失敗する（既定 off の間は全タスクが skip されていたので顕在化しなかった）。
+  実際の適用経路（apply-ansible.yml）の挙動は不変。
+- molecule `apiserver-goaway` に `check-mode-case.yml` を追加: フラグ未設定のマニフェストに対して check mode で role を通し、
+  失敗せず「変更あり」を報告し、マニフェストは書き換えないことを検証。
+
+### 適用前の確認（2026-10-09 02:38 UTC、worker-4 の Prometheus 経由、CP への exec なし）
+
+- G1 相当: 7 Node Ready、etcd 3 台とも has_leader=1、apiserver up 3/3、Longhorn volume 18 healthy、VIP 保持者 shanghai-1。
+- G2 相当: 直近 30 分 etcd leader change 0、API 5xx 0。直近の apiserver 再起動は 10-08 22:58（CP1）/ 23:01（CP2）/ 23:12（CP3）で 3 時間以上前。
+- 偏り: long-running request CP1 908 / CP2 672 / CP3 77（最後に再起動した CP3 が最少、再現）。MemAvailable 10 分最小 CP1 551 / CP2 877 / CP3 1,118 MiB。
+- 並行 mutation なし: apply / plan / upgrade workflow の in-progress / queued なし、Task Board lock は本 run のみ。
+
+### 停止条件・rollback・観測
+
+- 停止: apply-ansible の各 CP で readyz が 5 分以内に 200 へ戻らない / etcd health gate 不成立なら `fail-fast: true` で後続ノードは走らない。
+  観測側で 2 台以上の apiserver scrape 断、etcd leader なし、API 5xx > 5% が 5 分継続を見たら `gh run cancel` で止める。
+- rollback: `apiserver_goaway_chance: "0"` を同じ経路（PR merge → apply）で適用。フラグは残して値 0（無効）にする。
+- 観測: 最後の apiserver 再起動から最低 60 分（過去の 10〜15 分再発周期を超える）、Decision Packet §7 の成立条件で評価し、
+  24h 後に 7 日区分表と比較する案を残す。結果は Obsidian `research/boxp-225-cp-memory-watch-skew-20261008/` に保存。

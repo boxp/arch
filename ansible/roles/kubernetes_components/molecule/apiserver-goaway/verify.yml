@@ -291,3 +291,10 @@
       loop_control:
         loop_var: normalize_case
         label: "{{ normalize_case.name }}"
+
+    # ---- check mode (plan-ansible.yml の --check) で失敗しないこと ----
+    # 有効化 PR の plan は実 CP に対して check mode で流れる。copy は「変更あり」を返すだけで
+    # ファイルを書かないため、再読込後の assert や PID / readyz 待ちを check mode でも走らせると
+    # plan が必ず失敗する。check mode では変更を報告するだけでマニフェストを書かないことを確認する。
+    - name: Verify the goaway tasks survive check mode without writing the manifest
+      ansible.builtin.include_tasks: check-mode-case.yml
