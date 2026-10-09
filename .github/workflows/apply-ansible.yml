@@ -157,7 +157,11 @@ jobs:
             if [ "$SECONDS" -ge "$DEADLINE" ]; then
               break
             fi
-            sleep "$CP_APPLY_HEADROOM_POLL_SECONDS"
+            # sleep も残り待機時間を超えないようにする
+            SLEEP_SECONDS=$(( DEADLINE - SECONDS ))
+            if [ "$SLEEP_SECONDS" -gt "$CP_APPLY_HEADROOM_POLL_SECONDS" ]; then SLEEP_SECONDS="$CP_APPLY_HEADROOM_POLL_SECONDS"; fi
+            if [ "$SLEEP_SECONDS" -lt 1 ]; then SLEEP_SECONDS=1; fi
+            sleep "$SLEEP_SECONDS"
           done
           echo "::warning::Proceeding with Ansible apply on ${NODE} although MemAvailable ${LAST_MIB}MiB stayed below ${CP_APPLY_MIN_MEMAVAILABLE_MIB}MiB for ${CP_APPLY_HEADROOM_WAIT_SECONDS}s (wait-only guard; apply is never skipped)."
           echo "waited_seconds=$(( SECONDS - START ))" >> "$GITHUB_OUTPUT"
