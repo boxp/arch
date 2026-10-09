@@ -136,8 +136,12 @@ jobs:
           DEADLINE=$(( SECONDS + CP_APPLY_HEADROOM_WAIT_SECONDS ))
           LAST_MIB="unknown"
           while :; do
-            # timeout で各 probe を上限付きにする (ConnectTimeout は接続までしか効かず、remote 側が hang すると待機上限を超えるため)
-            AVAIL_KIB=$(timeout 60 ssh -o ConnectTimeout=30 "${NODE_IP}" "awk '/^MemAvailable:/ {print \$2}' /proc/meminfo" 2>/dev/null || echo "")
+            # 各 probe を timeout で上限付きにし、残り待機時間も超えないようにする
+            # (ConnectTimeout は接続までしか効かず、remote 側が hang すると待機上限を超えるため)
+            PROBE_TIMEOUT=$(( DEADLINE - SECONDS ))
+            if [ "$PROBE_TIMEOUT" -gt 60 ]; then PROBE_TIMEOUT=60; fi
+            if [ "$PROBE_TIMEOUT" -lt 1 ]; then PROBE_TIMEOUT=1; fi
+            AVAIL_KIB=$(timeout "$PROBE_TIMEOUT" ssh -o ConnectTimeout=30 "${NODE_IP}" "awk '/^MemAvailable:/ {print \$2}' /proc/meminfo" 2>/dev/null || echo "")
             if [[ "$AVAIL_KIB" =~ ^[0-9]+$ ]]; then
               LAST_MIB=$(( AVAIL_KIB / 1024 ))
               if [ "$AVAIL_KIB" -ge "$MIN_KIB" ]; then

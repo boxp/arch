@@ -202,5 +202,5 @@ role defaults は off のまま）。194 の再開・P2・etcd tuning・swap・�
   - job の `timeout-minutes: 30` に対し最大 5 分の待機（従来の各ノード 10 分程度 + 5 分）。
 - 副作用: この workflow ファイル自体が `on.push.paths` に含まれるため、**merge で Apply Ansible が 1 回走る**（4 ノード直列、ansible/ 不変なので changed は apt cache 程度、apiserver 再起動なし）。その run で本 step が初めて実機で動く。
 - rollback: revert のみ（クラスタ側の状態は変わらない）。
-- codex review 指摘対応: 各 SSH probe を `timeout 60` で上限付きにした（`ConnectTimeout` は接続までしか効かず、remote 側が hang すると待機上限を超えるため）。同じ形の plan 側（`plan-ansible.yml`、P2）にも同じ修正を入れた。
+- codex review 指摘対応: 各 SSH probe を `timeout`（最大 60 秒、かつ残り待機時間を超えない）で上限付きにした（`ConnectTimeout` は接続までしか効かず、remote 側が hang すると待機上限を超えるため）。同じ形の plan 側（`plan-ansible.yml`、P2）にも同じ修正を入れた。
 - 検証: actionlint（Docker `rhysd/actionlint`）両 workflow OK、step script を抜き出して ssh を mock した 6 ケース（worker 素通り / CP 充足 / CP 回復待ち / CP 未回復で warning 続行 / ssh 失敗後回復 / remote hang を timeout で打ち切り）。
