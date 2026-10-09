@@ -188,6 +188,9 @@
   ansible.builtin.set_fact:
     apiserver_manifest_edited: "{{ apiserver_goaway_written.changed | default(false) }}"
 
+# check mode (plan-ansible.yml の --check) では copy が「変更あり」を返すだけでファイルは書かれないため、
+# 再読込後の assert・PID 変化待ち・readyz 待ちは実行しない (実行すると plan が必ず失敗する)。
+# 実際の適用 (apply-ansible.yml) ではこれまでどおり全て実行する。
 # 書き戻した結果を YAML として読み直し、kube-apiserver コンテナの command にフラグが宣言値でちょうど 1 つあり、
 # 他のコンテナの command が変わっていないことを、kubelet が apiserver を入れ替える前に確かめる。
 - name: Re-read the kube-apiserver manifest after editing
@@ -197,6 +200,7 @@
   become: true
   when:
     - apiserver_goaway_applicable | bool
+    - not ansible_check_mode
 
 - name: Assert the kube-apiserver command carries exactly one goaway chance flag and other containers are untouched
   ansible.builtin.assert:
@@ -218,6 +222,7 @@
       }}
   when:
     - apiserver_goaway_applicable | bool
+    - not ansible_check_mode
 
 # kubelet がマニフェスト変更を検知して apiserver を入れ替えるのは非同期。
 # PID が変わる前に readyz を見ると「変更前の apiserver」で即成功し、次のノードへ進んでしまう。
@@ -235,6 +240,7 @@
   delay: 10
   when:
     - apiserver_manifest_edited | bool
+    - not ansible_check_mode
     - ansible_virtualization_type | default('') != "docker"
     - chroot_build is not defined or not chroot_build
 
@@ -248,6 +254,7 @@
       Proceeding to the next node could leave several apiservers restarting at once.
   when:
     - apiserver_manifest_edited | bool
+    - not ansible_check_mode
     - ansible_virtualization_type | default('') != "docker"
     - chroot_build is not defined or not chroot_build
 
@@ -266,6 +273,7 @@
   throttle: 1
   when:
     - apiserver_manifest_edited | bool
+    - not ansible_check_mode
     - ansible_virtualization_type | default('') != "docker"
     - chroot_build is not defined or not chroot_build
 
