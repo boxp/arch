@@ -1,0 +1,4 @@
+# shanghai-2 and shanghai-3 down 30..179s (5 ticks), recover at 180s -> transient (150s < 180s)
+0 200 200 200 200
+30 200 200 000 000
+180 200 200 200 200

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Stand-in for sudo so `become: true` runs the command as the current user and
+# keeps PATH (the mock kubectl) intact. Drops sudo's own flags and user option.
+while [ $# -gt 0 ]; do
+  case "$1" in
+    -u|-p|-r|-t) shift 2 ;;
+    --) shift; break ;;
+    -*) shift ;;
+    *) break ;;
+  esac
+done
+exec "$@"

@@ -268,6 +268,15 @@
       matchDatasources: ["custom.cursor-agent"],
       extractVersion: "downloads\\.cursor\\.com/lab/(?<version>[^/]+)/\\$\\{OS\\}/\\$\\{ARCH\\}/agent-cli-package\\.tar\\.gz"
     },
+    // even-terminal は 0.x のため minor 更新でも起動仕様が変わり得る (BOXP-205:
+    // 0.10 で config.json 必須化 + bind 先変更により codex-workspace が crash loop)。
+    // image build は required check ではないので、Build Codex Workspace Image の
+    // smoke test 成功を確認してから手動 merge する。
+    {
+      matchPackageNames: ["@evenrealities/even-terminal"],
+      automerge: false,
+      addLabels: ["manual-review-required"]
+    },
     // Kubernetes components (manual review required)
     {
       matchManagers: ["custom.regex"],
@@ -283,6 +292,22 @@
       matchPackageNames: ["kube-vip/kube-vip"],
       automerge: false,
       labels: ["kubernetes", "kube-vip"]
+    },
+    // 🚨 BOXP-207: apply.yaml / test.yaml（とそこから呼ぶ wc-*.yaml）が main で変わると、
+    // GitHub の保護機能により、write 権限者が Web で承認するまで以後の run が実行されない。
+    // automerge だと誰も見ていない時間に止まり始めるため、workflow の更新は週 1 回・
+    // 1 PR にまとめ、merge した人がその場で承認できるよう手動 merge にする。
+    // - schedule は PR（branch）を新しく作れる時間帯で、UTC 指定（月曜 02:00〜08:59 JST）。
+    //   時間帯の中で merge すると、同じ時間帯の次の実行で 2 本目の PR が作られ得る。
+    //   そのため作成は merge しない早朝に限り、merge は月曜 09:00 JST 以降に週 1 本だけ行う。
+    // - separateMajorMinor を無効にして、major 更新が別 PR に分かれないようにする。
+    // 手順: docs/project_docs/BOXP-207/runbook.md
+    {
+      matchFileNames: [".github/workflows/**"],
+      groupName: "GitHub Actions workflows",
+      separateMajorMinor: false,
+      schedule: ["* 17-23 * * 0"],
+      automerge: false,
     }
   ],
 }

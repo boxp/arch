@@ -1,8 +1,15 @@
 name: Kubernetes Upgrade
+run-name: >-
+  k8s-upgrade ${{ inputs.execution_id }} ${{ inputs.target_node }}
+  k8s=${{ inputs.kubernetes_package }} crio=${{ inputs.crio_package }}
+  dry-run=${{ inputs.dry_run }} ref=${{ github.ref_name }} by=${{ github.actor }}
 
 on:
   workflow_dispatch:
     inputs:
+      execution_id:
+        description: 'Ledger correlation ID; primary identity is GitHub run ID + attempt'
+        required: true
       kubernetes_version:
         description: 'Target Kubernetes version (e.g., 1.36.1)'
         required: true
@@ -11,6 +18,9 @@ on:
         required: true
       crio_version:
         description: 'Target CRI-O version (e.g., 1.36.1)'
+        required: true
+      crio_package:
+        description: 'Exact CRI-O package revision (e.g., 1.36.1-1.1)'
         required: true
       dry_run:
         description: 'Dry run mode (--check)'
@@ -28,16 +38,33 @@ on:
           - golyat-2
           - golyat-3
           - golyat-4
+      readyz_watch:
+        description: 'BOXP-213: record VIP/CP readyz every 30s during the upgrade and HALT on 3min redundancy loss (opt-in)'
+        type: boolean
+        default: false
+      readyz_observe_minutes:
+        description: 'BOXP-213: post-upgrade readyz observation window in minutes, 0-60 (empty = CP/golyat-4 30, worker 15; 0 = skip)'
+        type: string
+        default: ''
+
+# Serialize every production cluster mutation with normal Ansible apply. A queued
+# run must retain its own reviewed inputs, so do not cancel an in-flight run.
+concurrency:
+  group: lolice-production-cluster-mutation
+  cancel-in-progress: false
 
 env:
   NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104","golyat-1":"192.168.10.101","golyat-2":"192.168.10.105","golyat-3":"192.168.10.106","golyat-4":"192.168.10.107"}'
   ALL_NODE_IPS: "192.168.10.102 192.168.10.103 192.168.10.104 192.168.10.101 192.168.10.105 192.168.10.106 192.168.10.107"
+  CLUSTER_VIP: "192.168.10.99"
+  CONTROL_PLANE_NODES: "shanghai-1 shanghai-2 shanghai-3"
+  READYZ_WATCH_DIR: /tmp/readyz-watch
 
 jobs:
   pre-check:
     name: Pre-upgrade Validation
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
@@ -45,13 +72,53 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
+      EXECUTION_ID: ${{ inputs.execution_id }}
+      TARGET_NODE: ${{ inputs.target_node }}
     steps:
       - name: Validate per-node execution
         run: |
-          if [ "${{ inputs.target_node }}" = "all" ]; then
-            echo "::error::target_node=all is disabled. Run this workflow once per node and verify cluster health before continuing."
-            exit 1
-          fi
+          set -eu
+          case "$TARGET_NODE" in
+            shanghai-1|shanghai-2|shanghai-3|golyat-1|golyat-2|golyat-3|golyat-4) ;;
+            *) echo "::error::target_node must be one of the seven approved nodes"; exit 1 ;;
+          esac
+          [[ "$K8S_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::kubernetes_version must be X.Y.Z"; exit 1;
+          }
+          [[ "$CRIO_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::crio_version must be X.Y.Z"; exit 1;
+          }
+          [[ "$K8S_PACKAGE" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::kubernetes_package must use the supported numeric revision X.Y"; exit 1;
+          }
+          [[ "$CRIO_PACKAGE" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+\.[0-9]+$ ]] || {
+            echo "::error::crio_package must use the supported numeric revision X.Y"; exit 1;
+          }
+          [[ "${K8S_PACKAGE%%-*}" = "$K8S_VERSION" ]] || {
+            echo "::error::kubernetes package/version mismatch"; exit 1;
+          }
+          [[ "${CRIO_PACKAGE%%-*}" = "$CRIO_VERSION" ]] || {
+            echo "::error::CRI-O package/version mismatch"; exit 1;
+          }
+          [[ "${K8S_VERSION%.*}" = "${CRIO_VERSION%.*}" ]] || {
+            echo "::error::Kubernetes and CRI-O minor versions must match"; exit 1;
+          }
+          [[ "$EXECUTION_ID" =~ ^[0-9A-Za-z._:-]+$ ]] || {
+            echo "::error::execution_id must use only 0-9 A-Z a-z . _ : -"; exit 1;
+          }
+
+      - name: Record immutable dispatch identity
+        run: |
+          {
+            echo "### Dispatch identity"
+            echo "- execution_id: \`${EXECUTION_ID}\`"
+            echo "- primary identity (run ID + attempt): \`${GITHUB_RUN_ID}\` attempt \`${GITHUB_RUN_ATTEMPT}\`"
+            echo "- ref/SHA: \`${GITHUB_REF}\` / \`${GITHUB_SHA}\`"
+            echo "- target: \`${TARGET_NODE}\` (dry_run=${{ inputs.dry_run }})"
+            echo "- Kubernetes: \`${K8S_VERSION}\` / \`${K8S_PACKAGE}\`"
+            echo "- CRI-O: \`${CRIO_VERSION}\` / \`${CRIO_PACKAGE}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -59,7 +126,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -101,9 +168,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -156,7 +223,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
@@ -178,6 +245,7 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
             -vv 2>&1 | tee /tmp/pre-check-ansible.log
 
       - name: Take etcd snapshot
@@ -196,6 +264,8 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
+            -e "etcd_snapshot_store_retention_count=0" \
             -vv 2>&1 | tee /tmp/etcd-snapshot-ansible.log
 
       - name: Upload pre-check logs
@@ -213,7 +283,7 @@ jobs:
     needs: [pre-check]
     if: inputs.target_node == 'all' || inputs.target_node == 'shanghai-1'
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
@@ -221,6 +291,7 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -228,7 +299,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -270,9 +341,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -309,12 +380,59 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
           cd ansible
           uv sync
+
+      - name: Setup SSH config for readyz probe hosts
+        if: inputs.readyz_watch
+        run: |
+          # readyz-<cp> aliases let readyz-watch.sh probe from any non-updating control plane.
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_IP=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')
+            cat >> ~/.ssh/config << EOF
+
+          Host readyz-${CP_NAME}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+          chmod 600 ~/.ssh/config
+
+      - name: Start readyz watch
+        if: inputs.readyz_watch
+        run: |
+          # BOXP-213 (BOXP-194 A2/H2): background watcher; records VIP + 3 CP readyz every 30s,
+          # HALTs when redundancy (VIP, or >=2 non-updating CPs) is lost for 3 minutes.
+          mkdir -p "$READYZ_WATCH_DIR"
+          CP_ARGS=()
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
+          done
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node shanghai-1 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
+          echo $! > "$READYZ_WATCH_DIR/pid"
+          echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node shanghai-1)"
 
       - name: Upgrade shanghai-1
         run: |
@@ -334,17 +452,68 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
             -e "node_role=control_plane" \
             -e "is_first_control_plane=true" \
             ${DRY_RUN_FLAG} \
             -v
+      - name: Stop readyz watch and evaluate
+        if: always() && inputs.readyz_watch
+        run: |
+          touch "$READYZ_WATCH_DIR/stop"
+          WATCH_PID=$(cat "$READYZ_WATCH_DIR/pid" 2>/dev/null || true)
+          if [ -n "$WATCH_PID" ]; then
+            for _ in $(seq 1 90); do
+              kill -0 "$WATCH_PID" 2>/dev/null || break
+              sleep 1
+            done
+          fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
+          echo "::group::readyz watch log"
+          cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
+          echo "::endgroup::"
+          if [ -f "$READYZ_WATCH_DIR/readyz-summary.json" ]; then
+            echo "::group::readyz summary"
+            cat "$READYZ_WATCH_DIR/readyz-summary.json"
+            echo "::endgroup::"
+          fi
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading shanghai-1. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+            exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for shanghai-1 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for shanghai-1 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
+          fi
+          echo "::notice::readyz watch for shanghai-1 finished without HALT"
+
+      - name: Upload readyz watch artifact
+        if: always() && inputs.readyz_watch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readyz-watch-shanghai-1
+          path: |
+            /tmp/readyz-watch/readyz-samples.jsonl
+            /tmp/readyz-watch/readyz-events.jsonl
+            /tmp/readyz-watch/readyz-summary.json
+            /tmp/readyz-watch/HALT
+            /tmp/readyz-watch/watch.log
+          if-no-files-found: warn
+          retention-days: 30
+
 
   upgrade-cp-2:
     name: Upgrade shanghai-2
     needs: [pre-check, upgrade-cp-1]
     if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'shanghai-2')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
@@ -352,6 +521,7 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -359,7 +529,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -401,9 +571,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -440,12 +610,59 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
           cd ansible
           uv sync
+
+      - name: Setup SSH config for readyz probe hosts
+        if: inputs.readyz_watch
+        run: |
+          # readyz-<cp> aliases let readyz-watch.sh probe from any non-updating control plane.
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_IP=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')
+            cat >> ~/.ssh/config << EOF
+
+          Host readyz-${CP_NAME}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+          chmod 600 ~/.ssh/config
+
+      - name: Start readyz watch
+        if: inputs.readyz_watch
+        run: |
+          # BOXP-213 (BOXP-194 A2/H2): background watcher; records VIP + 3 CP readyz every 30s,
+          # HALTs when redundancy (VIP, or >=2 non-updating CPs) is lost for 3 minutes.
+          mkdir -p "$READYZ_WATCH_DIR"
+          CP_ARGS=()
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
+          done
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node shanghai-2 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
+          echo $! > "$READYZ_WATCH_DIR/pid"
+          echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node shanghai-2)"
 
       - name: Upgrade shanghai-2
         run: |
@@ -465,17 +682,68 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
             -e "node_role=control_plane" \
             -e "is_first_control_plane=false" \
             ${DRY_RUN_FLAG} \
             -v
+      - name: Stop readyz watch and evaluate
+        if: always() && inputs.readyz_watch
+        run: |
+          touch "$READYZ_WATCH_DIR/stop"
+          WATCH_PID=$(cat "$READYZ_WATCH_DIR/pid" 2>/dev/null || true)
+          if [ -n "$WATCH_PID" ]; then
+            for _ in $(seq 1 90); do
+              kill -0 "$WATCH_PID" 2>/dev/null || break
+              sleep 1
+            done
+          fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
+          echo "::group::readyz watch log"
+          cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
+          echo "::endgroup::"
+          if [ -f "$READYZ_WATCH_DIR/readyz-summary.json" ]; then
+            echo "::group::readyz summary"
+            cat "$READYZ_WATCH_DIR/readyz-summary.json"
+            echo "::endgroup::"
+          fi
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading shanghai-2. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+            exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for shanghai-2 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for shanghai-2 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
+          fi
+          echo "::notice::readyz watch for shanghai-2 finished without HALT"
+
+      - name: Upload readyz watch artifact
+        if: always() && inputs.readyz_watch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readyz-watch-shanghai-2
+          path: |
+            /tmp/readyz-watch/readyz-samples.jsonl
+            /tmp/readyz-watch/readyz-events.jsonl
+            /tmp/readyz-watch/readyz-summary.json
+            /tmp/readyz-watch/HALT
+            /tmp/readyz-watch/watch.log
+          if-no-files-found: warn
+          retention-days: 30
+
 
   upgrade-cp-3:
     name: Upgrade shanghai-3
     needs: [pre-check, upgrade-cp-1, upgrade-cp-2]
     if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'shanghai-3')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
@@ -483,6 +751,7 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -490,7 +759,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -532,9 +801,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -571,12 +840,59 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
           cd ansible
           uv sync
+
+      - name: Setup SSH config for readyz probe hosts
+        if: inputs.readyz_watch
+        run: |
+          # readyz-<cp> aliases let readyz-watch.sh probe from any non-updating control plane.
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_IP=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')
+            cat >> ~/.ssh/config << EOF
+
+          Host readyz-${CP_NAME}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+          chmod 600 ~/.ssh/config
+
+      - name: Start readyz watch
+        if: inputs.readyz_watch
+        run: |
+          # BOXP-213 (BOXP-194 A2/H2): background watcher; records VIP + 3 CP readyz every 30s,
+          # HALTs when redundancy (VIP, or >=2 non-updating CPs) is lost for 3 minutes.
+          mkdir -p "$READYZ_WATCH_DIR"
+          CP_ARGS=()
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
+          done
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node shanghai-3 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
+          echo $! > "$READYZ_WATCH_DIR/pid"
+          echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node shanghai-3)"
 
       - name: Upgrade shanghai-3
         run: |
@@ -596,17 +912,68 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
             -e "node_role=control_plane" \
             -e "is_first_control_plane=false" \
             ${DRY_RUN_FLAG} \
             -v
+      - name: Stop readyz watch and evaluate
+        if: always() && inputs.readyz_watch
+        run: |
+          touch "$READYZ_WATCH_DIR/stop"
+          WATCH_PID=$(cat "$READYZ_WATCH_DIR/pid" 2>/dev/null || true)
+          if [ -n "$WATCH_PID" ]; then
+            for _ in $(seq 1 90); do
+              kill -0 "$WATCH_PID" 2>/dev/null || break
+              sleep 1
+            done
+          fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
+          echo "::group::readyz watch log"
+          cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
+          echo "::endgroup::"
+          if [ -f "$READYZ_WATCH_DIR/readyz-summary.json" ]; then
+            echo "::group::readyz summary"
+            cat "$READYZ_WATCH_DIR/readyz-summary.json"
+            echo "::endgroup::"
+          fi
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading shanghai-3. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+            exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for shanghai-3 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for shanghai-3 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
+          fi
+          echo "::notice::readyz watch for shanghai-3 finished without HALT"
+
+      - name: Upload readyz watch artifact
+        if: always() && inputs.readyz_watch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readyz-watch-shanghai-3
+          path: |
+            /tmp/readyz-watch/readyz-samples.jsonl
+            /tmp/readyz-watch/readyz-events.jsonl
+            /tmp/readyz-watch/readyz-summary.json
+            /tmp/readyz-watch/HALT
+            /tmp/readyz-watch/watch.log
+          if-no-files-found: warn
+          retention-days: 30
+
 
   upgrade-worker-1:
     name: Upgrade golyat-1
     needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3]
     if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'golyat-1')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
@@ -614,6 +981,7 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -621,7 +989,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -662,9 +1030,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -714,12 +1082,59 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
           cd ansible
           uv sync
+
+      - name: Setup SSH config for readyz probe hosts
+        if: inputs.readyz_watch
+        run: |
+          # readyz-<cp> aliases let readyz-watch.sh probe from any non-updating control plane.
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_IP=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')
+            cat >> ~/.ssh/config << EOF
+
+          Host readyz-${CP_NAME}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+          chmod 600 ~/.ssh/config
+
+      - name: Start readyz watch
+        if: inputs.readyz_watch
+        run: |
+          # BOXP-213 (BOXP-194 A2/H2): background watcher; records VIP + 3 CP readyz every 30s,
+          # HALTs when redundancy (VIP, or >=2 non-updating CPs) is lost for 3 minutes.
+          mkdir -p "$READYZ_WATCH_DIR"
+          CP_ARGS=()
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
+          done
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node golyat-1 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
+          echo $! > "$READYZ_WATCH_DIR/pid"
+          echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node golyat-1)"
 
       - name: Upgrade golyat-1
         run: |
@@ -738,16 +1153,67 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
             -e "node_role=worker" \
             ${DRY_RUN_FLAG} \
             -v
+      - name: Stop readyz watch and evaluate
+        if: always() && inputs.readyz_watch
+        run: |
+          touch "$READYZ_WATCH_DIR/stop"
+          WATCH_PID=$(cat "$READYZ_WATCH_DIR/pid" 2>/dev/null || true)
+          if [ -n "$WATCH_PID" ]; then
+            for _ in $(seq 1 90); do
+              kill -0 "$WATCH_PID" 2>/dev/null || break
+              sleep 1
+            done
+          fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
+          echo "::group::readyz watch log"
+          cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
+          echo "::endgroup::"
+          if [ -f "$READYZ_WATCH_DIR/readyz-summary.json" ]; then
+            echo "::group::readyz summary"
+            cat "$READYZ_WATCH_DIR/readyz-summary.json"
+            echo "::endgroup::"
+          fi
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading golyat-1. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+            exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for golyat-1 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for golyat-1 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
+          fi
+          echo "::notice::readyz watch for golyat-1 finished without HALT"
+
+      - name: Upload readyz watch artifact
+        if: always() && inputs.readyz_watch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readyz-watch-golyat-1
+          path: |
+            /tmp/readyz-watch/readyz-samples.jsonl
+            /tmp/readyz-watch/readyz-events.jsonl
+            /tmp/readyz-watch/readyz-summary.json
+            /tmp/readyz-watch/HALT
+            /tmp/readyz-watch/watch.log
+          if-no-files-found: warn
+          retention-days: 30
+
 
   upgrade-worker-2:
     name: Upgrade golyat-2
     needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3, upgrade-worker-1]
     if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-1.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'golyat-2')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
@@ -755,6 +1221,7 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -762,7 +1229,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -803,9 +1270,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -855,12 +1322,59 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
           cd ansible
           uv sync
+
+      - name: Setup SSH config for readyz probe hosts
+        if: inputs.readyz_watch
+        run: |
+          # readyz-<cp> aliases let readyz-watch.sh probe from any non-updating control plane.
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_IP=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')
+            cat >> ~/.ssh/config << EOF
+
+          Host readyz-${CP_NAME}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+          chmod 600 ~/.ssh/config
+
+      - name: Start readyz watch
+        if: inputs.readyz_watch
+        run: |
+          # BOXP-213 (BOXP-194 A2/H2): background watcher; records VIP + 3 CP readyz every 30s,
+          # HALTs when redundancy (VIP, or >=2 non-updating CPs) is lost for 3 minutes.
+          mkdir -p "$READYZ_WATCH_DIR"
+          CP_ARGS=()
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
+          done
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node golyat-2 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
+          echo $! > "$READYZ_WATCH_DIR/pid"
+          echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node golyat-2)"
 
       - name: Upgrade golyat-2
         run: |
@@ -879,16 +1393,67 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
             -e "node_role=worker" \
             ${DRY_RUN_FLAG} \
             -v
+      - name: Stop readyz watch and evaluate
+        if: always() && inputs.readyz_watch
+        run: |
+          touch "$READYZ_WATCH_DIR/stop"
+          WATCH_PID=$(cat "$READYZ_WATCH_DIR/pid" 2>/dev/null || true)
+          if [ -n "$WATCH_PID" ]; then
+            for _ in $(seq 1 90); do
+              kill -0 "$WATCH_PID" 2>/dev/null || break
+              sleep 1
+            done
+          fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
+          echo "::group::readyz watch log"
+          cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
+          echo "::endgroup::"
+          if [ -f "$READYZ_WATCH_DIR/readyz-summary.json" ]; then
+            echo "::group::readyz summary"
+            cat "$READYZ_WATCH_DIR/readyz-summary.json"
+            echo "::endgroup::"
+          fi
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading golyat-2. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+            exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for golyat-2 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for golyat-2 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
+          fi
+          echo "::notice::readyz watch for golyat-2 finished without HALT"
+
+      - name: Upload readyz watch artifact
+        if: always() && inputs.readyz_watch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readyz-watch-golyat-2
+          path: |
+            /tmp/readyz-watch/readyz-samples.jsonl
+            /tmp/readyz-watch/readyz-events.jsonl
+            /tmp/readyz-watch/readyz-summary.json
+            /tmp/readyz-watch/HALT
+            /tmp/readyz-watch/watch.log
+          if-no-files-found: warn
+          retention-days: 30
+
 
   upgrade-worker-3:
     name: Upgrade golyat-3
     needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3, upgrade-worker-1, upgrade-worker-2]
     if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-1.result == 'skipped') && (needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-2.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'golyat-3')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
@@ -896,6 +1461,7 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -903,7 +1469,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -944,9 +1510,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -996,12 +1562,59 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
           cd ansible
           uv sync
+
+      - name: Setup SSH config for readyz probe hosts
+        if: inputs.readyz_watch
+        run: |
+          # readyz-<cp> aliases let readyz-watch.sh probe from any non-updating control plane.
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_IP=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')
+            cat >> ~/.ssh/config << EOF
+
+          Host readyz-${CP_NAME}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+          chmod 600 ~/.ssh/config
+
+      - name: Start readyz watch
+        if: inputs.readyz_watch
+        run: |
+          # BOXP-213 (BOXP-194 A2/H2): background watcher; records VIP + 3 CP readyz every 30s,
+          # HALTs when redundancy (VIP, or >=2 non-updating CPs) is lost for 3 minutes.
+          mkdir -p "$READYZ_WATCH_DIR"
+          CP_ARGS=()
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
+          done
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node golyat-3 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
+          echo $! > "$READYZ_WATCH_DIR/pid"
+          echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node golyat-3)"
 
       - name: Upgrade golyat-3
         run: |
@@ -1020,16 +1633,67 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
             -e "node_role=worker" \
             ${DRY_RUN_FLAG} \
             -v
+      - name: Stop readyz watch and evaluate
+        if: always() && inputs.readyz_watch
+        run: |
+          touch "$READYZ_WATCH_DIR/stop"
+          WATCH_PID=$(cat "$READYZ_WATCH_DIR/pid" 2>/dev/null || true)
+          if [ -n "$WATCH_PID" ]; then
+            for _ in $(seq 1 90); do
+              kill -0 "$WATCH_PID" 2>/dev/null || break
+              sleep 1
+            done
+          fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
+          echo "::group::readyz watch log"
+          cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
+          echo "::endgroup::"
+          if [ -f "$READYZ_WATCH_DIR/readyz-summary.json" ]; then
+            echo "::group::readyz summary"
+            cat "$READYZ_WATCH_DIR/readyz-summary.json"
+            echo "::endgroup::"
+          fi
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading golyat-3. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+            exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for golyat-3 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for golyat-3 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
+          fi
+          echo "::notice::readyz watch for golyat-3 finished without HALT"
+
+      - name: Upload readyz watch artifact
+        if: always() && inputs.readyz_watch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readyz-watch-golyat-3
+          path: |
+            /tmp/readyz-watch/readyz-samples.jsonl
+            /tmp/readyz-watch/readyz-events.jsonl
+            /tmp/readyz-watch/readyz-summary.json
+            /tmp/readyz-watch/HALT
+            /tmp/readyz-watch/watch.log
+          if-no-files-found: warn
+          retention-days: 30
+
 
   upgrade-worker-4:
     name: Upgrade golyat-4
     needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3, upgrade-worker-1, upgrade-worker-2, upgrade-worker-3]
     if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-1.result == 'skipped') && (needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-2.result == 'skipped') && (needs.upgrade-worker-3.result == 'success' || needs.upgrade-worker-3.result == 'skipped') && (inputs.target_node == 'all' || inputs.target_node == 'golyat-4')
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 75
     permissions:
       id-token: write
       contents: read
@@ -1037,6 +1701,7 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1044,7 +1709,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -1085,9 +1750,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -1137,12 +1802,59 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
           cd ansible
           uv sync
+
+      - name: Setup SSH config for readyz probe hosts
+        if: inputs.readyz_watch
+        run: |
+          # readyz-<cp> aliases let readyz-watch.sh probe from any non-updating control plane.
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_IP=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')
+            cat >> ~/.ssh/config << EOF
+
+          Host readyz-${CP_NAME}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+          chmod 600 ~/.ssh/config
+
+      - name: Start readyz watch
+        if: inputs.readyz_watch
+        run: |
+          # BOXP-213 (BOXP-194 A2/H2): background watcher; records VIP + 3 CP readyz every 30s,
+          # HALTs when redundancy (VIP, or >=2 non-updating CPs) is lost for 3 minutes.
+          mkdir -p "$READYZ_WATCH_DIR"
+          CP_ARGS=()
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
+          done
+          # The subshell records the watcher exit code so the evaluation step can tell
+          # "finished without HALT" (0) from "HALT" (2) and "crashed / never ran" (anything else).
+          rm -f "$READYZ_WATCH_DIR/rc"
+          (
+            WATCH_RC=0
+            READYZ_SSH_HOST_PREFIX=readyz- nohup scripts/upgrade-k8s/readyz-watch.sh \
+              --vip "vip=${CLUSTER_VIP}" \
+              "${CP_ARGS[@]}" \
+              --updating-node golyat-4 \
+              --interval 30 \
+              --halt-after 180 \
+              --stop-file "$READYZ_WATCH_DIR/stop" \
+              --out-dir "$READYZ_WATCH_DIR" \
+              > "$READYZ_WATCH_DIR/watch.log" 2>&1 < /dev/null || WATCH_RC=$?
+            echo "$WATCH_RC" > "$READYZ_WATCH_DIR/rc"
+          ) &
+          echo $! > "$READYZ_WATCH_DIR/pid"
+          echo "readyz watch started (pid $(cat "$READYZ_WATCH_DIR/pid"), updating-node golyat-4)"
 
       - name: Upgrade golyat-4
         run: |
@@ -1161,16 +1873,68 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             -e "kubernetes_upgrade_package=${K8S_PACKAGE}" \
             -e "crio_upgrade_version=${CRIO_VERSION}" \
+            -e "crio_upgrade_package=${CRIO_PACKAGE}" \
             -e "node_role=worker" \
             ${DRY_RUN_FLAG} \
             -v
+      - name: Stop readyz watch and evaluate
+        if: always() && inputs.readyz_watch
+        run: |
+          touch "$READYZ_WATCH_DIR/stop"
+          WATCH_PID=$(cat "$READYZ_WATCH_DIR/pid" 2>/dev/null || true)
+          if [ -n "$WATCH_PID" ]; then
+            for _ in $(seq 1 90); do
+              kill -0 "$WATCH_PID" 2>/dev/null || break
+              sleep 1
+            done
+          fi
+          WATCH_RC=$(cat "$READYZ_WATCH_DIR/rc" 2>/dev/null || echo missing)
+          echo "::group::readyz watch log"
+          cat "$READYZ_WATCH_DIR/watch.log" 2>/dev/null || echo "(no watch log)"
+          echo "::endgroup::"
+          if [ -f "$READYZ_WATCH_DIR/readyz-summary.json" ]; then
+            echo "::group::readyz summary"
+            cat "$READYZ_WATCH_DIR/readyz-summary.json"
+            echo "::endgroup::"
+          fi
+          if [ -f "$READYZ_WATCH_DIR/HALT" ] || [ "$WATCH_RC" = "2" ]; then
+            echo "::error::HALT (BOXP-194 H2): $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). API redundancy was lost for >= 3 minutes while upgrading golyat-4. Do NOT dispatch the next node and do not re-run this workflow until the cause is understood (decision packet 3.4)."
+            exit 2
+          fi
+          # Safe side: a watcher that crashed, never ran, or is still running did not observe the upgrade.
+          if [ "$WATCH_RC" != "0" ]; then
+            echo "::error::readyz watch for golyat-4 did not complete (exit code: ${WATCH_RC}). The upgrade was not observed; treat as HALT and investigate watch.log before dispatching the next node."
+            exit 1
+          fi
+          VERDICT=$(jq -r '.verdict' "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo missing)
+          if [ "$VERDICT" != "ok" ]; then
+            echo "::error::readyz watch for golyat-4 ended with verdict '${VERDICT}' (expected ok)."
+            exit 1
+          fi
+          echo "::notice::readyz watch for golyat-4 finished without HALT"
+
+      - name: Upload readyz watch artifact
+        if: always() && inputs.readyz_watch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readyz-watch-golyat-4
+          path: |
+            /tmp/readyz-watch/readyz-samples.jsonl
+            /tmp/readyz-watch/readyz-events.jsonl
+            /tmp/readyz-watch/readyz-summary.json
+            /tmp/readyz-watch/HALT
+            /tmp/readyz-watch/watch.log
+          if-no-files-found: warn
+          retention-days: 30
+
 
   post-check:
     name: Post-upgrade Validation
     needs: [pre-check, upgrade-cp-1, upgrade-cp-2, upgrade-cp-3, upgrade-worker-1, upgrade-worker-2, upgrade-worker-3, upgrade-worker-4]
     if: always() && !cancelled() && needs.pre-check.result == 'success' && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-1.result == 'skipped') && (needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-2.result == 'skipped') && (needs.upgrade-cp-3.result == 'success' || needs.upgrade-cp-3.result == 'skipped') && (needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-1.result == 'skipped') && (needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-2.result == 'skipped') && (needs.upgrade-worker-3.result == 'success' || needs.upgrade-worker-3.result == 'skipped') && (needs.upgrade-worker-4.result == 'success' || needs.upgrade-worker-4.result == 'skipped') && (needs.upgrade-cp-1.result == 'success' || needs.upgrade-cp-2.result == 'success' || needs.upgrade-cp-3.result == 'success' || needs.upgrade-worker-1.result == 'success' || needs.upgrade-worker-2.result == 'success' || needs.upgrade-worker-3.result == 'success' || needs.upgrade-worker-4.result == 'success')
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    # setup + health check (~15 min) + readyz observation window (readyz_observe_minutes, max 60) + upload
+    timeout-minutes: 100
     permissions:
       id-token: write
       contents: read
@@ -1178,6 +1942,8 @@ jobs:
       K8S_VERSION: ${{ inputs.kubernetes_version }}
       K8S_PACKAGE: ${{ inputs.kubernetes_package }}
       CRIO_VERSION: ${{ inputs.crio_version }}
+      CRIO_PACKAGE: ${{ inputs.crio_package }}
+      TARGET_NODE: ${{ inputs.target_node }}
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -1185,7 +1951,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -1227,9 +1993,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -1263,7 +2029,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
@@ -1279,8 +2045,8 @@ jobs:
             DRY_RUN_FLAG="--check"
           fi
           POST_CHECK_LIMIT="control_plane"
-          if [ "${{ inputs.target_node }}" != "all" ]; then
-            POST_CHECK_LIMIT="${{ inputs.target_node }}"
+          if [ "$TARGET_NODE" != "all" ]; then
+            POST_CHECK_LIMIT="$TARGET_NODE"
           fi
           echo "Running post-upgrade cluster health check"
           ansible-playbook \
@@ -1292,3 +2058,91 @@ jobs:
             -e "kubernetes_upgrade_version=${K8S_VERSION}" \
             ${DRY_RUN_FLAG} \
             -v
+
+      - name: Setup SSH config for readyz probe hosts
+        if: inputs.readyz_watch
+        run: |
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_IP=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')
+            cat >> ~/.ssh/config << EOF
+
+          Host readyz-${CP_NAME}
+            HostName ${CP_IP}
+            User boxp
+            IdentityFile ~/.ssh/id_ed25519
+            ProxyJump bastion
+            StrictHostKeyChecking accept-new
+          EOF
+          done
+          chmod 600 ~/.ssh/config
+
+      - name: Post-upgrade readyz observation
+        if: inputs.readyz_watch
+        env:
+          OBSERVE_MINUTES: ${{ inputs.readyz_observe_minutes }}
+          TARGET_NODE: ${{ inputs.target_node }}
+        run: |
+          # BOXP-213 (BOXP-194 A2/D2): observe VIP + 3 CP readyz after the node finished upgrading.
+          # Default window: control plane 30 min, golyat-4 (GPU worker) 30 min, other workers 15 min.
+          if [ -z "$OBSERVE_MINUTES" ]; then
+            case "$TARGET_NODE" in
+              shanghai-*|golyat-4) OBSERVE_MINUTES=30 ;;
+              *) OBSERVE_MINUTES=15 ;;
+            esac
+          fi
+          if ! [[ "$OBSERVE_MINUTES" =~ ^[0-9]+$ ]]; then
+            echo "::error::readyz_observe_minutes must be an integer between 0 and 60 (got '$OBSERVE_MINUTES'); the job timeout only covers a 60 minute window"
+            exit 1
+          fi
+          # Force base-10: a leading zero (e.g. "08") would otherwise be read as octal by $(( )).
+          OBSERVE_MINUTES=$((10#${OBSERVE_MINUTES}))
+          if [ "$OBSERVE_MINUTES" -gt 60 ]; then
+            echo "::error::readyz_observe_minutes must be an integer between 0 and 60 (got '$OBSERVE_MINUTES'); the job timeout only covers a 60 minute window"
+            exit 1
+          fi
+          if [ "$OBSERVE_MINUTES" -eq 0 ]; then
+            echo "readyz observation skipped (readyz_observe_minutes=0)"
+            exit 0
+          fi
+          mkdir -p "$READYZ_WATCH_DIR"
+          CP_ARGS=()
+          for CP_NAME in $CONTROL_PLANE_NODES; do
+            CP_ARGS+=(--cp "${CP_NAME}=$(echo "$NODE_IPS" | jq -r --arg n "$CP_NAME" '.[$n]')")
+          done
+          echo "Observing readyz for ${OBSERVE_MINUTES} minutes after upgrading ${TARGET_NODE}"
+          set +e
+          READYZ_SSH_HOST_PREFIX=readyz- scripts/upgrade-k8s/readyz-watch.sh \
+            --vip "vip=${CLUSTER_VIP}" \
+            "${CP_ARGS[@]}" \
+            --interval 30 \
+            --halt-after 180 \
+            --duration $((OBSERVE_MINUTES * 60)) \
+            --out-dir "$READYZ_WATCH_DIR" 2>&1 | tee "$READYZ_WATCH_DIR/watch.log"
+          RC=${PIPESTATUS[0]}
+          set -e
+          echo "::group::readyz summary"
+          cat "$READYZ_WATCH_DIR/readyz-summary.json" 2>/dev/null || echo "(no summary)"
+          echo "::endgroup::"
+          if [ "$RC" -eq 2 ] || [ -f "$READYZ_WATCH_DIR/HALT" ]; then
+            echo "::error::HALT (BOXP-194 H2) during post-upgrade observation after ${TARGET_NODE}: $(cat "$READYZ_WATCH_DIR/HALT" 2>/dev/null). Do NOT dispatch the next node (decision packet 3.4)."
+            exit 2
+          fi
+          if [ "$RC" -ne 0 ]; then
+            echo "::error::readyz-watch exited with code ${RC}"
+            exit "$RC"
+          fi
+          echo "::notice::post-upgrade readyz observation after ${TARGET_NODE} finished without HALT"
+
+      - name: Upload readyz observation artifact
+        if: always() && inputs.readyz_watch
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: readyz-observation-${{ inputs.target_node }}
+          path: |
+            /tmp/readyz-watch/readyz-samples.jsonl
+            /tmp/readyz-watch/readyz-events.jsonl
+            /tmp/readyz-watch/readyz-summary.json
+            /tmp/readyz-watch/HALT
+            /tmp/readyz-watch/watch.log
+          if-no-files-found: warn
+          retention-days: 30

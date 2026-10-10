@@ -1,29 +1,31 @@
 FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
-ARG CODEX_VERSION=0.147.0
-ARG CLAUDE_CODE_VERSION=2.1.229
-ARG EVEN_TERMINAL_VERSION=0.8.1
-ARG PI_AGENT_VERSION=0.84.1
+ARG CODEX_VERSION=0.160.1
+ARG CLAUDE_CODE_VERSION=2.1.292
+ARG EVEN_TERMINAL_VERSION=0.10.5
+ARG PI_AGENT_VERSION=1.0.4
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
-ARG GH_VERSION=2.97.0
-ARG GHQ_VERSION=1.10.1
-ARG GWQ_VERSION=0.1.1
+ARG GH_VERSION=2.102.0
+ARG GHQ_VERSION=1.11.2
+ARG GWQ_VERSION=0.1.2
 ARG CEEKER_VERSION=0.5.0
-ARG BABASHKA_VERSION=1.13.219
-ARG LAZYGIT_VERSION=0.64.1
-ARG YAZI_VERSION=26.5.6
+ARG BABASHKA_VERSION=1.13.225
+ARG LAZYGIT_VERSION=0.66.0
+ARG YAZI_VERSION=26.9.1
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG KUBECTL_VERSION=1.36.3
-ARG KUSTOMIZE_VERSION=5.8.1
+ARG KUSTOMIZE_VERSION=5.8.2
 ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV CODEX_TASK_BOARD_CLAUDE_BIN=/usr/bin/claude
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       bash-completion \
+      build-essential \
       ca-certificates \
       chromium \
       curl \
@@ -35,9 +37,9 @@ RUN apt-get update \
       less \
       lsb-release \
       locales \
-      make \
       mosh \
       openssh-server \
+      python3 \
       ripgrep \
       sudo \
       tar \

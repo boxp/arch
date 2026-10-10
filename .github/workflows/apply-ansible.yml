@@ -7,6 +7,10 @@ on:
       - 'ansible/**'
       - '.github/workflows/apply-ansible.yml'
 
+concurrency:
+  group: lolice-production-cluster-mutation
+  cancel-in-progress: false
+
 jobs:
   apply:
     runs-on: ubuntu-latest
@@ -21,6 +25,10 @@ jobs:
       fail-fast: true
     env:
       NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104","golyat-4":"192.168.10.107"}'
+      # BOXP-225 P2b: control plane に Apply を走らせる前に memory の余力を待つ (wait 型、skip/fail はしない)。
+      CP_APPLY_MIN_MEMAVAILABLE_MIB: 600
+      CP_APPLY_HEADROOM_WAIT_SECONDS: 300
+      CP_APPLY_HEADROOM_POLL_SECONDS: 30
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -28,7 +36,7 @@ jobs:
           persist-credentials: false
 
       - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e6de054238d6b7531b4efff3b6587d9aade6a06c # v6.2.3
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Apply
           aws-region: ap-northeast-1
@@ -73,9 +81,9 @@ jobs:
           chmod 600 ~/.ssh/id_ed25519
 
       - name: Install aqua
-        uses: aquaproj/aqua-installer@96a9bc20066c5bf5e275b41019cfc165b25f4e2e # v4.0.5
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
-          aqua_version: v2.62.3
+          aqua_version: v2.64.0
           working_directory: aqua
 
       - name: Setup SSH config
@@ -108,13 +116,69 @@ jobs:
           echo "Testing SSH connectivity to ${{ matrix.node }} (${NODE_IP}) via bastion..."
           ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
 
+      # BOXP-225 P2b: control plane に Ansible を走らせる前に memory の余力を待つ。
+      # MemAvailable が閾値未満の CP で Ansible を走らせると etcd の major fault / apiserver stall を誘発し、
+      # leader change や liveness kill に至った実績がある (plan 側は PR #13491 で待機 + skip)。
+      # Apply は途中で止めると部分適用になるため、ここでは待つだけで skip / fail はせず、
+      # 待機上限を超えたら warning を出して従来どおり続行する。
+      - name: Wait for control plane memory headroom
+        id: cp-headroom
+        run: |
+          NODE="${{ matrix.node }}"
+          if [[ "$NODE" != shanghai-* ]]; then
+            echo "waited_seconds=0" >> "$GITHUB_OUTPUT"
+            echo "${NODE} is not a control plane; headroom wait skipped."
+            exit 0
+          fi
+          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
+          MIN_KIB=$(( CP_APPLY_MIN_MEMAVAILABLE_MIB * 1024 ))
+          START=$SECONDS
+          DEADLINE=$(( SECONDS + CP_APPLY_HEADROOM_WAIT_SECONDS ))
+          LAST_MIB="unknown"
+          while :; do
+            # 最終 sleep 後 (SECONDS == DEADLINE) に余分な probe を走らせず、宣言した最大待機時間を超えない
+            # (初回 probe は待機上限が 0 でも 1 回は実行する)
+            if [ "$SECONDS" -gt "$START" ] && [ "$SECONDS" -ge "$DEADLINE" ]; then
+              break
+            fi
+            # 各 probe を timeout で上限付きにし、残り待機時間も超えないようにする
+            # (ConnectTimeout は接続までしか効かず、remote 側が hang すると待機上限を超えるため)
+            PROBE_TIMEOUT=$(( DEADLINE - SECONDS ))
+            if [ "$PROBE_TIMEOUT" -gt 60 ]; then PROBE_TIMEOUT=60; fi
+            if [ "$PROBE_TIMEOUT" -lt 1 ]; then PROBE_TIMEOUT=1; fi
+            AVAIL_KIB=$(timeout "$PROBE_TIMEOUT" ssh -o ConnectTimeout=30 "${NODE_IP}" "awk '/^MemAvailable:/ {print \$2}' /proc/meminfo" 2>/dev/null || echo "")
+            if [[ "$AVAIL_KIB" =~ ^[0-9]+$ ]]; then
+              LAST_MIB=$(( AVAIL_KIB / 1024 ))
+              if [ "$AVAIL_KIB" -ge "$MIN_KIB" ]; then
+                echo "${NODE}: MemAvailable ${LAST_MIB}MiB >= ${CP_APPLY_MIN_MEMAVAILABLE_MIB}MiB; proceeding with apply."
+                echo "waited_seconds=$(( SECONDS - START ))" >> "$GITHUB_OUTPUT"
+                echo "memavailable_mib=${LAST_MIB}" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
+              echo "${NODE}: MemAvailable ${LAST_MIB}MiB < ${CP_APPLY_MIN_MEMAVAILABLE_MIB}MiB; waiting."
+            else
+              echo "${NODE}: could not read MemAvailable (ssh/awk failed); waiting."
+            fi
+            if [ "$SECONDS" -ge "$DEADLINE" ]; then
+              break
+            fi
+            # sleep も残り待機時間を超えないようにする
+            SLEEP_SECONDS=$(( DEADLINE - SECONDS ))
+            if [ "$SLEEP_SECONDS" -gt "$CP_APPLY_HEADROOM_POLL_SECONDS" ]; then SLEEP_SECONDS="$CP_APPLY_HEADROOM_POLL_SECONDS"; fi
+            if [ "$SLEEP_SECONDS" -lt 1 ]; then SLEEP_SECONDS=1; fi
+            sleep "$SLEEP_SECONDS"
+          done
+          echo "::warning::Proceeding with Ansible apply on ${NODE} although MemAvailable ${LAST_MIB}MiB stayed below ${CP_APPLY_MIN_MEMAVAILABLE_MIB}MiB for ${CP_APPLY_HEADROOM_WAIT_SECONDS}s (wait-only guard; apply is never skipped)."
+          echo "waited_seconds=$(( SECONDS - START ))" >> "$GITHUB_OUTPUT"
+          echo "memavailable_mib=${LAST_MIB}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Python
         uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: '3.12'
 
       - name: Install uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Install dependencies
         run: |
