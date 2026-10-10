@@ -51,3 +51,29 @@ prefix `hitohub-decommission/`) へ保全・復元検証した後、hitohub 専�
   (DNS 4 record、tunnel 2 + config 2、SSM tunnel token 2、random_password 2、stage の Access application/policy を destroy)。
 - `terraform/cloudflare/boxp.tk`: `hitohub.boxp.tk` CNAME と redirect rule、moved block を削除 (共有 zone の hitohub 専用エントリのみ)。
 - `backend.tf` / `provider.tf` / `tfaction.yaml` / aqua / lock file は残し、tfaction が destroy plan を生成・apply できるようにする (A3 で shell を削除)。
+
+## PR A2 の apply 結果 (2026-10-10)
+
+- PR #13504 (merge `e67bbc8c`)、apply run 38069417957 (5 job すべて success)。
+  - `terraform/aws/hitohub/prod`: 0 added / 0 changed / 7 destroyed
+  - `terraform/aws/hitohub/stage`: 0 added / 0 changed / 7 destroyed
+  - `terraform/cloudflare/b0xp.io/hitohub/prod`: 0 added / 0 changed / 6 destroyed
+  - `terraform/cloudflare/b0xp.io/hitohub/stage`: 0 added / 0 changed / 8 destroyed
+  - `terraform/cloudflare/boxp.tk`: 0 added / 1 changed (redirect ruleset) / 1 destroyed (CNAME)
+- 想定外の destroy や他サービスへの影響は plan / apply ともに無し。
+
+## PR A3 (この PR)
+
+- 空になった working directory の shell を削除: `terraform/aws/hitohub/{prod,stage}`、
+  `terraform/cloudflare/b0xp.io/hitohub/{prod,stage}`、`terraform/cloudflare/boxp.tk/hitohub/{prod,stage}`
+  (backend.tf / provider.tf / tfaction.yaml / aqua / lock / .tfmigrate.hcl / tfmigrate 履歴 / .tfaction)。
+- `README.md` と `docs/project-structure.md` の hitohub 記述を削除。
+- `tfaction-state` / `tfaction-history` 上の既存 state / history オブジェクトは共有 bucket のデータとして触らない
+  (resource は A2 で全て destroy 済みで state は空)。
+- リソース変更は無し (tfaction の plan 対象 working directory 自体が無くなる)。
+
+## lolice 側の実リソース撤去結果 (2026-10-10、参照)
+
+- Argo CD Application `prod-hitohub` / `stage-hitohub` 削除 → TidbCluster 削除 → namespace 削除で
+  PVC 8 / PV 8 / Longhorn volume 8 本を撤去 (Longhorn 18 → 10 volume、すべて healthy)。
+- 詳細は Obsidian `Projects/hitohub/decommission` と lolice 側 plan.md。
