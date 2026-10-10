@@ -1,6 +1,7 @@
 resource "aws_ecr_repository" "hitohub_backend_stage" {
   name                 = "hitohub-backend-stage"
   image_tag_mutability = "IMMUTABLE"
+  force_delete         = true # BOXP-226: 廃止 destroy 時に残存 image ごと削除できるようにする
 
   image_scanning_configuration {
     scan_on_push = true
@@ -38,6 +39,7 @@ resource "aws_ecr_lifecycle_policy" "hitohub_backend_stage_lifecycle_policy" {
 resource "aws_ecr_repository" "hitohub_frontend_stage" {
   name                 = "hitohub-frontend-stage"
   image_tag_mutability = "IMMUTABLE"
+  force_delete         = true # BOXP-226: 廃止 destroy 時に残存 image ごと削除できるようにする
 
   image_scanning_configuration {
     scan_on_push = true
