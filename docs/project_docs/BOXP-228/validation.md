@@ -69,8 +69,10 @@ fi
 
 カスタムXDGの端末runuser whitelistとSSH login session-envへの引継ぎ、冪等bootstrap/fixture clone/fetchを追加検証する。image CIは既定+カスタムXDGの実Node terminal process環境とGit URL解決、SSH loginを確認する。最初の追加smokeのNode process探索と一時remote未登録はテスト不備として修正した。
 
-dotfiles同期のorigin allowlistはraw `remote.origin.url`を照合する。`remote get-url`はSSH rewrite後のURLを返すため、従来のHTTPS allowlistで正常なcloneを削除していた。実sync_onceをfixtureで呼び初回clone/既存fetch/不正origin拒否を検証する。現dotfiles setupはGit設定非管理。任意のユーザーによる後続Git overrideは対象外で、次回bootstrap時の競合検出を維持する。最新CI/レビュー証拠はObsidian Projects/BOXP-228/github-git-sshへ保存する。
+dotfiles同期のorigin allowlistはraw `remote.origin.url`と実効`remote get-url`の両方を照合し、canonical GitHub SSH URLだけを追加許可する。`remote get-url`はSSH rewrite後のURLを返すため、従来のHTTPS allowlistで正常なcloneを削除していた。実sync_onceをfixtureで呼び初回clone/既存fetch/不正origin拒否を検証する。現dotfiles setupはGit設定非管理。任意のユーザーによる後続Git overrideは対象外で、次回bootstrap時の競合検出を維持する。最新CI/レビュー証拠はObsidian Projects/BOXP-228/github-git-sshへ保存する。
 
 ### 対応可能なGit includeの制約
 
 条件付き`includeIf`（gitdir/onbranch等）は起動時のrepo外検証で成立条件を網羅できないため、直接・通常include内のどちらもbootstrapで理由を示して停止する。identityだけの条件付きincludeも未対応として扱う。通常includeは従来どおり検証する。inactive gitdir/onbranchとnested includeIfのfixtureで拒否を確認する。後から任意ユーザーがローカルGit設定や環境overrideを追加する操作はサポート対象外であり、既存設定を変更する前にrunnerを停止し再bootstrapで検証する。
+
+ローカルGit configでdotfilesの実効URLを別hostへrewriteしたfixtureを追加し、raw originが正しい場合でもfetch前に拒否することを確認する。不正URL値は検証エラーログへ表示しない。

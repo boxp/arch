@@ -193,4 +193,11 @@ git -C "${TARGET_DIR}" remote set-url origin https://example.invalid/dotfiles
 before_lines="$(wc -l <"${SSH_CALL_LOG}")"
 sync_once >/dev/null 2>&1
 [[ "$(wc -l <"${SSH_CALL_LOG}")" == "${before_lines}" ]] || fail "unrelated dotfiles origin accepted"
+git -C "${TARGET_DIR}" remote set-url origin https://github.com/boxp/dotfiles
+is_valid_dotfiles_origin || fail "managed GitHub SSH destination rejected"
+git -C "${TARGET_DIR}" config url.https://example.invalid/attacker.insteadOf https://github.com/boxp/dotfiles
+if is_valid_dotfiles_origin; then fail "local rewrite to attacker host accepted"; fi
+sync_once >"${tmp}/rejected-dotfiles.log" 2>&1
+assert_contains "${tmp}/rejected-dotfiles.log" "origin or transport does not match"
+[[ "$(wc -l <"${SSH_CALL_LOG}")" == "${before_lines}" ]] || fail "rejected local rewrite still fetched"
 echo "github Git SSH tests passed"
