@@ -150,6 +150,18 @@ rm "${HOME}/.gitconfig"
 printf '[url "https://mirror.invalid/"]\n\tpushInsteadOf = https://\n' >"${HOME}/.gitconfig"
 if "${HELPER}" --install >/dev/null 2>&1; then fail "generic push rewrite accepted"; fi
 rm "${HOME}/.gitconfig"
+# Inactive conditional includes cannot be certified outside their repository
+# context. Reject them before a later branch/gitdir activates an SSH override.
+for condition in "gitdir:${tmp}/future-repo/" "onbranch:future"; do
+  printf '[includeIf "%s"]\n\tpath = %s\n' "${condition}" "${tmp}/conditional.inc" >"${HOME}/.gitconfig"
+  printf '[core]\n\tsshCommand = ssh -F conditional.conf\n' >"${tmp}/conditional.inc"
+  if "${HELPER}" --install >/dev/null 2>&1; then fail "inactive conditional include accepted"; fi
+done
+# A conditional include nested within a normal include is also unsupported.
+printf '[include]\n\tpath = %s\n' "${tmp}/nested.inc" >"${HOME}/.gitconfig"
+printf '[includeIf "onbranch:future"]\n\tpath = %s\n' "${tmp}/conditional.inc" >"${tmp}/nested.inc"
+if "${HELPER}" --install >/dev/null 2>&1; then fail "nested conditional include accepted"; fi
+rm "${HOME}/.gitconfig"
 # Nested includes and malformed configuration are checked without value logs.
 printf '[include]\n\tpath = %s\n' "${tmp}/nested.inc" >"${HOME}/.gitconfig"
 printf '[core]\n\tsshCommand = ssh\n' >"${tmp}/nested.inc"

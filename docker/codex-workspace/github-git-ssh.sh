@@ -97,6 +97,14 @@ for file in "${home}/.gitconfig" "${git_config}"; do
     echo "cannot parse Git configuration: ${file}" >&2
     exit 1
   fi
+  # Conditional includes can become active only inside a later repository or
+  # branch, beyond this startup check. Fail closed rather than claiming their
+  # future SSH commands/URL rewrites have been validated. Plain includes are
+  # still supported and their nested keys are checked here.
+  if git config --includes --file "${file}" --name-only --list 2>/dev/null | grep -qi '^includeif\..*\.path$'; then
+    echo "conditional Git includes are unsupported by managed GitHub SSH transport: ${file}" >&2
+    exit 1
+  fi
   while IFS= read -r command; do
     if [[ "${command}" != "${ssh_wrapper} --ssh-mode" ]]; then
       echo "existing core.sshCommand in ${file} conflicts with managed GitHub SSH transport" >&2
