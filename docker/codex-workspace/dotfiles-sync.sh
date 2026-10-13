@@ -19,6 +19,8 @@ readonly EXPECTED_DOTFILES_REPO="https://github.com/boxp/dotfiles"
 
 log() { echo "[dotfiles-sync] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
+# Validate the stored repository identity, before Git applies transport URL
+# rewrites. A GitHub HTTPS origin may correctly resolve to SSH at runtime.
 is_valid_dotfiles_url() {
   local url="$1"
   [[ "$url" == "https://github.com/boxp/dotfiles" ]] || \
@@ -44,7 +46,7 @@ sync_once() {
     mkdir -p "$(dirname "${TARGET_DIR}")"
     if git clone --branch master "${EXPECTED_DOTFILES_REPO}" "${TARGET_DIR}"; then
       local cloned_remote
-      cloned_remote=$(git -C "${TARGET_DIR}" remote get-url origin 2>/dev/null || echo "")
+      cloned_remote=$(git -C "${TARGET_DIR}" config --get remote.origin.url 2>/dev/null || echo "")
       if ! is_valid_dotfiles_url "${cloned_remote}"; then
         log "ERROR: Cloned remote '${cloned_remote}' is not the expected dotfiles repo. Removing clone."
         rm -rf "${TARGET_DIR}"
@@ -65,7 +67,7 @@ sync_once() {
   fi
 
   local remote_url
-  remote_url=$(git -C "${TARGET_DIR}" remote get-url origin 2>/dev/null || echo "")
+  remote_url=$(git -C "${TARGET_DIR}" config --get remote.origin.url 2>/dev/null || echo "")
   if ! is_valid_dotfiles_url "${remote_url}"; then
     log "ERROR: ${TARGET_DIR} origin is '${remote_url}', expected exact boxp/dotfiles URL, skipping"
     return

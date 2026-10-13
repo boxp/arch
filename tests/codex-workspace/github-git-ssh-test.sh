@@ -166,4 +166,19 @@ git -C "${tmp}/clone" remote add other https://example.invalid/fixture.git
 [[ "$(git -C "${tmp}/clone" remote get-url other)" == https://example.invalid/fixture.git ]] || fail "other HTTPS host changed"
 [[ "$(git -C "${tmp}/clone" config remote.origin.url)" == https://github.com/boxp/fixture.git ]] || fail "raw origin changed"
 [[ "$(git -C "${tmp}/clone" remote get-url --push origin)" == ssh://git@github.com/boxp/fixture.git ]] || fail "HTTPS push transport not rewritten"
+# The real dotfiles sync must accept its stored HTTPS origin after SSH rewrite,
+# both on first clone and when inspecting an existing checkout.
+git --git-dir="${SSH_BARE_REPO}" update-ref refs/heads/master refs/heads/main
+source <(sed '/^while true; do$/,$d' "${ROOT_DIR}/docker/codex-workspace/dotfiles-sync.sh")
+TARGET_DIR="${tmp}/dotfiles"
+sync_once >/dev/null 2>&1
+[[ -d "${TARGET_DIR}/.git" && "${FIRST_SYNC_DONE}" == true ]] || fail "dotfiles clone rejected SSH rewrite"
+[[ "$(git -C "${TARGET_DIR}" remote get-url origin)" == ssh://git@github.com/boxp/dotfiles ]] || fail "dotfiles clone was not rewritten"
+SETUP_NEEDED=false
+sync_once >/dev/null 2>&1
+[[ "$(git -C "${TARGET_DIR}" rev-parse refs/remotes/origin/master)" == "$(git --git-dir="${SSH_BARE_REPO}" rev-parse master)" ]] || fail "existing dotfiles fetch failed"
+git -C "${TARGET_DIR}" remote set-url origin https://example.invalid/dotfiles
+before_lines="$(wc -l <"${SSH_CALL_LOG}")"
+sync_once >/dev/null 2>&1
+[[ "$(wc -l <"${SSH_CALL_LOG}")" == "${before_lines}" ]] || fail "unrelated dotfiles origin accepted"
 echo "github Git SSH tests passed"

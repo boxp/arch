@@ -108,8 +108,9 @@ args=()
 [[ -z "${expected}" ]] || args=("XDG_CONFIG_HOME=${actual}")
 fixture="$(mktemp -d)"
 git init -q "${fixture}"
+git -C "${fixture}" remote add fixture https://github.com/boxp/fixture.git
 env -u XDG_CONFIG_HOME HOME=/home/boxp "${args[@]}" \
-  git -C "${fixture}" -c remote.fixture.url=https://github.com/boxp/fixture.git remote get-url fixture \
+  git -C "${fixture}" remote get-url fixture \
   | grep -Fxq ssh://git@github.com/boxp/fixture.git
 EOF
 if [[ -n "${XDG_PATH}" ]]; then

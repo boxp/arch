@@ -64,3 +64,9 @@ fi
 本票の実writeは隔離HOMEのbootstrapを使い、HTTPS形式URLから実装branchへ通常pushして確認済み。ログはSSH/GitHub/strict/batchだけ。remote headは`62ae135f216e193cc94b57a2a963c628cade90bb`（最初の実装push時点）。workflow writeは227で同じworkspace/account/keyを利用したPR #818の成功証拠を参照する。SSH鍵にはOAuth workflow scopeはなく、read/挨拶だけでworkflow writeを完了扱いにしない。
 
 再bootstrapと新HOMEは検証済みだが、実image再build/実Pod再作成後の継続性は未検証。鍵とhost信頼が未提供ならSSH自体が停止し、HTTPSへfallbackしない。gh PR/APIは通常HOMEの既存OAuthを使用し、subscription認証を変更しない。LFSの別HTTP endpointやmanifest外のprivate dependency、明示的なrepo/env/command-line transport overrideは今回の検証範囲外。
+
+## レビュー再試行の追加検証
+
+カスタムXDGの端末runuser whitelistとSSH login session-envへの引継ぎ、冪等bootstrap/fixture clone/fetchを追加検証する。image CIは既定+カスタムXDGの実Node terminal process環境とGit URL解決、SSH loginを確認する。最初の追加smokeのNode process探索と一時remote未登録はテスト不備として修正した。
+
+dotfiles同期のorigin allowlistはraw `remote.origin.url`を照合する。`remote get-url`はSSH rewrite後のURLを返すため、従来のHTTPS allowlistで正常なcloneを削除していた。実sync_onceをfixtureで呼び初回clone/既存fetch/不正origin拒否を検証する。現dotfiles setupはGit設定非管理。任意のユーザーによる後続Git overrideは対象外で、次回bootstrap時の競合検出を維持する。最新CI/レビュー証拠はObsidian Projects/BOXP-228/github-git-sshへ保存する。
