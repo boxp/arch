@@ -82,33 +82,41 @@ config_stat="$(docker exec "${container}" stat -c '%U:%G %a' /home/boxp/.even-te
 
 # Check the real entrypoint child; docker exec's inherited environment alone
 # can hide a runuser/login regression. Only print the nonsecret XDG variable.
-docker exec -i "${container}" bash -s -- "${XDG_PATH}" <<'EOF'
+docker exec -u boxp -i "${container}" bash -s -- "${XDG_PATH}" <<'EOF'
 set -euo pipefail
 expected="$1"
 pid=""
-for comm_file in /proc/[0-9]*/comm; do
-  IFS= read -r comm <"${comm_file}" || continue
-  if [[ "${comm}" == even-terminal && "$(stat -c %U "${comm_file}")" == boxp ]]; then
-    pid="${comm_file%/comm}"
-    break
-  fi
+for cmdline_file in /proc/[0-9]*/cmdline; do
+  [[ "$(stat -c %U "${cmdline_file}" 2>/dev/null)" == boxp ]] || continue
+  # even-terminal is a Node CLI, so the process comm is node. Locate its
+  # script argument without printing command lines or unrelated environment.
+  while IFS= read -r -d '' arg; do
+    case "${arg}" in
+      */even-terminal|*/@evenrealities/even-terminal/bin/cli.js)
+        pid="${cmdline_file%/cmdline}" ;;
+    esac
+  done <"${cmdline_file}"
+  [[ -z "${pid}" ]] || break
 done
-[[ -n "${pid}" ]]
-actual="$(tr '\0' '\n' <"${pid}/environ" | sed -n 's/^XDG_CONFIG_HOME=//p')"
-[[ "${actual}" == "${expected}" ]]
+[[ -n "${pid}" ]] || { echo "even-terminal process not found" >&2; exit 1; }
+actual=""
+while IFS= read -r -d '' entry; do
+  case "${entry}" in XDG_CONFIG_HOME=*) actual="${entry#*=}" ;; esac
+done <"${pid}/environ"
+[[ "${actual}" == "${expected}" ]] || { echo "terminal XDG environment mismatch" >&2; exit 1; }
 args=()
-if [[ -n "${expected}" ]]; then
-  args=("XDG_CONFIG_HOME=${actual}")
-  # SSH login shells read the startup environment through this profile.
-  login_xdg="$(runuser -l boxp -c 'printf "%s" "${XDG_CONFIG_HOME:-}"')"
-  [[ "${login_xdg}" == "${expected}" ]]
-fi
-fixture="$(runuser -u boxp -- mktemp -d)"
-runuser -u boxp -- git init -q "${fixture}"
-runuser -u boxp -- env -u XDG_CONFIG_HOME HOME=/home/boxp "${args[@]}" \
+[[ -z "${expected}" ]] || args=("XDG_CONFIG_HOME=${actual}")
+fixture="$(mktemp -d)"
+git init -q "${fixture}"
+env -u XDG_CONFIG_HOME HOME=/home/boxp "${args[@]}" \
   git -C "${fixture}" -c remote.fixture.url=https://github.com/boxp/fixture.git remote get-url fixture \
   | grep -Fxq ssh://git@github.com/boxp/fixture.git
 EOF
+if [[ -n "${XDG_PATH}" ]]; then
+  # SSH login shells read the startup environment through this profile.
+  login_xdg="$(docker exec "${container}" /usr/sbin/runuser -l boxp -c 'printf "%s" "${XDG_CONFIG_HOME:-}"')"
+  [[ "${login_xdg}" == "${XDG_PATH}" ]] || fail "SSH login XDG environment mismatch"
+fi
 
 sleep 5
 container_running || fail "container exited after even-terminal started"
