@@ -14,11 +14,15 @@ unset XDG_CONFIG_HOME GIT_CONFIG_GLOBAL GIT_SSH GIT_SSH_COMMAND
 export GIT_CONFIG_NOSYSTEM=1
 export HOME="${tmp}/home"
 mkdir -m 0700 "${HOME}"
+# Git reads both normal global files for transport, even though --global
+# writes/lists a single target file. Existing identity must stay intact.
+printf '[user]\n\tname = fixture-existing\n\temail = fixture@example.invalid\n' >"${HOME}/.gitconfig"
 "${HELPER}" --install
 before="$(cat "${HOME}/.config/git/config")"
 "${HELPER}" --install
 [[ "$(cat "${HOME}/.config/git/config")" == "${before}" ]] || fail "install duplicated its include"
 assert_contains "${HOME}/.config/git/config" "${HOME}/.local/share/codex-workspace/github-git.inc"
+[[ "$(git -C "${tmp}" config user.name)" == fixture-existing ]] || fail "existing Git identity changed"
 
 mkdir -p "${tmp}/bin"
 cat >"${tmp}/bin/ssh" <<'EOF'
@@ -106,6 +110,11 @@ export HOME="${tmp}/new-home"
 mkdir -m 0700 "${HOME}"
 "${HELPER}" --install >/dev/null
 git clone "https://github.com/boxp/fixture.git" "${tmp}/new-clone" >/dev/null 2>&1 || fail "new HOME could not use the GitHub SSH configuration"
+# A .gitconfig created after bootstrap also keeps XDG transport active.
+printf '[user]\n\tname = later-identity\n' >"${HOME}/.gitconfig"
+"${HELPER}" --install >/dev/null
+git -C "${tmp}/new-clone" fetch origin >/dev/null 2>&1 || fail "later .gitconfig disabled SSH"
+[[ "$(git -C "${tmp}" config user.name)" == later-identity ]] || fail "later identity was not retained"
 
 # Bad or conflicting bootstrap inputs fail without changing another config.
 mkdir -m 0700 "${tmp}/conflict-home"

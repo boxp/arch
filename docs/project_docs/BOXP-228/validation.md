@@ -43,6 +43,10 @@ rm -- "$include"
 - 既存task-board runner回帰テスト、recurring-eventsテスト、bash構文、actionlint成功。recurring-eventsのsudo依存ownership caseは環境制約でskipされ、passedと区別する。
 - 対象変更ファイルのgitleaks findings=0。codex-reviewの独立レビューは指摘なし（最終commit後の追加結果はObsidian報告を参照）。
 
+### 既存.gitconfigとXDG設定の共存
+
+最終レビューの「.gitconfigがあるとXDG設定を読まない」という指摘は、`git config --global --list`で単一targetを指定した挙動と、Git transportが通常の全設定を読む挙動を混同したものだった。[Git公式FILES仕様](https://git-scm.com/docs/git-config#FILES)では両ファイルの読取が規定されている。既存identityを持つ.gitconfigとbootstrap後に追加された.gitconfigの両方で、identity保持と実Git SSH操作をfixture回帰テストに追加し成功を確認した。
+
 ## 残る制約
 
 本票の実writeは隔離HOMEのbootstrapを使い、HTTPS形式URLから実装branchへ通常pushして確認済み。ログはSSH/GitHub/strict/batchだけ。remote headは`62ae135f216e193cc94b57a2a963c628cade90bb`（最初の実装push時点）。workflow writeは227で同じworkspace/account/keyを利用したPR #818の成功証拠を参照する。SSH鍵にはOAuth workflow scopeはなく、read/挨拶だけでworkflow writeを完了扱いにしない。
