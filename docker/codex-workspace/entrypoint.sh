@@ -185,6 +185,7 @@ ensure_recurring_events_cron_job
 if [[ "${CODEX_WORKSPACE_ENTRYPOINT_SEED_ONLY:-}" == "1" ]]; then
   exit 0
 fi
+/usr/sbin/runuser -u boxp -- env HOME=/home/boxp /usr/local/bin/codex-workspace-github-git-ssh --install
 configure_codex
 configure_pi_agent
 
