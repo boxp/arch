@@ -26,11 +26,23 @@ workspaceユーザーとして以下を実行する（通常のHOMEを使用し�
 ```bash
 config="${XDG_CONFIG_HOME:-$HOME/.config}/git/config"
 include="$HOME/.local/share/codex-workspace/github-git.inc"
-git config --file "$config" --fixed-value --unset-all include.path "$include"
-rm -- "$include"
+if git config --file "$config" --get-all include.path 2>/dev/null | grep -Fxq "$include"; then
+  git config --file "$config" --fixed-value --unset-all include.path "$include"
+fi
+if [ -f "$include" ] && [ ! -L "$include" ]; then
+  unlink "$include"
+fi
 ```
 
-その後、外部制御側で記録済みの直前image digestへ戻し、同じPVC・既存鍵の状態で新Podを検証する。URL rewriteを除去するとHTTPS originは従来のOAuth/helperを再び使用する。SSH originは元のまま。
+反映/復旧の外部担当は以下の順序で作業し、各段階の証拠を本票報告へ記録する。
+
+1. 本runを含む全claimの正規終了、runnerのprepare-shutdown、成果/状態保存、外部の復旧担当を確保する。共有PVCを使用するworkspace/runner/同期/cron等のコンテナと他Pod/CronJobを列挙し、UID/HOME/XDG、設定overrideの有無、鍵/known_hostsの存在と所有権、mount、SSH到達性を非秘密メタデータで確認する。
+2. codex-workspace専用ImageUpdaterの更新対象をGitOpsで一時除外し、他Applicationのupdaterは維持する。復旧点として元の対象設定、変更対象include値/存在/permission、GitOps desired imageと実Pod imageIDの直前digestを記録する。credentialを含み得る設定全文やSecretはバックアップしない。
+3. 本PRの検証済みcommitとbuildが出力したimmutable digestの対応を記録する。merge/image公開後もdesired stateをそのdigestへ固定し、updaterが別buildへ進めない状態で対象workspaceだけを反映する。Recreate/replicas1による停止を外部担当が監視し、pull/起動/SSH検証が失敗した時点で直前digestへ復旧する（失敗Podを繰り返し再起動しない）。
+4. 新PodのimageID一致、PVC、実行ユーザーとHOME、bootstrap冪等性、HTTPS形式URLからのSSH read、承認済みwrite経路、gh APIを確認する。実Pod検証が完了してからupdaterの元設定とrunnerを正規再開する。
+5. rollbackでは上のinclude除去を先に行い、updater除外を維持したままGitOps desired imageを記録済み直前digestへ戻す。Pod imageIDと従来Git/gh経路が復旧した証拠を得てからupdater/runnerを再開する。
+
+同じPVC・既存鍵の状態で新Podを検証する。URL rewriteを除去するとHTTPS originは従来のOAuth/helperを再び使用する。SSH originは元のまま。
 
 ## 実装と検証結果
 
