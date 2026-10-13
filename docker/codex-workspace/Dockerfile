@@ -1,7 +1,7 @@
 FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
-ARG CODEX_VERSION=0.162.0
+ARG CODEX_VERSION=0.162.1
 ARG CLAUDE_CODE_VERSION=2.1.296
 ARG EVEN_TERMINAL_VERSION=0.10.5
 ARG PI_AGENT_VERSION=1.1.0
