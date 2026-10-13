@@ -116,6 +116,19 @@ printf '[user]\n\tname = later-identity\n' >"${HOME}/.gitconfig"
 git -C "${tmp}/new-clone" fetch origin >/dev/null 2>&1 || fail "later .gitconfig disabled SSH"
 [[ "$(git -C "${tmp}" config user.name)" == later-identity ]] || fail "later identity was not retained"
 
+# Custom XDG paths must retain their transport settings across bootstrap.
+export HOME="${tmp}/custom-xdg-home"
+export XDG_CONFIG_HOME="${HOME}/custom-config"
+mkdir -m 0700 "${HOME}"
+"${HELPER}" --install >/dev/null
+before="$(cat "${XDG_CONFIG_HOME}/git/config")"
+"${HELPER}" --install >/dev/null
+[[ "$(cat "${XDG_CONFIG_HOME}/git/config")" == "${before}" ]] || fail "custom XDG include duplicated"
+git clone "https://github.com/boxp/fixture.git" "${tmp}/custom-xdg-clone" >/dev/null 2>&1 || fail "custom XDG clone failed"
+git -C "${tmp}/custom-xdg-clone" fetch origin >/dev/null 2>&1 || fail "custom XDG fetch failed"
+unset XDG_CONFIG_HOME
+export HOME="${tmp}/new-home"
+
 # Bad or conflicting bootstrap inputs fail without changing another config.
 mkdir -m 0700 "${tmp}/conflict-home"
 printf '[core]\n\tsshCommand = ssh -F user.conf\n' >"${tmp}/conflict-home/.gitconfig"

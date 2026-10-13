@@ -18,3 +18,10 @@ codex-workspace内のGitHub向けclone/fetch/pull/pushを既存SSH鍵へ統一�
 - gh protocolはsshだがGitHub HTTPS URL rewriteがない。gh protocolだけでは既存HTTPS originを変更しない。
 - 既存標準鍵とknown_hostsを利用したBatchMode/StrictHostKeyChecking=yesでboxpのGitHub認証、arch fetchを確認。SSH鍵にOAuth workflow scopeはない。
 - 最新mainから今回のrun専用branchで作業する。既存run・共有checkout・資格情報の内容は変更しない。
+
+## レビュー再試行: XDG環境境界
+
+- カスタムXDG_CONFIG_HOMEを最終端末runuserのwhitelistとSSHログイン用session-envに追加する。
+- カスタムXDGでの冪等bootstrapと実Git fixture clone/fetchを検証する。
+- image CIで既定HOMEに加えカスタムXDGの起動を試し、端末プロセスの実環境、SSHログイン環境、GitHub URLのSSH解決を確認する。
+- 同一PR #13622へ通常SSH pushし、CIとレビューを再確認する。稼働HOME/Podへの反映は引継ぎまで行わない。
