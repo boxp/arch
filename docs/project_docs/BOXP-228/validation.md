@@ -1,196 +1,76 @@
-#!/usr/bin/env bash
-set -euo pipefail
+# BOXP-228 検証・反映記録
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-HELPER="${ROOT_DIR}/docker/codex-workspace/github-git-ssh.sh"
-tmp="$(mktemp -d)"
-trap 'rm -rf "${tmp}"' EXIT
+## 現状
 
-fail() { echo "error: $*" >&2; exit 1; }
-assert_contains() { grep -Fq -- "$2" "$1" || fail "expected $1 to contain $2"; }
+archのbootstrap実装と隔離検証が完了。稼働workspaceへの設定適用、merge、image公開、Pod置換は未実施。実装commit `62ae135f216e193cc94b57a2a963c628cade90bb` の通常pushが成功。PR結果はObsidianの本票報告へ記録する。
 
-# The installer accepts a disposable current-user-owned HOME and can be rerun.
-unset XDG_CONFIG_HOME GIT_CONFIG_GLOBAL GIT_SSH GIT_SSH_COMMAND
-export GIT_CONFIG_NOSYSTEM=1
-export HOME="${tmp}/home"
-mkdir -m 0700 "${HOME}"
-# Git reads both normal global files for transport, even though --global
-# writes/lists a single target file. Existing identity must stay intact.
-printf '[user]\n\tname = fixture-existing\n\temail = fixture@example.invalid\n' >"${HOME}/.gitconfig"
-"${HELPER}" --install
-before="$(cat "${HOME}/.config/git/config")"
-"${HELPER}" --install
-[[ "$(cat "${HOME}/.config/git/config")" == "${before}" ]] || fail "install duplicated its include"
-assert_contains "${HOME}/.config/git/config" "${HOME}/.local/share/codex-workspace/github-git.inc"
-[[ "$(git -C "${tmp}" config user.name)" == fixture-existing ]] || fail "existing Git identity changed"
+## 調査証拠
 
-mkdir -p "${tmp}/bin"
-cat >"${tmp}/bin/ssh" <<'EOF'
-#!/usr/bin/env bash
-set -eu
-if [[ "${1:-}" == -G ]]; then
-  host=""
-  for arg in "$@"; do
-    case "$arg" in
-      -G|-p|-l|-o|-i|-F|-J|-W|-b|-c|-D|-L|-R|-S|-w) continue ;;
-      -*|[0-9]*) continue ;;
-      *) host="${arg##*@}" ;;
-    esac
-  done
-  case "$host" in
-    github-alias) printf 'hostname ssh.github.com\n' ;;
-    *) printf 'hostname %s\n' "$host" ;;
-  esac
-  exit 0
+- 調査開始時のarch main: `838eec9fefc0cafd1682a3cad40b3e7438b90e85`。共有checkoutの古いHEADから今回run専用worktreeのみfast-forward。origin/mainは更新せず、明示SSH fetchのFETCH_HEADを使用した。mainはRenovateにより進行するため調査時点を区別する。
+- BOXP-227はreviewで終了しclaimなし。本228のみclaimが存在。227 PR #818のhead `77e4ef2b872586f2d89e28aa4400bc31e688bd35`、OPEN/未mergeをAPIで確認。本票では更新・CI再実行なし。
+- OSユーザーboxp。標準SSH鍵とknown_hostsが同ユーザー所有・600、SSH configとagentなし。鍵内容は読まず、公開fingerprintと存在/permissionのみ確認した。
+- `BatchMode=yes`/`StrictHostKeyChecking=yes`のSSH挨拶はboxp認証成功（GitHubの正常挨拶はexit1）。archへの明示SSH fetch成功。APIのarch permissions.push=trueは補助証拠であり、SSH write完了とは別に扱う。
+- gh protocolは既にssh。一方、GitHub HTTPS向けinsteadOf/pushInsteadOfはなし。GitHub credential helperはgh。gh protocolは既存HTTPS URLを置換しないため、HTTPS remoteやdotfilesの固定HTTPS cloneはOAuth Git transportを選べる状態。
+- 現dotfiles setupはGit設定非管理。image/bootstrap所有元はarch、HOMEの永続化とdeployment所有元はlolice。
+- GitHub APIの現deploymentはreplicas1、Recreate、workspace image latest、HOME PVCを複数サービスで共有。main merge後のimage公開とimage updaterがPod更新に繋がり得る。
+- runnerは既存ローカルrepoからrun用worktreeを作成する。archに.gitmodules/LFS ruleなし、tracked依存manifestにGit URL参照なし。manifest外のprivate dependencyや将来のLFS/submoduleは未検証。
+
+## 反映時点とrollback
+
+本run自身がこのPodのrunner claimを保持するため、自己置換はしない。claim終了後に外部制御担当が正規runner停止/prepare-shutdownと全claim解放を確認し、成果とrunner状態を保存してから反映する。lock強制解除、強制中断、全サービスrolloutは行わない。
+
+反映前にworkspaceユーザーのGit configから変更対象キーとimageの直前digestを非秘密の復旧点として保存する。includeだけを除去してから直前imageへ戻す。旧imageにwrapperがない状態でincludeを残すとSSH Gitが停止するため、設定rollbackを先に行う。既存remote・helper・SSH鍵・known_hosts・subscription認証を変更しない。
+
+workspaceユーザーとして以下を実行する（通常のHOMEを使用し、稼働Git操作/claim終了後に行う）。キーを完全一致で除去するため他includeは維持される。
+
+```bash
+config="${XDG_CONFIG_HOME:-$HOME/.config}/git/config"
+include="$HOME/.local/share/codex-workspace/github-git.inc"
+if git config --file "$config" --get-all include.path 2>/dev/null | grep -Fxq "$include"; then
+  git config --file "$config" --fixed-value --unset-all include.path "$include"
 fi
-printf '%s\n' "$*" >>"${SSH_CALL_LOG}"
-if [[ "${SSH_FAKE_REJECT:-false}" != true && "$*" == *git-upload-pack* ]]; then
-  exec git-upload-pack "${SSH_BARE_REPO}"
+if [ -f "$include" ] && [ ! -L "$include" ]; then
+  unlink "$include"
 fi
-if [[ "${SSH_FAKE_REJECT:-false}" != true && "$*" == *git-receive-pack* ]]; then
-  exec git-receive-pack "${SSH_BARE_REPO}"
-fi
-echo 'Host key verification failed.' >&2
-exit 255
-EOF
-chmod +x "${tmp}/bin/ssh"
-export PATH="${tmp}/bin:${PATH}"
-export SSH_CALL_LOG="${tmp}/ssh.log"
-export SSH_BARE_REPO="${tmp}/origin.git"
+```
 
-# A local bare repository is served through the mocked SSH process so these
-# are successful Git protocol operations, not only command construction.
-git init --bare --initial-branch=main "${tmp}/origin.git" >/dev/null
-git init --initial-branch=main "${tmp}/seed" >/dev/null
-git -C "${tmp}/seed" config user.name fixture
-git -C "${tmp}/seed" config user.email fixture@example.invalid
-printf 'fixture\n' >"${tmp}/seed/file"
-git -C "${tmp}/seed" add file
-git -C "${tmp}/seed" commit -m fixture >/dev/null
-git -C "${tmp}/seed" push "${tmp}/origin.git" HEAD:refs/heads/main >/dev/null 2>&1
+反映/復旧の外部担当は以下の順序で作業し、各段階の証拠を本票報告へ記録する。
 
-(cd "${tmp}" && git clone "https://github.com/boxp/fixture.git" "${tmp}/clone") >/dev/null 2>&1 || fail "clone via SSH fixture failed"
-git -C "${tmp}/clone" config user.name fixture
-git -C "${tmp}/clone" config user.email fixture@example.invalid
-git -C "${tmp}/clone" fetch origin >/dev/null 2>&1 || fail "fetch via SSH fixture failed"
-git -C "${tmp}/clone" pull origin main >/dev/null 2>&1 || fail "pull via SSH fixture failed"
-printf 'pushed\n' >>"${tmp}/clone/file"
-git -C "${tmp}/clone" add file
-git -C "${tmp}/clone" commit -m pushed >/dev/null
-git -C "${tmp}/clone" push origin HEAD:refs/heads/pushed >/dev/null 2>&1 || fail "push via SSH fixture failed"
-git -C "${tmp}/clone" worktree add "${tmp}/clone-worktree" HEAD >/dev/null 2>&1 || fail "worktree creation failed"
-git -C "${tmp}/clone-worktree" fetch origin >/dev/null 2>&1 || fail "new worktree could not use GitHub SSH config"
-[[ "$(wc -l <"${SSH_CALL_LOG}")" -ge 5 ]] || fail "expected clone/fetch/pull/push to invoke SSH"
-assert_contains "${SSH_CALL_LOG}" "BatchMode=yes"
-assert_contains "${SSH_CALL_LOG}" "StrictHostKeyChecking=yes"
+1. 本runを含む全claimの正規終了、runnerのprepare-shutdown、成果/状態保存、外部の復旧担当を確保する。共有PVCを使用するworkspace/runner/同期/cron等のコンテナと他Pod/CronJobを列挙し、UID/HOME/XDG、設定overrideの有無、鍵/known_hostsの存在と所有権、mount、SSH到達性を非秘密メタデータで確認する。
+2. codex-workspace専用ImageUpdaterの更新対象をGitOpsで一時除外し、他Applicationのupdaterは維持する。復旧点として元の対象設定、変更対象include値/存在/permission、GitOps desired imageと実Pod imageIDの直前digestを記録する。credentialを含み得る設定全文やSecretはバックアップしない。
+3. 本PRの検証済みcommitとbuildが出力したimmutable digestの対応を記録する。merge/image公開後もdesired stateをそのdigestへ固定し、updaterが別buildへ進めない状態で対象workspaceだけを反映する。Recreate/replicas1による停止を外部担当が監視し、pull/起動/SSH検証が失敗した時点で直前digestへ復旧する（失敗Podを繰り返し再起動しない）。
+4. 新PodのimageID一致、PVC、実行ユーザーとHOME、bootstrap冪等性、HTTPS形式URLからのSSH read、承認済みwrite経路、gh APIを確認する。実Pod検証が完了してからupdaterの元設定とrunnerを正規再開する。
+5. rollbackでは上のinclude除去を先に行い、updater除外を維持したままGitOps desired imageを記録済み直前digestへ戻す。Pod imageIDと従来Git/gh経路が復旧した証拠を得てからupdater/runnerを再開する。
 
-# A rejected unknown host key fails the Git command and does not retry HTTPS.
-export SSH_FAKE_REJECT=true
-before_lines="$(wc -l <"${SSH_CALL_LOG}")"
-if GIT_TRACE="${tmp}/git-trace.log" git -C "${tmp}/clone" fetch origin >/dev/null 2>&1; then
-  fail "fetch unexpectedly succeeded after host-key rejection"
-fi
-[[ "$(wc -l <"${SSH_CALL_LOG}")" -gt "${before_lines}" ]] || fail "rejected host-key fetch did not invoke SSH"
-assert_contains "${tmp}/git-trace.log" "ssh"
-if grep -q "git-remote-https" "${tmp}/git-trace.log"; then fail "rejected SSH transport retried through HTTPS"; fi
-unset SSH_FAKE_REJECT
+同じPVC・既存鍵の状態で新Podを検証する。URL rewriteを除去するとHTTPS originは従来のOAuth/helperを再び使用する。SSH originは元のまま。
 
-# Resolved GitHub aliases get strict options; unrelated hosts preserve arguments.
-"${HELPER}" --ssh-mode -p 2200 github-alias true >/dev/null 2>&1 || true
-last="$(tail -n 1 "${SSH_CALL_LOG}")"
-[[ "${last}" == *"StrictHostKeyChecking=yes"* ]] || fail "GitHub alias did not get strict options"
-before_lines="$(wc -l <"${SSH_CALL_LOG}")"
-"${HELPER}" --ssh-mode -p 2200 git@example.invalid true >/dev/null 2>&1 || true
-[[ "$(wc -l <"${SSH_CALL_LOG}")" -eq $((before_lines + 1)) ]] || fail "non-GitHub SSH call was not preserved"
-last="$(tail -n 1 "${SSH_CALL_LOG}")"
-[[ "${last}" == "-p 2200 git@example.invalid true" ]] || fail "non-GitHub SSH arguments changed: ${last}"
+## 実装と検証結果
 
-# The same bootstrap reproduces the config in a fresh HOME for a new workspace.
-export HOME="${tmp}/new-home"
-mkdir -m 0700 "${HOME}"
-"${HELPER}" --install >/dev/null
-git clone "https://github.com/boxp/fixture.git" "${tmp}/new-clone" >/dev/null 2>&1 || fail "new HOME could not use the GitHub SSH configuration"
-# A .gitconfig created after bootstrap also keeps XDG transport active.
-printf '[user]\n\tname = later-identity\n' >"${HOME}/.gitconfig"
-"${HELPER}" --install >/dev/null
-git -C "${tmp}/new-clone" fetch origin >/dev/null 2>&1 || fail "later .gitconfig disabled SSH"
-[[ "$(git -C "${tmp}" config user.name)" == later-identity ]] || fail "later identity was not retained"
+- imageに専用helperを同梱。entrypointのユーザー設定段階でboxp/HOMEを明示し、dotfiles sync前に実行する。seed-onlyとno-op sidecar経路は従来どおり。
+- 標準XDG Git configへ専用includeを一度だけ追加。既存設定を上書きしない。HTTPSの`github.com/` URLだけを`ssh://git@github.com/`へrewriteし、raw remoteは維持する。
+- helperがGitHubとGitHub SSH aliasへBatchMode/StrictHostKeyChecking=yesを付与する。他hostでは通常ssh引数を維持する。既存SSH設定、鍵、agent、known_hostsをそのまま利用する。
+- 起動ごとに正常HOME/XDG/専用ファイル/既存core.sshCommand/URL rewrite/nested includesを再確認し、競合時は具体的理由で停止する。通常Git configを無効化するGIT_CONFIG_GLOBAL overrideを拒否する。
+- 成功したfixture: 実Git clientとローカルbareへのSSH mock橋渡しによるclone/fetch/pull/push、新worktree fetch、新HOME bootstrap、冪等性、alias strict、他host引数保持、raw HTTPS remote維持、SSH host拒否時にHTTPS fallbackなし。既存/後付け/nested競合、不正HOME/XDG、外部XDG、override、malformed configも拒否。
+- 実GitHub: 隔離HOMEへ2回bootstrap後、既存鍵と信頼known_hostsを利用しHTTPS形式arch URLからclone、fetch、新worktree fetchの3操作が成功。SSH shimログはtransport=ssh/host=github.comだけに限定、鍵のコピー・global設定変更なし。
+- 既存task-board runner回帰テスト、recurring-eventsテスト、bash構文、actionlint成功。recurring-eventsのsudo依存ownership caseは環境制約でskipされ、passedと区別する。
+- 対象変更ファイルのgitleaks findings=0。codex-reviewの独立レビューは指摘なし（最終commit後の追加結果はObsidian報告を参照）。
 
-# Custom XDG paths must retain their transport settings across bootstrap.
-export HOME="${tmp}/custom-xdg-home"
-export XDG_CONFIG_HOME="${HOME}/custom-config"
-mkdir -m 0700 "${HOME}"
-"${HELPER}" --install >/dev/null
-before="$(cat "${XDG_CONFIG_HOME}/git/config")"
-"${HELPER}" --install >/dev/null
-[[ "$(cat "${XDG_CONFIG_HOME}/git/config")" == "${before}" ]] || fail "custom XDG include duplicated"
-git clone "https://github.com/boxp/fixture.git" "${tmp}/custom-xdg-clone" >/dev/null 2>&1 || fail "custom XDG clone failed"
-git -C "${tmp}/custom-xdg-clone" fetch origin >/dev/null 2>&1 || fail "custom XDG fetch failed"
-unset XDG_CONFIG_HOME
-export HOME="${tmp}/new-home"
+### 既存.gitconfigとXDG設定の共存
 
-# Bad or conflicting bootstrap inputs fail without changing another config.
-mkdir -m 0700 "${tmp}/conflict-home"
-printf '[core]\n\tsshCommand = ssh -F user.conf\n' >"${tmp}/conflict-home/.gitconfig"
-if HOME="${tmp}/conflict-home" "${HELPER}" --install >/dev/null 2>&1; then
-  fail "existing core.sshCommand conflict was accepted"
-fi
-mkdir -m 0700 "${tmp}/bad-xdg-home"
-if HOME="${tmp}/bad-xdg-home" XDG_CONFIG_HOME=relative "${HELPER}" --install >/dev/null 2>&1; then
-  fail "relative XDG_CONFIG_HOME was accepted"
-fi
-if HOME="${tmp}/bad-xdg-home" GIT_CONFIG_GLOBAL="${tmp}/alternate-gitconfig" "${HELPER}" --install >/dev/null 2>&1; then
-  fail "GIT_CONFIG_GLOBAL override was accepted"
-fi
+最終レビューの「.gitconfigがあるとXDG設定を読まない」という指摘は、`git config --global --list`で単一targetを指定した挙動と、Git transportが通常の全設定を読む挙動を混同したものだった。[Git公式FILES仕様](https://git-scm.com/docs/git-config#FILES)では両ファイルの読取が規定されている。既存identityを持つ.gitconfigとbootstrap後に追加された.gitconfigの両方で、identity保持と実Git SSH操作をfixture回帰テストに追加し成功を確認した。
 
-# Existing settings introduced after initial bootstrap must also fail closed.
-printf '[core]\n\tsshCommand = ssh -F user.conf\n' >"${HOME}/.gitconfig"
-if "${HELPER}" --install >/dev/null 2>&1; then fail "later SSH override accepted"; fi
-rm "${HOME}/.gitconfig"
-printf '[url "https://mirror.invalid/"]\n\tpushInsteadOf = https://\n' >"${HOME}/.gitconfig"
-if "${HELPER}" --install >/dev/null 2>&1; then fail "generic push rewrite accepted"; fi
-rm "${HOME}/.gitconfig"
-# Inactive conditional includes cannot be certified outside their repository
-# context. Reject them before a later branch/gitdir activates an SSH override.
-for condition in "gitdir:${tmp}/future-repo/" "onbranch:future"; do
-  printf '[includeIf "%s"]\n\tpath = %s\n' "${condition}" "${tmp}/conditional.inc" >"${HOME}/.gitconfig"
-  printf '[core]\n\tsshCommand = ssh -F conditional.conf\n' >"${tmp}/conditional.inc"
-  if "${HELPER}" --install >/dev/null 2>&1; then fail "inactive conditional include accepted"; fi
-done
-# A conditional include nested within a normal include is also unsupported.
-printf '[include]\n\tpath = %s\n' "${tmp}/nested.inc" >"${HOME}/.gitconfig"
-printf '[includeIf "onbranch:future"]\n\tpath = %s\n' "${tmp}/conditional.inc" >"${tmp}/nested.inc"
-if "${HELPER}" --install >/dev/null 2>&1; then fail "nested conditional include accepted"; fi
-rm "${HOME}/.gitconfig"
-# Nested includes and malformed configuration are checked without value logs.
-printf '[include]\n\tpath = %s\n' "${tmp}/nested.inc" >"${HOME}/.gitconfig"
-printf '[core]\n\tsshCommand = ssh\n' >"${tmp}/nested.inc"
-if "${HELPER}" --install >/dev/null 2>&1; then fail "nested override accepted"; fi
-rm "${HOME}/.gitconfig"
-if XDG_CONFIG_HOME="${tmp}/outside-home" "${HELPER}" --install >/dev/null 2>&1; then fail "external XDG path accepted"; fi
-if HOME=relative "${HELPER}" --install >/dev/null 2>&1; then fail "invalid HOME accepted"; fi
-printf '[broken\n' >"${HOME}/.gitconfig"
-if "${HELPER}" --install >/dev/null 2>&1; then fail "malformed config accepted"; fi
-rm "${HOME}/.gitconfig"
-"${HELPER}" --install >/dev/null
-# Non-GitHub HTTPS URLs keep their transport and raw HTTPS origins stay intact.
-git -C "${tmp}/clone" remote add other https://example.invalid/fixture.git
-[[ "$(git -C "${tmp}/clone" remote get-url other)" == https://example.invalid/fixture.git ]] || fail "other HTTPS host changed"
-[[ "$(git -C "${tmp}/clone" config remote.origin.url)" == https://github.com/boxp/fixture.git ]] || fail "raw origin changed"
-[[ "$(git -C "${tmp}/clone" remote get-url --push origin)" == ssh://git@github.com/boxp/fixture.git ]] || fail "HTTPS push transport not rewritten"
-# The real dotfiles sync must accept its stored HTTPS origin after SSH rewrite,
-# both on first clone and when inspecting an existing checkout.
-git --git-dir="${SSH_BARE_REPO}" update-ref refs/heads/master refs/heads/main
-source <(sed '/^while true; do$/,$d' "${ROOT_DIR}/docker/codex-workspace/dotfiles-sync.sh")
-TARGET_DIR="${tmp}/dotfiles"
-sync_once >/dev/null 2>&1
-[[ -d "${TARGET_DIR}/.git" && "${FIRST_SYNC_DONE}" == true ]] || fail "dotfiles clone rejected SSH rewrite"
-[[ "$(git -C "${TARGET_DIR}" remote get-url origin)" == ssh://git@github.com/boxp/dotfiles ]] || fail "dotfiles clone was not rewritten"
-SETUP_NEEDED=false
-sync_once >/dev/null 2>&1
-[[ "$(git -C "${TARGET_DIR}" rev-parse refs/remotes/origin/master)" == "$(git --git-dir="${SSH_BARE_REPO}" rev-parse master)" ]] || fail "existing dotfiles fetch failed"
-git -C "${TARGET_DIR}" remote set-url origin https://example.invalid/dotfiles
-before_lines="$(wc -l <"${SSH_CALL_LOG}")"
-sync_once >/dev/null 2>&1
-[[ "$(wc -l <"${SSH_CALL_LOG}")" == "${before_lines}" ]] || fail "unrelated dotfiles origin accepted"
-echo "github Git SSH tests passed"
+## 残る制約
+
+本票の実writeは隔離HOMEのbootstrapを使い、HTTPS形式URLから実装branchへ通常pushして確認済み。ログはSSH/GitHub/strict/batchだけ。remote headは`62ae135f216e193cc94b57a2a963c628cade90bb`（最初の実装push時点）。workflow writeは227で同じworkspace/account/keyを利用したPR #818の成功証拠を参照する。SSH鍵にはOAuth workflow scopeはなく、read/挨拶だけでworkflow writeを完了扱いにしない。
+
+再bootstrapと新HOMEは検証済みだが、実image再build/実Pod再作成後の継続性は未検証。鍵とhost信頼が未提供ならSSH自体が停止し、HTTPSへfallbackしない。gh PR/APIは通常HOMEの既存OAuthを使用し、subscription認証を変更しない。LFSの別HTTP endpointやmanifest外のprivate dependency、明示的なrepo/env/command-line transport overrideは今回の検証範囲外。
+
+## レビュー再試行の追加検証
+
+カスタムXDGの端末runuser whitelistとSSH login session-envへの引継ぎ、冪等bootstrap/fixture clone/fetchを追加検証する。image CIは既定+カスタムXDGの実Node terminal process環境とGit URL解決、SSH loginを確認する。最初の追加smokeのNode process探索と一時remote未登録はテスト不備として修正した。
+
+dotfiles同期のorigin allowlistはraw `remote.origin.url`を照合する。`remote get-url`はSSH rewrite後のURLを返すため、従来のHTTPS allowlistで正常なcloneを削除していた。実sync_onceをfixtureで呼び初回clone/既存fetch/不正origin拒否を検証する。現dotfiles setupはGit設定非管理。任意のユーザーによる後続Git overrideは対象外で、次回bootstrap時の競合検出を維持する。最新CI/レビュー証拠はObsidian Projects/BOXP-228/github-git-sshへ保存する。
+
+### 対応可能なGit includeの制約
+
+条件付き`includeIf`（gitdir/onbranch等）は起動時のrepo外検証で成立条件を網羅できないため、直接・通常include内のどちらもbootstrapで理由を示して停止する。identityだけの条件付きincludeも未対応として扱う。通常includeは従来どおり検証する。inactive gitdir/onbranchとnested includeIfのfixtureで拒否を確認する。後から任意ユーザーがローカルGit設定や環境overrideを追加する操作はサポート対象外であり、既存設定を変更する前にrunnerを停止し再bootstrapで検証する。
