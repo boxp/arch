@@ -7,6 +7,7 @@ on:
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
       - docker/codex-workspace/github-git-ssh.sh
+      - docker/codex-workspace/dotfiles-sync.sh
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/recurring-events/**
       - docker/hermes-agent/skills/obsidian-task-board/**
@@ -19,6 +20,7 @@ on:
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
       - docker/codex-workspace/github-git-ssh.sh
+      - docker/codex-workspace/dotfiles-sync.sh
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/recurring-events/**
       - docker/hermes-agent/skills/obsidian-task-board/**
