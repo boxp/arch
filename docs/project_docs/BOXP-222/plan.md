@@ -13,14 +13,17 @@
 
 1. `kubernetes_components` role に `crio_checkpoint_restore_level`（default `"checkpoint_only"`）を追加し、`/etc/crio/crio.conf.d/05-checkpoint-restore.conf` として `[crio.checkpoint_restore] container_level_enabled` を書く。`"checkpoint_restore"` は assert で拒否する。変更時は既存の `Restart crio` handler を notify する。`crio_version` が 1.36.6 未満のときはテーブルが未知で無視されるため、警告（debug）で可視化する（codex review 指摘）。
 2. Molecule default scenario の verify に drop-in の存在と内容（`checkpoint_only`、`checkpoint_restore` 不在）の検証を追加する。
-3. `inventories/production/hosts.yml`（control_plane / workers）、`playbooks/control-plane.yml`、`playbooks/node-shanghai-{1,2,3}.yml`、`playbooks/worker-image.yml` の baseline を `kubernetes_version 1.36.5` / `kubernetes_package_version 1.36.5-1.1` / `crio_version 1.36.6`（worker-image は `crio_package_version 1.36.6-3.1`）へ更新する。
+3. `inventories/production/hosts.yml`（control_plane / workers）、`playbooks/control-plane.yml`、`playbooks/node-shanghai-{1,2,3}.yml`、`playbooks/worker-image.yml` の baseline を `kubernetes_version 1.36.5` / `kubernetes_package_version 1.36.5-1.1` / `crio_version 1.36.6` / `crio_package_version 1.36.6-3.1` へ更新する。
+   - codex review 指摘: `crio_version` は apt repo の major.minor（v1.36）を決めるだけで、`crio_package_version` 未指定の本番経路（inventory / control-plane / node playbook）では `cri-o` が `state=present` で入るため、宣言値を変えても実 package 版は固定・更新されない。対処として `tasks/crio.yml` に Kubernetes package と同じ baseline 比較（未導入または指定版未満なら `cri-o=<指定版>` を導入、指定版より新しければ downgrade せずスキップ、指定時は apt hold）を追加し、本番経路すべてに `crio_package_version: 1.36.6-3.1`（OBS v1.36、amd64/arm64 とも存在）を設定する。
+   - テスト: Molecule default scenario で pin した revision が入り hold されること、新規 `crio-baseline` scenario で「installed が baseline より新しいとき downgrade されない」ことを検証する。
 4. `upgrade-k8s.yml` の workflow_dispatch 入力例を現行版に合わせる。
 5. 検証: `ansible-lint`、`actionlint` / `ghalint`、Molecule default（x86_64 と `MOLECULE_DOCKER_PLATFORM=linux/arm64`）。PR の Plan Ansible（`--check --diff`、shanghai-1/2/3 と golyat-4）で、変更が drop-in 追加と `Restart crio` handler のみで、cri-o / kubelet の downgrade・再インストールが出ないことを確認してから merge する。
 
 ## 適用時の注意
 
 - Apply Ansible は `max-parallel: 1` かつ `control-plane.yml` は `serial: 1` + `flush_handlers` + etcd health gate のため、`Restart crio` が複数 CP で同時に走ることはない。CRI-O の再起動は既存 container を保持する（CVE-2026-62146 の wipe にはならない）。
-- 通常 Apply は `crio_package_version` 未指定（`cri-o` state=present、`allow_downgrade: false`）で、kubelet 系は baseline より新しい package をスキップするため、live と同版の baseline では package 変更は発生しない。
+- 通常 Apply は cri-o / kubelet 系とも baseline 比較で「指定版未満なら更新、新しければスキップ」のため、live（cri-o 1.36.6-3.1 / kubelet 1.36.5-1.1）と同版の baseline では package 変更は発生しない。`Hold CRI-O package` は `crio_package_version` 指定により全ノードで走るので、まだ hold されていないノードでは hold が changed になる（package 変更ではない）。
+- 将来 upgrade-k8s workflow で版を上げたら、同じ PR か直後の PR で `crio_package_version` / `kubernetes_package_version` も追従させる。追従しないと通常 Apply は downgrade こそしないが、新規 image / 再構築時に古い版が入る。
 
 ## Rollback
 

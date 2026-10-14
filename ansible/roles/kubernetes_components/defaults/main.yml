@@ -6,6 +6,9 @@ kubernetes_version: "1.32"
 kubernetes_package_version: "1.32.0-1.1"
 
 # CRI-O version to install (using stable available version)
+# crio_version は apt repo (major.minor) を決める。実際の deb 版は crio_package_version で固定する。
+# 空のときは repo 上の任意の版が state=present で入る。指定時は baseline 比較
+# (未導入/指定版未満なら導入、新しければ downgrade しない) をして apt hold する (BOXP-222)。
 crio_version: "1.32"
 crio_package_version: ""
 

@@ -9,6 +9,7 @@
     node_resilience_hung_task_panic: true
     node_resilience_runtime_watchdog_sec: "15"
     node_resilience_reboot_watchdog_sec: "15"
+    crio_package_version: "1.32.13-1.1"
   tasks:
     - name: Check if CRI-O is installed
       ansible.builtin.package_facts:
@@ -28,6 +29,23 @@
           - "'kubeadm' in ansible_facts.packages"
           - "'kubectl' in ansible_facts.packages"
         fail_msg: "Kubernetes packages are not installed"
+
+    - name: Assert CRI-O package is pinned to crio_package_version (BOXP-222)
+      ansible.builtin.assert:
+        that:
+          - ansible_facts.packages['cri-o'][0].version == crio_package_version
+        fail_msg: "cri-o {{ ansible_facts.packages['cri-o'][0].version }} does not match crio_package_version {{ crio_package_version }}"
+
+    - name: Read apt hold list
+      ansible.builtin.command: apt-mark showhold
+      changed_when: false
+      register: crio_apt_hold
+
+    - name: Assert CRI-O package is held when crio_package_version is set (BOXP-222)
+      ansible.builtin.assert:
+        that:
+          - "'cri-o' in crio_apt_hold.stdout_lines"
+        fail_msg: "cri-o is not on apt hold"
 
     - name: Check if CRI-O configuration exists
       ansible.builtin.stat:

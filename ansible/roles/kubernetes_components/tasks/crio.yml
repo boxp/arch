@@ -40,9 +40,48 @@
     update_cache: true
   become: true
 
+# BOXP-222: crio_version は apt repo の major.minor を決めるだけで、実際に入る deb 版は決めない。
+# crio_package_version (正確な deb revision) が指定されたときは kubernetes.yml と同じ baseline 比較を行い、
+# 「未導入または指定版未満なら cri-o=<指定版> を導入、指定版より新しければ downgrade せずスキップ」にする。
+# 未指定のときは従来どおり cri-o を state=present で導入する (repo 上の任意の版が入る)。
+- name: Check CRI-O package version against baseline
+  ansible.builtin.shell: |
+    set -eu
+    desired={{ crio_package_version | quote }}
+    installed="$(dpkg-query -W -f='${Version}' cri-o 2>/dev/null || true)"
+
+    if [ -z "$installed" ] || dpkg --compare-versions "$installed" lt "$desired"; then
+      printf 'cri-o=%s\n' "$desired"
+    elif dpkg --compare-versions "$installed" gt "$desired"; then
+      printf 'skip-newer:cri-o=%s\n' "$installed"
+    fi
+  args:
+    executable: /bin/bash
+  become: true
+  changed_when: false
+  check_mode: false
+  register: crio_package_version_check
+  when: (crio_package_version | default('')) | length > 0
+
 - name: Set CRI-O package spec
   ansible.builtin.set_fact:
-    crio_package_spec: "{{ 'cri-o=' ~ crio_package_version if (crio_package_version | default('')) | length > 0 else 'cri-o' }}"
+    crio_package_spec: >-
+      {{
+        (crio_package_version_check.stdout | default('') | trim
+         if (crio_package_version_check.stdout | default('')) is match('^cri-o=') else '')
+        if (crio_package_version | default('')) | length > 0
+        else 'cri-o'
+      }}
+    crio_package_newer_than_baseline: >-
+      {{
+        crio_package_version_check.stdout | default('') | trim
+        if (crio_package_version_check.stdout | default('')) is match('^skip-newer:') else ''
+      }}
+
+- name: Report CRI-O package newer than baseline
+  ansible.builtin.debug:
+    msg: "Skipping CRI-O package downgrade during normal apply: {{ crio_package_newer_than_baseline }}"
+  when: crio_package_newer_than_baseline | length > 0
 
 - name: Install CRI-O package
   ansible.builtin.apt:
@@ -53,6 +92,7 @@
     allow_downgrade: false
   become: true
   notify: Restart crio
+  when: crio_package_spec | length > 0
 
 - name: Hold CRI-O package to prevent automatic updates
   ansible.builtin.dpkg_selections:
