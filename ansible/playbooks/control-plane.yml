@@ -142,6 +142,7 @@
         # あるので +256MiB の余地はある。apply-ansible.yml は 1 回の merge で 3 CP を続けて回すため、
         # 値を node ごとに持ち「1 PR = 1 台の apiserver 再起動」にし、各台 60 分以上観測してから次の台へ進む。
         # 値が変わらない node では tasks/apiserver_gomemlimit.yml は changed=0 (再起動なし)。
+        # 進行: shanghai-1 10-14 10:16 UTC 適用 → 60 分観測 → shanghai-3 (本 PR) → 60 分観測 → shanghai-2 (現 leader ではない方を先に)。
         # kube-system/kubeadm-config の extraEnvs はクラスタ共通なので、移行中は最後に Apply が走った CP の値
         # (shanghai-3) になる。全台が同じ値になった時点で一致する。
         # rollback は該当 node の値を "1536MiB" に戻す (同じ経路、その 1 台だけ再起動)。
@@ -150,7 +151,7 @@
             {
               'shanghai-1': '1792MiB',
               'shanghai-2': '1536MiB',
-              'shanghai-3': '1536MiB'
+              'shanghai-3': '1792MiB'
             }[node_name]
           }}
 

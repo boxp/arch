@@ -64,3 +64,15 @@ owner の明示承認「はい、引き上げを試してみましょう」（BO
   apiserver が 09:01 / 09:13 / 09:24 に再起動した（GOMEMLIMIT は 1536MiB のまま、changed=0）。golyat-4 は cri-o の downgrade 拒否で failure
   （control-plane.yml の `kubernetes_version: 1.36.1` と live 1.36.5 の drift、本票の範囲外。CP 3 台の job は success）。
   本 PR の merge で走る Apply でも golyat-4 job は同じ理由で失敗する見込みだが、matrix の最後なので CP の適用には影響しない。
+
+## 進捗（2026-10-14、run `20261014T102122Z-29c009d6` で追記）
+
+- 10:07 UTC: PR #13624 merge（ed2fc7e21）。plan で shanghai-1 のみ manifest changed、shanghai-2 / 3 は apt cache のみを確認済み。
+- 10:16 UTC: Apply run 38547325019 の shanghai-1 job で apiserver 再起動（10:16:36Z）。pod env / `go_gc_gomemlimit_bytes` = 1792MiB、readyz 200、up 3/3、shanghai-2 / 3 は 1536MiB で不変。
+- 前提の変化: etcd leader は 09:48:30 UTC に shanghai-2 → shanghai-1（BOXP-222 Apply の shanghai-2 CRI-O 再起動時。etcd プロセス再起動なし、本票の変更前）。
+  変更台が leader になったため、60 分窓では shanghai-1 の etcd fsync / commit p99 を重点監視する。
+- 第 2 段（本 PR）: shanghai-3 を 1792MiB にする。順序は leader でない shanghai-3 → shanghai-2（leader は最後）。
+  merge 条件は shanghai-1 の 60 分窓（10:16〜11:16 UTC）で GC CPU / GC 回数の改善が未変更台対照で見え、かつ安全 gate（up 3/3、leader あり / 連発なし、
+  5xx ≤ 5%、MemAvailable ≥ 400MiB かつ major fault 再発なし、etcd fsync / commit の秒級スパイクなし、7 Node Ready / lease / Longhorn 健全）が成立していること。
+  改善なし / 悪化 / 原因不明なら merge せず、shanghai-1 を 1536MiB に戻す PR に切り替える。
+- 観測の生データ: 前 run の `/tmp/b231` は workspace shutdown で消失。再開 run で Prometheus（golyat-3 経由）から 09:30 以降を 5 分刻みで再構成し、以後 5 分間隔で継続。
