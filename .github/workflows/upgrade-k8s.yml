@@ -20,7 +20,7 @@ on:
         description: 'Target CRI-O version (e.g., 1.36.6)'
         required: true
       crio_package:
-        description: 'Exact CRI-O package revision (e.g., 1.36.1-1.1)'
+        description: 'Exact CRI-O package revision (e.g., 1.36.6-3.1)'
         required: true
       dry_run:
         description: 'Dry run mode (--check)'
