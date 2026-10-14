@@ -11,16 +11,16 @@ on:
         description: 'Ledger correlation ID; primary identity is GitHub run ID + attempt'
         required: true
       kubernetes_version:
-        description: 'Target Kubernetes version (e.g., 1.36.1)'
+        description: 'Target Kubernetes version (e.g., 1.36.5)'
         required: true
       kubernetes_package:
-        description: 'Target package version (e.g., 1.36.1-1.1)'
+        description: 'Target package version (e.g., 1.36.5-1.1)'
         required: true
       crio_version:
-        description: 'Target CRI-O version (e.g., 1.36.1)'
+        description: 'Target CRI-O version (e.g., 1.36.6)'
         required: true
       crio_package:
-        description: 'Exact CRI-O package revision (e.g., 1.36.1-1.1)'
+        description: 'Exact CRI-O package revision (e.g., 1.36.6-3.1)'
         required: true
       dry_run:
         description: 'Dry run mode (--check)'

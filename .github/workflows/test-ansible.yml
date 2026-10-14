@@ -92,7 +92,7 @@ jobs:
     needs: [detect-roles, lint]
     if: needs.detect-roles.outputs.has-changes == 'true'
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    timeout-minutes: 30
     permissions:
       contents: read
     env:
