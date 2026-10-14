@@ -19,6 +19,11 @@ container_runtime: "cri-o"
 container_log_max_size: "1Mi"
 container_log_max_files: 2
 crio_log_size_max: 1048576
+# CRI-O checkpoint/restore (CRIU) support level: "none" | "checkpoint_only" | "checkpoint_restore".
+# BOXP-222: CVE-2026-92574 / CVE-2026-15801 (restore 経路で security context 無視・root 書込) の
+# advisory workaround に従い restore 経路を遮断する。1.36.6 の既定値と同じ "checkpoint_only" を
+# 明示し、"checkpoint_restore" に戻さないことを設定で固定する。lolice に checkpoint 用途はない。
+crio_checkpoint_restore_level: "checkpoint_only"
 
 # System configuration
 kubernetes_disable_swap: true

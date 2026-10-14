@@ -62,6 +62,30 @@
           - "'log_size_max = 1048576' in (crio_log_rotation_content.content | b64decode)"
         fail_msg: "CRI-O log size limit is not configured"
 
+    - name: Check if CRI-O checkpoint/restore configuration exists
+      ansible.builtin.stat:
+        path: /etc/crio/crio.conf.d/05-checkpoint-restore.conf
+      register: crio_checkpoint_restore_config
+
+    - name: Assert CRI-O checkpoint/restore configuration exists
+      ansible.builtin.assert:
+        that:
+          - crio_checkpoint_restore_config.stat.exists
+        fail_msg: "CRI-O checkpoint/restore configuration file does not exist"
+
+    - name: Read CRI-O checkpoint/restore configuration
+      ansible.builtin.slurp:
+        path: /etc/crio/crio.conf.d/05-checkpoint-restore.conf
+      register: crio_checkpoint_restore_content
+
+    - name: Assert CRI-O restore path is disabled (BOXP-222, CVE-2026-92574 / CVE-2026-15801)
+      ansible.builtin.assert:
+        that:
+          - "'[crio.checkpoint_restore]' in (crio_checkpoint_restore_content.content | b64decode)"
+          - "'container_level_enabled = \"checkpoint_only\"' in (crio_checkpoint_restore_content.content | b64decode)"
+          - "'checkpoint_restore\"' not in (crio_checkpoint_restore_content.content | b64decode)"
+        fail_msg: "CRI-O checkpoint/restore level must be checkpoint_only (restore path disabled)"
+
     - name: Check if kubelet configuration exists
       ansible.builtin.stat:
         path: /etc/kubernetes/kubelet-config.yaml

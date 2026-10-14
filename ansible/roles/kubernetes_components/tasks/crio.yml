@@ -95,6 +95,26 @@
   become: true
   notify: Restart crio
 
+- name: Assert CRI-O checkpoint/restore level is valid
+  ansible.builtin.assert:
+    that:
+      - crio_checkpoint_restore_level in ['none', 'checkpoint_only']
+    fail_msg: >-
+      crio_checkpoint_restore_level must be "none" or "checkpoint_only".
+      "checkpoint_restore" re-opens the restore path covered by CVE-2026-92574 / CVE-2026-15801 (BOXP-222).
+
+# BOXP-222: [crio.checkpoint_restore] は CRI-O 1.36.6 (CVE-2026-92574 / CVE-2026-15801 修正版) で
+# 追加されたテーブル。restore 経路を遮断する値を drop-in で明示し、既定値頼みにしない。
+- name: Configure CRI-O checkpoint/restore level
+  ansible.builtin.copy:
+    dest: /etc/crio/crio.conf.d/05-checkpoint-restore.conf
+    content: |
+      [crio.checkpoint_restore]
+      container_level_enabled = "{{ crio_checkpoint_restore_level }}"
+    mode: '0644'
+  become: true
+  notify: Restart crio
+
 - name: Configure CRI-O container log size limit
   ansible.builtin.copy:
     dest: /etc/crio/crio.conf.d/99-log-rotation.conf

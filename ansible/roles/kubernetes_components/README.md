@@ -29,6 +29,7 @@ This role provides a complete setup for Kubernetes control plane components incl
 
 ### CRI-O Configuration
 - `crio_version`: CRI-O version to install (default: "1.31")
+- `crio_checkpoint_restore_level`: `[crio.checkpoint_restore] container_level_enabled` written to `/etc/crio/crio.conf.d/05-checkpoint-restore.conf` (default: "checkpoint_only"; "checkpoint_restore" is rejected, see BOXP-222)
 - `container_runtime`: Container runtime to use (default: "cri-o")
 
 ### System Configuration
