@@ -11,7 +11,7 @@
 
 ## Plan
 
-1. `kubernetes_components` role に `crio_checkpoint_restore_level`（default `"checkpoint_only"`）を追加し、`/etc/crio/crio.conf.d/05-checkpoint-restore.conf` として `[crio.checkpoint_restore] container_level_enabled` を書く。`"checkpoint_restore"` は assert で拒否する。変更時は既存の `Restart crio` handler を notify する。
+1. `kubernetes_components` role に `crio_checkpoint_restore_level`（default `"checkpoint_only"`）を追加し、`/etc/crio/crio.conf.d/05-checkpoint-restore.conf` として `[crio.checkpoint_restore] container_level_enabled` を書く。`"checkpoint_restore"` は assert で拒否する。変更時は既存の `Restart crio` handler を notify する。`crio_version` が 1.36.6 未満のときはテーブルが未知で無視されるため、警告（debug）で可視化する（codex review 指摘）。
 2. Molecule default scenario の verify に drop-in の存在と内容（`checkpoint_only`、`checkpoint_restore` 不在）の検証を追加する。
 3. `inventories/production/hosts.yml`（control_plane / workers）、`playbooks/control-plane.yml`、`playbooks/node-shanghai-{1,2,3}.yml`、`playbooks/worker-image.yml` の baseline を `kubernetes_version 1.36.5` / `kubernetes_package_version 1.36.5-1.1` / `crio_version 1.36.6`（worker-image は `crio_package_version 1.36.6-3.1`）へ更新する。
 4. `upgrade-k8s.yml` の workflow_dispatch 入力例を現行版に合わせる。

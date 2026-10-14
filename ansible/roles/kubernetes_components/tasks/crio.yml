@@ -105,6 +105,16 @@
 
 # BOXP-222: [crio.checkpoint_restore] は CRI-O 1.36.6 (CVE-2026-92574 / CVE-2026-15801 修正版) で
 # 追加されたテーブル。restore 経路を遮断する値を drop-in で明示し、既定値頼みにしない。
+# 1.36.6 未満の CRI-O は未知テーブルを無視する (toml.Decode は undecoded key を許容) ため
+# drop-in は無害だが効かない。その版は restore 系 CVE 自体が未修正なので、警告で可視化する。
+- name: Warn when CRI-O is older than the checkpoint/restore table (BOXP-222)
+  ansible.builtin.debug:
+    msg: >-
+      WARNING: crio_version {{ crio_version }} is older than 1.36.6.
+      05-checkpoint-restore.conf will be written but ignored by this CRI-O, and the restore-path
+      fixes for CVE-2026-92574 / CVE-2026-15801 are not present. Upgrade CRI-O to 1.36.6 or newer.
+  when: crio_version is version('1.36.6', '<')
+
 - name: Configure CRI-O checkpoint/restore level
   ansible.builtin.copy:
     dest: /etc/crio/crio.conf.d/05-checkpoint-restore.conf
