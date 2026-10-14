@@ -134,6 +134,23 @@
         # この行の merge = apply-ansible.yml による本番適用で、serial: 1 で apiserver が 1 台ずつ再起動する。
         # rollback は値を "off" にする (apiserver_gomemlimit: "off")。env は残り、同じ経路で戻せる。
         apiserver_gomemlimit_enabled: true
+        # BOXP-231: GOMEMLIMIT 1536MiB → 1792MiB の逐次試行 (owner 承認 2026-10-14)。
+        # 1536MiB では 1.36.5 後の live heap (24h 最大 1,128〜1,167MiB) が limit 近傍で GC を頻発させ、
+        # GC CPU が 3 台で平均 25 / 41 / 21% (最大 2.1 core) まで上がっていた。MemAvailable の床は 1,082MiB 以上
+        # あるので +256MiB の余地はある。apply-ansible.yml は 1 回の merge で 3 CP を続けて回すため、
+        # 値を node ごとに持ち「1 PR = 1 台の apiserver 再起動」にし、各台 60 分以上観測してから次の台へ進む。
+        # 値が変わらない node では tasks/apiserver_gomemlimit.yml は changed=0 (再起動なし)。
+        # kube-system/kubeadm-config の extraEnvs はクラスタ共通なので、移行中は最後に Apply が走った CP の値
+        # (shanghai-3) になる。全台が同じ値になった時点で一致する。
+        # rollback は該当 node の値を "1536MiB" に戻す (同じ経路、その 1 台だけ再起動)。
+        apiserver_gomemlimit: >-
+          {{
+            {
+              'shanghai-1': '1792MiB',
+              'shanghai-2': '1536MiB',
+              'shanghai-3': '1536MiB'
+            }[node_name]
+          }}
 
   post_tasks:
     # serial: 1 で次のノードへ進む前に、ハンドラ (Restart crio / Restart kubelet) を
