@@ -76,3 +76,7 @@ owner の明示承認「はい、引き上げを試してみましょう」（BO
   5xx ≤ 5%、MemAvailable ≥ 400MiB かつ major fault 再発なし、etcd fsync / commit の秒級スパイクなし、7 Node Ready / lease / Longhorn 健全）が成立していること。
   改善なし / 悪化 / 原因不明なら merge せず、shanghai-1 を 1536MiB に戻す PR に切り替える。
 - 観測の生データ: 前 run の `/tmp/b231` は workspace shutdown で消失。再開 run で Prometheus（golyat-3 経由）から 09:30 以降を 5 分刻みで再構成し、以後 5 分間隔で継続。
+- 11:20 UTC: shanghai-1 の 60 分窓（10:17〜11:17）判定 = 安全 gate 成立、同 live heap 帯で GC CPU −30% の限定的改善（主効果の live 950MiB 超領域は未到達、24h 比較へ）。
+- 11:22 UTC: PR #13626 merge（80c103c7c）→ Apply run 38556124695 で shanghai-3 を 1792MiB に。
+- 第 3 段（本 PR）: shanghai-2（最も重い台、09:48 までの leader）を 1792MiB にして 3 台を揃える。merge 条件は shanghai-3 の 60 分窓で同じ安全 gate が成立し、
+  かつ shanghai-1 / 3 に悪化がないこと。kubeadm-config の extraEnvs は本段で 1792MiB に揃う。
