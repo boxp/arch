@@ -52,7 +52,7 @@ GitHub Actions の workflow dependency lockfile（2026-10-14 public preview）�
   その branch で下記を実行し diff をレビューして merge。
 
   ```sh
-  gh actions-lock --no-interactive --no-onboard --no-narrow
+  gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions --no-migrate-local-actions
   ```
 
   他 42 workflow の `actions/checkout` 更新 PR は従来どおり（lock 対象外なので Renovate は lock に触れない）。
@@ -67,7 +67,7 @@ GitHub Actions の workflow dependency lockfile（2026-10-14 public preview）�
 ## Preview 更新時の再検証
 
 1. `gh extension upgrade gh-actions-lock` 後、`gh actions-lock --verify --no-onboard` を実行。
-2. lockfile version が変わる場合は `gh actions-lock --no-interactive --no-onboard --no-narrow` で再生成し diff をレビュー。
+2. lockfile version が変わる場合は `gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions` で再生成し diff をレビュー。
 3. `wc-actions-lock-verify.yaml` の `GH_ACTIONS_LOCK_VERSION` を同じ版へ更新。
 
 ## 撤回手順（rollback）
@@ -76,3 +76,10 @@ GitHub Actions の workflow dependency lockfile（2026-10-14 public preview）�
 2. `test.yaml` / `wc-path-filter.yaml` から `actions-lock-verify` を外し、`wc-actions-lock-verify.yaml` を削除。
 3. `renovate.json5` の BOXP-234 packageRule を削除。
 4. いずれも通常 PR で行う。org/repo 設定・branch ruleset は触っていないため設定側の戻しは不要。
+
+## 注意: `--no-onboard` だけでは local action 移行が走る
+
+`gh actions-lock --no-onboard` は onboard を抑止するが、fix run である限り同 repo の `uses: ./…` を
+`uses: $/…` へ書き換える（v0.2.0 で `build-orange-pi-images.yml` が書き換えられるのを fixture で確認）。
+lock 追従コマンドには必ず `--no-migrate-local-actions` を付け、実行後は `git status` で
+対象 workflow と `actions.lock` 以外に差分が無いことを確認する。

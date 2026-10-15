@@ -5,7 +5,7 @@ name: actions-lock-verify
 # 依存 action が lockfile に揃っているか (lock 不足・ref 移動) を読み取り専用で確認する。
 # --no-onboard により未 onboard の workflow は info 扱いで失敗にしない (限定導入の境界)。
 # lockfile が古い場合の追従コマンド (手編集禁止):
-#   gh actions-lock --no-interactive --no-onboard --no-narrow
+#   gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions --no-migrate-local-actions
 on:
   workflow_call:
     inputs:
