@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS builder
+FROM ubuntu:26.04@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba AS builder
 
 ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
 ARG LLAMA_REF=a33ef00b13476e9c609caecc3c1c015b8615011d
@@ -53,7 +53,7 @@ RUN cmake -S /src/llama.cpp -B /src/llama.cpp/build-vulkan -G Ninja \
     && install -d -m 0755 /opt/llama.cpp/bin \
     && cp -a /src/llama.cpp/build-vulkan/bin/. /opt/llama.cpp/bin/
 
-FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+FROM ubuntu:26.04@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba
 
 ARG LLAMA_REPO=https://github.com/TheTom/llama-cpp-turboquant.git
 ARG LLAMA_REF=a33ef00b13476e9c609caecc3c1c015b8615011d
