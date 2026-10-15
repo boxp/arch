@@ -283,6 +283,23 @@
       matchPackageNames: ["kube-vip/kube-vip"],
       automerge: false,
       labels: ["kubernetes", "kube-vip"]
+    },
+    // BOXP-234: GitHub Actions workflow lockfile (.github/workflows/actions.lock) の限定導入。
+    // onboard 済み workflow の action を Renovate が更新すると、Renovate は repo 全体に
+    // `gh actions-lock` を走らせ、未 onboard の全 workflow まで lockfile に取り込んでしまう
+    // (限定導入の境界を越える。local action を含む workflow は verify も失敗する)。
+    // そのため onboard 済み workflow の更新は branch を分け、Renovate 側の lockfile 再生成
+    // (skipArtifactsUpdate) を止める。CI の actions-lock-verify が失敗したら、その branch で
+    //   gh actions-lock --no-interactive --no-onboard --no-narrow
+    // を実行して lockfile を追従させ、diff をレビューして merge する (automerge しない)。
+    // onboard 対象を増やす場合は matchFileNames にも追加すること。
+    {
+      matchManagers: ["github-actions"],
+      matchFileNames: [".github/workflows/test-codex-task-board-runner.yml"],
+      additionalBranchPrefix: "{{packageFileDir}}-actions-lock-",
+      skipArtifactsUpdate: true,
+      automerge: false,
+      labels: ["actions-lock"]
     }
   ],
 }

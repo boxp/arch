@@ -35,6 +35,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs:
+      - actions-lock-verify
       - conftest-verify
       - hide-comment
       - opa-fmt
@@ -45,6 +46,16 @@ jobs:
     if: failure()
     steps:
       - run: exit 1
+
+  actions-lock-verify:
+    uses: ./.github/workflows/wc-actions-lock-verify.yaml
+    needs: path-filter
+    if: |
+      needs.path-filter.outputs.actions-lock-verify == 'true'
+    permissions:
+      contents: read
+    with:
+      ref: ${{needs.path-filter.outputs.merge_commit_sha}}
 
   conftest-verify:
     uses: ./.github/workflows/wc-conftest-verify.yaml
