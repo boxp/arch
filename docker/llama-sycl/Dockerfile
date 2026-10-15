@@ -1,4 +1,4 @@
-FROM ubuntu:26.04@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba AS builder
+FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS builder
 
 ARG LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
 ARG LLAMA_REF=8c146a8366304c871efc26057cc90370ccf58dad
@@ -55,7 +55,7 @@ RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
     && install -d -m 0755 /opt/llama.cpp/bin \
     && cp -a /src/llama.cpp/build-sycl/bin/. /opt/llama.cpp/bin/
 
-FROM ubuntu:26.04@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba
+FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
 
 ARG LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
 ARG LLAMA_REF=8c146a8366304c871efc26057cc90370ccf58dad
