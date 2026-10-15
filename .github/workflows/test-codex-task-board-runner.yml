@@ -50,4 +50,5 @@ jobs:
       - run: tests/codex-workspace/recurring-events-test.sh
       - run: bb tests/codex-workspace/autonomy-policy-test.bb
       - run: bb tests/codex-workspace/autonomy-control-test.bb
+      - run: bb tests/codex-workspace/autonomy-intent-test.bb
       - run: bb tests/codex-workspace/vault-writer-test.bb

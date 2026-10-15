@@ -410,9 +410,11 @@ test_fable_model_environment_is_legacy_only() {
   make_fake_claude "${bin}"
 
   write_board "${vault}" "- [ ] [[Tickets/BOXP-159|BOXP-159: legacy fable]] #ticket status::in-progress
-- [ ] [[Tickets/BOXP-160|BOXP-160: fixed opus]] #ticket status::in-progress"
+- [ ] [[Tickets/BOXP-160|BOXP-160: fixed opus]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-158|BOXP-158: fixed fable]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-159 in-progress fable
   write_ticket "${vault}" BOXP-160 in-progress claude-opus
+  write_ticket "${vault}" BOXP-158 in-progress claude-fable
 
   PATH="${bin}:$PATH" \
     CODEX_TASK_BOARD_FABLE_MODEL=legacy-fable-model \
@@ -429,6 +431,60 @@ test_fable_model_environment_is_legacy_only() {
   assert_file_not_contains "${args_dir}/BOXP-160.log" '--agent'
   assert_file_not_contains "${args_dir}/BOXP-160.log" 'legacy-fable-model'
   assert_file_not_contains "${args_dir}/BOXP-160.log" 'legacy-extra-model'
+  # The explicit claude-fable route never inherits the retired fable overrides.
+  assert_file_contains "${args_dir}/BOXP-158.log" '--model claude-fable-5-1'
+  assert_file_not_contains "${args_dir}/BOXP-158.log" '--agent'
+  assert_file_not_contains "${args_dir}/BOXP-158.log" 'legacy-'
+}
+
+test_autonomy_shadow_is_opt_in_and_read_only() {
+  local tmp vault state bin shadow before after
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  shadow="${state}/autonomy-shadow/latest.edn"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-171|BOXP-171: human]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-172|BOXP-172: v2 claim]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-171 in-progress boxp
+  write_ticket "${vault}" BOXP-172 in-progress boxp
+  sed -i 's/^assignee: boxp$/assignee: boxp\nautonomy_version: 2\nexecution_intent: run\ncontrol_revision: 1/' \
+    "${vault}/Tickets/BOXP-172.md"
+
+  # Off by default: no shadow artifact is produced.
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >/tmp/task-board-shadow-off.out
+  [[ ! -e "${state}/autonomy-shadow" ]] || fail 'shadow artifact must not exist unless opted in'
+
+  # Opted in: the comparison is written under the runner root and the vault is
+  # byte-for-byte unchanged. An unverifiable v2 claim is never a start.
+  before="$(cd "${vault}" && find . -type f -exec sha256sum {} + | sort)"
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_AUTONOMY_SHADOW=true \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-shadow-on.out
+  after="$(cd "${vault}" && find . -type f -exec sha256sum {} + | sort)"
+  [[ "${before}" == "${after}" ]] || fail 'shadow evaluation must not change the vault'
+  assert_file_contains "${shadow}" ':cards 2'
+  assert_file_contains "${shadow}" ':shadow-starts 0'
+  assert_file_contains "${shadow}" ':differing 0'
+  assert_file_contains "${shadow}" ':ticket "BOXP-171"[^}]*:mode :legacy-v1[^}]*:diagnostic "no-legacy-action"'
+  assert_file_contains "${shadow}" ':ticket "BOXP-172"[^}]*:mode :v2[^}]*:start\? false[^}]*:diagnostic "not-canary"'
+  assert_file_not_contains "${shadow}" 'Test ticket'
+  [[ ! -e "${state}/runs" ]] || [[ -z "$(find "${state}/runs" -name summary.edn -print)" ]] \
+    || fail 'shadow evaluation must not start a run'
+
+  # v2 stays off: the legacy candidate rule is unchanged while shadow is on, and
+  # the difference is only recorded.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-173|BOXP-173: legacy start]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-173 in-progress codex
+  sed -i 's/^assignee: codex$/assignee: codex\nautonomy_version: 2\nexecution_intent: pause\ncontrol_revision: 1/' \
+    "${vault}/Tickets/BOXP-173.md"
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_AUTONOMY_SHADOW=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-shadow-legacy.out
+  assert_file_contains "${vault}/Tickets/BOXP-173.md" '^status: done$'
+  assert_file_contains "${shadow}" ':differing 1'
+  assert_file_contains "${shadow}" ':ticket "BOXP-173"[^}]*:legacy-action :implement[^}]*:start\? false[^}]*:differs\? true'
 }
 
 test_explicit_claude_error_and_review_markers_are_processed() {
@@ -468,6 +524,39 @@ test_explicit_claude_error_and_review_markers_are_processed() {
   write_ticket "${vault}" BOXP-167 in-progress claude-fable
   PATH="${bin}:$PATH" CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-claude-blocked-marker.out
   assert_file_contains "${vault}/Tickets/BOXP-167.md" '^status: blocked$'
+}
+
+test_claude_fable_idle_timeout_keeps_route() {
+  local tmp vault state bin args_dir
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  args_dir="${tmp}/claude-args"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-157|BOXP-157: stalled claude-fable]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-157 in-progress claude-fable
+
+  # An idle retry stays on the explicit route: same assignee, same model, and no
+  # fallback to the retired fable agent or its environment overrides.
+  for attempt in 1 2; do
+    rm -rf "${args_dir}"
+    PATH="${bin}:$PATH" \
+      CLAUDE_FAKE_SLEEP=2 \
+      CLAUDE_FAKE_ARG_LOG_DIR="${args_dir}" \
+      CODEX_TASK_BOARD_FABLE_MODEL=legacy-fable-model \
+      CODEX_TASK_BOARD_FABLE_AGENT=legacy-fable-agent \
+      CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 \
+      run_tick "${vault}" "${state}" env >/tmp/task-board-claude-fable-timeout-"${attempt}".out
+    assert_file_contains "${vault}/Tickets/BOXP-157.md" '^status: in-progress$'
+    assert_file_contains "${vault}/Tickets/BOXP-157.md" '^assignee: claude-fable$'
+    assert_file_contains "${args_dir}/BOXP-157.log" '--model claude-fable-5-1'
+    assert_file_not_contains "${args_dir}/BOXP-157.log" '--agent'
+    assert_file_not_contains "${args_dir}/BOXP-157.log" 'legacy-'
+    assert_run_summary_contains "${state}" BOXP-157 ':agent "claude-fable"'
+    assert_run_summary_contains "${state}" BOXP-157 ':idle-timeout\? true'
+  done
 }
 
 test_fable_agent_idle_timeout_retries() {
@@ -2882,6 +2971,8 @@ test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
 test_fable_model_environment_is_legacy_only
+test_autonomy_shadow_is_opt_in_and_read_only
+test_claude_fable_idle_timeout_keeps_route
 test_explicit_claude_error_and_review_markers_are_processed
 test_fable_agent_idle_timeout_retries
 test_fable_idle_timeout_stops_agent_children
