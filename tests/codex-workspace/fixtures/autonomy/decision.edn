@@ -1,0 +1,17 @@
+{:schema_version 1
+ :issuance "issued"
+ :id "BOXP-203/D1"
+ :ticket "BOXP-203"
+ :control_revision 1
+ :question "Proceed with bounded validator review?"
+ :recommended_option "review"
+ :options [{:id "review" :effect "Review the validator diff"}
+           {:id "hold" :effect "Keep the canary disabled"}]
+ :evidence_refs ["design.md" "implementation-tickets.md"]
+ :impact "No execution effect; review only."
+ :rollback "Revert the change."
+ :scope "28c3aaa276bc421debf1cdf237845260a9f18be96211b31fa5be9fcaf20ccb83"
+ :artifact_head "0123456789abcdef0123456789abcdef01234567"
+ :owner "boxp"
+ :expires_at "2026-10-07T10:00:00Z"
+ :status "pending"}

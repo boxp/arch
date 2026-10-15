@@ -21,17 +21,35 @@
 (def default-vault "/home/boxp/Documents/obsidian-headless/BOXP")
 (def default-root "/home/boxp/.codex-task-board")
 (def assignee->model
-  ;; GPT-5.6 performance order: Sol > Terra > Luna.
+  ;; Model performance order: gpt-6-astra > gpt-6.1-sol > gpt-5.6-terra > gpt-5.6-luna.
   ;; codex (default) / codex-terra route to Terra (GPT-5.5-equivalent, cost-efficient default).
-  ;; codex-sol / codex-full route to Sol (highest-performance, complex tasks only).
+  ;; codex-sol / codex-full route to gpt-6.1-sol (GPT-6.1 Sol, nearly matches Astra at lower cost; complex tasks only).
   ;; codex-mini routes to Luna (lightweight tier).
+  ;; codex-astra routes to gpt-6-astra (GPT-6 generation, most capable, highest cost).
   {"codex"       "gpt-5.6-terra"
-   "codex-sol"   "gpt-5.6-sol"
-   "codex-full"  "gpt-5.6-sol"
+   "codex-sol"   "gpt-6.1-sol"
+   "codex-full"  "gpt-6.1-sol"
    "codex-terra" "gpt-5.6-terra"
-   "codex-mini"  "gpt-5.6-luna"})
+   "codex-mini"  "gpt-5.6-luna"
+   "codex-astra" "gpt-6-astra"})
 
 (def reasoning-levels #{"minimal" "low" "medium" "high" "xhigh"})
+
+;; I1 introduces only a structural validator. Activation requires the later
+;; authenticated control/writer gates; no environment value can enable it here.
+(defn autonomy-v2-enabled? [] false)
+
+;; gpt-6-astra supports only low/medium/high reasoning efforts.
+(def astra-reasoning-levels #{"low" "medium" "high"})
+
+;; gpt-6.1-sol rejects minimal; runner exposes low/medium/high/xhigh.
+(def sol-reasoning-levels #{"low" "medium" "high" "xhigh"})
+
+;; Per-assignee override; assignees not listed here accept all reasoning-levels.
+(def assignee->reasoning-levels
+  {"codex-astra" astra-reasoning-levels
+   "codex-sol"   sol-reasoning-levels
+   "codex-full"  sol-reasoning-levels})
 
 (def board-mutex (Object.))
 (def log-mutex (Object.))
@@ -60,6 +78,29 @@
 (defn env [k default]
   (or (System/getenv k) default))
 
+;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
+;; Board/ticket read-modify-write cycles serialize across processes. Unset in
+;; deployment, where writes behave exactly as before; every writer moves onto it
+;; together at the I7 writer-generation switch.
+(def vault-writer-mutex (Object.))
+(def ^:dynamic *vault-writer-lock-held* false)
+
+(defn vault-writer-lock-dir []
+  (let [dir (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR")]
+    (when-not (str/blank? dir) dir)))
+
+(defn with-vault-writer-lock [f]
+  (let [dir (vault-writer-lock-dir)]
+    (if (or (nil? dir) *vault-writer-lock-held*)
+      (f)
+      (locking vault-writer-mutex
+        (fs/create-dirs dir)
+        (with-open [file (java.io.RandomAccessFile. (str (fs/path dir "vault-writer.lock")) "rw")
+                    channel (.getChannel file)]
+          (let [_file-lock (.lock channel)]
+            (binding [*vault-writer-lock-held* true]
+              (f))))))))
+
 (defn parse-codex-assignee [assignee]
   (cond
     (contains? assignee->model assignee)
@@ -68,13 +109,23 @@
     :else
     (when-let [[_ base-assignee reasoning-effort]
                (re-matches #"^(.*)-([^-]+)$" (or assignee ""))]
-      (when (and (contains? assignee->model base-assignee)
-                 (contains? reasoning-levels reasoning-effort))
-        {:base-assignee base-assignee
-         :reasoning-effort reasoning-effort}))))
+      (let [allowed-levels (get assignee->reasoning-levels base-assignee reasoning-levels)]
+        (when (and (contains? assignee->model base-assignee)
+                   (contains? allowed-levels reasoning-effort))
+          {:base-assignee base-assignee
+           :reasoning-effort reasoning-effort})))))
+
+(def claude-assignee->model
+  {"claude-fable" "claude-fable-5-1"
+   "claude-opus" "claude-opus-5-5"
+   "claude-sonnet" "claude-sonnet-5-5"})
+
+(defn claude-assignee? [assignee]
+  (or (= "fable" assignee)
+      (contains? claude-assignee->model assignee)))
 
 (defn supported-assignee? [assignee]
-  (or (= "fable" assignee)
+  (or (claude-assignee? assignee)
       (some? (parse-codex-assignee assignee))))
 
 (defn root []
@@ -344,31 +395,35 @@
 
 (defn move-card! [ticket-id target-status]
   (locking board-mutex
-    (let [path (board-path)
-          lines (vec (read-lines path))
-          card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
-          target-lane (or (status->lane target-status)
-                          (fail (str "invalid target status: " target-status)))]
-      (when-not card
-        (fail (str "ticket card not found: " ticket-id)))
-      (let [new-line (normalize-card-line (:line card) target-status)
-            without (remove-index lines (:idx card))
-            moved (insert-after-heading without target-lane new-line)]
-        (write-lines! path moved)))))
+    (with-vault-writer-lock
+     (fn []
+       (let [path (board-path)
+             lines (vec (read-lines path))
+             card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
+             target-lane (or (status->lane target-status)
+                             (fail (str "invalid target status: " target-status)))]
+         (when-not card
+           (fail (str "ticket card not found: " ticket-id)))
+         (let [new-line (normalize-card-line (:line card) target-status)
+               without (remove-index lines (:idx card))
+               moved (insert-after-heading without target-lane new-line)]
+           (write-lines! path moved)))))))
 
 (defn sync-board-statuses! []
   (locking board-mutex
-    (let [path (board-path)
-          lines (vec (read-lines path))
-          cards (parse-board-cards lines)
-          updates (into {} (map (fn [{:keys [idx line status]}]
-                                  [idx (normalize-card-line line status)])
-                                cards))
-          new-lines (mapv (fn [idx line] (get updates idx line))
-                          (range (count lines))
-                          lines)]
-      (when (not= lines new-lines)
-        (write-lines! path new-lines)))))
+    (with-vault-writer-lock
+     (fn []
+       (let [path (board-path)
+             lines (vec (read-lines path))
+             cards (parse-board-cards lines)
+             updates (into {} (map (fn [{:keys [idx line status]}]
+                                     [idx (normalize-card-line line status)])
+                                   cards))
+             new-lines (mapv (fn [idx line] (get updates idx line))
+                             (range (count lines))
+                             lines)]
+         (when (not= lines new-lines)
+           (write-lines! path new-lines)))))))
 
 (defn ticket-path [ticket-id]
   (fs/path (tickets-dir) (str ticket-id ".md")))
@@ -398,45 +453,66 @@
 
 (defn update-frontmatter! [ticket-id updates]
   (locking (ticket-mutex ticket-id)
-    (let [path (ticket-path ticket-id)
-          lines (vec (read-lines path))
-          {:keys [end]} (or (frontmatter-range lines)
-                            (fail (str "missing frontmatter: " path)))
-          before (subvec lines 0 (inc end))
-          body (subvec lines (inc end))
-          fm-lines (subvec before 1 end)
-          new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
-                         fm-lines
-                         updates)
-          new-lines (vec (concat ["---"] new-fm ["---"] body))]
-      (when (not= lines new-lines)
-        (write-lines! path new-lines)))))
+    (with-vault-writer-lock
+     (fn []
+       (let [path (ticket-path ticket-id)
+             lines (vec (read-lines path))
+             {:keys [end]} (or (frontmatter-range lines)
+                               (fail (str "missing frontmatter: " path)))
+             before (subvec lines 0 (inc end))
+             body (subvec lines (inc end))
+             fm-lines (subvec before 1 end)
+             new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
+                            fm-lines
+                            updates)
+             new-lines (vec (concat ["---"] new-fm ["---"] body))]
+         (when (not= lines new-lines)
+           (write-lines! path new-lines)))))))
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
 
 (defn append-note! [ticket-id note]
   (locking (ticket-mutex ticket-id)
-    (let [path (ticket-path ticket-id)
-          lines (vec (read-lines path))
-          bullet (str "- " (today) ": " note)
-          idx (or (section-index lines "## Notes") (dec (count lines)))
-          insert-idx (if (= "## Notes" (nth lines idx))
-                       (count lines)
-                       (count lines))
-          new-lines (if (some #(= bullet %) lines)
-                      lines
-                      (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-      (write-lines! path new-lines))))
+    ;; Deterministic black-box failure hook; unset in deployment.
+    (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE"))
+               (str/includes? note "Blocked transition recorded:"))
+      (throw (ex-info "forced blocker Notes write failure" {})))
+    (with-vault-writer-lock
+     (fn []
+       (let [path (ticket-path ticket-id)
+             lines (vec (read-lines path))
+             bullet (str "- " (today) ": " note)
+             idx (or (section-index lines "## Notes") (dec (count lines)))
+             insert-idx (if (= "## Notes" (nth lines idx))
+                          (count lines)
+                          (count lines))
+             new-lines (if (some #(= bullet %) lines)
+                         lines
+                         (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
+         (write-lines! path new-lines))))))
+
+(defn project-ticket-status! [ticket-id {:keys [status done]}]
+  (update-frontmatter! ticket-id (cond-> {:status status}
+                                   (= "done" status) (assoc :closed (or done (today))))))
 
 (defn sync-ticket-statuses! []
   (let [lines (vec (read-lines (board-path)))]
-    (doseq [{:keys [ticket-id status done]} (parse-board-cards lines)
+    (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
             :let [path (ticket-path ticket-id)]
             :when (fs/exists? path)]
-      (let [updates (cond-> {:status status}
-                      (= "done" status) (assoc :closed (or done (today))))]
-        (update-frontmatter! ticket-id updates)))))
+      (if (vault-writer-lock-dir)
+        ;; With the shared lock, another writer may move the card after the
+        ;; snapshot above. Re-read the lane inside the lock so a stale status is
+        ;; never projected. Lock order stays ticket mutex, then vault lock.
+        (locking (ticket-mutex ticket-id)
+          (with-vault-writer-lock
+           (fn []
+             (when-let [current (first (filter #(= ticket-id (:ticket-id %))
+                                               (parse-board-cards (vec (read-lines (board-path))))))]
+               (when (fs/exists? path)
+                 (project-ticket-status! ticket-id current))))))
+        (project-ticket-status! ticket-id card)))))
 
 (defn sync-all! []
   (sync-board-statuses!)
@@ -519,12 +595,19 @@
    #(delete-lock-if-matches-under-guard! ticket-id expected)))
 
 (defn mark-run! [ticket-id run-id status extra]
-  (let [summary (merge {:ticket ticket-id
+  (let [path (fs/path (run-dir ticket-id run-id) "summary.edn")
+        ;; Later lifecycle transitions replace the summary. Keep the selected
+        ;; assignee so failed and blocked runs remain attributable in history.
+        previous-agent (try
+                         (select-keys (read-edn-file path {}) [:agent])
+                         (catch Exception _ {}))
+        summary (merge previous-agent
+                       {:ticket ticket-id
                         :run-id run-id
                         :status status
                         :updated-at (now-str)}
                        extra)]
-    (write-edn-file! (fs/path (run-dir ticket-id run-id) "summary.edn") summary)))
+    (write-edn-file! path summary)))
 
 (defn close-interrupted-lock! [ticket-id lock reason note]
   (when-let [interrupted-run (:run-id lock)]
@@ -813,8 +896,64 @@
 (defn pr-gate-retry-limit []
   (env-long "CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT" "2"))
 
+(defn persisted-review-gate [review-gate]
+  ;; Gate results can contain CLI stderr or review-agent text. Persist only
+  ;; structured status so run summaries and retry state never copy secrets.
+  (select-keys review-gate [:ok? :gate :url :retryable? :retry-count
+                            :retry-limit :retry-exhausted? :checked-pr-urls
+                            :pr-urls :diagnostic]))
+
+(defn pr-gate-diagnostic [review-gate]
+  ;; A gate's :message may contain gh stderr or review-agent text.  Keep a
+  ;; useful but entirely derived diagnosis: it identifies the failing class
+  ;; and next action without retaining any untrusted diagnostic text.
+  (let [gate (:gate review-gate)]
+    {:format-version 1
+     :gate (some-> gate name)
+     :pr-url (:url review-gate)
+     :category (case gate
+                 :ci "ci-check-failure"
+                 :mergeability "mergeability"
+                 :conflict "merge-conflict"
+                 :codex-review "codex-review-findings"
+                 :pr-url "missing-pr-url"
+                 :pr-gate "pr-gate-api-error"
+                 "pr-gate-failure")
+     :detail (case gate
+               :ci "One or more required CI checks failed. Inspect the PR checks."
+               :mergeability "The PR is not mergeable yet. Inspect its merge state."
+               :conflict "The PR has merge conflicts. Resolve conflicts and update the PR."
+               :codex-review "Codex review reported actionable findings. Inspect the review artifact."
+               :pr-url "Review was requested without a GitHub PR URL."
+               :pr-gate "PR gate evaluation failed. Re-run the gate after checking GitHub availability."
+               "PR gate failed; inspect the PR and referenced run artifacts.")}))
+
+(defn persist-pr-gate-diagnostic! [ticket-id run-id review-gate]
+  (when (and (not (:ok? review-gate)) (:gate review-gate))
+    (let [path (fs/path (run-dir ticket-id run-id) "pr-gate-diagnostic.edn")
+          diagnostic (assoc (pr-gate-diagnostic review-gate) :recorded-at (now-str))]
+      (write-edn-file! path diagnostic)
+      {:path (str path)
+       :category (:category diagnostic)
+       :detail (:detail diagnostic)})))
+
+(defn persisted-review-gate-reason [review-gate]
+  (cond
+    (:ok? review-gate) "Review gates passed."
+    (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
+    :else "reason unavailable"))
+
 (defn retry-fingerprint [review-gate]
-  (str (:url review-gate) "|" (some-> (:gate review-gate) name) "|" (:message review-gate)))
+  ;; The key is persisted in state, so retain no diagnostic text.  Its digest
+  ;; still distinguishes separate failures of the same PR gate, preventing a
+  ;; new failure from consuming the retry budget of an earlier one.
+  (let [digest (java.security.MessageDigest/getInstance "SHA-256")
+        reason (str (or (:message review-gate) "reason unavailable"))
+        reason-hash (->> (.digest digest (.getBytes reason "UTF-8"))
+                         (map #(format "%02x" (bit-and 0xff %)))
+                         (apply str))]
+    (str (:url review-gate) "|" (some-> (:gate review-gate) name)
+         "|" reason-hash)))
 
 (defn latest-pr-gate-retry [ticket-id]
   (let [retries (get-in (runner-state) [:pr-gate-retries ticket-id])]
@@ -824,11 +963,14 @@
            last))))
 
 (defn pr-gate-retry-prompt [ticket-id]
-  (when-let [{:keys [pr-url gate message run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
+  (when-let [{:keys [pr-url gate message diagnostic run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
     (str "Pending PR gate retry instruction:\n"
          "- Target PR URL: " pr-url "\n"
          "- Failed gate: " gate "\n"
          "- Failure reason: " message "\n"
+         (when diagnostic
+           (str "- Safe diagnostic: " (:path diagnostic)
+                " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ")\n"))
          "- Retry agent: " (or agent "codex") "\n"
          "- Retry count for this same PR/gate/reason: " count "/" limit "\n"
          "- Previous run summary: " run-dir "/summary.edn\n"
@@ -844,7 +986,8 @@
         count (inc (long (or (:count current) 0)))
         record {:pr-url (:url review-gate)
                 :gate (some-> (:gate review-gate) name)
-                :message (:message review-gate)
+                :message (persisted-review-gate-reason review-gate)
+                :diagnostic (:diagnostic review-gate)
                 :run-id run-id
                 :run-dir (str (run-dir ticket-id run-id))
                 :agent agent
@@ -950,10 +1093,16 @@
   (str "Fable routing policy:\n"
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
-       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-5.6-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-5.6-terra (GPT-5.5-equivalent, cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-6.1-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Reserve gpt-6-astra (via codex-astra assignee) for the most demanding tasks requiring the highest capability. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
+
+(defn claude-policy-prompt [agent]
+  (str "Claude Code routing policy:\n"
+       "- You are the " agent " entry point for this Task Board run. Complete the task using the explicitly selected Claude model.\n"
+       "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 
 (defn codex-sol-policy-prompt [agent]
   (str "High-cost model routing policy:\n"
@@ -966,8 +1115,19 @@
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
 
+(defn codex-astra-policy-prompt [agent]
+  (str "Highest-capability model routing policy:\n"
+       "- You are the " agent " top-tier entry point for this Task Board run. You run on gpt-6-astra, the most capable and highest-cost model available.\n"
+       "- Reserve your own compute for the most demanding subtasks: complex reasoning, cross-cutting architectural decisions, synthesis of ambiguous requirements, and final acceptance checks.\n"
+       "- Aggressively delegate to lower-cost models for any work that does not require gpt-6-astra capability. Use codex-sol (gpt-6.1-sol) for high-complexity subtasks, codex (gpt-5.6-terra) for standard implementation and investigation.\n"
+       "- Do NOT delegate: tasks requiring your full reasoning capacity, tasks with shared context that cannot be serialized, and final quality judgments.\n"
+       "- If a delegated subtask fails or produces insufficient quality: re-instruct with clearer requirements once, then escalate to a higher-tier model or handle directly. Avoid unbounded delegation chains.\n"
+       "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n\n"))
+
 (defn append-note-instruction [agent ticket-id]
-  (let [helper (if (= "fable" agent)
+  (let [helper (if (claude-assignee? agent)
                  "~/.claude/skills/obsidian-task-board/bin/task-board.bb"
                  "~/.codex/skills/obsidian-task-board/bin/task-board.bb")]
     (str "Progress logging: at each milestone during your work (investigation complete, approach decided, PR created, blocker encountered), "
@@ -978,6 +1138,7 @@
 (defn prompt-for [action ticket-id lane workspace agent]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
+        base-agent (:base-assignee (parse-codex-assignee agent))
         common (str "You are running inside codex-workspace as an automated Task Board worker.\n"
                     "Respond in Japanese when editing notes or summaries for the user.\n"
                     "Task Board lane is the source of truth. Do not move Task Board cards directly; the runner will do that after this run.\n"
@@ -988,7 +1149,9 @@
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
-                    (when (contains? #{"codex-sol" "codex-full"} agent) (codex-sol-policy-prompt agent))
+                    (when (contains? claude-assignee->model agent) (claude-policy-prompt agent))
+                    (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
+                    (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
                              "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
@@ -1360,20 +1523,19 @@
                 (assoc pr-state
                        :checked-pr-urls passed
                        :pr-urls pr-urls)
-                (let [review (run-codex-review! run-dir pr-url)
-                      passed-message (str pr-url ": " (:message pr-state) " " (:message review))]
+                (let [review (run-codex-review! run-dir pr-url)]
                   (if-not (:ok? review)
                     (assoc review
                            :checked-pr-urls passed
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
-                    (recur (rest remaining) (conj passed passed-message))))))
+                    ;; This field is persisted in summaries, so it must remain a
+                    ;; URL list rather than carrying arbitrary check/review text.
+                    (recur (rest remaining) (conj passed pr-url))))))
             {:ok? true
              :pr-urls pr-urls
-             :message (str "All PR gates passed for "
-                           (count pr-urls)
-                           " PR(s): "
-                           (str/join " | " passed))}))
+             :checked-pr-urls passed
+             :message "PR gates passed."}))
 
         (no-repo-review-marker? last-message)
         {:ok? true
@@ -1392,7 +1554,7 @@
 
 (defn fable-model-args []
   ;; Fable runs via the `claude` CLI. Model defaults to claude CLI's built-in default
-  ;; (claude-sonnet-4-6) unless CODEX_TASK_BOARD_FABLE_MODEL overrides it.
+  ;; or account configuration unless CODEX_TASK_BOARD_FABLE_MODEL overrides it.
   (let [model (System/getenv "CODEX_TASK_BOARD_FABLE_MODEL")
         agent (env "CODEX_TASK_BOARD_FABLE_AGENT" "fable")
         extra (System/getenv "CODEX_TASK_BOARD_FABLE_EXTRA_ARGS")]
@@ -1406,6 +1568,11 @@
       (seq extra)
       (into (str/split extra #"\s+")))))
 
+(defn claude-model-args [agent]
+  (if (= "fable" agent)
+    (fable-model-args)
+    ["--model" (get claude-assignee->model agent)]))
+
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
@@ -1417,9 +1584,8 @@
     (fs/create-dirs dir)
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
-    (let [agent-args (case agent
-                       "fable"
-                       (cond-> ["claude" "--print" "--output-format" "text"]
+    (let [agent-args (if (claude-assignee? agent)
+                       (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "text"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-skip-permissions")
 
@@ -1428,7 +1594,7 @@
                                  (cons (vault) (workspace-add-dirs workspace))))
 
                    true
-                   (into (fable-model-args)))
+                   (into (claude-model-args agent)))
 
                        (cond-> ["codex" "exec" "--json" "--cd" (:workspace-dir workspace)
                           "--skip-git-repo-check"
@@ -1452,11 +1618,11 @@
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
                                               :out (io/file (str stdout-path))
                                               :err (io/file (str stderr-path))}
-                                       (= "fable" agent)
+                                       (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
           {:keys [proc idle-timeout?]} (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
           exit (:exit proc)
-          _ (when (and (= "fable" agent) (fs/exists? stdout-path))
+          _ (when (and (claude-assignee? agent) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path))
                        (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path)
@@ -1523,7 +1689,10 @@
              (str " (" (name gate) ")"))
            (when-let [url (:url review-gate)]
              (str " for " url))
-           ": " (:message review-gate))
+           ": " (persisted-review-gate-reason review-gate)
+           (when-let [diagnostic (:diagnostic review-gate)]
+             (str " Safe diagnostic: " (:path diagnostic)
+                  " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ").")))
 
       (and (= "in-progress" next-status)
            (not (:ok? review-gate))
@@ -1533,15 +1702,131 @@
              (str " (" (name gate) ")"))
            (when-let [url (:url review-gate)]
              (str " for " url))
-           ": " (:message review-gate)
+           ": " (persisted-review-gate-reason review-gate)
+           (when-let [diagnostic (:diagnostic review-gate)]
+             (str " Safe diagnostic: " (:path diagnostic)
+                  " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ")."))
            " Retrying with Codex instruction "
            (:retry-count review-gate) "/" (:retry-limit review-gate) ".")
 
       (and (= "review" next-status) (seq pr-urls))
-      (str base " PR: " (str/join ", " pr-urls) ". Review gates passed: " (:message review-gate))
+      (str base " PR: " (str/join ", " pr-urls) ". "
+           (persisted-review-gate-reason review-gate))
 
       :else
       base)))
+
+(defn sanitize-blocker-reason [reason]
+  ;; Notes are user-visible. Keep a compact diagnosis while never copying agent
+  ;; output or stderr verbatim, because either can contain credentials.
+  (let [value (-> (or reason "reason unavailable")
+                  str
+                  (str/replace #"[\r\n\t]+" " ")
+                  (str/replace #"(?i)(authorization:\s*(?:bearer\s+)?)[^\s]+" "$1[REDACTED]")
+                  (str/replace #"(?i)\b[A-Z0-9_]*(?:token|secret|password|api(?:[_-]|\s)+key|credential)[A-Z0-9_]*\s*[=:]\s*[^\s,;]+" "[REDACTED]")
+                  (str/replace #"\b(?:gh[pousr]_[A-Za-z0-9_]+|github_pat_[A-Za-z0-9_]+|sk-[A-Za-z0-9_-]+)\b" "[REDACTED]"))]
+    (if (str/blank? (str/trim value))
+      "reason unavailable"
+      (subs value 0 (min 600 (count value))))))
+
+(defn blocker-category [result exit review-gate exception]
+  (cond
+    exception "runner-internal-error"
+    (not (zero? (long (or exit 0)))) "agent-process-error"
+    (= "blocked" result) "agent-reported-blocked"
+    (:retry-exhausted? review-gate) "pr-gate-retry-limit"
+    (:gate review-gate) (str "pr-gate-" (name (:gate review-gate)))
+    :else "reason-unavailable"))
+
+(defn blocker-safe-reason [result exit review-gate exception]
+  ;; Do not copy agent, CLI, or exception text into user-visible Notes or run
+  ;; summaries.  Those strings are untrusted and can contain credentials.
+  (cond
+    exception "Runner internal error; inspect the referenced run artifacts."
+    (not (zero? (long (or exit 0)))) "Agent process exited unsuccessfully; inspect the referenced run artifacts."
+    (= "blocked" result) "Agent reported blocked; inspect the referenced run artifacts."
+    (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
+    :else "reason unavailable"))
+
+(defn blocker-note [ticket-id run-id action category reason]
+  (let [dir (str (run-dir ticket-id run-id))]
+    (str "Blocked transition recorded: ticket=" ticket-id
+         "; run=" run-id
+         "; transition-id=" ticket-id "/" run-id
+         "; action=" (name action)
+         "; at=" (now-str)
+         "; category=" category
+         "; reason=" (sanitize-blocker-reason reason)
+         "; inspect run artifacts: " dir "/summary.edn, " dir "/last-message.md, "
+         dir "/events.jsonl, " dir "/stderr.log.")))
+
+(defn blocked-transition-recorded? [ticket-id run-id]
+  ;; The note is the durable audit boundary.  If a later state transition
+  ;; throws and the outer error handler retries, do not append a second audit
+  ;; note for the same run.
+  (let [marker (str "transition-id=" ticket-id "/" run-id)]
+    (and (fs/exists? (ticket-path ticket-id))
+         (some #(str/includes? % marker) (read-lines (ticket-path ticket-id))))))
+
+(defn record-blocked-transition! [ticket-id run-id action result exit review-gate exception]
+  (let [category (blocker-category result exit review-gate exception)
+        reason (blocker-safe-reason result exit review-gate exception)]
+    (try
+      (when-not (blocked-transition-recorded? ticket-id run-id)
+        (append-note! ticket-id (blocker-note ticket-id run-id action category reason)))
+      true
+      (catch Exception e
+        ;; A Blocked card without this audit record is worse than leaving the
+        ;; current lane intact. Persist the failure where operators can inspect it.
+        (try
+          (mark-run! ticket-id run-id :blocker-note-failed
+                     {:action action
+                      :blocker-category category
+                      :blocker-reason (sanitize-blocker-reason reason)
+                      :notes-error "blocker Notes write failed"
+                      :finished-at (now-str)})
+          (catch Exception mark-error
+            (log! (str "could not record blocker note failure for " ticket-id "/" run-id
+                       ": " (.getMessage mark-error)))))
+        (log! (str "blocked transition withheld for " ticket-id "/" run-id
+                   " because Notes recording failed"))
+        false))))
+
+(defn block-ticket! [ticket-id run-id action result exit review-gate exception]
+  (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
+    ;; Keep the post-audit transition inside this boundary.  Otherwise a
+    ;; failure here escapes to process-card!'s catch, which invokes this
+    ;; function again and can duplicate the audit record.
+    (try
+      ;; Do not confirm the run as blocked until both durable ticket states
+      ;; have been updated.  A later card/frontmatter failure is recovered to
+      ;; the prior lane by process-card!, so recording :blocked beforehand
+      ;; would leave summary.edn contradicting the restored ticket state.
+      (move-card! ticket-id "blocked")
+      ;; Deterministic black-box failure hook; unset in deployment.
+      (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
+        (throw (ex-info "forced blocked state update failure" {})))
+      (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+      ;; run-agent! records a zero-exit agent as succeeded before its result is
+      ;; interpreted. Correct that provisional status only after the Blocked
+      ;; transition itself has succeeded.
+      (mark-run! ticket-id run-id :blocked
+                 {:action action
+                  :exit-code exit
+                  :result result
+                  :review-gate (persisted-review-gate review-gate)
+                  :blocker-category (blocker-category result exit review-gate exception)
+                  :blocker-reason (blocker-safe-reason result exit review-gate exception)
+                  :finished-at (now-str)})
+      true
+      (catch Exception e
+        (log! (str "blocked transition state update failed for " ticket-id "/" run-id
+                   "; preserving/restoring the prior card state: " (.getMessage e)))
+        false))))
+
+(defn restore-card-state! [ticket-id status assignee]
+  (move-card! ticket-id status)
+  (update-frontmatter! ticket-id {:status status :assignee assignee}))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
@@ -1559,13 +1844,19 @@
                 (update-frontmatter! ticket-id {:status "in-progress"}))
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
               (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock)
+                    _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
+                        ;; Deterministic black-box failure hook; unset in deployment.
+                        (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
+                                             "forced runner internal error token=super-secret-token") {})))
                     intended (cond
                                (not (zero? exit)) "blocked"
                                (= :groom action) "ready"
                                (#{"done" "review" "blocked"} result) result
                                :else "review")
                     review-gate (if (= "review" intended)
-                                  (let [gate-result (review-gate! dir last-message)]
+                                  (let [gate-result (review-gate! dir last-message)
+                                        gate-result (assoc gate-result :diagnostic
+                                                           (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
                                     (if (and (not (:ok? gate-result))
                                              (:retryable? gate-result))
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
@@ -1583,30 +1874,39 @@
                               :result result
                               :idle-timeout? true
                               :finished-at (now-str)}))
-                (when (= "review" intended)
+                ;; A non-retryable review-gate failure reaches block-ticket!.
+                ;; Let that function write :blocked only after the card and
+                ;; frontmatter transition have both succeeded.  Writing it
+                ;; here would leave summary.edn at :blocked when a later
+                ;; blocked-state failure restores the original lane.
+                (when (and (= "review" intended)
+                           (not= "blocked" next-status))
                   (mark-run! ticket-id run-id (cond
                                                 (:ok? review-gate) :succeeded
                                                 (= "in-progress" next-status) :retrying
-                                                :else :blocked)
+                                                :else :succeeded)
                              {:action action
                               :agent assignee
                               :lane effective-lane
                               :exit-code exit
                               :result result
-                              :review-gate review-gate
+                              :review-gate (persisted-review-gate review-gate)
                               :finished-at (now-str)}))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
-                (move-card! ticket-id next-status)
-                (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                         :assignee (if (= "in-progress" next-status) assignee "boxp")}
-                                                  (= "done" next-status) (assoc :closed (today))))
-                (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
+                (if (= "blocked" next-status)
+                  (when-not (block-ticket! ticket-id run-id action result exit review-gate nil)
+                    (restore-card-state! ticket-id status assignee))
+                  (do
+                    (move-card! ticket-id next-status)
+                    (update-frontmatter! ticket-id (cond-> {:status next-status
+                                                             :assignee (if (= "in-progress" next-status) assignee "boxp")}
+                                                      (= "done" next-status) (assoc :closed (today))))
+                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))))
                 true)
               (catch Exception e
-                (move-card! ticket-id "blocked")
-                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
-                (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " failed: " (.getMessage e)))
+                (when-not (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                  (restore-card-state! ticket-id status assignee))
                 true)
               (finally
                 (reset! stop? true)
@@ -1627,6 +1927,521 @@
          (filter (fn [{:keys [ticket-id] :as card}]
                    (some? (candidate-action card (ticket-assignee ticket-id)))))
          vec)))
+
+;; ---------------------------------------------------------------------------
+;; Run workspace pruning (BOXP-209)
+;;
+;; Every run leaves `workspaces/<ticket>/<run-id>/` plus a worktree and a
+;; `codex-task-board/<ticket>-<run-id>` branch in the source repository. Nothing
+;; else removes them, so the loop periodically prunes the run workspaces of
+;; tickets that have been done for longer than the retention period. A run is
+;; only deleted when every checkout in it is clean and all of its local commits
+;; exist on GitHub; anything that cannot be verified is kept and logged.
+;; ---------------------------------------------------------------------------
+
+(def default-workspace-retention-days 3)
+(def default-workspace-prune-interval-seconds 21600)
+(def max-unpushed-commits-per-checkout 200)
+
+(defn parse-prune-enabled [value]
+  (let [v (some-> value str/trim str/lower-case)]
+    (cond
+      (or (nil? v) (= "" v)) {:value true}
+      (contains? #{"1" "true" "yes" "on"} v) {:value true}
+      (contains? #{"0" "false" "no" "off"} v) {:value false}
+      :else {:value true :invalid? true})))
+
+(defn parse-bounded-long [value default minimum]
+  (if (str/blank? value)
+    {:value default}
+    (let [parsed (try
+                   (Long/parseLong (str/trim value))
+                   (catch Exception _ nil))]
+      (if (and parsed (>= parsed minimum))
+        {:value parsed}
+        {:value default :invalid? true}))))
+
+(def warned-prune-settings (atom #{}))
+
+(defn prune-setting [k parse]
+  ;; Unlike CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS, a bad value here must
+  ;; not stop the runner: fall back to the default and warn once per value.
+  (let [raw (System/getenv k)
+        {:keys [value invalid?]} (parse raw)]
+    (when (and invalid? (not (contains? @warned-prune-settings [k raw])))
+      (swap! warned-prune-settings conj [k raw])
+      (log! (str "prune: warning invalid " k "=" (pr-str raw) ", using default " value)))
+    value))
+
+(defn workspace-prune-enabled? []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_PRUNE" parse-prune-enabled))
+
+(defn workspace-retention-days []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_RETENTION_DAYS"
+                 #(parse-bounded-long % default-workspace-retention-days 0)))
+
+(defn workspace-prune-interval-seconds []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_PRUNE_INTERVAL_SECONDS"
+                 #(parse-bounded-long % default-workspace-prune-interval-seconds 1)))
+
+(defn workspaces-dir []
+  (fs/path (root) "workspaces"))
+
+(def run-id-timestamp-formatter
+  (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss'Z'"))
+
+(defn run-id-instant [run-id]
+  ;; Runs created before unique-run-id have no UUID suffix.
+  (when-let [[_ timestamp] (re-matches #"^(\d{8}T\d{6}Z)(?:-.+)?$" (str run-id))]
+    (try
+      (.toInstant (java.time.LocalDateTime/parse timestamp run-id-timestamp-formatter)
+                  java.time.ZoneOffset/UTC)
+      (catch Exception _ nil))))
+
+(defn parse-closed-date [value]
+  (try
+    (java.time.LocalDate/parse (str/replace (str/trim (str value)) #"^[\"']|[\"']$" ""))
+    (catch Exception _ nil)))
+
+(defn prune-ticket-decision
+  "Ticket-level eligibility from frontmatter. `closed` alone is not trusted:
+  reopened tickets keep a stale `closed`, so it only counts with status done."
+  [frontmatter today-date retention-days]
+  (let [status (some-> (:status frontmatter) str/trim)
+        closed (parse-closed-date (:closed frontmatter))]
+    (cond
+      (nil? frontmatter) {:eligible? false :reason "ticket-missing"}
+      (not= "done" status) {:eligible? false :reason "not-done"}
+      (nil? closed) {:eligible? false :reason "closed-missing"}
+      (.isAfter closed (.minusDays today-date retention-days))
+      {:eligible? false :reason "within-retention"}
+      :else {:eligible? true})))
+
+(defn prune-run-decision
+  "Run-level eligibility. The run-id timestamp keeps the grace period for a
+  ticket that was reopened and finished again while `closed` stayed old."
+  [run-id now-instant retention-days]
+  (let [started (run-id-instant run-id)]
+    (cond
+      (nil? started) {:eligible? false :reason "run-id-timestamp-unparseable"}
+      (.isAfter started (.minus now-instant (java.time.Duration/ofDays retention-days)))
+      {:eligible? false :reason "within-retention"}
+      :else {:eligible? true})))
+
+(defn github-repo-from-remote-url [url]
+  (when-let [[_ owner repo]
+             (re-find #"^(?:(?:https?|ssh|git)://(?:[^@/\s]+@)?|[^@/\s]+@)github\.com[:/]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$"
+                      (str/trim (str url)))]
+    (str owner "/" repo)))
+
+(defn command-result
+  "Runs a command without throwing. Timeouts and spawn failures are reported
+  as a non-zero exit so callers treat them as `could not verify`."
+  ([args] (command-result args {}))
+  ([args {:keys [timeout-seconds] :or {timeout-seconds 120}}]
+   (try
+     (let [proc (p/process args {:out :string
+                                 :err :string
+                                 :extra-env {"GIT_OPTIONAL_LOCKS" "0"}})
+           result (deref proc (* 1000 timeout-seconds) ::timeout)]
+       (if (= ::timeout result)
+         (do
+           (p/destroy-tree proc)
+           {:exit -1 :out "" :err (str "timed out after " timeout-seconds "s")})
+         {:exit (:exit result) :out (or (:out result) "") :err (or (:err result) "")}))
+     (catch Exception e
+       {:exit -1 :out "" :err (str (.getMessage e))}))))
+
+(defn one-line [text]
+  ;; Keeps every prune log entry on a single line.
+  (str/trim (str/replace (str text) #"\s+" " ")))
+
+(defn github-commit-status
+  "Returns :exists, :missing or :unknown. Local remote-tracking refs are often
+  stale, so GitHub is asked directly; results are cached for one prune pass."
+  [cache repo sha]
+  (let [k [repo sha]]
+    (or (get @cache k)
+        (let [{:keys [exit out err]} (command-result
+                                      ["gh" "api" (str "repos/" repo "/commits/" sha) "--jq" ".sha"]
+                                      {:timeout-seconds 60})
+              status (cond
+                       (and (zero? exit) (= sha (str/trim out))) :exists
+                       (re-find #"HTTP (404|422)" (str err out)) :missing
+                       :else :unknown)]
+          (swap! cache assoc k status)
+          status))))
+
+(defn find-checkouts
+  "Directories under `dir` that contain `.git` (file or directory), deepest
+  first. Symlinks are not followed and `.git` itself is not descended into,
+  but the rest of a checkout is: a clone nested inside another checkout (for
+  example one the parent gitignores) is invisible to the parent's
+  `git status` and has to be inspected on its own."
+  [dir]
+  (let [found (volatile! [])]
+    (letfn [(git-entry? [entry] (= ".git" (fs/file-name entry)))
+            (visit [current]
+              (let [entries (fs/list-dir current)]
+                (when (some git-entry? entries)
+                  (vswap! found conj current))
+                ;; Keep walking below a checkout; only `.git` is skipped.
+                (doseq [entry entries
+                        :when (and (not (git-entry? entry))
+                                   (fs/directory? entry {:nofollow-links true}))]
+                  (visit entry))))]
+      (visit dir))
+    ;; Deepest first so a nested worktree is detached before its parent goes.
+    (vec (sort-by (fn [path] [(- (count (seq (fs/path path)))) (str path)]) @found))))
+
+(defn inspect-checkout
+  "Returns {:hold reason} when the checkout must be kept, otherwise its repo
+  and, for a worktree of a repository outside the run, :external-common-dir."
+  [run-real checkout gh-cache]
+  (let [git (fn [& args] (command-result (into ["git" "-C" (str checkout)] args)))
+        toplevel (git "rev-parse" "--show-toplevel")
+        git-dir (git-path checkout "--git-dir")
+        common-dir (git-path checkout "--git-common-dir")]
+    (cond
+      (or (not (zero? (:exit toplevel))) (nil? git-dir) (nil? common-dir))
+      {:hold "git-error"}
+
+      (not= (fs/real-path (str/trim (:out toplevel))) (fs/real-path checkout))
+      {:hold "git-toplevel-mismatch"}
+
+      :else
+      (let [git-dir (fs/real-path git-dir)
+            common-dir (fs/real-path common-dir)
+            linked? (not= git-dir common-dir)
+            ;; A clone whose git dir lives in the run loses every local ref
+            ;; and reflog when the run is deleted, so all of them count. A
+            ;; worktree only loses its own HEAD and that HEAD's reflog.
+            owned-clone? (and (not linked?) (fs/starts-with? git-dir run-real))
+            status (git "status" "--porcelain")
+            origin (git "remote" "get-url" "origin")
+            repo (when (zero? (:exit origin))
+                   (github-repo-from-remote-url (:out origin)))
+            stash (when owned-clone?
+                    (git "rev-parse" "--verify" "--quiet" "refs/stash"))
+            ;; Commits dropped by reset, amend or rebase stay recoverable
+            ;; through the reflog until the run is deleted.
+            reflog (apply git "log" "-g" "--format=%H" (if owned-clone? ["--all"] ["HEAD"]))
+            reflog-shas (distinct (remove str/blank? (str/split-lines (:out reflog))))
+            rev-list (apply git "rev-list"
+                            (str "--max-count=" (inc max-unpushed-commits-per-checkout))
+                            (concat ["HEAD"]
+                                    (if owned-clone? ["--all" "--reflog"] reflog-shas)
+                                    ["--not" "--remotes"]))
+            ;; Remote-tracking refs can be stale or belong to another remote,
+            ;; so they are no proof by themselves: the tips are always checked
+            ;; on GitHub, which also covers every ancestor.
+            tips (apply git "rev-parse" "HEAD"
+                        (when owned-clone? ["--branches"]))
+            shas (distinct (remove str/blank? (concat (str/split-lines (:out tips))
+                                                      reflog-shas
+                                                      (str/split-lines (:out rev-list)))))]
+        (cond
+          (not (zero? (:exit status))) {:hold "git-error"}
+          (not (str/blank? (:out status))) {:hold "uncommitted-changes"}
+          (nil? repo) {:hold "origin-not-github"}
+          (and stash (zero? (:exit stash))) {:hold "stash-present"}
+          (some #(not (zero? (:exit %))) [tips reflog rev-list]) {:hold "git-error"}
+          (> (count shas) max-unpushed-commits-per-checkout) {:hold "too-many-unpushed-commits"}
+          :else
+          (or (some (fn [sha]
+                      (case (github-commit-status gh-cache repo sha)
+                        :exists nil
+                        :missing {:hold (str "commit-not-on-github sha=" sha)}
+                        {:hold (str "github-check-failed sha=" sha)}))
+                    shas)
+              {:repo repo
+               :external-common-dir (when (and linked?
+                                               (not (fs/starts-with? common-dir run-real)))
+                                      (str common-dir))}))))))
+
+(defn safe-run-workspace-path?
+  "True only when `run-path` really is <root>/workspaces/<ticket>/<run-id>."
+  [ticket-id run-id run-path]
+  (and (fs/directory? run-path {:nofollow-links true})
+       (= (fs/real-path run-path)
+          (fs/path (fs/real-path (workspaces-dir)) ticket-id run-id))))
+
+(defn prune-run-branch!
+  "Deletes the run's own branch from the source repository only when its tip
+  and every commit in its reflog (which goes away with the branch) are on
+  GitHub. Branches with any other name are never touched."
+  [{:keys [dry-run? gh-cache stats]} common-dir repo branch]
+  (let [git (fn [& args] (command-result (into ["git" "--git-dir" common-dir] args)))
+        ref (str "refs/heads/" branch)
+        tip (git "rev-parse" "--verify" "--quiet" ref)
+        sha (str/trim (:out tip))
+        on-github? (fn [sha] (= :exists (github-commit-status gh-cache repo sha)))
+        keep! (fn [reason] (log! (str "prune: keep-branch " common-dir " " branch " reason=" reason)))]
+    (when (and (zero? (:exit tip)) (not (str/blank? sha)))
+      (if-let [reason (if-not (on-github? sha)
+                        (str "tip-not-on-github sha=" sha)
+                        (let [reflog (git "log" "-g" "--format=%H" ref)
+                              reflog-shas (distinct (remove str/blank? (str/split-lines (:out reflog))))]
+                          (cond
+                            (not (zero? (:exit reflog))) "git-error"
+                            (> (count reflog-shas) max-unpushed-commits-per-checkout) "too-many-reflog-commits"
+                            :else (some #(when-not (on-github? %)
+                                           (str "reflog-commit-not-on-github sha=" %))
+                                        reflog-shas))))]
+        (keep! reason)
+        (if dry-run?
+          (do
+            (swap! stats update :branches inc)
+            (log! (str "prune: delete-branch " common-dir " " branch " (dry-run)")))
+          (let [deleted (git "branch" "-D" branch)]
+            (if (zero? (:exit deleted))
+              (do
+                (swap! stats update :branches inc)
+                (log! (str "prune: delete-branch " common-dir " " branch)))
+              (keep! (str "branch-delete-failed " (one-line (:err deleted)))))))))))
+
+(defn delete-run-workspace!
+  "Returns nil on success or a hold reason when the run could not be removed."
+  [{:keys [affected-repos]} run-path checkouts]
+  (or (some (fn [{:keys [path external-common-dir]}]
+              (when external-common-dir
+                (swap! affected-repos conj external-common-dir)
+                (let [removed (command-result
+                               ["git" "--git-dir" external-common-dir
+                                "worktree" "remove" "--force" (str path)]
+                               {:timeout-seconds 600})]
+                  (when-not (zero? (:exit removed))
+                    (str "worktree-remove-failed checkout=" path " " (one-line (:err removed)))))))
+            checkouts)
+      (try
+        (fs/delete-tree run-path)
+        nil
+        (catch Exception e
+          (str "delete-failed " (one-line (.getMessage e)))))))
+
+(defn ticket-frontmatter-or-nil [ticket-id]
+  ;; `ticket-frontmatter` exits the process on a missing file; pruning also
+  ;; visits workspace directories whose ticket no longer exists.
+  (let [path (ticket-path ticket-id)]
+    (when (fs/exists? path)
+      (try
+        (frontmatter-map (vec (str/split-lines (slurp (str path)))))
+        (catch Exception _ nil)))))
+
+(defn board-card-lanes
+  "Headings of the lanes holding the ticket's cards (empty when it has no
+  card), or nil when the board cannot be read. Unlike parse-board-cards this
+  also sees lanes the runner does not manage, such as Draft."
+  [ticket-id]
+  (try
+    (let [path (board-path)]
+      (when (fs/exists? path)
+        ;; board-mutex keeps a half-written board from this JVM out of the read.
+        (let [lines (locking board-mutex
+                      (str/split-lines (slurp (str path))))]
+          (:lanes (reduce (fn [{:keys [lane] :as acc} line]
+                            (if-let [[_ heading] (re-matches #"##\s+(.*?)\s*" line)]
+                              (assoc acc :lane heading)
+                              (cond-> acc
+                                (and (card-line? line) (= ticket-id (ticket-id-from-card line)))
+                                (update :lanes conj lane))))
+                          {:lane nil :lanes []}
+                          lines)))))
+    (catch Exception _ nil)))
+
+(defn prune-ticket-status [{:keys [today-date retention-days]} ticket-id]
+  (let [card-lanes (board-card-lanes ticket-id)]
+    (cond
+      (fs/exists? (lock-path ticket-id)) {:eligible? false :reason "locked"}
+      (nil? card-lanes) {:eligible? false :reason "board-unreadable"}
+      ;; The board lane is the source of truth and frontmatter only follows at
+      ;; the next sync, so a card moved out of Done wins over `status: done`.
+      ;; Tickets without a card are judged by frontmatter alone.
+      (some #(not= "Done" %) card-lanes) {:eligible? false :reason "not-done"}
+      :else (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id) today-date retention-days))))
+
+(defn prune-run-under-guard!
+  "Must run inside with-ticket-lock-guard so no run of the ticket can start
+  between the lock check and the deletion. Returns {:result ...}."
+  [{:keys [dry-run? now-instant retention-days gh-cache planned] :as ctx} ticket-id run-id]
+  (let [run-path (run-workspace-dir ticket-id run-id)
+        ticket (prune-ticket-status ctx ticket-id)
+        run (prune-run-decision run-id now-instant retention-days)
+        hold (fn [reason] {:result :held :reason reason})]
+    (cond
+      (not (fs/exists? run-path {:nofollow-links true})) {:result :gone}
+      (not (:eligible? ticket)) {:result :ticket-skipped :reason (:reason ticket)}
+      (= "within-retention" (:reason run)) {:result :recent}
+      (not (:eligible? run)) (hold (:reason run))
+      (not (safe-run-workspace-path? ticket-id run-id run-path)) (hold "unsafe-path")
+      :else
+      (let [run-real (fs/real-path run-path)
+            checkouts (mapv (fn [checkout]
+                              (assoc (inspect-checkout run-real checkout gh-cache) :path checkout))
+                            (find-checkouts run-path))
+            held (first (filter :hold checkouts))
+            branch (ticket-worktree-branch ticket-id run-id)
+            branch-repos (distinct (keep (fn [{:keys [external-common-dir repo]}]
+                                           (when external-common-dir
+                                             [external-common-dir repo]))
+                                         checkouts))
+            ;; Inspection can take a while (GitHub lookups); look once more
+            ;; for a reopened ticket right before anything is removed.
+            recheck (delay (prune-ticket-status ctx ticket-id))]
+        (cond
+          held
+          (hold (str (:hold held) " checkout=" (fs/relativize run-path (:path held))))
+
+          dry-run?
+          (do
+            (swap! planned conj (str run-path))
+            (log! (str "prune: delete " run-path " (dry-run)"))
+            (doseq [[common-dir repo] branch-repos]
+              (prune-run-branch! ctx common-dir repo branch))
+            {:result :deleted})
+
+          (not (:eligible? @recheck))
+          {:result :ticket-skipped :reason (:reason @recheck)}
+
+          :else
+          (if-let [reason (delete-run-workspace! ctx run-path checkouts)]
+            (hold reason)
+            (do
+              (log! (str "prune: delete " run-path))
+              (doseq [[common-dir repo] branch-repos]
+                (prune-run-branch! ctx common-dir repo branch))
+              {:result :deleted})))))))
+
+(defn child-directories [dir]
+  (if (fs/directory? dir)
+    (->> (fs/list-dir dir)
+         (filter #(fs/directory? % {:nofollow-links true}))
+         (sort-by str)
+         vec)
+    []))
+
+(defn prune-ticket-workspaces! [{:keys [stats stop?] :as ctx} ticket-id]
+  (let [skip-ticket! (fn [reason]
+                       (swap! stats update-in [:skipped reason] (fnil inc 0)))
+        pre (prune-ticket-status ctx ticket-id)
+        run-ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))]
+    (cond
+      (empty? run-ids) nil
+      (not (:eligible? pre)) (skip-ticket! (:reason pre))
+      :else
+      (loop [[run-id & more] run-ids]
+        (when (and run-id (not (stop?)))
+          (let [run-path (run-workspace-dir ticket-id run-id)
+                {:keys [result reason]}
+                (try
+                  (with-ticket-lock-guard
+                   ticket-id
+                   #(prune-run-under-guard! ctx ticket-id run-id))
+                  (catch Exception e
+                    {:result :held :reason (str "error " (one-line (.getMessage e)))}))]
+            (case result
+              :deleted (swap! stats update :deleted inc)
+              :recent (swap! stats update :recent inc)
+              :held (do
+                      (swap! stats update :held inc)
+                      (log! (str "prune: hold " run-path " reason=" reason)))
+              :ticket-skipped (skip-ticket! reason)
+              nil)
+            (when-not (= :ticket-skipped result)
+              (recur more))))))))
+
+(defn prune-empty-ticket-dir!
+  "Removes workspaces/<ticket>/ once no run is left, whatever the ticket status.
+  The delete is non-recursive, so a directory that is not empty is never touched."
+  [{:keys [dry-run? planned stats]} ticket-dir]
+  (let [ticket-id (fs/file-name ticket-dir)]
+    (with-ticket-lock-guard
+     ticket-id
+     (fn []
+       (when (and (fs/directory? ticket-dir {:nofollow-links true})
+                  (not (fs/exists? (lock-path ticket-id))))
+         (let [entries (fs/list-dir ticket-dir)]
+           (cond
+             (and dry-run? (every? #(contains? @planned (str %)) entries))
+             (do
+               (swap! stats update :empty-dirs inc)
+               (log! (str "prune: delete-empty " ticket-dir " (dry-run)")))
+
+             (and (not dry-run?) (empty? entries))
+             (do
+               (fs/delete ticket-dir)
+               (swap! stats update :empty-dirs inc)
+               (log! (str "prune: delete-empty " ticket-dir))))))))))
+
+(defn prune-workspaces!
+  ([] (prune-workspaces! {}))
+  ([{:keys [dry-run? stop?] :or {dry-run? false stop? (constantly false)}}]
+   (let [retention-days (workspace-retention-days)
+         ctx {:dry-run? dry-run?
+              :stop? stop?
+              :retention-days retention-days
+              :today-date (java.time.LocalDate/now java.time.ZoneOffset/UTC)
+              :now-instant (now)
+              :gh-cache (atom {})
+              :affected-repos (atom #{})
+              :planned (atom #{})
+              :stats (atom {:deleted 0 :held 0 :recent 0 :branches 0 :empty-dirs 0 :skipped {}})}
+         guarded (fn [label path f]
+                   (try
+                     (f)
+                     (catch Exception e
+                       (log! (str "prune: error " label " " path " " (one-line (.getMessage e)))))))]
+     (log! (str "prune: start retention-days=" retention-days " dry-run=" dry-run?))
+     (doseq [ticket-dir (child-directories (workspaces-dir))
+             :when (not (stop?))]
+       (guarded "ticket" ticket-dir
+                #(prune-ticket-workspaces! ctx (fs/file-name ticket-dir))))
+     (doseq [ticket-dir (child-directories (workspaces-dir))
+             :when (not (stop?))]
+       (guarded "empty-dir" ticket-dir
+                #(prune-empty-ticket-dir! ctx ticket-dir)))
+     (doseq [common-dir (sort @(:affected-repos ctx))]
+       (let [pruned (command-result ["git" "--git-dir" common-dir "worktree" "prune"])]
+         (when-not (zero? (:exit pruned))
+           (log! (str "prune: error worktree-prune " common-dir " " (one-line (:err pruned)))))))
+     (when (stop?)
+       (log! "prune: stopped early because the runner is draining"))
+     (let [{:keys [deleted held recent branches empty-dirs skipped]} @(:stats ctx)]
+       (log! (str "prune: summary deleted=" deleted
+                  " held=" held
+                  " skipped=" (reduce + 0 (vals skipped))
+                  " recent-runs=" recent
+                  " branches=" branches
+                  " empty-dirs=" empty-dirs
+                  " dry-run=" dry-run?
+                  (when (seq skipped)
+                    (str " skipped-detail="
+                         (str/join "," (map (fn [[reason n]] (str reason ":" n))
+                                            (sort-by key skipped)))))))
+       @(:stats ctx)))))
+
+;; Background prune started by `loop!`. The last start time lives only in this
+;; JVM: state.edn is shared with pr-gate-retries and is not written atomically,
+;; and one extra idempotent pass after a pod restart is harmless.
+(def workspace-prune-run (atom {:future nil :last-started-nanos nil}))
+
+(defn workspace-prune-due? [{:keys [future last-started-nanos]} now-nanos interval-seconds]
+  (and (or (nil? future) (realized? future))
+       (or (nil? last-started-nanos)
+           (>= (- now-nanos last-started-nanos) (* interval-seconds 1000000000)))))
+
+(defn maybe-start-workspace-prune! []
+  (when (and (workspace-prune-enabled?)
+             (workspace-prune-due? @workspace-prune-run (System/nanoTime)
+                                   (workspace-prune-interval-seconds))
+             (not (draining?)))
+    (reset! workspace-prune-run
+            {:last-started-nanos (System/nanoTime)
+             :future (future
+                       (try
+                         (prune-workspaces! {:stop? draining?})
+                         (catch Throwable t
+                           (log! (str "prune: failed: " (.getMessage t))))))})))
 
 ;; Map of ticket-id -> future for currently running process-card! calls.
 ;; Persists across tick! invocations so the loop can detect new candidates
@@ -1689,17 +2504,27 @@
   (activate-owner!)
   (log! (str "codex task-board runner started, vault=" (vault) ", root=" (root)
              ", owner=" (owner-id) ", instance=" runner-instance-id))
+  (log! (if (workspace-prune-enabled?)
+          (str "workspace prune enabled, retention-days=" (workspace-retention-days)
+               ", interval-seconds=" (workspace-prune-interval-seconds))
+          "workspace prune disabled by CODEX_TASK_BOARD_WORKSPACE_PRUNE"))
   (loop []
     (try
       (tick!)
       (catch Exception e
         (binding [*out* *err*]
           (println (str "task-board tick failed: " (.getMessage e))))))
+    ;; After the tick so the first pass never delays startup; one-shot `tick`
+    ;; does not prune.
+    (try
+      (maybe-start-workspace-prune!)
+      (catch Exception e
+        (log! (str "prune: failed to start: " (.getMessage e)))))
     (Thread/sleep (* 1000 (Long/parseLong (env "CODEX_TASK_BOARD_POLL_SECONDS" "60"))))
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick|loop|sync|prepare-shutdown|recover>")
+  (println "usage: task_board_runner.bb <tick|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -1708,6 +2533,29 @@
 
 (defn run-tests! []
   (let [failures (atom [])]
+    (when (autonomy-v2-enabled?)
+      (swap! failures conj "I1 autonomy v2 must remain disabled"))
+    ;; Versioned projections cannot affect legacy candidate selection while off.
+    ;; Include every existing route and lane, plus unsupported/new v2 routes.
+    (doseq [[lane status] lane->status
+            assignee (concat (keys assignee->model) (keys claude-assignee->model)
+                             ["fable" "codex-sol-high" "claude-fable" "unknown"])
+            intent ["run" "pause" "cancel" "wait-human"]]
+      (let [expected (when (supported-assignee? assignee)
+                       (get {"backlog" :groom "ready" :implement
+                             "in-progress" :implement "review" :review-fix
+                             "blocked" :blocked-retry} status))
+            action (candidate-action {:lane lane :status status
+                                      :autonomy_version 2 :execution_intent intent
+                                      :control_revision "malformed"}
+                                     assignee)]
+        (when (not= expected action)
+          (swap! failures conj "feature-off candidate compatibility"))))
+    (println "PASS: autonomy v2 remains off; legacy lane/route/intent matrix is unchanged")
+    ;; The shared vault writer lock is opt-in; unset, it must be a pass-through.
+    (when (and (nil? (vault-writer-lock-dir))
+               (not= :value (with-vault-writer-lock (fn [] (if *vault-writer-lock-held* :locked :value)))))
+      (swap! failures conj "vault writer lock must be a pass-through when not opted in"))
     (let [calls (atom [])]
       (try
         (with-redefs [install-shutdown-hook! #(swap! calls conj :install-shutdown-hook)
@@ -1735,9 +2583,27 @@
           (println (str "FAIL: same-second run IDs must be unique: " first-id " / " second-id))
           (swap! failures conj "same-second run ID uniqueness"))))
 
-    (doseq [[assignee expected-model] [["codex"       "gpt-5.6-terra"]
-                                       ["codex-sol"   "gpt-5.6-sol"]
-                                       ["codex-full"  "gpt-5.6-sol"]
+    (doseq [[assignee expected-model] claude-assignee->model]
+      (let [args (claude-model-args assignee)
+            actual-model (arg-value args "--model")]
+        (if (and (= expected-model actual-model)
+                 (supported-assignee? assignee)
+                 (not-any? #{"--agent"} args))
+          (println (str "PASS: " assignee " -> " actual-model " without legacy fable agent"))
+          (do
+            (println (str "FAIL: " assignee " expected=" expected-model " args=" args))
+            (swap! failures conj assignee)))))
+    (if (and (claude-assignee? "fable")
+             (not (contains? claude-assignee->model "fable")))
+      (println "PASS: legacy fable remains a separate Claude route")
+      (do
+        (println "FAIL: legacy fable must remain separate from explicit Claude model mappings")
+        (swap! failures conj "legacy fable route")))
+
+    (doseq [[assignee expected-model] [["codex-astra" "gpt-6-astra"]
+                                       ["codex"       "gpt-5.6-terra"]
+                                       ["codex-sol"   "gpt-6.1-sol"]
+                                       ["codex-full"  "gpt-6.1-sol"]
                                        ["codex-terra" "gpt-5.6-terra"]
                                        ["codex-mini"  "gpt-5.6-luna"]]]
       (let [actual-model (get-codex-model assignee nil)]
@@ -1746,8 +2612,9 @@
           (do
             (println (str "FAIL: " assignee " expected=" expected-model " actual=" actual-model))
             (swap! failures conj assignee)))))
+    ;; Only iterate levels allowed per assignee (e.g. no minimal for sol/astra); rejected suffixes are checked below.
     (doseq [[base-assignee expected-model] assignee->model
-            reasoning-effort reasoning-levels]
+            reasoning-effort (get assignee->reasoning-levels base-assignee reasoning-levels)]
       (let [assignee (str base-assignee "-" reasoning-effort)
             args (codex-model-profile-args assignee nil nil)
             actual-model (arg-value args "--model")
@@ -1777,12 +2644,23 @@
           (do
             (println (str "FAIL: " lane " expected action=" expected-action " actual=" action))
             (swap! failures conj lane)))))
-    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"]]
+    (doseq [assignee ["codex-invalid" "codex-terra-ultra" "unknown-high" "fable-high"
+                      "claude-opus-high" "claude-sonnet-5-5" "claude-unknown"
+                      "codex-astra-minimal" "codex-astra-xhigh"
+                      "codex-sol-minimal" "codex-full-minimal"]]
       (if (not (supported-assignee? assignee))
         (println (str "PASS: unsupported assignee ignored: " assignee))
         (do
           (println (str "FAIL: invalid assignee was supported: " assignee))
           (swap! failures conj assignee))))
+    ;; Test: codex-astra suffix assignees (valid levels only) resolve to codex-astra base for policy injection
+    (doseq [assignee ["codex-astra" "codex-astra-low" "codex-astra-medium" "codex-astra-high"]]
+      (let [base (:base-assignee (parse-codex-assignee assignee))]
+        (if (= "codex-astra" base)
+          (println (str "PASS: " assignee " -> base-assignee=" base " (astra policy applies)"))
+          (do
+            (println (str "FAIL: " assignee " expected base-assignee=codex-astra actual=" base))
+            (swap! failures conj (str "astra-base:" assignee))))))
     (let [args (codex-model-profile-args "codex-full" "gpt-test-override" nil)
           actual-model (arg-value args "--model")]
       (if (= actual-model "gpt-test-override")
@@ -1915,6 +2793,78 @@
             :else
             (println "PASS: mutex prevented concurrent write race; both frontmatter and note preserved")))))
 
+    ;; Test: workspace prune eligibility, settings and scheduling (pure functions)
+    (let [today-date (java.time.LocalDate/parse "2026-10-01")
+          now-instant (java.time.Instant/parse "2026-10-01T12:00:00Z")
+          cases [["prune: missing ticket is not eligible"
+                  (prune-ticket-decision nil today-date 3)
+                  {:eligible? false :reason "ticket-missing"}]
+                 ["prune: done ticket closed exactly retention days ago is eligible"
+                  (prune-ticket-decision {:status "done" :closed "2026-09-28"} today-date 3)
+                  {:eligible? true}]
+                 ["prune: done ticket inside retention is not eligible"
+                  (prune-ticket-decision {:status "done" :closed "2026-09-29"} today-date 3)
+                  {:eligible? false :reason "within-retention"}]
+                 ["prune: stale closed on a non-done ticket is not eligible"
+                  (prune-ticket-decision {:status "blocked" :closed "2026-07-15"} today-date 3)
+                  {:eligible? false :reason "not-done"}]
+                 ["prune: done ticket without closed is not eligible"
+                  (prune-ticket-decision {:status "done" :closed ""} today-date 3)
+                  {:eligible? false :reason "closed-missing"}]
+                 ["prune: old run is eligible"
+                  (prune-run-decision "20260928T120000Z-a8f301d6-92b8-4218-b605-b9680d35ff4a" now-instant 3)
+                  {:eligible? true}]
+                 ["prune: run inside retention is not eligible"
+                  (prune-run-decision "20260928T120001Z-a8f301d6-92b8-4218-b605-b9680d35ff4a" now-instant 3)
+                  {:eligible? false :reason "within-retention"}]
+                 ["prune: legacy run id without UUID suffix is eligible"
+                  (prune-run-decision "20260709T124714Z" now-instant 3)
+                  {:eligible? true}]
+                 ["prune: run without timestamp is not eligible"
+                  (prune-run-decision "manual-run" now-instant 3)
+                  {:eligible? false :reason "run-id-timestamp-unparseable"}]
+                 ["prune: ssh origin maps to owner/repo"
+                  (github-repo-from-remote-url "git@github.com:boxp/arch.git\n")
+                  "boxp/arch"]
+                 ["prune: https origin maps to owner/repo"
+                  (github-repo-from-remote-url "https://github.com/boxp/is01-linux")
+                  "boxp/is01-linux"]
+                 ["prune: non-GitHub origin is rejected"
+                  (github-repo-from-remote-url "https://notgithub.com/boxp/arch.git")
+                  nil]
+                 ["prune: local path origin is rejected"
+                  (github-repo-from-remote-url "/tmp/github.com/boxp/arch")
+                  nil]
+                 ["prune: enabled by default" (parse-prune-enabled nil) {:value true}]
+                 ["prune: 0 disables" (parse-prune-enabled "0") {:value false}]
+                 ["prune: invalid enabled flag falls back to default"
+                  (parse-prune-enabled "maybe") {:value true :invalid? true}]
+                 ["prune: retention days parsed" (parse-bounded-long "7" 3 0) {:value 7}]
+                 ["prune: negative retention falls back to default"
+                  (parse-bounded-long "-1" 3 0) {:value 3 :invalid? true}]
+                 ["prune: non-numeric interval falls back to default"
+                  (parse-bounded-long "6h" 21600 1) {:value 21600 :invalid? true}]
+                 ["prune: first pass is due"
+                  (workspace-prune-due? {:future nil :last-started-nanos nil} 0 21600) true]
+                 ["prune: not due before the interval"
+                  (workspace-prune-due? {:future (doto (promise) (deliver :done)) :last-started-nanos 0}
+                                        (* 21599 1000000000) 21600)
+                  false]
+                 ["prune: due after the interval"
+                  (workspace-prune-due? {:future (doto (promise) (deliver :done)) :last-started-nanos 0}
+                                        (* 21600 1000000000) 21600)
+                  true]
+                 ["prune: not due while the previous pass is running"
+                  (workspace-prune-due? {:future (promise) :last-started-nanos 0}
+                                        (* 99999 1000000000) 21600)
+                  false]]]
+      (doseq [[label actual expected] cases]
+        (if (= expected actual)
+          (println (str "PASS: " label))
+          (do
+            (println (str "FAIL: " label " expected=" (pr-str expected) " actual=" (pr-str actual)))
+            (swap! failures conj label)))))
+
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
       (println "All tests passed."))))
@@ -1932,5 +2882,9 @@
   "sync" (do (ensure-root!) (sync-all!))
   "prepare-shutdown" (prepare-shutdown!)
   "recover" (recover-locks!)
+  "prune-workspaces" (let [args (rest *command-line-args*)]
+                       (when-not (contains? #{[] ["--dry-run"]} (vec args))
+                         (usage))
+                       (prune-workspaces! {:dry-run? (= ["--dry-run"] (vec args))}))
   "test" (run-tests!)
   (usage))

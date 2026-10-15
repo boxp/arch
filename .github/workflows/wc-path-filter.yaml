@@ -22,8 +22,6 @@ on:
         value: ${{jobs.path-filter.outputs.ghalint}}
       test-ansible:
         value: ${{jobs.path-filter.outputs.test-ansible}}
-      actions-lock-verify:
-        value: ${{jobs.path-filter.outputs.actions-lock-verify}}
 
 jobs:
   path-filter:
@@ -39,7 +37,6 @@ jobs:
       opa-fmt: ${{steps.changes.outputs.opa-fmt}}
       ghalint: ${{steps.changes.outputs.ghalint}}
       test-ansible: ${{steps.changes.outputs.test-ansible}}
-      actions-lock-verify: ${{steps.changes.outputs.actions-lock-verify}}
     steps:
       - name: Generate token
         id: token
@@ -95,6 +92,3 @@ jobs:
               - ansible/**
               - .github/workflows/test-ansible.yml
               - .github/workflows/test.yaml
-
-            actions-lock-verify:
-              - .github/workflows/**

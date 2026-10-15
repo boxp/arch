@@ -1,0 +1,36 @@
+#!/bin/bash
+# Mock kubectl driven by PRE_CHECK_MOCK_MODE and a call counter in
+# PRE_CHECK_MOCK_STATE_DIR. Every invocation's arguments are appended to
+# calls.log so tests can assert the --server endpoint that was used.
+state_dir="${PRE_CHECK_MOCK_STATE_DIR:?}"
+mkdir -p "$state_dir"
+count_file="$state_dir/count"
+count=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))
+echo "$count" > "$count_file"
+echo "$*" >> "$state_dir/calls.log"
+
+ready_output() {
+  printf 'cp-a       Ready   control-plane   1d   v1.36.1\n'
+  printf 'worker-a   Ready   <none>          1d   v1.36.1\n'
+}
+refused() {
+  echo "The connection to the server ${1:-api}:6443 was refused - did you specify the right host or port?" >&2
+  exit 1
+}
+
+case "${PRE_CHECK_MOCK_MODE:-ready}" in
+  ready)
+    ready_output ;;
+  refused_then_ready)
+    # First PRE_CHECK_MOCK_REFUSALS calls fail like an apiserver restart.
+    if [ "$count" -le "${PRE_CHECK_MOCK_REFUSALS:-2}" ]; then refused; fi
+    ready_output ;;
+  refused_always)
+    refused ;;
+  not_ready)
+    printf 'cp-a       Ready      control-plane   1d   v1.36.1\n'
+    printf 'worker-a   NotReady   <none>          1d   v1.36.1\n' ;;
+  *)
+    echo "unknown PRE_CHECK_MOCK_MODE: $PRE_CHECK_MOCK_MODE" >&2
+    exit 2 ;;
+esac

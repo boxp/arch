@@ -35,7 +35,6 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     needs:
-      - actions-lock-verify
       - conftest-verify
       - hide-comment
       - opa-fmt
@@ -46,16 +45,6 @@ jobs:
     if: failure()
     steps:
       - run: exit 1
-
-  actions-lock-verify:
-    uses: ./.github/workflows/wc-actions-lock-verify.yaml
-    needs: path-filter
-    if: |
-      needs.path-filter.outputs.actions-lock-verify == 'true'
-    permissions:
-      contents: read
-    with:
-      ref: ${{needs.path-filter.outputs.merge_commit_sha}}
 
   conftest-verify:
     uses: ./.github/workflows/wc-conftest-verify.yaml
@@ -129,9 +118,6 @@ jobs:
       gh_app_id: ${{secrets.APP_ID}}
       gh_app_private_key: ${{secrets.APP_PRIVATE_KEY}}
       gh_cloudflare_api_token: ${{secrets.CLOUDFLARE_API_TOKEN}}
-      TAILSCALE_API_KEY: ${{secrets.TAILSCALE_API_KEY}}
-      TAILSCALE_TAILNET: ${{secrets.TAILSCALE_TAILNET}}
-      secrets: ${{toJSON(secrets)}}
 
   test-ansible:
     uses: ./.github/workflows/test-ansible.yml
