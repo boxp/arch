@@ -103,3 +103,10 @@ Renovate がこの PR を新しく作れるのは、月曜 02:00〜08:59 JST だ
 - merge するのは週に 1 本だけにする。同じ週に 2 本目の PR ができていた場合は merge せず、翌週の月曜 09:00 JST 以降に merge する。その間の更新は同じ PR に追加される。
 - merge した人が、その場で上の復旧手順 1〜4 まで行う。
 - 急ぎの更新（脆弱性の修正など）は週 1 本の例外として merge してよい。その場合も、merge 後に復旧手順を行う。
+- BOXP-234 以降、`.github/workflows/actions.lock` に onboard 済みの workflow（現在は `test-codex-task-board-runner.yml` のみ）の action が更新されると、PR の `actions-lock-verify` check が失敗する。merge 前にその branch で次を実行し、`actions.lock` の差分（`commit` の変更）を確認して commit する。lockfile は手編集しない。
+
+  ```bash
+  gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions
+  ```
+
+  `--no-onboard` と `--no-migrate-local-actions` を外すと、未 onboard の全 workflow が lockfile に取り込まれ、`build-orange-pi-images.yml` の local action も書き換わるので付け忘れないこと。詳細は `docs/project_docs/BOXP-234/plan.md`。

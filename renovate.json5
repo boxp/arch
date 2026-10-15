@@ -308,6 +308,18 @@
       separateMajorMinor: false,
       schedule: ["* 17-23 * * 0"],
       automerge: false,
+    },
+    // BOXP-234: GitHub Actions workflow lockfile (.github/workflows/actions.lock) の限定導入。
+    // Renovate は actions.lock があると、onboard 済み workflow の action 更新時に repo root で
+    // path 無しに `gh actions-lock` を実行し、未 onboard の全 workflow まで lockfile に取り込む
+    // (限定導入の境界を越える。local action を含む workflow は verify も失敗する)。
+    // そのため Renovate 側の lockfile 再生成 (artifacts update) を止める。上の週次 PR
+    // (手動 merge) で actions-lock-verify が失敗したら、merge 前にその branch で
+    //   gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions
+    // を実行して lockfile を追従させ、diff をレビューする。手順: docs/project_docs/BOXP-207/runbook.md
+    {
+      matchManagers: ["github-actions"],
+      skipArtifactsUpdate: true,
     }
   ],
 }
