@@ -14,6 +14,11 @@
   major: {
     automerge: false,
   },
+  // BOXP-235: actions.lock 再生成に使う gh-actions-lock の版。actions-lock-verify.yml の
+  // GH_ACTIONS_LOCK_VERSION と揃える。更新手順は docs/project_docs/BOXP-235/plan.md。
+  constraints: {
+    ghActionsLock: "v0.2.0",
+  },
   prHourlyLimit: 10,
   prConcurrentLimit: 10,
   branchConcurrentLimit: 20,
@@ -309,17 +314,12 @@
       schedule: ["* 17-23 * * 0"],
       automerge: false,
     },
-    // BOXP-234: GitHub Actions workflow lockfile (.github/workflows/actions.lock) の限定導入。
-    // Renovate は actions.lock があると、onboard 済み workflow の action 更新時に repo root で
-    // path 無しに `gh actions-lock` を実行し、未 onboard の全 workflow まで lockfile に取り込む
-    // (限定導入の境界を越える。local action を含む workflow は verify も失敗する)。
-    // そのため Renovate 側の lockfile 再生成 (artifacts update) を止める。上の週次 PR
-    // (手動 merge) で actions-lock-verify が失敗したら、merge 前にその branch で
-    //   gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions
-    // を実行して lockfile を追従させ、diff をレビューする。手順: docs/project_docs/BOXP-207/runbook.md
-    {
-      matchManagers: ["github-actions"],
-      skipArtifactsUpdate: true,
-    }
+    // BOXP-235: GitHub Actions workflow lockfile (.github/workflows/actions.lock) を全 workflow に展開。
+    // 上の週次 PR (手動 merge) で onboard 済み workflow の action が更新されると、Renovate は
+    // repo root で `gh actions-lock --no-interactive --no-narrow --no-migrate-local-actions` を実行し、
+    // 同じ branch に actions.lock の再生成を commit する (artifacts update)。CLI の版は
+    // 先頭の constraints.ghActionsLock で固定する (lockfile v0.0.3 を読める v0.2.0 以上が必須。
+    // Renovate 44.158.2 以前の既定 v0.1.6 は v0.0.3 を読めず再生成に失敗する)。
+    // 手順: docs/project_docs/BOXP-207/runbook.md、docs/project_docs/BOXP-235/plan.md
   ],
 }
