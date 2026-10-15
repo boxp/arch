@@ -2,10 +2,23 @@ FROM docker.io/nousresearch/hermes-agent@sha256:94f90d3cb66c848e6d7465fb7ca11dc4
 
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
 ARG BABASHKA_VERSION=1.13.226
-ARG BABASHKA_SHA256=aa55a3a2cacdfc2c8eba38991cdd4ea3d37eadde9ba374f0da0b95ad00daa1ba
+ARG BABASHKA_SHA256=bf89e909c4025edf2d669921c81107435b7244840d8f4306f58439c328a342f9
 
 ENV OBSIDIAN_HEADLESS_HOME=/opt/obsidian-headless \
     PATH=/opt/obsidian-headless/bin:/usr/local/bin:/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:/usr/local/sbin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# CVE-2026-92392 (HTTP/2 upload use-after-free, BOXP-236): the pinned upstream
+# image ships Debian trixie curl 8.14.1-2+deb13u3. Pull only the curl/libcurl
+# security update (DSA-6558-1, fixed in 8.14.1-2+deb13u7) from the Debian
+# archive and fail the build if the archive did not deliver a fixed version.
+ARG CURL_FIXED_VERSION=8.14.1-2+deb13u7
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends --only-upgrade curl libcurl4t64 libcurl3t64-gnutls; \
+    rm -rf /var/lib/apt/lists/*; \
+    for pkg in curl libcurl4t64 libcurl3t64-gnutls; do \
+      dpkg --compare-versions "$(dpkg-query -W -f '${Version}' "$pkg")" ge "${CURL_FIXED_VERSION}"; \
+    done
 
 RUN npm_config_prefix="${OBSIDIAN_HEADLESS_HOME}" npm install -g "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
     && npm cache clean --force
