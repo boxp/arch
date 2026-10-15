@@ -34,7 +34,7 @@ jobs:
     env:
       BABASHKA_VERSION: 1.12.218
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@v7.0.0 # BOXP-234 fixture: not in actions.lock (do not merge)
         with:
           persist-credentials: false
       - name: Install Babashka
