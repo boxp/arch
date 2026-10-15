@@ -52,7 +52,7 @@ GitHub Actions の workflow dependency lockfile（2026-10-14 public preview）�
   その branch で下記を実行し diff をレビューして merge。
 
   ```sh
-  gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions --no-migrate-local-actions
+  gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions
   ```
 
   他 42 workflow の `actions/checkout` 更新 PR は従来どおり（lock 対象外なので Renovate は lock に触れない）。

@@ -290,7 +290,7 @@
     // (限定導入の境界を越える。local action を含む workflow は verify も失敗する)。
     // そのため onboard 済み workflow の更新は branch を分け、Renovate 側の lockfile 再生成
     // (skipArtifactsUpdate) を止める。CI の actions-lock-verify が失敗したら、その branch で
-    //   gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions --no-migrate-local-actions
+    //   gh actions-lock --no-interactive --no-onboard --no-narrow --no-migrate-local-actions
     // を実行して lockfile を追従させ、diff をレビューして merge する (automerge しない)。
     // onboard 対象を増やす場合は matchFileNames にも追加すること。
     {
