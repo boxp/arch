@@ -1,4 +1,4 @@
-FROM ubuntu:resolute@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
+FROM ubuntu:resolute@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba
 
 ARG SDNEXT_REPO=https://github.com/vladmandic/sdnext.git
 ARG SDNEXT_REF=master

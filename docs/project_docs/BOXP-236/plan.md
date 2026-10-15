@@ -18,7 +18,7 @@
 | `ghcr.io/boxp/arch/hermes-agent` | lolice `hermes-agent`（hermes-agent / obsidian-sync の 2 container） | Debian trixie、curl/libcurl4t64/libcurl3t64-gnutls = 8.14.1-2+deb13u3 | 上流 `nousresearch/hermes-agent` の pinned digest に同梱。加えて main の Dockerfile は babashka 1.13.226 の SHA256 が誤りで build 自体が失敗中（run 38645655799） |
 | `ghcr.io/boxp/arch/llama-sycl` | lolice `local-llm/llama-server`（digest 固定 `836a64…`） | Ubuntu 26.04、2026-08-02 build（revision 2919ce6）、curl 8.18.0-1ubuntu2.3（`docker pull` で実測）。`llama-server` は libcurl を動的リンク | 2026-10-01 の `latest` も USN 前の build。base digest が 2026-06 時点のまま |
 | `ghcr.io/boxp/arch/llama-vulkan` | cluster 内消費者なし（publish のみ） | 同上（2026-10-01 build） | 同上 |
-| `ghcr.io/boxp/arch/sdnext-ipex` | lolice `stable-diffusion`（replicas 0） | Ubuntu 26.04、2026-06-30 build | 同上 |
+| `ghcr.io/boxp/arch/sdnext-ipex` | lolice `stable-diffusion`（replicas 0） | Ubuntu 26.04、2026-06-30 build | 同上。ただし **このPRでは更新しない**（下記） |
 
 修正不要と実測で確認したもの（詳細は Obsidian 台帳）: 7 ホスト（jammy 7.81.0 / noble 8.5.0）、`codex-workspace`
 （2026-10-14 22:09 build、8.18.0-1ubuntu2.8 済）、`arc-runner`（actions-runner 2.335.1 = jammy）、lolice の `curlimages/curl` initContainer
@@ -30,10 +30,14 @@
    - `BABASHKA_SHA256` を 1.13.226 の実 tarball の値 `bf89e909…` に修正（main の build 失敗を解消。GitHub release の `.sha256` と一致確認済み）。
    - upstream digest は据え置き（Hermes 本体の更新は本票の範囲外）、代わりに Debian archive から curl / libcurl4t64 / libcurl3t64-gnutls だけを
      `--only-upgrade` し、`dpkg --compare-versions ... ge 8.14.1-2+deb13u7` で修正版が入らなければ build を失敗させる。
-2. `docker/llama-sycl/Dockerfile`, `docker/llama-vulkan/Dockerfile`, `docker/sdnext-ipex/Dockerfile`
+2. `docker/llama-sycl/Dockerfile`, `docker/llama-vulkan/Dockerfile`
    - `ubuntu:26.04` / `ubuntu:resolute` の base digest を現行 `sha256:f144425f…`（2026-10-04）に更新。これにより main merge で再 build が走り、
      runtime stage の `apt-get install curl` が USN-8927-1 の 8.18.0-1ubuntu2.8 を取り込む。
-   - llama.cpp / SD.Next の ref、build flag、依存 package は変更しない。
+   - llama.cpp の ref、build flag、依存 package は変更しない。
+3. `docker/sdnext-ipex/Dockerfile` は **変更しない**（更新不能）。PR 内で digest 更新を試したが、SD.Next の installer が
+   Ubuntu 26.04 の Python 3.14.4 を拒否して build が失敗する（`Python: version=3.14.4 required=3.[10, 11, 12, 13]`）。これは 2026-10-01 以降の
+   main の build も同じ理由で失敗しており本票以前からの既存破損。修正には SD.Next ref / Python 版の変更が必要で本票の範囲外。
+   消費者 `stable-diffusion` は replicas 0 で稼働していないため、暫定策は「build を直すまで scale up しない」。
 
 ## 反映経路と検証
 
@@ -42,7 +46,7 @@
   `dpkg-query -W curl libcurl4t64 libcurl3t64-gnutls` が `8.14.1-2+deb13u7` 以上であることを確認。Hermes 置換前に Obsidian へ結果を永続化する。
 - llama-sycl: lolice は `.argocd-source-local-llm.yaml` で digest 固定（BOXP-183 の SIGILL 回帰で rollback 済み、ImageUpdater なし）。
   新 digest は lolice 側の別 PR で明示 pin し、起動 / `/health` / 推論 1 件で確認。失敗時は同ファイルを revert して `836a64…` に戻す。
-- sdnext-ipex: ImageUpdater（`digest`）が pin を更新するが replicas 0 のため再起動なし。llama-vulkan: 消費者なしのため publish のみ。
+- sdnext-ipex: 更新不能（上記）。replicas 0 を維持。llama-vulkan: 消費者なしのため publish のみ。
 - 検証は `docker pull` した publish 済み image の `dpkg-query` と、稼働 pod の `imageID` 照合で行う。PoC / 悪意ある RST の再現はしない。
 
 ## やらないこと
