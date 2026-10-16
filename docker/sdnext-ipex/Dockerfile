@@ -106,8 +106,9 @@ RUN set -eux; \
 # webui.sh runs with --skip-git/--skip-extensions above, so initialize only the
 # mandatory sdnq gitlink afterwards without invalidating its expensive layer.
 RUN set -eux; \
-    test "$(git -C /app rev-parse HEAD)" = "${SDNEXT_REF}"; \
-    sdnq_target="$(git -C /app ls-tree "${SDNEXT_REF}" -- extensions-builtin/sdnq | awk '$1 == "160000" && $2 == "commit" { print $3 }')"; \
+    sdnext_commit="$(git -C /app rev-parse "${SDNEXT_REF}^{commit}")"; \
+    test "$(git -C /app rev-parse HEAD)" = "${sdnext_commit}"; \
+    sdnq_target="$(git -C /app ls-tree "${sdnext_commit}" -- extensions-builtin/sdnq | awk '$1 == "160000" && $2 == "commit" { print $3 }')"; \
     test -n "${sdnq_target}"; \
     git -C /app submodule update --init --checkout --depth 1 -- extensions-builtin/sdnq; \
     test "$(git -C /app/extensions-builtin/sdnq rev-parse HEAD)" = "${sdnq_target}"; \
