@@ -246,6 +246,14 @@
     }
   },
   packageRules: [
+    // SD.Next supports Python 3.12 on noble; keep OS upgrades manual.
+    // Digest updates within Ubuntu 24.04 remain enabled.
+    {
+      matchFileNames: ["docker/sdnext-ipex/Dockerfile"],
+      matchManagers: ["dockerfile"],
+      matchPackageNames: ["ubuntu"],
+      allowedVersions: "/^24\\.04(?:\\.[0-9]+)?$/",
+    },
     {
       additionalBranchPrefix: '{{packageFileDir}}-',
       commitMessageSuffix: '({{packageFileDir}})',

@@ -1,7 +1,7 @@
-FROM ubuntu:resolute@sha256:53958ec7b67c2c9355df922dd08dbf0360611f8c3cdb656875e81873db9ffdba
+FROM ubuntu:24.04@sha256:534baea6a22c03a63003dbc8dbe78fe34bc0d7e595d9a9dc9834884ff530eb55
 
 ARG SDNEXT_REPO=https://github.com/vladmandic/sdnext.git
-ARG SDNEXT_REF=master
+ARG SDNEXT_REF=b7dcb0ce870181a40d1246fde1febbff5593a750
 
 LABEL org.opencontainers.image.title="SD.Next IPEX" \
       org.opencontainers.image.description="SD.Next Intel IPEX image for lolice stable-diffusion WebUI" \
@@ -70,6 +70,11 @@ ENV HF_HOME=/scratch/huggingface \
 WORKDIR /app
 
 RUN set -eux; \
+    . /etc/os-release; \
+    test "$VERSION_CODENAME" = noble; \
+    python3 -c 'import sys; assert sys.version_info[:2] == (3, 12)'; \
+    python3 --version; \
+    dpkg-query -W curl libcurl4t64; \
     python3 -m venv "${venv_dir}"; \
     "${venv_dir}/bin/python" -m pip install --no-cache-dir uv; \
     uv pip install --python "${venv_dir}/bin/python" \
