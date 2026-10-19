@@ -1137,12 +1137,18 @@
                                    :draft-state (cond stale? "stale" (:conflict? state) "conflict" image "synced" :else "partial")})))
 
 (defn draft-owned-or-absent? [path known]
+  (reject-symlink-path! path)
   (or (not (fs/exists? path)) (= (get known (str path)) (sha256-file path))))
 
 (defn draft-output-path [base fallback known]
-  (cond (draft-owned-or-absent? base known) base
-        (draft-owned-or-absent? fallback known) fallback
-        :else (fail "草稿の手動編集を保護: runner 更新版にも手動変更があります")))
+  (if (draft-owned-or-absent? base known) base
+      (loop [candidate fallback index 1]
+        (if (draft-owned-or-absent? candidate known) candidate
+            (if (> index 1000) (fail "草稿競合版が多すぎるため同期を停止しました")
+                (let [name (str (fs/file-name fallback))
+                      dot (str/last-index-of name ".")
+                      next-name (str (subs name 0 dot) "-" index (subs name dot))]
+                  (recur (fs/path (fs/parent fallback) next-name) (inc index))))))))
 
 (declare image-magic-ok?)
 
@@ -1165,7 +1171,7 @@
       (if-not completed?
         (when (and (:path old) (fs/exists? (:path old))) (draft-preview! novel-id old true))
         (let [;; Once restricted, never automatically downgrade a draft.
-              nsfw (boolean (or nsfw (:nsfw old)))
+              nsfw (boolean (or nsfw (:nsfw old) (get-in old [:pending :nsfw])))
               source (Files/readAllBytes (manuscript-path novel-id))
               image-src (illustration-path novel-id)
               image? (and (true? (get-in summary [:illustration :ok?])) (fs/regular-file? image-src)
@@ -1177,10 +1183,20 @@
               model (draft-meta (or (:model summary) (:llm-model fm)))
               key [source-hash image-hash nsfw agent model run]
               pending (:pending old)
-              known (:managed-files old {})
-              ;; Replay an interrupted plan with exactly the same timestamp and
-              ;; destinations; only expected old or intended new bytes are safe.
-              replay? (= key (:key pending))
+              previous (:managed-files old {})
+              ;; Recognize only verified intended bytes from a partial commit.
+              ;; If a human edited an output while the process was down, replan
+              ;; into a conflict copy instead of retrying the blocked plan forever.
+              known (merge previous
+                           (into {} (for [[p h] (:files pending)
+                                          :let [_ (reject-symlink-path! p)]
+                                          :when (and (fs/exists? p) (= h (sha256-file p)))] [p h])))
+              replay? (and (= key (:key pending))
+                           (every? (fn [[p h]]
+                                     (reject-symlink-path! p)
+                                     (or (not (fs/exists? p)) (= h (sha256-file p))
+                                         (= (get previous p) (sha256-file p))))
+                                   (:files pending)))
               plan (if replay? pending
                        (let [dir (draft-dir novel-id nsfw)
                              signature (subs (sha256-bytes (.getBytes (pr-str key) "UTF-8")) 0 16)
@@ -1791,6 +1807,8 @@
 
 (defn publish! [{:keys [novel-id nsfw title]} fm]
   (let [state (try (read-edn-file (published-state-path novel-id) {}) (catch Exception _ {}))
+        draft-state (do (reject-private-symlink-path! (draft-state-path novel-id))
+                        (read-edn-file (draft-state-path novel-id) {}))
         manuscript (manuscript-path novel-id)]
     (cond
       (and (= :published (:status state)) (seq (:path state)))
@@ -1806,6 +1824,9 @@
                          {:novel-id novel-id :path path :sha256 (sha256-file path) :nsfw nsfw
                           :published-at (or (not-empty (:published-at fm)) (now-str)) :status :published :source :pre-existing})
         {:ok? true :already? true :path path})
+
+      (and (not nsfw) (or (:nsfw draft-state) (get-in draft-state [:pending :nsfw])))
+      {:ok? false :reason "publish 待ち: NSFW 草稿の一般向け完成版配置は拒否しました。カードの #nsfw 区分を確認してください"}
 
       (not (manuscript-valid? manuscript))
       {:ok? false :reason "publish 待ち: private 原稿がないか短すぎます。Review で原稿を用意してから Done へ移してください"}

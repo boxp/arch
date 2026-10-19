@@ -40,7 +40,7 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 - `Review`: 管理ノートの `Draft Preview` から vault 内の原稿と挿絵を人間確認する。草稿は未承認。改稿する場合は `Review Instructions` に具体的な指示を保存して対応 agent を割り当てる（指示が空なら起動しない）。承認する場合だけ、人間がカードを `Done` へ移す。
 - `Done`: agent は再実行しない。runner は承認済み private 原稿と挿絵を、カード上の `#nsfw` に従って完成版フォルダへ一度だけ配置する。
 
-カードのレーンが状態の source of truth である。NSFW 分類の入力はカードの正規タグ `#nsfw` とし、管理ノート frontmatter は runner が同期する表示値、Requirements の記述は執筆条件として扱う。すでに NSFW として同期した草稿を自動で一般向けへ降格しない。カードの `status::` や管理ノート frontmatter と不一致の場合、runner がレーンに合わせて同期する。過去の run state を理由にレーンを戻さない。run 中に人間がカードを別レーンへ動かした場合、runner はレーンと担当を変更せず結果だけを `Run History` に記録する。
+カードのレーンが状態の source of truth である。NSFW 分類の入力はカードの正規タグ `#nsfw` とし、管理ノート frontmatter は runner が同期する表示値、Requirements の記述は執筆条件として扱う。すでに NSFW として同期した草稿を自動で一般向けへ降格せず、その状態での SFW 完成版配置も拒否する。カードの `status::` や管理ノート frontmatter と不一致の場合、runner がレーンに合わせて同期する。過去の run state を理由にレーンを戻さない。run 中に人間がカードを別レーンへ動かした場合、runner はレーンと担当を変更せず結果だけを `Run History` に記録する。
 
 ## 管理ノート
 
@@ -64,7 +64,7 @@ private 原本、prompt、log、結果は `/home/boxp/.novel-board/` 配下（`w
 - SFW: `Novels/Drafts/NOVEL-N/manuscript.md`、画像は同じ草稿配下の `attachments/`。
 - `#nsfw`: `NSFW/小説/草稿/NOVEL-N/manuscript.md`、画像は同じ草稿配下の `attachments/`。
 
-草稿の Vault Sync は owner の依頼により許可済み。prompt・credentials・raw API・log はコピーせず、外部サイトや公開 Git に本文を出さない。挿絵がない場合も本文を読み続けられ、一部未完了を表示する。草稿の手動編集は上書きせず競合として表示し、runner の更新版は別ファイルへ保存して管理ノートから案内する。手動版と更新版を確認するまでは、手動編集を private 原本へ逆同期しない。改稿と再 tick では内容の差分を同期し、完成版の配置は引き続き Done 承認後だけ行う。`runs/.../llm-evidence.edn` には model id・usage・finish_reason などの非秘密メタ情報だけを残し、prompt や本文は含めない。
+草稿の Vault Sync は owner の依頼により許可済み。草稿本文の元リンク・HTML・実行可能なコードフェンスは閲覧用の文字として無害化し、private 原本は変えない。prompt・credentials・raw API・log はコピーせず、外部サイトや公開 Git に本文を出さない。挿絵がない場合も本文を読み続けられ、一部未完了を表示する。草稿の手動編集は上書きせず競合として表示し、runner の更新版は別ファイルへ保存して管理ノートから案内する。手動版と更新版を確認するまでは、手動編集を private 原本へ逆同期しない。改稿と再 tick では内容の差分を同期し、完成版の配置は引き続き Done 承認後だけ行う。`runs/.../llm-evidence.edn` には model id・usage・finish_reason などの非秘密メタ情報だけを残し、prompt や本文は含めない。
 
 人間が `Review` から `Done` へ移した後だけ、runner が次へ配置する。
 

@@ -21,7 +21,7 @@
    - Done 承認後の完成版配置（`小説草案/AI執筆/` 等）は現状の publish のまま一度だけ。草稿フォルダは出版先ではなく、Done 後も未承認時点の閲覧用スナップショットとして保持する。完成版は管理ノートの既存 published-path / wiki link から辿る。
 2. **管理ノートからの導線**
    - frontmatter に `draft-path` / `draft-illustration` / `draft-synced-at` / `draft-state`（`synced` / `partial`（挿絵なし）/ `conflict`）を追加。
-   - 本文中に runner 管理の `## Draft Preview` 節を へ置き、未承認表示・`[[Novels/Drafts/NOVEL-N/manuscript|本文を読む]]`・`![[.../attachments/illustration.png]]`（存在時のみ）・生成 agent / model / run / 同期時刻 / 一部未完了を表示する。
+   - 本文中に runner 管理の `## Draft Preview` 節を置き、未承認表示・`[[Novels/Drafts/NOVEL-N/manuscript|本文を読む]]`・`![[.../attachments/illustration.png]]`（存在時のみ）・生成 agent / model / run / 同期時刻 / 一部未完了を表示する。
    - 参照画像候補の収集から `## Draft Preview` 節を除外し、生成済み挿絵が改稿時の参照画像として再投入されないようにする。
    - Novel Board のカード末尾に `[[Novels/Drafts/NOVEL-N/manuscript|草稿]]` リンクを一度だけ付ける（Board からワンクリックで本文へ）。
 3. **既存 NOVEL-4 の移管**: 新 runner の `sync-drafts NOVEL-4` を実 vault に対して一度実行し、`Novels/Drafts/NOVEL-4/` を作る。カードは Review のまま（Done にしない）。
