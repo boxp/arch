@@ -43,6 +43,32 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
    :body (json/generate-string {:id (str "chatcmpl-" (System/nanoTime)) :model "gemma4-26b" :object "chat.completion"
                                 :choices [{:index 0 :finish_reason finish :message {:role "assistant" :content content}}]
                                 :usage {:prompt_tokens 1234 :completion_tokens (count content) :total_tokens (+ 1234 (count content))}})})
+(defn sse-chunk [m] (str "data: " (json/generate-string m) "\n\n"))
+(defn respond-stream
+  "SSE chat completion. pieces: content strings sent one per chunk with `gap-ms`
+  between them. after: :done (usage + [DONE]), :stall (never finish), :cut (close mid-stream)."
+  [req pieces finish {:keys [gap-ms after] :or {gap-ms 0 after :done}}]
+  (let [id (str "chatcmpl-" (System/nanoTime))
+        base {:id id :model "gemma4-26b" :object "chat.completion.chunk"}]
+    (srv/as-channel req
+      {:on-open (fn [ch]
+                  (srv/send! ch {:status 200 :headers {"Content-Type" "text/event-stream"}} false)
+                  (future
+                    (try
+                      (srv/send! ch (sse-chunk (assoc base :choices [{:index 0 :delta {:role "assistant" :content nil} :finish_reason nil}])) false)
+                      (doseq [p pieces]
+                        (when (pos? gap-ms) (Thread/sleep gap-ms))
+                        (srv/send! ch (sse-chunk (assoc base :choices [{:index 0 :delta {:content p} :finish_reason nil}])) false))
+                      (case after
+                        :stall (Thread/sleep 120000)
+                        :cut nil
+                        (do (srv/send! ch (sse-chunk (assoc base :choices [{:index 0 :delta {} :finish_reason finish}])) false)
+                            (srv/send! ch (str (sse-chunk (assoc base :choices [] :usage {:prompt_tokens 1234 :completion_tokens (count (apply str pieces)) :total_tokens (+ 1234 (count (apply str pieces)))}))
+                                               "data: [DONE]\n\n") false)))
+                      (catch Throwable _ nil))
+                    (srv/close ch)))})))
+(def stream-pieces (concat ["# テスト小説\n\n"] (repeat 60 "秋の空はどこまでも高く、グラウンドには万国旗がはためいていた。一穂はバトンを握り直し、隣で笑う凛に頷いた。") ["\n\n## 追加設定メモ\n- なし\n\n## 参照した既存設定\n- ひとはこ\n"]))
+(def groom-pieces ["## Requirements\n\n- Title: 秋のテスト作品\n" "- Synopsis: 運動会前日の練習。\n- Characters: 桜一穂、瀬戸凛\n- Target length: 1000字\n" "- References:\n  - `ひとはこさんバース/キャラ設定/`\n- NSFW: false\n" "\n## Outline\n\n1. 前日準備\n2. バトンパス練習\n3. 小さな異変\n"])
 (defn handler [req]
   (let [uri (:uri req)
         raw (if (:body req) (slurp (:body req)) "{}")
@@ -56,11 +82,18 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
     (spit req-log (str (pr-str {:uri uri :model (:model parsed) :auth (get-in req [:headers "authorization"]) :plan? plan? :continuation? continuation? :mode mode :max-tokens (:max_tokens parsed)}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
-      (and groom? (not (contains? #{"length-forever" "error500"} mode))) (respond (str "## Requirements\n\n- Title: 秋のテスト作品\n- Synopsis: 運動会前日の練習。\n- Characters: 桜一穂、瀬戸凛\n- Target length: 1000字\n- References:\n  - `ひとはこさんバース/キャラ設定/`\n- NSFW: false\n" (apply str (repeat 3 "- Required elements: 万国旗、バトン、秋空の描写を入れる。\n")) "\n## Outline\n\n1. 前日準備\n2. バトンパス練習\n3. 小さな異変\n") "stop")
+      (and groom? (str/starts-with? mode "stream")) (respond-stream req groom-pieces "stop" (case mode "stream-stall" {:after :stall :gap-ms 200} "stream-slow" {:gap-ms 1500} "stream-cut" {:after :cut} {}))
+      (and groom? (not (contains? #{"length-forever" "error500" "error503" "error504"} mode))) (respond (str "## Requirements\n\n- Title: 秋のテスト作品\n- Synopsis: 運動会前日の練習。\n- Characters: 桜一穂、瀬戸凛\n- Target length: 1000字\n- References:\n  - `ひとはこさんバース/キャラ設定/`\n- NSFW: false\n" (apply str (repeat 3 "- Required elements: 万国旗、バトン、秋空の描写を入れる。\n")) "\n## Outline\n\n1. 前日準備\n2. バトンパス練習\n3. 小さな異変\n") "stop")
       plan? (respond "{\"scene\": \"バトンパス練習\", \"prompt\": \"two girls practicing a relay baton pass\", \"reference_images\": [\"ref-rin.png\", \"not-a-candidate.png\"]}" "stop")
       (= mode "empty") (respond "" "stop")
       (= mode "short") (respond "# 短い\n本文が足りない。" "stop")
       (= mode "error500") {:status 500 :body "boom"}
+      (= mode "error503") {:status 503 :body "loading"}
+      (= mode "error504") {:status 504 :body "stream timeout"}
+      (= mode "stream") (respond-stream req stream-pieces "stop" {})
+      (= mode "stream-stall") (respond-stream req (take 3 stream-pieces) "stop" {:gap-ms 200 :after :stall})
+      (= mode "stream-slow") (respond-stream req stream-pieces "stop" {:gap-ms 1500})
+      (= mode "stream-cut") (respond-stream req (take 3 stream-pieces) "stop" {:after :cut})
       (= mode "filter") (respond body-text "content_filter")
       (= mode "length") (if continuation? (respond body-text "stop") (respond "# 途中\n前半だけ。" "length"))
       (= mode "length-forever") (respond "少しだけ。" "length")
@@ -521,6 +554,98 @@ CODEX_NOVEL_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:1/v1" tick
 [[ "$(lane_of "${BOARD}" NOVEL-5)" == "Draft" ]] || fail "connection error should return to Draft"
 assert_contains "${VAULT}/Novels/NOVEL-5.md" "localllm connection error"
 echo "PASS: API failures are reported, not swallowed"
+
+# ---------------------------------------------------------------------------
+# 9b. Timeouts by layer (BOXP-250): proxy 504 is not retried; streamed output
+#     is kept on idle / total limits and on a cut; retry still works for 503
+# ---------------------------------------------------------------------------
+count_requests() { grep -c -- ":mode \"$1\"" "${REQ_LOG}" || true; }
+run_summary_of() { find "${STATE}/runs/$1" -name summary.edn | sort | tail -n 1; }
+evidence_of() { find "${STATE}/runs/$1" -name llm-evidence.edn | sort | tail -n 1; }
+
+# 504 from the proxy: fail at once, no second request (the upstream may still be generating)
+add_card Draft "- [ ] [[Novels/NOVEL-50|NOVEL-50: 中継504テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-50.md"
+write_requirements NOVEL-50
+echo error504 >"${MODE_FILE}"
+CODEX_NOVEL_BOARD_LOCALLLM_RETRIES=2 tick
+[[ "$(lane_of "${BOARD}" NOVEL-50)" == "Draft" ]] || fail "504 should return to Draft"
+[[ "$(count_requests error504)" == "1" ]] || fail "504 must not be retried (got $(count_requests error504) requests)"
+assert_contains "${VAULT}/Novels/NOVEL-50.md" "localllm HTTP error: 504 stream timeout"
+assert_contains "${VAULT}/Novels/NOVEL-50.md" "再試行しません"
+assert_contains "$(evidence_of NOVEL-50)" ":http-status 504"
+echo "PASS: proxy 504 fails without a duplicate request"
+
+# 503 before any body is still retried (model loading / no slot)
+set_assignee NOVEL-50 localllm
+echo error503 >"${MODE_FILE}"
+CODEX_NOVEL_BOARD_LOCALLLM_RETRIES=1 tick
+[[ "$(count_requests error503)" == "2" ]] || fail "503 should be retried once (got $(count_requests error503) requests)"
+assert_contains "${VAULT}/Novels/NOVEL-50.md" "localllm HTTP error: 503"
+echo "PASS: 503 before any output is retried"
+
+# streamed completion succeeds and is recorded as streamed with usage
+set_assignee NOVEL-50 localllm
+echo stream >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-50)" == "Review" ]] || fail "streamed write should reach Review"
+assert_contains "${STATE}/work/NOVEL-50/manuscript.md" "万国旗"
+assert_contains "$(evidence_of NOVEL-50)" ":streamed? true"
+assert_contains "$(evidence_of NOVEL-50)" ":prompt_tokens 1234"
+assert_contains "$(evidence_of NOVEL-50)" ":finish-reason \"stop\""
+assert_contains "$(evidence_of NOVEL-50)" ":first-byte-ms"
+echo "PASS: streamed completion"
+
+# idle limit: output stops mid-stream -> fail once, partial kept, no retry
+add_card Draft "- [ ] [[Novels/NOVEL-51|NOVEL-51: 停止テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-51.md"
+write_requirements NOVEL-51
+echo stream-stall >"${MODE_FILE}"
+CODEX_NOVEL_BOARD_LOCALLLM_RETRIES=2 CODEX_NOVEL_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS=3 tick
+[[ "$(lane_of "${BOARD}" NOVEL-51)" == "Draft" ]] || fail "idle timeout should return to Draft"
+[[ "$(count_requests stream-stall)" == "1" ]] || fail "idle timeout must not be retried"
+assert_contains "${VAULT}/Novels/NOVEL-51.md" "秒間出力が届かなかったため打ち切りました"
+assert_contains "${STATE}/work/NOVEL-51/manuscript.partial.md" "# テスト小説"
+assert_contains "${STATE}/work/NOVEL-51/manuscript.partial.md" "万国旗"
+[[ ! -f "${STATE}/work/NOVEL-51/manuscript.md" ]] || fail "partial output must not become the manuscript"
+assert_contains "$(evidence_of NOVEL-51)" ":status :idle-timeout"
+assert_contains "$(run_summary_of NOVEL-51)" ":status :failed"
+echo "PASS: idle limit keeps partial output and does not retry"
+
+# total limit for write: tokens keep flowing but the round exceeds the limit
+set_assignee NOVEL-51 localllm
+echo stream-slow >"${MODE_FILE}"
+CODEX_NOVEL_BOARD_LOCALLLM_TIMEOUT_SECONDS=4 CODEX_NOVEL_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS=30 tick
+[[ "$(lane_of "${BOARD}" NOVEL-51)" == "Draft" ]] || fail "total timeout should return to Draft"
+[[ "$(count_requests stream-slow)" == "1" ]] || fail "total timeout must not be retried"
+assert_contains "${VAULT}/Novels/NOVEL-51.md" "上限 4 秒を超えたため打ち切りました"
+assert_contains "$(evidence_of NOVEL-51)" ":status :total-timeout"
+echo "PASS: total limit bounds a progressing generation"
+
+# cut mid-stream (upstream reset): fail without retry, partial kept
+set_assignee NOVEL-51 localllm
+echo stream-cut >"${MODE_FILE}"
+CODEX_NOVEL_BOARD_LOCALLLM_RETRIES=2 tick
+[[ "$(lane_of "${BOARD}" NOVEL-51)" == "Draft" ]] || fail "cut stream should return to Draft"
+[[ "$(count_requests stream-cut)" == "1" ]] || fail "cut stream must not be retried"
+assert_contains "${VAULT}/Novels/NOVEL-51.md" "途中で途切れました"
+assert_contains "${STATE}/work/NOVEL-51/manuscript.partial.md" "万国旗"
+echo "PASS: cut stream keeps partial output and does not retry"
+
+# groom uses its own total limit and keeps groom.partial.md
+add_card Backlog "- [ ] [[Novels/NOVEL-52|NOVEL-52: 要件整理上限テスト]] #novel status::backlog assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-52.md"
+echo stream-slow >"${MODE_FILE}"
+CODEX_NOVEL_BOARD_LOCALLLM_TIMEOUT_SECONDS=60 CODEX_NOVEL_BOARD_LOCALLLM_GROOM_TIMEOUT_SECONDS=3 tick
+[[ "$(lane_of "${BOARD}" NOVEL-52)" == "Backlog" ]] || fail "groom total timeout should stay in Backlog"
+assert_contains "${VAULT}/Novels/NOVEL-52.md" "localllm groom が上限 3 秒を超えたため打ち切りました"
+GROOM_PARTIAL="$(find "${STATE}/runs/NOVEL-52" -name groom.partial.md | sort | tail -n 1)"
+[[ -n "${GROOM_PARTIAL}" ]] || fail "groom partial must be kept"
+assert_contains "${GROOM_PARTIAL}" "## Requirements"
+assert_not_contains "${VAULT}/Novels/NOVEL-52.md" "- Title: 秋のテスト作品"
+echo "PASS: groom has its own limit and keeps its partial output"
+
+echo normal >"${MODE_FILE}"
 
 # ---------------------------------------------------------------------------
 # 10. Stale lock recovery and no double start
