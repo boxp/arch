@@ -1244,10 +1244,13 @@
                (and (= (bit-and (aget buf 0) 0xff) 0x52) (= (bit-and (aget buf 1) 0xff) 0x49)))))))
 
 (defn select-reference-images [spec candidates]
+  ;; Images embedded in the management note itself were placed there by the
+  ;; human and are always passed; the model's picks (candidates only) are added.
   (let [by-file (into {} (map (juxt :file :path) candidates))
-        chosen (->> (:reference_images spec) (map str) (keep #(get by-file (fs/file-name %))) distinct)
+        pinned (map :path (filter #(= "管理ノート" (:label %)) candidates))
+        chosen (->> (:reference_images spec) (map str) (keep #(get by-file (fs/file-name %))))
         fallback (map :path candidates)]
-    (vec (take 6 (if (seq chosen) chosen fallback)))))
+    (vec (take 6 (distinct (if (or (seq pinned) (seq chosen)) (concat pinned chosen) fallback))))))
 
 (defn generate-illustration! [novel-id run-dir spec reference-images nsfw]
   (let [script (env "CODEX_NOVEL_BOARD_IMAGE_SCRIPT" default-image-script)
