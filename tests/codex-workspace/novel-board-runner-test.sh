@@ -257,6 +257,14 @@ assert_contains "${BOARD}" "[[Novels/NOVEL-1|NOVEL-1: 秋のテスト作品]] #n
 assert_contains "${VAULT}/Novels/NOVEL-1.md" "id: NOVEL-1"
 assert_contains "${VAULT}/Novels/NOVEL-1.md" "title: 秋のテスト作品"
 [[ ! -d "${STATE}/runs/NOVEL-1" ]] || fail "human-assigned scaffold must not start a run"
+# The scaffolded note is concise: machine frontmatter, heading, section headings and TBD.
+assert_not_contains "${VAULT}/Novels/NOVEL-1.md" "このノートは"
+assert_not_contains "${VAULT}/Novels/NOVEL-1.md" "- Title:"
+assert_not_contains "${VAULT}/Novels/NOVEL-1.md" "## Workflow"
+for heading in "Draft Preview" "Requirements" "Outline" "Review Instructions" "Change History" "Run History"; do
+  [[ "$(sed -n "/^## ${heading}\$/,/^## /p" "${VAULT}/Novels/NOVEL-1.md" | grep -v '^## ' | grep -v '^$')" == "TBD" ]] || fail "scaffolded ${heading} should contain only TBD"
+done
+[[ "$(wc -l <"${VAULT}/Novels/NOVEL-1.md")" -lt 50 ]] || fail "scaffolded note should be short"
 echo "PASS: scaffold title-only card"
 
 # Backlog + localllm -> groom -> Draft, assignee boxp
@@ -266,6 +274,10 @@ tick
 assert_contains "${BOARD}" "[[Novels/NOVEL-1|NOVEL-1: 秋のテスト作品]] #novel status::draft assignee::boxp"
 assert_contains "${VAULT}/Novels/NOVEL-1.md" "status: draft"
 assert_contains "${VAULT}/Novels/NOVEL-1.md" "action=groom agent=localllm model=gemma4-26b"
+# TBD placeholders were a blank slate for groom, and the first real entries replace them.
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "- Title: 秋のテスト作品"
+[[ -z "$(sed -n '/^## Requirements$/,/^## /p' "${VAULT}/Novels/NOVEL-1.md" | grep -x 'TBD')" ]] || fail "groom output must replace the Requirements TBD"
+[[ -z "$(sed -n '/^## Run History$/,/^## /p' "${VAULT}/Novels/NOVEL-1.md" | grep -x 'TBD')" ]] || fail "first Run History entry must replace the TBD"
 echo "PASS: localllm groom moves to Draft with human hand-off"
 
 # ---------------------------------------------------------------------------
@@ -354,8 +366,9 @@ cmp -s "${DRAFT1_IMAGE}" "${TMP}/human-image.png" || fail "human-edited illustra
 echo "PASS: draft sync, vault links, idempotence and edit conflict"
 
 # ---------------------------------------------------------------------------
-# 4. Review with empty instructions does not start; with instructions it revises
+# 4. Review with empty (TBD) instructions does not start; with instructions it revises
 # ---------------------------------------------------------------------------
+[[ "$(sed -n '/^## Review Instructions$/,/^## /p' "${VAULT}/Novels/NOVEL-1.md" | grep -v '^## ' | grep -v '^$')" == "TBD" ]] || fail "Review Instructions should still be the scaffold TBD"
 set_assignee NOVEL-1 localllm
 tick
 [[ "$(lane_of "${BOARD}" NOVEL-1)" == "Review" ]] || fail "empty Review Instructions must not start a run"
