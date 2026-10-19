@@ -21,6 +21,13 @@
 ;; generate-image skill and vault-local reference images, after the manuscript
 ;; has been validated. A missing illustration is reported as partial completion;
 ;; the runner never writes a link to an image that does not exist.
+;;
+;; Draft viewing (BOXP-247): once a manuscript reaches Review the runner copies
+;; the private manuscript and illustration into a vault draft folder
+;; (`Novels/Drafts/NOVEL-N/` or `NSFW/小説/草稿/NOVEL-N/`) so the human can read
+;; them in Obsidian before approval. The copy is marked as unapproved, is
+;; re-synced idempotently on every tick, never overwrites a draft the human has
+;; edited by hand, and is separate from the one-time publication on Done.
 
 (require '[babashka.fs :as fs]
          '[babashka.http-client :as http]
@@ -93,6 +100,8 @@
 (defn run-dir [novel-id run-id] (fs/path (runs-dir) novel-id run-id))
 (defn published-state-path [novel-id] (fs/path (published-dir) (str novel-id ".edn")))
 (defn skip-state-path [novel-id] (fs/path (skips-dir) (str novel-id ".edn")))
+(defn drafts-state-dir [] (fs/path (root) "drafts"))
+(defn draft-state-path [novel-id] (fs/path (drafts-state-dir) (str novel-id ".edn")))
 
 (def board-mutex (Object.))
 (def log-mutex (Object.))
@@ -217,7 +226,7 @@
   (ensure-private-dir! (root))
   (doseq [path [(locks-dir) (lock-guards-dir) (owners-dir) (owner-lock-guards-dir)
                 (terminating-owners-dir) (runs-dir) (skips-dir) (published-dir)
-                (fs/path (root) "work")]]
+                (drafts-state-dir) (fs/path (root) "work")]]
     (ensure-private-dir! path)))
 
 (defn sha256-file [path]
@@ -1036,10 +1045,223 @@
                        match (files-under dir-path #(and (= name (str (fs/file-name %))) (image-file? %)))]
                    match))))))
 
+(def draft-preview-heading "## Draft Preview")
+
+(defn without-section [content heading]
+  ;; Drops a runner-managed section (heading included) from note content.
+  (let [lines (vec (str/split-lines content))]
+    (if-let [{:keys [start end]} (section-bounds lines heading)]
+      (str/join "\n" (concat (subvec lines 0 start) (subvec lines end)))
+      content)))
+
+(defn safe-novel-id? [id] (boolean (re-matches #"NOVEL-\d+" (str id))))
+
+(defn draft-dir [novel-id nsfw]
+  (fs/path (vault) (if nsfw "NSFW/小説/草稿" "Novels/Drafts") novel-id))
+(defn draft-manuscript-path [novel-id nsfw] (fs/path (draft-dir novel-id nsfw) "manuscript.md"))
+(defn draft-image-path [novel-id nsfw] (fs/path (draft-dir novel-id nsfw) "attachments" "illustration.png"))
+
+(defn checked-draft-path! [base path]
+  ;; Check every ancestor, including the configured root itself. Never follow
+  ;; a symlink, even a dangling one, on either side of the copy.
+  (let [base (fs/normalize (fs/absolutize base))
+        target (fs/normalize (fs/absolutize path))]
+    (when-not (.startsWith target base) (fail "draft path escapes configured root"))
+    (loop [p target]
+      (when p
+        (when (fs/sym-link? p) (fail "symlink draft boundary rejected"))
+        (recur (fs/parent p))))
+    target))
+
+(defn reject-symlink-path! [path] (checked-draft-path! (vault) path))
+(defn reject-private-symlink-path! [path] (checked-draft-path! (root) path))
+
+(defn sha256-bytes [bytes]
+  (apply str (map #(format "%02x" (bit-and % 0xff))
+                  (.digest (MessageDigest/getInstance "SHA-256") bytes))))
+
+(defn draft-atomic-bytes! [base path bytes]
+  (checked-draft-path! base path)
+  (fs/create-dirs (fs/parent path))
+  (let [tmp (fs/path (fs/parent path) (str ".draft-" (java.util.UUID/randomUUID) ".tmp"))]
+    (try
+      (with-open [out (io/output-stream (str tmp))] (.write out bytes))
+      (private-file! tmp)
+      (checked-draft-path! base path)
+      (Files/move tmp (fs/path path)
+                  (into-array java.nio.file.CopyOption [StandardCopyOption/ATOMIC_MOVE StandardCopyOption/REPLACE_EXISTING]))
+      (finally (fs/delete-if-exists tmp)))))
+
+(defn draft-save-state! [novel-id state]
+  (draft-atomic-bytes! (root) (draft-state-path novel-id) (.getBytes (str (pr-str state) "\n") "UTF-8")))
+
+(defn sanitize-draft-markdown [text]
+  ;; Keep the manuscript readable, but make ALL author-supplied links, HTML,
+  ;; transclusions and executable plugin code fences inert. Only the runner's
+  ;; own verified attachment link is active. The private original is unchanged.
+  (str/escape text {\& "&amp;" \< "&lt;" \> "&gt;" \[ "&#91;" \] "&#93;"
+                    \` "&#96;" \~ "&#126;" \: "&#58;"}))
+
+(defn draft-meta [value]
+  (let [clean (str/replace (str (or value "unknown")) #"[^A-Za-z0-9._/-]" "_")]
+    (subs clean 0 (min 160 (count clean)))))
+
+(defn draft-preview! [novel-id state & [stale?]]
+  (let [path (:path state)
+        image (:image-path state)
+        rel (vault-relative path)
+        image-rel (when image (vault-relative image))
+        body (vec (remove nil?
+                    ["> 未承認草稿です。承認・完成版配置は Done 操作後です。"
+                     (str "本文: [[" (str/replace rel #"\.md$" "") "|本文を読む]]")
+                     (when (:text-conflict? state)
+                       (str "競合: 手動編集は保持しました。上の本文リンクは runner 更新版です。手動版: [["
+                            (str/replace (vault-relative (draft-manuscript-path novel-id (:nsfw state))) #"\.md$" "") "|手動版]]"))
+                     (when (:image-conflict? state)
+                       (str "競合: 画像の手動編集を保持し、runner 画像を別添付へ保存しました。手動画像: [["
+                            (vault-relative (draft-image-path novel-id (:nsfw state))) "|手動画像]]"))
+                     (when image
+                       (if (:nsfw state)
+                         (str "挿絵: [[" image-rel "|NSFW 草稿の挿絵]]（草稿本文内で表示）")
+                         (str "挿絵: ![[" image-rel "]]")))
+                     (when-not image "一部未完了: 挿絵なし。本文は閲覧できます。")
+                     (when stale? "更新待ち: 最新 run が未完了のため、前回の草稿を表示しています。")
+                     (str "草稿パス: `" rel "`")
+                     (str "更新: " (:synced-at state))
+                     (str "生成 agent/model: " (:agent state) " / " (:model state))
+                     (when (:nsfw state) "保存区分: NSFW（一般向けへの自動降格なし）")]))]
+    (when-not (= (str/trim (str/join "\n" body)) (section-text (note-content novel-id) draft-preview-heading))
+      (replace-section-body! novel-id draft-preview-heading body))
+    (update-frontmatter! novel-id {:draft-path rel :draft-illustration image-rel
+                                   :draft-synced-at (:synced-at state)
+                                   :draft-state (cond stale? "stale" (:conflict? state) "conflict" image "synced" :else "partial")})))
+
+(defn draft-owned-or-absent? [path known]
+  (reject-symlink-path! path)
+  (or (not (fs/exists? path)) (= (get known (str path)) (sha256-file path))))
+
+(defn draft-output-path [base fallback known]
+  (if (draft-owned-or-absent? base known) base
+      (loop [candidate fallback index 1]
+        (if (draft-owned-or-absent? candidate known) candidate
+            (if (> index 1000) (fail "草稿競合版が多すぎるため同期を停止しました")
+                (let [name (str (fs/file-name fallback))
+                      dot (str/last-index-of name ".")
+                      next-name (str (subs name 0 dot) "-" index (subs name dot))]
+                  (recur (fs/path (fs/parent fallback) next-name) (inc index))))))))
+
+(declare image-magic-ok?)
+
+(defn sync-draft-under-guard! [{:keys [novel-id nsfw status]}]
+  (when (and (= "review" status) (not (fs/exists? (lock-path novel-id))))
+    (doseq [path [(note-path novel-id)]] (reject-symlink-path! path))
+    (doseq [path [(manuscript-path novel-id) (illustration-path novel-id) (draft-state-path novel-id)
+                  (fs/path (runs-dir) novel-id)]] (reject-private-symlink-path! path))
+    (let [old (read-edn-file (draft-state-path novel-id) {})
+          fm (note-frontmatter novel-id)
+          run (:last-run fm)
+          valid-run? (and (seq run) (re-matches #"[A-Za-z0-9._-]+" run) (not (#{"." ".."} run)))
+          summary-path (when valid-run? (fs/path (run-dir novel-id run) "summary.edn"))
+          _ (when summary-path (reject-private-symlink-path! summary-path))
+          summary (when summary-path (read-edn-file summary-path {}))
+          completed? (and (= :succeeded (:status summary)) (= "review" (:next-status summary))
+                          (#{:write :revise} (:action summary))
+                          (fs/regular-file? (manuscript-path novel-id))
+                          (pos? (fs/size (manuscript-path novel-id))))]
+      (if-not completed?
+        (when (and (:path old) (fs/exists? (:path old))) (draft-preview! novel-id old true))
+        (let [;; Once restricted, never automatically downgrade a draft.
+              nsfw (boolean (or nsfw (:nsfw old) (get-in old [:pending :nsfw])))
+              source (Files/readAllBytes (manuscript-path novel-id))
+              image-src (illustration-path novel-id)
+              image? (and (true? (get-in summary [:illustration :ok?])) (fs/regular-file? image-src)
+                           (pos? (fs/size image-src)) (image-magic-ok? image-src))
+              image-bytes (when image? (Files/readAllBytes image-src))
+              image-hash (when image? (sha256-bytes image-bytes))
+              source-hash (sha256-bytes source)
+              agent (draft-meta (:agent summary))
+              model (draft-meta (or (:model summary) (:llm-model fm)))
+              key [source-hash image-hash nsfw agent model run]
+              pending (:pending old)
+              previous (:managed-files old {})
+              ;; Recognize only verified intended bytes from a partial commit.
+              ;; If a human edited an output while the process was down, replan
+              ;; into a conflict copy instead of retrying the blocked plan forever.
+              known (merge previous
+                           (into {} (for [[p h] (:files pending)
+                                          :let [_ (reject-symlink-path! p)]
+                                          :when (and (fs/exists? p) (= h (sha256-file p)))] [p h])))
+              replay? (and (= key (:key pending))
+                           (every? (fn [[p h]]
+                                     (reject-symlink-path! p)
+                                     (or (not (fs/exists? p)) (= h (sha256-file p))
+                                         (= (get previous p) (sha256-file p))))
+                                   (:files pending)))
+              plan (if replay? pending
+                       (let [dir (draft-dir novel-id nsfw)
+                             signature (subs (sha256-bytes (.getBytes (pr-str key) "UTF-8")) 0 16)
+                             dest (draft-manuscript-path novel-id nsfw)
+                             img (draft-image-path novel-id nsfw)
+                             fallback (fs/path dir (str "manuscript.runner-" signature ".md"))
+                             image-fallback (fs/path dir "attachments" (str "illustration.runner-" image-hash ".png"))
+                             _ (doseq [p [dest img fallback image-fallback]] (reject-symlink-path! p))
+                             target (draft-output-path dest fallback known)
+                             image-target (when image? (draft-output-path img image-fallback known))]
+                         {:key key :path (str target) :image-path (some-> image-target str)
+                          :synced-at (now-str) :conflict? (boolean (or (not= target dest) (and image? (not= image-target img))))
+                          :text-conflict? (not= target dest) :image-conflict? (boolean (and image? (not= image-target img)))
+                          :nsfw nsfw :agent agent :model model :run-id run}))
+              path (:path plan)
+              image-path (:image-path plan)
+              _ (doseq [p (remove nil? [path image-path])] (reject-symlink-path! p))
+              body (str "# 未承認草稿\n\n> 未承認草稿です。完成版ではありません。\n"
+                        "> agent: " agent " / model: " model " / run: " run
+                        " / 同期: " (:synced-at plan) "\n\n"
+                        (if image-path
+                          (str "![](attachments/" (fs/file-name image-path) ")\n\n")
+                          "> 一部未完了: 挿絵なし。本文は閲覧できます。\n\n")
+                        (sanitize-draft-markdown (String. source "UTF-8")))
+              body-bytes (.getBytes body "UTF-8")
+              desired (cond-> {path (sha256-bytes body-bytes)} image-path (assoc image-path image-hash))
+              unchanged? (and (= key (:key old)) (nil? pending)
+                              (every? (fn [[p h]] (and (fs/exists? p) (= h (sha256-file p)))) (:files old)))]
+          (if unchanged?
+            (draft-preview! novel-id old)
+            (let [plan (assoc plan :files desired)
+                  journal (assoc old :pending plan)]
+              ;; Persist intent BEFORE writing any vault artifact. No prompt,
+              ;; API response, credentials or raw logs enter this state or copy.
+              (draft-save-state! novel-id journal)
+              (doseq [[p bytes] (cond-> [[path body-bytes]] image-path (conj [image-path image-bytes]))]
+                (reject-symlink-path! p)
+                (let [current (when (fs/exists? p) (sha256-file p))]
+                  (when-not (or (nil? current) (= current (get known p)) (= current (get desired p)))
+                    (fail "草稿の手動編集を保護: 同期中に内容が変更されました"))
+                  (when-not (= current (get desired p)) (draft-atomic-bytes! (vault) p bytes))))
+              (let [state (-> plan (dissoc :files) (assoc :files desired :source-hash source-hash
+                                                           :managed-files (merge known desired)))]
+                ;; A new NSFW classification removes only unedited runner-owned
+                ;; SFW copies. Private originals and human-edited files survive.
+                (when (and nsfw (false? (:nsfw old)))
+                  (doseq [[p h] known :when (str/starts-with? p (str (draft-dir novel-id false) "/"))]
+                    (reject-symlink-path! p)
+                    (when (and (fs/exists? p) (= h (sha256-file p))) (fs/delete p))))
+                (draft-save-state! novel-id state)
+                (draft-preview! novel-id state)
+                (log! (str novel-id " vault draft " (if (:conflict? state) "conflict" (if image? "synced" "partial"))))))))))))
+
+(defn sync-draft! [{:keys [novel-id] :as card}]
+  (when-not (safe-novel-id? novel-id) (fail "invalid draft novel ID"))
+  (with-novel-lock-guard novel-id
+    #(when-let [live (current-card novel-id)] (sync-draft-under-guard! live))))
+
 (defn reference-image-candidates [novel-id content]
   ;; Images embedded in the management note come first, then images embedded in
   ;; the referenced setting notes. Returns [{:path :label}] without duplicates.
+  ;; The runner-managed Draft Preview section is skipped so a generated
+  ;; illustration is never fed back as a reference image on revision.
   (let [note-dir (fs/parent (note-path novel-id))
+        content (without-section content draft-preview-heading)
         from-note (map (fn [raw] [raw note-dir]) (embedded-image-refs content))
         from-refs (for [target (reference-targets content)
                         :let [resolved (try (resolve-vault-path target note-dir) (catch Exception _ nil))]
@@ -1585,6 +1807,8 @@
 
 (defn publish! [{:keys [novel-id nsfw title]} fm]
   (let [state (try (read-edn-file (published-state-path novel-id) {}) (catch Exception _ {}))
+        draft-state (do (reject-private-symlink-path! (draft-state-path novel-id))
+                        (read-edn-file (draft-state-path novel-id) {}))
         manuscript (manuscript-path novel-id)]
     (cond
       (and (= :published (:status state)) (seq (:path state)))
@@ -1600,6 +1824,9 @@
                          {:novel-id novel-id :path path :sha256 (sha256-file path) :nsfw nsfw
                           :published-at (or (not-empty (:published-at fm)) (now-str)) :status :published :source :pre-existing})
         {:ok? true :already? true :path path})
+
+      (and (not nsfw) (or (:nsfw draft-state) (get-in draft-state [:pending :nsfw])))
+      {:ok? false :reason "publish 待ち: NSFW 草稿の一般向け完成版配置は拒否しました。カードの #nsfw 区分を確認してください"}
 
       (not (manuscript-valid? manuscript))
       {:ok? false :reason "publish 待ち: private 原稿がないか短すぎます。Review で原稿を用意してから Done へ移してください"}
@@ -1787,6 +2014,34 @@
     (try (sync-note-from-card! card)
          (catch Exception e (log! (str "note sync failed for " (:novel-id card) ": " (.getMessage e)))))))
 
+(defn sync-drafts! [only-id & [strict?]]
+  (doseq [card (parse-board-cards (vec (read-lines (board-path))))
+          :when (or (nil? only-id) (= only-id (:novel-id card)))]
+    (try (sync-draft! card)
+         (catch Exception e
+           (if strict? (throw e)
+               (log! (str (:novel-id card) " draft sync failed: " (.getMessage e))))))))
+
+(defn add-draft-board-links! [& [only-id]]
+  (with-board-guard
+   (fn []
+     (let [path (board-path)
+           lines (vec (read-lines path))
+           updates (into {}
+                         (for [{:keys [novel-id line idx status]} (parse-board-cards lines)
+                               :when (or (nil? only-id) (= only-id novel-id))
+                               :let [fm (note-frontmatter novel-id)
+                                     rel (:draft-path fm)]
+                               :when (and (= "review" status) (seq rel)
+                                          (not (str/blank? (:draft-state fm)))
+                                          (try (reject-symlink-path! (fs/path (vault) rel))
+                                               (fs/regular-file? (fs/path (vault) rel))
+                                               (catch Exception _ false)))
+                               :let [clean (str/replace line #"\s+\[\[(?:Novels/Drafts|NSFW/小説/草稿)/[^\]]+\|草稿\]\]" "")]]
+                           [idx (str clean " [[" (str/replace rel #"\.md$" "") "|草稿]]")]))
+           updated (mapv (fn [idx line] (get updates idx line)) (range (count lines)) lines)]
+       (when (not= lines updated) (write-lines! path updated))))))
+
 (defn collect-completed! []
   (let [done (keep (fn [[id f]] (when (future-done? f) id)) @in-flight)]
     (doseq [id done] (try @(get @in-flight id) (catch Exception e (log! (str "error completing " id ": " (.getMessage e))))))
@@ -1805,6 +2060,8 @@
     (log! (str "owner " (owner-id) " is draining; not accepting new cards"))
     (do
       (sync-all!)
+      (sync-drafts! nil)
+      (add-draft-board-links!)
       (collect-completed!)
       (let [in-flight-ids (set (keys @in-flight))
             all-candidates (remove #(contains? in-flight-ids (:novel-id %)) (candidate-cards))
@@ -1890,13 +2147,20 @@
       (println "All tests passed."))))
 
 (defn usage []
-  (println "usage: novel_board_runner.bb <tick|loop|sync|prepare-shutdown|recover|test>")
+  (println "usage: novel_board_runner.bb <tick|loop|sync|sync-drafts NOVEL-N|prepare-shutdown|recover|test>")
   (System/exit 2))
 
 (case (or (first *command-line-args*) "tick")
-  "tick" (do (ensure-root!) (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+  "tick" (do (ensure-root!) (recover-locks!) (tick!) (drain-in-flight!) (sync-all!) (sync-drafts! nil) (add-draft-board-links!))
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
+  "sync-drafts" (do (ensure-root!)
+                    (let [id (second *command-line-args*)]
+                      (when-not (and (= 2 (count *command-line-args*)) (safe-novel-id? id)) (usage))
+                      (when-not (current-card id) (fail "draft card not found"))
+                      (sync-note-from-card! (current-card id))
+                      (sync-drafts! id true)
+                      (add-draft-board-links! id)))
   "prepare-shutdown" (prepare-shutdown!)
   "recover" (recover-locks!)
   "test" (run-tests!)

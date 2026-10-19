@@ -123,6 +123,31 @@ cat >"${TMP}/bin/edit.bb" <<'EOF'
 EOF
 chmod +x "${TMP}/bin/edit.bb"
 
+# Simulate a crash after the pending journal was committed but before all
+# planned vault files were written. Keep the same plan so sync must replay it.
+cat >"${TMP}/bin/mark-draft-pending.bb" <<'EOF'
+(require '[clojure.edn :as edn])
+(let [path (first *command-line-args*)
+      state (edn/read-string (slurp path))
+      plan (select-keys state [:key :path :image-path :synced-at :files :conflict?
+                               :text-conflict? :image-conflict? :nsfw :agent :model :run-id])]
+  (spit path (str (pr-str (-> state (dissoc :key) (assoc :pending plan))) "\n"))
+  (println (:path state)))
+EOF
+chmod +x "${TMP}/bin/mark-draft-pending.bb"
+cat >"${TMP}/bin/mark-image-failed.bb" <<'EOF'
+(require '[clojure.edn :as edn])
+(let [path (first *command-line-args*)
+      state (edn/read-string (slurp path))]
+  (spit path (str (pr-str (assoc state :illustration {:ok? false :reason "simulated revision failure"})) "\n")))
+EOF
+chmod +x "${TMP}/bin/mark-image-failed.bb"
+cat >"${TMP}/bin/draft-state-path.bb" <<'EOF'
+(require '[clojure.edn :as edn])
+(println (:path (edn/read-string (slurp (first *command-line-args*)))))
+EOF
+chmod +x "${TMP}/bin/draft-state-path.bb"
+
 cat >"${TMP}/bin/claude" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -281,6 +306,53 @@ assert_not_contains "${EVIDENCE}" "Authorization"
 [[ "$(stat -c %a "${STATE}/work/NOVEL-1/manuscript.md")" == "600" ]] || fail "manuscript must be private (0600)"
 echo "PASS: localllm write -> Review with illustration and evidence"
 
+# Draft is readable in the vault and linked from both the management note and Board.
+DRAFT1="${VAULT}/Novels/Drafts/NOVEL-1/manuscript.md"
+DRAFT1_IMAGE="${VAULT}/Novels/Drafts/NOVEL-1/attachments/illustration.png"
+[[ -s "${DRAFT1}" ]] || fail "Review manuscript was not copied into SFW draft folder"
+[[ -s "${DRAFT1_IMAGE}" ]] || fail "Review illustration was not copied into draft attachments"
+assert_contains "${DRAFT1}" "未承認草稿"
+assert_contains "${DRAFT1}" "![](attachments/illustration.png)"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "[[Novels/Drafts/NOVEL-1/manuscript|本文を読む]]"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "![[Novels/Drafts/NOVEL-1/attachments/illustration.png]]"
+assert_contains "${BOARD}" "[[Novels/Drafts/NOVEL-1/manuscript|草稿]]"
+[[ -f "${VAULT}/$(sed -n 's/.*本文: \[\[\([^]|]*\).*/\1/p' "${VAULT}/Novels/NOVEL-1.md" | head -n1).md" ]] || fail "management-note wiki link does not resolve"
+
+# An unchanged explicit sync must leave the copied files and note untouched.
+sha256sum "${DRAFT1}" "${DRAFT1_IMAGE}" "${VAULT}/Novels/NOVEL-1.md" >"${TMP}/draft-before.sha"
+bb "${RUNNER}" sync-drafts NOVEL-1 >>"${TMP}/runner.log" 2>&1
+sha256sum -c "${TMP}/draft-before.sha" >/dev/null || fail "unchanged draft sync modified vault content"
+
+# Replay a pending journal after a simulated interruption with the manuscript
+# output missing. Recovery must reproduce exactly the planned bytes, then be idle.
+DRAFT_STATE="${STATE}/drafts/NOVEL-1.edn"
+cp "${DRAFT1}" "${TMP}/planned-manuscript.md"
+cp "${DRAFT1_IMAGE}" "${TMP}/planned-image.png"
+bb "${TMP}/bin/mark-draft-pending.bb" "${DRAFT_STATE}"
+rm "${DRAFT1}"
+bb "${RUNNER}" sync-drafts NOVEL-1 >>"${TMP}/runner.log" 2>&1
+cmp -s "${DRAFT1}" "${TMP}/planned-manuscript.md" || fail "pending journal recovery changed planned manuscript bytes"
+cmp -s "${DRAFT1_IMAGE}" "${TMP}/planned-image.png" || fail "pending journal recovery changed planned image bytes"
+assert_not_contains "${DRAFT_STATE}" ":pending"
+sha256sum "${DRAFT1}" "${DRAFT1_IMAGE}" "${VAULT}/Novels/NOVEL-1.md" "${DRAFT_STATE}" >"${TMP}/recovered-before.sha"
+bb "${RUNNER}" sync-drafts NOVEL-1 >>"${TMP}/runner.log" 2>&1
+sha256sum -c "${TMP}/recovered-before.sha" >/dev/null || fail "post-recovery sync was not idempotent"
+echo "PASS: pending journal recovery"
+
+# A human edit is preserved; the revised runner copy is placed beside it.
+printf '\nHuman edit to the review copy.\n' >>"${DRAFT1}"
+printf '\nPrivate revision from the authoring run.\n' >>"${STATE}/work/NOVEL-1/manuscript.md"
+bb "${RUNNER}" sync-drafts NOVEL-1 >>"${TMP}/runner.log" 2>&1
+assert_contains "${DRAFT1}" "Human edit to the review copy"
+[[ -n "$(find "${VAULT}/Novels/Drafts/NOVEL-1" -maxdepth 1 -name 'manuscript.runner-*.md' -print -quit)" ]] || fail "runner did not preserve revised copy beside human edit"
+# Image edits also remain untouched; runner can write a separate generated copy.
+printf '\nHuman image edit marker.\n' >>"${DRAFT1_IMAGE}"
+cp "${DRAFT1_IMAGE}" "${TMP}/human-image.png"
+printf '\nSecond private revision.\n' >>"${STATE}/work/NOVEL-1/manuscript.md"
+bb "${RUNNER}" sync-drafts NOVEL-1 >>"${TMP}/runner.log" 2>&1
+cmp -s "${DRAFT1_IMAGE}" "${TMP}/human-image.png" || fail "human-edited illustration was overwritten"
+echo "PASS: draft sync, vault links, idempotence and edit conflict"
+
 # ---------------------------------------------------------------------------
 # 4. Review with empty instructions does not start; with instructions it revises
 # ---------------------------------------------------------------------------
@@ -294,6 +366,11 @@ bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-1.md" "Review Ins
 echo revise >"${MODE_FILE}"
 tick
 [[ "$(lane_of "${BOARD}" NOVEL-1)" == "Review" ]] || fail "revise should return to Review"
+assert_contains "${STATE}/work/NOVEL-1/manuscript.md" "改稿版テスト小説"
+CURRENT_DRAFT_REL="$(sed -n 's/.*本文: \[\[\([^]|]*\).*/\1/p' "${VAULT}/Novels/NOVEL-1.md" | tail -n1)"
+CURRENT_DRAFT="${VAULT}/${CURRENT_DRAFT_REL}.md"
+[[ -s "${CURRENT_DRAFT}" ]] || fail "management-note draft link did not resolve after revision"
+assert_contains "${CURRENT_DRAFT}" "改稿版テスト小説"
 assert_contains "${BOARD}" "status::review assignee::boxp"
 assert_contains "${STATE}/work/NOVEL-1/manuscript.md" "改稿版テスト小説"
 ls "${STATE}/work/NOVEL-1/" | grep -q "manuscript.prev-" || fail "previous manuscript must be kept"
@@ -302,7 +379,7 @@ echo normal >"${MODE_FILE}"
 echo "PASS: Review instructions gate and revise"
 
 # ---------------------------------------------------------------------------
-# 5. Done -> publish once, idempotent, image link only when image exists
+# 5. Done -> publish once, idempotent, with the approved illustration
 # ---------------------------------------------------------------------------
 move_card NOVEL-1 Done
 tick
@@ -318,6 +395,36 @@ tick; tick
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-1.md" 'published approved manuscript once')" == "1" ]] || fail "publish history must be written once"
 [[ ! -d "${VAULT}/NSFW" ]] || fail "SFW card must not touch NSFW directory"
 echo "PASS: Done publish once"
+
+# A later revision can fail image generation while retaining readable text.
+# Simulate a successful earlier illustration, then a changed manuscript with
+# a failed illustration result; old image embeds must disappear from the draft.
+add_card Draft "- [ ] [[Novels/NOVEL-23|NOVEL-23: 画像失敗改稿テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-23.md"
+write_requirements NOVEL-23
+tick
+NOVEL23_DRAFT="${VAULT}/Novels/Drafts/NOVEL-23/manuscript.md"
+[[ -s "${VAULT}/Novels/Drafts/NOVEL-23/attachments/illustration.png" ]] || fail "initial illustration missing for revision failure fixture"
+SUMMARY23="$(find "${STATE}/runs/NOVEL-23" -name summary.edn -print -quit)"
+printf '\nRevised body remains readable after illustration failure.\n' >>"${STATE}/work/NOVEL-23/manuscript.md"
+bb "${TMP}/bin/mark-image-failed.bb" "${SUMMARY23}"
+bb "${RUNNER}" sync-drafts NOVEL-23 >>"${TMP}/runner.log" 2>&1
+assert_contains "${NOVEL23_DRAFT}" "Revised body remains readable"
+assert_not_contains "${NOVEL23_DRAFT}" "![](attachments/illustration.png)"
+assert_not_contains "${VAULT}/Novels/NOVEL-23.md" "![[Novels/Drafts/NOVEL-23/attachments/illustration.png]]"
+cat >>"${STATE}/work/NOVEL-23/manuscript.md" <<'EOF'
+
+```html
+<iframe src="https://example.invalid/track"></iframe>
+```
+![[../../Secrets.md]] [run](javascript:alert(1))
+EOF
+bb "${RUNNER}" sync-drafts NOVEL-23 >>"${TMP}/runner.log" 2>&1
+assert_contains "${STATE}/work/NOVEL-23/manuscript.md" "<iframe src=\"https://example.invalid/track\">"
+assert_not_contains "${NOVEL23_DRAFT}" "<iframe"
+assert_not_contains "${NOVEL23_DRAFT}" "![[../../Secrets.md]]"
+assert_not_contains "${NOVEL23_DRAFT}" "javascript:"
+echo "PASS: failed revision illustration removes stale links while retaining text"
 
 # ---------------------------------------------------------------------------
 # 6. Empty / short output is a failure, card returns to Draft with reason
@@ -473,6 +580,8 @@ assert_contains "${FAKE_CLAUDE_ARG_LOG}" "--model claude-sonnet-5-5"
 assert_contains "${STATE}/work/NOVEL-9/manuscript.md" "クラウド執筆"
 [[ -s "${STATE}/work/NOVEL-9/illustration.png" ]] || fail "cloud route illustration missing"
 assert_contains "${VAULT}/Novels/NOVEL-9.md" "model=claude-sonnet-5-5"
+assert_contains "${VAULT}/Novels/Drafts/NOVEL-9/manuscript.md" "agent: claude-sonnet"
+assert_contains "${VAULT}/Novels/Drafts/NOVEL-9/manuscript.md" "model: claude-sonnet-5-5"
 echo "PASS: cloud route write"
 
 echo nothing >"${FAKE_CLAUDE_MODE_FILE}"
@@ -557,10 +666,92 @@ write_requirements NOVEL-12
 tick
 assert_contains "${VAULT}/Novels/NOVEL-12.md" "nsfw: true"
 assert_contains "${BOARD}" "[[Novels/NOVEL-12|NOVEL-12: 区分テスト]] #novel #nsfw status::review assignee::boxp"
+NSFW_DRAFT="${VAULT}/NSFW/小説/草稿/NOVEL-12/manuscript.md"
+NSFW_IMAGE="${VAULT}/NSFW/小説/草稿/NOVEL-12/attachments/illustration.png"
+[[ -s "${NSFW_DRAFT}" && -s "${NSFW_IMAGE}" ]] || fail "NSFW draft manuscript or illustration missing from NSFW folder"
+assert_contains "${VAULT}/Novels/NOVEL-12.md" "[[NSFW/小説/草稿/NOVEL-12/manuscript|本文を読む]]"
+assert_contains "${BOARD}" "[[NSFW/小説/草稿/NOVEL-12/manuscript|草稿]]"
+[[ -f "${VAULT}/NSFW/小説/草稿/NOVEL-12/manuscript.md" ]] || fail "NSFW wiki destination does not resolve"
+# Removing #nsfw later must not silently downgrade or copy the draft into SFW.
+sed -i '/NOVEL-12/s/ #nsfw / /' "${BOARD}"
+bb "${RUNNER}" sync-drafts NOVEL-12 >>"${TMP}/runner.log" 2>&1
+[[ -s "${NSFW_DRAFT}" ]] || fail "NSFW draft disappeared after attempted downgrade"
+[[ ! -e "${VAULT}/Novels/Drafts/NOVEL-12/manuscript.md" ]] || fail "NSFW draft leaked into SFW folder"
 move_card NOVEL-12 Done
+tick
+[[ -z "$(find "${VAULT}/小説草案/AI執筆" -maxdepth 1 -name '*_区分テスト.md' -print -quit)" ]] || fail "sticky NSFW draft was published into SFW folder"
+sed -i '/NOVEL-12/s/ status::done/ #nsfw status::done/' "${BOARD}"
 tick
 [[ -n "$(find "${VAULT}/NSFW/小説/AI執筆" -maxdepth 1 -name '*_区分テスト.md' | head -n 1)" ]] || fail "nsfw card must publish under NSFW/"
 echo "PASS: nsfw routing follows the card tag"
+
+# A symlinked destination is rejected and must not write outside the vault.
+add_card Review "- [ ] [[Novels/NOVEL-20|NOVEL-20: symlink境界]] #novel status::review assignee::boxp"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-20.md"
+mkdir -p "${STATE}/work/NOVEL-20" "${TMP}/outside"
+{ echo '# Symlink test'; for _ in $(seq 1 40); do echo 'This manuscript is long enough for the draft sync validation.'; done; } >"${STATE}/work/NOVEL-20/manuscript.md"
+mkdir -p "${STATE}/runs/NOVEL-20/run-1"
+cat >"${STATE}/runs/NOVEL-20/run-1/summary.edn" <<'EOF'
+{:novel "NOVEL-20" :run-id "run-1" :status :succeeded :next-status "review"
+ :action :write :agent "localllm" :model "gemma4-26b" :manuscript-chars 1000
+ :illustration {:ok? false}}
+EOF
+sed -i 's/^last-run:.*/last-run: run-1/' "${VAULT}/Novels/NOVEL-20.md"
+mkdir -p "${VAULT}/Novels/Drafts"
+ln -s "${TMP}/outside" "${VAULT}/Novels/Drafts/NOVEL-20"
+if bb "${RUNNER}" sync-drafts NOVEL-20 >>"${TMP}/runner.log" 2>&1; then
+  fail "symlinked draft destination should fail explicit sync"
+fi
+[[ ! -e "${TMP}/outside/manuscript.md" ]] || fail "symlink sync wrote outside the vault"
+echo "PASS: symlink boundary"
+
+# Private originals are also protected from symlink traversal.
+add_card Review "- [ ] [[Novels/NOVEL-21|NOVEL-21: private symlink境界]] #novel status::review assignee::boxp"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-21.md"
+mkdir -p "${STATE}/work/NOVEL-21" "${STATE}/runs/NOVEL-21/run-1"
+printf 'outside private file\n' >"${TMP}/outside/private-manuscript.md"
+ln -s "${TMP}/outside/private-manuscript.md" "${STATE}/work/NOVEL-21/manuscript.md"
+cat >"${STATE}/runs/NOVEL-21/run-1/summary.edn" <<'EOF'
+{:novel "NOVEL-21" :run-id "run-1" :status :succeeded :next-status "review"
+ :action :write :agent "localllm" :model "gemma4-26b" :manuscript-chars 1000
+ :illustration {:ok? false}}
+EOF
+sed -i 's/^last-run:.*/last-run: run-1/' "${VAULT}/Novels/NOVEL-21.md"
+if bb "${RUNNER}" sync-drafts NOVEL-21 >>"${TMP}/runner.log" 2>&1; then
+  fail "symlinked private manuscript should fail explicit sync"
+fi
+[[ ! -e "${VAULT}/Novels/Drafts/NOVEL-21/manuscript.md" ]] || fail "private symlink content was copied into vault"
+echo "PASS: private symlink boundary"
+
+# A pre-existing manuscript without a runner state record is treated as human
+# content and kept; the runner writes its copy to a separate managed path.
+add_card Review "- [ ] [[Novels/NOVEL-22|NOVEL-22: stateなし既存草稿]] #novel status::review assignee::boxp"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-22.md"
+mkdir -p "${STATE}/work/NOVEL-22" "${STATE}/runs/NOVEL-22/run-1" "${VAULT}/Novels/Drafts/NOVEL-22"
+{ echo '# State-less conflict'; for _ in $(seq 1 40); do echo 'This is an existing human-authored draft that must not be overwritten.'; done; } >"${STATE}/work/NOVEL-22/manuscript.md"
+printf 'Human draft created before runner state existed.\n' >"${VAULT}/Novels/Drafts/NOVEL-22/manuscript.md"
+cat >"${STATE}/runs/NOVEL-22/run-1/summary.edn" <<'EOF'
+{:novel "NOVEL-22" :run-id "run-1" :status :succeeded :next-status "review"
+ :action :write :agent "localllm" :model "gemma4-26b" :manuscript-chars 1000
+ :illustration {:ok? false}}
+EOF
+sed -i 's/^last-run:.*/last-run: run-1/' "${VAULT}/Novels/NOVEL-22.md"
+bb "${RUNNER}" sync-drafts NOVEL-22 >>"${TMP}/runner.log" 2>&1
+assert_contains "${VAULT}/Novels/Drafts/NOVEL-22/manuscript.md" "Human draft created before runner state existed"
+[[ -n "$(find "${VAULT}/Novels/Drafts/NOVEL-22" -maxdepth 1 -name 'manuscript.runner-*.md' -print -quit)" ]] || fail "state-less manual draft was overwritten instead of preserved"
+# A human edit made after the pending plan was journaled is preserved on replay;
+# the runner replans onto a fresh managed filename and then becomes idempotent.
+STATE22="${STATE}/drafts/NOVEL-22.edn"
+PENDING_PATH="$(bb "${TMP}/bin/mark-draft-pending.bb" "${STATE22}")"
+printf '\nHuman edit during pending recovery.\n' >>"${PENDING_PATH}"
+bb "${RUNNER}" sync-drafts NOVEL-22 >>"${TMP}/runner.log" 2>&1
+assert_contains "${PENDING_PATH}" "Human edit during pending recovery"
+NEW_STATE22_PATH="$(bb "${TMP}/bin/draft-state-path.bb" "${STATE22}")"
+[[ "${NEW_STATE22_PATH}" != "${PENDING_PATH}" ]] || fail "pending recovery overwrote a human-edited output"
+sha256sum "${NEW_STATE22_PATH}" "${VAULT}/Novels/NOVEL-22.md" "${STATE22}" >"${TMP}/pending-conflict-before.sha"
+bb "${RUNNER}" sync-drafts NOVEL-22 >>"${TMP}/runner.log" 2>&1
+sha256sum -c "${TMP}/pending-conflict-before.sha" >/dev/null || fail "pending conflict recovery was not idempotent"
+echo "PASS: state-less existing draft is preserved"
 
 # Rule cards are never scaffolded
 [[ "$(grep -c '#novel-rule' "${BOARD}")" == "5" ]] || fail "rule cards must stay untouched"
