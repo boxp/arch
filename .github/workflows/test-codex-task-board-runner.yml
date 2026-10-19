@@ -7,6 +7,7 @@ on:
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
       - docker/codex-workspace/task-board/**
+      - docker/codex-workspace/novel-board/**
       - docker/codex-workspace/recurring-events/**
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
@@ -18,6 +19,7 @@ on:
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
       - docker/codex-workspace/task-board/**
+      - docker/codex-workspace/novel-board/**
       - docker/codex-workspace/recurring-events/**
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
@@ -47,6 +49,8 @@ jobs:
           tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
           sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
       - run: tests/codex-workspace/task-board-runner-test.sh
+      - run: bb docker/codex-workspace/novel-board/novel_board_runner.bb test
+      - run: tests/codex-workspace/novel-board-runner-test.sh
       - run: tests/codex-workspace/recurring-events-test.sh
       - run: bb tests/codex-workspace/autonomy-policy-test.bb
       - run: bb tests/codex-workspace/autonomy-control-test.bb
