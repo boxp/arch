@@ -8,7 +8,10 @@ set -euo pipefail
 if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
   novel_board_runner=/opt/codex-workspace/novel-board/novel_board_runner.bb
   if [[ -x "${novel_board_runner}" ]]; then
-    exec "${novel_board_runner}" loop
+    # tini keeps PID 1 out of the runner (BOXP-252): orphaned agent children are
+    # reaped and SIGTERM is forwarded to the runner, whose shutdown hook then
+    # signals the agent process groups with a bounded grace.
+    exec /usr/bin/tini -- "${novel_board_runner}" loop
   fi
   echo "codex-workspace-entrypoint: ${novel_board_runner} not found in this image; idling" >&2
   exec sleep infinity

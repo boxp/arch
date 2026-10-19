@@ -268,6 +268,99 @@
 
 (def shutdown-hook-installed? (atom false))
 
+;; Set by the SIGTERM shutdown hook. `run-agent!` / `process-card!` consult it so
+;; an agent that exits because the runner signalled it is recorded as an
+;; interrupted run instead of a failed one, and so no lane / lock change is made
+;; while the Pod is going away.
+(def shutdown-requested? (atom false))
+
+;; run-id -> java.lang.Process of the agent CLI started through `setsid`. The
+;; shutdown hook signals these process groups so the agent and its descendants
+;; receive TERM before PID 1 exits and the kernel SIGKILLs the whole namespace.
+(def in-flight-agent-processes (atom {}))
+
+(declare kill-process-group!)
+
+(defn register-agent-process! [run-id process]
+  (swap! in-flight-agent-processes assoc run-id process)
+  ;; The shutdown hook may already have signalled the registered set before
+  ;; this agent was started. Re-check after registering so the agent group is
+  ;; still stopped (bounded by the hook's finalize wait and the Pod grace).
+  (when @shutdown-requested?
+    (kill-process-group! process "TERM")))
+
+(defn unregister-agent-process! [run-id]
+  (swap! in-flight-agent-processes dissoc run-id))
+
+(defn shutdown-agent-grace-seconds []
+  ;; Bounded wait for agents after TERM. Must stay well below the Pod's
+  ;; terminationGracePeriodSeconds (60) minus the preStop hook time.
+  (let [parsed (try
+                 (Long/parseLong (env "CODEX_TASK_BOARD_SHUTDOWN_AGENT_GRACE_SECONDS" "20"))
+                 (catch Exception _ 20))]
+    (max 0 (min parsed 45))))
+
+(defn kill-process-group! [process signal]
+  ;; The agent is started through `setsid`, so its PID is also its process
+  ;; group ID. Signalling the negative PID reaches every descendant.
+  (try
+    (let [result @(p/process ["/bin/kill" (str "-" signal) "--" (str "-" (.pid process))]
+                             {:out :string :err :string})]
+      (zero? (:exit result)))
+    (catch Exception _ false)))
+
+(defn stop-in-flight-agents! []
+  ;; TERM every registered agent process group, wait up to the bounded grace,
+  ;; then KILL whatever is still alive. Never waits for an LLM turn to finish.
+  (let [processes (vals @in-flight-agent-processes)]
+    (when (seq processes)
+      (log! (str "shutdown: signalling TERM to " (count processes) " in-flight agent process group(s), grace="
+                 (shutdown-agent-grace-seconds) "s"))
+      (doseq [process processes]
+        (kill-process-group! process "TERM"))
+      (let [deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-agent-grace-seconds)))]
+        (loop []
+          (when (and (some #(.isAlive ^java.lang.Process %) processes)
+                     (< (System/currentTimeMillis) deadline))
+            (Thread/sleep 250)
+            (recur))))
+      (let [survivors (filter #(.isAlive ^java.lang.Process %) processes)]
+        (when (seq survivors)
+          (log! (str "shutdown: " (count survivors) " agent process group(s) did not exit within grace; sending KILL")))
+        ;; KILL the group even when the agent itself exited: a TERM-resistant or
+        ;; late-created child can still be running inside the group.
+        (doseq [process processes]
+          (kill-process-group! process "KILL"))
+        (doseq [process survivors]
+          (try (.waitFor ^java.lang.Process process 2 java.util.concurrent.TimeUnit/SECONDS)
+               (catch Exception _ nil))))
+      (log! "shutdown: in-flight agents stopped"))))
+
+(declare in-flight-futures)
+
+(defn shutdown-finalize-seconds []
+  ;; Bounded wait for `process-card!` threads to record their interrupted run
+  ;; after the agents were stopped. Short: the next owner re-marks the run anyway.
+  (let [parsed (try
+                 (Long/parseLong (env "CODEX_TASK_BOARD_SHUTDOWN_FINALIZE_SECONDS" "5"))
+                 (catch Exception _ 5))]
+    (max 0 (min parsed 15))))
+
+(defn await-in-flight-finalization! []
+  (let [futures (vals @in-flight-futures)
+        deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-finalize-seconds)))]
+    (when (seq futures)
+      (loop []
+        (when (and (some #(not (future-done? %)) futures)
+                   (< (System/currentTimeMillis) deadline))
+          (Thread/sleep 100)
+          (recur)))
+      (let [pending (count (remove future-done? futures))]
+        (if (zero? pending)
+          (log! "shutdown: in-flight card processing finalized")
+          (log! (str "shutdown: " pending " in-flight card(s) not finalized within "
+                     (shutdown-finalize-seconds) "s; the next owner records them as interrupted")))))))
+
 (defn install-shutdown-hook! []
   (when (compare-and-set! shutdown-hook-installed? false true)
     (.addShutdownHook
@@ -275,11 +368,24 @@
      (Thread.
       ^Runnable
       (fn []
+        ;; Persist the planned-shutdown marker first: it is what lets the next
+        ;; owner recover this owner's locks even if everything below fails.
+        (reset! shutdown-requested? true)
         (try
           (prepare-shutdown!)
           (catch Exception e
             (binding [*out* *err*]
-              (println (str "failed to prepare task-board shutdown: " (.getMessage e)))))))))))
+              (println (str "failed to prepare task-board shutdown: " (.getMessage e))))))
+        (try
+          (stop-in-flight-agents!)
+          (catch Exception e
+            (binding [*out* *err*]
+              (println (str "failed to stop in-flight agents during shutdown: " (.getMessage e))))))
+        (try
+          (await-in-flight-finalization!)
+          (catch Exception e
+            (binding [*out* *err*]
+              (println (str "failed to await in-flight finalization during shutdown: " (.getMessage e)))))))))))
 
 (defn current-runner-marker? [marker]
   (and (= (owner-id) (:owner-id marker))
@@ -598,8 +704,10 @@
   (let [path (fs/path (run-dir ticket-id run-id) "summary.edn")
         ;; Later lifecycle transitions replace the summary. Keep the selected
         ;; assignee so failed and blocked runs remain attributable in history.
+        ;; `:shutdown` is written by the terminating runner itself; keep it when
+        ;; the next owner re-marks the same run as interrupted.
         previous-agent (try
-                         (select-keys (read-edn-file path {}) [:agent])
+                         (select-keys (read-edn-file path {}) [:agent :shutdown])
                          (catch Exception _ {}))
         summary (merge previous-agent
                        {:ticket ticket-id
@@ -741,6 +849,22 @@
                                :terminated-at (now-str)}))
       true)))
 
+(defn shutdown-marker-retention-seconds []
+  ;; A planned-shutdown marker of another owner that never matched a lock is
+  ;; kept for a while so a lock written just before that owner died can still be
+  ;; recovered. After this long the old Pod is certainly gone (its grace period
+  ;; is 60 seconds) and any such lock would have hit the heartbeat timeout
+  ;; anyway, so the marker is retired instead of accumulating forever.
+  (let [parsed (try
+                 (Long/parseLong (env "CODEX_TASK_BOARD_SHUTDOWN_MARKER_RETENTION_SECONDS" "3600"))
+                 (catch Exception _ 3600))]
+    (max 600 parsed)))
+
+(defn expired-shutdown-marker? [marker]
+  (and (string? (:requested-at marker))
+       (not= Long/MAX_VALUE (seconds-since (:requested-at marker)))
+       (> (seconds-since (:requested-at marker)) (shutdown-marker-retention-seconds))))
+
 (defn recover-planned-shutdown-marker! [marker retire-empty-marker?]
   (with-owner-lock-guard
    (:owner-id marker)
@@ -779,7 +903,7 @@
          ;; Lock creation for this owner takes the same owner guard. Marking the owner
          ;; terminated before deleting the marker also prevents a waiter from creating
          ;; a lock immediately after this critical section ends.
-         (when (and (or @recovered? retire-empty-marker?)
+         (when (and (or @recovered? retire-empty-marker? (expired-shutdown-marker? marker))
                     (not (matching-shutdown-lock-exists? marker))
                     (same-shutdown-marker? marker
                                            (try
@@ -1251,7 +1375,7 @@
         started-at (System/currentTimeMillis)]
     (loop [last-progress-at (max started-at (latest-modification-millis progress-paths))]
       (if-not (.isAlive process)
-        {:proc @proc :idle-timeout? false}
+        {:proc @proc :idle-timeout? false :shutdown? @shutdown-requested?}
         (do
           (Thread/sleep 1000)
           (let [observed-at (latest-modification-millis progress-paths)
@@ -1262,7 +1386,7 @@
               ;; immediately before the timeout action so a valid final response
               ;; is not discarded as an idle retry.
               (not (.isAlive process))
-              {:proc @proc :idle-timeout? false}
+              {:proc @proc :idle-timeout? false :shutdown? @shutdown-requested?}
 
               (and (pos? idle-timeout-seconds)
                    (>= idle-millis (* 1000 idle-timeout-seconds)))
@@ -1620,7 +1744,11 @@
                                               :err (io/file (str stderr-path))}
                                        (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
-          {:keys [proc idle-timeout?]} (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
+          _ (register-agent-process! run (:proc proc))
+          {:keys [proc idle-timeout? shutdown?]} (try
+                                                   (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
+                                                   (finally
+                                                     (unregister-agent-process! run)))
           exit (:exit proc)
           _ (when (and (claude-assignee? agent) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path))
@@ -1628,21 +1756,35 @@
           last-message (when (fs/exists? last-message-path)
                          (slurp (str last-message-path)))
           marker (result-marker last-message)]
-      (let [status (if (zero? exit) :succeeded :failed)]
-        (mark-run! ticket-id run status
+      (if shutdown?
+        ;; The agent stopped because this runner is shutting down. Record the
+        ;; interruption from the terminating side (the next owner re-marks the
+        ;; run through the planned-shutdown marker and keeps `:shutdown`).
+        (mark-run! ticket-id run :interrupted
                    {:action action
                     :agent agent
                     :lane lane
-                    :exit-code exit
-                    :idle-timeout? idle-timeout?
-                    :result marker
-                    :finished-at (now-str)}))
+                    :reason "planned workspace shutdown"
+                    :shutdown {:owner-id (owner-id)
+                               :instance-id runner-instance-id
+                               :agent-exit-code exit
+                               :agent-stopped-at (now-str)}})
+        (let [status (if (zero? exit) :succeeded :failed)]
+          (mark-run! ticket-id run status
+                     {:action action
+                      :agent agent
+                      :lane lane
+                      :exit-code exit
+                      :idle-timeout? idle-timeout?
+                      :result marker
+                      :finished-at (now-str)})))
       {:exit exit
        :result marker
        :run-id run
        :dir (str dir)
        :last-message last-message
-       :idle-timeout? idle-timeout?})))
+       :idle-timeout? idle-timeout?
+       :shutdown? (boolean shutdown?)})))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (when (supported-assignee? assignee)
@@ -1837,13 +1979,19 @@
             lock (acquire-lock! ticket-id action effective-lane)]
         (when lock
           (let [stop? (atom false)
-                hb (heartbeat! ticket-id lock stop?)]
+                hb (heartbeat! ticket-id lock stop?)
+                ;; Set when this runner is shutting down: the lock is left in place
+                ;; so the next owner recovers it through the planned-shutdown
+                ;; marker, and no lane / frontmatter / Notes change is made here.
+                keep-lock? (atom false)]
             (try
               (when (#{"ready" "review" "blocked"} status)
                 (move-card! ticket-id "in-progress")
                 (update-frontmatter! ticket-id {:status "in-progress"}))
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
-              (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock)
+              (let [{:keys [exit result run-id dir last-message idle-timeout? shutdown?]} (run-agent! ticket-id action effective-lane assignee lock)
+                    _ (when shutdown?
+                        (throw (ex-info "agent stopped by planned workspace shutdown" {:type ::planned-shutdown})))
                     _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
                         ;; Deterministic black-box failure hook; unset in deployment.
                         (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
@@ -1905,13 +2053,32 @@
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))))
                 true)
               (catch Exception e
-                (when-not (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
-                  (restore-card-state! ticket-id status assignee))
+                (if (or (= ::planned-shutdown (:type (ex-data e)))
+                        @shutdown-requested?)
+                  (do
+                    ;; Planned shutdown: keep the run attributable as interrupted and
+                    ;; leave the card, frontmatter and lock untouched for the next owner.
+                    (reset! keep-lock? true)
+                    (when-not (= ::planned-shutdown (:type (ex-data e)))
+                      (mark-run! ticket-id (:run-id lock) :interrupted
+                                 {:action action
+                                  :agent assignee
+                                  :lane effective-lane
+                                  :reason "planned workspace shutdown"
+                                  :shutdown {:owner-id (owner-id)
+                                             :instance-id runner-instance-id
+                                             :error (.getMessage e)
+                                             :agent-stopped-at (now-str)}}))
+                    (log! (str "run " (:run-id lock) " for " ticket-id
+                               " interrupted by planned workspace shutdown; lock kept for the next owner")))
+                  (when-not (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                    (restore-card-state! ticket-id status assignee)))
                 true)
               (finally
                 (reset! stop? true)
                 @hb
-                (release-lock! ticket-id lock)))))))))
+                (when-not @keep-lock?
+                  (release-lock! ticket-id lock))))))))))
 
 (defn ticket-assignee [ticket-id]
   (let [path (ticket-path ticket-id)]

@@ -94,6 +94,9 @@ make_fake_claude() {
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${CLAUDE_FAKE_IGNORES_TERM:-false}" == true ]]; then
+  trap '' TERM
+fi
 if [[ -n "${CLAUDE_FAKE_ARG_LOG:-}" ]]; then
   printf '%s\n' "$*" >>"${CLAUDE_FAKE_ARG_LOG}"
 fi
@@ -785,6 +788,178 @@ EOF
   assert_file_contains "${state}/locks/BOXP-205.edn" ':run-id "replacement-run"'
   assert_file_contains "${state}/locks/BOXP-205.edn" ':owner-id "replacement-pod"'
   assert_file_contains "${state}/runs/BOXP-205/${old_run}/summary.edn" ':status :interrupted'
+}
+
+# Start `loop` in the background with the given owner / instance and wait until
+# the lock for the ticket exists. Sets LOOP_PID (the loop must be a child of the
+# calling shell so `wait` works; do not call this inside a subshell).
+LOOP_PID=""
+start_loop_with_lock() {
+  local vault="$1" state="$2" ticket="$3" output="$4" bin="$5"
+  shift 5
+  local attempt
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_OWNER_ID=old-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=old-instance \
+    CODEX_TASK_BOARD_POLL_SECONDS=60 \
+    "$@" bb "${RUNNER}" loop >"${output}" 2>&1 &
+  LOOP_PID=$!
+  for attempt in $(seq 1 200); do
+    [[ -e "${state}/locks/${ticket}.edn" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -e "${state}/locks/${ticket}.edn" ]]; then
+    kill -KILL "${LOOP_PID}" 2>/dev/null || true
+    wait "${LOOP_PID}" 2>/dev/null || true
+    fail "expected loop runner to lock ${ticket}"
+  fi
+}
+
+wait_for_file() {
+  local file="$1" attempt
+  for attempt in $(seq 1 200); do
+    [[ -s "${file}" ]] && return 0
+    sleep 0.1
+  done
+  fail "expected ${file} to appear"
+}
+
+assert_process_stopped() {
+  local pid="$1" what="$2" state
+  if kill -0 "${pid}" 2>/dev/null; then
+    # An orphan can remain as a zombie until PID 1 reaps it; a zombie is not running.
+    state="$(ps -o stat= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
+    [[ "${state}" == Z* ]] || fail "expected ${what} ${pid} to be stopped (state=${state:-unknown})"
+  fi
+}
+
+test_sigterm_stops_in_flight_agent_and_keeps_lock_for_next_owner() {
+  local tmp vault state bin output child_pid_file child_pid pid started elapsed summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  output="${tmp}/runner.out"
+  child_pid_file="${tmp}/child.pid"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-301|BOXP-301: shutdown in flight]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-301 in-progress fable
+
+  start_loop_with_lock "${vault}" "${state}" BOXP-301 "${output}" "${bin}" \
+    env CLAUDE_FAKE_CHILD_PID_FILE="${child_pid_file}" CLAUDE_FAKE_CHILD_SLEEP=120
+  pid="${LOOP_PID}"
+  wait_for_file "${child_pid_file}"
+  child_pid="$(cat "${child_pid_file}")"
+
+  started="$(date +%s)"
+  kill -TERM "${pid}"
+  wait "${pid}" 2>/dev/null || true
+  elapsed=$(( $(date +%s) - started ))
+  [[ "${elapsed}" -lt 15 ]] || fail "expected SIGTERM shutdown with a cooperative agent to finish quickly, took ${elapsed}s"
+
+  # The agent and its child received TERM through the process group.
+  assert_process_stopped "${child_pid}" "agent child"
+  assert_file_contains "${output}" 'shutdown: signalling TERM to 1 in-flight agent process group'
+  assert_file_contains "${output}" 'shutdown: in-flight agents stopped'
+  assert_file_contains "${output}" 'shutdown: in-flight card processing finalized'
+  assert_file_contains "${output}" 'interrupted by planned workspace shutdown; lock kept for the next owner'
+  assert_file_not_contains "${output}" 'did not exit within grace'
+
+  # Marker written, lock kept, run recorded as interrupted by the terminating side.
+  assert_file_contains "${state}/terminating-owners/old-pod.edn" ':instance-id "old-instance"'
+  [[ -e "${state}/locks/BOXP-301.edn" ]] || fail "expected the lock to stay for the next owner after planned shutdown"
+  summary="$(find "${state}/runs/BOXP-301" -name summary.edn -print | sort | head -n 1)"
+  assert_file_contains "${summary}" ':status :interrupted'
+  assert_file_contains "${summary}" ':reason "planned workspace shutdown"'
+  assert_file_contains "${summary}" ':agent-exit-code'
+
+  # No lane / frontmatter / blocked transition from the dying runner.
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: shutdown in flight\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^assignee: fable$'
+  assert_file_not_contains "${vault}/Tickets/BOXP-301.md" 'finished with result'
+  assert_file_not_contains "${vault}/Tickets/BOXP-301.md" 'Blocked transition recorded'
+
+  # The next owner recovers exactly once through the marker and re-runs the ticket.
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-shutdown-next-owner.out
+  assert_file_contains "${summary}" ':status :interrupted'
+  assert_file_contains "${summary}" ':shutdown \{'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" 'marked interrupted after planned workspace shutdown of owner old-pod'
+  [[ "$(grep -c 'marked interrupted' "${vault}/Tickets/BOXP-301.md")" == 1 ]] || fail "expected a single interrupted note"
+  [[ ! -e "${state}/terminating-owners/old-pod.edn" ]] || fail "expected the recovered marker to be removed"
+  [[ "$(find "${state}/runs/BOXP-301" -mindepth 1 -maxdepth 1 -type d | wc -l)" == 2 ]] || fail "expected exactly one replacement run"
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: done$'
+  [[ ! -e "${state}/locks/BOXP-301.edn" ]] || fail "expected the replacement run to release its lock"
+}
+
+test_sigterm_kills_term_resistant_agent_within_grace() {
+  local tmp vault state bin output child_pid_file child_pid pid started elapsed summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  output="${tmp}/runner.out"
+  child_pid_file="${tmp}/child.pid"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-302|BOXP-302: resistant agent]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-302 in-progress fable
+
+  start_loop_with_lock "${vault}" "${state}" BOXP-302 "${output}" "${bin}" \
+    env CLAUDE_FAKE_IGNORES_TERM=true CLAUDE_FAKE_CHILD_IGNORES_TERM=true \
+        CLAUDE_FAKE_CHILD_PID_FILE="${child_pid_file}" CLAUDE_FAKE_CHILD_SLEEP=120 \
+        CODEX_TASK_BOARD_SHUTDOWN_AGENT_GRACE_SECONDS=2
+  pid="${LOOP_PID}"
+  wait_for_file "${child_pid_file}"
+  child_pid="$(cat "${child_pid_file}")"
+
+  started="$(date +%s)"
+  kill -TERM "${pid}"
+  wait "${pid}" 2>/dev/null || true
+  elapsed=$(( $(date +%s) - started ))
+  [[ "${elapsed}" -ge 2 && "${elapsed}" -lt 15 ]] || fail "expected bounded shutdown wait (2s grace) then KILL, took ${elapsed}s"
+
+  assert_process_stopped "${child_pid}" "TERM-resistant agent child"
+  assert_file_contains "${output}" 'did not exit within grace; sending KILL'
+  assert_file_contains "${output}" 'shutdown: in-flight agents stopped'
+  [[ -e "${state}/locks/BOXP-302.edn" ]] || fail "expected the lock to stay for the next owner"
+  summary="$(find "${state}/runs/BOXP-302" -name summary.edn -print | sort | head -n 1)"
+  assert_file_contains "${summary}" ':status :interrupted'
+  assert_file_contains "${vault}/Tickets/BOXP-302.md" '^status: in-progress$'
+}
+
+test_expired_foreign_shutdown_marker_is_retired() {
+  local tmp vault state old_requested fresh_requested
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  old_requested="$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)"
+  fresh_requested="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "${state}/terminating-owners" "${state}/owners"
+  write_board "${vault}" ""
+  cat >"${state}/terminating-owners/gone-pod.edn" <<EOF
+{:owner-id "gone-pod" :instance-id "gone-instance" :host "gone-pod" :requested-at "${old_requested}"}
+EOF
+  cat >"${state}/owners/gone-pod.edn" <<EOF
+{:owner-id "gone-pod" :instance-id "gone-instance" :status :terminating :host "gone-pod" :shutdown-requested-at "${old_requested}"}
+EOF
+  cat >"${state}/terminating-owners/recent-pod.edn" <<EOF
+{:owner-id "recent-pod" :instance-id "recent-instance" :host "recent-pod" :requested-at "${fresh_requested}"}
+EOF
+
+  CODEX_TASK_BOARD_OWNER_ID=new-pod \
+    CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-expired-marker.out
+
+  [[ ! -e "${state}/terminating-owners/gone-pod.edn" ]] || fail "expected the expired foreign marker to be retired"
+  assert_file_contains "${state}/owners/gone-pod.edn" ':status :terminated'
+  [[ -e "${state}/terminating-owners/recent-pod.edn" ]] || fail "expected a recent foreign marker to remain for a later scan"
 }
 
 test_sigterm_writes_shutdown_marker_without_prestop() {
@@ -2894,6 +3069,9 @@ test_stale_lock_recovers
 test_planned_shutdown_lock_recovers_immediately
 test_cross_process_lock_guard_preserves_replacement_lock
 test_sigterm_writes_shutdown_marker_without_prestop
+test_sigterm_stops_in_flight_agent_and_keeps_lock_for_next_owner
+test_sigterm_kills_term_resistant_agent_within_grace
+test_expired_foreign_shutdown_marker_is_retired
 test_one_shot_tick_does_not_replace_loop_owner_instance
 test_current_owner_shutdown_marker_drains_without_recovery
 test_same_owner_new_instance_recovers_previous_instance

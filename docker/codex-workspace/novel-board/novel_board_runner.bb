@@ -336,15 +336,102 @@
 
 (def shutdown-hook-installed? (atom false))
 
+;; Set by the SIGTERM shutdown hook (BOXP-252). The localllm stream reader,
+;; `run-cloud-agent!` and `process-card!` consult it so an in-flight run is
+;; recorded as interrupted (partial output kept, lane / assignee / lock left
+;; for the next owner) instead of being treated as a failed generation.
+(def shutdown-requested? (atom false))
+
+;; novel-id -> java.lang.Process of a cloud agent CLI started through `setsid`.
+;; The shutdown hook signals these process groups so the agent and its
+;; descendants receive TERM before PID 1 exits and the PID namespace is torn
+;; down with SIGKILL.
+(def in-flight-agent-processes (atom {}))
+
+(declare signal-process-group! in-flight)
+
+(defn register-agent-process! [novel-id process]
+  (swap! in-flight-agent-processes assoc novel-id process)
+  ;; The shutdown hook may already have signalled the registered set before
+  ;; this agent was started. Re-check after registering so the agent group is
+  ;; still stopped (bounded by the hook's finalize wait and the Pod grace).
+  (when @shutdown-requested?
+    (signal-process-group! process "TERM")))
+
+(defn unregister-agent-process! [novel-id]
+  (swap! in-flight-agent-processes dissoc novel-id))
+
+(defn shutdown-agent-grace-seconds []
+  ;; Bounded wait for agents after TERM. Must stay well below the Pod's
+  ;; terminationGracePeriodSeconds (60) minus the preStop hook time.
+  (max 0 (min (env-long "CODEX_NOVEL_BOARD_SHUTDOWN_AGENT_GRACE_SECONDS" 20) 45)))
+
+(defn shutdown-finalize-seconds []
+  ;; Bounded wait for `process-card!` threads to record their interrupted run
+  ;; after the agents / streams were stopped. The next owner re-marks the run
+  ;; through the planned-shutdown marker anyway, so this stays short.
+  (max 0 (min (env-long "CODEX_NOVEL_BOARD_SHUTDOWN_FINALIZE_SECONDS" 5) 15)))
+
+(defn stop-in-flight-agents! []
+  ;; TERM every registered agent process group, wait up to the bounded grace,
+  ;; then KILL whatever is still alive. Never waits for an LLM turn to finish.
+  (let [processes (vals @in-flight-agent-processes)]
+    (when (seq processes)
+      (log! (str "shutdown: signalling TERM to " (count processes) " in-flight agent process group(s), grace="
+                 (shutdown-agent-grace-seconds) "s"))
+      (doseq [process processes] (signal-process-group! process "TERM"))
+      (let [deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-agent-grace-seconds)))]
+        (loop []
+          (when (and (some #(.isAlive ^java.lang.Process %) processes)
+                     (< (System/currentTimeMillis) deadline))
+            (Thread/sleep 250)
+            (recur))))
+      (let [survivors (filter #(.isAlive ^java.lang.Process %) processes)]
+        (when (seq survivors)
+          (log! (str "shutdown: " (count survivors) " agent process group(s) did not exit within grace; sending KILL")))
+        ;; KILL the group even when the agent itself exited: a TERM-resistant or
+        ;; late-created child can still be running inside the group.
+        (doseq [process processes] (signal-process-group! process "KILL"))
+        (doseq [process survivors]
+          (try (.waitFor ^java.lang.Process process 2 java.util.concurrent.TimeUnit/SECONDS)
+               (catch Exception _ nil))))
+      (log! "shutdown: in-flight agents stopped"))))
+
+(defn await-in-flight-finalization! []
+  (let [futures (vals @in-flight)
+        deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-finalize-seconds)))]
+    (when (seq futures)
+      (loop []
+        (when (and (some #(not (future-done? %)) futures)
+                   (< (System/currentTimeMillis) deadline))
+          (Thread/sleep 100)
+          (recur)))
+      (let [pending (count (remove future-done? futures))]
+        (if (zero? pending)
+          (log! "shutdown: in-flight card processing finalized")
+          (log! (str "shutdown: " pending " in-flight card(s) not finalized within "
+                     (shutdown-finalize-seconds) "s; the next owner records them as interrupted")))))))
+
 (defn install-shutdown-hook! []
   (when (compare-and-set! shutdown-hook-installed? false true)
     (.addShutdownHook
      (Runtime/getRuntime)
      (Thread. ^Runnable (fn []
+                          ;; Marker first: it is what lets the next owner recover
+                          ;; this owner's locks even if everything below fails.
+                          (reset! shutdown-requested? true)
                           (try (prepare-shutdown!)
                                (catch Exception e
                                  (binding [*out* *err*]
-                                   (println (str "failed to prepare novel-board shutdown: " (.getMessage e)))))))))))
+                                   (println (str "failed to prepare novel-board shutdown: " (.getMessage e))))))
+                          (try (stop-in-flight-agents!)
+                               (catch Exception e
+                                 (binding [*out* *err*]
+                                   (println (str "failed to stop in-flight agents during shutdown: " (.getMessage e))))))
+                          (try (await-in-flight-finalization!)
+                               (catch Exception e
+                                 (binding [*out* *err*]
+                                   (println (str "failed to await in-flight finalization during shutdown: " (.getMessage e)))))))))))
 
 (defn current-runner-marker? [marker]
   (and (= (owner-id) (:owner-id marker))
@@ -389,7 +476,9 @@
 
 (defn mark-run! [novel-id run-id status extra]
   (let [path (fs/path (run-dir novel-id run-id) "summary.edn")
-        previous (try (select-keys (read-edn-file path {}) [:agent :action]) (catch Exception _ {}))]
+        ;; `:shutdown` is written by the terminating runner itself (BOXP-252); keep it
+        ;; when the next owner re-marks the same run as interrupted.
+        previous (try (select-keys (read-edn-file path {}) [:agent :action :shutdown]) (catch Exception _ {}))]
     (ensure-private-dir! (run-dir novel-id run-id))
     (write-edn-file! path (merge previous
                                  {:novel novel-id :run-id run-id :status status :updated-at (now-str)}
@@ -1504,6 +1593,16 @@
                    :error (when error (sanitize-error (str (.getName (class error)) ": " (.getMessage error))))
                    :elapsed-ms (- (System/currentTimeMillis) started)))
 
+          ;; Planned shutdown (BOXP-252): close the stream now so the partial
+          ;; text is kept and the run is recorded before the Pod goes away.
+          ;; The upstream generation may still be running; the caller must not
+          ;; re-request it from this process.
+          @shutdown-requested?
+          (do (close-body!)
+              (let [s @state]
+                (when on-progress (on-progress (:content s)))
+                (assoc (dissoc s :done? :error :last-at :done-marker?) :stop :shutdown :elapsed-ms (- now started))))
+
           (>= now deadline)
           (do (close-body!)
               (let [s @state]
@@ -1604,6 +1703,11 @@
               :complete
               (do (record-evidence! run-dir (assoc evidence :status :ok))
                   {:content content :finish-reason (:finish result) :usage (:usage result) :model model})
+
+              :shutdown
+              (do (record-evidence! run-dir (assoc evidence :status :shutdown))
+                  (throw (ex-info (str "localllm " phase " は runner の計画停止により打ち切りました（" (count content) " 字まで受信、再試行なし）")
+                                  {:type :llm-error :phase phase :shutdown? true :partial content})))
 
               :total-timeout
               (do (record-evidence! run-dir (assoc evidence :status :total-timeout))
@@ -1893,16 +1997,24 @@
                                                    :err (io/file (str stderr-path))
                                                    :dir (str work)
                                                    :env child-env})
-          {:keys [proc idle-timeout?]} (await-agent! proc [stdout-path stderr-path (manuscript-path novel-id) (note-path novel-id)]
-                                                     (env-long "CODEX_NOVEL_BOARD_AGENT_IDLE_TIMEOUT_SECONDS" 3600))
+          _ (register-agent-process! novel-id (:proc proc))
+          {:keys [proc idle-timeout?]} (try
+                                         (await-agent! proc [stdout-path stderr-path (manuscript-path novel-id) (note-path novel-id)]
+                                                       (env-long "CODEX_NOVEL_BOARD_AGENT_IDLE_TIMEOUT_SECONDS" 3600))
+                                         (finally
+                                           (unregister-agent-process! novel-id)))
+          ;; The agent stopped because the shutdown hook signalled it (BOXP-252).
+          shutdown? @shutdown-requested?
           exit (:exit proc)
           _ (when (and (= :claude route) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path)) (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path) (slurp (str last-message-path)))
           marker (cloud-result-marker last-message)]
-      (record-evidence! run-dir {:phase (name action) :route route :agent agent :status (if (zero? exit) :exit-0 :exit-nonzero)
-                                 :exit-code exit :idle-timeout? idle-timeout? :result marker})
+      (record-evidence! run-dir {:phase (name action) :route route :agent agent :status (cond shutdown? :shutdown (zero? exit) :exit-0 :else :exit-nonzero)
+                                 :exit-code exit :idle-timeout? idle-timeout? :shutdown? shutdown? :result marker})
       (cond
+        shutdown? {:ok? false :shutdown? true :agent-exit-code exit
+                   :reason "runner の計画停止により agent を停止しました（次の owner が再開します）"}
         idle-timeout? {:ok? false :reason "agent が進捗なしでタイムアウトしました（再開条件: agent を再割当）"}
         (not (zero? exit)) {:ok? false :reason (str "agent CLI が exit " exit " で終了しました（詳細: run dir の stderr.log）")}
         (= "blocked" marker) {:ok? false :reason (str "agent が blocked を返しました: "
@@ -2248,7 +2360,24 @@
         (when (and lock (not changed?))
           (let [stop? (atom false)
                 hb (heartbeat! novel-id lock stop?)
-                run-dir (ensure-private-dir! (run-dir novel-id (:run-id lock)))]
+                run-dir (ensure-private-dir! (run-dir novel-id (:run-id lock)))
+                ;; Set when this runner is shutting down (BOXP-252): the lock is
+                ;; left in place so the next owner recovers it through the
+                ;; planned-shutdown marker, and no lane / assignee / frontmatter
+                ;; change is made here. Partial output stays in the work dir and
+                ;; is never promoted to the manuscript.
+                keep-lock? (atom false)
+                record-shutdown! (fn [detail]
+                                   (reset! keep-lock? true)
+                                   (mark-run! novel-id (:run-id lock) :interrupted
+                                              (merge {:action action :agent agent :lane lane
+                                                      :reason "planned workspace shutdown"
+                                                      :shutdown (merge {:owner-id (owner-id)
+                                                                        :instance-id runner-instance-id
+                                                                        :stopped-at (now-str)}
+                                                                       detail)}))
+                                   (log! (str novel-id " run " (:run-id lock)
+                                              " interrupted by planned workspace shutdown; lock kept for the next owner")))]
             (try
               (when (and (#{:write :revise} action) (not= "in-progress" status))
                 (move-card! novel-id "in-progress" nil)
@@ -2262,15 +2391,23 @@
                                 (run-groom! novel-id card fm content agent run-dir)
                                 (run-write! novel-id card fm content action agent run-dir))
                               (catch Exception e
-                                {:ok? false :reason (str "runner 内部エラー: " (sanitize-error (.getMessage e)) "。再開条件: 原因解消後に agent を再割当")}))]
-                (finish-run! novel-id lock card action outcome run-dir))
+                                (if (or (:shutdown? (ex-data e)) @shutdown-requested?)
+                                  {:ok? false :shutdown? true :reason (sanitize-error (.getMessage e))}
+                                  {:ok? false :reason (str "runner 内部エラー: " (sanitize-error (.getMessage e)) "。再開条件: 原因解消後に agent を再割当")})))]
+                (if (or (:shutdown? outcome) @shutdown-requested?)
+                  (record-shutdown! (cond-> {:detail (:reason outcome)}
+                                      (contains? outcome :agent-exit-code) (assoc :agent-exit-code (:agent-exit-code outcome))))
+                  (finish-run! novel-id lock card action outcome run-dir)))
               (catch Exception e
-                (log! (str novel-id " failed to finish run: " (.getMessage e)))
-                (mark-run! novel-id (:run-id lock) :failed {:reason (sanitize-error (.getMessage e)) :finished-at (now-str)}))
+                (if @shutdown-requested?
+                  (record-shutdown! {:error (sanitize-error (.getMessage e))})
+                  (do (log! (str novel-id " failed to finish run: " (.getMessage e)))
+                      (mark-run! novel-id (:run-id lock) :failed {:reason (sanitize-error (.getMessage e)) :finished-at (now-str)}))))
               (finally
                 (reset! stop? true)
                 (try @hb (catch Exception _ nil))
-                (release-lock! novel-id lock)))
+                (when-not @keep-lock?
+                  (release-lock! novel-id lock))))
             true))))))
 
 ;; ---------------------------------------------------------------------------
