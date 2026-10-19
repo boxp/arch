@@ -13,7 +13,7 @@ kanban-plugin: board
 - [ ] 対応 agent は `localllm`（lolice の local-llm / Gemma 4 で本文生成）、`claude-fable` / `claude-opus` / `claude-sonnet`、`codex` 系。未対応の名前はカードを変更せず Run History に1回だけ記録する。
 - [ ] 管理ノートのテンプレートは `Templates/Novel Management.md` を使う。
 - [ ] 状態はカードのレーンを SSOT とし、管理ノートの `status` / `nsfw` は runner がカードに合わせて同期する。担当は Task Board と同様にカードの `assignee::` と管理ノート frontmatter の `assignee` のどちらを変えてもよく、runner が人間の変えた側を他方へ揃えてから起動する（同時に別の値なら カードを採用し Run History に記録）。runner 自身がカードの担当を書き換えるのは、人間の変更の反映と、自分の run を終えて人間確認レーンへ渡す時（`assignee::boxp`）だけ。
-- [ ] `Draft` と `Review` は人間確認レーン。`Review` からの改稿は指示を管理ノートへ書いて agent を割り当て、承認時だけ人間が `Done` へ移す。
+- [ ] `Draft` と `Review` は人間確認レーン。`Review` からの改稿は指示を管理ノートへ書いて agent を割り当て、承認時だけ人間が `Done` へ移す。`Draft` で管理ノートの `Review Instructions` に要件 / 構成への指示を書いて agent を割り当てると、本文を書かずに Requirements / Outline へ反映して `Draft` に戻る。
 - [ ] 原本は private work dir に保持し、Review 到達後は管理ノートの Draft Preview から未承認の vault 草稿と挿絵を読む。完成版配置は Done 承認後だけ。詳細は `Novels/README.md` を参照する。
 
 
@@ -24,7 +24,7 @@ kanban-plugin: board
 
 ## Draft
 
-- [ ] **運用ルール:** 執筆開始前の人間確認レーン。条件不足なら人間が `Backlog` へ戻し、執筆を始める場合だけ対応 agent を割り当てる。本文生成に失敗した場合は理由と再開条件を Run History に残して `Draft`（担当 boxp）へ戻る。 #novel-rule
+- [ ] **運用ルール:** 執筆開始前の人間確認レーン。条件不足なら人間が `Backlog` へ戻す。agent を割り当てると、`Review Instructions` が空なら初稿を書き始め、未反映の指示があれば本文を書かずに Requirements / Outline へ反映して `Draft`（担当 boxp）へ戻る（同じ指示のまま再割当で初稿開始）。本文生成に失敗した場合は理由と再開条件を Run History に残して `Draft`（担当 boxp）へ戻る。 #novel-rule
 
 
 ## In Progress
