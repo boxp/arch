@@ -753,6 +753,102 @@ bb "${RUNNER}" sync-drafts NOVEL-22 >>"${TMP}/runner.log" 2>&1
 sha256sum -c "${TMP}/pending-conflict-before.sha" >/dev/null || fail "pending conflict recovery was not idempotent"
 echo "PASS: state-less existing draft is preserved"
 
+
+# ---------------------------------------------------------------------------
+# BOXP-249: assignee can be changed on the card or in the management note
+# ---------------------------------------------------------------------------
+set_note_assignee() { sed -i -E "0,/^assignee:.*/s//assignee: $2/" "${VAULT}/Novels/$1.md"; }
+note_assignee() { grep -m1 -E '^assignee:' "${VAULT}/Novels/$1.md" | sed -E 's/^assignee:\s*//'; }
+
+# Note edit (Backlog) starts groom just like a card edit
+add_card Backlog "- [ ] [[Novels/NOVEL-40|NOVEL-40: ノート担当テスト]] #novel status::backlog assignee::boxp"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-40.md"
+tick
+[[ -f "${STATE}/assignee-sync/NOVEL-40.edn" ]] || fail "assignee sync state should be recorded once both sides agree"
+set_note_assignee NOVEL-40 localllm
+tick
+assert_contains "${TMP}/runner.log" "NOVEL-40 assignee changed in the management note: boxp -> localllm (synced to the card)"
+[[ "$(lane_of "${BOARD}" NOVEL-40)" == "Draft" ]] || fail "note assignee change should start groom and move to Draft"
+assert_contains "${BOARD}" "[[Novels/NOVEL-40|NOVEL-40: ノート担当テスト]] #novel status::draft assignee::boxp"
+[[ "$(note_assignee NOVEL-40)" == "boxp" ]] || fail "note assignee should be boxp after the hand-off"
+[[ "$(find "${STATE}/runs/NOVEL-40" -name summary.edn | wc -l)" == "1" ]] || fail "note assignee change should start exactly one run"
+assert_contains "${VAULT}/Novels/NOVEL-40.md" "started: action=groom agent=localllm from Backlog"
+tick
+[[ "$(find "${STATE}/runs/NOVEL-40" -name summary.edn | wc -l)" == "1" ]] || fail "boxp on both sides must not restart"
+echo "PASS: management note assignee starts the run"
+
+# First introduction: a stale note value never rolls back a fresh card
+add_card Draft "- [ ] [[Novels/NOVEL-41|NOVEL-41: 初回導入テスト]] #novel status::draft assignee::boxp"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-41.md"
+set_note_assignee NOVEL-41 localllm
+rm -f "${STATE}/assignee-sync/NOVEL-41.edn"
+tick
+assert_contains "${BOARD}" "[[Novels/NOVEL-41|NOVEL-41: 初回導入テスト]] #novel status::draft assignee::boxp"
+[[ "$(note_assignee NOVEL-41)" == "boxp" ]] || fail "without sync state the card value wins"
+[[ ! -d "${STATE}/runs/NOVEL-41" ]] || fail "first introduction must not start a run"
+echo "PASS: first introduction keeps the card value"
+
+# Card edit still syncs to the note; unsupported names via the note stay on the card
+set_assignee NOVEL-41 pi
+tick
+[[ "$(note_assignee NOVEL-41)" == "pi" ]] || fail "card edit should sync to the note"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-41.md" 'assignee `pi` は対応していない')" == "1" ]] || fail "unsupported assignee logged once"
+set_note_assignee NOVEL-41 boxp
+tick
+assert_contains "${BOARD}" "[[Novels/NOVEL-41|NOVEL-41: 初回導入テスト]] #novel status::draft assignee::boxp"
+[[ ! -d "${STATE}/runs/NOVEL-41" ]] || fail "unassigning via the note must not start a run"
+set_note_assignee NOVEL-41 pi2
+tick
+assert_contains "${BOARD}" "status::draft assignee::pi2"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-41.md" 'assignee `pi2` は対応していない')" == "1" ]] || fail "unsupported note assignee is logged once and kept"
+echo "PASS: card edit, unassign via note, unsupported via note"
+
+# Both sides changed since the last agreement: the card wins, recorded once
+set_assignee NOVEL-41 pi3
+set_note_assignee NOVEL-41 pi4
+tick
+assert_contains "${BOARD}" "status::draft assignee::pi3"
+[[ "$(note_assignee NOVEL-41)" == "pi3" ]] || fail "conflict should settle on the card value"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-41.md" '担当の同時変更を検出しました: カード `pi3` / 管理ノート `pi4`')" == "1" ]] || fail "conflict is recorded once"
+sha256sum "${BOARD}" "${VAULT}/Novels/NOVEL-41.md" >"${TMP}/conflict.sha"
+tick
+sha256sum -c "${TMP}/conflict.sha" >/dev/null || fail "re-tick after a conflict must be idempotent"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-41.md" '担当の同時変更を検出しました')" == "1" ]] || fail "conflict must not be recorded on every tick"
+set_assignee NOVEL-41 boxp
+tick
+
+# Note re-assigned during an active run is kept and handed over after the run
+add_card Draft "- [ ] [[Novels/NOVEL-42|NOVEL-42: run中ノート変更テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-42.md"
+write_requirements NOVEL-42
+echo slow >"${MODE_FILE}"
+tick & T1=$!
+sleep 1.5
+set_note_assignee NOVEL-42 pi
+wait "${T1}"
+echo normal >"${MODE_FILE}"
+[[ "$(lane_of "${BOARD}" NOVEL-42)" == "Review" ]] || fail "run should finish in Review"
+assert_contains "${BOARD}" "status::review assignee::boxp"
+[[ "$(note_assignee NOVEL-42)" == "pi" ]] || fail "a note re-assignment made during the run must survive the hand-off"
+tick
+assert_contains "${BOARD}" "status::review assignee::pi"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-42.md" 'assignee `pi` は対応していない')" == "1" ]] || fail "handed-over note assignee is processed after the run"
+[[ "$(find "${STATE}/runs/NOVEL-42" -name summary.edn | wc -l)" == "1" ]] || fail "exactly one run expected for NOVEL-42"
+set_assignee NOVEL-42 boxp
+tick
+echo "PASS: note re-assignment during a run is handed over after the run"
+
+# Kanban UI doubles the checkbox on manually added titles; scaffold strips it
+add_card Backlog "- [ ] - [ ] 二重チェックボックス assignee::localllm"
+tick
+NEW_ID="$(grep -o 'NOVEL-[0-9]*: 二重チェックボックス' "${BOARD}" | head -1 | cut -d: -f1)"
+[[ -n "${NEW_ID}" ]] || fail "double-checkbox title should be scaffolded with a clean title"
+assert_not_contains "${BOARD}" "- [ ] 二重チェックボックス]]"
+assert_contains "${VAULT}/Novels/${NEW_ID}.md" "# ${NEW_ID}: 二重チェックボックス"
+assert_contains "${VAULT}/Novels/${NEW_ID}.md" "title: 二重チェックボックス"
+[[ "$(lane_of "${BOARD}" "${NEW_ID}")" == "Draft" ]] || fail "scaffolded card with localllm should be groomed"
+echo "PASS: duplicated checkbox is stripped at scaffold"
+
 # Rule cards are never scaffolded
 [[ "$(grep -c '#novel-rule' "${BOARD}")" == "5" ]] || fail "rule cards must stay untouched"
 assert_not_contains "${BOARD}" "NOVEL-17"

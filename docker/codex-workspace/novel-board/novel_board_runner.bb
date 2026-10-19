@@ -102,6 +102,8 @@
 (defn skip-state-path [novel-id] (fs/path (skips-dir) (str novel-id ".edn")))
 (defn drafts-state-dir [] (fs/path (root) "drafts"))
 (defn draft-state-path [novel-id] (fs/path (drafts-state-dir) (str novel-id ".edn")))
+(defn assignee-sync-dir [] (fs/path (root) "assignee-sync"))
+(defn assignee-sync-path [novel-id] (fs/path (assignee-sync-dir) (str novel-id ".edn")))
 
 (def board-mutex (Object.))
 (def log-mutex (Object.))
@@ -226,7 +228,7 @@
   (ensure-private-dir! (root))
   (doseq [path [(locks-dir) (lock-guards-dir) (owners-dir) (owner-lock-guards-dir)
                 (terminating-owners-dir) (runs-dir) (skips-dir) (published-dir)
-                (drafts-state-dir) (fs/path (root) "work")]]
+                (drafts-state-dir) (assignee-sync-dir) (fs/path (root) "work")]]
     (ensure-private-dir! path)))
 
 (defn sha256-file [path]
@@ -644,7 +646,7 @@
   (boolean (re-find (re-pattern (str "(?:^|\\s)" (java.util.regex.Pattern/quote token) "(?=\\s|$)")) line)))
 
 (defn card-title [line novel-id]
-  (some-> (re-find (re-pattern (str "\\[\\[Novels/" novel-id "\\|" novel-id ":\\s*([^\\]]*)\\]\\]")) line)
+  (some-> (re-find (re-pattern (str "\\[\\[Novels/" novel-id "\\|" novel-id ":\\s*(.*?)\\]\\]")) line)
           second
           str/trim))
 
@@ -712,6 +714,18 @@
             (write-lines! path (assoc lines (:idx card) new-line)))
           (write-lines! path (insert-after-heading (remove-index lines (:idx card)) target-lane new-line))))))))
 
+(defn set-card-assignee! [novel-id assignee]
+  ;; Rewrites only the assignee attribute of the card in place (same lane).
+  (with-board-guard
+   (fn []
+    (let [path (board-path)
+          lines (vec (read-lines path))
+          card (first (filter #(= novel-id (:novel-id %)) (parse-board-cards lines)))]
+      (when-not card (fail (str "card not found: " novel-id)))
+      (let [new-line (replace-or-add-attr (:line card) "assignee" assignee)]
+        (when (not= new-line (:line card))
+          (write-lines! path (assoc lines (:idx card) new-line))))))))
+
 (defn sync-board-statuses! []
   (with-board-guard
    (fn []
@@ -728,7 +742,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defn scaffold-title [body]
+  ;; The Kanban UI already prefixes card text with "- [ ] ", so a human who
+  ;; types "- [ ] title" into it produces "- [ ] - [ ] title"; drop the extras.
   (-> body
+      (str/replace #"^(?:\s*-\s+\[[ xX]\]\s*)+" "")
       (str/replace #"(?:^|\s)#novel(?=\s|$)" " ")
       (str/replace #"(?:^|\s)#nsfw(?=\s|$)" " ")
       (str/replace #"(?:^|\s)status::[^\s]+" " ")
@@ -892,19 +909,85 @@
                           (vec (concat lines ["" "## Run History" "" bullet])))]
           (write-lines! path new-lines))))))
 
-(defn sync-note-from-card! [{:keys [novel-id status assignee nsfw title]}]
-  ;; The card is the source of truth for status, assignee, nsfw and title. The
-  ;; runner never writes those back onto the card from the note.
+(defn sync-note-from-card! [{:keys [novel-id status nsfw title]}]
+  ;; The card is the source of truth for status (lane), nsfw and title. The
+  ;; runner never writes those back onto the card from the note. The assignee
+  ;; is reconciled in both directions by `reconcile-assignee!`.
   (when (fs/exists? (note-path novel-id))
     (let [fm (note-frontmatter novel-id)
           updates (cond-> {}
                     (not= status (:status fm)) (assoc :status status)
-                    (not= (normalize-assignee assignee) (normalize-assignee (:assignee fm))) (assoc :assignee assignee)
                     (not= (str nsfw) (:nsfw fm)) (assoc :nsfw nsfw)
                     (and (seq title) (not= title (:title fm))) (assoc :title title)
                     (not= novel-id (:id fm)) (assoc :id novel-id))]
       (when (seq updates)
         (update-frontmatter! novel-id updates)))))
+
+;; ---------------------------------------------------------------------------
+;; Assignee reconciliation (BOXP-249)
+;;
+;; Humans may change the assignee either on the Board card (`assignee::x`) or in
+;; the management note frontmatter (`assignee: x`), like the Task Board. The
+;; runner remembers the last value both sides agreed on and applies whichever
+;; side a human changed since then. Neither side is an unconditional source of
+;; truth: a stale note never rolls back a fresh card (first introduction), and
+;; when both changed at once the card wins and the note records it once.
+;; ---------------------------------------------------------------------------
+
+(defn safe-assignee-token? [value]
+  (boolean (re-matches #"[A-Za-z0-9._-]+" (str value))))
+
+(defn assignee-sync-state [novel-id]
+  (try (read-edn-file (assignee-sync-path novel-id) {}) (catch Exception _ {})))
+
+(defn record-assignee-sync! [novel-id value & [extra]]
+  (write-edn-file! (assignee-sync-path novel-id)
+                   (merge (assignee-sync-state novel-id) {:assignee (normalize-assignee value) :recorded-at (now-str)} extra)))
+
+(defn note-assignee-conflict! [novel-id card-value note-value]
+  (let [fingerprint [(normalize-assignee card-value) (normalize-assignee note-value)]]
+    (when (not= fingerprint (:conflict (assignee-sync-state novel-id)))
+      (record-assignee-sync! novel-id card-value {:conflict fingerprint})
+      (append-history! novel-id (str "担当の同時変更を検出しました: カード `" card-value "` / 管理ノート `" note-value "`。カードの値を採用し管理ノートを揃えました。管理ノート側の担当にしたい場合はもう一度 assignee を書き換えてください"))
+      (log! (str novel-id " assignee conflict: card=" card-value " note=" note-value " (card wins)")))))
+
+(defn reconcile-assignee! [{:keys [novel-id assignee] :as card}]
+  (when (and (fs/exists? (note-path novel-id)) (not (fs/exists? (lock-path novel-id))))
+    (let [card-raw (str/trim (or assignee "boxp"))
+          card-a (normalize-assignee card-raw)
+          note-raw (str/trim (or (:assignee (note-frontmatter novel-id)) ""))
+          note-a (normalize-assignee note-raw)
+          note-value (if (str/blank? note-a) "boxp" note-a)
+          agreed (:assignee (assignee-sync-state novel-id))
+          note-changed? (not= note-value agreed)
+          card-changed? (not= card-a agreed)]
+      (cond
+        (= card-a note-value)
+        (when (not= agreed card-a) (record-assignee-sync! novel-id card-a))
+
+        ;; First introduction / unknown history: the card keeps its value.
+        (nil? agreed)
+        (do (update-frontmatter! novel-id {:assignee card-raw})
+            (record-assignee-sync! novel-id card-a))
+
+        ;; Only the note changed: a human edited the management note.
+        (and note-changed? (not card-changed?))
+        (if (safe-assignee-token? note-value)
+          (do (set-card-assignee! novel-id note-value)
+              (record-assignee-sync! novel-id note-value)
+              (log! (str novel-id " assignee changed in the management note: " card-raw " -> " note-value " (synced to the card)")))
+          (do (update-frontmatter! novel-id {:assignee card-raw})
+              (note-assignee-conflict! novel-id card-raw note-raw)))
+
+        ;; Only the card changed: a human edited the card.
+        (and card-changed? (not note-changed?))
+        (do (update-frontmatter! novel-id {:assignee card-raw})
+            (record-assignee-sync! novel-id card-a))
+
+        ;; Both changed since the last agreement: the card wins, recorded once.
+        :else
+        (do (update-frontmatter! novel-id {:assignee card-raw})
+            (note-assignee-conflict! novel-id card-raw note-raw))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Skip records (written once per distinct reason, never on every tick)
@@ -1899,8 +1982,16 @@
                       (= "backlog" target) "; 次: 失敗理由を解消してから Backlog で agent を再割当"
                       :else ""))]
     (when target
+      ;; Hand-off to the human: the card and the sync state become boxp. If a
+      ;; human re-assigned the management note to a different agent while the
+      ;; run was going, keep that value so the next tick syncs it to the card
+      ;; and starts the new assignment from a clean boundary.
       (move-card! novel-id target "boxp")
-      (update-frontmatter! novel-id (cond-> {:status target :assignee "boxp" :last-run run}
+      (record-assignee-sync! novel-id "boxp")
+      (update-frontmatter! novel-id (cond-> {:status target :last-run run}
+                                      (let [note-a (normalize-assignee (:assignee (note-frontmatter novel-id)))]
+                                        (or (human-assignee? note-a) (= note-a agent)))
+                                      (assoc :assignee "boxp")
                                       (:model outcome) (assoc :llm-model (:model outcome))
                                       (#{:write :revise} action) (assoc :work-dir (str (work-dir novel-id))
                                                                         :manuscript (str (manuscript-path novel-id)))
@@ -2012,6 +2103,7 @@
   (sync-board-statuses!)
   (doseq [card (parse-board-cards (vec (read-lines (board-path))))]
     (try (sync-note-from-card! card)
+         (reconcile-assignee! card)
          (catch Exception e (log! (str "note sync failed for " (:novel-id card) ": " (.getMessage e)))))))
 
 (defn sync-drafts! [only-id & [strict?]]
@@ -2124,6 +2216,12 @@
                              (select-keys (first cards) [:novel-id :status :title :assignee :nsfw])))
       (check "normalize keeps assignee when nil" (= line (normalize-card-line line "draft" nil)))
       (check "normalize sets assignee" (str/ends-with? (normalize-card-line line "review" "boxp") "status::review assignee::boxp")))
+    (check "card title tolerates brackets"
+           (= "- [ ] 二重" (:title (first (parse-board-cards ["## Backlog" "- [ ] [[Novels/NOVEL-9|NOVEL-9: - [ ] 二重]] #novel status::backlog assignee::boxp" "## Draft"])))))
+    (check "scaffold strips duplicated checkbox"
+           (= [{:idx 1 :title "二重" :assignee "localllm" :nsfw false}]
+              (backlog-scaffold-cards ["## Backlog" "- [ ] - [ ] 二重 assignee::localllm" "## Draft"])))
+    (check "safe assignee token" (and (safe-assignee-token? "claude-sonnet") (not (safe-assignee-token? "a b")) (not (safe-assignee-token? ""))))
     (check "scaffold detects title-only card"
            (= [{:idx 1 :title "新しい話" :assignee "localllm" :nsfw false}]
               (backlog-scaffold-cards ["## Backlog" "- [ ] 新しい話 assignee::localllm" "- [ ] **運用ルール:** x #novel-rule" "## Draft"])))
