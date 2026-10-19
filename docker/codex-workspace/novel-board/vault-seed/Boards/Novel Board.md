@@ -14,7 +14,7 @@ kanban-plugin: board
 - [ ] 管理ノートのテンプレートは `Templates/Novel Management.md` を使う。
 - [ ] 状態はカードのレーンを SSOT とし、管理ノートの `status` / `assignee` / `nsfw` は runner がカードに合わせて同期する。runner がカードの担当を書き換えるのは、自分の run を終えて人間確認レーンへ渡す時（`assignee::boxp`）だけ。
 - [ ] `Draft` と `Review` は人間確認レーン。`Review` からの改稿は指示を管理ノートへ書いて agent を割り当て、承認時だけ人間が `Done` へ移す。
-- [ ] `Done` 前の原稿と挿絵は private work dir に置き、完成版フォルダへ直接配置しない。詳細は `Novels/README.md` を参照する。
+- [ ] 原本は private work dir に保持し、Review 到達後は管理ノートの Draft Preview から未承認の vault 草稿と挿絵を読む。完成版配置は Done 承認後だけ。詳細は `Novels/README.md` を参照する。
 
 
 ## Backlog
@@ -34,7 +34,7 @@ kanban-plugin: board
 
 ## Review
 
-- [ ] **運用ルール:** 人間確認レーン。改稿は管理ノートの `Review Instructions` と agent 割当で再開し（指示が空なら起動しない）、承認時だけ人間が `Done` へ移す。 #novel-rule
+- [ ] **運用ルール:** 管理ノートの Draft Preview から未承認草稿の本文・挿絵を確認する。改稿は管理ノートの `Review Instructions` と agent 割当で再開し（指示が空なら起動しない）、承認時だけ人間が `Done` へ移す。 #novel-rule
 
 
 ## Done

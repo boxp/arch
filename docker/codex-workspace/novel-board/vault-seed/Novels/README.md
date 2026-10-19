@@ -1,6 +1,6 @@
 # Novels
 
-Novel Board の小説管理ノート置き場。本文の公開先ではない。
+Novel Board の管理ノートと未承認草稿の閲覧入口。Review 草稿は Obsidian Sync の対象で、完成承認とは別に扱う。
 
 ## 手動追加
 
@@ -37,10 +37,10 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 - `Backlog`: 手動追加と要件整理の入口。対応 agent を割り当てると、本文を書かずに Requirements と Outline を整理し、完了後は `Draft`（担当 `boxp`）へ移る。
 - `Draft`: 執筆開始前の人間確認。条件が不足する場合は人間が `Backlog` へ戻す。執筆開始時だけ対応 agent を割り当てる。本文生成に失敗した場合は理由と再開条件を `Run History` に残して `Draft`（担当 `boxp`）へ戻る。
 - `In Progress`: 初稿または改稿中。runner が同じ private `manuscript.md` を更新し、本文を検証（空・短すぎる・途中終了は失敗）した後に挿絵を1枚生成する。完了または一部未完了（挿絵なし）で `Review` へ移る。runner 再起動で中断した run は interrupted として記録され、agent が割り当てられたままなら次の tick で再開する。
-- `Review`: 原稿と挿絵の人間確認。改稿する場合は `Review Instructions` に具体的な指示を保存して対応 agent を割り当てる（指示が空なら起動しない）。承認する場合だけ、人間がカードを `Done` へ移す。
+- `Review`: 管理ノートの `Draft Preview` から vault 内の原稿と挿絵を人間確認する。草稿は未承認。改稿する場合は `Review Instructions` に具体的な指示を保存して対応 agent を割り当てる（指示が空なら起動しない）。承認する場合だけ、人間がカードを `Done` へ移す。
 - `Done`: agent は再実行しない。runner は承認済み private 原稿と挿絵を、カード上の `#nsfw` に従って完成版フォルダへ一度だけ配置する。
 
-カードのレーンが状態の source of truth である。カードの `status::` や管理ノート frontmatter と不一致の場合、runner がレーンに合わせて同期する。過去の run state を理由にレーンを戻さない。run 中に人間がカードを別レーンへ動かした場合、runner はレーンと担当を変更せず結果だけを `Run History` に記録する。
+カードのレーンが状態の source of truth である。NSFW 分類の入力はカードの正規タグ `#nsfw` とし、管理ノート frontmatter は runner が同期する表示値、Requirements の記述は執筆条件として扱う。すでに NSFW として同期した草稿を自動で一般向けへ降格しない。カードの `status::` や管理ノート frontmatter と不一致の場合、runner がレーンに合わせて同期する。過去の run state を理由にレーンを戻さない。run 中に人間がカードを別レーンへ動かした場合、runner はレーンと担当を変更せず結果だけを `Run History` に記録する。
 
 ## 管理ノート
 
@@ -59,7 +59,12 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 
 ## 原稿と完成版
 
-作業中原稿、prompt、log、結果、挿絵は `/home/boxp/.novel-board/` 配下（`work/NOVEL-N/manuscript.md`, `work/NOVEL-N/illustration.png`, `runs/NOVEL-N/<run-id>/`）に 0600/0700 で置き、SFW/NSFW とも完成前は非公開にする。管理ノートへ本文を埋め込まない。`runs/.../llm-evidence.edn` には model id・usage・finish_reason などの非秘密メタ情報だけを残し、prompt や本文は含めない。
+private 原本、prompt、log、結果は `/home/boxp/.novel-board/` 配下（`work/NOVEL-N/manuscript.md`, `work/NOVEL-N/illustration.png`, `runs/NOVEL-N/<run-id>/`）に保持する。Review に到達した本文と実在する挿絵だけを、全 agent 共通で次の未承認草稿へ同期する。管理ノートの `Draft Preview` の wiki link と画像埋込から閲覧できる。
+
+- SFW: `Novels/Drafts/NOVEL-N/manuscript.md`、画像は同じ草稿配下の `attachments/`。
+- `#nsfw`: `NSFW/小説/草稿/NOVEL-N/manuscript.md`、画像は同じ草稿配下の `attachments/`。
+
+草稿の Vault Sync は owner の依頼により許可済み。prompt・credentials・raw API・log はコピーせず、外部サイトや公開 Git に本文を出さない。挿絵がない場合も本文を読み続けられ、一部未完了を表示する。草稿の手動編集は上書きせず競合として表示し、runner の更新版は別ファイルへ保存して管理ノートから案内する。手動版と更新版を確認するまでは、手動編集を private 原本へ逆同期しない。改稿と再 tick では内容の差分を同期し、完成版の配置は引き続き Done 承認後だけ行う。`runs/.../llm-evidence.edn` には model id・usage・finish_reason などの非秘密メタ情報だけを残し、prompt や本文は含めない。
 
 人間が `Review` から `Done` へ移した後だけ、runner が次へ配置する。
 
