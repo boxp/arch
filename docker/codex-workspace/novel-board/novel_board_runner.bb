@@ -2151,10 +2151,13 @@
           (and (apply-groom-output! novel-id (:text result))
                (section-filled? (note-content novel-id) "## Requirements")
                (section-filled? (note-content novel-id) "## Outline"))
-          (cond-> {:ok? true :model (:model result) :usage (:usage result)}
-            regroom? (assoc :applied (summarize-lines (get sections "## Applied") 600)
-                            :unapplied (summarize-lines (get sections "## Unapplied") 600)
-                            :plan-changed? (not= before (plan-fingerprint (note-content novel-id)))))
+          (if (and regroom? (= before (plan-fingerprint (note-content novel-id))))
+            ;; Same plan as before: the feedback was not reflected, so do not
+            ;; record it as applied (the next assignment regrooms again).
+            {:ok? false :reason "添削の出力が元の Requirements / Outline と同じで指示が反映されていません（Review Instructions は未反映のまま保持）。再開条件: 指示を見直して agent を再割当" :model (:model result) :usage (:usage result)}
+            (cond-> {:ok? true :model (:model result) :usage (:usage result)}
+              regroom? (assoc :applied (summarize-lines (get sections "## Applied") 600)
+                              :unapplied (summarize-lines (get sections "## Unapplied") 600))))
           :else
           {:ok? false :reason (str label "の出力に ## Requirements / ## Outline 見出しがありませんでした。再開条件: agent を再割当") :model (:model result)}))
       (let [result (run-cloud-agent! novel-id fm content action agent run-dir)
@@ -2169,7 +2172,7 @@
           (not= (instructions-text content) (instructions-text after))
           {:ok? false :reason "run 中に Review Instructions が変更されたため反映済みとして記録しません（agent は人間の指示を編集してはいけません）。再開条件: 指示の内容を確認して agent を再割当"}
           :else (cond-> result
-                  regroom? (assoc :applied "agent が Change History に記録" :unapplied "agent の Change History 記録を参照" :plan-changed? true)))))))
+                  regroom? (assoc :applied "agent が Change History に記録" :unapplied "agent の Change History 記録を参照")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Publication (Done lane, once, never overwriting)

@@ -34,4 +34,5 @@
 ## 検証
 
 - `bb novel_board_runner.bb test`（自己テスト）と black-box テスト 47 件 PASS。
+- codex review 指摘: localllm の regroom で計画が元と同じなら失敗にし、指示を反映済みとして記録しない（cloud route と同じ扱い）。対応済み。
 - 配備後: 新 Pod の runner が arch main の sha と一致することを確認し、隔離 vault / root で配備済み runner を tick して Draft 指示 → regroom → Draft 戻し → 同じ指示で write 開始を確認。NOVEL-6 の再割当・再生成・レーン移動は行わない。

@@ -1066,7 +1066,15 @@ tick
 sha256sum -c "${TMP}/novel60-manuscript.sha" >/dev/null || fail "regroom must not touch the manuscript"
 [[ "$(count_matches "${VAULT}/Novels/NOVEL-60.md" 'action=regroom agent=localllm from Draft')" == "2" ]] || fail "changed feedback should trigger a second regroom"
 assert_contains "$(latest_prompt NOVEL-60)" "結末を希望の持てるものにしてください"
-echo "PASS: changed Draft feedback is reflected again without touching the manuscript"
+# The fake model returned the same plan as before: that is not a reflection, so the
+# run fails, the feedback stays pending and the next assignment regrooms again.
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "添削の出力が元の Requirements / Outline と同じで指示が反映されていません"
+set_assignee NOVEL-60 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-60)" == "Draft" ]] || fail "feedback not reflected by the model must not start the manuscript"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-60.md" 'action=regroom agent=localllm from Draft')" == "3" ]] || fail "unreflected feedback should be retried as regroom"
+sha256sum -c "${TMP}/novel60-manuscript.sha" >/dev/null || fail "retried regroom must not touch the manuscript"
+echo "PASS: changed Draft feedback is reflected again without touching the manuscript; unchanged plan is not success"
 
 # Cloud route: regroom edits the note; an agent that changes nothing fails and keeps the feedback pending
 echo regroom >"${FAKE_CLAUDE_MODE_FILE}"
