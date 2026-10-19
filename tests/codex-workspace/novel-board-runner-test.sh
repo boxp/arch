@@ -1,0 +1,572 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Black-box tests for the Novel Board runner. Uses a fake OpenAI-compatible
+# server (babashka http-kit), a fake generate-image script and a fake claude CLI
+# so no real model, GPU or API key is needed.
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+RUNNER="${ROOT_DIR}/docker/codex-workspace/novel-board/novel_board_runner.bb"
+SEED="${ROOT_DIR}/docker/codex-workspace/novel-board/vault-seed"
+
+TMP="$(mktemp -d)"
+trap 'kill "${SERVER_PID:-0}" 2>/dev/null || true; [[ -n "${KEEP_TMP:-}" ]] || rm -rf "${TMP}"' EXIT
+
+fail() { echo "error: $*" >&2; exit 1; }
+assert_contains() { grep -Fq -- "$2" "$1" || fail "expected $1 to contain: $2"; }
+assert_not_contains() { if grep -Fq -- "$2" "$1"; then fail "expected $1 not to contain: $2"; fi; }
+count_matches() { grep -Fc -- "$2" "$1" || true; }
+
+lane_of() {
+  # lane_of <board> <novel-id>
+  awk -v id="$2" '/^## /{lane=substr($0,4)} index($0,"[[Novels/" id "|")>0 {print lane; exit}' "$1"
+}
+card_line() { grep -F "[[Novels/$2|" "$1"; }
+
+PORT=$(( 20000 + RANDOM % 20000 ))
+MODE_FILE="${TMP}/llm-mode"
+REQ_LOG="${TMP}/llm-requests.log"
+echo normal >"${MODE_FILE}"
+: >"${REQ_LOG}"
+
+# ---------------------------------------------------------------------------
+# Fake OpenAI-compatible server
+# ---------------------------------------------------------------------------
+cat >"${TMP}/fake-llm.bb" <<'EOF'
+(require '[org.httpkit.server :as srv] '[cheshire.core :as json] '[clojure.string :as str])
+(def port (Long/parseLong (System/getenv "FAKE_LLM_PORT")))
+(def mode-file (System/getenv "FAKE_LLM_MODE_FILE"))
+(def req-log (System/getenv "FAKE_LLM_REQ_LOG"))
+(def body-text (str "# テスト小説\n\n" (apply str (repeat 60 "秋の空はどこまでも高く、グラウンドには万国旗がはためいていた。一穂はバトンを握り直し、隣で笑う凛に頷いた。")) "\n\n## 追加設定メモ\n- なし\n\n## 参照した既存設定\n- ひとはこ\n"))
+(defn respond [content finish]
+  {:status 200 :headers {"Content-Type" "application/json"}
+   :body (json/generate-string {:id (str "chatcmpl-" (System/nanoTime)) :model "gemma4-26b" :object "chat.completion"
+                                :choices [{:index 0 :finish_reason finish :message {:role "assistant" :content content}}]
+                                :usage {:prompt_tokens 1234 :completion_tokens (count content) :total_tokens (+ 1234 (count content))}})})
+(defn handler [req]
+  (let [uri (:uri req)
+        raw (if (:body req) (slurp (:body req)) "{}")
+        parsed (json/parse-string raw true)
+        mode (str/trim (slurp mode-file))
+        messages (:messages parsed)
+        last-user (:content (last messages))
+        plan? (str/includes? (str last-user) "JSON オブジェクト")
+        groom? (str/includes? (str last-user) "本文は書かないでください")
+        continuation? (some #(= "assistant" (:role %)) messages)]
+    (spit req-log (str (pr-str {:uri uri :model (:model parsed) :auth (get-in req [:headers "authorization"]) :plan? plan? :continuation? continuation? :mode mode :max-tokens (:max_tokens parsed)}) "\n") :append true)
+    (cond
+      (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
+      (and groom? (not (contains? #{"length-forever" "error500"} mode))) (respond (str "## Requirements\n\n- Title: 秋のテスト作品\n- Synopsis: 運動会前日の練習。\n- Characters: 桜一穂、瀬戸凛\n- Target length: 1000字\n- References:\n  - `ひとはこさんバース/キャラ設定/`\n- NSFW: false\n" (apply str (repeat 3 "- Required elements: 万国旗、バトン、秋空の描写を入れる。\n")) "\n## Outline\n\n1. 前日準備\n2. バトンパス練習\n3. 小さな異変\n") "stop")
+      plan? (respond "{\"scene\": \"バトンパス練習\", \"prompt\": \"two girls practicing a relay baton pass\", \"reference_images\": [\"ref-rin.png\", \"not-a-candidate.png\"]}" "stop")
+      (= mode "empty") (respond "" "stop")
+      (= mode "short") (respond "# 短い\n本文が足りない。" "stop")
+      (= mode "error500") {:status 500 :body "boom"}
+      (= mode "filter") (respond body-text "content_filter")
+      (= mode "length") (if continuation? (respond body-text "stop") (respond "# 途中\n前半だけ。" "length"))
+      (= mode "length-forever") (respond "少しだけ。" "length")
+      (= mode "slow") (do (Thread/sleep 4000) (respond body-text "stop"))
+      (= mode "revise") (respond (str/replace body-text "テスト小説" "改稿版テスト小説") "stop")
+      :else (respond body-text "stop"))))
+(srv/run-server handler {:port port})
+(println "fake llm listening" port)
+@(promise)
+EOF
+
+FAKE_LLM_PORT="${PORT}" FAKE_LLM_MODE_FILE="${MODE_FILE}" FAKE_LLM_REQ_LOG="${REQ_LOG}" \
+  bb "${TMP}/fake-llm.bb" >"${TMP}/fake-llm.log" 2>&1 &
+SERVER_PID=$!
+for _ in $(seq 1 50); do
+  if curl -s -o /dev/null "http://127.0.0.1:${PORT}/v1/models"; then break; fi
+  sleep 0.2
+done
+
+# ---------------------------------------------------------------------------
+# Fake generate-image and fake claude
+# ---------------------------------------------------------------------------
+mkdir -p "${TMP}/bin"
+cat >"${TMP}/bin/fake-generate-image.bb" <<'EOF'
+#!/usr/bin/env bb
+(require '[clojure.string :as str])
+(let [args (vec *command-line-args*)
+      out (nth args (inc (.indexOf args "-o")))
+      refs (keep-indexed (fn [i a] (when (= "-i" a) (nth args (inc i)))) args)
+      log (System/getenv "FAKE_IMAGE_LOG")]
+  (when log (spit log (str (pr-str {:out out :refs (vec refs) :prompt (last args)}) "\n") :append true))
+  (cond
+    (= "1" (System/getenv "FAKE_IMAGE_FAIL")) (do (binding [*out* *err*] (println "API returned status 500")) (System/exit 1))
+    (= "1" (System/getenv "FAKE_IMAGE_EMPTY")) (do (spit out "") (System/exit 0))
+    :else (do (with-open [o (java.io.FileOutputStream. out)]
+                (.write o (byte-array [0x89 0x50 0x4e 0x47 0x0d 0x0a 0x1a 0x0a 0 0 0 0])))
+              (println out))))
+EOF
+chmod +x "${TMP}/bin/fake-generate-image.bb"
+
+
+# Vault editing helper (babashka) used to simulate human edits.
+cat >"${TMP}/bin/edit.bb" <<'EOF'
+#!/usr/bin/env bb
+(require '[clojure.string :as str])
+(let [[cmd path a b] *command-line-args*
+      content (slurp path)
+      lines (vec (str/split-lines content))
+      lane-idx (fn [lane] (.indexOf lines (str "## " lane)))
+      write! (fn [ls] (spit path (str (str/join "\n" ls) "\n")))]
+  (case cmd
+    "add-card" (let [idx (lane-idx a)] (write! (vec (concat (subvec lines 0 (+ idx 2)) [b] (subvec lines (+ idx 2))))))
+    "move-card" (let [card (first (filter #(str/includes? % (str "[[Novels/" a "|")) lines))
+                      without (vec (remove #(= card %) lines))
+                      idx (.indexOf without (str "## " b))]
+                  (write! (vec (concat (subvec without 0 (+ idx 2)) [card] (subvec without (+ idx 2))))))
+    "set-assignee" (write! (mapv #(if (str/includes? % (str "[[Novels/" a "|")) (str/replace % #"assignee::\S+" (str "assignee::" b)) %) lines))
+    "replace-section" (write! (vec (str/split-lines (str/replace-first content (str "## " a "\n") (str "## " a "\n\n" (slurp b) "\n")))))
+    (throw (ex-info (str "unknown command " cmd) {}))))
+EOF
+chmod +x "${TMP}/bin/edit.bb"
+
+cat >"${TMP}/bin/claude" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+prompt="$(cat)"
+id="$(printf '%s' "${prompt}" | grep -o 'NOVEL-[0-9]*' | head -n 1)"
+mode="$(cat "${FAKE_CLAUDE_MODE_FILE}")"
+printf '%s\n' "$*" >>"${FAKE_CLAUDE_ARG_LOG}"
+work="${CODEX_NOVEL_BOARD_ROOT}/work/${id}"
+mkdir -p "${work}"
+case "${mode}" in
+  done)
+    { echo "# クラウド執筆"; for _ in $(seq 1 40); do echo "雲ひとつない空の下、一穂はスタートラインに立った。胸の鼓動がバトンに伝わる気がした。"; done; } >"${work}/manuscript.md"
+    echo '{"scene":"start line","prompt":"girl at the start line","reference_images":["ref-rin.png"]}' >"${work}/illustration.json"
+    echo "NOVEL_BOARD_RESULT: done"
+    ;;
+  groom)
+    note="${CODEX_NOVEL_BOARD_VAULT}/Novels/${id}.md"
+    printf -- '- Title: クラウド要件\n- Synopsis: あらすじ\n' >"${work}/groom.txt"
+    bb "${FAKE_EDIT_BB}" replace-section "${note}" Requirements "${work}/groom.txt"
+    printf -- '1. 導入\n2. 展開\n' >"${work}/outline.txt"
+    bb "${FAKE_EDIT_BB}" replace-section "${note}" Outline "${work}/outline.txt"
+    echo "NOVEL_BOARD_RESULT: done"
+    ;;
+  nomarker)
+    { echo "# マーカーなし"; for _ in $(seq 1 40); do echo "本文はあるが結果マーカーを出さない。"; done; } >"${work}/manuscript.md"
+    echo "finished without marker"
+    ;;
+  nothing)
+    echo "NOVEL_BOARD_RESULT: done"
+    ;;
+  blocked)
+    echo "NOVEL_BOARD_RESULT: blocked 参照資料が足りません"
+    ;;
+esac
+EOF
+chmod +x "${TMP}/bin/claude"
+
+# ---------------------------------------------------------------------------
+# Vault fixture
+# ---------------------------------------------------------------------------
+VAULT="${TMP}/vault"
+STATE="${TMP}/state"
+mkdir -p "${VAULT}/Boards" "${VAULT}/Novels" "${VAULT}/Templates" "${VAULT}/attachments" "${VAULT}/ひとはこさんバース/キャラ設定"
+cp "${SEED}/Boards/Novel Board.md" "${VAULT}/Boards/Novel Board.md"
+cp "${SEED}/Templates/Novel Management.md" "${VAULT}/Templates/Novel Management.md"
+cp "${SEED}/Novels/README.md" "${VAULT}/Novels/README.md"
+printf '\x89PNG\r\n\x1a\n' >"${VAULT}/attachments/ref-rin.png"
+printf '\x89PNG\r\n\x1a\n' >"${VAULT}/attachments/ref-hitohako.png"
+cat >"${VAULT}/ひとはこさんバース/キャラ設定/瀬戸凛.md" <<'EOF'
+# 瀬戸凛
+
+一穂のクラスメイト。陸上部。
+
+![](../../attachments/ref-rin.png)
+EOF
+cat >"${VAULT}/ひとはこさんバース/キャラ設定/ひとはこ.md" <<'EOF'
+# ひとはこ
+
+桜一穂。変身ヒロイン。
+
+![](../../attachments/ref-hitohako.png)
+EOF
+BOARD="${VAULT}/Boards/Novel Board.md"
+
+export CODEX_NOVEL_BOARD_VAULT="${VAULT}"
+export CODEX_NOVEL_BOARD_ROOT="${STATE}"
+export CODEX_NOVEL_BOARD_OWNER_ID="test-owner"
+export CODEX_NOVEL_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1"
+export CODEX_NOVEL_BOARD_LOCALLLM_MODEL="gemma4-26b"
+export CODEX_NOVEL_BOARD_LOCALLLM_TIMEOUT_SECONDS=30
+export CODEX_NOVEL_BOARD_LOCALLLM_RETRIES=0
+export CODEX_NOVEL_BOARD_LOCALLLM_MAX_CONTINUATIONS=2
+export CODEX_NOVEL_BOARD_IMAGE_SCRIPT="${TMP}/bin/fake-generate-image.bb"
+export CODEX_NOVEL_BOARD_CLAUDE_BIN="${TMP}/bin/claude"
+export CODEX_NOVEL_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=20
+export FAKE_IMAGE_LOG="${TMP}/image.log"
+export FAKE_CLAUDE_MODE_FILE="${TMP}/claude-mode"
+export FAKE_CLAUDE_ARG_LOG="${TMP}/claude-args.log"
+export FAKE_EDIT_BB="${TMP}/bin/edit.bb"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+: >"${FAKE_CLAUDE_ARG_LOG}"
+
+tick() { bb "${RUNNER}" tick >>"${TMP}/runner.log" 2>&1; }
+
+add_card() { bb "${TMP}/bin/edit.bb" add-card "${BOARD}" "$1" "$2"; }
+move_card() { bb "${TMP}/bin/edit.bb" move-card "${BOARD}" "$1" "$2"; }
+set_assignee() { bb "${TMP}/bin/edit.bb" set-assignee "${BOARD}" "$1" "$2"; }
+
+cat >"${TMP}/requirements.txt" <<'EOF'
+- Title: テスト小説
+- Synopsis: 運動会の前日、バトンパスの練習をする。
+- Characters: 桜一穂、瀬戸凛
+- Target length: 1000字
+- References:
+  - `ひとはこさんバース/キャラ設定/`
+- NSFW: false
+EOF
+write_requirements() { bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/$1.md" Requirements "${TMP}/requirements.txt"; }
+
+# ---------------------------------------------------------------------------
+# 1. Scaffold: title-only Backlog card
+# ---------------------------------------------------------------------------
+add_card Backlog "- [ ] 秋のテスト作品"
+tick
+assert_contains "${BOARD}" "[[Novels/NOVEL-1|NOVEL-1: 秋のテスト作品]] #novel status::backlog assignee::boxp"
+[[ -f "${VAULT}/Novels/NOVEL-1.md" ]] || fail "scaffold did not create NOVEL-1.md"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "id: NOVEL-1"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "title: 秋のテスト作品"
+[[ ! -d "${STATE}/runs/NOVEL-1" ]] || fail "human-assigned scaffold must not start a run"
+echo "PASS: scaffold title-only card"
+
+# Backlog + localllm -> groom -> Draft, assignee boxp
+set_assignee NOVEL-1 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-1)" == "Draft" ]] || fail "groom should move NOVEL-1 to Draft: $(card_line "${BOARD}" NOVEL-1)"
+assert_contains "${BOARD}" "[[Novels/NOVEL-1|NOVEL-1: 秋のテスト作品]] #novel status::draft assignee::boxp"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "status: draft"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "action=groom agent=localllm model=gemma4-26b"
+echo "PASS: localllm groom moves to Draft with human hand-off"
+
+# ---------------------------------------------------------------------------
+# 2. Unsupported assignee never rewrites the card and logs once
+# ---------------------------------------------------------------------------
+set_assignee NOVEL-1 pi
+tick; tick
+assert_contains "${BOARD}" "status::draft assignee::pi"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-1.md" 'assignee `pi` は対応していない')" == "1" ]] || fail "unsupported assignee should be logged exactly once"
+[[ ! -d "${STATE}/runs/NOVEL-1" || "$(find "${STATE}/runs/NOVEL-1" -name summary.edn | wc -l)" == "1" ]] || fail "unsupported assignee must not start a run"
+echo "PASS: unsupported assignee untouched"
+
+# ---------------------------------------------------------------------------
+# 3. Draft + localllm -> write -> Review with manuscript and illustration
+# ---------------------------------------------------------------------------
+write_requirements NOVEL-1
+set_assignee NOVEL-1 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-1)" == "Review" ]] || fail "write should move NOVEL-1 to Review: $(card_line "${BOARD}" NOVEL-1)"
+assert_contains "${BOARD}" "status::review assignee::boxp"
+[[ -s "${STATE}/work/NOVEL-1/manuscript.md" ]] || fail "manuscript missing"
+assert_contains "${STATE}/work/NOVEL-1/manuscript.md" "# テスト小説"
+[[ -s "${STATE}/work/NOVEL-1/illustration.png" ]] || fail "illustration missing"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "illustration: ${STATE}/work/NOVEL-1/illustration.png"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "挿絵: 生成済み"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "llm-model: gemma4-26b"
+assert_contains "${REQ_LOG}" ':model "gemma4-26b"'
+assert_contains "${REQ_LOG}" ':plan? true'
+# reference images: the model picked ref-rin.png (candidate) and a non-candidate that must be ignored
+assert_contains "${TMP}/image.log" "ref-rin.png"
+assert_not_contains "${TMP}/image.log" "not-a-candidate"
+assert_contains "${TMP}/image.log" "No text, no letters, no logo, no watermark"
+EVIDENCE="$(find "${STATE}/runs/NOVEL-1" -name llm-evidence.edn | sort | tail -n 1)"
+assert_contains "${EVIDENCE}" ':model "gemma4-26b"'
+assert_contains "${EVIDENCE}" ':finish-reason "stop"'
+assert_not_contains "${EVIDENCE}" "万国旗"
+assert_not_contains "${EVIDENCE}" "Authorization"
+[[ "$(stat -c %a "${STATE}/work/NOVEL-1/manuscript.md")" == "600" ]] || fail "manuscript must be private (0600)"
+echo "PASS: localllm write -> Review with illustration and evidence"
+
+# ---------------------------------------------------------------------------
+# 4. Review with empty instructions does not start; with instructions it revises
+# ---------------------------------------------------------------------------
+set_assignee NOVEL-1 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-1)" == "Review" ]] || fail "empty Review Instructions must not start a run"
+assert_contains "${BOARD}" "status::review assignee::localllm"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "Review Instructions が空のため改稿を開始しません"
+printf -- '- 冒頭をもっと明るくしてください。\n' >"${TMP}/instructions.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-1.md" "Review Instructions" "${TMP}/instructions.txt"
+echo revise >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-1)" == "Review" ]] || fail "revise should return to Review"
+assert_contains "${BOARD}" "status::review assignee::boxp"
+assert_contains "${STATE}/work/NOVEL-1/manuscript.md" "改稿版テスト小説"
+ls "${STATE}/work/NOVEL-1/" | grep -q "manuscript.prev-" || fail "previous manuscript must be kept"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "action=revise agent=localllm"
+echo normal >"${MODE_FILE}"
+echo "PASS: Review instructions gate and revise"
+
+# ---------------------------------------------------------------------------
+# 5. Done -> publish once, idempotent, image link only when image exists
+# ---------------------------------------------------------------------------
+move_card NOVEL-1 Done
+tick
+PUB="$(find "${VAULT}/小説草案/AI執筆" -maxdepth 1 -name '*_秋のテスト作品.md' | head -n 1)"
+[[ -n "${PUB}" ]] || fail "published manuscript missing"
+assert_contains "${PUB}" "![](attachments/"
+IMG="$(find "${VAULT}/小説草案/AI執筆/attachments" -name '*-highlight.png' | head -n 1)"
+[[ -s "${IMG}" ]] || fail "published illustration missing"
+assert_contains "${VAULT}/Novels/NOVEL-1.md" "published-path: 小説草案/AI執筆/"
+assert_contains "${BOARD}" "- [x] [[Novels/NOVEL-1|"
+tick; tick
+[[ "$(find "${VAULT}/小説草案/AI執筆" -maxdepth 1 -name '*.md' | wc -l)" == "1" ]] || fail "publish must be idempotent"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-1.md" 'published approved manuscript once')" == "1" ]] || fail "publish history must be written once"
+[[ ! -d "${VAULT}/NSFW" ]] || fail "SFW card must not touch NSFW directory"
+echo "PASS: Done publish once"
+
+# ---------------------------------------------------------------------------
+# 6. Empty / short output is a failure, card returns to Draft with reason
+# ---------------------------------------------------------------------------
+add_card Draft "- [ ] [[Novels/NOVEL-2|NOVEL-2: 空出力テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-2.md"
+write_requirements NOVEL-2
+echo empty >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-2)" == "Draft" ]] || fail "empty output should return to Draft: $(card_line "${BOARD}" NOVEL-2)"
+assert_contains "${BOARD}" "[[Novels/NOVEL-2|NOVEL-2: 空出力テスト]] #novel status::draft assignee::boxp"
+assert_contains "${VAULT}/Novels/NOVEL-2.md" "本文が短すぎます"
+assert_contains "${VAULT}/Novels/NOVEL-2.md" "再開条件"
+[[ ! -f "${STATE}/work/NOVEL-2/manuscript.md" ]] || fail "empty output must not be saved as manuscript"
+[[ ! -f "${STATE}/work/NOVEL-2/illustration.png" ]] || fail "no illustration without manuscript"
+assert_run_failed="$(find "${STATE}/runs/NOVEL-2" -name summary.edn | sort | tail -n 1)"
+assert_contains "${assert_run_failed}" ":status :failed"
+echo "PASS: empty output is not success"
+
+# ---------------------------------------------------------------------------
+# 7. Truncated output (finish_reason=length) continues; endless length fails
+# ---------------------------------------------------------------------------
+echo length >"${MODE_FILE}"
+set_assignee NOVEL-2 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-2)" == "Review" ]] || fail "continuation should complete the manuscript"
+assert_contains "${REQ_LOG}" ":continuation? true"
+assert_contains "${STATE}/work/NOVEL-2/manuscript.md" "万国旗"
+echo "PASS: finish_reason=length continuation"
+
+add_card Draft "- [ ] [[Novels/NOVEL-3|NOVEL-3: 途中終了テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-3.md"
+write_requirements NOVEL-3
+echo length-forever >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-3)" == "Draft" ]] || fail "endless truncation must fail"
+assert_contains "${VAULT}/Novels/NOVEL-3.md" "途中で終了しました"
+[[ -f "${STATE}/work/NOVEL-3/manuscript.partial.md" ]] || fail "partial manuscript must be kept"
+echo normal >"${MODE_FILE}"
+echo "PASS: endless truncation fails with partial kept"
+
+# ---------------------------------------------------------------------------
+# 8. Illustration failure => Review with partial completion, no fake link
+# ---------------------------------------------------------------------------
+set_assignee NOVEL-3 localllm
+FAKE_IMAGE_FAIL=1 tick
+[[ "$(lane_of "${BOARD}" NOVEL-3)" == "Review" ]] || fail "image failure should still reach Review"
+assert_contains "${VAULT}/Novels/NOVEL-3.md" "挿絵: 未生成"
+assert_contains "${VAULT}/Novels/NOVEL-3.md" "一部未完了"
+assert_not_contains "${VAULT}/Novels/NOVEL-3.md" "illustration: ${STATE}"
+[[ ! -f "${STATE}/work/NOVEL-3/illustration.png" ]] || fail "failed image must not exist"
+move_card NOVEL-3 Done
+tick
+PUB3="$(find "${VAULT}/小説草案/AI執筆" -maxdepth 1 -name '*_途中終了テスト.md' | head -n 1)"
+[[ -n "${PUB3}" ]] || fail "text-only publish missing"
+assert_not_contains "${PUB3}" "![](attachments/"
+assert_contains "${VAULT}/Novels/NOVEL-3.md" "挿絵: なし（未生成のためリンクは付けていません）"
+echo "PASS: illustration failure is partial completion without fake links"
+
+# exit 0 but empty image file is also a failure
+add_card Draft "- [ ] [[Novels/NOVEL-4|NOVEL-4: 空画像テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-4.md"
+write_requirements NOVEL-4
+FAKE_IMAGE_EMPTY=1 tick
+assert_contains "${VAULT}/Novels/NOVEL-4.md" "有効な画像ファイルが生成されませんでした"
+echo "PASS: empty image with exit 0 is not success"
+
+# ---------------------------------------------------------------------------
+# 9. API down / HTTP 500 => failure with reason, card back to Draft
+# ---------------------------------------------------------------------------
+add_card Draft "- [ ] [[Novels/NOVEL-5|NOVEL-5: API停止テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-5.md"
+write_requirements NOVEL-5
+echo error500 >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-5)" == "Draft" ]] || fail "HTTP 500 should return to Draft"
+assert_contains "${VAULT}/Novels/NOVEL-5.md" "localllm HTTP error: 500"
+echo normal >"${MODE_FILE}"
+set_assignee NOVEL-5 localllm
+CODEX_NOVEL_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:1/v1" tick
+[[ "$(lane_of "${BOARD}" NOVEL-5)" == "Draft" ]] || fail "connection error should return to Draft"
+assert_contains "${VAULT}/Novels/NOVEL-5.md" "localllm connection error"
+echo "PASS: API failures are reported, not swallowed"
+
+# ---------------------------------------------------------------------------
+# 10. Stale lock recovery and no double start
+# ---------------------------------------------------------------------------
+set_assignee NOVEL-5 localllm
+mkdir -p "${STATE}/locks"
+cat >"${STATE}/locks/NOVEL-5.edn" <<'EOF'
+{:novel "NOVEL-5" :run-id "20260101T000000Z-stale" :action :write :lane "Draft" :owner-id "old-owner" :owner-instance-id "old" :host "old" :pid 1 :started-at "2026-01-01T00:00:00Z" :heartbeat-at "2026-01-01T00:00:00Z"}
+EOF
+tick
+[[ ! -f "${STATE}/locks/NOVEL-5.edn" ]] || fail "stale lock should be released after the run"
+assert_contains "${VAULT}/Novels/NOVEL-5.md" "run 20260101T000000Z-stale was marked interrupted after heartbeat timeout"
+[[ "$(lane_of "${BOARD}" NOVEL-5)" == "Review" ]] || fail "stale lock should not block a new run"
+echo "PASS: stale lock recovery"
+
+add_card Draft "- [ ] [[Novels/NOVEL-6|NOVEL-6: 多重tickテスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-6.md"
+write_requirements NOVEL-6
+echo slow >"${MODE_FILE}"
+tick & T1=$!
+sleep 1.5
+tick & T2=$!
+wait "${T1}" "${T2}"
+echo normal >"${MODE_FILE}"
+[[ "$(find "${STATE}/runs/NOVEL-6" -name summary.edn | wc -l)" == "1" ]] || fail "concurrent ticks must start exactly one run"
+[[ "$(lane_of "${BOARD}" NOVEL-6)" == "Review" ]] || fail "slow run should finish in Review"
+echo "PASS: concurrent ticks do not double start"
+
+# Human moves the card during the run: runner keeps the human's lane
+add_card Draft "- [ ] [[Novels/NOVEL-7|NOVEL-7: 人間移動テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-7.md"
+write_requirements NOVEL-7
+echo slow >"${MODE_FILE}"
+tick & T1=$!
+sleep 1.5
+move_card NOVEL-7 Backlog
+wait "${T1}"
+echo normal >"${MODE_FILE}"
+[[ "$(lane_of "${BOARD}" NOVEL-7)" == "Backlog" ]] || fail "runner must not override a human lane move"
+assert_contains "${BOARD}" "[[Novels/NOVEL-7|NOVEL-7: 人間移動テスト]] #novel status::backlog assignee::localllm"
+assert_contains "${VAULT}/Novels/NOVEL-7.md" "人間が Backlog へ移動したためレーンと担当は変更しません"
+echo "PASS: human lane move during run is respected"
+set_assignee NOVEL-7 boxp
+
+# Planned shutdown marker closes the lock and the next tick restarts
+add_card Draft "- [ ] [[Novels/NOVEL-8|NOVEL-8: 再起動テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-8.md"
+write_requirements NOVEL-8
+mkdir -p "${STATE}/locks" "${STATE}/terminating-owners" "${STATE}/owners"
+cat >"${STATE}/locks/NOVEL-8.edn" <<'EOF'
+{:novel "NOVEL-8" :run-id "20260101T000000Z-shutdown" :action :write :lane "Draft" :owner-id "dead-owner" :owner-instance-id "dead-1" :host "old" :pid 1 :started-at "2026-01-01T00:00:00Z" :heartbeat-at "2099-01-01T00:00:00Z"}
+EOF
+echo '{:owner-id "dead-owner" :instance-id "dead-1" :host "old" :requested-at "2026-01-01T00:00:00Z"}' >"${STATE}/terminating-owners/dead-owner.edn"
+move_card NOVEL-8 "In Progress"
+tick
+assert_contains "${VAULT}/Novels/NOVEL-8.md" "was marked interrupted after planned workspace shutdown of owner dead-owner"
+[[ "$(lane_of "${BOARD}" NOVEL-8)" == "Review" ]] || fail "In Progress card should resume after planned shutdown"
+[[ ! -f "${STATE}/terminating-owners/dead-owner.edn" ]] || fail "consumed shutdown marker should be removed"
+echo "PASS: planned shutdown recovery resumes In Progress card"
+
+# ---------------------------------------------------------------------------
+# 11. Cloud route (fake claude): done, nothing, blocked; groom
+# ---------------------------------------------------------------------------
+add_card Draft "- [ ] [[Novels/NOVEL-9|NOVEL-9: クラウドテスト]] #novel status::draft assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-9.md"
+write_requirements NOVEL-9
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-9)" == "Review" ]] || fail "claude route should reach Review: $(card_line "${BOARD}" NOVEL-9)"
+assert_contains "${FAKE_CLAUDE_ARG_LOG}" "--model claude-sonnet-5-5"
+assert_contains "${STATE}/work/NOVEL-9/manuscript.md" "クラウド執筆"
+[[ -s "${STATE}/work/NOVEL-9/illustration.png" ]] || fail "cloud route illustration missing"
+assert_contains "${VAULT}/Novels/NOVEL-9.md" "model=claude-sonnet-5-5"
+echo "PASS: cloud route write"
+
+echo nothing >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Draft "- [ ] [[Novels/NOVEL-10|NOVEL-10: クラウド空テスト]] #novel status::draft assignee::fable"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-10.md"
+write_requirements NOVEL-10
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-10)" == "Draft" ]] || fail "exit 0 without manuscript must fail"
+assert_contains "${VAULT}/Novels/NOVEL-10.md" "exit 0 だけでは成功扱いにしません"
+assert_contains "${FAKE_CLAUDE_ARG_LOG}" "--model claude-fable-5-1"
+echo blocked >"${FAKE_CLAUDE_MODE_FILE}"
+set_assignee NOVEL-10 claude-fable
+tick
+assert_contains "${VAULT}/Novels/NOVEL-10.md" "agent が blocked を返しました"
+echo groom >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Backlog "- [ ] [[Novels/NOVEL-11|NOVEL-11: クラウドgroom]] #novel status::backlog assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-11.md"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-11)" == "Draft" ]] || fail "cloud groom should move to Draft"
+assert_contains "${VAULT}/Novels/NOVEL-11.md" "- Title: クラウド要件"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "PASS: cloud route failures and groom"
+
+# ---------------------------------------------------------------------------
+# 11b. finish_reason other than stop, groom truncation, cloud no-marker / unchanged revise
+# ---------------------------------------------------------------------------
+add_card Draft "- [ ] [[Novels/NOVEL-13|NOVEL-13: finish_reasonテスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-13.md"
+write_requirements NOVEL-13
+echo filter >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-13)" == "Draft" ]] || fail "finish_reason=content_filter must fail"
+assert_contains "${VAULT}/Novels/NOVEL-13.md" 'finish_reason="content_filter"'
+echo "PASS: non-stop finish_reason is not success"
+
+add_card Backlog "- [ ] [[Novels/NOVEL-14|NOVEL-14: groom途中終了]] #novel status::backlog assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-14.md"
+echo length-forever >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-14)" == "Backlog" ]] || fail "truncated groom must stay in Backlog"
+assert_contains "${VAULT}/Novels/NOVEL-14.md" "要件整理の出力が finish_reason"
+echo normal >"${MODE_FILE}"
+echo "PASS: truncated groom fails"
+
+echo nomarker >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Draft "- [ ] [[Novels/NOVEL-15|NOVEL-15: マーカーなし]] #novel status::draft assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-15.md"
+write_requirements NOVEL-15
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-15)" == "Draft" ]] || fail "missing done marker must fail"
+assert_contains "${VAULT}/Novels/NOVEL-15.md" "NOVEL_BOARD_RESULT: done を返さずに終了"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+set_assignee NOVEL-15 claude-sonnet
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-15)" == "Review" ]] || fail "cloud write should reach Review"
+printf -- '- 結末を変えてください。\n' >"${TMP}/instructions.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-15.md" "Review Instructions" "${TMP}/instructions.txt"
+echo nothing >"${FAKE_CLAUDE_MODE_FILE}"
+set_assignee NOVEL-15 claude-sonnet
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-15)" == "Review" ]] || fail "unchanged revise should return to Review"
+assert_contains "${VAULT}/Novels/NOVEL-15.md" "原稿が変更されていません"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "PASS: cloud marker and unchanged-revise checks"
+
+# Card moved away before the lock is taken: nothing runs
+add_card Draft "- [ ] [[Novels/NOVEL-16|NOVEL-16: 直前移動]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-16.md"
+write_requirements NOVEL-16
+move_card NOVEL-16 Done
+tick
+[[ ! -f "${STATE}/work/NOVEL-16/manuscript.md" ]] || fail "Done card without manuscript must not be written"
+assert_contains "${VAULT}/Novels/NOVEL-16.md" "publish 待ち"
+echo "PASS: Done without manuscript waits"
+
+# ---------------------------------------------------------------------------
+# 12. NSFW routing is decided by the card tag; note frontmatter follows the card
+# ---------------------------------------------------------------------------
+add_card Draft "- [ ] [[Novels/NOVEL-12|NOVEL-12: 区分テスト]] #novel #nsfw status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-12.md"
+write_requirements NOVEL-12
+tick
+assert_contains "${VAULT}/Novels/NOVEL-12.md" "nsfw: true"
+assert_contains "${BOARD}" "[[Novels/NOVEL-12|NOVEL-12: 区分テスト]] #novel #nsfw status::review assignee::boxp"
+move_card NOVEL-12 Done
+tick
+[[ -n "$(find "${VAULT}/NSFW/小説/AI執筆" -maxdepth 1 -name '*_区分テスト.md' | head -n 1)" ]] || fail "nsfw card must publish under NSFW/"
+echo "PASS: nsfw routing follows the card tag"
+
+# Rule cards are never scaffolded
+[[ "$(grep -c '#novel-rule' "${BOARD}")" == "5" ]] || fail "rule cards must stay untouched"
+assert_not_contains "${BOARD}" "NOVEL-17"
+
+# Private root permissions
+[[ "$(stat -c %a "${STATE}")" == "700" ]] || fail "state root must be 0700"
+
+echo "All novel-board runner tests passed."
