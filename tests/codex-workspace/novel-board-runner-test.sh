@@ -56,11 +56,12 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
     (spit req-log (str (pr-str {:uri uri :model (:model parsed) :auth (get-in req [:headers "authorization"]) :plan? plan? :continuation? continuation? :mode mode :max-tokens (:max_tokens parsed)}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
-      groom? (respond (str "## Requirements\n\n- Title: 秋のテスト作品\n- Synopsis: 運動会前日の練習。\n- Characters: 桜一穂、瀬戸凛\n- Target length: 1000字\n- References:\n  - `ひとはこさんバース/キャラ設定/`\n- NSFW: false\n" (apply str (repeat 3 "- Required elements: 万国旗、バトン、秋空の描写を入れる。\n")) "\n## Outline\n\n1. 前日準備\n2. バトンパス練習\n3. 小さな異変\n") "stop")
+      (and groom? (not (contains? #{"length-forever" "error500"} mode))) (respond (str "## Requirements\n\n- Title: 秋のテスト作品\n- Synopsis: 運動会前日の練習。\n- Characters: 桜一穂、瀬戸凛\n- Target length: 1000字\n- References:\n  - `ひとはこさんバース/キャラ設定/`\n- NSFW: false\n" (apply str (repeat 3 "- Required elements: 万国旗、バトン、秋空の描写を入れる。\n")) "\n## Outline\n\n1. 前日準備\n2. バトンパス練習\n3. 小さな異変\n") "stop")
       plan? (respond "{\"scene\": \"バトンパス練習\", \"prompt\": \"two girls practicing a relay baton pass\", \"reference_images\": [\"ref-rin.png\", \"not-a-candidate.png\"]}" "stop")
       (= mode "empty") (respond "" "stop")
       (= mode "short") (respond "# 短い\n本文が足りない。" "stop")
       (= mode "error500") {:status 500 :body "boom"}
+      (= mode "filter") (respond body-text "content_filter")
       (= mode "length") (if continuation? (respond body-text "stop") (respond "# 途中\n前半だけ。" "length"))
       (= mode "length-forever") (respond "少しだけ。" "length")
       (= mode "slow") (do (Thread/sleep 4000) (respond body-text "stop"))
@@ -141,7 +142,13 @@ case "${mode}" in
     note="${CODEX_NOVEL_BOARD_VAULT}/Novels/${id}.md"
     printf -- '- Title: クラウド要件\n- Synopsis: あらすじ\n' >"${work}/groom.txt"
     bb "${FAKE_EDIT_BB}" replace-section "${note}" Requirements "${work}/groom.txt"
+    printf -- '1. 導入\n2. 展開\n' >"${work}/outline.txt"
+    bb "${FAKE_EDIT_BB}" replace-section "${note}" Outline "${work}/outline.txt"
     echo "NOVEL_BOARD_RESULT: done"
+    ;;
+  nomarker)
+    { echo "# マーカーなし"; for _ in $(seq 1 40); do echo "本文はあるが結果マーカーを出さない。"; done; } >"${work}/manuscript.md"
+    echo "finished without marker"
     ;;
   nothing)
     echo "NOVEL_BOARD_RESULT: done"
@@ -490,6 +497,58 @@ echo done >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud route failures and groom"
 
 # ---------------------------------------------------------------------------
+# 11b. finish_reason other than stop, groom truncation, cloud no-marker / unchanged revise
+# ---------------------------------------------------------------------------
+add_card Draft "- [ ] [[Novels/NOVEL-13|NOVEL-13: finish_reasonテスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-13.md"
+write_requirements NOVEL-13
+echo filter >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-13)" == "Draft" ]] || fail "finish_reason=content_filter must fail"
+assert_contains "${VAULT}/Novels/NOVEL-13.md" 'finish_reason="content_filter"'
+echo "PASS: non-stop finish_reason is not success"
+
+add_card Backlog "- [ ] [[Novels/NOVEL-14|NOVEL-14: groom途中終了]] #novel status::backlog assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-14.md"
+echo length-forever >"${MODE_FILE}"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-14)" == "Backlog" ]] || fail "truncated groom must stay in Backlog"
+assert_contains "${VAULT}/Novels/NOVEL-14.md" "要件整理の出力が finish_reason"
+echo normal >"${MODE_FILE}"
+echo "PASS: truncated groom fails"
+
+echo nomarker >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Draft "- [ ] [[Novels/NOVEL-15|NOVEL-15: マーカーなし]] #novel status::draft assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-15.md"
+write_requirements NOVEL-15
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-15)" == "Draft" ]] || fail "missing done marker must fail"
+assert_contains "${VAULT}/Novels/NOVEL-15.md" "NOVEL_BOARD_RESULT: done を返さずに終了"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+set_assignee NOVEL-15 claude-sonnet
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-15)" == "Review" ]] || fail "cloud write should reach Review"
+printf -- '- 結末を変えてください。\n' >"${TMP}/instructions.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-15.md" "Review Instructions" "${TMP}/instructions.txt"
+echo nothing >"${FAKE_CLAUDE_MODE_FILE}"
+set_assignee NOVEL-15 claude-sonnet
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-15)" == "Review" ]] || fail "unchanged revise should return to Review"
+assert_contains "${VAULT}/Novels/NOVEL-15.md" "原稿が変更されていません"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "PASS: cloud marker and unchanged-revise checks"
+
+# Card moved away before the lock is taken: nothing runs
+add_card Draft "- [ ] [[Novels/NOVEL-16|NOVEL-16: 直前移動]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-16.md"
+write_requirements NOVEL-16
+move_card NOVEL-16 Done
+tick
+[[ ! -f "${STATE}/work/NOVEL-16/manuscript.md" ]] || fail "Done card without manuscript must not be written"
+assert_contains "${VAULT}/Novels/NOVEL-16.md" "publish 待ち"
+echo "PASS: Done without manuscript waits"
+
+# ---------------------------------------------------------------------------
 # 12. NSFW routing is decided by the card tag; note frontmatter follows the card
 # ---------------------------------------------------------------------------
 add_card Draft "- [ ] [[Novels/NOVEL-12|NOVEL-12: 区分テスト]] #novel #nsfw status::draft assignee::localllm"
@@ -505,7 +564,7 @@ echo "PASS: nsfw routing follows the card tag"
 
 # Rule cards are never scaffolded
 [[ "$(grep -c '#novel-rule' "${BOARD}")" == "5" ]] || fail "rule cards must stay untouched"
-assert_not_contains "${BOARD}" "NOVEL-13"
+assert_not_contains "${BOARD}" "NOVEL-17"
 
 # Private root permissions
 [[ "$(stat -c %a "${STATE}")" == "700" ]] || fail "state root must be 0700"

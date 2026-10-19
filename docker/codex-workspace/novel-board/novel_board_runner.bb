@@ -268,6 +268,18 @@
       (let [_file-lock (.lock channel)]
         (f)))))
 
+(defn board-guard-path [] (fs/path (root) "board.lock"))
+
+(defn with-board-guard [f]
+  ;; Serializes Board read-modify-write across threads and processes (helper
+  ;; commands, a replacement runner JVM) sharing the PVC.
+  (locking board-mutex
+    (fs/create-dirs (root))
+    (with-open [file (java.io.RandomAccessFile. (str (board-guard-path)) "rw")
+                channel (.getChannel file)]
+      (let [_file-lock (.lock channel)]
+        (f)))))
+
 (defn novel-lock-guard-path [novel-id]
   (fs/path (lock-guards-dir) (str (safe-owner-id novel-id) ".lock")))
 
@@ -577,15 +589,20 @@
 (defn heartbeat! [novel-id lock stop?]
   (future
     (while (not @stop?)
-      (with-novel-lock-guard
-       novel-id
-       (fn []
-         (let [path (lock-path novel-id)
-               existing (try (read-edn-file path nil) (catch Exception _ nil))]
-           (if (same-lock? lock existing)
-             (write-edn-file! path (assoc existing :heartbeat-at (now-str)))
-             (do (log! (str "heartbeat stopped because lock ownership changed: " novel-id))
-                 (reset! stop? true))))))
+      (try
+        (with-novel-lock-guard
+         novel-id
+         (fn []
+           (let [path (lock-path novel-id)
+                 existing (try (read-edn-file path nil) (catch Exception _ nil))]
+             (if (same-lock? lock existing)
+               (write-edn-file! path (assoc existing :heartbeat-at (now-str)))
+               (do (log! (str "heartbeat stopped because lock ownership changed: " novel-id))
+                   (reset! stop? true))))))
+        (catch Exception e
+          ;; A transient I/O error must not kill the heartbeat thread; the lock
+          ;; is released by the caller's finally block regardless.
+          (log! (str "heartbeat write failed for " novel-id ": " (.getMessage e)))))
       (Thread/sleep 1000))))
 
 ;; ---------------------------------------------------------------------------
@@ -673,7 +690,8 @@
   ;; Moves the card to the target lane. `assignee` is only written when supplied
   ;; (the explicit human hand-off at the end of a run); otherwise the card keeps
   ;; whatever the human wrote.
-  (locking board-mutex
+  (with-board-guard
+   (fn []
     (let [path (board-path)
           lines (vec (read-lines path))
           card (first (filter #(= novel-id (:novel-id %)) (parse-board-cards lines)))
@@ -683,17 +701,18 @@
         (if (= target-lane (:lane card))
           (when (not= new-line (:line card))
             (write-lines! path (assoc lines (:idx card) new-line)))
-          (write-lines! path (insert-after-heading (remove-index lines (:idx card)) target-lane new-line)))))))
+          (write-lines! path (insert-after-heading (remove-index lines (:idx card)) target-lane new-line))))))))
 
 (defn sync-board-statuses! []
-  (locking board-mutex
+  (with-board-guard
+   (fn []
     (let [path (board-path)
           lines (vec (read-lines path))
           updates (into {} (map (fn [{:keys [idx line status]}] [idx (normalize-card-line line status nil)])
                                 (parse-board-cards lines)))
           new-lines (mapv (fn [idx line] (get updates idx line)) (range (count lines)) lines)]
       (when (not= lines new-lines)
-        (write-lines! path new-lines)))))
+        (write-lines! path new-lines))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Backlog scaffold: a title-only card becomes NOVEL-N + management note.
@@ -759,7 +778,8 @@
     (str (str/join "\n" (concat ["---"] fm ["---"] body)) "\n")))
 
 (defn scaffold-backlog-cards! []
-  (locking board-mutex
+  (with-board-guard
+   (fn []
     (let [lines (vec (read-lines (board-path)))
           drafts (backlog-scaffold-cards lines)]
       (when (seq drafts)
@@ -773,7 +793,7 @@
           (write-lines! (board-path) (mapv (fn [idx line] (get replacements idx line)) (range (count lines)) lines))
           (doseq [{:keys [novel-id title]} cards]
             (log! (str "scaffolded " novel-id " from Backlog title: " title)))
-          (count cards))))))
+          (count cards)))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Management notes
@@ -1375,11 +1395,18 @@
         last-message-path (fs/path run-dir "last-message.md")]
     (spit (str prompt-path) (cloud-prompt novel-id fm content action agent))
     (private-file! prompt-path)
+    ;; A spec left by a previous run must not be reused for a new manuscript.
+    (fs/delete-if-exists (illustration-spec-path novel-id))
     (let [args (if (= :claude route) (claude-args agent) (codex-args agent work last-message-path))
+          ;; The agent never needs the image or local-llm credentials; keep them
+          ;; out of its environment so vault-authored prompts cannot exfiltrate them.
+          child-env (reduce dissoc (into {} (System/getenv))
+                            ["GEMINI_API_KEY" "CODEX_NOVEL_BOARD_LOCALLLM_API_KEY"])
           proc (p/process (into ["setsid"] args) {:in (io/file (str prompt-path))
                                                    :out (io/file (str stdout-path))
                                                    :err (io/file (str stderr-path))
-                                                   :dir (str work)})
+                                                   :dir (str work)
+                                                   :env child-env})
           {:keys [proc idle-timeout?]} (await-agent! proc [stdout-path stderr-path (manuscript-path novel-id) (note-path novel-id)]
                                                      (env-long "CODEX_NOVEL_BOARD_AGENT_IDLE_TIMEOUT_SECONDS" 3600))
           exit (:exit proc)
@@ -1394,6 +1421,7 @@
         (not (zero? exit)) {:ok? false :reason (str "agent CLI が exit " exit " で終了しました（詳細: run dir の stderr.log）")}
         (= "blocked" marker) {:ok? false :reason (str "agent が blocked を返しました: "
                                                       (sanitize-error (last (str/split-lines (str/trim (or last-message ""))))))}
+        (not= "done" marker) {:ok? false :reason "agent が NOVEL_BOARD_RESULT: done を返さずに終了しました。exit 0 だけでは成功扱いにしません。再開条件: agent を再割当"}
         :else {:ok? true :model (if (= :claude route) (get claude-assignee->model agent) (get codex-assignee->model (:base-assignee (parse-codex-assignee agent))))}))))
 
 ;; ---------------------------------------------------------------------------
@@ -1401,8 +1429,10 @@
 ;; ---------------------------------------------------------------------------
 
 (defn already-published? [novel-id]
+  ;; A completed publication record is final even if the human later moved or
+  ;; renamed the published file; the runner never publishes the same card twice.
   (let [state (try (read-edn-file (published-state-path novel-id) {}) (catch Exception _ {}))]
-    (and (seq (:path state)) (fs/exists? (:path state)))))
+    (and (= :published (:status state)) (seq (:path state)))))
 
 (defn candidate-action [{:keys [status assignee novel-id]} note-fm note-text]
   (let [route (assignee-route assignee)]
@@ -1444,6 +1474,10 @@
               {:ok? false :reason (str "本文が途中で終了しました（finish_reason=length、継続 " (:rounds result) " 回）。部分原稿は manuscript.partial.md に保存。再開条件: agent を再割当、または CODEX_NOVEL_BOARD_LOCALLLM_MAX_CONTINUATIONS を増やす")
                :model (:model result) :usage (:usage result)}
 
+              (not= "stop" (:finish-reason result))
+              {:ok? false :reason (str "本文生成が finish_reason=" (pr-str (:finish-reason result)) " で終了したため成功扱いにしません。再開条件: agent を再割当")
+               :model (:model result) :usage (:usage result)}
+
               (< (count (:text result)) (min-manuscript-chars))
               {:ok? false :reason (str "本文が短すぎます（" (count (:text result)) " 字 < " (min-manuscript-chars) " 字）。空出力は成功扱いにしません。再開条件: Requirements を見直して agent を再割当")
                :model (:model result) :usage (:usage result)}
@@ -1454,11 +1488,14 @@
                   (spit (str manuscript) (str (:text result) "\n"))
                   (private-file! manuscript)
                   {:ok? true :model (:model result) :usage (:usage result) :rounds (:rounds result)})))
-          (let [result (run-cloud-agent! novel-id fm content action agent run-dir)]
+          (let [before-sha (when (fs/exists? manuscript) (sha256-file manuscript))
+                result (run-cloud-agent! novel-id fm content action agent run-dir)]
             (cond
               (not (:ok? result)) result
               (not (manuscript-valid? manuscript))
               {:ok? false :reason (str "agent は完了を返しましたが有効な原稿がありません（" (manuscript-chars manuscript) " 字）。exit 0 だけでは成功扱いにしません。再開条件: agent を再割当")}
+              (and before-sha (= before-sha (sha256-file manuscript)))
+              {:ok? false :reason "agent は完了を返しましたが原稿が変更されていません。再開条件: Review Instructions を見直して agent を再割当"}
               :else (do (private-file! manuscript) result))))]
     (if-not (:ok? generation)
       generation
@@ -1501,17 +1538,22 @@
                                        "あなたは小説企画の編集者です。本文は書かず、指示された Markdown 見出しだけを出力します。"
                                        prompt (fs/path run-dir "groom.partial.md"))]
         (cond
+          (or (:truncated? result) (not= "stop" (:finish-reason result)))
+          {:ok? false :reason (str "要件整理の出力が finish_reason=" (pr-str (:finish-reason result)) " で途中終了しました。再開条件: agent を再割当") :model (:model result)}
           (< (count (:text result)) 200)
           {:ok? false :reason (str "要件整理の出力が短すぎます（" (count (:text result)) " 字）。再開条件: agent を再割当") :model (:model result)}
-          (apply-groom-output! novel-id (:text result))
+          (and (apply-groom-output! novel-id (:text result))
+               (section-filled? (note-content novel-id) "## Requirements")
+               (section-filled? (note-content novel-id) "## Outline"))
           {:ok? true :model (:model result) :usage (:usage result)}
           :else
           {:ok? false :reason "要件整理の出力に ## Requirements / ## Outline 見出しがありませんでした。再開条件: agent を再割当" :model (:model result)}))
       (let [result (run-cloud-agent! novel-id fm content :groom agent run-dir)]
         (cond
           (not (:ok? result)) result
-          (not (section-filled? (note-content novel-id) "## Requirements"))
-          {:ok? false :reason "agent は完了を返しましたが Requirements が埋まっていません。再開条件: agent を再割当"}
+          (not (and (section-filled? (note-content novel-id) "## Requirements")
+                    (section-filled? (note-content novel-id) "## Outline")))
+          {:ok? false :reason "agent は完了を返しましたが Requirements / Outline が埋まっていません。再開条件: agent を再割当"}
           :else result)))))
 
 ;; ---------------------------------------------------------------------------
@@ -1545,8 +1587,8 @@
   (let [state (try (read-edn-file (published-state-path novel-id) {}) (catch Exception _ {}))
         manuscript (manuscript-path novel-id)]
     (cond
-      (and (seq (:path state)) (fs/exists? (:path state)))
-      (do (when (not= (vault-relative (:path state)) (:published-path fm))
+      (and (= :published (:status state)) (seq (:path state)))
+      (do (when (and (fs/exists? (:path state)) (not= (vault-relative (:path state)) (:published-path fm)))
             (update-frontmatter! novel-id {:published-path (vault-relative (:path state)) :published-at (:published-at state)}))
           {:ok? true :already? true :path (:path state)})
 
@@ -1650,7 +1692,10 @@
   (let [lock (acquire-lock! novel-id :publish "Done" (normalize-assignee assignee))]
     (when lock
       (try
-        (let [result (publish! card fm)]
+        (let [live (current-card novel-id)
+              result (if (= "done" (:status live))
+                       (publish! card (note-frontmatter novel-id))
+                       {:ok? true :already? true :skipped? true})]
           (cond
             (and (:ok? result) (not (:already? result)))
             (do (append-history! novel-id (str "run " (:run-id lock) " published approved manuscript once: [["
@@ -1691,8 +1736,17 @@
 
       :publish (process-publish! card fm)
 
-      (let [lock (acquire-lock! novel-id action lane agent)]
-        (when lock
+      (let [lock (acquire-lock! novel-id action lane agent)
+            ;; Re-read the card under the lock: a human may have moved it or
+            ;; changed the assignee between candidate selection and now.
+            live (when lock (current-card novel-id))
+            changed? (and lock (or (nil? live)
+                                   (not= status (:status live))
+                                   (not= (normalize-assignee assignee) (normalize-assignee (:assignee live)))))]
+        (when changed?
+          (log! (str novel-id " changed before the run started (now " (:status live) "/" (:assignee live) "); skipping"))
+          (release-lock! novel-id lock))
+        (when (and lock (not changed?))
           (let [stop? (atom false)
                 hb (heartbeat! novel-id lock stop?)
                 run-dir (ensure-private-dir! (run-dir novel-id (:run-id lock)))]
@@ -1716,7 +1770,7 @@
                 (mark-run! novel-id (:run-id lock) :failed {:reason (sanitize-error (.getMessage e)) :finished-at (now-str)}))
               (finally
                 (reset! stop? true)
-                @hb
+                (try @hb (catch Exception _ nil))
                 (release-lock! novel-id lock)))
             true))))))
 
@@ -1774,7 +1828,7 @@
                        (process-card! card))))))
         (log! (if (empty? candidates)
                 "no actionable Novel Board cards"
-                (str "started " (count candidates) " card(s), " (count @in-flight) " in flight")))))))
+                (str (count @in-flight) " card(s) in flight")))))))
 
 (defn drain-in-flight! []
   (doseq [[id f] @in-flight]
