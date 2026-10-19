@@ -32,6 +32,8 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 
 上記以外の名前（例: `pi`）は runner が起動せず、カードは変更しないまま管理ノートの `Run History` に1回だけ理由を記録する。
 
+`localllm` の要求は streaming（SSE）で受け取り、1 要求あたりの上限は action 別（要件整理 20 分 / 本文・改稿 30 分 / 挿絵計画 10 分）、無通信の上限は 10 分（待ち行列・prefill を含む）。上限到達・中継の 504・途中切断では同じ生成を二重に投げないよう再試行せず、受信済みの部分出力を `manuscript.partial.md` / run ディレクトリの `groom.partial.md` に残して理由と再開条件を `Run History` に記録する。再試行するのは接続失敗と HTTP 429 / 500 / 502 / 503（出力が始まる前）だけ。上限は環境変数 `CODEX_NOVEL_BOARD_LOCALLLM_{TIMEOUT,GROOM_TIMEOUT,PLAN_TIMEOUT,IDLE_TIMEOUT}_SECONDS` で変更できる。
+
 ## レーン運用
 
 - `Backlog`: 手動追加と要件整理の入口。対応 agent を割り当てると、本文を書かずに Requirements と Outline を整理し、完了後は `Draft`（担当 `boxp`）へ移る。

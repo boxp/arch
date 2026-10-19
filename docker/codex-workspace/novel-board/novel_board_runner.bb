@@ -1388,11 +1388,28 @@
    :model (env "CODEX_NOVEL_BOARD_LOCALLLM_MODEL" default-localllm-model)
    ;; llama-server needs no key; the placeholder keeps OpenAI-style clients happy.
    :api-key (env "CODEX_NOVEL_BOARD_LOCALLLM_API_KEY" "local-llm")
+   ;; Limits per HTTP request (one generation round), by action. Every request
+   ;; is streamed (SSE) so that bytes keep flowing while the model generates
+   ;; and so that partial output survives a cut. The total limit bounds a
+   ;; single round even when tokens keep arriving; the idle limit bounds the
+   ;; silence before the first byte (queue + prefill) and between chunks.
    :timeout-ms (* 1000 (env-long "CODEX_NOVEL_BOARD_LOCALLLM_TIMEOUT_SECONDS" 1800))
+   :groom-timeout-ms (* 1000 (env-long "CODEX_NOVEL_BOARD_LOCALLLM_GROOM_TIMEOUT_SECONDS" 1200))
+   :plan-timeout-ms (* 1000 (env-long "CODEX_NOVEL_BOARD_LOCALLLM_PLAN_TIMEOUT_SECONDS" 600))
+   :idle-timeout-ms (* 1000 (env-long "CODEX_NOVEL_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS" 600))
    :max-tokens (env-long "CODEX_NOVEL_BOARD_LOCALLLM_MAX_TOKENS" 3072)
    :max-continuations (env-long "CODEX_NOVEL_BOARD_LOCALLLM_MAX_CONTINUATIONS" 4)
    :retries (env-long "CODEX_NOVEL_BOARD_LOCALLLM_RETRIES" 2)
    :temperature (Double/parseDouble (env "CODEX_NOVEL_BOARD_LOCALLLM_TEMPERATURE" "0.8"))})
+
+(defn phase-timeout-ms
+  "Total limit for one request of the given phase (groom / write / revise /
+  illustration-plan, continuation rounds share the base phase's limit)."
+  [cfg phase]
+  (cond
+    (str/starts-with? (str phase) "groom") (:groom-timeout-ms cfg)
+    (str/starts-with? (str phase) "illustration-plan") (:plan-timeout-ms cfg)
+    :else (:timeout-ms cfg)))
 
 (defn context-char-budget [] (env-long "CODEX_NOVEL_BOARD_CONTEXT_CHAR_BUDGET" 24000))
 (defn min-manuscript-chars [] (env-long "CODEX_NOVEL_BOARD_MIN_MANUSCRIPT_CHARS" 800))
@@ -1410,56 +1427,197 @@
         entries (try (read-edn-file path []) (catch Exception _ []))]
     (write-edn-file! path (conj (vec entries) (assoc entry :at (now-str))))))
 
-(defn llm-chat! [cfg run-dir phase messages {:keys [max-tokens temperature]}]
-  (let [url (str (:base-url cfg) "/chat/completions")]
+(defn- sse-data [line]
+  (when (str/starts-with? line "data:")
+    (str/trim (subs line 5))))
+
+(defn- apply-chat-chunk [state chunk]
+  ;; One `chat.completion.chunk` (streaming) or a whole `chat.completion`.
+  (let [choice (first (:choices chunk))
+        delta (or (get-in choice [:delta :content]) (get-in choice [:message :content]))]
+    (cond-> state
+      true (update :chunks inc)
+      true (assoc :last-at (System/currentTimeMillis))
+      (:id chunk) (assoc :id (:id chunk))
+      (:model chunk) (assoc :model (:model chunk))
+      (string? delta) (update :content str delta)
+      (:finish_reason choice) (assoc :finish (:finish_reason choice))
+      (:usage chunk) (assoc :usage (:usage chunk)))))
+
+(defn read-chat-response!
+  "Consumes a chat completion body (SSE `text/event-stream` or a plain JSON
+  object) while enforcing the idle and total limits. Returns
+  {:content :finish :usage :id :model :chunks :first-byte-ms :stop} where
+  :stop is :complete, :idle-timeout, :total-timeout or :stream-error (with
+  :error). On a limit the body is closed so the upstream request is torn down
+  instead of being left to finish unobserved. `on-progress` (optional) is
+  called with the content so far, at most every few seconds."
+  [^java.io.InputStream body {:keys [sse? idle-ms total-ms on-progress started-ms]}]
+  (let [started (or started-ms (System/currentTimeMillis))
+        deadline (+ started total-ms)
+        state (atom {:content "" :chunks 0 :last-at started :first-byte-ms nil :done? false :error nil})
+        note-first-byte (fn [s] (if (:first-byte-ms s) s (assoc s :first-byte-ms (- (System/currentTimeMillis) started))))
+        reader (future
+                 (try
+                   (if sse?
+                     (with-open [rdr (io/reader body :encoding "UTF-8")]
+                       (loop []
+                         (when-let [line (.readLine rdr)]
+                           (swap! state note-first-byte)
+                           (when-let [data (sse-data line)]
+                             (if (= "[DONE]" data)
+                               (swap! state assoc :done-marker? true)
+                               (when (seq data)
+                                 (let [chunk (try (json/parse-string data true) (catch Exception _ nil))]
+                                   (when (map? chunk)
+                                     (if-let [err (:error chunk)]
+                                       (throw (ex-info (str "server error in stream: " (or (:message err) (pr-str err))) {:type :stream-error}))
+                                       (swap! state apply-chat-chunk chunk)))))))
+                           (recur)))
+                       ;; A clean EOF without finish_reason / [DONE] is a cut upstream
+                       ;; (proxy reset after the headers were sent), not a completion.
+                       (let [{:keys [finish done-marker?]} @state]
+                         (when-not (or finish done-marker?)
+                           (throw (ex-info "stream ended before finish_reason / [DONE]" {:type :stream-error})))))
+                     (let [text (slurp body :encoding "UTF-8")
+                           parsed (json/parse-string text true)]
+                       (swap! state note-first-byte)
+                       (swap! state apply-chat-chunk parsed)))
+                   (swap! state assoc :done? true)
+                   (catch Throwable e
+                     (swap! state assoc :error e :done? true))))
+        close-body! (fn [] (try (.close body) (catch Exception _ nil)) (future-cancel reader))
+        progress-every-ms 5000]
+    (loop [last-progress-at started last-progress-chars 0]
+      (let [{:keys [done? error last-at content]} @state
+            now (System/currentTimeMillis)
+            idle (- now last-at)
+            report? (and on-progress (>= (- now last-progress-at) progress-every-ms) (not= last-progress-chars (count content)))]
+        (when report?
+          (on-progress content))
+        (cond
+          done?
+          (let [s @state]
+            (when on-progress (on-progress (:content s)))
+            (assoc (dissoc s :done? :error :last-at :done-marker?)
+                   :stop (if error :stream-error :complete)
+                   :error (when error (sanitize-error (str (.getName (class error)) ": " (.getMessage error))))
+                   :elapsed-ms (- (System/currentTimeMillis) started)))
+
+          (>= now deadline)
+          (do (close-body!)
+              (let [s @state]
+                (when on-progress (on-progress (:content s)))
+                (assoc (dissoc s :done? :error :last-at :done-marker?) :stop :total-timeout :elapsed-ms (- now started))))
+
+          (>= idle idle-ms)
+          (do (close-body!)
+              (let [s @state]
+                (when on-progress (on-progress (:content s)))
+                (assoc (dissoc s :done? :error :last-at :done-marker?) :stop :idle-timeout :idle-ms idle :elapsed-ms (- now started))))
+
+          :else
+          (do (Thread/sleep 200)
+              (recur (if report? now last-progress-at)
+                     (if report? (count content) last-progress-chars))))))))
+
+(defn llm-chat!
+  "One chat completion for `phase` with streaming, per-action limits and
+  evidence. Retries only when nothing can have been generated yet (connection
+  refused, HTTP 429/500/502/503 before any body). A 504 or a limit reached on
+  our side is not retried: the upstream (llama-server behind its proxy) may
+  still be busy with the same generation, and retrying would queue the same
+  prompt again. `on-partial` (optional) receives the partial content so the
+  caller can keep it on disk."
+  [cfg run-dir phase messages {:keys [max-tokens temperature on-partial]}]
+  (let [url (str (:base-url cfg) "/chat/completions")
+        total-ms (phase-timeout-ms cfg phase)
+        idle-ms (:idle-timeout-ms cfg)]
     (loop [attempt 1]
       (let [started (System/currentTimeMillis)
             body (json/generate-string {:model (:model cfg)
                                         :messages messages
                                         :max_tokens (or max-tokens (:max-tokens cfg))
                                         :temperature (or temperature (:temperature cfg))
-                                        :stream false})
+                                        :stream true
+                                        :stream_options {:include_usage true}})
             response (try
-                       (http/post url {:headers (cond-> {"Content-Type" "application/json" "Accept" "application/json"}
+                       (http/post url {:headers (cond-> {"Content-Type" "application/json" "Accept" "text/event-stream, application/json"}
                                                   (seq (:api-key cfg)) (assoc "Authorization" (str "Bearer " (:api-key cfg))))
                                        :body body
-                                       :timeout (:timeout-ms cfg)
+                                       ;; Time allowed for the response headers (queue wait); the
+                                       ;; body is bounded separately by the idle / total limits.
+                                       :timeout (min idle-ms total-ms)
+                                       :as :stream
                                        :throw false})
                        (catch Exception e {:exception e}))
             elapsed (- (System/currentTimeMillis) started)
-            retry? (< attempt (inc (:retries cfg)))]
+            retry? (< attempt (inc (:retries cfg)))
+            base-evidence {:phase phase :attempt attempt :model (:model cfg) :endpoint url
+                           :limits {:total-seconds (quot total-ms 1000) :idle-seconds (quot idle-ms 1000)}}]
         (cond
           (:exception response)
-          (let [message (sanitize-error (str (.getName (class (:exception response))) ": " (.getMessage (:exception response))))]
-            (record-evidence! run-dir {:phase phase :attempt attempt :model (:model cfg) :endpoint url
-                                       :status :connection-error :error message :elapsed-ms elapsed})
-            (if retry?
+          (let [message (sanitize-error (str (.getName (class (:exception response))) ": " (.getMessage (:exception response))))
+                timeout? (= "java.net.http.HttpTimeoutException" (.getName (class (:exception response))))]
+            (record-evidence! run-dir (assoc base-evidence :status (if timeout? :first-response-timeout :connection-error)
+                                             :error message :elapsed-ms elapsed))
+            (cond
+              timeout?
+              (throw (ex-info (str "localllm が " (quot elapsed 1000) " 秒以内に応答を開始しませんでした（待ち行列または停止、再試行なし）: " message)
+                              {:type :llm-error :phase phase :timeout :first-response}))
+              retry?
               (do (log! (str "localllm " phase " attempt " attempt " failed: " message "; retrying"))
                   (Thread/sleep (* 5000 attempt))
                   (recur (inc attempt)))
+              :else
               (throw (ex-info (str "localllm connection error after " attempt " attempt(s): " message)
                               {:type :llm-error :phase phase}))))
 
           (not= 200 (:status response))
-          (let [snippet (sanitize-error (str (:status response) " " (subs (str (:body response)) 0 (min 200 (count (str (:body response)))))))]
-            (record-evidence! run-dir {:phase phase :attempt attempt :model (:model cfg) :endpoint url
-                                       :status :http-error :http-status (:status response) :elapsed-ms elapsed})
-            (if (and retry? (or (>= (:status response) 500) (= 429 (:status response))))
-              (do (log! (str "localllm " phase " attempt " attempt " http " (:status response) "; retrying"))
+          (let [raw (try (slurp (:body response)) (catch Exception _ ""))
+                snippet (sanitize-error (str (:status response) " " (subs raw 0 (min 200 (count raw)))))
+                status (:status response)]
+            (record-evidence! run-dir (assoc base-evidence :status :http-error :http-status status :elapsed-ms elapsed))
+            (cond
+              (= 504 status)
+              (throw (ex-info (str "localllm HTTP error: " snippet "（中継または上流が " (quot elapsed 1000) " 秒で応答を打ち切りました。同じ生成が上流で続いている可能性があるため再試行しません）")
+                              {:type :llm-error :phase phase :http-status status}))
+              (and retry? (or (>= status 500) (= 429 status)))
+              (do (log! (str "localllm " phase " attempt " attempt " http " status "; retrying"))
                   (Thread/sleep (* 5000 attempt))
                   (recur (inc attempt)))
-              (throw (ex-info (str "localllm HTTP error: " snippet) {:type :llm-error :phase phase}))))
+              :else
+              (throw (ex-info (str "localllm HTTP error: " snippet) {:type :llm-error :phase phase :http-status status}))))
 
           :else
-          (let [parsed (json/parse-string (:body response) true)
-                choice (first (:choices parsed))
-                content (or (get-in choice [:message :content]) "")
-                finish (:finish_reason choice)]
-            (record-evidence! run-dir {:phase phase :attempt attempt :model (or (:model parsed) (:model cfg))
-                                       :endpoint url :status :ok :response-id (:id parsed)
-                                       :finish-reason finish :usage (:usage parsed)
-                                       :content-chars (count content) :elapsed-ms elapsed})
-            {:content content :finish-reason finish :usage (:usage parsed) :model (or (:model parsed) (:model cfg))}))))))
+          (let [content-type (str (get-in response [:headers "content-type"] ""))
+                sse? (str/includes? content-type "text/event-stream")
+                result (read-chat-response! (:body response) {:sse? sse? :idle-ms idle-ms :total-ms total-ms
+                                                              :on-progress on-partial :started-ms started})
+                content (or (:content result) "")
+                model (or (:model result) (:model cfg))
+                evidence (assoc base-evidence :model model :response-id (:id result) :streamed? sse?
+                                :finish-reason (:finish result) :usage (:usage result)
+                                :content-chars (count content) :chunks (:chunks result)
+                                :first-byte-ms (:first-byte-ms result) :elapsed-ms (:elapsed-ms result))]
+            (case (:stop result)
+              :complete
+              (do (record-evidence! run-dir (assoc evidence :status :ok))
+                  {:content content :finish-reason (:finish result) :usage (:usage result) :model model})
+
+              :total-timeout
+              (do (record-evidence! run-dir (assoc evidence :status :total-timeout))
+                  (throw (ex-info (str "localllm " phase " が上限 " (quot total-ms 1000) " 秒を超えたため打ち切りました（" (count content) " 字まで受信、再試行なし）")
+                                  {:type :llm-error :phase phase :timeout :total :partial content})))
+
+              :idle-timeout
+              (do (record-evidence! run-dir (assoc evidence :status :idle-timeout :idle-ms (:idle-ms result)))
+                  (throw (ex-info (str "localllm " phase " から " (quot (:idle-ms result) 1000) " 秒間出力が届かなかったため打ち切りました（" (count content) " 字まで受信、経過 " (quot (:elapsed-ms result) 1000) " 秒、再試行なし）")
+                                  {:type :llm-error :phase phase :timeout :idle :partial content})))
+
+              (do (record-evidence! run-dir (assoc evidence :status :stream-error :error (:error result)))
+                  (throw (ex-info (str "localllm " phase " の応答が途中で途切れました（" (count content) " 字まで受信、再試行なし）: " (:error result))
+                                  {:type :llm-error :phase phase :partial content}))))))))))
 
 (defn strip-fences [text]
   (-> text
@@ -1469,17 +1627,27 @@
       str/trim))
 
 (defn llm-generate-text! [cfg run-dir phase system user partial-path]
-  (let [base [{:role "system" :content system} {:role "user" :content user}]]
+  (let [base [{:role "system" :content system} {:role "user" :content user}]
+        save-partial! (fn [text]
+                        (spit (str partial-path) text)
+                        (private-file! partial-path))]
     (loop [acc "" rounds 0 last-finish nil usage-total {}]
       (let [messages (if (seq acc)
                        (conj base {:role "assistant" :content acc}
                              {:role "user" :content "続きをそのまま書き続けてください。前の文を繰り返さず、前置きなしで本文の続きだけを出力してください。"})
                        base)
-            {:keys [content finish-reason usage model]} (llm-chat! cfg run-dir (str phase (when (pos? rounds) (str "-continue-" rounds))) messages {})
+            {:keys [content finish-reason usage model]}
+            (try
+              (llm-chat! cfg run-dir (str phase (when (pos? rounds) (str "-continue-" rounds))) messages
+                         {:on-partial (fn [partial] (save-partial! (str acc partial)))})
+              (catch clojure.lang.ExceptionInfo e
+                ;; Keep whatever arrived before the cut, then surface the failure.
+                (when-let [partial (:partial (ex-data e))]
+                  (save-partial! (str acc partial)))
+                (throw e)))
             acc (str acc content)
             usage-total (merge-with + usage-total (select-keys (or usage {}) [:prompt_tokens :completion_tokens :total_tokens]))]
-        (spit (str partial-path) acc)
-        (private-file! partial-path)
+        (save-partial! acc)
         (if (and (= "length" finish-reason) (seq content) (< rounds (:max-continuations cfg)))
           (recur acc (inc rounds) finish-reason usage-total)
           {:text (strip-fences acc) :finish-reason finish-reason :rounds (inc rounds) :usage usage-total :model model
