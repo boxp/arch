@@ -22,6 +22,14 @@
 ;; has been validated. A missing illustration is reported as partial completion;
 ;; the runner never writes a link to an image that does not exist.
 ;;
+;; Review Instructions (BOXP-251): the human's `## Review Instructions` are passed
+;; to every action. On a Draft card, instructions a finished run has not consumed
+;; yet are reflected into Requirements / Outline (:regroom, no manuscript) and the
+;; card is handed back; the same instructions assigned again start the first
+;; draft with the text as writing conditions. The runner never deletes the
+;; section; it remembers the fingerprint of applied text under
+;; `instructions/NOVEL-N.edn`.
+;;
 ;; Draft viewing (BOXP-247): once a manuscript reaches Review the runner copies
 ;; the private manuscript and illustration into a vault draft folder
 ;; (`Novels/Drafts/NOVEL-N/` or `NSFW/小説/草稿/NOVEL-N/`) so the human can read
@@ -104,6 +112,11 @@
 (defn draft-state-path [novel-id] (fs/path (drafts-state-dir) (str novel-id ".edn")))
 (defn assignee-sync-dir [] (fs/path (root) "assignee-sync"))
 (defn assignee-sync-path [novel-id] (fs/path (assignee-sync-dir) (str novel-id ".edn")))
+;; Fingerprint of the Review Instructions text a finished run already consumed
+;; (BOXP-251). Lets a Draft card distinguish "new feedback on the plan" from
+;; "same feedback, now start the first draft" without deleting the human's text.
+(defn instructions-dir [] (fs/path (root) "instructions"))
+(defn instructions-state-path [novel-id] (fs/path (instructions-dir) (str novel-id ".edn")))
 
 (def board-mutex (Object.))
 (def log-mutex (Object.))
@@ -908,19 +921,55 @@
                       (vec (concat lines ["" heading ""] body-lines)))]
       (write-lines! path new-lines))))
 
-(defn append-history! [novel-id message]
+(defn append-section-entry! [novel-id heading message]
+  ;; Appends one timestamped bullet to a history section (Run History or Change
+  ;; History). The scaffold "TBD" is replaced by the first real entry.
   (locking (novel-mutex novel-id)
     (let [path (note-path novel-id)
           lines (vec (read-lines path))
           bullet (str "- " (now-str) ": " message)]
       (when-not (some #(= bullet %) lines)
-        (let [new-lines (if-let [{:keys [body-start end]} (section-bounds lines "## Run History")]
+        (let [new-lines (if-let [{:keys [body-start end]} (section-bounds lines heading)]
                           (let [body (subvec lines body-start end)
                                 body (if (every? placeholder-line? body) [""] body) ; drop the scaffold "TBD"
                                 trimmed (loop [b body] (if (and (seq b) (str/blank? (peek b))) (recur (pop b)) b))]
                             (vec (concat (subvec lines 0 body-start) trimmed [bullet] [""] (subvec lines end))))
-                          (vec (concat lines ["" "## Run History" "" bullet])))]
+                          (vec (concat lines ["" heading "" bullet])))]
           (write-lines! path new-lines))))))
+
+(defn append-history! [novel-id message]
+  (append-section-entry! novel-id "## Run History" message))
+
+(defn append-change-history! [novel-id message]
+  (append-section-entry! novel-id "## Change History" message))
+
+;; --- Review Instructions handling (BOXP-251) -------------------------------
+;; The human's Review Instructions are never deleted by the runner. Instead the
+;; runner remembers the fingerprint of the text a successful run consumed, so a
+;; Draft card can tell new feedback (-> reflect into Requirements / Outline and
+;; hand back for confirmation) from already-applied feedback (-> start the first
+;; draft and pass the text as writing conditions).
+
+(defn instructions-text [content]
+  (section-content content "## Review Instructions"))
+
+(defn instructions-fingerprint [text]
+  (when (seq (str text))
+    (let [normalized (str/join "\n" (->> (str/split-lines text) (map str/trim) (remove str/blank?)))
+          digest (MessageDigest/getInstance "SHA-256")]
+      (apply str (map #(format "%02x" %) (.digest digest (.getBytes normalized "UTF-8")))))))
+
+(defn applied-instructions-state [novel-id]
+  (try (read-edn-file (instructions-state-path novel-id) {}) (catch Exception _ {})))
+
+(defn instructions-applied? [novel-id text]
+  (let [fp (instructions-fingerprint text)]
+    (boolean (and fp (= fp (:fingerprint (applied-instructions-state novel-id)))))))
+
+(defn record-applied-instructions! [novel-id text run-id action]
+  (when-let [fp (instructions-fingerprint text)]
+    (write-edn-file! (instructions-state-path novel-id)
+                     {:fingerprint fp :run-id run-id :action action :applied-at (now-str)})))
 
 (defn sync-note-from-card! [{:keys [novel-id status nsfw title]}]
   ;; The card is the source of truth for status (lane), nsfw and title. The
@@ -1407,7 +1456,7 @@
   illustration-plan, continuation rounds share the base phase's limit)."
   [cfg phase]
   (cond
-    (str/starts-with? (str phase) "groom") (:groom-timeout-ms cfg)
+    (str/includes? (str phase) "groom") (:groom-timeout-ms cfg)
     (str/starts-with? (str phase) "illustration-plan") (:plan-timeout-ms cfg)
     :else (:timeout-ms cfg)))
 
@@ -1677,26 +1726,67 @@
   (let [budget (context-char-budget)
         brief (note-brief novel-id fm content)
         continuity (or (continuity-text fm (quot budget 6)) "")
-        manuscript-part (if (and (= :revise action) (seq existing-manuscript))
+        instructions (instructions-text content)
+        manuscript-part (cond
+                          (and (= :revise action) (seq existing-manuscript))
                           (str "# 現在の原稿\n" (truncate-text existing-manuscript (quot budget 3)) "\n\n"
-                               "# 改稿指示 (Review Instructions)\n" (section-content content "## Review Instructions") "\n\n")
-                          "")
+                               "# 改稿指示 (Review Instructions)\n" instructions "\n\n")
+                          ;; First draft: the human's Draft-stage feedback has already been
+                          ;; reflected into Requirements / Outline, but it is still the latest
+                          ;; guidance, so it travels with the writing prompt (BOXP-251).
+                          (seq instructions)
+                          (str "# 執筆時に守る人間の指示 (Review Instructions)\n" instructions "\n\n")
+                          :else "")
         remaining (- budget (count brief) (count continuity) (count manuscript-part))
         refs (collect-references novel-id content (max 2000 remaining) (quot budget 4))]
     {:prompt (str brief "\n" continuity "\n\n# 参照資料\n" (:text refs) "\n\n" manuscript-part
                   "# 指示\n"
                   (if (= :revise action)
                     "上の改稿指示に従って原稿全体を書き直し、完成した本文全体を出力してください。"
-                    "Requirements と Outline に従って、この話の本文全体を書いてください。目標文字数は Requirements の指定に従ってください。"))
-     :references-included (:included refs)}))
+                    (str "Requirements と Outline に従って、この話の本文全体を書いてください。目標文字数は Requirements の指定に従ってください。"
+                         (when (seq instructions) "「執筆時に守る人間の指示」がある場合は必ずそれにも従ってください。"))))
+     :references-included (:included refs)
+     :instructions-included (boolean (seq instructions))}))
 
-(defn groom-user-prompt [novel-id fm content]
+(def groom-format-instruction
+  "Requirements は Title / Synopsis / Characters / Style and point of view / Target readers / Target length / Required elements / Prohibited elements / References / NSFW の箇条書き、Outline は章立てと場面の箇条書きにしてください。")
+
+(defn groom-user-prompt
+  "Prompt for :groom (Backlog: organise Requirements / Outline from scratch,
+  passing any human feedback in Review Instructions along) and :regroom (Draft:
+  rewrite the existing Requirements / Outline so that the human's Review
+  Instructions are reflected, and report what was and was not applied)."
+  [novel-id fm content action]
   (let [budget (context-char-budget)
         brief (note-brief novel-id fm content)
-        refs (collect-references novel-id content (max 2000 (- budget (count brief))) (quot budget 4))]
-    (str brief "\n# 参照資料\n" (:text refs) "\n\n# 指示\n"
-         "本文は書かないでください。上の情報を整理し、`## Requirements` と `## Outline` の2見出しだけを含む Markdown を出力してください。"
-         "Requirements は Title / Synopsis / Characters / Style and point of view / Target readers / Target length / Required elements / Prohibited elements / References / NSFW の箇条書き、Outline は章立てと場面の箇条書きにしてください。")))
+        instructions (instructions-text content)
+        instructions-part (if (seq instructions)
+                            (str "# 人間からの指示 (Review Instructions)\n" instructions "\n\n")
+                            "")
+        refs (collect-references novel-id content (max 2000 (- budget (count brief) (count instructions-part))) (quot budget 4))]
+    (str brief "\n" instructions-part "# 参照資料\n" (:text refs) "\n\n# 指示\n"
+         (if (= :regroom action)
+           (str "本文は書かないでください。上の「人間からの指示」を既存の Requirements と Outline に反映し、添削後の全文を出力してください。"
+                "指示にない部分は既存の内容を保ち、勝手に削除・改変しないでください。"
+                "出力は `## Requirements` / `## Outline` / `## Applied` / `## Unapplied` の4見出しだけを含む Markdown にしてください。"
+                "Applied には反映した指示を、Unapplied には反映できなかった指示と理由を箇条書きで書き（なければ「なし」）、"
+                groom-format-instruction)
+           (str "本文は書かないでください。上の情報を整理し、`## Requirements` と `## Outline` の2見出しだけを含む Markdown を出力してください。"
+                (when (seq instructions) "「人間からの指示」がある場合は必ず Requirements / Outline に反映してください。")
+                groom-format-instruction)))))
+
+(defn groom-output-sections [text]
+  ;; Body lines of each section in a groom / regroom model output.
+  (let [lines (vec (str/split-lines text))]
+    (into {} (for [heading ["## Requirements" "## Outline" "## Applied" "## Unapplied"]
+                   :let [b (section-bounds lines heading)]
+                   :when b]
+               [heading (subvec lines (:body-start b) (:end b))]))))
+
+(defn summarize-lines [lines limit]
+  (let [text (str/join " / " (->> lines (map str/trim) (remove str/blank?) (remove placeholder-line?)
+                                   (map #(str/replace % #"^(?:[-*]|\d+\.)\s+" ""))))]
+    (if (str/blank? text) "なし" (truncate-text text limit))))
 
 (defn parse-json-object [text]
   (let [start (str/index-of text "{")
@@ -1808,15 +1898,27 @@
 (defn bypass-approvals? [] (= "true" (env "CODEX_NOVEL_BOARD_BYPASS_APPROVALS" "true")))
 
 (defn cloud-prompt [novel-id fm content action agent]
-  (let [work (work-dir novel-id)]
+  (let [work (work-dir novel-id)
+        note (note-path novel-id)
+        instructions? (seq (instructions-text content))
+        note-writes (if (= :regroom action)
+                      (str "the `## Requirements`, `## Outline` and `## Change History` sections of " note)
+                      (str "the Change History section of " note))]
     (str "You are running inside codex-workspace as the Novel Board writer for " novel-id " (agent " agent ").\n"
          "Respond in Japanese. The Novel Board card lane is the source of truth: do NOT move cards, do NOT change assignees, do NOT publish, and do NOT generate images yourself (the runner generates the illustration afterwards).\n"
-         "Allowed writes: files under " work " and the Change History section of " (note-path novel-id) ". Never edit the setting notes under ひとはこさんバース or existing novels.\n"
+         "Allowed writes: files under " work " and " note-writes ". Never edit the setting notes under ひとはこさんバース or existing novels. Never delete or rewrite `## Review Instructions` (the human owns that section).\n"
          (sfw-instruction (= "true" (:nsfw fm))) "\n\n"
          (case action
-           :groom (str "Goal: fill the `## Requirements` and `## Outline` sections of the management note " (note-path novel-id) " (do not write the manuscript). Read the referenced vault notes first.\n")
+           :groom (str "Goal: fill the `## Requirements` and `## Outline` sections of the management note " note " (do not write the manuscript). Read the referenced vault notes first."
+                       (when instructions? " `## Review Instructions` contains human feedback for this planning step: reflect it in Requirements / Outline.")
+                       "\n")
+           :regroom (str "Goal: the human wrote feedback on the plan in `## Review Instructions`. Revise the existing `## Requirements` and `## Outline` sections of " note
+                         " so that this feedback is reflected, keeping everything the feedback does not touch. Do NOT write or change the manuscript, and do not touch `## Review Instructions`."
+                         " Then append one bullet to `## Change History` of the note listing what you applied and what you could not apply (with the reason).\n")
            :revise (str "Goal: revise the existing manuscript " (manuscript-path novel-id) " following `## Review Instructions` in the management note. Keep the file name; write the complete revised manuscript (first line `# Title`).\n")
-           (str "Goal: write the complete manuscript to " (manuscript-path novel-id) " (Markdown, first line `# Title`), following `## Requirements` and `## Outline` of the management note and the referenced vault notes.\n"))
+           (str "Goal: write the complete manuscript to " (manuscript-path novel-id) " (Markdown, first line `# Title`), following `## Requirements` and `## Outline` of the management note and the referenced vault notes."
+                (when instructions? " `## Review Instructions` holds the human's latest instructions for this draft (already reflected in Requirements / Outline): follow them as well.")
+                "\n"))
          (when (#{:write :revise} action)
            (str "Also write " (illustration-spec-path novel-id) " as JSON: {\"scene\": \"...\", \"prompt\": \"English image prompt for one mid-shot highlight scene, no text/logo/watermark\", \"reference_images\": [\"<file names of vault images embedded in the management note or the referenced setting notes>\"]}.\n"))
          "\nManagement note contents:\n\n" content "\n\n"
@@ -1927,7 +2029,12 @@
       (human-assignee? assignee) nil
       (nil? route) :unsupported
       (= "backlog" status) :groom
-      (= "draft" status) :write
+      ;; Draft + agent (BOXP-251): new feedback in Review Instructions is reflected
+      ;; into Requirements / Outline and handed back (no manuscript). Empty
+      ;; instructions, or instructions a finished run already consumed, start the
+      ;; first draft as before (the text is then passed as writing conditions).
+      (= "draft" status) (let [text (instructions-text note-text)]
+                           (if (and (seq text) (not (instructions-applied? novel-id text))) :regroom :write))
       (= "in-progress" status) (if (fs/exists? (manuscript-path novel-id)) :revise :write)
       (= "review" status) (if (section-filled? note-text "## Review Instructions") :revise :review-instructions-empty)
       :else nil)))
@@ -1950,10 +2057,11 @@
         cfg (localllm-config)
         generation
         (if (= :localllm route)
-          (let [{:keys [prompt references-included]} (writer-user-prompt novel-id fm content action existing)
+          (let [{:keys [prompt references-included instructions-included]} (writer-user-prompt novel-id fm content action existing)
                 _ (spit (str (fs/path run-dir "prompt.md")) prompt)
                 _ (private-file! (fs/path run-dir "prompt.md"))
-                _ (record-evidence! run-dir {:phase "context" :references-included references-included :prompt-chars (count prompt)})
+                _ (record-evidence! run-dir {:phase "context" :references-included references-included
+                                             :instructions-included instructions-included :prompt-chars (count prompt)})
                 result (llm-generate-text! cfg run-dir (name action) (writer-system-prompt nsfw) prompt (fs/path work "manuscript.partial.md"))]
             (cond
               (:truncated? result)
@@ -2004,43 +2112,67 @@
                :scene (:scene spec))))))
 
 (defn apply-groom-output! [novel-id text]
-  (let [lines (vec (str/split-lines text))
-        req (section-bounds lines "## Requirements")
-        outline (section-bounds lines "## Outline")]
+  (let [sections (groom-output-sections text)
+        req (get sections "## Requirements")
+        outline (get sections "## Outline")]
     (if (and req outline)
-      (do (replace-section-body! novel-id "## Requirements" (subvec lines (:body-start req) (:end req)))
-          (replace-section-body! novel-id "## Outline" (subvec lines (:body-start outline) (:end outline)))
+      (do (replace-section-body! novel-id "## Requirements" req)
+          (replace-section-body! novel-id "## Outline" outline)
           true)
       false)))
 
-(defn run-groom! [novel-id card fm content agent run-dir]
-  (let [route (assignee-route agent)]
+(defn plan-fingerprint [content]
+  (instructions-fingerprint (str (section-content content "## Requirements") "\n" (section-content content "## Outline"))))
+
+(defn run-groom!
+  "Backlog :groom (fill Requirements / Outline) and Draft :regroom (reflect the
+  human's Review Instructions into the existing Requirements / Outline). Neither
+  writes the manuscript. Returns {:ok? :reason :model :usage :applied :unapplied}."
+  [novel-id card fm content action agent run-dir]
+  (let [route (assignee-route agent)
+        regroom? (= :regroom action)
+        label (if regroom? "要件/構成の添削" "要件整理")
+        before (plan-fingerprint content)]
     (if (= :localllm route)
       (let [cfg (localllm-config)
-            prompt (groom-user-prompt novel-id fm content)
+            prompt (groom-user-prompt novel-id fm content action)
             _ (spit (str (fs/path run-dir "prompt.md")) prompt)
             _ (private-file! (fs/path run-dir "prompt.md"))
-            result (llm-generate-text! cfg run-dir "groom"
+            _ (record-evidence! run-dir {:phase "context" :instructions-included (boolean (seq (instructions-text content))) :prompt-chars (count prompt)})
+            result (llm-generate-text! cfg run-dir (name action)
                                        "あなたは小説企画の編集者です。本文は書かず、指示された Markdown 見出しだけを出力します。"
-                                       prompt (fs/path run-dir "groom.partial.md"))]
+                                       prompt (fs/path run-dir "groom.partial.md"))
+            sections (groom-output-sections (or (:text result) ""))]
         (cond
           (or (:truncated? result) (not= "stop" (:finish-reason result)))
-          {:ok? false :reason (str "要件整理の出力が finish_reason=" (pr-str (:finish-reason result)) " で途中終了しました。再開条件: agent を再割当") :model (:model result)}
+          {:ok? false :reason (str label "の出力が finish_reason=" (pr-str (:finish-reason result)) " で途中終了しました。再開条件: agent を再割当") :model (:model result)}
           (< (count (:text result)) 200)
-          {:ok? false :reason (str "要件整理の出力が短すぎます（" (count (:text result)) " 字）。再開条件: agent を再割当") :model (:model result)}
+          {:ok? false :reason (str label "の出力が短すぎます（" (count (:text result)) " 字）。再開条件: agent を再割当") :model (:model result)}
           (and (apply-groom-output! novel-id (:text result))
                (section-filled? (note-content novel-id) "## Requirements")
                (section-filled? (note-content novel-id) "## Outline"))
-          {:ok? true :model (:model result) :usage (:usage result)}
+          (if (and regroom? (= before (plan-fingerprint (note-content novel-id))))
+            ;; Same plan as before: the feedback was not reflected, so do not
+            ;; record it as applied (the next assignment regrooms again).
+            {:ok? false :reason "添削の出力が元の Requirements / Outline と同じで指示が反映されていません（Review Instructions は未反映のまま保持）。再開条件: 指示を見直して agent を再割当" :model (:model result) :usage (:usage result)}
+            (cond-> {:ok? true :model (:model result) :usage (:usage result)}
+              regroom? (assoc :applied (summarize-lines (get sections "## Applied") 600)
+                              :unapplied (summarize-lines (get sections "## Unapplied") 600))))
           :else
-          {:ok? false :reason "要件整理の出力に ## Requirements / ## Outline 見出しがありませんでした。再開条件: agent を再割当" :model (:model result)}))
-      (let [result (run-cloud-agent! novel-id fm content :groom agent run-dir)]
+          {:ok? false :reason (str label "の出力に ## Requirements / ## Outline 見出しがありませんでした。再開条件: agent を再割当") :model (:model result)}))
+      (let [result (run-cloud-agent! novel-id fm content action agent run-dir)
+            after (note-content novel-id)]
         (cond
           (not (:ok? result)) result
-          (not (and (section-filled? (note-content novel-id) "## Requirements")
-                    (section-filled? (note-content novel-id) "## Outline")))
+          (not (and (section-filled? after "## Requirements")
+                    (section-filled? after "## Outline")))
           {:ok? false :reason "agent は完了を返しましたが Requirements / Outline が埋まっていません。再開条件: agent を再割当"}
-          :else result)))))
+          (and regroom? (= before (plan-fingerprint after)))
+          {:ok? false :reason "agent は完了を返しましたが Requirements / Outline が変更されていません（Review Instructions は未反映のまま保持）。再開条件: 指示を見直して agent を再割当"}
+          (not= (instructions-text content) (instructions-text after))
+          {:ok? false :reason "run 中に Review Instructions が変更されたため反映済みとして記録しません（agent は人間の指示を編集してはいけません）。再開条件: 指示の内容を確認して agent を再割当"}
+          :else (cond-> result
+                  regroom? (assoc :applied "agent が Change History に記録" :unapplied "agent の Change History 記録を参照")))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Publication (Done lane, once, never overwriting)
@@ -2143,7 +2275,9 @@
         success? (:ok? outcome)
         target (cond
                  human-moved? nil
-                 (= :groom action) (if success? "draft" "backlog")
+                 ;; groom / regroom never write the manuscript: success hands the
+                 ;; plan back for confirmation in Draft, failure keeps the origin lane.
+                 (#{:groom :regroom} action) (if success? "draft" origin)
                  success? "review"
                  (= "in-progress" origin) "draft"
                  :else origin)
@@ -2154,14 +2288,22 @@
                     (when (:manuscript-chars outcome) (str " 本文 " (:manuscript-chars outcome) " 字"))
                     (when (:illustration outcome) (str "; " (illustration-summary (:illustration outcome))))
                     (when-not success? (str "; 理由: " (:reason outcome)))
+                    (when (and success? (= :regroom action))
+                      (str "; Review Instructions を Requirements / Outline に反映（本文は書いていません。指示は消さずに保持、反映内容と未反映は Change History 参照）"))
                     (cond
                       human-moved? (str "; カードは run 中に人間が " (:lane current) " へ移動したためレーンと担当は変更しません")
                       (= "review" target) "; 次: Review で原稿を確認し、承認なら人間が Done へ移動（完成版はその後に一度だけ配置）。改稿は Review Instructions を書いて agent を再割当"
+                      (and (= "draft" target) success? (= :regroom action))
+                      "; 次: Draft で反映後の Requirements / Outline を確認。同じ指示のまま agent を割り当てると初稿執筆を開始（指示は執筆条件として渡す）、さらに添削するなら Review Instructions を書き換えてから agent を割当"
                       (= "draft" target) (if success?
                                            "; 次: Draft で要件を確認し、執筆を始めるなら agent を割当"
                                            "; 次: 失敗理由を解消してから Draft で agent を再割当")
                       (= "backlog" target) "; 次: 失敗理由を解消してから Backlog で agent を再割当"
                       :else ""))]
+    (when (and success? (= :regroom action))
+      (append-change-history! novel-id (str "run " run " (agent " agent "): Review Instructions を Requirements / Outline に反映。"
+                                            "反映: " (:applied outcome) "; 未反映: " (:unapplied outcome)
+                                            "; 次: Draft で確認し、同じ指示のまま agent を割当すると初稿執筆、追加の添削は指示を書き換えて割当")))
     (when target
       ;; Hand-off to the human: the card and the sync state become boxp. If a
       ;; human re-assigned the management note to a different agent while the
@@ -2219,7 +2361,8 @@
   (let [fm (note-frontmatter novel-id)
         content (note-content novel-id)
         action (candidate-action card fm content)
-        agent (normalize-assignee assignee)]
+        agent (normalize-assignee assignee)
+        instructions (instructions-text content)]
     (case action
       nil nil
 
@@ -2255,14 +2398,26 @@
                 (update-frontmatter! novel-id {:status "in-progress"}))
               (append-history! novel-id (str "run " (:run-id lock) " started: action=" (name action) " agent=" agent " from " lane
                                              (when (= :localllm (assignee-route agent))
-                                               (str " via " (:base-url (localllm-config)) " model=" (:model (localllm-config))))))
+                                               (str " via " (:base-url (localllm-config)) " model=" (:model (localllm-config))))
+                                             (when (seq instructions)
+                                               (case action
+                                                 :regroom "; Review Instructions あり: Requirements / Outline へ反映する（本文は書かない）"
+                                                 :write "; Review Instructions あり（反映済み）: 執筆条件として渡す"
+                                                 :groom "; Review Instructions あり: 要件整理への補足指示として渡す"
+                                                 :revise "; Review Instructions あり: 改稿指示として渡す"
+                                                 ""))))
               (mark-run! novel-id (:run-id lock) :running {:action action :agent agent :lane lane :started-at (now-str)})
               (let [outcome (try
-                              (if (= :groom action)
-                                (run-groom! novel-id card fm content agent run-dir)
+                              (if (#{:groom :regroom} action)
+                                (run-groom! novel-id card fm content action agent run-dir)
                                 (run-write! novel-id card fm content action agent run-dir))
                               (catch Exception e
                                 {:ok? false :reason (str "runner 内部エラー: " (sanitize-error (.getMessage e)) "。再開条件: 原因解消後に agent を再割当")}))]
+                ;; A successful run consumed the instructions as they were when it
+                ;; started; remember that so the same text is not re-applied forever
+                ;; (the human's text itself is never deleted by the runner).
+                (when (and (:ok? outcome) (seq instructions))
+                  (record-applied-instructions! novel-id instructions (:run-id lock) action))
                 (finish-run! novel-id lock card action outcome run-dir))
               (catch Exception e
                 (log! (str novel-id " failed to finish run: " (.getMessage e)))
@@ -2440,6 +2595,42 @@
                (candidate-action {:status "draft" :assignee "localllm" :novel-id "NOVEL-0"} {} "")
                (candidate-action {:status "review" :assignee "localllm" :novel-id "NOVEL-0"} {} "## Review Instructions\n\n## Change History\n")
                (candidate-action {:status "done" :assignee "boxp" :novel-id "NOVEL-0"} {} "")]))
+    ;; BOXP-251: Draft + agent chooses between reflecting new feedback and writing.
+    (let [tmp (str (fs/create-temp-dir {:prefix "novel-board-selftest"}))
+          note (fn [ri] (str "## Requirements\n\n- Title: x\n\n## Outline\n\n1. a\n\n## Review Instructions\n\n" ri "\n\n## Change History\n\nTBD\n"))
+          draft {:status "draft" :assignee "localllm" :novel-id "NOVEL-0"}]
+      (try
+        (with-redefs [root (constantly tmp)]
+          (check "draft without instructions writes" (= :write (candidate-action draft {} (note "TBD"))))
+          (check "draft with new instructions regrooms" (= :regroom (candidate-action draft {} (note "- 主人公を増やす"))))
+          (record-applied-instructions! "NOVEL-0" "- 主人公を増やす" "run-1" :regroom)
+          (check "draft with applied instructions writes" (= :write (candidate-action draft {} (note "- 主人公を増やす"))))
+          (check "fingerprint ignores whitespace-only edits" (= :write (candidate-action draft {} (note "  - 主人公を増やす  \n\n"))))
+          (check "draft with changed instructions regrooms again" (= :regroom (candidate-action draft {} (note "- 主人公を増やす\n- 結末を変える"))))
+          (check "review still revises on any non-empty instructions"
+                 (= :revise (candidate-action (assoc draft :status "review") {} (note "- 主人公を増やす")))))
+        (finally (fs/delete-tree tmp))))
+    (check "instructions-fingerprint of placeholder is nil" (nil? (instructions-fingerprint "")))
+    (check "groom output sections"
+           (= {"## Requirements" ["- Title: x"] "## Outline" ["1. a"] "## Applied" ["- 反映した"] "## Unapplied" ["なし"]}
+              (groom-output-sections "## Requirements\n- Title: x\n## Outline\n1. a\n## Applied\n- 反映した\n## Unapplied\nなし\n")))
+    (check "summarize-lines" (and (= "なし" (summarize-lines ["", "TBD"] 100)) (= "a / b" (summarize-lines ["- a" " 2. b "] 100))))
+    (check "write prompt carries applied instructions"
+           (let [p (:prompt (writer-user-prompt "NOVEL-0" {:title "T"} (str "## Requirements\n\n- Title: T\n\n## Outline\n\n1. a\n\n## Review Instructions\n\n- 冒頭を明るく\n\n## Change History\n") :write nil))]
+             (and (str/includes? p "執筆時に守る人間の指示") (str/includes? p "- 冒頭を明るく"))))
+    (check "write prompt omits TBD instructions"
+           (not (str/includes? (:prompt (writer-user-prompt "NOVEL-0" {:title "T"} "## Requirements\n\n- Title: T\n\n## Outline\n\n1. a\n\n## Review Instructions\n\nTBD\n" :write nil))
+                               "Review Instructions")))
+    (check "regroom prompt asks for Applied / Unapplied"
+           (let [p (groom-user-prompt "NOVEL-0" {:title "T"} "## Requirements\n\n- Title: T\n\n## Outline\n\n1. a\n\n## Review Instructions\n\n- 舞台を冬に\n" :regroom)]
+             (and (str/includes? p "- 舞台を冬に") (str/includes? p "## Applied") (str/includes? p "本文は書かないでください"))))
+    (check "groom prompt passes Backlog feedback"
+           (str/includes? (groom-user-prompt "NOVEL-0" {:title "T"} "## Requirements\n\nTBD\n\n## Outline\n\nTBD\n\n## Review Instructions\n\n- 短編にして\n" :groom) "- 短編にして"))
+    (check "cloud prompt mentions instructions for regroom and write"
+           (let [c "## Requirements\n\n- Title: T\n\n## Outline\n\n1. a\n\n## Review Instructions\n\n- 舞台を冬に\n"]
+             (and (str/includes? (cloud-prompt "NOVEL-0" {} c :regroom "claude-sonnet") "Do NOT write or change the manuscript")
+                  (str/includes? (cloud-prompt "NOVEL-0" {} c :write "claude-sonnet") "follow them as well")
+                  (not (str/includes? (cloud-prompt "NOVEL-0" {} "## Review Instructions\n\nTBD\n" :write "claude-sonnet") "follow them as well")))))
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s)")) (System/exit 1))
       (println "All tests passed."))))

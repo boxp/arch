@@ -37,7 +37,7 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 ## レーン運用
 
 - `Backlog`: 手動追加と要件整理の入口。対応 agent を割り当てると、本文を書かずに Requirements と Outline を整理し、完了後は `Draft`（担当 `boxp`）へ移る。
-- `Draft`: 執筆開始前の人間確認。条件が不足する場合は人間が `Backlog` へ戻す。執筆開始時だけ対応 agent を割り当てる。本文生成に失敗した場合は理由と再開条件を `Run History` に残して `Draft`（担当 `boxp`）へ戻る。
+- `Draft`: 執筆開始前の人間確認。条件が不足する場合は人間が `Backlog` へ戻す。対応 agent を割り当てたときの動作は `Review Instructions` で決まる: 空（`TBD`）なら従来どおり初稿を書き始める。まだ反映していない指示があれば本文を書かずに Requirements / Outline へ反映して `Draft`（担当 `boxp`）へ戻し、反映内容と未反映を `Change History` に記録する。反映済みの同じ指示のまま再度割り当てると初稿を書き始め、その指示は執筆条件として渡される（指示を書き換えると再び反映から始まる）。本文生成に失敗した場合は理由と再開条件を `Run History` に残して `Draft`（担当 `boxp`）へ戻る。
 - `In Progress`: 初稿または改稿中。runner が同じ private `manuscript.md` を更新し、本文を検証（空・短すぎる・途中終了は失敗）した後に挿絵を1枚生成する。完了または一部未完了（挿絵なし）で `Review` へ移る。runner 再起動で中断した run は interrupted として記録され、agent が割り当てられたままなら次の tick で再開する。
 - `Review`: 管理ノートの `Draft Preview` から vault 内の原稿と挿絵を人間確認する。草稿は未承認。改稿する場合は `Review Instructions` に具体的な指示を保存して対応 agent を割り当てる（指示が空なら起動しない）。承認する場合だけ、人間がカードを `Done` へ移す。
 - `Done`: agent は再実行しない。runner は承認済み private 原稿と挿絵を、カード上の `#nsfw` に従って完成版フォルダへ一度だけ配置する。
@@ -51,7 +51,7 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 - `Draft Preview`: Review 到達後に runner が未承認草稿の本文リンク・実在する挿絵・更新状況・生成 agent/model を表示する。SFW は `Novels/Drafts/NOVEL-N/`、NSFW は `NSFW/小説/草稿/NOVEL-N/`。手動編集した草稿は上書きせず競合として残し、runner 更新版への別リンクを表示する。承認は Board の Done 操作で行う。
 - `Requirements`: タイトル、あらすじ、登場人物、文体・視点、対象読者、目標文字数、必須要素、禁止事項、参照資料、NSFW 判定（執筆条件。保存分類の正本は Board の `#nsfw`）。Backlog で agent を割り当てると runner が整理して埋める。
 - `Outline`: 章立て、場面、展開。
-- `Review Instructions`: 人間からの最新の具体的な改稿指示。指示が空または `TBD` のまま agent を割り当てても Review から再開しない。
+- `Review Instructions`: 人間からの最新の具体的な指示。Review では改稿指示、Draft では要件 / 構成への添削（上の `Draft` 参照）、Backlog では要件整理への補足として runner が prompt に渡す。runner はこの欄を消さず、反映した指示の内容を `~/.novel-board/instructions/` に記憶して同じ指示を繰り返し適用しない。指示が空または `TBD` のまま agent を割り当てても Review から再開しない。
 - `Change History`: 原稿の変更履歴。
 - `Run History`: runner の実行、停止理由、再開条件、使用モデル。最初の記録で `TBD` は置き換わる。
 - frontmatter `series` / `episode` / `continuity`: 連作の名前・話数・整合メモ（vault 内パス。例: `Projects/運動会連作/README.md`）。runner は設定・伏線・人物の知識状態の引き継ぎとして整合メモを context に含める。

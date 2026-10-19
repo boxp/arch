@@ -82,6 +82,11 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
     (spit req-log (str (pr-str {:uri uri :model (:model parsed) :auth (get-in req [:headers "authorization"]) :plan? plan? :continuation? continuation? :mode mode :max-tokens (:max_tokens parsed)}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
+      ;; Draft-stage feedback (BOXP-251): the regroom prompt asks for Applied / Unapplied.
+      (and groom? (str/includes? (str last-user) "## Applied") (= mode "normal"))
+      (respond (str "## Requirements\n\n- Title: 添削後テスト作品\n- Synopsis: 冬の運動会前日の練習。\n- Characters: 桜一穂、瀬戸凛\n- Target length: 1000字\n- References:\n  - `ひとはこさんバース/キャラ設定/`\n- NSFW: false\n"
+                    (apply str (repeat 3 "- Required elements: 雪、バトン、冬空の描写を入れる。\n"))
+                    "\n## Outline\n\n1. 冬の前日準備\n2. バトンパス練習\n3. 小さな異変\n\n## Applied\n\n- 舞台を冬に変更\n\n## Unapplied\n\n- 登場人物の追加は参照資料に該当者がいないため未反映\n") "stop")
       (and groom? (str/starts-with? mode "stream")) (respond-stream req groom-pieces "stop" (case mode "stream-stall" {:after :stall :gap-ms 200} "stream-slow" {:gap-ms 1500} "stream-cut" {:after :cut} {}))
       (and groom? (not (contains? #{"length-forever" "error500" "error503" "error504"} mode))) (respond (str "## Requirements\n\n- Title: 秋のテスト作品\n- Synopsis: 運動会前日の練習。\n- Characters: 桜一穂、瀬戸凛\n- Target length: 1000字\n- References:\n  - `ひとはこさんバース/キャラ設定/`\n- NSFW: false\n" (apply str (repeat 3 "- Required elements: 万国旗、バトン、秋空の描写を入れる。\n")) "\n## Outline\n\n1. 前日準備\n2. バトンパス練習\n3. 小さな異変\n") "stop")
       plan? (respond "{\"scene\": \"バトンパス練習\", \"prompt\": \"two girls practicing a relay baton pass\", \"reference_images\": [\"ref-rin.png\", \"not-a-candidate.png\"]}" "stop")
@@ -203,6 +208,16 @@ case "${mode}" in
     bb "${FAKE_EDIT_BB}" replace-section "${note}" Requirements "${work}/groom.txt"
     printf -- '1. 導入\n2. 展開\n' >"${work}/outline.txt"
     bb "${FAKE_EDIT_BB}" replace-section "${note}" Outline "${work}/outline.txt"
+    echo "NOVEL_BOARD_RESULT: done"
+    ;;
+  regroom)
+    # Draft-stage feedback: edit Requirements / Outline only, never the manuscript or the instructions.
+    note="${CODEX_NOVEL_BOARD_VAULT}/Novels/${id}.md"
+    grep -q 'Do NOT write or change the manuscript' <<<"${prompt}" || { echo "NOVEL_BOARD_RESULT: blocked prompt is not a regroom prompt"; exit 0; }
+    printf -- '- Title: クラウド添削後\n- Synopsis: 冬のあらすじ\n- Characters: 桜一穂、瀬戸凛\n' >"${work}/regroom.txt"
+    bb "${FAKE_EDIT_BB}" replace-section "${note}" Requirements "${work}/regroom.txt"
+    printf -- "1. 冬の導入\\n2. 展開\\n" >"${work}/regroom-outline.txt"
+    bb "${FAKE_EDIT_BB}" replace-section "${note}" Outline "${work}/regroom-outline.txt"
     echo "NOVEL_BOARD_RESULT: done"
     ;;
   nomarker)
@@ -997,6 +1012,112 @@ assert_contains "${VAULT}/Novels/${NEW_ID}.md" "# ${NEW_ID}: 二重チェック�
 assert_contains "${VAULT}/Novels/${NEW_ID}.md" "title: 二重チェックボックス"
 [[ "$(lane_of "${BOARD}" "${NEW_ID}")" == "Draft" ]] || fail "scaffolded card with localllm should be groomed"
 echo "PASS: duplicated checkbox is stripped at scaffold"
+
+# ---------------------------------------------------------------------------
+# 15. Draft-stage Review Instructions are reflected, never ignored (BOXP-251)
+# ---------------------------------------------------------------------------
+set_instructions() { printf -- '%s\n' "$2" >"${TMP}/instructions.txt"; bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/$1.md" "Review Instructions" "${TMP}/instructions.txt"; }
+latest_prompt() { find "${STATE}/runs/$1" -name prompt.md | sort | tail -n 1; }
+
+# localllm: Draft + new feedback -> Requirements / Outline revised, back to Draft/boxp, no manuscript
+echo normal >"${MODE_FILE}"
+add_card Draft "- [ ] [[Novels/NOVEL-60|NOVEL-60: Draft指示テスト]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-60.md"
+write_requirements NOVEL-60
+set_instructions NOVEL-60 "- 舞台を冬に変更してください。"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-60)" == "Draft" ]] || fail "Draft feedback must hand back to Draft, not write: $(card_line "${BOARD}" NOVEL-60)"
+assert_contains "${BOARD}" "[[Novels/NOVEL-60|NOVEL-60: Draft指示テスト]] #novel status::draft assignee::boxp"
+[[ ! -f "${STATE}/work/NOVEL-60/manuscript.md" ]] || fail "Draft feedback must not start the manuscript"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "- Title: 添削後テスト作品"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "1. 冬の前日準備"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "action=regroom agent=localllm model=gemma4-26b"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "Requirements / Outline へ反映する（本文は書かない）"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "反映: 舞台を冬に変更; 未反映: 登場人物の追加は参照資料に該当者がいないため未反映"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "同じ指示のまま agent を割り当てると初稿執筆を開始"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "- 舞台を冬に変更してください。"
+[[ -z "$(sed -n '/^## Change History$/,/^## /p' "${VAULT}/Novels/NOVEL-60.md" | grep -x 'TBD')" ]] || fail "Change History entry must replace the TBD"
+assert_contains "$(latest_prompt NOVEL-60)" "舞台を冬に変更してください"
+assert_contains "$(latest_prompt NOVEL-60)" "## Applied"
+[[ -f "${STATE}/instructions/NOVEL-60.edn" ]] || fail "applied instructions fingerprint must be recorded"
+assert_contains "$(evidence_of NOVEL-60)" ":instructions-included true"
+echo "PASS: Draft feedback is reflected into the plan and handed back"
+
+# Same instructions, assigned again -> first draft starts and the instructions ride along
+set_assignee NOVEL-60 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-60)" == "Review" ]] || fail "applied instructions + agent should start the first draft: $(card_line "${BOARD}" NOVEL-60)"
+[[ -s "${STATE}/work/NOVEL-60/manuscript.md" ]] || fail "manuscript missing after write"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "action=write agent=localllm from Draft"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "Review Instructions あり（反映済み）: 執筆条件として渡す"
+assert_contains "$(latest_prompt NOVEL-60)" "執筆時に守る人間の指示 (Review Instructions)"
+assert_contains "$(latest_prompt NOVEL-60)" "舞台を冬に変更してください"
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "- 舞台を冬に変更してください。"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-60.md" 'action=regroom agent=localllm from Draft')" == "1" ]] || fail "applied feedback must not be re-applied"
+echo "PASS: applied Draft feedback starts the first draft with the instructions in the prompt"
+
+# Changed instructions after a human move back to Draft -> reflected again, manuscript untouched
+move_card NOVEL-60 Draft
+sha256sum "${STATE}/work/NOVEL-60/manuscript.md" >"${TMP}/novel60-manuscript.sha"
+set_instructions NOVEL-60 "- 結末を希望の持てるものにしてください。"
+set_assignee NOVEL-60 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-60)" == "Draft" ]] || fail "changed feedback must be reflected before writing again"
+sha256sum -c "${TMP}/novel60-manuscript.sha" >/dev/null || fail "regroom must not touch the manuscript"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-60.md" 'action=regroom agent=localllm from Draft')" == "2" ]] || fail "changed feedback should trigger a second regroom"
+assert_contains "$(latest_prompt NOVEL-60)" "結末を希望の持てるものにしてください"
+# The fake model returned the same plan as before: that is not a reflection, so the
+# run fails, the feedback stays pending and the next assignment regrooms again.
+assert_contains "${VAULT}/Novels/NOVEL-60.md" "添削の出力が元の Requirements / Outline と同じで指示が反映されていません"
+set_assignee NOVEL-60 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-60)" == "Draft" ]] || fail "feedback not reflected by the model must not start the manuscript"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-60.md" 'action=regroom agent=localllm from Draft')" == "3" ]] || fail "unreflected feedback should be retried as regroom"
+sha256sum -c "${TMP}/novel60-manuscript.sha" >/dev/null || fail "retried regroom must not touch the manuscript"
+echo "PASS: changed Draft feedback is reflected again without touching the manuscript; unchanged plan is not success"
+
+# Cloud route: regroom edits the note; an agent that changes nothing fails and keeps the feedback pending
+echo regroom >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Draft "- [ ] [[Novels/NOVEL-61|NOVEL-61: クラウドDraft指示]] #novel status::draft assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-61.md"
+write_requirements NOVEL-61
+set_instructions NOVEL-61 "- あらすじを冬にしてください。"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-61)" == "Draft" ]] || fail "cloud regroom should hand back to Draft: $(card_line "${BOARD}" NOVEL-61)"
+assert_contains "${BOARD}" "status::draft assignee::boxp"
+[[ ! -f "${STATE}/work/NOVEL-61/manuscript.md" ]] || fail "cloud regroom must not write the manuscript"
+assert_contains "${VAULT}/Novels/NOVEL-61.md" "- Title: クラウド添削後"
+assert_contains "${VAULT}/Novels/NOVEL-61.md" "action=regroom agent=claude-sonnet model=claude-sonnet-5-5"
+assert_contains "${VAULT}/Novels/NOVEL-61.md" "- あらすじを冬にしてください。"
+assert_contains "$(latest_prompt NOVEL-61)" "Do NOT write or change the manuscript"
+echo nothing >"${FAKE_CLAUDE_MODE_FILE}"
+set_instructions NOVEL-61 "- 登場人物を一人増やしてください。"
+set_assignee NOVEL-61 claude-sonnet
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-61)" == "Draft" ]] || fail "unchanged cloud regroom must return to Draft"
+assert_contains "${VAULT}/Novels/NOVEL-61.md" "Requirements / Outline が変更されていません"
+assert_contains "${VAULT}/Novels/NOVEL-61.md" "- 登場人物を一人増やしてください。"
+echo regroom >"${FAKE_CLAUDE_MODE_FILE}"
+set_assignee NOVEL-61 claude-sonnet
+tick
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-61.md" 'action=regroom agent=claude-sonnet from Draft')" == "3" ]] || fail "feedback left unapplied by a failed run must be retried as regroom, not write"
+[[ ! -f "${STATE}/work/NOVEL-61/manuscript.md" ]] || fail "retry must still not write the manuscript"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+echo "PASS: cloud regroom and unchanged-plan failure"
+
+# Backlog groom receives the feedback; feedback consumed by groom does not re-trigger at Draft
+add_card Backlog "- [ ] [[Novels/NOVEL-62|NOVEL-62: Backlog補足指示]] #novel status::backlog assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-62.md"
+set_instructions NOVEL-62 "- 短編にしてください。"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-62)" == "Draft" ]] || fail "groom with feedback should reach Draft"
+assert_contains "$(latest_prompt NOVEL-62)" "短編にしてください"
+assert_contains "${VAULT}/Novels/NOVEL-62.md" "要件整理への補足指示として渡す"
+set_assignee NOVEL-62 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-62)" == "Review" ]] || fail "feedback already consumed by groom should let the first draft start"
+assert_not_contains "${VAULT}/Novels/NOVEL-62.md" "action=regroom"
+echo "PASS: Backlog groom receives feedback and does not re-apply it at Draft"
 
 # Rule cards are never scaffolded
 [[ "$(grep -c '#novel-rule' "${BOARD}")" == "5" ]] || fail "rule cards must stay untouched"
