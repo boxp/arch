@@ -89,6 +89,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (= mode "short") (respond "# 短い\n本文が足りない。" "stop")
       (= mode "error500") {:status 500 :body "boom"}
       (= mode "error503") {:status 503 :body "loading"}
+      (= mode "headers-stall") (do (Thread/sleep 15000) (respond body-text "stop"))
       (= mode "error504") {:status 504 :body "stream timeout"}
       (= mode "stream") (respond-stream req stream-pieces "stop" {})
       (= mode "stream-stall") (respond-stream req (take 3 stream-pieces) "stop" {:gap-ms 200 :after :stall})
@@ -583,6 +584,16 @@ CODEX_NOVEL_BOARD_LOCALLLM_RETRIES=1 tick
 [[ "$(count_requests error503)" == "2" ]] || fail "503 should be retried once (got $(count_requests error503) requests)"
 assert_contains "${VAULT}/Novels/NOVEL-50.md" "localllm HTTP error: 503"
 echo "PASS: 503 before any output is retried"
+
+# no response headers within the idle limit (queue wait): fail once, no retry
+set_assignee NOVEL-50 localllm
+echo headers-stall >"${MODE_FILE}"
+CODEX_NOVEL_BOARD_LOCALLLM_RETRIES=2 CODEX_NOVEL_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS=3 tick
+[[ "$(lane_of "${BOARD}" NOVEL-50)" == "Draft" ]] || fail "first-response timeout should return to Draft"
+[[ "$(count_requests headers-stall)" == "1" ]] || fail "first-response timeout must not be retried"
+assert_contains "${VAULT}/Novels/NOVEL-50.md" "秒以内に応答を開始しませんでした"
+assert_contains "$(evidence_of NOVEL-50)" ":status :first-response-timeout"
+echo "PASS: first-response (queue) timeout fails without retry"
 
 # streamed completion succeeds and is recorded as streamed with usage
 set_assignee NOVEL-50 localllm
