@@ -29,3 +29,16 @@
 
 - `bb novel_board_runner.bb test`（純関数）と black-box テスト全件 PASS。
 - 配備後、sidecar ログと隔離 fixture で `.md` assignee 変更 → カード同期 → 期待 action 起動を確認。NOVEL-6 実カードは owner 意図 agent 不明のため割り当てない。
+
+## 追加要件: scaffold 生成ノートのメタ文言を TBD 化（2026-10-19 owner 指示）
+
+- 課題: `Templates/Novel Management.md` の運用説明（Workflow / 同期正本 / 連作設定 / Draft Preview / References 書式 / NSFW 解説 / 空の Requirements チェックリスト）が各作品ノートへ複写され、本文と無関係なノイズになっていた。
+- 方針:
+  - テンプレートは機械用 frontmatter（型は不変）、作品見出し、README への 1 行案内、parser 依存の 6 見出し（Draft Preview / Requirements / Outline / Review Instructions / Change History / Run History）と `TBD` だけにする。運用説明は `Novels/README.md` に集約。
+  - runner に `placeholder-line?` / `section-content` を追加。`TBD` / `TODO` / `N/A` / `未記入` / `未定`（箇条書き・括弧付き可）と旧テンプレートの空 `- Title:` 行は未記入として扱う。
+    - `section-filled?` が placeholder を内容と誤認しない → `TBD` だけの Review Instructions で改稿を起動しない（`:review-instructions-empty`）。Requirements / Outline の placeholder を執筆条件完成と誤認しない。
+    - prompt（note-brief / 改稿指示）と参照解決（`reference-targets`）は `section-content` を使い、`TBD` を参照ファイルとして解決しない。
+    - `append-history!` は Run History が placeholder だけなら最初の実記録で置き換える。Draft Preview / Requirements / Outline は既存の全置換で `TBD` が消える。
+  - 既存 NOVEL ノートは一括変更しない。NOVEL-6 はテンプレート由来と厳密一致する未編集説明だけを差分確認の上で整理する。
+- テスト: 自己テスト 4 件（TBD 判定、Review ゲート、参照除外、テンプレート描画）、black-box に scaffold 簡潔性・TBD 置換・TBD Review ゲートの assertion を追加。
+- 配備順序: image 配備（placeholder 判定を含む runner）→ live vault の `Templates/Novel Management.md` と `Novels/README.md` を seed 同内容へ更新 → 隔離 scaffold で生成物確認。旧 runner に新テンプレートを渡さない（`TBD` を内容と誤認するため）。

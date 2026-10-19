@@ -791,17 +791,19 @@
 
 (declare set-frontmatter-key frontmatter-range)
 
-(defn render-note-template [{:keys [novel-id title assignee nsfw]}]
-  (let [content (if (fs/exists? (template-path))
-                  (slurp (str (template-path)))
-                  "---\nid:\ntype: novel\nstatus: backlog\ntitle:\nassignee: boxp\nnsfw: false\nwork-dir:\nmanuscript:\nillustration:\nseries:\nepisode:\ncontinuity:\npublished-path:\npublished-at:\n---\n\n# Novel\n\n## Requirements\n\n## Outline\n\n## Review Instructions\n\n## Change History\n\n## Run History\n")
-        lines (vec (str/split-lines content))
+(def fallback-note-template
+  "---\nid:\ntype: novel\nstatus: backlog\ntitle:\nassignee: boxp\nnsfw: false\nwork-dir:\nmanuscript:\nillustration:\nseries:\nepisode:\ncontinuity:\npublished-path:\npublished-at:\n---\n\n# Novel\n\n## Draft Preview\n\nTBD\n\n## Requirements\n\nTBD\n\n## Outline\n\nTBD\n\n## Review Instructions\n\nTBD\n\n## Change History\n\nTBD\n\n## Run History\n\nTBD\n")
+
+(defn render-note-template
+  ([card] (render-note-template card (if (fs/exists? (template-path)) (slurp (str (template-path))) fallback-note-template)))
+  ([{:keys [novel-id title assignee nsfw]} content]
+  (let [lines (vec (str/split-lines content))
         {:keys [end]} (or (frontmatter-range lines) (fail "template is missing frontmatter"))
         fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k (yaml-value v)))
                    (subvec lines 1 end)
                    {:id novel-id :title title :status "backlog" :assignee assignee :nsfw (boolean nsfw)})
         body (mapv #(if (= "# Novel" (str/trim %)) (str "# " novel-id ": " title) %) (subvec lines (inc end)))]
-    (str (str/join "\n" (concat ["---"] fm ["---"] body)) "\n")))
+    (str (str/join "\n" (concat ["---"] fm ["---"] body)) "\n"))))
 
 (defn scaffold-backlog-cards! []
   (with-board-guard
@@ -879,14 +881,23 @@
       (str/trim (str/join "\n" (subvec lines body-start end)))
       "")))
 
-(defn section-filled? [content heading]
-  ;; Template placeholders such as "- Title:" do not count as content.
+(defn placeholder-line? [line]
+  ;; Scaffold markers for "not written yet": TBD / TODO / 未記入 / 未定 (optionally
+  ;; as a bullet or in brackets) and the old template's empty "- Title:" bullets.
+  (let [line (str/trim line)]
+    (boolean (or (str/blank? line)
+                 (re-matches #"(?i)(?:[-*]\s*)?[(（\[]?\s*(?:tbd|todo|n/?a|未記入|未定)\s*[)）\]]?\.?" line)
+                 (re-matches #"-\s*[A-Za-z /]+:\s*(?:\(.*\)|（.*）|TBD|tbd|未記入)?" line)))))
+
+(defn section-content [content heading]
+  ;; Section text with placeholder-only bodies collapsed to "" so prompts and
+  ;; reference lookups never see "TBD" as content.
   (let [text (section-text content heading)]
-    (boolean (some (fn [line]
-                     (let [line (str/trim line)]
-                       (and (seq line)
-                            (not (re-matches #"-\s*[A-Za-z /]+:\s*(\(.*\))?" line)))))
-                   (str/split-lines text)))))
+    (if (every? placeholder-line? (str/split-lines text)) "" text)))
+
+(defn section-filled? [content heading]
+  ;; Template placeholders such as "- Title:" or "TBD" do not count as content.
+  (boolean (seq (section-content content heading))))
 
 (defn replace-section-body! [novel-id heading body-lines]
   (locking (novel-mutex novel-id)
@@ -903,9 +914,11 @@
           lines (vec (read-lines path))
           bullet (str "- " (now-str) ": " message)]
       (when-not (some #(= bullet %) lines)
-        (let [new-lines (if-let [{:keys [end]} (section-bounds lines "## Run History")]
-                          (let [trimmed-end (loop [i end] (if (and (> i 0) (str/blank? (nth lines (dec i)))) (recur (dec i)) i))]
-                            (vec (concat (subvec lines 0 trimmed-end) [bullet] (subvec lines trimmed-end))))
+        (let [new-lines (if-let [{:keys [body-start end]} (section-bounds lines "## Run History")]
+                          (let [body (subvec lines body-start end)
+                                body (if (every? placeholder-line? body) [""] body) ; drop the scaffold "TBD"
+                                trimmed (loop [b body] (if (and (seq b) (str/blank? (peek b))) (recur (pop b)) b))]
+                            (vec (concat (subvec lines 0 body-start) trimmed [bullet] [""] (subvec lines end))))
                           (vec (concat lines ["" "## Run History" "" bullet])))]
           (write-lines! path new-lines))))))
 
@@ -1066,12 +1079,12 @@
 (defn reference-targets [content]
   ;; From the Requirements "References:" bullets (and any wiki links in the
   ;; Requirements/Outline) collect raw reference strings.
-  (let [req (section-text content "## Requirements")
-        outline (section-text content "## Outline")
+  (let [req (section-content content "## Requirements")
+        outline (section-content content "## Outline")
         text (str req "\n" outline)
         ticks (map second (re-seq #"`([^`\n]+)`" text))
         links (map second (re-seq #"(?<!!)\[\[([^\]]+)\]\]" text))]
-    (->> (concat ticks links) (map str/trim) (remove str/blank?) distinct vec)))
+    (->> (concat ticks links) (map str/trim) (remove placeholder-line?) distinct vec)))
 
 (defn collect-references [novel-id content char-budget per-file-limit]
   (let [note-dir (fs/parent (note-path novel-id))
@@ -1489,8 +1502,8 @@
   (str "# 管理ノート " novel-id "\n"
        "- タイトル: " (:title fm) "\n"
        (when (seq (:series fm)) (str "- 連作: " (:series fm) (when (seq (:episode fm)) (str " 第" (:episode fm) "話")) "\n"))
-       "\n## Requirements\n" (section-text content "## Requirements")
-       "\n\n## Outline\n" (section-text content "## Outline") "\n"))
+       "\n## Requirements\n" (section-content content "## Requirements")
+       "\n\n## Outline\n" (section-content content "## Outline") "\n"))
 
 (defn writer-user-prompt [novel-id fm content action existing-manuscript]
   (let [budget (context-char-budget)
@@ -1498,7 +1511,7 @@
         continuity (or (continuity-text fm (quot budget 6)) "")
         manuscript-part (if (and (= :revise action) (seq existing-manuscript))
                           (str "# 現在の原稿\n" (truncate-text existing-manuscript (quot budget 3)) "\n\n"
-                               "# 改稿指示 (Review Instructions)\n" (section-text content "## Review Instructions") "\n\n")
+                               "# 改稿指示 (Review Instructions)\n" (section-content content "## Review Instructions") "\n\n")
                           "")
         remaining (- budget (count brief) (count continuity) (count manuscript-part))
         refs (collect-references novel-id content (max 2000 remaining) (quot budget 4))]
@@ -2228,6 +2241,25 @@
     (check "section-filled? ignores template placeholders"
            (and (not (section-filled? "## Requirements\n- Title:\n- Synopsis:\n## Outline\n" "## Requirements"))
                 (section-filled? "## Requirements\n- Title: ほげ\n## Outline\n" "## Requirements")))
+    (check "section-filled? ignores TBD placeholders"
+           (and (not (section-filled? "## Requirements\n\nTBD\n\n## Outline\n" "## Requirements"))
+                (not (section-filled? "## Review Instructions\n\n- 未記入\n\n## Change History\n" "## Review Instructions"))
+                (not (section-filled? "## Outline\n\n(TBD)\n\n## Review Instructions\n" "## Outline"))
+                (section-filled? "## Review Instructions\n\n結末をTBDのまま終わらせず書き切る\n\n## Change History\n" "## Review Instructions")
+                (= "" (section-content "## Requirements\n\nTBD\n\n## Outline\n" "## Requirements"))))
+    (check "TBD Review Instructions do not start a revision"
+           (= :review-instructions-empty
+              (candidate-action {:status "review" :assignee "localllm" :novel-id "NOVEL-0"} {} "## Review Instructions\n\nTBD\n\n## Change History\n\nTBD\n")))
+    (check "TBD is never a reference target"
+           (= ["ひとはこさんバース/キャラ設定/"]
+              (reference-targets "## Requirements\n\n- References: `TBD`\n- Title: x\n- Synopsis: `ひとはこさんバース/キャラ設定/`\n\n## Outline\n\nTBD\n")))
+    (check "scaffold template is concise and parseable"
+           (let [note (render-note-template {:novel-id "NOVEL-0" :title "T" :assignee "boxp" :nsfw false} fallback-note-template)]
+             (and (str/includes? note "# NOVEL-0: T")
+                  (every? #(str/includes? note %) ["## Draft Preview" "## Requirements" "## Outline" "## Review Instructions" "## Change History" "## Run History"])
+                  (not (section-filled? note "## Requirements"))
+                  (not (section-filled? note "## Review Instructions"))
+                  (not (str/includes? note "このノートは")))))
     (check "parse-json-object tolerates prose" (= "x" (:prompt (parse-json-object "here: {\"prompt\": \"x\", \"reference_images\": []} done"))))
     (check "strip-fences" (= "# T\nbody" (strip-fences "```markdown\n# T\nbody\n```")))
     (check "sanitize-error hides bearer" (= "Bearer ***" (sanitize-error "Bearer abc123")))

@@ -44,14 +44,17 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 
 ## 管理ノート
 
-`Templates/Novel Management.md` を基準に、以下を保持する。
+`Templates/Novel Management.md` を基準に、以下を保持する。scaffold 直後の管理ノートは機械用 frontmatter・作品見出し・各セクション見出しと `TBD`（未記入）だけで、運用説明はこの README に集約する（各作品へ複写しない）。
 
-- `Requirements`: タイトル、あらすじ、登場人物、文体・視点、対象読者、目標文字数、必須要素、禁止事項、参照資料、NSFW 判定。
+- `Draft Preview`: Review 到達後に runner が未承認草稿の本文リンク・実在する挿絵・更新状況・生成 agent/model を表示する。SFW は `Novels/Drafts/NOVEL-N/`、NSFW は `NSFW/小説/草稿/NOVEL-N/`。手動編集した草稿は上書きせず競合として残し、runner 更新版への別リンクを表示する。承認は Board の Done 操作で行う。
+- `Requirements`: タイトル、あらすじ、登場人物、文体・視点、対象読者、目標文字数、必須要素、禁止事項、参照資料、NSFW 判定（執筆条件。保存分類の正本は Board の `#nsfw`）。Backlog で agent を割り当てると runner が整理して埋める。
 - `Outline`: 章立て、場面、展開。
-- `Review Instructions`: 人間からの最新の具体的な改稿指示。指示が空のまま agent を割り当てても Review から再開しない。
+- `Review Instructions`: 人間からの最新の具体的な改稿指示。指示が空または `TBD` のまま agent を割り当てても Review から再開しない。
 - `Change History`: 原稿の変更履歴。
-- `Run History`: runner の実行、停止理由、再開条件、使用モデル。
-- frontmatter `series` / `episode` / `continuity`: 連作の名前・話数・整合メモ（vault 内パス）。runner は整合メモを context に含める。
+- `Run History`: runner の実行、停止理由、再開条件、使用モデル。最初の記録で `TBD` は置き換わる。
+- frontmatter `series` / `episode` / `continuity`: 連作の名前・話数・整合メモ（vault 内パス。例: `Projects/運動会連作/README.md`）。runner は設定・伏線・人物の知識状態の引き継ぎとして整合メモを context に含める。
+
+`TBD` / `TODO` / `未記入` / `未定`（括弧や箇条書き付きでも可）と、空の `- Title:` 形式の箇条書きは「未記入」として扱う。runner はこれらを執筆条件・改稿指示・参照ファイル・実行履歴のいずれとしても解釈せず、prompt にも含めない。frontmatter の `status` / `nsfw` / パス類には `TBD` を書かない（型が壊れる）。
 
 参照資料は `Requirements` の `References:` に vault 内のノートまたはディレクトリをバッククォート（例: `` `ひとはこさんバース/キャラ設定/` ``）か `[[リンク]]` で列挙する。許可されたディレクトリ（既定: `ひとはこさんバース`, `Novels`, `Projects`, `Attachments`, `attachments`, `小説草案`）以外は読まない。
 
