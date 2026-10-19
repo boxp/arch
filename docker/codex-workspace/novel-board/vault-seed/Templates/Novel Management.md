@@ -29,7 +29,7 @@ published-at:
 - `Review`: 人間が原稿と挿絵を確認する。改稿時は `Review Instructions` を記録して agent を割り当て、承認時だけ人間がカードを `Done` へ移す。
 - `Done`: agent は再実行せず、runner が承認済み原稿と挿絵をカードの `#nsfw` に従って一度だけ完成版へ配置する。
 
-カードのレーンが source of truth であり、このノートの `status` / `assignee` を直接変えても遷移しない。停止理由と再開条件は `Run History`、改稿指示は `Review Instructions`、原稿の変更内容は `Change History` に残す。
+レーン（`status`）と NSFW 分類はカードが正本であり、このノートの `status` を直接変えても遷移しない。担当（`assignee`）はこのノートの frontmatter とカードの `assignee::` のどちらを変えてもよく、runner が双方を揃えてから起動する（両側を同時に別の値へ変えた場合はカードの値を採用し `Run History` に記録する）。停止理由と再開条件は `Run History`、改稿指示は `Review Instructions`、原稿の変更内容は `Change History` に残す。
 
 連作の場合は `series`（連作名）、`episode`（話数）、`continuity`（vault 内の整合メモのパス。例: `Projects/運動会連作/README.md`）を frontmatter に書くと、runner が設定・伏線・人物の知識状態の引き継ぎとして context に含める。
 

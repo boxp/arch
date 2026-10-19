@@ -18,7 +18,7 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 - `Templates/Novel Management.md` から `Novels/NOVEL-N.md` を作成する。
 - 元の行を `[[Novels/NOVEL-N|NOVEL-N: タイトル]] #novel status::backlog assignee::...` 形式へ置き換える。
 
-`assignee::` を省略した場合は `boxp` となり、執筆 agent は起動しない。`#nsfw` は正式カードと管理ノートへ引き継がれる。
+`assignee::` を省略した場合は `boxp` となり、執筆 agent は起動しない。scaffold 後の担当変更は、カードの `assignee::` でも管理ノート frontmatter の `assignee` でもよい（Task Board と同じ操作感。Kanban UI でカードを追加する場合はタイトルだけを入力する。`- [ ] タイトル` と入力すると先頭のチェックボックスが二重になるが、runner が scaffold 時に取り除く）。`#nsfw` は正式カードと管理ノートへ引き継がれる。
 `#novel-rule` は runner が scaffold 対象から除外する予約タグであり、作品タイトルには使用しない。
 
 ## 対応 agent（assignee）
@@ -40,7 +40,7 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 - `Review`: 管理ノートの `Draft Preview` から vault 内の原稿と挿絵を人間確認する。草稿は未承認。改稿する場合は `Review Instructions` に具体的な指示を保存して対応 agent を割り当てる（指示が空なら起動しない）。承認する場合だけ、人間がカードを `Done` へ移す。
 - `Done`: agent は再実行しない。runner は承認済み private 原稿と挿絵を、カード上の `#nsfw` に従って完成版フォルダへ一度だけ配置する。
 
-カードのレーンが状態の source of truth である。NSFW 分類の入力はカードの正規タグ `#nsfw` とし、管理ノート frontmatter は runner が同期する表示値、Requirements の記述は執筆条件として扱う。すでに NSFW として同期した草稿を自動で一般向けへ降格せず、その状態での SFW 完成版配置も拒否する。カードの `status::` や管理ノート frontmatter と不一致の場合、runner がレーンに合わせて同期する。過去の run state を理由にレーンを戻さない。run 中に人間がカードを別レーンへ動かした場合、runner はレーンと担当を変更せず結果だけを `Run History` に記録する。
+カードのレーンが状態の source of truth である。担当（assignee）はカードと管理ノート frontmatter の双方向同期で、runner は最後に両側が一致した値を `~/.novel-board/assignee-sync/` に記録し、人間が変えた側を他方へ反映してから起動する。状態が無い初回（旧ノート）はカードの値を採用し、両側が同時に別の値へ変わった場合もカードを採用して `Run History` に1回記録する。active run 中はこの調整を行わず、run 中に管理ノートで別 agent へ変更した場合は run 完了後に新担当へ引き渡す。NSFW 分類の入力はカードの正規タグ `#nsfw` とし、管理ノート frontmatter は runner が同期する表示値、Requirements の記述は執筆条件として扱う。すでに NSFW として同期した草稿を自動で一般向けへ降格せず、その状態での SFW 完成版配置も拒否する。カードの `status::` や管理ノート frontmatter と不一致の場合、runner がレーンに合わせて同期する。過去の run state を理由にレーンを戻さない。run 中に人間がカードを別レーンへ動かした場合、runner はレーンと担当を変更せず結果だけを `Run History` に記録する。
 
 ## 管理ノート
 
