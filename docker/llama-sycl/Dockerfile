@@ -28,6 +28,7 @@ RUN apt-get update \
       clinfo \
       intel-ocloc \
       intel-oneapi-compiler-dpcpp-cpp \
+      intel-oneapi-dnnl-devel \
       intel-oneapi-mkl-devel \
       intel-opencl-icd \
       libze-dev \
@@ -90,6 +91,7 @@ RUN apt-get update \
       clinfo \
       intel-ocloc \
       intel-oneapi-compiler-dpcpp-cpp-runtime \
+      intel-oneapi-dnnl \
       intel-oneapi-mkl-core \
       intel-oneapi-mkl-sycl \
       intel-oneapi-openmp \
