@@ -283,8 +283,15 @@
 (def lifecycle-commit-lock (Object.))
 (def committing-cards (atom 0))
 
+;; Wall-clock anchor of the shutdown hook (epoch millis), set once by
+;; `request-shutdown!`. The commit budget below is measured from it, so the
+;; wait for an in-progress lifecycle commit is bounded by the Pod's remaining
+;; grace and not by the time the agent stop happened to take.
+(def shutdown-started-at-ms (atom nil))
+
 (defn request-shutdown! []
   (locking lifecycle-commit-lock
+    (compare-and-set! shutdown-started-at-ms nil (System/currentTimeMillis))
     (reset! shutdown-requested? true)))
 
 ;; run-id -> java.lang.Process of the agent CLI started through `setsid`. The
@@ -383,26 +390,64 @@
                  (catch Exception _ 5))]
     (max 0 (min parsed 15))))
 
+(defn shutdown-commit-budget-seconds []
+  ;; How long after the hook started an in-progress lifecycle commit (lane,
+  ;; frontmatter, Notes, summary, gate diagnostic / retry counter, lock) may
+  ;; keep running before the hook returns anyway. A commit is local vault /
+  ;; run-dir writes only, so it normally finishes in well under a second; the
+  ;; budget exists for a stalled filesystem. Measured from the hook start, so
+  ;; preStop (~3 s) + budget + the kubelet margin stays inside
+  ;; terminationGracePeriodSeconds (60) even when the agent grace (20 s) and
+  ;; the KILL wait (2 s) were fully used.
+  (let [parsed (try
+                 (Long/parseLong (env "CODEX_TASK_BOARD_SHUTDOWN_COMMIT_BUDGET_SECONDS" "45"))
+                 (catch Exception _ 45))]
+    (max 0 (min parsed 55))))
+
+(defn shutdown-commit-deadline-ms []
+  (+ (or @shutdown-started-at-ms (System/currentTimeMillis))
+     (* 1000 (shutdown-commit-budget-seconds))))
+
 (defn await-in-flight-finalization! []
+  ;; Two deadlines:
+  ;; - `process-card!` futures that only have to record their interrupted run
+  ;;   get the short finalize window (the next owner re-marks the run anyway).
+  ;; - A lifecycle commit that began before the flag was raised must not be
+  ;;   cut in half (lane moved, frontmatter stale, lock released without the
+  ;;   summary). It is waited for up to the shutdown commit budget measured
+  ;;   from the hook start, and the future that ran it gets a fresh finalize
+  ;;   window afterwards so its lock release / summary write also lands.
+  ;;   Tests drive this through `committing-cards` without `in-flight-futures`.
   (let [futures (vals @in-flight-futures)
-        deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-finalize-seconds)))
-        pending? (fn []
-                   (or (some #(not (future-done? %)) futures)
-                       ;; A lifecycle commit that began before the flag was
-                       ;; raised must finish, otherwise the card is left half
-                       ;; moved (tests drive this without `in-flight-futures`).
-                       (pos? @committing-cards)))]
-    (when (pending?)
-      (loop []
-        (when (and (pending?) (< (System/currentTimeMillis) deadline))
-          (Thread/sleep 100)
-          (recur)))
+        finalize-ms (* 1000 (shutdown-finalize-seconds))
+        start (System/currentTimeMillis)
+        commit-deadline (max (+ start finalize-ms) (shutdown-commit-deadline-ms))
+        futures-pending? (fn [] (boolean (some #(not (future-done? %)) futures)))
+        committing? (fn [] (pos? @committing-cards))]
+    (when (or (futures-pending?) (committing?))
+      (loop [futures-deadline (+ start finalize-ms)]
+        (let [t (System/currentTimeMillis)
+              committing (committing?)
+              futures-deadline (if committing
+                                 (min commit-deadline (+ t finalize-ms))
+                                 futures-deadline)]
+          (when (or (and committing (< t commit-deadline))
+                    (and (futures-pending?) (< t futures-deadline)))
+            (Thread/sleep 100)
+            (recur futures-deadline))))
       (let [pending (count (remove future-done? futures))
             committing @committing-cards]
-        (if (and (zero? pending) (zero? committing))
+        (cond
+          (and (zero? pending) (zero? committing))
           (log! "shutdown: in-flight card processing finalized")
-          (log! (str "shutdown: " pending " in-flight card(s) and " committing
-                     " lifecycle commit(s) not finalized within "
+
+          (pos? committing)
+          (log! (str "shutdown: " committing " lifecycle commit(s) still in progress "
+                     (shutdown-commit-budget-seconds) "s after the shutdown started; exiting to stay inside "
+                     "terminationGracePeriodSeconds, the next owner recovers the card through the planned-shutdown marker"))
+
+          :else
+          (log! (str "shutdown: " pending " in-flight card(s) not finalized within "
                      (shutdown-finalize-seconds) "s; the next owner records them as interrupted")))))))
 
 (defn install-shutdown-hook! []
@@ -3323,26 +3368,46 @@
               (swap! failures conj label))))))
 
     ;; The hook's finalize wait must cover a lifecycle commit that began before
-    ;; the flag was raised, not only `in-flight-futures`.
-    (let [logs (atom [])]
-      (try
-        (swap! committing-cards inc)
-        (let [waiter (future (with-redefs [shutdown-finalize-seconds (constantly 3)
-                                           log! (fn [m] (swap! logs conj m))]
-                               (await-in-flight-finalization!)))]
-          (Thread/sleep 500)
-          (let [returned-early? (future-done? waiter)]
-            (swap! committing-cards dec)
-            (deref waiter 5000 :timeout)
-            (if (and (not returned-early?)
-                     (future-done? waiter)
-                     (some #(= "shutdown: in-flight card processing finalized" %) @logs))
-              (println "PASS: shutdown finalize wait covers an in-progress lifecycle commit")
-              (do
-                (println (str "FAIL: finalize wait early=" returned-early? " logs=" (pr-str @logs)))
-                (swap! failures conj "finalize wait covers lifecycle commit")))))
-        (finally
-          (reset! committing-cards 0))))
+    ;; the flag was raised, not only `in-flight-futures`. A commit is waited for
+    ;; up to the shutdown commit budget (measured from the hook start), not only
+    ;; the short finalize window, and is given up at the budget so the Pod
+    ;; still exits inside terminationGracePeriodSeconds.
+    (doseq [{:keys [label finalize budget hold-ms probe-ms expect-early? expect-log]}
+            [{:label "shutdown finalize wait covers an in-progress lifecycle commit"
+              :finalize 3 :budget 10 :hold-ms 500 :probe-ms 500
+              :expect-early? false
+              :expect-log "shutdown: in-flight card processing finalized"}
+             {:label "shutdown finalize wait covers a lifecycle commit longer than the finalize window"
+              :finalize 1 :budget 10 :hold-ms 2500 :probe-ms 2000
+              :expect-early? false
+              :expect-log "shutdown: in-flight card processing finalized"}
+             {:label "shutdown finalize wait gives up a lifecycle commit at the shutdown commit budget"
+              :finalize 1 :budget 2 :hold-ms 5000 :probe-ms 3500
+              :expect-early? true
+              :expect-log "shutdown: 1 lifecycle commit(s) still in progress 2s after the shutdown started; exiting to stay inside terminationGracePeriodSeconds, the next owner recovers the card through the planned-shutdown marker"}]]
+      (let [logs (atom [])]
+        (try
+          (reset! shutdown-started-at-ms nil)
+          (swap! committing-cards inc)
+          (let [waiter (future (with-redefs [shutdown-finalize-seconds (constantly finalize)
+                                             shutdown-commit-budget-seconds (constantly budget)
+                                             log! (fn [m] (swap! logs conj m))]
+                                 (await-in-flight-finalization!)))
+                releaser (future (Thread/sleep hold-ms) (swap! committing-cards dec))]
+            (Thread/sleep probe-ms)
+            (let [returned-early? (future-done? waiter)]
+              @releaser
+              (deref waiter 5000 :timeout)
+              (if (and (= (boolean expect-early?) returned-early?)
+                       (future-done? waiter)
+                       (some #(= expect-log %) @logs))
+                (println (str "PASS: " label))
+                (do
+                  (println (str "FAIL: " label " early=" returned-early? " logs=" (pr-str @logs)))
+                  (swap! failures conj label)))))
+          (finally
+            (reset! committing-cards 0)
+            (reset! shutdown-started-at-ms nil)))))
 
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
