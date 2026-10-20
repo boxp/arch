@@ -382,7 +382,11 @@
     (signal-process-group! process "TERM")))
 
 (defn unregister-agent-process! [novel-id]
-  (swap! in-flight-agent-processes dissoc novel-id))
+  ;; During shutdown the registry doubles as the final KILL list: keep the
+  ;; entry so a TERM-resistant child of an agent that already exited is still
+  ;; killed by the group KILL pass.
+  (when-not @shutdown-requested?
+    (swap! in-flight-agent-processes dissoc novel-id)))
 
 (defn shutdown-agent-grace-seconds []
   ;; Bounded wait for agents after TERM. Must stay well below the Pod's
@@ -2791,12 +2795,42 @@
                   (not (str/includes? (cloud-prompt "NOVEL-0" {} "## Review Instructions\n\nTBD\n" :write "claude-sonnet") "follow them as well")))))
     ;; Shutdown race: an agent registered while `stop-in-flight-agents!` is
     ;; waiting, and one registered after it finished, must both be killed.
-    (let [start-resistant! (fn []
-                             (:proc (p/process ["setsid" "sh" "-c" "trap '' TERM; sleep 60"]
-                                               {:out :string :err :string})))
+    (let [wait-for-file! (fn [path]
+                           (let [deadline (+ (System/currentTimeMillis) 5000)]
+                             (while (and (not (fs/exists? path)) (< (System/currentTimeMillis) deadline))
+                               (Thread/sleep 20))))
+          start-resistant! (fn []
+                             ;; Only return once the trap is installed, otherwise a
+                             ;; TERM sent right after start would still kill it.
+                             (let [ready (str (fs/create-temp-file {:prefix "shutdown-ready"}))]
+                               (fs/delete ready)
+                               (let [proc (:proc (p/process ["setsid" "sh" "-c"
+                                                             (str "trap '' TERM; : > " ready "; exec sleep 60")]
+                                                            {:out :string :err :string}))]
+                                 (wait-for-file! ready)
+                                 (fs/delete-if-exists ready)
+                                 proc)))
           early (start-resistant!)
           late (atom nil)
-          after (atom nil)]
+          after (atom nil)
+          orphaning (atom nil)
+          ;; Created by the child itself; `wait-for-file!` must not see an empty file.
+          orphan-pid-file (let [path (str (fs/create-temp-file {:prefix "shutdown-orphan" :suffix ".pid"}))]
+                            (fs/delete path)
+                            path)
+          orphan-pid (fn [] (when (fs/exists? orphan-pid-file)
+                              (some-> (slurp orphan-pid-file) str/trim not-empty)))
+          ;; A killed orphan may linger as a zombie until init reaps it, so
+          ;; treat zombies as stopped and allow a short settle time.
+          orphan-alive? (fn []
+                          (when-let [pid (orphan-pid)]
+                            (let [deadline (+ (System/currentTimeMillis) 3000)]
+                              (loop []
+                                (let [stat (str/trim (:out @(p/process ["ps" "-o" "stat=" "-p" pid] {:out :string :err :string})))
+                                      alive (and (seq stat) (not (str/starts-with? stat "Z")))]
+                                  (if (and alive (< (System/currentTimeMillis) deadline))
+                                    (do (Thread/sleep 50) (recur))
+                                    alive))))))]
       (try
         (reset! shutdown-requested? true)
         (register-agent-process! "NOVEL-race-early" early)
@@ -2805,6 +2839,16 @@
           (Thread/sleep 500)
           (reset! late (start-resistant!))
           (register-agent-process! "NOVEL-race-late" @late)
+          ;; Agent that exits on TERM but leaves a TERM-ignoring child behind,
+          ;; and is unregistered (as `run-agent!` does) before the final KILL.
+          (reset! orphaning (:proc (p/process ["setsid" "sh" "-c"
+                                               (str "sh -c 'trap \"\" TERM; echo $$ > " orphan-pid-file "; exec sleep 60' & wait")]
+                                              {:out :string :err :string})))
+          ;; Wait for the child's trap before the registration TERMs the group.
+          (wait-for-file! orphan-pid-file)
+          (register-agent-process! "NOVEL-race-orphaning" @orphaning)
+          (.waitFor ^java.lang.Process @orphaning 3 java.util.concurrent.TimeUnit/SECONDS)
+          (unregister-agent-process! "NOVEL-race-orphaning")
           @stopper)
         (reset! after (start-resistant!))
         (register-agent-process! "NOVEL-race-after" @after)
@@ -2815,9 +2859,14 @@
                (and @in-flight-agents-stopped?
                     (not (.isAlive ^java.lang.Process early))
                     (not (.isAlive ^java.lang.Process @late))
-                    (not (.isAlive ^java.lang.Process @after))))
+                    (not (.isAlive ^java.lang.Process @after))
+                 (some? (orphan-pid))
+                 (not (orphan-alive?))))
         (finally
-          (doseq [p (remove nil? [early @late @after])
+          (when-let [pid (orphan-pid)]
+            @(p/process ["/bin/kill" "-KILL" pid] {:out :string :err :string}))
+          (fs/delete-if-exists orphan-pid-file)
+          (doseq [p (remove nil? [early @late @after @orphaning])
                   :when (.isAlive ^java.lang.Process p)]
             (signal-process-group! p "KILL"))
           (reset! in-flight-agent-processes {})
