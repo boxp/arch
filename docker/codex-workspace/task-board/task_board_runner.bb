@@ -2056,10 +2056,23 @@
                 ;; block releases the `committing-cards` slot exactly once.
                 committing? (atom false)]
             (try
-              (when (#{"ready" "review" "blocked"} status)
-                (move-card! ticket-id "in-progress")
-                (update-frontmatter! ticket-id {:status "in-progress"}))
-              (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
+              ;; The start transition (lane, frontmatter, start Note) is a
+              ;; lifecycle commit as well: a TERM that lands right after the
+              ;; lock was taken must not move the card to In Progress, and a
+              ;; TERM during the transition lets it complete (the hook waits).
+              (begin-lifecycle-commit!)
+              (reset! committing? true)
+              (try
+                (when (#{"ready" "review" "blocked"} status)
+                  (move-card! ticket-id "in-progress")
+                  (update-frontmatter! ticket-id {:status "in-progress"}))
+                (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
+                (finally
+                  (reset! committing? false)
+                  (swap! committing-cards dec)))
+              ;; Do not start an agent the hook would only have to stop again
+              ;; (a TERM after this check is covered by `register-agent-process!`).
+              (ensure-not-shutting-down! "before agent start")
               (let [{:keys [exit result run-id dir last-message idle-timeout? shutdown?]} (run-agent! ticket-id action effective-lane assignee lock)
                     _ (when shutdown?
                         ;; `run-agent!` already recorded the interrupted run.
@@ -3203,12 +3216,15 @@
           (reset! in-flight-agents-stopped? false)
           (reset! shutdown-requested? false))))
 
-    ;; Shutdown after the agent exited normally: `run-agent!` reports the stale
-    ;; `shutdown?` it observed at exit, so `process-card!` must consult the live
-    ;; flag before the review gate and before committing lane / frontmatter /
-    ;; lock changes. Both windows must record the run as interrupted and keep
-    ;; the lock for the next owner.
-    (doseq [[label raise-at] [["shutdown raised after agent exit" :after-agent]
+    ;; Shutdown after the lock was taken or after the agent exited normally:
+    ;; `run-agent!` reports the stale `shutdown?` it observed at exit, so
+    ;; `process-card!` must consult the live flag before the start transition,
+    ;; before the review gate and before committing lane / frontmatter / lock
+    ;; changes. Each window must record the run as interrupted and keep the
+    ;; lock for the next owner; a transition already begun runs to completion.
+    (doseq [[label raise-at] [["shutdown raised before the start transition" :before-start]
+                              ["shutdown raised during the start transition" :during-start]
+                              ["shutdown raised after agent exit" :after-agent]
                               ["shutdown raised during the review gate" :during-gate]
                               ;; Once the commit section was entered the flag no
                               ;; longer interrupts it: the lane / frontmatter /
@@ -3218,15 +3234,24 @@
                               ["shutdown raised during the lifecycle commit" :during-commit]]]
       (let [calls (atom [])
             record! (fn [k & args] (swap! calls conj (into [k] args)) nil)
-            lock {:run-id (str "shutdown-commit-" (name raise-at)) :owner-id "test-owner"}]
+            lock {:run-id (str "shutdown-commit-" (name raise-at)) :owner-id "test-owner"}
+            ;; The start cases drive a Ready card so the start transition itself
+            ;; moves the lane; the others start from In Progress.
+            start-case? (#{:before-start :during-start} raise-at)
+            card (if start-case?
+                   {:ticket-id "TEST-SHUTDOWN" :lane "Ready" :status "ready"}
+                   {:ticket-id "TEST-SHUTDOWN" :lane "In Progress" :status "in-progress"})]
         (try
           (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-fable"})
                         candidate-action (fn [& _] :implement)
-                        acquire-lock! (fn [& _] lock)
+                        acquire-lock! (fn [& _]
+                                        (when (= :before-start raise-at)
+                                          (request-shutdown!))
+                                        lock)
                         heartbeat! (fn [& _] (future nil))
                         move-card! (fn [& args]
                                      (apply record! :move-card! args)
-                                     (when (= :during-commit raise-at)
+                                     (when (#{:during-start :during-commit} raise-at)
                                        (request-shutdown!)))
                         update-frontmatter! (partial record! :update-frontmatter!)
                         append-note! (partial record! :append-note!)
@@ -3239,6 +3264,7 @@
                         clear-pr-gate-retries! (partial record! :clear-pr-gate-retries!)
                         log! (fn [& _] nil)
                         run-agent! (fn [& _]
+                                     (record! :run-agent!)
                                      (when (= :after-agent raise-at)
                                        (reset! shutdown-requested? true))
                                      {:exit 0 :result "review" :run-id (:run-id lock)
@@ -3249,32 +3275,48 @@
                                        (when (= :during-gate raise-at)
                                          (reset! shutdown-requested? true))
                                        {:ok? true :pr-urls ["https://github.com/boxp/arch/pull/1"]})]
-            (process-card! {:ticket-id "TEST-SHUTDOWN" :lane "In Progress" :status "in-progress"}))
+            (process-card! card))
           (finally
             (reset! shutdown-requested? false)))
         (let [kinds (set (map first @calls))
+              count-of (fn [k] (count (filter #(= k (first %)) @calls)))
+              agent-ran? (contains? kinds :run-agent!)
               gate-ran? (contains? kinds :review-gate!)
+              expected-agent? (not start-case?)
               expected-gate? (#{:during-gate :during-commit} raise-at)
               interrupted? (some #{[:mark-run! :interrupted]} @calls)
               committed? (and (some #{[:mark-run! :succeeded]} @calls)
                               (every? kinds [:move-card! :update-frontmatter! :release-lock!
                                              :persist-pr-gate-diagnostic! :clear-pr-gate-retries!])
-                              (= 2 (count (filter #(= :append-note! (first %)) @calls))))
+                              (= 2 (count-of :append-note!)))
+              ;; Nothing after the start transition was written.
               untouched? (and (not-any? #{[:mark-run! :succeeded] [:mark-run! :retrying]} @calls)
-                              (not-any? kinds [:move-card! :update-frontmatter! :release-lock!
-                                               :block-ticket! :restore-card-state!
+                              (not-any? kinds [:release-lock! :block-ticket! :restore-card-state!
                                                :persist-pr-gate-diagnostic! :record-pr-gate-failure!
                                                :clear-pr-gate-retries!])
-                              (= 1 (count (filter #(= :append-note! (first %)) @calls))))
-              ok? (and (= (boolean expected-gate?) gate-ran?)
+                              (case raise-at
+                                ;; Lock taken, flag already up: no lane / frontmatter / Note at all.
+                                :before-start (and (zero? (count-of :move-card!))
+                                                   (zero? (count-of :update-frontmatter!))
+                                                   (zero? (count-of :append-note!)))
+                                ;; Start transition completes; nothing else.
+                                :during-start (and (= [[:move-card! "TEST-SHUTDOWN" "in-progress"]] (filter #(= :move-card! (first %)) @calls))
+                                                   (= 1 (count-of :update-frontmatter!))
+                                                   (= 1 (count-of :append-note!)))
+                                (and (zero? (count-of :move-card!))
+                                     (zero? (count-of :update-frontmatter!))
+                                     (= 1 (count-of :append-note!)))))
+              ok? (and (= (boolean expected-agent?) agent-ran?)
+                       (= (boolean expected-gate?) gate-ran?)
                        (zero? @committing-cards)
                        (if (= :during-commit raise-at)
                          (and committed? (not interrupted?))
                          (and interrupted? untouched?)))]
           (if ok?
             (println (str "PASS: " label
-                          (if (= :during-commit raise-at)
-                            " completes the commit and releases the lock"
+                          (case raise-at
+                            :during-commit " completes the commit and releases the lock"
+                            :during-start " completes the start transition, skips the agent and keeps the lock"
                             " keeps the lock and records an interrupted run")))
             (do
               (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))

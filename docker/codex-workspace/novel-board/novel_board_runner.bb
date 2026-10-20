@@ -355,6 +355,40 @@
 ;; for the next owner) instead of being treated as a failed generation.
 (def shutdown-requested? (atom false))
 
+;; `process-card!` decides "still allowed to commit lane / assignee /
+;; frontmatter / history / lock changes?" and enters its commit sections (the
+;; start transition and `finish-run!`) under this monitor; the shutdown hook
+;; raises `shutdown-requested?` under the same monitor. So either the check
+;; sees the flag (the run is recorded as interrupted and nothing is written),
+;; or the commit has already begun and is counted in `committing-cards`, which
+;; the hook then waits for (bounded). A commit is never cut in half by the flag.
+(def lifecycle-commit-lock (Object.))
+(def committing-cards (atom 0))
+
+(defn request-shutdown! []
+  (locking lifecycle-commit-lock
+    (reset! shutdown-requested? true)))
+
+(defn ensure-not-shutting-down!
+  "Abort `process-card!` when the SIGTERM hook raised the live shutdown flag.
+  `:shutdown? true` routes the exception to the interrupted-run path."
+  [stage]
+  (when @shutdown-requested?
+    (throw (ex-info (str "planned workspace shutdown requested " stage)
+                    {:shutdown? true}))))
+
+(defn begin-lifecycle-commit!
+  "Atomically re-check the live shutdown flag and enter a commit section of
+  `process-card!`. Runs under `lifecycle-commit-lock`, the monitor the hook
+  takes to raise the flag, so a TERM either arrives before the check (run is
+  recorded as interrupted, nothing committed) or after it (the whole commit
+  runs and the hook waits for it in `await-in-flight-finalization!`). Returns
+  only after `committing-cards` was incremented; the caller decrements it."
+  [stage]
+  (locking lifecycle-commit-lock
+    (ensure-not-shutting-down! stage)
+    (swap! committing-cards inc)))
+
 ;; novel-id -> java.lang.Process of a cloud agent CLI started through `setsid`.
 ;; The shutdown hook signals these process groups so the agent and its
 ;; descendants receive TERM before PID 1 exits and the PID namespace is torn
@@ -436,17 +470,24 @@
 
 (defn await-in-flight-finalization! []
   (let [futures (vals @in-flight)
-        deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-finalize-seconds)))]
-    (when (seq futures)
+        deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-finalize-seconds)))
+        pending? (fn []
+                   (or (some #(not (future-done? %)) futures)
+                       ;; A lifecycle commit that began before the flag was
+                       ;; raised must finish, otherwise the card is left half
+                       ;; moved (tests drive this without `in-flight`).
+                       (pos? @committing-cards)))]
+    (when (pending?)
       (loop []
-        (when (and (some #(not (future-done? %)) futures)
-                   (< (System/currentTimeMillis) deadline))
+        (when (and (pending?) (< (System/currentTimeMillis) deadline))
           (Thread/sleep 100)
           (recur)))
-      (let [pending (count (remove future-done? futures))]
-        (if (zero? pending)
+      (let [pending (count (remove future-done? futures))
+            committing @committing-cards]
+        (if (and (zero? pending) (zero? committing))
           (log! "shutdown: in-flight card processing finalized")
-          (log! (str "shutdown: " pending " in-flight card(s) not finalized within "
+          (log! (str "shutdown: " pending " in-flight card(s) and " committing
+                     " lifecycle commit(s) not finalized within "
                      (shutdown-finalize-seconds) "s; the next owner records them as interrupted")))))))
 
 (defn install-shutdown-hook! []
@@ -456,7 +497,7 @@
      (Thread. ^Runnable (fn []
                           ;; Marker first: it is what lets the next owner recover
                           ;; this owner's locks even if everything below fails.
-                          (reset! shutdown-requested? true)
+                          (request-shutdown!)
                           (try (prepare-shutdown!)
                                (catch Exception e
                                  (binding [*out* *err*]
@@ -2534,6 +2575,13 @@
                 ;; change is made here. Partial output stays in the work dir and
                 ;; is never promoted to the manuscript.
                 keep-lock? (atom false)
+                ;; Set while a lifecycle commit is in progress, so the finally
+                ;; block releases the `committing-cards` slot exactly once.
+                committing? (atom false)
+                end-commit! (fn []
+                              (when @committing?
+                                (reset! committing? false)
+                                (swap! committing-cards dec)))
                 record-shutdown! (fn [detail]
                                    (reset! keep-lock? true)
                                    (mark-run! novel-id (:run-id lock) :interrupted
@@ -2546,6 +2594,12 @@
                                    (log! (str novel-id " run " (:run-id lock)
                                               " interrupted by planned workspace shutdown; lock kept for the next owner")))]
             (try
+              ;; The start transition (lane, frontmatter, history, :running) is
+              ;; a lifecycle commit: a TERM that lands right after the lock was
+              ;; taken must not move the card, and a TERM during the transition
+              ;; lets it complete (the hook waits for it).
+              (begin-lifecycle-commit! "before the start transition")
+              (reset! committing? true)
               (when (and (#{:write :revise} action) (not= "in-progress" status))
                 (move-card! novel-id "in-progress" nil)
                 (update-frontmatter! novel-id {:status "in-progress"}))
@@ -2560,6 +2614,11 @@
                                                  :revise "; Review Instructions あり: 改稿指示として渡す"
                                                  ""))))
               (mark-run! novel-id (:run-id lock) :running {:action action :agent agent :lane lane :started-at (now-str)})
+              (end-commit!)
+              ;; Do not start a generation the hook would only have to stop
+              ;; again (a TERM after this check is covered by the agent
+              ;; registration / the stream reader's live flag).
+              (ensure-not-shutting-down! "before the run")
               (let [outcome (try
                               (if (#{:groom :regroom} action)
                                 (run-groom! novel-id card fm content action agent run-dir)
@@ -2568,22 +2627,31 @@
                                 (if (or (:shutdown? (ex-data e)) @shutdown-requested?)
                                   {:ok? false :shutdown? true :reason (sanitize-error (.getMessage e))}
                                   {:ok? false :reason (str "runner 内部エラー: " (sanitize-error (.getMessage e)) "。再開条件: 原因解消後に agent を再割当")})))]
-                (if (or (:shutdown? outcome) @shutdown-requested?)
+                (if (:shutdown? outcome)
                   (record-shutdown! (cond-> {:detail (:reason outcome)}
                                       (contains? outcome :agent-exit-code) (assoc :agent-exit-code (:agent-exit-code outcome))))
                   (do
+                    ;; Re-check the live flag atomically with entering the
+                    ;; final commit: a TERM after the generation finished must
+                    ;; still leave lane / assignee / frontmatter / lock to the
+                    ;; next owner, while a TERM during `finish-run!` lets it
+                    ;; complete.
+                    (begin-lifecycle-commit! "before the final transition")
+                    (reset! committing? true)
                     ;; A successful run consumed the instructions as they were when it
                     ;; started; remember that so the same text is not re-applied forever
                     ;; (the human's text itself is never deleted by the runner).
                     (when (and (:ok? outcome) (seq instructions))
                       (record-applied-instructions! novel-id instructions (:run-id lock) action))
-                    (finish-run! novel-id lock card action outcome run-dir))))
+                    (finish-run! novel-id lock card action outcome run-dir)
+                    (end-commit!))))
               (catch Exception e
-                (if @shutdown-requested?
+                (if (or (:shutdown? (ex-data e)) @shutdown-requested?)
                   (record-shutdown! {:error (sanitize-error (.getMessage e))})
                   (do (log! (str novel-id " failed to finish run: " (.getMessage e)))
                       (mark-run! novel-id (:run-id lock) :failed {:reason (sanitize-error (.getMessage e)) :finished-at (now-str)}))))
               (finally
+                (end-commit!)
                 (reset! stop? true)
                 (try @hb (catch Exception _ nil))
                 (when-not @keep-lock?
@@ -2872,6 +2940,98 @@
           (reset! in-flight-agent-processes {})
           (reset! in-flight-agents-stopped? false)
           (reset! shutdown-requested? false))))
+    ;; Shutdown after the lock was taken or after the generation finished: the
+    ;; live flag must be consulted atomically with entering each commit section
+    ;; (start transition, `finish-run!`). Each window records the run as
+    ;; interrupted and keeps the lock; a transition already begun completes.
+    (doseq [[label raise-at] [["shutdown raised before the start transition" :before-start]
+                              ["shutdown raised during the start transition" :during-start]
+                              ["shutdown raised after the run finished" :after-run]
+                              ["shutdown raised during finish-run!" :during-finish]]]
+      (let [calls (atom [])
+            record! (fn [k & args] (swap! calls conj (into [k] args)) nil)
+            lock {:run-id (str "shutdown-commit-" (name raise-at)) :owner-id "test-owner"}
+            card {:novel-id "NOVEL-0" :status "draft" :assignee "claude-fable" :lane "Draft" :title "T" :nsfw false}]
+        (try
+          (with-redefs [note-frontmatter (fn [_] {:assignee "claude-fable"})
+                        note-content (fn [_] "")
+                        candidate-action (fn [& _] :write)
+                        acquire-lock! (fn [& _]
+                                        (when (= :before-start raise-at) (request-shutdown!))
+                                        lock)
+                        current-card (fn [_] card)
+                        heartbeat! (fn [& _] (future nil))
+                        run-dir (fn [& _] "/nonexistent")
+                        ensure-private-dir! identity
+                        move-card! (fn [& args]
+                                     (apply record! :move-card! args)
+                                     (when (= :during-start raise-at) (request-shutdown!)))
+                        update-frontmatter! (partial record! :update-frontmatter!)
+                        append-history! (partial record! :append-history!)
+                        mark-run! (fn [_ _ status _] (record! :mark-run! status))
+                        run-write! (fn [& _]
+                                     (record! :run-write!)
+                                     (when (= :after-run raise-at) (reset! shutdown-requested? true))
+                                     {:ok? true :manuscript-chars 10})
+                        record-applied-instructions! (partial record! :record-applied-instructions!)
+                        finish-run! (fn [& _]
+                                      (record! :finish-run!)
+                                      (when (= :during-finish raise-at) (request-shutdown!)))
+                        release-lock! (partial record! :release-lock!)
+                        log! (fn [& _] nil)]
+            (process-card! card))
+          (finally
+            (reset! shutdown-requested? false)))
+        (let [kinds (set (map first @calls))
+              count-of (fn [k] (count (filter #(= k (first %)) @calls)))
+              interrupted? (some #{[:mark-run! :interrupted]} @calls)
+              failed? (some #{[:mark-run! :failed]} @calls)
+              started? (= 1 (count-of :move-card!))
+              start-complete? (and (= [[:move-card! "NOVEL-0" "in-progress" nil]] (filter #(= :move-card! (first %)) @calls))
+                                   (= 1 (count-of :update-frontmatter!))
+                                   (= 1 (count-of :append-history!))
+                                   (some #{[:mark-run! :running]} @calls))
+              ran? (contains? kinds :run-write!)
+              finished? (contains? kinds :finish-run!)
+              released? (contains? kinds :release-lock!)
+              ok? (and (zero? @committing-cards)
+                       (not failed?)
+                       (case raise-at
+                         :before-start (and (not started?) (not ran?) (not finished?) interrupted? (not released?)
+                                            (zero? (count-of :update-frontmatter!)) (zero? (count-of :append-history!))
+                                            (not-any? #{[:mark-run! :running]} @calls))
+                         :during-start (and start-complete? (not ran?) (not finished?) interrupted? (not released?))
+                         :after-run (and start-complete? ran? (not finished?) interrupted? (not released?))
+                         :during-finish (and start-complete? ran? finished? (not interrupted?) released?)))]
+          (if ok?
+            (println (str "PASS: " label
+                          (case raise-at
+                            :during-finish " completes the commit and releases the lock"
+                            :during-start " completes the start transition, skips the run and keeps the lock"
+                            " keeps the lock and records an interrupted run")))
+            (do
+              (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
+              (swap! failures conj label))))))
+
+    ;; The hook's finalize wait must cover a lifecycle commit that began before
+    ;; the flag was raised, not only `in-flight`.
+    (let [logs (atom [])]
+      (try
+        (swap! committing-cards inc)
+        (let [waiter (future (with-redefs [shutdown-finalize-seconds (constantly 3)
+                                           log! (fn [m] (swap! logs conj m))]
+                               (await-in-flight-finalization!)))]
+          (Thread/sleep 500)
+          (let [returned-early? (future-done? waiter)]
+            (swap! committing-cards dec)
+            (deref waiter 5000 :timeout)
+            (check "shutdown finalize wait covers an in-progress lifecycle commit"
+                   (and (not returned-early?)
+                        (future-done? waiter)
+                        (some #(= "shutdown: in-flight card processing finalized" %) @logs)))))
+        (finally
+          (reset! committing-cards 0))))
+
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s)")) (System/exit 1))
       (println "All tests passed."))))
