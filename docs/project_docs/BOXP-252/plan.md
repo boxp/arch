@@ -34,3 +34,5 @@
 ## 追記（2026-10-20）
 
 - CI `Test Codex Task Board Runner` の `test_prune_holds_checkout_over_commit_limit` 失敗は本変更と無関係の flaky。prune fixture が 2 つの checkout で同一メッセージ・同一親の空コミットを作るため、同一秒内に作られたコミットは同一 SHA になり、BOXP-331 側の正当な GitHub lookup が BOXP-332 側の over-limit SHA と一致して誤検知していた。fixture のコミットメッセージに checkout path を含めて SHA を一意化した。
+- codex-review gate 4 回目の指摘（2026-10-20）: `process-card!` が `run-agent!` の返す古い `shutdown?` しか見ないため、agent 正常終了後〜review gate 中〜レーン確定前に SIGTERM が届くと終了側 runner が success/blocked 記録・レーン移動・frontmatter 更新・lock 解放を行う競合があった。`ensure-not-shutting-down!` で agent 終了直後・review gate 完了直後（diagnostic/retry 計数の永続化前）・ライフサイクル確定直前の 3 点で live フラグを再確認し、shutdown 中は `:interrupted` 記録＋lock 保持に倒す（`run-agent!` が記録済みなら `:recorded? true` で二重記録しない）。内蔵テスト 2 件を追加し、修正なしで FAIL することを確認した。
+- ローカル codex review の追加指摘（確認直後〜commit 完了の間に TERM が届く窓）: `begin-lifecycle-commit!`（確認＋`committing-cards` 加算）と hook の `request-shutdown!` を同じ monitor `lifecycle-commit-lock` で原子化。TERM は確認前（interrupted・何も書かない）か commit 開始後（commit を完走させ、hook の `await-in-flight-finalization!` が `committing-cards` 0 まで finalize 予算内で待つ）のどちらかになる。commit 途中の中断は部分書き込みになるため行わない。内蔵テストを 2 件追加（計 4 件）。

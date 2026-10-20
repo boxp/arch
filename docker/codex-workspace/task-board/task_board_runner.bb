@@ -274,6 +274,19 @@
 ;; while the Pod is going away.
 (def shutdown-requested? (atom false))
 
+;; `process-card!` decides "still allowed to commit lane / frontmatter / lock
+;; changes?" and enters its commit section under this monitor; the shutdown
+;; hook raises `shutdown-requested?` under the same monitor. So either the
+;; check sees the flag (and the run is recorded as interrupted), or the commit
+;; has already begun and is counted in `committing-cards`, which the hook then
+;; waits for (bounded). A commit is never cut in half by the flag.
+(def lifecycle-commit-lock (Object.))
+(def committing-cards (atom 0))
+
+(defn request-shutdown! []
+  (locking lifecycle-commit-lock
+    (reset! shutdown-requested? true)))
+
 ;; run-id -> java.lang.Process of the agent CLI started through `setsid`. The
 ;; shutdown hook signals these process groups so the agent and its descendants
 ;; receive TERM before PID 1 exits and the kernel SIGKILLs the whole namespace.
@@ -372,17 +385,24 @@
 
 (defn await-in-flight-finalization! []
   (let [futures (vals @in-flight-futures)
-        deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-finalize-seconds)))]
-    (when (seq futures)
+        deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-finalize-seconds)))
+        pending? (fn []
+                   (or (some #(not (future-done? %)) futures)
+                       ;; A lifecycle commit that began before the flag was
+                       ;; raised must finish, otherwise the card is left half
+                       ;; moved (tests drive this without `in-flight-futures`).
+                       (pos? @committing-cards)))]
+    (when (pending?)
       (loop []
-        (when (and (some #(not (future-done? %)) futures)
-                   (< (System/currentTimeMillis) deadline))
+        (when (and (pending?) (< (System/currentTimeMillis) deadline))
           (Thread/sleep 100)
           (recur)))
-      (let [pending (count (remove future-done? futures))]
-        (if (zero? pending)
+      (let [pending (count (remove future-done? futures))
+            committing @committing-cards]
+        (if (and (zero? pending) (zero? committing))
           (log! "shutdown: in-flight card processing finalized")
-          (log! (str "shutdown: " pending " in-flight card(s) not finalized within "
+          (log! (str "shutdown: " pending " in-flight card(s) and " committing
+                     " lifecycle commit(s) not finalized within "
                      (shutdown-finalize-seconds) "s; the next owner records them as interrupted")))))))
 
 (defn install-shutdown-hook! []
@@ -394,7 +414,7 @@
       (fn []
         ;; Persist the planned-shutdown marker first: it is what lets the next
         ;; owner recover this owner's locks even if everything below fails.
-        (reset! shutdown-requested? true)
+        (request-shutdown!)
         (try
           (prepare-shutdown!)
           (catch Exception e
@@ -1994,6 +2014,30 @@
   (move-card! ticket-id status)
   (update-frontmatter! ticket-id {:status status :assignee assignee}))
 
+(defn ensure-not-shutting-down!
+  "Abort `process-card!` when the SIGTERM hook raised the live shutdown flag.
+  `run-agent!` only reports the flag as it was when the agent exited; a TERM
+  that lands after that (during the review gate, or just before the lane /
+  frontmatter / lock commit) must still leave the card untouched for the next
+  owner. `:recorded? false` makes the catch branch mark the run interrupted,
+  replacing the success / failure summary `run-agent!` already wrote."
+  [stage]
+  (when @shutdown-requested?
+    (throw (ex-info (str "planned workspace shutdown requested " stage)
+                    {:type ::planned-shutdown :recorded? false}))))
+
+(defn begin-lifecycle-commit!
+  "Atomically re-check the live shutdown flag and enter the commit section of
+  `process-card!`. Runs under `lifecycle-commit-lock`, the monitor the hook
+  takes to raise the flag, so a TERM either arrives before the check (run is
+  recorded as interrupted, nothing committed) or after it (the whole commit
+  runs and the hook waits for it in `await-in-flight-finalization!`). Returns
+  only after `committing-cards` was incremented; the caller decrements it."
+  []
+  (locking lifecycle-commit-lock
+    (ensure-not-shutting-down! "before lifecycle commit")
+    (swap! committing-cards inc)))
+
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
@@ -2007,7 +2051,10 @@
                 ;; Set when this runner is shutting down: the lock is left in place
                 ;; so the next owner recovers it through the planned-shutdown
                 ;; marker, and no lane / frontmatter / Notes change is made here.
-                keep-lock? (atom false)]
+                keep-lock? (atom false)
+                ;; Set once `begin-lifecycle-commit!` succeeded, so the finally
+                ;; block releases the `committing-cards` slot exactly once.
+                committing? (atom false)]
             (try
               (when (#{"ready" "review" "blocked"} status)
                 (move-card! ticket-id "in-progress")
@@ -2015,7 +2062,12 @@
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
               (let [{:keys [exit result run-id dir last-message idle-timeout? shutdown?]} (run-agent! ticket-id action effective-lane assignee lock)
                     _ (when shutdown?
-                        (throw (ex-info "agent stopped by planned workspace shutdown" {:type ::planned-shutdown})))
+                        ;; `run-agent!` already recorded the interrupted run.
+                        (throw (ex-info "agent stopped by planned workspace shutdown"
+                                        {:type ::planned-shutdown :recorded? true})))
+                    ;; The flag may have been raised after the agent exited
+                    ;; normally; do not start the review gate in that case.
+                    _ (ensure-not-shutting-down! "after agent exit")
                     _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
                         ;; Deterministic black-box failure hook; unset in deployment.
                         (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
@@ -2025,9 +2077,17 @@
                                (= :groom action) "ready"
                                (#{"done" "review" "blocked"} result) result
                                :else "review")
-                    review-gate (if (= "review" intended)
-                                  (let [gate-result (review-gate! dir last-message)
-                                        gate-result (assoc gate-result :diagnostic
+                    ;; The gate can take minutes (PR checks, codex review); it
+                    ;; writes nothing itself. Everything that persists state
+                    ;; (gate diagnostic / retry counter, summary, lane,
+                    ;; frontmatter, Notes, lock) happens after the single
+                    ;; commit boundary below.
+                    gate-result (when (= "review" intended)
+                                  (review-gate! dir last-message))
+                    _ (do (begin-lifecycle-commit!)
+                          (reset! committing? true))
+                    review-gate (if gate-result
+                                  (let [gate-result (assoc gate-result :diagnostic
                                                            (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
                                     (if (and (not (:ok? gate-result))
                                              (:retryable? gate-result))
@@ -2083,7 +2143,7 @@
                     ;; Planned shutdown: keep the run attributable as interrupted and
                     ;; leave the card, frontmatter and lock untouched for the next owner.
                     (reset! keep-lock? true)
-                    (when-not (= ::planned-shutdown (:type (ex-data e)))
+                    (when-not (:recorded? (ex-data e))
                       (mark-run! ticket-id (:run-id lock) :interrupted
                                  {:action action
                                   :agent assignee
@@ -2102,7 +2162,9 @@
                 (reset! stop? true)
                 @hb
                 (when-not @keep-lock?
-                  (release-lock! ticket-id lock))))))))))
+                  (release-lock! ticket-id lock))
+                (when @committing?
+                  (swap! committing-cards dec))))))))))
 
 (defn ticket-assignee [ticket-id]
   (let [path (ticket-path ticket-id)]
@@ -3140,6 +3202,105 @@
           (reset! in-flight-agent-processes {})
           (reset! in-flight-agents-stopped? false)
           (reset! shutdown-requested? false))))
+
+    ;; Shutdown after the agent exited normally: `run-agent!` reports the stale
+    ;; `shutdown?` it observed at exit, so `process-card!` must consult the live
+    ;; flag before the review gate and before committing lane / frontmatter /
+    ;; lock changes. Both windows must record the run as interrupted and keep
+    ;; the lock for the next owner.
+    (doseq [[label raise-at] [["shutdown raised after agent exit" :after-agent]
+                              ["shutdown raised during the review gate" :during-gate]
+                              ;; Once the commit section was entered the flag no
+                              ;; longer interrupts it: the lane / frontmatter /
+                              ;; Notes / lock transition runs to completion
+                              ;; (the hook waits for it instead), so the card is
+                              ;; never left half moved.
+                              ["shutdown raised during the lifecycle commit" :during-commit]]]
+      (let [calls (atom [])
+            record! (fn [k & args] (swap! calls conj (into [k] args)) nil)
+            lock {:run-id (str "shutdown-commit-" (name raise-at)) :owner-id "test-owner"}]
+        (try
+          (with-redefs [ticket-frontmatter (fn [_] {:assignee "claude-fable"})
+                        candidate-action (fn [& _] :implement)
+                        acquire-lock! (fn [& _] lock)
+                        heartbeat! (fn [& _] (future nil))
+                        move-card! (fn [& args]
+                                     (apply record! :move-card! args)
+                                     (when (= :during-commit raise-at)
+                                       (request-shutdown!)))
+                        update-frontmatter! (partial record! :update-frontmatter!)
+                        append-note! (partial record! :append-note!)
+                        mark-run! (fn [_ _ status _] (record! :mark-run! status))
+                        release-lock! (partial record! :release-lock!)
+                        block-ticket! (fn [& _] (record! :block-ticket!) true)
+                        restore-card-state! (partial record! :restore-card-state!)
+                        persist-pr-gate-diagnostic! (fn [& _] (record! :persist-pr-gate-diagnostic!) nil)
+                        record-pr-gate-failure! (fn [& _] (record! :record-pr-gate-failure!) nil)
+                        clear-pr-gate-retries! (partial record! :clear-pr-gate-retries!)
+                        log! (fn [& _] nil)
+                        run-agent! (fn [& _]
+                                     (when (= :after-agent raise-at)
+                                       (reset! shutdown-requested? true))
+                                     {:exit 0 :result "review" :run-id (:run-id lock)
+                                      :dir "/nonexistent" :last-message "https://github.com/boxp/arch/pull/1"
+                                      :idle-timeout? false :shutdown? false})
+                        review-gate! (fn [& _]
+                                       (record! :review-gate!)
+                                       (when (= :during-gate raise-at)
+                                         (reset! shutdown-requested? true))
+                                       {:ok? true :pr-urls ["https://github.com/boxp/arch/pull/1"]})]
+            (process-card! {:ticket-id "TEST-SHUTDOWN" :lane "In Progress" :status "in-progress"}))
+          (finally
+            (reset! shutdown-requested? false)))
+        (let [kinds (set (map first @calls))
+              gate-ran? (contains? kinds :review-gate!)
+              expected-gate? (#{:during-gate :during-commit} raise-at)
+              interrupted? (some #{[:mark-run! :interrupted]} @calls)
+              committed? (and (some #{[:mark-run! :succeeded]} @calls)
+                              (every? kinds [:move-card! :update-frontmatter! :release-lock!
+                                             :persist-pr-gate-diagnostic! :clear-pr-gate-retries!])
+                              (= 2 (count (filter #(= :append-note! (first %)) @calls))))
+              untouched? (and (not-any? #{[:mark-run! :succeeded] [:mark-run! :retrying]} @calls)
+                              (not-any? kinds [:move-card! :update-frontmatter! :release-lock!
+                                               :block-ticket! :restore-card-state!
+                                               :persist-pr-gate-diagnostic! :record-pr-gate-failure!
+                                               :clear-pr-gate-retries!])
+                              (= 1 (count (filter #(= :append-note! (first %)) @calls))))
+              ok? (and (= (boolean expected-gate?) gate-ran?)
+                       (zero? @committing-cards)
+                       (if (= :during-commit raise-at)
+                         (and committed? (not interrupted?))
+                         (and interrupted? untouched?)))]
+          (if ok?
+            (println (str "PASS: " label
+                          (if (= :during-commit raise-at)
+                            " completes the commit and releases the lock"
+                            " keeps the lock and records an interrupted run")))
+            (do
+              (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
+              (swap! failures conj label))))))
+
+    ;; The hook's finalize wait must cover a lifecycle commit that began before
+    ;; the flag was raised, not only `in-flight-futures`.
+    (let [logs (atom [])]
+      (try
+        (swap! committing-cards inc)
+        (let [waiter (future (with-redefs [shutdown-finalize-seconds (constantly 3)
+                                           log! (fn [m] (swap! logs conj m))]
+                               (await-in-flight-finalization!)))]
+          (Thread/sleep 500)
+          (let [returned-early? (future-done? waiter)]
+            (swap! committing-cards dec)
+            (deref waiter 5000 :timeout)
+            (if (and (not returned-early?)
+                     (future-done? waiter)
+                     (some #(= "shutdown: in-flight card processing finalized" %) @logs))
+              (println "PASS: shutdown finalize wait covers an in-progress lifecycle commit")
+              (do
+                (println (str "FAIL: finalize wait early=" returned-early? " logs=" (pr-str @logs)))
+                (swap! failures conj "finalize wait covers lifecycle commit")))))
+        (finally
+          (reset! committing-cards 0))))
 
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
