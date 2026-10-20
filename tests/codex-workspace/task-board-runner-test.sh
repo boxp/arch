@@ -2706,13 +2706,16 @@ EOF
   assert_file_contains "${out}" "^prune: hold ${ws}/BOXP-313/${old} reason=github-check-failed sha=[0-9a-f]{40} checkout=ghq/github.com/boxp/example$"
 }
 
-# Adds `count` empty commits to a checkout.
+# Adds `count` empty commits to a checkout. The message carries the checkout
+# path: commit timestamps have second resolution, so two checkouts committing
+# the same sequence on the same parent within one second would otherwise share
+# commit SHAs and leak between fixtures (flaky on fast CI runners).
 prune_empty_commits() {
   local checkout="$1"
   local count="$2"
   local i
   for ((i = 0; i < count; i++)); do
-    prune_git -C "${checkout}" commit -q --allow-empty -m "empty ${i}"
+    prune_git -C "${checkout}" commit -q --allow-empty -m "empty ${i} ${checkout}"
   done
 }
 

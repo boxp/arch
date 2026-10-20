@@ -30,3 +30,7 @@
 
 - `tests/codex-workspace/task-board-runner-test.sh`、`novel-board-runner-test.sh`、runner 内蔵 `test`。
 - production の active run は kill / rollout / lock 削除しない。配備は通常 GitOps（image updater → Argo CD Recreate）。
+
+## 追記（2026-10-20）
+
+- CI `Test Codex Task Board Runner` の `test_prune_holds_checkout_over_commit_limit` 失敗は本変更と無関係の flaky。prune fixture が 2 つの checkout で同一メッセージ・同一親の空コミットを作るため、同一秒内に作られたコミットは同一 SHA になり、BOXP-331 側の正当な GitHub lookup が BOXP-332 側の over-limit SHA と一致して誤検知していた。fixture のコミットメッセージに checkout path を含めて SHA を一意化した。
