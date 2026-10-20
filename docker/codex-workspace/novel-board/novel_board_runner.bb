@@ -361,6 +361,11 @@
 ;; down with SIGKILL.
 (def in-flight-agent-processes (atom {}))
 
+;; Set once `stop-in-flight-agents!` has sent its final KILL pass. An agent
+;; registered after that point would otherwise outlive the hook, so
+;; `register-agent-process!` kills it on the spot instead of only TERMing it.
+(def in-flight-agents-stopped? (atom false))
+
 (declare signal-process-group! in-flight)
 
 (defn register-agent-process! [novel-id process]
@@ -368,7 +373,12 @@
   ;; The shutdown hook may already have signalled the registered set before
   ;; this agent was started. Re-check after registering so the agent group is
   ;; still stopped (bounded by the hook's finalize wait and the Pod grace).
-  (when @shutdown-requested?
+  (cond
+    @in-flight-agents-stopped?
+    (do (signal-process-group! process "TERM")
+        (signal-process-group! process "KILL"))
+
+    @shutdown-requested?
     (signal-process-group! process "TERM")))
 
 (defn unregister-agent-process! [novel-id]
@@ -388,18 +398,28 @@
 (defn stop-in-flight-agents! []
   ;; TERM every registered agent process group, wait up to the bounded grace,
   ;; then KILL whatever is still alive. Never waits for an LLM turn to finish.
-  (let [processes (vals @in-flight-agent-processes)]
-    (when (seq processes)
-      (log! (str "shutdown: signalling TERM to " (count processes) " in-flight agent process group(s), grace="
+  ;; Agents registered while this runs receive TERM from
+  ;; `register-agent-process!`; the wait loop and the final KILL pass re-read
+  ;; the registry so they are covered too, and anything registered after the
+  ;; final pass is killed by `register-agent-process!` itself.
+  (let [alive? #(.isAlive ^java.lang.Process %)
+        initial (vals @in-flight-agent-processes)]
+    (when (seq initial)
+      (log! (str "shutdown: signalling TERM to " (count initial) " in-flight agent process group(s), grace="
                  (shutdown-agent-grace-seconds) "s"))
-      (doseq [process processes] (signal-process-group! process "TERM"))
+      (doseq [process initial] (signal-process-group! process "TERM"))
       (let [deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-agent-grace-seconds)))]
         (loop []
-          (when (and (some #(.isAlive ^java.lang.Process %) processes)
+          (when (and (some alive? (vals @in-flight-agent-processes))
                      (< (System/currentTimeMillis) deadline))
             (Thread/sleep 250)
-            (recur))))
-      (let [survivors (filter #(.isAlive ^java.lang.Process %) processes)]
+            (recur)))))
+    ;; Flip the flag before the final snapshot: a registration racing with the
+    ;; snapshot is then either in it or kills itself.
+    (reset! in-flight-agents-stopped? true)
+    (let [processes (distinct (concat initial (vals @in-flight-agent-processes)))
+          survivors (filter alive? processes)]
+      (when (seq processes)
         (when (seq survivors)
           (log! (str "shutdown: " (count survivors) " agent process group(s) did not exit within grace; sending KILL")))
         ;; KILL the group even when the agent itself exited: a TERM-resistant or
@@ -407,8 +427,8 @@
         (doseq [process processes] (signal-process-group! process "KILL"))
         (doseq [process survivors]
           (try (.waitFor ^java.lang.Process process 2 java.util.concurrent.TimeUnit/SECONDS)
-               (catch Exception _ nil))))
-      (log! "shutdown: in-flight agents stopped"))))
+               (catch Exception _ nil)))
+        (log! "shutdown: in-flight agents stopped")))))
 
 (defn await-in-flight-finalization! []
   (let [futures (vals @in-flight)
@@ -2769,6 +2789,40 @@
              (and (str/includes? (cloud-prompt "NOVEL-0" {} c :regroom "claude-sonnet") "Do NOT write or change the manuscript")
                   (str/includes? (cloud-prompt "NOVEL-0" {} c :write "claude-sonnet") "follow them as well")
                   (not (str/includes? (cloud-prompt "NOVEL-0" {} "## Review Instructions\n\nTBD\n" :write "claude-sonnet") "follow them as well")))))
+    ;; Shutdown race: an agent registered while `stop-in-flight-agents!` is
+    ;; waiting, and one registered after it finished, must both be killed.
+    (let [start-resistant! (fn []
+                             (:proc (p/process ["setsid" "sh" "-c" "trap '' TERM; sleep 60"]
+                                               {:out :string :err :string})))
+          early (start-resistant!)
+          late (atom nil)
+          after (atom nil)]
+      (try
+        (reset! shutdown-requested? true)
+        (register-agent-process! "NOVEL-race-early" early)
+        (let [stopper (future (with-redefs [shutdown-agent-grace-seconds (constantly 2)]
+                                (stop-in-flight-agents!)))]
+          (Thread/sleep 500)
+          (reset! late (start-resistant!))
+          (register-agent-process! "NOVEL-race-late" @late)
+          @stopper)
+        (reset! after (start-resistant!))
+        (register-agent-process! "NOVEL-race-after" @after)
+        (doseq [p [early @late @after]]
+          (try (.waitFor ^java.lang.Process p 3 java.util.concurrent.TimeUnit/SECONDS)
+               (catch Exception _ nil)))
+        (check "agents registered during or after shutdown are killed"
+               (and @in-flight-agents-stopped?
+                    (not (.isAlive ^java.lang.Process early))
+                    (not (.isAlive ^java.lang.Process @late))
+                    (not (.isAlive ^java.lang.Process @after))))
+        (finally
+          (doseq [p (remove nil? [early @late @after])
+                  :when (.isAlive ^java.lang.Process p)]
+            (signal-process-group! p "KILL"))
+          (reset! in-flight-agent-processes {})
+          (reset! in-flight-agents-stopped? false)
+          (reset! shutdown-requested? false))))
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s)")) (System/exit 1))
       (println "All tests passed."))))

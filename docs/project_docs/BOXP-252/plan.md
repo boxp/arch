@@ -20,7 +20,7 @@
 2. `novel_board_runner.bb`: 同じ hook / process group 登録 / `:shutdown?` 判定。localllm streaming は shutdown 要求で body を閉じ、partial を保存して interrupted とする。
 3. `entrypoint.sh`: novel-board-runner role を `tini -- runner loop` で起動（zombie reap、signal 転送）。
 4. black-box test: task-board 3 件（cooperative agent の TERM 伝播と lock 保持・次 owner の一度だけ回収、TERM 無視 agent の grace 後 KILL、期限切れ他 owner marker 回収）、novel-board 2 件（cloud agent 停止、localllm stream 停止と partial 保持・再要求なし）。
-5. 設計レビュー: codex review の指摘（agent 起動→登録の間に SIGTERM が来ると hook が空集合を見る競合）を登録時再確認で解消。
+5. 設計レビュー: codex review の指摘（agent 起動→登録の間に SIGTERM が来ると hook が空集合を見る競合）を登録時再確認で解消。2 回目の指摘（shutdown 中に登録された agent が最終 KILL/待機対象から漏れる）は、待機ループと最終 KILL での registry 再取得＋停止完了後の登録は即 KILL で解消し、両 runner の内蔵テスト（`bb ... test`）に競合テストを追加。
 
 ## 関連 PR
 
