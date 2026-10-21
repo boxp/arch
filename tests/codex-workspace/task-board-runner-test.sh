@@ -2531,16 +2531,18 @@ test_groom_continue_helper_cli_writes_all_keys() {
 }
 
 test_groom_continue_withdrawn_after_agent_finished_is_not_applied() {
-  # P1 regression: the owner withdraws the opt-in after the groom agent has
-  # finished but before the runner commits the Ready transition. The decision
-  # and the consumed write happen from one read, so the withdrawal wins.
-  local tmp vault state bin prompt_log signal tick_pid
+  # P1 regression: the owner withdraws the opt-in (helper CLI) while the runner
+  # is between reading the ticket and writing the Ready transition. The runner
+  # holds the helper's per-file lock across that read-modify-write, so the
+  # helper write is serialized after it instead of being overwritten by a
+  # stale `consumed` write. The withdrawal therefore survives on disk.
+  local tmp vault state bin prompt_log signal tick_pid helper_pid
   tmp="$(mktemp -d)"
   vault="${tmp}/vault"
   state="${tmp}/state"
   bin="${tmp}/bin"
   prompt_log="${tmp}/claude-prompt.log"
-  signal="${tmp}/before-commit"
+  signal="${tmp}/inside-commit"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   make_fake_claude "${bin}"
@@ -2550,8 +2552,8 @@ test_groom_continue_withdrawn_after_agent_finished_is_not_applied() {
   PATH="${bin}:$PATH" \
     CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
     CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
-    CODEX_TASK_BOARD_TEST_BEFORE_GROOM_CONTINUE_COMMIT_SIGNAL="${signal}" \
-    CODEX_TASK_BOARD_TEST_BEFORE_GROOM_CONTINUE_COMMIT_MILLIS=1500 \
+    CODEX_TASK_BOARD_TEST_INSIDE_GROOM_CONTINUE_COMMIT_SIGNAL="${signal}" \
+    CODEX_TASK_BOARD_TEST_INSIDE_GROOM_CONTINUE_COMMIT_MILLIS=2000 \
     run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-late-withdraw.out 2>&1 &
   tick_pid=$!
 
@@ -2564,22 +2566,22 @@ test_groom_continue_withdrawn_after_agent_finished_is_not_applied() {
     wait "${tick_pid}" 2>/dev/null || true
     fail "expected the runner to reach the groom-continue commit"
   fi
-  # The agent is done; the owner withdraws through the helper CLI while the
-  # runner is paused right before the atomic decision + write.
-  bb "${HELPER}" update BOXP-626 --vault "${vault}" --no-groom-continue >/dev/null
+  # The agent is done and the runner has read the ticket; the owner withdraws
+  # through the helper CLI. The helper must block on the shared per-file lock.
+  bb "${HELPER}" update BOXP-626 --vault "${vault}" --no-groom-continue >/tmp/task-board-groom-continue-late-withdraw-helper.out 2>&1 &
+  helper_pid=$!
+  sleep 1
+  kill -0 "${helper_pid}" 2>/dev/null || fail "expected the helper write to wait for the runner's per-file lock"
   wait "${tick_pid}"
+  wait "${helper_pid}"
 
   assert_file_contains "${prompt_log}" 'Continue-after-groom opt-in is active'
-  assert_parked_in_ready_for_human "${vault}" BOXP-626 "${prompt_log}"
+  # The helper write landed after the runner's commit and was not lost.
   assert_file_contains "${vault}/Tickets/BOXP-626.md" '^groom_continue: false$'
-  assert_file_contains "${vault}/Tickets/BOXP-626.md" 'Continue-after-groom opt-in not applied \(withdrawn\)'
-  assert_run_summary_contains "${state}" BOXP-626 ':groom-continue \{:continue\? false, :category "withdrawn"\}'
-
-  # The next tick must not start implementation: Ready/boxp is not a candidate.
-  PATH="${bin}:$PATH" \
-    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
-    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-late-withdraw-2.out
-  assert_file_not_contains "${prompt_log}" 'Goal: implement or complete this ticket'
+  assert_file_not_contains "${vault}/Tickets/BOXP-626.md" '^groom_continue: consumed$'
+  assert_file_contains "${vault}/Tickets/BOXP-626.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-626.md" 'Continue-after-groom opt-in applied'
+  assert_run_summary_contains "${state}" BOXP-626 ':groom-continue \{:continue\? true, :category "continued"\}'
 }
 
 test_groom_continue_idle_timeout_is_retried_without_consuming() {

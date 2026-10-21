@@ -101,6 +101,34 @@
             (binding [*vault-writer-lock-held* true]
               (f))))))))
 
+(defn helper-file-lock-path
+  "The per-file lock the obsidian-task-board helper CLI takes around every
+  ticket write: `<java.io.tmpdir>/task-board-locks/<sha256(canonical path)[0,16)>-<file name>.lock`.
+  Kept byte-for-byte compatible with the helper's `with-file-lock`."
+  [path]
+  (let [canonical (.getCanonicalPath (java.io.File. (str path)))
+        digest (java.security.MessageDigest/getInstance "SHA-256")
+        phash (subs (->> (.digest digest (.getBytes canonical "UTF-8"))
+                         (map #(format "%02x" (bit-and 0xff %)))
+                         (apply str))
+                    0 16)
+        safe-name (str/replace (str (fs/file-name path)) #"[^a-zA-Z0-9._-]" "_")]
+    (fs/path (System/getProperty "java.io.tmpdir") "task-board-locks"
+             (str phash "-" safe-name ".lock"))))
+
+(defn with-helper-file-lock
+  "Serialize a ticket read-modify-write against helper CLI commands running on
+  the same host. Unlike the vault writer lock this is always on; it is taken
+  innermost (after the JVM mutex and the optional vault writer lock), matching
+  the helper's own order (vault writer lock outside, per-file lock inside)."
+  [path f]
+  (let [lock-file (helper-file-lock-path path)]
+    (fs/create-dirs (fs/parent lock-file))
+    (with-open [file (java.io.RandomAccessFile. (str lock-file) "rw")
+                channel (.getChannel file)]
+      (let [_file-lock (.lock channel)]
+        (f)))))
+
 (defn parse-codex-assignee [assignee]
   (cond
     (contains? assignee->model assignee)
@@ -309,8 +337,21 @@
     (str/split-lines (slurp (str path)))
     (fail (str "missing file: " path))))
 
-(defn write-lines! [path lines]
-  (spit (str path) (str (str/join "\n" lines) "\n")))
+(defn write-lines!
+  "Replace `path` atomically: write a sibling temp file, then rename it over
+  the target. Another process (a helper command, a second runner JVM)
+  reading the file therefore sees either the old or the new content, never
+  a truncated file without frontmatter."
+  [path lines]
+  (let [target (fs/path (str path))
+        tmp (fs/path (fs/parent target)
+                     (str "." (fs/file-name target) ".tmp-" (.pid (java.lang.ProcessHandle/current))
+                          "-" (System/nanoTime)))]
+    (try
+      (spit (str tmp) (str (str/join "\n" lines) "\n"))
+      (fs/move tmp target {:replace-existing true :atomic-move true})
+      (finally
+        (fs/delete-if-exists tmp)))))
 
 (defn section-index [lines heading]
   (first (keep-indexed (fn [idx line]
@@ -397,6 +438,9 @@
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
+      (with-helper-file-lock
+       (board-path)
+       (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
              card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
@@ -407,7 +451,7 @@
          (let [new-line (normalize-card-line (:line card) target-status)
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
-           (write-lines! path moved)))))))
+           (write-lines! path moved)))))))))
 
 (defn sync-board-statuses! []
   (locking board-mutex
@@ -453,29 +497,33 @@
 
 (defn update-frontmatter-by!
   "Read the ticket frontmatter, call `(f fm-map)` -> {:updates {...} :result x},
-  and write `:updates` from the same read in one critical section (ticket mutex
-  plus the shared vault writer lock). Callers that must decide *from* the
-  current frontmatter use this so no other writer can change the file between
-  the comparison and the write. Returns `:result`."
+  and write `:updates` from the same read in one critical section (ticket mutex,
+  the optional shared vault writer lock, and the helper CLI's per-file lock).
+  Callers that must decide *from* the current frontmatter use this so no other
+  writer can change the file between the comparison and the write. Returns
+  `:result`."
   [ticket-id f]
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
-       (let [path (ticket-path ticket-id)
-             lines (vec (read-lines path))
-             {:keys [end]} (or (frontmatter-range lines)
-                               (fail (str "missing frontmatter: " path)))
-             before (subvec lines 0 (inc end))
-             body (subvec lines (inc end))
-             fm-lines (subvec before 1 end)
-             {:keys [updates result]} (f (frontmatter-map lines))
-             new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
-                            fm-lines
-                            updates)
-             new-lines (vec (concat ["---"] new-fm ["---"] body))]
-         (when (not= lines new-lines)
-           (write-lines! path new-lines))
-         result)))))
+       (with-helper-file-lock
+        (ticket-path ticket-id)
+        (fn []
+          (let [path (ticket-path ticket-id)
+                lines (vec (read-lines path))
+                {:keys [end]} (or (frontmatter-range lines)
+                                  (fail (str "missing frontmatter: " path)))
+                before (subvec lines 0 (inc end))
+                body (subvec lines (inc end))
+                fm-lines (subvec before 1 end)
+                {:keys [updates result]} (f (frontmatter-map lines))
+                new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
+                               fm-lines
+                               updates)
+                new-lines (vec (concat ["---"] new-fm ["---"] body))]
+            (when (not= lines new-lines)
+              (write-lines! path new-lines))
+            result)))))))
 
 (defn update-frontmatter! [ticket-id updates]
   (update-frontmatter-by! ticket-id (fn [_] {:updates updates}))
@@ -492,6 +540,9 @@
       (throw (ex-info "forced blocker Notes write failure" {})))
     (with-vault-writer-lock
      (fn []
+       (with-helper-file-lock
+        (ticket-path ticket-id)
+        (fn []
        (let [path (ticket-path ticket-id)
              lines (vec (read-lines path))
              bullet (str "- " (today) ": " note)
@@ -502,7 +553,7 @@
              new-lines (if (some #(= bullet %) lines)
                          lines
                          (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-         (write-lines! path new-lines))))))
+         (write-lines! path new-lines))))))))
 
 (defn project-ticket-status! [ticket-id {:keys [status done]}]
   (update-frontmatter! ticket-id (cond-> {:status status}
@@ -1294,14 +1345,16 @@
   the consumed write; it can no longer be overwritten by a stale comparison.
   Returns the decision."
   [ticket-id before exit result last-message assignee next-status]
-  ;; Deterministic black-box race hook; unset in deployment.
-  (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_GROOM_CONTINUE_COMMIT_SIGNAL")]
-    (spit signal-path "ready\n"))
-  (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_GROOM_CONTINUE_COMMIT_MILLIS")]
-    (Thread/sleep (Long/parseLong hold-ms)))
   (update-frontmatter-by!
    ticket-id
    (fn [fm]
+     ;; Deterministic black-box race hook; unset in deployment. It pauses
+     ;; between the read and the write, inside every lock, so a test can
+     ;; prove a concurrent helper write is serialized rather than lost.
+     (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_INSIDE_GROOM_CONTINUE_COMMIT_SIGNAL")]
+       (spit signal-path "ready\n"))
+     (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_INSIDE_GROOM_CONTINUE_COMMIT_MILLIS")]
+       (Thread/sleep (Long/parseLong hold-ms)))
      (let [decision (groom-continue-decision before (groom-continue-request fm)
                                              exit result last-message)
            continue? (boolean (:continue? decision))]
