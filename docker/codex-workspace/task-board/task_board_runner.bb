@@ -2108,7 +2108,20 @@
                               (= action (candidate-action current-card (:assignee fm))))]
               (when (and valid? (#{"ready" "review" "blocked"} status))
                 (move-card! ticket-id "in-progress")
-                (update-frontmatter! ticket-id {:status "in-progress"}))
+                (try
+                  ;; Deterministic black-box failure hook; unset in deployment.
+                  (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_CLAIM_FRONTMATTER"))
+                    (throw (ex-info "forced claim frontmatter write failure" {})))
+                  (update-frontmatter! ticket-id {:status "in-progress"})
+                  (catch Exception e
+                    ;; Roll the card back while the locks are still held so a
+                    ;; failed claim never leaves it in In Progress without a run.
+                    (try
+                      (move-card! ticket-id status)
+                      (catch Exception restore-error
+                        (log! (str "card restore after failed claim also failed for " ticket-id
+                                   ": " (.getMessage restore-error)))))
+                    (throw e))))
               valid?))))))))))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]

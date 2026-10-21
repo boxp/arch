@@ -51,7 +51,10 @@ Ready に置き、既存の `Ready → implement` claim で In Progress まで�
    他レーンは `groom_continue: false` のみ)。これで取消し後に implement が自動起動しない。
    さらに runner は ticket lock 取得後に frontmatter の assignee と Board レーンを再読し、
    lock 取得前に選んだ候補(action / assignee / status)と違えば lock を解放して見送る
-   (別 tick が古い assignee で implement を起動する TOCTOU を塞ぐ)。
+   (別 tick が古い assignee で implement を起動する TOCTOU を塞ぐ)。再検証と Ready/Review/
+   Blocked → In Progress の遷移は Board lock + ticket lock(helper と同じ順: vault → Board →
+   ticket)を保持したまま 1 箇所で行い、遷移途中で失敗したら lock 内でカードを元レーンへ戻す。
+   `sync-board-statuses!` も同じ Board file lock で囲む。
    既定配備では vault-writer lock が無効(未設定)なので、runner は helper CLI と同じ
    per-file lock(`<tmpdir>/task-board-locks/<sha256(canonical path)[0:16]>-<name>.lock`)を
    frontmatter 更新・Notes 追記・Board 書換で常に取得し、同一ホスト上の helper 書込みと
@@ -112,6 +115,8 @@ black-box（fake claude / codex、tmp vault）:
   `:retrying` + `:groom-continue idle-timeout`、次 tick は groom 再実行で正常継続
 - lock 取得直前に人間が `--assignee boxp` へ戻した `Ready` 票は、lock 取得後の再検証で
   見送られ agent は起動しない(lock 解放、run ディレクトリ無し)
+- claim 遷移の frontmatter 書込みが失敗(test hook)→ カードは Ready に戻り、lock 解放、
+  agent 非起動、次 tick で通常どおり claim
 
 ## 配備
 

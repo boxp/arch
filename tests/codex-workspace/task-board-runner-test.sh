@@ -2670,6 +2670,45 @@ test_candidate_reassigned_before_lock_is_not_started() {
   [[ ! -e "${start_log}" ]] || fail "expected no agent start on the next tick"
 }
 
+test_failed_claim_transition_restores_card_lane() {
+  # If the frontmatter write of the Ready -> In Progress claim fails after the
+  # card moved, the card is rolled back under the same locks and the lock is
+  # released; no agent starts and nothing is left in In Progress without a run.
+  local tmp vault state bin start_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  start_log="${tmp}/starts.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" ""
+  sed -i -e 's/^## Ready$/## Ready\n- [ ] [[Tickets\/BOXP-629|BOXP-629: claim failure]] #ticket status::ready priority::high/' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-629 ready claude-fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CODEX_TASK_BOARD_TEST_FAIL_CLAIM_FRONTMATTER=true \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-claim-failure.out 2>&1
+
+  [[ ! -e "${start_log}" ]] || fail "expected no agent start after a failed claim"
+  assert_file_contains /tmp/task-board-claim-failure.out 'candidate claim failed for BOXP-629: forced claim frontmatter write failure'
+  assert_file_contains "${vault}/Boards/Task Board.md" "^## Ready
+- \[ \] \[\[Tickets/BOXP-629\|.*status::ready"
+  assert_file_not_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-629\|.*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-629.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-629.md" '^assignee: claude-fable$'
+  [[ ! -e "${state}/locks/BOXP-629.edn" ]] || fail "expected the ticket lock to be released after a failed claim"
+  [[ ! -d "${state}/runs/BOXP-629" ]] || fail "expected no run directory after a failed claim"
+
+  # Without the hook the next tick claims and runs the ticket normally.
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-claim-failure-2.out
+  [[ "$(wc -l <"${start_log}")" -eq 1 ]] || fail "expected the ticket to be claimed once the failure is gone"
+}
+
 test_groom_continue_idle_timeout_is_retried_without_consuming() {
   # P2 regression: an opted-in groom stopped by the idle timeout keeps the
   # :retrying summary (no :succeeded rewrite), does not consume the opt-in, and
@@ -3670,6 +3709,7 @@ test_groom_continue_helper_cli_writes_all_keys
 test_groom_continue_withdrawn_after_agent_finished_is_not_applied
 test_groom_continue_idle_timeout_is_retried_without_consuming
 test_candidate_reassigned_before_lock_is_not_started
+test_failed_claim_transition_restores_card_lane
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing
