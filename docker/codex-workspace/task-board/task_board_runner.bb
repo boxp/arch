@@ -451,7 +451,13 @@
       (mapv #(if (re-matches pattern %) replacement %) fm-lines)
       (conj (vec fm-lines) replacement))))
 
-(defn update-frontmatter! [ticket-id updates]
+(defn update-frontmatter-by!
+  "Read the ticket frontmatter, call `(f fm-map)` -> {:updates {...} :result x},
+  and write `:updates` from the same read in one critical section (ticket mutex
+  plus the shared vault writer lock). Callers that must decide *from* the
+  current frontmatter use this so no other writer can change the file between
+  the comparison and the write. Returns `:result`."
+  [ticket-id f]
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
@@ -462,12 +468,18 @@
              before (subvec lines 0 (inc end))
              body (subvec lines (inc end))
              fm-lines (subvec before 1 end)
+             {:keys [updates result]} (f (frontmatter-map lines))
              new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
                             fm-lines
                             updates)
              new-lines (vec (concat ["---"] new-fm ["---"] body))]
          (when (not= lines new-lines)
-           (write-lines! path new-lines)))))))
+           (write-lines! path new-lines))
+         result)))))
+
+(defn update-frontmatter! [ticket-id updates]
+  (update-frontmatter-by! ticket-id (fn [_] {:updates updates}))
+  nil)
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
@@ -1261,9 +1273,43 @@
     (str "Continue-after-groom opt-in not applied (" (:category decision) "): "
          (:reason decision) ". Card moved to Blocked; the opt-in was not consumed.")
 
+    (= "idle-timeout" (:category decision))
+    (str "Continue-after-groom opt-in not applied (idle-timeout): "
+         (:reason decision) ". The opt-in was not consumed; the groom run will be retried from Backlog.")
+
     :else
     (str "Continue-after-groom opt-in not applied (" (:category decision) "): "
          (:reason decision) ". Card parked in Ready with assignee boxp for human review.")))
+
+(defn groom-continue-idle-timeout-decision [before]
+  (when (not= :off (:state before))
+    {:continue? false :category "idle-timeout"
+     :reason "groom agent was stopped by the idle timeout before it finished"}))
+
+(defn commit-groom-continue!
+  "Finish a groom run that opted in: re-read the opt-in, decide, and write the
+  resulting status/assignee/consumed frontmatter from that same read in one
+  critical section. A withdrawal (`--no-groom-continue`) that lands after the
+  agent finished is therefore either seen by the decision or serialized after
+  the consumed write; it can no longer be overwritten by a stale comparison.
+  Returns the decision."
+  [ticket-id before exit result last-message assignee next-status]
+  ;; Deterministic black-box race hook; unset in deployment.
+  (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_GROOM_CONTINUE_COMMIT_SIGNAL")]
+    (spit signal-path "ready\n"))
+  (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_GROOM_CONTINUE_COMMIT_MILLIS")]
+    (Thread/sleep (Long/parseLong hold-ms)))
+  (update-frontmatter-by!
+   ticket-id
+   (fn [fm]
+     (let [decision (groom-continue-decision before (groom-continue-request fm)
+                                             exit result last-message)
+           continue? (boolean (:continue? decision))]
+       {:updates (cond-> {:status next-status
+                          :assignee (if continue? assignee "boxp")}
+                   ;; One-shot: a later re-groom needs a fresh approval.
+                   continue? (assoc :groom_continue "consumed"))
+        :result decision}))))
 
 (defn prompt-for
   ([action ticket-id lane workspace agent]
@@ -1987,10 +2033,16 @@
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
               (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock
                                                                                            {:groom-continue groom-continue-before})
+                    ;; Provisional decision for the audit paths (Blocked, idle
+                    ;; timeout, runner failure). The Ready path re-decides in
+                    ;; commit-groom-continue! under the writer lock so a late
+                    ;; withdrawal cannot be overwritten by this earlier read.
                     groom-continue (when (= :groom action)
-                                     (groom-continue-decision groom-continue-before
-                                                              (groom-continue-request (ticket-frontmatter ticket-id))
-                                                              exit result last-message))
+                                     (if idle-timeout?
+                                       (groom-continue-idle-timeout-decision groom-continue-before)
+                                       (groom-continue-decision groom-continue-before
+                                                                (groom-continue-request (ticket-frontmatter ticket-id))
+                                                                exit result last-message)))
                     _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
                         ;; Deterministic black-box failure hook; unset in deployment.
                         (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
@@ -2009,18 +2061,24 @@
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
                                       gate-result))
                                   {:ok? true})
-                    next-status (if idle-timeout?
-                                  "in-progress"
-                                  (final-status action result exit review-gate))]
+                    next-status (cond
+                                  ;; A groom stopped by the idle timeout is
+                                  ;; retried as a groom: keep the card in
+                                  ;; Backlog instead of promoting a half-
+                                  ;; groomed ticket to the implement queue.
+                                  (and idle-timeout? (= :groom action)) "backlog"
+                                  idle-timeout? "in-progress"
+                                  :else (final-status action result exit review-gate))]
                 (when idle-timeout?
                   (mark-run! ticket-id run-id :retrying
-                             {:action action
-                              :agent assignee
-                              :lane effective-lane
-                              :exit-code exit
-                              :result result
-                              :idle-timeout? true
-                              :finished-at (now-str)}))
+                             (cond-> {:action action
+                                      :agent assignee
+                                      :lane effective-lane
+                                      :exit-code exit
+                                      :result result
+                                      :idle-timeout? true
+                                      :finished-at (now-str)}
+                               groom-continue (assoc :groom-continue (select-keys groom-continue [:continue? :category])))))
                 ;; A non-retryable review-gate failure reaches block-ticket!.
                 ;; Let that function write :blocked only after the card and
                 ;; frontmatter transition have both succeeded.  Writing it
@@ -2046,19 +2104,29 @@
                     (when groom-continue
                       (append-note! ticket-id (groom-continue-note groom-continue next-status)))
                     (restore-card-state! ticket-id status assignee))
-                  (let [continue? (boolean (:continue? groom-continue))]
-                    (move-card! ticket-id next-status)
-                    (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                             :assignee (if (or (= "in-progress" next-status) continue?)
-                                                                         assignee
-                                                                         "boxp")}
-                                                      (= "done" next-status) (assoc :closed (today))
-                                                      ;; One-shot: a later re-groom needs a fresh approval.
-                                                      continue? (assoc :groom_continue "consumed")))
+                  (let [_ (move-card! ticket-id next-status)
+                        ;; Opted-in groom reaching Ready: decide and write
+                        ;; atomically (P1). Everything else keeps the plain
+                        ;; frontmatter update; an idle timeout keeps the agent
+                        ;; assignee for the automatic retry and never consumes.
+                        groom-continue (if (and groom-continue (not idle-timeout?))
+                                         (commit-groom-continue! ticket-id groom-continue-before
+                                                                 exit result last-message
+                                                                 assignee next-status)
+                                         (do (update-frontmatter! ticket-id
+                                                                  (cond-> {:status next-status
+                                                                           :assignee (if (or (= "in-progress" next-status) idle-timeout?)
+                                                                                       assignee
+                                                                                       "boxp")}
+                                                                    (= "done" next-status) (assoc :closed (today))))
+                                             groom-continue))]
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                     (when groom-continue
-                      (append-note! ticket-id (groom-continue-note groom-continue next-status))
-                      ;; Summary rewrite keeps :agent; record only derived fields.
+                      (append-note! ticket-id (groom-continue-note groom-continue next-status)))
+                    ;; An idle timeout already recorded :retrying above (P2);
+                    ;; only a finished groom rewrites the summary as succeeded.
+                    ;; The rewrite keeps :agent; record only derived fields.
+                    (when (and groom-continue (not idle-timeout?))
                       (mark-run! ticket-id run-id :succeeded
                                  {:action action
                                   :lane effective-lane
@@ -2725,7 +2793,10 @@
       (check "prompt is empty without opt-in" (groom-continue-prompt {:state :off}) nil)
       (check "prompt names the scope" (boolean (some-> (groom-continue-prompt requested) (str/includes? "fix TLS trust"))) true)
       (check "quoted scope is unwrapped" (:scope (groom-continue-request (assoc ok :groom_continue_scope "\"fix: TLS \\\"trust\\\" #1\""))) "fix: TLS \"trust\" #1")
-      (check "quoted flag is unwrapped" (:state (groom-continue-request (assoc ok :groom_continue "\"true\""))) :requested))
+      (check "quoted flag is unwrapped" (:state (groom-continue-request (assoc ok :groom_continue "\"true\""))) :requested)
+      (check "idle timeout without opt-in yields no decision" (groom-continue-idle-timeout-decision {:state :off}) nil)
+      (check "idle timeout with opt-in does not continue" (:category (groom-continue-idle-timeout-decision requested)) "idle-timeout")
+      (check "idle timeout note says not consumed" (boolean (str/includes? (groom-continue-note (groom-continue-idle-timeout-decision requested) "backlog") "was not consumed")) true))
     ;; Versioned projections cannot affect legacy candidate selection while off.
     ;; Include every existing route and lane, plus unsupported/new v2 routes.
     (doseq [[lane status] lane->status

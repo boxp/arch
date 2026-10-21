@@ -2530,6 +2530,116 @@ test_groom_continue_helper_cli_writes_all_keys() {
   assert_file_contains "${vault}/Tickets/BOXP-625.md" '^groom_continue_scope:$'
 }
 
+test_groom_continue_withdrawn_after_agent_finished_is_not_applied() {
+  # P1 regression: the owner withdraws the opt-in after the groom agent has
+  # finished but before the runner commits the Ready transition. The decision
+  # and the consumed write happen from one read, so the withdrawal wins.
+  local tmp vault state bin prompt_log signal tick_pid
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  signal="${tmp}/before-commit"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-626
+  write_groom_continue_ticket "${vault}" BOXP-626 claude-fable true "approved scope" boxp
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    CODEX_TASK_BOARD_TEST_BEFORE_GROOM_CONTINUE_COMMIT_SIGNAL="${signal}" \
+    CODEX_TASK_BOARD_TEST_BEFORE_GROOM_CONTINUE_COMMIT_MILLIS=1500 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-late-withdraw.out 2>&1 &
+  tick_pid=$!
+
+  for _attempt in $(seq 1 100); do
+    [[ -e "${signal}" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -e "${signal}" ]]; then
+    kill -KILL "${tick_pid}" 2>/dev/null || true
+    wait "${tick_pid}" 2>/dev/null || true
+    fail "expected the runner to reach the groom-continue commit"
+  fi
+  # The agent is done; the owner withdraws through the helper CLI while the
+  # runner is paused right before the atomic decision + write.
+  bb "${HELPER}" update BOXP-626 --vault "${vault}" --no-groom-continue >/dev/null
+  wait "${tick_pid}"
+
+  assert_file_contains "${prompt_log}" 'Continue-after-groom opt-in is active'
+  assert_parked_in_ready_for_human "${vault}" BOXP-626 "${prompt_log}"
+  assert_file_contains "${vault}/Tickets/BOXP-626.md" '^groom_continue: false$'
+  assert_file_contains "${vault}/Tickets/BOXP-626.md" 'Continue-after-groom opt-in not applied \(withdrawn\)'
+  assert_run_summary_contains "${state}" BOXP-626 ':groom-continue \{:continue\? false, :category "withdrawn"\}'
+
+  # The next tick must not start implementation: Ready/boxp is not a candidate.
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-late-withdraw-2.out
+  assert_file_not_contains "${prompt_log}" 'Goal: implement or complete this ticket'
+}
+
+test_groom_continue_idle_timeout_is_retried_without_consuming() {
+  # P2 regression: an opted-in groom stopped by the idle timeout keeps the
+  # :retrying summary (no :succeeded rewrite), does not consume the opt-in, and
+  # is retried as a groom from Backlog rather than promoted to implement.
+  local tmp vault state bin prompt_log start_log summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  start_log="${tmp}/starts.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-627
+  write_groom_continue_ticket "${vault}" BOXP-627 claude-fable true "approved scope" boxp
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CLAUDE_FAKE_SLEEP=2 \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-idle-1.out
+
+  assert_file_contains "${prompt_log}" 'Continue-after-groom opt-in is active'
+  assert_file_contains "${vault}/Boards/Task Board.md" "^## Backlog
+- \[ \] \[\[Tickets/BOXP-627\|.*status::backlog"
+  assert_file_contains "${vault}/Tickets/BOXP-627.md" '^status: backlog$'
+  assert_file_contains "${vault}/Tickets/BOXP-627.md" '^assignee: claude-fable$'
+  assert_file_contains "${vault}/Tickets/BOXP-627.md" '^groom_continue: true$'
+  assert_file_contains "${vault}/Tickets/BOXP-627.md" 'No agent progress was logged before the idle timeout; the run was stopped and will be retried automatically'
+  assert_file_contains "${vault}/Tickets/BOXP-627.md" 'Continue-after-groom opt-in not applied \(idle-timeout\).*The opt-in was not consumed; the groom run will be retried from Backlog'
+  assert_file_not_contains "${vault}/Tickets/BOXP-627.md" 'Continue-after-groom opt-in applied'
+  summary="$(find "${state}/runs/BOXP-627" -name summary.edn -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" ':status :retrying'
+  assert_file_contains "${summary}" ':idle-timeout\? true'
+  assert_file_contains "${summary}" ':groom-continue {:continue\? false, :category "idle-timeout"}'
+  assert_file_not_contains "${summary}" ':status :succeeded'
+  [[ "$(wc -l <"${start_log}")" -eq 1 ]] || fail "expected one agent start before the retry"
+
+  # Retry tick: the groom runs again (not implement) and, finishing normally,
+  # the still-valid opt-in continues as usual.
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-idle-2.out
+
+  [[ "$(wc -l <"${start_log}")" -eq 2 ]] || fail "expected the groom to be retried once"
+  [[ "$(grep -c 'Goal: clarify this backlog ticket only' "${prompt_log}")" -eq 2 ]] || fail "expected the retry to be a groom run"
+  assert_file_not_contains "${prompt_log}" 'Goal: implement or complete this ticket'
+  assert_file_contains "${vault}/Tickets/BOXP-627.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-627.md" '^assignee: claude-fable$'
+  assert_file_contains "${vault}/Tickets/BOXP-627.md" '^groom_continue: consumed$'
+  assert_file_contains "${summary}" ':status :retrying'
+}
+
 test_assignee_model_routing() {
   CODEX_TASK_BOARD_AUTONOMY_V2=false bb "${RUNNER}" test
   # I1 deliberately has no activation switch, even with a requested opt-in.
@@ -3469,6 +3579,8 @@ test_groom_continue_runner_kill_switch
 test_groom_continue_concurrent_ticks_claim_implement_once
 test_groom_continue_recovers_after_crash
 test_groom_continue_helper_cli_writes_all_keys
+test_groom_continue_withdrawn_after_agent_finished_is_not_applied
+test_groom_continue_idle_timeout_is_retried_without_consuming
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing

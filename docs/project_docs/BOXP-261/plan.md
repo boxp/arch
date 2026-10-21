@@ -41,6 +41,14 @@ Ready に置き、既存の `Ready → implement` claim で In Progress まで�
 5. groom 失敗（exit != 0）は従来どおり `Blocked`。opt-in は消費しない。
 6. 重複 run / クラッシュ復帰は既存の ticket lock・stale lock 回収・planned shutdown 回収に
    乗る。継続後の implement claim も同じ lock 経路なので二重起動しない。
+7. 判定と書込みは原子的に行う: `Ready` へ置く frontmatter 書込み（status / assignee /
+   `consumed`）は、run 後の opt-in 再読込と同じ read-modify-write（ticket mutex +
+   共有 vault-writer lock）で行う。agent 終了後に owner が `--no-groom-continue` で
+   取り消した場合、その取消しが判定に見えるか、`consumed` 書込みの後に直列化されるかの
+   どちらかになり、古い比較結果で取消しを上書きすることはない。
+8. groom が idle timeout で停止した場合は opt-in を消費せず、summary は `:retrying`
+   のまま（`:succeeded` で上書きしない）。カードは `Backlog` に留め assignee を保持し、
+   次 tick で groom を再実行する（半端な groom 結果を implement queue に進めない）。
 
 ### groom prompt
 
@@ -86,6 +94,10 @@ black-box（fake claude / codex、tmp vault）:
 - 重複 run: `Ready` + agent の票に対し 2 つの tick を同時起動しても agent 起動は 1 回
 - クラッシュ復帰: stale lock 付きの opt-in 票が回収され、groom 1 回で継続する
 - helper CLI: create / update の引数検証と frontmatter 出力
+- agent 終了後・commit 直前の取消し（test hook で runner を一時停止し helper CLI で
+  `--no-groom-continue`）→ `Ready` + `boxp`、未消費、次 tick で implement が始まらない
+- opt-in 票の groom が idle timeout → `Backlog` + agent 保持、未消費、summary は
+  `:retrying` + `:groom-continue idle-timeout`、次 tick は groom 再実行で正常継続
 
 ## 配備
 
