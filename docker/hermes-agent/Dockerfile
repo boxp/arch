@@ -20,6 +20,24 @@ RUN set -eux; \
       dpkg --compare-versions "$(dpkg-query -W -f '${Version}' "$pkg")" ge "${CURL_FIXED_VERSION}"; \
     done
 
+# BOXP-259: eMudhra (emSign) 中間CA秘密鍵侵害への対応。upstream base (Debian trixie) の
+# ca-certificates 20250419 と venv の certifi 2026.5.20 は emSign ECC Root CA - G3 を
+# まだ信頼しているため、修正版 (Debian 20250419+deb13u1 以降 / certifi 2026.10.19 以降) へ
+# 更新し、ビルド時に当該ルートが trust store から外れたことを検証する。
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends --only-upgrade ca-certificates; \
+    rm -rf /var/lib/apt/lists/*; \
+    if grep -qE '^mozilla/(emSign_ECC_Root_CA_-_G3|Comodo_AAA_Services_root)\.crt' /etc/ca-certificates.conf; then \
+      echo 'emSign ECC Root CA - G3 / Comodo AAA Services root still enabled in ca-certificates.conf' >&2; exit 1; fi; \
+    if awk 'BEGIN{c=0} /BEGIN CERT/{c++} {print > ("/tmp/cacheck-" c ".pem")}' /etc/ssl/certs/ca-certificates.crt \
+       && for f in /tmp/cacheck-*.pem; do openssl x509 -in "$f" -noout -fingerprint -sha256; done \
+          | grep -qiE '86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B|D7:A7:A0:FB:5D:7E:27:31:D7:71:E9:48:4E:BC:DE:F7:1D:5F:0C:3E:0A:29:48:78:2B:C8:3E:E0:EA:69:9E:F4'; then \
+      echo 'emSign ECC Root CA - G3 / Comodo AAA Services root still trusted' >&2; exit 1; fi; \
+    rm -f /tmp/cacheck-*.pem; \
+    uv pip install --python /opt/hermes/.venv/bin/python --no-cache 'certifi>=2026.10.19'; \
+    /opt/hermes/.venv/bin/python -c "import base64, hashlib, re, certifi; d = open(certifi.where()).read(); fps = {hashlib.sha256(base64.b64decode(m)).hexdigest().upper() for m in re.findall(r'-----BEGIN CERTIFICATE-----\n(.*?)-----END CERTIFICATE-----', d, re.S)}; assert '86A1ECBA089C4A8D3BBE2734C612BA341D813E043CF9E8A862CD5C57A36BBE6B' not in fps, 'emSign ECC Root CA - G3 still in certifi'; print('certifi', certifi.__version__, 'ok')"
+
 RUN npm_config_prefix="${OBSIDIAN_HEADLESS_HOME}" npm install -g "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
     && npm cache clean --force
 
