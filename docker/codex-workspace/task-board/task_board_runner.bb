@@ -2064,14 +2064,38 @@
   (move-card! ticket-id status)
   (update-frontmatter! ticket-id {:status status :assignee assignee}))
 
+(defn candidate-still-valid?
+  "Re-read the ticket assignee and the Board card once the ticket lock is
+  held. The candidate was selected from a pre-lock read, so a human change
+  that landed in between (for example a withdrawn continue-after-groom opt-in
+  handing the card back to boxp) must stop this run before an agent starts."
+  [{:keys [ticket-id status]} assignee action]
+  (let [fm (with-helper-file-lock (ticket-path ticket-id) #(ticket-frontmatter ticket-id))
+        current-card (first (filter #(= ticket-id (:ticket-id %))
+                                    (parse-board-cards (vec (read-lines (board-path))))))]
+    (and (some? current-card)
+         (= assignee (:assignee fm))
+         (= status (:status current-card))
+         (= action (candidate-action current-card (:assignee fm))))))
+
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
         action (candidate-action card assignee)]
     (when action
+      ;; Deterministic black-box race hook; unset in deployment.
+      (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_LOCK_ACQUIRE_SIGNAL")]
+        (spit signal-path "ready\n"))
+      (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_LOCK_ACQUIRE_MILLIS")]
+        (Thread/sleep (Long/parseLong hold-ms)))
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (acquire-lock! ticket-id action effective-lane)]
         (when lock
+         (if-not (candidate-still-valid? card assignee action)
+          (do
+            (log! (str "candidate changed before the run started, leaving it for a future tick: " ticket-id))
+            (release-lock! ticket-id lock)
+            nil)
           (let [stop? (atom false)
                 hb (heartbeat! ticket-id lock stop?)
                 ;; BOXP-261: snapshot the opt-in only once this run holds the
@@ -2195,7 +2219,7 @@
               (finally
                 (reset! stop? true)
                 @hb
-                (release-lock! ticket-id lock)))))))))
+                (release-lock! ticket-id lock))))))))))
 
 (defn ticket-assignee [ticket-id]
   (let [path (ticket-path ticket-id)]

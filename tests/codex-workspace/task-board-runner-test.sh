@@ -2615,6 +2615,61 @@ test_groom_continue_withdrawn_after_agent_finished_is_not_applied() {
   assert_file_contains "${vault}/Tickets/BOXP-626.md" '^status: ready$'
 }
 
+test_candidate_reassigned_before_lock_is_not_started() {
+  # The candidate (Ready + agent assignee -> implement) is selected from a
+  # pre-lock read. A human handing the card back to boxp in between (for
+  # example a late continue-after-groom withdrawal) must stop the run once
+  # the lock is held, before any agent starts.
+  local tmp vault state bin prompt_log start_log signal tick_pid
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  start_log="${tmp}/starts.log"
+  signal="${tmp}/before-lock"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" ""
+  sed -i -e 's/^## Ready$/## Ready\n- [ ] [[Tickets\/BOXP-628|BOXP-628: reassigned]] #ticket status::ready priority::high/' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-628 ready claude-fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CODEX_TASK_BOARD_TEST_BEFORE_LOCK_ACQUIRE_SIGNAL="${signal}" \
+    CODEX_TASK_BOARD_TEST_BEFORE_LOCK_ACQUIRE_MILLIS=2000 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-reassigned-before-lock.out 2>&1 &
+  tick_pid=$!
+
+  for _attempt in $(seq 1 100); do
+    [[ -e "${signal}" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -e "${signal}" ]]; then
+    kill -KILL "${tick_pid}" 2>/dev/null || true
+    wait "${tick_pid}" 2>/dev/null || true
+    fail "expected the runner to pause before acquiring the ticket lock"
+  fi
+  bb "${HELPER}" update BOXP-628 --vault "${vault}" --assignee boxp >/dev/null
+  wait "${tick_pid}"
+
+  [[ ! -e "${start_log}" ]] || fail "expected no agent start after the ticket was handed back to boxp"
+  assert_file_contains /tmp/task-board-reassigned-before-lock.out 'candidate changed before the run started, leaving it for a future tick: BOXP-628'
+  assert_file_contains "${vault}/Tickets/BOXP-628.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-628.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-628\|BOXP-628: .*status::ready'
+  [[ ! -e "${state}/locks/BOXP-628.edn" ]] || fail "expected the ticket lock to be released"
+  [[ ! -d "${state}/runs/BOXP-628" ]] || fail "expected no run directory for a run that never started"
+
+  # Nothing to retry: Ready + boxp is not a candidate.
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-reassigned-before-lock-2.out
+  [[ ! -e "${start_log}" ]] || fail "expected no agent start on the next tick"
+}
+
 test_groom_continue_idle_timeout_is_retried_without_consuming() {
   # P2 regression: an opted-in groom stopped by the idle timeout keeps the
   # :retrying summary (no :succeeded rewrite), does not consume the opt-in, and
@@ -3614,6 +3669,7 @@ test_groom_continue_recovers_after_crash
 test_groom_continue_helper_cli_writes_all_keys
 test_groom_continue_withdrawn_after_agent_finished_is_not_applied
 test_groom_continue_idle_timeout_is_retried_without_consuming
+test_candidate_reassigned_before_lock_is_not_started
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing

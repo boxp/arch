@@ -49,6 +49,9 @@ Ready に置き、既存の `Ready → implement` claim で In Progress まで�
    commit 後に直列化された取消し(`consumed` + `Ready` + agent assignee)は helper CLI 側が
    検出し、`assignee: boxp` に戻して Notes に記録する(`--assignee` 明示時はそれを優先、
    他レーンは `groom_continue: false` のみ)。これで取消し後に implement が自動起動しない。
+   さらに runner は ticket lock 取得後に frontmatter の assignee と Board レーンを再読し、
+   lock 取得前に選んだ候補(action / assignee / status)と違えば lock を解放して見送る
+   (別 tick が古い assignee で implement を起動する TOCTOU を塞ぐ)。
    既定配備では vault-writer lock が無効(未設定)なので、runner は helper CLI と同じ
    per-file lock(`<tmpdir>/task-board-locks/<sha256(canonical path)[0:16]>-<name>.lock`)を
    frontmatter 更新・Notes 追記・Board 書換で常に取得し、同一ホスト上の helper 書込みと
@@ -107,6 +110,8 @@ black-box（fake claude / codex、tmp vault）:
   `--no-groom-continue`）→ `Ready` + `boxp`、未消費、次 tick で implement が始まらない
 - opt-in 票の groom が idle timeout → `Backlog` + agent 保持、未消費、summary は
   `:retrying` + `:groom-continue idle-timeout`、次 tick は groom 再実行で正常継続
+- lock 取得直前に人間が `--assignee boxp` へ戻した `Ready` 票は、lock 取得後の再検証で
+  見送られ agent は起動しない(lock 解放、run ディレクトリ無し)
 
 ## 配備
 
