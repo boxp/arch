@@ -116,18 +116,26 @@
     (fs/path (System/getProperty "java.io.tmpdir") "task-board-locks"
              (str phash "-" safe-name ".lock"))))
 
+(def ^:dynamic *helper-file-locks-held* #{})
+
 (defn with-helper-file-lock
   "Serialize a ticket read-modify-write against helper CLI commands running on
   the same host. Unlike the vault writer lock this is always on; it is taken
   innermost (after the JVM mutex and the optional vault writer lock), matching
   the helper's own order (vault writer lock outside, per-file lock inside)."
   [path f]
-  (let [lock-file (helper-file-lock-path path)]
-    (fs/create-dirs (fs/parent lock-file))
-    (with-open [file (java.io.RandomAccessFile. (str lock-file) "rw")
-                channel (.getChannel file)]
-      (let [_file-lock (.lock channel)]
-        (f)))))
+  (let [lock-file (str (helper-file-lock-path path))]
+    (if (contains? *helper-file-locks-held* lock-file)
+      ;; Re-entrant per thread: a JVM FileLock on a file this thread already
+      ;; holds would throw OverlappingFileLockException.
+      (f)
+      (do
+        (fs/create-dirs (fs/parent lock-file))
+        (with-open [file (java.io.RandomAccessFile. lock-file "rw")
+                    channel (.getChannel file)]
+          (let [_file-lock (.lock channel)]
+            (binding [*helper-file-locks-held* (conj *helper-file-locks-held* lock-file)]
+              (f))))))))
 
 (defn parse-codex-assignee [assignee]
   (cond
@@ -2064,19 +2072,35 @@
   (move-card! ticket-id status)
   (update-frontmatter! ticket-id {:status status :assignee assignee}))
 
-(defn candidate-still-valid?
-  "Re-read the ticket assignee and the Board card once the ticket lock is
-  held. The candidate was selected from a pre-lock read, so a human change
-  that landed in between (for example a withdrawn continue-after-groom opt-in
-  handing the card back to boxp) must stop this run before an agent starts."
+(defn claim-candidate!
+  "Re-validate the candidate and perform its lane transition in one critical
+  section that holds the helper CLI's Board lock and ticket lock in the
+  helper's own order (Board outer, ticket inner). The candidate was selected
+  from a pre-lock read; a human change that landed in between (for example a
+  withdrawn continue-after-groom opt-in handing the card back to boxp) is
+  seen here and stops the run before any agent starts. Once this returns
+  true the card is already in its run lane, so a later helper write sees
+  the in-progress state instead of a claimable Ready card."
   [{:keys [ticket-id status]} assignee action]
-  (let [fm (with-helper-file-lock (ticket-path ticket-id) #(ticket-frontmatter ticket-id))
-        current-card (first (filter #(= ticket-id (:ticket-id %))
-                                    (parse-board-cards (vec (read-lines (board-path))))))]
-    (and (some? current-card)
-         (= assignee (:assignee fm))
-         (= status (:status current-card))
-         (= action (candidate-action current-card (:assignee fm))))))
+  (locking board-mutex
+    (with-helper-file-lock
+     (board-path)
+     (fn []
+       (locking (ticket-mutex ticket-id)
+         (with-helper-file-lock
+          (ticket-path ticket-id)
+          (fn []
+            (let [fm (ticket-frontmatter ticket-id)
+                  current-card (first (filter #(= ticket-id (:ticket-id %))
+                                              (parse-board-cards (vec (read-lines (board-path))))))
+                  valid? (and (some? current-card)
+                              (= assignee (:assignee fm))
+                              (= status (:status current-card))
+                              (= action (candidate-action current-card (:assignee fm))))]
+              (when (and valid? (#{"ready" "review" "blocked"} status))
+                (move-card! ticket-id "in-progress")
+                (update-frontmatter! ticket-id {:status "in-progress"}))
+              valid?))))))))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
@@ -2091,7 +2115,11 @@
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (acquire-lock! ticket-id action effective-lane)]
         (when lock
-         (if-not (candidate-still-valid? card assignee action)
+         (if-not (try
+                   (claim-candidate! card assignee action)
+                   (catch Exception e
+                     (log! (str "candidate claim failed for " ticket-id ": " (.getMessage e)))
+                     false))
           (do
             (log! (str "candidate changed before the run started, leaving it for a future tick: " ticket-id))
             (release-lock! ticket-id lock)
@@ -2104,9 +2132,7 @@
                 groom-continue-before (when (= :groom action)
                                         (groom-continue-request (ticket-frontmatter ticket-id)))]
             (try
-              (when (#{"ready" "review" "blocked"} status)
-                (move-card! ticket-id "in-progress")
-                (update-frontmatter! ticket-id {:status "in-progress"}))
+              ;; The Ready/Review/Blocked -> In Progress move already happened in claim-candidate!.
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
               (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock
                                                                                            {:groom-continue groom-continue-before})
