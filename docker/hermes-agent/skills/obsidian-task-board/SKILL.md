@@ -128,7 +128,7 @@ The runner only honors a ticket whose frontmatter has all three keys. The helper
   --dry-run
 ```
 
-- `--groom-continue` sets `groom_continue: true`, `groom_continue_scope: <text>` (required, single line), and `groom_continue_approved_by: boxp` (override with `--groom-continue-approved-by`). The runner rejects approvers outside `CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS` (default `boxp`) and parks the card in `Ready` with `assignee: boxp` as usual.
+- `--groom-continue` sets `groom_continue: true`, `groom_continue_scope: "<text>"` (required, single line; the helper double-quotes it so `: ` or `#` in the text keep the YAML valid), and `groom_continue_approved_by: boxp` (override with `--groom-continue-approved-by`). The runner rejects approvers outside `CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS` (default `boxp`) and parks the card in `Ready` with `assignee: boxp` as usual.
 - `--no-groom-continue` sets `groom_continue: false` and keeps the scope for audit (opt-out). `create` accepts the same flags; its template leaves the three keys empty.
 - Only write the opt-in on behalf of an explicit owner approval, and quote the approved scope. Never write it as an agent on your own ticket; the runner snapshots the opt-in before the groom run starts and ignores values added during the run.
 - The runner consumes the opt-in (`groom_continue: consumed`) when it applies it. A later re-groom needs a fresh approval.

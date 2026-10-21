@@ -1160,6 +1160,16 @@
        (remove str/blank?)
        set))
 
+(defn yaml-scalar-value
+  "Unwrap a double-quoted YAML scalar written by the helper CLI (free text such
+  as the approved scope often contains `: ` or `#`, which is invalid unquoted).
+  Other values are returned trimmed and unchanged."
+  [value]
+  (let [v (str/trim (str value))]
+    (if (and (>= (count v) 2) (str/starts-with? v "\"") (str/ends-with? v "\""))
+      (str/replace (subs v 1 (dec (count v))) #"\\(.)" "$1")
+      v)))
+
 (defn groom-continue-request
   "Classify a ticket's continue-after-groom opt-in from its frontmatter map.
 
@@ -1168,9 +1178,9 @@
   :unauthorized opted in but the approver is missing or not allowed
   :requested    valid opt-in; carries :scope and :approver"
   [fm]
-  (let [flag (str/lower-case (str/trim (str (:groom_continue fm))))
-        scope (str/trim (str (:groom_continue_scope fm)))
-        approver (str/trim (str (:groom_continue_approved_by fm)))]
+  (let [flag (str/lower-case (yaml-scalar-value (:groom_continue fm)))
+        scope (yaml-scalar-value (:groom_continue_scope fm))
+        approver (yaml-scalar-value (:groom_continue_approved_by fm))]
     (cond
       (not= "true" flag)
       {:state :off}
@@ -2713,7 +2723,9 @@
       (check "agent-added opt-in does not continue" (groom-continue-decision {:state :off} requested 0 "review" "TASK_BOARD_RESULT: review") nil)
       (check "unauthorized snapshot does not continue" (:category (groom-continue-decision (groom-continue-request (assoc ok :groom_continue_approved_by "codex")) requested 0 "review" "TASK_BOARD_RESULT: review")) "unauthorized")
       (check "prompt is empty without opt-in" (groom-continue-prompt {:state :off}) nil)
-      (check "prompt names the scope" (boolean (some-> (groom-continue-prompt requested) (str/includes? "fix TLS trust"))) true))
+      (check "prompt names the scope" (boolean (some-> (groom-continue-prompt requested) (str/includes? "fix TLS trust"))) true)
+      (check "quoted scope is unwrapped" (:scope (groom-continue-request (assoc ok :groom_continue_scope "\"fix: TLS \\\"trust\\\" #1\""))) "fix: TLS \"trust\" #1")
+      (check "quoted flag is unwrapped" (:state (groom-continue-request (assoc ok :groom_continue "\"true\""))) :requested))
     ;; Versioned projections cannot affect legacy candidate selection while off.
     ;; Include every existing route and lane, plus unsupported/new v2 routes.
     (doseq [[lane status] lane->status

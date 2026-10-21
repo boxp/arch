@@ -2102,7 +2102,8 @@ test_groom_continue_opt_in_continues_to_implement() {
   make_fake_codex "${bin}"
   make_fake_claude "${bin}"
   write_backlog_board "${vault}" BOXP-610
-  write_groom_continue_ticket "${vault}" BOXP-610 claude-fable true "emSign CA trust update and rollout check" boxp
+  # Scope written the way the helper CLI writes it: a double-quoted YAML scalar.
+  write_groom_continue_ticket "${vault}" BOXP-610 claude-fable true "\"emSign CA: trust update and rollout check\"" boxp
 
   # Tick 1: groom. The opt-in keeps the agent assignee and parks the card in Ready.
   PATH="${bin}:$PATH" \
@@ -2112,7 +2113,7 @@ test_groom_continue_opt_in_continues_to_implement() {
     run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-1.out
 
   assert_file_contains "${prompt_log}" 'Goal: clarify this backlog ticket only'
-  assert_file_contains "${prompt_log}" 'Continue-after-groom opt-in is active for this ticket \(approved_by=boxp; approved scope: emSign CA trust update and rollout check\)'
+  assert_file_contains "${prompt_log}" 'Continue-after-groom opt-in is active for this ticket \(approved_by=boxp; approved scope: emSign CA: trust update and rollout check\)'
   assert_file_contains "${prompt_log}" 'TASK_BOARD_GROOM_CONTINUE: hold'
   assert_file_contains "${prompt_log}" 'Do not edit the groom_continue'
   assert_file_contains "${vault}/Boards/Task Board.md" "^## Ready
@@ -2120,9 +2121,9 @@ test_groom_continue_opt_in_continues_to_implement() {
   assert_file_contains "${vault}/Tickets/BOXP-610.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-610.md" '^assignee: claude-fable$'
   assert_file_contains "${vault}/Tickets/BOXP-610.md" '^groom_continue: consumed$'
-  assert_file_contains "${vault}/Tickets/BOXP-610.md" '^groom_continue_scope: emSign CA trust update and rollout check$'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" '^groom_continue_scope: "emSign CA: trust update and rollout check"$'
   assert_file_contains "${vault}/Tickets/BOXP-610.md" 'Continue-after-groom opt-in applied: assignee kept and card moved to Ready'
-  assert_file_contains "${vault}/Tickets/BOXP-610.md" 'approved by boxp; scope: emSign CA trust update and rollout check'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" 'approved by boxp; scope: emSign CA: trust update and rollout check'
   assert_run_summary_contains "${state}" BOXP-610 ':groom-continue \{:continue\? true, :category "continued"\}'
   [[ "$(wc -l <"${start_log}")" -eq 1 ]] || fail "expected one agent start after groom"
 
@@ -2495,18 +2496,19 @@ test_groom_continue_helper_cli_writes_all_keys() {
   write_backlog_board "${vault}" BOXP-623
   write_ticket "${vault}" BOXP-623 backlog claude-fable
 
-  out="$(bb "${HELPER}" update BOXP-623 --vault "${vault}" --groom-continue --groom-continue-scope "CA trust fix" --json)"
+  # Free text with ": ", "#", and quotes must stay valid YAML: the helper double-quotes it.
+  out="$(bb "${HELPER}" update BOXP-623 --vault "${vault}" --groom-continue --groom-continue-scope 'CA trust fix: minimal PR #1 and "rollout" check' --json)"
   [[ "${out}" == *'"groom_continue":"true"'* ]] || fail "expected update output to echo the opt-in: ${out}"
   assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue: true$'
-  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_scope: CA trust fix$'
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_scope: "CA trust fix: minimal PR #1 and \\"rollout\\" check"$'
   assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_approved_by: boxp$'
   assert_file_contains "${vault}/Tickets/BOXP-623.md" '^assignee: claude-fable$'
   out="$(bb "${HELPER}" show BOXP-623 --vault "${vault}" --json)"
-  [[ "${out}" == *'"groom-continue-scope":"CA trust fix"'* ]] || fail "expected show to include the scope: ${out}"
+  [[ "${out}" == *'"groom-continue-scope":"CA trust fix: minimal PR #1 and \"rollout\" check"'* ]] || fail "expected show to unquote the scope: ${out}"
 
   bb "${HELPER}" update BOXP-623 --vault "${vault}" --no-groom-continue >/dev/null
   assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue: false$'
-  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_scope: CA trust fix$'
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_scope: "CA trust fix: minimal PR #1 and \\"rollout\\" check"$'
 
   if bb "${HELPER}" update BOXP-623 --vault "${vault}" --groom-continue 2>/dev/null; then
     fail "expected --groom-continue without a scope to be rejected"

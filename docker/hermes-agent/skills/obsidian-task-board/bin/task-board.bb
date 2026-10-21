@@ -184,6 +184,18 @@
 (def groom-continue-keys
   ["groom_continue" "groom_continue_scope" "groom_continue_approved_by"])
 
+(defn yaml-quote
+  "Serialize free text as a double-quoted YAML scalar so `: `, `#`, and leading
+  punctuation in an approved scope cannot break the frontmatter."
+  [s]
+  (str "\"" (-> (str s) (str/replace "\\" "\\\\") (str/replace "\"" "\\\"")) "\""))
+
+(defn yaml-unquote [value]
+  (let [v (str/trim (str value))]
+    (if (and (>= (count v) 2) (str/starts-with? v "\"") (str/ends-with? v "\""))
+      (str/replace (subs v 1 (dec (count v))) #"\\(.)" "$1")
+      v)))
+
 (defn groom-continue-updates
   "Translate --groom-continue flags into frontmatter updates, or nil when unused."
   [opts]
@@ -204,7 +216,7 @@
         (when (and (some? approver) (str/blank? approver))
           (die "--groom-continue-approved-by must not be empty"))
         {"groom_continue" "true"
-         "groom_continue_scope" scope
+         "groom_continue_scope" (yaml-quote scope)
          "groom_continue_approved_by" (or (present approver) "boxp")})
 
       (:no-groom-continue opts)
@@ -315,7 +327,7 @@
      :assignee (fm-get frontmatter-lines "assignee")
      :repo (fm-get frontmatter-lines "repo")
      :groom-continue (fm-get frontmatter-lines "groom_continue")
-     :groom-continue-scope (fm-get frontmatter-lines "groom_continue_scope")
+     :groom-continue-scope (some-> (fm-get frontmatter-lines "groom_continue_scope") yaml-unquote)
      :groom-continue-approved-by (fm-get frontmatter-lines "groom_continue_approved_by")}))
 
 (defn card-line? [line]
