@@ -465,6 +465,9 @@
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
+      (with-helper-file-lock
+       (board-path)
+       (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
              cards (parse-board-cards lines)
@@ -475,7 +478,7 @@
                              (range (count lines))
                              lines)]
          (when (not= lines new-lines)
-           (write-lines! path new-lines)))))))
+           (write-lines! path new-lines)))))))))
 
 (defn ticket-path [ticket-id]
   (fs/path (tickets-dir) (str ticket-id ".md")))
@@ -2082,11 +2085,17 @@
   true the card is already in its run lane, so a later helper write sees
   the in-progress state instead of a claimable Ready card."
   [{:keys [ticket-id status]} assignee action]
+  ;; Lock order: JVM mutexes (board, then ticket) -> optional shared vault
+  ;; writer lock -> helper per-file locks (Board, then ticket). This matches
+  ;; update-frontmatter-by! / move-card! / sync-ticket-statuses! inside the
+  ;; JVM and the helper CLI across processes (vault lock outside its file locks).
   (locking board-mutex
-    (with-helper-file-lock
-     (board-path)
+   (locking (ticket-mutex ticket-id)
+    (with-vault-writer-lock
      (fn []
-       (locking (ticket-mutex ticket-id)
+      (with-helper-file-lock
+       (board-path)
+       (fn []
          (with-helper-file-lock
           (ticket-path ticket-id)
           (fn []
@@ -2100,7 +2109,7 @@
               (when (and valid? (#{"ready" "review" "blocked"} status))
                 (move-card! ticket-id "in-progress")
                 (update-frontmatter! ticket-id {:status "in-progress"}))
-              valid?))))))))
+              valid?))))))))))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
