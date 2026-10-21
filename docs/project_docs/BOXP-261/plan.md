@@ -46,6 +46,9 @@ Ready に置き、既存の `Ready → implement` claim で In Progress まで�
    共有 vault-writer lock）で行う。agent 終了後に owner が `--no-groom-continue` で
    取り消した場合、その取消しが判定に見えるか、`consumed` 書込みの後に直列化されるかの
    どちらかになり、古い比較結果で取消しを上書きすることはない。
+   commit 後に直列化された取消し(`consumed` + `Ready` + agent assignee)は helper CLI 側が
+   検出し、`assignee: boxp` に戻して Notes に記録する(`--assignee` 明示時はそれを優先、
+   他レーンは `groom_continue: false` のみ)。これで取消し後に implement が自動起動しない。
    既定配備では vault-writer lock が無効(未設定)なので、runner は helper CLI と同じ
    per-file lock(`<tmpdir>/task-board-locks/<sha256(canonical path)[0:16]>-<name>.lock`)を
    frontmatter 更新・Notes 追記・Board 書換で常に取得し、同一ホスト上の helper 書込みと

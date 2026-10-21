@@ -2509,6 +2509,8 @@ test_groom_continue_helper_cli_writes_all_keys() {
   bb "${HELPER}" update BOXP-623 --vault "${vault}" --no-groom-continue >/dev/null
   assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue: false$'
   assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_scope: "CA trust fix: minimal PR #1 and \\"rollout\\" check"$'
+  # Withdrawing before the runner applied the opt-in (Backlog) keeps the assignee.
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^assignee: claude-fable$'
 
   if bb "${HELPER}" update BOXP-623 --vault "${vault}" --groom-continue 2>/dev/null; then
     fail "expected --groom-continue without a scope to be rejected"
@@ -2528,6 +2530,25 @@ test_groom_continue_helper_cli_writes_all_keys() {
   bb "${HELPER}" create --vault "${vault}" --title "plain" >/dev/null
   assert_file_contains "${vault}/Tickets/BOXP-625.md" '^groom_continue:$'
   assert_file_contains "${vault}/Tickets/BOXP-625.md" '^groom_continue_scope:$'
+
+  # Withdrawing after the runner applied it (consumed, Ready, agent assignee)
+  # hands the card back to boxp; an explicit --assignee wins; other lanes are untouched.
+  write_ticket "${vault}" BOXP-630 ready claude-fable
+  sed -i -e 's/^assignee: claude-fable$/assignee: claude-fable\ngroom_continue: consumed\ngroom_continue_scope: "scope"\ngroom_continue_approved_by: boxp/' "${vault}/Tickets/BOXP-630.md"
+  sed -i -e 's/^## Ready$/## Ready\n- [ ] [[Tickets\/BOXP-630|BOXP-630: consumed]] #ticket status::ready priority::medium/' "${vault}/Boards/Task Board.md"
+  out="$(bb "${HELPER}" update BOXP-630 --vault "${vault}" --no-groom-continue --json)"
+  [[ "${out}" == *'"assignee":"boxp"'* ]] || fail "expected the late withdrawal to report the assignee reset: ${out}"
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" '^groom_continue: false$'
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" 'Continue-after-groom opt-in withdrawn after it was applied; assignee reset to boxp'
+  sed -i -e 's/^groom_continue: false$/groom_continue: consumed/' -e 's/^assignee: boxp$/assignee: claude-fable/' "${vault}/Tickets/BOXP-630.md"
+  bb "${HELPER}" update BOXP-630 --vault "${vault}" --no-groom-continue --assignee codex >/dev/null
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" '^assignee: codex$'
+  sed -i -e 's/^groom_continue: false$/groom_continue: consumed/' "${vault}/Tickets/BOXP-630.md"
+  bb "${HELPER}" update BOXP-630 --vault "${vault}" --lane "In Progress" --no-groom-continue >/dev/null
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" '^assignee: codex$'
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" '^groom_continue: false$'
 }
 
 test_groom_continue_withdrawn_after_agent_finished_is_not_applied() {
@@ -2576,12 +2597,22 @@ test_groom_continue_withdrawn_after_agent_finished_is_not_applied() {
   wait "${helper_pid}"
 
   assert_file_contains "${prompt_log}" 'Continue-after-groom opt-in is active'
-  # The helper write landed after the runner's commit and was not lost.
+  # The helper write landed after the runner's commit and was not lost. Because
+  # the opt-in had already been consumed, the helper also handed the card back
+  # to the human so the next tick does not claim implementation.
   assert_file_contains "${vault}/Tickets/BOXP-626.md" '^groom_continue: false$'
   assert_file_not_contains "${vault}/Tickets/BOXP-626.md" '^groom_continue: consumed$'
   assert_file_contains "${vault}/Tickets/BOXP-626.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-626.md" '^assignee: boxp$'
   assert_file_contains "${vault}/Tickets/BOXP-626.md" 'Continue-after-groom opt-in applied'
+  assert_file_contains "${vault}/Tickets/BOXP-626.md" 'Continue-after-groom opt-in withdrawn after it was applied; assignee reset to boxp'
   assert_run_summary_contains "${state}" BOXP-626 ':groom-continue \{:continue\? true, :category "continued"\}'
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-late-withdraw-2.out
+  assert_file_not_contains "${prompt_log}" 'Goal: implement or complete this ticket'
+  assert_file_contains "${vault}/Tickets/BOXP-626.md" '^status: ready$'
 }
 
 test_groom_continue_idle_timeout_is_retried_without_consuming() {

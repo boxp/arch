@@ -550,6 +550,16 @@
                   lane (or (:lane opts) (:lane old-card) (status->lane (:status ticket)) "Backlog")
                   status (lanes (require-lane lane))
                   title (or (:title opts) (:title ticket))
+                  ;; BOXP-261: a withdrawal that lands after the runner already
+                  ;; applied the opt-in (consumed, card parked in Ready with the
+                  ;; agent assignee) must also stop the automatic implement claim,
+                  ;; so hand the card back to the human unless --assignee was given.
+                  late-withdrawal? (and (:no-groom-continue opts)
+                                        (nil? (:assignee opts))
+                                        (= "consumed" (some-> (:groom-continue ticket) str/trim))
+                                        (= "ready" status)
+                                        (not= "boxp" (some-> (:assignee ticket) str/trim)))
+                  assignee (if late-withdrawal? "boxp" (:assignee opts))
                   done-date (or (present (:done-date old-card))
                                 (present (fm-get (:frontmatter-lines ticket) "closed"))
                                 (when (= lane "Done") (now-date)))
@@ -561,21 +571,25 @@
                            :notes (:notes opts)
                            :status status
                            :priority (:priority opts)
-                           :assignee (:assignee opts)
+                           :assignee assignee
                            :repo (:repo opts)
                            :closed (if (= lane "Done") done-date "")
-                           :groom-continue groom-continue}
+                           :groom-continue groom-continue
+                           :append-note (when late-withdrawal?
+                                          "Continue-after-groom opt-in withdrawn after it was applied; assignee reset to boxp so the implement run is not claimed automatically.")
+                           :note-source (or (:source opts) "hermes-agent")}
                   new-ticket (apply-ticket-update ticket updates)
                   card {:id id
                         :title title
                         :lane lane
                         :priority (or (:priority opts) (:priority ticket) (:priority old-card))
-                        :assignee (or (:assignee opts) (:assignee ticket) (:assignee old-card))
+                        :assignee (or assignee (:assignee ticket) (:assignee old-card))
                         :repo (or (:repo opts) (:repo old-card) (:repo ticket))
                         :done-date done-date}
                   new-board (insert-card board id card)
                   result (cond-> {:action "update" :id id :lane lane :status status :dry-run (boolean (:dry-run opts))}
-                           groom-continue (assoc :groom-continue groom-continue))]
+                           groom-continue (assoc :groom-continue groom-continue)
+                           late-withdrawal? (assoc :assignee "boxp"))]
               (when-not (:dry-run opts)
                 (write-text! path new-ticket)
                 (write-text! bpath new-board))
