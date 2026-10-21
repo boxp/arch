@@ -101,6 +101,42 @@
             (binding [*vault-writer-lock-held* true]
               (f))))))))
 
+(defn helper-file-lock-path
+  "The per-file lock the obsidian-task-board helper CLI takes around every
+  ticket write: `<java.io.tmpdir>/task-board-locks/<sha256(canonical path)[0,16)>-<file name>.lock`.
+  Kept byte-for-byte compatible with the helper's `with-file-lock`."
+  [path]
+  (let [canonical (.getCanonicalPath (java.io.File. (str path)))
+        digest (java.security.MessageDigest/getInstance "SHA-256")
+        phash (subs (->> (.digest digest (.getBytes canonical "UTF-8"))
+                         (map #(format "%02x" (bit-and 0xff %)))
+                         (apply str))
+                    0 16)
+        safe-name (str/replace (str (fs/file-name path)) #"[^a-zA-Z0-9._-]" "_")]
+    (fs/path (System/getProperty "java.io.tmpdir") "task-board-locks"
+             (str phash "-" safe-name ".lock"))))
+
+(def ^:dynamic *helper-file-locks-held* #{})
+
+(defn with-helper-file-lock
+  "Serialize a ticket read-modify-write against helper CLI commands running on
+  the same host. Unlike the vault writer lock this is always on; it is taken
+  innermost (after the JVM mutex and the optional vault writer lock), matching
+  the helper's own order (vault writer lock outside, per-file lock inside)."
+  [path f]
+  (let [lock-file (str (helper-file-lock-path path))]
+    (if (contains? *helper-file-locks-held* lock-file)
+      ;; Re-entrant per thread: a JVM FileLock on a file this thread already
+      ;; holds would throw OverlappingFileLockException.
+      (f)
+      (do
+        (fs/create-dirs (fs/parent lock-file))
+        (with-open [file (java.io.RandomAccessFile. lock-file "rw")
+                    channel (.getChannel file)]
+          (let [_file-lock (.lock channel)]
+            (binding [*helper-file-locks-held* (conj *helper-file-locks-held* lock-file)]
+              (f))))))))
+
 (defn parse-codex-assignee [assignee]
   (cond
     (contains? assignee->model assignee)
@@ -309,8 +345,21 @@
     (str/split-lines (slurp (str path)))
     (fail (str "missing file: " path))))
 
-(defn write-lines! [path lines]
-  (spit (str path) (str (str/join "\n" lines) "\n")))
+(defn write-lines!
+  "Replace `path` atomically: write a sibling temp file, then rename it over
+  the target. Another process (a helper command, a second runner JVM)
+  reading the file therefore sees either the old or the new content, never
+  a truncated file without frontmatter."
+  [path lines]
+  (let [target (fs/path (str path))
+        tmp (fs/path (fs/parent target)
+                     (str "." (fs/file-name target) ".tmp-" (.pid (java.lang.ProcessHandle/current))
+                          "-" (System/nanoTime)))]
+    (try
+      (spit (str tmp) (str (str/join "\n" lines) "\n"))
+      (fs/move tmp target {:replace-existing true :atomic-move true})
+      (finally
+        (fs/delete-if-exists tmp)))))
 
 (defn section-index [lines heading]
   (first (keep-indexed (fn [idx line]
@@ -397,6 +446,9 @@
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
+      (with-helper-file-lock
+       (board-path)
+       (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
              card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
@@ -407,12 +459,15 @@
          (let [new-line (normalize-card-line (:line card) target-status)
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
-           (write-lines! path moved)))))))
+           (write-lines! path moved)))))))))
 
 (defn sync-board-statuses! []
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
+      (with-helper-file-lock
+       (board-path)
+       (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
              cards (parse-board-cards lines)
@@ -423,7 +478,7 @@
                              (range (count lines))
                              lines)]
          (when (not= lines new-lines)
-           (write-lines! path new-lines)))))))
+           (write-lines! path new-lines)))))))))
 
 (defn ticket-path [ticket-id]
   (fs/path (tickets-dir) (str ticket-id ".md")))
@@ -451,23 +506,39 @@
       (mapv #(if (re-matches pattern %) replacement %) fm-lines)
       (conj (vec fm-lines) replacement))))
 
-(defn update-frontmatter! [ticket-id updates]
+(defn update-frontmatter-by!
+  "Read the ticket frontmatter, call `(f fm-map)` -> {:updates {...} :result x},
+  and write `:updates` from the same read in one critical section (ticket mutex,
+  the optional shared vault writer lock, and the helper CLI's per-file lock).
+  Callers that must decide *from* the current frontmatter use this so no other
+  writer can change the file between the comparison and the write. Returns
+  `:result`."
+  [ticket-id f]
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
-       (let [path (ticket-path ticket-id)
-             lines (vec (read-lines path))
-             {:keys [end]} (or (frontmatter-range lines)
-                               (fail (str "missing frontmatter: " path)))
-             before (subvec lines 0 (inc end))
-             body (subvec lines (inc end))
-             fm-lines (subvec before 1 end)
-             new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
-                            fm-lines
-                            updates)
-             new-lines (vec (concat ["---"] new-fm ["---"] body))]
-         (when (not= lines new-lines)
-           (write-lines! path new-lines)))))))
+       (with-helper-file-lock
+        (ticket-path ticket-id)
+        (fn []
+          (let [path (ticket-path ticket-id)
+                lines (vec (read-lines path))
+                {:keys [end]} (or (frontmatter-range lines)
+                                  (fail (str "missing frontmatter: " path)))
+                before (subvec lines 0 (inc end))
+                body (subvec lines (inc end))
+                fm-lines (subvec before 1 end)
+                {:keys [updates result]} (f (frontmatter-map lines))
+                new-fm (reduce (fn [acc [k v]] (set-frontmatter-key acc k v))
+                               fm-lines
+                               updates)
+                new-lines (vec (concat ["---"] new-fm ["---"] body))]
+            (when (not= lines new-lines)
+              (write-lines! path new-lines))
+            result)))))))
+
+(defn update-frontmatter! [ticket-id updates]
+  (update-frontmatter-by! ticket-id (fn [_] {:updates updates}))
+  nil)
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
@@ -480,6 +551,9 @@
       (throw (ex-info "forced blocker Notes write failure" {})))
     (with-vault-writer-lock
      (fn []
+       (with-helper-file-lock
+        (ticket-path ticket-id)
+        (fn []
        (let [path (ticket-path ticket-id)
              lines (vec (read-lines path))
              bullet (str "- " (today) ": " note)
@@ -490,29 +564,57 @@
              new-lines (if (some #(= bullet %) lines)
                          lines
                          (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-         (write-lines! path new-lines))))))
+         (write-lines! path new-lines))))))))
 
 (defn project-ticket-status! [ticket-id {:keys [status done]}]
   (update-frontmatter! ticket-id (cond-> {:status status}
                                    (= "done" status) (assoc :closed (or done (today))))))
 
+(defn with-board-and-ticket-locks
+  "Run `f` inside the critical section shared by every Board + ticket
+  read-modify-write in this runner and by the helper CLI's `update`: JVM mutexes
+  (board, then ticket) -> optional shared vault writer lock -> helper per-file
+  locks (Board, then ticket). Anything that decides a ticket's state from the
+  Board must read the Board inside this section, never from a pre-lock snapshot."
+  [ticket-id f]
+  (locking board-mutex
+   (locking (ticket-mutex ticket-id)
+    (with-vault-writer-lock
+     (fn []
+      (with-helper-file-lock
+       (board-path)
+       (fn []
+         (with-helper-file-lock
+          (ticket-path ticket-id)
+          f))))))))
+
+(defn current-board-card
+  "The ticket's card from the Board as it is on disk right now (nil when absent).
+  Only meaningful inside with-board-and-ticket-locks."
+  [ticket-id]
+  (first (filter #(= ticket-id (:ticket-id %))
+                 (parse-board-cards (vec (read-lines (board-path)))))))
+
 (defn sync-ticket-statuses! []
+  ;; The pre-lock read only enumerates which tickets to visit. The helper CLI
+  ;; `update` moves the card and rewrites the ticket under Board lock + ticket
+  ;; lock; projecting the lane from this snapshot after taking only the ticket
+  ;; lock could overwrite that newer status with a stale one. So the lane is
+  ;; re-read under the same Board lock + ticket lock the helper takes.
   (let [lines (vec (read-lines (board-path)))]
-    (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
-            :let [path (ticket-path ticket-id)]
-            :when (fs/exists? path)]
-      (if (vault-writer-lock-dir)
-        ;; With the shared lock, another writer may move the card after the
-        ;; snapshot above. Re-read the lane inside the lock so a stale status is
-        ;; never projected. Lock order stays ticket mutex, then vault lock.
-        (locking (ticket-mutex ticket-id)
-          (with-vault-writer-lock
-           (fn []
-             (when-let [current (first (filter #(= ticket-id (:ticket-id %))
-                                               (parse-board-cards (vec (read-lines (board-path))))))]
-               (when (fs/exists? path)
-                 (project-ticket-status! ticket-id current))))))
-        (project-ticket-status! ticket-id card)))))
+    (doseq [{:keys [ticket-id]} (parse-board-cards lines)
+            :when (fs/exists? (ticket-path ticket-id))]
+      ;; Deterministic black-box race hook; unset in deployment.
+      (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_SYNC_TICKET_LOCK_SIGNAL")]
+        (spit signal-path "ready\n"))
+      (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_SYNC_TICKET_LOCK_MILLIS")]
+        (Thread/sleep (Long/parseLong hold-ms)))
+      (with-board-and-ticket-locks
+       ticket-id
+       (fn []
+         (when-let [current (current-board-card ticket-id)]
+           (when (fs/exists? (ticket-path ticket-id))
+             (project-ticket-status! ticket-id current))))))))
 
 (defn sync-all! []
   (sync-board-statuses!)
@@ -1135,7 +1237,176 @@
          "append a note to this ticket's Notes by running:\n"
          "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
-(defn prompt-for [action ticket-id lane workspace agent]
+;; ---------------------------------------------------------------------------
+;; Continue-after-groom opt-in (BOXP-261)
+;;
+;; Ready stays a human review point by default: a groomed card is parked in
+;; Ready with `assignee: boxp`. An owner can pre-approve the implementation of
+;; one urgent ticket by writing all three frontmatter keys below. Only then does
+;; the runner keep the agent assignee after a *successful* groom so the next
+;; tick claims the card through the ordinary Ready -> In Progress path. The
+;; opt-in is snapshotted before the agent starts, so an agent cannot grant it
+;; to itself, and it is consumed (`groom_continue: consumed`) once used.
+;; ---------------------------------------------------------------------------
+
+(def groom-continue-keys
+  [:groom_continue :groom_continue_scope :groom_continue_approved_by])
+
+(defn groom-continue-enabled? []
+  ;; Runner-wide kill switch. Per-ticket default is off regardless.
+  (not= "false" (str/lower-case (str/trim (env "CODEX_TASK_BOARD_GROOM_CONTINUE" "true")))))
+
+(defn groom-continue-approvers []
+  (->> (str/split (env "CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS" "boxp") #"[,\s]+")
+       (map str/trim)
+       (remove str/blank?)
+       set))
+
+(defn yaml-scalar-value
+  "Unwrap a double-quoted YAML scalar written by the helper CLI (free text such
+  as the approved scope often contains `: ` or `#`, which is invalid unquoted).
+  Other values are returned trimmed and unchanged."
+  [value]
+  (let [v (str/trim (str value))]
+    (if (and (>= (count v) 2) (str/starts-with? v "\"") (str/ends-with? v "\""))
+      (str/replace (subs v 1 (dec (count v))) #"\\(.)" "$1")
+      v)))
+
+(defn groom-continue-request
+  "Classify a ticket's continue-after-groom opt-in from its frontmatter map.
+
+  :off          no opt-in (missing, false, consumed): legacy behavior, no note
+  :invalid      opted in but the approved scope is empty
+  :unauthorized opted in but the approver is missing or not allowed
+  :requested    valid opt-in; carries :scope and :approver"
+  [fm]
+  (let [flag (str/lower-case (yaml-scalar-value (:groom_continue fm)))
+        scope (yaml-scalar-value (:groom_continue_scope fm))
+        approver (yaml-scalar-value (:groom_continue_approved_by fm))]
+    (cond
+      (not= "true" flag)
+      {:state :off}
+
+      (str/blank? scope)
+      {:state :invalid :reason "groom_continue_scope is empty"}
+
+      (str/blank? approver)
+      {:state :unauthorized :reason "groom_continue_approved_by is empty"}
+
+      (not (contains? (groom-continue-approvers) approver))
+      {:state :unauthorized
+       :reason (str "approver " approver " is not in CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS")}
+
+      :else
+      {:state :requested :scope scope :approver approver})))
+
+(defn groom-continue-hold-marker? [text]
+  (boolean (re-find #"(?im)^TASK_BOARD_GROOM_CONTINUE:\s*hold\s*$" (or text ""))))
+
+(defn groom-continue-decision
+  "Decide whether a finished groom run may hand the ticket straight to the
+  implement queue. `before` is the opt-in snapshot taken before the agent ran;
+  `after` is the opt-in read back from the ticket after the run.
+
+  Returns nil when the ticket never opted in (legacy path). Otherwise returns
+  {:continue? bool :category string :reason string}."
+  [before after exit result last-message]
+  (when (not= :off (:state before))
+    (cond
+      (not= :requested (:state before))
+      {:continue? false :category (name (:state before)) :reason (:reason before)}
+
+      (not (groom-continue-enabled?))
+      {:continue? false :category "disabled"
+       :reason "CODEX_TASK_BOARD_GROOM_CONTINUE=false disables continue-after-groom on this runner"}
+
+      (not (zero? (long (or exit 0))))
+      {:continue? false :category "groom-failed"
+       :reason "groom agent exited unsuccessfully"}
+
+      (not= "review" result)
+      {:continue? false :category "unconfirmed-result"
+       :reason (str "groom result marker was " (or result "missing") ", expected review")}
+
+      (groom-continue-hold-marker? last-message)
+      {:continue? false :category "hold"
+       :reason "groom agent requested human confirmation with TASK_BOARD_GROOM_CONTINUE: hold"}
+
+      (not= :requested (:state after))
+      {:continue? false :category "withdrawn"
+       :reason "continue-after-groom opt-in was removed or invalidated during the run"}
+
+      (not= (select-keys before [:scope :approver]) (select-keys after [:scope :approver]))
+      {:continue? false :category "withdrawn"
+       :reason "continue-after-groom scope or approver changed during the run"}
+
+      :else
+      {:continue? true :category "continued"
+       :reason (str "approved by " (:approver before) "; scope: " (:scope before))})))
+
+(defn groom-continue-prompt [request]
+  (when (= :requested (:state request))
+    (str "Continue-after-groom opt-in is active for this ticket (approved_by=" (:approver request)
+         "; approved scope: " (:scope request) ").\n"
+         "After this grooming run completes normally, the runner keeps the current assignee, moves the card to Ready, and automatically starts implementation in the next tick without waiting for a human to re-assign the ticket.\n"
+         "Keep the clarified Plan inside the approved scope. If the approved scope does not cover the clarified work, a human decision is still required before implementation, or required access is missing, output exactly one line TASK_BOARD_GROOM_CONTINUE: hold before the result marker so the runner stops at Ready with assignee boxp instead.\n"
+         "Do not edit the groom_continue, groom_continue_scope, or groom_continue_approved_by frontmatter fields.\n")))
+
+(defn groom-continue-note [decision next-status]
+  (cond
+    (:continue? decision)
+    (str "Continue-after-groom opt-in applied: assignee kept and card moved to Ready; "
+         "implementation will be claimed automatically in the next tick ("
+         (:reason decision) "). groom_continue was set to consumed.")
+
+    (= "blocked" next-status)
+    (str "Continue-after-groom opt-in not applied (" (:category decision) "): "
+         (:reason decision) ". Card moved to Blocked; the opt-in was not consumed.")
+
+    (= "idle-timeout" (:category decision))
+    (str "Continue-after-groom opt-in not applied (idle-timeout): "
+         (:reason decision) ". The opt-in was not consumed; the groom run will be retried from Backlog.")
+
+    :else
+    (str "Continue-after-groom opt-in not applied (" (:category decision) "): "
+         (:reason decision) ". Card parked in Ready with assignee boxp for human review.")))
+
+(defn groom-continue-idle-timeout-decision [before]
+  (when (not= :off (:state before))
+    {:continue? false :category "idle-timeout"
+     :reason "groom agent was stopped by the idle timeout before it finished"}))
+
+(defn commit-groom-continue!
+  "Finish a groom run that opted in: re-read the opt-in, decide, and write the
+  resulting status/assignee/consumed frontmatter from that same read in one
+  critical section. A withdrawal (`--no-groom-continue`) that lands after the
+  agent finished is therefore either seen by the decision or serialized after
+  the consumed write; it can no longer be overwritten by a stale comparison.
+  Returns the decision."
+  [ticket-id before exit result last-message assignee next-status]
+  (update-frontmatter-by!
+   ticket-id
+   (fn [fm]
+     ;; Deterministic black-box race hook; unset in deployment. It pauses
+     ;; between the read and the write, inside every lock, so a test can
+     ;; prove a concurrent helper write is serialized rather than lost.
+     (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_INSIDE_GROOM_CONTINUE_COMMIT_SIGNAL")]
+       (spit signal-path "ready\n"))
+     (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_INSIDE_GROOM_CONTINUE_COMMIT_MILLIS")]
+       (Thread/sleep (Long/parseLong hold-ms)))
+     (let [decision (groom-continue-decision before (groom-continue-request fm)
+                                             exit result last-message)
+           continue? (boolean (:continue? decision))]
+       {:updates (cond-> {:status next-status
+                          :assignee (if continue? assignee "boxp")}
+                   ;; One-shot: a later re-groom needs a fresh approval.
+                   continue? (assoc :groom_continue "consumed"))
+        :result decision}))))
+
+(defn prompt-for
+  ([action ticket-id lane workspace agent]
+   (prompt-for action ticket-id lane workspace agent {}))
+  ([action ticket-id lane workspace agent opts]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
         base-agent (:base-assignee (parse-codex-assignee agent))
@@ -1162,6 +1433,7 @@
            "First investigate before writing: read ticket Notes and related Obsidian documents, inspect relevant GitHub repository state (issues, PRs, discussions via gh CLI), check related repo/git conventions, run Web searches for key technologies if needed, and for infra tickets check kubectl pod/deployment state; for performance/incident tickets check Grafana metrics.\n"
            "Then update the ticket file so Summary, Acceptance Criteria, Context, Plan, and Notes are specific enough for a human to review. Fill Context with investigation findings (system state, related docs, design rationale). Fill Plan with concrete implementation steps derived from findings.\n"
            "Keep the scope practical and preserve existing decisions.\n"
+           (or (groom-continue-prompt (:groom-continue opts)) "")
            (append-note-instruction agent ticket-id)
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: review\n")
 
@@ -1192,7 +1464,7 @@
            (append-note-instruction agent ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n"
-           "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n"))))
+           "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n")))))
 
 (defn result-marker [text]
   (when-let [[_ value] (re-find #"(?im)^TASK_BOARD_RESULT:\s*(done|review|blocked)\s*$" (or text ""))]
@@ -1573,7 +1845,10 @@
     (fable-model-args)
     ["--model" (get claude-assignee->model agent)]))
 
-(defn run-agent! [ticket-id action lane agent lock]
+(defn run-agent!
+  ([ticket-id action lane agent lock]
+   (run-agent! ticket-id action lane agent lock {}))
+  ([ticket-id action lane agent lock opts]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
         workspace (prepare-run-workspace! ticket-id run)
@@ -1582,7 +1857,7 @@
         stderr-path (fs/path dir "stderr.log")
         last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
-    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
+    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent opts))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
     (let [agent-args (if (claude-assignee? agent)
                        (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "text"]
@@ -1642,7 +1917,7 @@
        :run-id run
        :dir (str dir)
        :last-message last-message
-       :idle-timeout? idle-timeout?})))
+       :idle-timeout? idle-timeout?}))))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (when (supported-assignee? assignee)
@@ -1828,22 +2103,89 @@
   (move-card! ticket-id status)
   (update-frontmatter! ticket-id {:status status :assignee assignee}))
 
+(defn claim-candidate!
+  "Re-validate the candidate and perform its lane transition in one critical
+  section that holds the helper CLI's Board lock and ticket lock in the
+  helper's own order (Board outer, ticket inner). The candidate was selected
+  from a pre-lock read; a human change that landed in between (for example a
+  withdrawn continue-after-groom opt-in handing the card back to boxp) is
+  seen here and stops the run before any agent starts. Once this returns
+  true the card is already in its run lane, so a later helper write sees
+  the in-progress state instead of a claimable Ready card."
+  [{:keys [ticket-id status]} assignee action]
+  ;; Same critical section (and lock order) as sync-ticket-statuses! and the
+  ;; helper CLI: see with-board-and-ticket-locks.
+  (with-board-and-ticket-locks
+   ticket-id
+   (fn []
+    (let [fm (ticket-frontmatter ticket-id)
+          current-card (current-board-card ticket-id)
+          valid? (and (some? current-card)
+                      (= assignee (:assignee fm))
+                      (= status (:status current-card))
+                      (= action (candidate-action current-card (:assignee fm))))]
+      (when (and valid? (#{"ready" "review" "blocked"} status))
+        (move-card! ticket-id "in-progress")
+        (try
+          ;; Deterministic black-box failure hook; unset in deployment.
+          (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_CLAIM_FRONTMATTER"))
+            (throw (ex-info "forced claim frontmatter write failure" {})))
+          (update-frontmatter! ticket-id {:status "in-progress"})
+          (catch Exception e
+            ;; Roll the card back while the locks are still held so a
+            ;; failed claim never leaves it in In Progress without a run.
+            (try
+              (move-card! ticket-id status)
+              (catch Exception restore-error
+                (log! (str "card restore after failed claim also failed for " ticket-id
+                           ": " (.getMessage restore-error)))))
+            (throw e))))
+      valid?))))
+
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
         action (candidate-action card assignee)]
     (when action
+      ;; Deterministic black-box race hook; unset in deployment.
+      (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_LOCK_ACQUIRE_SIGNAL")]
+        (spit signal-path "ready\n"))
+      (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_LOCK_ACQUIRE_MILLIS")]
+        (Thread/sleep (Long/parseLong hold-ms)))
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (acquire-lock! ticket-id action effective-lane)]
         (when lock
+         (if-not (try
+                   (claim-candidate! card assignee action)
+                   (catch Exception e
+                     (log! (str "candidate claim failed for " ticket-id ": " (.getMessage e)))
+                     false))
+          (do
+            (log! (str "candidate changed before the run started, leaving it for a future tick: " ticket-id))
+            (release-lock! ticket-id lock)
+            nil)
           (let [stop? (atom false)
-                hb (heartbeat! ticket-id lock stop?)]
+                hb (heartbeat! ticket-id lock stop?)
+                ;; BOXP-261: snapshot the opt-in only once this run holds the
+                ;; ticket lock, so a withdrawal that landed while another run
+                ;; was active is honored and the agent cannot grant it itself.
+                groom-continue-before (when (= :groom action)
+                                        (groom-continue-request (ticket-frontmatter ticket-id)))]
             (try
-              (when (#{"ready" "review" "blocked"} status)
-                (move-card! ticket-id "in-progress")
-                (update-frontmatter! ticket-id {:status "in-progress"}))
+              ;; The Ready/Review/Blocked -> In Progress move already happened in claim-candidate!.
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
-              (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock)
+              (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock
+                                                                                           {:groom-continue groom-continue-before})
+                    ;; Provisional decision for the audit paths (Blocked, idle
+                    ;; timeout, runner failure). The Ready path re-decides in
+                    ;; commit-groom-continue! under the writer lock so a late
+                    ;; withdrawal cannot be overwritten by this earlier read.
+                    groom-continue (when (= :groom action)
+                                     (if idle-timeout?
+                                       (groom-continue-idle-timeout-decision groom-continue-before)
+                                       (groom-continue-decision groom-continue-before
+                                                                (groom-continue-request (ticket-frontmatter ticket-id))
+                                                                exit result last-message)))
                     _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
                         ;; Deterministic black-box failure hook; unset in deployment.
                         (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
@@ -1862,18 +2204,24 @@
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
                                       gate-result))
                                   {:ok? true})
-                    next-status (if idle-timeout?
-                                  "in-progress"
-                                  (final-status action result exit review-gate))]
+                    next-status (cond
+                                  ;; A groom stopped by the idle timeout is
+                                  ;; retried as a groom: keep the card in
+                                  ;; Backlog instead of promoting a half-
+                                  ;; groomed ticket to the implement queue.
+                                  (and idle-timeout? (= :groom action)) "backlog"
+                                  idle-timeout? "in-progress"
+                                  :else (final-status action result exit review-gate))]
                 (when idle-timeout?
                   (mark-run! ticket-id run-id :retrying
-                             {:action action
-                              :agent assignee
-                              :lane effective-lane
-                              :exit-code exit
-                              :result result
-                              :idle-timeout? true
-                              :finished-at (now-str)}))
+                             (cond-> {:action action
+                                      :agent assignee
+                                      :lane effective-lane
+                                      :exit-code exit
+                                      :result result
+                                      :idle-timeout? true
+                                      :finished-at (now-str)}
+                               groom-continue (assoc :groom-continue (select-keys groom-continue [:continue? :category])))))
                 ;; A non-retryable review-gate failure reaches block-ticket!.
                 ;; Let that function write :blocked only after the card and
                 ;; frontmatter transition have both succeeded.  Writing it
@@ -1895,14 +2243,40 @@
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
                 (if (= "blocked" next-status)
-                  (when-not (block-ticket! ticket-id run-id action result exit review-gate nil)
+                  (if (block-ticket! ticket-id run-id action result exit review-gate nil)
+                    (when groom-continue
+                      (append-note! ticket-id (groom-continue-note groom-continue next-status)))
                     (restore-card-state! ticket-id status assignee))
-                  (do
-                    (move-card! ticket-id next-status)
-                    (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                             :assignee (if (= "in-progress" next-status) assignee "boxp")}
-                                                      (= "done" next-status) (assoc :closed (today))))
-                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))))
+                  (let [_ (move-card! ticket-id next-status)
+                        ;; Opted-in groom reaching Ready: decide and write
+                        ;; atomically (P1). Everything else keeps the plain
+                        ;; frontmatter update; an idle timeout keeps the agent
+                        ;; assignee for the automatic retry and never consumes.
+                        groom-continue (if (and groom-continue (not idle-timeout?))
+                                         (commit-groom-continue! ticket-id groom-continue-before
+                                                                 exit result last-message
+                                                                 assignee next-status)
+                                         (do (update-frontmatter! ticket-id
+                                                                  (cond-> {:status next-status
+                                                                           :assignee (if (or (= "in-progress" next-status) idle-timeout?)
+                                                                                       assignee
+                                                                                       "boxp")}
+                                                                    (= "done" next-status) (assoc :closed (today))))
+                                             groom-continue))]
+                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
+                    (when groom-continue
+                      (append-note! ticket-id (groom-continue-note groom-continue next-status)))
+                    ;; An idle timeout already recorded :retrying above (P2);
+                    ;; only a finished groom rewrites the summary as succeeded.
+                    ;; The rewrite keeps :agent; record only derived fields.
+                    (when (and groom-continue (not idle-timeout?))
+                      (mark-run! ticket-id run-id :succeeded
+                                 {:action action
+                                  :lane effective-lane
+                                  :exit-code exit
+                                  :result result
+                                  :groom-continue (select-keys groom-continue [:continue? :category])
+                                  :finished-at (now-str)}))))
                 true)
               (catch Exception e
                 (when-not (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
@@ -1911,7 +2285,7 @@
               (finally
                 (reset! stop? true)
                 @hb
-                (release-lock! ticket-id lock)))))))))
+                (release-lock! ticket-id lock))))))))))
 
 (defn ticket-assignee [ticket-id]
   (let [path (ticket-path ticket-id)]
@@ -2236,9 +2610,13 @@
   (try
     (let [path (board-path)]
       (when (fs/exists? path)
-        ;; board-mutex keeps a half-written board from this JVM out of the read.
-        (let [lines (locking board-mutex
-                      (str/split-lines (slurp (str path))))]
+        ;; Deliberately lock-free: write-lines! replaces the Board by atomic
+        ;; rename, so this read sees a complete old or new file. Callers hold
+        ;; the ticket lock guard (ticket mutex), and board-mutex is always
+        ;; taken *before* the ticket mutex (with-board-and-ticket-locks), so
+        ;; taking board-mutex here would invert that order and could deadlock
+        ;; prune against sync/claim.
+        (let [lines (str/split-lines (slurp (str path)))]
           (:lanes (reduce (fn [{:keys [lane] :as acc} line]
                             (if-let [[_ heading] (re-matches #"##\s+(.*?)\s*" line)]
                               (assoc acc :lane heading)
@@ -2535,6 +2913,37 @@
   (let [failures (atom [])]
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
+    ;; BOXP-261: continue-after-groom opt-in classification and decision.
+    (let [ok {:groom_continue "true" :groom_continue_scope "fix TLS trust" :groom_continue_approved_by "boxp"}
+          requested (groom-continue-request ok)
+          check (fn [label actual expected]
+                  (if (= expected actual)
+                    (println (str "PASS: groom-continue " label))
+                    (do (println (str "FAIL: groom-continue " label " expected=" expected " actual=" actual))
+                        (swap! failures conj (str "groom-continue " label)))))]
+      (check "valid opt-in is requested" (:state requested) :requested)
+      (check "missing keys stay off" (:state (groom-continue-request {})) :off)
+      (check "false stays off" (:state (groom-continue-request (assoc ok :groom_continue "false"))) :off)
+      (check "consumed stays off" (:state (groom-continue-request (assoc ok :groom_continue "consumed"))) :off)
+      (check "empty scope is invalid" (:state (groom-continue-request (assoc ok :groom_continue_scope ""))) :invalid)
+      (check "missing approver is unauthorized" (:state (groom-continue-request (dissoc ok :groom_continue_approved_by))) :unauthorized)
+      (check "unknown approver is unauthorized" (:state (groom-continue-request (assoc ok :groom_continue_approved_by "codex"))) :unauthorized)
+      (check "legacy ticket yields no decision" (groom-continue-decision {:state :off} {:state :off} 0 "review" "TASK_BOARD_RESULT: review") nil)
+      (check "successful groom continues" (:continue? (groom-continue-decision requested requested 0 "review" "TASK_BOARD_RESULT: review")) true)
+      (check "failed groom does not continue" (:category (groom-continue-decision requested requested 1 nil "")) "groom-failed")
+      (check "blocked marker does not continue" (:category (groom-continue-decision requested requested 0 "blocked" "TASK_BOARD_RESULT: blocked")) "unconfirmed-result")
+      (check "hold marker does not continue" (:category (groom-continue-decision requested requested 0 "review" "TASK_BOARD_GROOM_CONTINUE: hold\nTASK_BOARD_RESULT: review")) "hold")
+      (check "withdrawn during run does not continue" (:category (groom-continue-decision requested {:state :off} 0 "review" "TASK_BOARD_RESULT: review")) "withdrawn")
+      (check "changed scope does not continue" (:category (groom-continue-decision requested (assoc requested :scope "other") 0 "review" "TASK_BOARD_RESULT: review")) "withdrawn")
+      (check "agent-added opt-in does not continue" (groom-continue-decision {:state :off} requested 0 "review" "TASK_BOARD_RESULT: review") nil)
+      (check "unauthorized snapshot does not continue" (:category (groom-continue-decision (groom-continue-request (assoc ok :groom_continue_approved_by "codex")) requested 0 "review" "TASK_BOARD_RESULT: review")) "unauthorized")
+      (check "prompt is empty without opt-in" (groom-continue-prompt {:state :off}) nil)
+      (check "prompt names the scope" (boolean (some-> (groom-continue-prompt requested) (str/includes? "fix TLS trust"))) true)
+      (check "quoted scope is unwrapped" (:scope (groom-continue-request (assoc ok :groom_continue_scope "\"fix: TLS \\\"trust\\\" #1\""))) "fix: TLS \"trust\" #1")
+      (check "quoted flag is unwrapped" (:state (groom-continue-request (assoc ok :groom_continue "\"true\""))) :requested)
+      (check "idle timeout without opt-in yields no decision" (groom-continue-idle-timeout-decision {:state :off}) nil)
+      (check "idle timeout with opt-in does not continue" (:category (groom-continue-idle-timeout-decision requested)) "idle-timeout")
+      (check "idle timeout note says not consumed" (boolean (str/includes? (groom-continue-note (groom-continue-idle-timeout-decision requested) "backlog") "was not consumed")) true))
     ;; Versioned projections cannot affect legacy candidate selection while off.
     ;; Include every existing route and lane, plus unsupported/new v2 routes.
     (doseq [[lane status] lane->status

@@ -99,6 +99,11 @@
           "--priority" (recur (nnext xs) (assoc opts :priority (first more)))
           "--assignee" (recur (nnext xs) (assoc opts :assignee (first more)))
           "--repo" (recur (nnext xs) (assoc opts :repo (first more)))
+          "--groom-continue" (recur more (assoc opts :groom-continue true))
+          "--no-groom-continue" (recur more (assoc opts :no-groom-continue true))
+          "--groom-continue-scope" (recur (nnext xs) (assoc opts :groom-continue-scope (first more)))
+          "--groom-continue-scope-file" (recur (nnext xs) (assoc opts :groom-continue-scope (slurp (first more))))
+          "--groom-continue-approved-by" (recur (nnext xs) (assoc opts :groom-continue-approved-by (first more)))
           "--dry-run" (recur more (assoc opts :dry-run true))
           "--confirm" (recur more (assoc opts :confirm true))
           "--json" (recur more (assoc opts :json true))
@@ -171,6 +176,54 @@
 
 (defn present [s]
   (when-not (str/blank? (str s)) s))
+
+;; BOXP-261: continue-after-groom opt-in. The runner only honors a ticket whose
+;; frontmatter carries all three keys with a non-empty scope and an approver it
+;; trusts (CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS, default boxp). The helper
+;; writes them together so a half-written opt-in cannot be mistaken for one.
+(def groom-continue-keys
+  ["groom_continue" "groom_continue_scope" "groom_continue_approved_by"])
+
+(defn yaml-quote
+  "Serialize free text as a double-quoted YAML scalar so `: `, `#`, and leading
+  punctuation in an approved scope cannot break the frontmatter."
+  [s]
+  (str "\"" (-> (str s) (str/replace "\\" "\\\\") (str/replace "\"" "\\\"")) "\""))
+
+(defn yaml-unquote [value]
+  (let [v (str/trim (str value))]
+    (if (and (>= (count v) 2) (str/starts-with? v "\"") (str/ends-with? v "\""))
+      (str/replace (subs v 1 (dec (count v))) #"\\(.)" "$1")
+      v)))
+
+(defn groom-continue-updates
+  "Translate --groom-continue flags into frontmatter updates, or nil when unused."
+  [opts]
+  (let [scope (some-> (:groom-continue-scope opts) str/trim)
+        approver (some-> (:groom-continue-approved-by opts) str/trim)]
+    (when (and (:groom-continue opts) (:no-groom-continue opts))
+      (die "--groom-continue and --no-groom-continue cannot be combined"))
+    (when (and (not (:groom-continue opts)) (not (:no-groom-continue opts))
+               (or (some? scope) (some? approver)))
+      (die "--groom-continue-scope and --groom-continue-approved-by require --groom-continue"))
+    (cond
+      (:groom-continue opts)
+      (do
+        (when (str/blank? (or scope ""))
+          (die "--groom-continue requires a non-empty --groom-continue-scope (or --groom-continue-scope-file)"))
+        (when (re-find #"[\r\n]" scope)
+          (die "--groom-continue-scope must be a single line; frontmatter values cannot span lines"))
+        (when (and (some? approver) (str/blank? approver))
+          (die "--groom-continue-approved-by must not be empty"))
+        {"groom_continue" "true"
+         "groom_continue_scope" (yaml-quote scope)
+         "groom_continue_approved_by" (or (present approver) "boxp")})
+
+      (:no-groom-continue opts)
+      ;; Keep scope/approver for audit; only the flag is withdrawn.
+      {"groom_continue" "false"}
+
+      :else nil)))
 
 (defn parse-frontmatter [content]
   (let [lines (str/split-lines content)]
@@ -272,7 +325,10 @@
      :status (fm-get frontmatter-lines "status")
      :priority (fm-get frontmatter-lines "priority")
      :assignee (fm-get frontmatter-lines "assignee")
-     :repo (fm-get frontmatter-lines "repo")}))
+     :repo (fm-get frontmatter-lines "repo")
+     :groom-continue (fm-get frontmatter-lines "groom_continue")
+     :groom-continue-scope (some-> (fm-get frontmatter-lines "groom_continue_scope") yaml-unquote)
+     :groom-continue-approved-by (fm-get frontmatter-lines "groom_continue_approved_by")}))
 
 (defn card-line? [line]
   (boolean (re-find #"- \[[ xX]\] \[\[Tickets/BOXP-\d+\|" line)))
@@ -359,11 +415,12 @@
                       (fm-set fm k v))
                     fm0
                     (remove (fn [[_ v]] (nil? v))
-                            {"status" status
-                             "priority" (:priority updates)
-                             "assignee" (:assignee updates)
-                             "repo" (:repo updates)
-                             "closed" (:closed updates)}))
+                            (merge {"status" status
+                                    "priority" (:priority updates)
+                                    "assignee" (:assignee updates)
+                                    "repo" (:repo updates)
+                                    "closed" (:closed updates)}
+                                   (:groom-continue updates))))
         body0 (:body-lines ticket)
         body1 (if-let [title (:title updates)]
                 (replace-heading body0 (:id ticket) title)
@@ -396,8 +453,9 @@
         ids (concat file-ids board-ids)]
     (str "BOXP-" (inc (apply max 0 ids)))))
 
-(defn create-ticket-content [{:keys [id title summary acceptance context plan notes priority assignee repo lane closed-date]}]
-  (let [status (lanes lane)]
+(defn create-ticket-content [{:keys [id title summary acceptance context plan notes priority assignee repo lane closed-date groom-continue]}]
+  (let [status (lanes lane)
+        fm-value (fn [k] (let [v (get groom-continue k)] (if (present v) (str " " v) "")))]
     (str "---\n"
          "id: " id "\n"
          "type: task\n"
@@ -410,6 +468,11 @@
          "sprint:\n"
          "repo: " (or repo "") "\n"
          "estimate:\n"
+         ;; BOXP-261: empty by default. Set all three (via --groom-continue) to let
+         ;; the runner keep the agent assignee after a successful groom.
+         "groom_continue:" (fm-value "groom_continue") "\n"
+         "groom_continue_scope:" (fm-value "groom_continue_scope") "\n"
+         "groom_continue_approved_by:" (fm-value "groom_continue_approved_by") "\n"
          "created: " (now-date) "\n"
          "due:\n"
          "closed:" (when (seq closed-date) (str " " closed-date)) "\n"
@@ -442,13 +505,15 @@
         board (read-text (board-path vault))
         ticket (ticket-data vault id)
         card (card-for board id)]
-    (print-result opts {:ticket (select-keys ticket [:id :path :title :status :priority :assignee :repo])
+    (print-result opts {:ticket (select-keys ticket [:id :path :title :status :priority :assignee :repo
+                                                    :groom-continue :groom-continue-scope :groom-continue-approved-by])
                         :card card})))
 
 (defn cmd-create [opts]
   (let [vault (vault-path opts)
         title (or (:title opts) (die "create requires --title"))
         lane (require-lane (or (:lane opts) "Backlog"))
+        groom-continue (groom-continue-updates opts)
         bpath (board-path vault)
         result-atom (atom nil)]
     (with-board-lock bpath
@@ -457,10 +522,12 @@
               id (next-ticket-id vault board)
               path (ticket-path vault id)
               done-date (when (= lane "Done") (now-date))
-              ticket-content (create-ticket-content (assoc opts :id id :title title :lane lane :closed-date done-date))
+              ticket-content (create-ticket-content (assoc opts :id id :title title :lane lane :closed-date done-date
+                                                          :groom-continue groom-continue))
               card {:id id :title title :lane lane :priority (:priority opts) :assignee (:assignee opts) :repo (:repo opts) :done-date done-date}
               new-board (insert-card board id card)
-              result {:action "create" :id id :ticket-path (str path) :lane lane :dry-run (boolean (:dry-run opts))}]
+              result (cond-> {:action "create" :id id :ticket-path (str path) :lane lane :dry-run (boolean (:dry-run opts))}
+                       groom-continue (assoc :groom-continue groom-continue))]
           (when-not (:dry-run opts)
             (write-text! path ticket-content)
             (write-text! bpath new-board))
@@ -471,6 +538,7 @@
   (let [vault (vault-path opts)
         path (ticket-path vault id)
         bpath (board-path vault)
+        groom-continue (groom-continue-updates opts)
         result-atom (atom nil)]
     (with-board-lock bpath
       (fn []
@@ -482,6 +550,16 @@
                   lane (or (:lane opts) (:lane old-card) (status->lane (:status ticket)) "Backlog")
                   status (lanes (require-lane lane))
                   title (or (:title opts) (:title ticket))
+                  ;; BOXP-261: a withdrawal that lands after the runner already
+                  ;; applied the opt-in (consumed, card parked in Ready with the
+                  ;; agent assignee) must also stop the automatic implement claim,
+                  ;; so hand the card back to the human unless --assignee was given.
+                  late-withdrawal? (and (:no-groom-continue opts)
+                                        (nil? (:assignee opts))
+                                        (= "consumed" (some-> (:groom-continue ticket) str/trim))
+                                        (= "ready" status)
+                                        (not= "boxp" (some-> (:assignee ticket) str/trim)))
+                  assignee (if late-withdrawal? "boxp" (:assignee opts))
                   done-date (or (present (:done-date old-card))
                                 (present (fm-get (:frontmatter-lines ticket) "closed"))
                                 (when (= lane "Done") (now-date)))
@@ -493,19 +571,25 @@
                            :notes (:notes opts)
                            :status status
                            :priority (:priority opts)
-                           :assignee (:assignee opts)
+                           :assignee assignee
                            :repo (:repo opts)
-                           :closed (if (= lane "Done") done-date "")}
+                           :closed (if (= lane "Done") done-date "")
+                           :groom-continue groom-continue
+                           :append-note (when late-withdrawal?
+                                          "Continue-after-groom opt-in withdrawn after it was applied; assignee reset to boxp so the implement run is not claimed automatically.")
+                           :note-source (or (:source opts) "hermes-agent")}
                   new-ticket (apply-ticket-update ticket updates)
                   card {:id id
                         :title title
                         :lane lane
                         :priority (or (:priority opts) (:priority ticket) (:priority old-card))
-                        :assignee (or (:assignee opts) (:assignee ticket) (:assignee old-card))
+                        :assignee (or assignee (:assignee ticket) (:assignee old-card))
                         :repo (or (:repo opts) (:repo old-card) (:repo ticket))
                         :done-date done-date}
                   new-board (insert-card board id card)
-                  result {:action "update" :id id :lane lane :status status :dry-run (boolean (:dry-run opts))}]
+                  result (cond-> {:action "update" :id id :lane lane :status status :dry-run (boolean (:dry-run opts))}
+                           groom-continue (assoc :groom-continue groom-continue)
+                           late-withdrawal? (assoc :assignee "boxp"))]
               (when-not (:dry-run opts)
                 (write-text! path new-ticket)
                 (write-text! bpath new-board))
