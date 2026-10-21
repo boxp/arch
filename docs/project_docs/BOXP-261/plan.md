@@ -54,7 +54,12 @@ Ready に置き、既存の `Ready → implement` claim で In Progress まで�
    (別 tick が古い assignee で implement を起動する TOCTOU を塞ぐ)。再検証と Ready/Review/
    Blocked → In Progress の遷移は Board lock + ticket lock(helper と同じ順: vault → Board →
    ticket)を保持したまま 1 箇所で行い、遷移途中で失敗したら lock 内でカードを元レーンへ戻す。
-   `sync-board-statuses!` も同じ Board file lock で囲む。
+   `sync-board-statuses!` も同じ Board file lock で囲む。`sync-ticket-statuses!` は lock
+   取得前の Board 読みを巡回対象の列挙にだけ使い、ticket ごとに同じ Board lock + ticket lock
+   (`with-board-and-ticket-locks`)の中で Board を再読込してから lane を frontmatter に投影する
+   (helper `update` 直後に古い lane で ticket を上書きしない)。prune が ticket lock guard 内から
+   呼ぶ `board-card-lanes` は board-mutex を取らない(Board 書込みは atomic rename で torn read が
+   無く、ticket → board の逆順取得で sync/claim と deadlock しないため)。
    既定配備では vault-writer lock が無効(未設定)なので、runner は helper CLI と同じ
    per-file lock(`<tmpdir>/task-board-locks/<sha256(canonical path)[0:16]>-<name>.lock`)を
    frontmatter 更新・Notes 追記・Board 書換で常に取得し、同一ホスト上の helper 書込みと
@@ -117,6 +122,8 @@ black-box（fake claude / codex、tmp vault）:
   見送られ agent は起動しない(lock 解放、run ディレクトリ無し)
 - claim 遷移の frontmatter 書込みが失敗(test hook)→ カードは Ready に戻り、lock 解放、
   agent 非起動、次 tick で通常どおり claim
+- sync の Board 読み直後(test hook)に helper `update --lane "In Progress"` でカードを動かしても、
+  単発 `sync` が lock 内で再読込するため ticket は `in-progress` のまま(旧実装では `ready` に戻る)
 
 ## 配備
 

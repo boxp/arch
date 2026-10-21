@@ -2709,6 +2709,54 @@ test_failed_claim_transition_restores_card_lane() {
   [[ "$(wc -l <"${start_log}")" -eq 1 ]] || fail "expected the ticket to be claimed once the failure is gone"
 }
 
+test_sync_does_not_overwrite_helper_update_with_stale_board_snapshot() {
+  # sync-ticket-statuses! enumerates cards from a pre-lock Board read. The
+  # helper CLI `update` moves the card and rewrites the ticket under Board lock
+  # + ticket lock. The runner must re-read the lane under the same locks before
+  # projecting it, or it overwrites the helper's newer status with the stale one
+  # and the next tick decides groom/implement from an inconsistent ticket.
+  local tmp vault state bin signal tick_pid
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  signal="${tmp}/before-sync-lock"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" ""
+  sed -i -e 's/^## Ready$/## Ready\n- [ ] [[Tickets\/BOXP-630|BOXP-630: stale sync]] #ticket status::ready priority::high/' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-630 ready boxp
+
+  # A tick syncs twice, so the second pass would hide the stale write; the
+  # one-shot `sync` command exercises a single pass like the last one of a tick.
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+    CODEX_TASK_BOARD_ROOT="${state}" \
+    CODEX_TASK_BOARD_TEST_BEFORE_SYNC_TICKET_LOCK_SIGNAL="${signal}" \
+    CODEX_TASK_BOARD_TEST_BEFORE_SYNC_TICKET_LOCK_MILLIS=2000 \
+    bb "${RUNNER}" sync >/tmp/task-board-stale-sync.out 2>&1 &
+  tick_pid=$!
+
+  for _attempt in $(seq 1 100); do
+    [[ -e "${signal}" ]] && break
+    sleep 0.1
+  done
+  if [[ ! -e "${signal}" ]]; then
+    kill -KILL "${tick_pid}" 2>/dev/null || true
+    wait "${tick_pid}" 2>/dev/null || true
+    fail "expected the runner to pause before taking the sync locks"
+  fi
+  # Human moves the card while the runner still holds its pre-lock snapshot.
+  bb "${HELPER}" update BOXP-630 --vault "${vault}" --lane "In Progress" >/dev/null
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" '^status: in-progress$'
+  wait "${tick_pid}" || fail "sync failed: $(cat /tmp/task-board-stale-sync.out)"
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-630\|BOXP-630: .*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-630.md" '^status: in-progress$'
+  assert_file_not_contains "${vault}/Tickets/BOXP-630.md" '^status: ready$'
+  [[ ! -d "${state}/runs/BOXP-630" ]] || fail "expected no run for a boxp-assigned ticket"
+}
+
 test_groom_continue_idle_timeout_is_retried_without_consuming() {
   # P2 regression: an opted-in groom stopped by the idle timeout keeps the
   # :retrying summary (no :succeeded rewrite), does not consume the opt-in, and
@@ -3710,6 +3758,7 @@ test_groom_continue_withdrawn_after_agent_finished_is_not_applied
 test_groom_continue_idle_timeout_is_retried_without_consuming
 test_candidate_reassigned_before_lock_is_not_started
 test_failed_claim_transition_restores_card_lane
+test_sync_does_not_overwrite_helper_update_with_stale_board_snapshot
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing

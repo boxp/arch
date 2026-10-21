@@ -570,23 +570,51 @@
   (update-frontmatter! ticket-id (cond-> {:status status}
                                    (= "done" status) (assoc :closed (or done (today))))))
 
+(defn with-board-and-ticket-locks
+  "Run `f` inside the critical section shared by every Board + ticket
+  read-modify-write in this runner and by the helper CLI's `update`: JVM mutexes
+  (board, then ticket) -> optional shared vault writer lock -> helper per-file
+  locks (Board, then ticket). Anything that decides a ticket's state from the
+  Board must read the Board inside this section, never from a pre-lock snapshot."
+  [ticket-id f]
+  (locking board-mutex
+   (locking (ticket-mutex ticket-id)
+    (with-vault-writer-lock
+     (fn []
+      (with-helper-file-lock
+       (board-path)
+       (fn []
+         (with-helper-file-lock
+          (ticket-path ticket-id)
+          f))))))))
+
+(defn current-board-card
+  "The ticket's card from the Board as it is on disk right now (nil when absent).
+  Only meaningful inside with-board-and-ticket-locks."
+  [ticket-id]
+  (first (filter #(= ticket-id (:ticket-id %))
+                 (parse-board-cards (vec (read-lines (board-path)))))))
+
 (defn sync-ticket-statuses! []
+  ;; The pre-lock read only enumerates which tickets to visit. The helper CLI
+  ;; `update` moves the card and rewrites the ticket under Board lock + ticket
+  ;; lock; projecting the lane from this snapshot after taking only the ticket
+  ;; lock could overwrite that newer status with a stale one. So the lane is
+  ;; re-read under the same Board lock + ticket lock the helper takes.
   (let [lines (vec (read-lines (board-path)))]
-    (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
-            :let [path (ticket-path ticket-id)]
-            :when (fs/exists? path)]
-      (if (vault-writer-lock-dir)
-        ;; With the shared lock, another writer may move the card after the
-        ;; snapshot above. Re-read the lane inside the lock so a stale status is
-        ;; never projected. Lock order stays ticket mutex, then vault lock.
-        (locking (ticket-mutex ticket-id)
-          (with-vault-writer-lock
-           (fn []
-             (when-let [current (first (filter #(= ticket-id (:ticket-id %))
-                                               (parse-board-cards (vec (read-lines (board-path))))))]
-               (when (fs/exists? path)
-                 (project-ticket-status! ticket-id current))))))
-        (project-ticket-status! ticket-id card)))))
+    (doseq [{:keys [ticket-id]} (parse-board-cards lines)
+            :when (fs/exists? (ticket-path ticket-id))]
+      ;; Deterministic black-box race hook; unset in deployment.
+      (when-let [signal-path (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_SYNC_TICKET_LOCK_SIGNAL")]
+        (spit signal-path "ready\n"))
+      (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_BEFORE_SYNC_TICKET_LOCK_MILLIS")]
+        (Thread/sleep (Long/parseLong hold-ms)))
+      (with-board-and-ticket-locks
+       ticket-id
+       (fn []
+         (when-let [current (current-board-card ticket-id)]
+           (when (fs/exists? (ticket-path ticket-id))
+             (project-ticket-status! ticket-id current))))))))
 
 (defn sync-all! []
   (sync-board-statuses!)
@@ -2085,44 +2113,34 @@
   true the card is already in its run lane, so a later helper write sees
   the in-progress state instead of a claimable Ready card."
   [{:keys [ticket-id status]} assignee action]
-  ;; Lock order: JVM mutexes (board, then ticket) -> optional shared vault
-  ;; writer lock -> helper per-file locks (Board, then ticket). This matches
-  ;; update-frontmatter-by! / move-card! / sync-ticket-statuses! inside the
-  ;; JVM and the helper CLI across processes (vault lock outside its file locks).
-  (locking board-mutex
-   (locking (ticket-mutex ticket-id)
-    (with-vault-writer-lock
-     (fn []
-      (with-helper-file-lock
-       (board-path)
-       (fn []
-         (with-helper-file-lock
-          (ticket-path ticket-id)
-          (fn []
-            (let [fm (ticket-frontmatter ticket-id)
-                  current-card (first (filter #(= ticket-id (:ticket-id %))
-                                              (parse-board-cards (vec (read-lines (board-path))))))
-                  valid? (and (some? current-card)
-                              (= assignee (:assignee fm))
-                              (= status (:status current-card))
-                              (= action (candidate-action current-card (:assignee fm))))]
-              (when (and valid? (#{"ready" "review" "blocked"} status))
-                (move-card! ticket-id "in-progress")
-                (try
-                  ;; Deterministic black-box failure hook; unset in deployment.
-                  (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_CLAIM_FRONTMATTER"))
-                    (throw (ex-info "forced claim frontmatter write failure" {})))
-                  (update-frontmatter! ticket-id {:status "in-progress"})
-                  (catch Exception e
-                    ;; Roll the card back while the locks are still held so a
-                    ;; failed claim never leaves it in In Progress without a run.
-                    (try
-                      (move-card! ticket-id status)
-                      (catch Exception restore-error
-                        (log! (str "card restore after failed claim also failed for " ticket-id
-                                   ": " (.getMessage restore-error)))))
-                    (throw e))))
-              valid?))))))))))
+  ;; Same critical section (and lock order) as sync-ticket-statuses! and the
+  ;; helper CLI: see with-board-and-ticket-locks.
+  (with-board-and-ticket-locks
+   ticket-id
+   (fn []
+    (let [fm (ticket-frontmatter ticket-id)
+          current-card (current-board-card ticket-id)
+          valid? (and (some? current-card)
+                      (= assignee (:assignee fm))
+                      (= status (:status current-card))
+                      (= action (candidate-action current-card (:assignee fm))))]
+      (when (and valid? (#{"ready" "review" "blocked"} status))
+        (move-card! ticket-id "in-progress")
+        (try
+          ;; Deterministic black-box failure hook; unset in deployment.
+          (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_CLAIM_FRONTMATTER"))
+            (throw (ex-info "forced claim frontmatter write failure" {})))
+          (update-frontmatter! ticket-id {:status "in-progress"})
+          (catch Exception e
+            ;; Roll the card back while the locks are still held so a
+            ;; failed claim never leaves it in In Progress without a run.
+            (try
+              (move-card! ticket-id status)
+              (catch Exception restore-error
+                (log! (str "card restore after failed claim also failed for " ticket-id
+                           ": " (.getMessage restore-error)))))
+            (throw e))))
+      valid?))))
 
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
@@ -2592,9 +2610,13 @@
   (try
     (let [path (board-path)]
       (when (fs/exists? path)
-        ;; board-mutex keeps a half-written board from this JVM out of the read.
-        (let [lines (locking board-mutex
-                      (str/split-lines (slurp (str path))))]
+        ;; Deliberately lock-free: write-lines! replaces the Board by atomic
+        ;; rename, so this read sees a complete old or new file. Callers hold
+        ;; the ticket lock guard (ticket mutex), and board-mutex is always
+        ;; taken *before* the ticket mutex (with-board-and-ticket-locks), so
+        ;; taking board-mutex here would invert that order and could deadlock
+        ;; prune against sync/claim.
+        (let [lines (str/split-lines (slurp (str path)))]
           (:lanes (reduce (fn [{:keys [lane] :as acc} line]
                             (if-let [[_ heading] (re-matches #"##\s+(.*?)\s*" line)]
                               (assoc acc :lane heading)
