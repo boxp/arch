@@ -113,6 +113,10 @@ fi
 if [[ -n "${CLAUDE_FAKE_START_LOG:-}" ]]; then
   printf '%s %s\n' "${ticket}" "$(date +%s)" >>"${CLAUDE_FAKE_START_LOG}"
 fi
+if [[ -n "${CLAUDE_FAKE_TICKET_SED:-}" && -n "${CODEX_TASK_BOARD_VAULT:-}" ]]; then
+  # Simulates an agent (or a human during the run) editing the ticket file.
+  sed -i -e "${CLAUDE_FAKE_TICKET_SED}" "${CODEX_TASK_BOARD_VAULT}/Tickets/${ticket}.md"
+fi
 if [[ -n "${CLAUDE_FAKE_PROGRESS_FILE:-}" ]]; then
   for _ in $(seq 1 "${CLAUDE_FAKE_PROGRESS_COUNT:-1}"); do
     sleep "${CLAUDE_FAKE_PROGRESS_INTERVAL:-0}"
@@ -2012,6 +2016,518 @@ test_groom_prompt_includes_append_note() {
   assert_file_contains "${prompt_log}" 'milestone'
 }
 
+# --- BOXP-261: continue-after-groom opt-in -----------------------------------
+
+write_groom_continue_ticket() {
+  # write_groom_continue_ticket <vault> <ticket> <assignee> <groom_continue> <scope> <approved_by>
+  local vault="$1" ticket="$2" assignee="$3" flag="$4" scope="$5" approver="$6"
+  mkdir -p "${vault}/Tickets"
+  cat >"${vault}/Tickets/${ticket}.md" <<EOF
+---
+id: ${ticket}
+type: task
+status: backlog
+priority: high
+assignee: ${assignee}
+repo:
+groom_continue: ${flag}
+groom_continue_scope: ${scope}
+groom_continue_approved_by: ${approver}
+closed:
+---
+
+# ${ticket}: groom continue
+
+## Summary
+
+Urgent ticket.
+
+## Acceptance Criteria
+
+- [ ] Done
+
+## Context
+
+Test context.
+
+## Plan
+
+- [ ] Run
+
+## Notes
+EOF
+}
+
+write_backlog_board() {
+  local vault="$1" ticket="$2"
+  mkdir -p "${vault}/Boards" "${vault}/Tickets"
+  cat >"${vault}/Boards/Task Board.md" <<EOF
+# Task Board
+
+## Backlog
+- [ ] [[Tickets/${ticket}|${ticket}: groom continue]] #ticket status::backlog priority::high
+
+## Ready
+
+## In Progress
+
+## Blocked
+
+## Review
+
+## Done
+EOF
+}
+
+assert_parked_in_ready_for_human() {
+  # Ready lane, assignee reset to boxp, opt-in not consumed, no implement run.
+  local vault="$1" ticket="$2" prompt_log="$3"
+  assert_file_contains "${vault}/Boards/Task Board.md" "^## Ready
+- \[ \] \[\[Tickets/${ticket}\|.*status::ready"
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^assignee: boxp$'
+  assert_file_not_contains "${vault}/Tickets/${ticket}.md" '^groom_continue: consumed$'
+  assert_file_not_contains "${prompt_log}" 'Goal: implement or complete this ticket'
+}
+
+test_groom_continue_opt_in_continues_to_implement() {
+  local tmp vault state bin prompt_log start_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  start_log="${tmp}/starts.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-610
+  write_groom_continue_ticket "${vault}" BOXP-610 claude-fable true "emSign CA trust update and rollout check" boxp
+
+  # Tick 1: groom. The opt-in keeps the agent assignee and parks the card in Ready.
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-1.out
+
+  assert_file_contains "${prompt_log}" 'Goal: clarify this backlog ticket only'
+  assert_file_contains "${prompt_log}" 'Continue-after-groom opt-in is active for this ticket \(approved_by=boxp; approved scope: emSign CA trust update and rollout check\)'
+  assert_file_contains "${prompt_log}" 'TASK_BOARD_GROOM_CONTINUE: hold'
+  assert_file_contains "${prompt_log}" 'Do not edit the groom_continue'
+  assert_file_contains "${vault}/Boards/Task Board.md" "^## Ready
+- \[ \] \[\[Tickets/BOXP-610\|.*status::ready"
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" '^assignee: claude-fable$'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" '^groom_continue: consumed$'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" '^groom_continue_scope: emSign CA trust update and rollout check$'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" 'Continue-after-groom opt-in applied: assignee kept and card moved to Ready'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" 'approved by boxp; scope: emSign CA trust update and rollout check'
+  assert_run_summary_contains "${state}" BOXP-610 ':groom-continue \{:continue\? true, :category "continued"\}'
+  [[ "$(wc -l <"${start_log}")" -eq 1 ]] || fail "expected one agent start after groom"
+
+  # Tick 2: the ordinary Ready -> In Progress claim starts implementation.
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-2.out
+
+  [[ "$(wc -l <"${start_log}")" -eq 2 ]] || fail "expected the implement run to start on the next tick"
+  assert_file_contains "${prompt_log}" 'Goal: implement or complete this ticket'
+  assert_file_contains "${prompt_log}" 'Current lane: In Progress'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" 'started from Ready with action implement using claude-fable'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'Tickets/BOXP-610\|.*status::done'
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" '^status: done$'
+  # One-shot: consumed survives the implement run so a re-groom needs a new approval.
+  assert_file_contains "${vault}/Tickets/BOXP-610.md" '^groom_continue: consumed$'
+}
+
+test_groom_continue_default_off_keeps_human_approval() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-611
+  # Legacy ticket without any groom_continue key.
+  write_ticket "${vault}" BOXP-611 backlog claude-fable
+
+  for _ in 1 2; do
+    PATH="${bin}:$PATH" \
+      CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+      CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+      run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-default.out
+  done
+
+  assert_file_not_contains "${prompt_log}" 'Continue-after-groom opt-in'
+  assert_parked_in_ready_for_human "${vault}" BOXP-611 "${prompt_log}"
+  assert_file_not_contains "${vault}/Tickets/BOXP-611.md" 'Continue-after-groom'
+  assert_file_not_contains "${vault}/Tickets/BOXP-611.md" '^groom_continue'
+}
+
+test_groom_continue_opt_out_false_keeps_human_approval() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-612
+  write_groom_continue_ticket "${vault}" BOXP-612 claude-fable false "approved scope" boxp
+
+  for _ in 1 2; do
+    PATH="${bin}:$PATH" \
+      CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+      CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+      run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-false.out
+  done
+
+  assert_file_not_contains "${prompt_log}" 'Continue-after-groom opt-in'
+  assert_parked_in_ready_for_human "${vault}" BOXP-612 "${prompt_log}"
+  assert_file_contains "${vault}/Tickets/BOXP-612.md" '^groom_continue: false$'
+  assert_file_not_contains "${vault}/Tickets/BOXP-612.md" 'Continue-after-groom'
+}
+
+test_groom_continue_failed_groom_is_blocked_and_not_consumed() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-613
+  write_groom_continue_ticket "${vault}" BOXP-613 claude-fable true "approved scope" boxp
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_EXIT=1 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-fail.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" "^## Blocked
+- \[ \] \[\[Tickets/BOXP-613\|.*status::blocked"
+  assert_file_contains "${vault}/Tickets/BOXP-613.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-613.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-613.md" '^groom_continue: true$'
+  assert_file_contains "${vault}/Tickets/BOXP-613.md" 'Blocked transition recorded:.*category=agent-process-error'
+  assert_file_contains "${vault}/Tickets/BOXP-613.md" 'Continue-after-groom opt-in not applied \(groom-failed\).*Card moved to Blocked; the opt-in was not consumed'
+  assert_file_not_contains "${vault}/Tickets/BOXP-613.md" 'Card parked in Ready'
+  assert_file_not_contains "${prompt_log}" 'Goal: implement or complete this ticket'
+}
+
+test_groom_continue_hold_marker_requires_human_confirmation() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-614
+  write_groom_continue_ticket "${vault}" BOXP-614 claude-fable true "approved scope" boxp
+
+  for _ in 1 2; do
+    PATH="${bin}:$PATH" \
+      CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+      CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_GROOM_CONTINUE: hold\nTASK_BOARD_RESULT: review' \
+      run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-hold.out
+  done
+
+  assert_parked_in_ready_for_human "${vault}" BOXP-614 "${prompt_log}"
+  assert_file_contains "${vault}/Tickets/BOXP-614.md" '^groom_continue: true$'
+  assert_file_contains "${vault}/Tickets/BOXP-614.md" 'Continue-after-groom opt-in not applied \(hold\)'
+  assert_run_summary_contains "${state}" BOXP-614 ':groom-continue \{:continue\? false, :category "hold"\}'
+}
+
+test_groom_continue_blocked_marker_requires_human_confirmation() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-615
+  write_groom_continue_ticket "${vault}" BOXP-615 claude-fable true "approved scope" boxp
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-blocked-marker.out
+
+  assert_parked_in_ready_for_human "${vault}" BOXP-615 "${prompt_log}"
+  assert_file_contains "${vault}/Tickets/BOXP-615.md" 'Continue-after-groom opt-in not applied \(unconfirmed-result\)'
+}
+
+test_groom_continue_requires_authorized_approver() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-616
+  # An agent name as approver must not count as owner approval.
+  write_groom_continue_ticket "${vault}" BOXP-616 claude-fable true "approved scope" codex
+
+  for _ in 1 2; do
+    PATH="${bin}:$PATH" \
+      CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+      CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+      run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-approver.out
+  done
+
+  assert_file_not_contains "${prompt_log}" 'Continue-after-groom opt-in is active'
+  assert_parked_in_ready_for_human "${vault}" BOXP-616 "${prompt_log}"
+  assert_file_contains "${vault}/Tickets/BOXP-616.md" 'Continue-after-groom opt-in not applied \(unauthorized\): approver codex is not in CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS'
+
+  # The same approver is accepted once the runner trusts it explicitly.
+  local vault2="${tmp}/vault2" state2="${tmp}/state2" prompt_log2="${tmp}/claude-prompt-2.log"
+  write_backlog_board "${vault2}" BOXP-616
+  write_groom_continue_ticket "${vault2}" BOXP-616 claude-fable true "approved scope" codex
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS="boxp, codex" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log2}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault2}" "${state2}" env >/tmp/task-board-groom-continue-approver-2.out
+  assert_file_contains "${vault2}/Tickets/BOXP-616.md" '^assignee: claude-fable$'
+  assert_file_contains "${vault2}/Tickets/BOXP-616.md" '^groom_continue: consumed$'
+}
+
+test_groom_continue_requires_scope() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-617
+  write_groom_continue_ticket "${vault}" BOXP-617 claude-fable true "" boxp
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-scope.out
+
+  assert_file_not_contains "${prompt_log}" 'Continue-after-groom opt-in is active'
+  assert_parked_in_ready_for_human "${vault}" BOXP-617 "${prompt_log}"
+  assert_file_contains "${vault}/Tickets/BOXP-617.md" 'Continue-after-groom opt-in not applied \(invalid\): groom_continue_scope is empty'
+}
+
+test_groom_continue_ignores_opt_in_added_by_agent() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-618
+  write_ticket "${vault}" BOXP-618 backlog claude-fable
+
+  # The agent writes a complete, otherwise valid opt-in into the ticket while it runs.
+  for _ in 1 2; do
+    PATH="${bin}:$PATH" \
+      CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+      CLAUDE_FAKE_TICKET_SED='s/^closed:$/closed:\ngroom_continue: true\ngroom_continue_scope: self-granted\ngroom_continue_approved_by: boxp/' \
+      CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+      run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-self-grant.out
+  done
+
+  assert_file_contains "${vault}/Tickets/BOXP-618.md" '^groom_continue: true$'
+  assert_parked_in_ready_for_human "${vault}" BOXP-618 "${prompt_log}"
+  assert_file_not_contains "${vault}/Tickets/BOXP-618.md" 'Continue-after-groom opt-in applied'
+}
+
+test_groom_continue_withdrawn_during_run_is_not_applied() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-619
+  write_groom_continue_ticket "${vault}" BOXP-619 claude-fable true "approved scope" boxp
+
+  # A human withdraws the opt-in while the groom run is in flight.
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_TICKET_SED='s/^groom_continue: true$/groom_continue: false/' \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-withdrawn.out
+
+  assert_file_contains "${prompt_log}" 'Continue-after-groom opt-in is active'
+  assert_parked_in_ready_for_human "${vault}" BOXP-619 "${prompt_log}"
+  assert_file_contains "${vault}/Tickets/BOXP-619.md" '^groom_continue: false$'
+  assert_file_contains "${vault}/Tickets/BOXP-619.md" 'Continue-after-groom opt-in not applied \(withdrawn\)'
+}
+
+test_groom_continue_runner_kill_switch() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-620
+  write_groom_continue_ticket "${vault}" BOXP-620 claude-fable true "approved scope" boxp
+
+  PATH="${bin}:$PATH" \
+    CODEX_TASK_BOARD_GROOM_CONTINUE=false \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-disabled.out
+
+  assert_parked_in_ready_for_human "${vault}" BOXP-620 "${prompt_log}"
+  assert_file_contains "${vault}/Tickets/BOXP-620.md" '^groom_continue: true$'
+  assert_file_contains "${vault}/Tickets/BOXP-620.md" 'Continue-after-groom opt-in not applied \(disabled\)'
+}
+
+test_groom_continue_concurrent_ticks_claim_implement_once() {
+  local tmp vault state bin prompt_log start_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  start_log="${tmp}/starts.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-621
+  write_groom_continue_ticket "${vault}" BOXP-621 claude-fable true "approved scope" boxp
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-concurrent-0.out
+  assert_file_contains "${vault}/Tickets/BOXP-621.md" '^assignee: claude-fable$'
+
+  # Two runner processes race for the Ready card; the ticket lock admits one.
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CLAUDE_FAKE_SLEEP=3 \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-concurrent-1.out &
+  local first=$!
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CLAUDE_FAKE_SLEEP=3 \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-concurrent-2.out &
+  local second=$!
+  wait "${first}" "${second}"
+
+  [[ "$(wc -l <"${start_log}")" -eq 2 ]] || fail "expected exactly one implement start after the groom start, got $(cat "${start_log}")"
+  [[ "$(grep -c 'Goal: implement or complete this ticket' "${prompt_log}")" -eq 1 ]] || fail "expected one implement prompt"
+  assert_file_contains "${vault}/Tickets/BOXP-621.md" '^status: done$'
+  [[ "$(find "${state}/runs/BOXP-621" -mindepth 1 -maxdepth 1 -type d | wc -l)" -eq 2 ]] || fail "expected two run directories (groom + implement)"
+}
+
+test_groom_continue_recovers_after_crash() {
+  local tmp vault state bin prompt_log start_log stale_run
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  start_log="${tmp}/starts.log"
+  stale_run="20260101T000000Z-crashed"
+  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-622/${stale_run}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  write_backlog_board "${vault}" BOXP-622
+  write_groom_continue_ticket "${vault}" BOXP-622 claude-fable true "approved scope" boxp
+  # A previous runner crashed mid-groom: its lock heartbeat is stale.
+  cat >"${state}/locks/BOXP-622.edn" <<EOF
+{:ticket "BOXP-622" :run-id "${stale_run}" :action :groom :lane "Backlog" :owner-id "dead-owner" :owner-instance-id "dead-instance" :host "dead" :pid 1 :started-at "2026-01-01T00:00:00Z" :heartbeat-at "2026-01-01T00:00:00Z"}
+EOF
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_START_LOG="${start_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-groom-continue-crash.out
+
+  assert_file_contains "${state}/runs/BOXP-622/${stale_run}/summary.edn" ':status :interrupted'
+  assert_file_contains "${vault}/Tickets/BOXP-622.md" "Codex run ${stale_run} was marked interrupted after heartbeat timeout"
+  [[ "$(wc -l <"${start_log}")" -eq 1 ]] || fail "expected exactly one groom rerun after crash recovery"
+  assert_file_contains "${vault}/Tickets/BOXP-622.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-622.md" '^assignee: claude-fable$'
+  assert_file_contains "${vault}/Tickets/BOXP-622.md" '^groom_continue: consumed$'
+  [[ ! -e "${state}/locks/BOXP-622.edn" ]] || fail "expected the ticket lock to be released"
+}
+
+test_groom_continue_helper_cli_writes_all_keys() {
+  local tmp vault out
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  write_backlog_board "${vault}" BOXP-623
+  write_ticket "${vault}" BOXP-623 backlog claude-fable
+
+  out="$(bb "${HELPER}" update BOXP-623 --vault "${vault}" --groom-continue --groom-continue-scope "CA trust fix" --json)"
+  [[ "${out}" == *'"groom_continue":"true"'* ]] || fail "expected update output to echo the opt-in: ${out}"
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue: true$'
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_scope: CA trust fix$'
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_approved_by: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^assignee: claude-fable$'
+  out="$(bb "${HELPER}" show BOXP-623 --vault "${vault}" --json)"
+  [[ "${out}" == *'"groom-continue-scope":"CA trust fix"'* ]] || fail "expected show to include the scope: ${out}"
+
+  bb "${HELPER}" update BOXP-623 --vault "${vault}" --no-groom-continue >/dev/null
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue: false$'
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue_scope: CA trust fix$'
+
+  if bb "${HELPER}" update BOXP-623 --vault "${vault}" --groom-continue 2>/dev/null; then
+    fail "expected --groom-continue without a scope to be rejected"
+  fi
+  if bb "${HELPER}" update BOXP-623 --vault "${vault}" --groom-continue-scope x 2>/dev/null; then
+    fail "expected a scope without --groom-continue to be rejected"
+  fi
+  if bb "${HELPER}" update BOXP-623 --vault "${vault}" --groom-continue --groom-continue-scope "$(printf 'a\nb')" 2>/dev/null; then
+    fail "expected a multi-line scope to be rejected"
+  fi
+  assert_file_contains "${vault}/Tickets/BOXP-623.md" '^groom_continue: false$'
+
+  out="$(bb "${HELPER}" create --vault "${vault}" --title "urgent" --assignee claude-fable --groom-continue --groom-continue-scope "scope" --json)"
+  [[ "${out}" == *'"id":"BOXP-624"'* ]] || fail "expected create to allocate BOXP-624: ${out}"
+  assert_file_contains "${vault}/Tickets/BOXP-624.md" '^groom_continue: true$'
+  assert_file_contains "${vault}/Tickets/BOXP-624.md" '^groom_continue_approved_by: boxp$'
+  bb "${HELPER}" create --vault "${vault}" --title "plain" >/dev/null
+  assert_file_contains "${vault}/Tickets/BOXP-625.md" '^groom_continue:$'
+  assert_file_contains "${vault}/Tickets/BOXP-625.md" '^groom_continue_scope:$'
+}
+
 test_assignee_model_routing() {
   CODEX_TASK_BOARD_AUTONOMY_V2=false bb "${RUNNER}" test
   # I1 deliberately has no activation switch, even with a requested opt-in.
@@ -2937,6 +3453,20 @@ test_groom_prompt_contains_investigation_steps
 test_implement_prompt_includes_append_note
 test_fable_implement_prompt_includes_append_note
 test_groom_prompt_includes_append_note
+test_groom_continue_opt_in_continues_to_implement
+test_groom_continue_default_off_keeps_human_approval
+test_groom_continue_opt_out_false_keeps_human_approval
+test_groom_continue_failed_groom_is_blocked_and_not_consumed
+test_groom_continue_hold_marker_requires_human_confirmation
+test_groom_continue_blocked_marker_requires_human_confirmation
+test_groom_continue_requires_authorized_approver
+test_groom_continue_requires_scope
+test_groom_continue_ignores_opt_in_added_by_agent
+test_groom_continue_withdrawn_during_run_is_not_applied
+test_groom_continue_runner_kill_switch
+test_groom_continue_concurrent_ticks_claim_implement_once
+test_groom_continue_recovers_after_crash
+test_groom_continue_helper_cli_writes_all_keys
 test_assignee_model_routing
 test_assignee_model_tick_routing
 test_assignee_reasoning_tick_routing

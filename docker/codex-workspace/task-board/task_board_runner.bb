@@ -1135,7 +1135,130 @@
          "append a note to this ticket's Notes by running:\n"
          "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
-(defn prompt-for [action ticket-id lane workspace agent]
+;; ---------------------------------------------------------------------------
+;; Continue-after-groom opt-in (BOXP-261)
+;;
+;; Ready stays a human review point by default: a groomed card is parked in
+;; Ready with `assignee: boxp`. An owner can pre-approve the implementation of
+;; one urgent ticket by writing all three frontmatter keys below. Only then does
+;; the runner keep the agent assignee after a *successful* groom so the next
+;; tick claims the card through the ordinary Ready -> In Progress path. The
+;; opt-in is snapshotted before the agent starts, so an agent cannot grant it
+;; to itself, and it is consumed (`groom_continue: consumed`) once used.
+;; ---------------------------------------------------------------------------
+
+(def groom-continue-keys
+  [:groom_continue :groom_continue_scope :groom_continue_approved_by])
+
+(defn groom-continue-enabled? []
+  ;; Runner-wide kill switch. Per-ticket default is off regardless.
+  (not= "false" (str/lower-case (str/trim (env "CODEX_TASK_BOARD_GROOM_CONTINUE" "true")))))
+
+(defn groom-continue-approvers []
+  (->> (str/split (env "CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS" "boxp") #"[,\s]+")
+       (map str/trim)
+       (remove str/blank?)
+       set))
+
+(defn groom-continue-request
+  "Classify a ticket's continue-after-groom opt-in from its frontmatter map.
+
+  :off          no opt-in (missing, false, consumed): legacy behavior, no note
+  :invalid      opted in but the approved scope is empty
+  :unauthorized opted in but the approver is missing or not allowed
+  :requested    valid opt-in; carries :scope and :approver"
+  [fm]
+  (let [flag (str/lower-case (str/trim (str (:groom_continue fm))))
+        scope (str/trim (str (:groom_continue_scope fm)))
+        approver (str/trim (str (:groom_continue_approved_by fm)))]
+    (cond
+      (not= "true" flag)
+      {:state :off}
+
+      (str/blank? scope)
+      {:state :invalid :reason "groom_continue_scope is empty"}
+
+      (str/blank? approver)
+      {:state :unauthorized :reason "groom_continue_approved_by is empty"}
+
+      (not (contains? (groom-continue-approvers) approver))
+      {:state :unauthorized
+       :reason (str "approver " approver " is not in CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS")}
+
+      :else
+      {:state :requested :scope scope :approver approver})))
+
+(defn groom-continue-hold-marker? [text]
+  (boolean (re-find #"(?im)^TASK_BOARD_GROOM_CONTINUE:\s*hold\s*$" (or text ""))))
+
+(defn groom-continue-decision
+  "Decide whether a finished groom run may hand the ticket straight to the
+  implement queue. `before` is the opt-in snapshot taken before the agent ran;
+  `after` is the opt-in read back from the ticket after the run.
+
+  Returns nil when the ticket never opted in (legacy path). Otherwise returns
+  {:continue? bool :category string :reason string}."
+  [before after exit result last-message]
+  (when (not= :off (:state before))
+    (cond
+      (not= :requested (:state before))
+      {:continue? false :category (name (:state before)) :reason (:reason before)}
+
+      (not (groom-continue-enabled?))
+      {:continue? false :category "disabled"
+       :reason "CODEX_TASK_BOARD_GROOM_CONTINUE=false disables continue-after-groom on this runner"}
+
+      (not (zero? (long (or exit 0))))
+      {:continue? false :category "groom-failed"
+       :reason "groom agent exited unsuccessfully"}
+
+      (not= "review" result)
+      {:continue? false :category "unconfirmed-result"
+       :reason (str "groom result marker was " (or result "missing") ", expected review")}
+
+      (groom-continue-hold-marker? last-message)
+      {:continue? false :category "hold"
+       :reason "groom agent requested human confirmation with TASK_BOARD_GROOM_CONTINUE: hold"}
+
+      (not= :requested (:state after))
+      {:continue? false :category "withdrawn"
+       :reason "continue-after-groom opt-in was removed or invalidated during the run"}
+
+      (not= (select-keys before [:scope :approver]) (select-keys after [:scope :approver]))
+      {:continue? false :category "withdrawn"
+       :reason "continue-after-groom scope or approver changed during the run"}
+
+      :else
+      {:continue? true :category "continued"
+       :reason (str "approved by " (:approver before) "; scope: " (:scope before))})))
+
+(defn groom-continue-prompt [request]
+  (when (= :requested (:state request))
+    (str "Continue-after-groom opt-in is active for this ticket (approved_by=" (:approver request)
+         "; approved scope: " (:scope request) ").\n"
+         "After this grooming run completes normally, the runner keeps the current assignee, moves the card to Ready, and automatically starts implementation in the next tick without waiting for a human to re-assign the ticket.\n"
+         "Keep the clarified Plan inside the approved scope. If the approved scope does not cover the clarified work, a human decision is still required before implementation, or required access is missing, output exactly one line TASK_BOARD_GROOM_CONTINUE: hold before the result marker so the runner stops at Ready with assignee boxp instead.\n"
+         "Do not edit the groom_continue, groom_continue_scope, or groom_continue_approved_by frontmatter fields.\n")))
+
+(defn groom-continue-note [decision next-status]
+  (cond
+    (:continue? decision)
+    (str "Continue-after-groom opt-in applied: assignee kept and card moved to Ready; "
+         "implementation will be claimed automatically in the next tick ("
+         (:reason decision) "). groom_continue was set to consumed.")
+
+    (= "blocked" next-status)
+    (str "Continue-after-groom opt-in not applied (" (:category decision) "): "
+         (:reason decision) ". Card moved to Blocked; the opt-in was not consumed.")
+
+    :else
+    (str "Continue-after-groom opt-in not applied (" (:category decision) "): "
+         (:reason decision) ". Card parked in Ready with assignee boxp for human review.")))
+
+(defn prompt-for
+  ([action ticket-id lane workspace agent]
+   (prompt-for action ticket-id lane workspace agent {}))
+  ([action ticket-id lane workspace agent opts]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
         base-agent (:base-assignee (parse-codex-assignee agent))
@@ -1162,6 +1285,7 @@
            "First investigate before writing: read ticket Notes and related Obsidian documents, inspect relevant GitHub repository state (issues, PRs, discussions via gh CLI), check related repo/git conventions, run Web searches for key technologies if needed, and for infra tickets check kubectl pod/deployment state; for performance/incident tickets check Grafana metrics.\n"
            "Then update the ticket file so Summary, Acceptance Criteria, Context, Plan, and Notes are specific enough for a human to review. Fill Context with investigation findings (system state, related docs, design rationale). Fill Plan with concrete implementation steps derived from findings.\n"
            "Keep the scope practical and preserve existing decisions.\n"
+           (or (groom-continue-prompt (:groom-continue opts)) "")
            (append-note-instruction agent ticket-id)
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: review\n")
 
@@ -1192,7 +1316,7 @@
            (append-note-instruction agent ticket-id)
            review-contract
            "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n"
-           "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n"))))
+           "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n")))))
 
 (defn result-marker [text]
   (when-let [[_ value] (re-find #"(?im)^TASK_BOARD_RESULT:\s*(done|review|blocked)\s*$" (or text ""))]
@@ -1573,7 +1697,10 @@
     (fable-model-args)
     ["--model" (get claude-assignee->model agent)]))
 
-(defn run-agent! [ticket-id action lane agent lock]
+(defn run-agent!
+  ([ticket-id action lane agent lock]
+   (run-agent! ticket-id action lane agent lock {}))
+  ([ticket-id action lane agent lock opts]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
         workspace (prepare-run-workspace! ticket-id run)
@@ -1582,7 +1709,7 @@
         stderr-path (fs/path dir "stderr.log")
         last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
-    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
+    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent opts))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
     (let [agent-args (if (claude-assignee? agent)
                        (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "text"]
@@ -1642,7 +1769,7 @@
        :run-id run
        :dir (str dir)
        :last-message last-message
-       :idle-timeout? idle-timeout?})))
+       :idle-timeout? idle-timeout?}))))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (when (supported-assignee? assignee)
@@ -1837,13 +1964,23 @@
             lock (acquire-lock! ticket-id action effective-lane)]
         (when lock
           (let [stop? (atom false)
-                hb (heartbeat! ticket-id lock stop?)]
+                hb (heartbeat! ticket-id lock stop?)
+                ;; BOXP-261: snapshot the opt-in only once this run holds the
+                ;; ticket lock, so a withdrawal that landed while another run
+                ;; was active is honored and the agent cannot grant it itself.
+                groom-continue-before (when (= :groom action)
+                                        (groom-continue-request (ticket-frontmatter ticket-id)))]
             (try
               (when (#{"ready" "review" "blocked"} status)
                 (move-card! ticket-id "in-progress")
                 (update-frontmatter! ticket-id {:status "in-progress"}))
               (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
-              (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock)
+              (let [{:keys [exit result run-id dir last-message idle-timeout?]} (run-agent! ticket-id action effective-lane assignee lock
+                                                                                           {:groom-continue groom-continue-before})
+                    groom-continue (when (= :groom action)
+                                     (groom-continue-decision groom-continue-before
+                                                              (groom-continue-request (ticket-frontmatter ticket-id))
+                                                              exit result last-message))
                     _ (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION"))
                         ;; Deterministic black-box failure hook; unset in deployment.
                         (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
@@ -1895,14 +2032,30 @@
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
                 (if (= "blocked" next-status)
-                  (when-not (block-ticket! ticket-id run-id action result exit review-gate nil)
+                  (if (block-ticket! ticket-id run-id action result exit review-gate nil)
+                    (when groom-continue
+                      (append-note! ticket-id (groom-continue-note groom-continue next-status)))
                     (restore-card-state! ticket-id status assignee))
-                  (do
+                  (let [continue? (boolean (:continue? groom-continue))]
                     (move-card! ticket-id next-status)
                     (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                             :assignee (if (= "in-progress" next-status) assignee "boxp")}
-                                                      (= "done" next-status) (assoc :closed (today))))
-                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))))
+                                                             :assignee (if (or (= "in-progress" next-status) continue?)
+                                                                         assignee
+                                                                         "boxp")}
+                                                      (= "done" next-status) (assoc :closed (today))
+                                                      ;; One-shot: a later re-groom needs a fresh approval.
+                                                      continue? (assoc :groom_continue "consumed")))
+                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
+                    (when groom-continue
+                      (append-note! ticket-id (groom-continue-note groom-continue next-status))
+                      ;; Summary rewrite keeps :agent; record only derived fields.
+                      (mark-run! ticket-id run-id :succeeded
+                                 {:action action
+                                  :lane effective-lane
+                                  :exit-code exit
+                                  :result result
+                                  :groom-continue (select-keys groom-continue [:continue? :category])
+                                  :finished-at (now-str)}))))
                 true)
               (catch Exception e
                 (when-not (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
@@ -2535,6 +2688,32 @@
   (let [failures (atom [])]
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
+    ;; BOXP-261: continue-after-groom opt-in classification and decision.
+    (let [ok {:groom_continue "true" :groom_continue_scope "fix TLS trust" :groom_continue_approved_by "boxp"}
+          requested (groom-continue-request ok)
+          check (fn [label actual expected]
+                  (if (= expected actual)
+                    (println (str "PASS: groom-continue " label))
+                    (do (println (str "FAIL: groom-continue " label " expected=" expected " actual=" actual))
+                        (swap! failures conj (str "groom-continue " label)))))]
+      (check "valid opt-in is requested" (:state requested) :requested)
+      (check "missing keys stay off" (:state (groom-continue-request {})) :off)
+      (check "false stays off" (:state (groom-continue-request (assoc ok :groom_continue "false"))) :off)
+      (check "consumed stays off" (:state (groom-continue-request (assoc ok :groom_continue "consumed"))) :off)
+      (check "empty scope is invalid" (:state (groom-continue-request (assoc ok :groom_continue_scope ""))) :invalid)
+      (check "missing approver is unauthorized" (:state (groom-continue-request (dissoc ok :groom_continue_approved_by))) :unauthorized)
+      (check "unknown approver is unauthorized" (:state (groom-continue-request (assoc ok :groom_continue_approved_by "codex"))) :unauthorized)
+      (check "legacy ticket yields no decision" (groom-continue-decision {:state :off} {:state :off} 0 "review" "TASK_BOARD_RESULT: review") nil)
+      (check "successful groom continues" (:continue? (groom-continue-decision requested requested 0 "review" "TASK_BOARD_RESULT: review")) true)
+      (check "failed groom does not continue" (:category (groom-continue-decision requested requested 1 nil "")) "groom-failed")
+      (check "blocked marker does not continue" (:category (groom-continue-decision requested requested 0 "blocked" "TASK_BOARD_RESULT: blocked")) "unconfirmed-result")
+      (check "hold marker does not continue" (:category (groom-continue-decision requested requested 0 "review" "TASK_BOARD_GROOM_CONTINUE: hold\nTASK_BOARD_RESULT: review")) "hold")
+      (check "withdrawn during run does not continue" (:category (groom-continue-decision requested {:state :off} 0 "review" "TASK_BOARD_RESULT: review")) "withdrawn")
+      (check "changed scope does not continue" (:category (groom-continue-decision requested (assoc requested :scope "other") 0 "review" "TASK_BOARD_RESULT: review")) "withdrawn")
+      (check "agent-added opt-in does not continue" (groom-continue-decision {:state :off} requested 0 "review" "TASK_BOARD_RESULT: review") nil)
+      (check "unauthorized snapshot does not continue" (:category (groom-continue-decision (groom-continue-request (assoc ok :groom_continue_approved_by "codex")) requested 0 "review" "TASK_BOARD_RESULT: review")) "unauthorized")
+      (check "prompt is empty without opt-in" (groom-continue-prompt {:state :off}) nil)
+      (check "prompt names the scope" (boolean (some-> (groom-continue-prompt requested) (str/includes? "fix TLS trust"))) true))
     ;; Versioned projections cannot affect legacy candidate selection while off.
     ;; Include every existing route and lane, plus unsupported/new v2 routes.
     (doseq [[lane status] lane->status

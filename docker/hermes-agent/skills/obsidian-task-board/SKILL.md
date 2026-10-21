@@ -113,6 +113,28 @@ Preview a control request (dry-run only):
 
 `control-intent` only prints the request that an authenticated control API would receive and the single actor allowed to send it. `--actor owner` (the default) previews `:update-control` and may set any intent. `--actor runner` previews `:restrict-intent`, requires `--writer-generation`, and can only tighten to `pause`, `cancel`, or `wait-human`. The command never writes to the vault and refuses to run without `--dry-run`: editing a ticket, Notes, or frontmatter is not an authorization for autonomy v2 intent, decisions, or retries. Decision answers and retry changes have no control operation yet, so the helper has no preview for them.
 
+## Continue After Groom (opt-in, BOXP-261)
+
+By default a groomed ticket is parked in `Ready` with `assignee: boxp` so a human approves implementation. For an urgent ticket the owner can pre-approve that step so the runner keeps the agent assignee after a successful groom and claims implementation on the next tick (`Backlog` → groom → `Ready` → `In Progress`).
+
+The runner only honors a ticket whose frontmatter has all three keys. The helper writes them together:
+
+```bash
+"$TASK_BOARD_HELPER" update BOXP-259 \
+  --vault /home/boxp/Documents/obsidian-headless/BOXP \
+  --assignee claude-fable \
+  --groom-continue \
+  --groom-continue-scope "emSign CA 対応: 最小限の trust 更新 PR と反映後確認まで。ノード再起動や鍵の一括失効は含まない" \
+  --dry-run
+```
+
+- `--groom-continue` sets `groom_continue: true`, `groom_continue_scope: <text>` (required, single line), and `groom_continue_approved_by: boxp` (override with `--groom-continue-approved-by`). The runner rejects approvers outside `CODEX_TASK_BOARD_GROOM_CONTINUE_APPROVERS` (default `boxp`) and parks the card in `Ready` with `assignee: boxp` as usual.
+- `--no-groom-continue` sets `groom_continue: false` and keeps the scope for audit (opt-out). `create` accepts the same flags; its template leaves the three keys empty.
+- Only write the opt-in on behalf of an explicit owner approval, and quote the approved scope. Never write it as an agent on your own ticket; the runner snapshots the opt-in before the groom run starts and ignores values added during the run.
+- The runner consumes the opt-in (`groom_continue: consumed`) when it applies it. A later re-groom needs a fresh approval.
+- Not applied (card stays in `Ready` with `assignee: boxp`, Notes record the reason): groom exited unsuccessfully (`Blocked` as before), result marker other than `review`, the groom agent emitted `TASK_BOARD_GROOM_CONTINUE: hold` because the approved scope does not cover the work or a human decision is still required, the opt-in was withdrawn or changed during the run, or the runner is started with `CODEX_TASK_BOARD_GROOM_CONTINUE=false`.
+- `show --json` includes `groom-continue`, `groom-continue-scope`, and `groom-continue-approved-by`.
+
 ## Codex Request Workflow
 
 - Backlog: requirements grooming request. Keep the card in `Backlog`, set `assignee: codex`, and append the request to Notes.
