@@ -5,9 +5,13 @@ NODE_NAME="${NODE_NAME:-golyat-4}"
 BASE_RELEASE="${BASE_RELEASE:-noble}"
 IMAGE_SIZE="${IMAGE_SIZE:-16G}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/gpu-worker-image}"
-INSTALL_GPU_HOST_TOOLS="${INSTALL_GPU_HOST_TOOLS:-true}"
+# BOXP-269: "auto" resolves the GPU host tools decision and the network
+# interface from ansible/vars/nodes.yml for NODE_NAME. Explicit values are
+# still honoured for one-off experiments.
+INSTALL_GPU_HOST_TOOLS="${INSTALL_GPU_HOST_TOOLS:-auto}"
 CONFIGURE_STATIC_NETWORK="${CONFIGURE_STATIC_NETWORK:-true}"
-WORKER_NETWORK_INTERFACE="${WORKER_NETWORK_INTERFACE:-enp44s0}"
+WORKER_NETWORK_INTERFACE="${WORKER_NETWORK_INTERFACE:-auto}"
+VERIFY_IMAGE="${VERIFY_IMAGE:-true}"
 GUESTFS_MEMSIZE="${GUESTFS_MEMSIZE:-4096}"
 GUESTFS_SMP="${GUESTFS_SMP:-2}"
 
@@ -24,7 +28,24 @@ if [[ ! "$NODE_NAME" =~ ^[A-Za-z0-9._-]+$ ]]; then
   exit 2
 fi
 
+case "$INSTALL_GPU_HOST_TOOLS" in
+  auto|true|false) ;;
+  *)
+    echo "INSTALL_GPU_HOST_TOOLS must be auto, true, or false: $INSTALL_GPU_HOST_TOOLS" >&2
+    exit 2
+    ;;
+esac
+
+case "$CONFIGURE_STATIC_NETWORK" in
+  true|false) ;;
+  *)
+    echo "CONFIGURE_STATIC_NETWORK must be true or false: $CONFIGURE_STATIC_NETWORK" >&2
+    exit 2
+    ;;
+esac
+
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+script_dir="$repo_root/scripts/images"
 if [[ "$OUTPUT_DIR" = /* ]]; then
   work_dir="$OUTPUT_DIR"
 else
@@ -32,6 +53,45 @@ else
 fi
 cache_dir="$work_dir/cache"
 mkdir -p "$cache_dir"
+
+# Resolve the node's expectations (IP, NIC, GPU tools, pinned versions) from
+# the same files the playbook reads. PyYAML is the only dependency; fall back
+# to a throwaway venv when the host python lacks it.
+node_config_python=python3
+if ! python3 -c 'import yaml' 2>/dev/null; then
+  python3 -m venv "$work_dir/tools-venv"
+  "$work_dir/tools-venv/bin/python" -m pip install --quiet --no-cache-dir 'pyyaml>=6'
+  node_config_python="$work_dir/tools-venv/bin/python"
+fi
+node_config="$("$node_config_python" "$script_dir/worker-node-config.py" "$NODE_NAME" --repo-root "$repo_root")"
+echo "$node_config"
+expected_node_ip="$(grep '^NODE_IP=' <<< "$node_config" | cut -d= -f2-)"
+expected_interface="$(grep '^NETWORK_INTERFACE=' <<< "$node_config" | cut -d= -f2-)"
+expected_gpu_host_tools="$(grep '^GPU_HOST_TOOLS=' <<< "$node_config" | cut -d= -f2-)"
+expected_gateway="$(grep '^GATEWAY=' <<< "$node_config" | cut -d= -f2-)"
+expected_k8s_package="$(grep '^KUBERNETES_PACKAGE_VERSION=' <<< "$node_config" | cut -d= -f2-)"
+expected_k8s_version="$(grep '^KUBERNETES_VERSION=' <<< "$node_config" | cut -d= -f2-)"
+expected_crio_package="$(grep '^CRIO_PACKAGE_VERSION=' <<< "$node_config" | cut -d= -f2-)"
+expected_crio_version="$(grep '^CRIO_VERSION=' <<< "$node_config" | cut -d= -f2-)"
+
+if [ "$INSTALL_GPU_HOST_TOOLS" = auto ]; then
+  INSTALL_GPU_HOST_TOOLS="$expected_gpu_host_tools"
+fi
+if [ "$WORKER_NETWORK_INTERFACE" = auto ]; then
+  WORKER_NETWORK_INTERFACE="$expected_interface"
+fi
+if [[ ! "$WORKER_NETWORK_INTERFACE" =~ ^[a-z][a-z0-9]*$ ]]; then
+  echo "WORKER_NETWORK_INTERFACE must be a plain interface name: $WORKER_NETWORK_INTERFACE" >&2
+  exit 2
+fi
+# The Longhorn multipath blacklist (BOXP-267) is required in the image as soon
+# as the repository ships it; before that the verifier only warns.
+if [ -f "$repo_root/ansible/files/longhorn-multipath.conf" ]; then
+  require_longhorn_multipath=true
+else
+  require_longhorn_multipath=false
+fi
+echo "Resolved build parameters: node=$NODE_NAME ip=$expected_node_ip interface=$WORKER_NETWORK_INTERFACE gpu_host_tools=$INSTALL_GPU_HOST_TOOLS static_network=$CONFIGURE_STATIC_NETWORK longhorn_multipath_required=$require_longhorn_multipath"
 
 base_url="https://cloud-images.ubuntu.com/${BASE_RELEASE}/current"
 base_image="${BASE_RELEASE}-server-cloudimg-amd64.img"
@@ -95,6 +155,32 @@ virt-sysprep -a "$qcow_image" \
   --operations machine-id,ssh-hostkeys,udev-persistent-net,logfiles,tmp-files,bash-history,customize \
   --hostname "$NODE_NAME"
 
+# Verify the finished (sysprepped) root tree before compressing. The verifier
+# reads the image with virt-copy-out and never modifies it.
+verify_report="$work_dir/image-verify.txt"
+rm -f "$verify_report"
+verification_status="skipped"
+if [ "$VERIFY_IMAGE" = true ]; then
+  "$script_dir/verify-gpu-worker-image.sh" \
+    --image "$qcow_image" \
+    --node "$NODE_NAME" \
+    --node-ip "$expected_node_ip" \
+    --interface "$WORKER_NETWORK_INTERFACE" \
+    --gpu-host-tools "$INSTALL_GPU_HOST_TOOLS" \
+    --gateway "$expected_gateway" \
+    --static-network "$CONFIGURE_STATIC_NETWORK" \
+    --kubernetes-package-version "$expected_k8s_package" \
+    --crio-package-version "$expected_crio_package" \
+    --require-longhorn-multipath "$require_longhorn_multipath" \
+    --report "$verify_report"
+  verification_status="passed"
+fi
+if grep -q '^ok: multipath: Longhorn blacklist baked' "$verify_report" 2>/dev/null; then
+  longhorn_multipath_blacklist=true
+else
+  longhorn_multipath_blacklist=false
+fi
+
 qemu-img convert -O raw "$qcow_image" "$raw_image"
 xz -T0 -f "$raw_image"
 (
@@ -105,10 +191,21 @@ xz -T0 -f "$raw_image"
 cat > "$work_dir/image-info.json" <<EOF
 {
   "node_name": "$NODE_NAME",
+  "node_ip": "$expected_node_ip",
+  "network_interface": "$WORKER_NETWORK_INTERFACE",
+  "static_network": $CONFIGURE_STATIC_NETWORK,
+  "gpu_host_tools": $INSTALL_GPU_HOST_TOOLS,
+  "kubernetes_version": "$expected_k8s_version",
+  "kubernetes_package_version": "$expected_k8s_package",
+  "crio_version": "$expected_crio_version",
+  "crio_package_version": "$expected_crio_package",
+  "longhorn_multipath_blacklist": $longhorn_multipath_blacklist,
   "base_release": "$BASE_RELEASE",
   "image_size": "$IMAGE_SIZE",
   "image_file": "$(basename "$compressed_image")",
   "checksum_file": "$(basename "$compressed_image").sha256",
+  "verification": "$verification_status",
+  "verification_report": "$(basename "$verify_report")",
   "build_date": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
   "build_method": "ubuntu-cloud-image/libguestfs/ansible-worker-image",
   "github_sha": "$(git -C "$repo_root" rev-parse HEAD)"
@@ -118,3 +215,4 @@ EOF
 echo "FINAL_IMAGE=$compressed_image"
 echo "CHECKSUM_FILE=$compressed_image.sha256"
 echo "IMAGE_INFO=$work_dir/image-info.json"
+echo "VERIFY_REPORT=$verify_report"

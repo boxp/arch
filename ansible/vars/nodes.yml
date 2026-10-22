@@ -1,10 +1,51 @@
 ---
-# Node IP addresses for Orange Pi Zero 3 cluster
+# Node IP addresses for the lolice cluster (control plane: Orange Pi Zero 3,
+# workers: amd64 golyat-*). Playbooks index this map by node_name; nothing
+# iterates over it, so adding a worker here changes no existing node.
 node_ips:
   shanghai-1: "192.168.10.102"
   shanghai-2: "192.168.10.103"
   shanghai-3: "192.168.10.104"
+  golyat-1: "192.168.10.101"
+  golyat-2: "192.168.10.105"
+  golyat-3: "192.168.10.106"
   golyat-4: "192.168.10.107"
+
+# BOXP-269: per-worker hardware facts consumed by playbooks/worker-image.yml and
+# scripts/images/build-gpu-worker-image.sh. The common worker baseline lives in
+# the playbook; only what differs between machines is recorded here.
+#
+# - interface: production NIC name used for the baked systemd-networkd static
+#   address (worker_configure_static_network=true). Names were read from the
+#   running nodes on 2026-10-22; they are predictable-name based and survive a
+#   reinstall as long as the hardware does not change.
+# - gpu_host_tools: whether the Intel GPU runtime/host tools are baked into the
+#   image (gpu_worker_host_tools role). Only golyat-4 runs GPU workloads.
+#
+# Membership here does NOT add a node to plan-ansible / apply-ansible; those
+# workflows keep their own explicit node matrix (G1 of BOXP-269, separate PR).
+worker_nodes:
+  golyat-1:
+    hardware: "GMKtec NucBox G3 (Intel N100), Intel I225-V onboard NIC"
+    interface: enp3s0
+    gpu_host_tools: false
+  golyat-2:
+    # Lenovo ThinkPad X1 Yoga. The production link is a USB Ethernet adapter,
+    # so the name is derived from the adapter MAC (enx<mac>). Replacing the
+    # adapter changes this name and requires a rebuild. The onboard enp0s31f6
+    # is unused/DOWN. First boot of the noble image on this hardware (USB NIC
+    # on kernel 6.8) is NOT yet verified.
+    hardware: "Lenovo ThinkPad X1 Yoga (Intel i5-6200U), USB Ethernet adapter (ax88179_178a)"
+    interface: enx207bd2213354
+    gpu_host_tools: false
+  golyat-3:
+    hardware: "GMKtec NucBox G3 (Intel N100), Intel I226-V onboard NIC"
+    interface: enp3s0
+    gpu_host_tools: false
+  golyat-4:
+    hardware: "GMKtec EVO-T1, onboard RTL8125 2.5GbE NIC (r8169)"
+    interface: enp44s0
+    gpu_host_tools: true
 
 # Common cluster configuration
 cluster:

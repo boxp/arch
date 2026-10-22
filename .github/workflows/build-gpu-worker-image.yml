@@ -22,10 +22,17 @@ on:
         type: string
         default: 16G
       install_gpu_host_tools:
-        description: Install Intel graphics runtime, nvtop, and host smoke-test tools
+        description: >-
+          Install Intel graphics runtime, nvtop, and host smoke-test tools.
+          "auto" uses worker_nodes.<node_name>.gpu_host_tools from ansible/vars/nodes.yml
+          (true only for golyat-4).
         required: true
-        type: boolean
-        default: true
+        type: choice
+        default: auto
+        options:
+          - auto
+          - "true"
+          - "false"
 
 jobs:
   build-image:
@@ -62,10 +69,12 @@ jobs:
           final_image_line="$(grep '^FINAL_IMAGE=' build-output.log | tail -n1)"
           checksum_file_line="$(grep '^CHECKSUM_FILE=' build-output.log | tail -n1)"
           image_info_line="$(grep '^IMAGE_INFO=' build-output.log | tail -n1)"
+          verify_report_line="$(grep '^VERIFY_REPORT=' build-output.log | tail -n1)"
           final_image="${final_image_line#FINAL_IMAGE=}"
           checksum_file="${checksum_file_line#CHECKSUM_FILE=}"
           image_info="${image_info_line#IMAGE_INFO=}"
-          for output_path in "$final_image" "$checksum_file" "$image_info"; do
+          verify_report="${verify_report_line#VERIFY_REPORT=}"
+          for output_path in "$final_image" "$checksum_file" "$image_info" "$verify_report"; do
             if [ -z "$output_path" ] || [ ! -f "$output_path" ]; then
               echo "Missing expected build output: $output_path" >&2
               exit 1
@@ -75,6 +84,7 @@ jobs:
             echo "final_image=$final_image"
             echo "checksum_file=$checksum_file"
             echo "image_info=$image_info"
+            echo "verify_report=$verify_report"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify image artifact
@@ -87,6 +97,14 @@ jobs:
           xz --test "${{ steps.build.outputs.final_image }}"
           file "${{ steps.build.outputs.final_image }}"
           jq . "${{ steps.build.outputs.image_info }}"
+          # BOXP-269: the build script already verified the image contents
+          # (identity, static network, kubelet/CRI-O, GPU tools, ssh, secrets)
+          # against ansible/vars/nodes.yml; fail here if that record is missing.
+          test "$(jq -r .verification "${{ steps.build.outputs.image_info }}")" = passed
+          test "$(jq -r .node_name "${{ steps.build.outputs.image_info }}")" = "${{ inputs.node_name }}"
+          echo "::group::Image content verification report"
+          cat "${{ steps.build.outputs.verify_report }}"
+          echo "::endgroup::"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4
@@ -104,6 +122,7 @@ jobs:
           final_image="${{ steps.build.outputs.final_image }}"
           checksum_file="${{ steps.build.outputs.checksum_file }}"
           image_info="${{ steps.build.outputs.image_info }}"
+          verify_report="${{ steps.build.outputs.verify_report }}"
           final_name="$(basename "$final_image")"
           latest_checksum_file="${RUNNER_TEMP}/latest.img.xz.sha256"
           checksum_value="$(cut -d' ' -f1 "$checksum_file")"
@@ -112,6 +131,7 @@ jobs:
           aws s3 cp "$final_image" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/"
           aws s3 cp "$checksum_file" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/"
           aws s3 cp "$image_info" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/image-info.json"
+          aws s3 cp "$verify_report" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/${final_name%.img.xz}.verify.txt"
 
           aws s3api copy-object \
             --copy-source "${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/${final_name}" \
@@ -121,6 +141,7 @@ jobs:
           aws s3 cp "$latest_checksum_file" "s3://${S3_BUCKET}/${S3_STABLE_PREFIX}/latest.img.xz.sha256"
 
           aws s3 cp "$image_info" "s3://${S3_BUCKET}/${S3_STABLE_PREFIX}/image-info.json"
+          aws s3 cp "$verify_report" "s3://${S3_BUCKET}/${S3_STABLE_PREFIX}/latest.verify.txt"
 
           aws s3api put-object-tagging \
             --bucket "$S3_BUCKET" \
@@ -136,6 +157,11 @@ jobs:
             echo "- Image: $(basename "${{ steps.build.outputs.final_image }}")"
             echo "- Size: $(du -h "${{ steps.build.outputs.final_image }}" | cut -f1)"
             echo "- Checksum: $(cut -d' ' -f1 "${{ steps.build.outputs.checksum_file }}")"
+            echo "- Node IP / interface: $(jq -r '.node_ip + " / " + .network_interface' "${{ steps.build.outputs.image_info }}")"
+            echo "- GPU host tools: $(jq -r .gpu_host_tools "${{ steps.build.outputs.image_info }}")"
+            echo "- Kubernetes / CRI-O: $(jq -r '.kubernetes_package_version + " / " + .crio_package_version' "${{ steps.build.outputs.image_info }}")"
+            echo "- Longhorn multipath blacklist baked: $(jq -r .longhorn_multipath_blacklist "${{ steps.build.outputs.image_info }}")"
+            echo "- Content verification: $(tail -n1 "${{ steps.build.outputs.verify_report }}")"
             echo "- Artifact storage: S3 only"
             echo "- S3 latest path: s3://arch-gpu-worker-images/images/${{ inputs.node_name }}/latest.img.xz"
             echo "- S3 artifact path: s3://arch-gpu-worker-images/images/artifacts/${{ inputs.node_name }}/"

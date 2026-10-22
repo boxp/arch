@@ -1,40 +1,60 @@
 # GPU Worker Image Deployment
 
-This document covers the Phase 2 GPU worker image artifact, flash procedure, and recovery gates for BOXP-23. It defines the procedure only; writing the GMKtec EVO-T1 internal NVMe is a Phase 3 destructive operation.
+This document covers the amd64 worker image artifact, flash procedure, and recovery gates. It started as the Phase 2 document for the golyat-4 GPU worker (BOXP-23); since BOXP-269 the same pipeline builds a per-node image for every golyat worker. It defines the procedure only; writing a node's internal disk is a destructive operation that needs its own approval (BOXP-269 G2 for golyat-1..3).
+
+## Worker nodes
+
+Per-node values come from `ansible/vars/nodes.yml` (`node_ips`, `worker_nodes`). The build script and the image verifier read the same file, so a node is added or changed there, never in the workflow.
+
+| node | IP | NIC (`interface`) | GPU host tools | target disk (read from the node, verify again before flashing) |
+|---|---|---|---|---|
+| golyat-1 | 192.168.10.101 | `enp3s0` (Intel I225-V) | no | NVMe MasonSemi 238.5G |
+| golyat-2 | 192.168.10.105 | `enx207bd2213354` (USB Ethernet, ax88179_178a) | no | SATA SSD Samsung MZNTY256 238.5G |
+| golyat-3 | 192.168.10.106 | `enp3s0` (Intel I226-V) | no | NVMe AirDisk 256GB |
+| golyat-4 | 192.168.10.107 | `enp44s0` (RTL8125) | yes | NVMe YMTC PC411 2TB |
+
+Notes:
+
+- golyat-2's production link is a USB adapter, so the interface name is derived from the adapter MAC. Replacing the adapter changes the name and requires a rebuild. The onboard `enp0s31f6` is unused.
+- The noble image has not yet been first-booted on golyat-1..3 hardware (N100 / i5-6200U, USB NIC on kernel 6.8). A successful build and content verification is not a substitute for that check.
+- golyat-1..3 are **not** targets of `plan-ansible` / `apply-ansible`; adding them is BOXP-269 G1 and a separate change.
 
 ## Build
 
-Run the workflow manually:
+Run the workflow manually (`install_gpu_host_tools=auto` picks the value from `worker_nodes`):
 
 ```bash
 gh workflow run build-gpu-worker-image.yml \
-  -f node_name=golyat-4 \
+  -f node_name=golyat-1 \
   -f base_release=noble \
   -f image_size=16G \
-  -f install_gpu_host_tools=true
+  -f install_gpu_host_tools=auto
 ```
 
-Or build locally when `qemu-img`, `virt-resize`, `virt-customize`, `virt-sysprep`, and `xz` are available:
+Or build locally when `qemu-img`, `virt-resize`, `virt-customize`, `virt-sysprep`, `virt-copy-out`, and `xz` are available:
 
 ```bash
-NODE_NAME=golyat-4 \
+NODE_NAME=golyat-1 \
 BASE_RELEASE=noble \
 IMAGE_SIZE=16G \
 OUTPUT_DIR=/tmp/gpu-worker-image-prod \
-INSTALL_GPU_HOST_TOOLS=true \
 scripts/images/build-gpu-worker-image.sh
 ```
+
+`INSTALL_GPU_HOST_TOOLS` and `WORKER_NETWORK_INTERFACE` default to `auto` (resolved from `ansible/vars/nodes.yml`); set them explicitly only for experiments. `scripts/images/worker-node-config.py <node>` prints the resolved values.
+
+After `virt-sysprep` the build runs `scripts/images/verify-gpu-worker-image.sh --image <qcow2>`, which copies `/etc`, `/home`, `/root`, `/opt`, `/usr/local/sbin`, and the dpkg status out of the image (read-only) and checks hostname, `/etc/lolice-worker-image`, the systemd-networkd static address and interface, kubelet `--node-ip`, kubelet/kubeadm/kubectl/cri-o package versions, GPU packages present or absent as expected, sshd password login disabled, no baked SSH host keys, the `boxp` authorized keys, no kubeadm join material, no build residue, and no credential patterns. The report is stored next to the image (`image-verify.txt` / `latest.verify.txt` in S3) and summarized in `image-info.json`. The Longhorn multipath blacklist (`/etc/multipath/conf.d/90-longhorn.conf`, BOXP-267) is required as soon as `ansible/files/longhorn-multipath.conf` exists in the repository and only reported as a warning before that.
 
 The stable latest image is uploaded to:
 
 ```text
-s3://arch-gpu-worker-images/images/golyat-4/
+s3://arch-gpu-worker-images/images/<node_name>/
 ```
 
 Timestamped artifacts are uploaded to:
 
 ```text
-s3://arch-gpu-worker-images/images/artifacts/golyat-4/
+s3://arch-gpu-worker-images/images/artifacts/<node_name>/
 ```
 
 Timestamped S3 objects under the `artifacts/` prefix expire after 30 days. `latest.img.xz`, `latest.img.xz.sha256`, and `image-info.json` under the stable node prefix are overwritten on each successful build and are not current-object expiration targets. Noncurrent versions are retained for 30 days by the bucket lifecycle policy.
@@ -66,12 +86,9 @@ The image is based on the current Ubuntu 24.04 Noble amd64 cloud image, then cus
 - Kubernetes sysctl/module baseline for workers
 - `/etc/lolice-worker-image` build metadata
 
-The initial GPU worker identity is:
+The image identity (hostname / Kubernetes node name, static IP, interface) is the `node_name` passed to the build and its entry in `ansible/vars/nodes.yml`.
 
-- hostname / Kubernetes node name: `golyat-4`
-- planned static IP: `192.168.10.107`
-
-Intel device plugin, node labels, taints, and cluster join are intentionally left to later phases. GPU runtime packages are installed by default so first boot can verify `/dev/dri` and `clinfo -l` before joining the cluster.
+Intel device plugin, node labels, taints, and cluster join are intentionally left to later phases. GPU runtime packages are installed only for nodes with `gpu_host_tools: true` (golyat-4) so its first boot can verify `/dev/dri` and `clinfo -l` before joining the cluster; the golyat-1..3 images do not carry the Intel graphics PPA or packages.
 
 ## Pre-Flash Gate
 
@@ -86,12 +103,15 @@ Do not write this image to the GMKtec internal storage until all checks are true
 ## Download And Verify
 
 ```bash
-aws s3 cp s3://arch-gpu-worker-images/images/golyat-4/latest.img.xz ./
-aws s3 cp s3://arch-gpu-worker-images/images/golyat-4/latest.img.xz.sha256 ./
+node=golyat-4
+aws s3 cp "s3://arch-gpu-worker-images/images/${node}/latest.img.xz" ./
+aws s3 cp "s3://arch-gpu-worker-images/images/${node}/latest.img.xz.sha256" ./
+aws s3 cp "s3://arch-gpu-worker-images/images/${node}/image-info.json" ./
 sha256sum -c latest.img.xz.sha256
+jq '{node_name, node_ip, network_interface, gpu_host_tools, kubernetes_package_version, crio_package_version, longhorn_multipath_blacklist, verification}' image-info.json
 ```
 
-If using the unique timestamped image instead of `latest.img.xz`, verify the matching timestamped checksum file.
+If using the unique timestamped image instead of `latest.img.xz`, verify the matching timestamped checksum file. Confirm `node_name` in `image-info.json` is the node you are about to flash before writing anything.
 
 ## USB Boot Smoke Test
 

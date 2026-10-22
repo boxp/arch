@@ -6,9 +6,15 @@
   vars_files:
     - ../vars/nodes.yml
   vars:
-    node_ip: "{{ node_ips[node_name] | default('') }}"
+    # BOXP-269: node-specific values are resolved from vars/nodes.yml by
+    # node_name. `-e` extra vars (apply-ansible.yml, build script) still win.
+    node_ip: "{{ node_ips[node_name] }}"
+    worker_node: "{{ worker_nodes[node_name] }}"
+    worker_image_build: "{{ chroot_build | default(false) | bool }}"
     worker_configure_static_network: false
-    worker_install_gpu_host_tools: false
+    # Image builds bake the per-node GPU host tools decision; live runs keep the
+    # historical default (off) unless the caller passes the variable explicitly.
+    worker_install_gpu_host_tools: "{{ worker_node.gpu_host_tools | bool if worker_image_build | bool else false }}"
     worker_base_packages:
       - ca-certificates
       - curl
@@ -24,10 +30,22 @@
       - vim
       - wireless-regdb
     worker_extra_kernel_modules_package: true
-    worker_static_network_interface: enp44s0
+    worker_static_network_interface: "{{ worker_node.interface }}"
     worker_static_networkd_config: /etc/systemd/network/20-wired.network
 
   pre_tasks:
+    - name: Require a known worker node_name
+      ansible.builtin.assert:
+        that:
+          - node_name is defined
+          - node_name in worker_nodes
+          - node_name in node_ips
+          - worker_nodes[node_name].interface is match('^[a-z][a-z0-9]*$')
+        fail_msg: >-
+          node_name must be passed with -e and listed in vars/nodes.yml
+          (node_ips and worker_nodes). Got: {{ node_name | default('<undefined>') }}
+      tags: [always]
+
     - name: Check if running in chroot environment
       ansible.builtin.stat:
         path: /proc/1/root/.
@@ -470,7 +488,7 @@
         dest: /etc/lolice-worker-image
         mode: "0644"
         content: |
-          node_name={{ node_name | default('golyat-4') }}
+          node_name={{ node_name }}
           kubernetes_version={{ kubernetes_version }}
           crio_version={{ crio_version }}
           crio_package_version={{ crio_package_version }}
