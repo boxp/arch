@@ -1,18 +1,87 @@
 name: Apply Ansible
 
+# main への push で変更されたファイルから影響ノードだけを導出して適用する。
+# 対応表と fail-closed の規則は .github/scripts/ansible-apply-targets.sh を参照。
+#   - worker 限定の差分 (worker-image.yml / worker 専用 role・files) -> golyat-* のみ
+#   - control plane 限定の差分 (control-plane.yml / node-shanghai-N.yml / CP 専用 role) -> 該当 shanghai-* のみ
+#   - 共有物 (inventories, vars, uv.lock, 共用 role ...) や参照先が解決できない差分 -> 従来通り全ノード
+#   - tests / docs / workflow 自身のみの差分 -> 適用対象なし (apply job は起動しない)
 on:
   push:
     branches: [main]
     paths:
       - 'ansible/**'
       - '.github/workflows/apply-ansible.yml'
+      - '.github/scripts/ansible-apply-targets.sh'
+      - '.github/scripts/ansible-apply-targets.test.sh'
+  workflow_dispatch:
+    inputs:
+      nodes:
+        description: 'Apply targets, comma separated (subset of shanghai-1,shanghai-2,shanghai-3,golyat-4)'
+        required: true
+        type: string
 
 concurrency:
   group: lolice-production-cluster-mutation
   cancel-in-progress: false
 
 jobs:
+  select-targets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      nodes: ${{ steps.select.outputs.nodes }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Self-test target resolver
+        run: .github/scripts/ansible-apply-targets.test.sh
+
+      - name: Get changed files
+        id: changed-files
+        if: github.event_name == 'push'
+        uses: tj-actions/changed-files@48d8f15b2aaa3d255ca5af3eba4870f807ce6b3c # v45
+
+      - name: Resolve apply targets
+        id: select
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGED_FILES: ${{ steps.changed-files.outputs.all_changed_and_modified_files }}
+          REQUESTED_NODES: ${{ inputs.nodes }}
+        run: |
+          set -euo pipefail
+          if [ "$EVENT_NAME" = "workflow_dispatch" ]; then
+            NODES="$(.github/scripts/ansible-apply-targets.sh --nodes "$REQUESTED_NODES")"
+            EXPLAIN="requested via workflow_dispatch: $REQUESTED_NODES"
+          else
+            if [ -z "$CHANGED_FILES" ]; then
+              echo "::error::changed file list is empty; refusing to guess apply targets"
+              exit 1
+            fi
+            EXPLAIN="$(echo "$CHANGED_FILES" | .github/scripts/ansible-apply-targets.sh --explain - 2>&1 >/dev/null)"
+            NODES="$(echo "$CHANGED_FILES" | .github/scripts/ansible-apply-targets.sh -)"
+          fi
+          echo "nodes=$NODES" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Apply Ansible targets"
+            echo
+            echo '```'
+            echo "$EXPLAIN"
+            echo '```'
+            echo
+            echo "Resolved nodes: \`$NODES\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "$EXPLAIN"
+          echo "Resolved nodes: $NODES"
+
   apply:
+    needs: select-targets
+    if: needs.select-targets.outputs.nodes != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -20,7 +89,7 @@ jobs:
       contents: read
     strategy:
       matrix:
-        node: [shanghai-1, shanghai-2, shanghai-3, golyat-4]
+        node: ${{ fromJSON(needs.select-targets.outputs.nodes) }}
       max-parallel: 1
       fail-fast: true
     env:
