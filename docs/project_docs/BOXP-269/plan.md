@@ -84,3 +84,9 @@
 - lolice#871 の merge。#13808 は本票の作業中に BOXP-267 側で main に入り、rebase 後の image には multipath blacklist が入っている。
 - IAM（`s3:GetObjectTagging`）や runner `timeout-minutes` の変更。
 - build 成功を移行完了として扱うこと。
+
+### codex-review 再指摘 (retry 2/2) への対応
+
+- 指摘: `scripts/images/build-gpu-worker-image.sh` が `-e worker_configure_static_network=${CONFIGURE_STATIC_NETWORK}` を ansible-playbook に渡しておらず verifier が常に失敗する。
+- 事実: 当該 extra var は origin/main 時点から `ansible-playbook` 呼び出しに含まれており本PRでも変更していない。aed0a88ec での3台分の実 build は内部検証 failures=0 (static network 設定・`20-wired.network` 検証を含む) で通過済み。誤検知と判断。
+- 対応: 結線を固定する回帰テスト `test_build_script_passes_resolved_settings_to_playbook_and_verifier` を追加 (node_name / gpu_host_tools / configure_static_network / static_network_interface / chroot_build の各 extra var と verifier への同値受け渡しを検証)。unittest 56 OK。

@@ -30,6 +30,7 @@ PLAYBOOK = ANSIBLE_DIR / 'playbooks/worker-image.yml'
 INVENTORY = ANSIBLE_DIR / 'inventories/production/hosts.yml'
 NODE_CONFIG_SCRIPT = REPO_ROOT / 'scripts/images/worker-node-config.py'
 S3_VERIFY_SCRIPT = REPO_ROOT / 'scripts/images/verify-gpu-worker-image-s3.sh'
+BUILD_SCRIPT = REPO_ROOT / 'scripts/images/build-gpu-worker-image.sh'
 BUILD_WORKFLOW = REPO_ROOT / '.github/workflows/build-gpu-worker-image.yml'
 APPLY_WORKFLOW = REPO_ROOT / '.github/workflows/apply-ansible.yml'
 PLAN_WORKFLOW = REPO_ROOT / '.github/workflows/plan-ansible.yml'
@@ -231,6 +232,36 @@ class WorkflowScopeGuardTest(unittest.TestCase):
             with self.subTest(workflow=workflow.name):
                 self.assertIn('worker_static_network_interface=enp44s0', workflow.read_text())
 
+    def test_build_script_passes_resolved_settings_to_playbook_and_verifier(self):
+        # The build defaults CONFIGURE_STATIC_NETWORK=true while the playbook
+        # keeps worker_configure_static_network=false for live runs, so the
+        # script must forward every resolved value as an extra var; the image
+        # verifier then checks the same values against the finished root tree.
+        text = BUILD_SCRIPT.read_text()
+        self.assertIn('CONFIGURE_STATIC_NETWORK="${CONFIGURE_STATIC_NETWORK:-true}"', text)
+        playbook_cmds = [line for line in text.splitlines() if 'ansible-playbook' in line]
+        self.assertEqual(len(playbook_cmds), 1)
+        cmd = playbook_cmds[0]
+        self.assertIn('playbooks/worker-image.yml', cmd)
+        for extra_var in (
+            '-e node_name=${NODE_NAME}',
+            '-e worker_install_gpu_host_tools=${INSTALL_GPU_HOST_TOOLS}',
+            '-e worker_configure_static_network=${CONFIGURE_STATIC_NETWORK}',
+            '-e worker_static_network_interface=${WORKER_NETWORK_INTERFACE}',
+            '-e chroot_build=true',
+        ):
+            with self.subTest(extra_var=extra_var):
+                self.assertIn(extra_var, cmd)
+        verifier = text[text.index('verify-gpu-worker-image.sh'):text.index('--report "$verify_report"')]
+        for option in (
+            '--node "$NODE_NAME"',
+            '--interface "$WORKER_NETWORK_INTERFACE"',
+            '--gpu-host-tools "$INSTALL_GPU_HOST_TOOLS"',
+            '--static-network "$CONFIGURE_STATIC_NETWORK"',
+        ):
+            with self.subTest(option=option):
+                self.assertIn(option, verifier)
+
     def test_build_workflow_is_dispatch_only_with_auto_gpu_default(self):
         workflow = yaml.safe_load(BUILD_WORKFLOW.read_text())
         self.assertEqual(list(workflow[True].keys()), ['workflow_dispatch'])
@@ -263,7 +294,7 @@ class WorkflowScopeGuardTest(unittest.TestCase):
         script = S3_VERIFY_SCRIPT.read_text()
         match = re.search(r"awk '([^']+)' \"\$worker_nodes_file\"", script)
         self.assertIsNotNone(match, 'awk node parser not found in S3 verifier')
-        result = subprocess.run(['awk', match.group(1), str(WORKER_NODES)], check=True,
+        result = subprocess.run(['awk', match.group(1), str(WORKER_NODES)], check=True,  # noqa: S603, S607
                                 capture_output=True, text=True)
         self.assertEqual(result.stdout.split(), list(load_workers().keys()))
 
