@@ -3056,6 +3056,83 @@ test_loop_prune_can_be_disabled() {
   assert_file_not_contains "${tmp}/runner.out" '^prune: '
 }
 
+
+test_run_finished_records_outbox_event() {
+  local tmp vault state bin event
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-701|BOXP-701: done]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-701 in-progress codex
+
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-done.out
+
+  # Second ticket in a later tick: a review result without a PR is blocked by the gate.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-701|BOXP-701: done]] #ticket status::done
+- [ ] [[Tickets/BOXP-702|BOXP-702: blocked]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-702 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-blocked.out
+
+  # done: lane, frontmatter and Notes are committed before the event is written.
+  event="$(ls "${state}"/outbox/pending/BOXP-701-*-done.edn)"
+  assert_file_contains "${event}" ':event-type "task-board.run-finished"'
+  assert_file_contains "${event}" ':from-status "in-progress"'
+  assert_file_contains "${event}" ':to-status "done"'
+  assert_file_contains "${event}" ':source "task-board-runner"'
+  assert_file_contains "${event}" ':status :pending'
+  assert_file_contains "${event}" ':revision "[0-9a-f]{12}"'
+  # review result without PR -> blocked by the gate: the blocked transition is an event too.
+  event="$(ls "${state}"/outbox/pending/BOXP-702-*-blocked.edn)"
+  assert_file_contains "${event}" ':to-status "blocked"'
+  assert_file_contains "${vault}/Tickets/BOXP-702.md" '^status: blocked$'
+  # The runner never needs the webhook secret or URL to record events.
+  assert_file_not_contains "${event}" 'secret'
+}
+
+test_in_progress_retry_records_no_outbox_event() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-703|BOXP-703: idle]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-703 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_SLEEP=2 \
+    CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-idle.out
+
+  assert_file_contains "${vault}/Tickets/BOXP-703.md" '^status: in-progress$'
+  if ls "${state}"/outbox/pending/BOXP-703-* >/dev/null 2>&1; then
+    fail "idle-timeout retry must not wake Kohako"
+  fi
+}
+
+test_outbox_disabled_by_env() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-704|BOXP-704: off]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-704 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_EVENTS_ENABLED=false run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-off.out
+
+  assert_file_contains "${vault}/Tickets/BOXP-704.md" '^status: done$'
+  if ls "${state}"/outbox/pending/BOXP-704-* >/dev/null 2>&1; then
+    fail "outbox must stay empty when CODEX_TASK_BOARD_EVENTS_ENABLED=false"
+  fi
+}
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
@@ -3134,5 +3211,8 @@ test_prune_respects_board_lane
 test_prune_invalid_settings_fall_back_to_defaults
 test_loop_prunes_in_background
 test_loop_prune_can_be_disabled
+test_run_finished_records_outbox_event
+test_in_progress_retry_records_no_outbox_event
+test_outbox_disabled_by_env
 
 echo "task-board-runner tests passed"
