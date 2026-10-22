@@ -2873,7 +2873,16 @@
   (let [idx (.indexOf args flag)]
     (when (>= idx 0) (nth args (inc idx)))))
 
+(declare run-tests*!)
+
 (defn run-tests! []
+  ;; BOXP-270: the lifecycle self-tests below drive the real finish path, whose
+  ;; outbox hook would otherwise write TEST-* events into the operator's live
+  ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
+  (with-redefs [record-task-board-event! (fn [& _] nil)]
+    (run-tests*!)))
+
+(defn run-tests*! []
   (let [failures (atom [])]
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
