@@ -84,6 +84,9 @@ jobs:
           command -v virt-sysprep
           command -v virt-copy-out
 
+      - name: Self-test the S3 artifact verifier
+        run: scripts/images/verify-gpu-worker-image-s3.test.sh
+
       - name: Build GPU worker image
         id: build
         env:
@@ -143,12 +146,16 @@ jobs:
           aws-region: ap-northeast-1
 
       - name: Upload image to S3
+        id: upload
         env:
           NODE_NAME: ${{ inputs.node_name }}
           S3_BUCKET: arch-gpu-worker-images
           S3_STABLE_PREFIX: images/${{ inputs.node_name }}
           S3_ARTIFACT_PREFIX: images/artifacts/${{ inputs.node_name }}
         run: |
+          # Recorded before the first write so the S3 verification step can
+          # prove that no other node's latest image changed during this run.
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           final_image="${{ steps.build.outputs.final_image }}"
           checksum_file="${{ steps.build.outputs.checksum_file }}"
           image_info="${{ steps.build.outputs.image_info }}"
@@ -178,6 +185,24 @@ jobs:
             --key "${S3_ARTIFACT_PREFIX}/${final_name}" \
             --tagging "TagSet=[{Key=NodeName,Value=${NODE_NAME}},{Key=BuildDate,Value=$(date +%Y-%m-%d)},{Key=GitSHA,Value=${GITHUB_SHA}}]"
 
+      - name: Verify S3 objects
+        env:
+          S3_BUCKET: arch-gpu-worker-images
+        run: |
+          # BOXP-269: read the bucket back independently of the upload (head,
+          # streamed sha256 of both image objects, stored .sha256 files, tags,
+          # other nodes' latest untouched). Read-only; the report goes to the
+          # job summary so the evidence lives with the run.
+          scripts/images/verify-gpu-worker-image-s3.sh \
+            --bucket "$S3_BUCKET" \
+            --node "${{ inputs.node_name }}" \
+            --image "${{ steps.build.outputs.final_image }}" \
+            --checksum-file "${{ steps.build.outputs.checksum_file }}" \
+            --since "${{ steps.upload.outputs.started_at }}" \
+            --git-sha "$GITHUB_SHA" \
+            --report "${RUNNER_TEMP}/s3-verify.md"
+          cat "${RUNNER_TEMP}/s3-verify.md" >> "$GITHUB_STEP_SUMMARY"
+
       - name: Build summary
         run: |
           {
@@ -192,6 +217,7 @@ jobs:
             echo "- Kubernetes / CRI-O: $(jq -r '.kubernetes_package_version + " / " + .crio_package_version' "${{ steps.build.outputs.image_info }}")"
             echo "- Longhorn multipath blacklist baked: $(jq -r .longhorn_multipath_blacklist "${{ steps.build.outputs.image_info }}")"
             echo "- Content verification: $(tail -n1 "${{ steps.build.outputs.verify_report }}")"
+            echo "- S3 verification: see the S3 objects table above (s3-verification line)"
             echo "- Artifact storage: S3 only"
             echo "- S3 latest path: s3://arch-gpu-worker-images/images/${{ inputs.node_name }}/latest.img.xz"
             echo "- S3 artifact path: s3://arch-gpu-worker-images/images/artifacts/${{ inputs.node_name }}/"

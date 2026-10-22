@@ -29,6 +29,7 @@ APPLY_TARGETS_SCRIPT = REPO_ROOT / '.github/scripts/ansible-apply-targets.sh'
 PLAYBOOK = ANSIBLE_DIR / 'playbooks/worker-image.yml'
 INVENTORY = ANSIBLE_DIR / 'inventories/production/hosts.yml'
 NODE_CONFIG_SCRIPT = REPO_ROOT / 'scripts/images/worker-node-config.py'
+S3_VERIFY_SCRIPT = REPO_ROOT / 'scripts/images/verify-gpu-worker-image-s3.sh'
 BUILD_WORKFLOW = REPO_ROOT / '.github/workflows/build-gpu-worker-image.yml'
 APPLY_WORKFLOW = REPO_ROOT / '.github/workflows/apply-ansible.yml'
 PLAN_WORKFLOW = REPO_ROOT / '.github/workflows/plan-ansible.yml'
@@ -240,6 +241,31 @@ class WorkflowScopeGuardTest(unittest.TestCase):
         text = BUILD_WORKFLOW.read_text()
         self.assertIn('verify_report', text)
         self.assertIn('latest.verify.txt', text)
+
+    def test_build_workflow_verifies_s3_objects_after_upload(self):
+        workflow = yaml.safe_load(BUILD_WORKFLOW.read_text())
+        steps = workflow['jobs']['build-image']['steps']
+        names = [step.get('name') for step in steps]
+        upload = names.index('Upload image to S3')
+        verify = names.index('Verify S3 objects')
+        self.assertLess(upload, verify)
+        self.assertLess(verify, names.index('Build summary'))
+        self.assertEqual(steps[upload]['id'], 'upload')
+        self.assertIn('started_at=', steps[upload]['run'])
+        run = steps[verify]['run']
+        self.assertIn('scripts/images/verify-gpu-worker-image-s3.sh', run)
+        self.assertIn('steps.upload.outputs.started_at', run)
+        self.assertIn('GITHUB_STEP_SUMMARY', run)
+
+    def test_s3_verifier_awk_node_list_matches_yaml(self):
+        # verify-gpu-worker-image-s3.sh lists the other nodes with awk (no
+        # PyYAML on the runner); keep that parse in step with the real file.
+        script = S3_VERIFY_SCRIPT.read_text()
+        match = re.search(r"awk '([^']+)' \"\$worker_nodes_file\"", script)
+        self.assertIsNotNone(match, 'awk node parser not found in S3 verifier')
+        result = subprocess.run(['awk', match.group(1), str(WORKER_NODES)], check=True,
+                                capture_output=True, text=True)
+        self.assertEqual(result.stdout.split(), list(load_workers().keys()))
 
 
 if __name__ == '__main__':
