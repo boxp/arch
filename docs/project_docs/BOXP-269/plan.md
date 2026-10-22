@@ -59,12 +59,27 @@
 - 履歴の確認: image build が成功したのは 2026-06-28 の 2 run（いずれも `ubuntu-22.04` GitHub-hosted）だけで、07-14 に self-hosted へ切り替えた直後の 2 run は `Build GPU worker image` step で失敗（log は期限切れ）。self-hosted 経路での成功実績は無い。
 - 対応: (a) runner image を 2.338.0 に上げる PR arch #13812 を別途作成（merge と lolice への rollout は owner 判断、失敗済み EphemeralRunner の掃除が別途必要になり得る）。(b) 本 PR に `runner` 入力を追加し、`ubuntu-22.04` を明示 opt-in の fallback とした。既定は `arc-runners-arch` のまま。queued の run 2 本（39754477023, 39758758666）は cancel。
 
-### image build（`runner=ubuntu-22.04`、PR branch 6cda8d635）
+### image build 結果（`runner=ubuntu-22.04`、S3 `arch-gpu-worker-images`）
 
-<!-- build results are appended below once each run finishes -->
+最終 revision aed0a88ec（S3 読み戻し検証込み）での 3 台分。各 run の job summary に image 内部検証レポートと S3 object 表（key / size / last modified / etag）が残る。
+
+| node | run | 成果物（`images/artifacts/<node>/`、`images/<node>/latest.*` にも複製） | size (bytes) | sha256 | 内部検証 / S3 検証 |
+|---|---|---|---|---|---|
+| golyat-1 | [39785863462](https://github.com/boxp/arch/actions/runs/39785863462)（13:19〜13:40 UTC） | `ubuntu-noble-amd64-gpu-worker-golyat-1-20261022-132105-aed0a88e.img.xz` | 2653442056 | `f32c2425a7339b65046e0805d890a97e38cf8b00268c663a2f17919754f124e6` | failures=0 warnings=1 / failures=0 warnings=1 |
+| golyat-2 | [39785876766](https://github.com/boxp/arch/actions/runs/39785876766)（13:19〜13:46 UTC） | `ubuntu-noble-amd64-gpu-worker-golyat-2-20261022-132104-aed0a88e.img.xz` | 2632484892 | `86c1129ee2a9afc7397081e013558abad6abf292ad4728714ab9909dcbcd6a22` | failures=0 warnings=1 / failures=0 warnings=1 |
+| golyat-3 | [39785889353](https://github.com/boxp/arch/actions/runs/39785889353)（13:19〜15:00 UTC、遅い runner） | `ubuntu-noble-amd64-gpu-worker-golyat-3-20261022-132817-aed0a88e.img.xz` | 2646909580 | `9ffa9fd4fb37450e2c20f22d28781399aa4c578b220731d977e575e4ed534d47` | failures=0 warnings=1 / failures=0 warnings=1 |
+
+- 内部検証の warning は 3 台とも `cloud-init: installed and not disabled`（golyat-4 の既存 image と同じ構成、bare metal では ds-identify が datasource 無しと判定する前提。無効化は first boot 検証と合わせて判断）のみ。multipath blacklist は baked=true（#13808 が main に入った後の rebase 以降）。K8s 1.36.5-1.1 / CRI-O 1.36.6-3.1、GPU package 無し、各 node の IP / NIC（golyat-2 は `enx207bd2213354`）が networkd と kubelet `--node-ip` に反映。
+- S3 検証の warning は 3 台とも `tag check skipped`（build role `GitHubActions_GPUWorkerImage_Build` は `s3:PutObjectTagging` のみで `s3:GetObjectTagging` が無い）。IAM の拡張は本 P0 では行わない（terraform/aws/gpu-worker-images の別判断）。
+- `images/golyat-4/latest.img.xz` の last modified は 3 run とも `2026-06-28T23:04:15Z` のまま（golyat-4 の成果物は未変更）。
+- 同一 branch の以前の revision でも 3 台とも build・内部検証は通っている（90d4362a2: multipath 無し warn 2、512a98aaf: run 39773097733 / 39773101460 / 39773105796、094af629a、e678dc4d2）。timestamp 付き artifact はそのまま S3 に残り（30 日で expire）、`latest.*` は最終 revision のもの。
+- S3 読み戻し検証（`verify-gpu-worker-image-s3.sh`）が見つけた 2 件: (1) 上記 `GetObjectTagging` 権限不足（AccessDenied を warn に変更）。(2) 3 台を並行 dispatch すると他 node の `latest` が同時刻に更新され「他 node 未変更」check が誤検知（run 39782648037 / 39782669478）。他 node の `image-info.json` がその node 名の image を示す場合は「並行 build による更新」として warn に変更。
+- build 時間は GitHub-hosted runner の当たり外れが大きい（16〜100 分、run 39775824167 は内部検証 pass 後の xz 圧縮中に 120 分 timeout で cancel）。`timeout-minutes` の引き上げは別途判断。
+- codex-workspace には AWS 資格情報が無いため、S3 object は run 内の読み戻し検証（head-object、stream sha256）と run log の `upload:` 行で確認した。
 
 ## P0 で行わないこと
 
 - golyat-1〜3 への Ansible Apply / Plan 対象追加、実機 first boot、USB/disk 書込み、drain/再 join、Longhorn 操作。
-- arch#13808 / lolice#871 の merge。#13808 が main に入るまで golyat-1〜3 の image には multipath blacklist が入らないため、G2 の flash 前に再 build が必要。
+- lolice#871 の merge。#13808 は本票の作業中に BOXP-267 側で main に入り、rebase 後の image には multipath blacklist が入っている。
+- IAM（`s3:GetObjectTagging`）や runner `timeout-minutes` の変更。
 - build 成功を移行完了として扱うこと。
