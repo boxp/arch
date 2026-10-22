@@ -78,6 +78,33 @@
 (defn env [k default]
   (or (System/getenv k) default))
 
+;; BOXP-270: Task Board -> Hermes event outbox. The module lives next to this
+;; script and is loaded lazily; a missing or broken module only disables event
+;; recording and never affects a run. The runner only writes outbox files: the
+;; signed delivery runs in the dispatcher container (task_board_events.bb loop).
+(def events-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "task_board_events.bb")))
+
+(def events-module-loaded?
+  (delay
+    (try
+      (load-file events-module-path)
+      true
+      (catch Exception e
+        (log! (str "event outbox module unavailable (" events-module-path "): " (.getMessage e)))
+        false))))
+
+(defn record-task-board-event!
+  "Record a minimal event after a run's final transition was committed. Only
+  blocked / review / done transitions are triggers; the module skips the rest."
+  [ticket-id run-id from-status to-status result]
+  (when (= "true" (env "CODEX_TASK_BOARD_EVENTS_ENABLED" "true"))
+    (try
+      (when @events-module-loaded?
+        ((resolve 'task-board-events/record-run-event!) ticket-id run-id from-status to-status result))
+      (catch Exception e
+        (log! (str "event outbox record failed for " ticket-id "/" run-id ": " (.getMessage e)))))))
+
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
 ;; deployment, where writes behave exactly as before; every writer moves onto it
@@ -2185,14 +2212,17 @@
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
                 (if (= "blocked" next-status)
-                  (when-not (block-ticket! ticket-id run-id action result exit review-gate nil)
+                  (if (block-ticket! ticket-id run-id action result exit review-gate nil)
+                    (record-task-board-event! ticket-id run-id status "blocked" result)
                     (restore-card-state! ticket-id status assignee))
                   (do
                     (move-card! ticket-id next-status)
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee (if (= "in-progress" next-status) assignee "boxp")}
                                                       (= "done" next-status) (assoc :closed (today))))
-                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))))
+                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
+                    ;; After lane, frontmatter and Notes are durable: wake Kohako.
+                    (record-task-board-event! ticket-id run-id status next-status result)))
                 true)
               (catch Exception e
                 (if (or (= ::planned-shutdown (:type (ex-data e)))
@@ -2213,7 +2243,8 @@
                                              :agent-stopped-at (now-str)}}))
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
-                  (when-not (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                  (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                    (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                     (restore-card-state! ticket-id status assignee)))
                 true)
               (finally

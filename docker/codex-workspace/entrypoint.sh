@@ -5,6 +5,18 @@ set -euo pipefail
 # (runAsUser 1000) on the shared home PVC, so none of the privileged workspace
 # setup below applies. An image without the runner stays a harmless no-op so
 # the lolice sidecar and the arch image can roll out in either order.
+# BOXP-270: Task Board -> Hermes event dispatcher sidecar. It only needs the
+# outbox on the shared home PVC and the webhook URL / secret from its own env;
+# an older image without the script idles instead of crashlooping the Pod.
+if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "task-board-event-dispatcher" ]]; then
+  event_dispatcher=/opt/codex-workspace/task-board/task_board_events.bb
+  if [[ -x "${event_dispatcher}" ]]; then
+    exec /usr/bin/tini -- "${event_dispatcher}" loop
+  fi
+  echo "codex-workspace-entrypoint: ${event_dispatcher} not found in this image; idling" >&2
+  exec sleep infinity
+fi
+
 if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
   novel_board_runner=/opt/codex-workspace/novel-board/novel_board_runner.bb
   if [[ -x "${novel_board_runner}" ]]; then
