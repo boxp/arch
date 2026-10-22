@@ -63,3 +63,10 @@ RUN chmod 0644 /opt/boxp/hermes-agent/skills/obsidian-task-board/SKILL.md \
 # Without this, a blocked-IPv6-egress failure is misreported to the operator
 # as "provider timeout" (BOXP-137).
 RUN python3 /opt/boxp/hermes-agent/patches/fix-scheduler-network-unreachable.py
+
+# Patch upstream gateway/platforms/webhook.py: backport the route option
+# ``mirror_to_session`` (upstream main) to v0.18.0 so a webhook delivery to
+# Telegram is also appended to that chat's session transcript as a labelled
+# user turn, giving follow-up replies the context of what was sent (BOXP-270).
+RUN python3 /opt/boxp/hermes-agent/patches/add-webhook-mirror-to-session.py \
+    && python3 -m py_compile /opt/hermes/gateway/platforms/webhook.py

@@ -33,3 +33,12 @@ tests/codex-workspace/task-board-runner-test.sh
 1. 本 PR merge → image build → image updater が lolice の `codex-workspace` を rollout。
 2. lolice PR-A（hermes-agent Service / Ingress NetworkPolicy / ESO Password Secret / `WEBHOOK_SECRET` env / subscription 書込み、codex-workspace 側の SecretStore / egress NetworkPolicy）。
 3. lolice PR-B（codex-workspace に `task-board-event-dispatcher` sidecar）。Pod 再作成で実行中 run は planned shutdown。
+
+## 追加（2026-10-22 後半）: 返信文脈継承 — webhook 配信の session mirror backport
+
+Owner 確認で、Telegram には通知が届くが「event で受け取った内容が会話 context に反映されていない」ことが判明（Kohako が短い返信を別話題と誤解）。配備版 Hermes v0.18.0 は `gateway/mirror.py` の `mirror_to_session` を同梱し cron `attach_to_session` では使っているが、webhook adapter は上流 main の route option `mirror_to_session` を未実装だった。
+
+- `docker/hermes-agent/patches/add-webhook-mirror-to-session.py`: 上流と同じ 3 点（delivery info に `route`/`mirror` を保持、`_deliver_cross_platform` の送信成功後に `_mirror_delivery`、`[Webhook delivery: <route>]` 付き user turn で `mirror_to_session`）を v0.18.0 の形に合わせて挿入。既定 off、失敗しても配信結果を変えない。全置換箇所が一意に一致しなければ build を失敗させ、冪等（再適用は no-op）。
+- Dockerfile で patch 適用後に `py_compile`。PR の image build job が適用可否を検証する。
+- 配備: main merge → image build（latest/sha-*）→ argocd-image-updater（newest-build、git write-back）→ lolice pin 更新 → Argo sync で hermes-agent Pod 再作成（Telegram 短時間停止）。lolice 側で route に `mirror_to_session: true` を設定する（lolice PR は image 配備後に merge）。
+- 検証: Pod 内で patch 適用版を stub 付きで実行（home chat / 明示 chat+thread / 既定 off / 送信失敗時は非 mirror / mirror 例外でも配信成功 / `send()` 経路）。配備後は fixture event で gateway log `delivery mirrored into telegram:<chat> session` と DM session への user turn 追加、Reply なし短文返答の文脈継承を実機確認する。
