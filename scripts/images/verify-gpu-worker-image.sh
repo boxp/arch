@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Verify the contents of a built lolice worker image against the per-node
-# expectations from ansible/vars/nodes.yml (BOXP-269).
+# expectations from ansible/vars/worker_nodes.yml (BOXP-269).
 #
 # Two input modes:
 #   --image FILE  read a qcow2/raw image with virt-copy-out (libguestfs) and

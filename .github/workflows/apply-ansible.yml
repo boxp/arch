@@ -4,7 +4,8 @@ name: Apply Ansible
 # 対応表と fail-closed の規則は .github/scripts/ansible-apply-targets.sh を参照。
 #   - worker 限定の差分 (worker-image.yml / worker 専用 role・files) -> golyat-* のみ
 #   - control plane 限定の差分 (control-plane.yml / node-shanghai-N.yml / CP 専用 role) -> 該当 shanghai-* のみ
-#   - 共有物 (inventories, vars, uv.lock, 共用 role ...) や参照先が解決できない差分 -> 従来通り全ノード
+#   - 共有物 (inventories, vars/nodes.yml, uv.lock, 共用 role ...) や参照先が解決できない差分 -> 従来通り全ノード
+#   - vars/*.yml は読み込む playbook から解決 (worker 専用の vars/worker_nodes.yml -> golyat-* のみ)
 #   - tests / docs / workflow 自身のみの差分 -> 適用対象なし (apply job は起動しない)
 on:
   push:

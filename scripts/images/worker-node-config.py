@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Print the per-node worker image expectations as KEY=VALUE lines.
 
-The values come from ansible/vars/nodes.yml (node_ips, worker_nodes, cluster)
-and the pinned worker_* versions in ansible/playbooks/worker-image.yml (play vars), so the build
-script and the image verifier share one source of truth with the playbook.
+The values come from ansible/vars/worker_nodes.yml (worker_nodes: ip, interface,
+gpu_host_tools), ansible/vars/nodes.yml (cluster, and node_ips for the
+consistency check) and the pinned worker_* versions in
+ansible/playbooks/worker-image.yml (play vars), so the build script and the
+image verifier share one source of truth with the playbook.
 
 Usage: worker-node-config.py <node_name> [--repo-root DIR]
 """
@@ -15,18 +17,25 @@ from pathlib import Path
 import yaml
 
 INTERFACE_RE = re.compile(r"^[a-z][a-z0-9]*$")
+IP_RE = re.compile(r"^\d{1,3}(\.\d{1,3}){3}$")
 
 
 def load_config(repo_root: Path, node_name: str) -> dict:
     nodes = yaml.safe_load((repo_root / "ansible/vars/nodes.yml").read_text())
+    workers = yaml.safe_load((repo_root / "ansible/vars/worker_nodes.yml").read_text())["worker_nodes"]
     playbook = yaml.safe_load((repo_root / "ansible/playbooks/worker-image.yml").read_text())[0]
 
-    if node_name not in nodes["node_ips"]:
-        raise SystemExit(f"{node_name}: missing from node_ips in ansible/vars/nodes.yml")
-    if node_name not in nodes["worker_nodes"]:
-        raise SystemExit(f"{node_name}: missing from worker_nodes in ansible/vars/nodes.yml")
+    if node_name not in workers:
+        raise SystemExit(f"{node_name}: missing from worker_nodes in ansible/vars/worker_nodes.yml")
 
-    worker = nodes["worker_nodes"][node_name]
+    worker = workers[node_name]
+    if not IP_RE.match(str(worker["ip"])):
+        raise SystemExit(f"{node_name}: invalid ip {worker['ip']!r}")
+    live_ip = nodes["node_ips"].get(node_name)
+    if live_ip is not None and live_ip != worker["ip"]:
+        raise SystemExit(
+            f"{node_name}: ip {worker['ip']} in worker_nodes.yml differs from node_ips {live_ip} in nodes.yml"
+        )
     if not INTERFACE_RE.match(str(worker["interface"])):
         raise SystemExit(f"{node_name}: invalid interface name {worker['interface']!r}")
     if not isinstance(worker["gpu_host_tools"], bool):
@@ -36,7 +45,7 @@ def load_config(repo_root: Path, node_name: str) -> dict:
     cluster = nodes["cluster"]
     return {
         "NODE_NAME": node_name,
-        "NODE_IP": nodes["node_ips"][node_name],
+        "NODE_IP": worker["ip"],
         "NETWORK_INTERFACE": worker["interface"],
         "GPU_HOST_TOOLS": "true" if worker["gpu_host_tools"] else "false",
         "GATEWAY": cluster["gateway"],

@@ -4,7 +4,7 @@ This document covers the amd64 worker image artifact, flash procedure, and recov
 
 ## Worker nodes
 
-Per-node values come from `ansible/vars/nodes.yml` (`node_ips`, `worker_nodes`). The build script and the image verifier read the same file, so a node is added or changed there, never in the workflow.
+Per-node values come from `ansible/vars/worker_nodes.yml` (`worker_nodes.<node>`: `ip`, `interface`, `gpu_host_tools`). The build script and the image verifier read the same file, so a node is added or changed there, never in the workflow. The file is separate from the shared `ansible/vars/nodes.yml` on purpose: editing it resolves to a worker-only `apply-ansible` run, while `nodes.yml` is loaded by the control plane playbooks as well (a worker listed in both must have the same IP; the playbook asserts it).
 
 | node | IP | NIC (`interface`) | GPU host tools | target disk (read from the node, verify again before flashing) |
 |---|---|---|---|---|
@@ -44,7 +44,7 @@ OUTPUT_DIR=/tmp/gpu-worker-image-prod \
 scripts/images/build-gpu-worker-image.sh
 ```
 
-`INSTALL_GPU_HOST_TOOLS` and `WORKER_NETWORK_INTERFACE` default to `auto` (resolved from `ansible/vars/nodes.yml`); set them explicitly only for experiments. `scripts/images/worker-node-config.py <node>` prints the resolved values.
+`INSTALL_GPU_HOST_TOOLS` and `WORKER_NETWORK_INTERFACE` default to `auto` (resolved from `ansible/vars/worker_nodes.yml`); set them explicitly only for experiments. `scripts/images/worker-node-config.py <node>` prints the resolved values.
 
 After `virt-sysprep` the build runs `scripts/images/verify-gpu-worker-image.sh --image <qcow2>`, which copies `/etc`, `/home`, `/root`, `/opt`, `/usr/local/sbin`, and the dpkg status out of the image (read-only) and checks hostname, `/etc/lolice-worker-image`, the systemd-networkd static address and interface, kubelet `--node-ip`, kubelet/kubeadm/kubectl/cri-o package versions, GPU packages present or absent as expected, sshd password login disabled, no baked SSH host keys, the `boxp` authorized keys, no kubeadm join material, no build residue, and no credential patterns. The report is stored next to the image (`image-verify.txt` / `latest.verify.txt` in S3) and summarized in `image-info.json`. The Longhorn multipath blacklist (`/etc/multipath/conf.d/90-longhorn.conf`, BOXP-267) is required as soon as `ansible/files/longhorn-multipath.conf` exists in the repository and only reported as a warning before that.
 
@@ -89,7 +89,7 @@ The image is based on the current Ubuntu 24.04 Noble amd64 cloud image, then cus
 - Kubernetes sysctl/module baseline for workers
 - `/etc/lolice-worker-image` build metadata
 
-The image identity (hostname / Kubernetes node name, static IP, interface) is the `node_name` passed to the build and its entry in `ansible/vars/nodes.yml`.
+The image identity (hostname / Kubernetes node name, static IP, interface) is the `node_name` passed to the build and its entry in `ansible/vars/worker_nodes.yml`.
 
 Intel device plugin, node labels, taints, and cluster join are intentionally left to later phases. GPU runtime packages are installed only for nodes with `gpu_host_tools: true` (golyat-4) so its first boot can verify `/dev/dri` and `clinfo -l` before joining the cluster; the golyat-1..3 images do not carry the Intel graphics PPA or packages.
 

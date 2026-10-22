@@ -5,11 +5,12 @@
   gather_facts: true
   vars_files:
     - ../vars/nodes.yml
+    - ../vars/worker_nodes.yml
   vars:
-    # BOXP-269: node-specific values are resolved from vars/nodes.yml by
+    # BOXP-269: node-specific values are resolved from vars/worker_nodes.yml by
     # node_name. `-e` extra vars (apply-ansible.yml, build script) still win.
-    node_ip: "{{ node_ips[node_name] }}"
     worker_node: "{{ worker_nodes[node_name] }}"
+    node_ip: "{{ worker_node.ip }}"
     worker_image_build: "{{ chroot_build | default(false) | bool }}"
     # Kubernetes / CRI-O baseline baked into the image. Defined at play level
     # (not only as role params) so that /etc/lolice-worker-image records the
@@ -48,11 +49,13 @@
         that:
           - node_name is defined
           - node_name in worker_nodes
-          - node_name in node_ips
+          - worker_nodes[node_name].ip is match('^[0-9.]+$')
           - worker_nodes[node_name].interface is match('^[a-z][a-z0-9]*$')
+          # Nodes already under live management must agree with vars/nodes.yml.
+          - node_name not in node_ips or node_ips[node_name] == worker_nodes[node_name].ip
         fail_msg: >-
-          node_name must be passed with -e and listed in vars/nodes.yml
-          (node_ips and worker_nodes). Got: {{ node_name | default('<undefined>') }}
+          node_name must be passed with -e and listed in vars/worker_nodes.yml
+          (consistent with node_ips in vars/nodes.yml). Got: {{ node_name | default('<undefined>') }}
       tags: [always]
 
     - name: Check if running in chroot environment

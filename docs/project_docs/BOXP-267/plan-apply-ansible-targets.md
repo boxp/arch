@@ -24,6 +24,7 @@
 | 上記以外の `ansible/playbooks/*.yml` | それを参照する playbook の対象 (単独なら なし。例: `upgrade-k8s.yml`、`longhorn-multipath.yml`) |
 | `ansible/roles/<role>/**` | その role を使う playbook の対象。どの playbook も使わなければ全ノード (fail closed) |
 | `ansible/files/**`, `ansible/templates/**` | ファイル名を参照する playbook / role の対象。参照が見つからなければ全ノード (fail closed) |
+| `ansible/vars/*.yml` | その vars を読み込む playbook のノード (`nodes.yml` は CP+worker=全ノード、`worker_nodes.yml` は `golyat-*`、未参照は全ノード) — BOXP-269 #13811 で追加 |
 | `ansible/group_vars/control_plane.yml` | 全 `shanghai-*` |
 | `ansible/tests/**`, `*.md`, `.ansible-lint`, `roles/*/molecule/**` | なし |
 | それ以外の `ansible/**` (inventories, vars, uv.lock, pyproject, ansible.cfg ...) | 全ノード (従来通り) |
@@ -44,7 +45,7 @@
    `["golyat-4"]` のみ。golyat-4 は既に同内容を手動限定適用済みのため収束確認 (Plan #39745060355 の golyat-4 は
    changed=1 で、これは `user_management` の sudoers lineinfile が check-mode で常に changed になる既存挙動。shanghai-1〜3 の
    Plan も同じ changed=1)。worker-image.yml の CI 経由 full apply は 2026-10-14 run #38567590772 で golyat-4 成功実績あり。
-3. #13811 (BOXP-269) は `vars/nodes.yml` を含むため、この規則では全ノード扱い。269 側で merge 経路を判断する (本票では触らない)。
+3. #13811 (BOXP-269) は当初 `vars/nodes.yml` を含み全ノード扱いだったが、269 側で worker 専用の `vars/worker_nodes.yml` に分離し、`ansible/vars/*.yml` を参照 playbook から解決する規則を追加したため worker (golyat-4) のみの apply に収まる。
 
 ## 検証
 

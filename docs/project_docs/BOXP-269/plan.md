@@ -11,16 +11,17 @@
 
 ## 変更内容
 
-1. `ansible/vars/nodes.yml`
-   - `node_ips` に golyat-1/2/3 を追加（CP playbook は添字参照のみなので挙動不変）。
-   - `worker_nodes` を新設し、機種固有要素（NIC 名、GPU host tools の要否、ハード説明）を node ごとに記録。
+1. `ansible/vars/worker_nodes.yml`（新規、`ansible/vars/nodes.yml` は変更しない）
+   - `worker_nodes` を新設し、node ごとに IP・機種固有要素（NIC 名、GPU host tools の要否、ハード説明）を記録。
+   - 当初は `nodes.yml` の `node_ips` へ golyat-1/2/3 を追加していたが、main に入った BOXP-267 #13813（apply-ansible の対象を変更ファイルから導出）では `nodes.yml` が CP playbook とも共有されるため全ノード Apply（CP 含む）に解決される。build 専用承認の範囲に収めるため worker 専用 vars へ分離した。
+   - 既に live 管理下の node（golyat-4）は `node_ips` と同じ IP であることを playbook / helper script / unittest で assert。
 2. `ansible/playbooks/worker-image.yml`
    - `worker_static_network_interface` を `worker_nodes[node_name].interface` から解決（`enp44s0` 決め打ちを撤去）。
    - `worker_install_gpu_host_tools` は image build（`chroot_build=true`）時のみ node 値を採用し、live 実行時は従来どおり既定 false。`-e` の明示指定が常に優先。
-   - `node_name` が `worker_nodes`/`node_ips` にあることを assert。`default('golyat-4')` を撤去。
+   - `node_name` が `worker_nodes` にあること、`node_ips` にもある場合は IP が一致することを assert。`default('golyat-4')` を撤去。
    - `worker_configure_static_network` の既定 false は変更しない（live ノードのネットワーク切替は G1/G2 の判断事項）。
 3. `scripts/images/build-gpu-worker-image.sh`
-   - `INSTALL_GPU_HOST_TOOLS` / `WORKER_NETWORK_INTERFACE` の既定を `auto` にし、`scripts/images/worker-node-config.py` 経由で `nodes.yml` と playbook の pin 値を解決。
+   - `INSTALL_GPU_HOST_TOOLS` / `WORKER_NETWORK_INTERFACE` の既定を `auto` にし、`scripts/images/worker-node-config.py` 経由で `worker_nodes.yml` と playbook の pin 値を解決。
    - `virt-sysprep` 後に `scripts/images/verify-gpu-worker-image.sh --image` で image 内部を read-only 検証し、`image-verify.txt` と拡張した `image-info.json`（node_ip/interface/gpu/k8s/CRI-O/multipath/verification）を出力。
 4. `scripts/images/verify-gpu-worker-image.sh`（新規）
    - hostname、`/etc/lolice-worker-image`、networkd 静的設定、kubelet `--node-ip`、パッケージ版、GPU パッケージの有無、sshd、host key 非混入、authorized_keys、join 資材なし、build 残骸なし、credential パターンなしを検査。
@@ -30,12 +31,14 @@
    - 検証レポートを log・S3（timestamp 版と `latest.verify.txt`）・summary に出力。`verification=passed` と `node_name` 一致を確認。
    - `runner` 入力（choice、既定 `arc-runners-arch`）を追加。`ubuntu-22.04` を選ぶと 7206f595a 以前の GitHub-hosted 経路（依存 apt install 込み）で build する。既定の挙動は不変。
 6. テスト `ansible/tests/test_worker_nodes.py`, `ansible/tests/test_verify_gpu_worker_image.py`
-   - nodes.yml と production inventory の整合、playbook の node 解決と live 既定、helper script、検証 script（合成 root tree で pass/fail）、plan/apply の対象が広がっていないこと（P0 ガード）。
-7. `docs/GPU_WORKER_IMAGE_DEPLOYMENT.md` を 3 台分へ拡張。
+   - worker_nodes.yml と production inventory の整合、`nodes.yml` が広がっていないこと、playbook の node 解決と live 既定、helper script、検証 script（合成 root tree で pass/fail）、plan/apply の対象が広がっていないこと、本 PR の ansible 差分が `ansible-apply-targets.sh` で `["golyat-4"]` に解決されること（P0 ガード）。
+7. `.github/scripts/ansible-apply-targets.sh`（BOXP-267 #13813 で導入）
+   - `ansible/vars/*.yml` を「その vars を読み込む playbook のノード」で解決する規則を追加（`nodes.yml` は CP+worker=全ノードで従来どおり、`worker_nodes.yml` は golyat-* のみ、未参照は fail-closed で全ノード）。fixture / 実 repo の self-test を追加。
+8. `docs/GPU_WORKER_IMAGE_DEPLOYMENT.md` を 3 台分へ拡張。
 
 ## trigger / 副作用の検証
 
-- `apply-ansible.yml` は `main` push かつ `ansible/**` 変更で発火し、matrix は shanghai-1〜3 + golyat-4 固定（fail-fast、max-parallel 1）。本 PR は `ansible/**` を含むため merge 時に既存 Apply は発火し得るが、これは renovate の ansible 依存更新と同じ経路で日常的に発生しているもの。
+- `apply-ansible.yml` は `main` push かつ `ansible/**` 変更で発火し、#13813 以降は matrix を変更ファイルから導出する。本 PR の ansible 差分（`playbooks/worker-image.yml`、`vars/worker_nodes.yml`、`tests/**`）は `["golyat-4"]` に解決され、CP への Apply は起動しない（unittest と resolver self-test で固定）。golyat-4 への Apply は既存ノードへの既存経路であり、対象拡大ではない。
 - 既存ノードへの影響は「golyat-4 の worker-image.yml 解決値が同一であること」で担保する: interface は workflow の `-e enp44s0` が引き続き優先、`worker_configure_static_network` は `-e true`、GPU は live 既定 false のまま。CP playbook は `node_ips[node_name]` の添字参照のみで、追加キーの影響なし。PR の Plan Ansible（check mode）で golyat-4 の差分が 0 であることを確認する。
 - `build-gpu-worker-image.yml` は `workflow_dispatch` のみ。IAM trust は `repo:boxp/arch:*` なので PR branch からの dispatch で build でき、golyat-1〜3 の S3 prefix は新規（既存 golyat-4 の latest は触らない）。
 - `plan-ansible.yml` / `plan-ansible-node.yml` / `apply-ansible.yml` は変更しない。

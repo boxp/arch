@@ -17,6 +17,8 @@
 #                                                (none when standalone, e.g. upgrade-k8s.yml)
 #   ansible/roles/<role>/**                   -> nodes of playbooks that use <role>
 #   ansible/files/**, ansible/templates/**    -> nodes of playbooks/roles that reference the file
+#   ansible/vars/*.yml                        -> nodes of playbooks that load the file
+#                                                (nodes.yml -> every node, worker_nodes.yml -> golyat-*)
 #   ansible/group_vars/control_plane.yml      -> every shanghai-* node
 #   ansible/tests/**, *.md, molecule/**, lint -> no node
 #   anything else under ansible/              -> every node (shared: inventories, vars, uv.lock, ...)
@@ -165,7 +167,7 @@ nodes_for_file() {
     ansible/roles/*/*)
       nodes_for_role "$(echo "$f" | cut -d/ -f3)"
       ;;
-    ansible/files/*|ansible/templates/*)
+    ansible/files/*|ansible/templates/*|ansible/vars/*.yml|ansible/vars/*.yaml)
       nodes_for_asset "$f"
       ;;
     ansible/group_vars/control_plane.yml)

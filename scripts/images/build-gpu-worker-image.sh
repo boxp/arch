@@ -6,7 +6,7 @@ BASE_RELEASE="${BASE_RELEASE:-noble}"
 IMAGE_SIZE="${IMAGE_SIZE:-16G}"
 OUTPUT_DIR="${OUTPUT_DIR:-build/gpu-worker-image}"
 # BOXP-269: "auto" resolves the GPU host tools decision and the network
-# interface from ansible/vars/nodes.yml for NODE_NAME. Explicit values are
+# interface from ansible/vars/worker_nodes.yml for NODE_NAME. Explicit values are
 # still honoured for one-off experiments.
 INSTALL_GPU_HOST_TOOLS="${INSTALL_GPU_HOST_TOOLS:-auto}"
 CONFIGURE_STATIC_NETWORK="${CONFIGURE_STATIC_NETWORK:-true}"

@@ -24,7 +24,7 @@ on:
       install_gpu_host_tools:
         description: >-
           Install Intel graphics runtime, nvtop, and host smoke-test tools.
-          "auto" uses worker_nodes.<node_name>.gpu_host_tools from ansible/vars/nodes.yml
+          "auto" uses worker_nodes.<node_name>.gpu_host_tools from ansible/vars/worker_nodes.yml
           (true only for golyat-4).
         required: true
         type: choice
@@ -129,7 +129,7 @@ jobs:
           jq . "${{ steps.build.outputs.image_info }}"
           # BOXP-269: the build script already verified the image contents
           # (identity, static network, kubelet/CRI-O, GPU tools, ssh, secrets)
-          # against ansible/vars/nodes.yml; fail here if that record is missing.
+          # against ansible/vars/worker_nodes.yml; fail here if that record is missing.
           test "$(jq -r .verification "${{ steps.build.outputs.image_info }}")" = passed
           test "$(jq -r .node_name "${{ steps.build.outputs.image_info }}")" = "${{ inputs.node_name }}"
           echo "::group::Image content verification report"
