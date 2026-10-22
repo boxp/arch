@@ -161,8 +161,21 @@ for other in "${other_nodes[@]}"; do
   modified="$(jq -r .LastModified <<<"$head")"
   state="unchanged"
   if [ -n "$since" ] && [ "$(date -u -d "$modified" +%s)" -ge "$(date -u -d "$since" +%s)" ]; then
-    state="MODIFIED during this run"
-    fail "${key} was modified at ${modified} (run started ${since})"
+    # Another node's latest changed while we were uploading. That is fine
+    # when it came from a concurrent build *of that node* (its image-info.json
+    # names it and its image file carries its name); this run only writes
+    # files named after $node, so anything else means we wrote where we
+    # should not have.
+    other_info="$(aws s3 cp "s3://${bucket}/images/${other}/image-info.json" - 2>/dev/null || true)"
+    other_info_node="$(jq -r '.node_name // empty' <<<"$other_info" 2>/dev/null || true)"
+    other_info_file="$(jq -r '.image_file // empty' <<<"$other_info" 2>/dev/null || true)"
+    if [ "$other_info_node" = "$other" ] && [[ "$other_info_file" == *"-${other}-"* ]] && [[ "$other_info_file" != *"-${node}-"* ]]; then
+      state="modified by a concurrent ${other} build (${other_info_file})"
+      warn "${key} was modified at ${modified} by a concurrent ${other} build (${other_info_file}); not by this run"
+    else
+      state="MODIFIED during this run"
+      fail "${key} was modified at ${modified} (run started ${since}) and images/${other}/image-info.json does not describe a ${other} image (node_name='${other_info_node}', image_file='${other_info_file}')"
+    fi
   else
     ok "${key} last modified ${modified}, before this run"
   fi

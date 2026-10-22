@@ -118,7 +118,12 @@ populate; FAKE_TAG_SHA=other check "wrong GitSHA tag fails" 1 run
 populate; FAKE_TAG_DENY=1 check "GetObjectTagging AccessDenied is only a warning" 0 run
 grep -q "s3-verification: passed (warnings: 1)" "$work/report.md" || { echo "FAIL: AccessDenied not reported as warning"; failc=$((failc+1)); }
 populate; FAKE_TAG_ERROR=1 check "other tagging errors still fail" 1 run
-populate; FAKE_OTHER_MTIME="2026-10-22T11:30:00+00:00" check "other node latest modified during run fails" 1 run
+populate; FAKE_OTHER_MTIME="2026-10-22T11:30:00+00:00" check "other node latest modified during run without its own image-info fails" 1 run
+populate; echo '{"node_name": "golyat-9", "image_file": "ubuntu-noble-amd64-gpu-worker-golyat-9-x.img.xz"}' > "$FAKE_S3/images/other-a/image-info.json"
+FAKE_OTHER_MTIME="2026-10-22T11:30:00+00:00" check "other node latest overwritten with this node's image fails" 1 run
+populate; echo '{"node_name": "other-a", "image_file": "ubuntu-noble-amd64-gpu-worker-other-a-20261022-113000-abc.img.xz"}' > "$FAKE_S3/images/other-a/image-info.json"
+FAKE_OTHER_MTIME="2026-10-22T11:30:00+00:00" check "other node latest modified by its own concurrent build is a warning" 0 run
+grep -q "modified by a concurrent other-a build" "$work/report.md" || { echo "FAIL: concurrent build not reported"; failc=$((failc+1)); }
 populate; check "usage error without --image" 2 "$script" --bucket b --node n
 
 echo "$pass passed, $failc failed"
