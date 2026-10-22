@@ -6,323 +6,41 @@ on:
     paths:
       - 'ansible/**'
       - '.github/workflows/plan-ansible.yml'
+      - '.github/workflows/plan-ansible-node.yml'
       - '.github/workflows/apply-ansible.yml'
 
 jobs:
-  plan:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  control-plane:
+    name: Plan ${{ matrix.node }}
+    strategy:
+      matrix:
+        node: [shanghai-1, shanghai-2, shanghai-3]
+      # BOXP-225 P2: この workflow 内の CP は従来どおり1台ずつ実行する。
+      max-parallel: 1
+      fail-fast: false
+    uses: ./.github/workflows/plan-ansible-node.yml
     permissions:
       id-token: write
       contents: read
-    strategy:
-      matrix:
-        node: [shanghai-1, shanghai-2, shanghai-3, golyat-4]
-      # BOXP-225 P2: control plane の plan (--check) は 1 台ずつ実行する。
-      # 3 台同時に Ansible を走らせると CP の memory 逼迫 (etcd major fault / apiserver stall) が
-      # 同時に起き、etcd quorum を失うリスクがあるため。
-      max-parallel: 1
-      fail-fast: false
-    env:
-      NODE_IPS: '{"shanghai-1":"192.168.10.102","shanghai-2":"192.168.10.103","shanghai-3":"192.168.10.104","golyat-4":"192.168.10.107"}'
-      AQUA_POLICY_CONFIG: ${{ github.workspace }}/aqua/aqua-policy.yaml
-      # BOXP-225 P2: control plane の MemAvailable がこの値 (MiB) を下回っている間は plan を待機し、
-      # 待機上限 (秒) を超えたら plan を skip する (SSH 不達の skip と同じ経路で結果を残す)。
-      CP_PLAN_MIN_MEMAVAILABLE_MIB: '600'
-      CP_PLAN_HEADROOM_WAIT_SECONDS: '300'
-      CP_PLAN_HEADROOM_POLL_SECONDS: '30'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
+    with:
+      node: ${{ matrix.node }}
+    secrets:
+      ANSIBLE_SSH_PRIVATE_KEY: ${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
-        with:
-          role-to-assume: arn:aws:iam::839695154978:role/GitHubActions_Ansible_Plan
-          aws-region: ap-northeast-1
-
-      - name: Setup Cloudflare credentials
-        id: cf-credentials
-        run: |
-          CF_ID=""
-          for i in 1 2 3; do
-            CF_ID=$(aws ssm get-parameter --name "bastion-cf-access-client-id" --with-decryption --query "Parameter.Value" --output text) && break
-            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_ID"
-            sleep 5
-          done
-          if [ -z "$CF_ID" ]; then
-            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_ID after 3 attempts"
-            exit 1
-          fi
-
-          CF_SECRET=""
-          for i in 1 2 3; do
-            CF_SECRET=$(aws ssm get-parameter --name "bastion-cf-access-client-secret" --with-decryption --query "Parameter.Value" --output text) && break
-            echo "Retry $i: Failed to get CF_ACCESS_CLIENT_SECRET"
-            sleep 5
-          done
-          if [ -z "$CF_SECRET" ]; then
-            echo "::error::Failed to retrieve CF_ACCESS_CLIENT_SECRET after 3 attempts"
-            exit 1
-          fi
-
-          echo "::add-mask::$CF_ID"
-          echo "::add-mask::$CF_SECRET"
-
-          echo "CF_ACCESS_CLIENT_ID=$CF_ID" >> "$GITHUB_ENV"
-          echo "CF_ACCESS_CLIENT_SECRET=$CF_SECRET" >> "$GITHUB_ENV"
-
-      - name: Setup SSH key
-        run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-
-      - name: Install aqua
-        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
-        with:
-          aqua_version: v2.64.0
-          working_directory: aqua
-
-      - name: Setup SSH config
-        run: |
-          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
-
-          cat >> ~/.ssh/config << EOF
-          Host bastion
-            HostName bastion.b0xp.io
-            User ansible
-            IdentityFile ~/.ssh/id_ed25519
-            ProxyCommand cloudflared access ssh --hostname %h --header "CF-Access-Client-Id: $CF_ACCESS_CLIENT_ID" --header "CF-Access-Client-Secret: $CF_ACCESS_CLIENT_SECRET"
-            StrictHostKeyChecking accept-new
-
-          Host ${NODE_IP}
-            HostName ${NODE_IP}
-            User boxp
-            IdentityFile ~/.ssh/id_ed25519
-            ProxyJump bastion
-            StrictHostKeyChecking accept-new
-          EOF
-
-          chmod 600 ~/.ssh/config
-
-      - name: Verify SSH connectivity
-        id: ssh-connectivity
-        continue-on-error: true
-        run: |
-          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
-          echo "Testing SSH connectivity to ${{ matrix.node }} (${NODE_IP}) via bastion..."
-          ssh -o ConnectTimeout=60 "${NODE_IP}" "echo 'SSH connection successful to ${{ matrix.node }}'"
-
-      - name: Skip plan for unreachable node
-        if: steps.ssh-connectivity.outcome != 'success'
-        run: |
-          echo "::warning::Skipping Ansible plan for ${{ matrix.node }} because SSH connectivity failed."
-          mkdir -p ansible/plan_outputs
-          jq -n \
-            --arg node "${{ matrix.node }}" \
-            '{
-              node: $node,
-              playbook: "ssh-connectivity",
-              has_changes: false,
-              stats: {
-                ($node): {
-                  ok: 0,
-                  changed: 0,
-                  skipped: 1,
-                  failures: 0,
-                  unreachable: 1
-                }
-              },
-              changed_tasks: [],
-              failed_tasks: []
-            }' > "ansible/plan_outputs/${{ matrix.node }}-ssh-connectivity.fmt.json"
-
-      # BOXP-225 P2: control plane に Ansible を走らせる前に memory の余力を確認する。
-      # MemAvailable が閾値未満の CP で plan を走らせると etcd の major fault / apiserver stall を誘発し、
-      # leader change や liveness kill に至った実績があるため、余力が戻るまで待ち、戻らなければ skip する。
-      - name: Check control plane memory headroom
-        id: cp-headroom
-        if: steps.ssh-connectivity.outcome == 'success'
-        run: |
-          NODE="${{ matrix.node }}"
-          if [[ "$NODE" != shanghai-* ]]; then
-            echo "proceed=true" >> "$GITHUB_OUTPUT"
-            echo "${NODE} is not a control plane; headroom check skipped."
-            exit 0
-          fi
-          NODE_IP=$(echo '${{ env.NODE_IPS }}' | jq -r '."${{ matrix.node }}"')
-          MIN_KIB=$(( CP_PLAN_MIN_MEMAVAILABLE_MIB * 1024 ))
-          START=$SECONDS
-          DEADLINE=$(( SECONDS + CP_PLAN_HEADROOM_WAIT_SECONDS ))
-          LAST_MIB="unknown"
-          while :; do
-            # 最終 sleep 後 (SECONDS == DEADLINE) に余分な probe を走らせず、宣言した最大待機時間を超えない
-            # (初回 probe は待機上限が 0 でも 1 回は実行する)
-            if [ "$SECONDS" -gt "$START" ] && [ "$SECONDS" -ge "$DEADLINE" ]; then
-              break
-            fi
-            # 各 probe を timeout で上限付きにし、残り待機時間も超えないようにする
-            # (ConnectTimeout は接続までしか効かず、remote 側が hang すると待機上限を超えるため)
-            PROBE_TIMEOUT=$(( DEADLINE - SECONDS ))
-            if [ "$PROBE_TIMEOUT" -gt 60 ]; then PROBE_TIMEOUT=60; fi
-            if [ "$PROBE_TIMEOUT" -lt 1 ]; then PROBE_TIMEOUT=1; fi
-            AVAIL_KIB=$(timeout "$PROBE_TIMEOUT" ssh -o ConnectTimeout=30 "${NODE_IP}" "awk '/^MemAvailable:/ {print \$2}' /proc/meminfo" 2>/dev/null || echo "")
-            if [[ "$AVAIL_KIB" =~ ^[0-9]+$ ]]; then
-              LAST_MIB=$(( AVAIL_KIB / 1024 ))
-              if [ "$AVAIL_KIB" -ge "$MIN_KIB" ]; then
-                echo "${NODE}: MemAvailable ${LAST_MIB}MiB >= ${CP_PLAN_MIN_MEMAVAILABLE_MIB}MiB; proceeding with plan."
-                echo "proceed=true" >> "$GITHUB_OUTPUT"
-                echo "memavailable_mib=${LAST_MIB}" >> "$GITHUB_OUTPUT"
-                exit 0
-              fi
-              echo "${NODE}: MemAvailable ${LAST_MIB}MiB < ${CP_PLAN_MIN_MEMAVAILABLE_MIB}MiB; waiting."
-            else
-              echo "${NODE}: could not read MemAvailable (ssh/awk failed); waiting."
-            fi
-            if [ "$SECONDS" -ge "$DEADLINE" ]; then
-              break
-            fi
-            # sleep も残り待機時間を超えないようにする
-            SLEEP_SECONDS=$(( DEADLINE - SECONDS ))
-            if [ "$SLEEP_SECONDS" -gt "$CP_PLAN_HEADROOM_POLL_SECONDS" ]; then SLEEP_SECONDS="$CP_PLAN_HEADROOM_POLL_SECONDS"; fi
-            if [ "$SLEEP_SECONDS" -lt 1 ]; then SLEEP_SECONDS=1; fi
-            sleep "$SLEEP_SECONDS"
-          done
-          echo "::warning::Skipping Ansible plan for ${NODE}: MemAvailable ${LAST_MIB}MiB stayed below ${CP_PLAN_MIN_MEMAVAILABLE_MIB}MiB for ${CP_PLAN_HEADROOM_WAIT_SECONDS}s."
-          echo "proceed=false" >> "$GITHUB_OUTPUT"
-          echo "memavailable_mib=${LAST_MIB}" >> "$GITHUB_OUTPUT"
-
-      - name: Skip plan for low-memory control plane
-        if: steps.ssh-connectivity.outcome == 'success' && steps.cp-headroom.outputs.proceed != 'true'
-        run: |
-          mkdir -p ansible/plan_outputs
-          jq -n \
-            --arg node "${{ matrix.node }}" \
-            '{
-              node: $node,
-              playbook: "cp-memory-headroom",
-              has_changes: false,
-              stats: {
-                ($node): {
-                  ok: 0,
-                  changed: 0,
-                  skipped: 1,
-                  failures: 0,
-                  unreachable: 0
-                }
-              },
-              changed_tasks: [],
-              failed_tasks: []
-            }' > "ansible/plan_outputs/${{ matrix.node }}-cp-memory-headroom.fmt.json"
-
-      - name: Set up Python
-        if: steps.ssh-connectivity.outcome == 'success' && steps.cp-headroom.outputs.proceed == 'true'
-        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: '3.12'
-
-      - name: Install uv
-        if: steps.ssh-connectivity.outcome == 'success' && steps.cp-headroom.outputs.proceed == 'true'
-        uses: astral-sh/setup-uv@1c37ad07a6a961277cf70c0d37d6f313000f5884 # v10.3.0
-
-      - name: Install dependencies
-        if: steps.ssh-connectivity.outcome == 'success' && steps.cp-headroom.outputs.proceed == 'true'
-        run: |
-          cd ansible
-          uv sync
-
-      - name: Run Ansible Plan (check + diff)
-        if: steps.ssh-connectivity.outcome == 'success' && steps.cp-headroom.outputs.proceed == 'true'
-        id: ansible-plan
-        run: |
-          cd ansible
-          source .venv/bin/activate
-          NODE="${{ matrix.node }}"
-          mkdir -p plan_outputs
-
-          # Disable profile_tasks callback for this run only to get clean JSON stdout
-          sed -i 's/^callbacks_enabled.*/#&/' ansible.cfg
-
-          run_ansible() {
-            local playbook="$1"
-            local node="$2"
-            local playbook_name="$3"
-            local output_file="$4"
-            shift 4
-            local json_file="plan_outputs/${node}-${playbook_name}.json"
-
-            set +e
-            ANSIBLE_STDOUT_CALLBACK=json \
-            ansible-playbook \
-              -i inventories/production/hosts.yml \
-              "$playbook" \
-              --limit "$node" \
-              -e "ansible_ssh_common_args=''" \
-              -e "node_name=$node" \
-              "$@" \
-              --check --diff \
-              > "$json_file" \
-              2>"plan_outputs/${node}-${playbook_name}.stderr"
-            local ansible_exit=$?
-            set -e
-
-            if [ "$ansible_exit" -ne 0 ] && [ "$ansible_exit" -ne 2 ]; then
-              echo "::error::Ansible playbook $playbook failed with exit code $ansible_exit"
-              echo "::group::Ansible stderr for ${playbook_name} on ${node}"
-              cat "plan_outputs/${node}-${playbook_name}.stderr"
-              echo "::endgroup::"
-              return "$ansible_exit"
-            fi
-
-            echo "::group::Ansible JSON output for ${playbook_name} on ${node}"
-            cat "$json_file"
-            echo "::endgroup::"
-
-            set +e
-            ansible-plan-formatter --node "$node" --playbook "$playbook_name" \
-              < "$json_file" > "$output_file"
-            local fmt_exit=$?
-            set -e
-            # exit 0=no changes, 2=changes detected, 1=tool error
-            if [ "$fmt_exit" -eq 1 ]; then
-              echo "::error::ansible-plan-formatter failed for $playbook_name on $node"
-              return 1
-            fi
-            return 0
-          }
-
-          if [[ "$NODE" == shanghai-* ]]; then
-            run_ansible "playbooks/control-plane.yml" "$NODE" "control-plane" \
-              "plan_outputs/${NODE}-control-plane.fmt.json"
-          elif [[ "$NODE" == golyat-* ]]; then
-            run_ansible "playbooks/worker-image.yml" "$NODE" "worker-image" \
-              "plan_outputs/${NODE}-worker-image.fmt.json" \
-              -e "worker_configure_static_network=true" \
-              -e "worker_static_network_interface=enp44s0"
-          else
-            echo "::error::Unsupported Ansible target node: $NODE"
-            exit 1
-          fi
-
-          PLAYBOOK="playbooks/node-${NODE}.yml"
-          if [ -f "$PLAYBOOK" ]; then
-            run_ansible "$PLAYBOOK" "$NODE" "node-${NODE}" \
-              "plan_outputs/${NODE}-node-specific.fmt.json"
-          fi
-
-      - name: Upload plan output
-        if: always()
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: plan-${{ matrix.node }}
-          path: ansible/plan_outputs/
-          retention-days: 1
+  worker:
+    name: Plan golyat-4
+    uses: ./.github/workflows/plan-ansible-node.yml
+    permissions:
+      id-token: write
+      contents: read
+    with:
+      node: golyat-4
+    secrets:
+      ANSIBLE_SSH_PRIVATE_KEY: ${{ secrets.ANSIBLE_SSH_PRIVATE_KEY }}
 
   comment:
-    needs: plan
+    needs: [control-plane, worker]
+    if: ${{ always() }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -330,18 +48,24 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           persist-credentials: false
 
+      - name: Install Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97
+        with:
+          python-version: '3.12'
+
       - name: Install aqua
-        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
+        uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329
         with:
           aqua_version: v2.64.0
           working_directory: aqua
 
-      - name: Download all plan outputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      - name: Download plan outputs
+        continue-on-error: true
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: plan_outputs
           pattern: plan-*
@@ -349,9 +73,19 @@ jobs:
 
       - name: Combine plan outputs
         id: combine
+        env:
+          CONTROL_PLANE_RESULT: ${{ needs.control-plane.result }}
+          WORKER_RESULT: ${{ needs.worker.result }}
         run: |
-          jq -s '.' plan_outputs/*.fmt.json > plan_combined.json
-          HAS_CHANGES=$(jq 'any(.[]; .has_changes)' plan_combined.json)
+          python3 .github/scripts/aggregate_ansible_plan.py \
+            --input-dir plan_outputs \
+            --output plan_combined.json \
+            --expected-nodes shanghai-1 shanghai-2 shanghai-3 golyat-4 \
+            --job-result "control-plane=$CONTROL_PLANE_RESULT" \
+            --job-result "worker=$WORKER_RESULT"
+          HAS_CHANGES=$(jq -r '.has_changes' plan_combined.json)
+          jq '.plans' plan_combined.json > plan_comment_plans.json
+          jq '.problems' plan_combined.json > plan_comment_problems.json
           echo "has_changes=${HAS_CHANGES}" >> "$GITHUB_OUTPUT"
 
       - name: Hide old comments
@@ -363,7 +97,8 @@ jobs:
         run: |
           github-comment post --config .github-comment-ansible.yaml -k ansible-plan \
             -var "has_changes:${{ steps.combine.outputs.has_changes }}" \
-            -var-file "plans_json:plan_combined.json"
+            -var-file "plans_json:plan_comment_plans.json" \
+            -var-file "problems_json:plan_comment_problems.json"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_COMMENT_SHA1: ${{ github.event.pull_request.head.sha }}
