@@ -33,10 +33,22 @@ on:
           - auto
           - "true"
           - "false"
+      runner:
+        description: >-
+          Runner label. arc-runners-arch (self-hosted, default) is the normal
+          path. ubuntu-22.04 is the GitHub-hosted path that produced the
+          2026-06 golyat-4 images; it is kept as an explicit fallback for when
+          the self-hosted runner cannot take jobs (BOXP-269).
+        required: true
+        type: choice
+        default: arc-runners-arch
+        options:
+          - arc-runners-arch
+          - ubuntu-22.04
 
 jobs:
   build-image:
-    runs-on: arc-runners-arch
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 120
     permissions:
       id-token: write
@@ -48,11 +60,29 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install image build dependencies (GitHub-hosted runner only)
+        if: ${{ inputs.runner != 'arc-runners-arch' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            jq \
+            libguestfs-tools \
+            python3-venv \
+            qemu-utils \
+            xz-utils
+          sudo chmod 0644 /boot/vmlinuz-*
+          if [ -e /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm
+          fi
+
       - name: Verify image build dependencies
         run: |
           command -v qemu-img
           command -v virt-customize
           command -v virt-resize
+          command -v virt-sysprep
+          command -v virt-copy-out
 
       - name: Build GPU worker image
         id: build
