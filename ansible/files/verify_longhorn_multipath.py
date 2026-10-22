@@ -45,6 +45,20 @@ def parse(config):
 
 
 def verify(config, require_blacklist=False):
+    """Fail closed on anything that could defeat the Longhorn device blacklist.
+
+    Only a `device` exception can override a `device` blacklist entry. In
+    multipath-tools (libmultipath/blacklist.c, filter_path) every filter class
+    is evaluated in turn and evaluation stops only on a positive blacklist
+    match; `*_BLIST_EXCEPT` results are negative (blacklist.h), so a `property`
+    or `devnode` exception never short-circuits the later `device` check. The
+    distro default `blacklist_exceptions { property "(SCSI_IDENT_|ID_WWN)" }`
+    is therefore accepted: multipath requires a whitelisted property for every
+    path, and it does not weaken the IET/VIRTUAL-DISK exclusion (verified on
+    golyat-4 with that exception present: DM_MULTIPATH_DEVICE_PATH=0, no map).
+    `wwid` exceptions are still refused because they are evaluated last and a
+    reviewer must confirm the POSIX regex cannot match a Longhorn WWID.
+    """
     rules, device_blocks = parse(config)
     for scope, key, value in rules:
         if key == "config_dir" and value != "/etc/multipath/conf.d":

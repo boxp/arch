@@ -26,7 +26,15 @@ class DropInTest(unittest.TestCase):
 
 class EffectiveMultipathConfigTest(unittest.TestCase):
     def test_effective_config_with_distro_defaults_is_accepted(self):
+        # The distro property exception is mandatory for multipath to consider any
+        # path at all and cannot override a device blacklist (only same-class
+        # exceptions can; see verify() docstring), so it must stay accepted.
         VERIFY.verify(DEFAULTS + DISTRO_BLACKLIST + DROPIN + PROPERTY_EXCEPTION, require_blacklist=True)
+
+    def test_only_same_class_exception_can_defeat_device_blacklist(self):
+        VERIFY.verify(DEFAULTS + DROPIN + 'blacklist_exceptions {\n devnode "^sd[a-z]"\n}\n', require_blacklist=True)
+        with self.assertRaises(ValueError):
+            VERIFY.verify(DEFAULTS + DROPIN + 'blacklist_exceptions {\n device {\n  vendor "^IET$"\n  product "^VIRTUAL-DISK$"\n }\n}\n', require_blacklist=True)
 
     def test_missing_dropin_is_only_allowed_during_preflight(self):
         VERIFY.verify(DEFAULTS + DISTRO_BLACKLIST + PROPERTY_EXCEPTION)
