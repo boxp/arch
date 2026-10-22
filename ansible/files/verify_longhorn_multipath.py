@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
-"""Fail closed on effective `multipath -t` configuration, without probing devices."""
+"""Fail closed on effective `multipath -t` / `multipathd show config` output.
+
+The input is parsed, never executed, and no block device is probed.
+"""
 import argparse
 import shlex
 import sys
 
-WWID = "360000000000000000e00000000010001"
-PATTERN = "^" + WWID + "$"
+VENDOR = "^IET$"
+PRODUCT = "^VIRTUAL-DISK$"
 
 
-def verify(config, require_blacklist=False):
+def parse(config):
+    """Return (rules, device_blocks) from multipath.conf style text."""
     stack = []
     rules = []
+    device_blocks = []
+    current_device = None
     for line in config.splitlines():
         tokens = shlex.split(line, comments=True)
         if not tokens:
@@ -19,24 +25,44 @@ def verify(config, require_blacklist=False):
             if len(tokens) != 2:
                 raise ValueError("Unexpected multipath section")
             stack.append(tokens[0])
+            if tokens[0] == "device":
+                current_device = {"scope": tuple(stack[:-1])}
         elif tokens == ["}"]:
             if not stack:
                 raise ValueError("Unbalanced multipath section")
-            stack.pop()
+            if stack.pop() == "device":
+                device_blocks.append(current_device)
+                current_device = None
         elif len(tokens) == 2:
             rules.append((tuple(stack), *tokens))
+            if current_device is not None:
+                current_device[tokens[0]] = tokens[1]
         else:
             raise ValueError("Unexpected multipath directive")
     if stack:
         raise ValueError("Unclosed multipath section")
+    return rules, device_blocks
+
+
+def verify(config, require_blacklist=False):
+    rules, device_blocks = parse(config)
     for scope, key, value in rules:
         if key == "config_dir" and value != "/etc/multipath/conf.d":
             raise ValueError("Non-default config_dir: drop-in would not be reliable")
         if scope == ("blacklist_exceptions",) and key == "wwid":
             # Conservative: POSIX regular expressions must not be interpreted by Python.
             raise ValueError("WWID blacklist exception requires separate review")
-    if require_blacklist and (("blacklist",), "wwid", PATTERN) not in rules:
-        raise ValueError("Exact target WWID blacklist missing in effective configuration")
+    for block in device_blocks:
+        if block["scope"] == ("blacklist_exceptions",) and "IET" in block.get("vendor", ""):
+            raise ValueError("IET device blacklist exception requires separate review")
+    excluded = any(
+        block["scope"] == ("blacklist",)
+        and block.get("vendor") == VENDOR
+        and block.get("product") == PRODUCT
+        for block in device_blocks
+    )
+    if require_blacklist and not excluded:
+        raise ValueError("Longhorn IET/VIRTUAL-DISK device blacklist missing in effective configuration")
 
 
 if __name__ == "__main__":

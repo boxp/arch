@@ -1,21 +1,22 @@
 ---
-- name: Exclude the verified Longhorn home volume from golyat-4 multipath
-  hosts: golyat-4
+# BOXP-267: limited, reversible application of the Longhorn multipath exclusion
+# to one worker (run with --limit <node> -e longhorn_multipath_confirm=true).
+# The same drop-in is baked into worker images by worker-image.yml.
+- name: Exclude Longhorn iSCSI disks from multipath on a worker
+  hosts: workers
   become: true
   gather_facts: false
   vars:
-    longhorn_multipath_dropin: /etc/multipath/conf.d/90-longhorn-codex-workspace.conf
+    longhorn_multipath_dropin: /etc/multipath/conf.d/90-longhorn.conf
   tasks:
-    - name: Require explicit evidence and a detached target before mutation
+    - name: Require an explicit, single-node confirmation before mutation
       ansible.builtin.assert:
         that:
-          - inventory_hostname == 'golyat-4'
-          - longhorn_multipath_identity_verified | default(false) | bool
-          - longhorn_multipath_volume_detached | default(false) | bool
+          - longhorn_multipath_confirm | default(false) | bool
+          - ansible_play_hosts_all | length == 1
         fail_msg: >-
-          Verify WWID 360000000000000000e00000000010001 belongs to
-          pvc-f81b80fe-11e7-4539-b36a-dbe28416f524, record evidence, and confirm
-          it is detached from golyat-4 before passing both explicit guards.
+          Run with --limit <one worker> and -e longhorn_multipath_confirm=true after
+          recording the evidence for that node.
 
     - name: Inspect device mapper maps without changing them
       ansible.builtin.command: dmsetup ls --target multipath
@@ -40,7 +41,7 @@
       changed_when: false
       check_mode: false
 
-    - name: Validate config directory and WWID exceptions before changing configuration
+    - name: Validate config directory and exceptions before changing configuration
       ansible.builtin.command:
         argv:
           - python3
@@ -70,9 +71,9 @@
     - name: Install and validate the narrow exclusion before daemon reload
       when: not ansible_check_mode
       block:
-        - name: Install exact WWID blacklist without changing the root configuration
+        - name: Install Longhorn-only device blacklist without changing the root configuration
           ansible.builtin.copy:
-            content: "{{ lookup('ansible.builtin.file', '../files/longhorn-codex-workspace.conf') }}\n"
+            content: "{{ lookup('ansible.builtin.file', '../files/longhorn-multipath.conf') }}\n"
             dest: "{{ longhorn_multipath_dropin }}"
             mode: '0644'
 
@@ -81,7 +82,7 @@
           register: longhorn_multipath_candidate
           changed_when: false
 
-        - name: Require effective exact blacklist and no WWID exceptions
+        - name: Require effective Longhorn device blacklist and no conflicting exceptions
           ansible.builtin.command:
             argv:
               - python3
@@ -133,7 +134,7 @@
       changed_when: false
       when: not ansible_check_mode
 
-    - name: Verify the running daemon received the exact blacklist
+    - name: Verify the running daemon received the Longhorn device blacklist
       ansible.builtin.command:
         argv:
           - python3

@@ -318,6 +318,23 @@
         state: link
       tags: [bootstrap, grow-rootfs]
 
+    - name: Create multipath drop-in directory
+      ansible.builtin.file:
+        path: /etc/multipath/conf.d
+        state: directory
+        mode: "0755"
+      tags: [bootstrap, multipath]
+
+    # BOXP-267: Longhorn iSCSI disks (tgt: IET / VIRTUAL-DISK) must never be
+    # claimed by multipathd, otherwise the CSI ext4 mount fails with exit 32.
+    - name: Exclude Longhorn iSCSI disks from multipath
+      ansible.builtin.copy:
+        content: "{{ lookup('ansible.builtin.file', '../files/longhorn-multipath.conf') }}\n"
+        dest: /etc/multipath/conf.d/90-longhorn.conf
+        mode: "0644"
+      notify: Reconfigure multipathd
+      tags: [bootstrap, multipath]
+
     - name: Record worker image build metadata
       ansible.builtin.copy:
         dest: /etc/lolice-worker-image
@@ -337,6 +354,25 @@
       ansible.builtin.systemd:
         name: ssh
         state: restarted
+      when: not (is_chroot | default(false) | bool)
+
+    # Reload only. Never stop/restart multipathd or flush maps here; refuse to
+    # reload while any multipath map exists so a live map is never dropped.
+    - name: Reconfigure multipathd
+      ansible.builtin.shell: |
+        set -eu
+        if ! systemctl is-active --quiet multipathd; then
+          echo "multipathd is not active; configuration applies on next start"
+          exit 0
+        fi
+        maps="$(dmsetup ls --target multipath)"
+        if [ "$maps" != "No devices found" ]; then
+          echo "existing multipath maps present; refusing to reconfigure: $maps" >&2
+          exit 1
+        fi
+        result="$(multipathd reconfigure)"
+        [ "$result" = "ok" ]
+      changed_when: true
       when: not (is_chroot | default(false) | bool)
 
     - name: Restart systemd-networkd
