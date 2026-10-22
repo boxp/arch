@@ -61,3 +61,7 @@ service-account*.json
 
 # Wrangler local dev secrets
 .dev.vars
+
+# Python bytecode (pytest/unittest runs leave these next to the sources)
+__pycache__/
+*.pyc

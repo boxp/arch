@@ -42,6 +42,7 @@
 - 既存ノードへの影響は「golyat-4 の worker-image.yml 解決値が同一であること」で担保する: interface は workflow の `-e enp44s0` が引き続き優先、`worker_configure_static_network` は `-e true`、GPU は live 既定 false のまま。CP playbook は `node_ips[node_name]` の添字参照のみで、追加キーの影響なし。PR の Plan Ansible（check mode）で golyat-4 の差分が 0 であることを確認する。
 - `build-gpu-worker-image.yml` は `workflow_dispatch` のみ。IAM trust は `repo:boxp/arch:*` なので PR branch からの dispatch で build でき、golyat-1〜3 の S3 prefix は新規（既存 golyat-4 の latest は触らない）。
 - `plan-ansible.yml` / `plan-ansible-node.yml` / `apply-ansible.yml` は変更しない。
+- codex-review 指摘への対応（2026-10-22）: ローカル unittest が生成した `ansible/files/__pycache__/*.pyc` が PR に混入し、未参照の `ansible/files/**` は fail-closed で全ノードに解決されるため、そのまま merge すると CP Apply が起動する状態だった。`.pyc` を PR から除外し、`.gitignore` に `__pycache__/` / `*.pyc` を追加、resolver で `**/__pycache__/**` と `*.pyc` は「対象なし」に解決するよう修正。さらに self-test に「本 PR の全変更ファイル一覧 → `["golyat-4"]`」の回帰 check を追加して P0 条件を固定した。
 
 ## 実施手順
 

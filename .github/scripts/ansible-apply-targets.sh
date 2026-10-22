@@ -21,6 +21,7 @@
 #                                                (nodes.yml -> every node, worker_nodes.yml -> golyat-*)
 #   ansible/group_vars/control_plane.yml      -> every shanghai-* node
 #   ansible/tests/**, *.md, molecule/**, lint -> no node
+#   **/__pycache__/**, *.pyc                  -> no node (Python bytecode is never Ansible content)
 #   anything else under ansible/              -> every node (shared: inventories, vars, uv.lock, ...)
 #   anything outside ansible/                 -> no node (workflow/doc edits do not change Ansible content)
 # Unresolvable references (role/file used nowhere we can see) fall back to every node,
@@ -158,7 +159,7 @@ nodes_for_file() {
     *) return 0 ;;
   esac
   case "$f" in
-    *.md|ansible/tests/*|ansible/.ansible-lint|ansible/roles/*/molecule/*)
+    *.md|ansible/tests/*|ansible/.ansible-lint|ansible/roles/*/molecule/*|*/__pycache__/*|*.pyc)
       return 0
       ;;
     ansible/playbooks/*.yml|ansible/playbooks/*.yaml)
