@@ -19,11 +19,25 @@ readonly EXPECTED_DOTFILES_REPO="https://github.com/boxp/dotfiles"
 
 log() { echo "[dotfiles-sync] $(date -u +%Y-%m-%dT%H:%M:%SZ) $*"; }
 
+# Validate the stored repository identity, before Git applies transport URL
+# rewrites. A GitHub HTTPS origin may correctly resolve to SSH at runtime.
 is_valid_dotfiles_url() {
   local url="$1"
   [[ "$url" == "https://github.com/boxp/dotfiles" ]] || \
   [[ "$url" == "https://github.com/boxp/dotfiles.git" ]] || \
   [[ "$url" == "git@github.com:boxp/dotfiles.git" ]]
+}
+
+# Validate both identity and effective destination. Only the canonical GitHub
+# SSH rewrite is accepted; local rewrites to another server remain forbidden.
+is_valid_dotfiles_origin() {
+  local stored effective
+  stored=$(git -C "${TARGET_DIR}" config --get remote.origin.url 2>/dev/null) || return 1
+  effective=$(git -C "${TARGET_DIR}" remote get-url origin 2>/dev/null) || return 1
+  is_valid_dotfiles_url "${stored}" || return 1
+  is_valid_dotfiles_url "${effective}" || \
+    [[ "${effective}" == "ssh://git@github.com/boxp/dotfiles" ]] || \
+    [[ "${effective}" == "ssh://git@github.com/boxp/dotfiles.git" ]]
 }
 
 run_setup() {
@@ -43,10 +57,8 @@ sync_once() {
     log "Target not found, cloning ${EXPECTED_DOTFILES_REPO} ..."
     mkdir -p "$(dirname "${TARGET_DIR}")"
     if git clone --branch master "${EXPECTED_DOTFILES_REPO}" "${TARGET_DIR}"; then
-      local cloned_remote
-      cloned_remote=$(git -C "${TARGET_DIR}" remote get-url origin 2>/dev/null || echo "")
-      if ! is_valid_dotfiles_url "${cloned_remote}"; then
-        log "ERROR: Cloned remote '${cloned_remote}' is not the expected dotfiles repo. Removing clone."
+      if ! is_valid_dotfiles_origin; then
+        log "ERROR: Cloned origin or transport is not the expected dotfiles repo. Removing clone."
         rm -rf "${TARGET_DIR}"
         return
       fi
@@ -64,10 +76,8 @@ sync_once() {
     return
   fi
 
-  local remote_url
-  remote_url=$(git -C "${TARGET_DIR}" remote get-url origin 2>/dev/null || echo "")
-  if ! is_valid_dotfiles_url "${remote_url}"; then
-    log "ERROR: ${TARGET_DIR} origin is '${remote_url}', expected exact boxp/dotfiles URL, skipping"
+  if ! is_valid_dotfiles_origin; then
+    log "ERROR: ${TARGET_DIR} origin or transport does not match the expected dotfiles repo, skipping"
     return
   fi
 
