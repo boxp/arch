@@ -28,6 +28,7 @@
 5. `.github/workflows/build-gpu-worker-image.yml`
    - `install_gpu_host_tools` を choice（auto/true/false、既定 auto）へ。
    - 検証レポートを log・S3（timestamp 版と `latest.verify.txt`）・summary に出力。`verification=passed` と `node_name` 一致を確認。
+   - `runner` 入力（choice、既定 `arc-runners-arch`）を追加。`ubuntu-22.04` を選ぶと 7206f595a 以前の GitHub-hosted 経路（依存 apt install 込み）で build する。既定の挙動は不変。
 6. テスト `ansible/tests/test_worker_nodes.py`, `ansible/tests/test_verify_gpu_worker_image.py`
    - nodes.yml と production inventory の整合、playbook の node 解決と live 既定、helper script、検証 script（合成 root tree で pass/fail）、plan/apply の対象が広がっていないこと（P0 ガード）。
 7. `docs/GPU_WORKER_IMAGE_DEPLOYMENT.md` を 3 台分へ拡張。
@@ -45,6 +46,19 @@
 2. PR branch を ref に `build-gpu-worker-image.yml` を golyat-1/2/3 で dispatch（`install_gpu_host_tools=auto`）。
 3. S3 の成果物（timestamp 版 + sha256 + image-info.json + verify）と run log を確認し、Obsidian `Projects/BOXP-269` に記録。
 4. review 後 merge。main 反映後に golyat-4 の Apply が発火した場合は差分 0 を確認する。
+
+## 実施結果（2026-10-22）
+
+### self-hosted runner の blocker と迂回
+
+- PR branch から `build-gpu-worker-image.yml` を dispatch（run 39754477023）したところ job は `queued` のまま進まず、`arc-runners-arch` の runner pod は約 1 分間に 6 回再作成されて消え、`repos/boxp/arch/actions/runners` にも登録されなかった（pod log は codex-workspace の権限では取得不可、状況証拠）。
+- 原因の推定: `docker/arc-runner` が固定する `actions-runner` 2.335.1（2026-06-09）が、GitHub の self-hosted runner 最低 version 強制（2026-09-29 から、各 release を 30 日以内に取り込む必要）に抵触し job を受け取れない。
+- 履歴の確認: image build が成功したのは 2026-06-28 の 2 run（いずれも `ubuntu-22.04` GitHub-hosted）だけで、07-14 に self-hosted へ切り替えた直後の 2 run は `Build GPU worker image` step で失敗（log は期限切れ）。self-hosted 経路での成功実績は無い。
+- 対応: (a) runner image を 2.338.0 に上げる PR arch #13812 を別途作成（merge と lolice への rollout は owner 判断、失敗済み EphemeralRunner の掃除が別途必要になり得る）。(b) 本 PR に `runner` 入力を追加し、`ubuntu-22.04` を明示 opt-in の fallback とした。既定は `arc-runners-arch` のまま。queued の run 2 本（39754477023, 39758758666）は cancel。
+
+### image build（`runner=ubuntu-22.04`、PR branch 6cda8d635）
+
+<!-- build results are appended below once each run finishes -->
 
 ## P0 で行わないこと
 

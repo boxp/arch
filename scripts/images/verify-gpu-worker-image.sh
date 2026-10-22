@@ -140,7 +140,8 @@ dpkg_version() {
   # dpkg_version <package>  -> installed version or empty
   awk -v pkg="$1" '
     $1 == "Package:" { current = $2; installed = 0; version = "" }
-    $1 == "Status:" && current == pkg && $0 ~ /install ok installed/ { installed = 1 }
+    # "install ok installed" or "hold ok installed" (kubelet/kubeadm/kubectl/cri-o are held)
+    $1 == "Status:" && current == pkg && $0 ~ /ok installed/ { installed = 1 }
     $1 == "Version:" && current == pkg { version = $2 }
     $0 == "" && current == pkg && installed { print version; exit }
   ' "$ROOT/var/lib/dpkg/status" 2>/dev/null || true
@@ -256,8 +257,10 @@ check_file_contains users etc/passwd "^boxp:"
 # --- first boot services ------------------------------------------------------
 check_present grow-rootfs usr/local/sbin/lolice-grow-rootfs
 check_present grow-rootfs etc/systemd/system/multi-user.target.wants/lolice-grow-rootfs.service
-if [ -f "$ROOT/etc/machine-id" ] && [ -s "$ROOT/etc/machine-id" ]; then
-  fail "sysprep: etc/machine-id is not empty"
+# systemd treats a missing/empty file or the literal "uninitialized" as first boot.
+if [ -f "$ROOT/etc/machine-id" ] && [ -s "$ROOT/etc/machine-id" ] \
+   && [ "$(tr -d '[:space:]' < "$ROOT/etc/machine-id")" != uninitialized ]; then
+  fail "sysprep: etc/machine-id is not empty ($(tr -d '[:space:]' < "$ROOT/etc/machine-id"))"
 else
   ok "sysprep: machine-id reset"
 fi

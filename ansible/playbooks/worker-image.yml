@@ -11,6 +11,15 @@
     node_ip: "{{ node_ips[node_name] }}"
     worker_node: "{{ worker_nodes[node_name] }}"
     worker_image_build: "{{ chroot_build | default(false) | bool }}"
+    # Kubernetes / CRI-O baseline baked into the image. Defined at play level
+    # (not only as role params) so that /etc/lolice-worker-image records the
+    # same values the kubernetes_components role installs; role params are
+    # scoped to the role and the record task used to fall back to the role
+    # defaults (found by the BOXP-269 image verifier on 2026-10-22).
+    worker_kubernetes_version: "1.36.5"
+    worker_kubernetes_package_version: "1.36.5-1.1"
+    worker_crio_version: "1.36.6"
+    worker_crio_package_version: "1.36.6-3.1"
     worker_configure_static_network: false
     # Image builds bake the per-node GPU host tools decision; live runs keep the
     # historical default (off) unless the caller passes the variable explicitly.
@@ -220,10 +229,10 @@
     - role: kubernetes_components
       tags: [kubernetes, k8s-components]
       vars:
-        kubernetes_version: "1.36.5"
-        kubernetes_package_version: "1.36.5-1.1"
-        crio_version: "1.36.6"
-        crio_package_version: "1.36.6-3.1"
+        kubernetes_version: "{{ worker_kubernetes_version }}"
+        kubernetes_package_version: "{{ worker_kubernetes_package_version }}"
+        crio_version: "{{ worker_crio_version }}"
+        crio_package_version: "{{ worker_crio_package_version }}"
         kubelet_cluster_dns: "{{ cluster.dns }}"
         kubelet_cluster_domain: "{{ cluster.domain }}"
         kubelet_node_ip: "{{ node_ip }}"
@@ -489,12 +498,15 @@
         mode: "0644"
         content: |
           node_name={{ node_name }}
-          kubernetes_version={{ kubernetes_version }}
-          crio_version={{ crio_version }}
-          crio_package_version={{ crio_package_version }}
+          kubernetes_version={{ worker_kubernetes_version }}
+          crio_version={{ worker_crio_version }}
+          crio_package_version={{ worker_crio_package_version }}
           static_network={{ worker_configure_static_network | bool }}
           gpu_runtime={{ worker_install_gpu_host_tools | bool }}
           intel_graphics_ppa={{ gpu_worker_host_tools_intel_graphics_ppa if worker_install_gpu_host_tools | bool else '' }}
+      # Build-time provenance only: a live apply must not relabel a node with
+      # the current pins (BOXP-269 P0 also keeps golyat-4's live files unchanged).
+      when: worker_image_build | bool
       tags: [bootstrap]
 
   handlers:

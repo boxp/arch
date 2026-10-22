@@ -151,9 +151,11 @@ virt-customize \
   --run-command "apt-get clean" \
   --run-command "rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* /opt/arch-ansible /opt/ansible-venv"
 
+# The "customize" operation re-generates /etc/machine-id (and would re-set the
+# hostname already set by virt-customize above), so it is left out; the image
+# must ship with an empty machine-id so each flash gets a fresh one.
 virt-sysprep -a "$qcow_image" \
-  --operations machine-id,ssh-hostkeys,udev-persistent-net,logfiles,tmp-files,bash-history,customize \
-  --hostname "$NODE_NAME"
+  --operations machine-id,ssh-hostkeys,udev-persistent-net,logfiles,tmp-files,bash-history
 
 # Verify the finished (sysprepped) root tree before compressing. The verifier
 # reads the image with virt-copy-out and never modifies it.

@@ -21,7 +21,7 @@ K8S_PKG = '1.36.5-1.1'
 CRIO_PKG = '1.36.6-3.1'
 
 DPKG_STATUS = '''Package: kubelet
-Status: install ok installed
+Status: hold ok installed
 Version: {k8s}
 
 Package: kubeadm
@@ -210,6 +210,17 @@ class VerifyGpuWorkerImageTest(unittest.TestCase):
         result = run_verifier(self.root)
         self.assertEqual(result.returncode, 1)
         self.assertIn(f"FAIL: identity: etc/hostname does not match '^{NODE}$'", result.stdout)
+
+    def test_machine_id_uninitialized_passes_and_generated_fails(self):
+        # The 2026-10-22 golyat-1 build shipped a generated machine-id because
+        # virt-sysprep's "customize" operation re-created it.
+        write(self.root, 'etc/machine-id', 'uninitialized\n')
+        result = run_verifier(self.root)
+        self.assertEqual(result.returncode, 0, result.stdout)
+        write(self.root, 'etc/machine-id', '0123456789abcdef0123456789abcdef\n')
+        result = run_verifier(self.root)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('FAIL: sysprep: etc/machine-id is not empty', result.stdout)
 
     def test_rejects_invalid_arguments(self):
         result = subprocess.run([str(SCRIPT), '--root', str(self.root), '--node', NODE],  # noqa: S603

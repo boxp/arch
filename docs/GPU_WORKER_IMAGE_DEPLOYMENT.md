@@ -28,8 +28,11 @@ gh workflow run build-gpu-worker-image.yml \
   -f node_name=golyat-1 \
   -f base_release=noble \
   -f image_size=16G \
-  -f install_gpu_host_tools=auto
+  -f install_gpu_host_tools=auto \
+  -f runner=arc-runners-arch
 ```
+
+`runner` selects where the job runs. `arc-runners-arch` (default) is the self-hosted ARC runner on golyat-4. `ubuntu-22.04` is the GitHub-hosted path that produced the 2026-06 golyat-4 images; it installs `libguestfs-tools`/`qemu-utils` itself and is kept as an explicit fallback for when the self-hosted runner cannot take jobs. On 2026-10-22 the self-hosted runner (pinned `actions-runner` 2.335.1) was rejected by GitHub's minimum runner version policy, so the BOXP-269 builds for golyat-1/2/3 were made with `runner=ubuntu-22.04`; the runner image bump is tracked in arch #13812.
 
 Or build locally when `qemu-img`, `virt-resize`, `virt-customize`, `virt-sysprep`, `virt-copy-out`, and `xz` are available:
 

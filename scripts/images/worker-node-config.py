@@ -2,7 +2,7 @@
 """Print the per-node worker image expectations as KEY=VALUE lines.
 
 The values come from ansible/vars/nodes.yml (node_ips, worker_nodes, cluster)
-and the pinned versions in ansible/playbooks/worker-image.yml, so the build
+and the pinned worker_* versions in ansible/playbooks/worker-image.yml (play vars), so the build
 script and the image verifier share one source of truth with the playbook.
 
 Usage: worker-node-config.py <node_name> [--repo-root DIR]
@@ -32,7 +32,7 @@ def load_config(repo_root: Path, node_name: str) -> dict:
     if not isinstance(worker["gpu_host_tools"], bool):
         raise SystemExit(f"{node_name}: gpu_host_tools must be a boolean")
 
-    k8s = next(role for role in playbook["roles"] if role["role"] == "kubernetes_components")["vars"]
+    play_vars = playbook["vars"]
     cluster = nodes["cluster"]
     return {
         "NODE_NAME": node_name,
@@ -41,10 +41,10 @@ def load_config(repo_root: Path, node_name: str) -> dict:
         "GPU_HOST_TOOLS": "true" if worker["gpu_host_tools"] else "false",
         "GATEWAY": cluster["gateway"],
         "DNS_SERVERS": " ".join(cluster["dns_servers"]),
-        "KUBERNETES_VERSION": k8s["kubernetes_version"],
-        "KUBERNETES_PACKAGE_VERSION": k8s["kubernetes_package_version"],
-        "CRIO_VERSION": k8s["crio_version"],
-        "CRIO_PACKAGE_VERSION": k8s["crio_package_version"],
+        "KUBERNETES_VERSION": play_vars["worker_kubernetes_version"],
+        "KUBERNETES_PACKAGE_VERSION": play_vars["worker_kubernetes_package_version"],
+        "CRIO_VERSION": play_vars["worker_crio_version"],
+        "CRIO_PACKAGE_VERSION": play_vars["worker_crio_package_version"],
     }
 
 

@@ -127,6 +127,23 @@ class WorkerImagePlaybookResolutionTest(unittest.TestCase):
         metadata = next(t for t in play['tasks'] if t['name'] == 'Record worker image build metadata')
         self.assertNotIn("default('golyat-4')", metadata['ansible.builtin.copy']['content'])
 
+    def test_image_metadata_records_the_baked_versions_and_is_build_only(self):
+        # The 2026-10-22 golyat-1 build recorded kubernetes_version=1.32 (the
+        # role default) because the pins were role params only. The record
+        # must use the play-level worker_* pins and must not run on a live apply.
+        play = yaml.safe_load(PLAYBOOK.read_text())[0]
+        role = next(r for r in play['roles'] if r['role'] == 'kubernetes_components')
+        for key in ('kubernetes_version', 'kubernetes_package_version', 'crio_version', 'crio_package_version'):
+            self.assertEqual(role['vars'][key], '{{ worker_' + key + ' }}')
+            self.assertIn('worker_' + key, play['vars'])
+        metadata = next(t for t in play['tasks'] if t['name'] == 'Record worker image build metadata')
+        content = metadata['ansible.builtin.copy']['content']
+        self.assertIn('kubernetes_version={{ worker_kubernetes_version }}', content)
+        self.assertIn('crio_package_version={{ worker_crio_package_version }}', content)
+        self.assertEqual(metadata['when'], 'worker_image_build | bool')
+        self.assertEqual(play['vars']['worker_kubernetes_version'], '1.36.5')
+        self.assertEqual(play['vars']['worker_crio_package_version'], '1.36.6-3.1')
+
 
 class WorkerNodeConfigScriptTest(unittest.TestCase):
     def run_script(self, node):
