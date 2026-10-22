@@ -53,8 +53,10 @@ def verify(config, require_blacklist=False):
             # Conservative: POSIX regular expressions must not be interpreted by Python.
             raise ValueError("WWID blacklist exception requires separate review")
     for block in device_blocks:
-        if block["scope"] == ("blacklist_exceptions",) and "IET" in block.get("vendor", ""):
-            raise ValueError("IET device blacklist exception requires separate review")
+        # Conservative: a device exception wins over the device blacklist and its
+        # POSIX regular expressions must not be re-interpreted by Python.
+        if block["scope"] == ("blacklist_exceptions",):
+            raise ValueError("Device blacklist exception requires separate review")
     excluded = any(
         block["scope"] == ("blacklist",)
         and block.get("vendor") == VENDOR

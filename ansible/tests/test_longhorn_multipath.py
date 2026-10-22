@@ -1,7 +1,7 @@
 """Safety gates for BOXP-267's Longhorn-only multipath exclusion."""
 import importlib.util
-from pathlib import Path
 import unittest
+from pathlib import Path
 
 import yaml
 
@@ -51,6 +51,8 @@ class EffectiveMultipathConfigTest(unittest.TestCase):
         for exception in (
             'blacklist_exceptions {\n wwid ".*"\n}\n',
             'blacklist_exceptions {\n device {\n  vendor "IET"\n  product ".*"\n }\n}\n',
+            'blacklist_exceptions {\n device {\n  vendor "^I.*$"\n  product "^VIRTUAL-DISK$"\n }\n}\n',
+            'blacklist_exceptions {\n device {\n  vendor ".*"\n  product ".*"\n }\n}\n',
         ):
             with self.subTest(exception=exception), self.assertRaises(ValueError):
                 VERIFY.verify(DEFAULTS + DROPIN + exception, require_blacklist=True)
