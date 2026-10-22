@@ -89,6 +89,21 @@ class WorkerImageWiringTest(unittest.TestCase):
         self.assertIn("No devices found", handler["ansible.builtin.shell"])
         self.assertIn("is_chroot", handler["when"])
 
+    def test_worker_image_resyncs_running_daemon_when_dropin_already_present(self):
+        play = yaml.safe_load((ROOT / "playbooks/worker-image.yml").read_text())[0]
+        checks = [t for t in play["tasks"] if t.get("register") == "longhorn_multipath_running_check"]
+        self.assertEqual(len(checks), 1)
+        check = checks[0]
+        self.assertEqual(check["notify"], "Reconfigure multipathd")
+        self.assertIs(check["failed_when"], False)
+        self.assertIn("rc != 0", check["changed_when"])
+        self.assertIn("--require-blacklist", check["ansible.builtin.command"]["argv"])
+        self.assertTrue(any("is_chroot" in w for w in check["when"]))
+        reads = [t for t in play["tasks"] if t.get("register") == "longhorn_multipath_running_config"]
+        self.assertEqual(len(reads), 1)
+        self.assertIn("multipathd show config", reads[0]["ansible.builtin.shell"])
+        self.assertIn("is-active", reads[0]["ansible.builtin.shell"])
+
 
 class LimitedApplyPlaybookTest(unittest.TestCase):
     """Both mutation phases of longhorn-multipath.yml must roll the drop-in back on failure."""

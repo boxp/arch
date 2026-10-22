@@ -335,6 +335,39 @@
       notify: Reconfigure multipathd
       tags: [bootstrap, multipath]
 
+    # A failed or skipped reload (e.g. a map existed) leaves the drop-in in place,
+    # so a later run would not notify the handler by itself. Compare the running
+    # daemon's effective configuration and notify when it lacks the blacklist.
+    - name: Read running multipathd configuration
+      ansible.builtin.shell: |
+        set -eu
+        if ! systemctl is-active --quiet multipathd; then
+          exit 0
+        fi
+        multipathd show config
+      register: longhorn_multipath_running_config
+      changed_when: false
+      check_mode: false
+      when: not (is_chroot | default(false) | bool)
+      tags: [bootstrap, multipath]
+
+    - name: Reconfigure multipathd when the running daemon lacks the Longhorn blacklist
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "{{ lookup('ansible.builtin.file', '../files/verify_longhorn_multipath.py') }}"
+          - --require-blacklist
+        stdin: "{{ longhorn_multipath_running_config.stdout }}"
+      register: longhorn_multipath_running_check
+      failed_when: false
+      changed_when: longhorn_multipath_running_check.rc != 0
+      notify: Reconfigure multipathd
+      when:
+        - not (is_chroot | default(false) | bool)
+        - longhorn_multipath_running_config.stdout | default('') | trim | length > 0
+      tags: [bootstrap, multipath]
+
     - name: Record worker image build metadata
       ansible.builtin.copy:
         dest: /etc/lolice-worker-image
