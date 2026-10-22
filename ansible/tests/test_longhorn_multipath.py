@@ -82,5 +82,45 @@ class WorkerImageWiringTest(unittest.TestCase):
         self.assertIn("is_chroot", handler["when"])
 
 
+class LimitedApplyPlaybookTest(unittest.TestCase):
+    """Both mutation phases of longhorn-multipath.yml must roll the drop-in back on failure."""
+
+    def setUp(self):
+        self.play = yaml.safe_load((ROOT / "playbooks/longhorn-multipath.yml").read_text())[0]
+        self.blocks = [t for t in self.play["tasks"] if "block" in t]
+
+    @staticmethod
+    def _commands(tasks):
+        return [t.get("ansible.builtin.command") for t in tasks if isinstance(t.get("ansible.builtin.command"), str)]
+
+    def test_candidate_and_daemon_phases_restore_previous_dropin(self):
+        self.assertEqual(len(self.blocks), 2)
+        for block in self.blocks:
+            with self.subTest(block=block["name"]):
+                self.assertIn("rescue", block)
+                self.assertEqual(block["when"], "not ansible_check_mode")
+                rescue = block["rescue"]
+                restores = [t for t in rescue if t.get("ansible.builtin.copy", {}).get("dest") == "{{ longhorn_multipath_dropin }}"]
+                removes = [t for t in rescue if t.get("ansible.builtin.file", {}).get("state") == "absent"]
+                self.assertEqual(len(restores), 1)
+                self.assertEqual(len(removes), 1)
+                self.assertEqual(rescue[-1].keys() & {"ansible.builtin.fail"}, {"ansible.builtin.fail"})
+
+    def test_daemon_phase_reloads_restored_config_only_after_reconfigure_ran(self):
+        daemon = self.blocks[1]
+        self.assertIn("multipathd reconfigure", self._commands(daemon["block"]))
+        self.assertIn("multipathd show config", self._commands(daemon["block"]))
+        rollback = [t for t in daemon["rescue"] if t.get("ansible.builtin.command") == "multipathd reconfigure"]
+        self.assertEqual(len(rollback), 1)
+        self.assertIs(rollback[0]["failed_when"], False)
+        self.assertIn("longhorn_multipath_reconfigure is defined", rollback[0]["when"])
+        self.assertIn("is not skipped", rollback[0]["when"])
+
+    def test_playbook_never_stops_restarts_or_flushes(self):
+        text = (ROOT / "playbooks/longhorn-multipath.yml").read_text()
+        for forbidden in ("ansible.builtin.systemd", "systemctl restart", "systemctl stop", "multipath -f", "multipath -F", "dmsetup remove"):
+            self.assertNotIn(forbidden, text)
+
+
 if __name__ == "__main__":
     unittest.main()
