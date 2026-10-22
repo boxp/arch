@@ -35,6 +35,11 @@ case "$1 $2" in
     printf '{"ContentLength": %s, "LastModified": "%s", "ETag": "\\"etag-%s\\""}\n' "$(stat -c %s "$path")" "$mtime" "$(basename "$key")" ;;
   "s3api get-object-tagging")
     [ -f "$path" ] || exit 254
+    if [ -n "${FAKE_TAG_ERROR:-}" ]; then echo "boom" >&2; exit 1; fi
+    if [ -n "${FAKE_TAG_DENY:-}" ]; then
+      echo "aws: [ERROR]: An error occurred (AccessDenied) when calling the GetObjectTagging operation: not authorized to perform: s3:GetObjectTagging" >&2
+      exit 254
+    fi
     printf '{"TagSet": [{"Key": "NodeName", "Value": "%s"}, {"Key": "GitSHA", "Value": "%s"}]}\n' "${FAKE_TAG_NODE:-golyat-9}" "${FAKE_TAG_SHA:-deadbeef}" ;;
   "s3 cp")
     [ "${args[3]}" = "-" ] || { echo "fake aws: only downloads to stdout are supported" >&2; exit 1; }
@@ -110,6 +115,9 @@ populate; head -c 4096 /dev/urandom > "$FAKE_S3/images/artifacts/$node/$name"; c
 populate; printf '%064d  x\n' 0 > "$FAKE_S3/images/$node/latest.img.xz.sha256"; check "stored checksum file mismatch fails" 1 run
 populate; FAKE_TAG_NODE=golyat-4 check "wrong NodeName tag fails" 1 run
 populate; FAKE_TAG_SHA=other check "wrong GitSHA tag fails" 1 run
+populate; FAKE_TAG_DENY=1 check "GetObjectTagging AccessDenied is only a warning" 0 run
+grep -q "s3-verification: passed (warnings: 1)" "$work/report.md" || { echo "FAIL: AccessDenied not reported as warning"; failc=$((failc+1)); }
+populate; FAKE_TAG_ERROR=1 check "other tagging errors still fail" 1 run
 populate; FAKE_OTHER_MTIME="2026-10-22T11:30:00+00:00" check "other node latest modified during run fails" 1 run
 populate; check "usage error without --image" 2 "$script" --bucket b --node n
 

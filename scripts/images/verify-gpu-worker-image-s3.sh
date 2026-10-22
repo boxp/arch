@@ -57,8 +57,9 @@ artifact_prefix="images/artifacts/${node}"
 artifact_key="${artifact_prefix}/${final_name}"
 latest_key="${stable_prefix}/latest.img.xz"
 
-failures=0
+failures=0 warnings=0
 fail() { echo "fail: $*"; failures=$((failures + 1)); }
+warn() { echo "warn: $*"; warnings=$((warnings + 1)); }
 ok() { echo "ok: $*"; }
 
 {
@@ -123,7 +124,9 @@ for key in "$artifact_key" "$latest_key"; do
   fi
 done
 
-# 4. artifact tags
+# 4. artifact tags. The build role (terraform/aws/gpu-worker-images) may put
+# tags but not read them back (no s3:GetObjectTagging); report that as a
+# warning instead of failing the build, since the tags are not load-bearing.
 if tags="$(aws s3api get-object-tagging --bucket "$bucket" --key "$artifact_key" --output json 2>&1)"; then
   tag_node="$(jq -r '.TagSet[] | select(.Key=="NodeName") | .Value' <<<"$tags")"
   tag_sha="$(jq -r '.TagSet[] | select(.Key=="GitSHA") | .Value' <<<"$tags")"
@@ -131,6 +134,8 @@ if tags="$(aws s3api get-object-tagging --bucket "$bucket" --key "$artifact_key"
   if [ -n "$git_sha" ]; then
     if [ "$tag_sha" = "$git_sha" ]; then ok "tag GitSHA=${tag_sha}"; else fail "tag GitSHA is '${tag_sha}', expected ${git_sha}"; fi
   fi
+elif grep -q "AccessDenied" <<<"$tags"; then
+  warn "tag check skipped: the role may not call s3:GetObjectTagging on ${artifact_key}"
 else
   fail "get-object-tagging ${artifact_key}: ${tags}"
 fi
@@ -167,7 +172,7 @@ done
 {
   echo
   echo "- local image: ${final_name} (${local_size} bytes, sha256 ${expected})"
-  echo "- s3-verification: $([ "$failures" -eq 0 ] && echo passed || echo "failed (${failures})")"
+  echo "- s3-verification: $([ "$failures" -eq 0 ] && echo passed || echo "failed (${failures})") (warnings: ${warnings})"
 } >> "$report"
-echo "summary: node=${node} s3-verification failures=${failures} report=${report}"
+echo "summary: node=${node} s3-verification failures=${failures} warnings=${warnings} report=${report}"
 [ "$failures" -eq 0 ]
