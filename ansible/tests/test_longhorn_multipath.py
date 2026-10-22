@@ -76,21 +76,83 @@ class EffectiveMultipathConfigTest(unittest.TestCase):
 
 
 class WorkerImageWiringTest(unittest.TestCase):
+    DROPIN_PATH = "/etc/multipath/conf.d/90-longhorn.conf"
+
+    def setUp(self):
+        self.play = yaml.safe_load((ROOT / "playbooks/worker-image.yml").read_text())[0]
+        blocks = [t for t in self.play["tasks"] if "block" in t and "multipath" in t.get("tags", [])]
+        self.assertEqual(len(blocks), 1)
+        self.block = blocks[0]
+
+    @staticmethod
+    def _verify_tasks(tasks, require_blacklist):
+        found = []
+        for task in tasks:
+            argv = task.get("ansible.builtin.command", {})
+            argv = argv.get("argv", []) if isinstance(argv, dict) else []
+            if any("verify_longhorn_multipath.py" in a for a in argv) and (("--require-blacklist" in argv) == require_blacklist):
+                found.append(task)
+        return found
+
     def test_worker_image_installs_dropin_and_never_restarts_multipathd(self):
-        play = yaml.safe_load((ROOT / "playbooks/worker-image.yml").read_text())[0]
-        copy_tasks = [t for t in play["tasks"] if t.get("ansible.builtin.copy", {}).get("dest") == "/etc/multipath/conf.d/90-longhorn.conf"]
+        # The drop-in copy lives only inside the validated block, never as a bare task.
+        self.assertEqual([t for t in self.play["tasks"] if t.get("ansible.builtin.copy", {}).get("dest") == self.DROPIN_PATH], [])
+        copy_tasks = [t for t in self.block["block"] if t.get("ansible.builtin.copy", {}).get("dest") == self.DROPIN_PATH]
         self.assertEqual(len(copy_tasks), 1)
         self.assertIn("longhorn-multipath.conf", copy_tasks[0]["ansible.builtin.copy"]["content"])
         self.assertEqual(copy_tasks[0]["notify"], "Reconfigure multipathd")
-        handlers = {h["name"]: h for h in play["handlers"]}
+        handlers = {h["name"]: h for h in self.play["handlers"]}
         handler = handlers["Reconfigure multipathd"]
         self.assertNotIn("ansible.builtin.systemd", handler)
         self.assertIn("multipathd reconfigure", handler["ansible.builtin.shell"])
         self.assertIn("No devices found", handler["ansible.builtin.shell"])
         self.assertIn("is_chroot", handler["when"])
 
+    def test_worker_image_validates_candidate_fail_closed_before_handler(self):
+        # Preflight (before copy): existing configuration must not be able to defeat
+        # the device blacklist; runs read-only in check mode too and is fail closed.
+        preflight = self._verify_tasks(self.play["tasks"], require_blacklist=False)
+        self.assertEqual(len(preflight), 1)
+        self.assertNotIn("failed_when", preflight[0])
+        self.assertIs(preflight[0]["check_mode"], False)
+        parses = [t for t in self.play["tasks"] if t.get("ansible.builtin.command") == "multipath -t"]
+        self.assertEqual(len(parses), 1)
+        self.assertEqual(parses[0]["register"], "longhorn_multipath_preflight")
+        # Candidate (after copy, before any reload): the complete configuration must
+        # contain the effective Longhorn blacklist; no failed_when: false escape hatch.
+        tasks = self.block["block"]
+        candidate_parse = [t for t in tasks if t.get("ansible.builtin.command") == "multipath -t"]
+        self.assertEqual(len(candidate_parse), 1)
+        self.assertEqual(candidate_parse[0]["register"], "longhorn_multipath_candidate")
+        candidate = self._verify_tasks(tasks, require_blacklist=True)
+        self.assertEqual(len(candidate), 1)
+        self.assertNotIn("failed_when", candidate[0])
+        self.assertNotIn("notify", candidate[0])
+        self.assertEqual(candidate[0]["ansible.builtin.command"]["stdin"], "{{ longhorn_multipath_candidate.stdout }}")
+        self.assertIn("not ansible_check_mode", candidate[0]["when"])
+        copy_index = next(i for i, t in enumerate(tasks) if "ansible.builtin.copy" in t)
+        self.assertLess(copy_index, tasks.index(candidate_parse[0]))
+        self.assertLess(tasks.index(candidate_parse[0]), tasks.index(candidate[0]))
+
+    def test_worker_image_rolls_back_dropin_when_candidate_validation_fails(self):
+        rescue = self.block["rescue"]
+        restores = [t for t in rescue if t.get("ansible.builtin.copy", {}).get("dest") == self.DROPIN_PATH]
+        removes = [t for t in rescue if t.get("ansible.builtin.file", {}).get("state") == "absent"]
+        self.assertEqual(len(restores), 1)
+        self.assertEqual(restores[0]["when"], "longhorn_multipath_previous.stat.exists")
+        self.assertEqual(len(removes), 1)
+        self.assertEqual(removes[0]["ansible.builtin.file"]["path"], self.DROPIN_PATH)
+        self.assertEqual(removes[0]["when"], "not longhorn_multipath_previous.stat.exists")
+        self.assertIn("ansible.builtin.fail", rescue[-1])
+        self.assertEqual([t for t in rescue if "notify" in t], [])
+        self.assertNotIn("multipathd reconfigure", yaml.safe_dump(self.block))
+        stats = [t for t in self.play["tasks"] if t.get("ansible.builtin.stat", {}).get("path") == self.DROPIN_PATH]
+        self.assertEqual(len(stats), 1)
+        self.assertEqual(stats[0]["register"], "longhorn_multipath_previous")
+        self.assertLess(self.play["tasks"].index(stats[0]), self.play["tasks"].index(self.block))
+
     def test_worker_image_resyncs_running_daemon_when_dropin_already_present(self):
-        play = yaml.safe_load((ROOT / "playbooks/worker-image.yml").read_text())[0]
+        play = self.play
         checks = [t for t in play["tasks"] if t.get("register") == "longhorn_multipath_running_check"]
         self.assertEqual(len(checks), 1)
         check = checks[0]
