@@ -230,6 +230,13 @@ case "${mode}" in
   blocked)
     echo "NOVEL_BOARD_RESULT: blocked 参照資料が足りません"
     ;;
+  slow)
+    # Long-running agent with a child; used by the SIGTERM tests (BOXP-252).
+    sleep 120 &
+    printf '%s\n' "$!" >"${FAKE_CLAUDE_CHILD_PID_FILE}"
+    wait "$!"
+    echo "NOVEL_BOARD_RESULT: done"
+    ;;
 esac
 EOF
 chmod +x "${TMP}/bin/claude"
@@ -731,6 +738,106 @@ assert_contains "${VAULT}/Novels/NOVEL-8.md" "was marked interrupted after plann
 [[ "$(lane_of "${BOARD}" NOVEL-8)" == "Review" ]] || fail "In Progress card should resume after planned shutdown"
 [[ ! -f "${STATE}/terminating-owners/dead-owner.edn" ]] || fail "consumed shutdown marker should be removed"
 echo "PASS: planned shutdown recovery resumes In Progress card"
+
+# ---------------------------------------------------------------------------
+# SIGTERM while a run is in flight (BOXP-252): the shutdown hook signals the
+# agent process group, records the run as interrupted, keeps the lock and the
+# lane, and the next owner recovers exactly once.
+# ---------------------------------------------------------------------------
+start_loop_as_old_pod() {
+  # start_loop_as_old_pod <novel-id> <output>; sets LOOP_PID. Must not run in a subshell.
+  local id="$1" output="$2" attempt
+  CODEX_NOVEL_BOARD_OWNER_ID=old-pod CODEX_NOVEL_BOARD_RUNNER_INSTANCE_ID=old-instance \
+    CODEX_NOVEL_BOARD_POLL_SECONDS=60 bb "${RUNNER}" loop >"${output}" 2>&1 &
+  LOOP_PID=$!
+  for attempt in $(seq 1 300); do
+    [[ -e "${STATE}/locks/${id}.edn" ]] && return 0
+    sleep 0.1
+  done
+  kill -KILL "${LOOP_PID}" 2>/dev/null || true
+  fail "expected loop runner to lock ${id}"
+}
+process_stopped() {
+  local pid="$1" state
+  kill -0 "${pid}" 2>/dev/null || return 0
+  state="$(ps -o stat= -p "${pid}" 2>/dev/null | tr -d '[:space:]' || true)"
+  [[ "${state}" == Z* ]]
+}
+
+# cloud agent in flight
+add_card Draft "- [ ] [[Novels/NOVEL-70|NOVEL-70: 停止中クラウド]] #novel status::draft assignee::claude-opus"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-70.md"
+write_requirements NOVEL-70
+echo slow >"${FAKE_CLAUDE_MODE_FILE}"
+export FAKE_CLAUDE_CHILD_PID_FILE="${TMP}/claude-child.pid"
+rm -f "${FAKE_CLAUDE_CHILD_PID_FILE}"
+start_loop_as_old_pod NOVEL-70 "${TMP}/loop-cloud.log"
+for _ in $(seq 1 200); do [[ -s "${FAKE_CLAUDE_CHILD_PID_FILE}" ]] && break; sleep 0.1; done
+[[ -s "${FAKE_CLAUDE_CHILD_PID_FILE}" ]] || fail "expected the fake agent to start its child"
+CHILD_PID="$(cat "${FAKE_CLAUDE_CHILD_PID_FILE}")"
+STARTED=$(date +%s)
+kill -TERM "${LOOP_PID}"
+wait "${LOOP_PID}" 2>/dev/null || true
+ELAPSED=$(( $(date +%s) - STARTED ))
+[[ "${ELAPSED}" -lt 15 ]] || fail "SIGTERM shutdown with a cooperative agent took ${ELAPSED}s"
+process_stopped "${CHILD_PID}" || fail "agent child ${CHILD_PID} should have been stopped through the process group"
+assert_contains "${TMP}/loop-cloud.log" "shutdown: signalling TERM to 1 in-flight agent process group"
+assert_contains "${TMP}/loop-cloud.log" "shutdown: in-flight card processing finalized"
+assert_contains "${TMP}/loop-cloud.log" "interrupted by planned workspace shutdown; lock kept for the next owner"
+[[ -e "${STATE}/locks/NOVEL-70.edn" ]] || fail "lock must stay for the next owner after planned shutdown"
+assert_contains "${STATE}/terminating-owners/old-pod.edn" ':instance-id "old-instance"'
+CLOUD_SUMMARY="$(run_summary_of NOVEL-70)"
+assert_contains "${CLOUD_SUMMARY}" ":status :interrupted"
+assert_contains "${CLOUD_SUMMARY}" ':reason "planned workspace shutdown"'
+assert_contains "${CLOUD_SUMMARY}" ":agent-exit-code"
+[[ "$(lane_of "${BOARD}" NOVEL-70)" == "In Progress" ]] || fail "dying runner must not move the card"
+assert_contains "${BOARD}" "NOVEL-70: 停止中クラウド]] #novel status::in-progress assignee::claude-opus"
+assert_not_contains "${VAULT}/Novels/NOVEL-70.md" "failed: action=write"
+[[ ! -e "${STATE}/work/NOVEL-70/manuscript.md" ]] || fail "partial agent work must not be promoted to a manuscript"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+tick
+assert_contains "${VAULT}/Novels/NOVEL-70.md" "was marked interrupted after planned workspace shutdown of owner old-pod"
+[[ "$(count_matches "${VAULT}/Novels/NOVEL-70.md" "was marked interrupted")" == "1" ]] || fail "exactly one interrupted history line expected"
+assert_contains "${CLOUD_SUMMARY}" ":shutdown {"
+[[ ! -f "${STATE}/terminating-owners/old-pod.edn" ]] || fail "consumed shutdown marker should be removed"
+[[ "$(find "${STATE}/runs/NOVEL-70" -name summary.edn | wc -l)" == "2" ]] || fail "exactly one replacement run expected"
+[[ "$(lane_of "${BOARD}" NOVEL-70)" == "Review" ]] || fail "next owner should resume the In Progress card once"
+[[ ! -e "${STATE}/locks/NOVEL-70.edn" ]] || fail "replacement run should release its lock"
+set_assignee NOVEL-70 boxp
+echo "PASS: SIGTERM stops the in-flight cloud agent, keeps the lock and the next owner resumes once"
+
+# localllm stream in flight
+add_card Draft "- [ ] [[Novels/NOVEL-71|NOVEL-71: 停止中ストリーム]] #novel status::draft assignee::localllm"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-71.md"
+write_requirements NOVEL-71
+echo stream-stall >"${MODE_FILE}"
+STALL_BEFORE="$(count_requests stream-stall)"
+start_loop_as_old_pod NOVEL-71 "${TMP}/loop-stream.log"
+for _ in $(seq 1 300); do [[ -s "${STATE}/work/NOVEL-71/manuscript.partial.md" ]] && break; sleep 0.1; done
+[[ -s "${STATE}/work/NOVEL-71/manuscript.partial.md" ]] || fail "expected partial text before SIGTERM"
+STARTED=$(date +%s)
+kill -TERM "${LOOP_PID}"
+wait "${LOOP_PID}" 2>/dev/null || true
+ELAPSED=$(( $(date +%s) - STARTED ))
+[[ "${ELAPSED}" -lt 15 ]] || fail "SIGTERM shutdown during a localllm stream took ${ELAPSED}s"
+assert_contains "${TMP}/loop-stream.log" "interrupted by planned workspace shutdown; lock kept for the next owner"
+[[ -e "${STATE}/locks/NOVEL-71.edn" ]] || fail "lock must stay for the next owner after planned shutdown"
+STREAM_SUMMARY="$(run_summary_of NOVEL-71)"
+assert_contains "${STREAM_SUMMARY}" ":status :interrupted"
+assert_contains "${STREAM_SUMMARY}" "計画停止により打ち切りました"
+assert_contains "$(evidence_of NOVEL-71)" ":status :shutdown"
+[[ -s "${STATE}/work/NOVEL-71/manuscript.partial.md" ]] || fail "partial text must be kept"
+[[ ! -e "${STATE}/work/NOVEL-71/manuscript.md" ]] || fail "partial text must not be promoted to a manuscript"
+[[ "$(lane_of "${BOARD}" NOVEL-71)" == "In Progress" ]] || fail "dying runner must not move the card"
+[[ "$(( $(count_requests stream-stall) - STALL_BEFORE ))" == "1" ]] || fail "the dying runner must not re-request the generation"
+echo normal >"${MODE_FILE}"
+tick
+assert_contains "${VAULT}/Novels/NOVEL-71.md" "was marked interrupted after planned workspace shutdown of owner old-pod"
+assert_contains "${STREAM_SUMMARY}" ":shutdown {"
+[[ "$(lane_of "${BOARD}" NOVEL-71)" == "Review" ]] || fail "next owner should resume the In Progress card once"
+set_assignee NOVEL-71 boxp
+unset FAKE_CLAUDE_CHILD_PID_FILE
+echo "PASS: SIGTERM closes the localllm stream, keeps the partial and the next owner resumes once"
 
 # ---------------------------------------------------------------------------
 # 11. Cloud route (fake claude): done, nothing, blocked; groom

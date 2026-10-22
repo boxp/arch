@@ -349,15 +349,208 @@
 
 (def shutdown-hook-installed? (atom false))
 
+;; Set by the SIGTERM shutdown hook (BOXP-252). The localllm stream reader,
+;; `run-cloud-agent!` and `process-card!` consult it so an in-flight run is
+;; recorded as interrupted (partial output kept, lane / assignee / lock left
+;; for the next owner) instead of being treated as a failed generation.
+(def shutdown-requested? (atom false))
+
+;; `process-card!` decides "still allowed to commit lane / assignee /
+;; frontmatter / history / lock changes?" and enters its commit sections (the
+;; start transition and `finish-run!`) under this monitor; the shutdown hook
+;; raises `shutdown-requested?` under the same monitor. So either the check
+;; sees the flag (the run is recorded as interrupted and nothing is written),
+;; or the commit has already begun and is counted in `committing-cards`, which
+;; the hook then waits for (bounded). A commit is never cut in half by the flag.
+(def lifecycle-commit-lock (Object.))
+(def committing-cards (atom 0))
+
+;; Wall-clock anchor of the shutdown hook (epoch millis), set once by
+;; `request-shutdown!`. The commit budget is measured from it, so the wait for
+;; an in-progress lifecycle commit is bounded by the Pod's remaining grace and
+;; not by the time the agent / stream stop happened to take.
+(def shutdown-started-at-ms (atom nil))
+
+(defn request-shutdown! []
+  (locking lifecycle-commit-lock
+    (compare-and-set! shutdown-started-at-ms nil (System/currentTimeMillis))
+    (reset! shutdown-requested? true)))
+
+(defn ensure-not-shutting-down!
+  "Abort `process-card!` when the SIGTERM hook raised the live shutdown flag.
+  `:shutdown? true` routes the exception to the interrupted-run path."
+  [stage]
+  (when @shutdown-requested?
+    (throw (ex-info (str "planned workspace shutdown requested " stage)
+                    {:shutdown? true}))))
+
+(defn begin-lifecycle-commit!
+  "Atomically re-check the live shutdown flag and enter a commit section of
+  `process-card!`. Runs under `lifecycle-commit-lock`, the monitor the hook
+  takes to raise the flag, so a TERM either arrives before the check (run is
+  recorded as interrupted, nothing committed) or after it (the whole commit
+  runs and the hook waits for it in `await-in-flight-finalization!`). Returns
+  only after `committing-cards` was incremented; the caller decrements it."
+  [stage]
+  (locking lifecycle-commit-lock
+    (ensure-not-shutting-down! stage)
+    (swap! committing-cards inc)))
+
+;; novel-id -> java.lang.Process of a cloud agent CLI started through `setsid`.
+;; The shutdown hook signals these process groups so the agent and its
+;; descendants receive TERM before PID 1 exits and the PID namespace is torn
+;; down with SIGKILL.
+(def in-flight-agent-processes (atom {}))
+
+;; Set once `stop-in-flight-agents!` has sent its final KILL pass. An agent
+;; registered after that point would otherwise outlive the hook, so
+;; `register-agent-process!` kills it on the spot instead of only TERMing it.
+(def in-flight-agents-stopped? (atom false))
+
+(declare signal-process-group! in-flight)
+
+(defn register-agent-process! [novel-id process]
+  (swap! in-flight-agent-processes assoc novel-id process)
+  ;; The shutdown hook may already have signalled the registered set before
+  ;; this agent was started. Re-check after registering so the agent group is
+  ;; still stopped (bounded by the hook's finalize wait and the Pod grace).
+  (cond
+    @in-flight-agents-stopped?
+    (do (signal-process-group! process "TERM")
+        (signal-process-group! process "KILL"))
+
+    @shutdown-requested?
+    (signal-process-group! process "TERM")))
+
+(defn unregister-agent-process! [novel-id]
+  ;; During shutdown the registry doubles as the final KILL list: keep the
+  ;; entry so a TERM-resistant child of an agent that already exited is still
+  ;; killed by the group KILL pass.
+  (when-not @shutdown-requested?
+    (swap! in-flight-agent-processes dissoc novel-id)))
+
+(defn shutdown-agent-grace-seconds []
+  ;; Bounded wait for agents after TERM. Must stay well below the Pod's
+  ;; terminationGracePeriodSeconds (60) minus the preStop hook time.
+  (max 0 (min (env-long "CODEX_NOVEL_BOARD_SHUTDOWN_AGENT_GRACE_SECONDS" 20) 45)))
+
+(defn shutdown-finalize-seconds []
+  ;; Bounded wait for `process-card!` threads to record their interrupted run
+  ;; after the agents / streams were stopped. The next owner re-marks the run
+  ;; through the planned-shutdown marker anyway, so this stays short.
+  (max 0 (min (env-long "CODEX_NOVEL_BOARD_SHUTDOWN_FINALIZE_SECONDS" 5) 15)))
+
+(defn shutdown-commit-budget-seconds []
+  ;; How long after the hook started an in-progress lifecycle commit (lane,
+  ;; frontmatter, history, summary, lock) may keep running before the hook
+  ;; returns anyway. A commit is local vault / run-dir writes only and normally
+  ;; finishes in well under a second; the budget exists for a stalled
+  ;; filesystem. Measured from the hook start, so preStop (~3 s) + budget + the
+  ;; kubelet margin stays inside terminationGracePeriodSeconds (60) even when
+  ;; the agent grace (20 s) and the KILL wait (2 s) were fully used.
+  (max 0 (min (env-long "CODEX_NOVEL_BOARD_SHUTDOWN_COMMIT_BUDGET_SECONDS" 45) 55)))
+
+(defn shutdown-commit-deadline-ms []
+  (+ (or @shutdown-started-at-ms (System/currentTimeMillis))
+     (* 1000 (shutdown-commit-budget-seconds))))
+
+(defn stop-in-flight-agents! []
+  ;; TERM every registered agent process group, wait up to the bounded grace,
+  ;; then KILL whatever is still alive. Never waits for an LLM turn to finish.
+  ;; Agents registered while this runs receive TERM from
+  ;; `register-agent-process!`; the wait loop and the final KILL pass re-read
+  ;; the registry so they are covered too, and anything registered after the
+  ;; final pass is killed by `register-agent-process!` itself.
+  (let [alive? #(.isAlive ^java.lang.Process %)
+        initial (vals @in-flight-agent-processes)]
+    (when (seq initial)
+      (log! (str "shutdown: signalling TERM to " (count initial) " in-flight agent process group(s), grace="
+                 (shutdown-agent-grace-seconds) "s"))
+      (doseq [process initial] (signal-process-group! process "TERM"))
+      (let [deadline (+ (System/currentTimeMillis) (* 1000 (shutdown-agent-grace-seconds)))]
+        (loop []
+          (when (and (some alive? (vals @in-flight-agent-processes))
+                     (< (System/currentTimeMillis) deadline))
+            (Thread/sleep 250)
+            (recur)))))
+    ;; Flip the flag before the final snapshot: a registration racing with the
+    ;; snapshot is then either in it or kills itself.
+    (reset! in-flight-agents-stopped? true)
+    (let [processes (distinct (concat initial (vals @in-flight-agent-processes)))
+          survivors (filter alive? processes)]
+      (when (seq processes)
+        (when (seq survivors)
+          (log! (str "shutdown: " (count survivors) " agent process group(s) did not exit within grace; sending KILL")))
+        ;; KILL the group even when the agent itself exited: a TERM-resistant or
+        ;; late-created child can still be running inside the group.
+        (doseq [process processes] (signal-process-group! process "KILL"))
+        (doseq [process survivors]
+          (try (.waitFor ^java.lang.Process process 2 java.util.concurrent.TimeUnit/SECONDS)
+               (catch Exception _ nil)))
+        (log! "shutdown: in-flight agents stopped")))))
+
+(defn await-in-flight-finalization! []
+  ;; Two deadlines:
+  ;; - `process-card!` futures that only have to record their interrupted run
+  ;;   get the short finalize window (the next owner re-marks the run anyway).
+  ;; - A lifecycle commit that began before the flag was raised must not be
+  ;;   cut in half (lane moved, frontmatter stale, lock released without the
+  ;;   summary). It is waited for up to the shutdown commit budget measured
+  ;;   from the hook start, and the future that ran it gets a fresh finalize
+  ;;   window afterwards so its lock release / summary write also lands.
+  ;;   Tests drive this through `committing-cards` without `in-flight`.
+  (let [futures (vals @in-flight)
+        finalize-ms (* 1000 (shutdown-finalize-seconds))
+        start (System/currentTimeMillis)
+        commit-deadline (max (+ start finalize-ms) (shutdown-commit-deadline-ms))
+        futures-pending? (fn [] (boolean (some #(not (future-done? %)) futures)))
+        committing? (fn [] (pos? @committing-cards))]
+    (when (or (futures-pending?) (committing?))
+      (loop [futures-deadline (+ start finalize-ms)]
+        (let [t (System/currentTimeMillis)
+              committing (committing?)
+              futures-deadline (if committing
+                                 (min commit-deadline (+ t finalize-ms))
+                                 futures-deadline)]
+          (when (or (and committing (< t commit-deadline))
+                    (and (futures-pending?) (< t futures-deadline)))
+            (Thread/sleep 100)
+            (recur futures-deadline))))
+      (let [pending (count (remove future-done? futures))
+            committing @committing-cards]
+        (cond
+          (and (zero? pending) (zero? committing))
+          (log! "shutdown: in-flight card processing finalized")
+
+          (pos? committing)
+          (log! (str "shutdown: " committing " lifecycle commit(s) still in progress "
+                     (shutdown-commit-budget-seconds) "s after the shutdown started; exiting to stay inside "
+                     "terminationGracePeriodSeconds, the next owner recovers the card through the planned-shutdown marker"))
+
+          :else
+          (log! (str "shutdown: " pending " in-flight card(s) not finalized within "
+                     (shutdown-finalize-seconds) "s; the next owner records them as interrupted")))))))
+
 (defn install-shutdown-hook! []
   (when (compare-and-set! shutdown-hook-installed? false true)
     (.addShutdownHook
      (Runtime/getRuntime)
      (Thread. ^Runnable (fn []
+                          ;; Marker first: it is what lets the next owner recover
+                          ;; this owner's locks even if everything below fails.
+                          (request-shutdown!)
                           (try (prepare-shutdown!)
                                (catch Exception e
                                  (binding [*out* *err*]
-                                   (println (str "failed to prepare novel-board shutdown: " (.getMessage e)))))))))))
+                                   (println (str "failed to prepare novel-board shutdown: " (.getMessage e))))))
+                          (try (stop-in-flight-agents!)
+                               (catch Exception e
+                                 (binding [*out* *err*]
+                                   (println (str "failed to stop in-flight agents during shutdown: " (.getMessage e))))))
+                          (try (await-in-flight-finalization!)
+                               (catch Exception e
+                                 (binding [*out* *err*]
+                                   (println (str "failed to await in-flight finalization during shutdown: " (.getMessage e)))))))))))
 
 (defn current-runner-marker? [marker]
   (and (= (owner-id) (:owner-id marker))
@@ -402,7 +595,9 @@
 
 (defn mark-run! [novel-id run-id status extra]
   (let [path (fs/path (run-dir novel-id run-id) "summary.edn")
-        previous (try (select-keys (read-edn-file path {}) [:agent :action]) (catch Exception _ {}))]
+        ;; `:shutdown` is written by the terminating runner itself (BOXP-252); keep it
+        ;; when the next owner re-marks the same run as interrupted.
+        previous (try (select-keys (read-edn-file path {}) [:agent :action :shutdown]) (catch Exception _ {}))]
     (ensure-private-dir! (run-dir novel-id run-id))
     (write-edn-file! path (merge previous
                                  {:novel novel-id :run-id run-id :status status :updated-at (now-str)}
@@ -1553,6 +1748,16 @@
                    :error (when error (sanitize-error (str (.getName (class error)) ": " (.getMessage error))))
                    :elapsed-ms (- (System/currentTimeMillis) started)))
 
+          ;; Planned shutdown (BOXP-252): close the stream now so the partial
+          ;; text is kept and the run is recorded before the Pod goes away.
+          ;; The upstream generation may still be running; the caller must not
+          ;; re-request it from this process.
+          @shutdown-requested?
+          (do (close-body!)
+              (let [s @state]
+                (when on-progress (on-progress (:content s)))
+                (assoc (dissoc s :done? :error :last-at :done-marker?) :stop :shutdown :elapsed-ms (- now started))))
+
           (>= now deadline)
           (do (close-body!)
               (let [s @state]
@@ -1653,6 +1858,11 @@
               :complete
               (do (record-evidence! run-dir (assoc evidence :status :ok))
                   {:content content :finish-reason (:finish result) :usage (:usage result) :model model})
+
+              :shutdown
+              (do (record-evidence! run-dir (assoc evidence :status :shutdown))
+                  (throw (ex-info (str "localllm " phase " は runner の計画停止により打ち切りました（" (count content) " 字まで受信、再試行なし）")
+                                  {:type :llm-error :phase phase :shutdown? true :partial content})))
 
               :total-timeout
               (do (record-evidence! run-dir (assoc evidence :status :total-timeout))
@@ -1995,16 +2205,24 @@
                                                    :err (io/file (str stderr-path))
                                                    :dir (str work)
                                                    :env child-env})
-          {:keys [proc idle-timeout?]} (await-agent! proc [stdout-path stderr-path (manuscript-path novel-id) (note-path novel-id)]
-                                                     (env-long "CODEX_NOVEL_BOARD_AGENT_IDLE_TIMEOUT_SECONDS" 3600))
+          _ (register-agent-process! novel-id (:proc proc))
+          {:keys [proc idle-timeout?]} (try
+                                         (await-agent! proc [stdout-path stderr-path (manuscript-path novel-id) (note-path novel-id)]
+                                                       (env-long "CODEX_NOVEL_BOARD_AGENT_IDLE_TIMEOUT_SECONDS" 3600))
+                                         (finally
+                                           (unregister-agent-process! novel-id)))
+          ;; The agent stopped because the shutdown hook signalled it (BOXP-252).
+          shutdown? @shutdown-requested?
           exit (:exit proc)
           _ (when (and (= :claude route) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path)) (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path) (slurp (str last-message-path)))
           marker (cloud-result-marker last-message)]
-      (record-evidence! run-dir {:phase (name action) :route route :agent agent :status (if (zero? exit) :exit-0 :exit-nonzero)
-                                 :exit-code exit :idle-timeout? idle-timeout? :result marker})
+      (record-evidence! run-dir {:phase (name action) :route route :agent agent :status (cond shutdown? :shutdown (zero? exit) :exit-0 :else :exit-nonzero)
+                                 :exit-code exit :idle-timeout? idle-timeout? :shutdown? shutdown? :result marker})
       (cond
+        shutdown? {:ok? false :shutdown? true :agent-exit-code exit
+                   :reason "runner の計画停止により agent を停止しました（次の owner が再開します）"}
         idle-timeout? {:ok? false :reason "agent が進捗なしでタイムアウトしました（再開条件: agent を再割当）"}
         (not (zero? exit)) {:ok? false :reason (str "agent CLI が exit " exit " で終了しました（詳細: run dir の stderr.log）")}
         (= "blocked" marker) {:ok? false :reason (str "agent が blocked を返しました: "
@@ -2391,8 +2609,38 @@
         (when (and lock (not changed?))
           (let [stop? (atom false)
                 hb (heartbeat! novel-id lock stop?)
-                run-dir (ensure-private-dir! (run-dir novel-id (:run-id lock)))]
+                run-dir (ensure-private-dir! (run-dir novel-id (:run-id lock)))
+                ;; Set when this runner is shutting down (BOXP-252): the lock is
+                ;; left in place so the next owner recovers it through the
+                ;; planned-shutdown marker, and no lane / assignee / frontmatter
+                ;; change is made here. Partial output stays in the work dir and
+                ;; is never promoted to the manuscript.
+                keep-lock? (atom false)
+                ;; Set while a lifecycle commit is in progress, so the finally
+                ;; block releases the `committing-cards` slot exactly once.
+                committing? (atom false)
+                end-commit! (fn []
+                              (when @committing?
+                                (reset! committing? false)
+                                (swap! committing-cards dec)))
+                record-shutdown! (fn [detail]
+                                   (reset! keep-lock? true)
+                                   (mark-run! novel-id (:run-id lock) :interrupted
+                                              (merge {:action action :agent agent :lane lane
+                                                      :reason "planned workspace shutdown"
+                                                      :shutdown (merge {:owner-id (owner-id)
+                                                                        :instance-id runner-instance-id
+                                                                        :stopped-at (now-str)}
+                                                                       detail)}))
+                                   (log! (str novel-id " run " (:run-id lock)
+                                              " interrupted by planned workspace shutdown; lock kept for the next owner")))]
             (try
+              ;; The start transition (lane, frontmatter, history, :running) is
+              ;; a lifecycle commit: a TERM that lands right after the lock was
+              ;; taken must not move the card, and a TERM during the transition
+              ;; lets it complete (the hook waits for it).
+              (begin-lifecycle-commit! "before the start transition")
+              (reset! committing? true)
               (when (and (#{:write :revise} action) (not= "in-progress" status))
                 (move-card! novel-id "in-progress" nil)
                 (update-frontmatter! novel-id {:status "in-progress"}))
@@ -2407,25 +2655,48 @@
                                                  :revise "; Review Instructions あり: 改稿指示として渡す"
                                                  ""))))
               (mark-run! novel-id (:run-id lock) :running {:action action :agent agent :lane lane :started-at (now-str)})
+              (end-commit!)
+              ;; Do not start a generation the hook would only have to stop
+              ;; again (a TERM after this check is covered by the agent
+              ;; registration / the stream reader's live flag).
+              (ensure-not-shutting-down! "before the run")
               (let [outcome (try
                               (if (#{:groom :regroom} action)
                                 (run-groom! novel-id card fm content action agent run-dir)
                                 (run-write! novel-id card fm content action agent run-dir))
                               (catch Exception e
-                                {:ok? false :reason (str "runner 内部エラー: " (sanitize-error (.getMessage e)) "。再開条件: 原因解消後に agent を再割当")}))]
-                ;; A successful run consumed the instructions as they were when it
-                ;; started; remember that so the same text is not re-applied forever
-                ;; (the human's text itself is never deleted by the runner).
-                (when (and (:ok? outcome) (seq instructions))
-                  (record-applied-instructions! novel-id instructions (:run-id lock) action))
-                (finish-run! novel-id lock card action outcome run-dir))
+                                (if (or (:shutdown? (ex-data e)) @shutdown-requested?)
+                                  {:ok? false :shutdown? true :reason (sanitize-error (.getMessage e))}
+                                  {:ok? false :reason (str "runner 内部エラー: " (sanitize-error (.getMessage e)) "。再開条件: 原因解消後に agent を再割当")})))]
+                (if (:shutdown? outcome)
+                  (record-shutdown! (cond-> {:detail (:reason outcome)}
+                                      (contains? outcome :agent-exit-code) (assoc :agent-exit-code (:agent-exit-code outcome))))
+                  (do
+                    ;; Re-check the live flag atomically with entering the
+                    ;; final commit: a TERM after the generation finished must
+                    ;; still leave lane / assignee / frontmatter / lock to the
+                    ;; next owner, while a TERM during `finish-run!` lets it
+                    ;; complete.
+                    (begin-lifecycle-commit! "before the final transition")
+                    (reset! committing? true)
+                    ;; A successful run consumed the instructions as they were when it
+                    ;; started; remember that so the same text is not re-applied forever
+                    ;; (the human's text itself is never deleted by the runner).
+                    (when (and (:ok? outcome) (seq instructions))
+                      (record-applied-instructions! novel-id instructions (:run-id lock) action))
+                    (finish-run! novel-id lock card action outcome run-dir)
+                    (end-commit!))))
               (catch Exception e
-                (log! (str novel-id " failed to finish run: " (.getMessage e)))
-                (mark-run! novel-id (:run-id lock) :failed {:reason (sanitize-error (.getMessage e)) :finished-at (now-str)}))
+                (if (or (:shutdown? (ex-data e)) @shutdown-requested?)
+                  (record-shutdown! {:error (sanitize-error (.getMessage e))})
+                  (do (log! (str novel-id " failed to finish run: " (.getMessage e)))
+                      (mark-run! novel-id (:run-id lock) :failed {:reason (sanitize-error (.getMessage e)) :finished-at (now-str)}))))
               (finally
+                (end-commit!)
                 (reset! stop? true)
                 (try @hb (catch Exception _ nil))
-                (release-lock! novel-id lock)))
+                (when-not @keep-lock?
+                  (release-lock! novel-id lock))))
             true))))))
 
 ;; ---------------------------------------------------------------------------
@@ -2631,6 +2902,197 @@
              (and (str/includes? (cloud-prompt "NOVEL-0" {} c :regroom "claude-sonnet") "Do NOT write or change the manuscript")
                   (str/includes? (cloud-prompt "NOVEL-0" {} c :write "claude-sonnet") "follow them as well")
                   (not (str/includes? (cloud-prompt "NOVEL-0" {} "## Review Instructions\n\nTBD\n" :write "claude-sonnet") "follow them as well")))))
+    ;; Shutdown race: an agent registered while `stop-in-flight-agents!` is
+    ;; waiting, and one registered after it finished, must both be killed.
+    (let [wait-for-file! (fn [path]
+                           (let [deadline (+ (System/currentTimeMillis) 5000)]
+                             (while (and (not (fs/exists? path)) (< (System/currentTimeMillis) deadline))
+                               (Thread/sleep 20))))
+          start-resistant! (fn []
+                             ;; Only return once the trap is installed, otherwise a
+                             ;; TERM sent right after start would still kill it.
+                             (let [ready (str (fs/create-temp-file {:prefix "shutdown-ready"}))]
+                               (fs/delete ready)
+                               (let [proc (:proc (p/process ["setsid" "sh" "-c"
+                                                             (str "trap '' TERM; : > " ready "; exec sleep 60")]
+                                                            {:out :string :err :string}))]
+                                 (wait-for-file! ready)
+                                 (fs/delete-if-exists ready)
+                                 proc)))
+          early (start-resistant!)
+          late (atom nil)
+          after (atom nil)
+          orphaning (atom nil)
+          ;; Created by the child itself; `wait-for-file!` must not see an empty file.
+          orphan-pid-file (let [path (str (fs/create-temp-file {:prefix "shutdown-orphan" :suffix ".pid"}))]
+                            (fs/delete path)
+                            path)
+          orphan-pid (fn [] (when (fs/exists? orphan-pid-file)
+                              (some-> (slurp orphan-pid-file) str/trim not-empty)))
+          ;; A killed orphan may linger as a zombie until init reaps it, so
+          ;; treat zombies as stopped and allow a short settle time.
+          orphan-alive? (fn []
+                          (when-let [pid (orphan-pid)]
+                            (let [deadline (+ (System/currentTimeMillis) 3000)]
+                              (loop []
+                                (let [stat (str/trim (:out @(p/process ["ps" "-o" "stat=" "-p" pid] {:out :string :err :string})))
+                                      alive (and (seq stat) (not (str/starts-with? stat "Z")))]
+                                  (if (and alive (< (System/currentTimeMillis) deadline))
+                                    (do (Thread/sleep 50) (recur))
+                                    alive))))))]
+      (try
+        (reset! shutdown-requested? true)
+        (register-agent-process! "NOVEL-race-early" early)
+        (let [stopper (future (with-redefs [shutdown-agent-grace-seconds (constantly 2)]
+                                (stop-in-flight-agents!)))]
+          (Thread/sleep 500)
+          (reset! late (start-resistant!))
+          (register-agent-process! "NOVEL-race-late" @late)
+          ;; Agent that exits on TERM but leaves a TERM-ignoring child behind,
+          ;; and is unregistered (as `run-agent!` does) before the final KILL.
+          (reset! orphaning (:proc (p/process ["setsid" "sh" "-c"
+                                               (str "sh -c 'trap \"\" TERM; echo $$ > " orphan-pid-file "; exec sleep 60' & wait")]
+                                              {:out :string :err :string})))
+          ;; Wait for the child's trap before the registration TERMs the group.
+          (wait-for-file! orphan-pid-file)
+          (register-agent-process! "NOVEL-race-orphaning" @orphaning)
+          (.waitFor ^java.lang.Process @orphaning 3 java.util.concurrent.TimeUnit/SECONDS)
+          (unregister-agent-process! "NOVEL-race-orphaning")
+          @stopper)
+        (reset! after (start-resistant!))
+        (register-agent-process! "NOVEL-race-after" @after)
+        (doseq [p [early @late @after]]
+          (try (.waitFor ^java.lang.Process p 3 java.util.concurrent.TimeUnit/SECONDS)
+               (catch Exception _ nil)))
+        (check "agents registered during or after shutdown are killed"
+               (and @in-flight-agents-stopped?
+                    (not (.isAlive ^java.lang.Process early))
+                    (not (.isAlive ^java.lang.Process @late))
+                    (not (.isAlive ^java.lang.Process @after))
+                 (some? (orphan-pid))
+                 (not (orphan-alive?))))
+        (finally
+          (when-let [pid (orphan-pid)]
+            @(p/process ["/bin/kill" "-KILL" pid] {:out :string :err :string}))
+          (fs/delete-if-exists orphan-pid-file)
+          (doseq [p (remove nil? [early @late @after @orphaning])
+                  :when (.isAlive ^java.lang.Process p)]
+            (signal-process-group! p "KILL"))
+          (reset! in-flight-agent-processes {})
+          (reset! in-flight-agents-stopped? false)
+          (reset! shutdown-requested? false))))
+    ;; Shutdown after the lock was taken or after the generation finished: the
+    ;; live flag must be consulted atomically with entering each commit section
+    ;; (start transition, `finish-run!`). Each window records the run as
+    ;; interrupted and keeps the lock; a transition already begun completes.
+    (doseq [[label raise-at] [["shutdown raised before the start transition" :before-start]
+                              ["shutdown raised during the start transition" :during-start]
+                              ["shutdown raised after the run finished" :after-run]
+                              ["shutdown raised during finish-run!" :during-finish]]]
+      (let [calls (atom [])
+            record! (fn [k & args] (swap! calls conj (into [k] args)) nil)
+            lock {:run-id (str "shutdown-commit-" (name raise-at)) :owner-id "test-owner"}
+            card {:novel-id "NOVEL-0" :status "draft" :assignee "claude-fable" :lane "Draft" :title "T" :nsfw false}]
+        (try
+          (with-redefs [note-frontmatter (fn [_] {:assignee "claude-fable"})
+                        note-content (fn [_] "")
+                        candidate-action (fn [& _] :write)
+                        acquire-lock! (fn [& _]
+                                        (when (= :before-start raise-at) (request-shutdown!))
+                                        lock)
+                        current-card (fn [_] card)
+                        heartbeat! (fn [& _] (future nil))
+                        run-dir (fn [& _] "/nonexistent")
+                        ensure-private-dir! identity
+                        move-card! (fn [& args]
+                                     (apply record! :move-card! args)
+                                     (when (= :during-start raise-at) (request-shutdown!)))
+                        update-frontmatter! (partial record! :update-frontmatter!)
+                        append-history! (partial record! :append-history!)
+                        mark-run! (fn [_ _ status _] (record! :mark-run! status))
+                        run-write! (fn [& _]
+                                     (record! :run-write!)
+                                     (when (= :after-run raise-at) (reset! shutdown-requested? true))
+                                     {:ok? true :manuscript-chars 10})
+                        record-applied-instructions! (partial record! :record-applied-instructions!)
+                        finish-run! (fn [& _]
+                                      (record! :finish-run!)
+                                      (when (= :during-finish raise-at) (request-shutdown!)))
+                        release-lock! (partial record! :release-lock!)
+                        log! (fn [& _] nil)]
+            (process-card! card))
+          (finally
+            (reset! shutdown-requested? false)))
+        (let [kinds (set (map first @calls))
+              count-of (fn [k] (count (filter #(= k (first %)) @calls)))
+              interrupted? (some #{[:mark-run! :interrupted]} @calls)
+              failed? (some #{[:mark-run! :failed]} @calls)
+              started? (= 1 (count-of :move-card!))
+              start-complete? (and (= [[:move-card! "NOVEL-0" "in-progress" nil]] (filter #(= :move-card! (first %)) @calls))
+                                   (= 1 (count-of :update-frontmatter!))
+                                   (= 1 (count-of :append-history!))
+                                   (some #{[:mark-run! :running]} @calls))
+              ran? (contains? kinds :run-write!)
+              finished? (contains? kinds :finish-run!)
+              released? (contains? kinds :release-lock!)
+              ok? (and (zero? @committing-cards)
+                       (not failed?)
+                       (case raise-at
+                         :before-start (and (not started?) (not ran?) (not finished?) interrupted? (not released?)
+                                            (zero? (count-of :update-frontmatter!)) (zero? (count-of :append-history!))
+                                            (not-any? #{[:mark-run! :running]} @calls))
+                         :during-start (and start-complete? (not ran?) (not finished?) interrupted? (not released?))
+                         :after-run (and start-complete? ran? (not finished?) interrupted? (not released?))
+                         :during-finish (and start-complete? ran? finished? (not interrupted?) released?)))]
+          (if ok?
+            (println (str "PASS: " label
+                          (case raise-at
+                            :during-finish " completes the commit and releases the lock"
+                            :during-start " completes the start transition, skips the run and keeps the lock"
+                            " keeps the lock and records an interrupted run")))
+            (do
+              (println (str "FAIL: " label " committing=" @committing-cards " calls=" (pr-str @calls)))
+              (swap! failures conj label))))))
+
+    ;; The hook's finalize wait must cover a lifecycle commit that began before
+    ;; the flag was raised, not only `in-flight`. A commit is waited for up to
+    ;; the shutdown commit budget (measured from the hook start), not only the
+    ;; short finalize window, and is given up at the budget so the Pod still
+    ;; exits inside terminationGracePeriodSeconds.
+    (doseq [{:keys [label finalize budget hold-ms probe-ms expect-early? expect-log]}
+            [{:label "shutdown finalize wait covers an in-progress lifecycle commit"
+              :finalize 3 :budget 10 :hold-ms 500 :probe-ms 500
+              :expect-early? false
+              :expect-log "shutdown: in-flight card processing finalized"}
+             {:label "shutdown finalize wait covers a lifecycle commit longer than the finalize window"
+              :finalize 1 :budget 10 :hold-ms 2500 :probe-ms 2000
+              :expect-early? false
+              :expect-log "shutdown: in-flight card processing finalized"}
+             {:label "shutdown finalize wait gives up a lifecycle commit at the shutdown commit budget"
+              :finalize 1 :budget 2 :hold-ms 5000 :probe-ms 3500
+              :expect-early? true
+              :expect-log "shutdown: 1 lifecycle commit(s) still in progress 2s after the shutdown started; exiting to stay inside terminationGracePeriodSeconds, the next owner recovers the card through the planned-shutdown marker"}]]
+      (let [logs (atom [])]
+        (try
+          (reset! shutdown-started-at-ms nil)
+          (swap! committing-cards inc)
+          (let [waiter (future (with-redefs [shutdown-finalize-seconds (constantly finalize)
+                                             shutdown-commit-budget-seconds (constantly budget)
+                                             log! (fn [m] (swap! logs conj m))]
+                                 (await-in-flight-finalization!)))
+                releaser (future (Thread/sleep hold-ms) (swap! committing-cards dec))]
+            (Thread/sleep probe-ms)
+            (let [returned-early? (future-done? waiter)]
+              @releaser
+              (deref waiter 5000 :timeout)
+              (check label
+                     (and (= (boolean expect-early?) returned-early?)
+                          (future-done? waiter)
+                          (some #(= expect-log %) @logs)))))
+          (finally
+            (reset! committing-cards 0)
+            (reset! shutdown-started-at-ms nil)))))
+
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s)")) (System/exit 1))
       (println "All tests passed."))))
