@@ -860,43 +860,60 @@
   (fs/path (run-dir ticket-id run-id) "localllm-committed.edn"))
 
 (defn record-localllm-commit!
-  "Run-specific, durable record that a localllm docs-edit's lane / frontmatter
-  transition completed after its note write (BOXP-277). Written inside the
-  lifecycle commit right after the frontmatter update; crash recovery reads it
+  "Run-specific, durable journal of a localllm docs-edit's lane / frontmatter
+  transition after its note write (BOXP-277). Written inside the lifecycle
+  commit: `:committing` (with the target status) right before the lane move,
+  `:committed` right after the frontmatter update. Crash recovery reads it
   instead of the ticket's own `status`, which is not run-specific (a Review
   re-run starts from `review`, an operator may edit it, and a failed restore
   puts the original status back)."
-  [ticket-id run-id next-status]
+  [ticket-id run-id phase next-status]
   (write-edn-file! (localllm-commit-marker-path ticket-id run-id)
-                   {:ticket ticket-id :run-id run-id :status next-status :committed-at (now-str)}))
+                   {:ticket ticket-id :run-id run-id :phase phase :status next-status :at (now-str)}))
 
 (defn recover-localllm-write!
   "Crash recovery for a localllm docs-edit run (BOXP-277): the audit written
-  right after the note write is the persistent journal. If a run left an
-  audit with applied changes but no run-specific commit record (the process
-  died between the write and the end of the lane / frontmatter transition),
-  restore the notes from the run backup (hash-checked, under the write lock)
-  and record it, so the next run starts from the original note. Returns the
-  rollback report or nil."
+  right after the note write is the persistent journal of the write, and
+  `localllm-committed.edn` the journal of the transition that follows it.
+  - no transition journal: the process died before the lane move started;
+    restore the notes from the run backup (hash-checked, under the write lock)
+    so the next run starts from the original note.
+  - `:committing`: the lane / frontmatter transition was interrupted half way;
+    the note write is complete and verified, so finish the transition
+    (idempotent lane move + frontmatter) instead of leaving Review / In Progress
+    and the note inconsistent.
+  - `:committed`: nothing to do.
+  Returns the rollback report, the completion record, or nil."
   [ticket-id run-id]
   (let [dir (run-dir ticket-id run-id)
         audit (read-edn-file (fs/path dir "localllm-audit.edn") nil)
-        ;; Only this run's own commit record proves the transition completed.
-        ;; The run summary is marked succeeded earlier and the ticket status is
-        ;; shared state (already `review` when a Review re-run starts), so
-        ;; neither must be trusted here.
-        transitioned? (fs/exists? (localllm-commit-marker-path ticket-id run-id))]
+        ;; Only this run's own journal is trusted. The run summary is marked
+        ;; succeeded earlier and the ticket status is shared state (already
+        ;; `review` when a Review re-run starts).
+        journal (read-edn-file (localllm-commit-marker-path ticket-id run-id) nil)
+        phase (:phase journal)]
     (when (and (seq (:applied audit))
-               (not transitioned?)
+               (not= :committed phase)
                @localllm-docs-module-loaded?)
-      (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str dir))
-                          (catch Exception e [{:status :error :reason (subs (str (.getMessage e)) 0 (min 200 (count (str (.getMessage e)))))}]))]
-        (log! (str "run " run-id " for " ticket-id ": restored localllm docs write left by an unfinished run: " (pr-str restored)))
-        (when (fs/exists? (ticket-path ticket-id))
-          (append-note! ticket-id (str "localllm docs run " run-id
-                                       " は文書を更新した後に完了せず終了していたため、backup から復元しました（未適用扱い）: "
-                                       (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored)))))
-        restored))))
+      (if (= :committing phase)
+        (let [next-status (str (:status journal "review"))]
+          (when (fs/exists? (ticket-path ticket-id))
+            (move-card! ticket-id next-status)
+            (update-frontmatter! ticket-id {:status next-status :assignee "boxp"})
+            (record-localllm-commit! ticket-id run-id :committed next-status)
+            (log! (str "run " run-id " for " ticket-id ": completed the interrupted lane transition of a localllm docs write (" next-status ")"))
+            (append-note! ticket-id (str "localllm docs run " run-id
+                                         " は文書を更新した後の lane / frontmatter 遷移の途中で終了していたため、遷移を " next-status
+                                         " として完了させました（文書の更新は適用済み。rollback: task_board_runner.bb localllm-rollback " ticket-id " " run-id "）")))
+          {:completed next-status})
+        (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str dir))
+                            (catch Exception e [{:status :error :reason (subs (str (.getMessage e)) 0 (min 200 (count (str (.getMessage e)))))}]))]
+          (log! (str "run " run-id " for " ticket-id ": restored localllm docs write left by an unfinished run: " (pr-str restored)))
+          (when (fs/exists? (ticket-path ticket-id))
+            (append-note! ticket-id (str "localllm docs run " run-id
+                                         " は文書を更新した後に完了せず終了していたため、backup から復元しました（未適用扱い）: "
+                                         (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored)))))
+          restored)))))
 
 (defn close-interrupted-lock! [ticket-id lock reason note]
   (when-let [interrupted-run (:run-id lock)]
@@ -2454,6 +2471,11 @@
                     (record-task-board-event! ticket-id run-id status "blocked" result)
                     (restore-card-state! ticket-id status assignee))
                   (do
+                    ;; localllm docs-edit: journal the transition before it
+                    ;; starts so a crash in the middle is completed (not rolled
+                    ;; back) by `recover-localllm-write!`.
+                    (when @docs-applied?
+                      (record-localllm-commit! ticket-id run-id :committing next-status))
                     (move-card! ticket-id next-status)
                     (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION"))
                       ;; Deterministic black-box failure hook after the document
@@ -2467,7 +2489,7 @@
                     ;; (crash recovery reads this run-specific record, see
                     ;; `recover-localllm-write!`).
                     (when @docs-applied?
-                      (record-localllm-commit! ticket-id run-id next-status))
+                      (record-localllm-commit! ticket-id run-id :committed next-status))
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                     ;; After lane, frontmatter and Notes are durable: wake Kohako.
                     (record-task-board-event! ticket-id run-id status next-status result)))

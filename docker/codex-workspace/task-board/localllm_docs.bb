@@ -132,6 +132,12 @@
                                     (into-array LinkOption [LinkOption/NOFOLLOW_LINKS]))]
     (when (.isRegularFile attrs) (.size attrs))))
 
+(defn max-note-bytes
+  "Byte cap derived from `max-note-chars` (UTF-8 is at most 4 bytes per char,
+  so a file above it cannot fit the char cap) checked before a note is read."
+  [cfg]
+  (* 4 (:max-note-chars cfg)))
+
 (defn slurp-nofollow
   "Read a validated vault file without following a symlink in its last
   component (O_NOFOLLOW), so a note swapped for a symlink between validation
@@ -567,8 +573,12 @@
     (loop [[c & more] candidates remaining budget included [] skipped [] out ""]
       (if (or (nil? c) (<= remaining 500))
         {:text out :included included :skipped (vec (concat skipped (when c (cons c more))))}
-        (let [r (resolve-vault-path vault c (:read-roots cfg))]
-          (if (and (:ok? r) (:exists? r))
+        (let [r (resolve-vault-path vault c (:read-roots cfg))
+              ;; Size check (O_NOFOLLOW) before the read: a linked note is
+              ;; truncated to the budget anyway, so one over the note byte cap
+              ;; is skipped instead of being read whole into memory.
+              size (when (and (:ok? r) (:exists? r)) (size-nofollow (:abs r)))]
+          (if (and size (<= size (max-note-bytes cfg)))
             (let [content (slurp-nofollow (:abs r))
                   piece (truncate-text content (max 0 (- remaining 200)))
                   block (str "\n### 参照ノート: " c "\n```markdown\n" piece "\n```\n")]
@@ -1384,15 +1394,22 @@
     (let [resolved (map #(assoc (resolve-vault-path vault % (:docs-roots cfg)) :requested %) targets)]
       (if-let [bad (first (remove :ok? resolved))]
         {:ok? false :category "localllm-invalid-target" :reason (str "docs-target を拒否: " (:reason bad))}
-        (let [snapshots (into {} (map (fn [{:keys [rel abs exists?]}]
-                                        (let [text (if exists? (slurp-nofollow abs) "")]
-                                          [rel {:rel rel :abs abs :exists? exists? :text text :sha (when exists? (sha256 text))}]))
-                                      resolved))
-              too-big (first (filter #(> (count (:text %)) (:max-note-chars cfg)) (vals snapshots)))]
-          (if too-big
-            {:ok? false :category "localllm-invalid-target"
-             :reason (str (:rel too-big) " は " (count (:text too-big)) " 字で上限 " (:max-note-chars cfg) " 字を超えます（長文は分割してください）")}
-            {:ok? true :targets (mapv :rel resolved) :snapshots snapshots}))))))
+        ;; Byte check (O_NOFOLLOW) before any target is read, so an oversized
+        ;; note inside the allowlist is refused without loading it into memory.
+        (if-let [huge (first (filter (fn [{:keys [abs exists?]}]
+                                       (and exists? (> (or (size-nofollow abs) 0) (max-note-bytes cfg))))
+                                     resolved))]
+          {:ok? false :category "localllm-invalid-target"
+           :reason (str (:rel huge) " は " (size-nofollow (:abs huge)) " bytes で、1 ノートの上限 " (:max-note-chars cfg) " 字（" (max-note-bytes cfg) " bytes）を超えます（長文は分割してください）")}
+          (let [snapshots (into {} (map (fn [{:keys [rel abs exists?]}]
+                                          (let [text (if exists? (slurp-nofollow abs) "")]
+                                            [rel {:rel rel :abs abs :exists? exists? :text text :sha (when exists? (sha256 text))}]))
+                                        resolved))
+                too-big (first (filter #(> (count (:text %)) (:max-note-chars cfg)) (vals snapshots)))]
+            (if too-big
+              {:ok? false :category "localllm-invalid-target"
+               :reason (str (:rel too-big) " は " (count (:text too-big)) " 字で上限 " (:max-note-chars cfg) " 字を超えます（長文は分割してください）")}
+              {:ok? true :targets (mapv :rel resolved) :snapshots snapshots})))))))
 
 (defn prompt-chars-lower-bound
   "Characters the edit request will carry before any optional reference /

@@ -295,6 +295,7 @@ test_apply_moves_to_review_without_cloud() {
   assert_file_contains "${run_dir}/last-message.md" '^TASK_BOARD_RESULT: review$'
   assert_file_contains "${run_dir}/localllm-audit.edn" ':status :review'
   assert_file_contains "${run_dir}/localllm-audit.edn" ':after-sha256'
+  assert_file_contains "${run_dir}/localllm-committed.edn" ':phase :committed'
   assert_file_contains "${run_dir}/localllm-committed.edn" ':status "review"'
   assert_file_not_contains "${run_dir}/llm-evidence.edn" 'v1\.3'
   grep -q 'v1.2' "${run_dir}/backup/${PILOT}/runbook.md" || fail "backup should hold the original"
@@ -642,6 +643,33 @@ test_corpus_notes_over_the_byte_caps_block_before_any_read() {
   assert_runbook_unchanged
 }
 
+test_oversized_target_and_reference_are_refused_before_reading() {
+  # docs-target above the byte cap derived from max-note-chars: refused before
+  # the file is read, no model request.
+  setup; echo normal >"${MODE_FILE}"
+  head -c 5000 /dev/zero | tr '\0' 'a' >>"${VAULT}/${PILOT}/runbook.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-747|BOXP-747: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-747 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_NOTE_CHARS=1000 >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected for an oversized target"
+  assert_blocked BOXP-747 'runbook\.md は [0-9]+ bytes で、1 ノートの上限 1000 字（4000 bytes）'
+  # a linked reference note above the cap is skipped (not read) and the edit
+  # still runs with the small target
+  setup; echo normal >"${MODE_FILE}"
+  { printf -- '---\ntitle: source a\n---\n\n# source a\n\n'; head -c 5000 /dev/zero | tr '\0' 'b'; printf '\n'; } >"${VAULT}/Projects/task-board-localllm-docs/refs/source-a.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-751|BOXP-751: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-751 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_NOTE_CHARS=1000 >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 1 ]] || fail "expected one model request, got $(request_count)"
+  assert_file_contains "${VAULT}/Tickets/BOXP-751.md" '^status: review$'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-751" -name localllm-audit.edn | head -n 1)"
+  assert_file_not_contains "${audit}" ':included \[[^]]*source-a'
+  grep -q 'refs=0' "${CASE_DIR}/out" || fail "oversized reference must be skipped: $(grep -o 'refs=[0-9]*' "${CASE_DIR}/out" | head -n 1)"
+}
+
 test_runaway_output_is_cut_and_blocks_without_retry() {
   setup; echo runaway >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-745|BOXP-745: docs]] #ticket status::ready"
@@ -873,7 +901,7 @@ test_stale_lock_recovery_is_decided_by_the_run_commit_record() {
   # the ticket status says in-progress (e.g. edited by hand afterwards).
   setup; echo normal >"${MODE_FILE}"
   write_unfinished_localllm_run BOXP-763 "${old_run}"
-  printf '{:ticket "BOXP-763" :run-id "%s" :status "review" :committed-at "2026-07-01T00:00:01Z"}\n' "${old_run}" >"${STATE}/runs/BOXP-763/${old_run}/localllm-committed.edn"
+  printf '{:ticket "BOXP-763" :run-id "%s" :phase :committed :status "review" :at "2026-07-01T00:00:01Z"}\n' "${old_run}" >"${STATE}/runs/BOXP-763/${old_run}/localllm-committed.edn"
   write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-763|BOXP-763: docs]] #ticket status::in-progress"
   write_ticket "${VAULT}" BOXP-763 in-progress boxp "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out"
@@ -882,6 +910,25 @@ test_stale_lock_recovery_is_decided_by_the_run_commit_record() {
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
   assert_file_contains "${STATE}/runs/BOXP-763/${old_run}/summary.edn" ':status :interrupted'
   [[ ! -e "${STATE}/locks/BOXP-763.edn" ]] || fail "stale lock must be released"
+  # A `:committing` journal means the run died in the middle of the lane /
+  # frontmatter transition: the (verified) note write is kept and the
+  # transition is completed, so Review and the note never disagree.
+  setup; echo normal >"${MODE_FILE}"
+  write_unfinished_localllm_run BOXP-764 "${old_run}"
+  printf '{:ticket "BOXP-764" :run-id "%s" :phase :committing :status "review" :at "2026-07-01T00:00:01Z"}\n' "${old_run}" >"${STATE}/runs/BOXP-764/${old_run}/localllm-committed.edn"
+  write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-764|BOXP-764: docs]] #ticket status::in-progress"
+  write_ticket "${VAULT}" BOXP-764 in-progress localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 0 ]] || fail "completing the transition must not start a new model run"
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-764\|.*status::review'
+  assert_file_contains "${VAULT}/Tickets/BOXP-764.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-764.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-764.md" '遷移の途中で終了していたため、遷移を review として完了させました'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-764.md" 'backup から復元しました'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${STATE}/runs/BOXP-764/${old_run}/localllm-committed.edn" ':phase :committed'
+  [[ ! -e "${STATE}/locks/BOXP-764.edn" ]] || fail "stale lock must be released"
 }
 
 test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
@@ -1009,6 +1056,7 @@ for t in \
   test_research_without_progress_stops_and_unsourced_apply_blocks \
   test_research_sources_outside_read_roots_block_without_request \
   test_corpus_notes_over_the_byte_caps_block_before_any_read \
+  test_oversized_target_and_reference_are_refused_before_reading \
   test_apply_moves_to_review_without_cloud \
   test_stream_response_is_applied \
   test_missing_opt_in_blocks_without_request \
