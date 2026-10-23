@@ -22,14 +22,33 @@ on:
         type: string
         default: 16G
       install_gpu_host_tools:
-        description: Install Intel graphics runtime, nvtop, and host smoke-test tools
+        description: >-
+          Install Intel graphics runtime, nvtop, and host smoke-test tools.
+          "auto" uses worker_nodes.<node_name>.gpu_host_tools from ansible/vars/worker_nodes.yml
+          (true only for golyat-4).
         required: true
-        type: boolean
-        default: true
+        type: choice
+        default: auto
+        options:
+          - auto
+          - "true"
+          - "false"
+      runner:
+        description: >-
+          Runner label. arc-runners-arch (self-hosted, default) is the normal
+          path. ubuntu-22.04 is the GitHub-hosted path that produced the
+          2026-06 golyat-4 images; it is kept as an explicit fallback for when
+          the self-hosted runner cannot take jobs (BOXP-269).
+        required: true
+        type: choice
+        default: arc-runners-arch
+        options:
+          - arc-runners-arch
+          - ubuntu-22.04
 
 jobs:
   build-image:
-    runs-on: arc-runners-arch
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 120
     permissions:
       id-token: write
@@ -41,11 +60,32 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install image build dependencies (GitHub-hosted runner only)
+        if: ${{ inputs.runner != 'arc-runners-arch' }}
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            jq \
+            libguestfs-tools \
+            python3-venv \
+            qemu-utils \
+            xz-utils
+          sudo chmod 0644 /boot/vmlinuz-*
+          if [ -e /dev/kvm ]; then
+            sudo chmod 0666 /dev/kvm
+          fi
+
       - name: Verify image build dependencies
         run: |
           command -v qemu-img
           command -v virt-customize
           command -v virt-resize
+          command -v virt-sysprep
+          command -v virt-copy-out
+
+      - name: Self-test the S3 artifact verifier
+        run: scripts/images/verify-gpu-worker-image-s3.test.sh
 
       - name: Build GPU worker image
         id: build
@@ -62,10 +102,12 @@ jobs:
           final_image_line="$(grep '^FINAL_IMAGE=' build-output.log | tail -n1)"
           checksum_file_line="$(grep '^CHECKSUM_FILE=' build-output.log | tail -n1)"
           image_info_line="$(grep '^IMAGE_INFO=' build-output.log | tail -n1)"
+          verify_report_line="$(grep '^VERIFY_REPORT=' build-output.log | tail -n1)"
           final_image="${final_image_line#FINAL_IMAGE=}"
           checksum_file="${checksum_file_line#CHECKSUM_FILE=}"
           image_info="${image_info_line#IMAGE_INFO=}"
-          for output_path in "$final_image" "$checksum_file" "$image_info"; do
+          verify_report="${verify_report_line#VERIFY_REPORT=}"
+          for output_path in "$final_image" "$checksum_file" "$image_info" "$verify_report"; do
             if [ -z "$output_path" ] || [ ! -f "$output_path" ]; then
               echo "Missing expected build output: $output_path" >&2
               exit 1
@@ -75,6 +117,7 @@ jobs:
             echo "final_image=$final_image"
             echo "checksum_file=$checksum_file"
             echo "image_info=$image_info"
+            echo "verify_report=$verify_report"
           } >> "$GITHUB_OUTPUT"
 
       - name: Verify image artifact
@@ -87,6 +130,14 @@ jobs:
           xz --test "${{ steps.build.outputs.final_image }}"
           file "${{ steps.build.outputs.final_image }}"
           jq . "${{ steps.build.outputs.image_info }}"
+          # BOXP-269: the build script already verified the image contents
+          # (identity, static network, kubelet/CRI-O, GPU tools, ssh, secrets)
+          # against ansible/vars/worker_nodes.yml; fail here if that record is missing.
+          test "$(jq -r .verification "${{ steps.build.outputs.image_info }}")" = passed
+          test "$(jq -r .node_name "${{ steps.build.outputs.image_info }}")" = "${{ inputs.node_name }}"
+          echo "::group::Image content verification report"
+          cat "${{ steps.build.outputs.verify_report }}"
+          echo "::endgroup::"
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e3dd6a429d7300a6a4c196c26e071d42e0343502 # v4
@@ -95,15 +146,20 @@ jobs:
           aws-region: ap-northeast-1
 
       - name: Upload image to S3
+        id: upload
         env:
           NODE_NAME: ${{ inputs.node_name }}
           S3_BUCKET: arch-gpu-worker-images
           S3_STABLE_PREFIX: images/${{ inputs.node_name }}
           S3_ARTIFACT_PREFIX: images/artifacts/${{ inputs.node_name }}
         run: |
+          # Recorded before the first write so the S3 verification step can
+          # prove that no other node's latest image changed during this run.
+          echo "started_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           final_image="${{ steps.build.outputs.final_image }}"
           checksum_file="${{ steps.build.outputs.checksum_file }}"
           image_info="${{ steps.build.outputs.image_info }}"
+          verify_report="${{ steps.build.outputs.verify_report }}"
           final_name="$(basename "$final_image")"
           latest_checksum_file="${RUNNER_TEMP}/latest.img.xz.sha256"
           checksum_value="$(cut -d' ' -f1 "$checksum_file")"
@@ -112,6 +168,7 @@ jobs:
           aws s3 cp "$final_image" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/"
           aws s3 cp "$checksum_file" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/"
           aws s3 cp "$image_info" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/image-info.json"
+          aws s3 cp "$verify_report" "s3://${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/${final_name%.img.xz}.verify.txt"
 
           aws s3api copy-object \
             --copy-source "${S3_BUCKET}/${S3_ARTIFACT_PREFIX}/${final_name}" \
@@ -121,11 +178,30 @@ jobs:
           aws s3 cp "$latest_checksum_file" "s3://${S3_BUCKET}/${S3_STABLE_PREFIX}/latest.img.xz.sha256"
 
           aws s3 cp "$image_info" "s3://${S3_BUCKET}/${S3_STABLE_PREFIX}/image-info.json"
+          aws s3 cp "$verify_report" "s3://${S3_BUCKET}/${S3_STABLE_PREFIX}/latest.verify.txt"
 
           aws s3api put-object-tagging \
             --bucket "$S3_BUCKET" \
             --key "${S3_ARTIFACT_PREFIX}/${final_name}" \
             --tagging "TagSet=[{Key=NodeName,Value=${NODE_NAME}},{Key=BuildDate,Value=$(date +%Y-%m-%d)},{Key=GitSHA,Value=${GITHUB_SHA}}]"
+
+      - name: Verify S3 objects
+        env:
+          S3_BUCKET: arch-gpu-worker-images
+        run: |
+          # BOXP-269: read the bucket back independently of the upload (head,
+          # streamed sha256 of both image objects, stored .sha256 files, tags,
+          # other nodes' latest untouched). Read-only; the report goes to the
+          # job summary so the evidence lives with the run.
+          scripts/images/verify-gpu-worker-image-s3.sh \
+            --bucket "$S3_BUCKET" \
+            --node "${{ inputs.node_name }}" \
+            --image "${{ steps.build.outputs.final_image }}" \
+            --checksum-file "${{ steps.build.outputs.checksum_file }}" \
+            --since "${{ steps.upload.outputs.started_at }}" \
+            --git-sha "$GITHUB_SHA" \
+            --report "${RUNNER_TEMP}/s3-verify.md"
+          cat "${RUNNER_TEMP}/s3-verify.md" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Build summary
         run: |
@@ -136,6 +212,12 @@ jobs:
             echo "- Image: $(basename "${{ steps.build.outputs.final_image }}")"
             echo "- Size: $(du -h "${{ steps.build.outputs.final_image }}" | cut -f1)"
             echo "- Checksum: $(cut -d' ' -f1 "${{ steps.build.outputs.checksum_file }}")"
+            echo "- Node IP / interface: $(jq -r '.node_ip + " / " + .network_interface' "${{ steps.build.outputs.image_info }}")"
+            echo "- GPU host tools: $(jq -r .gpu_host_tools "${{ steps.build.outputs.image_info }}")"
+            echo "- Kubernetes / CRI-O: $(jq -r '.kubernetes_package_version + " / " + .crio_package_version' "${{ steps.build.outputs.image_info }}")"
+            echo "- Longhorn multipath blacklist baked: $(jq -r .longhorn_multipath_blacklist "${{ steps.build.outputs.image_info }}")"
+            echo "- Content verification: $(tail -n1 "${{ steps.build.outputs.verify_report }}")"
+            echo "- S3 verification: see the S3 objects table above (s3-verification line)"
             echo "- Artifact storage: S3 only"
             echo "- S3 latest path: s3://arch-gpu-worker-images/images/${{ inputs.node_name }}/latest.img.xz"
             echo "- S3 artifact path: s3://arch-gpu-worker-images/images/artifacts/${{ inputs.node_name }}/"

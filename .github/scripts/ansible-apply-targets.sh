@@ -17,8 +17,11 @@
 #                                                (none when standalone, e.g. upgrade-k8s.yml)
 #   ansible/roles/<role>/**                   -> nodes of playbooks that use <role>
 #   ansible/files/**, ansible/templates/**    -> nodes of playbooks/roles that reference the file
+#   ansible/vars/*.yml                        -> nodes of playbooks that load the file
+#                                                (nodes.yml -> every node, worker_nodes.yml -> golyat-*)
 #   ansible/group_vars/control_plane.yml      -> every shanghai-* node
 #   ansible/tests/**, *.md, molecule/**, lint -> no node
+#   **/__pycache__/**, *.pyc                  -> no node (Python bytecode is never Ansible content)
 #   anything else under ansible/              -> every node (shared: inventories, vars, uv.lock, ...)
 #   anything outside ansible/                 -> no node (workflow/doc edits do not change Ansible content)
 # Unresolvable references (role/file used nowhere we can see) fall back to every node,
@@ -156,7 +159,7 @@ nodes_for_file() {
     *) return 0 ;;
   esac
   case "$f" in
-    *.md|ansible/tests/*|ansible/.ansible-lint|ansible/roles/*/molecule/*)
+    *.md|ansible/tests/*|ansible/.ansible-lint|ansible/roles/*/molecule/*|*/__pycache__/*|*.pyc)
       return 0
       ;;
     ansible/playbooks/*.yml|ansible/playbooks/*.yaml)
@@ -165,7 +168,7 @@ nodes_for_file() {
     ansible/roles/*/*)
       nodes_for_role "$(echo "$f" | cut -d/ -f3)"
       ;;
-    ansible/files/*|ansible/templates/*)
+    ansible/files/*|ansible/templates/*|ansible/vars/*.yml|ansible/vars/*.yaml)
       nodes_for_asset "$f"
       ;;
     ansible/group_vars/control_plane.yml)

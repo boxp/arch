@@ -27,7 +27,7 @@ cat > "$fixture/ansible/playbooks/control-plane.yml" <<'YML'
 YML
 cat > "$fixture/ansible/playbooks/worker-image.yml" <<'YML'
 - hosts: workers
-  vars_files: [../vars/nodes.yml]
+  vars_files: [../vars/nodes.yml, ../vars/worker_nodes.yml]
   roles:
     - role: shared_role
     - role: worker_role
@@ -64,7 +64,8 @@ echo "- ansible.builtin.copy: {src: ../files/role-asset.txt}" > "$fixture/ansibl
 echo "- debug: {}" > "$fixture/ansible/roles/upgrade_role/tasks/main.yml"
 touch "$fixture/ansible/files/"{cp-only.conf,worker-only.conf,role-asset.txt,unreferenced.conf} \
   "$fixture/ansible/templates/shanghai-2.service.j2" \
-  "$fixture/ansible/vars/nodes.yml" "$fixture/ansible/inventories/production/hosts.yml" \
+  "$fixture/ansible/vars/nodes.yml" "$fixture/ansible/vars/worker_nodes.yml" "$fixture/ansible/vars/unused.yml" \
+  "$fixture/ansible/inventories/production/hosts.yml" \
   "$fixture/ansible/group_vars/control_plane.yml" "$fixture/ansible/uv.lock" \
   "$fixture/ansible/README.md" "$fixture/ansible/.ansible-lint" "$fixture/ansible/tests/test_x.py" \
   "$fixture/ansible/roles/worker_role/README.md" "$fixture/ansible/roles/worker_role/molecule/default/converge.yml" \
@@ -114,9 +115,12 @@ check "file referenced by cp playbook -> CP" "$CP" "$fixture" ansible/files/cp-o
 check "file referenced via worker role -> worker" "$WORKER" "$fixture" ansible/files/role-asset.txt
 check "template referenced by node playbook -> that node" '["shanghai-2"]' "$fixture" ansible/templates/shanghai-2.service.j2
 check "unreferenced file -> all (fail closed)" "$ALL" "$fixture" ansible/files/unreferenced.conf
+check "python bytecode under files/ -> none" '[]' "$fixture" ansible/files/__pycache__/verify_x.cpython-314.pyc ansible/files/stray.pyc
 check "deleted (missing) file -> all (fail closed)" "$ALL" "$fixture" ansible/files/removed.conf
 check "group_vars/control_plane.yml -> CP" "$CP" "$fixture" ansible/group_vars/control_plane.yml
-check "vars/inventory/uv.lock -> all" "$ALL" "$fixture" ansible/vars/nodes.yml
+check "vars loaded by cp + worker playbooks -> all" "$ALL" "$fixture" ansible/vars/nodes.yml
+check "vars loaded by worker playbook only -> worker" "$WORKER" "$fixture" ansible/vars/worker_nodes.yml
+check "vars loaded nowhere -> all (fail closed)" "$ALL" "$fixture" ansible/vars/unused.yml
 check "inventory -> all" "$ALL" "$fixture" ansible/inventories/production/hosts.yml
 check "uv.lock -> all" "$ALL" "$fixture" ansible/uv.lock
 check "tests/md/lint -> none" '[]' "$fixture" ansible/tests/test_x.py ansible/README.md ansible/.ansible-lint
@@ -172,7 +176,22 @@ check "repo: network_configuration role -> CP" "$CP" "$repo_root" ansible/roles/
 check "repo: gpu_worker_host_tools role -> worker" "$WORKER" "$repo_root" ansible/roles/gpu_worker_host_tools/tasks/main.yml
 check "repo: user_management role -> all" "$ALL" "$repo_root" ansible/roles/user_management/tasks/main.yml
 check "repo: uv.lock -> all" "$ALL" "$repo_root" ansible/uv.lock
+check "repo: vars/nodes.yml -> all" "$ALL" "$repo_root" ansible/vars/nodes.yml
+check "repo: vars/worker_nodes.yml -> worker" "$WORKER" "$repo_root" ansible/vars/worker_nodes.yml
 check "repo: group_vars/control_plane.yml -> CP" "$CP" "$repo_root" ansible/group_vars/control_plane.yml
+# BOXP-269 P0 guard: the full file set of PR #13811 (worker-image pipeline
+# variabilisation for golyat-1..3) must only ever apply to golyat-4, never to
+# the control plane. Keep this list in sync with that PR if it grows.
+check "repo: BOXP-269 P0 PR file set -> worker only" "$WORKER" "$repo_root" \
+  .gitignore \
+  .github/scripts/ansible-apply-targets.sh .github/scripts/ansible-apply-targets.test.sh \
+  .github/workflows/apply-ansible.yml .github/workflows/build-gpu-worker-image.yml \
+  ansible/playbooks/worker-image.yml \
+  ansible/tests/test_verify_gpu_worker_image.py ansible/tests/test_worker_nodes.py \
+  ansible/vars/worker_nodes.yml \
+  docs/GPU_WORKER_IMAGE_DEPLOYMENT.md docs/project_docs/BOXP-267/plan-apply-ansible-targets.md docs/project_docs/BOXP-269/plan.md \
+  scripts/images/build-gpu-worker-image.sh scripts/images/verify-gpu-worker-image-s3.sh \
+  scripts/images/verify-gpu-worker-image-s3.test.sh scripts/images/verify-gpu-worker-image.sh scripts/images/worker-node-config.py
 
 echo "$((total - failures))/$total passed"
 [ "$failures" -eq 0 ]
