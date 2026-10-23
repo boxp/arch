@@ -1959,7 +1959,9 @@
          "; model=" (:model result "localllm")
          (when usage (str "; tokens prompt=" (:prompt_tokens usage) " completion=" (:completion_tokens usage)))
          (when-let [ms (:llm-elapsed-ms result)] (str "; llm " (quot ms 1000) "s"))
-         (when (seq (:summary result)) (str "; 要確認: " (:summary result)))
+         ;; The model's free-text summary may restate note content, so it stays
+         ;; in the audit file (same run directory) rather than in Notes.
+         (when (seq (:summary result)) "; 要確認事項: audit の :summary を参照")
          "; audit/backup: " (:audit-path result)
          "; rollback: " (localllm-rollback-command ticket-id run-id))))
 

@@ -1155,14 +1155,42 @@
                                   (:files staged))]
               (if (seq conflicts)
                 {:ok? false :category "localllm-conflict" :reason (str "競合のため未適用: " (str/join "; " conflicts))}
-                (let [applied (mapv (fn [{:keys [rel abs before after ops exists?]}]
-                                      (let [backup (when exists? (backup! run-dir rel before))]
-                                        (atomic-write! abs after)
-                                        {:path rel :before-sha256 (when exists? (sha256 before)) :after-sha256 (sha256 after)
-                                         :created? (not exists?) :backup backup :ops ops
-                                         :before-chars (count (or before "")) :after-chars (count after)}))
-                                    (:files staged))]
-                  {:ok? true :applied applied})))))))))
+                ;; Back up every existing target first, then write. If a write
+                ;; fails part-way, restore the files already written so a
+                ;; multi-target proposal is never half applied.
+                (let [backups (try
+                                {:ok? true
+                                 :by-rel (into {} (map (fn [{:keys [rel before exists?]}]
+                                                         [rel (when exists? (backup! run-dir rel before))])
+                                                       (:files staged)))}
+                                (catch Exception e
+                                  {:ok? false :reason (str "backup の作成に失敗したため未適用: " (sanitize-error (.getMessage e)))}))]
+                  (if-not (:ok? backups)
+                    {:ok? false :category "localllm-io-error" :reason (:reason backups)}
+                    (let [written (atom [])
+                          failure (try
+                                    (doseq [{:keys [rel abs after]} (:files staged)]
+                                      (atomic-write! abs after)
+                                      (swap! written conj rel))
+                                    nil
+                                    (catch Exception e
+                                      (doseq [{:keys [rel abs exists?]} (:files staged)
+                                              :when (contains? (set @written) rel)]
+                                        (try
+                                          (if exists?
+                                            (atomic-write! abs (slurp (get-in backups [:by-rel rel])))
+                                            (fs/delete-if-exists abs))
+                                          (catch Exception _ nil)))
+                                      (sanitize-error (.getMessage e))))]
+                      (if failure
+                        {:ok? false :category "localllm-io-error"
+                         :reason (str "書込みに失敗したため、書込み済みのファイルを backup から復元して未適用にしました: " failure)}
+                        {:ok? true
+                         :applied (mapv (fn [{:keys [rel before after ops exists?]}]
+                                          {:path rel :before-sha256 (when exists? (sha256 before)) :after-sha256 (sha256 after)
+                                           :created? (not exists?) :backup (get-in backups [:by-rel rel]) :ops ops
+                                           :before-chars (count (or before "")) :after-chars (count after)})
+                                        (:files staged))}))))))))))))
 
 (defn snapshot-targets
   "Resolve and read declared targets. Returns {:ok? true :targets :snapshots}
