@@ -620,6 +620,28 @@ test_research_sources_outside_read_roots_block_without_request() {
   assert_blocked BOXP-744 'symlink'
 }
 
+test_corpus_notes_over_the_byte_caps_block_before_any_read() {
+  # One allowed note larger than the per-note byte cap: the corpus is refused
+  # before anything is read into memory and no model request is made.
+  setup; echo research >"${MODE_FILE}"
+  head -c 6000 /dev/zero | tr '\0' 'a' >"${VAULT}/${CORPUS}/huge.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-745|BOXP-745: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-745 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_CORPUS_NOTE_BYTES=5000 >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected for an oversized corpus note"
+  assert_blocked BOXP-745 'huge\.md が 6000 bytes で 1 ノートの上限 5000 bytes'
+  assert_runbook_unchanged
+  # the corpus total is capped as well
+  setup; echo research >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-746|BOXP-746: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-746 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_CORPUS_BYTES=100 >"${CASE_DIR}/out"
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected for an oversized corpus"
+  assert_blocked BOXP-746 '合計サイズが上限 100 bytes'
+  assert_runbook_unchanged
+}
+
 test_runaway_output_is_cut_and_blocks_without_retry() {
   setup; echo runaway >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-745|BOXP-745: docs]] #ticket status::ready"
@@ -986,6 +1008,7 @@ for t in \
   test_research_finish_without_reads_auto_reads_the_hits \
   test_research_without_progress_stops_and_unsourced_apply_blocks \
   test_research_sources_outside_read_roots_block_without_request \
+  test_corpus_notes_over_the_byte_caps_block_before_any_read \
   test_apply_moves_to_review_without_cloud \
   test_stream_response_is_applied \
   test_missing_opt_in_blocks_without_request \

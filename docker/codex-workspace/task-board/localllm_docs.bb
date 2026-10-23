@@ -101,6 +101,11 @@
    :research-total-seconds (env-long "CODEX_TASK_BOARD_LOCALLLM_RESEARCH_TOTAL_SECONDS" 900)
    :index-char-budget (env-long "CODEX_TASK_BOARD_LOCALLLM_INDEX_CHAR_BUDGET" 6000)
    :max-corpus-notes (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CORPUS_NOTES" 1000)
+   ;; Byte caps checked (O_NOFOLLOW) before any corpus note is read into memory:
+   ;; the char budgets below only shape what the model sees, so one oversized
+   ;; allowed note must not exhaust the runner or stall the tick.
+   :max-corpus-note-bytes (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CORPUS_NOTE_BYTES" 1000000)
+   :max-corpus-bytes (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CORPUS_BYTES" 32000000)
    :search-max-hits (env-long "CODEX_TASK_BOARD_LOCALLLM_SEARCH_MAX_HITS" 8)
    :search-lines-per-hit (env-long "CODEX_TASK_BOARD_LOCALLLM_SEARCH_LINES_PER_HIT" 3)
    :read-max-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_READ_MAX_CHARS" 3500)
@@ -118,6 +123,14 @@
          (apply str))))
 
 (defn now-str [] (str (java.time.Instant/now)))
+
+(defn size-nofollow
+  "Size in bytes of a validated vault file without following a symlink in its
+  last component; nil when it is not a regular file."
+  [path]
+  (let [attrs (Files/readAttributes (fs/path (str path)) java.nio.file.attribute.BasicFileAttributes
+                                    (into-array LinkOption [LinkOption/NOFOLLOW_LINKS]))]
+    (when (.isRegularFile attrs) (.size attrs))))
 
 (defn slurp-nofollow
   "Read a validated vault file without following a symlink in its last
@@ -599,7 +612,9 @@
 (defn load-corpus
   "Enumerate the readable notes under the declared sources (no symlinks, `.md`
   only, targets excluded). Returns {:ok? true :notes [{:rel :title :headings :chars :text}]}
-  or {:ok? false :category :reason}."
+  or {:ok? false :category :reason}. Every note is re-validated (whole path,
+  no symlink component) and size-checked (O_NOFOLLOW) immediately before it
+  is read, and only the validated absolute path is read."
   [cfg vault sources targets]
   (let [resolved (map #(resolve-source-root vault % (:read-roots cfg)) sources)]
     (if-let [bad (first (remove :ok? resolved))]
@@ -614,17 +629,34 @@
                        (remove (set targets))
                        (filter (fn [rel] (let [r (resolve-vault-path vault rel (:read-roots cfg))] (and (:ok? r) (:exists? r)))))
                        sort
-                       vec)]
+                       vec)
+            invalid (fn [reason] {:ok? false :category "localllm-invalid-source" :reason reason})
+            note-cap (:max-corpus-note-bytes cfg)
+            total-cap (:max-corpus-bytes cfg)]
         (cond
-          (empty? files) {:ok? false :category "localllm-invalid-source" :reason "docs-sources に読めるノートがありません"}
-          (> (count files) (:max-corpus-notes cfg)) {:ok? false :category "localllm-invalid-source"
-                                                     :reason (str "docs-sources のノート数 " (count files) " が上限 " (:max-corpus-notes cfg) " を超えます（フォルダを絞ってください）")}
+          (empty? files) (invalid "docs-sources に読めるノートがありません")
+          (> (count files) (:max-corpus-notes cfg))
+          (invalid (str "docs-sources のノート数 " (count files) " が上限 " (:max-corpus-notes cfg) " を超えます（フォルダを絞ってください）"))
           :else
-          {:ok? true
-           :notes (mapv (fn [rel]
-                          (let [text (slurp-nofollow (fs/path vault rel))]
-                            {:rel rel :title (note-title text rel) :headings (note-headings text) :chars (count text) :text text}))
-                        files)})))))
+          (loop [[rel & more] files total 0 notes []]
+            (if (nil? rel)
+              {:ok? true :notes notes}
+              ;; Re-validate right before the read: a directory under a writable
+              ;; corpus swapped for a symlink after the enumeration above must
+              ;; not be followed into foreign content.
+              (let [r (resolve-vault-path vault rel (:read-roots cfg))
+                    size (when (and (:ok? r) (:exists? r)) (size-nofollow (:abs r)))]
+                (cond
+                  (not (:ok? r)) (invalid (str "docs-sources の読取直前の再検証に失敗: " (:reason r)))
+                  (nil? size) (invalid (str "docs-sources が通常ファイルではなくなりました: " rel))
+                  (> size note-cap)
+                  (invalid (str "docs-sources のノート " rel " が " size " bytes で 1 ノートの上限 " note-cap " bytes を超えます（分割するか docs-sources から外してください）"))
+                  (> (+ total size) total-cap)
+                  (invalid (str "docs-sources の合計サイズが上限 " total-cap " bytes を超えます（" rel " の時点で " (+ total size) " bytes。フォルダを絞ってください）"))
+                  :else
+                  (let [text (slurp-nofollow (:abs r))]
+                    (recur more (+ total size)
+                           (conj notes {:rel rel :title (note-title text rel) :headings (note-headings text) :chars (count text) :text text}))))))))))))
 
 (defn corpus-index
   "Compact listing the model can navigate without reading everything. Bounded
