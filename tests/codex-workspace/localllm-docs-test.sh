@@ -12,6 +12,7 @@ unset CODEX_TASK_BOARD_LOCALLLM_TIMEOUT_SECONDS CODEX_TASK_BOARD_LOCALLLM_IDLE_T
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
+DOCS_MODULE="${ROOT_DIR}/docker/codex-workspace/task-board/localllm_docs.bb"
 TMP="$(mktemp -d)"
 PORT="$(( 20000 + RANDOM % 20000 ))"
 MODE_FILE="${TMP}/mode"
@@ -735,6 +736,43 @@ test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
   [[ "$(grep -c 'v1\.2' "${VAULT}/${PILOT}/runbook.md")" == 0 ]] || fail "the applied update must replace the old line"
 }
 
+test_prompt_over_the_cap_blocks_without_a_request() {
+  setup; echo normal >"${MODE_FILE}"
+  # ~3,000 chars of body: fits max-note-chars but not a 2,000-char prompt cap
+  for _ in $(seq 1 60); do printf -- '- 長い本文の行です。この行は上限の検証のためだけに存在します。\n'; done >>"${VAULT}/${PILOT}/runbook.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-754|BOXP-754: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-754 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS=2000 >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected when the prompt exceeds the cap"
+  assert_blocked BOXP-754 '上限 2000 字を超えます'
+  assert_runbook_unchanged
+}
+
+test_symlink_swap_between_snapshot_and_write_is_rejected() {
+  # Another vault editor replaces the allowed directory with a symlink after
+  # the snapshot; the commit re-validates the path under the write lock and
+  # must not write through the symlink.
+  setup
+  mkdir -p "${CASE_DIR}/outside"
+  cp "${VAULT}/${PILOT}/runbook.md" "${CASE_DIR}/outside/runbook.md"
+  local out
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [cfg (localllm-docs/config)
+      vault \"${VAULT}\"
+      rel \"${PILOT}/runbook.md\"
+      snap (localllm-docs/snapshot-targets cfg vault [rel])
+      staged (localllm-docs/stage-proposal cfg snap {:changes [{:path rel :op \"replace-text\" :heading \"\" :old_text \"v1.2\" :new_text \"v1.3\"}]})]
+  (babashka.fs/move (str vault \"/${PILOT}\") (str \"${CASE_DIR}/moved-pilot\"))
+  (babashka.fs/create-sym-link (str vault \"/${PILOT}\") \"${CASE_DIR}/outside\")
+  (prn (localllm-docs/commit-staged! cfg vault \"${STATE}/runs/BOXP-755/r1\" staged {})))
+" 2>&1)"
+  [[ "${out}" == *':ok? false'* && "${out}" == *'書込み直前の再検証で拒否'* ]] || fail "commit must be rejected after a symlink swap: ${out}"
+  grep -q 'v1.2' "${CASE_DIR}/outside/runbook.md" || fail "the file outside the vault must not be written"
+  [[ ! -f "${STATE}/runs/BOXP-755/r1/backup/${PILOT}/runbook.md" ]] || fail "no backup may be taken for a rejected write"
+}
+
 test_research_total_time_limit_caps_each_model_call() {
   setup; echo slow >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-749|BOXP-749: docs]] #ticket status::ready"
@@ -761,6 +799,8 @@ for t in \
   test_research_total_time_limit_caps_each_model_call \
   test_write_is_deferred_until_the_lifecycle_commit \
   test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
+  test_prompt_over_the_cap_blocks_without_a_request \
+  test_symlink_swap_between_snapshot_and_write_is_rejected \
   test_research_finish_without_reads_auto_reads_the_hits \
   test_research_without_progress_stops_and_unsourced_apply_blocks \
   test_research_sources_outside_read_roots_block_without_request \

@@ -163,11 +163,12 @@ move_card() {
 }
 
 run_events() {
+  # Quiet hours default to "off" here: an empty value would fall back to the
+  # 02-09 JST window and defer every delivery when the suite runs at night.
   local vault="$1" state="$2"
   shift 2
   CODEX_TASK_BOARD_VAULT="${vault}" \
   CODEX_TASK_BOARD_ROOT="${state}" \
-  # "off" disables the window; an empty value would fall back to the 02-09 JST default
   CODEX_TASK_BOARD_EVENT_QUIET_HOURS="${CODEX_TASK_BOARD_EVENT_QUIET_HOURS:-off}" \
   "$@" bb "${EVENTS}" tick
 }

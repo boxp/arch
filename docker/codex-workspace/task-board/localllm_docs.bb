@@ -81,6 +81,10 @@
    :max-changes (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CHANGES" 8)
    :max-change-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CHANGE_CHARS" 8000)
    :max-note-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_NOTE_CHARS" 60000)
+   ;; Hard cap on what one edit request sends (ticket brief + all target
+   ;; bodies + references + research evidence + instructions). The reference
+   ;; budget above only shapes the optional part; this one blocks the run.
+   :max-prompt-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS" 60000)
    ;; After a rejected proposal the model gets the concrete reason once and may
    ;; answer with a corrected proposal (adapter v2). 0 disables the round.
    :max-corrections (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CORRECTIONS" 1)
@@ -1206,13 +1210,21 @@
   every existing target up, then write atomically per file. Nothing is written
   unless every target passes. Returns {:ok? true :applied [...]} or
   {:ok? false :category :reason}."
-  [cfg run-dir {:keys [files]} {:keys [lock-path]}]
+  [cfg vault run-dir {:keys [files]} {:keys [lock-path]}]
   (with-write-lock (or lock-path (default-write-lock-path run-dir)) (:write-lock-timeout-ms cfg)
     (fn []
       (let [conflicts (keep (fn [{:keys [rel abs before-sha exists?]}]
-                              (let [now-exists? (fs/exists? abs {:nofollow-links true})
+                              ;; Re-validate the path right before writing: a
+                              ;; directory on the way may have been swapped for
+                              ;; a symlink since the snapshot (other vault
+                              ;; editors are not serialized by our lock), and
+                              ;; atomic-write! goes through the parent directory.
+                              (let [revalidated (resolve-vault-path vault rel (:docs-roots cfg))
+                                    now-exists? (fs/exists? abs {:nofollow-links true})
                                     current (when now-exists? (slurp abs))]
                                 (cond
+                                  (not (:ok? revalidated)) (str rel ": 書込み直前の再検証で拒否（" (:reason revalidated) "）")
+                                  (not= (str (:abs revalidated)) (str abs)) (str rel ": 書込み直前の再検証で解決先が変わりました")
                                   (not= exists? now-exists?) (str rel ": 読み取り後に作成/削除されました")
                                   (and exists? (not= (sha256 current) before-sha)) (str rel ": 読み取り後に別の更新が入りました（競合）")
                                   :else nil)))
@@ -1261,7 +1273,7 @@
   without a deferred commit)."
   [cfg vault run-dir snap proposal & [opts]]
   (let [staged (stage-proposal cfg snap proposal)]
-    (if (:ok? staged) (commit-staged! cfg run-dir staged (or opts {})) staged)))
+    (if (:ok? staged) (commit-staged! cfg vault run-dir staged (or opts {})) staged)))
 
 (defn snapshot-targets
   "Resolve and read declared targets. Returns {:ok? true :targets :snapshots}
@@ -1285,6 +1297,13 @@
             {:ok? false :category "localllm-invalid-target"
              :reason (str (:rel too-big) " は " (count (:text too-big)) " 字で上限 " (:max-note-chars cfg) " 字を超えます（長文は分割してください）")}
             {:ok? true :targets (mapv :rel resolved) :snapshots snapshots}))))))
+
+(defn prompt-chars-lower-bound
+  "Characters the edit request will carry before any optional reference /
+  evidence is added: ticket brief + every target body."
+  [cfg ticket-text {:keys [targets snapshots]}]
+  (+ (count (ticket-brief ticket-text 15))
+     (reduce + (map #(count (get-in snapshots [% :text] "")) targets))))
 
 (defn build-messages
   ([cfg vault ticket-id ticket-text action snap] (build-messages cfg vault ticket-id ticket-text action snap nil))
@@ -1378,12 +1397,22 @@
       (and research (not (:ok? research)))
       (finish :blocked (merge (select-keys research [:category :reason :shutdown? :usage :llm-elapsed-ms :research])))
 
+      (> (prompt-chars-lower-bound cfg ticket-text snap) (:max-prompt-chars cfg))
+      (finish :blocked {:category "localllm-context-exceeded"
+                        :reason (str "対象ノート本文とチケットだけで " (prompt-chars-lower-bound cfg ticket-text snap)
+                                     " 字となり、1 回の依頼で送れる上限 " (:max-prompt-chars cfg) " 字を超えます（対象を減らすか、長文を分割してください）")})
+
       :else
       (let [research (:research research)
-            {:keys [messages references context-chars]} (build-messages cfg vault ticket-id ticket-text action snap research)]
+            {:keys [messages references context-chars]} (build-messages cfg vault ticket-id ticket-text action snap research)
+            prompt-chars (reduce + (map #(count (str (:content %))) messages))]
         (log! (str "localllm docs-edit " ticket-id ": targets=" (str/join "," (:targets snap))
-                   " context-chars=" context-chars " refs=" (count (:included references))
+                   " context-chars=" context-chars " prompt-chars=" prompt-chars " refs=" (count (:included references))
                    (when research (str " evidence=" (count (:evidence research)) " blocks"))))
+        (if (> prompt-chars (:max-prompt-chars cfg))
+          (finish :blocked {:category "localllm-context-exceeded" :research research
+                            :usage (or (:usage research) {}) :llm-elapsed-ms (or (:llm-elapsed-ms research) 0)
+                            :reason (str "送信内容が " prompt-chars " 字で上限 " (:max-prompt-chars cfg) " 字を超えるため実行しません（対象を減らすか、長文を分割してください）")})
         (loop [messages messages round 0
                usage-total (or (:usage research) {})
                llm-ms (or (:llm-elapsed-ms research) 0)]
@@ -1430,7 +1459,7 @@
                         ;; conflict check. Conflicts are not the model's fault
                         ;; and are final (never re-asked).
                         commit! (fn []
-                                  (let [result (try (commit-staged! cfg run-dir (:staged outcome) {:lock-path lock-path})
+                                  (let [result (try (commit-staged! cfg vault run-dir (:staged outcome) {:lock-path lock-path})
                                                     (catch Exception e
                                                       {:ok? false :category "localllm-io-error"
                                                        :reason (str "書込みに失敗したため未適用: " (sanitize-error (.getMessage e)))}))]
@@ -1441,7 +1470,7 @@
                       (assoc (finish :staged (assoc accepted :category "localllm-staged"
                                                     :staged-paths (mapv :rel (:files (:staged outcome)))))
                              :commit! commit!)
-                      (commit!))))))))))))
+                      (commit!)))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Rollback (operator command)
