@@ -46,12 +46,12 @@ profile（名前・ハンドル・一言紹介・SNS リンク）は `src/conten
 | セクション | 転記元 | 取得日 | 状態 |
 | --- | --- | --- | --- |
 | プロフィール画像 | GitHub アバター https://avatars.githubusercontent.com/u/1819576?v=4 | 2026-10-23 | 完了（460x460 JPEG 原寸。`?s=1024` でも原寸以上は配信されない） |
-| 経歴（experience） | LinkedIn プロフィール（本人提供の PDF または Data export、vault `Projects/BOXP-275/linkedin/`） | 未提供 | **未着手**。提供後に転記し、`linkedinSyncedAt` に転記日を記録して本人レビューを受ける。それまでセクションは「準備中」表示 |
+| 経歴（experience） | LinkedIn プロフィール https://www.linkedin.com/in/景太郎-竹内-98623b330/ （本人提供の PDF または Data export、vault `Projects/BOXP-275/linkedin/`） | URL は 2026-10-23 受領、本文は未取得 | **未着手**。LinkedIn はログイン壁（authwall）のため agent からは本文を取得できない。本人提供の PDF / テキスト受領後に転記し、`linkedinSyncedAt` に転記日を記録して本人レビューを受ける。それまでセクションは「準備中」+ LinkedIn リンク表示 |
 | スキル（skills） | GitHub 公開リポジトリの言語・内容（`gh repo list boxp`） | 2026-10-23 | 暫定。LinkedIn の Skills と突き合わせて更新する |
 | プロジェクト（projects） | `gh repo list boxp --source --no-archived`（fork 除外）の pushedAt / description | 2026-10-23 | 完了 |
 | 記事（articles） | 本人 Medium プロフィール https://medium.com/@boxpketaro の RSS（`medium.com/feed/@boxpketaro`、author = BOXP(Keitaro Takeuchi)） | 2026-10-23 | 9 本すべて掲載（2018〜2025、公開先はいずれも eureka-engineering publication）。Lunar レビュー記事は Medium に無く公開 URL 未確認のため未掲載 |
 | 登壇（talks） | speakerdeck.com/boxp の各デッキページ（published date） | 2026-10-23 | 完了（13 本。VR/アバター系 6 本は hobby として折りたたみ） |
-| SNS リンク | GitHub プロフィール（X `b0xp2`、YouTube `@BOXPKETARO`）、Medium は本人指定 `@boxpketaro` | 2026-10-23 | LinkedIn URL は未提供（`links.linkedin: null`。設定すると自動で表示） |
+| SNS リンク | GitHub プロフィール（X `b0xp2`、YouTube `@BOXPKETARO`）、Medium は本人指定 `@boxpketaro`、LinkedIn は本人指定 https://www.linkedin.com/in/景太郎-竹内-98623b330/ | 2026-10-23 | 完了。LinkedIn は自己閲覧用 query（`isSelfProfile=true`）を除いた URL を percent-encoded 形式で `links.linkedin` に設定 |
 
 ## 経歴の掲載粒度（既定、本人が変更可）
 
@@ -81,7 +81,7 @@ profile（名前・ハンドル・一言紹介・SNS リンク）は `src/conten
 ## 未決事項（本人判断が必要）
 
 - Access policy の include に使ったメールアドレスが、本人が GitHub ログインに使う primary email と一致するか（不一致ならログインできないので、正しいアドレスを vault 側で指示してもらい差し替える）。
-- LinkedIn プロフィール URL と経歴エクスポートの提供（vault `Projects/BOXP-275/linkedin/`）。
+- 経歴エクスポート（PDF またはテキスト）の提供（vault `Projects/BOXP-275/linkedin/`）。URL は受領済みだが本文はログイン壁のため未取得。
 - メールアドレスを連絡先として載せるか（現状は SNS の DM 案内のみ）。
 - shanghai-next / boxp/b0xp.io リポジトリを archive するか。
 - Lunar レビュー記事の公開 URL（未公開なら掲載しない）。
