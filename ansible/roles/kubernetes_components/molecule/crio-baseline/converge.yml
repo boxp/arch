@@ -1,0 +1,12 @@
+---
+# baseline (1.32.12-1.1) は prepare.yml で入れた 1.32.13-1.1 より古い。downgrade されずスキップされること。
+- name: Converge
+  hosts: all
+  become: true
+  tasks:
+    - name: Run the CRI-O tasks with a baseline older than the installed revision
+      ansible.builtin.include_role:
+        name: ../../../../kubernetes_components
+        tasks_from: crio.yml
+      vars:
+        crio_package_version: "1.32.12-1.1"

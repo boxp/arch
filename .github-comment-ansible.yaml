@@ -8,9 +8,15 @@ post:
 
       **Mode:** `--check --diff` (dry run)
 
+      {{- if .Vars.problems_json }}
+      {{- range $problem := fromJson .Vars.problems_json }}
+      - :warning: {{ $problem }}
+      {{- end }}
+      {{- end }}
+
       {{- if eq .Vars.has_changes "true" }}
 
-      :warning: **Changes detected**
+      :warning: **Changes detected or results need attention**
       {{- else }}
 
       :white_check_mark: **No changes**
@@ -20,6 +26,8 @@ post:
       {{- range $plan := fromJson .Vars.plans_json }}
 
       ### {{ $plan.node }}: {{ $plan.playbook }}
+
+      **Result:** `{{ $plan.status }}`
 
       | Host | OK | Changed | Skipped | Failed | Unreachable |
       |------|---:|--------:|--------:|-------:|------------:|
@@ -32,9 +40,12 @@ post:
       {{- else if $plan.changed_tasks }}
 
       **{{ len $plan.changed_tasks }} changed**
-      {{- else }}
+      {{- else if eq $plan.status "complete" }}
 
       **No changes**
+      {{- else }}
+
+      **No change result available**
       {{- end }}
       {{- if $plan.changed_tasks }}
 
@@ -65,4 +76,4 @@ post:
       {{- end }}
 
       ---
-      *Plan executed on all nodes in parallel.*
+      *Control plane nodes run serially within this workflow; the worker plan runs independently.*

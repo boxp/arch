@@ -1,29 +1,31 @@
-FROM ubuntu:26.04@sha256:f3d28607ddd78734bb7f71f117f3c6706c666b8b76cbff7c9ff6e5718d46ff64
+FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
-ARG CODEX_VERSION=0.147.0
-ARG CLAUDE_CODE_VERSION=2.1.229
-ARG EVEN_TERMINAL_VERSION=0.8.1
-ARG PI_AGENT_VERSION=0.84.1
+ARG CODEX_VERSION=0.163.0
+ARG CLAUDE_CODE_VERSION=2.1.304
+ARG EVEN_TERMINAL_VERSION=0.10.5
+ARG PI_AGENT_VERSION=1.3.0
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
-ARG GH_VERSION=2.97.0
-ARG GHQ_VERSION=1.10.1
-ARG GWQ_VERSION=0.1.1
+ARG GH_VERSION=2.102.0
+ARG GHQ_VERSION=1.11.2
+ARG GWQ_VERSION=0.1.2
 ARG CEEKER_VERSION=0.5.0
-ARG BABASHKA_VERSION=1.13.219
-ARG LAZYGIT_VERSION=0.64.1
-ARG YAZI_VERSION=26.5.6
+ARG BABASHKA_VERSION=1.13.226
+ARG LAZYGIT_VERSION=0.66.2
+ARG YAZI_VERSION=26.9.1
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG KUBECTL_VERSION=1.36.3
-ARG KUSTOMIZE_VERSION=5.8.1
+ARG KUSTOMIZE_VERSION=5.8.3
 ARG NODE_MAJOR=24
 
 ENV DEBIAN_FRONTEND=noninteractive
+ENV CODEX_TASK_BOARD_CLAUDE_BIN=/usr/bin/claude
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
       bash-completion \
+      build-essential \
       ca-certificates \
       chromium \
       curl \
@@ -35,9 +37,9 @@ RUN apt-get update \
       less \
       lsb-release \
       locales \
-      make \
       mosh \
       openssh-server \
+      python3 \
       ripgrep \
       sudo \
       tar \
@@ -55,6 +57,19 @@ RUN apt-get update \
     && apt-get update \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# BOXP-259: eMudhra (emSign) 中間CA秘密鍵侵害への対応。上の apt レイヤーで入る
+# ca-certificates が 20260816ubuntu0.26.04.1 以降 (emSign ECC Root CA - G3 と
+# Comodo AAA Services root を無効化) であることを、設定と bundle の指紋の両方で検証する。
+RUN set -eux; \
+    dpkg --compare-versions "$(dpkg-query -W -f '${Version}' ca-certificates)" ge 20260816ubuntu0.26.04.1; \
+    if grep -qE '^mozilla/(emSign_ECC_Root_CA_-_G3|Comodo_AAA_Services_root)\.crt' /etc/ca-certificates.conf; then \
+      echo 'emSign ECC Root CA - G3 / Comodo AAA Services root still enabled in ca-certificates.conf' >&2; exit 1; fi; \
+    if awk 'BEGIN{c=0} /BEGIN CERT/{c++} {print > ("/tmp/cacheck-" c ".pem")}' /etc/ssl/certs/ca-certificates.crt \
+       && for f in /tmp/cacheck-*.pem; do openssl x509 -in "$f" -noout -fingerprint -sha256; done \
+          | grep -qiE '86:A1:EC:BA:08:9C:4A:8D:3B:BE:27:34:C6:12:BA:34:1D:81:3E:04:3C:F9:E8:A8:62:CD:5C:57:A3:6B:BE:6B|D7:A7:A0:FB:5D:7E:27:31:D7:71:E9:48:4E:BC:DE:F7:1D:5F:0C:3E:0A:29:48:78:2B:C8:3E:E0:EA:69:9E:F4'; then \
+      echo 'emSign ECC Root CA - G3 / Comodo AAA Services root still trusted' >&2; exit 1; fi; \
+    rm -f /tmp/cacheck-*.pem
 
 RUN npm install -g \
       "@openai/codex@${CODEX_VERSION}" \
@@ -139,6 +154,7 @@ COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
 COPY dotfiles-sync.sh /opt/codex-workspace/dotfiles-sync.sh
 COPY cron/ /opt/codex-workspace/cron/
 COPY task-board/ /opt/codex-workspace/task-board/
+COPY novel-board/ /opt/codex-workspace/novel-board/
 COPY recurring-events/ /opt/codex-workspace/recurring-events/
 COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
@@ -146,6 +162,7 @@ RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && find /opt/codex-workspace/cron -type f -name "*.sh" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/cron -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/task-board -type f -name "*.bb" -exec chmod 0755 {} + \
+    && find /opt/codex-workspace/novel-board -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} +
 
 EXPOSE 2222 3456

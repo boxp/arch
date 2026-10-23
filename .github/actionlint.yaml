@@ -1,3 +1,10 @@
 self-hosted-runner:
   labels:
     - arc-runners-arch
+paths:
+  # BOXP-235: `uses: $/...` は workflow lockfile の same-repo 参照 (running commit に固定、
+  # lock entry 不要)。gh actions-lock が `./` から書き換える。actionlint v1.7.12 は未対応で
+  # "ref is missing" と誤検出するため、この形式のエラーだけ無視する。
+  .github/workflows/**/*.{yml,yaml}:
+    ignore:
+      - 'specifying action "\$/[^"]*" in invalid format because ref is missing'

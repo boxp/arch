@@ -1,0 +1,44 @@
+---
+# kube-apiserver GOMEMLIMIT の値検証。tasks/main.yml では kubeadm.yml より前に include する。
+# kubeadm-config.yaml.j2 は有効時にこの値を apiServer.extraEnvs へそのまま書き出すため、
+# 検証が後ろにあると新規 control plane 構築 (kubeadm init --config) で不正な環境変数の静的 Pod が
+# 先に生成される。tasks/apiserver_gomemlimit.yml も同じファイルを include するので、
+# tasks_from で単独実行しても検証される。
+#
+# Go ランタイムは GOMEMLIMIT の解釈に失敗すると値を無視して起動する (crash-loop はしない) が、
+# 「設定したつもりで効いていない」状態を CI / plan で止めるために形式と範囲を検証する。
+# 受け付ける形式: 整数 + 単位 (B / KiB / MiB / GiB) か "off" (無効化 = rollback 用)。
+# 小数・指数表記・単位なし・KB/MB (10 進単位) は Go が受け付けないか意図と違うので拒否する。
+- name: Validate the GOMEMLIMIT value has a form the Go runtime accepts
+  ansible.builtin.assert:
+    that:
+      - apiserver_gomemlimit | string is match('^([0-9]+(B|KiB|MiB|GiB)|off)$')
+    fail_msg: >-
+      apiserver_gomemlimit must be an integer with a binary unit such as "1536MiB" or "2GiB", or "off" to disable
+      (it is written verbatim into the kube-apiserver static pod manifest). Got: {{ apiserver_gomemlimit }}
+  when:
+    - apiserver_gomemlimit_enabled | bool
+
+# live heap (7 日最大約 1GiB) + 非 heap ランタイム (約 200MiB) を下回る limit は GC が常時走る状態になり、
+# RAM (3.9GiB) 以上の limit は何もしないのと同じ。control plane 1 台の RAM に対する妥当な範囲に限定する。
+- name: Validate the GOMEMLIMIT value is within a sane range for a control-plane node
+  ansible.builtin.assert:
+    that:
+      - apiserver_gomemlimit_mib | float >= 1024
+      - apiserver_gomemlimit_mib | float <= 3072
+    fail_msg: >-
+      apiserver_gomemlimit must be between 1024MiB and 3072MiB (below that the Go GC runs continuously against the
+      apiserver's live heap, above that it has no effect on a 4GiB node). Got: {{ apiserver_gomemlimit }}
+      (= {{ apiserver_gomemlimit_mib }} MiB)
+  vars:
+    apiserver_gomemlimit_number: "{{ apiserver_gomemlimit | string | regex_replace('[A-Za-z]+$', '') }}"
+    apiserver_gomemlimit_unit: "{{ apiserver_gomemlimit | string | regex_replace('^[0-9]+', '') }}"
+    apiserver_gomemlimit_unit_mib:
+      B: 0.00000095367431640625
+      KiB: 0.0009765625
+      MiB: 1
+      GiB: 1024
+    apiserver_gomemlimit_mib: "{{ (apiserver_gomemlimit_number | float) * (apiserver_gomemlimit_unit_mib[apiserver_gomemlimit_unit] | float) }}"
+  when:
+    - apiserver_gomemlimit_enabled | bool
+    - apiserver_gomemlimit | string != 'off'
