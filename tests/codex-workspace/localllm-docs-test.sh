@@ -541,6 +541,35 @@ test_tick_ticket_filter_claims_only_one_card() {
     bb "${RUNNER}" tick --ticket BOXP-727 >"${CASE_DIR}/out2"
   assert_file_contains "${CASE_DIR}/out2" 'closing stale lock: BOXP-727'
   [[ ! -e "${STATE}/locks/BOXP-727.edn" ]] || fail "the selected card's stale lock must be closed"
+  # a planned-shutdown lock of the selected card is recovered immediately (before the stale
+  # timeout) while the terminated owner's other lock and its marker are left for the loop
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-726|BOXP-726: docs]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-727|BOXP-727: docs]] #ticket status::in-progress"
+  write_ticket "${VAULT}" BOXP-726 in-progress localllm "${PILOT}/runbook.md"
+  write_ticket "${VAULT}" BOXP-727 in-progress localllm "${PILOT}/runbook.md"
+  local hb
+  hb="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  mkdir -p "${STATE}/locks" "${STATE}/owners"
+  printf '{:owner-id "old-pod" :instance-id "old-instance" :host "old-pod" :pid 10 :started-at "%s"}\n' "${hb}" >"${STATE}/owners/old-pod.edn"
+  for t in BOXP-726 BOXP-727; do
+    printf '{:ticket "%s" :run-id "20260701T000002Z" :action :docs-edit :lane "In Progress" :owner-id "old-pod" :owner-instance-id "old-instance" :heartbeat-at "%s"}\n' "${t}" "${hb}" >"${STATE}/locks/${t}.edn"
+  done
+  CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_OWNER_ID=old-pod bb "${RUNNER}" prepare-shutdown >/dev/null
+  [[ -e "${STATE}/terminating-owners/old-pod.edn" ]] || fail "prepare-shutdown must write the owner marker"
+  PATH="${BIN}:$PATH" CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" \
+    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" \
+    CODEX_TASK_BOARD_OWNER_ID=new-pod CODEX_TASK_BOARD_RUNNER_INSTANCE_ID=new-instance \
+    bb "${RUNNER}" tick --ticket BOXP-727 >"${CASE_DIR}/out3"
+  assert_file_contains "${CASE_DIR}/out3" 'closing lock from planned owner shutdown: BOXP-727'
+  assert_file_not_contains "${CASE_DIR}/out3" 'planned owner shutdown: BOXP-726'
+  assert_file_contains "${VAULT}/Tickets/BOXP-727.md" 'planned workspace shutdown of owner old-pod'
+  assert_file_contains "${VAULT}/Tickets/BOXP-727.md" '^status: review$'
+  [[ ! -d "${STATE}/runs/BOXP-726" ]] || fail "the other card must not run"
+  [[ -e "${STATE}/locks/BOXP-726.edn" ]] || fail "the other card's planned-shutdown lock must be left alone"
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-726.md" 'planned workspace shutdown'
+  assert_file_contains "${VAULT}/Tickets/BOXP-726.md" '^status: in-progress$'
+  [[ -e "${STATE}/terminating-owners/old-pod.edn" ]] || fail "the owner marker must remain for the loop"
   if bb "${RUNNER}" tick --bogus BOXP-727 >/dev/null 2>&1; then fail "unknown tick flag must be rejected"; fi
 }
 

@@ -1084,7 +1084,11 @@
          (when (fs/exists? locks-dir)
            (doseq [path (fs/list-dir locks-dir)
                    :let [ticket-id (lock-ticket-id path)]
-                   :when ticket-id]
+                   :when ticket-id
+                   ;; `tick --ticket BOXP-N` recovers only that ticket's lock;
+                   ;; the other locks of the terminated owner (and the marker)
+                   ;; are left for the loop.
+                   :when (or (nil? @only-ticket) (= @only-ticket ticket-id))]
              (with-ticket-lock-guard
               ticket-id
               (fn []
@@ -1107,7 +1111,8 @@
          ;; Lock creation for this owner takes the same owner guard. Marking the owner
          ;; terminated before deleting the marker also prevents a waiter from creating
          ;; a lock immediately after this critical section ends.
-         (when (and (or @recovered? retire-empty-marker? (expired-shutdown-marker? marker))
+         (when (and (nil? @only-ticket)
+                    (or @recovered? retire-empty-marker? (expired-shutdown-marker? marker))
                     (not (matching-shutdown-lock-exists? marker))
                     (same-shutdown-marker? marker
                                            (try
@@ -1139,12 +1144,10 @@
   ([] (recover-locks! false))
   ([runner-startup?]
    (ensure-root!)
-   ;; Planned-shutdown recovery walks every lock of a previous owner; under
-   ;; `tick --ticket` it is skipped so no other card's lane / frontmatter /
-   ;; Notes change. The selected ticket's own stale lock is still closed by
-   ;; cleanup-stale-locks! (filtered) or by acquire-lock! when it is claimed.
-   (when (nil? @only-ticket)
-     (recover-planned-shutdown-locks! runner-startup?))
+   ;; Under `tick --ticket` both passes are filtered to the selected ticket
+   ;; (its planned-shutdown lock is recovered right away, its stale lock is
+   ;; closed) and no other card's lane / frontmatter / Notes change.
+   (recover-planned-shutdown-locks! runner-startup?)
    (cleanup-stale-locks!)))
 
 (defn create-lock-under-guard! [path lock]
