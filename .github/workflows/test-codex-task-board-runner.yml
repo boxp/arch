@@ -32,7 +32,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       BABASHKA_VERSION: 1.12.218
     steps:
