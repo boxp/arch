@@ -732,7 +732,7 @@
          "# 対象ノート（docs-target、これ以外は変更できません）\n" target-blocks "\n"
          (when (seq (:text references)) (str "# 参照ノート（読み取り専用）\n" (:text references) "\n"))
          (when research
-           (str "# 根拠（docs-sources の調査で読んだ資料、読み取り専用。事実はここにあるものだけを使う）\n"
+           (str "# 根拠（docs-sources の調査で読んだ資料、読み取り専用。事実はここにあるものと、下の調査ログの search 該当行にあるものだけを使い、使った資料の path を sources に入れる）\n"
                 (if (seq (:evidence research)) (str/join "\n" (map :block (:evidence research))) "（調査では何も読めませんでした）") "\n"
                 "## 調査ログ\n" (str/join "\n" (:log research)) "\n"
                 (when (seq (:finish-reason research)) (str "## 調査の結論（モデル自身の報告）\n" (:finish-reason research) "\n"))
@@ -976,11 +976,14 @@
         started (System/currentTimeMillis)
         budget (:research-char-budget cfg)
         base {:corpus-notes (count notes) :corpus-chars (reduce + (map :chars notes)) :index-listed (:listed index)}]
-    (loop [round 1 evidence [] read-keys #{} seen-queries #{} log [] searches 0 reads 0 wasted 0 usage {} llm-ms 0]
+    (loop [round 1 evidence [] read-keys #{} seen-queries #{} hit-paths [] log [] searches 0 reads 0 wasted 0 usage {} llm-ms 0]
       (let [used (reduce + (map :chars evidence))
             remaining (- budget used)
             elapsed-s (quot (- (System/currentTimeMillis) started) 1000)
-            research (merge base {:evidence evidence :read-paths (vec (distinct (map :path evidence))) :log log :rounds (dec round)
+            ;; Search hits show matching lines (real corpus text) in the log, so
+            ;; they count as seen evidence for citations, separately from reads.
+            research (merge base {:evidence evidence :read-paths (vec (distinct (map :path evidence)))
+                                  :search-hit-paths (vec (distinct hit-paths)) :log log :rounds (dec round)
                                   :searches searches :reads reads :evidence-chars used :usage usage :llm-elapsed-ms llm-ms})
             stop (cond
                    (> round (:max-research-rounds cfg)) :rounds-exhausted
@@ -1010,7 +1013,7 @@
               (let [{:keys [ok? step reason]} (parse-research-step (:content llm) (:finish-reason llm))]
                 (cond
                   (not ok?)
-                  (recur (inc round) evidence read-keys seen-queries (conj log (str "round " round ": 応答不正（" reason "）")) searches reads (inc wasted) usage llm-ms)
+                  (recur (inc round) evidence read-keys seen-queries hit-paths (conj log (str "round " round ": 応答不正（" reason "）")) searches reads (inc wasted) usage llm-ms)
 
                   (= "finish" (:action step))
                   (do (log! (str "localllm research " ticket-id ": finish after " round " rounds, evidence=" used " chars, reads=" reads " searches=" searches))
@@ -1050,6 +1053,7 @@
                            (into evidence new-evidence)
                            (into read-keys (map :key new-evidence))
                            (into seen-queries queries)
+                           (into hit-paths (mapcat :hits search-results))
                            (vec (concat log entries))
                            (+ searches (count queries))
                            (+ reads (count new-evidence))
@@ -1163,12 +1167,12 @@
   so a human can check the edit against them)."
   [research proposal]
   (when research
-    (let [read-set (set (:read-paths research))
+    (let [seen (set (concat (:read-paths research) (:search-hit-paths research)))
           sources (vec (filter string? (:sources proposal)))
-          unknown (remove read-set sources)]
+          unknown (remove seen sources)]
       (cond
-        (empty? sources) "sources が空です。採用した事実の出典（調査で読んだ資料の path）を sources に列挙してください"
-        (seq unknown) (str "sources に調査で読んでいない path があります: " (truncate-text (str/join ", " unknown) 160))
+        (empty? sources) "sources が空です。採用した事実の出典（調査で読んだ資料、または search で該当行を確認した資料の path）を sources に列挙してください"
+        (seq unknown) (str "sources に調査で読んでも検索でも確認していない path があります: " (truncate-text (str/join ", " unknown) 160))
         :else nil))))
 
 (defn write-audit! [run-dir audit]
