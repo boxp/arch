@@ -295,6 +295,7 @@ test_apply_moves_to_review_without_cloud() {
   assert_file_contains "${run_dir}/last-message.md" '^TASK_BOARD_RESULT: review$'
   assert_file_contains "${run_dir}/localllm-audit.edn" ':status :review'
   assert_file_contains "${run_dir}/localllm-audit.edn" ':after-sha256'
+  assert_file_contains "${run_dir}/localllm-committed.edn" ':status "review"'
   assert_file_not_contains "${run_dir}/llm-evidence.edn" 'v1\.3'
   grep -q 'v1.2' "${run_dir}/backup/${PILOT}/runbook.md" || fail "backup should hold the original"
   [[ ! -e "${run_dir}/events.jsonl" ]] || fail "no agent events expected"
@@ -798,7 +799,8 @@ test_stale_lock_recovery_restores_an_unfinished_write() {
   printf '{:ticket-id "BOXP-761" :run-id "%s" :status :review :docs-roots ["%s"] :applied [{:path "%s/runbook.md" :before-sha256 "%s" :after-sha256 "%s" :created? false :backup "%s/backup/%s/runbook.md" :ops [{:op "replace-section"}]}]}\n' \
     "${old_run}" "${PILOT}" "${PILOT}" "${before_sha}" "${after_sha}" "${run_dir}" "${PILOT}" >"${run_dir}/localllm-audit.edn"
   # the summary is already :succeeded (it is written before the lane move); only
-  # the ticket frontmatter proves the transition, and here it is still in-progress
+  # the run's own commit record (localllm-committed.edn) proves the transition,
+  # and here it is missing
   printf '{:status :succeeded :result "review" :ticket "BOXP-761" :run-id "%s" :action :docs-edit :agent "localllm"}\n' "${old_run}" >"${run_dir}/summary.edn"
   printf '{:ticket "BOXP-761" :run-id "%s" :action :docs-edit :lane "In Progress" :heartbeat-at "2000-01-01T00:00:00Z"}\n' "${old_run}" >"${STATE}/locks/BOXP-761.edn"
   write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-761|BOXP-761: docs]] #ticket status::in-progress"
@@ -808,6 +810,56 @@ test_stale_lock_recovery_restores_an_unfinished_write() {
   assert_file_contains "${VAULT}/Tickets/BOXP-761.md" 'runbook.md restored'
   assert_file_contains "${run_dir}/summary.edn" ':status :interrupted'
   [[ ! -e "${STATE}/locks/BOXP-761.edn" ]] || fail "stale lock must be released"
+}
+
+write_unfinished_localllm_run() {
+  # Leaves the state of a localllm run killed right after its note write: the
+  # note already holds v1.3, the run dir has backup + audit (:applied) + a
+  # :succeeded summary, and the ticket lock is stale.
+  local ticket="$1" old_run="$2" run_dir="${STATE}/runs/$1/$2"
+  mkdir -p "${run_dir}/backup/${PILOT}" "${STATE}/locks"
+  cp "${VAULT}/${PILOT}/runbook.md" "${run_dir}/backup/${PILOT}/runbook.md"
+  local before_sha after_sha
+  before_sha="$(sha256sum "${VAULT}/${PILOT}/runbook.md" | cut -d' ' -f1)"
+  sed -i 's/v1\.2/v1.3/' "${VAULT}/${PILOT}/runbook.md"
+  after_sha="$(sha256sum "${VAULT}/${PILOT}/runbook.md" | cut -d' ' -f1)"
+  printf '{:ticket-id "%s" :run-id "%s" :status :review :docs-roots ["%s"] :applied [{:path "%s/runbook.md" :before-sha256 "%s" :after-sha256 "%s" :created? false :backup "%s/backup/%s/runbook.md" :ops [{:op "replace-section"}]}]}\n' \
+    "${ticket}" "${old_run}" "${PILOT}" "${PILOT}" "${before_sha}" "${after_sha}" "${run_dir}" "${PILOT}" >"${run_dir}/localllm-audit.edn"
+  printf '{:status :succeeded :result "review" :ticket "%s" :run-id "%s" :action :docs-edit :agent "localllm"}\n' "${ticket}" "${old_run}" >"${run_dir}/summary.edn"
+  printf '{:ticket "%s" :run-id "%s" :action :docs-edit :lane "In Progress" :heartbeat-at "2000-01-01T00:00:00Z"}\n' "${ticket}" "${old_run}" >"${STATE}/locks/${ticket}.edn"
+}
+
+test_stale_lock_recovery_is_decided_by_the_run_commit_record() {
+  # A Review-lane re-run starts with the ticket already at `status: review`, so
+  # the ticket status cannot tell a finished transition from a run that died
+  # right after the note write. Recovery must restore here.
+  setup; echo normal >"${MODE_FILE}"
+  local old_run="20260701T000000Z"
+  write_unfinished_localllm_run BOXP-762 "${old_run}"
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-762|BOXP-762: docs]] #ticket status::review"
+  write_ticket "${VAULT}" BOXP-762 review boxp "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_file_contains "${VAULT}/Tickets/BOXP-762.md" '完了せず終了していたため、backup から復元しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-762.md" 'runbook.md restored'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${STATE}/runs/BOXP-762/${old_run}/summary.edn" ':status :interrupted'
+  [[ ! -e "${STATE}/locks/BOXP-762.edn" ]] || fail "stale lock must be released"
+  # The same state plus this run's commit record (written after lane and
+  # frontmatter) means the transition completed: the note is kept even though
+  # the ticket status says in-progress (e.g. edited by hand afterwards).
+  setup; echo normal >"${MODE_FILE}"
+  write_unfinished_localllm_run BOXP-763 "${old_run}"
+  printf '{:ticket "BOXP-763" :run-id "%s" :status "review" :committed-at "2026-07-01T00:00:01Z"}\n' "${old_run}" >"${STATE}/runs/BOXP-763/${old_run}/localllm-committed.edn"
+  write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-763|BOXP-763: docs]] #ticket status::in-progress"
+  write_ticket "${VAULT}" BOXP-763 in-progress boxp "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-763.md" 'backup から復元しました'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${STATE}/runs/BOXP-763/${old_run}/summary.edn" ':status :interrupted'
+  [[ ! -e "${STATE}/locks/BOXP-763.edn" ]] || fail "stale lock must be released"
 }
 
 test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
@@ -927,6 +979,7 @@ for t in \
   test_failed_transition_after_the_write_is_rolled_back \
   test_partial_write_failure_keeps_a_file_edited_in_between \
   test_stale_lock_recovery_restores_an_unfinished_write \
+  test_stale_lock_recovery_is_decided_by_the_run_commit_record \
   test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
   test_prompt_over_the_cap_blocks_without_a_request \
   test_symlink_swap_between_snapshot_and_write_is_rejected \

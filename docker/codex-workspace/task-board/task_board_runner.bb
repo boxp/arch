@@ -856,20 +856,36 @@
                        extra)]
     (write-edn-file! path summary)))
 
+(defn localllm-commit-marker-path [ticket-id run-id]
+  (fs/path (run-dir ticket-id run-id) "localllm-committed.edn"))
+
+(defn record-localllm-commit!
+  "Run-specific, durable record that a localllm docs-edit's lane / frontmatter
+  transition completed after its note write (BOXP-277). Written inside the
+  lifecycle commit right after the frontmatter update; crash recovery reads it
+  instead of the ticket's own `status`, which is not run-specific (a Review
+  re-run starts from `review`, an operator may edit it, and a failed restore
+  puts the original status back)."
+  [ticket-id run-id next-status]
+  (write-edn-file! (localllm-commit-marker-path ticket-id run-id)
+                   {:ticket ticket-id :run-id run-id :status next-status :committed-at (now-str)}))
+
 (defn recover-localllm-write!
   "Crash recovery for a localllm docs-edit run (BOXP-277): the audit written
   right after the note write is the persistent journal. If a run left an
-  audit with applied changes but no final summary (the process died between
-  the write and the lane / Notes transition), restore the notes from the run
-  backup (hash-checked, under the write lock) and record it, so the next run
-  starts from the original note. Returns the rollback report or nil."
+  audit with applied changes but no run-specific commit record (the process
+  died between the write and the end of the lane / frontmatter transition),
+  restore the notes from the run backup (hash-checked, under the write lock)
+  and record it, so the next run starts from the original note. Returns the
+  rollback report or nil."
   [ticket-id run-id]
   (let [dir (run-dir ticket-id run-id)
         audit (read-edn-file (fs/path dir "localllm-audit.edn") nil)
-        ;; The durable sign that the transition completed is the ticket's own
-        ;; frontmatter (written after the lane move, before the final Notes);
-        ;; the run summary is marked succeeded earlier and must not be trusted.
-        transitioned? (= "review" (str (:status (when (fs/exists? (ticket-path ticket-id)) (ticket-frontmatter ticket-id)))))]
+        ;; Only this run's own commit record proves the transition completed.
+        ;; The run summary is marked succeeded earlier and the ticket status is
+        ;; shared state (already `review` when a Review re-run starts), so
+        ;; neither must be trusted here.
+        transitioned? (fs/exists? (localllm-commit-marker-path ticket-id run-id))]
     (when (and (seq (:applied audit))
                (not transitioned?)
                @localllm-docs-module-loaded?)
@@ -2446,6 +2462,12 @@
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee (if (= "in-progress" next-status) assignee "boxp")}
                                                       (= "done" next-status) (assoc :closed (today))))
+                    ;; localllm docs-edit: lane and frontmatter are durable, so
+                    ;; a crash from here on must not roll the note write back
+                    ;; (crash recovery reads this run-specific record, see
+                    ;; `recover-localllm-write!`).
+                    (when @docs-applied?
+                      (record-localllm-commit! ticket-id run-id next-status))
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                     ;; After lane, frontmatter and Notes are durable: wake Kohako.
                     (record-task-board-event! ticket-id run-id status next-status result)))
