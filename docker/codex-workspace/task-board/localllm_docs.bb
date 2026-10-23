@@ -64,7 +64,9 @@
    :api-key (env "CODEX_TASK_BOARD_LOCALLLM_API_KEY" "local-llm")
    :timeout-ms (* 1000 (env-long "CODEX_TASK_BOARD_LOCALLLM_TIMEOUT_SECONDS" 1800))
    :idle-timeout-ms (* 1000 (env-long "CODEX_TASK_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS" 600))
-   :max-tokens (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_TOKENS" 6144)
+   ;; Proposals are a few hundred tokens; 4096 bounds a degenerate loop to
+   ;; about five minutes of GPU time (decode ≒ 14 tok/s) before `length` ends it.
+   :max-tokens (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_TOKENS" 4096)
    :retries (env-long "CODEX_TASK_BOARD_LOCALLLM_RETRIES" 1)
    :temperature (Double/parseDouble (env "CODEX_TASK_BOARD_LOCALLLM_TEMPERATURE" "0.2"))
    ;; Write allowlist (vault-relative directories). Read allowlist defaults to
@@ -342,14 +344,24 @@
   (removed = text of the replaced region, for link checks) or {:ok? false :reason}."
   [lines {:keys [op heading old_text new_text]}]
   (let [new-lines (split-text-lines new_text)
-        bstart (body-start lines)]
+        bstart (body-start lines)
+        ;; A frequent small-model slip: new_text for a section starts by
+        ;; repeating the section heading. The heading line is kept by the
+        ;; executor, so drop that duplicate instead of producing "## x\n\n## x".
+        without-own-heading (fn [idx]
+                              (let [own (str/trim (nth lines idx))
+                                    [first-line & more] (drop-while str/blank? new-lines)]
+                                (if (and first-line (= (heading-text first-line) (heading-text own)) (heading-line? (str/trim first-line)))
+                                  (vec (drop-while str/blank? more))
+                                  new-lines)))]
     (case op
       "replace-section"
       (let [{:keys [ok? index reason]} (find-heading lines heading)]
         (if-not ok?
           {:ok? false :reason reason}
           (let [end (section-end lines index)
-                removed (subvec lines (inc index) end)]
+                removed (subvec lines (inc index) end)
+                new-lines (without-own-heading index)]
             {:ok? true
              :removed (str/join "\n" removed)
              :lines (vec (concat (subvec lines 0 (inc index)) [""] new-lines [""] (subvec lines end)))})))
@@ -359,11 +371,17 @@
         (if-not ok?
           {:ok? false :reason reason}
           (let [end (section-end lines index)
+                new-lines (without-own-heading index)
                 ;; keep one blank line before the next heading
                 body (vec (reverse (drop-while str/blank? (reverse (subvec lines (inc index) end)))))
                 list-item? (fn [l] (boolean (re-matches #"\s*(?:[-*+]|\d+[.)])\s+.*" (or l ""))))
-                ;; Continue a list directly; otherwise start a new paragraph.
-                joiner (if (and (seq body) (list-item? (peek body)) (list-item? (first new-lines))) [] [""])]
+                table-row? (fn [l] (str/starts-with? (str/trim (or l "")) "|"))
+                ;; Continue a list or a table directly (a blank line would end
+                ;; the table and orphan the new row); otherwise start a new paragraph.
+                joiner (if (and (seq body) (first new-lines)
+                                (or (and (list-item? (peek body)) (list-item? (first new-lines)))
+                                    (and (table-row? (peek body)) (table-row? (first new-lines)))))
+                         [] [""])]
             {:ok? true :removed ""
              :lines (vec (concat (subvec lines 0 (inc index)) body joiner new-lines [""] (subvec lines end)))})))
 
@@ -746,10 +764,23 @@
       (:finish_reason choice) (assoc :finish (:finish_reason choice))
       (:usage chunk) (assoc :usage (:usage chunk)))))
 
+(defn runaway-output?
+  "Heuristic for a degenerate generation loop (observed with Gemma 4 under a
+  JSON grammar: the same sentence repeated until max_tokens, ~10 minutes of GPU
+  time): the last `window` chars occur at least `times` times inside the tail."
+  ([content] (runaway-output? content 300 4 6000))
+  ([content window times tail-len]
+   (let [n (count content)]
+     (and (>= n (+ window 1500))
+          (let [tail (subs content (max 0 (- n tail-len)))
+                probe (subs content (- n window))]
+            (>= (count-occurrences tail probe) times))))))
+
 (defn read-chat-response!
   [^java.io.InputStream body {:keys [sse? idle-ms total-ms started-ms stop-requested?]}]
   (let [started (or started-ms (System/currentTimeMillis))
         deadline (+ started total-ms)
+        runaway-check-every 1500
         state (atom {:content "" :chunks 0 :last-at started :first-byte-ms nil :done? false :error nil})
         note-first-byte (fn [s] (if (:first-byte-ms s) s (assoc s :first-byte-ms (- (System/currentTimeMillis) started))))
         reader (future
@@ -785,16 +816,18 @@
                    (merge (dissoc s :done? :error :last-at :done-marker?)
                           {:stop stop :elapsed-ms (- (System/currentTimeMillis) started)}
                           extra)))]
-    (loop []
-      (let [{:keys [done? error last-at]} @state
-            now (System/currentTimeMillis)]
+    (loop [checked-at 0]
+      (let [{:keys [done? error last-at content]} @state
+            now (System/currentTimeMillis)
+            check-now? (>= (- (count content) checked-at) runaway-check-every)]
         (cond
           done? (finish (if error :stream-error :complete)
                         {:error (when error (sanitize-error (str (.getName (class error)) ": " (.getMessage error))))})
           (and stop-requested? (stop-requested?)) (do (close-body!) (finish :shutdown {}))
           (>= now deadline) (do (close-body!) (finish :total-timeout {}))
           (>= (- now last-at) idle-ms) (do (close-body!) (finish :idle-timeout {:idle-ms (- now last-at)}))
-          :else (do (Thread/sleep 200) (recur)))))))
+          (and check-now? (runaway-output? content)) (do (close-body!) (finish :runaway {}))
+          :else (do (Thread/sleep 200) (recur (if check-now? (count content) checked-at))))))))
 
 (defn llm-chat!
   "One structured chat completion. Returns {:ok? true :content :finish-reason
@@ -875,6 +908,8 @@
                               :reason (str "localllm 応答が上限 " (quot total-ms 1000) " 秒を超えたため打ち切りました（" (count content) " 字受信、未適用）")}
               :idle-timeout {:ok? false :category "localllm-timeout"
                              :reason (str "localllm から " (quot (:idle-ms result) 1000) " 秒間出力が届かなかったため打ち切りました（" (count content) " 字受信、未適用）")}
+              :runaway {:ok? false :category "localllm-runaway"
+                        :reason (str "localllm の出力が同じ内容を繰り返す暴走状態になったため " (quot (:elapsed-ms result) 1000) " 秒で打ち切りました（" (count content) " 字受信、未適用、再提案なし）")}
               {:ok? false :category "localllm-stream-error"
                :reason (str "localllm 応答が途中で途切れました（" (count content) " 字受信、未適用）: " (:error result))})))))))
 
@@ -895,7 +930,10 @@
   (let [text (strip-fences content)]
     (cond
       (str/blank? text) {:ok? false :reason "localllm の出力が空でした"}
-      (= "length" finish-reason) {:ok? false :reason (str "localllm の出力が max_tokens で途切れました（" (count text) " 字、JSON 不完全）")}
+      ;; Hitting max_tokens is almost always a degenerate loop; re-asking the
+      ;; same question would only burn the GPU again, so this is final.
+      (= "length" finish-reason) {:ok? false :final? true
+                                  :reason (str "localllm の出力が max_tokens で途切れました（" (count text) " 字、JSON 不完全、再提案なし）")}
       :else
       (let [parsed (try (json/parse-string text true) (catch Exception e {::error (.getMessage e)}))]
         (cond
@@ -1203,9 +1241,10 @@
                       :references (:included references) :corrections round :research research}]
             (if-not (:ok? llm)
               (finish :blocked (merge base (select-keys llm [:category :reason :shutdown?])))
-              (let [{:keys [ok? proposal reason]} (parse-proposal (:content llm) (:finish-reason llm))
+              (let [{:keys [ok? proposal reason final?]} (parse-proposal (:content llm) (:finish-reason llm))
                     source-error (when (and ok? (= "apply" (:decision proposal))) (validate-sources research proposal))
                     outcome (cond
+                              (and (not ok?) final?) {:kind :fatal :category "localllm-invalid-output" :reason reason}
                               (not ok?) {:kind :reject :category "localllm-invalid-output" :reason reason}
                               (= "needs-human" (:decision proposal)) {:kind :needs-human}
                               source-error {:kind :reject :category "localllm-invalid-proposal" :reason source-error}
@@ -1222,6 +1261,9 @@
                         (recur (conj messages {:role "assistant" :content (:content llm)} (correction-request (:reason outcome)))
                                (inc round) usage-total llm-ms))
                     (finish :blocked (assoc base :category (:category outcome) :reason (:reason outcome) :decision (:decision proposal))))
+
+                  :fatal
+                  (finish :blocked (assoc base :category (:category outcome) :reason (:reason outcome)))
 
                   :needs-human
                   (finish :blocked (assoc base :category "localllm-needs-human" :decision "needs-human"

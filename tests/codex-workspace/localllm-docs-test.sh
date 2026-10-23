@@ -48,7 +48,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 :choices [{:index 0 :finish_reason finish :message {:role "assistant" :content content}}]
                                 :usage {:prompt_tokens 1000 :completion_tokens (count content) :total_tokens (+ 1000 (count content))}})})
 (defn sse [m] (str "data: " (json/generate-string m) "\n\n"))
-(defn respond-stream [req pieces {:keys [cut?]}]
+(defn respond-stream [req pieces {:keys [cut? delay-ms]}]
   (let [base {:id (str "chatcmpl-" (System/nanoTime)) :model "gemma4-26b" :object "chat.completion.chunk"}]
     (srv/as-channel req
       {:on-open (fn [ch]
@@ -56,6 +56,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                   (future
                     (try
                       (doseq [p pieces]
+                        (when delay-ms (Thread/sleep delay-ms))
                         (srv/send! ch (sse (assoc base :choices [{:index 0 :delta {:content p} :finish_reason nil}])) false))
                       (when-not cut?
                         (srv/send! ch (sse (assoc base :choices [{:index 0 :delta {} :finish_reason "stop"}])) false)
@@ -98,6 +99,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (= mode "normal") (respond (proposal) "stop")
       (= mode "stream") (let [p (proposal)] (respond-stream req [(subs p 0 40) (subs p 40)] {}))
       (= mode "stream-cut") (let [p (proposal)] (respond-stream req [(subs p 0 40)] {:cut? true}))
+      ;; degenerate loop: the same sentence streamed until the client gives up
+      (= mode "runaway") (respond-stream req (concat ["{\"decision\":\"needs-human\",\"reason\":\""] (repeat 600 "この依頼には応じられません。") ["\"}"]) {:cut? true :delay-ms 5})
       (= mode "needs-human") (respond (proposal :decision "needs-human" :reason "依頼が曖昧です" :changes []) "stop")
       (= mode "invalid-json") (respond "{\"decision\": \"apply\", \"changes\": [" "stop")
       (= mode "empty") (respond "" "stop")
@@ -598,7 +601,23 @@ test_research_sources_outside_read_roots_block_without_request() {
   assert_blocked BOXP-744 'symlink'
 }
 
+test_runaway_output_is_cut_and_blocks_without_retry() {
+  setup; echo runaway >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-745|BOXP-745: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-745 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 1 ]] || fail "a runaway generation must not be re-asked, got $(request_count) requests"
+  assert_blocked BOXP-745 '暴走'
+  assert_runbook_unchanged
+  local evidence
+  evidence="$(find "${STATE}/runs/BOXP-745" -name llm-evidence.edn | head -n 1)"
+  assert_file_contains "${evidence}" ':status :runaway'
+  assert_file_not_contains "${evidence}" 'この依頼には応じられません'
+}
+
 for t in \
+  test_runaway_output_is_cut_and_blocks_without_retry \
   test_research_collects_evidence_then_applies_with_sources \
   test_research_sources_must_be_notes_the_model_read \
   test_research_without_progress_stops_and_unsourced_apply_blocks \

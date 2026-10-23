@@ -151,6 +151,20 @@
           (let [lost (clojure.set/difference (links b) (links a))]
             (when (seq lost) (fail! :data-loss (str path " のリンクが失われた: " (str/join ", " (sort lost))))))
           (when (odd? (count (filter #(re-matches #"\s*(```|~~~).*" %) (lines a)))) (fail! :format-broken (str path " のコードフェンスが不均衡")))
+          ;; Markdown structure slips the regex checks miss: a heading repeated
+          ;; (new_text restating the section heading) and a table row separated
+          ;; from its table by a blank line (an orphan row renders as text).
+          (let [heading-counts (fn [t] (frequencies (filter #(re-matches #"#{1,6}\s+\S.*" %) (lines t))))
+                dup (for [[h n] (heading-counts a) :when (> n (get (heading-counts b) h 0)) :when (> n 1)] h)]
+            (when (seq dup) (fail! :format-broken (str path " に重複した見出しがある: " (str/join ", " dup)))))
+          (let [ls (vec (lines a))
+                orphan (for [i (range 1 (dec (count ls)))
+                             :let [l (nth ls i) prev (nth ls (dec i)) next (nth ls (inc i))]
+                             :when (and (str/starts-with? (str/trim l) "|")
+                                        (str/blank? prev)
+                                        (not (re-matches #"\s*\|?\s*:?-{3,}.*" next)))]
+                         (subs l 0 (min 40 (count l))))]
+            (when (seq orphan) (fail! :format-broken (str path " に表から切り離された行がある: " (str/join ", " orphan)))))
           (when (< (count a) (* 0.6 (count b))) (fail! :data-loss (str path " が 40% 以上短くなった (" (count b) " → " (count a) " 字)"))))))
     (let [sources (str (:summary ticket) " " (str/join " " (:context ticket)) " " (str/join " " (:notes ticket)) " "
                        (str/join " " (map #(get before %) (:numbers-from expect))) " "

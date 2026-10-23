@@ -145,6 +145,7 @@ Projects/codex-task-board-runner/spec.md
 
 - frontmatter に `docs-target: <vault 相対 path.md>`（カンマ区切りで最大 3 件）を明示する。未設定の票は `Blocked` に理由付きで停止します。
 - `docs-target` は runner の許可 root（既定 `Projects/task-board-localllm-docs/pilot`、env `CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS`）配下の Markdown で、`..`・symlink・vault 外は拒否されます。
+- 多数の資料を参照して別ノートを更新する依頼は、frontmatter に `docs-sources: <参照フォルダ or ノート（vault 相対、カンマ区切り）>` を書く。runner は資料群の index（path / タイトル / 見出し）だけを model に渡し、model の search（語句一致）と節単位の read を有限回（既定 6 回・根拠 14,000 字）中継してから編集させる。資料は読み取り専用で、参照許可 root（既定 `Projects/task-board-localllm-docs` 配下、env `CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS`）外・symlink は拒否。採用した事実の出典（読んだノートの path）が無い提案は適用されず、Review の Notes に出典と調査量（回数・読んだ資料）が記録される。
 - 対象レーンは Ready / In Progress / Review / Blocked。Backlog の groom は行いません。Review に置いて再割当すると Notes 末尾の指示で改稿します。
 - 結果は常に `Review`（変更適用、担当 `boxp`）または `Blocked`（未適用、理由付き）で、`Done` にはなりません。model に到達できない場合も cloud agent へは切り替えません。
 - 変更は構造化差分（節の差替え / 追記 / 一意テキスト置換）だけで、frontmatter 不変・編集範囲外のリンク保持・コードフェンス整合・競合（base hash）検査・原本 backup・原子的保存を runner が強制します。
@@ -155,6 +156,7 @@ Projects/codex-task-board-runner/spec.md
 ```text
 assignee: localllm
 docs-target: Projects/task-board-localllm-docs/pilot/runbook.md
+docs-sources: Projects/task-board-localllm-docs/refs   # 任意: 多数資料から更新するとき
 ```
 
 Summary / Context に「どの節を、どの事実で、どう変えるか」を具体的に書きます。曖昧な依頼は model が `needs-human` を返し `Blocked` になります。設計・評価・採否は vault `Projects/task-board-localllm-docs/README.md` を参照。
