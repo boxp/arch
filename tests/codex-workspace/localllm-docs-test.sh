@@ -1041,6 +1041,43 @@ test_stale_lock_recovery_is_decided_by_the_run_commit_record() {
   [[ ! -e "${STATE}/locks/BOXP-764.edn" ]] || fail "stale lock must be released"
 }
 
+test_committing_recovery_blocks_when_the_note_changed_after_the_write() {
+  # BOXP-782: the run died in the middle of the lane / frontmatter transition
+  # (`:committing` journal) and the operator edited the target note by hand
+  # before the stale lock was recovered. Recovery must not present the edited
+  # note as "applied" in Review: hashes are checked against the audit under
+  # the write lock, the ticket is blocked, the note is left as it is now (no
+  # restore from backup either), and the journal records the conflict.
+  setup; echo normal >"${MODE_FILE}"
+  local old_run="20260701T000000Z"
+  write_unfinished_localllm_run BOXP-782 "${old_run}"
+  printf '{:ticket "BOXP-782" :run-id "%s" :phase :committing :status "review" :at "2026-07-01T00:00:01Z"}\n' "${old_run}" >"${STATE}/runs/BOXP-782/${old_run}/localllm-committed.edn"
+  sed -i 's/v1\.3/v1.4 (手動修正)/' "${VAULT}/${PILOT}/runbook.md"
+  write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-782|BOXP-782: docs]] #ticket status::in-progress"
+  write_ticket "${VAULT}" BOXP-782 in-progress localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 0 ]] || fail "a conflicting recovery must not start a new model run"
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-782\|.*status::blocked'
+  assert_file_not_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-782\|.*status::review'
+  assert_file_contains "${VAULT}/Tickets/BOXP-782.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-782.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-782.md" '対象文書が run の書込み内容から変わっていたため、遷移を完了せず Blocked にしました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-782.md" 'runbook.md changed'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-782.md" '遷移を review として完了させました'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-782.md" 'backup から復元しました'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.4 \(手動修正\)'
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.2'
+  assert_file_contains "${STATE}/runs/BOXP-782/${old_run}/localllm-committed.edn" ':phase :conflict'
+  assert_file_contains "${STATE}/runs/BOXP-782/${old_run}/summary.edn" ':status :interrupted'
+  [[ ! -e "${STATE}/locks/BOXP-782.edn" ]] || fail "stale lock must be released"
+  # A second tick must not re-decide the conflict (journal is terminal).
+  run_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  [[ "$(request_count)" == 0 ]] || fail "a blocked ticket must not be picked up again"
+  [[ "$(grep -c '遷移を完了せず Blocked にしました' "${VAULT}/Tickets/BOXP-782.md")" == 1 ]] || fail "the conflict note must be written once"
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.4 \(手動修正\)'
+}
+
 test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
   # Two tickets declare the same docs-target and run in parallel ticks. Both
   # snapshot the original note; the write lock + re-check make exactly one of
@@ -1312,6 +1349,7 @@ for t in \
   test_append_section_on_a_duplicated_heading_is_rejected \
   test_noop_proposal_is_not_applied \
   test_crash_right_after_the_review_note_completes_the_transition \
+  test_committing_recovery_blocks_when_the_note_changed_after_the_write \
   test_http_errors_block_after_bounded_retries \
   test_unreachable_model_blocks_without_cloud_fallback \
   test_idle_timeout_blocks \

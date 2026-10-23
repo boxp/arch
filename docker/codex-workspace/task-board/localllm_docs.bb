@@ -1749,6 +1749,46 @@
           [{:status :skipped :reason (:reason r)}]
           r)))))
 
+(defn- applied-mismatches
+  "The applied entries whose current content is no longer what the run wrote
+  (`:after-sha256`). Read only through a freshly validated path, O_NOFOLLOW."
+  [vault cfg audit]
+  (into []
+        (keep (fn [{:keys [path after-sha256]}]
+                (let [r (resolve-vault-path vault path (:docs-roots audit (:docs-roots cfg)))]
+                  (cond
+                    (not (:ok? r)) {:path path :status :invalid :reason (:reason r)}
+                    (not (:exists? r)) {:path path :status :missing :reason "ファイルが存在しません"}
+                    :else (let [current (try (sha256 (slurp-nofollow (:abs r)))
+                                             (catch Exception e {:error (sanitize-error (.getMessage e))}))]
+                            (cond
+                              (map? current) {:path path :status :unreadable :reason (:error current)}
+                              (not= after-sha256 current) {:path path :status :changed :reason "run 適用後に別の更新が入っています"}))))))
+        (:applied audit)))
+
+(defn with-applied-intact!
+  "Crash recovery helper (BOXP-277): under the same write lock as
+  `commit-staged!` / `rollback!`, verify that every note the run wrote still
+  carries exactly the content recorded in its audit (`:after-sha256`), and only
+  then call `f` (the runner completes the interrupted lane / frontmatter
+  transition inside it, so no other localllm write can interleave). Returns
+  {:ok? true :result (f)}, {:ok? false :category \"localllm-conflict\"
+  :mismatches [{:path :status :reason}]} when a note was edited, removed or
+  invalidated since the write, or the lock-timeout conflict result."
+  [vault run-dir f]
+  (let [audit (read-edn (fs/path run-dir "localllm-audit.edn") nil)
+        cfg (config)]
+    (if-not (and audit (seq (:applied audit)))
+      {:ok? false :category "localllm-conflict" :reason "この run には適用済みの変更の記録がありません" :mismatches []}
+      ;; `with-write-lock` returns `(f)` or its own lock-timeout conflict map.
+      (with-write-lock (default-write-lock-path run-dir) (:write-lock-timeout-ms cfg)
+        (fn []
+          (let [mismatches (applied-mismatches vault cfg audit)]
+            (if (seq mismatches)
+              {:ok? false :category "localllm-conflict" :mismatches mismatches
+               :reason (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) mismatches))}
+              {:ok? true :result (f)})))))))
+
 (defn- rollback-applied! [vault cfg audit]
   (mapv (fn [{:keys [path before-sha256 after-sha256 backup created?]}]
               (let [r (resolve-vault-path vault path (:docs-roots audit (:docs-roots cfg)))]
