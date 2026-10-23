@@ -1,0 +1,106 @@
+---
+import Window from './Window.astro';
+import stg from '../data/stg.json';
+---
+
+<section id="activities" class="scroll-mt-28 px-2 sm:px-4 py-10 max-w-5xl mx-auto space-y-8">
+  <h2 class="title-logo text-2xl sm:text-3xl text-center">
+    活動 <span class="text-gold text-base sm:text-lg">RECORDS</span>
+  </h2>
+  <p class="text-center text-sm text-paper/80">
+    ひっそりゲームしたりプログラミングしたり。主な活動はシューティングゲームの 1CC（ノーコンティニュークリア）配信。
+  </p>
+
+  <Window tab="1CC RECORDS">
+    <!-- Mobile: card list -->
+    <ul class="sm:hidden space-y-3 text-sm">
+      {
+        stg.clears.map((c) => (
+          <li class="border-b border-plum-line pb-3">
+            <div>
+              <span class="text-sakura">★</span> {c.game}
+              <span class="text-gold text-xs ml-1">{c.result}</span>
+            </div>
+            <div class="text-xs text-paper/80 mt-1">
+              {c.mode} / {c.ship}
+              {c.date && <span class="text-paper/60"> / {c.date}</span>}
+            </div>
+            {c.note && <div class="text-xs text-paper/60">{c.note}</div>}
+            {c.url && (
+              <a href={c.url} class="pixel-link text-xs" target="_blank" rel="noopener noreferrer">
+                ▶ 動画
+              </a>
+            )}
+          </li>
+        ))
+      }
+    </ul>
+
+    <!-- Desktop: table -->
+    <div class="hidden sm:block overflow-x-auto">
+      <table class="w-full text-sm text-left border-collapse">
+        <thead>
+          <tr class="text-gold tracking-widest border-b-2 border-gold-dark">
+            <th class="py-1 pr-2">GAME</th>
+            <th class="py-1 pr-2">MODE</th>
+            <th class="py-1 pr-2">SHIP</th>
+            <th class="py-1 pr-2">DATE</th>
+            <th class="py-1">LOG</th>
+          </tr>
+        </thead>
+        <tbody>
+          {
+            stg.clears.map((c) => (
+              <tr class="border-b border-plum-line align-top">
+                <td class="py-2 pr-2">
+                  <span class="text-sakura">★</span> {c.game}
+                  {c.note && <div class="text-[10px] sm:text-xs text-paper/60">{c.note}</div>}
+                </td>
+                <td class="py-2 pr-2 whitespace-nowrap">{c.mode}</td>
+                <td class="py-2 pr-2">{c.ship}</td>
+                <td class="py-2 pr-2 whitespace-nowrap">{c.date || '—'}</td>
+                <td class="py-2 whitespace-nowrap">
+                  {c.url ? (
+                    <a href={c.url} class="pixel-link" target="_blank" rel="noopener noreferrer">
+                      ▶ 動画
+                    </a>
+                  ) : (
+                    <span class="text-paper/40">—</span>
+                  )}
+                </td>
+              </tr>
+            ))
+          }
+        </tbody>
+      </table>
+    </div>
+    <p class="mt-3 text-[10px] sm:text-xs text-paper/50">
+      すべて 1CC（ノーコンティニュークリア）。日付は配信・公開時期からの目安。
+    </p>
+  </Window>
+
+  <div class="grid gap-8 md:grid-cols-2">
+    <Window tab="NOW PLAYING" cursor>
+      <ul class="space-y-2 text-sm">
+        {
+          stg.inProgress.map((g) => (
+            <li class="flex gap-2">
+              <span class="text-gold">▶</span>
+              <span>
+                <span class="text-sakura">{g.game}</span> … {g.goal}
+                {g.ship && <span class="text-paper/60">（{g.ship}）</span>}
+              </span>
+            </li>
+          ))
+        }
+      </ul>
+    </Window>
+    <Window tab="ALSO" cursor>
+      <ul class="space-y-2 text-sm">
+        <li class="flex gap-2"><span class="text-gold">▶</span><span>YouTube / Twitch でのゲーム配信</span></li>
+        <li class="flex gap-2"><span class="text-gold">▶</span><span>ひっそりプログラミング（バーチャルソフトウェアエンジニア）</span></li>
+        <li class="flex gap-2"><span class="text-gold">▶</span><span>超能力者協会の任務（怪獣災害対応・救助）</span></li>
+      </ul>
+    </Window>
+  </div>
+</section>

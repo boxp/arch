@@ -1,0 +1,32 @@
+---
+/**
+ * Integer-scaled pixel art image. Intrinsic size is read from the PNG at
+ * build time and multiplied by `scale` so dots stay crisp
+ * (image-rendering: pixelated is applied globally to img).
+ * Character art is drawn at its display resolution (scale 1), so every
+ * CSS pixel is one real dot; `scale` > 1 is only for small props/tiles.
+ */
+import { pngSize } from '../lib/pixel';
+
+interface Props {
+  src: string;
+  alt: string;
+  scale?: number;
+  class?: string;
+  loading?: 'lazy' | 'eager';
+}
+
+const { src, alt, scale = 2, class: className = '', loading = 'lazy' } = Astro.props;
+const { width, height } = pngSize(src);
+---
+
+<img
+  src={src}
+  alt={alt}
+  width={width}
+  height={height}
+  loading={loading}
+  decoding="async"
+  class:list={['pixel', className]}
+  style={`box-sizing:content-box;width:${width * scale}px;height:${height * scale}px;`}
+/>

@@ -1,0 +1,24 @@
+---
+/**
+ * ADV / RPG style message window: double border, square corners,
+ * optional title tab and blinking ▼ cursor.
+ */
+interface Props {
+  tab?: string;
+  paper?: boolean;
+  cursor?: boolean;
+  class?: string;
+  id?: string;
+}
+
+const { tab, paper = false, cursor = false, class: className = '', id } = Astro.props;
+---
+
+<div
+  id={id}
+  class:list={['rpg-window', { 'rpg-window--paper': paper }, className]}
+  data-cursor={cursor ? '' : undefined}
+>
+  {tab && <span class="rpg-tab" aria-hidden="true">{tab}</span>}
+  <slot />
+</div>

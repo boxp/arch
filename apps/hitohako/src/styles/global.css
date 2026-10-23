@@ -1,0 +1,247 @@
+@import "tailwindcss";
+
+/*
+ * Palette: deep purple x gold x sakura pink (matches the transformed costume).
+ * Flat colors only, no gradients.
+ */
+@theme {
+  --font-pixel: "DotGothic16", "PixelMplus12", "Misaki Gothic", "MS Gothic", monospace;
+  --color-ink: #0b0612;
+  --color-plum: #1a0b2e;
+  --color-plum-light: #2b1251;
+  --color-plum-line: #3a1e5c;
+  --color-gold: #e3b341;
+  --color-gold-dark: #a8781e;
+  --color-sakura: #f7a8c4;
+  --color-sakura-dark: #d678a0;
+  --color-paper: #f4ecff;
+  --color-torii: #d94a2b;
+  --color-cyan: #5fe3e8;
+  --color-ice: #bfe6ff;
+  --color-blaze: #ff7a45;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+html {
+  background-color: var(--color-plum);
+  color: var(--color-paper);
+  font-family: var(--font-pixel);
+  font-size: 16px;
+  line-height: 1.75;
+  -webkit-font-smoothing: none;
+  -moz-osx-font-smoothing: unset;
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100dvh;
+  background-color: var(--color-plum);
+  background-image: url("/pixel/tile-seigaiha.png");
+  background-size: 64px 64px;
+  background-repeat: repeat;
+  image-rendering: pixelated;
+}
+
+img,
+.pixel {
+  image-rendering: pixelated;
+  image-rendering: crisp-edges;
+}
+
+::selection {
+  background: var(--color-gold);
+  color: var(--color-ink);
+}
+
+/* ---------- ADV / RPG style window (double border, square corners) ---------- */
+.rpg-window {
+  position: relative;
+  background: var(--color-plum-light);
+  border: 4px solid var(--color-gold);
+  outline: 2px solid var(--color-ink);
+  box-shadow:
+    inset 0 0 0 2px var(--color-ink),
+    inset 0 0 0 4px var(--color-gold-dark),
+    6px 6px 0 0 var(--color-ink);
+  padding: 1.5rem;
+}
+
+.rpg-window--paper {
+  background: var(--color-paper);
+  color: var(--color-ink);
+}
+
+.rpg-tab {
+  position: absolute;
+  top: -1.1rem;
+  left: 1rem;
+  background: var(--color-plum);
+  color: var(--color-gold);
+  border: 2px solid var(--color-gold);
+  box-shadow: 3px 3px 0 0 var(--color-ink);
+  padding: 0 0.75rem;
+  line-height: 1.6;
+  letter-spacing: 0.1em;
+  font-size: 0.875rem;
+}
+
+.rpg-window--paper .rpg-tab {
+  background: var(--color-gold);
+  color: var(--color-ink);
+  border-color: var(--color-ink);
+}
+
+/* Blinking ▼ cursor at the bottom-right of a message window */
+.rpg-window[data-cursor]::after {
+  content: "▼";
+  position: absolute;
+  right: 0.75rem;
+  bottom: 0.25rem;
+  color: var(--color-sakura);
+  animation: blink 1s steps(1, end) infinite;
+}
+
+/* ---------- Pixel buttons / menu items ---------- */
+.rpg-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  border: 2px solid transparent;
+  color: var(--color-paper);
+  text-decoration: none;
+  white-space: nowrap;
+}
+
+.rpg-menu-item::before {
+  content: "▶";
+  color: var(--color-sakura);
+  visibility: hidden;
+}
+
+.rpg-menu-item:hover,
+.rpg-menu-item:focus-visible {
+  border-color: var(--color-gold);
+  background: var(--color-plum);
+  outline: none;
+}
+
+.rpg-menu-item:hover::before,
+.rpg-menu-item:focus-visible::before {
+  visibility: visible;
+  animation: blink 0.8s steps(1, end) infinite;
+}
+
+.pixel-link {
+  color: var(--color-sakura);
+  text-decoration: underline;
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.pixel-link:hover {
+  color: var(--color-gold);
+}
+
+/* ---------- Title screen ---------- */
+.title-logo {
+  color: var(--color-paper);
+  text-shadow:
+    4px 4px 0 var(--color-ink),
+    -2px -2px 0 var(--color-gold-dark),
+    2px -2px 0 var(--color-gold-dark),
+    -2px 2px 0 var(--color-gold-dark),
+    2px 2px 0 var(--color-gold-dark);
+  letter-spacing: 0.08em;
+}
+
+.press-start {
+  animation: blink 1.2s steps(1, end) infinite;
+}
+
+/* ---------- CRT overlay ---------- */
+.crt::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(0, 0, 0, 0) 0px,
+    rgba(0, 0, 0, 0) 2px,
+    rgba(0, 0, 0, 0.18) 2px,
+    rgba(0, 0, 0, 0.18) 4px
+  );
+  animation: scan 8s linear infinite;
+}
+
+.crt::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 51;
+  box-shadow: inset 0 0 120px rgba(11, 6, 18, 0.8);
+}
+
+/* ---------- Status bars ---------- */
+.stat-bar {
+  display: block;
+  height: 10px;
+  background: var(--color-ink);
+  border: 2px solid var(--color-gold-dark);
+}
+
+.stat-bar > span {
+  display: block;
+  height: 100%;
+  background: var(--color-sakura);
+}
+
+/* ---------- Typewriter ---------- */
+.typewriter[data-typing] .typewriter-text::after {
+  content: "_";
+  animation: blink 0.6s steps(1, end) infinite;
+}
+
+/* ---------- Animations ---------- */
+@keyframes blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+
+@keyframes scan {
+  from { background-position: 0 0; }
+  to { background-position: 0 64px; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-6px); }
+}
+
+.float {
+  animation: float 3s steps(4, end) infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  .crt::before,
+  .press-start,
+  .rpg-window[data-cursor]::after,
+  .rpg-menu-item::before,
+  .typewriter[data-typing] .typewriter-text::after,
+  .float {
+    animation: none !important;
+  }
+  .press-start,
+  .rpg-window[data-cursor]::after {
+    opacity: 1;
+  }
+}
