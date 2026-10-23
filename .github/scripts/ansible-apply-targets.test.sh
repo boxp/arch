@@ -185,7 +185,7 @@ check "repo: group_vars/control_plane.yml -> CP" "$CP" "$repo_root" ansible/grou
 check "repo: BOXP-269 P0 PR file set -> worker only" "$WORKER" "$repo_root" \
   .gitignore \
   .github/scripts/ansible-apply-targets.sh .github/scripts/ansible-apply-targets.test.sh \
-  .github/workflows/apply-ansible.yml .github/workflows/build-gpu-worker-image.yml \
+  .github/workflows/apply-ansible.yml .github/workflows/build-worker-image.yml \
   ansible/playbooks/worker-image.yml \
   ansible/tests/test_verify_gpu_worker_image.py ansible/tests/test_worker_nodes.py \
   ansible/vars/worker_nodes.yml \

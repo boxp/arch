@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Verify the GPU worker image objects that build-gpu-worker-image.yml just
+# Verify the worker image objects that build-worker-image.yml (formerly
+# build-gpu-worker-image.yml, renamed in BOXP-273) just
 # uploaded to S3 (BOXP-269).
 #
 # The upload step only runs `aws s3 cp`; this script re-reads the bucket with
