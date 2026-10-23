@@ -1517,15 +1517,27 @@
 ;; Rollback (operator command)
 ;; ---------------------------------------------------------------------------
 
+(declare rollback-applied!)
+
 (defn rollback!
   "Restore the files changed by a run when their current content still equals
   what the run wrote. Returns a vector of {:path :status :reason}."
   [vault run-dir]
-  (let [audit (read-edn (fs/path run-dir "localllm-audit.edn") nil)]
+  (let [audit (read-edn (fs/path run-dir "localllm-audit.edn") nil)
+        cfg (config)]
     (if-not (and audit (seq (:applied audit)))
       [{:status :nothing :reason "この run には適用済みの変更がありません"}]
-      (mapv (fn [{:keys [path after-sha256 backup created?]}]
-              (let [r (resolve-vault-path vault path (:docs-roots audit (:docs-roots (config))))]
+      ;; Same write lock as commit-staged!: the hash check and the restore
+      ;; must not interleave with another run's commit on the same note.
+      (let [r (with-write-lock (default-write-lock-path run-dir) (:write-lock-timeout-ms cfg)
+                (fn [] (rollback-applied! vault cfg audit)))]
+        (if (and (map? r) (false? (:ok? r)))
+          [{:status :skipped :reason (:reason r)}]
+          r)))))
+
+(defn- rollback-applied! [vault cfg audit]
+  (mapv (fn [{:keys [path after-sha256 backup created?]}]
+              (let [r (resolve-vault-path vault path (:docs-roots audit (:docs-roots cfg)))]
                 (cond
                   (not (:ok? r)) {:path path :status :skipped :reason (:reason r)}
                   (not (:exists? r)) {:path path :status :skipped :reason "ファイルが存在しません"}
@@ -1533,4 +1545,4 @@
                   created? (do (fs/delete (:abs r)) {:path path :status :restored :reason "run が新規作成したファイルを削除しました"})
                   (not (and backup (fs/exists? backup))) {:path path :status :skipped :reason "backup が見つかりません"}
                   :else (do (atomic-write! (:abs r) (slurp backup) (path-guard vault path)) {:path path :status :restored :reason "backup から復元しました"}))))
-            (:applied audit)))))
+            (:applied audit)))
