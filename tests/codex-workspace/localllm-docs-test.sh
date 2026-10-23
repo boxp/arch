@@ -121,6 +121,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (= mode "secret-append") (respond (proposal :changes [{:path target :op "append-section" :heading "## 付録: 認証情報" :old_text "" :new_text "```\n[Secret/keys.md から転記された API キー]\n```"}]) "stop")
       ;; re-emits a credential line that already exists in the note into a new section
       (= mode "secret-duplicate") (respond (proposal :changes [{:path target :op "append-section" :heading "## 付録" :old_text "" :new_text "- API キーの保管場所は Secret/keys.md（本文には書かない）。"}]) "stop")
+      ;; append-section naming a heading that already exists twice in the note
+      (= mode "append-ambiguous-heading") (respond (proposal :changes [{:path target :op "append-section" :heading "## 注意" :old_text "" :new_text "- 追記された注意。"}]) "stop")
       (= mode "undeclared-path") (respond (proposal :changes [{:path "Infrastructure/prod.md" :op "append-section" :heading "## x" :old_text "" :new_text "y"}]) "stop")
       (= mode "frontmatter") (respond (proposal :changes [{:path target :op "replace-text" :heading "" :old_text "updated: 2026-09-30" :new_text "updated: 2026-10-23"}]) "stop")
       (= mode "drop-link") (respond (proposal :changes [{:path target :op "replace-section" :heading "## 注意" :old_text "" :new_text "特になし"}]) "stop")
@@ -449,6 +451,19 @@ test_heading_without_hashes_is_matched_by_text() {
   assert_file_contains "${VAULT}/Tickets/BOXP-732.md" '^status: review$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 現状$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+}
+
+test_append_section_on_a_duplicated_heading_is_rejected() {
+  # BOXP-779: `## 注意` exists twice; append-section must neither pick one nor add a third copy
+  setup; echo append-ambiguous-heading >"${MODE_FILE}"
+  printf -- '\n## 注意\n\n- 二つ目の注意節。\n' >>"${VAULT}/${PILOT}/runbook.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-779|BOXP-779: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-779 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_CORRECTIONS=0 >"${CASE_DIR}/out"
+  assert_blocked BOXP-779 '見出しが複数あります'
+  assert_runbook_unchanged
+  [[ "$(grep -c '^## 注意$' "${VAULT}/${PILOT}/runbook.md")" == 2 ]] || fail "a third '## 注意' heading must not be created"
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '追記された注意'
 }
 
 test_http_errors_block_after_bounded_retries() {
@@ -1248,6 +1263,7 @@ for t in \
   test_section_rewrite_keeps_links_outside_the_section \
   test_rejected_proposal_gets_one_correction_round \
   test_heading_without_hashes_is_matched_by_text \
+  test_append_section_on_a_duplicated_heading_is_rejected \
   test_http_errors_block_after_bounded_retries \
   test_unreachable_model_blocks_without_cloud_fallback \
   test_idle_timeout_blocks \

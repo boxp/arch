@@ -371,7 +371,7 @@
     (cond
       (str/blank? wanted) {:ok? false :reason "heading が空です"}
       (empty? matches) {:ok? false :reason (str "見出しが見つかりません: " (untrusted wanted 80))}
-      (> (count matches) 1) {:ok? false :reason (str "見出しが複数あります（一意に特定できません）: " (untrusted wanted 80))}
+      (> (count matches) 1) {:ok? false :ambiguous? true :reason (str "見出しが複数あります（一意に特定できません）: " (untrusted wanted 80))}
       :else {:ok? true :index (first matches)})))
 
 (defn section-end
@@ -496,12 +496,20 @@
       (cond
         (not (heading-line? (str/trim (or heading "")))) {:ok? false :reason (str "append-section の heading が見出し行ではありません: " (untrusted heading 80))}
         ;; The model often picks append-section for a heading that already
-        ;; exists (seen in the real-vault E2E). The intent is unambiguous and
-        ;; safe, so treat it as an append to that section instead of failing.
-        (:ok? (find-heading lines heading)) (apply-change lines {:op "append-to-section" :heading heading :old_text old_text :new_text new_text})
-        :else {:ok? true :removed ""
-               :lines (vec (concat (let [trimmed (vec (reverse (drop-while str/blank? (reverse lines))))] trimmed)
-                                   [""] [(str/trim heading)] [""] new-lines))})
+        ;; exists (seen in the real-vault E2E). When exactly one such heading
+        ;; exists the intent is unambiguous and safe, so treat it as an append
+        ;; to that section. When the heading already exists more than once the
+        ;; note is ambiguous: neither appending to one of them nor creating a
+        ;; third copy is safe, so the proposal is rejected (codex review).
+        ;; Only a heading that does not exist at all is created.
+        :else
+        (let [{:keys [ok? ambiguous? reason]} (find-heading lines heading)]
+          (cond
+            ok? (apply-change lines {:op "append-to-section" :heading heading :old_text old_text :new_text new_text})
+            ambiguous? {:ok? false :reason (str "append-section: " reason)}
+            :else {:ok? true :removed ""
+                   :lines (vec (concat (let [trimmed (vec (reverse (drop-while str/blank? (reverse lines))))] trimmed)
+                                       [""] [(str/trim heading)] [""] new-lines))})))
 
       "replace-text"
       (let [body (str/join "\n" (subvec lines bstart))
