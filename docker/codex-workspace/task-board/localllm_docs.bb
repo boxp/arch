@@ -1311,10 +1311,20 @@
                   (if (:ok? acc)
                     (let [{:keys [text exists? sha abs]} (get snapshots rel)
                           result (apply-changes-to-document text file-changes exists?)]
-                      (if (:ok? result)
+                      (cond
+                        (not (:ok? result))
+                        {:ok? false :category "localllm-invalid-proposal" :reason (str rel ": " (:reason result))}
+                        ;; A proposal that leaves the note as it is (e.g.
+                        ;; replace-text with old_text = new_text) must not be
+                        ;; reported as an applied change and move the card to
+                        ;; Review (codex review). Trailing whitespace only is
+                        ;; not a change either.
+                        (and exists? (= (str/trimr (or text "")) (str/trimr (:text result))))
+                        {:ok? false :category "localllm-no-change"
+                         :reason (str rel ": 提案を適用しても本文が変わりません（変更なしの提案は適用しません）")}
+                        :else
                         (update acc :files conj {:rel rel :abs abs :before-sha sha :exists? exists?
-                                                 :before text :after (:text result) :ops (:ops result)})
-                        {:ok? false :category "localllm-invalid-proposal" :reason (str rel ": " (:reason result))}))
+                                                 :before text :after (:text result) :ops (:ops result)})))
                     acc))
                 {:ok? true :files []} (group-by :path changes))))))
 

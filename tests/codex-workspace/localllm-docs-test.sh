@@ -121,6 +121,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (= mode "secret-append") (respond (proposal :changes [{:path target :op "append-section" :heading "## 付録: 認証情報" :old_text "" :new_text "```\n[Secret/keys.md から転記された API キー]\n```"}]) "stop")
       ;; re-emits a credential line that already exists in the note into a new section
       (= mode "secret-duplicate") (respond (proposal :changes [{:path target :op "append-section" :heading "## 付録" :old_text "" :new_text "- API キーの保管場所は Secret/keys.md（本文には書かない）。"}]) "stop")
+      ;; a proposal that leaves the note unchanged
+      (= mode "noop-change") (respond (proposal :changes [{:path target :op "replace-text" :heading "" :old_text "v1.2" :new_text "v1.2"}]) "stop")
       ;; append-section naming a heading that already exists twice in the note
       (= mode "append-ambiguous-heading") (respond (proposal :changes [{:path target :op "append-section" :heading "## 注意" :old_text "" :new_text "- 追記された注意。"}]) "stop")
       (= mode "undeclared-path") (respond (proposal :changes [{:path "Infrastructure/prod.md" :op "append-section" :heading "## x" :old_text "" :new_text "y"}]) "stop")
@@ -464,6 +466,50 @@ test_append_section_on_a_duplicated_heading_is_rejected() {
   assert_runbook_unchanged
   [[ "$(grep -c '^## 注意$' "${VAULT}/${PILOT}/runbook.md")" == 2 ]] || fail "a third '## 注意' heading must not be created"
   assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '追記された注意'
+}
+
+test_noop_proposal_is_not_applied() {
+  # BOXP-780: old_text = new_text leaves the note as it is; that is not an
+  # applied change and must not move the card to Review
+  setup; echo noop-change >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-780|BOXP-780: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-780 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_blocked BOXP-780 '(同じ内容のため適用しません|本文が変わりません)'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-780.md" 'Review で停止しました'
+}
+
+test_crash_right_after_the_review_note_completes_the_transition() {
+  # BOXP-781: the process dies after the Review note was appended but before
+  # the lane move. The transition journal is written before that note, so the
+  # next tick completes the transition (Review + frontmatter) and keeps the
+  # document, instead of restoring the document under a note that says it
+  # was updated.
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-781|BOXP-781: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-781 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_TEST_EXIT_AFTER_LOCALLLM_REVIEW_NOTE=true >"${CASE_DIR}/out" 2>&1 || true
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" 'Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '^status: in-progress$'
+  [[ -e "${STATE}/locks/BOXP-781.edn" ]] || fail "the killed run must leave its lock behind"
+  local old_run
+  old_run="$(find "${STATE}/runs/BOXP-781" -mindepth 1 -maxdepth 1 -type d -printf '%f\n' | head -n 1)"
+  assert_file_contains "${STATE}/runs/BOXP-781/${old_run}/localllm-committed.edn" ':phase :committing'
+  sleep 2
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out2" 2>&1
+  assert_no_cloud
+  [[ "$(request_count)" == 1 ]] || fail "completing the transition must not start a new model run, got $(request_count) requests"
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-781\|.*status::review'
+  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '遷移の途中で終了していたため、遷移を review として完了させました'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-781.md" 'backup から復元しました'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${STATE}/runs/BOXP-781/${old_run}/localllm-committed.edn" ':phase :committed'
+  [[ ! -e "${STATE}/locks/BOXP-781.edn" ]] || fail "stale lock must be released"
 }
 
 test_http_errors_block_after_bounded_retries() {
@@ -1264,6 +1310,8 @@ for t in \
   test_rejected_proposal_gets_one_correction_round \
   test_heading_without_hashes_is_matched_by_text \
   test_append_section_on_a_duplicated_heading_is_rejected \
+  test_noop_proposal_is_not_applied \
+  test_crash_right_after_the_review_note_completes_the_transition \
   test_http_errors_block_after_bounded_retries \
   test_unreachable_model_blocks_without_cloud_fallback \
   test_idle_timeout_blocks \

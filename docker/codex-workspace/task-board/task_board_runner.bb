@@ -882,7 +882,8 @@
     the note write is complete and verified, so finish the transition
     (idempotent lane move + frontmatter) instead of leaving Review / In Progress
     and the note inconsistent.
-  - `:committed`: nothing to do.
+  - `:committed` / `:rolled-back`: nothing to do (the run finished the
+    transition, or already restored the notes itself after a failure).
   Returns the rollback report, the completion record, or nil."
   [ticket-id run-id]
   (let [dir (run-dir ticket-id run-id)
@@ -893,7 +894,7 @@
         journal (read-edn-file (localllm-commit-marker-path ticket-id run-id) nil)
         phase (:phase journal)]
     (when (and (seq (:applied audit))
-               (not= :committed phase)
+               (not (contains? #{:committed :rolled-back} phase))
                @localllm-docs-module-loaded?)
       (if (= :committing phase)
         (let [next-status (str (:status journal "review"))]
@@ -2140,8 +2141,23 @@
                                  (let [final (if staged? ((:commit! result)) result)
                                        applied? (boolean (seq (:applied final)))
                                        _ (when (and applied? on-applied!) (on-applied!))
+                                       ;; The Review note below is the first
+                                       ;; user-visible claim that the document
+                                       ;; was updated. Journal the transition
+                                       ;; before it, so a crash between this
+                                       ;; note and the lane move is completed by
+                                       ;; `recover-localllm-write!` instead of
+                                       ;; rolled back under a note that says
+                                       ;; the opposite (codex review).
+                                       _ (when (and applied? (= :review (:status final)))
+                                           (record-localllm-commit! ticket-id run :committing "review"))
                                        message (localllm-last-message run final)]
                                    (spit (str last-message-path) message)
+                                   (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_EXIT_AFTER_LOCALLLM_REVIEW_NOTE"))
+                                     ;; Deterministic black-box crash hook (unset in
+                                     ;; deployment): die right after the Review note.
+                                     (record-final! final)
+                                     (System/exit 137))
                                    {:result (record-final! final) :last-message message
                                     :applied? applied?})))))))
 
@@ -2535,6 +2551,10 @@
                       (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str (run-dir ticket-id (:run-id lock))))
                                           (catch Exception re [{:status :error :reason (sanitize-blocker-reason (.getMessage re))}]))]
                         (log! (str "run " (:run-id lock) " for " ticket-id ": rolled back localllm docs write after a failed transition: " (pr-str restored)))
+                        ;; A `:committing` journal may already exist (written
+                        ;; before the Review note); mark the run as restored so
+                        ;; no later recovery "completes" a rolled-back write.
+                        (record-localllm-commit! ticket-id (:run-id lock) :rolled-back nil)
                         (append-note! ticket-id (str "localllm docs run " (:run-id lock)
                                                      " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
