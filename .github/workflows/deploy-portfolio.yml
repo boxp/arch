@@ -1,0 +1,98 @@
+name: Deploy Portfolio Site
+
+# apps/portfolio（b0xp.io ポートフォリオ新サイト, BOXP-275）のビルドと Cloudflare Pages デプロイ。
+# PR: 本番設定でビルド + Lighthouse CI（モバイル）のみ。
+# main push / workflow_dispatch: stage 設定でビルドし stage プロジェクト boxp-portfolio-stage
+# （https://portfolio-stage.b0xp.io/、Cloudflare Access で本人限定）へデプロイする。
+# 本番プロジェクト boxp-portfolio（b0xp.io / www.b0xp.io）へはこの phase ではデプロイしない。
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/portfolio/**'
+      - '.github/workflows/deploy-portfolio.yml'
+  pull_request:
+    paths:
+      - 'apps/portfolio/**'
+      - '.github/workflows/deploy-portfolio.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      deployments: write
+    env:
+      STAGE_PROJECT_NAME: boxp-portfolio-stage
+      STAGE_SITE_URL: https://portfolio-stage.b0xp.io
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/portfolio/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/portfolio
+        run: npm ci
+
+      # PR では本番設定でビルドし、Lighthouse で本番相当のメタ（noindex なし）を検証する。
+      - name: Build (production settings)
+        if: github.event_name == 'pull_request'
+        working-directory: apps/portfolio
+        run: npm run build
+
+      - name: Build (stage settings)
+        if: github.event_name != 'pull_request'
+        working-directory: apps/portfolio
+        run: npm run build
+        env:
+          SITE_ENV: stage
+          SITE_URL: ${{ env.STAGE_SITE_URL }}
+
+      - name: Upload dist
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: portfolio-dist
+          path: apps/portfolio/dist
+          retention-days: 7
+
+      # Stage only in this phase. Production (b0xp.io) is not deployed from here.
+      - name: Deploy to Cloudflare Pages (stage)
+        if: github.event_name != 'pull_request'
+        working-directory: apps/portfolio
+        run: npx wrangler pages deploy dist --project-name "$STAGE_PROJECT_NAME" --branch main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+  lighthouse:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    needs: build
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: portfolio-dist
+          path: apps/portfolio/dist
+
+      - name: Run Lighthouse CI (mobile)
+        uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12
+        with:
+          configPath: ./apps/portfolio/lighthouserc.json
+          uploadArtifacts: true
+          temporaryPublicStorage: false
