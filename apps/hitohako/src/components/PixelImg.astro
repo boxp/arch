@@ -2,9 +2,9 @@
 /**
  * Integer-scaled pixel art image. Intrinsic size is read from the PNG at
  * build time and multiplied by `scale` so dots stay crisp
- * (image-rendering: pixelated is applied globally to img).
- * Character art is drawn at its display resolution (scale 1), so every
- * CSS pixel is one real dot; `scale` > 1 is only for small props/tiles.
+ * (image-rendering: pixelated via the `.pixel` class).
+ * Used for small props and tiles only (torii, sakura, wagara tiles).
+ * Character art is a regular illustration: see Illust.astro.
  */
 import { pngSize } from '../lib/pixel';
 

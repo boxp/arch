@@ -1,6 +1,6 @@
 ---
 import Window from './Window.astro';
-import PixelImg from './PixelImg.astro';
+import Illust from './Illust.astro';
 import allies from '../data/allies.json';
 
 const accentClass: Record<string, string> = {
@@ -21,10 +21,9 @@ const accentClass: Record<string, string> = {
       allies.map((a) => (
         <Window tab={a.heroineName ?? "NAVI"} class="flex flex-col">
           <div class="flex items-start gap-3">
-            <PixelImg
+            <Illust
               src={a.image}
               alt={`${a.name} の顔グラフィック`}
-              scale={1}
               class:list={['shrink-0 border-2 bg-ink', accentClass[a.accent]]}
             />
             <div>

@@ -1,6 +1,6 @@
 ---
 import Window from './Window.astro';
-import PixelImg from './PixelImg.astro';
+import Illust from './Illust.astro';
 import Navigator from './Navigator.astro';
 import profile from '../data/profile.json';
 
@@ -40,10 +40,9 @@ const bars = [
   <Window tab="STATUS">
     <div class="grid gap-6 md:grid-cols-[auto_1fr]">
       <div class="flex md:flex-col items-center gap-4">
-        <PixelImg
-          src="/pixel/hitohako-face.png"
+        <Illust
+          src="/illust/hitohako-face.png"
           alt="変身後のひとはこさんの顔グラフィック"
-          scale={1}
           class="border-2 border-gold bg-ink"
         />
         <div class="flex-1 md:w-full space-y-2 text-xs sm:text-sm">

@@ -4,7 +4,7 @@
  * Text is typed out with a tiny script; disabled for prefers-reduced-motion.
  */
 import Window from './Window.astro';
-import PixelImg from './PixelImg.astro';
+import Illust from './Illust.astro';
 
 interface Props {
   lines: string[];
@@ -16,10 +16,9 @@ const { lines, id } = Astro.props;
 
 <Window id={id} tab="NAVI: コハコ.exe" cursor class="typewriter" data-typing>
   <div class="flex gap-4 items-start">
-    <PixelImg
-      src="/pixel/kohako-face.png"
+    <Illust
+      src="/illust/kohako-face.png"
       alt="コハコ.exe の顔グラフィック"
-      scale={1}
       class="shrink-0 border-2 border-cyan bg-ink"
     />
     <p class="typewriter-text text-cyan text-sm sm:text-base leading-relaxed min-h-[3lh]" data-lines={JSON.stringify(lines)}>

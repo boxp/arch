@@ -4,7 +4,7 @@
     "name": "コハコ.exe",
     "reading": "こはこ どっと えぐぜ",
     "role": "専用ナビゲーション AI",
-    "image": "/pixel/kohako-face.png",
+    "image": "/illust/kohako-face.png",
     "accent": "cyan",
     "description": [
       "ひとはこさんを支援するために生み出されたナビゲーション AI。名前の由来は「一箱」より少し小さな「小箱」。",
@@ -19,7 +19,7 @@
     "reading": "なるせ りお",
     "heroineName": "アーク・リオ",
     "role": "遠距離支援 / メカ少女ヒロイン",
-    "image": "/pixel/rio-face.png",
+    "image": "/illust/rio-face.png",
     "accent": "ice",
     "description": [
       "超能力者協会に所属する変身ヒロイン。勉強が得意で真面目な、眼鏡がよく似合う知性派の少女。",
@@ -34,7 +34,7 @@
     "reading": "あまぎ さな",
     "heroineName": "セーラー・ブレイズ",
     "role": "近接制圧 / セーラーヒロイン",
-    "image": "/pixel/sana-face.png",
+    "image": "/illust/sana-face.png",
     "accent": "blaze",
     "description": [
       "超能力者協会に所属する変身ヒロイン。近接格闘に特化した、負けん気の強い直情型の少女。",
