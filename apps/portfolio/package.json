@@ -22,9 +22,9 @@
     "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
-    "@astrojs/check": "^0.9.6",
-    "@resvg/resvg-js": "^2.6.2",
-    "typescript": "^5.9.3",
-    "wrangler": "^4.50.0"
+    "@astrojs/check": "0.9.12",
+    "@resvg/resvg-js": "2.6.2",
+    "typescript": "5.9.3",
+    "wrangler": "4.152.0"
   }
 }
