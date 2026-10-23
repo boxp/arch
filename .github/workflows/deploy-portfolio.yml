@@ -80,15 +80,18 @@ jobs:
     timeout-minutes: 15
     needs: build
     if: github.event_name == 'pull_request'
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
+      # lighthouserc.json の staticDistDir (./dist) は cwd 基準で解決されるため、リポジトリルート直下に展開する。
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: portfolio-dist
-          path: apps/portfolio/dist
+          path: dist
 
       - name: Run Lighthouse CI (mobile)
         uses: treosh/lighthouse-ci-action@3e7e23fb74242897f95c0ba9cabad3d0227b9b18 # v12

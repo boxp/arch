@@ -55,9 +55,9 @@ resource "cloudflare_zero_trust_access_application" "portfolio_stage_pages_dev" 
   account_id = var.account_id
   name       = "Access application for ${local.portfolio_stage_project_name}.pages.dev"
   domain     = "${local.portfolio_stage_project_name}.pages.dev"
-  self_hosted_domains = [
-    "${local.portfolio_stage_project_name}.pages.dev",
-    "*.${local.portfolio_stage_project_name}.pages.dev",
+  destinations = [
+    { type = "public", uri = "${local.portfolio_stage_project_name}.pages.dev" },
+    { type = "public", uri = "*.${local.portfolio_stage_project_name}.pages.dev" },
   ]
   session_duration = "24h"
   type             = "self_hosted"
