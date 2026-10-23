@@ -282,6 +282,28 @@
                   (when (seq (:failures check)) (str " :: " (str/join " | " (map :message (:failures check)))))))
     result))
 
+(def rescore-dir (arg "--rescore" nil))
+
+(when rescore-dir
+  (let [fresh (fs/path (fs/create-temp-dir) "fixture")
+        _ (make-vault! fresh)
+        before (snapshot fresh)
+        results (vec (for [spec all-cases
+                           rep-dir (sort (map str (fs/glob (fs/path rescore-dir (:id spec)) "rep*")))
+                           :let [result-path (fs/path rep-dir "result.edn")]
+                           :when (fs/exists? result-path)]
+                       (let [old (edn/read-string (slurp (str result-path)))
+                             after (snapshot (fs/path rep-dir "vault"))
+                             check (check-case spec before after old)
+                             new (merge old check {:rescored? true})]
+                         (spit (str result-path) (pr-str new))
+                         (println (str "[rescore] " (:id spec) " rep" (:rep old) " -> " (if (:pass? check) "PASS" "FAIL")
+                                       (when (seq (:failures check)) (str " :: " (str/join " | " (map :message (:failures check)))))))
+                         new)))]
+    (spit (str (fs/path rescore-dir "results.edn")) (pr-str results))
+    (println (str "rescored " (count (filter :pass? results)) "/" (count results) " pass"))
+    (System/exit 0)))
+
 (def results (atom []))
 (doseq [[idx case] (map-indexed (fn [i c] [(inc i) c]) all-cases)
         :when (contains? (set (map :id cases)) (:id case))

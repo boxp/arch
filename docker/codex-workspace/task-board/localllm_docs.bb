@@ -77,7 +77,10 @@
    :max-targets (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_TARGETS" 3)
    :max-changes (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CHANGES" 8)
    :max-change-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CHANGE_CHARS" 8000)
-   :max-note-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_NOTE_CHARS" 60000)})
+   :max-note-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_NOTE_CHARS" 60000)
+   ;; After a rejected proposal the model gets the concrete reason once and may
+   ;; answer with a corrected proposal (adapter v2). 0 disables the round.
+   :max-corrections (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CORRECTIONS" 1)})
 
 ;; ---------------------------------------------------------------------------
 ;; Small helpers
@@ -376,6 +379,19 @@
       (forbidden-text-reason (:heading change)) (forbidden-text-reason (:heading change))
       :else nil)))
 
+(defn- table-header-lost?
+  "True when the removed region contained a Markdown table (header + `---` row)
+  and the new document still has table rows but the header separator for that
+  table is gone (a frequent small-model slip: rewriting rows without the header)."
+  [removed-text new-lines]
+  (let [sep? (fn [l] (boolean (re-matches #"\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*" l)))
+        row? (fn [l] (str/starts-with? (str/trim l) "|"))
+        removed-lines (str/split-lines (or removed-text ""))]
+    (and (some sep? removed-lines)
+         (some row? new-lines)
+         (< (count (filter sep? new-lines))
+            (count (filter sep? removed-lines))))))
+
 (defn apply-changes-to-document
   "Apply all `changes` for one target to `original` text. Returns
   {:ok? true :text :ops} or {:ok? false :reason}. Enforces: frontmatter
@@ -402,6 +418,7 @@
           (cond
             (and fm-end (not= orig-fm new-fm)) {:ok? false :reason "frontmatter が変更されるため拒否します"}
             (not (fence-balanced? lines)) {:ok? false :reason "コードフェンスの対応が崩れるため拒否します"}
+            (table-header-lost? removed-text lines) {:ok? false :reason "表のヘッダ行（| 列名 | と | --- |）が失われるため拒否します。表を差し替えるときはヘッダ行も含めてください"}
             (seq missing) {:ok? false :reason (str "編集範囲外のリンクが失われるため拒否します: " (truncate-text (str/join ", " (sort missing)) 120))}
             (= text (str original (when-not (str/ends-with? (or original "") "\n") "\n"))) {:ok? false :reason "変更前と同じ内容のため適用しません"}
             :else {:ok? true :text text :ops applied}))))))
@@ -495,7 +512,7 @@
          (when (seq (:text references)) (str "# 参照ノート（読み取り専用）\n" (:text references) "\n"))
          "# 指示\n"
          (if (= :revise action)
-           "このチケットは Review にあり、Notes の末尾に人間の追加指示があります。その指示に従って対象ノートを最小限に修正する構造化差分を出力してください。"
+           "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。対象ノートには前回までの作業結果が既に反映されているので、Summary / Acceptance Criteria は元の依頼として読み、最新の Review 指示を優先して対象ノートを最小限に修正する構造化差分を出力してください。既に存在する節は追加ではなく修正（replace-section）してください。"
            "チケットの Summary / Acceptance Criteria / Context / Notes の依頼にもとづいて対象ノートを更新する構造化差分を出力してください。")
          " 根拠がない、曖昧、対象外の依頼なら decision を needs-human にして changes は空にしてください。"
          " 文字数予算は " budget " 字です。summary には適用後に人間が確認すべき点を日本語で簡潔に書いてください。\n")))
@@ -780,9 +797,11 @@
 
 (defn run-docs-edit!
   "Full route for one ticket run. Returns
-  {:status :review|:blocked :category :reason :summary :applied :audit-path :evidence}.
+  {:status :review|:blocked :category :reason :summary :applied :audit-path ...}.
   `action` is :edit or :revise (Review lane). Never throws for model / IO
-  failures; those become :blocked with a concrete reason."
+  failures; those become :blocked with a concrete reason. A proposal rejected by
+  the executor is fed back to the model once (`:max-corrections`); conflicts and
+  needs-human decisions are final."
   [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn]}]
   (let [cfg (config)
         log! (or log-fn (fn [_]))
@@ -794,35 +813,57 @@
                                      :model (:model cfg) :endpoint (:base-url cfg) :targets targets
                                      :docs-roots (:docs-roots cfg)
                                      :elapsed-ms (- (System/currentTimeMillis) started)}
-                                    (select-keys m [:category :reason :summary :applied :usage :llm-elapsed-ms :context-chars :references :decision]))]
+                                    (select-keys m [:category :reason :summary :applied :usage :llm-elapsed-ms
+                                                    :context-chars :references :decision :corrections]))]
                    (write-audit! run-dir audit)
-                   (assoc m :status status :audit-path (str (fs/path run-dir "localllm-audit.edn")))))]
+                   (assoc m :status status :audit-path (str (fs/path run-dir "localllm-audit.edn")))))
+        correction-request (fn [why]
+                             {:role "user"
+                              :content (str "前の提案は runner の検証で拒否されました。理由: " why
+                                            "\n同じ依頼について、理由を踏まえて修正した構造化差分を出力してください。根拠がなければ needs-human にしてください。")})]
     (fs/create-dirs run-dir)
     (if-not (:ok? snap)
       (finish :blocked (select-keys snap [:category :reason]))
-      (let [{:keys [messages references context-chars]} (build-messages cfg vault ticket-id ticket-text action snap)
-            _ (log! (str "localllm docs-edit " ticket-id ": targets=" (str/join "," (:targets snap))
-                         " context-chars=" context-chars " refs=" (count (:included references))))
-            llm (llm-chat! cfg run-dir messages {:stop-requested? stop-requested?})]
-        (if-not (:ok? llm)
-          (finish :blocked (assoc (select-keys llm [:category :reason :shutdown?]) :context-chars context-chars))
-          (let [{:keys [ok? proposal reason]} (parse-proposal (:content llm) (:finish-reason llm))
-                base {:usage (:usage llm) :llm-elapsed-ms (:elapsed-ms llm) :context-chars context-chars
-                      :references (:included references)}]
-            (cond
-              (not ok?)
-              (finish :blocked (assoc base :category "localllm-invalid-output" :reason reason))
+      (let [{:keys [messages references context-chars]} (build-messages cfg vault ticket-id ticket-text action snap)]
+        (log! (str "localllm docs-edit " ticket-id ": targets=" (str/join "," (:targets snap))
+                   " context-chars=" context-chars " refs=" (count (:included references))))
+        (loop [messages messages round 0 usage-total {} llm-ms 0]
+          (let [llm (llm-chat! cfg run-dir messages {:stop-requested? stop-requested?
+                                                      :phase (if (zero? round) "docs-edit" (str "docs-edit-correction-" round))})
+                usage-total (merge-with + usage-total (select-keys (or (:usage llm) {}) [:prompt_tokens :completion_tokens :total_tokens]))
+                llm-ms (+ llm-ms (or (:elapsed-ms llm) 0))
+                base {:usage usage-total :llm-elapsed-ms llm-ms :context-chars context-chars
+                      :references (:included references) :corrections round}]
+            (if-not (:ok? llm)
+              (finish :blocked (merge base (select-keys llm [:category :reason :shutdown?])))
+              (let [{:keys [ok? proposal reason]} (parse-proposal (:content llm) (:finish-reason llm))
+                    outcome (cond
+                              (not ok?) {:kind :reject :category "localllm-invalid-output" :reason reason}
+                              (= "needs-human" (:decision proposal)) {:kind :needs-human}
+                              :else (let [result (apply-proposal! cfg vault run-dir snap proposal)]
+                                      (cond
+                                        (:ok? result) {:kind :accepted :result result}
+                                        ;; Conflicts are not the model's fault; never re-ask.
+                                        (= "localllm-conflict" (:category result)) {:kind :final :result result}
+                                        :else {:kind :reject :category (:category result) :reason (:reason result)})))]
+                (case (:kind outcome)
+                  :reject
+                  (if (< round (:max-corrections cfg))
+                    (do (log! (str "localllm docs-edit " ticket-id ": correction round " (inc round) " (" (:category outcome) ")"))
+                        (recur (conj messages {:role "assistant" :content (:content llm)} (correction-request (:reason outcome)))
+                               (inc round) usage-total llm-ms))
+                    (finish :blocked (assoc base :category (:category outcome) :reason (:reason outcome) :decision (:decision proposal))))
 
-              (= "needs-human" (:decision proposal))
-              (finish :blocked (assoc base :category "localllm-needs-human" :decision "needs-human"
-                                      :reason (str "localllm は変更を提案せず人間判断を求めました: "
-                                                   (sanitize-error (truncate-text (:reason proposal) 300)))))
+                  :needs-human
+                  (finish :blocked (assoc base :category "localllm-needs-human" :decision "needs-human"
+                                          :reason (str "localllm は変更を提案せず人間判断を求めました: "
+                                                       (sanitize-error (truncate-text (:reason proposal) 300)))))
 
-              :else
-              (let [result (apply-proposal! cfg vault run-dir snap proposal)]
-                (if-not (:ok? result)
-                  (finish :blocked (assoc base :category (:category result) :reason (:reason result) :decision "apply"))
-                  (finish :review (assoc base :decision "apply" :applied (:applied result)
+                  :final
+                  (finish :blocked (assoc base :category (:category (:result outcome)) :reason (:reason (:result outcome)) :decision "apply"))
+
+                  :accepted
+                  (finish :review (assoc base :decision "apply" :applied (:applied (:result outcome))
                                          :summary (sanitize-error (truncate-text (:summary proposal) 400))
                                          :category "localllm-applied")))))))))))
 

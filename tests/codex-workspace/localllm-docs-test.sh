@@ -85,6 +85,10 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (= mode "undeclared-path") (respond (proposal :changes [{:path "Infrastructure/prod.md" :op "append-section" :heading "## x" :old_text "" :new_text "y"}]) "stop")
       (= mode "frontmatter") (respond (proposal :changes [{:path target :op "replace-text" :heading "" :old_text "updated: 2026-09-30" :new_text "updated: 2026-10-23"}]) "stop")
       (= mode "drop-link") (respond (proposal :changes [{:path target :op "replace-section" :heading "## 注意" :old_text "" :new_text "特になし"}]) "stop")
+      (= mode "correct-after-reject") (if (str/includes? (str user) "拒否されました")
+                                         (respond (proposal) "stop")
+                                         (respond (proposal :changes [{:path target :op "replace-section" :heading "## 存在しない見出し" :old_text "" :new_text "x"}]) "stop"))
+      (= mode "heading-without-hashes") (respond (proposal :changes [{:path target :op "replace-section" :heading "現状" :old_text "" :new_text "- 稼働バージョンは v1.3 で、待受ポートは 8081 です。"}]) "stop")
       (= mode "error500") {:status 500 :body "boom"}
       (= mode "headers-stall") (do (Thread/sleep 6000) (respond (proposal) "stop"))
       (= mode "slow") (do (Thread/sleep 4000) (respond (proposal) "stop"))
@@ -364,6 +368,37 @@ test_section_rewrite_keeps_links_outside_the_section() {
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.2'
 }
 
+test_rejected_proposal_gets_one_correction_round() {
+  setup; echo correct-after-reject >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-730|BOXP-730: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-730 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  [[ "$(request_count)" == 2 ]] || fail "expected the rejected proposal to be re-asked once, got $(request_count)"
+  assert_file_contains "${VAULT}/Tickets/BOXP-730.md" '^status: review$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-730" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':corrections 1'
+  # with corrections disabled the same first answer blocks after one request
+  setup; echo correct-after-reject >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-731|BOXP-731: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-731 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_CORRECTIONS=0 >"${CASE_DIR}/out"
+  [[ "$(request_count)" == 1 ]] || fail "expected a single request with corrections disabled"
+  assert_blocked BOXP-731 '見出しが見つかりません'
+  assert_runbook_unchanged
+}
+
+test_heading_without_hashes_is_matched_by_text() {
+  setup; echo heading-without-hashes >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-732|BOXP-732: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-732 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-732.md" '^status: review$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 現状$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+}
+
 test_http_errors_block_after_bounded_retries() {
   setup; echo error500 >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-720|BOXP-720: docs]] #ticket status::ready"
@@ -468,6 +503,8 @@ for t in \
   test_needs_human_blocks_with_reason \
   test_invalid_outputs_block_and_leave_file \
   test_section_rewrite_keeps_links_outside_the_section \
+  test_rejected_proposal_gets_one_correction_round \
+  test_heading_without_hashes_is_matched_by_text \
   test_http_errors_block_after_bounded_retries \
   test_unreachable_model_blocks_without_cloud_fallback \
   test_idle_timeout_blocks \
