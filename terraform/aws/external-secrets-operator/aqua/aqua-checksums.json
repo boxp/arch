@@ -1,28 +1,28 @@
 {
   "checksums": [
     {
-      "id": "github_release/github.com/aquasecurity/trivy/v0.73.0/trivy_0.73.0_Linux-64bit.tar.gz",
-      "checksum": "2EDD39DA482BB4E9831962487B68F68E3928EC3137794757F54D00383D79547B",
+      "id": "github_release/github.com/aquasecurity/trivy/v0.76.0/trivy_0.76.0_Linux-64bit.tar.gz",
+      "checksum": "E24B1C51293C1B15E4BA8D45BBC7891BA053F90278EC2698F3562C993E145FE7",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/aquasecurity/trivy/v0.73.0/trivy_0.73.0_Linux-ARM64.tar.gz",
-      "checksum": "13833D97E8A1A5367471C372A173180157F593BECE570E20D5D925FEF552F5DD",
+      "id": "github_release/github.com/aquasecurity/trivy/v0.76.0/trivy_0.76.0_Linux-ARM64.tar.gz",
+      "checksum": "AAB21E677A7B7071FC79F1711480840754C18A1B9D9CEFA7CCD06AF63A0E8F4C",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/aquasecurity/trivy/v0.73.0/trivy_0.73.0_macOS-64bit.tar.gz",
-      "checksum": "D39D1374DD3E35D48621B82DF9B6625FE69F9920CC67D2739ED81BB679F16F51",
+      "id": "github_release/github.com/aquasecurity/trivy/v0.76.0/trivy_0.76.0_macOS-64bit.tar.gz",
+      "checksum": "89563D4D495CF4EF06A0D1950F8710B124E9F7BD2615EC6C47B03673F4AD45A2",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/aquasecurity/trivy/v0.73.0/trivy_0.73.0_macOS-ARM64.tar.gz",
-      "checksum": "80CC25FAAF6378E37701202D0B4F9F43D9E413D198D594BA60FDF559FE44A683",
+      "id": "github_release/github.com/aquasecurity/trivy/v0.76.0/trivy_0.76.0_macOS-ARM64.tar.gz",
+      "checksum": "E7EC0D21FE842553F59AF99ABA2EFBCC822369FBAED27019C575408B6D135FCE",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/aquasecurity/trivy/v0.73.0/trivy_0.73.0_windows-64bit.zip",
-      "checksum": "D2D3AD5292AAE470A03EB6506DB86FCE81B1894592B8451CADAF60EAA22F2025",
+      "id": "github_release/github.com/aquasecurity/trivy/v0.76.0/trivy_0.76.0_windows-64bit.zip",
+      "checksum": "7B4762A5A5326CB4B83DFD2BB5D9AAF15A1ED867C75CAD7DD8B38840A28E7BE6",
       "algorithm": "sha256"
     },
     {
@@ -51,33 +51,33 @@
       "algorithm": "sha256"
     },
     {
-      "id": "http/releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_darwin_amd64.zip",
-      "checksum": "E2E812E783771159BF758FD4E55D6DC9BB08F63E2AF2C63D212721807A02C5DC",
+      "id": "http/releases.hashicorp.com/terraform/1.16.6/terraform_1.16.6_darwin_amd64.zip",
+      "checksum": "794A36C3F7EBF6C58F2089C226068A539D1705BA358A5679B51671C8DC7EBC7B",
       "algorithm": "sha256"
     },
     {
-      "id": "http/releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_darwin_arm64.zip",
-      "checksum": "F210110C5698B94D803A7A63CDB0251B5455C150841478808E2BBB343F95ED68",
+      "id": "http/releases.hashicorp.com/terraform/1.16.6/terraform_1.16.6_darwin_arm64.zip",
+      "checksum": "85E1BC78AB45BDC5F82A7BAC3929E37D072834A584D22583A2498DC67BB624CD",
       "algorithm": "sha256"
     },
     {
-      "id": "http/releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_linux_amd64.zip",
-      "checksum": "D25CE7B6902013AD905DB3D2EAB0BE4CD905887FE88B81A6171B8D5503C31F3D",
+      "id": "http/releases.hashicorp.com/terraform/1.16.6/terraform_1.16.6_linux_amd64.zip",
+      "checksum": "38034B38D03096399A7A1264A14561A8029B2B496FD1F169452656E53968F1B7",
       "algorithm": "sha256"
     },
     {
-      "id": "http/releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_linux_arm64.zip",
-      "checksum": "8891E9DCEDC9E3B8950BC6AF9D4D8AF1F4CFADE3062F53B9DC403A89F6CE8C9C",
+      "id": "http/releases.hashicorp.com/terraform/1.16.6/terraform_1.16.6_linux_arm64.zip",
+      "checksum": "A750B5A11038F165846B2658C40C88CD7070AA67A61BAB431A14BA27928EA9EA",
       "algorithm": "sha256"
     },
     {
-      "id": "http/releases.hashicorp.com/terraform/1.15.8/terraform_1.15.8_windows_amd64.zip",
-      "checksum": "2FF41D2129AFB1982733C132C61A8D6EF038F879F3AEEDE7FC28B8B8B24ACF02",
+      "id": "http/releases.hashicorp.com/terraform/1.16.6/terraform_1.16.6_windows_amd64.zip",
+      "checksum": "6EA2C186E0E76A113AF30FBCDCF7A4B4C70756317994A04929E5C90B9E94B1DF",
       "algorithm": "sha256"
     },
     {
-      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.552.0/registry.yaml",
-      "checksum": "24EE3C66CE9DD9C2A5F790268252399A3614A746F50DB24158096974B98C8618",
+      "id": "registries/github_content/github.com/aquaproj/aqua-registry/v4.575.0/registry.yaml",
+      "checksum": "340BC6F1FA7124077830D090576F9DC538212FDD7869F8DE973E81B0124EFFA1",
       "algorithm": "sha256"
     }
   ]

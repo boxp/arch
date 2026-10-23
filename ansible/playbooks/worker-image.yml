@@ -5,10 +5,26 @@
   gather_facts: true
   vars_files:
     - ../vars/nodes.yml
+    - ../vars/worker_nodes.yml
   vars:
-    node_ip: "{{ node_ips[node_name] | default('') }}"
+    # BOXP-269: node-specific values are resolved from vars/worker_nodes.yml by
+    # node_name. `-e` extra vars (apply-ansible.yml, build script) still win.
+    worker_node: "{{ worker_nodes[node_name] }}"
+    node_ip: "{{ worker_node.ip }}"
+    worker_image_build: "{{ chroot_build | default(false) | bool }}"
+    # Kubernetes / CRI-O baseline baked into the image. Defined at play level
+    # (not only as role params) so that /etc/lolice-worker-image records the
+    # same values the kubernetes_components role installs; role params are
+    # scoped to the role and the record task used to fall back to the role
+    # defaults (found by the BOXP-269 image verifier on 2026-10-22).
+    worker_kubernetes_version: "1.36.5"
+    worker_kubernetes_package_version: "1.36.5-1.1"
+    worker_crio_version: "1.36.6"
+    worker_crio_package_version: "1.36.6-3.1"
     worker_configure_static_network: false
-    worker_install_gpu_host_tools: false
+    # Image builds bake the per-node GPU host tools decision; live runs keep the
+    # historical default (off) unless the caller passes the variable explicitly.
+    worker_install_gpu_host_tools: "{{ worker_node.gpu_host_tools | bool if worker_image_build | bool else false }}"
     worker_base_packages:
       - ca-certificates
       - curl
@@ -24,10 +40,24 @@
       - vim
       - wireless-regdb
     worker_extra_kernel_modules_package: true
-    worker_static_network_interface: enp44s0
+    worker_static_network_interface: "{{ worker_node.interface }}"
     worker_static_networkd_config: /etc/systemd/network/20-wired.network
 
   pre_tasks:
+    - name: Require a known worker node_name
+      ansible.builtin.assert:
+        that:
+          - node_name is defined
+          - node_name in worker_nodes
+          - worker_nodes[node_name].ip is match('^[0-9.]+$')
+          - worker_nodes[node_name].interface is match('^[a-z][a-z0-9]*$')
+          # Nodes already under live management must agree with vars/nodes.yml.
+          - node_name not in node_ips or node_ips[node_name] == worker_nodes[node_name].ip
+        fail_msg: >-
+          node_name must be passed with -e and listed in vars/worker_nodes.yml
+          (consistent with node_ips in vars/nodes.yml). Got: {{ node_name | default('<undefined>') }}
+      tags: [always]
+
     - name: Check if running in chroot environment
       ansible.builtin.stat:
         path: /proc/1/root/.
@@ -58,7 +88,9 @@
 
     - name: Install extra modules for installed generic kernels
       ansible.builtin.apt:
-        name: "{{ worker_generic_kernel_modules.files | map(attribute='path') | map('basename') | map('regex_replace', '^(.*)$', 'linux-modules-extra-\\1') | list }}"
+        name: >-
+          {{ worker_generic_kernel_modules.files | map(attribute='path') | map('basename')
+          | map('regex_replace', '^', 'linux-modules-extra-') | list }}
         state: present
         update_cache: true
       when:
@@ -200,10 +232,10 @@
     - role: kubernetes_components
       tags: [kubernetes, k8s-components]
       vars:
-        kubernetes_version: "1.36.1"
-        kubernetes_package_version: "1.36.1-1.1"
-        crio_version: "1.36.1"
-        crio_package_version: "1.36.1-1.1"
+        kubernetes_version: "{{ worker_kubernetes_version }}"
+        kubernetes_package_version: "{{ worker_kubernetes_package_version }}"
+        crio_version: "{{ worker_crio_version }}"
+        crio_package_version: "{{ worker_crio_package_version }}"
         kubelet_cluster_dns: "{{ cluster.dns }}"
         kubelet_cluster_domain: "{{ cluster.domain }}"
         kubelet_node_ip: "{{ node_ip }}"
@@ -316,18 +348,168 @@
         state: link
       tags: [bootstrap, grow-rootfs]
 
+    - name: Create multipath drop-in directory
+      ansible.builtin.file:
+        path: /etc/multipath/conf.d
+        state: directory
+        mode: "0755"
+      tags: [bootstrap, multipath]
+
+    # BOXP-267: Longhorn iSCSI disks (tgt: IET / VIRTUAL-DISK) must never be
+    # claimed by multipathd, otherwise the CSI ext4 mount fails with exit 32.
+    # `multipath -t` only parses the configuration files (no daemon, udev or
+    # device access), so it also works inside the image-build chroot.
+    - name: Locate the multipath configuration parser
+      ansible.builtin.command: which multipath
+      register: longhorn_multipath_parser
+      changed_when: false
+      failed_when: false
+      check_mode: false
+      tags: [bootstrap, multipath]
+
+    - name: Read effective multipath configuration before installing the drop-in
+      ansible.builtin.command: multipath -t
+      register: longhorn_multipath_preflight
+      changed_when: false
+      check_mode: false
+      when: longhorn_multipath_parser.rc == 0
+      tags: [bootstrap, multipath]
+
+    # Fail closed (also in check mode) when the existing configuration could
+    # defeat a device blacklist: a non-default config_dir or a device/wwid
+    # blacklist exception needs a separate review before the drop-in is placed.
+    - name: Refuse to continue when existing multipath configuration could defeat the Longhorn blacklist
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "{{ lookup('ansible.builtin.file', '../files/verify_longhorn_multipath.py') }}"
+        stdin: "{{ longhorn_multipath_preflight.stdout }}"
+      changed_when: false
+      check_mode: false
+      when: longhorn_multipath_parser.rc == 0
+      tags: [bootstrap, multipath]
+
+    - name: Inspect existing Longhorn multipath drop-in
+      ansible.builtin.stat:
+        path: /etc/multipath/conf.d/90-longhorn.conf
+      register: longhorn_multipath_previous
+      tags: [bootstrap, multipath]
+
+    - name: Preserve existing Longhorn multipath drop-in for rollback
+      ansible.builtin.slurp:
+        src: /etc/multipath/conf.d/90-longhorn.conf
+      register: longhorn_multipath_previous_content
+      when: longhorn_multipath_previous.stat.exists
+      tags: [bootstrap, multipath]
+
+    # The drop-in is only allowed to stay (and the handler only allowed to run)
+    # when the complete candidate configuration makes the Longhorn blacklist
+    # effective. Any validation failure restores the previous drop-in (or removes
+    # the new one) and fails the play, so the handler never reloads an unverified
+    # configuration.
+    - name: Install and validate the Longhorn multipath exclusion before any daemon reload
+      tags: [bootstrap, multipath]
+      block:
+        - name: Exclude Longhorn iSCSI disks from multipath
+          ansible.builtin.copy:
+            content: "{{ lookup('ansible.builtin.file', '../files/longhorn-multipath.conf') }}\n"
+            dest: /etc/multipath/conf.d/90-longhorn.conf
+            mode: "0644"
+          notify: Reconfigure multipathd
+
+        - name: Parse the candidate multipath configuration with multipath tools
+          ansible.builtin.command: multipath -t
+          register: longhorn_multipath_candidate
+          changed_when: false
+          when:
+            - not ansible_check_mode
+            - longhorn_multipath_parser.rc == 0
+
+        - name: Require the Longhorn device blacklist to be effective before the daemon reloads
+          ansible.builtin.command:
+            argv:
+              - python3
+              - -c
+              - "{{ lookup('ansible.builtin.file', '../files/verify_longhorn_multipath.py') }}"
+              - --require-blacklist
+            stdin: "{{ longhorn_multipath_candidate.stdout }}"
+          changed_when: false
+          when:
+            - not ansible_check_mode
+            - longhorn_multipath_parser.rc == 0
+
+      rescue:
+        - name: Restore previous Longhorn multipath drop-in after candidate validation failure
+          ansible.builtin.copy:
+            content: "{{ longhorn_multipath_previous_content.content | b64decode }}"
+            dest: /etc/multipath/conf.d/90-longhorn.conf
+            mode: "{{ longhorn_multipath_previous.stat.mode }}"
+          when: longhorn_multipath_previous.stat.exists
+
+        - name: Remove new Longhorn multipath drop-in after candidate validation failure
+          ansible.builtin.file:
+            path: /etc/multipath/conf.d/90-longhorn.conf
+            state: absent
+          when: not longhorn_multipath_previous.stat.exists
+
+        - name: Stop before multipathd reloads an unverified configuration
+          ansible.builtin.fail:
+            msg: >-
+              Longhorn multipath candidate validation failed; previous drop-in state restored
+              ({{ 'file restored' if longhorn_multipath_previous.stat.exists else 'new drop-in removed' }}).
+              multipathd was not reconfigured.
+
+    # A failed or skipped reload (e.g. a map existed) leaves the drop-in in place,
+    # so a later run would not notify the handler by itself. Compare the running
+    # daemon's effective configuration and notify when it lacks the blacklist.
+    # The candidate on disk was validated fail-closed above, so the handler can
+    # only ever reload a verified configuration.
+    - name: Read running multipathd configuration
+      ansible.builtin.shell: |
+        set -eu
+        if ! systemctl is-active --quiet multipathd; then
+          exit 0
+        fi
+        multipathd show config
+      register: longhorn_multipath_running_config
+      changed_when: false
+      check_mode: false
+      when: not (is_chroot | default(false) | bool)
+      tags: [bootstrap, multipath]
+
+    - name: Reconfigure multipathd when the running daemon lacks the Longhorn blacklist
+      ansible.builtin.command:
+        argv:
+          - python3
+          - -c
+          - "{{ lookup('ansible.builtin.file', '../files/verify_longhorn_multipath.py') }}"
+          - --require-blacklist
+        stdin: "{{ longhorn_multipath_running_config.stdout }}"
+      register: longhorn_multipath_running_check
+      failed_when: false
+      changed_when: longhorn_multipath_running_check.rc != 0
+      notify: Reconfigure multipathd
+      when:
+        - not (is_chroot | default(false) | bool)
+        - longhorn_multipath_running_config.stdout | default('') | trim | length > 0
+      tags: [bootstrap, multipath]
+
     - name: Record worker image build metadata
       ansible.builtin.copy:
         dest: /etc/lolice-worker-image
         mode: "0644"
         content: |
-          node_name={{ node_name | default('golyat-4') }}
-          kubernetes_version={{ kubernetes_version }}
-          crio_version={{ crio_version }}
-          crio_package_version={{ crio_package_version }}
+          node_name={{ node_name }}
+          kubernetes_version={{ worker_kubernetes_version }}
+          crio_version={{ worker_crio_version }}
+          crio_package_version={{ worker_crio_package_version }}
           static_network={{ worker_configure_static_network | bool }}
           gpu_runtime={{ worker_install_gpu_host_tools | bool }}
           intel_graphics_ppa={{ gpu_worker_host_tools_intel_graphics_ppa if worker_install_gpu_host_tools | bool else '' }}
+      # Build-time provenance only: a live apply must not relabel a node with
+      # the current pins (BOXP-269 P0 also keeps golyat-4's live files unchanged).
+      when: worker_image_build | bool
       tags: [bootstrap]
 
   handlers:
@@ -335,6 +517,25 @@
       ansible.builtin.systemd:
         name: ssh
         state: restarted
+      when: not (is_chroot | default(false) | bool)
+
+    # Reload only. Never stop/restart multipathd or flush maps here; refuse to
+    # reload while any multipath map exists so a live map is never dropped.
+    - name: Reconfigure multipathd
+      ansible.builtin.shell: |
+        set -eu
+        if ! systemctl is-active --quiet multipathd; then
+          echo "multipathd is not active; configuration applies on next start"
+          exit 0
+        fi
+        maps="$(dmsetup ls --target multipath)"
+        if [ "$maps" != "No devices found" ]; then
+          echo "existing multipath maps present; refusing to reconfigure: $maps" >&2
+          exit 1
+        fi
+        result="$(multipathd reconfigure)"
+        [ "$result" = "ok" ]
+      changed_when: true
       when: not (is_chroot | default(false) | bool)
 
     - name: Restart systemd-networkd

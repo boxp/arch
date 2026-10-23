@@ -1,0 +1,2 @@
+# shanghai-2 (first candidate when shanghai-1 is updating) unreachable over SSH; shanghai-3 serves the probe
+0 200 200 200 200 shanghai-2
