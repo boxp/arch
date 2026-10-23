@@ -54,8 +54,11 @@ VTuber「ひとはこ」のポートフォリオサイトを boxp/arch のモノ
   `image-rendering: pixelated` / nearest 拡大・整数倍強制を適用しない。
 - 背景タイル・桜・鳥居などの小ドット素材と和風 × レトロゲーム UI は維持し、`image-rendering: pixelated` は
   `.pixel`（小物・タイル）だけに限定する。
-- 演出: DotGothic16、ADV 風二重枠ウィンドウ、CRT 走査線、点滅カーソル、
-  `prefers-reduced-motion` でアニメーション停止。
+- 演出: DotGothic16、ADV 風二重枠ウィンドウ、静的な ▼ カーソル / PRESS START ボタン。
+  画面全体の CRT 風フィルタ（走査線・ビネット・スクロール）、点滅（カーソル・PRESS START・メニュー ▶）、
+  タイプライター表示、小物の上下揺れは、通常設定でもちらつかないように全て撤去する（2026-10-23 変更。
+  `prefers-reduced-motion` 時だけ止める方式は取らない）。keyframe アニメーションは定義しない。
+- Twitch リンクは `https://www.twitch.tv/boxpketaro`。
 
 ## Rollout
 

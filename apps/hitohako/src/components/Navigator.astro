@@ -1,7 +1,8 @@
 ---
 /**
  * コハコ.exe navigator window (Mega Man Battle Network style).
- * Text is typed out with a tiny script; disabled for prefers-reduced-motion.
+ * Text is rendered statically: no typewriter effect or blinking caret,
+ * so the window never flickers regardless of motion preferences.
  */
 import Window from './Window.astro';
 import Illust from './Illust.astro';
@@ -14,52 +15,15 @@ interface Props {
 const { lines, id } = Astro.props;
 ---
 
-<Window id={id} tab="NAVI: コハコ.exe" cursor class="typewriter" data-typing>
+<Window id={id} tab="NAVI: コハコ.exe" cursor>
   <div class="flex gap-4 items-start">
     <Illust
       src="/illust/kohako-face.png"
       alt="コハコ.exe の顔グラフィック"
       class="shrink-0 border-2 border-cyan bg-ink"
     />
-    <p class="typewriter-text text-cyan text-sm sm:text-base leading-relaxed min-h-[3lh]" data-lines={JSON.stringify(lines)}>
+    <p class="text-cyan text-sm sm:text-base leading-relaxed">
       {lines.join(' ')}
     </p>
   </div>
 </Window>
-
-<script>
-  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const targets = document.querySelectorAll<HTMLElement>('.typewriter[data-typing]');
-
-  targets.forEach((win) => {
-    const p = win.querySelector<HTMLElement>('.typewriter-text');
-    if (!p) return;
-    if (reduce) {
-      win.removeAttribute('data-typing');
-      return;
-    }
-    const full = p.textContent ?? '';
-    p.textContent = '';
-    let i = 0;
-    let started = false;
-
-    const type = () => {
-      if (i <= full.length) {
-        p.textContent = full.slice(0, i);
-        i += 1;
-        window.setTimeout(type, 35);
-      } else {
-        win.removeAttribute('data-typing');
-      }
-    };
-
-    const io = new IntersectionObserver((entries) => {
-      if (entries.some((e) => e.isIntersecting) && !started) {
-        started = true;
-        type();
-        io.disconnect();
-      }
-    });
-    io.observe(win);
-  });
-</script>
