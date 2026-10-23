@@ -590,6 +590,17 @@ test_tick_ticket_filter_claims_only_one_card() {
   [[ ! -d "${STATE}/runs/BOXP-726" ]] || fail "filtered-out card must not run"
   [[ -d "${STATE}/runs/BOXP-727" ]] || fail "selected card must run"
   assert_file_contains "${VAULT}/Tickets/BOXP-726.md" '^status: ready$'
+  # the board -> frontmatter sync is restricted to the selected card too: a card
+  # moved by hand (frontmatter not yet synced) outside --ticket is left as it is
+  sed -i 's/^status: ready$/status: backlog/' "${VAULT}/Tickets/BOXP-726.md"
+  sed -i 's/BOXP-726: docs\]\] #ticket status::ready/BOXP-726: docs]] #ticket/' "${VAULT}/Boards/Task Board.md"
+  PATH="${BIN}:$PATH" CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" \
+    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 \
+    bb "${RUNNER}" tick --ticket BOXP-727 >"${CASE_DIR}/out-sync"
+  assert_file_contains "${VAULT}/Tickets/BOXP-726.md" '^status: backlog$'
+  assert_file_not_contains "${VAULT}/Boards/Task Board.md" 'BOXP-726: docs\]\] #ticket status::'
+  assert_file_contains "${VAULT}/Boards/Task Board.md" 'BOXP-727: docs\]\] #ticket status::review'
+  sed -i 's/^status: backlog$/status: ready/' "${VAULT}/Tickets/BOXP-726.md"
   assert_file_contains "${VAULT}/Tickets/BOXP-727.md" '^status: review$'
   [[ -e "${STATE}/locks/BOXP-726.edn" ]] || fail "a stale lock outside --ticket must be left alone"
   assert_file_not_contains "${VAULT}/Tickets/BOXP-726.md" 'interrupted'

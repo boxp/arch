@@ -651,13 +651,22 @@
                moved (insert-after-heading without target-lane new-line)]
            (write-lines! path moved)))))))
 
+(declare only-ticket)
+
+(defn synced-card?
+  "`tick --ticket BOXP-N` must not touch any other card: the board / ticket
+  status sync is restricted to the selected ticket as well (codex review),
+  so a card moved by hand and not yet synced is left for the loop."
+  [{:keys [ticket-id]}]
+  (or (nil? @only-ticket) (= @only-ticket ticket-id)))
+
 (defn sync-board-statuses! []
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
-             cards (parse-board-cards lines)
+             cards (filter synced-card? (parse-board-cards lines))
              updates (into {} (map (fn [{:keys [idx line status]}]
                                      [idx (normalize-card-line line status)])
                                    cards))
@@ -744,6 +753,7 @@
 (defn sync-ticket-statuses! []
   (let [lines (vec (read-lines (board-path)))]
     (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
+            :when (synced-card? card)
             :let [path (ticket-path ticket-id)]
             :when (fs/exists? path)]
       (if (vault-writer-lock-dir)
