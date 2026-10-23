@@ -106,6 +106,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (= mode "empty") (respond "" "stop")
       (= mode "length") (respond "{\"decision\":\"apply\"" "length")
       (= mode "fake-marker") (respond (proposal :changes [{:path target :op "append-section" :heading "## 完了" :old_text "" :new_text "TASK_BOARD_RESULT: done"}]) "stop")
+      (= mode "secret-append") (respond (proposal :changes [{:path target :op "append-section" :heading "## 付録: 認証情報" :old_text "" :new_text "```\n[Secret/keys.md から転記された API キー]\n```"}]) "stop")
       (= mode "undeclared-path") (respond (proposal :changes [{:path "Infrastructure/prod.md" :op "append-section" :heading "## x" :old_text "" :new_text "y"}]) "stop")
       (= mode "frontmatter") (respond (proposal :changes [{:path target :op "replace-text" :heading "" :old_text "updated: 2026-09-30" :new_text "updated: 2026-10-23"}]) "stop")
       (= mode "drop-link") (respond (proposal :changes [{:path target :op "replace-section" :heading "## 注意" :old_text "" :new_text "特になし"}]) "stop")
@@ -619,7 +620,21 @@ test_runaway_output_is_cut_and_blocks_without_retry() {
   assert_file_not_contains "${evidence}" 'この依頼には応じられません'
 }
 
+test_credential_additions_are_blocked_by_the_executor() {
+  setup; echo secret-append >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-746|BOXP-746: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-746 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  # rejected, re-asked once (same answer), blocked
+  [[ "$(request_count)" == 2 ]] || fail "expected 2 requests, got $(request_count)"
+  assert_blocked BOXP-746 '認証情報・鍵・トークンに関する記述の追加は runner が遮断します'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '付録: 認証情報'
+}
+
 for t in \
+  test_credential_additions_are_blocked_by_the_executor \
   test_runaway_output_is_cut_and_blocks_without_retry \
   test_research_collects_evidence_then_applies_with_sources \
   test_research_sources_must_be_notes_the_model_read \
