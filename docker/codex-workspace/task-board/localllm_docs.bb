@@ -33,7 +33,8 @@
             [clojure.java.io :as io]
             [clojure.set :as set]
             [clojure.string :as str])
-  (:import [java.nio.file Files StandardCopyOption LinkOption]
+  (:import [java.nio.channels FileChannel]
+           [java.nio.file Files OpenOption StandardCopyOption StandardOpenOption LinkOption]
            [java.security MessageDigest]))
 
 ;; ---------------------------------------------------------------------------
@@ -83,6 +84,10 @@
    ;; After a rejected proposal the model gets the concrete reason once and may
    ;; answer with a corrected proposal (adapter v2). 0 disables the round.
    :max-corrections (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CORRECTIONS" 1)
+   ;; Document writes of all localllm runs are serialized under one OS file
+   ;; lock (re-check against the snapshot + backup + write), so two tickets on
+   ;; the same `docs-target` cannot both pass the conflict check.
+   :write-lock-timeout-ms (* 1000 (env-long "CODEX_TASK_BOARD_LOCALLLM_WRITE_LOCK_TIMEOUT_SECONDS" 30))
    ;; Staged research over a declared corpus (`docs-sources:`, adapter v4). The
    ;; model never sees the whole corpus: it gets an index (path / title /
    ;; headings), asks for grep-like searches and bounded section reads, and only
@@ -1145,11 +1150,12 @@
     (spit (str path) text)
     (str path)))
 
-(defn apply-proposal!
+(defn stage-proposal
   "Validate the whole proposal against the snapshot taken for the prompt and
-  apply it atomically per file. Nothing is written unless every target passes.
-  Returns {:ok? true :applied [...]} or {:ok? false :category :reason}."
-  [cfg vault run-dir {:keys [targets snapshots]} proposal]
+  compute the new text of every file (pure: nothing is written). Returns
+  {:ok? true :files [{:rel :abs :before-sha :exists? :before :after :ops}]} or
+  {:ok? false :category :reason}."
+  [cfg {:keys [targets snapshots]} proposal]
   (let [changes (:changes proposal)]
     (cond
       (empty? changes) {:ok? false :category "localllm-no-change" :reason "decision=apply ですが changes が空でした"}
@@ -1158,66 +1164,104 @@
       :else
       (if-let [shape-error (some #(validate-change-shape cfg targets %) changes)]
         {:ok? false :category "localllm-invalid-proposal" :reason shape-error}
-        (let [by-path (group-by :path changes)
-              ;; Stage every file first (pure), then verify hashes, then write.
-              staged (reduce (fn [acc [rel file-changes]]
-                               (if (:ok? acc)
-                                 (let [{:keys [text exists? sha abs]} (get snapshots rel)
-                                       result (apply-changes-to-document text file-changes exists?)]
-                                   (if (:ok? result)
-                                     (update acc :files conj {:rel rel :abs abs :before-sha sha :exists? exists?
-                                                              :before text :after (:text result) :ops (:ops result)})
-                                     {:ok? false :category "localllm-invalid-proposal" :reason (str rel ": " (:reason result))}))
-                                 acc))
-                             {:ok? true :files []} by-path)]
-          (if-not (:ok? staged)
-            staged
-            (let [conflicts (keep (fn [{:keys [rel abs before-sha exists?]}]
-                                    (let [now-exists? (fs/exists? abs {:nofollow-links true})
-                                          current (when now-exists? (slurp abs))]
-                                      (cond
-                                        (not= exists? now-exists?) (str rel ": 読み取り後に作成/削除されました")
-                                        (and exists? (not= (sha256 current) before-sha)) (str rel ": 読み取り後に別の更新が入りました（競合）")
-                                        :else nil)))
-                                  (:files staged))]
-              (if (seq conflicts)
-                {:ok? false :category "localllm-conflict" :reason (str "競合のため未適用: " (str/join "; " conflicts))}
-                ;; Back up every existing target first, then write. If a write
-                ;; fails part-way, restore the files already written so a
-                ;; multi-target proposal is never half applied.
-                (let [backups (try
-                                {:ok? true
-                                 :by-rel (into {} (map (fn [{:keys [rel before exists?]}]
-                                                         [rel (when exists? (backup! run-dir rel before))])
-                                                       (:files staged)))}
-                                (catch Exception e
-                                  {:ok? false :reason (str "backup の作成に失敗したため未適用: " (sanitize-error (.getMessage e)))}))]
-                  (if-not (:ok? backups)
-                    {:ok? false :category "localllm-io-error" :reason (:reason backups)}
-                    (let [written (atom [])
-                          failure (try
-                                    (doseq [{:keys [rel abs after]} (:files staged)]
-                                      (atomic-write! abs after)
-                                      (swap! written conj rel))
-                                    nil
-                                    (catch Exception e
-                                      (doseq [{:keys [rel abs exists?]} (:files staged)
-                                              :when (contains? (set @written) rel)]
-                                        (try
-                                          (if exists?
-                                            (atomic-write! abs (slurp (get-in backups [:by-rel rel])))
-                                            (fs/delete-if-exists abs))
-                                          (catch Exception _ nil)))
-                                      (sanitize-error (.getMessage e))))]
-                      (if failure
-                        {:ok? false :category "localllm-io-error"
-                         :reason (str "書込みに失敗したため、書込み済みのファイルを backup から復元して未適用にしました: " failure)}
-                        {:ok? true
-                         :applied (mapv (fn [{:keys [rel before after ops exists?]}]
-                                          {:path rel :before-sha256 (when exists? (sha256 before)) :after-sha256 (sha256 after)
-                                           :created? (not exists?) :backup (get-in backups [:by-rel rel]) :ops ops
-                                           :before-chars (count (or before "")) :after-chars (count after)})
-                                        (:files staged))}))))))))))))
+        (reduce (fn [acc [rel file-changes]]
+                  (if (:ok? acc)
+                    (let [{:keys [text exists? sha abs]} (get snapshots rel)
+                          result (apply-changes-to-document text file-changes exists?)]
+                      (if (:ok? result)
+                        (update acc :files conj {:rel rel :abs abs :before-sha sha :exists? exists?
+                                                 :before text :after (:text result) :ops (:ops result)})
+                        {:ok? false :category "localllm-invalid-proposal" :reason (str rel ": " (:reason result))}))
+                    acc))
+                {:ok? true :files []} (group-by :path changes))))))
+
+(defn default-write-lock-path
+  "One lock for all localllm document writes, next to the runner's ticket locks
+  (`<root>/locks/`). `run-dir` is `<root>/runs/<ticket>/<run>`."
+  [run-dir]
+  (str (fs/path (fs/parent (fs/parent (fs/parent (fs/absolutize run-dir)))) "locks" "localllm-docs-write.lock")))
+
+(defn- with-write-lock
+  "Run `f` while holding an exclusive OS file lock on `lock-path` (works across
+  threads of this runner and across runner processes). Waits up to
+  `timeout-ms`; on timeout returns a conflict result instead of calling `f`."
+  [lock-path timeout-ms f]
+  (fs/create-dirs (fs/parent lock-path))
+  (with-open [ch (FileChannel/open (fs/path lock-path)
+                                   (into-array OpenOption [StandardOpenOption/CREATE StandardOpenOption/WRITE]))]
+    (let [deadline (+ (System/currentTimeMillis) timeout-ms)]
+      (loop []
+        (let [lock (try (.tryLock ch) (catch java.io.IOException _ nil) (catch Exception _ nil))]
+          (cond
+            ;; FileLock/close releases the lock (babashka exposes close, not release).
+            lock (try (f) (finally (.close lock)))
+            (>= (System/currentTimeMillis) deadline)
+            {:ok? false :category "localllm-conflict"
+             :reason (str "他の localllm 書込みが " (quot timeout-ms 1000) " 秒以上続いているため未適用（再実行してください）")}
+            :else (do (Thread/sleep 100) (recur))))))))
+
+(defn commit-staged!
+  "Under the write lock: re-check that every target still matches the snapshot
+  (another ticket on the same `docs-target` may have written in between), back
+  every existing target up, then write atomically per file. Nothing is written
+  unless every target passes. Returns {:ok? true :applied [...]} or
+  {:ok? false :category :reason}."
+  [cfg run-dir {:keys [files]} {:keys [lock-path]}]
+  (with-write-lock (or lock-path (default-write-lock-path run-dir)) (:write-lock-timeout-ms cfg)
+    (fn []
+      (let [conflicts (keep (fn [{:keys [rel abs before-sha exists?]}]
+                              (let [now-exists? (fs/exists? abs {:nofollow-links true})
+                                    current (when now-exists? (slurp abs))]
+                                (cond
+                                  (not= exists? now-exists?) (str rel ": 読み取り後に作成/削除されました")
+                                  (and exists? (not= (sha256 current) before-sha)) (str rel ": 読み取り後に別の更新が入りました（競合）")
+                                  :else nil)))
+                            files)]
+        (if (seq conflicts)
+          {:ok? false :category "localllm-conflict" :reason (str "競合のため未適用: " (str/join "; " conflicts))}
+          ;; Back up every existing target first, then write. If a write
+          ;; fails part-way, restore the files already written so a
+          ;; multi-target proposal is never half applied.
+          (let [backups (try
+                          {:ok? true
+                           :by-rel (into {} (map (fn [{:keys [rel before exists?]}]
+                                                   [rel (when exists? (backup! run-dir rel before))])
+                                                 files))}
+                          (catch Exception e
+                            {:ok? false :reason (str "backup の作成に失敗したため未適用: " (sanitize-error (.getMessage e)))}))]
+            (if-not (:ok? backups)
+              {:ok? false :category "localllm-io-error" :reason (:reason backups)}
+              (let [written (atom [])
+                    failure (try
+                              (doseq [{:keys [rel abs after]} files]
+                                (atomic-write! abs after)
+                                (swap! written conj rel))
+                              nil
+                              (catch Exception e
+                                (doseq [{:keys [rel abs exists?]} files
+                                        :when (contains? (set @written) rel)]
+                                  (try
+                                    (if exists?
+                                      (atomic-write! abs (slurp (get-in backups [:by-rel rel])))
+                                      (fs/delete-if-exists abs))
+                                    (catch Exception _ nil)))
+                                (sanitize-error (.getMessage e))))]
+                (if failure
+                  {:ok? false :category "localllm-io-error"
+                   :reason (str "書込みに失敗したため、書込み済みのファイルを backup から復元して未適用にしました: " failure)}
+                  {:ok? true
+                   :applied (mapv (fn [{:keys [rel before after ops exists?]}]
+                                    {:path rel :before-sha256 (when exists? (sha256 before)) :after-sha256 (sha256 after)
+                                     :created? (not exists?) :backup (get-in backups [:by-rel rel]) :ops ops
+                                     :before-chars (count (or before "")) :after-chars (count after)})
+                                  files)})))))))))
+
+(defn apply-proposal!
+  "stage-proposal + commit-staged! in one step (evaluation harness and callers
+  without a deferred commit)."
+  [cfg vault run-dir snap proposal & [opts]]
+  (let [staged (stage-proposal cfg snap proposal)]
+    (if (:ok? staged) (commit-staged! cfg run-dir staged (or opts {})) staged)))
 
 (defn snapshot-targets
   "Resolve and read declared targets. Returns {:ok? true :targets :snapshots}
@@ -1282,8 +1326,16 @@
   `action` is :edit or :revise (Review lane). Never throws for model / IO
   failures; those become :blocked with a concrete reason. A proposal rejected by
   the executor is fed back to the model once (`:max-corrections`); conflicts and
-  needs-human decisions are final."
-  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn]}]
+  needs-human decisions are final.
+
+  With `:defer-commit? true` nothing is written here: an accepted proposal is
+  returned as {:status :staged ... :commit! (fn [] ...)} and the caller runs
+  `:commit!` inside its own lifecycle commit (the runner does so under the
+  shutdown monitor, together with the Notes / lane transition). `:commit!`
+  re-checks the targets under the write lock, writes, and returns the final
+  {:status :review|:blocked ...} map. `:lock-path` overrides the write lock
+  file (default: `<root>/locks/localllm-docs-write.lock`)."
+  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path]}]
   (let [cfg (config)
         log! (or log-fn (fn [_]))
         started (System/currentTimeMillis)
@@ -1296,7 +1348,7 @@
                                      :model (:model cfg) :endpoint (:base-url cfg) :targets targets
                                      :docs-roots (:docs-roots cfg) :docs-sources sources
                                      :elapsed-ms (- (System/currentTimeMillis) started)}
-                                    (select-keys m [:category :reason :summary :applied :usage :llm-elapsed-ms
+                                    (select-keys m [:category :reason :summary :applied :staged-paths :usage :llm-elapsed-ms
                                                     :context-chars :references :decision :corrections :sources])
                                     {:research (research-summary (:research m))})]
                    (write-audit! run-dir audit)
@@ -1350,12 +1402,10 @@
                               (not ok?) {:kind :reject :category "localllm-invalid-output" :reason reason}
                               (= "needs-human" (:decision proposal)) {:kind :needs-human}
                               source-error {:kind :reject :category "localllm-invalid-proposal" :reason source-error}
-                              :else (let [result (apply-proposal! cfg vault run-dir snap proposal)]
-                                      (cond
-                                        (:ok? result) {:kind :accepted :result result}
-                                        ;; Conflicts are not the model's fault; never re-ask.
-                                        (= "localllm-conflict" (:category result)) {:kind :final :result result}
-                                        :else {:kind :reject :category (:category result) :reason (:reason result)})))]
+                              :else (let [staged (stage-proposal cfg snap proposal)]
+                                      (if (:ok? staged)
+                                        {:kind :accepted :staged staged}
+                                        {:kind :reject :category (:category staged) :reason (:reason staged)})))]
                 (case (:kind outcome)
                   :reject
                   (if (< round (:max-corrections cfg))
@@ -1372,14 +1422,26 @@
                                           :reason (str "localllm は変更を提案せず人間判断を求めました: "
                                                        (sanitize-error (truncate-text (:reason proposal) 300)))))
 
-                  :final
-                  (finish :blocked (assoc base :category (:category (:result outcome)) :reason (:reason (:result outcome)) :decision "apply"))
-
                   :accepted
-                  (finish :review (assoc base :decision "apply" :applied (:applied (:result outcome))
-                                         :sources (vec (distinct (filter string? (:sources proposal))))
-                                         :summary (sanitize-error (truncate-text (:summary proposal) 400))
-                                         :category "localllm-applied")))))))))))
+                  (let [accepted (assoc base :decision "apply"
+                                        :sources (vec (distinct (filter string? (:sources proposal))))
+                                        :summary (sanitize-error (truncate-text (:summary proposal) 400)))
+                        ;; The write happens under the write lock with a fresh
+                        ;; conflict check. Conflicts are not the model's fault
+                        ;; and are final (never re-asked).
+                        commit! (fn []
+                                  (let [result (try (commit-staged! cfg run-dir (:staged outcome) {:lock-path lock-path})
+                                                    (catch Exception e
+                                                      {:ok? false :category "localllm-io-error"
+                                                       :reason (str "書込みに失敗したため未適用: " (sanitize-error (.getMessage e)))}))]
+                                    (if (:ok? result)
+                                      (finish :review (assoc accepted :applied (:applied result) :category "localllm-applied"))
+                                      (finish :blocked (assoc accepted :category (:category result) :reason (:reason result))))))]
+                    (if defer-commit?
+                      (assoc (finish :staged (assoc accepted :category "localllm-staged"
+                                                    :staged-paths (mapv :rel (:files (:staged outcome)))))
+                             :commit! commit!)
+                      (commit!))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Rollback (operator command)

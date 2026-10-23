@@ -684,6 +684,57 @@ test_research_finish_without_reads_auto_reads_the_hits() {
   assert_file_contains "${audit}" ':stop :finish'
 }
 
+test_write_is_deferred_until_the_lifecycle_commit() {
+  # A runner failure between the model's answer and the commit boundary (the
+  # deterministic test hook throws "after agent exit") must leave the note
+  # untouched: the write only happens inside the lifecycle commit.
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-751|BOXP-751: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-751 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION=true \
+    CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE="forced failure before commit" >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 1 ]] || fail "expected 1 request, got $(request_count)"
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-751\|.*status::blocked'
+  assert_runbook_unchanged
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-751" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':status :staged'
+  assert_file_not_contains "${audit}" ':applied'
+  [[ ! -d "$(dirname "${audit}")/backup" ]] || fail "no backup may exist for a never-committed write"
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-751.md" 'localllm docs run .* applied'
+}
+
+test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
+  # Two tickets declare the same docs-target and run in parallel ticks. Both
+  # snapshot the original note; the write lock + re-check make exactly one of
+  # them apply and the other stop as a conflict (no silent overwrite).
+  setup; echo slow >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-752|BOXP-752: docs]] #ticket status::ready
+- [ ] [[Tickets/BOXP-753|BOXP-753: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-752 ready localllm "${PILOT}/runbook.md"
+  write_ticket "${VAULT}" BOXP-753 ready localllm "${PILOT}/runbook.md"
+  PATH="${BIN}:$PATH" CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" \
+    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" \
+    bb "${RUNNER}" tick --ticket BOXP-752 >"${CASE_DIR}/out1" &
+  local p1=$!
+  sleep 1
+  PATH="${BIN}:$PATH" CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" \
+    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" \
+    bb "${RUNNER}" tick --ticket BOXP-753 >"${CASE_DIR}/out2" &
+  local p2=$!
+  wait "${p1}" "${p2}"
+  assert_no_cloud
+  [[ "$(request_count)" == 2 ]] || fail "expected 2 requests, got $(request_count)"
+  local reviews blocked
+  reviews="$(grep -c '^status: review$' "${VAULT}/Tickets/BOXP-752.md" "${VAULT}/Tickets/BOXP-753.md" | awk -F: '{s+=$2} END {print s}')"
+  blocked="$(grep -c '^status: blocked$' "${VAULT}/Tickets/BOXP-752.md" "${VAULT}/Tickets/BOXP-753.md" | awk -F: '{s+=$2} END {print s}')"
+  [[ "${reviews}" == 1 && "${blocked}" == 1 ]] || fail "expected exactly one review and one blocked, got review=${reviews} blocked=${blocked}"
+  grep -q '競合のため未適用' "${VAULT}/Tickets/BOXP-752.md" "${VAULT}/Tickets/BOXP-753.md" || fail "the second write must stop as a conflict"
+  [[ "$(grep -c 'v1\.3' "${VAULT}/${PILOT}/runbook.md")" == 1 ]] || fail "the note must carry exactly one applied update"
+  [[ "$(grep -c 'v1\.2' "${VAULT}/${PILOT}/runbook.md")" == 0 ]] || fail "the applied update must replace the old line"
+}
+
 test_research_total_time_limit_caps_each_model_call() {
   setup; echo slow >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-749|BOXP-749: docs]] #ticket status::ready"
@@ -708,6 +759,8 @@ for t in \
   test_research_sources_must_be_notes_the_model_read \
   test_research_sources_hit_only_by_search_are_rejected \
   test_research_total_time_limit_caps_each_model_call \
+  test_write_is_deferred_until_the_lifecycle_commit \
+  test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
   test_research_finish_without_reads_auto_reads_the_hits \
   test_research_without_progress_stops_and_unsourced_apply_blocks \
   test_research_sources_outside_read_roots_block_without_request \

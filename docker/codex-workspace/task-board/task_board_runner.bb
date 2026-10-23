@@ -1999,6 +1999,12 @@
                        :frontmatter (ticket-frontmatter ticket-id)
                        :action (if (= "Review" origin-lane) :revise :edit)
                        :stop-requested? (fn [] @shutdown-requested?)
+                       ;; The document write is deferred into process-card!'s
+                       ;; lifecycle commit (under the shutdown monitor, together
+                       ;; with Notes / lane), so a TERM can never leave a note
+                       ;; updated with the card still In Progress.
+                       :defer-commit? true
+                       :lock-path (str (fs/path (root) "locks" "localllm-docs-write.lock"))
                        :log-fn log!})
                      (catch Exception e
                        {:status :blocked :category "localllm-runner-error"
@@ -2006,32 +2012,53 @@
                    {:status :blocked :category "localllm-module-unavailable"
                     :reason "localllm_docs.bb を読み込めないため実行しません"})
           shutdown? (boolean (:shutdown? result))
-          review? (= :review (:status result))
-          message (localllm-last-message run result)]
+          staged? (= :staged (:status result))
+          ;; Writes the final Notes entry and run summary for a committed
+          ;; (or never-staged) result. Returns the result string.
+          record-final! (fn [result]
+                          (let [review? (= :review (:status result))]
+                            ;; Specific, sanitized reason first; the generic blocked audit note
+                            ;; written by block-ticket! follows it.
+                            (append-note! ticket-id (if review?
+                                                      (localllm-review-note ticket-id run result)
+                                                      (localllm-stop-note ticket-id run result)))
+                            (mark-run! ticket-id run :succeeded
+                                       {:action action :agent agent :lane lane :exit-code 0
+                                        :result (if review? "review" "blocked")
+                                        :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied])
+                                        :finished-at (now-str)})
+                            (if review? "review" "blocked")))
+          ;; A staged result is reported as the intended "review" until the
+          ;; deferred commit decides; its last-message is rewritten then.
+          message (localllm-last-message run (if staged? (assoc result :status :review) result))]
       (spit (str last-message-path) message)
-      (if shutdown?
+      (cond
+        shutdown?
         (mark-run! ticket-id run :interrupted
                    {:action action :agent agent :lane lane
                     :reason "planned workspace shutdown"
                     :shutdown {:owner-id (owner-id) :instance-id runner-instance-id :agent-stopped-at (now-str)}})
-        (do
-          ;; Specific, sanitized reason first; the generic blocked audit note
-          ;; written by block-ticket! follows it.
-          (append-note! ticket-id (if review?
-                                    (localllm-review-note ticket-id run result)
-                                    (localllm-stop-note ticket-id run result)))
-          (mark-run! ticket-id run :succeeded
-                     {:action action :agent agent :lane lane :exit-code 0
-                      :result (if review? "review" "blocked")
-                      :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied])
-                      :finished-at (now-str)})))
-      {:exit 0
-       :result (if review? "review" "blocked")
-       :run-id run
-       :dir (str dir)
-       :last-message message
-       :idle-timeout? false
-       :shutdown? shutdown?})))
+
+        staged?
+        (mark-run! ticket-id run :running
+                   {:action action :agent agent :lane lane :started-at (now-str)
+                    :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :staged-paths])
+                    :staged-at (now-str)})
+
+        :else (record-final! result))
+      (cond-> {:exit 0
+               :result (if (or staged? (= :review (:status result))) "review" "blocked")
+               :run-id run
+               :dir (str dir)
+               :last-message message
+               :idle-timeout? false
+               :shutdown? shutdown?}
+        staged? (assoc :deferred-commit!
+                       (fn []
+                         (let [final ((:commit! result))
+                               message (localllm-last-message run final)]
+                           (spit (str last-message-path) message)
+                           {:result (record-final! final) :last-message message})))))))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (cond
@@ -2285,9 +2312,10 @@
               ;; Do not start an agent the hook would only have to stop again
               ;; (a TERM after this check is covered by `register-agent-process!`).
               (ensure-not-shutting-down! "before agent start")
-              (let [{:keys [exit result run-id dir last-message idle-timeout? shutdown?]} (if (= :docs-edit action)
-                                                                                            (run-localllm-docs! ticket-id action effective-lane lane assignee lock)
-                                                                                            (run-agent! ticket-id action effective-lane assignee lock))
+              (let [agent-run (if (= :docs-edit action)
+                                (run-localllm-docs! ticket-id action effective-lane lane assignee lock)
+                                (run-agent! ticket-id action effective-lane assignee lock))
+                    {:keys [exit result run-id dir last-message idle-timeout? shutdown?]} agent-run
                     _ (when shutdown?
                         ;; `run-agent!` already recorded the interrupted run.
                         (throw (ex-info "agent stopped by planned workspace shutdown"
@@ -2313,6 +2341,14 @@
                                   (review-gate! dir last-message))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
+                    ;; localllm docs-edit: the document write was staged, not
+                    ;; applied. Commit it here, inside the same lifecycle commit
+                    ;; as Notes / lane / lock, so a planned shutdown either
+                    ;; leaves the note untouched (flag seen above) or lets the
+                    ;; write and the transition complete together.
+                    committed (when-let [commit! (:deferred-commit! agent-run)] (commit!))
+                    result (if committed (:result committed) result)
+                    last-message (if committed (:last-message committed) last-message)
                     review-gate (if gate-result
                                   (let [gate-result (assoc gate-result :diagnostic
                                                            (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
