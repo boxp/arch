@@ -765,6 +765,23 @@ test_failed_transition_after_the_write_is_rolled_back() {
   assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
 }
 
+test_partial_write_failure_keeps_a_file_edited_in_between() {
+  # The write of a target fails right after the file was written and an outside
+  # editor changed it in between (test hook): the restore must not overwrite
+  # that edit; the card is Blocked with a conflict reason naming the file.
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-771|BOXP-771: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-771 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_WRITE_AFTER_FIRST=true >"${CASE_DIR}/out" || true
+  assert_no_cloud
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-771\|.*status::blocked'
+  assert_file_contains "${VAULT}/Tickets/BOXP-771.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-771.md" '復元を見送りました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-771.md" 'runbook\.md'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'external edit between write and failure'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+}
+
 test_stale_lock_recovery_restores_an_unfinished_write() {
   # Simulate a process killed right after the note write: the run directory
   # holds the audit (:applied + backup) but no final summary, and the lock is
@@ -908,6 +925,7 @@ for t in \
   test_model_supplied_sources_outside_the_runner_reads_are_not_recorded \
   test_write_is_deferred_until_the_lifecycle_commit \
   test_failed_transition_after_the_write_is_rolled_back \
+  test_partial_write_failure_keeps_a_file_edited_in_between \
   test_stale_lock_recovery_restores_an_unfinished_write \
   test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
   test_prompt_over_the_cap_blocks_without_a_request \

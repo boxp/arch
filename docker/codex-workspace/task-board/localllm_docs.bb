@@ -918,7 +918,7 @@
             elapsed (- (System/currentTimeMillis) started)
             retry? (< attempt (inc (:retries cfg)))
             base-evidence {:phase phase :attempt attempt :model (:model cfg) :endpoint url
-                           :limits {:total-seconds (quot total-ms 1000) :idle-seconds (quot idle-ms 1000)}}]
+                           :limits {:total-seconds (quot (+ total-ms 999) 1000) :idle-seconds (quot (+ idle-ms 999) 1000)}}]
         (cond
           (:exception response)
           (let [message (sanitize-error (str (.getName (class (:exception response))) ": " (.getMessage (:exception response))))
@@ -1291,23 +1291,40 @@
             (if-not (:ok? backups)
               {:ok? false :category "localllm-io-error" :reason (:reason backups)}
               (let [written (atom [])
+                    kept (atom [])
                     failure (try
                               (doseq [{:keys [rel abs after]} files]
                                 (atomic-write! abs after (path-guard vault rel))
-                                (swap! written conj rel))
+                                (swap! written conj rel)
+                                ;; Deterministic black-box failure hook; unset in deployment.
+                                (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_WRITE_AFTER_FIRST"))
+                                  (spit abs "\n<!-- external edit between write and failure -->\n" :append true)
+                                  (throw (ex-info "forced write failure after the first target" {}))))
                               nil
                               (catch Exception e
-                                (doseq [{:keys [rel abs exists?]} files
+                                ;; The lock does not serialize outside editors
+                                ;; (Obsidian, a human): a file already written may
+                                ;; have been edited again since. Restore only
+                                ;; while its content is still what this run
+                                ;; wrote; otherwise leave it and report the
+                                ;; conflict instead of destroying that edit.
+                                (doseq [{:keys [rel abs exists? after]} files
                                         :when (contains? (set @written) rel)]
                                   (try
-                                    (if exists?
-                                      (atomic-write! abs (slurp (get-in backups [:by-rel rel])) (path-guard vault rel))
-                                      (fs/delete-if-exists abs))
-                                    (catch Exception _ nil)))
+                                    (if (and (fs/exists? abs {:nofollow-links true})
+                                             (= (sha256 after) (sha256 (slurp-nofollow abs))))
+                                      (if exists?
+                                        (atomic-write! abs (slurp (get-in backups [:by-rel rel])) (path-guard vault rel))
+                                        (fs/delete-if-exists abs))
+                                      (swap! kept conj rel))
+                                    (catch Exception _ (swap! kept conj rel))))
                                 (sanitize-error (.getMessage e))))]
                 (if failure
-                  {:ok? false :category "localllm-io-error"
-                   :reason (str "書込みに失敗したため、書込み済みのファイルを backup から復元して未適用にしました: " failure)}
+                  {:ok? false :category (if (seq @kept) "localllm-conflict" "localllm-io-error")
+                   :reason (if (seq @kept)
+                             (str "書込みに失敗しました。書込み済みのファイルのうち、その後に別の更新が入った "
+                                  (str/join ", " @kept) " は上書きせず復元を見送りました（人間が内容を確認してください）。他は backup から復元しました: " failure)
+                             (str "書込みに失敗したため、書込み済みのファイルを backup から復元して未適用にしました: " failure))}
                   {:ok? true
                    :applied (mapv (fn [{:keys [rel before after ops exists?]}]
                                     {:path rel :before-sha256 (when exists? (sha256 before)) :after-sha256 (sha256 after)
@@ -1531,7 +1548,11 @@
                                       (try
                                         (finish :review (assoc accepted :applied (:applied result) :category "localllm-applied"))
                                         (catch Throwable t
-                                          (try (rollback-applied! vault cfg {:applied (:applied result) :docs-roots (:docs-roots cfg)})
+                                          ;; Same write lock as the commit: the hash
+                                          ;; check and the restore must not interleave
+                                          ;; with another run's write on the same note.
+                                          (try (with-write-lock (or lock-path (default-write-lock-path run-dir)) (:write-lock-timeout-ms cfg)
+                                                 (fn [] (rollback-applied! vault cfg {:applied (:applied result) :docs-roots (:docs-roots cfg)})))
                                                (catch Throwable _ nil))
                                           (throw t)))
                                       (finish :blocked (assoc accepted :category (:category result) :reason (:reason result))))))]
