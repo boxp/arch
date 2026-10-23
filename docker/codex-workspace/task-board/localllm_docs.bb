@@ -1022,9 +1022,25 @@
                                                   :log (conj log (str "round " round ": finish")))})
 
                   :else
-                  (let [queries (->> (:queries step) (take (:max-queries-per-round cfg)) (remove seen-queries) vec)
-                        wanted-reads (take (:max-reads-per-round cfg) (:reads step))
+                  (let [requested (vec (take (:max-queries-per-round cfg) (:queries step)))
+                        repeated (filterv seen-queries requested)
+                        queries (vec (remove seen-queries requested))
+                        wanted-reads (vec (take (:max-reads-per-round cfg) (:reads step)))
                         search-results (mapv #(search-corpus cfg notes %) queries)
+                        ;; Observed with Gemma 4 on larger corpora: it keeps
+                        ;; searching (often the same words) and never reads, then
+                        ;; stops for lack of evidence. When a round asks for no
+                        ;; reads although earlier searches already surfaced hits,
+                        ;; the runner reads the best hit's matching section itself
+                        ;; (bounded, logged) so the loop makes progress.
+                        auto-reads (if (and (empty? wanted-reads) (empty? queries) (seq hit-paths))
+                                     (let [candidates (->> (concat (mapcat :hits search-results) (reverse hit-paths))
+                                                           distinct
+                                                           (remove (fn [p] (some #(str/starts-with? % p) read-keys)))
+                                                           (take 2))]
+                                       (mapv (fn [p] {:path p :heading "" :auto? true}) candidates))
+                                     [])
+                        wanted-reads (into wanted-reads auto-reads)
                         read-results (mapv (fn [{:keys [path heading]}] (read-corpus-section cfg notes (str path) (str heading))) wanted-reads)
                         new-evidence (->> read-results
                                           (filter :ok?)
@@ -1039,10 +1055,12 @@
                         skipped-budget (- (count (filter :ok? read-results)) (count new-evidence)
                                           (count (filter #(contains? read-keys (:key %)) (filter :ok? read-results))))
                         entries (concat (map (fn [q r] (str "round " round ": " (:text r))) queries search-results)
-                                        (map (fn [{:keys [path heading]} r]
+                                        (map (fn [q] (str "round " round ": search 「" q "」は既に実行済みです（結果は上の調査ログを参照。同じ検索を繰り返さず、該当した資料を read してください）")) repeated)
+                                        (map (fn [{:keys [path heading auto?]} r]
                                                (cond
                                                  (not (:ok? r)) (str "round " round ": read " path (when (seq heading) (str "#" heading)) " → 失敗: " (:reason r))
                                                  (contains? read-keys (:key r)) (str "round " round ": read " (:key r) " → 既に読んでいます（根拠を参照）")
+                                                 auto? (str "round " round ": read の要求が無かったため runner が検索該当資料 " (:key r) " を自動で読み取り、根拠に追加しました")
                                                  :else (str "round " round ": read " (:key r) " → 根拠に追加")))
                                              wanted-reads read-results)
                                         (when (pos? skipped-budget) [(str "round " round ": 根拠の文字数予算を超えるため " skipped-budget " 件の読取を保留しました。finish するか、節を絞ってください")])

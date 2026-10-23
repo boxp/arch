@@ -572,14 +572,17 @@ test_research_without_progress_stops_and_unsourced_apply_blocks() {
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-742|BOXP-742: docs]] #ticket status::ready"
   write_ticket "${VAULT}" BOXP-742 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  # round 1 searches, rounds 2-3 repeat the query (no progress) -> stop; then
-  # the proposal has no sources -> rejected once -> blocked
-  [[ "$(request_count)" == 5 ]] || fail "expected 5 requests, got $(request_count)"
+  # round 1 searches; round 2 repeats the query, so the runner auto-reads the
+  # hit; rounds 3-4 repeat again with nothing left to read (no progress) ->
+  # stop; then the proposal has no sources -> rejected once -> blocked
+  [[ "$(request_count)" == 6 ]] || fail "expected 6 requests, got $(request_count)"
   assert_blocked BOXP-742 'sources が空です'
   assert_runbook_unchanged
   local audit
   audit="$(find "${STATE}/runs/BOXP-742" -name localllm-audit.edn | head -n 1)"
   assert_file_contains "${audit}" ':stop :no-progress'
+  assert_file_contains "${audit}" ':read-paths \["Projects/task-board-localllm-docs/refs/corpus/design-v2.md"\]'
+  assert_file_contains "${audit}" '自動で読み取り'
 }
 
 test_research_sources_outside_read_roots_block_without_request() {
