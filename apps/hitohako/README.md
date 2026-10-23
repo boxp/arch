@@ -49,7 +49,7 @@ Pages プロジェクトと DNS は `terraform/cloudflare/b0xp.io/hitohako/` で
 - `src/data/allies.json` … 仲間（コハコ.exe / 鳴瀬理央 / 天城紗那）
 - `src/data/stg.json` … STG 1CC 記録・挑戦中
 - `src/data/links.json` … リンク
-- `public/pixel/` … ドット絵（`scripts/make-tiles.py` で和柄タイルを生成、キャラクターは generate-pixelart で制作）
+- `public/pixel/` … ドット絵（`scripts/make-tiles.py` で和柄タイルを生成、キャラクターは generate-pixelart で制作）。キャラクター絵は表示解像度そのもの（立ち絵 280x647、顔グラ 144x144）で描き、サイトでは拡大せず 1x で表示する（`PixelImg` の `scale` は小物・タイル用）
 
 ## Credits
 
