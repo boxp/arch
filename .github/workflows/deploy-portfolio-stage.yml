@@ -1,0 +1,47 @@
+name: Deploy Portfolio Stage
+
+# boxp/b0xp.io（ポートフォリオ新サイト）を stage Pages プロジェクト boxp-portfolio-stage
+# （https://portfolio-stage.b0xp.io/）へデプロイする。
+# 本来のデプロイ経路は boxp/b0xp.io 側の GitHub Actions だが、同リポジトリに CLOUDFLARE_API_TOKEN が
+# 設定されるまでの間、arch が既に持つ Cloudflare 認証情報で手動デプロイするための workflow。
+# 本番プロジェクト boxp-portfolio へはデプロイしない。
+on:
+  workflow_dispatch:
+    inputs:
+      git_ref:
+        description: boxp/b0xp.io の Git ref（stage へデプロイする）
+        required: true
+        default: main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      deployments: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: boxp/b0xp.io
+          ref: ${{ inputs.git_ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: package.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build (stage)
+        run: npm run build
+        env:
+          SITE_ENV: stage
+          SITE_URL: https://portfolio-stage.b0xp.io
+
+      - name: Deploy to Cloudflare Pages stage
+        run: npx wrangler pages deploy dist --project-name boxp-portfolio-stage --branch main
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
