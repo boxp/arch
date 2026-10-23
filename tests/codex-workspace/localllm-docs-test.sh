@@ -753,6 +753,32 @@ test_failed_transition_after_the_write_is_rolled_back() {
   assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
 }
 
+test_stale_lock_recovery_restores_an_unfinished_write() {
+  # Simulate a process killed right after the note write: the run directory
+  # holds the audit (:applied + backup) but no final summary, and the lock is
+  # stale. The next tick restores the note while recovering the lock.
+  setup; echo normal >"${MODE_FILE}"
+  local old_run="20260701T000000Z" run_dir
+  run_dir="${STATE}/runs/BOXP-761/${old_run}"
+  mkdir -p "${run_dir}/backup/${PILOT}" "${STATE}/locks"
+  cp "${VAULT}/${PILOT}/runbook.md" "${run_dir}/backup/${PILOT}/runbook.md"
+  local before_sha after_sha
+  before_sha="$(sha256sum "${VAULT}/${PILOT}/runbook.md" | cut -d' ' -f1)"
+  sed -i 's/v1\.2/v1.3/' "${VAULT}/${PILOT}/runbook.md"
+  after_sha="$(sha256sum "${VAULT}/${PILOT}/runbook.md" | cut -d' ' -f1)"
+  printf '{:ticket-id "BOXP-761" :run-id "%s" :status :review :docs-roots ["%s"] :applied [{:path "%s/runbook.md" :before-sha256 "%s" :after-sha256 "%s" :created? false :backup "%s/backup/%s/runbook.md" :ops [{:op "replace-section"}]}]}\n' \
+    "${old_run}" "${PILOT}" "${PILOT}" "${before_sha}" "${after_sha}" "${run_dir}" "${PILOT}" >"${run_dir}/localllm-audit.edn"
+  printf '{:status :running :ticket "BOXP-761" :run-id "%s" :action :docs-edit :agent "localllm"}\n' "${old_run}" >"${run_dir}/summary.edn"
+  printf '{:ticket "BOXP-761" :run-id "%s" :action :docs-edit :lane "In Progress" :heartbeat-at "2000-01-01T00:00:00Z"}\n' "${old_run}" >"${STATE}/locks/BOXP-761.edn"
+  write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-761|BOXP-761: docs]] #ticket status::in-progress"
+  write_ticket "${VAULT}" BOXP-761 in-progress localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-761.md" '完了せず終了していたため、backup から復元しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-761.md" 'runbook.md restored'
+  assert_file_contains "${run_dir}/summary.edn" ':status :interrupted'
+  [[ ! -e "${STATE}/locks/BOXP-761.edn" ]] || fail "stale lock must be released"
+}
+
 test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
   # Two tickets declare the same docs-target and run in parallel ticks. Both
   # snapshot the original note; the write lock + re-check make exactly one of
@@ -868,6 +894,7 @@ for t in \
   test_model_supplied_sources_outside_the_runner_reads_are_not_recorded \
   test_write_is_deferred_until_the_lifecycle_commit \
   test_failed_transition_after_the_write_is_rolled_back \
+  test_stale_lock_recovery_restores_an_unfinished_write \
   test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
   test_prompt_over_the_cap_blocks_without_a_request \
   test_symlink_swap_between_snapshot_and_write_is_rejected \

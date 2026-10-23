@@ -856,8 +856,32 @@
                        extra)]
     (write-edn-file! path summary)))
 
+(defn recover-localllm-write!
+  "Crash recovery for a localllm docs-edit run (BOXP-277): the audit written
+  right after the note write is the persistent journal. If a run left an
+  audit with applied changes but no final summary (the process died between
+  the write and the lane / Notes transition), restore the notes from the run
+  backup (hash-checked, under the write lock) and record it, so the next run
+  starts from the original note. Returns the rollback report or nil."
+  [ticket-id run-id]
+  (let [dir (run-dir ticket-id run-id)
+        audit (read-edn-file (fs/path dir "localllm-audit.edn") nil)
+        summary (read-edn-file (fs/path dir "summary.edn") nil)]
+    (when (and (seq (:applied audit))
+               (not= :succeeded (:status summary))
+               @localllm-docs-module-loaded?)
+      (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str dir))
+                          (catch Exception e [{:status :error :reason (subs (str (.getMessage e)) 0 (min 200 (count (str (.getMessage e)))))}]))]
+        (log! (str "run " run-id " for " ticket-id ": restored localllm docs write left by an unfinished run: " (pr-str restored)))
+        (when (fs/exists? (ticket-path ticket-id))
+          (append-note! ticket-id (str "localllm docs run " run-id
+                                       " は文書を更新した後に完了せず終了していたため、backup から復元しました（未適用扱い）: "
+                                       (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored)))))
+        restored))))
+
 (defn close-interrupted-lock! [ticket-id lock reason note]
   (when-let [interrupted-run (:run-id lock)]
+    (recover-localllm-write! ticket-id interrupted-run)
     (mark-run! ticket-id interrupted-run :interrupted
                {:reason reason
                 :previous-lock lock})
