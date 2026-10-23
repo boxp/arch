@@ -45,6 +45,8 @@ apps/video-rotator/public/ffmpeg-core/
 apps/video-rotator/*.tsbuildinfo
 apps/hitohako/dist/
 apps/hitohako/.astro/
+apps/portfolio/dist/
+apps/portfolio/.astro/
 *.log
 armbian-build/
 build/
