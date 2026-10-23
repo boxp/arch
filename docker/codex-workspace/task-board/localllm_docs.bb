@@ -1150,11 +1150,34 @@
 ;; Executor
 ;; ---------------------------------------------------------------------------
 
-(defn- atomic-write! [abs text]
-  (let [target (fs/path abs)
-        tmp (fs/path (fs/parent target) (str "." (fs/file-name target) ".localllm-" (System/nanoTime) ".tmp"))]
-    (spit (str tmp) text)
-    (Files/move tmp target (into-array java.nio.file.CopyOption [StandardCopyOption/ATOMIC_MOVE StandardCopyOption/REPLACE_EXISTING]))))
+(defn- atomic-write!
+  "Write `text` to `abs` through a temp file in the same directory and an
+  atomic rename. `guard!` (optional) is called right before the temp file is
+  created and again right before the rename; it throws when the path is no
+  longer acceptable (a directory on the way became a symlink). Java offers no
+  openat()/dirfd, so the check-then-act window cannot be closed completely in
+  babashka; it is narrowed to the two syscalls, and only a process that can
+  already write inside the vault (same privilege as this runner) could race it."
+  ([abs text] (atomic-write! abs text nil))
+  ([abs text guard!]
+   (let [target (fs/path abs)
+         tmp (fs/path (fs/parent target) (str "." (fs/file-name target) ".localllm-" (System/nanoTime) ".tmp"))]
+     (when guard! (guard!))
+     (with-open [out (Files/newOutputStream tmp (into-array OpenOption [StandardOpenOption/CREATE_NEW StandardOpenOption/WRITE]))]
+       (.write out (.getBytes ^String text "UTF-8")))
+     (try
+       (when guard! (guard!))
+       (Files/move tmp target (into-array java.nio.file.CopyOption [StandardCopyOption/ATOMIC_MOVE StandardCopyOption/REPLACE_EXISTING]))
+       (catch Throwable t
+         (fs/delete-if-exists tmp)
+         (throw t))))))
+
+(defn- path-guard
+  "Guard for atomic-write!: throws when `rel` now crosses a symlink."
+  [vault rel]
+  (fn []
+    (when (symlink-component? vault rel)
+      (throw (ex-info (str rel ": 書込み直前に symlink が検出されたため中断") {:type :symlink-race})))))
 
 (defn- backup! [run-dir rel text]
   (let [path (fs/path run-dir "backup" rel)]
@@ -1256,7 +1279,7 @@
               (let [written (atom [])
                     failure (try
                               (doseq [{:keys [rel abs after]} files]
-                                (atomic-write! abs after)
+                                (atomic-write! abs after (path-guard vault rel))
                                 (swap! written conj rel))
                               nil
                               (catch Exception e
@@ -1264,7 +1287,7 @@
                                         :when (contains? (set @written) rel)]
                                   (try
                                     (if exists?
-                                      (atomic-write! abs (slurp (get-in backups [:by-rel rel])))
+                                      (atomic-write! abs (slurp (get-in backups [:by-rel rel])) (path-guard vault rel))
                                       (fs/delete-if-exists abs))
                                     (catch Exception _ nil)))
                                 (sanitize-error (.getMessage e))))]
@@ -1501,5 +1524,5 @@
                   (not= after-sha256 (sha256 (slurp-nofollow (:abs r)))) {:path path :status :skipped :reason "run 適用後に別の更新が入っているため上書きしません"}
                   created? (do (fs/delete (:abs r)) {:path path :status :restored :reason "run が新規作成したファイルを削除しました"})
                   (not (and backup (fs/exists? backup))) {:path path :status :skipped :reason "backup が見つかりません"}
-                  :else (do (atomic-write! (:abs r) (slurp backup)) {:path path :status :restored :reason "backup から復元しました"}))))
+                  :else (do (atomic-write! (:abs r) (slurp backup) (path-guard vault path)) {:path path :status :restored :reason "backup から復元しました"}))))
             (:applied audit)))))
