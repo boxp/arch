@@ -225,6 +225,7 @@
 
 (defn run-h1 [vault tid case run-dir action]
   (let [prompt (h1-prompt vault tid case action)
+        _ (fs/create-dirs run-dir)
         _ (spit (str (fs/path run-dir "h1-prompt.md")) prompt)
         started (System/currentTimeMillis)
         proc @(p/process ["timeout" (str pi-timeout) "pi" "-p" "--no-session" "--no-extensions" "--no-skills" "--no-prompt-templates" "--no-context-files" "--no-mcp"
