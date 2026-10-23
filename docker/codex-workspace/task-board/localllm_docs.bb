@@ -1318,17 +1318,15 @@
   [cfg vault run-dir {:keys [files]} {:keys [lock-path]}]
   (with-write-lock (or lock-path (default-write-lock-path run-dir)) (:write-lock-timeout-ms cfg)
     (fn []
-      (let [conflicts (keep (fn [{:keys [rel abs before-sha exists?]}]
-                              ;; Re-validate the path right before writing: a
-                              ;; directory on the way may have been swapped for
-                              ;; a symlink since the snapshot (other vault
-                              ;; editors are not serialized by our lock), and
-                              ;; atomic-write! goes through the parent directory.
-                              ;; Nothing is read until the re-validation has
-                              ;; passed, and then only through the validated
-                              ;; path: with a swapped directory, O_NOFOLLOW on
-                              ;; the last component alone would still read
-                              ;; content from outside the vault.
+      (let [;; Re-validate the path right before writing: a directory on the
+            ;; way may have been swapped for a symlink since the snapshot
+            ;; (other vault editors are not serialized by our lock), and
+            ;; atomic-write! goes through the parent directory. Nothing is
+            ;; read until the re-validation has passed, and then only through
+            ;; the validated path: with a swapped directory, O_NOFOLLOW on the
+            ;; last component alone would still read content from outside the
+            ;; vault. Returns a conflict description or nil.
+            target-conflict (fn [{:keys [rel abs before-sha exists?]}]
                               (let [revalidated (resolve-vault-path vault rel (:docs-roots cfg))]
                                 (cond
                                   (not (:ok? revalidated)) (str rel ": 書込み直前の再検証で拒否（" (:reason revalidated) "）")
@@ -1341,7 +1339,7 @@
                                       (not= exists? now-exists?) (str rel ": 読み取り後に作成/削除されました")
                                       (and exists? (not= (sha256 current) before-sha)) (str rel ": 読み取り後に別の更新が入りました（競合）")
                                       :else nil)))))
-                            files)]
+            conflicts (keep target-conflict files)]
         (if (seq conflicts)
           {:ok? false :category "localllm-conflict" :reason (str "競合のため未適用: " (str/join "; " conflicts))}
           ;; Back up every existing target first, then write. If a write
@@ -1358,10 +1356,25 @@
               {:ok? false :category "localllm-io-error" :reason (:reason backups)}
               (let [written (atom [])
                     kept (atom [])
+                    conflict-mid-write (atom nil)
                     failure (try
-                              (doseq [{:keys [rel abs after]} files]
+                              (doseq [{:keys [rel abs after] :as file} files]
+                                ;; Outside editors are not held by the lock:
+                                ;; re-check each target immediately before
+                                ;; its own write, not only once up front, so
+                                ;; an edit landing on the 2nd target while
+                                ;; the 1st is written is never overwritten.
+                                (when-let [c (target-conflict file)]
+                                  (reset! conflict-mid-write c)
+                                  (throw (ex-info c {:localllm/conflict true})))
                                 (atomic-write! abs after (path-guard vault rel))
                                 (swap! written conj rel)
+                                ;; Deterministic black-box hook (unset in deployment): an
+                                ;; outside editor touches the *next* target while this one
+                                ;; was being written.
+                                (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_EDIT_NEXT_LOCALLLM_TARGET_AFTER_FIRST"))
+                                  (when-let [nxt (first (remove #(contains? (set @written) (:rel %)) files))]
+                                    (spit (:abs nxt) "\n<!-- external edit while the first target was written -->\n" :append true)))
                                 ;; Deterministic black-box failure hook; unset in deployment.
                                 (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_WRITE_AFTER_FIRST"))
                                   (spit abs "\n<!-- external edit between write and failure -->\n" :append true)
@@ -1386,10 +1399,14 @@
                                     (catch Exception _ (swap! kept conj rel))))
                                 (sanitize-error (.getMessage e))))]
                 (if failure
-                  {:ok? false :category (if (seq @kept) "localllm-conflict" "localllm-io-error")
-                   :reason (if (seq @kept)
+                  {:ok? false :category (if (or (seq @kept) @conflict-mid-write) "localllm-conflict" "localllm-io-error")
+                   :reason (cond
+                             (seq @kept)
                              (str "書込みに失敗しました。書込み済みのファイルのうち、その後に別の更新が入った "
                                   (str/join ", " @kept) " は上書きせず復元を見送りました（人間が内容を確認してください）。他は backup から復元しました: " failure)
+                             @conflict-mid-write
+                             (str "競合のため未適用（書込み途中で検出し、書込み済みのファイルは backup から復元しました）: " @conflict-mid-write)
+                             :else
                              (str "書込みに失敗したため、書込み済みのファイルを backup から復元して未適用にしました: " failure))}
                   {:ok? true
                    :applied (mapv (fn [{:keys [rel before after ops exists?]}]
@@ -1579,9 +1596,16 @@
                 (case (:kind outcome)
                   :reject
                   (if (< round (:max-corrections cfg))
-                    (do (log! (str "localllm docs-edit " ticket-id ": correction round " (inc round) " (" (:category outcome) ")"))
-                        (recur (conj messages {:role "assistant" :content (:content llm)} (correction-request (:reason outcome)))
-                               (inc round) usage-total llm-ms))
+                    (let [next-messages (conj messages {:role "assistant" :content (:content llm)} (correction-request (:reason outcome)))
+                          next-chars (reduce + (map #(count (str (:content %))) next-messages))]
+                      ;; The cap applies to every request, including the
+                      ;; correction round that carries the rejected output.
+                      (if (> next-chars (:max-prompt-chars cfg))
+                        (finish :blocked (assoc base :category "localllm-context-exceeded" :decision (:decision proposal)
+                                                :reason (str "修正ラウンドの送信内容が " next-chars " 字で上限 " (:max-prompt-chars cfg)
+                                                             " 字を超えるため再提案を求めず停止します（直前の拒否理由: " (:reason outcome) "）")))
+                        (do (log! (str "localllm docs-edit " ticket-id ": correction round " (inc round) " (" (:category outcome) ")"))
+                            (recur next-messages (inc round) usage-total llm-ms))))
                     (finish :blocked (assoc base :category (:category outcome) :reason (:reason outcome) :decision (:decision proposal))))
 
                   :fatal

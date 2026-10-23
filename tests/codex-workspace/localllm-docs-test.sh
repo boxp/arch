@@ -1019,6 +1019,53 @@ test_symlink_swap_between_snapshot_and_write_is_rejected() {
   [[ "${out}" == *':ok? false'* && "${out}" == *'書込み直前の再検証で拒否'* && "${out}" != *':raised'* ]] || fail "commit must reject without reading through the swapped directory: ${out}"
 }
 
+test_edit_on_a_later_target_during_the_write_is_detected() {
+  # Two targets: an outside editor changes the second one while the first is
+  # being written (test hook). The per-target re-check right before each
+  # write must stop the commit, restore the first target and leave the
+  # outside edit untouched (BOXP-775).
+  setup
+  printf -- '---\ntitle: second\n---\n\n# second\n\n## 現状\n\n- v1.2 で稼働。\n' >"${VAULT}/${PILOT}/second.md"
+  local out
+  out="$(CODEX_TASK_BOARD_TEST_EDIT_NEXT_LOCALLLM_TARGET_AFTER_FIRST=true bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [cfg (localllm-docs/config)
+      vault \"${VAULT}\"
+      rels [\"${PILOT}/runbook.md\" \"${PILOT}/second.md\"]
+      snap (localllm-docs/snapshot-targets cfg vault rels)
+      staged (localllm-docs/stage-proposal cfg snap {:changes (mapv (fn [rel] {:path rel :op \"replace-text\" :heading \"\" :old_text \"v1.2\" :new_text \"v1.3\"}) rels)})]
+  (prn (localllm-docs/commit-staged! cfg vault \"${STATE}/runs/BOXP-775/r1\" staged {})))
+" 2>&1)"
+  [[ "${out}" == *':ok? false'* && "${out}" == *'localllm-conflict'* && "${out}" == *'書込み途中で検出'* && "${out}" == *'second.md: 読み取り後に別の更新が入りました'* ]] \
+    || fail "a conflict on the second target must stop the commit: ${out}"
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${VAULT}/${PILOT}/second.md" 'external edit while the first target was written'
+  assert_file_contains "${VAULT}/${PILOT}/second.md" 'v1\.2'
+  assert_file_not_contains "${VAULT}/${PILOT}/second.md" 'v1\.3'
+}
+
+test_correction_round_over_the_prompt_cap_blocks() {
+  # The first request fits the cap; the rejected output plus the correction
+  # request would not. No second request is sent (BOXP-776).
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-776|BOXP-776: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-776 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out" 2>&1
+  local first_chars
+  first_chars="$(grep -o 'prompt-chars=[0-9]*' "${CASE_DIR}/out" | head -n 1 | cut -d= -f2)"
+  [[ -n "${first_chars}" ]] || fail "prompt-chars not logged: $(cat "${CASE_DIR}/out")"
+  setup; echo correct-after-reject >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-776|BOXP-776: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-776 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS="$(( first_chars + 50 ))" >"${CASE_DIR}/out" 2>&1
+  assert_no_cloud
+  [[ "$(request_count)" == 1 ]] || fail "the correction round must not be sent over the cap (requests: $(request_count))"
+  assert_blocked BOXP-776 '修正ラウンドの送信内容が .* 字で上限'
+  assert_file_contains "${VAULT}/Tickets/BOXP-776.md" '見出しが見つかりません'
+  assert_runbook_unchanged
+}
+
 test_absolute_paths_in_the_ticket_are_rejected() {
   # A leading `/` in docs-target / docs-sources must not be normalized into a
   # vault-relative path: the ticket is untrusted input and absolute paths are
@@ -1091,6 +1138,8 @@ for t in \
   test_prompt_over_the_cap_blocks_without_a_request \
   test_symlink_swap_between_snapshot_and_write_is_rejected \
   test_absolute_paths_in_the_ticket_are_rejected \
+  test_edit_on_a_later_target_during_the_write_is_detected \
+  test_correction_round_over_the_prompt_cap_blocks \
   test_research_finish_without_reads_auto_reads_the_hits \
   test_research_without_progress_stops_and_unsourced_apply_blocks \
   test_research_sources_outside_read_roots_block_without_request \
