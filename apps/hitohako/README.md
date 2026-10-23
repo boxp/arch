@@ -1,6 +1,6 @@
 # apps/hitohako
 
-ひとはこさん（VTuber / 変身ヒロイン）のポートフォリオサイト。
+ひとはこさん（変身ヒロイン）のポートフォリオサイト。セクション順はプロフィール / 活動 / リンク / 仲間 / クレジット。
 
 - stage: <https://hitohako-stage.b0xp.io>（現在公開中のフェーズ。noindex + STAGE バナー表示）
 - 本番（`hitohako.b0xp.io`）は後続フェーズで追加予定

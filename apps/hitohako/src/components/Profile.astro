@@ -1,7 +1,6 @@
 ---
 import Window from './Window.astro';
 import Illust from './Illust.astro';
-import Navigator from './Navigator.astro';
 import profile from '../data/profile.json';
 
 const stats = [
@@ -13,7 +12,6 @@ const stats = [
   { label: 'HAIR', value: profile.hair },
   { label: 'EYES', value: profile.eyes },
   { label: 'CHARM', value: profile.charm },
-  { label: 'ORIGIN', value: profile.origin },
 ];
 
 const bars = [
@@ -28,14 +26,6 @@ const bars = [
   <h2 class="title-logo text-2xl sm:text-3xl text-center">
     プロフィール <span class="text-gold text-base sm:text-lg">STATUS</span>
   </h2>
-
-  <Navigator
-    lines={[
-      'ひとはこさん、通信状態は良好です。',
-      'ステータス画面を開きますね。',
-      '……ほ、褒めすぎは照れてしまうので、ほどほどにお願いします。',
-    ]}
-  />
 
   <Window tab="STATUS">
     <div class="grid gap-6 md:grid-cols-[auto_1fr]">
