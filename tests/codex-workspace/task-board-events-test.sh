@@ -167,7 +167,8 @@ run_events() {
   shift 2
   CODEX_TASK_BOARD_VAULT="${vault}" \
   CODEX_TASK_BOARD_ROOT="${state}" \
-  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="${CODEX_TASK_BOARD_EVENT_QUIET_HOURS:-}" \
+  # "off" disables the window; an empty value would fall back to the 02-09 JST default
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="${CODEX_TASK_BOARD_EVENT_QUIET_HOURS:-off}" \
   "$@" bb "${EVENTS}" tick
 }
 
@@ -308,7 +309,7 @@ test_quiet_hours_defer_and_flush_in_order() {
   # signature timestamp against the real clock, so the clock override is
   # dropped here and only the quiet-hours gate is exercised at the real time
   # when it is outside the window; otherwise the window is disabled explicitly.
-  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="off" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   [[ "$(sed -n '1p' "${CASE_TMP}/receiver.log")" == *'"id":"BOXP-901-r1-blocked"'* ]] || fail "oldest event must be sent first"
   [[ "$(sed -n '2p' "${CASE_TMP}/receiver.log")" == *'"id":"BOXP-902-r2-review"'* ]] || fail "second event must follow"
