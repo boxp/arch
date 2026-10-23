@@ -720,6 +720,9 @@
     (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE"))
                (str/includes? note "Blocked transition recorded:"))
       (throw (ex-info "forced blocker Notes write failure" {})))
+    (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_FINAL_NOTE"))
+               (str/includes? note "Review で停止しました"))
+      (throw (ex-info "forced localllm final Notes write failure" {})))
     (with-vault-writer-lock
      (fn []
        (let [path (ticket-path ticket-id)
@@ -2056,12 +2059,18 @@
                :idle-timeout? false
                :shutdown? shutdown?}
         (not shutdown?) (assoc :deferred-commit!
-                               (fn []
+                               ;; `on-applied!` runs right after the notes were
+                               ;; written and before any Notes / summary write,
+                               ;; so the caller can roll back even when those
+                               ;; later writes throw.
+                               (fn [& [on-applied!]]
                                  (let [final (if staged? ((:commit! result)) result)
+                                       applied? (boolean (seq (:applied final)))
+                                       _ (when (and applied? on-applied!) (on-applied!))
                                        message (localllm-last-message run final)]
                                    (spit (str last-message-path) message)
                                    {:result (record-final! final) :last-message message
-                                    :applied? (boolean (seq (:applied final)))})))))))
+                                    :applied? applied?})))))))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (cond
@@ -2353,8 +2362,8 @@
                     ;; as Notes / lane / lock, so a planned shutdown either
                     ;; leaves the note untouched (flag seen above) or lets the
                     ;; write and the transition complete together.
-                    committed (when-let [commit! (:deferred-commit! agent-run)] (commit!))
-                    _ (when (:applied? committed) (reset! docs-applied? true))
+                    committed (when-let [commit! (:deferred-commit! agent-run)]
+                                (commit! (fn [] (reset! docs-applied? true))))
                     result (if committed (:result committed) result)
                     last-message (if committed (:last-message committed) last-message)
                     review-gate (if gate-result
