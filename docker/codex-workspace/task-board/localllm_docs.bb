@@ -52,11 +52,25 @@
 (defn- env-long [k default]
   (Long/parseLong (str (env k (str default)))))
 
-(defn- split-list [s]
+(defn- split-list
+  "Comma / newline separated *configuration* roots: leading and trailing
+  slashes are normalized away because the roots are our own env values."
+  [s]
   (->> (str/split (or s "") #"[,\n]")
        (map str/trim)
        (remove str/blank?)
        (map #(str/replace % #"^/+|/+$" ""))
+       vec))
+
+(defn- split-ticket-paths
+  "Comma / newline separated paths taken from a *ticket* (untrusted). Only
+  whitespace is trimmed: a leading `/` is kept so `resolve-vault-path` /
+  `resolve-source-root` reject it as an absolute path instead of silently
+  turning it into a vault-relative one."
+  [s]
+  (->> (str/split (or s "") #"[,\n]")
+       (map str/trim)
+       (remove str/blank?)
        vec))
 
 (defn config []
@@ -243,14 +257,14 @@
   "Declared targets from ticket frontmatter `docs-target:` (comma separated,
   vault-relative). Returns a vector of strings, possibly empty."
   [frontmatter]
-  (split-list (or (:docs-target frontmatter) (get frontmatter "docs-target"))))
+  (split-ticket-paths (or (:docs-target frontmatter) (get frontmatter "docs-target"))))
 
 (defn docs-sources
   "Declared research corpus from ticket frontmatter `docs-sources:` (comma
   separated vault-relative folders or notes, read-only). Empty when the ticket
   does not opt in to staged research."
   [frontmatter]
-  (split-list (or (:docs-sources frontmatter) (get frontmatter "docs-sources"))))
+  (split-ticket-paths (or (:docs-sources frontmatter) (get frontmatter "docs-sources"))))
 
 (defn- section-text [lines heading]
   (let [idx (first (keep-indexed (fn [i l] (when (= heading (str/trim l)) i)) lines))]
@@ -604,9 +618,11 @@
   "Validate one `docs-sources` entry (folder or note) against the read roots.
   Returns {:ok? true :rel :abs :dir?} or {:ok? false :reason}."
   [vault rel read-roots]
-  (let [rel (str/replace (str/trim (or rel "")) #"^/+|/+$" "")]
+  (let [rel (str/trim (or rel ""))
+        rel (if (str/starts-with? rel "/") rel (str/replace rel #"/+$" ""))]
     (cond
       (str/blank? rel) {:ok? false :reason "docs-sources に空の項目があります"}
+      (str/starts-with? rel "/") {:ok? false :reason (str "絶対 path は使えません（vault 相対で指定してください）: " rel)}
       (or (str/includes? rel "\\") (str/includes? rel "\u0000")) {:ok? false :reason (str "不正な文字を含む path です: " rel)}
       (some #(= ".." %) (str/split rel #"/")) {:ok? false :reason (str "`..` を含む path は使えません: " rel)}
       (not (under-root? rel read-roots)) {:ok? false :reason (str "参照許可 root 外の docs-sources です: " rel " (許可: " (str/join ", " read-roots) ")")}
@@ -1308,15 +1324,23 @@
                               ;; a symlink since the snapshot (other vault
                               ;; editors are not serialized by our lock), and
                               ;; atomic-write! goes through the parent directory.
-                              (let [revalidated (resolve-vault-path vault rel (:docs-roots cfg))
-                                    now-exists? (fs/exists? abs {:nofollow-links true})
-                                    current (when now-exists? (slurp-nofollow abs))]
+                              ;; Nothing is read until the re-validation has
+                              ;; passed, and then only through the validated
+                              ;; path: with a swapped directory, O_NOFOLLOW on
+                              ;; the last component alone would still read
+                              ;; content from outside the vault.
+                              (let [revalidated (resolve-vault-path vault rel (:docs-roots cfg))]
                                 (cond
                                   (not (:ok? revalidated)) (str rel ": 書込み直前の再検証で拒否（" (:reason revalidated) "）")
                                   (not= (str (:abs revalidated)) (str abs)) (str rel ": 書込み直前の再検証で解決先が変わりました")
-                                  (not= exists? now-exists?) (str rel ": 読み取り後に作成/削除されました")
-                                  (and exists? (not= (sha256 current) before-sha)) (str rel ": 読み取り後に別の更新が入りました（競合）")
-                                  :else nil)))
+                                  :else
+                                  (let [validated-abs (str (:abs revalidated))
+                                        now-exists? (:exists? revalidated)
+                                        current (when now-exists? (slurp-nofollow validated-abs))]
+                                    (cond
+                                      (not= exists? now-exists?) (str rel ": 読み取り後に作成/削除されました")
+                                      (and exists? (not= (sha256 current) before-sha)) (str rel ": 読み取り後に別の更新が入りました（競合）")
+                                      :else nil)))))
                             files)]
         (if (seq conflicts)
           {:ok? false :category "localllm-conflict" :reason (str "競合のため未適用: " (str/join "; " conflicts))}

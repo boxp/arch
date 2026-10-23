@@ -1000,6 +1000,44 @@ test_symlink_swap_between_snapshot_and_write_is_rejected() {
   ln -s "${CASE_DIR}/outside/runbook.md" "${CASE_DIR}/moved-pilot/linked.md"
   out="$(bb -e "(load-file \"${DOCS_MODULE}\") (prn (try (localllm-docs/slurp-nofollow \"${CASE_DIR}/moved-pilot/linked.md\") (catch Exception e :refused)))" 2>&1)"
   [[ "${out}" == *':refused'* ]] || fail "slurp-nofollow must refuse a symlink: ${out}"
+  # Nothing is read before the re-validation passes: with the swapped
+  # directory pointing at a non-file, a read-before-validate would raise
+  # instead of returning the clean rejection.
+  setup
+  mkdir -p "${CASE_DIR}/outside-dir/runbook.md"
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [cfg (localllm-docs/config)
+      vault \"${VAULT}\"
+      rel \"${PILOT}/runbook.md\"
+      snap (localllm-docs/snapshot-targets cfg vault [rel])
+      staged (localllm-docs/stage-proposal cfg snap {:changes [{:path rel :op \"replace-text\" :heading \"\" :old_text \"v1.2\" :new_text \"v1.3\"}]})]
+  (babashka.fs/move (str vault \"/${PILOT}\") (str \"${CASE_DIR}/moved-pilot\"))
+  (babashka.fs/create-sym-link (str vault \"/${PILOT}\") \"${CASE_DIR}/outside-dir\")
+  (prn (try (localllm-docs/commit-staged! cfg vault \"${STATE}/runs/BOXP-772/r1\" staged {}) (catch Exception e [:raised (.getMessage e)]))))
+" 2>&1)"
+  [[ "${out}" == *':ok? false'* && "${out}" == *'書込み直前の再検証で拒否'* && "${out}" != *':raised'* ]] || fail "commit must reject without reading through the swapped directory: ${out}"
+}
+
+test_absolute_paths_in_the_ticket_are_rejected() {
+  # A leading `/` in docs-target / docs-sources must not be normalized into a
+  # vault-relative path: the ticket is untrusted input and absolute paths are
+  # refused as such (BOXP-773 target, BOXP-774 corpus).
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-773|BOXP-773: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-773 ready localllm "/${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected for an absolute docs-target"
+  assert_blocked BOXP-773 '絶対 path'
+  assert_runbook_unchanged
+  setup; echo research >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-774|BOXP-774: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-774 ready localllm "${PILOT}/runbook.md" "/${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected for an absolute docs-sources"
+  assert_blocked BOXP-774 '絶対 path'
+  assert_runbook_unchanged
 }
 
 test_model_supplied_sources_outside_the_runner_reads_are_not_recorded() {
@@ -1052,6 +1090,7 @@ for t in \
   test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
   test_prompt_over_the_cap_blocks_without_a_request \
   test_symlink_swap_between_snapshot_and_write_is_rejected \
+  test_absolute_paths_in_the_ticket_are_rejected \
   test_research_finish_without_reads_auto_reads_the_hits \
   test_research_without_progress_stops_and_unsourced_apply_blocks \
   test_research_sources_outside_read_roots_block_without_request \
