@@ -1,0 +1,100 @@
+---
+# verify.yml から 1 ケースずつ呼ばれる。非標準状態のマニフェスト (GOMEMLIMIT の重複・valueFrom 形式・
+# 他の env との混在・sidecar / initContainer の同名 env) に対して role を有効化し、kube-apiserver コンテナの
+# env に GOMEMLIMIT が宣言値でちょうど 1 つになり、他の env・command・他コンテナ・metadata が不変で、
+# 2 回目が no-op になることを確認する。各ケースは converge 済みのマニフェストを退避し、終わったら元に戻す。
+- name: "Save the converged manifest ({{ normalize_case.name }})"
+  ansible.builtin.copy:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+    dest: /var/tmp/kube-apiserver.yaml.converged
+    remote_src: true
+    mode: '0600'
+  become: true
+
+- name: "Write the non-standard manifest ({{ normalize_case.name }})"
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    mode: '0600'
+    content: "{{ normalize_case.manifest }}"
+  become: true
+
+- name: "Run the GOMEMLIMIT tasks against it ({{ normalize_case.name }})"
+  ansible.builtin.include_role:
+    name: ../../../../kubernetes_components
+    tasks_from: apiserver_gomemlimit.yml
+  vars:
+    apiserver_gomemlimit_enabled: true
+    apiserver_gomemlimit: "{{ normalize_case.value | default('1536MiB') }}"
+
+- name: "Read the manifest after the run ({{ normalize_case.name }})"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: normalize_case_manifest
+  become: true
+
+- name: "Decode the manifest ({{ normalize_case.name }})"
+  ansible.builtin.set_fact:
+    normalize_case_text: "{{ normalize_case_manifest.content | b64decode }}"
+    normalize_case_after: "{{ normalize_case_manifest.content | b64decode | from_yaml }}"
+    normalize_case_before: "{{ normalize_case.manifest | from_yaml }}"
+
+- name: "Assert the env carries GOMEMLIMIT exactly once with the declared value ({{ normalize_case.name }})"
+  ansible.builtin.assert:
+    that:
+      # kube-apiserver コンテナの env に限って数える (sidecar 側の同名 env は数えない)
+      - >-
+        (normalize_case_apiserver_env | selectattr('name', 'equalto', 'GOMEMLIMIT') | list)
+        == [{'name': 'GOMEMLIMIT', 'value': normalize_case.value | default('1536MiB')}]
+      # GOMEMLIMIT 以外の env は順序ごと保たれる
+      - (normalize_case_apiserver_env | rejectattr('name', 'equalto', 'GOMEMLIMIT') | list) == (normalize_case.other_env | default([]))
+      - apiserver_gomemlimit_manifest_edited | bool
+    fail_msg: "{{ normalize_case.name }}: the env was not normalized to a single GOMEMLIMIT entry: {{ normalize_case_text }}"
+  vars:
+    normalize_case_apiserver_env: >-
+      {{
+        (normalize_case_after.spec.containers | selectattr('name', 'equalto', 'kube-apiserver') | first).env
+      }}
+
+- name: "Assert the surrounding content survived ({{ normalize_case.name }})"
+  ansible.builtin.assert:
+    that:
+      - normalize_case_after.kind == 'Pod'
+      - normalize_case_after.metadata == normalize_case_before.metadata
+      # kube-apiserver コンテナの env 以外 (command / image など) は変わらない
+      - >-
+        (normalize_case_after.spec.containers | selectattr('name', 'equalto', 'kube-apiserver') | first | combine({'env': []}))
+        == (normalize_case_before.spec.containers | selectattr('name', 'equalto', 'kube-apiserver') | first | combine({'env': []}))
+      # kube-apiserver 以外のコンテナ・initContainers は一切変わらない
+      - (normalize_case_after.spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | list)
+        == (normalize_case_before.spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | list)
+      - (normalize_case_after.spec.initContainers | default([])) == (normalize_case_before.spec.initContainers | default([]))
+    fail_msg: "{{ normalize_case.name }}: unrelated content was altered: {{ normalize_case_text }}"
+
+- name: "Run the GOMEMLIMIT tasks a second time ({{ normalize_case.name }})"
+  ansible.builtin.include_role:
+    name: ../../../../kubernetes_components
+    tasks_from: apiserver_gomemlimit.yml
+  vars:
+    apiserver_gomemlimit_enabled: true
+    apiserver_gomemlimit: "{{ normalize_case.value | default('1536MiB') }}"
+
+- name: "Read the manifest after the second run ({{ normalize_case.name }})"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: normalize_case_manifest_again
+  become: true
+
+- name: "Assert the second run is a no-op ({{ normalize_case.name }})"
+  ansible.builtin.assert:
+    that:
+      - not (apiserver_gomemlimit_manifest_edited | bool)
+      - (normalize_case_manifest_again.content | b64decode) == normalize_case_text
+    fail_msg: "{{ normalize_case.name }}: the second run changed the manifest again"
+
+- name: "Restore the converged manifest ({{ normalize_case.name }})"
+  ansible.builtin.copy:
+    src: /var/tmp/kube-apiserver.yaml.converged
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    remote_src: true
+    mode: '0600'
+  become: true

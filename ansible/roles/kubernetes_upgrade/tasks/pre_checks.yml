@@ -1,4 +1,21 @@
 ---
+- name: Validate exact upgrade version inputs
+  ansible.builtin.assert:
+    that:
+      - kubernetes_upgrade_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - kubernetes_upgrade_package is match('^' ~ (kubernetes_upgrade_version | regex_escape) ~ '-[0-9]+\.[0-9]+$')
+      - crio_upgrade_version is match('^[0-9]+\.[0-9]+\.[0-9]+$')
+      - crio_upgrade_package is match('^' ~ (crio_upgrade_version | regex_escape) ~ '-[0-9]+\.[0-9]+$')
+      - kubernetes_upgrade_version.split('.')[:2] == crio_upgrade_version.split('.')[:2]
+    fail_msg: >-
+      Exact X.Y.Z versions and matching package revisions are required;
+      wildcard package resolution is not permitted.
+  tags: [pre_checks]
+
+- name: Verify exact target packages before drain or host APT changes
+  ansible.builtin.include_tasks: apt_preflight.yml
+  tags: [pre_checks]
+
 - name: Verify current kubernetes version
   ansible.builtin.command: kubelet --version
   register: current_kubelet_version
@@ -38,6 +55,12 @@
   register: node_status
   check_mode: false
   changed_when: false
+  # Retry across a short API blip (for example one apiserver liveness restart on
+  # the delegate control plane). Persistent API failure or a node that stays
+  # NotReady still fails once the bounded retries are exhausted.
+  until: node_status.rc == 0 and 'NotReady' not in node_status.stdout
+  retries: "{{ kubernetes_upgrade_pre_check_ready_retries }}"
+  delay: "{{ kubernetes_upgrade_pre_check_ready_delay }}"
   failed_when: >
     node_status.rc != 0 or
     'NotReady' in node_status.stdout
@@ -45,8 +68,9 @@
   delegate_to: "{{ pre_check_delegate_host }}"
   vars:
     pre_check_delegate_host: "{{ kubernetes_worker_drain_delegate if node_role == 'worker' else inventory_hostname }}"
+    # Workers delegate to a control plane over SSH but query the API through the
+    # cluster VIP instead of that single control plane's direct endpoint.
     pre_check_kubectl_api_server: >-
-      {{ 'https://' ~ hostvars[pre_check_delegate_host].node_ip ~ ':6443'
-      if node_role == 'worker' else kubectl_api_server }}
+      {{ kubernetes_upgrade_worker_pre_check_api_server if node_role == 'worker' else kubectl_api_server }}
     pre_check_kubectl_api_server_arg: "{{ '--server=' ~ pre_check_kubectl_api_server }}"
   tags: [pre_checks]

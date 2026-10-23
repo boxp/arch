@@ -1,10 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# novel-board-runner sidecar compatibility stub: keeps the sidecar alive as a
-# no-op while boxp/lolice deployment removes the container. Removed once the
-# lolice sidecar deletion is merged.
+# novel-board-runner sidecar (BOXP-246): runs as the non-root container user
+# (runAsUser 1000) on the shared home PVC, so none of the privileged workspace
+# setup below applies. An image without the runner stays a harmless no-op so
+# the lolice sidecar and the arch image can roll out in either order.
+# BOXP-270: Task Board -> Hermes event dispatcher sidecar. It only needs the
+# outbox on the shared home PVC and the webhook URL / secret from its own env;
+# an older image without the script idles instead of crashlooping the Pod.
+if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "task-board-event-dispatcher" ]]; then
+  event_dispatcher=/opt/codex-workspace/task-board/task_board_events.bb
+  if [[ -x "${event_dispatcher}" ]]; then
+    exec /usr/bin/tini -- "${event_dispatcher}" loop
+  fi
+  echo "codex-workspace-entrypoint: ${event_dispatcher} not found in this image; idling" >&2
+  exec sleep infinity
+fi
+
 if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
+  novel_board_runner=/opt/codex-workspace/novel-board/novel_board_runner.bb
+  if [[ -x "${novel_board_runner}" ]]; then
+    # tini keeps PID 1 out of the runner (BOXP-252): orphaned agent children are
+    # reaped and SIGTERM is forwarded to the runner, whose shutdown hook then
+    # signals the agent process groups with a bounded grace.
+    exec /usr/bin/tini -- "${novel_board_runner}" loop
+  fi
+  echo "codex-workspace-entrypoint: ${novel_board_runner} not found in this image; idling" >&2
   exec sleep infinity
 fi
 
@@ -247,6 +268,80 @@ ssh-keygen -A
 
 cd /home/boxp
 
+even_terminal_port="${EVEN_TERMINAL_PORT:-3456}"
+even_terminal_cwd="${EVEN_TERMINAL_CWD:-/home/boxp}"
+even_terminal_provider="${EVEN_TERMINAL_PROVIDER:-codex}"
+even_terminal_interface="${EVEN_TERMINAL_INTERFACE:-eth0}"
+
+# even-terminal >= 0.10 runs an interactive setup wizard when its config file
+# is missing and exits 1 without a TTY, which takes the whole container down.
+# `even-terminal config` cannot create the file either, so seed a minimal one.
+# An existing config is left untouched; the env-derived values below are passed
+# as CLI flags, which take precedence over the config file.
+configure_even_terminal() {
+  local config_dir=/home/boxp/.even-terminal
+  local config="${config_dir}/config.json"
+  local token="${EVEN_TERMINAL_TOKEN:-}"
+
+  /usr/sbin/runuser -u boxp -- install -d -m 0700 "${config_dir}"
+  if [[ -e "${config}" ]]; then
+    return
+  fi
+
+  if [[ -z "${token}" ]]; then
+    token="$(head -c 32 /dev/urandom | od -An -tx1 | tr -d ' \n')"
+  fi
+
+  # The directory is writable by boxp, so write the file as boxp (never as
+  # root) to keep a planted symlink from redirecting a privileged write. The
+  # token goes through the environment to stay out of the process arguments.
+  # shellcheck disable=SC2016
+  EVEN_TERMINAL_CONFIG_TOKEN="${token}" /usr/sbin/runuser -u boxp -- \
+    bash -euo pipefail -c '
+      config_dir="$1"
+      umask 077
+      tmp="$(mktemp "${config_dir}/config.json.XXXXXX")"
+      trap '\''rm -f "${tmp}"'\'' EXIT
+      jq -n \
+        --arg provider "$2" \
+        --arg cwd "$3" \
+        --arg interface "$4" \
+        --argjson port "$5" \
+        '\''{
+          version: 1,
+          provider: $provider,
+          cwd: $cwd,
+          network: {mode: "interface", name: $interface},
+          port: $port,
+          token: $ENV.EVEN_TERMINAL_CONFIG_TOKEN
+        }'\'' >"${tmp}"
+      # Publish with link(2): it is atomic and fails if config.json already
+      # exists, so a config created since the check above is never replaced.
+      if ! ln -T "${tmp}" "${config_dir}/config.json" 2>/dev/null \
+        && [[ ! -e "${config_dir}/config.json" ]]; then
+        echo "codex-workspace-entrypoint: failed to create ${config_dir}/config.json" >&2
+        exit 1
+      fi
+    ' bash \
+    "${config_dir}" \
+    "${even_terminal_provider}" \
+    "${even_terminal_cwd}" \
+    "${even_terminal_interface}" \
+    "${even_terminal_port}"
+}
+
+configure_even_terminal
+
+# even-terminal >= 0.10 only binds to RFC1918 addresses by default and falls
+# back to 127.0.0.1 otherwise. Pod IPs are outside those ranges, so bind to the
+# pod interface explicitly to stay reachable through the Service.
+interface_args=()
+if [[ -e "/sys/class/net/${even_terminal_interface}" ]]; then
+  interface_args=(--interface "${even_terminal_interface}")
+else
+  echo "codex-workspace-entrypoint: interface ${even_terminal_interface} not found; even-terminal falls back to LAN auto-detection" >&2
+fi
+
 token_args=()
 if [[ -n "${EVEN_TERMINAL_TOKEN:-}" ]]; then
   token_args=(--token "${EVEN_TERMINAL_TOKEN}")
@@ -255,8 +350,9 @@ fi
 exec /usr/sbin/runuser -u boxp \
   --whitelist-environment=DOCKER_HOST,DOCKER_BUILDKIT,EDITOR,VISUAL,ANTHROPIC_API_KEY,ANTHROPIC_AUTH_TOKEN,ANTHROPIC_BASE_URL,CLAUDE_CODE_OAUTH_TOKEN,CLAUDE_CODE_USE_BEDROCK,CLAUDE_CODE_USE_VERTEX,CLAUDE_CODE_USE_FOUNDRY,GRAFANA_URL,GRAFANA_SERVICE_ACCOUNT_TOKEN,GEMINI_API_KEY,CODEX_TASK_BOARD_VAULT,CODEX_CRON_ROOT,KUBECONFIG \
   -- env HOME=/home/boxp even-terminal \
-  --port "${EVEN_TERMINAL_PORT:-3456}" \
-  --cwd "${EVEN_TERMINAL_CWD:-/home/boxp}" \
-  --provider "${EVEN_TERMINAL_PROVIDER:-codex}" \
+  --port "${even_terminal_port}" \
+  --cwd "${even_terminal_cwd}" \
+  --provider "${even_terminal_provider}" \
   --name "${EVEN_TERMINAL_NAME:-lolice-codex-workspace}" \
+  "${interface_args[@]}" \
   "${token_args[@]}"

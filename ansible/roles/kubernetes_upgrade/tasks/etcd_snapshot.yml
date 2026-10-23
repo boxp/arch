@@ -147,20 +147,83 @@
   tags: [etcd_snapshot]
 
 - name: Stream etcd snapshot into Longhorn PVC
-  ansible.builtin.shell: |
-    set -o pipefail
-    cat {{ _etcd_snapshot_remote_path | quote }} | \
-      kubectl --kubeconfig={{ kubeconfig_path | quote }} {{ kubectl_api_server_arg }} \
-        -n {{ etcd_snapshot_store_namespace | quote }} \
-        exec -i {{ _etcd_snapshot_store_pod | quote }} -- \
-        sh -c "cat > {{ (etcd_snapshot_store_mount_path ~ "/" ~ _etcd_snapshot_filename) | quote }}"
-  args:
-    executable: /bin/bash
-  become: true
-  changed_when: true
   when: _etcd_snapshot_needs_create | bool
   tags: [etcd_snapshot]
+  block:
+    - name: Read snapshot and PVC capacity in bytes
+      ansible.builtin.shell: |
+        set -o pipefail
+        snapshot_bytes=$(stat -c %s {{ _etcd_snapshot_remote_path | quote }})
+        available_bytes=$(kubectl --kubeconfig={{ kubeconfig_path | quote }} {{ kubectl_api_server_arg }} \
+          -n {{ etcd_snapshot_store_namespace | quote }} exec {{ _etcd_snapshot_store_pod | quote }} -- \
+          df -PB1 {{ etcd_snapshot_store_mount_path | quote }} | awk 'NR == 2 {print $4}')
+        printf '%s %s\n' "$snapshot_bytes" "$available_bytes"
+      args:
+        executable: /bin/bash
+      register: etcd_snapshot_capacity
+      become: true
+      changed_when: false
 
+    - name: Require capacity for snapshot and safety reserve
+      ansible.builtin.assert:
+        that:
+          - (etcd_snapshot_capacity.stdout.split()[1] | int) >= ((etcd_snapshot_capacity.stdout.split()[0] | int) + (etcd_snapshot_store_min_free_bytes | int))
+        fail_msg: "Snapshot PVC lacks capacity for the snapshot plus configured safety reserve"
+
+    - name: Stream etcd snapshot into temporary file
+      ansible.builtin.shell: |
+        set -o pipefail
+        cat {{ _etcd_snapshot_remote_path | quote }} | \
+          kubectl --kubeconfig={{ kubeconfig_path | quote }} {{ kubectl_api_server_arg }} \
+            -n {{ etcd_snapshot_store_namespace | quote }} \
+            exec -i {{ _etcd_snapshot_store_pod | quote }} -- \
+            sh -c "cat > {{ (etcd_snapshot_store_mount_path ~ '/' ~ _etcd_snapshot_filename ~ '.part') | quote }}"
+      args:
+        executable: /bin/bash
+      become: true
+      changed_when: true
+
+    - name: Read uploaded temporary snapshot size
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - "--kubeconfig={{ kubeconfig_path }}"
+          - "{{ kubectl_api_server_arg }}"
+          - -n
+          - "{{ etcd_snapshot_store_namespace }}"
+          - exec
+          - "{{ _etcd_snapshot_store_pod }}"
+          - --
+          - stat
+          - -c
+          - '%s'
+          - "{{ etcd_snapshot_store_mount_path }}/{{ _etcd_snapshot_filename }}.part"
+      register: uploaded_snapshot_size
+      become: true
+      changed_when: false
+
+    - name: Require complete snapshot transfer
+      ansible.builtin.assert:
+        that:
+          - (uploaded_snapshot_size.stdout | int) == (etcd_snapshot_capacity.stdout.split()[0] | int)
+        fail_msg: "Uploaded snapshot size differs from the source; leaving only the .part file"
+
+    - name: Publish verified snapshot atomically
+      ansible.builtin.command:
+        argv:
+          - kubectl
+          - "--kubeconfig={{ kubeconfig_path }}"
+          - "{{ kubectl_api_server_arg }}"
+          - -n
+          - "{{ etcd_snapshot_store_namespace }}"
+          - exec
+          - "{{ _etcd_snapshot_store_pod }}"
+          - --
+          - mv
+          - "{{ etcd_snapshot_store_mount_path }}/{{ _etcd_snapshot_filename }}.part"
+          - "{{ etcd_snapshot_store_mount_path }}/{{ _etcd_snapshot_filename }}"
+      become: true
+      changed_when: true
 - name: Verify selected etcd snapshot exists in Longhorn PVC
   ansible.builtin.command:
     argv:
