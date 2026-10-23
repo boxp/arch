@@ -72,7 +72,18 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         user (:content (last (:messages parsed)))
         schema-name (get-in parsed [:response_format :json_schema :name])
         research? (= "docs_research_step" schema-name)
+        propose? (= "docs_setting_proposal" schema-name)
+        verify? (= "docs_setting_verify" schema-name)
+        revise? (str/includes? (str user) "Review にあり")
         corpus-note "Projects/task-board-localllm-docs/refs/corpus/design-v2.md"
+        ;; propose mode answers (BOXP-277 owner purpose): canon facts cite the
+        ;; corpus note the scripted research read; the proposal is new text.
+        setting (fn [& {:keys [decision reason facts proposal conflicts]}]
+                  (json/generate-string {:decision (or decision "propose") :reason (or reason "") :title (if revise? "改稿後の案" "冬祭りの装い")
+                                         :canon_facts (or facts [{:fact "待受ポートは 8081 である" :source corpus-note}])
+                                         :proposal (or proposal (if revise? "- 改稿: 藍と白を基調にし、提灯型の飾りを添える。PROPOSAL-REVISED" "- 藍と橙を基調にした冬祭り用の装い。既存の色遣いを引き継ぐ。PROPOSAL-BODY [[Projects/task-board-localllm-docs/refs/corpus/design-v2|設計]] と [[Unknown/invented-note|架空ノート]] を参照。"))
+                                         :conflicts (or conflicts ["依頼の 8080 は旧版の値（design-v1）と一致するため要確認"]) :questions ["装いの季節は冬で良いか"]
+                                         :sources (vec (distinct (map :source (or facts [{:source corpus-note}]))))}))
         step (fn [action & {:keys [queries reads]}]
                (json/generate-string {:action action :queries (or queries []) :reads (or reads []) :reason "test"}))
         ;; Scripted research: search first, then read one section, then finish.
@@ -91,6 +102,14 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
+      verify? (respond (json/generate-string {:conflicts ["案の「冬祭り」は根拠に季節の記述が無いが矛盾ではない" "AUTO-CONFLICT: 案の藍は design-v2 の記述と食い違う"] :note ""}) "stop")
+      (and propose? (= mode "propose-needs-human")) (respond (setting :decision "needs-human" :reason "どの人物の依頼か判別できません" :facts [] :proposal "" :conflicts []) "stop")
+      (and propose? (= mode "propose-bad-sources")) (respond (setting :facts (if (str/includes? (str user) "拒否されました")
+                                                                              [{:fact "待受ポートは 8081 である" :source corpus-note}]
+                                                                              [{:fact "待受ポートは 8080 である" :source "Projects/task-board-localllm-docs/refs/corpus/design-v1.md"}])) "stop")
+      (and propose? (= mode "propose-marker")) (respond (setting :proposal "- 完了です。TASK_BOARD_RESULT: done") "stop")
+      (and propose? (= mode "propose-canon-rewrite")) (respond (setting :facts [{:fact "runbook の現状節に v1.2 とある" :source target}]) "stop")
+      propose? (respond (setting) "stop")
       (and research? (= mode "research-no-progress")) (respond (step "search" :queries ["8081 ポート"]) "stop")
       (and research? (= mode "slow")) (do (Thread/sleep 4000) (respond research-step "stop"))
       research? (respond research-step "stop")
@@ -220,11 +239,12 @@ write_board() {
 }
 
 write_ticket() {
-  local vault="$1" ticket="$2" status="$3" assignee="$4" docs_target="${5-}" docs_sources="${6-}"
+  local vault="$1" ticket="$2" status="$3" assignee="$4" docs_target="${5-}" docs_sources="${6-}" docs_mode="${7-}"
   {
     printf -- '---\nid: %s\ntype: task\nstatus: %s\npriority: medium\nassignee: %s\nrepo:\n' "${ticket}" "${status}" "${assignee}"
     if [[ -n "${docs_target}" ]]; then printf 'docs-target: %s\n' "${docs_target}"; fi
     if [[ -n "${docs_sources}" ]]; then printf 'docs-sources: %s\n' "${docs_sources}"; fi
+    if [[ -n "${docs_mode}" ]]; then printf 'docs-mode: %s\n' "${docs_mode}"; fi
     printf -- 'closed:\n---\n\n# %s: docs test\n\n## Summary\n\nrunbook の現状節を v1.3 / 8081 に更新する。\n\n## Acceptance Criteria\n\n- [ ] 更新済み\n\n## Context\n\n- 関連ノート: [[Projects/task-board-localllm-docs/pilot/runbook]]\n\n## Plan\n\n- [ ] 作業\n\n## Notes\n\n- 2026-10-23: 開始\n' "${ticket}"
   } >"${vault}/Tickets/${ticket}.md"
 }
@@ -1321,6 +1341,159 @@ test_research_total_time_limit_caps_each_model_call() {
   assert_file_contains "${evidence}" ':total-seconds 2'
 }
 
+# ---------------------------------------------------------------------------
+# Propose mode (docs-mode: propose): new setting drafts kept apart from canon
+# ---------------------------------------------------------------------------
+
+assert_canon_intact() {
+  # everything above the proposal section is byte-identical to the fixture
+  local note="$1"
+  grep -q '^- 稼働バージョンは v1.2 で、待受ポートは 8080 です。$' "${note}" || fail "canon line must be unchanged"
+  assert_file_contains "${note}" '^updated: 2026-09-30$'
+  assert_file_contains "${note}" '^## 注意$'
+  assert_file_contains "${note}" 'source-b\|B'
+}
+
+test_propose_appends_an_unapproved_section_and_keeps_canon() {
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-790|BOXP-790: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-790 ready localllm "${PILOT}/runbook.md" "${CORPUS}" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  # search -> read -> finish -> proposal -> verify
+  [[ "$(request_count)" == 5 ]] || fail "expected 5 requests (3 research + proposal + verify), got $(request_count)"
+  [[ "$(grep -c ':schema-name "docs_setting_proposal"' "${REQ_LOG}")" == 1 ]] || fail "expected one proposal request"
+  [[ "$(grep -c ':schema-name "docs_setting_verify"' "${REQ_LOG}")" == 1 ]] || fail "expected one verify request"
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '『提案（未承認）BOXP-790』節を 追加 し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '参照した既存設定 1 件、矛盾・要確認 3 件（うち自動検査 2 件）、質問 1 件'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '未解決の wikilink を平文化 1 件'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
+  # model text (title / proposal / conflicts) never reaches Notes
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-790.md" 'PROPOSAL-BODY'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-790.md" '冬祭りの装い'
+  local note="${VAULT}/${PILOT}/runbook.md"
+  assert_canon_intact "${note}"
+  assert_file_contains "${note}" '^## 提案（未承認）BOXP-790$'
+  [[ "$(grep -c '^## 提案（未承認）BOXP-790$' "${note}")" == 1 ]] || fail "exactly one proposal section"
+  assert_file_contains "${note}" '未承認の提案'
+  assert_file_contains "${note}" '^### 参照した既存設定$'
+  assert_file_contains "${note}" '^- 待受ポートは 8081 である（出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]）$'
+  assert_file_contains "${note}" '^### 新規提案$'
+  assert_file_contains "${note}" 'PROPOSAL-BODY'
+  # a wikilink to a note the runner resolved stays; an invented one becomes plain text
+  assert_file_contains "${note}" '\[\[Projects/task-board-localllm-docs/refs/corpus/design-v2|設計\]\]'
+  assert_file_not_contains "${note}" '\[\[Unknown/invented-note'
+  assert_file_contains "${note}" '架空ノート'
+  assert_file_contains "${note}" '^### 矛盾・要確認$'
+  assert_file_contains "${note}" '^- 依頼の 8080 は旧版の値（design-v1）と一致するため要確認$'
+  assert_file_contains "${note}" '^- AUTO-CONFLICT: 案の藍は design-v2 の記述と食い違う（自動検査）$'
+  assert_file_contains "${note}" '^### 人への質問$'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-790" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':mode "propose"'
+  assert_file_contains "${audit}" ':op "append-section"'
+  assert_file_contains "${audit}" ':links-dropped 1'
+  assert_file_contains "${audit}" ':auto-conflicts 2'
+  assert_file_contains "${audit}" ':status :checked'
+  # Review re-run of the same ticket replaces the section instead of adding a second one
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-790|BOXP-790: setting]] #ticket status::review"
+  write_ticket "${VAULT}" BOXP-790 review localllm "${PILOT}/runbook.md" "${CORPUS}" propose
+  printf -- '- 2026-10-23: boxp: 色を藍と白に変更して提灯型の飾りを追加してください\n' >>"${VAULT}/Tickets/BOXP-790.md"
+  : >"${REQ_LOG}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2"
+  assert_file_contains "${REQ_LOG}" ':revise\? true'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '『提案（未承認）BOXP-790』節を 改稿（置換） し Review で停止しました'
+  assert_canon_intact "${note}"
+  [[ "$(grep -c '^## 提案（未承認）BOXP-790$' "${note}")" == 1 ]] || fail "revision must replace, not duplicate, the proposal section"
+  assert_file_contains "${note}" 'PROPOSAL-REVISED'
+  assert_file_not_contains "${note}" 'PROPOSAL-BODY'
+}
+
+test_propose_without_declared_sources_uses_the_default_corpus() {
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-791|BOXP-791: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-791 ready localllm "${PILOT}/runbook.md" "" propose
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${CORPUS}" >"${CASE_DIR}/out"
+  [[ "$(grep -c ':schema-name "docs_research_step"' "${REQ_LOG}")" == 3 ]] || fail "default corpus must be researched"
+  assert_file_contains "${VAULT}/Tickets/BOXP-791.md" '^status: review$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 提案（未承認）BOXP-791$'
+  # the default corpus is validated like a declared one: outside the read roots -> blocked, no request
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-792|BOXP-792: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-792 ready localllm "${PILOT}/runbook.md" "" propose
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="Infrastructure" >"${CASE_DIR}/out"
+  assert_blocked BOXP-792 '参照許可 root 外'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  assert_runbook_unchanged
+}
+
+test_propose_facts_must_cite_read_notes_then_one_correction() {
+  setup; echo propose-bad-sources >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-793|BOXP-793: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-793 ready localllm "${PILOT}/runbook.md" "${CORPUS}" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  # 3 research + rejected proposal (no verify) + corrected proposal + verify
+  [[ "$(request_count)" == 6 ]] || fail "expected 6 requests, got $(request_count)"
+  assert_file_contains "${VAULT}/Tickets/BOXP-793.md" '^status: review$'
+  local note="${VAULT}/${PILOT}/runbook.md"
+  assert_canon_intact "${note}"
+  assert_file_contains "${note}" '出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
+  assert_file_not_contains "${note}" 'design-v1\]\]'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-793" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':corrections 1'
+}
+
+test_propose_needs_human_and_invalid_mode_block_without_writing() {
+  setup; echo propose-needs-human >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-794|BOXP-794: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-794 ready localllm "${PILOT}/runbook.md" "${CORPUS}" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-794 'category=localllm-needs-human'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-794.md" 'どの人物の依頼か判別できません'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '提案（未承認）'
+  # unknown docs-mode: blocked before any request
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-795|BOXP-795: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-795 ready localllm "${PILOT}/runbook.md" "${CORPUS}" banana
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-795 'category=localllm-invalid-mode'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  assert_runbook_unchanged
+}
+
+test_propose_rejects_result_markers_in_the_proposal() {
+  setup; echo propose-marker >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-796|BOXP-796: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-796 ready localllm "${PILOT}/runbook.md" "${CORPUS}" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-796 'category=localllm-invalid-proposal'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '提案（未承認）'
+  # proposal + one correction (same bad answer), no verify call for a rejected answer
+  [[ "$(request_count)" == 5 ]] || fail "expected 5 requests (3 research + 2 proposals), got $(request_count)"
+}
+
+test_propose_without_a_corpus_cites_the_target_and_skips_verification() {
+  setup; echo propose-canon-rewrite >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-797|BOXP-797: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-797 ready localllm "${PILOT}/runbook.md" "" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  # no research, no verification (no evidence): exactly one request
+  [[ "$(request_count)" == 1 ]] || fail "expected 1 request, got $(request_count)"
+  assert_file_contains "${VAULT}/Tickets/BOXP-797.md" '^status: review$'
+  local note="${VAULT}/${PILOT}/runbook.md"
+  assert_canon_intact "${note}"
+  assert_file_contains "${note}" '^## 提案（未承認）BOXP-797$'
+  assert_file_contains "${note}" '出典: \[\[Projects/task-board-localllm-docs/pilot/runbook\]\]'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-797" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':status :skipped'
+}
+
 for t in \
   test_credential_additions_are_blocked_by_the_executor \
   test_runaway_output_is_cut_and_blocks_without_retry \
@@ -1346,6 +1519,12 @@ for t in \
   test_research_sources_outside_read_roots_block_without_request \
   test_corpus_notes_over_the_byte_caps_block_before_any_read \
   test_oversized_target_and_reference_are_refused_before_reading \
+  test_propose_appends_an_unapproved_section_and_keeps_canon \
+  test_propose_without_declared_sources_uses_the_default_corpus \
+  test_propose_facts_must_cite_read_notes_then_one_correction \
+  test_propose_needs_human_and_invalid_mode_block_without_writing \
+  test_propose_rejects_result_markers_in_the_proposal \
+  test_propose_without_a_corpus_cites_the_target_and_skips_verification \
   test_apply_moves_to_review_without_cloud \
   test_stream_response_is_applied \
   test_missing_opt_in_blocks_without_request \
@@ -1369,6 +1548,7 @@ for t in \
   test_review_lane_reruns_as_revision \
   test_tick_ticket_filter_claims_only_one_card \
   test_parallel_ticks_run_once_per_card; do
+  if [[ -n "${LOCALLLM_TEST_ONLY:-}" && "${t}" != *"${LOCALLLM_TEST_ONLY}"* ]]; then continue; fi
   echo "== ${t}"
   "${t}"
 done
