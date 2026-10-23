@@ -16,7 +16,7 @@ const siteUrl = Astro.site?.toString() ?? 'https://hitohako-stage.b0xp.io/';
 // PUBLIC_SITE_STAGE is set by the deploy workflow. Anything other than the
 // explicit string 'false' is treated as stage (noindex + STAGE banner).
 const isStage = import.meta.env.PUBLIC_SITE_STAGE !== 'false';
-const ogImage = new URL('/pixel/hitohako-face.png', siteUrl).toString();
+const ogImage = new URL('/illust/hitohako-face.png', siteUrl).toString();
 ---
 
 <!doctype html>

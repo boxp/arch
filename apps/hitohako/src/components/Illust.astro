@@ -1,0 +1,42 @@
+---
+/**
+ * Regular (non-pixel) character illustration. The PNG is exported at 2x the
+ * CSS display size so it stays sharp on high-DPI screens; intrinsic size is
+ * read from the file at build time and halved for layout. No
+ * image-rendering: pixelated is applied (that is reserved for `.pixel`).
+ */
+import { pngSize } from '../lib/pixel';
+
+interface Props {
+  src: string;
+  alt: string;
+  /** Device pixel ratio the PNG was exported for (default 2 = retina). */
+  dpr?: number;
+  /**
+   * CSS max-height (e.g. "60dvh"). When set, the image is sized by height
+   * (width: auto) so the aspect ratio is preserved on short viewports.
+   */
+  maxHeight?: string;
+  class?: string;
+  loading?: 'lazy' | 'eager';
+}
+
+const { src, alt, dpr = 2, maxHeight, class: className = '', loading = 'lazy' } = Astro.props;
+const { width, height } = pngSize(src);
+const cssWidth = Math.round(width / dpr);
+const cssHeight = Math.round(height / dpr);
+const sizing = maxHeight
+  ? `height:min(${cssHeight}px, ${maxHeight});width:auto;`
+  : `width:${cssWidth}px;height:${cssHeight}px;`;
+---
+
+<img
+  src={src}
+  alt={alt}
+  width={width}
+  height={height}
+  loading={loading}
+  decoding="async"
+  class:list={['illust', className]}
+  style={`box-sizing:content-box;${sizing}`}
+/>

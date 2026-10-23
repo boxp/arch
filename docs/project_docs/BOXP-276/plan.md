@@ -47,11 +47,14 @@ VTuber「ひとはこ」のポートフォリオサイトを boxp/arch のモノ
 - stage 表示: 画面上部の STAGE バナー、`<meta name="robots" content="noindex">`、
   `public/_headers` の `X-Robots-Tag: noindex`。noindex はアクセス制御ではない。
 - セクション: タイトル画面（PRESS START）/ プロフィール（RPG ステータス風）/ 仲間 / 活動（STG 1CC 記録）/ リンク / クレジット。
-- キャラクターのドット絵（ひとはこ立ち絵・顔グラ、コハコ.exe / 鳴瀬理央 / 天城紗那の顔グラ）は
-  有効描画グリッドを大幅に増やして原典の作画資料から再生成する（立ち絵 107x199 → 約 288x512、顔グラ 64x64 → 128x128 級）。
-  既存の小さい絵の nearest 拡大や PNG キャンバス拡大は行わない。表示は整数倍（desktop/mobile とも 1x）で
-  `image-rendering: pixelated` を維持する。背景タイル・桜・鳥居などの小ドット素材は対象外。
-- 演出: DotGothic16、ADV 風二重枠ウィンドウ、CRT 走査線、点滅カーソル、`image-rendering: pixelated`、
+- キャラクター（ひとはこ立ち絵・顔グラ、コハコ.exe / 鳴瀬理央 / 天城紗那の顔グラ）はドット絵ではなく
+  通常のイラストにする（2026-10-23 方針変更。旧「高解像度ドット絵化」は撤回）。原典の作画資料を参照して
+  生成した通常イラストの原本を緑背景透過・トリミングし、CSS 表示サイズの 2 倍（立ち絵 560x1280、顔グラ 288x288）
+  の透過 PNG として `public/illust/` に置き、`Illust` コンポーネントで表示する。キャラにはドット絵変換・減色・
+  `image-rendering: pixelated` / nearest 拡大・整数倍強制を適用しない。
+- 背景タイル・桜・鳥居などの小ドット素材と和風 × レトロゲーム UI は維持し、`image-rendering: pixelated` は
+  `.pixel`（小物・タイル）だけに限定する。
+- 演出: DotGothic16、ADV 風二重枠ウィンドウ、CRT 走査線、点滅カーソル、
   `prefers-reduced-motion` でアニメーション停止。
 
 ## Rollout

@@ -45,10 +45,16 @@ body {
   image-rendering: pixelated;
 }
 
-img,
+/* Only pixel-art props/tiles get nearest-neighbour scaling.
+   Character illustrations (.illust) are regular drawings and must not be pixelated. */
 .pixel {
   image-rendering: pixelated;
   image-rendering: crisp-edges;
+}
+
+.illust {
+  image-rendering: auto;
+  max-width: 100%;
 }
 
 ::selection {
