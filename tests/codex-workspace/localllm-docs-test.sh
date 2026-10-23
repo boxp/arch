@@ -742,6 +742,15 @@ test_failed_transition_after_the_write_is_rolled_back() {
   assert_runbook_unchanged
   assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
   grep -q 'rolled back localllm docs write' "${CASE_DIR}/out" || fail "rollback must run when the final record fails: $(tail -n 5 "${CASE_DIR}/out")"
+  # the audit write right after the note write fails inside the module: the
+  # module restores the note itself before the error reaches the runner
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-760|BOXP-760: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-760 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_AUDIT_AFTER_APPLY=true >"${CASE_DIR}/out" || true
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-760\|.*status::blocked'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
 }
 
 test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {

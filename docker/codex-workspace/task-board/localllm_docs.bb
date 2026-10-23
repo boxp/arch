@@ -1185,6 +1185,8 @@
     (spit (str path) text)
     (str path)))
 
+(declare rollback-applied!)
+
 (defn stage-proposal
   "Validate the whole proposal against the snapshot taken for the prompt and
   compute the new text of every file (pure: nothing is written). Returns
@@ -1370,6 +1372,10 @@
         :else nil))))
 
 (defn write-audit! [run-dir audit]
+  ;; Deterministic black-box failure hook; unset in deployment.
+  (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_AUDIT_AFTER_APPLY"))
+             (= :review (:status audit)))
+    (throw (ex-info "forced audit write failure after apply" {})))
   (write-edn! (fs/path run-dir "localllm-audit.edn") (assoc audit :at (now-str))))
 
 (defn run-docs-edit!
@@ -1505,7 +1511,17 @@
                                                       {:ok? false :category "localllm-io-error"
                                                        :reason (str "書込みに失敗したため未適用: " (sanitize-error (.getMessage e)))}))]
                                     (if (:ok? result)
-                                      (finish :review (assoc accepted :applied (:applied result) :category "localllm-applied"))
+                                      ;; The audit write after a successful note write
+                                      ;; can still fail (disk full, run dir removed).
+                                      ;; Restore the notes from their backups before
+                                      ;; propagating, so a Blocked card never keeps a
+                                      ;; written note behind.
+                                      (try
+                                        (finish :review (assoc accepted :applied (:applied result) :category "localllm-applied"))
+                                        (catch Throwable t
+                                          (try (rollback-applied! vault cfg {:applied (:applied result) :docs-roots (:docs-roots cfg)})
+                                               (catch Throwable _ nil))
+                                          (throw t)))
                                       (finish :blocked (assoc accepted :category (:category result) :reason (:reason result))))))]
                     (if defer-commit?
                       (assoc (finish :staged (assoc accepted :category "localllm-staged"
@@ -1516,8 +1532,6 @@
 ;; ---------------------------------------------------------------------------
 ;; Rollback (operator command)
 ;; ---------------------------------------------------------------------------
-
-(declare rollback-applied!)
 
 (defn rollback!
   "Restore the files changed by a run when their current content still equals
