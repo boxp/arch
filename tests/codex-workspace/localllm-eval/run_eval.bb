@@ -38,8 +38,10 @@
 (def pi-model (arg "--pi-model" "llama.cpp/gemma4-26b"))
 (def pi-timeout (Long/parseLong (arg "--pi-timeout" "1500")))
 (def stop-file (arg "--stop-file" (str out-dir "/STOP")))
+;; `--cases-file corpus_cases.edn` selects the multi-document (main use case) set.
+(def cases-file (arg "--cases-file" "cases.edn"))
 
-(def all-cases (edn/read-string (slurp (str (fs/path here "cases.edn")))))
+(def all-cases (edn/read-string (slurp (str (fs/path here cases-file)))))
 (def cases (filterv #(or (nil? only) (contains? only (:id %))) all-cases))
 
 (fs/create-dirs out-dir)
@@ -48,17 +50,21 @@
 ;; Fixture / ticket helpers
 ;; ---------------------------------------------------------------------------
 
-(defn make-vault! [dir]
-  (fs/create-dirs dir)
-  (let [r @(p/process ["bb" (str (fs/path here "fixture.bb")) (str dir)] {:out :string :err :string})]
-    (when-not (zero? (:exit r)) (throw (ex-info (str "fixture failed: " (:err r)) {})))))
+(defn make-vault!
+  ([dir] (make-vault! dir nil))
+  ([dir {:keys [script args]}]
+   (fs/create-dirs dir)
+   (let [cmd (into ["bb" (str (fs/path here (or script "fixture.bb"))) (str dir)] (or args []))
+         r @(p/process cmd {:out :string :err :string})]
+     (when-not (zero? (:exit r)) (throw (ex-info (str "fixture failed: " (:err r)) {}))))))
 
 (defn ticket-id-for [case-idx] (str "BOXP-9" (format "%02d" case-idx)))
 
-(defn ticket-text [tid {:keys [ticket targets]} extra-notes]
+(defn ticket-text [tid {:keys [ticket targets docs-sources]} extra-notes]
   (str "---\n"
        "id: " tid "\ntype: task\nstatus: in-progress\npriority: medium\nassignee: localllm\nreporter: boxp\nproject: BOXP\n"
        "docs-target: " (str/join ", " targets) "\n"
+       (when (seq docs-sources) (str "docs-sources: " (str/join ", " docs-sources) "\n"))
        "created: 2026-10-23\ntags:\n  - ticket\n---\n\n"
        "# " tid ": " (:title ticket) "\n\n"
        "## Summary\n\n" (:summary ticket) "\n\n"
@@ -157,19 +163,44 @@
       (when (seq suspect) (fail! :hallucination-suspect (str "根拠に無い数値が追加された: " (str/join ", " (distinct suspect))))))
     {:pass? (empty? @failures) :failures @failures :changed changed}))
 
+(defn retrieval-metrics
+  "Retrieval side of a staged-research run, read from the audit of run1:
+  which gold sources were read, whether forbidden notes were cited, and the
+  search / read / token effort. Reported separately from the edit pass/fail."
+  [{:keys [expect]} run-dir]
+  (let [audit-path (fs/path run-dir "localllm-audit.edn")]
+    (when (fs/exists? audit-path)
+      (let [audit (edn/read-string (slurp (str audit-path)))
+            research (:research audit)
+            read-set (set (:read-paths research))
+            cited (set (:sources audit))
+            gold (vec (:gold-sources expect))
+            forbidden (vec (:forbidden-sources expect))]
+        (when (or research (seq gold))
+          {:gold (count gold)
+           :gold-read (count (filter read-set gold))
+           :gold-missing (vec (remove read-set gold))
+           :forbidden-cited (vec (filter cited forbidden))
+           :sources (vec (sort cited))
+           :rounds (:rounds research) :searches (:searches research) :reads (:reads research)
+           :evidence-chars (:evidence-chars research) :stop (:stop research)
+           :corpus-notes (:corpus-notes research) :corpus-chars (:corpus-chars research)
+           :index-listed (:index-listed research)})))))
+
 ;; ---------------------------------------------------------------------------
 ;; Harness H3: structured adapter (the production module)
 ;; ---------------------------------------------------------------------------
 
 (defn run-h3 [vault tid case run-dir action]
   (let [text (slurp (str (fs/path vault "Tickets" (str tid ".md"))))
-        fm {:docs-target (str/join ", " (:targets case))}
+        fm (cond-> {:docs-target (str/join ", " (:targets case))}
+             (seq (:docs-sources case)) (assoc :docs-sources (str/join ", " (:docs-sources case))))
         r (localllm-docs/run-docs-edit! {:vault (str vault) :ticket-id tid :run-dir (str run-dir)
                                          :ticket-text text :frontmatter fm :action action
                                          :log-fn println})]
     {:status (name (:status r)) :stopped? (= :blocked (:status r)) :category (:category r)
      :reason (:reason r) :summary (:summary r) :usage (:usage r) :llm-elapsed-ms (:llm-elapsed-ms r)
-     :applied (:applied r)}))
+     :applied (:applied r) :sources (:sources r)}))
 
 ;; ---------------------------------------------------------------------------
 ;; Harness H2: whole-file rewrite
@@ -255,7 +286,7 @@
         run-dir (fs/path out-dir (:id spec) (str "rep" rep))
         vault (fs/path run-dir "vault")
         _ (fs/create-dirs run-dir)
-        _ (make-vault! vault)
+        _ (make-vault! vault (:fixture spec))
         _ (write-ticket! vault tid (ticket-text tid spec []))
         before (snapshot vault)
         runner (case harness "h1" run-h1 "h2" run-h2 run-h3)
@@ -268,10 +299,12 @@
                   (assoc outcome1 :turns 1))
         after (snapshot vault)
         check (check-case spec before after outcome)
+        retrieval (when (= harness "h3") (retrieval-metrics spec (fs/path run-dir "run1")))
         result (merge {:case (:id spec) :title (:title spec) :group (:group spec) :rep rep :harness harness
+                       :scale (:scale spec)
                        :wall-ms (- (System/currentTimeMillis) started)}
                       (dissoc outcome :applied)
-                      {:applied (:applied outcome)}
+                      {:applied (:applied outcome) :retrieval retrieval}
                       check)]
     ;; keep the diff for human inspection
     (doseq [path (:changed check)]
@@ -280,6 +313,10 @@
     (println (str "[" harness "] " (:id spec) " rep" rep " -> " (if (:pass? check) "PASS" "FAIL") " status=" (:status outcome)
                   (when-let [u (:usage outcome)] (str " tokens=" (:prompt_tokens u) "+" (:completion_tokens u)))
                   " llm=" (quot (or (:llm-elapsed-ms outcome) 0) 1000) "s"
+                  (when retrieval (str " retrieval=" (:gold-read retrieval) "/" (:gold retrieval)
+                                       " rounds=" (:rounds retrieval) " searches=" (:searches retrieval) " reads=" (:reads retrieval)
+                                       " evidence=" (:evidence-chars retrieval) " stop=" (some-> (:stop retrieval) name)
+                                       (when (seq (:forbidden-cited retrieval)) (str " FORBIDDEN-CITED=" (str/join "," (:forbidden-cited retrieval))))))
                   (when (seq (:failures check)) (str " :: " (str/join " | " (map :message (:failures check)))))))
     result))
 
@@ -323,11 +360,15 @@
 (let [rs @results
       total (count rs) passed (count (filter :pass? rs))]
   (spit (str (fs/path out-dir "results.md"))
-        (str "| case | rep | status | pass | prompt tok | completion tok | llm sec | failures |\n|---|---|---|---|---|---|---|---|\n"
+        (str "| case | rep | status | pass | prompt tok | completion tok | llm sec | retrieval (gold read / rounds / searches / reads / evidence chars / stop) | failures |\n|---|---|---|---|---|---|---|---|---|\n"
              (str/join "\n" (for [r rs]
                               (str "| " (:case r) " | " (:rep r) " | " (:status r) " | " (if (:pass? r) "PASS" "FAIL") " | "
                                    (get-in r [:usage :prompt_tokens]) " | " (get-in r [:usage :completion_tokens]) " | "
                                    (quot (or (:llm-elapsed-ms r) 0) 1000) " | "
+                                   (if-let [m (:retrieval r)]
+                                     (str (:gold-read m) "/" (:gold m) " / " (:rounds m) " / " (:searches m) " / " (:reads m) " / " (:evidence-chars m) " / " (some-> (:stop m) name)
+                                          (when (seq (:forbidden-cited m)) (str " / forbidden cited: " (str/join ", " (:forbidden-cited m)))))
+                                     "–") " | "
                                    (str/join "; " (map :message (:failures r))) " |")))
              "\n\n" harness ": " passed "/" total " pass\n"))
   (println (str "\n" harness ": " passed "/" total " pass; results in " out-dir)))

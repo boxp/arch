@@ -1936,15 +1936,26 @@
 (declare sanitize-blocker-reason)
 
 (defn localllm-rollback-command [ticket-id run-id]
-  (str "bb " localllm-docs-module-path " rollback " ticket-id " " run-id
-       " （または task_board_runner.bb localllm-rollback " ticket-id " " run-id "）"))
+  (str "task_board_runner.bb localllm-rollback " ticket-id " " run-id))
+
+(defn localllm-research-note
+  "Staged-research summary for Notes (adapter v4): how the evidence was
+  collected, so a reviewer can judge the search effort and coverage."
+  [result]
+  (when-let [r (:research result)]
+    (str "; 調査: corpus " (:corpus-notes r) " ノート/" (:corpus-chars r) " 字, "
+         (:rounds r) " 回 (search " (:searches r) ", read " (:reads r) "), 根拠 " (:evidence-chars r) " 字"
+         (when-let [stop (:stop r)] (when (not= :finish stop) (str ", 打ち切り=" (name stop))))
+         (when (seq (:read-paths r)) (str "; 読んだ資料: " (str/join ", " (map #(str "[[" (str/replace % #"\.md$" "") "]]") (:read-paths r))))))))
 
 (defn localllm-review-note [ticket-id run-id result]
   (let [applied (:applied result)
         usage (:usage result)]
     (str "localllm docs run " run-id " が " (count applied) " ファイルを更新し Review で停止しました（Done にはしません）。"
-         " 対象: " (str/join ", " (map #(str "[[" (str/replace (:path %) #"\\.md$" "") "]]" (when (:created? %) "（新規）")) applied))
+         " 対象: " (str/join ", " (map #(str "[[" (str/replace (:path %) #"\.md$" "") "]]" (when (:created? %) "（新規）")) applied))
          "; 操作: " (str/join ", " (map (fn [a] (str/join "/" (map :op (:ops a)))) applied))
+         (when (seq (:sources result)) (str "; 出典: " (str/join ", " (map #(str "[[" (str/replace (str %) #"\.md$" "") "]]") (:sources result)))))
+         (localllm-research-note result)
          "; model=" (:model result "localllm")
          (when usage (str "; tokens prompt=" (:prompt_tokens usage) " completion=" (:completion_tokens usage)))
          (when-let [ms (:llm-elapsed-ms result)] (str "; llm " (quot ms 1000) "s"))
@@ -1956,6 +1967,7 @@
   (str "localllm docs run " run-id " は変更を適用せず停止しました（cloud への切替はしません）。"
        " category=" (:category result "unknown")
        "; 理由: " (sanitize-blocker-reason (:reason result))
+       (localllm-research-note result)
        (when-let [u (:usage result)] (str "; tokens prompt=" (:prompt_tokens u) " completion=" (:completion_tokens u)))
        "; audit: " (:audit-path result (str (run-dir ticket-id run-id) "/localllm-audit.edn"))))
 

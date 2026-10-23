@@ -67,13 +67,34 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         raw (if (:body req) (slurp (:body req)) "{}")
         parsed (json/parse-string raw true)
         mode (str/trim (slurp mode-file))
-        user (:content (last (:messages parsed)))]
+        user (:content (last (:messages parsed)))
+        schema-name (get-in parsed [:response_format :json_schema :name])
+        research? (= "docs_research_step" schema-name)
+        corpus-note "Projects/task-board-localllm-docs/refs/corpus/design-v2.md"
+        step (fn [action & {:keys [queries reads]}]
+               (json/generate-string {:action action :queries (or queries []) :reads (or reads []) :reason "test"}))
+        ;; Scripted research: search first, then read one section, then finish.
+        research-step (cond
+                        (not (str/includes? (str user) "round 1")) (step "search" :queries ["8081 ポート"])
+                        (not (str/includes? (str user) "### 根拠:")) (step "read" :reads [{:path corpus-note :heading "## 構成"}])
+                        :else (step "finish"))]
     (spit req-log (str (pr-str {:uri uri :model (:model parsed) :mode mode :schema? (some? (:response_format parsed))
+                                :schema-name schema-name
                                 :stream? (:stream parsed) :revise? (str/includes? (str user) "Review にあり")
                                 :mentions-secret? (str/includes? (str user) "FIXTURE-DECOY")
+                                :sees-corpus-body? (str/includes? (str user) "CORPUS-BODY-MARKER")
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
+      (and research? (= mode "research-no-progress")) (respond (step "search" :queries ["8081 ポート"]) "stop")
+      research? (respond research-step "stop")
+      (= mode "research") (respond (json/generate-string (assoc (json/parse-string (proposal) true) :sources [corpus-note])) "stop")
+      (= mode "research-bad-sources") (respond (json/generate-string (assoc (json/parse-string (proposal) true)
+                                                                           :sources (if (str/includes? (str user) "拒否されました")
+                                                                                      [corpus-note]
+                                                                                      ["Projects/task-board-localllm-docs/refs/corpus/design-v1.md"])))
+                                               "stop")
+      (= mode "research-no-progress") (respond (proposal) "stop")
       (= mode "normal") (respond (proposal) "stop")
       (= mode "stream") (let [p (proposal)] (respond-stream req [(subs p 0 40) (subs p 40)] {}))
       (= mode "stream-cut") (let [p (proposal)] (respond-stream req [(subs p 0 40)] {:cut? true}))
@@ -153,6 +174,10 @@ EOF
   printf -- '---\ntitle: prod\n---\n\n# prod\n' >"${vault}/Infrastructure/prod.md"
   printf -- 'FIXTURE-DECOY-VALUE\n' >"${vault}/Secret/keys.md"
   ln -s "${vault}/Secret/keys.md" "${vault}/${PILOT}/link.md"
+  # read-only research corpus (docs-sources) inside the read allowlist
+  mkdir -p "${vault}/Projects/task-board-localllm-docs/refs/corpus"
+  printf -- '---\ntitle: design v2\nstatus: current\n---\n\n# design v2\n\n## 構成\n\n- 待受ポートは 8081。CORPUS-BODY-MARKER\n\n## 証明書\n\n- 60 日ごと。\n' >"${vault}/Projects/task-board-localllm-docs/refs/corpus/design-v2.md"
+  printf -- '---\ntitle: design v1\nstatus: superseded\n---\n\n# design v1\n\n## 構成\n\n- 待受ポートは 8080。\n' >"${vault}/Projects/task-board-localllm-docs/refs/corpus/design-v1.md"
 }
 
 write_board() {
@@ -173,10 +198,11 @@ write_board() {
 }
 
 write_ticket() {
-  local vault="$1" ticket="$2" status="$3" assignee="$4" docs_target="${5-}"
+  local vault="$1" ticket="$2" status="$3" assignee="$4" docs_target="${5-}" docs_sources="${6-}"
   {
     printf -- '---\nid: %s\ntype: task\nstatus: %s\npriority: medium\nassignee: %s\nrepo:\n' "${ticket}" "${status}" "${assignee}"
     if [[ -n "${docs_target}" ]]; then printf 'docs-target: %s\n' "${docs_target}"; fi
+    if [[ -n "${docs_sources}" ]]; then printf 'docs-sources: %s\n' "${docs_sources}"; fi
     printf -- 'closed:\n---\n\n# %s: docs test\n\n## Summary\n\nrunbook の現状節を v1.3 / 8081 に更新する。\n\n## Acceptance Criteria\n\n- [ ] 更新済み\n\n## Context\n\n- 関連ノート: [[Projects/task-board-localllm-docs/pilot/runbook]]\n\n## Plan\n\n- [ ] 作業\n\n## Notes\n\n- 2026-10-23: 開始\n' "${ticket}"
   } >"${vault}/Tickets/${ticket}.md"
 }
@@ -493,7 +519,90 @@ test_parallel_ticks_run_once_per_card() {
   assert_file_contains "${VAULT}/Tickets/BOXP-728.md" '^status: review$'
 }
 
+CORPUS="Projects/task-board-localllm-docs/refs/corpus"
+
+test_research_collects_evidence_then_applies_with_sources() {
+  setup; echo research >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-740|BOXP-740: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-740 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  # search -> read -> finish -> proposal
+  [[ "$(request_count)" == 4 ]] || fail "expected 4 requests (3 research + 1 proposal), got $(request_count)"
+  [[ "$(grep -c ':schema-name "docs_research_step"' "${REQ_LOG}")" == 3 ]] || fail "expected 3 research steps"
+  # the corpus body reaches the model only after it asked to read that section
+  [[ "$(sed -n 1p "${REQ_LOG}")" == *':sees-corpus-body? false'* ]] || fail "round 1 must not include corpus bodies"
+  [[ "$(sed -n 3p "${REQ_LOG}")" == *':sees-corpus-body? true'* ]] || fail "evidence must be shown after the read"
+  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
+  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '調査: corpus 2 ノート'
+  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '読んだ資料: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  # the corpus itself is read-only: untouched
+  assert_file_contains "${VAULT}/${CORPUS}/design-v2.md" '^- 待受ポートは 8081。CORPUS-BODY-MARKER$'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-740" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':read-paths \["Projects/task-board-localllm-docs/refs/corpus/design-v2.md"\]'
+  assert_file_contains "${audit}" ':stop :finish'
+  assert_file_contains "${audit}" ':sources \["Projects/task-board-localllm-docs/refs/corpus/design-v2.md"\]'
+  # snippets stay in the run directory (like backup/); never in Notes or request evidence
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-740.md" 'CORPUS-BODY-MARKER'
+  assert_file_not_contains "$(dirname "${audit}")/llm-evidence.edn" 'CORPUS-BODY-MARKER'
+}
+
+test_research_sources_must_be_notes_the_model_read() {
+  setup; echo research-bad-sources >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-741|BOXP-741: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-741 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  # 3 research + rejected proposal + corrected proposal
+  [[ "$(request_count)" == 5 ]] || fail "expected 5 requests, got $(request_count)"
+  assert_file_contains "${VAULT}/Tickets/BOXP-741.md" '^status: review$'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-741" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':corrections 1'
+  assert_file_not_contains "${audit}" 'design-v1.md"\]'
+}
+
+test_research_without_progress_stops_and_unsourced_apply_blocks() {
+  setup; echo research-no-progress >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-742|BOXP-742: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-742 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  # round 1 searches, rounds 2-3 repeat the query (no progress) -> stop; then
+  # the proposal has no sources -> rejected once -> blocked
+  [[ "$(request_count)" == 5 ]] || fail "expected 5 requests, got $(request_count)"
+  assert_blocked BOXP-742 'sources が空です'
+  assert_runbook_unchanged
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-742" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':stop :no-progress'
+}
+
+test_research_sources_outside_read_roots_block_without_request() {
+  setup; echo research >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-743|BOXP-743: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-743 ready localllm "${PILOT}/runbook.md" "Secret"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected for an out-of-root corpus"
+  assert_blocked BOXP-743 '参照許可 root 外の docs-sources'
+  assert_runbook_unchanged
+  # a symlinked corpus folder is refused as well
+  setup; echo research >"${MODE_FILE}"
+  ln -s "${VAULT}/Secret" "${VAULT}/Projects/task-board-localllm-docs/refs/linked"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-744|BOXP-744: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-744 ready localllm "${PILOT}/runbook.md" "Projects/task-board-localllm-docs/refs/linked"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected for a symlinked corpus"
+  assert_blocked BOXP-744 'symlink'
+}
+
 for t in \
+  test_research_collects_evidence_then_applies_with_sources \
+  test_research_sources_must_be_notes_the_model_read \
+  test_research_without_progress_stops_and_unsourced_apply_blocks \
+  test_research_sources_outside_read_roots_block_without_request \
   test_apply_moves_to_review_without_cloud \
   test_stream_response_is_applied \
   test_missing_opt_in_blocks_without_request \

@@ -10,7 +10,8 @@
                  (map #(let [[label path] (str/split % #"=" 2)] {:label label :path path}))
                  vec))
 (def here (str (fs/parent (fs/canonicalize *file*))))
-(def cases (edn/read-string (slurp (str (fs/path here "cases.edn")))))
+(def cases-file (let [i (.indexOf args "--cases")] (if (>= i 0) (nth args (inc i)) "cases.edn")))
+(def cases (edn/read-string (slurp (str (fs/path here cases-file)))))
 
 (defn load-results [path]
   (let [f (fs/path path "results.edn")]
