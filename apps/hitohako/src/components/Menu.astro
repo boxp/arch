@@ -1,0 +1,28 @@
+---
+import Window from './Window.astro';
+
+const items = [
+  { href: '#profile', label: 'プロフィール', en: 'STATUS' },
+  { href: '#allies', label: '仲間', en: 'PARTY' },
+  { href: '#activities', label: '活動', en: 'RECORDS' },
+  { href: '#links', label: 'リンク', en: 'LINKS' },
+  { href: '#credits', label: 'クレジット', en: 'CREDITS' },
+];
+---
+
+<nav id="menu" class="sm:sticky top-0 z-40 px-2 sm:px-4 pt-4 pb-2" aria-label="メインメニュー">
+  <Window tab="MENU" class="mx-auto max-w-5xl !p-2 sm:!p-3">
+    <ul class="flex flex-wrap justify-center gap-x-1 gap-y-1 text-sm sm:text-base">
+      {
+        items.map((item) => (
+          <li>
+            <a href={item.href} class="rpg-menu-item">
+              <span>{item.label}</span>
+              <span class="text-gold text-[10px] sm:text-xs tracking-widest">{item.en}</span>
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+  </Window>
+</nav>

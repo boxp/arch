@@ -1,0 +1,68 @@
+---
+/**
+ * コハコ.exe navigator window (Mega Man Battle Network style).
+ * Text is typed out with a tiny script; disabled for prefers-reduced-motion.
+ */
+import Window from './Window.astro';
+import PixelImg from './PixelImg.astro';
+
+interface Props {
+  lines: string[];
+  id?: string;
+}
+
+const { lines, id } = Astro.props;
+---
+
+<Window id={id} tab="NAVI: コハコ.exe" cursor class="typewriter" data-typing>
+  <div class="flex gap-4 items-start">
+    <PixelImg
+      src="/pixel/kohako-face.png"
+      alt="コハコ.exe の顔グラフィック"
+     
+     
+      scale={1}
+      class="shrink-0 border-2 border-cyan bg-ink"
+    />
+    <p class="typewriter-text text-cyan text-sm sm:text-base leading-relaxed min-h-[3lh]" data-lines={JSON.stringify(lines)}>
+      {lines.join(' ')}
+    </p>
+  </div>
+</Window>
+
+<script>
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const targets = document.querySelectorAll<HTMLElement>('.typewriter[data-typing]');
+
+  targets.forEach((win) => {
+    const p = win.querySelector<HTMLElement>('.typewriter-text');
+    if (!p) return;
+    if (reduce) {
+      win.removeAttribute('data-typing');
+      return;
+    }
+    const full = p.textContent ?? '';
+    p.textContent = '';
+    let i = 0;
+    let started = false;
+
+    const type = () => {
+      if (i <= full.length) {
+        p.textContent = full.slice(0, i);
+        i += 1;
+        window.setTimeout(type, 35);
+      } else {
+        win.removeAttribute('data-typing');
+      }
+    };
+
+    const io = new IntersectionObserver((entries) => {
+      if (entries.some((e) => e.isIntersecting) && !started) {
+        started = true;
+        type();
+        io.disconnect();
+      }
+    });
+    io.observe(win);
+  });
+</script>

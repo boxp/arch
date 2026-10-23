@@ -1,0 +1,115 @@
+---
+import Window from './Window.astro';
+import PixelImg from './PixelImg.astro';
+import Navigator from './Navigator.astro';
+import profile from '../data/profile.json';
+
+const stats = [
+  { label: 'NAME', value: `${profile.name}（${profile.reading}）` },
+  { label: 'CLASS', value: profile.title },
+  { label: 'GUILD', value: profile.affiliation },
+  { label: 'WEAPON', value: profile.weapon },
+  { label: 'HEIGHT', value: profile.height },
+  { label: 'HAIR', value: profile.hair },
+  { label: 'EYES', value: profile.eyes },
+  { label: 'CHARM', value: profile.charm },
+  { label: 'ORIGIN', value: profile.origin },
+];
+
+const bars = [
+  { label: 'やさしさ', pct: 100 },
+  { label: '芯の強さ', pct: 90 },
+  { label: '照れやすさ', pct: 95 },
+  { label: '避け', pct: 80 },
+];
+---
+
+<section id="profile" class="scroll-mt-28 px-2 sm:px-4 py-10 max-w-5xl mx-auto space-y-8">
+  <h2 class="title-logo text-2xl sm:text-3xl text-center">
+    プロフィール <span class="text-gold text-base sm:text-lg">STATUS</span>
+  </h2>
+
+  <Navigator
+    lines={[
+      'ひとはこさん、通信状態は良好です。',
+      'ステータス画面を開きますね。',
+      '……ほ、褒めすぎは照れてしまうので、ほどほどにお願いします。',
+    ]}
+  />
+
+  <Window tab="STATUS">
+    <div class="grid gap-6 md:grid-cols-[auto_1fr]">
+      <div class="flex md:flex-col items-center gap-4">
+        <PixelImg
+          src="/pixel/hitohako-face.png"
+          alt="変身後のひとはこさんの顔グラフィック"
+         
+         
+          scale={2}
+          class="border-2 border-gold bg-ink"
+        />
+        <div class="flex-1 md:w-full space-y-2 text-xs sm:text-sm">
+          {
+            bars.map((b) => (
+              <div>
+                <div class="flex justify-between">
+                  <span>{b.label}</span>
+                  <span class="text-gold">{b.pct}</span>
+                </div>
+                <span class="stat-bar" role="img" aria-label={`${b.label} ${b.pct}`}>
+                  <span style={`width:${b.pct}%`} />
+                </span>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+
+      <dl class="grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm sm:text-base">
+        {
+          stats.map((s) => (
+            <>
+              <dt class="text-gold tracking-widest text-xs sm:text-sm pt-1">{s.label}</dt>
+              <dd>{s.value}</dd>
+            </>
+          ))
+        }
+      </dl>
+    </div>
+  </Window>
+
+  <div class="grid gap-8 md:grid-cols-2">
+    <Window tab="ABOUT" cursor>
+      <div class="space-y-3 text-sm sm:text-base">
+        {profile.description.map((d) => <p>{d}</p>)}
+      </div>
+    </Window>
+    <Window tab="COSTUME" cursor>
+      <div class="space-y-3 text-sm sm:text-base">
+        {profile.costume.map((d) => <p>{d}</p>)}
+      </div>
+    </Window>
+  </div>
+
+  <Window tab="SKILLS">
+    <ul class="grid gap-2 sm:grid-cols-2 text-sm sm:text-base">
+      {
+        profile.skills.map((s) => (
+          <li class="flex gap-2">
+            <span class="text-sakura">◆</span>
+            <span>
+              <span class="text-gold">{s.name}</span>
+              <span class="text-paper/70"> … {s.desc}</span>
+            </span>
+          </li>
+        ))
+      }
+    </ul>
+  </Window>
+
+  <Window tab="VOICE" paper>
+    <ul class="space-y-1 text-sm sm:text-base">
+      {profile.quotes.map((q) => <li>「{q}」</li>)}
+    </ul>
+  </Window>
+</section>

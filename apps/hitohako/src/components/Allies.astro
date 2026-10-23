@@ -1,0 +1,48 @@
+---
+import Window from './Window.astro';
+import PixelImg from './PixelImg.astro';
+import allies from '../data/allies.json';
+
+const accentClass: Record<string, string> = {
+  cyan: 'border-cyan text-cyan',
+  ice: 'border-ice text-ice',
+  blaze: 'border-blaze text-blaze',
+};
+---
+
+<section id="allies" class="scroll-mt-28 px-2 sm:px-4 py-10 max-w-5xl mx-auto space-y-8">
+  <h2 class="title-logo text-2xl sm:text-3xl text-center">
+    仲間 <span class="text-gold text-base sm:text-lg">PARTY</span>
+  </h2>
+  <p class="text-center text-sm text-paper/80">超能力者協会の頼れる仲間たち。</p>
+
+  <div class="grid gap-8 md:grid-cols-3">
+    {
+      allies.map((a) => (
+        <Window tab={a.heroineName ?? "NAVI"} class="flex flex-col">
+          <div class="flex items-start gap-3">
+            <PixelImg
+              src={a.image}
+              alt={`${a.name} の顔グラフィック`}
+             
+             
+              scale={1}
+              class:list={['shrink-0 border-2 bg-ink', accentClass[a.accent]]}
+            />
+            <div>
+              <h3 class="text-lg leading-tight">{a.name}</h3>
+              <p class="text-xs text-paper/60">{a.reading}</p>
+              <p class:list={['text-xs mt-1', accentClass[a.accent]]}>{a.role}</p>
+            </div>
+          </div>
+          <div class="mt-4 space-y-2 text-sm flex-1">
+            {a.description.map((d) => (
+              <p>{d}</p>
+            ))}
+          </div>
+          <p class="mt-4 text-sm text-sakura">「{a.quote}」</p>
+        </Window>
+      ))
+    }
+  </div>
+</section>

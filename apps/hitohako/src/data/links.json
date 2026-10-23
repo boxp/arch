@@ -1,0 +1,6 @@
+[
+  { "id": "youtube", "label": "YouTube", "name": "ひとはこ / BOXP Channel", "url": "https://www.youtube.com/channel/UCS8gl96UiidzwHrn9bugOKg", "desc": "STG 1CC 配信・アーカイブ" },
+  { "id": "x", "label": "X", "name": "@b0xp2", "url": "https://x.com/b0xp2", "desc": "連絡先・近況" },
+  { "id": "twitch", "label": "Twitch", "name": "Twitch", "url": "https://www.twitch.tv/b0xp", "desc": "配信アーカイブ" },
+  { "id": "b0xp", "label": "WEB", "name": "b0xp.io", "url": "https://b0xp.io", "desc": "中の人（BOXP）のポートフォリオ" }
+]

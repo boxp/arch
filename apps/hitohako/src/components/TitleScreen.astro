@@ -1,0 +1,37 @@
+---
+import PixelImg from './PixelImg.astro';
+---
+
+<section
+  id="title"
+  class="min-h-dvh flex flex-col items-center justify-center text-center px-4 py-12 relative"
+  aria-label="タイトル画面"
+>
+  <div class="flex items-end justify-center gap-6 mb-6">
+    <PixelImg src="/pixel/torii.png" alt="" scale={2} class="hidden sm:block float" />
+    <PixelImg
+      src="/pixel/hitohako-stand.png"
+      alt="変身後のひとはこさんの立ち絵（紫と金の和風衣装、桜の髪飾り、薙刀）"
+     
+     
+      scale={2}
+    />
+    <PixelImg src="/pixel/sakura.png" alt="" scale={3} class="hidden sm:block float" />
+  </div>
+
+  <h1 class="title-logo text-4xl sm:text-6xl md:text-7xl leading-tight">ひとはこ</h1>
+  <p class="mt-2 text-sakura text-sm sm:text-base tracking-widest">HITOHAKO ⛩ PORTFOLIO</p>
+  <p class="mt-1 text-paper/80 text-xs sm:text-sm">変身ヒロイン / バーチャルソフトウェアエンジニア巫女さん</p>
+
+  <a
+    href="#menu"
+    class="press-start mt-10 inline-block text-gold text-lg sm:text-2xl tracking-[0.3em] no-underline hover:text-sakura focus-visible:outline focus-visible:outline-2 focus-visible:outline-sakura px-2"
+    data-press-start
+  >
+    ▶ PRESS START
+  </a>
+
+  <p class="absolute bottom-4 left-0 right-0 text-[10px] sm:text-xs text-paper/50 tracking-widest">
+    ©2026 BOXP &nbsp;·&nbsp; VRoid の力で生まれました
+  </p>
+</section>

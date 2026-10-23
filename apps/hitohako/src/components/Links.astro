@@ -1,0 +1,35 @@
+---
+import Window from './Window.astro';
+import links from '../data/links.json';
+---
+
+<section id="links" class="scroll-mt-28 px-2 sm:px-4 py-10 max-w-5xl mx-auto space-y-8">
+  <h2 class="title-logo text-2xl sm:text-3xl text-center">
+    リンク <span class="text-gold text-base sm:text-lg">LINKS</span>
+  </h2>
+
+  <Window tab="WARP">
+    <ul class="grid gap-2 sm:grid-cols-2">
+      {
+        links.map((l) => (
+          <li>
+            <a
+              href={l.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="rpg-menu-item !whitespace-normal items-start"
+            >
+              <span class="flex flex-col">
+                <span>
+                  <span class="text-gold text-xs tracking-widest mr-2">{l.label}</span>
+                  {l.name}
+                </span>
+                <span class="text-xs text-paper/60">{l.desc}</span>
+              </span>
+            </a>
+          </li>
+        ))
+      }
+    </ul>
+  </Window>
+</section>

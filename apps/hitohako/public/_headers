@@ -1,0 +1,3 @@
+# Stage environment: keep search engines away. This is not access control.
+/*
+  X-Robots-Tag: noindex, nofollow
