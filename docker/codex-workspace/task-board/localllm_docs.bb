@@ -1197,8 +1197,10 @@
       (loop []
         (let [lock (try (.tryLock ch) (catch java.io.IOException _ nil) (catch Exception _ nil))]
           (cond
-            ;; FileLock/close releases the lock (babashka exposes close, not release).
-            lock (try (f) (finally (.close lock)))
+            ;; No method is called on the FileLock itself (babashka 1.12 does
+            ;; not expose release/close on it); closing the channel in
+            ;; `with-open` releases the lock after `f` returns.
+            lock (f)
             (>= (System/currentTimeMillis) deadline)
             {:ok? false :category "localllm-conflict"
              :reason (str "他の localllm 書込みが " (quot timeout-ms 1000) " 秒以上続いているため未適用（再実行してください）")}

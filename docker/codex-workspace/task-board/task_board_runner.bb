@@ -2039,13 +2039,15 @@
                     :reason "planned workspace shutdown"
                     :shutdown {:owner-id (owner-id) :instance-id runner-instance-id :agent-stopped-at (now-str)}})
 
-        staged?
+        ;; Blocked results are not finalized here either: Notes and the run
+        ;; summary are written by the deferred commit below, inside the
+        ;; lifecycle commit, so a TERM between here and that boundary leaves
+        ;; nothing final (card In Progress, lock kept, no "stopped" note).
+        :else
         (mark-run! ticket-id run :running
                    {:action action :agent agent :lane lane :started-at (now-str)
                     :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :staged-paths])
-                    :staged-at (now-str)})
-
-        :else (record-final! result))
+                    :decided-at (now-str)}))
       (cond-> {:exit 0
                :result (if (or staged? (= :review (:status result))) "review" "blocked")
                :run-id run
@@ -2053,12 +2055,12 @@
                :last-message message
                :idle-timeout? false
                :shutdown? shutdown?}
-        staged? (assoc :deferred-commit!
-                       (fn []
-                         (let [final ((:commit! result))
-                               message (localllm-last-message run final)]
-                           (spit (str last-message-path) message)
-                           {:result (record-final! final) :last-message message})))))))
+        (not shutdown?) (assoc :deferred-commit!
+                               (fn []
+                                 (let [final (if staged? ((:commit! result)) result)
+                                       message (localllm-last-message run final)]
+                                   (spit (str last-message-path) message)
+                                   {:result (record-final! final) :last-message message})))))))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (cond

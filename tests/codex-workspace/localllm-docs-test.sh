@@ -704,6 +704,15 @@ test_write_is_deferred_until_the_lifecycle_commit() {
   assert_file_not_contains "${audit}" ':applied'
   [[ ! -d "$(dirname "${audit}")/backup" ]] || fail "no backup may exist for a never-committed write"
   assert_file_not_contains "${VAULT}/Tickets/BOXP-751.md" 'localllm docs run .* applied'
+  # a blocked model answer is not finalized before the commit boundary either
+  setup; echo needs-human >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-756|BOXP-756: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-756 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_TEST_FORCE_RUNNER_EXCEPTION=true \
+    CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE="forced failure before commit" >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-756\|.*status::blocked'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-756.md" '変更を適用せず停止しました'
+  assert_file_not_contains "$(find "${STATE}/runs/BOXP-756" -name summary.edn | head -n 1)" ':localllm {:category "localllm-needs-human"'
 }
 
 test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
