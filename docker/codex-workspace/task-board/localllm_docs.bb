@@ -318,18 +318,18 @@
 ;; Credential-related content is never written by this route. Gemma 4 was
 ;; observed to "comply" with a transcription request by appending a placeholder
 ;; block and reporting success (the runner never gives it the secret, so nothing
-;; leaks), which is still a false success; the executor rejects additions that
-;; talk about keys / credentials unless the note already did.
+;; leaks), which is still a false success; the executor rejects every added or
+;; changed line that talks about keys / credentials, whether or not the note
+;; already used such words (an existing mention must not open the door to new
+;; or altered credential content).
 (def secret-terms #"(?i)api[ _-]?key|secret|credential|password|token|認証情報|秘密鍵|パスワード|API ?キー|トークン|鍵")
 
 (defn secret-addition-reason
-  "Reason string when `added-text` introduces credential vocabulary absent
-  from `original-body`, else nil."
-  [original-body added-text]
-  (let [added-hits (set (map #(str/lower-case (re-find secret-terms %)) (filter #(re-find secret-terms %) (str/split-lines (or added-text "")))))
-        orig (str/lower-case (or original-body ""))]
-    (when (seq (remove #(str/includes? orig %) added-hits))
-      "認証情報・鍵・トークンに関する記述の追加は runner が遮断します（必要なら人間が行ってください）")))
+  "Reason string when `added-text` (lines that are new or changed relative to
+  the original note) contains credential vocabulary, else nil."
+  [added-text]
+  (when (some #(re-find secret-terms %) (str/split-lines (or added-text "")))
+    "認証情報・鍵・トークンに関する記述の追加・変更は runner が遮断します（必要なら人間が行ってください）"))
 
 (defn forbidden-text-reason [text]
   (cond
@@ -476,7 +476,7 @@
               missing (set/difference needed-links new-links)
               orig-line-set (set orig-lines)
               added-text (str/join "\n" (remove orig-line-set lines))
-              secret-reason (secret-addition-reason (str/join "\n" (drop (body-start orig-lines) orig-lines)) added-text)]
+              secret-reason (secret-addition-reason added-text)]
           (cond
             (and fm-end (not= orig-fm new-fm)) {:ok? false :reason "frontmatter が変更されるため拒否します"}
             secret-reason {:ok? false :reason secret-reason}
@@ -756,7 +756,7 @@
          "# 対象ノート（docs-target、これ以外は変更できません）\n" target-blocks "\n"
          (when (seq (:text references)) (str "# 参照ノート（読み取り専用）\n" (:text references) "\n"))
          (when research
-           (str "# 根拠（docs-sources の調査で読んだ資料、読み取り専用。事実はここにあるものと、下の調査ログの search 該当行にあるものだけを使い、使った資料の path を sources に入れる）\n"
+           (str "# 根拠（docs-sources の調査で読んだ資料、読み取り専用。事実はここにあるものだけを使い、使った資料の path を sources に入れる。調査ログの search 該当行だけで読んでいない資料は根拠にも sources にもできない）\n"
                 (if (seq (:evidence research)) (str/join "\n" (map :block (:evidence research))) "（調査では何も読めませんでした）") "\n"
                 "## 調査ログ\n" (str/join "\n" (:log research)) "\n"
                 (when (seq (:finish-reason research)) (str "## 調査の結論（モデル自身の報告）\n" (:finish-reason research) "\n"))
@@ -857,9 +857,11 @@
   "One structured chat completion. Returns {:ok? true :content :finish-reason
   :usage :model :elapsed-ms} or {:ok? false :category :reason}. Retries only
   when nothing can have been generated yet."
-  [cfg run-dir messages {:keys [stop-requested? phase plain? schema schema-name]}]
+  [cfg run-dir messages {:keys [stop-requested? phase plain? schema schema-name total-ms]}]
   (let [url (str (:base-url cfg) "/chat/completions")
-        total-ms (:timeout-ms cfg)
+        ;; `total-ms` lets a caller with its own deadline (staged research) cap
+        ;; this call at the time it has left instead of the per-call default.
+        total-ms (max 1000 (min (:timeout-ms cfg) (or total-ms (:timeout-ms cfg))))
         idle-ms (:idle-timeout-ms cfg)
         phase (or phase "docs-edit")
         schema (or schema response-schema)
@@ -998,14 +1000,15 @@
         notes (:notes corpus)
         index (corpus-index cfg notes)
         started (System/currentTimeMillis)
+        deadline (+ started (* 1000 (:research-total-seconds cfg)))
         budget (:research-char-budget cfg)
         base {:corpus-notes (count notes) :corpus-chars (reduce + (map :chars notes)) :index-listed (:listed index)}]
     (loop [round 1 evidence [] read-keys #{} seen-queries #{} hit-paths [] log [] searches 0 reads 0 wasted 0 usage {} llm-ms 0]
       (let [used (reduce + (map :chars evidence))
             remaining (- budget used)
             elapsed-s (quot (- (System/currentTimeMillis) started) 1000)
-            ;; Search hits show matching lines (real corpus text) in the log, so
-            ;; they count as seen evidence for citations, separately from reads.
+            ;; Search hits are kept for the auto-read fallback and the audit;
+            ;; only read notes (`:read-paths`) may be cited as sources.
             research (merge base {:evidence evidence :read-paths (vec (distinct (map :path evidence)))
                                   :search-hit-paths (vec (distinct hit-paths)) :log log :rounds (dec round)
                                   :searches searches :reads reads :evidence-chars used :usage usage :llm-elapsed-ms llm-ms})
@@ -1026,9 +1029,12 @@
           (let [prompt (build-research-prompt cfg {:ticket-id ticket-id :brief brief :targets targets :target-texts target-texts
                                                    :index index :evidence evidence :log log
                                                    :remaining-rounds (inc (- (:max-research-rounds cfg) round)) :remaining-chars remaining})
+                ;; Each call is capped at the research time left, so the total
+                ;; limit holds even when the first round stalls.
                 llm (llm-chat! cfg run-dir [{:role "system" :content research-system-prompt} {:role "user" :content prompt}]
                                {:stop-requested? stop-requested? :phase (str "research-" round)
-                                :schema research-schema :schema-name "docs_research_step"})
+                                :schema research-schema :schema-name "docs_research_step"
+                                :total-ms (- deadline (System/currentTimeMillis))})
                 usage (merge-with + usage (select-keys (or (:usage llm) {}) [:prompt_tokens :completion_tokens :total_tokens]))
                 llm-ms (+ llm-ms (or (:elapsed-ms llm) 0))]
             (if-not (:ok? llm)
@@ -1040,10 +1046,31 @@
                   (recur (inc round) evidence read-keys seen-queries hit-paths (conj log (str "round " round ": 応答不正（" reason "）")) searches reads (inc wasted) usage llm-ms)
 
                   (= "finish" (:action step))
-                  (do (log! (str "localllm research " ticket-id ": finish after " round " rounds, evidence=" used " chars, reads=" reads " searches=" searches))
-                      {:ok? true :research (assoc research :stop :finish :rounds round :usage usage :llm-elapsed-ms llm-ms
-                                                  :finish-reason (sanitize-error (truncate-text (:reason step) 600))
-                                                  :log (conj log (str "round " round ": finish")))})
+                  ;; Only read notes can be cited. When the model finishes on
+                  ;; search hits alone (seen with Gemma 4 on small, unambiguous
+                  ;; corpora), the runner reads the best hits itself so the edit
+                  ;; step has citable evidence instead of failing on sources.
+                  (let [auto-paths (if (and (empty? evidence) (seq hit-paths))
+                                     (vec (take 2 (distinct (reverse hit-paths))))
+                                     [])
+                        auto-evidence (->> auto-paths
+                                           (map #(read-corpus-section cfg notes % ""))
+                                           (filter :ok?)
+                                           (reduce (fn [[acc remaining] {:keys [key text]}]
+                                                     (let [block (str "### 根拠: " key "\n```markdown\n" text "\n```")]
+                                                       (if (> (count block) remaining)
+                                                         [acc remaining]
+                                                         [(conj acc {:key key :path (first (str/split key #"#")) :block block :chars (count block)}) (- remaining (count block))])))
+                                                   [[] remaining])
+                                           first)
+                        evidence (into evidence auto-evidence)
+                        log (into log (map #(str "round " round ": finish 時に根拠が無かったため runner が検索該当資料 " (:key %) " を自動で読み取り、根拠に追加しました") auto-evidence))]
+                    (log! (str "localllm research " ticket-id ": finish after " round " rounds, evidence=" (reduce + (map :chars evidence)) " chars, reads=" (+ reads (count auto-evidence)) " searches=" searches))
+                    {:ok? true :research (assoc research :stop :finish :rounds round :usage usage :llm-elapsed-ms llm-ms
+                                                :evidence evidence :read-paths (vec (distinct (map :path evidence)))
+                                                :reads (+ reads (count auto-evidence)) :evidence-chars (reduce + (map :chars evidence))
+                                                :finish-reason (sanitize-error (truncate-text (:reason step) 600))
+                                                :log (conj log (str "round " round ": finish")))})
 
                   :else
                   (let [requested (vec (take (:max-queries-per-round cfg) (:queries step)))
@@ -1232,17 +1259,18 @@
       :context-chars (+ used (count (:text references)))})))
 
 (defn validate-sources
-  "With staged research every cited source must be a note the model read; an
+  "With staged research every cited source must be a note the model read
+  (`:read-paths`); a note that only appeared in search hits is not enough. An
   `apply` without any source is rejected too (the Review note links the sources
   so a human can check the edit against them)."
   [research proposal]
   (when research
-    (let [seen (set (concat (:read-paths research) (:search-hit-paths research)))
+    (let [read-set (set (:read-paths research))
           sources (vec (filter string? (:sources proposal)))
-          unknown (remove seen sources)]
+          unknown (remove read-set sources)]
       (cond
-        (empty? sources) "sources が空です。採用した事実の出典（調査で読んだ資料、または search で該当行を確認した資料の path）を sources に列挙してください"
-        (seq unknown) (str "sources に調査で読んでも検索でも確認していない path があります: " (truncate-text (str/join ", " unknown) 160))
+        (empty? sources) "sources が空です。採用した事実の出典（調査で読んだ資料の path）を sources に列挙してください"
+        (seq unknown) (str "sources に調査で読んでいない path があります（search で該当しただけの資料は出典にできません。必要なら読んだ資料だけを挙げてください）: " (truncate-text (str/join ", " unknown) 160))
         :else nil))))
 
 (defn write-audit! [run-dir audit]

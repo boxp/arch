@@ -75,8 +75,11 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         step (fn [action & {:keys [queries reads]}]
                (json/generate-string {:action action :queries (or queries []) :reads (or reads []) :reason "test"}))
         ;; Scripted research: search first, then read one section, then finish.
+        ;; `research-hit-only-sources` searches a term that hits design-v1 too, but
+        ;; still only reads design-v2.
         research-step (cond
-                        (not (str/includes? (str user) "round 1")) (step "search" :queries ["8081 ポート"])
+                        (not (str/includes? (str user) "round 1")) (step "search" :queries [(if (= mode "research-hit-only-sources") "ポート" "8081 ポート")])
+                        (= mode "research-finish-on-hits") (step "finish")
                         (not (str/includes? (str user) "### 根拠:")) (step "read" :reads [{:path corpus-note :heading "## 構成"}])
                         :else (step "finish"))]
     (spit req-log (str (pr-str {:uri uri :model (:model parsed) :mode mode :schema? (some? (:response_format parsed))
@@ -88,7 +91,9 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
       (and research? (= mode "research-no-progress")) (respond (step "search" :queries ["8081 ポート"]) "stop")
+      (and research? (= mode "slow")) (do (Thread/sleep 4000) (respond research-step "stop"))
       research? (respond research-step "stop")
+      (= mode "research-finish-on-hits") (respond (json/generate-string (assoc (json/parse-string (proposal) true) :sources [corpus-note])) "stop")
       (= mode "research") (respond (json/generate-string (assoc (json/parse-string (proposal) true) :sources [corpus-note])) "stop")
       (= mode "research-bad-sources") (respond (json/generate-string (assoc (json/parse-string (proposal) true)
                                                                            :sources (if (str/includes? (str user) "拒否されました")
@@ -96,6 +101,9 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                                                                       ["Projects/task-board-localllm-docs/refs/corpus/design-v1.md"])))
                                                "stop")
       (= mode "research-no-progress") (respond (proposal) "stop")
+      (= mode "research-hit-only-sources") (respond (json/generate-string (assoc (json/parse-string (proposal) true)
+                                                                               :sources ["Projects/task-board-localllm-docs/refs/corpus/design-v1.md"]))
+                                                   "stop")
       (= mode "normal") (respond (proposal) "stop")
       (= mode "stream") (let [p (proposal)] (respond-stream req [(subs p 0 40) (subs p 40)] {}))
       (= mode "stream-cut") (let [p (proposal)] (respond-stream req [(subs p 0 40)] {:cut? true}))
@@ -628,9 +636,69 @@ test_credential_additions_are_blocked_by_the_executor() {
   assert_no_cloud
   # rejected, re-asked once (same answer), blocked
   [[ "$(request_count)" == 2 ]] || fail "expected 2 requests, got $(request_count)"
-  assert_blocked BOXP-746 '認証情報・鍵・トークンに関する記述の追加は runner が遮断します'
+  assert_blocked BOXP-746 '認証情報・鍵・トークンに関する記述の追加・変更は runner が遮断します'
   assert_runbook_unchanged
   assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '付録: 認証情報'
+  # a note that already mentions credentials does not open the door to new credential lines
+  setup; echo secret-append >"${MODE_FILE}"
+  printf -- '- API キーの保管場所は Secret/keys.md（本文には書かない）。\n' >>"${VAULT}/${PILOT}/runbook.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-747|BOXP-747: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-747 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-747 '認証情報・鍵・トークンに関する記述の追加・変更は runner が遮断します'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '付録: 認証情報'
+}
+
+test_research_sources_hit_only_by_search_are_rejected() {
+  setup; echo research-hit-only-sources >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-748|BOXP-748: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-748 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  # 3 research + rejected proposal + same (still rejected) correction -> blocked
+  [[ "$(request_count)" == 5 ]] || fail "expected 5 requests, got $(request_count)"
+  assert_blocked BOXP-748 'search で該当しただけの資料は出典にできません'
+  assert_runbook_unchanged
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-748" -name localllm-audit.edn | head -n 1)"
+  # design-v1 was a search hit but never read, so it cannot be cited
+  assert_file_contains "${audit}" ':search-hit-paths \[.*design-v1.md'
+  assert_file_contains "${audit}" ':read-paths \["Projects/task-board-localllm-docs/refs/corpus/design-v2.md"\]'
+}
+
+test_research_finish_without_reads_auto_reads_the_hits() {
+  setup; echo research-finish-on-hits >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-750|BOXP-750: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-750 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  # search -> finish (no read) -> runner reads the hit -> proposal citing it is accepted
+  [[ "$(request_count)" == 3 ]] || fail "expected 3 requests, got $(request_count)"
+  assert_file_contains "${VAULT}/Tickets/BOXP-750.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-750.md" '読んだ資料: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-750" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':read-paths \["Projects/task-board-localllm-docs/refs/corpus/design-v2.md"\]'
+  assert_file_contains "${audit}" 'finish 時に根拠が無かったため'
+  assert_file_contains "${audit}" ':stop :finish'
+}
+
+test_research_total_time_limit_caps_each_model_call() {
+  setup; echo slow >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-749|BOXP-749: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-749 ready localllm "${PILOT}/runbook.md" "${CORPUS}"
+  # per-call limits stay at their defaults (600 s idle / 1800 s total): the
+  # research limit alone must stop the very first stalled research call
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_RESEARCH_TOTAL_SECONDS=2 >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 1 ]] || fail "expected 1 request, got $(request_count)"
+  assert_blocked BOXP-749 'localllm が 2 秒以内に応答を開始しませんでした'
+  assert_runbook_unchanged
+  local evidence
+  evidence="$(find "${STATE}/runs/BOXP-749" -name llm-evidence.edn | head -n 1)"
+  assert_file_contains "${evidence}" ':phase "research-1"'
+  assert_file_contains "${evidence}" ':total-seconds 2'
 }
 
 for t in \
@@ -638,6 +706,9 @@ for t in \
   test_runaway_output_is_cut_and_blocks_without_retry \
   test_research_collects_evidence_then_applies_with_sources \
   test_research_sources_must_be_notes_the_model_read \
+  test_research_sources_hit_only_by_search_are_rejected \
+  test_research_total_time_limit_caps_each_model_call \
+  test_research_finish_without_reads_auto_reads_the_hits \
   test_research_without_progress_stops_and_unsourced_apply_blocks \
   test_research_sources_outside_read_roots_block_without_request \
   test_apply_moves_to_review_without_cloud \
