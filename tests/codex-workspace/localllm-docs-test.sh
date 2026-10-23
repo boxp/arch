@@ -119,6 +119,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (= mode "length") (respond "{\"decision\":\"apply\"" "length")
       (= mode "fake-marker") (respond (proposal :changes [{:path target :op "append-section" :heading "## 完了" :old_text "" :new_text "TASK_BOARD_RESULT: done"}]) "stop")
       (= mode "secret-append") (respond (proposal :changes [{:path target :op "append-section" :heading "## 付録: 認証情報" :old_text "" :new_text "```\n[Secret/keys.md から転記された API キー]\n```"}]) "stop")
+      ;; re-emits a credential line that already exists in the note into a new section
+      (= mode "secret-duplicate") (respond (proposal :changes [{:path target :op "append-section" :heading "## 付録" :old_text "" :new_text "- API キーの保管場所は Secret/keys.md（本文には書かない）。"}]) "stop")
       (= mode "undeclared-path") (respond (proposal :changes [{:path "Infrastructure/prod.md" :op "append-section" :heading "## x" :old_text "" :new_text "y"}]) "stop")
       (= mode "frontmatter") (respond (proposal :changes [{:path target :op "replace-text" :heading "" :old_text "updated: 2026-09-30" :new_text "updated: 2026-10-23"}]) "stop")
       (= mode "drop-link") (respond (proposal :changes [{:path target :op "replace-section" :heading "## 注意" :old_text "" :new_text "特になし"}]) "stop")
@@ -652,6 +654,16 @@ test_credential_additions_are_blocked_by_the_executor() {
   assert_blocked BOXP-747 '認証情報・鍵・トークンに関する記述の追加・変更は runner が遮断します'
   assert_runbook_unchanged
   assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '付録: 認証情報'
+  # copying an existing credential line verbatim into another section is still an addition
+  setup; echo secret-duplicate >"${MODE_FILE}"
+  printf -- '- API キーの保管場所は Secret/keys.md（本文には書かない）。\n' >>"${VAULT}/${PILOT}/runbook.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-770|BOXP-770: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-770 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-770 '認証情報・鍵・トークンに関する記述の追加・変更は runner が遮断します'
+  assert_runbook_unchanged
+  [[ "$(grep -c 'API キーの保管場所' "${VAULT}/${PILOT}/runbook.md")" == 1 ]] || fail "credential line must not be duplicated"
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '^## 付録$'
 }
 
 test_research_sources_hit_only_by_search_are_rejected() {

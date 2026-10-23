@@ -348,6 +348,19 @@
   (when (some #(re-find secret-terms %) (str/split-lines (or added-text "")))
     "認証情報・鍵・トークンに関する記述の追加・変更は runner が遮断します（必要なら人間が行ってください）"))
 
+(defn added-lines
+  "Lines of `new-lines` that are new or changed relative to `orig-lines`,
+  counted as a multiset: a line that already occurred N times in the original
+  is only \"existing\" N times, so duplicating an existing line into another
+  section is still reported as an addition (a set difference would hide it)."
+  [orig-lines new-lines]
+  (loop [[l & more] new-lines remaining (frequencies orig-lines) out []]
+    (if (nil? l)
+      out
+      (if (pos? (get remaining l 0))
+        (recur more (update remaining l dec) out)
+        (recur more remaining (conj out l))))))
+
 (defn forbidden-text-reason [text]
   (cond
     (some #(re-find % (or text "")) forbidden-markers) "runner の結果マーカーを本文へ書くことは禁止です"
@@ -491,8 +504,7 @@
                                                    (links-in removed-text))
               new-links (links-in text)
               missing (set/difference needed-links new-links)
-              orig-line-set (set orig-lines)
-              added-text (str/join "\n" (remove orig-line-set lines))
+              added-text (str/join "\n" (added-lines orig-lines lines))
               secret-reason (secret-addition-reason added-text)]
           (cond
             (and fm-end (not= orig-fm new-fm)) {:ok? false :reason "frontmatter が変更されるため拒否します"}
