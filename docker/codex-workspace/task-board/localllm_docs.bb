@@ -1401,7 +1401,7 @@
                                      :docs-roots (:docs-roots cfg) :docs-sources sources
                                      :elapsed-ms (- (System/currentTimeMillis) started)}
                                     (select-keys m [:category :reason :summary :applied :staged-paths :usage :llm-elapsed-ms
-                                                    :context-chars :references :decision :corrections :sources])
+                                                    :context-chars :references :decision :corrections :sources :sources-dropped])
                                     {:research (research-summary (:research m))})]
                    (write-audit! run-dir audit)
                    (assoc m :status status :research (research-summary (:research m))
@@ -1485,8 +1485,16 @@
                                                        (sanitize-error (truncate-text (:reason proposal) 300)))))
 
                   :accepted
-                  (let [accepted (assoc base :decision "apply"
-                                        :sources (vec (distinct (filter string? (:sources proposal))))
+                  (let [;; Only paths the runner itself resolved and read may be
+                        ;; recorded as sources (they are rendered as wikilinks
+                        ;; in Notes): research reads, included references and
+                        ;; the targets. Anything else the model wrote is dropped
+                        ;; and counted in the audit.
+                        known (set (concat (:read-paths research) (:included references) (:targets snap)))
+                        claimed (vec (distinct (filter string? (:sources proposal))))
+                        accepted (assoc base :decision "apply"
+                                        :sources (vec (filter known claimed))
+                                        :sources-dropped (count (remove known claimed))
                                         :summary (sanitize-error (truncate-text (:summary proposal) 400)))
                         ;; The write happens under the write lock with a fresh
                         ;; conflict check. Conflicts are not the model's fault
