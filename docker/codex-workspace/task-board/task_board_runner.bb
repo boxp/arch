@@ -948,12 +948,17 @@
 (defn shutdown-marker-owner-key [path]
   (str/replace (str (.getFileName (fs/path path))) #"\.edn$" ""))
 
+(declare only-ticket)
+
 (defn cleanup-stale-locks! []
   (let [locks-dir (fs/path (root) "locks")]
     (when (fs/exists? locks-dir)
       (doseq [path (fs/list-dir locks-dir)
               :let [ticket-id (lock-ticket-id path)]
-              :when ticket-id]
+              :when ticket-id
+              ;; `tick --ticket BOXP-N` must not touch any other card: a stale
+              ;; lock of another ticket is left for the loop to recover.
+              :when (or (nil? @only-ticket) (= @only-ticket ticket-id))]
         (with-ticket-lock-guard
          ticket-id
          (fn []
@@ -1134,7 +1139,12 @@
   ([] (recover-locks! false))
   ([runner-startup?]
    (ensure-root!)
-   (recover-planned-shutdown-locks! runner-startup?)
+   ;; Planned-shutdown recovery walks every lock of a previous owner; under
+   ;; `tick --ticket` it is skipped so no other card's lane / frontmatter /
+   ;; Notes change. The selected ticket's own stale lock is still closed by
+   ;; cleanup-stale-locks! (filtered) or by acquire-lock! when it is claimed.
+   (when (nil? @only-ticket)
+     (recover-planned-shutdown-locks! runner-startup?))
    (cleanup-stale-locks!)))
 
 (defn create-lock-under-guard! [path lock]

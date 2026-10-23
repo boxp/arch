@@ -520,13 +520,27 @@ test_tick_ticket_filter_claims_only_one_card() {
 - [ ] [[Tickets/BOXP-727|BOXP-727: docs]] #ticket status::ready"
   write_ticket "${VAULT}" BOXP-726 ready localllm "${PILOT}/runbook.md"
   write_ticket "${VAULT}" BOXP-727 ready localllm "${PILOT}/runbook.md"
+  # a stale lock of a card outside the filter is not recovered by the single-card tick
+  mkdir -p "${STATE}/locks"
+  printf '{:ticket "BOXP-726" :run-id "20260701T000000Z" :action :docs-edit :lane "Ready" :heartbeat-at "2000-01-01T00:00:00Z"}\n' >"${STATE}/locks/BOXP-726.edn"
   PATH="${BIN}:$PATH" CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" \
-    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" \
+    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 \
     bb "${RUNNER}" tick --ticket BOXP-727 >"${CASE_DIR}/out"
   [[ ! -d "${STATE}/runs/BOXP-726" ]] || fail "filtered-out card must not run"
   [[ -d "${STATE}/runs/BOXP-727" ]] || fail "selected card must run"
   assert_file_contains "${VAULT}/Tickets/BOXP-726.md" '^status: ready$'
   assert_file_contains "${VAULT}/Tickets/BOXP-727.md" '^status: review$'
+  [[ -e "${STATE}/locks/BOXP-726.edn" ]] || fail "a stale lock outside --ticket must be left alone"
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-726.md" 'interrupted'
+  assert_file_not_contains "${CASE_DIR}/out" 'closing stale lock: BOXP-726'
+  # the selected card's own stale lock is still recovered
+  rm -f "${STATE}/locks/BOXP-726.edn"
+  printf '{:ticket "BOXP-727" :run-id "20260701T000001Z" :action :docs-edit :lane "Review" :heartbeat-at "2000-01-01T00:00:00Z"}\n' >"${STATE}/locks/BOXP-727.edn"
+  PATH="${BIN}:$PATH" CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" \
+    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 \
+    bb "${RUNNER}" tick --ticket BOXP-727 >"${CASE_DIR}/out2"
+  assert_file_contains "${CASE_DIR}/out2" 'closing stale lock: BOXP-727'
+  [[ ! -e "${STATE}/locks/BOXP-727.edn" ]] || fail "the selected card's stale lock must be closed"
   if bb "${RUNNER}" tick --bogus BOXP-727 >/dev/null 2>&1; then fail "unknown tick flag must be rejected"; fi
 }
 
