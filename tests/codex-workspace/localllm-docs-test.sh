@@ -308,7 +308,7 @@ test_apply_moves_to_review_without_cloud() {
   grep -q 'v1.2' "${VAULT}/${PILOT}/runbook.md" || fail "rollback should restore v1.2"
   # a second rollback is a no-op because the content no longer matches the run
   CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-700 "${run_id}" >"${CASE_DIR}/rollback2.out"
-  assert_file_contains "${CASE_DIR}/rollback2.out" ':status :skipped'
+  assert_file_contains "${CASE_DIR}/rollback2.out" ':status :unchanged'
   # a further tick does nothing: Review + assignee boxp is not a candidate
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2"
   [[ "$(request_count)" == 1 ]] || fail "Review/boxp card must not re-run"
@@ -373,7 +373,13 @@ test_needs_human_blocks_with_reason() {
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-707|BOXP-707: docs]] #ticket status::ready"
   write_ticket "${VAULT}" BOXP-707 ready localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_blocked BOXP-707 '依頼が曖昧です'
+  assert_blocked BOXP-707 'localllm は変更を提案せず人間判断を求めました'
+  # The model's free-text reason can quote note bodies: it stays in the audit
+  # and never reaches the user-visible Notes.
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-707.md" '依頼が曖昧です'
+  assert_file_contains "${VAULT}/Tickets/BOXP-707.md" 'audit の :reason を参照'
+  audit="$(find "${STATE}/runs/BOXP-707" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" '依頼が曖昧です'
   assert_runbook_unchanged
 }
 
@@ -1066,6 +1072,48 @@ test_correction_round_over_the_prompt_cap_blocks() {
   assert_runbook_unchanged
 }
 
+test_crash_right_after_the_write_is_recovered_from_the_journal() {
+  # The process dies after the notes are written but before the final audit /
+  # Notes (test hook). The recovery journal persisted before the first write
+  # lets the next tick's stale-lock recovery restore the note (BOXP-777).
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-777|BOXP-777: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-777 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_TEST_EXIT_AFTER_LOCALLLM_WRITE=true >"${CASE_DIR}/out" 2>&1 || true
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  [[ -e "${STATE}/locks/BOXP-777.edn" ]] || fail "the killed run must leave its lock behind"
+  audit="$(find "${STATE}/runs/BOXP-777" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':applied \['
+  assert_file_contains "${audit}" ':write-phase :writing'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-777.md" 'Review で停止しました'
+  # hand the card to a human so the next tick only recovers and does not start a new model run
+  sed -i 's/^assignee: localllm$/assignee: boxp/' "${VAULT}/Tickets/BOXP-777.md"
+  sleep 2
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out2" 2>&1
+  assert_file_contains "${VAULT}/Tickets/BOXP-777.md" '完了せず終了していたため、backup から復元しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-777.md" 'runbook.md restored'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  [[ ! -e "${STATE}/locks/BOXP-777.edn" ]] || fail "stale lock must be released"
+  # A journal whose note was never written (killed before the first write)
+  # reports the note as unchanged instead of restoring anything.
+  local out
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [cfg (localllm-docs/config)
+      vault \"${VAULT}\"
+      rel \"${PILOT}/runbook.md\"
+      snap (localllm-docs/snapshot-targets cfg vault [rel])
+      staged (localllm-docs/stage-proposal cfg snap {:changes [{:path rel :op \"replace-text\" :heading \"\" :old_text \"v1.2\" :new_text \"v1.3\"}]})
+      before (localllm-docs/sha256 (slurp (str vault \"/\" rel)))
+      after (localllm-docs/sha256 (:after (first (:files staged))))]
+  (localllm-docs/write-audit! \"${STATE}/runs/BOXP-778/r1\" {:status :staged :docs-roots (:docs-roots cfg) :applied [{:path rel :before-sha256 before :after-sha256 after :created? false :backup nil :ops []}] :write-phase :writing})
+  (prn (localllm-docs/rollback! vault \"${STATE}/runs/BOXP-778/r1\")))
+" 2>&1)"
+  [[ "${out}" == *':status :unchanged'* ]] || fail "an unwritten journal entry must be reported as unchanged: ${out}"
+  assert_runbook_unchanged
+}
+
 test_absolute_paths_in_the_ticket_are_rejected() {
   # A leading `/` in docs-target / docs-sources must not be normalized into a
   # vault-relative path: the ticket is untrusted input and absolute paths are
@@ -1138,6 +1186,7 @@ for t in \
   test_prompt_over_the_cap_blocks_without_a_request \
   test_symlink_swap_between_snapshot_and_write_is_rejected \
   test_absolute_paths_in_the_ticket_are_rejected \
+  test_crash_right_after_the_write_is_recovered_from_the_journal \
   test_edit_on_a_later_target_during_the_write_is_detected \
   test_correction_round_over_the_prompt_cap_blocks \
   test_research_finish_without_reads_auto_reads_the_hits \

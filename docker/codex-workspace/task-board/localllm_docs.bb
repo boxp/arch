@@ -188,6 +188,34 @@
       text
       (str (subs text 0 (max 0 limit)) "\n…（" (- (count text) limit) " 字省略）"))))
 
+;; Text that originates from the model or from note bodies (a heading the
+;; model named, an old_text it quoted, its free-text reason, links found in a
+;; note, …) is wrapped in private-use sentinels while it travels inside a
+;; reason string. The audit keeps it (sentinels stripped); anything that is
+;; rendered into user-visible Notes goes through `redact-untrusted` first, so
+;; a reason can never carry note content or unlabelled secrets into Notes.
+(def ^:private untrusted-open "\uE000")
+(def ^:private untrusted-close "\uE001")
+(def untrusted-placeholder "〔モデル出力・本文由来の文字列は Notes に載せません。audit の :reason を参照〕")
+
+(defn untrusted
+  "Mark `text` (truncated to `limit` chars) as model / note derived."
+  [text limit]
+  (str untrusted-open (truncate-text (str (or text "")) limit) untrusted-close))
+
+(defn plain-text
+  "Reason text with the sentinels removed (audit, model-facing messages)."
+  [s]
+  (str/replace (str (or s "")) #"[\uE000\uE001]" ""))
+
+(defn redact-untrusted
+  "Reason text safe for Notes: every untrusted span (and any stray sentinel)
+  replaced by a fixed placeholder."
+  [s]
+  (-> (str (or s ""))
+      (str/replace #"\uE000[\s\S]*?\uE001" untrusted-placeholder)
+      (str/replace #"[\uE000\uE001]" "")))
+
 ;; ---------------------------------------------------------------------------
 ;; Path safety
 ;; ---------------------------------------------------------------------------
@@ -342,8 +370,8 @@
                   (filter #(= (heading-text wanted) (heading-text (nth lines %))) indexes))]
     (cond
       (str/blank? wanted) {:ok? false :reason "heading が空です"}
-      (empty? matches) {:ok? false :reason (str "見出しが見つかりません: " (truncate-text wanted 80))}
-      (> (count matches) 1) {:ok? false :reason (str "見出しが複数あります（一意に特定できません）: " (truncate-text wanted 80))}
+      (empty? matches) {:ok? false :reason (str "見出しが見つかりません: " (untrusted wanted 80))}
+      (> (count matches) 1) {:ok? false :reason (str "見出しが複数あります（一意に特定できません）: " (untrusted wanted 80))}
       :else {:ok? true :index (first matches)})))
 
 (defn section-end
@@ -466,7 +494,7 @@
 
       "append-section"
       (cond
-        (not (heading-line? (str/trim (or heading "")))) {:ok? false :reason (str "append-section の heading が見出し行ではありません: " (truncate-text heading 80))}
+        (not (heading-line? (str/trim (or heading "")))) {:ok? false :reason (str "append-section の heading が見出し行ではありません: " (untrusted heading 80))}
         ;; The model often picks append-section for a heading that already
         ;; exists (seen in the real-vault E2E). The intent is unambiguous and
         ;; safe, so treat it as an append to that section instead of failing.
@@ -480,21 +508,21 @@
             n (count-occurrences body old_text)]
         (cond
           (str/blank? old_text) {:ok? false :reason "replace-text の old_text が空です"}
-          (zero? n) {:ok? false :reason (str "old_text が本文に見つかりません: " (truncate-text old_text 60))}
-          (> n 1) {:ok? false :reason (str "old_text が本文に複数回出現します（一意に特定できません）: " (truncate-text old_text 60))}
+          (zero? n) {:ok? false :reason (str "old_text が本文に見つかりません: " (untrusted old_text 60))}
+          (> n 1) {:ok? false :reason (str "old_text が本文に複数回出現します（一意に特定できません）: " (untrusted old_text 60))}
           :else (let [i (str/index-of body old_text)
                       new-body (str (subs body 0 i) (or new_text "") (subs body (+ i (count old_text))))]
                   {:ok? true :removed old_text
                    :lines (vec (concat (subvec lines 0 bstart) (str/split-lines new-body)))})))
 
-      {:ok? false :reason (str "未対応の op: " op)})))
+      {:ok? false :reason (str "未対応の op: " (untrusted op 40))})))
 
 (defn validate-change-shape [cfg targets change]
   (let [{:keys [path op new_text]} change]
     (cond
       (not (map? change)) "change がオブジェクトではありません"
-      (not (contains? (set targets) path)) (str "docs-target に宣言されていない path への変更は拒否します: " (truncate-text (str path) 80))
-      (not (contains? ops op)) (str "未対応の op: " (truncate-text (str op) 40))
+      (not (contains? (set targets) path)) (str "docs-target に宣言されていない path への変更は拒否します: " (untrusted path 80))
+      (not (contains? ops op)) (str "未対応の op: " (untrusted op 40))
       (> (count (or new_text "")) (:max-change-chars cfg)) (str "new_text が上限 " (:max-change-chars cfg) " 字を超えています")
       (forbidden-text-reason new_text) (forbidden-text-reason new_text)
       (forbidden-text-reason (:heading change)) (forbidden-text-reason (:heading change))
@@ -544,7 +572,7 @@
             secret-reason {:ok? false :reason secret-reason}
             (not (fence-balanced? lines)) {:ok? false :reason "コードフェンスの対応が崩れるため拒否します"}
             (table-header-lost? removed-text lines) {:ok? false :reason "表のヘッダ行（| 列名 | と | --- |）が失われるため拒否します。表を差し替えるときはヘッダ行も含めてください"}
-            (seq missing) {:ok? false :reason (str "編集範囲外のリンクが失われるため拒否します: " (truncate-text (str/join ", " (sort missing)) 120))}
+            (seq missing) {:ok? false :reason (str "編集範囲外のリンクが失われるため拒否します: " (untrusted (str/join ", " (sort missing)) 120))}
             (= text (str original (when-not (str/ends-with? (or original "") "\n") "\n"))) {:ok? false :reason "変更前と同じ内容のため適用しません"}
             :else {:ok? true :text text :ops applied}))))))
 
@@ -754,11 +782,11 @@
                              (str/join " / " (map #(str/replace % #"^#+\s*" "") (:headings note))) "）")))})
         (let [{:keys [ok? index reason]} (find-heading lines heading)]
           (if-not ok?
-            {:ok? false :reason (str rel ": " reason "（この note の見出し: " (str/join " / " (:headings note)) "）")}
+            {:ok? false :reason (str (untrusted rel 100) ": " reason "（この note の見出し: " (untrusted (str/join " / " (:headings note)) 300) "）")}
             (let [end (section-end lines index)
                   text (str/join "\n" (subvec lines index end))]
               {:ok? true :key (str rel "#" (str/trim (nth lines index))) :text (truncate-text text limit)})))))
-    {:ok? false :reason (str "docs-sources に無いノートです（index か search の結果にある path だけ読めます）: " (truncate-text rel 100))}))
+    {:ok? false :reason (str "docs-sources に無いノートです（index か search の結果にある path だけ読めます）: " (untrusted rel 100))}))
 
 (def research-schema
   {:type "object"
@@ -1050,9 +1078,9 @@
       :else
       (let [parsed (try (json/parse-string text true) (catch Exception e {::error (.getMessage e)}))]
         (cond
-          (::error parsed) {:ok? false :reason (str "localllm の出力が JSON として不正です: " (sanitize-error (::error parsed)))}
+          (::error parsed) {:ok? false :reason (str "localllm の出力が JSON として不正です: " (untrusted (sanitize-error (::error parsed)) 400))}
           (not (map? parsed)) {:ok? false :reason "localllm の出力が JSON オブジェクトではありません"}
-          (not (contains? #{"apply" "needs-human"} (:decision parsed))) {:ok? false :reason (str "decision が不正です: " (truncate-text (str (:decision parsed)) 40))}
+          (not (contains? #{"apply" "needs-human"} (:decision parsed))) {:ok? false :reason (str "decision が不正です: " (untrusted (:decision parsed) 40))}
           (not (vector? (:changes parsed))) {:ok? false :reason "changes が配列ではありません"}
           :else {:ok? true :proposal parsed})))))
 
@@ -1068,8 +1096,8 @@
       :else
       (let [parsed (try (json/parse-string text true) (catch Exception e {::error (.getMessage e)}))]
         (cond
-          (::error parsed) {:ok? false :reason (str "調査応答が JSON として不正です: " (sanitize-error (::error parsed)))}
-          (not (contains? #{"search" "read" "finish"} (:action parsed))) {:ok? false :reason (str "action が不正です: " (truncate-text (str (:action parsed)) 40))}
+          (::error parsed) {:ok? false :reason (str "調査応答が JSON として不正です: " (untrusted (sanitize-error (::error parsed)) 400))}
+          (not (contains? #{"search" "read" "finish"} (:action parsed))) {:ok? false :reason (str "action が不正です: " (untrusted (:action parsed) 40))}
           :else {:ok? true :step (-> parsed
                                      (update :queries #(if (sequential? %) (vec (remove str/blank? (map str %))) []))
                                      (update :reads #(if (sequential? %) (vec (filter map? %)) [])))})))))
@@ -1196,7 +1224,7 @@
                                         (map (fn [q] (str "round " round ": search 「" q "」は既に実行済みです（結果は上の調査ログを参照。同じ検索を繰り返さず、該当した資料を read してください）")) repeated)
                                         (map (fn [{:keys [path heading auto?]} r]
                                                (cond
-                                                 (not (:ok? r)) (str "round " round ": read " path (when (seq heading) (str "#" heading)) " → 失敗: " (:reason r))
+                                                 (not (:ok? r)) (str "round " round ": read " path (when (seq heading) (str "#" heading)) " → 失敗: " (plain-text (:reason r)))
                                                  (contains? read-keys (:key r)) (str "round " round ": read " (:key r) " → 既に読んでいます（根拠を参照）")
                                                  auto? (str "round " round ": read の要求が無かったため runner が検索該当資料 " (:key r) " を自動で読み取り、根拠に追加しました")
                                                  :else (str "round " round ": read " (:key r) " → 根拠に追加")))
@@ -1255,7 +1283,7 @@
     (spit (str path) text)
     (str path)))
 
-(declare rollback-applied!)
+(declare rollback-applied! write-audit!)
 
 (defn stage-proposal
   "Validate the whole proposal against the snapshot taken for the prompt and
@@ -1354,6 +1382,26 @@
                             {:ok? false :reason (str "backup の作成に失敗したため未適用: " (sanitize-error (.getMessage e)))}))]
             (if-not (:ok? backups)
               {:ok? false :category "localllm-io-error" :reason (:reason backups)}
+              (let [applied (mapv (fn [{:keys [rel before after ops exists?]}]
+                                    {:path rel :before-sha256 (when exists? (sha256 before)) :after-sha256 (sha256 after)
+                                     :created? (not exists?) :backup (get-in backups [:by-rel rel]) :ops ops
+                                     :before-chars (count (or before "")) :after-chars (count after)})
+                                  files)
+                    ;; Persist the recovery journal (backups + planned
+                    ;; writes) *before* the first byte is written: a process
+                    ;; killed between the note write and the final audit
+                    ;; would otherwise leave an audit without `:applied`, and
+                    ;; stale-lock recovery / `localllm-rollback` would have
+                    ;; nothing to restore from. Entries whose note is still at
+                    ;; `:before-sha256` are reported as unchanged on recovery.
+                    journal (try
+                              (write-audit! run-dir (assoc (or (read-edn (fs/path run-dir "localllm-audit.edn") nil) {})
+                                                           :applied applied :write-phase :writing))
+                              {:ok? true}
+                              (catch Exception e
+                                {:ok? false :reason (str "復旧ジャーナルの書込みに失敗したため未適用: " (sanitize-error (.getMessage e)))}))]
+                (if-not (:ok? journal)
+                  {:ok? false :category "localllm-io-error" :reason (:reason journal)}
               (let [written (atom [])
                     kept (atom [])
                     conflict-mid-write (atom nil)
@@ -1379,6 +1427,10 @@
                                 (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_WRITE_AFTER_FIRST"))
                                   (spit abs "\n<!-- external edit between write and failure -->\n" :append true)
                                   (throw (ex-info "forced write failure after the first target" {}))))
+                              ;; Deterministic black-box crash hook (unset in deployment):
+                              ;; die after the notes are written, before any audit / Notes.
+                              (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_EXIT_AFTER_LOCALLLM_WRITE"))
+                                (System/exit 137))
                               nil
                               (catch Exception e
                                 ;; The lock does not serialize outside editors
@@ -1408,12 +1460,7 @@
                              (str "競合のため未適用（書込み途中で検出し、書込み済みのファイルは backup から復元しました）: " @conflict-mid-write)
                              :else
                              (str "書込みに失敗したため、書込み済みのファイルを backup から復元して未適用にしました: " failure))}
-                  {:ok? true
-                   :applied (mapv (fn [{:keys [rel before after ops exists?]}]
-                                    {:path rel :before-sha256 (when exists? (sha256 before)) :after-sha256 (sha256 after)
-                                     :created? (not exists?) :backup (get-in backups [:by-rel rel]) :ops ops
-                                     :before-chars (count (or before "")) :after-chars (count after)})
-                                  files)})))))))))
+                  {:ok? true :applied applied})))))))))))
 
 (defn apply-proposal!
   "stage-proposal + commit-staged! in one step (evaluation harness and callers
@@ -1487,7 +1534,7 @@
           unknown (remove read-set sources)]
       (cond
         (empty? sources) "sources が空です。採用した事実の出典（調査で読んだ資料の path）を sources に列挙してください"
-        (seq unknown) (str "sources に調査で読んでいない path があります（search で該当しただけの資料は出典にできません。必要なら読んだ資料だけを挙げてください）: " (truncate-text (str/join ", " unknown) 160))
+        (seq unknown) (str "sources に調査で読んでいない path があります（search で該当しただけの資料は出典にできません。必要なら読んだ資料だけを挙げてください）: " (untrusted (str/join ", " unknown) 160))
         :else nil))))
 
 (defn write-audit! [run-dir audit]
@@ -1527,13 +1574,18 @@
                                      :elapsed-ms (- (System/currentTimeMillis) started)}
                                     (select-keys m [:category :reason :summary :applied :staged-paths :usage :llm-elapsed-ms
                                                     :context-chars :references :decision :corrections :sources :sources-dropped])
+                                    (when (:reason m) {:reason (plain-text (:reason m))})
                                     {:research (research-summary (:research m))})]
                    (write-audit! run-dir audit)
-                   (assoc m :status status :research (research-summary (:research m))
-                          :audit-path (str (fs/path run-dir "localllm-audit.edn")))))
+                   ;; Callers render `:reason` into Notes / last-message: any
+                   ;; model- or note-derived span is replaced here, the full
+                   ;; text stays in the audit only.
+                   (cond-> (assoc m :status status :research (research-summary (:research m))
+                                  :audit-path (str (fs/path run-dir "localllm-audit.edn")))
+                     (:reason m) (assoc :reason (redact-untrusted (:reason m))))))
         correction-request (fn [why]
                              {:role "user"
-                              :content (str "前の提案は runner の検証で拒否されました。理由: " why
+                              :content (str "前の提案は runner の検証で拒否されました。理由: " (plain-text why)
                                             "\n同じ依頼について、理由を踏まえて修正した構造化差分を出力してください。根拠がなければ needs-human にしてください。")})
         ;; Staged research runs only when the ticket declares a corpus.
         corpus (when (and (:ok? snap) (seq sources)) (load-corpus cfg vault sources (:targets snap)))
@@ -1614,7 +1666,7 @@
                   :needs-human
                   (finish :blocked (assoc base :category "localllm-needs-human" :decision "needs-human"
                                           :reason (str "localllm は変更を提案せず人間判断を求めました: "
-                                                       (sanitize-error (truncate-text (:reason proposal) 300)))))
+                                                       (untrusted (sanitize-error (truncate-text (:reason proposal) 300)) 400))))
 
                   :accepted
                   (let [;; Only paths the runner itself resolved and read may be
@@ -1680,11 +1732,12 @@
           r)))))
 
 (defn- rollback-applied! [vault cfg audit]
-  (mapv (fn [{:keys [path after-sha256 backup created?]}]
+  (mapv (fn [{:keys [path before-sha256 after-sha256 backup created?]}]
               (let [r (resolve-vault-path vault path (:docs-roots audit (:docs-roots cfg)))]
                 (cond
                   (not (:ok? r)) {:path path :status :skipped :reason (:reason r)}
                   (not (:exists? r)) {:path path :status :skipped :reason "ファイルが存在しません"}
+                  (and before-sha256 (= before-sha256 (sha256 (slurp-nofollow (:abs r))))) {:path path :status :unchanged :reason "run の書込み前の内容のままです（書込みに至っていません）"}
                   (not= after-sha256 (sha256 (slurp-nofollow (:abs r)))) {:path path :status :skipped :reason "run 適用後に別の更新が入っているため上書きしません"}
                   created? (do (fs/delete (:abs r)) {:path path :status :restored :reason "run が新規作成したファイルを削除しました"})
                   (not (and backup (fs/exists? backup))) {:path path :status :skipped :reason "backup が見つかりません"}
