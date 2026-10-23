@@ -56,9 +56,9 @@ resource "cloudflare_zero_trust_access_application" "hitohako_stage_pages_dev" {
   account_id = var.account_id
   name       = "Access application for ${local.stage_project_name}.pages.dev"
   domain     = "${local.stage_project_name}.pages.dev"
-  self_hosted_domains = [
-    "${local.stage_project_name}.pages.dev",
-    "*.${local.stage_project_name}.pages.dev",
+  destinations = [
+    { type = "public", uri = "${local.stage_project_name}.pages.dev" },
+    { type = "public", uri = "*.${local.stage_project_name}.pages.dev" },
   ]
   session_duration = "24h"
   type             = "self_hosted"
