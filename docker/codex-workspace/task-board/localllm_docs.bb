@@ -119,6 +119,14 @@
 
 (defn now-str [] (str (java.time.Instant/now)))
 
+(defn slurp-nofollow
+  "Read a validated vault file without following a symlink in its last
+  component (O_NOFOLLOW), so a note swapped for a symlink between validation
+  and read fails instead of pulling foreign content into a prompt or a hash."
+  [path]
+  (with-open [in (Files/newInputStream (fs/path (str path)) (into-array OpenOption [LinkOption/NOFOLLOW_LINKS]))]
+    (slurp in :encoding "UTF-8")))
+
 (defn sanitize-error [message]
   (let [cleaned (-> (or message "unknown error")
                     str
@@ -536,7 +544,7 @@
         {:text out :included included :skipped (vec (concat skipped (when c (cons c more))))}
         (let [r (resolve-vault-path vault c (:read-roots cfg))]
           (if (and (:ok? r) (:exists? r))
-            (let [content (slurp (:abs r))
+            (let [content (slurp-nofollow (:abs r))
                   piece (truncate-text content (max 0 (- remaining 200)))
                   block (str "\n### 参照ノート: " c "\n```markdown\n" piece "\n```\n")]
               (recur more (- remaining (count block)) (conj included c) skipped (str out block)))
@@ -602,7 +610,7 @@
           :else
           {:ok? true
            :notes (mapv (fn [rel]
-                          (let [text (slurp (str (fs/path vault rel)))]
+                          (let [text (slurp-nofollow (fs/path vault rel))]
                             {:rel rel :title (note-title text rel) :headings (note-headings text) :chars (count text) :text text}))
                         files)})))))
 
@@ -1223,7 +1231,7 @@
                               ;; atomic-write! goes through the parent directory.
                               (let [revalidated (resolve-vault-path vault rel (:docs-roots cfg))
                                     now-exists? (fs/exists? abs {:nofollow-links true})
-                                    current (when now-exists? (slurp abs))]
+                                    current (when now-exists? (slurp-nofollow abs))]
                                 (cond
                                   (not (:ok? revalidated)) (str rel ": 書込み直前の再検証で拒否（" (:reason revalidated) "）")
                                   (not= (str (:abs revalidated)) (str abs)) (str rel ": 書込み直前の再検証で解決先が変わりました")
@@ -1291,7 +1299,7 @@
       (if-let [bad (first (remove :ok? resolved))]
         {:ok? false :category "localllm-invalid-target" :reason (str "docs-target を拒否: " (:reason bad))}
         (let [snapshots (into {} (map (fn [{:keys [rel abs exists?]}]
-                                        (let [text (if exists? (slurp abs) "")]
+                                        (let [text (if exists? (slurp-nofollow abs) "")]
                                           [rel {:rel rel :abs abs :exists? exists? :text text :sha (when exists? (sha256 text))}]))
                                       resolved))
               too-big (first (filter #(> (count (:text %)) (:max-note-chars cfg)) (vals snapshots)))]
@@ -1490,7 +1498,7 @@
                 (cond
                   (not (:ok? r)) {:path path :status :skipped :reason (:reason r)}
                   (not (:exists? r)) {:path path :status :skipped :reason "ファイルが存在しません"}
-                  (not= after-sha256 (sha256 (slurp (:abs r)))) {:path path :status :skipped :reason "run 適用後に別の更新が入っているため上書きしません"}
+                  (not= after-sha256 (sha256 (slurp-nofollow (:abs r)))) {:path path :status :skipped :reason "run 適用後に別の更新が入っているため上書きしません"}
                   created? (do (fs/delete (:abs r)) {:path path :status :restored :reason "run が新規作成したファイルを削除しました"})
                   (not (and backup (fs/exists? backup))) {:path path :status :skipped :reason "backup が見つかりません"}
                   :else (do (atomic-write! (:abs r) (slurp backup)) {:path path :status :restored :reason "backup から復元しました"}))))

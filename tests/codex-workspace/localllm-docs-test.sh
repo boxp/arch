@@ -715,6 +715,22 @@ test_write_is_deferred_until_the_lifecycle_commit() {
   assert_file_not_contains "$(find "${STATE}/runs/BOXP-756" -name summary.edn | head -n 1)" ':localllm {:category "localllm-needs-human"'
 }
 
+test_failed_transition_after_the_write_is_rolled_back() {
+  # The write committed, then the lane / frontmatter / Notes transition fails
+  # (test hook after move-card!): the note is restored from the run backup and
+  # the card ends Blocked, so Blocked still means "nothing applied".
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-757|BOXP-757: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-757 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION=true >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-757\|.*status::blocked'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${VAULT}/Tickets/BOXP-757.md" 'backup から復元しました（未適用扱い）'
+  assert_file_contains "${VAULT}/Tickets/BOXP-757.md" 'runbook.md restored'
+}
+
 test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
   # Two tickets declare the same docs-target and run in parallel ticks. Both
   # snapshot the original note; the write lock + re-check make exactly one of
@@ -780,6 +796,10 @@ test_symlink_swap_between_snapshot_and_write_is_rejected() {
   [[ "${out}" == *':ok? false'* && "${out}" == *'書込み直前の再検証で拒否'* ]] || fail "commit must be rejected after a symlink swap: ${out}"
   grep -q 'v1.2' "${CASE_DIR}/outside/runbook.md" || fail "the file outside the vault must not be written"
   [[ ! -f "${STATE}/runs/BOXP-755/r1/backup/${PILOT}/runbook.md" ]] || fail "no backup may be taken for a rejected write"
+  # reads never follow a symlink in the last component either (validation and read are tied)
+  ln -s "${CASE_DIR}/outside/runbook.md" "${CASE_DIR}/moved-pilot/linked.md"
+  out="$(bb -e "(load-file \"${DOCS_MODULE}\") (prn (try (localllm-docs/slurp-nofollow \"${CASE_DIR}/moved-pilot/linked.md\") (catch Exception e :refused)))" 2>&1)"
+  [[ "${out}" == *':refused'* ]] || fail "slurp-nofollow must refuse a symlink: ${out}"
 }
 
 test_research_total_time_limit_caps_each_model_call() {
@@ -807,6 +827,7 @@ for t in \
   test_research_sources_hit_only_by_search_are_rejected \
   test_research_total_time_limit_caps_each_model_call \
   test_write_is_deferred_until_the_lifecycle_commit \
+  test_failed_transition_after_the_write_is_rolled_back \
   test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
   test_prompt_over_the_cap_blocks_without_a_request \
   test_symlink_swap_between_snapshot_and_write_is_rejected \

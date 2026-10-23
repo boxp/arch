@@ -2060,7 +2060,8 @@
                                  (let [final (if staged? ((:commit! result)) result)
                                        message (localllm-last-message run final)]
                                    (spit (str last-message-path) message)
-                                   {:result (record-final! final) :last-message message})))))))
+                                   {:result (record-final! final) :last-message message
+                                    :applied? (boolean (seq (:applied final)))})))))))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (cond
@@ -2295,7 +2296,11 @@
                 keep-lock? (atom false)
                 ;; Set once `begin-lifecycle-commit!` succeeded, so the finally
                 ;; block releases the `committing-cards` slot exactly once.
-                committing? (atom false)]
+                committing? (atom false)
+                ;; Set once a localllm docs-edit wrote its target notes inside
+                ;; this commit; a later failure of the lane / frontmatter /
+                ;; Notes transition rolls that write back (Blocked == unapplied).
+                docs-applied? (atom false)]
             (try
               ;; The start transition (lane, frontmatter, start Note) is a
               ;; lifecycle commit as well: a TERM that lands right after the
@@ -2349,6 +2354,7 @@
                     ;; leaves the note untouched (flag seen above) or lets the
                     ;; write and the transition complete together.
                     committed (when-let [commit! (:deferred-commit! agent-run)] (commit!))
+                    _ (when (:applied? committed) (reset! docs-applied? true))
                     result (if committed (:result committed) result)
                     last-message (if committed (:last-message committed) last-message)
                     review-gate (if gate-result
@@ -2397,6 +2403,10 @@
                     (restore-card-state! ticket-id status assignee))
                   (do
                     (move-card! ticket-id next-status)
+                    (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION"))
+                      ;; Deterministic black-box failure hook after the document
+                      ;; write and the lane move; unset in deployment.
+                      (throw (ex-info "forced failure after the lane move" {})))
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee (if (= "in-progress" next-status) assignee "boxp")}
                                                       (= "done" next-status) (assoc :closed (today))))
@@ -2423,9 +2433,21 @@
                                              :agent-stopped-at (now-str)}}))
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
-                  (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
-                    (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
-                    (restore-card-state! ticket-id status assignee)))
+                  (do
+                    (when @docs-applied?
+                      ;; The target notes were written but the transition did
+                      ;; not complete: restore them from this run's backup
+                      ;; (only while their content is still what the run wrote)
+                      ;; so Blocked keeps meaning "nothing applied".
+                      (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str (run-dir ticket-id (:run-id lock))))
+                                          (catch Exception re [{:status :error :reason (sanitize-blocker-reason (.getMessage re))}]))]
+                        (log! (str "run " (:run-id lock) " for " ticket-id ": rolled back localllm docs write after a failed transition: " (pr-str restored)))
+                        (append-note! ticket-id (str "localllm docs run " (:run-id lock)
+                                                     " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
+                                                     (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
+                    (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                      (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                      (restore-card-state! ticket-id status assignee))))
                 true)
               (finally
                 (reset! stop? true)
