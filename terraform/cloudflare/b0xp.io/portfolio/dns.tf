@@ -29,3 +29,12 @@ resource "cloudflare_dns_record" "iikanji" {
   ttl     = 1
   proxied = true
 }
+
+resource "cloudflare_dns_record" "hitohako" {
+  zone_id = var.zone_id
+  name    = "hitohako.b0xp.io"
+  content = cloudflare_pages_project.hitohako.subdomain
+  type    = "CNAME"
+  ttl     = 1
+  proxied = true
+}
