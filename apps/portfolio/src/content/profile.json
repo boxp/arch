@@ -1,0 +1,15 @@
+{
+  "name": "Keitaro Takeuchi",
+  "handle": "BOXP",
+  "tagline": "Clojure と Kubernetes が好きなソフトウェアエンジニア。自宅 k8s クラスタとその上で動くサービスを趣味で運用しています。",
+  "taglineEn": "Software engineer who writes Clojure and runs a homelab Kubernetes cluster.",
+  "location": "Tokyo, Japan",
+  "links": {
+    "github": "https://github.com/boxp",
+    "x": "https://x.com/b0xp2",
+    "youtube": "https://www.youtube.com/@BOXPKETARO",
+    "linkedin": null,
+    "speakerdeck": "https://speakerdeck.com/boxp",
+    "medium": "https://medium.com/@boxpketaro"
+  }
+}
