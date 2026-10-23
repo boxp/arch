@@ -768,7 +768,9 @@ test_stale_lock_recovery_restores_an_unfinished_write() {
   after_sha="$(sha256sum "${VAULT}/${PILOT}/runbook.md" | cut -d' ' -f1)"
   printf '{:ticket-id "BOXP-761" :run-id "%s" :status :review :docs-roots ["%s"] :applied [{:path "%s/runbook.md" :before-sha256 "%s" :after-sha256 "%s" :created? false :backup "%s/backup/%s/runbook.md" :ops [{:op "replace-section"}]}]}\n' \
     "${old_run}" "${PILOT}" "${PILOT}" "${before_sha}" "${after_sha}" "${run_dir}" "${PILOT}" >"${run_dir}/localllm-audit.edn"
-  printf '{:status :running :ticket "BOXP-761" :run-id "%s" :action :docs-edit :agent "localllm"}\n' "${old_run}" >"${run_dir}/summary.edn"
+  # the summary is already :succeeded (it is written before the lane move); only
+  # the ticket frontmatter proves the transition, and here it is still in-progress
+  printf '{:status :succeeded :result "review" :ticket "BOXP-761" :run-id "%s" :action :docs-edit :agent "localllm"}\n' "${old_run}" >"${run_dir}/summary.edn"
   printf '{:ticket "BOXP-761" :run-id "%s" :action :docs-edit :lane "In Progress" :heartbeat-at "2000-01-01T00:00:00Z"}\n' "${old_run}" >"${STATE}/locks/BOXP-761.edn"
   write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-761|BOXP-761: docs]] #ticket status::in-progress"
   write_ticket "${VAULT}" BOXP-761 in-progress localllm "${PILOT}/runbook.md"

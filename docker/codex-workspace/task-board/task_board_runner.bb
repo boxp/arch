@@ -866,9 +866,12 @@
   [ticket-id run-id]
   (let [dir (run-dir ticket-id run-id)
         audit (read-edn-file (fs/path dir "localllm-audit.edn") nil)
-        summary (read-edn-file (fs/path dir "summary.edn") nil)]
+        ;; The durable sign that the transition completed is the ticket's own
+        ;; frontmatter (written after the lane move, before the final Notes);
+        ;; the run summary is marked succeeded earlier and must not be trusted.
+        transitioned? (= "review" (str (:status (when (fs/exists? (ticket-path ticket-id)) (ticket-frontmatter ticket-id)))))]
     (when (and (seq (:applied audit))
-               (not= :succeeded (:status summary))
+               (not transitioned?)
                @localllm-docs-module-loaded?)
       (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str dir))
                           (catch Exception e [{:status :error :reason (subs (str (.getMessage e)) 0 (min 200 (count (str (.getMessage e)))))}]))]
