@@ -1,10 +1,10 @@
-name: Build GPU Worker Image
+name: Build Worker Image
 
 on:
   workflow_dispatch:
     inputs:
       node_name:
-        description: GPU worker node name
+        description: Worker node name
         required: true
         type: string
         default: golyat-4
