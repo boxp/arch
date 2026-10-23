@@ -94,6 +94,20 @@
         (log! (str "event outbox module unavailable (" events-module-path "): " (.getMessage e)))
         false))))
 
+(def localllm-docs-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "localllm_docs.bb")))
+
+(def localllm-docs-module-loaded?
+  ;; BOXP-277: document-update route for `assignee: localllm`. Loaded lazily so a
+  ;; broken module can never affect the cloud routes.
+  (delay
+    (try
+      (load-file localllm-docs-module-path)
+      true
+      (catch Exception e
+        (log! (str "localllm docs module unavailable (" localllm-docs-module-path "): " (.getMessage e)))
+        false))))
+
 (defn record-task-board-event!
   "Record a minimal event after a run's final transition was committed. Only
   blocked / review / done transitions are triggers; the module skips the rest."
@@ -151,8 +165,14 @@
   (or (= "fable" assignee)
       (contains? claude-assignee->model assignee)))
 
+(def localllm-assignee "localllm")
+
+(defn localllm-assignee? [assignee]
+  (= localllm-assignee assignee))
+
 (defn supported-assignee? [assignee]
   (or (claude-assignee? assignee)
+      (localllm-assignee? assignee)
       (some? (parse-codex-assignee assignee))))
 
 (defn root []
@@ -1902,8 +1922,114 @@
        :idle-timeout? idle-timeout?
        :shutdown? (boolean shutdown?)})))
 
+;; ---------------------------------------------------------------------------
+;; localllm document-update route (BOXP-277)
+;;
+;; No CLI agent, no shell, no vault-wide write. The module reads the declared
+;; targets, asks the local model for a structured change proposal and applies it
+;; only after runner-side validation. The run always ends in Review (changes
+;; applied, human verifies) or Blocked (nothing applied, concrete reason). The
+;; synthetic last message carries the regular markers so the existing review
+;; gate / final-status / Notes path is reused unchanged.
+;; ---------------------------------------------------------------------------
+
+(declare sanitize-blocker-reason)
+
+(defn localllm-rollback-command [ticket-id run-id]
+  (str "bb " localllm-docs-module-path " rollback " ticket-id " " run-id
+       " （または task_board_runner.bb localllm-rollback " ticket-id " " run-id "）"))
+
+(defn localllm-review-note [ticket-id run-id result]
+  (let [applied (:applied result)
+        usage (:usage result)]
+    (str "localllm docs run " run-id " が " (count applied) " ファイルを更新し Review で停止しました（Done にはしません）。"
+         " 対象: " (str/join ", " (map #(str "[[" (str/replace (:path %) #"\\.md$" "") "]]" (when (:created? %) "（新規）")) applied))
+         "; 操作: " (str/join ", " (map (fn [a] (str/join "/" (map :op (:ops a)))) applied))
+         "; model=" (:model result "localllm")
+         (when usage (str "; tokens prompt=" (:prompt_tokens usage) " completion=" (:completion_tokens usage)))
+         (when-let [ms (:llm-elapsed-ms result)] (str "; llm " (quot ms 1000) "s"))
+         (when (seq (:summary result)) (str "; 要確認: " (:summary result)))
+         "; audit/backup: " (:audit-path result)
+         "; rollback: " (localllm-rollback-command ticket-id run-id))))
+
+(defn localllm-stop-note [ticket-id run-id result]
+  (str "localllm docs run " run-id " は変更を適用せず停止しました（cloud への切替はしません）。"
+       " category=" (:category result "unknown")
+       "; 理由: " (sanitize-blocker-reason (:reason result))
+       (when-let [u (:usage result)] (str "; tokens prompt=" (:prompt_tokens u) " completion=" (:completion_tokens u)))
+       "; audit: " (:audit-path result (str (run-dir ticket-id run-id) "/localllm-audit.edn"))))
+
+(defn localllm-last-message [run-id result]
+  (let [review? (= :review (:status result))]
+    (str "localllm docs-edit run " run-id "\n"
+         "status: " (name (:status result :blocked)) "\n"
+         "category: " (:category result) "\n"
+         (when (:reason result) (str "reason: " (sanitize-blocker-reason (:reason result)) "\n"))
+         (when (seq (:applied result)) (str "applied: " (str/join ", " (map :path (:applied result))) "\n"))
+         "TASK_BOARD_REVIEW_PR: none\n"
+         "TASK_BOARD_RESULT: " (if review? "review" "blocked") "\n")))
+
+(defn run-localllm-docs! [ticket-id action lane origin-lane agent lock]
+  (let [run (:run-id lock)
+        dir (run-dir ticket-id run)
+        last-message-path (fs/path dir "last-message.md")]
+    (fs/create-dirs dir)
+    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
+    (let [result (if @localllm-docs-module-loaded?
+                   (try
+                     ((resolve 'localllm-docs/run-docs-edit!)
+                      {:vault (vault)
+                       :ticket-id ticket-id
+                       :run-dir (str dir)
+                       :ticket-text (slurp (str (ticket-path ticket-id)))
+                       :frontmatter (ticket-frontmatter ticket-id)
+                       :action (if (= "Review" origin-lane) :revise :edit)
+                       :stop-requested? (fn [] @shutdown-requested?)
+                       :log-fn log!})
+                     (catch Exception e
+                       {:status :blocked :category "localllm-runner-error"
+                        :reason (str "runner 内部エラー: " (sanitize-blocker-reason (.getMessage e)))}))
+                   {:status :blocked :category "localllm-module-unavailable"
+                    :reason "localllm_docs.bb を読み込めないため実行しません"})
+          shutdown? (boolean (:shutdown? result))
+          review? (= :review (:status result))
+          message (localllm-last-message run result)]
+      (spit (str last-message-path) message)
+      (if shutdown?
+        (mark-run! ticket-id run :interrupted
+                   {:action action :agent agent :lane lane
+                    :reason "planned workspace shutdown"
+                    :shutdown {:owner-id (owner-id) :instance-id runner-instance-id :agent-stopped-at (now-str)}})
+        (do
+          ;; Specific, sanitized reason first; the generic blocked audit note
+          ;; written by block-ticket! follows it.
+          (append-note! ticket-id (if review?
+                                    (localllm-review-note ticket-id run result)
+                                    (localllm-stop-note ticket-id run result)))
+          (mark-run! ticket-id run :succeeded
+                     {:action action :agent agent :lane lane :exit-code 0
+                      :result (if review? "review" "blocked")
+                      :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied])
+                      :finished-at (now-str)})))
+      {:exit 0
+       :result (if review? "review" "blocked")
+       :run-id run
+       :dir (str dir)
+       :last-message message
+       :idle-timeout? false
+       :shutdown? shutdown?})))
+
 (defn candidate-action [{:keys [lane status]} assignee]
-  (when (supported-assignee? assignee)
+  (cond
+    ;; localllm (BOXP-277) only updates declared vault documents. It never grooms
+    ;; a Backlog ticket and never runs a CLI agent; every lane with work maps to
+    ;; the single docs-edit action (Review re-runs with the latest Notes).
+    (localllm-assignee? assignee)
+    (case status
+      ("ready" "in-progress" "review" "blocked") :docs-edit
+      nil)
+
+    (supported-assignee? assignee)
     (case status
       "backlog" :groom
       "ready" :implement
@@ -2145,7 +2271,9 @@
               ;; Do not start an agent the hook would only have to stop again
               ;; (a TERM after this check is covered by `register-agent-process!`).
               (ensure-not-shutting-down! "before agent start")
-              (let [{:keys [exit result run-id dir last-message idle-timeout? shutdown?]} (run-agent! ticket-id action effective-lane assignee lock)
+              (let [{:keys [exit result run-id dir last-message idle-timeout? shutdown?]} (if (= :docs-edit action)
+                                                                                            (run-localllm-docs! ticket-id action effective-lane lane assignee lock)
+                                                                                            (run-agent! ticket-id action effective-lane assignee lock))
                     _ (when shutdown?
                         ;; `run-agent!` already recorded the interrupted run.
                         (throw (ex-info "agent stopped by planned workspace shutdown"
@@ -2263,11 +2391,18 @@
         (log! (str "ticket file not found, skipping card: " ticket-id))
         nil))))
 
+(def only-ticket
+  ;; `tick --ticket BOXP-N` (operator use, e.g. a pre-deployment E2E of one card
+  ;; from a shell): restrict a single tick to one ticket so no other candidate is
+  ;; claimed by the ad-hoc process. The `loop` never sets it.
+  (atom nil))
+
 (defn candidate-cards []
   (let [cards (parse-board-cards (vec (read-lines (board-path))))]
     (->> cards
          (filter (fn [{:keys [ticket-id] :as card}]
-                   (some? (candidate-action card (ticket-assignee ticket-id)))))
+                   (and (or (nil? @only-ticket) (= @only-ticket ticket-id))
+                        (some? (candidate-action card (ticket-assignee ticket-id))))))
          vec)))
 
 ;; ---------------------------------------------------------------------------
@@ -2866,7 +3001,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]>")
+  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-rollback BOXP-N RUN-ID>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -3449,6 +3584,54 @@
             (reset! committing-cards 0)
             (reset! shutdown-started-at-ms nil)))))
 
+    ;; BOXP-277: localllm only maps to :docs-edit and never grooms.
+    (doseq [[status expected] {"backlog" nil "ready" :docs-edit "in-progress" :docs-edit
+                               "review" :docs-edit "blocked" :docs-edit "done" nil}]
+      (let [actual (candidate-action {:lane (status->lane status) :status status} "localllm")]
+        (if (= expected actual)
+          (println (str "PASS: localllm " status " -> " (pr-str actual)))
+          (do (println (str "FAIL: localllm " status " expected " (pr-str expected) " got " (pr-str actual)))
+              (swap! failures conj (str "localllm candidate " status))))))
+    (doseq [assignee ["localllm-high" "local-llm" "gemma4"]]
+      (if (not (supported-assignee? assignee))
+        (println (str "PASS: unsupported localllm alias ignored: " assignee))
+        (do (println (str "FAIL: localllm alias was supported: " assignee))
+            (swap! failures conj assignee))))
+    (if @localllm-docs-module-loaded?
+      (let [vault (str (fs/create-temp-dir))
+            resolve-path (resolve 'localllm-docs/resolve-vault-path)
+            roots ["Projects/task-board-localllm-docs/pilot"]]
+        (fs/create-dirs (fs/path vault "Projects/task-board-localllm-docs/pilot"))
+        (fs/create-dirs (fs/path vault "Secret"))
+        (spit (str (fs/path vault "Secret/s.md")) "x")
+        (spit (str (fs/path vault "Projects/task-board-localllm-docs/pilot/ok.md")) "---\na: b\n---\n\n# t\n\n## s\n\nbody\n")
+        (fs/create-sym-link (fs/path vault "Projects/task-board-localllm-docs/pilot/link.md") (fs/path vault "Secret/s.md"))
+        (doseq [[rel expected] [["Projects/task-board-localllm-docs/pilot/ok.md" true]
+                                ["Projects/task-board-localllm-docs/pilot/new.md" true]
+                                ["Projects/task-board-localllm-docs/pilot/link.md" false]
+                                ["Projects/task-board-localllm-docs/pilot/../../x.md" false]
+                                ["Secret/s.md" false]
+                                ["/etc/passwd" false]
+                                ["Projects/task-board-localllm-docs/pilot/x.txt" false]]]
+          (let [actual (boolean (:ok? (resolve-path vault rel roots)))]
+            (if (= expected actual)
+              (println (str "PASS: localllm path " rel " -> " actual))
+              (do (println (str "FAIL: localllm path " rel " expected " expected " got " actual))
+                  (swap! failures conj (str "localllm path " rel))))))
+        (let [apply-doc (resolve 'localllm-docs/apply-changes-to-document)
+              original (slurp (str (fs/path vault "Projects/task-board-localllm-docs/pilot/ok.md")))]
+          (doseq [[label changes expected] [["frontmatter protected" [{:op "replace-text" :heading "" :old_text "a: b" :new_text "a: c"}] false]
+                                            ["section replace" [{:op "replace-section" :heading "## s" :old_text "" :new_text "new"}] true]
+                                            ["unknown heading" [{:op "replace-section" :heading "## zz" :old_text "" :new_text "new"}] false]
+                                            ["unbalanced fence" [{:op "append-section" :heading "## c" :old_text "" :new_text "```\nx"}] false]]]
+            (let [actual (boolean (:ok? (apply-doc original changes true)))]
+              (if (= expected actual)
+                (println (str "PASS: localllm executor " label))
+                (do (println (str "FAIL: localllm executor " label " expected " expected " got " actual))
+                    (swap! failures conj (str "localllm executor " label))))))))
+      (do (println "FAIL: localllm docs module could not be loaded")
+          (swap! failures conj "localllm module")))
+
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
       (println "All tests passed."))))
@@ -3461,7 +3644,18 @@
   (reset! in-flight-futures {}))
 
 (case (or (first *command-line-args*) "tick")
-  "tick" (do (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+  "tick" (let [args (vec (rest *command-line-args*))]
+           (when-not (contains? #{0 2} (count args)) (usage))
+           (when (= 2 (count args))
+             (when-not (= "--ticket" (first args)) (usage))
+             (reset! only-ticket (second args)))
+           (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+  "localllm-rollback" (let [[ticket-id run-id] (rest *command-line-args*)]
+                        (when-not (and ticket-id run-id) (usage))
+                        (if @localllm-docs-module-loaded?
+                          (doseq [r ((resolve 'localllm-docs/rollback!) (vault) (str (run-dir ticket-id run-id)))]
+                            (println (pr-str r)))
+                          (fail "localllm_docs.bb could not be loaded")))
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
   "prepare-shutdown" (prepare-shutdown!)

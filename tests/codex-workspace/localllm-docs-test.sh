@@ -1,0 +1,482 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Black-box tests for the Task Board `assignee: localllm` document-update route
+# (BOXP-277). A fake OpenAI-compatible server (babashka http-kit) stands in for
+# llama-server; fake claude / codex CLIs record any start so the tests can prove
+# the route never falls back to a cloud agent.
+
+unset CODEX_TASK_BOARD_CLAUDE_BIN
+unset CODEX_TASK_BOARD_LOCALLLM_BASE_URL CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS
+unset CODEX_TASK_BOARD_LOCALLLM_TIMEOUT_SECONDS CODEX_TASK_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS CODEX_TASK_BOARD_LOCALLLM_RETRIES
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
+TMP="$(mktemp -d)"
+PORT="$(( 20000 + RANDOM % 20000 ))"
+MODE_FILE="${TMP}/mode"
+REQ_LOG="${TMP}/requests.log"
+CONFLICT_FILE="${TMP}/conflict-target"
+echo normal >"${MODE_FILE}"
+: >"${REQ_LOG}"
+: >"${CONFLICT_FILE}"
+
+fail() { echo "error: $*" >&2; exit 1; }
+assert_file_contains() { grep -Eq -- "$2" "$1" || fail "expected $1 to match $2"; }
+assert_file_not_contains() { if grep -Eq -- "$2" "$1"; then fail "expected $1 not to match $2"; fi; }
+
+cleanup() { if [[ -n "${SERVER_PID:-}" ]]; then kill "${SERVER_PID}" 2>/dev/null || true; fi; }
+trap cleanup EXIT
+
+# ---------------------------------------------------------------------------
+# Fake OpenAI-compatible server
+# ---------------------------------------------------------------------------
+cat >"${TMP}/fake-llm.bb" <<'EOF'
+(require '[org.httpkit.server :as srv] '[cheshire.core :as json] '[clojure.string :as str])
+(def port (Long/parseLong (System/getenv "FAKE_LLM_PORT")))
+(def mode-file (System/getenv "FAKE_LLM_MODE_FILE"))
+(def req-log (System/getenv "FAKE_LLM_REQ_LOG"))
+(def conflict-file (System/getenv "FAKE_LLM_CONFLICT_FILE"))
+(def target "Projects/task-board-localllm-docs/pilot/runbook.md")
+(defn proposal [& {:keys [decision reason changes]}]
+  (json/generate-string {:decision (or decision "apply") :reason (or reason "") :summary "現状節を更新しました。"
+                         :changes (or changes [{:path target :op "replace-section" :heading "## 現状" :old_text ""
+                                                :new_text "- 稼働バージョンは v1.3 で、待受ポートは 8081 です。\n- 監視は [[Infrastructure/sample-dashboard|sample-dashboard]] を参照。"}])}))
+(defn respond [content finish]
+  {:status 200 :headers {"Content-Type" "application/json"}
+   :body (json/generate-string {:id (str "chatcmpl-" (System/nanoTime)) :model "gemma4-26b" :object "chat.completion"
+                                :choices [{:index 0 :finish_reason finish :message {:role "assistant" :content content}}]
+                                :usage {:prompt_tokens 1000 :completion_tokens (count content) :total_tokens (+ 1000 (count content))}})})
+(defn sse [m] (str "data: " (json/generate-string m) "\n\n"))
+(defn respond-stream [req pieces {:keys [cut?]}]
+  (let [base {:id (str "chatcmpl-" (System/nanoTime)) :model "gemma4-26b" :object "chat.completion.chunk"}]
+    (srv/as-channel req
+      {:on-open (fn [ch]
+                  (srv/send! ch {:status 200 :headers {"Content-Type" "text/event-stream"}} false)
+                  (future
+                    (try
+                      (doseq [p pieces]
+                        (srv/send! ch (sse (assoc base :choices [{:index 0 :delta {:content p} :finish_reason nil}])) false))
+                      (when-not cut?
+                        (srv/send! ch (sse (assoc base :choices [{:index 0 :delta {} :finish_reason "stop"}])) false)
+                        (srv/send! ch (str (sse (assoc base :choices [] :usage {:prompt_tokens 1000 :completion_tokens 50 :total_tokens 1050})) "data: [DONE]\n\n") false))
+                      (catch Throwable _ nil))
+                    (srv/close ch)))})))
+(defn handler [req]
+  (let [uri (:uri req)
+        raw (if (:body req) (slurp (:body req)) "{}")
+        parsed (json/parse-string raw true)
+        mode (str/trim (slurp mode-file))
+        user (:content (last (:messages parsed)))]
+    (spit req-log (str (pr-str {:uri uri :model (:model parsed) :mode mode :schema? (some? (:response_format parsed))
+                                :stream? (:stream parsed) :revise? (str/includes? (str user) "Review にあり")
+                                :mentions-secret? (str/includes? (str user) "FIXTURE-DECOY")
+                                :auth (get-in req [:headers "authorization"])}) "\n") :append true)
+    (cond
+      (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
+      (= mode "normal") (respond (proposal) "stop")
+      (= mode "stream") (let [p (proposal)] (respond-stream req [(subs p 0 40) (subs p 40)] {}))
+      (= mode "stream-cut") (let [p (proposal)] (respond-stream req [(subs p 0 40)] {:cut? true}))
+      (= mode "needs-human") (respond (proposal :decision "needs-human" :reason "依頼が曖昧です" :changes []) "stop")
+      (= mode "invalid-json") (respond "{\"decision\": \"apply\", \"changes\": [" "stop")
+      (= mode "empty") (respond "" "stop")
+      (= mode "length") (respond "{\"decision\":\"apply\"" "length")
+      (= mode "fake-marker") (respond (proposal :changes [{:path target :op "append-section" :heading "## 完了" :old_text "" :new_text "TASK_BOARD_RESULT: done"}]) "stop")
+      (= mode "undeclared-path") (respond (proposal :changes [{:path "Infrastructure/prod.md" :op "append-section" :heading "## x" :old_text "" :new_text "y"}]) "stop")
+      (= mode "frontmatter") (respond (proposal :changes [{:path target :op "replace-text" :heading "" :old_text "updated: 2026-09-30" :new_text "updated: 2026-10-23"}]) "stop")
+      (= mode "drop-link") (respond (proposal :changes [{:path target :op "replace-section" :heading "## 注意" :old_text "" :new_text "特になし"}]) "stop")
+      (= mode "error500") {:status 500 :body "boom"}
+      (= mode "headers-stall") (do (Thread/sleep 6000) (respond (proposal) "stop"))
+      (= mode "slow") (do (Thread/sleep 4000) (respond (proposal) "stop"))
+      (= mode "conflict") (do (spit (str/trim (slurp conflict-file)) "---\ntitle: edited by human\n---\n\n# runbook\n\n## 現状\n\n人間が同時に編集した。\n")
+                              (respond (proposal) "stop"))
+      :else (respond (proposal) "stop"))))
+(srv/run-server handler {:port port})
+(println "fake llm listening" port)
+@(promise)
+EOF
+
+FAKE_LLM_PORT="${PORT}" FAKE_LLM_MODE_FILE="${MODE_FILE}" FAKE_LLM_REQ_LOG="${REQ_LOG}" FAKE_LLM_CONFLICT_FILE="${CONFLICT_FILE}" \
+  bb "${TMP}/fake-llm.bb" >"${TMP}/fake-llm.log" 2>&1 &
+SERVER_PID=$!
+for _ in $(seq 1 50); do
+  if curl -s -o /dev/null "http://127.0.0.1:${PORT}/v1/models"; then break; fi
+  sleep 0.2
+done
+
+# ---------------------------------------------------------------------------
+# Fakes for cloud CLIs: any start is a failure of the "no cloud fallback" rule.
+# ---------------------------------------------------------------------------
+BIN="${TMP}/bin"
+mkdir -p "${BIN}"
+for cli in claude codex; do
+  cat >"${BIN}/${cli}" <<EOF
+#!/usr/bin/env bash
+echo "${cli} started" >>"${TMP}/cloud-starts.log"
+echo "TASK_BOARD_RESULT: done"
+EOF
+  chmod +x "${BIN}/${cli}"
+done
+
+# ---------------------------------------------------------------------------
+# Vault helpers
+# ---------------------------------------------------------------------------
+PILOT="Projects/task-board-localllm-docs/pilot"
+
+make_vault() {
+  local vault="$1"
+  mkdir -p "${vault}/Boards" "${vault}/Tickets" "${vault}/${PILOT}" "${vault}/Infrastructure" "${vault}/Secret"
+  cat >"${vault}/${PILOT}/runbook.md" <<'EOF'
+---
+title: runbook
+updated: 2026-09-30
+---
+
+# runbook
+
+## 概要
+
+説明。[[Projects/task-board-localllm-docs/refs/source-a|A]] を参照。
+
+## 現状
+
+- 稼働バージョンは v1.2 で、待受ポートは 8080 です。
+
+## 注意
+
+- [[Projects/task-board-localllm-docs/refs/source-b|B]] に従う。
+EOF
+  printf -- '---\ntitle: prod\n---\n\n# prod\n' >"${vault}/Infrastructure/prod.md"
+  printf -- 'FIXTURE-DECOY-VALUE\n' >"${vault}/Secret/keys.md"
+  ln -s "${vault}/Secret/keys.md" "${vault}/${PILOT}/link.md"
+}
+
+write_board() {
+  local vault="$1" lane="$2" body="$3"
+  {
+    printf '# Task Board\n\n## Backlog\n\n'
+    [[ "${lane}" == Backlog ]] && printf '%s\n' "${body}"
+    printf '\n## Ready\n\n'
+    [[ "${lane}" == Ready ]] && printf '%s\n' "${body}"
+    printf '\n## In Progress\n\n'
+    [[ "${lane}" == "In Progress" ]] && printf '%s\n' "${body}"
+    printf '\n## Blocked\n\n'
+    [[ "${lane}" == Blocked ]] && printf '%s\n' "${body}"
+    printf '\n## Review\n\n'
+    [[ "${lane}" == Review ]] && printf '%s\n' "${body}"
+    printf '\n## Done\n\n'
+  } >"${vault}/Boards/Task Board.md"
+}
+
+write_ticket() {
+  local vault="$1" ticket="$2" status="$3" assignee="$4" docs_target="${5-}"
+  {
+    printf -- '---\nid: %s\ntype: task\nstatus: %s\npriority: medium\nassignee: %s\nrepo:\n' "${ticket}" "${status}" "${assignee}"
+    if [[ -n "${docs_target}" ]]; then printf 'docs-target: %s\n' "${docs_target}"; fi
+    printf -- 'closed:\n---\n\n# %s: docs test\n\n## Summary\n\nrunbook の現状節を v1.3 / 8081 に更新する。\n\n## Acceptance Criteria\n\n- [ ] 更新済み\n\n## Context\n\n- 関連ノート: [[Projects/task-board-localllm-docs/pilot/runbook]]\n\n## Plan\n\n- [ ] 作業\n\n## Notes\n\n- 2026-10-23: 開始\n' "${ticket}"
+  } >"${vault}/Tickets/${ticket}.md"
+}
+
+run_tick() {
+  local vault="$1" state="$2"
+  shift 2
+  PATH="${BIN}:$PATH" \
+  CODEX_TASK_BOARD_VAULT="${vault}" \
+  CODEX_TASK_BOARD_ROOT="${state}" \
+  CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" \
+  CODEX_TASK_BOARD_LOCALLLM_RETRIES="${CODEX_TASK_BOARD_LOCALLLM_RETRIES_OVERRIDE:-1}" \
+  CODEX_TASK_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS="${IDLE_OVERRIDE:-600}" \
+  CODEX_TASK_BOARD_LOCALLLM_TIMEOUT_SECONDS="${TOTAL_OVERRIDE:-1800}" \
+  "$@" bb "${RUNNER}" tick
+}
+
+setup() {
+  CASE_DIR="$(mktemp -d "${TMP}/case.XXXX")"
+  VAULT="${CASE_DIR}/vault"
+  STATE="${CASE_DIR}/state"
+  make_vault "${VAULT}"
+  : >"${REQ_LOG}"
+  rm -f "${TMP}/cloud-starts.log"
+}
+
+assert_no_cloud() { [[ ! -e "${TMP}/cloud-starts.log" ]] || fail "cloud CLI was started: $(cat "${TMP}/cloud-starts.log")"; }
+assert_blocked() {
+  local ticket="$1" reason_re="$2"
+  assert_file_contains "${VAULT}/Boards/Task Board.md" "\[\[Tickets/${ticket}\|.*status::blocked"
+  assert_file_contains "${VAULT}/Tickets/${ticket}.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/${ticket}.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/${ticket}.md" "localllm docs run .* は変更を適用せず停止しました.*${reason_re}"
+  assert_file_contains "${VAULT}/Tickets/${ticket}.md" 'cloud への切替はしません'
+}
+assert_runbook_unchanged() {
+  grep -q 'v1.2' "${VAULT}/${PILOT}/runbook.md" || fail "runbook should be unchanged"
+  grep -q '^updated: 2026-09-30$' "${VAULT}/${PILOT}/runbook.md" || fail "runbook frontmatter should be unchanged"
+}
+request_count() { wc -l <"${REQ_LOG}" | tr -d ' '; }
+
+# ---------------------------------------------------------------------------
+# Tests
+# ---------------------------------------------------------------------------
+
+test_apply_moves_to_review_without_cloud() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-700|BOXP-700: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-700 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-700\|.*status::review'
+  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" 'localllm docs run .* が 1 ファイルを更新し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" 'rollback: '
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '8081'
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.2'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^updated: 2026-09-30$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'source-a\|A'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 注意$'
+  assert_file_contains "${REQ_LOG}" ':schema\? true'
+  assert_file_contains "${REQ_LOG}" ':stream\? true'
+  assert_file_contains "${REQ_LOG}" ':mentions-secret\? false'
+  [[ "$(request_count)" == 1 ]] || fail "expected exactly one request, got $(request_count)"
+  local run_dir summary
+  run_dir="$(find "${STATE}/runs/BOXP-700" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  summary="${run_dir}/summary.edn"
+  assert_file_contains "${summary}" ':result "review"'
+  assert_file_contains "${run_dir}/last-message.md" '^TASK_BOARD_REVIEW_PR: none$'
+  assert_file_contains "${run_dir}/last-message.md" '^TASK_BOARD_RESULT: review$'
+  assert_file_contains "${run_dir}/localllm-audit.edn" ':status :review'
+  assert_file_contains "${run_dir}/localllm-audit.edn" ':after-sha256'
+  assert_file_not_contains "${run_dir}/llm-evidence.edn" 'v1\.3'
+  grep -q 'v1.2' "${run_dir}/backup/${PILOT}/runbook.md" || fail "backup should hold the original"
+  [[ ! -e "${run_dir}/events.jsonl" ]] || fail "no agent events expected"
+  # rollback restores the original while the file is untouched since the run
+  local run_id
+  run_id="$(basename "${run_dir}")"
+  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-700 "${run_id}" >"${CASE_DIR}/rollback.out"
+  assert_file_contains "${CASE_DIR}/rollback.out" ':status :restored'
+  grep -q 'v1.2' "${VAULT}/${PILOT}/runbook.md" || fail "rollback should restore v1.2"
+  # a second rollback is a no-op because the content no longer matches the run
+  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-700 "${run_id}" >"${CASE_DIR}/rollback2.out"
+  assert_file_contains "${CASE_DIR}/rollback2.out" ':status :skipped'
+  # a further tick does nothing: Review + assignee boxp is not a candidate
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2"
+  [[ "$(request_count)" == 1 ]] || fail "Review/boxp card must not re-run"
+}
+
+test_stream_response_is_applied() {
+  setup; echo stream >"${MODE_FILE}"
+  write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-701|BOXP-701: docs]] #ticket status::in-progress"
+  write_ticket "${VAULT}" BOXP-701 in-progress localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-701.md" '^status: review$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+}
+
+test_missing_opt_in_blocks_without_request() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-702|BOXP-702: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-702 ready localllm ""
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_blocked BOXP-702 'docs-target'
+  [[ "$(request_count)" == 0 ]] || fail "no model request expected without opt-in"
+  assert_runbook_unchanged
+}
+
+test_backlog_localllm_is_not_groomed() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-703|BOXP-703: docs]] #ticket status::backlog"
+  write_ticket "${VAULT}" BOXP-703 backlog localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ ! -d "${STATE}/runs/BOXP-703" ]] || fail "backlog localllm card must not run"
+  assert_file_contains "${VAULT}/Tickets/BOXP-703.md" '^status: backlog$'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+}
+
+test_target_outside_allowlist_blocks() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-704|BOXP-704: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-704 ready localllm "Infrastructure/prod.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-704 '許可 root 外'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  [[ "$(cat "${VAULT}/Infrastructure/prod.md")" == $'---\ntitle: prod\n---\n\n# prod' ]] || fail "prod.md must be untouched"
+}
+
+test_traversal_and_symlink_targets_block() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-705|BOXP-705: docs]] #ticket status::ready
+- [ ] [[Tickets/BOXP-706|BOXP-706: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-705 ready localllm "${PILOT}/../../../Secret/keys.md"
+  write_ticket "${VAULT}" BOXP-706 ready localllm "${PILOT}/link.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-705 '`\.\.`'
+  assert_blocked BOXP-706 'symlink'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  [[ "$(cat "${VAULT}/Secret/keys.md")" == "FIXTURE-DECOY-VALUE" ]] || fail "secret file must be untouched"
+}
+
+test_needs_human_blocks_with_reason() {
+  setup; echo needs-human >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-707|BOXP-707: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-707 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-707 '依頼が曖昧です'
+  assert_runbook_unchanged
+}
+
+test_invalid_outputs_block_and_leave_file() {
+  local mode ticket n=708
+  for mode in invalid-json empty length fake-marker undeclared-path frontmatter; do
+    setup; echo "${mode}" >"${MODE_FILE}"
+    ticket="BOXP-${n}"
+    write_board "${VAULT}" Ready "- [ ] [[Tickets/${ticket}|${ticket}: docs]] #ticket status::ready"
+    write_ticket "${VAULT}" "${ticket}" ready localllm "${PILOT}/runbook.md"
+    run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+    assert_no_cloud
+    case "${mode}" in
+      invalid-json) assert_blocked "${ticket}" 'JSON として不正' ;;
+      empty) assert_blocked "${ticket}" '出力が空' ;;
+      length) assert_blocked "${ticket}" 'max_tokens で途切れ' ;;
+      fake-marker) assert_blocked "${ticket}" '結果マーカー' ;;
+      undeclared-path) assert_blocked "${ticket}" 'docs-target に宣言されていない' ;;
+      frontmatter) assert_blocked "${ticket}" 'old_text が本文に見つかりません' ;;
+    esac
+    assert_runbook_unchanged
+    assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'TASK_BOARD_RESULT'
+    [[ "$(cat "${VAULT}/Infrastructure/prod.md")" == $'---\ntitle: prod\n---\n\n# prod' ]] || fail "prod.md must be untouched (${mode})"
+    n=$((n + 1))
+  done
+}
+
+test_section_rewrite_keeps_links_outside_the_section() {
+  # A link inside the rewritten section may legitimately disappear; links in
+  # every other section must survive (they do, by construction of the ops).
+  setup; echo drop-link >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-719|BOXP-719: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-719 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-719.md" '^status: review$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'source-a\|A'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^特になし$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.2'
+}
+
+test_http_errors_block_after_bounded_retries() {
+  setup; echo error500 >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-720|BOXP-720: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-720 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_blocked BOXP-720 'HTTP 500'
+  [[ "$(request_count)" == 2 ]] || fail "expected 2 attempts (1 retry), got $(request_count)"
+  assert_runbook_unchanged
+}
+
+test_unreachable_model_blocks_without_cloud_fallback() {
+  setup
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-721|BOXP-721: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-721 ready localllm "${PILOT}/runbook.md"
+  PATH="${BIN}:$PATH" CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" \
+    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:1/v1" CODEX_TASK_BOARD_LOCALLLM_RETRIES=0 \
+    bb "${RUNNER}" tick >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_blocked BOXP-721 'localllm に接続できません'
+  assert_runbook_unchanged
+}
+
+test_idle_timeout_blocks() {
+  setup; echo headers-stall >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-722|BOXP-722: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-722 ready localllm "${PILOT}/runbook.md"
+  IDLE_OVERRIDE=2 TOTAL_OVERRIDE=3 run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-722 '秒以内に応答を開始しませんでした'
+  assert_runbook_unchanged
+}
+
+test_stream_cut_blocks() {
+  setup; echo stream-cut >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-723|BOXP-723: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-723 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-723 '途中で途切れました'
+  assert_runbook_unchanged
+}
+
+test_concurrent_edit_is_detected_and_not_overwritten() {
+  setup; echo conflict >"${MODE_FILE}"
+  printf '%s\n' "${VAULT}/${PILOT}/runbook.md" >"${CONFLICT_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-724|BOXP-724: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-724 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-724 '競合'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '人間が同時に編集した'
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+}
+
+test_review_lane_reruns_as_revision() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-725|BOXP-725: docs]] #ticket status::review"
+  write_ticket "${VAULT}" BOXP-725 review localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${REQ_LOG}" ':revise\? true'
+  assert_file_contains "${VAULT}/Tickets/BOXP-725.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-725.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+}
+
+test_tick_ticket_filter_claims_only_one_card() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-726|BOXP-726: docs]] #ticket status::ready
+- [ ] [[Tickets/BOXP-727|BOXP-727: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-726 ready localllm "${PILOT}/runbook.md"
+  write_ticket "${VAULT}" BOXP-727 ready localllm "${PILOT}/runbook.md"
+  PATH="${BIN}:$PATH" CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" \
+    CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" \
+    bb "${RUNNER}" tick --ticket BOXP-727 >"${CASE_DIR}/out"
+  [[ ! -d "${STATE}/runs/BOXP-726" ]] || fail "filtered-out card must not run"
+  [[ -d "${STATE}/runs/BOXP-727" ]] || fail "selected card must run"
+  assert_file_contains "${VAULT}/Tickets/BOXP-726.md" '^status: ready$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-727.md" '^status: review$'
+  if bb "${RUNNER}" tick --bogus BOXP-727 >/dev/null 2>&1; then fail "unknown tick flag must be rejected"; fi
+}
+
+test_parallel_ticks_run_once_per_card() {
+  setup; echo slow >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-728|BOXP-728: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-728 ready localllm "${PILOT}/runbook.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out1" &
+  local p1=$!
+  sleep 1
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2" &
+  local p2=$!
+  wait "${p1}" "${p2}"
+  [[ "$(find "${STATE}/runs/BOXP-728" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == 1 ]] || fail "expected a single run under concurrent ticks"
+  [[ "$(request_count)" == 1 ]] || fail "expected one model request under concurrent ticks, got $(request_count)"
+  assert_file_contains "${VAULT}/Tickets/BOXP-728.md" '^status: review$'
+}
+
+for t in \
+  test_apply_moves_to_review_without_cloud \
+  test_stream_response_is_applied \
+  test_missing_opt_in_blocks_without_request \
+  test_backlog_localllm_is_not_groomed \
+  test_target_outside_allowlist_blocks \
+  test_traversal_and_symlink_targets_block \
+  test_needs_human_blocks_with_reason \
+  test_invalid_outputs_block_and_leave_file \
+  test_section_rewrite_keeps_links_outside_the_section \
+  test_http_errors_block_after_bounded_retries \
+  test_unreachable_model_blocks_without_cloud_fallback \
+  test_idle_timeout_blocks \
+  test_stream_cut_blocks \
+  test_concurrent_edit_is_detected_and_not_overwritten \
+  test_review_lane_reruns_as_revision \
+  test_tick_ticket_filter_claims_only_one_card \
+  test_parallel_ticks_run_once_per_card; do
+  echo "== ${t}"
+  "${t}"
+done
+echo "localllm docs tests passed"
