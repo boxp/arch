@@ -37,3 +37,11 @@
 ## やらないこと
 
 - 新モデル download / GPU 二重 load / driver・kernel 変更 / 推論 tuning / vector DB 等の新検索基盤。認証追加 / 課金切替 / 本番インフラ変更 / 既存票の再実行 / lock 強制削除 / 他 agent 中断 / 全 vault 無条件更新。docs-only PR。
+
+## 結果（2026-10-23、詳細は vault `Projects/task-board-localllm-docs/evaluation.md`）
+
+- 単一ノート 12 ケース × 2 反復: H3 adapter v4 21/24（安全ケース再実行 v4.2 6/6）、H2 全文書き換え 10/12（不採用）、H1 pi CLI は Task Board 形式 prompt で無出力 timeout のため測定不能（不採用）。
+- 主用途（多数資料 → 別ノート）9 ケース × 2 反復: 正解資料付与 4/4（S・L）、自力探索 S 規模 4/4、M/L 規模 0/4 → v4.1（runner の自動読取）で 2/4、矛盾・不足での停止 4/4、同名混同 2/2、採用 ADR の出典付き統合 2/2。旧版・却下・検討中・予定・別プロジェクトの誤採用は 0、無言欠落は 0。
+- 観測した危険挙動と対策: JSON grammar 下の暴走生成（6144 token / 568 秒）→ 繰り返し検出で打ち切り・max_tokens 到達は再提案なし。秘密転記要求でプレースホルダ節を追加して偽成功 → 認証情報語彙の追記を executor が遮断。表の孤立行・見出し重複 → executor で結合・除去。既存見出しへの append-section → 追記として扱う。
+- E2E（配備前、Pod 内 `tick --ticket BOXP-278`、実 vault の専用テストノート + 5 件の専用参照ノート）: 1 回目は executor の検査で Blocked（未適用）、修正後の 2 回目で Review 停止・正しい更新・出典記録を確認。Done には遷移していない。
+- 採否: 文書更新専用の限定採用（明示 opt-in、pilot root、Review 必須）。50 件超 corpus の自力探索は下書き専用。配備（merge → image → lolice bump → Pod 再作成）は未反映。
