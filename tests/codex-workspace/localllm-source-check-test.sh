@@ -12,9 +12,9 @@ trap 'rm -rf "${TMP}"' EXIT
 
 fail() { echo "error: $*" >&2; exit 1; }
 
-write_audit() {  # $1 file, $2 status, $3 read-paths edn vector, $4 sources edn vector
+write_audit() {  # $1 file, $2 status, $3 read-paths edn vector, $4 sources edn vector, [$5 mode]
   cat >"$1" <<EDN
-{:ticket-id "BOXP-0" :run-id "run-1" :status $2 :mode "create" :docs-kind "monster"
+{:ticket-id "BOXP-0" :run-id "run-1" :status $2 :mode "${5:-create}" :docs-kind "monster"
  :docs-sources ["World"] :sources $4
  :summary "SECRET-SUMMARY-MUST-NOT-PRINT"
  :create {:path "Projects/task-board-localllm-docs/proposals/monsters/x.md"}
@@ -57,6 +57,13 @@ grep -q "FAIL status-review" <<<"${out}" || fail "expected status failure: ${out
 grep -q "FAIL sources-allowed: outside-allow=1" <<<"${out}" || fail "expected outside source failure: ${out}"
 grep -q "FAIL sources-were-read: cited-but-unread=1" <<<"${out}" || fail "expected unread source failure: ${out}"
 echo "PASS: source outside the allowed folder and non-review status fail"
+
+# 4b. FAIL: a propose / transcribe audit never passes the create check.
+write_audit "${TMP}/propose.edn" ':review' '["World/chars/a.md"]' '["World/chars/a.md"]' propose
+set +e; out="$(bb "${CHECK}" "${TMP}/propose.edn" --allow World)"; rc=$?; set -e
+[[ "${rc}" -eq 1 ]] || fail "expected exit 1 for non-create mode, got ${rc}: ${out}"
+grep -q 'FAIL mode-create: mode="propose"' <<<"${out}" || fail "expected mode failure: ${out}"
+echo "PASS: non-create audit fails"
 
 # 5. JSON output carries the same verdict and no text fields; usage errors exit 2.
 out="$(bb "${CHECK}" "${TMP}/ok.edn" --allow World --json)"

@@ -15,7 +15,8 @@
 ;;   * every required note (the world / monster rules the request named) is in
 ;;     the read list — a `search` hit alone does not count;
 ;;   * at least one cited source exists and every cited source was read;
-;;   * the run reached :review (a note was created / replaced).
+;;   * the audit is a `docs-mode: create` run that reached :review (a note was
+;;     created / replaced) — a transcribe / propose audit never passes.
 ;;
 ;; It prints only vault-relative paths, counts and PASS / FAIL lines; it never
 ;; prints `:summary`, evidence text, the model's name / body or any heading.
@@ -88,7 +89,9 @@
         sources-forbidden (vec (filter #(forbidden? % forbid) sources))
         sources-unread (vec (remove #(contains? read-set (normalize %)) sources))
         status (:status audit)
-        checks [{:id :status-review :pass? (= :review (keyword (name (or status "none"))))
+        checks [{:id :mode-create :pass? (= "create" (str (:mode audit)))
+                 :detail (str "mode=" (pr-str (:mode audit)))}
+                {:id :status-review :pass? (= :review (keyword (name (or status "none"))))
                  :detail (str "status=" (pr-str status))}
                 {:id :sources-present :pass? (pos? (count sources))
                  :detail (str "sources=" (count sources))}
