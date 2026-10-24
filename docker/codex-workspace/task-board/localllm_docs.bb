@@ -96,9 +96,19 @@
 (defn- write-roots-config []
   (vec (remove #(= % vault-root-marker) (split-list (env "CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS" default-docs-roots)))))
 
+;; BOXP-294: a ticket may pick one of the models the llama-server router serves
+;; (`docs-model:` frontmatter). `run-docs-edit!` validates the choice against the
+;; router's model list and binds it here for the whole run, so every request,
+;; audit and evidence of the run carries the selected id. nil = the deployment
+;; default (`CODEX_TASK_BOARD_LOCALLLM_MODEL`, Gemma 4), which stays unchanged.
+(def ^:dynamic *ticket-model* nil)
+
 (defn config []
   {:base-url (str/replace (env "CODEX_TASK_BOARD_LOCALLLM_BASE_URL" default-base-url) #"/+$" "")
-   :model (env "CODEX_TASK_BOARD_LOCALLLM_MODEL" default-model)
+   :model (or *ticket-model* (env "CODEX_TASK_BOARD_LOCALLLM_MODEL" default-model))
+   ;; Optional allowlist of ids a ticket may select with `docs-model:`. Empty =
+   ;; any id the router lists. Never widens what the server serves.
+   :models (split-list (env "CODEX_TASK_BOARD_LOCALLLM_MODELS" ""))
    :api-key (env "CODEX_TASK_BOARD_LOCALLLM_API_KEY" "local-llm")
    :timeout-ms (* 1000 (env-long "CODEX_TASK_BOARD_LOCALLLM_TIMEOUT_SECONDS" 1800))
    :idle-timeout-ms (* 1000 (env-long "CODEX_TASK_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS" 600))
@@ -2829,7 +2839,7 @@
                       :elapsed-ms 0}
                      (select-keys m [:category :reason :review-instruction]))]
     (write-audit! run-dir audit)
-    (assoc m :status :blocked :audit-path (str (fs/path run-dir "localllm-audit.edn")))))
+    (assoc m :status :blocked :model (:model cfg) :audit-path (str (fs/path run-dir "localllm-audit.edn")))))
 
 (defn- pin-frontmatter
   "Frontmatter the run proceeds with: the inferred mode / target are added so
@@ -2838,6 +2848,79 @@
   (cond-> frontmatter
     (not (#{:declared :target-declared} how)) (assoc :docs-mode mode)
     target (assoc :docs-target target)))
+
+;; ---------------------------------------------------------------------------
+;; Model selection (`docs-model:`, BOXP-294)
+;; ---------------------------------------------------------------------------
+
+(def model-id-pattern #"[A-Za-z0-9][A-Za-z0-9._:-]{0,63}")
+
+(defn docs-model-declared
+  "Ticket frontmatter `docs-model:` trimmed, or nil when absent / blank."
+  [frontmatter]
+  (let [raw (str/trim (str (or (:docs-model frontmatter) (get frontmatter "docs-model") "")))]
+    (when-not (str/blank? raw) raw)))
+
+(defn served-model-ids
+  "Ids the OpenAI-compatible server lists under GET {base-url}/models.
+  Returns {:ok? true :ids #{...}} or {:ok? false :reason}. Bounded by the
+  idle timeout; never throws."
+  [cfg]
+  (let [url (str (:base-url cfg) "/models")]
+    (try
+      (let [response (http/get url {:headers (cond-> {"Accept" "application/json"}
+                                               (seq (:api-key cfg)) (assoc "Authorization" (str "Bearer " (:api-key cfg))))
+                                    :timeout (min 30000 (:idle-timeout-ms cfg))
+                                    :throw false})]
+        (if (= 200 (:status response))
+          (let [parsed (json/parse-string (str (:body response)) true)
+                ids (->> (concat (:data parsed) (:models parsed))
+                         (keep #(or (:id %) (:name %)))
+                         (map str)
+                         set)]
+            (if (seq ids)
+              {:ok? true :ids ids}
+              {:ok? false :reason "localllm の model 一覧が空です"}))
+          {:ok? false :reason (str "localllm の model 一覧を取得できません（HTTP " (:status response) "）")}))
+      (catch Exception e
+        {:ok? false :reason (str "localllm の model 一覧を取得できません: "
+                                 (sanitize-error (str (.getName (class e)) ": " (.getMessage e))))}))))
+
+(defn resolve-docs-model
+  "Model id the run uses. Without `docs-model:` it is the deployment default
+  ({:how :default}). A declared id must be well-formed, inside the optional
+  allowlist (`CODEX_TASK_BOARD_LOCALLLM_MODELS`) and served by the router
+  (GET /models); otherwise {:ok? false :category :reason} without any model
+  call. There is no fallback to the default: an unknown id stops the run, so a
+  ticket that asked for a specific model is never answered by another one."
+  [cfg frontmatter]
+  (let [declared (docs-model-declared frontmatter)
+        allow (set (:models cfg))]
+    (cond
+      (nil? declared)
+      {:ok? true :model (:model cfg) :how :default}
+
+      (not (re-matches model-id-pattern declared))
+      {:ok? false :category "localllm-unknown-model"
+       :reason (str "docs-model の値 " (untrusted declared 80) " は model id として不正です（英数字・. _ : - のみ、64 字以内）。既定モデルへは切り替えません")}
+
+      (and (seq allow) (not (contains? allow declared)))
+      {:ok? false :category "localllm-unknown-model"
+       :reason (str "docs-model「" declared "」はこの runner で許可された model ではありません（許可: " (str/join ", " (sort allow)) "）。既定モデルへは切り替えません")}
+
+      :else
+      (let [served (served-model-ids cfg)]
+        (cond
+          (not (:ok? served))
+          {:ok? false :category "localllm-unavailable"
+           :reason (str "docs-model「" declared "」を確認できませんでした（" (:reason served) "）。既定モデルへは切り替えません")}
+
+          (not (contains? (:ids served) declared))
+          {:ok? false :category "localllm-unknown-model"
+           :reason (str "docs-model「" declared "」は localllm に登録されていません（登録済み: " (str/join ", " (sort (:ids served))) "）。既定モデルへは切り替えません")}
+
+          :else
+          {:ok? true :model declared :how :declared})))))
 
 (defn run-docs-edit!
   "Full route for one ticket run. Returns
@@ -2861,22 +2944,31 @@
   file (default: `<root>/locks/localllm-docs-write.lock`)."
   [{:keys [vault ticket-id frontmatter ticket-text action] :as opts}]
   (let [cfg (config)
-        mode-r (resolve-docs-mode cfg vault ticket-id frontmatter ticket-text)
-        instruction (when (= :revise action) (review-instruction-state ticket-text))]
-    (cond
-      (not (:ok? mode-r))
-      (finish-without-model opts (select-keys mode-r [:category :reason]))
+        model-r (resolve-docs-model cfg frontmatter)]
+    (if-not (:ok? model-r)
+      ;; The audit records the id the ticket asked for, not the default it did
+      ;; not get (no silent fallback, BOXP-294).
+      (binding [*ticket-model* (let [d (docs-model-declared frontmatter)]
+                                 (when (and d (re-matches model-id-pattern d)) d))]
+        (finish-without-model opts (select-keys model-r [:category :reason])))
+      ;; Every request / audit / evidence of this run carries the selected id.
+      (binding [*ticket-model* (:model model-r)]
+        (let [mode-r (resolve-docs-mode cfg vault ticket-id frontmatter ticket-text)
+              instruction (when (= :revise action) (review-instruction-state ticket-text))]
+          (cond
+            (not (:ok? mode-r))
+            (finish-without-model opts (select-keys mode-r [:category :reason]))
 
-      (and instruction (not (:new-instruction? instruction)))
-      (finish-without-model opts {:category "localllm-no-new-instruction" :mode (:mode mode-r) :how (:how mode-r)
-                                  :review-instruction instruction
-                                  :reason "Review の票に前回の localllm 結果より新しい指示が Notes にありません。改稿する内容を Notes 末尾に 1 行書いてから assignee を localllm に戻してください（前回の結果だけでは同じ案を作り直しません）"})
+            (and instruction (not (:new-instruction? instruction)))
+            (finish-without-model opts {:category "localllm-no-new-instruction" :mode (:mode mode-r) :how (:how mode-r)
+                                        :review-instruction instruction
+                                        :reason "Review の票に前回の localllm 結果より新しい指示が Notes にありません。改稿する内容を Notes 末尾に 1 行書いてから assignee を localllm に戻してください（前回の結果だけでは同じ案を作り直しません）"})
 
-      :else
-      (let [opts (assoc opts :frontmatter (pin-frontmatter frontmatter mode-r) :mode-resolution (:how mode-r))]
-        (if (= "create" (:mode mode-r))
-          (run-docs-create! opts)
-          (run-docs-edit* opts))))))
+            :else
+            (let [opts (assoc opts :frontmatter (pin-frontmatter frontmatter mode-r) :mode-resolution (:how mode-r))]
+              (if (= "create" (:mode mode-r))
+                (run-docs-create! opts)
+                (run-docs-edit* opts)))))))))
 
 (defn- template-section-line?
   "A line the ticket template puts in an empty section (unfilled checkbox,
@@ -3076,7 +3168,7 @@
                    ;; Callers render `:reason` into Notes / last-message: any
                    ;; model- or note-derived span is replaced here, the full
                    ;; text stays in the audit only.
-                   (cond-> (assoc m :status status :mode mode :research (research-summary (:research m))
+                   (cond-> (assoc m :status status :mode mode :model (:model cfg) :research (research-summary (:research m))
                                   :audit-path (str (fs/path run-dir "localllm-audit.edn")))
                      (:reason m) (assoc :reason (redact-untrusted (:reason m))))))
         correction-request (fn [why]
@@ -3295,7 +3387,7 @@
                                     (when (:reason m) {:reason (plain-text (:reason m))})
                                     {:research (research-summary (:research m))})]
                    (write-audit! run-dir audit)
-                   (cond-> (assoc m :status status :mode mode :docs-kind kind :research (research-summary (:research m))
+                   (cond-> (assoc m :status status :mode mode :docs-kind kind :model (:model cfg) :research (research-summary (:research m))
                                   :audit-path (str (fs/path run-dir "localllm-audit.edn")))
                      (:reason m) (assoc :reason (redact-untrusted (:reason m))))))
         correction-request (fn [why]

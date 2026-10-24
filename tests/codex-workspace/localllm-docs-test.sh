@@ -44,14 +44,18 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
   (json/generate-string {:decision (or decision "apply") :reason (or reason "") :summary "現状節を更新しました。"
                          :changes (or changes [{:path target :op "replace-section" :heading "## 現状" :old_text ""
                                                 :new_text "- 稼働バージョンは v1.3 で、待受ポートは 8081 です。\n- 監視は [[Infrastructure/sample-dashboard|sample-dashboard]] を参照。"}])}))
+;; Model ids the fake router "serves" (GET /v1/models) and the id of the last
+;; chat request, echoed back like llama-server does (BOXP-294).
+(def served-models ["gemma4-26b" "qwen38-27b"])
+(def req-model (atom "gemma4-26b"))
 (defn respond [content finish]
   {:status 200 :headers {"Content-Type" "application/json"}
-   :body (json/generate-string {:id (str "chatcmpl-" (System/nanoTime)) :model "gemma4-26b" :object "chat.completion"
+   :body (json/generate-string {:id (str "chatcmpl-" (System/nanoTime)) :model @req-model :object "chat.completion"
                                 :choices [{:index 0 :finish_reason finish :message {:role "assistant" :content content}}]
                                 :usage {:prompt_tokens 1000 :completion_tokens (count content) :total_tokens (+ 1000 (count content))}})})
 (defn sse [m] (str "data: " (json/generate-string m) "\n\n"))
 (defn respond-stream [req pieces {:keys [cut? delay-ms]}]
-  (let [base {:id (str "chatcmpl-" (System/nanoTime)) :model "gemma4-26b" :object "chat.completion.chunk"}]
+  (let [base {:id (str "chatcmpl-" (System/nanoTime)) :model @req-model :object "chat.completion.chunk"}]
     (srv/as-channel req
       {:on-open (fn [ch]
                   (srv/send! ch {:status 200 :headers {"Content-Type" "text/event-stream"}} false)
@@ -65,10 +69,22 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                         (srv/send! ch (str (sse (assoc base :choices [] :usage {:prompt_tokens 1000 :completion_tokens 50 :total_tokens 1050})) "data: [DONE]\n\n") false))
                       (catch Throwable _ nil))
                     (srv/close ch)))})))
+(defn models-list [req]
+  ;; GET /v1/models is logged with :uri so a test can prove whether the
+  ;; runner consulted the model list (and that no chat request followed).
+  (spit req-log (str (pr-str {:uri (:uri req) :method (:request-method req)}) "\n") :append true)
+  {:status 200 :headers {"Content-Type" "application/json"}
+   :body (json/generate-string {:object "list" :data (mapv (fn [id] {:id id :object "model" :owned_by "llamacpp"}) served-models)})})
+(declare handler*)
 (defn handler [req]
+  (if (= "/v1/models" (:uri req))
+    (models-list req)
+    (handler* req)))
+(defn handler* [req]
   (let [uri (:uri req)
         raw (if (:body req) (slurp (:body req)) "{}")
         parsed (json/parse-string raw true)
+        _ (when (:model parsed) (reset! req-model (:model parsed)))
         mode (str/trim (slurp mode-file))
         user (:content (last (:messages parsed)))
         schema-name (get-in parsed [:response_format :json_schema :name])
@@ -284,12 +300,13 @@ write_board() {
 }
 
 write_ticket() {
-  local vault="$1" ticket="$2" status="$3" assignee="$4" docs_target="${5-}" docs_sources="${6-}" docs_mode="${7-}"
+  local vault="$1" ticket="$2" status="$3" assignee="$4" docs_target="${5-}" docs_sources="${6-}" docs_mode="${7-}" docs_model="${8-}"
   {
     printf -- '---\nid: %s\ntype: task\nstatus: %s\npriority: medium\nassignee: %s\nrepo:\n' "${ticket}" "${status}" "${assignee}"
     if [[ -n "${docs_target}" ]]; then printf 'docs-target: %s\n' "${docs_target}"; fi
     if [[ -n "${docs_sources}" ]]; then printf 'docs-sources: %s\n' "${docs_sources}"; fi
     if [[ -n "${docs_mode}" ]]; then printf 'docs-mode: %s\n' "${docs_mode}"; fi
+    if [[ -n "${docs_model}" ]]; then printf 'docs-model: %s\n' "${docs_model}"; fi
     printf -- 'closed:\n---\n\n# %s: docs test\n\n## Summary\n\nrunbook の現状節を v1.3 / 8081 に更新する。\n\n## Acceptance Criteria\n\n- [ ] 更新済み\n\n## Context\n\n- 関連ノート: [[Projects/task-board-localllm-docs/pilot/runbook]]\n\n## Plan\n\n- [ ] 作業\n\n## Notes\n\n- 2026-10-23: 開始\n' "${ticket}"
   } >"${vault}/Tickets/${ticket}.md"
 }
@@ -334,6 +351,63 @@ request_count() { wc -l <"${REQ_LOG}" | tr -d ' '; }
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
+
+# BOXP-294: a ticket selects one of the served models with `docs-model:`; the
+# id is checked against GET /v1/models, used for every request and recorded in
+# Notes / audit / evidence. Unknown or disallowed ids stop the run before any
+# chat request (no fallback to the default model).
+test_docs_model_selects_a_served_model() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-740|BOXP-740: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-740 ready localllm "${PILOT}/runbook.md" "" "" "qwen38-27b"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-740\|.*status::review'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
+  assert_file_contains "${REQ_LOG}" ':uri "/v1/models"'
+  assert_file_contains "${REQ_LOG}" ':model "qwen38-27b"'
+  assert_file_not_contains "${REQ_LOG}" ':model "gemma4-26b"'
+  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" 'Review で停止しました.*model=qwen38-27b'
+  local run_dir
+  run_dir="$(find "${STATE}/runs/BOXP-740" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  assert_file_contains "${run_dir}/localllm-audit.edn" ':model "qwen38-27b"'
+  assert_file_contains "${run_dir}/llm-evidence.edn" ':model "qwen38-27b"'
+  assert_file_not_contains "${run_dir}/llm-evidence.edn" ':model "gemma4-26b"'
+}
+
+test_unknown_docs_model_blocks_without_a_model_call() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-741|BOXP-741: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-741 ready localllm "${PILOT}/runbook.md" "" "" "nope-1b"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_blocked BOXP-741 'docs-model「nope-1b」は localllm に登録されていません（登録済み: gemma4-26b, qwen38-27b）。既定モデルへは切り替えません'
+  assert_runbook_unchanged
+  assert_file_contains "${REQ_LOG}" ':uri "/v1/models"'
+  assert_file_not_contains "${REQ_LOG}" '/v1/chat/completions'
+  local run_dir
+  run_dir="$(find "${STATE}/runs/BOXP-741" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  assert_file_contains "${run_dir}/localllm-audit.edn" ':model "nope-1b"'
+  assert_file_contains "${run_dir}/localllm-audit.edn" ':category "localllm-unknown-model"'
+}
+
+test_docs_model_outside_the_allowlist_blocks_before_any_request() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-742|BOXP-742: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-742 ready localllm "${PILOT}/runbook.md" "" "" "qwen38-27b"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MODELS="gemma4-26b" >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_blocked BOXP-742 'docs-model「qwen38-27b」はこの runner で許可された model ではありません（許可: gemma4-26b）'
+  assert_runbook_unchanged
+  [[ "$(request_count)" == 0 ]] || fail "expected no request at all, got $(request_count)"
+  # a malformed id is refused the same way, without reaching the server
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-743|BOXP-743: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-743 ready localllm "${PILOT}/runbook.md" "" "" "../etc"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-743 'docs-model の値 .* は model id として不正です'
+  [[ "$(request_count)" == 0 ]] || fail "expected no request for a malformed id, got $(request_count)"
+}
 
 test_apply_moves_to_review_without_cloud() {
   setup; echo normal >"${MODE_FILE}"
@@ -2231,6 +2305,9 @@ for t in \
   test_propose_heading_only_answer_is_rejected_and_titles_stay_inside_the_section \
   test_propose_without_a_corpus_cites_the_target_and_verifies_against_it \
   test_apply_moves_to_review_without_cloud \
+  test_docs_model_selects_a_served_model \
+  test_unknown_docs_model_blocks_without_a_model_call \
+  test_docs_model_outside_the_allowlist_blocks_before_any_request \
   test_stream_response_is_applied \
   test_missing_opt_in_blocks_without_request \
   test_backlog_legacy_transcribe_ticket_is_groomed_without_a_model_call \
