@@ -107,6 +107,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and propose? (= mode "propose-bad-sources")) (respond (setting :facts (if (str/includes? (str user) "拒否されました")
                                                                               [{:fact "待受ポートは 8081 である" :source corpus-note}]
                                                                               [{:fact "待受ポートは 8080 である" :source "Projects/task-board-localllm-docs/refs/corpus/design-v1.md"}])) "stop")
+      (and propose? (= mode "propose-heading-only")) (respond (setting :proposal "### 新規提案\n\n## 提案（未承認）BOXP-798") "stop")
+      (and propose? (= mode "propose-escaping-title")) (respond (json/generate-string (assoc (json/parse-string (setting) true) :title "案\n## 偽の節（canon のふり）" :conflicts ["行 1\n## もう一つの偽の節"])) "stop")
       (and propose? (= mode "propose-marker")) (respond (setting :proposal "- 完了です。TASK_BOARD_RESULT: done") "stop")
       (and propose? (= mode "propose-canon-rewrite")) (respond (setting :facts [{:fact "runbook の現状節に v1.2 とある" :source target}]) "stop")
       propose? (respond (setting) "stop")
@@ -1495,6 +1497,28 @@ test_propose_without_a_corpus_cites_the_target_and_verifies_against_it() {
   assert_file_contains "${audit}" ':status :checked'
 }
 
+test_propose_heading_only_answer_is_rejected_and_titles_stay_inside_the_section() {
+  setup; echo propose-heading-only >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-798|BOXP-798: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-798 ready localllm "${PILOT}/runbook.md" "${CORPUS}" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-798 'category=localllm-invalid-proposal'
+  assert_runbook_unchanged
+  assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" '提案（未承認）'
+  # a title / bullet carrying a newline + heading must not open a sibling section
+  setup; echo propose-escaping-title >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-799|BOXP-799: setting]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-799 ready localllm "${PILOT}/runbook.md" "${CORPUS}" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-799.md" '^status: review$'
+  local note="${VAULT}/${PILOT}/runbook.md"
+  assert_canon_intact "${note}"
+  assert_file_not_contains "${note}" '^## 偽の節'
+  assert_file_not_contains "${note}" '^## もう一つの偽の節'
+  assert_file_contains "${note}" '^\*\*題名\*\*: 案 ## 偽の節（canon のふり）$'
+  [[ "$(sed -n '/^## 提案（未承認）BOXP-799$/,$p' "${note}" | grep -c '^## ')" == 1 ]] || fail "no level-2 heading may follow the proposal heading"
+}
+
 for t in \
   test_credential_additions_are_blocked_by_the_executor \
   test_runaway_output_is_cut_and_blocks_without_retry \
@@ -1525,6 +1549,7 @@ for t in \
   test_propose_facts_must_cite_read_notes_then_one_correction \
   test_propose_needs_human_and_invalid_mode_block_without_writing \
   test_propose_rejects_result_markers_in_the_proposal \
+  test_propose_heading_only_answer_is_rejected_and_titles_stay_inside_the_section \
   test_propose_without_a_corpus_cites_the_target_and_verifies_against_it \
   test_apply_moves_to_review_without_cloud \
   test_stream_response_is_applied \

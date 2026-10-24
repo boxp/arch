@@ -1063,8 +1063,15 @@
                              (do (swap! dropped inc) (or alias (str/trim target))))))]
     [out @dropped]))
 
+(defn- one-line
+  "Collapse a model string to a single line: a newline followed by `## x`
+  inside a title or bullet would otherwise open a sibling section outside the
+  proposal section (codex review)."
+  [s]
+  (-> (str s) (str/replace #"[\r\n]+" " ") (str/replace #"\s{2,}" " ") str/trim))
+
 (defn- clean-items [xs limit each]
-  (->> xs (filter string?) (map str/trim) (remove str/blank?) (map #(truncate-text % each)) (take limit) vec))
+  (->> xs (filter string?) (map one-line) (remove str/blank?) (map #(truncate-text % each)) (take limit) vec))
 
 (defn render-proposal-section
   "Markdown body of the `## 提案（未承認）<ticket-id>` section (heading line excluded)."
@@ -1092,11 +1099,24 @@
   (let [facts (->> (:canon_facts parsed)
                    (filter map?)
                    (filter #(and (string? (:fact %)) (string? (:source %)) (not (str/blank? (:fact %)))))
-                   (map #(-> % (update :fact (fn [f] (truncate-text (str/trim f) 400))) (update :source normalize-source-path)))
+                   (map #(-> % (update :fact (fn [f] (truncate-text (one-line f) 400))) (update :source normalize-source-path)))
                    (take 30))
         known-facts (vec (filter #(contains? known (:source %)) facts))
-        proposal-text (str/trim (str (:proposal parsed)))
-        title (truncate-text (str/trim (str (:title parsed))) 60)
+        heading (proposal-heading ticket-id)
+        ;; Gemma 4 tends to open the proposal by restating the section heading
+        ;; ("## 提案（未承認）BOXP-N" / "### 新規提案"); drop those leading lines
+        ;; (and turn any other heading into a bold line) BEFORE the emptiness
+        ;; check, so a heading-only answer is rejected rather than applied as
+        ;; an empty proposal (codex review).
+        own-heading? (fn [l] (let [t (heading-text l)]
+                               (and (heading-line? (str/trim l))
+                                    (or (= t (heading-text heading)) (contains? #{"新規提案" "提案" "新しい設定の案"} t)))))
+        proposal-text (->> (str/split-lines (str (:proposal parsed)))
+                           (drop-while #(or (str/blank? %) (own-heading? %)))
+                           (str/join "\n")
+                           strip-md-headings
+                           str/trim)
+        title (truncate-text (one-line (:title parsed)) 60)
         conflicts (clean-items (:conflicts parsed) 12 400)
         questions (clean-items (:questions parsed) 8 400)
         texts (concat [proposal-text title] (map :fact known-facts) conflicts questions)
@@ -1118,17 +1138,7 @@
                     (when (seq facts) (str "。出典として拒否: " (untrusted (str/join ", " (distinct (map :source facts))) 160))))}
 
       :else
-      (let [heading (proposal-heading ticket-id)
-            ;; Gemma 4 tends to open the proposal by restating the section
-            ;; heading ("## 提案（未承認）BOXP-N" / "### 新規提案"); drop those
-            ;; leading lines instead of rendering them as bold text.
-            own-heading? (fn [l] (let [t (heading-text l)]
-                                   (and (heading-line? (str/trim l))
-                                        (or (= t (heading-text heading)) (contains? #{"新規提案" "提案" "新しい設定の案"} t)))))
-            proposal-text (->> (str/split-lines proposal-text)
-                               (drop-while #(or (str/blank? %) (own-heading? %)))
-                               (str/join "\n"))
-            [proposal-text links-dropped] (sanitize-wikilinks (strip-md-headings proposal-text) known)
+      (let [[proposal-text links-dropped] (sanitize-wikilinks proposal-text known)
             existing (when exists? (find-heading target-lines heading))
             op (if (:ok? existing) "replace-section" "append-section")
             render (fn [auto-conflicts]
