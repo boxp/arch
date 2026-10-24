@@ -1174,9 +1174,10 @@ test_ticket_brief_drops_runner_notes_and_marks_the_ticket_as_non_source() {
   \"- 2026-10-24: Blocked transition recorded: ticket=BOXP-790; run=r\\n\"
   \"- 2026-10-24 01:25:18 UTC [kohako-event]: [kohako-event] handled event=e result=silent\\n\"
   \"- 2026-10-24: Codex run 20261024T015020Z-x was marked interrupted after planned workspace shutdown\\n\"
+  \"- 2026-10-24: Codex run を手動で再実行してください\\n\"
   \"- 2026-10-24 01:50:02 UTC [boxp]: 帯は橙を残して\\n\") 15))
 " 2>&1)"
-  [[ "${out}" == *'人の指示 A'* && "${out}" == *'帯は橙を残して'* ]] || fail "human notes must stay in the brief: ${out}"
+  [[ "${out}" == *'人の指示 A'* && "${out}" == *'帯は橙を残して'* && "${out}" == *'Codex run を手動で再実行してください'* ]] || fail "human notes must stay in the brief: ${out}"
   [[ "${out}" != *'Codex task-board run'* && "${out}" != *'localllm docs run'* && "${out}" != *'Blocked transition recorded'* \
      && "${out}" != *'kohako-event'* && "${out}" != *'marked interrupted'* ]] || fail "runner-generated notes must be dropped from the brief: ${out}"
   [[ "${out}" == *'資料ではありません'* && "${out}" == *'出典にはできず'* ]] || fail "the brief must say the ticket body is not a source: ${out}"

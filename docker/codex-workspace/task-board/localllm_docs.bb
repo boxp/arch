@@ -314,7 +314,11 @@
   ;; carry the previous run's result and source paths, which a weak model takes
   ;; for evidence instead of reading the corpus (deployed E2E of BOXP-278,
   ;; 2026-10-24: the model finished after one read and cited "Notes").
-  #"^- (\d{4}-\d{2}-\d{2}(?: [0-9:]+ UTC)?(?: \[kohako-event\])?): (?:Codex (?:task-board )?run |localllm docs run |Blocked transition recorded|\[kohako-event\]).*")
+  ;; Only the runner's fixed templates match: a run id (`20261024T015020Z-<uuid>`)
+  ;; right after "Codex task-board run" / "Codex run" / "localllm docs run", the
+  ;; literal "Blocked transition recorded: ticket=", or the kohako relay source
+  ;; tag. A human note that merely mentions Codex stays in the brief.
+  #"^- \d{4}-\d{2}-\d{2}(?: [0-9:]+ UTC \[kohako-event\])?: (?:(?:Codex (?:task-board )?run|localllm docs run) \d{8}T\d{6}Z-[0-9a-f]{8}-[0-9a-f-]{27} |Blocked transition recorded: ticket=|\[kohako-event\] ).*")
 
 (defn runner-note? [line]
   (boolean (re-matches runner-note-pattern line)))
