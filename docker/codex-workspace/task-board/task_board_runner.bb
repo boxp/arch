@@ -2081,7 +2081,7 @@
            ;; is the only model-chosen token here.
            create?
            (str " が新規" (if (= "monster" (:kind c)) "魔物" "キャラクター") "設定の提案ノートを "
-                (if (= "replace-body" (:op c)) "改稿（本文置換）" "作成")
+                (if (= "replace-note" (:op c)) "改稿（置換）" "作成")
                 " し Review で停止しました（既存の設定ノートは変更していません。未承認の案で、採用は人が判断し正式フォルダへ移してください。Done にはしません）。"
                 " 参照した既存設定 " (:facts c 0) " 件、矛盾・要確認 " (+ (:conflicts c 0) (:auto-conflicts c 0) (:near-names c 0)) " 件（うち自動検査 " (+ (:auto-conflicts c 0) (:near-names c 0)) " 件、名前が近い既存ノート " (:near-names c 0) " 件）、質問 " (:questions c 0) " 件"
                 (when (pos? (:facts-dropped c 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped c 0) " 件"))

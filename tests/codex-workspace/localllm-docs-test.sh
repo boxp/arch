@@ -100,7 +100,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         created (fn [& {:keys [decision reason name slug facts body aliases]}]
                   (json/generate-string {:decision (or decision "propose") :reason (or reason "")
                                          :name (or name "灯守ホタル") :slug (or slug "hotaru-lantern-keeper")
-                                         :aliases (or aliases ["ホタル" "灯守ホタル"]) :summary (if revise? "改稿後の概要。CREATE-REVISED" "灯籠の火を守る見習いの少女。CREATE-SUMMARY")
+                                         :aliases (or aliases (if revise? ["ホタル" "蛍"] ["ホタル" "灯守ホタル"])) :summary (if revise? "改稿後の概要。CREATE-REVISED" "灯籠の火を守る見習いの少女。CREATE-SUMMARY")
                                          :profile (or body "- 年齢: 16 歳。灯籠組合の見習い。CREATE-BODY [[Projects/task-board-localllm-docs/refs/corpus/design-v2|設計]] と [[Unknown/ghost-note|架空]] を参照。")
                                          :appearance "- 橙の作業着。" :personality "- 控えめ。語尾は「…かな」。" :role "## 役割\n- 見習い。"
                                          :relationships "" :timeline "- 灯暦 120 年に見習いになる。"
@@ -1681,7 +1681,10 @@ test_create_makes_an_unapproved_note_revises_it_and_rolls_back() {
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2"
   assert_file_contains "${REQ_LOG}" ':revise\? true'
   grep -q ':prev-create? true' "${REQ_LOG}" || fail "revision must show the previous note body separately"
-  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '新規キャラクター設定の提案ノートを 改稿（本文置換） し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '新規キャラクター設定の提案ノートを 改稿（置換） し Review で停止しました'
+  # the frontmatter follows the revision (aliases) while created / run / slug / ticket are carried over
+  assert_file_contains "${note}" '^  - "蛍"$'
+  assert_file_contains "${note}" '^slug: hotaru-lantern-keeper$'
   [[ "$(proposal_count)" == 1 ]] || fail "revision must not create a second note"
   assert_file_contains "${note}" 'CREATE-REVISED'
   assert_file_not_contains "${note}" 'CREATE-SUMMARY'

@@ -572,7 +572,7 @@
 
 ;; Runner-synthesized ops for `docs-mode: create` (BOXP-282): the model never
 ;; emits them (its schema has no `changes`), the runner renders the whole note.
-(def runner-only-ops #{"create-note" "replace-body"})
+(def runner-only-ops #{"create-note" "replace-body" "replace-note"})
 
 ;; Creative modes (propose / create) write fiction: a key, a token or a
 ;; password can legitimately be a story item, so only credential-shaped
@@ -675,6 +675,15 @@
         {:ok? false :reason "create-note は存在しないノートにだけ使えます"}
         {:ok? true :removed "" :lines (vec (split-text-lines new_text))})
 
+      ;; Whole-note replacement for the ticket's own proposal note (revision):
+      ;; the runner regenerates the frontmatter too (title / aliases follow a
+      ;; rename, created / run / slug / ticket are carried over), so the
+      ;; frontmatter-unchanged rule is lifted for this op only (codex review).
+      "replace-note"
+      (if (empty? lines)
+        {:ok? false :reason "replace-note は既存ノートにだけ使えます"}
+        {:ok? true :removed (str/join "\n" (subvec lines bstart)) :lines (vec (split-text-lines new_text))})
+
       "replace-body"
       (if (empty? lines)
         {:ok? false :reason "replace-body は既存ノートにだけ使えます"}
@@ -730,7 +739,8 @@
   ([original changes exists? {:keys [creative?]}]
   (let [orig-lines (if exists? (vec (str/split-lines original)) [])
         fm-end (frontmatter-end orig-lines)
-        orig-fm (when fm-end (subvec orig-lines 0 (inc fm-end)))]
+        orig-fm (when fm-end (subvec orig-lines 0 (inc fm-end)))
+        fm-regenerated? (some #(= "replace-note" (:op %)) changes)]
     (loop [lines orig-lines [c & more] changes removed-text "" applied []]
       (if c
         (let [{:keys [ok? reason] :as result} (if (and (not exists?) (not (contains? #{"append-section" "create-note"} (:op c))))
@@ -749,7 +759,7 @@
               added-text (str/join "\n" (added-lines orig-lines lines))
               secret-reason (if creative? (credential-addition-reason added-text) (secret-addition-reason added-text))]
           (cond
-            (and fm-end (not= orig-fm new-fm)) {:ok? false :reason "frontmatter が変更されるため拒否します"}
+            (and fm-end (not fm-regenerated?) (not= orig-fm new-fm)) {:ok? false :reason "frontmatter が変更されるため拒否します"}
             secret-reason {:ok? false :reason secret-reason}
             (not (fence-balanced? lines)) {:ok? false :reason "コードフェンスの対応が崩れるため拒否します"}
             (table-header-lost? removed-text lines) {:ok? false :reason "表のヘッダ行（| 列名 | と | --- |）が失われるため拒否します。表を差し替えるときはヘッダ行も含めてください"}
@@ -1799,10 +1809,10 @@
   (str "\"" (-> (str s) (str/replace "\\" "\\\\") (str/replace "\"" "\\\"")) "\""))
 
 (defn render-created-note
-  "Full text of a new proposal note (frontmatter + body) or, with
-  `:body-only? true`, the body alone (Review re-run: the frontmatter of the
-  existing note is kept by `replace-body`)."
-  [{:keys [kind ticket-id run-id name slug aliases summary sections facts conflicts questions auto-conflicts near-names created body-only?]}]
+  "Full text of a proposal note (frontmatter + body). On a revision the
+  frontmatter is regenerated as well so title / aliases follow a rename, while
+  `created` and `run` (origin-run) are carried over from the existing note."
+  [{:keys [kind ticket-id run-id origin-run name slug aliases summary sections facts conflicts questions auto-conflicts near-names created]}]
   (let [{:keys [label type]} (create-kinds kind)
         link (fn [p] (str "[[" (str/replace p #"\.md$" "") "]]"))
         bullets (fn [xs] (if (seq xs) (str/join "\n" (map #(str "- " %) xs)) "- なし"))
@@ -1816,7 +1826,7 @@
                 "slug: " slug "\n"
                 "aliases:" (if (seq aliases) (str "\n" (str/join "\n" (map #(str "  - " (yaml-quote %)) aliases))) " []") "\n"
                 "created: " created "\n"
-                "run: " run-id "\n"
+                "run: " (or origin-run run-id) "\n"
                 "---\n\n")
         body (str "# " name "\n\n"
                   "> **未承認の提案**: localllm docs run " run-id " がチケット [[Tickets/" ticket-id "]] の依頼で作成した新規" label "設定の案です。既存設定（canon）には採用されていません。以下の各節は新規の創作案で、既存設定からの引用は「参照した既存設定」節に出典付きで分けてあります。採用する場合は人が正式な設定フォルダへ移し、このノートを削除してください（同じチケットの改稿ではこのノートの本文が置き換えられます）。\n\n"
@@ -1834,11 +1844,11 @@
                                    (map #(str % "（自動検査）") auto-conflicts)
                                    (map #(str "名前が近い既存ノート: " (link %) "（自動検査）") near-names)))
                   "\n\n## 人への質問\n\n" (bullets questions) "\n")]
-    (if body-only? body (str fm body))))
+    (str fm body)))
 
 (defn interpret-create
   "Turn a parsed create-mode answer (decision propose) into a standard
-  proposal for the executor: one create-note (new) or replace-body (own note
+  proposal for the executor: one create-note (new) or replace-note (own note
   of a previous run). Returns {:kind :proposal ...} or {:kind :reject ...}."
   [cfg {:keys [ticket-id run-id kind own known research corpus-notes other-proposals created]} parsed]
   (let [facts (->> (:canon_facts parsed)
@@ -1859,6 +1869,10 @@
         texts (concat [name slug summary] (vals sections) (map :fact known-facts) conflicts questions aliases)
         forbidden (some forbidden-text-reason texts)
         {:keys [folder label]} (create-kinds kind)
+        ;; A revision keeps the file: its slug is the existing file name, the
+        ;; model's slug is ignored there (the path never changes).
+        slug (if own (str/replace (fs/file-name (:rel own)) #"\.md$" "") slug)
+        own-fm (when own (:frontmatter own))
         target (if own (:rel own) (str (:proposal-root cfg) "/" folder "/" slug ".md"))
         limit (:max-create-chars cfg)
         max-sections (max 1000 (- limit 3000))]
@@ -1922,7 +1936,9 @@
                               (render-created-note {:kind kind :ticket-id ticket-id :run-id run-id :name name :slug slug
                                                     :aliases aliases :summary summary :sections sections :facts known-facts
                                                     :conflicts conflicts :questions questions :auto-conflicts (mapv clean auto-conflicts)
-                                                    :near-names near :created created :body-only? (boolean own)}))
+                                                    :near-names near
+                                                    :created (or (get own-fm "created") created)
+                                                    :origin-run (get own-fm "run")}))
                 render (fn [auto-conflicts]
                          (let [fitting (->> (range (count auto-conflicts) -1 -1)
                                             (map #(vec (take % auto-conflicts)))
@@ -1930,7 +1946,7 @@
                                             first)]
                            {:decision "apply" :reason "" :summary (str label "の新規設定案: " name)
                             :runner-ops? true :creative? true
-                            :changes [{:path target :op (if own "replace-body" "create-note") :heading "" :old_text ""
+                            :changes [{:path target :op (if own "replace-note" "create-note") :heading "" :old_text ""
                                        :new_text (render-text (or fitting []))}]
                             :sources (vec (distinct (map :source known-facts)))}))
                 base-chars (count (render-text []))
@@ -1945,7 +1961,7 @@
                :facts known-facts
                :proposal-text proposal-text
                :target target
-               :create {:op (if own "replace-body" "create-note") :kind kind :slug slug :target target
+               :create {:op (if own "replace-note" "create-note") :kind kind :slug slug :target target
                         :facts (count known-facts) :facts-dropped (- (count facts) (count known-facts))
                         :conflicts (count conflicts) :questions (count questions) :near-names (count near)
                         :aliases (count aliases) :links-dropped @dropped
