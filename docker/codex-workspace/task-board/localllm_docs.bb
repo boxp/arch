@@ -86,6 +86,16 @@
        (remove str/blank?)
        vec))
 
+;; Write-side roots never accept the vault root marker: `.` is a read-only
+;; concept (BOXP-282). A proposal root of `.` / blank falls back to the default,
+;; `.` entries in DOCS_ROOTS are dropped (codex review).
+(defn- proposal-root-config []
+  (let [v (first (split-list (env "CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT" default-proposal-root)))]
+    (if (or (nil? v) (= v vault-root-marker)) default-proposal-root v)))
+
+(defn- write-roots-config []
+  (vec (remove #(= % vault-root-marker) (split-list (env "CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS" default-docs-roots)))))
+
 (defn config []
   {:base-url (str/replace (env "CODEX_TASK_BOARD_LOCALLLM_BASE_URL" default-base-url) #"/+$" "")
    :model (env "CODEX_TASK_BOARD_LOCALLLM_MODEL" default-model)
@@ -100,8 +110,7 @@
    ;; Write allowlist (vault-relative directories). Read allowlist defaults to
    ;; the write roots plus their parent project folder for references.
    ;; The proposal root (below) is always part of the write allowlist.
-   :docs-roots (vec (distinct (conj (split-list (env "CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS" default-docs-roots))
-                                    (first (split-list (env "CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT" default-proposal-root))))))
+   :docs-roots (vec (distinct (conj (write-roots-config) (proposal-root-config))))
    ;; `.` (whole vault) is allowed here (BOXP-282, owner approval); the
    ;; exclusions below still apply, and the write roots never widen with it.
    :read-roots (split-list (env "CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS"
@@ -110,10 +119,10 @@
    ;; The configured proposal root is always excluded from reads, whatever
    ;; EXCLUDE_PATHS says (codex review): our own unapproved notes are never canon.
    :exclude-paths (vec (distinct (conj (split-list (env "CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS" default-exclude-paths))
-                                       (first (split-list (env "CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT" default-proposal-root))))))
+                                       (proposal-root-config))))
    ;; Write root for `docs-mode: create` (new character / monster notes), one
    ;; subfolder per kind. Always allowed for writes, always excluded from reads.
-   :proposal-root (first (split-list (env "CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT" default-proposal-root)))
+   :proposal-root (proposal-root-config)
    :context-char-budget (env-long "CODEX_TASK_BOARD_LOCALLLM_CONTEXT_CHAR_BUDGET" 24000)
    :max-targets (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_TARGETS" 3)
    :max-changes (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CHANGES" 8)

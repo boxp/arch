@@ -1891,6 +1891,13 @@ test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." >"${CASE_DIR}/out"
   assert_blocked BOXP-812 '許可 root 外'
   [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  # `.` is read-only: as a write root or proposal root it is ignored (write roots never widen to the vault)
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-816|BOXP-816: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-816 ready localllm "Infrastructure/prod.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT="." >"${CASE_DIR}/out"
+  assert_blocked BOXP-816 '許可 root 外'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
 }
 
 for t in \
