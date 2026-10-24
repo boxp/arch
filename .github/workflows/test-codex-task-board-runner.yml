@@ -32,7 +32,7 @@ permissions:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 20
     env:
       BABASHKA_VERSION: 1.12.218
     steps:
@@ -50,6 +50,7 @@ jobs:
           sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
       - run: tests/codex-workspace/task-board-runner-test.sh
       - run: tests/codex-workspace/task-board-events-test.sh
+      - run: tests/codex-workspace/localllm-docs-test.sh
       - run: bb docker/codex-workspace/novel-board/novel_board_runner.bb test
       - run: tests/codex-workspace/novel-board-runner-test.sh
       - run: tests/codex-workspace/recurring-events-test.sh

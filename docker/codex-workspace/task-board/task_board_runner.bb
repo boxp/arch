@@ -94,6 +94,20 @@
         (log! (str "event outbox module unavailable (" events-module-path "): " (.getMessage e)))
         false))))
 
+(def localllm-docs-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "localllm_docs.bb")))
+
+(def localllm-docs-module-loaded?
+  ;; BOXP-277: document-update route for `assignee: localllm`. Loaded lazily so a
+  ;; broken module can never affect the cloud routes.
+  (delay
+    (try
+      (load-file localllm-docs-module-path)
+      true
+      (catch Exception e
+        (log! (str "localllm docs module unavailable (" localllm-docs-module-path "): " (.getMessage e)))
+        false))))
+
 (defn record-task-board-event!
   "Record a minimal event after a run's final transition was committed. Only
   blocked / review / done transitions are triggers; the module skips the rest."
@@ -151,8 +165,14 @@
   (or (= "fable" assignee)
       (contains? claude-assignee->model assignee)))
 
+(def localllm-assignee "localllm")
+
+(defn localllm-assignee? [assignee]
+  (= localllm-assignee assignee))
+
 (defn supported-assignee? [assignee]
   (or (claude-assignee? assignee)
+      (localllm-assignee? assignee)
       (some? (parse-codex-assignee assignee))))
 
 (defn root []
@@ -631,13 +651,22 @@
                moved (insert-after-heading without target-lane new-line)]
            (write-lines! path moved)))))))
 
+(declare only-ticket)
+
+(defn synced-card?
+  "`tick --ticket BOXP-N` must not touch any other card: the board / ticket
+  status sync is restricted to the selected ticket as well (codex review),
+  so a card moved by hand and not yet synced is left for the loop."
+  [{:keys [ticket-id]}]
+  (or (nil? @only-ticket) (= @only-ticket ticket-id)))
+
 (defn sync-board-statuses! []
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
-             cards (parse-board-cards lines)
+             cards (filter synced-card? (parse-board-cards lines))
              updates (into {} (map (fn [{:keys [idx line status]}]
                                      [idx (normalize-card-line line status)])
                                    cards))
@@ -700,6 +729,9 @@
     (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE"))
                (str/includes? note "Blocked transition recorded:"))
       (throw (ex-info "forced blocker Notes write failure" {})))
+    (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_FINAL_NOTE"))
+               (str/includes? note "Review で停止しました"))
+      (throw (ex-info "forced localllm final Notes write failure" {})))
     (with-vault-writer-lock
      (fn []
        (let [path (ticket-path ticket-id)
@@ -721,6 +753,7 @@
 (defn sync-ticket-statuses! []
   (let [lines (vec (read-lines (board-path)))]
     (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
+            :when (synced-card? card)
             :let [path (ticket-path ticket-id)]
             :when (fs/exists? path)]
       (if (vault-writer-lock-dir)
@@ -833,8 +866,99 @@
                        extra)]
     (write-edn-file! path summary)))
 
+(defn localllm-commit-marker-path [ticket-id run-id]
+  (fs/path (run-dir ticket-id run-id) "localllm-committed.edn"))
+
+(defn record-localllm-commit!
+  "Run-specific, durable journal of a localllm docs-edit's lane / frontmatter
+  transition after its note write (BOXP-277). Written inside the lifecycle
+  commit: `:committing` (with the target status) right before the lane move,
+  `:committed` right after the frontmatter update. Crash recovery reads it
+  instead of the ticket's own `status`, which is not run-specific (a Review
+  re-run starts from `review`, an operator may edit it, and a failed restore
+  puts the original status back)."
+  [ticket-id run-id phase next-status]
+  (write-edn-file! (localllm-commit-marker-path ticket-id run-id)
+                   {:ticket ticket-id :run-id run-id :phase phase :status next-status :at (now-str)}))
+
+(declare sanitize-blocker-reason)
+
+(defn recover-localllm-write!
+  "Crash recovery for a localllm docs-edit run (BOXP-277): the audit written
+  right after the note write is the persistent journal of the write, and
+  `localllm-committed.edn` the journal of the transition that follows it.
+  - no transition journal: the process died before the lane move started;
+    restore the notes from the run backup (hash-checked, under the write lock)
+    so the next run starts from the original note.
+  - `:committing`: the lane / frontmatter transition was interrupted half way;
+    the note write is complete and verified, so finish the transition
+    (idempotent lane move + frontmatter) instead of leaving Review / In Progress
+    and the note inconsistent. Only while every written note still carries
+    exactly the content of the audit (`:after-sha256`, checked under the
+    write lock together with the transition): a note edited or restored by
+    hand after the crash must not be presented as \"applied\" in Review, so
+    the ticket is moved to Blocked with the mismatch instead (codex review).
+  - `:committed` / `:rolled-back` / `:conflict`: nothing to do (the run
+    finished the transition, already restored the notes itself after a
+    failure, or was already blocked by a recovery).
+  Returns the rollback report, the completion record, or nil."
+  [ticket-id run-id]
+  (let [dir (run-dir ticket-id run-id)
+        audit (read-edn-file (fs/path dir "localllm-audit.edn") nil)
+        ;; Only this run's own journal is trusted. The run summary is marked
+        ;; succeeded earlier and the ticket status is shared state (already
+        ;; `review` when a Review re-run starts).
+        journal (read-edn-file (localllm-commit-marker-path ticket-id run-id) nil)
+        phase (:phase journal)]
+    (when (and (seq (:applied audit))
+               (not (contains? #{:committed :rolled-back :conflict} phase))
+               @localllm-docs-module-loaded?)
+      (if (= :committing phase)
+        (let [next-status (str (:status journal "review"))
+              ticket-exists? (fs/exists? (ticket-path ticket-id))
+              complete! (fn []
+                          (when ticket-exists?
+                            (move-card! ticket-id next-status)
+                            (update-frontmatter! ticket-id {:status next-status :assignee "boxp"})
+                            (record-localllm-commit! ticket-id run-id :committed next-status))
+                          {:completed next-status})
+              ;; Hash check + transition under the localllm write lock.
+              r ((resolve 'localllm-docs/with-applied-intact!) (vault) (str dir) complete!)]
+          (if (:ok? r)
+            (do
+              (log! (str "run " run-id " for " ticket-id ": completed the interrupted lane transition of a localllm docs write (" next-status ")"))
+              (when ticket-exists?
+                (append-note! ticket-id (str "localllm docs run " run-id
+                                             " は文書を更新した後の lane / frontmatter 遷移の途中で終了していたため、遷移を " next-status
+                                             " として完了させました（文書の更新は適用済み。rollback: task_board_runner.bb localllm-rollback " ticket-id " " run-id "）")))
+              (:result r))
+            (let [reason (sanitize-blocker-reason (str (:reason r)))]
+              ;; The notes no longer match what the run wrote (edited, restored
+              ;; or removed by hand after the crash), or the write lock could
+              ;; not be taken: neither complete the transition nor restore
+              ;; from backup. Block with the mismatch and record the journal
+              ;; as :conflict so no later recovery re-decides it.
+              (log! (str "run " run-id " for " ticket-id ": did not complete the interrupted localllm transition, the written notes changed since the write: " reason))
+              (record-localllm-commit! ticket-id run-id :conflict nil)
+              (when ticket-exists?
+                (move-card! ticket-id "blocked")
+                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                (append-note! ticket-id (str "localllm docs run " run-id
+                                             " は文書を更新した後の lane / frontmatter 遷移の途中で終了し、その後に対象文書が run の書込み内容から変わっていたため、遷移を完了せず Blocked にしました（文書は現在の内容のまま。backup からの復元もしていません。確認後に手動で Review / 再実行を判断してください）: "
+                                             reason)))
+              {:conflict reason})))
+        (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str dir))
+                            (catch Exception e [{:status :error :reason (subs (str (.getMessage e)) 0 (min 200 (count (str (.getMessage e)))))}]))]
+          (log! (str "run " run-id " for " ticket-id ": restored localllm docs write left by an unfinished run: " (pr-str restored)))
+          (when (fs/exists? (ticket-path ticket-id))
+            (append-note! ticket-id (str "localllm docs run " run-id
+                                         " は文書を更新した後に完了せず終了していたため、backup から復元しました（未適用扱い）: "
+                                         (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored)))))
+          restored)))))
+
 (defn close-interrupted-lock! [ticket-id lock reason note]
   (when-let [interrupted-run (:run-id lock)]
+    (recover-localllm-write! ticket-id interrupted-run)
     (mark-run! ticket-id interrupted-run :interrupted
                {:reason reason
                 :previous-lock lock})
@@ -865,12 +989,17 @@
 (defn shutdown-marker-owner-key [path]
   (str/replace (str (.getFileName (fs/path path))) #"\.edn$" ""))
 
+(declare only-ticket)
+
 (defn cleanup-stale-locks! []
   (let [locks-dir (fs/path (root) "locks")]
     (when (fs/exists? locks-dir)
       (doseq [path (fs/list-dir locks-dir)
               :let [ticket-id (lock-ticket-id path)]
-              :when ticket-id]
+              :when ticket-id
+              ;; `tick --ticket BOXP-N` must not touch any other card: a stale
+              ;; lock of another ticket is left for the loop to recover.
+              :when (or (nil? @only-ticket) (= @only-ticket ticket-id))]
         (with-ticket-lock-guard
          ticket-id
          (fn []
@@ -996,7 +1125,11 @@
          (when (fs/exists? locks-dir)
            (doseq [path (fs/list-dir locks-dir)
                    :let [ticket-id (lock-ticket-id path)]
-                   :when ticket-id]
+                   :when ticket-id
+                   ;; `tick --ticket BOXP-N` recovers only that ticket's lock;
+                   ;; the other locks of the terminated owner (and the marker)
+                   ;; are left for the loop.
+                   :when (or (nil? @only-ticket) (= @only-ticket ticket-id))]
              (with-ticket-lock-guard
               ticket-id
               (fn []
@@ -1019,7 +1152,8 @@
          ;; Lock creation for this owner takes the same owner guard. Marking the owner
          ;; terminated before deleting the marker also prevents a waiter from creating
          ;; a lock immediately after this critical section ends.
-         (when (and (or @recovered? retire-empty-marker? (expired-shutdown-marker? marker))
+         (when (and (nil? @only-ticket)
+                    (or @recovered? retire-empty-marker? (expired-shutdown-marker? marker))
                     (not (matching-shutdown-lock-exists? marker))
                     (same-shutdown-marker? marker
                                            (try
@@ -1051,6 +1185,9 @@
   ([] (recover-locks! false))
   ([runner-startup?]
    (ensure-root!)
+   ;; Under `tick --ticket` both passes are filtered to the selected ticket
+   ;; (its planned-shutdown lock is recovered right away, its stale lock is
+   ;; closed) and no other card's lane / frontmatter / Notes change.
    (recover-planned-shutdown-locks! runner-startup?)
    (cleanup-stale-locks!)))
 
@@ -1902,8 +2039,179 @@
        :idle-timeout? idle-timeout?
        :shutdown? (boolean shutdown?)})))
 
+;; ---------------------------------------------------------------------------
+;; localllm document-update route (BOXP-277)
+;;
+;; No CLI agent, no shell, no vault-wide write. The module reads the declared
+;; targets, asks the local model for a structured change proposal and applies it
+;; only after runner-side validation. The run always ends in Review (changes
+;; applied, human verifies) or Blocked (nothing applied, concrete reason). The
+;; synthetic last message carries the regular markers so the existing review
+;; gate / final-status / Notes path is reused unchanged.
+;; ---------------------------------------------------------------------------
+
+(declare sanitize-blocker-reason)
+
+(defn localllm-rollback-command [ticket-id run-id]
+  (str "task_board_runner.bb localllm-rollback " ticket-id " " run-id))
+
+(defn localllm-research-note
+  "Staged-research summary for Notes (adapter v4): how the evidence was
+  collected, so a reviewer can judge the search effort and coverage."
+  [result]
+  (when-let [r (:research result)]
+    (str "; 調査: corpus " (:corpus-notes r) " ノート/" (:corpus-chars r) " 字, "
+         (:rounds r) " 回 (search " (:searches r) ", read " (:reads r) "), 根拠 " (:evidence-chars r) " 字"
+         (when-let [stop (:stop r)] (when (not= :finish stop) (str ", 打ち切り=" (name stop))))
+         (when (seq (:read-paths r)) (str "; 読んだ資料: " (str/join ", " (map #(str "[[" (str/replace % #"\.md$" "") "]]") (:read-paths r))))))))
+
+(defn localllm-review-note [ticket-id run-id result]
+  (let [applied (:applied result)
+        usage (:usage result)]
+    (str "localllm docs run " run-id " が " (count applied) " ファイルを更新し Review で停止しました（Done にはしません）。"
+         " 対象: " (str/join ", " (map #(str "[[" (str/replace (:path %) #"\.md$" "") "]]" (when (:created? %) "（新規）")) applied))
+         "; 操作: " (str/join ", " (map (fn [a] (str/join "/" (map :op (:ops a)))) applied))
+         (when (seq (:sources result)) (str "; 出典: " (str/join ", " (map #(str "[[" (str/replace (str %) #"\.md$" "") "]]") (:sources result)))))
+         (localllm-research-note result)
+         "; model=" (:model result "localllm")
+         (when usage (str "; tokens prompt=" (:prompt_tokens usage) " completion=" (:completion_tokens usage)))
+         (when-let [ms (:llm-elapsed-ms result)] (str "; llm " (quot ms 1000) "s"))
+         ;; The model's free-text summary may restate note content, so it stays
+         ;; in the audit file (same run directory) rather than in Notes.
+         (when (seq (:summary result)) "; 要確認事項: audit の :summary を参照")
+         "; audit/backup: " (:audit-path result)
+         "; rollback: " (localllm-rollback-command ticket-id run-id))))
+
+(defn localllm-stop-note [ticket-id run-id result]
+  (str "localllm docs run " run-id " は変更を適用せず停止しました（cloud への切替はしません）。"
+       " category=" (:category result "unknown")
+       "; 理由: " (sanitize-blocker-reason (:reason result))
+       (localllm-research-note result)
+       (when-let [u (:usage result)] (str "; tokens prompt=" (:prompt_tokens u) " completion=" (:completion_tokens u)))
+       "; audit: " (:audit-path result (str (run-dir ticket-id run-id) "/localllm-audit.edn"))))
+
+(defn localllm-last-message [run-id result]
+  (let [review? (= :review (:status result))]
+    (str "localllm docs-edit run " run-id "\n"
+         "status: " (name (:status result :blocked)) "\n"
+         "category: " (:category result) "\n"
+         (when (:reason result) (str "reason: " (sanitize-blocker-reason (:reason result)) "\n"))
+         (when (seq (:applied result)) (str "applied: " (str/join ", " (map :path (:applied result))) "\n"))
+         "TASK_BOARD_REVIEW_PR: none\n"
+         "TASK_BOARD_RESULT: " (if review? "review" "blocked") "\n")))
+
+(defn run-localllm-docs! [ticket-id action lane origin-lane agent lock]
+  (let [run (:run-id lock)
+        dir (run-dir ticket-id run)
+        last-message-path (fs/path dir "last-message.md")]
+    (fs/create-dirs dir)
+    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
+    (let [result (if @localllm-docs-module-loaded?
+                   (try
+                     ((resolve 'localllm-docs/run-docs-edit!)
+                      {:vault (vault)
+                       :ticket-id ticket-id
+                       :run-dir (str dir)
+                       :ticket-text (slurp (str (ticket-path ticket-id)))
+                       :frontmatter (ticket-frontmatter ticket-id)
+                       :action (if (= "Review" origin-lane) :revise :edit)
+                       :stop-requested? (fn [] @shutdown-requested?)
+                       ;; The document write is deferred into process-card!'s
+                       ;; lifecycle commit (under the shutdown monitor, together
+                       ;; with Notes / lane), so a TERM can never leave a note
+                       ;; updated with the card still In Progress.
+                       :defer-commit? true
+                       :lock-path (str (fs/path (root) "locks" "localllm-docs-write.lock"))
+                       :log-fn log!})
+                     (catch Exception e
+                       {:status :blocked :category "localllm-runner-error"
+                        :reason (str "runner 内部エラー: " (sanitize-blocker-reason (.getMessage e)))}))
+                   {:status :blocked :category "localllm-module-unavailable"
+                    :reason "localllm_docs.bb を読み込めないため実行しません"})
+          shutdown? (boolean (:shutdown? result))
+          staged? (= :staged (:status result))
+          ;; Writes the final Notes entry and run summary for a committed
+          ;; (or never-staged) result. Returns the result string.
+          record-final! (fn [result]
+                          (let [review? (= :review (:status result))]
+                            ;; Specific, sanitized reason first; the generic blocked audit note
+                            ;; written by block-ticket! follows it.
+                            (append-note! ticket-id (if review?
+                                                      (localllm-review-note ticket-id run result)
+                                                      (localllm-stop-note ticket-id run result)))
+                            (mark-run! ticket-id run :succeeded
+                                       {:action action :agent agent :lane lane :exit-code 0
+                                        :result (if review? "review" "blocked")
+                                        :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied])
+                                        :finished-at (now-str)})
+                            (if review? "review" "blocked")))
+          ;; A staged result is reported as the intended "review" until the
+          ;; deferred commit decides; its last-message is rewritten then.
+          message (localllm-last-message run (if staged? (assoc result :status :review) result))]
+      (spit (str last-message-path) message)
+      (cond
+        shutdown?
+        (mark-run! ticket-id run :interrupted
+                   {:action action :agent agent :lane lane
+                    :reason "planned workspace shutdown"
+                    :shutdown {:owner-id (owner-id) :instance-id runner-instance-id :agent-stopped-at (now-str)}})
+
+        ;; Blocked results are not finalized here either: Notes and the run
+        ;; summary are written by the deferred commit below, inside the
+        ;; lifecycle commit, so a TERM between here and that boundary leaves
+        ;; nothing final (card In Progress, lock kept, no "stopped" note).
+        :else
+        (mark-run! ticket-id run :running
+                   {:action action :agent agent :lane lane :started-at (now-str)
+                    :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :staged-paths])
+                    :decided-at (now-str)}))
+      (cond-> {:exit 0
+               :result (if (or staged? (= :review (:status result))) "review" "blocked")
+               :run-id run
+               :dir (str dir)
+               :last-message message
+               :idle-timeout? false
+               :shutdown? shutdown?}
+        (not shutdown?) (assoc :deferred-commit!
+                               ;; `on-applied!` runs right after the notes were
+                               ;; written and before any Notes / summary write,
+                               ;; so the caller can roll back even when those
+                               ;; later writes throw.
+                               (fn [& [on-applied!]]
+                                 (let [final (if staged? ((:commit! result)) result)
+                                       applied? (boolean (seq (:applied final)))
+                                       _ (when (and applied? on-applied!) (on-applied!))
+                                       ;; The Review note below is the first
+                                       ;; user-visible claim that the document
+                                       ;; was updated. Journal the transition
+                                       ;; before it, so a crash between this
+                                       ;; note and the lane move is completed by
+                                       ;; `recover-localllm-write!` instead of
+                                       ;; rolled back under a note that says
+                                       ;; the opposite (codex review).
+                                       _ (when (and applied? (= :review (:status final)))
+                                           (record-localllm-commit! ticket-id run :committing "review"))
+                                       message (localllm-last-message run final)]
+                                   (spit (str last-message-path) message)
+                                   (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_EXIT_AFTER_LOCALLLM_REVIEW_NOTE"))
+                                     ;; Deterministic black-box crash hook (unset in
+                                     ;; deployment): die right after the Review note.
+                                     (record-final! final)
+                                     (System/exit 137))
+                                   {:result (record-final! final) :last-message message
+                                    :applied? applied?})))))))
+
 (defn candidate-action [{:keys [lane status]} assignee]
-  (when (supported-assignee? assignee)
+  (cond
+    ;; localllm (BOXP-277) only updates declared vault documents. It never grooms
+    ;; a Backlog ticket and never runs a CLI agent; every lane with work maps to
+    ;; the single docs-edit action (Review re-runs with the latest Notes).
+    (localllm-assignee? assignee)
+    (case status
+      ("ready" "in-progress" "review" "blocked") :docs-edit
+      nil)
+
+    (supported-assignee? assignee)
     (case status
       "backlog" :groom
       "ready" :implement
@@ -2126,7 +2434,11 @@
                 keep-lock? (atom false)
                 ;; Set once `begin-lifecycle-commit!` succeeded, so the finally
                 ;; block releases the `committing-cards` slot exactly once.
-                committing? (atom false)]
+                committing? (atom false)
+                ;; Set once a localllm docs-edit wrote its target notes inside
+                ;; this commit; a later failure of the lane / frontmatter /
+                ;; Notes transition rolls that write back (Blocked == unapplied).
+                docs-applied? (atom false)]
             (try
               ;; The start transition (lane, frontmatter, start Note) is a
               ;; lifecycle commit as well: a TERM that lands right after the
@@ -2145,7 +2457,10 @@
               ;; Do not start an agent the hook would only have to stop again
               ;; (a TERM after this check is covered by `register-agent-process!`).
               (ensure-not-shutting-down! "before agent start")
-              (let [{:keys [exit result run-id dir last-message idle-timeout? shutdown?]} (run-agent! ticket-id action effective-lane assignee lock)
+              (let [agent-run (if (= :docs-edit action)
+                                (run-localllm-docs! ticket-id action effective-lane lane assignee lock)
+                                (run-agent! ticket-id action effective-lane assignee lock))
+                    {:keys [exit result run-id dir last-message idle-timeout? shutdown?]} agent-run
                     _ (when shutdown?
                         ;; `run-agent!` already recorded the interrupted run.
                         (throw (ex-info "agent stopped by planned workspace shutdown"
@@ -2171,6 +2486,15 @@
                                   (review-gate! dir last-message))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
+                    ;; localllm docs-edit: the document write was staged, not
+                    ;; applied. Commit it here, inside the same lifecycle commit
+                    ;; as Notes / lane / lock, so a planned shutdown either
+                    ;; leaves the note untouched (flag seen above) or lets the
+                    ;; write and the transition complete together.
+                    committed (when-let [commit! (:deferred-commit! agent-run)]
+                                (commit! (fn [] (reset! docs-applied? true))))
+                    result (if committed (:result committed) result)
+                    last-message (if committed (:last-message committed) last-message)
                     review-gate (if gate-result
                                   (let [gate-result (assoc gate-result :diagnostic
                                                            (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
@@ -2216,10 +2540,25 @@
                     (record-task-board-event! ticket-id run-id status "blocked" result)
                     (restore-card-state! ticket-id status assignee))
                   (do
+                    ;; localllm docs-edit: journal the transition before it
+                    ;; starts so a crash in the middle is completed (not rolled
+                    ;; back) by `recover-localllm-write!`.
+                    (when @docs-applied?
+                      (record-localllm-commit! ticket-id run-id :committing next-status))
                     (move-card! ticket-id next-status)
+                    (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION"))
+                      ;; Deterministic black-box failure hook after the document
+                      ;; write and the lane move; unset in deployment.
+                      (throw (ex-info "forced failure after the lane move" {})))
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee (if (= "in-progress" next-status) assignee "boxp")}
                                                       (= "done" next-status) (assoc :closed (today))))
+                    ;; localllm docs-edit: lane and frontmatter are durable, so
+                    ;; a crash from here on must not roll the note write back
+                    ;; (crash recovery reads this run-specific record, see
+                    ;; `recover-localllm-write!`).
+                    (when @docs-applied?
+                      (record-localllm-commit! ticket-id run-id :committed next-status))
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                     ;; After lane, frontmatter and Notes are durable: wake Kohako.
                     (record-task-board-event! ticket-id run-id status next-status result)))
@@ -2243,9 +2582,25 @@
                                              :agent-stopped-at (now-str)}}))
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
-                  (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
-                    (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
-                    (restore-card-state! ticket-id status assignee)))
+                  (do
+                    (when @docs-applied?
+                      ;; The target notes were written but the transition did
+                      ;; not complete: restore them from this run's backup
+                      ;; (only while their content is still what the run wrote)
+                      ;; so Blocked keeps meaning "nothing applied".
+                      (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str (run-dir ticket-id (:run-id lock))))
+                                          (catch Exception re [{:status :error :reason (sanitize-blocker-reason (.getMessage re))}]))]
+                        (log! (str "run " (:run-id lock) " for " ticket-id ": rolled back localllm docs write after a failed transition: " (pr-str restored)))
+                        ;; A `:committing` journal may already exist (written
+                        ;; before the Review note); mark the run as restored so
+                        ;; no later recovery "completes" a rolled-back write.
+                        (record-localllm-commit! ticket-id (:run-id lock) :rolled-back nil)
+                        (append-note! ticket-id (str "localllm docs run " (:run-id lock)
+                                                     " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
+                                                     (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
+                    (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                      (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                      (restore-card-state! ticket-id status assignee))))
                 true)
               (finally
                 (reset! stop? true)
@@ -2263,11 +2618,18 @@
         (log! (str "ticket file not found, skipping card: " ticket-id))
         nil))))
 
+(def only-ticket
+  ;; `tick --ticket BOXP-N` (operator use, e.g. a pre-deployment E2E of one card
+  ;; from a shell): restrict a single tick to one ticket so no other candidate is
+  ;; claimed by the ad-hoc process. The `loop` never sets it.
+  (atom nil))
+
 (defn candidate-cards []
   (let [cards (parse-board-cards (vec (read-lines (board-path))))]
     (->> cards
          (filter (fn [{:keys [ticket-id] :as card}]
-                   (some? (candidate-action card (ticket-assignee ticket-id)))))
+                   (and (or (nil? @only-ticket) (= @only-ticket ticket-id))
+                        (some? (candidate-action card (ticket-assignee ticket-id))))))
          vec)))
 
 ;; ---------------------------------------------------------------------------
@@ -2866,7 +3228,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]>")
+  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-rollback BOXP-N RUN-ID>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -3449,6 +3811,54 @@
             (reset! committing-cards 0)
             (reset! shutdown-started-at-ms nil)))))
 
+    ;; BOXP-277: localllm only maps to :docs-edit and never grooms.
+    (doseq [[status expected] {"backlog" nil "ready" :docs-edit "in-progress" :docs-edit
+                               "review" :docs-edit "blocked" :docs-edit "done" nil}]
+      (let [actual (candidate-action {:lane (status->lane status) :status status} "localllm")]
+        (if (= expected actual)
+          (println (str "PASS: localllm " status " -> " (pr-str actual)))
+          (do (println (str "FAIL: localllm " status " expected " (pr-str expected) " got " (pr-str actual)))
+              (swap! failures conj (str "localllm candidate " status))))))
+    (doseq [assignee ["localllm-high" "local-llm" "gemma4"]]
+      (if (not (supported-assignee? assignee))
+        (println (str "PASS: unsupported localllm alias ignored: " assignee))
+        (do (println (str "FAIL: localllm alias was supported: " assignee))
+            (swap! failures conj assignee))))
+    (if @localllm-docs-module-loaded?
+      (let [vault (str (fs/create-temp-dir))
+            resolve-path (resolve 'localllm-docs/resolve-vault-path)
+            roots ["Projects/task-board-localllm-docs/pilot"]]
+        (fs/create-dirs (fs/path vault "Projects/task-board-localllm-docs/pilot"))
+        (fs/create-dirs (fs/path vault "Secret"))
+        (spit (str (fs/path vault "Secret/s.md")) "x")
+        (spit (str (fs/path vault "Projects/task-board-localllm-docs/pilot/ok.md")) "---\na: b\n---\n\n# t\n\n## s\n\nbody\n")
+        (fs/create-sym-link (fs/path vault "Projects/task-board-localllm-docs/pilot/link.md") (fs/path vault "Secret/s.md"))
+        (doseq [[rel expected] [["Projects/task-board-localllm-docs/pilot/ok.md" true]
+                                ["Projects/task-board-localllm-docs/pilot/new.md" true]
+                                ["Projects/task-board-localllm-docs/pilot/link.md" false]
+                                ["Projects/task-board-localllm-docs/pilot/../../x.md" false]
+                                ["Secret/s.md" false]
+                                ["/etc/passwd" false]
+                                ["Projects/task-board-localllm-docs/pilot/x.txt" false]]]
+          (let [actual (boolean (:ok? (resolve-path vault rel roots)))]
+            (if (= expected actual)
+              (println (str "PASS: localllm path " rel " -> " actual))
+              (do (println (str "FAIL: localllm path " rel " expected " expected " got " actual))
+                  (swap! failures conj (str "localllm path " rel))))))
+        (let [apply-doc (resolve 'localllm-docs/apply-changes-to-document)
+              original (slurp (str (fs/path vault "Projects/task-board-localllm-docs/pilot/ok.md")))]
+          (doseq [[label changes expected] [["frontmatter protected" [{:op "replace-text" :heading "" :old_text "a: b" :new_text "a: c"}] false]
+                                            ["section replace" [{:op "replace-section" :heading "## s" :old_text "" :new_text "new"}] true]
+                                            ["unknown heading" [{:op "replace-section" :heading "## zz" :old_text "" :new_text "new"}] false]
+                                            ["unbalanced fence" [{:op "append-section" :heading "## c" :old_text "" :new_text "```\nx"}] false]]]
+            (let [actual (boolean (:ok? (apply-doc original changes true)))]
+              (if (= expected actual)
+                (println (str "PASS: localllm executor " label))
+                (do (println (str "FAIL: localllm executor " label " expected " expected " got " actual))
+                    (swap! failures conj (str "localllm executor " label))))))))
+      (do (println "FAIL: localllm docs module could not be loaded")
+          (swap! failures conj "localllm module")))
+
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
       (println "All tests passed."))))
@@ -3461,7 +3871,18 @@
   (reset! in-flight-futures {}))
 
 (case (or (first *command-line-args*) "tick")
-  "tick" (do (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+  "tick" (let [args (vec (rest *command-line-args*))]
+           (when-not (contains? #{0 2} (count args)) (usage))
+           (when (= 2 (count args))
+             (when-not (= "--ticket" (first args)) (usage))
+             (reset! only-ticket (second args)))
+           (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+  "localllm-rollback" (let [[ticket-id run-id] (rest *command-line-args*)]
+                        (when-not (and ticket-id run-id) (usage))
+                        (if @localllm-docs-module-loaded?
+                          (doseq [r ((resolve 'localllm-docs/rollback!) (vault) (str (run-dir ticket-id run-id)))]
+                            (println (pr-str r)))
+                          (fail "localllm_docs.bb could not be loaded")))
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
   "prepare-shutdown" (prepare-shutdown!)
