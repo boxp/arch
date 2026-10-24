@@ -392,16 +392,22 @@
 (def rescore-dir (arg "--rescore" nil))
 
 (when rescore-dir
-  (let [fresh (fs/path (fs/create-temp-dir) "fixture")
-        _ (make-vault! fresh)
-        before (snapshot fresh)
+  ;; Each case is rescored against its own fixture (script / scale) with the
+  ;; same checker branch as a live run (codex review).
+  (let [fixture-before (memoize (fn [fixture]
+                                  (let [fresh (fs/path (fs/create-temp-dir) "fixture")]
+                                    (make-vault! fresh fixture)
+                                    (snapshot fresh))))
         results (vec (for [spec all-cases
                            rep-dir (sort (map str (fs/glob (fs/path rescore-dir (:id spec)) "rep*")))
                            :let [result-path (fs/path rep-dir "result.edn")]
                            :when (fs/exists? result-path)]
                        (let [old (edn/read-string (slurp (str result-path)))
+                             before (fixture-before (:fixture spec))
                              after (snapshot (fs/path rep-dir "vault"))
-                             check (check-case spec before after old)
+                             check (if (get-in spec [:expect :propose?])
+                                     (check-propose-case spec (ticket-id-for (inc (.indexOf all-cases spec))) before after old)
+                                     (check-case spec before after old))
                              new (merge old check {:rescored? true})]
                          (spit (str result-path) (pr-str new))
                          (println (str "[rescore] " (:id spec) " rep" (:rep old) " -> " (if (:pass? check) "PASS" "FAIL")

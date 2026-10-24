@@ -1477,13 +1477,14 @@ test_propose_rejects_result_markers_in_the_proposal() {
   [[ "$(request_count)" == 5 ]] || fail "expected 5 requests (3 research + 2 proposals), got $(request_count)"
 }
 
-test_propose_without_a_corpus_cites_the_target_and_skips_verification() {
+test_propose_without_a_corpus_cites_the_target_and_verifies_against_it() {
   setup; echo propose-canon-rewrite >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-797|BOXP-797: setting]] #ticket status::ready"
   write_ticket "${VAULT}" BOXP-797 ready localllm "${PILOT}/runbook.md" "" propose
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  # no research, no verification (no evidence): exactly one request
-  [[ "$(request_count)" == 1 ]] || fail "expected 1 request, got $(request_count)"
+  # no research; the target canon alone is checked: proposal + verify
+  [[ "$(request_count)" == 2 ]] || fail "expected 2 requests, got $(request_count)"
+  [[ "$(grep -c ':schema-name "docs_setting_verify"' "${REQ_LOG}")" == 1 ]] || fail "expected one verify request"
   assert_file_contains "${VAULT}/Tickets/BOXP-797.md" '^status: review$'
   local note="${VAULT}/${PILOT}/runbook.md"
   assert_canon_intact "${note}"
@@ -1491,7 +1492,7 @@ test_propose_without_a_corpus_cites_the_target_and_skips_verification() {
   assert_file_contains "${note}" '出典: \[\[Projects/task-board-localllm-docs/pilot/runbook\]\]'
   local audit
   audit="$(find "${STATE}/runs/BOXP-797" -name localllm-audit.edn | head -n 1)"
-  assert_file_contains "${audit}" ':status :skipped'
+  assert_file_contains "${audit}" ':status :checked'
 }
 
 for t in \
@@ -1524,7 +1525,7 @@ for t in \
   test_propose_facts_must_cite_read_notes_then_one_correction \
   test_propose_needs_human_and_invalid_mode_block_without_writing \
   test_propose_rejects_result_markers_in_the_proposal \
-  test_propose_without_a_corpus_cites_the_target_and_skips_verification \
+  test_propose_without_a_corpus_cites_the_target_and_verifies_against_it \
   test_apply_moves_to_review_without_cloud \
   test_stream_response_is_applied \
   test_missing_opt_in_blocks_without_request \

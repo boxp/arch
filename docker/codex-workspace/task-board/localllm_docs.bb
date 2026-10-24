@@ -1153,8 +1153,15 @@
   {:status :checked :conflicts [...] :usage :elapsed-ms} or {:status :skipped
   :reason} / {:status :failed :reason}; a failure never blocks the run (the
   model's own conflicts list still gets rendered) unless a shutdown was requested."
-  [cfg run-dir {:keys [research facts proposal-text stop-requested?]}]
-  (if (or (nil? research) (empty? (:evidence research)) (not (pos? (:max-verify-rounds cfg))))
+  [cfg run-dir {:keys [research facts proposal-text stop-requested? target target-text]}]
+  ;; The target note itself is canon too (load-corpus excludes it from the
+  ;; research corpus), so its body is always part of what the proposal is
+  ;; checked against (codex review).
+  (let [target-block (when (seq (str target-text))
+                       {:block (str "### 対象ノート（canon、提案の書込み先）: " target "\n```markdown\n" (truncate-text target-text 12000) "\n```") :chars (count target-text)})
+        evidence (vec (concat (when target-block [target-block]) (:evidence research)))
+        research (assoc research :evidence evidence)]
+  (if (or (empty? evidence) (not (pos? (:max-verify-rounds cfg))))
     {:status :skipped :reason "根拠が無いか無効化されているため自動検査なし"}
     (let [messages [{:role "system" :content verify-system-prompt}
                     {:role "user" :content (build-verify-prompt research facts proposal-text)}]
@@ -1173,7 +1180,7 @@
                                  vec)]
               (if (map? parsed)
                 {:status :checked :conflicts conflicts :usage (:usage llm) :elapsed-ms (:elapsed-ms llm)}
-                {:status :failed :reason "検査の出力が JSON として不正" :usage (:usage llm) :elapsed-ms (:elapsed-ms llm)}))))))))
+                {:status :failed :reason "検査の出力が JSON として不正" :usage (:usage llm) :elapsed-ms (:elapsed-ms llm)})))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; HTTP (SSE streaming, idle / total limits, structured output)
@@ -1978,6 +1985,7 @@
                                   (interpret-propose cfg propose-ctx proposal))
                     verify (when (= :proposal (:kind interpreted))
                              (verify-proposal! cfg run-dir {:research research :facts (:facts interpreted)
+                                                            :target target :target-text (get-in snap [:snapshots target :text] "")
                                                             :proposal-text (:proposal-text interpreted)
                                                             :stop-requested? stop-requested?}))
                     usage-total (merge-with + usage-total (select-keys (or (:usage verify) {}) [:prompt_tokens :completion_tokens :total_tokens]))
