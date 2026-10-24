@@ -2,7 +2,8 @@
 
 /*
  * Palette: deep purple x gold x sakura pink (matches the transformed costume).
- * Flat colors only, no gradients.
+ * Flat colors only, no gradients (the hero key visual is the one exception:
+ * static CSS gradients / masks blend the painting into the page, see below).
  */
 @theme {
   --font-pixel: "DotGothic16", "PixelMplus12", "Misaki Gothic", "MS Gothic", monospace;
@@ -204,15 +205,78 @@ body {
 }
 
 /* ---------- Hero key visual ----------
-   Finished landscape painting (2560x1428, background included). The <img> keeps
-   its aspect ratio; CSS only frames it (object-fit), it is never stretched.
+   Finished landscape painting (2560x1428, background included). The file is
+   byte-identical to the original; the <img> keeps its aspect ratio and CSS only
+   frames it (object-fit) and grades it very lightly. It is never stretched.
    Figure: centre-left, face top-centre (x 30-42%, y 5-27%), hair/obi flowing
-   right, bright sky top-right. */
+   right, bright sky top-right.
+
+   Layers (all static, no animation / blur / flashing):
+     .hero-art            masked at the sides and bottom so the picture melts
+                          into the seigaiha page background
+     .hero-art::before    edge vignette, transparent over the face
+     .hero-art::after     local plum gradient for the title block (desktop:
+                          top-right sky; stacked: bottom fade under the text)
+     .hero-visual         filter: slight saturation / contrast lift only
+     .hero-copy           borderless gradient panel + gold rule + text shadows */
+.hero-stage {
+  --hero-plum: 26, 11, 46; /* --color-plum as rgb() channels */
+  overflow: hidden;
+}
+
+.hero-art {
+  position: relative;
+  width: 100%;
+  line-height: 0;
+  /* sides fade into the page background; the bottom fades more (stacked layout
+     overlaps the title block here) */
+  mask-image:
+    linear-gradient(to right, transparent, #000 4%, #000 96%, transparent),
+    linear-gradient(to bottom, #000 68%, rgba(0, 0, 0, 0.55) 86%, transparent);
+  mask-composite: intersect;
+  -webkit-mask-image:
+    linear-gradient(to right, transparent, #000 4%, #000 96%, transparent),
+    linear-gradient(to bottom, #000 68%, rgba(0, 0, 0, 0.55) 86%, transparent);
+  -webkit-mask-composite: source-in;
+}
+
+.hero-art::before,
+.hero-art::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+/* Gentle vignette: nothing at the face / torso (centre is at the face), a soft
+   plum tint only towards the corners. */
+.hero-art::before {
+  background: radial-gradient(
+    ellipse 85% 95% at 36% 22%,
+    transparent 48%,
+    rgba(var(--hero-plum), 0.12) 72%,
+    rgba(var(--hero-plum), 0.32) 100%
+  );
+}
+
+/* Stacked layout: plum fade across the lower part so the overlapping title
+   block has contrast (the face is in the upper third and stays untouched). */
+.hero-art::after {
+  background: linear-gradient(
+    to bottom,
+    transparent 52%,
+    rgba(var(--hero-plum), 0.35) 76%,
+    rgba(var(--hero-plum), 0.78) 100%
+  );
+}
+
 .hero-visual {
   display: block;
   width: 100%;
   height: auto;
   object-fit: cover;
+  /* light colour grade only: keeps skin / eyes / costume colours, no blur */
+  filter: saturate(1.08) contrast(1.03);
 }
 
 /* Stage only: the fixed STAGE banner must not cover the top of the picture
@@ -228,17 +292,49 @@ body:has(.stage-banner) .hero {
 }
 
 /* Stacked layout (phones / small tablets): 4:3 frame anchored towards the left
-   so the whole figure and the naginata stay visible, then the title block. */
+   so the whole figure and the naginata stay visible; the title block then rides
+   up over the faded bottom edge. */
 .hero-visual {
   aspect-ratio: 4 / 3;
   object-position: 24% 50%;
 }
 
-.hero-window {
-  margin: 1rem auto 0;
+.hero-copy {
+  position: relative;
+  margin: -2.75rem auto 0;
   width: calc(100% - 1.5rem);
-  padding: 1.25rem 1.5rem;
   max-width: 28rem;
+  padding: 1.25rem 1.25rem 1.5rem;
+  background: linear-gradient(
+    to bottom,
+    rgba(var(--hero-plum), 0) 0%,
+    rgba(var(--hero-plum), 0.72) 2.5rem,
+    rgba(var(--hero-plum), 0.72) 100%
+  );
+}
+
+/* gold rule under the name, same width as the text */
+.hero-copy::after {
+  content: "";
+  display: block;
+  position: absolute;
+  left: 1.25rem;
+  right: 1.25rem;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(to right, transparent, var(--color-gold) 20%, var(--color-gold) 80%, transparent);
+}
+
+.hero-text-shadow {
+  text-shadow:
+    0 0 6px rgba(var(--hero-plum), 0.95),
+    0 0 14px rgba(var(--hero-plum), 0.7),
+    1px 1px 0 var(--color-ink);
+}
+
+.hero-title {
+  padding-bottom: 0.5rem;
+  border-bottom: 2px solid var(--color-gold-dark);
 }
 
 .hero-name {
@@ -251,6 +347,10 @@ body:has(.stage-banner) .hero {
     aspect-ratio: 2560 / 1428;
     object-position: 50% 50%;
   }
+
+  .hero-copy {
+    margin-top: -3.5rem;
+  }
 }
 
 @media (min-width: 1024px) {
@@ -262,18 +362,51 @@ body:has(.stage-banner) .hero {
     object-position: 50% 0%;
   }
 
-  /* Title block over the bright top-right sky (x >= ~69%, y 7-45% of the picture).
-     Translucent plum keeps the DotGothic text readable on the pale background
-     without darkening the figure. */
+  /* bottom fades less (nothing overlaps it on desktop) */
+  .hero-art {
+    mask-image:
+      linear-gradient(to right, transparent, #000 4%, #000 96%, transparent),
+      linear-gradient(to bottom, #000 80%, rgba(0, 0, 0, 0.6) 92%, transparent);
+    -webkit-mask-image:
+      linear-gradient(to right, transparent, #000 4%, #000 96%, transparent),
+      linear-gradient(to bottom, #000 80%, rgba(0, 0, 0, 0.6) 92%, transparent);
+  }
+
+  /* Local plum gradient over the bright top-right sky (x >= ~62%, y <= ~55%)
+     behind the title block. It fades out before the face (x <= 42%) and the obi
+     ribbon (y >= 50%), so only sky and the hair tips are tinted. */
+  .hero-art::after {
+    background:
+      radial-gradient(
+        ellipse 46% 62% at 88% 16%,
+        rgba(var(--hero-plum), 0.78) 0%,
+        rgba(var(--hero-plum), 0.6) 38%,
+        rgba(var(--hero-plum), 0.22) 72%,
+        transparent 100%
+      ),
+      linear-gradient(to top, rgba(var(--hero-plum), 0.55), transparent 18%);
+  }
+
   .hero-copy {
     position: absolute;
-    top: 6%;
-    right: 3%;
+    top: 7%;
+    right: 4%;
     margin: 0;
     width: clamp(19rem, 29vw, 30rem);
     max-width: none;
-    background: rgba(26, 11, 46, 0.86);
-    padding: 1rem 1.25rem 1.25rem;
+    padding: 1.25rem 1.5rem 1.5rem 1.75rem;
+    background: linear-gradient(
+      135deg,
+      rgba(var(--hero-plum), 0.1) 0%,
+      rgba(var(--hero-plum), 0.45) 45%,
+      rgba(var(--hero-plum), 0.6) 100%
+    );
+    border-left: 3px solid var(--color-gold);
+  }
+
+  /* on desktop the gold accent is the left rule, not a bottom line */
+  .hero-copy::after {
+    display: none;
   }
 
   .hero-name {
