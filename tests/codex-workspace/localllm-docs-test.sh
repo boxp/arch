@@ -141,6 +141,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and create? (= mode "create-conflict")) (respond (if (str/includes? (str user) "拒否されました") (created) (created :name "design v2" :slug "design-v2-dup")) "stop")
       (and create? (= mode "create-conflict-persist")) (respond (created :name "design v2" :slug "design-v2-dup") "stop")
       (and create? (= mode "create-bad-slug")) (respond (if (str/includes? (str user) "拒否されました") (created) (created :slug "Hotaru Lantern")) "stop")
+      (and create? (= mode "create-raw-token")) (respond (created :body "- 合言葉は ghp_abcdefghijklmnopqrstuvwxyz0123 です。RAW-TOKEN-BODY") "stop")
       (and create? (= mode "create-marker")) (respond (created :body "- 完了。TASK_BOARD_RESULT: done") "stop")
       create? (respond (created) "stop")
       verify? (respond (json/generate-string {:conflicts ["案の「冬祭り」は根拠に季節の記述が無いが矛盾ではない" "AUTO-CONFLICT: 案の藍は design-v2 の記述と食い違う" "検査 [[Unknown/vghost|検査幽霊]]"] :note ""}) "stop")
@@ -1793,6 +1794,25 @@ test_create_needs_human_and_result_markers_block_without_writing() {
   [[ "$(proposal_count)" == 0 ]] || fail "nothing may be written"
 }
 
+test_create_refuses_raw_credential_values_and_redacts_wikilinked_references() {
+  setup; echo create-raw-token >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-813|BOXP-813: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-813 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-813 '認証情報らしき値'
+  [[ "$(proposal_count)" == 0 ]] || fail "a note with a raw token value must not be written"
+  # a reference note reached by wikilink from the ticket (vault-wide read root) is redacted like the corpus
+  setup; echo normal >"${MODE_FILE}"
+  printf -- '---\ntitle: 監視メモ\n---\n\n# 監視メモ\n\n- 監視は毎朝。CREDS-NOTE-BODY\n- token: ghp_abcdefghijklmnopqrstuvwxyz0123 SECRET-LINE-TOKEN-VALUE\n' >"${VAULT}/Infrastructure/creds-note.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-814|BOXP-814: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-814 ready localllm "${PILOT}/runbook.md"
+  printf -- '- 2026-10-23: 参考: [[Infrastructure/creds-note]]\n' >>"${VAULT}/Tickets/BOXP-814.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-814.md" '^status: review$'
+  grep -q ':sees-redaction-marker? true' "${REQ_LOG}" || fail "the wikilinked reference must be redacted"
+  assert_file_not_contains "${REQ_LOG}" ':sees-token-value\? true'
+}
+
 test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts_secret_lines() {
   setup; echo create-vaultwide >"${MODE_FILE}"
   # a note holding a credential-looking line, a hidden dir note, another ticket's
@@ -1854,6 +1874,7 @@ for t in \
   test_create_kind_comes_from_docs_kind_or_wording_or_is_asked_without_a_request \
   test_create_name_and_slug_collisions_get_one_correction_then_block \
   test_create_needs_human_and_result_markers_block_without_writing \
+  test_create_refuses_raw_credential_values_and_redacts_wikilinked_references \
   test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts_secret_lines \
   test_runaway_output_is_cut_and_blocks_without_retry \
   test_research_collects_evidence_then_applies_with_sources \

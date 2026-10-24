@@ -580,9 +580,18 @@
 ;; result-marker check still apply).
 (def credential-terms #"(?i)api[ _-]?key|credential|password|認証情報|秘密鍵|パスワード|API ?キー|access[ _-]?token|client[ _-]?secret")
 
+(declare secret-line?)
+
 (defn credential-addition-reason [added-text]
-  (when (some #(re-find credential-terms %) (str/split-lines (or added-text "")))
-    "認証情報・パスワード・API キーに関する記述の追加は runner が遮断します（必要なら人間が行ってください）"))
+  (let [lines (str/split-lines (or added-text ""))]
+    (cond
+      (some #(re-find credential-terms %) lines)
+      "認証情報・パスワード・API キーに関する記述の追加は runner が遮断します（必要なら人間が行ってください）"
+      ;; A raw credential-shaped value (`ghp_…`, `sk-…`, PEM, JWT, …) is
+      ;; refused even without the vocabulary (codex review, BOXP-282).
+      (some secret-line? lines)
+      "認証情報らしき値（鍵・トークンの形式）を含む行の追加は runner が遮断します"
+      :else nil)))
 
 (defn- split-text-lines [text]
   (let [t (str/replace (or text "") #"\r\n?" "\n")
@@ -793,7 +802,10 @@
               ;; is skipped instead of being read whole into memory.
               size (when (and (:ok? r) (:exists? r)) (size-nofollow (:abs r)))]
           (if (and size (<= size (max-note-bytes cfg)))
-            (let [content (slurp-nofollow (:abs r))
+            (let [;; Same secret-line redaction as the corpus (codex review,
+                  ;; BOXP-282): a reference reached by wikilink under a
+                  ;; vault-wide read root must not bypass it.
+                  [content _] (redact-secret-lines (slurp-nofollow (:abs r)))
                   piece (truncate-text content (max 0 (- remaining 200)))
                   block (str "\n### 参照ノート: " c "\n```markdown\n" piece "\n```\n")]
               (recur more (- remaining (count block)) (conj included c) skipped (str out block)))
