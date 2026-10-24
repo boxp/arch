@@ -1,53 +1,54 @@
 ---
 /**
- * Hero / title screen. The character illustration is the lead element:
- * on desktop it fills most of the viewport height next to the title block,
- * on mobile it sits above the title at a reduced but still large height.
+ * Hero / title screen built around the finished key visual (landscape painting
+ * with its own background: Hitohako centre-left, face near the top, hair and
+ * obi streaming to the right, bright sky in the top-right corner).
+ *
+ * - lg and up: the painting fills the width (aspect ratio kept, cropped only at
+ *   the bottom when taller than the viewport). Name / title / one line of intro /
+ *   PRESS START sit in a translucent RPG window over the bright top-right sky,
+ *   away from the face and costume. No second standing illustration, no card.
+ * - below lg: stacked. The painting comes first in a 4:3 frame positioned so the
+ *   whole figure and the naginata stay in view (no centre crop through the face),
+ *   then the title block on the plain background.
  * Static only - no animation, blinking or parallax (see global.css).
  */
-import PixelImg from './PixelImg.astro';
+import profile from '../data/profile.json';
 import { heroImage } from '../lib/hero';
 
-// Content-hashed file name (see src/lib/hero.ts); Layout.astro preloads the same WebP.
+// Content-hashed files (see src/lib/hero.ts); Layout.astro preloads the same srcset.
 const hero = heroImage();
 const alt =
-  '変身後のひとはこさんが片手を胸に添え、少し口を開いて優しく語りかけるように微笑み、薙刀を傍らに立てて軽やかに佇むイラスト（黒髪ロングに左右の三つ編み、碧眼、紫と金の和風衣装、桜の髪飾り、なびくピンクの帯リボン）';
+  '変身後のひとはこさんが紫と金の薙刀を片手に持ち、桜の花びらが舞う空と山を背景に穏やかに微笑むイラスト（黒髪ロングに三つ編み、碧眼、桜の髪飾り、紫と金の和風衣装、右へなびく長い髪とピンクの帯）';
+// First sentence of the existing ABOUT text, reused verbatim.
+const intro = profile.description[0].split('。')[0] + '。';
 ---
 
-<section
-  id="title"
-  class="min-h-dvh flex flex-col items-center justify-center px-3 pt-8 pb-6 sm:py-12"
-  aria-label="タイトル画面"
->
-  <div
-    class="w-full max-w-6xl flex flex-col md:flex-row items-center justify-center gap-2 md:gap-8 lg:gap-14"
-  >
-    <div class="hero-figure flex items-end justify-center gap-3 md:gap-5">
-      <PixelImg src="/pixel/torii.png" alt="" scale={2} class="hidden lg:block" />
-      <picture>
-        <source srcset={hero.webp} type="image/webp" />
-        <img
-          src={hero.png}
-          alt={alt}
-          width={hero.width}
-          height={hero.height}
-          loading="eager"
-          fetchpriority="high"
-          decoding="async"
-          class="illust hero-illust"
-        />
-      </picture>
-      <PixelImg src="/pixel/sakura.png" alt="" scale={3} class="hidden lg:block self-start mt-10" />
-    </div>
+<section id="title" class="hero flex flex-col items-center" aria-label="タイトル画面">
+  <div class="hero-stage relative w-full">
+    <picture>
+      <source srcset={hero.srcset} sizes="100vw" type="image/webp" />
+      <img
+        src={hero.src}
+        alt={alt}
+        width={hero.width}
+        height={hero.height}
+        loading="eager"
+        fetchpriority="high"
+        decoding="async"
+        class="illust hero-visual"
+      />
+    </picture>
 
-    <div class="text-center md:text-left shrink-0">
-      <h1 class="title-logo text-5xl sm:text-6xl md:text-7xl lg:text-8xl leading-tight">ひとはこ</h1>
-      <p class="mt-2 text-sakura text-sm sm:text-base tracking-widest">HITOHAKO ⛩ PORTFOLIO</p>
-      <p class="mt-1 text-paper/80 text-xs sm:text-sm">変身ヒロイン</p>
+    <div class="hero-copy rpg-window hero-window text-center lg:text-left">
+      <h1 class="title-logo hero-name leading-tight">{profile.heroineName}</h1>
+      <p class="mt-2 text-sakura text-xs sm:text-sm lg:text-base tracking-widest">HITOHAKO ⛩ PORTFOLIO</p>
+      <p class="mt-1 text-gold text-sm sm:text-base lg:text-lg tracking-wider">{profile.title}</p>
+      <p class="mt-3 text-paper/85 text-xs sm:text-sm lg:text-xs xl:text-sm">{intro}</p>
 
       <a
         href="#menu"
-        class="press-start mt-6 md:mt-10 inline-block text-gold text-lg sm:text-2xl tracking-[0.3em] no-underline hover:text-sakura focus-visible:outline focus-visible:outline-2 focus-visible:outline-sakura px-2"
+        class="press-start mt-5 inline-block whitespace-nowrap text-gold text-lg sm:text-xl lg:text-lg tracking-[0.3em] no-underline hover:text-sakura focus-visible:outline focus-visible:outline-2 focus-visible:outline-sakura px-2"
         data-press-start
       >
         ▶ PRESS START
@@ -55,7 +56,5 @@ const alt =
     </div>
   </div>
 
-  <p class="mt-6 md:mt-12 text-[10px] sm:text-xs text-paper/50 tracking-widest">
-    ©2026 BOXP
-  </p>
+  <p class="my-3 lg:my-4 text-[10px] sm:text-xs text-paper/50 tracking-widest">©2026 BOXP</p>
 </section>

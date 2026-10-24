@@ -203,19 +203,81 @@ body {
   }
 }
 
-/* ---------- Hero illustration ----------
-   Sized by viewport height (width: auto keeps the aspect ratio). The PNG/WebP
-   is exported at 2x (885x1600) so it stays sharp up to 800px CSS height. */
-.hero-illust {
-  height: min(800px, 82dvh);
-  width: auto;
-  max-width: 100%;
-  object-fit: contain;
+/* ---------- Hero key visual ----------
+   Finished landscape painting (2560x1428, background included). The <img> keeps
+   its aspect ratio; CSS only frames it (object-fit), it is never stretched.
+   Figure: centre-left, face top-centre (x 30-42%, y 5-27%), hair/obi flowing
+   right, bright sky top-right. */
+.hero-visual {
+  display: block;
+  width: 100%;
+  height: auto;
+  object-fit: cover;
 }
 
-@media (max-width: 767px) {
-  .hero-illust {
-    height: min(560px, 52dvh);
+/* Stage only: the fixed STAGE banner must not cover the top of the picture
+   (the face sits near the top edge). Production has no banner. */
+body:has(.stage-banner) .hero {
+  padding-top: 2.75rem;
+}
+
+@media (min-width: 640px) {
+  body:has(.stage-banner) .hero {
+    padding-top: 1.75rem;
+  }
+}
+
+/* Stacked layout (phones / small tablets): 4:3 frame anchored towards the left
+   so the whole figure and the naginata stay visible, then the title block. */
+.hero-visual {
+  aspect-ratio: 4 / 3;
+  object-position: 24% 50%;
+}
+
+.hero-window {
+  margin: 1rem auto 0;
+  width: calc(100% - 1.5rem);
+  padding: 1.25rem 1.5rem;
+  max-width: 28rem;
+}
+
+.hero-name {
+  font-size: clamp(2.75rem, 11vw, 4rem);
+}
+
+@media (min-width: 640px) {
+  /* Wide enough to show the full painting; still stacked. */
+  .hero-visual {
+    aspect-ratio: 2560 / 1428;
+    object-position: 50% 50%;
+  }
+}
+
+@media (min-width: 1024px) {
+  /* Painting-first layout: full width, cropped only at the bottom on very wide
+     screens (max-height), top anchored so the face never leaves the frame. */
+  .hero-visual {
+    aspect-ratio: 2560 / 1428;
+    max-height: 100dvh;
+    object-position: 50% 0%;
+  }
+
+  /* Title block over the bright top-right sky (x >= ~69%, y 7-45% of the picture).
+     Translucent plum keeps the DotGothic text readable on the pale background
+     without darkening the figure. */
+  .hero-copy {
+    position: absolute;
+    top: 6%;
+    right: 3%;
+    margin: 0;
+    width: clamp(19rem, 29vw, 30rem);
+    max-width: none;
+    background: rgba(26, 11, 46, 0.86);
+    padding: 1rem 1.25rem 1.25rem;
+  }
+
+  .hero-name {
+    font-size: clamp(2.5rem, 4.4vw, 5.5rem);
   }
 }
 

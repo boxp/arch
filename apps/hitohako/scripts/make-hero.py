@@ -1,71 +1,58 @@
-"""Convert a green-screen character illustration into the transparent hero image.
-Run: uvx --from pillow python -I scripts/make-hero.py <source.png> [height]
+"""Publish the finished hero key visual (a full-background landscape JPEG) as
+content-hashed site assets.
+Run: uvx --from pillow python -I scripts/make-hero.py <hero.jpg>
 
-Pipeline (no pixel-art conversion, no palette reduction):
-  1. soft chroma key on the pure-green background (alpha from green excess)
-  2. un-mix the background colour out of semi-transparent edge pixels (despill)
-  3. trim to the opaque bounding box (+ small margin)
-  4. LANCZOS downscale to `height` px (default 1600 = 2x of the 800px CSS height)
-  5. write public/illust/hitohako-hero-<hash>.png and .webp, where <hash> is the
-     first 10 hex chars of the SHA-256 of the PNG bytes (content-addressed name so
-     that a redrawn hero is never served from a cache of the previous one),
-     and remove the previous hitohako-hero-*.{png,webp} files.
-The site resolves the current file name at build time via src/lib/hero.ts.
+The source is the finished illustration as delivered. It is NOT redrawn, keyed,
+cropped, flipped or colour-corrected here:
+  1. <hash> = first 10 hex chars of the SHA-256 of the source JPEG bytes, so the
+     published file name can be checked against the delivered original
+  2. public/illust/hitohako-hero-<hash>.jpg  - byte-identical copy of the source
+     (fallback `src`, also the largest candidate)
+  3. public/illust/hitohako-hero-<hash>-<w>w.webp for each width in WIDTHS
+     (LANCZOS downscale only, never upscaled; aspect ratio preserved) used as the
+     responsive `srcset`
+  4. previous hitohako-hero-*.{jpg,png,webp} files are removed, so the site can
+     never keep serving an old picture from a browser / CDN cache.
+The site resolves the current file names at build time via src/lib/hero.ts.
 """
-import glob, hashlib, io, os, sys
+import glob, hashlib, io, os, shutil, sys
 from PIL import Image
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'public', 'illust')
-BG = (0, 255, 0)
-LO, HI = 24, 150   # green-excess range mapped to alpha 1 -> 0
+WIDTHS = (960, 1440, 2560)
+WEBP_QUALITY = 90
 
-def key(src):
-    im = Image.open(src).convert('RGB')
-    w, h = im.size
-    px = im.load()
-    out = Image.new('RGBA', (w, h))
-    op = out.load()
-    for y in range(h):
-        for x in range(w):
-            r, g, b = px[x, y]
-            excess = g - max(r, b)
-            if excess <= LO:
-                a = 255
-            elif excess >= HI:
-                a = 0
-            else:
-                a = round(255 * (1 - (excess - LO) / (HI - LO)))
-            if a == 0:
-                op[x, y] = (0, 0, 0, 0)
-            elif a == 255:
-                op[x, y] = (r, g, b, 255)
-            else:
-                f = a / 255
-                # c = f*fg + (1-f)*bg  ->  fg = (c - (1-f)*bg) / f
-                fg = tuple(min(255, max(0, round((c - (1 - f) * bc) / f))) for c, bc in zip((r, g, b), BG))
-                op[x, y] = fg + (a,)
-    return out
 
 def main():
     src = sys.argv[1]
-    height = int(sys.argv[2]) if len(sys.argv) > 2 else 1600
-    im = key(src)
-    bbox = im.getchannel('A').point(lambda v: 255 if v > 8 else 0).getbbox()
-    m = 8
-    im = im.crop((max(0, bbox[0] - m), max(0, bbox[1] - m), min(im.width, bbox[2] + m), min(im.height, bbox[3] + m)))
-    scale = height / im.height
-    im = im.resize((round(im.width * scale), height), Image.LANCZOS)
+    with open(src, 'rb') as f:
+        data = f.read()
+    digest = hashlib.sha256(data).hexdigest()
+    h = digest[:10]
+    im = Image.open(io.BytesIO(data))
+    if im.format != 'JPEG':
+        sys.exit(f'expected a JPEG source, got {im.format}')
+    im = im.convert('RGB')
+
     os.makedirs(OUT_DIR, exist_ok=True)
-    png = io.BytesIO()
-    im.save(png, format='PNG', optimize=True)
-    digest = hashlib.sha256(png.getvalue()).hexdigest()[:10]
-    for old in glob.glob(os.path.join(OUT_DIR, 'hitohako-hero*.png')) + glob.glob(os.path.join(OUT_DIR, 'hitohako-hero*.webp')):
+    for old in glob.glob(os.path.join(OUT_DIR, 'hitohako-hero-*')):
         os.remove(old)
-    base = os.path.join(OUT_DIR, f'hitohako-hero-{digest}')
-    with open(base + '.png', 'wb') as f:
-        f.write(png.getvalue())
-    im.save(base + '.webp', quality=88, method=6)
-    print(im.size, base)
+        print('removed', os.path.relpath(old))
+
+    jpg = os.path.join(OUT_DIR, f'hitohako-hero-{h}.jpg')
+    with open(jpg, 'wb') as f:
+        f.write(data)
+    print(f'wrote {os.path.relpath(jpg)} {im.width}x{im.height} {len(data)} bytes (sha256 {digest})')
+
+    for w in sorted(set(WIDTHS)):
+        if w > im.width:
+            print(f'skip {w}w (source is only {im.width}px wide, no upscaling)')
+            continue
+        out = os.path.join(OUT_DIR, f'hitohako-hero-{h}-{w}w.webp')
+        scaled = im if w == im.width else im.resize((w, round(im.height * w / im.width)), Image.LANCZOS)
+        scaled.save(out, format='WEBP', quality=WEBP_QUALITY, method=6)
+        print(f'wrote {os.path.relpath(out)} {scaled.width}x{scaled.height} {os.path.getsize(out)} bytes')
+
 
 if __name__ == '__main__':
     main()
