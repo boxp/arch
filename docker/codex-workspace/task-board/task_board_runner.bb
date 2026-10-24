@@ -1706,7 +1706,7 @@
     (and (seq repos) repo (contains? repos repo))))
 
 (defn pr-view [pr-url]
-  (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,isDraft,mergeStateStatus,statusCheckRollup"] {})
+  (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup"] {})
       (json/parse-string true)))
 
 (defn check-name [check]
@@ -1760,8 +1760,18 @@
        :message (str "CI checks passed: " (str/join ", " (map check-name checks)))})))
 
 (defn merge-state [pr]
-  (let [state (some-> (:mergeStateStatus pr) str/upper-case)]
+  (let [state (some-> (:mergeStateStatus pr) str/upper-case)
+        pr-state (some-> (:state pr) str/upper-case)]
     (cond
+      ;; An agent may merge its own PR before returning review (approved flow for
+      ;; runner/deploy changes). GitHub reports mergeStateStatus=UNKNOWN for merged
+      ;; PRs, which must not be treated as a pending mergeability gate.
+      (= "MERGED" pr-state)
+      {:state :passed
+       :message (str "GitHub reports this PR is already merged"
+                     (when-let [at (:mergedAt pr)] (str " at " at))
+                     ".")}
+
       (:isDraft pr)
       {:state :failed
        :gate :mergeability
