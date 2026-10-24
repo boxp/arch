@@ -1,33 +1,53 @@
 ---
+/**
+ * Hero / title screen. The character illustration is the lead element:
+ * on desktop it fills most of the viewport height next to the title block,
+ * on mobile it sits above the title at a reduced but still large height.
+ * Static only - no animation, blinking or parallax (see global.css).
+ */
 import PixelImg from './PixelImg.astro';
-import Illust from './Illust.astro';
+import { pngSize } from '../lib/pixel';
+
+const hero = '/illust/hitohako-hero';
+const { width, height } = pngSize(`${hero}.png`);
+const alt =
+  '変身後のひとはこさんが薙刀を構えて跳躍するイラスト（黒髪ロングに左右の三つ編み、紫と金の和風衣装、桜の髪飾り、ピンクの帯リボン）';
 ---
 
 <section
   id="title"
-  class="min-h-dvh flex flex-col items-center justify-center text-center px-4 py-6 sm:py-12"
+  class="min-h-dvh flex flex-col items-center justify-center px-3 pt-8 pb-6 sm:py-12"
   aria-label="タイトル画面"
 >
-  <div class="flex flex-col md:flex-row items-center justify-center gap-3 md:gap-12">
-    <div class="flex items-end gap-4">
-      <PixelImg src="/pixel/torii.png" alt="" scale={2} class="hidden sm:block" />
-      <Illust
-        src="/illust/hitohako-stand.png"
-        alt="変身後のひとはこさんの立ち絵（紫と金の和風衣装、桜の髪飾り、薙刀）"
-        loading="eager"
-        maxHeight="60dvh"
-      />
-      <PixelImg src="/pixel/sakura.png" alt="" scale={3} class="hidden sm:block" />
+  <div
+    class="w-full max-w-6xl flex flex-col md:flex-row items-center justify-center gap-2 md:gap-8 lg:gap-14"
+  >
+    <div class="hero-figure flex items-end justify-center gap-3 md:gap-5">
+      <PixelImg src="/pixel/torii.png" alt="" scale={2} class="hidden lg:block" />
+      <picture>
+        <source srcset={`${hero}.webp`} type="image/webp" />
+        <img
+          src={`${hero}.png`}
+          alt={alt}
+          width={width}
+          height={height}
+          loading="eager"
+          fetchpriority="high"
+          decoding="async"
+          class="illust hero-illust"
+        />
+      </picture>
+      <PixelImg src="/pixel/sakura.png" alt="" scale={3} class="hidden lg:block self-start mt-10" />
     </div>
 
-    <div>
-      <h1 class="title-logo text-4xl sm:text-6xl md:text-7xl leading-tight">ひとはこ</h1>
+    <div class="text-center md:text-left shrink-0">
+      <h1 class="title-logo text-5xl sm:text-6xl md:text-7xl lg:text-8xl leading-tight">ひとはこ</h1>
       <p class="mt-2 text-sakura text-sm sm:text-base tracking-widest">HITOHAKO ⛩ PORTFOLIO</p>
       <p class="mt-1 text-paper/80 text-xs sm:text-sm">変身ヒロイン</p>
 
       <a
         href="#menu"
-        class="press-start mt-5 md:mt-10 inline-block text-gold text-lg sm:text-2xl tracking-[0.3em] no-underline hover:text-sakura focus-visible:outline focus-visible:outline-2 focus-visible:outline-sakura px-2"
+        class="press-start mt-6 md:mt-10 inline-block text-gold text-lg sm:text-2xl tracking-[0.3em] no-underline hover:text-sakura focus-visible:outline focus-visible:outline-2 focus-visible:outline-sakura px-2"
         data-press-start
       >
         ▶ PRESS START
@@ -35,7 +55,7 @@ import Illust from './Illust.astro';
     </div>
   </div>
 
-  <p class="mt-8 md:mt-16 text-[10px] sm:text-xs text-paper/50 tracking-widest">
+  <p class="mt-6 md:mt-12 text-[10px] sm:text-xs text-paper/50 tracking-widest">
     ©2026 BOXP
   </p>
 </section>
