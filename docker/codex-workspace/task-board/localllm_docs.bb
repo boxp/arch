@@ -165,6 +165,11 @@
    ;; index does not fit are bounded by this many chars each.
    :list-char-budget (env-long "CODEX_TASK_BOARD_LOCALLLM_LIST_CHAR_BUDGET" 3000)
    :max-lists-per-round (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_LISTS_PER_ROUND" 2)
+   ;; The research log (search / list results of earlier rounds) is re-sent
+   ;; every round; only its newest entries within this budget are kept so a
+   ;; list-heavy exploration cannot push the request over max-prompt-chars
+   ;; (codex review).
+   :research-log-char-budget (env-long "CODEX_TASK_BOARD_LOCALLLM_RESEARCH_LOG_CHAR_BUDGET" 12000)
    :search-max-hits (env-long "CODEX_TASK_BOARD_LOCALLLM_SEARCH_MAX_HITS" 8)
    :search-lines-per-hit (env-long "CODEX_TASK_BOARD_LOCALLLM_SEARCH_LINES_PER_HIT" 3)
    :read-max-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_READ_MAX_CHARS" 3500)
@@ -1136,8 +1141,23 @@
        "- 必要な事実が資料群に無い、または資料同士が矛盾して解消できないときは、推測で埋めず finish して reason にその旨を書きます（後の編集段階で needs-human を選べます）。\n"
        "- 予算（回数・文字数）が尽きる前に finish します。使わないフィールドは空配列・空文字列にします。\n"))
 
+(defn bounded-log
+  "Newest log entries whose total fits `budget` chars; older ones are replaced
+  by one line saying how many were dropped (their results, if useful, were
+  already read into the evidence)."
+  [log budget]
+  (let [kept (loop [[l & more] (reverse log) used 0 acc ()]
+               (if (or (nil? l) (> (+ used (count l) 1) budget))
+                 acc
+                 (recur more (+ used (count l) 1) (cons l acc))))
+        dropped (- (count log) (count kept))]
+    (if (pos? dropped)
+      (cons (str "（古い調査ログ " dropped " 件は省略。必要な資料は根拠に残っているか、search / list で再取得できます）") kept)
+      kept)))
+
 (defn build-research-prompt
   [cfg {:keys [ticket-id brief targets target-texts index evidence log remaining-rounds remaining-chars]}]
+  (let [log (bounded-log log (:research-log-char-budget cfg))]
   (str "# チケット " ticket-id "\n" brief "\n\n"
        (if (seq targets) "# 対象ノート（更新先。読み取り専用で表示）\n" "# 対象ノート\n（この依頼は新規ノートの作成なので更新先のノートはありません。runner が保存先を決めます）\n")
        (str/join "\n" (map (fn [rel text] (str "### " rel "\n```markdown\n" (truncate-text text 6000) "\n```\n")) targets target-texts)) "\n"
@@ -1148,7 +1168,7 @@
        "残り " remaining-rounds " 回、根拠の残り文字数は約 " remaining-chars " 字です。"
        "1 回で queries は最大 " (:max-queries-per-round cfg) " 件、reads は最大 " (:max-reads-per-round cfg) " 件、folders は最大 " (:max-lists-per-round cfg) " 件です。"
        (when (:tree? index) "資料が多いため index はフォルダ木です。設定資料のありそうなフォルダを list し、人物名・事物名・種族名などで search してから read してください。")
-       "必要な根拠がそろったら action を finish にし、reason に「どの事実をどの資料で確認したか」「不足や矛盾があればその内容」を書いてください。\n"))
+       "必要な根拠がそろったら action を finish にし、reason に「どの事実をどの資料で確認したか」「不足や矛盾があればその内容」を書いてください。\n")))
 
 (def system-prompt
   (str "あなたは Obsidian vault の文書を更新する日本語の技術ライターです。Task Board のチケットに書かれた依頼にもとづき、宣言された対象ノートだけを、根拠のある範囲で最小限に更新します。\n"
