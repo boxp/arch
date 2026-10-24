@@ -99,6 +99,10 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 :stream? (:stream parsed) :revise? (str/includes? (str user) "Review にあり")
                                 :mentions-secret? (str/includes? (str user) "FIXTURE-DECOY")
                                 :sees-corpus-body? (str/includes? (str user) "CORPUS-BODY-MARKER")
+                                ;; propose re-run: the canon block must not carry the previous
+                                ;; proposal section; it is shown separately as 前回の案
+                                :canon-block-has-proposal? (boolean (some-> (re-find #"(?s)# 対象ノート.*?(?=\n# )" (str user)) (str/includes? "提案（未承認）")))
+                                :prev-proposal? (str/includes? (str user) "# 前回の案")
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
@@ -1406,6 +1410,9 @@ test_propose_appends_an_unapproved_section_and_keeps_canon() {
   : >"${REQ_LOG}"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2"
   assert_file_contains "${REQ_LOG}" ':revise\? true'
+  # the previous draft is shown as 前回の案, never inside the canon block (proposal, verify and research requests)
+  grep -q ':prev-proposal? true' "${REQ_LOG}" || fail "revision must show the previous draft separately"
+  assert_file_not_contains "${REQ_LOG}" ':canon-block-has-proposal? true'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '『提案（未承認）BOXP-790』節を 改稿（置換） し Review で停止しました'
   assert_canon_intact "${note}"
   [[ "$(grep -c '^## 提案（未承認）BOXP-790$' "${note}")" == 1 ]] || fail "revision must replace, not duplicate, the proposal section"

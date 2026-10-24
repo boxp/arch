@@ -989,15 +989,40 @@
        "- 比較するのは案が扱う人物・事物の設定です。別の人物の設定（例: 姉の髪型）と案の記述が異なることは矛盾ではありません。\n"
        "- 出力は JSON だけです。note は一言の所感（空でも可）です。\n"))
 
+(defn split-proposal-sections
+  "Separate a target note into its canon and its unapproved proposal sections
+  (`## 提案（未承認）...`). Returns {:canon text :own text-or-nil :others n}:
+  `own` is the body of this ticket's own section (shown as the previous draft
+  on a Review re-run), `others` counts sections of other tickets. Proposal
+  sections are never handed to the model or the checker as canon (codex review)."
+  [text ticket-id]
+  (let [lines (vec (str/split-lines (or text "")))
+        own-heading (proposal-heading ticket-id)
+        prefix (heading-text "## 提案（未承認）")
+        proposal-idx (->> (heading-indexes lines)
+                          (filter #(and (= 2 (heading-level (nth lines %)))
+                                        (str/starts-with? (heading-text (nth lines %)) prefix))))
+        ranges (map (fn [i] [i (section-end lines i)]) proposal-idx)
+        drop? (set (mapcat (fn [[s e]] (range s e)) ranges))
+        canon (->> (map-indexed vector lines) (remove #(drop? (first %))) (map second) (str/join "\n") str/trimr)
+        own (first (for [[s e] ranges :when (= (str/trim (nth lines s)) own-heading)]
+                     (str/trim (str/join "\n" (subvec lines (inc s) e)))))]
+    {:canon canon :own own :others (- (count ranges) (if own 1 0))}))
+
 (defn build-propose-prompt
   [cfg {:keys [ticket-id brief targets target-texts target-exists references research action]}]
+  (let [splits (map #(split-proposal-sections % ticket-id) target-texts)
+        previous (first (keep :own splits))]
   (str "# チケット " ticket-id "\n" brief "\n\n"
-       "# 対象ノート（docs-target。canon 本文は変更できません。あなたの案は『" (proposal-heading ticket-id) "』節として保存されます）\n"
-       (str/join "\n" (map (fn [rel text exists?]
+       "# 対象ノート（docs-target の canon 本文。変更できません。あなたの案は『" (proposal-heading ticket-id) "』節として保存されます。未承認の提案節はここから除いてあります）\n"
+       (str/join "\n" (map (fn [rel {:keys [canon others]} exists?]
                              (if exists?
-                               (str "### " rel "\n```markdown\n" text "\n```\n")
+                               (str "### " rel "\n```markdown\n" canon "\n```\n"
+                                    (when (pos? others) (str "（他チケットの未承認提案節 " others " 件は canon ではないため省略）\n")))
                                (str "### " rel "\n（まだ存在しません。提案節だけの新規ノートになります）\n")))
-                           targets target-texts target-exists)) "\n"
+                           targets splits target-exists)) "\n"
+       (when previous
+         (str "# 前回の案（このチケットの『" (proposal-heading ticket-id) "』節。未承認で canon ではありません。改稿の土台としてだけ使い、canon_facts の出典にしてはいけません）\n```markdown\n" (truncate-text previous 6000) "\n```\n\n"))
        (when (seq (:text references)) (str "# 参照ノート（読み取り専用）\n" (:text references) "\n"))
        (when research
          (str "# 根拠（docs-sources の調査で読んだ資料、読み取り専用。canon_facts の source はここにある資料の path だけ）\n"
@@ -1011,7 +1036,7 @@
          "チケットの Summary / Acceptance Criteria / Context / Notes の依頼にもとづき、新しい設定の案を出力してください。")
        ;; The executor caps the whole rendered section at max-change-chars; the
        ;; body budget given to the model leaves room for facts / conflicts / boilerplate.
-       " proposal は " (max 1000 (- (:max-change-chars cfg) 2500)) " 字以内、canon_facts は要点だけにしてください。\n"))
+       " proposal は " (max 1000 (- (:max-change-chars cfg) 2500)) " 字以内、canon_facts は要点だけにしてください。\n")))
 
 (defn build-verify-prompt [research facts proposal-text]
   (str "# 既存設定の根拠（資料から読み取った本文）\n"
@@ -1955,7 +1980,7 @@
                      (log! (str "localllm research " ticket-id ": corpus=" (count (:notes corpus)) " notes, "
                                 (reduce + (map :chars (:notes corpus))) " chars"))
                      (run-research! cfg run-dir {:ticket-id ticket-id :brief brief :targets (:targets snap)
-                                                 :target-texts (mapv #(get-in snap [:snapshots % :text]) (:targets snap))
+                                                 :target-texts (mapv #(let [t (get-in snap [:snapshots % :text])] (if propose? (:canon (split-proposal-sections t ticket-id)) t)) (:targets snap))
                                                  :corpus corpus :stop-requested? stop-requested? :log-fn log!
                                                  :research-system-prompt (when propose? (str research-system-prompt propose-research-guidance))})))]
     (fs/create-dirs run-dir)
@@ -2022,7 +2047,7 @@
                                   (interpret-propose cfg propose-ctx proposal))
                     verify (when (= :proposal (:kind interpreted))
                              (verify-proposal! cfg run-dir {:research research :facts (:facts interpreted)
-                                                            :target target :target-text (get-in snap [:snapshots target :text] "")
+                                                            :target target :target-text (:canon (split-proposal-sections (get-in snap [:snapshots target :text] "") ticket-id))
                                                             :proposal-text (:proposal-text interpreted)
                                                             :stop-requested? stop-requested?}))
                     usage-total (merge-with + usage-total (select-keys (or (:usage verify) {}) [:prompt_tokens :completion_tokens :total_tokens]))
