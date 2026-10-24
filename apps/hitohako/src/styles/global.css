@@ -205,7 +205,7 @@ body {
 
 /* ---------- Hero illustration ----------
    Sized by viewport height (width: auto keeps the aspect ratio). The PNG/WebP
-   is exported at 2x (1220x1600) so it stays sharp up to 800px CSS height. */
+   is exported at 2x (1159x1600) so it stays sharp up to 800px CSS height. */
 .hero-illust {
   height: min(800px, 82dvh);
   width: auto;
