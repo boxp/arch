@@ -4,13 +4,22 @@
  * with its own background: Hitohako centre-left, face near the top, hair and
  * obi streaming to the right, bright sky in the top-right corner).
  *
- * - lg and up: the painting fills the width (aspect ratio kept, cropped only at
- *   the bottom when taller than the viewport). Name / title / one line of intro /
- *   PRESS START sit in a translucent RPG window over the bright top-right sky,
- *   away from the face and costume. No second standing illustration, no card.
- * - below lg: stacked. The painting comes first in a 4:3 frame positioned so the
- *   whole figure and the naginata stay in view (no centre crop through the face),
- *   then the title block on the plain background.
+ * The picture itself is never redrawn or re-generated; everything below is CSS
+ * on top of the unmodified file (see "Hero key visual" in global.css):
+ * - a very light colour grade on the <img> (slight saturation / contrast),
+ * - a soft plum gradient over the bright top-right sky so the title block reads,
+ *   plus a gentle edge vignette, both fading to nothing over the face and costume,
+ * - the picture's sides and bottom are masked into the seigaiha page background
+ *   instead of ending in a hard rectangle,
+ * - the title block is a borderless gradient panel with a gold rule and text
+ *   shadows (no second standing illustration, no card, no RPG box).
+ *
+ * - lg and up: painting full width (aspect ratio kept, cropped only at the
+ *   bottom when taller than the viewport); name / title / intro / PRESS START
+ *   over the top-right sky, away from the face.
+ * - below lg: stacked. 4:3 frame positioned so the whole figure and the naginata
+ *   stay in view (no centre crop through the face); the title block overlaps the
+ *   faded bottom of the picture so picture and text read as one visual.
  * Static only - no animation, blinking or parallax (see global.css).
  */
 import profile from '../data/profile.json';
@@ -26,25 +35,27 @@ const intro = profile.description[0].split('。')[0] + '。';
 
 <section id="title" class="hero flex flex-col items-center" aria-label="タイトル画面">
   <div class="hero-stage relative w-full">
-    <picture>
-      <source srcset={hero.srcset} sizes="100vw" type="image/webp" />
-      <img
-        src={hero.src}
-        alt={alt}
-        width={hero.width}
-        height={hero.height}
-        loading="eager"
-        fetchpriority="high"
-        decoding="async"
-        class="illust hero-visual"
-      />
-    </picture>
+    <div class="hero-art">
+      <picture>
+        <source srcset={hero.srcset} sizes="100vw" type="image/webp" />
+        <img
+          src={hero.src}
+          alt={alt}
+          width={hero.width}
+          height={hero.height}
+          loading="eager"
+          fetchpriority="high"
+          decoding="async"
+          class="illust hero-visual"
+        />
+      </picture>
+    </div>
 
-    <div class="hero-copy rpg-window hero-window text-center lg:text-left">
+    <div class="hero-copy text-center lg:text-left">
       <h1 class="title-logo hero-name leading-tight">{profile.heroineName}</h1>
-      <p class="mt-2 text-sakura text-xs sm:text-sm lg:text-base tracking-widest">HITOHAKO ⛩ PORTFOLIO</p>
-      <p class="mt-1 text-gold text-sm sm:text-base lg:text-lg tracking-wider">{profile.title}</p>
-      <p class="mt-3 text-paper/85 text-xs sm:text-sm lg:text-xs xl:text-sm">{intro}</p>
+      <p class="mt-2 text-sakura text-xs sm:text-sm lg:text-base tracking-widest hero-text-shadow">HITOHAKO ⛩ PORTFOLIO</p>
+      <p class="hero-title mt-1 text-gold text-sm sm:text-base lg:text-lg tracking-wider hero-text-shadow">{profile.title}</p>
+      <p class="mt-3 text-paper/90 text-xs sm:text-sm lg:text-xs xl:text-sm hero-text-shadow">{intro}</p>
 
       <a
         href="#menu"
