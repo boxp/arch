@@ -433,9 +433,17 @@
                     (count lines))]
         (str/trim (str/join "\n" (subvec (vec lines) (inc idx) end)))))))
 
+(defn request-title+summary
+  "The `# title` line and the `## Summary` section of a ticket: the part of
+  the request that decides the kind / mode when the frontmatter is silent."
+  [ticket-text]
+  (let [lines (str/split-lines (or ticket-text ""))]
+    {:title (or (first (filter #(str/starts-with? % "# ") lines)) "")
+     :summary (or (section-text lines "## Summary") "")}))
+
 (def runner-note-pattern
-  ;; Notes the runner itself appends (start / finish / localllm result / Blocked
-  ;; transition / kohako relay). They carry no human instruction, but they do
+  ;; Notes the runner itself appends (start / finish / localllm result / groom
+  ;; result / Blocked transition / kohako relay). They carry no human instruction, but they do
   ;; carry the previous run's result and source paths, which a weak model takes
   ;; for evidence instead of reading the corpus (deployed E2E of BOXP-278,
   ;; 2026-10-24: the model finished after one read and cited "Notes").
@@ -444,7 +452,7 @@
   ;; accepts) right after "Codex task-board run" / "Codex run" / "localllm docs
   ;; run", the literal "Blocked transition recorded: ticket=", or the kohako
   ;; relay source tag. A human note that merely mentions Codex stays in the brief.
-  #"^- \d{4}-\d{2}-\d{2}(?: [0-9:]+ UTC \[kohako-event\])?: (?:(?:Codex (?:task-board )?run|localllm docs run) \d{8}T\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f-]{27})? |Blocked transition recorded: ticket=|\[kohako-event\] ).*")
+  #"^- \d{4}-\d{2}-\d{2}(?: [0-9:]+ UTC \[kohako-event\])?: (?:(?:Codex (?:task-board )?run|localllm (?:docs|groom) run) \d{8}T\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f-]{27})? |Blocked transition recorded: ticket=|\[kohako-event\] ).*")
 
 (defn runner-note? [line]
   (boolean (re-matches runner-note-pattern line)))
@@ -1634,14 +1642,19 @@
       (and declared (contains? create-kinds declared)) {:ok? true :kind declared :how :declared}
       declared {:ok? false :reason (str "docs-kind は " (str/join " / " (keys create-kinds)) " のどちらかです: " (untrusted declared 40))}
       :else
-      (let [lines (str/split-lines (or ticket-text ""))
-            title (or (first (filter #(str/starts-with? % "# ") lines)) "")
-            text (str title "\n" (or (section-text lines "## Summary") ""))
-            hits (vec (keep (fn [[k re]] (when (re-find re text) k)) kind-keywords))]
+      ;; The title decides when it names exactly one kind (BOXP-290): a
+      ;; constraint sentence in the Summary such as 「既存の怪獣・人物の事実は
+      ;; 変えない」 names both kinds and must not make a 「新怪獣」 title ambiguous.
+      (let [{:keys [title summary]} (request-title+summary ticket-text)
+            hits-in (fn [text] (vec (keep (fn [[k re]] (when (re-find re text) k)) kind-keywords)))
+            title-hits (hits-in title)
+            [hits how] (if (= 1 (count title-hits))
+                         [title-hits :title-keywords]
+                         [(hits-in (str title "\n" summary)) :keywords])]
         (case (count hits)
-          1 {:ok? true :kind (first hits) :how :keywords}
+          1 {:ok? true :kind (first hits) :how how}
           0 {:ok? false :reason "新規作成する設定の種別が分かりません。frontmatter に `docs-kind: character`（キャラクター）か `docs-kind: monster`（魔物）を書くか、題名か Summary に「キャラ」「魔物」などの語を含めてください"}
-          {:ok? false :reason "題名・Summary にキャラクターと魔物の両方の語があり種別を決められません。frontmatter に `docs-kind: character` か `docs-kind: monster` を書いてください"})))))
+          {:ok? false :reason "題名・Summary にキャラクターと魔物の両方の語があり種別を決められません。題名に『新キャラ』『新怪獣』のようにどちらかを書くか、frontmatter に `docs-kind: character` か `docs-kind: monster` を書いてください"})))))
 
 (defn simple-frontmatter
   "Scalar `key: value` pairs and `key:\\n  - item` lists of a note's
@@ -2690,6 +2703,142 @@
     (throw (ex-info "forced audit write failure after apply" {})))
   (write-edn! (fs/path run-dir "localllm-audit.edn") (assoc audit :at (now-str))))
 
+;; ---------------------------------------------------------------------------
+;; Natural-language ticket contract (BOXP-290): mode inference, Review
+;; instruction check, Backlog groom
+;; ---------------------------------------------------------------------------
+;;
+;; The owner writes `assignee: localllm` and the request in plain Japanese; the
+;; machine-facing frontmatter (`docs-mode` / `docs-kind` / `docs-sources` /
+;; `docs-target`) stays optional and backward compatible:
+;;
+;;   * an explicit `docs-mode` always wins (an invalid value is refused, never
+;;     guessed); an explicit `docs-target` without a mode keeps the old meaning
+;;     (transcribe), so older cards do not change behaviour;
+;;   * otherwise the ticket's own proposal note (a Review / Blocked re-run of
+;;     a create ticket) means create-revise; a kind word in the title / Summary
+;;     means create; an addition verb (加筆 / 書き足し / 追記) plus exactly one
+;;     wikilink that resolves inside the *write* roots means propose on that
+;;     note; anything ambiguous, both at once, or out of range is one concrete
+;;     question (Blocked) before any model call.
+;;
+;; Nothing here widens the read or write roots: an addition to a note outside
+;; the write roots is a question, not a write.
+
+(declare run-docs-edit* run-docs-create!)
+
+(def propose-verb-pattern #"加筆|書き足|追記|書き加え|書き込ん|書き込み")
+
+(def canon-rewrite-pattern
+  ;; An imperative rewrite of existing canon (「既存の設定を書き換えて」). The
+  ;; verb must be followed by an affirmative continuation, so the usual
+  ;; constraints (「既存の事実は変えない」「書き換えない」) do not match.
+  #"(既存|原典|canon|正式|確定|本文)[^。\n]{0,20}?(書き換え|書き直し|改変し|上書きし|変更し|削除し|消し)(て(?!はいけ|はなら|はだめ|はダメ|はいけません)|ろ|てほしい|て欲しい|てください|て下さい|ること|なさい|てくれ)")
+
+(defn docs-mode-declared
+  "Raw `docs-mode:` value of the ticket frontmatter, or nil when absent."
+  [frontmatter]
+  (let [raw (str/trim (str (or (:docs-mode frontmatter) (get frontmatter "docs-mode") "")))]
+    (when-not (str/blank? raw) raw)))
+
+(defn resolve-docs-mode
+  "Mode of a localllm run from the frontmatter or, when it is silent, from the
+  request wording. Returns {:ok? true :mode :how :target? :own?} or
+  {:ok? false :category :reason} with a question the owner can answer in one
+  edit. Never calls the model."
+  [cfg vault ticket-id frontmatter ticket-text]
+  (cond
+    (docs-mode-declared frontmatter)
+    (if-let [m (docs-mode frontmatter)]
+      {:ok? true :mode m :how :declared}
+      {:ok? false :category "localllm-invalid-mode"
+       :reason (str "docs-mode は " (str/join " / " (sort docs-modes)) " のどれかです（未設定なら題名・Summary から用途を判定します）")})
+
+    ;; Older cards: a declared target without a mode is a fact transcription.
+    (seq (docs-targets frontmatter))
+    {:ok? true :mode "transcribe" :how :target-declared}
+
+    :else
+    (if-let [own (find-own-proposal cfg vault ticket-id)]
+      {:ok? true :mode "create" :how :existing-note :own own}
+      (let [{:keys [title summary]} (request-title+summary ticket-text)
+            text (str title "\n" summary)
+            links (vec (wikilink-targets text))
+            propose-verb? (boolean (re-find propose-verb-pattern text))
+            kind-r (resolve-docs-kind frontmatter ticket-text)
+            kind-word? (or (:ok? kind-r) (str/includes? (str (:reason kind-r)) "両方の語"))
+            ask (fn [reason] {:ok? false :category "localllm-unclear-request" :reason reason})]
+        (cond
+          (and propose-verb? kind-word?)
+          (ask "既存ノートへの加筆（提案節）と新しいキャラクター / 魔物の作成の両方と読めます。加筆なら『[[ノートの path]] に … を加筆』のように加筆先だけを、新規作成なら『新しいキャラ』『新しい怪獣』のように種別だけを題名か Summary に書いてください（docs-mode の明示も使えます）")
+
+          (and propose-verb? (empty? links))
+          (ask "既存ノートへの加筆と読めますが、加筆先のノートが分かりません。Summary に加筆先を `[[ノートの path]]` で 1 件書くか、frontmatter に `docs-target:` を書いてください")
+
+          (and propose-verb? (> (count links) 1))
+          (ask (str "加筆先の候補となる wikilink が " (count links) " 件あり 1 件に決められません。加筆先を 1 件だけ書くか、frontmatter の `docs-target:` で指定してください"))
+
+          propose-verb?
+          (let [link (first links)
+                r (resolve-vault-path vault link (:docs-roots cfg))]
+            (cond
+              (not (:ok? r))
+              (ask (str "加筆先 " link " は提案節を書ける範囲（書込許可 root: " (str/join ", " (:docs-roots cfg)) "）外か不正な path です。原典ノートへは直接書きません。新しいキャラクター / 魔物なら新規ノート（未承認の提案）として依頼し直すか、加筆先を許可 root 内のノートにしてください"))
+              (not (:exists? r))
+              (ask (str "加筆先 " link " が存在しません。既存ノートの path を確認してください（新しいキャラクター / 魔物なら『新しいキャラ』『新しい怪獣』と書けば新規ノートとして作ります）"))
+              :else {:ok? true :mode "propose" :how :wikilink :target (:rel r)}))
+
+          (:ok? kind-r)
+          {:ok? true :mode "create" :how (:how kind-r)}
+
+          kind-word?
+          {:ok? false :category "localllm-create-kind-unknown" :reason (:reason kind-r)}
+
+          :else
+          (ask "依頼の用途が分かりません。新しいキャラクター / 魔物の設定を作るなら題名か Summary に『新しいキャラ』『新しい怪獣』のように種別を、既存ノートへの加筆案なら『[[ノートの path]] に … を加筆』のように加筆先を書いてください（従来どおり docs-mode / docs-kind / docs-target の明示も使えます）"))))))
+
+(def localllm-result-note-pattern
+  ;; The runner's own result line of an earlier localllm run (Review or stop).
+  #"^- \d{4}-\d{2}-\d{2}: localllm docs run \d{8}T\d{6}Z\S* (?:が|は).*")
+
+(defn review-instruction-state
+  "For a Review re-run: did a human write anything in Notes after the last
+  localllm result note? Returns {:previous-run? :new-instruction? :human-notes}.
+  A ticket without any earlier localllm result (moved to Review by hand) counts
+  as instructed."
+  [ticket-text]
+  (let [lines (str/split-lines (or ticket-text ""))
+        bullets (->> (str/split-lines (or (section-text lines "## Notes") ""))
+                     (filter #(str/starts-with? % "- "))
+                     vec)
+        last-result (last (keep-indexed (fn [i l] (when (re-matches localllm-result-note-pattern l) i)) bullets))
+        after (if last-result (subvec bullets (inc last-result)) bullets)
+        human (remove runner-note? after)]
+    {:previous-run? (some? last-result)
+     :new-instruction? (or (nil? last-result) (boolean (seq human)))
+     :human-notes (count human)}))
+
+(defn- finish-without-model
+  "Audit + result for a run decided before any model call (unclear request,
+  Review without a new instruction)."
+  [{:keys [run-dir ticket-id]} m]
+  (fs/create-dirs run-dir)
+  (let [cfg (config)
+        audit (merge {:ticket-id ticket-id :run-id (fs/file-name run-dir) :status :blocked
+                      :model (:model cfg) :endpoint (:base-url cfg) :mode (:mode m) :mode-resolution (:how m)
+                      :elapsed-ms 0}
+                     (select-keys m [:category :reason :review-instruction]))]
+    (write-audit! run-dir audit)
+    (assoc m :status :blocked :audit-path (str (fs/path run-dir "localllm-audit.edn")))))
+
+(defn- pin-frontmatter
+  "Frontmatter the run proceeds with: the inferred mode / target are added so
+  the existing mode-specific routes read them as if declared."
+  [frontmatter {:keys [mode how target]}]
+  (cond-> frontmatter
+    (not (#{:declared :target-declared} how)) (assoc :docs-mode mode)
+    target (assoc :docs-target target)))
+
 (defn run-docs-edit!
   "Full route for one ticket run. Returns
   {:status :review|:blocked :category :reason :summary :applied :audit-path ...}.
@@ -2698,6 +2847,11 @@
   the executor is fed back to the model once (`:max-corrections`); conflicts and
   needs-human decisions are final.
 
+  The mode comes from `resolve-docs-mode` (explicit frontmatter, else the
+  request wording; BOXP-290). A Review re-run without a new human Note after
+  the last localllm result is refused before any model call, so an unchanged
+  card never regenerates the same proposal.
+
   With `:defer-commit? true` nothing is written here: an accepted proposal is
   returned as {:status :staged ... :commit! (fn [] ...)} and the caller runs
   `:commit!` inside its own lifecycle commit (the runner does so under the
@@ -2705,9 +2859,197 @@
   re-checks the targets under the write lock, writes, and returns the final
   {:status :review|:blocked ...} map. `:lock-path` overrides the write lock
   file (default: `<root>/locks/localllm-docs-write.lock`)."
-  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path] :as opts}]
-  (if (= "create" (docs-mode frontmatter))
-    (run-docs-create! opts)
+  [{:keys [vault ticket-id frontmatter ticket-text action] :as opts}]
+  (let [cfg (config)
+        mode-r (resolve-docs-mode cfg vault ticket-id frontmatter ticket-text)
+        instruction (when (= :revise action) (review-instruction-state ticket-text))]
+    (cond
+      (not (:ok? mode-r))
+      (finish-without-model opts (select-keys mode-r [:category :reason]))
+
+      (and instruction (not (:new-instruction? instruction)))
+      (finish-without-model opts {:category "localllm-no-new-instruction" :mode (:mode mode-r) :how (:how mode-r)
+                                  :review-instruction instruction
+                                  :reason "Review の票に前回の localllm 結果より新しい指示が Notes にありません。改稿する内容を Notes 末尾に 1 行書いてから assignee を localllm に戻してください（前回の結果だけでは同じ案を作り直しません）"})
+
+      :else
+      (let [opts (assoc opts :frontmatter (pin-frontmatter frontmatter mode-r) :mode-resolution (:how mode-r))]
+        (if (= "create" (:mode mode-r))
+          (run-docs-create! opts)
+          (run-docs-edit* opts))))))
+
+(defn- template-section-line?
+  "A line the ticket template puts in an empty section (unfilled checkbox,
+  `- 背景:` style placeholders, the default Plan items, the Notes hint)."
+  [line]
+  (let [l (str/trim line)]
+    (or (str/blank? l)
+        (re-matches #"- \[ \]\s*" l)
+        (re-matches #"- \[ \] (?:調査|実装または作業|確認)" l)
+        (re-matches #"- [^:：]{1,12}[:：]\s*" l)
+        (= l "作業ログや判断メモを書く。"))))
+
+(defn template-section?
+  "True when every line of the section body is a template placeholder."
+  [body-lines]
+  (every? template-section-line? body-lines))
+
+(defn- groom-required-candidates
+  "Corpus notes the request should read first, chosen from paths and titles
+  only (no body is consulted): notes whose title the request names, and the
+  world / rule notes of the kind. Bounded; vault-relative paths."
+  [notes kind text limit]
+  (let [rule-re (case kind
+                  "monster" #"怪獣|魔物|モンスター|魔獣|怪物|規則|ルール|世界観|README|用語|年表"
+                  "character" #"世界観|README|用語|年表|規則|ルール|地理|組織|協会|学園|機関|勢力"
+                  #"世界観|README|用語|年表|規則|ルール")
+        links (set (wikilink-targets text))
+        mentioned (filter #(or (contains? links (:rel %)) (and (>= (count (:title %)) 2) (str/includes? text (:title %)))) notes)
+        by-rule (filter #(re-find rule-re (str (:rel %) "\n" (:title %))) notes)]
+    (->> (concat mentioned by-rule) (map :rel) distinct (take limit) vec)))
+
+(defn- folder-counts
+  "`folder/ n` pairs of a corpus, shallowest folders first, bounded."
+  [notes limit]
+  (->> notes
+       (group-by (fn [{:keys [rel]}] (let [i (str/last-index-of rel "/")] (if i (subs rel 0 i) ""))))
+       (map (fn [[f ns]] (str (if (= f "") "（直下）" (str f "/")) " " (count ns))))
+       sort
+       (take limit)
+       vec))
+
+(defn groom-ticket
+  "Deterministic Backlog groom for `assignee: localllm` (BOXP-290): no model
+  call, no document write, no external action. Decides the purpose (mode /
+  kind / target), validates the corpus the run would use, picks required
+  reading candidates from paths and titles, and renders the Acceptance
+  Criteria / Context / Plan items plus the frontmatter values to pin. Returns
+  {:status :ready :mode :kind :target :sources :sources-origin :corpus
+  :required :sections :frontmatter :summary} or {:status :blocked :category
+  :reason} with one concrete question. Private note bodies never appear in
+  the result; only paths, counts and the request's own wording."
+  [cfg vault ticket-id frontmatter ticket-text]
+  (let [mode-r (resolve-docs-mode cfg vault ticket-id frontmatter ticket-text)
+        brief (ticket-brief ticket-text 15)
+        declared-sources (docs-sources frontmatter)
+        sources (if (seq declared-sources) declared-sources (:default-sources cfg))
+        sources-origin (if (seq declared-sources) :declared :default)]
+    (cond
+      (re-find canon-rewrite-pattern brief)
+      {:status :blocked :category "localllm-canon-rewrite-request"
+       :reason "既存設定（canon）の書き換え・削除と読める依頼が含まれます。localllm は原典ノートを書き換えません。新しいキャラクター / 魔物の案（未承認の新規ノート）か、書込許可 root 内ノートへの提案節として依頼し直すか、該当の文を『変えない』制約に直してください"}
+
+      (not (:ok? mode-r))
+      {:status :blocked :category (:category mode-r) :reason (:reason mode-r)}
+
+      :else
+      (let [mode (:mode mode-r)
+            own (:own mode-r)
+            kind-r (when (= "create" mode)
+                     (if own {:ok? true :kind (:kind own) :how :existing-note} (resolve-docs-kind frontmatter ticket-text)))
+            kind (:kind kind-r)
+            targets (if (:target mode-r) [(:target mode-r)] (docs-targets frontmatter))
+            target (or (first targets) (:rel own))
+            ;; The run would validate the targets first (codex review): do it
+            ;; here so a Ready card is runnable and a bad target is a question now.
+            target-check (when (not= "create" mode)
+                           (cond
+                             (and (= "propose" mode) (> (count targets) 1))
+                             {:ok? false :category "localllm-invalid-target" :reason "docs-mode: propose では docs-target は 1 ノートだけです（提案節を 1 か所に保存します）"}
+                             :else (snapshot-targets cfg vault targets)))
+            {:keys [title summary]} (request-title+summary ticket-text)
+            corpus (when (seq sources) (load-corpus cfg vault sources (when target [target])))]
+        (cond
+          (and target-check (not (:ok? target-check)))
+          {:status :blocked :category (:category target-check) :reason (:reason target-check)}
+
+          (and (= "create" mode) (not (:ok? kind-r)))
+          {:status :blocked :category "localllm-create-kind-unknown" :reason (:reason kind-r)}
+
+          (and (= "create" mode) (empty? sources))
+          {:status :blocked :category "localllm-opt-in-missing"
+           :reason "新規設定の作成には参照する設定資料が必要ですが、票の docs-sources も runner の既定 corpus（CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES）も空です。docs-sources に vault 相対フォルダを書くか、runner の既定 corpus を設定してください"}
+
+          (and corpus (not (:ok? corpus)))
+          {:status :blocked :category (:category corpus) :reason (:reason corpus)}
+
+          :else
+          (let [notes (:notes corpus)
+                required (when notes (groom-required-candidates notes kind (str title "\n" summary) 8))
+                kind-label (when kind (:label (create-kinds kind)))
+                folder (when kind (str (:proposal-root cfg) "/" (:folder (create-kinds kind)) "/"))
+                link (fn [rel] (str "[[" (str/replace rel #"\.md$" "") "]]"))
+                how-text (case (:how mode-r)
+                           :declared "frontmatter の docs-mode"
+                           :target-declared "frontmatter の docs-target（旧形式）"
+                           :existing-note "この票が作成済みの提案ノート"
+                           :title-keywords "題名の語"
+                           :keywords "題名・Summary の語"
+                           :wikilink "Summary の加筆語と wikilink の 1 件"
+                           (name (:how mode-r)))
+                purpose (case mode
+                          "create" (str "新規" kind-label "設定の作成（create / " kind "、" how-text "から判定）")
+                          "propose" (str (link target) " への提案節の追加（propose、" how-text "から判定）")
+                          (str (str/join ", " (map link (docs-targets frontmatter))) " への事実転記（transcribe、" how-text "）"))
+                corpus-line (if corpus
+                              (str "参照資料: " (if (= :declared sources-origin) "票の docs-sources" "runner 既定の corpus")
+                                   " `" (str/join ", " sources) "`（" (count notes) " ノート / " (reduce + (map :chars notes)) " 字"
+                                   (when (seq notes) (str "。フォルダ: " (str/join ", " (folder-counts notes 6))))
+                                   "）。この範囲外のノートは読まない。読取許可自体（vault 全域）は変えない")
+                              "参照資料: なし（対象ノートと wikilink 先だけを参照）")
+                context (vec (remove nil?
+                                     [(str "localllm groom（runner の自動整理。モデル呼出・文書書込なし）: 用途 = " purpose)
+                                      corpus-line
+                                      (when (seq required)
+                                        (str "必読候補（path と題名だけで runner が選定、本文は未読。実行時に優先して read する）: " (str/join ", " (map link required))))
+                                      (case mode
+                                        "create" (str "守る制約: 原典ノートは変更しない / 新規案は `" folder "` に未承認ノート 1 件（既存ノートの上書きなし、名前・slug の衝突は拒否）/ 既存の人物・怪獣・組織の事実は変えず、原典に無い要素は新規案と明示 / 性的・露骨・残酷な描写なし / 出典は調査で読んだ資料だけ")
+                                        "propose" (str "守る制約: " (link target) " の canon 本文は変更せず、末尾の『提案（未承認）" ticket-id "』節 1 つだけを追加 / 置換 / 既存の事実は変えず、出典は読んだ資料だけ")
+                                        "守る制約: 対象ノートの指定節だけを票に書かれた事実で更新し、根拠が無ければ停止する（docs-sources の資料を読んだものだけを出典にする）")
+                                      "実行の流れ: この票を Ready に置き assignee を localllm に戻す → In Progress → Review（担当 boxp）。改稿は Review の票の Notes 末尾に指示を書いて assignee を localllm に戻す（Notes に新しい指示が無い再実行は Blocked で止まる）。rollback は Notes の localllm-rollback コマンド"]))
+                acceptance (case mode
+                             "create" (vec (remove nil?
+                                                   [(str "- [ ] `" folder "` に未承認の新規ノート 1 件が作成され（frontmatter `status: unapproved` / `localllm-proposal: true` / `ticket: " ticket-id "`）、票が Review で止まる")
+                                                    (str "- [ ] Notes の「読んだ資料」「出典」がすべて `" (str/join "`, `" sources) "` 配下（corpus 外 0 件、合成 fixture / pilot / proposals 0 件）")
+                                                    (when (seq required) (str "- [ ] 必読候補 " (count required) " 件のうち規則・世界観ノートが read 済み（Notes の 読んだ資料 で確認）"))
+                                                    "- [ ] 原典ノートの変更 0 件（mtime / byte 不変）、既存ノートの上書きなし"
+                                                    "- [ ] 内容（全年齢・既存事実との整合）は Owner が Obsidian で確認し、修正は Notes に指示して同じノートを改稿"]))
+                             "propose" [(str "- [ ] " (link target) " の末尾に『提案（未承認）" ticket-id "』節が 1 つだけ追加され、canon 本文は byte 不変で票が Review で止まる")
+                                        "- [ ] 提案節の出典 wikilink がすべて調査で読んだ資料（Notes の 読んだ資料）に含まれる"
+                                        "- [ ] 内容は Owner が Obsidian で確認し、採用なら本文へ反映して節を削除、修正は Notes に指示"]
+                             ["- [ ] 対象ノートの指定節が票の事実どおりに更新され、票が Review で止まる（frontmatter・範囲外の本文は不変）"
+                              "- [ ] 出典が docs-sources の読んだ資料に限られ、根拠の無い更新は Blocked で止まる"])
+                plan (case mode
+                       "create" ["- [ ] 調査: corpus を index → list / search → read（最大 8 round、必読候補を優先）"
+                                 "- [ ] 作成: 新規ノート 1 件（slug はモデルが付け、runner が名前 / slug の衝突と出典を検査。上書きしない）"
+                                 "- [ ] 確認: Owner が Review で読み、必要なら Notes に修正指示 → 同じノートを改稿"]
+                       "propose" ["- [ ] 調査: corpus と対象ノートを index → search → read"
+                                  (str "- [ ] 提案: " (link target) " 末尾に提案節 1 つ（canon 不変、自動検査付き）")
+                                  "- [ ] 確認: Owner が Review で読み、採用 / 改稿 / 削除を判断"]
+                       ["- [ ] 調査: 対象ノートと docs-sources を読む"
+                        "- [ ] 更新: 指定節の差替え / 追記（検証に落ちれば未適用で Blocked）"
+                        "- [ ] 確認: Owner が Review で差分を確認"])
+                pins (cond-> {}
+                       (not (#{:declared :target-declared} (:how mode-r))) (assoc :docs-mode mode)
+                       (and (= "create" mode) (not (docs-kind-declared frontmatter)) kind) (assoc :docs-kind kind)
+                       (:target mode-r) (assoc :docs-target (:target mode-r)))]
+            {:status :ready :mode mode :mode-resolution (:how mode-r) :kind kind :target target
+             :sources sources :sources-origin sources-origin
+             :corpus (when corpus {:notes (count notes) :chars (reduce + (map :chars notes))
+                                   :excluded (:excluded corpus) :redacted-lines (:redacted-lines corpus) :proposal-notes (:proposal-notes corpus)})
+             :required (vec required)
+             :sections {"## Acceptance Criteria" acceptance "## Context" (mapv #(str "- " %) context) "## Plan" plan}
+             :frontmatter pins
+             :summary (str "用途=" mode (when kind (str "/" kind)) "（" (name (:how mode-r)) "）"
+                           (when target (str ", 対象=" target))
+                           ", corpus=" (if (seq sources) (str (name sources-origin) " " (str/join "," sources) " " (count notes) " ノート") "なし")
+                           ", 必読候補 " (count required) " 件"
+                           (when (seq pins) (str ", frontmatter 固定: " (str/join ", " (map #(str (name (key %)) "=" (val %)) pins)))))}))))))
+
+(defn run-docs-edit*
+  "Transcribe / propose route (the non-create modes), dispatched from
+  `run-docs-edit!` with the resolved mode already pinned in the frontmatter."
+  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path mode-resolution] :as opts}]
   (let [cfg (config)
         log! (or log-fn (fn [_]))
         started (System/currentTimeMillis)
@@ -2723,7 +3065,7 @@
         finish (fn [status m]
                  (let [audit (merge {:ticket-id ticket-id :run-id (fs/file-name run-dir) :status status
                                      :model (:model cfg) :endpoint (:base-url cfg) :targets targets
-                                     :docs-roots (:docs-roots cfg) :docs-sources sources :mode mode
+                                     :docs-roots (:docs-roots cfg) :docs-sources sources :docs-sources-origin (if (seq declared-sources) :declared :default) :mode mode :mode-resolution mode-resolution
                                      :elapsed-ms (- (System/currentTimeMillis) started)}
                                     (select-keys m [:category :reason :summary :applied :staged-paths :usage :llm-elapsed-ms
                                                     :context-chars :references :decision :corrections :sources :sources-dropped
@@ -2910,7 +3252,7 @@
                       (assoc (finish :staged (assoc accepted :category "localllm-staged"
                                                     :staged-paths (mapv :rel (:files (:staged outcome)))))
                              :commit! commit!)
-                      (commit!))))))))))))))
+                      (commit!)))))))))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Create mode route (`docs-mode: create`, BOXP-282)
@@ -2923,7 +3265,7 @@
   model / IO failures. No `docs-target` is needed: the note path is derived
   from the kind and the slug the model picks (or is the ticket's own earlier
   note, whose body is then replaced)."
-  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path]}]
+  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path mode-resolution]}]
   (let [cfg (assoc (config) :vault vault)
         log! (or log-fn (fn [_]))
         started (System/currentTimeMillis)
@@ -2944,7 +3286,7 @@
                  (let [audit (merge {:ticket-id ticket-id :run-id run-id :status status
                                      :model (:model cfg) :endpoint (:base-url cfg)
                                      :targets (if-let [t (:target m)] [t] (when own [(:rel own)]))
-                                     :docs-roots (:docs-roots cfg) :docs-sources sources :mode mode :docs-kind kind
+                                     :docs-roots (:docs-roots cfg) :docs-sources sources :docs-sources-origin (if (seq declared-sources) :declared :default) :mode mode :mode-resolution mode-resolution :docs-kind kind
                                      :kind-resolution (:how kind-r) :action action
                                      :elapsed-ms (- (System/currentTimeMillis) started)}
                                     (select-keys m [:category :reason :summary :applied :staged-paths :usage :llm-elapsed-ms

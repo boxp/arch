@@ -9,6 +9,7 @@ set -euo pipefail
 unset CODEX_TASK_BOARD_CLAUDE_BIN
 unset CODEX_TASK_BOARD_LOCALLLM_BASE_URL CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS
 unset CODEX_TASK_BOARD_LOCALLLM_TIMEOUT_SECONDS CODEX_TASK_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS CODEX_TASK_BOARD_LOCALLLM_RETRIES
+unset CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS CODEX_TASK_BOARD_LOCALLLM_MODEL
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
@@ -402,14 +403,43 @@ test_missing_opt_in_blocks_without_request() {
   assert_runbook_unchanged
 }
 
-test_backlog_localllm_is_not_groomed() {
+test_backlog_legacy_transcribe_ticket_is_groomed_without_a_model_call() {
+  # BOXP-290: a Backlog card is groomed by the runner itself (no model, no document write)
+  # and ends in Ready + assignee boxp; an older card with only docs-target keeps meaning transcribe
   setup; echo normal >"${MODE_FILE}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-703|BOXP-703: docs]] #ticket status::backlog"
   write_ticket "${VAULT}" BOXP-703 backlog localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   assert_no_cloud
-  [[ ! -d "${STATE}/runs/BOXP-703" ]] || fail "backlog localllm card must not run"
-  assert_file_contains "${VAULT}/Tickets/BOXP-703.md" '^status: backlog$'
+  [[ "$(request_count)" == 0 ]] || fail "groom must not call the model"
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-703\|.*status::ready'
+  assert_file_contains "${VAULT}/Tickets/BOXP-703.md" '^status: ready$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-703.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-703.md" 'localllm groom run .* が票を整理し Ready に置きました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-703.md" '用途 = .*への事実転記（transcribe、frontmatter の docs-target（旧形式））'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-703.md" '^docs-mode:'
+  assert_runbook_unchanged
+  [[ -f "${STATE}/runs/BOXP-703/$(ls "${STATE}/runs/BOXP-703")/localllm-groom.edn" ]] || fail "groom record expected"
+}
+
+
+
+test_backlog_groom_validates_explicit_targets_before_ready() {
+  # codex review: a declared target the run would refuse is a question at groom time, not a Ready card
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-705|BOXP-705: docs]] #ticket status::backlog"
+  write_ticket "${VAULT}" BOXP-705 backlog localllm "Infrastructure/prod.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-705.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-705.md" 'localllm groom run .* は票を整理できず停止しました.*許可 root 外'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  # explicit propose with two targets: question at groom time
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-706|BOXP-706: docs]] #ticket status::backlog"
+  write_ticket "${VAULT}" BOXP-706 backlog localllm "${PILOT}/runbook.md,${PILOT}/other.md" "" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-706.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-706.md" 'docs-target は 1 ノートだけです'
   [[ "$(request_count)" == 0 ]] || fail "no request expected"
 }
 
@@ -1824,6 +1854,263 @@ test_create_refuses_raw_credential_values_and_redacts_wikilinked_references() {
   assert_file_not_contains "${REQ_LOG}" ':sees-token-value\? true'
 }
 
+# ---------------------------------------------------------------------------
+# Natural-language tickets (BOXP-290): no docs-mode / docs-kind / docs-sources /
+# docs-target, only `assignee: localllm` and the request wording; the runner
+# grooms Backlog cards itself, infers the mode, and refuses a Review re-run
+# without a new human Note.
+# ---------------------------------------------------------------------------
+
+write_nl_ticket() {
+  local vault="$1" ticket="$2" status="$3" assignee="$4" title="$5" summary="$6"
+  shift 6
+  {
+    printf -- '---\nid: %s\ntype: task\nstatus: %s\npriority: medium\nassignee: %s\nrepo:\n' "${ticket}" "${status}" "${assignee}"
+    for extra in "$@"; do printf '%s\n' "${extra}"; done
+    printf -- 'closed:\n---\n\n# %s: %s\n\n## Summary\n\n%s\n\n## Acceptance Criteria\n\n- [ ] \n\n## Context\n\n- 背景:\n- 関連リンク:\n- 関連ノート:\n\n## Plan\n\n- [ ] 調査\n- [ ] 実装または作業\n- [ ] 確認\n\n## Notes\n\n作業ログや判断メモを書く。\n' "${ticket}" "${title}" "${summary}"
+  } >"${vault}/Tickets/${ticket}.md"
+}
+
+groom_tick() { run_tick "$1" "$2" env CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${CORPUS}" "${@:3}"; }
+
+assert_groom_blocked() {
+  local ticket="$1" reason_re="$2"
+  assert_file_contains "${VAULT}/Tickets/${ticket}.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/${ticket}.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/${ticket}.md" "localllm groom run .* は票を整理できず停止しました.*${reason_re}"
+  [[ "$(request_count)" == 0 ]] || fail "groom must not call the model"
+  [[ "$(proposal_count)" == 0 ]] || fail "groom must not write documents"
+}
+
+test_natural_language_backlog_card_is_groomed_then_runs_revises_and_refuses_an_unchanged_review() {
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-820|BOXP-820: 新キャラ]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-820 backlog localllm "新キャラを 1 名追加" "灯火街に灯籠組合の見習いの新しいキャラを 1 名追加してほしい。既存の人物の事実は変えない。[[Projects/task-board-localllm-docs/refs/corpus/design-v2]] は必ず読むこと。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_no_cloud
+  [[ "$(request_count)" == 0 ]] || fail "groom must not call the model"
+  [[ "$(proposal_count)" == 0 ]] || fail "groom must not create notes"
+  local ticket="${VAULT}/Tickets/BOXP-820.md"
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-820\|.*status::ready'
+  assert_file_contains "${ticket}" '^status: ready$'
+  assert_file_contains "${ticket}" '^assignee: boxp$'
+  # the decision is pinned for the owner to see and override
+  assert_file_contains "${ticket}" '^docs-mode: create$'
+  assert_file_contains "${ticket}" '^docs-kind: character$'
+  assert_file_not_contains "${ticket}" '^docs-sources:'
+  # template sections are replaced by the groom, the owner's Summary is untouched
+  assert_file_contains "${ticket}" '灯籠組合の見習いの新しいキャラ'
+  assert_file_not_contains "${ticket}" '^- 背景:$'
+  assert_file_not_contains "${ticket}" '^- \[ \] 実装または作業$'
+  assert_file_contains "${ticket}" '用途 = 新規キャラクター設定の作成（create / character、題名の語から判定）'
+  assert_file_contains "${ticket}" "参照資料: runner 既定の corpus \`${CORPUS}\`（2 ノート / [0-9]+ 字。フォルダ: ${CORPUS}/ 2）"
+  assert_file_contains "${ticket}" '必読候補（path と題名だけで runner が選定、本文は未読。実行時に優先して read する）: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
+  assert_file_contains "${ticket}" "^- \[ \] \`${PROPOSALS}/characters/\` に未承認の新規ノート 1 件が作成され"
+  assert_file_contains "${ticket}" '^- \[ \] 調査: corpus を index → list / search → read'
+  assert_file_contains "${ticket}" 'localllm groom run .* が票を整理し Ready に置きました（runner の決定的な整理で、モデル呼出・文書の書込・外部操作はありません）。 用途=create/character（title-keywords）, corpus=default .* 2 ノート, 必読候補 1 件, frontmatter 固定: docs-mode=create, docs-kind=character。実行するにはこの票の assignee を localllm に戻してください'
+  # corpus bodies never reach the ticket
+  assert_file_not_contains "${ticket}" 'CORPUS-BODY-MARKER'
+  local groom_run
+  groom_run="$(ls "${STATE}/runs/BOXP-820")"
+  assert_file_contains "${STATE}/runs/BOXP-820/${groom_run}/localllm-groom.edn" ':mode-resolution :title-keywords'
+  assert_file_contains "${STATE}/runs/BOXP-820/${groom_run}/summary.edn" ':result "ready"'
+  # a groomed card in Ready with assignee boxp is not a candidate: nothing runs on its own
+  : >"${REQ_LOG}"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-idle"
+  [[ "$(request_count)" == 0 ]] || fail "Ready + boxp must not run"
+  assert_file_contains "${ticket}" '^status: ready$'
+  # owner approval = assignee back to localllm; the normal scheduler runs the create (default corpus, no docs-sources)
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-820|BOXP-820: 新キャラ]] #ticket status::ready"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  assert_no_cloud
+  [[ "$(grep -c ':schema-name "docs_setting_create"' "${REQ_LOG}")" == 1 ]] || fail "expected one create request"
+  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^assignee: boxp$'
+  assert_file_contains "${ticket}" '新規キャラクター設定の提案ノートを 作成 し Review で停止しました'
+  local note="${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md"
+  [[ -f "${note}" ]] || fail "proposal note must be created"
+  [[ "$(proposal_count)" == 1 ]] || fail "exactly one proposal note"
+  assert_runbook_unchanged
+  local create_run audit
+  create_run="$(ls -t "${STATE}/runs/BOXP-820" | head -n 1)"
+  audit="${STATE}/runs/BOXP-820/${create_run}/localllm-audit.edn"
+  assert_file_contains "${audit}" ':docs-sources-origin :default'
+  assert_file_contains "${audit}" ':mode-resolution :declared'
+  # Review re-run with the assignee flipped back but no new human Note: refused before any request
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-820|BOXP-820: 新キャラ]] #ticket status::review"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out3"
+  assert_blocked BOXP-820 'category=localllm-no-new-instruction'
+  assert_file_contains "${ticket}" '前回の localllm 結果より新しい指示が Notes にありません'
+  [[ "$(request_count)" == 0 ]] || fail "an unchanged Review card must not reach the model"
+  assert_file_contains "${note}" 'CREATE-SUMMARY'
+  [[ "$(proposal_count)" == 1 ]] || fail "no second note"
+  # Review + a new human Note + assignee back: the same note is revised (ordinary Board operation)
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/; s/^status: blocked$/status: review/' "${ticket}"
+  printf -- '- 2026-10-24: boxp: 口調をもう少し明るくし、年齢は 15 歳にしてください。名前は変えないでください。\n' >>"${ticket}"
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-820|BOXP-820: 新キャラ]] #ticket status::review"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out4"
+  assert_file_contains "${REQ_LOG}" ':revise\? true'
+  grep -q ':prev-create? true' "${REQ_LOG}" || fail "revision must show the previous note body"
+  assert_file_contains "${ticket}" '新規キャラクター設定の提案ノートを 改稿（置換） し Review で停止しました'
+  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^assignee: boxp$'
+  assert_file_contains "${note}" 'CREATE-REVISED'
+  assert_file_not_contains "${note}" 'CREATE-SUMMARY'
+  [[ "$(proposal_count)" == 1 ]] || fail "revision must not create a second note"
+  local revise_run
+  revise_run="$(ls -t "${STATE}/runs/BOXP-820" | head -n 1)"
+  assert_file_contains "${STATE}/runs/BOXP-820/${revise_run}/localllm-audit.edn" ':mode-resolution :declared'
+  assert_runbook_unchanged
+}
+
+test_natural_language_ready_card_infers_create_without_groom_and_explicit_sources_still_win() {
+  # Ready directly (no groom): 「新怪獣」 in the title decides monster even though the Summary names 人物 too
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-821|BOXP-821: 新怪獣]] #ticket status::ready"
+  write_nl_ticket "${VAULT}" BOXP-821 ready localllm "新怪獣を 1 種追加" "山あいの沢に出る新しい怪獣を 1 種考えてほしい。既存の怪獣・人物・組織の事実は変えない。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_file_contains "${VAULT}/Tickets/BOXP-821.md" '新規魔物設定の提案ノートを 作成 し Review で停止しました'
+  [[ -f "${VAULT}/${PROPOSALS}/monsters/hotaru-lantern-keeper.md" ]] || fail "monster note expected"
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-821" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':mode-resolution :title-keywords'
+  assert_file_contains "${audit}" ':kind-resolution :title-keywords'
+  assert_file_contains "${audit}" ':docs-sources-origin :default'
+  # an explicit docs-sources on an older card is used as declared, never swapped for the default corpus
+  setup; echo create >"${MODE_FILE}"
+  mkdir -p "${VAULT}/Projects/task-board-localllm-docs/refs/other"
+  printf -- '---\ntitle: other world\n---\n\n# other world\n\n## 構成\n\n- 別世界。OTHER-WORLD-BODY\n' >"${VAULT}/Projects/task-board-localllm-docs/refs/other/world.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-822|BOXP-822: 新キャラ]] #ticket status::ready"
+  write_nl_ticket "${VAULT}" BOXP-822 ready localllm "新キャラ追加" "新しいキャラを追加してほしい。" "docs-sources: Projects/task-board-localllm-docs/refs/other"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  audit="$(find "${STATE}/runs/BOXP-822" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':docs-sources-origin :declared'
+  assert_file_contains "${audit}" ':docs-sources \["Projects/task-board-localllm-docs/refs/other"\]'
+  grep -q 'CORPUS-BODY-MARKER' "${REQ_LOG}" && fail "the default corpus must not replace an explicit docs-sources"
+  # an explicit docs-mode wins over the wording (propose on the declared target, not create)
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-823|BOXP-823: setting]] #ticket status::ready"
+  write_nl_ticket "${VAULT}" BOXP-823 ready localllm "新キャラの衣装" "新しいキャラの冬祭り用の装いの案。" "docs-mode: propose" "docs-target: ${PILOT}/runbook.md"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 提案（未承認）BOXP-823$'
+  [[ "$(proposal_count)" == 0 ]] || fail "no note may be created when docs-mode says propose"
+  audit="$(find "${STATE}/runs/BOXP-823" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':mode-resolution :declared'
+}
+
+test_natural_language_propose_target_comes_from_one_wikilink_inside_the_write_roots() {
+  # groom: addition verb + one wikilink inside the pilot -> propose pinned with the target
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-824|BOXP-824: 加筆]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-824 backlog localllm "runbook に加筆" "[[${PILOT}/runbook]] に冬祭り用の新しい装いの案を加筆してほしい。普段の色遣いを引き継ぐこと。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  local ticket="${VAULT}/Tickets/BOXP-824.md"
+  [[ "$(request_count)" == 0 ]] || fail "groom must not call the model"
+  assert_file_contains "${ticket}" '^status: ready$'
+  assert_file_contains "${ticket}" '^docs-mode: propose$'
+  assert_file_contains "${ticket}" "^docs-target: ${PILOT}/runbook.md$"
+  assert_file_contains "${ticket}" "用途 = \[\[${PILOT}/runbook\]\] への提案節の追加（propose、Summary の加筆語と wikilink の 1 件から判定）"
+  assert_file_contains "${ticket}" "^- \[ \] \[\[${PILOT}/runbook\]\] の末尾に『提案（未承認）BOXP-824』節が 1 つだけ追加され"
+  assert_runbook_unchanged
+  # approval: the Ready run appends the section (default corpus researched)
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-824|BOXP-824: 加筆]] #ticket status::ready"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 提案（未承認）BOXP-824$'
+  grep -q 'v1.2' "${VAULT}/${PILOT}/runbook.md" || fail "canon must be unchanged"
+  # Ready directly, no groom: the same inference applies at run time
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-825|BOXP-825: 加筆]] #ticket status::ready"
+  write_nl_ticket "${VAULT}" BOXP-825 ready localllm "runbook に追記" "[[${PILOT}/runbook]] に新しい装いの案を追記してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 提案（未承認）BOXP-825$'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-825" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':mode-resolution :wikilink'
+  assert_file_contains "${audit}" ':mode "propose"'
+}
+
+test_natural_language_unclear_requests_stop_with_one_question_and_no_model_call() {
+  # addition to a canon note outside the write roots: question, never a write (roots are not widened)
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-830|BOXP-830: 加筆]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-830 backlog localllm "design v2 に加筆" "[[Projects/task-board-localllm-docs/refs/corpus/design-v2]] に新しい装いの案を加筆してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-830 '提案節を書ける範囲（書込許可 root: .*）外'
+  [[ "$(cat "${VAULT}/Projects/task-board-localllm-docs/refs/corpus/design-v2.md")" == *'CORPUS-BODY-MARKER'* ]] || fail "canon must be untouched"
+  grep -q '提案（未承認）' "${VAULT}/Projects/task-board-localllm-docs/refs/corpus/design-v2.md" && fail "no section may be written outside the write roots"
+  # both an addition verb and a kind word: question
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-831|BOXP-831: 加筆]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-831 backlog localllm "新キャラとの関係を加筆" "[[${PILOT}/runbook]] に新しいキャラとの関係を加筆してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-831 '加筆（提案節）と新しいキャラクター / 魔物の作成の両方と読めます'
+  # addition verb without any wikilink: question
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-832|BOXP-832: 加筆]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-832 backlog localllm "設定を加筆" "冬祭りの装いの案を加筆してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-832 '加筆先のノートが分かりません'
+  # two wikilinks: question
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-833|BOXP-833: 加筆]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-833 backlog localllm "加筆" "[[${PILOT}/runbook]] か [[Infrastructure/prod]] に装いの案を加筆してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-833 'wikilink が 2 件あり 1 件に決められません'
+  # neither a kind word nor an addition: question
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-834|BOXP-834: 何か]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-834 backlog localllm "何か設定を" "何か新しい設定を足してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-834 '依頼の用途が分かりません'
+  # both kinds, no title decision: question (kind)
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-835|BOXP-835: 追加]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-835 backlog localllm "追加" "魔物使いのキャラを追加してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-835 '両方の語があり種別を決められません'
+  # an imperative rewrite of existing canon: refused with the reason (a 「変えない」 constraint is not)
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-836|BOXP-836: 新キャラ]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-836 backlog localllm "新キャラ追加" "新しいキャラを追加し、既存の設定ノートの年齢を書き換えてほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-836 '既存設定（canon）の書き換え・削除と読める依頼'
+  # no corpus at all for a create: question, no request
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-837|BOXP-837: 新キャラ]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-837 backlog localllm "新キャラ追加" "新しいキャラを追加してほしい。"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-837 '既定 corpus（CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES）も空です'
+  # the same questions at run time (Ready, no groom): Blocked by the docs run, no request
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-838|BOXP-838: 何か]] #ticket status::ready"
+  write_nl_ticket "${VAULT}" BOXP-838 ready localllm "何か設定を" "何か新しい設定を足してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_blocked BOXP-838 'category=localllm-unclear-request'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  [[ "$(proposal_count)" == 0 ]] || fail "nothing may be written"
+  # a Blocked groom card, corrected by the owner and put back to Backlog, is groomed again
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-839|BOXP-839: 何か]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-839 backlog localllm "何か設定を" "何か新しい設定を足してほしい。"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_groom_blocked BOXP-839 '依頼の用途が分かりません'
+  sed -i 's/^status: blocked$/status: backlog/; s/^assignee: boxp$/assignee: localllm/; s/^# BOXP-839: 何か設定を$/# BOXP-839: 新しい怪獣を 1 種/' "${VAULT}/Tickets/BOXP-839.md"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-839|BOXP-839: 新怪獣]] #ticket status::backlog"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  assert_file_contains "${VAULT}/Tickets/BOXP-839.md" '^status: ready$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-839.md" '^docs-kind: monster$'
+  # the earlier question stays in Notes, the groom items are appended once per groom run
+  assert_file_contains "${VAULT}/Tickets/BOXP-839.md" '依頼の用途が分かりません'
+  [[ "$(grep -c '^- localllm groom（runner の自動整理' "${VAULT}/Tickets/BOXP-839.md")" == 1 ]] || fail "one groom context block expected"
+}
+
 test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts_secret_lines() {
   setup; echo create-vaultwide >"${MODE_FILE}"
   # a note holding a credential-looking line, a hidden dir note, another ticket's
@@ -1907,6 +2194,10 @@ for t in \
   test_create_name_and_slug_collisions_get_one_correction_then_block \
   test_create_needs_human_and_result_markers_block_without_writing \
   test_create_refuses_raw_credential_values_and_redacts_wikilinked_references \
+  test_natural_language_backlog_card_is_groomed_then_runs_revises_and_refuses_an_unchanged_review \
+  test_natural_language_ready_card_infers_create_without_groom_and_explicit_sources_still_win \
+  test_natural_language_propose_target_comes_from_one_wikilink_inside_the_write_roots \
+  test_natural_language_unclear_requests_stop_with_one_question_and_no_model_call \
   test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts_secret_lines \
   test_runaway_output_is_cut_and_blocks_without_retry \
   test_research_collects_evidence_then_applies_with_sources \
@@ -1942,7 +2233,8 @@ for t in \
   test_apply_moves_to_review_without_cloud \
   test_stream_response_is_applied \
   test_missing_opt_in_blocks_without_request \
-  test_backlog_localllm_is_not_groomed \
+  test_backlog_legacy_transcribe_ticket_is_groomed_without_a_model_call \
+  test_backlog_groom_validates_explicit_targets_before_ready \
   test_target_outside_allowlist_blocks \
   test_traversal_and_symlink_targets_block \
   test_needs_human_blocks_with_reason \
