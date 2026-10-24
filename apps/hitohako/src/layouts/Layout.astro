@@ -9,7 +9,7 @@ interface Props {
 const {
   title = 'ひとはこ | 変身ヒロイン',
   description =
-    'ひとはこさん（変身ヒロイン）のポートフォリオサイト。プロフィール・活動・リンク・仲間。和風 × 90年代レトロゲーム風。',
+    'ひとはこさん（変身ヒロイン）のポートフォリオサイト。プロフィール・活動・配信アーカイブ・リンク・仲間。和風 × 90年代レトロゲーム風。',
 } = Astro.props;
 
 const siteUrl = Astro.site?.toString() ?? 'https://hitohako-stage.b0xp.io/';
@@ -33,6 +33,7 @@ const ogImage = new URL('/illust/hitohako-face.png', siteUrl).toString();
     <meta property="og:url" content={siteUrl} />
     <meta property="og:image" content={ogImage} />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="preload" as="image" href="/illust/hitohako-hero.webp" type="image/webp" fetchpriority="high" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

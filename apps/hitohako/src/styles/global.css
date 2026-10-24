@@ -202,3 +202,24 @@ body {
     scroll-behavior: auto;
   }
 }
+
+/* ---------- Hero illustration ----------
+   Sized by viewport height (width: auto keeps the aspect ratio). The PNG/WebP
+   is exported at 2x (1220x1600) so it stays sharp up to 800px CSS height. */
+.hero-illust {
+  height: min(800px, 82dvh);
+  width: auto;
+  max-width: 100%;
+  object-fit: contain;
+}
+
+@media (max-width: 767px) {
+  .hero-illust {
+    height: min(560px, 52dvh);
+  }
+}
+
+/* ---------- YouTube click-to-play facade ---------- */
+.yt-facade__play {
+  box-shadow: 4px 4px 0 0 var(--color-ink);
+}
