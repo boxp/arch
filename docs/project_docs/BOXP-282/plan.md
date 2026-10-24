@@ -46,3 +46,14 @@
 ## 結果
 
 （実装・評価・配備後に追記）
+
+### 進捗（run 20261024T043310Z、再開後）
+
+- 実装: `localllm_docs.bb` に vault 全域 read root（`.`）、隠し dir / 除外 path / `localllm-proposal` ノートの除外、秘匿行の除去、corpus 上限（5,000 / 64 MB）、フォルダ木 index、`list` action、search の path / タイトル一致、read のリンク先表示、`docs-mode: create`（種別解決、create-schema、キャラ / 魔物別の節、名前・別名・slug 衝突検査、proposals 配下への新規ノート描画、同票ノートの本文置換）、`run-docs-create!`。`task_board_runner.bb` の Review Notes に create 文言。
+- 検証: black-box 60 本 pass（新規 5 本）。実 Gemma4 評価は `create_cases.edn`（9 ケース）を実行中。
+- 配備設定: lolice worktree（`codex-task-board/BOXP-282-localllm-env`）に `READ_ROOTS=.` / `DEFAULT_SOURCES=.` を用意（arch merge 後に PR）。
+- 文書: vault `Projects/task-board-localllm-docs/README.md` に BOXP-282 節、`evaluation.md` §9（結果は実行後に追記）。
+
+### 結果（1 反復目）
+
+- 実 Gemma4 評価 `create_cases.edn` 9/9（rescore 後。詳細は vault evaluation §9.2、証拠 `evidence/create-v1/`）。black-box 62 本 pass。codex review 7 回（P1 ×3、P2 ×4 を修正、最終回は指摘なし）。PR: https://github.com/boxp/arch/pull/13864
