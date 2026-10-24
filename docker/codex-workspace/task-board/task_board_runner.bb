@@ -2061,7 +2061,8 @@
   [result]
   (when-let [r (:research result)]
     (str "; 調査: corpus " (:corpus-notes r) " ノート/" (:corpus-chars r) " 字, "
-         (:rounds r) " 回 (search " (:searches r) ", read " (:reads r) "), 根拠 " (:evidence-chars r) " 字"
+         (:rounds r) " 回 (search " (:searches r) ", list " (:lists r 0) ", read " (:reads r) "), 根拠 " (:evidence-chars r) " 字"
+         (when (pos? (:corpus-redacted-lines r 0)) (str ", 秘匿行の除去 " (:corpus-redacted-lines r) " 行"))
          (when-let [stop (:stop r)] (when (not= :finish stop) (str ", 打ち切り=" (name stop))))
          (when (seq (:read-paths r)) (str "; 読んだ資料: " (str/join ", " (map #(str "[[" (str/replace % #"\.md$" "") "]]") (:read-paths r))))))))
 
@@ -2069,9 +2070,24 @@
   (let [applied (:applied result)
         usage (:usage result)
         propose? (= "propose" (:mode result))
-        p (:propose result)]
+        create? (= "create" (:mode result))
+        p (:propose result)
+        c (:create result)]
     (str "localllm docs run " run-id
-         (if propose?
+         (cond
+           ;; Create mode (BOXP-282): one new unapproved note under the
+           ;; proposal root (or the ticket's own earlier note, body replaced).
+           ;; The model's name / text never reach Notes; the path (ASCII slug)
+           ;; is the only model-chosen token here.
+           create?
+           (str " が新規" (if (= "monster" (:kind c)) "魔物" "キャラクター") "設定の提案ノートを "
+                (if (= "replace-note" (:op c)) "改稿（置換）" "作成")
+                " し Review で停止しました（既存の設定ノートは変更していません。未承認の案で、採用は人が判断し正式フォルダへ移してください。Done にはしません）。"
+                " 参照した既存設定 " (:facts c 0) " 件、矛盾・要確認 " (+ (:conflicts c 0) (:auto-conflicts c 0) (:near-names c 0)) " 件（うち自動検査 " (+ (:auto-conflicts c 0) (:near-names c 0)) " 件、名前が近い既存ノート " (:near-names c 0) " 件）、質問 " (:questions c 0) " 件"
+                (when (pos? (:facts-dropped c 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped c 0) " 件"))
+                (when (pos? (:links-dropped c 0)) (str "、未解決の wikilink を平文化 " (:links-dropped c 0) " 件"))
+                ".")
+           propose?
            ;; Propose mode never touches the canon: one clearly marked section
            ;; was added or replaced, adoption is the reviewer's decision.
            (str " が『提案（未承認）" ticket-id "』節を " (if (= "replace-section" (:op p)) "改稿（置換）" "追加")
@@ -2080,6 +2096,7 @@
                 (when (pos? (:facts-dropped p 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped p 0) " 件"))
                 (when (pos? (:links-dropped p 0)) (str "、未解決の wikilink を平文化 " (:links-dropped p 0) " 件"))
                 ".")
+           :else
            (str " が " (count applied) " ファイルを更新し Review で停止しました（Done にはしません）。"))
          " 対象: " (str/join ", " (map #(str "[[" (str/replace (:path %) #"\.md$" "") "]]" (when (:created? %) "（新規）")) applied))
          "; 操作: " (str/join ", " (map (fn [a] (str/join "/" (map :op (:ops a)))) applied))
@@ -2154,7 +2171,7 @@
                             (mark-run! ticket-id run :succeeded
                                        {:action action :agent agent :lane lane :exit-code 0
                                         :result (if review? "review" "blocked")
-                                        :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied :mode :propose])
+                                        :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied :mode :propose :create])
                                         :finished-at (now-str)})
                             (if review? "review" "blocked")))
           ;; A staged result is reported as the intended "review" until the

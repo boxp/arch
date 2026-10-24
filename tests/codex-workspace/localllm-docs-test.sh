@@ -93,11 +93,40 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                         (not (str/includes? (str user) "round 1")) (step "search" :queries [(if (= mode "research-hit-only-sources") "ポート" "8081 ポート")])
                         (= mode "research-finish-on-hits") (step "finish")
                         (not (str/includes? (str user) "### 根拠:")) (step "read" :reads [{:path corpus-note :heading "## 構成"}])
-                        :else (step "finish"))]
+                        :else (step "finish"))
+        create? (= "docs_setting_create" schema-name)
+        creds-note "Infrastructure/creds-note.md"
+        ;; create mode answers (BOXP-282): a new character / monster note.
+        created (fn [& {:keys [decision reason name slug facts body aliases]}]
+                  (json/generate-string {:decision (or decision "propose") :reason (or reason "")
+                                         :name (or name "灯守ホタル") :slug (or slug "hotaru-lantern-keeper")
+                                         :aliases (or aliases (if revise? ["ホタル" "蛍"] ["ホタル" "灯守ホタル"])) :summary (if revise? "改稿後の概要。CREATE-REVISED" "灯籠の火を守る見習いの少女。CREATE-SUMMARY")
+                                         :profile (or body "- 年齢: 16 歳。灯籠組合の見習い。CREATE-BODY [[Projects/task-board-localllm-docs/refs/corpus/design-v2|設計]] と [[Unknown/ghost-note|架空]] を参照。")
+                                         :appearance "- 橙の作業着。" :personality "- 控えめ。語尾は「…かな」。" :role "## 役割\n- 見習い。"
+                                         :relationships "" :timeline "- 灯暦 120 年に見習いになる。"
+                                         :ecology "- 夜行性。" :habitat "- 山あいの沢。" :traits "- 体表が淡く光る。CREATE-BODY" :world-position "- 既存種とは別系統。" :story-usage "- 道しるべになる。" :weaknesses "- 強い光。"
+                                         :canon_facts (or facts [{:fact "待受ポートは 8081 である" :source corpus-note}])
+                                         :conflicts ["依頼の 8080 は旧版の値（design-v1）と一致するため要確認"] :questions ["見習いの期間は何年か"]
+                                         :sources (vec (distinct (map :source (or facts [{:source corpus-note}]))))}))
+        ;; vault-wide research script: list a folder, then read a credential-looking
+        ;; note plus three paths that must be refused (ticket, other proposal, hidden dir), then finish.
+        vaultwide-step (cond
+                         (not (str/includes? (str user) "round 1")) (json/generate-string {:action "list" :queries [] :reads [] :folders ["Infrastructure"] :reason "test"})
+                         (not (str/includes? (str user) "### 根拠:")) (json/generate-string {:action "read" :queries [] :folders []
+                                                                                             :reads [{:path creds-note :heading ""} {:path "Tickets/BOXP-800.md" :heading ""}
+                                                                                                     {:path "Projects/task-board-localllm-docs/proposals/characters/other-ticket.md" :heading ""} {:path "Drafts/llm/characters/other-ticket.md" :heading ""}
+                                                                                                     {:path ".obsidian/workspace.md" :heading ""}]
+                                                                                             :reason "test"})
+                         :else (json/generate-string {:action "finish" :queries [] :reads [] :folders [] :reason "done"}))]
     (spit req-log (str (pr-str {:uri uri :model (:model parsed) :mode mode :schema? (some? (:response_format parsed))
                                 :schema-name schema-name
                                 :stream? (:stream parsed) :revise? (str/includes? (str user) "Review にあり")
                                 :mentions-secret? (str/includes? (str user) "FIXTURE-DECOY")
+                                :sees-token-value? (str/includes? (str user) "SECRET-LINE-TOKEN-VALUE")
+                                :sees-redaction-marker? (str/includes? (str user) "〔秘匿")
+                                :sees-tree-index? (str/includes? (str user) "フォルダ木だけを示します")
+                                :sees-list-result? (str/includes? (str user) "list 「Infrastructure/」")
+                                :prev-create? (str/includes? (str user) "# 前回の案（このチケットが作成した未承認ノート")
                                 :sees-corpus-body? (str/includes? (str user) "CORPUS-BODY-MARKER")
                                 ;; propose re-run: the canon block must not carry the previous
                                 ;; proposal section; it is shown separately as 前回の案
@@ -106,6 +135,15 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
+      (and research? (= mode "create-vaultwide")) (respond vaultwide-step "stop")
+      (and create? (= mode "create-vaultwide")) (respond (created :facts [{:fact "creds-note に監視の記述がある" :source creds-note}]) "stop")
+      (and create? (= mode "create-needs-human")) (respond (created :decision "needs-human" :reason "どの作品の依頼か判別できません" :facts []) "stop")
+      (and create? (= mode "create-conflict")) (respond (if (str/includes? (str user) "拒否されました") (created) (created :name "design v2" :slug "design-v2-dup")) "stop")
+      (and create? (= mode "create-conflict-persist")) (respond (created :name "design v2" :slug "design-v2-dup") "stop")
+      (and create? (= mode "create-bad-slug")) (respond (if (str/includes? (str user) "拒否されました") (created) (created :slug "Hotaru Lantern")) "stop")
+      (and create? (= mode "create-raw-token")) (respond (created :body "- 合言葉は ghp_abcdefghijklmnopqrstuvwxyz0123 です。RAW-TOKEN-BODY") "stop")
+      (and create? (= mode "create-marker")) (respond (created :body "- 完了。TASK_BOARD_RESULT: done") "stop")
+      create? (respond (created) "stop")
       verify? (respond (json/generate-string {:conflicts ["案の「冬祭り」は根拠に季節の記述が無いが矛盾ではない" "AUTO-CONFLICT: 案の藍は design-v2 の記述と食い違う" "検査 [[Unknown/vghost|検査幽霊]]"] :note ""}) "stop")
       (and propose? (= mode "propose-needs-human")) (respond (setting :decision "needs-human" :reason "どの人物の依頼か判別できません" :facts [] :proposal "" :conflicts []) "stop")
       (and propose? (= mode "propose-bad-sources")) (respond (setting :facts (if (str/includes? (str user) "拒否されました")
@@ -1557,8 +1595,319 @@ test_propose_heading_only_answer_is_rejected_and_titles_stay_inside_the_section(
   [[ "$(sed -n '/^## 提案（未承認）BOXP-799$/,$p' "${note}" | grep -c '^## ')" == 1 ]] || fail "no level-2 heading may follow the proposal heading"
 }
 
+# ---------------------------------------------------------------------------
+# Create mode (docs-mode: create, BOXP-282): new character / monster notes
+# under the proposal root, vault-wide read root with exclusions
+# ---------------------------------------------------------------------------
+
+PROPOSALS="Projects/task-board-localllm-docs/proposals"
+
+write_create_ticket() {
+  local vault="$1" ticket="$2" status="$3" summary="$4" docs_kind="${5-}" docs_sources="${6-}"
+  {
+    printf -- '---\nid: %s\ntype: task\nstatus: %s\npriority: medium\nassignee: localllm\nrepo:\ndocs-mode: create\n' "${ticket}" "${status}"
+    if [[ -n "${docs_kind}" ]]; then printf 'docs-kind: %s\n' "${docs_kind}"; fi
+    if [[ -n "${docs_sources}" ]]; then printf 'docs-sources: %s\n' "${docs_sources}"; fi
+    printf -- 'closed:\n---\n\n# %s: 設定追加\n\n## Summary\n\n%s\n\n## Acceptance Criteria\n\n- [ ] 作成済み\n\n## Context\n\n- なし\n\n## Plan\n\n- [ ] 作業\n\n## Notes\n\n- 2026-10-23: 開始\n' "${ticket}" "${summary}"
+  } >"${vault}/Tickets/${ticket}.md"
+}
+
+proposal_count() { find "${VAULT}/${PROPOSALS}" -name '*.md' 2>/dev/null | wc -l | tr -d ' '; }
+
+test_create_makes_an_unapproved_note_revises_it_and_rolls_back() {
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-800|BOXP-800: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-800 ready "灯火街に灯籠組合の見習いの新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_no_cloud
+  # search -> read -> finish -> create -> verify
+  [[ "$(request_count)" == 5 ]] || fail "expected 5 requests (3 research + create + verify), got $(request_count)"
+  [[ "$(grep -c ':schema-name "docs_setting_create"' "${REQ_LOG}")" == 1 ]] || fail "expected one create request"
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^assignee: boxp$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '新規キャラクター設定の提案ノートを 作成 し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '参照した既存設定 1 件、矛盾・要確認 4 件（うち自動検査 3 件、名前が近い既存ノート 0 件）、質問 1 件'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '未解決の wikilink を平文化 1 件'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" "対象: \[\[${PROPOSALS}/characters/hotaru-lantern-keeper\]\]（新規）"
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '操作: create-note'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
+  # model text never reaches Notes
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-800.md" 'CREATE-BODY|CREATE-SUMMARY|灯守ホタル'
+  local note="${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md"
+  [[ -f "${note}" ]] || fail "proposal note must be created"
+  [[ "$(proposal_count)" == 1 ]] || fail "exactly one proposal note, got $(proposal_count)"
+  assert_runbook_unchanged
+  assert_file_contains "${note}" '^title: "灯守ホタル"$'
+  assert_file_contains "${note}" '^type: character-proposal$'
+  assert_file_contains "${note}" '^status: unapproved$'
+  assert_file_contains "${note}" '^localllm-proposal: true$'
+  assert_file_contains "${note}" '^ticket: BOXP-800$'
+  assert_file_contains "${note}" '^  - "ホタル"$'
+  [[ "$(grep -c '^  - ' "${note}")" == 1 ]] || fail "alias equal to the name must be dropped"
+  assert_file_contains "${note}" '^# 灯守ホタル$'
+  assert_file_contains "${note}" '未承認の提案'
+  assert_file_contains "${note}" 'CREATE-SUMMARY'
+  assert_file_contains "${note}" '^## プロフィール$'
+  assert_file_contains "${note}" 'CREATE-BODY'
+  # a heading inside a section body becomes bold; an empty section is marked, not invented
+  assert_file_contains "${note}" '^\*\*役割\*\*$'
+  assert_file_not_contains "${note}" '^## 役割$'
+  assert_file_contains "${note}" '^## 関係性$'
+  assert_file_contains "${note}" '^未定（要確認）$'
+  # monster sections are not rendered on a character note
+  assert_file_not_contains "${note}" '^## 生態$'
+  # wikilinks: resolved note kept, invented one plain
+  assert_file_contains "${note}" '\[\[Projects/task-board-localllm-docs/refs/corpus/design-v2|設計\]\]'
+  assert_file_not_contains "${note}" '\[\[Unknown/ghost-note'
+  assert_file_contains "${note}" '架空'
+  assert_file_contains "${note}" '^## 参照した既存設定（出典）$'
+  assert_file_contains "${note}" '^- 待受ポートは 8081 である（出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]）$'
+  assert_file_contains "${note}" '^## 矛盾・要確認$'
+  assert_file_contains "${note}" '^- AUTO-CONFLICT: 案の藍は design-v2 の記述と食い違う（自動検査）$'
+  assert_file_contains "${note}" '^## 人への質問$'
+  assert_file_not_contains "${note}" 'TASK_BOARD_RESULT'
+  local audit run1
+  audit="$(find "${STATE}/runs/BOXP-800" -name localllm-audit.edn | head -n 1)"
+  run1="$(basename "$(dirname "${audit}")")"
+  assert_file_contains "${audit}" ':mode "create"'
+  assert_file_contains "${audit}" ':op "create-note"'
+  assert_file_contains "${audit}" ':kind-resolution :keywords'
+  assert_file_contains "${audit}" ':created\? true'
+  # Review re-run: the ticket's own note is found and its body replaced (frontmatter kept, no second note)
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-800|BOXP-800: 新キャラ]] #ticket status::review"
+  write_create_ticket "${VAULT}" BOXP-800 review "灯火街に灯籠組合の見習いの新しいキャラを追加してほしい。" "" "${CORPUS}"
+  printf -- '- 2026-10-23: boxp: 口調をもう少し明るくしてください\n' >>"${VAULT}/Tickets/BOXP-800.md"
+  : >"${REQ_LOG}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2"
+  assert_file_contains "${REQ_LOG}" ':revise\? true'
+  grep -q ':prev-create? true' "${REQ_LOG}" || fail "revision must show the previous note body separately"
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '新規キャラクター設定の提案ノートを 改稿（置換） し Review で停止しました'
+  # the frontmatter follows the revision (aliases) while created / run / slug / ticket are carried over
+  assert_file_contains "${note}" '^  - "蛍"$'
+  assert_file_contains "${note}" '^slug: hotaru-lantern-keeper$'
+  [[ "$(proposal_count)" == 1 ]] || fail "revision must not create a second note"
+  assert_file_contains "${note}" 'CREATE-REVISED'
+  assert_file_not_contains "${note}" 'CREATE-SUMMARY'
+  assert_file_contains "${note}" "^run: ${run1}$"
+  assert_file_contains "${note}" '^ticket: BOXP-800$'
+  # rollback: the revision is restored from its backup, then the creation is undone (note removed)
+  local run2
+  run2="$(ls -t "${STATE}/runs/BOXP-800" | head -n 1)"
+  [[ "${run2}" != "${run1}" ]] || fail "second run id expected"
+  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-800 "${run2}" >"${CASE_DIR}/rb2" 2>&1 || fail "rollback 2 failed: $(cat "${CASE_DIR}/rb2")"
+  assert_file_contains "${note}" 'CREATE-SUMMARY'
+  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-800 "${run1}" >"${CASE_DIR}/rb1" 2>&1 || fail "rollback 1 failed: $(cat "${CASE_DIR}/rb1")"
+  [[ ! -e "${note}" ]] || fail "rollback of the creating run must remove the note"
+  assert_runbook_unchanged
+}
+
+test_create_kind_comes_from_docs_kind_or_wording_or_is_asked_without_a_request() {
+  # declared kind wins over wording-free summaries; monster sections are rendered
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-801|BOXP-801: 追加]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-801 ready "山あいの沢に棲む新しい存在を 1 種考えてほしい。" monster "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-801.md" '新規魔物設定の提案ノートを 作成 し Review で停止しました'
+  local note="${VAULT}/${PROPOSALS}/monsters/hotaru-lantern-keeper.md"
+  [[ -f "${note}" ]] || fail "monster note must be created under monsters/"
+  assert_file_contains "${note}" '^type: monster-proposal$'
+  assert_file_contains "${note}" '^## 生態$'
+  assert_file_contains "${note}" '^## 弱点・対処$'
+  assert_file_not_contains "${note}" '^## プロフィール$'
+  [[ ! -e "${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md" ]] || fail "no character note expected"
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-801" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':kind-resolution :declared'
+  # both kinds in the wording and no docs-kind: ask, no model call, nothing written
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-802|BOXP-802: 追加]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-802 ready "魔物使いのキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-802 '両方の語があり種別を決められません'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected for an ambiguous kind"
+  [[ "$(proposal_count)" == 0 ]] || fail "nothing may be written"
+  # no kind word at all
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-803|BOXP-803: 追加]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-803 ready "何か新しい設定を足してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-803 '種別が分かりません'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected for an unknown kind"
+  # no corpus at all (no docs-sources, no default corpus): no model call, nothing written
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-815|BOXP-815: 追加]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-815 ready "新しいキャラを追加してほしい。" "" ""
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-815 '参照する設定資料が必要です'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected without a corpus"
+  [[ "$(proposal_count)" == 0 ]] || fail "nothing may be written"
+  # unknown docs-kind value
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-804|BOXP-804: 追加]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-804 ready "新しいキャラを追加してほしい。" item "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-804 'docs-kind は character / monster'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected for a bad docs-kind"
+}
+
+test_create_name_and_slug_collisions_get_one_correction_then_block() {
+  # name equal to a corpus note title: rejected once, corrected answer accepted
+  setup; echo create-conflict >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-805|BOXP-805: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-805 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  [[ "$(grep -c ':schema-name "docs_setting_create"' "${REQ_LOG}")" == 2 ]] || fail "expected one correction round"
+  assert_file_contains "${VAULT}/Tickets/BOXP-805.md" '^status: review$'
+  [[ -f "${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md" ]] || fail "corrected note expected"
+  [[ ! -e "${VAULT}/${PROPOSALS}/characters/design-v2-dup.md" ]] || fail "the colliding note must not be written"
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-805" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':corrections 1'
+  # the collision persists: Blocked, nothing written
+  setup; echo create-conflict-persist >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-806|BOXP-806: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-806 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-806 '既存ノートの名前と同じです'
+  [[ "$(proposal_count)" == 0 ]] || fail "nothing may be written on a persistent collision"
+  # an invalid slug is re-asked once
+  setup; echo create-bad-slug >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-807|BOXP-807: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-807 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-807.md" '^status: review$'
+  [[ "$(proposal_count)" == 1 ]] || fail "one note expected after the slug correction"
+  # another ticket's proposal already uses the name / slug: never overwritten
+  setup; echo create >"${MODE_FILE}"
+  mkdir -p "${VAULT}/${PROPOSALS}/characters"
+  printf -- '---\ntitle: "灯守ホタル"\ntype: character-proposal\nstatus: unapproved\nlocalllm-proposal: true\nticket: BOXP-700\n---\n\n# 灯守ホタル\n\nOTHER-TICKET-NOTE\n' >"${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-808|BOXP-808: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-808 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-808 '既に存在します|既存ノートの名前と同じです'
+  assert_file_contains "${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md" 'OTHER-TICKET-NOTE'
+  [[ "$(proposal_count)" == 1 ]] || fail "the other ticket's note must be the only one"
+}
+
+test_create_needs_human_and_result_markers_block_without_writing() {
+  setup; echo create-needs-human >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-809|BOXP-809: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-809 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-809 'localllm は新規設定を提案せず人間判断を求めました'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-809.md" 'どの作品の依頼か判別できません'
+  [[ "$(proposal_count)" == 0 ]] || fail "nothing may be written"
+  setup; echo create-marker >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-810|BOXP-810: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-810 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-810 'runner の結果マーカー'
+  [[ "$(proposal_count)" == 0 ]] || fail "nothing may be written"
+}
+
+test_create_refuses_raw_credential_values_and_redacts_wikilinked_references() {
+  setup; echo create-raw-token >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-813|BOXP-813: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-813 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-813 '認証情報らしき値'
+  [[ "$(proposal_count)" == 0 ]] || fail "a note with a raw token value must not be written"
+  # a reference note reached by wikilink from the ticket (vault-wide read root) is redacted like the corpus
+  setup; echo normal >"${MODE_FILE}"
+  printf -- '---\ntitle: 監視メモ\n---\n\n# 監視メモ\n\n- 監視は毎朝。CREDS-NOTE-BODY\n- token: ghp_abcdefghijklmnopqrstuvwxyz0123 SECRET-LINE-TOKEN-VALUE\n' >"${VAULT}/Infrastructure/creds-note.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-814|BOXP-814: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-814 ready localllm "${PILOT}/runbook.md"
+  printf -- '- 2026-10-23: 参考: [[Infrastructure/creds-note]]\n' >>"${VAULT}/Tickets/BOXP-814.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-814.md" '^status: review$'
+  grep -q ':sees-redaction-marker? true' "${REQ_LOG}" || fail "the wikilinked reference must be redacted"
+  assert_file_not_contains "${REQ_LOG}" ':sees-token-value\? true'
+}
+
+test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts_secret_lines() {
+  setup; echo create-vaultwide >"${MODE_FILE}"
+  # a note holding a credential-looking line, a hidden dir note, another ticket's
+  # proposal, a stray note marked as our proposal, and 70 padding notes (tree index)
+  printf -- '---\ntitle: 監視メモ\n---\n\n# 監視メモ\n\n## 監視\n\n- 監視は毎朝。CREDS-NOTE-BODY\n- token: ghp_abcdefghijklmnopqrstuvwxyz0123 SECRET-LINE-TOKEN-VALUE\n' >"${VAULT}/Infrastructure/creds-note.md"
+  mkdir -p "${VAULT}/.obsidian" "${VAULT}/${PROPOSALS}/characters" "${VAULT}/Archive/notes"
+  printf -- '# workspace\n\nHIDDEN-NOTE-BODY\n' >"${VAULT}/.obsidian/workspace.md"
+  printf -- '---\ntitle: "他票の案"\nlocalllm-proposal: true\nticket: BOXP-700\n---\n\n# 他票の案\n\nOTHER-PROPOSAL-BODY\n' >"${VAULT}/${PROPOSALS}/characters/other-ticket.md"
+  printf -- '---\ntitle: stray\nlocalllm-proposal: true\n---\n\n# stray\n\nSTRAY-PROPOSAL-BODY\n' >"${VAULT}/Infrastructure/stray-proposal.md"
+  for i in $(seq 1 70); do printf -- '---\ntitle: memo %s\n---\n\n# memo %s\n\n## 本文\n\n- padding\n' "$i" "$i" >"${VAULT}/Archive/notes/memo-${i}.md"; done
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-800|BOXP-800: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-800 ready "新しいキャラを追加してほしい。" "" "."
+  # a small index budget stands in for a vault-sized corpus: the flat listing does not fit, so the folder tree is shown
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_INDEX_CHAR_BUDGET=1500 CODEX_TASK_BOARD_LOCALLLM_MAX_READS_PER_ROUND=5 >"${CASE_DIR}/out"
+  assert_no_cloud
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '出典: \[\[Infrastructure/creds-note\]\]'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" 'list 1, read 1'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '秘匿行の除去 1 行'
+  # the model saw the folder tree, the list result and the redaction marker, never the token value
+  grep -q ':sees-tree-index? true' "${REQ_LOG}" || fail "a corpus of this size must be shown as a folder tree"
+  grep -q ':sees-list-result? true' "${REQ_LOG}" || fail "the list action must return the folder listing"
+  grep -q ':sees-redaction-marker? true' "${REQ_LOG}" || fail "the redaction marker must replace the secret line"
+  assert_file_not_contains "${REQ_LOG}" ':sees-token-value\? true'
+  assert_file_not_contains "${REQ_LOG}" ':mentions-secret\? true'
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-800" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" ':corpus-redacted-lines 1'
+  assert_file_contains "${audit}" ':corpus-proposal-notes 1'
+  assert_file_contains "${audit}" ':index-tree\? true'
+  assert_file_contains "${audit}" 'read Tickets/BOXP-800.md → 失敗'
+  assert_file_contains "${audit}" "read ${PROPOSALS}/characters/other-ticket.md → 失敗"
+  assert_file_contains "${audit}" 'read .obsidian/workspace.md → 失敗'
+  # nothing from the excluded notes reached a request or Notes
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-800.md" 'SECRET-LINE-TOKEN-VALUE|HIDDEN-NOTE-BODY|OTHER-PROPOSAL-BODY|STRAY-PROPOSAL-BODY'
+  local note="${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md"
+  [[ -f "${note}" ]] || fail "proposal note expected"
+  assert_file_not_contains "${note}" 'SECRET-LINE-TOKEN-VALUE'
+  assert_file_contains "${VAULT}/${PROPOSALS}/characters/other-ticket.md" 'OTHER-PROPOSAL-BODY'
+  # a custom proposal root is excluded from reads even when EXCLUDE_PATHS does not list it
+  setup; echo create-vaultwide >"${MODE_FILE}"
+  mkdir -p "${VAULT}/Drafts/llm/characters"
+  printf -- '---\ntitle: "他票の案"\nlocalllm-proposal: true\nticket: BOXP-700\n---\n\n# 他票の案\n\nCUSTOM-ROOT-PROPOSAL-BODY\n' >"${VAULT}/Drafts/llm/characters/other-ticket.md"
+  printf -- '---\ntitle: 監視メモ\n---\n\n# 監視メモ\n\n## 監視\n\n- 監視は毎朝。\n' >"${VAULT}/Infrastructure/creds-note.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-800|BOXP-800: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-800 ready "新しいキャラを追加してほしい。[[Drafts/llm/characters/other-ticket]] も参考に。" "" "."
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT="Drafts/llm" CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS="Tickets,Boards" >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: review$'
+  [[ -f "${VAULT}/Drafts/llm/characters/hotaru-lantern-keeper.md" ]] || fail "note must be created under the custom proposal root"
+  grep -q 'CUSTOM-ROOT-PROPOSAL-BODY' "${REQ_LOG}" && fail "a proposal under the custom root must not reach the model"
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-800" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" 'read Drafts/llm/characters/other-ticket.md → 失敗'
+  # without `.` in the read roots a vault-wide docs-sources is refused before any request
+  setup; echo create-vaultwide >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-811|BOXP-811: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-811 ready "新しいキャラを追加してほしい。" "" "."
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-811 'READ_ROOTS に . が無いため'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  # the vault-wide root never widens the write roots: a transcribe target outside the pilot stays refused
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-812|BOXP-812: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-812 ready localllm "Infrastructure/prod.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." >"${CASE_DIR}/out"
+  assert_blocked BOXP-812 '許可 root 外'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  # `.` is read-only: as a write root or proposal root it is ignored (write roots never widen to the vault)
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-816|BOXP-816: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-816 ready localllm "Infrastructure/prod.md"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT="." >"${CASE_DIR}/out"
+  assert_blocked BOXP-816 '許可 root 外'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+}
+
 for t in \
   test_credential_additions_are_blocked_by_the_executor \
+  test_create_makes_an_unapproved_note_revises_it_and_rolls_back \
+  test_create_kind_comes_from_docs_kind_or_wording_or_is_asked_without_a_request \
+  test_create_name_and_slug_collisions_get_one_correction_then_block \
+  test_create_needs_human_and_result_markers_block_without_writing \
+  test_create_refuses_raw_credential_values_and_redacts_wikilinked_references \
+  test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts_secret_lines \
   test_runaway_output_is_cut_and_blocks_without_retry \
   test_research_collects_evidence_then_applies_with_sources \
   test_research_sources_must_be_notes_the_model_read \
