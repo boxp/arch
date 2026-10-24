@@ -114,7 +114,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                          (not (str/includes? (str user) "round 1")) (json/generate-string {:action "list" :queries [] :reads [] :folders ["Infrastructure"] :reason "test"})
                          (not (str/includes? (str user) "### 根拠:")) (json/generate-string {:action "read" :queries [] :folders []
                                                                                              :reads [{:path creds-note :heading ""} {:path "Tickets/BOXP-800.md" :heading ""}
-                                                                                                     {:path "Projects/task-board-localllm-docs/proposals/characters/other-ticket.md" :heading ""}
+                                                                                                     {:path "Projects/task-board-localllm-docs/proposals/characters/other-ticket.md" :heading ""} {:path "Drafts/llm/characters/other-ticket.md" :heading ""}
                                                                                                      {:path ".obsidian/workspace.md" :heading ""}]
                                                                                              :reason "test"})
                          :else (json/generate-string {:action "finish" :queries [] :reads [] :folders [] :reason "done"}))]
@@ -1837,7 +1837,7 @@ test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-800|BOXP-800: 新キャラ]] #ticket status::ready"
   write_create_ticket "${VAULT}" BOXP-800 ready "新しいキャラを追加してほしい。" "" "."
   # a small index budget stands in for a vault-sized corpus: the flat listing does not fit, so the folder tree is shown
-  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_INDEX_CHAR_BUDGET=1500 >"${CASE_DIR}/out"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_INDEX_CHAR_BUDGET=1500 CODEX_TASK_BOARD_LOCALLLM_MAX_READS_PER_ROUND=5 >"${CASE_DIR}/out"
   assert_no_cloud
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: review$'
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '出典: \[\[Infrastructure/creds-note\]\]'
@@ -1863,6 +1863,20 @@ test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts
   [[ -f "${note}" ]] || fail "proposal note expected"
   assert_file_not_contains "${note}" 'SECRET-LINE-TOKEN-VALUE'
   assert_file_contains "${VAULT}/${PROPOSALS}/characters/other-ticket.md" 'OTHER-PROPOSAL-BODY'
+  # a custom proposal root is excluded from reads even when EXCLUDE_PATHS does not list it
+  setup; echo create-vaultwide >"${MODE_FILE}"
+  mkdir -p "${VAULT}/Drafts/llm/characters"
+  printf -- '---\ntitle: "他票の案"\nlocalllm-proposal: true\nticket: BOXP-700\n---\n\n# 他票の案\n\nCUSTOM-ROOT-PROPOSAL-BODY\n' >"${VAULT}/Drafts/llm/characters/other-ticket.md"
+  printf -- '---\ntitle: 監視メモ\n---\n\n# 監視メモ\n\n## 監視\n\n- 監視は毎朝。\n' >"${VAULT}/Infrastructure/creds-note.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-800|BOXP-800: 新キャラ]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-800 ready "新しいキャラを追加してほしい。[[Drafts/llm/characters/other-ticket]] も参考に。" "" "."
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT="Drafts/llm" CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS="Tickets,Boards" >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: review$'
+  [[ -f "${VAULT}/Drafts/llm/characters/hotaru-lantern-keeper.md" ]] || fail "note must be created under the custom proposal root"
+  grep -q 'CUSTOM-ROOT-PROPOSAL-BODY' "${REQ_LOG}" && fail "a proposal under the custom root must not reach the model"
+  local audit
+  audit="$(find "${STATE}/runs/BOXP-800" -name localllm-audit.edn | head -n 1)"
+  assert_file_contains "${audit}" 'read Drafts/llm/characters/other-ticket.md → 失敗'
   # without `.` in the read roots a vault-wide docs-sources is refused before any request
   setup; echo create-vaultwide >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-811|BOXP-811: 新キャラ]] #ticket status::ready"

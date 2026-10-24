@@ -107,7 +107,10 @@
    :read-roots (split-list (env "CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS"
                                 (str (env "CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS" default-docs-roots)
                                      ",Projects/task-board-localllm-docs")))
-   :exclude-paths (split-list (env "CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS" default-exclude-paths))
+   ;; The configured proposal root is always excluded from reads, whatever
+   ;; EXCLUDE_PATHS says (codex review): our own unapproved notes are never canon.
+   :exclude-paths (vec (distinct (conj (split-list (env "CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS" default-exclude-paths))
+                                       (first (split-list (env "CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT" default-proposal-root))))))
    ;; Write root for `docs-mode: create` (new character / monster notes), one
    ;; subfolder per kind. Always allowed for writes, always excluded from reads.
    :proposal-root (first (split-list (env "CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT" default-proposal-root)))
