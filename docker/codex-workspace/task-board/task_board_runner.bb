@@ -2230,13 +2230,137 @@
                                    {:result (record-final! final) :last-message message
                                     :applied? applied?})))))))
 
+;; ---------------------------------------------------------------------------
+;; localllm Backlog groom (BOXP-290)
+;;
+;; Runner-side, deterministic: `localllm-docs/groom-ticket` decides the purpose
+;; from the frontmatter or the request wording, validates the corpus the run
+;; would use, and renders Acceptance Criteria / Context / Plan items plus the
+;; frontmatter values to pin. No model call, no document write, no external
+;; action. The ticket edit happens inside the lifecycle commit, and the card
+;; ends in Ready + assignee boxp (the owner approves by setting the assignee
+;; back to localllm) or Blocked with one concrete question.
+;; ---------------------------------------------------------------------------
+
+(defn ticket-section-range
+  "[start end) of the body lines of `heading` (exact `## ...` line) in a
+  ticket: start is the line after the heading, end the next `## ` heading or
+  the end of the file. nil when the heading is absent."
+  [lines heading]
+  (when-let [idx (first (keep-indexed (fn [i l] (when (= heading (str/trim l)) i)) lines))]
+    (let [end (or (first (keep-indexed (fn [i l] (when (and (> i idx) (re-matches #"##\s+.*" l)) i)) lines))
+                  (count lines))]
+      [(inc idx) end])))
+
+(defn merge-section-items
+  "Ticket lines with `items` placed in the section `heading`: a section whose
+  body is only template placeholders is replaced, a filled section keeps its
+  content and gets the items appended; a missing section is added before
+  `## Notes` (or at the end)."
+  [lines heading items]
+  (let [lines (vec lines)
+        block (vec (concat [""] items [""]))]
+    (if-let [[start end] (ticket-section-range lines heading)]
+      (let [body (subvec lines start end)
+            template? ((resolve 'localllm-docs/template-section?) body)
+            kept (if template?
+                   []
+                   (vec (reverse (drop-while str/blank? (reverse body)))))]
+        (vec (concat (subvec lines 0 start)
+                     (if (seq kept) (concat kept [""] items [""]) block)
+                     (subvec lines end))))
+      (let [notes-idx (or (section-index lines "## Notes") (count lines))]
+        (vec (concat (subvec lines 0 notes-idx) [heading] block (subvec lines notes-idx)))))))
+
+(defn update-ticket-sections!
+  "Write groom items into the ticket's sections ({heading [items]}), under the
+  same ticket mutex / vault writer lock as the frontmatter and Notes writes."
+  [ticket-id sections]
+  (locking (ticket-mutex ticket-id)
+    (with-vault-writer-lock
+     (fn []
+       (let [path (ticket-path ticket-id)
+             lines (vec (read-lines path))
+             new-lines (reduce (fn [acc [heading items]] (merge-section-items acc heading items)) lines sections)]
+         (when (not= lines new-lines)
+           (write-lines! path new-lines)))))))
+
+(defn localllm-groom-note [ticket-id run-id result]
+  (str "localllm groom run " run-id " が票を整理し Ready に置きました（runner の決定的な整理で、モデル呼出・文書の書込・外部操作はありません）。"
+       " " (:summary result)
+       "。実行するにはこの票の assignee を localllm に戻してください（Ready のまま）。用途や対象が違えば Summary / frontmatter を直してから戻してください。"))
+
+(defn localllm-groom-stop-note [ticket-id run-id result]
+  (str "localllm groom run " run-id " は票を整理できず停止しました（モデル呼出・文書の書込なし）。"
+       " category=" (:category result "unknown")
+       "; 質問: " (sanitize-blocker-reason (:reason result))
+       " — Summary か frontmatter を直し、Backlog（再整理）か Ready（実行）に置いて assignee を localllm に戻してください"
+       "; record: " (str (fs/path (run-dir ticket-id run-id) "localllm-groom.edn"))))
+
+(defn run-localllm-groom! [ticket-id action lane origin-lane agent lock]
+  (let [run (:run-id lock)
+        dir (run-dir ticket-id run)
+        last-message-path (fs/path dir "last-message.md")]
+    (fs/create-dirs dir)
+    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
+    (let [result (if @localllm-docs-module-loaded?
+                   (try
+                     ((resolve 'localllm-docs/groom-ticket)
+                      ((resolve 'localllm-docs/config)) (vault) ticket-id
+                      (ticket-frontmatter ticket-id) (slurp (str (ticket-path ticket-id))))
+                     (catch Exception e
+                       {:status :blocked :category "localllm-runner-error"
+                        :reason (str "runner 内部エラー: " (sanitize-blocker-reason (.getMessage e)))}))
+                   {:status :blocked :category "localllm-module-unavailable"
+                    :reason "localllm_docs.bb を読み込めないため整理しません"})
+          ready? (= :ready (:status result))
+          record (merge {:ticket-id ticket-id :run-id run :action action :status (:status result) :origin-lane origin-lane
+                         :decided-at (now-str)}
+                        (select-keys result [:category :reason :mode :mode-resolution :kind :target :sources :sources-origin
+                                             :corpus :required :frontmatter :summary]))
+          message (str "localllm groom run " run "\n"
+                       "status: " (if ready? "ready" "blocked") "\n"
+                       (when (:category result) (str "category: " (:category result) "\n"))
+                       (when (:reason result) (str "reason: " (sanitize-blocker-reason (:reason result)) "\n"))
+                       "TASK_BOARD_REVIEW_PR: none\n"
+                       "TASK_BOARD_RESULT: " (if ready? "review" "blocked") "\n")]
+      (write-edn-file! (fs/path dir "localllm-groom.edn") record)
+      (spit (str last-message-path) message)
+      {:exit 0
+       :result (if ready? "ready" "blocked")
+       :run-id run
+       :dir (str dir)
+       :last-message message
+       :idle-timeout? false
+       :shutdown? false
+       ;; The ticket edit (sections + pinned frontmatter) and the Notes entry
+       ;; happen inside the caller's lifecycle commit, together with the lane
+       ;; move, so a TERM never leaves a half-groomed card.
+       :deferred-commit! (fn [& _]
+                           (when ready?
+                             (update-ticket-sections! ticket-id (:sections result))
+                             (when (seq (:frontmatter result))
+                               (update-frontmatter! ticket-id (:frontmatter result))))
+                           (append-note! ticket-id (if ready?
+                                                     (localllm-groom-note ticket-id run result)
+                                                     (localllm-groom-stop-note ticket-id run result)))
+                           (mark-run! ticket-id run :succeeded
+                                      {:action action :agent agent :lane lane :exit-code 0
+                                       :result (if ready? "ready" "blocked")
+                                       :localllm-groom (select-keys result [:category :mode :mode-resolution :kind :target :sources-origin :required])
+                                       :finished-at (now-str)})
+                           {:result (if ready? "ready" "blocked") :last-message message :applied? false})})))
+
 (defn candidate-action [{:keys [lane status]} assignee]
   (cond
-    ;; localllm (BOXP-277) only updates declared vault documents. It never grooms
-    ;; a Backlog ticket and never runs a CLI agent; every lane with work maps to
-    ;; the single docs-edit action (Review re-runs with the latest Notes).
+    ;; localllm (BOXP-277) only updates declared vault documents and never runs
+    ;; a CLI agent. Every lane with work maps to the single docs-edit action
+    ;; (Review re-runs with the latest Notes). A Backlog card gets the
+    ;; deterministic runner-side groom (BOXP-290: no model call, no document
+    ;; write), which ends in Ready + assignee boxp like every other groom.
     (localllm-assignee? assignee)
     (case status
+      "backlog" :docs-groom
       ("ready" "in-progress" "review" "blocked") :docs-edit
       nil)
 
@@ -2253,6 +2377,9 @@
   (let [intended (cond
                    (not (zero? exit)) "blocked"
                    (= :groom action) "ready"
+                   ;; localllm groom (BOXP-290): Ready when the ticket was
+                   ;; clarified, Blocked when it stopped with a question.
+                   (= :docs-groom action) (if (= "blocked" result) "blocked" "ready")
                    (#{"done" "review" "blocked"} result) result
                    :else "review")]
     (cond
@@ -2486,8 +2613,9 @@
               ;; Do not start an agent the hook would only have to stop again
               ;; (a TERM after this check is covered by `register-agent-process!`).
               (ensure-not-shutting-down! "before agent start")
-              (let [agent-run (if (= :docs-edit action)
-                                (run-localllm-docs! ticket-id action effective-lane lane assignee lock)
+              (let [agent-run (case action
+                                :docs-edit (run-localllm-docs! ticket-id action effective-lane lane assignee lock)
+                                :docs-groom (run-localllm-groom! ticket-id action effective-lane lane assignee lock)
                                 (run-agent! ticket-id action effective-lane assignee lock))
                     {:keys [exit result run-id dir last-message idle-timeout? shutdown?]} agent-run
                     _ (when shutdown?
@@ -2504,6 +2632,7 @@
                     intended (cond
                                (not (zero? exit)) "blocked"
                                (= :groom action) "ready"
+                               (= :docs-groom action) (if (= "blocked" result) "blocked" "ready")
                                (#{"done" "review" "blocked"} result) result
                                :else "review")
                     ;; The gate can take minutes (PR checks, codex review); it
@@ -3840,8 +3969,8 @@
             (reset! committing-cards 0)
             (reset! shutdown-started-at-ms nil)))))
 
-    ;; BOXP-277: localllm only maps to :docs-edit and never grooms.
-    (doseq [[status expected] {"backlog" nil "ready" :docs-edit "in-progress" :docs-edit
+    ;; BOXP-277: localllm maps to :docs-edit; BOXP-290: Backlog gets the runner-side groom.
+    (doseq [[status expected] {"backlog" :docs-groom "ready" :docs-edit "in-progress" :docs-edit
                                "review" :docs-edit "blocked" :docs-edit "done" nil}]
       (let [actual (candidate-action {:lane (status->lane status) :status status} "localllm")]
         (if (= expected actual)
