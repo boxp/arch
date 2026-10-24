@@ -1,5 +1,6 @@
 ---
 import '../styles/global.css';
+import { heroImage } from '../lib/hero';
 
 interface Props {
   title?: string;
@@ -17,6 +18,8 @@ const siteUrl = Astro.site?.toString() ?? 'https://hitohako-stage.b0xp.io/';
 // explicit string 'false' is treated as stage (noindex + STAGE banner).
 const isStage = import.meta.env.PUBLIC_SITE_STAGE !== 'false';
 const ogImage = new URL('/illust/hitohako-face.png', siteUrl).toString();
+// Same content-hashed revision as the <picture> in TitleScreen.
+const hero = heroImage();
 ---
 
 <!doctype html>
@@ -33,7 +36,7 @@ const ogImage = new URL('/illust/hitohako-face.png', siteUrl).toString();
     <meta property="og:url" content={siteUrl} />
     <meta property="og:image" content={ogImage} />
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-    <link rel="preload" as="image" href="/illust/hitohako-hero.webp" type="image/webp" fetchpriority="high" />
+    <link rel="preload" as="image" href={hero.webp} type="image/webp" fetchpriority="high" />
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
     <link

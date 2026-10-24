@@ -6,9 +6,13 @@ Pipeline (no pixel-art conversion, no palette reduction):
   2. un-mix the background colour out of semi-transparent edge pixels (despill)
   3. trim to the opaque bounding box (+ small margin)
   4. LANCZOS downscale to `height` px (default 1600 = 2x of the 800px CSS height)
-  5. write public/illust/hitohako-hero.png and .webp
+  5. write public/illust/hitohako-hero-<hash>.png and .webp, where <hash> is the
+     first 10 hex chars of the SHA-256 of the PNG bytes (content-addressed name so
+     that a redrawn hero is never served from a cache of the previous one),
+     and remove the previous hitohako-hero-*.{png,webp} files.
+The site resolves the current file name at build time via src/lib/hero.ts.
 """
-import os, sys
+import glob, hashlib, io, os, sys
 from PIL import Image
 
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', 'public', 'illust')
@@ -52,9 +56,16 @@ def main():
     scale = height / im.height
     im = im.resize((round(im.width * scale), height), Image.LANCZOS)
     os.makedirs(OUT_DIR, exist_ok=True)
-    im.save(os.path.join(OUT_DIR, 'hitohako-hero.png'), optimize=True)
-    im.save(os.path.join(OUT_DIR, 'hitohako-hero.webp'), quality=88, method=6)
-    print(im.size)
+    png = io.BytesIO()
+    im.save(png, format='PNG', optimize=True)
+    digest = hashlib.sha256(png.getvalue()).hexdigest()[:10]
+    for old in glob.glob(os.path.join(OUT_DIR, 'hitohako-hero*.png')) + glob.glob(os.path.join(OUT_DIR, 'hitohako-hero*.webp')):
+        os.remove(old)
+    base = os.path.join(OUT_DIR, f'hitohako-hero-{digest}')
+    with open(base + '.png', 'wb') as f:
+        f.write(png.getvalue())
+    im.save(base + '.webp', quality=88, method=6)
+    print(im.size, base)
 
 if __name__ == '__main__':
     main()

@@ -1,3 +1,14 @@
 # Stage environment: keep search engines away. This is not access control.
+# Caching: HTML and non-hashed assets must be revalidated on every request so a
+# new deployment shows up immediately; content-hashed files (Astro's /_astro/
+# bundle and the hero illustration hitohako-hero-<hash>.*) never change under
+# the same URL and may be cached for a year.
 /*
   X-Robots-Tag: noindex, nofollow
+  Cache-Control: public, max-age=0, must-revalidate
+
+/_astro/*
+  Cache-Control: public, max-age=31536000, immutable
+
+/illust/hitohako-hero-*
+  Cache-Control: public, max-age=31536000, immutable
