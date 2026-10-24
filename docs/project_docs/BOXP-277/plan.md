@@ -82,3 +82,12 @@ Owner の訂正（2026-10-23 16:46 / 23:11）: 最終目的は「ひとはこさ
 - pi（H1）無出力 timeout の有限診断: harness 側（`<tool_call|>` トークン漏れで空応答、container に models.json 未 mount）と切り分け。localllm 経路は非依存。
 - codex review（ローカル 6 回）の P2 計 7 件を修正。black-box 54 本。
 - 採否: 設定提案を限定 pilot（明示 opt-in、pilot root、Review 必須）で採用。依頼の前提が canon と矛盾する依頼・50 件超 corpus は下書き専用。実資料の root / scope は owner の判断。
+
+## 配備後（2026-10-24、run 20261024T014433Z）
+
+- 配備確認: PR #13838 / #13842 の merge 後、image-updater → Argo sync で codex-workspace Pod が再作成され（`codex-workspace-7fc96f7c84-748lm`）、`/opt/codex-workspace/task-board/` の runner 5 ファイル（`task_board_runner.bb` / `localllm_docs.bb` / `vault_writer.bb` / `autonomy_policy.bb` / `task_board_events.bb`）が `origin/main`（ea132ea9a）と byte 一致。lolice manifest の変更は不要だった（env は既定値）。
+- 配備後 E2E（配備済み loop runner の通常 tick、`tick --ticket` ではない）: テストノート 2 件を前回 run の backup（配備前状態）へ戻し、BOXP-278（転記）/ BOXP-279（設定提案）を `assignee: localllm`・Ready に戻した。loop は 60 秒以内に両票を同時 claim し、他票（cloud agent の BOXP-280）と並走した。
+  - BOXP-279 設定提案: 1 回目 PASS（Review 停止、提案節追加、canon byte 一致、出典 3 件、矛盾 0、llm 424 秒 = GPU を 278 と直列共有）。2 回目は人の改稿指示を Notes に書いて Ready に戻し、提案節の置換を確認（結果は vault `evaluation.md` §8）。
+  - BOXP-278 転記: 1 回目 Blocked・未適用。調査が 1 read で finish し、票の Context / Notes に残る前回結果を根拠に出典へ「Notes」を挙げ、runner の「sources は読んだ資料のみ」検査が拒否した（安全側に収束、cloud 切替なし）。2 回目を同じ配備版で実行（結果は §8）。
+- 修正（本 run の PR）: `ticket-brief` から runner 自身が追記する Notes（start / finish / localllm 結果 / Blocked transition / kohako relay）を除外し、「票本文は依頼であり出典にできない」注記を加えた。弱いモデルが前回結果を資料の代わりにする誘因を減らす。unit テスト追加。
+- 残る owner 判断は 1 つ: 実資料の root / scope（参照を許す最小フォルダ、提案節を書いてよいノート、最初の目視期間）。lolice の sidecar env `CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS` / `READ_ROOTS` / `DEFAULT_SOURCES` で与える。

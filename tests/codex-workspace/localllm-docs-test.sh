@@ -1158,6 +1158,30 @@ test_prompt_over_the_cap_blocks_without_a_request() {
   assert_runbook_unchanged
 }
 
+test_ticket_brief_drops_runner_notes_and_marks_the_ticket_as_non_source() {
+  # Deployed E2E of BOXP-278 (2026-10-24): the runner's own Notes (start /
+  # finish / result / Blocked / kohako relay) carried the previous run's facts
+  # and paths, the model skipped the corpus and cited "Notes". The brief keeps
+  # human notes only and says the ticket body is not a source.
+  setup
+  local out
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(print (localllm-docs/ticket-brief (str \"---\\nid: BOXP-790\\n---\\n\\n# BOXP-790: brief\\n\\n## Summary\\n\\ns\\n\\n## Notes\\n\\n\"
+  \"- 2026-10-23: 人の指示 A\\n\"
+  \"- 2026-10-24: Codex task-board run 20261024T015020Z-695fb2b1-bba7 started from Ready with action docs-edit using localllm.\\n\"
+  \"- 2026-10-24: localllm docs run 20261024T015020Z-695fb2b1-bba7 は変更を適用せず停止しました（cloud への切替はしません）。 category=x\\n\"
+  \"- 2026-10-24: Blocked transition recorded: ticket=BOXP-790; run=r\\n\"
+  \"- 2026-10-24 01:25:18 UTC [kohako-event]: [kohako-event] handled event=e result=silent\\n\"
+  \"- 2026-10-24: Codex run 20261024T015020Z-x was marked interrupted after planned workspace shutdown\\n\"
+  \"- 2026-10-24 01:50:02 UTC [boxp]: 帯は橙を残して\\n\") 15))
+" 2>&1)"
+  [[ "${out}" == *'人の指示 A'* && "${out}" == *'帯は橙を残して'* ]] || fail "human notes must stay in the brief: ${out}"
+  [[ "${out}" != *'Codex task-board run'* && "${out}" != *'localllm docs run'* && "${out}" != *'Blocked transition recorded'* \
+     && "${out}" != *'kohako-event'* && "${out}" != *'marked interrupted'* ]] || fail "runner-generated notes must be dropped from the brief: ${out}"
+  [[ "${out}" == *'資料ではありません'* && "${out}" == *'出典にはできず'* ]] || fail "the brief must say the ticket body is not a source: ${out}"
+}
+
 test_symlink_swap_between_snapshot_and_write_is_rejected() {
   # Another vault editor replaces the allowed directory with a symlink after
   # the snapshot; the commit re-validates the path under the write lock and
@@ -1546,6 +1570,7 @@ for t in \
   test_two_tickets_on_the_same_target_do_not_overwrite_each_other \
   test_prompt_over_the_cap_blocks_without_a_request \
   test_symlink_swap_between_snapshot_and_write_is_rejected \
+  test_ticket_brief_drops_runner_notes_and_marks_the_ticket_as_non_source \
   test_absolute_paths_in_the_ticket_are_rejected \
   test_crash_right_after_the_write_is_recovered_from_the_journal \
   test_edit_on_a_later_target_during_the_write_is_detected \
