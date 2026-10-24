@@ -1516,7 +1516,7 @@ test_propose_heading_only_answer_is_rejected_and_titles_stay_inside_the_section(
   assert_file_not_contains "${note}" '^## 偽の節'
   assert_file_not_contains "${note}" '^## もう一つの偽の節'
   assert_file_contains "${note}" '^\*\*題名\*\*: 案 幽霊 ## 偽の節（canon のふり）$'
-  assert_file_not_contains "${note}" 'Unknown/ghost'
+  assert_file_not_contains "${note}" '\[\[Unknown/ghost'
   assert_file_contains "${note}" '^- 行 1 Unknown/ghost2 ## もう一つの偽の節$'
   [[ "$(sed -n '/^## 提案（未承認）BOXP-799$/,$p' "${note}" | grep -c '^## ')" == 1 ]] || fail "no level-2 heading may follow the proposal heading"
 }
