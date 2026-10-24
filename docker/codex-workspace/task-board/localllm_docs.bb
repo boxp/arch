@@ -1009,7 +1009,9 @@
        (if (= :revise action)
          (str "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。対象ノートには前回の案が『" (proposal-heading ticket-id) "』節として入っています。Review 指示を優先して案を改稿し、改稿後の案全体（title / canon_facts / proposal / conflicts / questions）を出力してください。節は runner が置き換えます。")
          "チケットの Summary / Acceptance Criteria / Context / Notes の依頼にもとづき、新しい設定の案を出力してください。")
-       " proposal は " (:max-change-chars cfg) " 字以内です。\n"))
+       ;; The executor caps the whole rendered section at max-change-chars; the
+       ;; body budget given to the model leaves room for facts / conflicts / boilerplate.
+       " proposal は " (max 1000 (- (:max-change-chars cfg) 2500)) " 字以内、canon_facts は要点だけにしてください。\n"))
 
 (defn build-verify-prompt [research facts proposal-text]
   (str "# 既存設定の根拠（資料から読み取った本文）\n"
@@ -1138,25 +1140,50 @@
                     (when (seq facts) (str "。出典として拒否: " (untrusted (str/join ", " (distinct (map :source facts))) 160))))}
 
       :else
-      (let [[proposal-text links-dropped] (sanitize-wikilinks proposal-text known)
+      ;; Every rendered model field (not only the proposal body) goes through
+      ;; the wikilink filter: a `[[Unknown/note]]` in a title, fact, conflict
+      ;; or question would otherwise be written as a dangling link (codex review).
+      (let [dropped (atom 0)
+            clean (fn [s] (let [[out n] (sanitize-wikilinks s known)] (swap! dropped + n) out))
+            proposal-text (clean proposal-text)
+            title (clean title)
+            known-facts (mapv #(update % :fact clean) known-facts)
+            conflicts (mapv clean conflicts)
+            questions (mapv clean questions)
             existing (when exists? (find-heading target-lines heading))
             op (if (:ok? existing) "replace-section" "append-section")
+            render-text (fn [auto-conflicts]
+                          (render-proposal-section {:ticket-id ticket-id :run-id run-id :title title
+                                                    :facts known-facts :proposal proposal-text
+                                                    :conflicts conflicts :questions questions
+                                                    :auto-conflicts auto-conflicts}))
+            limit (:max-change-chars cfg)
+            ;; The executor caps the whole rendered section (`new_text`) at
+            ;; max-change-chars; the body check above only bounds the model's
+            ;; part. Validate the rendered size here with the overhead spelled
+            ;; out, and let optional auto-check items be dropped to fit.
             render (fn [auto-conflicts]
-                     {:decision "apply" :reason "" :summary title
-                      :changes [{:path target :op op :heading heading :old_text ""
-                                 :new_text (render-proposal-section {:ticket-id ticket-id :run-id run-id :title title
-                                                                     :facts known-facts :proposal proposal-text
-                                                                     :conflicts conflicts :questions questions
-                                                                     :auto-conflicts auto-conflicts})}]
-                      :sources (vec (distinct (map :source known-facts)))})]
-        {:kind :proposal
-         :render render
-         :proposal (render [])
-         :facts known-facts
-         :proposal-text proposal-text
-         :propose {:op op :title title :facts (count known-facts) :facts-dropped (- (count facts) (count known-facts))
-                   :conflicts (count conflicts) :questions (count questions) :links-dropped links-dropped
-                   :proposal-chars (count proposal-text)}}))))
+                     (let [fitting (->> (range (count auto-conflicts) -1 -1)
+                                        (map #(vec (take % auto-conflicts)))
+                                        (filter #(<= (count (render-text %)) limit))
+                                        first)]
+                       {:decision "apply" :reason "" :summary title
+                        :changes [{:path target :op op :heading heading :old_text ""
+                                   :new_text (render-text (or fitting []))}]
+                        :sources (vec (distinct (map :source known-facts)))}))
+            base-chars (count (render-text []))]
+        (if (> base-chars limit)
+          {:kind :reject :category "localllm-invalid-proposal"
+           :reason (str "提案節の全体（題名・参照した既存設定・案・矛盾・質問・定型文）が " base-chars " 字で上限 " limit " 字を超えます。"
+                        "proposal 本文は " (max 500 (- limit (- base-chars (count proposal-text)))) " 字以内に収め、canon_facts / conflicts / questions も要点だけにしてください")}
+          {:kind :proposal
+           :render render
+           :proposal (render [])
+           :facts known-facts
+           :proposal-text proposal-text
+           :propose {:op op :title title :facts (count known-facts) :facts-dropped (- (count facts) (count known-facts))
+                     :conflicts (count conflicts) :questions (count questions) :links-dropped @dropped
+                     :proposal-chars (count proposal-text) :rendered-chars base-chars}})))))
 
 (defn verify-proposal!
   "One bounded consistency call: the collected evidence vs the proposal. Returns
