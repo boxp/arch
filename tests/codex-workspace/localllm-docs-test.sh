@@ -106,7 +106,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
-      verify? (respond (json/generate-string {:conflicts ["案の「冬祭り」は根拠に季節の記述が無いが矛盾ではない" "AUTO-CONFLICT: 案の藍は design-v2 の記述と食い違う"] :note ""}) "stop")
+      verify? (respond (json/generate-string {:conflicts ["案の「冬祭り」は根拠に季節の記述が無いが矛盾ではない" "AUTO-CONFLICT: 案の藍は design-v2 の記述と食い違う" "検査 [[Unknown/vghost|検査幽霊]]"] :note ""}) "stop")
       (and propose? (= mode "propose-needs-human")) (respond (setting :decision "needs-human" :reason "どの人物の依頼か判別できません" :facts [] :proposal "" :conflicts []) "stop")
       (and propose? (= mode "propose-bad-sources")) (respond (setting :facts (if (str/includes? (str user) "拒否されました")
                                                                               [{:fact "待受ポートは 8081 である" :source corpus-note}]
@@ -1373,7 +1373,7 @@ test_propose_appends_an_unapproved_section_and_keeps_canon() {
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '^status: review$'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '^assignee: boxp$'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '『提案（未承認）BOXP-790』節を 追加 し Review で停止しました'
-  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '参照した既存設定 1 件、矛盾・要確認 3 件（うち自動検査 2 件）、質問 1 件'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '参照した既存設定 1 件、矛盾・要確認 4 件（うち自動検査 3 件）、質問 1 件'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '未解決の wikilink を平文化 1 件'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
   # model text (title / proposal / conflicts) never reaches Notes
@@ -1395,13 +1395,15 @@ test_propose_appends_an_unapproved_section_and_keeps_canon() {
   assert_file_contains "${note}" '^### 矛盾・要確認$'
   assert_file_contains "${note}" '^- 依頼の 8080 は旧版の値（design-v1）と一致するため要確認$'
   assert_file_contains "${note}" '^- AUTO-CONFLICT: 案の藍は design-v2 の記述と食い違う（自動検査）$'
+  assert_file_contains "${note}" '^- 検査 検査幽霊（自動検査）$'
+  assert_file_not_contains "${note}" '\[\[Unknown/vghost'
   assert_file_contains "${note}" '^### 人への質問$'
   local audit
   audit="$(find "${STATE}/runs/BOXP-790" -name localllm-audit.edn | head -n 1)"
   assert_file_contains "${audit}" ':mode "propose"'
   assert_file_contains "${audit}" ':op "append-section"'
   assert_file_contains "${audit}" ':links-dropped 1'
-  assert_file_contains "${audit}" ':auto-conflicts 2'
+  assert_file_contains "${audit}" ':auto-conflicts 3'
   assert_file_contains "${audit}" ':status :checked'
   # Review re-run of the same ticket replaces the section instead of adding a second one
   write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-790|BOXP-790: setting]] #ticket status::review"

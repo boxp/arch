@@ -1177,11 +1177,13 @@
             questions (mapv clean questions)
             existing (when exists? (find-heading target-lines heading))
             op (if (:ok? existing) "replace-section" "append-section")
+            ;; The verifier is a model too: its conflict lines get the same
+            ;; wikilink filter before they are rendered (codex review).
             render-text (fn [auto-conflicts]
                           (render-proposal-section {:ticket-id ticket-id :run-id run-id :title title
                                                     :facts known-facts :proposal proposal-text
                                                     :conflicts conflicts :questions questions
-                                                    :auto-conflicts auto-conflicts}))
+                                                    :auto-conflicts (mapv clean auto-conflicts)}))
             limit (:max-change-chars cfg)
             ;; The executor caps the whole rendered section (`new_text`) at
             ;; max-change-chars; the body check above only bounds the model's
