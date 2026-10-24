@@ -308,13 +308,33 @@
                     (count lines))]
         (str/trim (str/join "\n" (subvec (vec lines) (inc idx) end)))))))
 
+(def runner-note-pattern
+  ;; Notes the runner itself appends (start / finish / localllm result / Blocked
+  ;; transition / kohako relay). They carry no human instruction, but they do
+  ;; carry the previous run's result and source paths, which a weak model takes
+  ;; for evidence instead of reading the corpus (deployed E2E of BOXP-278,
+  ;; 2026-10-24: the model finished after one read and cited "Notes").
+  ;; Only the runner's fixed templates match: a run id (`20261024T015020Z-<uuid>`,
+  ;; or the older timestamp-only `20260713T164707Z` that `run-id-instant` still
+  ;; accepts) right after "Codex task-board run" / "Codex run" / "localllm docs
+  ;; run", the literal "Blocked transition recorded: ticket=", or the kohako
+  ;; relay source tag. A human note that merely mentions Codex stays in the brief.
+  #"^- \d{4}-\d{2}-\d{2}(?: [0-9:]+ UTC \[kohako-event\])?: (?:(?:Codex (?:task-board )?run|localllm docs run) \d{8}T\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f-]{27})? |Blocked transition recorded: ticket=|\[kohako-event\] ).*")
+
+(defn runner-note? [line]
+  (boolean (re-matches runner-note-pattern line)))
+
 (defn ticket-brief
-  "Ticket text without frontmatter, trimmed to the sections the model needs."
+  "Ticket text without frontmatter, trimmed to the sections the model needs.
+  Runner-generated Notes are dropped so only human instructions remain."
   [ticket-text max-notes]
   (let [lines (str/split-lines (or ticket-text ""))
         title (first (filter #(str/starts-with? % "# ") lines))
         notes (section-text lines "## Notes")
-        note-bullets (->> (str/split-lines (or notes "")) (filter #(str/starts-with? % "- ")) vec)
+        note-bullets (->> (str/split-lines (or notes ""))
+                          (filter #(str/starts-with? % "- "))
+                          (remove runner-note?)
+                          vec)
         recent-notes (if (> (count note-bullets) max-notes)
                        (subvec note-bullets (- (count note-bullets) max-notes))
                        note-bullets)]
@@ -323,7 +343,8 @@
          "## Acceptance Criteria\n" (or (section-text lines "## Acceptance Criteria") "") "\n\n"
          "## Context\n" (or (section-text lines "## Context") "") "\n\n"
          "## Plan\n" (or (section-text lines "## Plan") "") "\n\n"
-         "## Notes（新しいものほど下。人間の追加指示はここに書かれる）\n" (str/join "\n" recent-notes) "\n")))
+         "## Notes（新しいものほど下。人間の追加指示はここに書かれる）\n" (str/join "\n" recent-notes) "\n\n"
+         "（このチケット本文は依頼・指示であり、資料ではありません。Context や Notes に書かれた事実も出典にはできず、docs-sources の資料を read して確認したものだけを根拠・sources にします）\n")))
 
 ;; ---------------------------------------------------------------------------
 ;; Markdown structure helpers
