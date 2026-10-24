@@ -135,15 +135,15 @@
 
  {:id "P09" :title "S / 新規ノートへの提案: 霜灯祭の夜のエピソード案（対象ノートが未存在）" :group "search" :scale "S" :mode "propose"
   :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
-  :targets ["Projects/task-board-localllm-docs/pilot/setting/world/frost-festival-episode.md"]
+  :targets ["Projects/task-board-localllm-docs/pilot/setting/frost-festival-episode.md"]
   :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
   :ticket {:title "霜灯祭の夜のエピソード案（新規ノート）"
-           :summary "霜灯祭の夜に篝火ユイ・篝火ユキ・水瀬ミオの三人が鐘楼の前で過ごす短いエピソードの案を考えて、新しいノート `Projects/task-board-localllm-docs/pilot/setting/world/frost-festival-episode.md` に書いてほしい。祭りの決まりごと（色、鐘が鳴る回数）と三人の口調を既存設定に合わせること。"
+           :summary "霜灯祭の夜に篝火ユイ・篝火ユキ・水瀬ミオの三人が鐘楼の前で過ごす短いエピソードの案を考えて、新しいノート `Projects/task-board-localllm-docs/pilot/setting/frost-festival-episode.md` に書いてほしい。祭りの決まりごと（色、鐘が鳴る回数）と三人の口調を既存設定に合わせること。"
            :acceptance ["三人の口調が既存設定どおり" "祭りの決まりごとが既存設定どおり"]
            :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
            :notes []}
   :expect {:propose? true
-           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/world/frost-festival-episode.md"]
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/frost-festival-episode.md"]
            :section-must-contain ["三度|3 ?回|三回" "藍"]
            :proposal-must-not-contain ["まいど" "灯を継ぐ"]
            :gold-sources ["Projects/task-board-localllm-docs/refs/setting/world/festivals.md"]

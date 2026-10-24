@@ -12,7 +12,7 @@
 ;;   pilot/setting/characters/yui.md         write target (P01/P03/P05/P06/P08): canon of 篝火ユイ
 ;;   pilot/setting/characters/yuki.md        write target (P04): canon of 篝火ユキ (the sister)
 ;;   pilot/setting/relationships.md          write target (P02/P07)
-;;   pilot/setting/world/*.md                written in P09 (new note)
+;;   pilot/setting/frost-festival-episode.md written in P09 (new note; parent must exist)
 ;;   refs/setting/world/{overview,lantern-craft,festivals,timeline,locations}.md
 ;;   refs/setting/characters/{mio,mina,ren,obaa}.md   other characters
 ;;   refs/setting/characters/yui-v1.md       superseded profile (age 17) — not canon
