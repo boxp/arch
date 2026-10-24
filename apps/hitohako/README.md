@@ -60,5 +60,4 @@ Pages プロジェクトと DNS は `terraform/cloudflare/b0xp.io/hitohako/` で
 
 ## Credits
 
-- アイコン・ヒーローイメージ（YouTube）: nagaren さん
 - フォント: [DotGothic16](https://fonts.google.com/specimen/DotGothic16)（SIL OFL 1.1）
