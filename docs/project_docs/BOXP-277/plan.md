@@ -46,3 +46,31 @@
 - E2E（配備前、Pod 内 `tick --ticket BOXP-278`、実 vault の専用テストノート + 5 件の専用参照ノート）: 1 回目は executor の検査で Blocked（未適用）、修正後の 2 回目で Review 停止・正しい更新・出典記録を確認。Done には遷移していない。
 - 採否: 文書更新専用の限定採用（明示 opt-in、pilot root、Review 必須）。50 件超 corpus の自力探索は下書き専用。配備（merge → image → lolice bump → Pod 再作成）は未反映。
 - codex review 対応（v4.3）: 段階的収集の総時間上限（既定 900 秒）を各 LLM 呼出しの残り時間として渡す（1 回目が固まっても上限内で停止）。認証情報語彙を含む追記・変更行はノート内に既出でも全て拒否。`sources` は読んだ資料だけに限定し、search 該当のみの資料は出典にできない（モデルが読まずに finish した場合は runner が上位該当資料を読んでから編集へ渡す）。文書の書込みは runner の lifecycle commit（停止 monitor 下、Notes / lane 遷移と同じ区間）まで遅延し、全 localllm 書込みを 1 つの OS file lock（`<root>/locks/localllm-docs-write.lock`）で直列化して競合再確認→backup→書込みを行う（同じ docs-target の 2 票が並列でも片方は競合で停止、計画停止でノートだけ更新済みにならない）。書込み直前に lock 内で path を再検証（snapshot 後に許可ディレクトリが symlink に差し替えられても書き抜けない）。1 回の依頼で送る文字数に上限（`CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS`、既定 60,000 字）を設け、超える場合はモデルを呼ばず Blocked。blocked 結果の Notes / run summary も lifecycle commit 内で最終化。書込み後の遷移失敗は backup から復元して Blocked。読取は O_NOFOLLOW、書込みは temp 作成直前 / rename 直前に symlink guard（openat が無いため完全には閉じない残限界を明記）。Notes の出典は runner が解決・読取した path だけ。rollback も同じ write lock 内で検査・復元。強制終了で書込み後に完了しなかった run は stale lock 回収時に audit から検出して復元。復旧の「遷移完了」判定は ticket の `status`（Review 再実行では開始時点から review で run 固有でない）ではなく、lifecycle commit 内で書く run 固有の `localllm-committed.edn`（lane 移動直前に `:committing`、frontmatter 更新直後に `:committed`）だけを見る。journal 無し→backup から復元、`:committing`→検証済みの書込みを保持して lane / frontmatter 遷移を冪等に完了（Review と文書内容が食い違う状態を残さない）、`:committed`→何もしない。docs-target と参照ノートも読取前に O_NOFOLLOW でサイズ検査（max-note-chars×4 bytes、対象は Blocked・参照は skip）。docs-sources の各ノートは読取直前に path 全体を再検証し（列挙後に中間ディレクトリが symlink へ差し替えられても追従しない）、O_NOFOLLOW でサイズを検査して 1 ノート（既定 1,000,000 bytes）/ 合計（既定 32,000,000 bytes）の上限を超えればモデルを呼ばず Blocked。チケットの `docs-target` / `docs-sources` は空白のみ trim し、先頭 `/` は resolver が絶対 path として拒否（list 分割時の正規化で vault 相対に変換しない）。書込み直前の競合検査は再検証に成功した path だけを読む（中間ディレクトリの symlink 差替え後に vault 外を読まない）。複数 docs-target の書込みは各ファイルの書込み直前にも存在/hash を再確認し、途中で外部編集を検出したら書込み済み分を backup から復元して競合として Blocked。修正ラウンド（拒否理由を添えた再依頼）の送信内容にも文字数上限を適用し、超過なら 2 回目を送らず Blocked。復旧ジャーナル（backup path と書込み予定の hash を含む `:applied`）は最初の 1 byte を書く前に audit へ永続化し、書込み直後〜最終 audit の間で強制終了しても次の tick の stale lock 回収で復元できる（未書込みのノートは before hash 一致で「unchanged」）。モデル出力・ノート本文に由来する文字列（needs-human の理由、見出し・old_text・path・JSON エラー断片・失われるリンク等）は sentinel で印を付け、Notes / last-message へは固定の placeholder に置換して出さず、audit の `:reason` にだけ残す。`tick --ticket BOXP-N` は stale lock / planned-shutdown の回復を対象票に限定し（対象票自身の計画停止 lock は即時回収、他票の lock と owner marker は loop に委ねる）、対象票だけを実行する。`append-section` は heading が未存在のときだけ新設し、一意に存在すれば追記、同名見出しが複数あれば拒否（第 3 の同名見出しを作らない）。`apply` 提案を適用しても本文が変わらない（例: replace-text の old_text = new_text、末尾空白のみの差）ファイルは「変更なし」として拒否し、Review へ進めない。Review note（文書更新を主張する最初の記録）を書く前に遷移 journal `:committing` を永続化し、note 直後〜lane 移動前の強制終了は次の tick で遷移完了（文書保持）として復旧する（note と矛盾する rollback を残さない）。遷移失敗で rollback した run は journal を `:rolled-back` にして後続の復旧対象から外す。`:committing` の復旧は write lock 内で audit の各 `:after-sha256` と現在の内容を照合してから遷移を完了し、強制終了後に対象ノートが手で編集・復元・削除されていた場合は遷移せず（backup からの復元もせず）Blocked にして journal を `:conflict` にする（編集済みのノートを「適用済み」の Review として見せない、テスト BOXP-782）。`tick --ticket BOXP-N` では board / frontmatter の status 同期も対象票に限定し、手で移動して未同期の他票の frontmatter や card 行を書き換えない（テスト BOXP-726 を拡張）。black-box 47 本。
+
+## Owner 目的訂正後の計画（2026-10-24、run 20261023T233535Z）
+
+Owner の訂正（2026-10-23 16:46 / 23:11）: 最終目的は「ひとはこさんバースの多数の設定資料を自力参照し、既存の確定設定（canon）と新規提案を区別して別文書へ新設定を加筆案として描き足す」運用。上記の事実転記 adapter v4.3 + 安全 executor（PR #13838）は土台であり、pilot 限定採用や CI pass では本票は完了しない。
+
+### 実装: 設定提案 mode（`docs-mode: propose`）
+
+- 資料調査は v4 の段階的収集（index → search → 節 read）をそのまま使い、設定向けの観点（人物の基本情報・口調・衣装・関係性・年表・retcon の有効版・未承認下書きの区別）を調査 prompt に追加。
+- 編集段階は JSON schema `{decision: propose|needs-human, title, canon_facts[{fact, source}], proposal, conflicts[], questions[], sources[]}`。runner が対象ノート末尾に `## 提案（未承認）BOXP-N` 節を **1 つだけ** 追加（Review 改稿では同節を置換）。canon 本文は構造上変更されず、未承認案の自動昇格なし。
+- 「資料に無い」は停止理由にしない。needs-human は対象不明・設定提案でない依頼（ファイル/チケット/秘密）・canon 本文の書き換え依頼だけ。
+- 案と根拠を照合する自動検査 1 回（`verify-proposal!`）。結果は「（自動検査）」付きで矛盾・要確認へ。失敗しても run は止めない（shutdown のみ伝播）。
+- canon_facts の出典は runner が読んだ資料 path に限定（未読は除外・全滅なら修正ラウンド）。架空 wikilink は平文化、見出しは太字化、結果マーカー・認証情報語は従来通り拒否。
+- `CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES`: `docs-sources` 未宣言の票に使う既定 corpus（参照 root 検証は宣言時と同じ）。機械向け frontmatter は `docs-target` + `docs-mode` の 2 行で足りる。
+- black-box: 提案 mode 6 本追加（追加 / 改稿置換 / 既定 corpus と root 外拒否 / 未読出典の修正ラウンド / needs-human と不正 mode / マーカー拒否 / corpus 無し）→ 53 本。
+
+### 評価: 非露骨な創作設定 fixture（`setting_fixture.bb` 灯火街）
+
+- 人物 6（似た名前 2 組: ユイ/ユキ、ミオ/ミナ）、年表、retcon 採用（ユイ 17→19 歳、旧版 superseded）、却下案（レンは幼馴染でない）、未承認下書き 2、M 規模は無関係 40 ノート（囮「料理人のユイ」含む）。
+- ケース P01-P09（`setting_cases.edn`）: 新衣装 / 初対面エピソード / M 規模 / 別人（ユキ）の口調 / 依頼が canon と矛盾→矛盾を明示して提案 / canon 書き換え依頼→停止 / 対象不明→停止 / Review 改稿 / 新規ノート。各 2 反復、自力探索条件。
+- checker: canon が byte 一致の prefix として保持、提案節が 1 個、新規提案に canon 誤り・未承認案・別人の口調が無い、矛盾小節に期待語、出典に旧版/未承認/囮が無い（retrieval）。加えて claude-fable が本文を目視。
+
+### pi（H1）無出力 timeout の有限診断
+
+- 5 試行・各 ≤240 秒・`/slots` 観測。結果は vault `evidence/pi-diag-2026-10-24/`。900 秒 hang は再現せず、失敗は「tool 結果後に `<tool_call|>` を本文として出して空出力終了」（5 回中 2 回）＝ harness/template 側。localllm 経路は pi 非依存。
+
+### 配備と E2E の実施条件
+
+- PR #13838（gate 済み・MERGEABLE）は許可範囲内で merge する。image build → argocd-image-updater → Argo 自動 sync で Pod が再作成されるため、**他の active run（`locks/`）が無い区切りで本 run の最後に merge** する。配備後の E2E（専用テストカード BOXP-278 転記 / BOXP-279 提案）は配備済み runner で次 run が実施。配備前の E2E は本 run 内で `tick --ticket` により実 vault の専用テストノートへ実施。
