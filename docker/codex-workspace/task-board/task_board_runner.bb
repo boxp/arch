@@ -2067,8 +2067,20 @@
 
 (defn localllm-review-note [ticket-id run-id result]
   (let [applied (:applied result)
-        usage (:usage result)]
-    (str "localllm docs run " run-id " が " (count applied) " ファイルを更新し Review で停止しました（Done にはしません）。"
+        usage (:usage result)
+        propose? (= "propose" (:mode result))
+        p (:propose result)]
+    (str "localllm docs run " run-id
+         (if propose?
+           ;; Propose mode never touches the canon: one clearly marked section
+           ;; was added or replaced, adoption is the reviewer's decision.
+           (str " が『提案（未承認）" ticket-id "』節を " (if (= "replace-section" (:op p)) "改稿（置換）" "追加")
+                " し Review で停止しました（canon 本文は変更していません。採用は人が判断し、採用時は本文へ反映して節を削除してください。Done にはしません）。"
+                " 参照した既存設定 " (:facts p 0) " 件、矛盾・要確認 " (+ (:conflicts p 0) (:auto-conflicts p 0)) " 件（うち自動検査 " (:auto-conflicts p 0) " 件）、質問 " (:questions p 0) " 件"
+                (when (pos? (:facts-dropped p 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped p 0) " 件"))
+                (when (pos? (:links-dropped p 0)) (str "、未解決の wikilink を平文化 " (:links-dropped p 0) " 件"))
+                ".")
+           (str " が " (count applied) " ファイルを更新し Review で停止しました（Done にはしません）。"))
          " 対象: " (str/join ", " (map #(str "[[" (str/replace (:path %) #"\.md$" "") "]]" (when (:created? %) "（新規）")) applied))
          "; 操作: " (str/join ", " (map (fn [a] (str/join "/" (map :op (:ops a)))) applied))
          (when (seq (:sources result)) (str "; 出典: " (str/join ", " (map #(str "[[" (str/replace (str %) #"\.md$" "") "]]") (:sources result)))))
@@ -2142,7 +2154,7 @@
                             (mark-run! ticket-id run :succeeded
                                        {:action action :agent agent :lane lane :exit-code 0
                                         :result (if review? "review" "blocked")
-                                        :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied])
+                                        :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied :mode :propose])
                                         :finished-at (now-str)})
                             (if review? "review" "blocked")))
           ;; A staged result is reported as the intended "review" until the
@@ -2163,7 +2175,7 @@
         :else
         (mark-run! ticket-id run :running
                    {:action action :agent agent :lane lane :started-at (now-str)
-                    :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :staged-paths])
+                    :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :staged-paths :mode])
                     :decided-at (now-str)}))
       (cond-> {:exit 0
                :result (if (or staged? (= :review (:status result))) "review" "blocked")

@@ -60,11 +60,12 @@
 
 (defn ticket-id-for [case-idx] (str "BOXP-9" (format "%02d" case-idx)))
 
-(defn ticket-text [tid {:keys [ticket targets docs-sources]} extra-notes]
+(defn ticket-text [tid {:keys [ticket targets docs-sources mode]} extra-notes]
   (str "---\n"
        "id: " tid "\ntype: task\nstatus: in-progress\npriority: medium\nassignee: localllm\nreporter: boxp\nproject: BOXP\n"
        "docs-target: " (str/join ", " targets) "\n"
        (when (seq docs-sources) (str "docs-sources: " (str/join ", " docs-sources) "\n"))
+       (when mode (str "docs-mode: " mode "\n"))
        "created: 2026-10-23\ntags:\n  - ticket\n---\n\n"
        "# " tid ": " (:title ticket) "\n\n"
        "## Summary\n\n" (:summary ticket) "\n\n"
@@ -112,6 +113,55 @@
 (defn added-lines [before after]
   (let [b (set (lines before))]
     (remove b (lines after))))
+
+(defn subsection
+  "Text of a `### heading` inside the proposal section (level-3 to next level<=3)."
+  [section-text heading]
+  (section section-text heading))
+
+(defn check-propose-case
+  "Checker for docs-mode: propose cases. The canon (everything that existed
+  before) must be byte-identical; exactly one proposal section for the ticket
+  exists; regexes apply to the section / 新規提案 / 矛盾 parts."
+  [{:keys [expect targets]} tid before after outcome]
+  (let [changed (->> (set (concat (keys before) (keys after)))
+                     (filter #(not= (get before %) (get after %)))
+                     (remove #(str/starts-with? % "Tickets/"))
+                     sort vec)
+        allowed (set (:allowed-changes expect))
+        out-of-scope (vec (remove allowed changed))
+        failures (atom [])
+        fail! (fn [k msg] (swap! failures conj {:kind k :message msg}))
+        heading (str "## 提案（未承認）" tid)]
+    (when (seq out-of-scope) (fail! :scope-violation (str "許可外のファイルが変更された: " (str/join ", " out-of-scope))))
+    (if (:stop? expect)
+      (do
+        (when (seq changed) (fail! :should-have-stopped (str "停止すべきケースでファイルが変更された: " (str/join ", " changed))))
+        (when-not (:stopped? outcome) (fail! :should-have-stopped (str "停止すべきケースで成功/適用を報告した (" (:status outcome) ")"))))
+      (do
+        (when (:stopped? outcome) (fail! :instruction-miss (str "提案すべきケースで停止した: " (:reason outcome))))
+        (when (empty? changed) (fail! :instruction-miss "対象ファイルが変更されていない"))
+        (doseq [path targets :when (contains? allowed path)]
+          (let [b (get before path) a (get after path "")
+                n (count (filter #(= (str/trim %) heading) (lines a)))]
+            ;; canon intact: the original text is an exact prefix of the result
+            (when (and b (not (str/starts-with? a (str/trimr b))))
+              (fail! :data-loss (str path " の既存本文（canon）が変更された")))
+            (when (not= n 1) (fail! :format-broken (str path " の提案節が " n " 個（1 個であるべき）")))
+            (when (= n 1)
+              (let [sec (section a heading)
+                    prop (or (subsection sec "### 新規提案") "")
+                    conf (or (subsection sec "### 矛盾・要確認") "")]
+                (when (str/blank? prop) (fail! :instruction-miss (str path " の新規提案が空")))
+                (doseq [re (:section-must-contain expect)]
+                  (when-not (re-find (re-pattern re) sec) (fail! :instruction-miss (str "提案節に /" re "/ が無い"))))
+                (doseq [re (:proposal-must-not-contain expect)]
+                  (when (re-find (re-pattern re) prop) (fail! :canon-violation (str "新規提案に禁止パターン /" re "/ がある"))))
+                (doseq [re (:conflict-must-contain expect)]
+                  (when-not (re-find (re-pattern re) conf) (fail! :instruction-miss (str "矛盾・要確認に /" re "/ が無い"))))
+                (when (re-find #"(?i)TASK_BOARD_RESULT" sec) (fail! :forbidden-content "提案節に結果マーカーがある"))
+                (when (odd? (count (filter #(re-matches #"\s*(```|~~~).*" %) (lines a)))) (fail! :format-broken (str path " のコードフェンスが不均衡")))))))))
+    {:pass? (empty? @failures) :failures @failures :changed changed}))
 
 (defn check-case
   "Returns {:pass? :failures [..] :details {..}}."
@@ -210,7 +260,8 @@
 (defn run-h3 [vault tid case run-dir action]
   (let [text (slurp (str (fs/path vault "Tickets" (str tid ".md"))))
         fm (cond-> {:docs-target (str/join ", " (:targets case))}
-             (seq (:docs-sources case)) (assoc :docs-sources (str/join ", " (:docs-sources case))))
+             (seq (:docs-sources case)) (assoc :docs-sources (str/join ", " (:docs-sources case)))
+             (:mode case) (assoc :docs-mode (:mode case)))
         r (localllm-docs/run-docs-edit! {:vault (str vault) :ticket-id tid :run-dir (str run-dir)
                                          :ticket-text text :frontmatter fm :action action
                                          :log-fn println})]
@@ -314,7 +365,9 @@
                         (assoc o2 :turn1 (dissoc outcome1 :applied) :turns 2)))
                   (assoc outcome1 :turns 1))
         after (snapshot vault)
-        check (check-case spec before after outcome)
+        check (if (get-in spec [:expect :propose?])
+                (check-propose-case spec tid before after outcome)
+                (check-case spec before after outcome))
         retrieval (when (= harness "h3") (retrieval-metrics spec (fs/path run-dir "run1")))
         result (merge {:case (:id spec) :title (:title spec) :group (:group spec) :rep rep :harness harness
                        :scale (:scale spec)
@@ -339,16 +392,22 @@
 (def rescore-dir (arg "--rescore" nil))
 
 (when rescore-dir
-  (let [fresh (fs/path (fs/create-temp-dir) "fixture")
-        _ (make-vault! fresh)
-        before (snapshot fresh)
+  ;; Each case is rescored against its own fixture (script / scale) with the
+  ;; same checker branch as a live run (codex review).
+  (let [fixture-before (memoize (fn [fixture]
+                                  (let [fresh (fs/path (fs/create-temp-dir) "fixture")]
+                                    (make-vault! fresh fixture)
+                                    (snapshot fresh))))
         results (vec (for [spec all-cases
                            rep-dir (sort (map str (fs/glob (fs/path rescore-dir (:id spec)) "rep*")))
                            :let [result-path (fs/path rep-dir "result.edn")]
                            :when (fs/exists? result-path)]
                        (let [old (edn/read-string (slurp (str result-path)))
+                             before (fixture-before (:fixture spec))
                              after (snapshot (fs/path rep-dir "vault"))
-                             check (check-case spec before after old)
+                             check (if (get-in spec [:expect :propose?])
+                                     (check-propose-case spec (ticket-id-for (inc (.indexOf all-cases spec))) before after old)
+                                     (check-case spec before after old))
                              new (merge old check {:rescored? true})]
                          (spit (str result-path) (pr-str new))
                          (println (str "[rescore] " (:id spec) " rep" (:rep old) " -> " (if (:pass? check) "PASS" "FAIL")
