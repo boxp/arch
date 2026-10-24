@@ -49,3 +49,9 @@
 - 境界（path / 件数のみ）: 4 回の model run すべてで read / 出典が `ひとはこさんバース/` 配下のみ（`localllm_source_check.bb` PASS、合成 fixture / pilot / proposals の read 0）、原典 28 ノートの sha256 は E2E 前後で一致、新規ノートは 2 件だけで重複新案 0、旧提案ノート無変更。llm 所要 531 / 588 / 367 / 332 秒。
 - 記録: vault `Projects/task-board-localllm-docs/evidence/e2e-BOXP-290/README.md`（run id、件数、rollback コマンド）、同 README の「現状」表と「未実施」。
 - 限界 / 未確認: (1) groom の必読候補は題名・path の語で選ぶため、Summary の自然文に書いたノート名 1 件（BOXP-291）が候補に入らず未読のまま Review に進んだ。必読を強制するには `docs-sources` の明示か、今後 `docs-required-sources` 相当の対応が必要。(2) Board カードの `assignee::` 表示は groom / Review 遷移の frontmatter 変更に追従しない（既存の claude groom と同じ。runner は frontmatter を参照）。(3) 提案本文の意味品質（原典との整合、全年齢、改稿指示の反映度）は cloud 担当では読まず、Owner の Obsidian での確認が最終受入。(4) BOXP-292 の案は BOXP-289 の既存提案と発想が近い（同一 corpus からの類似案。提案ノートは corpus 外で名前近接検査の対象外）。
+
+## 追補: Review gate の merged PR 判定（2026-10-24 UTC）
+
+- 現象: 前 run が docs PR #13905 を CI pass 後に squash merge してから `TASK_BOARD_RESULT: review` を返したところ、runner の PR gate が `mergeability` で失敗（retry 1/2）。GitHub は merge 済み PR に `mergeStateStatus=UNKNOWN` を返し、`merge-state` がこれを pending 扱いして timeout していた。PR 自体に問題はない。
+- 対応（`task_board_runner.bb`）: `pr-view` の取得項目に `state,mergedAt` を追加し、`merge-state` で `state=MERGED` を mergeability pass とする（CI / codex-review gate は従来どおり評価）。fake `gh` に `GH_FAKE_PR_STATE` / `GH_FAKE_PR_STATE_<n>` を追加し、merged PR（`mergeStateStatus=UNKNOWN`）が Review に遷移し `pr-gate-diagnostic.edn` を残さない black-box テストを追加。旧 runner ではこのテストが失敗することを確認。
+- 影響: 本票のように「通常 review/CI/merge まで agent が進める」運用で、merge 済み PR を根拠に review を返しても無限 retry / Blocked にならない。配備中の Pod は旧判定のため、本修正の PR が merge → image → Pod 再作成されるまで、最終応答に merge 済み PR の URL を gate 対象として含めない運用で回避。

@@ -177,9 +177,20 @@ if [[ "$1 $2" == "pr view" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9
   if [[ -n "${!merge_var:-}" ]]; then
     merge_state="${!merge_var}"
   fi
+  pr_state_var="GH_FAKE_PR_STATE_${pr_number}"
+  pr_state="${GH_FAKE_PR_STATE:-OPEN}"
+  if [[ -n "${!pr_state_var:-}" ]]; then
+    pr_state="${!pr_state_var}"
+  fi
+  merged_at=null
+  if [[ "${pr_state}" == "MERGED" ]]; then
+    merged_at='"2026-10-24T16:12:08Z"'
+  fi
   cat <<JSON
 {
   "url": "${3}",
+  "state": "${pr_state}",
+  "mergedAt": ${merged_at},
   "isDraft": ${draft},
   "mergeStateStatus": "${merge_state}",
   "statusCheckRollup": ${checks}
@@ -1985,6 +1996,32 @@ test_review_with_behind_merge_state_times_out() {
   assert_file_not_contains "${vault}/Tickets/BOXP-409.md" 'mergeStateStatus=BEHIND'
 }
 
+test_review_with_already_merged_pr_passes_mergeability_gate() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-455|BOXP-455: merged pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-455 in-progress codex boxp/example
+
+  # GitHub reports mergeStateStatus=UNKNOWN for already-merged PRs; the gate must
+  # treat state=MERGED as passed instead of waiting until timeout.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 GH_FAKE_PR_STATE=MERGED GH_FAKE_MERGE_STATE=UNKNOWN CODEX_FAKE_MESSAGE=$'Merged PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-merged.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-455\|BOXP-455: merged pr\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-455.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-455.md" 'Review gates passed'
+  if find "${state}/runs/BOXP-455" -name pr-gate-diagnostic.edn -print | grep -q .; then
+    echo "error: expected no pr-gate-diagnostic.edn for an already-merged PR" >&2
+    exit 1
+  fi
+  assert_file_not_contains "${vault}/Tickets/BOXP-455.md" 'Review gate failed'
+}
+
 test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes() {
   local tmp vault state bin diagnostic
   tmp="$(mktemp -d)"
@@ -3187,6 +3224,7 @@ test_no_ci_repo_requires_clean_merge_state
 test_canonical_path_hash_symlink_isolation
 test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
+test_review_with_already_merged_pr_passes_mergeability_gate
 test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes
 test_review_gate_retry_limit_blocks
 test_review_gate_retry_limit_is_scoped_to_failure_reason
