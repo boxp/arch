@@ -2948,10 +2948,21 @@
             kind-r (when (= "create" mode)
                      (if own {:ok? true :kind (:kind own) :how :existing-note} (resolve-docs-kind frontmatter ticket-text)))
             kind (:kind kind-r)
-            target (or (:target mode-r) (first (docs-targets frontmatter)) (:rel own))
+            targets (if (:target mode-r) [(:target mode-r)] (docs-targets frontmatter))
+            target (or (first targets) (:rel own))
+            ;; The run would validate the targets first (codex review): do it
+            ;; here so a Ready card is runnable and a bad target is a question now.
+            target-check (when (not= "create" mode)
+                           (cond
+                             (and (= "propose" mode) (> (count targets) 1))
+                             {:ok? false :category "localllm-invalid-target" :reason "docs-mode: propose では docs-target は 1 ノートだけです（提案節を 1 か所に保存します）"}
+                             :else (snapshot-targets cfg vault targets)))
             {:keys [title summary]} (request-title+summary ticket-text)
             corpus (when (seq sources) (load-corpus cfg vault sources (when target [target])))]
         (cond
+          (and target-check (not (:ok? target-check)))
+          {:status :blocked :category (:category target-check) :reason (:reason target-check)}
+
           (and (= "create" mode) (not (:ok? kind-r)))
           {:status :blocked :category "localllm-create-kind-unknown" :reason (:reason kind-r)}
 

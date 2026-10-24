@@ -422,6 +422,27 @@ test_backlog_legacy_transcribe_ticket_is_groomed_without_a_model_call() {
   [[ -f "${STATE}/runs/BOXP-703/$(ls "${STATE}/runs/BOXP-703")/localllm-groom.edn" ]] || fail "groom record expected"
 }
 
+
+
+test_backlog_groom_validates_explicit_targets_before_ready() {
+  # codex review: a declared target the run would refuse is a question at groom time, not a Ready card
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-705|BOXP-705: docs]] #ticket status::backlog"
+  write_ticket "${VAULT}" BOXP-705 backlog localllm "Infrastructure/prod.md"
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-705.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-705.md" 'localllm groom run .* は票を整理できず停止しました.*許可 root 外'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  # explicit propose with two targets: question at groom time
+  setup; echo propose >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-706|BOXP-706: docs]] #ticket status::backlog"
+  write_ticket "${VAULT}" BOXP-706 backlog localllm "${PILOT}/runbook.md,${PILOT}/other.md" "" propose
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-706.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-706.md" 'docs-target は 1 ノートだけです'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+}
+
 test_target_outside_allowlist_blocks() {
   setup; echo normal >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-704|BOXP-704: docs]] #ticket status::ready"
@@ -2213,6 +2234,7 @@ for t in \
   test_stream_response_is_applied \
   test_missing_opt_in_blocks_without_request \
   test_backlog_legacy_transcribe_ticket_is_groomed_without_a_model_call \
+  test_backlog_groom_validates_explicit_targets_before_ready \
   test_target_outside_allowlist_blocks \
   test_traversal_and_symlink_targets_block \
   test_needs_human_blocks_with_reason \
