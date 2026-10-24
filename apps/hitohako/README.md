@@ -42,7 +42,7 @@
 
 Pages プロジェクトと DNS は `terraform/cloudflare/b0xp.io/hitohako/` で管理する。
 `--project-name` は Terraform 側の `local.stage_project_name` と必ず一致させる。
-`public/_headers` で `X-Robots-Tag: noindex` を付けている（検索避けであり、アクセス制御ではない）。
+`public/_headers` で `X-Robots-Tag: noindex` を付けている（検索避けであり、アクセス制御ではない）。同じファイルで HTML・非ハッシュ asset は `max-age=0, must-revalidate`、`/_astro/*` と hero 絵 `hitohako-hero-<hash>.*` は `immutable` を指定している。
 
 ## Content
 
@@ -51,7 +51,7 @@ Pages プロジェクトと DNS は `terraform/cloudflare/b0xp.io/hitohako/` で
 - `src/data/stg.json` … STG 1CC 記録・挑戦中
 - `src/data/links.json` … リンク
 - `src/data/archives.json` … 配信アーカイブ（YouTube 動画 ID・タイトル・日付の明示リスト。本人チャンネル UCS8gl96UiidzwHrn9bugOKg の公開動画のみ。追加時は `https://www.youtube.com/oembed?url=...` で公開/埋込可を確認する）
-- `public/illust/` … キャラクターイラスト（ひとはこ hero 絵・顔グラ、コハコ.exe / 鳴瀬理央 / 天城紗那の顔グラ）。顔グラは CSS 表示サイズの 2 倍（288x288 → 144x144 表示）で書き出した透過 PNG を `Illust` で表示する。hero 絵 `hitohako-hero.{png,webp}` は 1159x1600（2x）の透過画像で、`TitleScreen` が `<picture>`（WebP 優先）+ 高さ基準（desktop `min(800px, 82dvh)` / mobile `min(560px, 52dvh)`）で表示する。緑背景の生成原画からの透過化は `uvx --from pillow python -I scripts/make-hero.py <src.png>`。`image-rendering: pixelated` は適用しない
+- `public/illust/` … キャラクターイラスト（ひとはこ hero 絵・顔グラ、コハコ.exe / 鳴瀬理央 / 天城紗那の顔グラ）。顔グラは CSS 表示サイズの 2 倍（288x288 → 144x144 表示）で書き出した透過 PNG を `Illust` で表示する。hero 絵 `hitohako-hero-<hash>.{png,webp}`（hash は PNG の SHA-256 先頭 10 桁）は 1038x1600（2x）の透過画像で、`src/lib/hero.ts` が build 時にファイル名を解決し、`TitleScreen` の `<picture>`（WebP 優先）と `Layout` の preload が同じ revision を参照する。高さ基準（desktop `min(800px, 82dvh)` / mobile `min(560px, 52dvh)`）で表示。絵を差し替えると URL も変わるため、旧画像の browser / CDN cache が残っても新しい絵が表示される。緑背景の生成原画からの透過化と hash 付きファイルの書き出し（旧ファイル削除込み）は `uvx --from pillow python -I scripts/make-hero.py <src.png>`。`image-rendering: pixelated` は適用しない
 - `public/pixel/` … 小物のドット絵（桜・鳥居、`scripts/make-tiles.py` で生成する和柄タイル）。`PixelImg` で整数倍表示する
 
 ## 配信アーカイブ（YouTube 埋め込み）

@@ -6,12 +6,12 @@
  * Static only - no animation, blinking or parallax (see global.css).
  */
 import PixelImg from './PixelImg.astro';
-import { pngSize } from '../lib/pixel';
+import { heroImage } from '../lib/hero';
 
-const hero = '/illust/hitohako-hero';
-const { width, height } = pngSize(`${hero}.png`);
+// Content-hashed file name (see src/lib/hero.ts); Layout.astro preloads the same WebP.
+const hero = heroImage();
 const alt =
-  '変身後のひとはこさんが穏やかに微笑み、薙刀を傍らに立てて軽やかに佇むイラスト（黒髪ロングに左右の三つ編み、碧眼、紫と金の和風衣装、桜の髪飾り、なびくピンクの帯リボン）';
+  '変身後のひとはこさんが片手を胸に添え、少し口を開いて優しく語りかけるように微笑み、薙刀を傍らに立てて軽やかに佇むイラスト（黒髪ロングに左右の三つ編み、碧眼、紫と金の和風衣装、桜の髪飾り、なびくピンクの帯リボン）';
 ---
 
 <section
@@ -25,12 +25,12 @@ const alt =
     <div class="hero-figure flex items-end justify-center gap-3 md:gap-5">
       <PixelImg src="/pixel/torii.png" alt="" scale={2} class="hidden lg:block" />
       <picture>
-        <source srcset={`${hero}.webp`} type="image/webp" />
+        <source srcset={hero.webp} type="image/webp" />
         <img
-          src={`${hero}.png`}
+          src={hero.png}
           alt={alt}
-          width={width}
-          height={height}
+          width={hero.width}
+          height={hero.height}
           loading="eager"
           fetchpriority="high"
           decoding="async"
