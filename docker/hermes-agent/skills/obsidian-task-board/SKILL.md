@@ -161,6 +161,27 @@ docs-sources: Projects/task-board-localllm-docs/refs   # 任意: 多数資料か
 
 Summary / Context に「どの節を、どの事実で、どう変えるか」を具体的に書きます。曖昧な依頼は model が `needs-human` を返し `Blocked` になります。設計・評価・採否は vault `Projects/task-board-localllm-docs/README.md` を参照。
 
+#### 設定提案 mode（`docs-mode: propose`、創作設定の加筆案）
+
+既存の設定資料（世界観・人物・年表・決定記録）を参照して **新しい設定の案** を別ノートへ書き足す用途は、frontmatter に `docs-mode: propose` を加えます（既定の `transcribe` は資料にある事実の転記専用で、資料に無いことは書きません）。
+
+- model は資料を調査したうえで「参照した既存設定（読んだ資料の出典付き）」「新規提案」「矛盾・要確認」「人への質問」を返し、runner が対象ノートの末尾に **`## 提案（未承認）BOXP-N` 節を 1 つだけ** 追加します。既存本文（canon）は構造上変更されず、未承認の案が自動で canon になることはありません。採用するときは人が本文へ反映して節を削除します。
+- 同じ票を Review に置いて再割当すると、Notes 末尾の指示で案を改稿し、同じ節を置き換えます（節が増えない）。
+- 「資料に無い」は停止理由になりません。`needs-human` になるのは対象の人物・事物が判別できない依頼、設定提案でない依頼（ファイル操作・チケット操作・秘密情報）、canon 本文そのものの書き換え・削除だけを求める依頼です。
+- 案と根拠を照合する自動検査を 1 回行い、見つかった食い違いは「（自動検査）」付きで矛盾・要確認に入ります（人の確認を置き換えるものではありません）。
+- 出典は runner が実際に読んだ資料の path だけ、架空ノートへの wikilink は平文化されます。`docs-target` は 1 ノートだけ（未存在なら提案節だけの新規ノート）。`docs-sources` を省略した票は runner 設定の既定 corpus（env `CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES`、未設定なら調査なし）を使うので、毎回資料を列挙する必要はありません。
+
+依頼例:
+
+```text
+assignee: localllm
+docs-mode: propose
+docs-target: Projects/task-board-localllm-docs/pilot/setting/characters/yui.md
+docs-sources: Projects/task-board-localllm-docs/refs/setting, Projects/task-board-localllm-docs/pilot/setting   # 省略時は既定 corpus
+```
+
+Summary には「誰の・何の設定案を・どのノートへ」を自然文で書けば足ります（例: 「ユイの冬祭り用の新しい衣装の設定を考えて、ユイのノートに加筆案として書いてほしい。普段の色遣いを引き継ぐこと」）。
+
 ## Failure Handling
 
 If the helper refuses a change, report the exact command and error. Common causes are missing ticket files, malformed frontmatter delimiters, missing board lanes, or multiple board cards for one ticket. Prefer `show` and `list --json` to inspect state before retrying.

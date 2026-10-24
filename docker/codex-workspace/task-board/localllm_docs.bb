@@ -986,6 +986,7 @@
        "- 根拠に書かれていることだけを基準にします。根拠に無い事柄は矛盾ではありません（新しい案は新しくてよい）。\n"
        "- 矛盾ごとに「案のどの記述が、どの資料のどの設定と食い違うか」を 1 文で書きます。無ければ空配列にします。\n"
        "- 口調・年齢・時系列・関係性・衣装の既定・公開範囲・設定変更（retcon）後の内容との食い違い、似た名前の別人物の混同を特に確認します。\n"
+       "- 比較するのは案が扱う人物・事物の設定です。別の人物の設定（例: 姉の髪型）と案の記述が異なることは矛盾ではありません。\n"
        "- 出力は JSON だけです。note は一言の所感（空でも可）です。\n"))
 
 (defn build-propose-prompt
@@ -1117,8 +1118,17 @@
                     (when (seq facts) (str "。出典として拒否: " (untrusted (str/join ", " (distinct (map :source facts))) 160))))}
 
       :else
-      (let [[proposal-text links-dropped] (sanitize-wikilinks (strip-md-headings proposal-text) known)
-            heading (proposal-heading ticket-id)
+      (let [heading (proposal-heading ticket-id)
+            ;; Gemma 4 tends to open the proposal by restating the section
+            ;; heading ("## 提案（未承認）BOXP-N" / "### 新規提案"); drop those
+            ;; leading lines instead of rendering them as bold text.
+            own-heading? (fn [l] (let [t (heading-text l)]
+                                   (and (heading-line? (str/trim l))
+                                        (or (= t (heading-text heading)) (contains? #{"新規提案" "提案" "新しい設定の案"} t)))))
+            proposal-text (->> (str/split-lines proposal-text)
+                               (drop-while #(or (str/blank? %) (own-heading? %)))
+                               (str/join "\n"))
+            [proposal-text links-dropped] (sanitize-wikilinks (strip-md-headings proposal-text) known)
             existing (when exists? (find-heading target-lines heading))
             op (if (:ok? existing) "replace-section" "append-section")
             render (fn [auto-conflicts]
