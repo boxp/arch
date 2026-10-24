@@ -22,6 +22,15 @@
 - `.github/workflows/test-codex-task-board-runner.yml`: 上記テストを追加。
 - runner 本体（`localllm_docs.bb` / `task_board_runner.bb`）は変更なし → 再配備不要。
 
-## 結果
+## 結果（2026-10-24 08:30〜08:50 UTC、配備済み loop runner の通常 tick）
 
-（run 完了後に追記）
+| 票 | 種別 | 結果 | 読んだ資料 | 必読 | 出典 | 合成 fixture / pilot / proposals / evidence の read | 原典の変更 | llm |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| BOXP-288 | character | Review（`proposals/characters/` に新規 1 件） | 20 件、すべて `ひとはこさんバース/` 配下 | 5/5 read 済み | 3 件（read 済み） | 0 | 0 | 579 s / prompt 88,551 tok / 7 round（read 20）/ budget-exhausted |
+| BOXP-289 | monster | Review（`proposals/monsters/` に新規 1 件） | 17 件、すべて `ひとはこさんバース/` 配下 | 6/6 read 済み（怪獣規則 + 既存怪獣 2 + 組織 3） | 1 件（read 済み） | 0 | 0 | 555 s / prompt 81,086 tok / 8 round（read 26）/ rounds-exhausted |
+
+- `localllm_source_check.bb` は両 run とも `RESULT: PASS`（出力は path / 件数のみ。evidence は vault `Projects/task-board-localllm-docs/evidence/e2e-BOXP-287/`）。
+- corpus は `docs-sources: ひとはこさんバース` の 28 ノート / 54,455 字のみ（除外 0、秘匿行 0）。合成設定・小説草案・自作 proposals は corpus に入らない。
+- 票は Ready → In Progress → Review（assignee boxp）へ runner が遷移。cloud 側からの手動実行・rollback なし。
+- runner コードは無変更のため再配備不要。本 PR は検証 CLI・テスト・CI 配線・本 plan のみ。
+- 未確認（cloud 担当では判断しない）: 提案本文の意味品質。Owner が Obsidian で 2 件を確認する。限界: 出典 path が少数ノートに集中（289 は 1 件）。次の限定改善候補は `docs-required-sources`（必読ノートの先読み）。
