@@ -74,3 +74,11 @@ Owner の訂正（2026-10-23 16:46 / 23:11）: 最終目的は「ひとはこさ
 ### 配備と E2E の実施条件
 
 - PR #13838（gate 済み・MERGEABLE）は許可範囲内で merge する。image build → argocd-image-updater → Argo 自動 sync で Pod が再作成されるため、**他の active run（`locks/`）が無い区切りで本 run の最後に merge** する。配備後の E2E（専用テストカード BOXP-278 転記 / BOXP-279 提案）は配備済み runner で次 run が実施。配備前の E2E は本 run 内で `tick --ticket` により実 vault の専用テストノートへ実施。
+
+### 結果（2026-10-24、run 20261023T233535Z、詳細は vault `evaluation.md` §7）
+
+- 設定提案 mode の実 Gemma4 評価（自力探索、各 2 反復、18 run）: **15/18**。新衣装 2/2、初対面エピソード 2/2、M 規模 2/2、別人の口調 2/2、依頼が canon と矛盾 1/2、canon 書き換え依頼の停止 2/2、代名詞だけの対象 0/2（唯一の男性人物と解釈して提案。ケース設計が弱い）、Review 改稿 2/2、新規ノート 2/2。canon 破壊・未承認案/却下案/旧版/囮の事実採用・架空リンク・範囲外変更は 0。1 run 90〜250 秒、prompt 計 15k〜50k token。
+- 自動検査（案と根拠の照合）は姉妹の設定を取り違える false positive を出す。矛盾欄に「（自動検査）」付きで出るだけで適用は止めない。
+- pi（H1）無出力 timeout の有限診断: harness 側（`<tool_call|>` トークン漏れで空応答、container に models.json 未 mount）と切り分け。localllm 経路は非依存。
+- codex review（ローカル 6 回）の P2 計 7 件を修正。black-box 54 本。
+- 採否: 設定提案を限定 pilot（明示 opt-in、pilot root、Review 必須）で採用。依頼の前提が canon と矛盾する依頼・50 件超 corpus は下書き専用。実資料の root / scope は owner の判断。
