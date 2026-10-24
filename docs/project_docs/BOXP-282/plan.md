@@ -57,3 +57,14 @@
 ### 結果（1 反復目）
 
 - 実 Gemma4 評価 `create_cases.edn` 9/9（rescore 後。詳細は vault evaluation §9.2、証拠 `evidence/create-v1/`）。black-box 62 本 pass。codex review 7 回（P1 ×3、P2 ×4 を修正、最終回は指摘なし）。PR: https://github.com/boxp/arch/pull/13864
+
+### 結果（配備・配備後 E2E、run 20261024T061827Z）
+
+- merge / 配備: arch PR #13864 → main `3bb8c52`、lolice PR #882（sidecar env `CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS=.` / `CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES=.`）。2026-10-24 06:18 UTC 起動の Pod `codex-workspace-bd777f7fc-mwzpf` で `/opt/codex-workspace/task-board/localllm_docs.bb` の sha256 が `origin/main` と一致、env も反映。
+- 配備後 E2E（通常 Board、配備済み loop runner の通常 tick、vault `Projects/task-board-localllm-docs/evidence/e2e-BOXP-285/` と `e2e-BOXP-286/`）:
+  - BOXP-285 新キャラ作成（`docs-sources` = 合成設定）: Ready → Review、`proposals/characters/haku-bell-apprentice.md` を新規作成。llm 409 秒、7 round（list 2 / read 13）、出典 3 件、canon 不変。
+  - 同票 Review 改稿（Notes 指示 + assignee を localllm に戻す）: 同じノートを本文置換（1 件のまま、frontmatter の run / created / slug は初回を引継ぎ）。年齢 15・性格・師の関係が反映、自動検査指摘が解消。llm 414 秒。
+  - BOXP-286 新魔物作成（`docs-sources` 無し = 既定 corpus は vault 全域 1,830 ノート / 8.15M 字）: フォルダ木 index → list 4 → search 5 → read 7 で合成設定に自力到達し `proposals/monsters/echo-shadow.md` を作成。秘匿行の除去 10 行（値は Notes / ノート / prompt に不出現）。llm 507 秒、prompt 109k tok。弱点: round 上限で `monster-rules.md` に届かず出典が薄い。
+- 2 反復目評価（`evidence/create-v2/`）: 9/9 PASS（C01 / C02 は前 run、C03〜C09 は本 run で実行。1 反復目と合わせて 18/18、checker 誤検知 0）。C07 同名衝突は本反復では修正後も衝突が続き無上書き Blocked（1 反復目は別名で Review）。詳細は vault evaluation §9.2.1。
+- 受入: proposals 配下の未承認ノート 2 件（BOXP-285 ハク、BOXP-286 残響の影）の採否と正式フォルダへの移管は owner 判断（Review のまま）。
+- 配備後に見つかった未配備修正: なし（arch main の runner 5 ファイルと Pod は同一）。
