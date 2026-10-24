@@ -1733,6 +1733,14 @@ test_create_kind_comes_from_docs_kind_or_wording_or_is_asked_without_a_request()
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   assert_blocked BOXP-803 '種別が分かりません'
   [[ "$(request_count)" == 0 ]] || fail "no request expected for an unknown kind"
+  # no corpus at all (no docs-sources, no default corpus): no model call, nothing written
+  setup; echo create >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-815|BOXP-815: 追加]] #ticket status::ready"
+  write_create_ticket "${VAULT}" BOXP-815 ready "新しいキャラを追加してほしい。" "" ""
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  assert_blocked BOXP-815 '参照する設定資料が必要です'
+  [[ "$(request_count)" == 0 ]] || fail "no request expected without a corpus"
+  [[ "$(proposal_count)" == 0 ]] || fail "nothing may be written"
   # unknown docs-kind value
   setup; echo create >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-804|BOXP-804: 追加]] #ticket status::ready"

@@ -2945,6 +2945,12 @@
       (not (:ok? kind-r))
       (finish :blocked {:category "localllm-create-kind-unknown" :reason (:reason kind-r)})
 
+      ;; A new setting must be grounded: without any readable corpus the
+      ;; sources check could never run, so no model call (codex review).
+      (empty? sources)
+      (finish :blocked {:category "localllm-opt-in-missing"
+                        :reason "docs-mode: create は参照する設定資料が必要です。票の frontmatter に `docs-sources: <vault 相対フォルダ>` を書くか、runner の CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES を設定してください（資料なしでは新規設定を作りません）"})
+
       (and corpus (not (:ok? corpus)))
       (finish :blocked (select-keys corpus [:category :reason]))
 

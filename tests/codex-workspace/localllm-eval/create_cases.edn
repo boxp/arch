@@ -10,7 +10,9 @@
 ;;   :kind                      "character" | "monster" (expected folder / sections)
 ;;   :note-must-contain         regexes on the whole new note
 ;;   :note-must-not-contain     regexes on the whole new note (canon errors,
-;;                              unapproved drafts as fact, rejected ideas, decoys)
+;;                              unapproved drafts as fact, rejected ideas, decoys).
+;;                              The fire-immunity pattern skips lines that negate
+;;                              it (「火に耐性はない」 restates the rule, no violation)
 ;;   :name-must-not-be          names the H1 / title must not equal (collision case)
 ;;   :gold-sources / :forbidden-sources  as in corpus_cases.edn
 ;; Checked for every create case: every pre-existing note byte-identical, exactly
@@ -41,7 +43,7 @@
            :notes []}
   :expect {:create? true :kind "monster"
            :note-must-contain ["火|灯" "鐘"]
-           :note-must-not-contain ["火に(耐性|強い)|火を(恐れない|凍らせる)" "氷狼" "街の中(に|へ)(入れる|入り込む|入って)"]
+           :note-must-not-contain ["(?m)^(?!.*(ない|無い|しない|せず)).*(火に耐性|火に強い|火を恐れない|火を凍らせる)" "氷狼" "街の中(に|へ)(入れる|入り込む|入って)"]
            :gold-sources ["Projects/task-board-localllm-docs/refs/setting/world/monster-rules.md"]
            :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/proposals/draft-monster-ice-wolf.md"]}}
 
@@ -69,7 +71,7 @@
            :notes []}
   :expect {:create? true :kind "monster"
            :note-must-contain ["火|灯|鐘"]
-           :note-must-not-contain ["火に(耐性|強い)|火を(恐れない|凍らせる)" "氷狼" "玩具|木の人形"]
+           :note-must-not-contain ["(?m)^(?!.*(ない|無い|しない|せず)).*(火に耐性|火に強い|火を恐れない|火を凍らせる)" "氷狼" "玩具|木の人形"]
            :gold-sources ["Projects/task-board-localllm-docs/refs/setting/world/monster-rules.md"]
            :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/proposals/draft-monster-ice-wolf.md" "Projects/task-board-localllm-docs/refs/setting/unrelated/庭いじり/memo-03.md"]}}
 
@@ -101,7 +103,7 @@
   :expect {:create? true :kind "monster"
            :note-must-contain ["火|灯|鐘"]
            :revised-must-contain ["沢"]
-           :note-must-not-contain ["火に(耐性|強い)|火を(恐れない|凍らせる)" "氷狼"]
+           :note-must-not-contain ["(?m)^(?!.*(ない|無い|しない|せず)).*(火に耐性|火に強い|火を恐れない|火を凍らせる)" "氷狼"]
            :gold-sources ["Projects/task-board-localllm-docs/refs/setting/world/monster-rules.md" "Projects/task-board-localllm-docs/refs/setting/monsters/sawa-no-nushi.md"]
            :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/proposals/draft-monster-ice-wolf.md"]}}
 
