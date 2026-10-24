@@ -1169,11 +1169,11 @@ test_ticket_brief_drops_runner_notes_and_marks_the_ticket_as_non_source() {
 (load-file \"${DOCS_MODULE}\")
 (print (localllm-docs/ticket-brief (str \"---\\nid: BOXP-790\\n---\\n\\n# BOXP-790: brief\\n\\n## Summary\\n\\ns\\n\\n## Notes\\n\\n\"
   \"- 2026-10-23: 人の指示 A\\n\"
-  \"- 2026-10-24: Codex task-board run 20261024T015020Z-695fb2b1-bba7 started from Ready with action docs-edit using localllm.\\n\"
-  \"- 2026-10-24: localllm docs run 20261024T015020Z-695fb2b1-bba7 は変更を適用せず停止しました（cloud への切替はしません）。 category=x\\n\"
+  \"- 2026-10-24: Codex task-board run 20261024T015020Z-695fb2b1-bba7-4636-b5b1-0e65337ebd0d started from Ready with action docs-edit using localllm.\\n\"
+  \"- 2026-10-24: localllm docs run 20261024T015020Z-695fb2b1-bba7-4636-b5b1-0e65337ebd0d は変更を適用せず停止しました（cloud への切替はしません）。 category=x\\n\"
   \"- 2026-10-24: Blocked transition recorded: ticket=BOXP-790; run=r\\n\"
   \"- 2026-10-24 01:25:18 UTC [kohako-event]: [kohako-event] handled event=e result=silent\\n\"
-  \"- 2026-10-24: Codex run 20261024T015020Z-x was marked interrupted after planned workspace shutdown\\n\"
+  \"- 2026-10-24: Codex run 20261024T015020Z-32722cbd-77c3-4722-b735-312ef0225cbc was marked interrupted after planned workspace shutdown\\n\"
   \"- 2026-10-24: Codex run を手動で再実行してください\\n\"
   \"- 2026-10-24 01:50:02 UTC [boxp]: 帯は橙を残して\\n\") 15))
 " 2>&1)"
