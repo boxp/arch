@@ -87,6 +87,10 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         _ (when (:model parsed) (reset! req-model (:model parsed)))
         mode (str/trim (slurp mode-file))
         user (:content (last (:messages parsed)))
+        system (:content (first (:messages parsed)))
+        ;; BOXP-302 codex review: a correction round re-renders the first user turn
+        first-user (:content (second (:messages parsed)))
+        all-chars (reduce + (map #(count (str (:content %))) (:messages parsed)))
         schema-name (get-in parsed [:response_format :json_schema :name])
         research? (= "docs_research_step" schema-name)
         propose? (= "docs_setting_proposal" schema-name)
@@ -147,6 +151,10 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         old "Refs/verse/キャラ設定/旧版-ユイ.md"
         rule "Refs/verse/世界観設定/規則.md"
         bell "Refs/verse/アイテム設定/鈴.md"
+        ;; BOXP-302: a mob note whose planned section holds quoted dialogue lines
+        ;; under sub-headings; `correction?` marks the one correction round.
+        club "Refs/verse/キャラ設定/モブ/部員たち.md"
+        correction? (str/includes? (str user) "前の提案は runner の検証で拒否されました")
         verse-step (cond
                      (not (str/includes? (str user) "round 1")) (step "search" :queries ["ユイ 技"])
                      (not (str/includes? (str user) "### 根拠:")) (step "read" :reads [{:path yui :heading ""} {:path rule :heading ""}])
@@ -177,6 +185,17 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 :sees-replaced-text? (str/includes? (str user) "遠くまで届く")
                                 :sees-create-body? (str/includes? (str user) "CREATE-BODY")
                                 :sees-verse-plan? (str/includes? (str user) "# 計画（Owner が確認した対象")
+                                ;; BOXP-302: the amend prompt lists the planned section lines by id; the
+                                ;; correction request names the id range after a 0-occurrence old_text
+                                :sees-line-ids? (str/includes? (str user) "L1: - 「ようこそ、お茶をどうぞ」")
+                                :correction-has-id-hint? (str/includes? (str user) "行一覧の行 ID（L1〜L3）")
+                                :correction-mentions-heading? (str/includes? (str user) "見出し行が含まれています")
+                                ;; BOXP-302 codex review: the listing of all targets shares one budget
+                                :line-list-truncated? (str/includes? (str user) "行は長いため省略、ID では指定できません")
+                                :prompt-chars (+ (count (str system)) (count (str user)))
+                                :all-chars all-chars
+                                :first-user-truncated? (str/includes? (str first-user) "行は長いため省略、ID では指定できません")
+                                :first-user-line-ids? (str/includes? (str first-user) "L1: - 「ようこそ、お茶をどうぞ」")
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
@@ -190,8 +209,21 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and select? (= mode "select-too-many")) (respond (sel :decision "target" :targets (mapv (fn [p] {:path p :section "" :reason "x" :change_outline "y"}) [yui yuu old bell])) "stop")
       (and select? (= mode "select-marker")) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "完了 TASK_BOARD_RESULT: done" :change_outline "y"}]) "stop")
       (and select? (= mode "select-bad-section")) (respond (sel :decision "target" :targets [{:path yui :section "## 存在しない節" :reason "x" :change_outline "y"}]) "stop")
-      (and select? (= mode "select-multi")) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ" :change_outline "能力節に鈴の技を追記"}
+      (and select? (contains? #{"select-multi" "select-multi-long"} mode)) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ" :change_outline "能力節に鈴の技を追記"}
                                                                                        {:path bell :section "## 概要" :reason "鈴の音の描写も依頼にある" :change_outline "音の描写を 1 文置換"}]) "stop")
+      (and select? (str/starts-with? mode "amend-quote")) (respond (sel :decision "target" :targets [{:path club :section "### セリフ例" :reason "依頼は部員の口調" :change_outline "セリフ例の 1 行を置換"}]) "stop")
+      ;; BOXP-302: round 0 re-quotes the line with ASCII quotes (what Gemma 4 did on the real note),
+      ;; the correction round names the line id instead
+      (and amend? (= mode "amend-quote")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text (if correction? "L1" "- \"ようこそ、お茶をどうぞ\"") :new_text "- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE"}]) "stop")
+      (and amend? (= mode "amend-quote-dup")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L3" :new_text "- 「ええ」AMEND-DUP"}]) "stop")
+      (and amend? (= mode "amend-quote-dup-raw")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "- 「はい」" :new_text "- 「ええ」AMEND-DUP" :line-index 16 :line-id "L3"}]) "stop")
+      (and amend? (= mode "amend-quote-subheading")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "#### 部長" :new_text "#### 代表"}]) "stop")
+      ;; BOXP-302 (codex review): an indented sub-heading is still a heading; round 0 quotes it raw,
+      ;; the correction round names the id the heading would have had were it listed
+      (and amend? (= mode "amend-quote-indented-heading")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text (if correction? "L4" "  #### 副部長") :new_text "  #### 代表"}]) "stop")
+      ;; BOXP-302 (codex review): a body line that reads like an id makes the id form ambiguous
+      (and amend? (= mode "amend-quote-id-shaped-line")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L1" :new_text "- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE"}]) "stop")
+      (and amend? (= mode "amend-quote-bad-id")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L9" :new_text "- 「どうぞ」"}]) "stop")
       (and select? (= mode "select-nosection")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
       (and select? (= mode "select-nosection-ok")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
       (and amend? (= mode "select-nosection")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 既存の節に書く。"}]) "stop")
@@ -199,7 +231,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and amend? (= mode "amend-heading-replace")) (respond (amend-out :changes [{:path yui :op "replace-text" :heading "" :old_text "## 能力" :new_text "## 技"}]) "stop")
       (and amend? (= mode "amend-wrong-section")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 関係" :old_text "" :new_text "- 関係に書き足す。"}]) "stop")
       (and amend? (= mode "amend-needs-human")) (respond (json/generate-string {:decision "needs-human" :reason "依頼が曖昧です" :summary "" :canon_facts [] :changes [] :conflicts [] :questions [] :sources []}) "stop")
-      (and amend? (= mode "select-multi")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY"}
+      (and amend? (contains? #{"select-multi" "select-multi-long"} mode)) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY"}
                                                                           {:path bell :op "replace-text" :heading "" :old_text "- 音は澄んでいる。" :new_text "- 音は澄んでいて、遠くまで届く。"}]) "stop")
       select? (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ。ユウは別人、旧版-ユイ は superseded のため除外 [[Unknown/ghost|幽霊]]" :change_outline "能力節に鈴を使う新しい技を 1 件追記"}]) "stop")
       amend? (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text ""
@@ -2375,6 +2407,12 @@ make_verse() {
   printf -- '---\ntitle: 鈴\n---\n\n# 鈴\n\n## 概要\n\n- 音は澄んでいる。VERSE-BELL-BODY\n\n## 来歴\n\n- 鐘楼に伝わる。\n' >"${VAULT}/${VERSE}/アイテム設定/鈴.md"
 }
 
+make_club_note() {
+  # BOXP-302: a mob note whose planned section (level-3 heading) holds quoted
+  # dialogue lines under level-4 sub-headings, like the real target.
+  printf -- '---\ntitle: 部員たち\n---\n\n# 部員たち\n\n## プロフィール\n\n- 学院の部活の部員。VERSE-CLUB-BODY\n\n### セリフ例\n\n#### 部長\n\n- 「ようこそ、お茶をどうぞ」\n- 「今日の稽古は庭でやりましょう」\n\n#### 副部長\n\n- 「資料はこちらにまとめておきました」\n' >"${VAULT}/${VERSE}/キャラ設定/モブ/部員たち.md"
+}
+
 verse_tick() { run_tick "$1" "$2" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${VERSE}" CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" "${@:3}"; }
 verse_sums() { (cd "${VAULT}" && find "${VERSE}" -type f | sort | xargs sha256sum); }
 assert_verse_unchanged_except() {
@@ -2917,8 +2955,266 @@ test_frontmatter_keys_missing_from_the_map_are_taken_from_the_ticket_text() {
   assert_file_not_contains "${REQ_LOG}" '/v1/chat/completions'
 }
 
+# BOXP-302: a replace-text names the line by its id (the real Gemma 4 run quoted the
+# dialogue line with ASCII quotes instead of 「」 and never matched); sub-headings and
+# unknown ids are refused without a write.
+# An indented sub-heading (CommonMark allows up to three leading spaces) is a heading
+# too: it is neither listed by id nor replaceable as raw text (codex review).
+test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings() {
+  local sums ticket run club="${VERSE}/キャラ設定/モブ/部員たち.md"
+  for mode in amend-quote amend-quote-subheading amend-quote-bad-id amend-quote-indented-heading amend-quote-id-shaped-line; do
+    setup; make_verse; make_club_note; echo "${mode}" >"${MODE_FILE}"
+    [[ "${mode}" == amend-quote-id-shaped-line ]] && sed -i "s/^- 「資料はこちらにまとめておきました」$/L1/" "${VAULT}/${club}"
+    [[ "${mode}" == amend-quote-indented-heading ]] && sed -i "s/^#### 副部長$/  #### 副部長/" "${VAULT}/${club}"
+    write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-890|BOXP-890: 口調]] #ticket status::backlog"
+    write_nl_ticket "${VAULT}" BOXP-890 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
+    verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+    ticket="${VAULT}/Tickets/BOXP-890.md"
+    assert_file_contains "${ticket}" '^status: ready$'
+    assert_file_contains "${ticket}" "^docs-target: ${club}$"
+    sums="$(verse_sums)"
+    : >"${REQ_LOG}"
+    sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+    write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-890|BOXP-890: 口調]] #ticket status::ready"
+    verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+    grep -q ':sees-line-ids? true' "${REQ_LOG}" || fail "the amend prompt must list the planned section lines by id"
+    if [[ "${mode}" == amend-quote ]]; then
+      [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
+      grep -q ':correction-has-id-hint? true' "${REQ_LOG}" || fail "the correction request must name the id range"
+      assert_file_contains "${ticket}" '^status: review$'
+      run="$(latest_run BOXP-890)"
+      assert_file_contains "${STATE}/runs/BOXP-890/${run}/localllm-audit.edn" ':line-ids 1'
+      assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-890:${run}:replace old=.* -->- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE<!-- /localllm:BOXP-890 -->$"
+      assert_file_not_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+      assert_file_contains "${VAULT}/${club}" '^- 「今日の稽古は庭でやりましょう」$'
+      assert_file_contains "${VAULT}/${club}" '^#### 部長$'
+      assert_file_contains "${VAULT}/${club}" '^#### 副部長$'
+      assert_file_not_contains "${ticket}" 'ようこそ'
+      assert_verse_unchanged_except "${sums}" "${club}"
+      # accept removes the markers and keeps the replaced line only
+      CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-accept BOXP-890 "${run}" >"${CASE_DIR}/acc" 2>&1 || fail "accept failed: $(cat "${CASE_DIR}/acc")"
+      assert_file_contains "${VAULT}/${club}" '^- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE$'
+      assert_file_not_contains "${VAULT}/${club}" 'localllm:'
+    elif [[ "${mode}" == amend-quote-subheading ]]; then
+      assert_blocked BOXP-890 'category=localllm-invalid-proposal'
+      assert_file_contains "${ticket}" '見出し行が含まれています'
+      [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
+      assert_file_contains "${VAULT}/${club}" '^#### 部長$'
+      assert_verse_unchanged_except "${sums}"
+    elif [[ "${mode}" == amend-quote-indented-heading ]]; then
+      assert_blocked BOXP-890 'category=localllm-invalid-proposal'
+      # round 0: the raw indented heading is refused as a heading; the correction round
+      # asks for L4, which was never listed because the heading is not a body line
+      grep -q ':correction-mentions-heading? true' "${REQ_LOG}" || fail "the raw indented heading must be refused as a heading line"
+      assert_file_contains "${ticket}" '行一覧（L1〜L3）にありません'
+      [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
+      assert_file_contains "${VAULT}/${club}" '^  #### 副部長$'
+      assert_file_contains "${VAULT}/${club}" '^- 「資料はこちらにまとめておきました」$'
+      assert_file_not_contains "${VAULT}/${club}" '代表'
+      assert_verse_unchanged_except "${sums}"
+    elif [[ "${mode}" == amend-quote-id-shaped-line ]]; then
+      # the section now holds a body line that reads `L1` (listed as L3): `L1` is
+      # refused as ambiguous instead of replacing the first dialogue line
+      assert_blocked BOXP-890 'category=localllm-invalid-proposal'
+      assert_file_contains "${ticket}" 'ID として解釈できません。その行を置き換えるなら行一覧の ID（L3）'
+      assert_file_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+      assert_file_contains "${VAULT}/${club}" '^L1$'
+      assert_verse_unchanged_except "${sums}"
+    else
+      assert_blocked BOXP-890 'category=localllm-invalid-proposal'
+      assert_file_contains "${ticket}" '行一覧（L1〜L3）にありません'
+      assert_verse_unchanged_except "${sums}"
+    fi
+    assert_no_cloud
+  done
+}
+
+# BOXP-302 (codex review): the line listing shares one char budget across all
+# planned targets and is bounded by the room left under max-prompt-chars, so a
+# legitimate multi-target amend with a long section is sent (truncated listing)
+# instead of being blocked before the model call.
+test_canon_amend_line_listing_shares_one_budget_across_targets() {
+  local out
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [sec (fn [n] (str \"## 節\\n\\n\" (clojure.string/join \"\\n\" (map #(str \"- 行 \" % \" の本文です。\") (range n)))))
+      targets [{:path \"a.md\" :section \"## 節\"} {:path \"b.md\" :section \"## 節\"} {:path \"c.md\" :section \"## 節\"}]
+      lists (localllm-docs/amend-line-lists targets [(sec 5) (sec 5) (sec 5)] 150)]
+  (prn {:shown (mapv (fn [p] (count (:lines (get lists p)))) [\"a.md\" \"b.md\" \"c.md\"])
+        :all (mapv (fn [p] (:all (get lists p))) [\"a.md\" \"b.md\" \"c.md\"])
+        :chars (reduce + (map (comp localllm-docs/line-list-chars :lines) (vals lists)))
+        :budget (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 20000} 15500)
+        :budget-capped (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 60000} 15500)
+        :budget-none (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 15000} 15500)}))
+" 2>&1)"
+  # 5 lines fit in 150 chars for the first target, the second gets the remainder
+  # (3 lines), the third nothing; the total never exceeds the shared budget
+  [[ "${out}" == *':shown [5 3 0]'* && "${out}" == *':all [5 5 5]'* ]] || fail "the listing budget must be shared in plan order: ${out}"
+  [[ "${out}" == *':budget 4500'* && "${out}" == *':budget-capped 12000'* && "${out}" == *':budget-none 0'* ]] || fail "the budget must be the cap bounded by the prompt room: ${out}"
+  grep -q ':chars 1[0-4][0-9]' <<<"${out}" || fail "the rendered listing must stay within the shared budget: ${out}"
+
+  # codex review: listing headers carry the (unbounded) path and heading; the
+  # rendered request, not a fixed reserve, decides how many lines fit
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [cfg {:amend-line-list-chars 12000 :max-prompt-chars 9000 :max-change-chars 4000 :max-changes 6}
+      long-path (str \"Refs/\" (apply str (repeat 900 \"長\")) \"/note.md\")
+      sec (str \"## \" (apply str (repeat 400 \"節\")))
+      text (str sec \"\\n\\n\" (clojure.string/join \"\\n\" (map #(str \"- 行 \" % \" の本文です。\") (range 200))))
+      args {:ticket-id \"T\" :brief \"b\" :plan-targets [{:path long-path :section sec :outline \"o\"}] :target-texts [text] :action :amend}
+      base (localllm-docs/amend-prompt-chars cfg args)
+      naive (localllm-docs/amend-line-lists [{:path long-path :section sec}] [text] (localllm-docs/amend-line-list-budget cfg base))
+      lists (localllm-docs/fit-amend-line-lists cfg args)]
+  (prn {:naive-over? (> (localllm-docs/amend-prompt-chars cfg (assoc args :line-lists naive)) 9000)
+        :fit-ok? (<= (localllm-docs/amend-prompt-chars cfg (assoc args :line-lists lists)) 9000)
+        :shown-some? (pos? (count (:lines (get lists long-path))))}))
+" 2>&1)"
+  [[ "${out}" == *':naive-over? true'* && "${out}" == *':fit-ok? true'* && "${out}" == *':shown-some? true'* ]] || fail "the rendered request with long headers must fit the cap: ${out}"
+
+  # black-box: two targets, the second note's planned section holds ~12,000
+  # chars of lines; with a 20,000-char request cap the per-target listing of
+  # the old code (12,000) would have blocked the run before the model call
+  setup; make_verse; echo select-multi-long >"${MODE_FILE}"
+  local bell="${VERSE}/アイテム設定/鈴.md"
+  { printf -- '---\ntitle: 鈴\n---\n\n# 鈴\n\n## 概要\n\n- 音は澄んでいる。VERSE-BELL-BODY\n'
+    for i in $(seq 1 300); do printf -- '- 音色の記録 %03d 回目。鐘楼の朝の鳴らし方を書き留めた行です。\n' "${i}"; done
+    printf -- '\n## 来歴\n\n- 鐘楼に伝わる。\n'; } >"${VAULT}/${bell}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-842|BOXP-842: 鈴の技]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-842 backlog localllm "ユイの鈴の技と鈴の音" "ユイに鈴を使う技を追記し、鈴の音の描写を一文だけ遠くまで届くように直してほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  local ticket="${VAULT}/Tickets/BOXP-842.md"
+  assert_file_contains "${ticket}" '^status: ready$'
+  local sums; sums="$(verse_sums)"
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-842|BOXP-842: 鈴の技]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS=20000 >"${CASE_DIR}/out2"
+  assert_no_cloud
+  assert_file_not_contains "${ticket}" 'localllm-context-exceeded'
+  assert_file_contains "${ticket}" '^status: review$'
+  grep -q ':schema-name "docs_setting_amend"' "${REQ_LOG}" || fail "the amend request must be sent"
+  grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':line-list-truncated? true' || fail "the long listing must be truncated to the shared budget"
+  local chars; chars="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | sed -E 's/.*:prompt-chars ([0-9]+).*/\1/')"
+  [[ "${chars}" -le 20000 && "${chars}" -gt 12000 ]] || fail "the amend request must fit the 20,000-char cap (got ${chars})"
+  assert_file_contains "${VAULT}/${bell}" '^<!-- localllm:BOXP-842:.*:replace old=[A-Za-z0-9_-]+ -->- 音は澄んでいて、遠くまで届く。<!-- /localllm:BOXP-842 -->VERSE-BELL-BODY$'
+  assert_file_contains "${VAULT}/${bell}" '^- 音色の記録 300 回目。'
+  assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md" "${bell}"
+}
+
+make_club_note_dup() {
+  # BOXP-302 (codex review): the planned section repeats one line verbatim; a
+  # line id must still name exactly one of them.
+  printf -- '---\ntitle: 部員たち\n---\n\n# 部員たち\n\n## プロフィール\n\n- 学院の部活の部員。VERSE-CLUB-BODY\n\n### セリフ例\n\n#### 部長\n\n- 「ようこそ、お茶をどうぞ」\n- 「はい」\n- 「はい」\n\n#### 副部長\n\n- 「資料はこちらにまとめておきました」\n' >"${VAULT}/${VERSE}/キャラ設定/モブ/部員たち.md"
+}
+
+# BOXP-302 (codex review): a line id resolves to a position, so one of two
+# identical lines can be replaced; the same text quoted raw stays ambiguous even
+# when the response smuggles a `line-index` of its own (runner-only metadata).
+test_canon_amend_line_id_replaces_one_of_two_identical_lines() {
+  local sums ticket run club="${VERSE}/キャラ設定/モブ/部員たち.md"
+  for mode in amend-quote-dup amend-quote-dup-raw; do
+    setup; make_verse; make_club_note_dup; echo "${mode}" >"${MODE_FILE}"
+    write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-891|BOXP-891: 口調]] #ticket status::backlog"
+    write_nl_ticket "${VAULT}" BOXP-891 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
+    verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+    ticket="${VAULT}/Tickets/BOXP-891.md"
+    assert_file_contains "${ticket}" '^status: ready$'
+    sums="$(verse_sums)"
+    : >"${REQ_LOG}"
+    sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+    write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-891|BOXP-891: 口調]] #ticket status::ready"
+    verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+    if [[ "${mode}" == amend-quote-dup ]]; then
+      assert_file_contains "${ticket}" '^status: review$'
+      run="$(latest_run BOXP-891)"
+      assert_file_contains "${STATE}/runs/BOXP-891/${run}/localllm-audit.edn" ':line-ids 1'
+      # the second 「はい」 (L3) is replaced, the first (L2) and everything else stay
+      [[ "$(grep -c '^- 「はい」$' "${VAULT}/${club}")" == 1 ]] || fail "exactly one of the identical lines must remain"
+      assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-891:${run}:replace old=.* -->- 「ええ」AMEND-DUP<!-- /localllm:BOXP-891 -->$"
+      [[ "$(grep -n -- '^- 「はい」$\|AMEND-DUP' "${VAULT}/${club}" | sed -n 1p)" == *'- 「はい」' ]] || fail "the first identical line must be the one kept"
+      assert_file_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+      assert_file_contains "${VAULT}/${club}" '^#### 部長$'
+      assert_verse_unchanged_except "${sums}" "${club}"
+      CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-accept BOXP-891 "${run}" >"${CASE_DIR}/acc" 2>&1 || fail "accept failed: $(cat "${CASE_DIR}/acc")"
+      assert_file_contains "${VAULT}/${club}" '^- 「ええ」AMEND-DUP$'
+      [[ "$(grep -c '^- 「はい」$' "${VAULT}/${club}")" == 1 ]] || fail "accept must keep the untouched identical line"
+    else
+      assert_blocked BOXP-891 'category=localllm-invalid-proposal'
+      assert_file_contains "${ticket}" '本文での出現 2 件'
+      assert_verse_unchanged_except "${sums}"
+    fi
+    assert_no_cloud
+  done
+}
+
+make_club_note_long() {
+  # BOXP-302 (codex review): the planned section is long enough that its line
+  # listing is the bulk of the amend request.
+  { printf -- '---\ntitle: 部員たち\n---\n\n# 部員たち\n\n## プロフィール\n\n- 学院の部活の部員。VERSE-CLUB-BODY\n\n### セリフ例\n\n#### 部長\n\n- 「ようこそ、お茶をどうぞ」\n- 「今日の稽古は庭でやりましょう」\n\n#### 副部長\n\n- 「資料はこちらにまとめておきました」\n'
+    for i in $(seq 1 200); do printf -- '- 「記録 %03d 番、今日の稽古の様子をノートに書いておきますね」\n' "${i}"; done; } >"${VAULT}/${VERSE}/キャラ設定/モブ/部員たち.md"
+}
+
+# BOXP-302 (codex review): the first request fits the listing to the cap, so
+# the rejected answer plus the correction request would overflow it. The
+# correction round re-fits the listing to the room left and is sent (the
+# quote-mismatch → line-id recovery path works at the cap) instead of stopping
+# with context-exceeded.
+test_canon_amend_correction_round_refits_the_line_listing_to_the_cap() {
+  local ticket run first_chars sums club="${VERSE}/キャラ設定/モブ/部員たち.md"
+  # uncapped run: the listing is complete; its request length becomes the cap
+  setup; make_verse; make_club_note_long; echo amend-quote >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-892 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  ticket="${VAULT}/Tickets/BOXP-892.md"
+  assert_file_contains "${ticket}" '^status: ready$'
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  assert_file_contains "${ticket}" '^status: review$'
+  [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
+  if grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':line-list-truncated? true'; then fail "the uncapped listing must be complete"; fi
+  first_chars="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | head -n 1 | sed -E 's/.*:all-chars ([0-9]+).*/\1/')"
+  [[ "${first_chars}" -gt 15000 ]] || fail "the listing must be the bulk of the request (got ${first_chars})"
+
+  # capped at exactly that length: the old code stopped before the correction round
+  setup; make_verse; make_club_note_long; echo amend-quote >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-892 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  ticket="${VAULT}/Tickets/BOXP-892.md"
+  assert_file_contains "${ticket}" '^status: ready$'
+  sums="$(verse_sums)"
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS="${first_chars}" >"${CASE_DIR}/out2"
+  assert_no_cloud
+  assert_file_not_contains "${ticket}" 'localllm-context-exceeded'
+  assert_file_contains "${ticket}" '^status: review$'
+  [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "the correction round must be sent at the cap (requests: $(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}"))"
+  local second; second="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | sed -n 2p)"
+  [[ "${second}" == *':first-user-truncated? true'* ]] || fail "the correction round must show a shorter listing: ${second}"
+  [[ "${second}" == *':first-user-line-ids? true'* ]] || fail "the ids still shown must name the same lines (L1 first)"
+  local chars; chars="$(sed -E 's/.*:all-chars ([0-9]+).*/\1/' <<<"${second}")"
+  [[ "${chars}" -le "${first_chars}" ]] || fail "the correction round must fit the cap ${first_chars} (got ${chars})"
+  grep -Eq 'correction round 1 .* line-ids=203/203 -> [0-9]+/203' "${CASE_DIR}/out2" || fail "the shrink must be logged: $(grep 'correction round' "${CASE_DIR}/out2")"
+  run="$(latest_run BOXP-892)"
+  assert_file_contains "${STATE}/runs/BOXP-892/${run}/localllm-audit.edn" ':line-ids 1'
+  assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-892:${run}:replace old=.* -->- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE<!-- /localllm:BOXP-892 -->$"
+  assert_file_not_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+  assert_file_contains "${VAULT}/${club}" '^- 「記録 200 番、'
+  assert_file_contains "${VAULT}/${club}" '^#### 副部長$'
+  assert_verse_unchanged_except "${sums}" "${club}"
+}
+
 for t in \
   test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back \
+  test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
+  test_canon_amend_line_listing_shares_one_budget_across_targets \
+  test_canon_amend_line_id_replaces_one_of_two_identical_lines \
+  test_canon_amend_correction_round_refits_the_line_listing_to_the_cap \
   test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted \
   test_canon_select_asks_or_refuses_without_writing \
   test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted \
