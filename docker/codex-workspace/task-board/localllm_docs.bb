@@ -4742,21 +4742,47 @@
                                               accepted (if note? (accept-created-note unwrapped) unwrapped)]
                                           (if (= accepted current)
                                             {:path path :status :unchanged :reason "未確認マーカーがありません"}
-                                            {:path path :status :accepted :abs (:abs r) :text accepted
+                                            {:path path :status :accepted :abs (:abs r) :text accepted :before current
                                              :reason (if note? "未確認の frontmatter / バナーを外しました" "マーカーを外して本文を採用しました")})))))))
                               (:applied audit))
                         blocked (filter #(= :skipped (:status %)) planned)
+                        strip-private (fn [p] (dissoc p :abs :text :before))
                         results (if (seq blocked)
                                   (mapv (fn [p] (if (= :skipped (:status p))
                                                   p
                                                   {:path (:path p) :status :skipped
                                                    :reason (str "他のノート（" (str/join ", " (map :path blocked)) "）が採用できないため、この run の採用は全体を見送りました")}))
                                         planned)
-                                  (mapv (fn [{:keys [status abs text path] :as p}]
-                                          (when (= :accepted status)
-                                            (atomic-write! abs text (path-guard vault path)))
-                                          (dissoc p :abs :text))
-                                        planned))]
+                                  ;; Phase 2: write; a failure part-way restores
+                                  ;; the notes already written (while they still
+                                  ;; hold the accepted text), so acceptance is
+                                  ;; never left half done (codex review).
+                                  (let [written (atom [])
+                                        failure (try
+                                                  (doseq [{:keys [status abs text path]} planned
+                                                          :when (= :accepted status)]
+                                                    (atomic-write! abs text (path-guard vault path))
+                                                    (swap! written conj path))
+                                                  nil
+                                                  (catch Exception e (sanitize-error (.getMessage e))))]
+                                    (if-not failure
+                                      (mapv strip-private planned)
+                                      (let [kept (atom [])]
+                                        (doseq [{:keys [abs text before path]} planned
+                                                :when (contains? (set @written) path)]
+                                          (try
+                                            (if (= (sha256 text) (sha256 (slurp-nofollow abs)))
+                                              (atomic-write! abs before (path-guard vault path))
+                                              (swap! kept conj path))
+                                            (catch Exception _ (swap! kept conj path))))
+                                        (mapv (fn [{:keys [path] :as p}]
+                                                (cond
+                                                  (contains? (set @kept) path)
+                                                  {:path path :status :accepted :reason (str "採用後に別の更新が入ったため復元を見送りました（他のノートの書込失敗: " failure "）。手で確認してください")}
+                                                  (= :accepted (:status p))
+                                                  {:path path :status :skipped :reason (str "書込みに失敗したため、この run の採用を全体で見送り、書込み済みのノートは元に戻しました: " failure)}
+                                                  :else (strip-private p)))
+                                              planned)))))]
                     (write-edn! (fs/path run-dir "localllm-accepted.edn") {:ticket-id ticket-id :run-id (fs/file-name run-dir) :at (now-str) :results results})
                     results)))]
         (if (and (map? r) (false? (:ok? r)))
