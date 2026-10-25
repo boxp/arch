@@ -2816,7 +2816,7 @@ test_canon_amend_stops_when_the_plan_is_stale_missing_or_the_note_holds_another_
   setup; make_verse; echo select-target >"${MODE_FILE}"; sums="$(verse_sums)"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-876|BOXP-876: 技]] #ticket status::backlog"
   write_nl_ticket "${VAULT}" BOXP-876 backlog localllm "ユイに技を追加" "ユイに新しい技を追記してほしい。"
-  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${VERSE}" CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="Tickets,Boards,${PROPOSALS}" >"${CASE_DIR}/out"
+  run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${VERSE}" CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="Tickets,Boards,${PROPOSALS},Projects" >"${CASE_DIR}/out"
   assert_groom_blocked BOXP-876 "category=localllm-unclear-request"
   assert_verse_unchanged_except "${sums}"
   # a natural-language Backlog card without canon roots keeps the legacy (deterministic) groom
