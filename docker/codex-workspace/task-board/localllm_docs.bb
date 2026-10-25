@@ -103,6 +103,8 @@
 ;; default (`CODEX_TASK_BOARD_LOCALLLM_MODEL`, Gemma 4), which stays unchanged.
 (def ^:dynamic *ticket-model* nil)
 
+(declare excluded-path?)
+
 (defn config []
   {:base-url (str/replace (env "CODEX_TASK_BOARD_LOCALLLM_BASE_URL" default-base-url) #"/+$" "")
    :model (or *ticket-model* (env "CODEX_TASK_BOARD_LOCALLLM_MODEL" default-model))
@@ -138,7 +140,15 @@
    ;; are allowed only for a run whose Backlog groom plan (`docs-plan`) the
    ;; owner confirmed (assignee back to localllm); they never widen
    ;; `:docs-roots` for other modes, and `.` is refused (write side).
-   :canon-roots (vec (remove #(= % vault-root-marker) (split-list (env "CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS" ""))))
+   ;; Roots under the read exclusions (Tickets / Boards / Templates / the
+   ;; proposal root) or inside the pilot write roots are dropped: a wrong env
+   ;; value must not open Task Board data to canon writes (codex review).
+   :canon-roots (vec (remove (fn [r] (or (= r vault-root-marker)
+                                         (excluded-path? r (split-list default-exclude-paths))
+                                         (excluded-path? r (split-list (env "CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS" default-exclude-paths)))
+                                         (excluded-path? r [(proposal-root-config)])
+                                         (some #(excluded-path? r [%]) (write-roots-config))))
+                             (split-list (env "CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS" ""))))
    :context-char-budget (env-long "CODEX_TASK_BOARD_LOCALLLM_CONTEXT_CHAR_BUDGET" 24000)
    :max-targets (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_TARGETS" 3)
    :max-changes (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CHANGES" 8)
@@ -3149,6 +3159,24 @@
           :else
           {:ok? true :model declared :how :declared})))))
 
+(defn- latest-applied-model
+  "Model id of the most recent run of the same ticket whose audit reached
+  Review with `rel` among its applied notes, or nil (BOXP-296: an accepted
+  revision may have used another id than the origin run)."
+  [run-dir rel]
+  (let [runs (fs/parent run-dir)]
+    (when (fs/directory? runs)
+      (->> (fs/list-dir runs)
+           (map str)
+           (filter #(re-matches #"[A-Za-z0-9._-]{1,80}" (fs/file-name %)))
+           (sort #(compare %2 %1))
+           (keep (fn [d]
+                   (let [a (read-edn (fs/path d "localllm-audit.edn") nil)]
+                     (when (and (map? a) (= :review (:status a)) (some #(= rel (:path %)) (:applied a))
+                                (string? (:model a)) (re-matches model-id-pattern (:model a)))
+                       (:model a)))))
+           first))))
+
 (defn- previous-run-model
   "Model id an earlier run of the same ticket recorded in its
   `localllm-audit.edn` (the run named in the ticket's own proposal note), or
@@ -3379,6 +3407,7 @@
       (or (str/includes? f "\\") (str/includes? f "\u0000") (some #(= ".." %) (str/split f #"/"))) {:ok? false :reason (str "保存先フォルダの path が不正です: " (untrusted f 100))}
       (hidden-component? f) {:ok? false :reason (str "隠しフォルダは保存先にできません: " (untrusted f 100))}
       (not (under-root? f canon-roots)) {:ok? false :reason (str "保存先 " (untrusted f 100) " は書込許可フォルダ（" (str/join ", " canon-roots) "）の外です")}
+      (excluded-path? f (split-list default-exclude-paths)) {:ok? false :reason (str "保存先 " (untrusted f 100) " は Task Board データ / テンプレート / 提案 root のため書けません")}
       (not (contains? (set offered) f)) {:ok? false :reason (str "保存先 " (untrusted f 100) " は既存の分類フォルダではありません（候補: " (str/join ", " offered) "）。新しいフォルダは作りません")}
       (symlink-component? vault f) {:ok? false :reason (str "保存先が symlink を経由します: " f)}
       (not (fs/directory? (fs/path vault f) {:nofollow-links true})) {:ok? false :reason (str "保存先フォルダが存在しません: " f)}
@@ -4502,7 +4531,10 @@
         ;; silently differs from the note's model is refused before any request
         ;; (BOXP-294, no silent model switch within one proposal).
         own-run (when own (get (:frontmatter own) "run"))
-        note-model (when own (previous-run-model run-dir own-run))
+        ;; The guard compares against the model that wrote the note LAST
+        ;; (an accepted revision may have used another id), falling back to
+        ;; the origin run named in the frontmatter (codex review).
+        note-model (when own (or (latest-applied-model run-dir (:rel own)) (previous-run-model run-dir own-run)))
         model-guard (when (and note-model (not= :declared model-resolution) (not= note-model (:model cfg)))
                       {:category "localllm-model-mismatch"
                        :reason (str "この票の提案ノートは model " note-model " で生成されています（run " own-run "）が、今回の run は docs-model が読めず既定の " (:model cfg)
