@@ -4196,7 +4196,7 @@
 (def amend-system-prompt
   (str "あなたは創作世界の設定資料（Obsidian vault）を扱う日本語の設定ライターです。Task Board のチケットの依頼にもとづき、Owner が確認した計画に書かれた対象ノートの節だけに、既存設定と矛盾しない追記・編集を最小限で行います。\n"
        "厳守事項:\n"
-       "- 出力は JSON だけです。changes には計画の対象 path と節だけを使い、op は append-to-section（計画の節の末尾に追記。heading は計画の節の見出し行）、append-section（計画で『新しい節』とされた場合だけ。heading に新しい見出し行）、replace-text（計画の節の中の 1 行を差し替える。old_text には『計画の節の行一覧』の行 ID だけを書き（例 \"L3\"）、new_text に差し替え後の行全体を書く。原文を引用し直すと引用符や記号が変わって一致しないので、必ず行 ID を使う。行一覧が無い節でだけ、本文に一度だけ現れる文をそのまま old_text に書く）のいずれかです。他のノート・他の節・frontmatter・見出し構造・既存のリンクは変えません。削除だけの変更は作れません（依頼が削除なら needs-human）。\n"
+       "- 出力は JSON だけです。changes には計画の対象 path と節だけを使い、op は append-to-section（計画の節の末尾に追記。heading は計画の節の見出し行）、append-section（計画で『新しい節』とされた場合だけ。heading に新しい見出し行）、replace-text（計画の節の中の 1 行を差し替える。old_text には『計画の節の行一覧』の行 ID だけを書き（例 \"L3\"）、new_text に差し替え後の行全体を書く。原文を引用し直すと引用符や記号が変わって一致しないので、一覧にある行は必ず行 ID を使う。行一覧が無い節、または一覧が長さのため省略した行を差し替えるときだけ、その行の本文に一度だけ現れる文を一字も変えずそのまま old_text に書く）のいずれかです。他のノート・他の節・frontmatter・見出し構造・既存のリンクは変えません。削除だけの変更は作れません（依頼が削除なら needs-human）。\n"
        "- 既存の確定設定（年齢・関係・所属・地名・規則など）を書き換える依頼は、依頼で明示されていなければ行わず、conflicts に書きます。依頼で明示された置換だけ replace-text にします。\n"
        "- new_text は対象ノートの文体・箇条書きの形式に合わせた Markdown で、資料で裏付けられない固有名詞・数値・日付・人名を補完しません。原典に無い要素は「（新規）」と明示します。性的・露骨・残酷な描写は書きません。\n"
        "- canon_facts には、追記の前提にした既存設定を 1 件ずつ、根拠として読んだ資料の path（vault 相対）とともに列挙します。対象ノート自身（計画の path）も出典にできます。『未承認』『下書き』『却下』『旧版』と明記された内容は既存設定として扱いません。sources には canon_facts で使った資料 path を列挙します。\n"
@@ -4219,11 +4219,11 @@
        (let [blocks (keep (fn [{:keys [path section]}]
                             (let [{:keys [all lines]} (get line-lists (str path))]
                               (when (seq lines)
-                                (str "### " path " の節『" section "』（" (count lines) " 行" (when (< (count lines) all) (str "。以降の " (- all (count lines)) " 行は長いため省略、ID では指定できません")) "）\n"
+                                (str "### " path " の節『" section "』（" (count lines) " 行" (when (< (count lines) all) (str "。以降の " (- all (count lines)) " 行は長いため省略、ID では指定できません。省略した行を差し替えるときは、その行に一度だけ現れる文を一字も変えずそのまま old_text に書きます")) "）\n"
                                      (str/join "\n" (map #(str (:id %) ": " (:text %)) lines)) "\n"))))
                           plan-targets)]
          (when (seq blocks)
-           (str "# 計画の節の行一覧（replace-text 用の行 ID。old_text には ID だけを書きます: 例 \"L3\"。見出し行・空行は置換できないため載せていません）\n"
+           (str "# 計画の節の行一覧（replace-text 用の行 ID。old_text には ID だけを書きます: 例 \"L3\"。見出し行・空行は置換できないため載せていません。一覧にある行は ID で、省略された行だけ原文で指定します）\n"
                 (str/join "\n" blocks) "\n")))
        (when previous
          (str "# 前回の案（このチケットが前回書いた未確認の変更。canon ではなく、改稿の土台としてだけ使い、canon_facts の出典にしてはいけません。runner が置き換えます）\n```markdown\n" (truncate-text previous 6000) "\n```\n\n"))

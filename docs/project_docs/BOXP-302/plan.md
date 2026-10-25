@@ -81,3 +81,4 @@
 - テスト `test_canon_amend_line_listing_shares_one_budget_across_targets`: (a) 3 target × 5 行に予算 150 字 → 配分 [5 3 0]、合計が予算内、予算関数の 3 ケース（残余で抑える / cap で抑える / 残余なし→0）。(b) black-box: 2 target、2 つ目の節に約 13,000 字の行、`MAX_PROMPT_CHARS=20000` で amend tick → block されず Review 到達、一覧は省略付き、送信 prompt 文字数 ≤ 20,000（旧実装では本文 12,000 + 一覧 12,000 で超過し block）。
 - 結果: amend 関連 4 テスト pass。全体テストの結果は PR 本文に記載。
 - 手元 codex review 追加指摘 P2: 「固定 1000 字の予約では path / 節見出し長が無制限な一覧ヘッダーを保証できない」→ `fit-amend-line-lists` で実際に描画した request 長（system + user、ヘッダー込み）が `:max-prompt-chars` に収まるまで予算を超過分だけ縮めて再描画（予算は単調減少で 0 に到達し終了）。固定予約は撤廃。単体確認: 長 path 900 字 + 見出し 400 字 + 200 行、cap 9000 で素朴配分は 10,445 字に超過、fit 後は 8,999 字で 24 行提示。
+- 手元 codex review 追加指摘 P2: 「一覧が途中省略される節で、省略行は ID 不可・原文引用は『一覧の無い節のみ』と書かれ、モデルが従える指定方法が無い」→ checker は従来から本文一意の原文を受理しているため、system prompt / 一覧ヘッダー / 省略注記の文言を実挙動に合わせた（一覧にある行は ID、一覧の無い節または省略行だけ一度だけ現れる原文をそのまま）。コード経路の変更なし。
