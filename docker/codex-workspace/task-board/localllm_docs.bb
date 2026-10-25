@@ -1881,23 +1881,30 @@
                        (= ticket-id (str (get (:frontmatter %) "ticket"))))
                  (list-proposal-notes cfg vault))))
 
-(defn find-own-canon-note
-  "BOXP-296: the unreviewed note this ticket created directly inside the
-  confirmed canon `folder` (frontmatter `localllm-unreviewed: true` and
-  `ticket: <id>`), or nil. Only regular `.md` files directly in the folder,
-  validated against `roots` and size-checked before they are read."
-  [cfg vault folder roots ticket-id]
+(defn list-unreviewed-canon-notes
+  "BOXP-296: the unreviewed notes the route created directly inside the canon
+  `folder` (frontmatter `localllm-unreviewed: true`), any ticket:
+  [{:rel :kind :text :frontmatter}]. Only regular `.md` files directly in the
+  folder, validated against `roots` and size-checked before they are read."
+  [cfg vault folder roots]
   (let [dir (fs/path vault folder)]
-    (when (fs/directory? dir {:nofollow-links true})
-      (first (for [f (sort (map str (fs/list-dir dir "*.md")))
-                   :let [rel (str folder "/" (fs/file-name f))
-                         r (resolve-vault-path vault rel roots)]
-                   :when (and (:ok? r) (:exists? r) (<= (or (size-nofollow (:abs r)) 0) (max-note-bytes cfg)))
-                   :let [text (slurp-nofollow (:abs r))
-                         fm (simple-frontmatter text)]
-                   :when (and (= "true" (str (get fm "localllm-unreviewed")))
-                              (= ticket-id (str (get fm "ticket"))))]
-               {:rel rel :kind (get fm "kind") :text text :frontmatter fm})))))
+    (if-not (fs/directory? dir {:nofollow-links true})
+      []
+      (vec (for [f (sort (map str (fs/list-dir dir "*.md")))
+                 :let [rel (str folder "/" (fs/file-name f))
+                       r (resolve-vault-path vault rel roots)]
+                 :when (and (:ok? r) (:exists? r) (<= (or (size-nofollow (:abs r)) 0) (max-note-bytes cfg)))
+                 :let [text (slurp-nofollow (:abs r))
+                       fm (simple-frontmatter text)]
+                 :when (= "true" (str (get fm "localllm-unreviewed")))]
+             {:rel rel :kind (get fm "kind") :text text :frontmatter fm})))))
+
+(defn find-own-canon-note
+  "The unreviewed note this ticket created inside the confirmed canon
+  `folder` (`ticket: <id>`), or nil."
+  [cfg vault folder roots ticket-id]
+  (first (filter #(= ticket-id (str (get (:frontmatter %) "ticket")))
+                 (list-unreviewed-canon-notes cfg vault folder roots))))
 
 ;; --- names and collisions ----------------------------------------------------
 
@@ -4541,7 +4548,12 @@
             ;; Only notes the runner itself read may be cited; the ticket's
             ;; own note is not canon and never a source.
             known (set (:read-paths research))
-            other-proposals (when (:ok? prepared) (list-proposal-notes cfg vault))
+            ;; Collision candidates: the proposal root and, for a canon-folder
+            ;; destination, the unreviewed notes other tickets already saved
+            ;; there (excluded from the corpus, so not covered by it; codex review).
+            other-proposals (when (:ok? prepared)
+                              (concat (list-proposal-notes cfg vault)
+                                      (when canon-folder (list-unreviewed-canon-notes cfg vault canon-folder (:docs-roots cfg)))))
             ctx {:ticket-id ticket-id :run-id run-id :kind kind :own own :known known :research research
                  :corpus-notes (:notes corpus) :other-proposals other-proposals :folder canon-folder
                  :created (str (java.time.LocalDate/now))}]

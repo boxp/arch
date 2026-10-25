@@ -203,6 +203,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       select? (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ。ユウは別人、旧版-ユイ は superseded のため除外 [[Unknown/ghost|幽霊]]" :change_outline "能力節に鈴を使う新しい技を 1 件追記"}]) "stop")
       amend? (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text ""
                                             :new_text (if revise? "- 鈴鳴り（新規）: 鈴の音で仲間に合図を送る。射程は十歩。AMEND-REVISED" "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY [[Refs/verse/世界観設定/規則|規則]] と [[Unknown/ghost|幽霊]] を参照。")}]) "stop")
+      (and create? verse? (str/includes? raw "BOXP-864")) (respond (created :slug "hotaru-two" :facts [{:fact "モブは名字を持たない" :source rule}]) "stop")
       (and create? verse?) (respond (created :facts [{:fact "モブは名字を持たない" :source rule}]) "stop")
       (and research? (= mode "create-vaultwide")) (respond vaultwide-step "stop")
       (and create? (= mode "create-vaultwide")) (respond (created :facts [{:fact "creds-note に監視の記述がある" :source creds-note}]) "stop")
@@ -2666,6 +2667,16 @@ test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_acce
   assert_file_contains "${note}" 'CREATE-REVISED'
   assert_file_contains "${note}" '^localllm-unreviewed: true$'
   [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name '*.md' | wc -l | tr -d ' ')" == 2 ]] || fail "no second note"
+  # another ticket creating the same name in the same folder is refused (the unreviewed note is outside the corpus)
+  : >"${REQ_LOG}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-864|BOXP-864: 脇役2]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-864 backlog localllm "新しい脇役をもう 1 名" "いつものフォルダに、鐘楼で働く新しい脇役をもう 1 名追加してほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-dup"
+  sed -i "s/^assignee: boxp$/assignee: localllm/" "${VAULT}/Tickets/BOXP-864.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-864|BOXP-864: 脇役2]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-dup2"
+  assert_blocked BOXP-864 "name / aliases が既存ノートの名前と同じです"
+  [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "duplicate unreviewed note must not be created"
   # accept removes the unreviewed marks, keeps the text
   local run2; run2="$(latest_run BOXP-860)"
   CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
