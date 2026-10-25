@@ -1153,11 +1153,19 @@
          (filter #(and (= :unlinked (:kind %)) (= "Backlog" (:lane %))))
          (remove #(hold-marker-reason (:line %)))
          (remove #(contains? titles (normalize-title-key (:title %))))
-         (mapv (fn [{:keys [idx line title]}]
-                 {:idx idx
-                  :title title
-                  :assignee (or (attr-value line "assignee") "boxp")
-                  :nsfw (token-present? line "#nsfw")})))))
+         ;; Two new cards with one title in the same tick: only the first
+         ;; becomes a work; the other is held with the id on the next pass.
+         (reduce (fn [{:keys [seen cards] :as acc} {:keys [idx line title]}]
+                   (let [k (normalize-title-key title)]
+                     (if (contains? seen k)
+                       acc
+                       {:seen (conj seen k)
+                        :cards (conj cards {:idx idx
+                                            :title title
+                                            :assignee (or (attr-value line "assignee") "boxp")
+                                            :nsfw (token-present? line "#nsfw")})})))
+                 {:seen #{} :cards []})
+         :cards)))
 
 (defn existing-novel-numbers
   "Every NOVEL number already in use anywhere: all references on the board
@@ -3722,6 +3730,10 @@
     (check "scaffold detects title-only card"
            (= [{:idx 1 :title "新しい話" :assignee "localllm" :nsfw false}]
               (backlog-scaffold-cards ["## Backlog" "- [ ] 新しい話 assignee::localllm" "- [ ] **運用ルール:** x #novel-rule" "## Draft"])))
+    (check "scaffold takes one card per title in a tick"
+           (with-redefs [novels-dir (constantly (fs/path "/nonexistent-novel-board-test"))]
+             (= [{:idx 1 :title "同題" :assignee "localllm" :nsfw false} {:idx 3 :title "別題" :assignee "boxp" :nsfw false}]
+                (backlog-scaffold-cards ["## Backlog" "- [ ] 同題 assignee::localllm" "- [ ]  同題 " "- [ ] 別題" "## Draft"]))))
     (check "section-filled? ignores template placeholders"
            (and (not (section-filled? "## Requirements\n- Title:\n- Synopsis:\n## Outline\n" "## Requirements"))
                 (section-filled? "## Requirements\n- Title: ほげ\n## Outline\n" "## Requirements")))
