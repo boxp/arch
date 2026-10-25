@@ -4351,8 +4351,13 @@
         ;; planned section is resolved to that exact line before any check;
         ;; an id outside the lines the prompt showed (`line-lists`, shared
         ;; budget) is refused (no fuzzy matching).
-        resolve-id (fn [{:keys [path op old_text] :as c}]
-                     (let [plan (get plan-by-path (str path))]
+        ;; Only the schema fields of a change are taken from the model: the
+        ;; runner's own `:line-id` / `:line-index` / `:bad-line-id` are set
+        ;; here and nowhere else (codex review: a response carrying them raw
+        ;; must not pass as a resolved id).
+        resolve-id (fn [raw]
+                     (let [{:keys [path op old_text] :as c} (select-keys raw [:path :op :heading :old_text :new_text])
+                           plan (get plan-by-path (str path))]
                        (if (and plan (= "replace-text" op) (re-matches amend-line-id-pattern (str old_text)))
                          (let [ls (get-in line-lists [(str path) :lines] [])
                                hit (first (filter #(= (:id %) (str/trim (str old_text))) ls))]

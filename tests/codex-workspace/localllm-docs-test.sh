@@ -209,7 +209,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       ;; the correction round names the line id instead
       (and amend? (= mode "amend-quote")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text (if correction? "L1" "- \"ようこそ、お茶をどうぞ\"") :new_text "- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE"}]) "stop")
       (and amend? (= mode "amend-quote-dup")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L3" :new_text "- 「ええ」AMEND-DUP"}]) "stop")
-      (and amend? (= mode "amend-quote-dup-raw")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "- 「はい」" :new_text "- 「ええ」AMEND-DUP"}]) "stop")
+      (and amend? (= mode "amend-quote-dup-raw")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "- 「はい」" :new_text "- 「ええ」AMEND-DUP" :line-index 16 :line-id "L3"}]) "stop")
       (and amend? (= mode "amend-quote-subheading")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "#### 部長" :new_text "#### 代表"}]) "stop")
       (and amend? (= mode "amend-quote-bad-id")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L9" :new_text "- 「どうぞ」"}]) "stop")
       (and select? (= mode "select-nosection")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
@@ -3073,7 +3073,8 @@ make_club_note_dup() {
 }
 
 # BOXP-302 (codex review): a line id resolves to a position, so one of two
-# identical lines can be replaced; the same text quoted raw stays ambiguous.
+# identical lines can be replaced; the same text quoted raw stays ambiguous even
+# when the response smuggles a `line-index` of its own (runner-only metadata).
 test_canon_amend_line_id_replaces_one_of_two_identical_lines() {
   local sums ticket run club="${VERSE}/キャラ設定/モブ/部員たち.md"
   for mode in amend-quote-dup amend-quote-dup-raw; do
