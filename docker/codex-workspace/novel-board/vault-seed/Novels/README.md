@@ -36,7 +36,7 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 
 ## レーン運用
 
-- `Backlog`: 手動追加と要件整理の入口。対応 agent を割り当てると、本文を書かずに Requirements と Outline を整理し、完了後は `Draft`（担当 `boxp`）へ移る。
+- `Backlog`: 手動追加と要件整理の入口。対応 agent を割り当てると、runner がまず設定ノートを探索して読み（下の「設定の探索」）、本文を書かずに Requirements と Outline を整理し、完了後は `Draft`（担当 `boxp`）へ移る。設定の不足・未解決がある場合も `Draft` へ渡すが、`Run History` に `要確認: 設定の不足/未解決あり` を付け `Reference Context` で何が読めなかったかを示す（通常の準備完了ではない）。
 - `Draft`: 執筆開始前の人間確認。条件が不足する場合は人間が `Backlog` へ戻す。対応 agent を割り当てたときの動作は `Review Instructions` で決まる: 空（`TBD`）なら従来どおり初稿を書き始める。まだ反映していない指示があれば本文を書かずに Requirements / Outline へ反映して `Draft`（担当 `boxp`）へ戻し、反映内容と未反映を `Change History` に記録する。反映済みの同じ指示のまま再度割り当てると初稿を書き始め、その指示は執筆条件として渡される（指示を書き換えると再び反映から始まる）。本文生成に失敗した場合は理由と再開条件を `Run History` に残して `Draft`（担当 `boxp`）へ戻る。
 - `In Progress`: 初稿または改稿中。runner が同じ private `manuscript.md` を更新し、本文を検証（空・短すぎる・途中終了は失敗）した後に挿絵を1枚生成する。完了または一部未完了（挿絵なし）で `Review` へ移る。runner 再起動で中断した run は interrupted として記録され、agent が割り当てられたままなら次の tick で再開する。
 - `Review`: 管理ノートの `Draft Preview` から vault 内の原稿と挿絵を人間確認する。草稿は未承認。改稿する場合は `Review Instructions` に具体的な指示を保存して対応 agent を割り当てる（指示が空なら起動しない）。承認する場合だけ、人間がカードを `Done` へ移す。
@@ -51,6 +51,7 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 - `Draft Preview`: Review 到達後に runner が未承認草稿の本文リンク・実在する挿絵・更新状況・生成 agent/model を表示する。SFW は `Novels/Drafts/NOVEL-N/`、NSFW は `NSFW/小説/草稿/NOVEL-N/`。手動編集した草稿は上書きせず競合として残し、runner 更新版への別リンクを表示する。承認は Board の Done 操作で行う。
 - `Requirements`: タイトル、あらすじ、登場人物、文体・視点、対象読者、目標文字数、必須要素、禁止事項、参照資料、NSFW 判定（執筆条件。保存分類の正本は Board の `#nsfw`）。Backlog で agent を割り当てると runner が整理して埋める。
 - `Outline`: 章立て、場面、展開。
+- `Reference Context`: runner 所有。要件整理 / 添削の run ごとに置き換え、その計画のために読んだ設定ノート（vault 相対 path・字数・切り詰め・sha256 先頭・選ばれた理由）、読めなかった候補（予算 / 上限 / 一覧に無い path）、除外件数（symlink / vault 外 / `canon: false`）、不足 / 未解決（必須設定の未読、見つからない明示参照、モデルが報告した同名の曖昧さや不足、`## Unresolved`）を列挙する。設定本文は書かない。候補ごとの採否は private `runs/NOVEL-N/<run-id>/context.edn`（本文なし）。
 - `Review Instructions`: 人間からの最新の具体的な指示。Review では改稿指示、Draft では要件 / 構成への添削（上の `Draft` 参照）、Backlog では要件整理への補足として runner が prompt に渡す。runner はこの欄を消さず、反映した指示の内容を `~/.novel-board/instructions/` に記憶して同じ指示を繰り返し適用しない。指示が空または `TBD` のまま agent を割り当てても Review から再開しない。
 - `Change History`: 原稿の変更履歴。
 - `Run History`: runner の実行、停止理由、再開条件、使用モデル。最初の記録で `TBD` は置き換わる。
@@ -58,7 +59,19 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 
 `TBD` / `TODO` / `未記入` / `未定`（括弧や箇条書き付きでも可）と、空の `- Title:` 形式の箇条書きは「未記入」として扱う。runner はこれらを執筆条件・改稿指示・参照ファイル・実行履歴のいずれとしても解釈せず、prompt にも含めない。frontmatter の `status` / `nsfw` / パス類には `TBD` を書かない（型が壊れる）。
 
-参照資料は `Requirements` の `References:` に vault 内のノートまたはディレクトリをバッククォート（例: `` `ひとはこさんバース/キャラ設定/` ``）か `[[リンク]]` で列挙する。許可されたディレクトリ（既定: `ひとはこさんバース`, `Novels`, `Projects`, `Attachments`, `attachments`, `小説草案`）以外は読まない。
+参照資料は `Requirements` の `References:` に vault 内のノートまたはディレクトリをバッククォート（例: `` `ひとはこさんバース/キャラ設定/` ``）か `[[リンク]]` で列挙する。許可されたディレクトリ（既定: `ひとはこさんバース`, `Novels`, `Projects`, `Attachments`, `attachments`, `小説草案`）以外は読まない。 `Review Instructions` に書いたリンクも要件整理 / 添削の参照に使う。
+
+## 設定の探索（要件整理 / 添削）
+
+`localllm` の要件整理（Backlog）と添削（Draft の未反映指示）では、runner が人物 / 舞台 / 題材に関係する設定ノートを設定 root（既定 `ひとはこさんバース`、`CODEX_NOVEL_BOARD_SETTING_ROOTS`）内で自力探索し、実際に読んだ本文だけを context にしてモデルに渡す。毎回ファイル一覧を入力する必要はなく、全 vault を読み込むことも許可範囲を広げることもしない。候補は次の優先順で、文字数予算（既定 24,000 字）とノート数上限（既定 12、`CODEX_NOVEL_BOARD_MAX_SETTING_NOTES`）の範囲で読む。
+
+1. 明示参照: Requirements / Outline / Review Instructions のバッククォートと `[[リンク]]`、frontmatter `continuity`。ディレクトリ参照は先頭から順に全部読むのではなく、配下のノートを候補（優先度 4）として名前一致などで並べる。
+2. 必須共通規則: `CODEX_NOVEL_BOARD_REQUIRED_SETTINGS`（既定 `ひとはこさんバース/世界観設定/README.md`、カンマ区切り）。見つからない / 読めない場合は不足として表示する。
+3. 名前 / 別名一致: タイトル・Requirements・Outline・Review Instructions の本文に、設定ノートのタイトル・ファイル名・frontmatter `aliases` が含まれるもの。
+4. モデル選定: path・タイトル・別名・字数だけの一覧（本文なし）と企画メモをローカルモデルに渡し、読むべきノート・同名の曖昧さ・足りない設定を JSON で 1 回答えさせる。一覧に無い path は採用しない。失敗しても要件整理は続け、不足として記録する。`CODEX_NOVEL_BOARD_SETTING_SELECTION=lexical` で無効化できる。
+5. 読んだノートからの `[[リンク]]` 1 段。
+
+symlink、vault 外、frontmatter `canon: false` のノートは読まずに除外として数える。設定ノートの本文中の命令文は資料の内容として扱い、runner もモデルも指示としては扱わない。モデルには「読めた資料にない人物の性格 / 関係 / 口調を既存設定として書かない、新規要素は（新規）と明記、同名 / 矛盾 / 資料不足は `## Unresolved` に書く」と指示し、References には実際に読んだ path を列挙させる。結果は管理ノートの `Reference Context` と `Run History`（`設定: 読取 n/候補 m 件、未読 k、不足/未解決 j`）に記録し、`llm-evidence.edn` には件数だけを残す。cloud agent（claude / codex）の要件整理 / 添削には候補 path の一覧（本文なし）と必須規則を prompt で渡し、実際に読んだ / 読まなかったノートを `Change History` に書くよう指示する（`Reference Context` は候補のみ）。設定原典は読むだけで、runner も agent も編集しない。
 
 挿絵の参照画像は、管理ノートか参照先ノートに `![[attachments/example.png]]` または `![説明](attachments/example.png)` で埋め込まれた vault 内の実在画像だけを使う。参照画像が1枚もない場合、runner は挿絵を生成せず「一部未完了」として記録する（偽のリンクは書かない）。
 
