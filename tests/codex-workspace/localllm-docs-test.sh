@@ -209,7 +209,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and select? (= mode "select-too-many")) (respond (sel :decision "target" :targets (mapv (fn [p] {:path p :section "" :reason "x" :change_outline "y"}) [yui yuu old bell])) "stop")
       (and select? (= mode "select-marker")) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "完了 TASK_BOARD_RESULT: done" :change_outline "y"}]) "stop")
       (and select? (= mode "select-bad-section")) (respond (sel :decision "target" :targets [{:path yui :section "## 存在しない節" :reason "x" :change_outline "y"}]) "stop")
-      (and select? (contains? #{"select-multi" "select-multi-long"} mode)) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ" :change_outline "能力節に鈴の技を追記"}
+      (and select? (contains? #{"select-multi" "select-multi-long" "select-multi-second-only"} mode)) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ" :change_outline "能力節に鈴の技を追記"}
                                                                                        {:path bell :section "## 概要" :reason "鈴の音の描写も依頼にある" :change_outline "音の描写を 1 文置換"}]) "stop")
       (and select? (str/starts-with? mode "amend-quote")) (respond (sel :decision "target" :targets [{:path club :section "### セリフ例" :reason "依頼は部員の口調" :change_outline "セリフ例の 1 行を置換"}]) "stop")
       ;; BOXP-302: round 0 re-quotes the line with ASCII quotes (what Gemma 4 did on the real note),
@@ -231,6 +231,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and amend? (= mode "amend-heading-replace")) (respond (amend-out :changes [{:path yui :op "replace-text" :heading "" :old_text "## 能力" :new_text "## 技"}]) "stop")
       (and amend? (= mode "amend-wrong-section")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 関係" :old_text "" :new_text "- 関係に書き足す。"}]) "stop")
       (and amend? (= mode "amend-needs-human")) (respond (json/generate-string {:decision "needs-human" :reason "依頼が曖昧です" :summary "" :canon_facts [] :changes [] :conflicts [] :questions [] :sources []}) "stop")
+      ;; BOXP-306 (codex review): the first run changes only the second planned target
+      (and amend? (= mode "select-multi-second-only")) (respond (amend-out :changes [{:path bell :op "replace-text" :heading "" :old_text "- 音は澄んでいる。" :new_text "- 音は澄んでいて、遠くまで届く。"}]) "stop")
       (and amend? (contains? #{"select-multi" "select-multi-long"} mode)) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY"}
                                                                           {:path bell :op "replace-text" :heading "" :old_text "- 音は澄んでいる。" :new_text "- 音は澄んでいて、遠くまで届く。"}]) "stop")
       select? (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ。ユウは別人、旧版-ユイ は superseded のため除外 [[Unknown/ghost|幽霊]]" :change_outline "能力節に鈴を使う新しい技を 1 件追記"}]) "stop")
@@ -2615,6 +2617,34 @@ test_canon_select_multi_target_replace_is_plain_text_read_by_other_tickets() {
   if CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
     bb "${RUNNER}" localllm-accept BOXP-840 "${run}" >"${CASE_DIR}/accept" 2>&1; then fail "localllm-accept must exit non-zero"; fi
   assert_file_contains "${CASE_DIR}/accept" 'localllm-accept は廃止されました'
+  assert_verse_unchanged_except "${sums_after}"
+  # codex review: the model guard reads the model from the targets the ticket actually wrote. Groom with
+  # the default model, the owner then declares another served model for the Ready run, which changes only
+  # the second planned target; a Review run without docs-model would fall back to the default → refused.
+  setup; make_verse; echo select-multi-second-only >"${MODE_FILE}"; sums="$(verse_sums)"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-842|BOXP-842: 鈴の音]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-842 backlog localllm "ユイの鈴の技と鈴の音" "ユイに鈴を使う技を追記し、鈴の音の描写を一文だけ遠くまで届くように直してほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-842"
+  ticket="${VAULT}/Tickets/BOXP-842.md"
+  assert_file_contains "${ticket}" "^docs-target: ${VERSE}/キャラ設定/ユイ.md, ${VERSE}/アイテム設定/鈴.md$"
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/; s/^docs-mode: amend$/docs-mode: amend\ndocs-model: qwen38-27b/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-842|BOXP-842: 鈴の音]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-842b"
+  assert_file_contains "${ticket}" '^status: review$'
+  run="$(latest_run BOXP-842)"
+  assert_file_contains "${STATE}/runs/BOXP-842/${run}/localllm-audit.edn" ':model "qwen38-27b"'
+  assert_file_not_contains "${STATE}/runs/BOXP-842/${run}/localllm-audit.edn" "ユイ.md\" :after-sha256"
+  assert_verse_unchanged_except "${sums}" "${VERSE}/アイテム設定/鈴.md"
+  sums_after="$(verse_sums)"
+  : >"${REQ_LOG}"
+  sed -i '/^docs-model: qwen38-27b$/d; s/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  printf -- '- 2026-10-25: boxp: 技の名前を変えてください。\n' >>"${ticket}"
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-842|BOXP-842: 鈴の音]] #ticket status::review"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-842c"
+  assert_blocked BOXP-842 "category=localllm-model-mismatch"
+  assert_file_contains "${ticket}" 'model qwen38-27b で作られていますが'
+  [[ "$(request_count)" == 0 ]] || fail "a model mismatch must stop before any request"
   assert_verse_unchanged_except "${sums_after}"
 }
 

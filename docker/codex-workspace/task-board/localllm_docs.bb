@@ -4647,14 +4647,26 @@
         ;; explicit `docs-model`, the run must use the model that wrote this
         ;; ticket's change last (or, before any write, the model of the groom
         ;; plan the owner confirmed). A silently changed default is refused.
+        ;; The previous write may cover only some of the planned targets, so
+        ;; the model is taken from the writes that exist, not from the first
+        ;; target (codex review); writes by different models stop the run.
+        prior-models (when own-write? (vec (distinct (keep :model (vals prior-writes)))))
         expected-model (when (:ok? snap)
-                         (or (when own-write? (:model (get prior-writes (first plan-paths))))
-                             (let [m (:model plan)] (when (and (string? m) (re-matches model-id-pattern m)) m))))
-        model-guard (when (and expected-model (not= :declared model-resolution) (not= expected-model (:model cfg)))
-                      {:category "localllm-model-mismatch"
-                       :reason (str "この票の計画 / 前回の変更は model " expected-model " で作られていますが、今回の run は docs-model が無く既定の " (:model cfg)
-                                    " になります。黙って切り替えないため停止しました。frontmatter に docs-model: " expected-model
-                                    " を書いて assignee を localllm に戻すか、意図的に変えるなら docs-model: " (:model cfg) " と明記してください")})
+                         (or (when (= 1 (count prior-models)) (first prior-models))
+                             (when (empty? prior-models)
+                               (let [m (:model plan)] (when (and (string? m) (re-matches model-id-pattern m)) m)))))
+        model-guard (when (:ok? snap)
+                      (cond
+                        (> (count prior-models) 1)
+                        {:category "localllm-model-mismatch"
+                         :reason (str "この票の前回の変更は対象ごとに異なる model（" (str/join ", " prior-models)
+                                      "）で書かれています。どのモデルで続けるか frontmatter の docs-model に明記して assignee を localllm に戻してください")}
+
+                        (and expected-model (not= :declared model-resolution) (not= expected-model (:model cfg)))
+                        {:category "localllm-model-mismatch"
+                         :reason (str "この票の計画 / 前回の変更は model " expected-model " で作られていますが、今回の run は docs-model が無く既定の " (:model cfg)
+                                      " になります。黙って切り替えないため停止しました。frontmatter に docs-model: " expected-model
+                                      " を書いて assignee を localllm に戻すか、意図的に変えるなら docs-model: " (:model cfg) " と明記してください")}))
         excluded-plan? (boolean (some #(excluded-path? % (:exclude-paths cfg)) plan-paths))
         gate-ok? (and (:ok? snap) (nil? stale) (nil? model-guard) (not excluded-plan?))
         ;; The planned target stays in the research corpus: a model that
