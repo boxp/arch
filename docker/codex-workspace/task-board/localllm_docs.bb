@@ -2150,8 +2150,11 @@
                 timeout? (= "java.net.http.HttpTimeoutException" (.getName (class (:exception response))))]
             (record-evidence! run-dir (assoc base-evidence :status (if timeout? :first-response-timeout :connection-error) :error message :elapsed-ms elapsed))
             (cond
+              ;; Report the configured first-response limit, not the measured
+              ;; elapsed time: on a slow runner the client fires the timeout a
+              ;; little after the limit and `elapsed` would round up.
               timeout? {:ok? false :category "localllm-timeout"
-                        :reason (str "localllm が " (quot elapsed 1000) " 秒以内に応答を開始しませんでした（待ち行列または停止、再試行なし）")}
+                        :reason (str "localllm が " (quot (+ (min idle-ms total-ms) 999) 1000) " 秒以内に応答を開始しませんでした（待ち行列または停止、再試行なし）")}
               retry? (do (Thread/sleep (* 3000 attempt)) (recur (inc attempt)))
               :else {:ok? false :category "localllm-unavailable"
                      :reason (str "localllm に接続できません（" attempt " 回試行、cloud への切替はしません）: " message)}))
