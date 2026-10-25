@@ -4139,6 +4139,8 @@
 ;; id and is resolved to the exact line before every existing check. There is
 ;; no fuzzy / normalized matching: an id maps to one line or is refused.
 (def amend-line-id-pattern #"\s*L(\d{1,4})\s*")
+;; The listing never names more lines than the id pattern resolves (codex review).
+(def max-amend-line-ids 9999)
 
 (defn plan-section-lines
   "Replaceable lines of the planned section of `text` (canon view): every
@@ -4168,7 +4170,7 @@
   (loop [ls (seq section-lines) used 0 acc []]
     (if-let [{:keys [id text] :as l} (first ls)]
       (let [used' (+ used (count id) 2 (count text) 1)]
-        (if (> used' budget) acc (recur (rest ls) used' (conj acc l))))
+        (if (or (> used' budget) (>= (count acc) max-amend-line-ids)) acc (recur (rest ls) used' (conj acc l))))
       acc)))
 
 (defn line-id-range [section-lines]
