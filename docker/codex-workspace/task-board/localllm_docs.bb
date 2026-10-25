@@ -4078,7 +4078,15 @@
   "Reason string when `change` leaves the planned section of the note (nil
   when the plan names no section or the change stays inside it)."
   [lines plan-section {:keys [op heading old_text]}]
-  (when (seq plan-section)
+  (if (str/blank? plan-section)
+    ;; A plan without a section means "add one new section": only a new
+    ;; heading may be appended; existing sections and sentences stay (codex review).
+    (cond
+      (not= "append-section" op) (str "計画は新しい節の追加なので、既存の節への変更（" (untrusted op 40) "）は拒否します")
+      (not (heading-line? (str/trim (str heading)))) (str "append-section の heading が見出し行ではありません: " (untrusted heading 80))
+      (let [{:keys [ok? ambiguous?]} (find-heading lines heading)] (or ok? ambiguous?))
+      (str "計画は新しい節の追加ですが、heading " (untrusted heading 80) " は既に存在します（既存の節へは書けません）")
+      :else nil)
     (let [{:keys [ok? index]} (find-heading lines plan-section)]
       (if-not ok?
         (str "計画の節『" plan-section "』が対象ノートに見つかりません（ノートが変わった可能性。再 groom してください）")
@@ -4087,10 +4095,11 @@
           (when-not (= (heading-text heading) (heading-text plan-section))
             (str "計画の節『" plan-section "』以外の節への変更は拒否します: " (untrusted heading 80)))
           "replace-text"
+          ;; The heading line itself is outside the editable body (codex review).
           (let [end (section-end lines index)
-                body (str/join "\n" (subvec lines index end))]
+                body (str/join "\n" (subvec lines (inc index) end))]
             (when-not (= 1 (count-occurrences body (str old_text)))
-              (str "replace-text の old_text は計画の節『" plan-section "』の中に一意に存在する文でなければなりません: " (untrusted old_text 60))))
+              (str "replace-text の old_text は計画の節『" plan-section "』の本文（見出し行を除く）に一意に存在する文でなければなりません: " (untrusted old_text 60))))
           nil)))))
 
 (defn interpret-amend

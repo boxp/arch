@@ -191,11 +191,16 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and select? (= mode "select-bad-section")) (respond (sel :decision "target" :targets [{:path yui :section "## 存在しない節" :reason "x" :change_outline "y"}]) "stop")
       (and select? (= mode "select-multi")) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ" :change_outline "能力節に鈴の技を追記"}
                                                                                        {:path bell :section "## 概要" :reason "鈴の音の描写も依頼にある" :change_outline "音の描写を 1 文置換"}]) "stop")
-      select? (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ。ユウは別人、旧版-ユイ は superseded のため除外 [[Unknown/ghost|幽霊]]" :change_outline "能力節に鈴を使う新しい技を 1 件追記"}]) "stop")
+      (and select? (= mode "select-nosection")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
+      (and select? (= mode "select-nosection-ok")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
+      (and amend? (= mode "select-nosection")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 既存の節に書く。"}]) "stop")
+      (and amend? (= mode "select-nosection-ok")) (respond (amend-out :changes [{:path yui :op "append-section" :heading "## 装備" :old_text "" :new_text "- 鈴（新規）。AMEND-BODY"}]) "stop")
+      (and amend? (= mode "amend-heading-replace")) (respond (amend-out :changes [{:path yui :op "replace-text" :heading "" :old_text "## 能力" :new_text "## 技"}]) "stop")
       (and amend? (= mode "amend-wrong-section")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 関係" :old_text "" :new_text "- 関係に書き足す。"}]) "stop")
       (and amend? (= mode "amend-needs-human")) (respond (json/generate-string {:decision "needs-human" :reason "依頼が曖昧です" :summary "" :canon_facts [] :changes [] :conflicts [] :questions [] :sources []}) "stop")
       (and amend? (= mode "select-multi")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY"}
                                                                           {:path bell :op "replace-text" :heading "" :old_text "- 音は澄んでいる。" :new_text "- 音は澄んでいて、遠くまで届く。"}]) "stop")
+      select? (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ。ユウは別人、旧版-ユイ は superseded のため除外 [[Unknown/ghost|幽霊]]" :change_outline "能力節に鈴を使う新しい技を 1 件追記"}]) "stop")
       amend? (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text ""
                                             :new_text (if revise? "- 鈴鳴り（新規）: 鈴の音で仲間に合図を送る。射程は十歩。AMEND-REVISED" "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY [[Refs/verse/世界観設定/規則|規則]] と [[Unknown/ghost|幽霊]] を参照。")}]) "stop")
       (and create? verse?) (respond (created :facts [{:fact "モブは名字を持たない" :source rule}]) "stop")
@@ -2754,7 +2759,7 @@ test_canon_amend_stops_when_the_plan_is_stale_missing_or_the_note_holds_another_
 
 test_canon_amend_rejects_changes_outside_the_planned_section_and_needs_human() {
   local sums ticket
-  for mode in amend-wrong-section amend-needs-human; do
+  for mode in amend-wrong-section amend-needs-human amend-heading-replace select-nosection; do
     setup; make_verse; echo "${mode}" >"${MODE_FILE}"
     write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-880|BOXP-880: 技]] #ticket status::backlog"
     write_nl_ticket "${VAULT}" BOXP-880 backlog localllm "ユイに技を追加" "ユイに新しい技を追記してほしい。"
@@ -2770,12 +2775,34 @@ test_canon_amend_rejects_changes_outside_the_planned_section_and_needs_human() {
       assert_blocked BOXP-880 'category=localllm-invalid-proposal'
       assert_file_contains "${ticket}" '計画の節『## 能力』以外の節への変更は拒否します'
       [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
+    elif [[ "${mode}" == amend-heading-replace ]]; then
+      assert_blocked BOXP-880 "category=localllm-invalid-proposal"
+      assert_file_contains "${ticket}" "本文（見出し行を除く）に一意に存在する文"
+      assert_file_contains "${VAULT}/${VERSE}/キャラ設定/ユイ.md" "^## 能力$"
+    elif [[ "${mode}" == select-nosection ]]; then
+      assert_blocked BOXP-880 "category=localllm-invalid-proposal"
+      assert_file_contains "${ticket}" "計画は新しい節の追加なので、既存の節への変更"
     else
       assert_blocked BOXP-880 'category=localllm-needs-human'
       [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 1 ]] || fail "needs-human is final"
     fi
     assert_verse_unchanged_except "${sums}"
   done
+  # a sectionless plan accepts exactly one new section
+  setup; make_verse; echo select-nosection-ok >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-881|BOXP-881: 装備]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-881 backlog localllm "ユイに装備の節を追加" "ユイの設定に装備の節を新しく追記してほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  ticket="${VAULT}/Tickets/BOXP-881.md"
+  assert_file_contains "${ticket}" "（節の指定なし: 新しい節を追加）"
+  sums="$(verse_sums)"
+  sed -i "s/^assignee: boxp$/assignee: localllm/" "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-881|BOXP-881: 装備]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  assert_file_contains "${ticket}" "^status: review$"
+  assert_file_contains "${VAULT}/${VERSE}/キャラ設定/ユイ.md" "^## 装備$"
+  assert_file_contains "${VAULT}/${VERSE}/キャラ設定/ユイ.md" "AMEND-BODY"
+  assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md"
 }
 
 for t in \
