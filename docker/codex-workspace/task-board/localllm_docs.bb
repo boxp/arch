@@ -4966,9 +4966,14 @@
             ;; own note is not canon and never a source.
             known (set (:read-paths research))
             ;; Collision candidates: the proposal root (excluded from the
-            ;; corpus). Notes other tickets saved inside a canon folder are
-            ;; ordinary notes now (BOXP-306) and are covered by the corpus.
-            other-proposals (when (:ok? prepared) (list-proposal-notes cfg vault))
+            ;; corpus) and every note the route saved inside the chosen canon
+            ;; folder. Those are ordinary notes now (BOXP-306), but the
+            ;; declared `docs-sources` need not cover the folder, so they are
+            ;; listed here as well rather than relied on from the corpus
+            ;; (codex review).
+            other-proposals (when (:ok? prepared)
+                              (concat (list-proposal-notes cfg vault)
+                                      (when canon-folder (list-route-canon-notes cfg vault canon-folder (:docs-roots cfg) (constantly true)))))
             ctx {:ticket-id ticket-id :run-id run-id :kind kind :own own :known known :research research
                  :corpus-notes (:notes corpus) :other-proposals other-proposals :folder canon-folder
                  :created (str (java.time.LocalDate/now))}]

@@ -242,6 +242,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                              {:path yui :op "append-to-section" :heading "## 能力" :old_text ""
                                               :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY [[Refs/verse/世界観設定/規則|規則]] と [[Unknown/ghost|幽霊]] を参照。"})]) "stop")
       (and create? verse? (str/includes? raw "BOXP-864")) (respond (created :slug "hotaru-two" :facts [{:fact "モブは名字を持たない" :source rule}]) "stop")
+      (and create? verse? (str/includes? raw "BOXP-865")) (respond (created :slug "hotaru-three" :facts [{:fact "鈴は合図に使う道具である" :source rule}]) "stop")
       (and create? verse?) (respond (created :facts [{:fact "モブは名字を持たない" :source rule}]) "stop")
       (and research? (= mode "create-vaultwide")) (respond vaultwide-step "stop")
       (and create? (= mode "create-vaultwide")) (respond (created :facts [{:fact "creds-note に監視の記述がある" :source creds-note}]) "stop")
@@ -2746,6 +2747,19 @@ test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note() {
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-dup2"
   assert_blocked BOXP-864 "name / aliases が既存ノートの名前と同じです"
   [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "duplicate note must not be created"
+  # ... and still refused when the ticket's docs-sources do not cover the canon folder (the note is
+  # not in that corpus; the folder itself is listed as a collision candidate; codex review)
+  : >"${REQ_LOG}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-865|BOXP-865: 脇役3]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-865 backlog localllm "新しい脇役をさらに 1 名" "いつものフォルダに、鐘楼で働く新しい脇役をさらに 1 名追加してほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-dup3"
+  assert_file_contains "${VAULT}/Tickets/BOXP-865.md" "^docs-folder: ${VERSE}/キャラ設定/モブ$"
+  sed -i "s/^assignee: boxp$/assignee: localllm/; s|^docs-mode: create$|docs-mode: create\ndocs-sources: ${VERSE}/世界観設定|" "${VAULT}/Tickets/BOXP-865.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-865|BOXP-865: 脇役3]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-dup4"
+  assert_file_contains "${STATE}/runs/BOXP-865/$(latest_run BOXP-865)/localllm-audit.edn" ":docs-sources \[\"${VERSE}/世界観設定\"\]"
+  assert_blocked BOXP-865 "name / aliases が既存ノートの名前と同じです"
+  [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "duplicate note must not be created when the sources skip the folder"
   # a second Review instruction revises the same note again; still no second file, still a plain note
   : >"${REQ_LOG}"
   sed -i "s/^assignee: boxp$/assignee: localllm/" "${ticket}"
