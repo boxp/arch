@@ -2304,7 +2304,7 @@
 (defn- localllm-groom-model-note
   "BOXP-296: a content-search groom calls the model; say so (and how much)."
   [result]
-  (if (= :content-search (:mode-resolution result))
+  (if (:model-called? result)
     (str "対象選定のためモデル " (:model result "localllm") " を呼び出しました（文書の書込・外部操作はありません）"
          (when-let [r (:research result)]
            (str "。調査: corpus " (:corpus-notes r) " ノート, " (:rounds r) " 回 (search " (:searches r) ", list " (:lists r 0) ", read " (:reads r) "), 根拠 " (:evidence-chars r) " 字"
@@ -2317,11 +2317,11 @@
   (str "localllm groom run " run-id " が票を整理し Ready に置きました（" (localllm-groom-model-note result) "）。"
        " " (:summary result)
        "。実行するにはこの票の assignee を localllm に戻してください（Ready のまま）。用途や対象が違えば Summary / frontmatter を直してから戻してください。"
-       (when (= :content-search (:mode-resolution result))
+       (when (:model-called? result)
          (str " 計画の全文: " (str (fs/path (run-dir ticket-id run-id) "localllm-groom.edn"))))))
 
 (defn localllm-groom-stop-note [ticket-id run-id result]
-  (str "localllm groom run " run-id " は票を整理できず停止しました（" (if (= :content-search (:mode-resolution result)) (localllm-groom-model-note result) "モデル呼出・文書の書込なし") "）。"
+  (str "localllm groom run " run-id " は票を整理できず停止しました（" (if (:model-called? result) (localllm-groom-model-note result) "モデル呼出・文書の書込なし") "）。"
        " category=" (:category result "unknown")
        "; 質問: " (sanitize-blocker-reason (:reason result))
        " — Summary か frontmatter を直し、Backlog（再整理）か Ready（実行）に置いて assignee を localllm に戻してください"
@@ -2358,7 +2358,7 @@
                                              :corpus :required :frontmatter :summary
                                              ;; BOXP-296: the plan the owner confirms (targets / sections /
                                              ;; hashes or destination folder), the model and the research summary.
-                                             :plan :model :model-resolution :research :usage :llm-elapsed-ms]))
+                                             :plan :model :model-resolution :model-called? :research :usage :llm-elapsed-ms]))
           message (str "localllm groom run " run "\n"
                        "status: " (if ready? "ready" "blocked") "\n"
                        (when (:category result) (str "category: " (:category result) "\n"))

@@ -3531,6 +3531,9 @@
                                                          :stop-requested? stop-requested? :log-fn log-fn})
                   research-summary (when-let [r (:research sel)] (-> r (dissoc :evidence) (assoc :evidence-keys (mapv :key (:evidence r)))))
                   common {:mode "select" :mode-resolution :content-search :model (:model cfg) :model-resolution (:how model-r)
+                          ;; `select-target!` ran: the model was (at least) requested. Groom
+                          ;; results blocked before this point carry no flag (codex review).
+                          :model-called? true
                           :sources sources :sources-origin sources-origin
                           :corpus {:notes (count (:notes corpus)) :chars (reduce + (map :chars (:notes corpus)))
                                    :excluded (:excluded corpus) :redacted-lines (:redacted-lines corpus)

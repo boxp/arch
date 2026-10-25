@@ -2610,6 +2610,7 @@ test_canon_select_asks_or_refuses_without_writing() {
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
   assert_file_contains "${VAULT}/Tickets/BOXP-853.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-853.md" 'category=localllm-unknown-model'
+  assert_file_contains "${VAULT}/Tickets/BOXP-853.md" "は票を整理できず停止しました（モデル呼出・文書の書込なし）"
   assert_file_not_contains "${REQ_LOG}" '/v1/chat/completions'
   # a served non-default model is used for the whole selection and recorded in the plan
   setup; make_verse; echo select-target >"${MODE_FILE}"
