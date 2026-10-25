@@ -899,7 +899,9 @@
   gives {:id .. :note? true}; a draft path (`Novels/Drafts/NOVEL-N/…`,
   `NSFW/小説/草稿/NOVEL-N/…`) gives {:id .. :draft? true}; anything else nil."
   [target]
-  (let [t (-> (decode-link-target target) (str/replace #"^(?:/|\./)+" ""))]
+  (let [t (-> (decode-link-target target)
+              (str/replace #"#.*$" "") ; Markdown links keep their heading anchor in the target
+              (str/replace #"^(?:/|\./)+" ""))]
     (if-let [[_ id] (re-matches #"(?:Novels/)?(NOVEL-\d+)(?:\.md)?" t)]
       {:id id :note? true}
       (when-let [[_ id] (re-matches #"(?:Novels/Drafts|NSFW/小説/草稿)/(NOVEL-\d+)(?:/.*)?" t)]
@@ -3640,6 +3642,9 @@
                       "- [ ] [NOVEL-7: 題](Novels/NOVEL-7.md) #novel"
                       "- [ ] [題](<Novels/NOVEL-7.md>)"
                       "- [ ] [[Novels/Drafts/NOVEL-7/manuscript|草稿]]"])))
+      (check "refs: markdown link with a heading anchor still resolves"
+             (= {:note-ids #{"NOVEL-7"} :other-link? false}
+                (select-keys (card-novel-refs "- [ ] [NOVEL-7: 題](Novels/NOVEL-7.md#Requirements) #novel") [:note-ids :other-link?])))
       (check "refs: draft link and bare ids are separate"
              (= {:draft-ids #{"NOVEL-7"} :bare-ids #{"NOVEL-3"}}
                 (select-keys (card-novel-refs "- [ ] NOVEL-3 の続き [[Novels/Drafts/NOVEL-7/manuscript|草稿]]") [:draft-ids :bare-ids])))
