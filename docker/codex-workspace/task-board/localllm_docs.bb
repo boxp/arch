@@ -3736,6 +3736,18 @@
       (= "select" (:mode mode-r))
       (groom-select cfg vault ticket-id frontmatter ticket-text opts)
 
+      ;; BOXP-302: a card the select groom already pinned (`docs-mode: amend`
+      ;; + `docs-target` + `docs-plan`) and that came back to Backlog (stale
+      ;; plan, blocked run, more grooming) is groomed again by content search
+      ;; so the plan is re-pinned. The generic branch below validated the pinned
+      ;; canon target against the proposal roots only and refused it as
+      ;; "outside the allowed root" (BOXP-301 re-groom).
+      (= "amend" (:mode mode-r))
+      (if (seq (:canon-roots cfg))
+        (groom-select cfg vault ticket-id frontmatter ticket-text opts)
+        {:status :blocked :category "localllm-invalid-mode"
+         :reason "docs-mode: amend は CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS が設定された runner でだけ使えます（この runner では既存ノートの限定編集を計画できません）"})
+
       :else
       (let [mode (:mode mode-r)
             own (:own mode-r)
