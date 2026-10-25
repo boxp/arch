@@ -90,9 +90,24 @@
 - 設計上の判断: Ready に直接置いた自然文票は従来経路（proposals / pilot）のまま（実フォルダへの書込は必ず groom 計画の確認を通す）。選定理由・予定差分はモデル文を 300 字以内で票に載せる（Owner 要件「選定理由 / 予定差分を groom で提示」。本文の長い引用はプロンプトで禁止し、未知 wikilink は平文化、マーカーは拒否）。
 - 未実施（後続 run）: merge → image → Pod 再作成 → lolice#885 merge → 実 Gemma4 / Qwen で『自然文 → groom（実バース 28 ノートから選定、path / 件数のみ記録）→ Ready 確認 → 専用非 canon 検証ノートへ限定 amend → Review → 同対象改稿 → rollback』。新規ノートの実フォルダ保存は groom（保存先の提示）までを実バースで確認し、原典フォルダへの実書込は Owner 票の計画確認を経る。
 
+### 2026-10-25 run 20261025T060833Z（配備後の実バース E2E・Qwen 修正）
+
+配備確認: Pod `codex-workspace-f4fc769bb-n4vzw` の runner 5 ファイルが arch main（1a13cd6a7、#13979 含む）と sha256 一致、env `CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS=ひとはこさんバース` あり。原典 28 ノートは `evidence/e2e-BOXP-296/canon-sha256-before.txt` と全工程で一致（本文は読んでいない。path / 件数 / run id のみ記録）。
+
+| 票 | model | groom（自然文のみ、path 指定なし） | 実行 | 改稿 / rollback / accept |
+| --- | --- | --- | --- | --- |
+| BOXP-297 | gemma4-26b（既定） | 1 回目: 候補を検証ノート 1 件に絞ったが追記文が無いため質問 1 件で Blocked（書込なし）。Summary に追記文を書いて再 groom → 検証ノート『## 検証メモ』を一意に選定、Context に対象 / 節 / 理由 / 予定差分 / sha、frontmatter に amend / docs-target / docs-plan → Ready + boxp | assignee 戻し → append-to-section×1 をマーカー付きで適用 → Review（llm 118 s） | Notes 指示 1 行 → 同スパン置換（llm 101 s）→ Review。`localllm-rollback`（改稿 run）= backup 復元、`localllm-accept`（初回 run）= マーカー除去、採用後の rollback = `:skipped`（上書きしない） |
+| BOXP-298 | qwen38-27b（`docs-model`） | 検証ノート『## 検証メモ』を一意に選定（llm 388 s、Qwen ロード込み）→ Ready + boxp | **needs-human で Blocked（書込なし）**: research で対象ノート自身を read しようとして「docs-sources に無いノート」になり、根拠なしと判断。原因は amend の research corpus が計画対象を除外していたこと（Gemma4 は対象自身を出典にして通った） | 修正後の配備で再実行（後続 run） |
+| BOXP-299 | gemma4-26b | 『新しい脇役を 1 名いつものフォルダに』→ 保存先 `ひとはこさんバース/キャラ設定/モブ/` を既存分類から選定（list 3）、create / character / docs-folder / docs-plan → Ready + boxp | 実書込は Owner 判断のため未実行 | — |
+| BOXP-300 | gemma4-26b | 検証ノートを選定 → Ready | 計画後にノート末尾へ 1 行を手で追加して assignee 戻し → `localllm-plan-stale` で **書かずに Blocked**（モデル呼出なし） | — |
+
+修正（本 run の PR）: `run-docs-amend!` の research corpus に計画対象を含める（スパンは canon 化されるので未確認文は見えない）、amend のプロンプトで対象 path を canon_facts の出典にできると明示、black-box に `:read-paths` の assertion、テスト先頭で `CANON_ROOTS` を unset（Pod env の漏れで `opt-in-missing` ケースが落ちた）。全 77 本 pass、codex review 指摘なし。
+
+未確認（後続 run）: 修正配備後の Qwen amend → Review → 改稿 → rollback（BOXP-298 を Backlog に戻して再 groom）。
+
 #### 後続 run の E2E 手順（配備後）
 
-1. 新 Pod で `/opt/codex-workspace/task-board/{localllm_docs,task_board_runner}.bb` の sha256 が arch main と一致し、env `CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS=ひとはこさんバース` が入っていることを確認（lolice#885 merge 後）。
+1. 新 Pod で `/opt/codex-workspace/task-board/{localllm_docs,task_board_runner}.bb` の sha256 が arch main と一致し、env `CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS=ひとはこさんバース` が入っていることを確認（lolice#885 merge 後）。**2026-10-25 時点で 票 A / C / D は完了、残りは Qwen 修正配備後の票 B（BOXP-298 を Backlog + assignee localllm に戻して再 groom → 承認 → amend → 改稿 → rollback）と evidence / README の更新。**
 2. 検証ノートを用意: `ひとはこさんバース/世界観設定/localllm検証ノート（BOXP-296・設定ではない）.md`（frontmatter `canon: false`、見出し `## 検証メモ` 1 つ。本文は非私的な数行）。既存原典 28 ノートの sha256 を記録。
 3. 票 A（Gemma4 既定）: Backlog に `assignee: localllm`、題名「localllm 検証ノートに項目を追記」、Summary「ひとはこさんバースの localllm 検証ノート（設定ではない）の検証メモに、検証用の項目を 1 行追記してほしい。他のノートは変えない。」→ groom が検証ノートを選ぶか（Context の対象 path / 節 / 理由）を確認。別のノートを選んだら assignee を戻さず Blocked / 再 groom を記録（選定品質の到達点として報告）。
 4. assignee を localllm に戻す → amend → Review: 検証ノートのマーカー内だけに追記、原典 28 ノートの sha256 不変、Notes の操作 / report / accept / rollback コマンド。
