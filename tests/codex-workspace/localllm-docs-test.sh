@@ -88,6 +88,9 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         mode (str/trim (slurp mode-file))
         user (:content (last (:messages parsed)))
         system (:content (first (:messages parsed)))
+        ;; BOXP-302 codex review: a correction round re-renders the first user turn
+        first-user (:content (second (:messages parsed)))
+        all-chars (reduce + (map #(count (str (:content %))) (:messages parsed)))
         schema-name (get-in parsed [:response_format :json_schema :name])
         research? (= "docs_research_step" schema-name)
         propose? (= "docs_setting_proposal" schema-name)
@@ -189,6 +192,9 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 ;; BOXP-302 codex review: the listing of all targets shares one budget
                                 :line-list-truncated? (str/includes? (str user) "行は長いため省略、ID では指定できません")
                                 :prompt-chars (+ (count (str system)) (count (str user)))
+                                :all-chars all-chars
+                                :first-user-truncated? (str/includes? (str first-user) "行は長いため省略、ID では指定できません")
+                                :first-user-line-ids? (str/includes? (str first-user) "L1: - 「ようこそ、お茶をどうぞ」")
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
@@ -3112,11 +3118,74 @@ test_canon_amend_line_id_replaces_one_of_two_identical_lines() {
   done
 }
 
+make_club_note_long() {
+  # BOXP-302 (codex review): the planned section is long enough that its line
+  # listing is the bulk of the amend request.
+  { printf -- '---\ntitle: 部員たち\n---\n\n# 部員たち\n\n## プロフィール\n\n- 学院の部活の部員。VERSE-CLUB-BODY\n\n### セリフ例\n\n#### 部長\n\n- 「ようこそ、お茶をどうぞ」\n- 「今日の稽古は庭でやりましょう」\n\n#### 副部長\n\n- 「資料はこちらにまとめておきました」\n'
+    for i in $(seq 1 200); do printf -- '- 「記録 %03d 番、今日の稽古の様子をノートに書いておきますね」\n' "${i}"; done; } >"${VAULT}/${VERSE}/キャラ設定/モブ/部員たち.md"
+}
+
+# BOXP-302 (codex review): the first request fits the listing to the cap, so
+# the rejected answer plus the correction request would overflow it. The
+# correction round re-fits the listing to the room left and is sent (the
+# quote-mismatch → line-id recovery path works at the cap) instead of stopping
+# with context-exceeded.
+test_canon_amend_correction_round_refits_the_line_listing_to_the_cap() {
+  local ticket run first_chars sums club="${VERSE}/キャラ設定/モブ/部員たち.md"
+  # uncapped run: the listing is complete; its request length becomes the cap
+  setup; make_verse; make_club_note_long; echo amend-quote >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-892 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  ticket="${VAULT}/Tickets/BOXP-892.md"
+  assert_file_contains "${ticket}" '^status: ready$'
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  assert_file_contains "${ticket}" '^status: review$'
+  [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
+  if grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':line-list-truncated? true'; then fail "the uncapped listing must be complete"; fi
+  first_chars="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | head -n 1 | sed -E 's/.*:all-chars ([0-9]+).*/\1/')"
+  [[ "${first_chars}" -gt 15000 ]] || fail "the listing must be the bulk of the request (got ${first_chars})"
+
+  # capped at exactly that length: the old code stopped before the correction round
+  setup; make_verse; make_club_note_long; echo amend-quote >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-892 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  ticket="${VAULT}/Tickets/BOXP-892.md"
+  assert_file_contains "${ticket}" '^status: ready$'
+  sums="$(verse_sums)"
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS="${first_chars}" >"${CASE_DIR}/out2"
+  assert_no_cloud
+  assert_file_not_contains "${ticket}" 'localllm-context-exceeded'
+  assert_file_contains "${ticket}" '^status: review$'
+  [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "the correction round must be sent at the cap (requests: $(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}"))"
+  local second; second="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | sed -n 2p)"
+  [[ "${second}" == *':first-user-truncated? true'* ]] || fail "the correction round must show a shorter listing: ${second}"
+  [[ "${second}" == *':first-user-line-ids? true'* ]] || fail "the ids still shown must name the same lines (L1 first)"
+  local chars; chars="$(sed -E 's/.*:all-chars ([0-9]+).*/\1/' <<<"${second}")"
+  [[ "${chars}" -le "${first_chars}" ]] || fail "the correction round must fit the cap ${first_chars} (got ${chars})"
+  grep -Eq 'correction round 1 .* line-ids=203/203 -> [0-9]+/203' "${CASE_DIR}/out2" || fail "the shrink must be logged: $(grep 'correction round' "${CASE_DIR}/out2")"
+  run="$(latest_run BOXP-892)"
+  assert_file_contains "${STATE}/runs/BOXP-892/${run}/localllm-audit.edn" ':line-ids 1'
+  assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-892:${run}:replace old=.* -->- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE<!-- /localllm:BOXP-892 -->$"
+  assert_file_not_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+  assert_file_contains "${VAULT}/${club}" '^- 「記録 200 番、'
+  assert_file_contains "${VAULT}/${club}" '^#### 副部長$'
+  assert_verse_unchanged_except "${sums}" "${club}"
+}
+
 for t in \
   test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back \
   test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
   test_canon_amend_line_listing_shares_one_budget_across_targets \
   test_canon_amend_line_id_replaces_one_of_two_identical_lines \
+  test_canon_amend_correction_round_refits_the_line_listing_to_the_cap \
   test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted \
   test_canon_select_asks_or_refuses_without_writing \
   test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted \

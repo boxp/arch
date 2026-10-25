@@ -4615,7 +4615,9 @@
           (finish :blocked {:category "localllm-context-exceeded" :research research
                             :usage (or (:usage research) {}) :llm-elapsed-ms (or (:llm-elapsed-ms research) 0)
                             :reason (str "送信内容が " prompt-chars " 字で上限 " (:max-prompt-chars cfg) " 字を超えるため実行しません")})
-          (loop [messages messages round 0
+          ;; `ctx` travels with the loop: a correction round may show a shorter
+          ;; line listing and only the ids it showed resolve.
+          (loop [messages messages ctx ctx round 0
                  usage-total (or (:usage research) {})
                  llm-ms (or (:llm-elapsed-ms research) 0)]
             (let [llm (llm-chat! cfg run-dir messages {:stop-requested? stop-requested?
@@ -4664,14 +4666,27 @@
                   (case (:kind outcome)
                     :reject
                     (if (< round (:max-corrections cfg))
-                      (let [next-messages (conj messages {:role "assistant" :content (:content llm)} (correction-request (:reason outcome)))
-                            next-chars (reduce + (map #(count (str (:content %))) next-messages))]
+                      ;; BOXP-302 / codex review: the first request fills the cap
+                      ;; with the line listing, so the rejected answer plus the
+                      ;; correction request would overflow it. The listing is
+                      ;; re-fitted to the room the conversation tail leaves (the
+                      ;; ids are a prefix, so every id still shown means the same
+                      ;; line) and the user turn is rendered again; only the ids
+                      ;; now shown resolve. Still over the cap with no listing
+                      ;; at all → stop as before.
+                      (let [history (conj (vec (drop 2 messages)) {:role "assistant" :content (:content llm)} (correction-request (:reason outcome)))
+                            history-chars (reduce + (map #(count (str (:content %))) history))
+                            next-lists (fit-amend-line-lists (update cfg :max-prompt-chars - history-chars) prompt-args)
+                            next-messages (into [(first messages) {:role "user" :content (build-amend-prompt cfg (assoc prompt-args :line-lists next-lists))}] history)
+                            next-chars (reduce + (map #(count (str (:content %))) next-messages))
+                            shown (fn [ls] (str (reduce + (map (comp count :lines) (vals ls))) "/" (reduce + (map :all (vals ls)))))]
                         (if (> next-chars (:max-prompt-chars cfg))
                           (finish :blocked (assoc base :category "localllm-context-exceeded" :decision (:decision proposal)
                                                   :reason (str "修正ラウンドの送信内容が " next-chars " 字で上限 " (:max-prompt-chars cfg)
                                                                " 字を超えるため再提案を求めず停止します（直前の拒否理由: " (:reason outcome) "）")))
-                          (do (log! (str "localllm docs-amend " ticket-id ": correction round " (inc round) " (" (:category outcome) ")"))
-                              (recur next-messages (inc round) usage-total llm-ms))))
+                          (do (log! (str "localllm docs-amend " ticket-id ": correction round " (inc round) " (" (:category outcome) ")"
+                                         " prompt-chars=" next-chars " line-ids=" (shown (:line-lists ctx)) " -> " (shown next-lists)))
+                              (recur next-messages (assoc ctx :line-lists next-lists) (inc round) usage-total llm-ms))))
                       (finish :blocked (assoc base :category (:category outcome) :reason (:reason outcome) :decision (:decision proposal))))
 
                     :fatal
