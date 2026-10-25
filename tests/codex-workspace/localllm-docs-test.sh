@@ -147,6 +147,10 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         old "Refs/verse/キャラ設定/旧版-ユイ.md"
         rule "Refs/verse/世界観設定/規則.md"
         bell "Refs/verse/アイテム設定/鈴.md"
+        ;; BOXP-302: a mob note whose planned section holds quoted dialogue lines
+        ;; under sub-headings; `correction?` marks the one correction round.
+        club "Refs/verse/キャラ設定/モブ/部員たち.md"
+        correction? (str/includes? (str user) "前の提案は runner の検証で拒否されました")
         verse-step (cond
                      (not (str/includes? (str user) "round 1")) (step "search" :queries ["ユイ 技"])
                      (not (str/includes? (str user) "### 根拠:")) (step "read" :reads [{:path yui :heading ""} {:path rule :heading ""}])
@@ -177,6 +181,10 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 :sees-replaced-text? (str/includes? (str user) "遠くまで届く")
                                 :sees-create-body? (str/includes? (str user) "CREATE-BODY")
                                 :sees-verse-plan? (str/includes? (str user) "# 計画（Owner が確認した対象")
+                                ;; BOXP-302: the amend prompt lists the planned section lines by id; the
+                                ;; correction request names the id range after a 0-occurrence old_text
+                                :sees-line-ids? (str/includes? (str user) "L1: - 「ようこそ、お茶をどうぞ」")
+                                :correction-has-id-hint? (str/includes? (str user) "行一覧の行 ID（L1〜L3）")
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
@@ -192,6 +200,12 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and select? (= mode "select-bad-section")) (respond (sel :decision "target" :targets [{:path yui :section "## 存在しない節" :reason "x" :change_outline "y"}]) "stop")
       (and select? (= mode "select-multi")) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ" :change_outline "能力節に鈴の技を追記"}
                                                                                        {:path bell :section "## 概要" :reason "鈴の音の描写も依頼にある" :change_outline "音の描写を 1 文置換"}]) "stop")
+      (and select? (str/starts-with? mode "amend-quote")) (respond (sel :decision "target" :targets [{:path club :section "### セリフ例" :reason "依頼は部員の口調" :change_outline "セリフ例の 1 行を置換"}]) "stop")
+      ;; BOXP-302: round 0 re-quotes the line with ASCII quotes (what Gemma 4 did on the real note),
+      ;; the correction round names the line id instead
+      (and amend? (= mode "amend-quote")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text (if correction? "L1" "- \"ようこそ、お茶をどうぞ\"") :new_text "- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE"}]) "stop")
+      (and amend? (= mode "amend-quote-subheading")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "#### 部長" :new_text "#### 代表"}]) "stop")
+      (and amend? (= mode "amend-quote-bad-id")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L9" :new_text "- 「どうぞ」"}]) "stop")
       (and select? (= mode "select-nosection")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
       (and select? (= mode "select-nosection-ok")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
       (and amend? (= mode "select-nosection")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 既存の節に書く。"}]) "stop")
@@ -2375,6 +2389,12 @@ make_verse() {
   printf -- '---\ntitle: 鈴\n---\n\n# 鈴\n\n## 概要\n\n- 音は澄んでいる。VERSE-BELL-BODY\n\n## 来歴\n\n- 鐘楼に伝わる。\n' >"${VAULT}/${VERSE}/アイテム設定/鈴.md"
 }
 
+make_club_note() {
+  # BOXP-302: a mob note whose planned section (level-3 heading) holds quoted
+  # dialogue lines under level-4 sub-headings, like the real target.
+  printf -- '---\ntitle: 部員たち\n---\n\n# 部員たち\n\n## プロフィール\n\n- 学院の部活の部員。VERSE-CLUB-BODY\n\n### セリフ例\n\n#### 部長\n\n- 「ようこそ、お茶をどうぞ」\n- 「今日の稽古は庭でやりましょう」\n\n#### 副部長\n\n- 「資料はこちらにまとめておきました」\n' >"${VAULT}/${VERSE}/キャラ設定/モブ/部員たち.md"
+}
+
 verse_tick() { run_tick "$1" "$2" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${VERSE}" CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" "${@:3}"; }
 verse_sums() { (cd "${VAULT}" && find "${VERSE}" -type f | sort | xargs sha256sum); }
 assert_verse_unchanged_except() {
@@ -2917,8 +2937,60 @@ test_frontmatter_keys_missing_from_the_map_are_taken_from_the_ticket_text() {
   assert_file_not_contains "${REQ_LOG}" '/v1/chat/completions'
 }
 
+# BOXP-302: a replace-text names the line by its id (the real Gemma 4 run quoted the
+# dialogue line with ASCII quotes instead of 「」 and never matched); sub-headings and
+# unknown ids are refused without a write.
+test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings() {
+  local sums ticket run club="${VERSE}/キャラ設定/モブ/部員たち.md"
+  for mode in amend-quote amend-quote-subheading amend-quote-bad-id; do
+    setup; make_verse; make_club_note; echo "${mode}" >"${MODE_FILE}"
+    write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-890|BOXP-890: 口調]] #ticket status::backlog"
+    write_nl_ticket "${VAULT}" BOXP-890 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
+    verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+    ticket="${VAULT}/Tickets/BOXP-890.md"
+    assert_file_contains "${ticket}" '^status: ready$'
+    assert_file_contains "${ticket}" "^docs-target: ${club}$"
+    sums="$(verse_sums)"
+    : >"${REQ_LOG}"
+    sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+    write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-890|BOXP-890: 口調]] #ticket status::ready"
+    verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+    grep -q ':sees-line-ids? true' "${REQ_LOG}" || fail "the amend prompt must list the planned section lines by id"
+    if [[ "${mode}" == amend-quote ]]; then
+      [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
+      grep -q ':correction-has-id-hint? true' "${REQ_LOG}" || fail "the correction request must name the id range"
+      assert_file_contains "${ticket}" '^status: review$'
+      run="$(latest_run BOXP-890)"
+      assert_file_contains "${STATE}/runs/BOXP-890/${run}/localllm-audit.edn" ':line-ids 1'
+      assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-890:${run}:replace old=.* -->- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE<!-- /localllm:BOXP-890 -->$"
+      assert_file_not_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+      assert_file_contains "${VAULT}/${club}" '^- 「今日の稽古は庭でやりましょう」$'
+      assert_file_contains "${VAULT}/${club}" '^#### 部長$'
+      assert_file_contains "${VAULT}/${club}" '^#### 副部長$'
+      assert_file_not_contains "${ticket}" 'ようこそ'
+      assert_verse_unchanged_except "${sums}" "${club}"
+      # accept removes the markers and keeps the replaced line only
+      CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-accept BOXP-890 "${run}" >"${CASE_DIR}/acc" 2>&1 || fail "accept failed: $(cat "${CASE_DIR}/acc")"
+      assert_file_contains "${VAULT}/${club}" '^- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE$'
+      assert_file_not_contains "${VAULT}/${club}" 'localllm:'
+    elif [[ "${mode}" == amend-quote-subheading ]]; then
+      assert_blocked BOXP-890 'category=localllm-invalid-proposal'
+      assert_file_contains "${ticket}" '見出し行が含まれています'
+      [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
+      assert_file_contains "${VAULT}/${club}" '^#### 部長$'
+      assert_verse_unchanged_except "${sums}"
+    else
+      assert_blocked BOXP-890 'category=localllm-invalid-proposal'
+      assert_file_contains "${ticket}" '行一覧（L1〜L3）にありません'
+      assert_verse_unchanged_except "${sums}"
+    fi
+    assert_no_cloud
+  done
+}
+
 for t in \
   test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back \
+  test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
   test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted \
   test_canon_select_asks_or_refuses_without_writing \
   test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted \

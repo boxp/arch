@@ -4114,10 +4114,44 @@
 (def amend-research-guidance
   (str "\n補足（この依頼は、Owner が確認した計画にある対象ノートの節への追記・編集です）: 書き足す内容が既存設定（世界の規則、年表、関係性、口調、他の人物・怪獣の設定）と矛盾しないよう、対象ノートに関係する資料と、依頼で名指しされた人物・事物のノートを read します。対象ノート自体は読み取り専用で表示されており（未確認の変更は除いた canon 本文）、index にもあるので read もできます。追記の前提にする既存設定が対象ノート自身にしか無い場合は、対象ノートの path を canon_facts の出典にしてかまいません。\n"))
 
+;; BOXP-302: a replace-text names the line it replaces by a line id. Gemma 4
+;; reproduced a quoted dialogue line of the planned section character for
+;; character but turned the corner brackets 「」 into ASCII double quotes
+;; inside the JSON string, so an exact re-quote of `old_text` never matched
+;; (0 occurrences, both rounds) and the run stopped unapplied. The runner
+;; enumerates the replaceable lines of the planned section (non-blank,
+;; non-heading, non-fence) as L1.. in the prompt; `old_text` may be such an
+;; id and is resolved to the exact line before every existing check. There is
+;; no fuzzy / normalized matching: an id maps to one line or is refused.
+(def amend-line-id-pattern #"\s*L(\d{1,4})\s*")
+
+(defn plan-section-lines
+  "Replaceable lines of the planned section of `text` (canon view): every
+  non-blank, non-heading, non-fence line between the section heading and the
+  next heading of the same or a higher level, numbered L1.. in document
+  order. [] when the plan names no section or the heading is not found
+  exactly once."
+  [text plan-section]
+  (if (str/blank? (str plan-section))
+    []
+    (let [lines (vec (str/split-lines (or text "")))
+          {:keys [ok? index]} (find-heading lines plan-section)]
+      (if-not ok?
+        []
+        (let [end (section-end lines index)]
+          (->> (range (inc index) end)
+               (map (fn [i] [i (nth lines i)]))
+               (remove (fn [[_ l]] (or (str/blank? l) (heading-line? l) (code-fence? l))))
+               (map-indexed (fn [n [i l]] {:id (str "L" (inc n)) :index i :text l}))
+               vec))))))
+
+(defn line-id-range [section-lines]
+  (if (seq section-lines) (str "L1〜L" (count section-lines)) "行なし"))
+
 (def amend-system-prompt
   (str "あなたは創作世界の設定資料（Obsidian vault）を扱う日本語の設定ライターです。Task Board のチケットの依頼にもとづき、Owner が確認した計画に書かれた対象ノートの節だけに、既存設定と矛盾しない追記・編集を最小限で行います。\n"
        "厳守事項:\n"
-       "- 出力は JSON だけです。changes には計画の対象 path と節だけを使い、op は append-to-section（計画の節の末尾に追記。heading は計画の節の見出し行）、append-section（計画で『新しい節』とされた場合だけ。heading に新しい見出し行）、replace-text（計画の節の中にある一意な文を old_text にそのまま書き、new_text に差し替え後の文）のいずれかです。他のノート・他の節・frontmatter・見出し構造・既存のリンクは変えません。削除だけの変更は作れません（依頼が削除なら needs-human）。\n"
+       "- 出力は JSON だけです。changes には計画の対象 path と節だけを使い、op は append-to-section（計画の節の末尾に追記。heading は計画の節の見出し行）、append-section（計画で『新しい節』とされた場合だけ。heading に新しい見出し行）、replace-text（計画の節の中の 1 行を差し替える。old_text には『計画の節の行一覧』の行 ID だけを書き（例 \"L3\"）、new_text に差し替え後の行全体を書く。原文を引用し直すと引用符や記号が変わって一致しないので、必ず行 ID を使う。行一覧が無い節でだけ、本文に一度だけ現れる文をそのまま old_text に書く）のいずれかです。他のノート・他の節・frontmatter・見出し構造・既存のリンクは変えません。削除だけの変更は作れません（依頼が削除なら needs-human）。\n"
        "- 既存の確定設定（年齢・関係・所属・地名・規則など）を書き換える依頼は、依頼で明示されていなければ行わず、conflicts に書きます。依頼で明示された置換だけ replace-text にします。\n"
        "- new_text は対象ノートの文体・箇条書きの形式に合わせた Markdown で、資料で裏付けられない固有名詞・数値・日付・人名を補完しません。原典に無い要素は「（新規）」と明示します。性的・露骨・残酷な描写は書きません。\n"
        "- canon_facts には、追記の前提にした既存設定を 1 件ずつ、根拠として読んだ資料の path（vault 相対）とともに列挙します。対象ノート自身（計画の path）も出典にできます。『未承認』『下書き』『却下』『旧版』と明記された内容は既存設定として扱いません。sources には canon_facts で使った資料 path を列挙します。\n"
@@ -4135,6 +4169,17 @@
                            plan-targets)) "\n\n"
        "# 対象ノート（canon 本文、読み取り専用。このチケットの未確認の変更は除いてあります）\n"
        (str/join "\n" (map (fn [{:keys [path]} text] (str "### " path "\n```markdown\n" (truncate-text text 12000) "\n```\n")) plan-targets target-texts)) "\n"
+       ;; BOXP-302: the replaceable lines of each planned section, by id.
+       (let [blocks (keep identity
+                          (map (fn [{:keys [path section]} text]
+                                 (let [ls (plan-section-lines text section)]
+                                   (when (seq ls)
+                                     (str "### " path " の節『" section "』（" (count ls) " 行）\n"
+                                          (str/join "\n" (map #(str (:id %) ": " (:text %)) ls)) "\n"))))
+                               plan-targets target-texts))]
+         (when (seq blocks)
+           (str "# 計画の節の行一覧（replace-text 用の行 ID。old_text には ID だけを書きます: 例 \"L3\"。見出し行・空行は置換できないため載せていません）\n"
+                (str/join "\n" blocks) "\n")))
        (when previous
          (str "# 前回の案（このチケットが前回書いた未確認の変更。canon ではなく、改稿の土台としてだけ使い、canon_facts の出典にしてはいけません。runner が置き換えます）\n```markdown\n" (truncate-text previous 6000) "\n```\n\n"))
        (when research
@@ -4189,9 +4234,24 @@
           "replace-text"
           ;; The heading line itself is outside the editable body (codex review).
           (let [end (section-end lines index)
-                body (str/join "\n" (subvec lines (inc index) end))]
-            (when-not (= 1 (count-occurrences body (str old_text)))
-              (str "replace-text の old_text は計画の節『" plan-section "』の本文（見出し行を除く）に一意に存在する文でなければなりません: " (untrusted old_text 60))))
+                body (str/join "\n" (subvec lines (inc index) end))
+                old (str old_text)
+                n (count-occurrences body old)
+                ids (line-id-range (plan-section-lines (str/join "\n" lines) plan-section))]
+            (cond
+              ;; A sub-heading inside the section is part of the body text but
+              ;; not of the editable prose: replacing it changes the heading
+              ;; structure (BOXP-302 hardening).
+              (some heading-line? (str/split-lines old))
+              (str "replace-text の old_text に見出し行が含まれています（見出し構造は変えません）。old_text は計画の節『" plan-section
+                   "』の本文（見出し行を除く）に一意に存在する文でなければなりません: " (untrusted old_text 60))
+              ;; 0 / several occurrences are told apart with counts only (no
+              ;; note text) so the mismatch can be supervised from the audit.
+              (not= 1 n)
+              (str "replace-text の old_text は計画の節『" plan-section "』の本文（見出し行を除く）に一意に存在する文でなければなりません（本文での出現 " n " 件、old_text " (count old) " 字"
+                   (when (zero? n) (str "。原文の引用は引用符や記号が変わって一致しないことがあるため、old_text には行一覧の行 ID（" ids "）を書いてください"))
+                   "）: " (untrusted old_text 60))
+              :else nil))
           nil)))))
 
 (defn interpret-amend
@@ -4207,7 +4267,20 @@
                    (take 30))
         known-facts (vec (filter #(contains? known (:source %)) facts))
         plan-by-path (into {} (map (juxt :path identity) plan-targets))
-        changes (vec (filter map? (:changes parsed)))
+        ;; BOXP-302: a replace-text whose old_text is a line id (`L3`) of the
+        ;; planned section is resolved to that exact line before any check;
+        ;; an id outside the enumerated lines is refused (no fuzzy matching).
+        resolve-id (fn [{:keys [path op old_text] :as c}]
+                     (let [plan (get plan-by-path (str path))]
+                       (if (and plan (= "replace-text" op) (re-matches amend-line-id-pattern (str old_text)))
+                         (let [ls (plan-section-lines (get-in snap [:snapshots (str path) :text] "") (:section plan))
+                               hit (first (filter #(= (:id %) (str/trim (str old_text))) ls))]
+                           (if hit
+                             (assoc c :old_text (:text hit) :line-id (:id hit))
+                             (assoc c :bad-line-id (str "replace-text の old_text の行 ID " (untrusted old_text 12) " は計画の節『" (:section plan)
+                                                        "』の行一覧（" (line-id-range ls) "）にありません"))))
+                         c)))
+        changes (mapv resolve-id (filter map? (:changes parsed)))
         conflicts (clean-items (:conflicts parsed) 12 400)
         questions (clean-items (:questions parsed) 8 400)
         check (fn [{:keys [path op heading old_text new_text] :as c}]
@@ -4215,6 +4288,7 @@
                       lines (vec (str/split-lines (get-in snap [:snapshots (str path) :text] "")))]
                   (cond
                     (nil? plan) (str "計画に無い path への変更は拒否します: " (untrusted path 100))
+                    (:bad-line-id c) (:bad-line-id c)
                     (not (contains? amend-ops op)) (str "amend で使えない op です: " (untrusted op 40))
                     (str/blank? (str new_text)) "new_text が空です"
                     (and (= "replace-text" op) (str/blank? (str old_text))) "replace-text の old_text が空です"
@@ -4244,7 +4318,8 @@
       :else
       (let [dropped (atom 0)
             clean (fn [s] (let [[out n] (sanitize-wikilinks (str s) known)] (swap! dropped + n) out))
-            cleaned (mapv #(update % :new_text (fn [t] (str/trim (strip-md-headings (clean t))))) changes)
+            line-ids (count (filter :line-id changes))
+            cleaned (mapv #(-> % (dissoc :line-id :bad-line-id) (update :new_text (fn [t] (str/trim (strip-md-headings (clean t)))))) changes)
             wrapped (mapv #(wrap-change ticket-id run-id %) cleaned)
             proposal-text (str/join "\n\n" (map (fn [{:keys [path op heading new_text]}] (str "（" path " / " op (when (seq heading) (str " / " heading)) "）\n" new_text)) cleaned))
             known-facts (mapv #(update % :fact clean) known-facts)
@@ -4254,7 +4329,7 @@
          :proposal {:decision "apply" :reason "" :summary (sanitize-error (truncate-text (one-line (:summary parsed)) 400))
                     :changes wrapped :sources (vec (distinct (map :source known-facts))) :creative? true}
          :facts known-facts :proposal-text proposal-text :conflicts conflicts :questions questions
-         :amend {:changes (count wrapped) :ops (frequencies (map :op wrapped)) :facts (count known-facts)
+         :amend {:changes (count wrapped) :ops (frequencies (map :op wrapped)) :line-ids line-ids :facts (count known-facts)
                  :facts-dropped (- (count facts) (count known-facts)) :conflicts (count conflicts) :questions (count questions)
                  :links-dropped @dropped :proposal-chars (count proposal-text)}}))))
 
