@@ -3209,12 +3209,123 @@ test_canon_amend_correction_round_refits_the_line_listing_to_the_cap() {
   assert_verse_unchanged_except "${sums}" "${club}"
 }
 
+test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search() {
+  # BOXP-302: the select groom pins docs-mode: amend / docs-target / docs-plan.
+  # A pinned card placed back in Backlog (blocked run, stale plan, more
+  # grooming) must be groomed again by content search and re-pin the plan,
+  # not be refused as "target outside the allowed root" by the generic branch.
+  setup; make_verse; echo select-target >"${MODE_FILE}"
+  local sums; sums="$(verse_sums)"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-880 backlog localllm "ユイに新しい技を追加" "いつものフォルダのユイの設定に、鈴を使う新しい技を 1 つ追記してほしい。既存の事実は変えない。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  local ticket="${VAULT}/Tickets/BOXP-880.md"
+  assert_file_contains "${ticket}" '^status: ready$'
+  assert_file_contains "${ticket}" '^docs-mode: amend$'
+  local first_run; first_run="$(latest_run BOXP-880)"
+  assert_file_contains "${ticket}" "^docs-plan: ${first_run}$"
+  # the owner sends the pinned card back to Backlog for re-planning
+  : >"${REQ_LOG}"
+  sed -i -e 's/^status: ready$/status: backlog/' -e 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::backlog"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  assert_no_cloud
+  local second_run; second_run="$(latest_run BOXP-880)"
+  [[ "${second_run}" != "${first_run}" ]] || fail "the re-groom must be a new run"
+  assert_file_contains "${ticket}" '^status: ready$'
+  assert_file_contains "${ticket}" '^assignee: boxp$'
+  assert_file_contains "${ticket}" '^docs-mode: amend$'
+  assert_file_contains "${ticket}" "^docs-target: ${VERSE}/キャラ設定/ユイ.md$"
+  assert_file_contains "${ticket}" "^docs-plan: ${second_run}$"
+  assert_file_not_contains "${ticket}" "^docs-plan: ${first_run}$"
+  [[ "$(grep -c '^docs-plan:' "${ticket}")" == 1 ]] || fail "docs-plan must be replaced, not duplicated"
+  assert_file_not_contains "${ticket}" '許可 root 外'
+  assert_file_not_contains "${ticket}" 'localllm-invalid-target'
+  [[ "$(grep -c ':schema-name "docs_target_selection"' "${REQ_LOG}")" == 1 ]] || fail "the re-groom must select the target by content again"
+  assert_file_not_contains "${REQ_LOG}" ':schema-name "docs_setting_amend"'
+  assert_verse_unchanged_except "${sums}"
+  [[ "$(proposal_count)" == 0 ]] || fail "groom must not write documents"
+  assert_file_contains "${STATE}/runs/BOXP-880/${second_run}/localllm-groom.edn" ':mode-resolution :content-search'
+  # the owner duplicates the pinned target by hand (`A, A` vs plan `A`): as a
+  # set it still equals the plan, but it is a hand edit, not the groom's pin,
+  # so the groom must stop as plan-mismatch instead of re-selecting (codex review)
+  : >"${REQ_LOG}"
+  sed -i -e 's/^status: ready$/status: backlog/' -e 's/^assignee: boxp$/assignee: localllm/' \
+    -e "s#^docs-target: .*#docs-target: ${VERSE}/キャラ設定/ユイ.md, ${VERSE}/キャラ設定/ユイ.md#" "${ticket}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::backlog"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2b"
+  assert_no_cloud
+  assert_groom_blocked BOXP-880 'category=localllm-plan-mismatch'
+  assert_file_contains "${ticket}" '手動で変えた対象は再選定しません'
+  assert_file_contains "${ticket}" "^docs-target: ${VERSE}/キャラ設定/ユイ.md, ${VERSE}/キャラ設定/ユイ.md$"
+  assert_file_contains "${ticket}" "^docs-plan: ${second_run}$"
+  local dup_run; dup_run="$(latest_run BOXP-880)"
+  [[ "${dup_run}" != "${second_run}" ]] || fail "the duplicate-target check must run as a new groom run"
+  assert_file_not_contains "${REQ_LOG}" ':schema-name "docs_target_selection"'
+  assert_verse_unchanged_except "${sums}"
+  # the same duplicated pin sent straight to the amend run (Ready + localllm)
+  # must stop there too, before any model call
+  : >"${REQ_LOG}"
+  sed -i -e 's/^status: blocked$/status: ready/' -e 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2c"
+  assert_no_cloud
+  assert_blocked BOXP-880 'category=localllm-plan-mismatch'
+  [[ "$(request_count)" == 0 ]] || fail "a duplicated docs-target must stop the amend run before the model"
+  assert_file_contains "${ticket}" "^docs-plan: ${second_run}$"
+  assert_verse_unchanged_except "${sums}"
+  [[ "$(proposal_count)" == 0 ]] || fail "the amend run must not write documents"
+  # the owner hand-edits the pinned docs-target to another canon note: the pin
+  # no longer matches the groom plan, so the groom keeps the explicit target
+  # and asks instead of selecting a different note (codex review)
+  : >"${REQ_LOG}"
+  sed -i -e 's/^status: blocked$/status: backlog/' -e 's/^assignee: boxp$/assignee: localllm/' \
+    -e "s#^docs-target: .*#docs-target: ${VERSE}/キャラ設定/ユウ.md#" "${ticket}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::backlog"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out3"
+  assert_no_cloud
+  assert_groom_blocked BOXP-880 'category=localllm-plan-mismatch'
+  assert_file_contains "${ticket}" '手動で変えた対象は再選定しません'
+  assert_file_contains "${ticket}" "^docs-target: ${VERSE}/キャラ設定/ユウ.md$"
+  assert_file_contains "${ticket}" "^docs-plan: ${second_run}$"
+  [[ "$(latest_run BOXP-880)" != "${second_run}" ]] || fail "the mismatch check must run as a new groom run"
+  assert_file_not_contains "${REQ_LOG}" ':schema-name "docs_target_selection"'
+  assert_verse_unchanged_except "${sums}"
+  # a hand-written docs-mode: amend / docs-target without any groom plan keeps
+  # its target (validated against the canon roots) and is a question: no
+  # selection call may replace the owner's explicit target
+  setup; make_verse; echo select-target >"${MODE_FILE}"
+  sums="$(verse_sums)"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-882|BOXP-882: 技を追加]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-882 backlog localllm "ユウに新しい技を追加" "ユウの設定に火を使う新しい技を 1 つ追記してほしい。" \
+    "docs-mode: amend" "docs-target: ${VERSE}/キャラ設定/ユウ.md"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out4"
+  assert_no_cloud
+  assert_groom_blocked BOXP-882 'category=localllm-plan-missing'
+  local manual="${VAULT}/Tickets/BOXP-882.md"
+  assert_file_contains "${manual}" '手動指定の対象は再選定しません'
+  assert_file_contains "${manual}" "^docs-target: ${VERSE}/キャラ設定/ユウ.md$"
+  assert_file_contains "${manual}" '^docs-mode: amend$'
+  assert_file_not_contains "${manual}" '^docs-plan:'
+  assert_file_not_contains "${manual}" '許可 root 外'
+  assert_verse_unchanged_except "${sums}"
+  # the same pinned card on a runner without canon roots is a question, not a write
+  setup; echo select-target >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-881|BOXP-881: 技を追加]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-881 backlog localllm "ユイに新しい技を追加" "ユイの設定に新しい技を 1 つ追記してほしい。" \
+    "docs-mode: amend" "docs-target: Refs/verse/キャラ設定/ユイ.md" "docs-plan: 20261025T000000Z-aaaaaaaa-0000-0000-0000-000000000000"
+  groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out3"
+  assert_groom_blocked BOXP-881 'category=localllm-invalid-mode'
+  assert_file_contains "${VAULT}/Tickets/BOXP-881.md" 'CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS が設定された runner でだけ'
+}
+
 for t in \
   test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back \
   test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
   test_canon_amend_line_listing_shares_one_budget_across_targets \
   test_canon_amend_line_id_replaces_one_of_two_identical_lines \
   test_canon_amend_correction_round_refits_the_line_listing_to_the_cap \
+  test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search \
   test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted \
   test_canon_select_asks_or_refuses_without_writing \
   test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted \
