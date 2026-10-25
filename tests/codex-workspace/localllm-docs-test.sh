@@ -2692,6 +2692,16 @@ test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_acce
   assert_file_contains "${CASE_DIR}/accept" ':status :accepted'
   assert_file_not_contains "${note}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）'
   assert_file_contains "${note}" 'CREATE-REVISED'
+  # a Review instruction after acceptance revises the same (now accepted) note; no second file
+  : >"${REQ_LOG}"
+  sed -i "s/^assignee: boxp$/assignee: localllm/" "${ticket}"
+  printf -- "- 2026-10-25: boxp: 口調をもう少し丁寧に。\n" >>"${ticket}"
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-860|BOXP-860: 脇役]] #ticket status::review"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out5"
+  assert_file_contains "${ticket}" "^status: review$"
+  [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "revision after accept must not create a second note"
+  assert_file_contains "${note}" "^localllm-unreviewed: true$"
+  assert_file_contains "${ticket}" "設定フォルダ内、未確認）を 改稿（置換） し Review で停止しました"
   # a hand-written docs-folder without a groom plan is refused on a Ready card
   setup; make_verse; echo select-new >"${MODE_FILE}"; sums="$(verse_sums)"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-862|BOXP-862: 脇役]] #ticket status::ready"

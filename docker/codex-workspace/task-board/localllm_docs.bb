@@ -1881,12 +1881,13 @@
                        (= ticket-id (str (get (:frontmatter %) "ticket"))))
                  (list-proposal-notes cfg vault))))
 
-(defn list-unreviewed-canon-notes
-  "BOXP-296: the unreviewed notes the route created directly inside the canon
-  `folder` (frontmatter `localllm-unreviewed: true`), any ticket:
-  [{:rel :kind :text :frontmatter}]. Only regular `.md` files directly in the
-  folder, validated against `roots` and size-checked before they are read."
-  [cfg vault folder roots]
+(defn- list-route-canon-notes
+  "BOXP-296: notes the route created directly inside the canon `folder`
+  (frontmatter `ticket:` + `run:` written by `render-created-note`), filtered
+  by `keep?` on the frontmatter: [{:rel :kind :text :frontmatter}]. Only
+  regular `.md` files directly in the folder, validated against `roots` and
+  size-checked before they are read."
+  [cfg vault folder roots keep?]
   (let [dir (fs/path vault folder)]
     (if-not (fs/directory? dir {:nofollow-links true})
       []
@@ -1896,15 +1897,24 @@
                  :when (and (:ok? r) (:exists? r) (<= (or (size-nofollow (:abs r)) 0) (max-note-bytes cfg)))
                  :let [text (slurp-nofollow (:abs r))
                        fm (simple-frontmatter text)]
-                 :when (= "true" (str (get fm "localllm-unreviewed")))]
+                 :when (and (re-matches #"[A-Za-z]+-\d+" (str (get fm "ticket")))
+                            (seq (str (get fm "run")))
+                            (keep? fm))]
              {:rel rel :kind (get fm "kind") :text text :frontmatter fm})))))
 
+(defn list-unreviewed-canon-notes
+  "The unreviewed notes the route created inside the canon `folder`, any
+  ticket (collision candidates: they are excluded from the corpus)."
+  [cfg vault folder roots]
+  (list-route-canon-notes cfg vault folder roots #(= "true" (str (get % "localllm-unreviewed")))))
+
 (defn find-own-canon-note
-  "The unreviewed note this ticket created inside the confirmed canon
-  `folder` (`ticket: <id>`), or nil."
+  "The note this ticket created inside the confirmed canon `folder`
+  (`ticket: <id>`), unreviewed or already accepted, or nil. An accepted note
+  is still the ticket's own: a later Review instruction revises it (it becomes
+  unreviewed again until accepted) instead of creating a second note (codex review)."
   [cfg vault folder roots ticket-id]
-  (first (filter #(= ticket-id (str (get (:frontmatter %) "ticket")))
-                 (list-unreviewed-canon-notes cfg vault folder roots))))
+  (first (list-route-canon-notes cfg vault folder roots #(= ticket-id (str (get % "ticket"))))))
 
 ;; --- names and collisions ----------------------------------------------------
 
