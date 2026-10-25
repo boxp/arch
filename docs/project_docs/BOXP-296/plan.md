@@ -125,9 +125,18 @@
 
 到達点: Gemma4 既定 / Qwen 選択の両方で『対象 path なしの自然文 → 内容探索 groom → Ready 確認 → 通常フォルダ内の非 canon 検証ノートへ限定 write → Review → 同対象改稿 → rollback』を実モデルで確認。新規保存先の選定は groom 提示まで（BOXP-299）、計画 stale は書かずに停止（BOXP-300）。未確認: 新規ノートの実フォルダ書込（Owner 判断）、原典ノートへの実 amend（Owner 票の計画確認を経る）。
 
+### 2026-10-25 run 20261025T080658Z（#14007 配備後の再確認・完了）
+
+配備確認: Pod `codex-workspace-5fb44488d9-ndffz` の runner 5 ファイルが arch main（ce121a008、#14007 含む）と sha256 一致、env `CANON_ROOTS` あり、原典 28 ノート sha256 不変、検証ノートは BOXP-298 の計画 sha（f92ae4a6…）と一致・マーカー 0。
+
+- BOXP-298（Review、`docs-mode` / `docs-target` / `docs-plan` / `docs-model` が揃った票 file）に `task-board.bb append-note --source boxp` で改稿指示を 1 行入れ、assignee を localllm に戻す → run 20261025T080841Z（qwen38-27b、llm 392 s、read 1 = 対象ノート自身）が **`localllm-unclear-request` を再発せず** 計画の『## 検証メモ』末尾へ append-to-section×1 をマーカー付きで適用し Review。`localllm-rollback 080841Z` = `:restored`（計画 sha に復帰、マーカー 0）。原典 28 ノート不変。
+- これで前 run の残作業（票読取修正の実機確認）は完了。evidence `e2e-BOXP-296/README` と vault README の到達点を更新。
+
+到達点（最終）: Gemma4 既定 / Qwen 選択の両方で『対象 path なしの自然文 → 内容探索 groom → Ready 確認 → 通常フォルダ内の非 canon 検証ノートへ限定 write → Review → 同対象改稿 → rollback / accept』を実 scheduler で確認（BOXP-297 / 298）。新規保存先の選定は groom 提示まで（BOXP-299）、計画 stale は書かずに停止（BOXP-300）。未確認（Owner 判断）: 新規ノートの実フォルダ書込、原典ノートへの実 amend。
+
 #### 後続 run の E2E 手順（配備後）
 
-1. 新 Pod で `/opt/codex-workspace/task-board/{localllm_docs,task_board_runner}.bb` の sha256 が arch main と一致し、env `CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS=ひとはこさんバース` が入っていることを確認（lolice#885 merge 後）。**2026-10-25 時点で 票 A / C / D は完了、残りは Qwen 修正配備後の票 B（BOXP-298 を Backlog + assignee localllm に戻して再 groom → 承認 → amend → 改稿 → rollback）と evidence / README の更新。**
+1. 新 Pod で `/opt/codex-workspace/task-board/{localllm_docs,task_board_runner}.bb` の sha256 が arch main と一致し、env `CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS=ひとはこさんバース` が入っていることを確認（lolice#885 merge 後）。**2026-10-25 時点で票 A / B / C / D とも完了（上の結果節）。**
 2. 検証ノートを用意: `ひとはこさんバース/世界観設定/localllm検証ノート（BOXP-296・設定ではない）.md`（frontmatter `canon: false`、見出し `## 検証メモ` 1 つ。本文は非私的な数行）。既存原典 28 ノートの sha256 を記録。
 3. 票 A（Gemma4 既定）: Backlog に `assignee: localllm`、題名「localllm 検証ノートに項目を追記」、Summary「ひとはこさんバースの localllm 検証ノート（設定ではない）の検証メモに、検証用の項目を 1 行追記してほしい。他のノートは変えない。」→ groom が検証ノートを選ぶか（Context の対象 path / 節 / 理由）を確認。別のノートを選んだら assignee を戻さず Blocked / 再 groom を記録（選定品質の到達点として報告）。
 4. assignee を localllm に戻す → amend → Review: 検証ノートのマーカー内だけに追記、原典 28 ノートの sha256 不変、Notes の操作 / report / accept / rollback コマンド。
