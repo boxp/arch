@@ -42,7 +42,7 @@ Owner 指示（Telegram）: 「このタグを使った rollback の仕組み自
 
 ### ドキュメント
 - `docker/hermes-agent/skills/obsidian-task-board/SKILL.md` の rollback 案内を更新。
-- vault（Obsidian Projects 正本）: `Projects/task-board-localllm-docs/README.md` の accept / rollback / マーカー説明を新方式へ。`Novels/README.md` は Task Board localllm のマーカーに言及していないため変更なし（確認済み）。過去の evidence / Notes は改竄しない。
+- vault（Obsidian Projects 正本、**本リポジトリ外**のため PR 差分には含まれない）: `Projects/task-board-localllm-docs/README.md` の accept / rollback / マーカー説明を 2026-10-25 に vault 側で直接新方式へ更新済み（冒頭の現行方式節 + 表 / 停止節など 4 箇所。BOXP-296 / 290 / 287 節の旧記述は「当時の経緯」と明記して残す。更新後の sha256 `d0995967…`）。同 `pilot/test-note.md` の確認手順にあった `localllm-rollback` 行も Obsidian 履歴で戻す案内へ更新。`Novels/README.md` は Task Board localllm のマーカーに言及していないため変更なし（確認済み）。`Projects/local-llm-qwen38-vs-gemma4/README.md` の rollback 行は過去 run の記録表のため不変。過去の evidence / Notes は改竄しない。
 
 ## 3. 移行（実 vault、ローカル処理）
 - 棚卸し（path / 件数のみ）: スパン = `ひとはこさんバース/キャラ設定/モブ/高嶺花学院ヒロイン部.md`（BOXP-301、replace × 8）。unreviewed ノート = `ひとはこさんバース/キャラ設定/モブ/yui-sasaki.md`（バナー / `status: unapproved` 付き）。Tickets / evidence 内の文字列は対象外（許可 root 外）。
@@ -61,3 +61,4 @@ Owner 指示（Telegram）: 「このタグを使った rollback の仕組み自
 - 2026-10-25 PR gate の codex review（#14050、1 回目）: P2 1 件 = 移行対象判定 `legacy-marked?` が開きマーカー `<!-- localllm:` しか見ておらず、閉じマーカーだけが残った旧ノート（`<!-- /localllm:BOXP-N -->`）を無報告・未変更で素通りしていた。修正: 判定を開き/閉じ両方に一致する `span-any-re` に変更し、`parse-spans` の「開きマーカーの無い閉じマーカー」判定でそのノートだけ `:skipped` + 理由を報告（本文不変）。移行後の残存チェックも同じ正規表現へ。テストに閉じマーカー単独 fixture（dry-run / apply / 再 dry-run とも skipped、hash 不変、本文非露出）を追加。
 - 2026-10-25 手元 codex review（上記修正後、`--base origin/main`）: P2 1 件 = create の名称衝突候補。旧実装は canon フォルダ内の `localllm-unreviewed` ノートを corpus とは別に候補へ加えていたが、306 で「通常ノートになったので corpus で足りる」として外した。票の `docs-sources` が保存先 canon フォルダを含まない場合に他票の作成ノートが候補から漏れ、同名・別 slug の重複ノートを作れてしまう。修正: 保存先 canon フォルダ内で経路が作成したノート（`ticket:`+`run:` frontmatter）を `list-route-canon-notes` で常に候補へ加える。テスト: docs-sources をフォルダ外に絞った票で同名 create が blocked になるケースを追加（修正なしで失敗することを確認）。
 - 2026-10-25 手元 codex review（2 回目）: P2 1 件 = amend のモデル整合ガードが前回 write のモデルを計画の先頭ターゲットからだけ読んでいた。前回 run が 2 番目以降のターゲットだけを書いた場合に nil → groom 計画のモデルへ戻り、既定モデルへの無宣言切替を止められない。修正: 実在する前回 write 全体から distinct なモデルを取り、1 種ならそれを期待値、複数なら対象間不一致として停止、無ければ従来どおり計画のモデル。テスト: 既定モデルで groom → docs-model 明示で 2 番目の対象だけ変更 → docs-model を外した Review run が model-mismatch で停止（修正なしで失敗することを確認）。
+- 2026-10-25 review gate（codex review、retry 2 回目）: P2 1 件 = 「計画に挙げた vault 正本 `Projects/task-board-localllm-docs/README.md` が差分にない」。当該 README は Obsidian vault（本リポジトリ外、私的本文を含むため PR に載せない）にあり、1 回目の PR 作成時に vault 側で新方式へ更新済み。本 run で vault 側の残存を再点検（現行文言としての accept / rollback 必須説明 0 件、`pilot/test-note.md` の確認手順 1 行を追加修正）し、本計画 §2 ドキュメント節に所在・更新済みの事実・対象外とした過去記録を明記。
