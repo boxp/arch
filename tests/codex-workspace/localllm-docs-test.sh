@@ -221,6 +221,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       ;; BOXP-302 (codex review): an indented sub-heading is still a heading; round 0 quotes it raw,
       ;; the correction round names the id the heading would have had were it listed
       (and amend? (= mode "amend-quote-indented-heading")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text (if correction? "L4" "  #### 副部長") :new_text "  #### 代表"}]) "stop")
+      ;; BOXP-302 (codex review): a body line that reads like an id makes the id form ambiguous
+      (and amend? (= mode "amend-quote-id-shaped-line")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L1" :new_text "- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE"}]) "stop")
       (and amend? (= mode "amend-quote-bad-id")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L9" :new_text "- 「どうぞ」"}]) "stop")
       (and select? (= mode "select-nosection")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
       (and select? (= mode "select-nosection-ok")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
@@ -2960,8 +2962,9 @@ test_frontmatter_keys_missing_from_the_map_are_taken_from_the_ticket_text() {
 # too: it is neither listed by id nor replaceable as raw text (codex review).
 test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings() {
   local sums ticket run club="${VERSE}/キャラ設定/モブ/部員たち.md"
-  for mode in amend-quote amend-quote-subheading amend-quote-bad-id amend-quote-indented-heading; do
+  for mode in amend-quote amend-quote-subheading amend-quote-bad-id amend-quote-indented-heading amend-quote-id-shaped-line; do
     setup; make_verse; make_club_note; echo "${mode}" >"${MODE_FILE}"
+    [[ "${mode}" == amend-quote-id-shaped-line ]] && sed -i "s/^- 「資料はこちらにまとめておきました」$/L1/" "${VAULT}/${club}"
     [[ "${mode}" == amend-quote-indented-heading ]] && sed -i "s/^#### 副部長$/  #### 副部長/" "${VAULT}/${club}"
     write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-890|BOXP-890: 口調]] #ticket status::backlog"
     write_nl_ticket "${VAULT}" BOXP-890 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
@@ -3008,6 +3011,14 @@ test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings() {
       assert_file_contains "${VAULT}/${club}" '^  #### 副部長$'
       assert_file_contains "${VAULT}/${club}" '^- 「資料はこちらにまとめておきました」$'
       assert_file_not_contains "${VAULT}/${club}" '代表'
+      assert_verse_unchanged_except "${sums}"
+    elif [[ "${mode}" == amend-quote-id-shaped-line ]]; then
+      # the section now holds a body line that reads `L1` (listed as L3): `L1` is
+      # refused as ambiguous instead of replacing the first dialogue line
+      assert_blocked BOXP-890 'category=localllm-invalid-proposal'
+      assert_file_contains "${ticket}" 'ID として解釈できません。その行を置き換えるなら行一覧の ID（L3）'
+      assert_file_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+      assert_file_contains "${VAULT}/${club}" '^L1$'
       assert_verse_unchanged_except "${sums}"
     else
       assert_blocked BOXP-890 'category=localllm-invalid-proposal'

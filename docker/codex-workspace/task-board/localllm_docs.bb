@@ -4364,11 +4364,26 @@
         resolve-id (fn [raw]
                      (let [{:keys [path op old_text] :as c} (select-keys raw [:path :op :heading :old_text :new_text])
                            plan (get plan-by-path (str path))]
+                       ;; A body line that itself reads like an id (`L3`) makes the
+                       ;; id form ambiguous: refuse rather than guess, naming the id
+                       ;; that line was listed under (codex review).
                        (if (and plan (= "replace-text" op) (re-matches amend-line-id-pattern (str old_text)))
                          (let [ls (get-in line-lists [(str path) :lines] [])
-                               hit (first (filter #(= (:id %) (str/trim (str old_text))) ls))]
-                           (if hit
+                               wanted (str/trim (str old_text))
+                               hit (first (filter #(= (:id %) wanted) ls))
+                               same-lines (filter #(= (str/trim (:text %)) wanted)
+                                                  (plan-section-lines (get-in snap [:snapshots (str path) :text] "") (:section plan)))
+                               id-shaped (keep (fn [l] (:id (first (filter #(= (:index %) (:index l)) ls)))) same-lines)]
+                           (cond
+                             (seq same-lines)
+                             (assoc c :bad-line-id (str "replace-text の old_text " (untrusted old_text 12) " は行 ID の形ですが、計画の節『" (:section plan)
+                                                        "』の本文に同じ内容の行があるため ID として解釈できません。"
+                                                        (if (seq id-shaped)
+                                                          (str "その行を置き換えるなら行一覧の ID（" (str/join "、" id-shaped) "）を、別の行なら行一覧のとおり ID を書いてください")
+                                                          "その行は行一覧に載っていないため、この run では置き換えられません")))
+                             hit
                              (assoc c :old_text (:text hit) :line-id (:id hit) :line-index (:index hit))
+                             :else
                              (assoc c :bad-line-id (str "replace-text の old_text の行 ID " (untrusted old_text 12) " は計画の節『" (:section plan)
                                                         "』の行一覧（" (line-id-range ls) "）にありません"))))
                          c)))
