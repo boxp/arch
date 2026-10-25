@@ -117,3 +117,11 @@
 - 対策: pin の生成元を runner 自身の記録で限定する。`docs-plan` がこの票の run ディレクトリにある `localllm-groom.edn`（`load-plan`）に解決でき、計画の decision が `target` で、計画の対象集合が `docs-target` と一致するときだけ groom 由来の pin とみなし `groom-select` で再固定する。それ以外は明示 `docs-target` を保持し、canon roots を含めた root で `snapshot-targets`（存在・root・サイズ）を検証した上で質問停止する: 対象が計画と異なる → `localllm-plan-mismatch`（「手動で変えた対象は再選定しません」）、計画が無い / target 以外 → `localllm-plan-missing`（「手動指定の対象は再選定しません」）、`docs-target` が無い → `localllm-plan-missing`。canon roots 無しの runner は従来どおり `localllm-invalid-mode`。いずれもモデル呼出・書込なし。`run-docs-amend!` 側の plan / hash / 対象一致検査は不変。
 - テスト（`test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search` に追加、合成 fixture）: (a) 再 groom 後に `docs-target` を手で別ノート（ユウ）に変えて Backlog へ → 新 run で `localllm-plan-mismatch`、`docs-target` は手で変えた値のまま、`docs-plan` は不変、selection request なし、原典 byte 不変。(b) 手動の `docs-mode: amend` + `docs-target` だけの票 → `localllm-plan-missing`、`docs-target` / `docs-mode` 保持、`docs-plan` なし、「許可 root 外」は出ない、モデル呼出 0 回。生成元検査を外す（常に再選定）と (a) が失敗（再選定されて Ready になる）ことを確認。
 - 結果: 対象テスト pass、手元 codex review（`--base origin/main`）クリーン。全体 suite の結果は PR 本文と Notes に記載。
+
+## 13. 記録（2026-10-25 run 20261025T152107Z-0658c33c-c252-49fb-87eb-ec3b7907a007、PR #14027 codex-review gate 再試行 2/2）
+
+- 指摘（P2）: §12 の `groom-pinned?` は `docs-target` と計画の対象を `set` 同士で比較するため、手で同じ対象を重複追加した票（`A, A` vs 計画 `A`）も「groom が固定した pin」と誤認し、本来 `localllm-plan-mismatch` で停止すべき手編集カードが content-search を実行して対象を再選定し Ready に戻り得る。
+- 対策: groom の pin 判定を vector の厳密一致 `(= targets plan-paths)`（順序・件数込み）にした。groom の pin は計画の対象を計画順で `docs-target` に書くため、groom 由来の pin は引き続き一致する。重複・並べ替え・増減はすべて手編集として扱い、対象を保持したまま `localllm-plan-mismatch` の質問停止（再選定・モデル呼出・書込なし）。
+- 併せて amend run 側（`run-docs-amend!`）の `ready?` と対象一致検査も同じ厳密一致にした。従来は set 比較だったため、重複 `docs-target` の票が Ready+localllm で動くと research（モデル呼出）が走ってから mismatch で止まっていた（検査順の弱点、合成 fixture で観測）。厳密一致により snapshot・research の前に停止する。
+- テスト（`test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search` に追加、合成 fixture）: 再 groom 後に `docs-target` を `ユイ.md, ユイ.md` と重複させ Backlog へ → 新 run で `localllm-plan-mismatch`、`docs-target` / `docs-plan` 不変、selection request なし、原典 byte 不変。同じ票を Ready+localllm で tick → amend run が `localllm-plan-mismatch` で停止しモデル呼出 0 回・提案ノート 0 件。2 箇所の厳密一致を set 比較に戻すと再選定が通って Ready になり同ケースが失敗することを確認。
+- 結果: 対象テスト pass。全体 suite・手元 codex review の結果は PR 本文と Notes に記載。
