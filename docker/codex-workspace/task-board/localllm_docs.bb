@@ -3191,6 +3191,30 @@
     (let [m (:model (read-edn (fs/path (fs/parent run-dir) run-id "localllm-audit.edn") nil))]
       (when (and (string? m) (re-matches model-id-pattern m)) m))))
 
+(def reconciled-frontmatter-keys
+  "Keys a run decides on before any model call. When the caller's frontmatter
+  map lacks one that the ticket text carries, the text wins: the two views come
+  from different reads and the map was seen empty for a moment while another
+  writer replaced the file (BOXP-294 E2E for `docs-model`, BOXP-296 E2E for
+  `docs-mode` / `docs-target` / `docs-plan`, which sent an amend run to the
+  wording rules and a needless question)."
+  [:docs-mode :docs-target :docs-plan :docs-kind :docs-folder :docs-model :docs-sources])
+
+(defn reconcile-frontmatter
+  "`frontmatter` with every reconciled key that is blank in the map but present
+  in the ticket text's own frontmatter filled from the text. Keys the map
+  already carries are never overridden."
+  [frontmatter ticket-text]
+  (let [from-text (simple-frontmatter ticket-text)
+        blank? (fn [v] (str/blank? (str (if (vector? v) (str/join " " v) v))))]
+    (reduce (fn [m k]
+              (let [v (get from-text (name k))]
+                (if (and (blank? (or (get m k) (get m (name k)))) (not (blank? v)))
+                  (assoc m k (if (vector? v) (str/join ", " v) v))
+                  m)))
+            (or frontmatter {})
+            reconciled-frontmatter-keys)))
+
 (defn run-docs-edit!
   "Full route for one ticket run. Returns
   {:status :review|:blocked :category :reason :summary :applied :audit-path ...}.
@@ -3214,15 +3238,7 @@
   [{:keys [vault ticket-id frontmatter ticket-text action log-fn] :as opts}]
   (let [cfg (config)
         log! (or log-fn (fn [_]))
-        ;; The ticket text is read again for `docs-model:` when the caller's
-        ;; frontmatter map lacks it (BOXP-294 E2E: one live run resolved the
-        ;; default although the file carried the key). Both views must agree
-        ;; before a declared model is treated as absent.
-        frontmatter (if (docs-model-declared frontmatter)
-                      frontmatter
-                      (if-let [d (get (simple-frontmatter ticket-text) "docs-model")]
-                        (assoc frontmatter :docs-model d)
-                        frontmatter))
+        frontmatter (reconcile-frontmatter frontmatter ticket-text)
         opts (assoc opts :frontmatter frontmatter)
         model-r (resolve-docs-model cfg frontmatter)]
     (log! (str "localllm model " ticket-id ": "
@@ -3683,7 +3699,8 @@
   :stop-requested? / :log-fn for that case."
   ([cfg vault ticket-id frontmatter ticket-text] (groom-ticket cfg vault ticket-id frontmatter ticket-text nil))
   ([cfg vault ticket-id frontmatter ticket-text opts]
-  (let [mode-r (resolve-docs-mode cfg vault ticket-id frontmatter ticket-text {:groom? true})
+  (let [frontmatter (reconcile-frontmatter frontmatter ticket-text)
+        mode-r (resolve-docs-mode cfg vault ticket-id frontmatter ticket-text {:groom? true})
         brief (ticket-brief ticket-text 15)
         declared-sources (docs-sources frontmatter)
         sources (if (seq declared-sources) declared-sources (:default-sources cfg))

@@ -2880,6 +2880,43 @@ test_canon_amend_rejects_changes_outside_the_planned_section_and_needs_human() {
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md"
 }
 
+test_frontmatter_keys_missing_from_the_map_are_taken_from_the_ticket_text() {
+  # BOXP-296 E2E: the runner's frontmatter map and the ticket text came from
+  # two reads; one live run saw an empty map while the file carried
+  # docs-mode / docs-target / docs-plan and fell back to the wording rules
+  # (a needless question). The text is the second view for every key the run
+  # decides on before a model call; keys the map already has are kept.
+  setup; echo normal >"${MODE_FILE}"
+  make_verse "${VAULT}"
+  local out
+  # groom: declared create + kind in the text only → no question, no model call
+  out="$(CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${VERSE}" CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
+    CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [text \"---\\nid: BOXP-901\\nstatus: backlog\\nassignee: localllm\\ndocs-mode: create\\ndocs-kind: character\\n---\\n\\n# BOXP-901: 依頼\\n\\n## Summary\\n\\n設定を 1 件お願いします。\\n\\n## Notes\\n\"
+      r (localllm-docs/groom-ticket (localllm-docs/config) \"${VAULT}\" \"BOXP-901\" {} text nil)]
+  (prn (select-keys r [:status :mode :kind :category])))
+" 2>&1)"
+  [[ "${out}" == *':status :ready'* && "${out}" == *':mode "create"'* && "${out}" == *':kind "character"'* ]] || fail "groom must read docs-mode / docs-kind from the text when the map is empty: ${out}"
+  [[ "$(request_count)" == 0 ]] || fail "the groom must not call the model, got $(request_count) request(s)"
+  # docs-edit: declared amend + plan in the text only → the plan check, not the wording rules;
+  # a map value is never overridden by the text
+  out="$(CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${VERSE}" CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
+    CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_BASE_URL="http://127.0.0.1:${PORT}/v1" bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [text \"---\\nid: BOXP-902\\nstatus: ready\\nassignee: localllm\\ndocs-mode: amend\\ndocs-target: ${VERSE}/キャラ設定/ユイ.md\\ndocs-plan: 20261025T071453Z-06df4146-50be-492a-86fb-79d05f2a7e2d\\ndocs-model: nope-1b\\n---\\n\\n# BOXP-902: 依頼\\n\\n## Summary\\n\\n装備の節に一行足してほしい。\\n\\n## Notes\\n\"
+      edit (fn [fm] (select-keys (localllm-docs/run-docs-edit! {:vault \"${VAULT}\" :ticket-id \"BOXP-902\" :run-dir \"${STATE}/runs/BOXP-902/r1\" :ticket-text text :frontmatter fm :action :edit}) [:status :category :model]))]
+  (prn (localllm-docs/reconcile-frontmatter {:docs-model \"qwen38-27b\"} text))
+  (prn (edit {}))
+  (prn (edit {:docs-model \"qwen38-27b\"})))
+" 2>&1)"
+  [[ "${out}" == *':docs-model "qwen38-27b"'* && "${out}" == *':docs-mode "amend"'* && "${out}" == *':docs-plan "20261025T071453Z-06df4146-50be-492a-86fb-79d05f2a7e2d"'* ]] || fail "reconcile must fill missing keys and keep the map's docs-model: ${out}"
+  [[ "${out}" == *':category "localllm-unknown-model"'* ]] || fail "with an empty map the text's docs-model must be the one refused: ${out}"
+  [[ "${out}" == *':category "localllm-plan-missing"'* ]] || fail "with the model from the map the text's docs-mode / docs-plan must reach the plan check: ${out}"
+  [[ "${out}" != *'localllm-unclear-request'* ]] || fail "the wording rules must not be consulted when the text declares the mode: ${out}"
+  assert_file_not_contains "${REQ_LOG}" '/v1/chat/completions'
+}
+
 for t in \
   test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back \
   test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted \
@@ -2955,6 +2992,7 @@ for t in \
   test_stream_cut_blocks \
   test_concurrent_edit_is_detected_and_not_overwritten \
   test_review_lane_reruns_as_revision \
+  test_frontmatter_keys_missing_from_the_map_are_taken_from_the_ticket_text \
   test_tick_ticket_filter_claims_only_one_card \
   test_parallel_ticks_run_once_per_card; do
   if [[ -n "${LOCALLLM_TEST_ONLY:-}" && "${t}" != *"${LOCALLLM_TEST_ONLY}"* ]]; then continue; fi
