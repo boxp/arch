@@ -2922,6 +2922,15 @@
           :else
           {:ok? true :model declared :how :declared})))))
 
+(defn- previous-run-model
+  "Model id an earlier run of the same ticket recorded in its
+  `localllm-audit.edn` (the run named in the ticket's own proposal note), or
+  nil when unknown."
+  [run-dir run-id]
+  (when (and (string? run-id) (re-matches #"[A-Za-z0-9._-]{1,80}" run-id))
+    (let [m (:model (read-edn (fs/path (fs/parent run-dir) run-id "localllm-audit.edn") nil))]
+      (when (and (string? m) (re-matches model-id-pattern m)) m))))
+
 (defn run-docs-edit!
   "Full route for one ticket run. Returns
   {:status :review|:blocked :category :reason :summary :applied :audit-path ...}.
@@ -2942,9 +2951,24 @@
   re-checks the targets under the write lock, writes, and returns the final
   {:status :review|:blocked ...} map. `:lock-path` overrides the write lock
   file (default: `<root>/locks/localllm-docs-write.lock`)."
-  [{:keys [vault ticket-id frontmatter ticket-text action] :as opts}]
+  [{:keys [vault ticket-id frontmatter ticket-text action log-fn] :as opts}]
   (let [cfg (config)
+        log! (or log-fn (fn [_]))
+        ;; The ticket text is read again for `docs-model:` when the caller's
+        ;; frontmatter map lacks it (BOXP-294 E2E: one live run resolved the
+        ;; default although the file carried the key). Both views must agree
+        ;; before a declared model is treated as absent.
+        frontmatter (if (docs-model-declared frontmatter)
+                      frontmatter
+                      (if-let [d (get (simple-frontmatter ticket-text) "docs-model")]
+                        (assoc frontmatter :docs-model d)
+                        frontmatter))
+        opts (assoc opts :frontmatter frontmatter)
         model-r (resolve-docs-model cfg frontmatter)]
+    (log! (str "localllm model " ticket-id ": "
+               (if (:ok? model-r)
+                 (str (:model model-r) " (" (name (:how model-r)) ")")
+                 (str "refused (" (:category model-r) ")"))))
     (if-not (:ok? model-r)
       ;; The audit records the id the ticket asked for, not the default it did
       ;; not get (no silent fallback, BOXP-294).
@@ -2965,7 +2989,8 @@
                                         :reason "Review の票に前回の localllm 結果より新しい指示が Notes にありません。改稿する内容を Notes 末尾に 1 行書いてから assignee を localllm に戻してください（前回の結果だけでは同じ案を作り直しません）"})
 
             :else
-            (let [opts (assoc opts :frontmatter (pin-frontmatter frontmatter mode-r) :mode-resolution (:how mode-r))]
+            (let [opts (assoc opts :frontmatter (pin-frontmatter frontmatter mode-r) :mode-resolution (:how mode-r)
+                              :model-resolution (:how model-r))]
               (if (= "create" (:mode mode-r))
                 (run-docs-create! opts)
                 (run-docs-edit* opts)))))))))
@@ -3141,7 +3166,7 @@
 (defn run-docs-edit*
   "Transcribe / propose route (the non-create modes), dispatched from
   `run-docs-edit!` with the resolved mode already pinned in the frontmatter."
-  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path mode-resolution] :as opts}]
+  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path mode-resolution model-resolution] :as opts}]
   (let [cfg (config)
         log! (or log-fn (fn [_]))
         started (System/currentTimeMillis)
@@ -3157,7 +3182,7 @@
         finish (fn [status m]
                  (let [audit (merge {:ticket-id ticket-id :run-id (fs/file-name run-dir) :status status
                                      :model (:model cfg) :endpoint (:base-url cfg) :targets targets
-                                     :docs-roots (:docs-roots cfg) :docs-sources sources :docs-sources-origin (if (seq declared-sources) :declared :default) :mode mode :mode-resolution mode-resolution
+                                     :docs-roots (:docs-roots cfg) :docs-sources sources :docs-sources-origin (if (seq declared-sources) :declared :default) :mode mode :mode-resolution mode-resolution :model-resolution model-resolution
                                      :elapsed-ms (- (System/currentTimeMillis) started)}
                                     (select-keys m [:category :reason :summary :applied :staged-paths :usage :llm-elapsed-ms
                                                     :context-chars :references :decision :corrections :sources :sources-dropped
@@ -3357,7 +3382,7 @@
   model / IO failures. No `docs-target` is needed: the note path is derived
   from the kind and the slug the model picks (or is the ticket's own earlier
   note, whose body is then replaced)."
-  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path mode-resolution]}]
+  [{:keys [vault ticket-id run-dir ticket-text frontmatter action stop-requested? log-fn defer-commit? lock-path mode-resolution model-resolution]}]
   (let [cfg (assoc (config) :vault vault)
         log! (or log-fn (fn [_]))
         started (System/currentTimeMillis)
@@ -3370,6 +3395,17 @@
         ;; after Blocked) continues the ticket's own note instead of creating
         ;; a second one.
         own (when (:ok? prepared) (find-own-proposal cfg vault ticket-id))
+        ;; A revision of the ticket's own note keeps the model that generated
+        ;; it unless the ticket declares another id explicitly: a default that
+        ;; silently differs from the note's model is refused before any request
+        ;; (BOXP-294, no silent model switch within one proposal).
+        own-run (when own (get (:frontmatter own) "run"))
+        note-model (when own (previous-run-model run-dir own-run))
+        model-guard (when (and note-model (not= :declared model-resolution) (not= note-model (:model cfg)))
+                      {:category "localllm-model-mismatch"
+                       :reason (str "この票の提案ノートは model " note-model " で生成されています（run " own-run "）が、今回の run は docs-model が読めず既定の " (:model cfg)
+                                    " になります。黙って切り替えないため停止しました。票の frontmatter に docs-model: " note-model
+                                    " があることを確認して assignee を localllm に戻すか、意図的に変えるなら docs-model: " (:model cfg) " と明記してください")})
         action (if own :revise action)
         kind-r (if own {:ok? true :kind (:kind own) :how :existing-note} (resolve-docs-kind frontmatter ticket-text))
         kind (:kind kind-r)
@@ -3378,7 +3414,7 @@
                  (let [audit (merge {:ticket-id ticket-id :run-id run-id :status status
                                      :model (:model cfg) :endpoint (:base-url cfg)
                                      :targets (if-let [t (:target m)] [t] (when own [(:rel own)]))
-                                     :docs-roots (:docs-roots cfg) :docs-sources sources :docs-sources-origin (if (seq declared-sources) :declared :default) :mode mode :mode-resolution mode-resolution :docs-kind kind
+                                     :docs-roots (:docs-roots cfg) :docs-sources sources :docs-sources-origin (if (seq declared-sources) :declared :default) :mode mode :mode-resolution mode-resolution :model-resolution model-resolution :docs-kind kind
                                      :kind-resolution (:how kind-r) :action action
                                      :elapsed-ms (- (System/currentTimeMillis) started)}
                                     (select-keys m [:category :reason :summary :applied :staged-paths :usage :llm-elapsed-ms
@@ -3394,7 +3430,7 @@
                              {:role "user"
                               :content (str "前の提案は runner の検証で拒否されました。理由: " (plain-text why)
                                             "\n同じ依頼について、理由を踏まえて修正した案を同じ JSON 形式で出力してください。")})
-        corpus (when (and (:ok? kind-r) (:ok? prepared) (seq sources))
+        corpus (when (and (nil? model-guard) (:ok? kind-r) (:ok? prepared) (seq sources))
                  (load-corpus cfg vault sources (when own [(:rel own)])))
         research (when (and corpus (:ok? corpus))
                    (let [brief (ticket-brief ticket-text 15)]
@@ -3407,6 +3443,9 @@
     (cond
       (not (:ok? prepared))
       (finish :blocked {:category "localllm-invalid-target" :reason (:reason prepared)})
+
+      model-guard
+      (finish :blocked model-guard)
 
       (not (:ok? kind-r))
       (finish :blocked {:category "localllm-create-kind-unknown" :reason (:reason kind-r)})

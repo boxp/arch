@@ -31,3 +31,9 @@
 - `tests/codex-workspace/localllm-docs-test.sh` 全件（CI `test-codex-task-board-runner.yml`）。
 - 本番 ini 反映前に golyat-4 の static pod を live と同一 image・router mode・候補 `models.ini` で起動し、`/v1/models` → load → 日本語応答 → 応答 `model` id を確認。
 - 配備後: 通常 Board の票（`assignee: localllm` + `docs-model: qwen38-27b`）で groom / create / Review 改稿を実行し、Notes `model=` / audit / evidence の served model と `GET /models` の loaded 状態で実使用を確認。終了後 `gemma4-26b` の再ロードと `/health` を確認（rollback）。
+
+## 配備後 E2E（2026-10-25、票 BOXP-295）と追補
+
+- groom（モデル呼出なし）→ create は要求どおり router が `qwen38-27b` を on-demand load（Gemma 4 を unload）し、Notes `model=` / audit `:model` / evidence の served model がすべて `qwen38-27b`、提案ノート 1 件のみ新規、原典書込なし。Review で指示なしの再実行はモデル呼出なしで Blocked。
+- 異常 1 件: 改稿指示後に Blocked から再実行した run（00:47 UTC）が、票ファイルに `docs-model: qwen38-27b` が残っているにもかかわらず既定 `gemma4-26b` で動いた（router log で要求 model を確認、audit `:model gemma4-26b`）。同じ手順を CI の fake server（tick / loop どちらも）で再現すると毎回 `qwen38-27b` を要求し、再現せず。改稿結果は run backup から rollback し、再実行では `qwen38-27b` が要求された。
+- 追補（この PR）: `run-docs-edit!` が model 解決を runner log に残し、caller の frontmatter map に `docs-model` が無いときは票本文の frontmatter を読み直す。提案ノート改稿の再実行は、ノートを生成した run の audit `:model` と今回の model が違い、かつ今回が明示指定でない（`:model-resolution :default`）ならモデルを呼ばず `Blocked`（category `localllm-model-mismatch`）。明示的に別 id を `docs-model` に書いた場合は従来どおり実行。audit に `:model-resolution` を追加。テスト `test_revision_keeps_the_notes_model_or_blocks`。
