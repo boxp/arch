@@ -169,6 +169,10 @@
    ;; After a rejected proposal the model gets the concrete reason once and may
    ;; answer with a corrected proposal (adapter v2). 0 disables the round.
    :max-corrections (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_CORRECTIONS" 1)
+   ;; BOXP-302: the amend prompt repeats the planned section's replaceable
+   ;; lines with ids; this bounds that list (and the ids a model may use) so a
+   ;; long section does not push the request over `:max-prompt-chars`.
+   :amend-line-list-chars (env-long "CODEX_TASK_BOARD_LOCALLLM_AMEND_LINE_LIST_CHARS" 12000)
    ;; Document writes of all localllm runs are serialized under one OS file
    ;; lock (re-check against the snapshot + backup + write), so two tickets on
    ;; the same `docs-target` cannot both pass the conflict check.
@@ -4145,6 +4149,17 @@
                (map-indexed (fn [n [i l]] {:id (str "L" (inc n)) :index i :text l}))
                vec))))))
 
+(defn limit-section-lines
+  "The leading lines of `section-lines` whose rendered list (`L1: text`)
+  fits in `budget` chars; the prompt shows exactly these and only their ids
+  resolve (a line the model never saw cannot be named)."
+  [section-lines budget]
+  (loop [ls (seq section-lines) used 0 acc []]
+    (if-let [{:keys [id text] :as l} (first ls)]
+      (let [used' (+ used (count id) 2 (count text) 1)]
+        (if (> used' budget) acc (recur (rest ls) used' (conj acc l))))
+      acc)))
+
 (defn line-id-range [section-lines]
   (if (seq section-lines) (str "L1〜L" (count section-lines)) "行なし"))
 
@@ -4172,9 +4187,10 @@
        ;; BOXP-302: the replaceable lines of each planned section, by id.
        (let [blocks (keep identity
                           (map (fn [{:keys [path section]} text]
-                                 (let [ls (plan-section-lines text section)]
+                                 (let [all (plan-section-lines text section)
+                                       ls (limit-section-lines all (:amend-line-list-chars cfg))]
                                    (when (seq ls)
-                                     (str "### " path " の節『" section "』（" (count ls) " 行）\n"
+                                     (str "### " path " の節『" section "』（" (count ls) " 行" (when (< (count ls) (count all)) (str "。以降の " (- (count all) (count ls)) " 行は長いため省略、ID では指定できません")) "）\n"
                                           (str/join "\n" (map #(str (:id %) ": " (:text %)) ls)) "\n"))))
                                plan-targets target-texts))]
          (when (seq blocks)
@@ -4214,7 +4230,7 @@
 (defn- change-in-plan-section
   "Reason string when `change` leaves the planned section of the note (nil
   when the plan names no section or the change stays inside it)."
-  [lines plan-section {:keys [op heading old_text]}]
+  [cfg lines plan-section {:keys [op heading old_text]}]
   (if (str/blank? plan-section)
     ;; A plan without a section means "add one new section": only a new
     ;; heading may be appended; existing sections and sentences stay (codex review).
@@ -4237,7 +4253,7 @@
                 body (str/join "\n" (subvec lines (inc index) end))
                 old (str old_text)
                 n (count-occurrences body old)
-                ids (line-id-range (plan-section-lines (str/join "\n" lines) plan-section))]
+                ids (line-id-range (limit-section-lines (plan-section-lines (str/join "\n" lines) plan-section) (:amend-line-list-chars cfg)))]
             (cond
               ;; A sub-heading inside the section is part of the body text but
               ;; not of the editable prose: replacing it changes the heading
@@ -4273,7 +4289,7 @@
         resolve-id (fn [{:keys [path op old_text] :as c}]
                      (let [plan (get plan-by-path (str path))]
                        (if (and plan (= "replace-text" op) (re-matches amend-line-id-pattern (str old_text)))
-                         (let [ls (plan-section-lines (get-in snap [:snapshots (str path) :text] "") (:section plan))
+                         (let [ls (limit-section-lines (plan-section-lines (get-in snap [:snapshots (str path) :text] "") (:section plan)) (:amend-line-list-chars cfg))
                                hit (first (filter #(= (:id %) (str/trim (str old_text))) ls))]
                            (if hit
                              (assoc c :old_text (:text hit) :line-id (:id hit))
@@ -4298,7 +4314,7 @@
                     (forbidden-text-reason new_text) (forbidden-text-reason new_text)
                     (forbidden-text-reason heading) (forbidden-text-reason heading)
                     (> (count (str new_text)) (- (:max-change-chars cfg) 200)) (str "new_text が " (count (str new_text)) " 字で上限 " (- (:max-change-chars cfg) 200) " 字を超えています")
-                    :else (change-in-plan-section lines (:section plan) c))))
+                    :else (change-in-plan-section cfg lines (:section plan) c))))
         problem (some check changes)]
     (cond
       (empty? changes)
