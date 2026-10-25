@@ -4324,7 +4324,19 @@
         previous (when own-spans?
                    (str/join "\n\n" (for [{:keys [path own]} span-info s own]
                                       (str "（" path " / " (:op s) "）\n" (str/trim (subs (get-in snap [:snapshots path :text]) (:inner-start s) (:inner-end s)))))))
-        gate-ok? (and (:ok? snap) (nil? malformed) (nil? foreign) (nil? stale))
+        ;; Model consistency (codex review, same rule as create): without an
+        ;; explicit `docs-model`, the run must use the model that wrote this
+        ;; ticket's spans last (or, before any write, the model of the groom
+        ;; plan the owner confirmed). A silently changed default is refused.
+        expected-model (when (:ok? snap)
+                         (or (when own-spans? (latest-applied-model run-dir (first plan-paths)))
+                             (let [m (:model plan)] (when (and (string? m) (re-matches model-id-pattern m)) m))))
+        model-guard (when (and expected-model (not= :declared model-resolution) (not= expected-model (:model cfg)))
+                      {:category "localllm-model-mismatch"
+                       :reason (str "この票の計画 / 前回の変更は model " expected-model " で作られていますが、今回の run は docs-model が無く既定の " (:model cfg)
+                                    " になります。黙って切り替えないため停止しました。frontmatter に docs-model: " expected-model
+                                    " を書いて assignee を localllm に戻すか、意図的に変えるなら docs-model: " (:model cfg) " と明記してください")})
+        gate-ok? (and (:ok? snap) (nil? malformed) (nil? foreign) (nil? stale) (nil? model-guard))
         corpus (when (and gate-ok? (seq sources)) (load-corpus cfg vault sources plan-paths))
         research (when (and corpus (:ok? corpus))
                    (let [brief (ticket-brief ticket-text 15)]
@@ -4365,6 +4377,9 @@
       stale
       (finish :blocked {:category "localllm-plan-stale"
                         :reason (str (:path stale) " は" (:why stale) "。書かずに停止しました。内容を確認し、票を Backlog に戻して再 groom（再計画）してください")})
+
+      model-guard
+      (finish :blocked model-guard)
 
       (and corpus (not (:ok? corpus)))
       (finish :blocked (select-keys corpus [:category :reason]))

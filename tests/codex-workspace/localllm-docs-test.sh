@@ -2624,6 +2624,13 @@ test_canon_select_asks_or_refuses_without_writing() {
   assert_file_contains "${VAULT}/Tickets/BOXP-854.md" '対象選定のためモデル qwen38-27b を呼び出しました'
   assert_file_not_contains "${REQ_LOG}" ':model "gemma4-26b"'
   assert_file_contains "${STATE}/runs/BOXP-854/$(latest_run BOXP-854)/localllm-groom.edn" ':model "qwen38-27b"'
+  # the plan was made with qwen: running it without docs-model would fall back to the default → refused before any request
+  : >"${REQ_LOG}"
+  sed -i "/^docs-model: qwen38-27b$/d; s/^assignee: boxp$/assignee: localllm/" "${VAULT}/Tickets/BOXP-854.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-854|BOXP-854: 技]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+  assert_blocked BOXP-854 "category=localllm-model-mismatch"
+  [[ "$(request_count)" == 0 ]] || fail "a model mismatch must stop before any request"
 }
 
 test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted() {
