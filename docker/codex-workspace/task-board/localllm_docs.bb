@@ -1075,9 +1075,9 @@
           (> (count files) (:max-corpus-notes cfg))
           (invalid (str "docs-sources のノート数 " (count files) " が上限 " (:max-corpus-notes cfg) " を超えます（フォルダを絞るか CODEX_TASK_BOARD_LOCALLLM_MAX_CORPUS_NOTES を上げてください）"))
           :else
-          (loop [[rel & more] files total 0 notes [] redacted 0 proposals 0 spans 0]
+          (loop [[rel & more] files total 0 notes [] redacted 0 proposals 0 spans 0 malformed 0]
             (if (nil? rel)
-              {:ok? true :notes notes :excluded excluded :redacted-lines redacted :proposal-notes proposals :unreviewed-spans spans}
+              {:ok? true :notes notes :excluded excluded :redacted-lines redacted :proposal-notes proposals :unreviewed-spans spans :malformed-span-notes malformed}
               ;; Re-validate right before the read: a directory under a writable
               ;; corpus swapped for a symlink after the enumeration above must
               ;; not be followed into foreign content.
@@ -1094,16 +1094,20 @@
                   (let [raw (slurp-nofollow (:abs r))]
                     (if (proposal-note? raw)
                       ;; One of our own unapproved proposals: never canon.
-                      (recur more (+ total size) notes redacted (inc proposals) spans)
+                      (recur more (+ total size) notes redacted (inc proposals) spans malformed)
                       ;; Unreviewed spans of any ticket (BOXP-296) are dropped /
-                      ;; reverted before the note becomes research material.
-                      (let [{canon :text stripped :stripped} (strip-spans raw)
+                      ;; reverted before the note becomes research material. A
+                      ;; note whose markers cannot be parsed (hand-edited) is
+                      ;; left out entirely rather than read as canon (codex review).
+                      (let [{canon :text stripped :stripped spans-ok? :ok?} (strip-spans raw)
                             [text n] (redact-secret-lines canon)]
+                        (if-not spans-ok?
+                          (recur more (+ total size) notes redacted proposals spans (inc malformed))
                         (recur more (+ total size)
                                (conj notes {:rel rel :title (note-title text rel) :headings (note-headings text) :chars (count text) :text text
                                             ;; Lower-cased once here: a vault-wide search would otherwise re-lower 18 MB per query.
                                             :lower (str/lower-case (str rel "\n" (note-title text rel) "\n" text))})
-                               (+ redacted n) proposals (+ spans stripped))))))))))))))
+                               (+ redacted n) proposals (+ spans stripped) malformed))))))))))))))
 
 (defn- index-line [{:keys [rel title headings chars]}]
   (str "- " rel " | " (truncate-text title 60)
@@ -3537,7 +3541,7 @@
                           :sources sources :sources-origin sources-origin
                           :corpus {:notes (count (:notes corpus)) :chars (reduce + (map :chars (:notes corpus)))
                                    :excluded (:excluded corpus) :redacted-lines (:redacted-lines corpus)
-                                   :proposal-notes (:proposal-notes corpus) :unreviewed-spans (:unreviewed-spans corpus)}
+                                   :proposal-notes (:proposal-notes corpus) :unreviewed-spans (:unreviewed-spans corpus) :malformed-span-notes (:malformed-span-notes corpus)}
                           :research research-summary :usage (:usage sel) :llm-elapsed-ms (:llm-elapsed-ms sel)}
                   link (fn [rel] (str "[[" (str/replace rel #"\.md$" "") "]]"))
                   corpus-line (str "参照資料: " (if (= :declared sources-origin) "票の docs-sources" "runner 既定の corpus")
