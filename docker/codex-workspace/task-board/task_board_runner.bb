@@ -2071,18 +2071,34 @@
         usage (:usage result)
         propose? (= "propose" (:mode result))
         create? (= "create" (:mode result))
+        amend? (= "amend" (:mode result))
         p (:propose result)
-        c (:create result)]
+        c (:create result)
+        a (:amend result)]
     (str "localllm docs run " run-id
          (cond
+           ;; Amend mode (BOXP-296): marked additions / edits inside the canon
+           ;; notes a confirmed groom plan named. Facts / conflicts / questions
+           ;; stay in the run directory report.
+           amend?
+           (str " が groom 計画の対象ノートへ未確認の追記・編集を " (:changes a 0) " 件適用し Review で停止しました（変更は HTML コメントのマーカー <!-- localllm:" ticket-id ":… --> で囲まれ、Owner が採用するまで他の依頼の根拠には使われません。採用: task_board_runner.bb localllm-accept " ticket-id " " run-id "。Done にはしません）。"
+                " 操作: " (str/join ", " (map (fn [[op n]] (str op "×" n)) (:ops a)))
+                "、参照した既存設定 " (:facts a 0) " 件、矛盾・要確認 " (+ (:conflicts a 0) (:auto-conflicts a 0)) " 件（うち自動検査 " (:auto-conflicts a 0) " 件）、質問 " (:questions a 0) " 件"
+                (when (pos? (:facts-dropped a 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped a 0) " 件"))
+                (when (pos? (:links-dropped a 0)) (str "、未解決の wikilink を平文化 " (:links-dropped a 0) " 件"))
+                (when (:report-path result) (str "; report: " (:report-path result)))
+                ".")
            ;; Create mode (BOXP-282): one new unapproved note under the
            ;; proposal root (or the ticket's own earlier note, body replaced).
            ;; The model's name / text never reach Notes; the path (ASCII slug)
            ;; is the only model-chosen token here.
            create?
-           (str " が新規" (if (= "monster" (:kind c)) "魔物" "キャラクター") "設定の提案ノートを "
+           (str " が新規" (case (:kind c) "monster" "魔物" "setting" "" "キャラクター") "設定の"
+                (if (:canon? c) "ノート（groom 計画で確認した設定フォルダ内、未確認）を " "提案ノートを ")
                 (if (= "replace-note" (:op c)) "改稿（置換）" "作成")
-                " し Review で停止しました（既存の設定ノートは変更していません。未承認の案で、採用は人が判断し正式フォルダへ移してください。Done にはしません）。"
+                (if (:canon? c)
+                  (str " し Review で停止しました（既存のノートは変更していません。frontmatter `localllm-unreviewed: true` の未確認ノートで、Owner が採用するまで他の依頼の根拠には使われません。採用: task_board_runner.bb localllm-accept " ticket-id " " run-id "。Done にはしません）。")
+                  " し Review で停止しました（既存の設定ノートは変更していません。未承認の案で、採用は人が判断し正式フォルダへ移してください。Done にはしません）。")
                 " 参照した既存設定 " (:facts c 0) " 件、矛盾・要確認 " (+ (:conflicts c 0) (:auto-conflicts c 0) (:near-names c 0)) " 件（うち自動検査 " (+ (:auto-conflicts c 0) (:near-names c 0)) " 件、名前が近い既存ノート " (:near-names c 0) " 件）、質問 " (:questions c 0) " 件"
                 (when (pos? (:facts-dropped c 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped c 0) " 件"))
                 (when (pos? (:links-dropped c 0)) (str "、未解決の wikilink を平文化 " (:links-dropped c 0) " 件"))
@@ -2285,13 +2301,27 @@
          (when (not= lines new-lines)
            (write-lines! path new-lines)))))))
 
+(defn- localllm-groom-model-note
+  "BOXP-296: a content-search groom calls the model; say so (and how much)."
+  [result]
+  (if (:model-called? result)
+    (str "対象選定のためモデル " (:model result "localllm") " を呼び出しました（文書の書込・外部操作はありません）"
+         (when-let [r (:research result)]
+           (str "。調査: corpus " (:corpus-notes r) " ノート, " (:rounds r) " 回 (search " (:searches r) ", list " (:lists r 0) ", read " (:reads r) "), 根拠 " (:evidence-chars r) " 字"
+                (when (seq (:read-paths r)) (str "; 読んだ資料: " (str/join ", " (map #(str "[[" (str/replace % #"\.md$" "") "]]") (:read-paths r)))))))
+         (when-let [u (:usage result)] (str "; tokens prompt=" (:prompt_tokens u) " completion=" (:completion_tokens u)))
+         (when-let [ms (:llm-elapsed-ms result)] (str "; llm " (quot ms 1000) "s")))
+    "runner の決定的な整理で、モデル呼出・文書の書込・外部操作はありません"))
+
 (defn localllm-groom-note [ticket-id run-id result]
-  (str "localllm groom run " run-id " が票を整理し Ready に置きました（runner の決定的な整理で、モデル呼出・文書の書込・外部操作はありません）。"
+  (str "localllm groom run " run-id " が票を整理し Ready に置きました（" (localllm-groom-model-note result) "）。"
        " " (:summary result)
-       "。実行するにはこの票の assignee を localllm に戻してください（Ready のまま）。用途や対象が違えば Summary / frontmatter を直してから戻してください。"))
+       "。実行するにはこの票の assignee を localllm に戻してください（Ready のまま）。用途や対象が違えば Summary / frontmatter を直してから戻してください。"
+       (when (:model-called? result)
+         (str " 計画の全文: " (str (fs/path (run-dir ticket-id run-id) "localllm-groom.edn"))))))
 
 (defn localllm-groom-stop-note [ticket-id run-id result]
-  (str "localllm groom run " run-id " は票を整理できず停止しました（モデル呼出・文書の書込なし）。"
+  (str "localllm groom run " run-id " は票を整理できず停止しました（" (if (:model-called? result) (localllm-groom-model-note result) "モデル呼出・文書の書込なし") "）。"
        " category=" (:category result "unknown")
        "; 質問: " (sanitize-blocker-reason (:reason result))
        " — Summary か frontmatter を直し、Backlog（再整理）か Ready（実行）に置いて assignee を localllm に戻してください"
@@ -2307,17 +2337,28 @@
                    (try
                      ((resolve 'localllm-docs/groom-ticket)
                       ((resolve 'localllm-docs/config)) (vault) ticket-id
-                      (ticket-frontmatter ticket-id) (slurp (str (ticket-path ticket-id))))
+                      (ticket-frontmatter ticket-id) (slurp (str (ticket-path ticket-id)))
+                      ;; BOXP-296: a content-search groom calls the model
+                      ;; (bounded research + one selection call); it needs the
+                      ;; run directory for audit / evidence and honours the
+                      ;; shutdown request like the docs-edit route.
+                      {:run-dir (str dir)
+                       :stop-requested? (fn [] @shutdown-requested?)
+                       :log-fn log!})
                      (catch Exception e
                        {:status :blocked :category "localllm-runner-error"
                         :reason (str "runner 内部エラー: " (sanitize-blocker-reason (.getMessage e)))}))
                    {:status :blocked :category "localllm-module-unavailable"
                     :reason "localllm_docs.bb を読み込めないため整理しません"})
           ready? (= :ready (:status result))
+          shutdown? (boolean (:shutdown? result))
           record (merge {:ticket-id ticket-id :run-id run :action action :status (:status result) :origin-lane origin-lane
                          :decided-at (now-str)}
                         (select-keys result [:category :reason :mode :mode-resolution :kind :target :sources :sources-origin
-                                             :corpus :required :frontmatter :summary]))
+                                             :corpus :required :frontmatter :summary
+                                             ;; BOXP-296: the plan the owner confirms (targets / sections /
+                                             ;; hashes or destination folder), the model and the research summary.
+                                             :plan :model :model-resolution :model-called? :research :usage :llm-elapsed-ms]))
           message (str "localllm groom run " run "\n"
                        "status: " (if ready? "ready" "blocked") "\n"
                        (when (:category result) (str "category: " (:category result) "\n"))
@@ -2326,17 +2367,22 @@
                        "TASK_BOARD_RESULT: " (if ready? "review" "blocked") "\n")]
       (write-edn-file! (fs/path dir "localllm-groom.edn") record)
       (spit (str last-message-path) message)
-      {:exit 0
+      (when shutdown?
+        (mark-run! ticket-id run :interrupted
+                   {:action action :agent agent :lane lane
+                    :reason "planned workspace shutdown"
+                    :shutdown {:owner-id (owner-id) :instance-id runner-instance-id :agent-stopped-at (now-str)}}))
+      (cond-> {:exit 0
        :result (if ready? "ready" "blocked")
        :run-id run
        :dir (str dir)
        :last-message message
        :idle-timeout? false
-       :shutdown? false
+       :shutdown? shutdown?}
        ;; The ticket edit (sections + pinned frontmatter) and the Notes entry
        ;; happen inside the caller's lifecycle commit, together with the lane
        ;; move, so a TERM never leaves a half-groomed card.
-       :deferred-commit! (fn [& _]
+       (not shutdown?) (assoc :deferred-commit! (fn [& _]
                            (when ready?
                              (update-ticket-sections! ticket-id (:sections result))
                              (when (seq (:frontmatter result))
@@ -2347,9 +2393,9 @@
                            (mark-run! ticket-id run :succeeded
                                       {:action action :agent agent :lane lane :exit-code 0
                                        :result (if ready? "ready" "blocked")
-                                       :localllm-groom (select-keys result [:category :mode :mode-resolution :kind :target :sources-origin :required])
+                                       :localllm-groom (select-keys result [:category :mode :mode-resolution :kind :target :sources-origin :required :model])
                                        :finished-at (now-str)})
-                           {:result (if ready? "ready" "blocked") :last-message message :applied? false})})))
+                           {:result (if ready? "ready" "blocked") :last-message message :applied? false}))))))
 
 (defn candidate-action [{:keys [lane status]} assignee]
   (cond
@@ -3386,7 +3432,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-rollback BOXP-N RUN-ID>")
+  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-rollback BOXP-N RUN-ID|localllm-accept BOXP-N RUN-ID>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -4041,6 +4087,14 @@
                           (doseq [r ((resolve 'localllm-docs/rollback!) (vault) (str (run-dir ticket-id run-id)))]
                             (println (pr-str r)))
                           (fail "localllm_docs.bb could not be loaded")))
+  ;; BOXP-296: adopt a run's unreviewed canon-folder changes (markers /
+  ;; unreviewed frontmatter removed, text kept).
+  "localllm-accept" (let [[ticket-id run-id] (rest *command-line-args*)]
+                      (when-not (and ticket-id run-id) (usage))
+                      (if @localllm-docs-module-loaded?
+                        (doseq [r ((resolve 'localllm-docs/accept!) (vault) (str (run-dir ticket-id run-id)))]
+                          (println (pr-str r)))
+                        (fail "localllm_docs.bb could not be loaded")))
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
   "prepare-shutdown" (prepare-shutdown!)

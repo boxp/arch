@@ -150,7 +150,7 @@ Projects/codex-task-board-runner/spec.md
 - 結果は常に `Review`（変更適用、担当 `boxp`）または `Blocked`（未適用、理由付き）で、`Done` にはなりません。model に到達できない場合も cloud agent へは切り替えません。
 - 変更は構造化差分（節の差替え / 追記 / 一意テキスト置換）だけで、frontmatter 不変・編集範囲外のリンク保持・コードフェンス整合・競合（base hash）検査・原本 backup・原子的保存を runner が強制します。
 - 証拠は run ディレクトリの `localllm-audit.edn` / `llm-evidence.edn`（非秘密メタのみ）。元に戻すには `task_board_runner.bb localllm-rollback BOXP-N RUN-ID`。
-- モデル選択（BOXP-294）: 既定は runner 設定のモデル（`gemma4-26b`）。lolice の local-llm が `models.ini` で配信している別の model id を使う票は frontmatter に `docs-model: <model id>` を書く（例 `docs-model: qwen38-27b`）。runner は実行前に llama-server の `GET /v1/models` 一覧と照合し、無い id・許可外の id（env `CODEX_TASK_BOARD_LOCALLLM_MODELS` を設定した場合）はモデルを呼ばずに `Blocked` にする（既定モデルへ黙って切り替えない）。使った model id は Review の Notes（`model=`）・`localllm-audit.edn`・`llm-evidence.edn`（サーバーが返した model も記録）に残る。llama-server は `--models-max 1` のため、別 model を選んだ票の実行中は既定モデルがアンロードされ、次に既定モデルの要求が来たときに再ロードされる（数十秒〜2 分の追加待ち）。
+- モデル選択（BOXP-294）: 既定は runner 設定のモデル（`gemma4-26b`）。lolice の local-llm が `models.ini` で配信している別の model id を使う票は frontmatter に `docs-model: <model id>` を書く（例 `docs-model: qwen38-27b`）。runner は実行前に llama-server の `GET /v1/models` 一覧と照合し、無い id・許可外の id（env `CODEX_TASK_BOARD_LOCALLLM_MODELS` を設定した場合）はモデルを呼ばずに `Blocked` にする（既定モデルへ黙って切り替えない）。使った model id は Review の Notes（`model=`）・`localllm-audit.edn`（`:model-resolution :declared|:default`）・`llm-evidence.edn`（サーバーが返した model も記録）に残る。同じ票の提案ノートを改稿する再実行は、ノートを生成した model と違う既定モデルに黙って変わることはない（`docs-model` が読めず既定になる場合はモデルを呼ばず `Blocked`。意図的に変えるなら `docs-model: <別の id>` を明記する）。llama-server は `--models-max 1` のため、別 model を選んだ票の実行中は既定モデルがアンロードされ、次に既定モデルの要求が来たときに再ロードされる（数十秒〜2 分の追加待ち）。
 
 依頼例（Ready レーン）:
 
