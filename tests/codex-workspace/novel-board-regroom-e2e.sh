@@ -59,7 +59,15 @@ export CODEX_NOVEL_BOARD_CODEX_BIN=/bin/false
 export CODEX_NOVEL_BOARD_SETTING_ROOTS="ひとはこさんバース"
 export CODEX_NOVEL_BOARD_REQUIRED_SETTINGS="ひとはこさんバース/世界観設定/README.md"
 
-fail() { echo "FAIL: $*" >&2; exit 1; }
+fail() {
+  echo "FAIL: $*" >&2
+  # Diagnostics (metadata only, no prompt / manuscript content): what the runner
+  # said and how the last run ended, so a one-off failure is explainable.
+  echo "--- runner.log (tail)" >&2; tail -n 20 "${TMP}/runner.log" 2>/dev/null | cut -c1-400 >&2
+  echo "--- latest run summary.edn" >&2; find "${STATE}/runs" -name summary.edn 2>/dev/null | sort | tail -n 1 | xargs -r cat >&2; echo >&2
+  echo "--- lock / skip state" >&2; ls -R "${STATE}/locks" "${STATE}/skips" 2>/dev/null >&2
+  exit 1
+}
 tick() { bb "${RUNNER}" tick >>"${TMP}/runner.log" 2>&1; }
 lane_of() { awk -v id="$1" '/^## /{lane=substr($0,4)} index($0,"[[Novels/" id "|")>0 {print lane; exit}' "${BOARD}"; }
 card_line() { grep -F "[[Novels/$1|" "${BOARD}"; }
