@@ -150,6 +150,7 @@ Projects/codex-task-board-runner/spec.md
 - 結果は常に `Review`（変更適用、担当 `boxp`）または `Blocked`（未適用、理由付き）で、`Done` にはなりません。model に到達できない場合も cloud agent へは切り替えません。
 - 変更は構造化差分（節の差替え / 追記 / 一意テキスト置換）だけで、frontmatter 不変・編集範囲外のリンク保持・コードフェンス整合・競合（base hash）検査・原本 backup・原子的保存を runner が強制します。
 - 証拠は run ディレクトリの `localllm-audit.edn` / `llm-evidence.edn`（非秘密メタのみ）。元に戻すには `task_board_runner.bb localllm-rollback BOXP-N RUN-ID`。
+- モデル選択（BOXP-294）: 既定は runner 設定のモデル（`gemma4-26b`）。lolice の local-llm が `models.ini` で配信している別の model id を使う票は frontmatter に `docs-model: <model id>` を書く（例 `docs-model: qwen38-27b`）。runner は実行前に llama-server の `GET /v1/models` 一覧と照合し、無い id・許可外の id（env `CODEX_TASK_BOARD_LOCALLLM_MODELS` を設定した場合）はモデルを呼ばずに `Blocked` にする（既定モデルへ黙って切り替えない）。使った model id は Review の Notes（`model=`）・`localllm-audit.edn`・`llm-evidence.edn`（サーバーが返した model も記録）に残る。llama-server は `--models-max 1` のため、別 model を選んだ票の実行中は既定モデルがアンロードされ、次に既定モデルの要求が来たときに再ロードされる（数十秒〜2 分の追加待ち）。
 
 依頼例（Ready レーン）:
 
@@ -157,6 +158,7 @@ Projects/codex-task-board-runner/spec.md
 assignee: localllm
 docs-target: Projects/task-board-localllm-docs/pilot/runbook.md
 docs-sources: Projects/task-board-localllm-docs/refs   # 任意: 多数資料から更新するとき
+docs-model: qwen38-27b                                 # 任意: 既定（gemma4-26b）以外の配信 model を使うとき
 ```
 
 Summary / Context に「どの節を、どの事実で、どう変えるか」を具体的に書きます。曖昧な依頼は model が `needs-human` を返し `Blocked` になります。設計・評価・採否は vault `Projects/task-board-localllm-docs/README.md` を参照。
