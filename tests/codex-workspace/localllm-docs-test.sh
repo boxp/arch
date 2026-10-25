@@ -9,7 +9,7 @@ set -euo pipefail
 unset CODEX_TASK_BOARD_CLAUDE_BIN
 unset CODEX_TASK_BOARD_LOCALLLM_BASE_URL CODEX_TASK_BOARD_LOCALLLM_DOCS_ROOTS CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS
 unset CODEX_TASK_BOARD_LOCALLLM_TIMEOUT_SECONDS CODEX_TASK_BOARD_LOCALLLM_IDLE_TIMEOUT_SECONDS CODEX_TASK_BOARD_LOCALLLM_RETRIES
-unset CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS CODEX_TASK_BOARD_LOCALLLM_MODEL CODEX_TASK_BOARD_LOCALLLM_MODELS
+unset CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS CODEX_TASK_BOARD_LOCALLLM_MODEL CODEX_TASK_BOARD_LOCALLLM_MODELS
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
@@ -137,8 +137,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                          :else (json/generate-string {:action "finish" :queries [] :reads [] :folders [] :reason "done"}))
         ;; BOXP-296: synthetic verse (canon folder) fixture. The research script
         ;; searches the name, reads the character and the rules note (the
-        ;; character is excluded from the corpus during the amend run, so only
-        ;; the rules note yields evidence there), then finishes.
+        ;; planned target stays readable during the amend run too: a model that
+        ;; re-reads it must not be refused), then finishes.
         verse? (or (str/starts-with? mode "select-") (str/starts-with? mode "amend-"))
         select? (= "docs_target_selection" schema-name)
         amend? (= "docs_setting_amend" schema-name)
@@ -2462,6 +2462,10 @@ test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back() {
   assert_file_contains "${audit}" ":plan-id \"${groom_run}\""
   assert_file_contains "${audit}" ":canon-roots \[\"${VERSE}\"\]"
   assert_file_contains "${audit}" ':sources \["Refs/verse/世界観設定/規則.md"\]'
+  # the amend research could read the planned target itself (canon view, spans stripped): a model
+  # that re-reads the note it is about to amend is not refused (real Qwen E2E, BOXP-298)
+  assert_file_contains "${audit}" ':read-paths \["Refs/verse/キャラ設定/ユイ.md" "Refs/verse/世界観設定/規則.md"\]'
+  assert_file_contains "${audit}" ':corpus-notes 6'
   # another ticket's groom never sees the unreviewed text (canon view)
   : >"${REQ_LOG}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-831|BOXP-831: 別の依頼]] #ticket status::backlog"
