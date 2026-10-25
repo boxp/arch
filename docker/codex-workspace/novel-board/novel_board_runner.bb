@@ -1172,8 +1172,11 @@
                       (let [{:keys [note-ids draft-ids bare-ids]} (card-novel-refs line)]
                         (keep novel-number (concat note-ids draft-ids bare-ids))))
                     lines)
-            (numbers-in (novels-dir))
-            (numbers-in (fs/path (novels-dir) "Drafts"))
+            ;; Everything under Novels/ recursively (notes, nested copies, draft
+            ;; folders): a nested `Novels/old/NOVEL-7.md` still reserves 7.
+            (when (fs/exists? (novels-dir))
+              (keep #(some-> (re-find #"^NOVEL-(\d+)(?:\.|$)" (str (fs/file-name %))) second Long/parseLong)
+                    (fs/glob (novels-dir) "**")))
             (numbers-in (fs/path (vault) "NSFW" "小説" "草稿"))
             (mapcat numbers-in [(fs/path (root) "work") (runs-dir) (published-dir) (drafts-state-dir)
                                 (assignee-sync-dir) (instructions-dir) (skips-dir) (locks-dir)]))))
@@ -3703,6 +3706,16 @@
                    "- [ ] [[Novels/NOVEL-7|NOVEL-7: 題]] #novel status::backlog assignee::localllm"]
                   [(canonical-card-line {:line "- [x] [[NOVEL-7]] #nsfw" :status "done" :novel-id "NOVEL-7" :title nil})
                    (canonical-card-line {:line "- [ ] [NOVEL-7: 題](Novels/NOVEL-7.md) assignee::localllm ⚠ runner: 古い理由" :status "backlog" :novel-id "NOVEL-7" :title "題"})])))
+      (check "existing numbers include nested notes and draft folders under Novels/"
+             (let [dir (fs/create-temp-dir)]
+               (try
+                 (fs/create-dirs (fs/path dir "Novels" "old"))
+                 (fs/create-dirs (fs/path dir "Novels" "Drafts" "NOVEL-9"))
+                 (spit (str (fs/path dir "Novels" "old" "NOVEL-7.md")) "x")
+                 (spit (str (fs/path dir "Novels" "NOVEL-2.md")) "x")
+                 (with-redefs [novels-dir (constantly (fs/path dir "Novels")) root (constantly "/nonexistent-novel-board-test") vault (constantly (str dir))]
+                   (= #{2 7 9} (set (existing-novel-numbers []))))
+                 (finally (fs/delete-tree dir)))))
       (check "existing numbers include held and bare references"
              (with-redefs [novels-dir (constantly (fs/path "/nonexistent-novel-board-test")) root (constantly "/nonexistent-novel-board-test") vault (constantly "/nonexistent-novel-board-test")]
                (= [7 3 12] (vec (existing-novel-numbers ["- [ ] [[Novels/NOVEL-7|NOVEL-7: 題]]" "- [ ] NOVEL-3 ⚠ runner: x" "- [ ] [[Novels/Drafts/NOVEL-12/manuscript|草稿]]"]))))))
