@@ -208,6 +208,8 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       ;; BOXP-302: round 0 re-quotes the line with ASCII quotes (what Gemma 4 did on the real note),
       ;; the correction round names the line id instead
       (and amend? (= mode "amend-quote")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text (if correction? "L1" "- \"ようこそ、お茶をどうぞ\"") :new_text "- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE"}]) "stop")
+      (and amend? (= mode "amend-quote-dup")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L3" :new_text "- 「ええ」AMEND-DUP"}]) "stop")
+      (and amend? (= mode "amend-quote-dup-raw")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "- 「はい」" :new_text "- 「ええ」AMEND-DUP"}]) "stop")
       (and amend? (= mode "amend-quote-subheading")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "#### 部長" :new_text "#### 代表"}]) "stop")
       (and amend? (= mode "amend-quote-bad-id")) (respond (amend-out :changes [{:path club :op "replace-text" :heading "" :old_text "L9" :new_text "- 「どうぞ」"}]) "stop")
       (and select? (= mode "select-nosection")) (respond (sel :decision "target" :targets [{:path yui :section "" :reason "新しい節を足す" :change_outline "装備の節を新設"}]) "stop")
@@ -3064,10 +3066,56 @@ test_canon_amend_line_listing_shares_one_budget_across_targets() {
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md" "${bell}"
 }
 
+make_club_note_dup() {
+  # BOXP-302 (codex review): the planned section repeats one line verbatim; a
+  # line id must still name exactly one of them.
+  printf -- '---\ntitle: 部員たち\n---\n\n# 部員たち\n\n## プロフィール\n\n- 学院の部活の部員。VERSE-CLUB-BODY\n\n### セリフ例\n\n#### 部長\n\n- 「ようこそ、お茶をどうぞ」\n- 「はい」\n- 「はい」\n\n#### 副部長\n\n- 「資料はこちらにまとめておきました」\n' >"${VAULT}/${VERSE}/キャラ設定/モブ/部員たち.md"
+}
+
+# BOXP-302 (codex review): a line id resolves to a position, so one of two
+# identical lines can be replaced; the same text quoted raw stays ambiguous.
+test_canon_amend_line_id_replaces_one_of_two_identical_lines() {
+  local sums ticket run club="${VERSE}/キャラ設定/モブ/部員たち.md"
+  for mode in amend-quote-dup amend-quote-dup-raw; do
+    setup; make_verse; make_club_note_dup; echo "${mode}" >"${MODE_FILE}"
+    write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-891|BOXP-891: 口調]] #ticket status::backlog"
+    write_nl_ticket "${VAULT}" BOXP-891 backlog localllm "部員の口調を整える" "部員たちのセリフ例を、育ちの良さを残した自然な話し方に整えてほしい。"
+    verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+    ticket="${VAULT}/Tickets/BOXP-891.md"
+    assert_file_contains "${ticket}" '^status: ready$'
+    sums="$(verse_sums)"
+    : >"${REQ_LOG}"
+    sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+    write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-891|BOXP-891: 口調]] #ticket status::ready"
+    verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
+    if [[ "${mode}" == amend-quote-dup ]]; then
+      assert_file_contains "${ticket}" '^status: review$'
+      run="$(latest_run BOXP-891)"
+      assert_file_contains "${STATE}/runs/BOXP-891/${run}/localllm-audit.edn" ':line-ids 1'
+      # the second 「はい」 (L3) is replaced, the first (L2) and everything else stay
+      [[ "$(grep -c '^- 「はい」$' "${VAULT}/${club}")" == 1 ]] || fail "exactly one of the identical lines must remain"
+      assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-891:${run}:replace old=.* -->- 「ええ」AMEND-DUP<!-- /localllm:BOXP-891 -->$"
+      [[ "$(grep -n -- '^- 「はい」$\|AMEND-DUP' "${VAULT}/${club}" | sed -n 1p)" == *'- 「はい」' ]] || fail "the first identical line must be the one kept"
+      assert_file_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+      assert_file_contains "${VAULT}/${club}" '^#### 部長$'
+      assert_verse_unchanged_except "${sums}" "${club}"
+      CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-accept BOXP-891 "${run}" >"${CASE_DIR}/acc" 2>&1 || fail "accept failed: $(cat "${CASE_DIR}/acc")"
+      assert_file_contains "${VAULT}/${club}" '^- 「ええ」AMEND-DUP$'
+      [[ "$(grep -c '^- 「はい」$' "${VAULT}/${club}")" == 1 ]] || fail "accept must keep the untouched identical line"
+    else
+      assert_blocked BOXP-891 'category=localllm-invalid-proposal'
+      assert_file_contains "${ticket}" '本文での出現 2 件'
+      assert_verse_unchanged_except "${sums}"
+    fi
+    assert_no_cloud
+  done
+}
+
 for t in \
   test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back \
   test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
   test_canon_amend_line_listing_shares_one_budget_across_targets \
+  test_canon_amend_line_id_replaces_one_of_two_identical_lines \
   test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted \
   test_canon_select_asks_or_refuses_without_writing \
   test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted \

@@ -672,7 +672,7 @@
 (defn apply-change
   "Apply one validated change to `lines`. Returns {:ok? true :lines :removed}
   (removed = text of the replaced region, for link checks) or {:ok? false :reason}."
-  [lines {:keys [op heading old_text new_text]}]
+  [lines {:keys [op heading old_text new_text line-index]}]
   (let [new-lines (split-text-lines new_text)
         bstart (body-start lines)
         ;; A frequent small-model slip: new_text for a section starts by
@@ -759,6 +759,15 @@
             n (count-occurrences body old_text)]
         (cond
           (str/blank? old_text) {:ok? false :reason "replace-text の old_text が空です"}
+          ;; BOXP-302: a change resolved from a line id carries the line's
+          ;; position, so an identical line elsewhere in the note is no
+          ;; obstacle (codex review); the line must still read exactly as the
+          ;; id was resolved (no shift from an earlier change, no fuzzy match).
+          (some? line-index)
+          (if (and (integer? line-index) (<= bstart line-index) (< line-index (count lines)) (= (nth lines line-index) old_text))
+            {:ok? true :removed old_text
+             :lines (vec (concat (subvec lines 0 line-index) (str/split-lines (or new_text "")) (subvec lines (inc line-index))))}
+            {:ok? false :reason (str "行 ID で解決した行の位置 " line-index " に old_text がありません（先行する変更で行がずれた可能性）: " (untrusted old_text 60))})
           (zero? n) {:ok? false :reason (str "old_text が本文に見つかりません: " (untrusted old_text 60))}
           (> n 1) {:ok? false :reason (str "old_text が本文に複数回出現します（一意に特定できません）: " (untrusted old_text 60))}
           :else (let [i (str/index-of body old_text)
@@ -4279,7 +4288,7 @@
 (defn- change-in-plan-section
   "Reason string when `change` leaves the planned section of the note (nil
   when the plan names no section or the change stays inside it)."
-  [lines plan-section shown-lines {:keys [op heading old_text]}]
+  [lines plan-section shown-lines {:keys [op heading old_text line-index]}]
   (if (str/blank? plan-section)
     ;; A plan without a section means "add one new section": only a new
     ;; heading may be appended; existing sections and sentences stay (codex review).
@@ -4310,6 +4319,12 @@
               (some heading-line? (str/split-lines old))
               (str "replace-text の old_text に見出し行が含まれています（見出し構造は変えません）。old_text は計画の節『" plan-section
                    "』の本文（見出し行を除く）に一意に存在する文でなければなりません: " (untrusted old_text 60))
+              ;; BOXP-302: a line named by id is checked by position (inside
+              ;; the section, reading exactly as listed): identical lines
+              ;; elsewhere do not make it ambiguous (codex review).
+              (some? line-index)
+              (when-not (and (integer? line-index) (< index line-index end) (= (nth lines line-index) old))
+                (str "行 ID で解決した行が計画の節『" plan-section "』の中にありません（ノートが変わった可能性。再 groom してください）"))
               ;; 0 / several occurrences are told apart with counts only (no
               ;; note text) so the mismatch can be supervised from the audit.
               (not= 1 n)
@@ -4342,7 +4357,7 @@
                          (let [ls (get-in line-lists [(str path) :lines] [])
                                hit (first (filter #(= (:id %) (str/trim (str old_text))) ls))]
                            (if hit
-                             (assoc c :old_text (:text hit) :line-id (:id hit))
+                             (assoc c :old_text (:text hit) :line-id (:id hit) :line-index (:index hit))
                              (assoc c :bad-line-id (str "replace-text の old_text の行 ID " (untrusted old_text 12) " は計画の節『" (:section plan)
                                                         "』の行一覧（" (line-id-range ls) "）にありません"))))
                          c)))
@@ -4385,7 +4400,10 @@
       (let [dropped (atom 0)
             clean (fn [s] (let [[out n] (sanitize-wikilinks (str s) known)] (swap! dropped + n) out))
             line-ids (count (filter :line-id changes))
-            cleaned (mapv #(-> % (dissoc :line-id :bad-line-id) (update :new_text (fn [t] (str/trim (strip-md-headings (clean t)))))) changes)
+            ;; Positional (line id) replacements are applied first and bottom-up
+            ;; so no earlier edit of the same note can shift the resolved line.
+            ordered (concat (sort-by (comp - :line-index) (filter :line-index changes)) (remove :line-index changes))
+            cleaned (mapv #(-> % (dissoc :line-id :bad-line-id) (update :new_text (fn [t] (str/trim (strip-md-headings (clean t)))))) ordered)
             wrapped (mapv #(wrap-change ticket-id run-id %) cleaned)
             proposal-text (str/join "\n\n" (map (fn [{:keys [path op heading new_text]}] (str "（" path " / " op (when (seq heading) (str " / " heading)) "）\n" new_text)) cleaned))
             known-facts (mapv #(update % :fact clean) known-facts)
