@@ -863,7 +863,12 @@
           (if-let [[_ t r op old] (re-matches span-open-re tok)]
             (if open
               {:ok? false :reason "localllm スパンが入れ子になっています"}
-              (recur {:ticket t :run r :op op :old (when (= "replace" op) (or (b64url-decode (or old "")) "")) :start s :inner-start e} spans))
+              (let [decoded (when (= "replace" op) (b64url-decode (or old "")))]
+                (if (and (= "replace" op) (nil? decoded))
+                  ;; An undecodable old text must not silently become "" in
+                  ;; the canon view (codex review): the note is malformed.
+                  {:ok? false :reason "localllm の replace マーカーの旧文（old=）を復号できません"}
+                  (recur {:ticket t :run r :op op :old decoded :start s :inner-start e} spans))))
             (if-let [[_ t] (re-matches span-close-re tok)]
               (cond
                 (nil? open) {:ok? false :reason "開きマーカーの無い localllm 閉じマーカーがあります"}
@@ -3394,7 +3399,9 @@
   (let [known (set (map :rel corpus-notes))
         by-rel (into {} (map (juxt :rel identity) corpus-notes))
         read-set (set (:read-paths research))
-        roots (vec (distinct (concat (:docs-roots cfg) canon-roots)))
+        ;; Selected targets must lie in a canon root: the content-search route
+        ;; never widens to the pilot / proposal write roots (codex review).
+        roots (vec canon-roots)
         decision (:decision selection)
         bad (fn [reason] {:ok? false :category "localllm-selection-invalid" :reason reason})]
     (case decision
