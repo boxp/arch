@@ -81,3 +81,22 @@
 ## 結果 / 到達点（run ごとに追記）
 
 - （実装 run で追記）
+
+### 2026-10-25 run 20261025T034921Z（実装・PR）
+
+- 実装は設計どおり（`localllm_docs.bb` +1,200 行、`task_board_runner.bb` +70 行、black-box +560 行）。arch PR boxp/arch#13979（#13952 を土台に含む）、lolice PR boxp/lolice#885。
+- 検証: `localllm-docs-test.sh` 全 77 本 pass（新規 6 本: 選定 groom → amend → 他票非表示 → 改稿 → rollback 連鎖 / 複数対象 + replace + accept（all-or-nothing）/ ask・不正選定・canon 書換語・未知 model・Qwen 選択 / 実フォルダへの新規ノートと非表示・同名拒否・採用後の改稿 / stale・他票スパン・計画なし・CANON_ROOTS なし / 計画外の節・見出し行・新節計画の境界・needs-human）、runner / events / source-check / vault-writer / inline test pass。
+- codex review 6 回: P1 ×2（新節計画で既存節へ書ける・見出し行の置換）、P2（同フォルダ未確認ノートとの名前衝突）、accept の部分採用、採用後の同票改稿で 2 件目作成、選定 root の広がりと undecodable な replace マーカー → すべて修正・テスト追加。
+- 設計上の判断: Ready に直接置いた自然文票は従来経路（proposals / pilot）のまま（実フォルダへの書込は必ず groom 計画の確認を通す）。選定理由・予定差分はモデル文を 300 字以内で票に載せる（Owner 要件「選定理由 / 予定差分を groom で提示」。本文の長い引用はプロンプトで禁止し、未知 wikilink は平文化、マーカーは拒否）。
+- 未実施（後続 run）: merge → image → Pod 再作成 → lolice#885 merge → 実 Gemma4 / Qwen で『自然文 → groom（実バース 28 ノートから選定、path / 件数のみ記録）→ Ready 確認 → 専用非 canon 検証ノートへ限定 amend → Review → 同対象改稿 → rollback』。新規ノートの実フォルダ保存は groom（保存先の提示）までを実バースで確認し、原典フォルダへの実書込は Owner 票の計画確認を経る。
+
+#### 後続 run の E2E 手順（配備後）
+
+1. 新 Pod で `/opt/codex-workspace/task-board/{localllm_docs,task_board_runner}.bb` の sha256 が arch main と一致し、env `CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS=ひとはこさんバース` が入っていることを確認（lolice#885 merge 後）。
+2. 検証ノートを用意: `ひとはこさんバース/世界観設定/localllm検証ノート（BOXP-296・設定ではない）.md`（frontmatter `canon: false`、見出し `## 検証メモ` 1 つ。本文は非私的な数行）。既存原典 28 ノートの sha256 を記録。
+3. 票 A（Gemma4 既定）: Backlog に `assignee: localllm`、題名「localllm 検証ノートに項目を追記」、Summary「ひとはこさんバースの localllm 検証ノート（設定ではない）の検証メモに、検証用の項目を 1 行追記してほしい。他のノートは変えない。」→ groom が検証ノートを選ぶか（Context の対象 path / 節 / 理由）を確認。別のノートを選んだら assignee を戻さず Blocked / 再 groom を記録（選定品質の到達点として報告）。
+4. assignee を localllm に戻す → amend → Review: 検証ノートのマーカー内だけに追記、原典 28 ノートの sha256 不変、Notes の操作 / report / accept / rollback コマンド。
+5. Notes に改稿指示 1 行 → 同スパン置換 → Review。`localllm-rollback` で原本復帰、再適用後に `localllm-accept` を試し、最後に検証ノートを削除（または残して `canon: false` のまま）。
+6. 票 B（`docs-model: qwen38-27b`）で 3〜4 を繰り返す（GPU 直列、Gemma4 の再ロード待ちあり）。
+7. 新規保存先の選定: 票 C「新しい脇役を 1 名いつものフォルダに」を Backlog に置き groom の保存先提示（docs-folder）まで確認し、assignee は戻さない（原典フォルダへの実書込は Owner 判断）。
+8. evidence: `Projects/task-board-localllm-docs/evidence/e2e-BOXP-296/README.md` に run id・path・件数・sha256 不変だけを記録（本文なし）。README 現状表と本 plan に到達点 / 未確認を追記。
