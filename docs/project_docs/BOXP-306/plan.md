@@ -55,3 +55,6 @@ Owner 指示（Telegram）: 「このタグを使った rollback の仕組み自
 ## 5. 記録（実施結果）
 
 - 2026-10-25 実 vault への移行 dry-run（本 worktree の runner、`CANON_ROOTS=ひとはこさんバース`、書込なし）: 走査 40 ノート、移行対象 2 件（`ひとはこさんバース/キャラ設定/モブ/高嶺花学院ヒロイン部.md` = replace スパン 8、`ひとはこさんバース/キャラ設定/モブ/yui-sasaki.md` = `localllm-unreviewed` + バナー）、不明形式 0 件。Tickets / evidence 内のマーカー文字列は許可 root 外で対象外。
+- 2026-10-25 実装の再適用: 中断 run が push した commit を origin/main（BOXP-302 merge 後）へ cherry-pick。テスト一覧の衝突のみ解消（302 のテストと 306 のテストを両方残す）。
+- 2026-10-25 codex review（`codex review --base origin/main`）: P2 1 件 = 旧 `localllm-unreviewed` ノートの移行で、生成バナーと同じ書き出しの Owner 引用も本文全体から消えていた。修正: タイトル直後の生成形式に一致する 1 行だけを除去（`legacy-banner-re`）、テストに Owner 引用が残るケースを追加。
+- 2026-10-25 ローカル検証: `tests/codex-workspace/localllm-docs-test.sh` 83 本 pass（exit 0）、`tests/codex-workspace/task-board-runner-test.sh` pass。
