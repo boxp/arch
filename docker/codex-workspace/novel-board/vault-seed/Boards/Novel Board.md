@@ -19,7 +19,7 @@ kanban-plugin: board
 
 ## Backlog
 
-- [ ] **運用ルール:** タイトルだけの新規カードを受け付ける。agent 割当時は本文を書かず Requirements と Outline を整理し、完了後に `Draft`（担当 boxp）へ移す。 #novel-rule
+- [ ] **運用ルール:** タイトルだけの新規カードを受け付ける。agent 割当時は runner が設定ノートを探索して読み、本文を書かず Requirements と Outline を整理し、読んだ / 読めなかった設定を管理ノートの `Reference Context` に記録して `Draft`（担当 boxp）へ移す（不足があれば Run History に要確認）。 #novel-rule
 
 
 ## Draft
