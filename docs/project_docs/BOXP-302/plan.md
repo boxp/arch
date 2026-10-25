@@ -92,3 +92,10 @@
 - 対策（修正時に一覧を再構成して上限内に収める方式。初回の固定予約は採らない: 応答長は max_tokens 由来で文字数が確定せず、予約しても超過を保証できないため）: 修正ラウンドでは会話末尾（これまでの assistant 応答 + 修正依頼）の文字数を `:max-prompt-chars` から差し引いた上限で `fit-amend-line-lists` を再実行し、user 文（計画・本文・行一覧・指示）を再描画して `[system, user', …末尾]` を送る。行 ID は先頭からの接頭辞なので、縮小後も提示されている ID は同じ行を指す。解決可能な ID は再描画した一覧（ctx の `:line-lists` を loop で持ち回り）に限定する。一覧を空にしても上限を超える場合は従来どおり「修正ラウンドの送信内容が … 字で上限 …」で停止（他モードと同じ）。縮小は log に `line-ids=提示/全体 -> 提示/全体` で記録する。
 - テスト `test_canon_amend_correction_round_refits_the_line_listing_to_the_cap`（black-box）: 節 203 行の合成 fixture で (1) 上限なしで groom → amend（引用符不一致 → 修正ラウンドで L1）を通し、初回 amend リクエストの総文字数を取得、(2) その値を `CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS` に与えて同じ流れを実行 → context-exceeded にならず修正ラウンドが送信され（2 リクエスト）、2 回目の最初の user 文は省略付き一覧で L1 を含み、全メッセージ合計 ≤ cap、log に `203/203 -> N/203`、L1 だけ置換され 200 行目・小見出し不変、Review 到達。fake server に全メッセージ合計長 `:all-chars` と最初の user 文のフラグを追加（従来の `user` は最後のメッセージ＝修正依頼文のため）。
 - 結果: 新テスト単体 pass（実測 203 → 184 行、総 19,677 字 ≤ cap 20,373 相当）。全体 suite・手元 codex review の結果は PR 本文と Notes に記載。
+
+## 10. 記録（2026-10-25 run 20261025T133540Z-799575d3-fe22-480f-8664-0a2adb3c85c2、PR gate codex-review 再試行）
+
+- codex review（PR #14016）P2: 「`heading-line?` が行頭 `#` のみを見ており、CommonMark で有効な先頭 1〜3 空白の ATX 見出しを見出しとして扱わない。行 ID 一覧に `  #### 小見出し` が載り、ID 経由で置換できてしまい、『見出し構造を変更しない』制約と今回の見出し置換 hardening を迂回する」。
+- 対策: `heading-line?` を先頭 0〜3 空白（空白のみ、タブは不可: 4 空白以上はコードブロック）許容の `^ {0,3}#{1,6}\s+\S.*` にし、`heading-level` も先頭空白を除いて数える。判定関数は 1 つなので、節終端（`section-end` / `heading-indexes`）、行一覧からの除外（`plan-section-lines`）、replace-text old_text の見出し拒否、append-section の heading 検査が同じ基準になる。fuzzy 一致や正規化は加えない。
+- テスト: `test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings` に mode `amend-quote-indented-heading` を追加。fixture の `#### 副部長` を 2 空白字下げに書き換え、round 0 はモデルが字下げ見出しを原文で old_text に書く → 「見出し行が含まれています」で拒否（fake server が修正依頼文の理由を `:correction-mentions-heading?` で記録）、修正ラウンドは見出しが一覧に載っていれば得たはずの `L4` を書く → 「行一覧（L1〜L3）にありません」で拒否、Blocked、字下げ見出し・本文・他ノート不変、cloud 呼出なし。修正を外した状態では同ケースが（置換が通って Blocked にならず）失敗することを確認した。
+- 結果: 新ケース含む対象テスト pass。全体 suite・手元 codex review の結果は PR 本文と Notes に記載。

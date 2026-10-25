@@ -532,10 +532,14 @@
   (if-let [end (frontmatter-end lines)] (inc end) 0))
 
 (defn heading-level [line]
-  (count (re-find #"^#+" line)))
+  (count (re-find #"^#+" (str/triml (or line "")))))
 
-(defn heading-line? [line]
-  (boolean (re-matches #"#{1,6}\s+\S.*" line)))
+(defn heading-line?
+  "An ATX heading. CommonMark allows up to three leading spaces, so an indented
+  `  #### 小見出し` is a heading too: it must end a section, stay out of the amend
+  line listing and be refused as replace-text old_text (codex review, BOXP-302)."
+  [line]
+  (boolean (re-matches #" {0,3}#{1,6}\s+\S.*" (or line ""))))
 
 (defn- code-fence? [line]
   (boolean (re-matches #"\s*(```|~~~).*" line)))
