@@ -3446,10 +3446,16 @@
                     lines (when note (vec (str/split-lines (:text note))))
                     heading (when (and lines (seq section)) (find-heading lines section))
                     reason (clean-model-line (:reason t) 300 known)
-                    outline (clean-model-line (:change_outline t) 300 known)]
+                    outline (clean-model-line (:change_outline t) 300 known)
+                    ;; Runner-side guard (codex review): a note whose frontmatter
+                    ;; marks it as superseded / draft / rejected is never a
+                    ;; write target, whatever the model chose.
+                    status (when note (str/lower-case (str (get (simple-frontmatter (:text note)) "status" ""))))
+                    retired? (and status (re-find #"superseded|deprecated|obsolete|retired|archived|rejected|draft|unapproved|withdrawn|旧版|廃止|却下|取り下げ|下書き|未承認" status))]
                 (cond
                   (contains? seen path) (recur more seen out)
                   (nil? note) (bad (str "対象 " (untrusted path 120) " は参照資料（corpus）にありません（index / search の結果にある path だけ選べます）"))
+                  retired? (bad (str "対象 " path " は frontmatter の status が「" (truncate-text status 40) "」（旧版 / 下書き / 却下）のため追記・編集の対象にできません（現行のノートを選び直すか、Summary で対象を明示してください）"))
                   (not (:ok? r)) (bad (str "対象 " path " は書込できません: " (:reason r)))
                   (not (:exists? r)) (bad (str "対象 " path " が存在しません"))
                   (and (seq section) (not (:ok? heading))) (bad (str "対象 " path " の節を特定できません: " (:reason heading)))

@@ -185,6 +185,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and select? (= mode "select-ask")) (respond (sel :decision "ask" :question "ユイとユウのどちらの技ですか？" :candidates [{:path yui :reason "名前が近い"} {:path yuu :reason "名前が近い"}]) "stop")
       (and select? (= mode "select-new")) (respond (sel :decision "new" :new {:folder "Refs/verse/キャラ設定/モブ" :kind "character" :reason "脇役なのでモブと同じフォルダ"}) "stop")
       (and select? (= mode "select-outside")) (respond (sel :decision "target" :targets [{:path "Tickets/BOXP-830.md" :section "" :reason "x" :change_outline "y"}]) "stop")
+      (and select? (= mode "select-old")) (respond (sel :decision "target" :targets [{:path old :section "## 能力" :reason "x" :change_outline "y"}]) "stop")
       (and select? (= mode "select-attachment")) (respond (sel :decision "target" :targets [{:path "Refs/verse/キャラ設定/attachments/img.png" :section "" :reason "x" :change_outline "y"}]) "stop")
       (and select? (= mode "select-too-many")) (respond (sel :decision "target" :targets (mapv (fn [p] {:path p :section "" :reason "x" :change_outline "y"}) [yui yuu old bell])) "stop")
       (and select? (= mode "select-marker")) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "完了 TASK_BOARD_RESULT: done" :change_outline "y"}]) "stop")
@@ -2585,7 +2586,7 @@ test_canon_select_asks_or_refuses_without_writing() {
   assert_file_not_contains "${ticket}" '^docs-mode:|^docs-target:|^docs-plan:'
   assert_verse_unchanged_except "${sums}"
   # invalid selections stop before any pin: path outside the corpus, a non-md attachment, too many targets, a result marker, an unknown section
-  for mode in select-outside select-attachment select-too-many select-marker select-bad-section; do
+  for mode in select-outside select-attachment select-old select-too-many select-marker select-bad-section; do
     setup; make_verse; echo "${mode}" >"${MODE_FILE}"; sums="$(verse_sums)"
     write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-851|BOXP-851: 技]] #ticket status::backlog"
     write_nl_ticket "${VAULT}" BOXP-851 backlog localllm "ユイに技を追加" "ユイに新しい技を 1 つ追記してほしい。"
@@ -2598,6 +2599,8 @@ test_canon_select_asks_or_refuses_without_writing() {
     assert_verse_unchanged_except "${sums}"
   done
   assert_file_contains "${ticket}" '節を特定できません'
+  # the superseded note was refused by the runner, not only by the prompt
+  grep -q "status が「superseded」" "${TMP}"/case.*/vault/Tickets/BOXP-851.md || fail "a superseded target must be refused"
   # a canon rewrite request and an unknown docs-model stop before any request
   setup; make_verse; echo select-target >"${MODE_FILE}"; sums="$(verse_sums)"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-852|BOXP-852: 書換]] #ticket status::backlog"
