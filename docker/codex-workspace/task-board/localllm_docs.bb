@@ -993,10 +993,12 @@
       (str (str/join "\n" (concat fm body)) (when (str/ends-with? text "\n") "\n")))))
 
 (defn legacy-marked?
-  "True when `text` still carries a legacy span marker or the retired
-  unreviewed frontmatter (the only notes the migration touches)."
+  "True when `text` still carries any legacy span marker (an open marker, or a
+  stray close marker left alone, so that a malformed note is reported rather
+  than silently kept; codex review) or the retired unreviewed frontmatter (the
+  only notes the migration touches)."
   [text]
-  (or (str/includes? (or text "") legacy-marker-prefix) (legacy-unreviewed-note? text)))
+  (or (boolean (re-find span-any-re (or text ""))) (legacy-unreviewed-note? text)))
 
 (defn migrate-legacy-text
   "The note with every legacy marker / unreviewed mark removed and the current
@@ -1009,7 +1011,7 @@
       unwrapped
       (let [unreviewed? (legacy-unreviewed-note? (:text unwrapped))
             out (strip-legacy-unreviewed-marks (:text unwrapped))]
-        (if (str/includes? out legacy-marker-prefix)
+        (if (re-find span-any-re out)
           {:ok? false :reason "マーカーを外した後も localllm マーカー文字列が残ります（不明な形式）"}
           {:ok? true :text out :spans (:spans unwrapped) :unreviewed? unreviewed?})))))
 

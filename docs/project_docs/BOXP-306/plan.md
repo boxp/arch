@@ -58,3 +58,4 @@ Owner 指示（Telegram）: 「このタグを使った rollback の仕組み自
 - 2026-10-25 実装の再適用: 中断 run が push した commit を origin/main（BOXP-302 merge 後）へ cherry-pick。テスト一覧の衝突のみ解消（302 のテストと 306 のテストを両方残す）。
 - 2026-10-25 codex review（`codex review --base origin/main`）: P2 1 件 = 旧 `localllm-unreviewed` ノートの移行で、生成バナーと同じ書き出しの Owner 引用も本文全体から消えていた。修正: タイトル直後の生成形式に一致する 1 行だけを除去（`legacy-banner-re`）、テストに Owner 引用が残るケースを追加。
 - 2026-10-25 ローカル検証: `tests/codex-workspace/localllm-docs-test.sh` 83 本 pass（exit 0）、`tests/codex-workspace/task-board-runner-test.sh` pass。
+- 2026-10-25 PR gate の codex review（#14050、1 回目）: P2 1 件 = 移行対象判定 `legacy-marked?` が開きマーカー `<!-- localllm:` しか見ておらず、閉じマーカーだけが残った旧ノート（`<!-- /localllm:BOXP-N -->`）を無報告・未変更で素通りしていた。修正: 判定を開き/閉じ両方に一致する `span-any-re` に変更し、`parse-spans` の「開きマーカーの無い閉じマーカー」判定でそのノートだけ `:skipped` + 理由を報告（本文不変）。移行後の残存チェックも同じ正規表現へ。テストに閉じマーカー単独 fixture（dry-run / apply / 再 dry-run とも skipped、hash 不変、本文非露出）を追加。

@@ -3175,6 +3175,7 @@ test_legacy_markers_are_migrated_once_and_safely() {
   local yui="${VAULT}/${VERSE}/キャラ設定/ユイ.md" bell="${VAULT}/${VERSE}/アイテム設定/鈴.md"
   local mob="${VAULT}/${VERSE}/キャラ設定/モブ/legacy-hotaru.md" bad="${VAULT}/${VERSE}/世界観設定/壊れた.md"
   local outside="${VAULT}/Infrastructure/outside.md" prop="${VAULT}/${PROPOSALS}/characters/old-proposal.md"
+  local orphan="${VAULT}/${VERSE}/世界観設定/閉じだけ.md"
   local old_b64; old_b64="$(printf -- '- 音は澄んでいる。' | basenc --base64url -w0 | tr -d '=')"
   # (a) an add span of one ticket and a replace span of another (new text in place, old text in the marker)
   printf -- '\n<!-- localllm:BOXP-700:20261024T000000Z-aaaaaaaa-0000-0000-0000-000000000000:add -->\n- 鈴鳴り（新規）: 鈴の音で合図を送る。LEGACY-ADD\n<!-- /localllm:BOXP-700 -->\n' >>"${yui}"
@@ -3183,6 +3184,8 @@ test_legacy_markers_are_migrated_once_and_safely() {
   printf -- '---\ntitle: "灯守ホタル"\ntype: character\nkind: character\nstatus: unapproved\nlocalllm-unreviewed: true\nticket: BOXP-702\nslug: legacy-hotaru\naliases: []\ncreated: 2026-10-25\nrun: 20261024T000000Z-cccccccc-0000-0000-0000-000000000000\n---\n\n# 灯守ホタル\n\n> **未確認（localllm）**: localllm docs run x がチケット [[Tickets/BOXP-702]] の依頼で保存しました。採用するなら `task_board_runner.bb localllm-accept BOXP-702 x`。\n\n## 概要\n\n灯籠の火を守る見習い。LEGACY-CREATE\n\n> **未確認（localllm）** と Owner が本文に書いたメモ。OWNER-QUOTE-KEPT\n' >"${mob}"
   # (c) nested markers: unknown shape, must be left to a human
   printf -- '---\ntitle: 壊れた\n---\n\n# 壊れた\n\n<!-- localllm:BOXP-703:20261024T000000Z-dddddddd-0000-0000-0000-000000000000:add -->\n<!-- localllm:BOXP-703:20261024T000000Z-dddddddd-0000-0000-0000-000000000000:add -->\n- 二重。\n<!-- /localllm:BOXP-703 -->\n' >"${bad}"
+  # (c2) a close marker left alone (its open marker lost to a hand edit): unknown shape, reported, left to a human (codex review)
+  printf -- '---\ntitle: 閉じだけ\n---\n\n# 閉じだけ\n\n- 残った文。ORPHAN-CLOSE\n<!-- /localllm:BOXP-707 -->\n' >"${orphan}"
   # (d) outside every migration root, (e) a proposal-root note, (f) a symlink inside the root
   printf -- '---\ntitle: outside\n---\n\n<!-- localllm:BOXP-704:20261024T000000Z-eeeeeeee-0000-0000-0000-000000000000:add -->\n- 外。\n<!-- /localllm:BOXP-704 -->\n' >"${outside}"
   mkdir -p "$(dirname "${prop}")"
@@ -3198,8 +3201,9 @@ test_legacy_markers_are_migrated_once_and_safely() {
   assert_result_line "${CASE_DIR}/dry" "${VERSE}/アイテム設定/鈴.md" ":status :would-migrate" ":spans 1" ":unreviewed? false"
   assert_result_line "${CASE_DIR}/dry" "${VERSE}/キャラ設定/モブ/legacy-hotaru.md" ":status :would-migrate" ":spans 0" ":unreviewed? true"
   assert_result_line "${CASE_DIR}/dry" "${VERSE}/世界観設定/壊れた.md" ":status :skipped" "形式を解釈できないため未変更: localllm スパンが入れ子になっています"
+  assert_result_line "${CASE_DIR}/dry" "${VERSE}/世界観設定/閉じだけ.md" ":status :skipped" "形式を解釈できないため未変更: 開きマーカーの無い localllm 閉じマーカーがあります"
   assert_file_not_contains "${CASE_DIR}/dry" 'outside.md|old-proposal.md|link.md'
-  assert_file_not_contains "${CASE_DIR}/dry" 'LEGACY-ADD|LEGACY-CREATE|遠くまで届く|灯籠の火'
+  assert_file_not_contains "${CASE_DIR}/dry" 'LEGACY-ADD|LEGACY-CREATE|遠くまで届く|灯籠の火|ORPHAN-CLOSE'
   assert_verse_unchanged_except "${sums}"
   # apply with a hand edit landing on one note between the plan and its write: that note is skipped, the others migrate
   if MIGRATE_HOOK="${VERSE}/キャラ設定/ユイ.md" migrate_cmd --apply >"${CASE_DIR}/apply1" 2>&1; then
@@ -3211,6 +3215,7 @@ test_legacy_markers_are_migrated_once_and_safely() {
   assert_result_line "${CASE_DIR}/apply1" "${VERSE}/アイテム設定/鈴.md" ":status :migrated"
   assert_result_line "${CASE_DIR}/apply1" "${VERSE}/キャラ設定/モブ/legacy-hotaru.md" ":status :migrated"
   assert_result_line "${CASE_DIR}/apply1" "${VERSE}/世界観設定/壊れた.md" ":status :skipped"
+  assert_result_line "${CASE_DIR}/apply1" "${VERSE}/世界観設定/閉じだけ.md" ":status :skipped" "開きマーカーの無い localllm 閉じマーカー"
   # replace span: the new sentence once, the old sentence gone, nothing else changed in the note
   assert_file_contains "${bell}" '^- 音は澄んでいて、遠くまで届く。VERSE-BELL-BODY$'
   assert_file_not_contains "${bell}" '<!--|音は澄んでいる。'
@@ -3226,6 +3231,7 @@ test_legacy_markers_are_migrated_once_and_safely() {
   [[ "$(sed -n '12,14p' "${mob}")" == $'# 灯守ホタル\n\n## 概要' ]] || fail "the banner and its blank line must go together: $(sed -n '12,18p' "${mob}")"
   # untouched: the nested note, the note outside the roots, the proposal note, the symlink
   grep -Fq "$(grep '壊れた.md' <<<"${sums}")" <<<"$(verse_sums)" || fail "the nested note must be unchanged"
+  grep -Fq "$(grep '閉じだけ.md' <<<"${sums}")" <<<"$(verse_sums)" || fail "the note with a stray close marker must be unchanged"
   [[ "$(sha256sum "${outside}" "${prop}")" == "${sums_other}" ]] || fail "notes outside the roots / proposal notes must be unchanged"
   [[ -L "${VAULT}/${VERSE}/世界観設定/link.md" ]] || fail "the symlink must be left alone"
   # second apply without the hook: the remaining note migrates; the nested note is reported again
@@ -3240,6 +3246,7 @@ test_legacy_markers_are_migrated_once_and_safely() {
   migrate_cmd >"${CASE_DIR}/dry2" 2>&1 || true
   [[ "$(grep -c ':status :would-migrate' "${CASE_DIR}/dry2")" == 0 ]] || fail "nothing left to migrate: $(cat "${CASE_DIR}/dry2")"
   assert_result_line "${CASE_DIR}/dry2" "${VERSE}/世界観設定/壊れた.md" ":status :skipped"
+  assert_result_line "${CASE_DIR}/dry2" "${VERSE}/世界観設定/閉じだけ.md" ":status :skipped"
   # a later ticket's groom reads the migrated text as ordinary note text
   echo select-target >"${MODE_FILE}"; : >"${REQ_LOG}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-706|BOXP-706: 技]] #ticket status::backlog"
