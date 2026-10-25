@@ -2771,6 +2771,20 @@ test_canon_amend_stops_when_the_plan_is_stale_missing_or_the_note_holds_another_
   assert_file_contains "${ticket}" '他の票（BOXP-700）の未確認の変更が残っています'
   [[ "$(request_count)" == 0 ]] || fail "no request expected"
   assert_verse_unchanged_except "${sums}"
+  # an exclusion added after the plan was made applies to the write: nothing written, no request
+  setup; make_verse; echo select-target >"${MODE_FILE}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-877|BOXP-877: 技]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-877 backlog localllm "ユイに技を追加" "ユイに新しい技を追記してほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-877.md" "^status: ready$"
+  sums="$(verse_sums)"; : >"${REQ_LOG}"
+  sed -i "s/^assignee: boxp$/assignee: localllm/" "${VAULT}/Tickets/BOXP-877.md"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-877|BOXP-877: 技]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS="Tickets,Boards,Templates,${VERSE}/キャラ設定" >"${CASE_DIR}/out2"
+  assert_blocked BOXP-877 "category=localllm-invalid-target"
+  assert_file_contains "${VAULT}/Tickets/BOXP-877.md" "参照除外（.*）配下にあるため書きません"
+  [[ "$(request_count)" == 0 ]] || fail "no request expected"
+  assert_verse_unchanged_except "${sums}"
   # a note whose markers are broken (hand-edited replace marker) is left out of the corpus, never read as canon
   setup; make_verse; echo select-target >"${MODE_FILE}"
   printf -- "\n<!-- localllm:BOXP-700:20261024T000000Z-aaaaaaaa-0000-0000-0000-000000000000:replace old=A -->壊れた置換<!-- /localllm:BOXP-700 -->\n" >>"${VAULT}/${VERSE}/アイテム設定/鈴.md"

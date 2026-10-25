@@ -3400,7 +3400,8 @@
   "A destination folder named by the model / a `docs-folder` pin: an existing
   real directory under one of `canon-roots`, offered by `canon-folders`, no
   symlink component. Returns {:ok? true :folder} or {:ok? false :reason}."
-  [vault folder canon-roots offered]
+  ([vault folder canon-roots offered] (validate-canon-folder vault folder canon-roots offered nil))
+  ([vault folder canon-roots offered {:keys [exclude-paths]}]
   (let [f (-> (str (or folder "")) str/trim (str/replace #"^/+|/+$" ""))]
     (cond
       (str/blank? f) {:ok? false :reason "保存先フォルダが空です"}
@@ -3408,11 +3409,14 @@
       (hidden-component? f) {:ok? false :reason (str "隠しフォルダは保存先にできません: " (untrusted f 100))}
       (not (under-root? f canon-roots)) {:ok? false :reason (str "保存先 " (untrusted f 100) " は書込許可フォルダ（" (str/join ", " canon-roots) "）の外です")}
       (excluded-path? f (split-list default-exclude-paths)) {:ok? false :reason (str "保存先 " (untrusted f 100) " は Task Board データ / テンプレート / 提案 root のため書けません")}
+      ;; The configured read exclusions apply to the write side too, also for
+      ;; a plan made before the exclusion was added (codex review).
+      (excluded-path? f exclude-paths) {:ok? false :reason (str "保存先 " (untrusted f 100) " は参照除外（" (str/join ", " exclude-paths) "）配下のため書けません")}
       (not (contains? (set offered) f)) {:ok? false :reason (str "保存先 " (untrusted f 100) " は既存の分類フォルダではありません（候補: " (str/join ", " offered) "）。新しいフォルダは作りません")}
       (symlink-component? vault f) {:ok? false :reason (str "保存先が symlink を経由します: " f)}
       (not (fs/directory? (fs/path vault f) {:nofollow-links true})) {:ok? false :reason (str "保存先フォルダが存在しません: " f)}
       (not (str/starts-with? (canonical (fs/path vault f)) (str (canonical vault) "/"))) {:ok? false :reason (str "保存先が vault 外に解決されます: " f)}
-      :else {:ok? true :folder f})))
+      :else {:ok? true :folder f}))))
 
 (defn- clean-model-line
   "A model reason / outline for the ticket: one line, bounded, unknown
@@ -3449,7 +3453,7 @@
 
       "new"
       (let [{:keys [folder kind reason]} (:new_note selection)
-            f (validate-canon-folder vault folder canon-roots offered-folders)
+            f (validate-canon-folder vault folder canon-roots offered-folders {:exclude-paths (:exclude-paths cfg)})
             kind (str/trim (str kind))
             r (clean-model-line reason 300 known)]
         (cond
@@ -4056,7 +4060,7 @@
         (not (:ok? plan-r)) {:ok? false :reason (str "docs-folder には groom の計画が必要です: " (:reason plan-r))}
         (not= "new" (:decision (:plan plan-r))) {:ok? false :reason "docs-plan の計画は新規ノートの作成ではありません"}
         (not= f (:folder (:plan plan-r))) {:ok? false :reason (str "docs-folder " (untrusted f 100) " が groom 計画の保存先 " (:folder (:plan plan-r)) " と一致しません（計画を変えるなら Backlog に戻して再 groom）")}
-        :else (validate-canon-folder vault f (:canon-roots cfg) [f])))))
+        :else (validate-canon-folder vault f (:canon-roots cfg) [f] {:exclude-paths (:exclude-paths cfg)})))))
 
 (def amend-ops #{"append-to-section" "append-section" "replace-text"})
 
@@ -4336,7 +4340,8 @@
                        :reason (str "この票の計画 / 前回の変更は model " expected-model " で作られていますが、今回の run は docs-model が無く既定の " (:model cfg)
                                     " になります。黙って切り替えないため停止しました。frontmatter に docs-model: " expected-model
                                     " を書いて assignee を localllm に戻すか、意図的に変えるなら docs-model: " (:model cfg) " と明記してください")})
-        gate-ok? (and (:ok? snap) (nil? malformed) (nil? foreign) (nil? stale) (nil? model-guard))
+        excluded-plan? (boolean (some #(excluded-path? % (:exclude-paths cfg)) plan-paths))
+        gate-ok? (and (:ok? snap) (nil? malformed) (nil? foreign) (nil? stale) (nil? model-guard) (not excluded-plan?))
         corpus (when (and gate-ok? (seq sources)) (load-corpus cfg vault sources plan-paths))
         research (when (and corpus (:ok? corpus))
                    (let [brief (ticket-brief ticket-text 15)]
@@ -4362,6 +4367,10 @@
       (not= (set targets) (set plan-paths))
       (finish :blocked {:category "localllm-plan-mismatch"
                         :reason "docs-target が groom 計画の対象と一致しません。対象を変えるなら Backlog に戻して再 groom してください"})
+
+      excluded-plan?
+      (finish :blocked {:category "localllm-invalid-target"
+                        :reason (str "計画の対象が参照除外（" (str/join ", " (:exclude-paths cfg)) "）配下にあるため書きません（除外設定が計画後に変わりました。Backlog に戻して再 groom してください）")})
 
       (not (:ok? snap))
       (finish :blocked (select-keys snap [:category :reason]))
