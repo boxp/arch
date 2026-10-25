@@ -179,7 +179,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 ;; propose re-run: the canon block must not carry the previous
                                 ;; proposal section; it is shown separately as 前回の案
                                 :canon-block-has-proposal? (boolean (some-> (re-find #"(?s)# 対象ノート.*?(?=\n# )" (str user)) (str/includes? "提案（未承認）")))
-                                :prev-proposal? (str/includes? (str user) "# 前回の案")
+                                :prev-proposal? (or (str/includes? (str user) "# 前回の案") (str/includes? (str user) "# 前回書いた内容"))
                                 ;; BOXP-296 canon-folder fixture: unreviewed text of one ticket must never be shown to another
                                 :sees-amend-body? (str/includes? (str user) "AMEND-BODY")
                                 :sees-replaced-text? (str/includes? (str user) "遠くまで届く")
@@ -234,8 +234,13 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and amend? (contains? #{"select-multi" "select-multi-long"} mode)) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY"}
                                                                           {:path bell :op "replace-text" :heading "" :old_text "- 音は澄んでいる。" :new_text "- 音は澄んでいて、遠くまで届く。"}]) "stop")
       select? (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ。ユウは別人、旧版-ユイ は superseded のため除外 [[Unknown/ghost|幽霊]]" :change_outline "能力節に鈴を使う新しい技を 1 件追記"}]) "stop")
-      amend? (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text ""
-                                            :new_text (if revise? "- 鈴鳴り（新規）: 鈴の音で仲間に合図を送る。射程は十歩。AMEND-REVISED" "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY [[Refs/verse/世界観設定/規則|規則]] と [[Unknown/ghost|幽霊]] を参照。")}]) "stop")
+      ;; BOXP-306: a Review revision edits the line the previous run left in the
+      ;; note (replace-text by line id) instead of a second addition
+      amend? (respond (amend-out :changes [(if revise?
+                                             {:path yui :op "replace-text" :heading "" :old_text "L2"
+                                              :new_text "- 鈴鳴り（新規）: 鈴の音で仲間に合図を送る。射程は十歩。AMEND-REVISED"}
+                                             {:path yui :op "append-to-section" :heading "## 能力" :old_text ""
+                                              :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY [[Refs/verse/世界観設定/規則|規則]] と [[Unknown/ghost|幽霊]] を参照。"})]) "stop")
       (and create? verse? (str/includes? raw "BOXP-864")) (respond (created :slug "hotaru-two" :facts [{:fact "モブは名字を持たない" :source rule}]) "stop")
       (and create? verse?) (respond (created :facts [{:fact "モブは名字を持たない" :source rule}]) "stop")
       (and research? (= mode "create-vaultwide")) (respond vaultwide-step "stop")
@@ -546,7 +551,9 @@ test_apply_moves_to_review_without_cloud() {
   assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '^status: review$'
   assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '^assignee: boxp$'
   assert_file_contains "${VAULT}/Tickets/BOXP-700.md" 'localllm docs run .* が 1 ファイルを更新し Review で停止しました'
-  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" 'rollback: '
+  # BOXP-306: Notes point at the audit only; no accept / rollback command
+  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '; audit: '
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-700.md" 'rollback: |localllm-accept|localllm-rollback'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" '8081'
   assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.2'
@@ -568,17 +575,22 @@ test_apply_moves_to_review_without_cloud() {
   assert_file_contains "${run_dir}/localllm-committed.edn" ':phase :committed'
   assert_file_contains "${run_dir}/localllm-committed.edn" ':status "review"'
   assert_file_not_contains "${run_dir}/llm-evidence.edn" 'v1\.3'
-  grep -q 'v1.2' "${run_dir}/backup/${PILOT}/runbook.md" || fail "backup should hold the original"
+  # the recovery journal of the write stays in the run directory (runner-internal restore only)
+  grep -q 'v1.2' "${run_dir}/backup/${PILOT}/runbook.md" || fail "recovery copy should hold the original"
   [[ ! -e "${run_dir}/events.jsonl" ]] || fail "no agent events expected"
-  # rollback restores the original while the file is untouched since the run
-  local run_id
+  # BOXP-306: the retired operator commands print the notice and touch nothing
+  local run_id before_sum
   run_id="$(basename "${run_dir}")"
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-700 "${run_id}" >"${CASE_DIR}/rollback.out"
-  assert_file_contains "${CASE_DIR}/rollback.out" ':status :restored'
-  grep -q 'v1.2' "${VAULT}/${PILOT}/runbook.md" || fail "rollback should restore v1.2"
-  # a second rollback is a no-op because the content no longer matches the run
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-700 "${run_id}" >"${CASE_DIR}/rollback2.out"
-  assert_file_contains "${CASE_DIR}/rollback2.out" ':status :unchanged'
+  before_sum="$(sha256sum "${VAULT}/${PILOT}/runbook.md")"
+  for legacy in localllm-rollback localllm-accept; do
+    if CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" "${legacy}" BOXP-700 "${run_id}" >"${CASE_DIR}/${legacy}.out" 2>&1; then
+      fail "${legacy} must exit non-zero"
+    fi
+    assert_file_contains "${CASE_DIR}/${legacy}.out" "${legacy} は廃止されました"
+    assert_file_not_contains "${CASE_DIR}/${legacy}.out" ':status :restored|:status :accepted'
+    [[ "$(sha256sum "${VAULT}/${PILOT}/runbook.md")" == "${before_sum}" ]] || fail "${legacy} must not change the note"
+  done
+  grep -q 'v1.3' "${VAULT}/${PILOT}/runbook.md" || fail "the applied text must stay"
   # a further tick does nothing: Review + assignee boxp is not a candidate
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2"
   [[ "$(request_count)" == 1 ]] || fail "Review/boxp card must not re-run"
@@ -1845,7 +1857,7 @@ write_create_ticket() {
 
 proposal_count() { find "${VAULT}/${PROPOSALS}" -name '*.md' 2>/dev/null | wc -l | tr -d ' '; }
 
-test_create_makes_an_unapproved_note_revises_it_and_rolls_back() {
+test_create_makes_an_unapproved_note_and_revises_it() {
   setup; echo create >"${MODE_FILE}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-800|BOXP-800: 新キャラ]] #ticket status::ready"
   write_create_ticket "${VAULT}" BOXP-800 ready "灯火街に灯籠組合の見習いの新しいキャラを追加してほしい。" "" "${CORPUS}"
@@ -1921,14 +1933,14 @@ test_create_makes_an_unapproved_note_revises_it_and_rolls_back() {
   assert_file_not_contains "${note}" 'CREATE-SUMMARY'
   assert_file_contains "${note}" "^run: ${run1}$"
   assert_file_contains "${note}" '^ticket: BOXP-800$'
-  # rollback: the revision is restored from its backup, then the creation is undone (note removed)
+  # BOXP-306: no operator rollback; the retired command neither restores nor removes the note
   local run2
   run2="$(ls -t "${STATE}/runs/BOXP-800" | head -n 1)"
   [[ "${run2}" != "${run1}" ]] || fail "second run id expected"
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-800 "${run2}" >"${CASE_DIR}/rb2" 2>&1 || fail "rollback 2 failed: $(cat "${CASE_DIR}/rb2")"
-  assert_file_contains "${note}" 'CREATE-SUMMARY'
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-800 "${run1}" >"${CASE_DIR}/rb1" 2>&1 || fail "rollback 1 failed: $(cat "${CASE_DIR}/rb1")"
-  [[ ! -e "${note}" ]] || fail "rollback of the creating run must remove the note"
+  if CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-rollback BOXP-800 "${run2}" >"${CASE_DIR}/rb2" 2>&1; then fail "localllm-rollback must exit non-zero"; fi
+  assert_file_contains "${CASE_DIR}/rb2" '廃止されました'
+  assert_file_contains "${note}" 'CREATE-REVISED'
+  [[ "$(proposal_count)" == 1 ]] || fail "the retired command must not remove the note"
   assert_runbook_unchanged
 }
 
@@ -2429,7 +2441,7 @@ assert_verse_unchanged_except() {
 }
 latest_run() { ls -t "${STATE}/runs/$1" | head -n 1; }
 
-test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back() {
+test_canon_select_grooms_by_content_then_amends_and_revises_in_place() {
   setup; make_verse; echo select-target >"${MODE_FILE}"
   local sums; sums="$(verse_sums)"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-830|BOXP-830: 技を追加]] #ticket status::backlog"
@@ -2464,7 +2476,7 @@ test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back() {
   assert_file_contains "${groom}" ':decision "target"'
   assert_file_contains "${groom}" ':mode-resolution :content-search'
   assert_file_contains "${groom}" ':model "gemma4-26b"'
-  # owner approval: assignee back → amend run writes only the planned section, wrapped in markers
+  # owner approval: assignee back → amend run writes only the planned section, as plain Markdown (BOXP-306)
   : >"${REQ_LOG}"
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-830|BOXP-830: 技を追加]] #ticket status::ready"
@@ -2476,9 +2488,8 @@ test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back() {
   assert_file_contains "${ticket}" '^assignee: boxp$'
   local yui="${VAULT}/${VERSE}/キャラ設定/ユイ.md"
   local amend_run; amend_run="$(latest_run BOXP-830)"
-  assert_file_contains "${yui}" "^<!-- localllm:BOXP-830:${amend_run}:add -->$"
-  assert_file_contains "${yui}" '^<!-- /localllm:BOXP-830 -->$'
-  assert_file_contains "${yui}" 'AMEND-BODY \[\[Refs/verse/世界観設定/規則\|規則\]\] と 幽霊 を参照'
+  assert_file_not_contains "${yui}" '<!--'
+  assert_file_contains "${yui}" '^- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY \[\[Refs/verse/世界観設定/規則\|規則\]\] と 幽霊 を参照。$'
   assert_file_not_contains "${yui}" 'Unknown/ghost'
   # the addition sits inside 能力, everything else is byte-identical
   awk '/^## 能力/{f=1} /^## 関係/{f=0} f' "${yui}" | grep -q 'AMEND-BODY' || fail "addition must be inside the planned section"
@@ -2486,10 +2497,10 @@ test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back() {
   assert_file_contains "${yui}" '^aliases:$'
   assert_file_contains "${yui}" '^- \[\[Refs/verse/キャラ設定/ユウ\|ユウ\]\] は幼なじみ。$'
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md"
-  # Notes: counts, accept / rollback commands, report path; no model text
-  assert_file_contains "${ticket}" 'が groom 計画の対象ノートへ未確認の追記・編集を 1 件適用し Review で停止しました'
-  assert_file_contains "${ticket}" "localllm-accept BOXP-830 ${amend_run}"
-  assert_file_contains "${ticket}" "localllm-rollback BOXP-830 ${amend_run}"
+  # Notes: counts, report path, revert hint; no accept / rollback command, no model text
+  assert_file_contains "${ticket}" 'が groom 計画の対象ノートへ追記・編集を 1 件適用し Review で停止しました（通常の本文として直接反映'
+  assert_file_contains "${ticket}" 'Obsidian の履歴機能で'
+  assert_file_not_contains "${ticket}" 'localllm-accept|localllm-rollback|マーカー内|マーカー付き|HTML コメントのマーカー'
   assert_file_contains "${ticket}" '操作: append-to-section×1、参照した既存設定 1 件、矛盾・要確認 [1-9][0-9]* 件'
   assert_file_contains "${ticket}" "report: ${STATE}/runs/BOXP-830/${amend_run}/localllm-amend-report.md"
   assert_file_not_contains "${ticket}" 'AMEND-BODY|AMEND-CONFLICT|AMEND-SUMMARY|VERSE-RULE-BODY'
@@ -2500,19 +2511,20 @@ test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back() {
   assert_file_contains "${audit}" ":plan-id \"${groom_run}\""
   assert_file_contains "${audit}" ":canon-roots \[\"${VERSE}\"\]"
   assert_file_contains "${audit}" ':sources \["Refs/verse/世界観設定/規則.md"\]'
-  # the amend research could read the planned target itself (canon view, spans stripped): a model
-  # that re-reads the note it is about to amend is not refused (real Qwen E2E, BOXP-298)
+  # the amend research could read the planned target itself: a model that re-reads the note
+  # it is about to amend is not refused (real Qwen E2E, BOXP-298)
   assert_file_contains "${audit}" ':read-paths \["Refs/verse/キャラ設定/ユイ.md" "Refs/verse/世界観設定/規則.md"\]'
   assert_file_contains "${audit}" ':corpus-notes 6'
-  # another ticket's groom never sees the unreviewed text (canon view)
+  # BOXP-306: another ticket's groom reads the note as it is now (the added text included)
   : >"${REQ_LOG}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-831|BOXP-831: 別の依頼]] #ticket status::backlog"
   write_nl_ticket "${VAULT}" BOXP-831 backlog localllm "ユイの技を見直す" "ユイの技の記述を確認して追記してほしい。"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-other"
   assert_file_contains "${REQ_LOG}" ':schema-name "docs_target_selection"'
-  assert_file_not_contains "${REQ_LOG}" ':sees-amend-body\? true'
+  grep ':schema-name "docs_target_selection"' "${REQ_LOG}" | grep -q ':sees-amend-body? true' || fail "a later ticket must read the current text of the note"
   local groom831; groom831="$(latest_run BOXP-831)"
-  assert_file_contains "${STATE}/runs/BOXP-831/${groom831}/localllm-groom.edn" ':unreviewed-spans 1'
+  assert_file_not_contains "${STATE}/runs/BOXP-831/${groom831}/localllm-groom.edn" ':unreviewed-spans|:malformed-span-notes'
+  assert_file_contains "${STATE}/runs/BOXP-831/${groom831}/localllm-groom.edn" ':notes 6'
   # unchanged Review card: refused before any request
   : >"${REQ_LOG}"
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
@@ -2521,38 +2533,39 @@ test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back() {
   assert_blocked BOXP-830 'category=localllm-no-new-instruction'
   [[ "$(request_count)" == 0 ]] || fail "an unchanged Review card must not reach the model"
   assert_file_contains "${yui}" 'AMEND-BODY'
-  # Review instruction: the same span is replaced (one generation, no second marker)
+  # Review instruction: the line the previous run left is edited in place (no second copy, no marker)
   : >"${REQ_LOG}"
-  local before_revise; before_revise="$(cat "${yui}")"
   sed -i 's/^assignee: boxp$/assignee: localllm/; s/^status: blocked$/status: review/' "${ticket}"
   printf -- '- 2026-10-25: boxp: 技の射程も書いてください。\n' >>"${ticket}"
   write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-830|BOXP-830: 技を追加]] #ticket status::review"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out4"
   assert_file_contains "${REQ_LOG}" ':revise\? true'
-  grep -q ':prev-proposal? true' "${REQ_LOG}" || fail "revision must show the previous span as 前回の案"
+  grep -q ':prev-proposal? true' "${REQ_LOG}" || fail "revision must show the previous write as 前回書いた内容"
+  grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':sees-amend-body? true' || fail "the revision prompt must show the note with the previous write"
   assert_file_contains "${ticket}" '^status: review$'
   local revise_run; revise_run="$(latest_run BOXP-830)"
-  assert_file_contains "${yui}" 'AMEND-REVISED'
+  assert_file_contains "${yui}" '^- 鈴鳴り（新規）: 鈴の音で仲間に合図を送る。射程は十歩。AMEND-REVISED$'
   assert_file_not_contains "${yui}" 'AMEND-BODY'
-  [[ "$(grep -c '^<!-- localllm:BOXP-830:' "${yui}")" == 1 ]] || fail "exactly one span after the revision"
-  assert_file_contains "${yui}" "^<!-- localllm:BOXP-830:${revise_run}:add -->$"
+  assert_file_not_contains "${yui}" '<!--'
+  [[ "$(grep -c '鈴鳴り' "${yui}")" == 1 ]] || fail "the revision must not duplicate the previous addition"
+  assert_file_contains "${yui}" '^- 既存の技: 風読み。$'
   assert_file_contains "${STATE}/runs/BOXP-830/${revise_run}/localllm-audit.edn" ':action :revise'
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md"
-  # rollback the revision → the first write is back; rollback the first write → the original bytes
-  bb "${RUNNER}" localllm-rollback BOXP-830 "${revise_run}" >"${CASE_DIR}/rb1" 2>&1 \
-    CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" || true
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
-    bb "${RUNNER}" localllm-rollback BOXP-830 "${revise_run}" >"${CASE_DIR}/rb1" 2>&1
-  assert_file_contains "${CASE_DIR}/rb1" ':status :restored'
-  [[ "$(cat "${yui}")" == "${before_revise}" ]] || fail "rollback of the revision must restore the first write"
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
-    bb "${RUNNER}" localllm-rollback BOXP-830 "${amend_run}" >"${CASE_DIR}/rb2" 2>&1
-  assert_file_contains "${CASE_DIR}/rb2" ':status :restored'
-  assert_verse_unchanged_except "${sums}"
-  assert_file_not_contains "${yui}" 'localllm:'
+  # a hand edit after the write: the next Review instruction stops before any request (no overwrite)
+  : >"${REQ_LOG}"
+  printf -- '- 人が後から足した行。\n' >>"${yui}"
+  local edited_sum; edited_sum="$(sha256sum "${yui}")"
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  printf -- '- 2026-10-25: boxp: もう一行。\n' >>"${ticket}"
+  write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-830|BOXP-830: 技を追加]] #ticket status::review"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out5"
+  assert_blocked BOXP-830 'category=localllm-plan-stale'
+  assert_file_contains "${ticket}" "前回の run ${revise_run} の適用後に別の変更が入っています"
+  [[ "$(request_count)" == 0 ]] || fail "a note edited after the write must not reach the model"
+  [[ "$(sha256sum "${yui}")" == "${edited_sum}" ]] || fail "the hand edit must be left alone"
 }
 
-test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted() {
+test_canon_select_multi_target_replace_is_plain_text_read_by_other_tickets() {
   setup; make_verse; echo select-multi >"${MODE_FILE}"
   local sums; sums="$(verse_sums)"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-840|BOXP-840: 鈴の技]] #ticket status::backlog"
@@ -2572,45 +2585,36 @@ test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accept
   local yui="${VAULT}/${VERSE}/キャラ設定/ユイ.md" bell="${VAULT}/${VERSE}/アイテム設定/鈴.md"
   local run; run="$(latest_run BOXP-840)"
   assert_file_contains "${yui}" 'AMEND-BODY'
-  # the replacement keeps the old sentence (base64url) in the open marker and the new one in place
-  assert_file_contains "${bell}" "^<!-- localllm:BOXP-840:${run}:replace old=[A-Za-z0-9_-]+ -->- 音は澄んでいて、遠くまで届く。<!-- /localllm:BOXP-840 -->VERSE-BELL-BODY$"
+  # BOXP-306: the replacement is plain text in place; the old sentence is gone (Obsidian history keeps it)
+  assert_file_contains "${bell}" '^- 音は澄んでいて、遠くまで届く。VERSE-BELL-BODY$'
   assert_file_not_contains "${bell}" '^- 音は澄んでいる。$'
+  assert_file_not_contains "${bell}" '<!--'
+  assert_file_not_contains "${yui}" '<!--'
+  assert_file_contains "${yui}" '^- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY$'
   assert_file_contains "${bell}" '^- 鐘楼に伝わる。$'
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md" "${VERSE}/アイテム設定/鈴.md"
-  assert_file_contains "${ticket}" '未確認の追記・編集を 2 件適用し Review で停止しました'
+  assert_file_contains "${ticket}" '追記・編集を 2 件適用し Review で停止しました（通常の本文として直接反映'
   assert_file_contains "${ticket}" '操作: (append-to-section×1, replace-text×1|replace-text×1, append-to-section×1)'
-  # another ticket's groom sees the canon view: no addition, the old sentence restored
+  assert_file_not_contains "${ticket}" 'localllm-accept|localllm-rollback'
+  [[ ! -e "${STATE}/runs/BOXP-840/${run}/localllm-accepted.edn" ]] || fail "no accept record is written"
+  # another ticket's groom reads both notes as they are now: the addition and the replaced sentence
   : >"${REQ_LOG}"
   echo select-target >"${MODE_FILE}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-841|BOXP-841: 別の依頼]] #ticket status::backlog"
   write_nl_ticket "${VAULT}" BOXP-841 backlog localllm "ユイの技" "ユイの技を追記してほしい。"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-other"
-  assert_file_not_contains "${REQ_LOG}" ':sees-amend-body\? true'
-  assert_file_not_contains "${REQ_LOG}" ':sees-replaced-text\? true'
+  grep ':schema-name "docs_target_selection"' "${REQ_LOG}" | grep -q ':sees-amend-body? true' || fail "the addition must be read by a later ticket"
+  [[ "$(corpus_has "${VERSE}/アイテム設定/鈴.md" "遠くまで届く")" == true ]] || fail "the replaced sentence must be read by a later ticket"
+  [[ "$(corpus_has "${VERSE}/アイテム設定/鈴.md" "音は澄んでいる。")" == false ]] || fail "the old sentence must not be read back by a later ticket"
   assert_file_contains "${REQ_LOG}" ':sees-corpus-body\? false'
   local g841; g841="$(latest_run BOXP-841)"
-  assert_file_contains "${STATE}/runs/BOXP-841/${g841}/localllm-groom.edn" ':unreviewed-spans 2'
-  # accept is all-or-nothing: while one note is edited by hand, neither is adopted
-  local yui_saved; yui_saved="$(cat "${yui}")"
-  printf -- "\n- 人の追記。\n" >>"${yui}"
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
-    bb "${RUNNER}" localllm-accept BOXP-840 "${run}" >"${CASE_DIR}/accept0" 2>&1
-  [[ "$(grep -c ":status :skipped" "${CASE_DIR}/accept0")" == 2 ]] || fail "accept must skip every note when one changed: $(cat "${CASE_DIR}/accept0")"
-  assert_file_contains "${bell}" "localllm:BOXP-840"
-  printf "%s\n" "${yui_saved}" >"${yui}"
-  # accept: markers removed, new text kept; a later rollback of the same run is refused
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
-    bb "${RUNNER}" localllm-accept BOXP-840 "${run}" >"${CASE_DIR}/accept" 2>&1
-  [[ "$(grep -c ':status :accepted' "${CASE_DIR}/accept")" == 2 ]] || fail "both notes must be accepted: $(cat "${CASE_DIR}/accept")"
-  assert_file_not_contains "${yui}" 'localllm:'
-  assert_file_not_contains "${bell}" 'localllm:'
-  assert_file_contains "${yui}" '^- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY$'
-  assert_file_contains "${bell}" '^- 音は澄んでいて、遠くまで届く。VERSE-BELL-BODY$'
-  [[ -f "${STATE}/runs/BOXP-840/${run}/localllm-accepted.edn" ]] || fail "accept record expected"
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
-    bb "${RUNNER}" localllm-rollback BOXP-840 "${run}" >"${CASE_DIR}/rb" 2>&1
-  assert_file_contains "${CASE_DIR}/rb" ':status :skipped'
-  assert_file_contains "${yui}" 'AMEND-BODY'
+  assert_file_not_contains "${STATE}/runs/BOXP-841/${g841}/localllm-groom.edn" ':unreviewed-spans'
+  # the retired accept command changes nothing (both notes byte-identical)
+  local sums_after; sums_after="$(verse_sums)"
+  if CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
+    bb "${RUNNER}" localllm-accept BOXP-840 "${run}" >"${CASE_DIR}/accept" 2>&1; then fail "localllm-accept must exit non-zero"; fi
+  assert_file_contains "${CASE_DIR}/accept" 'localllm-accept は廃止されました'
+  assert_verse_unchanged_except "${sums_after}"
 }
 
 test_canon_select_asks_or_refuses_without_writing() {
@@ -2675,7 +2679,7 @@ test_canon_select_asks_or_refuses_without_writing() {
   [[ "$(request_count)" == 0 ]] || fail "a model mismatch must stop before any request"
 }
 
-test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted() {
+test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note() {
   setup; make_verse; echo select-new >"${MODE_FILE}"
   local sums; sums="$(verse_sums)"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-860|BOXP-860: 脇役]] #ticket status::backlog"
@@ -2700,24 +2704,27 @@ test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_acce
   local note="${VAULT}/${VERSE}/キャラ設定/モブ/hotaru-lantern-keeper.md"
   [[ -f "${note}" ]] || fail "note must be created in the chosen canon folder"
   [[ "$(proposal_count)" == 0 ]] || fail "nothing under the proposal root"
-  assert_file_contains "${note}" '^localllm-unreviewed: true$'
+  # BOXP-306: an ordinary note (provenance frontmatter only; no unreviewed mark, status or banner)
+  assert_file_not_contains "${note}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）|localllm-accept|<!--'
   assert_file_contains "${note}" '^ticket: BOXP-860$'
-  assert_file_contains "${note}" '^> \*\*未確認（localllm）\*\*'
+  assert_file_contains "${note}" "^run: "
+  assert_file_contains "${note}" '^# 灯守ホタル$'
   assert_file_contains "${note}" 'CREATE-BODY'
   assert_file_not_contains "${note}" '^localllm-proposal:'
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/モブ/hotaru-lantern-keeper.md"
   local run; run="$(latest_run BOXP-860)"
-  assert_file_contains "${ticket}" 'が新規キャラクター設定のノート（groom 計画で確認した設定フォルダ内、未確認）を 作成 し Review で停止しました'
-  assert_file_contains "${ticket}" "localllm-accept BOXP-860 ${run}"
+  assert_file_contains "${ticket}" 'が新規キャラクター設定のノート（groom 計画で確認した設定フォルダ内）を 作成 し Review で停止しました（既存のノートは変更していません。通常のノートとして保存'
+  assert_file_not_contains "${ticket}" 'localllm-accept|localllm-rollback'
   assert_file_contains "${STATE}/runs/BOXP-860/${run}/localllm-audit.edn" ":canon-folder|:docs-roots \[.*\"${VERSE}\""
-  # until accepted, another ticket's groom does not see the new note
+  # another ticket's groom reads the new note like any other note
   : >"${REQ_LOG}"
   echo select-target >"${MODE_FILE}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-861|BOXP-861: 技]] #ticket status::backlog"
   write_nl_ticket "${VAULT}" BOXP-861 backlog localllm "ユイに技を追加" "ユイに新しい技を追記してほしい。"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-other"
-  assert_file_not_contains "${REQ_LOG}" ':sees-create-body\? true'
-  assert_file_contains "${STATE}/runs/BOXP-861/$(latest_run BOXP-861)/localllm-groom.edn" ':proposal-notes 1'
+  [[ "$(corpus_has "${VERSE}/キャラ設定/モブ/hotaru-lantern-keeper.md" "CREATE-BODY")" == true ]] || fail "the created note must be read by a later ticket"
+  assert_file_contains "${STATE}/runs/BOXP-861/$(latest_run BOXP-861)/localllm-groom.edn" ':proposal-notes 0'
+  assert_file_contains "${STATE}/runs/BOXP-861/$(latest_run BOXP-861)/localllm-groom.edn" ':notes 7'
   # Review instruction revises the same note in place (no second file)
   : >"${REQ_LOG}"; echo select-new >"${MODE_FILE}"
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
@@ -2726,9 +2733,10 @@ test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_acce
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out3"
   assert_file_contains "${ticket}" '^status: review$'
   assert_file_contains "${note}" 'CREATE-REVISED'
-  assert_file_contains "${note}" '^localllm-unreviewed: true$'
+  assert_file_not_contains "${note}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）'
+  assert_file_contains "${note}" '^ticket: BOXP-860$'
   [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name '*.md' | wc -l | tr -d ' ')" == 2 ]] || fail "no second note"
-  # another ticket creating the same name in the same folder is refused (the unreviewed note is outside the corpus)
+  # another ticket creating the same name in the same folder is refused (the note is in the corpus now)
   : >"${REQ_LOG}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-864|BOXP-864: 脇役2]] #ticket status::backlog"
   write_nl_ticket "${VAULT}" BOXP-864 backlog localllm "新しい脇役をもう 1 名" "いつものフォルダに、鐘楼で働く新しい脇役をもう 1 名追加してほしい。"
@@ -2737,24 +2745,17 @@ test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_acce
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-864|BOXP-864: 脇役2]] #ticket status::ready"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-dup2"
   assert_blocked BOXP-864 "name / aliases が既存ノートの名前と同じです"
-  [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "duplicate unreviewed note must not be created"
-  # accept removes the unreviewed marks, keeps the text
-  local run2; run2="$(latest_run BOXP-860)"
-  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
-    bb "${RUNNER}" localllm-accept BOXP-860 "${run2}" >"${CASE_DIR}/accept" 2>&1
-  assert_file_contains "${CASE_DIR}/accept" ':status :accepted'
-  assert_file_not_contains "${note}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）'
-  assert_file_contains "${note}" 'CREATE-REVISED'
-  # a Review instruction after acceptance revises the same (now accepted) note; no second file
+  [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "duplicate note must not be created"
+  # a second Review instruction revises the same note again; still no second file, still a plain note
   : >"${REQ_LOG}"
   sed -i "s/^assignee: boxp$/assignee: localllm/" "${ticket}"
   printf -- "- 2026-10-25: boxp: 口調をもう少し丁寧に。\n" >>"${ticket}"
   write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-860|BOXP-860: 脇役]] #ticket status::review"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out5"
   assert_file_contains "${ticket}" "^status: review$"
-  [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "revision after accept must not create a second note"
-  assert_file_contains "${note}" "^localllm-unreviewed: true$"
-  assert_file_contains "${ticket}" "設定フォルダ内、未確認）を 改稿（置換） し Review で停止しました"
+  [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "a second revision must not create a second note"
+  assert_file_not_contains "${note}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）'
+  assert_file_contains "${ticket}" "設定フォルダ内）を 改稿（置換） し Review で停止しました"
   # a hand-written docs-folder without a groom plan is refused on a Ready card
   setup; make_verse; echo select-new >"${MODE_FILE}"; sums="$(verse_sums)"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-862|BOXP-862: 脇役]] #ticket status::ready"
@@ -2774,7 +2775,7 @@ test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_acce
   assert_verse_unchanged_except "${sums}"
 }
 
-test_canon_amend_stops_when_the_plan_is_stale_missing_or_the_note_holds_another_tickets_span() {
+test_canon_amend_stops_when_the_plan_is_stale_or_missing() {
   local sums ticket yui
   # the target changed (sync / hand edit) between groom and run → nothing written, no model call
   setup; make_verse; echo select-target >"${MODE_FILE}"
@@ -2793,26 +2794,27 @@ test_canon_amend_stops_when_the_plan_is_stale_missing_or_the_note_holds_another_
   assert_file_contains "${ticket}" 'groom 計画の時点から変更されています'
   [[ "$(request_count)" == 0 ]] || fail "a stale plan must not reach the model"
   assert_verse_unchanged_except "${sums}"
-  # another ticket's unreviewed span in the target → stop (no nesting of unreviewed changes)
+  # BOXP-306: text another ticket wrote earlier is ordinary note text: the groom reads it and
+  # the run is not stopped for it (the plan hash is of the real file either way)
   setup; make_verse; echo select-target >"${MODE_FILE}"
   yui="${VAULT}/${VERSE}/キャラ設定/ユイ.md"
-  printf -- '\n<!-- localllm:BOXP-700:20261024T000000Z-aaaaaaaa-0000-0000-0000-000000000000:add -->\n- 他票の未確認追記。OTHER-SPAN-BODY\n<!-- /localllm:BOXP-700 -->\n' >>"${yui}"
+  printf -- '- 他票が先に書いた行。OTHER-WRITE-BODY\n' >>"${yui}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-871|BOXP-871: 技]] #ticket status::backlog"
   write_nl_ticket "${VAULT}" BOXP-871 backlog localllm "ユイに技を追加" "ユイに新しい技を追記してほしい。"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
   ticket="${VAULT}/Tickets/BOXP-871.md"
   assert_file_contains "${ticket}" '^status: ready$'
-  # the groom's model never saw the other ticket's span, and the plan hash is of the real file
-  assert_file_not_contains "${REQ_LOG}" 'OTHER-SPAN-BODY'
   sums="$(verse_sums)"
   : >"${REQ_LOG}"
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-871|BOXP-871: 技]] #ticket status::ready"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
-  assert_blocked BOXP-871 'category=localllm-other-unreviewed'
-  assert_file_contains "${ticket}" '他の票（BOXP-700）の未確認の変更が残っています'
-  [[ "$(request_count)" == 0 ]] || fail "no request expected"
-  assert_verse_unchanged_except "${sums}"
+  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_not_contains "${ticket}" 'localllm-other-unreviewed'
+  assert_file_contains "${yui}" 'OTHER-WRITE-BODY'
+  assert_file_contains "${yui}" 'AMEND-BODY'
+  assert_file_not_contains "${yui}" '<!--'
+  assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md"
   # an exclusion added after the plan was made applies to the write: nothing written, no request
   setup; make_verse; echo select-target >"${MODE_FILE}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-877|BOXP-877: 技]] #ticket status::backlog"
@@ -2827,16 +2829,15 @@ test_canon_amend_stops_when_the_plan_is_stale_missing_or_the_note_holds_another_
   assert_file_contains "${VAULT}/Tickets/BOXP-877.md" "参照除外（.*）配下にあるため書きません"
   [[ "$(request_count)" == 0 ]] || fail "no request expected"
   assert_verse_unchanged_except "${sums}"
-  # a note whose markers are broken (hand-edited replace marker) is left out of the corpus, never read as canon
+  # BOXP-306: a note with a user's own HTML comment is an ordinary corpus note (no marker parsing)
   setup; make_verse; echo select-target >"${MODE_FILE}"
-  printf -- "\n<!-- localllm:BOXP-700:20261024T000000Z-aaaaaaaa-0000-0000-0000-000000000000:replace old=A -->壊れた置換<!-- /localllm:BOXP-700 -->\n" >>"${VAULT}/${VERSE}/アイテム設定/鈴.md"
+  printf -- "\n<!-- 自分用メモ: ここは後で見直す -->\n" >>"${VAULT}/${VERSE}/アイテム設定/鈴.md"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-875|BOXP-875: 技]] #ticket status::backlog"
   write_nl_ticket "${VAULT}" BOXP-875 backlog localllm "ユイに技を追加" "ユイに新しい技を追記してほしい。"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
   assert_file_contains "${VAULT}/Tickets/BOXP-875.md" "^status: ready$"
-  assert_file_contains "${STATE}/runs/BOXP-875/$(latest_run BOXP-875)/localllm-groom.edn" ":malformed-span-notes 1"
-  assert_file_not_contains "${REQ_LOG}" "VERSE-BELL-BODY|壊れた置換"
-  assert_file_contains "${VAULT}/Tickets/BOXP-875.md" "corpus 5 ノート"
+  assert_file_not_contains "${STATE}/runs/BOXP-875/$(latest_run BOXP-875)/localllm-groom.edn" ":malformed-span-notes"
+  assert_file_contains "${VAULT}/Tickets/BOXP-875.md" "corpus 6 ノート"
   # amend without a plan (card written by hand into Ready) → stop before any request
   setup; make_verse; echo select-target >"${MODE_FILE}"; sums="$(verse_sums)"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-872|BOXP-872: 技]] #ticket status::ready"
@@ -2984,17 +2985,15 @@ test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings() {
       assert_file_contains "${ticket}" '^status: review$'
       run="$(latest_run BOXP-890)"
       assert_file_contains "${STATE}/runs/BOXP-890/${run}/localllm-audit.edn" ':line-ids 1'
-      assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-890:${run}:replace old=.* -->- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE<!-- /localllm:BOXP-890 -->$"
+      # BOXP-306: the replaced line is plain text in place
+      assert_file_contains "${VAULT}/${club}" '^- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE$'
       assert_file_not_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
+      assert_file_not_contains "${VAULT}/${club}" '<!--'
       assert_file_contains "${VAULT}/${club}" '^- 「今日の稽古は庭でやりましょう」$'
       assert_file_contains "${VAULT}/${club}" '^#### 部長$'
       assert_file_contains "${VAULT}/${club}" '^#### 副部長$'
       assert_file_not_contains "${ticket}" 'ようこそ'
       assert_verse_unchanged_except "${sums}" "${club}"
-      # accept removes the markers and keeps the replaced line only
-      CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-accept BOXP-890 "${run}" >"${CASE_DIR}/acc" 2>&1 || fail "accept failed: $(cat "${CASE_DIR}/acc")"
-      assert_file_contains "${VAULT}/${club}" '^- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE$'
-      assert_file_not_contains "${VAULT}/${club}" 'localllm:'
     elif [[ "${mode}" == amend-quote-subheading ]]; then
       assert_blocked BOXP-890 'category=localllm-invalid-proposal'
       assert_file_contains "${ticket}" '見出し行が含まれています'
@@ -3096,7 +3095,8 @@ test_canon_amend_line_listing_shares_one_budget_across_targets() {
   grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':line-list-truncated? true' || fail "the long listing must be truncated to the shared budget"
   local chars; chars="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | sed -E 's/.*:prompt-chars ([0-9]+).*/\1/')"
   [[ "${chars}" -le 20000 && "${chars}" -gt 12000 ]] || fail "the amend request must fit the 20,000-char cap (got ${chars})"
-  assert_file_contains "${VAULT}/${bell}" '^<!-- localllm:BOXP-842:.*:replace old=[A-Za-z0-9_-]+ -->- 音は澄んでいて、遠くまで届く。<!-- /localllm:BOXP-842 -->VERSE-BELL-BODY$'
+  assert_file_contains "${VAULT}/${bell}" '^- 音は澄んでいて、遠くまで届く。VERSE-BELL-BODY$'
+  assert_file_not_contains "${VAULT}/${bell}" '<!--'
   assert_file_contains "${VAULT}/${bell}" '^- 音色の記録 300 回目。'
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md" "${bell}"
 }
@@ -3130,14 +3130,12 @@ test_canon_amend_line_id_replaces_one_of_two_identical_lines() {
       assert_file_contains "${STATE}/runs/BOXP-891/${run}/localllm-audit.edn" ':line-ids 1'
       # the second 「はい」 (L3) is replaced, the first (L2) and everything else stay
       [[ "$(grep -c '^- 「はい」$' "${VAULT}/${club}")" == 1 ]] || fail "exactly one of the identical lines must remain"
-      assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-891:${run}:replace old=.* -->- 「ええ」AMEND-DUP<!-- /localllm:BOXP-891 -->$"
+      assert_file_contains "${VAULT}/${club}" '^- 「ええ」AMEND-DUP$'
+      assert_file_not_contains "${VAULT}/${club}" '<!--'
       [[ "$(grep -n -- '^- 「はい」$\|AMEND-DUP' "${VAULT}/${club}" | sed -n 1p)" == *'- 「はい」' ]] || fail "the first identical line must be the one kept"
       assert_file_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
       assert_file_contains "${VAULT}/${club}" '^#### 部長$'
       assert_verse_unchanged_except "${sums}" "${club}"
-      CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-accept BOXP-891 "${run}" >"${CASE_DIR}/acc" 2>&1 || fail "accept failed: $(cat "${CASE_DIR}/acc")"
-      assert_file_contains "${VAULT}/${club}" '^- 「ええ」AMEND-DUP$'
-      [[ "$(grep -c '^- 「はい」$' "${VAULT}/${club}")" == 1 ]] || fail "accept must keep the untouched identical line"
     else
       assert_blocked BOXP-891 'category=localllm-invalid-proposal'
       assert_file_contains "${ticket}" '本文での出現 2 件'
@@ -3145,6 +3143,116 @@ test_canon_amend_line_id_replaces_one_of_two_identical_lines() {
     fi
     assert_no_cloud
   done
+}
+
+# BOXP-306: notes written before the change still carry review markers /
+# `localllm-unreviewed` marks. The one-off migration strips them deterministically
+# (current text kept, old text in replace markers dropped), touches nothing else,
+# is dry-run by default, stops per note on unknown shapes or a concurrent hand
+# edit, and is idempotent.
+migrate_cmd() {
+  # $1 = --apply or empty; MIGRATE_HOOK = note the test hook edits between the plan and its write
+  local -a hook=()
+  [[ -n "${MIGRATE_HOOK:-}" ]] && hook=("CODEX_TASK_BOARD_TEST_EDIT_LOCALLLM_MIGRATION_TARGET=${MIGRATE_HOOK}")
+  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
+    env "${hook[@]}" bb "${RUNNER}" localllm-migrate-markers ${1:+"$1"}
+}
+# one result line of the migration output must carry every given token (map key order is not fixed)
+assert_result_line() {
+  local file="$1" path="$2"; shift 2
+  local line; line="$(grep -F ":path \"${path}\"" "${file}")" || fail "no result line for ${path} in ${file}: $(cat "${file}")"
+  for tok in "$@"; do [[ "${line}" == *"${tok}"* ]] || fail "result line for ${path} must contain ${tok}: ${line}"; done
+}
+corpus_has() {
+  # $1 = vault-relative note, $2 = text; prints true/false from load-corpus (boolean only, no note text)
+  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [c (localllm-docs/load-corpus (localllm-docs/config) \"${VAULT}\" [\"${VERSE}\"] [])]
+  (print (boolean (some #(and (= (:rel %) \"$1\") (clojure.string/includes? (:text %) \"$2\")) (:notes c)))))" 2>&1
+}
+test_legacy_markers_are_migrated_once_and_safely() {
+  setup; make_verse
+  local yui="${VAULT}/${VERSE}/キャラ設定/ユイ.md" bell="${VAULT}/${VERSE}/アイテム設定/鈴.md"
+  local mob="${VAULT}/${VERSE}/キャラ設定/モブ/legacy-hotaru.md" bad="${VAULT}/${VERSE}/世界観設定/壊れた.md"
+  local outside="${VAULT}/Infrastructure/outside.md" prop="${VAULT}/${PROPOSALS}/characters/old-proposal.md"
+  local old_b64; old_b64="$(printf -- '- 音は澄んでいる。' | basenc --base64url -w0 | tr -d '=')"
+  # (a) an add span of one ticket and a replace span of another (new text in place, old text in the marker)
+  printf -- '\n<!-- localllm:BOXP-700:20261024T000000Z-aaaaaaaa-0000-0000-0000-000000000000:add -->\n- 鈴鳴り（新規）: 鈴の音で合図を送る。LEGACY-ADD\n<!-- /localllm:BOXP-700 -->\n' >>"${yui}"
+  printf -- '---\ntitle: 鈴\n---\n\n# 鈴\n\n## 概要\n\n<!-- localllm:BOXP-701:20261024T000000Z-bbbbbbbb-0000-0000-0000-000000000000:replace old=%s -->- 音は澄んでいて、遠くまで届く。<!-- /localllm:BOXP-701 -->VERSE-BELL-BODY\n\n## 来歴\n\n- 鐘楼に伝わる。\n' "${old_b64}" >"${bell}"
+  # (b) a created note with the retired unreviewed marks
+  printf -- '---\ntitle: "灯守ホタル"\ntype: character\nkind: character\nstatus: unapproved\nlocalllm-unreviewed: true\nticket: BOXP-702\nslug: legacy-hotaru\naliases: []\ncreated: 2026-10-25\nrun: 20261024T000000Z-cccccccc-0000-0000-0000-000000000000\n---\n\n# 灯守ホタル\n\n> **未確認（localllm）**: localllm docs run x がチケット [[Tickets/BOXP-702]] の依頼で保存しました。採用するなら `task_board_runner.bb localllm-accept BOXP-702 x`。\n\n## 概要\n\n灯籠の火を守る見習い。LEGACY-CREATE\n' >"${mob}"
+  # (c) nested markers: unknown shape, must be left to a human
+  printf -- '---\ntitle: 壊れた\n---\n\n# 壊れた\n\n<!-- localllm:BOXP-703:20261024T000000Z-dddddddd-0000-0000-0000-000000000000:add -->\n<!-- localllm:BOXP-703:20261024T000000Z-dddddddd-0000-0000-0000-000000000000:add -->\n- 二重。\n<!-- /localllm:BOXP-703 -->\n' >"${bad}"
+  # (d) outside every migration root, (e) a proposal-root note, (f) a symlink inside the root
+  printf -- '---\ntitle: outside\n---\n\n<!-- localllm:BOXP-704:20261024T000000Z-eeeeeeee-0000-0000-0000-000000000000:add -->\n- 外。\n<!-- /localllm:BOXP-704 -->\n' >"${outside}"
+  mkdir -p "$(dirname "${prop}")"
+  printf -- '---\ntitle: old\nstatus: unapproved\nlocalllm-proposal: true\nlocalllm-unreviewed: true\nticket: BOXP-705\nrun: x\n---\n\n# old\n\n<!-- localllm:BOXP-705:20261024T000000Z-ffffffff-0000-0000-0000-000000000000:add -->\n- 提案。\n<!-- /localllm:BOXP-705 -->\n' >"${prop}"
+  ln -s "${outside}" "${VAULT}/${VERSE}/世界観設定/link.md"
+  local sums; sums="$(verse_sums)"
+  local sums_other; sums_other="$(sha256sum "${outside}" "${prop}")"
+  # dry run: a plan with paths / hashes / counts only, nothing written
+  migrate_cmd >"${CASE_DIR}/dry" 2>&1 || true  # exit 3: the nested note is reported for a human
+  assert_file_contains "${CASE_DIR}/dry" ':dry-run\? true'
+  [[ "$(grep -c ':status :would-migrate' "${CASE_DIR}/dry")" == 3 ]] || fail "three notes to migrate expected: $(cat "${CASE_DIR}/dry")"
+  assert_result_line "${CASE_DIR}/dry" "${VERSE}/キャラ設定/ユイ.md" ":status :would-migrate" ":spans 1" ":unreviewed? false" ":before-sha256 \"" ":after-sha256 \""
+  assert_result_line "${CASE_DIR}/dry" "${VERSE}/アイテム設定/鈴.md" ":status :would-migrate" ":spans 1" ":unreviewed? false"
+  assert_result_line "${CASE_DIR}/dry" "${VERSE}/キャラ設定/モブ/legacy-hotaru.md" ":status :would-migrate" ":spans 0" ":unreviewed? true"
+  assert_result_line "${CASE_DIR}/dry" "${VERSE}/世界観設定/壊れた.md" ":status :skipped" "形式を解釈できないため未変更: localllm スパンが入れ子になっています"
+  assert_file_not_contains "${CASE_DIR}/dry" 'outside.md|old-proposal.md|link.md'
+  assert_file_not_contains "${CASE_DIR}/dry" 'LEGACY-ADD|LEGACY-CREATE|遠くまで届く|灯籠の火'
+  assert_verse_unchanged_except "${sums}"
+  # apply with a hand edit landing on one note between the plan and its write: that note is skipped, the others migrate
+  if MIGRATE_HOOK="${VERSE}/キャラ設定/ユイ.md" migrate_cmd --apply >"${CASE_DIR}/apply1" 2>&1; then
+    fail "apply with a skipped note must exit non-zero"
+  fi
+  assert_result_line "${CASE_DIR}/apply1" "${VERSE}/キャラ設定/ユイ.md" ":status :skipped" "適用直前に別の編集が入ったため未変更"
+  assert_file_contains "${yui}" '<!-- localllm:BOXP-700'
+  assert_file_contains "${yui}" 'HAND-EDIT-DURING-MIGRATION'
+  assert_result_line "${CASE_DIR}/apply1" "${VERSE}/アイテム設定/鈴.md" ":status :migrated"
+  assert_result_line "${CASE_DIR}/apply1" "${VERSE}/キャラ設定/モブ/legacy-hotaru.md" ":status :migrated"
+  assert_result_line "${CASE_DIR}/apply1" "${VERSE}/世界観設定/壊れた.md" ":status :skipped"
+  # replace span: the new sentence once, the old sentence gone, nothing else changed in the note
+  assert_file_contains "${bell}" '^- 音は澄んでいて、遠くまで届く。VERSE-BELL-BODY$'
+  assert_file_not_contains "${bell}" '<!--|音は澄んでいる。'
+  [[ "$(grep -c '遠くまで届く' "${bell}")" == 1 ]] || fail "the replaced sentence must appear once"
+  assert_file_contains "${bell}" '^- 鐘楼に伝わる。$'
+  # created note: marks and banner gone, text and provenance kept
+  assert_file_not_contains "${mob}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）|localllm-accept'
+  assert_file_contains "${mob}" '^ticket: BOXP-702$'
+  assert_file_contains "${mob}" '^# 灯守ホタル$'
+  assert_file_contains "${mob}" 'LEGACY-CREATE'
+  [[ "$(sed -n '12,14p' "${mob}")" == $'# 灯守ホタル\n\n## 概要' ]] || fail "the banner and its blank line must go together: $(sed -n '12,18p' "${mob}")"
+  # untouched: the nested note, the note outside the roots, the proposal note, the symlink
+  grep -Fq "$(grep '壊れた.md' <<<"${sums}")" <<<"$(verse_sums)" || fail "the nested note must be unchanged"
+  [[ "$(sha256sum "${outside}" "${prop}")" == "${sums_other}" ]] || fail "notes outside the roots / proposal notes must be unchanged"
+  [[ -L "${VAULT}/${VERSE}/世界観設定/link.md" ]] || fail "the symlink must be left alone"
+  # second apply without the hook: the remaining note migrates; the nested note is reported again
+  sed -i '/HAND-EDIT-DURING-MIGRATION/d' "${yui}"
+  if migrate_cmd --apply >"${CASE_DIR}/apply2" 2>&1; then fail "the nested note keeps the exit code non-zero"; fi
+  assert_result_line "${CASE_DIR}/apply2" "${VERSE}/キャラ設定/ユイ.md" ":status :migrated"
+  [[ "$(grep -c ':status :migrated' "${CASE_DIR}/apply2")" == 1 ]] || fail "already migrated notes must not be touched again"
+  assert_file_contains "${yui}" '^- 鈴鳴り（新規）: 鈴の音で合図を送る。LEGACY-ADD$'
+  assert_file_not_contains "${yui}" '<!--'
+  assert_file_contains "${yui}" '^- 既存の技: 風読み。$'
+  # idempotent: a third dry run plans nothing but the nested note
+  migrate_cmd >"${CASE_DIR}/dry2" 2>&1 || true
+  [[ "$(grep -c ':status :would-migrate' "${CASE_DIR}/dry2")" == 0 ]] || fail "nothing left to migrate: $(cat "${CASE_DIR}/dry2")"
+  assert_result_line "${CASE_DIR}/dry2" "${VERSE}/世界観設定/壊れた.md" ":status :skipped"
+  # a later ticket's groom reads the migrated text as ordinary note text
+  echo select-target >"${MODE_FILE}"; : >"${REQ_LOG}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-706|BOXP-706: 技]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-706 backlog localllm "ユイに技を追加" "ユイに新しい技を追記してほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  assert_file_contains "${VAULT}/Tickets/BOXP-706.md" '^status: ready$'
+  [[ "$(corpus_has "${VERSE}/アイテム設定/鈴.md" "遠くまで届く")" == true ]] || fail "the migrated replacement must be read as the current text"
+  [[ "$(corpus_has "${VERSE}/アイテム設定/鈴.md" "音は澄んでいる。")" == false ]] || fail "the old sentence must not be read back"
+  # a runner without canon roots has no migration root beyond the pilot: the verse is not scanned
+  setup; make_verse
+  printf -- '\n<!-- localllm:BOXP-700:20261024T000000Z-aaaaaaaa-0000-0000-0000-000000000000:add -->\n- x\n<!-- /localllm:BOXP-700 -->\n' >>"${VAULT}/${VERSE}/キャラ設定/ユイ.md"
+  sums="$(verse_sums)"
+  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" bb "${RUNNER}" localllm-migrate-markers --apply >"${CASE_DIR}/noroot" 2>&1 || fail "no note to migrate: $(cat "${CASE_DIR}/noroot")"
+  assert_file_not_contains "${CASE_DIR}/noroot" 'ユイ.md'
+  assert_verse_unchanged_except "${sums}"
 }
 
 make_club_note_long() {
@@ -3202,7 +3310,8 @@ test_canon_amend_correction_round_refits_the_line_listing_to_the_cap() {
   grep -Eq 'correction round 1 .* line-ids=203/203 -> [0-9]+/203' "${CASE_DIR}/out2" || fail "the shrink must be logged: $(grep 'correction round' "${CASE_DIR}/out2")"
   run="$(latest_run BOXP-892)"
   assert_file_contains "${STATE}/runs/BOXP-892/${run}/localllm-audit.edn" ':line-ids 1'
-  assert_file_contains "${VAULT}/${club}" "^<!-- localllm:BOXP-892:${run}:replace old=.* -->- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE<!-- /localllm:BOXP-892 -->$"
+  assert_file_contains "${VAULT}/${club}" '^- 「いらっしゃい、お茶どうぞ」AMEND-QUOTE$'
+  assert_file_not_contains "${VAULT}/${club}" '<!--'
   assert_file_not_contains "${VAULT}/${club}" '^- 「ようこそ、お茶をどうぞ」$'
   assert_file_contains "${VAULT}/${club}" '^- 「記録 200 番、'
   assert_file_contains "${VAULT}/${club}" '^#### 副部長$'
@@ -3210,18 +3319,19 @@ test_canon_amend_correction_round_refits_the_line_listing_to_the_cap() {
 }
 
 for t in \
-  test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back \
+  test_legacy_markers_are_migrated_once_and_safely \
+  test_canon_select_grooms_by_content_then_amends_and_revises_in_place \
   test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
   test_canon_amend_line_listing_shares_one_budget_across_targets \
   test_canon_amend_line_id_replaces_one_of_two_identical_lines \
   test_canon_amend_correction_round_refits_the_line_listing_to_the_cap \
-  test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted \
+  test_canon_select_multi_target_replace_is_plain_text_read_by_other_tickets \
   test_canon_select_asks_or_refuses_without_writing \
-  test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted \
-  test_canon_amend_stops_when_the_plan_is_stale_missing_or_the_note_holds_another_tickets_span \
+  test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note \
+  test_canon_amend_stops_when_the_plan_is_stale_or_missing \
   test_canon_amend_rejects_changes_outside_the_planned_section_and_needs_human \
   test_credential_additions_are_blocked_by_the_executor \
-  test_create_makes_an_unapproved_note_revises_it_and_rolls_back \
+  test_create_makes_an_unapproved_note_and_revises_it \
   test_create_kind_comes_from_docs_kind_or_wording_or_is_asked_without_a_request \
   test_create_name_and_slug_collisions_get_one_correction_then_block \
   test_create_needs_human_and_result_markers_block_without_writing \
