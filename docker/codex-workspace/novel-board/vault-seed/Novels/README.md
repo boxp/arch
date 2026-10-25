@@ -21,6 +21,19 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 `assignee::` を省略した場合は `boxp` となり、執筆 agent は起動しない。scaffold 後の担当変更は、カードの `assignee::` でも管理ノート frontmatter の `assignee` でもよい（Task Board と同じ操作感。Kanban UI でカードを追加する場合はタイトルだけを入力する。`- [ ] タイトル` と入力すると先頭のチェックボックスが二重になるが、runner が scaffold 時に取り除く）。`#nsfw` は正式カードと管理ノートへ引き継がれる。
 `#novel-rule` は runner が scaffold 対象から除外する予約タグであり、作品タイトルには使用しない。
 
+### 既存作品のカードと新規採番の境界
+
+新しい ID を採番するのは、どの作品にもリンクしていないタイトルだけのカードに限る。既存作品のカードは、Obsidian が作る通常のリンク表現であればどれでも同じ `NOVEL-N` と管理ノートに解決し、runner が正規形 `[[Novels/NOVEL-N|NOVEL-N: タイトル]] #novel status::… assignee::…` に書き直す（`[[NOVEL-N]]`、`[[Novels/NOVEL-N.md|…]]`、`[[Novels/NOVEL-N#見出し]]`、`\|` でエスケープした別名、`[NOVEL-N: タイトル](Novels/NOVEL-N.md)`）。ID 文字列が本文にあるだけのカード（例 `NOVEL-7 の続き`）はリンクではないので既存作品に関連付けず、新規採番もしない。
+
+次の場合、runner は新しい作品を作らず、既存作品も書き換えず、カード末尾に `⚠ runner: 理由` を 1 回だけ表示して待つ（理由が変われば置き換え、解消すれば runner が外す）。
+
+- ID 文字列だけでリンクがない、管理ノート `Novels/NOVEL-N.md` が無い、1 枚のカードが複数の作品を参照している、草稿へのリンクしかない。
+- 同じ `NOVEL-N` のカードが複数レーンにある（どちらも移動・実行しない）。
+- タイトルだけの新規カードが既存作品と同じタイトル（再整理なら既存カードを `Backlog` へ移し、別作品ならタイトルを変える）。
+- タイトルにリンクが含まれる（新規作品はタイトルだけにする）。
+
+採番は Board 上の全参照・`Novels/`・草稿フォルダ・runner の private 状態にある最大番号 + 1 で、削除した作品の番号は再利用しない。`Novels/` 配下に同じ ID の管理ノートが複数ある場合は、件数と相対 path だけを runner log と `Run History` に 1 回報告し、`Novels/NOVEL-N.md` だけを使う（削除・統合はしない）。
+
 ## 対応 agent（assignee）
 
 | assignee | 実行先 | 備考 |
@@ -36,8 +49,8 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 
 ## レーン運用
 
-- `Backlog`: 手動追加と要件整理の入口。対応 agent を割り当てると、runner がまず設定ノートを探索して読み（下の「設定の探索」）、本文を書かずに Requirements と Outline を整理し、完了後は `Draft`（担当 `boxp`）へ移る。設定の不足・未解決がある場合も `Draft` へ渡すが、`Run History` に `要確認: 設定の不足/未解決あり` を付け `Reference Context` で何が読めなかったかを示す（通常の準備完了ではない）。
-- `Draft`: 執筆開始前の人間確認。条件が不足する場合は人間が `Backlog` へ戻す。対応 agent を割り当てたときの動作は `Review Instructions` で決まる: 空（`TBD`）なら従来どおり初稿を書き始める。まだ反映していない指示があれば本文を書かずに Requirements / Outline へ反映して `Draft`（担当 `boxp`）へ戻し、反映内容と未反映を `Change History` に記録する。反映済みの同じ指示のまま再度割り当てると初稿を書き始め、その指示は執筆条件として渡される（指示を書き換えると再び反映から始まる）。本文生成に失敗した場合は理由と再開条件を `Run History` に残して `Draft`（担当 `boxp`）へ戻る。
+- `Backlog`: 手動追加と要件整理の入口。対応 agent を割り当てると、runner がまず設定ノートを探索して読み（下の「設定の探索」）、本文を書かずに Requirements と Outline を整理し、完了後は `Draft`（担当 `boxp`）へ移る。`Draft` から戻した既存作品も同じ `NOVEL-N`・管理ノートのまま扱い、既存の Requirements / Outline / Review Instructions を土台に設定探索をやり直して Requirements / Outline / Reference Context を更新する（`Run History` と `Change History` に「再整理」と記録。Review Instructions が無くても再整理であり、本文執筆には進まない）。原稿・Draft Preview・挿絵・`series` / `episode` / `continuity`・履歴はそのまま残る。設定の不足・未解決がある場合も `Draft` へ渡すが、`Run History` に `要確認: 設定の不足/未解決あり` を付け `Reference Context` で何が読めなかったかを示す（通常の準備完了ではない）。
+- `Draft`: 執筆開始前の人間確認。条件が不足する場合は人間がカードをそのまま `Backlog` へ戻す（Kanban のドラッグで可。新しいカードを作らない。戻した後に agent を割り当てると同じ ID で再整理される）。対応 agent を割り当てたときの動作は `Review Instructions` で決まる: 空（`TBD`）なら従来どおり初稿を書き始める。まだ反映していない指示があれば本文を書かずに Requirements / Outline へ反映して `Draft`（担当 `boxp`）へ戻し、反映内容と未反映を `Change History` に記録する。反映済みの同じ指示のまま再度割り当てると初稿を書き始め、その指示は執筆条件として渡される（指示を書き換えると再び反映から始まる）。本文生成に失敗した場合は理由と再開条件を `Run History` に残して `Draft`（担当 `boxp`）へ戻る。
 - `In Progress`: 初稿または改稿中。runner が同じ private `manuscript.md` を更新し、本文を検証（空・短すぎる・途中終了は失敗）した後に挿絵を1枚生成する。完了または一部未完了（挿絵なし）で `Review` へ移る。runner 再起動で中断した run は interrupted として記録され、agent が割り当てられたままなら次の tick で再開する。
 - `Review`: 管理ノートの `Draft Preview` から vault 内の原稿と挿絵を人間確認する。草稿は未承認。改稿する場合は `Review Instructions` に具体的な指示を保存して対応 agent を割り当てる（指示が空なら起動しない）。承認する場合だけ、人間がカードを `Done` へ移す。
 - `Done`: agent は再実行しない。runner は承認済み private 原稿と挿絵を、カード上の `#nsfw` に従って完成版フォルダへ一度だけ配置する。

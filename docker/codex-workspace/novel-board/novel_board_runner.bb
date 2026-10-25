@@ -850,6 +850,8 @@
   (boolean (re-matches #"\s*-\s+\[[ xX]\]\s+.*" line)))
 
 (defn novel-id-from-card [line]
+  ;; The canonical card link `[[Novels/NOVEL-N|…]]` / `[[Novels/NOVEL-N]]`.
+  ;; Other link spellings a human may produce are resolved by `card-novel-refs`.
   (second (re-find #"\[\[Novels/(NOVEL-\d+)(?:\||\]\])" line)))
 
 (defn attr-value [line key]
@@ -863,26 +865,179 @@
           second
           str/trim))
 
+;; --- Card references (BOXP-307) ---------------------------------------------
+;; A card moved back from Draft to Backlog keeps its link, but humans also
+;; write links the way Obsidian does: shortest path `[[NOVEL-7]]`, Markdown
+;; `[NOVEL-7: 題](Novels/NOVEL-7.md)`, a `.md` suffix, a `#heading`, or an
+;; escaped pipe `\|`. All of these must resolve to the one existing management
+;; note and never to a new ID. A bare `NOVEL-7` string without a link is not a
+;; reference; the runner neither associates it with an existing work nor
+;; scaffolds a new one, it shows the reason on the card instead.
+
+(declare scaffold-title frontmatter-map note-frontmatter files-under append-history!)
+
+(def hold-marker-prefix "⚠ runner: ")
+
+(defn strip-hold-marker [line]
+  (str/trimr (str/replace line #"\s*⚠ runner: .*$" "")))
+
+(defn hold-marker-reason [line]
+  (second (re-find #"⚠ runner: (.*)$" line)))
+
+(defn rule-card? [line]
+  ;; Permanent lane explanations: the `#novel-rule` tag or a bold lead-in.
+  (let [body (str/replace line #"^\s*-\s+\[[ xX]\]\s*" "")]
+    (boolean (or (token-present? line "#novel-rule") (str/starts-with? (str/trim body) "**")))))
+
+(defn decode-link-target [target]
+  (let [t (-> (str target) str/trim (str/replace #"^<(.*)>$" "$1"))]
+    (try (java.net.URLDecoder/decode (str/replace t "+" "%2B") "UTF-8") (catch Exception _ t))))
+
+(defn novel-link-target
+  "Classifies one link target (no alias / heading). The management note itself
+  (`Novels/NOVEL-N`, `NOVEL-N`, optional leading `/` or `./`, optional `.md`)
+  gives {:id .. :note? true}; a draft path (`Novels/Drafts/NOVEL-N/…`,
+  `NSFW/小説/草稿/NOVEL-N/…`) gives {:id .. :draft? true}; anything else nil."
+  [target]
+  (let [t (-> (decode-link-target target)
+              (str/replace #"#.*$" "") ; Markdown links keep their heading anchor in the target
+              (str/replace #"^(?:/|\./)+" ""))]
+    (if-let [[_ id] (re-matches #"(?:Novels/)?(NOVEL-\d+)(?:\.md)?" t)]
+      {:id id :note? true}
+      (when-let [[_ id] (re-matches #"(?:Novels/Drafts|NSFW/小説/草稿)/(NOVEL-\d+)(?:/.*)?" t)]
+        {:id id :draft? true}))))
+
+(def wiki-link-pattern #"\[\[([^\]\[|#\\]+)(?:#[^\]\[|\\]*)?(?:\\?\|.*?)?\]\]")
+(def markdown-link-pattern #"(?<!!)\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)")
+
+(defn card-novel-refs
+  "All NOVEL references on one card line (hold marker excluded):
+   :note-ids   management-note links, in any Obsidian spelling
+   :draft-ids  links into a draft folder (`…|草稿`)
+   :bare-ids   `NOVEL-N` strings outside any link (never a reference)
+   :other-link? a link to something that is not a management note or draft
+   :alias-title the `NOVEL-N: title` alias of the first note link, if any"
+  [line]
+  (let [text (strip-hold-marker line)
+        wiki (re-seq wiki-link-pattern text)
+        md (re-seq markdown-link-pattern text)
+        targets (concat (map (fn [[_ target]] target) wiki)
+                        (map (fn [[_ _ target]] target) md))
+        classified (map novel-link-target targets)
+        aliases (concat (keep (fn [[whole target]]
+                                (when (:note? (novel-link-target target))
+                                  (some-> (re-find #"\\?\|(.*)\]\]$" whole) second)))
+                              wiki)
+                        (keep (fn [[_ label target]] (when (:note? (novel-link-target target)) label)) md))
+        link-free (-> text
+                      (str/replace wiki-link-pattern " ")
+                      (str/replace markdown-link-pattern " "))]
+    {:note-ids (set (keep #(when (:note? %) (:id %)) classified))
+     :draft-ids (set (keep #(when (:draft? %) (:id %)) classified))
+     :bare-ids (set (map second (re-seq #"(?<![\w/-])(NOVEL-\d+)(?![\w-])" link-free)))
+     :other-link? (boolean (some nil? classified))
+     :alias-title (some-> (first aliases) str/trim not-empty)}))
+
+(defn novel-number [id] (some-> (re-find #"NOVEL-(\d+)" (str id)) second Long/parseLong))
+
+(defn format-ids [ids] (str/join ", " (sort-by novel-number ids)))
+
+(defn resolve-card-line
+  "Decides what one card line in a lane is. `note-exists?` is a predicate on a
+  NOVEL id. Returns one of
+   {:kind :rule}
+   {:kind :novel :novel-id id :canonical? bool :title str}
+   {:kind :unlinked :title str}      ; a title-only card (Backlog: scaffold)
+   {:kind :hold :reason str}         ; never scaffolded, never run"
+  [line lane note-exists?]
+  (if (rule-card? line)
+    {:kind :rule}
+    (let [{:keys [note-ids draft-ids bare-ids other-link? alias-title]} (card-novel-refs line)
+          linked (into note-ids draft-ids)
+          canonical (novel-id-from-card (strip-hold-marker line))]
+      (cond
+        (> (count linked) 1)
+        {:kind :hold :reason (str "カードが複数の作品（" (format-ids linked) "）を参照しているため、どの作品か判断できません。1 つの管理ノートへのリンクだけにしてください")}
+
+        (= 1 (count note-ids))
+        (let [id (first note-ids)
+              canonical-title (and canonical (card-title (strip-hold-marker line) id))
+              missing (str "管理ノート `Novels/" id ".md` がありません。既存作品なら管理ノートを復元し、新規作品ならタイトルだけのカードにしてください（新規採番はしません）")]
+          (cond
+            ;; Canonical cards parse without touching the vault (as before); a
+            ;; missing note is shown on the card and skipped by the candidates.
+            canonical-title
+            (cond-> {:kind :novel :novel-id id :canonical? true :title canonical-title}
+              (not (note-exists? id)) (assoc :missing-note? true :reason missing))
+
+            (not (note-exists? id))
+            {:kind :hold :reason missing}
+
+            :else
+            {:kind :novel :novel-id id :canonical? false
+             :title (let [[_ t] (some->> alias-title (re-matches #"NOVEL-\d+:\s*(.*)"))]
+                      (some-> t str/trim not-empty))}))
+
+        (= 1 (count draft-ids))
+        {:kind :hold :reason (str "草稿へのリンクだけでは作品を特定しません。管理ノート `[[Novels/" (first draft-ids) "]]` へのリンクにしてください")}
+
+        (seq bare-ids)
+        {:kind :hold :reason (str "`" (format-ids bare-ids) "` という ID の文字列だけでは既存作品として扱いません（新規採番もしません）。既存作品なら `[[Novels/" (first (sort-by novel-number bare-ids)) "]]` のリンクにしてください")}
+
+        other-link?
+        (if (= "Backlog" lane)
+          {:kind :hold :reason "タイトルにリンクが含まれているため新規作成しません。新規作品はタイトルだけのカードにし、既存作品は管理ノートへのリンクにしてください"}
+          {:kind :hold :reason "作品の管理ノートへのリンクがありません。`[[Novels/NOVEL-N]]` の形式でリンクしてください（新規採番はしません）"})
+
+        :else
+        (let [title (scaffold-title (str/replace (strip-hold-marker line) #"^\s*-\s+\[[ xX]\]\s*" ""))]
+          (cond
+            (str/blank? title) {:kind :hold :reason "タイトルが空のため作成しません"}
+            (= "Backlog" lane) {:kind :unlinked :title title}
+            :else {:kind :hold :reason "作品の管理ノートへのリンクがありません。新規作品は Backlog にタイトルだけのカードを置き、既存作品は `[[Novels/NOVEL-N]]` でリンクしてください"}))))))
+
+(defn note-exists? [novel-id] (fs/exists? (note-path novel-id)))
+
+(defn lane-card-lines
+  "[{:idx :lane :status :line}] for every card line inside the managed lanes."
+  [lines]
+  (vec (for [lane (keys lane->status)
+             :let [{:keys [body-start end]} (section-range lines lane)]
+             :when body-start
+             idx (range body-start end)
+             :let [line (nth lines idx)]
+             :when (card-line? line)]
+         {:idx idx :lane lane :status (lane->status lane) :line line})))
+
+(defn classify-board-cards
+  "Every card line with its resolution; duplicates of one NOVEL id are turned
+  into holds so neither copy is ever moved or run."
+  [lines]
+  (let [cards (mapv (fn [{:keys [line lane] :as c}] (merge c (resolve-card-line line lane note-exists?)))
+                    (lane-card-lines lines))
+        lanes-by-id (reduce (fn [acc {:keys [kind novel-id lane]}]
+                              (if (= :novel kind) (update acc novel-id (fnil conj []) lane) acc))
+                            {} cards)]
+    (mapv (fn [{:keys [kind novel-id] :as c}]
+            (if (and (= :novel kind) (> (count (lanes-by-id novel-id)) 1))
+              (assoc c :kind :hold :duplicate-of novel-id
+                     :reason (str "同じ " novel-id " のカードが " (count (lanes-by-id novel-id)) " 枚あります（"
+                                  (str/join ", " (lanes-by-id novel-id)) "）。1 枚だけ残してください（runner はどちらも移動・実行しません）"))
+              c))
+          cards)))
+
 (defn parse-board-cards [lines]
-  (->> lane->status
-       keys
-       (mapcat (fn [lane]
-                 (let [status (lane->status lane)]
-                   (when-let [{:keys [body-start end]} (section-range lines lane)]
-                     (keep-indexed
-                      (fn [idx line]
-                        (when (and (card-line? line) (novel-id-from-card line))
-                          (let [novel-id (novel-id-from-card line)]
-                            {:novel-id novel-id
-                             :lane lane
-                             :status status
-                             :title (card-title line novel-id)
-                             :assignee (or (attr-value line "assignee") "boxp")
-                             :nsfw (token-present? line "#nsfw")
-                             :line line
-                             :idx (+ body-start idx)})))
-                      (subvec (vec lines) body-start end))))))
-       vec))
+  (->> (classify-board-cards (vec lines))
+       (filter #(= :novel (:kind %)))
+       (mapv (fn [{:keys [novel-id lane status title line idx]}]
+               {:novel-id novel-id
+                :lane lane
+                :status status
+                :title title
+                :assignee (or (attr-value line "assignee") "boxp")
+                :nsfw (token-present? line "#nsfw")
+                :line line
+                :idx idx}))))
 
 (defn replace-or-add-attr [line key value]
   (let [pattern (re-pattern (str "(?:^|\\s)" key "::[^\\s]+"))]
@@ -966,32 +1121,167 @@
       (str/replace #"\s+" " ")
       str/trim))
 
-(defn backlog-scaffold-cards [lines]
-  (when-let [{:keys [body-start end]} (section-range lines "Backlog")]
-    (keep (fn [idx]
-            (let [line (nth lines idx)]
-              (when-let [[_ body] (re-matches #"^\s*-\s+\[[ xX]\]\s+(.+)$" line)]
-                (let [title (scaffold-title body)]
-                  (when (and (not (str/includes? body "[["))
-                             (not (token-present? body "#novel-rule"))
-                             (not (str/starts-with? (str/trim body) "**"))
-                             (not (str/blank? title)))
-                    {:idx idx
-                     :title title
-                     :assignee (or (attr-value body "assignee") "boxp")
-                     :nsfw (token-present? body "#nsfw")})))))
-          (range body-start end))))
+(defn normalize-title-key [title]
+  (-> (str title) (str/replace #"\s+" " ") str/trim))
 
-(defn existing-novel-numbers [lines]
-  (concat (keep #(some-> (re-find #"\[\[Novels/NOVEL-(\d+)(?:\||\]\])" %) second Long/parseLong) lines)
-          (when (fs/exists? (novels-dir))
-            (keep #(some-> (re-matches #"NOVEL-(\d+)\.md" (str (fs/file-name %))) second Long/parseLong)
-                  (fs/list-dir (novels-dir))))))
+(defn existing-work-titles
+  "{normalized title -> #{NOVEL ids}} from the resolved cards and from the
+  frontmatter of every management note, so a title-only card that repeats an
+  existing work is never scaffolded as a second work by accident."
+  [lines]
+  (let [from-cards (for [{:keys [kind novel-id title]} (classify-board-cards lines)
+                         :when (and (= :novel kind) (seq title))]
+                     [(normalize-title-key title) novel-id])
+        from-notes (when (fs/exists? (novels-dir))
+                     (for [f (fs/list-dir (novels-dir))
+                           :let [[_ id] (re-matches #"(NOVEL-\d+)\.md" (str (fs/file-name f)))]
+                           :when id
+                           :let [title (try (:title (frontmatter-map (vec (read-lines f)))) (catch Exception _ nil))]
+                           :when (seq (str title))]
+                       [(normalize-title-key title) id]))]
+    (reduce (fn [acc [k id]] (update acc k (fnil conj #{}) id)) {} (concat from-cards from-notes))))
+
+(defn backlog-scaffold-cards
+  "Title-only Backlog cards that become a new NOVEL id. Cards that reference an
+  existing work in any spelling, that only mention an id string, that carry a
+  hold marker, or that repeat an existing title are never here (see
+  `reconcile-board-cards!`, which shows the reason on the card)."
+  [lines]
+  (let [lines (vec lines)
+        titles (existing-work-titles lines)]
+    (->> (classify-board-cards lines)
+         (filter #(and (= :unlinked (:kind %)) (= "Backlog" (:lane %))))
+         (remove #(hold-marker-reason (:line %)))
+         (remove #(contains? titles (normalize-title-key (:title %))))
+         ;; Two new cards with one title in the same tick: only the first
+         ;; becomes a work; the other is held with the id on the next pass.
+         (reduce (fn [{:keys [seen cards] :as acc} {:keys [idx line title]}]
+                   (let [k (normalize-title-key title)]
+                     (if (contains? seen k)
+                       acc
+                       {:seen (conj seen k)
+                        :cards (conj cards {:idx idx
+                                            :title title
+                                            :assignee (or (attr-value line "assignee") "boxp")
+                                            :nsfw (token-present? line "#nsfw")})})))
+                 {:seen #{} :cards []})
+         :cards)))
+
+(defn existing-novel-numbers
+  "Every NOVEL number already in use anywhere: all references on the board
+  (including held lines and bare id strings), management notes, vault draft
+  folders and the private state. A deleted work's id is never reissued, so
+  nothing old can be associated with a new card."
+  [lines]
+  (let [numbers-in (fn [dir] (when (fs/exists? dir)
+                               (keep #(some-> (re-find #"^NOVEL-(\d+)(?:\.|$)" (str (fs/file-name %))) second Long/parseLong)
+                                     (fs/list-dir dir))))]
+    (concat (mapcat (fn [line]
+                      (let [{:keys [note-ids draft-ids bare-ids]} (card-novel-refs line)]
+                        (keep novel-number (concat note-ids draft-ids bare-ids))))
+                    lines)
+            ;; Everything under Novels/ recursively (notes, nested copies, draft
+            ;; folders): a nested `Novels/old/NOVEL-7.md` still reserves 7.
+            (when (fs/exists? (novels-dir))
+              (keep #(some-> (re-find #"^NOVEL-(\d+)(?:\.|$)" (str (fs/file-name %))) second Long/parseLong)
+                    (fs/glob (novels-dir) "**")))
+            (numbers-in (fs/path (vault) "NSFW" "小説" "草稿"))
+            (mapcat numbers-in [(fs/path (root) "work") (runs-dir) (published-dir) (drafts-state-dir)
+                                (assignee-sync-dir) (instructions-dir) (skips-dir) (locks-dir)]))))
 
 (defn scaffold-card-line [{:keys [novel-id title assignee nsfw]}]
   (str "- [ ] [[Novels/" novel-id "|" novel-id ": " title "]] #novel"
        (when nsfw " #nsfw")
        " status::backlog assignee::" assignee))
+
+(defn canonical-card-line
+  "Rebuilds a resolved but non-canonical card line (`[[NOVEL-7]]`,
+  `[NOVEL-7: 題](Novels/NOVEL-7.md)`, `.md`, `\\|` …) in the canonical form,
+  keeping the lane status, `#nsfw` and the assignee the human wrote."
+  [{:keys [line status novel-id title]}]
+  (let [clean (strip-hold-marker line)
+        title (or (not-empty (str title))
+                  (not-empty (str (:title (note-frontmatter novel-id))))
+                  novel-id)]
+    (str "- [" (if (= "done" status) "x" " ") "] [[Novels/" novel-id "|" novel-id ": " title "]] #novel"
+         (when (token-present? clean "#nsfw") " #nsfw")
+         " status::" status " assignee::" (or (attr-value clean "assignee") "boxp"))))
+
+(defn hold-card-line [line reason]
+  (str (strip-hold-marker line) " " hold-marker-prefix reason))
+
+(defn reconcile-board-cards!
+  "One pass over every managed lane before scaffold / sync (BOXP-307):
+   - a card that links an existing work in a non-canonical spelling is
+     rewritten in the canonical form (same id, same note);
+   - a card the runner must not act on gets `⚠ runner: <reason>` appended
+     once (replaced when the reason changes, removed once it resolves);
+   - a Backlog title that repeats an existing work is held with the ids.
+   Returns the number of changed lines."
+  []
+  (with-board-guard
+   (fn []
+    (let [path (board-path)
+          lines (vec (read-lines path))
+          titles (existing-work-titles lines)
+          updates (into {}
+                        (for [{:keys [kind idx line title] :as card} (classify-board-cards lines)
+                              :let [current (hold-marker-reason line)
+                                    new-line (case kind
+                                               :rule line
+                                               :novel (cond
+                                                        (:missing-note? card) (hold-card-line line (:reason card))
+                                                        (:canonical? card) (strip-hold-marker line)
+                                                        :else (canonical-card-line card))
+                                               :hold (hold-card-line line (:reason card))
+                                               :unlinked (if-let [ids (and (= "Backlog" (:lane card))
+                                                                           (get titles (normalize-title-key title)))]
+                                                           (hold-card-line line (str "同名の作品 " (format-ids ids) " があります。再整理なら既存カードを Backlog へ移動し、別作品ならタイトルを変えてください（新規採番はしません）"))
+                                                           (strip-hold-marker line)))]
+                              :when (not= new-line line)]
+                          [idx (cond-> {:line new-line :kind kind :novel-id (:novel-id card) :lane (:lane card)
+                                        :duplicate-of (:duplicate-of card)}
+                                 (not= current (hold-marker-reason new-line)) (assoc :reason (hold-marker-reason new-line)))]))]
+      (when (seq updates)
+        (write-lines! path (mapv (fn [idx line] (get-in updates [idx :line] line)) (range (count lines)) lines))
+        ;; Duplicate cards of one work: recorded once in that work's Run
+        ;; History (the marker, and so this entry, is written once per reason).
+        (doseq [[id reason] (distinct (keep (fn [{:keys [duplicate-of reason]}] (when (and duplicate-of reason) [duplicate-of reason]))
+                                            (vals updates)))
+                :when (note-exists? id)]
+          (append-history! id (str reason "。カードを 1 枚にすると次の tick で保留が外れます")))
+        (doseq [[_ {:keys [kind novel-id lane reason line]}] (sort updates)]
+          (cond
+            reason (log! (str "card held in " lane ": " reason))
+            (= :novel kind) (log! (str novel-id " card link normalized in " lane ": " line))
+            :else (log! (str "card hold cleared in " lane)))))
+      (count updates)))))
+
+(defn duplicates-dir [] (fs/path (root) "duplicates"))
+
+(defn report-duplicate-notes!
+  "Reports (once per set of paths) management-note files that duplicate a
+  NOVEL id anywhere under Novels/ except the canonical `Novels/NOVEL-N.md` and
+  the draft folders. Count and relative paths only; nothing is deleted or merged."
+  []
+  (when (fs/exists? (novels-dir))
+    (let [files (files-under (novels-dir) (fn [p] (and (fs/regular-file? p)
+                                                       (not (str/starts-with? (str (vault-relative p)) "Novels/Drafts/"))
+                                                       (re-find #"^NOVEL-\d+" (str (fs/file-name p)))
+                                                       (str/ends-with? (str (fs/file-name p)) ".md"))))
+          by-id (group-by (fn [p] (second (re-find #"^(NOVEL-\d+)" (str (fs/file-name p))))) files)]
+      (doseq [[id paths] by-id
+              :let [extras (sort (map #(str (vault-relative %)) (remove #(= (canonical-path %) (canonical-path (note-path id))) paths)))]
+              :when (seq extras)
+              :let [state-path (fs/path (duplicates-dir) (str id ".edn"))
+                    state (try (read-edn-file state-path {}) (catch Exception _ {}))]
+              :when (not= extras (:paths state))]
+        (write-edn-file! state-path {:paths extras :reported-at (now-str)})
+        (let [message (str id " の管理ノートと同じ ID のファイルが他に " (count extras) " 件あります: "
+                           (str/join ", " (map #(str "`" % "`") extras))
+                           "。runner は `Novels/" id ".md` だけを使い、削除・統合はしません")]
+          (log! message)
+          (when (note-exists? id) (append-history! id message)))))))
 
 (defn yaml-value [value]
   (cond
@@ -2296,6 +2586,12 @@
      :references-included (:included refs)
      :instructions-included (boolean (seq instructions))}))
 
+(defn replan? [content]
+  ;; A Backlog groom of a work whose plan is already filled: the human moved an
+  ;; existing card back from Draft to have it re-organised (BOXP-307). Same id,
+  ;; same note; the existing plan is the input, not a blank slate.
+  (boolean (or (section-filled? content "## Requirements") (section-filled? content "## Outline"))))
+
 (def groom-format-instruction
   "Requirements は Title / Synopsis / Characters / Style and point of view / Target readers / Target length / Required elements / Prohibited elements / References / NSFW の箇条書き、Outline は章立てと場面の箇条書きにしてください。References には上で実際に読んだ設定ノートの vault 相対 path をバッククォートで列挙してください（読んでいないノートは書かない）。")
 
@@ -2329,6 +2625,8 @@
                 "Applied には反映した指示を、Unapplied には反映できなかった指示と理由を箇条書きで書き（なければ「なし」）、"
                 groom-format-instruction groom-canon-instruction)
            (str "本文は書かないでください。上の情報を整理し、`## Requirements` / `## Outline` / `## Unresolved` の3見出しだけを含む Markdown を出力してください。"
+                (when (replan? content)
+                  "既存の Requirements / Outline は人間が確認・手編集した企画です。それを土台にして、今回読めた設定ノートと「人間からの指示」を反映して更新してください。指示や資料と矛盾しない既存の項目は削除・改変せず、変えた箇所は Unresolved ではなく本文に反映してください。")
                 (when (seq instructions) "「人間からの指示」がある場合は必ず Requirements / Outline に反映してください。")
                 groom-format-instruction groom-canon-instruction)))))
 
@@ -2820,7 +3118,9 @@
   [novel-id card fm content action agent run-dir]
   (let [route (assignee-route agent)
         regroom? (= :regroom action)
-        label (if regroom? "要件/構成の添削" "要件整理")
+        label (cond regroom? "要件/構成の添削"
+                    (replan? content) "要件の再整理"
+                    :else "要件整理")
         before (plan-fingerprint content)
         run-id (str (fs/file-name run-dir))
         cfg (localllm-config)
@@ -2841,7 +3141,8 @@
         record-context! (fn [unresolved]
                           (replace-section-body! novel-id "## Reference Context"
                                                  (reference-context-lines run-id action agent exploration unresolved)))
-        with-context (fn [outcome] (assoc outcome :exploration-summary summary :attention? attention?))]
+        with-context (fn [outcome] (assoc outcome :exploration-summary summary :attention? attention?
+                                          :replan? (and (not regroom?) (replan? content))))]
     (if (= :localllm route)
       (let [prompt (groom-user-prompt novel-id fm content action exploration)
             _ (spit (str (fs/path run-dir "prompt.md")) prompt)
@@ -3019,6 +3320,9 @@
                                            "; 次: 失敗理由を解消してから Draft で agent を再割当")
                       (= "backlog" target) "; 次: 失敗理由を解消してから Backlog で agent を再割当"
                       :else ""))]
+    (when (and success? (= :groom action) (:replan? outcome))
+      (append-change-history! novel-id (str "run " run " (agent " agent "): Backlog からの再整理で Requirements / Outline を更新（同じ " novel-id "・管理ノート、本文なし。設定: "
+                                            (:exploration-summary outcome) "、Reference Context 参照）。次: Draft で内容を確認し、執筆を始めるなら agent を割当")))
     (when (and success? (= :regroom action))
       (append-change-history! novel-id (str "run " run " (agent " agent "): Review Instructions を Requirements / Outline に反映。"
                                             "反映: " (:applied outcome) "; 未反映: " (:unapplied outcome)
@@ -3148,6 +3452,8 @@
               (append-history! novel-id (str "run " (:run-id lock) " started: action=" (name action) " agent=" agent " from " lane
                                              (when (= :localllm (assignee-route agent))
                                                (str " via " (:base-url (localllm-config)) " model=" (:model (localllm-config))))
+                                             (when (and (= :groom action) (replan? content))
+                                               "; 既存作品の再整理: 同じ ID・管理ノートのまま、既存の Requirements / Outline を土台に設定探索をやり直して更新する（本文は書かない）")
                                              (when (seq instructions)
                                                (case action
                                                  :regroom "; Review Instructions あり: Requirements / Outline へ反映する（本文は書かない）"
@@ -3207,6 +3513,12 @@
 (def in-flight (atom {}))
 
 (defn sync-all! []
+  ;; Resolve every card to its existing work (or show why not) before anything
+  ;; is scaffolded, so a card moved back from Draft keeps its id (BOXP-307).
+  (try (reconcile-board-cards!)
+       (catch Exception e (log! (str "board reconcile failed: " (.getMessage e)))))
+  (try (report-duplicate-notes!)
+       (catch Exception e (log! (str "duplicate note report failed: " (.getMessage e)))))
   (scaffold-backlog-cards!)
   (sync-board-statuses!)
   (doseq [card (parse-board-cards (vec (read-lines (board-path))))]
@@ -3330,9 +3642,105 @@
            (= [{:idx 1 :title "二重" :assignee "localllm" :nsfw false}]
               (backlog-scaffold-cards ["## Backlog" "- [ ] - [ ] 二重 assignee::localllm" "## Draft"])))
     (check "safe assignee token" (and (safe-assignee-token? "claude-sonnet") (not (safe-assignee-token? "a b")) (not (safe-assignee-token? ""))))
+    ;; BOXP-307: every spelling of a link to the management note resolves to the
+    ;; same existing id; id strings alone never do.
+    (let [exists? #{"NOVEL-7" "NOVEL-3"}
+          resolve (fn [line & [lane]] (resolve-card-line line (or lane "Backlog") exists?))
+          hold-reason (fn [line & [lane]] (let [r (resolve line lane)] (when (= :hold (:kind r)) (:reason r))))]
+      (check "refs: canonical alias with brackets"
+             (= {:note-ids #{"NOVEL-9"} :draft-ids #{} :bare-ids #{} :other-link? false :alias-title "NOVEL-9: - [ ] 二重"}
+                (card-novel-refs "- [ ] [[Novels/NOVEL-9|NOVEL-9: - [ ] 二重]] #novel status::backlog assignee::boxp")))
+      (check "refs: shortest path, .md, heading, escaped pipe, markdown link, draft link"
+             (= [#{"NOVEL-7"} #{"NOVEL-7"} #{"NOVEL-7"} #{"NOVEL-7"} #{"NOVEL-7"} #{"NOVEL-7"} #{}]
+                (map (comp :note-ids card-novel-refs)
+                     ["- [ ] [[NOVEL-7]] assignee::localllm"
+                      "- [ ] [[Novels/NOVEL-7.md|NOVEL-7: 題]] #novel"
+                      "- [ ] [[Novels/NOVEL-7#Requirements]]"
+                      "- [ ] [[Novels/NOVEL-7\\|NOVEL-7: 題]] #novel status::draft"
+                      "- [ ] [NOVEL-7: 題](Novels/NOVEL-7.md) #novel"
+                      "- [ ] [題](<Novels/NOVEL-7.md>)"
+                      "- [ ] [[Novels/Drafts/NOVEL-7/manuscript|草稿]]"])))
+      (check "refs: markdown link with a heading anchor still resolves"
+             (= {:note-ids #{"NOVEL-7"} :other-link? false}
+                (select-keys (card-novel-refs "- [ ] [NOVEL-7: 題](Novels/NOVEL-7.md#Requirements) #novel") [:note-ids :other-link?])))
+      (check "refs: draft link and bare ids are separate"
+             (= {:draft-ids #{"NOVEL-7"} :bare-ids #{"NOVEL-3"}}
+                (select-keys (card-novel-refs "- [ ] NOVEL-3 の続き [[Novels/Drafts/NOVEL-7/manuscript|草稿]]") [:draft-ids :bare-ids])))
+      (check "refs: bare id inside an alias is title text"
+             (= {:note-ids #{"NOVEL-7"} :bare-ids #{}}
+                (select-keys (card-novel-refs "- [ ] [[Novels/NOVEL-7|NOVEL-7: NOVEL-3 の続編]] #novel") [:note-ids :bare-ids])))
+      (check "refs: hold marker is not part of the card"
+             (= {:note-ids #{} :bare-ids #{}}
+                (select-keys (card-novel-refs "- [ ] 新作 ⚠ runner: `NOVEL-3` という ID の文字列だけでは [[Novels/NOVEL-3]]") [:note-ids :bare-ids])))
+      (check "resolve: canonical card keeps its id even without a note"
+             (= {:kind :novel :novel-id "NOVEL-9" :canonical? true :title "題" :missing-note? true}
+                (dissoc (resolve "- [ ] [[Novels/NOVEL-9|NOVEL-9: 題]] #novel status::backlog assignee::boxp") :reason)))
+      (check "resolve: non-canonical spellings resolve to the existing work"
+             (= [{:kind :novel :novel-id "NOVEL-7" :canonical? false :title nil}
+                 {:kind :novel :novel-id "NOVEL-7" :canonical? false :title "題"}
+                 {:kind :novel :novel-id "NOVEL-7" :canonical? false :title "題"}
+                 {:kind :novel :novel-id "NOVEL-7" :canonical? false :title "題"}]
+                (map resolve ["- [ ] [[NOVEL-7]] #novel status::draft assignee::localllm"
+                              "- [ ] [NOVEL-7: 題](Novels/NOVEL-7.md) status::draft"
+                              "- [ ] [[Novels/NOVEL-7.md|NOVEL-7: 題]]"
+                              "- [ ] [[Novels/NOVEL-7\\|NOVEL-7: 題]] #novel"])))
+      (check "resolve: non-canonical link to a missing note is held, not scaffolded"
+             (str/includes? (hold-reason "- [ ] [[NOVEL-8]] assignee::localllm") "管理ノート `Novels/NOVEL-8.md` がありません"))
+      (check "resolve: bare id string is held, not scaffolded, not associated"
+             (and (str/includes? (hold-reason "- [ ] NOVEL-7 assignee::localllm") "ID の文字列だけでは既存作品として扱いません")
+                  (str/includes? (hold-reason "- [ ] NOVEL-7: 題の再整理") "[[Novels/NOVEL-7]]")))
+      (check "resolve: two works on one card is ambiguous"
+             (str/includes? (hold-reason "- [ ] [[Novels/NOVEL-3]] と [[NOVEL-7]]") "複数の作品（NOVEL-3, NOVEL-7）"))
+      (check "resolve: draft-only link does not identify the work"
+             (str/includes? (hold-reason "- [ ] [[Novels/Drafts/NOVEL-7/manuscript|草稿]]") "草稿へのリンクだけでは"))
+      (check "resolve: links in a title are not scaffolded"
+             (and (str/includes? (hold-reason "- [ ] [[ひとはこ]]の運動会") "タイトルにリンクが含まれている")
+                  (str/includes? (hold-reason "- [ ] [memo](https://example.com/x)") "タイトルにリンクが含まれている")))
+      (check "resolve: title-only card in Backlog scaffolds, elsewhere it is held"
+             (and (= {:kind :unlinked :title "新しい話"} (resolve "- [ ] 新しい話 assignee::localllm"))
+                  (= {:kind :unlinked :title "二重"} (resolve "- [ ] - [ ] 二重 #nsfw"))
+                  (str/includes? (hold-reason "- [ ] 新しい話" "Draft") "管理ノートへのリンクがありません")))
+      (check "resolve: rule cards are untouched"
+             (= [{:kind :rule} {:kind :rule}]
+                (map resolve ["- [ ] **運用ルール:** NOVEL-3 を見る" "- [ ] 説明 #novel-rule"])))
+      (check "hold marker round trip"
+             (let [held (hold-card-line "- [ ] NOVEL-7 assignee::localllm" "理由 A")]
+               (and (= "- [ ] NOVEL-7 assignee::localllm ⚠ runner: 理由 A" held)
+                    (= "理由 A" (hold-marker-reason held))
+                    (= "- [ ] NOVEL-7 assignee::localllm" (strip-hold-marker held))
+                    (= "- [ ] NOVEL-7 assignee::localllm ⚠ runner: 理由 B" (hold-card-line held "理由 B")))))
+      (check "duplicate cards of one id are held on both lines"
+             (with-redefs [note-exists? (constantly true)]
+               (let [cards (classify-board-cards ["## Backlog" "- [ ] [[Novels/NOVEL-7|NOVEL-7: 題]] #novel status::backlog assignee::localllm" "## Draft" "- [ ] [[NOVEL-7]] status::draft" "## Done"])]
+                 (and (= [:hold :hold] (map :kind cards))
+                      (every? #(str/includes? (:reason %) "同じ NOVEL-7 のカードが 2 枚あります（Backlog, Draft）") cards)
+                      (empty? (parse-board-cards ["## Backlog" "- [ ] [[Novels/NOVEL-7|NOVEL-7: 題]] #novel" "## Draft" "- [ ] [[NOVEL-7]]" "## Done"]))))))
+      (check "canonical line keeps lane status, nsfw and assignee"
+             (with-redefs [note-frontmatter (constantly {:title "ノートの題"})]
+               (= ["- [x] [[Novels/NOVEL-7|NOVEL-7: ノートの題]] #novel #nsfw status::done assignee::boxp"
+                   "- [ ] [[Novels/NOVEL-7|NOVEL-7: 題]] #novel status::backlog assignee::localllm"]
+                  [(canonical-card-line {:line "- [x] [[NOVEL-7]] #nsfw" :status "done" :novel-id "NOVEL-7" :title nil})
+                   (canonical-card-line {:line "- [ ] [NOVEL-7: 題](Novels/NOVEL-7.md) assignee::localllm ⚠ runner: 古い理由" :status "backlog" :novel-id "NOVEL-7" :title "題"})])))
+      (check "existing numbers include nested notes and draft folders under Novels/"
+             (let [dir (fs/create-temp-dir)]
+               (try
+                 (fs/create-dirs (fs/path dir "Novels" "old"))
+                 (fs/create-dirs (fs/path dir "Novels" "Drafts" "NOVEL-9"))
+                 (spit (str (fs/path dir "Novels" "old" "NOVEL-7.md")) "x")
+                 (spit (str (fs/path dir "Novels" "NOVEL-2.md")) "x")
+                 (with-redefs [novels-dir (constantly (fs/path dir "Novels")) root (constantly "/nonexistent-novel-board-test") vault (constantly (str dir))]
+                   (= #{2 7 9} (set (existing-novel-numbers []))))
+                 (finally (fs/delete-tree dir)))))
+      (check "existing numbers include held and bare references"
+             (with-redefs [novels-dir (constantly (fs/path "/nonexistent-novel-board-test")) root (constantly "/nonexistent-novel-board-test") vault (constantly "/nonexistent-novel-board-test")]
+               (= [7 3 12] (vec (existing-novel-numbers ["- [ ] [[Novels/NOVEL-7|NOVEL-7: 題]]" "- [ ] NOVEL-3 ⚠ runner: x" "- [ ] [[Novels/Drafts/NOVEL-12/manuscript|草稿]]"]))))))
     (check "scaffold detects title-only card"
            (= [{:idx 1 :title "新しい話" :assignee "localllm" :nsfw false}]
               (backlog-scaffold-cards ["## Backlog" "- [ ] 新しい話 assignee::localllm" "- [ ] **運用ルール:** x #novel-rule" "## Draft"])))
+    (check "scaffold takes one card per title in a tick"
+           (with-redefs [novels-dir (constantly (fs/path "/nonexistent-novel-board-test"))]
+             (= [{:idx 1 :title "同題" :assignee "localllm" :nsfw false} {:idx 3 :title "別題" :assignee "boxp" :nsfw false}]
+                (backlog-scaffold-cards ["## Backlog" "- [ ] 同題 assignee::localllm" "- [ ]  同題 " "- [ ] 別題" "## Draft"]))))
     (check "section-filled? ignores template placeholders"
            (and (not (section-filled? "## Requirements\n- Title:\n- Synopsis:\n## Outline\n" "## Requirements"))
                 (section-filled? "## Requirements\n- Title: ほげ\n## Outline\n" "## Requirements")))
