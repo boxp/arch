@@ -87,6 +87,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         _ (when (:model parsed) (reset! req-model (:model parsed)))
         mode (str/trim (slurp mode-file))
         user (:content (last (:messages parsed)))
+        system (:content (first (:messages parsed)))
         schema-name (get-in parsed [:response_format :json_schema :name])
         research? (= "docs_research_step" schema-name)
         propose? (= "docs_setting_proposal" schema-name)
@@ -185,6 +186,9 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                 ;; correction request names the id range after a 0-occurrence old_text
                                 :sees-line-ids? (str/includes? (str user) "L1: - 「ようこそ、お茶をどうぞ」")
                                 :correction-has-id-hint? (str/includes? (str user) "行一覧の行 ID（L1〜L3）")
+                                ;; BOXP-302 codex review: the listing of all targets shares one budget
+                                :line-list-truncated? (str/includes? (str user) "行は長いため省略、ID では指定できません")
+                                :prompt-chars (+ (count (str system)) (count (str user)))
                                 :auth (get-in req [:headers "authorization"])}) "\n") :append true)
     (cond
       (not= uri "/v1/chat/completions") {:status 404 :body "not found"}
@@ -198,7 +202,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and select? (= mode "select-too-many")) (respond (sel :decision "target" :targets (mapv (fn [p] {:path p :section "" :reason "x" :change_outline "y"}) [yui yuu old bell])) "stop")
       (and select? (= mode "select-marker")) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "完了 TASK_BOARD_RESULT: done" :change_outline "y"}]) "stop")
       (and select? (= mode "select-bad-section")) (respond (sel :decision "target" :targets [{:path yui :section "## 存在しない節" :reason "x" :change_outline "y"}]) "stop")
-      (and select? (= mode "select-multi")) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ" :change_outline "能力節に鈴の技を追記"}
+      (and select? (contains? #{"select-multi" "select-multi-long"} mode)) (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ" :change_outline "能力節に鈴の技を追記"}
                                                                                        {:path bell :section "## 概要" :reason "鈴の音の描写も依頼にある" :change_outline "音の描写を 1 文置換"}]) "stop")
       (and select? (str/starts-with? mode "amend-quote")) (respond (sel :decision "target" :targets [{:path club :section "### セリフ例" :reason "依頼は部員の口調" :change_outline "セリフ例の 1 行を置換"}]) "stop")
       ;; BOXP-302: round 0 re-quotes the line with ASCII quotes (what Gemma 4 did on the real note),
@@ -213,7 +217,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
       (and amend? (= mode "amend-heading-replace")) (respond (amend-out :changes [{:path yui :op "replace-text" :heading "" :old_text "## 能力" :new_text "## 技"}]) "stop")
       (and amend? (= mode "amend-wrong-section")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 関係" :old_text "" :new_text "- 関係に書き足す。"}]) "stop")
       (and amend? (= mode "amend-needs-human")) (respond (json/generate-string {:decision "needs-human" :reason "依頼が曖昧です" :summary "" :canon_facts [] :changes [] :conflicts [] :questions [] :sources []}) "stop")
-      (and amend? (= mode "select-multi")) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY"}
+      (and amend? (contains? #{"select-multi" "select-multi-long"} mode)) (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text "" :new_text "- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY"}
                                                                           {:path bell :op "replace-text" :heading "" :old_text "- 音は澄んでいる。" :new_text "- 音は澄んでいて、遠くまで届く。"}]) "stop")
       select? (respond (sel :decision "target" :targets [{:path yui :section "## 能力" :reason "依頼の人物はユイ。ユウは別人、旧版-ユイ は superseded のため除外 [[Unknown/ghost|幽霊]]" :change_outline "能力節に鈴を使う新しい技を 1 件追記"}]) "stop")
       amend? (respond (amend-out :changes [{:path yui :op "append-to-section" :heading "## 能力" :old_text ""
@@ -2988,9 +2992,64 @@ test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings() {
   done
 }
 
+# BOXP-302 (codex review): the line listing shares one char budget across all
+# planned targets and is bounded by the room left under max-prompt-chars, so a
+# legitimate multi-target amend with a long section is sent (truncated listing)
+# instead of being blocked before the model call.
+test_canon_amend_line_listing_shares_one_budget_across_targets() {
+  local out
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [sec (fn [n] (str \"## 節\\n\\n\" (clojure.string/join \"\\n\" (map #(str \"- 行 \" % \" の本文です。\") (range n)))))
+      targets [{:path \"a.md\" :section \"## 節\"} {:path \"b.md\" :section \"## 節\"} {:path \"c.md\" :section \"## 節\"}]
+      lists (localllm-docs/amend-line-lists targets [(sec 5) (sec 5) (sec 5)] 150)]
+  (prn {:shown (mapv (fn [p] (count (:lines (get lists p)))) [\"a.md\" \"b.md\" \"c.md\"])
+        :all (mapv (fn [p] (:all (get lists p))) [\"a.md\" \"b.md\" \"c.md\"])
+        :chars (reduce + (map (comp localllm-docs/line-list-chars :lines) (vals lists)))
+        :budget (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 20000} 15500)
+        :budget-capped (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 60000} 15500)
+        :budget-none (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 16000} 15500)}))
+" 2>&1)"
+  # 5 lines fit in 150 chars for the first target, the second gets the remainder
+  # (3 lines), the third nothing; the total never exceeds the shared budget
+  [[ "${out}" == *':shown [5 3 0]'* && "${out}" == *':all [5 5 5]'* ]] || fail "the listing budget must be shared in plan order: ${out}"
+  [[ "${out}" == *':budget 3500'* && "${out}" == *':budget-capped 12000'* && "${out}" == *':budget-none 0'* ]] || fail "the budget must be the cap bounded by the prompt room: ${out}"
+  grep -q ':chars 1[0-4][0-9]' <<<"${out}" || fail "the rendered listing must stay within the shared budget: ${out}"
+
+  # black-box: two targets, the second note's planned section holds ~12,000
+  # chars of lines; with a 20,000-char request cap the per-target listing of
+  # the old code (12,000) would have blocked the run before the model call
+  setup; make_verse; echo select-multi-long >"${MODE_FILE}"
+  local bell="${VERSE}/アイテム設定/鈴.md"
+  { printf -- '---\ntitle: 鈴\n---\n\n# 鈴\n\n## 概要\n\n- 音は澄んでいる。VERSE-BELL-BODY\n'
+    for i in $(seq 1 300); do printf -- '- 音色の記録 %03d 回目。鐘楼の朝の鳴らし方を書き留めた行です。\n' "${i}"; done
+    printf -- '\n## 来歴\n\n- 鐘楼に伝わる。\n'; } >"${VAULT}/${bell}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-842|BOXP-842: 鈴の技]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-842 backlog localllm "ユイの鈴の技と鈴の音" "ユイに鈴を使う技を追記し、鈴の音の描写を一文だけ遠くまで届くように直してほしい。"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
+  local ticket="${VAULT}/Tickets/BOXP-842.md"
+  assert_file_contains "${ticket}" '^status: ready$'
+  local sums; sums="$(verse_sums)"
+  : >"${REQ_LOG}"
+  sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-842|BOXP-842: 鈴の技]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS=20000 >"${CASE_DIR}/out2"
+  assert_no_cloud
+  assert_file_not_contains "${ticket}" 'localllm-context-exceeded'
+  assert_file_contains "${ticket}" '^status: review$'
+  grep -q ':schema-name "docs_setting_amend"' "${REQ_LOG}" || fail "the amend request must be sent"
+  grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':line-list-truncated? true' || fail "the long listing must be truncated to the shared budget"
+  local chars; chars="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | sed -E 's/.*:prompt-chars ([0-9]+).*/\1/')"
+  [[ "${chars}" -le 20000 && "${chars}" -gt 12000 ]] || fail "the amend request must fit the 20,000-char cap (got ${chars})"
+  assert_file_contains "${VAULT}/${bell}" '^<!-- localllm:BOXP-842:.*:replace old=[A-Za-z0-9_-]+ -->- 音は澄んでいて、遠くまで届く。<!-- /localllm:BOXP-842 -->VERSE-BELL-BODY$'
+  assert_file_contains "${VAULT}/${bell}" '^- 音色の記録 300 回目。'
+  assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md" "${bell}"
+}
+
 for t in \
   test_canon_select_grooms_by_content_then_amends_revises_and_rolls_back \
   test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
+  test_canon_amend_line_listing_shares_one_budget_across_targets \
   test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accepted \
   test_canon_select_asks_or_refuses_without_writing \
   test_canon_select_new_note_goes_to_the_chosen_folder_and_stays_hidden_until_accepted \

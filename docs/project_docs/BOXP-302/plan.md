@@ -73,3 +73,10 @@
   - 観測: 3 件中 1 件は old == new の無変更置換（モデルの品質問題、runner は Review で Owner 判断に委ねる。別途 no-op 置換の自動拒否を検討する余地あり）。
 - Ready gate: コード変更なし（§4）。
 - 未実施（本 run の範囲外 / 後続）: PR merge → image → Pod 再作成 → 配備確認（sha256）→ §6 の手順で BOXP-301 を Backlog から再 groom。
+
+## 8. 記録（2026-10-25 run 20261025T121943Z-60569f39-bb30-4d60-8f72-f03689011a34、PR gate codex-review 再試行 1/2）
+
+- codex review（PR #14016）P2: 「行一覧の 12,000 字上限が対象ノートごとに適用され、最大 3 target では一覧だけで約 36,000 字、本文（各 12,000 字）と合わせ `:max-prompt-chars` 60,000 を容易に超え、正当な複数対象 amend が LLM 呼出前に block される」。
+- 対策: 行一覧の予算を **全 target 共有** にした。`amend-line-lists` が計画順に 1 つの予算を配分（前の target が使った残りを次に渡す）し、`amend-line-list-budget` でその予算を `min(:amend-line-list-chars, :max-prompt-chars − 一覧なしプロンプト長 − 1000)` に抑える。プロンプト生成・行 ID 解決・拒否理由の ID 範囲はすべて同じ `line-lists`（ctx）を参照し、提示した行だけが解決される（fuzzy なし、従来どおり）。予算が 0 の target は一覧なしとなり、本文一意の原文引用による replace-text のみ有効（拒否理由の ID 案内も出さない）。
+- テスト `test_canon_amend_line_listing_shares_one_budget_across_targets`: (a) 3 target × 5 行に予算 150 字 → 配分 [5 3 0]、合計が予算内、予算関数の 3 ケース（残余で抑える / cap で抑える / 残余なし→0）。(b) black-box: 2 target、2 つ目の節に約 13,000 字の行、`MAX_PROMPT_CHARS=20000` で amend tick → block されず Review 到達、一覧は省略付き、送信 prompt 文字数 ≤ 20,000（旧実装では本文 12,000 + 一覧 12,000 で超過し block）。
+- 結果: amend 関連 4 テスト pass。全体テストの結果は PR 本文に記載。
