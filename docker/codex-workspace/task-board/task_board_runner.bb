@@ -960,7 +960,7 @@
               (when ticket-exists?
                 (append-note! ticket-id (str "localllm docs run " run-id
                                              " は文書を更新した後の lane / frontmatter 遷移の途中で終了していたため、遷移を " next-status
-                                             " として完了させました（文書の更新は適用済み。rollback: task_board_runner.bb localllm-rollback " ticket-id " " run-id "）")))
+                                             " として完了させました（文書の更新は適用済み。戻す場合は Obsidian の履歴機能で）")))
               (:result r))
             (let [reason (sanitize-blocker-reason (str (:reason r)))]
               ;; The notes no longer match what the run wrote (edited, restored
@@ -2082,8 +2082,10 @@
 
 (declare sanitize-blocker-reason)
 
-(defn localllm-rollback-command [ticket-id run-id]
-  (str "task_board_runner.bb localllm-rollback " ticket-id " " run-id))
+;; BOXP-306: a localllm write is reflected in the note directly (no review
+;; marker, no accept step, no operator rollback). Notes point at the audit only;
+;; the owner reverts through Obsidian's own history when needed.
+(def localllm-revert-hint "戻す場合は Obsidian の履歴機能で（runner の専用 rollback はありません）")
 
 (defn localllm-research-note
   "Staged-research summary for Notes (adapter v4): how the evidence was
@@ -2107,11 +2109,11 @@
         a (:amend result)]
     (str "localllm docs run " run-id
          (cond
-           ;; Amend mode (BOXP-296): marked additions / edits inside the canon
-           ;; notes a confirmed groom plan named. Facts / conflicts / questions
-           ;; stay in the run directory report.
+           ;; Amend mode (BOXP-296 / BOXP-306): additions / edits inside the
+           ;; canon notes a confirmed groom plan named, saved as plain Markdown.
+           ;; Facts / conflicts / questions stay in the run directory report.
            amend?
-           (str " が groom 計画の対象ノートへ未確認の追記・編集を " (:changes a 0) " 件適用し Review で停止しました（変更は HTML コメントのマーカー <!-- localllm:" ticket-id ":… --> で囲まれ、Owner が採用するまで他の依頼の根拠には使われません。採用: task_board_runner.bb localllm-accept " ticket-id " " run-id "。Done にはしません）。"
+           (str " が groom 計画の対象ノートへ追記・編集を " (:changes a 0) " 件適用し Review で停止しました（通常の本文として直接反映。内容は Obsidian で確認し、" localllm-revert-hint "。Done にはしません）。"
                 " 操作: " (str/join ", " (map (fn [[op n]] (str op "×" n)) (:ops a)))
                 "、参照した既存設定 " (:facts a 0) " 件、矛盾・要確認 " (+ (:conflicts a 0) (:auto-conflicts a 0)) " 件（うち自動検査 " (:auto-conflicts a 0) " 件）、質問 " (:questions a 0) " 件"
                 (when (pos? (:facts-dropped a 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped a 0) " 件"))
@@ -2124,10 +2126,10 @@
            ;; is the only model-chosen token here.
            create?
            (str " が新規" (case (:kind c) "monster" "魔物" "setting" "" "キャラクター") "設定の"
-                (if (:canon? c) "ノート（groom 計画で確認した設定フォルダ内、未確認）を " "提案ノートを ")
+                (if (:canon? c) "ノート（groom 計画で確認した設定フォルダ内）を " "提案ノートを ")
                 (if (= "replace-note" (:op c)) "改稿（置換）" "作成")
                 (if (:canon? c)
-                  (str " し Review で停止しました（既存のノートは変更していません。frontmatter `localllm-unreviewed: true` の未確認ノートで、Owner が採用するまで他の依頼の根拠には使われません。採用: task_board_runner.bb localllm-accept " ticket-id " " run-id "。Done にはしません）。")
+                  (str " し Review で停止しました（既存のノートは変更していません。通常のノートとして保存。内容は Obsidian で確認し、" localllm-revert-hint "。Done にはしません）。")
                   " し Review で停止しました（既存の設定ノートは変更していません。未承認の案で、採用は人が判断し正式フォルダへ移してください。Done にはしません）。")
                 " 参照した既存設定 " (:facts c 0) " 件、矛盾・要確認 " (+ (:conflicts c 0) (:auto-conflicts c 0) (:near-names c 0)) " 件（うち自動検査 " (+ (:auto-conflicts c 0) (:near-names c 0)) " 件、名前が近い既存ノート " (:near-names c 0) " 件）、質問 " (:questions c 0) " 件"
                 (when (pos? (:facts-dropped c 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped c 0) " 件"))
@@ -2154,8 +2156,7 @@
          ;; The model's free-text summary may restate note content, so it stays
          ;; in the audit file (same run directory) rather than in Notes.
          (when (seq (:summary result)) "; 要確認事項: audit の :summary を参照")
-         "; audit/backup: " (:audit-path result)
-         "; rollback: " (localllm-rollback-command ticket-id run-id))))
+         "; audit: " (:audit-path result))))
 
 (defn localllm-stop-note [ticket-id run-id result]
   (str "localllm docs run " run-id " は変更を適用せず停止しました（cloud への切替はしません）。"
@@ -3464,7 +3465,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-rollback BOXP-N RUN-ID|localllm-accept BOXP-N RUN-ID>")
+  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-migrate-markers [--apply]>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -4140,20 +4141,27 @@
              (when-not (= "--ticket" (first args)) (usage))
              (reset! only-ticket (second args)))
            (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
-  "localllm-rollback" (let [[ticket-id run-id] (rest *command-line-args*)]
-                        (when-not (and ticket-id run-id) (usage))
-                        (if @localllm-docs-module-loaded?
-                          (doseq [r ((resolve 'localllm-docs/rollback!) (vault) (str (run-dir ticket-id run-id)))]
-                            (println (pr-str r)))
-                          (fail "localllm_docs.bb could not be loaded")))
-  ;; BOXP-296: adopt a run's unreviewed canon-folder changes (markers /
-  ;; unreviewed frontmatter removed, text kept).
-  "localllm-accept" (let [[ticket-id run-id] (rest *command-line-args*)]
-                      (when-not (and ticket-id run-id) (usage))
-                      (if @localllm-docs-module-loaded?
-                        (doseq [r ((resolve 'localllm-docs/accept!) (vault) (str (run-dir ticket-id run-id)))]
-                          (println (pr-str r)))
-                        (fail "localllm_docs.bb could not be loaded")))
+  ;; BOXP-306: the operator accept / rollback commands are retired. Both print
+  ;; the notice and exit without touching any file (a copied command from an
+  ;; old Notes line must not restore or rewrite a note by surprise).
+  ("localllm-rollback" "localllm-accept")
+  (do (binding [*out* *err*]
+        (println (str "error: " (first *command-line-args*) " は廃止されました (BOXP-306)。localllm の変更は対象ノートへ直接反映され、専用の採用 / 取消操作はありません。"
+                      "戻す場合は Obsidian の履歴機能を使ってください。ファイルは変更していません。")))
+      (System/exit 2))
+  ;; BOXP-306: one-off migration of notes written before the change (legacy
+  ;; span markers / `localllm-unreviewed` marks removed, current text kept).
+  ;; Dry-run unless `--apply`; same write lock as the localllm commits.
+  "localllm-migrate-markers" (let [args (vec (rest *command-line-args*))]
+                               (when-not (contains? #{[] ["--apply"]} args) (usage))
+                               (if @localllm-docs-module-loaded?
+                                 (let [r ((resolve 'localllm-docs/migrate-markers!) (vault)
+                                          {:apply? (= ["--apply"] args)
+                                           :lock-path (str (fs/path (root) "locks" "localllm-docs-write.lock"))})]
+                                   (println (pr-str (dissoc r :results)))
+                                   (doseq [x (:results r)] (println (pr-str x)))
+                                   (when (some #(= :skipped (:status %)) (:results r)) (System/exit 3)))
+                                 (fail "localllm_docs.bb could not be loaded")))
   "loop" (loop!)
   "sync" (do (ensure-root!) (sync-all!))
   "prepare-shutdown" (prepare-shutdown!)
