@@ -1599,6 +1599,9 @@ tick
 replace_line_containing "${BOARD}" "の続きを再整理" "- [ ] [[Novels/${RID}]] assignee::localllm"
 tick
 [[ "$(grep -c "同じ ${RID} のカードが 2 枚あります（Backlog, Draft）" "${BOARD}")" == "2" ]] || fail "duplicate cards must both be held: $(grep -F "${RID}" "${BOARD}")"
+run_history "${RID}" | grep -Fq -- "同じ ${RID} のカードが 2 枚あります（Backlog, Draft）。1 枚だけ残してください" || fail "duplicate cards must be recorded in Run History"
+tick
+[[ "$(run_history "${RID}" | grep -Fc -- "同じ ${RID} のカードが 2 枚あります")" == "1" ]] || fail "duplicate cards are recorded once"
 RUNS_BEFORE_DUP="$(find "${STATE}/runs/${RID}" -mindepth 1 -maxdepth 1 -type d | wc -l)"
 tick
 [[ "$(find "${STATE}/runs/${RID}" -mindepth 1 -maxdepth 1 -type d | wc -l)" == "${RUNS_BEFORE_DUP}" ]] || fail "duplicate cards must not run"

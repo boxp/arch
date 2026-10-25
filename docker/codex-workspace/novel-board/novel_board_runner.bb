@@ -1239,10 +1239,17 @@
                                                            (hold-card-line line (str "同名の作品 " (format-ids ids) " があります。再整理なら既存カードを Backlog へ移動し、別作品ならタイトルを変えてください（新規採番はしません）"))
                                                            (strip-hold-marker line)))]
                               :when (not= new-line line)]
-                          [idx (cond-> {:line new-line :kind kind :novel-id (:novel-id card) :lane (:lane card)}
+                          [idx (cond-> {:line new-line :kind kind :novel-id (:novel-id card) :lane (:lane card)
+                                        :duplicate-of (:duplicate-of card)}
                                  (not= current (hold-marker-reason new-line)) (assoc :reason (hold-marker-reason new-line)))]))]
       (when (seq updates)
         (write-lines! path (mapv (fn [idx line] (get-in updates [idx :line] line)) (range (count lines)) lines))
+        ;; Duplicate cards of one work: recorded once in that work's Run
+        ;; History (the marker, and so this entry, is written once per reason).
+        (doseq [[id reason] (distinct (keep (fn [{:keys [duplicate-of reason]}] (when (and duplicate-of reason) [duplicate-of reason]))
+                                            (vals updates)))
+                :when (note-exists? id)]
+          (append-history! id (str reason "。カードを 1 枚にすると次の tick で保留が外れます")))
         (doseq [[_ {:keys [kind novel-id lane reason line]}] (sort updates)]
           (cond
             reason (log! (str "card held in " lane ": " reason))
