@@ -145,12 +145,14 @@
    ;; value must not open Task Board data to canon writes (codex review).
    ;; Overlap is rejected in both directions (a canon root that *contains* a
    ;; write root, e.g. `Projects`, would widen the route too; codex review).
+   ;; An excluded folder INSIDE a canon root is fine (it narrows the root).
    :canon-roots (let [overlaps? (fn [a b] (or (excluded-path? a [b]) (excluded-path? b [a])))
-                      protected (concat (split-list default-exclude-paths)
-                                        (split-list (env "CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS" default-exclude-paths))
-                                        [(proposal-root-config)]
-                                        (write-roots-config))]
-                  (vec (remove (fn [r] (or (= r vault-root-marker) (some #(overlaps? r %) protected)))
+                      write-side (cons (proposal-root-config) (write-roots-config))
+                      excludes (concat (split-list default-exclude-paths)
+                                       (split-list (env "CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS" default-exclude-paths)))]
+                  (vec (remove (fn [r] (or (= r vault-root-marker)
+                                           (some #(overlaps? r %) write-side)
+                                           (excluded-path? r excludes)))
                                (split-list (env "CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS" "")))))
    :context-char-budget (env-long "CODEX_TASK_BOARD_LOCALLLM_CONTEXT_CHAR_BUDGET" 24000)
    :max-targets (env-long "CODEX_TASK_BOARD_LOCALLLM_MAX_TARGETS" 3)
