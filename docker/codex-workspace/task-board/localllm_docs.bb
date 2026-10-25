@@ -4189,9 +4189,9 @@
 (defn amend-line-list-budget
   "Chars the line listing may add to an amend prompt of `base-chars` (system
   + user without the listing): the configured cap, but never more than the
-  room left under `:max-prompt-chars` minus the listing's own headers."
+  room left under `:max-prompt-chars`."
   [cfg base-chars]
-  (max 0 (min (:amend-line-list-chars cfg) (- (:max-prompt-chars cfg) base-chars 1000))))
+  (max 0 (min (:amend-line-list-chars cfg) (- (:max-prompt-chars cfg) base-chars))))
 
 (def amend-system-prompt
   (str "あなたは創作世界の設定資料（Obsidian vault）を扱う日本語の設定ライターです。Task Board のチケットの依頼にもとづき、Owner が確認した計画に書かれた対象ノートの節だけに、既存設定と矛盾しない追記・編集を最小限で行います。\n"
@@ -4238,6 +4238,26 @@
          "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。前回の案を土台に Review 指示を優先して改稿し、改稿後の変更全体（changes / canon_facts / conflicts / questions）を出力してください。前回の変更は runner が取り除いたうえで今回の changes を適用します。"
          "チケットの Summary / Acceptance Criteria / Context / Notes の依頼と上の計画にもとづき、対象ノートの節への追記・編集を changes として出力してください。")
        " 各 new_text は " (max 500 (- (:max-change-chars cfg) 500)) " 字以内、変更は合計 " (:max-changes cfg) " 件以内、canon_facts は要点だけにしてください。\n"))
+
+(defn amend-prompt-chars
+  "Chars of the whole amend request (system + user) for `prompt-args`."
+  [cfg prompt-args]
+  (+ (count amend-system-prompt) (count (build-amend-prompt cfg prompt-args))))
+
+(defn fit-amend-line-lists
+  "`amend-line-lists` for `prompt-args` whose rendered request stays within
+  `:max-prompt-chars`: starts from the configured budget and, while the
+  rendered prompt (listing headers with their paths / headings included)
+  overflows, shrinks the budget by the overflow and renders again. Terminates
+  because the budget strictly decreases to 0 (codex review: a fixed header
+  reserve cannot bound unbounded path / heading lengths)."
+  [cfg {:keys [plan-targets target-texts] :as prompt-args}]
+  (loop [budget (amend-line-list-budget cfg (amend-prompt-chars cfg (dissoc prompt-args :line-lists)))]
+    (let [lists (amend-line-lists plan-targets target-texts budget)
+          over (- (amend-prompt-chars cfg (assoc prompt-args :line-lists lists)) (:max-prompt-chars cfg))]
+      (if (or (<= over 0) (zero? budget))
+        lists
+        (recur (max 0 (- budget over)))))))
 
 (defn parse-amend-output
   [content finish-reason]
@@ -4556,9 +4576,8 @@
             prompt-args {:ticket-id ticket-id :brief brief :plan-targets plan-targets :target-texts target-texts
                          :previous previous :research research :action action}
             ;; BOXP-302 / codex review: the line listing of all planned sections
-            ;; shares one budget bounded by the room the rest of the prompt leaves.
-            base-chars (+ (count amend-system-prompt) (count (build-amend-prompt cfg prompt-args)))
-            line-lists (amend-line-lists plan-targets target-texts (amend-line-list-budget cfg base-chars))
+            ;; shares one budget and the rendered request stays within the cap.
+            line-lists (fit-amend-line-lists cfg prompt-args)
             messages [{:role "system" :content amend-system-prompt}
                       {:role "user" :content (build-amend-prompt cfg (assoc prompt-args :line-lists line-lists))}]
             prompt-chars (reduce + (map #(count (str (:content %))) messages))

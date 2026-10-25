@@ -3008,13 +3008,31 @@ test_canon_amend_line_listing_shares_one_budget_across_targets() {
         :chars (reduce + (map (comp localllm-docs/line-list-chars :lines) (vals lists)))
         :budget (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 20000} 15500)
         :budget-capped (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 60000} 15500)
-        :budget-none (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 16000} 15500)}))
+        :budget-none (localllm-docs/amend-line-list-budget {:amend-line-list-chars 12000 :max-prompt-chars 15000} 15500)}))
 " 2>&1)"
   # 5 lines fit in 150 chars for the first target, the second gets the remainder
   # (3 lines), the third nothing; the total never exceeds the shared budget
   [[ "${out}" == *':shown [5 3 0]'* && "${out}" == *':all [5 5 5]'* ]] || fail "the listing budget must be shared in plan order: ${out}"
-  [[ "${out}" == *':budget 3500'* && "${out}" == *':budget-capped 12000'* && "${out}" == *':budget-none 0'* ]] || fail "the budget must be the cap bounded by the prompt room: ${out}"
+  [[ "${out}" == *':budget 4500'* && "${out}" == *':budget-capped 12000'* && "${out}" == *':budget-none 0'* ]] || fail "the budget must be the cap bounded by the prompt room: ${out}"
   grep -q ':chars 1[0-4][0-9]' <<<"${out}" || fail "the rendered listing must stay within the shared budget: ${out}"
+
+  # codex review: listing headers carry the (unbounded) path and heading; the
+  # rendered request, not a fixed reserve, decides how many lines fit
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [cfg {:amend-line-list-chars 12000 :max-prompt-chars 9000 :max-change-chars 4000 :max-changes 6}
+      long-path (str \"Refs/\" (apply str (repeat 900 \"長\")) \"/note.md\")
+      sec (str \"## \" (apply str (repeat 400 \"節\")))
+      text (str sec \"\\n\\n\" (clojure.string/join \"\\n\" (map #(str \"- 行 \" % \" の本文です。\") (range 200))))
+      args {:ticket-id \"T\" :brief \"b\" :plan-targets [{:path long-path :section sec :outline \"o\"}] :target-texts [text] :action :amend}
+      base (localllm-docs/amend-prompt-chars cfg args)
+      naive (localllm-docs/amend-line-lists [{:path long-path :section sec}] [text] (localllm-docs/amend-line-list-budget cfg base))
+      lists (localllm-docs/fit-amend-line-lists cfg args)]
+  (prn {:naive-over? (> (localllm-docs/amend-prompt-chars cfg (assoc args :line-lists naive)) 9000)
+        :fit-ok? (<= (localllm-docs/amend-prompt-chars cfg (assoc args :line-lists lists)) 9000)
+        :shown-some? (pos? (count (:lines (get lists long-path))))}))
+" 2>&1)"
+  [[ "${out}" == *':naive-over? true'* && "${out}" == *':fit-ok? true'* && "${out}" == *':shown-some? true'* ]] || fail "the rendered request with long headers must fit the cap: ${out}"
 
   # black-box: two targets, the second note's planned section holds ~12,000
   # chars of lines; with a 20,000-char request cap the per-target listing of
