@@ -1446,6 +1446,229 @@ grep -Fq -- "読取は agent 側で行うため、ここでは候補のみ" <<<"
 echo done >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud groom receives the names-only exploration"
 
+
+# ---------------------------------------------------------------------------
+# 17. A card moved back from Draft to Backlog is re-groomed under the same id;
+#     nothing a human may write on a card ever scaffolds a second work by
+#     accident (BOXP-307). Synthetic, non-explicit fixture only.
+# ---------------------------------------------------------------------------
+replace_line_containing() { # file needle new-line (verbatim)
+  REPL="$3" awk -v needle="$2" 'index($0, needle) { print ENVIRON["REPL"]; next } { print }' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+}
+delete_line_containing() { # file needle
+  awk -v needle="$2" 'index($0, needle) { next } { print }' "$1" >"$1.tmp" && mv "$1.tmp" "$1"
+}
+note_count() { find "${VAULT}/Novels" -maxdepth 1 -name 'NOVEL-*.md' | wc -l; }
+run_history() { sed -n '/^## Run History$/,/^## /p' "${VAULT}/Novels/$1.md"; }
+change_history() { sed -n '/^## Change History$/,/^## /p' "${VAULT}/Novels/$1.md"; }
+latest_run_id() { find "${STATE}/runs/$1" -mindepth 1 -maxdepth 1 -type d | sort | tail -n 1 | xargs -r basename; }
+hold_reason_of() { # board needle
+  grep -F -- "$2" "$1" | sed -n 's/.*⚠ runner: //p' | head -n 1
+}
+echo normal >"${MODE_FILE}"
+echo done >"${FAKE_CLAUDE_MODE_FILE}"
+
+# A deleted work leaves private state behind; its number is never reissued.
+mkdir -p "${STATE}/assignee-sync"
+echo '{:assignee "boxp"}' >"${STATE}/assignee-sync/NOVEL-120.edn"
+NOTES_BEFORE="$(note_count)"
+add_card Backlog "- [ ] 再整理テスト"
+tick
+assert_contains "${BOARD}" "[[Novels/NOVEL-121|NOVEL-121: 再整理テスト]] #novel status::backlog assignee::boxp"
+[[ ! -f "${VAULT}/Novels/NOVEL-120.md" ]] || fail "a deleted work's id must not be reissued"
+RID=NOVEL-121
+[[ "$(note_count)" == "$((NOTES_BEFORE + 1))" ]] || fail "exactly one note scaffolded"
+echo "PASS: new title gets the next unused id, never a deleted one"
+
+# First groom from Backlog, as before.
+set_assignee "${RID}" localllm
+tick
+[[ "$(lane_of "${BOARD}" "${RID}")" == "Draft" ]] || fail "first groom should reach Draft"
+assert_contains "${BOARD}" "[[Novels/${RID}|${RID}: 再整理テスト]] #novel status::draft assignee::boxp"
+FIRST_RUN="$(latest_run_id "${RID}")"
+[[ -z "$(run_history "${RID}" | grep -F '既存作品の再整理')" ]] || fail "a first groom must not be labelled as a re-groom"
+NOTES_AFTER_FIRST="$(note_count)"
+
+# The human edits the plan in Draft, then drags the card back to Backlog in the
+# Kanban UI: the line moves verbatim, so it still says status::draft.
+cat >"${TMP}/edited-req.txt" <<'EOF'
+- Title: 再整理テスト
+- Synopsis: 人間が手で直したあらすじ（HUMAN-EDIT-MARKER）。
+- Characters: 桜一穂、瀬戸凛
+- Target length: 1200字
+- NSFW: false
+EOF
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/${RID}.md" Requirements "${TMP}/edited-req.txt"
+move_card "${RID}" Backlog
+grep -Fq -- "[[Novels/${RID}|${RID}: 再整理テスト]] #novel status::draft assignee::boxp" "${BOARD}" || fail "fixture: moved line should still carry status::draft"
+tick
+# Human assignee: nothing runs, the lane wins over the stale status attribute
+# and the old run state, and no second work appears.
+[[ "$(lane_of "${BOARD}" "${RID}")" == "Backlog" ]] || fail "a card moved to Backlog must stay there: $(card_line "${BOARD}" "${RID}")"
+assert_contains "${BOARD}" "[[Novels/${RID}|${RID}: 再整理テスト]] #novel status::backlog assignee::boxp"
+assert_contains "${VAULT}/Novels/${RID}.md" "status: backlog"
+[[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "moving a card back must not scaffold a note"
+assert_not_contains "${BOARD}" "NOVEL-122"
+[[ "$(latest_run_id "${RID}")" == "${FIRST_RUN}" ]] || fail "moving back with a human assignee must not start a run"
+echo "PASS: Draft -> Backlog keeps the id, the lane wins over the stale status attribute"
+
+# Assign localllm again: the same id is re-groomed from the existing plan.
+set_instructions "${RID}" "舞台を冬にする（BACKLOG-INSTRUCTION-MARKER）"
+set_assignee "${RID}" localllm
+tick
+[[ "$(lane_of "${BOARD}" "${RID}")" == "Draft" ]] || fail "re-groom should hand back to Draft: $(card_line "${BOARD}" "${RID}")"
+assert_contains "${BOARD}" "[[Novels/${RID}|${RID}: 再整理テスト]] #novel status::draft assignee::boxp"
+SECOND_RUN="$(latest_run_id "${RID}")"
+[[ "${SECOND_RUN}" != "${FIRST_RUN}" ]] || fail "re-groom must be a new run"
+[[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "re-groom must not add a note"
+assert_not_contains "${BOARD}" "NOVEL-122"
+[[ "$(grep -c "\[\[Novels/${RID}|" "${BOARD}")" == "1" ]] || fail "exactly one card for ${RID}"
+PROMPT2="$(latest_prompt "${RID}")"
+assert_contains "${PROMPT2}" "既存の Requirements / Outline は人間が確認・手編集した企画です"
+assert_contains "${PROMPT2}" "HUMAN-EDIT-MARKER"
+assert_contains "${PROMPT2}" "BACKLOG-INSTRUCTION-MARKER"
+assert_contains "${PROMPT2}" "本文は書かないでください"
+assert_not_contains "${PROMPT2}" "## Applied"
+run_history "${RID}" | grep -F "run ${SECOND_RUN} started: action=groom" | grep -Fq -- "既存作品の再整理: 同じ ID・管理ノートのまま" || fail "re-groom must be labelled in Run History"
+change_history "${RID}" | grep -Fq -- "Backlog からの再整理で Requirements / Outline を更新（同じ ${RID}" || fail "re-groom must be recorded in Change History"
+reference_context "${RID}" | grep -Fq -- "${SECOND_RUN}" || fail "Reference Context must be replaced by the re-groom run"
+[[ -z "$(reference_context "${RID}" | grep -F "${FIRST_RUN}")" ]] || fail "Reference Context must not keep the first run"
+# The human's instructions stay in the note; the run consumed them (so Draft +
+# agent with the same text starts the first draft, as documented).
+assert_contains "${VAULT}/Novels/${RID}.md" "BACKLOG-INSTRUCTION-MARKER"
+grep -Fq -- ":action :groom" "${STATE}/instructions/${RID}.edn" || fail "instructions consumed by the Backlog re-groom must be recorded"
+[[ ! -e "${STATE}/work/${RID}/manuscript.md" ]] || fail "re-groom must not write a manuscript"
+[[ ! -d "${VAULT}/Novels/Drafts/${RID}" ]] || fail "re-groom must not create a draft folder"
+echo "PASS: Backlog re-groom reuses the id, the note and the human's plan"
+
+# A second round trip: still one id, one note, one card.
+move_card "${RID}" Backlog
+set_assignee "${RID}" localllm
+tick
+[[ "$(lane_of "${BOARD}" "${RID}")" == "Draft" ]] || fail "second re-groom should reach Draft"
+THIRD_RUN="$(latest_run_id "${RID}")"
+[[ "${THIRD_RUN}" != "${SECOND_RUN}" ]] || fail "second re-groom must be a new run"
+[[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "repeated round trips must not add notes"
+[[ "$(grep -c "\[\[Novels/${RID}|" "${BOARD}")" == "1" ]] || fail "repeated round trips must keep one card"
+assert_not_contains "${BOARD}" "NOVEL-122"
+[[ "$(find "${STATE}/runs/${RID}" -mindepth 1 -maxdepth 1 -type d | wc -l)" == "3" ]] || fail "three groom runs expected"
+echo "PASS: repeated Draft <-> Backlog round trips never multiply ids or notes"
+
+# Every link spelling Obsidian produces resolves to the same work and is
+# rewritten in the canonical form; the lane, #nsfw and assignee are kept.
+for form in \
+  "- [ ] [[${RID}]] status::draft assignee::boxp" \
+  "- [ ] [${RID}: 再整理テスト](Novels/${RID}.md) #novel status::draft assignee::boxp" \
+  "- [ ] [[Novels/${RID}.md|${RID}: 再整理テスト]] #novel status::draft assignee::boxp" \
+  "- [ ] [[Novels/${RID}\\|${RID}: 再整理テスト]] #novel status::draft assignee::boxp" \
+  "- [ ] [[Novels/${RID}#Requirements|${RID}: 再整理テスト]] #novel status::draft assignee::boxp"; do
+  replace_line_containing "${BOARD}" "${RID}" "${form}"
+  tick
+  [[ "$(lane_of "${BOARD}" "${RID}")" == "Draft" ]] || fail "normalized card should stay in Draft for form: ${form}"
+  assert_contains "${BOARD}" "[[Novels/${RID}|${RID}: 再整理テスト]] #novel status::draft assignee::boxp"
+  [[ "$(grep -c "${RID}" "${BOARD}")" == "1" ]] || fail "one card line for form: ${form}"
+  [[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "link form must not scaffold: ${form}"
+  [[ "$(latest_run_id "${RID}")" == "${THIRD_RUN}" ]] || fail "normalizing a boxp card must not run: ${form}"
+done
+assert_contains "${TMP}/runner.log" "${RID} card link normalized in Draft"
+# A shortest-path link moved to Backlog with an agent is normalized and
+# re-groomed in the same tick (no new id).
+replace_line_containing "${BOARD}" "${RID}" "- [ ] [[${RID}]] #nsfw assignee::localllm"
+move_card_raw() { delete_line_containing "${BOARD}" "$1"; bb "${TMP}/bin/edit.bb" add-card "${BOARD}" "$2" "$1"; }
+move_card_raw "- [ ] [[${RID}]] #nsfw assignee::localllm" Backlog
+tick
+[[ "$(lane_of "${BOARD}" "${RID}")" == "Draft" ]] || fail "shortest-path card with an agent should be re-groomed: $(grep -F "${RID}" "${BOARD}")"
+assert_contains "${BOARD}" "[[Novels/${RID}|${RID}: 再整理テスト]] #novel #nsfw status::draft assignee::boxp"
+[[ "$(latest_run_id "${RID}")" != "${THIRD_RUN}" ]] || fail "shortest-path card with an agent must run"
+[[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "shortest-path card must not scaffold"
+assert_contains "${VAULT}/Novels/${RID}.md" "nsfw: true"
+echo "PASS: every Obsidian link spelling resolves to the existing work"
+
+# An id string without a link is neither a reference nor a new title.
+add_card Backlog "- [ ] ${RID} の続きを再整理 assignee::localllm"
+tick
+REASON="$(hold_reason_of "${BOARD}" "の続きを再整理")"
+[[ "${REASON}" == *"ID の文字列だけでは既存作品として扱いません"* ]] || fail "bare id must be held with a reason: ${REASON}"
+[[ "${REASON}" == *"[[Novels/${RID}]]"* ]] || fail "hold reason must say how to link: ${REASON}"
+[[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "bare id must not scaffold"
+[[ "$(lane_of "${BOARD}" "${RID}")" == "Draft" ]] || fail "bare id must not touch the real card"
+[[ "$(grep -c '⚠ runner:' "${BOARD}")" == "1" ]] || fail "one hold marker expected"
+tick
+[[ "$(grep -c '⚠ runner:' "${BOARD}")" == "1" ]] || fail "hold marker is written once, not per tick"
+# The human turns it into a link: now there are two cards for one id, both held.
+replace_line_containing "${BOARD}" "の続きを再整理" "- [ ] [[Novels/${RID}]] assignee::localllm"
+tick
+[[ "$(grep -c "同じ ${RID} のカードが 2 枚あります（Backlog, Draft）" "${BOARD}")" == "2" ]] || fail "duplicate cards must both be held: $(grep -F "${RID}" "${BOARD}")"
+RUNS_BEFORE_DUP="$(find "${STATE}/runs/${RID}" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+tick
+[[ "$(find "${STATE}/runs/${RID}" -mindepth 1 -maxdepth 1 -type d | wc -l)" == "${RUNS_BEFORE_DUP}" ]] || fail "duplicate cards must not run"
+[[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "duplicate cards must not scaffold"
+# Removing the extra card clears the hold on the real one.
+delete_line_containing "${BOARD}" "- [ ] [[Novels/${RID}]] assignee::localllm"
+tick
+assert_not_contains "${BOARD}" "⚠ runner:"
+assert_contains "${BOARD}" "[[Novels/${RID}|${RID}: 再整理テスト]] #novel #nsfw status::draft assignee::boxp"
+echo "PASS: id strings and duplicate cards are held with a reason, never scaffolded"
+
+# Missing management note: shown, not scaffolded, not run.
+add_card Backlog "- [ ] [[Novels/NOVEL-900|NOVEL-900: 幽霊カード]] #novel status::backlog assignee::localllm"
+add_card Backlog "- [ ] [[NOVEL-901]] assignee::localllm"
+tick
+[[ "$(hold_reason_of "${BOARD}" "NOVEL-900")" == *"管理ノート \`Novels/NOVEL-900.md\` がありません"* ]] || fail "canonical card without a note must be held"
+[[ "$(hold_reason_of "${BOARD}" "NOVEL-901")" == *"管理ノート \`Novels/NOVEL-901.md\` がありません"* ]] || fail "shortest-path card without a note must be held"
+[[ ! -f "${VAULT}/Novels/NOVEL-900.md" && ! -f "${VAULT}/Novels/NOVEL-901.md" ]] || fail "missing notes must not be created"
+[[ ! -d "${STATE}/runs/NOVEL-900" && ! -d "${STATE}/runs/NOVEL-901" ]] || fail "cards without a note must not run"
+delete_line_containing "${BOARD}" "NOVEL-900"
+delete_line_containing "${BOARD}" "NOVEL-901"
+# Several works on one card, a draft-only link, and a link inside a title.
+add_card Backlog "- [ ] [[Novels/NOVEL-1]] と [[${RID}]] の合本 assignee::localllm"
+add_card Backlog "- [ ] [[Novels/Drafts/NOVEL-1/manuscript|草稿]] assignee::localllm"
+add_card Backlog "- [ ] [[ひとはこ]]の新作 assignee::localllm"
+tick
+[[ "$(hold_reason_of "${BOARD}" "の合本")" == *"複数の作品（NOVEL-1, ${RID}）"* ]] || fail "two works on one card must be held"
+[[ "$(hold_reason_of "${BOARD}" "manuscript|草稿]] assignee::localllm")" == *"草稿へのリンクだけでは"* ]] || fail "draft-only link must be held"
+[[ "$(hold_reason_of "${BOARD}" "の新作")" == *"タイトルにリンクが含まれている"* ]] || fail "link in a title must be held"
+[[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "held cards must not scaffold"
+[[ "$(lane_of "${BOARD}" NOVEL-1)" != "" ]] || fail "fixture: NOVEL-1 still on the board"
+delete_line_containing "${BOARD}" "の合本"
+delete_line_containing "${BOARD}" "manuscript|草稿]] assignee::localllm"
+delete_line_containing "${BOARD}" "の新作"
+tick
+assert_not_contains "${BOARD}" "⚠ runner:"
+echo "PASS: missing notes, several works, draft-only and title links are held"
+
+# A new title that repeats an existing work is not a second work until the
+# human says so by changing the title; the marker is removed by the runner.
+add_card Backlog "- [ ] 再整理テスト assignee::localllm"
+tick
+[[ "$(hold_reason_of "${BOARD}" "- [ ] 再整理テスト assignee::localllm")" == *"同名の作品 ${RID} があります"* ]] || fail "same title must be held: $(grep -F '再整理テスト assignee' "${BOARD}")"
+[[ "$(note_count)" == "${NOTES_AFTER_FIRST}" ]] || fail "same title must not scaffold"
+[[ "$(grep -c "\[\[Novels/${RID}|" "${BOARD}")" == "1" ]] || fail "same title must not touch the existing card"
+replace_line_containing "${BOARD}" "- [ ] 再整理テスト assignee::localllm" "- [ ] 再整理テスト 外伝 assignee::boxp ⚠ runner: 古い理由は人間が消し忘れた"
+tick
+assert_contains "${BOARD}" "[[Novels/NOVEL-122|NOVEL-122: 再整理テスト 外伝]] #novel status::backlog assignee::boxp"
+assert_not_contains "${BOARD}" "⚠ runner:"
+assert_not_contains "${BOARD}" "古い理由"
+[[ -f "${VAULT}/Novels/NOVEL-122.md" ]] || fail "a distinct title is a new work"
+assert_contains "${VAULT}/Novels/NOVEL-122.md" "title: 再整理テスト 外伝"
+[[ "$(note_count)" == "$((NOTES_AFTER_FIRST + 1))" ]] || fail "exactly one new note for the new title"
+echo "PASS: same-title cards wait for the human, distinct titles scaffold normally"
+
+# Duplicate note files under Novels/ are reported once (count and paths), never removed.
+mkdir -p "${VAULT}/Novels/old"
+cp "${VAULT}/Novels/${RID}.md" "${VAULT}/Novels/old/${RID}.md"
+tick
+run_history "${RID}" | grep -Fq -- "同じ ID のファイルが他に 1 件あります: \`Novels/old/${RID}.md\`" || fail "duplicate note must be reported in Run History"
+tick
+[[ "$(run_history "${RID}" | grep -Fc -- "同じ ID のファイルが他に 1 件あります")" == "1" ]] || fail "duplicate note is reported once"
+[[ -f "${VAULT}/Novels/old/${RID}.md" ]] || fail "duplicate note must not be deleted"
+rm -rf "${VAULT}/Novels/old"
+echo "PASS: duplicate notes are reported, not merged"
+
+# Rule cards are never held or rewritten.
+[[ "$(grep -c '#novel-rule' "${BOARD}")" == "5" ]] || fail "rule cards must stay untouched"
+assert_not_contains "${BOARD}" "⚠ runner:"
+
 # Rule cards are never scaffolded
 [[ "$(grep -c '#novel-rule' "${BOARD}")" == "5" ]] || fail "rule cards must stay untouched"
 assert_not_contains "${BOARD}" "NOVEL-17"

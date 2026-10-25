@@ -24,7 +24,7 @@ kanban-plugin: board
 
 ## Draft
 
-- [ ] **運用ルール:** 執筆開始前の人間確認レーン。条件不足なら人間が `Backlog` へ戻す。agent を割り当てると、`Review Instructions` が空なら初稿を書き始め、未反映の指示があれば本文を書かずに Requirements / Outline へ反映して `Draft`（担当 boxp）へ戻る（同じ指示のまま再割当で初稿開始）。本文生成に失敗した場合は理由と再開条件を Run History に残して `Draft`（担当 boxp）へ戻る。 #novel-rule
+- [ ] **運用ルール:** 執筆開始前の人間確認レーン。条件不足なら人間がカードをそのまま `Backlog` へ戻す（同じ ID のまま再整理。新しいカードは作らない）。agent を割り当てると、`Review Instructions` が空なら初稿を書き始め、未反映の指示があれば本文を書かずに Requirements / Outline へ反映して `Draft`（担当 boxp）へ戻る（同じ指示のまま再割当で初稿開始）。本文生成に失敗した場合は理由と再開条件を Run History に残して `Draft`（担当 boxp）へ戻る。 #novel-rule
 
 
 ## In Progress
