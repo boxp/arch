@@ -2547,6 +2547,14 @@ test_canon_select_multi_target_replace_is_hidden_from_other_tickets_until_accept
   assert_file_contains "${REQ_LOG}" ':sees-corpus-body\? false'
   local g841; g841="$(latest_run BOXP-841)"
   assert_file_contains "${STATE}/runs/BOXP-841/${g841}/localllm-groom.edn" ':unreviewed-spans 2'
+  # accept is all-or-nothing: while one note is edited by hand, neither is adopted
+  local yui_saved; yui_saved="$(cat "${yui}")"
+  printf -- "\n- 人の追記。\n" >>"${yui}"
+  CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
+    bb "${RUNNER}" localllm-accept BOXP-840 "${run}" >"${CASE_DIR}/accept0" 2>&1
+  [[ "$(grep -c ":status :skipped" "${CASE_DIR}/accept0")" == 2 ]] || fail "accept must skip every note when one changed: $(cat "${CASE_DIR}/accept0")"
+  assert_file_contains "${bell}" "localllm:BOXP-840"
+  printf "%s\n" "${yui_saved}" >"${yui}"
   # accept: markers removed, new text kept; a later rollback of the same run is refused
   CODEX_TASK_BOARD_VAULT="${VAULT}" CODEX_TASK_BOARD_ROOT="${STATE}" CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS="${VERSE}" \
     bb "${RUNNER}" localllm-accept BOXP-840 "${run}" >"${CASE_DIR}/accept" 2>&1

@@ -4701,17 +4701,19 @@
       [{:status :nothing :reason "この run には Review まで到達した適用済みの変更がありません"}]
       (let [r (with-write-lock (default-write-lock-path run-dir) (:write-lock-timeout-ms cfg)
                 (fn []
-                  (let [results
-                        (mapv (fn [{:keys [path after-sha256 created?]}]
+                  (let [;; Phase 1 (no writes): every note must still be what the
+                        ;; run wrote. Phase 2 writes all or nothing, so a
+                        ;; multi-target run is never half adopted (codex review).
+                        planned
+                        (mapv (fn [{:keys [path after-sha256]}]
                                 (let [r (resolve-vault-path vault path (:docs-roots audit (:docs-roots cfg)))]
                                   (cond
                                     (not (:ok? r)) {:path path :status :skipped :reason (:reason r)}
                                     (not (:exists? r)) {:path path :status :skipped :reason "ファイルが存在しません"}
                                     :else
                                     (let [current (slurp-nofollow (:abs r))]
-                                      (cond
-                                        (not= after-sha256 (sha256 current)) {:path path :status :skipped :reason "run 適用後に別の更新が入っているため、そのままにしました（手で確認してください）"}
-                                        :else
+                                      (if (not= after-sha256 (sha256 current))
+                                        {:path path :status :skipped :reason "run 適用後に別の更新が入っているため、そのままにしました（手で確認してください）"}
                                         ;; A created note (or its later revision, op replace-note)
                                         ;; carries the unreviewed frontmatter; an amended note
                                         ;; carries spans. Decide by content, not by `created?`.
@@ -4720,9 +4722,21 @@
                                               accepted (if note? (accept-created-note unwrapped) unwrapped)]
                                           (if (= accepted current)
                                             {:path path :status :unchanged :reason "未確認マーカーがありません"}
-                                            (do (atomic-write! (:abs r) accepted (path-guard vault path))
-                                                {:path path :status :accepted :reason (if note? "未確認の frontmatter / バナーを外しました" "マーカーを外して本文を採用しました")}))))))))
-                              (:applied audit))]
+                                            {:path path :status :accepted :abs (:abs r) :text accepted
+                                             :reason (if note? "未確認の frontmatter / バナーを外しました" "マーカーを外して本文を採用しました")})))))))
+                              (:applied audit))
+                        blocked (filter #(= :skipped (:status %)) planned)
+                        results (if (seq blocked)
+                                  (mapv (fn [p] (if (= :skipped (:status p))
+                                                  p
+                                                  {:path (:path p) :status :skipped
+                                                   :reason (str "他のノート（" (str/join ", " (map :path blocked)) "）が採用できないため、この run の採用は全体を見送りました")}))
+                                        planned)
+                                  (mapv (fn [{:keys [status abs text path] :as p}]
+                                          (when (= :accepted status)
+                                            (atomic-write! abs text (path-guard vault path)))
+                                          (dissoc p :abs :text))
+                                        planned))]
                     (write-edn! (fs/path run-dir "localllm-accepted.edn") {:ticket-id ticket-id :run-id (fs/file-name run-dir) :at (now-str) :results results})
                     results)))]
         (if (and (map? r) (false? (:ok? r)))
