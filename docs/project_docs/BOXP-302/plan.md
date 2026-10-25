@@ -62,3 +62,14 @@
 2. groom が対象・節・予定差分を Ready（assignee boxp）で提示する。**Owner が計画を確認し、assignee を localllm に戻したときだけ** docs-edit が走る（今回の Blocked 報告はこの確認の代わりにはしない）。
 3. docs-edit は『### セリフ例』の行を ID で置換し Review で停止する。Owner が Obsidian で差分を見て `localllm-accept` / Notes で改稿指示 / `localllm-rollback`。
 4. 本票（302）は手順提示までで、口調修正の完了は報告しない。
+
+## 7. 記録（2026-10-25 run 20261025T114129Z-9eacaae6-0749-4ddc-9c32-7322b00343ab）
+
+- codex review（`codex review --base origin/main`）: P2「行 ID 一覧が `truncate-text 12000` の対象外で長い節では `max-prompt-chars` を超える」→ `:amend-line-list-chars`（env `CODEX_TASK_BOARD_LOCALLLM_AMEND_LINE_LIST_CHARS`、既定 12000）で一覧を先頭から予算内に制限し、提示していない行の ID は解決しない（見せていない行を指させない）ように修正。
+- black-box 全体 `tests/codex-workspace/localllm-docs-test.sh`: 78 テスト pass（exit 0）。review 反映後に amend 関連 3 テストを再実行し pass。
+- 実モデル再確認（合成 fixture vault `/tmp/real-e2e-out`、原典不使用、実 gemma4-26b、runner `tick` そのもの）:
+  - groom: 自然文票から `Refs/verse/キャラ設定/モブ/部員たち.md` の節『### セリフ例』を選定 → Ready + boxp（llm 65 s）。
+  - amend: `:corrections 1`（1 回目は従来どおり拒否、修正ラウンドで行 ID に切替）→ `:line-ids 3`、replace-text×3 がマーカー付きで適用され Review 停止（llm 180 s）。小見出し `####` 2 行・他ノートは不変、backup / after-sha256 記録あり。
+  - 観測: 3 件中 1 件は old == new の無変更置換（モデルの品質問題、runner は Review で Owner 判断に委ねる。別途 no-op 置換の自動拒否を検討する余地あり）。
+- Ready gate: コード変更なし（§4）。
+- 未実施（本 run の範囲外 / 後続）: PR merge → image → Pod 再作成 → 配備確認（sha256）→ §6 の手順で BOXP-301 を Backlog から再 groom。
