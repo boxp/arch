@@ -873,7 +873,9 @@
 (def ^:private span-close-re #"<!-- /localllm:([A-Za-z]+-\d+) -->")
 (def ^:private span-any-re #"<!-- /?localllm:[^>]*-->")
 (def ^:private legacy-marker-prefix "<!-- localllm:")
-(def ^:private legacy-banner-prefix "> **未確認（localllm）**")
+(def ^:private legacy-banner-re
+  ;; The exact shape `render-created-note` wrote before BOXP-306 (one line).
+  #"> \*\*未確認（localllm）\*\*: localllm docs run [A-Za-z0-9._-]+ がチケット \[\[Tickets/[A-Za-z]+-\d+\]\] の依頼で.*")
 
 (defn b64url-decode [^String s]
   (try (String. (.decode (java.util.Base64/getUrlDecoder) s) "UTF-8") (catch Exception _ nil)))
@@ -972,14 +974,22 @@
           fm (subvec lines 0 (inc end))
           body (subvec lines (inc end))
           fm (vec (remove #(re-matches #"\s*(localllm-unreviewed:\s*true|status:\s*unapproved)\s*" %) fm))
-          ;; The banner is one blockquote line right after the title; the
-          ;; blank line that followed it goes with it.
-          body (loop [out [] [l & more :as remaining] body]
-                 (cond
-                   (empty? remaining) out
-                   (str/starts-with? (str/trim l) legacy-banner-prefix)
-                   (recur out (if (and (seq more) (str/blank? (first more))) (rest more) more))
-                   :else (recur (conj out l) more)))]
+          ;; The banner the route generated is exactly one blockquote line in
+          ;; the generated form, placed right after the `# title` line (or at
+          ;; the top of the body); only that line goes, together with the blank
+          ;; line that followed it. A blockquote the owner wrote elsewhere in
+          ;; the body, even one starting the same way, is text and stays
+          ;; (codex review).
+          body (let [first-idx (first (keep-indexed (fn [i l] (when-not (str/blank? l) i)) body))
+                     banner-idx (when first-idx
+                                  (if (re-matches #"#\s.*" (nth body first-idx))
+                                    (first (keep-indexed (fn [i l] (when (and (> i first-idx) (not (str/blank? l))) i)) body))
+                                    first-idx))]
+                 (if (and banner-idx (re-matches legacy-banner-re (nth body banner-idx)))
+                   (let [after (subvec body (inc banner-idx))
+                         after (if (and (seq after) (str/blank? (first after))) (subvec after 1) after)]
+                     (vec (concat (subvec body 0 banner-idx) after)))
+                   body))]
       (str (str/join "\n" (concat fm body)) (when (str/ends-with? text "\n") "\n")))))
 
 (defn legacy-marked?

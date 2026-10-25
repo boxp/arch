@@ -3180,7 +3180,7 @@ test_legacy_markers_are_migrated_once_and_safely() {
   printf -- '\n<!-- localllm:BOXP-700:20261024T000000Z-aaaaaaaa-0000-0000-0000-000000000000:add -->\n- 鈴鳴り（新規）: 鈴の音で合図を送る。LEGACY-ADD\n<!-- /localllm:BOXP-700 -->\n' >>"${yui}"
   printf -- '---\ntitle: 鈴\n---\n\n# 鈴\n\n## 概要\n\n<!-- localllm:BOXP-701:20261024T000000Z-bbbbbbbb-0000-0000-0000-000000000000:replace old=%s -->- 音は澄んでいて、遠くまで届く。<!-- /localllm:BOXP-701 -->VERSE-BELL-BODY\n\n## 来歴\n\n- 鐘楼に伝わる。\n' "${old_b64}" >"${bell}"
   # (b) a created note with the retired unreviewed marks
-  printf -- '---\ntitle: "灯守ホタル"\ntype: character\nkind: character\nstatus: unapproved\nlocalllm-unreviewed: true\nticket: BOXP-702\nslug: legacy-hotaru\naliases: []\ncreated: 2026-10-25\nrun: 20261024T000000Z-cccccccc-0000-0000-0000-000000000000\n---\n\n# 灯守ホタル\n\n> **未確認（localllm）**: localllm docs run x がチケット [[Tickets/BOXP-702]] の依頼で保存しました。採用するなら `task_board_runner.bb localllm-accept BOXP-702 x`。\n\n## 概要\n\n灯籠の火を守る見習い。LEGACY-CREATE\n' >"${mob}"
+  printf -- '---\ntitle: "灯守ホタル"\ntype: character\nkind: character\nstatus: unapproved\nlocalllm-unreviewed: true\nticket: BOXP-702\nslug: legacy-hotaru\naliases: []\ncreated: 2026-10-25\nrun: 20261024T000000Z-cccccccc-0000-0000-0000-000000000000\n---\n\n# 灯守ホタル\n\n> **未確認（localllm）**: localllm docs run x がチケット [[Tickets/BOXP-702]] の依頼で保存しました。採用するなら `task_board_runner.bb localllm-accept BOXP-702 x`。\n\n## 概要\n\n灯籠の火を守る見習い。LEGACY-CREATE\n\n> **未確認（localllm）** と Owner が本文に書いたメモ。OWNER-QUOTE-KEPT\n' >"${mob}"
   # (c) nested markers: unknown shape, must be left to a human
   printf -- '---\ntitle: 壊れた\n---\n\n# 壊れた\n\n<!-- localllm:BOXP-703:20261024T000000Z-dddddddd-0000-0000-0000-000000000000:add -->\n<!-- localllm:BOXP-703:20261024T000000Z-dddddddd-0000-0000-0000-000000000000:add -->\n- 二重。\n<!-- /localllm:BOXP-703 -->\n' >"${bad}"
   # (d) outside every migration root, (e) a proposal-root note, (f) a symlink inside the root
@@ -3217,7 +3217,9 @@ test_legacy_markers_are_migrated_once_and_safely() {
   [[ "$(grep -c '遠くまで届く' "${bell}")" == 1 ]] || fail "the replaced sentence must appear once"
   assert_file_contains "${bell}" '^- 鐘楼に伝わる。$'
   # created note: marks and banner gone, text and provenance kept
-  assert_file_not_contains "${mob}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）|localllm-accept'
+  assert_file_not_contains "${mob}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）\*\*: localllm docs run|localllm-accept'
+  # an owner-written blockquote that starts the same way is text, not the generated banner (codex review)
+  assert_file_contains "${mob}" '^> \*\*未確認（localllm）\*\* と Owner が本文に書いたメモ。OWNER-QUOTE-KEPT$'
   assert_file_contains "${mob}" '^ticket: BOXP-702$'
   assert_file_contains "${mob}" '^# 灯守ホタル$'
   assert_file_contains "${mob}" 'LEGACY-CREATE'
