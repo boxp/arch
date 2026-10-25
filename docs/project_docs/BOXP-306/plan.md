@@ -26,7 +26,7 @@ Owner 指示（Telegram）: 「このタグを使った rollback の仕組み自
 - `load-corpus`: `strip-spans` を外し現在の本文を読む。`:unreviewed-spans` / `:malformed-span-notes` を削除。
 - `list-unreviewed-canon-notes` を削除（新規ノートは corpus と既存ファイル検査で衝突を見る）。
 - `accept!` を削除。`rollback!` は内部の整合回復専用（runner の中断 run 復旧 / 遷移失敗時）に残す。
-- 新規 `migrate-markers!`（決定的・ローカル）: 許可 root（canon roots + docs roots、除外 path を除く）配下の `.md` を列挙し、`<!-- localllm:` スパン / `localllm-unreviewed: true` を持つノートだけを対象に、スパンのマーカーを外して新文を保持し、`localllm-unreviewed` / `status: unapproved` / 未確認バナー行を除去する。dry-run 既定、`--apply` で書込（write lock 下、適用直前に dry-run 時の sha256 と一致しなければそのノートだけ停止）。入れ子 / 不明形式 / 復号不能 / symlink / 上限超過はそのノートだけ非変更で理由を報告。`localllm-proposal: true` のノートと許可 root 外は対象外。再実行は対象 0 件（冪等）。出力は相対 path / 件数 / sha256 / 理由だけ。
+- 新規 `migrate-markers!`（決定的・ローカル）: 許可 root（canon roots + docs roots、除外 path を除く）配下の `.md` を列挙し、`<!-- localllm:` スパン / `localllm-unreviewed: true` を持つノートだけを対象に、スパンのマーカーを外して新文を保持し、`localllm-unreviewed` / `status: unapproved` / 未確認バナー行を除去する。dry-run 既定、`--apply` で書込（write lock 下、適用直前に dry-run 時の sha256 と一致しなければそのノートだけ停止）。入れ子 / 不明形式 / 復号不能 / symlink / 上限超過はそのノートだけ非変更で理由を報告。`localllm-proposal: true` のノートと許可 root 外は対象外。再実行は対象 0 件（冪等）。出力は相対 path / 件数 / sha256 / 理由だけ。改行形式は保持（CRLF ノートは LF 化して印を外した後に全行 CRLF へ復元、CRLF / LF 混在ノートはそのノートだけ理由付きで未変更停止）。
 
 ### `docker/codex-workspace/task-board/task_board_runner.bb`
 - `localllm-accept` / `localllm-rollback` サブコマンドは廃止案内を出して exit 2（ファイルを触らない）。
@@ -38,7 +38,7 @@ Owner 指示（Telegram）: 「このタグを使った rollback の仕組み自
 
 ### テスト `tests/codex-workspace/localllm-docs-test.sh`
 - 既存のマーカー / accept / rollback 前提の assertion を新方式へ書き換え（append / replace / create / revise、後続票が現在の本文を読む）。
-- 追加: 旧マーカー移行（add / replace スパン 2 票分 + unreviewed ノート、新文維持・二重化無し・dry-run 非変更・apply 後の冪等・不明形式 / 入れ子で停止・apply 直前の人手編集で停止・許可 root 外 / symlink 非対象）、旧 CLI が何も書かないこと、生成本文に `<!-- localllm` が残らないこと。
+- 追加: 旧マーカー移行（add / replace スパン 2 票分 + unreviewed ノート、新文維持・二重化無し・dry-run 非変更・apply 後の冪等・不明形式 / 入れ子で停止・apply 直前の人手編集で停止・許可 root 外 / symlink 非対象、CRLF ノートの全行 CRLF 維持・混在ノートの停止）、旧 CLI が何も書かないこと、生成本文に `<!-- localllm` が残らないこと。
 
 ### ドキュメント
 - `docker/hermes-agent/skills/obsidian-task-board/SKILL.md` の rollback 案内を更新。
@@ -62,3 +62,4 @@ Owner 指示（Telegram）: 「このタグを使った rollback の仕組み自
 - 2026-10-25 手元 codex review（上記修正後、`--base origin/main`）: P2 1 件 = create の名称衝突候補。旧実装は canon フォルダ内の `localllm-unreviewed` ノートを corpus とは別に候補へ加えていたが、306 で「通常ノートになったので corpus で足りる」として外した。票の `docs-sources` が保存先 canon フォルダを含まない場合に他票の作成ノートが候補から漏れ、同名・別 slug の重複ノートを作れてしまう。修正: 保存先 canon フォルダ内で経路が作成したノート（`ticket:`+`run:` frontmatter）を `list-route-canon-notes` で常に候補へ加える。テスト: docs-sources をフォルダ外に絞った票で同名 create が blocked になるケースを追加（修正なしで失敗することを確認）。
 - 2026-10-25 手元 codex review（2 回目）: P2 1 件 = amend のモデル整合ガードが前回 write のモデルを計画の先頭ターゲットからだけ読んでいた。前回 run が 2 番目以降のターゲットだけを書いた場合に nil → groom 計画のモデルへ戻り、既定モデルへの無宣言切替を止められない。修正: 実在する前回 write 全体から distinct なモデルを取り、1 種ならそれを期待値、複数なら対象間不一致として停止、無ければ従来どおり計画のモデル。テスト: 既定モデルで groom → docs-model 明示で 2 番目の対象だけ変更 → docs-model を外した Review run が model-mismatch で停止（修正なしで失敗することを確認）。
 - 2026-10-25 review gate（codex review、retry 2 回目）: P2 1 件 = 「計画に挙げた vault 正本 `Projects/task-board-localllm-docs/README.md` が差分にない」。当該 README は Obsidian vault（本リポジトリ外、私的本文を含むため PR に載せない）にあり、1 回目の PR 作成時に vault 側で新方式へ更新済み。本 run で vault 側の残存を再点検（現行文言としての accept / rollback 必須説明 0 件、`pilot/test-note.md` の確認手順 1 行を追加修正）し、本計画 §2 ドキュメント節に所在・更新済みの事実・対象外とした過去記録を明記。
+- 2026-10-25 review gate（codex review、retry 3 回目）: P2 1 件 = 移行 `strip-legacy-unreviewed-marks` が `split-lines` → `join "\n"` で全文を再構築し、CRLF ノートでは印以外の全行末も LF に変わる（add スパンの `unwrap-spans` も LF 前提）。修正: `migrate-legacy-text` で改行形式を判定し、CRLF ノートは LF 化して処理した後に全行 CRLF へ復元、CRLF / LF 混在（または単独 CR）はそのノートだけ「改行形式が混在」理由で未変更停止。テスト: CRLF fixture（replace + add スパン + unreviewed 印、適用後の全文 sha256 が期待どおり・全行 CRLF）と混在 fixture（dry-run / apply / 再 dry-run とも skipped、hash 不変）を追加（修正なしで失敗することを確認）。

@@ -1000,20 +1000,41 @@
   [text]
   (or (boolean (re-find span-any-re (or text ""))) (legacy-unreviewed-note? text)))
 
+(defn- line-ending
+  "The single line ending `text` uses: \"\\n\", \"\\r\\n\" (every newline is CRLF)
+  or nil when the endings are mixed / a bare CR occurs (the shape is then not
+  one the migration can rebuild faithfully)."
+  [text]
+  (let [crlf (count (re-seq #"\r\n" text))
+        cr (count (re-seq #"\r" text))
+        lf (count (re-seq #"\n" text))]
+    (cond
+      (zero? cr) "\n"
+      (and (= cr crlf) (= lf crlf)) "\r\n"
+      :else nil)))
+
 (defn migrate-legacy-text
   "The note with every legacy marker / unreviewed mark removed and the current
   text kept. Returns {:ok? true :text :spans n :unreviewed? bool} or {:ok?
   false :reason}. A note without any legacy mark comes back unchanged
-  (`:spans 0`, `:unreviewed? false`)."
+  (`:spans 0`, `:unreviewed? false`). The note's line ending is kept: a CRLF
+  note is rebuilt with CRLF on every line (the marker removal itself works on
+  LF text); mixed endings are reported instead of being unified (codex review)."
   [text]
-  (let [unwrapped (unwrap-spans text)]
-    (if-not (:ok? unwrapped)
-      unwrapped
-      (let [unreviewed? (legacy-unreviewed-note? (:text unwrapped))
-            out (strip-legacy-unreviewed-marks (:text unwrapped))]
-        (if (re-find span-any-re out)
-          {:ok? false :reason "マーカーを外した後も localllm マーカー文字列が残ります（不明な形式）"}
-          {:ok? true :text out :spans (:spans unwrapped) :unreviewed? unreviewed?})))))
+  (let [text (or text "")
+        eol (line-ending text)]
+    (if-not eol
+      {:ok? false :reason "改行形式が混在しているため（CRLF と LF）判定できません"}
+      (let [lf-text (if (= "\n" eol) text (str/replace text "\r\n" "\n"))
+            unwrapped (unwrap-spans lf-text)]
+        (if-not (:ok? unwrapped)
+          unwrapped
+          (let [unreviewed? (legacy-unreviewed-note? (:text unwrapped))
+                out (strip-legacy-unreviewed-marks (:text unwrapped))
+                out (if (= "\n" eol) out (str/replace out "\n" eol))]
+            (if (re-find span-any-re out)
+              {:ok? false :reason "マーカーを外した後も localllm マーカー文字列が残ります（不明な形式）"}
+              {:ok? true :text out :spans (:spans unwrapped) :unreviewed? unreviewed?})))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Context building

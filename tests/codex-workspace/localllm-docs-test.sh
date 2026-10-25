@@ -3220,6 +3220,7 @@ test_legacy_markers_are_migrated_once_and_safely() {
   local mob="${VAULT}/${VERSE}/キャラ設定/モブ/legacy-hotaru.md" bad="${VAULT}/${VERSE}/世界観設定/壊れた.md"
   local outside="${VAULT}/Infrastructure/outside.md" prop="${VAULT}/${PROPOSALS}/characters/old-proposal.md"
   local orphan="${VAULT}/${VERSE}/世界観設定/閉じだけ.md"
+  local crlf="${VAULT}/${VERSE}/世界観設定/CRLF.md" mixed="${VAULT}/${VERSE}/世界観設定/混在.md"
   local old_b64; old_b64="$(printf -- '- 音は澄んでいる。' | basenc --base64url -w0 | tr -d '=')"
   # (a) an add span of one ticket and a replace span of another (new text in place, old text in the marker)
   printf -- '\n<!-- localllm:BOXP-700:20261024T000000Z-aaaaaaaa-0000-0000-0000-000000000000:add -->\n- 鈴鳴り（新規）: 鈴の音で合図を送る。LEGACY-ADD\n<!-- /localllm:BOXP-700 -->\n' >>"${yui}"
@@ -3230,6 +3231,10 @@ test_legacy_markers_are_migrated_once_and_safely() {
   printf -- '---\ntitle: 壊れた\n---\n\n# 壊れた\n\n<!-- localllm:BOXP-703:20261024T000000Z-dddddddd-0000-0000-0000-000000000000:add -->\n<!-- localllm:BOXP-703:20261024T000000Z-dddddddd-0000-0000-0000-000000000000:add -->\n- 二重。\n<!-- /localllm:BOXP-703 -->\n' >"${bad}"
   # (c2) a close marker left alone (its open marker lost to a hand edit): unknown shape, reported, left to a human (codex review)
   printf -- '---\ntitle: 閉じだけ\n---\n\n# 閉じだけ\n\n- 残った文。ORPHAN-CLOSE\n<!-- /localllm:BOXP-707 -->\n' >"${orphan}"
+  # (c3) a CRLF note (replace span + unreviewed mark): the marks go, every line keeps CRLF (codex review)
+  printf -- '---\r\ntitle: CRLF\r\nlocalllm-unreviewed: true\r\n---\r\n\r\n# CRLF\r\n\r\n<!-- localllm:BOXP-708:20261024T000000Z-99999999-0000-0000-0000-000000000000:replace old=%s -->- 音は澄んでいて、遠くまで届く。<!-- /localllm:BOXP-708 -->CRLF-BODY\r\n\r\n<!-- localllm:BOXP-708:20261024T000000Z-99999999-0000-0000-0000-000000000000:add -->\r\n- 追加行。CRLF-ADD\r\n<!-- /localllm:BOXP-708 -->\r\n- 末尾。CRLF-TAIL\r\n' "${old_b64}" >"${crlf}"
+  # (c4) mixed line endings: not a shape the migration rebuilds faithfully, reported, left to a human
+  printf -- '---\r\ntitle: 混在\n---\r\n\r\n<!-- localllm:BOXP-709:20261024T000000Z-88888888-0000-0000-0000-000000000000:add -->\r\n- 混在。MIXED-BODY\n<!-- /localllm:BOXP-709 -->\r\n' >"${mixed}"
   # (d) outside every migration root, (e) a proposal-root note, (f) a symlink inside the root
   printf -- '---\ntitle: outside\n---\n\n<!-- localllm:BOXP-704:20261024T000000Z-eeeeeeee-0000-0000-0000-000000000000:add -->\n- 外。\n<!-- /localllm:BOXP-704 -->\n' >"${outside}"
   mkdir -p "$(dirname "${prop}")"
@@ -3240,14 +3245,16 @@ test_legacy_markers_are_migrated_once_and_safely() {
   # dry run: a plan with paths / hashes / counts only, nothing written
   migrate_cmd >"${CASE_DIR}/dry" 2>&1 || true  # exit 3: the nested note is reported for a human
   assert_file_contains "${CASE_DIR}/dry" ':dry-run\? true'
-  [[ "$(grep -c ':status :would-migrate' "${CASE_DIR}/dry")" == 3 ]] || fail "three notes to migrate expected: $(cat "${CASE_DIR}/dry")"
+  [[ "$(grep -c ':status :would-migrate' "${CASE_DIR}/dry")" == 4 ]] || fail "four notes to migrate expected: $(cat "${CASE_DIR}/dry")"
+  assert_result_line "${CASE_DIR}/dry" "${VERSE}/世界観設定/CRLF.md" ":status :would-migrate" ":spans 2" ":unreviewed? true"
+  assert_result_line "${CASE_DIR}/dry" "${VERSE}/世界観設定/混在.md" ":status :skipped" "形式を解釈できないため未変更: 改行形式が混在しているため"
   assert_result_line "${CASE_DIR}/dry" "${VERSE}/キャラ設定/ユイ.md" ":status :would-migrate" ":spans 1" ":unreviewed? false" ":before-sha256 \"" ":after-sha256 \""
   assert_result_line "${CASE_DIR}/dry" "${VERSE}/アイテム設定/鈴.md" ":status :would-migrate" ":spans 1" ":unreviewed? false"
   assert_result_line "${CASE_DIR}/dry" "${VERSE}/キャラ設定/モブ/legacy-hotaru.md" ":status :would-migrate" ":spans 0" ":unreviewed? true"
   assert_result_line "${CASE_DIR}/dry" "${VERSE}/世界観設定/壊れた.md" ":status :skipped" "形式を解釈できないため未変更: localllm スパンが入れ子になっています"
   assert_result_line "${CASE_DIR}/dry" "${VERSE}/世界観設定/閉じだけ.md" ":status :skipped" "形式を解釈できないため未変更: 開きマーカーの無い localllm 閉じマーカーがあります"
   assert_file_not_contains "${CASE_DIR}/dry" 'outside.md|old-proposal.md|link.md'
-  assert_file_not_contains "${CASE_DIR}/dry" 'LEGACY-ADD|LEGACY-CREATE|遠くまで届く|灯籠の火|ORPHAN-CLOSE'
+  assert_file_not_contains "${CASE_DIR}/dry" 'LEGACY-ADD|LEGACY-CREATE|遠くまで届く|灯籠の火|ORPHAN-CLOSE|CRLF-BODY|MIXED-BODY'
   assert_verse_unchanged_except "${sums}"
   # apply with a hand edit landing on one note between the plan and its write: that note is skipped, the others migrate
   if MIGRATE_HOOK="${VERSE}/キャラ設定/ユイ.md" migrate_cmd --apply >"${CASE_DIR}/apply1" 2>&1; then
@@ -3260,6 +3267,12 @@ test_legacy_markers_are_migrated_once_and_safely() {
   assert_result_line "${CASE_DIR}/apply1" "${VERSE}/キャラ設定/モブ/legacy-hotaru.md" ":status :migrated"
   assert_result_line "${CASE_DIR}/apply1" "${VERSE}/世界観設定/壊れた.md" ":status :skipped"
   assert_result_line "${CASE_DIR}/apply1" "${VERSE}/世界観設定/閉じだけ.md" ":status :skipped" "開きマーカーの無い localllm 閉じマーカー"
+  assert_result_line "${CASE_DIR}/apply1" "${VERSE}/世界観設定/CRLF.md" ":status :migrated"
+  assert_result_line "${CASE_DIR}/apply1" "${VERSE}/世界観設定/混在.md" ":status :skipped" "改行形式が混在"
+  # CRLF note: marks gone, text kept, and every line still ends with CRLF (no bare LF introduced)
+  [[ "$(printf -- '---\r\ntitle: CRLF\r\n---\r\n\r\n# CRLF\r\n\r\n- 音は澄んでいて、遠くまで届く。CRLF-BODY\r\n\r\n- 追加行。CRLF-ADD\r\n- 末尾。CRLF-TAIL\r\n' | sha256sum)" == "$(sha256sum <"${crlf}")" ]] \
+    || fail "the CRLF note must keep CRLF on every line with only the marks removed: $(od -c "${crlf}" | head -40)"
+  grep -Fq "$(grep '混在.md' <<<"${sums}")" <<<"$(verse_sums)" || fail "the mixed-ending note must be unchanged"
   # replace span: the new sentence once, the old sentence gone, nothing else changed in the note
   assert_file_contains "${bell}" '^- 音は澄んでいて、遠くまで届く。VERSE-BELL-BODY$'
   assert_file_not_contains "${bell}" '<!--|音は澄んでいる。'
@@ -3291,6 +3304,8 @@ test_legacy_markers_are_migrated_once_and_safely() {
   [[ "$(grep -c ':status :would-migrate' "${CASE_DIR}/dry2")" == 0 ]] || fail "nothing left to migrate: $(cat "${CASE_DIR}/dry2")"
   assert_result_line "${CASE_DIR}/dry2" "${VERSE}/世界観設定/壊れた.md" ":status :skipped"
   assert_result_line "${CASE_DIR}/dry2" "${VERSE}/世界観設定/閉じだけ.md" ":status :skipped"
+  assert_result_line "${CASE_DIR}/dry2" "${VERSE}/世界観設定/混在.md" ":status :skipped"
+  assert_file_not_contains "${CASE_DIR}/dry2" 'CRLF.md'
   # a later ticket's groom reads the migrated text as ordinary note text
   echo select-target >"${MODE_FILE}"; : >"${REQ_LOG}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-706|BOXP-706: 技]] #ticket status::backlog"
