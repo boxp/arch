@@ -105,6 +105,26 @@
 
 未確認（後続 run）: 修正配備後の Qwen amend → Review → 改稿 → rollback（BOXP-298 を Backlog に戻して再 groom）。
 
+### 2026-10-25 run 20261025T071238Z（Qwen E2E 完了・票読取の競合修正）
+
+配備確認: Pod `codex-workspace-858796cb7f-dbv9h` の runner 5 ファイルが arch main（1fc09f333、#13996 含む）と sha256 一致、env `CANON_ROOTS` あり。原典 28 ノートの sha256 は全工程で `canon-sha256-before.txt` と一致。
+
+| 票 | model | groom | 実行 | 改稿 | rollback |
+| --- | --- | --- | --- | --- | --- |
+| BOXP-298 | qwen38-27b | 旧計画を外して Backlog + localllm に戻す → run 20261025T071453Z（llm 383 s、read 1）が検証ノート『## 検証メモ』を一意に選定 → Ready + boxp | run 20261025T072156Z（llm 411 s）: 対象ノート自身を出典に append-to-section×1 → Review（#13996 の修正が実機で有効） | run 20261025T073400Z（llm 433 s）: 同スパン置換 → Review | rollback 073400Z = restored → rollback 072156Z = restored（マーカー 0）→ 復元済み run の再 rollback = skipped |
+
+途中で見つかった問題と修正（本 run の PR）:
+
+- 改稿指示を `printf` で票に直書きしたところ、同じ秒に kohako-event が Notes を追記して指示行が消えた（run 072929Z は `localllm-no-new-instruction` で正しく停止）。Notes は vault writer の lock を通る helper（`task-board.bb append-note --source boxp`）で書く。README に明記。
+- 指示を入れ直した run 073059Z が `localllm-unclear-request`（mode nil）で停止。票 file には `docs-mode` / `docs-target` / `docs-plan` / `docs-model` が揃っており、配備済み code で同じ票を再解決すると amend / declared になる → runner の `ticket-frontmatter` と `slurp` の 2 回読取のうち frontmatter 側が別 writer の非原子書込（`write-lines!` = `spit`）の途中を lock なしで読んだ torn read と判断（BOXP-294 で `docs-model` だけに入っていた回避策と同根。どの writer と重なったかは特定できていない）。書込はしないので安全側だが、不要な質問で止まる。
+  - `write-lines!` を同 dir の temp + `ATOMIC_MOVE` に。
+  - localllm docs-edit / groom の票読取を `read-ticket`（vault writer lock 下の 1 回の `slurp`、frontmatter は同じ text から導出）に。
+  - `localllm_docs.bb` に `reconcile-frontmatter`（map に無い `docs-mode` / `docs-target` / `docs-plan` / `docs-kind` / `docs-folder` / `docs-model` / `docs-sources` を text の frontmatter から補完、map の値は上書きしない）を追加し `run-docs-edit!` / `groom-ticket` の入口で適用（`docs-model` だけの旧回避策を置換）。
+  - テスト: runner inline（原子書込で temp 残骸なし・`read-ticket` の frontmatter が同じ text 由来）、black-box `test_frontmatter_keys_missing_from_the_map_are_taken_from_the_ticket_text`（map 空でも text の create / kind で groom が質問せずモデル未呼出、text の amend / plan で計画検査に到達、text の未知 model が拒否される、map の `docs-model` は上書きされない）。
+- 注意（運用）: `task_board_runner.bb` を引数なしで `load-file` すると既定 command の `tick` が走る。動作確認はテストスイート経由で行う（本 run で 1 回走ったが候補 2 件は本番 loop の lock 済みで起動せず、票 / 原典 / run は不変を確認）。
+
+到達点: Gemma4 既定 / Qwen 選択の両方で『対象 path なしの自然文 → 内容探索 groom → Ready 確認 → 通常フォルダ内の非 canon 検証ノートへ限定 write → Review → 同対象改稿 → rollback』を実モデルで確認。新規保存先の選定は groom 提示まで（BOXP-299）、計画 stale は書かずに停止（BOXP-300）。未確認: 新規ノートの実フォルダ書込（Owner 判断）、原典ノートへの実 amend（Owner 票の計画確認を経る）。
+
 #### 後続 run の E2E 手順（配備後）
 
 1. 新 Pod で `/opt/codex-workspace/task-board/{localllm_docs,task_board_runner}.bb` の sha256 が arch main と一致し、env `CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS=ひとはこさんバース` が入っていることを確認（lolice#885 merge 後）。**2026-10-25 時点で 票 A / C / D は完了、残りは Qwen 修正配備後の票 B（BOXP-298 を Backlog + assignee localllm に戻して再 groom → 承認 → amend → 改稿 → rollback）と evidence / README の更新。**

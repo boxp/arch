@@ -551,8 +551,27 @@
     (str/split-lines (slurp (str path)))
     (fail (str "missing file: " path))))
 
-(defn write-lines! [path lines]
-  (spit (str path) (str (str/join "\n" lines) "\n")))
+(defn write-lines!
+  "Replace `path` atomically: the content goes to a temp file in the same
+  directory and is renamed over the target, so a concurrent reader (another
+  runner thread, the Task Board helper, kohako-event) sees either the old or
+  the new file and never a truncated one. BOXP-296 E2E: a plain `spit`
+  (truncate + write) let a localllm run read a ticket whose frontmatter was
+  empty for a moment and fall back to the wording rules."
+  [path lines]
+  (let [target (fs/path (str path))
+        dir (or (fs/parent target) (fs/path "."))
+        tmp (fs/path dir (str "." (fs/file-name target) "." (random-uuid) ".tmp"))
+        content (str (str/join "\n" lines) "\n")]
+    (fs/create-dirs dir)
+    (try
+      (spit (str tmp) content)
+      (java.nio.file.Files/move tmp target
+                                (into-array java.nio.file.CopyOption
+                                            [java.nio.file.StandardCopyOption/ATOMIC_MOVE
+                                             java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
+      (finally
+        (fs/delete-if-exists tmp)))))
 
 (defn section-index [lines heading]
   (first (keep-indexed (fn [idx line]
@@ -722,6 +741,17 @@
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
+
+(defn read-ticket
+  "One consistent view of a ticket for a localllm run: text and frontmatter
+  from the same read, taken under the shared vault writer lock so an in-flight
+  write by the helper / another thread is never observed half-way (BOXP-296
+  E2E: two separate reads let a run see a complete body with an empty
+  frontmatter map). Returns {:text :frontmatter}."
+  [ticket-id]
+  (let [text (with-vault-writer-lock (fn [] (slurp (str (ticket-path ticket-id)))))]
+    {:text text
+     :frontmatter (frontmatter-map (vec (str/split-lines text)))}))
 
 (defn append-note! [ticket-id note]
   (locking (ticket-mutex ticket-id)
@@ -2151,14 +2181,15 @@
         last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
-    (let [result (if @localllm-docs-module-loaded?
+    (let [{ticket-text :text frontmatter :frontmatter} (read-ticket ticket-id)
+          result (if @localllm-docs-module-loaded?
                    (try
                      ((resolve 'localllm-docs/run-docs-edit!)
                       {:vault (vault)
                        :ticket-id ticket-id
                        :run-dir (str dir)
-                       :ticket-text (slurp (str (ticket-path ticket-id)))
-                       :frontmatter (ticket-frontmatter ticket-id)
+                       :ticket-text ticket-text
+                       :frontmatter frontmatter
                        :action (if (= "Review" origin-lane) :revise :edit)
                        :stop-requested? (fn [] @shutdown-requested?)
                        ;; The document write is deferred into process-card!'s
@@ -2333,11 +2364,12 @@
         last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
-    (let [result (if @localllm-docs-module-loaded?
+    (let [{ticket-text :text frontmatter :frontmatter} (read-ticket ticket-id)
+          result (if @localllm-docs-module-loaded?
                    (try
                      ((resolve 'localllm-docs/groom-ticket)
                       ((resolve 'localllm-docs/config)) (vault) ticket-id
-                      (ticket-frontmatter ticket-id) (slurp (str (ticket-path ticket-id)))
+                      frontmatter ticket-text
                       ;; BOXP-296: a content-search groom calls the model
                       ;; (bounded research + one selection call); it needs the
                       ;; run directory for audit / evidence and honours the
@@ -4062,6 +4094,33 @@
                     (swap! failures conj (str "localllm executor " label))))))))
       (do (println "FAIL: localllm docs module could not be loaded")
           (swap! failures conj "localllm module")))
+
+    ;; BOXP-296: ticket writes are atomic (no truncated file is ever visible)
+    ;; and a localllm run reads text + frontmatter from one locked read.
+    (let [tmp (fs/create-temp-dir)
+          ticket-dir (fs/path tmp "Tickets")
+          _ (fs/create-dirs ticket-dir)
+          ticket-file (fs/path ticket-dir "BOXP-296.md")
+          lines ["---" "id: BOXP-296" "status: ready" "assignee: localllm" "docs-mode: amend"
+                 "docs-target: ひとはこさんバース/世界観設定/検証.md" "docs-plan: 20261025T071453Z-06df4146-50be-492a-86fb-79d05f2a7e2d"
+                 "---" "" "# BOXP-296: t" "" "## Notes" "" "- n"]]
+      (try
+        (write-lines! ticket-file lines)
+        (write-lines! ticket-file (conj lines "- n2"))
+        (let [leftovers (filter #(str/ends-with? (fs/file-name %) ".tmp") (fs/list-dir ticket-dir))
+              content (slurp (str ticket-file))
+              {:keys [text frontmatter]} (with-redefs [ticket-path (fn [_] ticket-file)] (read-ticket "BOXP-296"))]
+          (if (and (empty? leftovers)
+                   (= content (str (str/join "\n" (conj lines "- n2")) "\n"))
+                   (= text content)
+                   (= "amend" (:docs-mode frontmatter))
+                   (= "ひとはこさんバース/世界観設定/検証.md" (:docs-target frontmatter))
+                   (= "20261025T071453Z-06df4146-50be-492a-86fb-79d05f2a7e2d" (:docs-plan frontmatter))
+                   (= frontmatter (frontmatter-map (vec (str/split-lines text)))))
+            (println "PASS: write-lines! replaces atomically and read-ticket derives frontmatter from the same text")
+            (do (println (str "FAIL: atomic write / read-ticket leftovers=" (count leftovers) " fm=" frontmatter))
+                (swap! failures conj "atomic write / read-ticket"))))
+        (finally (fs/delete-tree tmp))))
 
     (if (seq @failures)
       (do (println (str "FAILED: " (count @failures) " test(s) failed")) (System/exit 1))
