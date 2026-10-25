@@ -1308,7 +1308,7 @@
   ;; structured status so run summaries and retry state never copy secrets.
   (select-keys review-gate [:ok? :gate :url :retryable? :retry-count
                             :retry-limit :retry-exhausted? :checked-pr-urls
-                            :pr-urls :diagnostic]))
+                            :merged-pr-urls :pr-urls :diagnostic]))
 
 (defn pr-gate-diagnostic [review-gate]
   ;; A gate's :message may contain gh stderr or review-agent text.  Keep a
@@ -1346,7 +1346,13 @@
 
 (defn persisted-review-gate-reason [review-gate]
   (cond
-    (:ok? review-gate) "Review gates passed."
+    (:ok? review-gate)
+    ;; Merged PR URLs are derived from the agent message by regex and already
+    ;; appear in Notes, so listing them here retains no untrusted text.
+    (str "Review gates passed."
+         (when-let [merged (seq (:merged-pr-urls review-gate))]
+           (str " Already-merged PR(s) skipped gates and codex review: "
+                (str/join ", " merged) ".")))
     (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
     :else "reason unavailable"))
 
@@ -1736,8 +1742,13 @@
     (and (seq repos) repo (contains? repos repo))))
 
 (defn pr-view [pr-url]
-  (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,isDraft,mergeStateStatus,statusCheckRollup"] {})
+  (-> (run-string! ["gh" "pr" "view" pr-url "--json" "url,state,mergedAt,isDraft,mergeStateStatus,statusCheckRollup"] {})
       (json/parse-string true)))
+
+(defn merged-pr? [pr]
+  ;; GitHub reports mergeStateStatus=UNKNOWN for merged PRs, which merge-state
+  ;; would otherwise treat as :pending until the gate timeout (BOXP-271).
+  (= "MERGED" (some-> (:state pr) str/upper-case)))
 
 (defn check-name [check]
   (or (:name check)
@@ -1825,6 +1836,16 @@
             ci (ci-state (:statusCheckRollup pr))
             no-checks? (empty? (:statusCheckRollup pr))]
         (cond
+          ;; Merged PRs are already on the base branch: nothing is left to gate.
+          (merged-pr? pr)
+          {:ok? true
+           :merged? true
+           :url pr-url
+           :message (str "PR is already merged"
+                         (when-let [merged-at (not-empty (str (:mergedAt pr)))]
+                           (str " at " merged-at))
+                         "; PR gates were skipped.")}
+
           (= :failed (:state merge))
           {:ok? false
            :gate (:gate merge)
@@ -1923,26 +1944,41 @@
       (cond
         (seq pr-urls)
         (loop [remaining pr-urls
-               passed []]
+               passed []
+               merged []]
           (if-let [pr-url (first remaining)]
             (let [pr-state (wait-for-pr-state! pr-url)]
-              (if-not (:ok? pr-state)
+              (cond
+                (not (:ok? pr-state))
                 (assoc pr-state
                        :checked-pr-urls passed
+                       :merged-pr-urls merged
                        :pr-urls pr-urls)
+
+                ;; Already-merged PR: its diff is on the base branch, so codex
+                ;; review is skipped too. Both lists below are persisted in
+                ;; summaries and must stay URL-only.
+                (:merged? pr-state)
+                (recur (rest remaining) passed (conj merged pr-url))
+
+                :else
                 (let [review (run-codex-review! run-dir pr-url)]
                   (if-not (:ok? review)
                     (assoc review
                            :checked-pr-urls passed
+                           :merged-pr-urls merged
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
                     ;; This field is persisted in summaries, so it must remain a
                     ;; URL list rather than carrying arbitrary check/review text.
-                    (recur (rest remaining) (conj passed pr-url))))))
+                    (recur (rest remaining) (conj passed pr-url) merged)))))
             {:ok? true
              :pr-urls pr-urls
              :checked-pr-urls passed
-             :message "PR gates passed."}))
+             :merged-pr-urls merged
+             :message (str "PR gates passed."
+                           (when (seq merged)
+                             (str " Merged PR(s) skipped: " (str/join ", " merged) ".")))}))
 
         (no-repo-review-marker? last-message)
         {:ok? true
