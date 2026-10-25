@@ -3752,8 +3752,12 @@
             plan-r (if run-dir (load-plan run-dir frontmatter) {:ok? false :reason "groom の計画を読む run ディレクトリがありません"})
             plan (:plan plan-r)
             plan-paths (mapv :path (:targets plan))
+            ;; The pin the select groom writes is the plan's targets in plan
+            ;; order, so the comparison is exact (order and count): a target
+            ;; added twice by hand (`A, A` vs plan `A`) is a hand edit, not
+            ;; a groom pin, and must stop as plan-mismatch (codex review).
             groom-pinned? (and (:ok? plan-r) (= "target" (:decision plan)) (seq plan-paths)
-                               (= (set targets) (set plan-paths)))
+                               (= targets plan-paths))
             guidance "対象を内容から選び直させるなら frontmatter の docs-mode / docs-target / docs-plan を外し、Summary に加筆先と内容を書いて Backlog に戻し assignee を localllm にしてください（groom が対象と計画を固定します）"]
         (cond
           (empty? (:canon-roots cfg))
@@ -4549,7 +4553,7 @@
                              {:role "user"
                               :content (str "前の提案は runner の検証で拒否されました。理由: " (plain-text why)
                                             "\n同じ依頼について、理由を踏まえて修正した案を同じ JSON 形式で出力してください（計画の対象・節の範囲内で）。")})
-        ready? (and (:ok? plan-r) (seq canon-roots) (= "target" (:decision plan)) (seq plan-paths) (= (set targets) (set plan-paths)))
+        ready? (and (:ok? plan-r) (seq canon-roots) (= "target" (:decision plan)) (seq plan-paths) (= targets plan-paths))
         snap (when ready? (snapshot-targets cfg vault plan-paths))
         span-info (when (:ok? snap)
                     (mapv (fn [p] (let [t (get-in snap [:snapshots p :text]) ps (parse-spans t)]
@@ -4627,7 +4631,9 @@
       (not= "target" (:decision plan))
       (finish :blocked {:category "localllm-plan-mismatch" :reason "docs-plan の計画は既存ノートへの追記・編集（target）ではありません"})
 
-      (not= (set targets) (set plan-paths))
+      ;; Exact (order and count) like the groom's pin check: a duplicated or
+      ;; reordered hand edit of docs-target is not the groom's pin.
+      (not= targets plan-paths)
       (finish :blocked {:category "localllm-plan-mismatch"
                         :reason "docs-target が groom 計画の対象と一致しません。対象を変えるなら Backlog に戻して再 groom してください"})
 

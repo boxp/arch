@@ -3246,11 +3246,40 @@ test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search() {
   assert_verse_unchanged_except "${sums}"
   [[ "$(proposal_count)" == 0 ]] || fail "groom must not write documents"
   assert_file_contains "${STATE}/runs/BOXP-880/${second_run}/localllm-groom.edn" ':mode-resolution :content-search'
+  # the owner duplicates the pinned target by hand (`A, A` vs plan `A`): as a
+  # set it still equals the plan, but it is a hand edit, not the groom's pin,
+  # so the groom must stop as plan-mismatch instead of re-selecting (codex review)
+  : >"${REQ_LOG}"
+  sed -i -e 's/^status: ready$/status: backlog/' -e 's/^assignee: boxp$/assignee: localllm/' \
+    -e "s#^docs-target: .*#docs-target: ${VERSE}/キャラ設定/ユイ.md, ${VERSE}/キャラ設定/ユイ.md#" "${ticket}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::backlog"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2b"
+  assert_no_cloud
+  assert_groom_blocked BOXP-880 'category=localllm-plan-mismatch'
+  assert_file_contains "${ticket}" '手動で変えた対象は再選定しません'
+  assert_file_contains "${ticket}" "^docs-target: ${VERSE}/キャラ設定/ユイ.md, ${VERSE}/キャラ設定/ユイ.md$"
+  assert_file_contains "${ticket}" "^docs-plan: ${second_run}$"
+  local dup_run; dup_run="$(latest_run BOXP-880)"
+  [[ "${dup_run}" != "${second_run}" ]] || fail "the duplicate-target check must run as a new groom run"
+  assert_file_not_contains "${REQ_LOG}" ':schema-name "docs_target_selection"'
+  assert_verse_unchanged_except "${sums}"
+  # the same duplicated pin sent straight to the amend run (Ready + localllm)
+  # must stop there too, before any model call
+  : >"${REQ_LOG}"
+  sed -i -e 's/^status: blocked$/status: ready/' -e 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::ready"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2c"
+  assert_no_cloud
+  assert_blocked BOXP-880 'category=localllm-plan-mismatch'
+  [[ "$(request_count)" == 0 ]] || fail "a duplicated docs-target must stop the amend run before the model"
+  assert_file_contains "${ticket}" "^docs-plan: ${second_run}$"
+  assert_verse_unchanged_except "${sums}"
+  [[ "$(proposal_count)" == 0 ]] || fail "the amend run must not write documents"
   # the owner hand-edits the pinned docs-target to another canon note: the pin
   # no longer matches the groom plan, so the groom keeps the explicit target
   # and asks instead of selecting a different note (codex review)
   : >"${REQ_LOG}"
-  sed -i -e 's/^status: ready$/status: backlog/' -e 's/^assignee: boxp$/assignee: localllm/' \
+  sed -i -e 's/^status: blocked$/status: backlog/' -e 's/^assignee: boxp$/assignee: localllm/' \
     -e "s#^docs-target: .*#docs-target: ${VERSE}/キャラ設定/ユウ.md#" "${ticket}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::backlog"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out3"
