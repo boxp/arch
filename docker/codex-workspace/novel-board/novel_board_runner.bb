@@ -1526,10 +1526,19 @@
                   (update acc :gaps conj {:type :reference-not-allowed :detail (str label " `" target "` は許可ディレクトリ外のため読みません")})
 
                   (fs/directory? resolved)
-                  (let [members (filter #(str/starts-with? (str (:rel %) ) (str (absolute-relative (vault) resolved) "/")) catalog)]
-                    (if (seq members)
-                      (reduce (fn [a m] (update a :cands add-candidate (:rel m) 4 (str label "ディレクトリ `" target "`"))) acc members)
-                      (update acc :gaps conj {:type :reference-empty :detail (str label " `" target "` は設定 root 外のディレクトリか空のため個別には読みません")})))
+                  (let [members (filter #(str/starts-with? (str (:rel %)) (str (absolute-relative (vault) resolved) "/")) catalog)
+                        ;; An allowed directory outside the setting roots (e.g. `Projects/…/`)
+                        ;; is not in the catalog: its Markdown files are read as extra
+                        ;; candidates at the same priority, so nothing a human listed is lost.
+                        outside (when (empty? members)
+                                  (for [f (reference-markdown-files resolved)
+                                        :when (not (symlinked-under? resolved f))]
+                                    {:rel (absolute-relative (vault) f) :path (str f) :priority 4
+                                     :reason (str label "ディレクトリ `" target "`")}))]
+                    (cond
+                      (seq members) (reduce (fn [a m] (update a :cands add-candidate (:rel m) 4 (str label "ディレクトリ `" target "`"))) acc members)
+                      (seq outside) (update acc :extra into outside)
+                      :else (update acc :gaps conj {:type :reference-empty :detail (str label " `" target "` に読める Markdown がありません")})))
 
                   :else
                   (if-let [entry (get by-canonical (try (canonical-path resolved) (catch Exception _ nil)))]
@@ -2417,7 +2426,7 @@
                       (map #(str "(不一致) " %) (:rejected selection)))
         entries-by-rel (merge (into {} (map (juxt :rel identity) catalog))
                               (into {} (map (fn [e] [(:rel e) (assoc e :extra? true)]) extra)))
-        cands (reduce (fn [c e] (add-candidate c (:rel e) 0 (:reason e))) cands extra)
+        cands (reduce (fn [c e] (add-candidate c (:rel e) (or (:priority e) 0) (:reason e))) cands extra)
         ordered (order-candidates cands hits)]
     (if (= :cloud mode)
       {:catalog-count (count usable) :query-chars (count query) :selection selection :text ""

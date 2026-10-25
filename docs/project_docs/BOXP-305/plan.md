@@ -31,3 +31,10 @@
 - `bb novel_board_runner.bb test`（自己テスト）と `tests/codex-workspace/novel-board-runner-test.sh`（black-box）。新規 fixture: 参照明示なしのタイトルから別名一致、必須共通規則、同名曖昧、大量 distractor、`canon: false`、symlink、注入文、古い明示 References、Review Instructions リンク、予算切れ、反復 groom（Reference Context の置換）。
 - 新規テストは修正前 runner で失敗することを確認する（検出力の確認）。
 - 配備後: 新 Pod の runner sha256 が main と一致 → 配備済み scheduler + 実 llama-server で隔離 fixture（合成設定ノート、実原典・実作品は未接触）を Backlog→groom→Draft、regroom に通し、Reference Context / context.edn / 本文未開始を確認。
+
+## 検証結果（2026-10-25、ローカル）
+
+- `bb novel_board_runner.bb test`: 自己テスト全 PASS（探索ヘルパー: Review Instructions のリンク収集、`aliases` の inline / block 解析、名前・別名一致、不足判定、件数だけの evidence、Reference Context の整形、catalog の除外と 1 hop リンク、を追加）。
+- `tests/codex-workspace/novel-board-runner-test.sh`: 既存 49 件 + 新規 section 16（別名一致 / 必須規則 / モデル選定と一覧外 path の不採用 / 1 hop リンク / 40 件の distractor / `canon: false` / symlink / 注入文 / 古い明示 References / Review Instructions のリンク / 設定 root 外の許可ディレクトリ `Projects/…/` / Reference Context の置換 / ノート数上限と切詰 / 選定失敗の継続 / lexical モード / 設定 root なし / cloud route への候補一覧）全 PASS。
+- 検出力: 新規 section を修正前 runner（origin/main `daa4d52a…`）に対して実行すると、最初の断定「別名ノート `lilith-tail.md` が prompt に無い」で失敗する（新テストは機能欠落を実際に検出する）。
+- codex review 指摘 1 件（設定 root 外の許可ディレクトリを `References` で指定した場合に配下 Markdown が読まれなくなる回帰）→ 明示ディレクトリが catalog に無い場合は配下の Markdown を優先度 4 の候補として読むよう修正し、回帰テストを追加。

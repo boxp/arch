@@ -1351,8 +1351,11 @@ cat >"${TMP}/requirements.txt" <<'EOT'
 - Characters: リリス・テイル、瀬戸凛
 - References:
   - `ひとはこさんバース/キャラ設定/消えたノート.md`
+  - `Projects/連作メモ/`
 - NSFW: false
 EOT
+mkdir -p "${VAULT}/Projects/連作メモ"
+printf '# 連作メモ\n\n第1話の伏線。PROJECT-MEMO-MARKER\n' >"${VAULT}/Projects/連作メモ/メモ.md"
 write_requirements NOVEL-80
 set_instructions NOVEL-80 "- 舞台を冬に。[[ひとはこさんバース/キャラ設定/モブ/モブ7|モブ7]] も登場させる。[[ひとはこさんバース/キャラ設定/外部|外部]] も参照。"
 set_assignee NOVEL-80 localllm
@@ -1362,6 +1365,9 @@ tick
 PROMPT80="$(latest_prompt NOVEL-80)"
 assert_contains "${PROMPT80}" "## 参照: ひとはこさんバース/キャラ設定/モブ/モブ7.md"
 assert_contains "${PROMPT80}" "MOB-MARKER-7"
+# An allowed directory outside the setting roots (Projects/) is still read when listed explicitly.
+assert_contains "${PROMPT80}" "## 参照: Projects/連作メモ/メモ.md"
+assert_contains "${PROMPT80}" "PROJECT-MEMO-MARKER"
 assert_not_contains "${PROMPT80}" "MOB-MARKER-8"
 assert_contains "${PROMPT80}" "明示参照 \`ひとはこさんバース/キャラ設定/消えたノート.md\` が vault 内に見つかりません"
 assert_contains "${PROMPT80}" "明示参照 \`ひとはこさんバース/キャラ設定/外部|外部\` は許可ディレクトリ外のため読みません"
@@ -1371,6 +1377,7 @@ RC80="$(reference_context NOVEL-80)"
 grep -Fq -- "(regroom, agent localllm)" <<<"${RC80}" || fail "Reference Context must name the regroom run"
 grep -Fq -- "読取: \`ひとはこさんバース/キャラ設定/モブ/モブ7.md\`" <<<"${RC80}" || fail "Review Instructions link must be read"
 grep -Fq -- "明示参照 \`ひとはこさんバース/キャラ設定/モブ/モブ7|モブ7\`" <<<"${RC80}" || fail "explicit reason missing"
+grep -Fq -- "読取: \`Projects/連作メモ/メモ.md\`" <<<"${RC80}" || fail "explicit directory outside the setting roots must be read: ${RC80}"
 grep -Fq -- "不足/未解決: 明示参照 \`ひとはこさんバース/キャラ設定/消えたノート.md\` が vault 内に見つかりません" <<<"${RC80}" || fail "stale explicit reference must be reported"
 assert_contains "${VAULT}/Novels/NOVEL-80.md" "action=regroom agent=localllm model=gemma4-26b"
 echo "PASS: regroom honours Review Instructions links, reports stale references and replaces Reference Context"
