@@ -3357,7 +3357,7 @@
 ;; run that follows (`amend` / `create`) only writes what the plan names, and
 ;; stops when a target changed since the plan was made.
 
-(declare resolve-docs-model)
+(declare resolve-docs-model load-plan)
 
 (def selection-schema
   {:type "object"
@@ -3741,12 +3741,51 @@
       ;; plan, blocked run, more grooming) is groomed again by content search
       ;; so the plan is re-pinned. The generic branch below validated the pinned
       ;; canon target against the proposal roots only and refused it as
-      ;; "outside the allowed root" (BOXP-301 re-groom).
+      ;; "outside the allowed root" (BOXP-301 re-groom). Only a pin whose
+      ;; `docs-plan` is this ticket's own groom record naming exactly the
+      ;; declared targets is re-selected (codex review): a hand-written
+      ;; `docs-mode: amend` / `docs-target` keeps its targets, which are
+      ;; validated against the canon roots and never replaced by a selection.
       (= "amend" (:mode mode-r))
-      (if (seq (:canon-roots cfg))
-        (groom-select cfg vault ticket-id frontmatter ticket-text opts)
-        {:status :blocked :category "localllm-invalid-mode"
-         :reason "docs-mode: amend は CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS が設定された runner でだけ使えます（この runner では既存ノートの限定編集を計画できません）"})
+      (let [targets (docs-targets frontmatter)
+            run-dir (:run-dir opts)
+            plan-r (if run-dir (load-plan run-dir frontmatter) {:ok? false :reason "groom の計画を読む run ディレクトリがありません"})
+            plan (:plan plan-r)
+            plan-paths (mapv :path (:targets plan))
+            groom-pinned? (and (:ok? plan-r) (= "target" (:decision plan)) (seq plan-paths)
+                               (= (set targets) (set plan-paths)))
+            guidance "対象を内容から選び直させるなら frontmatter の docs-mode / docs-target / docs-plan を外し、Summary に加筆先と内容を書いて Backlog に戻し assignee を localllm にしてください（groom が対象と計画を固定します）"]
+        (cond
+          (empty? (:canon-roots cfg))
+          {:status :blocked :category "localllm-invalid-mode"
+           :reason "docs-mode: amend は CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS が設定された runner でだけ使えます（この runner では既存ノートの限定編集を計画できません）"}
+
+          groom-pinned?
+          (groom-select cfg vault ticket-id frontmatter ticket-text opts)
+
+          :else
+          ;; A hand-written amend: the explicit targets are kept and checked
+          ;; (existence, canon roots, size) but no plan exists for them, so the
+          ;; groom asks instead of selecting another note.
+          (let [cfg* (assoc cfg :docs-roots (vec (distinct (concat (:docs-roots cfg) (:canon-roots cfg)))))
+                snap (when (seq targets) (snapshot-targets cfg* vault targets))]
+            (cond
+              (empty? targets)
+              {:status :blocked :category "localllm-plan-missing"
+               :reason (str "docs-mode: amend は groom（対象選定）が docs-target / docs-plan と一緒に固定する値ですが、この票には docs-target がありません。" guidance)}
+
+              (not (:ok? snap))
+              {:status :blocked :category (:category snap) :reason (:reason snap)}
+
+              (and (:ok? plan-r) (= "target" (:decision plan)))
+              {:status :blocked :category "localllm-plan-mismatch"
+               :reason (str "docs-target（" (str/join ", " targets) "）が docs-plan " (:plan-id plan-r) " の計画の対象（" (str/join ", " plan-paths) "）と一致しません。手動で変えた対象は再選定しません。計画の対象に戻すか、" guidance)}
+
+              :else
+              {:status :blocked :category "localllm-plan-missing"
+               :reason (str "docs-target（" (str/join ", " targets) "）は読めますが、docs-mode: amend に必要な groom の計画がありません（"
+                            (if (:ok? plan-r) (str "docs-plan " (:plan-id plan-r) " の計画は既存ノートへの追記・編集（target）ではありません") (:reason plan-r))
+                            "）。手動指定の対象は再選定しません。" guidance)}))))
 
       :else
       (let [mode (:mode mode-r)

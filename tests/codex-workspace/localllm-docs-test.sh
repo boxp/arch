@@ -3246,6 +3246,40 @@ test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search() {
   assert_verse_unchanged_except "${sums}"
   [[ "$(proposal_count)" == 0 ]] || fail "groom must not write documents"
   assert_file_contains "${STATE}/runs/BOXP-880/${second_run}/localllm-groom.edn" ':mode-resolution :content-search'
+  # the owner hand-edits the pinned docs-target to another canon note: the pin
+  # no longer matches the groom plan, so the groom keeps the explicit target
+  # and asks instead of selecting a different note (codex review)
+  : >"${REQ_LOG}"
+  sed -i -e 's/^status: ready$/status: backlog/' -e 's/^assignee: boxp$/assignee: localllm/' \
+    -e "s#^docs-target: .*#docs-target: ${VERSE}/キャラ設定/ユウ.md#" "${ticket}"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-880|BOXP-880: 技を追加]] #ticket status::backlog"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out3"
+  assert_no_cloud
+  assert_groom_blocked BOXP-880 'category=localllm-plan-mismatch'
+  assert_file_contains "${ticket}" '手動で変えた対象は再選定しません'
+  assert_file_contains "${ticket}" "^docs-target: ${VERSE}/キャラ設定/ユウ.md$"
+  assert_file_contains "${ticket}" "^docs-plan: ${second_run}$"
+  [[ "$(latest_run BOXP-880)" != "${second_run}" ]] || fail "the mismatch check must run as a new groom run"
+  assert_file_not_contains "${REQ_LOG}" ':schema-name "docs_target_selection"'
+  assert_verse_unchanged_except "${sums}"
+  # a hand-written docs-mode: amend / docs-target without any groom plan keeps
+  # its target (validated against the canon roots) and is a question: no
+  # selection call may replace the owner's explicit target
+  setup; make_verse; echo select-target >"${MODE_FILE}"
+  sums="$(verse_sums)"
+  write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-882|BOXP-882: 技を追加]] #ticket status::backlog"
+  write_nl_ticket "${VAULT}" BOXP-882 backlog localllm "ユウに新しい技を追加" "ユウの設定に火を使う新しい技を 1 つ追記してほしい。" \
+    "docs-mode: amend" "docs-target: ${VERSE}/キャラ設定/ユウ.md"
+  verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out4"
+  assert_no_cloud
+  assert_groom_blocked BOXP-882 'category=localllm-plan-missing'
+  local manual="${VAULT}/Tickets/BOXP-882.md"
+  assert_file_contains "${manual}" '手動指定の対象は再選定しません'
+  assert_file_contains "${manual}" "^docs-target: ${VERSE}/キャラ設定/ユウ.md$"
+  assert_file_contains "${manual}" '^docs-mode: amend$'
+  assert_file_not_contains "${manual}" '^docs-plan:'
+  assert_file_not_contains "${manual}" '許可 root 外'
+  assert_verse_unchanged_except "${sums}"
   # the same pinned card on a runner without canon roots is a question, not a write
   setup; echo select-target >"${MODE_FILE}"
   write_board "${VAULT}" Backlog "- [ ] [[Tickets/BOXP-881|BOXP-881: 技を追加]] #ticket status::backlog"
