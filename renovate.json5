@@ -306,6 +306,24 @@
       automerge: false,
       labels: ["kubernetes", "kube-vip"]
     },
+    // BOXP-313: Hermes Agent upstream image (docker/hermes-agent/Dockerfile).
+    // FROM は「安定版 tag + multi-arch index digest」で固定し、dockerfile manager に
+    // version と digest の両方を追わせる (tag 無し digest だけだと version lookup が
+    // できず Dependency Dashboard で "Updates: undefined" になる)。
+    // - Docker Hub には v0.22.x (SemVer) のほか旧い日付形式 v2026.9.24 等と rc.N-v0.22.x
+    //   が同居する。docker versioning では v2026.x が「major 2026」として最新扱いになる
+    //   ため、allowedVersions で v0.MINOR.PATCH 形式の安定版 tag だけに限定する。
+    //   (rc.N-… は docker versioning として無効なので元から候補に入らない)
+    // - 上流 minor 更新は config 自動移行 / s6 起動方式の変更を伴い得るので automerge
+    //   しない。digest-only 更新 (同 tag の再 push) も image build の smoke test を見てから
+    //   手動 merge する。更新手順・rollback は docs/project_docs/BOXP-313/plan.md。
+    {
+      matchDatasources: ["docker"],
+      matchPackageNames: ["docker.io/nousresearch/hermes-agent"],
+      allowedVersions: "/^v?0\\.[0-9]+\\.[0-9]+$/",
+      automerge: false,
+      addLabels: ["hermes-agent", "manual-review-required"],
+    },
     // 🚨 BOXP-207: apply.yaml / test.yaml（とそこから呼ぶ wc-*.yaml）が main で変わると、
     // GitHub の保護機能により、write 権限者が Web で承認するまで以後の run が実行されない。
     // automerge だと誰も見ていない時間に止まり始めるため、workflow の更新は週 1 回・
