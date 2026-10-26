@@ -148,8 +148,9 @@ Projects/codex-task-board-runner/spec.md
 - 多数の資料を参照して別ノートを更新する依頼は、frontmatter に `docs-sources: <参照フォルダ or ノート（vault 相対、カンマ区切り）>` を書く。runner は資料群の index（path / タイトル / 見出し）だけを model に渡し、model の search（語句一致）と節単位の read を有限回（既定 6 回・根拠 14,000 字）中継してから編集させる。資料は読み取り専用で、参照許可 root（既定 `Projects/task-board-localllm-docs` 配下、env `CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS`）外・symlink は拒否。採用した事実の出典（読んだノートの path）が無い提案は適用されず、Review の Notes に出典と調査量（回数・読んだ資料）が記録される。
 - 対象レーンは Ready / In Progress / Review / Blocked。Backlog の groom は行いません。Review に置いて再割当すると Notes 末尾の指示で改稿します。
 - 結果は常に `Review`（変更適用、担当 `boxp`）または `Blocked`（未適用、理由付き）で、`Done` にはなりません。model に到達できない場合も cloud agent へは切り替えません。
-- 変更は構造化差分（節の差替え / 追記 / 一意テキスト置換）だけで、frontmatter 不変・編集範囲外のリンク保持・コードフェンス整合・競合（base hash）検査・原本 backup・原子的保存を runner が強制します。
-- 証拠は run ディレクトリの `localllm-audit.edn` / `llm-evidence.edn`（非秘密メタのみ）。元に戻すには `task_board_runner.bb localllm-rollback BOXP-N RUN-ID`。
+- 変更は構造化差分（節の差替え / 追記 / 一意テキスト置換）だけで、frontmatter 不変・編集範囲外のリンク保持・コードフェンス整合・競合（base hash）検査・原子的保存を runner が強制します。
+- 変更は対象ノートへ **通常の Markdown として直接反映** されます（BOXP-306。HTML コメントの review マーカー・`localllm-unreviewed` の未確認印・専用の採用 / 取消コマンドはありません）。内容は Owner が Obsidian で確認し、戻したい場合は Obsidian の履歴機能で戻します。`localllm-accept` / `localllm-rollback` は廃止済みで、実行しても案内を出すだけで何も書きません。
+- 証拠は run ディレクトリの `localllm-audit.edn` / `llm-evidence.edn`（非秘密メタのみ）。run ディレクトリの `backup/` は書込途中の失敗・中断 run を runner 自身が元に戻すための一時保全で、操作用ではありません。
 - モデル選択（BOXP-294）: 既定は runner 設定のモデル（`gemma4-26b`）。lolice の local-llm が `models.ini` で配信している別の model id を使う票は frontmatter に `docs-model: <model id>` を書く（例 `docs-model: qwen38-27b`）。runner は実行前に llama-server の `GET /v1/models` 一覧と照合し、無い id・許可外の id（env `CODEX_TASK_BOARD_LOCALLLM_MODELS` を設定した場合）はモデルを呼ばずに `Blocked` にする（既定モデルへ黙って切り替えない）。使った model id は Review の Notes（`model=`）・`localllm-audit.edn`（`:model-resolution :declared|:default`）・`llm-evidence.edn`（サーバーが返した model も記録）に残る。同じ票の提案ノートを改稿する再実行は、ノートを生成した model と違う既定モデルに黙って変わることはない（`docs-model` が読めず既定になる場合はモデルを呼ばず `Blocked`。意図的に変えるなら `docs-model: <別の id>` を明記する）。llama-server は `--models-max 1` のため、別 model を選んだ票の実行中は既定モデルがアンロードされ、次に既定モデルの要求が来たときに再ロードされる（数十秒〜2 分の追加待ち）。
 
 依頼例（Ready レーン）:

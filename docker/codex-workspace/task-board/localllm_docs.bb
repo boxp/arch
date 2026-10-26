@@ -15,8 +15,11 @@
 ;;     frontmatter is never touched, links outside the edited region must
 ;;     survive, code fences must stay balanced, fake result markers are rejected;
 ;;   - the file hash read for the prompt is re-checked before writing (conflict
-;;     detection), the original is backed up into the run directory, the new
-;;     content is written atomically, and nothing is applied when any check fails;
+;;     detection), the original is kept in the run directory only as the
+;;     recovery journal of that write (a failure part-way or an interrupted run
+;;     restores it; there is no operator rollback / accept, BOXP-306), the new
+;;     content is written atomically as plain Markdown, and nothing is applied
+;;     when any check fails;
 ;;   - the audit (`localllm-audit.edn`) and non-secret request evidence
 ;;     (`llm-evidence.edn`) stay in the run directory; prompts, note bodies and
 ;;     headers are never copied into Notes or GitHub.
@@ -461,9 +464,10 @@
   (let [lines (vec (str/split-lines (or text "")))]
     (when (= "---" (first lines))
       (when-let [end (first (keep-indexed (fn [i l] (when (and (pos? i) (= "---" l)) i)) lines))]
-        ;; `localllm-unreviewed: true` (BOXP-296): a note the route created
-        ;; inside a canon folder that the owner has not accepted yet.
-        (boolean (some #(re-matches #"\s*localllm-(?:proposal|unreviewed):\s*true\s*" %) (subvec lines 0 end)))))))
+        ;; Only the explicit proposal classification of the proposal root.
+        ;; A note the route created inside a canon folder is an ordinary note
+        ;; (BOXP-306: no `localllm-unreviewed` state any more).
+        (boolean (some #(re-matches #"\s*localllm-proposal:\s*true\s*" %) (subvec lines 0 end)))))))
 
 (defn- section-text [lines heading]
   (let [idx (first (keep-indexed (fn [i l] (when (= heading (str/trim l)) i)) lines))]
@@ -845,12 +849,12 @@
             :else {:ok? true :text text :ops applied})))))))
 
 ;; ---------------------------------------------------------------------------
-;; Unreviewed spans (BOXP-296): provenance of canon-folder edits
+;; Legacy review markers (BOXP-296, retired by BOXP-306): migration only
 ;; ---------------------------------------------------------------------------
 ;;
-;; An addition / edit the route applies inside a canon folder is wrapped in
-;; HTML comments (hidden in Obsidian's reading view), so the unreviewed state
-;; of the text is visible in the file itself, not only in the run directory:
+;; Until BOXP-306 an addition / edit applied inside a canon folder was wrapped
+;; in HTML comments, and a created note carried `localllm-unreviewed: true`,
+;; `status: unapproved` and a banner, until the owner ran `localllm-accept`:
 ;;
 ;;   <!-- localllm:BOXP-N:RUN-ID:add -->
 ;;   …added lines…
@@ -858,33 +862,28 @@
 ;;
 ;;   <!-- localllm:BOXP-N:RUN-ID:replace old=<base64url of the replaced text> -->new text<!-- /localllm:BOXP-N -->
 ;;
-;; `strip-spans` restores the canon view (additions dropped, replacements
-;; reverted) for every corpus read, so an unreviewed change of one ticket is
-;; never evidence for another; the same ticket's spans are replaced as a whole
-;; on a Review revision; `localllm-accept` removes the markers once the owner
-;; adopts the text; `localllm-rollback` restores the backup as before.
+;; The route no longer writes any of these: a change is saved as plain
+;; Markdown and later runs read the note as it is (the owner reverts through
+;; Obsidian's own history when needed). The parser below exists only so the
+;; one-off `localllm-migrate-markers` command can strip the markers of notes
+;; written before the change while keeping their current (new) text; nothing in
+;; the generation / corpus path calls it.
 
 (def ^:private span-open-re #"<!-- localllm:([A-Za-z]+-\d+):([A-Za-z0-9._-]+):(add|replace)(?: old=([A-Za-z0-9_=-]*))? -->")
 (def ^:private span-close-re #"<!-- /localllm:([A-Za-z]+-\d+) -->")
 (def ^:private span-any-re #"<!-- /?localllm:[^>]*-->")
-
-(defn b64url-encode [^String s]
-  (.encodeToString (.withoutPadding (java.util.Base64/getUrlEncoder)) (.getBytes s "UTF-8")))
+(def ^:private legacy-marker-prefix "<!-- localllm:")
+(def ^:private legacy-banner-re
+  ;; The exact shape `render-created-note` wrote before BOXP-306 (one line).
+  #"> \*\*未確認（localllm）\*\*: localllm docs run [A-Za-z0-9._-]+ がチケット \[\[Tickets/[A-Za-z]+-\d+\]\] の依頼で.*")
 
 (defn b64url-decode [^String s]
   (try (String. (.decode (java.util.Base64/getUrlDecoder) s) "UTF-8") (catch Exception _ nil)))
 
-(defn span-open [ticket-id run-id op old]
-  (str "<!-- localllm:" ticket-id ":" run-id ":" op
-       (when (= "replace" op) (str " old=" (b64url-encode (or old ""))))
-       " -->"))
-
-(defn span-close [ticket-id] (str "<!-- /localllm:" ticket-id " -->"))
-
 (defn parse-spans
-  "Spans of `text` in document order: [{:ticket :run :op :old :start :end
-  :inner-start :inner-end}]. Returns {:ok? true :spans} or {:ok? false :reason}
-  when markers are unbalanced, nested or malformed."
+  "Legacy spans of `text` in document order: [{:ticket :run :op :old :start
+  :end :inner-start :inner-end}]. Returns {:ok? true :spans} or {:ok? false
+  :reason} when markers are unbalanced, nested or malformed."
   [text]
   (let [text (or text "")
         m (re-matcher span-any-re text)]
@@ -934,46 +933,108 @@
               (do (.append out (subs text start end))
                   (recur end more out)))))))))
 
-(defn strip-spans
-  "Canon view of `text`: spans selected by `pick?` (default: all) are removed
-  (additions) or reverted to their recorded old text (replacements). Returns
-  {:text :stripped n :ok? bool}; malformed markers leave the text unchanged."
-  ([text] (strip-spans text (constantly true)))
-  ([text pick?]
-   (let [{:keys [ok? spans]} (parse-spans text)
-         picked (when ok? (filter pick? spans))]
-     (if-not ok?
-       {:text text :stripped 0 :ok? false}
-       {:text (splice-spans text pick? (fn [s _] (if (= "replace" (:op s)) (or (:old s) "") "")))
-        :stripped (count picked) :ok? true}))))
-
 (defn unwrap-spans
-  "Adopt the spans of `ticket-id`: markers removed, the new text kept."
-  [text ticket-id]
-  (let [{:keys [ok?]} (parse-spans text)]
-    (if-not ok?
-      text
-      (splice-spans text #(= ticket-id (:ticket %))
-                    (fn [{:keys [op]} inner]
-                      (if (= "replace" op)
-                        inner
-                        ;; Block addition: the newline after the open marker
-                        ;; and the one before the close marker were ours.
-                        (-> inner (str/replace #"^\n" "") (str/replace #"\n$" ""))))))))
-
-(defn span-tickets
-  "Ticket ids that own spans in `text` (empty when none or malformed)."
+  "Legacy spans of every ticket adopted: markers removed, the new text kept
+  (the replaced old text recorded in the marker is dropped). Returns {:ok?
+  true :text :spans n} or {:ok? false :reason} when the markers are malformed
+  (the text is then left to a human)."
   [text]
-  (let [{:keys [ok? spans]} (parse-spans text)]
-    (if ok? (set (map :ticket spans)) #{})))
+  (let [{:keys [ok? spans reason]} (parse-spans text)]
+    (if-not ok?
+      {:ok? false :reason reason}
+      {:ok? true :spans (count spans)
+       :text (splice-spans text (constantly true)
+                           (fn [{:keys [op]} inner]
+                             (if (= "replace" op)
+                               inner
+                               ;; Block addition: the newline after the open marker
+                               ;; and the one before the close marker were ours.
+                               (-> inner (str/replace #"^\n" "") (str/replace #"\n$" "")))))})))
 
-(defn wrap-change
-  "A model change (append-to-section / append-section / replace-text) with its
-  new text wrapped in this run's span markers."
-  [ticket-id run-id {:keys [op old_text new_text] :as change}]
-  (if (= "replace-text" op)
-    (assoc change :new_text (str (span-open ticket-id run-id "replace" old_text) new_text (span-close ticket-id)))
-    (assoc change :new_text (str (span-open ticket-id run-id "add" nil) "\n" (str/trim (or new_text "")) "\n" (span-close ticket-id)))))
+(defn legacy-unreviewed-note?
+  "True when the frontmatter carries the retired `localllm-unreviewed: true`."
+  [text]
+  (let [lines (vec (str/split-lines (or text "")))]
+    (boolean
+     (when (= "---" (first lines))
+       (when-let [end (first (keep-indexed (fn [i l] (when (and (pos? i) (= "---" l)) i)) lines))]
+         (some #(re-matches #"\s*localllm-unreviewed:\s*true\s*" %) (subvec lines 0 end)))))))
+
+(defn strip-legacy-unreviewed-marks
+  "Frontmatter `localllm-unreviewed: true` / `status: unapproved` and the
+  未確認 banner line removed from a note the route created inside a canon
+  folder before BOXP-306; the text itself is kept. Only applied to a note that
+  carries `localllm-unreviewed: true` (a `status: unapproved` of another origin
+  is never touched)."
+  [text]
+  (if-not (legacy-unreviewed-note? text)
+    text
+    (let [lines (vec (str/split-lines text))
+          end (first (keep-indexed (fn [i l] (when (and (pos? i) (= "---" l)) i)) lines))
+          fm (subvec lines 0 (inc end))
+          body (subvec lines (inc end))
+          fm (vec (remove #(re-matches #"\s*(localllm-unreviewed:\s*true|status:\s*unapproved)\s*" %) fm))
+          ;; The banner the route generated is exactly one blockquote line in
+          ;; the generated form, placed right after the `# title` line (or at
+          ;; the top of the body); only that line goes, together with the blank
+          ;; line that followed it. A blockquote the owner wrote elsewhere in
+          ;; the body, even one starting the same way, is text and stays
+          ;; (codex review).
+          body (let [first-idx (first (keep-indexed (fn [i l] (when-not (str/blank? l) i)) body))
+                     banner-idx (when first-idx
+                                  (if (re-matches #"#\s.*" (nth body first-idx))
+                                    (first (keep-indexed (fn [i l] (when (and (> i first-idx) (not (str/blank? l))) i)) body))
+                                    first-idx))]
+                 (if (and banner-idx (re-matches legacy-banner-re (nth body banner-idx)))
+                   (let [after (subvec body (inc banner-idx))
+                         after (if (and (seq after) (str/blank? (first after))) (subvec after 1) after)]
+                     (vec (concat (subvec body 0 banner-idx) after)))
+                   body))]
+      (str (str/join "\n" (concat fm body)) (when (str/ends-with? text "\n") "\n")))))
+
+(defn legacy-marked?
+  "True when `text` still carries any legacy span marker (an open marker, or a
+  stray close marker left alone, so that a malformed note is reported rather
+  than silently kept; codex review) or the retired unreviewed frontmatter (the
+  only notes the migration touches)."
+  [text]
+  (or (boolean (re-find span-any-re (or text ""))) (legacy-unreviewed-note? text)))
+
+(defn- line-ending
+  "The single line ending `text` uses: \"\\n\", \"\\r\\n\" (every newline is CRLF)
+  or nil when the endings are mixed / a bare CR occurs (the shape is then not
+  one the migration can rebuild faithfully)."
+  [text]
+  (let [crlf (count (re-seq #"\r\n" text))
+        cr (count (re-seq #"\r" text))
+        lf (count (re-seq #"\n" text))]
+    (cond
+      (zero? cr) "\n"
+      (and (= cr crlf) (= lf crlf)) "\r\n"
+      :else nil)))
+
+(defn migrate-legacy-text
+  "The note with every legacy marker / unreviewed mark removed and the current
+  text kept. Returns {:ok? true :text :spans n :unreviewed? bool} or {:ok?
+  false :reason}. A note without any legacy mark comes back unchanged
+  (`:spans 0`, `:unreviewed? false`). The note's line ending is kept: a CRLF
+  note is rebuilt with CRLF on every line (the marker removal itself works on
+  LF text); mixed endings are reported instead of being unified (codex review)."
+  [text]
+  (let [text (or text "")
+        eol (line-ending text)]
+    (if-not eol
+      {:ok? false :reason "改行形式が混在しているため（CRLF と LF）判定できません"}
+      (let [lf-text (if (= "\n" eol) text (str/replace text "\r\n" "\n"))
+            unwrapped (unwrap-spans lf-text)]
+        (if-not (:ok? unwrapped)
+          unwrapped
+          (let [unreviewed? (legacy-unreviewed-note? (:text unwrapped))
+                out (strip-legacy-unreviewed-marks (:text unwrapped))
+                out (if (= "\n" eol) out (str/replace out "\n" eol))]
+            (if (re-find span-any-re out)
+              {:ok? false :reason "マーカーを外した後も localllm マーカー文字列が残ります（不明な形式）"}
+              {:ok? true :text out :spans (:spans unwrapped) :unreviewed? unreviewed?})))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Context building
@@ -1109,9 +1170,9 @@
           (> (count files) (:max-corpus-notes cfg))
           (invalid (str "docs-sources のノート数 " (count files) " が上限 " (:max-corpus-notes cfg) " を超えます（フォルダを絞るか CODEX_TASK_BOARD_LOCALLLM_MAX_CORPUS_NOTES を上げてください）"))
           :else
-          (loop [[rel & more] files total 0 notes [] redacted 0 proposals 0 spans 0 malformed 0]
+          (loop [[rel & more] files total 0 notes [] redacted 0 proposals 0]
             (if (nil? rel)
-              {:ok? true :notes notes :excluded excluded :redacted-lines redacted :proposal-notes proposals :unreviewed-spans spans :malformed-span-notes malformed}
+              {:ok? true :notes notes :excluded excluded :redacted-lines redacted :proposal-notes proposals}
               ;; Re-validate right before the read: a directory under a writable
               ;; corpus swapped for a symlink after the enumeration above must
               ;; not be followed into foreign content.
@@ -1127,21 +1188,17 @@
                   :else
                   (let [raw (slurp-nofollow (:abs r))]
                     (if (proposal-note? raw)
-                      ;; One of our own unapproved proposals: never canon.
-                      (recur more (+ total size) notes redacted (inc proposals) spans malformed)
-                      ;; Unreviewed spans of any ticket (BOXP-296) are dropped /
-                      ;; reverted before the note becomes research material. A
-                      ;; note whose markers cannot be parsed (hand-edited) is
-                      ;; left out entirely rather than read as canon (codex review).
-                      (let [{canon :text stripped :stripped spans-ok? :ok?} (strip-spans raw)
-                            [text n] (redact-secret-lines canon)]
-                        (if-not spans-ok?
-                          (recur more (+ total size) notes redacted proposals spans (inc malformed))
+                      ;; One of our own unapproved proposals (proposal root
+                      ;; classification): never canon.
+                      (recur more (+ total size) notes redacted (inc proposals))
+                      ;; The note is read as it is on disk (BOXP-306): text a
+                      ;; localllm run wrote earlier is ordinary note text now.
+                      (let [[text n] (redact-secret-lines raw)]
                         (recur more (+ total size)
                                (conj notes {:rel rel :title (note-title text rel) :headings (note-headings text) :chars (count text) :text text
                                             ;; Lower-cased once here: a vault-wide search would otherwise re-lower 18 MB per query.
                                             :lower (str/lower-case (str rel "\n" (note-title text rel) "\n" text))})
-                               (+ redacted n) proposals (+ spans stripped) malformed))))))))))))))
+                               (+ redacted n) proposals)))))))))))))
 
 (defn- index-line [{:keys [rel title headings chars]}]
   (str "- " rel " | " (truncate-text title 60)
@@ -1945,17 +2002,10 @@
                             (keep? fm))]
              {:rel rel :kind (get fm "kind") :text text :frontmatter fm})))))
 
-(defn list-unreviewed-canon-notes
-  "The unreviewed notes the route created inside the canon `folder`, any
-  ticket (collision candidates: they are excluded from the corpus)."
-  [cfg vault folder roots]
-  (list-route-canon-notes cfg vault folder roots #(= "true" (str (get % "localllm-unreviewed")))))
-
 (defn find-own-canon-note
   "The note this ticket created inside the confirmed canon `folder`
-  (`ticket: <id>`), unreviewed or already accepted, or nil. An accepted note
-  is still the ticket's own: a later Review instruction revises it (it becomes
-  unreviewed again until accepted) instead of creating a second note (codex review)."
+  (`ticket: <id>`), or nil. A later Review instruction revises that note in
+  place instead of creating a second note (codex review)."
   [cfg vault folder roots ticket-id]
   (first (list-route-canon-notes cfg vault folder roots #(= ticket-id (str (get % "ticket"))))))
 
@@ -2099,11 +2149,11 @@
                 "title: " (yaml-quote name) "\n"
                 "type: " type "\n"
                 "kind: " kind "\n"
-                "status: unapproved\n"
-                ;; `localllm-unreviewed` (BOXP-296): a note saved inside a canon
-                ;; folder by a confirmed groom plan. Both keys exclude the note
-                ;; from every corpus until the owner accepts it.
-                (if canon? "localllm-unreviewed: true\n" "localllm-proposal: true\n")
+                ;; Proposal root: the explicit unapproved classification stays
+                ;; (never canon). A note saved inside a canon folder by a
+                ;; confirmed groom plan is an ordinary note (BOXP-306): only the
+                ;; provenance keys (`ticket` / `run`) are written.
+                (when-not canon? "status: unapproved\nlocalllm-proposal: true\n")
                 "ticket: " ticket-id "\n"
                 "slug: " slug "\n"
                 "aliases:" (if (seq aliases) (str "\n" (str/join "\n" (map #(str "  - " (yaml-quote %)) aliases))) " []") "\n"
@@ -2111,8 +2161,7 @@
                 "run: " (or origin-run run-id) "\n"
                 "---\n\n")
         body (str "# " name "\n\n"
-                  (if canon?
-                    (str "> **未確認（localllm）**: localllm docs run " run-id " がチケット [[Tickets/" ticket-id "]] の依頼で、groom 計画で確認した保存先にこの新規" label "設定を保存しました。Owner が内容を確認するまで未確認の案で、他の依頼の根拠には使われません。採用するなら `task_board_runner.bb localllm-accept " ticket-id " " run-id "`（または frontmatter の `localllm-unreviewed` / `status: unapproved` とこの行を手で削除）、不要なら Notes の localllm-rollback で削除できます（同じチケットの改稿ではこのノートの本文が置き換えられます）。\n\n")
+                  (when-not canon?
                     (str "> **未承認の提案**: localllm docs run " run-id " がチケット [[Tickets/" ticket-id "]] の依頼で作成した新規" label "設定の案です。既存設定（canon）には採用されていません。以下の各節は新規の創作案で、既存設定からの引用は「参照した既存設定」節に出典付きで分けてあります。採用する場合は人が正式な設定フォルダへ移し、このノートを削除してください（同じチケットの改稿ではこのノートの本文が置き換えられます）。\n\n"))
                   "## 概要\n\n" (if (str/blank? summary) "未定（要確認）" (str/trim summary)) "\n\n"
                   (str/join "\n\n" (map (fn [[k heading _]]
@@ -2164,7 +2213,10 @@
                  own (:rel own)
                  canon-folder (str canon-folder "/" slug ".md")
                  :else (str (:proposal-root cfg) "/" folder "/" slug ".md"))
-        canon? (boolean (or canon-folder (and own (= "true" (str (get own-fm "localllm-unreviewed"))))))
+        ;; A revision of a note that lives in a canon folder (not under the
+        ;; proposal root) stays an ordinary canon note.
+        canon? (boolean (or canon-folder
+                            (and own (not (str/starts-with? (str (:rel own)) (str (:proposal-root cfg) "/"))))))
         limit (:max-create-chars cfg)
         max-sections (max 1000 (- limit 3000))]
     (cond
@@ -3183,23 +3235,50 @@
           :else
           {:ok? true :model declared :how :declared})))))
 
+(declare plan-id-pattern)
+
+(defn- latest-applied-write
+  "The most recent run of the same ticket whose audit reached Review with
+  `rel` among its applied notes: {:run-id :model :after-sha256}, or nil.
+  With `plan-id`, only runs whose audit names that plan count (a write under
+  an earlier plan is another change). Runs are read from the ticket's run
+  directory only (`<root>/runs/<ticket>/`)."
+  ([run-dir rel] (latest-applied-write run-dir rel nil))
+  ([run-dir rel plan-id]
+   (let [runs (fs/parent run-dir)]
+     (when (fs/directory? runs)
+       (->> (fs/list-dir runs)
+            (map str)
+            (filter #(re-matches #"[A-Za-z0-9._-]{1,80}" (fs/file-name %)))
+            (remove #(= (str (fs/absolutize %)) (str (fs/absolutize run-dir))))
+            (sort #(compare %2 %1))
+            (keep (fn [d]
+                    (let [a (read-edn (fs/path d "localllm-audit.edn") nil)
+                          entry (when (map? a) (first (filter #(= rel (:path %)) (:applied a))))]
+                      (when (and entry (= :review (:status a))
+                                 (or (nil? plan-id) (= plan-id (:plan-id a))))
+                        {:run-id (fs/file-name d) :after-sha256 (:after-sha256 entry)
+                         :model (when (and (string? (:model a)) (re-matches model-id-pattern (:model a))) (:model a))}))))
+            first)))))
+
 (defn- latest-applied-model
   "Model id of the most recent run of the same ticket whose audit reached
-  Review with `rel` among its applied notes, or nil (BOXP-296: an accepted
-  revision may have used another id than the origin run)."
+  Review with `rel` among its applied notes, or nil (a revision may have used
+  another id than the origin run)."
   [run-dir rel]
-  (let [runs (fs/parent run-dir)]
-    (when (fs/directory? runs)
-      (->> (fs/list-dir runs)
-           (map str)
-           (filter #(re-matches #"[A-Za-z0-9._-]{1,80}" (fs/file-name %)))
-           (sort #(compare %2 %1))
-           (keep (fn [d]
-                   (let [a (read-edn (fs/path d "localllm-audit.edn") nil)]
-                     (when (and (map? a) (= :review (:status a)) (some #(= rel (:path %)) (:applied a))
-                                (string? (:model a)) (re-matches model-id-pattern (:model a)))
-                       (:model a)))))
-           first))))
+  (:model (latest-applied-write run-dir rel)))
+
+(defn- previous-amend-text
+  "The 『書いた内容』 section of an earlier amend run's report (run directory
+  of the same ticket), or nil. Shown to the model on a Review revision as the
+  text its previous run wrote (already part of the note)."
+  [run-dir prev-run-id]
+  (when (and (string? prev-run-id) (re-matches plan-id-pattern prev-run-id))
+    (let [path (fs/path (fs/parent run-dir) prev-run-id "localllm-amend-report.md")]
+      (when (fs/regular-file? path {:nofollow-links true})
+        (let [text (slurp (str path))
+              m (re-find #"(?s)\n## 書いた内容[^\n]*\n\n(.*?)\n\n## 矛盾・要確認\n" text)]
+          (when-let [t (second m)] (when-not (str/blank? t) (str/trim t))))))))
 
 (defn- previous-run-model
   "Model id an earlier run of the same ticket recorded in its
@@ -3620,7 +3699,7 @@
                           :sources sources :sources-origin sources-origin
                           :corpus {:notes (count (:notes corpus)) :chars (reduce + (map :chars (:notes corpus)))
                                    :excluded (:excluded corpus) :redacted-lines (:redacted-lines corpus)
-                                   :proposal-notes (:proposal-notes corpus) :unreviewed-spans (:unreviewed-spans corpus) :malformed-span-notes (:malformed-span-notes corpus)}
+                                   :proposal-notes (:proposal-notes corpus)}
                           :research research-summary :usage (:usage sel) :llm-elapsed-ms (:llm-elapsed-ms sel)}
                   link (fn [rel] (str "[[" (str/replace rel #"\.md$" "") "]]"))
                   corpus-line (str "参照資料: " (if (= :declared sources-origin) "票の docs-sources" "runner 既定の corpus")
@@ -3629,7 +3708,7 @@
                   research-line (when-let [r (:research sel)]
                                   (str "対象選定の調査（モデル " (:model cfg) "）: " (:rounds r) " 回（search " (:searches r) ", list " (:lists r 0) ", read " (:reads r) "）、根拠 " (:evidence-chars r) " 字"
                                        (when (seq (:read-paths r)) (str "。読んだ資料: " (str/join ", " (map link (:read-paths r)))))))
-                  flow (str "実行の流れ: 計画を確認してこの票の assignee を localllm に戻す（Ready のまま）→ In Progress → 計画の対象だけに限定して書込 → Review（担当 boxp）。対象が計画後に変わっていれば書かずに停止（Backlog に戻して再計画）。改稿は Review の票の Notes 末尾に指示を書いて assignee を戻す。採用は `task_board_runner.bb localllm-accept " ticket-id " RUN-ID`、取消は Notes の localllm-rollback コマンド")]
+                  flow (str "実行の流れ: 計画を確認してこの票の assignee を localllm に戻す（Ready のまま）→ In Progress → 計画の対象だけに限定して書込 → Review（担当 boxp）。対象が計画後に変わっていれば書かずに停止（Backlog に戻して再計画）。改稿は Review の票の Notes 末尾に指示を書いて assignee を戻す。変更は対象ノートへ直接反映され（専用の採用操作なし）、戻すなら Obsidian の履歴機能で戻す")]
               (cond
                 (and (not (:ok? sel)) (:shutdown? sel))
                 (merge common {:status :blocked :shutdown? true :category (:category sel) :reason (:reason sel)})
@@ -3655,12 +3734,12 @@
                                                [(str "localllm groom（対象選定、モデル呼出あり・文書書込なし）: 用途 = 新規" kind-label "設定の作成（create / " kind "）、保存先 = `" folder "/`（既存の分類フォルダから選定、新しいフォルダは作らない）")
                                                 (str "選定理由（モデルの説明、要確認）: " reason)
                                                 corpus-line research-line
-                                                (str "守る制約: 既存ノートの上書きなし（名前・slug の衝突は拒否）/ 新規ノートは frontmatter `localllm-unreviewed: true` と未確認バナー付きで保存し、Owner が採用するまで他の依頼の根拠に使われない / 既存の人物・怪獣・組織の事実は変えず原典に無い要素は新規案と明示 / 性的・露骨・残酷な描写なし / 出典は調査で読んだ資料だけ")
+                                                (str "守る制約: 既存ノートの上書きなし（名前・slug の衝突は拒否）/ 新規ノートは通常のノートとして保存（frontmatter に `ticket` / `run` の出所だけを記録） / 既存の人物・怪獣・組織の事実は変えず原典に無い要素は新規案と明示 / 性的・露骨・残酷な描写なし / 出典は調査で読んだ資料だけ")
                                                 flow]))
-                          acceptance [(str "- [ ] `" folder "/` に未確認の新規ノート 1 件が作成され（frontmatter `localllm-unreviewed: true` / `ticket: " ticket-id "`）、票が Review で止まる")
+                          acceptance [(str "- [ ] `" folder "/` に新規ノート 1 件が作成され（frontmatter `ticket: " ticket-id "`）、票が Review で止まる")
                                       (str "- [ ] Notes の「読んだ資料」「出典」がすべて `" (str/join "`, `" sources) "` 配下")
                                       "- [ ] 既存ノートの変更 0 件、他フォルダへの書込なし"
-                                      "- [ ] 内容は Owner が Obsidian で確認し、採用なら localllm-accept、修正は Notes に指示して同じノートを改稿、不要なら rollback"]
+                                      "- [ ] 内容は Owner が Obsidian で確認し、修正は Notes に指示して同じノートを改稿、不要なら Obsidian で削除または履歴から戻す"]
                           plan-items ["- [ ] 調査: corpus を index → list / search → read（必読候補を優先）"
                                       (str "- [ ] 作成: `" folder "/<slug>.md` を 1 件（runner が名前 / slug の衝突と出典を検査。上書きしない）")
                                       "- [ ] 確認: Owner が Review で読み、採用 / 改稿 / 取消を判断"]
@@ -3683,16 +3762,16 @@
                                                (concat [(str "localllm groom（対象選定、モデル呼出あり・文書書込なし）: 用途 = 既存ノートへの限定追記・編集（amend、" (count targets) " 件）")]
                                                        target-lines
                                                        [corpus-line research-line
-                                                        "守る制約: 上記の対象ノート・節だけに追記（append）または節内の一意な文の置換（replace）を行い、frontmatter・他の節・リンク・他のノートは変えない / 追記・置換は HTML コメントのマーカー（票 id・run id、置換は旧文を同梱）で囲み、Owner が採用するまで他の依頼の根拠に使われない / 削除・rename・移動・一括変更なし / 対象が計画時の sha256 と違えば書かずに停止"
+                                                        "守る制約: 上記の対象ノート・節だけに追記（append）または節内の一意な文の置換（replace）を行い、frontmatter・他の節・リンク・他のノートは変えない / 変更は通常の Markdown として対象ノートへ直接反映する（マーカーなし。戻すなら Obsidian の履歴） / 削除・rename・移動・一括変更なし / 対象が計画時の sha256 と違えば書かずに停止"
                                                         flow])))
                           acceptance (vec (concat (map (fn [{:keys [path section]}]
-                                                         (str "- [ ] " (link path) (when (seq section) (str " の『" section "』")) " にマーカー付きの追記 / 置換だけが入り、他の節・frontmatter・リンクは byte 不変"))
+                                                         (str "- [ ] " (link path) (when (seq section) (str " の『" section "』")) " に追記 / 置換だけが入り、他の節・frontmatter・リンクは byte 不変"))
                                                        targets)
-                                                  ["- [ ] 他のノートの変更 0 件、票が Review で止まる（Notes に対象・操作・出典・accept / rollback コマンド）"
-                                                   "- [ ] 内容は Owner が Obsidian で確認し、採用なら localllm-accept、修正は Notes に指示、不要なら rollback"]))
+                                                  ["- [ ] 他のノートの変更 0 件、票が Review で止まる（Notes に対象・操作・出典・audit の path）"
+                                                   "- [ ] 内容は Owner が Obsidian で確認し、修正は Notes に指示、不要なら Obsidian の履歴から戻す"]))
                           plan-items ["- [ ] 調査: corpus を index → list / search → read（対象ノートは読み取り専用で提示）"
                                       "- [ ] 適用: 計画の対象・節に限定した追記 / 置換（runner が範囲・出典・形式を検査、backup 付きで原子的に適用）"
-                                      "- [ ] 確認: Owner が Review で差分（マーカー内）を確認し、accept / 改稿 / rollback"]
+                                      "- [ ] 確認: Owner が Review で対象ノートを確認し、必要なら改稿指示 / Obsidian の履歴で復元"]
                           pins {:docs-mode "amend" :docs-target (str/join ", " (map :path targets)) :docs-plan run-id}]
                       (merge common {:status :ready :mode "amend" :kind nil :target (:path (first targets)) :required (vec (remove (set (:read-paths (:research sel))) (map :path targets)))
                                      :sections {"## Acceptance Criteria" acceptance "## Context" (mapv #(str "- " %) context) "## Plan" plan-items}
@@ -3855,7 +3934,7 @@
                                         "create" (str "守る制約: 原典ノートは変更しない / 新規案は `" folder "` に未承認ノート 1 件（既存ノートの上書きなし、名前・slug の衝突は拒否）/ 既存の人物・怪獣・組織の事実は変えず、原典に無い要素は新規案と明示 / 性的・露骨・残酷な描写なし / 出典は調査で読んだ資料だけ")
                                         "propose" (str "守る制約: " (link target) " の canon 本文は変更せず、末尾の『提案（未承認）" ticket-id "』節 1 つだけを追加 / 置換 / 既存の事実は変えず、出典は読んだ資料だけ")
                                         "守る制約: 対象ノートの指定節だけを票に書かれた事実で更新し、根拠が無ければ停止する（docs-sources の資料を読んだものだけを出典にする）")
-                                      "実行の流れ: この票を Ready に置き assignee を localllm に戻す → In Progress → Review（担当 boxp）。改稿は Review の票の Notes 末尾に指示を書いて assignee を localllm に戻す（Notes に新しい指示が無い再実行は Blocked で止まる）。rollback は Notes の localllm-rollback コマンド"]))
+                                      "実行の流れ: この票を Ready に置き assignee を localllm に戻す → In Progress → Review（担当 boxp）。改稿は Review の票の Notes 末尾に指示を書いて assignee を localllm に戻す（Notes に新しい指示が無い再実行は Blocked で止まる）。戻すなら Obsidian の履歴機能で戻す"]))
                 acceptance (case mode
                              "create" (vec (remove nil?
                                                    [(str "- [ ] `" folder "` に未承認の新規ノート 1 件が作成され（frontmatter `status: unapproved` / `localllm-proposal: true` / `ticket: " ticket-id "`）、票が Review で止まる")
@@ -4110,13 +4189,14 @@
 ;;
 ;; Pinned by the groom: `docs-mode: amend`, `docs-target: <paths>` and
 ;; `docs-plan: <groom run id>`. The run refuses to write when the plan is
-;; missing, names other targets, when a target changed since the plan (or since
-;; this ticket's last write), or when another ticket's unreviewed span is still
-;; in the note. The model sees the canon view (own spans stripped), may only
-;; append to the planned section / add the planned new section / replace one
-;; unique sentence inside the planned section, and every change is wrapped in
-;; this ticket's span markers. Facts, conflicts and questions go to a report in
-;; the run directory, never into the note or Notes.
+;; missing, names other targets, or when a target changed since the plan (or
+;; since this ticket's last write, found through the run audits). The model
+;; sees the note as it is, may only append to the planned section / add the
+;; planned new section / replace one unique sentence inside the planned
+;; section, and the change is saved as plain Markdown (BOXP-306: no markers,
+;; no accept step; a Review revision edits the text the previous run left).
+;; Facts, conflicts and questions go to a report in the run directory, never
+;; into the note or Notes.
 
 (def plan-id-pattern #"[A-Za-z0-9._-]{1,80}")
 
@@ -4186,7 +4266,7 @@
    :additionalProperties false})
 
 (def amend-research-guidance
-  (str "\n補足（この依頼は、Owner が確認した計画にある対象ノートの節への追記・編集です）: 書き足す内容が既存設定（世界の規則、年表、関係性、口調、他の人物・怪獣の設定）と矛盾しないよう、対象ノートに関係する資料と、依頼で名指しされた人物・事物のノートを read します。対象ノート自体は読み取り専用で表示されており（未確認の変更は除いた canon 本文）、index にもあるので read もできます。追記の前提にする既存設定が対象ノート自身にしか無い場合は、対象ノートの path を canon_facts の出典にしてかまいません。\n"))
+  (str "\n補足（この依頼は、Owner が確認した計画にある対象ノートの節への追記・編集です）: 書き足す内容が既存設定（世界の規則、年表、関係性、口調、他の人物・怪獣の設定）と矛盾しないよう、対象ノートに関係する資料と、依頼で名指しされた人物・事物のノートを read します。対象ノート自体は現在の本文がそのまま読み取り専用で表示されており、index にもあるので read もできます。追記の前提にする既存設定が対象ノート自身にしか無い場合は、対象ノートの path を canon_facts の出典にしてかまいません。\n"))
 
 ;; BOXP-302: a replace-text names the line it replaces by a line id. Gemma 4
 ;; reproduced a quoted dialogue line of the planned section character for
@@ -4282,7 +4362,7 @@
                              (str "- " path (if (seq section) (str " の節『" section "』") " （新しい節を 1 つ追加: heading はあなたが決める）")
                                   " — 予定差分: " outline))
                            plan-targets)) "\n\n"
-       "# 対象ノート（canon 本文、読み取り専用。このチケットの未確認の変更は除いてあります）\n"
+       "# 対象ノート（現在の本文、読み取り専用。このチケットが前回書いた内容があればそのまま含まれています）\n"
        (str/join "\n" (map (fn [{:keys [path]} text] (str "### " path "\n```markdown\n" (truncate-text text 12000) "\n```\n")) plan-targets target-texts)) "\n"
        ;; BOXP-302: the replaceable lines of each planned section, by id
        ;; (`line-lists` from `amend-line-lists`: one budget for all targets).
@@ -4296,7 +4376,7 @@
            (str "# 計画の節の行一覧（replace-text 用の行 ID。old_text には ID だけを書きます: 例 \"L3\"。見出し行・空行は置換できないため載せていません。一覧にある行は ID で、省略された行だけ原文で指定します）\n"
                 (str/join "\n" blocks) "\n")))
        (when previous
-         (str "# 前回の案（このチケットが前回書いた未確認の変更。canon ではなく、改稿の土台としてだけ使い、canon_facts の出典にしてはいけません。runner が置き換えます）\n```markdown\n" (truncate-text previous 6000) "\n```\n\n"))
+         (str "# 前回書いた内容（このチケットの前回の変更。対象ノートに既に反映済みで、上の本文に含まれています。改稿の土台としてだけ使い、canon_facts の出典にしてはいけません）\n```markdown\n" (truncate-text previous 6000) "\n```\n\n"))
        (when research
          (str "# 根拠（調査で読んだ資料、読み取り専用。canon_facts の source はここにある資料の path だけ）\n"
               (if (seq (:evidence research)) (str/join "\n" (map :block (:evidence research))) "（調査では何も読めませんでした）") "\n"
@@ -4305,7 +4385,7 @@
               "\n"))
        "# 指示\n"
        (if (= :revise action)
-         "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。前回の案を土台に Review 指示を優先して改稿し、改稿後の変更全体（changes / canon_facts / conflicts / questions）を出力してください。前回の変更は runner が取り除いたうえで今回の changes を適用します。"
+         "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。前回書いた内容は対象ノートに既に反映されているので、Review 指示を優先して、対象ノートの現在の本文を最小限に直す changes（前回書いた行の修正は replace-text、同じ内容を二重に追記しない）と canon_facts / conflicts / questions を出力してください。"
          "チケットの Summary / Acceptance Criteria / Context / Notes の依頼と上の計画にもとづき、対象ノートの節への追記・編集を changes として出力してください。")
        " 各 new_text は " (max 500 (- (:max-change-chars cfg) 500)) " 字以内、変更は合計 " (:max-changes cfg) " 件以内、canon_facts は要点だけにしてください。\n"))
 
@@ -4455,7 +4535,6 @@
                     (str/blank? (str new_text)) "new_text が空です"
                     (and (= "replace-text" op) (str/blank? (str old_text))) "replace-text の old_text が空です"
                     (and (not= "replace-text" op) (str/blank? (str heading))) "heading が空です"
-                    (str/includes? (str old_text) "<!-- localllm") "runner のマーカーを含む文の置換は拒否します"
                     (str/includes? (str new_text) "<!--") "new_text に HTML コメントを書くことは禁止です"
                     (forbidden-text-reason new_text) (forbidden-text-reason new_text)
                     (forbidden-text-reason heading) (forbidden-text-reason heading)
@@ -4484,17 +4563,17 @@
             ;; Positional (line id) replacements are applied first and bottom-up
             ;; so no earlier edit of the same note can shift the resolved line.
             ordered (concat (sort-by (comp - :line-index) (filter :line-index changes)) (remove :line-index changes))
+            ;; BOXP-306: the change is applied as plain Markdown, no marker.
             cleaned (mapv #(-> % (dissoc :line-id :bad-line-id) (update :new_text (fn [t] (str/trim (strip-md-headings (clean t)))))) ordered)
-            wrapped (mapv #(wrap-change ticket-id run-id %) cleaned)
             proposal-text (str/join "\n\n" (map (fn [{:keys [path op heading new_text]}] (str "（" path " / " op (when (seq heading) (str " / " heading)) "）\n" new_text)) cleaned))
             known-facts (mapv #(update % :fact clean) known-facts)
             conflicts (mapv clean conflicts)
             questions (mapv clean questions)]
         {:kind :proposal
          :proposal {:decision "apply" :reason "" :summary (sanitize-error (truncate-text (one-line (:summary parsed)) 400))
-                    :changes wrapped :sources (vec (distinct (map :source known-facts))) :creative? true}
+                    :changes cleaned :sources (vec (distinct (map :source known-facts))) :creative? true}
          :facts known-facts :proposal-text proposal-text :conflicts conflicts :questions questions
-         :amend {:changes (count wrapped) :ops (frequencies (map :op wrapped)) :line-ids line-ids :facts (count known-facts)
+         :amend {:changes (count cleaned) :ops (frequencies (map :op cleaned)) :line-ids line-ids :facts (count known-facts)
                  :facts-dropped (- (count facts) (count known-facts)) :conflicts (count conflicts) :questions (count questions)
                  :links-dropped @dropped :proposal-chars (count proposal-text)}}))))
 
@@ -4509,7 +4588,7 @@
           (str "# localllm amend report " ticket-id " / run " run-id "\n\n"
                "## 参照した既存設定（出典）\n\n"
                (if (seq facts) (str/join "\n" (map (fn [{:keys [fact source]}] (str "- " fact "（出典: " (link source) "）")) facts)) "- なし")
-               "\n\n## 書いた内容（マーカー内）\n\n" proposal-text
+               "\n\n## 書いた内容\n\n" proposal-text
                "\n\n## 矛盾・要確認\n\n" (bullets (concat conflicts (map #(str % "（自動検査）") (:conflicts verify))))
                "\n\n## 人への質問\n\n" (bullets questions) "\n"))
     (str path)))
@@ -4555,57 +4634,63 @@
                                             "\n同じ依頼について、理由を踏まえて修正した案を同じ JSON 形式で出力してください（計画の対象・節の範囲内で）。")})
         ready? (and (:ok? plan-r) (seq canon-roots) (= "target" (:decision plan)) (seq plan-paths) (= targets plan-paths))
         snap (when ready? (snapshot-targets cfg vault plan-paths))
-        span-info (when (:ok? snap)
-                    (mapv (fn [p] (let [t (get-in snap [:snapshots p :text]) ps (parse-spans t)]
-                                    {:path p :parse ps
-                                     :own (vec (filter #(= ticket-id (:ticket %)) (:spans ps)))
-                                     :others (vec (remove #(= ticket-id (:ticket %)) (:spans ps)))}))
-                          plan-paths))
-        malformed (first (filter #(not (:ok? (:parse %))) span-info))
-        foreign (first (filter #(seq (:others %)) span-info))
-        own-spans? (boolean (some #(seq (:own %)) span-info))
+        ;; BOXP-306: whether this ticket already wrote a planned target is read
+        ;; from the ticket's own run audits (the note carries no marker). The
+        ;; latest run that reached Review with the path among its applied
+        ;; notes, and only runs after the confirmed plan (an older plan's
+        ;; write is a different change).
+        prior-writes (when (:ok? snap)
+                       (into {} (keep (fn [p] (when-let [w (latest-applied-write run-dir p (:plan-id plan-r))] [p w])) plan-paths)))
+        own-write? (boolean (seq prior-writes))
         ;; A note that already carries this ticket's write is revised even when
-        ;; the card came from Ready again (Blocked → Ready): never two spans.
-        action (if own-spans? :revise action)
+        ;; the card came from Ready again (Blocked → Ready): never a second copy.
+        action (if own-write? :revise action)
         ;; Hash gate: an untouched target must still be what the groom saw; a
-        ;; target we wrote before must still be what the last run left.
-        stale (when (and (:ok? snap) (nil? malformed))
+        ;; target we wrote before must still be what the last run left (a hand
+        ;; edit after the write stops the run: Backlog → re-groom).
+        stale (when (:ok? snap)
                 (first (keep (fn [{:keys [path sha]}]
                                (let [current (get-in snap [:snapshots path :sha])
-                                     own (:own (first (filter #(= path (:path %)) span-info)))]
-                                 (if (seq own)
-                                   (let [prev-run (:run (first own))
-                                         prev-audit (when (re-matches plan-id-pattern (str prev-run))
-                                                      (read-edn (fs/path (fs/parent run-dir) prev-run "localllm-audit.edn") nil))
-                                         after (:after-sha256 (first (filter #(= path (:path %)) (:applied prev-audit))))]
-                                     (when (not= after current)
-                                       {:path path :why (str "前回の run " prev-run " の適用後に別の変更が入っています（またはその run の記録がありません）")}))
+                                     prior (get prior-writes path)]
+                                 (if prior
+                                   (when (not= (:after-sha256 prior) current)
+                                     {:path path :why (str "前回の run " (:run-id prior) " の適用後に別の変更が入っています")})
                                    (when (not= sha current)
                                      {:path path :why "groom 計画の時点から変更されています（同期または人手編集）"}))))
                              plan-targets)))
         view (when (:ok? snap)
-               (into {} (map (fn [p] [p (:text (strip-spans (get-in snap [:snapshots p :text]) #(= ticket-id (:ticket %))))]) plan-paths)))
-        snap' (when (:ok? snap)
-                (update snap :snapshots (fn [ss] (into {} (map (fn [[p s]] [p (assoc s :raw (:text s) :text (get view p))]) ss)))))
-        previous (when own-spans?
-                   (str/join "\n\n" (for [{:keys [path own]} span-info s own]
-                                      (str "（" path " / " (:op s) "）\n" (str/trim (subs (get-in snap [:snapshots path :text]) (:inner-start s) (:inner-end s)))))))
+               (into {} (map (fn [p] [p (get-in snap [:snapshots p :text])]) plan-paths)))
+        snap' snap
+        previous (when own-write?
+                   (let [texts (keep (fn [p] (previous-amend-text run-dir (:run-id (get prior-writes p)))) plan-paths)]
+                     (when (seq texts) (str/join "\n\n" (distinct texts)))))
         ;; Model consistency (codex review, same rule as create): without an
         ;; explicit `docs-model`, the run must use the model that wrote this
-        ;; ticket's spans last (or, before any write, the model of the groom
+        ;; ticket's change last (or, before any write, the model of the groom
         ;; plan the owner confirmed). A silently changed default is refused.
+        ;; The previous write may cover only some of the planned targets, so
+        ;; the model is taken from the writes that exist, not from the first
+        ;; target (codex review); writes by different models stop the run.
+        prior-models (when own-write? (vec (distinct (keep :model (vals prior-writes)))))
         expected-model (when (:ok? snap)
-                         (or (when own-spans? (latest-applied-model run-dir (first plan-paths)))
-                             (let [m (:model plan)] (when (and (string? m) (re-matches model-id-pattern m)) m))))
-        model-guard (when (and expected-model (not= :declared model-resolution) (not= expected-model (:model cfg)))
-                      {:category "localllm-model-mismatch"
-                       :reason (str "この票の計画 / 前回の変更は model " expected-model " で作られていますが、今回の run は docs-model が無く既定の " (:model cfg)
-                                    " になります。黙って切り替えないため停止しました。frontmatter に docs-model: " expected-model
-                                    " を書いて assignee を localllm に戻すか、意図的に変えるなら docs-model: " (:model cfg) " と明記してください")})
+                         (or (when (= 1 (count prior-models)) (first prior-models))
+                             (when (empty? prior-models)
+                               (let [m (:model plan)] (when (and (string? m) (re-matches model-id-pattern m)) m)))))
+        model-guard (when (:ok? snap)
+                      (cond
+                        (> (count prior-models) 1)
+                        {:category "localllm-model-mismatch"
+                         :reason (str "この票の前回の変更は対象ごとに異なる model（" (str/join ", " prior-models)
+                                      "）で書かれています。どのモデルで続けるか frontmatter の docs-model に明記して assignee を localllm に戻してください")}
+
+                        (and expected-model (not= :declared model-resolution) (not= expected-model (:model cfg)))
+                        {:category "localllm-model-mismatch"
+                         :reason (str "この票の計画 / 前回の変更は model " expected-model " で作られていますが、今回の run は docs-model が無く既定の " (:model cfg)
+                                      " になります。黙って切り替えないため停止しました。frontmatter に docs-model: " expected-model
+                                      " を書いて assignee を localllm に戻すか、意図的に変えるなら docs-model: " (:model cfg) " と明記してください")}))
         excluded-plan? (boolean (some #(excluded-path? % (:exclude-paths cfg)) plan-paths))
-        gate-ok? (and (:ok? snap) (nil? malformed) (nil? foreign) (nil? stale) (nil? model-guard) (not excluded-plan?))
-        ;; The planned target stays in the research corpus (its spans are
-        ;; stripped to the canon view like every other note): a model that
+        gate-ok? (and (:ok? snap) (nil? stale) (nil? model-guard) (not excluded-plan?))
+        ;; The planned target stays in the research corpus: a model that
         ;; re-reads the note it is about to amend must not be told the note
         ;; does not exist and give up for lack of evidence (real Qwen E2E,
         ;; BOXP-298). The target path is a valid canon_facts source either way.
@@ -4643,14 +4728,6 @@
 
       (not (:ok? snap))
       (finish :blocked (select-keys snap [:category :reason]))
-
-      malformed
-      (finish :blocked {:category "localllm-invalid-target"
-                        :reason (str (:path malformed) ": localllm のマーカーが壊れています（" (:reason (:parse malformed)) "）。手で直すか localllm-rollback で戻してください")})
-
-      foreign
-      (finish :blocked {:category "localllm-other-unreviewed"
-                        :reason (str (:path foreign) " に他の票（" (str/join ", " (distinct (map :ticket (:others foreign)))) "）の未確認の変更が残っています。先にその採否（localllm-accept / localllm-rollback）を決めてください")})
 
       stale
       (finish :blocked {:category "localllm-plan-stale"
@@ -4727,17 +4804,15 @@
                                 (let [staged (stage-proposal cfg snap' (:proposal interpreted))]
                                   (if-not (:ok? staged)
                                     {:kind :reject :category (:category staged) :reason (:reason staged)}
-                                    ;; The written file must carry well-formed
-                                    ;; spans of this ticket only (one generation).
-                                    (if-let [bad (first (keep (fn [{:keys [rel after]}]
-                                                                (let [{:keys [ok? spans reason]} (parse-spans after)]
-                                                                  (cond
-                                                                    (not ok?) (str rel ": " reason)
-                                                                    (some #(not= ticket-id (:ticket %)) spans) (str rel ": 他票のマーカーが混入")
-                                                                    (empty? spans) (str rel ": マーカーが残りませんでした")
-                                                                    :else nil)))
+                                    ;; Invariant (BOXP-306): the route never writes a
+                                    ;; review marker; a note that would gain one is
+                                    ;; refused rather than written.
+                                    (if-let [bad (first (keep (fn [{:keys [rel before after]}]
+                                                                (when (and (str/includes? after legacy-marker-prefix)
+                                                                           (not (str/includes? (or before "") legacy-marker-prefix)))
+                                                                  (str rel ": localllm マーカーを書き込もうとしました")))
                                                               (:files staged)))]
-                                      {:kind :reject :category "localllm-invalid-proposal" :reason (str "マーカーの検証に失敗: " bad)}
+                                      {:kind :reject :category "localllm-invalid-proposal" :reason bad}
                                       {:kind :accepted :staged staged}))))]
                   (case (:kind outcome)
                     :reject
@@ -4923,12 +4998,15 @@
             ;; Only notes the runner itself read may be cited; the ticket's
             ;; own note is not canon and never a source.
             known (set (:read-paths research))
-            ;; Collision candidates: the proposal root and, for a canon-folder
-            ;; destination, the unreviewed notes other tickets already saved
-            ;; there (excluded from the corpus, so not covered by it; codex review).
+            ;; Collision candidates: the proposal root (excluded from the
+            ;; corpus) and every note the route saved inside the chosen canon
+            ;; folder. Those are ordinary notes now (BOXP-306), but the
+            ;; declared `docs-sources` need not cover the folder, so they are
+            ;; listed here as well rather than relied on from the corpus
+            ;; (codex review).
             other-proposals (when (:ok? prepared)
                               (concat (list-proposal-notes cfg vault)
-                                      (when canon-folder (list-unreviewed-canon-notes cfg vault canon-folder (:docs-roots cfg)))))
+                                      (when canon-folder (list-route-canon-notes cfg vault canon-folder (:docs-roots cfg) (constantly true)))))
             ctx {:ticket-id ticket-id :run-id run-id :kind kind :own own :known known :research research
                  :corpus-notes (:notes corpus) :other-proposals other-proposals :folder canon-folder
                  :created (str (java.time.LocalDate/now))}]
@@ -5030,12 +5108,19 @@
                         (commit!)))))))))))))
 
 ;; ---------------------------------------------------------------------------
-;; Rollback (operator command)
+;; Write-integrity restore (runner internal) and legacy marker migration
 ;; ---------------------------------------------------------------------------
+;;
+;; BOXP-306: there is no operator rollback / accept any more. `rollback!` is
+;; kept for the runner itself: a run that wrote its notes but could not finish
+;; its lane transition (crash, failed Notes write) is put back to "nothing
+;; applied" from the run's own recovery journal, while the notes still carry
+;; exactly what the run wrote. Owners revert adopted text through Obsidian's
+;; history instead.
 
 (defn rollback!
   "Restore the files changed by a run when their current content still equals
-  what the run wrote. Returns a vector of {:path :status :reason}."
+  what the run wrote (runner recovery only). Returns a vector of {:path :status :reason}."
   [vault run-dir]
   (let [audit (read-edn (fs/path run-dir "localllm-audit.edn") nil)
         cfg (config)]
@@ -5049,100 +5134,97 @@
           [{:status :skipped :reason (:reason r)}]
           r)))))
 
-(defn- accept-created-note
-  "Frontmatter / banner of a canon-folder note the route created, with the
-  unreviewed marks removed (the text itself is kept)."
-  [text]
-  (let [lines (vec (str/split-lines text))
-        end (frontmatter-end lines)
-        fm (if end (subvec lines 0 (inc end)) [])
-        body (if end (subvec lines (inc end)) lines)
-        fm (vec (remove #(re-matches #"\s*(localllm-unreviewed:\s*true|status:\s*unapproved)\s*" %) fm))
-        body (vec (remove #(str/starts-with? (str/trim %) "> **未確認（localllm）**") body))]
-    (str (str/join "\n" (concat fm body)) "\n")))
+(defn- migration-roots
+  "Vault-relative folders the legacy marker migration may touch: the canon
+  roots and the write roots of this runner, minus the proposal root (its notes
+  keep their explicit `localllm-proposal` classification) and the read
+  exclusions. Never the vault root."
+  [cfg]
+  (vec (distinct (remove (fn [r] (or (= r vault-root-marker)
+                                     (= r (:proposal-root cfg))
+                                     (excluded-path? r (:exclude-paths cfg))))
+                         (concat (:canon-roots cfg) (:docs-roots cfg))))))
 
-(defn accept!
-  "Operator command (BOXP-296): adopt the unreviewed changes a run applied —
-  span markers removed (new text kept, replaced text forgotten), a created
-  note's `localllm-unreviewed` / `status: unapproved` / banner removed — when
-  every note still carries exactly what the run wrote. Returns a vector of
-  {:path :status :reason}. After accepting, `rollback!` of the same run is
-  refused (the content is no longer the run's)."
-  [vault run-dir]
-  (let [audit (read-edn (fs/path run-dir "localllm-audit.edn") nil)
-        cfg (config)
-        ticket-id (:ticket-id audit)]
-    (if-not (and audit (seq (:applied audit)) (= :review (:status audit)))
-      [{:status :nothing :reason "この run には Review まで到達した適用済みの変更がありません"}]
-      (let [r (with-write-lock (default-write-lock-path run-dir) (:write-lock-timeout-ms cfg)
-                (fn []
-                  (let [;; Phase 1 (no writes): every note must still be what the
-                        ;; run wrote. Phase 2 writes all or nothing, so a
-                        ;; multi-target run is never half adopted (codex review).
-                        planned
-                        (mapv (fn [{:keys [path after-sha256]}]
-                                (let [r (resolve-vault-path vault path (:docs-roots audit (:docs-roots cfg)))]
+(defn migrate-markers!
+  "One-off, deterministic migration of notes written before BOXP-306: every
+  `.md` under the migration roots that still carries a legacy span marker or
+  `localllm-unreviewed: true` gets the markers removed with the current (new)
+  text kept and the unreviewed frontmatter / banner dropped. Nothing else is
+  touched (no model, no cloud, no other note). Dry-run by default; with
+  `:apply? true` each note is re-read under the write lock and written
+  atomically only when its sha256 still equals the dry-run value (a hand edit
+  in between leaves the note alone). A note whose markers are nested, unclosed
+  or undecodable is reported and left unchanged. Returns {:roots :scanned
+  :results [{:path :status :reason :spans :unreviewed? :before-sha256
+  :after-sha256}]} with path / counts / hashes only."
+  [vault {:keys [apply? lock-path]}]
+  (let [cfg (config)
+        roots (migration-roots cfg)
+        opts {:exclude-paths (:exclude-paths cfg)}
+        enumerated (->> roots
+                        (mapcat (fn [root]
+                                  (let [abs (fs/path vault root)]
+                                    (when (fs/directory? abs {:nofollow-links true})
+                                      (->> (fs/glob abs "**.md" {:follow-links false})
+                                           (map #(str root "/" (fs/relativize abs %))))))))
+                        distinct
+                        sort
+                        vec)
+        plan (fn []
+               (vec (keep (fn [rel]
+                            (let [r (resolve-vault-path vault rel roots opts)]
+                              (cond
+                                (not (:ok? r)) nil ; symlink / excluded / hidden: not ours to touch, not reported as a note
+                                (not (:exists? r)) nil
+                                (> (or (size-nofollow (:abs r)) 0) (max-note-bytes cfg))
+                                {:path rel :status :skipped :reason "ノートが上限サイズを超えるため確認せず残しました"}
+                                :else
+                                (let [text (slurp-nofollow (:abs r))]
                                   (cond
-                                    (not (:ok? r)) {:path path :status :skipped :reason (:reason r)}
-                                    (not (:exists? r)) {:path path :status :skipped :reason "ファイルが存在しません"}
+                                    (not (legacy-marked? text)) nil
+                                    (proposal-note? text) {:path rel :status :skipped :reason "localllm-proposal の提案ノートは対象外です"}
                                     :else
-                                    (let [current (slurp-nofollow (:abs r))]
-                                      (if (not= after-sha256 (sha256 current))
-                                        {:path path :status :skipped :reason "run 適用後に別の更新が入っているため、そのままにしました（手で確認してください）"}
-                                        ;; A created note (or its later revision, op replace-note)
-                                        ;; carries the unreviewed frontmatter; an amended note
-                                        ;; carries spans. Decide by content, not by `created?`.
-                                        (let [unwrapped (unwrap-spans current ticket-id)
-                                              note? (proposal-note? unwrapped)
-                                              accepted (if note? (accept-created-note unwrapped) unwrapped)]
-                                          (if (= accepted current)
-                                            {:path path :status :unchanged :reason "未確認マーカーがありません"}
-                                            {:path path :status :accepted :abs (:abs r) :text accepted :before current
-                                             :reason (if note? "未確認の frontmatter / バナーを外しました" "マーカーを外して本文を採用しました")})))))))
-                              (:applied audit))
-                        blocked (filter #(= :skipped (:status %)) planned)
-                        strip-private (fn [p] (dissoc p :abs :text :before))
-                        results (if (seq blocked)
-                                  (mapv (fn [p] (if (= :skipped (:status p))
-                                                  p
-                                                  {:path (:path p) :status :skipped
-                                                   :reason (str "他のノート（" (str/join ", " (map :path blocked)) "）が採用できないため、この run の採用は全体を見送りました")}))
-                                        planned)
-                                  ;; Phase 2: write; a failure part-way restores
-                                  ;; the notes already written (while they still
-                                  ;; hold the accepted text), so acceptance is
-                                  ;; never left half done (codex review).
-                                  (let [written (atom [])
-                                        failure (try
-                                                  (doseq [{:keys [status abs text path]} planned
-                                                          :when (= :accepted status)]
-                                                    (atomic-write! abs text (path-guard vault path))
-                                                    (swap! written conj path))
-                                                  nil
-                                                  (catch Exception e (sanitize-error (.getMessage e))))]
-                                    (if-not failure
-                                      (mapv strip-private planned)
-                                      (let [kept (atom [])]
-                                        (doseq [{:keys [abs text before path]} planned
-                                                :when (contains? (set @written) path)]
-                                          (try
-                                            (if (= (sha256 text) (sha256 (slurp-nofollow abs)))
-                                              (atomic-write! abs before (path-guard vault path))
-                                              (swap! kept conj path))
-                                            (catch Exception _ (swap! kept conj path))))
-                                        (mapv (fn [{:keys [path] :as p}]
-                                                (cond
-                                                  (contains? (set @kept) path)
-                                                  {:path path :status :accepted :reason (str "採用後に別の更新が入ったため復元を見送りました（他のノートの書込失敗: " failure "）。手で確認してください")}
-                                                  (= :accepted (:status p))
-                                                  {:path path :status :skipped :reason (str "書込みに失敗したため、この run の採用を全体で見送り、書込み済みのノートは元に戻しました: " failure)}
-                                                  :else (strip-private p)))
-                                              planned)))))]
-                    (write-edn! (fs/path run-dir "localllm-accepted.edn") {:ticket-id ticket-id :run-id (fs/file-name run-dir) :at (now-str) :results results})
-                    results)))]
+                                    (let [m (migrate-legacy-text text)]
+                                      (if-not (:ok? m)
+                                        {:path rel :status :skipped :reason (str "形式を解釈できないため未変更: " (:reason m))
+                                         :before-sha256 (sha256 text)}
+                                        (if (= (:text m) text)
+                                          {:path rel :status :unchanged :reason "外すものがありません" :before-sha256 (sha256 text)}
+                                          {:path rel :status :planned :abs (:abs r) :before text :after (:text m)
+                                           :spans (:spans m) :unreviewed? (:unreviewed? m)
+                                           :before-sha256 (sha256 text) :after-sha256 (sha256 (:text m))}))))))))
+                          enumerated)))
+        strip-private (fn [p] (dissoc p :abs :before :after))
+        dry (plan)]
+    (if-not apply?
+      {:roots roots :scanned (count enumerated) :dry-run? true
+       :results (mapv #(-> % strip-private (update :status (fn [s] (if (= :planned s) :would-migrate s)))) dry)}
+      (let [lock (or lock-path (str (fs/path vault ".localllm-migrate.lock")))
+            r (with-write-lock lock (:write-lock-timeout-ms cfg)
+                (fn []
+                  ;; Deterministic black-box hook (unset in deployment): an outside
+                  ;; editor touches one planned note after the plan, before its write.
+                  (when-let [edited (System/getenv "CODEX_TASK_BOARD_TEST_EDIT_LOCALLLM_MIGRATION_TARGET")]
+                    (when-let [p (first (filter #(and (= :planned (:status %)) (= edited (:path %))) dry))]
+                      (spit (:abs p) "\n- HAND-EDIT-DURING-MIGRATION\n" :append true)))
+                  (mapv (fn [{:keys [status abs before after path] :as p}]
+                          (if (not= :planned status)
+                            (strip-private p)
+                            (try
+                              ;; Hash gate right before the write: the note must still be
+                              ;; what the dry run read, else it is left to the human.
+                              (let [current (slurp-nofollow abs)]
+                                (if (not= (sha256 current) (sha256 before))
+                                  (assoc (strip-private p) :status :skipped :reason "適用直前に別の編集が入ったため未変更（再実行してください）")
+                                  (do (atomic-write! abs after (path-guard vault path))
+                                      (assoc (strip-private p) :status :migrated :reason "マーカー / 未確認印を外し本文を保持"))))
+                              (catch Exception e
+                                (assoc (strip-private p) :status :skipped :reason (str "書込みに失敗: " (sanitize-error (.getMessage e))))))))
+                        dry)))]
         (if (and (map? r) (false? (:ok? r)))
-          [{:status :skipped :reason (:reason r)}]
-          r)))))
+          {:roots roots :scanned (count enumerated) :dry-run? false
+           :results (mapv #(assoc (strip-private %) :status :skipped :reason (:reason r)) dry)}
+          {:roots roots :scanned (count enumerated) :dry-run? false :results r})))))
 
 (defn- applied-mismatches
   "The applied entries whose current content is no longer what the run wrote
