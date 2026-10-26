@@ -38,9 +38,25 @@ RUN set -eux; \
 
 # obsidian-headless CLI (`ob`) for the vault sync sidecar. npm here is the pm-managed
 # Node (symlinked into /usr/local/bin by the upstream image).
-RUN npm_config_prefix="${OBSIDIAN_HEADLESS_HOME}" npm install -g "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}" \
-    && npm cache clean --force \
-    && "${OBSIDIAN_HEADLESS_HOME}/bin/ob" --version
+# better-sqlite3 (obsidian-headless dependency) needs a native binary. npm 12 in the
+# v0.22.x base skips dependency install scripts for global installs unless they are
+# allowed, so without --allow-scripts the module has no bindings file and `ob sync`
+# crash-loops (BOXP-313). Allow its install script (prebuild-install, falling back to
+# node-gyp with the base image's gcc/g++/make/python3), rebuild explicitly if that
+# still left no binary, and fail the build if the module cannot be loaded.
+RUN set -eux; \
+    npm_config_prefix="${OBSIDIAN_HEADLESS_HOME}" npm install -g --allow-scripts=better-sqlite3 --foreground-scripts "obsidian-headless@${OBSIDIAN_HEADLESS_VERSION}"; \
+    pkg="${OBSIDIAN_HEADLESS_HOME}/lib/node_modules/obsidian-headless"; \
+    check='const D=require("better-sqlite3"); new D(":memory:").prepare("select 1").get()'; \
+    if ! (cd "$pkg" && node -e "$check"); then \
+      gyp="$(ls /opt/hermes/tools/node-*/lib/node_modules/npm/node_modules/node-gyp/bin/node-gyp.js | head -1)"; \
+      (cd "$pkg/node_modules/better-sqlite3" && node "$gyp" rebuild --release); \
+    fi; \
+    rm -rf "$pkg/node_modules/better-sqlite3/build/Release/obj" "$pkg/node_modules/better-sqlite3/build/Release/.deps" \
+           "$pkg/node_modules/better-sqlite3/build/deps" "$HOME/.cache/node-gyp"; \
+    (cd "$pkg" && node -e "$check"); \
+    npm cache clean --force; \
+    "${OBSIDIAN_HEADLESS_HOME}/bin/ob" --version
 
 RUN set -eux; \
     tmp="$(mktemp -d)"; \

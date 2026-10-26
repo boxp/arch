@@ -77,3 +77,12 @@
 ## スコープ外
 
 - 全体 Renovate 監視漏れの定期棚卸し、広範パッケージ更新、automerge 方針変更、認証再発行、他サービス更新。
+
+## ロールアウト結果（2026-10-26 追記）
+
+- arch #14111 merge → image `sha-5da617d` が 08:19 UTC に rollout。config は 33 → 51 へ自動移行（`backups/config/*.pre-docker-migrate.*`）。
+- **障害 1（gateway 停止ループ、08:19〜08:50 UTC）**: `logs/gateway-exit-diag.log` に毎回 `asyncio.run.SystemExit: Refusing to bind dashboard … dashboard.public_url is set … no auth providers are registered`。
+  v0.22.x は dashboard ルートを gateway プロセス自身が持ち、`HERMES_DASHBOARD_PUBLIC_URL`（operator 宣言の外部 URL）があると auth gate が有効になる。auth provider が無いと **gateway 自体**が終了する（`HERMES_DASHBOARD=false` でも同じ）。
+  対処: lolice #887（dashboard off、効果なし）→ #888（`HERMES_DASHBOARD_PUBLIC_URL` 削除）で復旧 → #889 で dashboard を loopback + Cloudflare Access 構成（更新前と同じ姿勢、public URL 無し）で再有効化。Hermes 側 auth provider（basic auth / OAuth）の追加は新規認証情報のため別承認。
+- **障害 2（obsidian-sync サイドカー CrashLoop）**: npm 12（v0.22.x base の pm 管理 Node 26 同梱）は global install の依存 install script を既定で実行しないため、better-sqlite3 の bindings が無く `ob sync` が落ちる。対処: `npm install -g --allow-scripts=better-sqlite3`（prebuild-install が ABI 147 の prebuilt を取得、無ければ node-gyp fallback）+ 読み込み検証をビルドに追加。
+- 学び: 上流 base の major 更新時は (1) gateway 再起動ループは `logs/gateway-exit-diag.log` を最初に見る、(2) 初回 rollout 前に `kustomize` の全 env と config.yaml を新版の security gate（dashboard auth、API server key 等）と照合する、(3) サイドカーのネイティブ依存（better-sqlite3）を `ob --version` ではなく実ロードで検証する。
