@@ -44,3 +44,16 @@ resource "aws_ssm_parameter" "even_g2_lab_tunnel_token" {
   type        = "SecureString"
   value       = sensitive(data.cloudflare_zero_trust_tunnel_cloudflared_token.even_g2_lab.token)
 }
+
+# BOXP-318: the private hostname route above never became reachable from WARP
+# clients (Gateway logs show the query answered without an initial resolved IP,
+# and cloudflared would resolve the hostname itself at L4 instead of using the
+# ingress rule). Route the Service ClusterIP through this tunnel instead, matching
+# the proven WARP -> tunnel -> private IP path used by codex-workspace.
+# The ClusterIP is pinned in boxp/lolice argoproj/even-g2-lab/service.yaml.
+resource "cloudflare_zero_trust_tunnel_cloudflared_route" "even_g2_main" {
+  account_id = var.account_id
+  tunnel_id  = cloudflare_zero_trust_tunnel_cloudflared.even_g2_lab.id
+  network    = "10.104.181.159/32"
+  comment    = "lolice even-g2-main ClusterIP for WARP access"
+}
