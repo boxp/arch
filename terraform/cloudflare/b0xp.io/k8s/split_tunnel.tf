@@ -74,6 +74,10 @@ resource "cloudflare_zero_trust_device_default_profile" "warp_include" {
       address     = "192.168.10.108/32"
       description = "palserver-2"
     },
+    {
+      address     = "10.104.181.159/32"
+      description = "even-g2-main"
+    },
   ]
 }
 
