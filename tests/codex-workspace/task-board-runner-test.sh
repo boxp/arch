@@ -169,17 +169,30 @@ if [[ "$1 $2" == "pr view" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9
   fi
   draft_var="GH_FAKE_IS_DRAFT_${pr_number}"
   merge_var="GH_FAKE_MERGE_STATE_${pr_number}"
+  state_var="GH_FAKE_PR_STATE_${pr_number}"
   draft="${GH_FAKE_IS_DRAFT:-false}"
   merge_state="${GH_FAKE_MERGE_STATE:-CLEAN}"
+  pr_state="${GH_FAKE_PR_STATE:-OPEN}"
   if [[ -n "${!draft_var:-}" ]]; then
     draft="${!draft_var}"
   fi
   if [[ -n "${!merge_var:-}" ]]; then
     merge_state="${!merge_var}"
   fi
+  if [[ -n "${!state_var:-}" ]]; then
+    pr_state="${!state_var}"
+  fi
+  # Real GitHub returns mergeStateStatus=UNKNOWN (and a mergedAt) for merged PRs.
+  merged_at="null"
+  if [[ "${pr_state}" == "MERGED" ]]; then
+    merged_at='"2026-10-22T10:50:58Z"'
+    merge_state="UNKNOWN"
+  fi
   cat <<JSON
 {
   "url": "${3}",
+  "state": "${pr_state}",
+  "mergedAt": ${merged_at},
   "isDraft": ${draft},
   "mergeStateStatus": "${merge_state}",
   "statusCheckRollup": ${checks}
@@ -1985,6 +1998,85 @@ test_review_with_behind_merge_state_times_out() {
   assert_file_not_contains "${vault}/Tickets/BOXP-409.md" 'mergeStateStatus=BEHIND'
 }
 
+test_review_with_merged_pr_skips_gates() {
+  local tmp vault state bin prompt_log summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompts.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-420|BOXP-420: merged pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-420 in-progress codex boxp/example
+
+  # Merged PRs report mergeStateStatus=UNKNOWN; without the state check the gate
+  # would poll until this timeout and fail with gate=mergeability.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_PROMPT_LOG="${prompt_log}" GH_FAKE_PR_STATE=MERGED CODEX_FAKE_MESSAGE=$'Merged PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-merged-pr.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-420\|BOXP-420: merged pr\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-420.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-420.md" 'Review gates passed\. Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123\.'
+  summary="$(find "${state}/runs/BOXP-420" -name summary.edn -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" ':ok\? true'
+  assert_file_contains "${summary}" ':merged-pr-urls \["https://github.com/boxp/example/pull/123"\]'
+  assert_file_contains "${summary}" ':checked-pr-urls \[\]'
+  if [[ -f "${prompt_log}" ]] && grep -q '^CODEX_REVIEW_GATE$' "${prompt_log}"; then
+    fail "codex review should not run for a merged PR"
+  fi
+}
+
+test_review_with_none_marker_and_merged_pr_moves_review() {
+  local tmp vault state bin summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-421|BOXP-421: none plus merged]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-421 in-progress codex boxp/example
+
+  # BOXP-270 regression: the final message references already-merged PRs and
+  # declares TASK_BOARD_REVIEW_PR: none. PR URLs still win over the marker, but
+  # merged PRs must not stall the gate until the timeout.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 GH_FAKE_PR_STATE=MERGED CODEX_FAKE_MESSAGE=$'Deployed https://github.com/boxp/example/pull/123 and https://github.com/boxp/example/pull/456 earlier.\nTASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-none-merged.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-421\|BOXP-421: none plus merged\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-421.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-421.md" 'Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123, https://github.com/boxp/example/pull/456\.'
+  assert_file_not_contains "${vault}/Tickets/BOXP-421.md" 'Review gate failed'
+  summary="$(find "${state}/runs/BOXP-421" -name summary.edn -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" ':merged-pr-urls \["https://github.com/boxp/example/pull/123" "https://github.com/boxp/example/pull/456"\]'
+}
+
+test_review_with_open_and_merged_prs_gates_open_only() {
+  local tmp vault state bin prompt_log summary
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompts.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-422|BOXP-422: open and merged]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-422 in-progress codex boxp/example
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_PROMPT_LOG="${prompt_log}" GH_FAKE_PR_STATE_123=MERGED CODEX_FAKE_MESSAGE=$'Context: https://github.com/boxp/example/pull/123 (merged)\nCreated PR: https://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-open-and-merged.out
+
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-422\|BOXP-422: open and merged\]\].*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-422.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-422.md" 'Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123\.'
+  summary="$(find "${state}/runs/BOXP-422" -name summary.edn -print | sort | tail -n 1)"
+  assert_file_contains "${summary}" ':checked-pr-urls \["https://github.com/boxp/example/pull/456"\]'
+  assert_file_contains "${summary}" ':merged-pr-urls \["https://github.com/boxp/example/pull/123"\]'
+  assert_file_contains "${prompt_log}" '^PR: https://github.com/boxp/example/pull/456$'
+  assert_file_not_contains "${prompt_log}" '^PR: https://github.com/boxp/example/pull/123$'
+}
+
 test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes() {
   local tmp vault state bin diagnostic
   tmp="$(mktemp -d)"
@@ -3187,6 +3279,9 @@ test_no_ci_repo_requires_clean_merge_state
 test_canonical_path_hash_symlink_isolation
 test_review_with_draft_pr_is_retried
 test_review_with_behind_merge_state_times_out
+test_review_with_merged_pr_skips_gates
+test_review_with_none_marker_and_merged_pr_moves_review
+test_review_with_open_and_merged_prs_gates_open_only
 test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes
 test_review_gate_retry_limit_blocks
 test_review_gate_retry_limit_is_scoped_to_failure_reason
