@@ -11,6 +11,7 @@ unset CODEX_TASK_BOARD_FABLE_EXTRA_ARGS
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
 HELPER="${ROOT_DIR}/docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
+export TASK_BOARD_DELEGATION_HELPER="${ROOT_DIR}/docker/codex-workspace/task-board/delegate.py"
 
 fail() {
   echo "error: $*" >&2
@@ -69,6 +70,9 @@ ticket="$(sed -n 's/^Ticket: //p' "${prompt}" | head -n 1)"
 if [[ -n "${CODEX_FAKE_PROMPT_LOG:-}" ]]; then
   cat "${prompt}" >>"${CODEX_FAKE_PROMPT_LOG}"
 fi
+if grep -q 'Delegation contract:' "${prompt}"; then
+  python3 "${TASK_BOARD_DELEGATION_HELPER}" exempt small-task
+fi
 mkdir -p "$(dirname "${last_message}")"
 if grep -q '^CODEX_REVIEW_GATE$' "${prompt}"; then
   printf '%s\n' "${CODEX_FAKE_REVIEW_MESSAGE:-CODEX_REVIEW_RESULT: clean}" >"${last_message}"
@@ -105,6 +109,13 @@ if [[ -n "${CLAUDE_FAKE_EXECUTABLE_LOG:-}" ]]; then
 fi
 
 prompt="$(cat)"
+if [[ "${prompt}" == *'Delegation contract:'* ]]; then
+  case "${TEST_DELEGATION_MODE:-exempt}" in
+    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run || true ;;
+    missing) ;;
+    *) python3 "${TASK_BOARD_DELEGATION_HELPER}" exempt small-task ;;
+  esac
+fi
 ticket="$(printf '%s\n' "${prompt}" | sed -n 's/^Ticket: //p' | head -n 1)"
 if [[ -n "${CLAUDE_FAKE_ARG_LOG_DIR:-}" ]]; then
   mkdir -p "${CLAUDE_FAKE_ARG_LOG_DIR}"
@@ -356,6 +367,8 @@ test_fable_assignee_runs_via_claude() {
   assert_file_contains "${prompt_log}" 'gpt-6-astra'
   assert_file_contains "${prompt_log}" 'codex-astra'
   assert_file_contains "${prompt_log}" 'Delegate long investigation, implementation, file editing, and test execution to Codex'
+  assert_file_contains "${prompt_log}" 'If delegation is unavailable, report blocked'
+  assert_file_contains "${prompt_log}" 'Do not fall back to another API key'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-150\|BOXP-150: fable\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-150.md" '^status: done$'
   summary="$(find "${state}/runs/BOXP-150" -name summary.edn -print | sort | tail -n 1)"
@@ -389,6 +402,7 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
     esac
     write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: ${assignee}]] #ticket status::in-progress"
     write_ticket "${vault}" "${ticket}" in-progress "${assignee}"
+    : > "${prompt_log}"
 
     PATH="${path_bin}:$PATH" \
       CODEX_TASK_BOARD_CLAUDE_BIN="${pinned_bin}/claude" \
@@ -403,6 +417,19 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
     assert_file_not_contains "${args_dir}/${ticket}.log" '--agent'
     assert_file_contains "${prompt_log}" "^Task Board assignee/agent: ${assignee}$"
     assert_file_contains "${prompt_log}" 'Claude Code routing policy'
+    case "${assignee}" in
+      claude-fable|claude-opus)
+        assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, file editing, and test execution to Codex'
+        assert_file_contains "${prompt_log}" 'gpt-6.1-terra'
+        assert_file_contains "${prompt_log}" 'Retain final judgment and verify delegated results'
+        assert_file_contains "${prompt_log}" 'If delegation is unavailable, report blocked'
+        assert_file_contains "${prompt_log}" 'Do not fall back to another API key'
+        ;;
+      claude-sonnet)
+        assert_file_not_contains "${prompt_log}" 'Delegate independent investigation, implementation, file editing, and test execution to Codex'
+        ;;
+    esac
+    assert_file_not_contains "${prompt_log}" 'Fable routing policy'
     assert_file_contains "${prompt_log}" "~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note ${ticket}"
     assert_run_summary_contains "${state}" "${ticket}" ":agent \"${assignee}\""
     assert_run_summary_contains "${state}" "${ticket}" ':status :succeeded'
@@ -611,6 +638,8 @@ test_codex_sol_assignee_includes_delegation_policy() {
   assert_file_contains "${prompt_log}" 'High-cost model routing policy'
   assert_file_contains "${prompt_log}" 'You are the codex-sol high-cost entry point'
   assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, and verification to lower-cost models whenever practical'
+  assert_file_contains "${prompt_log}" 'If delegation is unavailable, report blocked'
+  assert_file_contains "${prompt_log}" 'Do not fall back to another API key'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-152\|BOXP-152: codex-sol\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-152.md" '^status: done$'
   summary="$(find "${state}/runs/BOXP-152" -name summary.edn -print | sort | tail -n 1)"
@@ -640,6 +669,8 @@ test_codex_full_assignee_includes_delegation_policy() {
   assert_file_contains "${prompt_log}" 'High-cost model routing policy'
   assert_file_contains "${prompt_log}" 'You are the codex-full high-cost entry point'
   assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, and verification to lower-cost models whenever practical'
+  assert_file_contains "${prompt_log}" 'If delegation is unavailable, report blocked'
+  assert_file_contains "${prompt_log}" 'Do not fall back to another API key'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-153\|BOXP-153: codex-full\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-153.md" '^status: done$'
   summary="$(find "${state}/runs/BOXP-153" -name summary.edn -print | sort | tail -n 1)"
@@ -2382,6 +2413,8 @@ test_codex_astra_assignee_includes_delegation_policy() {
     assert_file_contains "${prompt_log}" 'You are the '"${assignee}"' top-tier entry point'
     assert_file_contains "${prompt_log}" 'gpt-6-astra'
     assert_file_contains "${prompt_log}" 'Aggressively delegate to lower-cost models'
+    assert_file_contains "${prompt_log}" 'If delegation is unavailable, report blocked'
+    assert_file_contains "${prompt_log}" 'Do not fall back to another API key'
     assert_file_contains "${args_log}" "exec.*--model gpt-6-astra"
     assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-160\|BOXP-160: codex-astra\]\].*status::done'
     assert_file_contains "${vault}/Tickets/BOXP-160.md" '^status: done$'
@@ -3226,6 +3259,52 @@ test_outbox_disabled_by_env() {
 }
 
 test_parallel_codex_runs
+test_delegation_gate_end_to_end() {
+  local tmp vault state bin mode ticket summary
+  for mode in success failed missing; do
+    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    mkdir -p "${bin}" "${tmp}/codex-home/sessions"
+    make_fake_claude "${bin}"
+    cat >"${bin}/codex" <<'FAKE'
+#!/usr/bin/env python3
+import json, os, pathlib, sys
+pathlib.Path(os.environ['TEST_CHILD_ARGS']).write_text(json.dumps(sys.argv))
+ident = '11111111-1111-4111-8111-111111111111'
+model = sys.argv[sys.argv.index('--model') + 1]
+path = pathlib.Path(os.environ['CODEX_HOME']) / 'sessions' / ('rollout-' + ident + '.jsonl')
+events = [{'type':'session_meta','payload':{'id':ident}}, {'type':'turn_context','payload':{'model':model}}, {'type':'event_msg','payload':{'type':'task_complete'}}]
+path.write_text(''.join(json.dumps(x) + '\n' for x in events))
+print(json.dumps({'type':'thread.started','thread_id':ident}))
+print(json.dumps({'type':'turn.completed'}))
+sys.exit(1 if os.environ['TEST_CHILD_FAILURE'] == 'true' else 0)
+FAKE
+    chmod +x "${bin}/codex"
+    ticket=BOXP-999
+    write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: delegation]] #ticket status::in-progress"
+    write_ticket "${vault}" "${ticket}" in-progress fable
+    PATH="${bin}:$PATH" CODEX_HOME="${tmp}/codex-home" \
+      CODEX_TASK_BOARD_BYPASS_APPROVALS=false CLAUDE_FAKE_ARG_LOG="${tmp}/parent-args" TEST_CHILD_ARGS="${tmp}/child-args" \
+      TEST_DELEGATION_MODE="$(if [[ "${mode}" == missing ]]; then echo missing; else echo run; fi)" \
+      TEST_CHILD_FAILURE="$(if [[ "${mode}" == failed ]]; then echo true; else echo false; fi)" \
+      CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >/dev/null
+    summary="$(find "${state}/runs/${ticket}" -name summary.edn -print | head -n 1)"
+    if [[ "${mode}" == success ]]; then
+      assert_file_contains "${summary}" ':status :succeeded'
+      assert_file_contains "${tmp}/parent-args" "--add-dir $(dirname "${summary}")"
+      python3 - "${tmp}/child-args" "${vault}" <<'CHECK'
+import json, sys
+args = json.load(open(sys.argv[1]))
+assert sys.argv[2] in [args[i + 1] for i, arg in enumerate(args) if arg == '--add-dir']
+CHECK
+    else
+      assert_file_contains "${summary}" ':status :blocked'
+      assert_file_contains "${summary}" ':exit-code 1'
+      assert_file_not_contains "${vault}/Tickets/${ticket}.md" '^status: done$'
+    fi
+  done
+}
+
+test_delegation_gate_end_to_end
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
 test_fable_model_environment_is_legacy_only
