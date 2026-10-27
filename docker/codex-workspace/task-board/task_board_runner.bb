@@ -2057,7 +2057,7 @@
 
                    (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (into (mapcat (fn [dir] ["--add-dir" dir])
-                                 (cons (vault) (workspace-add-dirs workspace))))
+                                 (concat [(vault) (str dir)] (workspace-add-dirs workspace))))
 
                    true
                    (into (claude-model-args agent)))
@@ -2070,7 +2070,7 @@
 
                    (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
-                          "--add-dir" (vault)])
+                          "--add-dir" (vault) "--add-dir" (str dir)])
 
                    (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
@@ -2084,7 +2084,9 @@
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
                                               :out (io/file (str stdout-path))
                                               :err (io/file (str stderr-path))
-                                              :extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path}}
+                                              :extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path
+                                                          "TASK_BOARD_DELEGATION_ADD_DIRS" (json/generate-string
+                                                                                           (vec (cons (vault) (workspace-add-dirs workspace))))}}
                                        (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
           _ (register-agent-process! run (:proc proc))

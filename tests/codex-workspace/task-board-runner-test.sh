@@ -3268,6 +3268,7 @@ test_delegation_gate_end_to_end() {
     cat >"${bin}/codex" <<'FAKE'
 #!/usr/bin/env python3
 import json, os, pathlib, sys
+pathlib.Path(os.environ['TEST_CHILD_ARGS']).write_text(json.dumps(sys.argv))
 ident = '11111111-1111-4111-8111-111111111111'
 model = sys.argv[sys.argv.index('--model') + 1]
 path = pathlib.Path(os.environ['CODEX_HOME']) / 'sessions' / ('rollout-' + ident + '.jsonl')
@@ -3282,12 +3283,19 @@ FAKE
     write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: delegation]] #ticket status::in-progress"
     write_ticket "${vault}" "${ticket}" in-progress fable
     PATH="${bin}:$PATH" CODEX_HOME="${tmp}/codex-home" \
+      CODEX_TASK_BOARD_BYPASS_APPROVALS=false CLAUDE_FAKE_ARG_LOG="${tmp}/parent-args" TEST_CHILD_ARGS="${tmp}/child-args" \
       TEST_DELEGATION_MODE="$(if [[ "${mode}" == missing ]]; then echo missing; else echo run; fi)" \
       TEST_CHILD_FAILURE="$(if [[ "${mode}" == failed ]]; then echo true; else echo false; fi)" \
       CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >/dev/null
     summary="$(find "${state}/runs/${ticket}" -name summary.edn -print | head -n 1)"
     if [[ "${mode}" == success ]]; then
       assert_file_contains "${summary}" ':status :succeeded'
+      assert_file_contains "${tmp}/parent-args" "--add-dir $(dirname "${summary}")"
+      python3 - "${tmp}/child-args" "${vault}" <<'CHECK'
+import json, sys
+args = json.load(open(sys.argv[1]))
+assert sys.argv[2] in [args[i + 1] for i, arg in enumerate(args) if arg == '--add-dir']
+CHECK
     else
       assert_file_contains "${summary}" ':status :blocked'
       assert_file_contains "${summary}" ':exit-code 1'

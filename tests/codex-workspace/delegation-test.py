@@ -24,6 +24,10 @@ class Contract(unittest.TestCase):
         self.fake.write_text('''#!/usr/bin/env python3
 import json, os, pathlib, sys
 assert not os.environ.get("OPENAI_API_KEY")
+assert not os.environ.get("TASK_BOARD_DELEGATION_EVIDENCE")
+assert not os.environ.get("TASK_BOARD_DELEGATION_ADD_DIRS")
+if os.environ.get("TEST_ARGUMENTS_FILE"):
+    pathlib.Path(os.environ["TEST_ARGUMENTS_FILE"]).write_text(json.dumps(sys.argv))
 model = sys.argv[sys.argv.index("--model") + 1]
 id = "11111111-1111-4111-8111-111111111111"
 path = pathlib.Path(os.environ["CODEX_HOME"]) / "sessions" / ("rollout-" + id + ".jsonl")
@@ -44,6 +48,18 @@ sys.exit(int(os.environ.get("CHILD_EXIT", "0")))
         self.assertEqual(self.call('verify'), 0)
         self.env['CODEX_TASK_BOARD_MODEL'] = 'another-model'
         self.assertNotEqual(self.call('verify'), 0)
+    def test_sandbox_add_dirs(self):
+        args_file = Path(self.tmp.name) / 'args.json'
+        self.env.update(CODEX_TASK_BOARD_BYPASS_APPROVALS='false',
+                        TASK_BOARD_DELEGATION_ADD_DIRS=json.dumps(['/vault with spaces', '/git/common']),
+                        TEST_ARGUMENTS_FILE=str(args_file))
+        self.assertEqual(self.call('run'), 0)
+        args = json.loads(args_file.read_text())
+        self.assertEqual([args[i + 1] for i, arg in enumerate(args) if arg == '--add-dir'],
+                         ['/vault with spaces', '/git/common'])
+        self.assertIn('workspace-write', args)
+        self.assertNotIn('--dangerously-bypass-approvals-and-sandbox', args)
+
     def test_failure_modes(self):
         self.assertNotEqual(self.call('verify'), 0)
         for key, value in [('CHILD_EXIT', '1'), ('COMPLETE', 'no'), ('ACTUAL_MODEL', 'wrong')]:

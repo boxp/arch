@@ -81,6 +81,7 @@ def main():
     for key in ('OPENAI_API_KEY', 'CODEX_API_KEY', 'OPENAI_ADMIN_KEY'):
         env.pop(key, None)
     env.pop('TASK_BOARD_DELEGATION_EVIDENCE', None)
+    add_dirs_json = env.pop('TASK_BOARD_DELEGATION_ADD_DIRS', '[]')
     prompt = sys.stdin.read() + '\nDo not delegate recursively or invoke the Task Board delegation helper.\n'
     def heartbeat(done):
         while not done.wait(30):
@@ -113,16 +114,22 @@ def main():
             except ProcessLookupError:
                 pass
     try:
-        permissions = (['--dangerously-bypass-approvals-and-sandbox']
-                       if env.get('CODEX_TASK_BOARD_BYPASS_APPROVALS', 'true') == 'true'
-                       else ['--sandbox', env.get('CODEX_TASK_BOARD_SANDBOX', 'workspace-write')])
+        if env.get('CODEX_TASK_BOARD_BYPASS_APPROVALS', 'true') == 'true':
+            permissions = ['--dangerously-bypass-approvals-and-sandbox']
+        else:
+            add_dirs = json.loads(add_dirs_json)
+            if not isinstance(add_dirs, list) or not all(isinstance(x, str) and x for x in add_dirs):
+                raise ValueError('invalid delegation directories')
+            permissions = ['--sandbox', env.get('CODEX_TASK_BOARD_SANDBOX', 'workspace-write')]
+            for directory in add_dirs:
+                permissions.extend(['--add-dir', directory])
         child = subprocess.Popen(['codex', 'exec', '--json', '--model', model(),
                                   '-c', 'forced_login_method="chatgpt"', '-c', 'model_provider="openai"',
                                   *permissions, '--skip-git-repo-check', '-'],
                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  text=True, env=env)
         stdout, stderr = child.communicate(input=prompt, timeout=DELEGATION_TIMEOUT_SECONDS)
-    except (OSError, subprocess.TimeoutExpired):
+    except (OSError, ValueError, subprocess.TimeoutExpired):
         stop_child()
         if child is not None:
             child.communicate()
