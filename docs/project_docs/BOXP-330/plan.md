@@ -38,7 +38,7 @@ Owner/admin と workload（service token 端末）の到達範囲は変えない
 
 Owner 兼 member の場合: Owner の email は list に入らないので、Owner の扱いが優先される。service token 端末には user email が無いので、list に一致しない。
 
-## 段階 2（別 PR）: member 用 device profile
+## 段階 2（本 PR の続き。別 PR）: member 用 device profile
 
 `identity.email in $lolice-members` に一致する custom profile を作り、Include をゲーム /32 と team domain（boxp.cloudflareaccess.com。BOXP-328 の再認証ループ対策）だけにする。目的は、一般のインターネット通信と非ゲーム宛ての通信を WARP に載せないこと（routing の話であり、認可は段階 1 の Gateway で担保する）。
 
@@ -59,3 +59,8 @@ Owner 兼 member の場合: Owner の email は list に入らないので、Own
 1. 通常: 2 つの Gateway policy を `enabled = false` にする PR、または本 PR の revert（list は残してよい）。
 2. 緊急: Zero Trust dashboard で 2 つの policy を disable し、24 時間以内に Terraform 側を追従させる。
 3. 権限を広げる方向の rollback（list の削除や member の一括除外）は、原因を特定してから行う。
+
+## 適用記録
+
+- 段階 1: boxp/arch#14171 を merge（9efe6e4）。apply run 40460861082 が成功（k8s 3 add/1 change、portal Worker を更新）。post-apply の check 警告は無し（enrollment policy の member は全員 list に入っている）。
+- 段階 2: member 用 custom profile（precedence 100、match `identity.email in $lolice-members`、Include はゲーム /32 ×4 と team domain）。client 挙動の設定は default profile から引き継ぐ。Rollback は `enabled = false` にするか revert する（member は default profile に戻るが、認可は Gateway で維持される）。
