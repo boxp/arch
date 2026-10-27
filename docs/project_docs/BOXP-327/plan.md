@@ -2,7 +2,7 @@
 
 ## 目的と範囲
 
-github-comment v6.4.2 の旧署名asset取得404を解消し、署名・checksum検証を維持する。開始mainは e8fb485ffd81abc42c2ec2e02ddf4fe8f53553b7、既存PR #14166のheadは44884eddb8228e44681f89b4bce4eb3a42423f27。既存PRへ修復を統合し重複PRは作らない。
+github-comment v6.4.2 の旧署名asset取得404を解消し、署名・checksum検証を維持する。開始mainは e8fb485ffd81abc42c2ec2e02ddf4fe8f53553b7、既存PR #14166のheadは44884eddb8228e44681f89b4bce4eb3a42423f27。修復本体は既存PR #14166へ統合する。pull_request_targetがbase mainのworkflowを使うため、信頼済みregistry定義とbase由来policyの登録を先行PRとして通常mergeし、その後に修復本体を再検証する。
 
 ## 実施計画
 
@@ -10,8 +10,9 @@ github-comment v6.4.2 の旧署名asset取得404を解消し、署名・checksum
 2. 上流未対応のため既存local registryへ対象package定義だけを複製し、v6.4.2以降をbundleに変更する。旧版override、identity/issuer/repository/tag制約とSHA256検証を維持する。
    実行時に必要な既存aqua policyをgithub-comment使用5箇所で登録する。policyの標準registry条件には既存の固定SHAを明示して、semver判定による標準package拒否を避ける。GitHub token権限・secret・保護は変更しない。
 3. 隔離環境で旧構成404、新構成の実installとchecksum生成、全6platform、旧v6.4.1とghalint v1.5.7の回帰を確認する。正しい署名の成功と誤identity/issuer/repository/tag・改変digest/bundleの拒否を確認する。
-4. 対象限定CIで同障害を継続検出する。独立差分review、既存PRの最新head CI、通常mergeを経てmainで再検証する。
-5. Obsidian Projects/aqua-checksum-pipeline/repair-summary.mdへ変更・検証・PR/CI/mergeの証拠と未確認事項を記録する。
+4. 初回修復head 1749d4f55のrun 40451217999ではchecksum更新は成功したが、base mainのworkflowにpolicy登録がなく実行ジョブが拒否された。独立reviewでPR由来policy/registryの自動承認を禁止する指摘を受け、実行jobはbase SHA（pushではgithub.sha）のregistry/policyを別checkoutして配置してから登録する。先行PRにはpull_request_target用4箇所とbundle対応registry/policy定義を含め、本体importはv6.4.1標準registryのまま通常mergeする。pull_requestで新workflowを直接実行するplan-ansibleの1箇所は、信頼済みpolicyがbaseへ入った後に修復本体へ含める。PR由来の任意ローカル定義へwrite tokenを渡す対象を広げない。元PRへ最新mainを通常mergeして新head CIを確認する。
+5. 対象限定CIで同障害を継続検出する。独立差分review、既存PRの最新head CI、通常mergeを経てmainで再検証する。
+6. Obsidian Projects/aqua-checksum-pipeline/repair-summary.mdへ変更・検証・PR/CI/mergeの証拠と未確認事項を記録する。
 
 ## 境界とrollback
 

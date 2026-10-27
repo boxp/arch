@@ -57,6 +57,24 @@ jobs:
           repositories: >-
             []
 
+      # Privileged jobs must not approve registry/policy files supplied by a PR.
+      - name: Checkout trusted aqua definitions
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{github.event.pull_request.base.sha || github.sha}}
+          path: .trusted-aqua
+          persist-credentials: false
+          sparse-checkout-cone-mode: false
+          sparse-checkout: |
+            aqua/registry.yaml
+            aqua/aqua-policy.yaml
+
+      - name: Use trusted aqua definitions
+        run: |
+          cp .trusted-aqua/aqua/registry.yaml aqua/registry.yaml
+          cp .trusted-aqua/aqua/aqua-policy.yaml aqua/aqua-policy.yaml
+          rm -rf .trusted-aqua
+
       - uses: aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329 # v4.1.0
         with:
           aqua_version: v2.64.0
