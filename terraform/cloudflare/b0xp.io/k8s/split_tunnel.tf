@@ -78,6 +78,14 @@ resource "cloudflare_zero_trust_device_default_profile" "warp_include" {
       address     = "10.104.181.159/32"
       description = "even-g2-main"
     },
+    {
+      # BOXP-328: send Kohako G2 (published route on Cloudflare shared IPs)
+      # through WARP/Gateway so the Access "Require Gateway" posture matches.
+      # Side effect: other sites on the same Cloudflare IPs also go through
+      # WARP while connected (rules are built from the IPs resolved at connect).
+      host        = "kohako-g2.b0xp.io"
+      description = "kohako-g2 (Access Require Gateway)"
+    },
   ]
 }
 
