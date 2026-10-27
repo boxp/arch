@@ -316,8 +316,8 @@ async function addEmailToAccessPolicy(env, email) {
 // The member is appended to that Gateway list BEFORE the Access enrollment
 // policy is updated, so a failure leaves the member un-enrolled instead of
 // enrolled without restriction (fail closed). Terraform
-// (terraform/cloudflare/b0xp.io/k8s/member_network_isolation.tf) reconciles
-// the list from the Access enrollment policy on every apply. The Owner
+// (terraform/cloudflare/b0xp.io/k8s/member_network_isolation.tf) only seeds
+// the list, so this Worker is its single writer afterwards. The Owner
 // (ADMIN_EMAIL) is never added.
 async function addEmailToMemberGatewayList(env, email) {
   const normalizedEmail = email.trim().toLowerCase();
