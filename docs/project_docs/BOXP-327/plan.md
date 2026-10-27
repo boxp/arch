@@ -1,0 +1,20 @@
+# BOXP-327 github-comment署名形式対応
+
+## 目的と範囲
+
+github-comment v6.4.2 の旧署名asset取得404を解消し、署名・checksum検証を維持する。開始mainは e8fb485ffd81abc42c2ec2e02ddf4fe8f53553b7、既存PR #14166のheadは44884eddb8228e44681f89b4bce4eb3a42423f27。既存PRへ修復を統合し重複PRは作らない。
+
+## 実施計画
+
+1. 正本資料、最新main・PR・上流registry・release署名仕様を照合する。正式helperでTerraへ独立調査を委任し親が証拠確認する。
+2. 上流未対応のため既存local registryへ対象package定義だけを複製し、v6.4.2以降をbundleに変更する。旧版override、identity/issuer/repository/tag制約とSHA256検証を維持する。
+   実行時に必要な既存aqua policyをgithub-comment使用5箇所で登録する。policyの標準registry条件には既存の固定SHAを明示して、semver判定による標準package拒否を避ける。GitHub token権限・secret・保護は変更しない。
+3. 隔離環境で旧構成404、新構成の実installとchecksum生成、全6platform、旧v6.4.1とghalint v1.5.7の回帰を確認する。正しい署名の成功と誤identity/issuer/repository/tag・改変digest/bundleの拒否を確認する。
+4. 対象限定CIで同障害を継続検出する。独立差分review、既存PRの最新head CI、通常mergeを経てmainで再検証する。
+5. Obsidian Projects/aqua-checksum-pipeline/repair-summary.mdへ変更・検証・PR/CI/mergeの証拠と未確認事項を記録する。
+
+## 境界とrollback
+
+権限・credential・保護設定を追加変更しない。署名/checksum検証を無効化しない。Python/K8s/TS7保留、#14148、G2/325は変更しない。
+
+rollbackは修復mergeを通常のrevert PRで戻す。mainに元からあるv6.4.1のimport/checksum、標準registryとlocalの既存定義へ復元する。v6.4.2を旧registryのまま残すrollbackは404を再発させるため行わない。上流対応後はghalint修復も含む固定refへ移行し今回のローカル複製と明示registry選択を除去する。
