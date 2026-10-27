@@ -47,9 +47,9 @@ locals {
       enabled    = p.enabled
       action     = p.action
       filters    = p.filters
-      traffic    = replace(replace(coalesce(p.traffic, ""), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
-      identity   = replace(replace(coalesce(p.identity, ""), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
-      posture    = coalesce(p.device_posture, "")
+      traffic    = replace(replace((p.traffic == null ? "" : p.traffic), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
+      identity   = replace(replace((p.identity == null ? "" : p.identity), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
+      posture    = (p.device_posture == null ? "" : p.device_posture)
     }
   ]
 }
@@ -76,7 +76,7 @@ output "inventory_custom_profiles" {
       precedence    = p.precedence
       enabled       = p.enabled
       default       = p.default
-      match         = replace(replace(coalesce(p.match, ""), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
+      match         = replace(replace((p.match == null ? "" : p.match), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
       include       = [for r in coalesce(p.include, []) : coalesce(r.address, r.host, "")]
       exclude_count = length(coalesce(p.exclude, []))
       tunnel        = p.tunnel_protocol
