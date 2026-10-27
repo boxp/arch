@@ -356,6 +356,8 @@ test_fable_assignee_runs_via_claude() {
   assert_file_contains "${prompt_log}" 'gpt-6-astra'
   assert_file_contains "${prompt_log}" 'codex-astra'
   assert_file_contains "${prompt_log}" 'Delegate long investigation, implementation, file editing, and test execution to Codex'
+  assert_file_contains "${prompt_log}" 'If delegation is unavailable, explain why in the final summary'
+  assert_file_contains "${prompt_log}" 'Do not retry indefinitely or fall back to another API key'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-150\|BOXP-150: fable\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-150.md" '^status: done$'
   summary="$(find "${state}/runs/BOXP-150" -name summary.edn -print | sort | tail -n 1)"
@@ -409,6 +411,8 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
         assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, file editing, and test execution to Codex'
         assert_file_contains "${prompt_log}" 'gpt-6.1-terra'
         assert_file_contains "${prompt_log}" 'Retain final judgment and verify delegated results'
+        assert_file_contains "${prompt_log}" 'If delegation is unavailable, explain why in the final summary'
+        assert_file_contains "${prompt_log}" 'Do not retry indefinitely or fall back to another API key'
         ;;
       claude-sonnet)
         assert_file_not_contains "${prompt_log}" 'Delegate independent investigation, implementation, file editing, and test execution to Codex'
@@ -623,6 +627,8 @@ test_codex_sol_assignee_includes_delegation_policy() {
   assert_file_contains "${prompt_log}" 'High-cost model routing policy'
   assert_file_contains "${prompt_log}" 'You are the codex-sol high-cost entry point'
   assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, and verification to lower-cost models whenever practical'
+  assert_file_contains "${prompt_log}" 'If delegation is unavailable, explain why in the final summary'
+  assert_file_contains "${prompt_log}" 'Do not retry indefinitely or fall back to another API key'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-152\|BOXP-152: codex-sol\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-152.md" '^status: done$'
   summary="$(find "${state}/runs/BOXP-152" -name summary.edn -print | sort | tail -n 1)"
@@ -652,6 +658,8 @@ test_codex_full_assignee_includes_delegation_policy() {
   assert_file_contains "${prompt_log}" 'High-cost model routing policy'
   assert_file_contains "${prompt_log}" 'You are the codex-full high-cost entry point'
   assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, and verification to lower-cost models whenever practical'
+  assert_file_contains "${prompt_log}" 'If delegation is unavailable, explain why in the final summary'
+  assert_file_contains "${prompt_log}" 'Do not retry indefinitely or fall back to another API key'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-153\|BOXP-153: codex-full\]\].*status::done'
   assert_file_contains "${vault}/Tickets/BOXP-153.md" '^status: done$'
   summary="$(find "${state}/runs/BOXP-153" -name summary.edn -print | sort | tail -n 1)"
@@ -2394,6 +2402,8 @@ test_codex_astra_assignee_includes_delegation_policy() {
     assert_file_contains "${prompt_log}" 'You are the '"${assignee}"' top-tier entry point'
     assert_file_contains "${prompt_log}" 'gpt-6-astra'
     assert_file_contains "${prompt_log}" 'Aggressively delegate to lower-cost models'
+    assert_file_contains "${prompt_log}" 'If delegation is unavailable, explain why in the final summary'
+    assert_file_contains "${prompt_log}" 'Do not retry indefinitely or fall back to another API key'
     assert_file_contains "${args_log}" "exec.*--model gpt-6-astra"
     assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-160\|BOXP-160: codex-astra\]\].*status::done'
     assert_file_contains "${vault}/Tickets/BOXP-160.md" '^status: done$'
