@@ -41,16 +41,16 @@ data "cloudflare_zero_trust_access_applications" "inventory" {
 
 locals {
   inventory_gateway = [
-        for p in data.cloudflare_zero_trust_gateway_policies.inventory.result : {
-          name       = p.name
-          precedence = p.precedence
-          enabled    = p.enabled
-          action     = p.action
-          filters    = p.filters
-          traffic    = replace(replace(coalesce(p.traffic, ""), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
-          identity   = replace(replace(coalesce(p.identity, ""), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
-          posture    = coalesce(p.device_posture, "")
-        }
+    for p in data.cloudflare_zero_trust_gateway_policies.inventory.result : {
+      name       = p.name
+      precedence = p.precedence
+      enabled    = p.enabled
+      action     = p.action
+      filters    = p.filters
+      traffic    = replace(replace(coalesce(p.traffic, ""), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
+      identity   = replace(replace(coalesce(p.identity, ""), local.inventory_owner_emails[0], "OWNER"), local.inventory_email_regex, "<email>")
+      posture    = coalesce(p.device_posture, "")
+    }
   ]
 }
 
