@@ -124,3 +124,59 @@ resource "cloudflare_zero_trust_gateway_policy" "lolice_member_block_private" {
 
   depends_on = [cloudflare_zero_trust_gateway_policy.lolice_member_allow_game]
 }
+
+# BOXP-330 stage 2: routing for members. The default profile includes
+# management hosts and is shared with the Owner and codex-workspace, so members
+# get their own profile that only includes the game servers plus the Access
+# team domain (required in Include mode for One Client re-authentication and
+# posture; BOXP-328 hit "Please enable WARP" without it). Other traffic
+# (general Internet, other 192.168.10.* hosts) stays off WARP. This is routing
+# only: authorization is enforced by the Gateway policies above, even if a
+# device ends up with a different profile or route.
+# Client behaviour settings are copied from the default profile so members only
+# see the split tunnel difference. The Owner and service-token devices never
+# match (they are not in the list) and keep the default profile.
+data "cloudflare_zero_trust_device_default_profile" "current" {
+  account_id = var.account_id
+}
+
+resource "cloudflare_zero_trust_device_custom_profile" "lolice_member" {
+  account_id  = var.account_id
+  name        = "lolice members (game servers only)"
+  description = "BOXP-330: lolice members route only the game servers and the Access team domain through WARP"
+  enabled     = true
+  precedence  = 100
+  match       = local.lolice_member_identity
+
+  include = concat(
+    [
+      for ip in distinct([for socket in local.lolice_member_game_sockets : socket.ip]) : {
+        address     = "${ip}/32"
+        description = "lolice game server"
+      }
+    ],
+    [{
+      host        = data.cloudflare_zero_trust_organization.current.auth_domain
+      description = "Access team domain (One Client auth)"
+    }],
+  )
+
+  allow_mode_switch     = data.cloudflare_zero_trust_device_default_profile.current.allow_mode_switch
+  allow_updates         = data.cloudflare_zero_trust_device_default_profile.current.allow_updates
+  allowed_to_leave      = data.cloudflare_zero_trust_device_default_profile.current.allowed_to_leave
+  auto_connect          = data.cloudflare_zero_trust_device_default_profile.current.auto_connect
+  captive_portal        = data.cloudflare_zero_trust_device_default_profile.current.captive_portal
+  disable_auto_fallback = data.cloudflare_zero_trust_device_default_profile.current.disable_auto_fallback
+  exclude_office_ips    = data.cloudflare_zero_trust_device_default_profile.current.exclude_office_ips
+  service_mode_v2       = data.cloudflare_zero_trust_device_default_profile.current.service_mode_v2
+  support_url           = data.cloudflare_zero_trust_device_default_profile.current.support_url
+  switch_locked         = data.cloudflare_zero_trust_device_default_profile.current.switch_locked
+  # The default profile reports "" when no protocol is pinned.
+  tunnel_protocol = data.cloudflare_zero_trust_device_default_profile.current.tunnel_protocol == "" ? null : data.cloudflare_zero_trust_device_default_profile.current.tunnel_protocol
+
+  dns_search_suffixes            = data.cloudflare_zero_trust_device_default_profile.current.dns_search_suffixes
+  register_interface_ip_with_dns = data.cloudflare_zero_trust_device_default_profile.current.register_interface_ip_with_dns
+  sccm_vpn_boundary_support      = data.cloudflare_zero_trust_device_default_profile.current.sccm_vpn_boundary_support
+  uninstall_protection           = data.cloudflare_zero_trust_device_default_profile.current.uninstall_protection
+  virtual_networks               = data.cloudflare_zero_trust_device_default_profile.current.virtual_networks
+}
