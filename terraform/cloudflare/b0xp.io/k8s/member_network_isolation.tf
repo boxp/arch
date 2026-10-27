@@ -136,17 +136,27 @@ resource "cloudflare_zero_trust_gateway_policy" "lolice_member_block_private" {
 # Client behaviour settings are copied from the default profile so members only
 # see the split tunnel difference. The Owner and service-token devices never
 # match (they are not in the list) and keep the default profile.
+# Device profile match expressions cannot reference Gateway lists (API error
+# 2073 "list uuids not supported"), so the addresses are inlined from the
+# enrollment policy and marked sensitive to keep them out of public plans.
+# Members approved by the Worker after the last apply keep the default profile
+# (Gateway still blocks non-game hosts) until the next apply or drift run.
 data "cloudflare_zero_trust_device_default_profile" "current" {
   account_id = var.account_id
 }
 
 resource "cloudflare_zero_trust_device_custom_profile" "lolice_member" {
+  # An empty set would be an invalid expression and would match nobody anyway.
+  count = length(local.lolice_member_emails) > 0 ? 1 : 0
+
   account_id  = var.account_id
   name        = "lolice members (game servers only)"
   description = "BOXP-330: lolice members route only the game servers and the Access team domain through WARP"
   enabled     = true
   precedence  = 100
-  match       = local.lolice_member_identity
+  match       = sensitive(format("identity.email in {%s}", join(" ", [
+    for email in local.lolice_member_emails : jsonencode(email)
+  ])))
 
   include = concat(
     [

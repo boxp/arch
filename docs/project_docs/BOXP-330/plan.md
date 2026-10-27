@@ -64,3 +64,5 @@ Owner 兼 member の場合: Owner の email は list に入らないので、Own
 
 - 段階 1: boxp/arch#14171 を merge（9efe6e4）。apply run 40460861082 が成功（k8s 3 add/1 change、portal Worker を更新）。post-apply の check 警告は無し（enrollment policy の member は全員 list に入っている）。
 - 段階 2: member 用 custom profile（precedence 100、match `identity.email in $lolice-members`、Include はゲーム /32 ×4 と team domain）。client 挙動の設定は default profile から引き継ぐ。Rollback は `enabled = false` にするか revert する（member は default profile に戻るが、認可は Gateway で維持される）。
+- 段階 2 の apply（run 40462555897）は失敗した。device profile の match 式では Gateway list を参照できない（API error 2073 "list uuids not supported"）。custom profile は作成されず、default profile は computed な policy_id の更新だけだった。
+- 段階 2 修正: match を enrollment policy 由来のインライン email 集合（`identity.email in {...}`）に変え、`sensitive()` で plan から隠す。member が 0 人なら profile を作らない。Worker が apply 後に承認した member は、次の apply または drift 実行までは default profile のままになる（認可は Gateway list で効く）。
