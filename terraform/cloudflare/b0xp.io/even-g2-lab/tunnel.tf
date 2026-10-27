@@ -20,6 +20,23 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "even_g2_lab" {
         service  = "http://even-g2-main.even-g2-lab.svc.cluster.local:80"
       },
       {
+        # BOXP-328: Kohako G2 over HTTPS (dns.tf / access.tf). Only /kohako/
+        # is routed, to a dedicated Service (nginx :8081) that the private L4
+        # route (even-g2-main ClusterIP) cannot reach. cloudflared also
+        # validates the Access JWT (signature, issuer and this application's
+        # AUD) and rejects requests without it.
+        hostname = local.kohako_g2_hostname
+        path     = "^/kohako/"
+        service  = "http://kohako-g2-web.even-g2-lab.svc.cluster.local:80"
+        origin_request = {
+          access = {
+            required  = true
+            team_name = local.zero_trust_team_name
+            aud_tag   = [cloudflare_zero_trust_access_application.kohako_g2.aud]
+          }
+        }
+      },
+      {
         service = "http_status:404"
       }
     ]
