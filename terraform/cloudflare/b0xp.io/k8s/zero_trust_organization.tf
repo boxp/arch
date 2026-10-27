@@ -51,13 +51,14 @@ resource "cloudflare_zero_trust_organization" "this" {
   user_seat_expiration_inactive_time = data.cloudflare_zero_trust_organization.current.user_seat_expiration_inactive_time
   warp_auth_non_browser_401          = data.cloudflare_zero_trust_organization.current.warp_auth_non_browser_401
 
-  lifecycle {
-    # service_token_inactivity has never been configured, so the API returns
-    # only { enabled = false }. The resource requires action and
-    # inactivity_threshold_days as well, so that value cannot be written in
-    # the configuration, and leaving it null would show a removal on every
-    # plan. Keep the value from the state and leave this setting to the
-    # dashboard.
-    ignore_changes = [service_token_inactivity]
+  # service_token_inactivity has never been configured, so the API returns
+  # only { enabled = false }. Sending that value back on PUT is rejected
+  # ("service_token_inactivity must include enabled, inactivity_threshold_days,
+  # and action"), so the full object is written with enforcement kept off.
+  # action and inactivity_threshold_days have no effect while enabled = false.
+  service_token_inactivity = {
+    enabled                   = false
+    action                    = "disable"
+    inactivity_threshold_days = 90
   }
 }

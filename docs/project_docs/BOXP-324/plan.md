@@ -47,3 +47,11 @@ Cloudflare One Client（旧 WARP）の登録 identity で済ませる「Authenti
 - `service_token_inactivity` は API 上 `enabled = false` だけの未設定状態。resource は action と inactivity_threshold_days も必須にするため config では表せず、null にすると毎回の plan で削除差分が出る。`lifecycle.ignore_changes` で state の値を保持し、この設定は dashboard 管理のままにする
 - `login_design` は未設定なので、空 object `{}` ではなく null を渡す
 - `cloudflare_zero_trust_device_default_profile.warp_include` の `policy_id -> (known after apply)` は既存の provider 挙動で、この PR の変更ではない（default profile の id は固定）
+
+## merge 後の apply 失敗と修正（2026-10-27）
+
+- #14162 の apply は organization の PUT で `access.api.error.invalid_org_config`
+  （`service_token_inactivity must include enabled, inactivity_threshold_days, and action`）になり失敗した。
+  `ignore_changes` で state の `{ enabled = false }` をそのまま送ったため。organization の設定は変わっていない
+- `service_token_inactivity` を `enabled = false`・`action = "disable"`・`inactivity_threshold_days = 90` の完全な形で書く。
+  enabled = false なので service token の自動無効化・削除は起きない（action と日数は enabled = true のときだけ効く）
