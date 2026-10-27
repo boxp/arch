@@ -86,6 +86,15 @@ resource "cloudflare_zero_trust_device_default_profile" "warp_include" {
       host        = "kohako-g2.b0xp.io"
       description = "kohako-g2 (Access Require Gateway)"
     },
+    {
+      # BOXP-328: Split Tunnels Include mode must also include the team domain
+      # (<team>.cloudflareaccess.com) for device posture checks and client
+      # sessions (Cloudflare docs: "Routes for Split Tunnels Include mode").
+      # The Owner device hit "Please enable WARP" on the team domain while only
+      # kohako-g2.b0xp.io was included. Same shared-IP side effect as above.
+      host        = data.cloudflare_zero_trust_organization.current.auth_domain
+      description = "Access team domain (One Client auth / Require Gateway)"
+    },
   ]
 }
 
