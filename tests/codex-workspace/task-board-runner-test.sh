@@ -2287,7 +2287,7 @@ test_assignee_model_routing() {
 
 test_assignee_model_tick_routing() {
   local tmp vault state bin args_log assignee expected_model
-  local pairs=("codex:gpt-5.6-terra" "codex-sol:gpt-6.1-sol" "codex-full:gpt-6.1-sol" "codex-terra:gpt-5.6-terra" "codex-mini:gpt-5.6-luna" "codex-astra:gpt-6-astra")
+  local pairs=("codex:gpt-6.1-terra" "codex-sol:gpt-6.1-sol" "codex-full:gpt-6.1-sol" "codex-terra:gpt-6.1-terra" "codex-mini:gpt-5.6-luna" "codex-astra:gpt-6-astra")
   for pair in "${pairs[@]}"; do
     assignee="${pair%%:*}"
     expected_model="${pair##*:}"
@@ -2310,11 +2310,11 @@ test_assignee_model_tick_routing() {
 test_assignee_reasoning_tick_routing() {
   local tmp vault state bin args_log assignee expected_model level
   local pairs=(
-    "codex-minimal:gpt-5.6-terra:minimal"
+    "codex-minimal:gpt-6.1-terra:minimal"
     "codex-sol-low:gpt-6.1-sol:low"
     "codex-full-medium:gpt-6.1-sol:medium"
     "codex-sol-xhigh:gpt-6.1-sol:xhigh"
-    "codex-terra-high:gpt-5.6-terra:high"
+    "codex-terra-high:gpt-6.1-terra:high"
     "codex-mini-xhigh:gpt-5.6-luna:xhigh"
     "codex-astra-low:gpt-6-astra:low"
     "codex-astra-medium:gpt-6-astra:medium"
