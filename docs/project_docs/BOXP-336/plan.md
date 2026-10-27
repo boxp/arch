@@ -5,6 +5,7 @@
 - lolice（golyat-4: Core Ultra 9 285H / Arc 140T iGPU / RAM 93 GB 共有）で、Strata（https://github.com/Niko1221/Strata）を使うメリットがあるかを実機で検証する。
 - 現行ハードウェアでは本来困難な人気の大型 MoE モデルを、実行可能性を gate したうえで試す。
 - Strata は一時隔離 runtime（golyat-4 の static pod、127.0.0.1 のみ）で動かし、既存 localllm（`local-llm/llama-server`）の構成・既定モデルは変更しない。
+- Owner 指示（2026-10-27 09:22 / 09:23 UTC）: 既存 localllm を一時停止し、Strata 検証を新しい **Argo CD AppProject** で GitOps 配備して検証する（「project」は Obsidian や repo ではなく Argo CD の AppProject を指す）。最初の比較は static pod で行ったため、同じ Strata 構成を AppProject `strata-eval` 配下の Application として lolice へ配備し直し、readback と実推論で再確認する（後述「Argo CD project での検証」）。
 
 ## 前提（2026-10-27 UTC 実測）
 
@@ -55,3 +56,32 @@
 - 判断: Strata は不採用。既定は gemma4-26b のまま。Flash-Next を localllm に登録するかは別票で判断する。
 - 後片付け: static pod、watchdog、tunnel を撤去済み。gemma4-26b を再ロードし、`/health` が ok であることを確認した。取得物の保持と削除は Owner の判断に委ねる（vault の owner-summary に記載）。
 - 詳細: Obsidian `Projects/strata-localllm-evaluation/owner-summary.md` / `reproduction.md`
+
+## Argo CD project での検証（2026-10-27 12:20〜12:55 UTC、PR レビュー指摘への対応）
+
+Owner の指示どおり、既存 localllm を GitOps で一時停止し、Strata を新しい Argo CD AppProject 配下の Application として配備して検証し直した。
+
+| 段階 | PR（boxp/lolice） | readback |
+| --- | --- | --- |
+| AppProject `strata-eval`、Application `strata-eval` を追加し、`local-llm/llama-server` を replicas 0 にした | #901 | `local-llm` は Synced で replicas 0/ready 0。`strata-eval` は `resource :Namespace is not permitted` で SyncError |
+| Namespace を親の `argocd-apps`（project default）で作るように変更。AppProject には cluster-scoped resource を許可しない（`[]`） | #902 | Application `strata-eval`（`spec.project: strata-eval`）が Synced / Healthy（rev e3f24386）。Pod `strata-server` が golyat-4 で Running。Strata `/health` は ok（arena 31.64 GiB を 15 s で読込、GPU expert cache 2000） |
+| 検証を終了。`local-llm` を replicas 1 に戻し、`strata-server` を 0 にした | #903 | `local-llm` は Synced / Healthy で 1/1、`/health` ok。gemma4-26b は 1 要求で再ロード。`strata-server` は 0/0 |
+
+- AppProject `strata-eval` の許可範囲は次のとおり。
+  - sourceRepos: `https://github.com/boxp/lolice` のみ
+  - destinations: in-cluster の `strata-eval` のみ
+  - clusterResourceWhitelist: `[]`
+  - namespaceResourceWhitelist: ConfigMap と Deployment のみ
+- 既存 AppProject `default` と local-llm の model、設定、hostPath は変更していない。
+- Deployment の設定は static pod の S1 と同じ（server 設定、image digest、hostPath read-only、memory limit 56Gi）。違いは次の 3 点。
+  - 非特権にした（`gpu.intel.com/i915: 1`、非 root、`readOnlyRootFilesystem`）
+  - Pod 内の 127.0.0.1 だけで待ち受け、Service は作らない
+  - 計測中だけ node の loopback へ一時的に転送した（`podfwd.py`）
+- 結果（合成 fixture 9 件を 1 回ずつ）は 5/9 pass。
+  - prose 3 件と code_1、json_1 は pass。decode は約 4.4 t/s、TTFT は 9〜30 s。
+  - code_2 は関数名の指示を守らなかった（既知の不合格）。
+  - long_1、json_2、tool_1 は batched prompt の layer 0 で 60 s 進まず、engine が自分で abort した。i915 の `Fence expiration time out` は 213 件増えた。GPU reset はなかった。
+  - 日本語の出力に全角カンマ「，」が 9 件混入した。
+  - static pod での結果と同じ挙動が再現したので、**Strata は不採用**の判断を維持する。
+- 計測中の node MemAvailable は最小でも 46.8 GB で、watchdog（15 GiB 未満で crictl stop）は作動しなかった。NVMe 読込は約 18.8 GB。
+- 残したもの: AppProject、Application、Namespace `strata-eval` は残してある（親 `argocd-apps` は prune が無効）。削除する場合は Owner の判断を受けてから、別 PR と明示的な削除で行う。
