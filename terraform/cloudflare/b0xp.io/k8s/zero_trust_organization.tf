@@ -40,11 +40,11 @@ resource "cloudflare_zero_trust_organization" "this" {
   deny_unmatched_requests_exempted_zone_names = data.cloudflare_zero_trust_organization.current.deny_unmatched_requests_exempted_zone_names
   is_ui_read_only                             = data.cloudflare_zero_trust_organization.current.is_ui_read_only
   # Keep login_design null instead of an empty object when it is not configured.
-  login_design              = alltrue([for v in values(try(tomap(data.cloudflare_zero_trust_organization.current.login_design), {})) : v == null]) ? null : data.cloudflare_zero_trust_organization.current.login_design
-  mfa_config                = data.cloudflare_zero_trust_organization.current.mfa_config
-  mfa_piv_key_requirements  = data.cloudflare_zero_trust_organization.current.mfa_piv_key_requirements
-  mfa_required_for_all_apps = data.cloudflare_zero_trust_organization.current.mfa_required_for_all_apps
-  name                      = data.cloudflare_zero_trust_organization.current.name
+  login_design                       = alltrue([for v in values(try(tomap(data.cloudflare_zero_trust_organization.current.login_design), {})) : v == null]) ? null : data.cloudflare_zero_trust_organization.current.login_design
+  mfa_config                         = data.cloudflare_zero_trust_organization.current.mfa_config
+  mfa_piv_key_requirements           = data.cloudflare_zero_trust_organization.current.mfa_piv_key_requirements
+  mfa_required_for_all_apps          = data.cloudflare_zero_trust_organization.current.mfa_required_for_all_apps
+  name                               = data.cloudflare_zero_trust_organization.current.name
   session_duration                   = data.cloudflare_zero_trust_organization.current.session_duration
   strict_service_token_auth          = data.cloudflare_zero_trust_organization.current.strict_service_token_auth
   ui_read_only_toggle_reason         = data.cloudflare_zero_trust_organization.current.ui_read_only_toggle_reason
