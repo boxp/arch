@@ -39,11 +39,12 @@ resource "cloudflare_zero_trust_organization" "this" {
   deny_unmatched_requests                     = data.cloudflare_zero_trust_organization.current.deny_unmatched_requests
   deny_unmatched_requests_exempted_zone_names = data.cloudflare_zero_trust_organization.current.deny_unmatched_requests_exempted_zone_names
   is_ui_read_only                             = data.cloudflare_zero_trust_organization.current.is_ui_read_only
-  login_design                                = data.cloudflare_zero_trust_organization.current.login_design
-  mfa_config                                  = data.cloudflare_zero_trust_organization.current.mfa_config
-  mfa_piv_key_requirements                    = data.cloudflare_zero_trust_organization.current.mfa_piv_key_requirements
-  mfa_required_for_all_apps                   = data.cloudflare_zero_trust_organization.current.mfa_required_for_all_apps
-  name                                        = data.cloudflare_zero_trust_organization.current.name
+  # Keep login_design null instead of an empty object when it is not configured.
+  login_design              = alltrue([for v in values(try(tomap(data.cloudflare_zero_trust_organization.current.login_design), {})) : v == null]) ? null : data.cloudflare_zero_trust_organization.current.login_design
+  mfa_config                = data.cloudflare_zero_trust_organization.current.mfa_config
+  mfa_piv_key_requirements  = data.cloudflare_zero_trust_organization.current.mfa_piv_key_requirements
+  mfa_required_for_all_apps = data.cloudflare_zero_trust_organization.current.mfa_required_for_all_apps
+  name                      = data.cloudflare_zero_trust_organization.current.name
   # The data source returns an object with null fields when the setting has
   # never been configured, but the resource requires all of its fields.
   service_token_inactivity           = try(data.cloudflare_zero_trust_organization.current.service_token_inactivity.action, null) == null ? null : data.cloudflare_zero_trust_organization.current.service_token_inactivity

@@ -40,3 +40,10 @@ Cloudflare One Client（旧 WARP）の登録 identity で済ませる「Authenti
 
 - この PR を revert すると resource が state から消えるだけで設定は戻らない。無効化に戻す場合は
   `warp_auth_session_duration = null` にする PR を apply するか、dashboard で toggle を OFF にする（その後 Terraform を追従）
+
+## CI plan で分かったこと（2026-10-27）
+
+- CI token で organization の読み取り（data source・import）はできた
+- `service_token_inactivity` は API 上 `enabled = false` だけの未設定状態。resource は action などを必須にするため、未設定なら null を渡す（無効のままで挙動は変わらない）
+- `login_design` は未設定なので、空 object `{}` ではなく null を渡す
+- `cloudflare_zero_trust_device_default_profile.warp_include` の `policy_id -> (known after apply)` は既存の provider 挙動で、この PR の変更ではない（default profile の id は固定）
