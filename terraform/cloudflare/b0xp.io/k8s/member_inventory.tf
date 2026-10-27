@@ -55,10 +55,12 @@ locals {
 }
 
 output "inventory_gateway_rules" {
+  description = "BOXP-330 temporary read-only inventory (inventory_gateway_rules)"
   value = local.inventory_gateway
 }
 
 output "inventory_device_settings" {
+  description = "BOXP-330 temporary read-only inventory (inventory_device_settings)"
   value = {
     gateway_proxy_enabled     = data.cloudflare_zero_trust_device_settings.inventory.gateway_proxy_enabled
     gateway_udp_proxy_enabled = data.cloudflare_zero_trust_device_settings.inventory.gateway_udp_proxy_enabled
@@ -67,6 +69,7 @@ output "inventory_device_settings" {
 }
 
 output "inventory_custom_profiles" {
+  description = "BOXP-330 temporary read-only inventory (inventory_custom_profiles)"
   value = [
     for p in data.cloudflare_zero_trust_device_custom_profiles.inventory.result : {
       name          = p.name
@@ -82,6 +85,7 @@ output "inventory_custom_profiles" {
 }
 
 output "inventory_tunnel_routes" {
+  description = "BOXP-330 temporary read-only inventory (inventory_tunnel_routes)"
   value = [
     for r in data.cloudflare_zero_trust_tunnel_cloudflared_routes.inventory.result : {
       network = r.network
@@ -93,6 +97,7 @@ output "inventory_tunnel_routes" {
 }
 
 output "inventory_virtual_networks" {
+  description = "BOXP-330 temporary read-only inventory (inventory_virtual_networks)"
   value = [
     for v in data.cloudflare_zero_trust_tunnel_cloudflared_virtual_networks.inventory.result : {
       name       = v.name
@@ -102,6 +107,7 @@ output "inventory_virtual_networks" {
 }
 
 output "inventory_lists" {
+  description = "BOXP-330 temporary read-only inventory (inventory_lists)"
   value = [
     for l in data.cloudflare_zero_trust_lists.inventory.result : {
       id    = l.id
@@ -113,6 +119,7 @@ output "inventory_lists" {
 }
 
 output "inventory_warp_enrollment_policies" {
+  description = "BOXP-330 temporary read-only inventory (inventory_warp_enrollment_policies)"
   value = [
     for app in data.cloudflare_zero_trust_access_applications.inventory.result : [
       for p in coalesce(app.policies, []) : {
