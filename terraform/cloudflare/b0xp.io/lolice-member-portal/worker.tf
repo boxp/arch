@@ -1,4 +1,4 @@
-# Last synced with apps/lolice-member-portal/src/index.js: 2026-07-21
+# Last synced with apps/lolice-member-portal/src/index.js: 2026-10-27
 
 resource "cloudflare_workers_kv_namespace" "pending_requests" {
   account_id = var.account_id
@@ -66,6 +66,13 @@ resource "cloudflare_workers_script" "lolice_member_portal" {
       name = "CF_POLICY_ID"
       type = "plain_text"
       text = "d807cdcb-141e-40f3-ac82-5b6f97468f19"
+    },
+    {
+      # BOXP-330: Gateway EMAIL list (terraform/cloudflare/b0xp.io/k8s) that
+      # restricts approved members to the game servers.
+      name = "MEMBER_GATEWAY_LIST_NAME"
+      type = "plain_text"
+      text = "lolice-members"
     },
     {
       name = "PORTAL_BASE_URL"
