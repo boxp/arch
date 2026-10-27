@@ -44,10 +44,12 @@ resource "cloudflare_zero_trust_organization" "this" {
   mfa_piv_key_requirements                    = data.cloudflare_zero_trust_organization.current.mfa_piv_key_requirements
   mfa_required_for_all_apps                   = data.cloudflare_zero_trust_organization.current.mfa_required_for_all_apps
   name                                        = data.cloudflare_zero_trust_organization.current.name
-  service_token_inactivity                    = data.cloudflare_zero_trust_organization.current.service_token_inactivity
-  session_duration                            = data.cloudflare_zero_trust_organization.current.session_duration
-  strict_service_token_auth                   = data.cloudflare_zero_trust_organization.current.strict_service_token_auth
-  ui_read_only_toggle_reason                  = data.cloudflare_zero_trust_organization.current.ui_read_only_toggle_reason
-  user_seat_expiration_inactive_time          = data.cloudflare_zero_trust_organization.current.user_seat_expiration_inactive_time
-  warp_auth_non_browser_401                   = data.cloudflare_zero_trust_organization.current.warp_auth_non_browser_401
+  # The data source returns an object with null fields when the setting has
+  # never been configured, but the resource requires all of its fields.
+  service_token_inactivity           = try(data.cloudflare_zero_trust_organization.current.service_token_inactivity.action, null) == null ? null : data.cloudflare_zero_trust_organization.current.service_token_inactivity
+  session_duration                   = data.cloudflare_zero_trust_organization.current.session_duration
+  strict_service_token_auth          = data.cloudflare_zero_trust_organization.current.strict_service_token_auth
+  ui_read_only_toggle_reason         = data.cloudflare_zero_trust_organization.current.ui_read_only_toggle_reason
+  user_seat_expiration_inactive_time = data.cloudflare_zero_trust_organization.current.user_seat_expiration_inactive_time
+  warp_auth_non_browser_401          = data.cloudflare_zero_trust_organization.current.warp_auth_non_browser_401
 }
