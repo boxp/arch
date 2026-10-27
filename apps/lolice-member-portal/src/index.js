@@ -311,6 +311,62 @@ async function addEmailToAccessPolicy(env, email) {
   throw new Error("Failed to confirm all approved emails in Access policy after retries");
 }
 
+// BOXP-330: lolice members are restricted to the game servers by Gateway
+// network policies that match `identity.email in $<lolice-members list>`.
+// The member is appended to that Gateway list BEFORE the Access enrollment
+// policy is updated, so a failure leaves the member un-enrolled instead of
+// enrolled without restriction (fail closed). Terraform
+// (terraform/cloudflare/b0xp.io/k8s/member_network_isolation.tf) reconciles
+// the list from the Access enrollment policy on every apply. The Owner
+// (ADMIN_EMAIL) is never added.
+async function addEmailToMemberGatewayList(env, email) {
+  const normalizedEmail = email.trim().toLowerCase();
+  if (normalizedEmail === env.ADMIN_EMAIL.toLowerCase()) return;
+
+  const cfHeaders = {
+    Authorization: `Bearer ${env.CF_API_TOKEN}`,
+    "Content-Type": "application/json",
+  };
+  const listsUrl = `https://api.cloudflare.com/client/v4/accounts/${env.CF_ACCOUNT_ID}/gateway/lists`;
+
+  const listsResponse = await fetch(`${listsUrl}?type=EMAIL`, { headers: cfHeaders });
+  if (!listsResponse.ok) {
+    throw new Error(`Cloudflare Gateway lists GET failed: ${listsResponse.status}`);
+  }
+  const { result: lists } = await listsResponse.json();
+  const memberList = (lists ?? []).find((list) => list.name === env.MEMBER_GATEWAY_LIST_NAME);
+  if (!memberList) {
+    throw new Error(`Gateway list ${env.MEMBER_GATEWAY_LIST_NAME} not found`);
+  }
+  const listUrl = `${listsUrl}/${memberList.id}`;
+
+  const listContains = async () => {
+    const itemsResponse = await fetch(`${listUrl}/items`, { headers: cfHeaders });
+    if (!itemsResponse.ok) {
+      throw new Error(`Cloudflare Gateway list items GET failed: ${itemsResponse.status}`);
+    }
+    const { result: items } = await itemsResponse.json();
+    return (items ?? []).flat().some((item) => item?.value?.toLowerCase() === normalizedEmail);
+  };
+
+  if (await listContains()) return;
+
+  const patchResponse = await fetch(listUrl, {
+    method: "PATCH",
+    headers: cfHeaders,
+    body: JSON.stringify({
+      append: [{ value: normalizedEmail, description: "lolice member" }],
+    }),
+  });
+  if (!patchResponse.ok) {
+    throw new Error(`Cloudflare Gateway list PATCH failed: ${patchResponse.status}`);
+  }
+
+  if (!(await listContains())) {
+    throw new Error("Failed to confirm the approved email in the member Gateway list");
+  }
+}
+
 async function handleRequest(request, env) {
   const ip = request.headers.get("CF-Connecting-IP") ?? "";
   if (await isRateLimited(env, ip)) {
@@ -410,7 +466,16 @@ async function handleApproval(request, env) {
   const pending = await getPendingEmail(token, env);
   if (pending.error) return pending.error;
 
-  // Step 1: Update Access policy (critical — must succeed before proceeding).
+  // Step 1: Add the member to the Gateway list that restricts members to the
+  // game servers (critical — must succeed before the member is enrolled).
+  try {
+    await addEmailToMemberGatewayList(env, pending.email);
+  } catch (error) {
+    console.error("Failed to update member Gateway list", error);
+    return htmlResponse("<h1>承認処理に失敗しました。</h1><p>メンバー用 Gateway リストの更新に失敗しました。時間をおいて同じリンクを再度開いてください。</p>", 502);
+  }
+
+  // Step 2: Update Access policy (critical — must succeed before proceeding).
   try {
     await addEmailToAccessPolicy(env, pending.email);
   } catch (error) {
@@ -418,10 +483,10 @@ async function handleApproval(request, env) {
     return htmlResponse("<h1>承認処理に失敗しました。</h1><p>Cloudflare Access ポリシーの更新に失敗しました。時間をおいて同じリンクを再度開いてください。</p>", 502);
   }
 
-  // Step 2: Policy update succeeded — delete token so the link cannot be reused.
+  // Step 3: Policy update succeeded — delete token so the link cannot be reused.
   await env.PENDING_REQUESTS.delete(pending.token);
 
-  // Step 3: Send notification email (non-critical — policy update already completed).
+  // Step 4: Send notification email (non-critical — policy update already completed).
   let emailError = null;
   try {
     await sendEmail(env, {
