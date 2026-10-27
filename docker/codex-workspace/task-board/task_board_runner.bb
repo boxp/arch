@@ -1507,6 +1507,7 @@
        "- You are the Claude Code fable entry point for this Task Board run.\n"
        "- Minimize fable token and limit consumption. Keep your own work focused on short judgment, routing, review perspective, and concise direction.\n"
        "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-6.1-terra (cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-6.1-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Reserve gpt-6-astra (via codex-astra assignee) for the most demanding tasks requiring the highest capability. Use the prepared workspace and repository worktrees from this prompt.\n"
+       "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
@@ -1514,6 +1515,9 @@
 (defn claude-policy-prompt [agent]
   (str "Claude Code routing policy:\n"
        "- You are the " agent " entry point for this Task Board run. Complete the task using the explicitly selected Claude model.\n"
+       (when (contains? #{"claude-fable" "claude-opus"} agent)
+         (str "- Delegate independent investigation, implementation, file editing, and test execution to Codex whenever practical. Use the default Codex route (gpt-6.1-terra, unless CODEX_TASK_BOARD_MODEL overrides it); reserve gpt-6.1-sol for high-complexity work and gpt-6-astra for the most demanding work. Retain final judgment and verify delegated results.\n"
+              "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"))
        "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 
@@ -1523,7 +1527,8 @@
        "- Focus your own effort on task decomposition, results integration, critical decisions, and final review.\n"
        "- Delegate independent investigation, implementation, and verification to lower-cost models whenever practical. Use the codex (gpt-6.1-terra) assignee as the default delegation route, unless CODEX_TASK_BOARD_MODEL overrides it.\n"
        "- Do NOT delegate: tasks smaller than the delegation overhead, tasks requiring shared context or elevated permissions, and tasks requiring final judgment or acceptance.\n"
-       "- If a delegated subtask fails, produces insufficient quality, or is unavailable: re-instruct once, verify the result, or handle it directly. Avoid recursive or unbounded delegation chains.\n"
+       "- If delegation fails or is unavailable, report blocked. Do not use recursive delegation.\n"
+       "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
@@ -1532,9 +1537,10 @@
   (str "Highest-capability model routing policy:\n"
        "- You are the " agent " top-tier entry point for this Task Board run. You run on gpt-6-astra, the most capable and highest-cost model available.\n"
        "- Reserve your own compute for the most demanding subtasks: complex reasoning, cross-cutting architectural decisions, synthesis of ambiguous requirements, and final acceptance checks.\n"
-       "- Aggressively delegate to lower-cost models for any work that does not require gpt-6-astra capability. Use codex-sol (gpt-6.1-sol) for high-complexity subtasks, codex (gpt-6.1-terra) for standard implementation and investigation.\n"
+       "- Aggressively delegate to lower-cost models for any work that does not require gpt-6-astra capability. Use the delegation helper for implementation and investigation.\n"
        "- Do NOT delegate: tasks requiring your full reasoning capacity, tasks with shared context that cannot be serialized, and final quality judgments.\n"
-       "- If a delegated subtask fails or produces insufficient quality: re-instruct with clearer requirements once, then escalate to a higher-tier model or handle directly. Avoid unbounded delegation chains.\n"
+       "- If delegation fails or is unavailable, report blocked. Do not escalate or use recursive delegation.\n"
+       "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n\n"))
@@ -1548,6 +1554,21 @@
          "append a note to this ticket's Notes by running:\n"
          "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
+(defn delegation-required? [agent]
+  (or (contains? #{"fable" "claude-fable" "claude-opus"} agent)
+      (contains? #{"codex-sol" "codex-full" "codex-astra"}
+                 (:base-assignee (parse-codex-assignee agent)))))
+
+(def delegation-helper
+  (str (fs/path (fs/parent (fs/absolutize (System/getProperty "babashka.file"))) "delegate.py")))
+
+(defn delegation-prompt []
+  (str "Delegation contract: run `python3 " delegation-helper " run` with the subtask on stdin. "
+       "This runs one lower-cost Codex child; verify its result. If it fails or is unavailable, return blocked; do not substitute another model or API. "
+       "If the entire task is exempt, record exactly one reason using `python3 " delegation-helper
+       " exempt <reason>` where reason is small-task, shared-context, elevated-permissions, final-judgment, or full-reasoning. "
+       "Exemptions are self-reported. A successful result requires verified delegation or an explicit exemption.\n\n"))
+
 (defn prompt-for [action ticket-id lane workspace agent]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
@@ -1559,6 +1580,7 @@
                     "Task Board assignee/agent: " agent "\n"
                     "Current lane: " lane "\n\n"
                     (workspace-prompt workspace) "\n"
+                    (when (delegation-required? agent) (delegation-prompt))
                     "Previous run summaries:\n" (pr-str previous) "\n\n"
                     (or (pr-gate-retry-prompt ticket-id) "")
                     (when (= "fable" agent) (fable-policy-prompt))
@@ -2023,7 +2045,8 @@
         prompt-path (fs/path dir "prompt.md")
         stdout-path (fs/path dir "events.jsonl")
         stderr-path (fs/path dir "stderr.log")
-        last-message-path (fs/path dir "last-message.md")]
+        last-message-path (fs/path dir "last-message.md")
+        evidence-path (str (fs/path dir "delegation.json"))]
     (fs/create-dirs dir)
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
@@ -2034,7 +2057,7 @@
 
                    (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (into (mapcat (fn [dir] ["--add-dir" dir])
-                                 (cons (vault) (workspace-add-dirs workspace))))
+                                 (concat [(vault) (str dir)] (workspace-add-dirs workspace))))
 
                    true
                    (into (claude-model-args agent)))
@@ -2047,7 +2070,7 @@
 
                    (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (into ["--sandbox" (env "CODEX_TASK_BOARD_SANDBOX" "workspace-write")
-                          "--add-dir" (vault)])
+                          "--add-dir" (vault) "--add-dir" (str dir)])
 
                    (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
@@ -2060,7 +2083,10 @@
           idle-timeout-seconds (agent-idle-timeout-seconds)
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
                                               :out (io/file (str stdout-path))
-                                              :err (io/file (str stderr-path))}
+                                              :err (io/file (str stderr-path))
+                                              :extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path
+                                                          "TASK_BOARD_DELEGATION_ADD_DIRS" (json/generate-string
+                                                                                           (vec (cons (vault) (workspace-add-dirs workspace))))}}
                                        (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
           _ (register-agent-process! run (:proc proc))
@@ -2068,13 +2094,21 @@
                                                    (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
                                                    (finally
                                                      (unregister-agent-process! run)))
-          exit (:exit proc)
+          raw-exit (:exit proc)
           _ (when (and (claude-assignee? agent) (fs/exists? stdout-path))
               (io/copy (io/file (str stdout-path))
                        (io/file (str last-message-path))))
           last-message (when (fs/exists? last-message-path)
                          (slurp (str last-message-path)))
-          marker (result-marker last-message)]
+          marker (result-marker last-message)
+          delegation-ok? (or (not (delegation-required? agent))
+                             (not (zero? raw-exit))
+                             shutdown? idle-timeout?
+                             (= "blocked" marker)
+                             (zero? (:exit @(p/process ["python3" delegation-helper "verify"]
+                                                       {:extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path}
+                                                        :out :string :err :string}))))
+          exit (if delegation-ok? raw-exit 1)]
       (if shutdown?
         ;; The agent stopped because this runner is shutting down. Record the
         ;; interruption from the terminating side (the next owner re-marks the
@@ -2095,6 +2129,7 @@
                       :lane lane
                       :exit-code exit
                       :idle-timeout? idle-timeout?
+                      :delegation-ok? delegation-ok?
                       :result marker
                       :finished-at (now-str)})))
       {:exit exit
@@ -3519,6 +3554,15 @@
 
 (defn run-tests*! []
   (let [failures (atom [])]
+    ;; Route additions or model changes require an explicit delegation-policy review.
+    (when-not (= assignee->model {"codex" "gpt-6.1-terra" "codex-terra" "gpt-6.1-terra"
+                                  "codex-sol" "gpt-6.1-sol" "codex-full" "gpt-6.1-sol"
+                                  "codex-mini" "gpt-5.6-luna" "codex-astra" "gpt-6-astra"})
+      (swap! failures conj "review delegation policy for changed Codex routes"))
+    (when-not (= claude-assignee->model {"claude-fable" "claude-fable-5-1"
+                                        "claude-opus" "claude-opus-5-5"
+                                        "claude-sonnet" "claude-sonnet-5-5"})
+      (swap! failures conj "review delegation policy for changed Claude routes"))
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
     ;; Versioned projections cannot affect legacy candidate selection while off.
