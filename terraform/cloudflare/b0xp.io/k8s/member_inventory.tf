@@ -56,7 +56,7 @@ locals {
 
 output "inventory_gateway_rules" {
   description = "BOXP-330 temporary read-only inventory (inventory_gateway_rules)"
-  value = local.inventory_gateway
+  value       = local.inventory_gateway
 }
 
 output "inventory_device_settings" {
