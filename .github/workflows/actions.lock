@@ -22,6 +22,9 @@ workflows:
         - 'aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd'
         - 'suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10'
         - 'tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a'
+    '.github/workflows/aqua-github-comment.yaml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329'
     '.github/workflows/build-arc-runner-image.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc'
