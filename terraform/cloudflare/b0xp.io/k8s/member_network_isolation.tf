@@ -171,7 +171,8 @@ resource "cloudflare_zero_trust_device_custom_profile" "lolice_member" {
   service_mode_v2       = data.cloudflare_zero_trust_device_default_profile.current.service_mode_v2
   support_url           = data.cloudflare_zero_trust_device_default_profile.current.support_url
   switch_locked         = data.cloudflare_zero_trust_device_default_profile.current.switch_locked
-  tunnel_protocol       = data.cloudflare_zero_trust_device_default_profile.current.tunnel_protocol
+  # The default profile reports "" when no protocol is pinned.
+  tunnel_protocol       = data.cloudflare_zero_trust_device_default_profile.current.tunnel_protocol == "" ? null : data.cloudflare_zero_trust_device_default_profile.current.tunnel_protocol
 
   dns_search_suffixes            = data.cloudflare_zero_trust_device_default_profile.current.dns_search_suffixes
   register_interface_ip_with_dns = data.cloudflare_zero_trust_device_default_profile.current.register_interface_ip_with_dns
