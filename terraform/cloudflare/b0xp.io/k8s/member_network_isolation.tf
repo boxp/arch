@@ -172,4 +172,10 @@ resource "cloudflare_zero_trust_device_custom_profile" "lolice_member" {
   support_url           = data.cloudflare_zero_trust_device_default_profile.current.support_url
   switch_locked         = data.cloudflare_zero_trust_device_default_profile.current.switch_locked
   tunnel_protocol       = data.cloudflare_zero_trust_device_default_profile.current.tunnel_protocol
+
+  dns_search_suffixes            = data.cloudflare_zero_trust_device_default_profile.current.dns_search_suffixes
+  register_interface_ip_with_dns = data.cloudflare_zero_trust_device_default_profile.current.register_interface_ip_with_dns
+  sccm_vpn_boundary_support      = data.cloudflare_zero_trust_device_default_profile.current.sccm_vpn_boundary_support
+  uninstall_protection           = data.cloudflare_zero_trust_device_default_profile.current.uninstall_protection
+  virtual_networks               = data.cloudflare_zero_trust_device_default_profile.current.virtual_networks
 }
