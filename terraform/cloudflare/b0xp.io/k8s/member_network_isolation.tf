@@ -16,8 +16,12 @@
 # addresses", maintained by the lolice-member-portal Worker) minus the Owner.
 # The Owner (also the portal admin) and service-token devices
 # (codex-workspace) are never in the list, so their access is unchanged.
-# The Worker appends newly approved members to the list before enrolling them
-# (fail closed); this resource reconciles the list on every apply.
+# Terraform only seeds the list when it is created (ignore_changes = [items]);
+# afterwards the Worker is the single writer and appends newly approved members
+# before enrolling them (fail closed). Letting Terraform rewrite the whole set
+# on every apply could race with an approval and drop a just-approved member.
+# The check block below warns when an enrolled member is missing from the list
+# (e.g. someone added to the Access policy outside the portal).
 
 data "cloudflare_zero_trust_access_applications" "lolice_member" {
   account_id = var.account_id
@@ -85,6 +89,32 @@ resource "cloudflare_zero_trust_list" "lolice_members" {
       description = "lolice member"
     }
   ])
+
+  lifecycle {
+    ignore_changes = [items]
+  }
+}
+
+check "lolice_members_cover_enrollment" {
+  data "cloudflare_zero_trust_list" "lolice_members_live" {
+    account_id = var.account_id
+    list_id    = cloudflare_zero_trust_list.lolice_members.id
+  }
+
+  assert {
+    condition = length(setsubtract(
+      local.lolice_member_emails,
+      [for item in coalesce(data.cloudflare_zero_trust_list.lolice_members_live.items, []) : lower(item.value)],
+    )) == 0
+    # Only a count: member addresses must not appear in public plan output.
+    error_message = format(
+      "%d enrolled lolice member(s) are missing from the lolice-members Gateway list and are not restricted. Add them to the list (Zero Trust > Lists) or re-approve them through the portal.",
+      length(setsubtract(
+        local.lolice_member_emails,
+        [for item in coalesce(data.cloudflare_zero_trust_list.lolice_members_live.items, []) : lower(item.value)],
+      )),
+    )
+  }
 }
 
 resource "cloudflare_zero_trust_gateway_policy" "lolice_member_allow_game" {
