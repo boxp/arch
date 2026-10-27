@@ -41,6 +41,7 @@ function createEnv(pendingRequests = {}) {
     CF_API_TOKEN: "cf-token",
     CF_APP_ID: "app-id",
     CF_POLICY_ID: "policy-id",
+    MEMBER_GATEWAY_LIST_NAME: "lolice-members",
     PENDING_REQUESTS: createKv(pendingRequests),
     PORTAL_BASE_URL: "https://lolice.b0xp.io",
     RESEND_API_KEY: "resend-key",
@@ -57,6 +58,31 @@ function policyResponse(emails = []) {
       require: [],
     },
   }));
+}
+
+function gatewayListsResponse(lists = [{ id: "list-id", name: "lolice-members", type: "EMAIL" }]) {
+  return new Response(JSON.stringify({ result: lists }));
+}
+
+function gatewayItemsResponse(emails = []) {
+  return new Response(JSON.stringify({ result: [emails.map((value) => ({ value }))] }));
+}
+
+// Gateway list lookup, items GET (absent), PATCH append, verify items GET.
+function mockGatewayAppend(fetchMock, email = "member@example.com") {
+  return fetchMock
+    .mockResolvedValueOnce(gatewayListsResponse())
+    .mockResolvedValueOnce(gatewayItemsResponse())
+    .mockResolvedValueOnce(new Response("{}", { status: 200 }))
+    .mockResolvedValueOnce(gatewayItemsResponse([email]));
+}
+
+function approvalRequest() {
+  return new Request("https://lolice.b0xp.io/api/approve", {
+    body: "token=token",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    method: "POST",
+  });
 }
 
 afterEach(() => vi.unstubAllGlobals());
@@ -90,7 +116,7 @@ describe("lolice member portal Worker", () => {
 
   it("approves a request after the confirmation form is submitted", async () => {
     const env = createEnv({ token: JSON.stringify({ email: "member@example.com" }) });
-    const fetchMock = vi.fn()
+    const fetchMock = mockGatewayAppend(vi.fn())
       .mockResolvedValueOnce(policyResponse())
       .mockResolvedValueOnce(new Response("{}", { status: 200 }))
       .mockResolvedValueOnce(policyResponse(["member@example.com"]))
@@ -110,7 +136,8 @@ describe("lolice member portal Worker", () => {
 
   it("keeps the token when the Access policy update fails", async () => {
     const env = createEnv({ token: JSON.stringify({ email: "member@example.com" }) });
-    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 500 })));
+    const fetchMock = mockGatewayAppend(vi.fn(async () => new Response("{}", { status: 500 })));
+    vi.stubGlobal("fetch", fetchMock);
 
     const response = await worker.fetch(new Request("https://lolice.b0xp.io/api/approve", {
       body: "token=token",
@@ -125,7 +152,7 @@ describe("lolice member portal Worker", () => {
 
   it("completes access approval when the notification email fails", async () => {
     const env = createEnv({ token: JSON.stringify({ email: "member@example.com" }) });
-    const fetchMock = vi.fn()
+    const fetchMock = mockGatewayAppend(vi.fn())
       .mockResolvedValueOnce(policyResponse())
       .mockResolvedValueOnce(new Response("{}", { status: 200 }))
       .mockResolvedValueOnce(policyResponse(["member@example.com"]))
@@ -142,6 +169,75 @@ describe("lolice member portal Worker", () => {
     expect(await response.text()).toContain("Cloudflare Access ポリシーへの追加は");
     expect(env.PENDING_REQUESTS.delete).toHaveBeenCalledWith("token");
     expect(await env.PENDING_REQUESTS.get("token", "json")).toBeNull();
+  });
+
+  it("adds the member to the Gateway list before the Access policy", async () => {
+    const env = createEnv({ token: JSON.stringify({ email: "member@example.com" }) });
+    const fetchMock = mockGatewayAppend(vi.fn())
+      .mockResolvedValueOnce(policyResponse())
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }))
+      .mockResolvedValueOnce(policyResponse(["member@example.com"]))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(approvalRequest(), env);
+
+    expect(response.status).toBe(302);
+    const calls = fetchMock.mock.calls.map(([url, init]) => `${init?.method ?? "GET"} ${url}`);
+    const patchIndex = calls.indexOf("PATCH https://api.cloudflare.com/client/v4/accounts/account-id/gateway/lists/list-id");
+    const putIndex = calls.indexOf("PUT https://api.cloudflare.com/client/v4/accounts/account-id/access/apps/app-id/policies/policy-id");
+    expect(calls[0]).toBe("GET https://api.cloudflare.com/client/v4/accounts/account-id/gateway/lists?type=EMAIL");
+    expect(patchIndex).toBeGreaterThan(0);
+    expect(putIndex).toBeGreaterThan(patchIndex);
+    expect(JSON.parse(fetchMock.mock.calls[patchIndex][1].body)).toEqual({
+      append: [{ value: "member@example.com", description: "lolice member" }],
+    });
+  });
+
+  it("does not enroll the member when the Gateway list is missing", async () => {
+    const env = createEnv({ token: JSON.stringify({ email: "member@example.com" }) });
+    const fetchMock = vi.fn().mockResolvedValueOnce(gatewayListsResponse([]));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(approvalRequest(), env);
+
+    expect(response.status).toBe(502);
+    expect(await response.text()).toContain("メンバー用 Gateway リストの更新に失敗しました");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(env.PENDING_REQUESTS.delete).not.toHaveBeenCalled();
+    expect(await env.PENDING_REQUESTS.get("token", "json")).toEqual({ email: "member@example.com" });
+  });
+
+  it("skips the Gateway PATCH when the member is already listed", async () => {
+    const env = createEnv({ token: JSON.stringify({ email: "member@example.com" }) });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(gatewayListsResponse())
+      .mockResolvedValueOnce(gatewayItemsResponse(["Member@Example.com"]))
+      .mockResolvedValueOnce(policyResponse())
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }))
+      .mockResolvedValueOnce(policyResponse(["member@example.com"]))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(approvalRequest(), env);
+
+    expect(response.status).toBe(302);
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === "PATCH")).toBe(false);
+  });
+
+  it("never adds the Owner to the member Gateway list", async () => {
+    const env = createEnv({ token: JSON.stringify({ email: "admin@example.com" }) });
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(policyResponse())
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }))
+      .mockResolvedValueOnce(policyResponse(["admin@example.com"]))
+      .mockResolvedValueOnce(new Response("{}", { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const response = await worker.fetch(approvalRequest(), env);
+
+    expect(response.status).toBe(302);
+    expect(fetchMock.mock.calls.some(([url]) => String(url).includes("/gateway/lists"))).toBe(false);
   });
 
   it("rejects a pending request", async () => {
