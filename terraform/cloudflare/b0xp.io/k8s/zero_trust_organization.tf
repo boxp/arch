@@ -9,7 +9,8 @@
 # is omitted from the configuration would be reset. To keep all existing
 # dashboard-managed values (auth domain, login design, MFA, etc.), every
 # attribute is passed through from the current organization read by the data
-# source, and only warp_auth_session_duration is set explicitly.
+# source. Only warp_auth_session_duration and service_token_inactivity (see
+# below) are set explicitly.
 #
 # allow_authenticate_via_warp ("Apply to all Access applications") is kept at
 # its current value on purpose: client sessions are enabled per Access
