@@ -48,6 +48,7 @@ jobs:
             -o "${tmp}/bb.tar.gz"
           tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
           sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
+      - run: python3 tests/codex-workspace/delegation-test.py
       - run: tests/codex-workspace/task-board-runner-test.sh
       - run: tests/codex-workspace/task-board-events-test.sh
       - run: tests/codex-workspace/localllm-docs-test.sh
