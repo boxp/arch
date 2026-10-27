@@ -154,7 +154,7 @@ resource "cloudflare_zero_trust_device_custom_profile" "lolice_member" {
   description = "BOXP-330: lolice members route only the game servers and the Access team domain through WARP"
   enabled     = true
   precedence  = 100
-  match       = sensitive(format("identity.email in {%s}", join(" ", [
+  match = sensitive(format("identity.email in {%s}", join(" ", [
     for email in local.lolice_member_emails : jsonencode(email)
   ])))
 
