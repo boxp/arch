@@ -96,10 +96,18 @@ def main():
             assert entry["algorithm"] == "sha256"
             assert entry["checksum"].lower() == signed[entry["id"].rsplit("/", 1)[1]]
         print("PASS: signed checksums match all six platform entries", flush=True)
+        committed_file = REPO / "aqua/aqua-checksums.json"
+        committed = [entry for entry in json.loads(committed_file.read_bytes())["checksums"]
+                     if "/suzuki-shunsuke/github-comment/" in entry["id"]]
+        normalize = lambda values: {entry["id"]: (entry["algorithm"], entry["checksum"].lower())
+                                    for entry in values}
+        assert len(committed) == 6 and normalize(committed) == normalize(entries)
+        # Install with the actual committed file, not only the freshly generated fixture.
+        shutil.copy(committed_file, directory / "aqua-checksums.json")
         print(run([AQUA, "exec", "--", "github-comment", "--version"], env), flush=True)
         run([AQUA, "update-checksum", "-deep", "-prune"], env)
         assert generated == (directory / "aqua-checksums.json").read_bytes()
-        print("PASS: real install and idempotent checksum generation", flush=True)
+        print("PASS: committed checksums, real install and idempotent generation", flush=True)
 
         cosign = next(path for path in (directory / "root/pkgs").rglob("cosign-linux-amd64")
                       if path.is_file())
