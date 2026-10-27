@@ -1514,6 +1514,8 @@
 (defn claude-policy-prompt [agent]
   (str "Claude Code routing policy:\n"
        "- You are the " agent " entry point for this Task Board run. Complete the task using the explicitly selected Claude model.\n"
+       (when (contains? #{"claude-fable" "claude-opus"} agent)
+         "- Delegate independent investigation, implementation, file editing, and test execution to Codex whenever practical. Use the default Codex route (gpt-6.1-terra, unless CODEX_TASK_BOARD_MODEL overrides it); reserve gpt-6.1-sol for high-complexity work and gpt-6-astra for the most demanding work. Retain final judgment and verify delegated results.\n")
        "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 

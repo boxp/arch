@@ -389,6 +389,7 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
     esac
     write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: ${assignee}]] #ticket status::in-progress"
     write_ticket "${vault}" "${ticket}" in-progress "${assignee}"
+    : > "${prompt_log}"
 
     PATH="${path_bin}:$PATH" \
       CODEX_TASK_BOARD_CLAUDE_BIN="${pinned_bin}/claude" \
@@ -403,6 +404,17 @@ test_explicit_claude_assignees_use_fixed_models_and_pinned_binary() {
     assert_file_not_contains "${args_dir}/${ticket}.log" '--agent'
     assert_file_contains "${prompt_log}" "^Task Board assignee/agent: ${assignee}$"
     assert_file_contains "${prompt_log}" 'Claude Code routing policy'
+    case "${assignee}" in
+      claude-fable|claude-opus)
+        assert_file_contains "${prompt_log}" 'Delegate independent investigation, implementation, file editing, and test execution to Codex'
+        assert_file_contains "${prompt_log}" 'gpt-6.1-terra'
+        assert_file_contains "${prompt_log}" 'Retain final judgment and verify delegated results'
+        ;;
+      claude-sonnet)
+        assert_file_not_contains "${prompt_log}" 'Delegate independent investigation, implementation, file editing, and test execution to Codex'
+        ;;
+    esac
+    assert_file_not_contains "${prompt_log}" 'Fable routing policy'
     assert_file_contains "${prompt_log}" "~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note ${ticket}"
     assert_run_summary_contains "${state}" "${ticket}" ":agent \"${assignee}\""
     assert_run_summary_contains "${state}" "${ticket}" ':status :succeeded'
