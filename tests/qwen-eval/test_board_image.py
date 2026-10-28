@@ -26,6 +26,17 @@ class BoardImageTest(unittest.TestCase):
             for bad in [good.replace(':created? true',':created? false'),good.replace(':action :edit',':action :revise'),good.replace(':status :review',':status :staged')]:
                 audit.write_text(bad)
                 with self.assertRaises(ValueError): creation(d,'BOXP-350',run)
+    def test_revision_must_descend_from_the_same_new_note(self):
+        with tempfile.TemporaryDirectory() as d:
+            first='20261028T113859Z-aaaa-bbbb';second='20261028T114859Z-aaaa-bbbb'
+            one=Path(d)/'runs/BOXP-350'/first;one.mkdir(parents=True)
+            two=Path(d)/'runs/BOXP-350'/second;two.mkdir()
+            original='{:ticket-id "BOXP-350" :run-id "'+first+'" :status :review :mode "create" :action :edit :docs-kind "character" :applied [{:path "new.md" :created? true :before-sha256 nil :after-sha256 "first"}]}'
+            revised='{:ticket-id "BOXP-350" :run-id "'+second+'" :status :review :mode "create" :action :revise :docs-kind "character" :applied [{:path "new.md" :created? false :before-sha256 "first" :after-sha256 "second"}]}'
+            (one/'localllm-audit.edn').write_text(original);(two/'localllm-audit.edn').write_text(revised)
+            self.assertEqual(creation(d,'BOXP-350',second)['creation-origin'],first)
+            (two/'localllm-audit.edn').write_text(revised.replace(':before-sha256 "first"',':before-sha256 "owner-edit"'))
+            with self.assertRaisesRegex(ValueError,'lineage'): creation(d,'BOXP-350',second)
     def test_original_images_go_to_local_vision_then_manifest(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);vault=root/'vault';folder=vault/'ひとはこさんバース/characters';folder.mkdir(parents=True)
