@@ -57,6 +57,12 @@ class BoardImageTest(unittest.TestCase):
             other=vault/'ひとはこさんバース/other';other.mkdir();(other/'original.png').write_bytes(png())
             with self.assertRaisesRegex(ValueError,'ambiguous'):
                 prepare_board_image.resolve_link(vault,note,'![[original.png]]')
+    def test_external_absolute_and_unresolved_images_are_refused(self):
+        with tempfile.TemporaryDirectory() as d:
+            vault=Path(d);note=vault/'note.md';note.write_text('synthetic')
+            for link in ['![original](https://example.com/original.png)', '![[/tmp/private.png]]', '![original](missing)', '![original]()']:
+                with self.assertRaises(ValueError):
+                    prepare_board_image.resolve_link(vault,note,link)
     def test_text_budget_exceeded_refuses_before_model(self):
         with tempfile.TemporaryDirectory() as d:
             root=Path(d);folder=root/'ひとはこさんバース';folder.mkdir()

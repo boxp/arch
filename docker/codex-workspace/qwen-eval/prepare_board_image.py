@@ -31,7 +31,9 @@ def resolve_link(vault, source, link):
     if link.startswith(('![[', '[[')): value = link.lstrip('!')[2:-2].split('|',1)[0]
     else: value = link.split('](',1)[1][:-1].strip().strip('<>')
     value = urllib.parse.unquote(value.split('#',1)[0])
+    is_image = link.startswith('!') or Path(urllib.parse.urlsplit(value).path).suffix.lower() in ('.png','.jpg','.jpeg','.webp','.svg')
     if not value or '://' in value or value.startswith('/'):
+        if is_image: raise ValueError('original visual reference must be a resolvable local vault path')
         return None
     # Normal Markdown relative paths may contain parent segments; resolve
     # canonical path first, then enforce the vault boundary and no symlinks.
@@ -51,7 +53,7 @@ def resolve_link(vault, source, link):
             if resolved.suffix.lower() in ('.png','.jpg','.jpeg','.webp'): matches.add(resolved)
         except (ValueError,OSError): pass
     if len(matches) != 1:
-        if Path(value).suffix.lower() in ('.png','.jpg','.jpeg','.webp','.svg'):
+        if is_image:
             raise ValueError('original visual reference is unresolved or ambiguous')
         return None
     return matches.pop()
