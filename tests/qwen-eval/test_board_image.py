@@ -49,5 +49,24 @@ class BoardImageTest(unittest.TestCase):
             self.assertEqual(json.loads(manifest.read_text())['job']['reference']['sha256'],hashlib.sha256(png()).hexdigest())
             self.assertEqual(hashlib.sha256(note.read_bytes()).hexdigest(),digest)
 
+    def test_ambiguous_image_link_cannot_become_no_reference(self):
+        with tempfile.TemporaryDirectory() as d:
+            vault=Path(d);folder=vault/'ひとはこさんバース/characters';folder.mkdir(parents=True)
+            note=folder/'new.md';note.write_text('synthetic')
+            (folder/'original.png').write_bytes(png())
+            other=vault/'ひとはこさんバース/other';other.mkdir();(other/'original.png').write_bytes(png())
+            with self.assertRaisesRegex(ValueError,'ambiguous'):
+                prepare_board_image.resolve_link(vault,note,'![[original.png]]')
+    def test_text_budget_exceeded_refuses_before_model(self):
+        with tempfile.TemporaryDirectory() as d:
+            root=Path(d);folder=root/'ひとはこさんバース';folder.mkdir()
+            note=folder/'new.md';note.write_text('x'*24001)
+            audit={'applied':[{'path':'ひとはこさんバース/new.md','after-sha256':hashlib.sha256(note.read_bytes()).hexdigest()}],'sources':[]}
+            args=['prepare','--vault',str(root),'--ticket','BOXP-350','--run','20261028T113859Z-aaaa-bbbb','--manifest',str(root/'manifest.json')]
+            with patch('sys.argv',args),patch('prepare_board_image.creation',return_value=audit),patch('urllib.request.urlopen') as model:
+                with self.assertRaisesRegex(ValueError,'text budget'):
+                    prepare_board_image.main()
+                model.assert_not_called()
+
 
 if __name__=='__main__':unittest.main()

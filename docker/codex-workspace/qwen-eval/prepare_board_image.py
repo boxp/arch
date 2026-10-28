@@ -50,7 +50,10 @@ def resolve_link(vault, source, link):
             resolved=local_path(vault,rel)
             if resolved.suffix.lower() in ('.png','.jpg','.jpeg','.webp'): matches.add(resolved)
         except (ValueError,OSError): pass
-    if len(matches) != 1: return None
+    if len(matches) != 1:
+        if Path(value).suffix.lower() in ('.png','.jpg','.jpeg','.webp','.svg'):
+            raise ValueError('original visual reference is unresolved or ambiguous')
+        return None
     return matches.pop()
 
 
@@ -78,9 +81,8 @@ def main():
         for link in links(text):
             image=resolve_link(vault,path,link)
             if image: images.add(image)
-        remaining=24000-chars
-        if remaining>0:
-            excerpt=text[:remaining];contexts.append({'path':rel,'text':excerpt});chars+=len(excerpt)
+        if chars+len(text)>24000: raise ValueError('bounded research text budget exceeded')
+        contexts.append({'path':rel,'text':text});chars+=len(text)
         sources.append({'path':rel,'sha256':hashlib.sha256(data).hexdigest()})
     image_specs=[]
     if len(images)>8: raise ValueError('bounded visual reference budget exceeded')
