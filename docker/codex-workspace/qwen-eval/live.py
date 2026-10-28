@@ -153,6 +153,11 @@ print(json.dumps({str(pid):open('/proc/%d/comm'%pid).read().strip() for pid in i
         command(['git', 'switch', '-c', branch, 'origin/main'], cwd=self.lolice)
         if (replicas(self.lolice/GEMMA), replicas(self.lolice/QWEN)) != expected:
             raise RuntimeError('GitOps desired state changed unexpectedly')
+        if phase == 'fence':
+            declared = re.search(r'^  state: (.*)$', (self.lolice/GATE).read_text(), re.M)[1]
+            actual = cluster('configmap','llama-server-admission','local-llm')['data']['state'].strip()
+            if not declared.startswith('open:') or actual != declared:
+                raise RuntimeError('another admission fence/drift already exists; do not take ownership')
         if phase != 'fence' and ('closed:' + self.token) not in (self.lolice/GATE).read_text() and phase != 'reopen':
             raise RuntimeError('fence ownership changed')
         if phase == 'reopen' and ('verify:' + self.token) not in (self.lolice/GATE).read_text():
