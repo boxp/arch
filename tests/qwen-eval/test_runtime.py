@@ -38,6 +38,18 @@ class RuntimeTests(unittest.TestCase):
         self.c = self.make()
     def make(self):
         return RuntimeController(self.tmp.name, 'BOXP-344-test', self.backend, wall=lambda:self.now)
+    def test_unknown_generation_survives_restart_without_scaling_qwen_down(self):
+        with tempfile.TemporaryDirectory() as root:
+            backend=Backend()
+            adapter=RuntimeAdapter(root,root,'BOXP-349-uncertain',backend)
+            with adapter.controller.db:
+                adapter.controller.db.execute('INSERT INTO inflight_generation VALUES (1,?)', ('BOXP-350',))
+            adapter.controller.db.close()
+            restarted=RuntimeAdapter(root,root,'BOXP-349-uncertain',backend)
+            self.addCleanup(restarted.controller.db.close)
+            with self.assertRaisesRegex(RecoveryRequired,'do not stop or kill'):
+                restarted.stop_qwen_and_prove_gpu_free()
+            self.assertEqual(backend.calls,[])
     def test_full_order_and_owner(self):
         for phase in ('fence','stop-gemma','start-qwen','stop-qwen','restore-gemma','reopen'):
             if phase == 'reopen': self.c.mark_verified()

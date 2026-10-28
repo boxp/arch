@@ -40,6 +40,7 @@ class RuntimeController:
         self.verified = False
         self.db = sqlite3.connect(str(Path(root) / 'runtime.sqlite'), timeout=30)
         self.db.execute('PRAGMA synchronous=FULL')
+        self.db.execute('CREATE TABLE IF NOT EXISTS inflight_generation (id INTEGER PRIMARY KEY CHECK(id=1), job TEXT NOT NULL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS transitions (id INTEGER PRIMARY KEY, phase TEXT NOT NULL, intended_at REAL NOT NULL, settled_at REAL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS dispatches (id INTEGER PRIMARY KEY AUTOINCREMENT)')
         self.db.execute('CREATE TABLE IF NOT EXISTS window (id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL, started REAL NOT NULL, phase TEXT NOT NULL, pending TEXT, expected TEXT, desired TEXT)')
@@ -202,9 +203,20 @@ print('completed')
 
     def generate(self, contract):
         self.controller.reserve_dispatch()
-        return super().generate(contract)
+        with self.controller.db:
+            self.controller.db.execute('INSERT INTO inflight_generation VALUES (1,?)', (contract['id'],))
+        try:
+            return super().generate(contract)
+        finally:
+            # LiveAdapter clears uncertainty only after observing the done
+            # marker. Preserve pending across timeout, cancellation and restart.
+            if self.uncertain_job is None:
+                with self.controller.db:
+                    self.controller.db.execute('DELETE FROM inflight_generation WHERE id=1')
 
     def stop_qwen_and_prove_gpu_free(self):
+        if self.uncertain_job is not None or self.controller.db.execute('SELECT job FROM inflight_generation WHERE id=1').fetchone():
+            raise RecoveryRequired('generation result is unknown; do not stop or kill Qwen, keep admission closed')
         phase, pending = self.controller.db.execute(
             'SELECT phase,pending FROM window WHERE id=1').fetchone()
         if pending is not None:
