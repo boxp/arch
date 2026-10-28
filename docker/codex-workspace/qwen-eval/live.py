@@ -263,6 +263,7 @@ print(json.dumps({str(pid):open('/proc/%d/comm'%pid).read().strip() for pid in i
         pods = cluster('pods','-l=app=llama-server','local-llm')['items']
         if len(pods) != 1 or pods[0]['metadata'].get('deletionTimestamp'): raise RuntimeError('unexpected llama Pod set')
         pod = pods[0]
+        if pod['spec'].get('nodeName') != 'golyat-4': raise RuntimeError('llama is outside the observed GPU node')
         args = next(c['args'] for c in pod['spec']['containers'] if c['name']=='llama-server')
         if args[args.index('--host')+1] != '127.0.0.1': raise RuntimeError('raw inference port is not fenced')
         return pod, 'http://' + pod['status']['podIP']
@@ -359,7 +360,7 @@ print('empty')
         self.phase('start-qwen')
         self.qwen_started = True
         pod = cluster('pods','-l=app=qwen-image-eval','stable-diffusion')['items']
-        if len(pod)!=1: raise RuntimeError('unexpected Qwen Pod set')
+        if len(pod)!=1 or pod[0]['spec'].get('nodeName')!='golyat-4': raise RuntimeError('unexpected Qwen Pod/node set')
         self.record('qwen-pod', {'uid':pod[0]['metadata']['uid'],'containers':pod[0]['status']['containerStatuses']})
 
     def generate(self, contract):
@@ -391,6 +392,7 @@ if not p.exists() or not done.exists(): print('{}')
 else:
  try:
   meta=json.loads(p.read_text()); image=b/(j['id']+'.png')
+  meta['load']=json.loads((b/'load.json').read_text())
   print(json.dumps({'metadata':meta,'png':base64.b64encode(image.read_bytes()).decode() if image.exists() else None}))
  except (ValueError,OSError): print('{}')
 ''', {'name':name,'id':contract['id']}, timeout=30))
