@@ -202,6 +202,11 @@ class Harness:
                     except Exception as exc:
                         persistence_ok = False
                         errors[board] = 'persistence: ' + repr(exc)
+                if not safe:
+                    try:
+                        safe = bool(getattr(adapter, 'can_restore_without_handover', lambda: False)())
+                    except Exception as exc:
+                        for board in pending: errors[board] = errors.get(board, '') + '; recovery proof: ' + repr(exc)
                 if safe:
                     try:
                         adapter.stop_qwen_and_prove_gpu_free()

@@ -66,12 +66,13 @@ def http(url, method='GET', data=None, timeout=10):
 
 class LiveAdapter:
     profile = 'turbo'
+    evidence_directory = 'live-evidence'
 
     def __init__(self, root, lolice, token):
         if not re.fullmatch(r'BOXP-344-[A-Za-z0-9_-]+', token): raise ValueError('invalid run token')
         self.root, self.lolice, self.token = Path(root), Path(lolice), token
-        self.evidence = self.root / 'live-evidence'
-        self.evidence.mkdir(exist_ok=False)
+        self.evidence = self.root / self.evidence_directory
+        self.evidence.mkdir(parents=True, exist_ok=False)
         self.generation_metadata = {}
         self.pod_uid = None
         self.qwen_started = False

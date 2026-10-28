@@ -8,6 +8,7 @@ or RBAC is installed here. An ambiguous write is never replayed.
 import json
 import sqlite3
 import time
+import uuid
 from pathlib import Path
 
 from live import LiveAdapter, PHASES
@@ -154,8 +155,24 @@ class RuntimeAdapter(LiveAdapter):
     This is not a standalone CLI or an enabled normal-Board integration.
     """
     def __init__(self, root, lolice, token, backend, **limits):
+        self.evidence_directory = 'runtime-evidence/' + uuid.uuid4().hex
         super().__init__(root, lolice, token)
         self.controller = RuntimeController(root, token, backend, **limits)
+
+    def record(self, name, value):
+        # A fresh probe after interruption must preserve the previous proof.
+        super().record(name + '-' + uuid.uuid4().hex, value)
+
+    def can_restore_without_handover(self):
+        # Harness may recover a completed drain cancelled before Gemma stops.
+        # An incomplete/ambiguous drain deliberately remains fail closed.
+        try:
+            self.assert_lease()
+            return (self.pod_uid is not None and self.controller.db.execute(
+                'SELECT phase,pending FROM window WHERE id=1').fetchone() == ('fence', None)
+                and list(self.controller.backend.snapshot()) == [1, 0, 'closed:' + self.token])
+        except Exception:
+            return False
 
     def phase(self, phase):
         self.assert_lease()

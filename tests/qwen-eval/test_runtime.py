@@ -6,6 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'docker/codex-workspace/qwen-eval'))
 from runtime import RuntimeController, RecoveryRequired, RuntimeAdapter
+from harness import Harness, FakeAdapter
 from unittest.mock import Mock
 
 
@@ -100,14 +101,43 @@ class RuntimeTests(unittest.TestCase):
         count = len(self.backend.calls)
         self.c.db.close(); self.c = self.make()
         with self.assertRaises(RecoveryRequired): self.c.phase('reopen')
-        adapter = RuntimeAdapter.__new__(RuntimeAdapter)
-        adapter.controller = self.c; adapter.token = self.c.token
+        self.c.db.close()
+        adapter = RuntimeAdapter(self.tmp.name, self.tmp.name, self.c.token, self.backend)
+        self.c = adapter.controller
         adapter.assert_lease = self.backend.assert_lease
-        adapter.verify_gemma_ready = Mock()
+        adapter.verify_gemma_ready = Mock(side_effect=lambda: adapter.record('gemma-restored', {}))
         adapter.restore_gemma_verify()
         adapter.verify_gemma_ready.assert_called_once_with()
         self.assertEqual(len(self.backend.calls), count)
+        adapter.restore_gemma_verify()
+        self.assertEqual(len(list(adapter.evidence.glob('gemma-restored-*.json'))), 2)
         self.c.phase('reopen')
+
+    def test_harness_restores_cancelled_completed_fence(self):
+        class CancelBeforeStop(FakeAdapter):
+            def stop_gemma_and_prove_gpu_free(self): raise RuntimeError('cancelled')
+            def can_restore_without_handover(self): return True
+        h = Harness(Path(self.tmp.name)/'harness')
+        self.addCleanup(h.db.close)
+        h.submit('task-board'); a = CancelBeforeStop()
+        self.assertEqual(h.run('task-board', a), 'failed')
+        self.assertNotIn('generate', a.calls)
+        self.assertIn('restore_gemma_verify', a.calls)
+        self.assertIn('reopen', a.calls)
+
+    def test_adapter_restart_preserves_evidence(self):
+        a = RuntimeAdapter(self.tmp.name, self.tmp.name, self.c.token, self.backend)
+        self.addCleanup(a.controller.db.close)
+        a.record('proof', {'first':True})
+        b = RuntimeAdapter(self.tmp.name, self.tmp.name, self.c.token, self.backend)
+        self.addCleanup(b.controller.db.close)
+        b.record('proof', {'second':True})
+        self.assertNotEqual(a.evidence, b.evidence)
+        self.assertEqual(len(list(Path(self.tmp.name).glob('runtime-evidence/*/proof-*.json'))), 2)
+        a.assert_lease = self.backend.assert_lease
+        self.assertFalse(a.can_restore_without_handover())
+        self.c.phase('fence'); a.pod_uid = 'drained'
+        self.assertTrue(a.can_restore_without_handover())
 
     def test_drift_and_lost_lease_block_writes(self):
         self.backend.state[2] = 'closed:someone-else'
