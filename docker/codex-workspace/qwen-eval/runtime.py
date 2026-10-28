@@ -40,6 +40,7 @@ class RuntimeController:
         self.verified = False
         self.db = sqlite3.connect(str(Path(root) / 'runtime.sqlite'), timeout=30)
         self.db.execute('PRAGMA synchronous=FULL')
+        self.db.execute('CREATE TABLE IF NOT EXISTS transitions (id INTEGER PRIMARY KEY, phase TEXT NOT NULL, intended_at REAL NOT NULL, settled_at REAL)')
         self.db.execute('CREATE TABLE IF NOT EXISTS dispatches (id INTEGER PRIMARY KEY AUTOINCREMENT)')
         self.db.execute('CREATE TABLE IF NOT EXISTS window (id INTEGER PRIMARY KEY CHECK(id=1), token TEXT NOT NULL, started REAL NOT NULL, phase TEXT NOT NULL, pending TEXT, expected TEXT, desired TEXT)')
         with self.db:
@@ -114,6 +115,7 @@ class RuntimeController:
         desired = [*after, mode + ':' + self.token]
         expected = list(snapshot)
         with self.db:
+            self.db.execute('INSERT INTO transitions(phase,intended_at) VALUES (?,?)', (name, self.wall()))
             self.db.execute('UPDATE window SET pending=?,expected=?,desired=? WHERE id=1',
                             (name, json.dumps(expected), json.dumps(desired)))
         deadline = self.clock() + self.timeout
@@ -126,6 +128,7 @@ class RuntimeController:
         if self.clock() >= deadline or list(self.backend.snapshot()) != desired:
             raise RecoveryRequired('transition timeout or readback mismatch')
         with self.db:
+            self.db.execute('UPDATE transitions SET settled_at=? WHERE id=(SELECT max(id) FROM transitions WHERE phase=? AND settled_at IS NULL)', (self.wall(), name))
             self.db.execute('UPDATE window SET phase=?,pending=NULL,expected=NULL,desired=NULL WHERE id=1 AND pending=?', (name, name))
 
     def reconcile(self):

@@ -60,6 +60,9 @@ class TransportTests(unittest.TestCase):
             if phase == 'reopen': controller.mark_verified()
             controller.phase(phase)
         self.assertEqual(self.backend.snapshot(), [1,0,'open:BOXP-349-test'])
+        times=controller.db.execute('SELECT intended_at,settled_at FROM transitions ORDER BY id').fetchall()
+        self.assertEqual(len(times),6)
+        self.assertTrue(all(a <= b for a,b in times))
         self.assertEqual([x[0] for x in self.api.patches], [2,0,1,1,2,0,2])
         for index, patch, args in self.api.patches:
             self.assertEqual([x['op'] for x in patch], ['test','test','test','replace'])
