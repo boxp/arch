@@ -21,8 +21,9 @@ def creation(root, ticket, run):
         if item.is_symlink(): raise ValueError('audit root symlink')
     directory = root.resolve(strict=True) / 'runs' / ticket
     target = directory / run / 'localllm-audit.edn'
-    paths = sorted(path for path in directory.glob('*/localllm-audit.edn') if path.parent.name <= run)
+    paths = sorted(directory.glob('*/localllm-audit.edn'))
     if target not in paths: raise ValueError('Board creation audit unavailable')
+    if target != paths[-1]: raise ValueError('latest Board audit must be selected')
     for path in paths:
         for item in (path, *path.parents):
             if item.is_symlink(): raise ValueError('audit symlink')
@@ -39,6 +40,8 @@ def creation(root, ticket, run):
     head, origin = None, None
     for item in audits:
         if item.get('ticket-id') != ticket or item.get('status') != 'review' or item.get('mode') != 'create' or item.get('docs-kind') != 'character':
+            if item.get('applied') or origin is not None:
+                raise ValueError('non-lineage audit interrupts character creation')
             continue
         if len(item.get('applied', [])) != 1: raise ValueError('one character note per run is required')
         note = item['applied'][0]

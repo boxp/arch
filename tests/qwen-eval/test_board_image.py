@@ -35,6 +35,11 @@ class BoardImageTest(unittest.TestCase):
             revised='{:ticket-id "BOXP-350" :run-id "'+second+'" :status :review :mode "create" :action :revise :docs-kind "character" :applied [{:path "new.md" :created? false :before-sha256 "first" :after-sha256 "second"}]}'
             (one/'localllm-audit.edn').write_text(original);(two/'localllm-audit.edn').write_text(revised)
             self.assertEqual(creation(d,'BOXP-350',second)['creation-origin'],first)
+            with self.assertRaisesRegex(ValueError,'latest'): creation(d,'BOXP-350',first)
+            middle=Path(d)/'runs/BOXP-350/20261028T114000Z-aaaa-bbbb';middle.mkdir()
+            (middle/'localllm-audit.edn').write_text(original.replace(':mode "create"',':mode "amend"'))
+            with self.assertRaisesRegex(ValueError,'non-lineage'): creation(d,'BOXP-350',second)
+            (middle/'localllm-audit.edn').unlink();middle.rmdir()
             (two/'localllm-audit.edn').write_text(revised.replace(':before-sha256 "first"',':before-sha256 "owner-edit"'))
             with self.assertRaisesRegex(ValueError,'lineage'): creation(d,'BOXP-350',second)
     def test_original_images_go_to_local_vision_then_manifest(self):
