@@ -12,6 +12,7 @@ import json
 from pathlib import Path
 import re
 import shlex
+import signal
 import subprocess
 import time
 import urllib.error
@@ -196,15 +197,16 @@ print(json.dumps({str(pid):open('/proc/%d/comm'%pid).read().strip() for pid in i
             self.wait_application('stable-diffusion', merged_sha, desired, mode)
             self.assert_lease()
             self.pending_phase = None
-        except Exception:
+        except BaseException:
             # Any exit from a pending phase (including timeout, GitHub read or
             # evidence failure) must attempt cancellation of our own OPEN PR.
             try:
                 if url is None:
                     matches=json.loads(command(['gh','pr','list','--head',branch,'--state','all','--json','url'],cwd=self.lolice))
                     if len(matches)==1: url=matches[0]['url']
+                    else: raise RuntimeError('ambiguous PR lookup for '+branch+': '+str(len(matches)))
                 if url is not None: self.cancel_pending_pr(url)
-            except Exception as cancellation:
+            except BaseException as cancellation:
                 print('RECOVERY_REQUIRED unresolved PR for '+branch+': '+repr(cancellation),flush=True)
             raise
 
@@ -445,6 +447,8 @@ else:
 
 
 def main():
+    def terminated(signum, frame): raise SystemExit(128+signum)
+    signal.signal(signal.SIGTERM, terminated)
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root',required=True)
     parser.add_argument('--lolice-worktree',required=True)

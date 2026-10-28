@@ -107,3 +107,19 @@ class UncertainExecution(unittest.TestCase):
             with self.assertRaises(TimeoutError):self.a.phase('start-qwen')
         self.assertEqual(self.a.pending_phase,'start-qwen')
         with self.assertRaises(RuntimeError):self.a.stop_qwen_and_prove_gpu_free()
+    def test_interrupt_during_create_finds_and_cancels_open_pr(self):
+        for file,count in ((live.GEMMA,0),(live.QWEN,0)):
+            p=Path(self.temp.name)/file;p.parent.mkdir(parents=True,exist_ok=True)
+            p.write_text('spec:\n  replicas: '+str(count)+'\n')
+        (Path(self.temp.name)/live.GATE).write_text('data:\n  state: closed:BOXP-344-test\n')
+        commands=[]
+        def fake(args,**kwargs):
+            commands.append(args)
+            if args[:3]==['gh','pr','create']:raise KeyboardInterrupt()
+            if args[:3]==['gh','pr','list']:return '[{"url":"https://github.com/boxp/lolice/pull/1"}]'
+            if args[:3]==['gh','pr','view']:
+                return '{"state":"CLOSED"}' if any(x[:3]==['gh','pr','close'] for x in commands) else '{"state":"OPEN"}'
+            return ''
+        with patch.object(live,'command',side_effect=fake):
+            with self.assertRaises(KeyboardInterrupt):self.a.phase('start-qwen')
+        self.assertTrue(any(x[:3]==['gh','pr','close'] for x in commands))
