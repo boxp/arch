@@ -23,8 +23,8 @@ BASE = 'http://llama-server.local-llm.svc.cluster.local:8080/v1/chat/completions
 
 
 def links(text):
-    return (re.findall(r'!?\[\[[^\]\n]+\]\]', text) +
-            re.findall(r'!?\[[^\]\n]*\]\([^\n)]+\)', text))
+    return (re.findall(r'!?\[\[[^\]\n]*\]\]', text) +
+            re.findall(r'!?\[[^\]\n]*\]\([^\n)]*\)', text))
 
 
 def resolve_link(vault, source, link):
