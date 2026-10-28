@@ -69,7 +69,7 @@ class LiveAdapter:
     evidence_directory = 'live-evidence'
 
     def __init__(self, root, lolice, token):
-        if not re.fullmatch(r'BOXP-344-[A-Za-z0-9_-]+', token): raise ValueError('invalid run token')
+        if not re.fullmatch(r'BOXP-(?:344|349)-[A-Za-z0-9_-]+', token): raise ValueError('invalid run token')
         self.root, self.lolice, self.token = Path(root), Path(lolice), token
         self.evidence = self.root / self.evidence_directory
         self.evidence.mkdir(parents=True, exist_ok=False)
@@ -80,23 +80,13 @@ class LiveAdapter:
         self.pending_phase = None
         self.uncertain_job = None
 
-    def acquire_lease(self):
+    def acquire_lease(self, recover=False):
         # A single node-wide lease plus a durable one-session marker prevents
         # another root/process from silently starting a second BOXP-344 pilot.
-        code = """
-import fcntl, json, os, sys
-from pathlib import Path
-w=Path('/var/lib/local-llm/models/boxp340-qwen-image-21/work')
-f=open(w/'boxp344-window.lock','a+b')
-fcntl.flock(f,fcntl.LOCK_EX|fcntl.LOCK_NB)
-token=sys.stdin.readline().strip()
-with (w/'boxp344-window.json').open('x') as marker:
- json.dump({'token':token,'state':'active-or-recovery-needed','pid':os.getpid(),'start':open('/proc/self/stat').read().split()[21]},marker);marker.flush();os.fsync(marker.fileno())
-print('LEASED',flush=True)
-sys.stdin.read()
-"""
+        code = Path(__file__).with_name('node_lease.py').read_text()
+        mode = 'recover' if recover else 'new'
         self.lease = subprocess.Popen(['ssh','-o','BatchMode=yes','-o','ConnectTimeout=5','-o','ServerAliveInterval=5','-o','ServerAliveCountMax=2',HOST,
-                                      'python3 -c ' + shlex.quote(code)],
+                                      'python3 -c ' + shlex.quote(code) + ' ' + shlex.quote(WORK) + ' ' + mode],
                                      stdin=subprocess.PIPE,stdout=subprocess.PIPE,stderr=subprocess.PIPE,text=True)
         self.lease.stdin.write(self.token+'\n'); self.lease.stdin.flush()
         if self.lease.stdout.readline().strip() != 'LEASED':
@@ -372,22 +362,35 @@ print('empty')
         self.record('qwen-pod', {'uid':pod[0]['metadata']['uid'],'containers':pod[0]['status']['containerStatuses']})
 
     def generate(self, contract):
+        ref_data = None
+        if contract.get('reference') is not None:
+            if not getattr(self, 'reference_root', None):
+                raise RuntimeError('reference image execution is not supported by the verified queue contract')
+            from harness import validate_image_reference
+            ref_data = validate_image_reference(self.reference_root, contract['reference'])
         self.assert_lease()
         name = self.token + '-' + contract['id']
+        expected_job = dict(contract)
+        if ref_data is not None:
+            expected_job['ref'] = '/work/boxp344/' + name + '/reference.png'
         self.uncertain_job = name
         self.ssh('''
-import json, os
+import json, os, base64, hashlib
 from pathlib import Path
 j=json.loads(payload); w=Path('/var/lib/local-llm/models/boxp340-qwen-image-21/work'); name=j['name']
 b=w/'boxp344'/name; b.mkdir(parents=True,exist_ok=False)
-(b/'jobs.json').write_text(json.dumps([j['contract']]))
+if j.get('reference_png') is not None:
+ data=base64.b64decode(j['reference_png'],validate=True)
+ assert hashlib.sha256(data).hexdigest()==j['contract']['reference']['sha256']
+ with (b/'reference.png').open('xb') as f: f.write(data);f.flush();os.fsync(f.fileno())
+with (b/'jobs.json').open('x') as f: json.dump([j['contract']],f);f.flush();os.fsync(f.fileno())
 text='MODEL=/models/Qwen-Image-2.1-Turbo\\nJOBS=/work/boxp344/'+name+'/jobs.json\\nOUT=/work/boxp344/'+name+'/out\\nEXTRA=\\n'
 # Never replace queue/done/output state; uncertain execution cannot retry.
 f=w/'queue'/(name+'.job'); tmp=b/'queued.job'
 with tmp.open('x') as out: out.write(text); out.flush(); os.fsync(out.fileno())
 os.link(tmp,f)
 print('queued')
-''', {'name':name,'contract':contract})
+''', {'name':name,'contract':expected_job,'reference_png':base64.b64encode(ref_data).decode() if ref_data is not None else None})
         for _ in range(180):
             self.assert_lease()
             result = json.loads(self.ssh('''
@@ -408,7 +411,7 @@ else:
                 self.uncertain_job = None
                 self.generation_metadata = result['metadata']
                 self.record('generation-'+contract['id'], result['metadata'])
-                if result['metadata'].get('job') != contract: raise RuntimeError('generated contract metadata mismatch')
+                if result['metadata'].get('job') != expected_job: raise RuntimeError('generated contract metadata mismatch')
                 if result['metadata'].get('status') != 'ok' or not result['png']: raise RuntimeError('Qwen generation failed')
                 return base64.b64decode(result['png'],validate=True)
             time.sleep(5)

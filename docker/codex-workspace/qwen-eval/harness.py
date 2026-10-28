@@ -80,6 +80,36 @@ def reference(root, relative, expected):
     return data
 
 
+def validate_reference_contract(root, spec):
+    """Accept one local PNG by relative path and SHA-256; return verified bytes."""
+    if not isinstance(spec, dict) or set(spec) != {'path', 'sha256'}:
+        raise ValueError('reference must have path and sha256')
+    if not isinstance(spec['path'], str) or not isinstance(spec['sha256'], str):
+        raise ValueError('invalid reference fields')
+    if len(spec['sha256']) != 64 or any(c not in '0123456789abcdef' for c in spec['sha256']):
+        raise ValueError('invalid reference digest')
+    return reference(root, spec['path'], spec['sha256'])
+
+
+def validate_image_reference(root, spec):
+    """Original local PNG/JPEG/WebP bytes, without cloud inspection/conversion."""
+    if not isinstance(spec, dict) or set(spec) != {'path', 'sha256'}:
+        raise ValueError('reference contract')
+    if not isinstance(spec['path'], str) or not isinstance(spec['sha256'], str) or len(spec['sha256']) != 64:
+        raise ValueError('reference fields')
+    from research import local_path
+    path = local_path(root, spec['path'])
+    if not path.is_file() or path.stat().st_size > 16_000_000:
+        raise ValueError('reference size')
+    data = path.read_bytes()
+    if hashlib.sha256(data).hexdigest() != spec['sha256']:
+        raise ValueError('reference hash mismatch')
+    if not (data.startswith(b'\x89PNG\r\n\x1a\n') or data.startswith(b'\xff\xd8\xff') or
+            (data.startswith(b'RIFF') and data[8:12] == b'WEBP')):
+        raise ValueError('unsupported original image encoding')
+    return data
+
+
 class ClosedAdapter:
     """Real implementation deliberately absent; no switch can assert live safety."""
     def fence_and_drain(self): raise RuntimeError('real safety adapter unavailable')
@@ -110,6 +140,7 @@ class Harness:
     def __init__(self, root, profile='fake'):
         if profile not in ('fake', 'turbo'): raise ValueError('unknown evaluation profile')
         self.profile = profile
+        self.inputs = INPUTS
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.root / 'jobs.sqlite', timeout=30)
@@ -149,7 +180,7 @@ class Harness:
         return self.run_many([board], adapter)[board]
 
     def run_many(self, boards, adapter):
-        if not boards or len(set(boards)) != len(boards) or any(b not in INPUTS for b in boards):
+        if not boards or len(set(boards)) != len(boards) or any(b not in self.inputs for b in boards):
             raise ValueError('only the two unique synthetic Boards are allowed')
         if getattr(adapter, 'profile', 'fake') != self.profile:
             raise ValueError('adapter/profile mismatch')
@@ -170,6 +201,8 @@ class Harness:
             staged = set()
             current = None
             try:
+                if hasattr(adapter, 'controller') and not 1 <= len(pending) <= adapter.controller.max_batch:
+                    raise ValueError('batch limit exceeded before fencing')
                 for board in pending: self.state(board, 'draining')
                 adapter.fence_and_drain()
                 adapter.stop_gemma_and_prove_gpu_free()

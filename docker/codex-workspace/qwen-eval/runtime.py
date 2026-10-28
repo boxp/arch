@@ -31,7 +31,7 @@ class RuntimeController:
     """
     def __init__(self, root, token, backend, *, timeout=120, max_window=1800,
                  max_batch=2, clock=time.monotonic, wall=time.time):
-        if timeout <= 0 or max_window <= 0 or max_batch < 1:
+        if timeout <= 0 or not 0 < max_window <= 1800 or not 1 <= max_batch <= 2:
             raise ValueError('invalid runtime limits')
         self.token, self.backend = token, backend
         self.timeout, self.max_window, self.max_batch = timeout, max_window, max_batch
@@ -177,6 +177,25 @@ class RuntimeAdapter(LiveAdapter):
     def phase(self, phase):
         self.assert_lease()
         self.controller.phase(phase)
+
+    def mark_window_completed(self, images):
+        self.assert_lease()
+        if self.controller.db.execute('SELECT phase,pending FROM window WHERE id=1').fetchone() != ('reopen', None):
+            raise RecoveryRequired('window is not restored')
+        if list(self.controller.backend.snapshot()) != [1, 0, 'open:' + self.token]:
+            raise RecoveryRequired('window final state changed')
+        self.ssh("""
+import json,os,time
+from pathlib import Path
+j=json.loads(payload);w=Path('/var/lib/local-llm/models/boxp340-qwen-image-21/work');p=w/'boxp344-window.json'
+old=json.loads(p.read_text());assert old['token']==j['token']
+old.update(state='completed',images=j['images'],completed_at=time.time(),regeneration_allowed=False)
+t=w/(j['token']+'.complete.tmp')
+with t.open('x') as f: json.dump(old,f);f.flush();os.fsync(f.fileno())
+os.replace(t,p)
+f=os.open(w,os.O_RDONLY|os.O_DIRECTORY);os.fsync(f);os.close(f)
+print('completed')
+""", {'token':self.token,'images':images})
 
     def generate(self, contract):
         self.controller.reserve_dispatch()
