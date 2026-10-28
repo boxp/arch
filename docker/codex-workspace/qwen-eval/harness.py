@@ -15,7 +15,7 @@ import zlib
 
 INPUTS = {
     'task-board': ('A fictional blue robot tending a garden.', 101),
-    'novel-board': ('A fictional red bird crosses a quiet moon.', 202),
+    'novel-board': ('At dusk, a fictional red bird carries a silver seed across a quiet moon. It lands beside a dry crater and plants the seed. By dawn, one tiny white flower shines in the dust.', 202),
 }
 REVISION = 'synthetic-fake-only'
 
@@ -107,11 +107,18 @@ class FakeAdapter(ClosedAdapter):
 
 
 class Harness:
-    def __init__(self, root):
+    def __init__(self, root, profile='fake'):
+        if profile not in ('fake', 'turbo'): raise ValueError('unknown evaluation profile')
+        self.profile = profile
         self.root = Path(root).resolve()
         self.root.mkdir(parents=True, exist_ok=True)
         self.db = sqlite3.connect(self.root / 'jobs.sqlite', timeout=30)
         self.db.execute('PRAGMA synchronous=FULL')
+        self.db.execute('CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL)')
+        with self.db:
+            self.db.execute('INSERT OR IGNORE INTO config VALUES (?,?)', ('profile', profile))
+        if self.db.execute("SELECT value FROM config WHERE key='profile'").fetchone()[0] != profile:
+            raise ValueError('evaluation profile cannot change within a root')
         self.db.execute('CREATE TABLE IF NOT EXISTS jobs (board TEXT PRIMARY KEY, contract TEXT NOT NULL, state TEXT NOT NULL, error TEXT)')
         self.db.execute('CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, board TEXT, state TEXT, at REAL, detail TEXT)')
     @contextlib.contextmanager
@@ -126,8 +133,10 @@ class Harness:
     def submit(self, board):
         if board not in INPUTS: raise ValueError('only two fixed synthetic inputs are permitted')
         prompt, seed = INPUTS[board]
-        contract = json.dumps(dict(id=board, board=board, prompt=prompt, seed=seed, width=1, height=1,
-                                   model_revision=REVISION, reference=None, purpose='closed synthetic evaluation'), sort_keys=True)
+        contract = json.dumps(dict(id=board, board=board, source=prompt, prompt='Illustrate this fictional synthetic material: ' + prompt, seed=seed,
+                                   width=1 if self.profile == 'fake' else 896,
+                                   height=1 if self.profile == 'fake' else 1184,
+                                   model_revision=REVISION if self.profile == 'fake' else 'Qwen/Qwen-Image-2.1-Turbo@fc13ba1986fcb905854dc8de2f52eee395f49b5b', reference=None, purpose='closed synthetic evaluation'), sort_keys=True)
         with self.lock():
             row = self.db.execute('SELECT contract FROM jobs WHERE board=?', (board,)).fetchone()
             if row:
@@ -137,46 +146,62 @@ class Harness:
                 self.db.execute('INSERT INTO jobs VALUES (?,?,?,?)', (board,contract,'queued',''))
                 self.db.execute('INSERT INTO events(board,state,at,detail) VALUES (?,?,?,?)', (board,'queued',time.time(),''))
     def run(self, board, adapter):
+        return self.run_many([board], adapter)[board]
+
+    def run_many(self, boards, adapter):
+        if not boards or len(set(boards)) != len(boards) or any(b not in INPUTS for b in boards):
+            raise ValueError('only the two unique synthetic Boards are allowed')
+        if getattr(adapter, 'profile', 'fake') != self.profile:
+            raise ValueError('adapter/profile mismatch')
         with self.lock():
-            row = self.db.execute('SELECT contract,state FROM jobs WHERE board=?', (board,)).fetchone()
-            if not row: raise ValueError('submit first')
-            contract, state = json.loads(row[0]), row[1]
-            if state in ('completed','failed','recovery-needed'): return state
-            if state != 'queued':
+            rows = {b: self.db.execute('SELECT contract,state FROM jobs WHERE board=?', (b,)).fetchone() for b in boards}
+            if any(row is None for row in rows.values()): raise ValueError('submit first')
+            pending = [b for b, row in rows.items() if row[1] == 'queued']
+            interrupted = [b for b, row in rows.items() if row[1] not in ('queued','completed','failed','recovery-needed')]
+            for board in interrupted:
                 self.state(board, 'recovery-needed', 'interrupted operation; no automatic regeneration or reopening')
-                return 'recovery-needed'
-            # An interrupted operation on either board blocks every new job.
-            if self.db.execute("SELECT 1 FROM jobs WHERE board != ? AND state NOT IN ('queued','completed','failed')", (board,)).fetchone():
+            def statuses():
+                return {b: self.db.execute('SELECT state FROM jobs WHERE board=?', (b,)).fetchone()[0] for b in boards}
+            if interrupted: return statuses()
+            if not pending: return statuses()
+            if self.db.execute("SELECT 1 FROM jobs WHERE state NOT IN ('queued','completed','failed')").fetchone():
                 raise RuntimeError('arbiter recovery required')
-            error, failed, restored, safe, persistence_ok = '', False, False, False, True
+            errors, safe, restored, persistence_ok = {}, False, False, True
+            staged = set()
+            current = None
             try:
-                self.state(board, 'draining')
+                for board in pending: self.state(board, 'draining')
                 adapter.fence_and_drain()
                 adapter.stop_gemma_and_prove_gpu_free()
                 safe = True
-                self.state(board, 'image-ready')
+                for board in pending: self.state(board, 'image-ready')
                 adapter.start_qwen()
-                self.state(board, 'generating')  # durable before the irreversible call
-                data = adapter.generate(contract)
-                if validate_png(data) != (contract['width'], contract['height']):
-                    raise ValueError('output dimensions differ from contract')
-                self.state(board, 'staged')
-                stage = self.root / 'staging' / board
-                stage.mkdir(parents=True, exist_ok=False)
-                self.write_new(stage / 'image.png', data)
-                metadata = dict(contract, fake=True, sha256=hashlib.sha256(data).hexdigest())
-                self.write_new(stage / 'metadata.json', json.dumps(metadata, indent=2).encode())
+                for board in pending:
+                    current = board
+                    contract = json.loads(rows[board][0])
+                    self.state(board, 'generating')
+                    data = adapter.generate(contract)
+                    if validate_png(data) != (contract['width'], contract['height']):
+                        raise ValueError('output dimensions differ from contract')
+                    self.state(board, 'staged')
+                    stage = self.root / 'staging' / board
+                    stage.mkdir(parents=True, exist_ok=False)
+                    self.write_new(stage / 'image.png', data)
+                    metadata = dict(contract, fake=self.profile == 'fake', sha256=hashlib.sha256(data).hexdigest(),
+                                    generation=getattr(adapter, 'generation_metadata', {}))
+                    self.write_new(stage / 'metadata.json', json.dumps(metadata, indent=2).encode())
+                    staged.add(board)
             except Exception as exc:
-                failed = True
-                error = type(exc).__name__ + ': ' + str(exc)
+                reason = type(exc).__name__ + ': ' + str(exc)
+                for board in pending:
+                    if board not in staged:
+                        errors[board] = reason if board == current or current is None else 'batch aborted: ' + reason
             finally:
-                try:
-                    self.state(board, 'restoring', error)
-                except Exception as exc:
-                    persistence_ok = False
-                    error += '; persistence: ' + str(exc)
-                # Failed fence/GPU proof cannot authorize touching an unknown
-                # workload, reopening admission, or allowing the next Board.
+                for board in pending:
+                    try: self.state(board, 'restoring', errors.get(board, ''))
+                    except Exception as exc:
+                        persistence_ok = False
+                        errors[board] = 'persistence: ' + repr(exc)
                 if safe:
                     try:
                         adapter.stop_qwen_and_prove_gpu_free()
@@ -185,19 +210,20 @@ class Harness:
                             adapter.reopen()
                             restored = True
                     except Exception as exc:
-                        error = (error + '; restore: ' + str(exc)).strip('; ')
-            if not restored:
-                self.state(board, 'recovery-needed', error)
-            elif failed:
-                self.state(board, 'failed', error)
-            else:
-                try:
-                    self.state(board, 'publishing')
-                    self.publish(board)
-                    self.state(board, 'completed')
-                except Exception as exc:
-                    self.state(board, 'recovery-needed', 'publication: ' + str(exc))
-            return self.db.execute('SELECT state FROM jobs WHERE board=?', (board,)).fetchone()[0]
+                        for board in pending: errors[board] = errors.get(board, '') + '; restore: ' + repr(exc)
+            for board in pending:
+                if not restored:
+                    self.state(board, 'recovery-needed', errors.get(board, 'safety proof failed'))
+                elif board in errors:
+                    self.state(board, 'failed', errors[board])
+                else:
+                    try:
+                        self.state(board, 'publishing')
+                        self.publish(board)
+                        self.state(board, 'completed')
+                    except Exception as exc:
+                        self.state(board, 'recovery-needed', 'publication: ' + repr(exc))
+            return statuses()
     @staticmethod
     def write_new(path, data):
         with open(path, 'xb') as f:
@@ -209,7 +235,7 @@ class Harness:
         stage = self.root / 'staging' / board
         contract = json.loads(self.db.execute('SELECT contract FROM jobs WHERE board=?', (board,)).fetchone()[0])
         self.write_new(stage / 'note.md', ('# 合成評価: ' + board + '\n\n'
-                       + contract['prompt'] + '\n\n![テスト用fake画像](image.png)\n').encode())
+                       + contract['source'] + ('\n\n![テスト用fake画像](image.png)\n' if self.profile == 'fake' else '\n\n![合成評価画像](image.png)\n')).encode())
         fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY)
         try: os.fsync(fd)
         finally: os.close(fd)

@@ -141,3 +141,35 @@ class Tests(unittest.TestCase):
         self.assertFalse((dest/'image.png').exists())
 
 if __name__ == '__main__': unittest.main()
+
+class BatchTests(unittest.TestCase):
+    def test_two_boards_one_switch_and_restore(self):
+        with tempfile.TemporaryDirectory() as d:
+            x=h.Harness(d)
+            for b in h.INPUTS: x.submit(b)
+            a=h.FakeAdapter()
+            self.assertEqual(x.run_many(list(h.INPUTS),a), {b:'completed' for b in h.INPUTS})
+            self.assertEqual(a.calls.count('start_qwen'),1)
+            self.assertEqual(a.calls.count('generate'),2)
+            self.assertEqual(a.calls.count('restore_gemma_verify'),1)
+            self.assertEqual(a.calls.count('reopen'),1)
+            before=a.calls[:]
+            self.assertEqual(x.run_many(list(h.INPUTS),a), {b:'completed' for b in h.INPUTS})
+            self.assertEqual(a.calls,before)
+    def test_metadata_write_failure_does_not_publish_incomplete_bundle(self):
+        with tempfile.TemporaryDirectory() as d:
+            x=h.Harness(d); x.submit('task-board')
+            original=x.write_new
+            def failing(path,data):
+                if path.name=='metadata.json':
+                    path.write_text('partial')
+                    raise MemoryError()
+                original(path,data)
+            x.write_new=failing
+            self.assertEqual(x.run('task-board',h.FakeAdapter()),'failed')
+            self.assertFalse((Path(d)/'vault').exists())
+    def test_profile_cannot_change_or_use_wrong_adapter(self):
+        with tempfile.TemporaryDirectory() as d:
+            x=h.Harness(d,profile='turbo'); x.submit('task-board')
+            with self.assertRaises(ValueError): h.Harness(d)
+            with self.assertRaises(ValueError): x.run('task-board',h.FakeAdapter())

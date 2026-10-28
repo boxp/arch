@@ -1,18 +1,30 @@
-# 閉じた合成画像評価ハーネス
+# BOXP-344 閉じた合成画像評価
 
-既存 Board、モデル、外部 API、クラスタへの接続はありません。固定された架空の Task / Novel 各1件だけを受け付け、画像は各1枚までです。fake の 1×1 PNG はテスト用であり Qwen の実画像ではありません。実画像の評価実績は **0枚**です。独立した Linux ファイルシステム上の専用ディレクトリを指定してください。機密・既存 vault を指定しないでください。root は信頼できる単一ユーザー専用で、他者によるファイルや symlink の変更がないことが前提です。ローカルの `flock`、SQLite、`renameat2(RENAME_NOREPLACE)` と同一ファイルシステムを使用します。NFS や複数ホストの調停は対象外です。
+固定の合成設定・合成短編を各1件、画像各1枚まで処理する隔離ハーネス。通常Board・既存素材は接続しない。共通flockとSQLiteで状態を永続化し、中断後に再生成しない。未確定状態は`recovery-needed`で両入口を止める。外部画像APIへのfallbackはない。
+
+## fake試験
 
 ```sh
-python3 docker/codex-workspace/qwen-eval/harness.py --root /tmp/qwen-eval submit task-board
-python3 docker/codex-workspace/qwen-eval/harness.py --root /tmp/qwen-eval run task-board --fake
-python3 docker/codex-workspace/qwen-eval/harness.py --root /tmp/qwen-eval status task-board
-python3 -m unittest discover -s tests/qwen-eval -v
+python3 docker/codex-workspace/qwen-eval/harness.py --root /tmp/qwen-fake submit task-board
+python3 docker/codex-workspace/qwen-eval/harness.py --root /tmp/qwen-fake run task-board --fake
+python3 -B -m unittest discover -s tests/qwen-eval -v
 ```
 
-`novel-board` も同じ操作です。`--fake` を省くと実アダプターが存在しないため fail closed します。公開先は root 内 `vault/qwen-synthetic-evaluation/{board}/`、相対リンク付きノートと PNG、メタデータを一体で公開します。出力先を既存 Board や正本に接続しないでください。状態と時刻は SQLite の `jobs` と `events` に記録します。途中でプロセスが停止した場合、次回は `recovery-needed` となり再生成や受付再開はしません。公開直後に停止した場合も状態と出力を人手で照合してください。失敗画像のリンクは作られません。復旧操作や自動 retry は提供しません。
+fakeは1×1のテストPNGであり、実Qwen画像の実績に数えない。`--fake`を省いた単体CLIは接続しない。rootは単一ユーザー専用のLinux同一filesystem上に置く（SQLite/flock/renameat2、NFSは対象外）。参照関数は許可root・symlink・hash・PNGを検査するが、今回の固定合成ジョブは参照なし。
 
-## 将来のアダプター契約（未実装）
+## 限定実機経路
 
-実環境へ接続するには別途実装・レビューが必要です。`fence_and_drain` は Board 以外の直接クライアント・LAN を含む全文章入口と自動投入を封鎖し、既存要求と slot を drain し、未管理入口や GPU 利用者がないことを証明する。`stop_gemma_and_prove_gpu_free` は承認済み GitOps で desired state を変更し、Gemma 停止と GPU 解放を確認する。`start_qwen` と `generate` は隔離されたローカル workload のみを使用する。完了・失敗時とも `stop_qwen_and_prove_gpu_free` を実行し、`restore_gemma_verify` は元の desired state・自動投入、health、短い推論を検証する。その成功後にのみ `reopen` が入口を再開する。初期フェンスまたはGPU解放の証明に失敗した場合は未知のworkloadを停止・復帰せず、`recovery-needed`で後続ジョブを遮断する。いずれかの証明が欠ければ例外を返し封鎖を維持する。プロセス停止時は実状態と履歴を照合し、明示的な復旧が必要であり、未確定の生成を再試行してはならない。呼び出し側の真偽値だけを安全性の証拠として扱ってはならない。
+`live.py`は固定Turbo revision・896×1184・seed101/202を使用する。2件を1回の切替にまとめ、生成を成功してもGemma復帰の検証が済むまでノートを公開しない。fakeと実機profileは同じrootで混在させない。
 
-参照検証関数は許可 root 内の相対パス、全コンポーネントの symlink、SHA-256 と PNG を検査する。固定合成ジョブは参照なしであり、実素材を受け付けない。固定契約を拡張して実参照を使用することは今回の対象外。fake アダプターは実際のフェンス、排他、GPU 解放を証明しない。
+```sh
+python3 docker/codex-workspace/qwen-eval/live.py \
+  --root <vault内の新規評価専用directory> \
+  --lolice-worktree <本run専用のcleanなlolice-worktree> \
+  --token BOXP-344-<一意token>
+```
+
+この操作は事前のコードレビュー・CIとlolice受付機構の配備が必要。各段階で通常のGitOps PRを作成し、独立レビュー・CI・mergeを待つ。プログラム自身はmerge、直接patch、RBAC追加、kill、lock解除をしない。段階は封鎖→drain確認→Gemma=0/GPU解放→Qwen=1→2件生成→Qwen=0/GPU解放→Gemma=1/verify→health・固定短文推論→open。Service/LAN/Podの全入口、loaded modelのslots、upstream active/pending、Pod UID、nodeのGPU FDを照合する。Qwenは既存SSH/file-queueで投入し、既存依存とqueueの空を確認、egressは全拒否する。
+
+node共通leaseと永続session markerは別rootからの二重評価も拒否する。中断したmarkerやlockを自動削除しない。timeout、Podの入替、未知GPU利用者、復帰失敗等は閉じた状態で止め、履歴とdesired/actual/queue/outputを照合して明示的に復旧する。生成の有無が未確定なら再投入しない。既存のqueue runnerが1件を処理中のときも再試行しない。
+
+公開先はroot内`vault/qwen-synthetic-evaluation/{board}/`。元の合成文・相対リンク付きノート・PNG・hash/契約/生成metadataを原子的・非上書きで公開する。実root自体をvault内の専用評価領域に置く。実機証拠は`live-evidence`、状態と各段階の時刻はSQLiteの`events`。不完全なPNGやmetadata、復帰未確認時に偽リンク・完成扱いを作らない。
