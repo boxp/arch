@@ -5,7 +5,8 @@ import unittest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'docker/codex-workspace/qwen-eval'))
-from runtime import RuntimeController, RecoveryRequired
+from runtime import RuntimeController, RecoveryRequired, RuntimeAdapter
+from unittest.mock import Mock
 
 
 class Backend:
@@ -84,6 +85,29 @@ class RuntimeTests(unittest.TestCase):
                 with self.assertRaises(RecoveryRequired): c.phase('reopen')
                 c.mark_verified(); c.phase('reopen')
                 self.assertEqual(backend.state, [1,0,'open:BOXP-349-early'])
+
+    def test_dispatch_requires_live_settled_qwen(self):
+        with self.assertRaises(RecoveryRequired): self.c.reserve_dispatch()
+        for phase in ('fence','stop-gemma','start-qwen'): self.c.phase(phase)
+        self.c.reserve_dispatch()
+        self.c.phase('stop-qwen')
+        with self.assertRaises(RecoveryRequired): self.c.reserve_dispatch()
+        self.assertEqual(self.c.db.execute('SELECT count(*) FROM dispatches').fetchone()[0], 1)
+
+    def test_restart_after_restore_runs_only_fresh_probe(self):
+        for phase in ('fence','stop-gemma','start-qwen','stop-qwen','restore-gemma'):
+            self.c.phase(phase)
+        count = len(self.backend.calls)
+        self.c.db.close(); self.c = self.make()
+        with self.assertRaises(RecoveryRequired): self.c.phase('reopen')
+        adapter = RuntimeAdapter.__new__(RuntimeAdapter)
+        adapter.controller = self.c; adapter.token = self.c.token
+        adapter.assert_lease = self.backend.assert_lease
+        adapter.verify_gemma_ready = Mock()
+        adapter.restore_gemma_verify()
+        adapter.verify_gemma_ready.assert_called_once_with()
+        self.assertEqual(len(self.backend.calls), count)
+        self.c.phase('reopen')
 
     def test_drift_and_lost_lease_block_writes(self):
         self.backend.state[2] = 'closed:someone-else'

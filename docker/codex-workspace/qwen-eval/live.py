@@ -427,6 +427,9 @@ else:
 
     def restore_gemma_verify(self):
         self.phase('restore-gemma')
+        self.verify_gemma_ready()
+
+    def verify_gemma_ready(self):
         for _ in range(30):
             try:
                 pod,url=self.require_gate('verify')

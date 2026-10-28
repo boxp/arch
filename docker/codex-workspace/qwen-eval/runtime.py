@@ -66,6 +66,11 @@ class RuntimeController:
         self._guard()
 
     def reserve_dispatch(self):
+        self._guard()
+        if self.db.execute('SELECT phase,pending FROM window WHERE id=1').fetchone() != ('start-qwen', None):
+            raise RecoveryRequired('Qwen start must be settled before dispatch')
+        if list(self.backend.snapshot()) != [0, 1, 'closed:' + self.token]:
+            raise RecoveryRequired('Qwen ownership drift before dispatch')
         count = self.db.execute('SELECT count(*) FROM dispatches').fetchone()[0]
         self.check_batch(count + 1)
         with self.db:
@@ -179,5 +184,12 @@ class RuntimeAdapter(LiveAdapter):
         return super().stop_qwen_and_prove_gpu_free()
 
     def restore_gemma_verify(self):
-        super().restore_gemma_verify()
+        row = self.controller.db.execute('SELECT phase,pending FROM window WHERE id=1').fetchone()
+        if row == ('restore-gemma', None):
+            self.assert_lease()
+            if list(self.controller.backend.snapshot()) != [1, 0, 'verify:' + self.token]:
+                raise RecoveryRequired('restore state drift before fresh probe')
+            self.verify_gemma_ready()
+        else:
+            super().restore_gemma_verify()
         self.controller.mark_verified()
