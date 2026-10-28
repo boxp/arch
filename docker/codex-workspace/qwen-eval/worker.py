@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""One bounded synthetic runtime window; requires separately provisioned proofs."""
+"""One bounded local research or synthetic runtime window; requires ownership proofs."""
 import argparse
 import json
 import os
