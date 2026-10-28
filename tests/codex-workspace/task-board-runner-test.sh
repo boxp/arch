@@ -3390,3 +3390,6 @@ test_in_progress_retry_records_no_outbox_event
 test_outbox_disabled_by_env
 
 echo "task-board-runner tests passed"
+
+# BOXP-344: isolated shared-GPU evaluation state machine; no model/network.
+python3 -B -m unittest discover -s "${ROOT_DIR}/tests/qwen-eval" -v
