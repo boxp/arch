@@ -205,7 +205,9 @@ print(json.dumps({str(pid):open('/proc/%d/comm'%pid).read().strip() for pid in i
                     matches=json.loads(command(['gh','pr','list','--head',branch,'--state','all','--json','url'],cwd=self.lolice))
                     if len(matches)==1: url=matches[0]['url']
                     else: raise RuntimeError('ambiguous PR lookup for '+branch+': '+str(len(matches)))
-                if url is not None: self.cancel_pending_pr(url)
+                if url is not None:
+                    final_state = self.cancel_pending_pr(url)
+                    print('RECOVERY_REQUIRED phase='+phase+' branch='+branch+' pr='+url+' state='+final_state,flush=True)
             except BaseException as cancellation:
                 print('RECOVERY_REQUIRED unresolved PR for '+branch+': '+repr(cancellation),flush=True)
             raise
