@@ -13,6 +13,6 @@ python3 -m unittest discover -s tests/qwen-eval -v
 
 ## 将来のアダプター契約（未実装）
 
-実環境へ接続するには別途実装・レビューが必要です。`fence_and_drain` は Board 以外の直接クライアント・LAN を含む全文章入口と自動投入を封鎖し、既存要求と slot を drain し、未管理入口や GPU 利用者がないことを証明する。`stop_gemma_and_prove_gpu_free` は承認済み GitOps で desired state を変更し、Gemma 停止と GPU 解放を確認する。`start_qwen` と `generate` は隔離されたローカル workload のみを使用する。完了・失敗時とも `stop_qwen_and_prove_gpu_free` を実行し、`restore_gemma_verify_and_reopen` は元の desired state・自動投入、health、短い推論を検証した後にのみ入口を再開する。いずれかの証明が欠ければ例外を返し封鎖を維持する。プロセス停止時は実状態と履歴を照合し、明示的な復旧が必要であり、未確定の生成を再試行してはならない。呼び出し側の真偽値だけを安全性の証拠として扱ってはならない。
+実環境へ接続するには別途実装・レビューが必要です。`fence_and_drain` は Board 以外の直接クライアント・LAN を含む全文章入口と自動投入を封鎖し、既存要求と slot を drain し、未管理入口や GPU 利用者がないことを証明する。`stop_gemma_and_prove_gpu_free` は承認済み GitOps で desired state を変更し、Gemma 停止と GPU 解放を確認する。`start_qwen` と `generate` は隔離されたローカル workload のみを使用する。完了・失敗時とも `stop_qwen_and_prove_gpu_free` を実行し、`restore_gemma_verify` は元の desired state・自動投入、health、短い推論を検証する。その成功後にのみ `reopen` が入口を再開する。初期フェンスまたはGPU解放の証明に失敗した場合は未知のworkloadを停止・復帰せず、`recovery-needed`で後続ジョブを遮断する。いずれかの証明が欠ければ例外を返し封鎖を維持する。プロセス停止時は実状態と履歴を照合し、明示的な復旧が必要であり、未確定の生成を再試行してはならない。呼び出し側の真偽値だけを安全性の証拠として扱ってはならない。
 
 参照検証関数は許可 root 内の相対パス、全コンポーネントの symlink、SHA-256 と PNG を検査する。固定合成ジョブは参照なしであり、実素材を受け付けない。固定契約を拡張して実参照を使用することは今回の対象外。fake アダプターは実際のフェンス、排他、GPU 解放を証明しない。

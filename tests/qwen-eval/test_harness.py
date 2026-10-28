@@ -46,12 +46,21 @@ class Tests(unittest.TestCase):
                 self.assertEqual((dest/'note.md').read_text().count('image.png'), 1)
                 self.assertEqual((dest/'image.png').read_bytes(), h.png())
     def test_failure_and_restore(self):
-        for step in ('fence_and_drain','stop_gemma_and_prove_gpu_free','start_qwen','generate','stop_qwen_and_prove_gpu_free','restore_gemma_verify_and_reopen'):
+        for step in ('fence_and_drain','stop_gemma_and_prove_gpu_free','start_qwen','generate','stop_qwen_and_prove_gpu_free','restore_gemma_verify','reopen'):
             with self.subTest(step=step), tempfile.TemporaryDirectory() as d:
                 x = h.Harness(d); x.submit('task-board'); a = h.FakeAdapter(step)
                 state = x.run('task-board', a)
-                self.assertIn('stop_qwen_and_prove_gpu_free', a.calls)
-                self.assertEqual(state, 'recovery-needed' if step.startswith(('stop_qwen','restore_gemma')) else 'failed')
+                unsafe = step in ('fence_and_drain', 'stop_gemma_and_prove_gpu_free')
+                if unsafe:
+                    self.assertNotIn('stop_qwen_and_prove_gpu_free', a.calls)
+                    self.assertNotIn('restore_gemma_verify', a.calls)
+                    self.assertNotIn('reopen', a.calls)
+                    x.submit('novel-board')
+                    with self.assertRaises(RuntimeError): x.run('novel-board', h.FakeAdapter())
+                else:
+                    self.assertIn('stop_qwen_and_prove_gpu_free', a.calls)
+                recovery = unsafe or step.startswith(('stop_qwen', 'restore_gemma', 'reopen'))
+                self.assertEqual(state, 'recovery-needed' if recovery else 'failed')
                 self.assertFalse((Path(d)/'vault').exists())
     def test_default_closed(self):
         self.x.submit('task-board')
@@ -91,8 +100,28 @@ class Tests(unittest.TestCase):
                 x = h.Harness(d); x.submit('task-board')
                 class Refuse(h.FakeAdapter):
                     def fence_and_drain(self): raise RuntimeError(reason)
-                a = Refuse(); self.assertEqual(x.run('task-board',a),'failed')
+                a = Refuse(); self.assertEqual(x.run('task-board',a),'recovery-needed')
                 self.assertNotIn('start_qwen',a.calls)
+
+    def test_generation_timeout_oom_and_bad_output_restore_without_link(self):
+        for failure in (TimeoutError('timeout'), MemoryError('OOM'), MemoryError(), ValueError('generation')):
+            with self.subTest(failure=str(failure)), tempfile.TemporaryDirectory() as d:
+                x = h.Harness(d); x.submit('task-board')
+                class Fail(h.FakeAdapter):
+                    def generate(self, contract):
+                        self.step('generate')
+                        raise failure
+                a = Fail()
+                self.assertEqual(x.run('task-board', a), 'failed')
+                self.assertEqual(a.calls[-3:], ['stop_qwen_and_prove_gpu_free', 'restore_gemma_verify', 'reopen'])
+                self.assertFalse((Path(d) / 'vault').exists())
+                self.assertEqual(x.run('task-board', a), 'failed')
+                self.assertEqual(a.calls.count('generate'), 1)
+        self.x.submit('task-board')
+        class Bad(h.FakeAdapter):
+            def generate(self, contract): return b'not PNG'
+        self.assertEqual(self.x.run('task-board', Bad()), 'failed')
+        self.assertFalse((self.root / 'vault').exists())
 
     def test_reference_and_png(self):
         ref = self.root/'refs'; ref.mkdir(); (ref/'a.png').write_bytes(h.png())

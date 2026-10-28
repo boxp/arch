@@ -41,7 +41,10 @@ def validate_png(data):
         seen.append(kind)
         if kind == b'IHDR':
             if n != 13: raise ValueError('PNG IHDR')
-            width, height = struct.unpack('>II', body[:8])
+            width, height, depth, color, compression, filtering, interlace = struct.unpack('>IIBBBBB', body)
+            if depth != 8 or color not in (2, 6) or compression or filtering or interlace:
+                raise ValueError('unsupported PNG format')
+            channels = 3 if color == 2 else 4
             if not (1 <= width <= 2048 and 1 <= height <= 2048): raise ValueError('PNG dimensions')
         if kind == b'IDAT': idat += body
         pos = end
@@ -50,8 +53,12 @@ def validate_png(data):
         raise ValueError('invalid PNG structure')
     # Bound decompression to avoid untrusted output expansion.
     dec = zlib.decompressobj()
-    dec.decompress(idat, 32_000_001)
-    if dec.unconsumed_tail or not dec.eof: raise ValueError('invalid PNG data')
+    pixels = dec.decompress(idat, 32_000_001)
+    if dec.unconsumed_tail or dec.unused_data or not dec.eof: raise ValueError('invalid PNG data')
+    stride = 1 + width * channels
+    if len(pixels) != height * stride or any(pixels[row * stride] > 4 for row in range(height)):
+        raise ValueError('invalid PNG pixel buffer')
+    return width, height
 
 
 def reference(root, relative, expected):
@@ -80,7 +87,8 @@ class ClosedAdapter:
     def start_qwen(self): raise RuntimeError('unavailable')
     def generate(self, contract): raise RuntimeError('unavailable')
     def stop_qwen_and_prove_gpu_free(self): raise RuntimeError('unavailable')
-    def restore_gemma_verify_and_reopen(self): raise RuntimeError('unavailable')
+    def restore_gemma_verify(self): raise RuntimeError('unavailable')
+    def reopen(self): raise RuntimeError('unavailable')
 
 
 class FakeAdapter(ClosedAdapter):
@@ -94,7 +102,8 @@ class FakeAdapter(ClosedAdapter):
     def start_qwen(self): self.step('start_qwen')
     def generate(self, contract): self.step('generate'); return png()
     def stop_qwen_and_prove_gpu_free(self): self.step('stop_qwen_and_prove_gpu_free')
-    def restore_gemma_verify_and_reopen(self): self.step('restore_gemma_verify_and_reopen')
+    def restore_gemma_verify(self): self.step('restore_gemma_verify')
+    def reopen(self): self.step('reopen')
 
 
 class Harness:
@@ -139,16 +148,18 @@ class Harness:
             # An interrupted operation on either board blocks every new job.
             if self.db.execute("SELECT 1 FROM jobs WHERE board != ? AND state NOT IN ('queued','completed','failed')", (board,)).fetchone():
                 raise RuntimeError('arbiter recovery required')
-            error, restored = '', False
+            error, failed, restored, safe, persistence_ok = '', False, False, False, True
             try:
                 self.state(board, 'draining')
                 adapter.fence_and_drain()
                 adapter.stop_gemma_and_prove_gpu_free()
+                safe = True
                 self.state(board, 'image-ready')
                 adapter.start_qwen()
                 self.state(board, 'generating')  # durable before the irreversible call
                 data = adapter.generate(contract)
-                validate_png(data)
+                if validate_png(data) != (contract['width'], contract['height']):
+                    raise ValueError('output dimensions differ from contract')
                 self.state(board, 'staged')
                 stage = self.root / 'staging' / board
                 stage.mkdir(parents=True, exist_ok=False)
@@ -156,18 +167,28 @@ class Harness:
                 metadata = dict(contract, fake=True, sha256=hashlib.sha256(data).hexdigest())
                 self.write_new(stage / 'metadata.json', json.dumps(metadata, indent=2).encode())
             except Exception as exc:
-                error = str(exc)
+                failed = True
+                error = type(exc).__name__ + ': ' + str(exc)
             finally:
-                self.state(board, 'restoring', error)
                 try:
-                    adapter.stop_qwen_and_prove_gpu_free()
-                    adapter.restore_gemma_verify_and_reopen()
-                    restored = True
+                    self.state(board, 'restoring', error)
                 except Exception as exc:
-                    error = (error + '; restore: ' + str(exc)).strip('; ')
+                    persistence_ok = False
+                    error += '; persistence: ' + str(exc)
+                # Failed fence/GPU proof cannot authorize touching an unknown
+                # workload, reopening admission, or allowing the next Board.
+                if safe:
+                    try:
+                        adapter.stop_qwen_and_prove_gpu_free()
+                        adapter.restore_gemma_verify()
+                        if persistence_ok:
+                            adapter.reopen()
+                            restored = True
+                    except Exception as exc:
+                        error = (error + '; restore: ' + str(exc)).strip('; ')
             if not restored:
                 self.state(board, 'recovery-needed', error)
-            elif error:
+            elif failed:
                 self.state(board, 'failed', error)
             else:
                 try:
@@ -186,7 +207,9 @@ class Harness:
         parent = self.root / 'vault' / 'qwen-synthetic-evaluation'
         parent.mkdir(parents=True, exist_ok=True)
         stage = self.root / 'staging' / board
-        self.write_new(stage / 'note.md', ('# Synthetic evaluation\n\n![Fake image](image.png)\n').encode())
+        contract = json.loads(self.db.execute('SELECT contract FROM jobs WHERE board=?', (board,)).fetchone()[0])
+        self.write_new(stage / 'note.md', ('# 合成評価: ' + board + '\n\n'
+                       + contract['prompt'] + '\n\n![テスト用fake画像](image.png)\n').encode())
         fd = os.open(stage, os.O_RDONLY | os.O_DIRECTORY)
         try: os.fsync(fd)
         finally: os.close(fd)
