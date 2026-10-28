@@ -154,6 +154,7 @@ COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
 COPY dotfiles-sync.sh /opt/codex-workspace/dotfiles-sync.sh
 COPY cron/ /opt/codex-workspace/cron/
 COPY task-board/ /opt/codex-workspace/task-board/
+COPY qwen-eval/ /opt/codex-workspace/qwen-eval/
 COPY novel-board/ /opt/codex-workspace/novel-board/
 COPY recurring-events/ /opt/codex-workspace/recurring-events/
 COPY skills/ /opt/codex-workspace/skills/
