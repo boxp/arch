@@ -3222,7 +3222,11 @@ test_ai_ops_ledger_records_run_lifecycle() {
   # Start Ready -> In Progress, finish In Progress -> Review. A retry stays In
   # Progress: no lane.changed for in-progress -> in-progress.
   [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 2 ]] || fail "expected two lane.changed ledger events"
+  grep ':ledger:correction"' "${ledger}" | grep -q '"confidence":"high"' \
+    || fail "expected a failed CI check to be a high-confidence correction"
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "fail"\] 1'
+  # gate="all" is the overall denominator and must count the failure too.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "fail"\] 1'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "pass"\] 1'
 }
 

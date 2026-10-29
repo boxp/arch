@@ -163,11 +163,17 @@
       (log! (str "ai ops ledger record failed for " ticket-id "/" run-id ": " (.getMessage e))))))
 
 (defn gate-correction
-  "Provisional rule classification of a failed review gate."
-  [gate]
-  (case gate
-    (:ci :codex-review) {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "high"}
-    (:mergeability :conflict :pr-url) {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "medium"}
+  "Provisional rule classification of a failed review gate. Only failures
+  that show a defect in the agent's output (failed CI checks, review
+  findings, merge state, missing PR URL) count as agent-system. A gate that
+  could not evaluate (CI wait timeout, review command error, gate API error)
+  or a failure without a known kind is unknown."
+  [review-gate]
+  (case [(:gate review-gate) (:failure-kind review-gate)]
+    ([:ci :check-failure] [:codex-review :findings])
+    {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "high"}
+    ([:mergeability :merge-state] [:conflict :merge-state] [:pr-url nil])
+    {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "medium"}
     {:correction_class "unknown" :correction_origin "unknown" :confidence "low"}))
 
 (defn record-ai-ops-gate!
@@ -176,6 +182,10 @@
   (try
     (when (and @ai-ops-module-loaded? (:gate review-gate))
       ((resolve 'ai-ops-ledger/record-gate!) (root) (name (:gate review-gate)) false))
+    ;; gate="all" is the overall denominator: count every evaluated result,
+    ;; failures included, or the overall failure rate is understated.
+    (when (and @ai-ops-module-loaded? (not (:ok? review-gate)))
+      ((resolve 'ai-ops-ledger/record-gate!) (root) "all" false))
     ;; A gate that checked nothing (TASK_BOARD_REVIEW_PR: none, or only
     ;; already-merged PRs) is counted as skip, not pass.
     (when (and @ai-ops-module-loaded? (:ok? review-gate))
@@ -188,7 +198,7 @@
                                   :classifier "rule"
                                   :classifier_version "correction-rules/v0"
                                   :evidence_event_ids [(str ticket-id "/" run-id ":ledger:started")]}
-                                 (gate-correction (:gate review-gate))))))
+                                 (gate-correction review-gate)))))
 
 (defn record-ai-ops-finish!
   "Record run.finished and, when the card moved, lane.changed."
@@ -2076,6 +2086,7 @@
           (= :failed (:state merge))
           {:ok? false
            :gate (:gate merge)
+           :failure-kind :merge-state
            :url pr-url
            :retryable? true
            :message (:message merge)}
@@ -2083,6 +2094,7 @@
           (= :failed (:state ci))
           {:ok? false
            :gate :ci
+           :failure-kind :check-failure
            :url pr-url
            :retryable? true
            :message (:message ci)}
@@ -2104,6 +2116,7 @@
           (> (System/currentTimeMillis) deadline)
           {:ok? false
            :gate (if (= :pending (:state merge)) (:gate merge) :ci)
+           :failure-kind :timeout
            :url pr-url
            :retryable? true
            :message (str "Timed out waiting for PR gates. " (:message merge) " " (:message ci))}
@@ -2147,6 +2160,7 @@
       (not (zero? (:exit proc)))
       {:ok? false
        :gate :codex-review
+       :failure-kind :command-error
        :url pr-url
        :retryable? false
        :message (str "codex review command failed: " (:err proc))}
@@ -2159,6 +2173,7 @@
       :else
       {:ok? false
        :gate :codex-review
+       :failure-kind :findings
        :url pr-url
        :retryable? true
        :message (str "codex review reported actionable findings"
@@ -3830,6 +3845,19 @@
                                         "claude-opus" "claude-opus-5-5"
                                         "claude-sonnet" "claude-sonnet-5-5"})
       (swap! failures conj "review delegation policy for changed Claude routes"))
+    ;; BOXP-360: only gate failures that show an output defect are agent-system
+    ;; corrections; a gate that could not evaluate stays unknown.
+    (doseq [[gate-result expected] [[{:gate :ci :failure-kind :check-failure} "agent-system"]
+                                    [{:gate :codex-review :failure-kind :findings} "agent-system"]
+                                    [{:gate :conflict :failure-kind :merge-state} "agent-system"]
+                                    [{:gate :pr-url} "agent-system"]
+                                    [{:gate :ci :failure-kind :timeout} "unknown"]
+                                    [{:gate :mergeability :failure-kind :timeout} "unknown"]
+                                    [{:gate :codex-review :failure-kind :command-error} "unknown"]
+                                    [{:gate :pr-gate} "unknown"]
+                                    [{:gate :ci} "unknown"]]]
+      (when-not (= expected (:correction_origin (gate-correction gate-result)))
+        (swap! failures conj (str "gate-correction origin for " gate-result))))
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
     ;; Versioned projections cannot affect legacy candidate selection while off.
