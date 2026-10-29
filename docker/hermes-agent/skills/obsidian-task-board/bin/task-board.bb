@@ -299,7 +299,7 @@
      :status (second (re-find #"status::([^\s]+)" rest))
      :priority (second (re-find #"priority::([^\s]+)" rest))
      :assignee (second (re-find #"assignee::([^\s]+)" rest))
-     :rev (second (re-find #"rev::([^\s]+)" rest))
+     :rev (second (re-find #"(?:^|\s)rev::([^\s]+)" rest))
      :done-date (second (re-find #"done::([^\s]+)" rest))
      :repo (vec (map second (re-seq #"repo::([^\s]+)" rest)))
      :raw line}))
@@ -470,19 +470,20 @@
         notes (when-let [[start end] (find-section-range (:body-lines ticket) "Notes")]
                 (subvec (:body-lines ticket) start end))
         started (when (#{"In Progress" "Review" "Blocked" "Done"} (:lane card))
-                  (some (fn [[_ run timestamp]]
+                  (some (fn [[_ run timestamp agent]]
                           (try
                             (let [fmt (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss'Z'")
                                   instant (.toInstant (.atOffset (java.time.LocalDateTime/parse timestamp fmt) java.time.ZoneOffset/UTC))]
-                              (when (>= (.getEpochSecond instant) (quot epoch 1000)) run))
+                              (when (and (>= (.getEpochSecond instant) (quot epoch 1000))
+                                         (or (nil? (:assignee opts)) (= agent (:assignee opts))))
+                                run))
                             (catch Exception _ nil)))
-                        (re-seq #"Codex task-board run ((\d{8}T\d{6}Z)[^\s]*) started from" (str/join "\n" notes))))
+                        (re-seq #"Codex task-board run ((\d{8}T\d{6}Z)[^\s]*) started from .* using ([^\s]+?)\.?(?:\s|$)" (str/join "\n" notes))))
         tr (:rev ticket) cr (:rev card) assignee (:assignee opts)
         state (cond
                 (> (count cards) 1) "duplicate-cards"
                 started "started"
-                (or (and (= tr cr) (not= tr expected))
-                    (and (not= tr expected) (= cr expected) assignee (not= (:assignee ticket) assignee))) "reverted"
+                (and (= tr cr) (not= tr expected)) "reverted"
                 (not= tr cr) "pending-sync"
                 (and (= tr cr expected) (or (nil? assignee) (= assignee (:assignee ticket)))) "awaiting-pickup"
                 :else "unknown")]
@@ -533,7 +534,13 @@
                   done-date (or (present (:done-date old-card))
                                 (present (fm-get (:frontmatter-lines ticket) "closed"))
                                 (when (= lane "Done") (now-date)))
-                  rev (new-rev)
+                  ;; A new revision marks a new assignment (lane or assignee);
+                  ;; the runner treats it as superseding an in-flight run. Text
+                  ;; edits and notes keep the current one.
+                  reassigned? (or (not= lane (:lane old-card))
+                                  (not= status (:status ticket))
+                                  (and (:assignee opts) (not= (:assignee opts) (:assignee ticket))))
+                  rev (if reassigned? (new-rev) (or (:rev ticket) (:rev old-card)))
                   updates {:rev rev :append-note (:note opts) :note-source (or (:source opts) "hermes-agent")
                            :title (:title opts)
                            :summary (:summary opts)

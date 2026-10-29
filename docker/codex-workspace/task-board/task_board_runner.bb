@@ -607,24 +607,66 @@
   (and (card-rev card) (not= (card-rev card) (:board_rev fm))))
 
 (def revision-mismatches (atom {}))
-(def revision-logged (atom #{}))
 
-(defn sync-revision! [card fm]
-  (let [id (:ticket-id card) pair [(card-rev card) (:board_rev fm)]]
-    (if (rev-mismatch? card fm)
+(defn rev-epoch
+  "Epoch millis encoded in a helper revision (`<base36 millis>-<hex>`), or nil."
+  [rev]
+  (try (Long/parseLong (first (str/split (str rev) #"-")) 36)
+       (catch Exception _ nil)))
+
+(defn rev-mismatch-warn-seconds []
+  (try (Long/parseLong (env "CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS" "300"))
+       (catch Exception _ 300)))
+
+(declare repair-card-revision! update-frontmatter!)
+
+(defn sync-revision!
+  "BOXP-357: the helper stamps one revision on the ticket (board_rev) and its
+  card (rev::). While they differ this replica holds one side of an update the
+  other side of which has not arrived (or was lost to a last-writer-wins sync),
+  so the stale ticket must not be rewritten nor dispatched. A newer ticket is a
+  complete helper write: the card is repaired from it. A newer card waits for
+  its ticket; when it never arrives within the warn window the ticket write is
+  taken as lost and its frontmatter is repaired from the card. Returns true when
+  the lane must not be projected onto the ticket in this pass."
+  [card fm]
+  (let [id (:ticket-id card)
+        card-rev' (card-rev card)
+        ticket-rev (:board_rev fm)
+        pair [card-rev' ticket-rev]]
+    (if-not (rev-mismatch? card fm)
+      (do (swap! revision-mismatches dissoc id) false)
       (let [entry (get (swap! revision-mismatches
                               (fn [m] (if (= pair (get-in m [id :pair])) m
-                                          (assoc m id {:pair pair :first-seen (now)})))) id)
-            threshold (try (Long/parseLong (env "CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS" "300"))
-                           (catch Exception _ 300))]
-        (when-not (contains? @revision-logged id)
-          (swap! revision-logged conj id)
-          (log! (str "assignment sync pending for " id ": card rev=" (first pair) " ticket rev=" (second pair) " lane=" (:lane card))))
-        (when (> (.toMillis (java.time.Duration/between (:first-seen entry) (now))) (* 1000 threshold))
-          (log! (str "WARN: assignment revision mismatch persisted for " id " card rev=" (first pair)
-                     " ticket rev=" (second pair) "; one side of a board/ticket update may have been lost")))
-        true)
-      (do (swap! revision-mismatches dissoc id) false))))
+                                          (assoc m id {:pair pair :first-seen (now)}))))
+                       id)
+            card-at (rev-epoch card-rev')
+            ticket-at (rev-epoch ticket-rev)
+            ticket-lane (status->lane (:status fm))
+            card-assignee (attr-value (:line card) "assignee")
+            age-ns (.toNanos (java.time.Duration/between (:first-seen entry) (now)))]
+        (cond
+          (and card-at ticket-at (> ticket-at card-at) ticket-lane)
+          (do (log! (str "assignment revision: repairing stale card for " id " from ticket rev=" ticket-rev
+                         " (card rev=" card-rev' ")"))
+              (repair-card-revision! id (:status fm) (:assignee fm) ticket-rev)
+              (swap! revision-mismatches dissoc id)
+              true)
+
+          (and (> age-ns (* 1000000000 (rev-mismatch-warn-seconds)))
+               card-at (or (nil? ticket-at) (> card-at ticket-at)) card-assignee)
+          (do (log! (str "WARN: assignment revision mismatch persisted for " id " card rev=" card-rev'
+                         " ticket rev=" ticket-rev "; the ticket write was lost, repairing its frontmatter from the card"))
+              (update-frontmatter! id {:status (:status card) :assignee card-assignee :board_rev card-rev'})
+              (swap! revision-mismatches dissoc id)
+              true)
+
+          :else
+          (do (when-not (:logged? entry)
+                (swap! revision-mismatches assoc-in [id :logged?] true)
+                (log! (str "assignment sync pending for " id ": card rev=" card-rev'
+                           " ticket rev=" ticket-rev " lane=" (:lane card))))
+              true))))))
 
 (defn parse-board-cards [lines]
   (->> lane->status
@@ -697,6 +739,23 @@
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
            (write-lines! path moved))))))))
+
+(defn repair-card-revision!
+  "Move a card to the ticket's lane and copy the ticket's assignee and
+  revision onto it, in one board write (see `sync-revision!`)."
+  [ticket-id target-status assignee rev]
+  (locking board-mutex
+    (with-vault-writer-lock
+     (fn []
+       (let [path (board-path)
+             lines (vec (read-lines path))
+             card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))]
+         (when card
+           (let [new-line (cond-> (-> (normalize-card-line (:line card) target-status)
+                                      (replace-or-add-attr "rev" rev))
+                            assignee (replace-or-add-attr "assignee" assignee))]
+             (write-lines! path (insert-after-heading (remove-index lines (:idx card))
+                                                      (status->lane target-status) new-line)))))))))
 
 (declare only-ticket)
 
@@ -2761,7 +2820,8 @@
 (defn superseded-revision [ticket-id start-rev]
   (try
     (let [ticket-rev (:board_rev (ticket-frontmatter ticket-id))
-          card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path))))))
+          card (when (fs/exists? (board-path))
+                 (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))))
           cr (card-rev card)]
       (when (or (not= ticket-rev start-rev) (and cr (not= cr start-rev)))
         {:rev (if (not= ticket-rev start-rev) ticket-rev cr) :consistent? (= ticket-rev cr)}))
@@ -2769,14 +2829,14 @@
       (log! (str "superseded check failed for " ticket-id ": " (.getMessage e)))
       nil)))
 
-(defn record-superseded! [ticket-id run-id action agent lane result exit next-status review-gate revision]
-  (mark-run! ticket-id run-id (cond (= next-status "blocked") :blocked
-                                    (= next-status "in-progress") :retrying
-                                    :else :succeeded)
+(defn record-superseded! [ticket-id run-id action agent lane result exit review-gate revision]
+  ;; :superseded, not :succeeded / :blocked: the lane was left to the newer
+  ;; assignment, so no lane-derived status would match the ticket.
+  (mark-run! ticket-id run-id :superseded
              {:action action :agent agent :lane lane :exit-code exit :result result
               :review-gate (persisted-review-gate review-gate) :finished-at (now-str)
               :superseded-by (:rev revision)})
-  (let [note (str "Codex task-board run " run-id " finished with result " result
+  (let [note (str "Codex task-board run " run-id " finished with result " (or result "error")
                   ", but a newer assignment (board_rev " (:rev revision)
                   ") arrived during the run; lane and assignee were left as instructed.")]
     (if (:consistent? revision) (append-note! ticket-id note) (log! note))))
@@ -2901,8 +2961,8 @@
                               :finished-at (now-str)}))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
-                (if-let [revision (when-not (or idle-timeout? @docs-applied?) (superseded-revision ticket-id start-rev))]
-                  (record-superseded! ticket-id run-id action assignee effective-lane result exit next-status review-gate revision)
+                (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
+                  (record-superseded! ticket-id run-id action assignee effective-lane result exit review-gate revision)
                   (if (= "blocked" next-status)
                   (if (block-ticket! ticket-id run-id action result exit review-gate nil)
                     (record-task-board-event! ticket-id run-id status "blocked" result)
@@ -2951,7 +3011,7 @@
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
                   (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
-                    (record-superseded! ticket-id (:run-id lock) action assignee effective-lane nil nil "blocked" nil revision)
+                    (record-superseded! ticket-id (:run-id lock) action assignee effective-lane nil nil nil revision)
                     (do
                     (when @docs-applied?
                       ;; The target notes were written but the transition did
@@ -3537,7 +3597,6 @@
     completed-ids))
 
 (defn tick! []
-  (reset! revision-logged #{})
   (recover-locks!)
   (if (draining?)
     (log! (str "runner owner " (owner-id) " is draining; not accepting new tickets"))

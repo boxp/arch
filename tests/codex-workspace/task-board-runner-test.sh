@@ -3358,8 +3358,44 @@ test_assignment_superseded() {
   assert_run_summary_contains "${state}" BOXP-991 ':superseded-by'
 }
 
+test_assignment_repairs() {
+  local tmp vault state bin old new rev1 rev2
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  old="rs-0000"; new="pnhdlqrk-0000"
+  # A newer ticket is a complete helper write whose card update was lost: the card is repaired and dispatched.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::boxp rev::${old}"
+  write_ticket "${vault}" BOXP-992 ready codex
+  sed -i "s/^type: task$/type: task\nboard_rev: ${new}/" "${vault}/Tickets/BOXP-992.md"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick" 2>&1
+  assert_file_contains "${tmp}/tick" 'repairing stale card for BOXP-992'
+  assert_file_contains "${tmp}/starts" BOXP-992
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${new}"
+  # A newer card whose ticket never arrives: after the warn window the ticket frontmatter is repaired from the card.
+  rm -rf "${vault}" "${state}" "${tmp}/starts"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::codex rev::${new}"
+  write_ticket "${vault}" BOXP-993 review boxp
+  sed -i "s/^type: task$/type: task\nboard_rev: ${old}/" "${vault}/Tickets/BOXP-993.md"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
+  assert_file_contains "${tmp}/tick" 'WARN: assignment revision mismatch persisted for BOXP-993'
+  assert_file_contains "${vault}/Tickets/BOXP-993.md" "^board_rev: ${new}$"
+  # The repaired ticket carries the card's assignee, so the same tick dispatches it.
+  assert_file_contains "${tmp}/tick" 'processing BOXP-993 from In Progress'
+  assert_file_contains "${tmp}/starts" BOXP-993
+  # Notes and text edits keep the revision; only a lane or assignee change issues a new one.
+  rm -rf "${vault}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-994|BOXP-994: test]] #ticket status::in-progress assignee::boxp'
+  write_ticket "${vault}" BOXP-994 in-progress boxp
+  rev1="$(bb "${HELPER}" update BOXP-994 --vault "${vault}" --lane Ready --assignee codex --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  rev2="$(bb "${HELPER}" update BOXP-994 --vault "${vault}" --note 'progress only' --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  [[ -n "${rev1}" && "${rev1}" == "${rev2}" ]] || fail "note-only update changed revision ${rev1} -> ${rev2}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev1}"
+}
+
 test_assignment_revisions
 test_assignment_superseded
+test_assignment_repairs
 test_delegation_gate_end_to_end
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
