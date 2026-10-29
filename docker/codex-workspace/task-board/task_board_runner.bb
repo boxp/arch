@@ -624,11 +624,16 @@
   "BOXP-357: the helper stamps one revision on the ticket (board_rev) and its
   card (rev::). While they differ this replica holds one side of an update the
   other side of which has not arrived (or was lost to a last-writer-wins sync),
-  so the stale ticket must not be rewritten nor dispatched. A newer ticket is a
-  complete helper write: the card is repaired from it. A newer card waits for
-  its ticket; when it never arrives within the warn window the ticket write is
-  taken as lost and its frontmatter is repaired from the card. Returns true when
-  the lane must not be projected onto the ticket in this pass."
+  so the stale ticket must not be rewritten nor dispatched. Normally the other
+  side arrives within a few sync intervals. Only when the same pair outlives
+  the warn window is the older side taken as lost and repaired from the newer
+  one: a newer ticket is a complete helper write, so the card is repaired from
+  it (the shared board file can be reverted by another card's write); a newer
+  card repairs the ticket frontmatter. Repairing earlier would overwrite the
+  helper's in-flight write of the other file. Returns false
+  when consistent, true to hold the projection, or a repair fn that also holds
+  it. The caller runs the fn after releasing its ticket / vault locks, because
+  the board repair takes the board mutex (lock order: board mutex, vault lock)."
   [card fm]
   (let [id (:ticket-id card)
         card-rev' (card-rev card)
@@ -644,22 +649,20 @@
             ticket-at (rev-epoch ticket-rev)
             ticket-lane (status->lane (:status fm))
             card-assignee (attr-value (:line card) "assignee")
-            age-ns (.toNanos (java.time.Duration/between (:first-seen entry) (now)))]
+            expired? (> (.toNanos (java.time.Duration/between (:first-seen entry) (now)))
+                        (* 1000000000 (rev-mismatch-warn-seconds)))]
         (cond
-          (and card-at ticket-at (> ticket-at card-at) ticket-lane)
-          (do (log! (str "assignment revision: repairing stale card for " id " from ticket rev=" ticket-rev
+          (and expired? card-at ticket-at (> ticket-at card-at) ticket-lane)
+          (do (log! (str "WARN: assignment revision mismatch persisted for " id "; the card write was lost, repairing the card from ticket rev=" ticket-rev
                          " (card rev=" card-rev' ")"))
-              (repair-card-revision! id (:status fm) (:assignee fm) ticket-rev)
               (swap! revision-mismatches dissoc id)
-              true)
+              #(repair-card-revision! id (:status fm) (:assignee fm) ticket-rev))
 
-          (and (> age-ns (* 1000000000 (rev-mismatch-warn-seconds)))
-               card-at (or (nil? ticket-at) (> card-at ticket-at)) card-assignee)
+          (and expired? card-at (or (nil? ticket-at) (> card-at ticket-at)) card-assignee)
           (do (log! (str "WARN: assignment revision mismatch persisted for " id " card rev=" card-rev'
                          " ticket rev=" ticket-rev "; the ticket write was lost, repairing its frontmatter from the card"))
-              (update-frontmatter! id {:status (:status card) :assignee card-assignee :board_rev card-rev'})
               (swap! revision-mismatches dissoc id)
-              true)
+              #(update-frontmatter! id {:status (:status card) :assignee card-assignee :board_rev card-rev'}))
 
           :else
           (do (when-not (:logged? entry)
@@ -877,16 +880,21 @@
         ;; With the shared lock, another writer may move the card after the
         ;; snapshot above. Re-read the lane inside the lock so a stale status is
         ;; never projected. Lock order stays ticket mutex, then vault lock.
-        (locking (ticket-mutex ticket-id)
-          (with-vault-writer-lock
-           (fn []
-             (when-let [current (first (filter #(= ticket-id (:ticket-id %))
-                                               (parse-board-cards (vec (read-lines (board-path))))))]
-               (when (fs/exists? path)
-                 (when-not (sync-revision! current (ticket-frontmatter ticket-id))
-                   (project-ticket-status! ticket-id current)))))))
-        (when-not (sync-revision! card (ticket-frontmatter ticket-id))
-          (project-ticket-status! ticket-id card))))))
+        (let [held (locking (ticket-mutex ticket-id)
+                     (with-vault-writer-lock
+                      (fn []
+                        (when-let [current (first (filter #(= ticket-id (:ticket-id %))
+                                                          (parse-board-cards (vec (read-lines (board-path))))))]
+                          (when (fs/exists? path)
+                            (let [held (sync-revision! current (ticket-frontmatter ticket-id))]
+                              (when-not held
+                                (project-ticket-status! ticket-id current))
+                              held))))))]
+          (when (fn? held) (held)))
+        (let [held (sync-revision! card (ticket-frontmatter ticket-id))]
+          (cond
+            (fn? held) (held)
+            (not held) (project-ticket-status! ticket-id card)))))))
 
 (defn sync-all! []
   (sync-board-statuses!)

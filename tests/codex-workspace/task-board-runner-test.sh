@@ -3368,8 +3368,12 @@ test_assignment_repairs() {
   write_board "${vault}" "- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::boxp rev::${old}"
   write_ticket "${vault}" BOXP-992 ready codex
   sed -i "s/^type: task$/type: task\nboard_rev: ${new}/" "${vault}/Tickets/BOXP-992.md"
-  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick" 2>&1
-  assert_file_contains "${tmp}/tick" 'repairing stale card for BOXP-992'
+  cp "${vault}/Boards/Task Board.md" "${tmp}/board-before"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick0" 2>&1
+  cmp "${tmp}/board-before" "${vault}/Boards/Task Board.md" || fail 'card repaired inside the warn window'
+  [[ ! -e "${tmp}/starts" ]] || fail 'stale card dispatched inside the warn window'
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
+  assert_file_contains "${tmp}/tick" 'the card write was lost, repairing the card from ticket rev=.* for BOXP-992|BOXP-992; the card write was lost'
   assert_file_contains "${tmp}/starts" BOXP-992
   assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${new}"
   # A newer card whose ticket never arrives: after the warn window the ticket frontmatter is repaired from the card.
