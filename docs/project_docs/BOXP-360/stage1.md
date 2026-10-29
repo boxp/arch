@@ -35,7 +35,7 @@ Hermes (`definition_version=hermes-observer/v1`)
 - Ready に入った時刻は runner が観測しない。Ready→ack の遅延を出すには、board-diff 由来の Ready 遷移時刻との join が要る (次段階)。
 - Hermes の承認 hook は `session_key` だけを持ち、turn hook は `session_id` を持つ。そのため承認と turn は同じ task に join されない。同じ承認の重複は session_key の中で数える。
 - Hermes の `approval.resolved` の choice (許可/拒否) はまだ取らない。Owner 救援 (催促) は metadata だけでは判定できないので、引き続き unknown とする。
-- Hermes の counter は plugin 起動からの値で、再起動で 0 に戻る (Prometheus の counter reset として扱われる)。ledger は PVC 上に永続する。
+- Hermes の counter は plugin を起動してからの値で、再起動すると 0 に戻る (Prometheus は counter reset として扱う)。複数の Hermes process が plugin を load した場合、`metrics.prom` を書くのは `metrics.lock` を flock で取得した 1 process だけになる。ledger にはすべての process が追記し、PVC 上に永続する。
 - ledger の SLI を Prometheus に出す処理 (ledger + extract の aggregate を定期実行する) は、2〜4 週の baseline 収集と並行して次段階で行う。第 1 段階で Prometheus に出すのは、生成元の counter と収集の健全性。
 
 ## 配備と確認
