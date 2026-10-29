@@ -7,7 +7,7 @@ FROM docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797
 
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
 ARG BABASHKA_VERSION=1.13.228
-ARG BABASHKA_SHA256=bf89e909c4025edf2d669921c81107435b7244840d8f4306f58439c328a342f9
+ARG BABASHKA_SHA256=cf643eb2bd1064fe3cbeab9751d59c2877094516ce692e89893fce56ec98ab00
 
 # Keep the upstream PATH order (hermes shim, venv, then the pm-managed node/python
 # symlinks under /usr/local/bin) and prepend only the obsidian-headless prefix.

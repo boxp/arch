@@ -38,6 +38,16 @@ fi
 - `delete` requires `--dry-run` or `--confirm`; prefer dry-run first and report the affected ticket file and board card.
 - Do not move Codex requests to `In Progress`. The runner owns that transition.
 
+## 担当変更と同期後の確認
+
+票の frontmatter `assignee` が担当・着手判定の正本、カードの lane が status の正本です。カードの `assignee::` は表示用の写しです。
+
+担当変更と依頼は append-note の後に update するのではなく、`update BOXP-55 --assignee codex-sol --lane Ready --note "依頼内容"` の一回で行い、出力された `rev` を記録してください。helper の成功は hermes のローカル replica の更新を示すだけで、runner への到達を意味しません。後で `verify-dispatch BOXP-55 --expected-rev <rev> --assignee codex-sol --json` で確認します。
+
+新しい `rev` は lane か assignee が変わる update でだけ発行されます。Notes や本文だけの update は現在の `rev` を保ちます。実行中の run に新しい `rev` が届くと、その run は完了時に lane / assignee を上書きせず、新しい指示が次の tick で拾われます。票とカードの `rev` が食い違っている間、runner はもう一方のファイルの到着を待ちます。`CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS`（既定 300 秒）を過ぎても一致しなければ WARN を出し、新しい `rev` の側に合わせて古い側を直します（票が新しければカードを、カードが新しければ票の frontmatter を直します）。
+
+`awaiting-pickup` は同期済みで着手待ち、`started` は着手済み、`pending-sync` は同期途中、`reverted` は別の更新で置き換わった状態です。`duplicate-cards` はカード重複、`unknown` は判定不能です。`pending-sync` は数回の同期間隔までは通常の状態です。`reverted` または長時間続く `pending-sync` は、繰り返し盲目的に更新したり sleep したりせず、`show --json` の consistency を添えて親または owner に報告してください。ロックを強制解除したり並列 run を起動したりしないでください。
+
 ## Commands
 
 List tickets:

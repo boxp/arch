@@ -1450,6 +1450,7 @@ test_fable_reported_blocked_is_audited() {
   PATH="${bin}:$PATH" CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked\napi_key=do-not-expose' run_tick "${vault}" "${state}" env >/tmp/task-board-fable-blocked.out
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-302\|BOXP-302: fable blocked\]\].*status::blocked'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'status::blocked.*assignee::boxp'
   assert_file_contains "${vault}/Tickets/BOXP-302.md" 'category=agent-reported-blocked'
   assert_file_contains "${vault}/Tickets/BOXP-302.md" 'reason=Agent reported blocked; inspect the referenced run artifacts'
   assert_file_not_contains "${vault}/Tickets/BOXP-302.md" 'do-not-expose'
@@ -3304,6 +3305,101 @@ CHECK
   done
 }
 
+test_assignment_revisions() {
+  local tmp vault state bin rev result code
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::boxp'
+  write_ticket "${vault}" BOXP-990 review boxp
+  result="$(bb "${HELPER}" update BOXP-990 --vault "${vault}" --lane Ready --assignee codex --note 'assignment note' --json)"
+  rev="$(printf '%s' "${result}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" "^board_rev: ${rev}$"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" 'assignment note'
+  assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev}"
+  bb "${HELPER}" show BOXP-990 --vault "${vault}" --json | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["consistency"]["rev-match"] and x["consistency"]["assignee-match"]'
+  bb "${HELPER}" verify-dispatch BOXP-990 --vault "${vault}" --expected-rev "${rev}" --assignee codex --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["state"] == "awaiting-pickup"'
+  sed -i "s/^board_rev: .*/board_rev: old/; s/^assignee: .*/assignee: boxp/; s/^status: .*/status: review/" "${vault}/Tickets/BOXP-990.md"
+  cp "${vault}/Tickets/BOXP-990.md" "${tmp}/before"
+  set +e
+  bb "${HELPER}" verify-dispatch BOXP-990 --vault "${vault}" --expected-rev "${rev}" --json >"${tmp}/verify"
+  code=$?
+  set -e
+  [[ "$code" == 5 ]] || fail 'expected pending-sync exit 5'
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick"
+  cmp "${tmp}/before" "${vault}/Tickets/BOXP-990.md" || fail 'mismatch rewrote ticket'
+  [[ ! -e "${tmp}/starts" ]] || fail 'mismatch started agent'
+  sed -i "s/^board_rev: .*/board_rev: ${rev}/; s/^assignee: .*/assignee: codex/; s/^status: .*/status: ready/" "${vault}/Tickets/BOXP-990.md"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick2"
+  assert_file_contains "${tmp}/starts" BOXP-990
+  assert_file_contains "${vault}/Boards/Task Board.md" 'assignee::boxp'
+  bb "${HELPER}" verify-dispatch BOXP-990 --vault "${vault}" --expected-rev "${rev}" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["state"] == "started"'
+  sed -n '/\[\[Tickets\/BOXP-990|/p' "${vault}/Boards/Task Board.md" >>"${vault}/Boards/Task Board.md"
+  bb "${HELPER}" show BOXP-990 --vault "${vault}" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["consistency"]["duplicate-cards"] == 2'
+}
+
+test_assignment_superseded() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-991 in-progress codex
+  bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee codex >/dev/null
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  local pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
+  bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee boxp --note 'new assignment' >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-991.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-991.md" 'newer assignment \(board_rev'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'status::ready.*assignee::boxp'
+  assert_run_summary_contains "${state}" BOXP-991 ':superseded-by'
+}
+
+test_assignment_repairs() {
+  local tmp vault state bin old new rev1 rev2
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  old="rs-0000"; new="pnhdlqrk-0000"
+  # A newer ticket is a complete helper write whose card update was lost: the card is repaired and dispatched.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::boxp rev::${old}"
+  write_ticket "${vault}" BOXP-992 ready codex
+  sed -i "s/^type: task$/type: task\nboard_rev: ${new}/" "${vault}/Tickets/BOXP-992.md"
+  cp "${vault}/Boards/Task Board.md" "${tmp}/board-before"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick0" 2>&1
+  cmp "${tmp}/board-before" "${vault}/Boards/Task Board.md" || fail 'card repaired inside the warn window'
+  [[ ! -e "${tmp}/starts" ]] || fail 'stale card dispatched inside the warn window'
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
+  assert_file_contains "${tmp}/tick" 'the card write was lost, repairing the card from ticket rev=.* for BOXP-992|BOXP-992; the card write was lost'
+  assert_file_contains "${tmp}/starts" BOXP-992
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${new}"
+  # A newer card whose ticket never arrives: after the warn window the ticket frontmatter is repaired from the card.
+  rm -rf "${vault}" "${state}" "${tmp}/starts"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::codex rev::${new}"
+  write_ticket "${vault}" BOXP-993 review boxp
+  sed -i "s/^type: task$/type: task\nboard_rev: ${old}/" "${vault}/Tickets/BOXP-993.md"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
+  assert_file_contains "${tmp}/tick" 'WARN: assignment revision mismatch persisted for BOXP-993'
+  assert_file_contains "${vault}/Tickets/BOXP-993.md" "^board_rev: ${new}$"
+  # The repaired ticket carries the card's assignee, so the same tick dispatches it.
+  assert_file_contains "${tmp}/tick" 'processing BOXP-993 from In Progress'
+  assert_file_contains "${tmp}/starts" BOXP-993
+  # Notes and text edits keep the revision; only a lane or assignee change issues a new one.
+  rm -rf "${vault}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-994|BOXP-994: test]] #ticket status::in-progress assignee::boxp'
+  write_ticket "${vault}" BOXP-994 in-progress boxp
+  rev1="$(bb "${HELPER}" update BOXP-994 --vault "${vault}" --lane Ready --assignee codex --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  rev2="$(bb "${HELPER}" update BOXP-994 --vault "${vault}" --note 'progress only' --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  [[ -n "${rev1}" && "${rev1}" == "${rev2}" ]] || fail "note-only update changed revision ${rev1} -> ${rev2}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev1}"
+}
+
+test_assignment_revisions
+test_assignment_superseded
+test_assignment_repairs
 test_delegation_gate_end_to_end
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
