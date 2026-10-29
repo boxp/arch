@@ -229,15 +229,20 @@
 
 (def ai-ops-metrics-last-ms (atom 0))
 
-(defn maybe-write-ai-ops-metrics! []
+(defn maybe-write-ai-ops-metrics!
+  ;; sync? (one-shot `tick`): Babashka exits without waiting for futures, so the
+  ;; SLI refresh must complete before metrics.prom is written.
+  ([] (maybe-write-ai-ops-metrics! false))
+  ([sync?]
   (try
     (let [now-ms (System/currentTimeMillis)]
       (when (and @ai-ops-module-loaded? (>= (- now-ms @ai-ops-metrics-last-ms) 60000))
         (reset! ai-ops-metrics-last-ms now-ms)
-        ((resolve 'ai-ops-ledger/refresh-sli-async!) (root) (System/getenv "CODEX_TASK_BOARD_VAULT"))
+        ((resolve (if sync? 'ai-ops-ledger/refresh-sli! 'ai-ops-ledger/refresh-sli-async!))
+         (root) (System/getenv "CODEX_TASK_BOARD_VAULT"))
         ((resolve 'ai-ops-ledger/write-metrics!) (root))))
     (catch Exception e
-      (log! (str "ai ops metrics write failed: " (.getMessage e))))))
+      (log! (str "ai ops metrics write failed: " (.getMessage e)))))))
 
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
@@ -4610,8 +4615,9 @@
              (when-not (= "--ticket" (first args)) (usage))
              (reset! only-ticket (second args)))
            (recover-locks!) (tick!) (drain-in-flight!) (sync-all!)
-           ;; One-shot ticks also refresh metrics.prom (loop! does it per poll).
-           (maybe-write-ai-ops-metrics!))
+           ;; One-shot ticks also refresh metrics.prom (loop! does it per poll),
+           ;; waiting for the SLI refresh because the process exits next.
+           (maybe-write-ai-ops-metrics! true))
   ;; BOXP-306: the operator accept / rollback commands are retired. Both print
   ;; the notice and exit without touching any file (a copied command from an
   ;; old Notes line must not restore or rewrite a note by surprise).

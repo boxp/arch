@@ -470,7 +470,7 @@
                      [[{} now-seconds]])))
      "\n")))
 
-;; Review-gate corrections and collection_lost markers exist only in the runner
+;; Review-gate corrections, collection_lost and privacy_rejected markers exist only in the runner
 ;; ledger, so deleting an expired day file would make all-history SLIs undercount
 ;; corrections or turn back into determined values. Before deleting, copy those
 ;; lines into the SLI archive (metadata-only, small); a day file whose archive copy
@@ -479,7 +479,8 @@
 (defn sli-archive-path [root] (fs/path (ledger-dir root) "sli-archive.jsonl"))
 (defn sli-archive-line? [line]
   (let [e (try (json/parse-string line true) (catch Exception _ ::unparsable))]
-    (or (= ::unparsable e) (not (map? e)) (contains? e :collection_lost) (= "correction" (:event_type e)))))
+    (or (= ::unparsable e) (not (map? e)) (contains? e :collection_lost) (contains? e :privacy_rejected)
+        (= "correction" (:event_type e)))))
 
 (defn prune! [root]
   (let [cutoff (.minusDays (java.time.LocalDate/now java.time.ZoneOffset/UTC) (retention-days))]
