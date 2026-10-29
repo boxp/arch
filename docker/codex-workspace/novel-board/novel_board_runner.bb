@@ -2276,9 +2276,10 @@
       (swap! notes conj (canonical-path (note-path novel-id)))
       (swap! explored conj {:rel (absolute-relative (vault) (note-path novel-id)) :source "管理ノート" :images (count refs)})
       (doseq [raw refs] (image! raw note-dir "管理ノート" "管理ノート" false)))
-    (doseq [target (reference-targets content)]
-      (if (contains? image-extensions (str/lower-case (or (fs/extension target) "")))
-        (image! target note-dir target "明示参照" true)
+    (doseq [target (reference-targets content)
+            :let [image-target (str/trim (str/replace target #"[|#].*$" ""))]]
+      (if (contains? image-extensions (str/lower-case (or (fs/extension image-target) "")))
+        (image! image-target note-dir image-target "明示参照" true)
         (let [path (try (resolve-vault-path target note-dir) (catch Exception _ nil))]
           (cond
             (nil? path) (gap! :image-not-found target)
@@ -3092,18 +3093,25 @@
   (let [state (try (read-edn-file (published-state-path novel-id) {}) (catch Exception _ {}))]
     (and (= :published (:status state)) (seq (:path state)))))
 
+(defn without-links [text]
+  (-> (str text)
+      (str/replace #"!?\[\[[^\]]*\]\]" "")
+      (str/replace #"!?\[[^\]]*\]\([^)]*\)" "")
+      (str/replace #"`[^`]*`" "")))
+
 (defn image-intent? [text]
   ;; A request to produce an illustration, not a mere mention: links, embeds
   ;; and code spans (file names such as `x-illustration.png`) are ignored.
-  (let [plain (-> (str text)
-                  (str/replace #"!?\[\[[^\]]*\]\]" "")
-                  (str/replace #"!?\[[^\]]*\]\([^)]*\)" "")
-                  (str/replace #"`[^`]*`" ""))]
+  (let [plain (without-links text)]
     (boolean (re-find #"(?i)(?:挿絵|イラスト|illustration|画像|絵)[^。\n]{0,12}?(?:用意|生成|作成|作って|作り直|描|付け|追加|入れ|差し替|やり直|generate|create|draw)" plain))))
 
 (defn image-only-instructions? [text]
   (let [lines (->> (str/split-lines (str text)) (map #(str/replace % #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")) (remove str/blank?))]
-    (and (seq lines) (every? image-intent? lines)
+    ;; Lines that only point at material (`参照: [[note]]`) support the request.
+    (and (some image-intent? lines)
+         (every? #(or (image-intent? %)
+                      (re-matches #"(?i)\s*(?:参照|資料|参考|作画資料|references?)?\s*[:：]?\s*" (without-links %)))
+                 lines)
          (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更" %) lines))))
 
 (defn illustration-job-path [novel-id] (fs/path (work-dir novel-id) "illustration-job.edn"))
@@ -3822,6 +3830,8 @@
                 (not (image-intent? "[[character-illustration.png]] を参考に主人公の衣装を変更してください"))
                 (not (image-only-instructions? "- `illustration.png` を参考に衣装を直す"))
                 (image-only-instructions? "- 挿絵を作り直してください\n- イラストを1枚追加")
+                (image-only-instructions? "- 挿絵を生成してください\n- 参照: [[設定/主人公]]")
+                (not (image-only-instructions? "- 参照: [[設定/主人公]]"))
                 (not (image-only-instructions? "- 挿絵を描く\n- 本文を加筆"))))
     (check "review image action and mixed action"
            (with-redefs [instructions-applied? (constantly false)]
@@ -3845,7 +3855,7 @@
         (spit (str (fs/path root "S" "資料.md")) "# 資料\n![[b.png]]")
         (with-redefs [vault (constantly (str root)) work-dir (constantly work) setting-roots (constantly ["S"])
                       allowed-reference-dirs (constantly ["S" "NSFW" "Novels"])]
-          (let [result (discover-reference-images "NOVEL-0" "## Requirements\n人物 `private.png`\n![[NSFW/x.png]]\n" {} false)
+          (let [result (discover-reference-images "NOVEL-0" "## Requirements\n人物 `private.png|立ち絵`\n![[NSFW/x.png]]\n" {} false)
                 files (set (map :file (:candidates result))) gaps (set (map :type (:gaps result)))]
             (check "image discovery priorities and gaps"
                    (and (= #{"a.png" "b.png" "private.png"} files)
