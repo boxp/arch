@@ -3110,14 +3110,21 @@
   (let [plain (without-links text)]
     (boolean (re-find #"(?i)(?:挿絵|イラスト|illustration|画像|絵)[^。\n]{0,12}?(?:用意|生成|作成|作って|作り直|描|付け|追加|入れ|差し替|やり直|generate|create|draw)" plain))))
 
+(defn without-keep-clauses [text]
+  (str/replace (without-links text)
+               #"(?:本文|文章|台詞|セリフ|展開)(?:は|には|を)?(?:そのまま|変え(?:ず|ない)|変更(?:せず|しない)|いじら(?:ず|ない)|触ら(?:ず|ない)|手を(?:加え|入れ)(?:ず|ない)|改稿(?:せず|しない)|書き換え(?:ず|ない))(?:でください|で|に)?"
+               ""))
+
 (defn image-only-instructions? [text]
   (let [lines (->> (str/split-lines (str text)) (map #(str/replace % #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")) (remove str/blank?))]
     ;; Lines that only point at material (`参照: [[note]]`) support the request.
     (and (some image-intent? lines)
          (every? #(or (image-intent? %)
-                      (re-matches #"(?i)\s*(?:参照|資料|参考|作画資料|references?)?\s*[:：]?\s*" (without-links %)))
+                      (re-matches #"(?i)\s*(?:参照|資料|参考|作画資料|references?)?\s*[:：]?\s*" (without-links %))
+                      (and (not= (without-links %) (without-keep-clauses %))
+                           (re-matches #"[\s。、]*" (without-keep-clauses %))))
                  lines)
-         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更" %) lines))))
+         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更" (without-keep-clauses %)) lines))))
 
 (defn illustration-job-path [novel-id] (fs/path (work-dir novel-id) "illustration-job.edn"))
 
@@ -3836,6 +3843,14 @@
                 (not (image-only-instructions? "- `illustration.png` を参考に衣装を直す"))
                 (image-only-instructions? "- 挿絵を作り直してください\n- イラストを1枚追加")
                 (image-only-instructions? "- 挿絵を生成してください\n- 参照: [[設定/主人公]]")
+                (image-only-instructions? "本文はそのままで、挿絵だけ生成してください")
+                (image-only-instructions? "本文は変えずに挿絵を作ってください")
+                (image-only-instructions? "挿絵を追加して。本文は変更しないで")
+                (image-only-instructions? "- 挿絵を生成してください\n- 本文には手を加えないでください")
+                (not (image-only-instructions? "本文を書き直して挿絵も作って"))
+                (not (image-only-instructions? "台詞を変更して、挿絵も追加"))
+                (not (image-only-instructions? "展開を変更して挿絵を作り直して"))
+                (not (image-only-instructions? "挿絵を描く。本文は変更しないで本文を加筆"))
                 (not (image-only-instructions? "- 参照: [[設定/主人公]]"))
                 (not (image-only-instructions? "- 挿絵を描く\n- 本文を加筆"))))
     (check "review image action and mixed action"
