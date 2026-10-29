@@ -23,7 +23,7 @@ closed: 2026-10-21
 ---
 EOF
 cat >"$tmp/root/runs/BOXP-999/20261020T010000Z-abcd/summary.edn" <<'EOF'
-{:ticket "BOXP-999" :run-id "20261020T010000Z-abcd" :agent "codex" :status :succeeded :result "Bearer fake-secret" :blocker-category "sk-abcdef" :finished-at "2026-10-20T02:00:00Z"}
+{:ticket "BOXP-999" :run-id "20261020T010000Z-abcd" :agent "sk-abcdef" :status :succeeded :result "review" :blocker-category "Bearer fake-secret" :finished-at "2026-10-20T02:00:00Z"}
 EOF
 bb ai_ops_sli.bb extract "$tmp/root" "$tmp/vault" >"$tmp/extract.jsonl" 2>"$tmp/extract.stats"
 bb ai_ops_sli.bb aggregate "$tmp/extract.jsonl" >"$tmp/extract.edn"
@@ -263,7 +263,7 @@ bb -e '
       checks
       [["privacy gate が本文/引数 key を落とす" (= 2 (:privacy-dropped-keys st))]
        ["credential 値を redact" (= 1 (:privacy-redacted-values st))]
-       ["extract でも危険値を redact" (and (= 2 (:privacy-redacted-values (edn/read-string (slurp extractst)))) (not (re-find #"Bearer|sk-abcdef" (slurp extract))))]
+       ["extract でも危険値を redact" (and (= 3 (:privacy-redacted-values (edn/read-string (slurp extractst)))) (not (re-find #"Bearer|sk-abcdef" (slurp extract))))]
        ["source 未接続は unknown" (every? #(= "unknown" (get-in (edn/read-string (slurp extracted)) [:zero-tolerance % :status])) [:duplicate-effects :critical-safety-events])]
        ["coverage 宣言済みなら 0" (and (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :duplicate-effects :count])) (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :critical-safety-events :count])))]
        ["未知の zero-tolerance を Prom に出さない" (not (re-find #"duplicate_effect|critical_safety" (slurp extractprom)))]
@@ -944,3 +944,33 @@ bb -e "
   (assert (not-any? #(#{\"task.accepted\" \"task.reopened\"} (:event_type %)) evs))
   (println \"ok   取消済み ticket は extract から aggregate まで cancelled として集計し、closed を受入/再open扱いしない\"))"
 rm -rf "$tmp_cxl"
+
+tmp_unk=$(mktemp -d)
+mkdir -p "$tmp_unk/root/runs/BOXP-84/20261020T010000Z-aaaa" "$tmp_unk/root/runs/BOXP-84/20261020T030000Z-bbbb" "$tmp_unk/root/outbox" "$tmp_unk/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_unk/vault/Tickets/BOXP-84.md"
+echo '{:ticket "BOXP-84" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_unk/root/runs/BOXP-84/20261020T010000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-84" :run-id "20261020T030000Z-bbbb" :agent "codex" :status :succeeded :result "review" :action "review_fix" :started-at "2026-10-20T03:00:00Z" :finished-at "2026-10-20T04:00:00Z"}' > "$tmp_unk/root/runs/BOXP-84/20261020T030000Z-bbbb/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_unk/root" "$tmp_unk/vault" > "$tmp_unk/x.jsonl" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_unk/x.jsonl\")
+      fa (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= 1 (get-in r [:input :unreadable-runs])) (pr-str (:input r)))
+  (assert (= 0 (or (:count fa) (get-in fa [:observed :count]))) (pr-str fa))
+  (assert (= 1 (or (:unevaluated-input-missing fa) (get-in fa [:observed :unevaluated-input-missing]))) (pr-str fa))
+  (println \"ok   未知の :action/:status/:result を持つ summary.edn は欠落入力として該当 task を未評価にし first acceptance 合格扱いしない\"))"
+rm -rf "$tmp_unk"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-71:run" :task_id "BOXP-71" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-71:fin" :task_id "BOXP-71" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-71:acc" :task_id "BOXP-71" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]]
+  (doseq [e [{:event_id "BOXP-72:run" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+             {:event_id "BOXP-72:acc" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
+             {:event_id "BOXP-72:state" :event_type "task.state" :status "done" :snapshot "current"}]]
+    (let [r (ai-ops-sli/aggregate* (conj base e))]
+      (assert (= "unknown" (get-in r [:sli :first-acceptance-conformance :status])) (pr-str e))
+      (assert (= "unknown" (get-in r [:sli :agent-system-correction-task-ratio :status])) (pr-str e))
+      (assert (= 1 (get-in r [:coverage :unlinked-task-events]))))))
+(println "ok   task_id 欠落の run/受入/状態 event でも是正率/first acceptance を確定値にしない")'

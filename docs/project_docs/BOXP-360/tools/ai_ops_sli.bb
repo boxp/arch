@@ -225,6 +225,9 @@
                                       (every? #(let [v (get s %)] (or (keyword? v) (string? v))) [:status])
                                       (every? #(let [v (get s %)] (or (nil? v) (keyword? v) (string? v))) [:action :agent :result :blocker-category])
                                       (every? #(let [v (get s %)] (or (nil? v) (string? v))) [:started-at :finished-at :updated-at])
+                                      ;; 集計に使う値が未知 (例: :action "review_fix") なら是正導出から漏れるため欠落入力として扱う
+                                      (every? (fn [[k ek]] (let [v (get s k)] (or (nil? v) (contains? (ek enum-values) (kw-or-str v)))))
+                                              [[:status :status] [:action :action] [:result :result]])
                                       (let [v (:exit-code s)] (or (nil? v) (integer? v)))
                                       (= (:ticket s) (str (fs/file-name (fs/parent d))))
                                       (= (:run-id s) (str (fs/file-name d))))))
@@ -435,11 +438,13 @@
                           (some-> (:event_type %) (str/starts-with? "task."))
                           (some-> (:event_type %) (str/starts-with? "run.")))
         unlinked (filter #(and (nil? (:task_id %)) (task-scoped? %)) uniq)
-        unlinked-corr (count (filter #(#{"correction" "task.reopened"} (:event_type %)) unlinked))
+        ;; correction/reopen だけでなく run.*/task.accepted/task.state 等も是正率・first acceptance の分母/分子を左右するため、
+        ;; task_id 欠落の task 紐付け event が 1 件でもあれば是正 SLI を確定しない
+        unlinked-corr (count unlinked)
         ;; 欠落 event (破損行・privacy 拒否・drop/未配信・読めない入力) は task に紐付けられず、受入前の是正だった可能性を否定できない
         unlinked-guard (fn [m] (cond
                                  (pos? unlinked-corr)
-                                 {:status "unknown" :reason "task_id 欠落の是正 event があり、どの task の是正か確定できない (合格扱いしない)"
+                                 {:status "unknown" :reason "task_id 欠落の task 紐付け event (是正・run・受入・状態) があり、どの task の分子/分母か確定できない (合格扱いしない)"
                                   :observed m :unlinked-corrections unlinked-corr :lost-events corr-lost}
                                  (pos? corr-lost)
                                  {:status "unknown" :reason "task に紐付けられない欠落 event (破損行・privacy 拒否・collector 欠落・読めない入力) があり、是正の有無を確定できない (観測値は observed)"
