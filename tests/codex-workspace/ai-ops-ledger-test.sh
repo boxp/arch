@@ -548,3 +548,40 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (not @ai-ops-ledger/sli-refresh-running))
     (assert (= 2 @calls))))
 (println "ai-ops-ledger-test: SLI export ledger merge and async refresh passed")'
+
+# A refresh in another process (resident loop vs manual tick) holds sli.lock
+# from the due check through saving sli.prom: a concurrent refresh must skip
+# without running the aggregate or touching sli.prom / the export status.
+sli_root="${tmp}/sli-root"
+AI_OPS_LOCK="${sli_root}/ai-ops/sli.lock" bb -e '
+(with-open [f (java.io.RandomAccessFile. (System/getenv "AI_OPS_LOCK") "rw")]
+  (.lock (.getChannel f))
+  (spit (str (System/getenv "AI_OPS_LOCK") ".held") "1")
+  (Thread/sleep 3000))
+' &
+sli_holder=$!
+for _ in $(seq 1 100); do [ -f "${sli_root}/ai-ops/sli.lock.held" ] && break; sleep 0.05; done
+AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
+(require (quote [babashka.fs :as fs]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (str (fs/path (System/getenv "AI_OPS_TMP") "sli-root")))
+(def vault (str (fs/path (System/getenv "AI_OPS_TMP") "sli-vault")))
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(def before (slurp (str (ai-ops-ledger/sli-path root))))
+(def calls (atom 0))
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)
+              ai-ops-ledger/run-sli-command! (fn [& _] (swap! calls inc) false)]
+  (assert (nil? (ai-ops-ledger/refresh-sli! root vault)) "refresh must skip while another process holds sli.lock"))
+(assert (zero? @calls) "aggregate must not run while another process refreshes")
+(assert (= "{:last-attempt 1}" (slurp (str (ai-ops-ledger/sli-status-path root)))) "export status must not be overwritten")
+(assert (= before (slurp (str (ai-ops-ledger/sli-path root)))) "sli.prom must not be overwritten")
+(println "ai-ops-ledger-test: SLI refresh cross-process lock passed")'
+wait "${sli_holder}"
+AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
+(require (quote [babashka.fs :as fs]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (str (fs/path (System/getenv "AI_OPS_TMP") "sli-root")))
+(def vault (str (fs/path (System/getenv "AI_OPS_TMP") "sli-vault")))
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)) "refresh must run once the other process releases sli.lock"))
+(println "ai-ops-ledger-test: SLI refresh after lock release passed")'

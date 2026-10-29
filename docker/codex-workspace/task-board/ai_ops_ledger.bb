@@ -615,9 +615,24 @@
       (.write w (subs text 0 end))))
   true)
 
-(defn refresh-sli! [root vault]
-  (try
-    (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
+(defn sli-lock-path [root] (fs/path (ai-ops-dir root) "sli.lock"))
+
+(defn with-sli-lock
+  "Run f while holding an exclusive FileLock on `<root>/ai-ops/sli.lock`, so the
+  resident `loop` and a manual `tick` never both run an SLI refresh (due check
+  through saving sli.prom and the export status). Non-blocking: when another
+  process or thread holds it, return nil without running f."
+  [root f]
+  (fs/create-dirs (ai-ops-dir root))
+  (with-open [file (java.io.RandomAccessFile. (str (sli-lock-path root)) "rw")
+              channel (.getChannel file)]
+    ;; tryLock returns nil when another process holds it and throws when this
+    ;; JVM already does; both mean a refresh is running, so skip.
+    (when-let [_lock (try (.tryLock channel) (catch Exception _ nil))]
+      (f))))
+
+(defn- refresh-sli-locked! [root vault]
+  (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
       (when (and (enabled?) (pos? interval) (not (str/blank? vault))
                  (>= (- now (get status :last-attempt 0)) interval))
         (let [attempt (assoc status :last-attempt now) tmp (atom nil) output (atom nil)
@@ -635,7 +650,11 @@
               (do (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) false))
             (catch Exception _
               (try (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) (catch Exception _)) false)
-            (finally (when @tmp (fs/delete-if-exists @tmp)) (when @output (fs/delete-if-exists @output)))))))
+            (finally (when @tmp (fs/delete-if-exists @tmp)) (when @output (fs/delete-if-exists @output))))))))
+
+(defn refresh-sli! [root vault]
+  (try
+    (with-sli-lock root #(refresh-sli-locked! root vault))
     (catch Exception _ nil)))
 
 ;; The extract/prom subprocesses may take up to sli-timeout; never block the
