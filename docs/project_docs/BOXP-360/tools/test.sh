@@ -1096,3 +1096,22 @@ bb -e '
     (assert (= [0 1] ((juxt :id-collisions :duplicates) (:input r))) (pr-str (:input r)))
     (assert (= 0 (get-in r [:zero-tolerance :critical-safety-events :count])) (pr-str (:zero-tolerance r)))))
 (println "ok   同じ event_id で内容が異なる event (ID 衝突) は入力順に関係なく zero-tolerance/是正 SLI を unknown にし、同一内容の再送は衝突扱いしない")'
+
+tmp_fin=$(mktemp -d); trap 'rm -rf "$tmp" "$tmp_status" "$tmp_fin"' EXIT
+mkdir -p "$tmp_fin/root/outbox" "$tmp_fin/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: review\n---\n' >"$tmp_fin/vault/Tickets/BOXP-86.md"
+for r in 20261020T000000Z-a 20261020T010000Z-b 20261020T020000Z-c; do mkdir -p "$tmp_fin/root/runs/BOXP-86/$r"; done
+echo '{:ticket "BOXP-86" :run-id "20261020T000000Z-a" :status :succeeded :result "review" :action :implement :agent "claude-opus" :started-at "2026-10-20T00:00:00Z"}' >"$tmp_fin/root/runs/BOXP-86/20261020T000000Z-a/summary.edn"
+echo '{:ticket "BOXP-86" :run-id "20261020T010000Z-b" :status :running :action :implement :agent "claude-opus" :started-at "2026-10-20T01:00:00Z"}' >"$tmp_fin/root/runs/BOXP-86/20261020T010000Z-b/summary.edn"
+echo '{:ticket "BOXP-86" :run-id "20261020T020000Z-c" :status :interrupted :action :implement :agent "claude-opus" :started-at "2026-10-20T02:00:00Z"}' >"$tmp_fin/root/runs/BOXP-86/20261020T020000Z-c/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_fin/root" "$tmp_fin/vault" >"$tmp_fin/extract.jsonl" 2>/dev/null
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [evs (map #(cheshire.core/parse-string % true) (clojure.string/split-lines (slurp (first *command-line-args*))))
+      of-run (fn [r] (set (map :event_type (filter #(= r (:run_id %)) evs))))]
+  ;; 終了状態なのに :finished-at が無い run は run.started だけの正常 run として集計せず run.unreadable にする
+  (assert (= #{"run.unreadable"} (of-run "20261020T000000Z-a")) (pr-str evs))
+  ;; 実行中/中断は :finished-at 無しが正常
+  (assert (= #{"run.started"} (of-run "20261020T010000Z-b")) (pr-str evs))
+  (assert (contains? (of-run "20261020T020000Z-c") "run.interrupted") (pr-str evs)))
+(println "ok   終了状態 (succeeded 等) の run summary に :finished-at が無ければ run.unreadable で未評価にし、running/interrupted は許容する")' "$tmp_fin/extract.jsonl"

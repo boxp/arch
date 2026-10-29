@@ -231,6 +231,10 @@
                                       (every? (fn [[k ek]] (let [v (get s k)] (or (nil? v) (contains? (ek enum-values) (kw-or-str v)))))
                                               [[:status :status] [:action :action] [:result :result]])
                                       (let [v (:exit-code s)] (or (nil? v) (integer? v)))
+                                      ;; 実行中/中断以外 (succeeded/retrying/blocked/failed 等の終了状態) は :finished-at 必須。
+                                      ;; 欠けると run.finished が出ず Review 到達/retry が黙って消えるため欠落入力として扱う
+                                      (or (contains? #{"running" "in-progress" "interrupted"} (kw-or-str (:status s)))
+                                          (not (str/blank? (:finished-at s))))
                                       (= (:ticket s) (str (fs/file-name (fs/parent d))))
                                       (= (:run-id s) (str (fs/file-name d))))))
         unreadable (->> summaries (remove valid-summary?)
