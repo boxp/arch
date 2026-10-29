@@ -1372,3 +1372,20 @@ bb -e '
   (assert (= [1 1] ((juxt :count :denominator) fa)) (pr-str fa))
   (assert (= 1 (:unevaluated-input-missing fa)) (pr-str fa)))
 (println "ok   occurred_precision が不正な受入は正確な時刻扱いせず入力欠落として未評価")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [run (fn [t] {:event_id (str t "/20261020T000000Z-ab12:started") :task_id t :run_id "20261020T000000Z-ab12" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"})
+      acc (fn [t] {:event_id (str t ":acc") :task_id t :event_type "task.accepted" :occurred_at "2026-10-21T12:00:00Z" :occurred_precision "second"})
+      corr (fn [t at p] {:event_id (str t ":corr") :task_id t :event_type "correction" :correction_class "instruction_violation" :correction_origin "agent-system" :occurred_at at :occurred_precision p})
+      evs [;; 受入 12:00 (秒精度) と同日の日粒度是正: 受入前の可能性があるため合格にしない (前後不明)
+           (run "BOXP-133") (acc "BOXP-133") (corr "BOXP-133" "2026-10-21T23:59:59Z" "day")
+           ;; 前日の日粒度是正: 全期間が受入前 → 不合格
+           (run "BOXP-134") (acc "BOXP-134") (corr "BOXP-134" "2026-10-20T23:59:59Z" "day")
+           ;; 翌日の日粒度是正: 全期間が受入後 → first acceptance は合格、受入後是正として計上
+           (run "BOXP-135") (acc "BOXP-135") (corr "BOXP-135" "2026-10-22T00:00:00Z" "day")]
+      r (ai-ops-sli/aggregate* evs)
+      fa (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= [1 2] ((juxt :count :denominator) fa)) (pr-str fa))
+  (assert (= 1 (:acceptance-day-ambiguous fa)) (pr-str fa)))
+(println "ok   日粒度の是正は当日全体の期間として受入と比較し前後不明を別掲")'

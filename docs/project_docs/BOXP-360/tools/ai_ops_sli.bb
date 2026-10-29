@@ -557,15 +557,27 @@
                           same-day? (fn [t] (and day-window (not (.isBefore t (first day-window)))
                                                  (if hi-inclusive? (not (.isAfter t (second day-window))) (.isBefore t (second day-window)))))
                           relevant-corr (remove #(= "non-agent" (correction-origin %)) corr)
+                          ;; 是正側も精度に応じた期間として比較する: 日粒度の是正は [当日 00:00, 翌日 00:00) のどこか。
+                          ;; 期間の両端で受入との前後 (:before/:same/:after) が一致しなければ前後不明 (:ambiguous)
+                          point-phase (fn [t] (cond (before-accept? t) :before (same-day? t) :same :else :after))
+                          corr-interval (fn [e] (when-let [t (parse-inst (:occurred_at e))]
+                                                  (if (= "day" (:occurred_precision e))
+                                                    (let [lo (.truncatedTo t java.time.temporal.ChronoUnit/DAYS)]
+                                                      [lo (.minusNanos (.plus lo 1 java.time.temporal.ChronoUnit/DAYS) 1)])
+                                                    [t t])))
+                          corr-phase (fn [e] (if-let [[lo hi] (corr-interval e)]
+                                               (let [p1 (point-phase lo) p2 (point-phase hi)] (if (= p1 p2) p1 :ambiguous))
+                                               :unknown))
                           first-pass (when accepted
-                                       (cond
-                                         (some #(let [t (parse-inst (:occurred_at %))] (or (nil? t) (before-accept? t))) relevant-corr) :fail
-                                         (some #(some-> (parse-inst (:occurred_at %)) same-day?) relevant-corr) :ambiguous
-                                         :else :pass))
+                                       (let [phases (set (map corr-phase relevant-corr))]
+                                         (cond
+                                           (some phases [:unknown :before]) :fail
+                                           (some phases [:same :ambiguous]) :ambiguous
+                                           :else :pass)))
                           first-review (some #(when (or (= "review" (:result %)) (= "review" (:lane_to %))
                                                         (and (= "task.state" (:event_type %)) (= "review" (:status %))))
                                                 (or (parse-inst (:occurred_at %)) true)) evs)
-                          post-accept-corr (when accepted (filter #(when-let [t (parse-inst (:occurred_at %))]
+                          post-accept-corr (when accepted (filter #(when-let [t (first (corr-interval %))]
                                                                      ;; 日粒度の曖昧窓では同時刻の再オープン特例を適用しない (窓内の再オープンは前後不明)
                                                                      (if day-window
                                                                        (if hi-inclusive? (.isAfter t (second day-window)) (not (.isBefore t (second day-window))))
@@ -597,7 +609,7 @@
                  ;; 受入時刻不明・是正時刻不明・日粒度受入と同日の是正: 受入後の是正 (再オープン) の有無を確定できない
                  :post-accept-indeterminate? (boolean (and (some #(= "task.accepted" (:event_type %)) evs) (empty? post-accept-corr)
                                                           (or (nil? accepted)
-                                                              (some #(let [t (parse-inst (:occurred_at %))] (or (nil? t) (same-day? t))) corr))))
+                                                              (some #(#{:unknown :same :ambiguous} (corr-phase %)) corr))))
                  :observed? (boolean (or (seq runs) (seq orphan-runs) (some :synthetic evs) (some #(= "run.unreadable" (:event_type %)) evs)))
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
                  ;; run 履歴の無い受入 task は受入時刻の有無・受入後の再オープンに関わらず未評価 (done snapshot のみ/再オープン中の task も保守的分母に残す)
