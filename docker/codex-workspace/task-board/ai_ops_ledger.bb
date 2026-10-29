@@ -480,9 +480,16 @@
 ;;   so no expired raw content is retained: unparsable/non-object lines become
 ;;   `{"collection_lost":"input_unreadable"}`, the rest `{"privacy_rejected":"upstream"}`
 ;;   (keeping only an allowlisted event_type). Both keep the SLIs unknown.
-;; - Each day file is archived to its own file named by date and content hash and
-;;   written atomically, so a crash between archive and delete only rewrites the same
-;;   file on retry instead of appending duplicate (ID-less) markers.
+;; - Each day file is archived to its own file named by date, the hash and the length of
+;;   the archived day file content, written atomically. A day file is only appended to,
+;;   so an archive whose source is a prefix of the current day file content is a subset
+;;   of it (crash between archive and delete, or appends between retries) and is
+;;   superseded. An archive whose source is not a prefix came from an earlier
+;;   incarnation of the same date (the day file was pruned and later recreated, e.g. by
+;;   a pending ledger_dropped marker) and is kept alongside, so pruning the recreated
+;;   file never drops earlier archived corrections. Known limit: an incarnation whose
+;;   content is identical to a prefix of the earlier one (only ID-less markers) is
+;;   folded into it; the SLIs stay unknown but the lost-event count may be lower.
 (defn sli-archive-dir [root] (fs/path (ledger-dir root) "sli-archive"))
 (def archived-lost-markers
   #{{:collection_lost "ledger_dropped"} {:collection_lost "buffer_dropped"}
@@ -505,8 +512,15 @@
 (defn- sha256-hex [^String s]
   (let [d (.digest (java.security.MessageDigest/getInstance "SHA-256") (.getBytes s "UTF-8"))]
     (apply str (map #(format "%02x" (bit-and % 0xff)) d))))
+(defn- source-hash [^String content] (subs (sha256-hex content) 0 16))
 (defn sli-archive-file [root date content]
-  (fs/path (sli-archive-dir root) (str "events-" date "-" (subs (sha256-hex content) 0 16) ".jsonl")))
+  (fs/path (sli-archive-dir root) (str "events-" date "-" (source-hash content) "-" (count content) ".jsonl")))
+(defn archive-superseded?
+  "True when archive file a was written from a prefix of day file content."
+  [a ^String content]
+  (when-let [[_ h n] (re-matches #"events-\d{4}-\d{2}-\d{2}-([0-9a-f]{16})-(\d+)\.jsonl" (str (fs/file-name a)))]
+    (let [n (parse-long n)]
+      (and (<= n (count content)) (= h (source-hash (subs content 0 n)))))))
 (defn sli-archive-files [root]
   (if (fs/exists? (sli-archive-dir root)) (fs/glob (sli-archive-dir root) "events-*.jsonl") []))
 (defn sli-archive-files-for [root date]
@@ -524,11 +538,11 @@
             (fs/create-dirs (sli-archive-dir root))
             (atomic-spit! (sli-archive-file root d content)
                           (str (str/join "\n" (map json/generate-string entries)) "\n")))
-          ;; Older archive copies of the same date (the day file changed between
-          ;; retries) are superseded by this one.
+          ;; Archives of earlier attempts on this same day file (its prefixes) are
+          ;; superseded; archives of earlier incarnations of the date are kept.
           (let [keep-name (str (fs/file-name (sli-archive-file root d content)))]
             (doseq [a (sli-archive-files-for root d)
-                    :when (not= keep-name (str (fs/file-name a)))]
+                    :when (and (not= keep-name (str (fs/file-name a))) (archive-superseded? a content))]
               (fs/delete-if-exists a)))
           (fs/delete-if-exists f))
         (catch Exception _ nil)))))
@@ -565,19 +579,22 @@
 ;; collection_lost markers into unknown SLIs. A line still being appended has no
 ;; trailing newline yet and is left out instead of being counted as malformed.
 (defn- file-date [f]
-  (second (re-matches #"events-(\d{4}-\d{2}-\d{2})(?:-[0-9a-f]+)?\.jsonl" (str (fs/file-name f)))))
+  (second (re-matches #"events-(\d{4}-\d{2}-\d{2})(?:-[0-9a-f]+-\d+)?\.jsonl" (str (fs/file-name f)))))
 (defn- read-ledger-date
   "Text for one ledger date. prune! writes the archive before deleting the day file
   and this runs without the ledger lock, so both may exist (or the deletion may have
-  failed). The day file is a superset of its archive copy and wins; the archive is
-  read only once the day file is gone, and only the newest copy of that date, so
-  markers are never counted twice."
+  failed). Archives written from a prefix of the current day file are subsets of it
+  and skipped; archives of earlier incarnations of the date are read in addition, so
+  markers are never counted twice and earlier corrections are never dropped."
   [root date]
-  (let [day (fs/path (ledger-dir root) (str "events-" date ".jsonl"))]
-    (or (try (slurp (str day)) (catch java.io.IOException _ nil))
-        (some (fn [a] (try (slurp (str a)) (catch java.io.IOException _ nil)))
-              (sort-by #(- (.toMillis (fs/last-modified-time %))) (sli-archive-files-for root date)))
-        "")))
+  (let [day (fs/path (ledger-dir root) (str "events-" date ".jsonl"))
+        text (try (slurp (str day)) (catch java.io.IOException _ nil))
+        archives (->> (sli-archive-files-for root date)
+                      (remove #(and text (archive-superseded? % text)))
+                      (sort-by str)
+                      (keep (fn [a] (try (slurp (str a)) (catch java.io.IOException _ nil))))
+                      (map #(if (or (str/blank? %) (str/ends-with? % "\n")) % (str % "\n"))))]
+    (apply str (concat archives [(or text "")]))))
 (defn append-ledger-events! [root target]
   (with-open [w (java.io.FileWriter. (str target) true)]
     (doseq [d (sort (distinct (keep file-date (if (fs/exists? (ledger-dir root)) (concat (fs/glob (ledger-dir root) "events-*.jsonl") (sli-archive-files root)) []))))

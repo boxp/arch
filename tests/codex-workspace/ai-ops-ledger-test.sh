@@ -186,7 +186,26 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     ;; unclean lines keep SLIs unknown as body-less markers; clean ordinary lines are dropped
     (check "pruned corrections, loss markers and gate-rejected lines archived as body-less markers" (= expected (read-archive)))
     (check "archive written once per day file content" (= [(str archive)] (map str (ai-ops-ledger/sli-archive-files root))))
-    (check "archive holds no expired raw content" (not (re-find #"hunter2|sk-secret|password|note|\"a\"|\"b\"" (slurp (str archive))))))
+    (check "archive holds no expired raw content" (not (re-find #"hunter2|sk-secret|password|note|\"a\"|\"b\"" (slurp (str archive)))))
+    ;; the pruned date is recreated by a pending ledger_dropped marker: pruning it again
+    ;; must keep the earlier archive (corrections) next to the new one
+    (spit (str old) "{\"collection_lost\":\"ledger_dropped\"}\n")
+    (ai-ops-ledger/prune! root)
+    (check "recreated day file pruned" (not (fs/exists? old)))
+    (check "earlier archive kept when the pruned date is recreated" (fs/exists? archive))
+    (check "recreated day file archived in addition" (= (frequencies (conj expected {:collection_lost "ledger_dropped"})) (frequencies (read-archive))))
+    (let [read-date @(resolve (symbol "ai-ops-ledger" "read-ledger-date"))]
+      (check "SLI input reads both archives of the date"
+             (= 9 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))
+      ;; recreated again but not yet deleted: day file and its own archive are not both read
+      (spit (str old) "{\"collection_lost\":\"buffer_dropped\"}\n")
+      (with-redefs [fs/delete-if-exists (fn [_] (throw (ex-info "crash" {})))]
+        (ai-ops-ledger/prune! root))
+      (check "undeleted recreated day file and its archive counted once"
+             (= 10 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))
+      (fs/delete-if-exists old)
+      (check "after deletion every incarnation is read once"
+             (= 10 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))))
   (check "current ledger file kept" (fs/exists? (ai-ops-ledger/day-file root))))
 
 (if (seq @failures)
