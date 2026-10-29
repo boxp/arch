@@ -316,13 +316,23 @@
 (def marker-headroom-bytes 65536)
 
 (defn append-lost-marker!
-  "Best-effort marker append. Never throws; returns true when written."
+  "Best-effort marker append. Never throws; returns true when written (or when
+  the headroom is already used up, which only markers can consume, so a marker
+  is already present) and false when the append failed."
   [path]
   (try
     (when (or (not (fs/exists? path)) (< (fs/size path) (+ (max-bytes) marker-headroom-bytes)))
-      (append-line! path lost-marker)
-      true)
+      (append-line! path lost-marker))
+    true
     (catch Exception _ false)))
+
+(defn- mark-lost!
+  "Append the lost-event marker for `date` (call with the lock held). A failed
+  append leaves a pending-lost-markers obligation so a later flush retries it,
+  even when the stats update that follows succeeds."
+  [root date]
+  (when-not (append-lost-marker! (day-file root date))
+    (keep-pending-marker! root date)))
 
 (defn emit!
   "Append one gated event. Never throws; returns the written event or nil."
@@ -341,11 +351,12 @@
                                          :cost_source "unknown"}
                                         event
                                         {:observed_at now}))
-              path (day-file root)
+              date (utc-date)
+              path (day-file root date)
               full? (and (fs/exists? path) (>= (fs/size path) (max-bytes)))]
           (cond
             full?
-            (do (append-lost-marker! path)
+            (do (mark-lost! root date)
                 (update-stats! root #(-> % (count-in [:dropped-full])
                                          (update :redacted-values (fnil + 0) redacted)))
                 nil)
@@ -368,7 +379,7 @@
       (catch Exception _
         (let [date (utc-date)]
           (try (with-ledger-lock root (fn []
-                                        (append-lost-marker! (day-file root date))
+                                        (mark-lost! root date)
                                         (update-stats! root #(count-in % [:write-errors]))))
                (catch Exception _ (spool-write-error! root :event date))))
         nil))))

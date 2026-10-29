@@ -366,3 +366,31 @@ AI_OPS_MODULE="${module}" AI_OPS_ROOT="${marker_root}" bb -e '
 (when-not (every? second checks) (System/exit 1))
 (println "ai-ops-ledger-test: pending marker retry checks passed")
 '
+
+# emit! write errors: when only the marker append fails (the stats update
+# succeeds), the obligation must still be kept so a later flush writes it.
+emit_marker_root="${tmp}/emit-marker-retry"
+AI_OPS_MODULE="${module}" AI_OPS_ROOT="${emit_marker_root}" bb -e '
+(require (quote [babashka.fs :as fs]) (quote [clojure.string :as str]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (System/getenv "AI_OPS_ROOT"))
+(def today (ai-ops-ledger/utc-date))
+(def ev {:event_type "run.started" :task_id "BOXP-1" :run_id "20261029T000000Z-00000000-0000-0000-0000-000000000001"})
+(def r1 (with-redefs [ai-ops-ledger/append-line! (fn [_ _] (throw (ex-info "disk" {})))]
+          (ai-ops-ledger/emit! root ev)))
+(def obligation? (fs/exists? (fs/path (ai-ops-ledger/pending-lost-markers-dir root) today)))
+(reset! ai-ops-ledger/unrecorded-lost-events {})
+(reset! ai-ops-ledger/unrecorded-write-errors 0)
+(defn markers [] (let [p (ai-ops-ledger/day-file root today)]
+                   (if (fs/exists? p) (count (filter #(str/includes? % "collection_lost") (str/split-lines (slurp (str p))))) 0)))
+(def ok (ai-ops-ledger/write-metrics! root))
+(def checks [["emit marker retry: emit returns nil" (nil? r1)]
+             ["emit marker retry: obligation kept after failed marker" obligation?]
+             ["emit marker retry: write-metrics succeeds" (true? ok)]
+             ["emit marker retry: marker written by later flush" (= 1 (markers))]
+             ["emit marker retry: obligation cleared" (empty? (fs/list-dir (ai-ops-ledger/pending-lost-markers-dir root)))]
+             ["emit marker retry: loss counted once" (= 1 (:write-errors (ai-ops-ledger/read-stats root)))]])
+(doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
+(when-not (every? second checks) (System/exit 1))
+(println "ai-ops-ledger-test: emit marker retry checks passed")
+'
