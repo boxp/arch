@@ -59,7 +59,7 @@
 (def task-id-re #"[A-Z]+-\d+")
 (def run-id-re
   #"\d{8}T\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-[0-9a-f]{1,8})?(?:-groom)?")
-(def event-words #{"started" "finished" "interrupted" "correction" "lane"})
+(def event-words #{"started" "finished" "interrupted" "correction" "lane" "lane-start"})
 
 (defn event-id [task-id run-id word]
   (str task-id "/" run-id ":ledger:" word))

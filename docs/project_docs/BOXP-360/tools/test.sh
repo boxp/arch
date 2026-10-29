@@ -1460,3 +1460,29 @@ bb -e '
   (assert (= 1 (get-in r [:tasks :accepted-without-run-history])) (pr-str (:tasks r)))
   (assert (= 1 (get-in rs [:sli :first-acceptance-conformance :denominator])) (pr-str (:sli rs))))
 (println "ok   通常モードでは synthetic field で run 履歴なし受入を観測済み扱いにしない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; runner ledger と既存 extract を join しても同じ run の run/retry/是正/lane 遷移を二重計上しない
+(let [run "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57"
+      base {:task_id "BOXP-98" :request_id "req:BOXP-98" :run_id run :source "task-board-runner" :occurred_at "2026-10-29T05:57:35Z"}
+      extract [(assoc base :event_id (str "BOXP-98/" run ":started") :event_type "run.started")
+               (assoc base :event_id (str "BOXP-98/" run ":finished") :event_type "run.finished" :status "retrying")
+               (assoc base :event_id (str "BOXP-98/" run ":corr") :event_type "correction" :source "derived" :classifier "rule"
+                      :correction_class "gate_defect" :correction_origin "agent-system")]
+      ledger [(assoc base :event_id (str "BOXP-98/" run ":ledger:started") :event_type "run.started" :lane_from "ready" :lane_to "in-progress")
+              (assoc base :event_id (str "BOXP-98/" run ":ledger:finished") :event_type "run.finished" :status "retrying")
+              (assoc base :event_id (str "BOXP-98/" run ":ledger:correction") :event_type "correction" :classifier "rule"
+                     :correction_class "gate_defect" :correction_origin "agent-system")
+              (assoc base :event_id (str "BOXP-98/" run ":ledger:lane") :event_type "lane.changed" :lane_from "ready" :lane_to "in-progress")]
+      only-extract (ai-ops-sli/aggregate* extract)
+      joined (ai-ops-sli/aggregate* (concat extract ledger))
+      only-ledger (ai-ops-sli/aggregate* ledger)]
+  (assert (= (get-in only-extract [:sli :run-reliability]) (get-in joined [:sli :run-reliability])) (pr-str (get-in joined [:sli :run-reliability])))
+  (assert (= 1 (get-in joined [:sli :run-reliability :runs])))
+  (assert (= 1 (get-in joined [:sli :run-reliability :retrying])))
+  (assert (= 3 (get-in joined [:input :ledger-merged])) (pr-str (:input joined)))
+  (assert (= (get-in only-extract [:sli :agent-system-correction-task-ratio]) (get-in joined [:sli :agent-system-correction-task-ratio])))
+  (assert (= 1 (get-in only-ledger [:sli :run-reliability :runs])))
+  (assert (= 0 (get-in only-ledger [:input :ledger-merged]))))
+(println "ok   runner ledger と extract の併用で同じ run を二重計上しない")'

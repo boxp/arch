@@ -405,6 +405,20 @@
 
 (def rule-classifier? #{"rule" "model"})
 
+;; runner ledger (event_id に :ledger: を含む) と既存 extract/outbox は同じ run の同じ事実を別 ID で出す。
+;; 両入力を join したとき run/retry/是正/lane 遷移を二重計上しないよう、論理 key が一致する ledger event は
+;; 非 ledger 側を正とし除外する (ledger だけにある事実は残す)。
+(defn ledger-event? [e] (and (string? (:event_id e)) (str/includes? (:event_id e) ":ledger:")))
+(def ledger-merge-types #{"run.started" "run.finished" "run.interrupted" "correction" "lane.changed"})
+(defn ledger-logical-key [e]
+  (when (and (ledger-merge-types (:event_type e)) (:task_id e) (:run_id e))
+    (cond-> [(:task_id e) (:run_id e) (:event_type e)]
+      (= "lane.changed" (:event_type e)) (conj (:lane_from e) (:lane_to e)))))
+(defn merge-ledger-events [events]
+  (let [other-keys (set (keep #(when-not (ledger-event? %) (ledger-logical-key %)) events))
+        merged? #(and (ledger-event? %) (contains? other-keys (ledger-logical-key %)))]
+    {:events (remove merged? events) :merged (count (filter merged? events))}))
+
 (defn unique-events [events]
   (second (reduce (fn [[seen out] e] (if (contains? seen (:event_id e)) [seen out] [(conj seen (:event_id e)) (conj out e)])) [#{} []] events)))
 
@@ -506,7 +520,7 @@
         corr-lost (+ malformed buffer-dropped undelivered input-unreadable
                      (count (filter #(may-affect-corrections? (:event_type %)) upstream-markers))
                      (count (filter (fn [[e g]] (and (:rejected? g) (may-affect-corrections? (:event_type e)))) (map vector raw-events gated))))
-        events (keep :event gated)
+        {events :events ledger-merged :merged} (merge-ledger-events (keep :event gated))
         n-in (count events)
         uniq (unique-events events)
         id-collisions (event-id-collisions events)
@@ -686,7 +700,7 @@
     {:schema schema-version :classifier classifier-version
      :input {:events n-in :malformed-lines malformed :unreadable-inputs input-unreadable
              :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks))
-             :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :id-collisions id-collisions :order-inversions inversions
+             :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :id-collisions id-collisions :ledger-merged ledger-merged :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
      :tasks {:total n :never-run (count (filter #(and (zero? (:runs %)) (zero? (:orphan-runs % 0))) tasks))
              :orphan-run-events (reduce + (map #(:orphan-runs % 0) tasks))
@@ -837,11 +851,12 @@
     (println "# TYPE ai_ops_events_total counter")
     (doseq [[[src t] c] (frequencies (map (fn [e] [(if (contains? (:source enum-values) (:source e)) (:source e) "other")
                                                     (if (contains? (:event_type enum-values) (:event_type e)) (:event_type e) "other")])
-                                          (unique-events (keep (comp :event privacy-gate) (remove #(or (::malformed %) (marker? %)) evs)))))]
+                                          (unique-events (:events (merge-ledger-events (keep (comp :event privacy-gate) (remove #(or (::malformed %) (marker? %)) evs)))))))]
       (line "ai_ops_events_total" {:source src :event_type t} c))
     (println "# TYPE ai_ops_tasks gauge")
     (doseq [[o c] (get-in r [:tasks :outcomes])] (line "ai_ops_tasks" {:outcome o} c))
     (line "ai_ops_event_duplicates_total" {} (get-in r [:input :duplicates]))
+    (line "ai_ops_ledger_merged_events_total" {} (get-in r [:input :ledger-merged]))
     (line "ai_ops_event_id_collisions_total" {} (get-in r [:input :id-collisions]))
     (line "ai_ops_input_malformed_lines_total" {} (get-in r [:input :malformed-lines]))
     (line "ai_ops_privacy_rejected_events_total" {:stage "upstream"} (get-in r [:coverage :privacy-rejected-upstream]))

@@ -3212,8 +3212,11 @@ test_ai_ops_ledger_records_run_lifecycle() {
   assert_file_not_contains "${ledger}" 'http'
   assert_file_not_contains "${ledger}" 'privacy_rejected'
   [[ "$(grep -c '"event_type":"run.started"' "${ledger}")" -eq 2 ]] || fail "expected two run.started ledger events"
-  # A retry stays In Progress: no lane.changed for in-progress -> in-progress.
-  [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 1 ]] || fail "expected one lane.changed ledger event"
+  grep ':ledger:lane-start"' "${ledger}" | grep '"lane_from":"ready"' | grep -q '"lane_to":"in-progress"' \
+    || fail "expected a start lane.changed ready -> in-progress"
+  # Start Ready -> In Progress, finish In Progress -> Review. A retry stays In
+  # Progress: no lane.changed for in-progress -> in-progress.
+  [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 2 ]] || fail "expected two lane.changed ledger events"
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "fail"\] 1'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "pass"\] 1'
 }

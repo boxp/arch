@@ -10,6 +10,8 @@
 | Hermes (`plugins/boxp-ai-ops-observer`、既存 kohako-g2-context と同じく bootstrap で配置・有効化) | `/opt/data/ai-ops/ledger/events-*.jsonl`、`metrics.prom`、`salt` | `ai-ops-metrics` sidecar (:9464、PVC の `ai-ops` subPath だけを read-only で mount) → ServiceMonitor `hermes-agent-ai-ops-metrics` | lolice `argoproj/hermes-agent` |
 
 - 共通 schema は `ai-ops-event/v0`。`tools/ai_ops_sli.bb aggregate` に両方の ledger と既存 metadata の extract をそのまま渡して join できる。Hermes の会話は `conv-` 形式の opaque ID (local salt の SHA-256) を task/request に使う。ticket の無い会話にも ticket の起票を求めずに request_id が付く。
+- runner ledger の event_id は `:ledger:<word>` を含み、extract/outbox と同じ run の同じ事実 (run.started/finished/interrupted・correction・同じ lane_from/lane_to の lane.changed) を別 ID で持つ。aggregate はこの論理 key が一致する ledger event を除外して非 ledger 側を正とし、除外件数を `input.ledger-merged` / `ai_ops_ledger_merged_events_total` で出す (両入力の join で run/retry/是正が二重計上されない)。ledger にしかない事実はそのまま数える。
+- runner は開始時に card を実際に Ready/Review/Blocked から In Progress へ移した場合、`run.started` に加えて `lane.changed` (`:ledger:lane-start`) も記録する。
 - Prometheus の label は enum 値 (event_type / reason / runtime / status / gate / origin / class) だけに限る。ticket・run・session の ID は ledger 側に置く。
 - 観測の失敗で業務を止めない。runner はすべての呼び出しを try で包む。Hermes は callback で bounded queue (1000) に `put_nowait` するだけにし、書き込みは daemon worker が行う。queue 溢れ、日次 file の上限 (8 MiB)、privacy による拒否、書き込みエラーはすべて件数として metrics に出す。retention は 90 日。
 - sidecar の `/metrics` は、file が無い・古い場合を `ai_ops_metrics_file_present` / `ai_ops_metrics_file_age_seconds` で示す。scrape の受領だけで「収集できている」とは扱わない。

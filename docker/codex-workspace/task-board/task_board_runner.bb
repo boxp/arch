@@ -2993,6 +2993,12 @@
                 (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
                 (record-ai-ops-event! ticket-id (:run-id lock) assignee action "started"
                                       {:event_type "run.started" :lane_from status :lane_to "in-progress"})
+                ;; The card actually moved: record the start transition as well so
+                ;; the ledger lane history matches the board (run.started is not a
+                ;; state transition for the aggregator).
+                (when (#{"ready" "review" "blocked"} status)
+                  (record-ai-ops-event! ticket-id (:run-id lock) assignee action "lane-start"
+                                        {:event_type "lane.changed" :lane_from status :lane_to "in-progress"}))
                 (finally
                   (reset! committing? false)
                   (swap! committing-cards dec)))
