@@ -161,10 +161,14 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (let [root (str (fs/path tmp "g"))
       old (fs/path root "ai-ops" "ledger" "events-2000-01-01.jsonl")]
   (fs/create-dirs (fs/parent old))
-  (spit (str old) "{}\n")
+  (spit (str old) (str "{}\n{\"event_id\":\"a\",\"event_type\":\"run.started\"}\n"
+                       "{\"event_id\":\"b\",\"event_type\":\"correction\"}\n{\"collection_lost\":\"ledger_dropped\"}\n"))
   (ev root "started" {:event_type "run.started"})
   (ai-ops-ledger/write-metrics! root)
   (check "old ledger file pruned" (not (fs/exists? old)))
+  (check "pruned corrections and loss markers archived for SLI"
+         (= [{:event_id "b" :event_type "correction"} {:collection_lost "ledger_dropped"}]
+            (map #(json/parse-string % true) (remove str/blank? (str/split-lines (slurp (str (ai-ops-ledger/sli-archive-path root))))))))
   (check "current ledger file kept" (fs/exists? (ai-ops-ledger/day-file root))))
 
 (if (seq @failures)
@@ -459,6 +463,16 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (= "0" (second before)) "no ledger loss before the ledger file exists")
     (assert (= "1" (second after)) "ledger_dropped marker must reach the SLI aggregate")
     (assert (not (re-find #"ai_ops_input_malformed_lines_total(\{[^}]*\})? [1-9]" text)) "partial ledger line must not be read")))
+;; retention: an expired day file holding the marker is pruned, but the marker
+;; survives in the SLI archive so the all-history SLI stays unknown
+(spit (str (ai-ops-ledger/day-file root "2000-01-01")) "{\"collection_lost\":\"ledger_dropped\"}\n")
+(fs/delete-if-exists (ai-ops-ledger/day-file root "2026-10-21"))
+(ai-ops-ledger/prune! root)
+(assert (not (fs/exists? (ai-ops-ledger/day-file root "2000-01-01"))) "expired day file must be pruned")
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault))))
+(assert (= "1" (second (determinable))) "pruned ledger_dropped marker must still reach the SLI aggregate")
 (fs/delete-tree (ai-ops-ledger/ledger-dir root))
 (let [real-run ai-ops-ledger/run-sli-command! calls (atom 0)]
   (with-redefs [ai-ops-ledger/sli-interval (constantly 1)

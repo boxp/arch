@@ -935,7 +935,10 @@ bb -e '
     (assert (str/includes? ok-out "ai_ops_reached_review_tasks 1") ok-out)
     (assert (str/includes? bad-out "ai_ops_sli_determinable{sli=\"agent_system_correction_task_ratio\"} 0") bad-out)
     (assert (str/includes? bad-out "ai_ops_sli_determinable{sli=\"first_acceptance_conformance\"} 0") bad-out)
-    (assert (not (re-find #"ai_ops_correction_tasks|ai_ops_reached_review_tasks" bad-out)) bad-out)))
+    (assert (not (re-find #"ai_ops_correction_tasks|ai_ops_reached_review_tasks" bad-out)) bad-out)
+    ;; 欠落 event の所属層は不明なので、層別の分子・分母も確定値として出さない
+    (assert (re-find #"ai_ops_stratum_tasks\{[^}]*kind=\"reached_review\"\} 1" ok-out) ok-out)
+    (assert (not (re-find #"ai_ops_stratum_tasks\{[^}]*kind=\"(reached_review|agent_system_corr|unknown_corr|accepted|first_pass)\"" bad-out)) bad-out)))
 (println "ok   種別不明 event は是正 SLI を unknown にし、Prom は unknown の是正率を確定値として出さず判定可否 gauge を出す")'
 tmp_zero=$(mktemp)
 echo '{"event_id":"BOXP-1:requested","task_id":"BOXP-1","event_type":"request.received","source":"ticket-frontmatter"}' > "$tmp_zero"

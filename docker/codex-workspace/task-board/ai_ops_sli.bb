@@ -965,7 +965,11 @@
     (doseq [[k n] (reduce-kv (fn [m k v] (update m (if (#{"delegated" "exempt" "failed"} k) k "other") (fnil + 0) v)) {} (or (get-in r [:sli :delegation]) {}))]
       (line "ai_ops_delegation_runs" {:kind k} n))
     (doseq [[s values] (reduce-kv (fn [m k v] (update m (if (contains? (:stratum enum-values) k) k "other") #(merge-with + (or % {}) v))) {} (:by-stratum r))
-            [label k] [["reached_review" :reached-review] ["agent_system_corr" :agent-system-corr-tasks] ["unknown_corr" :unknown-corr-tasks] ["accepted" :accepted] ["first_pass" :first-pass] ["unevaluated_input_missing" :unevaluated-input-missing]]]
+            [label k sli] [["reached_review" :reached-review :agent-system-correction-task-ratio] ["agent_system_corr" :agent-system-corr-tasks :agent-system-correction-task-ratio]
+                           ["unknown_corr" :unknown-corr-tasks :agent-system-correction-task-ratio] ["accepted" :accepted :first-acceptance-conformance]
+                           ["first_pass" :first-pass :first-acceptance-conformance] ["unevaluated_input_missing" :unevaluated-input-missing nil]]
+            ;; 欠落 event の所属層は不明なので、全体 SLI が unknown の間は対応する層別の分子・分母も出さない
+            :when (or (nil? sli) (not (#{"unknown" :unknown} (get-in r [:sli sli :status]))))]
       (line "ai_ops_stratum_tasks" {:stratum s :kind label} (get values k 0)))
     (doseq [[label k] [["unfinished" :unfinished] ["awaiting_review" :awaiting-review] ["unobserved" :unobserved]]]
       (line "ai_ops_guardrail_tasks" {:kind label} (get-in r [:guardrails k])))))
