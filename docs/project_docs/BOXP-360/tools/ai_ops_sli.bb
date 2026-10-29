@@ -366,7 +366,9 @@
                  :delegation (frequencies (keep :delegation_kind runs))})
         n (count tasks)
         reached (filter :reached-review? tasks)
-        accepted (filter #(and (:observed? %) (= "accepted" (:outcome %))) tasks)
+        observed-accepted (filter #(and (:observed? %) (= "accepted" (:outcome %))) tasks)
+        accepted (filter :accepted-at observed-accepted)
+        accepted-without-acceptance-time (filter #(nil? (:accepted-at %)) observed-accepted)
         accepted-ever (filter :acceptance-history? tasks)
         sources (frequencies (map :source uniq))
         connected? (fn [target] (some #(and (= "coverage.connected" (:event_type %)) (= target (:coverage_target %))) uniq))
@@ -386,7 +388,7 @@
      :sli
      {:agent-system-correction-task-ratio
       (assoc (ratio (count (filter #(pos? (:agent-corr %)) reached)) (count reached))
-             :unknown-cause-tasks (count (filter #(and (zero? (:agent-corr %)) (pos? (:unknown-corr %))) reached))
+             :unknown-cause-tasks (count (filter #(pos? (:unknown-corr %)) reached))
              :note "分母=review 到達 task。unknown 原因は分子に入れず別掲 (成功扱いもしない)")
       :corrections-per-task {:agent-system (quantiles (map :agent-corr reached))
                              :unknown (quantiles (map :unknown-corr reached))
@@ -394,9 +396,12 @@
                              :total-unknown (reduce + (map :unknown-corr reached))}
       :first-acceptance-conformance
       (assoc (ratio (count (filter :first-pass? accepted)) (count accepted))
-             :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted)) (count (filter #(or (= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached)))
+             :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted))
+                                                (+ (count (filter #(or (= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
+                                                   (count (remove :reached-review? accepted-without-acceptance-time))))
+             :accepted-without-acceptance-time (count accepted-without-acceptance-time)
              :not-yet-evaluated (count (filter #(and (not= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
-             :note "分母=受入済 task。未評価 (awaiting-review 等) は別掲し合格に数えない")
+             :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明と未評価は別掲し合格に数えない")
       :reopen-after-accept (if (connected? "acceptance-history") (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)) {:status :unknown :reason "acceptance history source not connected"})
       :owner-rescue (if (some #(= "owner.rescue" (:event_type %)) uniq)
                       (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
@@ -435,11 +440,13 @@
      (into (sorted-map)
            (for [[s ts] (group-by :stratum tasks)
                  :let [r (filter :reached-review? ts)
-                       a (filter #(and (:observed? %) (= "accepted" (:outcome %))) ts)]]
+                       observed-a (filter #(and (:observed? %) (= "accepted" (:outcome %))) ts)
+                       a (filter :accepted-at observed-a)]]
              [s {:tasks (count ts) :reached-review (count r)
                  :agent-system-corr-tasks (count (filter #(pos? (:agent-corr %)) r))
                  :unknown-corr-tasks (count (filter #(pos? (:unknown-corr %)) r))
                  :accepted (count a)
+                 :accepted-without-acceptance-time (count (remove :accepted-at observed-a))
                  :first-pass (count (filter :first-pass? a))}]))}))
 
 (defn aggregate [file] (aggregate* (read-events file)))

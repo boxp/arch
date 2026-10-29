@@ -407,6 +407,22 @@ bb -e '
 
 bb -e '
 (load-file "ai_ops_sli.bb")
+(let [events [{:event_id "BOXP-1:run" :task_id "BOXP-1" :event_type "run.started" :stratum "infra"}
+              {:event_id "BOXP-1:state" :task_id "BOXP-1" :event_type "task.state" :snapshot "current" :status "done"}
+              {:event_id "BOXP-2:run" :task_id "BOXP-2" :event_type "run.started" :stratum "infra"}
+              {:event_id "BOXP-2:review" :task_id "BOXP-2" :event_type "task.state" :snapshot "current" :status "review"}
+              {:event_id "BOXP-2:corr1" :task_id "BOXP-2" :event_type "correction" :correction_origin "agent-system"}
+              {:event_id "BOXP-2:corr2" :task_id "BOXP-2" :event_type "correction" :correction_origin "unknown"}]
+      report (ai-ops-sli/aggregate* events)
+      overall (get-in report [:sli :first-acceptance-conformance])
+      stratum (get-in report [:by-stratum "infra"])]
+  (assert (= [0 0 1] ((juxt :count :denominator :accepted-without-acceptance-time) overall)))
+  (assert (= [0 0 1] ((juxt :first-pass :accepted :accepted-without-acceptance-time) stratum)))
+  (assert (= 1 (get-in report [:sli :agent-system-correction-task-ratio :unknown-cause-tasks]) (:unknown-corr-tasks stratum)))
+  (println "ok   受入時刻不明を未評価にし、原因不明と agent-system の重複を数える"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
 (let [events [{:event_id "BOXP-1:run" :task_id "BOXP-1" :event_type "run.started"}
               {:event_id "BOXP-1:state" :task_id "BOXP-1" :event_type "task.state" :status "review" :snapshot "current"}]
       report (ai-ops-sli/aggregate* events)]

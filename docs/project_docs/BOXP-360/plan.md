@@ -40,9 +40,9 @@
 
 | SLI | 式 | 分母 / 注意 |
 |---|---|---|
-| agent-system 是正 task 率 | agent-system 起因の是正を 1 回以上含む task / review に到達した task | unknown 原因の task は別に掲げる |
+| agent-system 是正 task 率 | agent-system 起因の是正を 1 回以上含む task / review に到達した task | unknown 原因の task は agent-system 起因との重複を含め別に掲げる |
 | 1 task あたり是正往復 | agent-system 起因の是正 event 数の分布 | n<20 なら分位点は参考値 |
-| first acceptance 適合率 | 最初の受入以前（同時刻を含む）に agent 起因または原因不明の是正がない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の agent 起因または原因不明の是正は保守的に不合格。未評価は別掲 |
+| first acceptance 適合率 | 最初の受入以前（同時刻を含む）に agent 起因または原因不明の是正がない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の agent 起因または原因不明の是正は保守的に不合格。有効な受入時刻がない task は分子・分母から除き、未評価として別掲 |
 | reopen-after-accept | close 後に是正が入った task / 受入済み task | late feedback を拾う |
 | Owner 救援率 | 状況の催促や同じ承認の繰り返しが起きた task / 全 task | source が未接続なら unknown |
 | Ready→ack 遅延 / 詰まり率 | ack 時刻 − Ready 時刻 | **現状は unknown** (Ready への遷移時刻の event が無い) |
@@ -59,13 +59,13 @@
 
 ## 5. 実測 baseline (既存 metadata のみ)
 
-正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 03:05頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
+正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 03:12頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
 
-- ticket 360、run 1466、event 4441 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。
+- ticket 360、run 1467、event 4443 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。
 - outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13 (現在の lane snapshot を再open履歴より優先して再集計)。
-- agent-system 是正 task 率: **43/284 (15.1%)**。原因 unknown の task は 107、unknown 是正 event は 206。
-- first acceptance 適合率: **94/223 (42.2%)**。未評価を不合格として含めると 94/283 (33.2%)、未評価 60。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
-- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 560、idle-timeout 7。delegation は delegated 71、exempt 56。
+- agent-system 是正 task 率: **43/284 (15.1%)**。原因 unknown の是正を含む task は 141 (agent-system 起因との重複を含む。旧集計は重複を除いた 107)、unknown 是正 event は 206。
+- first acceptance 適合率: **94/223 (42.2%)**。未評価を不合格として含めると 94/283 (33.2%)、未評価 60、受入時刻不明の受入済み task 0。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
+- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 561、idle-timeout 7。delegation は delegated 72、exempt 56。
 - extract の order-inversions 814 は glob の読み取り順から出たもので、実際の到着順ではない。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
 
