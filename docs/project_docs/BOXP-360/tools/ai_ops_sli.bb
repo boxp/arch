@@ -56,6 +56,8 @@
   (and (<= (count s) 128) (boolean (re-matches (if synthetic? #"[A-Za-z0-9:_/-]{1,128}"
                          #"(?:[A-Z]+-\d+(?:[/:-][A-Za-z0-9:_/-]+)?|cov-[a-z0-9-]+-[0-9a-f]{8}|(?:req|conv)-[a-z0-9-]{8,64}(?:/[A-Za-z0-9:_-]+)?)") s))))
 (def ^:dynamic *synthetic-mode* false)
+;; 数値fieldは妥当な整数範囲のみ許可 (長い数値に埋め込まれた機密値を生成元で落とす)
+(def numeric-ranges {:attempt [0 1000] :redelivery [0 1000] :exit_code [-255 255] :tokens_in [0 100000000] :tokens_out [0 100000000]})
 
 (defn valid-value? [k v]
   (let [synthetic? *synthetic-mode*]
@@ -63,7 +65,7 @@
     (nil? v) true
     (and (string? v) (not (token-safe? v))) false
     (contains? enum-values k) (and (string? v) (contains? (enum-values k) v))
-    (#{:attempt :exit_code :redelivery :tokens_in :tokens_out} k) (number? v)
+    (contains? numeric-ranges k) (let [[lo hi] (numeric-ranges k)] (and (integer? v) (<= lo v hi)))
     (#{:idle_timeout :synthetic} k) (boolean? v)
     (#{:occurred_at :observed_at} k) (and (string? v) (try (java.time.Instant/parse v) true (catch Exception _ false)))
     (#{:event_id :parent_event_id} k) (and (string? v) (event-id? v synthetic?))

@@ -1409,3 +1409,12 @@ bb -e '
     (assert (= {:created "2026-10-20" :status "done"} (ai-ops-sli/frontmatter ok)) "frontmatter 抽出失敗")
     (assert (nil? (ai-ops-sli/frontmatter open)) "終了区切り無しは破損扱い")))
 (println "ok   ticket frontmatter は終了区切りまで逐次読み、本文を読み込まない")' "$tmp_fm/BOXP-136.md" "$tmp_fm/BOXP-137.md"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [g (ai-ops-sli/privacy-gate {:event_id "BOXP-1/r1" :event_type "run.started" :task_id "BOXP-1" :attempt 12345678901234567890 :tokens_in 1.5 :exit_code 1 :tokens_out 1000})]
+  (assert (= "redacted" (get-in g [:event :attempt])) (pr-str g))
+  (assert (= "redacted" (get-in g [:event :tokens_in])) (pr-str g))
+  (assert (= [1 1000] ((juxt :exit_code :tokens_out) (:event g))) (pr-str g))
+  (assert (= 2 (:redacted-values g)) (pr-str g)))
+(println "ok   数値fieldは整数範囲外 (長い数値・小数) を redact")'
