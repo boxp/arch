@@ -36,7 +36,7 @@
    :runtime #{"codex-cli" "claude-cli" "localllm" "hermes" "unknown"}
    :agent #{"codex" "codex-sol" "codex-sol-xhigh" "codex-astra" "claude-opus" "claude-fable" "fable" "localllm"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
-   :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold"}
+   :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled"}
    :result #{"review" "blocked" "done" "ready"}
    :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
@@ -340,6 +340,8 @@
         n-in (count events)
         uniq (unique-events events)
         unverifiable-severity (count (filter #(and (some? (:severity %)) (not (contains? (:severity enum-values) (:severity %)))) uniq))
+        ;; event_type 欠落/不正 (redact 済み) の event は effect/重大 event の可能性を否定できない
+        unverifiable-type (count (filter #(not (contains? (:event_type enum-values) (:event_type %))) uniq))
         dup (- n-in (count uniq))
         ;; 観測順と occurred_at 順の逆転、observed_at より未来の occurred_at (時刻ずれ)
         inversions (->> events (group-by :task_id) vals
@@ -453,6 +455,9 @@
                                            {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信) があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
                                             :collection-lost-events (+ buffer-dropped undelivered)}
+                                           (pos? unverifiable-type)
+                                           {:status "unknown" :reason "event_type 欠落/不正の event があり重複の有無を確定できない"
+                                            :observed-duplicates-lower-bound (:count effects) :unverifiable-event-types unverifiable-type}
                                            ;; effect_key 欠落/不正の effect があると重複の有無を確定できない (0 件と報告しない)
                                            (pos? (:unverifiable effects))
                                            {:status "unknown" :reason "effect_key 欠落/不正の effect があり重複の有無を確定できない"
@@ -467,6 +472,9 @@
                                                 {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信) があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
                                             :collection-lost-events (+ buffer-dropped undelivered)}
+                                                (pos? unverifiable-type)
+                                                {:status "unknown" :reason "event_type 欠落/不正の event があり重大 event の有無を確定できない"
+                                                 :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :unverifiable-event-types unverifiable-type}
                                                 ;; severity が不正 (redact 済み) の event は重大度を検証できないため 0 件と確定しない
                                                 (pos? unverifiable-severity)
                                                 {:status "unknown" :reason "severity 不正の event があり重大 event の有無を確定できない"

@@ -587,3 +587,22 @@ bb -e "
   (assert (re-find #\"ai_ops_collection_lost_events_total\\{reason=\\\"buffer_dropped\\\"\\} 2\" (with-out-str (ai-ops-sli/prom \"$tmp_drop\"))))
   (println \"ok   collector 停止中の drop を marker で集計へ引き継ぎ、重大 event/二重実行を 0 件と確定しない\"))"
 rm -f "$tmp_drop" "$tmp_drop.in"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [covs [{:event_id "cov-safety-12345678" :event_type "coverage.connected" :coverage_target "critical-safety-events"}
+            {:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}]
+      r (ai-ops-sli/aggregate* (conj covs {:event_id "BOXP-67:e1" :task_id "BOXP-67" :event_type "effect.appplied" :effect_key "deploy:x"}))]
+  (assert (= "unknown" (get-in r [:zero-tolerance :duplicate-effects :status])))
+  (assert (nil? (get-in r [:zero-tolerance :duplicate-effects :count])))
+  (assert (= 1 (get-in r [:zero-tolerance :duplicate-effects :unverifiable-event-types])))
+  (assert (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status])))
+  (println "ok   不正 event_type の event があれば二重実行/重大 event を 0 件と確定しない"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [r (ai-ops-sli/aggregate* [{:event_id "BOXP-68:req" :task_id "BOXP-68" :request_id "req:BOXP-68" :event_type "request.received" :occurred_at "2026-10-29T00:00:00Z"}
+                                {:event_id "BOXP-68:state" :task_id "BOXP-68" :event_type "task.state" :status "cancelled" :snapshot "current"}])]
+  (assert (= {"cancelled" 1} (get-in r [:tasks :outcomes])))
+  (assert (= 0 (get-in r [:guardrails :unfinished])))
+  (println "ok   privacy gate 経由でも task.state cancelled snapshot を取消 outcome に残す"))'
