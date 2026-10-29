@@ -443,6 +443,8 @@
       ;; 状態遷移の occurred_at が不正 (redact 済み等) だと時刻なしとして過去側に並び、受入/再open の前後を誤判定するため入力欠落とする
       ;; (時刻なし current snapshot は occurred_at=nil なので対象外)
       (and (contains? state-transition-types (:event_type e)) (some? (:occurred_at e)) (nil? (parse-inst (:occurred_at e))))
+      ;; occurred_precision が不正 (redact 済み) だと日粒度の受入を正確な時刻と誤認し同日の是正の前後を誤判定するため入力欠落とする
+      (and (or (contains? state-transition-types (:event_type e)) (= "correction" (:event_type e))) (= "redacted" (:occurred_precision e)))
       (some #(let [v (get e %)] (or (nil? v) (and (string? v) (str/blank? v)))) (get required-state-fields (:event_type e)))))
 (defn input-missing? [t] (or (pos? (:unreadable-runs t 0)) (pos? (:unverifiable-state t 0))))
 ;; 最初の受入履歴を持つ task (受入後に再オープン中でも first acceptance の対象から外さない; 現在状態は outcome で別に扱う)
@@ -574,13 +576,16 @@
                           ;; run.started を欠く終了/中断 event: run 履歴が不完全なため入力欠落として未評価にする
                           started-ids (set (keep :run_id runs))
                           orphan-runs (filter #(and (#{"run.finished" "run.interrupted"} (:event_type %))
-                                                     (if (:run_id %) (not (started-ids (:run_id %))) (empty? runs))) evs)]
+                                                     (if (:run_id %) (not (started-ids (:run_id %))) (empty? runs))) evs)
+                          ;; run 履歴の無い是正 event: 是正の根拠 run を確認できないため run 履歴不足として未評価にする
+                          history-less-corr (when (and (empty? runs) (empty? orphan-runs) (not-any? :synthetic evs))
+                                              (filter #(= "correction" (:event_type %)) evs))]
                     ;; 状態 event (state/cancelled/reopened)・読めない run・救援 event も task の存在を示す (救援単独 task を救援率から落とさない)
-                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
+                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue" "correction"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
                 {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
-                 :unreadable-runs (+ (count (filter #(= "run.unreadable" (:event_type %)) evs)) (count orphan-runs))
+                 :unreadable-runs (+ (count (filter #(= "run.unreadable" (:event_type %)) evs)) (count orphan-runs) (if (seq history-less-corr) 1 0))
                  :orphan-runs (count orphan-runs)
                  ;; 状態/結果 field が不正値で redact された event: Review 到達・受入・取消を判定できないため入力欠落として扱う
                  :unverifiable-state (+ (count (filter unverifiable-state-event? evs)) (count (unordered-transition-events evs)))

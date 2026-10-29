@@ -1342,3 +1342,33 @@ bb -e '
   (assert (= 1 (:unevaluated-input-missing ct)) (pr-str ct))
   (assert (= 1 (:denominator ct)) (pr-str ct)))
 (println "ok   run.finished のみ観測された task を計上し run 履歴不足として未評価に別掲")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [evs [;; run/状態 event を取得できず task_id 付きの是正 event だけが届いた task
+           {:event_id "BOXP-129:corr" :task_id "BOXP-129" :event_type "correction" :correction_class "instruction_violation" :correction_origin "agent-system" :occurred_at "2026-10-20T01:00:00Z"}
+           {:event_id "BOXP-130/20261020T000000Z-ef56:started" :task_id "BOXP-130" :run_id "20261020T000000Z-ef56" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+           {:event_id "BOXP-130/20261020T000000Z-ef56:finished" :task_id "BOXP-130" :run_id "20261020T000000Z-ef56" :event_type "run.finished" :occurred_at "2026-10-20T01:00:00Z" :result "review"}]
+      r (ai-ops-sli/aggregate* evs)
+      ct (get-in r [:sli :agent-system-correction-task-ratio])]
+  ;; 是正 event 単独の task も計上し、run 履歴不足として未評価に別掲する (分母から黙って消さない)
+  (assert (= 2 (get-in r [:tasks :total])) (pr-str (:tasks r)))
+  (assert (= 1 (:unevaluated-input-missing ct)) (pr-str ct))
+  (assert (= 1 (:denominator ct)) (pr-str ct)))
+(println "ok   correction のみ観測された task を計上し run 履歴不足として未評価に別掲")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [run (fn [t] {:event_id (str t "/20261020T000000Z-ab12:started") :task_id t :run_id "20261020T000000Z-ab12" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"})
+      evs [(run "BOXP-131")
+           ;; 日粒度受入の精度 field が破損 (privacy gate で redact) → 23:59:59Z を正確な受入時刻と誤認してはならない
+           {:event_id "BOXP-131:acc" :task_id "BOXP-131" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "dya"}
+           {:event_id "BOXP-131:corr" :task_id "BOXP-131" :event_type "correction" :correction_class "instruction_violation" :correction_origin "agent-system" :occurred_at "2026-10-21T10:00:00Z"}
+           (run "BOXP-132")
+           {:event_id "BOXP-132:acc" :task_id "BOXP-132" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"}]
+      r (ai-ops-sli/aggregate* evs)
+      fa (get-in r [:sli :first-acceptance-conformance])]
+  ;; 精度不正の受入 task は合格/不合格にせず入力欠落として未評価
+  (assert (= [1 1] ((juxt :count :denominator) fa)) (pr-str fa))
+  (assert (= 1 (:unevaluated-input-missing fa)) (pr-str fa)))
+(println "ok   occurred_precision が不正な受入は正確な時刻扱いせず入力欠落として未評価")'
