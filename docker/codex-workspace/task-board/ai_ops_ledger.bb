@@ -22,6 +22,7 @@
   (:require [babashka.fs :as fs]
             [cheshire.core :as json]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]))
 
 (def schema-version "ai-ops-event/v0")
@@ -318,13 +319,24 @@
 (def lost-marker {:collection_lost "ledger_dropped"})
 (def marker-headroom-bytes 65536)
 
+(def lost-marker-line (json/generate-string lost-marker))
+
+(defn- has-lost-marker? [path]
+  (with-open [r (io/reader (str path))]
+    (boolean (some #(= lost-marker-line %) (line-seq r)))))
+
 (defn append-lost-marker!
   "Best-effort marker append. Never throws; returns true when written (or when
-  the headroom is already used up, which only markers can consume, so a marker
-  is already present) and false when the append failed."
+  the headroom is used up and a marker is verifiably present in the file) and
+  false when the append failed. The headroom alone is not proof of a marker:
+  lowering the cap can leave a marker-less file above cap + headroom, so the
+  file is checked and the marker is appended (one line past the headroom) when
+  missing."
   [path]
   (try
-    (when (or (not (fs/exists? path)) (< (fs/size path) (+ (max-bytes) marker-headroom-bytes)))
+    (when (or (not (fs/exists? path))
+              (< (fs/size path) (+ (max-bytes) marker-headroom-bytes))
+              (not (has-lost-marker? path)))
       (append-line! path lost-marker))
     true
     (catch Exception _ false)))

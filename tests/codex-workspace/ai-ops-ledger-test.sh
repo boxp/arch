@@ -70,6 +70,22 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   (check "only a body-less loss marker appended"
          (= (str (apply str (repeat 64 "x")) "{\"collection_lost\":\"ledger_dropped\"}\n") (slurp (str f)))))
 
+;; a lowered cap can leave a marker-less file above cap + headroom: the marker
+;; must still be written once (headroom alone is not proof of a marker)
+(let [root (str (fs/path tmp "c1"))
+      f (ai-ops-ledger/day-file root)
+      body (str (apply str (repeat 200 "x")) "\n")
+      marker "{\"collection_lost\":\"ledger_dropped\"}\n"]
+  (fs/create-dirs (fs/parent f))
+  (spit (str f) body)
+  (with-redefs [ai-ops-ledger/max-bytes (constantly 32)
+                ai-ops-ledger/marker-headroom-bytes 16]
+    (ev root "started" {:event_type "run.started"})
+    (ev root "finished" {:event_type "run.finished" :status "succeeded"}))
+  (check "lowered cap: marker appended once to marker-less file past headroom"
+         (= (str body marker) (slurp (str f))))
+  (check "lowered cap: both drops counted" (= 2 (:dropped-full (stats root)))))
+
 ;; a loss in the ledger reaches the aggregation: SLIs over the ledger become unknown
 (let [root (str (fs/path tmp "c2"))
       sli (str (fs/path (System/getenv "AI_OPS_REPO") "docs" "project_docs" "BOXP-360" "tools" "ai_ops_sli.bb"))]
