@@ -1500,6 +1500,27 @@ bb -e '
 
 bb -e '
 (load-file "ai_ops_sli.bb")
+;; Ready から始まり Review で終わる run: outbox (Ready→Review) と ledger (Ready→In Progress, In Progress→Review) を
+;; join しても終了遷移は1件に統合され、lane 履歴は Ready→In Progress→Review になる
+(let [t "BOXP-94" r "20261029T123804Z-cacd1e0e-9737-4ab6-ac0f-dbea9be0b4e6"
+      outbox (ai-ops-sli/outbox->events {:event-id (str t "-" r "-review") :event-type "task-board.lane-changed"
+                                         :ticket-id t :run-id r :from-status "ready" :to-status "review"
+                                         :result "review" :source "task-board-runner"
+                                         :created-at "2026-10-29T12:50:00Z" :accepted-at "2026-10-29T12:50:01Z"})
+      base {:task_id t :request_id (str "req:" t) :run_id r :source "task-board-runner"}
+      ledger [(assoc base :event_id (str t "/" r ":ledger:lane-start") :event_type "lane.changed" :lane_from "ready" :lane_to "in-progress" :occurred_at "2026-10-29T12:38:04Z")
+              (assoc base :event_id (str t "/" r ":ledger:lane") :event_type "lane.changed" :lane_from "in-progress" :lane_to "review" :occurred_at "2026-10-29T12:50:00Z")]
+      {:keys [events merged]} (ai-ops-sli/merge-ledger-events (concat outbox ledger))
+      lanes (->> events (filter #(= "lane.changed" (:event_type %))) (sort-by :occurred_at) (map (juxt :lane_from :lane_to)))
+      agg (ai-ops-sli/aggregate* (concat outbox ledger))]
+  (assert (= 1 merged) (pr-str merged))
+  (assert (= [["ready" "in-progress"] ["in-progress" "review"]] lanes) (pr-str lanes))
+  (assert (= 1 (get-in agg [:input :ledger-merged])) (pr-str (:input agg)))
+  (assert (= {"awaiting-review" 1} (get-in agg [:tasks :outcomes])) (pr-str (:tasks agg))))
+(println "ok   outbox と ledger の終了 lane 遷移を1件に統合し lane 履歴を連続させる")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
 ;; extract と runner ledger を併用しても、バージョン/reasoning 付き担当名が ledger と同じ基本担当名で残る
 (let [run "20261029T114416Z-7a59ee61-f3ae-4a53-a6b7-ea575ed7d67b"
       summ {:ticket "BOXP-95" :run-id run :agent "claude-opus-5-5" :status :succeeded :result :review :action :implement

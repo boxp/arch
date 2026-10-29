@@ -437,7 +437,10 @@
     (if (= "correction" (:event_type e))
       (when-let [cause (correction-cause-run e)] [(:task_id e) cause "correction"])
       (cond-> [(:task_id e) (:run_id e) (:event_type e)]
-        (= "lane.changed" (:event_type e)) (conj (:lane_from e) (:lane_to e))))))
+        ;; outbox は開始時 lane→終了 lane (Ready→Review) を1件、ledger は開始遷移 (Ready→In Progress) と
+        ;; 終了遷移 (In Progress→Review) を別に出す。同じ終了遷移を lane_from で区別すると両方残るため、
+        ;; run 内の到達 lane (outbox の event_id も run×to-status で一意) で照合する
+        (= "lane.changed" (:event_type e)) (conj (:lane_to e))))))
 ;; 是正の分類は実際の gate 結果を持つ ledger 側を正とする (derived は gate 種別を知らず一律 gate_defect に推定する)。
 ;; 統合時は derived event の ID/evidence を残し、分類 field は ledger 側で上書きする。
 ;; 発生時刻も ledger 側 (実際の gate 失敗時刻) を正とする。derived の時刻は次の review-fix run 開始時刻で、
@@ -452,12 +455,22 @@
                                         (cond-> (select-keys % correction-class-fields)
                                           (parse-inst (:occurred_at %)) (merge (select-keys % correction-time-fields)))])
                                     events))
-        reclassify #(if-let [c (and (not (ledger-event? %)) (= "correction" (:event_type %))
-                                    (ledger-class (ledger-logical-key %)))]
-                      (merge (apply dissoc % (cond-> correction-class-fields
-                                               (:occurred_at c) (into correction-time-fields)))
-                             c)
-                      %)]
+        ;; 統合した終了 lane 遷移の遷移元は ledger 側 (開始遷移後の実 lane) を正とし、lane 履歴を
+        ;; Ready→In Progress→Review のように連続させる (outbox は開始時 lane を遷移元に持つ)
+        ledger-lane-from (into {} (keep #(when (and (merged? %) (= "lane.changed" (:event_type %)) (:lane_from %))
+                                           [(ledger-logical-key %) (:lane_from %)])
+                                        events))
+        reclassify #(cond
+                      (ledger-event? %) %
+                      (= "correction" (:event_type %))
+                      (if-let [c (ledger-class (ledger-logical-key %))]
+                        (merge (apply dissoc % (cond-> correction-class-fields
+                                                 (:occurred_at c) (into correction-time-fields)))
+                               c)
+                        %)
+                      (= "lane.changed" (:event_type %))
+                      (if-let [from (ledger-lane-from (ledger-logical-key %))] (assoc % :lane_from from) %)
+                      :else %)]
     {:events (map reclassify (remove merged? events)) :merged (count (filter merged? events))}))
 
 (defn unique-events [events]
