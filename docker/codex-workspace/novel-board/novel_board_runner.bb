@@ -2229,10 +2229,13 @@
   (with-novel-lock-guard novel-id
     #(when-let [live (current-card novel-id)] (sync-draft-under-guard! live))))
 
-(defn discover-reference-images [novel-id content fm nsfw]
+(defn discover-reference-images
   ;; Staged search (management note, explicit references, name-matched setting
   ;; notes, one wiki-link hop). At most 4 images per setting note so one
   ;; image-heavy note cannot crowd out the others. Paths and counts only.
+  ;; `named-paths` are setting notes the owner's image request names (BOXP-363).
+  ([novel-id content fm nsfw] (discover-reference-images novel-id content fm nsfw []))
+  ([novel-id content fm nsfw named-paths]
   (let [candidates (atom []) explored (atom []) gaps (atom []) seen (atom #{}) notes (atom #{})
         links (atom []) note-dir (fs/parent (note-path novel-id))
         private-root (fs/path (work-dir novel-id) "references")
@@ -2254,7 +2257,12 @@
                      (gap! :image-not-allowed (if private? (str raw) (absolute-relative (vault) path)))
                      (or (zero? (fs/size path)) (not (image-magic-ok? path)))
                      (gap! :image-invalid-bytes (if private? (str raw) (vault-relative path)))
-                     (and (< (count @candidates) 24) (not (contains? @seen (canonical-path path))))
+                     ;; An image the management note embeds stays pinned even when a
+                     ;; request-named note (scanned first) already listed it.
+                     (and (= "管理ノート" source) (contains? @seen (canonical-path path)))
+                     (swap! candidates (fn [cs] (mapv #(if (= (canonical-path (:path %)) (canonical-path path)) (assoc % :label label :source source) %) cs)))
+                     ;; Management-note images are always passed, so the cap does not apply.
+                     (and (or (= "管理ノート" source) (< (count @candidates) 24)) (not (contains? @seen (canonical-path path))))
                      (do (swap! seen conj (canonical-path path))
                          (swap! candidates conj {:path (str path) :file (str (fs/file-name path)) :label label :source source})))))
         scan! (fn [file source follow?]
@@ -2277,6 +2285,8 @@
                           (do (swap! explored conj {:rel rel :source source :images (count refs)})
                               (doseq [raw (take 4 refs)] (image! raw (fs/parent file) (str/replace (str (fs/file-name file)) #"\.md$" "") source false))
                               (when follow? (swap! links into (map #(vector % (fs/parent file)) (wiki-link-stems text)))))))))))]
+    ;; Request-named notes first, so the 24-image cap cannot crowd them out.
+    (doseq [path named-paths] (scan! (fs/path path) "名前一致" true))
     (let [text (without-section content draft-preview-heading) refs (embedded-image-refs text)]
       (swap! notes conj (canonical-path (note-path novel-id)))
       (swap! explored conj {:rel (absolute-relative (vault) (note-path novel-id)) :source "管理ノート" :images (count refs)})
@@ -2303,7 +2313,7 @@
           freq (frequencies (map canonical-path paths))]
       (doseq [path (sort-by #(- (get freq (canonical-path %))) (distinct paths))]
         (scan! path "リンク先" false)))
-    {:candidates @candidates :explored @explored :gaps @gaps}))
+    {:candidates @candidates :explored @explored :gaps @gaps})))
 
 (defn reference-image-candidates [novel-id content fm nsfw]
   (:candidates (discover-reference-images novel-id content fm nsfw)))
@@ -2861,7 +2871,10 @@
         pinned (map :path (filter #(= "管理ノート" (:label %)) candidates))
         chosen (->> (:reference_images spec) (map str) (keep #(get by-file (fs/file-name %))))
         fallback (map :path (take 4 candidates))]
-    (vec (take 6 (distinct (if (or (seq pinned) (seq chosen)) (concat pinned chosen) fallback))))))
+    ;; A request-named character keeps up to 3 slots ahead of the pinned images.
+    (vec (take 6 (distinct (if (or (seq pinned) (seq chosen))
+                             (concat (when (:request_focus spec) (take 3 chosen)) pinned chosen)
+                             fallback))))))
 
 (defn valid-image? [path]
   (and (fs/regular-file? path) (pos? (fs/size path)) (image-magic-ok? path)))
@@ -3250,16 +3263,65 @@
        (when (seq gaps) (str "、不足: " (str/join ", " (map #(str (name (:type %)) " " (:detail %)) (take 5 gaps)))))
        "。再開条件: 登場人物の設定ノートか、そのリンク先に SFW の作画資料画像を埋め込む、または Review Instructions に画像を含むノートへの [[リンク]] を書く"))
 
+(defn illustration-request [instructions]
+  ;; The owner's illustration lines only (links removed, bounded).
+  (let [request (->> (str/split-lines (str instructions))
+                     (filter image-intent?)
+                     (map #(str/trim (str/replace (without-links %) #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")))
+                     (str/join " "))]
+    (subs request 0 (min 400 (count request)))))
+
+(defn profile-names
+  "Names written in a setting note's profile lines (`- 偽名: 桜 一穂（さくら いちほ）`):
+  the full name and its parts of two or more characters. A kanji name without a
+  space (`桜一穂`) also yields its trailing given-name candidates (`一穂`)."
+  [text]
+  (->> (str/split-lines (str text))
+       (keep #(second (re-find #"^\s*[-*]?\s*(?:偽名|本名|名前|氏名|通称|別名|呼び名)\s*[:：]\s*(.+)$" %)))
+       (map #(str/trim (str/replace % #"[（(][^）)]*[）)]" "")))
+       (mapcat (fn [name]
+                 (let [parts (str/split name #"[\s　]+")]
+                   (cons name (if (and (= 1 (count parts)) (re-matches #"\p{IsHan}{3,6}" name))
+                                (map #(subs name %) (range 1 (dec (count name))))
+                                parts)))))
+       (map str/trim) (filter #(>= (count %) 2)) distinct vec))
+
+(defn request-named-entries
+  "Setting catalog entries whose names occur in the owner's illustration request."
+  [request]
+  (let [hay (normalize-match-text request)]
+    (if (str/blank? hay)
+      []
+      (vec (for [entry (setting-catalog)
+                 :when (not (:excluded entry))
+                 :let [names (concat (match-names entry) (profile-names (try (slurp (:path entry)) (catch Exception _ ""))))]
+                 :when (some #(let [n (normalize-match-text %)] (and (>= (count n) 2) (str/includes? hay n))) names)]
+             entry)))))
+
+(defn request-named-stems [request] (set (map :stem (request-named-entries request))))
+
+(defn focus-reference-images
+  "BOXP-363: when the request names characters, the write-time picks from other
+  name-matched / linked notes (another character's sheet) are dropped and the
+  named notes' images are used, so the request's character is drawn."
+  [spec candidates named-stems]
+  (let [named (filter #(contains? named-stems (:label %)) candidates)]
+    (if (empty? named)
+      spec
+      (let [by-file (into {} (map (juxt :file identity) candidates))
+            chosen (keep #(get by-file (str (fs/file-name (str %)))) (:reference_images spec))
+            kept (filter #(or (contains? named-stems (:label %)) (not (contains? #{"名前一致" "リンク先"} (:source %)))) chosen)
+            covered (set (map :label kept))
+            extra (remove #(contains? covered (:label %)) named)]
+        (assoc spec :reference_images (vec (distinct (map :file (concat (filter #(contains? named-stems (:label %)) kept) extra kept))))
+                    :request_focus true)))))
+
 (defn illustration-spec-with-request
   "BOXP-363: an image-only Review request directs the new illustration. Only the
   owner's illustration lines (links removed, bounded) are added, never manuscript
   text, and never for NSFW works (their spec is left as planned)."
   [spec instructions nsfw]
-  (let [request (->> (str/split-lines (str instructions))
-                     (filter image-intent?)
-                     (map #(str/trim (str/replace (without-links %) #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")))
-                     (str/join " "))
-        request (subs request 0 (min 400 (count request)))]
+  (let [request (illustration-request instructions)]
     (if (or nsfw (str/blank? request))
       spec
       (assoc spec :prompt (str "Owner's request for this illustration (highest priority; it overrides the composition, scene and number of characters described afterwards): "
@@ -3273,6 +3335,7 @@
     (ensure-private-dir! (work-dir novel-id))
     (if-not (manuscript-valid? manuscript)
       {:ok? false :reason "有効な本文がありません。再開条件: 本文を用意"}
+      (let [named (request-named-entries (illustration-request instructions))]
       (let [before (sha256-file manuscript) job (read-edn-file job-path {})
             pending (:pending job)
             safe-pending? (and pending (= (str (fs/parent (fs/absolutize pending))) (str (fs/absolutize (work-dir novel-id))))
@@ -3285,7 +3348,7 @@
                 (write-edn-file! job-path (assoc job :status :abandoned)))
             _ (when adopted (write-edn-file! job-path (assoc job :status :succeeded :output-sha (sha256-file (illustration-path novel-id)))))
             reused (and (not adopted) (illustration-current? novel-id) (= fp (:instructions-fp (read-edn-file job-path {}))))
-            discovery (when-not (or adopted reused) (discover-reference-images novel-id content fm (:nsfw card)))
+            discovery (when-not (or adopted reused) (discover-reference-images novel-id content fm (:nsfw card) (map :path named)))
             _ (when discovery (write-edn-file! (fs/path run-dir "illustration-references.edn") (select-keys discovery [:explored :gaps])))
             candidates (:candidates discovery)
             spec (when (seq candidates)
@@ -3293,7 +3356,8 @@
                        (if (= :localllm (assignee-route agent))
                          (plan-illustration-with-llm! (localllm-config) run-dir (slurp (str manuscript)) candidates (:nsfw card) (:title card))
                          (default-illustration-spec (:title card) "")))
-                       (illustration-spec-with-request instructions (:nsfw card))))
+                       (illustration-spec-with-request instructions (:nsfw card))
+                       (focus-reference-images candidates (set (map :stem named)))))
             illustration (cond
                            adopted adopted
                            reused {:ok? true :path (str (illustration-path novel-id)) :bytes (fs/size (illustration-path novel-id))}
@@ -3310,7 +3374,7 @@
             ok? (and (:ok? illustration) unchanged?)]
         (cond-> {:ok? (boolean ok?) :illustration illustration :manuscript-chars (manuscript-chars manuscript)
                  :manuscript-unchanged? unchanged? :adopted? (boolean adopted) :reused? (boolean reused)}
-          (not ok?) (assoc :reason (if unchanged? (:reason illustration) "本文が変更されたため検証に失敗しました。再開条件: 本文を確認")))))))
+          (not ok?) (assoc :reason (if unchanged? (:reason illustration) "本文が変更されたため検証に失敗しました。再開条件: 本文を確認"))))))))
 
 (defn apply-groom-output! [novel-id text]
   (let [sections (groom-output-sections text)
@@ -3888,6 +3952,19 @@
            (with-redefs [instructions-applied? (constantly true) illustration-current? (constantly false)]
              (= :illustrate (candidate-action {:status "review" :assignee "localllm" :novel-id "NOVEL-0"} {}
                                              "## Review Instructions\n\n- 挿絵を用意\n- 本文を加筆\n"))))
+    (check "request-named character drives image-only references"
+           (let [cands [{:file "hero.png" :label "主人公" :source "名前一致"} {:file "hero2.png" :label "主人公" :source "名前一致"}
+                        {:file "friend.png" :label "友人" :source "名前一致"} {:file "pin.png" :label "管理ノート" :source "管理ノート"}]
+                 spec {:reference_images ["friend.png" "pin.png"]}]
+             (and (= ["hero.png" "hero2.png" "pin.png"] (:reference_images (focus-reference-images spec cands #{"主人公"})))
+                  (let [pins (map #(hash-map :file (str "p" % ".png") :path (str "p" % ".png") :label "管理ノート" :source "管理ノート") (range 6))
+                        all (concat pins [{:file "hero.png" :path "hero.png" :label "主人公" :source "名前一致"}])]
+                    (some #{"hero.png"} (select-reference-images (focus-reference-images {:reference_images []} all #{"主人公"}) all)))
+                  (= ["hero2.png"] (:reference_images (focus-reference-images {:reference_images ["hero2.png" "friend.png"]} cands #{"主人公"})))
+                  (= spec (focus-reference-images spec cands #{}))
+                  (= ["桜 一穂" "一穂"] (profile-names "- 偽名: 桜 一穂（さくら　いちほ）\n- 年齢: 16"))
+                  (= ["桜一穂" "一穂"] (profile-names "- 偽名: 桜一穂（さくらいちほ）"))
+                  (= "カウンターで一穂を1人で描いた挿絵に作り直して" (illustration-request "- 本文の台詞を直す\n- カウンターで一穂を1人で描いた挿絵に作り直して [[設定/主人公]]")))))
     (check "default image prompt excludes manuscript"
            (not (str/includes? (:prompt (default-illustration-spec "題" "秘密の本文") ) "秘密の本文")))
     (let [tmp (fs/create-temp-dir) root (fs/path tmp "vault") work (fs/path tmp "work")]
@@ -3896,7 +3973,7 @@
         (doseq [path [(fs/path root "S" "a.png") (fs/path root "S" "b.png") (fs/path root "NSFW" "x.png") (fs/path work "references" "private.png")]]
           (with-open [out (io/output-stream (str path))] (.write out (byte-array [(unchecked-byte 0x89) 0x50 0x4e 0x47]))))
         (spit (str (fs/path root "S" "bad.png")) "bad")
-        (spit (str (fs/path root "S" "人物.md")) "# 人物\n![[a.png]]\n![[bad.png]]\n![[missing.png]]\n[[資料]]")
+        (spit (str (fs/path root "S" "人物.md")) "# 人物\n- 本名: 星野 ゆい\n![[a.png]]\n![[bad.png]]\n![[missing.png]]\n[[資料]]")
         (spit (str (fs/path root "S" "資料.md")) "# 資料\n![[b.png]]\n[[非正典]]")
         (spit (str (fs/path root "S" "非正典.md")) "---\ncanon: false\n---\n# 非正典\n![[a.png]]")
         (spit (str (fs/path root "S" "人物2.md")) "# 人物\n[[非正典]]")
@@ -3904,6 +3981,11 @@
                       allowed-reference-dirs (constantly ["S" "NSFW" "Novels"])]
           (let [result (discover-reference-images "NOVEL-0" "## Requirements\n人物 `private.png|立ち絵`\n![[NSFW/x.png]]\n" {} false)
                 files (set (map :file (:candidates result))) gaps (set (map :type (:gaps result)))]
+            (check "management-note image stays pinned after a named scan"
+                   (= "管理ノート" (:label (first (filter #(= "a.png" (:file %)) (:candidates (discover-reference-images "NOVEL-0" "## Requirements\n![[S/a.png]]\n" {} false (map :path (request-named-entries "ゆいを描いて")))))))))
+            (check "request names resolve through profile names"
+                   (and (= #{"人物"} (request-named-stems "ゆいを1人で描いた挿絵に作り直して"))
+                        (= #{"a.png" "b.png"} (set (map :file (:candidates (discover-reference-images "NOVEL-0" "## Requirements\n無関係\n" {} false (map :path (request-named-entries "ゆいを描いて")))))))))
             (check "image discovery priorities and gaps"
                    (and (= #{"a.png" "b.png" "private.png"} files)
                         (every? gaps [:image-not-found :image-invalid-bytes :image-nsfw-excluded :image-noncanon-excluded])
