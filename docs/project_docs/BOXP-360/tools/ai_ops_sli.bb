@@ -110,9 +110,9 @@
 
 (defn frontmatter
   "開始/終了の `---` が揃い、必須field (status / created) を持つ frontmatter だけを map で返す。
-  終了区切りが無い (本文の status: 等まで取り込み得る) / 必須field欠落は nil (呼び出し側で破損扱い)。"
+  終了区切りが無い (本文の status: 等まで取り込み得る) / 必須field欠落 / 読み取り例外 (権限不足等) は nil (呼び出し側で破損扱い)。"
   [f]
-  (let [lines (str/split-lines (slurp (str f)))
+  (let [lines (try (str/split-lines (slurp (str f))) (catch Exception _ nil))
         body (rest lines)
         fm-lines (take-while #(not= "---" %) body)]
     (when (and (= "---" (first lines)) (< (count fm-lines) (count body)))
@@ -441,7 +441,8 @@
                  :post-accept-corr (count post-accept-corr)
                  :observed? (boolean (or (seq runs) (some :synthetic evs) (some #(= "run.unreadable" (:event_type %)) evs)))
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
-                 :accepted-unobserved? (boolean (and (= "accepted" (task-outcome evs)) accepted (empty? runs) (not-any? :synthetic evs)))
+                 ;; run 履歴の無い受入 task は受入時刻の有無に関わらず未評価 (done snapshot のみの task も保守的分母に残す)
+                 :accepted-unobserved? (boolean (and (= "accepted" (task-outcome evs)) (empty? runs) (not-any? :synthetic evs)))
                  :first-pass? (and accepted (not-any? #(let [t (parse-inst (:occurred_at %))]
                                                         (and (not= "non-agent" (correction-origin %)) (or (nil? t) (not (.isAfter t accepted))))) corr))
                  :lead-h (hours requested accepted)

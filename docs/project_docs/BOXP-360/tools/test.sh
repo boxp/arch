@@ -726,3 +726,33 @@ bb -e '
   (assert (= [1 1] ((juxt :count :denominator) fa)) (pr-str fa))
   (assert (= [1 3] ((juxt :count :denominator) (:incl-unevaluated-as-not-pass fa))) (pr-str fa)))
 (println "ok   未評価を含めた適合率の分母に run 履歴なし受入・入力欠落 task を含める")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [evs [{:event_id "BOXP-95:run" :task_id "BOXP-95" :event_type "run.started"}
+           {:event_id "BOXP-95:accepted" :task_id "BOXP-95" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
+           {:event_id "BOXP-96:state" :task_id "BOXP-96" :event_type "task.state" :snapshot "current" :status "done"}]
+      r (ai-ops-sli/aggregate* evs)
+      fa (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= [1 1] ((juxt :count :denominator) fa)) (pr-str fa))
+  (assert (= [1 2] ((juxt :count :denominator) (:incl-unevaluated-as-not-pass fa))) (pr-str fa))
+  (assert (= 1 (get-in r [:tasks :accepted-without-run-history])) (pr-str (:tasks r))))
+(println "ok   run 履歴も受入時刻もない done snapshot のみの受入 task を保守的分母と未評価件数に含める")'
+
+tmp_perm=$(mktemp -d)
+mkdir -p "$tmp_perm/root/runs/BOXP-97/20261020T010000Z-aaaa" "$tmp_perm/root/outbox" "$tmp_perm/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_perm/vault/Tickets/BOXP-97.md"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_perm/vault/Tickets/BOXP-98.md"
+echo '{:ticket "BOXP-97" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_perm/root/runs/BOXP-97/20261020T010000Z-aaaa/summary.edn"
+chmod 000 "$tmp_perm/vault/Tickets/BOXP-97.md"
+if [ "$(id -u)" != 0 ]; then
+  bb ai_ops_sli.bb extract "$tmp_perm/root" "$tmp_perm/vault" > "$tmp_perm/x.jsonl" 2>/dev/null
+  bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_perm/x.jsonl\")]
+  (assert (= 1 (get-in r [:input :unreadable-inputs])) (pr-str (:input r)))
+  (assert (pos? (get-in r [:input :tasks-with-unreadable-runs])) (pr-str (:input r)))
+  (assert (re-find #\"BOXP-98\" (slurp \"$tmp_perm/x.jsonl\")))
+  (println \"ok   読み取り不能 ticket は欠落入力として計数し、他 ticket の抽出を継続する\"))"
+fi
+chmod 600 "$tmp_perm/vault/Tickets/BOXP-97.md"; rm -rf "$tmp_perm"
