@@ -1623,6 +1623,12 @@ test_review_without_repo_marker_skips_pr_gates() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-402\|BOXP-402: no repo review\]\].*status::review'
   assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: review$'
+  # A skipped gate (no PR to check) must not be counted as a pass.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "skip"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "skip"\] 1'
+  if grep -q '\["all" "pass"\]' "${state}/ai-ops/ledger-stats.edn"; then
+    fail "review-none gate must not be counted as pass"
+  fi
 }
 
 test_review_with_conflict_is_blocked() {
@@ -3183,6 +3189,110 @@ test_loop_prune_can_be_disabled() {
 }
 
 
+test_ai_ops_ledger_records_run_lifecycle() {
+  local tmp vault state bin ledger
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" ""
+  # The card starts in the Ready lane so run.started records the Ready -> ack transition.
+  sed -i 's/^## Ready$/## Ready\n- [ ] [[Tickets\/BOXP-416|BOXP-416: ledger secret title]] #ticket status::ready/' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-416 ready codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-1.out
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-2.out
+
+  ledger="$(ls "${state}"/ai-ops/ledger/events-*.jsonl)"
+  # JSON key order is not fixed: select each event by its id suffix, then check fields.
+  grep ':ledger:started"' "${ledger}" | grep -q '"lane_from":"ready"' || fail "expected run.started from ready"
+  grep ':ledger:correction"' "${ledger}" | grep '"correction_class":"gate_defect"' | grep -q '"correction_origin":"agent-system"' \
+    || fail "expected an agent-system gate_defect correction"
+  grep ':ledger:finished"' "${ledger}" | grep -q '"status":"retrying"' || fail "expected a retrying run.finished"
+  grep ':ledger:finished"' "${ledger}" | grep -q '"status":"succeeded"' || fail "expected a succeeded run.finished"
+  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_to":"review"' || fail "expected lane.changed to review"
+  assert_file_not_contains "${ledger}" 'secret title'
+  assert_file_not_contains "${ledger}" 'http'
+  assert_file_not_contains "${ledger}" 'privacy_rejected'
+  [[ "$(grep -c '"event_type":"run.started"' "${ledger}")" -eq 2 ]] || fail "expected two run.started ledger events"
+  grep ':ledger:lane-start"' "${ledger}" | grep '"lane_from":"ready"' | grep -q '"lane_to":"in-progress"' \
+    || fail "expected a start lane.changed ready -> in-progress"
+  # Start Ready -> In Progress, finish In Progress -> Review. A retry stays In
+  # Progress: no lane.changed for in-progress -> in-progress.
+  [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 2 ]] || fail "expected two lane.changed ledger events"
+  grep ':ledger:correction"' "${ledger}" | grep -q '"confidence":"high"' \
+    || fail "expected a failed CI check to be a high-confidence correction"
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "fail"\] 1'
+  # gate="all" is the overall denominator and must count the failure too.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "fail"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "pass"\] 1'
+  # Individual gates count their successes too, not only failures.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "pass"\] 1'
+  # The CI-failed run also passed mergeability; that success must be counted.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["mergeability" "pass"\] 2'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["codex-review" "pass"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "pass"\] 2'
+  # One-shot `tick` (not only `loop`) must refresh metrics.prom from the stats.
+  assert_file_contains "${state}/ai-ops/metrics.prom" 'ai_ops_review_gate_total\{gate="ci",result="fail"\} 1'
+}
+
+test_ai_ops_ledger_groom_from_backlog_records_actual_lane() {
+  local tmp vault state bin ledger
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}" "${vault}/Boards" "${vault}/Tickets"
+  make_fake_codex "${bin}"
+  cat >"${vault}/Boards/Task Board.md" <<'EOF'
+# Task Board
+
+## Backlog
+- [ ] [[Tickets/BOXP-418|BOXP-418: ledger groom]] #ticket status::backlog
+
+## Ready
+
+## In Progress
+
+## Blocked
+
+## Review
+
+## Done
+EOF
+  write_ticket "${vault}" BOXP-418 backlog codex
+
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-groom.out
+
+  ledger="$(ls "${state}"/ai-ops/ledger/events-*.jsonl)"
+  # A Backlog groom run never moves the card to In Progress: no start
+  # transition, and the finish transition starts from backlog.
+  assert_file_not_contains "${ledger}" ':ledger:lane-start"'
+  assert_file_not_contains "${ledger}" '"lane_from":"in-progress"'
+  grep ':ledger:started"' "${ledger}" | grep -q '"lane_to":"backlog"' || fail "expected run.started to stay in backlog"
+  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_from":"backlog"' || fail "expected lane.changed from backlog"
+}
+
+test_ai_ops_ledger_disabled_by_env() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-417|BOXP-417: ledger off]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-417 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_AI_OPS_LEDGER_ENABLED=false run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-off.out
+
+  assert_file_contains "${vault}/Tickets/BOXP-417.md" '^status: done$'
+  [[ ! -e "${state}/ai-ops" ]] || fail "ledger must not be written when disabled"
+}
+
 test_run_finished_records_outbox_event() {
   local tmp vault state bin event
   tmp="$(mktemp -d)"
@@ -3484,6 +3594,9 @@ test_loop_prune_can_be_disabled
 test_run_finished_records_outbox_event
 test_in_progress_retry_records_no_outbox_event
 test_outbox_disabled_by_env
+test_ai_ops_ledger_records_run_lifecycle
+test_ai_ops_ledger_disabled_by_env
+test_ai_ops_ledger_groom_from_backlog_records_actual_lane
 
 echo "task-board-runner tests passed"
 

@@ -488,8 +488,16 @@ bb -e '
   (assert (= 1 (get-in report [:sli :agent-system-correction-task-ratio :denominator])))
   (assert (= "blocked" (ai-ops-sli/task-outcome [review (assoc blocked :occurred_at "2026-10-21T00:00:00Z")])))
   (assert (= "awaiting-review" (ai-ops-sli/task-outcome [review (assoc blocked :event_type "task.state" :status "review" :snapshot "current") (lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
-  (assert (= "unobserved" (ai-ops-sli/task-outcome [(lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
-  (println "ok   lane 遷移の outcome と review 分母、現在状態と done の優先順位"))
+  (assert (= "accepted" (ai-ops-sli/task-outcome [(lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
+  ;; ledger 単独: Ready -> In Progress -> Done の最後の done 遷移を完了として扱う
+  (let [l (fn [from to time] {:event_id (str "BOXP-33:" to) :task_id "BOXP-33" :event_type "lane.changed" :lane_from from :lane_to to :occurred_at time})
+        evs [(l "ready" "in-progress" "2026-10-22T00:00:00Z") (l "in-progress" "done" "2026-10-22T01:00:00Z")]
+        report (ai-ops-sli/aggregate* evs)]
+    (assert (= "accepted" (ai-ops-sli/task-outcome evs)))
+    (assert (= {"accepted" 1} (get-in report [:tasks :outcomes])) (pr-str (:tasks report)))
+    ;; done 後の再 open は未完了に戻る
+    (assert (= "in-flight" (ai-ops-sli/task-outcome (conj evs (l "done" "ready" "2026-10-22T02:00:00Z"))))))
+  (println "ok   lane 遷移の outcome と review 分母、現在状態と done の優先順位 (ledger 単独の done 遷移は完了)"))
 (let [low {:event_id "BOXP-40:event" :event_type "correction" :severity "low"}
       report (ai-ops-sli/aggregate* [low])]
   (assert (= [0 "partial/undeclared"] ((juxt :count :coverage) (get-in report [:zero-tolerance :critical-safety-events]))))
@@ -1460,3 +1468,167 @@ bb -e '
   (assert (= 1 (get-in r [:tasks :accepted-without-run-history])) (pr-str (:tasks r)))
   (assert (= 1 (get-in rs [:sli :first-acceptance-conformance :denominator])) (pr-str (:sli rs))))
 (println "ok   通常モードでは synthetic field で run 履歴なし受入を観測済み扱いにしない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; runner ledger と既存 extract を join しても同じ run の run/retry/是正/lane 遷移を二重計上しない
+(let [run "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57"
+      run2 "20261029T063201Z-7d2adcd6-e49e-4399-b92c-d22645e07a3b"
+      base {:task_id "BOXP-98" :request_id "req:BOXP-98" :run_id run :source "task-board-runner" :occurred_at "2026-10-29T05:57:35Z"}
+      extract [(assoc base :event_id (str "BOXP-98/" run ":started") :event_type "run.started")
+               (assoc base :event_id (str "BOXP-98/" run ":finished") :event_type "run.finished" :status "retrying")
+               ;; run の gate 失敗を受けた次の review-fix run の開始時に導出される是正 (原因 run = run)
+               (assoc base :event_id (str "BOXP-98/" run2 ":corr") :run_id run2 :event_type "correction" :source "derived" :classifier "rule"
+                      :evidence_event_ids [(str "BOXP-98/" run2 ":started") (str "BOXP-98/" run ":finished")]
+                      :correction_class "gate_defect" :correction_origin "agent-system")]
+      ledger [(assoc base :event_id (str "BOXP-98/" run ":ledger:started") :event_type "run.started" :lane_from "ready" :lane_to "in-progress")
+              (assoc base :event_id (str "BOXP-98/" run ":ledger:finished") :event_type "run.finished" :status "retrying")
+              (assoc base :event_id (str "BOXP-98/" run ":ledger:correction") :event_type "correction" :classifier "rule"
+                     :correction_class "gate_defect" :correction_origin "agent-system")
+              (assoc base :event_id (str "BOXP-98/" run ":ledger:lane") :event_type "lane.changed" :lane_from "ready" :lane_to "in-progress")]
+      only-extract (ai-ops-sli/aggregate* extract)
+      joined (ai-ops-sli/aggregate* (concat extract ledger))
+      only-ledger (ai-ops-sli/aggregate* ledger)]
+  (assert (= (get-in only-extract [:sli :run-reliability]) (get-in joined [:sli :run-reliability])) (pr-str (get-in joined [:sli :run-reliability])))
+  (assert (= 1 (get-in joined [:sli :run-reliability :runs])))
+  (assert (= 1 (get-in joined [:sli :run-reliability :retrying])))
+  (assert (= 3 (get-in joined [:input :ledger-merged])) (pr-str (:input joined)))
+  (assert (= (get-in only-extract [:sli :agent-system-correction-task-ratio]) (get-in joined [:sli :agent-system-correction-task-ratio])))
+  (assert (= 1 (get-in only-ledger [:sli :run-reliability :runs])))
+  (assert (= 0 (get-in only-ledger [:input :ledger-merged]))))
+(println "ok   runner ledger と extract の併用で同じ run を二重計上しない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; Ready から始まり Review で終わる run: outbox (Ready→Review) と ledger (Ready→In Progress, In Progress→Review) を
+;; join しても終了遷移は1件に統合され、lane 履歴は Ready→In Progress→Review になる
+(let [t "BOXP-94" r "20261029T123804Z-cacd1e0e-9737-4ab6-ac0f-dbea9be0b4e6"
+      outbox (ai-ops-sli/outbox->events {:event-id (str t "-" r "-review") :event-type "task-board.lane-changed"
+                                         :ticket-id t :run-id r :from-status "ready" :to-status "review"
+                                         :result "review" :source "task-board-runner"
+                                         :created-at "2026-10-29T12:50:00Z" :accepted-at "2026-10-29T12:50:01Z"})
+      base {:task_id t :request_id (str "req:" t) :run_id r :source "task-board-runner"}
+      ledger [(assoc base :event_id (str t "/" r ":ledger:lane-start") :event_type "lane.changed" :lane_from "ready" :lane_to "in-progress" :occurred_at "2026-10-29T12:38:04Z")
+              (assoc base :event_id (str t "/" r ":ledger:lane") :event_type "lane.changed" :lane_from "in-progress" :lane_to "review" :occurred_at "2026-10-29T12:50:00Z")]
+      {:keys [events merged]} (ai-ops-sli/merge-ledger-events (concat outbox ledger))
+      lanes (->> events (filter #(= "lane.changed" (:event_type %))) (sort-by :occurred_at) (map (juxt :lane_from :lane_to)))
+      agg (ai-ops-sli/aggregate* (concat outbox ledger))]
+  (assert (= 1 merged) (pr-str merged))
+  (assert (= [["ready" "in-progress"] ["in-progress" "review"]] lanes) (pr-str lanes))
+  (assert (= 1 (get-in agg [:input :ledger-merged])) (pr-str (:input agg)))
+  (assert (= {"awaiting-review" 1} (get-in agg [:tasks :outcomes])) (pr-str (:tasks agg))))
+(println "ok   outbox と ledger の終了 lane 遷移を1件に統合し lane 履歴を連続させる")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; extract と runner ledger を併用しても、バージョン/reasoning 付き担当名が ledger と同じ基本担当名で残る
+(let [run "20261029T114416Z-7a59ee61-f3ae-4a53-a6b7-ea575ed7d67b"
+      summ {:ticket "BOXP-95" :run-id run :agent "claude-opus-5-5" :status :succeeded :result :review :action :implement
+            :started-at "2026-10-29T11:44:16Z" :finished-at "2026-10-29T12:04:00Z"}
+      extract (keep (comp :event ai-ops-sli/privacy-gate) (ai-ops-sli/summary->events "BOXP-95" summ))
+      base {:task_id "BOXP-95" :request_id "req:BOXP-95" :run_id run :source "task-board-runner" :agent "claude-opus" :runtime "claude-cli"
+            :occurred_at "2026-10-29T11:44:16Z"}
+      ledger [(assoc base :event_id (str "BOXP-95/" run ":ledger:started") :event_type "run.started")
+              (assoc base :event_id (str "BOXP-95/" run ":ledger:finished") :event_type "run.finished" :status "succeeded" :result "review")]
+      merged (:events (ai-ops-sli/merge-ledger-events (concat extract ledger)))
+      runs (filter #(#{"run.started" "run.finished"} (:event_type %)) merged)]
+  (assert (seq runs))
+  (assert (every? #(= "claude-opus" (:agent %)) runs) (pr-str (map (juxt :event_id :agent) runs)))
+  (assert (every? #(= "claude-cli" (:runtime %)) runs))
+  (assert (= "codex-terra" (:agent (first (ai-ops-sli/summary->events "BOXP-95" (assoc summ :agent "codex-terra-high"))))))
+  (assert (= "unknown-agent-9" (ai-ops-sli/normalize-agent "unknown-agent-9"))))
+(println "ok   extract も ledger と同じ規則で担当名を正規化し、統合後も agent を失わない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; 同じ review-fix run に「直前 run の gate 失敗由来の derived 是正」と「その run 自身の gate 失敗 (ledger)」がある場合は別の事実
+(let [r0 "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57"
+      r1 "20261029T063201Z-7d2adcd6-e49e-4399-b92c-d22645e07a3b"
+      base {:task_id "BOXP-97" :request_id "req:BOXP-97" :source "task-board-runner" :occurred_at "2026-10-29T06:32:01Z"}
+      evs [(assoc base :event_id (str "BOXP-97/" r0 ":started") :run_id r0 :event_type "run.started")
+           (assoc base :event_id (str "BOXP-97/" r0 ":finished") :run_id r0 :event_type "run.finished" :status "retrying")
+           (assoc base :event_id (str "BOXP-97/" r1 ":started") :run_id r1 :event_type "run.started")
+           (assoc base :event_id (str "BOXP-97/" r1 ":finished") :run_id r1 :event_type "run.finished" :status "succeeded" :result "review")
+           (assoc base :event_id (str "BOXP-97/" r1 ":corr") :run_id r1 :event_type "correction" :source "derived" :classifier "rule"
+                  :evidence_event_ids [(str "BOXP-97/" r1 ":started") (str "BOXP-97/" r0 ":finished")]
+                  :correction_class "gate_defect" :correction_origin "agent-system")
+           (assoc base :event_id (str "BOXP-97/" r1 ":ledger:correction") :run_id r1 :event_type "correction" :classifier "rule"
+                  :evidence_event_ids [(str "BOXP-97/" r1 ":ledger:started")]
+                  :correction_class "gate_defect" :correction_origin "agent-system")]
+      r (ai-ops-sli/aggregate* evs)]
+  (assert (= 0 (get-in r [:input :ledger-merged])) (pr-str (:input r)))
+  (assert (= 2 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (get-in r [:sli :corrections-per-task]))))
+(println "ok   同じ run 内の別々の gate 失敗由来の是正を ledger 統合で落とさない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; 統合時は実 gate 結果を持つ ledger 側の分類を正とする (pr-gate 失敗は ledger では unknown、derived は一律 gate_defect と推定)
+(let [r0 "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57"
+      r1 "20261029T063201Z-7d2adcd6-e49e-4399-b92c-d22645e07a3b"
+      base {:task_id "BOXP-96" :request_id "req:BOXP-96" :source "task-board-runner" :occurred_at "2026-10-29T06:32:01Z"}
+      derived (assoc base :event_id (str "BOXP-96/" r1 ":corr") :run_id r1 :event_type "correction" :source "derived" :classifier "rule"
+                     :evidence_event_ids [(str "BOXP-96/" r1 ":started") (str "BOXP-96/" r0 ":finished")]
+                     :correction_class "gate_defect" :correction_origin "agent-system" :confidence "high")
+      evs [(assoc base :event_id (str "BOXP-96/" r0 ":started") :run_id r0 :event_type "run.started")
+           (assoc base :event_id (str "BOXP-96/" r0 ":finished") :run_id r0 :event_type "run.finished" :status "retrying")
+           (assoc base :event_id (str "BOXP-96/" r1 ":started") :run_id r1 :event_type "run.started")
+           (assoc base :event_id (str "BOXP-96/" r1 ":finished") :run_id r1 :event_type "run.finished" :status "succeeded" :result "review")
+           derived
+           (assoc base :event_id (str "BOXP-96/" r0 ":ledger:correction") :run_id r0 :event_type "correction" :classifier "rule"
+                  :correction_class "unknown" :correction_origin "unknown" :confidence "low")]
+      r (ai-ops-sli/aggregate* evs)
+      merged (:events (ai-ops-sli/merge-ledger-events evs))
+      corr (filter #(= "correction" (:event_type %)) merged)]
+  (assert (= 1 (get-in r [:input :ledger-merged])) (pr-str (:input r)))
+  (assert (= [(:event_id derived)] (map :event_id corr)) (pr-str corr))
+  (assert (= ["unknown" "unknown" "low"] ((juxt :correction_class :correction_origin :confidence) (first corr))) (pr-str corr))
+  (assert (= (:evidence_event_ids derived) (:evidence_event_ids (first corr))))
+  (assert (= 0 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (get-in r [:sli :corrections-per-task])))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unknown-cause-tasks])) (pr-str (get-in r [:sli :agent-system-correction-task-ratio]))))
+(println "ok   ledger 統合時は実 gate 結果の是正分類を保持する")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; 統合時は ledger 側の実 gate 失敗時刻を保持する (derived は次の review-fix run 開始時刻で、間の受入を跨ぐと受入後是正に化ける)
+(let [r0 "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57"
+      r1 "20261029T063201Z-7d2adcd6-e49e-4399-b92c-d22645e07a3b"
+      base {:task_id "BOXP-95" :request_id "req:BOXP-95" :source "task-board-runner"}
+      evs [(assoc base :event_id (str "BOXP-95/" r0 ":started") :run_id r0 :event_type "run.started" :occurred_at "2026-10-29T05:57:35Z")
+           (assoc base :event_id (str "BOXP-95/" r0 ":finished") :run_id r0 :event_type "run.finished" :status "retrying" :occurred_at "2026-10-29T06:00:00Z")
+           (assoc base :event_id (str "BOXP-95/" r0 ":ledger:correction") :run_id r0 :event_type "correction" :classifier "rule"
+                  :correction_class "gate_defect" :correction_origin "agent-system" :occurred_at "2026-10-29T06:00:00Z")
+           (assoc base :event_id "BOXP-95:accepted" :event_type "task.accepted" :occurred_at "2026-10-29T06:10:00Z")
+           (assoc base :event_id (str "BOXP-95/" r1 ":started") :run_id r1 :event_type "run.started" :occurred_at "2026-10-29T06:32:01Z")
+           (assoc base :event_id (str "BOXP-95/" r1 ":corr") :run_id r1 :event_type "correction" :source "derived" :classifier "rule"
+                  :evidence_event_ids [(str "BOXP-95/" r1 ":started") (str "BOXP-95/" r0 ":finished")]
+                  :correction_class "gate_defect" :correction_origin "agent-system" :occurred_at "2026-10-29T06:32:01Z")]
+      merged (:events (ai-ops-sli/merge-ledger-events evs))
+      corr (first (filter #(= "correction" (:event_type %)) merged))
+      fa (get-in (ai-ops-sli/aggregate* evs) [:sli :first-acceptance-conformance])]
+  (assert (= (str "BOXP-95/" r1 ":corr") (:event_id corr)) (pr-str corr))
+  (assert (= "2026-10-29T06:00:00Z" (:occurred_at corr)) (pr-str corr))
+  (assert (= [0 1] [(:count fa) (:denominator fa)]) (pr-str fa)))
+(println "ok   ledger 統合時は実 gate 失敗時刻を保持し受入前の是正を受入後に移さない")'
+
+cat >"$tmp/emit-ledger.clj" <<EOF
+(load-file "$(pwd)/../../../../docker/codex-workspace/task-board/ai_ops_ledger.bb")
+(let [t "BOXP-96" r "20261029T065116Z-73b3af54-9911-4b9a-aefe-6352c5ec0973"
+      base {:task_id t :request_id (str "req:" t) :run_id r :agent "claude-opus" :runtime "claude-cli" :action "implement"}]
+  (doseq [[w f] [["started" {:event_type "run.started" :lane_from "ready" :lane_to "in-progress"}]
+                 ["lane-start" {:event_type "lane.changed" :lane_from "ready" :lane_to "in-progress"}]
+                 ["correction" {:event_type "correction" :classifier "rule" :classifier_version "correction-rules/v0"
+                                :correction_class "gate_defect" :correction_origin "agent-system" :confidence "high"
+                                :evidence_event_ids [(ai-ops-ledger/event-id t r "started")]}]
+                 ["finished" {:event_type "run.finished" :status "retrying"}]
+                 ["lane" {:event_type "lane.changed" :lane_from "in-progress" :lane_to "review"}]]]
+    (assert (ai-ops-ledger/emit! "$tmp/ledger-root" (merge base {:event_id (ai-ops-ledger/event-id t r w)} f)) w)))
+EOF
+bb "$tmp/emit-ledger.clj"
+bb ai_ops_sli.bb aggregate "$tmp"/ledger-root/ai-ops/ledger/events-*.jsonl >"$tmp/ledger.edn"
+bb -e "
+(let [r (clojure.edn/read-string (slurp \"$tmp/ledger.edn\"))]
+  (assert (= 5 (get-in r [:input :unique])) (pr-str (:input r)))
+  (assert (every? zero? (map #(get-in r [:coverage %]) [:privacy-rejected-invalid-id :privacy-rejected-invalid-correlation-id :privacy-rejected-upstream])) (pr-str (:coverage r)))
+  (assert (= 1 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (:sli r)))
+  (assert (= {\"awaiting-review\" 1} (get-in r [:tasks :outcomes])) (pr-str (:tasks r))))"
+echo "ok   runner が実際に出力した ledger event (lane-start 含む) を通常モードで拒否せず集計する"

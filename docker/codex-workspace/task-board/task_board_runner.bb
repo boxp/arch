@@ -119,6 +119,125 @@
       (catch Exception e
         (log! (str "event outbox record failed for " ticket-id "/" run-id ": " (.getMessage e)))))))
 
+;; BOXP-360: metadata-only AI ops ledger. Loaded lazily like the event outbox;
+;; a missing or broken module, a full disk or a privacy rejection only loses
+;; (and counts) observation events and never affects a run.
+(def ai-ops-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_ops_ledger.bb")))
+
+(def ai-ops-module-loaded?
+  (delay
+    (try
+      (load-file ai-ops-module-path)
+      true
+      (catch Exception e
+        (log! (str "ai ops ledger module unavailable (" ai-ops-module-path "): " (.getMessage e)))
+        false))))
+
+(declare root)
+
+(defn assignee-runtime [assignee]
+  (let [a (str assignee)]
+    (cond (str/starts-with? a "codex") "codex-cli"
+          (= "localllm" a) "localllm"
+          (str/blank? a) "unknown"
+          :else "claude-cli")))
+
+(defn record-ai-ops-event!
+  "Append one run lifecycle fact to the AI ops ledger. `word` selects the
+  ledger event id suffix; `fields` are ai-ops-event/v0 keys."
+  [ticket-id run-id assignee action word fields]
+  (try
+    (when @ai-ops-module-loaded?
+      ((resolve 'ai-ops-ledger/emit!)
+       (root)
+       (merge {:event_id ((resolve 'ai-ops-ledger/event-id) ticket-id run-id word)
+               :task_id ticket-id
+               :request_id (str "req:" ticket-id)
+               :run_id run-id
+               :agent assignee
+               :runtime (assignee-runtime assignee)
+               :action (some-> action name)}
+              fields)))
+    (catch Exception e
+      (log! (str "ai ops ledger record failed for " ticket-id "/" run-id ": " (.getMessage e))))))
+
+(defn gate-correction
+  "Provisional rule classification of a failed review gate. Only failures
+  that show a defect in the agent's output (failed CI checks, review
+  findings, draft or conflicting merge state, missing PR URL) count as
+  agent-system. A gate that could not evaluate (CI wait timeout, missing or
+  unknown mergeStateStatus, review command error, gate API error) or a
+  failure without a known kind is unknown."
+  [review-gate]
+  (case [(:gate review-gate) (:failure-kind review-gate)]
+    ([:ci :check-failure] [:codex-review :findings])
+    {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "high"}
+    ([:mergeability :merge-state] [:conflict :merge-state] [:pr-url nil])
+    {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "medium"}
+    {:correction_class "unknown" :correction_origin "unknown" :confidence "low"}))
+
+(defn gate-results
+  "Individual [gate result] pairs of a review gate, excluding gate=all."
+  [review-gate]
+  (or (not-empty (:gate-results review-gate))
+      (when (and (not (:ok? review-gate)) (:gate review-gate))
+        [[(name (:gate review-gate)) "fail"]])))
+
+(defn record-ai-ops-gate!
+  "Count the review gate result and record a failed gate as a correction."
+  [ticket-id run-id assignee action review-gate]
+  (try
+    ;; Count every individual gate result (pass / fail / skip), so a
+    ;; per-gate failure rate has its successes in the denominator. A gate
+    ;; result without :gate-results falls back to counting the failed gate.
+    (when @ai-ops-module-loaded?
+      (doseq [[gate result] (gate-results review-gate)]
+        ((resolve 'ai-ops-ledger/record-gate!) (root) gate result)))
+    ;; gate="all" is the overall denominator: count every evaluated result,
+    ;; failures included, or the overall failure rate is understated.
+    (when (and @ai-ops-module-loaded? (not (:ok? review-gate)))
+      ((resolve 'ai-ops-ledger/record-gate!) (root) "all" false))
+    ;; A gate that checked nothing (TASK_BOARD_REVIEW_PR: none, or only
+    ;; already-merged PRs) is counted as skip, not pass.
+    (when (and @ai-ops-module-loaded? (:ok? review-gate))
+      ((resolve 'ai-ops-ledger/record-gate!) (root) "all" (if (:skipped? review-gate) "skip" "pass")))
+    (catch Exception e
+      (log! (str "ai ops gate record failed for " ticket-id "/" run-id ": " (.getMessage e)))))
+  (when-not (:ok? review-gate)
+    (record-ai-ops-event! ticket-id run-id assignee action "correction"
+                          (merge {:event_type "correction"
+                                  :classifier "rule"
+                                  :classifier_version "correction-rules/v0"
+                                  :evidence_event_ids [(str ticket-id "/" run-id ":ledger:started")]}
+                                 (gate-correction review-gate)))))
+
+(defn record-ai-ops-finish!
+  "Record run.finished and, when the card moved, lane.changed."
+  [ticket-id run-id assignee action from-status to-status summary-status fields]
+  (record-ai-ops-event! ticket-id run-id assignee action "finished"
+                        (merge {:event_type "run.finished" :status summary-status} fields))
+  (when (and to-status (not= from-status to-status))
+    (record-ai-ops-event! ticket-id run-id assignee action "lane"
+                          {:event_type "lane.changed" :lane_from from-status :lane_to to-status})))
+
+(defn ai-ops-run-lane
+  "Lane the card is in while the run executes: Ready/Review/Blocked cards are
+  moved to In Progress at start, others (Backlog groom, In Progress) stay put."
+  [status]
+  (if (#{"ready" "review" "blocked"} status) "in-progress" status))
+
+(def ai-ops-metrics-last-ms (atom 0))
+
+(defn maybe-write-ai-ops-metrics! []
+  (try
+    (let [now-ms (System/currentTimeMillis)]
+      (when (and @ai-ops-module-loaded? (>= (- now-ms @ai-ops-metrics-last-ms) 60000))
+        (reset! ai-ops-metrics-last-ms now-ms)
+        ((resolve 'ai-ops-ledger/write-metrics!) (root))))
+    (catch Exception e
+      (log! (str "ai ops metrics write failed: " (.getMessage e))))))
+
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
 ;; deployment, where writes behave exactly as before; every writer moves onto it
@@ -1942,11 +2061,13 @@
       (:isDraft pr)
       {:state :failed
        :gate :mergeability
+       :failure-kind :merge-state
        :message "GitHub reports this PR is still a draft."}
 
       (= "DIRTY" state)
       {:state :failed
        :gate :conflict
+       :failure-kind :merge-state
        :message "GitHub reports mergeStateStatus=DIRTY, which indicates conflicts with the base branch."}
 
       (#{"UNKNOWN" "BEHIND"} state)
@@ -1958,10 +2079,17 @@
       {:state :passed
        :message (str "GitHub mergeStateStatus=" state ".")}
 
+      ;; A missing or unrecognized state could not be evaluated, so it is not
+      ;; evidence of an output defect.
       :else
       {:state :failed
        :gate :mergeability
+       :failure-kind :merge-state-unknown
        :message (str "GitHub mergeStateStatus=" (or state "missing") " is not review-ready.")})))
+
+;; A passed merge state means the PR is neither a draft nor conflicting, so
+;; both the mergeability and conflict gates count a success.
+(def merge-pass-results [["mergeability" "pass"] ["conflict" "pass"]])
 
 (defn wait-for-pr-state! [pr-url]
   (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))
@@ -1985,21 +2113,35 @@
           (= :failed (:state merge))
           {:ok? false
            :gate (:gate merge)
+           :failure-kind (:failure-kind merge)
            :url pr-url
            :retryable? true
+           ;; DIRTY is a known, non-draft state, so mergeability passed and
+           ;; only the conflict gate failed. A draft or unknown state leaves
+           ;; the conflict gate unevaluated.
+           :gate-results (if (= :conflict (:gate merge))
+                           [["mergeability" "pass"] ["conflict" "fail"]]
+                           [[(name (:gate merge)) "fail"]])
            :message (:message merge)}
 
+          ;; Keep a passed mergeability in :gate-results, or its success
+          ;; drops out of the per-gate denominator when CI fails.
           (= :failed (:state ci))
           {:ok? false
            :gate :ci
+           :failure-kind :check-failure
            :url pr-url
            :retryable? true
+           :gate-results (cond-> []
+                           (= :passed (:state merge)) (into merge-pass-results)
+                           true (conj ["ci" "fail"]))
            :message (:message ci)}
 
           (and (= :passed (:state merge))
                (= :passed (:state ci)))
           {:ok? true
            :url pr-url
+           :gate-results (conj merge-pass-results ["ci" "pass"])
            :message (str (:message merge) " " (:message ci))}
 
           ;; Explicit opt-in: repo is listed in CODEX_TASK_BOARD_NO_CI_REPOS and
@@ -2008,13 +2150,18 @@
           (and skip-ci? no-checks? (= "CLEAN" (some-> (:mergeStateStatus pr) str/upper-case)))
           {:ok? true
            :url pr-url
+           :gate-results (conj merge-pass-results ["ci" "skip"])
            :message (str (:message merge) " CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS.")}
 
           (> (System/currentTimeMillis) deadline)
           {:ok? false
            :gate (if (= :pending (:state merge)) (:gate merge) :ci)
+           :failure-kind :timeout
            :url pr-url
            :retryable? true
+           :gate-results (if (= :pending (:state merge))
+                           [[(name (:gate merge)) "fail"]]
+                           (conj merge-pass-results ["ci" "fail"]))
            :message (str "Timed out waiting for PR gates. " (:message merge) " " (:message ci))}
 
           :else
@@ -2056,6 +2203,7 @@
       (not (zero? (:exit proc)))
       {:ok? false
        :gate :codex-review
+       :failure-kind :command-error
        :url pr-url
        :retryable? false
        :message (str "codex review command failed: " (:err proc))}
@@ -2063,30 +2211,39 @@
       (codex-review-clean? last-message)
       {:ok? true
        :url pr-url
+       :gate-results [["codex-review" "pass"]]
        :message "codex review reported no actionable findings."}
 
       :else
       {:ok? false
        :gate :codex-review
+       :failure-kind :findings
        :url pr-url
        :retryable? true
        :message (str "codex review reported actionable findings"
                      (when-let [summary (not-empty (codex-review-summary last-message))]
                        (str ": " summary)))})))
 
-(defn review-gate! [run-dir last-message]
+(defn review-gate!
+  "Evaluate the PR gates. :gate-results lists every individual gate result as
+  [gate pass|fail|skip] so per-gate success is counted, not only failures."
+  [run-dir last-message]
   (try
     (let [pr-urls (github-pr-urls last-message)]
       (cond
         (seq pr-urls)
         (loop [remaining pr-urls
                passed []
-               merged []]
+               merged []
+               results [["pr-url" "pass"]]]
           (if-let [pr-url (first remaining)]
             (let [pr-state (wait-for-pr-state! pr-url)]
               (cond
                 (not (:ok? pr-state))
                 (assoc pr-state
+                       :gate-results (into results
+                                           (or (not-empty (:gate-results pr-state))
+                                               [[(name (:gate pr-state)) "fail"]]))
                        :checked-pr-urls passed
                        :merged-pr-urls merged
                        :pr-urls pr-urls)
@@ -2095,20 +2252,26 @@
                 ;; review is skipped too. Both lists below are persisted in
                 ;; summaries and must stay URL-only.
                 (:merged? pr-state)
-                (recur (rest remaining) passed (conj merged pr-url))
+                (recur (rest remaining) passed (conj merged pr-url)
+                       (into results [["mergeability" "skip"] ["conflict" "skip"] ["ci" "skip"] ["codex-review" "skip"]]))
 
                 :else
-                (let [review (run-codex-review! run-dir pr-url)]
+                (let [review (run-codex-review! run-dir pr-url)
+                      results (into results (:gate-results pr-state))]
                   (if-not (:ok? review)
                     (assoc review
+                           :gate-results (conj results [(name (:gate review)) "fail"])
                            :checked-pr-urls passed
                            :merged-pr-urls merged
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
                     ;; This field is persisted in summaries, so it must remain a
                     ;; URL list rather than carrying arbitrary check/review text.
-                    (recur (rest remaining) (conj passed pr-url) merged)))))
+                    (recur (rest remaining) (conj passed pr-url) merged
+                           (into results (:gate-results review)))))))
             {:ok? true
+             :skipped? (empty? passed)
+             :gate-results results
              :pr-urls pr-urls
              :checked-pr-urls passed
              :merged-pr-urls merged
@@ -2118,6 +2281,8 @@
 
         (no-repo-review-marker? last-message)
         {:ok? true
+         :skipped? true
+         :gate-results [["pr-url" "skip"]]
          :message "TASK_BOARD_REVIEW_PR: none was provided; PR gates were skipped because no repository changes were reported."}
 
         :else
@@ -2861,6 +3026,8 @@
              {:action action :agent agent :lane lane :exit-code exit :result result
               :review-gate (persisted-review-gate review-gate) :finished-at (now-str)
               :superseded-by (:rev revision)})
+  ;; The lane belongs to the newer assignment: no lane.changed.
+  (record-ai-ops-finish! ticket-id run-id agent action nil nil "superseded" {:result result :exit_code exit})
   (let [note (str "Codex task-board run " run-id " finished with result " (or result "error")
                   ", but a newer assignment (board_rev " (:rev revision)
                   ") arrived during the run; lane and assignee were left as instructed.")]
@@ -2900,6 +3067,14 @@
                   (move-card! ticket-id "in-progress")
                   (update-frontmatter! ticket-id {:status "in-progress"}))
                 (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
+                (record-ai-ops-event! ticket-id (:run-id lock) assignee action "started"
+                                      {:event_type "run.started" :lane_from status :lane_to (ai-ops-run-lane status)})
+                ;; The card actually moved: record the start transition as well so
+                ;; the ledger lane history matches the board (run.started is not a
+                ;; state transition for the aggregator).
+                (when (#{"ready" "review" "blocked"} status)
+                  (record-ai-ops-event! ticket-id (:run-id lock) assignee action "lane-start"
+                                        {:event_type "lane.changed" :lane_from status :lane_to "in-progress"}))
                 (finally
                   (reset! committing? false)
                   (swap! committing-cards dec)))
@@ -2935,6 +3110,8 @@
                     ;; commit boundary below.
                     gate-result (when (= "review" intended)
                                   (review-gate! dir last-message))
+                    _ (when gate-result
+                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
                     ;; localllm docs-edit: the document write was staged, not
@@ -2990,7 +3167,9 @@
                   (record-superseded! ticket-id run-id action assignee effective-lane result exit review-gate revision)
                   (if (= "blocked" next-status)
                   (if (block-ticket! ticket-id run-id action result exit review-gate nil)
-                    (record-task-board-event! ticket-id run-id status "blocked" result)
+                    (do (record-task-board-event! ticket-id run-id status "blocked" result)
+                        (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) "blocked" "blocked"
+                                               {:result result :exit_code exit}))
                     (restore-card-state! ticket-id status assignee))
                   (do
                     ;; localllm docs-edit: journal the transition before it
@@ -3014,7 +3193,12 @@
                       (record-localllm-commit! ticket-id run-id :committed next-status))
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                     ;; After lane, frontmatter and Notes are durable: wake Kohako.
-                    (record-task-board-event! ticket-id run-id status next-status result))))
+                    (record-task-board-event! ticket-id run-id status next-status result)
+                    (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) next-status
+                                           (cond
+                                             (= "in-progress" next-status) "retrying"
+                                             :else "succeeded")
+                                           {:result result :exit_code exit :idle_timeout (boolean idle-timeout?)}))))
                 true)
               (catch Exception e
                 (if (or (= ::planned-shutdown (:type (ex-data e)))
@@ -3033,6 +3217,8 @@
                                              :instance-id runner-instance-id
                                              :error (.getMessage e)
                                              :agent-stopped-at (now-str)}}))
+                    (record-ai-ops-event! ticket-id (:run-id lock) assignee action "interrupted"
+                                          {:event_type "run.interrupted" :status "interrupted"})
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
                   (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
@@ -3054,7 +3240,8 @@
                                                      " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
-                      (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                      (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                          (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
                       (restore-card-state! ticket-id status assignee)))))
                 true)
               (finally
@@ -3677,6 +3864,7 @@
           (println (str "task-board tick failed: " (.getMessage e))))))
     ;; After the tick so the first pass never delays startup; one-shot `tick`
     ;; does not prune.
+    (maybe-write-ai-ops-metrics!)
     (try
       (maybe-start-workspace-prune!)
       (catch Exception e
@@ -3698,7 +3886,9 @@
   ;; BOXP-270: the lifecycle self-tests below drive the real finish path, whose
   ;; outbox hook would otherwise write TEST-* events into the operator's live
   ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
-  (with-redefs [record-task-board-event! (fn [& _] nil)]
+  (with-redefs [record-task-board-event! (fn [& _] nil)
+                record-ai-ops-event! (fn [& _] nil)
+                record-ai-ops-gate! (fn [& _] nil)]
     (run-tests*!)))
 
 (defn run-tests*! []
@@ -3712,6 +3902,55 @@
                                         "claude-opus" "claude-opus-5-5"
                                         "claude-sonnet" "claude-sonnet-5-5"})
       (swap! failures conj "review delegation policy for changed Claude routes"))
+    ;; BOXP-360: draft / conflict are output defects; a missing or unknown
+    ;; mergeStateStatus could not be evaluated and is classified unknown.
+    (doseq [[pr expected] [[{:isDraft true :mergeStateStatus "CLEAN"} "agent-system"]
+                           [{:mergeStateStatus "DIRTY"} "agent-system"]
+                           [{} "unknown"]
+                           [{:mergeStateStatus "SOMETHING_NEW"} "unknown"]]]
+      (let [merge (merge-state pr)]
+        (when-not (and (= :failed (:state merge))
+                       (= expected (:correction_origin
+                                    (gate-correction (select-keys merge [:gate :failure-kind])))))
+          (swap! failures conj (str "merge-state classification for " pr)))))
+    ;; BOXP-360: only gate failures that show an output defect are agent-system
+    ;; corrections; a gate that could not evaluate stays unknown.
+    (doseq [[gate-result expected] [[{:gate :ci :failure-kind :check-failure} "agent-system"]
+                                    [{:gate :codex-review :failure-kind :findings} "agent-system"]
+                                    [{:gate :conflict :failure-kind :merge-state} "agent-system"]
+                                    [{:gate :pr-url} "agent-system"]
+                                    [{:gate :mergeability :failure-kind :merge-state-unknown} "unknown"]
+                                    [{:gate :ci :failure-kind :timeout} "unknown"]
+                                    [{:gate :mergeability :failure-kind :timeout} "unknown"]
+                                    [{:gate :codex-review :failure-kind :command-error} "unknown"]
+                                    [{:gate :pr-gate} "unknown"]
+                                    [{:gate :ci} "unknown"]]]
+      (when-not (= expected (:correction_origin (gate-correction gate-result)))
+        (swap! failures conj (str "gate-correction origin for " gate-result))))
+    ;; BOXP-360: each individual gate is counted pass / fail / skip, so the
+    ;; per-gate failure rate has its successes in the denominator.
+    (doseq [[gate-result expected] [[{:ok? true :gate-results [["pr-url" "pass"] ["ci" "pass"] ["codex-review" "pass"]]}
+                                     [["pr-url" "pass"] ["ci" "pass"] ["codex-review" "pass"]]]
+                                    [{:ok? false :gate :codex-review :gate-results [["ci" "pass"] ["codex-review" "fail"]]}
+                                     [["ci" "pass"] ["codex-review" "fail"]]]
+                                    [{:ok? false :gate :pr-url} [["pr-url" "fail"]]]
+                                    [{:ok? true :skipped? true} nil]]]
+      (when-not (= expected (gate-results gate-result))
+        (swap! failures conj (str "gate-results for " gate-result))))
+    ;; BOXP-360: the conflict gate counts a pass when no conflict is found,
+    ;; so its failure rate is not 100% after a single conflict.
+    (doseq [[pr expected] [[{:mergeStateStatus "CLEAN" :statusCheckRollup [{:name "t" :status "COMPLETED" :conclusion "SUCCESS"}]}
+                            [["mergeability" "pass"] ["conflict" "pass"] ["ci" "pass"]]]
+                           [{:mergeStateStatus "CLEAN" :statusCheckRollup [{:name "t" :status "COMPLETED" :conclusion "FAILURE"}]}
+                            [["mergeability" "pass"] ["conflict" "pass"] ["ci" "fail"]]]
+                           [{:mergeStateStatus "DIRTY" :statusCheckRollup []}
+                            [["mergeability" "pass"] ["conflict" "fail"]]]
+                           [{:isDraft true :mergeStateStatus "DIRTY" :statusCheckRollup []}
+                            [["mergeability" "fail"]]]]]
+      (with-redefs [pr-view (fn [_] pr)
+                    no-ci-repo? (constantly false)]
+        (when-not (= expected (gate-results (wait-for-pr-state! "https://github.com/boxp/test/pull/1")))
+          (swap! failures conj (str "conflict gate-results for " pr)))))
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
     ;; Versioned projections cannot affect legacy candidate selection while off.
@@ -4369,7 +4608,9 @@
            (when (= 2 (count args))
              (when-not (= "--ticket" (first args)) (usage))
              (reset! only-ticket (second args)))
-           (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+           (recover-locks!) (tick!) (drain-in-flight!) (sync-all!)
+           ;; One-shot ticks also refresh metrics.prom (loop! does it per poll).
+           (maybe-write-ai-ops-metrics!))
   ;; BOXP-306: the operator accept / rollback commands are retired. Both print
   ;; the notice and exit without touching any file (a copied command from an
   ;; old Notes line must not restore or rewrite a note by surprise).

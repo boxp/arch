@@ -33,11 +33,11 @@
 (def enum-values
   {:snapshot #{"current"} :schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
    :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "run.unreadable" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"}
-   :source #{"task-board-runner" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff" "synthetic:calibration" "synthetic:feedback" "synthetic:hermes" "synthetic:task-board"}
+   :source #{"task-board-runner" "hermes-observer" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff" "synthetic:calibration" "synthetic:feedback" "synthetic:hermes" "synthetic:task-board"}
    :runtime #{"codex-cli" "claude-cli" "localllm" "hermes" "unknown"}
-   :agent #{"codex" "codex-sol" "codex-sol-xhigh" "codex-astra" "claude-opus" "claude-fable" "fable" "localllm"}
+   :agent #{"codex" "codex-terra" "codex-sol" "codex-sol-xhigh" "codex-full" "codex-mini" "codex-astra" "claude-opus" "claude-fable" "claude-sonnet" "fable" "localllm"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
-   :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled"}
+   :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled" "superseded"}
    :result #{"review" "blocked" "done" "ready"}
    :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
@@ -59,7 +59,7 @@
   ["frontmatter-unreadable" "ticket-missing" "accepted-again" "in-progress" "interrupted" "unreadable"
    "correction" "requested" "cancelled" "finished" "approval" "coverage" "critical" "reopened" "accepted"
    "request" "started" "running" "blocked" "backlog" "pending" "review" "rescue" "effect" "reopen"
-   "safety" "cancel" "accept" "failed" "state" "event" "start" "ready" "lane" "done" "corr" "fin" "req" "run" "rule" "human" "model"])
+   "safety" "cancel" "accept" "failed" "state" "event" "start" "ready" "lane" "done" "corr" "fin" "req" "run" "rule" "human" "model" "ledger" "lane-start"])
 (def run-id-re "\\d{8}T\\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-[0-9a-f]{1,8})?(?:-groom)?")
 (def id-segment-re (str "(?:" run-id-re "|(?:" (str/join "|" id-words) ")\\d{0,3}|[0-9a-f]{8,16}|\\d{1,6}|[a-z]\\d{0,3})"))
 (def conv-id-re "(?:req|conv)-[0-9a-f]{8}(?:-[0-9a-f]{4}){0,3}(?:-[0-9a-f]{12})?")
@@ -115,8 +115,9 @@
   (and (map? e) (= "upstream" (:privacy_rejected e)) (every? #{:privacy_rejected :event_type} (keys e))))
 ;; collector 停止で bounded buffer から溢れた/未配信の event の marker (本文・ID なし)
 ;; input_unreadable: extract で読めなかった summary.edn / outbox (task を特定できない欠落入力)
+;; ledger_dropped: runner ledger が容量超過/書き込み失敗で書けなかった event (task_board ai_ops_ledger.bb が出す)
 (def lost-markers {{:collection_lost "buffer_dropped"} :buffer-dropped {:collection_lost "undelivered"} :undelivered
-                   {:collection_lost "input_unreadable"} :input-unreadable})
+                   {:collection_lost "input_unreadable"} :input-unreadable {:collection_lost "ledger_dropped"} :ledger-dropped})
 (defn marker? [e] (or (rejected-marker? e) (contains? lost-markers e)))
 
 (defn emit-gated [stats e]
@@ -179,12 +180,24 @@
   "keyword/文字列の両形式を同じ文字列に正規化する (:review と \"review\" を区別しない)。"
   [v] (when (some? v) (if (keyword? v) (name v) (str v))))
 
+;; runner ledger (ai_ops_ledger.bb normalize-agent) と同じ規則で担当名を正規化する。
+;; extract 側だけ claude-opus-5-5 や codex-sol-xhigh を redact すると、ledger 統合時に ledger event が除外され agent が欠落するため
+(def reasoning-suffix-re #"(.+)-(minimal|low|medium|high|xhigh)")
+(def claude-model-re #"(claude-(?:fable|opus|sonnet))-\d+(?:-\d+)*")
+(defn normalize-agent [agent]
+  (if (and (string? agent) (not (contains? (:agent enum-values) agent)))
+    (let [unsuffixed (or (second (re-matches reasoning-suffix-re agent)) agent)
+          base (or (second (re-matches claude-model-re unsuffixed)) unsuffixed)]
+      (if (contains? (:agent enum-values) base) base agent))
+    agent))
+
 (defn summary->events [ticket s]
   (let [run-id (:run-id s)
         started (or (:started-at s) (run-id->instant run-id))
+        agent (normalize-agent (kw-or-str (:agent s)))
         base {:schema_version schema-version :task_id ticket :request_id (str "req:" ticket)
-              :run_id run-id :source "task-board-runner" :agent (kw-or-str (:agent s))
-              :runtime (let [a (or (kw-or-str (:agent s)) "")]
+              :run_id run-id :source "task-board-runner" :agent agent
+              :runtime (let [a (or agent "")]
                          (cond (str/starts-with? a "codex") "codex-cli"
                                (str/starts-with? a "localllm") "localllm"
                                (str/blank? a) "unknown"
@@ -405,6 +418,61 @@
 
 (def rule-classifier? #{"rule" "model"})
 
+;; runner ledger (event_id に :ledger: を含む) と既存 extract/outbox は同じ run の同じ事実を別 ID で出す。
+;; 両入力を join したとき run/retry/是正/lane 遷移を二重計上しないよう、論理 key が一致する ledger event は
+;; 非 ledger 側を正とし除外する (ledger だけにある事実は残す)。
+(defn ledger-event? [e] (and (string? (:event_id e)) (str/includes? (:event_id e) ":ledger:")))
+(def ledger-merge-types #{"run.started" "run.finished" "run.interrupted" "correction" "lane.changed"})
+;; 是正は「どの run の review gate 失敗か」で照合する。ledger の correction はその run 自身の gate 失敗、
+;; extract の derived correction は review-fix run の開始時に導出され原因は直前 run (evidence の <task>/<run>:finished)。
+;; 同じ run_id でも別の gate 失敗なので run_id では照合しない。原因 run を特定できない是正は統合しない
+(defn correction-cause-run [e]
+  (cond
+    (ledger-event? e) (:run_id e)
+    (= "derived" (:source e))
+    (some #(when (string? %) (second (re-matches (re-pattern (str (java.util.regex.Pattern/quote (str (:task_id e) "/")) "(.+):finished")) %)))
+          (:evidence_event_ids e))))
+(defn ledger-logical-key [e]
+  (when (and (ledger-merge-types (:event_type e)) (:task_id e) (:run_id e))
+    (if (= "correction" (:event_type e))
+      (when-let [cause (correction-cause-run e)] [(:task_id e) cause "correction"])
+      (cond-> [(:task_id e) (:run_id e) (:event_type e)]
+        ;; outbox は開始時 lane→終了 lane (Ready→Review) を1件、ledger は開始遷移 (Ready→In Progress) と
+        ;; 終了遷移 (In Progress→Review) を別に出す。同じ終了遷移を lane_from で区別すると両方残るため、
+        ;; run 内の到達 lane (outbox の event_id も run×to-status で一意) で照合する
+        (= "lane.changed" (:event_type e)) (conj (:lane_to e))))))
+;; 是正の分類は実際の gate 結果を持つ ledger 側を正とする (derived は gate 種別を知らず一律 gate_defect に推定する)。
+;; 統合時は derived event の ID/evidence を残し、分類 field は ledger 側で上書きする。
+;; 発生時刻も ledger 側 (実際の gate 失敗時刻) を正とする。derived の時刻は次の review-fix run 開始時刻で、
+;; 間に受入があると受入前の失敗を受入後の是正と誤判定するため (ledger に有効な時刻が無い場合だけ derived 側を残す)
+(def correction-class-fields [:correction_class :correction_origin :confidence :classifier :classifier_version])
+(def correction-time-fields [:occurred_at :occurred_precision])
+(defn merge-ledger-events [events]
+  (let [other-keys (set (keep #(when-not (ledger-event? %) (ledger-logical-key %)) events))
+        merged? #(and (ledger-event? %) (contains? other-keys (ledger-logical-key %)))
+        ledger-class (into {} (keep #(when (and (merged? %) (= "correction" (:event_type %)))
+                                       [(ledger-logical-key %)
+                                        (cond-> (select-keys % correction-class-fields)
+                                          (parse-inst (:occurred_at %)) (merge (select-keys % correction-time-fields)))])
+                                    events))
+        ;; 統合した終了 lane 遷移の遷移元は ledger 側 (開始遷移後の実 lane) を正とし、lane 履歴を
+        ;; Ready→In Progress→Review のように連続させる (outbox は開始時 lane を遷移元に持つ)
+        ledger-lane-from (into {} (keep #(when (and (merged? %) (= "lane.changed" (:event_type %)) (:lane_from %))
+                                           [(ledger-logical-key %) (:lane_from %)])
+                                        events))
+        reclassify #(cond
+                      (ledger-event? %) %
+                      (= "correction" (:event_type %))
+                      (if-let [c (ledger-class (ledger-logical-key %))]
+                        (merge (apply dissoc % (cond-> correction-class-fields
+                                                 (:occurred_at c) (into correction-time-fields)))
+                               c)
+                        %)
+                      (= "lane.changed" (:event_type %))
+                      (if-let [from (ledger-lane-from (ledger-logical-key %))] (assoc % :lane_from from) %)
+                      :else %)]
+    {:events (map reclassify (remove merged? events)) :merged (count (filter merged? events))}))
+
 (defn unique-events [events]
   (second (reduce (fn [[seen out] e] (if (contains? seen (:event_id e)) [seen out] [(conj seen (:event_id e)) (conj out e)])) [#{} []] events)))
 
@@ -452,7 +520,7 @@
         ;; aggregate の是正再分類と同じ照合条件 (evidence の一致のみ。evidence event 自体の有無は問わない)
         evs (remove #(let [evidence (evidence-of %)]
                        (and (= "human" (:classifier %)) (reclassifiable? %) evidence (contains? ruled evidence))) evs)
-        latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress"} (:lane_to %)))) evs)))
+        latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress" "done"} (:lane_to %)))) evs)))
         state (if (= "lane.changed" (:event_type latest)) (:lane_to latest) (:status latest))]
     (cond
       ;; 時刻なし再open/取消/lane 遷移があり現在状態 snapshot も無い: 前後不明のため受入済みと確定しない (未完了側に数える)
@@ -492,7 +560,9 @@
         upstream-markers (filter rejected-marker? events)
         upstream-rejected (count upstream-markers)
         collection-lost (frequencies (keep lost-markers events))
-        buffer-dropped (get collection-lost :buffer-dropped 0)
+        ledger-dropped (get collection-lost :ledger-dropped 0)
+        ;; ledger の容量超過/書き込み失敗も種別不明の欠落として drop と同じに扱う
+        buffer-dropped (+ (get collection-lost :buffer-dropped 0) ledger-dropped)
         undelivered (get collection-lost :undelivered 0)
         input-unreadable (get collection-lost :input-unreadable 0)
         events (remove marker? events)
@@ -506,7 +576,7 @@
         corr-lost (+ malformed buffer-dropped undelivered input-unreadable
                      (count (filter #(may-affect-corrections? (:event_type %)) upstream-markers))
                      (count (filter (fn [[e g]] (and (:rejected? g) (may-affect-corrections? (:event_type e)))) (map vector raw-events gated))))
-        events (keep :event gated)
+        {events :events ledger-merged :merged} (merge-ledger-events (keep :event gated))
         n-in (count events)
         uniq (unique-events events)
         id-collisions (event-id-collisions events)
@@ -686,7 +756,7 @@
     {:schema schema-version :classifier classifier-version
      :input {:events n-in :malformed-lines malformed :unreadable-inputs input-unreadable
              :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks))
-             :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :id-collisions id-collisions :order-inversions inversions
+             :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :id-collisions id-collisions :ledger-merged ledger-merged :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
      :tasks {:total n :never-run (count (filter #(and (zero? (:runs %)) (zero? (:orphan-runs % 0))) tasks))
              :orphan-run-events (reduce + (map #(:orphan-runs % 0) tasks))
@@ -802,7 +872,7 @@
                   :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
-     :coverage {:collection-lost {:buffer-dropped buffer-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :unlinked-task-events (count unlinked) :unlinked-corrections unlinked-corr :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
+     :coverage {:collection-lost {:buffer-dropped (- buffer-dropped ledger-dropped) :ledger-dropped ledger-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :unlinked-task-events (count unlinked) :unlinked-corrections unlinked-corr :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
                 :hermes-conversation {:status (if (or (connected? "hermes-conversation")
                                                    (some #(or (= "hermes" (:runtime %))
@@ -837,17 +907,19 @@
     (println "# TYPE ai_ops_events_total counter")
     (doseq [[[src t] c] (frequencies (map (fn [e] [(if (contains? (:source enum-values) (:source e)) (:source e) "other")
                                                     (if (contains? (:event_type enum-values) (:event_type e)) (:event_type e) "other")])
-                                          (unique-events (keep (comp :event privacy-gate) (remove #(or (::malformed %) (marker? %)) evs)))))]
+                                          (unique-events (:events (merge-ledger-events (keep (comp :event privacy-gate) (remove #(or (::malformed %) (marker? %)) evs)))))))]
       (line "ai_ops_events_total" {:source src :event_type t} c))
     (println "# TYPE ai_ops_tasks gauge")
     (doseq [[o c] (get-in r [:tasks :outcomes])] (line "ai_ops_tasks" {:outcome o} c))
     (line "ai_ops_event_duplicates_total" {} (get-in r [:input :duplicates]))
+    (line "ai_ops_ledger_merged_events_total" {} (get-in r [:input :ledger-merged]))
     (line "ai_ops_event_id_collisions_total" {} (get-in r [:input :id-collisions]))
     (line "ai_ops_input_malformed_lines_total" {} (get-in r [:input :malformed-lines]))
     (line "ai_ops_privacy_rejected_events_total" {:stage "upstream"} (get-in r [:coverage :privacy-rejected-upstream]))
     (line "ai_ops_collection_lost_events_total" {:reason "buffer_dropped"} (get-in r [:coverage :collection-lost :buffer-dropped]))
     (line "ai_ops_collection_lost_events_total" {:reason "undelivered"} (get-in r [:coverage :collection-lost :undelivered]))
     (line "ai_ops_collection_lost_events_total" {:reason "input_unreadable"} (get-in r [:coverage :collection-lost :input-unreadable]))
+    (line "ai_ops_collection_lost_events_total" {:reason "ledger_dropped"} (get-in r [:coverage :collection-lost :ledger-dropped]))
     (line "ai_ops_event_order_inversions_total" {} (get-in r [:input :order-inversions]))
     (line "ai_ops_unlinked_task_events_total" {} (get-in r [:coverage :unlinked-task-events]))
     ;; unknown の SLI は観測値を確定値として公開しない。判定可否を別 gauge で出し、dashboard/alert が欠落込みの率を使わないようにする
