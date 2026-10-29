@@ -161,6 +161,29 @@ for line in lines:
     assert line.startswith('# ') or re.fullmatch(r'[a-zA-Z_:][a-zA-Z0-9_:]*(?:\{[a-zA-Z_]+="[a-zA-Z0-9:._/-]+"(?:,[a-zA-Z_]+="[a-zA-Z0-9:._/-]+")*\})? [0-9]+', line), line
 print('ok   Prometheus privacy gate と exposition')
 PYTEST
+cat >"$tmp/four-fixes.jsonl" <<'EOF'
+{"event_id":"BOXP-100:critical","event_type":"correction","severity":"critical"}
+{"event_id":"BOXP-100:critical","event_type":"correction","severity":"critical"}
+{"event_id":"invalid id","severity":"critical"}
+{"event_id":"BOXP-101:req","task_id":"conv-12345678","request_id":"req-12345678","event_type":"request.received"}
+{"event_id":"BOXP-102:req","task_id":"conv-abcdefgh","request_id":"req-abcdefgh","event_type":"request.received"}
+{"event_id":"BOXP-101:approval1","event_type":"approval.requested","approval_key":"op:one"}
+{"event_id":"BOXP-101:approval2","event_type":"approval.requested","approval_key":"op:one"}
+{"event_id":"BOXP-101:approval3","event_type":"approval.requested","approval_key":"op:one"}
+{"event_id":"BOXP-101:run","task_id":"conv-12345678","event_type":"run.started"}
+{"event_id":"BOXP-101:accepted","task_id":"conv-12345678","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-101:correction","task_id":"conv-12345678","event_type":"correction","occurred_at":"2026-10-20T00:00:00Z"}
+EOF
+bb ai_ops_sli.bb aggregate "$tmp/four-fixes.jsonl" >"$tmp/four-fixes.edn"
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [r (edn/read-string (slurp (first *command-line-args*)))
+      checks [["孤立した重大 event は重複排除して計上" (= 1 (get-in r [:zero-tolerance :critical-safety-events]))]
+              ["通常モードの会話 ID は別 task として保持" (and (= 2 (get-in r [:tasks :total])) (= 2 (get-in r [:guardrails :tasks-per-request :denominator])) (every? #(not (ai-ops-sli/valid-value? :task_id %)) ["conv-sk-abcdefgh" "conv-abcdefghijklmnopqrstuvwxyz1234567890" "conv-abc/defgh" "conv-ABCDEFGH"]))]
+              ["重複承認率の分母は承認イベント総数" (= [2 3] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
+              ["受入と同時刻の是正は first-pass 不合格" (= [0 1] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance])))]]]
+  (doseq [[label ok] checks] (println (if ok "ok  " "FAIL") label))
+  (when (some (comp not second) checks) (System/exit 1)))' "$tmp/four-fixes.edn"
 cat >"$tmp/history.jsonl" <<'EOF'
 {"event_id":"BOXP-9:accepted","task_id":"BOXP-9","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
 {"event_id":"BOXP-9:reopened","task_id":"BOXP-9","event_type":"task.reopened","occurred_at":"2026-10-21T00:00:00Z"}
@@ -209,7 +232,7 @@ bb -e '
        ["first acceptance: 受入 1 中 1、未評価 2 は合格扱いしない" (= [1 1 2] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance])))]
        ["close 後 late feedback を reopen-after-accept に計上" (= 1 (get-in r [:sli :reopen-after-accept :count]))]
        ["Owner 救援" (= 1 (get-in r [:sli :owner-rescue :count]))]
-       ["同 scope 重複承認" (= [1 1] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
+       ["同 scope 重複承認" (= [1 2] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
        ["二重実行は zero-tolerance に計上" (= 1 (get-in r [:zero-tolerance :duplicate-effects :count]))]
        ["重大 event" (= 1 (get-in r [:zero-tolerance :critical-safety-events]))]
        ["途中再起動 (interrupted) を保持" (= 1 (get-in r [:sli :run-reliability :interrupted]))]

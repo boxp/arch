@@ -67,8 +67,8 @@
     (#{:occurred_at :observed_at} k) (and (string? v) (try (java.time.Instant/parse v) true (catch Exception _ false)))
     (#{:event_id :parent_event_id} k) (and (string? v) (event-id? v synthetic?))
     (= k :evidence_event_ids) (and (sequential? v) (every? #(and (string? %) (token-safe? %) (event-id? % synthetic?)) v))
-    (= k :task_id) (and (string? v) (boolean (re-matches (if synthetic? #"(?:[A-Z]+[0-9]+|req:conv-[a-z0-9-]+)" #"[A-Z]+-\d+") v)))
-    (= k :request_id) (and (string? v) (boolean (re-matches (if synthetic? #"req:(?:[A-Z]+[0-9]+|conv-[a-z0-9-]+)" #"req:[A-Z]+-\d+") v)))
+    (= k :task_id) (and (string? v) (boolean (re-matches (if synthetic? #"(?:[A-Z]+[0-9]+|req:conv-[a-z0-9-]+)" #"(?:[A-Z]+-\d+|(?:req|conv)-[a-z0-9-]{8,64})") v)))
+    (= k :request_id) (and (string? v) (boolean (re-matches (if synthetic? #"req:(?:[A-Z]+[0-9]+|conv-[a-z0-9-]+)" #"(?:req:[A-Z]+-\d+|(?:req|conv)-[a-z0-9-]{8,64})") v)))
     (= k :run_id) (and (string? v) (boolean (re-matches (if synthetic? #"r[0-9]+" #"\d{8}T\d{6}Z(?:-[0-9a-f-]+)?") v)))
     (#{:effect_key :approval_key} k) (and (string? v) (boolean (re-matches #"[a-z0-9:_-]{1,64}" v)))
     :else false)))
@@ -325,12 +325,11 @@
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
                  :accepted-unobserved? (boolean (and (= "accepted" (task-outcome evs)) accepted (empty? runs) (not-any? :synthetic evs)))
                  :first-pass? (and accepted (not-any? #(let [t (parse-inst (:occurred_at %))]
-                                                        (or (nil? t) (.isBefore t accepted))) corr))
+                                                        (or (nil? t) (not (.isAfter t accepted)))) corr))
                  :lead-h (hours requested accepted)
                  :rescue (count (filter #(= "owner.rescue" (:event_type %)) evs))
                  :approvals (frequencies (keep :approval_key (filter #(= "approval.requested" (:event_type %)) evs)))
                  :effects (frequencies (keep :effect_key (filter #(= "effect.applied" (:event_type %)) evs)))
-                 :severe (count (filter #(= "critical" (:severity %)) evs))
                  :agents (set (keep :agent runs))
                  :delegation (frequencies (keep :delegation_kind runs))})
         n (count tasks)
@@ -343,7 +342,7 @@
                                          repeated (filter #(> (count %) 1) (vals groups))]
                                      {:count (reduce + (map #(dec (count %)) repeated))
                                       :tasks-involved (count (set (keep :task_id (mapcat identity repeated))))
-                                      :scopes (count groups)}))
+                                      :scopes (count groups) :total (reduce + (map count (vals groups)))}))
         effects (duplicates "effect.applied" :effect_key)
         approvals (duplicates "approval.requested" :approval_key)]
     {:schema schema-version :classifier classifier-version
@@ -371,7 +370,7 @@
                       (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
                       {:status "unknown" :reason "rescue event の source 未接続"})
       :duplicate-approval (if (pos? (:scopes approvals))
-                            (assoc (ratio (:count approvals) (:scopes approvals)) :tasks-involved (:tasks-involved approvals))
+                            (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
                             {:status "unknown" :reason "approval event 未接続"})
       :lead-time-hours (assoc (quantiles (keep :lead-h accepted))
                               :note "request.received/accepted は日粒度 (frontmatter)。queue/active/approval/wait/blocked 分解は lane timestamp 不足で unknown")
@@ -386,7 +385,7 @@
                                           {:status "unknown" :reason "effect source 未接続"})
                       :critical-safety-events (if (some #(or (some? (:severity %))
                                                                (and (= "coverage.connected" (:event_type %)) (= "critical-safety-events" (:coverage_target %)))) uniq)
-                                                (reduce + (map :severe tasks))
+                                                (count (filter #(= "critical" (:severity %)) uniq))
                                                 {:status "unknown" :reason "safety source 未接続"})
                       :private-leak {:status "unknown" :reason "leak detector 未接続。0件観測≠0件"}}
      :guardrails {:pending-over-7d "要 lane timestamp (unknown)"

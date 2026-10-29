@@ -41,11 +41,11 @@
 |---|---|---|
 | agent-system 是正 task 率 | agent-system 起因の是正を 1 回以上含む task / review に到達した task | unknown 原因の task は別に掲げる |
 | 1 task あたり是正往復 | agent-system 起因の是正 event 数の分布 | n<20 なら分位点は参考値 |
-| first acceptance 適合率 | 最初の受入より前に原因を問わず是正が一度もない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の是正は保守的に不合格。未評価は別掲 |
+| first acceptance 適合率 | 最初の受入以前（同時刻を含む）に原因を問わず是正が一度もない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の是正は保守的に不合格。未評価は別掲 |
 | reopen-after-accept | close 後に是正が入った task / 受入済み task | late feedback を拾う |
 | Owner 救援率 | 状況の催促や同じ承認の繰り返しが起きた task / 全 task | source が未接続なら unknown |
 | Ready→ack 遅延 / 詰まり率 | ack 時刻 − Ready 時刻 | **現状は unknown** (Ready への遷移時刻の event が無い) |
-| 同 scope 重複承認率 | 同じ `approval_key` が 2 回以上ある承認 / 承認 | |
+| 同 scope 重複承認率 | 重複する `approval_key` の余分な承認イベント数 / 有効な `approval_key` 付き承認イベント総数 | |
 | 実成果確認の完走率 | readback event がある受入 / 受入 | 未接続 |
 | lead time | queue / active / approval / user wait / external blocked に分解し、wall time も保持 | 現状は日粒度の wall time だけ |
 | usage / delegation depth | delegated / exempt、委譲の深さ | |
