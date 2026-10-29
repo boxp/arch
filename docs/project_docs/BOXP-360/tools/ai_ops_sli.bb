@@ -319,6 +319,8 @@
         gated (map privacy-gate (remove ::malformed events))
         rejected (count (filter #(and (:rejected? %) (not (:invalid-correlation? %))) gated))
         rejected-correlation (count (filter :invalid-correlation? gated))
+        ;; 破損行と privacy gate で拒否した event は中身を検証できないため、zero-tolerance 指標を 0 件と確定しない
+        lost (+ malformed rejected rejected-correlation)
         events (keep :event gated)
         n-in (count events)
         uniq (unique-events events)
@@ -430,10 +432,10 @@
                         :retrying (reduce + (map :retrying tasks))}
       :delegation (apply merge-with + (map :delegation tasks))}
      :zero-tolerance {:duplicate-effects (cond
-                                           ;; 破損行に effect が含まれていた可能性があるため 0 件と確定しない
-                                           (pos? malformed)
-                                           {:status "unknown" :reason "破損した入力行があり重複の有無を確定できない"
-                                            :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed}
+                                           ;; 破損行・拒否 event に effect が含まれていた可能性があるため 0 件と確定しない
+                                           (pos? lost)
+                                           {:status "unknown" :reason "破損した入力行または拒否された event があり重複の有無を確定できない"
+                                            :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation)}
                                            ;; effect_key 欠落/不正の effect があると重複の有無を確定できない (0 件と報告しない)
                                            (pos? (:unverifiable effects))
                                            {:status "unknown" :reason "effect_key 欠落/不正の effect があり重複の有無を確定できない"
@@ -444,9 +446,9 @@
                                                   :coverage (if (connected? "duplicate-effects") "connected" "partial/undeclared"))
                                            :else {:status "unknown" :reason "effect source 未接続"})
                       :critical-safety-events (cond
-                                                (pos? malformed)
-                                                {:status "unknown" :reason "破損した入力行があり重大 event の有無を確定できない"
-                                                 :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed}
+                                                (pos? lost)
+                                                {:status "unknown" :reason "破損した入力行または拒否された event があり重大 event の有無を確定できない"
+                                                 :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation)}
                                                 (connected? "critical-safety-events") {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "connected"}
                                                 (some #(contains? (:severity enum-values) (:severity %)) uniq) {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "partial/undeclared"}
                                                 :else {:status "unknown" :reason "safety source 未接続"})

@@ -146,8 +146,9 @@ bb -e '
   (assert (= [2 2 0] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance]))))
   (assert (= 2 (get-in r [:coverage :privacy-rejected-invalid-id])))
   (assert (= 0 (get-in r [:input :duplicates])))
-  (assert (= 0 (get-in r [:zero-tolerance :duplicate-effects :count])))
-  (assert (= 0 (get-in r [:zero-tolerance :critical-safety-events :count])))
+  ;; 拒否 event があれば zero-tolerance は 0 件確定せず unknown
+  (assert (= ["unknown" 2] ((juxt :status :rejected-events) (get-in r [:zero-tolerance :duplicate-effects]))))
+  (assert (= ["unknown" 2] ((juxt :status :rejected-events) (get-in r [:zero-tolerance :critical-safety-events]))))
   (println "ok   reopen 状態、不正 ID の拒否と複数 coverage"))' "$tmp/reopen.edn"
 
 cat >"$tmp/spoof.jsonl" <<'EOF'
@@ -223,7 +224,7 @@ bb ai_ops_sli.bb aggregate "$tmp/four-fixes.jsonl" >"$tmp/four-fixes.edn"
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [r (edn/read-string (slurp (first *command-line-args*)))
-      checks [["孤立した重大 event は重複排除して計上" (= [1 "partial/undeclared"] ((juxt :count :coverage) (get-in r [:zero-tolerance :critical-safety-events])))]
+      checks [["孤立した重大 event は重複排除して下限計上し、拒否 event があれば unknown" (= ["unknown" 1 1] ((juxt :status :observed-lower-bound :rejected-events) (get-in r [:zero-tolerance :critical-safety-events])))]
               ["通常モードの会話 ID は別 task として保持" (and (= 2 (get-in r [:tasks :total])) (= 2 (get-in r [:guardrails :tasks-per-request :denominator])) (every? #(not (ai-ops-sli/valid-value? :task_id %)) ["conv-sk-abcdefgh" "conv-abcdefghijklmnopqrstuvwxyz1234567890" "conv-abc/defgh" "conv-ABCDEFGH"]))]
               ["重複承認率の分母は承認イベント総数" (= [2 3] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
               ["受入と同時刻の是正は first-pass 不合格" (= [0 1] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance])))]]]
@@ -528,3 +529,20 @@ bb -e '
   (assert (= 1 (get-in r [:tasks :outcomes "in-flight"])))
   (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :count])))
   (println "ok   classifier なしの再オープンは人の再分類対象にしない"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [covs [{:event_id "cov-safety-12345678" :event_type "coverage.connected" :coverage_target "critical-safety-events"}
+            {:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}]
+      bad-id {:event_id "bad id !!" :task_id "BOXP-62" :event_type "correction" :severity "critical"}
+      bad-corr {:event_id "BOXP-63:effect" :task_id "../etc/passwd" :event_type "effect.applied" :effect_key "fx-1" :severity "critical"}
+      ok (ai-ops-sli/aggregate* covs)]
+  (assert (= 0 (get-in ok [:zero-tolerance :critical-safety-events :count])))
+  (doseq [bad [bad-id bad-corr]]
+    (let [r (ai-ops-sli/aggregate* (conj covs bad))]
+      (assert (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status])))
+      (assert (nil? (get-in r [:zero-tolerance :critical-safety-events :count])))
+      (assert (= 1 (get-in r [:zero-tolerance :critical-safety-events :rejected-events])))
+      (assert (= "unknown" (get-in r [:zero-tolerance :duplicate-effects :status])))
+      (assert (nil? (get-in r [:zero-tolerance :duplicate-effects :count])))))
+  (println "ok   不正 ID/correlation ID で拒否した event があれば重大 event/二重実行を 0 件と確定しない"))'
