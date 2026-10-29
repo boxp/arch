@@ -503,6 +503,19 @@
             (doseq [child (reverse children)] (.destroyForcibly child))
             (.destroyForcibly process)))))))
 
+;; extract only reads runs/outbox/tickets; review-gate corrections and
+;; ledger_dropped markers exist only in the runner ledger. Append every ledger
+;; day file so ai_ops_sli.bb merges them (merge-ledger-events) and turns
+;; collection_lost markers into unknown SLIs. A line still being appended has no
+;; trailing newline yet and is left out instead of being counted as malformed.
+(defn append-ledger-events! [root target]
+  (with-open [w (java.io.FileWriter. (str target) true)]
+    (doseq [f (sort (map str (if (fs/exists? (ledger-dir root)) (fs/glob (ledger-dir root) "events-*.jsonl") [])))
+            :let [text (slurp f) end (inc (or (str/last-index-of text "\n") -1))]
+            :when (pos? end)]
+      (.write w (subs text 0 end))))
+  true)
+
 (defn refresh-sli! [root vault]
   (try
     (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
@@ -515,6 +528,7 @@
             (reset! tmp (java.io.File/createTempFile "ai-ops-sli-" ".jsonl"))
             (reset! output (java.io.File/createTempFile "ai-ops-sli-" ".prom"))
             (if (and (run-sli-command! ["bb" sli-script "extract" (str root) (str vault)] @tmp deadline)
+                     (append-ledger-events! root @tmp)
                      (run-sli-command! ["bb" sli-script "prom" (str @tmp)] @output deadline)
                      (pos? (.length @output)) (< (.length @output) sli-limit))
               (do (atomic-spit! (sli-path root) (slurp @output))
@@ -524,6 +538,14 @@
               (try (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) (catch Exception _)) false)
             (finally (when @tmp (fs/delete-if-exists @tmp)) (when @output (fs/delete-if-exists @output)))))))
     (catch Exception _ nil)))
+
+;; The extract/prom subprocesses may take up to sli-timeout; never block the
+;; runner poll loop on them. At most one refresh runs at a time.
+(def sli-refresh-running (atom false))
+(defn refresh-sli-async! [root vault]
+  (when (compare-and-set! sli-refresh-running false true)
+    (future (try (refresh-sli! root vault) (finally (reset! sli-refresh-running false))))
+    true))
 
 (defn sli-export-metrics [root]
   (let [s (read-sli-status root)]

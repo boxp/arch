@@ -81,3 +81,5 @@ Hermes の plugin API は配備版を read-only で調べた (`hermes-plugin-inv
 #### SLI の Prometheus 公開
 
 runner は vault 設定時、既定 900 秒ごとに全履歴の SLI を再集計し、既存 `ai-ops/metrics.prom` に追記する。`CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS=0` で停止でき、タイムアウトは `CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS`（既定 120 秒）。`ai_ops_sli_determinable` / `ai_ops_sli_source_connected` と分子・分母で unknown を区別し、`ai_ops_sli_export_*` で更新状態を確認する。SLI 値はスナップショットなので `rate()` / `increase()` を適用しない。
+
+集計入力は extract の出力に runner ledger の日次 file (`ai-ops/ledger/events-*.jsonl`) を連結したもの。review gate の是正や `ledger_dropped` 欠落 marker は ledger にしか無いため、これを含めないと欠落があっても SLI を確定値として公開してしまう。ledger と extract が同じ事実を出す場合は `merge-ledger-events` で非 ledger 側に統合する。追記途中の末尾行 (改行なし) は読み込まない。再集計は runner の poll loop を止めないよう別 thread (`refresh-sli-async!`) で実行し、同時に 1 つしか走らせない。

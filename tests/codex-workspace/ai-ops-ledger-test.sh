@@ -443,4 +443,32 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
         (assert (< (- (System/currentTimeMillis) start) 5000))
         (assert (= 1 (:failures (ai-ops-ledger/read-sli-status root))))
         (assert (= old (slurp (str (ai-ops-ledger/sli-path root)))))))))
-(println "ai-ops-ledger-test: SLI export success, failure, interval and timeout passed")'
+(println "ai-ops-ledger-test: SLI export success, failure, interval and timeout passed")
+(defn determinable [] (re-find #"ai_ops_collection_lost_events_total\{reason=\"ledger_dropped\"\} (\d+)" (slurp (str (ai-ops-ledger/sli-path root)))))
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+  (def before (determinable))
+  (fs/create-dirs (ai-ops-ledger/ledger-dir root))
+  ;; a complete ledger_dropped marker plus a partially appended line
+  (spit (str (ai-ops-ledger/day-file root "2026-10-21")) "{\"collection_lost\":\"ledger_dropped\"}\n{\"event_id\":\"BOXP-1")
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+  (let [text (slurp (str (ai-ops-ledger/sli-path root))) after (determinable)]
+    (println "ledger merge: before" (second before) "after" (second after))
+    (assert (= "0" (second before)) "no ledger loss before the ledger file exists")
+    (assert (= "1" (second after)) "ledger_dropped marker must reach the SLI aggregate")
+    (assert (not (re-find #"ai_ops_input_malformed_lines_total(\{[^}]*\})? [1-9]" text)) "partial ledger line must not be read")))
+(fs/delete-tree (ai-ops-ledger/ledger-dir root))
+(let [real-run ai-ops-ledger/run-sli-command! calls (atom 0)]
+  (with-redefs [ai-ops-ledger/sli-interval (constantly 1)
+                ai-ops-ledger/run-sli-command! (fn [args output deadline] (swap! calls inc) (Thread/sleep 1500) (real-run args output deadline))]
+    (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+    (let [start (System/currentTimeMillis)]
+      (assert (true? (ai-ops-ledger/refresh-sli-async! root vault)))
+      (assert (nil? (ai-ops-ledger/refresh-sli-async! root vault)) "second refresh must not start while one runs")
+      (assert (< (- (System/currentTimeMillis) start) 500) "async refresh must not block the caller"))
+    (loop [i 0] (when (and @ai-ops-ledger/sli-refresh-running (< i 100)) (Thread/sleep 100) (recur (inc i))))
+    (assert (not @ai-ops-ledger/sli-refresh-running))
+    (assert (= 2 @calls))))
+(println "ai-ops-ledger-test: SLI export ledger merge and async refresh passed")'
