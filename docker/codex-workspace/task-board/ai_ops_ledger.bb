@@ -117,9 +117,10 @@
 (def ledger-mutex (java.util.concurrent.locks.ReentrantLock.))
 ;; Write errors that could not be persisted to stats (e.g. lock timeout); rendered into metrics.
 (def unrecorded-write-errors (atom 0))
-;; Subset of those that lost a ledger event (not just a gate count): the next
-;; lock holder must also leave a lost marker in the day file for them.
-(def unrecorded-lost-events (atom 0))
+;; Subset of those that lost a ledger event (not just a gate count), keyed by
+;; the UTC date of the loss: the next lock holder must also leave a lost marker
+;; in that date's day file (not the flush date's) for them.
+(def unrecorded-lost-events (atom {}))
 
 (defn ai-ops-dir [root] (fs/path root "ai-ops"))
 (defn lock-path [root] (fs/path (ai-ops-dir root) "ledger.lock"))
@@ -164,8 +165,11 @@
 (defn max-bytes [] (env-long "CODEX_TASK_BOARD_AI_OPS_LEDGER_MAX_BYTES" 8388608))
 (defn retention-days [] (env-long "CODEX_TASK_BOARD_AI_OPS_LEDGER_RETENTION_DAYS" 90))
 
-(defn day-file [root]
-  (fs/path (ledger-dir root) (str "events-" (java.time.LocalDate/now java.time.ZoneOffset/UTC) ".jsonl")))
+(defn utc-date [] (str (java.time.LocalDate/now java.time.ZoneOffset/UTC)))
+
+(defn day-file
+  ([root] (day-file root (utc-date)))
+  ([root date] (fs/path (ledger-dir root) (str "events-" date ".jsonl"))))
 
 (defn read-stats [root]
   (let [p (stats-path root)]
@@ -203,21 +207,30 @@
 
 (def lost-event-spool-prefix "event-")
 
+(defn lost-event-spool-date
+  "UTC date (yyyy-MM-dd) of the loss recorded in a lost-event spool name
+  (`event-<date>-...`); nil for a gate spool. Legacy names without a date fall
+  back to the flush date."
+  [name]
+  (when (str/starts-with? name lost-event-spool-prefix)
+    (or (second (re-find #"^event-(\d{4}-\d{2}-\d{2})-" name)) (utc-date))))
+
 (defn spool-write-error!
   "Record one write error that could not be persisted to stats. Never throws;
   falls back to the in-process counter when the spool file cannot be created.
   `kind` :event marks a lost ledger event, so the flush also appends the lost
   marker to the day file under the lock (never outside it)."
   ([root] (spool-write-error! root :gate))
-  ([root kind]
+  ([root kind] (spool-write-error! root kind (utc-date)))
+  ([root kind date]
    (try
      (fs/create-dirs (pending-write-errors-dir root))
      (fs/create-file (fs/path (pending-write-errors-dir root)
-                              (str (when (= :event kind) lost-event-spool-prefix)
+                              (str (when (= :event kind) (str lost-event-spool-prefix date "-"))
                                    (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime) "-" (random-uuid))))
      (catch Exception _
        (swap! unrecorded-write-errors inc)
-       (when (= :event kind) (swap! unrecorded-lost-events inc))))))
+       (when (= :event kind) (swap! unrecorded-lost-events update date (fnil inc 0)))))))
 
 (declare append-lost-marker!)
 
@@ -237,16 +250,19 @@
         consumed (set (:consumed-write-error-spool (read-stats root)))
         fresh-names (remove consumed names)
         fresh (count fresh-names)
-        fresh-lost (count (filter #(str/starts-with? % lost-event-spool-prefix) fresh-names))
+        fresh-lost (frequencies (keep lost-event-spool-date fresh-names))
         [pending _] (reset-vals! unrecorded-write-errors 0)
-        [pending-lost _] (reset-vals! unrecorded-lost-events 0)
+        [pending-lost _] (reset-vals! unrecorded-lost-events {})
         total (+ pending fresh)]
     ;; Lost events recorded outside the lock get their marker here, with the
     ;; lock held, so it never races a normal append. A crash before the stats
     ;; update may repeat the marker; one marker is enough and counts stay exact.
-    (when (pos? (+ pending-lost fresh-lost))
-      (when-not (append-lost-marker! (day-file root))
-        (swap! unrecorded-lost-events + pending-lost)))
+    ;; Each marker goes to the day file of the loss date so that aggregating
+    ;; only that day still sees the gap.
+    (doseq [[date n] (merge-with + pending-lost fresh-lost)
+            :when (pos? n)]
+      (when-not (append-lost-marker! (day-file root date))
+        (swap! unrecorded-lost-events update date (fnil + 0) n)))
     (when (or (pos? total) (not= consumed names))
       (try (update-stats! root #(-> %
                                     (update :write-errors (fnil + 0) total)
@@ -317,10 +333,11 @@
       ;; The marker is appended only while holding the lock; if the lock is
       ;; unavailable the loss is spooled and the next lock holder writes it.
       (catch Exception _
-        (try (with-ledger-lock root (fn []
-                                      (append-lost-marker! (day-file root))
-                                      (update-stats! root #(count-in % [:write-errors]))))
-             (catch Exception _ (spool-write-error! root :event)))
+        (let [date (utc-date)]
+          (try (with-ledger-lock root (fn []
+                                        (append-lost-marker! (day-file root date))
+                                        (update-stats! root #(count-in % [:write-errors]))))
+               (catch Exception _ (spool-write-error! root :event date))))
         nil))))
 
 (def gate-results #{"pass" "fail" "skip"})

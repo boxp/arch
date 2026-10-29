@@ -303,3 +303,35 @@ AI_OPS_MODULE="${module}" AI_OPS_ROOT="${crash_root}" bb -e '
 (when-not (every? second checks) (println "stats:" s s2) (System/exit 1))
 (println "ai-ops-ledger-test: spool crash-recovery checks passed")
 '
+
+# A loss spooled before the UTC date change and flushed afterwards must leave
+# its marker in the loss date's day file, not the flush date's.
+midnight_root="${tmp}/midnight"
+AI_OPS_MODULE="${module}" AI_OPS_ROOT="${midnight_root}" bb -e '
+(require (quote [babashka.fs :as fs]) (quote [clojure.string :as str]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (System/getenv "AI_OPS_ROOT"))
+(def today (ai-ops-ledger/utc-date))
+(def yesterday (str (.minusDays (java.time.LocalDate/parse today) 1)))
+(def before (str (.minusDays (java.time.LocalDate/parse today) 2)))
+;; spooled loss from another (exited) process, recorded yesterday
+(ai-ops-ledger/spool-write-error! root :event yesterday)
+;; in-process fallback counter for a loss two days ago
+(swap! ai-ops-ledger/unrecorded-lost-events update before (fnil inc 0))
+(swap! ai-ops-ledger/unrecorded-write-errors inc)
+(def spool-name (str (fs/file-name (first (fs/list-dir (ai-ops-ledger/pending-write-errors-dir root))))))
+(def ok (ai-ops-ledger/write-metrics! root))
+(defn markers [date] (let [p (ai-ops-ledger/day-file root date)]
+                       (if (fs/exists? p) (count (filter #(str/includes? % "collection_lost") (str/split-lines (slurp (str p))))) 0)))
+(def checks [["midnight: write-metrics succeeds" (true? ok)]
+             ["midnight: spool name carries loss date" (= yesterday (ai-ops-ledger/lost-event-spool-date spool-name))]
+             ["midnight: spooled loss marker in loss-date file" (= 1 (markers yesterday))]
+             ["midnight: in-process loss marker in loss-date file" (= 1 (markers before))]
+             ["midnight: no marker in flush-date file" (zero? (markers today))]
+             ["midnight: both losses counted" (= 2 (:write-errors (ai-ops-ledger/read-stats root)))]
+             ["midnight: legacy undated spool falls back to flush date" (= today (ai-ops-ledger/lost-event-spool-date "event-123-456-abc"))]
+             ["midnight: gate spool has no date" (nil? (ai-ops-ledger/lost-event-spool-date "123-456-abc"))]])
+(doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
+(when-not (every? second checks) (System/exit 1))
+(println "ai-ops-ledger-test: date-change loss checks passed")
+'
