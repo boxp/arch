@@ -11,6 +11,7 @@ cat >>"$tmp/ok.jsonl" <<'EOF'
 EOF
 bb ai_ops_sli.bb aggregate --synthetic "$tmp/ok.jsonl" >"$tmp/ok.edn"
 bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 4 10 20 2>"$tmp/down.stats" >"$tmp/down.jsonl"
+bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 8 10 11 2>"$tmp/partial.stats" >"$tmp/partial.jsonl"
 bb ai_ops_sli.bb prom --synthetic "$tmp/ok.jsonl" >"$tmp/ok.prom"
 
 mkdir -p "$tmp/root/runs/BOXP-999/20261020T010000Z-abcd" "$tmp/root/outbox" "$tmp/vault/Tickets"
@@ -386,6 +387,19 @@ bb -e '
 
 bb -e '
 (load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-9:run" :task_id "BOXP-9" :event_type "run.started"}
+            {:event_id "BOXP-9:rule" :task_id "BOXP-9" :event_type "task.reopened" :classifier "rule" :correction_origin "agent-system" :evidence_event_ids ["BOXP-9:run"] :occurred_at "2026-10-19T00:00:00Z"}
+            {:event_id "BOXP-9:accepted" :task_id "BOXP-9" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}]
+      human {:event_id "BOXP-9:human" :task_id "BOXP-9" :event_type "task.reopened" :classifier "human" :correction_origin "non-agent" :evidence_event_ids ["BOXP-9:run"] :occurred_at "2026-10-21T00:00:00Z"}
+      report (ai-ops-sli/aggregate* (conj base human))]
+  (assert (= 1 (get-in report [:tasks :outcomes "accepted"])))
+  (assert (= [1 1] ((juxt :count :denominator) (get-in report [:sli :first-acceptance-conformance]))))
+  (doseq [unmatched [(dissoc human :evidence_event_ids) (assoc human :evidence_event_ids ["BOXP-9:missing"])]]
+    (assert (= 1 (get-in (ai-ops-sli/aggregate* (conj base unmatched)) [:tasks :outcomes "in-flight"]))))
+  (println "ok   人の再分類は状態遷移にせず、証拠なしの再オープンは反映"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
 (let [event {:event_id "BOXP-1:event" :event_type "run.started" :source "synthetic:hermes"}
       status #(get-in (ai-ops-sli/aggregate* %) [:coverage :hermes-conversation :status])]
   (assert (= "connected" (status [event])))
@@ -444,7 +458,15 @@ bb -e '
       stats (edn/read-string (slurp stats-file))]
   (assert (= 40 (:delivered stats) (count (clojure.string/split-lines (slurp output)))))
   (assert (= 2 (:undelivered-buffered stats)))
+  (assert (= 2 (:buffer-max-depth stats)))
   (println "ok   collector が最後まで停止した場合はバッファを未配信に残す"))' "$tmp/end-down.jsonl" "$tmp/end-down.stats"
+
+bb -e '
+(let [[ok partial down] (map #(edn/read-string (slurp %)) *command-line-args*)]
+  (assert (= 0 (:buffer-max-depth ok)))
+  (assert (= 2 (:buffer-max-depth partial)))
+  (assert (= 4 (:buffer-max-depth down)))
+  (println "ok   バッファ最大深度は未使用・部分使用・満杯を実測"))' "$tmp/ok.stats" "$tmp/partial.stats" "$tmp/down.stats"
 
 bb -e '
 (load-file "ai_ops_sli.bb")

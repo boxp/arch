@@ -235,7 +235,7 @@
                 (cond
                   (nil? ev) st
                   down? (if (< (count buf) buffer-cap)
-                          (update st :buf conj ev)
+                          (-> st (update :buf conj ev) (update :max-depth max (inc (count buf))))
                           (-> st (update :buffer-dropped inc)))
                   :else (-> st
                             (update :delivered into (conj buf ev))
@@ -250,7 +250,7 @@
     (doseq [e (:delivered st)] (println (json/generate-string e)))
     (binding [*out* *err*]
       (prn {:emitted (:emitted st) :delivered (count (:delivered st)) :buffer-cap buffer-cap
-            :buffer-dropped (:buffer-dropped st) :undelivered-buffered (count (:buf st)) :buffer-max-depth (max (:max-depth st) buffer-cap)
+            :buffer-dropped (:buffer-dropped st) :undelivered-buffered (count (:buf st)) :buffer-max-depth (:max-depth st)
             :privacy-dropped-keys (:privacy-dropped-keys st) :privacy-redacted-values (:privacy-redacted-values st) :privacy-rejected (:privacy-rejected st)}))))
 
 ;; ---------------------------------------------------------------------------
@@ -290,7 +290,11 @@
       (correction-class-origin (:correction_class e)) "unknown"))
 
 (defn task-outcome [evs]
-  (let [latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress"} (:lane_to %)))) evs)))
+  (let [ids (set (keep :event_id evs))
+        evs (remove #(let [evidence (when (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %)))]
+                       (and (= "human" (:classifier %)) (#{"correction" "task.reopened"} (:event_type %))
+                            evidence (not= evidence (:event_id %)) (contains? ids evidence))) evs)
+        latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress"} (:lane_to %)))) evs)))
         state (if (= "lane.changed" (:event_type latest)) (:lane_to latest) (:status latest))]
     (cond
       (or (= "task.cancelled" (:event_type latest)) (= "cancelled" state)) "cancelled"
