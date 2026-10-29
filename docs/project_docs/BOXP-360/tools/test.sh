@@ -1030,3 +1030,31 @@ bb -e '
   (assert (= 2 (:unevaluated-input-missing c)) (pr-str c))
   (assert (= 0 (:denominator f)) (pr-str f)))
 (println "ok   必須状態 field (task.state の status / lane.changed の lane_to) が欠落した event も入力欠落として未評価に別掲する")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [cov {:event_id "cov-acceptance-12345678" :event_type "coverage.connected" :coverage_target "acceptance-history"}
+      base [{:event_id "BOXP-83:run" :task_id "BOXP-83" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+            {:event_id "BOXP-83:acc" :task_id "BOXP-83" :event_type "task.accepted"}
+            {:event_id "BOXP-83:reopen" :task_id "BOXP-83" :event_type "task.reopened" :correction_origin "agent-system" :occurred_at "2026-10-22T00:00:00Z"}
+            cov]
+      ra (get-in (ai-ops-sli/aggregate* base) [:sli :reopen-after-accept])
+      ;; 受入時刻は確定でも是正時刻が不明なら受入後かどうか確定できない
+      timed (assoc-in base [1 :occurred_at] "2026-10-21T00:00:00Z")
+      rb (get-in (ai-ops-sli/aggregate* (assoc timed 2 (dissoc (nth timed 2) :occurred_at))) [:sli :reopen-after-accept])
+      rc (get-in (ai-ops-sli/aggregate* timed) [:sli :reopen-after-accept])]
+  (assert (and (= :unknown (:status ra)) (= 1 (:indeterminate ra))) (pr-str ra))
+  (assert (and (= :unknown (:status rb)) (= 1 (:indeterminate rb))) (pr-str rb))
+  (assert (= [1 1] ((juxt :count :denominator) rc)) (pr-str rc)))
+(println "ok   受入時刻または是正時刻が不明な task があれば reopen-after-accept を確定せず unknown (前後不明件数を別掲)")'
+
+tmp_status=$(mktemp -d); trap 'rm -rf "$tmp" "$tmp_status"' EXIT
+mkdir -p "$tmp_status/root/runs" "$tmp_status/root/outbox" "$tmp_status/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: donee\nclosed: 2026-10-21\n---\n' >"$tmp_status/vault/Tickets/BOXP-84.md"
+bb ai_ops_sli.bb extract "$tmp_status/root" "$tmp_status/vault" >"$tmp_status/extract.jsonl" 2>/dev/null
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [evs (map #(cheshire.core/parse-string % true) (clojure.string/split-lines (slurp (first *command-line-args*))))]
+  (assert (some #(and (= "BOXP-84" (:task_id %)) (= "run.unreadable" (:event_type %))) evs) (pr-str evs))
+  (assert (not-any? #(and (= "BOXP-84" (:task_id %)) (#{"task.accepted" "task.state"} (:event_type %))) evs) (pr-str evs)))
+(println "ok   未知の ticket status (例 donee) は frontmatter 破損として run.unreadable で未評価にする")' "$tmp_status/extract.jsonl"

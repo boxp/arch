@@ -116,9 +116,11 @@
   (when-let [[_ y mo d h mi s] (re-find #"^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z" (str run-id))]
     (str y "-" mo "-" d "T" h ":" mi ":" s "Z")))
 
+(def ticket-statuses #{"ready" "review" "blocked" "backlog" "in-progress" "done" "cancelled"})
+
 (defn frontmatter
   "開始/終了の `---` が揃い、必須field (status / created) を持つ frontmatter だけを map で返す。
-  終了区切りが無い (本文の status: 等まで取り込み得る) / 必須field欠落 / 読み取り例外 (権限不足等) は nil (呼び出し側で破損扱い)。"
+  終了区切りが無い (本文の status: 等まで取り込み得る) / 必須field欠落 / 未知の status (例 donee) / 読み取り例外 (権限不足等) は nil (呼び出し側で破損扱い)。"
   [f]
   (let [lines (try (str/split-lines (slurp (str f))) (catch Exception _ nil))
         body (rest lines)
@@ -127,7 +129,7 @@
       (let [m (->> fm-lines
                    (keep #(when-let [[_ k v] (re-matches #"^([a-z_]+):\s*(.*)$" %)] [(keyword k) (str/trim v)]))
                    (into {}))]
-        (when (and (not (str/blank? (:status m))) (re-matches #"\d{4}-\d{2}-\d{2}" (str (:created m))))
+        (when (and (contains? ticket-statuses (:status m)) (re-matches #"\d{4}-\d{2}-\d{2}" (str (:created m))))
           m)))))
 
 (def infra-repos #{"boxp/arch" "boxp/lolice" "boxp/is01-linux" "boxp/dotfiles" "boxp/palserver"})
@@ -278,7 +280,7 @@
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.reopened"
                            :occurred_at (str (:closed fm) "T23:59:59Z") :occurred_precision "day"
                            :correction_origin "unknown" :correction_class "unknown"}])
-                       (when (#{"ready" "review" "blocked" "backlog" "in-progress" "done" "cancelled"} (:status fm))
+                       (when (contains? ticket-statuses (:status fm))
                          [{:schema_version schema-version :event_id (str ticket ":state") :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.state"
                            :status (:status fm) :snapshot "current" :occurred_at nil}]))]
@@ -518,6 +520,10 @@
                  :retrying (count (filter #(= "retrying" (:status %)) finished))
                  :agent-corr (count agent-corr) :unknown-corr (count unknown-corr)
                  :post-accept-corr (count post-accept-corr)
+                 ;; 受入時刻不明・是正時刻不明・日粒度受入と同日の是正: 受入後の是正 (再オープン) の有無を確定できない
+                 :post-accept-indeterminate? (boolean (and (some #(= "task.accepted" (:event_type %)) evs) (empty? post-accept-corr)
+                                                          (or (nil? accepted)
+                                                              (some #(let [t (parse-inst (:occurred_at %))] (or (nil? t) (same-day? t))) corr))))
                  :observed? (boolean (or (seq runs) (some :synthetic evs) (some #(= "run.unreadable" (:event_type %)) evs)))
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
                  ;; run 履歴の無い受入 task は受入時刻の有無に関わらず未評価 (done snapshot のみの task も保守的分母に残す)
@@ -584,7 +590,14 @@
              :unevaluated-input-missing (count (filter #(input-missing? %) accepted-all))
              :not-yet-evaluated (count (filter #(and (not= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
              :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明・日粒度受入と同日の是正 (前後不明)・未評価は別掲し合格に数えない"))
-      :reopen-after-accept (if (connected? "acceptance-history") (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)) {:status :unknown :reason "acceptance history source not connected"})
+      :reopen-after-accept (cond
+                             (not (connected? "acceptance-history")) {:status :unknown :reason "acceptance history source not connected"}
+                             ;; 前後関係を確定できない task があれば率を確定しない (観測値は下限として別掲)
+                             (some :post-accept-indeterminate? accepted-ever)
+                             {:status :unknown :reason "受入時刻または是正時刻が不明で受入後の是正を確定できない task がある"
+                              :observed (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever))
+                              :indeterminate (count (filter :post-accept-indeterminate? accepted-ever))}
+                             :else (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)))
       :owner-rescue (if (some #(= "owner.rescue" (:event_type %)) uniq)
                       (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
                       {:status "unknown" :reason "rescue event の source 未接続"})
