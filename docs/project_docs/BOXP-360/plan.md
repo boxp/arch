@@ -59,14 +59,15 @@
 
 ## 5. 実測 baseline (既存 metadata のみ)
 
-正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 04:00頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
+正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 04:06頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
 
-- ticket 360、run 1482、event 4474 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。summary.edn の無い run ディレクトリ 1 件 (BOXP-354 の groom run) は欠落入力として該当 task を未評価にした。live の生成元 privacy gate で拒否された event が 2 件あり、zero-tolerance 指標は unknown。
-- outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13 (現在の lane snapshot を再open履歴より優先して再集計)。
+- ticket 361、run 1489、event 4491 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。summary.edn の無い run ディレクトリ 1 件 (BOXP-354 の groom run) は欠落入力として該当 task を未評価にした。live の生成元 privacy gate で拒否された event が 2 件あり、zero-tolerance 指標は unknown。
+- outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 12、backlog 13 (現在の lane snapshot を再open履歴より優先して再集計)。
 - agent-system 是正 task 率: **43/283 (15.2%)**。summary 欠落で未評価 1。原因 unknown の是正を含む task は 140 (agent-system 起因との重複を含む。旧集計は重複を除いた 107)、unknown 是正 event は 203。
 - first acceptance 適合率: **94/148 (63.5%)**。受入日 (frontmatter `closed` は日粒度) と同日に是正がある 74 件は前後関係を確定できないため分子・分母から除き `acceptance-day-ambiguous` として別掲 (層別: infra 36 / assistant-or-research 27 / dev 8 / creative 3)。旧集計 94/222 (42.3%) は同日是正を受入前と見なしていた。未評価・前後不明を不合格として含める保守的な割合は 94/340 (27.6%) で、分母に未評価 60、summary 欠落で未評価 1、run 履歴の無い受入済み 57 件 (是正の有無を観測できない) を含める。受入時刻不明の受入済み task 0。主指標 94/222 の分母からは run 履歴無し受入 57 件を外して別掲。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
-- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 576、idle-timeout 7。delegation は delegated 74、exempt 68。
-- extract の order-inversions 822 は glob の読み取り順から出たもので、実際の到着順ではない。
+- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 582、idle-timeout 7。delegation は delegated 74、exempt 75、failed 1。
+- extract の order-inversions 825 は glob の読み取り順から出たもので、実際の到着順ではない。
+- task_id 欠落の task 紐付け event (unlinked-task-events) は 0、うち是正 0。是正が1件でもあれば是正率/first acceptance は unknown にして観測値を `observed` に別掲する。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
 
 ## 6. 合成 E2E pilot (`tools/test.sh`)

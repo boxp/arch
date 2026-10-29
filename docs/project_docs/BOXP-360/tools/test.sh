@@ -227,7 +227,7 @@ bb -e '
       checks [["孤立した重大 event は重複排除して下限計上し、拒否 event があれば unknown" (= ["unknown" 1 1] ((juxt :status :observed-lower-bound :rejected-events) (get-in r [:zero-tolerance :critical-safety-events])))]
               ["通常モードの会話 ID は別 task として保持" (and (= 2 (get-in r [:tasks :total])) (= 2 (get-in r [:guardrails :tasks-per-request :denominator])) (every? #(not (ai-ops-sli/valid-value? :task_id %)) ["conv-sk-abcdefgh" "conv-abcdefghijklmnopqrstuvwxyz1234567890" "conv-abc/defgh" "conv-ABCDEFGH"]))]
               ["重複承認率の分母は承認イベント総数" (= [2 3] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
-              ["受入と同時刻の是正は first-pass 不合格" (= [0 1] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance])))]]]
+              ["受入と同時刻の是正は first-pass 不合格 (孤立是正があるため unknown・観測値も不合格)" (let [fa (get-in r [:sli :first-acceptance-conformance])] (and (= "unknown" (:status fa)) (= [0 1] ((juxt :count :denominator) (:observed fa)))))]]]
   (doseq [[label ok] checks] (println (if ok "ok  " "FAIL") label))
   (when (some (comp not second) checks) (System/exit 1)))' "$tmp/four-fixes.edn"
 cat >"$tmp/history.jsonl" <<'EOF'
@@ -835,3 +835,22 @@ bb -e '
   (let [gated (map (comp :event ai-ops-sli/privacy-gate) kw)]
     (assert (every? #(= "codex" (:agent %)) gated) (pr-str gated))))
 (println "ok   keyword/文字列形式の :agent を同じ値に正規化し runtime 判定と privacy gate で誤分類しない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-70:run" :task_id "BOXP-70" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-70:fin" :task_id "BOXP-70" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-70:acc" :task_id "BOXP-70" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+      ok (ai-ops-sli/aggregate* base)
+      r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-70:corr" :event_type "correction" :correction_class "instruction_violation"
+                                           :correction_origin "agent-system" :occurred_at "2026-10-20T03:00:00Z"}))
+      fa (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= 1 (get-in ok [:sli :first-acceptance-conformance :count])) (pr-str ok))
+  (assert (= "unknown" (:status fa)) (pr-str fa))
+  (assert (= 1 (:unlinked-corrections fa)))
+  (assert (= "unknown" (get-in r [:sli :agent-system-correction-task-ratio :status])))
+  (assert (= 1 (get-in r [:coverage :unlinked-task-events])))
+  (let [f (str (babashka.fs/create-temp-file))]
+    (spit f (str/join "\n" (map cheshire.core/generate-string (conj base {:event_id "BOXP-70:corr" :event_type "correction" :correction_origin "agent-system" :occurred_at "2026-10-20T03:00:00Z"}))))
+    (assert (str/includes? (with-out-str (ai-ops-sli/prom f)) "ai_ops_unlinked_task_events_total 1"))))
+(println "ok   task_id 欠落の是正 event を黙って除外せず別掲し first acceptance/是正率を unknown にする")'

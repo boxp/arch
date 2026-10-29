@@ -413,6 +413,16 @@
         skew (->> uniq (filter #(let [o (parse-inst (:occurred_at %)) w (parse-inst (:observed_at %))]
                                    (and o w (.isAfter o (.plusSeconds w 300))))) count)
         by-task (group-by :task_id (filter :task_id uniq))
+        ;; task に紐付くべき event で task_id が欠落したもの: 集計から黙って除外せず件数を別掲し、是正が欠落していれば SLI を確定しない
+        task-scoped? #(or (#{"correction" "request.received" "lane.changed"} (:event_type %))
+                          (some-> (:event_type %) (str/starts-with? "task."))
+                          (some-> (:event_type %) (str/starts-with? "run.")))
+        unlinked (filter #(and (nil? (:task_id %)) (task-scoped? %)) uniq)
+        unlinked-corr (count (filter #(#{"correction" "task.reopened"} (:event_type %)) unlinked))
+        unlinked-guard (fn [m] (if (pos? unlinked-corr)
+                                 {:status "unknown" :reason "task_id 欠落の是正 event があり、どの task の是正か確定できない (合格扱いしない)"
+                                  :observed m :unlinked-corrections unlinked-corr}
+                                 m))
         tasks (for [[tid evs] by-task
                     :let [evs (sort-by event-time-key evs)
                           corr (filter #(#{"correction" "task.reopened"} (:event_type %)) evs)
@@ -510,16 +520,16 @@
              :by-stratum (frequencies (map :stratum tasks))}
      :sli
      {:agent-system-correction-task-ratio
-      (assoc (ratio (count (filter #(pos? (:agent-corr %)) reached)) (count reached))
+      (unlinked-guard (assoc (ratio (count (filter #(pos? (:agent-corr %)) reached)) (count reached))
              :unknown-cause-tasks (count (filter #(pos? (:unknown-corr %)) reached))
              :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) reached-all))
-             :note "分母=review 到達 task。unknown 原因は分子に入れず別掲 (成功扱いもしない)")
+             :note "分母=review 到達 task。unknown 原因は分子に入れず別掲 (成功扱いもしない)"))
       :corrections-per-task {:agent-system (quantiles (map :agent-corr reached))
                              :unknown (quantiles (map :unknown-corr reached))
                              :total-agent-system (reduce + (map :agent-corr reached))
                              :total-unknown (reduce + (map :unknown-corr reached))}
       :first-acceptance-conformance
-      (assoc (ratio (count (filter :first-pass? accepted)) (count accepted))
+      (unlinked-guard (assoc (ratio (count (filter :first-pass? accepted)) (count accepted))
              :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted))
                                                 ;; 保守的分母: 未評価・受入時刻不明・run 履歴無し受入・入力欠落 task も不合格として含める
                                                 (count (distinct (map :task (concat (filter #(or (= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached-all)
@@ -529,7 +539,7 @@
              :acceptance-day-ambiguous (count acceptance-day-ambiguous)
              :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) accepted-all))
              :not-yet-evaluated (count (filter #(and (not= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
-             :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明・日粒度受入と同日の是正 (前後不明)・未評価は別掲し合格に数えない")
+             :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明・日粒度受入と同日の是正 (前後不明)・未評価は別掲し合格に数えない"))
       :reopen-after-accept (if (connected? "acceptance-history") (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)) {:status :unknown :reason "acceptance history source not connected"})
       :owner-rescue (if (some #(= "owner.rescue" (:event_type %)) uniq)
                       (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
@@ -583,7 +593,7 @@
                   :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
-     :coverage {:collection-lost {:buffer-dropped buffer-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
+     :coverage {:collection-lost {:buffer-dropped buffer-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :unlinked-task-events (count unlinked) :unlinked-corrections unlinked-corr :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
                 :hermes-conversation {:status (if (or (connected? "hermes-conversation")
                                                    (some #(or (= "hermes" (:runtime %))
@@ -629,7 +639,9 @@
     (line "ai_ops_collection_lost_events_total" {:reason "undelivered"} (get-in r [:coverage :collection-lost :undelivered]))
     (line "ai_ops_collection_lost_events_total" {:reason "input_unreadable"} (get-in r [:coverage :collection-lost :input-unreadable]))
     (line "ai_ops_event_order_inversions_total" {} (get-in r [:input :order-inversions]))
-    (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
+    (line "ai_ops_unlinked_task_events_total" {} (get-in r [:coverage :unlinked-task-events]))
+    (let [c (get-in r [:sli :agent-system-correction-task-ratio])
+          c (if (= "unknown" (:status c)) (:observed c) c)]
       (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))
       (line "ai_ops_correction_tasks" {:origin "unknown"} (:unknown-cause-tasks c))
       (line "ai_ops_reached_review_tasks" {} (:denominator c)))))
