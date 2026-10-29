@@ -1715,4 +1715,58 @@ tick
 assert_contains "${VAULT}/Novels/NOVEL-9902.md" "許可されていないセクションを変更しました: ## Requirements"
 echo "PASS: cloud note write boundaries"
 
+# Image-only Review uses name matching and one linked note, and is idempotent.
+mkdir -p "${VAULT}/ひとはこさんバース/BOXP363" "${STATE}/work/NOVEL-8801"
+printf '\211PNG\r\n\032\nfixture' >"${VAULT}/ひとはこさんバース/BOXP363/name.png"
+printf '\211PNG\r\n\032\nfixture' >"${VAULT}/ひとはこさんバース/BOXP363/link.png"
+printf '# 星野太郎\n![[name.png]]\n[[BOXP363資料]]\n' >"${VAULT}/ひとはこさんバース/BOXP363/星野太郎.md"
+printf '# 資料\n![[link.png]]\n' >"${VAULT}/ひとはこさんバース/BOXP363/BOXP363資料.md"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-8801.md"
+sed -i '/^TBD$/d' "${VAULT}/Novels/NOVEL-8801.md"
+printf '%s\n' '- Characters: 星野太郎' >"${TMP}/image-req.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" Requirements "${TMP}/image-req.txt"
+printf '%s\n' '- 挿絵も用意してください' >"${TMP}/image-instructions.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" 'Review Instructions' "${TMP}/image-instructions.txt"
+for _ in $(seq 1 300); do printf '穏やかな朝の物語。' >>"${STATE}/work/NOVEL-8801/manuscript.md"; done
+before_image_body="$(sha256sum "${STATE}/work/NOVEL-8801/manuscript.md" | cut -d' ' -f1)"
+: >>"${FAKE_IMAGE_LOG}"
+image_calls_before="$(wc -l <"${FAKE_IMAGE_LOG}")"
+add_card Review '- [ ] [[Novels/NOVEL-8801|NOVEL-8801: 試験作品]] #novel status::review assignee::localllm'
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-8801)" == Review ]] || fail 'image-only must remain Review'
+card_line "${BOARD}" NOVEL-8801 | grep -Fq 'assignee::boxp' || fail 'image-only must return to boxp'
+[[ "$(sha256sum "${STATE}/work/NOVEL-8801/manuscript.md" | cut -d' ' -f1)" == "${before_image_body}" ]] || fail 'image-only changed manuscript'
+[[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'image-only must call generator once'
+tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq 'name.png' || fail 'name-matched image missing'
+tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq 'link.png' || fail 'linked image missing'
+[[ -s "${VAULT}/Novels/Drafts/NOVEL-8801/attachments/illustration.png" ]] || fail 'image-only draft missing image'
+assert_contains "${VAULT}/Novels/NOVEL-8801.md" '![[Novels/Drafts/NOVEL-8801/attachments/illustration.png]]'
+set_assignee NOVEL-8801 localllm
+tick
+[[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'duplicate image generation'
+
+# Recovery adopts a valid pending image without calling the generator.
+cp "${STATE}/work/NOVEL-8801/illustration.png" "${STATE}/work/NOVEL-8801/illustration.pending-crash.png"
+printf '{:status :running :run-id "crash" :manuscript-sha "%s" :pending "%s"}\n' "${before_image_body}" "${STATE}/work/NOVEL-8801/illustration.pending-crash.png" >"${STATE}/work/NOVEL-8801/illustration-job.edn"
+set_assignee NOVEL-8801 localllm
+tick
+[[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'recovery called generator'
+[[ ! -f "${STATE}/work/NOVEL-8801/illustration.pending-crash.png" ]] || fail 'pending image not adopted'
+
+# Missing references preserve both manuscript and the previous image.
+cp "${STATE}/work/NOVEL-8801/illustration.png" "${TMP}/image-before-shortage.png"
+sed -i '/^- Characters: 星野太郎$/d' "${VAULT}/Novels/NOVEL-8801.md"
+printf '%s\n' '- Characters: 未知の人物' >"${TMP}/image-req.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" Requirements "${TMP}/image-req.txt"
+printf '%s\n' '- 挿絵を作り直してください' >"${TMP}/image-instructions.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" 'Review Instructions' "${TMP}/image-instructions.txt"
+set_assignee NOVEL-8801 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-8801)" == Review ]] || fail 'missing image must remain Review'
+card_line "${BOARD}" NOVEL-8801 | grep -Fq 'assignee::boxp' || fail 'missing image must return to boxp'
+assert_contains "${VAULT}/Novels/NOVEL-8801.md" '探索ノート数'
+cmp "${TMP}/image-before-shortage.png" "${STATE}/work/NOVEL-8801/illustration.png" || fail 'missing image changed previous image'
+[[ "$(sha256sum "${STATE}/work/NOVEL-8801/manuscript.md" | cut -d' ' -f1)" == "${before_image_body}" ]] || fail 'missing image changed manuscript'
+echo 'PASS: image-only generation, reuse, recovery and shortage'
+
 echo "All novel-board runner tests passed."

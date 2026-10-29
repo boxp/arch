@@ -2139,7 +2139,7 @@
           _ (when summary-path (reject-private-symlink-path! summary-path))
           summary (when summary-path (read-edn-file summary-path {}))
           completed? (and (= :succeeded (:status summary)) (= "review" (:next-status summary))
-                          (#{:write :revise} (:action summary))
+                          (#{:write :revise :illustrate} (:action summary))
                           (fs/regular-file? (manuscript-path novel-id))
                           (pos? (fs/size (manuscript-path novel-id))))]
       (if-not completed?
@@ -2229,33 +2229,84 @@
   (with-novel-lock-guard novel-id
     #(when-let [live (current-card novel-id)] (sync-draft-under-guard! live))))
 
-(defn reference-image-candidates [novel-id content]
-  ;; Images embedded in the management note come first, then images embedded in
-  ;; the referenced setting notes. Returns [{:path :label}] without duplicates.
-  ;; The runner-managed Draft Preview section is skipped so a generated
-  ;; illustration is never fed back as a reference image on revision.
-  (let [note-dir (fs/parent (note-path novel-id))
-        content (without-section content draft-preview-heading)
-        from-note (map (fn [raw] [raw note-dir]) (embedded-image-refs content))
-        from-refs (for [target (reference-targets content)
-                        :let [resolved (try (resolve-vault-path target note-dir) (catch Exception _ nil))]
-                        :when (and resolved (allowed-reference-path? resolved))
-                        file (reference-markdown-files resolved)
-                        raw (embedded-image-refs (slurp (str file)))]
-                    [raw (fs/parent file) (str/replace (str (fs/file-name file)) #"\.md$" "")])]
-    (loop [items (concat from-note from-refs) acc [] seen #{}]
-      (if (empty? items)
-        acc
-        (let [[raw base label] (first items)
-              path (try (resolve-image raw base) (catch Exception _ nil))
-              key (when path (canonical-path path))]
-          (if (and path (not (contains? seen key)))
-            (recur (rest items)
-                   (conj acc {:path (str path)
-                              :file (str (fs/file-name path))
-                              :label (or label "管理ノート")})
-                   (conj seen key))
-            (recur (rest items) acc seen)))))))
+(defn discover-reference-images [novel-id content fm nsfw]
+  ;; Staged search (management note, explicit references, name-matched setting
+  ;; notes, one wiki-link hop). At most 4 images per setting note so one
+  ;; image-heavy note cannot crowd out the others. Paths and counts only.
+  (let [candidates (atom []) explored (atom []) gaps (atom []) seen (atom #{}) notes (atom #{})
+        links (atom []) note-dir (fs/parent (note-path novel-id))
+        private-root (fs/path (work-dir novel-id) "references")
+        gap! (fn [type detail] (swap! gaps conj {:type type :detail (str detail)}))
+        image! (fn [raw base label source explicit?]
+                 (let [vault-path (try (resolve-image raw base) (catch Exception _ nil))
+                       private-path (when (and explicit? (= (str raw) (str (fs/file-name raw))) (fs/directory? private-root))
+                                      (first (files-under private-root #(= (str (fs/file-name %)) (str raw)))))
+                       path (or vault-path private-path)
+                       private? (and path (not vault-path))]
+                   (cond
+                     (nil? path) (gap! :image-not-found raw)
+                     (and (not nsfw) (not private?) (str/starts-with? (absolute-relative (vault) path) "NSFW/"))
+                     (gap! :image-nsfw-excluded (absolute-relative (vault) path))
+                     (if private?
+                       (or (fs/sym-link? private-root) (symlinked-under? private-root path)
+                           (not (str/starts-with? (canonical-path path) (str (canonical-path private-root) java.io.File/separator))))
+                       (or (not (allowed-reference-path? path)) (symlinked-under? (vault) path)))
+                     (gap! :image-not-allowed (if private? (str raw) (absolute-relative (vault) path)))
+                     (or (zero? (fs/size path)) (not (image-magic-ok? path)))
+                     (gap! :image-invalid-bytes (if private? (str raw) (vault-relative path)))
+                     (and (< (count @candidates) 24) (not (contains? @seen (canonical-path path))))
+                     (do (swap! seen conj (canonical-path path))
+                         (swap! candidates conj {:path (str path) :file (str (fs/file-name path)) :label label :source source})))))
+        scan! (fn [file source follow?]
+                (when (and file (< (count @notes) 40) (not (contains? @notes (canonical-path file))))
+                  (swap! notes conj (canonical-path file))
+                  (let [rel (absolute-relative (vault) file)]
+                    (cond
+                      (or (not (allowed-reference-path? file)) (symlinked-under? (vault) file)) (gap! :image-not-allowed rel)
+                      (and (not nsfw) (str/starts-with? rel "NSFW/")) (gap! :image-nsfw-excluded rel)
+                      :else
+                      (let [text (slurp (str file)) fm (frontmatter-map (vec (str/split-lines text)))
+                            refs (embedded-image-refs text)]
+                        (cond
+                          (and (not nsfw) (= "true" (str/lower-case (str (:nsfw fm)))))
+                          (gap! :image-nsfw-excluded rel)
+                          ;; Automatic stages honour `canon: false` like the setting exploration.
+                          (and (not= "明示参照" source) (= "false" (str/lower-case (str (:canon fm)))))
+                          (gap! :image-noncanon-excluded rel)
+                          :else
+                          (do (swap! explored conj {:rel rel :source source :images (count refs)})
+                              (doseq [raw (take 4 refs)] (image! raw (fs/parent file) (str/replace (str (fs/file-name file)) #"\.md$" "") source false))
+                              (when follow? (swap! links into (map #(vector % (fs/parent file)) (wiki-link-stems text)))))))))))]
+    (let [text (without-section content draft-preview-heading) refs (embedded-image-refs text)]
+      (swap! notes conj (canonical-path (note-path novel-id)))
+      (swap! explored conj {:rel (absolute-relative (vault) (note-path novel-id)) :source "管理ノート" :images (count refs)})
+      (doseq [raw refs] (image! raw note-dir "管理ノート" "管理ノート" false)))
+    (doseq [target (reference-targets content)
+            :let [image-target (str/trim (str/replace target #"[|#].*$" ""))]]
+      (if (contains? image-extensions (str/lower-case (or (fs/extension image-target) "")))
+        (image! image-target note-dir image-target "明示参照" true)
+        (let [path (try (resolve-vault-path target note-dir) (catch Exception _ nil))]
+          (cond
+            (nil? path) (gap! :image-not-found target)
+            (or (not (allowed-reference-path? path)) (symlinked-under? (vault) path)) (gap! :image-not-allowed target)
+            :else (doseq [file (reference-markdown-files path)] (scan! file "明示参照" true))))))
+    (doseq [:let [query (exploration-query fm content)]
+            entry (setting-catalog)
+            :when (and (not (:excluded entry)) (seq (lexical-hits entry query)))]
+      (scan! (:path entry) "名前一致" true))
+    ;; Notes linked from several setting notes (a shared school / world note)
+    ;; come before notes only one character links to.
+    (let [paths (keep (fn [[stem base]]
+                        (let [path (try (resolve-vault-path stem base) (catch Exception _ nil))]
+                          (when (and path (str/ends-with? (str path) ".md")) path)))
+                      @links)
+          freq (frequencies (map canonical-path paths))]
+      (doseq [path (sort-by #(- (get freq (canonical-path %))) (distinct paths))]
+        (scan! path "リンク先" false)))
+    {:candidates @candidates :explored @explored :gaps @gaps}))
+
+(defn reference-image-candidates [novel-id content fm nsfw]
+  (:candidates (discover-reference-images novel-id content fm nsfw)))
 
 ;; ---------------------------------------------------------------------------
 ;; localllm route (OpenAI-compatible chat completions)
@@ -2771,7 +2822,7 @@
 (defn default-illustration-spec [title manuscript]
   {:scene "本文のハイライト場面（自動選択）"
    :prompt (str "Anime style illustration, mid shot with depth and dynamic angle, of the highlight scene of a Japanese light novel titled \""
-                title "\". " (truncate-text (str/replace manuscript #"\s+" " ") 400)
+                title "\". "
                 " Expressive faces and poses, layered foreground, midground and background.")
    :reference_images []})
 
@@ -2809,51 +2860,44 @@
   (let [by-file (into {} (map (juxt :file :path) candidates))
         pinned (map :path (filter #(= "管理ノート" (:label %)) candidates))
         chosen (->> (:reference_images spec) (map str) (keep #(get by-file (fs/file-name %))))
-        fallback (map :path candidates)]
+        fallback (map :path (take 4 candidates))]
     (vec (take 6 (distinct (if (or (seq pinned) (seq chosen)) (concat pinned chosen) fallback))))))
+
+(defn valid-image? [path]
+  (and (fs/regular-file? path) (pos? (fs/size path)) (image-magic-ok? path)))
+
+(defn pending-image-path [novel-id run-dir]
+  (fs/path (work-dir novel-id) (str "illustration.pending-" (fs/file-name run-dir) ".png")))
+
+(defn promote-illustration! [novel-id pending]
+  (let [output (illustration-path novel-id)]
+    (when (fs/exists? output)
+      (fs/copy output (fs/path (work-dir novel-id) (str "illustration.prev-" (str/replace (now-str) #"[:.]" "-") ".png")) {:replace-existing true}))
+    (java.nio.file.Files/move (fs/path pending) (fs/path output)
+                             (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
+    (private-file! output)
+    {:ok? true :path (str output) :bytes (fs/size output)}))
 
 (defn generate-illustration! [novel-id run-dir spec reference-images nsfw]
   (let [script (env "CODEX_NOVEL_BOARD_IMAGE_SCRIPT" default-image-script)
-        output (illustration-path novel-id)
+        pending (pending-image-path novel-id run-dir)
         log-path (fs/path run-dir "image.log")
-        prompt (str (:prompt spec)
-                    (if nsfw "" " Safe for work, no sexual emphasis.")
-                    " No text, no letters, no logo, no watermark.")]
-    (cond
-      (not (fs/exists? script))
-      {:ok? false :reason (str "挿絵スクリプトが見つかりません: " script)}
-
-      (empty? reference-images)
-      {:ok? false :reason "参照画像が管理ノート/参照設定に埋め込まれていないため挿絵を生成しませんでした（再試行条件: Requirements か References に vault 内の参照画像を埋め込む）"}
-
-      :else
-      (do
-        (when (fs/exists? output)
-          (fs/move output (fs/path (work-dir novel-id) (str "illustration.prev-" (str/replace (now-str) #"[:.]" "-") ".png"))
-                   {:replace-existing true}))
-        (let [args (-> ["bb" (str script) "-a" (env "CODEX_NOVEL_BOARD_IMAGE_ASPECT" "16:9") "-o" (str output)]
-                       (into (mapcat (fn [ref] ["-i" (str ref)]) reference-images))
-                       (conj prompt))
-              started (System/currentTimeMillis)
+        prompt (str (:prompt spec) (if nsfw "" " Safe for work, no sexual emphasis.") " No text, no letters, no logo, no watermark.")]
+    (try
+      (cond
+        (not (fs/exists? script)) {:ok? false :reason (str "挿絵スクリプトが見つかりません: " script)}
+        (empty? reference-images) {:ok? false :reason "参照画像が見つかりません。再開条件: 作画資料画像を追加"}
+        :else
+        (let [args (-> ["bb" (str script) "-a" (env "CODEX_NOVEL_BOARD_IMAGE_ASPECT" "16:9") "-o" (str pending)]
+                       (into (mapcat (fn [ref] ["-i" (str ref)]) reference-images)) (conj prompt))
               proc (p/process args {:out (io/file (str log-path)) :err (io/file (str log-path))})
-              timeout-ms (* 1000 (env-long "CODEX_NOVEL_BOARD_IMAGE_TIMEOUT_SECONDS" 600))
-              result (deref (future @proc) timeout-ms ::timeout)]
-          (if (= ::timeout result)
-            (do (p/destroy-tree proc)
-                {:ok? false :reason "挿絵生成がタイムアウトしました（再試行条件: Review から agent を再割当）"})
-            (let [exit (:exit result)
-                  elapsed (- (System/currentTimeMillis) started)]
-              (cond
-                (not (zero? exit))
-                {:ok? false :reason (str "挿絵生成が exit " exit " で失敗しました（詳細: run dir の image.log）") :elapsed-ms elapsed}
-
-                (or (not (fs/exists? output)) (zero? (fs/size output)) (not (image-magic-ok? output)))
-                {:ok? false :reason "挿絵生成は exit 0 でしたが有効な画像ファイルが生成されませんでした" :elapsed-ms elapsed}
-
-                :else
-                (do (private-file! output)
-                    {:ok? true :path (str output) :bytes (fs/size output) :elapsed-ms elapsed
-                     :references (mapv vault-relative reference-images)})))))))))
+              result (deref (future @proc) (* 1000 (env-long "CODEX_NOVEL_BOARD_IMAGE_TIMEOUT_SECONDS" 600)) ::timeout)]
+          (cond
+            (= ::timeout result) (do (p/destroy-tree proc) {:ok? false :reason "挿絵生成がタイムアウトしました。再開条件: agent を再割当"})
+            (not (zero? (:exit result))) {:ok? false :reason (str "挿絵生成が exit " (:exit result) " で失敗しました。再開条件: image.log を確認")}
+            (not (valid-image? pending)) {:ok? false :reason "有効な画像ファイルが生成されませんでした。再開条件: image.log を確認"}
+            :else (assoc (promote-illustration! novel-id pending) :references (mapv str reference-images)))))
+      (finally (fs/delete-if-exists pending)))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cloud route (claude / codex CLI)
@@ -3054,6 +3098,35 @@
   (let [state (try (read-edn-file (published-state-path novel-id) {}) (catch Exception _ {}))]
     (and (= :published (:status state)) (seq (:path state)))))
 
+(defn without-links [text]
+  (-> (str text)
+      (str/replace #"!?\[\[[^\]]*\]\]" "")
+      (str/replace #"!?\[[^\]]*\]\([^)]*\)" "")
+      (str/replace #"`[^`]*`" "")))
+
+(defn image-intent? [text]
+  ;; A request to produce an illustration, not a mere mention: links, embeds
+  ;; and code spans (file names such as `x-illustration.png`) are ignored.
+  (let [plain (without-links text)]
+    (boolean (re-find #"(?i)(?:挿絵|イラスト|illustration|画像|絵)[^。\n]{0,12}?(?:用意|生成|作成|作って|作り直|描|付け|追加|入れ|差し替|やり直|generate|create|draw)" plain))))
+
+(defn image-only-instructions? [text]
+  (let [lines (->> (str/split-lines (str text)) (map #(str/replace % #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")) (remove str/blank?))]
+    ;; Lines that only point at material (`参照: [[note]]`) support the request.
+    (and (some image-intent? lines)
+         (every? #(or (image-intent? %)
+                      (re-matches #"(?i)\s*(?:参照|資料|参考|作画資料|references?)?\s*[:：]?\s*" (without-links %)))
+                 lines)
+         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更" %) lines))))
+
+(defn illustration-job-path [novel-id] (fs/path (work-dir novel-id) "illustration-job.edn"))
+
+(defn illustration-current? [novel-id]
+  (let [image (illustration-path novel-id) manuscript (manuscript-path novel-id)
+        job (read-edn-file (illustration-job-path novel-id) {})]
+    (and (valid-image? image) (fs/regular-file? manuscript) (= :succeeded (:status job))
+         (= (:manuscript-sha job) (sha256-file manuscript)) (= (:output-sha job) (sha256-file image)))))
+
 (defn candidate-action [{:keys [status assignee novel-id]} note-fm note-text]
   (let [route (assignee-route assignee)]
     (cond
@@ -3068,7 +3141,11 @@
       (= "draft" status) (let [text (instructions-text note-text)]
                            (if (and (seq text) (not (instructions-applied? novel-id text))) :regroom :write))
       (= "in-progress" status) (if (fs/exists? (manuscript-path novel-id)) :revise :write)
-      (= "review" status) (if (section-filled? note-text "## Review Instructions") :revise :review-instructions-empty)
+      (= "review" status) (if (section-filled? note-text "## Review Instructions")
+                            (let [text (instructions-text note-text)]
+                              (if (or (image-only-instructions? text)
+                                      (and (instructions-applied? novel-id text) (image-intent? text) (not (illustration-current? novel-id))))
+                                :illustrate :revise)) :review-instructions-empty)
       :else nil)))
 
 (defn manuscript-valid? [path]
@@ -3078,6 +3155,8 @@
 
 (defn manuscript-chars [path]
   (if (fs/exists? path) (count (str/trim (slurp (str path)))) 0))
+
+(declare reference-shortage-reason)
 
 (defn run-write! [novel-id card fm content action agent run-dir]
   ;; Returns {:ok? :reason :model :manuscript-chars :illustration {...}}
@@ -3129,7 +3208,9 @@
               :else (do (private-file! manuscript) result))))]
     (if-not (:ok? generation)
       generation
-      (let [candidates (reference-image-candidates novel-id content)
+      (let [discovery (discover-reference-images novel-id content fm nsfw)
+            _ (write-edn-file! (fs/path run-dir "illustration-references.edn") (select-keys discovery [:explored :gaps]))
+            candidates (:candidates discovery)
             spec (cond
                    (fs/exists? (illustration-spec-path novel-id))
                    (or (try (parse-json-object (slurp (str (illustration-spec-path novel-id)))) (catch Exception _ nil))
@@ -3141,11 +3222,70 @@
                    :else (default-illustration-spec (:title card) (slurp (str manuscript))))
             _ (write-edn-file! (fs/path run-dir "illustration-spec.edn") (dissoc spec :prompt))
             references (select-reference-images spec candidates)
-            illustration (generate-illustration! novel-id run-dir spec references nsfw)]
+            illustration (if (seq candidates)
+                           (generate-illustration! novel-id run-dir spec references nsfw)
+                           {:ok? false :reason (reference-shortage-reason discovery)})
+            _ (when (:ok? illustration)
+                (write-edn-file! (illustration-job-path novel-id)
+                                 {:status :succeeded :run-id (str (fs/file-name run-dir))
+                                  :manuscript-sha (sha256-file manuscript) :output-sha (sha256-file (illustration-path novel-id))
+                                  :instructions-fp (instructions-fingerprint (instructions-text content))}))]
         (assoc generation
                :manuscript-chars (manuscript-chars manuscript)
                :illustration illustration
                :scene (:scene spec))))))
+
+(defn reference-shortage-reason [{:keys [explored gaps]}]
+  (str "参照画像が見つかりません。探索ノート数: "
+       (str/join ", " (for [source ["管理ノート" "明示参照" "名前一致" "リンク先"]]
+                         (str source "=" (count (filter #(= source (:source %)) explored)))))
+       "、埋め込み画像参照数: " (reduce + (map :images explored))
+       (when (seq gaps) (str "、不足: " (str/join ", " (map #(str (name (:type %)) " " (:detail %)) (take 5 gaps)))))
+       "。再開条件: 登場人物の設定ノートか、そのリンク先に SFW の作画資料画像を埋め込む、または Review Instructions に画像を含むノートへの [[リンク]] を書く"))
+
+(defn run-illustrate! [novel-id card fm content agent run-dir]
+  (let [manuscript (manuscript-path novel-id) job-path (illustration-job-path novel-id)
+        instructions (instructions-text content) fp (instructions-fingerprint instructions)]
+    (ensure-private-dir! (work-dir novel-id))
+    (if-not (manuscript-valid? manuscript)
+      {:ok? false :reason "有効な本文がありません。再開条件: 本文を用意"}
+      (let [before (sha256-file manuscript) job (read-edn-file job-path {})
+            pending (:pending job)
+            safe-pending? (and pending (= (str (fs/parent (fs/absolutize pending))) (str (fs/absolutize (work-dir novel-id))))
+                               (re-matches #"illustration\.pending-[A-Za-z0-9._-]+\.png" (str (fs/file-name pending)))
+                               (not (fs/sym-link? pending)))
+            adopted (when (and (= :running (:status job)) safe-pending? (= before (:manuscript-sha job)) (valid-image? pending))
+                      (promote-illustration! novel-id pending))
+            _ (when (and (= :running (:status job)) (not adopted))
+                (when safe-pending? (fs/delete-if-exists pending))
+                (write-edn-file! job-path (assoc job :status :abandoned)))
+            _ (when adopted (write-edn-file! job-path (assoc job :status :succeeded :output-sha (sha256-file (illustration-path novel-id)))))
+            reused (and (not adopted) (illustration-current? novel-id) (= fp (:instructions-fp (read-edn-file job-path {}))))
+            discovery (when-not (or adopted reused) (discover-reference-images novel-id content fm (:nsfw card)))
+            _ (when discovery (write-edn-file! (fs/path run-dir "illustration-references.edn") (select-keys discovery [:explored :gaps])))
+            candidates (:candidates discovery)
+            spec (when (seq candidates)
+                   (or (try (when (fs/exists? (illustration-spec-path novel-id)) (parse-json-object (slurp (str (illustration-spec-path novel-id))))) (catch Exception _ nil))
+                       (if (= :localllm (assignee-route agent))
+                         (plan-illustration-with-llm! (localllm-config) run-dir (slurp (str manuscript)) candidates (:nsfw card) (:title card))
+                         (default-illustration-spec (:title card) ""))))
+            illustration (cond
+                           adopted adopted
+                           reused {:ok? true :path (str (illustration-path novel-id)) :bytes (fs/size (illustration-path novel-id))}
+                           (empty? candidates) {:ok? false :reason (reference-shortage-reason discovery)}
+                           :else (let [running {:status :running :run-id (str (fs/file-name run-dir)) :manuscript-sha before :instructions-fp fp
+                                                :pending (str (pending-image-path novel-id run-dir)) :started-at (now-str)}
+                                       _ (write-edn-file! job-path running)
+                                       result (try (generate-illustration! novel-id run-dir spec (select-reference-images spec candidates) (:nsfw card))
+                                                   (catch Exception e {:ok? false :reason (str "挿絵生成に失敗しました: " (sanitize-error (.getMessage e)) "。再開条件: 原因を解消")}))]
+                                   (write-edn-file! job-path (if (:ok? result)
+                                                               (assoc running :status :succeeded :output-sha (sha256-file (illustration-path novel-id)))
+                                                               (assoc running :status :failed :reason (:reason result)))) result))
+            unchanged? (= before (sha256-file manuscript))
+            ok? (and (:ok? illustration) unchanged?)]
+        (cond-> {:ok? (boolean ok?) :illustration illustration :manuscript-chars (manuscript-chars manuscript)
+                 :manuscript-unchanged? unchanged? :adopted? (boolean adopted) :reused? (boolean reused)}
+          (not ok?) (assoc :reason (if unchanged? (:reason illustration) "本文が変更されたため検証に失敗しました。再開条件: 本文を確認")))))))
 
 (defn apply-groom-output! [novel-id text]
   (let [sections (groom-output-sections text)
@@ -3356,8 +3496,11 @@
                     (when (:model outcome) (str " model=" (:model outcome)))
                     (when-let [u (usage-summary (:usage outcome))] (str " (" u ")"))
                     (when (:manuscript-chars outcome) (str " 本文 " (:manuscript-chars outcome) " 字"))
-                    (when (:illustration outcome) (str "; " (illustration-summary (:illustration outcome))))
-                    (when-not success? (str "; 理由: " (:reason outcome)))
+                    (when (or (:illustration outcome) (= :illustrate action))
+                      (str "; " (illustration-summary (or (:illustration outcome) {:ok? false :reason (:reason outcome)}))))
+                    (when (= :illustrate action) "; 本文は変更していません")
+                    (when-not (or success? (and (= :illustrate action) (= (:reason outcome) (get-in outcome [:illustration :reason]))))
+                      (str "; 理由: " (:reason outcome)))
                     (when (:exploration-summary outcome) (str "; 設定: " (:exploration-summary outcome) "（Reference Context 参照）"))
                     (when (and success? (:attention? outcome))
                       "; 要確認: 設定の不足/未解決あり。通常の準備完了 Draft ではなく、Reference Context を確認してから次へ進めてください")
@@ -3365,6 +3508,7 @@
                       (str "; Review Instructions を Requirements / Outline に反映（本文は書いていません。指示は消さずに保持、反映内容と未反映は Change History 参照）"))
                     (cond
                       human-moved? (str "; カードは run 中に人間が " (:lane current) " へ移動したためレーンと担当は変更しません")
+                      (and (= :illustrate action) (not success?)) "; 次: 不足資料を追加するか指示を具体化してから agent を再割当（資料が同じままでは同じ結果）"
                       (= "review" target) "; 次: Review で原稿を確認し、承認なら人間が Done へ移動（完成版はその後に一度だけ配置）。改稿は Review Instructions を書いて agent を再割当"
                       (and (= "draft" target) success? (= :regroom action))
                       "; 次: Draft で反映後の Requirements / Outline を確認。同じ指示のまま agent を割り当てると初稿執筆を開始（指示は執筆条件として渡す）、さらに添削するなら Review Instructions を書き換えてから agent を割当"
@@ -3513,6 +3657,7 @@
                                                  :write "; Review Instructions あり（反映済み）: 執筆条件として渡す"
                                                  :groom "; Review Instructions あり: 要件整理への補足指示として渡す"
                                                  :revise "; Review Instructions あり: 改稿指示として渡す"
+                                                 :illustrate "; Review Instructions: 挿絵のみ（本文は変更しない）"
                                                  ""))))
               (mark-run! novel-id (:run-id lock) :running {:action action :agent agent :lane lane :started-at (now-str)})
               (end-commit!)
@@ -3521,9 +3666,10 @@
               ;; registration / the stream reader's live flag).
               (ensure-not-shutting-down! "before the run")
               (let [outcome (try
-                              (if (#{:groom :regroom} action)
-                                (run-groom! novel-id card fm content action agent run-dir)
-                                (run-write! novel-id card fm content action agent run-dir))
+                              (cond
+                                (#{:groom :regroom} action) (run-groom! novel-id card fm content action agent run-dir)
+                                (= :illustrate action) (run-illustrate! novel-id card fm content agent run-dir)
+                                :else (run-write! novel-id card fm content action agent run-dir))
                               (catch Exception e
                                 (if (or (:shutdown? (ex-data e)) @shutdown-requested?)
                                   {:ok? false :shutdown? true :reason (sanitize-error (.getMessage e))}
@@ -3682,6 +3828,47 @@
                                            (map normalize-assignee ["localllm" "Local-LLM" "local_llm" "fable" "codex-sol"])))
     (check "routes" (= [:localllm :claude :codex :codex nil nil]
                        (map assignee-route ["localllm" "claude-fable" "codex" "codex-sol-high" "pi" "boxp"])))
+    (check "image instructions classification"
+           (and (image-intent? "挿絵も用意してください")
+                (image-only-instructions? "- 挿絵も用意してください")
+                (not (image-intent? "画像資料は再度調べて取得し直してください"))
+                (not (image-intent? "[[character-illustration.png]] を参考に主人公の衣装を変更してください"))
+                (not (image-only-instructions? "- `illustration.png` を参考に衣装を直す"))
+                (image-only-instructions? "- 挿絵を作り直してください\n- イラストを1枚追加")
+                (image-only-instructions? "- 挿絵を生成してください\n- 参照: [[設定/主人公]]")
+                (not (image-only-instructions? "- 参照: [[設定/主人公]]"))
+                (not (image-only-instructions? "- 挿絵を描く\n- 本文を加筆"))))
+    (check "review image action and mixed action"
+           (with-redefs [instructions-applied? (constantly false)]
+             (let [card {:status "review" :assignee "localllm" :novel-id "NOVEL-0"}
+                   note #(str "## Review Instructions\n\n" % "\n\n## Change History\n")]
+               (and (= :illustrate (candidate-action card {} (note "- 挿絵を用意")))
+                    (= :revise (candidate-action card {} (note "- 挿絵を用意\n- 本文を加筆")))))))
+    (check "applied mixed instructions with missing image resume illustration"
+           (with-redefs [instructions-applied? (constantly true) illustration-current? (constantly false)]
+             (= :illustrate (candidate-action {:status "review" :assignee "localllm" :novel-id "NOVEL-0"} {}
+                                             "## Review Instructions\n\n- 挿絵を用意\n- 本文を加筆\n"))))
+    (check "default image prompt excludes manuscript"
+           (not (str/includes? (:prompt (default-illustration-spec "題" "秘密の本文") ) "秘密の本文")))
+    (let [tmp (fs/create-temp-dir) root (fs/path tmp "vault") work (fs/path tmp "work")]
+      (try
+        (doseq [dir [(fs/path root "S") (fs/path root "NSFW") (fs/path root "Novels") (fs/path work "references")]] (fs/create-dirs dir))
+        (doseq [path [(fs/path root "S" "a.png") (fs/path root "S" "b.png") (fs/path root "NSFW" "x.png") (fs/path work "references" "private.png")]]
+          (with-open [out (io/output-stream (str path))] (.write out (byte-array [(unchecked-byte 0x89) 0x50 0x4e 0x47]))))
+        (spit (str (fs/path root "S" "bad.png")) "bad")
+        (spit (str (fs/path root "S" "人物.md")) "# 人物\n![[a.png]]\n![[bad.png]]\n![[missing.png]]\n[[資料]]")
+        (spit (str (fs/path root "S" "資料.md")) "# 資料\n![[b.png]]\n[[非正典]]")
+        (spit (str (fs/path root "S" "非正典.md")) "---\ncanon: false\n---\n# 非正典\n![[a.png]]")
+        (spit (str (fs/path root "S" "人物2.md")) "# 人物\n[[非正典]]")
+        (with-redefs [vault (constantly (str root)) work-dir (constantly work) setting-roots (constantly ["S"])
+                      allowed-reference-dirs (constantly ["S" "NSFW" "Novels"])]
+          (let [result (discover-reference-images "NOVEL-0" "## Requirements\n人物 `private.png|立ち絵`\n![[NSFW/x.png]]\n" {} false)
+                files (set (map :file (:candidates result))) gaps (set (map :type (:gaps result)))]
+            (check "image discovery priorities and gaps"
+                   (and (= #{"a.png" "b.png" "private.png"} files)
+                        (every? gaps [:image-not-found :image-invalid-bytes :image-nsfw-excluded :image-noncanon-excluded])
+                        (= #{"名前一致" "リンク先" "明示参照"} (set (map :source (:candidates result))))))))
+        (finally (fs/delete-tree tmp))))
     (check "human assignee" (and (human-assignee? "boxp") (human-assignee? "") (not (human-assignee? "pi"))))
     (let [line "- [ ] [[Novels/NOVEL-7|NOVEL-7: テスト 作品]] #novel #nsfw status::draft assignee::localllm"
           cards (parse-board-cards ["## Draft" line "## Done"])]
