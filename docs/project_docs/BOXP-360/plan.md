@@ -59,7 +59,7 @@
 - 期間: run は 2026-07-03〜2026-10-29、outbox は 2026-10-22〜。task 290 / run 1453 / event 4136。
 - outcome: accepted 222、awaiting-review 33、in-flight 20、blocked 11、backlog 4。
 - agent-system 是正 task 率 (gate_defect = review-fix run): **43/284 (15.1%)**。原因 unknown の review 後再 implement: **107 task (205 event)**。
-- first acceptance 適合率: **94/222 (42.3%)**。未評価 62 を合格に数えない場合は 94/284 (33.1%)。
+- first acceptance 適合率: **94/224 (42.0%)**。未評価 60 を合格に数えない場合は 94/284 (33.1%)。run 履歴の無い受入済み 57 件は観測不能として分母外で別掲。ticket 総数 360 (run 無し 70) は総数・未完了 guardrail に残す。reopen-after-accept は受入履歴 source 未接続のため unknown。
 - 2026-10-01 以降に作成された task (154): 是正 task 12/150 (8.0%)、unknown 46、first acceptance 70/117 (59.8%)。lead time p50 約 24h / p90 約 96h (日粒度)。
 - run の信頼性: interrupted 135、retrying 547、idle-timeout 7。blocker の内訳は agent-reported-blocked 72 / agent-process-error 30 / pr-gate-pr-url 7。
 - delegation (記録がある 113 run): delegated 57 / exempt 56。

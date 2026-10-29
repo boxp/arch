@@ -29,28 +29,51 @@
     :evidence_event_ids :stratum :delegation_kind :tokens_in :tokens_out :cost_source
     :severity :effect_key :approval_key :redelivery :synthetic :coverage_target})
 
-(def forbidden-value-patterns
-  [#"(?i)bearer\s+[a-z0-9._-]+" #"(?i)(api[_-]?key|token|secret|password)=" #"https?://[^\s]*\?"
-   #"(?i)-----BEGIN" #"(?i)\bat\s+[\w.$]+\([\w.]+:\d+\)"])
+(def enum-values
+  {:schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
+   :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "effect.applied" "coverage.connected"}
+   :source #{"task-board-runner" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff" "synthetic:calibration" "synthetic:feedback" "synthetic:hermes" "synthetic:task-board"}
+   :runtime #{"codex-cli" "claude-cli" "localllm" "hermes" "unknown"}
+   :agent #{"codex" "codex-sol" "codex-sol-xhigh" "codex-astra" "claude-opus" "claude-fable" "fable" "localllm"}
+   :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
+   :status #{"succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold"}
+   :result #{"review" "blocked" "done" "ready"}
+   :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
+   :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
+   :correction_class #{"gate_defect" "unknown" "done_claim_without_execution" "instruction_violation" "preference_adjustment"}
+   :correction_origin #{"agent-system" "non-agent" "unknown"} :classifier #{"rule" "human"}
+   :confidence #{"high" "medium" "low"} :severity #{"critical" "high" "medium" "low"}
+   :cost_source #{"unknown"} :occurred_precision #{"day" "second" "ns"}
+   :delegation_kind #{"delegated" "exempt" "failed" "unparsable"}
+   :stratum #{"assistant-or-research" "assistant" "research" "creative" "dev" "infra"}
+   :blocker_category #{"external" "agent-reported-blocked" "agent-process-error" "pr-gate-pr-url"}
+   :coverage_target #{"duplicate-effects" "critical-safety-events" "acceptance-history"}})
 
-(defn safe-value? [v]
+(def token-pattern #"(?i)(?:^|[^a-z0-9])(ghp_|gho_|github_pat_|xox[bp]-|AKIA|sk-|glpat-)[a-z0-9_-]+|[a-z0-9]{32,}")
+(defn token-safe? [s] (not (re-find token-pattern s)))
+(defn event-id? [s synthetic?]
+  (and (<= (count s) 128) (boolean (re-matches (if synthetic? #"[A-Za-z0-9:_/-]{1,128}"
+                         #"[A-Z]+-\d+(?:[/:-][A-Za-z0-9:_/-]+)?") s))))
+(defn valid-value? [k v synthetic?]
   (cond
     (nil? v) true
-    (string? v) (and (<= (count v) 128)
-                     (boolean (re-matches #"[A-Za-z0-9_./:+-]+" v))
-                     (not (re-find #"(?i)(?:^|[^a-z0-9])sk-[a-z0-9_-]+" v))
-                     (not (some #(re-find % v) forbidden-value-patterns)))
-    (sequential? v) (every? safe-value? v)
-    :else (or (number? v) (boolean? v))))
+    (and (string? v) (not (token-safe? v))) false
+    (contains? enum-values k) (and (string? v) (contains? (enum-values k) v))
+    (#{:attempt :exit_code :redelivery :tokens_in :tokens_out} k) (number? v)
+    (#{:idle_timeout :synthetic} k) (boolean? v)
+    (#{:occurred_at :observed_at} k) (and (string? v) (try (java.time.Instant/parse v) true (catch Exception _ false)))
+    (#{:event_id :parent_event_id} k) (and (string? v) (event-id? v synthetic?))
+    (= k :evidence_event_ids) (and (sequential? v) (every? #(and (string? %) (token-safe? %) (event-id? % synthetic?)) v))
+    (= k :task_id) (and (string? v) (boolean (re-matches (if synthetic? #"(?:[A-Z]+[0-9]+|req:conv-[a-z0-9-]+)" #"[A-Z]+-\d+") v)))
+    (= k :request_id) (and (string? v) (boolean (re-matches (if synthetic? #"req:(?:[A-Z]+[0-9]+|conv-[a-z0-9-]+)" #"req:[A-Z]+-\d+") v)))
+    (= k :run_id) (and (string? v) (boolean (re-matches (if synthetic? #"r[0-9]+" #"\d{8}T\d{6}Z(?:-[0-9a-f-]+)?") v)))
+    (#{:effect_key :approval_key} k) (and (string? v) (boolean (re-matches #"[a-z0-9:_-]{1,64}" v)))
+    :else false))
 
-(defn privacy-gate
-  "許可 key の値も短い識別子に限定し、不正な値を redact する。"
-  [e]
+(defn privacy-gate [e]
   (let [dropped (remove allowed-keys (keys e))
         selected (select-keys e allowed-keys)
-        invalid (filter (fn [[k v]] (or (not (safe-value? v))
-                                      (and (#{:result :status :blocker_category :correction_class :correction_origin :severity} k)
-                                           (string? v) (> (count v) 48)))) selected)]
+        invalid (filter (fn [[k v]] (not (valid-value? k v (true? (:synthetic e))))) selected)]
     {:event (reduce (fn [m [k _]] (assoc m k "redacted")) selected invalid)
      :dropped-keys (count dropped) :redacted-values (count invalid) :rejected? false}))
 
@@ -170,10 +193,15 @@
                          :occurred_at (str (:created fm) "T00:00:00Z") :occurred_precision "day"}]
                        (mapcat #(summary->events ticket %) rs)
                        (derive-corrections ticket rs)
-                       (when (and (= "done" (:status fm)) (not (str/blank? (:closed fm))))
+                       (when (not (str/blank? (:closed fm)))
                          [{:schema_version schema-version :event_id (str ticket ":accepted") :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.accepted"
                            :occurred_at (str (:closed fm) "T23:59:59Z") :occurred_precision "day"}])
+                       (when (and (not= "done" (:status fm)) (not (str/blank? (:closed fm))))
+                         [{:schema_version schema-version :event_id (str ticket ":reopened") :task_id ticket
+                           :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.reopened"
+                           :occurred_at (str (:closed fm) "T23:59:59Z") :occurred_precision "day"
+                           :correction_origin "unknown" :correction_class "unknown"}])
                        (when (#{"ready" "review" "blocked" "backlog" "in-progress"} (:status fm))
                          [{:schema_version schema-version :event_id (str ticket ":state") :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.state"
@@ -273,19 +301,22 @@
                           accepted (some #(when (= "task.accepted" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           first-review (some #(when (or (= "review" (:result %)) (= "review" (:lane_to %)))
                                                 (parse-inst (:occurred_at %))) evs)
-                          post-accept-corr (when accepted (filter #(some-> (parse-inst (:occurred_at %)) (.isAfter accepted)) corr))
+                          post-accept-corr (when accepted (filter #(when-let [t (parse-inst (:occurred_at %))] (or (.isAfter t accepted) (and (= "task.reopened" (:event_type %)) (= t accepted)))) corr))
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
                           finished (filter #(= "run.finished" (:event_type %)) evs)]
-                    :when (or (seq runs) (some :synthetic evs))]
+                    :when (or (some #(= "request.received" (:event_type %)) evs) (seq runs) (some :synthetic evs))]
                 {:task tid :stratum (some :stratum evs) :outcome (task-outcome evs)
+                 :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
                  :interrupted (count (filter #(= "run.interrupted" (:event_type %)) evs))
                  :idle-timeouts (count (filter :idle_timeout finished))
                  :retrying (count (filter #(= "retrying" (:status %)) finished))
                  :agent-corr (count agent-corr) :unknown-corr (count unknown-corr)
                  :post-accept-corr (count post-accept-corr)
-                 :reached-review? (boolean (or first-review accepted))
+                 :observed? (boolean (or (seq runs) (some :synthetic evs)))
+                 :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
+                 :accepted-unobserved? (boolean (and accepted (empty? runs) (not-any? :synthetic evs)))
                  :first-pass? (and accepted (not-any? #(let [t (parse-inst (:occurred_at %))]
                                                         (or (nil? t) (.isBefore t accepted))) corr))
                  :lead-h (hours requested accepted)
@@ -297,12 +328,22 @@
                  :delegation (frequencies (keep :delegation_kind runs))})
         n (count tasks)
         reached (filter :reached-review? tasks)
-        accepted (filter #(= "accepted" (:outcome %)) tasks)
-        sources (frequencies (map :source uniq))]
+        accepted (filter #(and (:observed? %) (= "accepted" (:outcome %))) tasks)
+        accepted-ever (filter #(= "accepted" (:outcome %)) tasks)
+        sources (frequencies (map :source uniq))
+        connected? (fn [target] (some #(and (= "coverage.connected" (:event_type %)) (= target (:coverage_target %))) uniq))
+        duplicates (fn [type key] (let [groups (group-by key (filter #(and (= type (:event_type %)) (get % key) (not= "redacted" (get % key))) uniq))
+                                         repeated (filter #(> (count %) 1) (vals groups))]
+                                     {:count (reduce + (map #(dec (count %)) repeated))
+                                      :tasks-involved (count (set (keep :task_id (mapcat identity repeated))))
+                                      :scopes (count groups)}))
+        effects (duplicates "effect.applied" :effect_key)
+        approvals (duplicates "approval.requested" :approval_key)]
     {:schema schema-version :classifier classifier-version
      :input {:events n-in :unique (count uniq) :duplicates dup :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
-     :tasks {:total n :outcomes (frequencies (map :outcome tasks))
+     :tasks {:total n :never-run (count (filter #(zero? (:runs %)) tasks))
+             :accepted-without-run-history (count (filter :accepted-unobserved? tasks)) :outcomes (frequencies (map :outcome tasks))
              :by-stratum (frequencies (map :stratum tasks))}
      :sli
      {:agent-system-correction-task-ratio
@@ -318,13 +359,13 @@
              :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted)) (count reached))
              :not-yet-evaluated (count (remove #(= "accepted" (:outcome %)) reached))
              :note "分母=受入済 task。未評価 (awaiting-review 等) は別掲し合格に数えない")
-      :reopen-after-accept (ratio (count (filter #(pos? (:post-accept-corr %)) accepted)) (count accepted))
+      :reopen-after-accept (if (connected? "acceptance-history") (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)) {:status :unknown :reason "acceptance history source not connected"})
       :owner-rescue (if (some #(= "owner.rescue" (:event_type %)) uniq)
                       (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
                       {:status "unknown" :reason "rescue event の source 未接続"})
-      :duplicate-approval (let [ap (mapcat (comp vals :approvals) tasks)]
-                            (if (seq ap) (ratio (count (filter #(> % 1) ap)) (count ap))
-                                {:status "unknown" :reason "approval event 未接続"}))
+      :duplicate-approval (if (pos? (:scopes approvals))
+                            (assoc (ratio (:count approvals) (:scopes approvals)) :tasks-involved (:tasks-involved approvals))
+                            {:status "unknown" :reason "approval event 未接続"})
       :lead-time-hours (assoc (quantiles (keep :lead-h accepted))
                               :note "request.received/accepted は日粒度 (frontmatter)。queue/active/approval/wait/blocked 分解は lane timestamp 不足で unknown")
       :run-reliability {:runs (reduce + (map :runs tasks))
@@ -332,9 +373,8 @@
                         :idle-timeouts (reduce + (map :idle-timeouts tasks))
                         :retrying (reduce + (map :retrying tasks))}
       :delegation (apply merge-with + (map :delegation tasks))}
-     :zero-tolerance {:duplicate-effects (if (some #(or (= "effect.applied" (:event_type %))
-                                                            (and (= "coverage.connected" (:event_type %)) (= "duplicate-effects" (:coverage_target %)))) uniq)
-                                          (count (mapcat #(filter (fn [[_ c]] (> c 1)) (:effects %)) tasks))
+     :zero-tolerance {:duplicate-effects (if (connected? "duplicate-effects")
+                                          (select-keys effects [:count :tasks-involved])
                                           {:status "unknown" :reason "effect source 未接続"})
                       :critical-safety-events (if (some #(or (some? (:severity %))
                                                                (and (= "coverage.connected" (:event_type %)) (= "critical-safety-events" (:coverage_target %)))) uniq)
@@ -343,6 +383,7 @@
                       :private-leak {:status "unknown" :reason "leak detector 未接続。0件観測≠0件"}}
      :guardrails {:pending-over-7d "要 lane timestamp (unknown)"
                   :tasks-per-request (ratio n (count (set (keep :request_id uniq))))
+                  :unfinished (count (filter #(or (some? (:current-state %)) (not (contains? #{"accepted" "cancelled"} (:outcome %)))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
      :coverage {:ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
