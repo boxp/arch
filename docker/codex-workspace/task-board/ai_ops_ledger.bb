@@ -509,6 +509,8 @@
   (fs/path (sli-archive-dir root) (str "events-" date "-" (subs (sha256-hex content) 0 16) ".jsonl")))
 (defn sli-archive-files [root]
   (if (fs/exists? (sli-archive-dir root)) (fs/glob (sli-archive-dir root) "events-*.jsonl") []))
+(defn sli-archive-files-for [root date]
+  (if (fs/exists? (sli-archive-dir root)) (fs/glob (sli-archive-dir root) (str "events-" date "-*.jsonl")) []))
 
 (defn prune! [root]
   (let [cutoff (.minusDays (java.time.LocalDate/now java.time.ZoneOffset/UTC) (retention-days))]
@@ -522,6 +524,12 @@
             (fs/create-dirs (sli-archive-dir root))
             (atomic-spit! (sli-archive-file root d content)
                           (str (str/join "\n" (map json/generate-string entries)) "\n")))
+          ;; Older archive copies of the same date (the day file changed between
+          ;; retries) are superseded by this one.
+          (let [keep-name (str (fs/file-name (sli-archive-file root d content)))]
+            (doseq [a (sli-archive-files-for root d)
+                    :when (not= keep-name (str (fs/file-name a)))]
+              (fs/delete-if-exists a)))
           (fs/delete-if-exists f))
         (catch Exception _ nil)))))
 
@@ -556,10 +564,24 @@
 ;; day file so ai_ops_sli.bb merges them (merge-ledger-events) and turns
 ;; collection_lost markers into unknown SLIs. A line still being appended has no
 ;; trailing newline yet and is left out instead of being counted as malformed.
+(defn- file-date [f]
+  (second (re-matches #"events-(\d{4}-\d{2}-\d{2})(?:-[0-9a-f]+)?\.jsonl" (str (fs/file-name f)))))
+(defn- read-ledger-date
+  "Text for one ledger date. prune! writes the archive before deleting the day file
+  and this runs without the ledger lock, so both may exist (or the deletion may have
+  failed). The day file is a superset of its archive copy and wins; the archive is
+  read only once the day file is gone, and only the newest copy of that date, so
+  markers are never counted twice."
+  [root date]
+  (let [day (fs/path (ledger-dir root) (str "events-" date ".jsonl"))]
+    (or (try (slurp (str day)) (catch java.io.IOException _ nil))
+        (some (fn [a] (try (slurp (str a)) (catch java.io.IOException _ nil)))
+              (sort-by #(- (.toMillis (fs/last-modified-time %))) (sli-archive-files-for root date)))
+        "")))
 (defn append-ledger-events! [root target]
   (with-open [w (java.io.FileWriter. (str target) true)]
-    (doseq [f (sort (map str (if (fs/exists? (ledger-dir root)) (concat (fs/glob (ledger-dir root) "events-*.jsonl") (sli-archive-files root)) [])))
-            :let [text (slurp f) end (inc (or (str/last-index-of text "\n") -1))]
+    (doseq [d (sort (distinct (keep file-date (if (fs/exists? (ledger-dir root)) (concat (fs/glob (ledger-dir root) "events-*.jsonl") (sli-archive-files root)) []))))
+            :let [text (read-ledger-date root d) end (inc (or (str/last-index-of text "\n") -1))]
             :when (pos? end)]
       (.write w (subs text 0 end))))
   true)

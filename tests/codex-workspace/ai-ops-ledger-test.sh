@@ -491,6 +491,17 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
   (assert (true? (ai-ops-ledger/refresh-sli! root vault))))
 (assert (= "1" (second (determinable))) "pruned ledger_dropped marker must still reach the SLI aggregate")
+;; archived but not yet deleted (concurrent refresh or failed delete): the day
+;; file and its archive copy must not both be counted
+(spit (str (ai-ops-ledger/day-file root "2000-01-01")) "{\"collection_lost\":\"ledger_dropped\"}\n")
+(with-redefs [fs/delete-if-exists (fn [_] (throw (ex-info "crash" {})))]
+  (ai-ops-ledger/prune! root))
+(assert (fs/exists? (ai-ops-ledger/day-file root "2000-01-01")))
+(assert (seq (ai-ops-ledger/sli-archive-files-for root "2000-01-01")))
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault))))
+(assert (= "1" (second (determinable))) "archive and undeleted day file must not double-count markers")
 (fs/delete-tree (ai-ops-ledger/ledger-dir root))
 (let [real-run ai-ops-ledger/run-sli-command! calls (atom 0)]
   (with-redefs [ai-ops-ledger/sli-interval (constantly 1)
