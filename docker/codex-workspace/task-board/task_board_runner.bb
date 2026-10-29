@@ -2102,12 +2102,17 @@
            :retryable? true
            :message (:message merge)}
 
+          ;; Keep a passed mergeability in :gate-results, or its success
+          ;; drops out of the per-gate denominator when CI fails.
           (= :failed (:state ci))
           {:ok? false
            :gate :ci
            :failure-kind :check-failure
            :url pr-url
            :retryable? true
+           :gate-results (cond-> []
+                           (= :passed (:state merge)) (conj ["mergeability" "pass"])
+                           true (conj ["ci" "fail"]))
            :message (:message ci)}
 
           (and (= :passed (:state merge))
@@ -2132,6 +2137,9 @@
            :failure-kind :timeout
            :url pr-url
            :retryable? true
+           :gate-results (if (= :pending (:state merge))
+                           [[(name (:gate merge)) "fail"]]
+                           [["mergeability" "pass"] ["ci" "fail"]])
            :message (str "Timed out waiting for PR gates. " (:message merge) " " (:message ci))}
 
           :else
@@ -2211,7 +2219,9 @@
               (cond
                 (not (:ok? pr-state))
                 (assoc pr-state
-                       :gate-results (conj results [(name (:gate pr-state)) "fail"])
+                       :gate-results (into results
+                                           (or (not-empty (:gate-results pr-state))
+                                               [[(name (:gate pr-state)) "fail"]]))
                        :checked-pr-urls passed
                        :merged-pr-urls merged
                        :pr-urls pr-urls)

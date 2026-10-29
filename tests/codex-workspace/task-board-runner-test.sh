@@ -3231,7 +3231,8 @@ test_ai_ops_ledger_records_run_lifecycle() {
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "pass"\] 1'
   # Individual gates count their successes too, not only failures.
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "pass"\] 1'
-  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["mergeability" "pass"\] 1'
+  # The CI-failed run also passed mergeability; that success must be counted.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["mergeability" "pass"\] 2'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["codex-review" "pass"\] 1'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "pass"\] 2'
 }

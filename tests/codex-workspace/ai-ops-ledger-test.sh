@@ -335,3 +335,34 @@ AI_OPS_MODULE="${module}" AI_OPS_ROOT="${midnight_root}" bb -e '
 (when-not (every? second checks) (System/exit 1))
 (println "ai-ops-ledger-test: date-change loss checks passed")
 '
+
+# A marker append that fails during a flush must stay pending on disk, so a
+# later process still writes it after the first (short-lived) one exits.
+marker_root="${tmp}/marker-retry"
+AI_OPS_MODULE="${module}" AI_OPS_ROOT="${marker_root}" bb -e '
+(require (quote [babashka.fs :as fs]) (quote [clojure.string :as str]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (System/getenv "AI_OPS_ROOT"))
+(def today (ai-ops-ledger/utc-date))
+(ai-ops-ledger/spool-write-error! root :event today)
+(def ok1 (with-redefs [ai-ops-ledger/append-lost-marker! (fn [_] false)]
+           (ai-ops-ledger/write-metrics! root)))
+;; simulate the first process exiting: in-process state is gone
+(reset! ai-ops-ledger/unrecorded-lost-events {})
+(reset! ai-ops-ledger/unrecorded-write-errors 0)
+(defn markers [] (let [p (ai-ops-ledger/day-file root today)]
+                   (if (fs/exists? p) (count (filter #(str/includes? % "collection_lost") (str/split-lines (slurp (str p))))) 0)))
+(def before (markers))
+(def ok2 (ai-ops-ledger/write-metrics! root))
+(def after (markers))
+(def ok3 (ai-ops-ledger/write-metrics! root))
+(def checks [["marker retry: write-metrics succeeds" (and (true? ok1) (true? ok2) (true? ok3))]
+             ["marker retry: no marker while append fails" (zero? before)]
+             ["marker retry: marker written by a later process" (= 1 after)]
+             ["marker retry: marker not repeated" (= 1 (markers))]
+             ["marker retry: obligation cleared" (empty? (fs/list-dir (ai-ops-ledger/pending-lost-markers-dir root)))]
+             ["marker retry: loss counted once" (= 1 (:write-errors (ai-ops-ledger/read-stats root)))]])
+(doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
+(when-not (every? second checks) (System/exit 1))
+(println "ai-ops-ledger-test: pending marker retry checks passed")
+'

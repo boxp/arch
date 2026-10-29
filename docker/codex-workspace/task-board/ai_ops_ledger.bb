@@ -234,6 +234,34 @@
 
 (declare append-lost-marker!)
 
+;; A lost-event marker that could not be appended during a flush is kept as one
+;; persistent obligation file per loss date under
+;; `<root>/ai-ops/pending-lost-markers/<date>`, so the marker is still written
+;; by a later lock holder even if this (short-lived) process exits first. The
+;; write-error count is tracked separately and is not affected.
+(defn pending-lost-markers-dir [root] (fs/path (ai-ops-dir root) "pending-lost-markers"))
+
+(defn- pending-marker-dates [root]
+  (let [dir (pending-lost-markers-dir root)]
+    (if (fs/exists? dir)
+      (->> (fs/list-dir dir)
+           (map #(str (fs/file-name %)))
+           (filter #(re-matches #"\d{4}-\d{2}-\d{2}" %))
+           set)
+      #{})))
+
+(defn- keep-pending-marker! [root date]
+  (try
+    (fs/create-dirs (pending-lost-markers-dir root))
+    (let [f (fs/path (pending-lost-markers-dir root) date)]
+      (when-not (fs/exists? f) (fs/create-file f)))
+    (catch Exception _
+      (swap! unrecorded-lost-events update date (fnil inc 0)))))
+
+(defn- drop-pending-marker! [root date]
+  (try (fs/delete-if-exists (fs/path (pending-lost-markers-dir root) date))
+       (catch Exception _ nil)))
+
 (defn flush-unrecorded-write-errors!
   "Persist write errors counted while the lock was unavailable (spool files from
   any process plus this process's fallback counter). Call with the ledger lock
@@ -259,10 +287,15 @@
     ;; update may repeat the marker; one marker is enough and counts stay exact.
     ;; Each marker goes to the day file of the loss date so that aggregating
     ;; only that day still sees the gap.
-    (doseq [[date n] (merge-with + pending-lost fresh-lost)
-            :when (pos? n)]
-      (when-not (append-lost-marker! (day-file root date))
-        (swap! unrecorded-lost-events update date (fnil + 0) n)))
+    ;; A failed append keeps a persistent obligation (pending-lost-markers)
+    ;; before the spool files are deleted below, so the marker is not lost when
+    ;; this process exits before the write recovers.
+    (doseq [date (into (pending-marker-dates root)
+                       (keys (into {} (filter (comp pos? val))
+                                   (merge-with + pending-lost fresh-lost))))]
+      (if (append-lost-marker! (day-file root date))
+        (drop-pending-marker! root date)
+        (keep-pending-marker! root date)))
     (when (or (pos? total) (not= consumed names))
       (try (update-stats! root #(-> %
                                     (update :write-errors (fnil + 0) total)
