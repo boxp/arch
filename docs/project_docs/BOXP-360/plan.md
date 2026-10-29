@@ -42,7 +42,7 @@
 |---|---|---|
 | agent-system 是正 task 率 | agent-system 起因の是正を 1 回以上含む task / review に到達した task | unknown 原因の task は agent-system 起因との重複を含め別に掲げる |
 | 1 task あたり是正往復 | agent-system 起因の是正 event 数の分布 | n<20 なら分位点は参考値 |
-| first acceptance 適合率 | 最初の受入以前（同時刻を含む）に agent 起因または原因不明の是正がない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の agent 起因または原因不明の是正は保守的に不合格。有効な受入時刻がない task は分子・分母から除き、未評価として別掲 |
+| first acceptance 適合率 | 最初の受入以前（同時刻を含む）に agent 起因または原因不明の是正がない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の agent 起因または原因不明の是正は保守的に不合格。有効な受入時刻がない task、および日粒度の受入と同日の是正がある task (前後不明) は分子・分母から除き別掲 |
 | reopen-after-accept | close 後に是正が入った task / 受入済み task | late feedback を拾う |
 | Owner 救援率 | 状況の催促や同じ承認の繰り返しが起きた task / 全 task | source が未接続なら unknown |
 | Ready→ack 遅延 / 詰まり率 | ack 時刻 − Ready 時刻 | **現状は unknown** (Ready への遷移時刻の event が無い) |
@@ -64,7 +64,7 @@
 - ticket 360、run 1482、event 4474 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。summary.edn の無い run ディレクトリ 1 件 (BOXP-354 の groom run) は欠落入力として該当 task を未評価にした。live の生成元 privacy gate で拒否された event が 2 件あり、zero-tolerance 指標は unknown。
 - outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13 (現在の lane snapshot を再open履歴より優先して再集計)。
 - agent-system 是正 task 率: **43/283 (15.2%)**。summary 欠落で未評価 1。原因 unknown の是正を含む task は 140 (agent-system 起因との重複を含む。旧集計は重複を除いた 107)、unknown 是正 event は 203。
-- first acceptance 適合率: **94/222 (42.3%)**。未評価を不合格として含める保守的な割合は 94/340 (27.6%) で、分母に未評価 60、summary 欠落で未評価 1、run 履歴の無い受入済み 57 件 (是正の有無を観測できない) を含める。受入時刻不明の受入済み task 0。主指標 94/222 の分母からは run 履歴無し受入 57 件を外して別掲。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
+- first acceptance 適合率: **94/148 (63.5%)**。受入日 (frontmatter `closed` は日粒度) と同日に是正がある 74 件は前後関係を確定できないため分子・分母から除き `acceptance-day-ambiguous` として別掲 (層別: infra 36 / assistant-or-research 27 / dev 8 / creative 3)。旧集計 94/222 (42.3%) は同日是正を受入前と見なしていた。未評価・前後不明を不合格として含める保守的な割合は 94/340 (27.6%) で、分母に未評価 60、summary 欠落で未評価 1、run 履歴の無い受入済み 57 件 (是正の有無を観測できない) を含める。受入時刻不明の受入済み task 0。主指標 94/222 の分母からは run 履歴無し受入 57 件を外して別掲。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
 - run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 576、idle-timeout 7。delegation は delegated 74、exempt 68。
 - extract の order-inversions 822 は glob の読み取り順から出たもので、実際の到着順ではない。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
@@ -113,3 +113,4 @@ privacy gate で拒否した event (不正な event_id や task/request/run ID) 
 - 2026-10-29 追記 (codex-review): extract は `runs/*/*/summary.edn` の glob ではなく run ディレクトリを列挙し、`summary.edn` 自体が無い run も `run.unreadable` として該当 task を `unevaluated-input-missing` にする (同 task に正常 run があっても見落とした是正を含めて合格扱いしない)。run_id の許可形式に `-groom` 等の英小文字 suffix を追加し、欠落 event が ID 検証で拒否されないようにした。frontmatter は終了区切り `---` と必須 field (`status`、`created`=YYYY-MM-DD) を検証し、欠ければ破損 ticket として扱う (本文の `status:` / `closed:` を状態に取り込まない)。回帰 test を追加し修正前実装で失敗を確認、test.sh 79/79 ok。実 baseline を 03:50 UTC に再生成: BOXP-354 の groom run が summary 欠落で未評価となり、是正 task 43/283、first acceptance 94/222。
 - 2026-10-29 追記 (codex-review): 人の再分類と rule/model 判定の照合を `evidence_event_ids` の先頭 ID ではなく evidence 集合全体 (重複除去・整列) で行うようにした (`[A,B]` への再分類が `[A,C]` の別是正に波及しない)。`incl-unevaluated-as-not-pass` の分母を、review 到達 task (入力欠落 task を含む) の未評価/受入済みに、受入時刻不明と run 履歴の無い受入済み task を加えた集合にし、未評価を除外して高く見せないようにした。回帰 test 2 件を追加し修正前実装で失敗を確認、test.sh 81/81 ok。baseline 04:00 UTC 再生成: first acceptance 94/222 (42.3%)、保守的割合 94/340 (27.6%)、是正 task 43/283。
 - 2026-10-29 追記 (codex-review): ticket の読み取り例外 (権限不足等) も frontmatter 破損と同じく欠落入力として扱い、`run.unreadable` を出して他 ticket の抽出を継続する (extract 全体を停止させない)。run 履歴が無い受入済み task は受入時刻の有無に関わらず `accepted-without-run-history` と `incl-unevaluated-as-not-pass` の分母に含める (`task.state done` snapshot だけの task が保守的分母から抜けて適合率を高く見せない)。回帰 test 2 件を追加し修正前実装で失敗を確認、test.sh 83/83 ok。baseline を 04:0x UTC に再生成し SLI 値は不変 (first acceptance 94/222、保守的 94/340、是正 task 43/283)。
+- 2026-10-29 追記 (codex-review): summary.edn の field 型 (`:status` は keyword/string、`:action`/`:agent`/`:result`/`:blocker-category` は nil/keyword/string、時刻は nil/string、`:exit-code` は nil/整数) を検証し、不正型 summary は `run.unreadable` として該当 task を未評価にする (`name` 例外で extract 全体が止まらない)。日粒度の受入時刻 (`closed`) は当日 [00:00, 翌日 00:00) を曖昧窓とし、窓より前の是正は不合格、窓内の是正は前後不明 `acceptance-day-ambiguous` として first acceptance の分子・分母から除き全体/層別に別掲 (保守的分母には不合格側で残す)、窓以降は受入後是正。回帰 test 2 件追加し修正前実装で失敗を確認、test.sh 85/85 ok。baseline 再生成: first acceptance 94/148 (63.5%)、前後不明 74、保守的 94/340 (27.6%)、是正 task 43/283 不変。

@@ -18,7 +18,7 @@ privacy gate は key ごとの許可値・ID・時刻・型を検証し、認証
 
 受入履歴の網羅性は `coverage.connected` の `acceptance-history` がなければ reopen-after-accept を unknown とする。closed が残る未完了 ticket は受入と再オープンの証拠として抽出する。duplicate-effects は effect 観測時または coverage 接続時に全 task の effect_key を横断して余分な適用数と関与 task 数を数え、宣言がない場合は coverage を partial/undeclared とし、承認も approval_key ごとに横断集計し、重複承認率は有効な approval_key 付き承認イベントの余分な件数を全承認イベント数で割る。
 
-run 履歴の無い受入済み ticket（accepted-without-run-history）は是正有無を観測できないため、first acceptance / 是正率の分母に入れず別掲する（合格扱いしない）。run 履歴があっても有効な受入時刻がない受入済み task は first acceptance の分子・分母から除き、`accepted-without-acceptance-time` として全体と層別に別掲する。原因 unknown の是正を含む task は agent-system の是正も含む場合でも unknown として数える。reopen-after-accept は受入履歴 source 接続時のみ、現在の状態にかかわらず受入イベントがある全 task を分母に計上する。
+run 履歴の無い受入済み ticket（accepted-without-run-history）は是正有無を観測できないため、first acceptance / 是正率の分母に入れず別掲する（合格扱いしない）。run 履歴があっても有効な受入時刻がない受入済み task は first acceptance の分子・分母から除き、`accepted-without-acceptance-time` として全体と層別に別掲する。受入時刻が日粒度 (`occurred_precision=day`) の場合は当日内の前後を確定できないため、同日の是正がある task を `acceptance-day-ambiguous` として分子・分母から除き別掲する。summary.edn は使用 field の型も検証し、不正型は欠落入力 (`run.unreadable`) として扱う。原因 unknown の是正を含む task は agent-system の是正も含む場合でも unknown として数える。reopen-after-accept は受入履歴 source 接続時のみ、現在の状態にかかわらず受入イベントがある全 task を分母に計上する。
 
 合成データの短い ID を許可するには、`emit-sim`、`aggregate`、`prom` のコマンド直後に `--synthetic` を指定する。入力の `synthetic` フィールドだけでは ID 制約は緩和されず、`extract` は常に厳格に検証する。
 受入後の最新イベントが `task.reopened` の場合は未完了（in-flight）とし、同時刻の受入より再オープンを優先する。

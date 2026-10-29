@@ -756,3 +756,36 @@ if [ "$(id -u)" != 0 ]; then
   (println \"ok   読み取り不能 ticket は欠落入力として計数し、他 ticket の抽出を継続する\"))"
 fi
 chmod 600 "$tmp_perm/vault/Tickets/BOXP-97.md"; rm -rf "$tmp_perm"
+
+tmp_type=$(mktemp -d)
+mkdir -p "$tmp_type/root/runs/BOXP-99/20261020T010000Z-aaaa" "$tmp_type/root/runs/BOXP-99/20261020T030000Z-bbbb" "$tmp_type/root/runs/BOXP-100/20261020T010000Z-cccc" "$tmp_type/root/outbox" "$tmp_type/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_type/vault/Tickets/BOXP-99.md"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_type/vault/Tickets/BOXP-100.md"
+echo '{:ticket "BOXP-99" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :implement :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_type/root/runs/BOXP-99/20261020T010000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-99" :run-id "20261020T030000Z-bbbb" :agent "codex" :status 1 :action 2}' > "$tmp_type/root/runs/BOXP-99/20261020T030000Z-bbbb/summary.edn"
+echo '{:ticket "BOXP-100" :run-id "20261020T010000Z-cccc" :agent "codex" :status :succeeded :result "review" :action :implement :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_type/root/runs/BOXP-100/20261020T010000Z-cccc/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_type/root" "$tmp_type/vault" > "$tmp_type/x.jsonl" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_type/x.jsonl\")]
+  (assert (= 1 (get-in r [:input :unreadable-runs])) (pr-str (:input r)))
+  (assert (re-find #\"BOXP-100\" (slurp \"$tmp_type/x.jsonl\")))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :denominator])) (pr-str (get-in r [:sli :first-acceptance-conformance])))
+  (println \"ok   field 型が不正な summary.edn は欠落として未評価にし、extract を継続する\"))"
+rm -rf "$tmp_type"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [acc (fn [t] {:event_id (str t ":accepted") :task_id t :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"})
+      run (fn [t] {:event_id (str t ":run") :task_id t :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z" :result "review"})
+      corr (fn [t at] {:event_id (str t ":corr") :task_id t :event_type "correction" :occurred_at at :correction_origin "agent-system" :correction_class "gate_defect"})
+      evs [(run "BOXP-101") (acc "BOXP-101") (corr "BOXP-101" "2026-10-21T10:00:00Z")
+           (run "BOXP-102") (acc "BOXP-102") (corr "BOXP-102" "2026-10-20T10:00:00Z")
+           (run "BOXP-103") (acc "BOXP-103")]
+      r (ai-ops-sli/aggregate* evs)
+      fa (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= [1 2] ((juxt :count :denominator) fa)) (pr-str fa))
+  (assert (= 1 (:acceptance-day-ambiguous fa)) (pr-str fa))
+  (assert (= 3 (get-in fa [:incl-unevaluated-as-not-pass :denominator])) (pr-str fa))
+  (assert (= 1 (reduce + (map :acceptance-day-ambiguous (vals (:by-stratum r)))))))
+(println "ok   日粒度の受入と同日の是正は前後不明として first acceptance の分子・分母から除き別掲する")'

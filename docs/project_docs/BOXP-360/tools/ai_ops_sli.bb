@@ -208,7 +208,12 @@
         ;; 読めない/必須field (ticket・run-id がディレクトリと一致、status) を欠く summary.edn は黙って捨てず
         ;; run.unreadable として ディレクトリの ticket に紐付け、その task の SLI を未評価にする
         valid-summary? (fn [f] (let [s (read-edn f) d (fs/parent f)]
+                                 ;; summary->events/derive-corrections が name/str を呼ぶ field の型も検証する (不正型は欠落扱い)
                                  (and (map? s) (some? (:status s))
+                                      (every? #(let [v (get s %)] (or (keyword? v) (string? v))) [:status])
+                                      (every? #(let [v (get s %)] (or (nil? v) (keyword? v) (string? v))) [:action :agent :result :blocker-category])
+                                      (every? #(let [v (get s %)] (or (nil? v) (string? v))) [:started-at :finished-at :updated-at])
+                                      (let [v (:exit-code s)] (or (nil? v) (integer? v)))
                                       (= (:ticket s) (str (fs/file-name (fs/parent d))))
                                       (= (:run-id s) (str (fs/file-name d))))))
         unreadable (->> summaries (remove valid-summary?)
@@ -420,11 +425,28 @@
                                            :else e))) corr)
                           agent-corr (filter #(= "agent-system" (correction-origin %)) corr)
                           unknown-corr (filter #(= "unknown" (correction-origin %)) corr)
-                          accepted (some #(when (= "task.accepted" (:event_type %)) (parse-inst (:occurred_at %))) evs)
+                          accepted-ev (some #(when (and (= "task.accepted" (:event_type %)) (parse-inst (:occurred_at %))) %) evs)
+                          accepted (some-> accepted-ev :occurred_at parse-inst)
+                          ;; 日粒度の受入 (frontmatter closed) は当日内の前後関係を確定できない: [当日 00:00, 翌日 00:00) を曖昧窓にする
+                          day-window (when (and accepted (= "day" (:occurred_precision accepted-ev)))
+                                       (let [start (.truncatedTo accepted java.time.temporal.ChronoUnit/DAYS)]
+                                         [start (.plus start 1 java.time.temporal.ChronoUnit/DAYS)]))
+                          before-accept? (fn [t] (if day-window (.isBefore t (first day-window)) (not (.isAfter t accepted))))
+                          same-day? (fn [t] (and day-window (not (.isBefore t (first day-window))) (.isBefore t (second day-window))))
+                          relevant-corr (remove #(= "non-agent" (correction-origin %)) corr)
+                          first-pass (when accepted
+                                       (cond
+                                         (some #(let [t (parse-inst (:occurred_at %))] (or (nil? t) (before-accept? t))) relevant-corr) :fail
+                                         (some #(some-> (parse-inst (:occurred_at %)) same-day?) relevant-corr) :ambiguous
+                                         :else :pass))
                           first-review (some #(when (or (= "review" (:result %)) (= "review" (:lane_to %))
                                                         (and (= "task.state" (:event_type %)) (= "review" (:status %))))
                                                 (or (parse-inst (:occurred_at %)) true)) evs)
-                          post-accept-corr (when accepted (filter #(when-let [t (parse-inst (:occurred_at %))] (or (.isAfter t accepted) (and (= "task.reopened" (:event_type %)) (= t accepted)))) corr))
+                          post-accept-corr (when accepted (filter #(when-let [t (parse-inst (:occurred_at %))]
+                                                                     (if day-window
+                                                                       (or (not (.isBefore t (second day-window)))
+                                                                           (and (= "task.reopened" (:event_type %)) (= t accepted)))
+                                                                       (or (.isAfter t accepted) (and (= "task.reopened" (:event_type %)) (= t accepted))))) corr))
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
                           finished (filter #(= "run.finished" (:event_type %)) evs)]
@@ -443,8 +465,9 @@
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
                  ;; run 履歴の無い受入 task は受入時刻の有無に関わらず未評価 (done snapshot のみの task も保守的分母に残す)
                  :accepted-unobserved? (boolean (and (= "accepted" (task-outcome evs)) (empty? runs) (not-any? :synthetic evs)))
-                 :first-pass? (and accepted (not-any? #(let [t (parse-inst (:occurred_at %))]
-                                                        (and (not= "non-agent" (correction-origin %)) (or (nil? t) (not (.isAfter t accepted))))) corr))
+                 :first-pass? (= :pass first-pass)
+                 ;; 受入と同日の是正があり日粒度では前後不明: 合格にも不合格にもせず別掲
+                 :first-pass-ambiguous? (= :ambiguous first-pass)
                  :lead-h (hours requested accepted)
                  :rescue (count (filter #(= "owner.rescue" (:event_type %)) evs))
                  :approvals (frequencies (keep :approval_key (filter #(= "approval.requested" (:event_type %)) evs)))
@@ -458,7 +481,9 @@
         reached (remove #(pos? (:unreadable-runs %)) reached-all)
         observed-accepted (filter #(and (:observed? %) (= "accepted" (:outcome %))) tasks)
         accepted-all (filter :accepted-at observed-accepted)
-        accepted (remove #(pos? (:unreadable-runs %)) accepted-all)
+        accepted-evaluable (remove #(pos? (:unreadable-runs %)) accepted-all)
+        accepted (remove :first-pass-ambiguous? accepted-evaluable)
+        acceptance-day-ambiguous (filter :first-pass-ambiguous? accepted-evaluable)
         accepted-without-acceptance-time (filter #(nil? (:accepted-at %)) observed-accepted)
         accepted-ever (filter :acceptance-history? tasks)
         sources (frequencies (map :source uniq))
@@ -496,9 +521,10 @@
                                                                                     accepted-without-acceptance-time
                                                                                     (filter :accepted-unobserved? tasks))))))
              :accepted-without-acceptance-time (count accepted-without-acceptance-time)
+             :acceptance-day-ambiguous (count acceptance-day-ambiguous)
              :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) accepted-all))
              :not-yet-evaluated (count (filter #(and (not= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
-             :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明と未評価は別掲し合格に数えない")
+             :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明・日粒度受入と同日の是正 (前後不明)・未評価は別掲し合格に数えない")
       :reopen-after-accept (if (connected? "acceptance-history") (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)) {:status :unknown :reason "acceptance history source not connected"})
       :owner-rescue (if (some #(= "owner.rescue" (:event_type %)) uniq)
                       (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
@@ -564,13 +590,15 @@
                  :let [ok (remove #(pos? (:unreadable-runs %)) ts)
                        r (filter :reached-review? ok)
                        observed-a (filter #(and (:observed? %) (= "accepted" (:outcome %))) ok)
-                       a (filter :accepted-at observed-a)]]
+                       a-all (filter :accepted-at observed-a)
+                       a (remove :first-pass-ambiguous? a-all)]]
              [s {:tasks (count ts) :reached-review (count r)
                  :agent-system-corr-tasks (count (filter #(pos? (:agent-corr %)) r))
                  :unknown-corr-tasks (count (filter #(pos? (:unknown-corr %)) r))
                  :accepted (count a)
                  :accepted-without-acceptance-time (count (remove :accepted-at observed-a))
                  :first-pass (count (filter :first-pass? a))
+                 :acceptance-day-ambiguous (count (filter :first-pass-ambiguous? a-all))
                  :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) ts))}]))}))
 
 (defn aggregate [file] (aggregate* (read-events file)))
