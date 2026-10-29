@@ -488,8 +488,16 @@ bb -e '
   (assert (= 1 (get-in report [:sli :agent-system-correction-task-ratio :denominator])))
   (assert (= "blocked" (ai-ops-sli/task-outcome [review (assoc blocked :occurred_at "2026-10-21T00:00:00Z")])))
   (assert (= "awaiting-review" (ai-ops-sli/task-outcome [review (assoc blocked :event_type "task.state" :status "review" :snapshot "current") (lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
-  (assert (= "unobserved" (ai-ops-sli/task-outcome [(lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
-  (println "ok   lane 遷移の outcome と review 分母、現在状態と done の優先順位"))
+  (assert (= "accepted" (ai-ops-sli/task-outcome [(lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
+  ;; ledger 単独: Ready -> In Progress -> Done の最後の done 遷移を完了として扱う
+  (let [l (fn [from to time] {:event_id (str "BOXP-33:" to) :task_id "BOXP-33" :event_type "lane.changed" :lane_from from :lane_to to :occurred_at time})
+        evs [(l "ready" "in-progress" "2026-10-22T00:00:00Z") (l "in-progress" "done" "2026-10-22T01:00:00Z")]
+        report (ai-ops-sli/aggregate* evs)]
+    (assert (= "accepted" (ai-ops-sli/task-outcome evs)))
+    (assert (= {"accepted" 1} (get-in report [:tasks :outcomes])) (pr-str (:tasks report)))
+    ;; done 後の再 open は未完了に戻る
+    (assert (= "in-flight" (ai-ops-sli/task-outcome (conj evs (l "done" "ready" "2026-10-22T02:00:00Z"))))))
+  (println "ok   lane 遷移の outcome と review 分母、現在状態と done の優先順位 (ledger 単独の done 遷移は完了)"))
 (let [low {:event_id "BOXP-40:event" :event_type "correction" :severity "low"}
       report (ai-ops-sli/aggregate* [low])]
   (assert (= [0 "partial/undeclared"] ((juxt :count :coverage) (get-in report [:zero-tolerance :critical-safety-events]))))

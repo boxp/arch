@@ -495,7 +495,7 @@
         ;; aggregate の是正再分類と同じ照合条件 (evidence の一致のみ。evidence event 自体の有無は問わない)
         evs (remove #(let [evidence (evidence-of %)]
                        (and (= "human" (:classifier %)) (reclassifiable? %) evidence (contains? ruled evidence))) evs)
-        latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress"} (:lane_to %)))) evs)))
+        latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress" "done"} (:lane_to %)))) evs)))
         state (if (= "lane.changed" (:event_type latest)) (:lane_to latest) (:status latest))]
     (cond
       ;; 時刻なし再open/取消/lane 遷移があり現在状態 snapshot も無い: 前後不明のため受入済みと確定しない (未完了側に数える)
