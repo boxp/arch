@@ -148,6 +148,10 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
                "ai_ops_review_gate_total{gate=\"all\",result=\"pass\"} 1"
                "ai_ops_review_gate_total{gate=\"all\",result=\"skip\"} 1"
                "ai_ops_corrections_total{origin=\"agent-system\",class=\"gate_defect\"} 1"
+               ;; never-seen allowlisted pairs are published from zero for increase()
+               "ai_ops_review_gate_total{gate=\"ci\",result=\"fail\"} 0"
+               "ai_ops_runs_finished_total{runtime=\"claude-cli\",status=\"failed\"} 0"
+               "ai_ops_corrections_total{origin=\"unknown\",class=\"unknown\"} 0"
                "ai_ops_ledger_info{schema_version=\"ai-ops-event/v0\",definition_version=\"ledger/v1\"} 1"
                "# TYPE ai_ops_ledger_events_total counter"]]
       (check (str "metrics contain " s) (str/includes? m s)))

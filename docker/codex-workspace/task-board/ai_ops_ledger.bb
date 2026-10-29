@@ -436,6 +436,12 @@
 (defn instant-seconds [s]
   (try (quot (.toEpochMilli (java.time.Instant/parse s)) 1000) (catch Exception _ nil)))
 
+;; Prometheus cannot see the zero before a series first appears, so increase()
+;; would miss the first event of a rarely seen label pair. Publish every
+;; allowlisted pair from zero; observed pairs outside the allowlist are kept.
+(defn zero-filled [xs ys m]
+  (merge (into {} (for [x xs y ys] [[x y] 0])) m))
+
 (defn metrics-text [stats now-seconds]
   (let [sorted (fn [m] (sort-by (comp str key) m))]
     (str
@@ -453,11 +459,11 @@
        (metric-lines "ai_ops_ledger_redacted_values_total" "counter" "Field values removed by the source privacy gate."
                      [[{} (:redacted-values stats 0)]])
        (metric-lines "ai_ops_runs_finished_total" "counter" "Finished runs by runtime and summary status."
-                     (for [[[rt st] n] (sorted (:run-finished stats))] [{:runtime rt :status st} n]))
+                     (for [[[rt st] n] (sorted (zero-filled (:runtime enum-values) (:status enum-values) (:run-finished stats)))] [{:runtime rt :status st} n]))
        (metric-lines "ai_ops_review_gate_total" "counter" "Review gate evaluations by gate and result."
-                     (for [[[g r] n] (sorted (:gate stats))] [{:gate g :result r} n]))
+                     (for [[[g r] n] (sorted (zero-filled gate-names gate-results (:gate stats)))] [{:gate g :result r} n]))
        (metric-lines "ai_ops_corrections_total" "counter" "Rule-classified corrections (provisional) by origin and class."
-                     (for [[[o c] n] (sorted (:corrections stats))] [{:origin o :class c} n]))
+                     (for [[[o c] n] (sorted (zero-filled (:correction_origin enum-values) (:correction_class enum-values) (:corrections stats)))] [{:origin o :class c} n]))
        (when-let [s (some-> (:last-emit-at stats) instant-seconds)]
          (metric-lines "ai_ops_ledger_last_emit_timestamp_seconds" "gauge" "Time of the last ledger write." [[{} s]]))
        (metric-lines "ai_ops_metrics_generated_timestamp_seconds" "gauge" "Time this exposition was generated."
