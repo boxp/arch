@@ -929,6 +929,14 @@ bb -e '
     (assert (str/includes? bad-out "ai_ops_sli_determinable{sli=\"first_acceptance_conformance\"} 0") bad-out)
     (assert (not (re-find #"ai_ops_correction_tasks|ai_ops_reached_review_tasks" bad-out)) bad-out)))
 (println "ok   種別不明 event は是正 SLI を unknown にし、Prom は unknown の是正率を確定値として出さず判定可否 gauge を出す")'
+tmp_zero=$(mktemp)
+echo '{"event_id":"BOXP-1:requested","task_id":"BOXP-1","event_type":"request.received","source":"ticket-frontmatter"}' > "$tmp_zero"
+zero_out=$(bb ai_ops_sli.bb prom "$tmp_zero")
+grep -q 'ai_ops_sli_determinable{sli="agent_system_correction_task_ratio"} 0' <<<"$zero_out" \
+  && grep -q 'ai_ops_sli_determinable{sli="first_acceptance_conformance"} 0' <<<"$zero_out" \
+  || { echo "FAIL 分母 0 の SLI が判定可能と出力された"; echo "$zero_out"; exit 1; }
+echo "ok   分母 0 の SLI は Prom で判定不能 (determinable=0) として出す"
+
 
 tmp_cxl=$(mktemp -d)
 mkdir -p "$tmp_cxl/root/runs/BOXP-110/20261020T010000Z-aaaa" "$tmp_cxl/root/outbox" "$tmp_cxl/vault/Tickets"

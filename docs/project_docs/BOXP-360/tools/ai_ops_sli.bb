@@ -818,7 +818,9 @@
     (println "# TYPE ai_ops_sli_determinable gauge")
     (doseq [[k m] [[:agent-system-correction-task-ratio "agent_system_correction_task_ratio"]
                    [:first-acceptance-conformance "first_acceptance_conformance"]]]
-      (line "ai_ops_sli_determinable" {:sli m} (if (= "unknown" (get-in r [:sli k :status])) 0 1)))
+      (let [s (get-in r [:sli k])]
+        ;; 分母 0 は率を計算できないので判定不能として扱う
+        (line "ai_ops_sli_determinable" {:sli m} (if (or (= "unknown" (:status s)) (not (pos? (or (:denominator s) 0)))) 0 1))))
     (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
       (when-not (= "unknown" (:status c))
         (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))
