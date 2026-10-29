@@ -652,17 +652,19 @@ printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > 
 echo '{:ticket "BOXP-72" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_bad/root/runs/BOXP-72/20261020T010000Z-aaaa/summary.edn"
 echo '{:ticket "BOXP-72" :run-id ' > "$tmp_bad/root/runs/BOXP-72/20261020T030000Z-bbbb/summary.edn"
 echo '{:ticket-id ' > "$tmp_bad/root/outbox/broken.edn"
+echo '{}' > "$tmp_bad/root/outbox/incomplete.edn"
+echo '{:ticket-id "BOXP-72" :event-type "task-board.lane-changed"}' > "$tmp_bad/root/outbox/no-id.edn"
 bb ai_ops_sli.bb extract "$tmp_bad/root" "$tmp_bad/vault" > "$tmp_bad/x.jsonl" 2>/dev/null
 bb -e "
 (load-file \"ai_ops_sli.bb\")
 (let [r (ai-ops-sli/aggregate \"$tmp_bad/x.jsonl\")]
   (assert (= 1 (get-in r [:input :unreadable-runs])))
-  (assert (= 1 (get-in r [:input :unreadable-inputs])))
+  (assert (= 3 (get-in r [:input :unreadable-inputs])))
   (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])))
   (assert (= 1 (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing])))
   (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unevaluated-input-missing])))
   (assert (= 1 (reduce + (map :unevaluated-input-missing (vals (:by-stratum r))))))
   (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
-  (assert (re-find #\"ai_ops_collection_lost_events_total\\{reason=\\\"input_unreadable\\\"\\} 1\" (with-out-str (ai-ops-sli/prom \"$tmp_bad/x.jsonl\"))))
-  (println \"ok   破損した summary.edn/outbox は欠落として計数し、該当 task の first acceptance/是正率を未評価にする\"))"
+  (assert (re-find #\"ai_ops_collection_lost_events_total\\{reason=\\\"input_unreadable\\\"\\} 3\" (with-out-str (ai-ops-sli/prom \"$tmp_bad/x.jsonl\"))))
+  (println \"ok   破損/必須field欠落の summary.edn/outbox は欠落として計数し、該当 task の first acceptance/是正率を未評価にする\"))"
 rm -rf "$tmp_bad"

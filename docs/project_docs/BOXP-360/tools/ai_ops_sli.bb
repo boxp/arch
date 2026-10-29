@@ -239,7 +239,8 @@
     (doseq [f (fs/glob (fs/path root "outbox") "**.edn")
             :when (not= "board-lanes.edn" (str (fs/file-name f)))
             :let [e (read-edn f)]
-            ev (if (map? e) (outbox->events e) [::unreadable])]
+            ;; 必須field (event-id/event-type/ticket-id) を欠く map も黙って捨てず欠落として数える
+            ev (or (when (map? e) (when (:ticket-id e) (outbox->events e))) [::unreadable])]
       (if (= ::unreadable ev)
         (do (swap! stats update :input-unreadable (fnil inc 0))
             (println (json/generate-string {:collection_lost "input_unreadable"})))
