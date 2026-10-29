@@ -536,12 +536,24 @@
                           ;; 時刻不明の受入が 1 件でもあれば最初の受入を特定できない: 後の受入を first acceptance の基準にせず受入時刻不明として別掲
                           accepted-ev (when (every? #(parse-inst (:occurred_at %)) acceptances) (first acceptances))
                           accepted (some-> accepted-ev :occurred_at parse-inst)
-                          ;; 日粒度の受入 (frontmatter closed) は当日内の前後関係を確定できない: [当日 00:00, 翌日 00:00) を曖昧窓にする
-                          day-window (when (and accepted (= "day" (:occurred_precision accepted-ev)))
-                                       (let [start (.truncatedTo accepted java.time.temporal.ChronoUnit/DAYS)]
-                                         [start (.plus start 1 java.time.temporal.ChronoUnit/DAYS)]))
+                          ;; 日粒度の受入 (frontmatter closed) は当日内の前後関係を確定できない。最初の受入は
+                          ;; [全受入の最早可能時刻の最小, 全受入の最遅可能時刻の最小] のどこかにあり、幅があればその区間を曖昧窓にする
+                          ;; (日粒度受入と同日の時刻付き受入が混在する場合、時刻付き受入を最初の受入と確定しない)
+                          bounds (when accepted-ev
+                                   (for [a acceptances :let [t (parse-inst (:occurred_at a))]]
+                                     (if (= "day" (:occurred_precision a))
+                                       (let [start (.truncatedTo t java.time.temporal.ChronoUnit/DAYS)]
+                                         [start (.plus start 1 java.time.temporal.ChronoUnit/DAYS) false])
+                                       [t t true])))
+                          lo (when bounds (first (sort (map first bounds))))
+                          hi-b (when bounds (first (sort-by (juxt second #(if (nth % 2) 0 1)) bounds)))
+                          hi (second hi-b)
+                          ;; 窓の終端が時刻付き受入の場合は終端時刻も曖昧 (日粒度受入が先なら終端時刻の是正は受入後になり得る)
+                          hi-inclusive? (boolean (nth hi-b 2 nil))
+                          day-window (when (and lo hi (.isBefore lo hi)) [lo hi])
                           before-accept? (fn [t] (if day-window (.isBefore t (first day-window)) (not (.isAfter t accepted))))
-                          same-day? (fn [t] (and day-window (not (.isBefore t (first day-window))) (.isBefore t (second day-window))))
+                          same-day? (fn [t] (and day-window (not (.isBefore t (first day-window)))
+                                                 (if hi-inclusive? (not (.isAfter t (second day-window))) (.isBefore t (second day-window)))))
                           relevant-corr (remove #(= "non-agent" (correction-origin %)) corr)
                           first-pass (when accepted
                                        (cond
@@ -553,7 +565,7 @@
                                                 (or (parse-inst (:occurred_at %)) true)) evs)
                           post-accept-corr (when accepted (filter #(when-let [t (parse-inst (:occurred_at %))]
                                                                      (if day-window
-                                                                       (or (not (.isBefore t (second day-window)))
+                                                                       (or (if hi-inclusive? (.isAfter t (second day-window)) (not (.isBefore t (second day-window))))
                                                                            (and (= "task.reopened" (:event_type %)) (= t accepted)))
                                                                        (or (.isAfter t accepted) (and (= "task.reopened" (:event_type %)) (= t accepted))))) corr))
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
@@ -578,8 +590,9 @@
                                                               (some #(let [t (parse-inst (:occurred_at %))] (or (nil? t) (same-day? t))) corr))))
                  :observed? (boolean (or (seq runs) (some :synthetic evs) (some #(= "run.unreadable" (:event_type %)) evs)))
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
-                 ;; run 履歴の無い受入 task は受入時刻の有無に関わらず未評価 (done snapshot のみの task も保守的分母に残す)
-                 :accepted-unobserved? (boolean (and (= "accepted" (task-outcome evs)) (empty? runs) (not-any? :synthetic evs)))
+                 ;; run 履歴の無い受入 task は受入時刻の有無・受入後の再オープンに関わらず未評価 (done snapshot のみ/再オープン中の task も保守的分母に残す)
+                 :accepted-unobserved? (boolean (and (or (some #(= "task.accepted" (:event_type %)) evs) (= "accepted" (task-outcome evs)))
+                                                     (empty? runs) (not-any? :synthetic evs)))
                  :first-pass? (= :pass first-pass)
                  ;; 受入と同日の是正があり日粒度では前後不明: 合格にも不合格にもせず別掲
                  :first-pass-ambiguous? (= :ambiguous first-pass)

@@ -253,7 +253,7 @@ bb -e '
               ["受入履歴未接続は unknown" (= :unknown (get-in u [:sli :reopen-after-accept :status]))]
               ["履歴接続時に再オープンと受入を計上" (= [1 1] ((juxt :count :denominator) (get-in c [:sli :reopen-after-accept])))]
               ["タスク間の effect と承認の重複" (and (= [1 2] ((juxt :count :tasks-involved) (get-in c [:zero-tolerance :duplicate-effects]))) (= [1 2] ((juxt :count :tasks-involved) (get-in c [:sli :duplicate-approval]))))]
-              ["再オープン済みは受入済みとして数えない" (and (= 0 (get-in u [:sli :first-acceptance-conformance :denominator])) (= 0 (get-in u [:tasks :accepted-without-run-history])))]
+              ["受入後再オープン中の run 履歴なし task は分母外で未評価に別掲" (and (= 0 (get-in u [:sli :first-acceptance-conformance :denominator])) (= 1 (get-in u [:tasks :accepted-without-run-history])))]
               ["Owner rescue に未実行を含む" (= [1 2] ((juxt :count :denominator) (get-in c [:sli :owner-rescue])))]
               ["秘密値を emit-sim でも 5 件 redact" (and (= 5 (:privacy-redacted-values stats)) (= 5 (count (re-seq #"redacted" (slurp (str dir "/secrets.out"))))))]]]
   (doseq [[label ok] checks] (println (if ok "ok  " "FAIL") label))
@@ -1272,6 +1272,42 @@ bb -e '
   (assert (= [1 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))))
   (assert (= 2 (get-in r [:by-stratum nil :accepted])))
   (println "ok   再オープン中 task を最初の受入履歴で first acceptance に計上"))' "$tmp/reopened-first-accept.edn"
+
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [evs [{:event_id "BOXP-111:accepted" :task_id "BOXP-111" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
+           {:event_id "BOXP-111:reopen" :task_id "BOXP-111" :event_type "task.reopened" :occurred_at "2026-10-21T00:00:00Z"}
+           {:event_id "BOXP-112:run" :task_id "BOXP-112" :event_type "run.started" :occurred_at "2026-10-19T00:00:00Z"}
+           {:event_id "BOXP-112:accepted" :task_id "BOXP-112" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}]
+      r (ai-ops-sli/aggregate* evs)
+      fa (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= 1 (get-in r [:tasks :accepted-without-run-history])) (pr-str (:tasks r)))
+  (assert (= [1 1] ((juxt :count :denominator) fa)) (pr-str fa))
+  (assert (= [1 2] ((juxt :count :denominator) (:incl-unevaluated-as-not-pass fa))) (pr-str fa)))
+(println "ok   受入後に再オープン中の run 履歴なし task も accepted-without-run-history と保守的分母に含める")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [run (fn [t] {:event_id (str t ":run") :task_id t :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z" :result "review"})
+      dacc (fn [t] {:event_id (str t ":dacc") :task_id t :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"})
+      tacc (fn [t at] {:event_id (str t ":tacc") :task_id t :event_type "task.accepted" :occurred_at at :occurred_precision "second"})
+      corr (fn [t at] {:event_id (str t ":corr") :task_id t :event_type "correction" :occurred_at at :correction_origin "agent-system" :correction_class "gate_defect"})
+      evs [;; 同日の日粒度受入と時刻付き受入、間の是正: 日粒度受入が先だった可能性があり前後不明
+           (run "BOXP-121") (dacc "BOXP-121") (tacc "BOXP-121" "2026-10-21T12:00:00Z") (corr "BOXP-121" "2026-10-21T10:00:00Z")
+           ;; 時刻付き受入と同時刻の是正も前後不明
+           (run "BOXP-122") (dacc "BOXP-122") (tacc "BOXP-122" "2026-10-21T12:00:00Z") (corr "BOXP-122" "2026-10-21T12:00:00Z")
+           ;; 前日の是正は確実に受入前: 不合格
+           (run "BOXP-123") (dacc "BOXP-123") (tacc "BOXP-123" "2026-10-21T12:00:00Z") (corr "BOXP-123" "2026-10-20T10:00:00Z")
+           ;; 時刻付き受入後の是正は確実に受入後: 合格 (reopen-after-accept 側)
+           (run "BOXP-124") (dacc "BOXP-124") (tacc "BOXP-124" "2026-10-21T12:00:00Z") (corr "BOXP-124" "2026-10-21T13:00:00Z")
+           ;; 時刻付き受入が日粒度受入の前日: 時刻付き受入が確定的に最初
+           (run "BOXP-125") (dacc "BOXP-125") (tacc "BOXP-125" "2026-10-20T12:00:00Z") (corr "BOXP-125" "2026-10-20T13:00:00Z")]
+      r (ai-ops-sli/aggregate* evs)
+      fa (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= 2 (:acceptance-day-ambiguous fa)) (pr-str fa))
+  (assert (= [2 3] ((juxt :count :denominator) fa)) (pr-str fa)))
+(println "ok   日粒度受入と同日の時刻付き受入が混在する場合は最初の受入を前後不明として扱う")'
 
 # 添付ノート (BOXP-<数字>-*.md) だけの Tickets は正本 ticket 0 件として extract をエラー終了する
 mkdir -p "$tmp/notes-only/vault/Tickets" "$tmp/notes-only/root/runs" "$tmp/notes-only/root/outbox"
