@@ -176,11 +176,12 @@
                 :else [])))))))
 
 (defn outbox->events [e]
-  (when (and (:event-id e) (:event-type e))
-    (let [lane? (= "task-board.lane-changed" (:event-type e))]
+  ;; 既知の outbox 種別のみ変換し、空/未知の event-type は nil (呼び出し側で欠落入力として計数) にする
+  (when-let [et (and (:event-id e) ({"task-board.lane-changed" "lane.changed" "task-board.run-finished" "notify.run-finished"} (:event-type e)))]
+    (let [lane? (= "lane.changed" et)]
       [{:schema_version schema-version :event_id (:event-id e) :task_id (:ticket-id e)
         :request_id (str "req:" (:ticket-id e)) :run_id (:run-id e) :source (str "outbox:" (:source e))
-        :event_type (if lane? "lane.changed" "notify.run-finished")
+        :event_type et
         :occurred_at (:created-at e) :observed_at (:accepted-at e) :occurred_precision "ns"
         :lane_from (:from-status e) :lane_to (:to-status e)
         :result (some-> (:result e) str) :redelivery (or (:redeliveries e) 0)
@@ -189,7 +190,10 @@
 (defn extract [root vault]
   (let [stats (atom {:privacy-dropped-keys 0 :privacy-redacted-values 0 :privacy-rejected 0})
         tickets (->> (fs/glob (fs/path vault "Tickets") "BOXP-*.md")
-                     (keep (fn [f] (when-let [fm (frontmatter f)] [(str (fs/strip-ext (fs/file-name f))) fm])))
+                     ;; ticket 正本は BOXP-<数字>.md のみ (BOXP-144-*.md 等の添付ノートは ticket ではない)
+                     (filter #(re-matches #"BOXP-\d+\.md" (str (fs/file-name %))))
+                     ;; frontmatter を読めない ticket も黙って除外せず ::broken として残し、run 抽出と未評価扱いを保つ
+                     (map (fn [f] [(str (fs/strip-ext (fs/file-name f))) (or (frontmatter f) ::broken)]))
                      (into {}))
         summaries (fs/glob (fs/path root "runs") "*/*/summary.edn")
         ;; 読めない/必須field (ticket・run-id がディレクトリと一致、status) を欠く summary.edn は黙って捨てず
@@ -208,13 +212,22 @@
                                       (assoc :delegation-kind (try (:kind (json/parse-string (slurp (str d)) true)) (catch Exception _ "unparsable"))))))))
                   (group-by :ticket))]
     (doseq [[ticket fm] (sort-by key tickets)
-            :let [rs (get runs ticket)
+            :let [broken? (= ::broken fm)
+                  fm (if broken? {} fm)
+                  _ (when broken? (swap! stats update :input-unreadable (fnil inc 0))
+                      (println (json/generate-string {:collection_lost "input_unreadable"})))
+                  rs (get runs ticket)
                   st (stratum fm (set (keep :action rs)))
                   ;; 期間外の古い ticket は created しか持たない
                   evs (concat
-                       [{:schema_version schema-version :event_id (str ticket ":requested") :task_id ticket
-                         :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "request.received"
-                         :occurred_at (str (:created fm) "T00:00:00Z") :occurred_precision "day"}]
+                       (if broken?
+                         ;; frontmatter 破損: 該当 task を unreadable として未評価にする (分母から黙って消さない)
+                         [{:schema_version schema-version :event_id (str ticket ":frontmatter-unreadable") :task_id ticket
+                           :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "run.unreadable"
+                           :occurred_at nil}]
+                         [{:schema_version schema-version :event_id (str ticket ":requested") :task_id ticket
+                           :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "request.received"
+                           :occurred_at (str (:created fm) "T00:00:00Z") :occurred_precision "day"}])
                        (mapcat #(summary->events ticket %) rs)
                        (for [{:keys [run-id]} (get unreadable ticket)]
                          {:schema_version schema-version :event_id (str ticket ":" run-id ":unreadable") :task_id ticket

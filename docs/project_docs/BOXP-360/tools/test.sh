@@ -668,3 +668,20 @@ bb -e "
   (assert (re-find #\"ai_ops_collection_lost_events_total\\{reason=\\\"input_unreadable\\\"\\} 3\" (with-out-str (ai-ops-sli/prom \"$tmp_bad/x.jsonl\"))))
   (println \"ok   破損/必須field欠落の summary.edn/outbox は欠落として計数し、該当 task の first acceptance/是正率を未評価にする\"))"
 rm -rf "$tmp_bad"
+
+tmp_fm=$(mktemp -d)
+mkdir -p "$tmp_fm/root/runs/BOXP-80/20261020T010000Z-aaaa" "$tmp_fm/root/outbox" "$tmp_fm/vault/Tickets"
+printf 'broken\ncreated: 2026-10-20\n' > "$tmp_fm/vault/Tickets/BOXP-80.md"
+echo '{:ticket "BOXP-80" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_fm/root/runs/BOXP-80/20261020T010000Z-aaaa/summary.edn"
+echo '{:event-id "e1" :ticket-id "BOXP-80" :event-type "" :created-at "2026-10-20T02:00:00Z"}' > "$tmp_fm/root/outbox/empty-type.edn"
+echo '{:event-id "e2" :ticket-id "BOXP-80" :event-type "task-board.unknown" :created-at "2026-10-20T02:00:00Z"}' > "$tmp_fm/root/outbox/unknown-type.edn"
+bb ai_ops_sli.bb extract "$tmp_fm/root" "$tmp_fm/vault" > "$tmp_fm/x.jsonl" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_fm/x.jsonl\")]
+  (assert (= 3 (get-in r [:input :unreadable-inputs])))
+  (assert (zero? (get-in r [:input :sources \"outbox:\"] 0)))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unevaluated-input-missing])))
+  (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
+  (println \"ok   空/未知の outbox event-type と frontmatter 破損 ticket は欠落として計数し、run を保持して該当 task を未評価にする\"))"
+rm -rf "$tmp_fm"
