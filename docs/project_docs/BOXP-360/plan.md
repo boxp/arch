@@ -17,7 +17,7 @@
 | Loki 3.4.2 | TSDB+filesystem、retention 168h、PVC 100Gi | 7 日で消えるので SLI の正本にはしない。調査用だけ |
 | Grafana 13.2.2 / Alloy (DaemonSet 7) | Alloy は pod のファイルログだけを Loki へ送る。`otelcol.receiver` なし | dashboard は再利用。OTLP trace の受け口は今はない |
 | Tempo / Jaeger / OTel collector / Langfuse / ClickHouse / Postgres | 全 namespace で workload/service が見つからない (名前・image での検索) | 新しく作るなら構築・backup・保守のコストが増える |
-| Hermes `sha-88638ef` | lifecycle hook (`pre/post_llm_call`, `pre/post_tool_call`, `pre_approval_request`/`post_approval_response`, `on_session_*`, `on_kanban_*`, `post_gateway_admission` など) と plugin dispatch は**配備版コードに実在**。`observability/langfuse` は catalog plugin への参照だけで、plugin 本体は配備されていない。有効な plugin は `kohako-g2-context` のみ。同梱の `shared_metrics` の送信先は `telemetry.nousresearch.com` (外部) で、config 上は未設定 | Hermes 側の取得経路は既存 hook を使う metadata-only plugin にする。独自 hook は新設しない。shared_metrics は外部送信なので使わない |
+| Hermes `sha-88638ef` | lifecycle hook (`pre/post_llm_call`, `pre/post_tool_call`, `pre_approval_request`/`post_approval_response`, `on_session_*`, `on_kanban_*`, `post_gateway_admission` など) と plugin dispatch は**配備版コードに実在**。`observability/langfuse` は catalog plugin への参照を確認したが、限定した探索 (`/opt/hermes/plugins` 一覧と `/opt/data/plugins/*langfuse*`) では plugin 本体を確認できず、存在・有効性は unknown。config の `plugins.enabled` は値を表示していないため、どの plugin が有効かも unknown (infra-inventory.md と同じ扱い)。同梱の `shared_metrics` の送信先は `telemetry.nousresearch.com` (外部) で、config 上は未設定 | Hermes 側の取得経路は既存 hook を使う metadata-only plugin にする。独自 hook は新設しない。shared_metrics は外部送信なので使わない |
 | Task Board runner | `runs/<ticket>/<run>/summary.edn` (1466 件)、`delegation.json` (127)、`outbox/*.edn` (223、2026-10-22 以降、`event-id`/`revision`/`redeliveries`/`hermes-status` あり) | 既存の metadata だけで baseline を取る |
 | 未確認 (unknown) | codex-workspace から Prometheus/Loki/dashboard への HTTP は timeout、`pods/exec`・`portforward`・`metrics.k8s.io` は Forbidden → 既存 series 名、PVC 使用量、scrape 対象数、ノードの空き資源、Grafana 認証、Alertmanager の通知先 | 「無い」ではなく unknown として扱う。導入判断の前に Owner 権限での確認が要る |
 
@@ -87,7 +87,7 @@
 ## 8. 段階的な導入案
 
 1. (Owner 承認後) runner が `ai-ops-event/v0` を `~/.codex-task-board/ai-ops/events-YYYYMMDD.jsonl` に追記する。Ready/ack/approval の時刻も出す。bounded buffer と drop counter を付け、書き込みに失敗しても業務は止めない。
-2. (同じ承認の範囲) Hermes の既存 hook を使う metadata-only plugin (`post_llm_call`, `post_tool_call`, `pre_approval_request`/`post_approval_response`, `on_session_end`) を作る。本文と引数は生成元で落とす。有効化には Hermes の再起動が 1 回要る。
+2. (同じ承認の範囲) Hermes の既存 hook を使う metadata-only plugin (`post_llm_call`, `post_tool_call`, `pre_approval_request`/`post_approval_response`, `on_session_end`) を作る。本文と引数は生成元で落とす。有効化には Hermes の再起動が 1 回要る。着手前に、有効な plugin と Langfuse catalog plugin 本体の有無 (現時点 unknown) を read-only で確認する。
 3. 集計を CronJob にし、`ai_ops_*` の metric を Prometheus に出す (ServiceMonitor を lolice に追加)。label は source/event_type/stratum/outcome/origin だけにし、ID は label にしない。
 4. 代表的な業務で 2〜4 週の baseline を取る。曖昧な差戻しだけを Owner が少量校正する。
 5. baseline が揃ってから、rolling 28d、最小 sample 数、error budget policy、burn-rate alert を提案する。BOXP-357 などの修正は待たせず、変更前後を version/event で比べる。
@@ -95,3 +95,5 @@
 retention / access / privacy: ledger は 180d で、Owner と runner の SA だけが読む。削除依頼は request_id 単位で ledger から消し、集計し直す。trace は sample してよいが、SLI counter は sample しない。
 
 `emit-sim` の標準エラー統計には、入力末尾で collector が停止中のため未配信となったバッファ内イベント数を `undelivered-buffered` として記録する。配信済みイベントのみを標準出力に出す。
+
+`duplicate-effects` は、`effect_key` が欠落または privacy gate で redact された `effect.applied` が 1 件でもあれば重複の有無を確定できないため `status unknown` とし、観測できた重複数を下限 (`observed-duplicates-lower-bound`)、検証できない effect 数を `unverifiable-effects` として別掲する (coverage 宣言済みでも 0 件と報告しない)。人による是正/再オープンの再分類は、集計と状態判定のどちらも「同じ evidence を持つ rule/model 判定がある」ことだけを条件にし、evidence event 自体が入力に無くても同じ扱いにする。

@@ -398,6 +398,10 @@ bb -e '
     (assert (= 1 (get-in (ai-ops-sli/aggregate* (conj base unmatched)) [:tasks :outcomes "in-flight"]))))
   (let [no-rule (vec (remove #(= "BOXP-9:rule" (:event_id %)) base))]
     (assert (= 1 (get-in (ai-ops-sli/aggregate* (conj no-rule human)) [:tasks :outcomes "in-flight"]))))
+  (let [no-evidence-event (vec (remove #(= "BOXP-9:run" (:event_id %)) base))
+        r (ai-ops-sli/aggregate* (conj no-evidence-event human))]
+    (assert (= 1 (get-in r [:tasks :outcomes "accepted"])))
+    (assert (= 0 (get-in r [:sli :reopen-after-accept :count] 0))))
   (println "ok   人の再分類は状態遷移にせず、証拠なし・rule 判定なしの再オープンは反映"))'
 
 bb -e '
@@ -486,3 +490,17 @@ bb -e '
       report (ai-ops-sli/aggregate* [low])]
   (assert (= [0 "partial/undeclared"] ((juxt :count :coverage) (get-in report [:zero-tolerance :critical-safety-events]))))
   (println "ok   safety の low のみは重大 0 件の部分観測"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [cov {:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}
+      ok {:event_id "BOXP-50:e1" :task_id "BOXP-50" :event_type "effect.applied" :effect_key "deploy:a"}
+      bad {:event_id "BOXP-50:e2" :task_id "BOXP-50" :event_type "effect.applied" :effect_key "Bad Key!"}
+      gated (keep #(:event (ai-ops-sli/privacy-gate %)) [cov ok bad])
+      r (ai-ops-sli/aggregate* gated)
+      d (get-in r [:zero-tolerance :duplicate-effects])]
+  (assert (= "unknown" (:status d)))
+  (assert (nil? (:count d)))
+  (assert (= [1 0] ((juxt :unverifiable-effects :observed-duplicates-lower-bound) d)))
+  (assert (= [0 "connected"] ((juxt :count :coverage) (get-in (ai-ops-sli/aggregate* (keep #(:event (ai-ops-sli/privacy-gate %)) [cov ok])) [:zero-tolerance :duplicate-effects]))))
+  (println "ok   effect_key 欠落/不正があれば重複実行 0 件と確定しない"))'

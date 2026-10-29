@@ -290,14 +290,13 @@
       (correction-class-origin (:correction_class e)) "unknown"))
 
 (defn task-outcome [evs]
-  (let [ids (set (keep :event_id evs))
-        evidence-of #(when (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %)))
+  (let [evidence-of #(when (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %)))
         reclassifiable? #(#{"correction" "task.reopened"} (:event_type %))
         ;; 人の再分類は、同じ evidence を持つ rule/model 判定がある場合だけ状態遷移から除外する
         ruled (set (keep #(when (and (reclassifiable? %) (not= "human" (:classifier %))) (evidence-of %)) evs))
+        ;; aggregate の是正再分類と同じ照合条件 (evidence の一致のみ。evidence event 自体の有無は問わない)
         evs (remove #(let [evidence (evidence-of %)]
-                       (and (= "human" (:classifier %)) (reclassifiable? %)
-                            evidence (not= evidence (:event_id %)) (contains? ids evidence) (contains? ruled evidence))) evs)
+                       (and (= "human" (:classifier %)) (reclassifiable? %) evidence (contains? ruled evidence))) evs)
         latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress"} (:lane_to %)))) evs)))
         state (if (= "lane.changed" (:event_type latest)) (:lane_to latest) (:status latest))]
     (cond
@@ -383,6 +382,7 @@
         duplicates (fn [type key] (let [groups (group-by key (filter #(and (= type (:event_type %)) (get % key) (not= "redacted" (get % key))) uniq))
                                          repeated (filter #(> (count %) 1) (vals groups))]
                                      {:count (reduce + (map #(dec (count %)) repeated))
+                                      :unverifiable (count (filter #(and (= type (:event_type %)) (or (nil? (get % key)) (= "redacted" (get % key)))) uniq))
                                       :tasks-involved (count (set (keep :task_id (mapcat identity repeated))))
                                       :scopes (count groups) :total (reduce + (map count (vals groups)))}))
         effects (duplicates "effect.applied" :effect_key)
@@ -424,10 +424,16 @@
                         :idle-timeouts (reduce + (map :idle-timeouts tasks))
                         :retrying (reduce + (map :retrying tasks))}
       :delegation (apply merge-with + (map :delegation tasks))}
-     :zero-tolerance {:duplicate-effects (if (or (connected? "duplicate-effects") (some #(= "effect.applied" (:event_type %)) uniq))
-                                          (assoc (select-keys effects [:count :tasks-involved])
-                                                 :coverage (if (connected? "duplicate-effects") "connected" "partial/undeclared"))
-                                          {:status "unknown" :reason "effect source 未接続"})
+     :zero-tolerance {:duplicate-effects (cond
+                                           ;; effect_key 欠落/不正の effect があると重複の有無を確定できない (0 件と報告しない)
+                                           (pos? (:unverifiable effects))
+                                           {:status "unknown" :reason "effect_key 欠落/不正の effect があり重複の有無を確定できない"
+                                            :observed-duplicates-lower-bound (:count effects) :tasks-involved (:tasks-involved effects)
+                                            :unverifiable-effects (:unverifiable effects) :coverage "partial/unverifiable-keys"}
+                                           (or (connected? "duplicate-effects") (some #(= "effect.applied" (:event_type %)) uniq))
+                                           (assoc (select-keys effects [:count :tasks-involved])
+                                                  :coverage (if (connected? "duplicate-effects") "connected" "partial/undeclared"))
+                                           :else {:status "unknown" :reason "effect source 未接続"})
                       :critical-safety-events (cond
                                                 (connected? "critical-safety-events") {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "connected"}
                                                 (some #(contains? (:severity enum-values) (:severity %)) uniq) {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "partial/undeclared"}
