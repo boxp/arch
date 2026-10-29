@@ -412,3 +412,31 @@ AI_OPS_MODULE="${module}" AI_OPS_ROOT="${emit_marker_root}" bb -e '
 (when-not (every? second checks) (System/exit 1))
 (println "ai-ops-ledger-test: emit marker retry checks passed")
 '
+AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
+(require (quote [babashka.fs :as fs]) (quote [clojure.string :as str]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (str (fs/path (System/getenv "AI_OPS_TMP") "sli-root")))
+(def vault (str (fs/path (System/getenv "AI_OPS_TMP") "sli-vault")))
+(doseq [d [(fs/path root "runs") (fs/path root "outbox") (fs/path vault "Tickets")]] (fs/create-dirs d))
+(spit (str (fs/path vault "Tickets" "BOXP-1.md")) "---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n")
+(assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+(def old (slurp (str (ai-ops-ledger/sli-path root))))
+(assert (str/includes? old "ai_ops_sli_info"))
+(assert (ai-ops-ledger/write-metrics! root))
+(assert (str/includes? (slurp (str (ai-ops-ledger/metrics-path root))) "ai_ops_sli_info"))
+(assert (nil? (ai-ops-ledger/refresh-sli! root "/missing")))
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (false? (ai-ops-ledger/refresh-sli! root "/missing")))
+  (assert (= old (slurp (str (ai-ops-ledger/sli-path root)))))
+  (assert (= 1 (:failures (ai-ops-ledger/read-sli-status root))))
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (let [real-run ai-ops-ledger/run-sli-command!]
+    (with-redefs [ai-ops-ledger/sli-timeout (constantly 1)
+                  ai-ops-ledger/run-sli-command! (fn [_ output deadline] (real-run ["sh" "-c" "sleep 30 & wait"] output deadline))]
+      (let [start (System/currentTimeMillis)]
+        (assert (false? (ai-ops-ledger/refresh-sli! root vault)))
+        (assert (< (- (System/currentTimeMillis) start) 5000))
+        (assert (= 1 (:failures (ai-ops-ledger/read-sli-status root))))
+        (assert (= old (slurp (str (ai-ops-ledger/sli-path root)))))))))
+(println "ai-ops-ledger-test: SLI export success, failure, interval and timeout passed")'

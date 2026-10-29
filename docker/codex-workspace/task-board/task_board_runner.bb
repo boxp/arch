@@ -234,6 +234,7 @@
     (let [now-ms (System/currentTimeMillis)]
       (when (and @ai-ops-module-loaded? (>= (- now-ms @ai-ops-metrics-last-ms) 60000))
         (reset! ai-ops-metrics-last-ms now-ms)
+        ((resolve 'ai-ops-ledger/refresh-sli!) (root) (System/getenv "CODEX_TASK_BOARD_VAULT"))
         ((resolve 'ai-ops-ledger/write-metrics!) (root))))
     (catch Exception e
       (log! (str "ai ops metrics write failed: " (.getMessage e))))))

@@ -267,7 +267,7 @@ bb -e '
        ["extract でも危険値を redact" (and (= 3 (:privacy-redacted-values (edn/read-string (slurp extractst)))) (not (re-find #"Bearer|sk-abcdef" (slurp extract))))]
        ["source 未接続は unknown" (every? #(= "unknown" (get-in (edn/read-string (slurp extracted)) [:zero-tolerance % :status])) [:duplicate-effects :critical-safety-events])]
        ["coverage 宣言済みなら 0" (and (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :duplicate-effects :count])) (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :critical-safety-events :count])))]
-       ["未知の zero-tolerance を Prom に出さない" (not (re-find #"duplicate_effect|critical_safety" (slurp extractprom)))]
+       ["未知の zero-tolerance を Prom に出さない" (and (clojure.string/includes? (slurp extractprom) "ai_ops_sli_source_connected{sli=\"duplicate_effects\"} 0") (clojure.string/includes? (slurp extractprom) "ai_ops_sli_source_connected{sli=\"critical_safety_events\"} 0"))]
        ["受入前の非 agent 是正は first-pass を妨げず、受入後は reopen" (let [r (edn/read-string (slurp timing))] (and (= [2 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))) (= 1 (get-in r [:sli :reopen-after-accept :count]))))]
        ["生成元に本文が残らない" (not (re-find #"送ってはいけない|Bearer|/secret" (slurp (str (fs/parent ok) "/ok.jsonl"))))]
        ["重複 event を 1 件として数える" (= 1 (get-in r [:input :duplicates]))]
@@ -1632,3 +1632,16 @@ bb -e "
   (assert (= 1 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (:sli r)))
   (assert (= {\"awaiting-review\" 1} (get-in r [:tasks :outcomes])) (pr-str (:tasks r))))"
 echo "ok   runner が実際に出力した ledger event (lane-start 含む) を通常モードで拒否せず集計する"
+python3 - "$tmp/ok.prom" "$tmp/extract.prom" <<'PYTEST'
+import sys
+ok, extracted = (open(p).read() for p in sys.argv[1:])
+for name in ('ai_ops_sli_info', 'ai_ops_sli_generated_timestamp_seconds', 'ai_ops_first_acceptance_tasks', 'ai_ops_first_acceptance_denominator_tasks', 'ai_ops_first_acceptance_excluded_tasks', 'ai_ops_first_acceptance_conservative_tasks', 'ai_ops_correction_events', 'ai_ops_correction_unevaluated_tasks', 'ai_ops_sli_source_connected', 'ai_ops_runs', 'ai_ops_stratum_tasks', 'ai_ops_guardrail_tasks'):
+    assert '# TYPE ' + name + ' gauge' in ok, name
+for sli in ('owner_rescue', 'duplicate_approval', 'reopen_after_accept'):
+    assert f'ai_ops_sli_determinable{{sli="{sli}"}} 0' in extracted
+    assert f'ai_ops_sli_count{{sli="{sli}"}}' not in extracted
+    assert f'ai_ops_sli_denominator{{sli="{sli}"}}' not in extracted
+assert 'ai_ops_lead_time_hours{quantile="0.5"}' in extracted
+assert 'ai_ops_lead_time_precision_info{precision="day"} 1' in extracted
+print('ok   SLI snapshot metrics and unknown handling')
+PYTEST

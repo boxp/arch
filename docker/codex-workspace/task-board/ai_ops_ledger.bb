@@ -471,6 +471,65 @@
             :when (and d (.isBefore (java.time.LocalDate/parse d) cutoff))]
       (fs/delete-if-exists f))))
 
+(def sli-script (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_sli.bb")))
+(def sli-limit (* 256 1024))
+(defn sli-status-path [root] (fs/path (ai-ops-dir root) "sli-export-status.edn"))
+(defn sli-path [root] (fs/path (ai-ops-dir root) "sli.prom"))
+(defn sli-interval [] (env-long "CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS" 900))
+(defn sli-timeout [] (env-long "CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS" 120))
+(defn sli-enabled? [] (and (pos? (sli-interval)) (not (str/blank? (System/getenv "CODEX_TASK_BOARD_VAULT")))))
+(defn read-sli-status [root]
+  (try (or (some-> (sli-status-path root) str slurp edn/read-string) {}) (catch Exception _ {})))
+
+(defn run-sli-command! [args output deadline]
+  (let [process (-> (ProcessBuilder. ^java.util.List (vec args))
+                    (.redirectOutput (java.io.File. (str output)))
+                    (.redirectError java.lang.ProcessBuilder$Redirect/DISCARD)
+                    (.start))]
+    (try
+      (let [remaining (max 0 (- deadline (System/currentTimeMillis)))]
+        (if (and (pos? remaining) (.waitFor process remaining java.util.concurrent.TimeUnit/MILLISECONDS))
+          (zero? (.exitValue process))
+          false))
+      (finally
+        (when (.isAlive process)
+          (let [children (vec (iterator-seq (.iterator (.descendants (.toHandle process)))))]
+            (doseq [child (reverse children)] (.destroyForcibly child))
+            (.destroyForcibly process)))))))
+
+(defn refresh-sli! [root vault]
+  (try
+    (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
+      (when (and (pos? interval) (not (str/blank? vault))
+                 (>= (- now (get status :last-attempt 0)) interval))
+        (let [attempt (assoc status :last-attempt now) tmp (atom nil) output (atom nil)
+              deadline (+ (System/currentTimeMillis) (* 1000 (max 0 (sli-timeout))))]
+          (try
+            (atomic-spit! (sli-status-path root) (pr-str attempt))
+            (reset! tmp (java.io.File/createTempFile "ai-ops-sli-" ".jsonl"))
+            (reset! output (java.io.File/createTempFile "ai-ops-sli-" ".prom"))
+            (if (and (run-sli-command! ["bb" sli-script "extract" (str root) (str vault)] @tmp deadline)
+                     (run-sli-command! ["bb" sli-script "prom" (str @tmp)] @output deadline)
+                     (pos? (.length @output)) (< (.length @output) sli-limit))
+              (do (atomic-spit! (sli-path root) (slurp @output))
+                  (atomic-spit! (sli-status-path root) (pr-str (assoc attempt :last-success now))) true)
+              (do (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) false))
+            (catch Exception _
+              (try (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) (catch Exception _)) false)
+            (finally (when @tmp (fs/delete-if-exists @tmp)) (when @output (fs/delete-if-exists @output)))))))
+    (catch Exception _ nil)))
+
+(defn sli-export-metrics [root]
+  (let [s (read-sli-status root)]
+    (str (str/join "\n" (concat
+          (when-let [v (:last-success s)] (metric-lines "ai_ops_sli_export_last_success_timestamp_seconds" "gauge" "Last successful SLI export." [[{} v]]))
+          (metric-lines "ai_ops_sli_export_last_attempt_timestamp_seconds" "gauge" "Last SLI export attempt, or zero if never attempted." [[{} (:last-attempt s 0)]])
+          (metric-lines "ai_ops_sli_export_failures_total" "counter" "Failed SLI export attempts." [[{} (:failures s 0)]])
+          (metric-lines "ai_ops_sli_export_enabled" "gauge" "SLI export is enabled and configured." [[{} (if (sli-enabled?) 1 0)]]))) "\n")))
+
+(defn sli-snapshot [root]
+  (try (let [p (sli-path root)] (if (and (fs/regular-file? p) (<= (fs/size p) sli-limit)) (slurp (str p)) "")) (catch Exception _ "")))
+
 (defn write-metrics!
   "Write `<root>/ai-ops/metrics.prom` from the stats and prune old ledger files.
   Never throws; returns true on success."
@@ -484,6 +543,7 @@
          (flush-unrecorded-write-errors! root)
          (when (fs/exists? (ledger-dir root)) (prune! root))
          (atomic-spit! (metrics-path root)
-                       (metrics-text (read-stats root) (quot (System/currentTimeMillis) 1000)))
+                       (str (metrics-text (read-stats root) (quot (System/currentTimeMillis) 1000))
+                            (sli-export-metrics root) (sli-snapshot root)))
          true))
       (catch Exception _ nil))))
