@@ -26,7 +26,10 @@
 全 agent に同じ SDK を使わせるのではなく、同じ意味の項目と相関 ID で join する。
 
 - **相関 ID**: `request_id` (論理的な依頼。ticket の無い会話にも付ける。ticket を新しく作らせない) → `task_id` (ticket、または会話の request) → `run_id` / `attempt` → `event_id` (生成元で安定させ、再送時も同じ値) + `parent_event_id` / `evidence_event_ids`。非同期 queue、再起動、別 repo の PR でも同じ ID を引き継ぐ。
-- **event ID の形式**: 通常モードでは ticket 形式、`cov-<source>-<8桁の16進数>`、または `req-<英小文字・数字・ハイフン8〜64文字>` / `conv-<同8〜64文字>`（任意で `/` と英数字・`:`, `_`, `-` の接尾辞）を使う。最大128文字で token パターンは禁止。parent / evidence ID も同じ制約。
+- **event ID の形式 (通常モード、`ai_ops_sli.bb` の `prod-*-re` と同一)**: 自由形式の英数字は許可しない（短い秘密値が token denylist をすり抜けるのを防ぐため）。最大128文字で token パターンは禁止。parent / evidence ID も同じ制約。
+  - `event_id`: (a) ticket 形式 `<大文字>-<数字>` に `/` `:` `-` 区切りの segment を0〜4個、(b) `cov-(acceptance|effects|safety|hermes|approvals)-<8桁16進>`、(c) 会話 ID (`req-` / `conv-` + 16進8桁、続けて `-` + 16進4桁を0〜3個、任意で `-` + 16進12桁) に `/` `:` 区切りの segment を0〜3個。segment は run_id、固定語彙 (`started` `finished` `accepted` `correction` `reopened` `state` `run` `req` `event` 等、末尾に数字0〜3桁可)、16進8〜16桁、数字1〜6桁、英小文字1字+数字0〜3桁のいずれか。
+  - `task_id`: ticket 形式 (`BOXP-360`) または会話 ID。`request_id`: `req:<ticket形式>` または会話 ID。`run_id`: `YYYYMMDDTHHMMSSZ` + 任意で `-<UUID>` か `-<16進1〜8桁>` + 任意で `-groom`。`effect_key` / `approval_key`: `(op|pr|merge|deploy|notify|lane|approval|effect):<16進8〜16桁>`。
+  - 許可例: `BOXP-1:started`、`BOXP-360/20261029T051836Z-1b92f7db-efb5-4eb3-82b5-6de5c60183fa/fin`、`cov-effects-12345678`、`req-abcdef01`、`conv-0123abcd/accepted`、`conv-abcdef01/event:1`。拒否例: `conv-short` (16進8桁でない)、`conv-ABCDEFGH` (大文字)、`conv-passwordhunter2`、`BOXP-1:password-hunter2` (固定語彙外の segment)、`cov-password-12345678` (source 語彙外)、`req-abcdef01/sk-secretvalue`。
 - **event_type**: `request.received` `run.started` `run.finished` `run.interrupted` `correction` `task.reopened` `approval.requested` `approval.resolved` `effect.applied` `owner.rescue` `lane.changed` `task.accepted` `task.cancelled` `task.state` `notify.run-finished` `coverage.connected`
 - **区別して保持する状態**: run の終了 ≠ task の受入、Ready ≠ 受領 (ack)、agent の自己申告 ≠ 環境の state、再送 (`redelivery`) ≠ 新しい依頼、reopen / 取消 / 阻害 / 保留 / 未観測。これらを成功の分母から黙って外さない。
 - **差戻し分類** (`correction_class` / `correction_origin` / `classifier`=rule|human|model / `classifier_version` / `confidence` / `evidence_event_ids`):

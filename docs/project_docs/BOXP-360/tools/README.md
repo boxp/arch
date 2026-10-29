@@ -23,7 +23,14 @@ run 履歴の無い受入済み ticket（accepted-without-run-history、受入�
 合成データの短い ID を許可するには、`emit-sim`、`aggregate`、`prom` のコマンド直後に `--synthetic` を指定する。入力の `synthetic` フィールドだけでは ID 制約は緩和されず、`extract` は常に厳格に検証する。
 受入後の最新イベントが `task.reopened` の場合は未完了（in-flight）とし、同時刻の受入より再オープンを優先する。
 
-通常モードの `event_id` / `parent_event_id` / `evidence_event_ids` は ticket 形式、`cov-<source>-<8桁の16進数>`、または `req-` / `conv-` に英小文字・数字・ハイフン8〜64文字を続けた形式を使う。会話 ID には任意で `/` と英数字・`:`, `_`, `-` の接尾辞を付けられる。最大128文字で、token パターンは禁止する。
+通常モードの ID は `ai_ops_sli.bb` の `prod-*-re` で定義した生成元ごとの固定パターンに限定し、自由形式の英数字は許可しない（短い秘密値が token denylist をすり抜けるのを防ぐため）。最大128文字で token パターンは禁止する。
+
+- `event_id` / `parent_event_id` / `evidence_event_ids`: (a) ticket 形式 `<大文字>-<数字>` に `/` `:` `-` 区切りの segment を0〜4個、(b) `cov-(acceptance|effects|safety|hermes|approvals)-<8桁16進>`、(c) 会話 ID (`req-` / `conv-` + 16進8桁、続けて `-` + 16進4桁を0〜3個、任意で `-` + 16進12桁) に `/` `:` 区切りの segment を0〜3個。segment は run_id、固定語彙 (`id-words`、末尾に数字0〜3桁可)、16進8〜16桁、数字1〜6桁、英小文字1字+数字0〜3桁のいずれか。
+- `task_id`: ticket 形式または会話 ID。`request_id`: `req:<ticket形式>` または会話 ID。`run_id`: `YYYYMMDDTHHMMSSZ` + 任意で `-<UUID>` か `-<16進1〜8桁>` + 任意で `-groom`。`effect_key` / `approval_key`: `(op|pr|merge|deploy|notify|lane|approval|effect):<16進8〜16桁>`。
+- 許可例: `BOXP-1:started`、`BOXP-360/20261029T051836Z-1b92f7db-efb5-4eb3-82b5-6de5c60183fa/fin`、`cov-effects-12345678`、`req-abcdef01`、`conv-0123abcd/accepted`、`conv-abcdef01/event:1`
+- 拒否例: `conv-short`、`conv-ABCDEFGH`、`conv-passwordhunter2`、`BOXP-1:password-hunter2`、`cov-password-12345678`、`req-abcdef01/sk-secretvalue`
+
+これらの例は `test.sh` で privacy gate の判定と一致することを検証している。
 
 状態は時刻付き遷移を時刻順に評価し、抽出時の現在状態を示す `snapshot=current` は履歴より優先し、その他の時刻なし snapshot は時刻付き状態 event が存在しない場合に限り使用する。時刻不明の agent 起因または原因不明の是正は first acceptance を不合格とする。是正 origin が省略または不正な場合は有効な class 分類から補い、それも不正なら unknown として数える。有効な origin は優先する。`approval.resolved` は保持するが重複承認の分母には含めない。
 

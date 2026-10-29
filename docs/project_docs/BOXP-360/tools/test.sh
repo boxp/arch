@@ -1436,3 +1436,15 @@ bb -e '
   (assert (ai-ops-sli/event-id? id false) id))
 (assert (ai-ops-sli/valid-value? :effect_key "deploy:0000000a"))
 (println "ok   privacy gate は生成元ごとの固定 ID 形式のみ許可し短い秘密値を拒否")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(require (quote [clojure.string :as str]))
+;; README の許可例・拒否例が privacy gate の実判定と一致する (文書と実装の ID 仕様の乖離を防ぐ)
+(let [lines (str/split-lines (slurp "README.md"))
+      ids (fn [prefix] (->> lines (filter #(str/starts-with? % prefix)) first (re-seq #"`([^`]+)`") (map second)))
+      ok (ids "- 許可例:") ng (ids "- 拒否例:")]
+  (assert (and (seq ok) (seq ng)))
+  (doseq [id ok] (assert (ai-ops-sli/event-id? id false) id))
+  (doseq [id ng] (assert (not (ai-ops-sli/event-id? id false)) id)))
+(println "ok   README の ID 許可例・拒否例が privacy gate の判定と一致")'
