@@ -205,6 +205,8 @@ CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=300 AI_OPS_MODULE="${module}" AI_
 (def t0 (System/currentTimeMillis))
 (def r (ev))
 (def elapsed (- (System/currentTimeMillis) t0))
+;; While another process holds the lock nothing may be appended to the day file.
+(def day-written-while-held? (clojure.java.io/.exists (clojure.java.io/file (str (ai-ops-ledger/day-file root)))))
 (def gate-r (ai-ops-ledger/record-gate! root "all" "pass"))
 (def metrics-r (ai-ops-ledger/write-metrics! root))
 (Thread/sleep 4500)
@@ -212,6 +214,7 @@ CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=300 AI_OPS_MODULE="${module}" AI_
 (def metrics-r2 (ai-ops-ledger/write-metrics! root))
 (def m (slurp (str (ai-ops-ledger/metrics-path root))))
 (def s-before-emit (ai-ops-ledger/read-stats root))
+(def day-lines (clojure.string/split-lines (slurp (str (ai-ops-ledger/day-file root)))))
 (def r2 (ev))
 (def s (ai-ops-ledger/read-stats root))
 (def checks [["held lock: emit returns nil" (nil? r)]
@@ -222,6 +225,9 @@ CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=300 AI_OPS_MODULE="${module}" AI_
               ;; one lost emit + one lost gate count
               (and (= 2 (:write-errors s-before-emit))
                    (clojure.string/includes? m "ai_ops_ledger_lost_events_total{reason=\"write_error\"} 2"))]
+             ["held lock: no lost marker appended outside the lock" (not day-written-while-held?)]
+             ["after release: lost event marker written by next lock holder (gate loss adds none)"
+              (= ["{\"collection_lost\":\"ledger_dropped\"}"] day-lines)]
              ["after release: emit succeeds" (some? r2)]
              ["after release: lost write and gate counted" (= 2 (:write-errors s))]])
 (doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
@@ -263,6 +269,8 @@ AI_OPS_MODULE="${module}" AI_OPS_ROOT="${spool_root}" bb -e '
              ["exited process loss: exported by another process"
               (clojure.string/includes? m "ai_ops_ledger_lost_events_total{reason=\"write_error\"} 1")]
              ["exited process loss: counted once" (= 1 (:write-errors s))]
+             ["exited process loss: marker written once by next lock holder"
+              (= "{\"collection_lost\":\"ledger_dropped\"}\n" (slurp (str (ai-ops-ledger/day-file root))))]
              ["exited process loss: spool drained" (empty? (fs/list-dir (ai-ops-ledger/pending-write-errors-dir root)))]])
 (doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
 (when-not (every? second checks) (println "stats:" s) (System/exit 1))

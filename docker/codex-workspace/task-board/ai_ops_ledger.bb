@@ -117,6 +117,9 @@
 (def ledger-mutex (java.util.concurrent.locks.ReentrantLock.))
 ;; Write errors that could not be persisted to stats (e.g. lock timeout); rendered into metrics.
 (def unrecorded-write-errors (atom 0))
+;; Subset of those that lost a ledger event (not just a gate count): the next
+;; lock holder must also leave a lost marker in the day file for them.
+(def unrecorded-lost-events (atom 0))
 
 (defn ai-ops-dir [root] (fs/path root "ai-ops"))
 (defn lock-path [root] (fs/path (ai-ops-dir root) "ledger.lock"))
@@ -198,15 +201,25 @@
 ;; next lock holder in any process folds it into the stats.
 (defn pending-write-errors-dir [root] (fs/path (ai-ops-dir root) "pending-write-errors"))
 
+(def lost-event-spool-prefix "event-")
+
 (defn spool-write-error!
   "Record one write error that could not be persisted to stats. Never throws;
-  falls back to the in-process counter when the spool file cannot be created."
-  [root]
-  (try
-    (fs/create-dirs (pending-write-errors-dir root))
-    (fs/create-file (fs/path (pending-write-errors-dir root)
-                             (str (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime) "-" (random-uuid))))
-    (catch Exception _ (swap! unrecorded-write-errors inc))))
+  falls back to the in-process counter when the spool file cannot be created.
+  `kind` :event marks a lost ledger event, so the flush also appends the lost
+  marker to the day file under the lock (never outside it)."
+  ([root] (spool-write-error! root :gate))
+  ([root kind]
+   (try
+     (fs/create-dirs (pending-write-errors-dir root))
+     (fs/create-file (fs/path (pending-write-errors-dir root)
+                              (str (when (= :event kind) lost-event-spool-prefix)
+                                   (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime) "-" (random-uuid))))
+     (catch Exception _
+       (swap! unrecorded-write-errors inc)
+       (when (= :event kind) (swap! unrecorded-lost-events inc))))))
+
+(declare append-lost-marker!)
 
 (defn flush-unrecorded-write-errors!
   "Persist write errors counted while the lock was unavailable (spool files from
@@ -222,9 +235,18 @@
         files (if (fs/exists? dir) (vec (fs/list-dir dir)) [])
         names (set (map #(str (fs/file-name %)) files))
         consumed (set (:consumed-write-error-spool (read-stats root)))
-        fresh (count (remove consumed names))
+        fresh-names (remove consumed names)
+        fresh (count fresh-names)
+        fresh-lost (count (filter #(str/starts-with? % lost-event-spool-prefix) fresh-names))
         [pending _] (reset-vals! unrecorded-write-errors 0)
+        [pending-lost _] (reset-vals! unrecorded-lost-events 0)
         total (+ pending fresh)]
+    ;; Lost events recorded outside the lock get their marker here, with the
+    ;; lock held, so it never races a normal append. A crash before the stats
+    ;; update may repeat the marker; one marker is enough and counts stay exact.
+    (when (pos? (+ pending-lost fresh-lost))
+      (when-not (append-lost-marker! (day-file root))
+        (swap! unrecorded-lost-events + pending-lost)))
     (when (or (pos? total) (not= consumed names))
       (try (update-stats! root #(-> %
                                     (update :write-errors (fnil + 0) total)
@@ -292,10 +314,13 @@
                 (update-stats! root #(-> (record-written % e)
                                          (update :redacted-values (fnil + 0) redacted)))
                 e)))))
+      ;; The marker is appended only while holding the lock; if the lock is
+      ;; unavailable the loss is spooled and the next lock holder writes it.
       (catch Exception _
-        (append-lost-marker! (day-file root))
-        (try (with-ledger-lock root #(update-stats! root (fn [s] (count-in s [:write-errors]))))
-             (catch Exception _ (spool-write-error! root)))
+        (try (with-ledger-lock root (fn []
+                                      (append-lost-marker! (day-file root))
+                                      (update-stats! root #(count-in % [:write-errors]))))
+             (catch Exception _ (spool-write-error! root :event)))
         nil))))
 
 (def gate-results #{"pass" "fail" "skip"})
