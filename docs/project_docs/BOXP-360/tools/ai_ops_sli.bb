@@ -397,6 +397,9 @@
       (some #(= "hold" (:status %)) evs) "on-hold"
       :else "unobserved")))
 
+(def state-fields [:status :result :action :lane_from :lane_to])
+(defn input-missing? [t] (or (pos? (:unreadable-runs t 0)) (pos? (:unverifiable-state t 0))))
+
 (defn aggregate* [events]
   (let [malformed (count (filter ::malformed events))
         ;; 生成元 (extract/emit-sim) の privacy gate で拒否された event の marker
@@ -420,6 +423,9 @@
         events (keep :event gated)
         n-in (count events)
         uniq (unique-events events)
+        ;; 読めない run summary / ticket (run.unreadable) は中身に effect/重大 event があった可能性を否定できない
+        unreadable-run-events (count (filter #(= "run.unreadable" (:event_type %)) uniq))
+        lost (+ lost unreadable-run-events)
         unverifiable-severity (count (filter #(and (some? (:severity %)) (not (contains? (:severity enum-values) (:severity %)))) uniq))
         ;; event_type 欠落/不正 (redact 済み) の event は effect/重大 event の可能性を否定できない
         unverifiable-type (count (filter #(not (contains? (:event_type enum-values) (:event_type %))) uniq))
@@ -498,6 +504,8 @@
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
                  :unreadable-runs (count (filter #(= "run.unreadable" (:event_type %)) evs))
+                 ;; 状態/結果 field が不正値で redact された event: Review 到達・受入・取消を判定できないため入力欠落として扱う
+                 :unverifiable-state (count (filter (fn [e] (some #(= "redacted" (get e %)) state-fields)) evs))
                  :interrupted (count (filter #(= "run.interrupted" (:event_type %)) evs))
                  :idle-timeouts (count (filter :idle_timeout finished))
                  :retrying (count (filter #(= "retrying" (:status %)) finished))
@@ -518,12 +526,13 @@
                  :delegation (frequencies (keep :delegation_kind runs))})
         n (count tasks)
         ;; 読めない run を持つ task は是正/差戻しを見落とし得るため、是正率と first acceptance の分子・分母から除き別掲する
-        input-missing (filter #(pos? (:unreadable-runs %)) tasks)
-        reached-all (filter :reached-review? tasks)
-        reached (remove #(pos? (:unreadable-runs %)) reached-all)
+        input-missing (filter #(input-missing? %) tasks)
+        ;; 入力欠落 task は Review 到達を確認できなくても未評価として別掲する (分母から黙って消さない)
+        reached-all (filter #(or (:reached-review? %) (input-missing? %)) tasks)
+        reached (remove #(input-missing? %) reached-all)
         observed-accepted (filter #(and (:observed? %) (= "accepted" (:outcome %))) tasks)
         accepted-all (filter :accepted-at observed-accepted)
-        accepted-evaluable (remove #(pos? (:unreadable-runs %)) accepted-all)
+        accepted-evaluable (remove #(input-missing? %) accepted-all)
         accepted (remove :first-pass-ambiguous? accepted-evaluable)
         acceptance-day-ambiguous (filter :first-pass-ambiguous? accepted-evaluable)
         accepted-without-acceptance-time (filter #(nil? (:accepted-at %)) observed-accepted)
@@ -540,7 +549,8 @@
         approvals (duplicates "approval.requested" :approval_key)]
     {:schema schema-version :classifier classifier-version
      :input {:events n-in :malformed-lines malformed :unreadable-inputs input-unreadable
-             :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks)) :unique (count uniq) :duplicates dup :order-inversions inversions
+             :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks))
+             :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
      :tasks {:total n :never-run (count (filter #(zero? (:runs %)) tasks))
              :accepted-without-run-history (count (filter :accepted-unobserved? tasks)) :outcomes (frequencies (map :outcome tasks))
@@ -549,7 +559,7 @@
      {:agent-system-correction-task-ratio
       (unlinked-guard (assoc (ratio (count (filter #(pos? (:agent-corr %)) reached)) (count reached))
              :unknown-cause-tasks (count (filter #(pos? (:unknown-corr %)) reached))
-             :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) reached-all))
+             :unevaluated-input-missing (count (filter #(input-missing? %) reached-all))
              :note "分母=review 到達 task。unknown 原因は分子に入れず別掲 (成功扱いもしない)"))
       :corrections-per-task (unlinked-guard {:agent-system (quantiles (map :agent-corr reached))
                              :unknown (quantiles (map :unknown-corr reached))
@@ -564,7 +574,7 @@
                                                                                     (filter :accepted-unobserved? tasks))))))
              :accepted-without-acceptance-time (count accepted-without-acceptance-time)
              :acceptance-day-ambiguous (count acceptance-day-ambiguous)
-             :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) accepted-all))
+             :unevaluated-input-missing (count (filter #(input-missing? %) accepted-all))
              :not-yet-evaluated (count (filter #(and (not= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
              :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明・日粒度受入と同日の是正 (前後不明)・未評価は別掲し合格に数えない"))
       :reopen-after-accept (if (connected? "acceptance-history") (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)) {:status :unknown :reason "acceptance history source not connected"})
@@ -584,9 +594,9 @@
      :zero-tolerance {:duplicate-effects (cond
                                            ;; 破損行・拒否 event に effect が含まれていた可能性があるため 0 件と確定しない
                                            (pos? lost)
-                                           {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信) があり重複の有無を確定できない"
+                                           {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events}
                                            (pos? unverifiable-type)
                                            {:status "unknown" :reason "event_type 欠落/不正の event があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :unverifiable-event-types unverifiable-type}
@@ -601,9 +611,9 @@
                                            :else {:status "unknown" :reason "effect source 未接続"})
                       :critical-safety-events (cond
                                                 (pos? lost)
-                                                {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信) があり重大 event の有無を確定できない"
+                                                {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events}
                                                 (pos? unverifiable-type)
                                                 {:status "unknown" :reason "event_type 欠落/不正の event があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :unverifiable-event-types unverifiable-type}
@@ -629,7 +639,7 @@
      :by-stratum
      (into (sorted-map)
            (for [[s ts] (group-by :stratum tasks)
-                 :let [ok (remove #(pos? (:unreadable-runs %)) ts)
+                 :let [ok (remove #(input-missing? %) ts)
                        r (filter :reached-review? ok)
                        observed-a (filter #(and (:observed? %) (= "accepted" (:outcome %))) ok)
                        a-all (filter :accepted-at observed-a)
@@ -641,7 +651,7 @@
                  :accepted-without-acceptance-time (count (remove :accepted-at observed-a))
                  :first-pass (count (filter :first-pass? a))
                  :acceptance-day-ambiguous (count (filter :first-pass-ambiguous? a-all))
-                 :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) ts))}]))}))
+                 :unevaluated-input-missing (count (filter #(input-missing? %) ts))}]))}))
 
 (defn aggregate [file] (aggregate* (read-events file)))
 

@@ -974,3 +974,30 @@ bb -e '
       (assert (= "unknown" (get-in r [:sli :agent-system-correction-task-ratio :status])) (pr-str e))
       (assert (= 1 (get-in r [:coverage :unlinked-task-events]))))))
 (println "ok   task_id 欠落の run/受入/状態 event でも是正率/first acceptance を確定値にしない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [cov [{:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}
+           {:event_id "cov-safety-12345678" :event_type "coverage.connected" :coverage_target "critical-safety-events"}]
+      base (into cov [{:event_id "BOXP-75:run" :task_id "BOXP-75" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}])
+      ok (ai-ops-sli/aggregate* base)
+      r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-75:unreadable" :task_id "BOXP-75" :event_type "run.unreadable"}))]
+  (assert (= 0 (get-in ok [:zero-tolerance :duplicate-effects :count])) (pr-str (:zero-tolerance ok)))
+  (assert (= 0 (get-in ok [:zero-tolerance :critical-safety-events :count])) (pr-str (:zero-tolerance ok)))
+  (assert (= "unknown" (get-in r [:zero-tolerance :duplicate-effects :status])) (pr-str (:zero-tolerance r)))
+  (assert (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status])) (pr-str (:zero-tolerance r)))
+  (assert (= 1 (get-in r [:zero-tolerance :critical-safety-events :unreadable-runs]))))
+(println "ok   読めない run summary (run.unreadable) があれば coverage 接続済みでも二重実行/重大 event を 0 件と確定しない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [r (ai-ops-sli/aggregate*
+         [{:event_id "BOXP-76:run" :task_id "BOXP-76" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+          {:event_id "BOXP-76:fin" :task_id "BOXP-76" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+          {:event_id "BOXP-77:run" :task_id "BOXP-77" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+          {:event_id "BOXP-77:fin" :task_id "BOXP-77" :event_type "run.finished" :result "bogus_review" :occurred_at "2026-10-20T02:00:00Z"}])
+      c (get-in r [:sli :agent-system-correction-task-ratio])]
+  (assert (= 1 (:denominator c)) (pr-str c))
+  (assert (= 1 (:unevaluated-input-missing c)) (pr-str c))
+  (assert (= 1 (get-in r [:input :unverifiable-state-events])) (pr-str (:input r))))
+(println "ok   状態/結果 field が不正値で redact された task は是正率の分母から黙って消さず入力欠落として別掲する")'
