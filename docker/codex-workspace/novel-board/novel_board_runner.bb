@@ -3124,7 +3124,7 @@
                       (and (not= (without-links %) (without-keep-clauses %))
                            (re-matches #"[\s。、]*" (without-keep-clauses %))))
                  lines)
-         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更" (without-keep-clauses %)) lines))))
+         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更|プロローグ|エピローグ|段落|地の文|章を" (without-keep-clauses %)) lines))))
 
 (defn illustration-job-path [novel-id] (fs/path (work-dir novel-id) "illustration-job.edn"))
 
@@ -3851,6 +3851,9 @@
                 (not (image-only-instructions? "台詞を変更して、挿絵も追加"))
                 (not (image-only-instructions? "展開を変更して挿絵を作り直して"))
                 (not (image-only-instructions? "挿絵を描く。本文は変更しないで本文を加筆"))
+                (not (image-only-instructions? "本文は変更しないで、プロローグを追加して挿絵を生成"))
+                (not (image-only-instructions? "エピローグを足して挿絵も作って"))
+                (image-only-instructions? "雨上がりの場面の挿絵を作ってください")
                 (not (image-only-instructions? "- 参照: [[設定/主人公]]"))
                 (not (image-only-instructions? "- 挿絵を描く\n- 本文を加筆"))))
     (check "review image action and mixed action"
