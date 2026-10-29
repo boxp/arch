@@ -1077,3 +1077,22 @@ bb -e '
     (assert (= :unknown (:status r)) (pr-str r))
     (assert (= 0 (get-in r [:observed :count])) (pr-str r))))
 (println "ok   欠落・未紐付け event や入力欠落 task があれば reopen-after-accept を 0 件と確定せず unknown (観測値は observed)")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [cov [{:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}
+           {:event_id "cov-safety-12345678" :event_type "coverage.connected" :coverage_target "critical-safety-events"}]
+      run {:event_id "BOXP-86:e1" :task_id "BOXP-86" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+      eff {:event_id "BOXP-86:e1" :task_id "BOXP-86" :event_type "effect.applied" :effect_key "eff-a" :severity "critical" :occurred_at "2026-10-20T00:01:00Z"}
+      ;; 同一内容の再送 (observed_at/redelivery のみ違う) は衝突ではない
+      resend (assoc run :observed_at "2026-10-20T00:05:00Z" :redelivery 1)]
+  (doseq [evs [(concat [run eff] cov) (concat [eff run] cov)]]
+    (let [r (ai-ops-sli/aggregate* evs)]
+      (assert (= 1 (get-in r [:input :id-collisions])) (pr-str (:input r)))
+      (assert (= "unknown" (get-in r [:zero-tolerance :duplicate-effects :status])) (pr-str (:zero-tolerance r)))
+      (assert (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status])) (pr-str (:zero-tolerance r)))
+      (assert (= "unknown" (get-in r [:sli :agent-system-correction-task-ratio :status])) (pr-str (:sli r)))))
+  (let [r (ai-ops-sli/aggregate* (concat [run resend] cov))]
+    (assert (= [0 1] ((juxt :id-collisions :duplicates) (:input r))) (pr-str (:input r)))
+    (assert (= 0 (get-in r [:zero-tolerance :critical-safety-events :count])) (pr-str (:zero-tolerance r)))))
+(println "ok   同じ event_id で内容が異なる event (ID 衝突) は入力順に関係なく zero-tolerance/是正 SLI を unknown にし、同一内容の再送は衝突扱いしない")'

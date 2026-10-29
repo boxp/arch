@@ -358,6 +358,13 @@
 (defn unique-events [events]
   (second (reduce (fn [[seen out] e] (if (contains? seen (:event_id e)) [seen out] [(conj seen (:event_id e)) (conj out e)])) [#{} []] events)))
 
+;; 同じ event_id で内容 (配送 metadata の observed_at/redelivery を除く) が異なる event: 再送ではなく ID 衝突。
+;; unique-events は先着を残すため後着側が消える (順序依存)。消えた側の種別は信用できないので欠落として扱う
+(defn event-id-collisions [events]
+  (->> events (group-by :event_id) vals
+       (map #(dec (count (distinct (map (fn [e] (dissoc e :observed_at :redelivery)) %)))))
+       (reduce + 0)))
+
 (defn event-time-key [e]
   (if-let [t (parse-inst (:occurred_at e))] [1 t] [0 java.time.Instant/MIN]))
 
@@ -430,14 +437,15 @@
         events (keep :event gated)
         n-in (count events)
         uniq (unique-events events)
+        id-collisions (event-id-collisions events)
         ;; 読めない run summary / ticket (run.unreadable) は中身に effect/重大 event があった可能性を否定できない
         unreadable-run-events (count (filter #(= "run.unreadable" (:event_type %)) uniq))
-        lost (+ lost unreadable-run-events)
+        lost (+ lost unreadable-run-events id-collisions)
         unverifiable-severity (count (filter #(and (some? (:severity %)) (not (contains? (:severity enum-values) (:severity %)))) uniq))
         ;; event_type 欠落/不正 (redact 済み) の event は effect/重大 event の可能性を否定できない
         unverifiable-type (count (filter #(not (contains? (:event_type enum-values) (:event_type %))) uniq))
         ;; 種別不明の event は受入前の correction だった可能性を否定できないため、是正 SLI の欠落にも含める
-        corr-lost (+ corr-lost unverifiable-type)
+        corr-lost (+ corr-lost unverifiable-type id-collisions)
         dup (- n-in (count uniq))
         ;; 観測順と occurred_at 順の逆転、observed_at より未来の occurred_at (時刻ずれ)
         inversions (->> events (group-by :task_id) vals
@@ -563,7 +571,7 @@
     {:schema schema-version :classifier classifier-version
      :input {:events n-in :malformed-lines malformed :unreadable-inputs input-unreadable
              :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks))
-             :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :order-inversions inversions
+             :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :id-collisions id-collisions :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
      :tasks {:total n :never-run (count (filter #(zero? (:runs %)) tasks))
              :accepted-without-run-history (count (filter :accepted-unobserved? tasks)) :outcomes (frequencies (map :outcome tasks))
@@ -620,9 +628,9 @@
      :zero-tolerance {:duplicate-effects (cond
                                            ;; 破損行・拒否 event に effect が含まれていた可能性があるため 0 件と確定しない
                                            (pos? lost)
-                                           {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run があり重複の有無を確定できない"
+                                           {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run・event_id 衝突があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions}
                                            (pos? unverifiable-type)
                                            {:status "unknown" :reason "event_type 欠落/不正の event があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :unverifiable-event-types unverifiable-type}
@@ -637,9 +645,9 @@
                                            :else {:status "unknown" :reason "effect source 未接続"})
                       :critical-safety-events (cond
                                                 (pos? lost)
-                                                {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run があり重大 event の有無を確定できない"
+                                                {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run・event_id 衝突があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions}
                                                 (pos? unverifiable-type)
                                                 {:status "unknown" :reason "event_type 欠落/不正の event があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :unverifiable-event-types unverifiable-type}
@@ -696,6 +704,7 @@
     (println "# TYPE ai_ops_tasks gauge")
     (doseq [[o c] (get-in r [:tasks :outcomes])] (line "ai_ops_tasks" {:outcome o} c))
     (line "ai_ops_event_duplicates_total" {} (get-in r [:input :duplicates]))
+    (line "ai_ops_event_id_collisions_total" {} (get-in r [:input :id-collisions]))
     (line "ai_ops_input_malformed_lines_total" {} (get-in r [:input :malformed-lines]))
     (line "ai_ops_privacy_rejected_events_total" {:stage "upstream"} (get-in r [:coverage :privacy-rejected-upstream]))
     (line "ai_ops_collection_lost_events_total" {:reason "buffer_dropped"} (get-in r [:coverage :collection-lost :buffer-dropped]))
