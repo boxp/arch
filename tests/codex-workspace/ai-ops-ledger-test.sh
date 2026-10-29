@@ -219,10 +219,11 @@ CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=300 AI_OPS_MODULE="${module}" AI_
              ["held lock: record-gate/write-metrics do not throw" (and (nil? gate-r) (nil? metrics-r))]
              ["after release: write-metrics succeeds" (true? metrics-r2)]
              ["after release: loss exported without a later emit"
-              (and (= 1 (:write-errors s-before-emit))
-                   (clojure.string/includes? m "ai_ops_ledger_lost_events_total{reason=\"write_error\"} 1"))]
+              ;; one lost emit + one lost gate count
+              (and (= 2 (:write-errors s-before-emit))
+                   (clojure.string/includes? m "ai_ops_ledger_lost_events_total{reason=\"write_error\"} 2"))]
              ["after release: emit succeeds" (some? r2)]
-             ["after release: lost write counted" (= 1 (:write-errors s))]])
+             ["after release: lost write and gate counted" (= 2 (:write-errors s))]])
 (doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
 (when-not (every? second checks) (println "stats:" s "elapsed:" elapsed) (System/exit 1))
 (println "ai-ops-ledger-test: held-lock checks passed")
@@ -266,4 +267,31 @@ AI_OPS_MODULE="${module}" AI_OPS_ROOT="${spool_root}" bb -e '
 (doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
 (when-not (every? second checks) (println "stats:" s) (System/exit 1))
 (println "ai-ops-ledger-test: exited-process loss checks passed")
+'
+
+# Spool consumption must survive a crash between the stats update and the spool
+# deletion (no double count) and a crash before the stats update (no loss).
+crash_root="${tmp}/crash"
+AI_OPS_MODULE="${module}" AI_OPS_ROOT="${crash_root}" bb -e '
+(require (quote [babashka.fs :as fs]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (System/getenv "AI_OPS_ROOT"))
+(def spool-dir (ai-ops-ledger/pending-write-errors-dir root))
+(fs/create-dirs spool-dir)
+;; crash after the stats update: a and b already counted and listed as consumed
+(fs/create-file (fs/path spool-dir "a")) (fs/create-file (fs/path spool-dir "b"))
+(ai-ops-ledger/update-stats! root (constantly {:write-errors 2 :consumed-write-error-spool #{"a" "b"}}))
+;; crash before the stats update: c spooled but not yet counted
+(fs/create-file (fs/path spool-dir "c"))
+(def ok (ai-ops-ledger/write-metrics! root))
+(def s (ai-ops-ledger/read-stats root))
+(def ok2 (ai-ops-ledger/write-metrics! root))
+(def s2 (ai-ops-ledger/read-stats root))
+(def checks [["crash recovery: write-metrics succeeds" (and (true? ok) (true? ok2))]
+             ["crash recovery: consumed spool not counted twice, fresh spool counted" (= 3 (:write-errors s))]
+             ["crash recovery: spool drained" (empty? (fs/list-dir spool-dir))]
+             ["crash recovery: stable on next flush" (and (= 3 (:write-errors s2)) (empty? (:consumed-write-error-spool s2)))]])
+(doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
+(when-not (every? second checks) (println "stats:" s s2) (System/exit 1))
+(println "ai-ops-ledger-test: spool crash-recovery checks passed")
 '

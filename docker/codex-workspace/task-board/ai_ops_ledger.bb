@@ -211,18 +211,26 @@
 (defn flush-unrecorded-write-errors!
   "Persist write errors counted while the lock was unavailable (spool files from
   any process plus this process's fallback counter). Call with the ledger lock
-  held. Spool files are removed before the stats update so a crash cannot count
-  them twice; on failure the removed count is kept in the in-process counter."
+  held. Crash-safe and exactly-once: the stats update atomically adds the count
+  of not-yet-consumed spool files and records their names in
+  `:consumed-write-error-spool`; files are deleted only afterwards. A crash
+  before the stats update leaves the files to be counted by the next flush, and
+  a crash (or delete failure) after it leaves files already listed as consumed,
+  which are deleted without being counted again."
   [root]
   (let [dir (pending-write-errors-dir root)
-        spooled (if (fs/exists? dir)
-                  (count (filter #(try (fs/delete %) true (catch Exception _ false)) (fs/list-dir dir)))
-                  0)
+        files (if (fs/exists? dir) (vec (fs/list-dir dir)) [])
+        names (set (map #(str (fs/file-name %)) files))
+        consumed (set (:consumed-write-error-spool (read-stats root)))
+        fresh (count (remove consumed names))
         [pending _] (reset-vals! unrecorded-write-errors 0)
-        total (+ pending spooled)]
-    (when (pos? total)
-      (try (update-stats! root #(update % :write-errors (fnil + 0) total))
-           (catch Exception e (swap! unrecorded-write-errors + total) (throw e))))))
+        total (+ pending fresh)]
+    (when (or (pos? total) (not= consumed names))
+      (try (update-stats! root #(-> %
+                                    (update :write-errors (fnil + 0) total)
+                                    (assoc :consumed-write-error-spool names)))
+           (catch Exception e (swap! unrecorded-write-errors + pending) (throw e))))
+    (doseq [f files] (try (fs/delete-if-exists f) (catch Exception _ nil)))))
 
 (defn append-line! [path m]
   (fs/create-dirs (fs/parent path))
@@ -305,7 +313,12 @@
                                                   (cond (true? result) "pass"
                                                         (contains? gate-results result) result
                                                         :else "fail")]]))))
-      (catch Exception _ nil))))
+      ;; A lost gate count (lock timeout / stats write failure) must not look
+      ;; like normal collection: count it as a write error like emit! does.
+      (catch Exception _
+        (try (with-ledger-lock root #(update-stats! root (fn [s] (count-in s [:write-errors]))))
+             (catch Exception _ (spool-write-error! root)))
+        nil))))
 
 ;; ---------------------------------------------------------------------------
 ;; metrics
