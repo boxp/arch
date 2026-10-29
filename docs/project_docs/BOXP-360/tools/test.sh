@@ -4,14 +4,14 @@ set -euo pipefail
 cd "$(dirname "$0")"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
-bb ai_ops_sli.bb emit-sim fixtures/synthetic-events.jsonl 64 2>"$tmp/ok.stats" >"$tmp/ok.jsonl"
+bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 64 2>"$tmp/ok.stats" >"$tmp/ok.jsonl"
 cat >>"$tmp/ok.jsonl" <<'EOF'
 {"event_id":"cov-acceptance-12345678","event_type":"coverage.connected","coverage_target":"acceptance-history"}
 {"event_id":"cov-effects-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
 EOF
-bb ai_ops_sli.bb aggregate "$tmp/ok.jsonl" >"$tmp/ok.edn"
-bb ai_ops_sli.bb emit-sim fixtures/synthetic-events.jsonl 4 10 20 2>"$tmp/down.stats" >"$tmp/down.jsonl"
-bb ai_ops_sli.bb prom "$tmp/ok.jsonl" >"$tmp/ok.prom"
+bb ai_ops_sli.bb aggregate --synthetic "$tmp/ok.jsonl" >"$tmp/ok.edn"
+bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 4 10 20 2>"$tmp/down.stats" >"$tmp/down.jsonl"
+bb ai_ops_sli.bb prom --synthetic "$tmp/ok.jsonl" >"$tmp/ok.prom"
 
 mkdir -p "$tmp/root/runs/BOXP-999/20261020T010000Z-abcd" "$tmp/root/outbox" "$tmp/vault/Tickets"
 cat >"$tmp/vault/Tickets/BOXP-999.md" <<'EOF'
@@ -36,7 +36,7 @@ EOF
 cat >>"$tmp/timing.jsonl" <<'EOF'
 {"event_id":"cov-one-12345678","event_type":"coverage.connected","coverage_target":"acceptance-history"}
 EOF
-bb ai_ops_sli.bb aggregate "$tmp/timing.jsonl" >"$tmp/timing.edn"
+bb ai_ops_sli.bb aggregate --synthetic "$tmp/timing.jsonl" >"$tmp/timing.edn"
 cat >"$tmp/coverage.jsonl" <<'EOF'
 {"event_id":"cov-one-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
 {"event_id":"cov-two-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}
@@ -118,6 +118,32 @@ bb -e '
   (assert (= 0 (get-in r [:zero-tolerance :critical-safety-events])))
   (println "ok   reopen 状態、不正 ID の拒否と複数 coverage"))' "$tmp/reopen.edn"
 
+cat >"$tmp/spoof.jsonl" <<'EOF'
+{"event_id":"patient:john-doe","synthetic":true,"task_id":"BOXP-1","event_type":"task.accepted"}
+EOF
+bb ai_ops_sli.bb emit-sim "$tmp/spoof.jsonl" >"$tmp/spoof.out" 2>"$tmp/spoof.stats"
+bb ai_ops_sli.bb aggregate "$tmp/spoof.jsonl" >"$tmp/spoof.edn"
+bb -e '
+(let [[out stats report] *command-line-args*]
+  (assert (= 1 (:privacy-rejected (edn/read-string (slurp stats)))))
+  (assert (= 1 (get-in (edn/read-string (slurp report)) [:coverage :privacy-rejected-invalid-id])))
+  (assert (not (re-find #"patient" (str (slurp out) (slurp stats) (slurp report)))))
+  (println "ok   synthetic フィールドによる ID 制約の回避を拒否"))' "$tmp/spoof.out" "$tmp/spoof.stats" "$tmp/spoof.edn"
+
+cat >"$tmp/reopened-only.jsonl" <<'EOF'
+{"event_id":"BOXP-10:reopened","task_id":"BOXP-10","event_type":"task.reopened","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-10:accepted","task_id":"BOXP-10","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-11:accepted","task_id":"BOXP-11","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-11:reopened","task_id":"BOXP-11","event_type":"task.reopened","occurred_at":"2026-10-21T00:00:00Z"}
+{"event_id":"BOXP-11:accepted-again","task_id":"BOXP-11","event_type":"task.accepted","occurred_at":"2026-10-22T00:00:00Z"}
+EOF
+bb ai_ops_sli.bb aggregate "$tmp/reopened-only.jsonl" >"$tmp/reopened-only.edn"
+bb -e '
+(let [r (edn/read-string (slurp (first *command-line-args*)))]
+  (assert (= {"in-flight" 1 "accepted" 1} (get-in r [:tasks :outcomes])))
+  (assert (= 1 (get-in r [:guardrails :unfinished])))
+  (println "ok   再オープン単独、同時刻の優先順位と再受入"))' "$tmp/reopened-only.edn"
+
 cat >"$tmp/privacy-prom.jsonl" <<'EOF'
 {"event_id":"invalid id","source":"derived\"\nsk-secret-token","event_type":"run.started\"\nsk-secret-token"}
 {"event_id":"BOXP-1:unsafe","source":"derived\"\nsk-secret-token","event_type":"run.started\"\nsk-secret-token"}
@@ -156,7 +182,7 @@ bb -e '
               ["受入履歴未接続は unknown" (= :unknown (get-in u [:sli :reopen-after-accept :status]))]
               ["履歴接続時に再オープンと受入を計上" (= [1 1] ((juxt :count :denominator) (get-in c [:sli :reopen-after-accept])))]
               ["タスク間の effect と承認の重複" (and (= [1 2] ((juxt :count :tasks-involved) (get-in c [:zero-tolerance :duplicate-effects]))) (= [1 2] ((juxt :count :tasks-involved) (get-in c [:sli :duplicate-approval]))))]
-              ["run 履歴無し受入は first-pass 分母外で別掲" (and (= 0 (get-in u [:sli :first-acceptance-conformance :denominator])) (= 1 (get-in u [:tasks :accepted-without-run-history])))]
+              ["再オープン済みは受入済みとして数えない" (and (= 0 (get-in u [:sli :first-acceptance-conformance :denominator])) (= 0 (get-in u [:tasks :accepted-without-run-history])))]
               ["Owner rescue に未実行を含む" (= [1 2] ((juxt :count :denominator) (get-in c [:sli :owner-rescue])))]
               ["秘密値を emit-sim でも 5 件 redact" (and (= 5 (:privacy-redacted-values stats)) (= 5 (count (re-seq #"redacted" (slurp (str dir "/secrets.out"))))))]]]
   (doseq [[label ok] checks] (println (if ok "ok  " "FAIL") label))
@@ -176,11 +202,11 @@ bb -e '
        ["重複 event を 1 件として数える" (= 1 (get-in r [:input :duplicates]))]
        ["順序逆転を検知" (= 1 (get-in r [:input :order-inversions]))]
        ["時刻ずれを検知" (= 1 (get-in r [:input :clock-skew-gt-5m]))]
-       ["取消/阻害/保留を outcome に残す" (= {"accepted" 2 "cancelled" 1 "blocked" 1 "awaiting-review" 2 "in-flight" 1} (get-in r [:tasks :outcomes]))]
+       ["取消/阻害/保留を outcome に残す" (= {"accepted" 1 "cancelled" 1 "blocked" 1 "awaiting-review" 2 "in-flight" 2} (get-in r [:tasks :outcomes]))]
        ["ticket なし会話も request_id で task 化" (= 7 (get-in r [:tasks :total]))]
        ["人の訂正が rule 判定を上書き (S3 は非 agent 起因)" (= 0 (get-in r [:sli :agent-system-correction-task-ratio :unknown-cause-tasks]))]
        ["agent-system 是正 task 1/4 (S2)" (= [1 4] ((juxt :count :denominator) (get-in r [:sli :agent-system-correction-task-ratio])))]
-       ["first acceptance: 受入 2 中 1、未評価 2 は合格扱いしない" (= [1 2 2] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance])))]
+       ["first acceptance: 受入 1 中 1、未評価 2 は合格扱いしない" (= [1 1 2] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance])))]
        ["close 後 late feedback を reopen-after-accept に計上" (= 1 (get-in r [:sli :reopen-after-accept :count]))]
        ["Owner 救援" (= 1 (get-in r [:sli :owner-rescue :count]))]
        ["同 scope 重複承認" (= [1 1] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]

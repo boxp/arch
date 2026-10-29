@@ -54,7 +54,10 @@
 (defn event-id? [s synthetic?]
   (and (<= (count s) 128) (boolean (re-matches (if synthetic? #"[A-Za-z0-9:_/-]{1,128}"
                          #"(?:[A-Z]+-\d+(?:[/:-][A-Za-z0-9:_/-]+)?|cov-[a-z0-9-]+-[0-9a-f]{8})") s))))
-(defn valid-value? [k v synthetic?]
+(def ^:dynamic *synthetic-mode* false)
+
+(defn valid-value? [k v]
+  (let [synthetic? *synthetic-mode*]
   (cond
     (nil? v) true
     (and (string? v) (not (token-safe? v))) false
@@ -68,13 +71,13 @@
     (= k :request_id) (and (string? v) (boolean (re-matches (if synthetic? #"req:(?:[A-Z]+[0-9]+|conv-[a-z0-9-]+)" #"req:[A-Z]+-\d+") v)))
     (= k :run_id) (and (string? v) (boolean (re-matches (if synthetic? #"r[0-9]+" #"\d{8}T\d{6}Z(?:-[0-9a-f-]+)?") v)))
     (#{:effect_key :approval_key} k) (and (string? v) (boolean (re-matches #"[a-z0-9:_-]{1,64}" v)))
-    :else false))
+    :else false)))
 
 (defn privacy-gate [e]
   (let [dropped (remove allowed-keys (keys e))
         selected (select-keys e allowed-keys)
-        invalid (filter (fn [[k v]] (not (valid-value? k v (true? (:synthetic e))))) selected)
-        rejected? (or (nil? (:event_id e)) (not (valid-value? :event_id (:event_id e) (true? (:synthetic e)))))]
+        invalid (filter (fn [[k v]] (not (valid-value? k v))) selected)
+        rejected? (or (nil? (:event_id e)) (not (valid-value? :event_id (:event_id e))))]
     {:event (when-not rejected? (reduce (fn [m [k _]] (assoc m k "redacted")) selected invalid))
      :dropped-keys (count dropped) :redacted-values (count (remove #(= :event_id (first %)) invalid)) :rejected? rejected?}))
 
@@ -266,10 +269,11 @@
        (keep #(try (json/parse-string % true) (catch Exception _ nil)))))
 
 (defn task-outcome [evs]
-  (let [latest (last (filter #(#{"task.state" "task.accepted"} (:event_type %)) evs))
+  (let [latest (last (sort-by #(vector (or (:occurred_at %) "9999") (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened"} (:event_type %)) evs)))
         state (:status latest)]
     (cond
       (some #(= "task.cancelled" (:event_type %)) evs) "cancelled"
+      (= "task.reopened" (:event_type latest)) "in-flight"
       (or (= "task.accepted" (:event_type latest)) (#{"done" "closed"} state)) "accepted"
       (= state "blocked") "blocked"
       (= state "review") "awaiting-review"
@@ -428,11 +432,14 @@
 ;; ---------------------------------------------------------------------------
 
 (defn -main [& [cmd & args]]
-  (case cmd
-    "extract" (extract (first args) (second args))
-    "emit-sim" (let [[f cap from to] args] (emit-sim f (parse-long (or cap "8")) (parse-long (or from "-1")) (parse-long (or to "-2"))))
-    "aggregate" (prn (aggregate (first args)))
-    "prom" (prom (first args))
-    (binding [*out* *err*] (println "usage: ai_ops_sli.bb extract|emit-sim|aggregate|prom ...") (System/exit 2))))
+  (let [synthetic? (and (contains? #{"emit-sim" "aggregate" "prom"} cmd) (= "--synthetic" (first args)))
+        args (if synthetic? (rest args) args)]
+    (binding [*synthetic-mode* (boolean synthetic?)]
+      (case cmd
+        "extract" (extract (first args) (second args))
+        "emit-sim" (let [[f cap from to] args] (emit-sim f (parse-long (or cap "8")) (parse-long (or from "-1")) (parse-long (or to "-2"))))
+        "aggregate" (prn (aggregate (first args)))
+        "prom" (prom (first args))
+        (binding [*out* *err*] (println "usage: ai_ops_sli.bb extract|emit-sim|aggregate|prom [--synthetic] ...") (System/exit 2))))))
 
 (when (= *file* (System/getProperty "babashka.file")) (apply -main *command-line-args*))

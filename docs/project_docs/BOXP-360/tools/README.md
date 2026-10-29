@@ -6,7 +6,7 @@ bb ai_ops_sli.bb extract ~/.codex-task-board "$CODEX_TASK_BOARD_VAULT" > /tmp/ev
 bb ai_ops_sli.bb aggregate /tmp/events.jsonl   # SLI/guardrail/coverage (EDN)
 bb ai_ops_sli.bb prom /tmp/events.jsonl        # 低 cardinality Prometheus exposition
 # 生成元 bounded buffer + privacy gate + collector 停止 (index 10..20) の模擬
-bb ai_ops_sli.bb emit-sim fixtures/synthetic-events.jsonl 4 10 20 > /tmp/collected.jsonl
+bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 4 10 20 > /tmp/collected.jsonl
 ./test.sh                                      # 合成 E2E と回帰 check
 ```
 
@@ -19,3 +19,6 @@ privacy gate は key ごとの許可値・ID・時刻・型を検証し、認証
 受入履歴の網羅性は `coverage.connected` の `acceptance-history` がなければ reopen-after-accept を unknown とする。closed が残る未完了 ticket は受入と再オープンの証拠として抽出する。duplicate-effects は effect 観測時または coverage 接続時に全 task の effect_key を横断して余分な適用数と関与 task 数を数え、宣言がない場合は coverage を partial/undeclared とし、承認も approval_key ごとに横断集計する。
 
 run 履歴の無い受入済み ticket（accepted-without-run-history）は是正有無を観測できないため、first acceptance / 是正率の分母に入れず別掲する（合格扱いしない）。reopen-after-accept は受入履歴 source 接続時のみ、現在の状態にかかわらず受入イベントがある全 task を分母に計上する。
+
+合成データの短い ID を許可するには、`emit-sim`、`aggregate`、`prom` のコマンド直後に `--synthetic` を指定する。入力の `synthetic` フィールドだけでは ID 制約は緩和されず、`extract` は常に厳格に検証する。
+受入後の最新イベントが `task.reopened` の場合は未完了（in-flight）とし、同時刻の受入より再オープンを優先する。
