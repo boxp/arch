@@ -484,7 +484,10 @@
 (defn ever-accepted? [t] (or (:acceptance-history? t) (= "accepted" (:outcome t))))
 
 (defn aggregate* [events]
-  (let [malformed (count (filter ::malformed events))
+  (let [;; 合成データ扱いは呼び出し側の --synthetic 指定に限る (通常モードでは入力の synthetic field を信頼しない)
+        syn-mode? *synthetic-mode*
+        syn-evs? (fn [evs] (boolean (and syn-mode? (some :synthetic evs))))
+        malformed (count (filter ::malformed events))
         ;; 生成元 (extract/emit-sim) の privacy gate で拒否された event の marker
         upstream-markers (filter rejected-marker? events)
         upstream-rejected (count upstream-markers)
@@ -623,10 +626,10 @@
                           orphan-runs (filter #(and (#{"run.finished" "run.interrupted"} (:event_type %))
                                                      (if (:run_id %) (not (started-ids (:run_id %))) (empty? runs))) evs)
                           ;; run 履歴の無い是正 event: 是正の根拠 run を確認できないため run 履歴不足として未評価にする
-                          history-less-corr (when (and (empty? runs) (empty? orphan-runs) (not-any? :synthetic evs))
+                          history-less-corr (when (and (empty? runs) (empty? orphan-runs) (not (syn-evs? evs)))
                                               (filter #(= "correction" (:event_type %)) evs))]
                     ;; 状態 event (state/cancelled/reopened)・読めない run・救援 event も task の存在を示す (救援単独 task を救援率から落とさない)
-                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue" "correction"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
+                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue" "correction"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (syn-evs? evs) (some #(= "lane.changed" (:event_type %)) evs))]
                 {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
@@ -643,11 +646,11 @@
                  :post-accept-indeterminate? (boolean (and (some #(= "task.accepted" (:event_type %)) evs) (empty? post-accept-corr)
                                                           (or (nil? accepted)
                                                               (some #(#{:unknown :same :ambiguous} (corr-phase %)) corr))))
-                 :observed? (boolean (or (seq runs) (seq orphan-runs) (some :synthetic evs) (some #(= "run.unreadable" (:event_type %)) evs)))
-                 :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
+                 :observed? (boolean (or (seq runs) (seq orphan-runs) (syn-evs? evs) (some #(= "run.unreadable" (:event_type %)) evs)))
+                 :reached-review? (boolean (and (or (seq runs) (syn-evs? evs)) (or first-review accepted)))
                  ;; run 履歴の無い受入 task は受入時刻の有無・受入後の再オープンに関わらず未評価 (done snapshot のみ/再オープン中の task も保守的分母に残す)
                  :accepted-unobserved? (boolean (and (or (some #(= "task.accepted" (:event_type %)) evs) (= "accepted" (task-outcome evs)))
-                                                     (empty? runs) (empty? orphan-runs) (not-any? :synthetic evs)))
+                                                     (empty? runs) (empty? orphan-runs) (not (syn-evs? evs))))
                  :first-pass? (= :pass first-pass)
                  ;; 受入と同日の是正があり日粒度では前後不明: 合格にも不合格にもせず別掲
                  :first-pass-ambiguous? (= :ambiguous first-pass)

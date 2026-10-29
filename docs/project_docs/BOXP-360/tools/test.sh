@@ -1448,3 +1448,15 @@ bb -e '
   (doseq [id ok] (assert (ai-ops-sli/event-id? id false) id))
   (doseq [id ng] (assert (not (ai-ops-sli/event-id? id false)) id)))
 (println "ok   README の ID 許可例・拒否例が privacy gate の判定と一致")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; 通常モードでは入力の synthetic field を信頼しない (run 履歴なし受入を観測済み・合格扱いにしない)
+(let [evs [{:event_id "BOXP-97:accepted" :task_id "BOXP-97" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z" :synthetic true}]
+      r (ai-ops-sli/aggregate* evs)
+      fa (get-in r [:sli :first-acceptance-conformance])
+      rs (binding [ai-ops-sli/*synthetic-mode* true] (ai-ops-sli/aggregate* [{:event_id "s97" :task_id "S97" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z" :synthetic true}]))]
+  (assert (= 0 (:denominator fa)) (pr-str fa))
+  (assert (= 1 (get-in r [:tasks :accepted-without-run-history])) (pr-str (:tasks r)))
+  (assert (= 1 (get-in rs [:sli :first-acceptance-conformance :denominator])) (pr-str (:sli rs))))
+(println "ok   通常モードでは synthetic field で run 履歴なし受入を観測済み扱いにしない")'
