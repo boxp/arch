@@ -3360,7 +3360,7 @@
                        (focus-reference-images candidates (set (map :stem named)))))
             illustration (cond
                            adopted adopted
-                           reused {:ok? true :path (str (illustration-path novel-id)) :bytes (fs/size (illustration-path novel-id))}
+                           reused {:ok? true :reused? true :path (str (illustration-path novel-id)) :bytes (fs/size (illustration-path novel-id))}
                            (empty? candidates) {:ok? false :reason (reference-shortage-reason discovery)}
                            :else (let [running {:status :running :run-id (str (fs/file-name run-dir)) :manuscript-sha before :instructions-fp fp
                                                 :pending (str (pending-image-path novel-id run-dir)) :started-at (now-str)}
@@ -3560,8 +3560,12 @@
     (str "prompt " (or (:prompt_tokens usage) "?") " / completion " (or (:completion_tokens usage) "?") " tokens")))
 
 (defn illustration-summary [illustration]
-  (if (:ok? illustration)
+  (cond
+    (:reused? illustration)
+    (str "挿絵: 同じ依頼で生成済みの画像をそのまま使用（新規生成なし） " (:path illustration) " (" (:bytes illustration) " bytes)。作り直すには Review Instructions の挿絵の指示を変えて agent を再割当")
+    (:ok? illustration)
     (str "挿絵: 生成済み " (:path illustration) " (" (:bytes illustration) " bytes, 参照画像 " (count (:references illustration)) " 件)")
+    :else
     (str "挿絵: 未生成（" (:reason illustration) "）→ 一部未完了。本文は完成")))
 
 (defn finish-run! [novel-id lock card action outcome run-dir]

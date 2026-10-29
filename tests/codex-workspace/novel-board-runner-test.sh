@@ -1745,6 +1745,7 @@ assert_contains "${VAULT}/Novels/NOVEL-8801.md" '![[Novels/Drafts/NOVEL-8801/att
 set_assignee NOVEL-8801 localllm
 tick
 [[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'duplicate image generation'
+assert_contains "${VAULT}/Novels/NOVEL-8801.md" '同じ依頼で生成済みの画像をそのまま使用（新規生成なし）'
 
 # Recovery adopts a valid pending image without calling the generator.
 cp "${STATE}/work/NOVEL-8801/illustration.png" "${STATE}/work/NOVEL-8801/illustration.pending-crash.png"
