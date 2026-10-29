@@ -2257,6 +2257,10 @@
                      (gap! :image-not-allowed (if private? (str raw) (absolute-relative (vault) path)))
                      (or (zero? (fs/size path)) (not (image-magic-ok? path)))
                      (gap! :image-invalid-bytes (if private? (str raw) (vault-relative path)))
+                     ;; An image the management note embeds stays pinned even when a
+                     ;; request-named note (scanned first) already listed it.
+                     (and (= "管理ノート" source) (contains? @seen (canonical-path path)))
+                     (swap! candidates (fn [cs] (mapv #(if (= (canonical-path (:path %)) (canonical-path path)) (assoc % :label label :source source) %) cs)))
                      (and (< (count @candidates) 24) (not (contains? @seen (canonical-path path))))
                      (do (swap! seen conj (canonical-path path))
                          (swap! candidates conj {:path (str path) :file (str (fs/file-name path)) :label label :source source})))))
@@ -3976,6 +3980,8 @@
                       allowed-reference-dirs (constantly ["S" "NSFW" "Novels"])]
           (let [result (discover-reference-images "NOVEL-0" "## Requirements\n人物 `private.png|立ち絵`\n![[NSFW/x.png]]\n" {} false)
                 files (set (map :file (:candidates result))) gaps (set (map :type (:gaps result)))]
+            (check "management-note image stays pinned after a named scan"
+                   (= "管理ノート" (:label (first (filter #(= "a.png" (:file %)) (:candidates (discover-reference-images "NOVEL-0" "## Requirements\n![[S/a.png]]\n" {} false (map :path (request-named-entries "ゆいを描いて")))))))))
             (check "request names resolve through profile names"
                    (and (= #{"人物"} (request-named-stems "ゆいを1人で描いた挿絵に作り直して"))
                         (= #{"a.png" "b.png"} (set (map :file (:candidates (discover-reference-images "NOVEL-0" "## Requirements\n無関係\n" {} false (map :path (request-named-entries "ゆいを描いて")))))))))
