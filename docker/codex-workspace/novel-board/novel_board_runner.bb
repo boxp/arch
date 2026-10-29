@@ -3260,12 +3260,17 @@
 
 (defn profile-names
   "Names written in a setting note's profile lines (`- 偽名: 桜 一穂（さくら いちほ）`):
-  the full name and its parts of two or more characters."
+  the full name and its parts of two or more characters. A kanji name without a
+  space (`桜一穂`) also yields its trailing given-name candidates (`一穂`)."
   [text]
   (->> (str/split-lines (str text))
        (keep #(second (re-find #"^\s*[-*]?\s*(?:偽名|本名|名前|氏名|通称|別名|呼び名)\s*[:：]\s*(.+)$" %)))
        (map #(str/trim (str/replace % #"[（(][^）)]*[）)]" "")))
-       (mapcat #(cons % (str/split % #"[\s　]+")))
+       (mapcat (fn [name]
+                 (let [parts (str/split name #"[\s　]+")]
+                   (cons name (if (and (= 1 (count parts)) (re-matches #"\p{IsHan}{3,6}" name))
+                                (map #(subs name %) (range 1 (dec (count name))))
+                                parts)))))
        (map str/trim) (filter #(>= (count %) 2)) distinct vec))
 
 (defn request-named-stems
@@ -3938,6 +3943,7 @@
                   (= ["hero2.png"] (:reference_images (focus-reference-images {:reference_images ["hero2.png" "friend.png"]} cands #{"主人公"})))
                   (= spec (focus-reference-images spec cands #{}))
                   (= ["桜 一穂" "一穂"] (profile-names "- 偽名: 桜 一穂（さくら　いちほ）\n- 年齢: 16"))
+                  (= ["桜一穂" "一穂"] (profile-names "- 偽名: 桜一穂（さくらいちほ）"))
                   (= "カウンターで一穂を1人で描いた挿絵に作り直して" (illustration-request "- 本文の台詞を直す\n- カウンターで一穂を1人で描いた挿絵に作り直して [[設定/主人公]]")))))
     (check "default image prompt excludes manuscript"
            (not (str/includes? (:prompt (default-illustration-spec "題" "秘密の本文") ) "秘密の本文")))
