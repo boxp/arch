@@ -291,9 +291,13 @@
 
 (defn task-outcome [evs]
   (let [ids (set (keep :event_id evs))
-        evs (remove #(let [evidence (when (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %)))]
-                       (and (= "human" (:classifier %)) (#{"correction" "task.reopened"} (:event_type %))
-                            evidence (not= evidence (:event_id %)) (contains? ids evidence))) evs)
+        evidence-of #(when (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %)))
+        reclassifiable? #(#{"correction" "task.reopened"} (:event_type %))
+        ;; 人の再分類は、同じ evidence を持つ rule/model 判定がある場合だけ状態遷移から除外する
+        ruled (set (keep #(when (and (reclassifiable? %) (not= "human" (:classifier %))) (evidence-of %)) evs))
+        evs (remove #(let [evidence (evidence-of %)]
+                       (and (= "human" (:classifier %)) (reclassifiable? %)
+                            evidence (not= evidence (:event_id %)) (contains? ids evidence) (contains? ruled evidence))) evs)
         latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress"} (:lane_to %)))) evs)))
         state (if (= "lane.changed" (:event_type latest)) (:lane_to latest) (:status latest))]
     (cond

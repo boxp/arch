@@ -32,7 +32,7 @@
 - **差戻し分類** (`correction_class` / `correction_origin` / `classifier`=rule|human|model / `classifier_version` / `confidence` / `evidence_event_ids`):
   - agent-system 起因: `instruction_violation`、`source_mismatch` (原典不一致)、`done_claim_without_execution` (未実施を完成扱い)、`assignee_regression` (担当復帰)、`gate_defect` (CI / codex review の指摘)
   - 非 agent 起因: `preference_adjustment`、`scope_addition`、`unavoidable_safety_decision`、`external_failure`
-  - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。origin が省略または不正な場合は有効な class から補い、それも不正なら unknown とする。有効な origin は優先する。人の訂正 (`classifier=human`) は同じ evidence に対する分類のみを上書きし、元の是正の時刻と ID を保持する。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
+  - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。origin が省略または不正な場合は有効な class から補い、それも不正なら unknown とする。有効な origin は優先する。人の訂正 (`classifier=human`) は同じ evidence に対する分類のみを上書きし、元の是正の時刻と ID を保持する。同じ evidence の rule/model 判定がない人の reopen は再分類ではなく実際の再オープンとして状態遷移に反映する。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
 - **privacy gate (生成元で適用)**: allowlist にある key だけを通す (`ai_ops_sli.bb` の `allowed-keys`)。許可値も短い識別子に限定し、本文、認証情報、query 付き URL、改行などの不正値を redact し、不正な event_id は event ごと拒否して件数を stderr に出す。extract と emit-sim の両方に適用する。server 側の masking には頼らない。通常の会話本文は中央 DB へ copy しない。
 - **token / cost**: provider が返した値だけを記録する。subscription CLI は `cost_source=unknown` とし、API 単価を掛けて実請求に見せない。
 

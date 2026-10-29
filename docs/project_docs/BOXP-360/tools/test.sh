@@ -396,7 +396,9 @@ bb -e '
   (assert (= [1 1] ((juxt :count :denominator) (get-in report [:sli :first-acceptance-conformance]))))
   (doseq [unmatched [(dissoc human :evidence_event_ids) (assoc human :evidence_event_ids ["BOXP-9:missing"])]]
     (assert (= 1 (get-in (ai-ops-sli/aggregate* (conj base unmatched)) [:tasks :outcomes "in-flight"]))))
-  (println "ok   人の再分類は状態遷移にせず、証拠なしの再オープンは反映"))'
+  (let [no-rule (vec (remove #(= "BOXP-9:rule" (:event_id %)) base))]
+    (assert (= 1 (get-in (ai-ops-sli/aggregate* (conj no-rule human)) [:tasks :outcomes "in-flight"]))))
+  (println "ok   人の再分類は状態遷移にせず、証拠なし・rule 判定なしの再オープンは反映"))'
 
 bb -e '
 (load-file "ai_ops_sli.bb")
