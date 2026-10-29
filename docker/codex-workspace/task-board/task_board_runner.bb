@@ -220,6 +220,12 @@
     (record-ai-ops-event! ticket-id run-id assignee action "lane"
                           {:event_type "lane.changed" :lane_from from-status :lane_to to-status})))
 
+(defn ai-ops-run-lane
+  "Lane the card is in while the run executes: Ready/Review/Blocked cards are
+  moved to In Progress at start, others (Backlog groom, In Progress) stay put."
+  [status]
+  (if (#{"ready" "review" "blocked"} status) "in-progress" status))
+
 (def ai-ops-metrics-last-ms (atom 0))
 
 (defn maybe-write-ai-ops-metrics! []
@@ -3046,7 +3052,7 @@
                   (update-frontmatter! ticket-id {:status "in-progress"}))
                 (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
                 (record-ai-ops-event! ticket-id (:run-id lock) assignee action "started"
-                                      {:event_type "run.started" :lane_from status :lane_to "in-progress"})
+                                      {:event_type "run.started" :lane_from status :lane_to (ai-ops-run-lane status)})
                 ;; The card actually moved: record the start transition as well so
                 ;; the ledger lane history matches the board (run.started is not a
                 ;; state transition for the aggregator).
@@ -3146,7 +3152,7 @@
                   (if (= "blocked" next-status)
                   (if (block-ticket! ticket-id run-id action result exit review-gate nil)
                     (do (record-task-board-event! ticket-id run-id status "blocked" result)
-                        (record-ai-ops-finish! ticket-id run-id assignee action "in-progress" "blocked" "blocked"
+                        (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) "blocked" "blocked"
                                                {:result result :exit_code exit}))
                     (restore-card-state! ticket-id status assignee))
                   (do
@@ -3172,7 +3178,7 @@
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                     ;; After lane, frontmatter and Notes are durable: wake Kohako.
                     (record-task-board-event! ticket-id run-id status next-status result)
-                    (record-ai-ops-finish! ticket-id run-id assignee action "in-progress" next-status
+                    (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) next-status
                                            (cond
                                              (= "in-progress" next-status) "retrying"
                                              :else "succeeded")
@@ -3219,7 +3225,7 @@
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
                       (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
-                          (record-ai-ops-finish! ticket-id (:run-id lock) assignee action "in-progress" "blocked" "blocked" {}))
+                          (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
                       (restore-card-state! ticket-id status assignee)))))
                 true)
               (finally

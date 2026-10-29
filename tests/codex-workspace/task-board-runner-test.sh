@@ -3237,6 +3237,43 @@ test_ai_ops_ledger_records_run_lifecycle() {
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "pass"\] 2'
 }
 
+test_ai_ops_ledger_groom_from_backlog_records_actual_lane() {
+  local tmp vault state bin ledger
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}" "${vault}/Boards" "${vault}/Tickets"
+  make_fake_codex "${bin}"
+  cat >"${vault}/Boards/Task Board.md" <<'EOF'
+# Task Board
+
+## Backlog
+- [ ] [[Tickets/BOXP-418|BOXP-418: ledger groom]] #ticket status::backlog
+
+## Ready
+
+## In Progress
+
+## Blocked
+
+## Review
+
+## Done
+EOF
+  write_ticket "${vault}" BOXP-418 backlog codex
+
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-groom.out
+
+  ledger="$(ls "${state}"/ai-ops/ledger/events-*.jsonl)"
+  # A Backlog groom run never moves the card to In Progress: no start
+  # transition, and the finish transition starts from backlog.
+  assert_file_not_contains "${ledger}" ':ledger:lane-start"'
+  assert_file_not_contains "${ledger}" '"lane_from":"in-progress"'
+  grep ':ledger:started"' "${ledger}" | grep -q '"lane_to":"backlog"' || fail "expected run.started to stay in backlog"
+  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_from":"backlog"' || fail "expected lane.changed from backlog"
+}
+
 test_ai_ops_ledger_disabled_by_env() {
   local tmp vault state bin
   tmp="$(mktemp -d)"
@@ -3557,6 +3594,7 @@ test_in_progress_retry_records_no_outbox_event
 test_outbox_disabled_by_env
 test_ai_ops_ledger_records_run_lifecycle
 test_ai_ops_ledger_disabled_by_env
+test_ai_ops_ledger_groom_from_backlog_records_actual_lane
 
 echo "task-board-runner tests passed"
 
