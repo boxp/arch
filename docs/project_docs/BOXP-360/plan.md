@@ -59,13 +59,13 @@
 
 ## 5. 実測 baseline (既存 metadata のみ)
 
-正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 03:50頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
+正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 04:00頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
 
-- ticket 360、run 1481、event 4472 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。summary.edn の無い run ディレクトリ 1 件 (BOXP-354 の groom run) は欠落入力として該当 task を未評価にした。live の生成元 privacy gate で拒否された event が 2 件あり、zero-tolerance 指標は unknown。
+- ticket 360、run 1482、event 4474 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。summary.edn の無い run ディレクトリ 1 件 (BOXP-354 の groom run) は欠落入力として該当 task を未評価にした。live の生成元 privacy gate で拒否された event が 2 件あり、zero-tolerance 指標は unknown。
 - outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13 (現在の lane snapshot を再open履歴より優先して再集計)。
 - agent-system 是正 task 率: **43/283 (15.2%)**。summary 欠落で未評価 1。原因 unknown の是正を含む task は 140 (agent-system 起因との重複を含む。旧集計は重複を除いた 107)、unknown 是正 event は 203。
-- first acceptance 適合率: **94/222 (42.3%)**。未評価を不合格として含めると 94/282 (33.3%)、未評価 60、summary 欠落で未評価 1、受入時刻不明の受入済み task 0。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
-- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 575、idle-timeout 7。delegation は delegated 74、exempt 67。
+- first acceptance 適合率: **94/222 (42.3%)**。未評価を不合格として含める保守的な割合は 94/340 (27.6%) で、分母に未評価 60、summary 欠落で未評価 1、run 履歴の無い受入済み 57 件 (是正の有無を観測できない) を含める。受入時刻不明の受入済み task 0。主指標 94/222 の分母からは run 履歴無し受入 57 件を外して別掲。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
+- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 576、idle-timeout 7。delegation は delegated 74、exempt 68。
 - extract の order-inversions 822 は glob の読み取り順から出たもので、実際の到着順ではない。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
 
@@ -111,3 +111,4 @@ privacy gate で拒否した event (不正な event_id や task/request/run ID) 
 - 2026-10-29 追記 (codex-review): EDN として読めても必須field (`:event-id` / `:event-type` / `:ticket-id`) を欠く outbox map (例: `{}`) を黙って捨てず、読めない outbox と同じく `{"collection_lost":"input_unreadable"}` marker として計数し zero-tolerance 指標を unknown にする。回帰 test 追加 (修正を戻すと失敗することを確認)。実 baseline は不完全 outbox 0 件で数値不変。
 - 2026-10-29 追記 (codex-review): outbox の event-type は既知の `task-board.lane-changed` / `task-board.run-finished` のみ変換し、空/未知の種別は `notify.run-finished` に化けさせず `input_unreadable` marker として計数する。frontmatter を読めない ticket (`BOXP-<数字>.md`) も黙って除外せず `run.unreadable` event を出して該当 task を `unevaluated-input-missing` にし、その ticket の正常な run も保持する。ticket の glob は `BOXP-<数字>.md` に限定 (`BOXP-144-*.md` 等の添付ノート 7 件は ticket ではない)。回帰 test 追加 (修正前実装で失敗を確認)、test.sh 78/78 ok。実 baseline は修正前と extract 出力が完全一致 (4471 行) で数値不変。
 - 2026-10-29 追記 (codex-review): extract は `runs/*/*/summary.edn` の glob ではなく run ディレクトリを列挙し、`summary.edn` 自体が無い run も `run.unreadable` として該当 task を `unevaluated-input-missing` にする (同 task に正常 run があっても見落とした是正を含めて合格扱いしない)。run_id の許可形式に `-groom` 等の英小文字 suffix を追加し、欠落 event が ID 検証で拒否されないようにした。frontmatter は終了区切り `---` と必須 field (`status`、`created`=YYYY-MM-DD) を検証し、欠ければ破損 ticket として扱う (本文の `status:` / `closed:` を状態に取り込まない)。回帰 test を追加し修正前実装で失敗を確認、test.sh 79/79 ok。実 baseline を 03:50 UTC に再生成: BOXP-354 の groom run が summary 欠落で未評価となり、是正 task 43/283、first acceptance 94/222。
+- 2026-10-29 追記 (codex-review): 人の再分類と rule/model 判定の照合を `evidence_event_ids` の先頭 ID ではなく evidence 集合全体 (重複除去・整列) で行うようにした (`[A,B]` への再分類が `[A,C]` の別是正に波及しない)。`incl-unevaluated-as-not-pass` の分母を、review 到達 task (入力欠落 task を含む) の未評価/受入済みに、受入時刻不明と run 履歴の無い受入済み task を加えた集合にし、未評価を除外して高く見せないようにした。回帰 test 2 件を追加し修正前実装で失敗を確認、test.sh 81/81 ok。baseline 04:00 UTC 再生成: first acceptance 94/222 (42.3%)、保守的割合 94/340 (27.6%)、是正 task 43/283。

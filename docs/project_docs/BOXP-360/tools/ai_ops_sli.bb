@@ -348,8 +348,14 @@
   (or (#{"agent-system" "non-agent" "unknown"} (:correction_origin e))
       (correction-class-origin (:correction_class e)) "unknown"))
 
+(defn evidence-key
+  "再分類の照合 key。evidence_event_ids の集合全体で対象を一意に特定する (先頭 ID だけで照合しない)"
+  [e]
+  (let [ids (:evidence_event_ids e)]
+    (when (and (sequential? ids) (seq ids)) (vec (sort (distinct ids))))))
+
 (defn task-outcome [evs]
-  (let [evidence-of #(when (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %)))
+  (let [evidence-of evidence-key
         reclassifiable? #(#{"correction" "task.reopened"} (:event_type %))
         ;; 人の再分類は、同じ evidence を持つ rule/model 判定がある場合だけ状態遷移から除外する
         ruled (set (keep #(when (and (reclassifiable? %) (rule-classifier? (:classifier %))) (evidence-of %)) evs))
@@ -401,12 +407,11 @@
                     :let [evs (sort-by event-time-key evs)
                           corr (filter #(#{"correction" "task.reopened"} (:event_type %)) evs)
                           ;; 人の訂正 (classifier=human) は同じ evidence の rule 判定を上書きする
-                          human (into {} (keep #(when (and (= "human" (:classifier %)) (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %))) [(first (:evidence_event_ids %)) %]) corr))
-                          matched (set (keep #(when (and (rule-classifier? (:classifier %)) (sequential? (:evidence_event_ids %))
-                                                        (contains? human (first (:evidence_event_ids %))))
-                                               (first (:evidence_event_ids %))) corr))
+                          human (into {} (keep #(when-let [k (and (= "human" (:classifier %)) (evidence-key %))] [k %]) corr))
+                          matched (set (keep #(when-let [k (and (rule-classifier? (:classifier %)) (evidence-key %))]
+                                                (when (contains? human k) k)) corr))
                           corr (keep (fn [e]
-                                       (let [evidence (first (:evidence_event_ids e)) h (get human evidence)]
+                                       (let [evidence (evidence-key e) h (get human evidence)]
                                          (cond
                                            (and (= "human" (:classifier e)) (contains? matched evidence)) nil
                                            (and h (rule-classifier? (:classifier e)))
@@ -485,8 +490,10 @@
       :first-acceptance-conformance
       (assoc (ratio (count (filter :first-pass? accepted)) (count accepted))
              :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted))
-                                                (+ (count (filter #(or (= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
-                                                   (count (remove :reached-review? accepted-without-acceptance-time))))
+                                                ;; 保守的分母: 未評価・受入時刻不明・run 履歴無し受入・入力欠落 task も不合格として含める
+                                                (count (distinct (map :task (concat (filter #(or (= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached-all)
+                                                                                    accepted-without-acceptance-time
+                                                                                    (filter :accepted-unobserved? tasks))))))
              :accepted-without-acceptance-time (count accepted-without-acceptance-time)
              :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) accepted-all))
              :not-yet-evaluated (count (filter #(and (not= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))

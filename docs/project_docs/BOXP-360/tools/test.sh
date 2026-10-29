@@ -703,3 +703,26 @@ bb -e "
   (assert (not (re-find #\"BOXP-82:accepted\" (slurp \"$tmp_miss/x.jsonl\"))))
   (println \"ok   summary.edn 不在の run と閉じ区切り/必須field欠落の frontmatter を欠落として該当 task を未評価にする\"))"
 rm -rf "$tmp_miss"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-91:run" :task_id "BOXP-91" :event_type "run.started"}
+            {:event_id "BOXP-91:review" :task_id "BOXP-91" :event_type "run.finished" :occurred_at "2026-10-18T00:00:00Z"}
+            {:event_id "BOXP-91:other" :task_id "BOXP-91" :event_type "run.started"}
+            {:event_id "BOXP-91:rule1" :task_id "BOXP-91" :event_type "correction" :classifier "rule" :correction_origin "agent-system" :evidence_event_ids ["BOXP-91:run" "BOXP-91:review"] :occurred_at "2026-10-19T00:00:00Z"}
+            {:event_id "BOXP-91:rule2" :task_id "BOXP-91" :event_type "correction" :classifier "rule" :correction_origin "agent-system" :evidence_event_ids ["BOXP-91:run" "BOXP-91:other"] :occurred_at "2026-10-19T01:00:00Z"}
+            {:event_id "BOXP-91:human" :task_id "BOXP-91" :event_type "correction" :classifier "human" :correction_origin "non-agent" :evidence_event_ids ["BOXP-91:review" "BOXP-91:run"] :occurred_at "2026-10-21T00:00:00Z"}]
+      r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-91:accepted" :task_id "BOXP-91" :event_type "task.accepted" :occurred_at "2026-10-22T00:00:00Z"}))]
+  (assert (= 1 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (get-in r [:sli :corrections-per-task]))))
+(println "ok   人の再分類は evidence 集合全体が一致する是正だけに適用 (先頭 ID の一致では適用しない)")
+(let [evs [{:event_id "BOXP-92:run" :task_id "BOXP-92" :event_type "run.started"}
+           {:event_id "BOXP-92:accepted" :task_id "BOXP-92" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
+           {:event_id "BOXP-93:accepted" :task_id "BOXP-93" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
+           {:event_id "BOXP-93:state" :task_id "BOXP-93" :event_type "task.state" :snapshot "current" :status "done"}
+           {:event_id "BOXP-94:run" :task_id "BOXP-94" :event_type "run.started"}
+           {:event_id "BOXP-94:unreadable" :task_id "BOXP-94" :event_type "run.unreadable"}
+           {:event_id "BOXP-94:accepted" :task_id "BOXP-94" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}]
+      fa (get-in (ai-ops-sli/aggregate* evs) [:sli :first-acceptance-conformance])]
+  (assert (= [1 1] ((juxt :count :denominator) fa)) (pr-str fa))
+  (assert (= [1 3] ((juxt :count :denominator) (:incl-unevaluated-as-not-pass fa))) (pr-str fa)))
+(println "ok   未評価を含めた適合率の分母に run 履歴なし受入・入力欠落 task を含める")'
