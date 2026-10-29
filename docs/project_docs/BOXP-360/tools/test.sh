@@ -1328,3 +1328,17 @@ bb -e '
   ;; 日粒度受入の内部時刻 (23:59:59Z) と同時刻の再オープンは同日内で前後不明: 受入後と確定しない
   (assert (and (= :unknown (:status ra)) (= 1 (:indeterminate ra))) (pr-str ra)))
 (println "ok   日粒度受入と同時刻の再オープンは同時刻特例を適用せず reopen-after-accept を unknown にする")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [evs [;; run.started を取得できず result=review の終了 event だけが残った task
+           {:event_id "BOXP-127/20261020T000000Z-ab12:finished" :task_id "BOXP-127" :run_id "20261020T000000Z-ab12" :event_type "run.finished" :occurred_at "2026-10-20T01:00:00Z" :result "review"}
+           {:event_id "BOXP-128/20261020T000000Z-cd34:started" :task_id "BOXP-128" :run_id "20261020T000000Z-cd34" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+           {:event_id "BOXP-128/20261020T000000Z-cd34:finished" :task_id "BOXP-128" :run_id "20261020T000000Z-cd34" :event_type "run.finished" :occurred_at "2026-10-20T01:00:00Z" :result "review"}]
+      r (ai-ops-sli/aggregate* evs)
+      ct (get-in r [:sli :agent-system-correction-task-ratio])]
+  ;; 終了 event 単独の task も計上し、run 履歴不足として未評価に別掲する (分母から黙って消さない)
+  (assert (= 2 (get-in r [:tasks :total])) (pr-str (:input r)))
+  (assert (= 1 (:unevaluated-input-missing ct)) (pr-str ct))
+  (assert (= 1 (:denominator ct)) (pr-str ct)))
+(println "ok   run.finished のみ観測された task を計上し run 履歴不足として未評価に別掲")'

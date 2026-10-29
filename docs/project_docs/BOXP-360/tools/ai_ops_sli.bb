@@ -570,13 +570,18 @@
                                                                        (or (.isAfter t accepted) (and (= "task.reopened" (:event_type %)) (= t accepted))))) corr))
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
-                          finished (filter #(= "run.finished" (:event_type %)) evs)]
+                          finished (filter #(= "run.finished" (:event_type %)) evs)
+                          ;; run.started を欠く終了/中断 event: run 履歴が不完全なため入力欠落として未評価にする
+                          started-ids (set (keep :run_id runs))
+                          orphan-runs (filter #(and (#{"run.finished" "run.interrupted"} (:event_type %))
+                                                     (if (:run_id %) (not (started-ids (:run_id %))) (empty? runs))) evs)]
                     ;; 状態 event (state/cancelled/reopened)・読めない run・救援 event も task の存在を示す (救援単独 task を救援率から落とさない)
-                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue"} (:event_type %)) evs) (seq runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
+                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
                 {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
-                 :unreadable-runs (count (filter #(= "run.unreadable" (:event_type %)) evs))
+                 :unreadable-runs (+ (count (filter #(= "run.unreadable" (:event_type %)) evs)) (count orphan-runs))
+                 :orphan-runs (count orphan-runs)
                  ;; 状態/結果 field が不正値で redact された event: Review 到達・受入・取消を判定できないため入力欠落として扱う
                  :unverifiable-state (+ (count (filter unverifiable-state-event? evs)) (count (unordered-transition-events evs)))
                  :interrupted (count (filter #(= "run.interrupted" (:event_type %)) evs))
@@ -588,11 +593,11 @@
                  :post-accept-indeterminate? (boolean (and (some #(= "task.accepted" (:event_type %)) evs) (empty? post-accept-corr)
                                                           (or (nil? accepted)
                                                               (some #(let [t (parse-inst (:occurred_at %))] (or (nil? t) (same-day? t))) corr))))
-                 :observed? (boolean (or (seq runs) (some :synthetic evs) (some #(= "run.unreadable" (:event_type %)) evs)))
+                 :observed? (boolean (or (seq runs) (seq orphan-runs) (some :synthetic evs) (some #(= "run.unreadable" (:event_type %)) evs)))
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
                  ;; run 履歴の無い受入 task は受入時刻の有無・受入後の再オープンに関わらず未評価 (done snapshot のみ/再オープン中の task も保守的分母に残す)
                  :accepted-unobserved? (boolean (and (or (some #(= "task.accepted" (:event_type %)) evs) (= "accepted" (task-outcome evs)))
-                                                     (empty? runs) (not-any? :synthetic evs)))
+                                                     (empty? runs) (empty? orphan-runs) (not-any? :synthetic evs)))
                  :first-pass? (= :pass first-pass)
                  ;; 受入と同日の是正があり日粒度では前後不明: 合格にも不合格にもせず別掲
                  :first-pass-ambiguous? (= :ambiguous first-pass)
@@ -630,7 +635,8 @@
              :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks))
              :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :id-collisions id-collisions :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
-     :tasks {:total n :never-run (count (filter #(zero? (:runs %)) tasks))
+     :tasks {:total n :never-run (count (filter #(and (zero? (:runs %)) (zero? (:orphan-runs % 0))) tasks))
+             :orphan-run-events (reduce + (map #(:orphan-runs % 0) tasks))
              :accepted-without-run-history (count (filter :accepted-unobserved? tasks)) :outcomes (frequencies (map :outcome tasks))
              :by-stratum (frequencies (map :stratum tasks))}
      :sli
