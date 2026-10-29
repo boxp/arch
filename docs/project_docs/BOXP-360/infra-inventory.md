@@ -57,3 +57,5 @@
 
 - Prometheus の AI / agent / task_board / hermes / llm 系の系列名: **unknown**。列挙できず、ゼロとは判断できない。
 - Loki の hermes-agent / codex-workspace のログストリーム有無と label 名: **unknown**。Alloy の pod ログ収集設定があることだけでは実ストリーム存在は証明できない。
+
+Task Board の summary / outbox は effect と safety の網羅的な source ではないため、対応 coverage がない baseline の二重実行・重大安全 event は unknown とする。

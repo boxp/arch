@@ -32,7 +32,7 @@
   - agent-system 起因: `instruction_violation`、`source_mismatch` (原典不一致)、`done_claim_without_execution` (未実施を完成扱い)、`assignee_regression` (担当復帰)、`gate_defect` (CI / codex review の指摘)
   - 非 agent 起因: `preference_adjustment`、`scope_addition`、`unavoidable_safety_decision`、`external_failure`
   - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。人の訂正 (`classifier=human`) は同じ evidence に対する rule 判定を上書きする。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
-- **privacy gate (生成元で適用)**: allowlist にある key だけを通す (`ai_ops_sli.bb` の `allowed-keys`)。本文、prompt、生の tool args、header、query 付き URL、stack trace は落とすか、event ごと reject する。server 側の masking には頼らない。通常の会話本文は中央 DB へ copy しない。
+- **privacy gate (生成元で適用)**: allowlist にある key だけを通す (`ai_ops_sli.bb` の `allowed-keys`)。許可値も短い識別子に限定し、本文、認証情報、query 付き URL、改行などの不正値を redact して件数を stderr に出す。extract と emit-sim の両方に適用する。server 側の masking には頼らない。通常の会話本文は中央 DB へ copy しない。
 - **token / cost**: provider が返した値だけを記録する。subscription CLI は `cost_source=unknown` とし、API 単価を掛けて実請求に見せない。
 
 ## 4. SLI 候補 (式と分母)
@@ -41,7 +41,7 @@
 |---|---|---|
 | agent-system 是正 task 率 | agent-system 起因の是正を 1 回以上含む task / review に到達した task | unknown 原因の task は別に掲げる |
 | 1 task あたり是正往復 | agent-system 起因の是正 event 数の分布 | n<20 なら分位点は参考値 |
-| first acceptance 適合率 | 是正なしで受け入れられた task / 受入済み task | 未評価 (awaiting-review 等) は別に掲げ、合格に数えない |
+| first acceptance 適合率 | 最初の受入より前に原因を問わず是正が一度もない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の是正は保守的に不合格。未評価は別掲 |
 | reopen-after-accept | close 後に是正が入った task / 受入済み task | late feedback を拾う |
 | Owner 救援率 | 状況の催促や同じ承認の繰り返しが起きた task / 全 task | source が未接続なら unknown |
 | Ready→ack 遅延 / 詰まり率 | ack 時刻 − Ready 時刻 | **現状は unknown** (Ready への遷移時刻の event が無い) |
@@ -49,27 +49,27 @@
 | 実成果確認の完走率 | readback event がある受入 / 受入 | 未接続 |
 | lead time | queue / active / approval / user wait / external blocked に分解し、wall time も保持 | 現状は日粒度の wall time だけ |
 | usage / delegation depth | delegated / exempt、委譲の深さ | |
-| **zero-tolerance** | 二重実行 (`effect_key` の重複)、安全・権限違反、private leak | 統計 SLO の error budget で相殺しない。leak detector は未接続なので unknown |
+| **zero-tolerance** | 二重実行 (`effect_key` の重複)、安全・権限違反、private leak | 統計 SLO の error budget で相殺しない。各 source 未接続なら unknown。対応 event または coverage.connected 宣言がある場合のみ件数を報告 |
 | guardrail | 通知や確認の抑制、未完了の放置、task の細分化 (tasks/request)、source 差異 | 低い差戻し率を見かけ上つくることを防ぐ |
 
 層別は creative / dev / infra / research / assistant。必要に応じて model、runner、prompt/skill の版を付ける。条件が同じでなければ model を順位付けしない。
 
 ## 5. 実測 baseline (2026-10-29、既存 metadata のみ。詳細: `baseline-2026-10-29.edn`)
 
-- 期間: run は 2026-07-03〜2026-10-29、outbox は 2026-10-22〜。task 290 / run 1452 / event 4134。
+- 期間: run は 2026-07-03〜2026-10-29、outbox は 2026-10-22〜。task 290 / run 1453 / event 4136。
 - outcome: accepted 222、awaiting-review 33、in-flight 20、blocked 11、backlog 4。
-- agent-system 是正 task 率 (gate_defect = review-fix run): **43/283 (15.2%)**。原因 unknown の review 後再 implement: **107 task (205 event)**。
-- first acceptance 適合率: **94/222 (42.3%)**。未評価 61 を合格に数えない場合は 94/283 (33.2%)。
-- 2026-10-01 以降に作成された task (154): 是正 task 12/149 (8.1%)、unknown 46、first acceptance 70/117 (59.8%)。lead time p50 約 24h / p90 約 96h (日粒度)。
-- run の信頼性: interrupted 135、retrying 546、idle-timeout 7。blocker の内訳は agent-reported-blocked 72 / agent-process-error 30 / pr-gate-pr-url 7。
+- agent-system 是正 task 率 (gate_defect = review-fix run): **43/284 (15.1%)**。原因 unknown の review 後再 implement: **107 task (205 event)**。
+- first acceptance 適合率: **94/222 (42.3%)**。未評価 62 を合格に数えない場合は 94/284 (33.1%)。
+- 2026-10-01 以降に作成された task (154): 是正 task 12/150 (8.0%)、unknown 46、first acceptance 70/117 (59.8%)。lead time p50 約 24h / p90 約 96h (日粒度)。
+- run の信頼性: interrupted 135、retrying 547、idle-timeout 7。blocker の内訳は agent-reported-blocked 72 / agent-process-error 30 / pr-gate-pr-url 7。
 - delegation (記録がある 113 run): delegated 57 / exempt 56。
 - outbox: redelivery があった event 3、Hermes 側の `duplicate` 判定 2 (重複排除は機能している)。
-- **unknown**: Owner 救援、重複承認、Ready→ack、private leak、token/cost、Hermes 会話。
+- **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
 - 観測そのものの不備も見つかった: (a) 旧形式の run-id (uuid なし) は ticket をまたいで衝突する (49 件) → event_id は `ticket/run-id` にした。(b) ticket frontmatter の `assignee` は 356/360 が boxp (BOXP-357 の不整合)。担当者は run の `:agent` を正とする。(c) extract の `order-inversions` (807) は glob の読み取り順から出たもので、実際の到着順ではない。
 
 ## 6. 合成 E2E pilot (`tools/test.sh`)
 
-`fixtures/synthetic-events.jsonl` (7 task、42 event) で次を確認する: 重複、順序の逆転、時刻ずれ、late feedback (close 後の是正)、pending/Ready、reopen、人の訂正による上書き、途中の再起動、取消、外部要因の blocked、ticket の無い会話、承認の重複、二重実行 (critical)、本文・引数・Bearer を含む event、collector の停止 (bounded buffer cap=4 で 7 件 drop、業務の emit は 42 件とも継続)、Prometheus に ID を出さないこと。20 check がすべて ok。
+`fixtures/synthetic-events.jsonl` (7 task、42 event) で次を確認する: 重複、順序の逆転、時刻ずれ、late feedback (close 後の是正)、pending/Ready、reopen、人の訂正による上書き、途中の再起動、取消、外部要因の blocked、ticket の無い会話、承認の重複、二重実行 (critical)、本文・引数・Bearer を含む event、collector の停止 (bounded buffer cap=4 で 7 件 drop、業務の emit は 42 件とも継続)、Prometheus に ID を出さないこと。追加の一時 fixture で extract の redact、coverage と受入前後の是正も検証する。
 
 ## 7. 基盤候補の比較
 

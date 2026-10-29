@@ -27,21 +27,39 @@
     :lane_from :lane_to :status :result :action :exit_code :idle_timeout :blocker_category
     :correction_class :correction_origin :classifier :classifier_version :confidence
     :evidence_event_ids :stratum :delegation_kind :tokens_in :tokens_out :cost_source
-    :severity :effect_key :approval_key :redelivery :synthetic})
+    :severity :effect_key :approval_key :redelivery :synthetic :coverage_target})
 
 (def forbidden-value-patterns
   [#"(?i)bearer\s+[a-z0-9._-]+" #"(?i)(api[_-]?key|token|secret|password)=" #"https?://[^\s]*\?"
    #"(?i)-----BEGIN" #"(?i)\bat\s+[\w.$]+\([\w.]+:\d+\)"])
 
+(defn safe-value? [v]
+  (cond
+    (nil? v) true
+    (string? v) (and (<= (count v) 128)
+                     (boolean (re-matches #"[A-Za-z0-9_./:+-]+" v))
+                     (not (re-find #"(?i)(?:^|[^a-z0-9])sk-[a-z0-9_-]+" v))
+                     (not (some #(re-find % v) forbidden-value-patterns)))
+    (sequential? v) (every? safe-value? v)
+    :else (or (number? v) (boolean? v))))
+
 (defn privacy-gate
-  "allowlist 外の key を落とし、禁止 pattern を含む値の event は reject する。
-  返り値 {:event e-or-nil :dropped-keys n :rejected? bool}"
+  "許可 key の値も短い識別子に限定し、不正な値を redact する。"
   [e]
-  (let [ks (set (keys e))
-        dropped (remove allowed-keys ks)
-        e' (select-keys e allowed-keys)
-        bad? (some (fn [v] (and (string? v) (some #(re-find % v) forbidden-value-patterns))) (vals e'))]
-    {:event (when-not bad? e') :dropped-keys (count dropped) :rejected? (boolean bad?)}))
+  (let [dropped (remove allowed-keys (keys e))
+        selected (select-keys e allowed-keys)
+        invalid (filter (fn [[k v]] (or (not (safe-value? v))
+                                      (and (#{:result :status :blocker_category :correction_class :correction_origin :severity} k)
+                                           (string? v) (> (count v) 48)))) selected)]
+    {:event (reduce (fn [m [k _]] (assoc m k "redacted")) selected invalid)
+     :dropped-keys (count dropped) :redacted-values (count invalid) :rejected? false}))
+
+(defn emit-gated [stats e]
+  (let [{:keys [event dropped-keys redacted-values rejected?]} (privacy-gate e)]
+    (swap! stats #(-> % (update :privacy-dropped-keys + dropped-keys)
+                      (update :privacy-redacted-values + redacted-values)
+                      (cond-> rejected? (update :privacy-rejected inc))))
+    (when event (println (json/generate-string event)))))
 
 ;; ---------------------------------------------------------------------------
 ;; extract: 既存 metadata -> 共通 schema
@@ -132,7 +150,8 @@
         :status (str (:hermes-status e))}])))
 
 (defn extract [root vault]
-  (let [tickets (->> (fs/glob (fs/path vault "Tickets") "BOXP-*.md")
+  (let [stats (atom {:privacy-dropped-keys 0 :privacy-redacted-values 0 :privacy-rejected 0})
+        tickets (->> (fs/glob (fs/path vault "Tickets") "BOXP-*.md")
                      (keep (fn [f] (when-let [fm (frontmatter f)] [(str (fs/strip-ext (fs/file-name f))) fm])))
                      (into {}))
         runs (->> (fs/glob (fs/path root "runs") "*/*/summary.edn")
@@ -160,12 +179,13 @@
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.state"
                            :status (:status fm) :occurred_at nil}]))]
             e evs]
-      (println (json/generate-string (assoc e :stratum st))))
+      (emit-gated stats (assoc e :stratum st)))
     (doseq [f (fs/glob (fs/path root "outbox") "**.edn")
             :when (not= "board-lanes.edn" (str (fs/file-name f)))
             :let [e (read-edn f)]
             ev (outbox->events e)]
-      (println (json/generate-string ev)))))
+      (emit-gated stats ev))
+    (binding [*out* *err*] (prn @stats))))
 
 ;; ---------------------------------------------------------------------------
 ;; emit-sim: 生成元 bounded buffer。collector 停止中も業務は止めず、溢れた分は drop を数える
@@ -174,8 +194,8 @@
   (let [raw (->> (str/split-lines (slurp file)) (remove str/blank?) (map #(json/parse-string % true)))
         st (reduce
             (fn [{:keys [buf] :as st} [i e]]
-              (let [{ev :event :keys [dropped-keys rejected?]} (privacy-gate e)
-                    st (-> st (update :emitted inc) (update :privacy-dropped-keys + dropped-keys)
+              (let [{ev :event :keys [dropped-keys redacted-values rejected?]} (privacy-gate e)
+                    st (-> st (update :emitted inc) (update :privacy-dropped-keys + dropped-keys) (update :privacy-redacted-values + redacted-values)
                            (cond-> rejected? (update :privacy-rejected inc)))
                     down? (<= down-from i down-to)]
                 (cond
@@ -188,14 +208,14 @@
                             (assoc :buf [])
                             (update :max-depth max (count buf))))))
             {:emitted 0 :delivered [] :buf [] :buffer-dropped 0 :privacy-dropped-keys 0
-             :privacy-rejected 0 :max-depth 0}
+             :privacy-rejected 0 :privacy-redacted-values 0 :max-depth 0}
             (map-indexed vector raw))
         st (-> st (update :delivered into (:buf st)) (assoc :buf []))]
     (doseq [e (:delivered st)] (println (json/generate-string e)))
     (binding [*out* *err*]
       (prn {:emitted (:emitted st) :delivered (count (:delivered st)) :buffer-cap buffer-cap
             :buffer-dropped (:buffer-dropped st) :buffer-max-depth (max (:max-depth st) buffer-cap)
-            :privacy-dropped-keys (:privacy-dropped-keys st) :privacy-rejected (:privacy-rejected st)}))))
+            :privacy-dropped-keys (:privacy-dropped-keys st) :privacy-redacted-values (:privacy-redacted-values st) :privacy-rejected (:privacy-rejected st)}))))
 
 ;; ---------------------------------------------------------------------------
 ;; aggregate
@@ -266,7 +286,8 @@
                  :agent-corr (count agent-corr) :unknown-corr (count unknown-corr)
                  :post-accept-corr (count post-accept-corr)
                  :reached-review? (boolean (or first-review accepted))
-                 :first-pass? (and accepted (empty? agent-corr) (empty? unknown-corr))
+                 :first-pass? (and accepted (not-any? #(let [t (parse-inst (:occurred_at %))]
+                                                        (or (nil? t) (.isBefore t accepted))) corr))
                  :lead-h (hours requested accepted)
                  :rescue (count (filter #(= "owner.rescue" (:event_type %)) evs))
                  :approvals (frequencies (keep :approval_key (filter #(= "approval.requested" (:event_type %)) evs)))
@@ -311,8 +332,14 @@
                         :idle-timeouts (reduce + (map :idle-timeouts tasks))
                         :retrying (reduce + (map :retrying tasks))}
       :delegation (apply merge-with + (map :delegation tasks))}
-     :zero-tolerance {:duplicate-effects (count (mapcat #(filter (fn [[_ c]] (> c 1)) (:effects %)) tasks))
-                      :critical-safety-events (reduce + (map :severe tasks))
+     :zero-tolerance {:duplicate-effects (if (some #(or (= "effect.applied" (:event_type %))
+                                                            (and (= "coverage.connected" (:event_type %)) (= "duplicate-effects" (:coverage_target %)))) uniq)
+                                          (count (mapcat #(filter (fn [[_ c]] (> c 1)) (:effects %)) tasks))
+                                          {:status "unknown" :reason "effect source 未接続"})
+                      :critical-safety-events (if (some #(or (some? (:severity %))
+                                                               (and (= "coverage.connected" (:event_type %)) (= "critical-safety-events" (:coverage_target %)))) uniq)
+                                                (reduce + (map :severe tasks))
+                                                {:status "unknown" :reason "safety source 未接続"})
                       :private-leak {:status "unknown" :reason "leak detector 未接続。0件観測≠0件"}}
      :guardrails {:pending-over-7d "要 lane timestamp (unknown)"
                   :tasks-per-request (ratio n (count (set (keep :request_id uniq))))
