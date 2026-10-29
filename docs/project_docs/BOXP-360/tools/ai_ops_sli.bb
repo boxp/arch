@@ -83,12 +83,15 @@
      :dropped-keys (count dropped) :redacted-values (count (remove #(= :event_id (first %)) invalid))
      :rejected? rejected? :invalid-correlation? invalid-correlation?}))
 
+(def rejected-marker {:privacy_rejected "upstream"})
+
 (defn emit-gated [stats e]
   (let [{:keys [event dropped-keys redacted-values rejected?]} (privacy-gate e)]
     (swap! stats #(-> % (update :privacy-dropped-keys + dropped-keys)
                       (update :privacy-redacted-values + redacted-values)
                       (cond-> rejected? (update :privacy-rejected inc))))
-    (when event (println (json/generate-string event)))))
+    ;; 拒否した event は本文を出さず、ID を持たない marker 行だけを出して aggregate へ拒否件数を引き継ぐ
+    (println (json/generate-string (or event rejected-marker)))))
 
 ;; ---------------------------------------------------------------------------
 ;; extract: 既存 metadata -> 共通 schema
@@ -229,11 +232,11 @@
         st (reduce
             (fn [{:keys [buf] :as st} [i e]]
               (let [{ev :event :keys [dropped-keys redacted-values rejected?]} (privacy-gate e)
+                    ev (or ev rejected-marker)
                     st (-> st (update :emitted inc) (update :privacy-dropped-keys + dropped-keys) (update :privacy-redacted-values + redacted-values)
                            (cond-> rejected? (update :privacy-rejected inc)))
                     down? (<= down-from i down-to)]
                 (cond
-                  (nil? ev) st
                   down? (if (< (count buf) buffer-cap)
                           (-> st (update :buf conj ev) (update :max-depth max (inc (count buf))))
                           (-> st (update :buffer-dropped inc)))
@@ -316,14 +319,18 @@
 
 (defn aggregate* [events]
   (let [malformed (count (filter ::malformed events))
+        ;; 生成元 (extract/emit-sim) の privacy gate で拒否された event の marker
+        upstream-rejected (count (filter #(= rejected-marker %) events))
+        events (remove #(= rejected-marker %) events)
         gated (map privacy-gate (remove ::malformed events))
         rejected (count (filter #(and (:rejected? %) (not (:invalid-correlation? %))) gated))
         rejected-correlation (count (filter :invalid-correlation? gated))
         ;; 破損行と privacy gate で拒否した event は中身を検証できないため、zero-tolerance 指標を 0 件と確定しない
-        lost (+ malformed rejected rejected-correlation)
+        lost (+ malformed rejected rejected-correlation upstream-rejected)
         events (keep :event gated)
         n-in (count events)
         uniq (unique-events events)
+        unverifiable-severity (count (filter #(and (some? (:severity %)) (not (contains? (:severity enum-values) (:severity %)))) uniq))
         dup (- n-in (count uniq))
         ;; 観測順と occurred_at 順の逆転、observed_at より未来の occurred_at (時刻ずれ)
         inversions (->> events (group-by :task_id) vals
@@ -435,7 +442,7 @@
                                            ;; 破損行・拒否 event に effect が含まれていた可能性があるため 0 件と確定しない
                                            (pos? lost)
                                            {:status "unknown" :reason "破損した入力行または拒否された event があり重複の有無を確定できない"
-                                            :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation)}
+                                            :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)}
                                            ;; effect_key 欠落/不正の effect があると重複の有無を確定できない (0 件と報告しない)
                                            (pos? (:unverifiable effects))
                                            {:status "unknown" :reason "effect_key 欠落/不正の effect があり重複の有無を確定できない"
@@ -448,7 +455,11 @@
                       :critical-safety-events (cond
                                                 (pos? lost)
                                                 {:status "unknown" :reason "破損した入力行または拒否された event があり重大 event の有無を確定できない"
-                                                 :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation)}
+                                                 :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)}
+                                                ;; severity が不正 (redact 済み) の event は重大度を検証できないため 0 件と確定しない
+                                                (pos? unverifiable-severity)
+                                                {:status "unknown" :reason "severity 不正の event があり重大 event の有無を確定できない"
+                                                 :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :unverifiable-severity unverifiable-severity}
                                                 (connected? "critical-safety-events") {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "connected"}
                                                 (some #(contains? (:severity enum-values) (:severity %)) uniq) {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "partial/undeclared"}
                                                 :else {:status "unknown" :reason "safety source 未接続"})
@@ -458,7 +469,7 @@
                   :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
-     :coverage {:privacy-rejected-invalid-id rejected :privacy-rejected-invalid-correlation-id rejected-correlation :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
+     :coverage {:privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
                 :hermes-conversation {:status (if (or (connected? "hermes-conversation")
                                                    (some #(or (= "hermes" (:runtime %))
@@ -489,12 +500,13 @@
     (println "# TYPE ai_ops_events_total counter")
     (doseq [[[src t] c] (frequencies (map (fn [e] [(if (contains? (:source enum-values) (:source e)) (:source e) "other")
                                                     (if (contains? (:event_type enum-values) (:event_type e)) (:event_type e) "other")])
-                                          (unique-events (keep (comp :event privacy-gate) (remove ::malformed evs)))))]
+                                          (unique-events (keep (comp :event privacy-gate) (remove #(or (::malformed %) (= rejected-marker %)) evs)))))]
       (line "ai_ops_events_total" {:source src :event_type t} c))
     (println "# TYPE ai_ops_tasks gauge")
     (doseq [[o c] (get-in r [:tasks :outcomes])] (line "ai_ops_tasks" {:outcome o} c))
     (line "ai_ops_event_duplicates_total" {} (get-in r [:input :duplicates]))
     (line "ai_ops_input_malformed_lines_total" {} (get-in r [:input :malformed-lines]))
+    (line "ai_ops_privacy_rejected_events_total" {:stage "upstream"} (get-in r [:coverage :privacy-rejected-upstream]))
     (line "ai_ops_event_order_inversions_total" {} (get-in r [:input :order-inversions]))
     (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
       (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))

@@ -546,3 +546,27 @@ bb -e '
       (assert (= "unknown" (get-in r [:zero-tolerance :duplicate-effects :status])))
       (assert (nil? (get-in r [:zero-tolerance :duplicate-effects :count])))))
   (println "ok   不正 ID/correlation ID で拒否した event があれば重大 event/二重実行を 0 件と確定しない"))'
+
+tmp_gated=$(mktemp)
+printf '%s\n' '{"event_id":"cov-safety-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}' '{"event_id":"cov-effects-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}' '{"event_id":"bad id !!","task_id":"BOXP-64","event_type":"correction","severity":"critical"}' > "$tmp_gated.in"
+bb ai_ops_sli.bb emit-sim --synthetic "$tmp_gated.in" > "$tmp_gated" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_gated\")]
+  (assert (not (re-find #\"BOXP-64|bad id\" (slurp \"$tmp_gated\"))))
+  (assert (= 1 (get-in r [:coverage :privacy-rejected-upstream])))
+  (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
+  (assert (= 1 (get-in r [:zero-tolerance :critical-safety-events :rejected-events])))
+  (assert (= \"unknown\" (get-in r [:zero-tolerance :duplicate-effects :status])))
+  (assert (re-find #\"ai_ops_privacy_rejected_events_total\\{stage=\\\"upstream\\\"\\} 1\" (with-out-str (ai-ops-sli/prom \"$tmp_gated\"))))
+  (println \"ok   生成元で拒否した event は本文なし marker で集計へ引き継ぎ、重大 event/二重実行を 0 件と確定しない\"))"
+rm -f "$tmp_gated" "$tmp_gated.in"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [covs [{:event_id "cov-safety-12345678" :event_type "coverage.connected" :coverage_target "critical-safety-events"}]
+      r (ai-ops-sli/aggregate* (conj covs {:event_id "BOXP-65:corr" :task_id "BOXP-65" :event_type "correction" :severity "catastrophic"}))]
+  (assert (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status])))
+  (assert (nil? (get-in r [:zero-tolerance :critical-safety-events :count])))
+  (assert (= 1 (get-in r [:zero-tolerance :critical-safety-events :unverifiable-severity])))
+  (println "ok   不正 severity の event があれば重大 event を 0 件と確定しない"))'
