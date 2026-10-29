@@ -204,8 +204,9 @@
         :event_type et
         :occurred_at (:created-at e) :observed_at (:accepted-at e) :occurred_precision "ns"
         :lane_from (:from-status e) :lane_to (:to-status e)
-        :result (kw-or-str (:result e)) :redelivery (or (:redeliveries e) 0)
-        :status (str (:hermes-status e))}])))
+        ;; :hermes-status は通知配送の状態で task 状態ではないため :status へ写さない
+        ;; (欠落時の空文字が redact され task が入力欠落扱いになるのを防ぐ)
+        :result (kw-or-str (:result e)) :redelivery (or (:redeliveries e) 0)}])))
 
 (defn extract [root vault]
   (let [stats (atom {:privacy-dropped-keys 0 :privacy-redacted-values 0 :privacy-rejected 0})
@@ -619,9 +620,15 @@
       :owner-rescue (if (some #(= "owner.rescue" (:event_type %)) uniq)
                       (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
                       {:status "unknown" :reason "rescue event の source 未接続"})
-      :duplicate-approval (if (pos? (:scopes approvals))
+      :duplicate-approval (cond
+                            ;; approval_key 欠落/不正の承認があると同 scope 重複の有無を確定できない (観測値は下限として別掲)
+                            (pos? (:unverifiable approvals))
+                            {:status "unknown" :reason "approval_key 欠落/不正の承認があり重複承認の有無を確定できない"
+                             :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
+                             :unverifiable-approvals (:unverifiable approvals) :coverage "partial/unverifiable-keys"}
+                            (pos? (:scopes approvals))
                             (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
-                            {:status "unknown" :reason "approval event 未接続"})
+                            :else {:status "unknown" :reason "approval event 未接続"})
       :lead-time-hours (assoc (quantiles (keep :lead-h accepted))
                               :note "request.received/accepted は日粒度 (frontmatter)。queue/active/approval/wait/blocked 分解は lane timestamp 不足で unknown")
       :run-reliability {:runs (reduce + (map :runs tasks))

@@ -1115,3 +1115,33 @@ bb -e '
   (assert (= #{"run.started"} (of-run "20261020T010000Z-b")) (pr-str evs))
   (assert (contains? (of-run "20261020T020000Z-c") "run.interrupted") (pr-str evs)))
 (println "ok   終了状態 (succeeded 等) の run summary に :finished-at が無ければ run.unreadable で未評価にし、running/interrupted は許容する")' "$tmp_fin/extract.jsonl"
+
+tmp_ob=$(mktemp -d); trap 'rm -rf "$tmp" "$tmp_status" "$tmp_fin" "$tmp_ob"' EXIT
+mkdir -p "$tmp_ob/root/runs/BOXP-87/20261020T000000Z-a" "$tmp_ob/root/outbox" "$tmp_ob/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' >"$tmp_ob/vault/Tickets/BOXP-87.md"
+echo '{:ticket "BOXP-87" :run-id "20261020T000000Z-a" :status :succeeded :result "review" :action :implement :agent "claude-opus" :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z"}' >"$tmp_ob/root/runs/BOXP-87/20261020T000000Z-a/summary.edn"
+echo '{:event-id "BOXP-87:ob1" :run-id "20261020T000000Z-a" :ticket-id "BOXP-87" :event-type "task-board.run-finished" :source "task-board-runner" :created-at "2026-10-20T01:00:00Z"}' >"$tmp_ob/root/outbox/ob1.edn"
+echo '{:event-id "BOXP-87:ob2" :ticket-id "BOXP-87" :event-type "task-board.lane-changed" :source "board-diff" :from-status "in-progress" :to-status "review" :hermes-status "sent" :created-at "2026-10-20T01:00:00Z"}' >"$tmp_ob/root/outbox/ob2.edn"
+bb ai_ops_sli.bb extract "$tmp_ob/root" "$tmp_ob/vault" >"$tmp_ob/extract.jsonl" 2>/dev/null
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [evs (map #(cheshire.core/parse-string % true) (clojure.string/split-lines (slurp (first *command-line-args*))))
+      ob (filter #(clojure.string/starts-with? (or (:source %) "") "outbox:") evs)
+      r (ai-ops-sli/aggregate* evs)]
+  (assert (= 2 (count ob)) (pr-str evs))
+  ;; 通知配送状態 (hermes-status) は task の :status に写さない
+  (assert (every? #(nil? (:status %)) ob) (pr-str ob))
+  (assert (zero? (get-in r [:input :unverifiable-state-events])) (pr-str (:input r)))
+  (assert (zero? (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing] 0)) (pr-str (:sli r))))
+(println "ok   outbox の通知配送状態は task status に写さず、正常な outbox event を持つ task を入力欠落扱いしない")' "$tmp_ob/extract.jsonl"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [ok [{:event_id "BOXP-88:ap1" :task_id "BOXP-88" :event_type "approval.requested" :approval_key "op:one"}]
+      nokey {:event_id "BOXP-88:ap2" :task_id "BOXP-88" :event_type "approval.requested"}
+      r1 (ai-ops-sli/aggregate* (conj ok nokey))
+      r2 (ai-ops-sli/aggregate* ok)]
+  (assert (= "unknown" (get-in r1 [:sli :duplicate-approval :status])) (pr-str (get-in r1 [:sli :duplicate-approval])))
+  (assert (= 1 (get-in r1 [:sli :duplicate-approval :unverifiable-approvals])) (pr-str (get-in r1 [:sli :duplicate-approval])))
+  (assert (= [0 1] ((juxt :count :denominator) (get-in r2 [:sli :duplicate-approval]))) (pr-str (get-in r2 [:sli :duplicate-approval]))))
+(println "ok   approval_key 欠落/不正の承認があれば重複承認率を確定せず unknown (観測値は下限、検証不能件数を別掲)")'
