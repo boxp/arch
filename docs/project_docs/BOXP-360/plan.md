@@ -18,7 +18,7 @@
 | Grafana 13.2.2 / Alloy (DaemonSet 7) | Alloy は pod のファイルログだけを Loki へ送る。`otelcol.receiver` なし | dashboard は再利用。OTLP trace の受け口は今はない |
 | Tempo / Jaeger / OTel collector / Langfuse / ClickHouse / Postgres | 全 namespace で workload/service が見つからない (名前・image での検索) | 新しく作るなら構築・backup・保守のコストが増える |
 | Hermes `sha-88638ef` | lifecycle hook (`pre/post_llm_call`, `pre/post_tool_call`, `pre_approval_request`/`post_approval_response`, `on_session_*`, `on_kanban_*`, `post_gateway_admission` など) と plugin dispatch は**配備版コードに実在**。`observability/langfuse` は catalog plugin への参照だけで、plugin 本体は配備されていない。有効な plugin は `kohako-g2-context` のみ。同梱の `shared_metrics` の送信先は `telemetry.nousresearch.com` (外部) で、config 上は未設定 | Hermes 側の取得経路は既存 hook を使う metadata-only plugin にする。独自 hook は新設しない。shared_metrics は外部送信なので使わない |
-| Task Board runner | `runs/<ticket>/<run>/summary.edn` (1465 件)、`delegation.json` (126)、`outbox/*.edn` (223、2026-10-22 以降、`event-id`/`revision`/`redeliveries`/`hermes-status` あり) | 既存の metadata だけで baseline を取る |
+| Task Board runner | `runs/<ticket>/<run>/summary.edn` (1466 件)、`delegation.json` (127)、`outbox/*.edn` (223、2026-10-22 以降、`event-id`/`revision`/`redeliveries`/`hermes-status` あり) | 既存の metadata だけで baseline を取る |
 | 未確認 (unknown) | codex-workspace から Prometheus/Loki/dashboard への HTTP は timeout、`pods/exec`・`portforward`・`metrics.k8s.io` は Forbidden → 既存 series 名、PVC 使用量、scrape 対象数、ノードの空き資源、Grafana 認証、Alertmanager の通知先 | 「無い」ではなく unknown として扱う。導入判断の前に Owner 権限での確認が要る |
 
 ## 3. 共通 event schema `ai-ops-event/v0`
@@ -59,13 +59,13 @@
 
 ## 5. 実測 baseline (既存 metadata のみ)
 
-正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 03:02頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
+正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 03:05頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
 
-- ticket 360、run 1465、event 4439 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。
+- ticket 360、run 1466、event 4441 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。
 - outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13 (現在の lane snapshot を再open履歴より優先して再集計)。
 - agent-system 是正 task 率: **43/284 (15.1%)**。原因 unknown の task は 107、unknown 是正 event は 206。
 - first acceptance 適合率: **94/223 (42.2%)**。未評価を不合格として含めると 94/283 (33.2%)、未評価 60。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
-- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 559、idle-timeout 7。delegation は delegated 69、exempt 56、failed 1。
+- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 560、idle-timeout 7。delegation は delegated 71、exempt 56。
 - extract の order-inversions 814 は glob の読み取り順から出たもので、実際の到着順ではない。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
 
@@ -93,3 +93,5 @@
 5. baseline が揃ってから、rolling 28d、最小 sample 数、error budget policy、burn-rate alert を提案する。BOXP-357 などの修正は待たせず、変更前後を version/event で比べる。
 
 retention / access / privacy: ledger は 180d で、Owner と runner の SA だけが読む。削除依頼は request_id 単位で ledger から消し、集計し直す。trace は sample してよいが、SLI counter は sample しない。
+
+`emit-sim` の標準エラー統計には、入力末尾で collector が停止中のため未配信となったバッファ内イベント数を `undelivered-buffered` として記録する。配信済みイベントのみを標準出力に出す。

@@ -404,3 +404,28 @@ bb -e '
   (assert (= [1 1] ((juxt :first-pass :accepted) stratum) ((juxt :count :denominator) overall)))
   (assert (= [1 1] (mapv #(reduce + (map % (vals (:by-stratum report)))) [:first-pass :accepted])))
   (println "ok   再オープンを除く層別 first acceptance は全体と一致"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [events [{:event_id "BOXP-1:run" :task_id "BOXP-1" :event_type "run.started"}
+              {:event_id "BOXP-1:state" :task_id "BOXP-1" :event_type "task.state" :status "review" :snapshot "current"}]
+      report (ai-ops-sli/aggregate* events)]
+  (assert (= 1 (get-in report [:sli :agent-system-correction-task-ratio :denominator])))
+  (println "ok   時刻のない現在の Review を分母に含む"))
+(let [cancelled {:event_type "task.cancelled" :occurred_at "2026-10-19T00:00:00Z"}
+      reopened {:event_type "task.reopened" :occurred_at "2026-10-20T00:00:00Z"}
+      accepted {:event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+  (assert (= "in-flight" (ai-ops-sli/task-outcome [cancelled reopened])))
+  (assert (= "accepted" (ai-ops-sli/task-outcome [cancelled reopened accepted])))
+  (assert (= "cancelled" (ai-ops-sli/task-outcome [cancelled])))
+  (assert (= "cancelled" (ai-ops-sli/task-outcome [{:event_type "task.state" :status "cancelled"}])))
+  (assert (= "awaiting-review" (ai-ops-sli/task-outcome [cancelled {:event_type "task.state" :status "review" :snapshot "current"}])))
+  (println "ok   取消後の再オープンと受入、現在の状態を時系列で判定"))'
+
+bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 4 40 99 >"$tmp/end-down.jsonl" 2>"$tmp/end-down.stats"
+bb -e '
+(let [[output stats-file] *command-line-args*
+      stats (edn/read-string (slurp stats-file))]
+  (assert (= 40 (:delivered stats) (count (clojure.string/split-lines (slurp output)))))
+  (assert (= 2 (:undelivered-buffered stats)))
+  (println "ok   collector が最後まで停止した場合はバッファを未配信に残す"))' "$tmp/end-down.jsonl" "$tmp/end-down.stats"

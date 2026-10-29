@@ -28,3 +28,5 @@ run 履歴の無い受入済み ticket（accepted-without-run-history）は是�
 状態は時刻付き遷移を時刻順に評価し、抽出時の現在状態を示す `snapshot=current` は履歴より優先し、その他の時刻なし snapshot は時刻付き状態 event が存在しない場合に限り使用する。時刻不明の agent 起因または原因不明の是正は first acceptance を不合格とする。是正 origin が省略または不正な場合は有効な class 分類から補い、それも不正なら unknown として数える。有効な origin は優先する。`approval.resolved` は保持するが重複承認の分母には含めない。
 
 `coverage.hermes-conversation` は、source が `synthetic:hermes` 等の Hermes、runtime が `hermes`、または `coverage.connected` の対象が `hermes-conversation` のイベントを観測すると `connected`、それ以外は `not-connected` とする。合成イベントも接続として扱う。`by-stratum` の `accepted` と `first-pass` は全体の first-acceptance-conformance と同じ観測済み受入タスクを対象とし、それぞれ分母と分子に対応する。
+
+emit-sim は配信済みイベントを標準出力し、統計を標準エラーに出す。入力末尾でも collector が停止中の場合、バッファ内のイベントは配信せず `undelivered-buffered` に件数を記録する。collector が稼働中ならバッファを配信し、同件数は 0 になる。

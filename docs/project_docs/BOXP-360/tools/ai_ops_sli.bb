@@ -244,11 +244,13 @@
             {:emitted 0 :delivered [] :buf [] :buffer-dropped 0 :privacy-dropped-keys 0
              :privacy-rejected 0 :privacy-redacted-values 0 :max-depth 0}
             (map-indexed vector raw))
-        st (-> st (update :delivered into (:buf st)) (assoc :buf []))]
+        st (if (and (seq raw) (<= down-from (dec (count raw)) down-to))
+             st
+             (-> st (update :delivered into (:buf st)) (assoc :buf [])))]
     (doseq [e (:delivered st)] (println (json/generate-string e)))
     (binding [*out* *err*]
       (prn {:emitted (:emitted st) :delivered (count (:delivered st)) :buffer-cap buffer-cap
-            :buffer-dropped (:buffer-dropped st) :buffer-max-depth (max (:max-depth st) buffer-cap)
+            :buffer-dropped (:buffer-dropped st) :undelivered-buffered (count (:buf st)) :buffer-max-depth (max (:max-depth st) buffer-cap)
             :privacy-dropped-keys (:privacy-dropped-keys st) :privacy-redacted-values (:privacy-redacted-values st) :privacy-rejected (:privacy-rejected st)}))))
 
 ;; ---------------------------------------------------------------------------
@@ -288,10 +290,10 @@
       (correction-class-origin (:correction_class e)) "unknown"))
 
 (defn task-outcome [evs]
-  (let [latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened"} (:event_type %)) evs)))
+  (let [latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) evs)))
         state (:status latest)]
     (cond
-      (some #(= "task.cancelled" (:event_type %)) evs) "cancelled"
+      (or (= "task.cancelled" (:event_type latest)) (= "cancelled" state)) "cancelled"
       (= "task.reopened" (:event_type latest)) "in-flight"
       (or (= "task.accepted" (:event_type latest)) (#{"done" "closed"} state)) "accepted"
       (= state "blocked") "blocked"
@@ -335,8 +337,9 @@
                           agent-corr (filter #(= "agent-system" (correction-origin %)) corr)
                           unknown-corr (filter #(= "unknown" (correction-origin %)) corr)
                           accepted (some #(when (= "task.accepted" (:event_type %)) (parse-inst (:occurred_at %))) evs)
-                          first-review (some #(when (or (= "review" (:result %)) (= "review" (:lane_to %)))
-                                                (parse-inst (:occurred_at %))) evs)
+                          first-review (some #(when (or (= "review" (:result %)) (= "review" (:lane_to %))
+                                                        (and (= "task.state" (:event_type %)) (= "review" (:status %))))
+                                                (or (parse-inst (:occurred_at %)) true)) evs)
                           post-accept-corr (when accepted (filter #(when-let [t (parse-inst (:occurred_at %))] (or (.isAfter t accepted) (and (= "task.reopened" (:event_type %)) (= t accepted)))) corr))
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
