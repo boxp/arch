@@ -132,6 +132,10 @@
       (seq repos) "dev"
       :else "assistant-or-research")))
 
+(defn kw-or-str
+  "keyword/文字列の両形式を同じ文字列に正規化する (:review と \"review\" を区別しない)。"
+  [v] (when (some? v) (if (keyword? v) (name v) (str v))))
+
 (defn summary->events [ticket s]
   (let [run-id (:run-id s)
         started (or (:started-at s) (run-id->instant run-id))
@@ -149,9 +153,9 @@
       (and (:finished-at s) (not= :interrupted (:status s)))
       (conj (assoc base :event_id (str ticket "/" run-id ":finished") :event_type "run.finished"
                    :occurred_at (:finished-at s) :occurred_precision "ns"
-                   :status (some-> (:status s) name) :result (some-> (:result s) str)
+                   :status (some-> (:status s) name) :result (kw-or-str (:result s))
                    :exit_code (:exit-code s) :idle_timeout (boolean (:idle-timeout? s))
-                   :blocker_category (some-> (:blocker-category s) str)))
+                   :blocker_category (kw-or-str (:blocker-category s))))
       (= :interrupted (:status s))
       (conj (assoc base :event_id (str ticket "/" run-id ":" (name (:status s))) :event_type "run.interrupted"
                    :occurred_at (or (:finished-at s) (:updated-at s) started) :status (name (:status s)))))))
@@ -175,7 +179,7 @@
                 [(assoc base :event_id (str ticket "/" (:run-id cur) ":corr") :event_type "correction"
                         :correction_class "gate_defect" :correction_origin "agent-system" :confidence "medium")]
                 ;; review/done 後に再び implement: Owner 差戻し or scope 追加。原因は metadata だけでは判別不能
-                (and prev (= :succeeded (:status prev)) (#{"review" "done"} (str (:result prev)))
+                (and prev (= :succeeded (:status prev)) (#{"review" "done"} (kw-or-str (:result prev)))
                      (#{:implement :docs-edit} (:action cur)))
                 [(assoc base :event_id (str ticket "/" (:run-id cur) ":reopen") :event_type "task.reopened"
                         :correction_class "unknown" :correction_origin "unknown" :confidence "low")]
@@ -190,7 +194,7 @@
         :event_type et
         :occurred_at (:created-at e) :observed_at (:accepted-at e) :occurred_precision "ns"
         :lane_from (:from-status e) :lane_to (:to-status e)
-        :result (some-> (:result e) str) :redelivery (or (:redeliveries e) 0)
+        :result (kw-or-str (:result e)) :redelivery (or (:redeliveries e) 0)
         :status (str (:hermes-status e))}])))
 
 (defn extract [root vault]

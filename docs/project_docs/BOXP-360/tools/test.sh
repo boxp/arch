@@ -807,3 +807,17 @@ bb -e "
   (assert (every? (ty \"BOXP-404\") [\"run.started\" \"run.finished\" \"run.unreadable\"]) (pr-str (ty \"BOXP-404\")))
   (println \"ok   文字列形式の run status/action も keyword と同じく集計し、vault に無い ticket の run も計上して ticket 欠落を明示する\"))"
 rm -rf "$tmp_str"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(doseq [[label result] [["keyword" :review] ["文字列" "review"]]]
+  (let [prev {:ticket "BOXP-1" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result result :action :implement
+              :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z" :blocker-category :none}
+        cur {:ticket "BOXP-1" :run-id "20261020T030000Z-bbbb" :agent "codex" :status :succeeded :result result :action :implement
+             :started-at "2026-10-20T03:00:00Z" :finished-at "2026-10-20T04:00:00Z"}
+        fin (some #(when (= "run.finished" (:event_type %)) %) (ai-ops-sli/summary->events "BOXP-1" prev))
+        corr (ai-ops-sli/derive-corrections "BOXP-1" [prev cur])]
+    (assert (= "review" (:result fin)) (pr-str label (:result fin)))
+    (assert (= "none" (:blocker_category fin)) (pr-str label (:blocker_category fin)))
+    (assert (= ["task.reopened"] (mapv :event_type corr)) (pr-str label corr))))
+(println "ok   keyword/文字列形式の :result を同じく正規化し Review 到達と再オープンを導出")'
