@@ -592,6 +592,12 @@
              :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明・日粒度受入と同日の是正 (前後不明)・未評価は別掲し合格に数えない"))
       :reopen-after-accept (cond
                              (not (connected? "acceptance-history")) {:status :unknown :reason "acceptance history source not connected"}
+                             ;; 欠落・未紐付け event や入力欠落 task があれば、受入後の再オープンが欠落側にあった可能性を否定できない
+                             (or (pos? unlinked-corr) (pos? corr-lost) (some input-missing? accepted-ever))
+                             {:status :unknown :reason "欠落 event (破損行・privacy 拒否・collector 欠落・読めない入力)・task_id 欠落 event・受入履歴を持つ task の入力欠落があり受入後の再オープンを確定できない"
+                              :observed (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever))
+                              :lost-events corr-lost :unlinked-events unlinked-corr
+                              :unevaluated-input-missing (count (filter input-missing? accepted-ever))}
                              ;; 前後関係を確定できない task があれば率を確定しない (観測値は下限として別掲)
                              (some :post-accept-indeterminate? accepted-ever)
                              {:status :unknown :reason "受入時刻または是正時刻が不明で受入後の是正を確定できない task がある"

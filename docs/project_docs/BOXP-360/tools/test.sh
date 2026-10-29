@@ -1058,3 +1058,22 @@ bb -e '
   (assert (some #(and (= "BOXP-84" (:task_id %)) (= "run.unreadable" (:event_type %))) evs) (pr-str evs))
   (assert (not-any? #(and (= "BOXP-84" (:task_id %)) (#{"task.accepted" "task.state"} (:event_type %))) evs) (pr-str evs)))
 (println "ok   未知の ticket status (例 donee) は frontmatter 破損として run.unreadable で未評価にする")' "$tmp_status/extract.jsonl"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [cov {:event_id "cov-acceptance-12345678" :event_type "coverage.connected" :coverage_target "acceptance-history"}
+      base [{:event_id "BOXP-85:run" :task_id "BOXP-85" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+            {:event_id "BOXP-85:fin" :task_id "BOXP-85" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-85:acc" :task_id "BOXP-85" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
+            cov]
+      ok (get-in (ai-ops-sli/aggregate* base) [:sli :reopen-after-accept])
+      ;; 受入後の task.reopened が collector drop / privacy 拒否 / 読めない run に含まれていた場合
+      dropped (get-in (ai-ops-sli/aggregate* (conj base {:collection_lost "buffer_dropped"})) [:sli :reopen-after-accept])
+      rejected (get-in (ai-ops-sli/aggregate* (conj base {:privacy_rejected "upstream" :event_type "task.reopened"})) [:sli :reopen-after-accept])
+      unreadable (get-in (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-85:unr" :task_id "BOXP-85" :event_type "run.unreadable"})) [:sli :reopen-after-accept])
+      unlinked (get-in (ai-ops-sli/aggregate* (conj base {:event_id "x:reopen" :event_type "task.reopened" :occurred_at "2026-10-22T00:00:00Z"})) [:sli :reopen-after-accept])]
+  (assert (= [0 1] ((juxt :count :denominator) ok)) (pr-str ok))
+  (doseq [r [dropped rejected unreadable unlinked]]
+    (assert (= :unknown (:status r)) (pr-str r))
+    (assert (= 0 (get-in r [:observed :count])) (pr-str r))))
+(println "ok   欠落・未紐付け event や入力欠落 task があれば reopen-after-accept を 0 件と確定せず unknown (観測値は observed)")'
