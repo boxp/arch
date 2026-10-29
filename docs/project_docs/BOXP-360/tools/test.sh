@@ -504,3 +504,27 @@ bb -e '
   (assert (= [1 0] ((juxt :unverifiable-effects :observed-duplicates-lower-bound) d)))
   (assert (= [0 "connected"] ((juxt :count :coverage) (get-in (ai-ops-sli/aggregate* (keep #(:event (ai-ops-sli/privacy-gate %)) [cov ok])) [:zero-tolerance :duplicate-effects]))))
   (println "ok   effect_key 欠落/不正があれば重複実行 0 件と確定しない"))'
+
+tmp_bad=$(mktemp)
+printf '%s\n' '{"event_id":"cov-safety-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}' '{"event_id":"cov-effects-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}' '{"event_id":"BOXP-60:crit","event_type":"correction","severity":"crit' '[1,2]' > "$tmp_bad"
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_bad\")]
+  (assert (= 2 (get-in r [:input :malformed-lines])))
+  (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
+  (assert (nil? (get-in r [:zero-tolerance :critical-safety-events :count])))
+  (assert (= \"unknown\" (get-in r [:zero-tolerance :duplicate-effects :status])))
+  (assert (re-find #\"ai_ops_input_malformed_lines_total 2\" (with-out-str (ai-ops-sli/prom \"$tmp_bad\"))))
+  (println \"ok   破損行は黙殺せず計数し、重大 event/二重実行を 0 件と確定しない\"))"
+rm -f "$tmp_bad"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-61:run" :task_id "BOXP-61" :event_type "run.started"}
+            {:event_id "BOXP-61:accepted" :task_id "BOXP-61" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
+            {:event_id "BOXP-61:reopen" :task_id "BOXP-61" :event_type "task.reopened" :correction_origin "agent-system" :evidence_event_ids ["BOXP-61:run"] :occurred_at "2026-10-21T00:00:00Z"}]
+      human {:event_id "BOXP-61:human" :task_id "BOXP-61" :event_type "task.reopened" :classifier "human" :correction_origin "non-agent" :evidence_event_ids ["BOXP-61:run"] :occurred_at "2026-10-22T00:00:00Z"}
+      r (ai-ops-sli/aggregate* (conj base human))]
+  (assert (= 1 (get-in r [:tasks :outcomes "in-flight"])))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :count])))
+  (println "ok   classifier なしの再オープンは人の再分類対象にしない"))'

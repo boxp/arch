@@ -269,8 +269,12 @@
        :note (when (< n 20) "n<20: 分位点は参考値")})))
 
 (defn read-events [file]
+  ;; 破損行は黙って捨てず ::malformed marker として残し、aggregate* で計数して影響 coverage を unknown にする
   (->> (str/split-lines (slurp file)) (remove str/blank?)
-       (keep #(try (json/parse-string % true) (catch Exception _ nil)))))
+       (map #(let [e (try (json/parse-string % true) (catch Exception _ nil))]
+               (if (map? e) e {::malformed true})))))
+
+(def rule-classifier? #{"rule" "model"})
 
 (defn unique-events [events]
   (second (reduce (fn [[seen out] e] (if (contains? seen (:event_id e)) [seen out] [(conj seen (:event_id e)) (conj out e)])) [#{} []] events)))
@@ -293,7 +297,7 @@
   (let [evidence-of #(when (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %)))
         reclassifiable? #(#{"correction" "task.reopened"} (:event_type %))
         ;; 人の再分類は、同じ evidence を持つ rule/model 判定がある場合だけ状態遷移から除外する
-        ruled (set (keep #(when (and (reclassifiable? %) (not= "human" (:classifier %))) (evidence-of %)) evs))
+        ruled (set (keep #(when (and (reclassifiable? %) (rule-classifier? (:classifier %))) (evidence-of %)) evs))
         ;; aggregate の是正再分類と同じ照合条件 (evidence の一致のみ。evidence event 自体の有無は問わない)
         evs (remove #(let [evidence (evidence-of %)]
                        (and (= "human" (:classifier %)) (reclassifiable? %) evidence (contains? ruled evidence))) evs)
@@ -311,7 +315,8 @@
       :else "unobserved")))
 
 (defn aggregate* [events]
-  (let [gated (map privacy-gate events)
+  (let [malformed (count (filter ::malformed events))
+        gated (map privacy-gate (remove ::malformed events))
         rejected (count (filter #(and (:rejected? %) (not (:invalid-correlation? %))) gated))
         rejected-correlation (count (filter :invalid-correlation? gated))
         events (keep :event gated)
@@ -330,14 +335,14 @@
                           corr (filter #(#{"correction" "task.reopened"} (:event_type %)) evs)
                           ;; 人の訂正 (classifier=human) は同じ evidence の rule 判定を上書きする
                           human (into {} (keep #(when (and (= "human" (:classifier %)) (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %))) [(first (:evidence_event_ids %)) %]) corr))
-                          matched (set (keep #(when (and (not= "human" (:classifier %)) (sequential? (:evidence_event_ids %))
+                          matched (set (keep #(when (and (rule-classifier? (:classifier %)) (sequential? (:evidence_event_ids %))
                                                         (contains? human (first (:evidence_event_ids %))))
                                                (first (:evidence_event_ids %))) corr))
                           corr (keep (fn [e]
                                        (let [evidence (first (:evidence_event_ids e)) h (get human evidence)]
                                          (cond
                                            (and (= "human" (:classifier e)) (contains? matched evidence)) nil
-                                           (and h (not= "human" (:classifier e)))
+                                           (and h (rule-classifier? (:classifier e)))
                                            (merge (apply dissoc e [:correction_class :correction_origin :classifier :classifier_version :confidence])
                                                   (select-keys h [:correction_class :correction_origin :classifier :classifier_version :confidence]))
                                            :else e))) corr)
@@ -388,7 +393,7 @@
         effects (duplicates "effect.applied" :effect_key)
         approvals (duplicates "approval.requested" :approval_key)]
     {:schema schema-version :classifier classifier-version
-     :input {:events n-in :unique (count uniq) :duplicates dup :order-inversions inversions
+     :input {:events n-in :malformed-lines malformed :unique (count uniq) :duplicates dup :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
      :tasks {:total n :never-run (count (filter #(zero? (:runs %)) tasks))
              :accepted-without-run-history (count (filter :accepted-unobserved? tasks)) :outcomes (frequencies (map :outcome tasks))
@@ -425,6 +430,10 @@
                         :retrying (reduce + (map :retrying tasks))}
       :delegation (apply merge-with + (map :delegation tasks))}
      :zero-tolerance {:duplicate-effects (cond
+                                           ;; 破損行に effect が含まれていた可能性があるため 0 件と確定しない
+                                           (pos? malformed)
+                                           {:status "unknown" :reason "破損した入力行があり重複の有無を確定できない"
+                                            :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed}
                                            ;; effect_key 欠落/不正の effect があると重複の有無を確定できない (0 件と報告しない)
                                            (pos? (:unverifiable effects))
                                            {:status "unknown" :reason "effect_key 欠落/不正の effect があり重複の有無を確定できない"
@@ -435,6 +444,9 @@
                                                   :coverage (if (connected? "duplicate-effects") "connected" "partial/undeclared"))
                                            :else {:status "unknown" :reason "effect source 未接続"})
                       :critical-safety-events (cond
+                                                (pos? malformed)
+                                                {:status "unknown" :reason "破損した入力行があり重大 event の有無を確定できない"
+                                                 :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed}
                                                 (connected? "critical-safety-events") {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "connected"}
                                                 (some #(contains? (:severity enum-values) (:severity %)) uniq) {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "partial/undeclared"}
                                                 :else {:status "unknown" :reason "safety source 未接続"})
@@ -475,11 +487,12 @@
     (println "# TYPE ai_ops_events_total counter")
     (doseq [[[src t] c] (frequencies (map (fn [e] [(if (contains? (:source enum-values) (:source e)) (:source e) "other")
                                                     (if (contains? (:event_type enum-values) (:event_type e)) (:event_type e) "other")])
-                                          (unique-events (keep (comp :event privacy-gate) evs))))]
+                                          (unique-events (keep (comp :event privacy-gate) (remove ::malformed evs)))))]
       (line "ai_ops_events_total" {:source src :event_type t} c))
     (println "# TYPE ai_ops_tasks gauge")
     (doseq [[o c] (get-in r [:tasks :outcomes])] (line "ai_ops_tasks" {:outcome o} c))
     (line "ai_ops_event_duplicates_total" {} (get-in r [:input :duplicates]))
+    (line "ai_ops_input_malformed_lines_total" {} (get-in r [:input :malformed-lines]))
     (line "ai_ops_event_order_inversions_total" {} (get-in r [:input :order-inversions]))
     (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
       (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))

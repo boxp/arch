@@ -97,3 +97,5 @@ retention / access / privacy: ledger は 180d で、Owner と runner の SA だ�
 `emit-sim` の標準エラー統計には、入力末尾で collector が停止中のため未配信となったバッファ内イベント数を `undelivered-buffered` として記録する。配信済みイベントのみを標準出力に出す。
 
 `duplicate-effects` は、`effect_key` が欠落または privacy gate で redact された `effect.applied` が 1 件でもあれば重複の有無を確定できないため `status unknown` とし、観測できた重複数を下限 (`observed-duplicates-lower-bound`)、検証できない effect 数を `unverifiable-effects` として別掲する (coverage 宣言済みでも 0 件と報告しない)。人による是正/再オープンの再分類は、集計と状態判定のどちらも「同じ evidence を持つ rule/model 判定がある」ことだけを条件にし、evidence event 自体が入力に無くても同じ扱いにする。
+
+入力の破損行 (JSON として解釈できない行や object でない行) は黙って捨てず `input.malformed-lines` と Prometheus の `ai_ops_input_malformed_lines_total` で数える。破損行が 1 件でもあれば、その行に重大 event や effect が含まれていた可能性があるため、`critical-safety-events` と `duplicate-effects` は coverage 宣言済みでも `status unknown` とし、観測できた件数は下限として別掲する。人の再分類の対象は `classifier` が `rule` または `model` の判定に限り、classifier の無い是正/再オープンは独立した event として扱う。
