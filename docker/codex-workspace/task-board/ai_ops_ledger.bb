@@ -587,14 +587,26 @@
   and skipped; archives of earlier incarnations of the date are read in addition, so
   markers are never counted twice and earlier corrections are never dropped."
   [root date]
-  (let [day (fs/path (ledger-dir root) (str "events-" date ".jsonl"))
-        text (try (slurp (str day)) (catch java.io.IOException _ nil))
+  (let [unreadable (str (json/generate-string {:collection_lost "input_unreadable"}) "\n")
+        ;; A file that vanished (pruned meanwhile) is fine; one that still exists but
+        ;; cannot be read (permissions, I/O) may hide corrections or loss markers, so
+        ;; it becomes a body-less input_unreadable marker and the SLIs stay unknown.
+        read-file (fn [f] (try (slurp (str f))
+                               (catch java.io.IOException e
+                                 (if (or (instance? java.nio.file.NoSuchFileException e) (not (fs/exists? f)))
+                                   nil
+                                   ::unreadable))))
+        day (fs/path (ledger-dir root) (str "events-" date ".jsonl"))
+        day-text (read-file day)
+        text (when (string? day-text) day-text)
         archives (->> (sli-archive-files-for root date)
                       (remove #(and text (archive-superseded? % text)))
                       (sort-by str)
-                      (keep (fn [a] (try (slurp (str a)) (catch java.io.IOException _ nil))))
-                      (map #(if (or (str/blank? %) (str/ends-with? % "\n")) % (str % "\n"))))]
-    (apply str (concat archives [(or text "")]))))
+                      (keep read-file)
+                      (map #(cond (= ::unreadable %) unreadable
+                                  (or (str/blank? %) (str/ends-with? % "\n")) %
+                                  :else (str % "\n"))))]
+    (apply str (concat archives [(cond (= ::unreadable day-text) unreadable :else (or text ""))]))))
 (defn append-ledger-events! [root target]
   (with-open [w (java.io.FileWriter. (str target) true)]
     (doseq [d (sort (distinct (keep file-date (if (fs/exists? (ledger-dir root)) (concat (fs/glob (ledger-dir root) "events-*.jsonl") (sli-archive-files root)) []))))

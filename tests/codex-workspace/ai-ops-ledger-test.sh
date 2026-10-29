@@ -205,7 +205,21 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
              (= 10 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))
       (fs/delete-if-exists old)
       (check "after deletion every incarnation is read once"
-             (= 10 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))))
+             (= 10 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))
+      ;; unreadable (not missing) day file or archive: counted as a loss marker, not dropped
+      (spit (str old) "{\"collection_lost\":\"buffer_dropped\"}\n{\"collection_lost\":\"ledger_dropped\"}\n")
+      (let [real-slurp slurp
+            unreadable (fn [pred] (fn [f & opts] (if (pred (str f)) (throw (java.io.IOException. "Permission denied")) (apply real-slurp f opts))))
+            n-unreadable (fn [] (count (filter #{{:collection_lost "input_unreadable"}}
+                                               (map #(json/parse-string % true) (remove str/blank? (str/split-lines (read-date root "2000-01-01")))))))
+            base (n-unreadable)]
+        (with-redefs [slurp (unreadable #(= % (str old)))]
+          (check "unreadable day file becomes an input_unreadable marker" (= (inc base) (n-unreadable))))
+        (with-redefs [slurp (unreadable #(str/includes? % "sli-archive"))]
+          (check "unreadable archives become input_unreadable markers"
+                 (< base (n-unreadable))))
+        (check "readable files add no input_unreadable marker" (= base (n-unreadable))))
+      (fs/delete-if-exists old)))
   (check "current ledger file kept" (fs/exists? (ai-ops-ledger/day-file root))))
 
 (if (seq @failures)
