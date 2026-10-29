@@ -103,3 +103,5 @@ retention / access / privacy: ledger は 180d で、Owner と runner の SA だ�
 privacy gate で拒否した event (不正な event_id や task/request/run ID) も、破損行と同じように中身を検証できない。そのため、1 件でもあれば `critical-safety-events` と `duplicate-effects` は coverage 宣言済みでも `status unknown` とし、観測できた件数は下限として、拒否件数は `rejected-events` として別掲する。実 baseline の拒否は 0 件で数値は変わらない。
 
 生成元 (extract/emit-sim) の privacy gate で拒否した event は、本文や ID を出さずに `{"privacy_rejected":"upstream"}` という marker 行だけを JSONL に出す。aggregate はこの marker を `coverage.privacy-rejected-upstream` と Prometheus の `ai_ops_privacy_rejected_events_total{stage="upstream"}` で数え、1 件でもあれば zero-tolerance 指標を unknown にする (stderr の統計だけに残して集計で 0 件になる経路を塞ぐ)。また severity が不正 (redact 済み) の event があれば重大度を検証できないため、`critical-safety-events` は coverage 宣言済みでも unknown とし、件数を `unverifiable-severity` として別掲する。実 baseline は拒否・不正 severity とも 0 件で数値は変わらない。
+
+- 2026-10-29 追記 (codex-review): emit-sim の bounded buffer drop / 未配信件数を stderr だけでなく本文・ID なし marker 行で aggregate へ引き継ぐ。aggregate は `coverage.collection-lost` と `ai_ops_collection_lost_events_total{reason}` で計数し、1件以上あれば zero-tolerance 指標 (critical-safety-events / duplicate-effects) を coverage 宣言済みでも unknown にする。

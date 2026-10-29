@@ -463,7 +463,8 @@ bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 4 40 99 >"
 bb -e '
 (let [[output stats-file] *command-line-args*
       stats (edn/read-string (slurp stats-file))]
-  (assert (= 40 (:delivered stats) (count (clojure.string/split-lines (slurp output)))))
+  (assert (= 40 (:delivered stats) (count (remove #(clojure.string/includes? % "collection_lost") (clojure.string/split-lines (slurp output))))))
+  (assert (= 2 (count (filter #(clojure.string/includes? % "\"undelivered\"") (clojure.string/split-lines (slurp output))))))
   (assert (= 2 (:undelivered-buffered stats)))
   (assert (= 2 (:buffer-max-depth stats)))
   (println "ok   collector が最後まで停止した場合はバッファを未配信に残す"))' "$tmp/end-down.jsonl" "$tmp/end-down.stats"
@@ -570,3 +571,19 @@ bb -e '
   (assert (nil? (get-in r [:zero-tolerance :critical-safety-events :count])))
   (assert (= 1 (get-in r [:zero-tolerance :critical-safety-events :unverifiable-severity])))
   (println "ok   不正 severity の event があれば重大 event を 0 件と確定しない"))'
+
+tmp_drop=$(mktemp)
+{ printf '%s\n' '{"event_id":"cov-safety-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}' '{"event_id":"cov-effects-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}'
+  for i in 1 2 3 4 5; do printf '{"event_id":"BOXP-66:e%s","task_id":"BOXP-66","event_type":"correction","severity":"critical"}\n' "$i"; done; } > "$tmp_drop.in"
+bb ai_ops_sli.bb emit-sim --synthetic "$tmp_drop.in" 1 2 4 > "$tmp_drop" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_drop\")]
+  (assert (= 2 (get-in r [:coverage :collection-lost :buffer-dropped])))
+  (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
+  (assert (nil? (get-in r [:zero-tolerance :critical-safety-events :count])))
+  (assert (= 2 (get-in r [:zero-tolerance :critical-safety-events :collection-lost-events])))
+  (assert (= \"unknown\" (get-in r [:zero-tolerance :duplicate-effects :status])))
+  (assert (re-find #\"ai_ops_collection_lost_events_total\\{reason=\\\"buffer_dropped\\\"\\} 2\" (with-out-str (ai-ops-sli/prom \"$tmp_drop\"))))
+  (println \"ok   collector 停止中の drop を marker で集計へ引き継ぎ、重大 event/二重実行を 0 件と確定しない\"))"
+rm -f "$tmp_drop" "$tmp_drop.in"

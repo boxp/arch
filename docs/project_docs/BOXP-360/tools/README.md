@@ -29,7 +29,7 @@ run 履歴の無い受入済み ticket（accepted-without-run-history）は是�
 
 `coverage.hermes-conversation` は、source が `synthetic:hermes` 等の Hermes、runtime が `hermes`、または `coverage.connected` の対象が `hermes-conversation` のイベントを観測すると `connected`、それ以外は `not-connected` とする。合成イベントも接続として扱う。`by-stratum` の `accepted` と `first-pass` は全体の first-acceptance-conformance と同じ受入時刻を確認できる観測済み受入タスクを対象とし、それぞれ分母と分子に対応する。
 
-emit-sim は配信済みイベントを標準出力し、統計を標準エラーに出す。入力末尾でも collector が停止中の場合、バッファ内のイベントは配信せず `undelivered-buffered` に件数を記録する。collector が稼働中ならバッファを配信し、同件数は 0 になる。
+emit-sim は配信済みイベントを標準出力し、統計を標準エラーに出す。入力末尾でも collector が停止中の場合、バッファ内のイベントは配信せず `undelivered-buffered` に件数を記録する。collector が稼働中ならバッファを配信し、同件数は 0 になる。 drop 件数と未配信件数は、本文と ID を持たない marker 行（`{"collection_lost":"buffer_dropped"}` / `{"collection_lost":"undelivered"}`）として標準出力にも出す。aggregate は件数を `coverage.collection-lost` と `ai_ops_collection_lost_events_total{reason=...}` に記録し、1件以上あれば coverage 宣言済みでも critical-safety-events / duplicate-effects を unknown にする（観測件数は下限）。
 
 `lane.changed` の `lane_to`（ready / review / blocked / backlog / in-progress）も時刻付き状態遷移として outcome 判定に含め、`lane_to=review` は Review 到達とする。`lane_to=done` は受入とみなさない（受入は `task.accepted` / done snapshot で判定）。
 
