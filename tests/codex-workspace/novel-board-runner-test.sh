@@ -1739,6 +1739,7 @@ card_line "${BOARD}" NOVEL-8801 | grep -Fq 'assignee::boxp' || fail 'image-only 
 [[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'image-only must call generator once'
 tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq 'name.png' || fail 'name-matched image missing'
 tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq 'link.png' || fail 'linked image missing'
+tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq "Owner's request for this illustration (highest priority; it overrides the composition, scene and number of characters described afterwards): 挿絵も用意してください" || fail 'image-only prompt must carry the review request'
 [[ -s "${VAULT}/Novels/Drafts/NOVEL-8801/attachments/illustration.png" ]] || fail 'image-only draft missing image'
 assert_contains "${VAULT}/Novels/NOVEL-8801.md" '![[Novels/Drafts/NOVEL-8801/attachments/illustration.png]]'
 set_assignee NOVEL-8801 localllm

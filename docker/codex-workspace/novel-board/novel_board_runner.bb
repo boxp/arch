@@ -3250,6 +3250,23 @@
        (when (seq gaps) (str "、不足: " (str/join ", " (map #(str (name (:type %)) " " (:detail %)) (take 5 gaps)))))
        "。再開条件: 登場人物の設定ノートか、そのリンク先に SFW の作画資料画像を埋め込む、または Review Instructions に画像を含むノートへの [[リンク]] を書く"))
 
+(defn illustration-spec-with-request
+  "BOXP-363: an image-only Review request directs the new illustration. Only the
+  owner's illustration lines (links removed, bounded) are added, never manuscript
+  text, and never for NSFW works (their spec is left as planned)."
+  [spec instructions nsfw]
+  (let [request (->> (str/split-lines (str instructions))
+                     (filter image-intent?)
+                     (map #(str/trim (str/replace (without-links %) #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")))
+                     (str/join " "))
+        request (subs request 0 (min 400 (count request)))]
+    (if (or nsfw (str/blank? request))
+      spec
+      (assoc spec :prompt (str "Owner's request for this illustration (highest priority; it overrides the composition, scene and number of characters described afterwards): "
+                               request
+                               " Earlier scene description, use only for character appearance and setting: "
+                               (:prompt spec))))))
+
 (defn run-illustrate! [novel-id card fm content agent run-dir]
   (let [manuscript (manuscript-path novel-id) job-path (illustration-job-path novel-id)
         instructions (instructions-text content) fp (instructions-fingerprint instructions)]
@@ -3272,10 +3289,11 @@
             _ (when discovery (write-edn-file! (fs/path run-dir "illustration-references.edn") (select-keys discovery [:explored :gaps])))
             candidates (:candidates discovery)
             spec (when (seq candidates)
-                   (or (try (when (fs/exists? (illustration-spec-path novel-id)) (parse-json-object (slurp (str (illustration-spec-path novel-id))))) (catch Exception _ nil))
+                   (-> (or (try (when (fs/exists? (illustration-spec-path novel-id)) (parse-json-object (slurp (str (illustration-spec-path novel-id))))) (catch Exception _ nil))
                        (if (= :localllm (assignee-route agent))
                          (plan-illustration-with-llm! (localllm-config) run-dir (slurp (str manuscript)) candidates (:nsfw card) (:title card))
-                         (default-illustration-spec (:title card) ""))))
+                         (default-illustration-spec (:title card) "")))
+                       (illustration-spec-with-request instructions (:nsfw card))))
             illustration (cond
                            adopted adopted
                            reused {:ok? true :path (str (illustration-path novel-id)) :bytes (fs/size (illustration-path novel-id))}
@@ -3855,6 +3873,10 @@
                 (not (image-only-instructions? "エピローグを足して挿絵も作って"))
                 (image-only-instructions? "雨上がりの場面の挿絵を作ってください")
                 (not (image-only-instructions? "- 参照: [[設定/主人公]]"))
+                (= "p" (:prompt (illustration-spec-with-request {:prompt "p"} "- 挿絵を作って" true)))
+                (= "p" (:prompt (illustration-spec-with-request {:prompt "p"} "- 台詞を直す" false)))
+                (let [p (:prompt (illustration-spec-with-request {:prompt "p"} "- 台詞を直す\n- 挿絵を作り直して。カウンターで1人 [[設定/主人公]]" false))]
+                  (and (str/includes? p "挿絵を作り直して。カウンターで1人") (not (str/includes? p "台詞")) (not (str/includes? p "設定/主人公")) (str/ends-with? p "p")))
                 (not (image-only-instructions? "- 挿絵を描く\n- 本文を加筆"))))
     (check "review image action and mixed action"
            (with-redefs [instructions-applied? (constantly false)]
