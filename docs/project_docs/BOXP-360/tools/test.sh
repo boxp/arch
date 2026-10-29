@@ -143,8 +143,9 @@ bb ai_ops_sli.bb aggregate "$tmp/reopen.jsonl" >"$tmp/reopen.edn"
 bb -e '
 (let [r (edn/read-string (slurp (first *command-line-args*)))]
   (assert (= {"in-flight" 1 "accepted" 2} (get-in r [:tasks :outcomes])))
-  ;; 拒否 event は coverage.connected (是正に無関係な種別) のため first acceptance は確定できる
-  (assert (= [2 2 0] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance]))))
+  ;; 拒否 event は coverage.connected (是正に無関係な種別) のため first acceptance は確定できる。
+  ;; 受入後に再オープン中の BOXP-1 も最初の受入履歴を持つため分母に含む
+  (assert (= [3 3 0] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance]))))
   (assert (= 2 (get-in r [:coverage :privacy-rejected-invalid-id])))
   (assert (= 0 (get-in r [:input :duplicates])))
   ;; 拒否 event があれば zero-tolerance は 0 件確定せず unknown
@@ -276,7 +277,7 @@ bb -e '
        ["ticket なし会話も request_id で task 化" (= 7 (get-in r [:tasks :total]))]
        ["人の訂正が rule 判定を上書き (S3 は非 agent 起因)" (= 0 (get-in r [:sli :agent-system-correction-task-ratio :unknown-cause-tasks]))]
        ["agent-system 是正 task 1/4 (S2)" (= [1 4] ((juxt :count :denominator) (get-in r [:sli :agent-system-correction-task-ratio])))]
-       ["first acceptance: 受入 1 中 1、未評価 2 は合格扱いしない" (= [1 1 2] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance])))]
+       ["first acceptance: 受入履歴 2 中 1 (再オープン中 S2 は受入前是正で不合格)、未評価 2 は合格扱いしない" (= [1 2 2] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance])))]
        ["close 後 late feedback を reopen-after-accept に計上" (= 1 (get-in r [:sli :reopen-after-accept :count]))]
        ["Owner 救援" (= 1 (get-in r [:sli :owner-rescue :count]))]
        ["同 scope 重複承認" (= [1 2] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
@@ -423,9 +424,9 @@ bb -e '
       report (ai-ops-sli/aggregate* events)
       stratum (get-in report [:by-stratum "infra"])
       overall (get-in report [:sli :first-acceptance-conformance])]
-  (assert (= [1 1] ((juxt :first-pass :accepted) stratum) ((juxt :count :denominator) overall)))
-  (assert (= [1 1] (mapv #(reduce + (map % (vals (:by-stratum report)))) [:first-pass :accepted])))
-  (println "ok   再オープンを除く層別 first acceptance は全体と一致"))'
+  (assert (= [2 2] ((juxt :first-pass :accepted) stratum) ((juxt :count :denominator) overall)))
+  (assert (= [2 2] (mapv #(reduce + (map % (vals (:by-stratum report)))) [:first-pass :accepted])))
+  (println "ok   再オープン中も受入履歴で数える層別 first acceptance は全体と一致"))'
 
 bb -e '
 (load-file "ai_ops_sli.bb")
@@ -1254,3 +1255,28 @@ for case in no-root empty-tickets no-outbox; do
   [ -s "$tmp_in/x.jsonl" ] && { echo "FAIL 入力欠落 ($case) で event を出さない"; exit 1; }
 done
 echo "ok   入力ディレクトリ不在/空 ticket ディレクトリは空データとして集計せず extract をエラー終了する"
+
+# 受入後に再オープン中の task も最初の受入履歴で first acceptance に計上する (受入前是正があれば不合格)
+cat >"$tmp/reopened-first-accept.jsonl" <<'JEOF'
+{"event_id":"BOXP-20:run","task_id":"BOXP-20","event_type":"run.started","occurred_at":"2026-10-18T00:00:00Z"}
+{"event_id":"BOXP-20:corr","task_id":"BOXP-20","event_type":"correction","correction_origin":"agent-system","correction_class":"instruction_violation","occurred_at":"2026-10-19T00:00:00Z"}
+{"event_id":"BOXP-20:accepted","task_id":"BOXP-20","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-20:reopened","task_id":"BOXP-20","event_type":"task.reopened","occurred_at":"2026-10-21T00:00:00Z"}
+{"event_id":"BOXP-21:run","task_id":"BOXP-21","event_type":"run.started","occurred_at":"2026-10-18T00:00:00Z"}
+{"event_id":"BOXP-21:accepted","task_id":"BOXP-21","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+JEOF
+bb ai_ops_sli.bb aggregate "$tmp/reopened-first-accept.jsonl" >"$tmp/reopened-first-accept.edn"
+bb -e '
+(let [r (edn/read-string (slurp (first *command-line-args*)))]
+  (assert (= 1 (get-in r [:tasks :outcomes "in-flight"])))
+  (assert (= [1 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))))
+  (assert (= 2 (get-in r [:by-stratum nil :accepted])))
+  (println "ok   再オープン中 task を最初の受入履歴で first acceptance に計上"))' "$tmp/reopened-first-accept.edn"
+
+# 添付ノート (BOXP-<数字>-*.md) だけの Tickets は正本 ticket 0 件として extract をエラー終了する
+mkdir -p "$tmp/notes-only/vault/Tickets" "$tmp/notes-only/root/runs" "$tmp/notes-only/root/outbox"
+printf -- '---\nstatus: done\ncreated: 2026-10-01\n---\n' >"$tmp/notes-only/vault/Tickets/BOXP-144-notes.md"
+if bb ai_ops_sli.bb extract "$tmp/notes-only/root" "$tmp/notes-only/vault" >"$tmp/notes-only.jsonl" 2>/dev/null; then
+  echo "FAIL 添付ノートのみの Tickets を空入力として検出しない"; exit 1
+fi
+echo "ok   添付ノートのみの Tickets を空入力としてエラー終了"

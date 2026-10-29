@@ -214,8 +214,8 @@
     (when-not (and (fs/directory? d) (fs/readable? d))
       (binding [*out* *err*] (println (str "extract: required input directory is missing or unreadable: " d)))
       (System/exit 2)))
-  ;; 未マウントの空マウントポイント等で ticket が 1 件も無い場合も空データとして扱わない
-  (when (empty? (fs/glob (fs/path vault "Tickets") "BOXP-*.md"))
+  ;; 未マウントの空マウントポイント等で正本 ticket (BOXP-<数字>.md) が 1 件も無い場合も空データとして扱わない (添付ノートのみは空扱い)
+  (when (empty? (filter #(re-matches #"BOXP-\d+\.md" (str (fs/file-name %))) (fs/glob (fs/path vault "Tickets") "BOXP-*.md")))
     (binding [*out* *err*] (println (str "extract: no ticket files found under " (fs/path vault "Tickets"))))
     (System/exit 2))
   (let [stats (atom {:privacy-dropped-keys 0 :privacy-redacted-values 0 :privacy-rejected 0})
@@ -445,6 +445,8 @@
       (and (contains? state-transition-types (:event_type e)) (some? (:occurred_at e)) (nil? (parse-inst (:occurred_at e))))
       (some #(let [v (get e %)] (or (nil? v) (and (string? v) (str/blank? v)))) (get required-state-fields (:event_type e)))))
 (defn input-missing? [t] (or (pos? (:unreadable-runs t 0)) (pos? (:unverifiable-state t 0))))
+;; 最初の受入履歴を持つ task (受入後に再オープン中でも first acceptance の対象から外さない; 現在状態は outcome で別に扱う)
+(defn ever-accepted? [t] (or (:acceptance-history? t) (= "accepted" (:outcome t))))
 
 (defn aggregate* [events]
   (let [malformed (count (filter ::malformed events))
@@ -593,7 +595,7 @@
         ;; 入力欠落 task は Review 到達を確認できなくても未評価として別掲する (分母から黙って消さない)
         reached-all (filter #(or (:reached-review? %) (input-missing? %)) tasks)
         reached (remove #(input-missing? %) reached-all)
-        observed-accepted (filter #(and (:observed? %) (= "accepted" (:outcome %))) tasks)
+        observed-accepted (filter #(and (:observed? %) (ever-accepted? %)) tasks)
         accepted-all (filter :accepted-at observed-accepted)
         accepted-evaluable (remove #(input-missing? %) accepted-all)
         accepted (remove :first-pass-ambiguous? accepted-evaluable)
@@ -632,7 +634,7 @@
       (unlinked-guard (assoc (ratio (count (filter :first-pass? accepted)) (count accepted))
              :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted))
                                                 ;; 保守的分母: 未評価・受入時刻不明・run 履歴無し受入・入力欠落 task も不合格として含める
-                                                (count (distinct (map :task (concat (filter #(or (= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached-all)
+                                                (count (distinct (map :task (concat (filter #(or (ever-accepted? %) (nil? (:accepted-at %))) reached-all)
                                                                                     accepted-without-acceptance-time
                                                                                     (filter :accepted-unobserved? tasks))))))
              :accepted-without-acceptance-time (count accepted-without-acceptance-time)
@@ -739,7 +741,7 @@
            (for [[s ts] (group-by :stratum tasks)
                  :let [ok (remove #(input-missing? %) ts)
                        r (filter :reached-review? ok)
-                       observed-a (filter #(and (:observed? %) (= "accepted" (:outcome %))) ok)
+                       observed-a (filter #(and (:observed? %) (ever-accepted? %)) ok)
                        a-all (filter :accepted-at observed-a)
                        a (remove :first-pass-ambiguous? a-all)]]
              [s {:tasks (count ts) :reached-review (count r)
