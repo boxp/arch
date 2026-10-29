@@ -1316,3 +1316,15 @@ if bb ai_ops_sli.bb extract "$tmp/notes-only/root" "$tmp/notes-only/vault" >"$tm
   echo "FAIL 添付ノートのみの Tickets を空入力として検出しない"; exit 1
 fi
 echo "ok   添付ノートのみの Tickets を空入力としてエラー終了"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [cov {:event_id "cov-acceptance-12345678" :event_type "coverage.connected" :coverage_target "acceptance-history"}
+      evs [{:event_id "BOXP-126:run" :task_id "BOXP-126" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+           {:event_id "BOXP-126:acc" :task_id "BOXP-126" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"}
+           {:event_id "BOXP-126:reopen" :task_id "BOXP-126" :event_type "task.reopened" :correction_origin "agent-system" :occurred_at "2026-10-21T23:59:59Z"}
+           cov]
+      ra (get-in (ai-ops-sli/aggregate* evs) [:sli :reopen-after-accept])]
+  ;; 日粒度受入の内部時刻 (23:59:59Z) と同時刻の再オープンは同日内で前後不明: 受入後と確定しない
+  (assert (and (= :unknown (:status ra)) (= 1 (:indeterminate ra))) (pr-str ra)))
+(println "ok   日粒度受入と同時刻の再オープンは同時刻特例を適用せず reopen-after-accept を unknown にする")'

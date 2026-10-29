@@ -55,7 +55,7 @@
 
 層別は creative / dev / infra / research / assistant。必要に応じて model、runner、prompt/skill の版を付ける。条件が同じでなければ model を順位付けしない。
 
-状態遷移は時刻付き event を時刻順に評価し、抽出時の現在状態と明示された snapshot は履歴に優先し、その他の時刻なし snapshot は時刻付き状態 event がある場合に上書きしない。同時刻では再オープンを受入より優先する。時刻なしの agent 起因または原因不明の是正は first acceptance を不合格とする。
+状態遷移は時刻付き event を時刻順に評価し、抽出時の現在状態と明示された snapshot は履歴に優先し、その他の時刻なし snapshot は時刻付き状態 event がある場合に上書きしない。同時刻では再オープンを受入より優先する（ただし日粒度受入の曖昧窓内では同時刻特例を適用せず、受入後の再オープンと確定しない）。時刻なしの agent 起因または原因不明の是正は first acceptance を不合格とする。
 
 ## 5. 実測 baseline (既存 metadata のみ)
 

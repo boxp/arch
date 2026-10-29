@@ -564,9 +564,9 @@
                                                         (and (= "task.state" (:event_type %)) (= "review" (:status %))))
                                                 (or (parse-inst (:occurred_at %)) true)) evs)
                           post-accept-corr (when accepted (filter #(when-let [t (parse-inst (:occurred_at %))]
+                                                                     ;; 日粒度の曖昧窓では同時刻の再オープン特例を適用しない (窓内の再オープンは前後不明)
                                                                      (if day-window
-                                                                       (or (if hi-inclusive? (.isAfter t (second day-window)) (not (.isBefore t (second day-window))))
-                                                                           (and (= "task.reopened" (:event_type %)) (= t accepted)))
+                                                                       (if hi-inclusive? (.isAfter t (second day-window)) (not (.isBefore t (second day-window))))
                                                                        (or (.isAfter t accepted) (and (= "task.reopened" (:event_type %)) (= t accepted))))) corr))
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
