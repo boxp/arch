@@ -3110,14 +3110,21 @@
   (let [plain (without-links text)]
     (boolean (re-find #"(?i)(?:挿絵|イラスト|illustration|画像|絵)[^。\n]{0,12}?(?:用意|生成|作成|作って|作り直|描|付け|追加|入れ|差し替|やり直|generate|create|draw)" plain))))
 
+(defn without-keep-clauses [text]
+  (str/replace (without-links text)
+               #"(?:本文|文章|台詞|セリフ|展開)(?:は|には|を)?(?:そのまま|変え(?:ず|ない)|変更(?:せず|しない)|いじら(?:ず|ない)|触ら(?:ず|ない)|手を(?:加え|入れ)(?:ず|ない)|改稿(?:せず|しない)|書き換え(?:ず|ない))(?:でください|で|に)?"
+               ""))
+
 (defn image-only-instructions? [text]
   (let [lines (->> (str/split-lines (str text)) (map #(str/replace % #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")) (remove str/blank?))]
     ;; Lines that only point at material (`参照: [[note]]`) support the request.
     (and (some image-intent? lines)
          (every? #(or (image-intent? %)
-                      (re-matches #"(?i)\s*(?:参照|資料|参考|作画資料|references?)?\s*[:：]?\s*" (without-links %)))
+                      (re-matches #"(?i)\s*(?:参照|資料|参考|作画資料|references?)?\s*[:：]?\s*" (without-links %))
+                      (and (not= (without-links %) (without-keep-clauses %))
+                           (re-matches #"[\s。、]*" (without-keep-clauses %))))
                  lines)
-         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更" %) lines))))
+         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更|プロローグ|エピローグ|段落|地の文|章を" (without-keep-clauses %)) lines))))
 
 (defn illustration-job-path [novel-id] (fs/path (work-dir novel-id) "illustration-job.edn"))
 
@@ -3243,6 +3250,23 @@
        (when (seq gaps) (str "、不足: " (str/join ", " (map #(str (name (:type %)) " " (:detail %)) (take 5 gaps)))))
        "。再開条件: 登場人物の設定ノートか、そのリンク先に SFW の作画資料画像を埋め込む、または Review Instructions に画像を含むノートへの [[リンク]] を書く"))
 
+(defn illustration-spec-with-request
+  "BOXP-363: an image-only Review request directs the new illustration. Only the
+  owner's illustration lines (links removed, bounded) are added, never manuscript
+  text, and never for NSFW works (their spec is left as planned)."
+  [spec instructions nsfw]
+  (let [request (->> (str/split-lines (str instructions))
+                     (filter image-intent?)
+                     (map #(str/trim (str/replace (without-links %) #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")))
+                     (str/join " "))
+        request (subs request 0 (min 400 (count request)))]
+    (if (or nsfw (str/blank? request))
+      spec
+      (assoc spec :prompt (str "Owner's request for this illustration (highest priority; it overrides the composition, scene and number of characters described afterwards): "
+                               request
+                               " Earlier scene description, use only for character appearance and setting: "
+                               (:prompt spec))))))
+
 (defn run-illustrate! [novel-id card fm content agent run-dir]
   (let [manuscript (manuscript-path novel-id) job-path (illustration-job-path novel-id)
         instructions (instructions-text content) fp (instructions-fingerprint instructions)]
@@ -3265,10 +3289,11 @@
             _ (when discovery (write-edn-file! (fs/path run-dir "illustration-references.edn") (select-keys discovery [:explored :gaps])))
             candidates (:candidates discovery)
             spec (when (seq candidates)
-                   (or (try (when (fs/exists? (illustration-spec-path novel-id)) (parse-json-object (slurp (str (illustration-spec-path novel-id))))) (catch Exception _ nil))
+                   (-> (or (try (when (fs/exists? (illustration-spec-path novel-id)) (parse-json-object (slurp (str (illustration-spec-path novel-id))))) (catch Exception _ nil))
                        (if (= :localllm (assignee-route agent))
                          (plan-illustration-with-llm! (localllm-config) run-dir (slurp (str manuscript)) candidates (:nsfw card) (:title card))
-                         (default-illustration-spec (:title card) ""))))
+                         (default-illustration-spec (:title card) "")))
+                       (illustration-spec-with-request instructions (:nsfw card))))
             illustration (cond
                            adopted adopted
                            reused {:ok? true :path (str (illustration-path novel-id)) :bytes (fs/size (illustration-path novel-id))}
@@ -3836,7 +3861,22 @@
                 (not (image-only-instructions? "- `illustration.png` を参考に衣装を直す"))
                 (image-only-instructions? "- 挿絵を作り直してください\n- イラストを1枚追加")
                 (image-only-instructions? "- 挿絵を生成してください\n- 参照: [[設定/主人公]]")
+                (image-only-instructions? "本文はそのままで、挿絵だけ生成してください")
+                (image-only-instructions? "本文は変えずに挿絵を作ってください")
+                (image-only-instructions? "挿絵を追加して。本文は変更しないで")
+                (image-only-instructions? "- 挿絵を生成してください\n- 本文には手を加えないでください")
+                (not (image-only-instructions? "本文を書き直して挿絵も作って"))
+                (not (image-only-instructions? "台詞を変更して、挿絵も追加"))
+                (not (image-only-instructions? "展開を変更して挿絵を作り直して"))
+                (not (image-only-instructions? "挿絵を描く。本文は変更しないで本文を加筆"))
+                (not (image-only-instructions? "本文は変更しないで、プロローグを追加して挿絵を生成"))
+                (not (image-only-instructions? "エピローグを足して挿絵も作って"))
+                (image-only-instructions? "雨上がりの場面の挿絵を作ってください")
                 (not (image-only-instructions? "- 参照: [[設定/主人公]]"))
+                (= "p" (:prompt (illustration-spec-with-request {:prompt "p"} "- 挿絵を作って" true)))
+                (= "p" (:prompt (illustration-spec-with-request {:prompt "p"} "- 台詞を直す" false)))
+                (let [p (:prompt (illustration-spec-with-request {:prompt "p"} "- 台詞を直す\n- 挿絵を作り直して。カウンターで1人 [[設定/主人公]]" false))]
+                  (and (str/includes? p "挿絵を作り直して。カウンターで1人") (not (str/includes? p "台詞")) (not (str/includes? p "設定/主人公")) (str/ends-with? p "p")))
                 (not (image-only-instructions? "- 挿絵を描く\n- 本文を加筆"))))
     (check "review image action and mixed action"
            (with-redefs [instructions-applied? (constantly false)]
