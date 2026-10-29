@@ -367,3 +367,24 @@ bb -e '
       (assert (= [passes 1] ((juxt :count :denominator) (get-in report [:sli :first-acceptance-conformance]))))
       (assert (= 0 (get-in report [:sli :reopen-after-accept :count])))))
   (println "ok   人の再分類は元の是正時刻を保持"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [event {:event_id "BOXP-1:event" :event_type "run.started" :source "synthetic:hermes"}
+      status #(get-in (ai-ops-sli/aggregate* %) [:coverage :hermes-conversation :status])]
+  (assert (= "connected" (status [event])))
+  (assert (= "not-connected" (status [(dissoc event :source)])))
+  (assert (= "connected" (status [(assoc event :source "derived" :runtime "hermes")])))
+  (assert (= "connected" (status [{:event_id "cov-hermes-12345678" :event_type "coverage.connected" :coverage_target "hermes-conversation"}])))
+  (println "ok   Hermes の source、runtime、coverage 接続と未接続"))
+(let [events [{:event_id "BOXP-1:run" :task_id "BOXP-1" :event_type "run.started" :stratum "infra"}
+              {:event_id "BOXP-1:accepted" :task_id "BOXP-1" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
+              {:event_id "BOXP-1:reopened" :task_id "BOXP-1" :event_type "task.reopened" :occurred_at "2026-10-21T00:00:00Z"}
+              {:event_id "BOXP-2:run" :task_id "BOXP-2" :event_type "run.started" :stratum "infra"}
+              {:event_id "BOXP-2:accepted" :task_id "BOXP-2" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}]
+      report (ai-ops-sli/aggregate* events)
+      stratum (get-in report [:by-stratum "infra"])
+      overall (get-in report [:sli :first-acceptance-conformance])]
+  (assert (= [1 1] ((juxt :first-pass :accepted) stratum) ((juxt :count :denominator) overall)))
+  (assert (= [1 1] (mapv #(reduce + (map % (vals (:by-stratum report)))) [:first-pass :accepted])))
+  (println "ok   再オープンを除く層別 first acceptance は全体と一致"))'

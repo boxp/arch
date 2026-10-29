@@ -47,7 +47,7 @@
    :delegation_kind #{"delegated" "exempt" "failed" "unparsable"}
    :stratum #{"assistant-or-research" "assistant" "research" "creative" "dev" "infra"}
    :blocker_category #{"external" "agent-reported-blocked" "agent-process-error" "pr-gate-pr-url"}
-   :coverage_target #{"duplicate-effects" "critical-safety-events" "acceptance-history"}})
+   :coverage_target #{"duplicate-effects" "critical-safety-events" "acceptance-history" "hermes-conversation"}})
 
 (def token-pattern #"(?i)(?:^|[^a-z0-9])(ghp_|gho_|github_pat_|xox[bp]-|AKIA|sk-|glpat-)[a-z0-9_-]+|[a-z0-9]{32,}")
 (defn token-safe? [s] (not (re-find token-pattern s)))
@@ -423,15 +423,20 @@
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
      :coverage {:privacy-rejected-invalid-id rejected :privacy-rejected-invalid-correlation-id rejected-correlation :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
-                :hermes-conversation {:status (if (some #(str/starts-with? (str %) "hermes") (keys sources)) "connected" "not-connected")}}
+                :hermes-conversation {:status (if (or (connected? "hermes-conversation")
+                                                   (some #(or (= "hermes" (:runtime %))
+                                                              (boolean (re-matches #"(?:[^:]+:)?hermes" (or (:source %) "")))) uniq))
+                                             "connected" "not-connected")}}
      :by-stratum
      (into (sorted-map)
            (for [[s ts] (group-by :stratum tasks)
-                 :let [r (filter :reached-review? ts)]]
+                 :let [r (filter :reached-review? ts)
+                       a (filter #(and (:observed? %) (= "accepted" (:outcome %))) ts)]]
              [s {:tasks (count ts) :reached-review (count r)
                  :agent-system-corr-tasks (count (filter #(pos? (:agent-corr %)) r))
                  :unknown-corr-tasks (count (filter #(pos? (:unknown-corr %)) r))
-                 :first-pass (count (filter :first-pass? r))}]))}))
+                 :accepted (count a)
+                 :first-pass (count (filter :first-pass? a))}]))}))
 
 (defn aggregate [file] (aggregate* (read-events file)))
 
