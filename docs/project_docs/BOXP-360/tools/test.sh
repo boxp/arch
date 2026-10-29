@@ -42,6 +42,14 @@ cat >"$tmp/coverage.jsonl" <<'EOF'
 {"event_id":"cov-two-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}
 EOF
 bb ai_ops_sli.bb aggregate "$tmp/coverage.jsonl" >"$tmp/coverage.edn"
+cat >"$tmp/invalid-severity.jsonl" <<'EOF'
+{"event_id":"BOXP-1:safety","event_type":"correction","severity":"invalid"}
+EOF
+bb ai_ops_sli.bb aggregate "$tmp/invalid-severity.jsonl" >"$tmp/invalid-severity.edn"
+bb -e '
+(let [r (edn/read-string (slurp (first *command-line-args*)))]
+  (assert (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status])))
+  (println "ok   不正 severity は safety source 接続の証拠にならない"))' "$tmp/invalid-severity.edn"
 cat >"$tmp/vault/Tickets/BOXP-998.md" <<'EOF'
 ---
 created: 2026-10-20
@@ -290,10 +298,14 @@ bb -e '
 (let [base {:run-id "20261020T010000Z-abcd" :agent "codex"}
       running (ai-ops-sli/summary->events "BOXP-1" (assoc base :status :running))
       interrupted (ai-ops-sli/summary->events "BOXP-2" (assoc base :status :interrupted))
-      report (ai-ops-sli/aggregate* (concat running interrupted))]
+      finished-at "2026-10-20T02:00:00Z"
+      interrupted-finished (ai-ops-sli/summary->events "BOXP-3" (assoc base :status :interrupted :finished-at finished-at))
+      report (ai-ops-sli/aggregate* (concat running interrupted interrupted-finished))]
   (assert (= ["run.started"] (mapv :event_type running)))
   (assert (= ["run.started" "run.interrupted"] (mapv :event_type interrupted)))
-  (assert (= [2 1] ((juxt :runs :interrupted) (get-in report [:sli :run-reliability]))))
+  (assert (= ["run.started" "run.interrupted"] (mapv :event_type interrupted-finished)))
+  (assert (= finished-at (:occurred_at (second interrupted-finished))))
+  (assert (= [3 2] ((juxt :runs :interrupted) (get-in report [:sli :run-reliability]))))
   (println "ok   実行中と中断済みを区別"))
 (let [base {:task_id "BOXP-1"}
       events [(merge base {:event_id "BOXP-1:run" :event_type "run.started"})

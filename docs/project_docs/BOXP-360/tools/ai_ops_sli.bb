@@ -132,15 +132,15 @@
               :delegation_kind (:delegation-kind s)}]
     (cond-> [(assoc base :event_id (str ticket "/" run-id ":started") :event_type "run.started"
                     :occurred_at started :occurred_precision "second")]
-      (:finished-at s)
+      (and (:finished-at s) (not= :interrupted (:status s)))
       (conj (assoc base :event_id (str ticket "/" run-id ":finished") :event_type "run.finished"
                    :occurred_at (:finished-at s) :occurred_precision "ns"
                    :status (some-> (:status s) name) :result (some-> (:result s) str)
                    :exit_code (:exit-code s) :idle_timeout (boolean (:idle-timeout? s))
                    :blocker_category (some-> (:blocker-category s) str)))
-      (and (not (:finished-at s)) (= :interrupted (:status s)))
+      (= :interrupted (:status s))
       (conj (assoc base :event_id (str ticket "/" run-id ":" (name (:status s))) :event_type "run.interrupted"
-                   :occurred_at (or (:updated-at s) started) :status (name (:status s)))))))
+                   :occurred_at (or (:finished-at s) (:updated-at s) started) :status (name (:status s)))))))
 
 (defn derive-corrections
   "run 系列から是正 event を規則で暫定分類する (classifier=rule, 人の訂正で上書き可能)。"
@@ -408,7 +408,7 @@
                                           (assoc (select-keys effects [:count :tasks-involved])
                                                  :coverage (if (connected? "duplicate-effects") "connected" "partial/undeclared"))
                                           {:status "unknown" :reason "effect source 未接続"})
-                      :critical-safety-events (if (some #(or (some? (:severity %))
+                      :critical-safety-events (if (some #(or (contains? (:severity enum-values) (:severity %))
                                                                (and (= "coverage.connected" (:event_type %)) (= "critical-safety-events" (:coverage_target %)))) uniq)
                                                 (count (filter #(= "critical" (:severity %)) uniq))
                                                 {:status "unknown" :reason "safety source 未接続"})

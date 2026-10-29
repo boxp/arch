@@ -12,7 +12,7 @@ bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 4 10 20 > 
 
 pilot 用であり runner / Hermes には未接続。extract と emit-sim は allowlist key のみ出力し、不正な値を redact し、不正な event_id の event は拒否する。stderr の privacy-redacted-values / privacy-rejected で件数を確認できる。aggregate は入力を再検証し、追加の拒否件数を coverage.privacy-rejected-invalid-id に記録する。coverage.connected の ID は `cov-<source>-<8桁の16進数>` の形式を使い、宣言ごとに一意にする。短い識別子以外の文字列は保持しない。
 
-zero-tolerance は対応する effect.applied / severity 付き event または coverage.connected event（coverage_target に duplicate-effects / critical-safety-events）を観測した場合にのみ件数を報告し、それ以外は unknown。Prom 出力は zero-tolerance メトリクスを公開しない。first acceptance は最初の受入以前（同時刻を含む）の agent 起因または原因不明の是正を対象とし、その時刻不明は不合格として扱う。人による再分類は元の是正の時刻と ID を保持する。
+zero-tolerance は対応する effect.applied / 許可された severity 付き event または coverage.connected event（coverage_target に duplicate-effects / critical-safety-events）を観測した場合にのみ件数を報告し、それ以外は unknown。Prom 出力は zero-tolerance メトリクスを公開しない。first acceptance は最初の受入以前（同時刻を含む）の agent 起因または原因不明の是正を対象とし、その時刻不明は不合格として扱う。人による再分類は元の是正の時刻と ID を保持する。
 
 privacy gate は key ごとの許可値・ID・時刻・型を検証し、認証情報や長い英数字列も redact する。未実行の request も task 総数、outcome、未完了と Owner rescue の分母に含め、never-run を別掲する。review 到達を対象とする SLI の分母は変えない。
 
