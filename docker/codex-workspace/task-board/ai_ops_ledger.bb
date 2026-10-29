@@ -103,6 +103,20 @@
 (def ledger-mutex (Object.))
 
 (defn ai-ops-dir [root] (fs/path root "ai-ops"))
+(defn lock-path [root] (fs/path (ai-ops-dir root) "ledger.lock"))
+
+(defn with-ledger-lock
+  "Serialize ledger/stats/metrics writes across threads (`locking`) and across
+  processes sharing the root (runner `loop`, manual `tick`, helper commands)
+  with an exclusive FileLock on `<root>/ai-ops/ledger.lock`."
+  [root f]
+  (locking ledger-mutex
+    (fs/create-dirs (ai-ops-dir root))
+    (with-open [file (java.io.RandomAccessFile. (str (lock-path root)) "rw")
+                channel (.getChannel file)]
+      (let [_file-lock (.lock channel)]
+        ;; Closing the channel releases the lock.
+        (f)))))
 (defn ledger-dir [root] (fs/path (ai-ops-dir root) "ledger"))
 (defn stats-path [root] (fs/path (ai-ops-dir root) "ledger-stats.edn"))
 (defn metrics-path [root] (fs/path (ai-ops-dir root) "metrics.prom"))
@@ -125,7 +139,9 @@
 
 (defn atomic-spit! [path content]
   (fs/create-dirs (fs/parent path))
-  (let [tmp (fs/path (fs/parent path) (str "." (fs/file-name path) ".tmp"))]
+  (let [tmp (fs/path (fs/parent path)
+                 (str "." (fs/file-name path) "." (.pid (java.lang.ProcessHandle/current))
+                      "." (.getId (Thread/currentThread)) ".tmp"))]
     (spit (str tmp) content)
     (fs/move tmp path {:replace-existing true :atomic-move true})))
 
@@ -153,7 +169,9 @@
   [root event]
   (when (enabled?)
     (try
-      (locking ledger-mutex
+      (with-ledger-lock
+       root
+       (fn []
         (let [now (str (java.time.Instant/now))
               [e redacted] (gate (merge {:schema_version schema-version
                                          :source "task-board-runner"
@@ -182,20 +200,27 @@
             (do (append-line! path e)
                 (update-stats! root #(-> (record-written % e)
                                          (update :redacted-values (fnil + 0) redacted)))
-                e))))
+                e)))))
       (catch Exception _
-        (try (locking ledger-mutex (update-stats! root #(count-in % [:write-errors])))
+        (try (with-ledger-lock root #(update-stats! root (fn [s] (count-in s [:write-errors]))))
              (catch Exception _ nil))
         nil))))
 
+(def gate-results #{"pass" "fail" "skip"})
+
 (defn record-gate!
-  "Count one review-gate evaluation by gate name and pass/fail. Never throws."
-  [root gate-name ok?]
+  "Count one review-gate evaluation by gate name and result (pass / fail /
+  skip; a boolean is read as pass / fail). Never throws."
+  [root gate-name result]
   (when (enabled?)
     (try
-      (locking ledger-mutex
-        (update-stats! root #(count-in % [:gate [(if (contains? gate-names gate-name) gate-name "other")
-                                                 (if ok? "pass" "fail")]])))
+      (with-ledger-lock
+       root
+       #(update-stats! root (fn [s]
+                              (count-in s [:gate [(if (contains? gate-names gate-name) gate-name "other")
+                                                  (cond (true? result) "pass"
+                                                        (contains? gate-results result) result
+                                                        :else "fail")]]))))
       (catch Exception _ nil))))
 
 ;; ---------------------------------------------------------------------------
@@ -254,9 +279,11 @@
   [root]
   (when (enabled?)
     (try
-      (locking ledger-mutex
-        (when (fs/exists? (ledger-dir root)) (prune! root))
-        (atomic-spit! (metrics-path root)
-                      (metrics-text (read-stats root) (quot (System/currentTimeMillis) 1000)))
-        true)
+      (with-ledger-lock
+       root
+       (fn []
+         (when (fs/exists? (ledger-dir root)) (prune! root))
+         (atomic-spit! (metrics-path root)
+                       (metrics-text (read-stats root) (quot (System/currentTimeMillis) 1000)))
+         true))
       (catch Exception _ nil))))

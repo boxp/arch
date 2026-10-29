@@ -176,8 +176,10 @@
   (try
     (when (and @ai-ops-module-loaded? (:gate review-gate))
       ((resolve 'ai-ops-ledger/record-gate!) (root) (name (:gate review-gate)) false))
+    ;; A gate that checked nothing (TASK_BOARD_REVIEW_PR: none, or only
+    ;; already-merged PRs) is counted as skip, not pass.
     (when (and @ai-ops-module-loaded? (:ok? review-gate))
-      ((resolve 'ai-ops-ledger/record-gate!) (root) "all" true))
+      ((resolve 'ai-ops-ledger/record-gate!) (root) "all" (if (:skipped? review-gate) "skip" "pass")))
     (catch Exception e
       (log! (str "ai ops gate record failed for " ticket-id "/" run-id ": " (.getMessage e)))))
   (when-not (:ok? review-gate)
@@ -2198,6 +2200,7 @@
                     ;; URL list rather than carrying arbitrary check/review text.
                     (recur (rest remaining) (conj passed pr-url) merged)))))
             {:ok? true
+             :skipped? (empty? passed)
              :pr-urls pr-urls
              :checked-pr-urls passed
              :merged-pr-urls merged
@@ -2207,6 +2210,7 @@
 
         (no-repo-review-marker? last-message)
         {:ok? true
+         :skipped? true
          :message "TASK_BOARD_REVIEW_PR: none was provided; PR gates were skipped because no repository changes were reported."}
 
         :else

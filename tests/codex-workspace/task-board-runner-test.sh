@@ -1623,6 +1623,11 @@ test_review_without_repo_marker_skips_pr_gates() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-402\|BOXP-402: no repo review\]\].*status::review'
   assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: review$'
+  # A skipped gate (no PR to check) must not be counted as a pass.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "skip"\] 1'
+  if grep -q '\["all" "pass"\]' "${state}/ai-ops/ledger-stats.edn"; then
+    fail "review-none gate must not be counted as pass"
+  fi
 }
 
 test_review_with_conflict_is_blocked() {

@@ -87,6 +87,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   (ai-ops-ledger/record-gate! root "codex-review" false)
   (ai-ops-ledger/record-gate! root "https://evil" false)
   (ai-ops-ledger/record-gate! root "all" true)
+  (ai-ops-ledger/record-gate! root "all" "skip")
   (check "write-metrics ok" (true? (ai-ops-ledger/write-metrics! root)))
   (let [m (slurp (str (ai-ops-ledger/metrics-path root)))]
     (doseq [s ["ai_ops_ledger_events_total{event_type=\"run.finished\"} 40"
@@ -95,6 +96,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
                "ai_ops_review_gate_total{gate=\"codex-review\",result=\"fail\"} 1"
                "ai_ops_review_gate_total{gate=\"other\",result=\"fail\"} 1"
                "ai_ops_review_gate_total{gate=\"all\",result=\"pass\"} 1"
+               "ai_ops_review_gate_total{gate=\"all\",result=\"skip\"} 1"
                "ai_ops_corrections_total{origin=\"agent-system\",class=\"gate_defect\"} 1"
                "ai_ops_ledger_info{schema_version=\"ai-ops-event/v0\",definition_version=\"ledger/v1\"} 1"
                "# TYPE ai_ops_ledger_events_total counter"]]
@@ -114,4 +116,37 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (if (seq @failures)
   (do (println "failures:" @failures) (System/exit 1))
   (println "ai-ops-ledger-test: all checks passed"))
+'
+
+# Separate processes (runner loop + manual tick) share one root: the stats
+# read-modify-write and the temp file must not lose counts across processes.
+concurrent_root="${tmp}/concurrent"
+procs=4
+per_proc=25
+for i in $(seq 1 "${procs}"); do
+  AI_OPS_MODULE="${module}" AI_OPS_ROOT="${concurrent_root}" AI_OPS_N="${per_proc}" bb -e '
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def run "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57")
+(dotimes [_ (Long/parseLong (System/getenv "AI_OPS_N"))]
+  (ai-ops-ledger/emit! (System/getenv "AI_OPS_ROOT")
+                       {:event_id (ai-ops-ledger/event-id "BOXP-1" run "started") :task_id "BOXP-1"
+                        :request_id "req:BOXP-1" :run_id run :event_type "run.started"})
+  (ai-ops-ledger/record-gate! (System/getenv "AI_OPS_ROOT") "all" "pass"))
+' &
+done
+wait
+AI_OPS_MODULE="${module}" AI_OPS_ROOT="${concurrent_root}" AI_OPS_EXPECTED="$((procs * per_proc))" bb -e '
+(require (quote [babashka.fs :as fs]) (quote [clojure.string :as str]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (System/getenv "AI_OPS_ROOT"))
+(def expected (Long/parseLong (System/getenv "AI_OPS_EXPECTED")))
+(def s (ai-ops-ledger/read-stats root))
+(def n-lines (count (remove str/blank? (str/split-lines (slurp (str (ai-ops-ledger/day-file root)))))))
+(def checks [["concurrent emitted count" (= expected (:emitted s))]
+             ["concurrent gate count" (= expected (get-in s [:gate ["all" "pass"]]))]
+             ["concurrent ledger lines" (= expected n-lines)]
+             ["no stray temp files" (empty? (fs/glob (ai-ops-ledger/ai-ops-dir root) ".*.tmp"))]])
+(doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
+(when-not (every? second checks) (println "stats:" s "lines:" n-lines) (System/exit 1))
+(println "ai-ops-ledger-test: concurrent checks passed")
 '

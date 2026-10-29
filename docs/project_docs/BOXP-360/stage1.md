@@ -52,3 +52,8 @@ Hermes (`definition_version=hermes-observer/v1`)
    - aggregate で runner/Hermes の ledger と extract が join できる。
 
 Hermes の plugin API は配備版を read-only で調べた (`hermes-plugin-investigation.md`)。
+
+## review gate 指摘への対応 (2026-10-29 07:20 UTC)
+
+- runner の `loop` と手動 `tick` など、別 process が同じ root に書くことがある。`ledger-stats.edn` の read-modify-write と固定名の一時ファイルが衝突し、count が失われていた (旧実装では 4 process × 25 件で emitted 24/100、write-errors 5)。`<root>/ai-ops/ledger.lock` の FileLock (プロセス内は `locking` と併用) で ledger 追記・stats 更新・metrics 書き出しを直列化する。一時ファイル名には pid と thread id を付ける。4 process を同時に動かす test を追加した。
+- `TASK_BOARD_REVIEW_PR: none`、または merge 済み PR しかない場合は、gate が何も確認していない。この場合 `ai_ops_review_gate_total{gate="all"}` に `result="skip"` として数え、`pass` には混ぜない。
