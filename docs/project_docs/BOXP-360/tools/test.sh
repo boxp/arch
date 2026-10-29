@@ -146,7 +146,7 @@ bb -e '
   (assert (= 2 (get-in r [:coverage :privacy-rejected-invalid-id])))
   (assert (= 0 (get-in r [:input :duplicates])))
   (assert (= 0 (get-in r [:zero-tolerance :duplicate-effects :count])))
-  (assert (= 0 (get-in r [:zero-tolerance :critical-safety-events])))
+  (assert (= 0 (get-in r [:zero-tolerance :critical-safety-events :count])))
   (println "ok   reopen 状態、不正 ID の拒否と複数 coverage"))' "$tmp/reopen.edn"
 
 cat >"$tmp/spoof.jsonl" <<'EOF'
@@ -222,7 +222,7 @@ bb ai_ops_sli.bb aggregate "$tmp/four-fixes.jsonl" >"$tmp/four-fixes.edn"
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [r (edn/read-string (slurp (first *command-line-args*)))
-      checks [["孤立した重大 event は重複排除して計上" (= 1 (get-in r [:zero-tolerance :critical-safety-events]))]
+      checks [["孤立した重大 event は重複排除して計上" (= [1 "partial/undeclared"] ((juxt :count :coverage) (get-in r [:zero-tolerance :critical-safety-events])))]
               ["通常モードの会話 ID は別 task として保持" (and (= 2 (get-in r [:tasks :total])) (= 2 (get-in r [:guardrails :tasks-per-request :denominator])) (every? #(not (ai-ops-sli/valid-value? :task_id %)) ["conv-sk-abcdefgh" "conv-abcdefghijklmnopqrstuvwxyz1234567890" "conv-abc/defgh" "conv-ABCDEFGH"]))]
               ["重複承認率の分母は承認イベント総数" (= [2 3] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
               ["受入と同時刻の是正は first-pass 不合格" (= [0 1] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance])))]]]
@@ -262,7 +262,7 @@ bb -e '
        ["credential 値を redact" (= 1 (:privacy-redacted-values st))]
        ["extract でも危険値を redact" (and (= 2 (:privacy-redacted-values (edn/read-string (slurp extractst)))) (not (re-find #"Bearer|sk-abcdef" (slurp extract))))]
        ["source 未接続は unknown" (every? #(= "unknown" (get-in (edn/read-string (slurp extracted)) [:zero-tolerance % :status])) [:duplicate-effects :critical-safety-events])]
-       ["coverage 宣言済みなら 0" (and (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :duplicate-effects :count])) (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :critical-safety-events])))]
+       ["coverage 宣言済みなら 0" (and (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :duplicate-effects :count])) (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :critical-safety-events :count])))]
        ["未知の zero-tolerance を Prom に出さない" (not (re-find #"duplicate_effect|critical_safety" (slurp extractprom)))]
        ["受入前の非 agent 是正は first-pass を妨げず、受入後は reopen" (let [r (edn/read-string (slurp timing))] (and (= [2 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))) (= 1 (get-in r [:sli :reopen-after-accept :count]))))]
        ["生成元に本文が残らない" (not (re-find #"送ってはいけない|Bearer|/secret" (slurp (str (fs/parent ok) "/ok.jsonl"))))]
@@ -278,7 +278,7 @@ bb -e '
        ["Owner 救援" (= 1 (get-in r [:sli :owner-rescue :count]))]
        ["同 scope 重複承認" (= [1 2] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
        ["二重実行は zero-tolerance に計上" (= 1 (get-in r [:zero-tolerance :duplicate-effects :count]))]
-       ["重大 event" (= 1 (get-in r [:zero-tolerance :critical-safety-events]))]
+       ["重大 event" (= [1 "partial/undeclared"] ((juxt :count :coverage) (get-in r [:zero-tolerance :critical-safety-events])))]
        ["途中再起動 (interrupted) を保持" (= 1 (get-in r [:sli :run-reliability :interrupted]))]
        ["private leak は 0 でなく unknown" (= "unknown" (get-in r [:zero-tolerance :private-leak :status]))]
        ["collector 停止中も emit は継続し drop を数える" (and (= 42 (:emitted d)) (= 7 (:buffer-dropped d)) (= 35 (:delivered d)))]
@@ -445,3 +445,20 @@ bb -e '
   (assert (= 40 (:delivered stats) (count (clojure.string/split-lines (slurp output)))))
   (assert (= 2 (:undelivered-buffered stats)))
   (println "ok   collector が最後まで停止した場合はバッファを未配信に残す"))' "$tmp/end-down.jsonl" "$tmp/end-down.stats"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [lane (fn [id target time] {:event_id (str id ":lane") :task_id id :event_type "lane.changed" :lane_to target :occurred_at time})
+      review (lane "BOXP-31" "review" "2026-10-20T00:00:00Z")
+      blocked (lane "BOXP-32" "blocked" "2026-10-20T00:00:00Z")
+      report (ai-ops-sli/aggregate* [review blocked {:event_id "BOXP-31:run" :task_id "BOXP-31" :event_type "run.started"}])]
+  (assert (= {"awaiting-review" 1 "blocked" 1} (get-in report [:tasks :outcomes])))
+  (assert (= 1 (get-in report [:sli :agent-system-correction-task-ratio :denominator])))
+  (assert (= "blocked" (ai-ops-sli/task-outcome [review (assoc blocked :occurred_at "2026-10-21T00:00:00Z")])))
+  (assert (= "awaiting-review" (ai-ops-sli/task-outcome [review (assoc blocked :event_type "task.state" :status "review" :snapshot "current") (lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
+  (assert (= "unobserved" (ai-ops-sli/task-outcome [(lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
+  (println "ok   lane 遷移の outcome と review 分母、現在状態と done の優先順位"))
+(let [low {:event_id "BOXP-40:low" :event_type "correction" :severity "low"}
+      report (ai-ops-sli/aggregate* [low])]
+  (assert (= [0 "partial/undeclared"] ((juxt :count :coverage) (get-in report [:zero-tolerance :critical-safety-events]))))
+  (println "ok   safety の low のみは重大 0 件の部分観測"))'

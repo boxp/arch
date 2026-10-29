@@ -290,8 +290,8 @@
       (correction-class-origin (:correction_class e)) "unknown"))
 
 (defn task-outcome [evs]
-  (let [latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) evs)))
-        state (:status latest)]
+  (let [latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress"} (:lane_to %)))) evs)))
+        state (if (= "lane.changed" (:event_type latest)) (:lane_to latest) (:status latest))]
     (cond
       (or (= "task.cancelled" (:event_type latest)) (= "cancelled" state)) "cancelled"
       (= "task.reopened" (:event_type latest)) "in-flight"
@@ -344,7 +344,7 @@
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
                           finished (filter #(= "run.finished" (:event_type %)) evs)]
-                    :when (or (some #(#{"request.received" "task.accepted"} (:event_type %)) evs) (seq runs) (some :synthetic evs))]
+                    :when (or (some #(#{"request.received" "task.accepted"} (:event_type %)) evs) (seq runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
                 {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
@@ -420,10 +420,10 @@
                                           (assoc (select-keys effects [:count :tasks-involved])
                                                  :coverage (if (connected? "duplicate-effects") "connected" "partial/undeclared"))
                                           {:status "unknown" :reason "effect source 未接続"})
-                      :critical-safety-events (if (some #(or (contains? (:severity enum-values) (:severity %))
-                                                               (and (= "coverage.connected" (:event_type %)) (= "critical-safety-events" (:coverage_target %)))) uniq)
-                                                (count (filter #(= "critical" (:severity %)) uniq))
-                                                {:status "unknown" :reason "safety source 未接続"})
+                      :critical-safety-events (cond
+                                                (connected? "critical-safety-events") {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "connected"}
+                                                (some #(contains? (:severity enum-values) (:severity %)) uniq) {:count (count (filter #(= "critical" (:severity %)) uniq)) :coverage "partial/undeclared"}
+                                                :else {:status "unknown" :reason "safety source 未接続"})
                       :private-leak {:status "unknown" :reason "leak detector 未接続。0件観測≠0件"}}
      :guardrails {:pending-over-7d "要 lane timestamp (unknown)"
                   :tasks-per-request (ratio n (count (set (keep :request_id uniq))))

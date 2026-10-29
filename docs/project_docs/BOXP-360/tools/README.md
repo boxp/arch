@@ -30,3 +30,7 @@ run 履歴の無い受入済み ticket（accepted-without-run-history）は是�
 `coverage.hermes-conversation` は、source が `synthetic:hermes` 等の Hermes、runtime が `hermes`、または `coverage.connected` の対象が `hermes-conversation` のイベントを観測すると `connected`、それ以外は `not-connected` とする。合成イベントも接続として扱う。`by-stratum` の `accepted` と `first-pass` は全体の first-acceptance-conformance と同じ受入時刻を確認できる観測済み受入タスクを対象とし、それぞれ分母と分子に対応する。
 
 emit-sim は配信済みイベントを標準出力し、統計を標準エラーに出す。入力末尾でも collector が停止中の場合、バッファ内のイベントは配信せず `undelivered-buffered` に件数を記録する。collector が稼働中ならバッファを配信し、同件数は 0 になる。
+
+`lane.changed` の `lane_to`（ready / review / blocked / backlog / in-progress）も時刻付き状態遷移として outcome 判定に含め、`lane_to=review` は Review 到達とする。`lane_to=done` は受入とみなさない（受入は `task.accepted` / done snapshot で判定）。
+
+critical-safety-events は `coverage.connected`（対象 `critical-safety-events`）がある場合のみ `coverage=connected` で件数を確定し、宣言なしで有効な severity の event だけを観測した場合は観測件数に `coverage=partial/undeclared` を付ける（0件でも「重大 event なし」とはしない）。どちらもない場合は unknown。
