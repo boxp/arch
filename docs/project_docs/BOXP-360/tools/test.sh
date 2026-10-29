@@ -35,7 +35,7 @@ cat >"$tmp/timing.jsonl" <<'EOF'
 {"synthetic":true,"event_id":"b2","task_id":"S2","event_type":"correction","correction_origin":"non-agent","occurred_at":"2026-10-20T01:00:00Z"}
 EOF
 cat >>"$tmp/timing.jsonl" <<'EOF'
-{"event_id":"cov-one-12345678","event_type":"coverage.connected","coverage_target":"acceptance-history"}
+{"event_id":"cov-effects-12345678","event_type":"coverage.connected","coverage_target":"acceptance-history"}
 EOF
 bb ai_ops_sli.bb aggregate --synthetic "$tmp/timing.jsonl" >"$tmp/timing.edn"
 cat >"$tmp/invalid-origin.jsonl" <<'EOF'
@@ -47,7 +47,7 @@ bb ai_ops_sli.bb aggregate "$tmp/invalid-origin.jsonl" >"$tmp/invalid-origin.edn
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [r (edn/read-string (slurp (first *command-line-args*)))
-      gated (:event (ai-ops-sli/privacy-gate {:event_id "BOXP-1:test" :correction_origin "invalid" :correction_class "invalid"}))]
+      gated (:event (ai-ops-sli/privacy-gate {:event_id "BOXP-1:event" :correction_origin "invalid" :correction_class "invalid"}))]
   (assert (= ["redacted" "redacted"] ((juxt :correction_origin :correction_class) gated)))
   (assert (= "unknown" (ai-ops-sli/correction-origin gated)))
   (assert (= "agent-system" (ai-ops-sli/correction-origin (assoc gated :correction_class "source_mismatch"))))
@@ -55,8 +55,8 @@ bb -e '
   (assert (= [0 1] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))))
   (println "ok   不正な origin と class は unknown として first-pass 不合格"))' "$tmp/invalid-origin.edn"
 cat >"$tmp/coverage.jsonl" <<'EOF'
-{"event_id":"cov-one-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
-{"event_id":"cov-two-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}
+{"event_id":"cov-effects-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
+{"event_id":"cov-safety-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}
 EOF
 bb ai_ops_sli.bb aggregate "$tmp/coverage.jsonl" >"$tmp/coverage.edn"
 cat >"$tmp/invalid-severity.jsonl" <<'EOF'
@@ -94,11 +94,11 @@ cat >"$tmp/regression.jsonl" <<'EOF'
 {"event_id":"BOXP-1:requested","task_id":"BOXP-1","request_id":"req:BOXP-1","event_type":"request.received","occurred_at":"2026-10-20T00:00:00Z"}
 {"event_id":"BOXP-1:accepted","task_id":"BOXP-1","event_type":"task.accepted","occurred_at":"2026-10-21T00:00:00Z"}
 {"event_id":"BOXP-1:reopened","task_id":"BOXP-1","event_type":"task.reopened","occurred_at":"2026-10-22T00:00:00Z"}
-{"event_id":"BOXP-1:effect","task_id":"BOXP-1","event_type":"effect.applied","effect_key":"op:shared"}
+{"event_id":"BOXP-1:effect","task_id":"BOXP-1","event_type":"effect.applied","effect_key":"op:0000000b"}
 {"event_id":"BOXP-2:requested","task_id":"BOXP-2","request_id":"req:BOXP-2","event_type":"request.received"}
-{"event_id":"BOXP-2:effect","task_id":"BOXP-2","event_type":"effect.applied","effect_key":"op:shared"}
-{"event_id":"BOXP-1:approval","task_id":"BOXP-1","event_type":"approval.requested","approval_key":"op:shared"}
-{"event_id":"BOXP-2:approval","task_id":"BOXP-2","event_type":"approval.requested","approval_key":"op:shared"}
+{"event_id":"BOXP-2:effect","task_id":"BOXP-2","event_type":"effect.applied","effect_key":"op:0000000b"}
+{"event_id":"BOXP-1:approval","task_id":"BOXP-1","event_type":"approval.requested","approval_key":"op:0000000b"}
+{"event_id":"BOXP-2:approval","task_id":"BOXP-2","event_type":"approval.requested","approval_key":"op:0000000b"}
 {"event_id":"BOXP-1:rescue","task_id":"BOXP-1","event_type":"owner.rescue"}
 EOF
 bb ai_ops_sli.bb aggregate "$tmp/regression.jsonl" >"$tmp/unconnected.edn"
@@ -181,8 +181,8 @@ bb -e '
 
 cat >"$tmp/privacy-prom.jsonl" <<'EOF'
 {"event_id":"invalid id","source":"derived\"\nsk-secret-token","event_type":"run.started\"\nsk-secret-token"}
-{"event_id":"BOXP-1:unsafe","source":"derived\"\nsk-secret-token","event_type":"run.started\"\nsk-secret-token"}
-{"event_id":"BOXP-1:valid","source":"derived","event_type":"run.started"}
+{"event_id":"BOXP-1:event","source":"derived\"\nsk-secret-token","event_type":"run.started\"\nsk-secret-token"}
+{"event_id":"BOXP-1:run","source":"derived","event_type":"run.started"}
 EOF
 bb ai_ops_sli.bb prom "$tmp/privacy-prom.jsonl" >"$tmp/privacy-prom.out"
 python3 - "$tmp/privacy-prom.out" <<'PYTEST'
@@ -214,10 +214,10 @@ cat >"$tmp/four-fixes.jsonl" <<'EOF'
 {"event_id":"BOXP-100:critical","event_type":"correction","severity":"critical"}
 {"event_id":"invalid id","severity":"critical"}
 {"event_id":"BOXP-101:req","task_id":"conv-12345678","request_id":"req-12345678","event_type":"request.received"}
-{"event_id":"BOXP-102:req","task_id":"conv-abcdefgh","request_id":"req-abcdefgh","event_type":"request.received"}
-{"event_id":"BOXP-101:approval1","event_type":"approval.requested","approval_key":"op:one"}
-{"event_id":"BOXP-101:approval2","event_type":"approval.requested","approval_key":"op:one"}
-{"event_id":"BOXP-101:approval3","event_type":"approval.requested","approval_key":"op:one"}
+{"event_id":"BOXP-102:req","task_id":"conv-abcdef01","request_id":"req-abcdef01","event_type":"request.received"}
+{"event_id":"BOXP-101:approval:1","event_type":"approval.requested","approval_key":"op:0000000a"}
+{"event_id":"BOXP-101:approval:2","event_type":"approval.requested","approval_key":"op:0000000a"}
+{"event_id":"BOXP-101:approval:3","event_type":"approval.requested","approval_key":"op:0000000a"}
 {"event_id":"BOXP-101:run","task_id":"conv-12345678","event_type":"run.started"}
 {"event_id":"BOXP-101:accepted","task_id":"conv-12345678","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
 {"event_id":"BOXP-101:correction","task_id":"conv-12345678","event_type":"correction","occurred_at":"2026-10-20T00:00:00Z"}
@@ -227,7 +227,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [r (edn/read-string (slurp (first *command-line-args*)))
       checks [["孤立した重大 event は重複排除して下限計上し、拒否 event があれば unknown" (= ["unknown" 1 1] ((juxt :status :observed-lower-bound :rejected-events) (get-in r [:zero-tolerance :critical-safety-events])))]
-              ["通常モードの会話 ID は別 task として保持" (and (= 2 (get-in r [:tasks :total])) (= 2 (get-in r [:guardrails :tasks-per-request :denominator])) (every? #(not (ai-ops-sli/valid-value? :task_id %)) ["conv-sk-abcdefgh" "conv-abcdefghijklmnopqrstuvwxyz1234567890" "conv-abc/defgh" "conv-ABCDEFGH"]))]
+              ["通常モードの会話 ID は別 task として保持" (and (= 2 (get-in r [:tasks :total])) (= 2 (get-in r [:guardrails :tasks-per-request :denominator])) (every? #(not (ai-ops-sli/valid-value? :task_id %)) ["conv-sk-abcdefgh" "conv-abcdef01ijklmnopqrstuvwxyz1234567890" "conv-abc/defgh" "conv-ABCDEFGH"]))]
               ["重複承認率の分母は承認イベント総数 (種別不明の拒否 event があるため unknown・観測値下限で確認)" (let [d (get-in r [:sli :duplicate-approval])] (and (= "unknown" (:status d)) (= [2 3] ((juxt :count :denominator) (:observed-lower-bound d)))))]
               ["受入と同時刻の是正は first-pass 不合格 (孤立是正があるため unknown・観測値も不合格)" (let [fa (get-in r [:sli :first-acceptance-conformance])] (and (= "unknown" (:status fa)) (= [0 1] ((juxt :count :denominator) (:observed fa)))))]]]
   (doseq [[label ok] checks] (println (if ok "ok  " "FAIL") label))
@@ -301,24 +301,24 @@ bb -e '
                   :source ["task-board-runner" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff"]
                   :coverage_target ["duplicate-effects" "critical-safety-events" "acceptance-history"] :cost_source ["unknown"]
                   :stratum ["creative" "dev" "infra" "research" "assistant" "assistant-or-research"]}
-      ids ["req-abcdefgh" "conv-abcdefgh/event:1" "req-abcdefgh/started" "BOXP-1:started" "cov-one-12345678"]]
+      ids ["req-abcdef01" "conv-abcdef01/event:1" "req-abcdef01/started" "BOXP-1:started" "cov-effects-12345678"]]
   (doseq [[k values] documented v values]
-    (let [r (ai-ops-sli/privacy-gate {:event_id "BOXP-1:test" k v})]
+    (let [r (ai-ops-sli/privacy-gate {:event_id "BOXP-1:event" k v})]
       (assert (= v (get (:event r) k)) (str k " " v))))
   (doseq [id ids] (assert (= id (:event_id (:event (ai-ops-sli/privacy-gate {:event_id id :parent_event_id id :evidence_event_ids [id]}))))))
-  (doseq [id ["conv-short" "conv-ABCDEFGH" "req-abcdefgh/sk-secretvalue" (str "req-abcdefgh/" (apply str (repeat 120 "a")))]]
+  (doseq [id ["conv-short" "conv-ABCDEFGH" "req-abcdef01/sk-secretvalue" (str "req-abcdef01/" (apply str (repeat 120 "a")))]]
     (assert (:rejected? (ai-ops-sli/privacy-gate {:event_id id}))))
   (doseq [[class origin] ai-ops-sli/correction-class-origin]
     (assert (= origin (ai-ops-sli/correction-origin {:correction_class class}))))
   (println "ok   文書化された enum、会話 event ID と是正原因"))'
 cat >"$tmp/snapshot-precedence.jsonl" <<'EOF'
-{"event_id":"conv-abcdefgh/run","task_id":"conv-abcdefgh","event_type":"run.started","occurred_at":"2026-10-19T00:00:00Z"}
-{"event_id":"conv-abcdefgh/state","task_id":"conv-abcdefgh","event_type":"task.state","status":"review"}
-{"event_id":"conv-abcdefgh/accepted","task_id":"conv-abcdefgh","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
-{"event_id":"conv-abcdefgh/approval","task_id":"conv-abcdefgh","event_type":"approval.resolved","approval_key":"op:one"}
-{"event_id":"conv-ijklmnop/run","task_id":"conv-ijklmnop","event_type":"run.started","occurred_at":"2026-10-19T00:00:00Z"}
-{"event_id":"conv-ijklmnop/accepted","task_id":"conv-ijklmnop","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
-{"event_id":"conv-ijklmnop/correction","task_id":"conv-ijklmnop","event_type":"correction","correction_class":"source_mismatch"}
+{"event_id":"conv-abcdef01/run","task_id":"conv-abcdef01","event_type":"run.started","occurred_at":"2026-10-19T00:00:00Z"}
+{"event_id":"conv-abcdef01/state","task_id":"conv-abcdef01","event_type":"task.state","status":"review"}
+{"event_id":"conv-abcdef01/accepted","task_id":"conv-abcdef01","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"conv-abcdef01/approval","task_id":"conv-abcdef01","event_type":"approval.resolved","approval_key":"op:0000000a"}
+{"event_id":"conv-0123abcd/run","task_id":"conv-0123abcd","event_type":"run.started","occurred_at":"2026-10-19T00:00:00Z"}
+{"event_id":"conv-0123abcd/accepted","task_id":"conv-0123abcd","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"conv-0123abcd/correction","task_id":"conv-0123abcd","event_type":"correction","correction_class":"source_mismatch"}
 EOF
 bb ai_ops_sli.bb aggregate "$tmp/snapshot-precedence.jsonl" >"$tmp/snapshot-precedence.edn"
 bb -e '
@@ -490,7 +490,7 @@ bb -e '
   (assert (= "awaiting-review" (ai-ops-sli/task-outcome [review (assoc blocked :event_type "task.state" :status "review" :snapshot "current") (lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
   (assert (= "unobserved" (ai-ops-sli/task-outcome [(lane "BOXP-31" "done" "2026-10-22T00:00:00Z")])))
   (println "ok   lane 遷移の outcome と review 分母、現在状態と done の優先順位"))
-(let [low {:event_id "BOXP-40:low" :event_type "correction" :severity "low"}
+(let [low {:event_id "BOXP-40:event" :event_type "correction" :severity "low"}
       report (ai-ops-sli/aggregate* [low])]
   (assert (= [0 "partial/undeclared"] ((juxt :count :coverage) (get-in report [:zero-tolerance :critical-safety-events]))))
   (println "ok   safety の low のみは重大 0 件の部分観測"))'
@@ -498,7 +498,7 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [cov {:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}
-      ok {:event_id "BOXP-50:e1" :task_id "BOXP-50" :event_type "effect.applied" :effect_key "deploy:a"}
+      ok {:event_id "BOXP-50:e1" :task_id "BOXP-50" :event_type "effect.applied" :effect_key "deploy:0000000a"}
       bad {:event_id "BOXP-50:e2" :task_id "BOXP-50" :event_type "effect.applied" :effect_key "Bad Key!"}
       gated (keep #(:event (ai-ops-sli/privacy-gate %)) [cov ok bad])
       r (ai-ops-sli/aggregate* gated)
@@ -538,7 +538,7 @@ bb -e '
 (let [covs [{:event_id "cov-safety-12345678" :event_type "coverage.connected" :coverage_target "critical-safety-events"}
             {:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}]
       bad-id {:event_id "bad id !!" :task_id "BOXP-62" :event_type "correction" :severity "critical"}
-      bad-corr {:event_id "BOXP-63:effect" :task_id "../etc/passwd" :event_type "effect.applied" :effect_key "fx-1" :severity "critical"}
+      bad-corr {:event_id "BOXP-63:effect" :task_id "../etc/passwd" :event_type "effect.applied" :effect_key "op:0000000f" :severity "critical"}
       ok (ai-ops-sli/aggregate* covs)]
   (assert (= 0 (get-in ok [:zero-tolerance :critical-safety-events :count])))
   (doseq [bad [bad-id bad-corr]]
@@ -594,7 +594,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [covs [{:event_id "cov-safety-12345678" :event_type "coverage.connected" :coverage_target "critical-safety-events"}
             {:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}]
-      r (ai-ops-sli/aggregate* (conj covs {:event_id "BOXP-67:e1" :task_id "BOXP-67" :event_type "effect.appplied" :effect_key "deploy:x"}))]
+      r (ai-ops-sli/aggregate* (conj covs {:event_id "BOXP-67:e1" :task_id "BOXP-67" :event_type "effect.appplied" :effect_key "deploy:0000000e"}))]
   (assert (= "unknown" (get-in r [:zero-tolerance :duplicate-effects :status])))
   (assert (nil? (get-in r [:zero-tolerance :duplicate-effects :count])))
   (assert (= 1 (get-in r [:zero-tolerance :duplicate-effects :unverifiable-event-types])))
@@ -710,9 +710,9 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-91:run" :task_id "BOXP-91" :event_type "run.started"}
             {:event_id "BOXP-91:review" :task_id "BOXP-91" :event_type "run.finished" :occurred_at "2026-10-18T00:00:00Z"}
-            {:event_id "BOXP-91:other" :task_id "BOXP-91" :event_type "run.started"}
+            {:event_id "BOXP-91:event" :task_id "BOXP-91" :event_type "run.started"}
             {:event_id "BOXP-91:rule1" :task_id "BOXP-91" :event_type "correction" :classifier "rule" :correction_origin "agent-system" :evidence_event_ids ["BOXP-91:run" "BOXP-91:review"] :occurred_at "2026-10-19T00:00:00Z"}
-            {:event_id "BOXP-91:rule2" :task_id "BOXP-91" :event_type "correction" :classifier "rule" :correction_origin "agent-system" :evidence_event_ids ["BOXP-91:run" "BOXP-91:other"] :occurred_at "2026-10-19T01:00:00Z"}
+            {:event_id "BOXP-91:rule2" :task_id "BOXP-91" :event_type "correction" :classifier "rule" :correction_origin "agent-system" :evidence_event_ids ["BOXP-91:run" "BOXP-91:event"] :occurred_at "2026-10-19T01:00:00Z"}
             {:event_id "BOXP-91:human" :task_id "BOXP-91" :event_type "correction" :classifier "human" :correction_origin "non-agent" :evidence_event_ids ["BOXP-91:review" "BOXP-91:run"] :occurred_at "2026-10-21T00:00:00Z"}]
       r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-91:accepted" :task_id "BOXP-91" :event_type "task.accepted" :occurred_at "2026-10-22T00:00:00Z"}))]
   (assert (= 1 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (get-in r [:sli :corrections-per-task]))))
@@ -842,7 +842,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-70:run" :task_id "BOXP-70" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
             {:event_id "BOXP-70:fin" :task_id "BOXP-70" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
-            {:event_id "BOXP-70:acc" :task_id "BOXP-70" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+            {:event_id "BOXP-70:accept" :task_id "BOXP-70" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       ok (ai-ops-sli/aggregate* base)
       r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-70:corr" :event_type "correction" :correction_class "instruction_violation"
                                            :correction_origin "agent-system" :occurred_at "2026-10-20T03:00:00Z"}))
@@ -861,7 +861,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-71:run" :task_id "BOXP-71" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
             {:event_id "BOXP-71:fin" :task_id "BOXP-71" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
-            {:event_id "BOXP-71:acc" :task_id "BOXP-71" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+            {:event_id "BOXP-71:accept" :task_id "BOXP-71" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       ok (ai-ops-sli/aggregate* base)]
   (assert (= [1 1] ((juxt :count :denominator) (get-in ok [:sli :first-acceptance-conformance]))) (pr-str ok))
   ;; 受入前の是正が生成元で拒否 / buffer drop / 未配信 / 破損行として欠落したケース
@@ -883,7 +883,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-72:run" :task_id "BOXP-72" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
             {:event_id "BOXP-72:fin" :task_id "BOXP-72" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
-            {:event_id "BOXP-72:acc" :task_id "BOXP-72" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+            {:event_id "BOXP-72:accept" :task_id "BOXP-72" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       bad-corr {:event_id "bad id" :task_id "BOXP-72" :event_type "correction" :correction_origin "agent-system" :occurred_at "2026-10-20T03:00:00Z"}
       bad-notify {:event_id "bad id" :task_id "BOXP-72" :event_type "notify.run-finished" :occurred_at "2026-10-20T03:00:00Z"}
       m-corr (ai-ops-sli/rejected-marker-for bad-corr)
@@ -912,7 +912,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-72:run" :task_id "BOXP-72" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
             {:event_id "BOXP-72:fin" :task_id "BOXP-72" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
-            {:event_id "BOXP-72:acc" :task_id "BOXP-72" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+            {:event_id "BOXP-72:accept" :task_id "BOXP-72" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       ;; 受入前の correction だった可能性がある種別不明 (欠落/不正) の event
       r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-72:x" :task_id "BOXP-72" :event_type "bogus" :occurred_at "2026-10-20T03:00:00Z"}))
       r2 (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-72:y" :task_id "BOXP-72" :occurred_at "2026-10-20T03:00:00Z"}))
@@ -974,9 +974,9 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-71:run" :task_id "BOXP-71" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
             {:event_id "BOXP-71:fin" :task_id "BOXP-71" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
-            {:event_id "BOXP-71:acc" :task_id "BOXP-71" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]]
+            {:event_id "BOXP-71:accept" :task_id "BOXP-71" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]]
   (doseq [e [{:event_id "BOXP-72:run" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-             {:event_id "BOXP-72:acc" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
+             {:event_id "BOXP-72:accept" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
              {:event_id "BOXP-72:state" :event_type "task.state" :status "done" :snapshot "current"}]]
     (let [r (ai-ops-sli/aggregate* (conj base e))]
       (assert (= "unknown" (get-in r [:sli :first-acceptance-conformance :status])) (pr-str e))
@@ -1015,9 +1015,9 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [r (ai-ops-sli/aggregate*
          [{:event_id "BOXP-80:run" :task_id "BOXP-80" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
-          {:event_id "BOXP-80:acc1" :task_id "BOXP-80" :event_type "task.accepted"}
+          {:event_id "BOXP-80:accept1" :task_id "BOXP-80" :event_type "task.accepted"}
           {:event_id "BOXP-80:corr" :task_id "BOXP-80" :event_type "correction" :correction_origin "agent-system" :occurred_at "2026-10-21T00:00:00Z"}
-          {:event_id "BOXP-80:acc2" :task_id "BOXP-80" :event_type "task.accepted" :occurred_at "2026-10-22T00:00:00Z"}])
+          {:event_id "BOXP-80:accept2" :task_id "BOXP-80" :event_type "task.accepted" :occurred_at "2026-10-22T00:00:00Z"}])
       f (get-in r [:sli :first-acceptance-conformance])]
   (assert (= 0 (:denominator f)) (pr-str f))
   (assert (= 1 (:accepted-without-acceptance-time f)) (pr-str f)))
@@ -1028,8 +1028,8 @@ bb -e '
 (let [r (ai-ops-sli/aggregate*
          [{:event_id "BOXP-81:run" :task_id "BOXP-81" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
           {:event_id "BOXP-81:fin" :task_id "BOXP-81" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T01:00:00Z"}
-          {:event_id "BOXP-81:acc" :task_id "BOXP-81" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
-          {:event_id "BOXP-81:cur" :task_id "BOXP-81" :event_type "task.state" :snapshot "current"}
+          {:event_id "BOXP-81:accept" :task_id "BOXP-81" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
+          {:event_id "BOXP-81:state9" :task_id "BOXP-81" :event_type "task.state" :snapshot "current"}
           {:event_id "BOXP-82:run" :task_id "BOXP-82" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
           {:event_id "BOXP-82:lane" :task_id "BOXP-82" :event_type "lane.changed" :lane_from "in-progress" :occurred_at "2026-10-20T01:00:00Z"}])
       c (get-in r [:sli :agent-system-correction-task-ratio])
@@ -1044,7 +1044,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [cov {:event_id "cov-acceptance-12345678" :event_type "coverage.connected" :coverage_target "acceptance-history"}
       base [{:event_id "BOXP-83:run" :task_id "BOXP-83" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
-            {:event_id "BOXP-83:acc" :task_id "BOXP-83" :event_type "task.accepted"}
+            {:event_id "BOXP-83:accept" :task_id "BOXP-83" :event_type "task.accepted"}
             {:event_id "BOXP-83:reopen" :task_id "BOXP-83" :event_type "task.reopened" :correction_origin "agent-system" :occurred_at "2026-10-22T00:00:00Z"}
             cov]
       ra (get-in (ai-ops-sli/aggregate* base) [:sli :reopen-after-accept])
@@ -1074,14 +1074,14 @@ bb -e '
 (let [cov {:event_id "cov-acceptance-12345678" :event_type "coverage.connected" :coverage_target "acceptance-history"}
       base [{:event_id "BOXP-85:run" :task_id "BOXP-85" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
             {:event_id "BOXP-85:fin" :task_id "BOXP-85" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T01:00:00Z"}
-            {:event_id "BOXP-85:acc" :task_id "BOXP-85" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
+            {:event_id "BOXP-85:accept" :task_id "BOXP-85" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
             cov]
       ok (get-in (ai-ops-sli/aggregate* base) [:sli :reopen-after-accept])
       ;; 受入後の task.reopened が collector drop / privacy 拒否 / 読めない run に含まれていた場合
       dropped (get-in (ai-ops-sli/aggregate* (conj base {:collection_lost "buffer_dropped"})) [:sli :reopen-after-accept])
       rejected (get-in (ai-ops-sli/aggregate* (conj base {:privacy_rejected "upstream" :event_type "task.reopened"})) [:sli :reopen-after-accept])
-      unreadable (get-in (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-85:unr" :task_id "BOXP-85" :event_type "run.unreadable"})) [:sli :reopen-after-accept])
-      unlinked (get-in (ai-ops-sli/aggregate* (conj base {:event_id "x:reopen" :event_type "task.reopened" :occurred_at "2026-10-22T00:00:00Z"})) [:sli :reopen-after-accept])]
+      unreadable (get-in (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-85:unreadable" :task_id "BOXP-85" :event_type "run.unreadable"})) [:sli :reopen-after-accept])
+      unlinked (get-in (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-1084:reopen" :event_type "task.reopened" :occurred_at "2026-10-22T00:00:00Z"})) [:sli :reopen-after-accept])]
   (assert (= [0 1] ((juxt :count :denominator) ok)) (pr-str ok))
   (doseq [r [dropped rejected unreadable unlinked]]
     (assert (= :unknown (:status r)) (pr-str r))
@@ -1093,7 +1093,7 @@ bb -e '
 (let [cov [{:event_id "cov-effects-12345678" :event_type "coverage.connected" :coverage_target "duplicate-effects"}
            {:event_id "cov-safety-12345678" :event_type "coverage.connected" :coverage_target "critical-safety-events"}]
       run {:event_id "BOXP-86:e1" :task_id "BOXP-86" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
-      eff {:event_id "BOXP-86:e1" :task_id "BOXP-86" :event_type "effect.applied" :effect_key "eff-a" :severity "critical" :occurred_at "2026-10-20T00:01:00Z"}
+      eff {:event_id "BOXP-86:e1" :task_id "BOXP-86" :event_type "effect.applied" :effect_key "effect:0000000a" :severity "critical" :occurred_at "2026-10-20T00:01:00Z"}
       ;; 同一内容の再送 (observed_at/redelivery のみ違う) は衝突ではない
       resend (assoc run :observed_at "2026-10-20T00:05:00Z" :redelivery 1)]
   (doseq [evs [(concat [run eff] cov) (concat [eff run] cov)]]
@@ -1130,8 +1130,8 @@ tmp_ob=$(mktemp -d); trap 'rm -rf "$tmp" "$tmp_status" "$tmp_fin" "$tmp_ob"' EXI
 mkdir -p "$tmp_ob/root/runs/BOXP-87/20261020T000000Z-a" "$tmp_ob/root/outbox" "$tmp_ob/vault/Tickets"
 printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' >"$tmp_ob/vault/Tickets/BOXP-87.md"
 echo '{:ticket "BOXP-87" :run-id "20261020T000000Z-a" :status :succeeded :result "review" :action :implement :agent "claude-opus" :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z"}' >"$tmp_ob/root/runs/BOXP-87/20261020T000000Z-a/summary.edn"
-echo '{:event-id "BOXP-87:ob1" :run-id "20261020T000000Z-a" :ticket-id "BOXP-87" :event-type "task-board.run-finished" :source "task-board-runner" :created-at "2026-10-20T01:00:00Z"}' >"$tmp_ob/root/outbox/ob1.edn"
-echo '{:event-id "BOXP-87:ob2" :ticket-id "BOXP-87" :event-type "task-board.lane-changed" :source "board-diff" :from-status "in-progress" :to-status "review" :hermes-status "sent" :created-at "2026-10-20T01:00:00Z"}' >"$tmp_ob/root/outbox/ob2.edn"
+echo '{:event-id "BOXP-87-20261020T000000Z-a-done" :run-id "20261020T000000Z-a" :ticket-id "BOXP-87" :event-type "task-board.run-finished" :source "task-board-runner" :created-at "2026-10-20T01:00:00Z"}' >"$tmp_ob/root/outbox/ob1.edn"
+echo '{:event-id "BOXP-87-lane-review-20261020T010000Z-0000000b" :ticket-id "BOXP-87" :event-type "task-board.lane-changed" :source "board-diff" :from-status "in-progress" :to-status "review" :hermes-status "sent" :created-at "2026-10-20T01:00:00Z"}' >"$tmp_ob/root/outbox/ob2.edn"
 bb ai_ops_sli.bb extract "$tmp_ob/root" "$tmp_ob/vault" >"$tmp_ob/extract.jsonl" 2>/dev/null
 bb -e '
 (load-file "ai_ops_sli.bb")
@@ -1147,8 +1147,8 @@ bb -e '
 
 bb -e '
 (load-file "ai_ops_sli.bb")
-(let [ok [{:event_id "BOXP-88:ap1" :task_id "BOXP-88" :event_type "approval.requested" :approval_key "op:one"}]
-      nokey {:event_id "BOXP-88:ap2" :task_id "BOXP-88" :event_type "approval.requested"}
+(let [ok [{:event_id "BOXP-88:approval1" :task_id "BOXP-88" :event_type "approval.requested" :approval_key "op:0000000a"}]
+      nokey {:event_id "BOXP-88:approval2" :task_id "BOXP-88" :event_type "approval.requested"}
       r1 (ai-ops-sli/aggregate* (conj ok nokey))
       r2 (ai-ops-sli/aggregate* ok)]
   (assert (= "unknown" (get-in r1 [:sli :duplicate-approval :status])) (pr-str (get-in r1 [:sli :duplicate-approval])))
@@ -1158,8 +1158,8 @@ bb -e '
 
 bb -e '
 (load-file "ai_ops_sli.bb")
-(let [ap {:event_id "BOXP-89:ap1" :task_id "BOXP-89" :event_type "approval.requested" :approval_key "op:one"}
-      rejected-ap {:event_id "bad id!" :task_id "BOXP-90" :event_type "approval.requested" :approval_key "op:one"}
+(let [ap {:event_id "BOXP-89:approval1" :task_id "BOXP-89" :event_type "approval.requested" :approval_key "op:0000000a"}
+      rejected-ap {:event_id "bad id!" :task_id "BOXP-90" :event_type "approval.requested" :approval_key "op:0000000a"}
       notify-marker {:privacy_rejected "upstream" :event_type "notify.run-finished"}
       r1 (ai-ops-sli/aggregate* [ap rejected-ap])
       r2 (ai-ops-sli/aggregate* [ap {:collection_lost "buffer_dropped"}])
@@ -1298,8 +1298,8 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [run (fn [t] {:event_id (str t ":run") :task_id t :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z" :result "review"})
-      dacc (fn [t] {:event_id (str t ":dacc") :task_id t :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"})
-      tacc (fn [t at] {:event_id (str t ":tacc") :task_id t :event_type "task.accepted" :occurred_at at :occurred_precision "second"})
+      dacc (fn [t] {:event_id (str t ":accepted:1") :task_id t :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"})
+      tacc (fn [t at] {:event_id (str t ":accepted:2") :task_id t :event_type "task.accepted" :occurred_at at :occurred_precision "second"})
       corr (fn [t at] {:event_id (str t ":corr") :task_id t :event_type "correction" :occurred_at at :correction_origin "agent-system" :correction_class "gate_defect"})
       evs [;; 同日の日粒度受入と時刻付き受入、間の是正: 日粒度受入が先だった可能性があり前後不明
            (run "BOXP-121") (dacc "BOXP-121") (tacc "BOXP-121" "2026-10-21T12:00:00Z") (corr "BOXP-121" "2026-10-21T10:00:00Z")
@@ -1329,7 +1329,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [cov {:event_id "cov-acceptance-12345678" :event_type "coverage.connected" :coverage_target "acceptance-history"}
       evs [{:event_id "BOXP-126:run" :task_id "BOXP-126" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
-           {:event_id "BOXP-126:acc" :task_id "BOXP-126" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"}
+           {:event_id "BOXP-126:accept" :task_id "BOXP-126" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"}
            {:event_id "BOXP-126:reopen" :task_id "BOXP-126" :event_type "task.reopened" :correction_origin "agent-system" :occurred_at "2026-10-21T23:59:59Z"}
            cov]
       ra (get-in (ai-ops-sli/aggregate* evs) [:sli :reopen-after-accept])]
@@ -1370,10 +1370,10 @@ bb -e '
 (let [run (fn [t] {:event_id (str t "/20261020T000000Z-ab12:started") :task_id t :run_id "20261020T000000Z-ab12" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"})
       evs [(run "BOXP-131")
            ;; 日粒度受入の精度 field が破損 (privacy gate で redact) → 23:59:59Z を正確な受入時刻と誤認してはならない
-           {:event_id "BOXP-131:acc" :task_id "BOXP-131" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "dya"}
+           {:event_id "BOXP-131:accept" :task_id "BOXP-131" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "dya"}
            {:event_id "BOXP-131:corr" :task_id "BOXP-131" :event_type "correction" :correction_class "instruction_violation" :correction_origin "agent-system" :occurred_at "2026-10-21T10:00:00Z"}
            (run "BOXP-132")
-           {:event_id "BOXP-132:acc" :task_id "BOXP-132" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"}]
+           {:event_id "BOXP-132:accept" :task_id "BOXP-132" :event_type "task.accepted" :occurred_at "2026-10-21T23:59:59Z" :occurred_precision "day"}]
       r (ai-ops-sli/aggregate* evs)
       fa (get-in r [:sli :first-acceptance-conformance])]
   ;; 精度不正の受入 task は合格/不合格にせず入力欠落として未評価
@@ -1384,7 +1384,7 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [run (fn [t] {:event_id (str t "/20261020T000000Z-ab12:started") :task_id t :run_id "20261020T000000Z-ab12" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"})
-      acc (fn [t] {:event_id (str t ":acc") :task_id t :event_type "task.accepted" :occurred_at "2026-10-21T12:00:00Z" :occurred_precision "second"})
+      acc (fn [t] {:event_id (str t ":accept") :task_id t :event_type "task.accepted" :occurred_at "2026-10-21T12:00:00Z" :occurred_precision "second"})
       corr (fn [t at p] {:event_id (str t ":corr") :task_id t :event_type "correction" :correction_class "instruction_violation" :correction_origin "agent-system" :occurred_at at :occurred_precision p})
       evs [;; 受入 12:00 (秒精度) と同日の日粒度是正: 受入前の可能性があるため合格にしない (前後不明)
            (run "BOXP-133") (acc "BOXP-133") (corr "BOXP-133" "2026-10-21T23:59:59Z" "day")
@@ -1418,3 +1418,21 @@ bb -e '
   (assert (= [1 1000] ((juxt :exit_code :tokens_out) (:event g))) (pr-str g))
   (assert (= 2 (:redacted-values g)) (pr-str g)))
 (println "ok   数値fieldは整数範囲外 (長い数値・小数) を redact")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; 生成元ごとの固定 ID 形式に合わない短い秘密値は token denylist に掛からなくても通さない
+(doseq [id ["BOXP-1:password-hunter2" "BOXP-1/hunter2" "BOXP-1:pw:hunter2" "conv-passwordhunter2" "req-hunter22-secret" "cov-password-12345678"]]
+  (assert (not (ai-ops-sli/event-id? id false)) id)
+  (assert (:rejected? (ai-ops-sli/privacy-gate {:event_id id :event_type "run.started"})) id))
+(doseq [[k v] [[:effect_key "password:hunter2"] [:approval_key "password:hunter2"] [:effect_key "op:hunter2"]
+               [:task_id "conv-passwordhunter2"] [:request_id "req-hunter2secret"] [:run_id "20261020T000000Z-hunter2"]]]
+  (assert (not (ai-ops-sli/valid-value? k v)) (str k " " v)))
+;; 実 extract / outbox が生成する ID 形式は通す
+(doseq [id ["BOXP-1/20261029T053619Z-96bcfde3-8008-4361-857b-1f87823f798f:started" "BOXP-1/20261029T053619Z:finished"
+            "BOXP-1:20261029T053619Z-dd5bab52-356d-4629-8c8d-61aa51dde55c-groom:unreadable" "BOXP-1:frontmatter-unreadable"
+            "BOXP-1-lane-done-20261029T053619Z-1a2b3c4d" "BOXP-1-20261029T053619Z-96bcfde3-8008-4361-857b-1f87823f798f-review"
+            "cov-effects-12345678" "conv-0123abcd/accepted"]]
+  (assert (ai-ops-sli/event-id? id false) id))
+(assert (ai-ops-sli/valid-value? :effect_key "deploy:0000000a"))
+(println "ok   privacy gate は生成元ごとの固定 ID 形式のみ許可し短い秘密値を拒否")'

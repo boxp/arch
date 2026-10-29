@@ -52,9 +52,27 @@
 
 (def token-pattern #"(?i)(?:^|[^a-z0-9])(ghp_|gho_|github_pat_|xox[bp]-|AKIA|sk-|glpat-)[a-z0-9_-]+|[a-z0-9]{32,}")
 (defn token-safe? [s] (not (re-find token-pattern s)))
+;; 本番モードの ID は生成元ごとの固定パターンのみ許可する。自由な英数字 suffix を許すと
+;; `BOXP-1:password-hunter2` のような短い秘密値が token 形状 denylist をすり抜けるため、
+;; suffix は固定語彙 / run_id / 16進 hash / 数値 / 1文字+数字の短い連番だけで構成させる。
+(def id-words
+  ["frontmatter-unreadable" "ticket-missing" "accepted-again" "in-progress" "interrupted" "unreadable"
+   "correction" "requested" "cancelled" "finished" "approval" "coverage" "critical" "reopened" "accepted"
+   "request" "started" "running" "blocked" "backlog" "pending" "review" "rescue" "effect" "reopen"
+   "safety" "cancel" "accept" "failed" "state" "event" "start" "ready" "lane" "done" "corr" "fin" "req" "run" "rule" "human" "model"])
+(def run-id-re "\\d{8}T\\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-[0-9a-f]{1,8})?(?:-groom)?")
+(def id-segment-re (str "(?:" run-id-re "|(?:" (str/join "|" id-words) ")\\d{0,3}|[0-9a-f]{8,16}|\\d{1,6}|[a-z]\\d{0,3})"))
+(def conv-id-re "(?:req|conv)-[0-9a-f]{8}(?:-[0-9a-f]{4}){0,3}(?:-[0-9a-f]{12})?")
+(def prod-event-id-re
+  (re-pattern (str "(?:[A-Z]+-\\d+(?:[/:-]" id-segment-re "){0,4}"
+                   "|cov-(?:acceptance|effects|safety|hermes|approvals)-[0-9a-f]{8}"
+                   "|" conv-id-re "(?:[/:]" id-segment-re "){0,3})")))
+(def prod-task-id-re (re-pattern (str "(?:[A-Z]+-\\d+|" conv-id-re ")")))
+(def prod-request-id-re (re-pattern (str "(?:req:[A-Z]+-\\d+|" conv-id-re ")")))
+(def prod-run-id-re (re-pattern run-id-re))
+(def prod-effect-key-re #"(?:op|pr|merge|deploy|notify|lane|approval|effect):[0-9a-f]{8,16}")
 (defn event-id? [s synthetic?]
-  (and (<= (count s) 128) (boolean (re-matches (if synthetic? #"[A-Za-z0-9:_/-]{1,128}"
-                         #"(?:[A-Z]+-\d+(?:[/:-][A-Za-z0-9:_/-]+)?|cov-[a-z0-9-]+-[0-9a-f]{8}|(?:req|conv)-[a-z0-9-]{8,64}(?:/[A-Za-z0-9:_-]+)?)") s))))
+  (and (<= (count s) 128) (boolean (re-matches (if synthetic? #"[A-Za-z0-9:_/-]{1,128}" prod-event-id-re) s))))
 (def ^:dynamic *synthetic-mode* false)
 ;; 数値fieldは妥当な整数範囲のみ許可 (長い数値に埋め込まれた機密値を生成元で落とす)
 (def numeric-ranges {:attempt [0 1000] :redelivery [0 1000] :exit_code [-255 255] :tokens_in [0 100000000] :tokens_out [0 100000000]})
@@ -70,10 +88,10 @@
     (#{:occurred_at :observed_at} k) (and (string? v) (try (java.time.Instant/parse v) true (catch Exception _ false)))
     (#{:event_id :parent_event_id} k) (and (string? v) (event-id? v synthetic?))
     (= k :evidence_event_ids) (and (sequential? v) (every? #(and (string? %) (token-safe? %) (event-id? % synthetic?)) v))
-    (= k :task_id) (and (string? v) (boolean (re-matches (if synthetic? #"(?:[A-Z]+[0-9]+|req:conv-[a-z0-9-]+)" #"(?:[A-Z]+-\d+|(?:req|conv)-[a-z0-9-]{8,64})") v)))
-    (= k :request_id) (and (string? v) (boolean (re-matches (if synthetic? #"req:(?:[A-Z]+[0-9]+|conv-[a-z0-9-]+)" #"(?:req:[A-Z]+-\d+|(?:req|conv)-[a-z0-9-]{8,64})") v)))
-    (= k :run_id) (and (string? v) (boolean (re-matches (if synthetic? #"r[0-9]+" #"\d{8}T\d{6}Z(?:-[0-9a-f-]+)?(?:-[a-z]+)?") v)))
-    (#{:effect_key :approval_key} k) (and (string? v) (boolean (re-matches #"[a-z0-9:_-]{1,64}" v)))
+    (= k :task_id) (and (string? v) (boolean (re-matches (if synthetic? #"(?:[A-Z]+[0-9]+|req:conv-[a-z0-9-]+)" prod-task-id-re) v)))
+    (= k :request_id) (and (string? v) (boolean (re-matches (if synthetic? #"req:(?:[A-Z]+[0-9]+|conv-[a-z0-9-]+)" prod-request-id-re) v)))
+    (= k :run_id) (and (string? v) (boolean (re-matches (if synthetic? #"r[0-9]+" prod-run-id-re) v)))
+    (#{:effect_key :approval_key} k) (and (string? v) (boolean (re-matches (if synthetic? #"[a-z0-9:_-]{1,64}" prod-effect-key-re) v)))
     :else false)))
 
 (defn privacy-gate [e]
