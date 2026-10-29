@@ -119,6 +119,95 @@
       (catch Exception e
         (log! (str "event outbox record failed for " ticket-id "/" run-id ": " (.getMessage e)))))))
 
+;; BOXP-360: metadata-only AI ops ledger. Loaded lazily like the event outbox;
+;; a missing or broken module, a full disk or a privacy rejection only loses
+;; (and counts) observation events and never affects a run.
+(def ai-ops-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_ops_ledger.bb")))
+
+(def ai-ops-module-loaded?
+  (delay
+    (try
+      (load-file ai-ops-module-path)
+      true
+      (catch Exception e
+        (log! (str "ai ops ledger module unavailable (" ai-ops-module-path "): " (.getMessage e)))
+        false))))
+
+(declare root)
+
+(defn assignee-runtime [assignee]
+  (let [a (str assignee)]
+    (cond (str/starts-with? a "codex") "codex-cli"
+          (= "localllm" a) "localllm"
+          (str/blank? a) "unknown"
+          :else "claude-cli")))
+
+(defn record-ai-ops-event!
+  "Append one run lifecycle fact to the AI ops ledger. `word` selects the
+  ledger event id suffix; `fields` are ai-ops-event/v0 keys."
+  [ticket-id run-id assignee action word fields]
+  (try
+    (when @ai-ops-module-loaded?
+      ((resolve 'ai-ops-ledger/emit!)
+       (root)
+       (merge {:event_id ((resolve 'ai-ops-ledger/event-id) ticket-id run-id word)
+               :task_id ticket-id
+               :request_id (str "req:" ticket-id)
+               :run_id run-id
+               :agent assignee
+               :runtime (assignee-runtime assignee)
+               :action (some-> action name)}
+              fields)))
+    (catch Exception e
+      (log! (str "ai ops ledger record failed for " ticket-id "/" run-id ": " (.getMessage e))))))
+
+(defn gate-correction
+  "Provisional rule classification of a failed review gate."
+  [gate]
+  (case gate
+    (:ci :codex-review) {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "high"}
+    (:mergeability :conflict :pr-url) {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "medium"}
+    {:correction_class "unknown" :correction_origin "unknown" :confidence "low"}))
+
+(defn record-ai-ops-gate!
+  "Count the review gate result and record a failed gate as a correction."
+  [ticket-id run-id assignee action review-gate]
+  (try
+    (when (and @ai-ops-module-loaded? (:gate review-gate))
+      ((resolve 'ai-ops-ledger/record-gate!) (root) (name (:gate review-gate)) false))
+    (when (and @ai-ops-module-loaded? (:ok? review-gate))
+      ((resolve 'ai-ops-ledger/record-gate!) (root) "all" true))
+    (catch Exception e
+      (log! (str "ai ops gate record failed for " ticket-id "/" run-id ": " (.getMessage e)))))
+  (when-not (:ok? review-gate)
+    (record-ai-ops-event! ticket-id run-id assignee action "correction"
+                          (merge {:event_type "correction"
+                                  :classifier "rule"
+                                  :classifier_version "correction-rules/v0"
+                                  :evidence_event_ids [(str ticket-id "/" run-id ":ledger:started")]}
+                                 (gate-correction (:gate review-gate))))))
+
+(defn record-ai-ops-finish!
+  "Record run.finished and, when the card moved, lane.changed."
+  [ticket-id run-id assignee action from-status to-status summary-status fields]
+  (record-ai-ops-event! ticket-id run-id assignee action "finished"
+                        (merge {:event_type "run.finished" :status summary-status} fields))
+  (when (and to-status (not= from-status to-status))
+    (record-ai-ops-event! ticket-id run-id assignee action "lane"
+                          {:event_type "lane.changed" :lane_from from-status :lane_to to-status})))
+
+(def ai-ops-metrics-last-ms (atom 0))
+
+(defn maybe-write-ai-ops-metrics! []
+  (try
+    (let [now-ms (System/currentTimeMillis)]
+      (when (and @ai-ops-module-loaded? (>= (- now-ms @ai-ops-metrics-last-ms) 60000))
+        (reset! ai-ops-metrics-last-ms now-ms)
+        ((resolve 'ai-ops-ledger/write-metrics!) (root))))
+    (catch Exception e
+      (log! (str "ai ops metrics write failed: " (.getMessage e))))))
+
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
 ;; deployment, where writes behave exactly as before; every writer moves onto it
@@ -2861,6 +2950,8 @@
              {:action action :agent agent :lane lane :exit-code exit :result result
               :review-gate (persisted-review-gate review-gate) :finished-at (now-str)
               :superseded-by (:rev revision)})
+  ;; The lane belongs to the newer assignment: no lane.changed.
+  (record-ai-ops-finish! ticket-id run-id agent action nil nil "superseded" {:result result :exit_code exit})
   (let [note (str "Codex task-board run " run-id " finished with result " (or result "error")
                   ", but a newer assignment (board_rev " (:rev revision)
                   ") arrived during the run; lane and assignee were left as instructed.")]
@@ -2900,6 +2991,8 @@
                   (move-card! ticket-id "in-progress")
                   (update-frontmatter! ticket-id {:status "in-progress"}))
                 (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
+                (record-ai-ops-event! ticket-id (:run-id lock) assignee action "started"
+                                      {:event_type "run.started" :lane_from status :lane_to "in-progress"})
                 (finally
                   (reset! committing? false)
                   (swap! committing-cards dec)))
@@ -2935,6 +3028,8 @@
                     ;; commit boundary below.
                     gate-result (when (= "review" intended)
                                   (review-gate! dir last-message))
+                    _ (when gate-result
+                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
                     ;; localllm docs-edit: the document write was staged, not
@@ -2990,7 +3085,9 @@
                   (record-superseded! ticket-id run-id action assignee effective-lane result exit review-gate revision)
                   (if (= "blocked" next-status)
                   (if (block-ticket! ticket-id run-id action result exit review-gate nil)
-                    (record-task-board-event! ticket-id run-id status "blocked" result)
+                    (do (record-task-board-event! ticket-id run-id status "blocked" result)
+                        (record-ai-ops-finish! ticket-id run-id assignee action "in-progress" "blocked" "blocked"
+                                               {:result result :exit_code exit}))
                     (restore-card-state! ticket-id status assignee))
                   (do
                     ;; localllm docs-edit: journal the transition before it
@@ -3014,7 +3111,12 @@
                       (record-localllm-commit! ticket-id run-id :committed next-status))
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                     ;; After lane, frontmatter and Notes are durable: wake Kohako.
-                    (record-task-board-event! ticket-id run-id status next-status result))))
+                    (record-task-board-event! ticket-id run-id status next-status result)
+                    (record-ai-ops-finish! ticket-id run-id assignee action "in-progress" next-status
+                                           (cond
+                                             (= "in-progress" next-status) "retrying"
+                                             :else "succeeded")
+                                           {:result result :exit_code exit :idle_timeout (boolean idle-timeout?)}))))
                 true)
               (catch Exception e
                 (if (or (= ::planned-shutdown (:type (ex-data e)))
@@ -3033,6 +3135,8 @@
                                              :instance-id runner-instance-id
                                              :error (.getMessage e)
                                              :agent-stopped-at (now-str)}}))
+                    (record-ai-ops-event! ticket-id (:run-id lock) assignee action "interrupted"
+                                          {:event_type "run.interrupted" :status "interrupted"})
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
                   (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
@@ -3054,7 +3158,8 @@
                                                      " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
-                      (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                      (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                          (record-ai-ops-finish! ticket-id (:run-id lock) assignee action "in-progress" "blocked" "blocked" {}))
                       (restore-card-state! ticket-id status assignee)))))
                 true)
               (finally
@@ -3677,6 +3782,7 @@
           (println (str "task-board tick failed: " (.getMessage e))))))
     ;; After the tick so the first pass never delays startup; one-shot `tick`
     ;; does not prune.
+    (maybe-write-ai-ops-metrics!)
     (try
       (maybe-start-workspace-prune!)
       (catch Exception e
@@ -3698,7 +3804,9 @@
   ;; BOXP-270: the lifecycle self-tests below drive the real finish path, whose
   ;; outbox hook would otherwise write TEST-* events into the operator's live
   ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
-  (with-redefs [record-task-board-event! (fn [& _] nil)]
+  (with-redefs [record-task-board-event! (fn [& _] nil)
+                record-ai-ops-event! (fn [& _] nil)
+                record-ai-ops-gate! (fn [& _] nil)]
     (run-tests*!)))
 
 (defn run-tests*! []

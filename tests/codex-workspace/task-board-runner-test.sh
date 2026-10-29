@@ -3183,6 +3183,58 @@ test_loop_prune_can_be_disabled() {
 }
 
 
+test_ai_ops_ledger_records_run_lifecycle() {
+  local tmp vault state bin ledger
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" ""
+  # The card starts in the Ready lane so run.started records the Ready -> ack transition.
+  sed -i 's/^## Ready$/## Ready\n- [ ] [[Tickets\/BOXP-416|BOXP-416: ledger secret title]] #ticket status::ready/' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-416 ready codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-1.out
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-2.out
+
+  ledger="$(ls "${state}"/ai-ops/ledger/events-*.jsonl)"
+  # JSON key order is not fixed: select each event by its id suffix, then check fields.
+  grep ':ledger:started"' "${ledger}" | grep -q '"lane_from":"ready"' || fail "expected run.started from ready"
+  grep ':ledger:correction"' "${ledger}" | grep '"correction_class":"gate_defect"' | grep -q '"correction_origin":"agent-system"' \
+    || fail "expected an agent-system gate_defect correction"
+  grep ':ledger:finished"' "${ledger}" | grep -q '"status":"retrying"' || fail "expected a retrying run.finished"
+  grep ':ledger:finished"' "${ledger}" | grep -q '"status":"succeeded"' || fail "expected a succeeded run.finished"
+  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_to":"review"' || fail "expected lane.changed to review"
+  assert_file_not_contains "${ledger}" 'secret title'
+  assert_file_not_contains "${ledger}" 'http'
+  assert_file_not_contains "${ledger}" 'privacy_rejected'
+  [[ "$(grep -c '"event_type":"run.started"' "${ledger}")" -eq 2 ]] || fail "expected two run.started ledger events"
+  # A retry stays In Progress: no lane.changed for in-progress -> in-progress.
+  [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 1 ]] || fail "expected one lane.changed ledger event"
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "fail"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "pass"\] 1'
+}
+
+test_ai_ops_ledger_disabled_by_env() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-417|BOXP-417: ledger off]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-417 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_AI_OPS_LEDGER_ENABLED=false run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-off.out
+
+  assert_file_contains "${vault}/Tickets/BOXP-417.md" '^status: done$'
+  [[ ! -e "${state}/ai-ops" ]] || fail "ledger must not be written when disabled"
+}
+
 test_run_finished_records_outbox_event() {
   local tmp vault state bin event
   tmp="$(mktemp -d)"
@@ -3484,6 +3536,8 @@ test_loop_prune_can_be_disabled
 test_run_finished_records_outbox_event
 test_in_progress_retry_records_no_outbox_event
 test_outbox_disabled_by_env
+test_ai_ops_ledger_records_run_lifecycle
+test_ai_ops_ledger_disabled_by_env
 
 echo "task-board-runner tests passed"
 

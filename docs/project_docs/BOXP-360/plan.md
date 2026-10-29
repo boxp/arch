@@ -142,3 +142,9 @@ privacy gate で拒否した event (不正な event_id や task/request/run ID) 
 - 2026-10-29 再試行57: `correction` だけを持つ task も集計に含め、run 履歴の無い是正は run 履歴不足として未評価 (unevaluated-input-missing) に別掲。`occurred_precision` が不正 (redact) な状態遷移/是正 event は日粒度受入を正確時刻と誤認しないよう入力欠落として未評価にする。
 - 2026-10-29 追記 (codex-review, 合意済み blocking 基準: privacy 境界): 本番モードの ID は生成元ごとの固定パターンだけを許可する。`event_id` は `<ticket>` + 最大4個の固定 segment (固定語彙 + 任意の連番数字 / run_id (UUID・短い16進・`-groom`) / 16進 hash / 数値 / 1文字+数字) か、`cov-<固定語彙>-<8桁16進>`、16進の会話 ID (`req-`/`conv-`) に限定。`task_id`/`request_id` の会話 ID も16進形式、`run_id` は runner 形式、`effect_key`/`approval_key` は `<固定 kind>:<8-16桁16進 hash>` に限定し、`BOXP-1:password-hunter2` や `password:hunter2` のような token 形状 denylist に掛からない短い秘密値を拒否/redact する。合成モード (`--synthetic`) の緩い形式は従来どおり。回帰 test 追加 (旧実装で通過することを確認)、既存 test の自由形式 ID を固定形式へ置換、test.sh 127 件 ok。live extract 出力・privacy 件数 (redact 4 / 拒否 2) は修正前と完全一致で baseline 不変。
 - 2026-10-29 追記 (codex-review, 合意済み blocking 基準: 未観測の合格確定): aggregate の観測済み判定 (`observed?`/`reached-review?`/`accepted-unobserved?`/run 履歴なし是正) で入力の `synthetic` field を信頼するのは `--synthetic` モードのときだけに限定。通常モードで `synthetic: true` を付けた run 履歴なし受入は first acceptance の分母・合格に入れず `accepted-without-run-history` に別掲。回帰 test 追加 (旧実装で失敗を確認)、test.sh 129 件 ok。live extract は `synthetic` field を出力しないため baseline 不変。
+
+## 案 A 第 1 段階 (2026-10-29 Owner 承認後)
+
+- Owner 承認範囲: 既存 Prometheus 再利用、Board/Hermes からの本文なし allowlist metadata 収集、通常 review/CI/merge/配備/readback、Hermes 再起動 1 回。新 secret・課金・外部送信・Langfuse・生本文収集は範囲外。
+- 実装: runner の `ai_ops_ledger.bb` (arch) と Hermes の `boxp-ai-ops-observer` plugin + 両 pod の read-only metrics sidecar / ServiceMonitor / NetworkPolicy (lolice)。設計・限界・配備手順は `stage1.md`、Hermes plugin API の調査結果は `hermes-plugin-investigation.md`。
+- 配備後に readback (ledger 行、Prometheus query、aggregate join) を行い、2〜4 週の baseline を definition version・母数・unknown・coverage 付きで継続観測する。SLO 候補は実測後に提案する (現時点で確定しない)。
