@@ -618,7 +618,7 @@
   (try (Long/parseLong (env "CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS" "300"))
        (catch Exception _ 300)))
 
-(declare repair-card-revision! update-frontmatter!)
+(declare repair-card-revision! repair-ticket-revision! update-frontmatter! ticket-frontmatter)
 
 (defn sync-revision!
   "BOXP-357: the helper stamps one revision on the ticket (board_rev) and its
@@ -656,13 +656,13 @@
           (do (log! (str "WARN: assignment revision mismatch persisted for " id "; the card write was lost, repairing the card from ticket rev=" ticket-rev
                          " (card rev=" card-rev' ")"))
               (swap! revision-mismatches dissoc id)
-              #(repair-card-revision! id (:status fm) (:assignee fm) ticket-rev))
+              #(repair-card-revision! id (:status fm) (:assignee fm) ticket-rev card-rev'))
 
           (and expired? card-at (or (nil? ticket-at) (> card-at ticket-at)) card-assignee)
           (do (log! (str "WARN: assignment revision mismatch persisted for " id " card rev=" card-rev'
                          " ticket rev=" ticket-rev "; the ticket write was lost, repairing its frontmatter from the card"))
               (swap! revision-mismatches dissoc id)
-              #(update-frontmatter! id {:status (:status card) :assignee card-assignee :board_rev card-rev'}))
+              #(repair-ticket-revision! id {:status (:status card) :assignee card-assignee :board_rev card-rev'} ticket-rev))
 
           :else
           (do (when-not (:logged? entry)
@@ -745,20 +745,37 @@
 
 (defn repair-card-revision!
   "Move a card to the ticket's lane and copy the ticket's assignee and
-  revision onto it, in one board write (see `sync-revision!`)."
-  [ticket-id target-status assignee rev]
+  revision onto it, in one board write (see `sync-revision!`). Skipped when
+  either side changed since the mismatch was observed."
+  [ticket-id target-status assignee rev expected-card-rev]
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
              card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))]
-         (when card
+         (when (and card
+                    (= expected-card-rev (card-rev card))
+                    (= rev (:board_rev (ticket-frontmatter ticket-id))))
            (let [new-line (cond-> (-> (normalize-card-line (:line card) target-status)
                                       (replace-or-add-attr "rev" rev))
                             assignee (replace-or-add-attr "assignee" assignee))]
              (write-lines! path (insert-after-heading (remove-index lines (:idx card))
                                                       (status->lane target-status) new-line)))))))))
+
+(defn repair-ticket-revision!
+  "Copy the card's lane status, assignee and revision onto the ticket
+  frontmatter (see `sync-revision!`). Skipped when either side changed since
+  the mismatch was observed."
+  [ticket-id {:keys [board_rev] :as updates} expected-ticket-rev]
+  (locking (ticket-mutex ticket-id)
+    (with-vault-writer-lock
+     (fn []
+       (let [card (first (filter #(= ticket-id (:ticket-id %))
+                                 (parse-board-cards (vec (read-lines (board-path))))))]
+         (when (and (= board_rev (card-rev card))
+                    (= expected-ticket-rev (:board_rev (ticket-frontmatter ticket-id))))
+           (update-frontmatter! ticket-id updates)))))))
 
 (declare only-ticket)
 
