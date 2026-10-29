@@ -1044,7 +1044,8 @@ bb -e '
       rb (get-in (ai-ops-sli/aggregate* (assoc timed 2 (dissoc (nth timed 2) :occurred_at))) [:sli :reopen-after-accept])
       rc (get-in (ai-ops-sli/aggregate* timed) [:sli :reopen-after-accept])]
   (assert (and (= :unknown (:status ra)) (= 1 (:indeterminate ra))) (pr-str ra))
-  (assert (and (= :unknown (:status rb)) (= 1 (:indeterminate rb))) (pr-str rb))
+  ;; 時刻なし再open は前後不明の入力欠落 (unordered transition) として未評価になる
+  (assert (and (= :unknown (:status rb)) (= 1 (:unevaluated-input-missing rb))) (pr-str rb))
   (assert (= [1 1] ((juxt :count :denominator) rc)) (pr-str rc)))
 (println "ok   受入時刻または是正時刻が不明な task があれば reopen-after-accept を確定せず unknown (前後不明件数を別掲)")'
 
@@ -1220,3 +1221,20 @@ bb -e '
   (assert (= "unknown" (get-in r1 [:sli :owner-rescue :status])) (pr-str (get-in r1 [:sli :owner-rescue])))
   (assert (= [1 1] ((juxt :count :denominator) (get-in r1 [:sli :owner-rescue :observed]))) (pr-str (get-in r1 [:sli :owner-rescue]))))
 (println "ok   分母に影響する task 紐付け event の欠落 (不正 ID 拒否等) があれば Owner 救援率を unknown")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-98:run" :task_id "BOXP-98" :run_id "20261020T010000Z-aaaa" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-98:fin" :task_id "BOXP-98" :run_id "20261020T010000Z-aaaa" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-98:accepted" :task_id "BOXP-98" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+      reopened {:event_id "BOXP-98:reopened" :task_id "BOXP-98" :event_type "task.reopened"}
+      r (ai-ops-sli/aggregate* (conj base reopened))
+      ;; 現在状態 snapshot があればそれを優先し前後不明にしない
+      rs (ai-ops-sli/aggregate* (conj base reopened {:event_id "BOXP-98:state" :task_id "BOXP-98" :event_type "task.state" :status "review" :snapshot "current"}))]
+  (assert (= {"indeterminate" 1} (get-in r [:tasks :outcomes])) (pr-str (get-in r [:tasks :outcomes])))
+  (assert (= 1 (get-in r [:guardrails :unfinished])) (pr-str (:guardrails r)))
+  (assert (= 1 (get-in r [:input :unverifiable-state-events])) (pr-str (:input r)))
+  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])) (pr-str (get-in r [:sli :first-acceptance-conformance])))
+  (assert (= {"awaiting-review" 1} (get-in rs [:tasks :outcomes])) (pr-str (get-in rs [:tasks :outcomes])))
+  (assert (= 0 (get-in rs [:input :unverifiable-state-events])) (pr-str (:input rs))))
+(println "ok   現在状態 snapshot が無いとき occurred_at 欠落の再open/取消/lane 遷移は前後不明として受入済みと確定せず入力欠落にする")'

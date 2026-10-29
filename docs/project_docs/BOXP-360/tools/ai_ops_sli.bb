@@ -393,6 +393,15 @@
   (let [ids (:evidence_event_ids e)]
     (when (and (sequential? ids) (seq ids)) (vec (sort (distinct ids))))))
 
+;; occurred_at 欠落の再open/取消/lane 遷移は他の遷移との前後を確定できない (時刻なしとして過去側に並び、受入後の再open を受入前と誤判定する)。
+;; 現在状態 snapshot があればそれが優先されるので対象外。時刻なし task.state は snapshot 扱い、時刻なし task.accepted は受入時刻不明として別掲済み
+(def order-sensitive-types #{"task.reopened" "task.cancelled" "lane.changed"})
+(defn unordered-transition-events [evs]
+  (let [transitions (filter #(#{"task.state" "task.accepted" "task.reopened" "task.cancelled" "lane.changed"} (:event_type %)) evs)]
+    (if (or (some #(and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) transitions)
+            (< (count transitions) 2))
+      []
+      (filter #(and (contains? order-sensitive-types (:event_type %)) (nil? (:occurred_at %))) transitions))))
 (defn task-outcome [evs]
   (let [evidence-of evidence-key
         reclassifiable? #(#{"correction" "task.reopened"} (:event_type %))
@@ -404,6 +413,8 @@
         latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(or (#{"task.state" "task.accepted" "task.reopened" "task.cancelled"} (:event_type %)) (and (= "lane.changed" (:event_type %)) (#{"ready" "review" "blocked" "backlog" "in-progress"} (:lane_to %)))) evs)))
         state (if (= "lane.changed" (:event_type latest)) (:lane_to latest) (:status latest))]
     (cond
+      ;; 時刻なし再open/取消/lane 遷移があり現在状態 snapshot も無い: 前後不明のため受入済みと確定しない (未完了側に数える)
+      (seq (unordered-transition-events evs)) "indeterminate"
       (or (= "task.cancelled" (:event_type latest)) (= "cancelled" state)) "cancelled"
       (= "task.reopened" (:event_type latest)) "in-flight"
       (or (= "task.accepted" (:event_type latest)) (#{"done" "closed" "accepted"} state)) "accepted"
@@ -544,7 +555,7 @@
                  :runs (count runs) :finished (count finished)
                  :unreadable-runs (count (filter #(= "run.unreadable" (:event_type %)) evs))
                  ;; 状態/結果 field が不正値で redact された event: Review 到達・受入・取消を判定できないため入力欠落として扱う
-                 :unverifiable-state (count (filter unverifiable-state-event? evs))
+                 :unverifiable-state (+ (count (filter unverifiable-state-event? evs)) (count (unordered-transition-events evs)))
                  :interrupted (count (filter #(= "run.interrupted" (:event_type %)) evs))
                  :idle-timeouts (count (filter :idle_timeout finished))
                  :retrying (count (filter #(= "retrying" (:status %)) finished))
