@@ -2261,7 +2261,8 @@
                      ;; request-named note (scanned first) already listed it.
                      (and (= "管理ノート" source) (contains? @seen (canonical-path path)))
                      (swap! candidates (fn [cs] (mapv #(if (= (canonical-path (:path %)) (canonical-path path)) (assoc % :label label :source source) %) cs)))
-                     (and (< (count @candidates) 24) (not (contains? @seen (canonical-path path))))
+                     ;; Management-note images are always passed, so the cap does not apply.
+                     (and (or (= "管理ノート" source) (< (count @candidates) 24)) (not (contains? @seen (canonical-path path))))
                      (do (swap! seen conj (canonical-path path))
                          (swap! candidates conj {:path (str path) :file (str (fs/file-name path)) :label label :source source})))))
         scan! (fn [file source follow?]
