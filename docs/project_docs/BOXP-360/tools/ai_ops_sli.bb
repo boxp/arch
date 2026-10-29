@@ -208,7 +208,7 @@
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.reopened"
                            :occurred_at (str (:closed fm) "T23:59:59Z") :occurred_precision "day"
                            :correction_origin "unknown" :correction_class "unknown"}])
-                       (when (#{"ready" "review" "blocked" "backlog" "in-progress"} (:status fm))
+                       (when (#{"ready" "review" "blocked" "backlog" "in-progress" "done"} (:status fm))
                          [{:schema_version schema-version :event_id (str ticket ":state") :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.state"
                            :status (:status fm) :snapshot "current" :occurred_at nil}]))]
@@ -270,6 +270,9 @@
   (->> (str/split-lines (slurp file)) (remove str/blank?)
        (keep #(try (json/parse-string % true) (catch Exception _ nil)))))
 
+(defn unique-events [events]
+  (second (reduce (fn [[seen out] e] (if (contains? seen (:event_id e)) [seen out] [(conj seen (:event_id e)) (conj out e)])) [#{} []] events)))
+
 (defn event-time-key [e]
   (if-let [t (parse-inst (:occurred_at e))] [1 t] [0 java.time.Instant/MIN]))
 
@@ -303,7 +306,7 @@
         rejected-correlation (count (filter :invalid-correlation? gated))
         events (keep :event gated)
         n-in (count events)
-        uniq (second (reduce (fn [[seen out] e] (if (contains? seen (:event_id e)) [seen out] [(conj seen (:event_id e)) (conj out e)])) [#{} []] events))
+        uniq (unique-events events)
         dup (- n-in (count uniq))
         ;; 観測順と occurred_at 順の逆転、observed_at より未来の occurred_at (時刻ずれ)
         inversions (->> events (group-by :task_id) vals
@@ -442,7 +445,7 @@
     (println "# TYPE ai_ops_events_total counter")
     (doseq [[[src t] c] (frequencies (map (fn [e] [(if (contains? (:source enum-values) (:source e)) (:source e) "other")
                                                     (if (contains? (:event_type enum-values) (:event_type e)) (:event_type e) "other")])
-                                          (keep (comp :event privacy-gate) evs)))]
+                                          (unique-events (keep (comp :event privacy-gate) evs))))]
       (line "ai_ops_events_total" {:source src :event_type t} c))
     (println "# TYPE ai_ops_tasks gauge")
     (doseq [[o c] (get-in r [:tasks :outcomes])] (line "ai_ops_tasks" {:outcome o} c))

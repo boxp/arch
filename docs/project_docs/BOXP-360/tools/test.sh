@@ -68,8 +68,10 @@ bb ai_ops_sli.bb extract "$tmp/root" "$tmp/vault" >"$tmp/backlog.jsonl" 2>"$tmp/
 bb ai_ops_sli.bb aggregate "$tmp/backlog.jsonl" >"$tmp/backlog.edn"
 bb -e '
 (let [events (map #(cheshire.core/parse-string % true) (clojure.string/split-lines (slurp (first *command-line-args*))))
-      state (some #(when (= "BOXP-997:state" (:event_id %)) %) events)]
+      state (some #(when (= "BOXP-997:state" (:event_id %)) %) events)
+      done (some #(when (= "BOXP-999:state" (:event_id %)) %) events)]
   (assert (= "current" (:snapshot state)))
+  (assert (= ["current" "done"] ((juxt :snapshot :status) done)))
   (println "ok   extract は現在状態の snapshot を明示"))' "$tmp/backlog.jsonl"
 cat >"$tmp/regression.jsonl" <<'EOF'
 {"event_id":"BOXP-1:requested","task_id":"BOXP-1","request_id":"req:BOXP-1","event_type":"request.received","occurred_at":"2026-10-20T00:00:00Z"}
@@ -174,6 +176,19 @@ for line in lines:
     assert line.startswith('# ') or re.fullmatch(r'[a-zA-Z_:][a-zA-Z0-9_:]*(?:\{[a-zA-Z_]+="[a-zA-Z0-9:._/-]+"(?:,[a-zA-Z_]+="[a-zA-Z0-9:._/-]+")*\})? [0-9]+', line), line
 print('ok   Prometheus privacy gate と exposition')
 PYTEST
+cat >"$tmp/duplicate-prom.jsonl" <<'EOF'
+{"event_id":"BOXP-1:run","source":"derived","event_type":"run.started"}
+{"event_id":"BOXP-1:run","source":"derived","event_type":"run.started","redelivery":1}
+{"event_id":"BOXP-1:accepted","source":"derived","event_type":"task.accepted"}
+EOF
+bb ai_ops_sli.bb aggregate "$tmp/duplicate-prom.jsonl" >"$tmp/duplicate-prom.edn"
+bb ai_ops_sli.bb prom "$tmp/duplicate-prom.jsonl" >"$tmp/duplicate-prom.out"
+bb -e '
+(let [[report prom] *command-line-args*
+      unique (get-in (edn/read-string (slurp report)) [:input :unique])
+      counts (map (comp parse-long second) (re-seq #"(?m)^ai_ops_events_total\{[^}]+\} (\d+)$" (slurp prom)))]
+  (assert (= 2 unique (reduce + counts)))
+  (println "ok   Prometheus のイベント数は重複排除後の集計と一致"))' "$tmp/duplicate-prom.edn" "$tmp/duplicate-prom.out"
 cat >"$tmp/four-fixes.jsonl" <<'EOF'
 {"event_id":"BOXP-100:critical","event_type":"correction","severity":"critical"}
 {"event_id":"BOXP-100:critical","event_type":"correction","severity":"critical"}
@@ -334,12 +349,14 @@ bb -e '
 (let [base [{:event_id "BOXP-1:run" :task_id "BOXP-1" :event_type "run.started"}
             {:event_id "BOXP-1:accepted" :task_id "BOXP-1" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
             {:event_id "BOXP-1:reopened" :task_id "BOXP-1" :event_type "task.reopened" :occurred_at "2026-10-21T00:00:00Z"}]]
-  (doseq [[state outcome] [["review" "awaiting-review"] ["blocked" "blocked"]]]
+  (doseq [[state outcome] [["review" "awaiting-review"] ["blocked" "blocked"] ["done" "accepted"]]]
     (let [snapshot {:event_id "BOXP-1:state" :task_id "BOXP-1" :event_type "task.state" :snapshot "current" :status state}
           report (ai-ops-sli/aggregate* (conj base snapshot))]
       (assert (= 1 (get-in report [:tasks :outcomes outcome])))
+      (when (= state "done")
+        (assert (= [1 1] ((juxt :count :denominator) (get-in report [:sli :first-acceptance-conformance])))))
       (assert (= "current" (get-in (ai-ops-sli/privacy-gate snapshot) [:event :snapshot])))))
-  (println "ok   現在の review / blocked snapshot は再オープン履歴より優先"))
+  (println "ok   現在の review / blocked / done snapshot は再オープン履歴より優先"))
 (let [base [{:event_id "BOXP-2:run" :task_id "BOXP-2" :event_type "run.started"}
             {:event_id "BOXP-2:rule" :task_id "BOXP-2" :event_type "correction" :classifier "rule" :correction_class "source_mismatch" :correction_origin "agent-system" :evidence_event_ids ["BOXP-2:run"] :occurred_at "2026-10-19T00:00:00Z"}
             {:event_id "BOXP-2:accepted" :task_id "BOXP-2" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
