@@ -117,11 +117,42 @@ bb -e '
   (assert (= 0 (get-in r [:zero-tolerance :duplicate-effects :count])))
   (assert (= 0 (get-in r [:zero-tolerance :critical-safety-events])))
   (println "ok   reopen 状態、不正 ID の拒否と複数 coverage"))' "$tmp/reopen.edn"
+
+cat >"$tmp/privacy-prom.jsonl" <<'EOF'
+{"event_id":"invalid id","source":"derived\"\nsk-secret-token","event_type":"run.started\"\nsk-secret-token"}
+{"event_id":"BOXP-1:unsafe","source":"derived\"\nsk-secret-token","event_type":"run.started\"\nsk-secret-token"}
+{"event_id":"BOXP-1:valid","source":"derived","event_type":"run.started"}
+EOF
+bb ai_ops_sli.bb prom "$tmp/privacy-prom.jsonl" >"$tmp/privacy-prom.out"
+python3 - "$tmp/privacy-prom.out" <<'PYTEST'
+import re, sys
+text = open(sys.argv[1]).read()
+assert 'secret' not in text and 'redacted' not in text
+lines = text.splitlines()
+assert 'ai_ops_events_total{source="other",event_type="other"} 1' in lines
+assert 'ai_ops_events_total{source="derived",event_type="run.started"} 1' in lines
+for line in lines:
+    assert line.startswith('# ') or re.fullmatch(r'[a-zA-Z_:][a-zA-Z0-9_:]*(?:\{[a-zA-Z_]+="[a-zA-Z0-9:._/-]+"(?:,[a-zA-Z_]+="[a-zA-Z0-9:._/-]+")*\})? [0-9]+', line), line
+print('ok   Prometheus privacy gate と exposition')
+PYTEST
+cat >"$tmp/history.jsonl" <<'EOF'
+{"event_id":"BOXP-9:accepted","task_id":"BOXP-9","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-9:reopened","task_id":"BOXP-9","event_type":"task.reopened","occurred_at":"2026-10-21T00:00:00Z"}
+{"event_id":"BOXP-9:state","task_id":"BOXP-9","event_type":"task.state","status":"ready","occurred_at":"2026-10-22T00:00:00Z"}
+{"event_id":"BOXP-9:coverage","event_type":"coverage.connected","coverage_target":"acceptance-history"}
+EOF
+bb ai_ops_sli.bb aggregate "$tmp/history.jsonl" >"$tmp/history.edn"
+bb -e '
+(let [r (edn/read-string (slurp (first *command-line-args*)))]
+  (assert (= [1 1] ((juxt :count :denominator) (get-in r [:sli :reopen-after-accept]))))
+  (assert (= 1 (get-in r [:tasks :outcomes "in-flight"])))
+  (println "ok   再オープン後 Ready の受入履歴"))' "$tmp/history.edn"
 bb -e '
 (let [[dir] *command-line-args* r #(edn/read-string (slurp (str dir "/" % ".edn")))
       b (r "backlog") u (r "unconnected") c (r "connected") stats (edn/read-string (slurp (str dir "/secrets.stats")))
       checks [["未実行 backlog と Ready を分母に含む" (and (= 3 (get-in b [:tasks :total])) (= 2 (get-in b [:tasks :never-run])) (= 1 (get-in b [:tasks :outcomes "backlog"])) (= 2 (get-in b [:guardrails :unfinished])))]
               ["closed の再オープンを抽出" (and (re-find #"BOXP-997:accepted" (slurp (str dir "/backlog.jsonl"))) (re-find #"BOXP-997:reopened" (slurp (str dir "/backlog.jsonl"))))]
+              ["未宣言でも観測した重複を部分 coverage で報告" (= [1 "partial/undeclared"] ((juxt :count :coverage) (get-in u [:zero-tolerance :duplicate-effects])))]
               ["受入履歴未接続は unknown" (= :unknown (get-in u [:sli :reopen-after-accept :status]))]
               ["履歴接続時に再オープンと受入を計上" (= [1 1] ((juxt :count :denominator) (get-in c [:sli :reopen-after-accept])))]
               ["タスク間の effect と承認の重複" (and (= [1 2] ((juxt :count :tasks-involved) (get-in c [:zero-tolerance :duplicate-effects]))) (= [1 2] ((juxt :count :tasks-involved) (get-in c [:sli :duplicate-approval]))))]

@@ -308,8 +308,8 @@
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
                           finished (filter #(= "run.finished" (:event_type %)) evs)]
-                    :when (or (some #(= "request.received" (:event_type %)) evs) (seq runs) (some :synthetic evs))]
-                {:task tid :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
+                    :when (or (some #(#{"request.received" "task.accepted"} (:event_type %)) evs) (seq runs) (some :synthetic evs))]
+                {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
                  :interrupted (count (filter #(= "run.interrupted" (:event_type %)) evs))
@@ -332,7 +332,7 @@
         n (count tasks)
         reached (filter :reached-review? tasks)
         accepted (filter #(and (:observed? %) (= "accepted" (:outcome %))) tasks)
-        accepted-ever (filter #(= "accepted" (:outcome %)) tasks)
+        accepted-ever (filter :acceptance-history? tasks)
         sources (frequencies (map :source uniq))
         connected? (fn [target] (some #(and (= "coverage.connected" (:event_type %)) (= target (:coverage_target %))) uniq))
         duplicates (fn [type key] (let [groups (group-by key (filter #(and (= type (:event_type %)) (get % key) (not= "redacted" (get % key))) uniq))
@@ -376,8 +376,9 @@
                         :idle-timeouts (reduce + (map :idle-timeouts tasks))
                         :retrying (reduce + (map :retrying tasks))}
       :delegation (apply merge-with + (map :delegation tasks))}
-     :zero-tolerance {:duplicate-effects (if (connected? "duplicate-effects")
-                                          (select-keys effects [:count :tasks-involved])
+     :zero-tolerance {:duplicate-effects (if (or (connected? "duplicate-effects") (some #(= "effect.applied" (:event_type %)) uniq))
+                                          (assoc (select-keys effects [:count :tasks-involved])
+                                                 :coverage (if (connected? "duplicate-effects") "connected" "partial/undeclared"))
                                           {:status "unknown" :reason "effect source 未接続"})
                       :critical-safety-events (if (some #(or (some? (:severity %))
                                                                (and (= "coverage.connected" (:event_type %)) (= "critical-safety-events" (:coverage_target %)))) uniq)
@@ -411,7 +412,9 @@
         r (aggregate* evs)
         line (fn [m labels v] (println (str m (when (seq labels) (str "{" (str/join "," (map (fn [[k v]] (str (name k) "=\"" v "\"")) labels)) "}")) " " v)))]
     (println "# TYPE ai_ops_events_total counter")
-    (doseq [[[src t] c] (frequencies (map (juxt #(first (str/split (str (:source %)) #":")) :event_type) evs))]
+    (doseq [[[src t] c] (frequencies (map (fn [e] [(if (contains? (:source enum-values) (:source e)) (:source e) "other")
+                                                    (if (contains? (:event_type enum-values) (:event_type e)) (:event_type e) "other")])
+                                          (keep (comp :event privacy-gate) evs)))]
       (line "ai_ops_events_total" {:source src :event_type t} c))
     (println "# TYPE ai_ops_tasks gauge")
     (doseq [[o c] (get-in r [:tasks :outcomes])] (line "ai_ops_tasks" {:outcome o} c))

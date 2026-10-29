@@ -16,6 +16,6 @@ zero-tolerance は対応する effect.applied / severity 付き event または 
 
 privacy gate は key ごとの許可値・ID・時刻・型を検証し、認証情報や長い英数字列も redact する。未実行の request も task 総数、outcome、未完了と Owner rescue の分母に含め、never-run を別掲する。review 到達を対象とする SLI の分母は変えない。
 
-受入履歴の網羅性は `coverage.connected` の `acceptance-history` がなければ reopen-after-accept を unknown とする。closed が残る未完了 ticket は受入と再オープンの証拠として抽出する。duplicate-effects は coverage 接続時に全 task の effect_key を横断して余分な適用数と関与 task 数を数え、承認も approval_key ごとに横断集計する。
+受入履歴の網羅性は `coverage.connected` の `acceptance-history` がなければ reopen-after-accept を unknown とする。closed が残る未完了 ticket は受入と再オープンの証拠として抽出する。duplicate-effects は effect 観測時または coverage 接続時に全 task の effect_key を横断して余分な適用数と関与 task 数を数え、宣言がない場合は coverage を partial/undeclared とし、承認も approval_key ごとに横断集計する。
 
-run 履歴の無い受入済み ticket（accepted-without-run-history）は是正有無を観測できないため、first acceptance / 是正率の分母に入れず別掲する（合格扱いしない）。reopen-after-accept は受入履歴 source 接続時のみ、受入済みの全 task を分母に計上する。
+run 履歴の無い受入済み ticket（accepted-without-run-history）は是正有無を観測できないため、first acceptance / 是正率の分母に入れず別掲する（合格扱いしない）。reopen-after-accept は受入履歴 source 接続時のみ、現在の状態にかかわらず受入イベントがある全 task を分母に計上する。
