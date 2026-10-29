@@ -207,12 +207,27 @@ case "${mode}" in
     echo '{"scene":"start line","prompt":"girl at the start line","reference_images":["ref-rin.png"]}' >"${work}/illustration.json"
     echo "NOVEL_BOARD_RESULT: done"
     ;;
-  groom)
+  groom|groom-overreach)
+    allowed="$(printf '%s\n' "${prompt}" | grep '^Allowed writes:' || true)"
+    if [[ "${allowed}" != *'## Requirements'* || "${allowed}" != *'## Outline'* ]]; then
+      echo "NOVEL_BOARD_RESULT: blocked Requirements/Outline are not allowed"
+      exit 0
+    fi
     note="${CODEX_NOVEL_BOARD_VAULT}/Novels/${id}.md"
     printf -- '- Title: クラウド要件\n- Synopsis: あらすじ\n' >"${work}/groom.txt"
     bb "${FAKE_EDIT_BB}" replace-section "${note}" Requirements "${work}/groom.txt"
     printf -- '1. 導入\n2. 展開\n' >"${work}/outline.txt"
     bb "${FAKE_EDIT_BB}" replace-section "${note}" Outline "${work}/outline.txt"
+    if [[ "${mode}" == groom-overreach ]]; then
+      printf '許可外の変更\n' >"${work}/overreach.txt"
+      bb "${FAKE_EDIT_BB}" replace-section "${note}" 'Draft Preview' "${work}/overreach.txt"
+    fi
+    echo "NOVEL_BOARD_RESULT: done"
+    ;;
+  write-overreach)
+    note="${CODEX_NOVEL_BOARD_VAULT}/Novels/${id}.md"
+    printf '許可外の変更\n' >"${work}/overreach.txt"
+    bb "${FAKE_EDIT_BB}" replace-section "${note}" Requirements "${work}/overreach.txt"
     echo "NOVEL_BOARD_RESULT: done"
     ;;
   regroom)
@@ -878,6 +893,10 @@ cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-11.md"
 tick
 [[ "$(lane_of "${BOARD}" NOVEL-11)" == "Draft" ]] || fail "cloud groom should move to Draft"
 assert_contains "${VAULT}/Novels/NOVEL-11.md" "- Title: クラウド要件"
+sed -n '/^## Reference Context$/,/^## Review Instructions$/p' "${VAULT}/Novels/NOVEL-11.md" >"${TMP}/cloud-reference.txt"
+assert_not_contains "${TMP}/cloud-reference.txt" "読取 0"
+assert_not_contains "${TMP}/cloud-reference.txt" "不足/未解決: なし"
+assert_contains "${TMP}/cloud-reference.txt" "runner 未判定"
 echo done >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud route failures and groom"
 
@@ -1442,7 +1461,8 @@ assert_contains "${PROMPT85}" "Common rules you MUST read before planning: \`ひ
 assert_contains "${PROMPT85}" "\`ひとはこさんバース/キャラ設定/lilith-tail.md\`"
 assert_contains "${PROMPT85}" "listing the setting notes you actually read"
 assert_not_contains "${PROMPT85}" "ALIAS-MARKER"
-grep -Fq -- "読取は agent 側で行うため、ここでは候補のみ" <<<"$(reference_context NOVEL-85)" || fail "cloud Reference Context must say the agent reads"
+grep -Fq -- "runner は本文未読・読取と未解決は agent の自己申告で runner 未検証" <<<"$(reference_context NOVEL-85)" || fail "cloud Reference Context must say the agent reads and the runner did not verify"
+if grep -Fq -- "読取 0" <<<"$(reference_context NOVEL-85)"; then fail "cloud Reference Context must not claim 読取 0"; fi
 echo done >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud groom receives the names-only exploration"
 
@@ -1678,5 +1698,21 @@ assert_not_contains "${BOARD}" "NOVEL-17"
 
 # Private root permissions
 [[ "$(stat -c %a "${STATE}")" == "700" ]] || fail "state root must be 0700"
+
+# Cloud agents cannot change management note sections outside their action.
+echo groom-overreach >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Backlog "- [ ] [[Novels/NOVEL-9901|NOVEL-9901: 許可外変更]] #novel status::backlog assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-9901.md"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-9901)" == "Backlog" ]] || fail "groom overreach must stay in Backlog"
+assert_contains "${VAULT}/Novels/NOVEL-9901.md" "許可されていないセクションを変更しました: ## Draft Preview"
+echo write-overreach >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Draft "- [ ] [[Novels/NOVEL-9902|NOVEL-9902: 執筆時の許可外変更]] #novel status::draft assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-9902.md"
+write_requirements NOVEL-9902
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-9902)" == "Draft" ]] || fail "write overreach must stay in Draft"
+assert_contains "${VAULT}/Novels/NOVEL-9902.md" "許可されていないセクションを変更しました: ## Requirements"
+echo "PASS: cloud note write boundaries"
 
 echo "All novel-board runner tests passed."
