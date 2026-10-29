@@ -59,7 +59,7 @@
   ["frontmatter-unreadable" "ticket-missing" "accepted-again" "in-progress" "interrupted" "unreadable"
    "correction" "requested" "cancelled" "finished" "approval" "coverage" "critical" "reopened" "accepted"
    "request" "started" "running" "blocked" "backlog" "pending" "review" "rescue" "effect" "reopen"
-   "safety" "cancel" "accept" "failed" "state" "event" "start" "ready" "lane" "done" "corr" "fin" "req" "run" "rule" "human" "model" "ledger"])
+   "safety" "cancel" "accept" "failed" "state" "event" "start" "ready" "lane" "done" "corr" "fin" "req" "run" "rule" "human" "model" "ledger" "lane-start"])
 (def run-id-re "\\d{8}T\\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-[0-9a-f]{1,8})?(?:-groom)?")
 (def id-segment-re (str "(?:" run-id-re "|(?:" (str/join "|" id-words) ")\\d{0,3}|[0-9a-f]{8,16}|\\d{1,6}|[a-z]\\d{0,3})"))
 (def conv-id-re "(?:req|conv)-[0-9a-f]{8}(?:-[0-9a-f]{4}){0,3}(?:-[0-9a-f]{12})?")
@@ -410,10 +410,21 @@
 ;; 非 ledger 側を正とし除外する (ledger だけにある事実は残す)。
 (defn ledger-event? [e] (and (string? (:event_id e)) (str/includes? (:event_id e) ":ledger:")))
 (def ledger-merge-types #{"run.started" "run.finished" "run.interrupted" "correction" "lane.changed"})
+;; 是正は「どの run の review gate 失敗か」で照合する。ledger の correction はその run 自身の gate 失敗、
+;; extract の derived correction は review-fix run の開始時に導出され原因は直前 run (evidence の <task>/<run>:finished)。
+;; 同じ run_id でも別の gate 失敗なので run_id では照合しない。原因 run を特定できない是正は統合しない
+(defn correction-cause-run [e]
+  (cond
+    (ledger-event? e) (:run_id e)
+    (= "derived" (:source e))
+    (some #(when (string? %) (second (re-matches (re-pattern (str (java.util.regex.Pattern/quote (str (:task_id e) "/")) "(.+):finished")) %)))
+          (:evidence_event_ids e))))
 (defn ledger-logical-key [e]
   (when (and (ledger-merge-types (:event_type e)) (:task_id e) (:run_id e))
-    (cond-> [(:task_id e) (:run_id e) (:event_type e)]
-      (= "lane.changed" (:event_type e)) (conj (:lane_from e) (:lane_to e)))))
+    (if (= "correction" (:event_type e))
+      (when-let [cause (correction-cause-run e)] [(:task_id e) cause "correction"])
+      (cond-> [(:task_id e) (:run_id e) (:event_type e)]
+        (= "lane.changed" (:event_type e)) (conj (:lane_from e) (:lane_to e))))))
 (defn merge-ledger-events [events]
   (let [other-keys (set (keep #(when-not (ledger-event? %) (ledger-logical-key %)) events))
         merged? #(and (ledger-event? %) (contains? other-keys (ledger-logical-key %)))]
