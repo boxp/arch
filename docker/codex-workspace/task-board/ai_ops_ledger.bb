@@ -472,19 +472,43 @@
 
 ;; Review-gate corrections, collection_lost and privacy_rejected markers exist only in the runner
 ;; ledger, so deleting an expired day file would make all-history SLIs undercount
-;; corrections or turn back into determined values. Before deleting, copy those
-;; lines into the SLI archive (metadata-only, small); a day file whose archive copy
-;; fails is kept. A crash between append and delete only re-appends identical
-;; lines, which the aggregator deduplicates by event_id.
-(defn sli-archive-path [root] (fs/path (ledger-dir root) "sli-archive.jsonl"))
-(defn sli-archive-line? [line]
+;; corrections or turn back into determined values. Before deleting, the SLI-relevant
+;; lines are copied into the SLI archive; a day file whose archive copy fails is kept.
+;; - Only metadata the source gate reproduces unchanged is copied verbatim (clean
+;;   corrections and the known body-less markers). Any other unclean line (unparsable,
+;;   `{}`, invalid IDs, values the gate would redact) is replaced by a body-less marker
+;;   so no expired raw content is retained: unparsable/non-object lines become
+;;   `{"collection_lost":"input_unreadable"}`, the rest `{"privacy_rejected":"upstream"}`
+;;   (keeping only an allowlisted event_type). Both keep the SLIs unknown.
+;; - Each day file is archived to its own file named by date and content hash and
+;;   written atomically, so a crash between archive and delete only rewrites the same
+;;   file on retry instead of appending duplicate (ID-less) markers.
+(defn sli-archive-dir [root] (fs/path (ledger-dir root) "sli-archive"))
+(def archived-lost-markers
+  #{{:collection_lost "ledger_dropped"} {:collection_lost "buffer_dropped"}
+    {:collection_lost "undelivered"} {:collection_lost "input_unreadable"}})
+(defn- rejected-marker [e]
+  (cond-> {:privacy_rejected "upstream"}
+    (contains? (:event_type enum-values) (:event_type e)) (assoc :event_type (:event_type e))))
+(defn sli-archive-entry
+  "Body-less archive form of one expired ledger line, or nil when it is not needed."
+  [line]
   (let [e (try (json/parse-string line true) (catch Exception _ ::unparsable))]
-    ;; Lines the source gate would not reproduce unchanged (e.g. `{}` or invalid
-    ;; IDs) may be rejected by the aggregator and keep SLIs unknown, so they are
-    ;; archived too; only clean ordinary events are dropped with the day file.
-    (or (= ::unparsable e) (not (map? e)) (contains? e :collection_lost) (contains? e :privacy_rejected)
-        (= "correction" (:event_type e))
-        (let [[kept redacted] (gate e)] (not (and kept (zero? redacted) (= kept e)))))))
+    (cond
+      (or (= ::unparsable e) (not (map? e))) {:collection_lost "input_unreadable"}
+      (contains? archived-lost-markers e) e
+      (or (contains? e :collection_lost) (contains? e :privacy_rejected)) (rejected-marker e)
+      :else (let [[kept redacted] (gate e)]
+              (if (and kept (zero? redacted) (= kept e))
+                (when (= "correction" (:event_type e)) e)
+                (rejected-marker e))))))
+(defn- sha256-hex [^String s]
+  (let [d (.digest (java.security.MessageDigest/getInstance "SHA-256") (.getBytes s "UTF-8"))]
+    (apply str (map #(format "%02x" (bit-and % 0xff)) d))))
+(defn sli-archive-file [root date content]
+  (fs/path (sli-archive-dir root) (str "events-" date "-" (subs (sha256-hex content) 0 16) ".jsonl")))
+(defn sli-archive-files [root]
+  (if (fs/exists? (sli-archive-dir root)) (fs/glob (sli-archive-dir root) "events-*.jsonl") []))
 
 (defn prune! [root]
   (let [cutoff (.minusDays (java.time.LocalDate/now java.time.ZoneOffset/UTC) (retention-days))]
@@ -492,9 +516,12 @@
             :let [d (second (re-matches #"events-(\d{4}-\d{2}-\d{2})\.jsonl" (str (fs/file-name f))))]
             :when (and d (.isBefore (java.time.LocalDate/parse d) cutoff))]
       (try
-        (let [keep (filter sli-archive-line? (remove str/blank? (str/split-lines (slurp f))))]
-          (when (seq keep)
-            (spit (str (sli-archive-path root)) (str (str/join "\n" keep) "\n") :append true))
+        (let [content (slurp f)
+              entries (keep sli-archive-entry (remove str/blank? (str/split-lines content)))]
+          (when (seq entries)
+            (fs/create-dirs (sli-archive-dir root))
+            (atomic-spit! (sli-archive-file root d content)
+                          (str (str/join "\n" (map json/generate-string entries)) "\n")))
           (fs/delete-if-exists f))
         (catch Exception _ nil)))))
 
@@ -531,7 +558,7 @@
 ;; trailing newline yet and is left out instead of being counted as malformed.
 (defn append-ledger-events! [root target]
   (with-open [w (java.io.FileWriter. (str target) true)]
-    (doseq [f (sort (map str (if (fs/exists? (ledger-dir root)) (concat (fs/glob (ledger-dir root) "events-*.jsonl") (filter fs/exists? [(sli-archive-path root)])) [])))
+    (doseq [f (sort (map str (if (fs/exists? (ledger-dir root)) (concat (fs/glob (ledger-dir root) "events-*.jsonl") (sli-archive-files root)) [])))
             :let [text (slurp f) end (inc (or (str/last-index-of text "\n") -1))]
             :when (pos? end)]
       (.write w (subs text 0 end))))

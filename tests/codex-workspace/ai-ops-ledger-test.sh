@@ -161,21 +161,32 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (let [root (str (fs/path tmp "g"))
       old (fs/path root "ai-ops" "ledger" "events-2000-01-01.jsonl")]
   (fs/create-dirs (fs/parent old))
-  (spit (str old) (str "{}\n{\"event_id\":\"a\",\"event_type\":\"run.started\"}\n"
+  (spit (str old) (str "{}\nnot json password=hunter2\n{\"event_id\":\"a\",\"event_type\":\"run.started\"}\n"
                        (json/generate-string {:event_id (ai-ops-ledger/event-id "BOXP-1" "20261029T055735Z" "started")
                                               :task_id "BOXP-1" :request_id "req:BOXP-1"
                                               :run_id "20261029T055735Z" :event_type "run.started"}) "\n"
-                       "{\"event_id\":\"b\",\"event_type\":\"correction\"}\n{\"collection_lost\":\"ledger_dropped\"}\n"
-                       "{\"privacy_rejected\":\"upstream\"}\n{\"privacy_rejected\":\"upstream\",\"event_type\":\"effect.applied\"}\n"))
-  (ev root "started" {:event_type "run.started"})
-  (ai-ops-ledger/write-metrics! root)
-  (check "old ledger file pruned" (not (fs/exists? old)))
-  ;; `{}` and the invalid-ID line are rejected by the aggregator (SLI unknown),
-  ;; so they must survive pruning; the clean run.started line is dropped.
-  (check "pruned corrections, loss markers and gate-rejected lines archived for SLI"
-         (= [{} {:event_id "a" :event_type "run.started"} {:event_id "b" :event_type "correction"} {:collection_lost "ledger_dropped"}
-             {:privacy_rejected "upstream"} {:privacy_rejected "upstream" :event_type "effect.applied"}]
-            (map #(json/parse-string % true) (remove str/blank? (str/split-lines (slurp (str (ai-ops-ledger/sli-archive-path root))))))))
+                       "{\"event_id\":\"b\",\"event_type\":\"correction\",\"note\":\"token sk-secret\"}\n{\"collection_lost\":\"ledger_dropped\"}\n"
+                       "{\"privacy_rejected\":\"upstream\"}\n{\"privacy_rejected\":\"upstream\",\"event_type\":\"effect.applied\"}\n"
+                       "{\"privacy_rejected\":\"hunter2\",\"event_type\":\"password\"}\n"))
+  (let [content (slurp (str old))
+        archive (ai-ops-ledger/sli-archive-file root "2000-01-01" content)
+        expected [{:privacy_rejected "upstream"} {:collection_lost "input_unreadable"} {:privacy_rejected "upstream" :event_type "run.started"}
+                  {:privacy_rejected "upstream" :event_type "correction"} {:collection_lost "ledger_dropped"}
+                  {:privacy_rejected "upstream"} {:privacy_rejected "upstream"}
+                  {:privacy_rejected "upstream"}]
+        read-archive (fn [] (mapcat #(map (fn [l] (json/parse-string l true)) (remove str/blank? (str/split-lines (slurp (str %)))))
+                                   (ai-ops-ledger/sli-archive-files root)))]
+    ;; crash after archiving but before deleting: the retry must not duplicate markers
+    (with-redefs [fs/delete-if-exists (fn [_] (throw (ex-info "crash" {})))]
+      (ai-ops-ledger/prune! root))
+    (check "day file kept when delete fails" (fs/exists? old))
+    (ev root "started" {:event_type "run.started"})
+    (ai-ops-ledger/write-metrics! root)
+    (check "old ledger file pruned" (not (fs/exists? old)))
+    ;; unclean lines keep SLIs unknown as body-less markers; clean ordinary lines are dropped
+    (check "pruned corrections, loss markers and gate-rejected lines archived as body-less markers" (= expected (read-archive)))
+    (check "archive written once per day file content" (= [(str archive)] (map str (ai-ops-ledger/sli-archive-files root))))
+    (check "archive holds no expired raw content" (not (re-find #"hunter2|sk-secret|password|note|\"a\"|\"b\"" (slurp (str archive))))))
   (check "current ledger file kept" (fs/exists? (ai-ops-ledger/day-file root))))
 
 (if (seq @failures)
