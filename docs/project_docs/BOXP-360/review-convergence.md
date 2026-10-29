@@ -50,8 +50,30 @@ Owner 指示 (2026-10-29 05:15 UTC、レビュー反復過多の是正) に基�
   - それとは別に、ticket 単位の連続 gate 失敗上限を設ける (例: 10)。超えたら Blocked と triage 要求にして自動続行を止める。
   - PR head の変更では count をリセットしない。
 
-## 5. 判断依頼
+## 5. Owner 判断 (2026-10-29 05:24 UTC 承認済み)
 
-- 合意事項: ②③を後続リストとして扱うことに reviewer (codex-review) と Owner が合意すれば、①は修正済みなので本 PR は収束扱いにできる。
-- 合意を得るまで: 本 ticket は自動の再レビューループを止め、Blocked (triage 待ち) で返す。
-- 承認待ち境界は維持する: 新しい本番 instrumentation、再起動、新基盤の導入は引き続き Owner の一点承認待ち。
+- Owner は「今回 scope で到達しない将来改善 (②) と文書・nit (③) を reviewer と非 blocking 合意し、後続へ分離する」方針を承認した。
+- これは次の承認ではない: 重大欠陥や今回要件違反を残した merge、required gate の無効化、未確認指摘の一括却下、runner の再試行上限変更、新観測基盤・runner emit・Hermes plugin の本番配備や再起動 (案 A 第 1 段階は別途 Owner の一点承認待ち)。
+
+## 6. 本 PR の blocking 基準 (reviewer 向け)
+
+本 PR の成果物は「read-only 棚卸し・共通 schema/SLI 定義・既存 metadata による baseline・合成 pilot・導入案」であり、本番 collector ではない。`ai_ops_sli.bb` は本番に配備・常駐しない。
+
+blocking (今回必須、修正する):
+
+- privacy gate の迂回 (許可外 field・本文・secret 形状の値が出力に出る)
+- 実 baseline (`extract` → `aggregate` の live 入力) で SLI の値・分母を誤る、または未観測/未接続を 0 件や合格として確定する
+- 文書 (owner-summary/plan.md) の結論が baseline EDN と矛盾する
+- test.sh の失敗
+
+非 blocking (後続、本 PR では修正しない):
+
+- 未接続 source (approval/rescue/effect/safety/Hermes/collector) や、現在の extract が生成しない入力形 (破損・不正値・synthetic のみの組み合わせ) でだけ起きる判定の穴。これらは §3 の設計是正 (入力完全性の一元判定・時刻区間・property test) で一括して扱う。
+- live データ増分による数値の小さなずれ (baseline は `baseline-2026-10-29.edn` 生成時点の値を正とする)。
+- 表記・文書構成の好み。
+
+後続リスト (別票で起票予定):
+
+1. §3 の設計是正 1〜4 (入力完全性の一元判定、時刻区間、property/invariant test、固定 snapshot での baseline 再現)
+2. runner の連続 gate 失敗予算 (§4)
+3. 案 A 第 1 段階 (runner emit + Hermes hook plugin) は Owner 承認後に着手。接続時に該当 source の②を blocking として再評価する。
