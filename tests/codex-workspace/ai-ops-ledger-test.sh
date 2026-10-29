@@ -150,3 +150,41 @@ AI_OPS_MODULE="${module}" AI_OPS_ROOT="${concurrent_root}" AI_OPS_EXPECTED="$((p
 (when-not (every? second checks) (println "stats:" s "lines:" n-lines) (System/exit 1))
 (println "ai-ops-ledger-test: concurrent checks passed")
 '
+
+# A process holding the ledger lock (hung writer) must not block runner
+# lifecycle work: emit! gives up within the bounded wait, returns nil, and the
+# lost write is counted once the lock is free again.
+held_root="${tmp}/held"
+mkdir -p "${held_root}/ai-ops"
+AI_OPS_LOCK="${held_root}/ai-ops/ledger.lock" bb -e '
+(with-open [f (java.io.RandomAccessFile. (System/getenv "AI_OPS_LOCK") "rw")]
+  (.lock (.getChannel f))
+  (spit (str (System/getenv "AI_OPS_LOCK") ".held") "1")
+  (Thread/sleep 4000))
+' &
+holder=$!
+for _ in $(seq 1 100); do [ -f "${held_root}/ai-ops/ledger.lock.held" ] && break; sleep 0.05; done
+CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=300 AI_OPS_MODULE="${module}" AI_OPS_ROOT="${held_root}" bb -e '
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (System/getenv "AI_OPS_ROOT"))
+(def run "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57")
+(defn ev [] (ai-ops-ledger/emit! root {:event_id (ai-ops-ledger/event-id "BOXP-1" run "started") :task_id "BOXP-1"
+                                       :request_id "req:BOXP-1" :run_id run :event_type "run.started"}))
+(def t0 (System/currentTimeMillis))
+(def r (ev))
+(def elapsed (- (System/currentTimeMillis) t0))
+(def gate-r (ai-ops-ledger/record-gate! root "all" "pass"))
+(def metrics-r (ai-ops-ledger/write-metrics! root))
+(Thread/sleep 4500)
+(def r2 (ev))
+(def s (ai-ops-ledger/read-stats root))
+(def checks [["held lock: emit returns nil" (nil? r)]
+             ["held lock: emit gives up within bound" (< elapsed 2500)]
+             ["held lock: record-gate/write-metrics do not throw" (and (nil? gate-r) (nil? metrics-r))]
+             ["after release: emit succeeds" (some? r2)]
+             ["after release: lost write counted" (= 1 (:write-errors s))]])
+(doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
+(when-not (every? second checks) (println "stats:" s "elapsed:" elapsed) (System/exit 1))
+(println "ai-ops-ledger-test: held-lock checks passed")
+'
+wait "${holder}"

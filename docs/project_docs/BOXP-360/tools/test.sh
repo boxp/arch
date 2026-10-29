@@ -1511,6 +1511,33 @@ bb -e '
   (assert (= 2 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (get-in r [:sli :corrections-per-task]))))
 (println "ok   同じ run 内の別々の gate 失敗由来の是正を ledger 統合で落とさない")'
 
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; 統合時は実 gate 結果を持つ ledger 側の分類を正とする (pr-gate 失敗は ledger では unknown、derived は一律 gate_defect と推定)
+(let [r0 "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57"
+      r1 "20261029T063201Z-7d2adcd6-e49e-4399-b92c-d22645e07a3b"
+      base {:task_id "BOXP-96" :request_id "req:BOXP-96" :source "task-board-runner" :occurred_at "2026-10-29T06:32:01Z"}
+      derived (assoc base :event_id (str "BOXP-96/" r1 ":corr") :run_id r1 :event_type "correction" :source "derived" :classifier "rule"
+                     :evidence_event_ids [(str "BOXP-96/" r1 ":started") (str "BOXP-96/" r0 ":finished")]
+                     :correction_class "gate_defect" :correction_origin "agent-system" :confidence "high")
+      evs [(assoc base :event_id (str "BOXP-96/" r0 ":started") :run_id r0 :event_type "run.started")
+           (assoc base :event_id (str "BOXP-96/" r0 ":finished") :run_id r0 :event_type "run.finished" :status "retrying")
+           (assoc base :event_id (str "BOXP-96/" r1 ":started") :run_id r1 :event_type "run.started")
+           (assoc base :event_id (str "BOXP-96/" r1 ":finished") :run_id r1 :event_type "run.finished" :status "succeeded" :result "review")
+           derived
+           (assoc base :event_id (str "BOXP-96/" r0 ":ledger:correction") :run_id r0 :event_type "correction" :classifier "rule"
+                  :correction_class "unknown" :correction_origin "unknown" :confidence "low")]
+      r (ai-ops-sli/aggregate* evs)
+      merged (:events (ai-ops-sli/merge-ledger-events evs))
+      corr (filter #(= "correction" (:event_type %)) merged)]
+  (assert (= 1 (get-in r [:input :ledger-merged])) (pr-str (:input r)))
+  (assert (= [(:event_id derived)] (map :event_id corr)) (pr-str corr))
+  (assert (= ["unknown" "unknown" "low"] ((juxt :correction_class :correction_origin :confidence) (first corr))) (pr-str corr))
+  (assert (= (:evidence_event_ids derived) (:evidence_event_ids (first corr))))
+  (assert (= 0 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (get-in r [:sli :corrections-per-task])))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unknown-cause-tasks])) (pr-str (get-in r [:sli :agent-system-correction-task-ratio]))))
+(println "ok   ledger 統合時は実 gate 結果の是正分類を保持する")'
+
 cat >"$tmp/emit-ledger.clj" <<EOF
 (load-file "$(pwd)/../../../../docker/codex-workspace/task-board/ai_ops_ledger.bb")
 (let [t "BOXP-96" r "20261029T065116Z-73b3af54-9911-4b9a-aefe-6352c5ec0973"

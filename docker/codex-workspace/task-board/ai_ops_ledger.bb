@@ -100,23 +100,40 @@
 ;; ---------------------------------------------------------------------------
 ;; storage
 
-(def ledger-mutex (Object.))
+(def ledger-mutex (java.util.concurrent.locks.ReentrantLock.))
+;; Write errors that could not be persisted to stats (e.g. lock timeout); rendered into metrics.
+(def unrecorded-write-errors (atom 0))
 
 (defn ai-ops-dir [root] (fs/path root "ai-ops"))
 (defn lock-path [root] (fs/path (ai-ops-dir root) "ledger.lock"))
 
+(defn lock-timeout-ms []
+  (try (Long/parseLong (or (System/getenv "CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS") ""))
+       (catch Exception _ 2000)))
+
 (defn with-ledger-lock
-  "Serialize ledger/stats/metrics writes across threads (`locking`) and across
-  processes sharing the root (runner `loop`, manual `tick`, helper commands)
-  with an exclusive FileLock on `<root>/ai-ops/ledger.lock`."
+  "Serialize ledger/stats/metrics writes across threads (ReentrantLock) and
+  across processes sharing the root (runner `loop`, manual `tick`, helper
+  commands) with an exclusive FileLock on `<root>/ai-ops/ledger.lock`. Both
+  waits are bounded by `lock-timeout-ms`; on timeout this throws ex-info."
   [root f]
-  (locking ledger-mutex
+  (when-not (.tryLock ledger-mutex (lock-timeout-ms) java.util.concurrent.TimeUnit/MILLISECONDS)
+    (throw (ex-info "ai-ops ledger lock timeout" {:root (str root)})))
+  (try
     (fs/create-dirs (ai-ops-dir root))
     (with-open [file (java.io.RandomAccessFile. (str (lock-path root)) "rw")
                 channel (.getChannel file)]
-      (let [_file-lock (.lock channel)]
+      ;; Bounded wait: a holder that hangs must not stall runner lifecycle
+      ;; work. On timeout we throw and callers count it as a write error / drop.
+      (let [deadline (+ (System/currentTimeMillis) (lock-timeout-ms))
+            _file-lock (loop []
+                         (or (.tryLock channel)
+                             (if (< (System/currentTimeMillis) deadline)
+                               (do (Thread/sleep 20) (recur))
+                               (throw (ex-info "ai-ops ledger lock timeout" {:root (str root)})))))]
         ;; Closing the channel releases the lock.
-        (f)))))
+        (f)))
+    (finally (.unlock ledger-mutex))))
 (defn ledger-dir [root] (fs/path (ai-ops-dir root) "ledger"))
 (defn stats-path [root] (fs/path (ai-ops-dir root) "ledger-stats.edn"))
 (defn metrics-path [root] (fs/path (ai-ops-dir root) "metrics.prom"))
@@ -172,7 +189,10 @@
       (with-ledger-lock
        root
        (fn []
-        (let [now (str (java.time.Instant/now))
+        (let [[pending _] (reset-vals! unrecorded-write-errors 0)
+              _ (when (pos? pending)
+                  (update-stats! root #(update % :write-errors (fnil + 0) pending)))
+              now (str (java.time.Instant/now))
               [e redacted] (gate (merge {:schema_version schema-version
                                          :source "task-board-runner"
                                          :occurred_at now
@@ -203,7 +223,7 @@
                 e)))))
       (catch Exception _
         (try (with-ledger-lock root #(update-stats! root (fn [s] (count-in s [:write-errors]))))
-             (catch Exception _ nil))
+             (catch Exception _ (swap! unrecorded-write-errors inc)))
         nil))))
 
 (def gate-results #{"pass" "fail" "skip"})
