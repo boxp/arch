@@ -37,6 +37,22 @@ cat >>"$tmp/timing.jsonl" <<'EOF'
 {"event_id":"cov-one-12345678","event_type":"coverage.connected","coverage_target":"acceptance-history"}
 EOF
 bb ai_ops_sli.bb aggregate --synthetic "$tmp/timing.jsonl" >"$tmp/timing.edn"
+cat >"$tmp/invalid-origin.jsonl" <<'EOF'
+{"event_id":"BOXP-1:run","task_id":"BOXP-1","event_type":"run.started"}
+{"event_id":"BOXP-1:correction","task_id":"BOXP-1","event_type":"correction","correction_origin":"invalid","correction_class":"invalid","occurred_at":"2026-10-20T01:00:00Z"}
+{"event_id":"BOXP-1:accepted","task_id":"BOXP-1","event_type":"task.accepted","occurred_at":"2026-10-20T02:00:00Z"}
+EOF
+bb ai_ops_sli.bb aggregate "$tmp/invalid-origin.jsonl" >"$tmp/invalid-origin.edn"
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [r (edn/read-string (slurp (first *command-line-args*)))
+      gated (:event (ai-ops-sli/privacy-gate {:event_id "BOXP-1:test" :correction_origin "invalid" :correction_class "invalid"}))]
+  (assert (= ["redacted" "redacted"] ((juxt :correction_origin :correction_class) gated)))
+  (assert (= "unknown" (ai-ops-sli/correction-origin gated)))
+  (assert (= "agent-system" (ai-ops-sli/correction-origin (assoc gated :correction_class "source_mismatch"))))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unknown-cause-tasks])))
+  (assert (= [0 1] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))))
+  (println "ok   不正な origin と class は unknown として first-pass 不合格"))' "$tmp/invalid-origin.edn"
 cat >"$tmp/coverage.jsonl" <<'EOF'
 {"event_id":"cov-one-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
 {"event_id":"cov-two-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}

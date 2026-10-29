@@ -18,7 +18,7 @@
 | Grafana 13.2.2 / Alloy (DaemonSet 7) | Alloy は pod のファイルログだけを Loki へ送る。`otelcol.receiver` なし | dashboard は再利用。OTLP trace の受け口は今はない |
 | Tempo / Jaeger / OTel collector / Langfuse / ClickHouse / Postgres | 全 namespace で workload/service が見つからない (名前・image での検索) | 新しく作るなら構築・backup・保守のコストが増える |
 | Hermes `sha-88638ef` | lifecycle hook (`pre/post_llm_call`, `pre/post_tool_call`, `pre_approval_request`/`post_approval_response`, `on_session_*`, `on_kanban_*`, `post_gateway_admission` など) と plugin dispatch は**配備版コードに実在**。`observability/langfuse` は catalog plugin への参照だけで、plugin 本体は配備されていない。有効な plugin は `kohako-g2-context` のみ。同梱の `shared_metrics` の送信先は `telemetry.nousresearch.com` (外部) で、config 上は未設定 | Hermes 側の取得経路は既存 hook を使う metadata-only plugin にする。独自 hook は新設しない。shared_metrics は外部送信なので使わない |
-| Task Board runner | `runs/<ticket>/<run>/summary.edn` (1463 件)、`delegation.json` (124)、`outbox/*.edn` (223、2026-10-22 以降、`event-id`/`revision`/`redeliveries`/`hermes-status` あり) | 既存の metadata だけで baseline を取る |
+| Task Board runner | `runs/<ticket>/<run>/summary.edn` (1465 件)、`delegation.json` (126)、`outbox/*.edn` (223、2026-10-22 以降、`event-id`/`revision`/`redeliveries`/`hermes-status` あり) | 既存の metadata だけで baseline を取る |
 | 未確認 (unknown) | codex-workspace から Prometheus/Loki/dashboard への HTTP は timeout、`pods/exec`・`portforward`・`metrics.k8s.io` は Forbidden → 既存 series 名、PVC 使用量、scrape 対象数、ノードの空き資源、Grafana 認証、Alertmanager の通知先 | 「無い」ではなく unknown として扱う。導入判断の前に Owner 権限での確認が要る |
 
 ## 3. 共通 event schema `ai-ops-event/v0`
@@ -32,7 +32,7 @@
 - **差戻し分類** (`correction_class` / `correction_origin` / `classifier`=rule|human|model / `classifier_version` / `confidence` / `evidence_event_ids`):
   - agent-system 起因: `instruction_violation`、`source_mismatch` (原典不一致)、`done_claim_without_execution` (未実施を完成扱い)、`assignee_regression` (担当復帰)、`gate_defect` (CI / codex review の指摘)
   - 非 agent 起因: `preference_adjustment`、`scope_addition`、`unavoidable_safety_decision`、`external_failure`
-  - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。origin が省略された場合は上記 class から補い、明示された origin は優先する。人の訂正 (`classifier=human`) は同じ evidence に対する分類のみを上書きし、元の是正の時刻と ID を保持する。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
+  - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。origin が省略または不正な場合は有効な class から補い、それも不正なら unknown とする。有効な origin は優先する。人の訂正 (`classifier=human`) は同じ evidence に対する分類のみを上書きし、元の是正の時刻と ID を保持する。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
 - **privacy gate (生成元で適用)**: allowlist にある key だけを通す (`ai_ops_sli.bb` の `allowed-keys`)。許可値も短い識別子に限定し、本文、認証情報、query 付き URL、改行などの不正値を redact し、不正な event_id は event ごと拒否して件数を stderr に出す。extract と emit-sim の両方に適用する。server 側の masking には頼らない。通常の会話本文は中央 DB へ copy しない。
 - **token / cost**: provider が返した値だけを記録する。subscription CLI は `cost_source=unknown` とし、API 単価を掛けて実請求に見せない。
 
@@ -59,14 +59,14 @@
 
 ## 5. 実測 baseline (既存 metadata のみ)
 
-正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 02:57頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
+正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 03:02頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
 
-- ticket 360、run 1463、event 4435 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。
+- ticket 360、run 1465、event 4439 (done ticket の現在状態 snapshot を追加)。run 履歴のない ticket は 70。
 - outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13 (現在の lane snapshot を再open履歴より優先して再集計)。
 - agent-system 是正 task 率: **43/284 (15.1%)**。原因 unknown の task は 107、unknown 是正 event は 206。
 - first acceptance 適合率: **94/223 (42.2%)**。未評価を不合格として含めると 94/283 (33.2%)、未評価 60。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
-- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 557、idle-timeout 7。delegation は delegated 68、exempt 56。
-- extract の order-inversions 812 は glob の読み取り順から出たもので、実際の到着順ではない。
+- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 559、idle-timeout 7。delegation は delegated 69、exempt 56、failed 1。
+- extract の order-inversions 814 は glob の読み取り順から出たもので、実際の到着順ではない。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
 
 ## 6. 合成 E2E pilot (`tools/test.sh`)

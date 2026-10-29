@@ -284,7 +284,8 @@
    "external_failure" "non-agent"})
 
 (defn correction-origin [e]
-  (or (:correction_origin e) (correction-class-origin (:correction_class e)) "unknown"))
+  (or (#{"agent-system" "non-agent" "unknown"} (:correction_origin e))
+      (correction-class-origin (:correction_class e)) "unknown"))
 
 (defn task-outcome [evs]
   (let [latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened"} (:event_type %)) evs)))

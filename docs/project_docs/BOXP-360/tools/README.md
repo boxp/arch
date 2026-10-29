@@ -25,6 +25,6 @@ run 履歴の無い受入済み ticket（accepted-without-run-history）は是�
 
 通常モードの `event_id` / `parent_event_id` / `evidence_event_ids` は ticket 形式、`cov-<source>-<8桁の16進数>`、または `req-` / `conv-` に英小文字・数字・ハイフン8〜64文字を続けた形式を使う。会話 ID には任意で `/` と英数字・`:`, `_`, `-` の接尾辞を付けられる。最大128文字で、token パターンは禁止する。
 
-状態は時刻付き遷移を時刻順に評価し、抽出時の現在状態を示す `snapshot=current` は履歴より優先し、その他の時刻なし snapshot は時刻付き状態 event が存在しない場合に限り使用する。時刻不明の agent 起因または原因不明の是正は first acceptance を不合格とする。是正 origin が省略された場合は plan の class 分類から補い、明示された origin を優先する。`approval.resolved` は保持するが重複承認の分母には含めない。
+状態は時刻付き遷移を時刻順に評価し、抽出時の現在状態を示す `snapshot=current` は履歴より優先し、その他の時刻なし snapshot は時刻付き状態 event が存在しない場合に限り使用する。時刻不明の agent 起因または原因不明の是正は first acceptance を不合格とする。是正 origin が省略または不正な場合は有効な class 分類から補い、それも不正なら unknown として数える。有効な origin は優先する。`approval.resolved` は保持するが重複承認の分母には含めない。
 
 `coverage.hermes-conversation` は、source が `synthetic:hermes` 等の Hermes、runtime が `hermes`、または `coverage.connected` の対象が `hermes-conversation` のイベントを観測すると `connected`、それ以外は `not-connected` とする。合成イベントも接続として扱う。`by-stratum` の `accepted` と `first-pass` は全体の first-acceptance-conformance と同じ観測済み受入タスクを対象とし、それぞれ分母と分子に対応する。
