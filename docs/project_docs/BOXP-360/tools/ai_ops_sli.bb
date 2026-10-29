@@ -13,6 +13,7 @@
   (:require [babashka.fs :as fs]
             [cheshire.core :as json]
             [clojure.edn :as edn]
+            [clojure.java.io :as io]
             [clojure.string :as str]))
 
 (def schema-version "ai-ops-event/v0")
@@ -118,14 +119,26 @@
 
 (def ticket-statuses #{"ready" "review" "blocked" "backlog" "in-progress" "done" "cancelled"})
 
+(def frontmatter-max-lines 200)
+
 (defn frontmatter
   "開始/終了の `---` が揃い、必須field (status / created) を持つ frontmatter だけを map で返す。
   終了区切りが無い (本文の status: 等まで取り込み得る) / 必須field欠落 / 未知の status (例 donee) / 読み取り例外 (権限不足等) は nil (呼び出し側で破損扱い)。"
   [f]
-  (let [lines (try (str/split-lines (slurp (str f))) (catch Exception _ nil))
-        body (rest lines)
-        fm-lines (take-while #(not= "---" %) body)]
-    (when (and (= "---" (first lines)) (< (count fm-lines) (count body)))
+  ;; 本文は読まない: 終了区切り `---` までを逐次読み、frontmatter-max-lines を超えても閉じなければ破損扱い
+  (let [[open fm-lines closed?]
+        (try (with-open [r (io/reader (str f))]
+               (let [ls (line-seq r)]
+                 (if (not= "---" (first ls))
+                   [false nil false]
+                   (loop [acc [] more (rest ls)]
+                     (cond
+                       (empty? more) [true acc false]
+                       (= "---" (first more)) [true acc true]
+                       (>= (count acc) frontmatter-max-lines) [true acc false]
+                       :else (recur (conj acc (first more)) (rest more)))))))
+             (catch Exception _ [false nil false]))]
+    (when (and open closed?)
       (let [m (->> fm-lines
                    (keep #(when-let [[_ k v] (re-matches #"^([a-z_]+):\s*(.*)$" %)] [(keyword k) (str/trim v)]))
                    (into {}))]

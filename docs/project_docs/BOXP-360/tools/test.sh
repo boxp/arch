@@ -1397,3 +1397,15 @@ bb -e '
   (assert (= [1 2] ((juxt :count :denominator) fa)) (pr-str fa))
   (assert (= 1 (:acceptance-day-ambiguous fa)) (pr-str fa)))
 (println "ok   日粒度の是正は当日全体の期間として受入と比較し前後不明を別掲")'
+
+tmp_fm=$(mktemp -d); trap 'rm -rf "$tmp" "$tmp_status" "$tmp_fm"' EXIT
+printf -- '---\ncreated: 2026-10-20\nstatus: done\n---\n本文 Bearer secret-body\n' >"$tmp_fm/BOXP-136.md"
+printf -- '---\ncreated: 2026-10-20\n本文に区切り無し\nstatus: done\n' >"$tmp_fm/BOXP-137.md"
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [[ok open] *command-line-args*]
+  ;; ファイル全体を slurp せず、終了区切りまでだけ読む (本文をプロセスに取り込まない)
+  (with-redefs [slurp (fn [& _] (throw (ex-info "ticket file must not be slurped" {})))]
+    (assert (= {:created "2026-10-20" :status "done"} (ai-ops-sli/frontmatter ok)) "frontmatter 抽出失敗")
+    (assert (nil? (ai-ops-sli/frontmatter open)) "終了区切り無しは破損扱い")))
+(println "ok   ticket frontmatter は終了区切りまで逐次読み、本文を読み込まない")' "$tmp_fm/BOXP-136.md" "$tmp_fm/BOXP-137.md"
