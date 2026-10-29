@@ -789,3 +789,21 @@ bb -e '
   (assert (= 3 (get-in fa [:incl-unevaluated-as-not-pass :denominator])) (pr-str fa))
   (assert (= 1 (reduce + (map :acceptance-day-ambiguous (vals (:by-stratum r)))))))
 (println "ok   日粒度の受入と同日の是正は前後不明として first acceptance の分子・分母から除き別掲する")'
+
+tmp_str=$(mktemp -d)
+mkdir -p "$tmp_str/vault/Tickets" "$tmp_str/root/runs/BOXP-1/20261020T010000Z-aaaa" "$tmp_str/root/runs/BOXP-1/20261020T030000Z-bbbb" "$tmp_str/root/runs/BOXP-404/20261020T010000Z-cccc"
+printf -- '---\ncreated: 2026-10-20\nstatus: in-progress\n---\n' > "$tmp_str/vault/Tickets/BOXP-1.md"
+echo '{:ticket "BOXP-1" :run-id "20261020T010000Z-aaaa" :agent "codex" :status "succeeded" :result "review" :action "implement" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_str/root/runs/BOXP-1/20261020T010000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-1" :run-id "20261020T030000Z-bbbb" :agent "codex" :status "interrupted" :action "implement" :finished-at "2026-10-20T04:00:00Z"}' > "$tmp_str/root/runs/BOXP-1/20261020T030000Z-bbbb/summary.edn"
+echo '{:ticket "BOXP-404" :run-id "20261020T010000Z-cccc" :agent "codex" :status :succeeded :result "review" :action :implement :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_str/root/runs/BOXP-404/20261020T010000Z-cccc/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_str/root" "$tmp_str/vault" > "$tmp_str/x.jsonl" 2>/dev/null
+bb -e "
+(require '[cheshire.core :as json] '[clojure.string :as str])
+(let [evs (->> (str/split-lines (slurp \"$tmp_str/x.jsonl\")) (map #(json/parse-string % true)))
+      ty (fn [t] (set (keep #(when (= t (:task_id %)) (:event_type %)) evs)))]
+  (assert (contains? (ty \"BOXP-1\") \"run.interrupted\") (pr-str (ty \"BOXP-1\")))
+  (assert (= 1 (count (filter #(and (= \"BOXP-1\" (:task_id %)) (= \"run.finished\" (:event_type %))) evs))))
+  (assert (contains? (ty \"BOXP-1\") \"task.reopened\") (pr-str (ty \"BOXP-1\")))
+  (assert (every? (ty \"BOXP-404\") [\"run.started\" \"run.finished\" \"run.unreadable\"]) (pr-str (ty \"BOXP-404\")))
+  (println \"ok   文字列形式の run status/action も keyword と同じく集計し、vault に無い ticket の run も計上して ticket 欠落を明示する\"))"
+rm -rf "$tmp_str"

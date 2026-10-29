@@ -221,12 +221,17 @@
                         (group-by :ticket))
         runs (->> summaries
                   (keep (fn [f] (when-let [s (and (valid-summary? f) (read-edn f))]
-                                  (let [d (fs/path (fs/parent f) "delegation.json")]
+                                  ;; :status/:action は文字列形式も許可するため keyword に正規化してから比較する
+                                  (let [s (cond-> (update s :status keyword) (:action s) (update :action keyword))
+                                        d (fs/path (fs/parent f) "delegation.json")]
                                     (cond-> s (fs/exists? d)
                                       (assoc :delegation-kind (try (:kind (json/parse-string (slurp (str d)) true)) (catch Exception _ "unparsable"))))))))
-                  (group-by :ticket))]
-    (doseq [[ticket fm] (sort-by key tickets)
-            :let [broken? (= ::broken fm)
+                  (group-by :ticket))
+        ;; vault に ticket が無い run (削除/移動) も黙って除外せず、run を計上したうえで ticket 欠落として未評価にする
+        all-tickets (merge (zipmap (concat (keys runs) (keys unreadable)) (repeat ::missing)) tickets)]
+    (doseq [[ticket fm] (sort-by key all-tickets)
+            :let [missing? (= ::missing fm)
+                  broken? (or missing? (= ::broken fm))
                   fm (if broken? {} fm)
                   _ (when broken? (swap! stats update :input-unreadable (fnil inc 0))
                       (println (json/generate-string {:collection_lost "input_unreadable"})))
@@ -236,7 +241,7 @@
                   evs (concat
                        (if broken?
                          ;; frontmatter 破損: 該当 task を unreadable として未評価にする (分母から黙って消さない)
-                         [{:schema_version schema-version :event_id (str ticket ":frontmatter-unreadable") :task_id ticket
+                         [{:schema_version schema-version :event_id (str ticket (if missing? ":ticket-missing" ":frontmatter-unreadable")) :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "run.unreadable"
                            :occurred_at nil}]
                          [{:schema_version schema-version :event_id (str ticket ":requested") :task_id ticket
@@ -272,10 +277,6 @@
         (do (swap! stats update :input-unreadable (fnil inc 0))
             (println (json/generate-string {:collection_lost "input_unreadable"})))
         (emit-gated stats ev)))
-    ;; ticket が vault に無い run の破損 summary も欠落として残す
-    (doseq [[ticket us] unreadable :when (not (contains? tickets ticket)) _ us]
-      (swap! stats update :input-unreadable (fnil inc 0))
-      (println (json/generate-string {:collection_lost "input_unreadable"})))
     (binding [*out* *err*] (prn @stats))))
 
 ;; ---------------------------------------------------------------------------
