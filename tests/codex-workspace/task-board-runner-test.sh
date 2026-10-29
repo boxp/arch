@@ -1625,6 +1625,7 @@ test_review_without_repo_marker_skips_pr_gates() {
   assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: review$'
   # A skipped gate (no PR to check) must not be counted as a pass.
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "skip"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "skip"\] 1'
   if grep -q '\["all" "pass"\]' "${state}/ai-ops/ledger-stats.edn"; then
     fail "review-none gate must not be counted as pass"
   fi
@@ -3228,6 +3229,11 @@ test_ai_ops_ledger_records_run_lifecycle() {
   # gate="all" is the overall denominator and must count the failure too.
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "fail"\] 1'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "pass"\] 1'
+  # Individual gates count their successes too, not only failures.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "pass"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["mergeability" "pass"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["codex-review" "pass"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "pass"\] 2'
 }
 
 test_ai_ops_ledger_disabled_by_env() {

@@ -176,12 +176,23 @@
     {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "medium"}
     {:correction_class "unknown" :correction_origin "unknown" :confidence "low"}))
 
+(defn gate-results
+  "Individual [gate result] pairs of a review gate, excluding gate=all."
+  [review-gate]
+  (or (not-empty (:gate-results review-gate))
+      (when (and (not (:ok? review-gate)) (:gate review-gate))
+        [[(name (:gate review-gate)) "fail"]])))
+
 (defn record-ai-ops-gate!
   "Count the review gate result and record a failed gate as a correction."
   [ticket-id run-id assignee action review-gate]
   (try
-    (when (and @ai-ops-module-loaded? (:gate review-gate))
-      ((resolve 'ai-ops-ledger/record-gate!) (root) (name (:gate review-gate)) false))
+    ;; Count every individual gate result (pass / fail / skip), so a
+    ;; per-gate failure rate has its successes in the denominator. A gate
+    ;; result without :gate-results falls back to counting the failed gate.
+    (when @ai-ops-module-loaded?
+      (doseq [[gate result] (gate-results review-gate)]
+        ((resolve 'ai-ops-ledger/record-gate!) (root) gate result)))
     ;; gate="all" is the overall denominator: count every evaluated result,
     ;; failures included, or the overall failure rate is understated.
     (when (and @ai-ops-module-loaded? (not (:ok? review-gate)))
@@ -2103,6 +2114,7 @@
                (= :passed (:state ci)))
           {:ok? true
            :url pr-url
+           :gate-results [["mergeability" "pass"] ["ci" "pass"]]
            :message (str (:message merge) " " (:message ci))}
 
           ;; Explicit opt-in: repo is listed in CODEX_TASK_BOARD_NO_CI_REPOS and
@@ -2111,6 +2123,7 @@
           (and skip-ci? no-checks? (= "CLEAN" (some-> (:mergeStateStatus pr) str/upper-case)))
           {:ok? true
            :url pr-url
+           :gate-results [["mergeability" "pass"] ["ci" "skip"]]
            :message (str (:message merge) " CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS.")}
 
           (> (System/currentTimeMillis) deadline)
@@ -2168,6 +2181,7 @@
       (codex-review-clean? last-message)
       {:ok? true
        :url pr-url
+       :gate-results [["codex-review" "pass"]]
        :message "codex review reported no actionable findings."}
 
       :else
@@ -2180,19 +2194,24 @@
                      (when-let [summary (not-empty (codex-review-summary last-message))]
                        (str ": " summary)))})))
 
-(defn review-gate! [run-dir last-message]
+(defn review-gate!
+  "Evaluate the PR gates. :gate-results lists every individual gate result as
+  [gate pass|fail|skip] so per-gate success is counted, not only failures."
+  [run-dir last-message]
   (try
     (let [pr-urls (github-pr-urls last-message)]
       (cond
         (seq pr-urls)
         (loop [remaining pr-urls
                passed []
-               merged []]
+               merged []
+               results [["pr-url" "pass"]]]
           (if-let [pr-url (first remaining)]
             (let [pr-state (wait-for-pr-state! pr-url)]
               (cond
                 (not (:ok? pr-state))
                 (assoc pr-state
+                       :gate-results (conj results [(name (:gate pr-state)) "fail"])
                        :checked-pr-urls passed
                        :merged-pr-urls merged
                        :pr-urls pr-urls)
@@ -2201,21 +2220,26 @@
                 ;; review is skipped too. Both lists below are persisted in
                 ;; summaries and must stay URL-only.
                 (:merged? pr-state)
-                (recur (rest remaining) passed (conj merged pr-url))
+                (recur (rest remaining) passed (conj merged pr-url)
+                       (into results [["mergeability" "skip"] ["ci" "skip"] ["codex-review" "skip"]]))
 
                 :else
-                (let [review (run-codex-review! run-dir pr-url)]
+                (let [review (run-codex-review! run-dir pr-url)
+                      results (into results (:gate-results pr-state))]
                   (if-not (:ok? review)
                     (assoc review
+                           :gate-results (conj results [(name (:gate review)) "fail"])
                            :checked-pr-urls passed
                            :merged-pr-urls merged
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
                     ;; This field is persisted in summaries, so it must remain a
                     ;; URL list rather than carrying arbitrary check/review text.
-                    (recur (rest remaining) (conj passed pr-url) merged)))))
+                    (recur (rest remaining) (conj passed pr-url) merged
+                           (into results (:gate-results review)))))))
             {:ok? true
              :skipped? (empty? passed)
+             :gate-results results
              :pr-urls pr-urls
              :checked-pr-urls passed
              :merged-pr-urls merged
@@ -2226,6 +2250,7 @@
         (no-repo-review-marker? last-message)
         {:ok? true
          :skipped? true
+         :gate-results [["pr-url" "skip"]]
          :message "TASK_BOARD_REVIEW_PR: none was provided; PR gates were skipped because no repository changes were reported."}
 
         :else
@@ -3858,6 +3883,16 @@
                                     [{:gate :ci} "unknown"]]]
       (when-not (= expected (:correction_origin (gate-correction gate-result)))
         (swap! failures conj (str "gate-correction origin for " gate-result))))
+    ;; BOXP-360: each individual gate is counted pass / fail / skip, so the
+    ;; per-gate failure rate has its successes in the denominator.
+    (doseq [[gate-result expected] [[{:ok? true :gate-results [["pr-url" "pass"] ["ci" "pass"] ["codex-review" "pass"]]}
+                                     [["pr-url" "pass"] ["ci" "pass"] ["codex-review" "pass"]]]
+                                    [{:ok? false :gate :codex-review :gate-results [["ci" "pass"] ["codex-review" "fail"]]}
+                                     [["ci" "pass"] ["codex-review" "fail"]]]
+                                    [{:ok? false :gate :pr-url} [["pr-url" "fail"]]]
+                                    [{:ok? true :skipped? true} nil]]]
+      (when-not (= expected (gate-results gate-result))
+        (swap! failures conj (str "gate-results for " gate-result))))
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
     ;; Versioned projections cannot affect legacy candidate selection while off.
