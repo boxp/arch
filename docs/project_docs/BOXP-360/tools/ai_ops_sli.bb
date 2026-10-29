@@ -417,8 +417,12 @@
 (def state-fields [:status :result :action :lane_from :lane_to])
 ;; event 種別ごとに outcome/Review 到達の判定に必須の状態 field: 欠落も redact と同じく入力欠落として扱う
 (def required-state-fields {"task.state" [:status] "lane.changed" [:lane_to]})
+(def state-transition-types #{"task.state" "task.accepted" "task.reopened" "task.cancelled" "lane.changed"})
 (defn unverifiable-state-event? [e]
   (or (some #(= "redacted" (get e %)) state-fields)
+      ;; 状態遷移の occurred_at が不正 (redact 済み等) だと時刻なしとして過去側に並び、受入/再open の前後を誤判定するため入力欠落とする
+      ;; (時刻なし current snapshot は occurred_at=nil なので対象外)
+      (and (contains? state-transition-types (:event_type e)) (some? (:occurred_at e)) (nil? (parse-inst (:occurred_at e))))
       (some #(let [v (get e %)] (or (nil? v) (and (string? v) (str/blank? v)))) (get required-state-fields (:event_type e)))))
 (defn input-missing? [t] (or (pos? (:unreadable-runs t 0)) (pos? (:unverifiable-state t 0))))
 
@@ -638,6 +642,11 @@
                       {:status "unknown" :reason "救援 event だった可能性のある欠落 event または task_id 欠落の救援があり、救援発生 task 数を確定できない"
                        :observed-lower-bound (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
                        :lost-events rescue-lost :unlinked-rescues rescue-unlinked}
+                      ;; task 紐付け event の欠落/task_id 欠落は分母 (全 task 数) を過少にするため確定しない
+                      (or (pos? corr-lost) (pos? unlinked-corr))
+                      {:status "unknown" :reason "task の存在を示す event だった可能性のある欠落 event または task_id 欠落の task 紐付け event があり、救援率の分母を確定できない"
+                       :observed (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
+                       :lost-events corr-lost :unlinked-task-events unlinked-corr}
                       :else (ratio (count (filter #(pos? (:rescue %)) tasks)) n))
       :duplicate-approval (cond
                             ;; 承認 event だった可能性のある欠落 (拒否・drop・破損等) があると重複を見落とし得る

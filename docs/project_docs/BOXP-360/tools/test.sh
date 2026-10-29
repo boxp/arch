@@ -1196,3 +1196,27 @@ bb -e '
                                 {:event_id "BOXP-94:rescue" :task_id "BOXP-94" :event_type "owner.rescue"}])]
   (assert (= [1 2] ((juxt :count :denominator) (get-in r [:sli :owner-rescue]))) (pr-str (get-in r [:sli :owner-rescue]))))
 (println "ok   救援 event だけが観測された task も Owner 救援率の分子・分母に含める")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-95:requested" :task_id "BOXP-95" :request_id "req:BOXP-95" :event_type "request.received" :occurred_at "2026-10-20T00:00:00Z"}
+            {:event_id "BOXP-95:run1:started" :task_id "BOXP-95" :run_id "20261020T010000Z-aaaa" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-95:run1:finished" :task_id "BOXP-95" :run_id "20261020T010000Z-aaaa" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-95:accepted" :task_id "BOXP-95" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+      r0 (ai-ops-sli/aggregate* base)
+      _ (assert (= [1 1] ((juxt :count :denominator) (get-in r0 [:sli :first-acceptance-conformance]))) (pr-str (get-in r0 [:sli :first-acceptance-conformance])))
+      r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-95:reopened" :task_id "BOXP-95" :event_type "task.reopened" :occurred_at "not-a-time"}))]
+  (assert (= 1 (get-in r [:input :unverifiable-state-events])) (pr-str (:input r)))
+  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])) (pr-str (get-in r [:sli :first-acceptance-conformance])))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing])) (pr-str (get-in r [:sli :first-acceptance-conformance]))))
+(println "ok   時刻を解釈できない状態遷移 event (task.reopened 等) は入力欠落として該当 task を未評価にする")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-96:rescue" :task_id "BOXP-96" :event_type "owner.rescue"}]
+      r0 (ai-ops-sli/aggregate* base)
+      r1 (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-97:requested" :task_id "bad id" :event_type "request.received"}))]
+  (assert (= [1 1] ((juxt :count :denominator) (get-in r0 [:sli :owner-rescue]))) (pr-str (get-in r0 [:sli :owner-rescue])))
+  (assert (= "unknown" (get-in r1 [:sli :owner-rescue :status])) (pr-str (get-in r1 [:sli :owner-rescue])))
+  (assert (= [1 1] ((juxt :count :denominator) (get-in r1 [:sli :owner-rescue :observed]))) (pr-str (get-in r1 [:sli :owner-rescue]))))
+(println "ok   分母に影響する task 紐付け event の欠落 (不正 ID 拒否等) があれば Owner 救援率を unknown")'
