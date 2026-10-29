@@ -165,9 +165,10 @@
 (defn gate-correction
   "Provisional rule classification of a failed review gate. Only failures
   that show a defect in the agent's output (failed CI checks, review
-  findings, merge state, missing PR URL) count as agent-system. A gate that
-  could not evaluate (CI wait timeout, review command error, gate API error)
-  or a failure without a known kind is unknown."
+  findings, draft or conflicting merge state, missing PR URL) count as
+  agent-system. A gate that could not evaluate (CI wait timeout, missing or
+  unknown mergeStateStatus, review command error, gate API error) or a
+  failure without a known kind is unknown."
   [review-gate]
   (case [(:gate review-gate) (:failure-kind review-gate)]
     ([:ci :check-failure] [:codex-review :findings])
@@ -2060,11 +2061,13 @@
       (:isDraft pr)
       {:state :failed
        :gate :mergeability
+       :failure-kind :merge-state
        :message "GitHub reports this PR is still a draft."}
 
       (= "DIRTY" state)
       {:state :failed
        :gate :conflict
+       :failure-kind :merge-state
        :message "GitHub reports mergeStateStatus=DIRTY, which indicates conflicts with the base branch."}
 
       (#{"UNKNOWN" "BEHIND"} state)
@@ -2076,9 +2079,12 @@
       {:state :passed
        :message (str "GitHub mergeStateStatus=" state ".")}
 
+      ;; A missing or unrecognized state could not be evaluated, so it is not
+      ;; evidence of an output defect.
       :else
       {:state :failed
        :gate :mergeability
+       :failure-kind :merge-state-unknown
        :message (str "GitHub mergeStateStatus=" (or state "missing") " is not review-ready.")})))
 
 (defn wait-for-pr-state! [pr-url]
@@ -2103,7 +2109,7 @@
           (= :failed (:state merge))
           {:ok? false
            :gate (:gate merge)
-           :failure-kind :merge-state
+           :failure-kind (:failure-kind merge)
            :url pr-url
            :retryable? true
            :message (:message merge)}
@@ -3886,12 +3892,24 @@
                                         "claude-opus" "claude-opus-5-5"
                                         "claude-sonnet" "claude-sonnet-5-5"})
       (swap! failures conj "review delegation policy for changed Claude routes"))
+    ;; BOXP-360: draft / conflict are output defects; a missing or unknown
+    ;; mergeStateStatus could not be evaluated and is classified unknown.
+    (doseq [[pr expected] [[{:isDraft true :mergeStateStatus "CLEAN"} "agent-system"]
+                           [{:mergeStateStatus "DIRTY"} "agent-system"]
+                           [{} "unknown"]
+                           [{:mergeStateStatus "SOMETHING_NEW"} "unknown"]]]
+      (let [merge (merge-state pr)]
+        (when-not (and (= :failed (:state merge))
+                       (= expected (:correction_origin
+                                    (gate-correction (select-keys merge [:gate :failure-kind])))))
+          (swap! failures conj (str "merge-state classification for " pr)))))
     ;; BOXP-360: only gate failures that show an output defect are agent-system
     ;; corrections; a gate that could not evaluate stays unknown.
     (doseq [[gate-result expected] [[{:gate :ci :failure-kind :check-failure} "agent-system"]
                                     [{:gate :codex-review :failure-kind :findings} "agent-system"]
                                     [{:gate :conflict :failure-kind :merge-state} "agent-system"]
                                     [{:gate :pr-url} "agent-system"]
+                                    [{:gate :mergeability :failure-kind :merge-state-unknown} "unknown"]
                                     [{:gate :ci :failure-kind :timeout} "unknown"]
                                     [{:gate :mergeability :failure-kind :timeout} "unknown"]
                                     [{:gate :codex-review :failure-kind :command-error} "unknown"]
