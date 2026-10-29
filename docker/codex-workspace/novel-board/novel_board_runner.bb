@@ -3093,12 +3093,18 @@
     (and (= :published (:status state)) (seq (:path state)))))
 
 (defn image-intent? [text]
-  (boolean (re-find #"(?i)挿絵|イラスト|illustration|(?:画像|絵)を?(?:生成|作成|作って|作り直|用意|描|再生成)" (str text))))
+  ;; A request to produce an illustration, not a mere mention: links, embeds
+  ;; and code spans (file names such as `x-illustration.png`) are ignored.
+  (let [plain (-> (str text)
+                  (str/replace #"!?\[\[[^\]]*\]\]" "")
+                  (str/replace #"!?\[[^\]]*\]\([^)]*\)" "")
+                  (str/replace #"`[^`]*`" ""))]
+    (boolean (re-find #"(?i)(?:挿絵|イラスト|illustration|画像|絵)[^。\n]{0,12}?(?:用意|生成|作成|作って|作り直|描|付け|追加|入れ|差し替|やり直|generate|create|draw)" plain))))
 
 (defn image-only-instructions? [text]
   (let [lines (->> (str/split-lines (str text)) (map #(str/replace % #"^\s*(?:[-*]\s+|\d+[.)、]\s*)?" "")) (remove str/blank?))]
     (and (seq lines) (every? image-intent? lines)
-         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開" %) lines))))
+         (not-any? #(re-find #"本文|改稿|書き直|文章|台詞|セリフ|加筆|削除|一人称|展開|変更" %) lines))))
 
 (defn illustration-job-path [novel-id] (fs/path (work-dir novel-id) "illustration-job.edn"))
 
@@ -3813,6 +3819,9 @@
            (and (image-intent? "挿絵も用意してください")
                 (image-only-instructions? "- 挿絵も用意してください")
                 (not (image-intent? "画像資料は再度調べて取得し直してください"))
+                (not (image-intent? "[[character-illustration.png]] を参考に主人公の衣装を変更してください"))
+                (not (image-only-instructions? "- `illustration.png` を参考に衣装を直す"))
+                (image-only-instructions? "- 挿絵を作り直してください\n- イラストを1枚追加")
                 (not (image-only-instructions? "- 挿絵を描く\n- 本文を加筆"))))
     (check "review image action and mixed action"
            (with-redefs [instructions-applied? (constantly false)]
