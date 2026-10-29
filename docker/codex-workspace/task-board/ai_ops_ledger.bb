@@ -479,8 +479,12 @@
 (defn sli-archive-path [root] (fs/path (ledger-dir root) "sli-archive.jsonl"))
 (defn sli-archive-line? [line]
   (let [e (try (json/parse-string line true) (catch Exception _ ::unparsable))]
+    ;; Lines the source gate would not reproduce unchanged (e.g. `{}` or invalid
+    ;; IDs) may be rejected by the aggregator and keep SLIs unknown, so they are
+    ;; archived too; only clean ordinary events are dropped with the day file.
     (or (= ::unparsable e) (not (map? e)) (contains? e :collection_lost) (contains? e :privacy_rejected)
-        (= "correction" (:event_type e)))))
+        (= "correction" (:event_type e))
+        (let [[kept redacted] (gate e)] (not (and kept (zero? redacted) (= kept e)))))))
 
 (defn prune! [root]
   (let [cutoff (.minusDays (java.time.LocalDate/now java.time.ZoneOffset/UTC) (retention-days))]
