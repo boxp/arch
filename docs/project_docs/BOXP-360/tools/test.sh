@@ -947,6 +947,23 @@ grep -q 'ai_ops_sli_determinable{sli="agent_system_correction_task_ratio"} 0' <<
   && grep -q 'ai_ops_sli_determinable{sli="first_acceptance_conformance"} 0' <<<"$zero_out" \
   || { echo "FAIL 分母 0 の SLI が判定可能と出力された"; echo "$zero_out"; exit 1; }
 echo "ok   分母 0 の SLI は Prom で判定不能 (determinable=0) として出す"
+tmp_partial=$(mktemp)
+cat >"$tmp_partial" <<'EOF'
+{"event_id":"BOXP-1:requested","task_id":"BOXP-1","event_type":"request.received","source":"ticket-frontmatter"}
+{"event_id":"BOXP-1:effect","task_id":"BOXP-1","event_type":"effect.applied","effect_key":"op:0000000b","severity":"low"}
+EOF
+partial_out=$(bb ai_ops_sli.bb prom "$tmp_partial")
+grep -q 'ai_ops_sli_source_connected{sli="duplicate_effects"} 0' <<<"$partial_out" \
+  && grep -q 'ai_ops_sli_source_partial{sli="duplicate_effects"} 1' <<<"$partial_out" \
+  && grep -q 'ai_ops_sli_source_connected{sli="critical_safety_events"} 0' <<<"$partial_out" \
+  && grep -q 'ai_ops_sli_source_partial{sli="critical_safety_events"} 1' <<<"$partial_out" \
+  || { echo "FAIL coverage 未宣言の部分観測が source 接続済みと出力された"; echo "$partial_out" | grep source_; exit 1; }
+printf '%s\n' '{"event_id":"cov-effects-0000000a","event_type":"coverage.connected","coverage_target":"duplicate-effects"}' >>"$tmp_partial"
+partial_out=$(bb ai_ops_sli.bb prom "$tmp_partial")
+grep -q 'ai_ops_sli_source_connected{sli="duplicate_effects"} 1' <<<"$partial_out" \
+  && grep -q 'ai_ops_sli_source_partial{sli="duplicate_effects"} 0' <<<"$partial_out" \
+  || { echo "FAIL coverage 宣言済みの source が接続済みと出力されない"; echo "$partial_out" | grep source_; exit 1; }
+echo "ok   coverage 未宣言の部分観測は source_connected=0/source_partial=1、宣言済みなら connected=1"
 
 
 tmp_cxl=$(mktemp -d)

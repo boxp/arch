@@ -953,8 +953,12 @@
         (line "ai_ops_sli_count" {:sli label} (:count s))
         (line "ai_ops_sli_denominator" {:sli label} (:denominator s))))
     (doseq [[section k label] [[:coverage :ready-ack-latency "ready_ack_latency"] [:coverage :tokens-cost "tokens_cost"] [:zero-tolerance :critical-safety-events "critical_safety_events"] [:zero-tolerance :duplicate-effects "duplicate_effects"] [:coverage :hermes-conversation "hermes_conversation"]]
-            :let [s (get-in r [section k]) status (:status s)]]
-      (line "ai_ops_sli_source_connected" {:sli label} (if (and (not (#{"unknown" :unknown "not-connected" :not-connected} status)) (some? s)) 1 0)))
+            :let [s (get-in r [section k]) status (:status s)
+                  observed (and (some? s) (not (#{"unknown" :unknown "not-connected" :not-connected} status)))
+                  ;; coverage 宣言の無い部分観測 (partial/undeclared 等) は接続済みとしない
+                  partial (and observed (some? (:coverage s)) (not= "connected" (:coverage s)))]]
+      (line "ai_ops_sli_source_connected" {:sli label} (if (and observed (not partial)) 1 0))
+      (line "ai_ops_sli_source_partial" {:sli label} (if partial 1 0)))
     (let [lead (get-in r [:sli :lead-time-hours])]
       (when (:n lead)
         (doseq [[q k] [["0.5" :p50] ["0.9" :p90]]] (line "ai_ops_lead_time_hours" {:quantile q} (get lead k)))
