@@ -42,8 +42,10 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   (ev root "started" {:event_type "run.started" :agent "codex-sol-xhigh"})
   (ev root "finished" {:event_type "run.finished" :agent "codex-terra-minimal" :status "succeeded"})
   (ev root "lane" {:event_type "lane.changed" :agent "unknown-high"})
-  (check "reasoning suffix normalized to base agent"
-         (= ["codex-sol" "codex-terra" nil] (mapv :agent (events root))))
+  (ev root "correction" {:event_type "correction" :agent "claude-opus-5-5"})
+  (ev root "interrupted" {:event_type "run.interrupted" :agent "claude-sonnet-5-5-high"})
+  (check "reasoning suffix and Claude model version normalized to base agent"
+         (= ["codex-sol" "codex-terra" nil "claude-opus" "claude-sonnet"] (mapv :agent (events root))))
   (check "normalized agent not counted as redaction" (= 1 (:redacted-values (stats root)))))
 
 ;; invalid IDs are rejected with a body-less marker

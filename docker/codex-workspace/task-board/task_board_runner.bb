@@ -4566,7 +4566,9 @@
            (when (= 2 (count args))
              (when-not (= "--ticket" (first args)) (usage))
              (reset! only-ticket (second args)))
-           (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+           (recover-locks!) (tick!) (drain-in-flight!) (sync-all!)
+           ;; One-shot ticks also refresh metrics.prom (loop! does it per poll).
+           (maybe-write-ai-ops-metrics!))
   ;; BOXP-306: the operator accept / rollback commands are retired. Both print
   ;; the notice and exit without touching any file (a copied command from an
   ;; old Notes line must not restore or rewrite a note by surprise).

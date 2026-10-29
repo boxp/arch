@@ -91,15 +91,18 @@
     :else false))
 
 (def reasoning-suffix-re #"(.+)-(minimal|low|medium|high|xhigh)")
+;; Claude model IDs (e.g. `claude-opus-5-5`) used in place of the route name.
+(def claude-model-re #"(claude-(?:fable|opus|sonnet))-\d+(?:-\d+)*")
 
 (defn normalize-agent
   "Map a runner assignee with a reasoning-level suffix (e.g. `codex-sol-xhigh`)
-  to its allowlisted base assignee so per-agent analysis keeps the value."
+  or a versioned Claude model ID (e.g. `claude-opus-5-5`) to its allowlisted
+  base assignee so per-agent analysis keeps the value."
   [agent]
-  (if-let [[_ base] (and (string? agent)
-                         (not (contains? (:agent enum-values) agent))
-                         (re-matches reasoning-suffix-re agent))]
-    (if (contains? (:agent enum-values) base) base agent)
+  (if (and (string? agent) (not (contains? (:agent enum-values) agent)))
+    (let [unsuffixed (or (second (re-matches reasoning-suffix-re agent)) agent)
+          base (or (second (re-matches claude-model-re unsuffixed)) unsuffixed)]
+      (if (contains? (:agent enum-values) base) base agent))
     agent))
 
 (defn gate

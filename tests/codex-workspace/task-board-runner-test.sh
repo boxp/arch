@@ -3235,6 +3235,8 @@ test_ai_ops_ledger_records_run_lifecycle() {
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["mergeability" "pass"\] 2'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["codex-review" "pass"\] 1'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "pass"\] 2'
+  # One-shot `tick` (not only `loop`) must refresh metrics.prom from the stats.
+  assert_file_contains "${state}/ai-ops/metrics.prom" 'ai_ops_review_gate_total\{gate="ci",result="fail"\} 1'
 }
 
 test_ai_ops_ledger_groom_from_backlog_records_actual_lane() {
