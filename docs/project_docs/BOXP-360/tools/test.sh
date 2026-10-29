@@ -792,7 +792,7 @@ bb -e '
 (println "ok   日粒度の受入と同日の是正は前後不明として first acceptance の分子・分母から除き別掲する")'
 
 tmp_str=$(mktemp -d)
-mkdir -p "$tmp_str/vault/Tickets" "$tmp_str/root/runs/BOXP-1/20261020T010000Z-aaaa" "$tmp_str/root/runs/BOXP-1/20261020T030000Z-bbbb" "$tmp_str/root/runs/BOXP-404/20261020T010000Z-cccc"
+mkdir -p "$tmp_str/vault/Tickets" "$tmp_str/root/outbox" "$tmp_str/root/runs/BOXP-1/20261020T010000Z-aaaa" "$tmp_str/root/runs/BOXP-1/20261020T030000Z-bbbb" "$tmp_str/root/runs/BOXP-404/20261020T010000Z-cccc"
 printf -- '---\ncreated: 2026-10-20\nstatus: in-progress\n---\n' > "$tmp_str/vault/Tickets/BOXP-1.md"
 echo '{:ticket "BOXP-1" :run-id "20261020T010000Z-aaaa" :agent "codex" :status "succeeded" :result "review" :action "implement" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_str/root/runs/BOXP-1/20261020T010000Z-aaaa/summary.edn"
 echo '{:ticket "BOXP-1" :run-id "20261020T030000Z-bbbb" :agent "codex" :status "interrupted" :action "implement" :finished-at "2026-10-20T04:00:00Z"}' > "$tmp_str/root/runs/BOXP-1/20261020T030000Z-bbbb/summary.edn"
@@ -1238,3 +1238,19 @@ bb -e '
   (assert (= {"awaiting-review" 1} (get-in rs [:tasks :outcomes])) (pr-str (get-in rs [:tasks :outcomes])))
   (assert (= 0 (get-in rs [:input :unverifiable-state-events])) (pr-str (:input rs))))
 (println "ok   現在状態 snapshot が無いとき occurred_at 欠落の再open/取消/lane 遷移は前後不明として受入済みと確定せず入力欠落にする")'
+
+# 入力ディレクトリ不在/空の ticket ディレクトリは空データとして集計せずエラー終了する
+tmp_in=$(mktemp -d); trap 'rm -rf "$tmp" "$tmp_in"' EXIT
+for case in no-root empty-tickets no-outbox; do
+  rm -rf "$tmp_in/root" "$tmp_in/vault"
+  case $case in
+    no-root) mkdir -p "$tmp_in/vault/Tickets"; printf -- '---\nstatus: done\ncreated: 2026-10-01\n---\n' >"$tmp_in/vault/Tickets/BOXP-1.md" ;;
+    empty-tickets) mkdir -p "$tmp_in/root/runs" "$tmp_in/root/outbox" "$tmp_in/vault/Tickets" ;;
+    no-outbox) mkdir -p "$tmp_in/root/runs" "$tmp_in/vault/Tickets"; printf -- '---\nstatus: done\ncreated: 2026-10-01\n---\n' >"$tmp_in/vault/Tickets/BOXP-1.md" ;;
+  esac
+  if bb ai_ops_sli.bb extract "$tmp_in/root" "$tmp_in/vault" >"$tmp_in/x.jsonl" 2>/dev/null; then
+    echo "FAIL extract は入力欠落 ($case) でエラー終了する"; exit 1
+  fi
+  [ -s "$tmp_in/x.jsonl" ] && { echo "FAIL 入力欠落 ($case) で event を出さない"; exit 1; }
+done
+echo "ok   入力ディレクトリ不在/空 ticket ディレクトリは空データとして集計せず extract をエラー終了する"

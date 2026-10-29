@@ -209,6 +209,15 @@
         :result (kw-or-str (:result e)) :redelivery (or (:redeliveries e) 0)}])))
 
 (defn extract [root vault]
+  ;; 入力ディレクトリの指定ミス/未マウント/権限不足を空データとして集計しない (SLI を確定値と誤報しないようエラー終了する)
+  (doseq [d [(fs/path vault "Tickets") (fs/path root "runs") (fs/path root "outbox")]]
+    (when-not (and (fs/directory? d) (fs/readable? d))
+      (binding [*out* *err*] (println (str "extract: required input directory is missing or unreadable: " d)))
+      (System/exit 2)))
+  ;; 未マウントの空マウントポイント等で ticket が 1 件も無い場合も空データとして扱わない
+  (when (empty? (fs/glob (fs/path vault "Tickets") "BOXP-*.md"))
+    (binding [*out* *err*] (println (str "extract: no ticket files found under " (fs/path vault "Tickets"))))
+    (System/exit 2))
   (let [stats (atom {:privacy-dropped-keys 0 :privacy-redacted-values 0 :privacy-rejected 0})
         tickets (->> (fs/glob (fs/path vault "Tickets") "BOXP-*.md")
                      ;; ticket 正本は BOXP-<数字>.md のみ (BOXP-144-*.md 等の添付ノートは ticket ではない)
