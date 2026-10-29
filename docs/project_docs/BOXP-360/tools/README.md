@@ -4,7 +4,7 @@
 # 既存 Task Board metadata -> 共通 event (summary.edn / delegation.json kind / outbox / ticket frontmatter のみ読む)
 bb ai_ops_sli.bb extract ~/.codex-task-board "$CODEX_TASK_BOARD_VAULT" > /tmp/events.jsonl
 bb ai_ops_sli.bb aggregate /tmp/events.jsonl   # SLI/guardrail/coverage (EDN)
-bb ai_ops_sli.bb prom /tmp/events.jsonl        # 低 cardinality Prometheus exposition
+bb ai_ops_sli.bb prom /tmp/events.jsonl        # 低 cardinality Prometheus exposition (SLI が unknown のときは率の部品を出さず ai_ops_sli_determinable=0)
 # 生成元 bounded buffer + privacy gate + collector 停止 (index 10..20) の模擬
 bb ai_ops_sli.bb emit-sim --synthetic fixtures/synthetic-events.jsonl 4 10 20 > /tmp/collected.jsonl
 ./test.sh                                      # 合成 E2E と回帰 check

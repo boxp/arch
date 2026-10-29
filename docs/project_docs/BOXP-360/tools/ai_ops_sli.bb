@@ -419,6 +419,8 @@
         unverifiable-severity (count (filter #(and (some? (:severity %)) (not (contains? (:severity enum-values) (:severity %)))) uniq))
         ;; event_type 欠落/不正 (redact 済み) の event は effect/重大 event の可能性を否定できない
         unverifiable-type (count (filter #(not (contains? (:event_type enum-values) (:event_type %))) uniq))
+        ;; 種別不明の event は受入前の correction だった可能性を否定できないため、是正 SLI の欠落にも含める
+        corr-lost (+ corr-lost unverifiable-type)
         dup (- n-in (count uniq))
         ;; 観測順と occurred_at 順の逆転、observed_at より未来の occurred_at (時刻ずれ)
         inversions (->> events (group-by :task_id) vals
@@ -659,11 +661,16 @@
     (line "ai_ops_collection_lost_events_total" {:reason "input_unreadable"} (get-in r [:coverage :collection-lost :input-unreadable]))
     (line "ai_ops_event_order_inversions_total" {} (get-in r [:input :order-inversions]))
     (line "ai_ops_unlinked_task_events_total" {} (get-in r [:coverage :unlinked-task-events]))
-    (let [c (get-in r [:sli :agent-system-correction-task-ratio])
-          c (if (= "unknown" (:status c)) (:observed c) c)]
-      (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))
-      (line "ai_ops_correction_tasks" {:origin "unknown"} (:unknown-cause-tasks c))
-      (line "ai_ops_reached_review_tasks" {} (:denominator c)))))
+    ;; unknown の SLI は観測値を確定値として公開しない。判定可否を別 gauge で出し、dashboard/alert が欠落込みの率を使わないようにする
+    (println "# TYPE ai_ops_sli_determinable gauge")
+    (doseq [[k m] [[:agent-system-correction-task-ratio "agent_system_correction_task_ratio"]
+                   [:first-acceptance-conformance "first_acceptance_conformance"]]]
+      (line "ai_ops_sli_determinable" {:sli m} (if (= "unknown" (get-in r [:sli k :status])) 0 1)))
+    (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
+      (when-not (= "unknown" (:status c))
+        (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))
+        (line "ai_ops_correction_tasks" {:origin "unknown"} (:unknown-cause-tasks c))
+        (line "ai_ops_reached_review_tasks" {} (:denominator c))))))
 
 ;; ---------------------------------------------------------------------------
 

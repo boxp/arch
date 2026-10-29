@@ -906,3 +906,25 @@ bb -e '
       (assert (str/includes? out "\"event_type\":\"correction\"") out)
       (assert (not (str/includes? out "bad id")) out))))
 (println "ok   upstream 拒否 marker は event_type enum のみ保持し、是正に無関係な種別 (notify 等) の拒否では是正 SLI を unknown にしない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-72:run" :task_id "BOXP-72" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-72:fin" :task_id "BOXP-72" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-72:acc" :task_id "BOXP-72" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+      ;; 受入前の correction だった可能性がある種別不明 (欠落/不正) の event
+      r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-72:x" :task_id "BOXP-72" :event_type "bogus" :occurred_at "2026-10-20T03:00:00Z"}))
+      r2 (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-72:y" :task_id "BOXP-72" :occurred_at "2026-10-20T03:00:00Z"}))
+      prom-out (fn [evs] (let [f (str (babashka.fs/create-temp-file))]
+                           (spit f (str/join "\n" (map cheshire.core/generate-string evs)))
+                           (with-out-str (ai-ops-sli/prom f))))]
+  (doseq [x [r r2] k [:first-acceptance-conformance :agent-system-correction-task-ratio]]
+    (assert (= "unknown" (get-in x [:sli k :status])) (pr-str (get-in x [:sli k]))))
+  (let [ok-out (prom-out base)
+        bad-out (prom-out (conj base {:event_id "BOXP-72:x" :task_id "BOXP-72" :event_type "bogus" :occurred_at "2026-10-20T03:00:00Z"}))]
+    (assert (str/includes? ok-out "ai_ops_sli_determinable{sli=\"agent_system_correction_task_ratio\"} 1") ok-out)
+    (assert (str/includes? ok-out "ai_ops_reached_review_tasks 1") ok-out)
+    (assert (str/includes? bad-out "ai_ops_sli_determinable{sli=\"agent_system_correction_task_ratio\"} 0") bad-out)
+    (assert (str/includes? bad-out "ai_ops_sli_determinable{sli=\"first_acceptance_conformance\"} 0") bad-out)
+    (assert (not (re-find #"ai_ops_correction_tasks|ai_ops_reached_review_tasks" bad-out)) bad-out)))
+(println "ok   種別不明 event は是正 SLI を unknown にし、Prom は unknown の是正率を確定値として出さず判定可否 gauge を出す")'
