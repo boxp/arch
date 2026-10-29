@@ -10,7 +10,7 @@ bb ai_ops_sli.bb emit-sim fixtures/synthetic-events.jsonl 4 10 20 > /tmp/collect
 ./test.sh                                      # 合成 E2E と回帰 check
 ```
 
-pilot 用であり runner / Hermes には未接続。extract と emit-sim は allowlist key のみ出力し、不正な値を redact する。stderr の privacy-redacted-values で件数を確認できる。短い識別子以外の文字列は保持しない。
+pilot 用であり runner / Hermes には未接続。extract と emit-sim は allowlist key のみ出力し、不正な値を redact し、不正な event_id の event は拒否する。stderr の privacy-redacted-values / privacy-rejected で件数を確認できる。aggregate は入力を再検証し、追加の拒否件数を coverage.privacy-rejected-invalid-id に記録する。coverage.connected の ID は `cov-<source>-<8桁の16進数>` の形式を使い、宣言ごとに一意にする。短い識別子以外の文字列は保持しない。
 
 zero-tolerance は対応する effect.applied / severity 付き event または coverage.connected event（coverage_target に duplicate-effects / critical-safety-events）を観測した場合にのみ件数を報告し、それ以外は unknown。Prom 出力は zero-tolerance メトリクスを公開しない。first acceptance は最初の受入より前の全是正を対象とし、時刻不明は不合格として扱う。
 

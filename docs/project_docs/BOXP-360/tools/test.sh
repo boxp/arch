@@ -6,8 +6,8 @@ tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 bb ai_ops_sli.bb emit-sim fixtures/synthetic-events.jsonl 64 2>"$tmp/ok.stats" >"$tmp/ok.jsonl"
 cat >>"$tmp/ok.jsonl" <<'EOF'
-{"event_id":"coverage1","event_type":"coverage.connected","coverage_target":"acceptance-history"}
-{"event_id":"coverage2","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
+{"event_id":"cov-acceptance-12345678","event_type":"coverage.connected","coverage_target":"acceptance-history"}
+{"event_id":"cov-effects-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
 EOF
 bb ai_ops_sli.bb aggregate "$tmp/ok.jsonl" >"$tmp/ok.edn"
 bb ai_ops_sli.bb emit-sim fixtures/synthetic-events.jsonl 4 10 20 2>"$tmp/down.stats" >"$tmp/down.jsonl"
@@ -28,18 +28,18 @@ bb ai_ops_sli.bb extract "$tmp/root" "$tmp/vault" >"$tmp/extract.jsonl" 2>"$tmp/
 bb ai_ops_sli.bb aggregate "$tmp/extract.jsonl" >"$tmp/extract.edn"
 bb ai_ops_sli.bb prom "$tmp/extract.jsonl" >"$tmp/extract.prom"
 cat >"$tmp/timing.jsonl" <<'EOF'
-{"synthetic":true,"event_id":"a1","task_id":"a","event_type":"task.accepted","occurred_at":"2026-10-20T02:00:00Z"}
-{"synthetic":true,"event_id":"a2","task_id":"a","event_type":"correction","correction_origin":"agent-system","occurred_at":"2026-10-20T03:00:00Z"}
-{"synthetic":true,"event_id":"b1","task_id":"b","event_type":"task.accepted","occurred_at":"2026-10-20T02:00:00Z"}
-{"synthetic":true,"event_id":"b2","task_id":"b","event_type":"correction","correction_origin":"non-agent","occurred_at":"2026-10-20T01:00:00Z"}
+{"synthetic":true,"event_id":"a1","task_id":"S1","event_type":"task.accepted","occurred_at":"2026-10-20T02:00:00Z"}
+{"synthetic":true,"event_id":"a2","task_id":"S1","event_type":"correction","correction_origin":"agent-system","occurred_at":"2026-10-20T03:00:00Z"}
+{"synthetic":true,"event_id":"b1","task_id":"S2","event_type":"task.accepted","occurred_at":"2026-10-20T02:00:00Z"}
+{"synthetic":true,"event_id":"b2","task_id":"S2","event_type":"correction","correction_origin":"non-agent","occurred_at":"2026-10-20T01:00:00Z"}
 EOF
 cat >>"$tmp/timing.jsonl" <<'EOF'
-{"event_id":"c1","event_type":"coverage.connected","coverage_target":"acceptance-history"}
+{"event_id":"cov-one-12345678","event_type":"coverage.connected","coverage_target":"acceptance-history"}
 EOF
 bb ai_ops_sli.bb aggregate "$tmp/timing.jsonl" >"$tmp/timing.edn"
 cat >"$tmp/coverage.jsonl" <<'EOF'
-{"event_id":"c1","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
-{"event_id":"c2","event_type":"coverage.connected","coverage_target":"critical-safety-events"}
+{"event_id":"cov-one-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
+{"event_id":"cov-two-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}
 EOF
 bb ai_ops_sli.bb aggregate "$tmp/coverage.jsonl" >"$tmp/coverage.edn"
 cat >"$tmp/vault/Tickets/BOXP-998.md" <<'EOF'
@@ -89,6 +89,34 @@ bb -e '
       gated (map ai-ops-sli/privacy-gate es)]
   (assert (= 5 (reduce + (map :redacted-values gated))))
   (assert (every? #(some #{"redacted"} (vals (:event %))) gated)))' "$tmp/secrets.jsonl"
+cat >"$tmp/reopen.jsonl" <<'EOF'
+{"event_id":"BOXP-1:request","task_id":"BOXP-1","event_type":"request.received"}
+{"event_id":"BOXP-1:run","task_id":"BOXP-1","event_type":"run.started"}
+{"event_id":"BOXP-1:accepted","task_id":"BOXP-1","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-1:state","task_id":"BOXP-1","event_type":"task.state","status":"ready","occurred_at":"2026-10-21T00:00:00Z"}
+{"event_id":"BOXP-2:request","task_id":"BOXP-2","event_type":"request.received"}
+{"event_id":"BOXP-2:run","task_id":"BOXP-2","event_type":"run.started"}
+{"event_id":"BOXP-2:accepted","task_id":"BOXP-2","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-2:state","task_id":"BOXP-2","event_type":"task.state","status":"review"}
+{"event_id":"BOXP-3:request","task_id":"BOXP-3","event_type":"request.received"}
+{"event_id":"BOXP-3:run","task_id":"BOXP-3","event_type":"run.started"}
+{"event_id":"BOXP-3:accepted","task_id":"BOXP-3","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"BOXP-3:state","task_id":"BOXP-3","event_type":"task.state","status":"blocked"}
+{"event_id":"invalid one","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
+{"event_id":"invalid two","event_type":"coverage.connected","coverage_target":"critical-safety-events"}
+{"event_id":"cov-effects-12345678","event_type":"coverage.connected","coverage_target":"duplicate-effects"}
+{"event_id":"cov-safety-12345678","event_type":"coverage.connected","coverage_target":"critical-safety-events"}
+EOF
+bb ai_ops_sli.bb aggregate "$tmp/reopen.jsonl" >"$tmp/reopen.edn"
+bb -e '
+(let [r (edn/read-string (slurp (first *command-line-args*)))]
+  (assert (= {"in-flight" 1 "awaiting-review" 1 "blocked" 1} (get-in r [:tasks :outcomes])))
+  (assert (= [0 0 0] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance]))))
+  (assert (= 2 (get-in r [:coverage :privacy-rejected-invalid-id])))
+  (assert (= 0 (get-in r [:input :duplicates])))
+  (assert (= 0 (get-in r [:zero-tolerance :duplicate-effects :count])))
+  (assert (= 0 (get-in r [:zero-tolerance :critical-safety-events])))
+  (println "ok   reopen 状態、不正 ID の拒否と複数 coverage"))' "$tmp/reopen.edn"
 bb -e '
 (let [[dir] *command-line-args* r #(edn/read-string (slurp (str dir "/" % ".edn")))
       b (r "backlog") u (r "unconnected") c (r "connected") stats (edn/read-string (slurp (str dir "/secrets.stats")))

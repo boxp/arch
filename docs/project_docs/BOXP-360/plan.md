@@ -32,7 +32,7 @@
   - agent-system 起因: `instruction_violation`、`source_mismatch` (原典不一致)、`done_claim_without_execution` (未実施を完成扱い)、`assignee_regression` (担当復帰)、`gate_defect` (CI / codex review の指摘)
   - 非 agent 起因: `preference_adjustment`、`scope_addition`、`unavoidable_safety_decision`、`external_failure`
   - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。人の訂正 (`classifier=human`) は同じ evidence に対する rule 判定を上書きする。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
-- **privacy gate (生成元で適用)**: allowlist にある key だけを通す (`ai_ops_sli.bb` の `allowed-keys`)。許可値も短い識別子に限定し、本文、認証情報、query 付き URL、改行などの不正値を redact して件数を stderr に出す。extract と emit-sim の両方に適用する。server 側の masking には頼らない。通常の会話本文は中央 DB へ copy しない。
+- **privacy gate (生成元で適用)**: allowlist にある key だけを通す (`ai_ops_sli.bb` の `allowed-keys`)。許可値も短い識別子に限定し、本文、認証情報、query 付き URL、改行などの不正値を redact し、不正な event_id は event ごと拒否して件数を stderr に出す。extract と emit-sim の両方に適用する。server 側の masking には頼らない。通常の会話本文は中央 DB へ copy しない。
 - **token / cost**: provider が返した値だけを記録する。subscription CLI は `cost_source=unknown` とし、API 単価を掛けて実請求に見せない。
 
 ## 4. SLI 候補 (式と分母)
@@ -54,18 +54,17 @@
 
 層別は creative / dev / infra / research / assistant。必要に応じて model、runner、prompt/skill の版を付ける。条件が同じでなければ model を順位付けしない。
 
-## 5. 実測 baseline (2026-10-29、既存 metadata のみ。詳細: `baseline-2026-10-29.edn`)
+## 5. 実測 baseline (既存 metadata のみ)
 
-- 期間: run は 2026-07-03〜2026-10-29、outbox は 2026-10-22〜。task 290 / run 1453 / event 4136。
-- outcome: accepted 222、awaiting-review 33、in-flight 20、blocked 11、backlog 4。
-- agent-system 是正 task 率 (gate_defect = review-fix run): **43/284 (15.1%)**。原因 unknown の review 後再 implement: **107 task (205 event)**。
-- first acceptance 適合率: **94/224 (42.0%)**。未評価 60 を合格に数えない場合は 94/284 (33.1%)。run 履歴の無い受入済み 57 件は観測不能として分母外で別掲。ticket 総数 360 (run 無し 70) は総数・未完了 guardrail に残す。reopen-after-accept は受入履歴 source 未接続のため unknown。
-- 2026-10-01 以降に作成された task (154): 是正 task 12/150 (8.0%)、unknown 46、first acceptance 70/117 (59.8%)。lead time p50 約 24h / p90 約 96h (日粒度)。
-- run の信頼性: interrupted 135、retrying 547、idle-timeout 7。blocker の内訳は agent-reported-blocked 72 / agent-process-error 30 / pr-gate-pr-url 7。
-- delegation (記録がある 113 run): delegated 57 / exempt 56。
-- outbox: redelivery があった event 3、Hermes 側の `duplicate` 判定 2 (重複排除は機能している)。
+正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29T02:34:29Z** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
+
+- ticket 360、run 1455、event 4142。run 履歴のない ticket は 70。
+- outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13。
+- agent-system 是正 task 率: **43/284 (15.1%)**。原因 unknown の task は 107、unknown 是正 event は 206。
+- first acceptance 適合率: **94/223 (42.2%)**。未評価を不合格として含めると 94/283 (33.2%)、未評価 60。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
+- run の信頼性: interrupted 135、retrying 549、idle-timeout 7。delegation は delegated 59、exempt 56、failed 1。
+- extract の order-inversions 809 は glob の読み取り順から出たもので、実際の到着順ではない。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
-- 観測そのものの不備も見つかった: (a) 旧形式の run-id (uuid なし) は ticket をまたいで衝突する (49 件) → event_id は `ticket/run-id` にした。(b) ticket frontmatter の `assignee` は 356/360 が boxp (BOXP-357 の不整合)。担当者は run の `:agent` を正とする。(c) extract の `order-inversions` (807) は glob の読み取り順から出たもので、実際の到着順ではない。
 
 ## 6. 合成 E2E pilot (`tools/test.sh`)
 

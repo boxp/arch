@@ -36,7 +36,7 @@
    :runtime #{"codex-cli" "claude-cli" "localllm" "hermes" "unknown"}
    :agent #{"codex" "codex-sol" "codex-sol-xhigh" "codex-astra" "claude-opus" "claude-fable" "fable" "localllm"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
-   :status #{"succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold"}
+   :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold"}
    :result #{"review" "blocked" "done" "ready"}
    :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
@@ -53,7 +53,7 @@
 (defn token-safe? [s] (not (re-find token-pattern s)))
 (defn event-id? [s synthetic?]
   (and (<= (count s) 128) (boolean (re-matches (if synthetic? #"[A-Za-z0-9:_/-]{1,128}"
-                         #"[A-Z]+-\d+(?:[/:-][A-Za-z0-9:_/-]+)?") s))))
+                         #"(?:[A-Z]+-\d+(?:[/:-][A-Za-z0-9:_/-]+)?|cov-[a-z0-9-]+-[0-9a-f]{8})") s))))
 (defn valid-value? [k v synthetic?]
   (cond
     (nil? v) true
@@ -73,9 +73,10 @@
 (defn privacy-gate [e]
   (let [dropped (remove allowed-keys (keys e))
         selected (select-keys e allowed-keys)
-        invalid (filter (fn [[k v]] (not (valid-value? k v (true? (:synthetic e))))) selected)]
-    {:event (reduce (fn [m [k _]] (assoc m k "redacted")) selected invalid)
-     :dropped-keys (count dropped) :redacted-values (count invalid) :rejected? false}))
+        invalid (filter (fn [[k v]] (not (valid-value? k v (true? (:synthetic e))))) selected)
+        rejected? (or (nil? (:event_id e)) (not (valid-value? :event_id (:event_id e) (true? (:synthetic e)))))]
+    {:event (when-not rejected? (reduce (fn [m [k _]] (assoc m k "redacted")) selected invalid))
+     :dropped-keys (count dropped) :redacted-values (count (remove #(= :event_id (first %)) invalid)) :rejected? rejected?}))
 
 (defn emit-gated [stats e]
   (let [{:keys [event dropped-keys redacted-values rejected?]} (privacy-gate e)]
@@ -265,12 +266,11 @@
        (keep #(try (json/parse-string % true) (catch Exception _ nil)))))
 
 (defn task-outcome [evs]
-  (let [types (set (map :event_type evs))
-        state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
-        cancelled? (some #(= "task.cancelled" (:event_type %)) evs)]
+  (let [latest (last (filter #(#{"task.state" "task.accepted"} (:event_type %)) evs))
+        state (:status latest)]
     (cond
-      cancelled? "cancelled"
-      (contains? types "task.accepted") "accepted"
+      (some #(= "task.cancelled" (:event_type %)) evs) "cancelled"
+      (or (= "task.accepted" (:event_type latest)) (#{"done" "closed"} state)) "accepted"
       (= state "blocked") "blocked"
       (= state "review") "awaiting-review"
       (#{"ready" "in-progress"} state) "in-flight"
@@ -279,8 +279,11 @@
       :else "unobserved")))
 
 (defn aggregate* [events]
-  (let [n-in (count events)
-        uniq (vals (reduce (fn [m e] (if (contains? m (:event_id e)) m (assoc m (:event_id e) e))) {} events))
+  (let [gated (map privacy-gate events)
+        rejected (count (filter :rejected? gated))
+        events (keep :event gated)
+        n-in (count events)
+        uniq (second (reduce (fn [[seen out] e] (if (contains? seen (:event_id e)) [seen out] [(conj seen (:event_id e)) (conj out e)])) [#{} []] events))
         dup (- n-in (count uniq))
         ;; 観測順と occurred_at 順の逆転、observed_at より未来の occurred_at (時刻ずれ)
         inversions (->> events (group-by :task_id) vals
@@ -306,7 +309,7 @@
                           runs (filter #(= "run.started" (:event_type %)) evs)
                           finished (filter #(= "run.finished" (:event_type %)) evs)]
                     :when (or (some #(= "request.received" (:event_type %)) evs) (seq runs) (some :synthetic evs))]
-                {:task tid :stratum (some :stratum evs) :outcome (task-outcome evs)
+                {:task tid :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
                  :interrupted (count (filter #(= "run.interrupted" (:event_type %)) evs))
@@ -316,7 +319,7 @@
                  :post-accept-corr (count post-accept-corr)
                  :observed? (boolean (or (seq runs) (some :synthetic evs)))
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
-                 :accepted-unobserved? (boolean (and accepted (empty? runs) (not-any? :synthetic evs)))
+                 :accepted-unobserved? (boolean (and (= "accepted" (task-outcome evs)) accepted (empty? runs) (not-any? :synthetic evs)))
                  :first-pass? (and accepted (not-any? #(let [t (parse-inst (:occurred_at %))]
                                                         (or (nil? t) (.isBefore t accepted))) corr))
                  :lead-h (hours requested accepted)
@@ -356,8 +359,8 @@
                              :total-unknown (reduce + (map :unknown-corr reached))}
       :first-acceptance-conformance
       (assoc (ratio (count (filter :first-pass? accepted)) (count accepted))
-             :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted)) (count reached))
-             :not-yet-evaluated (count (remove #(= "accepted" (:outcome %)) reached))
+             :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted)) (count (filter #(or (= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached)))
+             :not-yet-evaluated (count (filter #(and (not= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
              :note "分母=受入済 task。未評価 (awaiting-review 等) は別掲し合格に数えない")
       :reopen-after-accept (if (connected? "acceptance-history") (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)) {:status :unknown :reason "acceptance history source not connected"})
       :owner-rescue (if (some #(= "owner.rescue" (:event_type %)) uniq)
@@ -383,10 +386,10 @@
                       :private-leak {:status "unknown" :reason "leak detector 未接続。0件観測≠0件"}}
      :guardrails {:pending-over-7d "要 lane timestamp (unknown)"
                   :tasks-per-request (ratio n (count (set (keep :request_id uniq))))
-                  :unfinished (count (filter #(or (some? (:current-state %)) (not (contains? #{"accepted" "cancelled"} (:outcome %)))) tasks))
+                  :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
-     :coverage {:ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
+     :coverage {:privacy-rejected-invalid-id rejected :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
                 :hermes-conversation {:status (if (some #(str/starts-with? (str %) "hermes") (keys sources)) "connected" "not-connected")}}
      :by-stratum
