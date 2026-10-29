@@ -1538,6 +1538,29 @@ bb -e '
   (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unknown-cause-tasks])) (pr-str (get-in r [:sli :agent-system-correction-task-ratio]))))
 (println "ok   ledger 統合時は実 gate 結果の是正分類を保持する")'
 
+bb -e '
+(load-file "ai_ops_sli.bb")
+;; 統合時は ledger 側の実 gate 失敗時刻を保持する (derived は次の review-fix run 開始時刻で、間の受入を跨ぐと受入後是正に化ける)
+(let [r0 "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57"
+      r1 "20261029T063201Z-7d2adcd6-e49e-4399-b92c-d22645e07a3b"
+      base {:task_id "BOXP-95" :request_id "req:BOXP-95" :source "task-board-runner"}
+      evs [(assoc base :event_id (str "BOXP-95/" r0 ":started") :run_id r0 :event_type "run.started" :occurred_at "2026-10-29T05:57:35Z")
+           (assoc base :event_id (str "BOXP-95/" r0 ":finished") :run_id r0 :event_type "run.finished" :status "retrying" :occurred_at "2026-10-29T06:00:00Z")
+           (assoc base :event_id (str "BOXP-95/" r0 ":ledger:correction") :run_id r0 :event_type "correction" :classifier "rule"
+                  :correction_class "gate_defect" :correction_origin "agent-system" :occurred_at "2026-10-29T06:00:00Z")
+           (assoc base :event_id "BOXP-95:accepted" :event_type "task.accepted" :occurred_at "2026-10-29T06:10:00Z")
+           (assoc base :event_id (str "BOXP-95/" r1 ":started") :run_id r1 :event_type "run.started" :occurred_at "2026-10-29T06:32:01Z")
+           (assoc base :event_id (str "BOXP-95/" r1 ":corr") :run_id r1 :event_type "correction" :source "derived" :classifier "rule"
+                  :evidence_event_ids [(str "BOXP-95/" r1 ":started") (str "BOXP-95/" r0 ":finished")]
+                  :correction_class "gate_defect" :correction_origin "agent-system" :occurred_at "2026-10-29T06:32:01Z")]
+      merged (:events (ai-ops-sli/merge-ledger-events evs))
+      corr (first (filter #(= "correction" (:event_type %)) merged))
+      fa (get-in (ai-ops-sli/aggregate* evs) [:sli :first-acceptance-conformance])]
+  (assert (= (str "BOXP-95/" r1 ":corr") (:event_id corr)) (pr-str corr))
+  (assert (= "2026-10-29T06:00:00Z" (:occurred_at corr)) (pr-str corr))
+  (assert (= [0 1] [(:count fa) (:denominator fa)]) (pr-str fa)))
+(println "ok   ledger 統合時は実 gate 失敗時刻を保持し受入前の是正を受入後に移さない")'
+
 cat >"$tmp/emit-ledger.clj" <<EOF
 (load-file "$(pwd)/../../../../docker/codex-workspace/task-board/ai_ops_ledger.bb")
 (let [t "BOXP-96" r "20261029T065116Z-73b3af54-9911-4b9a-aefe-6352c5ec0973"

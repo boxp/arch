@@ -57,3 +57,8 @@ Hermes の plugin API は配備版を read-only で調べた (`hermes-plugin-inv
 
 - runner の `loop` と手動 `tick` など、別 process が同じ root に書くことがある。`ledger-stats.edn` の read-modify-write と固定名の一時ファイルが衝突し、count が失われていた (旧実装では 4 process × 25 件で emitted 24/100、write-errors 5)。`<root>/ai-ops/ledger.lock` の FileLock (プロセス内は `locking` と併用) で ledger 追記・stats 更新・metrics 書き出しを直列化する。一時ファイル名には pid と thread id を付ける。4 process を同時に動かす test を追加した。
 - `TASK_BOARD_REVIEW_PR: none`、または merge 済み PR しかない場合は、gate が何も確認していない。この場合 `ai_ops_review_gate_total{gate="all"}` に `result="skip"` として数え、`pass` には混ぜない。
+
+## review gate 指摘への対応 (2026-10-29 08:20 UTC)
+
+- ledger の correction と extract の derived 是正を統合するとき、発生時刻 (`occurred_at` / `occurred_precision`) は ledger 側を正とする。ledger 側の時刻は実際に gate が失敗した時刻である。derived 側の時刻は次の review-fix run の開始時刻なので、間に受入があると受入前の失敗が受入後の是正として数えられてしまう。ledger 側に有効な時刻が無い場合だけ derived 側の時刻を残す。ID と evidence は従来どおり derived 側を残す。
+- lock 待ちのタイムアウトで stats に書けなかった write error は、`<root>/ai-ops/pending-write-errors/` に件数 1 件につき空の marker file を 1 つ作って記録する。一意な名前の file を作るだけなので lock は要らない。手動 `tick` のような短命な process が flush せずに終了しても、件数は失われない。次に lock を取った process (どの process でもよい) が emit / write-metrics の際に stats へ合算し、marker を消す。marker を作れなかった場合は、従来どおり process 内の counter に残す。

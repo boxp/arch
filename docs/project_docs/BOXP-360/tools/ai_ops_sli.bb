@@ -426,17 +426,24 @@
       (cond-> [(:task_id e) (:run_id e) (:event_type e)]
         (= "lane.changed" (:event_type e)) (conj (:lane_from e) (:lane_to e))))))
 ;; 是正の分類は実際の gate 結果を持つ ledger 側を正とする (derived は gate 種別を知らず一律 gate_defect に推定する)。
-;; 統合時は derived event の ID/時刻/evidence を残し、分類 field だけ ledger 側で上書きする
+;; 統合時は derived event の ID/evidence を残し、分類 field は ledger 側で上書きする。
+;; 発生時刻も ledger 側 (実際の gate 失敗時刻) を正とする。derived の時刻は次の review-fix run 開始時刻で、
+;; 間に受入があると受入前の失敗を受入後の是正と誤判定するため (ledger に有効な時刻が無い場合だけ derived 側を残す)
 (def correction-class-fields [:correction_class :correction_origin :confidence :classifier :classifier_version])
+(def correction-time-fields [:occurred_at :occurred_precision])
 (defn merge-ledger-events [events]
   (let [other-keys (set (keep #(when-not (ledger-event? %) (ledger-logical-key %)) events))
         merged? #(and (ledger-event? %) (contains? other-keys (ledger-logical-key %)))
         ledger-class (into {} (keep #(when (and (merged? %) (= "correction" (:event_type %)))
-                                       [(ledger-logical-key %) (select-keys % correction-class-fields)])
+                                       [(ledger-logical-key %)
+                                        (cond-> (select-keys % correction-class-fields)
+                                          (parse-inst (:occurred_at %)) (merge (select-keys % correction-time-fields)))])
                                     events))
         reclassify #(if-let [c (and (not (ledger-event? %)) (= "correction" (:event_type %))
                                     (ledger-class (ledger-logical-key %)))]
-                      (merge (apply dissoc % correction-class-fields) c)
+                      (merge (apply dissoc % (cond-> correction-class-fields
+                                               (:occurred_at c) (into correction-time-fields)))
+                             c)
                       %)]
     {:events (map reclassify (remove merged? events)) :merged (count (filter merged? events))}))
 

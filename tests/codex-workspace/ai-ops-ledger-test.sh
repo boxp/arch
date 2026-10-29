@@ -205,3 +205,42 @@ CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=300 AI_OPS_MODULE="${module}" AI_
 (println "ai-ops-ledger-test: held-lock checks passed")
 '
 wait "${holder}"
+
+# A short-lived process (manual tick) that loses a write to a lock timeout and
+# exits without flushing must not lose the count: another process's
+# write-metrics! exports it.
+spool_root="${tmp}/spool"
+mkdir -p "${spool_root}/ai-ops"
+AI_OPS_LOCK="${spool_root}/ai-ops/ledger.lock" bb -e '
+(with-open [f (java.io.RandomAccessFile. (System/getenv "AI_OPS_LOCK") "rw")]
+  (.lock (.getChannel f))
+  (spit (str (System/getenv "AI_OPS_LOCK") ".held") "1")
+  (Thread/sleep 2500))
+' &
+holder=$!
+for _ in $(seq 1 100); do [ -f "${spool_root}/ai-ops/ledger.lock.held" ] && break; sleep 0.05; done
+CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=200 AI_OPS_MODULE="${module}" AI_OPS_ROOT="${spool_root}" bb -e '
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def run "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57")
+(assert (nil? (ai-ops-ledger/emit! (System/getenv "AI_OPS_ROOT")
+                                   {:event_id (ai-ops-ledger/event-id "BOXP-1" run "started") :task_id "BOXP-1"
+                                    :request_id "req:BOXP-1" :run_id run :event_type "run.started"})))
+'
+wait "${holder}"
+AI_OPS_MODULE="${module}" AI_OPS_ROOT="${spool_root}" bb -e '
+(require (quote [babashka.fs :as fs]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (System/getenv "AI_OPS_ROOT"))
+(def ok (ai-ops-ledger/write-metrics! root))
+(def m (slurp (str (ai-ops-ledger/metrics-path root))))
+(def ok2 (ai-ops-ledger/write-metrics! root))
+(def s (ai-ops-ledger/read-stats root))
+(def checks [["exited process loss: write-metrics succeeds" (and (true? ok) (true? ok2))]
+             ["exited process loss: exported by another process"
+              (clojure.string/includes? m "ai_ops_ledger_lost_events_total{reason=\"write_error\"} 1")]
+             ["exited process loss: counted once" (= 1 (:write-errors s))]
+             ["exited process loss: spool drained" (empty? (fs/list-dir (ai-ops-ledger/pending-write-errors-dir root)))]])
+(doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
+(when-not (every? second checks) (println "stats:" s) (System/exit 1))
+(println "ai-ops-ledger-test: exited-process loss checks passed")
+'

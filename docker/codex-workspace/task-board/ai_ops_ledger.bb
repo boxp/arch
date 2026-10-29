@@ -190,14 +190,38 @@
     (= "correction" (:event_type e))
     (count-in [:corrections [(:correction_origin e "unknown") (:correction_class e "unknown")]])))
 
-(defn flush-unrecorded-write-errors!
-  "Persist write errors counted while the lock was unavailable. Call with the
-  ledger lock held. On failure the count is restored for a later flush."
+;; Write errors that happen while the lock is unavailable are spooled as one
+;; empty marker file each under `<root>/ai-ops/pending-write-errors/`. Creating
+;; a uniquely named file needs no lock, so the loss survives a short-lived
+;; process (manual `tick`, helper command) that exits before any flush, and the
+;; next lock holder in any process folds it into the stats.
+(defn pending-write-errors-dir [root] (fs/path (ai-ops-dir root) "pending-write-errors"))
+
+(defn spool-write-error!
+  "Record one write error that could not be persisted to stats. Never throws;
+  falls back to the in-process counter when the spool file cannot be created."
   [root]
-  (let [[pending _] (reset-vals! unrecorded-write-errors 0)]
-    (when (pos? pending)
-      (try (update-stats! root #(update % :write-errors (fnil + 0) pending))
-           (catch Exception e (swap! unrecorded-write-errors + pending) (throw e))))))
+  (try
+    (fs/create-dirs (pending-write-errors-dir root))
+    (fs/create-file (fs/path (pending-write-errors-dir root)
+                             (str (.pid (java.lang.ProcessHandle/current)) "-" (System/nanoTime) "-" (random-uuid))))
+    (catch Exception _ (swap! unrecorded-write-errors inc))))
+
+(defn flush-unrecorded-write-errors!
+  "Persist write errors counted while the lock was unavailable (spool files from
+  any process plus this process's fallback counter). Call with the ledger lock
+  held. Spool files are removed before the stats update so a crash cannot count
+  them twice; on failure the removed count is kept in the in-process counter."
+  [root]
+  (let [dir (pending-write-errors-dir root)
+        spooled (if (fs/exists? dir)
+                  (count (filter #(try (fs/delete %) true (catch Exception _ false)) (fs/list-dir dir)))
+                  0)
+        [pending _] (reset-vals! unrecorded-write-errors 0)
+        total (+ pending spooled)]
+    (when (pos? total)
+      (try (update-stats! root #(update % :write-errors (fnil + 0) total))
+           (catch Exception e (swap! unrecorded-write-errors + total) (throw e))))))
 
 (defn append-line! [path m]
   (fs/create-dirs (fs/parent path))
@@ -243,7 +267,7 @@
                 e)))))
       (catch Exception _
         (try (with-ledger-lock root #(update-stats! root (fn [s] (count-in s [:write-errors]))))
-             (catch Exception _ (swap! unrecorded-write-errors inc)))
+             (catch Exception _ (spool-write-error! root)))
         nil))))
 
 (def gate-results #{"pass" "fail" "skip"})
