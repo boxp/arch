@@ -27,10 +27,10 @@
     :lane_from :lane_to :status :result :action :exit_code :idle_timeout :blocker_category
     :correction_class :correction_origin :classifier :classifier_version :confidence
     :evidence_event_ids :stratum :delegation_kind :tokens_in :tokens_out :cost_source
-    :severity :effect_key :approval_key :redelivery :synthetic :coverage_target})
+    :severity :effect_key :approval_key :redelivery :synthetic :coverage_target :snapshot})
 
 (def enum-values
-  {:schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
+  {:snapshot #{"current"} :schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
    :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"}
    :source #{"task-board-runner" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff" "synthetic:calibration" "synthetic:feedback" "synthetic:hermes" "synthetic:task-board"}
    :runtime #{"codex-cli" "claude-cli" "localllm" "hermes" "unknown"}
@@ -211,7 +211,7 @@
                        (when (#{"ready" "review" "blocked" "backlog" "in-progress"} (:status fm))
                          [{:schema_version schema-version :event_id (str ticket ":state") :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.state"
-                           :status (:status fm) :occurred_at nil}]))]
+                           :status (:status fm) :snapshot "current" :occurred_at nil}]))]
             e evs]
       (emit-gated stats (assoc e :stratum st)))
     (doseq [f (fs/glob (fs/path root "outbox") "**.edn")
@@ -284,7 +284,7 @@
   (or (:correction_origin e) (correction-class-origin (:correction_class e)) "unknown"))
 
 (defn task-outcome [evs]
-  (let [latest (last (sort-by #(conj (event-time-key %) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened"} (:event_type %)) evs)))
+  (let [latest (last (sort-by #(conj (if (and (= "task.state" (:event_type %)) (= "current" (:snapshot %))) [2 java.time.Instant/MIN] (event-time-key %)) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened"} (:event_type %)) evs)))
         state (:status latest)]
     (cond
       (some #(= "task.cancelled" (:event_type %)) evs) "cancelled"
@@ -317,9 +317,17 @@
                           corr (filter #(#{"correction" "task.reopened"} (:event_type %)) evs)
                           ;; 人の訂正 (classifier=human) は同じ evidence の rule 判定を上書きする
                           human (into {} (keep #(when (and (= "human" (:classifier %)) (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %))) [(first (:evidence_event_ids %)) %]) corr))
-                          corr (keep #(if (= "human" (:classifier %)) %
-                                          (when-not (and (sequential? (:evidence_event_ids %))
-                                                         (contains? human (first (:evidence_event_ids %)))) %)) corr)
+                          matched (set (keep #(when (and (not= "human" (:classifier %)) (sequential? (:evidence_event_ids %))
+                                                        (contains? human (first (:evidence_event_ids %))))
+                                               (first (:evidence_event_ids %))) corr))
+                          corr (keep (fn [e]
+                                       (let [evidence (first (:evidence_event_ids e)) h (get human evidence)]
+                                         (cond
+                                           (and (= "human" (:classifier e)) (contains? matched evidence)) nil
+                                           (and h (not= "human" (:classifier e)))
+                                           (merge (apply dissoc e [:correction_class :correction_origin :classifier :classifier_version :confidence])
+                                                  (select-keys h [:correction_class :correction_origin :classifier :classifier_version :confidence]))
+                                           :else e))) corr)
                           agent-corr (filter #(= "agent-system" (correction-origin %)) corr)
                           unknown-corr (filter #(= "unknown" (correction-origin %)) corr)
                           accepted (some #(when (= "task.accepted" (:event_type %)) (parse-inst (:occurred_at %))) evs)
@@ -342,7 +350,7 @@
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
                  :accepted-unobserved? (boolean (and (= "accepted" (task-outcome evs)) accepted (empty? runs) (not-any? :synthetic evs)))
                  :first-pass? (and accepted (not-any? #(let [t (parse-inst (:occurred_at %))]
-                                                        (or (nil? t) (not (.isAfter t accepted)))) corr))
+                                                        (and (not= "non-agent" (correction-origin %)) (or (nil? t) (not (.isAfter t accepted))))) corr))
                  :lead-h (hours requested accepted)
                  :rescue (count (filter #(= "owner.rescue" (:event_type %)) evs))
                  :approvals (frequencies (keep :approval_key (filter #(= "approval.requested" (:event_type %)) evs)))

@@ -32,7 +32,7 @@
 - **差戻し分類** (`correction_class` / `correction_origin` / `classifier`=rule|human|model / `classifier_version` / `confidence` / `evidence_event_ids`):
   - agent-system 起因: `instruction_violation`、`source_mismatch` (原典不一致)、`done_claim_without_execution` (未実施を完成扱い)、`assignee_regression` (担当復帰)、`gate_defect` (CI / codex review の指摘)
   - 非 agent 起因: `preference_adjustment`、`scope_addition`、`unavoidable_safety_decision`、`external_failure`
-  - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。origin が省略された場合は上記 class から補い、明示された origin は優先する。人の訂正 (`classifier=human`) は同じ evidence に対する rule 判定を上書きする。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
+  - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。origin が省略された場合は上記 class から補い、明示された origin は優先する。人の訂正 (`classifier=human`) は同じ evidence に対する分類のみを上書きし、元の是正の時刻と ID を保持する。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
 - **privacy gate (生成元で適用)**: allowlist にある key だけを通す (`ai_ops_sli.bb` の `allowed-keys`)。許可値も短い識別子に限定し、本文、認証情報、query 付き URL、改行などの不正値を redact し、不正な event_id は event ごと拒否して件数を stderr に出す。extract と emit-sim の両方に適用する。server 側の masking には頼らない。通常の会話本文は中央 DB へ copy しない。
 - **token / cost**: provider が返した値だけを記録する。subscription CLI は `cost_source=unknown` とし、API 単価を掛けて実請求に見せない。
 
@@ -42,7 +42,7 @@
 |---|---|---|
 | agent-system 是正 task 率 | agent-system 起因の是正を 1 回以上含む task / review に到達した task | unknown 原因の task は別に掲げる |
 | 1 task あたり是正往復 | agent-system 起因の是正 event 数の分布 | n<20 なら分位点は参考値 |
-| first acceptance 適合率 | 最初の受入以前（同時刻を含む）に原因を問わず是正が一度もない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の是正は保守的に不合格。未評価は別掲 |
+| first acceptance 適合率 | 最初の受入以前（同時刻を含む）に agent 起因または原因不明の是正がない受入済み task / 受入済み task | 受入後の是正は reopen 側に計上。時刻不明の agent 起因または原因不明の是正は保守的に不合格。未評価は別掲 |
 | reopen-after-accept | close 後に是正が入った task / 受入済み task | late feedback を拾う |
 | Owner 救援率 | 状況の催促や同じ承認の繰り返しが起きた task / 全 task | source が未接続なら unknown |
 | Ready→ack 遅延 / 詰まり率 | ack 時刻 − Ready 時刻 | **現状は unknown** (Ready への遷移時刻の event が無い) |
@@ -55,14 +55,14 @@
 
 層別は creative / dev / infra / research / assistant。必要に応じて model、runner、prompt/skill の版を付ける。条件が同じでなければ model を順位付けしない。
 
-状態遷移は時刻付き event を時刻順に評価し、時刻なし snapshot は時刻付き状態 event がある場合に上書きしない。同時刻では再オープンを受入より優先する。時刻なしの是正は first acceptance を不合格とする。
+状態遷移は時刻付き event を時刻順に評価し、抽出時の現在状態と明示された snapshot は履歴に優先し、その他の時刻なし snapshot は時刻付き状態 event がある場合に上書きしない。同時刻では再オープンを受入より優先する。時刻なしの agent 起因または原因不明の是正は first acceptance を不合格とする。
 
 ## 5. 実測 baseline (既存 metadata のみ)
 
 正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 02:52頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
 
-- ticket 360、run 1460、event 4149。run 履歴のない ticket は 70。
-- outcome: accepted 280、awaiting-review 22、in-flight 41、blocked 5、backlog 12。
+- ticket 360、run 1461、event 4151。run 履歴のない ticket は 70。
+- outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13 (現在の lane snapshot を再open履歴より優先して再集計)。
 - agent-system 是正 task 率: **43/284 (15.1%)**。原因 unknown の task は 107、unknown 是正 event は 206。
 - first acceptance 適合率: **94/223 (42.2%)**。未評価を不合格として含めると 94/283 (33.2%)、未評価 60。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
 - run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 554、idle-timeout 7。delegation は delegated 65、exempt 56。

@@ -58,6 +58,11 @@ closed: 2026-10-21
 EOF
 bb ai_ops_sli.bb extract "$tmp/root" "$tmp/vault" >"$tmp/backlog.jsonl" 2>"$tmp/backlog.stats"
 bb ai_ops_sli.bb aggregate "$tmp/backlog.jsonl" >"$tmp/backlog.edn"
+bb -e '
+(let [events (map #(cheshire.core/parse-string % true) (clojure.string/split-lines (slurp (first *command-line-args*))))
+      state (some #(when (= "BOXP-997:state" (:event_id %)) %) events)]
+  (assert (= "current" (:snapshot state)))
+  (println "ok   extract は現在状態の snapshot を明示"))' "$tmp/backlog.jsonl"
 cat >"$tmp/regression.jsonl" <<'EOF'
 {"event_id":"BOXP-1:requested","task_id":"BOXP-1","request_id":"req:BOXP-1","event_type":"request.received","occurred_at":"2026-10-20T00:00:00Z"}
 {"event_id":"BOXP-1:accepted","task_id":"BOXP-1","event_type":"task.accepted","occurred_at":"2026-10-21T00:00:00Z"}
@@ -220,7 +225,7 @@ bb -e '
        ["source 未接続は unknown" (every? #(= "unknown" (get-in (edn/read-string (slurp extracted)) [:zero-tolerance % :status])) [:duplicate-effects :critical-safety-events])]
        ["coverage 宣言済みなら 0" (and (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :duplicate-effects :count])) (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :critical-safety-events])))]
        ["未知の zero-tolerance を Prom に出さない" (not (re-find #"duplicate_effect|critical_safety" (slurp extractprom)))]
-       ["受入前の非 agent 是正のみ first-pass を妨げ、受入後は reopen" (let [r (edn/read-string (slurp timing))] (and (= [1 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))) (= 1 (get-in r [:sli :reopen-after-accept :count]))))]
+       ["受入前の非 agent 是正は first-pass を妨げず、受入後は reopen" (let [r (edn/read-string (slurp timing))] (and (= [2 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))) (= 1 (get-in r [:sli :reopen-after-accept :count]))))]
        ["生成元に本文が残らない" (not (re-find #"送ってはいけない|Bearer|/secret" (slurp (str (fs/parent ok) "/ok.jsonl"))))]
        ["重複 event を 1 件として数える" (= 1 (get-in r [:input :duplicates]))]
        ["順序逆転を検知" (= 1 (get-in r [:input :order-inversions]))]
@@ -311,3 +316,25 @@ bb -e '
   (assert (= 1 (get-in report [:sli :run-reliability :runs])))
   (assert (every? :rejected? (map ai-ops-sli/privacy-gate (butlast events))))
   (println "ok   不正な correlation ID のイベントを集計から除外"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-1:run" :task_id "BOXP-1" :event_type "run.started"}
+            {:event_id "BOXP-1:accepted" :task_id "BOXP-1" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
+            {:event_id "BOXP-1:reopened" :task_id "BOXP-1" :event_type "task.reopened" :occurred_at "2026-10-21T00:00:00Z"}]]
+  (doseq [[state outcome] [["review" "awaiting-review"] ["blocked" "blocked"]]]
+    (let [snapshot {:event_id "BOXP-1:state" :task_id "BOXP-1" :event_type "task.state" :snapshot "current" :status state}
+          report (ai-ops-sli/aggregate* (conj base snapshot))]
+      (assert (= 1 (get-in report [:tasks :outcomes outcome])))
+      (assert (= "current" (get-in (ai-ops-sli/privacy-gate snapshot) [:event :snapshot])))))
+  (println "ok   現在の review / blocked snapshot は再オープン履歴より優先"))
+(let [base [{:event_id "BOXP-2:run" :task_id "BOXP-2" :event_type "run.started"}
+            {:event_id "BOXP-2:rule" :task_id "BOXP-2" :event_type "correction" :classifier "rule" :correction_class "source_mismatch" :correction_origin "agent-system" :evidence_event_ids ["BOXP-2:run"] :occurred_at "2026-10-19T00:00:00Z"}
+            {:event_id "BOXP-2:accepted" :task_id "BOXP-2" :event_type "task.accepted" :occurred_at "2026-10-20T00:00:00Z"}
+            {:event_id "cov-acceptance-12345678" :event_type "coverage.connected" :coverage_target "acceptance-history"}]]
+  (doseq [[class passes] [["source_mismatch" 0] ["preference_adjustment" 1]]]
+    (let [human {:event_id "BOXP-2:human" :task_id "BOXP-2" :event_type "correction" :classifier "human" :correction_class class :evidence_event_ids ["BOXP-2:run"] :occurred_at "2026-10-21T00:00:00Z"}
+          report (ai-ops-sli/aggregate* (conj base human))]
+      (assert (= [passes 1] ((juxt :count :denominator) (get-in report [:sli :first-acceptance-conformance]))))
+      (assert (= 0 (get-in report [:sli :reopen-after-accept :count])))))
+  (println "ok   人の再分類は元の是正時刻を保持"))'
