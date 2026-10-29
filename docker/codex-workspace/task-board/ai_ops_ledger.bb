@@ -483,7 +483,7 @@
 (defn sli-path [root] (fs/path (ai-ops-dir root) "sli.prom"))
 (defn sli-interval [] (env-long "CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS" 900))
 (defn sli-timeout [] (env-long "CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS" 120))
-(defn sli-enabled? [] (and (pos? (sli-interval)) (not (str/blank? (System/getenv "CODEX_TASK_BOARD_VAULT")))))
+(defn sli-enabled? [] (and (enabled?) (pos? (sli-interval)) (not (str/blank? (System/getenv "CODEX_TASK_BOARD_VAULT")))))
 (defn read-sli-status [root]
   (try (or (some-> (sli-status-path root) str slurp edn/read-string) {}) (catch Exception _ {})))
 
@@ -506,7 +506,7 @@
 (defn refresh-sli! [root vault]
   (try
     (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
-      (when (and (pos? interval) (not (str/blank? vault))
+      (when (and (enabled?) (pos? interval) (not (str/blank? vault))
                  (>= (- now (get status :last-attempt 0)) interval))
         (let [attempt (assoc status :last-attempt now) tmp (atom nil) output (atom nil)
               deadline (+ (System/currentTimeMillis) (* 1000 (max 0 (sli-timeout))))]
