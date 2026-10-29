@@ -140,8 +140,8 @@
   (let [run-id (:run-id s)
         started (or (:started-at s) (run-id->instant run-id))
         base {:schema_version schema-version :task_id ticket :request_id (str "req:" ticket)
-              :run_id run-id :source "task-board-runner" :agent (:agent s)
-              :runtime (let [a (str (:agent s))]
+              :run_id run-id :source "task-board-runner" :agent (kw-or-str (:agent s))
+              :runtime (let [a (or (kw-or-str (:agent s)) "")]
                          (cond (str/starts-with? a "codex") "codex-cli"
                                (str/starts-with? a "localllm") "localllm"
                                (str/blank? a) "unknown"

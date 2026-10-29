@@ -821,3 +821,17 @@ bb -e '
     (assert (= "none" (:blocker_category fin)) (pr-str label (:blocker_category fin)))
     (assert (= ["task.reopened"] (mapv :event_type corr)) (pr-str label corr))))
 (println "ok   keyword/文字列形式の :result を同じく正規化し Review 到達と再オープンを導出")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [ev (fn [agent] (->> (ai-ops-sli/summary->events "BOXP-1" {:ticket "BOXP-1" :run-id "20261020T010000Z-aaaa" :agent agent :status :succeeded :result :review :action :implement
+                                                               :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z"})
+                          (mapv #(select-keys % [:event_id :event_type :agent :runtime]))))
+      kw (ev :codex) s (ev "codex")]
+  (assert (= kw s) (pr-str kw s))
+  (assert (every? #(and (= "codex" (:agent %)) (= "codex-cli" (:runtime %))) kw) (pr-str kw))
+  (assert (= "claude-cli" (:runtime (first (ev :claude-opus)))))
+  (assert (= "localllm" (:runtime (first (ev :localllm)))))
+  (let [gated (map (comp :event ai-ops-sli/privacy-gate) kw)]
+    (assert (every? #(= "codex" (:agent %)) gated) (pr-str gated))))
+(println "ok   keyword/文字列形式の :agent を同じ値に正規化し runtime 判定と privacy gate で誤分類しない")'
