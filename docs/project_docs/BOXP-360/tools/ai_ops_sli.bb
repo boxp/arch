@@ -115,8 +115,9 @@
   (and (map? e) (= "upstream" (:privacy_rejected e)) (every? #{:privacy_rejected :event_type} (keys e))))
 ;; collector 停止で bounded buffer から溢れた/未配信の event の marker (本文・ID なし)
 ;; input_unreadable: extract で読めなかった summary.edn / outbox (task を特定できない欠落入力)
+;; ledger_dropped: runner ledger が容量超過/書き込み失敗で書けなかった event (task_board ai_ops_ledger.bb が出す)
 (def lost-markers {{:collection_lost "buffer_dropped"} :buffer-dropped {:collection_lost "undelivered"} :undelivered
-                   {:collection_lost "input_unreadable"} :input-unreadable})
+                   {:collection_lost "input_unreadable"} :input-unreadable {:collection_lost "ledger_dropped"} :ledger-dropped})
 (defn marker? [e] (or (rejected-marker? e) (contains? lost-markers e)))
 
 (defn emit-gated [stats e]
@@ -534,7 +535,9 @@
         upstream-markers (filter rejected-marker? events)
         upstream-rejected (count upstream-markers)
         collection-lost (frequencies (keep lost-markers events))
-        buffer-dropped (get collection-lost :buffer-dropped 0)
+        ledger-dropped (get collection-lost :ledger-dropped 0)
+        ;; ledger の容量超過/書き込み失敗も種別不明の欠落として drop と同じに扱う
+        buffer-dropped (+ (get collection-lost :buffer-dropped 0) ledger-dropped)
         undelivered (get collection-lost :undelivered 0)
         input-unreadable (get collection-lost :input-unreadable 0)
         events (remove marker? events)
@@ -844,7 +847,7 @@
                   :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
-     :coverage {:collection-lost {:buffer-dropped buffer-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :unlinked-task-events (count unlinked) :unlinked-corrections unlinked-corr :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
+     :coverage {:collection-lost {:buffer-dropped (- buffer-dropped ledger-dropped) :ledger-dropped ledger-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :unlinked-task-events (count unlinked) :unlinked-corrections unlinked-corr :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
                 :hermes-conversation {:status (if (or (connected? "hermes-conversation")
                                                    (some #(or (= "hermes" (:runtime %))
@@ -891,6 +894,7 @@
     (line "ai_ops_collection_lost_events_total" {:reason "buffer_dropped"} (get-in r [:coverage :collection-lost :buffer-dropped]))
     (line "ai_ops_collection_lost_events_total" {:reason "undelivered"} (get-in r [:coverage :collection-lost :undelivered]))
     (line "ai_ops_collection_lost_events_total" {:reason "input_unreadable"} (get-in r [:coverage :collection-lost :input-unreadable]))
+    (line "ai_ops_collection_lost_events_total" {:reason "ledger_dropped"} (get-in r [:coverage :collection-lost :ledger-dropped]))
     (line "ai_ops_event_order_inversions_total" {} (get-in r [:input :order-inversions]))
     (line "ai_ops_unlinked_task_events_total" {} (get-in r [:coverage :unlinked-task-events]))
     ;; unknown の SLI は観測値を確定値として公開しない。判定可否を別 gauge で出し、dashboard/alert が欠落込みの率を使わないようにする

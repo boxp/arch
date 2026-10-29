@@ -14,7 +14,8 @@
 ;;
 ;; Observation must never stop work: `emit!` and `write-metrics!` swallow every
 ;; exception, the day file is capped, and every loss (cap / privacy / write
-;; error) is counted in `<root>/ai-ops/ledger-stats.edn` and exported through
+;; error) is counted in `<root>/ai-ops/ledger-stats.edn` (and leaves a body-less
+;; `ledger_dropped` marker in the day file for the aggregation) and exported through
 ;; `<root>/ai-ops/metrics.prom` (low-cardinality labels only, no IDs).
 
 (ns ai-ops-ledger
@@ -227,6 +228,23 @@
   (fs/create-dirs (fs/parent path))
   (spit (str path) (str (json/generate-string m) "\n") :append true))
 
+;; A lost event (cap reached / write error) leaves one body-less marker line
+;; `{"collection_lost":"ledger_dropped"}` in the day file so that aggregating
+;; the ledger (ai_ops_sli.bb) sees the gap and reports affected SLIs as unknown
+;; instead of complete. Markers may exceed the cap only by a bounded headroom;
+;; one marker is enough to make the day unknown and exact counts stay in stats.
+(def lost-marker {:collection_lost "ledger_dropped"})
+(def marker-headroom-bytes 65536)
+
+(defn append-lost-marker!
+  "Best-effort marker append. Never throws; returns true when written."
+  [path]
+  (try
+    (when (or (not (fs/exists? path)) (< (fs/size path) (+ (max-bytes) marker-headroom-bytes)))
+      (append-line! path lost-marker)
+      true)
+    (catch Exception _ false)))
+
 (defn emit!
   "Append one gated event. Never throws; returns the written event or nil."
   [root event]
@@ -248,7 +266,8 @@
               full? (and (fs/exists? path) (>= (fs/size path) (max-bytes)))]
           (cond
             full?
-            (do (update-stats! root #(-> % (count-in [:dropped-full])
+            (do (append-lost-marker! path)
+                (update-stats! root #(-> % (count-in [:dropped-full])
                                          (update :redacted-values (fnil + 0) redacted)))
                 nil)
 
@@ -266,6 +285,7 @@
                                          (update :redacted-values (fnil + 0) redacted)))
                 e)))))
       (catch Exception _
+        (append-lost-marker! (day-file root))
         (try (with-ledger-lock root #(update-stats! root (fn [s] (count-in s [:write-errors]))))
              (catch Exception _ (spool-write-error! root)))
         nil))))

@@ -7,7 +7,7 @@ module="${repo_root}/docker/codex-workspace/task-board/ai_ops_ledger.bb"
 tmp="$(mktemp -d)"
 trap 'chmod -R u+w "${tmp}" 2>/dev/null || true; rm -rf "${tmp}"' EXIT
 
-AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
+AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (require (quote [babashka.fs :as fs]) (quote [cheshire.core :as json]) (quote [clojure.string :as str]))
 (load-file (System/getenv "AI_OPS_MODULE"))
 (def tmp (System/getenv "AI_OPS_TMP"))
@@ -65,7 +65,30 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   (with-redefs [ai-ops-ledger/max-bytes (constantly 32)]
     (check "emit returns nil when full" (nil? (ev root "started" {:event_type "run.started"}))))
   (check "dropped-full counted" (= 1 (:dropped-full (stats root))))
-  (check "nothing appended" (= 64 (fs/size f))))
+  (check "only a body-less loss marker appended"
+         (= (str (apply str (repeat 64 "x")) "{\"collection_lost\":\"ledger_dropped\"}\n") (slurp (str f)))))
+
+;; a loss in the ledger reaches the aggregation: SLIs over the ledger become unknown
+(let [root (str (fs/path tmp "c2"))
+      sli (str (fs/path (System/getenv "AI_OPS_REPO") "docs" "project_docs" "BOXP-360" "tools" "ai_ops_sli.bb"))]
+  (load-file sli)
+  (ev root "started" {:event_type "run.started"})
+  (ev root "finished" {:event_type "run.finished" :status "succeeded" :result "review"})
+  (let [f (ai-ops-ledger/day-file root)
+        before ((resolve (quote ai-ops-sli/aggregate*)) (events root))]
+    (with-redefs [ai-ops-ledger/max-bytes (constantly (fs/size f))]
+      (check "cap drop returns nil" (nil? (ev root "correction" {:event_type "correction" :correction_origin "agent-system"}))))
+    (with-redefs [ai-ops-ledger/update-stats! (fn [& _] (throw (ex-info "disk" {})))]
+      (ev root "lane" {:event_type "lane.changed" :lane_to "review"}))
+    (let [r ((resolve (quote ai-ops-sli/aggregate*)) (events root))]
+      (check "ledger without loss is determinable"
+             (not= "unknown" (get-in before [:sli :agent-system-correction-task-ratio :status])))
+      (check "ledger markers counted as collection loss"
+             (= 2 (get-in r [:coverage :collection-lost :ledger-dropped])))
+      (check "ledger loss makes correction SLI unknown"
+             (= "unknown" (get-in r [:sli :agent-system-correction-task-ratio :status])))
+      (check "ledger loss makes zero-tolerance unknown"
+             (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status]))))))
 
 ;; concurrent emits
 (let [root (str (fs/path tmp "d"))

@@ -62,3 +62,9 @@ Hermes の plugin API は配備版を read-only で調べた (`hermes-plugin-inv
 
 - ledger の correction と extract の derived 是正を統合するとき、発生時刻 (`occurred_at` / `occurred_precision`) は ledger 側を正とする。ledger 側の時刻は実際に gate が失敗した時刻である。derived 側の時刻は次の review-fix run の開始時刻なので、間に受入があると受入前の失敗が受入後の是正として数えられてしまう。ledger 側に有効な時刻が無い場合だけ derived 側の時刻を残す。ID と evidence は従来どおり derived 側を残す。
 - lock 待ちのタイムアウトで stats に書けなかった write error は、`<root>/ai-ops/pending-write-errors/` に件数 1 件につき空の marker file を 1 つ作って記録する。一意な名前の file を作るだけなので lock は要らない。手動 `tick` のような短命な process が flush せずに終了しても、件数は失われない。次に lock を取った process (どの process でもよい) が emit / write-metrics の際に stats へ合算し、marker を消す。marker を作れなかった場合は、従来どおり process 内の counter に残す。
+
+## review gate 指摘への対応 (2026-10-29 08:40 UTC)
+
+- ledger が容量超過や書き込み失敗で event を書けなかったとき、日次 file に本文・ID の無い marker 行 `{"collection_lost":"ledger_dropped"}` を追記する。これまでは `ledger-stats.edn` の counter だけが増え、ledger を集計する `ai_ops_sli.bb` からは欠落が見えなかった。そのため、是正などが失われても是正率や first acceptance を確定値として出してしまっていた。
+- `ai_ops_sli.bb` は `ledger_dropped` を collector の drop と同じ種別不明の欠落として数える (`coverage.collection-lost.ledger-dropped`、`ai_ops_collection_lost_events_total{reason="ledger_dropped"}`)。1 件以上あれば、是正率、first acceptance、zero-tolerance 指標を unknown にする。
+- marker は容量上限を超えても書くが、超過は上限 + 64KiB までに抑える。日次 file の欠落を unknown にするには marker が 1 行あれば足りる。正確な件数は従来どおり stats と metrics に出す。marker 自体を書けない障害の場合、欠落は metrics (`ai_ops_ledger_lost_events_total`) にだけ残る。この制約は既知のものとして扱う。
