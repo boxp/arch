@@ -89,10 +89,23 @@
     (#{:event_id :request_id :task_id :run_id :evidence_event_ids} k) true
     :else false))
 
+(def reasoning-suffix-re #"(.+)-(minimal|low|medium|high|xhigh)")
+
+(defn normalize-agent
+  "Map a runner assignee with a reasoning-level suffix (e.g. `codex-sol-xhigh`)
+  to its allowlisted base assignee so per-agent analysis keeps the value."
+  [agent]
+  (if-let [[_ base] (and (string? agent)
+                         (not (contains? (:agent enum-values) agent))
+                         (re-matches reasoning-suffix-re agent))]
+    (if (contains? (:agent enum-values) base) base agent)
+    agent))
+
 (defn gate
   "Apply the source privacy gate. Returns [event-or-nil redacted-count]."
   [event]
-  (let [selected (select-keys event allowed-keys)
+  (let [selected (cond-> (select-keys event allowed-keys)
+                   (contains? event :agent) (update :agent normalize-agent))
         kept (into {} (filter (fn [[k v]] (and (some? v) (valid-value? k v)))) selected)
         redacted (- (count (filter (comp some? val) selected)) (count kept))]
     [(when (and (valid-ids? kept) (contains? kept :event_type)) kept) redacted]))
@@ -177,6 +190,15 @@
     (= "correction" (:event_type e))
     (count-in [:corrections [(:correction_origin e "unknown") (:correction_class e "unknown")]])))
 
+(defn flush-unrecorded-write-errors!
+  "Persist write errors counted while the lock was unavailable. Call with the
+  ledger lock held. On failure the count is restored for a later flush."
+  [root]
+  (let [[pending _] (reset-vals! unrecorded-write-errors 0)]
+    (when (pos? pending)
+      (try (update-stats! root #(update % :write-errors (fnil + 0) pending))
+           (catch Exception e (swap! unrecorded-write-errors + pending) (throw e))))))
+
 (defn append-line! [path m]
   (fs/create-dirs (fs/parent path))
   (spit (str path) (str (json/generate-string m) "\n") :append true))
@@ -189,9 +211,7 @@
       (with-ledger-lock
        root
        (fn []
-        (let [[pending _] (reset-vals! unrecorded-write-errors 0)
-              _ (when (pos? pending)
-                  (update-stats! root #(update % :write-errors (fnil + 0) pending)))
+        (let [_ (flush-unrecorded-write-errors! root)
               now (str (java.time.Instant/now))
               [e redacted] (gate (merge {:schema_version schema-version
                                          :source "task-board-runner"
@@ -302,6 +322,8 @@
       (with-ledger-lock
        root
        (fn []
+         ;; Losses from lock timeouts are reflected even when no emit! follows.
+         (flush-unrecorded-write-errors! root)
          (when (fs/exists? (ledger-dir root)) (prune! root))
          (atomic-spit! (metrics-path root)
                        (metrics-text (read-stats root) (quot (System/currentTimeMillis) 1000)))

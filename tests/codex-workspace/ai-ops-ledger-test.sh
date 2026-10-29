@@ -37,6 +37,15 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   (check "schema and source added" (= ["ai-ops-event/v0" "task-board-runner"]
                                       ((juxt :schema_version :source) (first (events root))))))
 
+;; reasoning-level assignees (runner accepts e.g. codex-sol-xhigh) keep their base agent
+(let [root (str (fs/path tmp "h"))]
+  (ev root "started" {:event_type "run.started" :agent "codex-sol-xhigh"})
+  (ev root "finished" {:event_type "run.finished" :agent "codex-terra-minimal" :status "succeeded"})
+  (ev root "lane" {:event_type "lane.changed" :agent "unknown-high"})
+  (check "reasoning suffix normalized to base agent"
+         (= ["codex-sol" "codex-terra" nil] (mapv :agent (events root))))
+  (check "normalized agent not counted as redaction" (= 1 (:redacted-values (stats root)))))
+
 ;; invalid IDs are rejected with a body-less marker
 (let [root (str (fs/path tmp "b"))]
   (ai-ops-ledger/emit! root {:event_id "BOXP-1:password-hunter2" :task_id "BOXP-1" :request_id "req:BOXP-1"
@@ -176,11 +185,19 @@ CODEX_TASK_BOARD_AI_OPS_LEDGER_LOCK_TIMEOUT_MS=300 AI_OPS_MODULE="${module}" AI_
 (def gate-r (ai-ops-ledger/record-gate! root "all" "pass"))
 (def metrics-r (ai-ops-ledger/write-metrics! root))
 (Thread/sleep 4500)
+;; No emit! follows the lost write: write-metrics! alone must expose it.
+(def metrics-r2 (ai-ops-ledger/write-metrics! root))
+(def m (slurp (str (ai-ops-ledger/metrics-path root))))
+(def s-before-emit (ai-ops-ledger/read-stats root))
 (def r2 (ev))
 (def s (ai-ops-ledger/read-stats root))
 (def checks [["held lock: emit returns nil" (nil? r)]
              ["held lock: emit gives up within bound" (< elapsed 2500)]
              ["held lock: record-gate/write-metrics do not throw" (and (nil? gate-r) (nil? metrics-r))]
+             ["after release: write-metrics succeeds" (true? metrics-r2)]
+             ["after release: loss exported without a later emit"
+              (and (= 1 (:write-errors s-before-emit))
+                   (clojure.string/includes? m "ai_ops_ledger_lost_events_total{reason=\"write_error\"} 1"))]
              ["after release: emit succeeds" (some? r2)]
              ["after release: lost write counted" (= 1 (:write-errors s))]])
 (doseq [[l ok] checks] (println (if ok "ok" "FAIL") l))
