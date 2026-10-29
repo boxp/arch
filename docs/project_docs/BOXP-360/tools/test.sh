@@ -143,6 +143,7 @@ bb ai_ops_sli.bb aggregate "$tmp/reopen.jsonl" >"$tmp/reopen.edn"
 bb -e '
 (let [r (edn/read-string (slurp (first *command-line-args*)))]
   (assert (= {"in-flight" 1 "accepted" 2} (get-in r [:tasks :outcomes])))
+  ;; 拒否 event は coverage.connected (是正に無関係な種別) のため first acceptance は確定できる
   (assert (= [2 2 0] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance]))))
   (assert (= 2 (get-in r [:coverage :privacy-rejected-invalid-id])))
   (assert (= 0 (get-in r [:input :duplicates])))
@@ -660,9 +661,9 @@ bb -e "
 (let [r (ai-ops-sli/aggregate \"$tmp_bad/x.jsonl\")]
   (assert (= 1 (get-in r [:input :unreadable-runs])))
   (assert (= 3 (get-in r [:input :unreadable-inputs])))
-  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])))
-  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing])))
-  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unevaluated-input-missing])))
+  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :observed :denominator])))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :observed :unevaluated-input-missing])))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :observed :unevaluated-input-missing])))
   (assert (= 1 (reduce + (map :unevaluated-input-missing (vals (:by-stratum r))))))
   (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
   (assert (re-find #\"ai_ops_collection_lost_events_total\\{reason=\\\"input_unreadable\\\"\\} 3\" (with-out-str (ai-ops-sli/prom \"$tmp_bad/x.jsonl\"))))
@@ -681,7 +682,7 @@ bb -e "
 (let [r (ai-ops-sli/aggregate \"$tmp_fm/x.jsonl\")]
   (assert (= 3 (get-in r [:input :unreadable-inputs])))
   (assert (zero? (get-in r [:input :sources \"outbox:\"] 0)))
-  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unevaluated-input-missing])))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :observed :unevaluated-input-missing])))
   (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
   (println \"ok   空/未知の outbox event-type と frontmatter 破損 ticket は欠落として計数し、run を保持して該当 task を未評価にする\"))"
 rm -rf "$tmp_fm"
@@ -698,8 +699,8 @@ bb -e "
 (let [r (ai-ops-sli/aggregate \"$tmp_miss/x.jsonl\")]
   (assert (= 3 (get-in r [:input :unreadable-runs])))
   (assert (= 2 (get-in r [:input :unreadable-inputs])))
-  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])))
-  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing])))
+  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :observed :denominator])))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :observed :unevaluated-input-missing])))
   (assert (not (re-find #\"BOXP-82:accepted\" (slurp \"$tmp_miss/x.jsonl\"))))
   (println \"ok   summary.edn 不在の run と閉じ区切り/必須field欠落の frontmatter を欠落として該当 task を未評価にする\"))"
 rm -rf "$tmp_miss"
@@ -854,3 +855,54 @@ bb -e '
     (spit f (str/join "\n" (map cheshire.core/generate-string (conj base {:event_id "BOXP-70:corr" :event_type "correction" :correction_origin "agent-system" :occurred_at "2026-10-20T03:00:00Z"}))))
     (assert (str/includes? (with-out-str (ai-ops-sli/prom f)) "ai_ops_unlinked_task_events_total 1"))))
 (println "ok   task_id 欠落の是正 event を黙って除外せず別掲し first acceptance/是正率を unknown にする")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-71:run" :task_id "BOXP-71" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-71:fin" :task_id "BOXP-71" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-71:acc" :task_id "BOXP-71" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+      ok (ai-ops-sli/aggregate* base)]
+  (assert (= [1 1] ((juxt :count :denominator) (get-in ok [:sli :first-acceptance-conformance]))) (pr-str ok))
+  ;; 受入前の是正が生成元で拒否 / buffer drop / 未配信 / 破損行として欠落したケース
+  (doseq [[label lost] [["upstream 拒否" ai-ops-sli/rejected-marker]
+                        ["buffer drop" {:collection_lost "buffer_dropped"}]
+                        ["未配信" {:collection_lost "undelivered"}]
+                        ["破損行" {:ai-ops-sli/malformed true}]
+                        ["aggregate 側 privacy 拒否" {:event_id "bad id" :task_id "BOXP-71" :event_type "correction" :correction_origin "agent-system" :occurred_at "2026-10-20T03:00:00Z"}]]]
+    (let [r (ai-ops-sli/aggregate* (conj base lost))
+          fa (get-in r [:sli :first-acceptance-conformance])
+          cr (get-in r [:sli :agent-system-correction-task-ratio])]
+      (assert (= ["unknown" 1] ((juxt :status :lost-events) fa)) (str label " " (pr-str fa)))
+      (assert (= [1 1] ((juxt :count :denominator) (:observed fa))) label)
+      (assert (= "unknown" (:status cr)) label)
+      (assert (= "unknown" (get-in r [:sli :corrections-per-task :status])) label))))
+(println "ok   受入前の是正が拒否/drop/未配信/破損で欠落したら first acceptance/是正率を確定せず unknown (観測値は observed)")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-72:run" :task_id "BOXP-72" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-72:fin" :task_id "BOXP-72" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-72:acc" :task_id "BOXP-72" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
+      bad-corr {:event_id "bad id" :task_id "BOXP-72" :event_type "correction" :correction_origin "agent-system" :occurred_at "2026-10-20T03:00:00Z"}
+      bad-notify {:event_id "bad id" :task_id "BOXP-72" :event_type "notify.run-finished" :occurred_at "2026-10-20T03:00:00Z"}
+      m-corr (ai-ops-sli/rejected-marker-for bad-corr)
+      m-notify (ai-ops-sli/rejected-marker-for bad-notify)
+      m-unknown (ai-ops-sli/rejected-marker-for {:event_id "bad id" :event_type "secret value"})]
+  ;; marker は本文・ID を持たず、許可 enum の event_type だけを残す
+  (assert (= {:privacy_rejected "upstream" :event_type "correction"} m-corr))
+  (assert (= {:privacy_rejected "upstream"} m-unknown))
+  (doseq [[label evs status] [["是正種別の upstream 拒否" [m-corr] "unknown"]
+                              ["種別不明の upstream 拒否" [m-unknown] "unknown"]
+                              ["notify の upstream 拒否" [m-notify] nil]
+                              ["notify の aggregate 側拒否" [bad-notify] nil]]]
+    (let [r (ai-ops-sli/aggregate* (into base evs))
+          fa (get-in r [:sli :first-acceptance-conformance])]
+      (assert (= status (:status fa)) (str label " " (pr-str fa)))
+      ;; zero-tolerance は種別に関係なく保守的に unknown
+      (assert (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status])) label)))
+  (let [f (str (babashka.fs/create-temp-file))]
+    (spit f (cheshire.core/generate-string (assoc bad-corr :synthetic true)))
+    (let [out (with-out-str (binding [*err* (java.io.StringWriter.)] (ai-ops-sli/emit-sim f 4 100 100)))]
+      (assert (str/includes? out "\"event_type\":\"correction\"") out)
+      (assert (not (str/includes? out "bad id")) out))))
+(println "ok   upstream 拒否 marker は event_type enum のみ保持し、是正に無関係な種別 (notify 等) の拒否では是正 SLI を unknown にしない")'

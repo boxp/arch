@@ -84,11 +84,19 @@
      :rejected? rejected? :invalid-correlation? invalid-correlation?}))
 
 (def rejected-marker {:privacy_rejected "upstream"})
+;; 是正 SLI (是正率/first acceptance) に影響し得ない event 種別。これ以外 (種別不明を含む) の欠落は是正だった可能性を否定できない
+(def correction-neutral-types #{"notify.run-finished" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"})
+(defn may-affect-corrections? [event-type] (not (contains? correction-neutral-types event-type)))
+;; 拒否 marker には本文・ID を出さず、許可 enum の event_type だけを残す (是正 SLI への影響判定用)
+(defn rejected-marker-for [e]
+  (cond-> rejected-marker (contains? (:event_type enum-values) (:event_type e)) (assoc :event_type (:event_type e))))
+(defn rejected-marker? [e]
+  (and (map? e) (= "upstream" (:privacy_rejected e)) (every? #{:privacy_rejected :event_type} (keys e))))
 ;; collector 停止で bounded buffer から溢れた/未配信の event の marker (本文・ID なし)
 ;; input_unreadable: extract で読めなかった summary.edn / outbox (task を特定できない欠落入力)
 (def lost-markers {{:collection_lost "buffer_dropped"} :buffer-dropped {:collection_lost "undelivered"} :undelivered
                    {:collection_lost "input_unreadable"} :input-unreadable})
-(defn marker? [e] (or (= rejected-marker e) (contains? lost-markers e)))
+(defn marker? [e] (or (rejected-marker? e) (contains? lost-markers e)))
 
 (defn emit-gated [stats e]
   (let [{:keys [event dropped-keys redacted-values rejected?]} (privacy-gate e)]
@@ -96,7 +104,7 @@
                       (update :privacy-redacted-values + redacted-values)
                       (cond-> rejected? (update :privacy-rejected inc))))
     ;; 拒否した event は本文を出さず、ID を持たない marker 行だけを出して aggregate へ拒否件数を引き継ぐ
-    (println (json/generate-string (or event rejected-marker)))))
+    (println (json/generate-string (or event (rejected-marker-for e))))))
 
 ;; ---------------------------------------------------------------------------
 ;; extract: 既存 metadata -> 共通 schema
@@ -291,7 +299,7 @@
         st (reduce
             (fn [{:keys [buf] :as st} [i e]]
               (let [{ev :event :keys [dropped-keys redacted-values rejected?]} (privacy-gate e)
-                    ev (or ev rejected-marker)
+                    ev (or ev (rejected-marker-for e))
                     st (-> st (update :emitted inc) (update :privacy-dropped-keys + dropped-keys) (update :privacy-redacted-values + redacted-values)
                            (cond-> rejected? (update :privacy-rejected inc)))
                     down? (<= down-from i down-to)]
@@ -388,17 +396,23 @@
 (defn aggregate* [events]
   (let [malformed (count (filter ::malformed events))
         ;; 生成元 (extract/emit-sim) の privacy gate で拒否された event の marker
-        upstream-rejected (count (filter #(= rejected-marker %) events))
+        upstream-markers (filter rejected-marker? events)
+        upstream-rejected (count upstream-markers)
         collection-lost (frequencies (keep lost-markers events))
         buffer-dropped (get collection-lost :buffer-dropped 0)
         undelivered (get collection-lost :undelivered 0)
         input-unreadable (get collection-lost :input-unreadable 0)
         events (remove marker? events)
-        gated (map privacy-gate (remove ::malformed events))
+        raw-events (remove ::malformed events)
+        gated (map privacy-gate raw-events)
         rejected (count (filter #(and (:rejected? %) (not (:invalid-correlation? %))) gated))
         rejected-correlation (count (filter :invalid-correlation? gated))
         ;; 破損行と privacy gate で拒否した event は中身を検証できないため、zero-tolerance 指標を 0 件と確定しない
         lost (+ malformed rejected rejected-correlation upstream-rejected buffer-dropped undelivered input-unreadable)
+        ;; 是正 SLI 用の欠落: 種別が是正に無関係と分かる拒否 event (notify 等) は除く。破損行・drop・未配信・読めない入力は種別不明なので含める
+        corr-lost (+ malformed buffer-dropped undelivered input-unreadable
+                     (count (filter #(may-affect-corrections? (:event_type %)) upstream-markers))
+                     (count (filter (fn [[e g]] (and (:rejected? g) (may-affect-corrections? (:event_type e)))) (map vector raw-events gated))))
         events (keep :event gated)
         n-in (count events)
         uniq (unique-events events)
@@ -419,10 +433,15 @@
                           (some-> (:event_type %) (str/starts-with? "run.")))
         unlinked (filter #(and (nil? (:task_id %)) (task-scoped? %)) uniq)
         unlinked-corr (count (filter #(#{"correction" "task.reopened"} (:event_type %)) unlinked))
-        unlinked-guard (fn [m] (if (pos? unlinked-corr)
+        ;; 欠落 event (破損行・privacy 拒否・drop/未配信・読めない入力) は task に紐付けられず、受入前の是正だった可能性を否定できない
+        unlinked-guard (fn [m] (cond
+                                 (pos? unlinked-corr)
                                  {:status "unknown" :reason "task_id 欠落の是正 event があり、どの task の是正か確定できない (合格扱いしない)"
-                                  :observed m :unlinked-corrections unlinked-corr}
-                                 m))
+                                  :observed m :unlinked-corrections unlinked-corr :lost-events corr-lost}
+                                 (pos? corr-lost)
+                                 {:status "unknown" :reason "task に紐付けられない欠落 event (破損行・privacy 拒否・collector 欠落・読めない入力) があり、是正の有無を確定できない (観測値は observed)"
+                                  :observed m :lost-events corr-lost}
+                                 :else m))
         tasks (for [[tid evs] by-task
                     :let [evs (sort-by event-time-key evs)
                           corr (filter #(#{"correction" "task.reopened"} (:event_type %)) evs)
@@ -524,10 +543,10 @@
              :unknown-cause-tasks (count (filter #(pos? (:unknown-corr %)) reached))
              :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) reached-all))
              :note "分母=review 到達 task。unknown 原因は分子に入れず別掲 (成功扱いもしない)"))
-      :corrections-per-task {:agent-system (quantiles (map :agent-corr reached))
+      :corrections-per-task (unlinked-guard {:agent-system (quantiles (map :agent-corr reached))
                              :unknown (quantiles (map :unknown-corr reached))
                              :total-agent-system (reduce + (map :agent-corr reached))
-                             :total-unknown (reduce + (map :unknown-corr reached))}
+                             :total-unknown (reduce + (map :unknown-corr reached))})
       :first-acceptance-conformance
       (unlinked-guard (assoc (ratio (count (filter :first-pass? accepted)) (count accepted))
              :incl-unevaluated-as-not-pass (ratio (count (filter :first-pass? accepted))

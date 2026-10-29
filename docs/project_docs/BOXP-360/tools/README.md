@@ -34,3 +34,5 @@ emit-sim は配信済みイベントを標準出力し、統計を標準エラ�
 `lane.changed` の `lane_to`（ready / review / blocked / backlog / in-progress）も時刻付き状態遷移として outcome 判定に含め、`lane_to=review` は Review 到達とする。`lane_to=done` は受入とみなさない（受入は `task.accepted` / done snapshot で判定）。
 
 critical-safety-events は `coverage.connected`（対象 `critical-safety-events`）がある場合のみ `coverage=connected` で件数を確定し、宣言なしで有効な severity の event だけを観測した場合は観測件数に `coverage=partial/undeclared` を付ける（0件でも「重大 event なし」とはしない）。どちらもない場合は unknown。
+
+是正率 / corrections-per-task / first acceptance は、task に紐付けられない欠落 event (破損行・privacy 拒否・drop・未配信・読めない入力) が 1 件でもあれば `status unknown` とし、観測値を `observed`、件数を `lost-events` に出す。生成元の拒否 marker は許可 enum の `event_type` だけを保持し、notify / owner.rescue / approval.* / effect.applied / coverage.connected の拒否は是正 SLI を unknown にしない。
