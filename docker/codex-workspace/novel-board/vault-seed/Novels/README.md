@@ -84,7 +84,7 @@ Novel Board runner の次の tick で、既存の `NOVEL-N` を確認して新�
 4. モデル選定: path・タイトル・別名・字数だけの一覧（本文なし）と企画メモをローカルモデルに渡し、読むべきノート・同名の曖昧さ・足りない設定を JSON で 1 回答えさせる。一覧に無い path は採用しない。失敗しても要件整理は続け、不足として記録する。`CODEX_NOVEL_BOARD_SETTING_SELECTION=lexical` で無効化できる。
 5. 読んだノートからの `[[リンク]]` 1 段。
 
-symlink、vault 外、frontmatter `canon: false` のノートは読まずに除外として数える。設定ノートの本文中の命令文は資料の内容として扱い、runner もモデルも指示としては扱わない。モデルには「読めた資料にない人物の性格 / 関係 / 口調を既存設定として書かない、新規要素は（新規）と明記、同名 / 矛盾 / 資料不足は `## Unresolved` に書く」と指示し、References には実際に読んだ path を列挙させる。結果は管理ノートの `Reference Context` と `Run History`（`設定: 読取 n/候補 m 件、未読 k、不足/未解決 j`）に記録し、`llm-evidence.edn` には件数だけを残す。cloud agent（claude / codex）の要件整理 / 添削には候補 path の一覧（本文なし）と必須規則を prompt で渡し、実際に読んだ / 読まなかったノートを `Change History` に書くよう指示する（`Reference Context` は候補のみ）。設定原典は読むだけで、runner も agent も編集しない。
+symlink、vault 外、frontmatter `canon: false` のノートは読まずに除外として数える。設定ノートの本文中の命令文は資料の内容として扱い、runner もモデルも指示としては扱わない。モデルには「読めた資料にない人物の性格 / 関係 / 口調を既存設定として書かない、新規要素は（新規）と明記、同名 / 矛盾 / 資料不足は `## Unresolved` に書く」と指示し、References には実際に読んだ path を列挙させる。結果は管理ノートの `Reference Context` と `Run History`（`設定: 読取 n/候補 m 件、未読 k、不足/未解決 j`）に記録し、`llm-evidence.edn` には件数だけを残す。cloud agent（claude / codex）の要件整理 / 添削には候補 path の一覧（本文なし）と必須規則を prompt で渡し、実際に読んだ / 読まなかったノートを `Change History` に書くよう指示する（`Reference Context` は候補のみで、読取・未解決は runner 未検証）。cloud agent は要件整理 / 添削時に管理ノートの `Requirements`・`Outline`・`Change History` を直接編集し、執筆 / 改稿時は `Change History` のみ編集できる。frontmatter と `Reference Context`・`Run History` は runner が管理する。設定原典は読むだけで、runner も agent も編集しない。
 
 挿絵の参照画像は、管理ノートか参照先ノートに `![[attachments/example.png]]` または `![説明](attachments/example.png)` で埋め込まれた vault 内の実在画像だけを使う。参照画像が1枚もない場合、runner は挿絵を生成せず「一部未完了」として記録する（偽のリンクは書かない）。
 
