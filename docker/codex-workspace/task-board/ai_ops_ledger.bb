@@ -654,7 +654,10 @@
 
 (defn refresh-sli! [root vault]
   (try
-    (with-sli-lock root #(refresh-sli-locked! root vault))
+    ;; Check the cheap preconditions first: a disabled ledger must not even
+    ;; create ai-ops/ for the lock file.
+    (when (and (enabled?) (pos? (sli-interval)) (not (str/blank? vault)))
+      (with-sli-lock root #(refresh-sli-locked! root vault)))
     (catch Exception _ nil)))
 
 ;; The extract/prom subprocesses may take up to sli-timeout; never block the
