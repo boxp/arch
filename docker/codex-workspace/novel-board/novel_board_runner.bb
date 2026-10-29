@@ -2280,6 +2280,8 @@
                           (do (swap! explored conj {:rel rel :source source :images (count refs)})
                               (doseq [raw (take 4 refs)] (image! raw (fs/parent file) (str/replace (str (fs/file-name file)) #"\.md$" "") source false))
                               (when follow? (swap! links into (map #(vector % (fs/parent file)) (wiki-link-stems text)))))))))))]
+    ;; Request-named notes first, so the 24-image cap cannot crowd them out.
+    (doseq [path named-paths] (scan! (fs/path path) "名前一致" true))
     (let [text (without-section content draft-preview-heading) refs (embedded-image-refs text)]
       (swap! notes conj (canonical-path (note-path novel-id)))
       (swap! explored conj {:rel (absolute-relative (vault) (note-path novel-id)) :source "管理ノート" :images (count refs)})
@@ -2293,7 +2295,6 @@
             (nil? path) (gap! :image-not-found target)
             (or (not (allowed-reference-path? path)) (symlinked-under? (vault) path)) (gap! :image-not-allowed target)
             :else (doseq [file (reference-markdown-files path)] (scan! file "明示参照" true))))))
-    (doseq [path named-paths] (scan! (fs/path path) "名前一致" true))
     (doseq [:let [query (exploration-query fm content)]
             entry (setting-catalog)
             :when (and (not (:excluded entry)) (seq (lexical-hits entry query)))]
