@@ -228,6 +228,9 @@
                                       (every? #(let [v (get s %)] (or (keyword? v) (string? v))) [:status])
                                       (every? #(let [v (get s %)] (or (nil? v) (keyword? v) (string? v))) [:action :agent :result :blocker-category])
                                       (every? #(let [v (get s %)] (or (nil? v) (string? v))) [:started-at :finished-at :updated-at])
+                                      ;; 時刻は解釈可能であること (不正時刻は privacy gate で redact され是正の前後を誤判定するため欠落入力として扱う)
+                                      (every? #(let [v (get s %)] (or (nil? v) (try (java.time.Instant/parse v) true (catch Exception _ false))))
+                                              [:started-at :finished-at :updated-at])
                                       ;; 集計に使う値が未知 (例: :action "review_fix") なら是正導出から漏れるため欠落入力として扱う
                                       (every? (fn [[k ek]] (let [v (get s k)] (or (nil? v) (contains? (ek enum-values) (kw-or-str v)))))
                                               [[:status :status] [:action :action] [:result :result]])
@@ -530,8 +533,8 @@
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
                           finished (filter #(= "run.finished" (:event_type %)) evs)]
-                    ;; 状態 event (state/cancelled/reopened) や読めない run も task の存在を示す
-                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable"} (:event_type %)) evs) (seq runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
+                    ;; 状態 event (state/cancelled/reopened)・読めない run・救援 event も task の存在を示す (救援単独 task を救援率から落とさない)
+                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue"} (:event_type %)) evs) (seq runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
                 {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)

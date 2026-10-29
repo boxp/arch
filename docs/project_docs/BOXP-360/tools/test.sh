@@ -1174,3 +1174,25 @@ bb -e '
   (assert (= "unknown" (get-in r2 [:sli :owner-rescue :status])) (pr-str (get-in r2 [:sli :owner-rescue])))
   (assert (= 1 (get-in r2 [:sli :owner-rescue :observed-lower-bound :count])) (pr-str (get-in r2 [:sli :owner-rescue]))))
 (println "ok   救援 event の欠落 (拒否等) や task_id 欠落の救援があれば Owner 救援率を unknown (観測値は下限)")'
+
+tmp_ts=$(mktemp -d)
+mkdir -p "$tmp_ts/root/runs/BOXP-84/20261020T010000Z-aaaa" "$tmp_ts/root/runs/BOXP-84/20261022T010000Z-bbbb" "$tmp_ts/root/outbox" "$tmp_ts/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_ts/vault/Tickets/BOXP-84.md"
+echo '{:ticket "BOXP-84" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_ts/root/runs/BOXP-84/20261020T010000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-84" :run-id "20261022T010000Z-bbbb" :agent "codex" :status :succeeded :result "review" :action :review-fix :started-at "invalid" :finished-at "2026-10-22T02:00:00Z"}' > "$tmp_ts/root/runs/BOXP-84/20261022T010000Z-bbbb/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_ts/root" "$tmp_ts/vault" > "$tmp_ts/x.jsonl" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_ts/x.jsonl\")]
+  (assert (= 1 (get-in r [:input :unreadable-runs])) (pr-str (:input r)))
+  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])) (pr-str (get-in r [:sli :first-acceptance-conformance])))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing])) (pr-str (get-in r [:sli :first-acceptance-conformance])))
+  (println \"ok   解釈できない時刻を持つ summary.edn は欠落入力 (run.unreadable) として該当 task を未評価にする\"))"
+rm -rf "$tmp_ts"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [r (ai-ops-sli/aggregate* [{:event_id "BOXP-93:requested" :task_id "BOXP-93" :request_id "req:BOXP-93" :event_type "request.received"}
+                                {:event_id "BOXP-94:rescue" :task_id "BOXP-94" :event_type "owner.rescue"}])]
+  (assert (= [1 2] ((juxt :count :denominator) (get-in r [:sli :owner-rescue]))) (pr-str (get-in r [:sli :owner-rescue]))))
+(println "ok   救援 event だけが観測された task も Owner 救援率の分子・分母に含める")'
