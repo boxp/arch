@@ -59,13 +59,13 @@
 
 ## 5. 実測 baseline (既存 metadata のみ)
 
-正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 02:45頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
+正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 02:52頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
 
-- ticket 360、run 1459、event 4150。run 履歴のない ticket は 70。
+- ticket 360、run 1460、event 4149。run 履歴のない ticket は 70。
 - outcome: accepted 280、awaiting-review 22、in-flight 41、blocked 5、backlog 12。
 - agent-system 是正 task 率: **43/284 (15.1%)**。原因 unknown の task は 107、unknown 是正 event は 206。
 - first acceptance 適合率: **94/223 (42.2%)**。未評価を不合格として含めると 94/283 (33.2%)、未評価 60。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
-- run の信頼性: interrupted 135、retrying 553、idle-timeout 7。delegation は delegated 63、exempt 56、failed 1。
+- run の信頼性: interrupted 133 (実行中 run は interrupted に含めない)、retrying 554、idle-timeout 7。delegation は delegated 65、exempt 56。
 - extract の order-inversions 810 は glob の読み取り順から出たもので、実際の到着順ではない。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
 

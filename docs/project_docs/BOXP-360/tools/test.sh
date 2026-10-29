@@ -279,3 +279,35 @@ bb -e '
   (assert (= [1 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))))
   (assert (= [1 2] ((juxt :count :denominator) (get-in r [:sli :agent-system-correction-task-ratio]))))
   (println "ok   時刻なし snapshot と是正、承認解決の集計"))' "$tmp/snapshot-precedence.edn"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base {:run-id "20261020T010000Z-abcd" :agent "codex"}
+      running (ai-ops-sli/summary->events "BOXP-1" (assoc base :status :running))
+      interrupted (ai-ops-sli/summary->events "BOXP-2" (assoc base :status :interrupted))
+      report (ai-ops-sli/aggregate* (concat running interrupted))]
+  (assert (= ["run.started"] (mapv :event_type running)))
+  (assert (= ["run.started" "run.interrupted"] (mapv :event_type interrupted)))
+  (assert (= [2 1] ((juxt :runs :interrupted) (get-in report [:sli :run-reliability]))))
+  (println "ok   実行中と中断済みを区別"))
+(let [base {:task_id "BOXP-1"}
+      events [(merge base {:event_id "BOXP-1:run" :event_type "run.started"})
+              (merge base {:event_id "BOXP-1:review" :event_type "task.state" :status "review" :result "review" :occurred_at "2026-10-20T00:00:00Z"})
+              (merge base {:event_id "BOXP-1:rule" :event_type "correction" :classifier "rule" :correction_origin "agent-system"})
+              (merge base {:event_id "BOXP-1:human" :event_type "correction" :classifier "human" :correction_origin "non-agent"})
+              (merge base {:event_id "BOXP-1:rule2" :event_type "correction" :classifier "rule" :correction_origin "agent-system" :evidence_event_ids ["BOXP-1:run"]})
+              (merge base {:event_id "BOXP-1:human2" :event_type "correction" :classifier "human" :correction_origin "non-agent" :evidence_event_ids ["BOXP-1:run"]})]
+      report (ai-ops-sli/aggregate* events)]
+  (assert (= 1 (get-in report [:sli :corrections-per-task :total-agent-system])))
+  (println "ok   evidence がない訂正は他の分類を上書きしない"))
+(let [events [{:event_id "BOXP-1:a" :task_id "invalid one" :event_type "run.started"}
+              {:event_id "BOXP-2:a" :task_id "invalid two" :event_type "run.started"}
+              {:event_id "BOXP-3:a" :task_id "BOXP-3" :request_id "invalid" :event_type "run.started"}
+              {:event_id "BOXP-4:a" :task_id "BOXP-4" :run_id "invalid" :event_type "run.started"}
+              {:event_id "BOXP-5:a" :task_id "BOXP-5" :event_type "run.started"}]
+      report (ai-ops-sli/aggregate* events)]
+  (assert (= 4 (get-in report [:coverage :privacy-rejected-invalid-correlation-id])))
+  (assert (= 1 (get-in report [:tasks :total])))
+  (assert (= 1 (get-in report [:sli :run-reliability :runs])))
+  (assert (every? :rejected? (map ai-ops-sli/privacy-gate (butlast events))))
+  (println "ok   不正な correlation ID のイベントを集計から除外"))'

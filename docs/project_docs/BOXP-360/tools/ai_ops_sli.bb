@@ -77,9 +77,11 @@
   (let [dropped (remove allowed-keys (keys e))
         selected (select-keys e allowed-keys)
         invalid (filter (fn [[k v]] (not (valid-value? k v))) selected)
-        rejected? (or (nil? (:event_id e)) (not (valid-value? :event_id (:event_id e))))]
+        invalid-correlation? (boolean (some #(and (some? (get e %)) (not (valid-value? % (get e %)))) [:task_id :request_id :run_id]))
+        rejected? (or (nil? (:event_id e)) (not (valid-value? :event_id (:event_id e))) invalid-correlation?)]
     {:event (when-not rejected? (reduce (fn [m [k _]] (assoc m k "redacted")) selected invalid))
-     :dropped-keys (count dropped) :redacted-values (count (remove #(= :event_id (first %)) invalid)) :rejected? rejected?}))
+     :dropped-keys (count dropped) :redacted-values (count (remove #(= :event_id (first %)) invalid))
+     :rejected? rejected? :invalid-correlation? invalid-correlation?}))
 
 (defn emit-gated [stats e]
   (let [{:keys [event dropped-keys redacted-values rejected?]} (privacy-gate e)]
@@ -136,7 +138,7 @@
                    :status (some-> (:status s) name) :result (some-> (:result s) str)
                    :exit_code (:exit-code s) :idle_timeout (boolean (:idle-timeout? s))
                    :blocker_category (some-> (:blocker-category s) str)))
-      (and (not (:finished-at s)) (#{:interrupted :running} (:status s)))
+      (and (not (:finished-at s)) (= :interrupted (:status s)))
       (conj (assoc base :event_id (str ticket "/" run-id ":" (name (:status s))) :event_type "run.interrupted"
                    :occurred_at (or (:updated-at s) started) :status (name (:status s)))))))
 
@@ -297,7 +299,8 @@
 
 (defn aggregate* [events]
   (let [gated (map privacy-gate events)
-        rejected (count (filter :rejected? gated))
+        rejected (count (filter #(and (:rejected? %) (not (:invalid-correlation? %))) gated))
+        rejected-correlation (count (filter :invalid-correlation? gated))
         events (keep :event gated)
         n-in (count events)
         uniq (second (reduce (fn [[seen out] e] (if (contains? seen (:event_id e)) [seen out] [(conj seen (:event_id e)) (conj out e)])) [#{} []] events))
@@ -313,9 +316,10 @@
                     :let [evs (sort-by event-time-key evs)
                           corr (filter #(#{"correction" "task.reopened"} (:event_type %)) evs)
                           ;; 人の訂正 (classifier=human) は同じ evidence の rule 判定を上書きする
-                          human (into {} (keep #(when (= "human" (:classifier %)) [(first (:evidence_event_ids %)) %]) corr))
+                          human (into {} (keep #(when (and (= "human" (:classifier %)) (sequential? (:evidence_event_ids %)) (first (:evidence_event_ids %))) [(first (:evidence_event_ids %)) %]) corr))
                           corr (keep #(if (= "human" (:classifier %)) %
-                                          (when-not (contains? human (first (:evidence_event_ids %))) %)) corr)
+                                          (when-not (and (sequential? (:evidence_event_ids %))
+                                                         (contains? human (first (:evidence_event_ids %)))) %)) corr)
                           agent-corr (filter #(= "agent-system" (correction-origin %)) corr)
                           unknown-corr (filter #(= "unknown" (correction-origin %)) corr)
                           accepted (some #(when (= "task.accepted" (:event_type %)) (parse-inst (:occurred_at %))) evs)
@@ -406,7 +410,7 @@
                   :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
-     :coverage {:privacy-rejected-invalid-id rejected :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
+     :coverage {:privacy-rejected-invalid-id rejected :privacy-rejected-invalid-correlation-id rejected-correlation :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
                 :hermes-conversation {:status (if (some #(str/starts-with? (str %) "hermes") (keys sources)) "connected" "not-connected")}}
      :by-stratum
