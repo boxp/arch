@@ -1001,3 +1001,32 @@ bb -e '
   (assert (= 1 (:unevaluated-input-missing c)) (pr-str c))
   (assert (= 1 (get-in r [:input :unverifiable-state-events])) (pr-str (:input r))))
 (println "ok   状態/結果 field が不正値で redact された task は是正率の分母から黙って消さず入力欠落として別掲する")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [r (ai-ops-sli/aggregate*
+         [{:event_id "BOXP-80:run" :task_id "BOXP-80" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+          {:event_id "BOXP-80:acc1" :task_id "BOXP-80" :event_type "task.accepted"}
+          {:event_id "BOXP-80:corr" :task_id "BOXP-80" :event_type "correction" :correction_origin "agent-system" :occurred_at "2026-10-21T00:00:00Z"}
+          {:event_id "BOXP-80:acc2" :task_id "BOXP-80" :event_type "task.accepted" :occurred_at "2026-10-22T00:00:00Z"}])
+      f (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= 0 (:denominator f)) (pr-str f))
+  (assert (= 1 (:accepted-without-acceptance-time f)) (pr-str f)))
+(println "ok   最初の受入時刻が不明なら後の時刻付き受入を first acceptance の基準にせず受入時刻不明として別掲する")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [r (ai-ops-sli/aggregate*
+         [{:event_id "BOXP-81:run" :task_id "BOXP-81" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+          {:event_id "BOXP-81:fin" :task_id "BOXP-81" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T01:00:00Z"}
+          {:event_id "BOXP-81:acc" :task_id "BOXP-81" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
+          {:event_id "BOXP-81:cur" :task_id "BOXP-81" :event_type "task.state" :snapshot "current"}
+          {:event_id "BOXP-82:run" :task_id "BOXP-82" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
+          {:event_id "BOXP-82:lane" :task_id "BOXP-82" :event_type "lane.changed" :lane_from "in-progress" :occurred_at "2026-10-20T01:00:00Z"}])
+      c (get-in r [:sli :agent-system-correction-task-ratio])
+      f (get-in r [:sli :first-acceptance-conformance])]
+  (assert (= 2 (get-in r [:input :unverifiable-state-events])) (pr-str (:input r)))
+  (assert (= 0 (:denominator c)) (pr-str c))
+  (assert (= 2 (:unevaluated-input-missing c)) (pr-str c))
+  (assert (= 0 (:denominator f)) (pr-str f)))
+(println "ok   必須状態 field (task.state の status / lane.changed の lane_to) が欠落した event も入力欠落として未評価に別掲する")'

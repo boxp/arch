@@ -398,6 +398,11 @@
       :else "unobserved")))
 
 (def state-fields [:status :result :action :lane_from :lane_to])
+;; event 種別ごとに outcome/Review 到達の判定に必須の状態 field: 欠落も redact と同じく入力欠落として扱う
+(def required-state-fields {"task.state" [:status] "lane.changed" [:lane_to]})
+(defn unverifiable-state-event? [e]
+  (or (some #(= "redacted" (get e %)) state-fields)
+      (some #(let [v (get e %)] (or (nil? v) (and (string? v) (str/blank? v)))) (get required-state-fields (:event_type e)))))
 (defn input-missing? [t] (or (pos? (:unreadable-runs t 0)) (pos? (:unverifiable-state t 0))))
 
 (defn aggregate* [events]
@@ -473,7 +478,9 @@
                                            :else e))) corr)
                           agent-corr (filter #(= "agent-system" (correction-origin %)) corr)
                           unknown-corr (filter #(= "unknown" (correction-origin %)) corr)
-                          accepted-ev (some #(when (and (= "task.accepted" (:event_type %)) (parse-inst (:occurred_at %))) %) evs)
+                          acceptances (filter #(= "task.accepted" (:event_type %)) evs)
+                          ;; 時刻不明の受入が 1 件でもあれば最初の受入を特定できない: 後の受入を first acceptance の基準にせず受入時刻不明として別掲
+                          accepted-ev (when (every? #(parse-inst (:occurred_at %)) acceptances) (first acceptances))
                           accepted (some-> accepted-ev :occurred_at parse-inst)
                           ;; 日粒度の受入 (frontmatter closed) は当日内の前後関係を確定できない: [当日 00:00, 翌日 00:00) を曖昧窓にする
                           day-window (when (and accepted (= "day" (:occurred_precision accepted-ev)))
@@ -505,7 +512,7 @@
                  :runs (count runs) :finished (count finished)
                  :unreadable-runs (count (filter #(= "run.unreadable" (:event_type %)) evs))
                  ;; 状態/結果 field が不正値で redact された event: Review 到達・受入・取消を判定できないため入力欠落として扱う
-                 :unverifiable-state (count (filter (fn [e] (some #(= "redacted" (get e %)) state-fields)) evs))
+                 :unverifiable-state (count (filter unverifiable-state-event? evs))
                  :interrupted (count (filter #(= "run.interrupted" (:event_type %)) evs))
                  :idle-timeouts (count (filter :idle_timeout finished))
                  :retrying (count (filter #(= "retrying" (:status %)) finished))
