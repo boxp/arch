@@ -928,3 +928,19 @@ bb -e '
     (assert (str/includes? bad-out "ai_ops_sli_determinable{sli=\"first_acceptance_conformance\"} 0") bad-out)
     (assert (not (re-find #"ai_ops_correction_tasks|ai_ops_reached_review_tasks" bad-out)) bad-out)))
 (println "ok   種別不明 event は是正 SLI を unknown にし、Prom は unknown の是正率を確定値として出さず判定可否 gauge を出す")'
+
+tmp_cxl=$(mktemp -d)
+mkdir -p "$tmp_cxl/root/runs/BOXP-110/20261020T010000Z-aaaa" "$tmp_cxl/root/outbox" "$tmp_cxl/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: cancelled\nclosed: 2026-10-22\n---\n' > "$tmp_cxl/vault/Tickets/BOXP-110.md"
+printf -- '---\ncreated: 2026-10-20\nstatus: cancelled\n---\n' > "$tmp_cxl/vault/Tickets/BOXP-111.md"
+echo '{:ticket "BOXP-110" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_cxl/root/runs/BOXP-110/20261020T010000Z-aaaa/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_cxl/root" "$tmp_cxl/vault" > "$tmp_cxl/x.jsonl" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_cxl/x.jsonl\")
+      evs (map #(cheshire.core/parse-string % true) (clojure.string/split-lines (slurp \"$tmp_cxl/x.jsonl\")))]
+  (assert (= {\"cancelled\" 2} (get-in r [:tasks :outcomes])) (pr-str (get-in r [:tasks :outcomes])))
+  (assert (= 0 (get-in r [:guardrails :unfinished])))
+  (assert (not-any? #(#{\"task.accepted\" \"task.reopened\"} (:event_type %)) evs))
+  (println \"ok   取消済み ticket は extract から aggregate まで cancelled として集計し、closed を受入/再open扱いしない\"))"
+rm -rf "$tmp_cxl"

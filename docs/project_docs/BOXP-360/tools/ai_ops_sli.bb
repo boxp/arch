@@ -265,16 +265,17 @@
                           :request_id (str "req:" ticket) :run_id run-id :source "task-board-runner" :event_type "run.unreadable"
                           :occurred_at (run-id->instant run-id) :occurred_precision "second"})
                        (derive-corrections ticket rs)
-                       (when (not (str/blank? (:closed fm)))
+                       ;; 取消済み ticket の closed は受入ではないため task.accepted/reopened を出さない
+                       (when (and (not= "cancelled" (:status fm)) (not (str/blank? (:closed fm))))
                          [{:schema_version schema-version :event_id (str ticket ":accepted") :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.accepted"
                            :occurred_at (str (:closed fm) "T23:59:59Z") :occurred_precision "day"}])
-                       (when (and (not= "done" (:status fm)) (not (str/blank? (:closed fm))))
+                       (when (and (not (#{"done" "cancelled"} (:status fm))) (not (str/blank? (:closed fm))))
                          [{:schema_version schema-version :event_id (str ticket ":reopened") :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.reopened"
                            :occurred_at (str (:closed fm) "T23:59:59Z") :occurred_precision "day"
                            :correction_origin "unknown" :correction_class "unknown"}])
-                       (when (#{"ready" "review" "blocked" "backlog" "in-progress" "done"} (:status fm))
+                       (when (#{"ready" "review" "blocked" "backlog" "in-progress" "done" "cancelled"} (:status fm))
                          [{:schema_version schema-version :event_id (str ticket ":state") :task_id ticket
                            :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "task.state"
                            :status (:status fm) :snapshot "current" :occurred_at nil}]))]
