@@ -192,12 +192,17 @@
                      (keep (fn [f] (when-let [fm (frontmatter f)] [(str (fs/strip-ext (fs/file-name f))) fm])))
                      (into {}))
         summaries (fs/glob (fs/path root "runs") "*/*/summary.edn")
-        ;; 読めない summary.edn は黙って捨てず run.unreadable として ticket に紐付け、その task の SLI を未評価にする
-        unreadable (->> summaries (remove read-edn)
+        ;; 読めない/必須field (ticket・run-id がディレクトリと一致、status) を欠く summary.edn は黙って捨てず
+        ;; run.unreadable として ディレクトリの ticket に紐付け、その task の SLI を未評価にする
+        valid-summary? (fn [f] (let [s (read-edn f) d (fs/parent f)]
+                                 (and (map? s) (some? (:status s))
+                                      (= (:ticket s) (str (fs/file-name (fs/parent d))))
+                                      (= (:run-id s) (str (fs/file-name d))))))
+        unreadable (->> summaries (remove valid-summary?)
                         (map (fn [f] (let [d (fs/parent f)] {:ticket (str (fs/file-name (fs/parent d))) :run-id (str (fs/file-name d))})))
                         (group-by :ticket))
         runs (->> summaries
-                  (keep (fn [f] (when-let [s (read-edn f)]
+                  (keep (fn [f] (when-let [s (and (valid-summary? f) (read-edn f))]
                                   (let [d (fs/path (fs/parent f) "delegation.json")]
                                     (cond-> s (fs/exists? d)
                                       (assoc :delegation-kind (try (:kind (json/parse-string (slurp (str d)) true)) (catch Exception _ "unparsable"))))))))
@@ -333,7 +338,7 @@
     (cond
       (or (= "task.cancelled" (:event_type latest)) (= "cancelled" state)) "cancelled"
       (= "task.reopened" (:event_type latest)) "in-flight"
-      (or (= "task.accepted" (:event_type latest)) (#{"done" "closed"} state)) "accepted"
+      (or (= "task.accepted" (:event_type latest)) (#{"done" "closed" "accepted"} state)) "accepted"
       (= state "blocked") "blocked"
       (= state "review") "awaiting-review"
       (#{"ready" "in-progress"} state) "in-flight"

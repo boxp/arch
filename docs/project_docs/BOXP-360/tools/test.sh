@@ -616,6 +616,36 @@ bb -e '
   (assert (= {"cancelled" 2 "in-flight" 1} (get-in r [:tasks :outcomes])))
   (println "ok   状態 event だけを持つ task も集計から落とさない"))'
 
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [gated (:event (ai-ops-sli/privacy-gate {:event_id "BOXP-73:state" :task_id "BOXP-73" :event_type "task.state" :status "accepted" :snapshot "current"}))
+      r (ai-ops-sli/aggregate* [{:event_id "BOXP-73:start" :task_id "BOXP-73" :run_id "20261020T010000Z-aaaa" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
+                                {:event_id "BOXP-73:run" :task_id "BOXP-73" :run_id "20261020T010000Z-aaaa" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+                                gated])]
+  (assert (= "accepted" (:status gated)))
+  (assert (= "accepted" (ai-ops-sli/task-outcome [gated])))
+  (assert (= {"accepted" 1} (get-in r [:tasks :outcomes])))
+  (assert (= 0 (get-in r [:guardrails :unfinished])))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :accepted-without-acceptance-time])))
+  (println "ok   privacy gate 経由の task.state accepted を受入 outcome とし、受入時刻不明として別掲する"))'
+
+tmp_inc=$(mktemp -d)
+mkdir -p "$tmp_inc/root/runs/BOXP-74/20261020T010000Z-aaaa" "$tmp_inc/root/runs/BOXP-74/20261020T030000Z-bbbb" "$tmp_inc/root/runs/BOXP-74/20261020T040000Z-cccc" "$tmp_inc/root/outbox" "$tmp_inc/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_inc/vault/Tickets/BOXP-74.md"
+echo '{:ticket "BOXP-74" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_inc/root/runs/BOXP-74/20261020T010000Z-aaaa/summary.edn"
+echo '{}' > "$tmp_inc/root/runs/BOXP-74/20261020T030000Z-bbbb/summary.edn"
+echo '{:ticket "BOXP-99" :run-id "20261020T040000Z-cccc" :status :succeeded}' > "$tmp_inc/root/runs/BOXP-74/20261020T040000Z-cccc/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_inc/root" "$tmp_inc/vault" > "$tmp_inc/x.jsonl" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_inc/x.jsonl\")]
+  (assert (= 2 (get-in r [:input :unreadable-runs])))
+  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing])))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unevaluated-input-missing])))
+  (println \"ok   必須field欠落/ticket・run-id不一致の summary.edn も欠落として該当 task を未評価にする\"))"
+rm -rf "$tmp_inc"
+
 tmp_bad=$(mktemp -d)
 mkdir -p "$tmp_bad/root/runs/BOXP-72/20261020T010000Z-aaaa" "$tmp_bad/root/runs/BOXP-72/20261020T030000Z-bbbb" "$tmp_bad/root/outbox" "$tmp_bad/vault/Tickets"
 printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_bad/vault/Tickets/BOXP-72.md"
