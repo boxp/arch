@@ -110,8 +110,8 @@ EOF
 bb ai_ops_sli.bb aggregate "$tmp/reopen.jsonl" >"$tmp/reopen.edn"
 bb -e '
 (let [r (edn/read-string (slurp (first *command-line-args*)))]
-  (assert (= {"in-flight" 1 "awaiting-review" 1 "blocked" 1} (get-in r [:tasks :outcomes])))
-  (assert (= [0 0 0] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance]))))
+  (assert (= {"in-flight" 1 "accepted" 2} (get-in r [:tasks :outcomes])))
+  (assert (= [2 2 0] ((juxt :count :denominator :not-yet-evaluated) (get-in r [:sli :first-acceptance-conformance]))))
   (assert (= 2 (get-in r [:coverage :privacy-rejected-invalid-id])))
   (assert (= 0 (get-in r [:input :duplicates])))
   (assert (= 0 (get-in r [:zero-tolerance :duplicate-effects :count])))
@@ -225,7 +225,7 @@ bb -e '
        ["重複 event を 1 件として数える" (= 1 (get-in r [:input :duplicates]))]
        ["順序逆転を検知" (= 1 (get-in r [:input :order-inversions]))]
        ["時刻ずれを検知" (= 1 (get-in r [:input :clock-skew-gt-5m]))]
-       ["取消/阻害/保留を outcome に残す" (= {"accepted" 1 "cancelled" 1 "blocked" 1 "awaiting-review" 2 "in-flight" 2} (get-in r [:tasks :outcomes]))]
+       ["取消/阻害/保留を outcome に残す" (= {"accepted" 1 "cancelled" 1 "blocked" 1 "awaiting-review" 1 "in-flight" 3} (get-in r [:tasks :outcomes]))]
        ["ticket なし会話も request_id で task 化" (= 7 (get-in r [:tasks :total]))]
        ["人の訂正が rule 判定を上書き (S3 は非 agent 起因)" (= 0 (get-in r [:sli :agent-system-correction-task-ratio :unknown-cause-tasks]))]
        ["agent-system 是正 task 1/4 (S2)" (= [1 4] ((juxt :count :denominator) (get-in r [:sli :agent-system-correction-task-ratio])))]
@@ -242,3 +242,40 @@ bb -e '
       bad (remove second checks)]
   (doseq [[n ok?] checks] (println (if ok? "ok  " "FAIL") n))
   (System/exit (if (seq bad) 1 0)))' "$tmp/ok.edn" "$tmp/ok.stats" "$tmp/down.stats" "$tmp/ok.prom" "$tmp/extract.jsonl" "$tmp/extract.stats" "$tmp/extract.edn" "$tmp/timing.edn" "$tmp/coverage.edn" "$tmp/extract.prom"
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [documented {:event_type ["request.received" "run.started" "run.finished" "run.interrupted" "correction" "task.reopened" "approval.requested" "approval.resolved" "effect.applied" "owner.rescue" "lane.changed" "task.accepted" "task.cancelled" "task.state" "notify.run-finished" "coverage.connected"]
+                  :correction_class ["instruction_violation" "source_mismatch" "done_claim_without_execution" "assignee_regression" "gate_defect" "preference_adjustment" "scope_addition" "unavoidable_safety_decision" "external_failure" "unknown"]
+                  :correction_origin ["agent-system" "non-agent" "unknown"] :classifier ["rule" "human" "model"]
+                  :schema_version ["ai-ops-event/v0"] :classifier_version ["correction-rules/v0"]
+                  :status ["done" "closed" "accepted" "blocked" "interrupted" "review" "ready"]
+                  :source ["task-board-runner" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff"]
+                  :coverage_target ["duplicate-effects" "critical-safety-events" "acceptance-history"] :cost_source ["unknown"]
+                  :stratum ["creative" "dev" "infra" "research" "assistant" "assistant-or-research"]}
+      ids ["req-abcdefgh" "conv-abcdefgh/event:1" "req-abcdefgh/started" "BOXP-1:started" "cov-one-12345678"]]
+  (doseq [[k values] documented v values]
+    (let [r (ai-ops-sli/privacy-gate {:event_id "BOXP-1:test" k v})]
+      (assert (= v (get (:event r) k)) (str k " " v))))
+  (doseq [id ids] (assert (= id (:event_id (:event (ai-ops-sli/privacy-gate {:event_id id :parent_event_id id :evidence_event_ids [id]}))))))
+  (doseq [id ["conv-short" "conv-ABCDEFGH" "req-abcdefgh/sk-secretvalue" (str "req-abcdefgh/" (apply str (repeat 120 "a")))]]
+    (assert (:rejected? (ai-ops-sli/privacy-gate {:event_id id}))))
+  (doseq [[class origin] ai-ops-sli/correction-class-origin]
+    (assert (= origin (ai-ops-sli/correction-origin {:correction_class class}))))
+  (println "ok   文書化された enum、会話 event ID と是正原因"))'
+cat >"$tmp/snapshot-precedence.jsonl" <<'EOF'
+{"event_id":"conv-abcdefgh/run","task_id":"conv-abcdefgh","event_type":"run.started","occurred_at":"2026-10-19T00:00:00Z"}
+{"event_id":"conv-abcdefgh/state","task_id":"conv-abcdefgh","event_type":"task.state","status":"review"}
+{"event_id":"conv-abcdefgh/accepted","task_id":"conv-abcdefgh","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"conv-abcdefgh/approval","task_id":"conv-abcdefgh","event_type":"approval.resolved","approval_key":"op:one"}
+{"event_id":"conv-ijklmnop/run","task_id":"conv-ijklmnop","event_type":"run.started","occurred_at":"2026-10-19T00:00:00Z"}
+{"event_id":"conv-ijklmnop/accepted","task_id":"conv-ijklmnop","event_type":"task.accepted","occurred_at":"2026-10-20T00:00:00Z"}
+{"event_id":"conv-ijklmnop/correction","task_id":"conv-ijklmnop","event_type":"correction","correction_class":"source_mismatch"}
+EOF
+bb ai_ops_sli.bb aggregate "$tmp/snapshot-precedence.jsonl" >"$tmp/snapshot-precedence.edn"
+bb -e '
+(let [r (edn/read-string (slurp (first *command-line-args*)))]
+  (assert (= 2 (get-in r [:tasks :outcomes "accepted"])))
+  (assert (= [1 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))))
+  (assert (= [1 2] ((juxt :count :denominator) (get-in r [:sli :agent-system-correction-task-ratio]))))
+  (println "ok   時刻なし snapshot と是正、承認解決の集計"))' "$tmp/snapshot-precedence.edn"

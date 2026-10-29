@@ -22,3 +22,7 @@ run 履歴の無い受入済み ticket（accepted-without-run-history）は是�
 
 合成データの短い ID を許可するには、`emit-sim`、`aggregate`、`prom` のコマンド直後に `--synthetic` を指定する。入力の `synthetic` フィールドだけでは ID 制約は緩和されず、`extract` は常に厳格に検証する。
 受入後の最新イベントが `task.reopened` の場合は未完了（in-flight）とし、同時刻の受入より再オープンを優先する。
+
+通常モードの `event_id` / `parent_event_id` / `evidence_event_ids` は ticket 形式、`cov-<source>-<8桁の16進数>`、または `req-` / `conv-` に英小文字・数字・ハイフン8〜64文字を続けた形式を使う。会話 ID には任意で `/` と英数字・`:`, `_`, `-` の接尾辞を付けられる。最大128文字で、token パターンは禁止する。
+
+状態は時刻付き遷移を時刻順に評価し、時刻なし snapshot は時刻付き状態 event が存在しない場合に限り使用する。時刻不明の是正は受入前か判別できないため first acceptance を不合格とする。是正 origin が省略された場合は plan の class 分類から補い、明示された origin を優先する。`approval.resolved` は保持するが重複承認の分母には含めない。

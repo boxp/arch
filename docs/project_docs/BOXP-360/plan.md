@@ -26,12 +26,13 @@
 全 agent に同じ SDK を使わせるのではなく、同じ意味の項目と相関 ID で join する。
 
 - **相関 ID**: `request_id` (論理的な依頼。ticket の無い会話にも付ける。ticket を新しく作らせない) → `task_id` (ticket、または会話の request) → `run_id` / `attempt` → `event_id` (生成元で安定させ、再送時も同じ値) + `parent_event_id` / `evidence_event_ids`。非同期 queue、再起動、別 repo の PR でも同じ ID を引き継ぐ。
-- **event_type**: `request.received` `run.started` `run.finished` `run.interrupted` `correction` `task.reopened` `approval.requested` `approval.resolved` `effect.applied` `owner.rescue` `lane.changed` `task.accepted` `task.cancelled` `task.state`
+- **event ID の形式**: 通常モードでは ticket 形式、`cov-<source>-<8桁の16進数>`、または `req-<英小文字・数字・ハイフン8〜64文字>` / `conv-<同8〜64文字>`（任意で `/` と英数字・`:`, `_`, `-` の接尾辞）を使う。最大128文字で token パターンは禁止。parent / evidence ID も同じ制約。
+- **event_type**: `request.received` `run.started` `run.finished` `run.interrupted` `correction` `task.reopened` `approval.requested` `approval.resolved` `effect.applied` `owner.rescue` `lane.changed` `task.accepted` `task.cancelled` `task.state` `notify.run-finished` `coverage.connected`
 - **区別して保持する状態**: run の終了 ≠ task の受入、Ready ≠ 受領 (ack)、agent の自己申告 ≠ 環境の state、再送 (`redelivery`) ≠ 新しい依頼、reopen / 取消 / 阻害 / 保留 / 未観測。これらを成功の分母から黙って外さない。
 - **差戻し分類** (`correction_class` / `correction_origin` / `classifier`=rule|human|model / `classifier_version` / `confidence` / `evidence_event_ids`):
   - agent-system 起因: `instruction_violation`、`source_mismatch` (原典不一致)、`done_claim_without_execution` (未実施を完成扱い)、`assignee_regression` (担当復帰)、`gate_defect` (CI / codex review の指摘)
   - 非 agent 起因: `preference_adjustment`、`scope_addition`、`unavoidable_safety_decision`、`external_failure`
-  - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。人の訂正 (`classifier=human`) は同じ evidence に対する rule 判定を上書きする。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
+  - `unknown`: 分子にも成功にも入れず、別に掲げる。否定的な返事や Review への移動をすべて失敗とは数えない。担当 model 自身の判定だけで確定しない。origin が省略された場合は上記 class から補い、明示された origin は優先する。人の訂正 (`classifier=human`) は同じ evidence に対する rule 判定を上書きする。Owner に毎回の採点は求めず、曖昧な例だけを少量校正する。
 - **privacy gate (生成元で適用)**: allowlist にある key だけを通す (`ai_ops_sli.bb` の `allowed-keys`)。許可値も短い識別子に限定し、本文、認証情報、query 付き URL、改行などの不正値を redact し、不正な event_id は event ごと拒否して件数を stderr に出す。extract と emit-sim の両方に適用する。server 側の masking には頼らない。通常の会話本文は中央 DB へ copy しない。
 - **token / cost**: provider が返した値だけを記録する。subscription CLI は `cost_source=unknown` とし、API 単価を掛けて実請求に見せない。
 
@@ -54,16 +55,18 @@
 
 層別は creative / dev / infra / research / assistant。必要に応じて model、runner、prompt/skill の版を付ける。条件が同じでなければ model を順位付けしない。
 
+状態遷移は時刻付き event を時刻順に評価し、時刻なし snapshot は時刻付き状態 event がある場合に上書きしない。同時刻では再オープンを受入より優先する。時刻なしの是正は first acceptance を不合格とする。
+
 ## 5. 実測 baseline (既存 metadata のみ)
 
-正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29T02:34:29Z** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
+正本は `baseline-2026-10-29.edn`。抽出時刻は **2026-10-29 02:45頃** (UTC)。README の extract と aggregate を実行した。extract の privacy gate でも不正 event ID を拒否し、不正値を redact した。baseline の coverage にある拒否数は後段 aggregate での追加拒否数であり、extract で既に拒否された件数は含まない。
 
-- ticket 360、run 1455、event 4142。run 履歴のない ticket は 70。
-- outcome: accepted 280、awaiting-review 32、in-flight 24、blocked 11、backlog 13。
+- ticket 360、run 1459、event 4150。run 履歴のない ticket は 70。
+- outcome: accepted 280、awaiting-review 22、in-flight 41、blocked 5、backlog 12。
 - agent-system 是正 task 率: **43/284 (15.1%)**。原因 unknown の task は 107、unknown 是正 event は 206。
 - first acceptance 適合率: **94/223 (42.2%)**。未評価を不合格として含めると 94/283 (33.2%)、未評価 60。run 履歴の無い受入済み 57 件は観測不能として分母外。再オープン済みの task は未評価にも含めない。reopen-after-accept は受入履歴 source 未接続のため unknown。
-- run の信頼性: interrupted 135、retrying 549、idle-timeout 7。delegation は delegated 59、exempt 56、failed 1。
-- extract の order-inversions 809 は glob の読み取り順から出たもので、実際の到着順ではない。
+- run の信頼性: interrupted 135、retrying 553、idle-timeout 7。delegation は delegated 63、exempt 56、failed 1。
+- extract の order-inversions 810 は glob の読み取り順から出たもので、実際の到着順ではない。
 - **unknown**: Owner 救援、重複承認、Ready→ack、二重実行、安全 event、private leak、token/cost、Hermes 会話。
 
 ## 6. 合成 E2E pilot (`tools/test.sh`)

@@ -31,7 +31,7 @@
 
 (def enum-values
   {:schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
-   :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "effect.applied" "coverage.connected"}
+   :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"}
    :source #{"task-board-runner" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff" "synthetic:calibration" "synthetic:feedback" "synthetic:hermes" "synthetic:task-board"}
    :runtime #{"codex-cli" "claude-cli" "localllm" "hermes" "unknown"}
    :agent #{"codex" "codex-sol" "codex-sol-xhigh" "codex-astra" "claude-opus" "claude-fable" "fable" "localllm"}
@@ -40,8 +40,8 @@
    :result #{"review" "blocked" "done" "ready"}
    :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
-   :correction_class #{"gate_defect" "unknown" "done_claim_without_execution" "instruction_violation" "preference_adjustment"}
-   :correction_origin #{"agent-system" "non-agent" "unknown"} :classifier #{"rule" "human"}
+   :correction_class #{"gate_defect" "unknown" "done_claim_without_execution" "instruction_violation" "source_mismatch" "assignee_regression" "preference_adjustment" "scope_addition" "unavoidable_safety_decision" "external_failure"}
+   :correction_origin #{"agent-system" "non-agent" "unknown"} :classifier #{"rule" "human" "model"}
    :confidence #{"high" "medium" "low"} :severity #{"critical" "high" "medium" "low"}
    :cost_source #{"unknown"} :occurred_precision #{"day" "second" "ns"}
    :delegation_kind #{"delegated" "exempt" "failed" "unparsable"}
@@ -53,7 +53,7 @@
 (defn token-safe? [s] (not (re-find token-pattern s)))
 (defn event-id? [s synthetic?]
   (and (<= (count s) 128) (boolean (re-matches (if synthetic? #"[A-Za-z0-9:_/-]{1,128}"
-                         #"(?:[A-Z]+-\d+(?:[/:-][A-Za-z0-9:_/-]+)?|cov-[a-z0-9-]+-[0-9a-f]{8})") s))))
+                         #"(?:[A-Z]+-\d+(?:[/:-][A-Za-z0-9:_/-]+)?|cov-[a-z0-9-]+-[0-9a-f]{8}|(?:req|conv)-[a-z0-9-]{8,64}(?:/[A-Za-z0-9:_-]+)?)") s))))
 (def ^:dynamic *synthetic-mode* false)
 
 (defn valid-value? [k v]
@@ -268,8 +268,21 @@
   (->> (str/split-lines (slurp file)) (remove str/blank?)
        (keep #(try (json/parse-string % true) (catch Exception _ nil)))))
 
+(defn event-time-key [e]
+  (if-let [t (parse-inst (:occurred_at e))] [1 t] [0 java.time.Instant/MIN]))
+
+(def correction-class-origin
+  {"instruction_violation" "agent-system" "source_mismatch" "agent-system"
+   "done_claim_without_execution" "agent-system" "assignee_regression" "agent-system"
+   "gate_defect" "agent-system" "preference_adjustment" "non-agent"
+   "scope_addition" "non-agent" "unavoidable_safety_decision" "non-agent"
+   "external_failure" "non-agent"})
+
+(defn correction-origin [e]
+  (or (:correction_origin e) (correction-class-origin (:correction_class e)) "unknown"))
+
 (defn task-outcome [evs]
-  (let [latest (last (sort-by #(vector (or (:occurred_at %) "9999") (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened"} (:event_type %)) evs)))
+  (let [latest (last (sort-by #(conj (event-time-key %) (if (= "task.reopened" (:event_type %)) 1 0)) (filter #(#{"task.state" "task.accepted" "task.reopened"} (:event_type %)) evs)))
         state (:status latest)]
     (cond
       (some #(= "task.cancelled" (:event_type %)) evs) "cancelled"
@@ -297,14 +310,14 @@
                                    (and o w (.isAfter o (.plusSeconds w 300))))) count)
         by-task (group-by :task_id (filter :task_id uniq))
         tasks (for [[tid evs] by-task
-                    :let [evs (sort-by #(or (:occurred_at %) "9999") evs)
+                    :let [evs (sort-by event-time-key evs)
                           corr (filter #(#{"correction" "task.reopened"} (:event_type %)) evs)
                           ;; 人の訂正 (classifier=human) は同じ evidence の rule 判定を上書きする
                           human (into {} (keep #(when (= "human" (:classifier %)) [(first (:evidence_event_ids %)) %]) corr))
                           corr (keep #(if (= "human" (:classifier %)) %
                                           (when-not (contains? human (first (:evidence_event_ids %))) %)) corr)
-                          agent-corr (filter #(= "agent-system" (:correction_origin %)) corr)
-                          unknown-corr (filter #(= "unknown" (:correction_origin %)) corr)
+                          agent-corr (filter #(= "agent-system" (correction-origin %)) corr)
+                          unknown-corr (filter #(= "unknown" (correction-origin %)) corr)
                           accepted (some #(when (= "task.accepted" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           first-review (some #(when (or (= "review" (:result %)) (= "review" (:lane_to %)))
                                                 (parse-inst (:occurred_at %))) evs)
