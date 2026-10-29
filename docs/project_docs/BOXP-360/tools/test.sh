@@ -606,3 +606,33 @@ bb -e '
   (assert (= {"cancelled" 1} (get-in r [:tasks :outcomes])))
   (assert (= 0 (get-in r [:guardrails :unfinished])))
   (println "ok   privacy gate 経由でも task.state cancelled snapshot を取消 outcome に残す"))'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [r (ai-ops-sli/aggregate* [{:event_id "BOXP-69:state" :task_id "BOXP-69" :event_type "task.state" :status "cancelled" :snapshot "current"}
+                                {:event_id "BOXP-70:cancel" :task_id "BOXP-70" :event_type "task.cancelled" :occurred_at "2026-10-29T00:00:00Z"}
+                                {:event_id "BOXP-71:state" :task_id "BOXP-71" :event_type "task.state" :status "in-progress" :snapshot "current"}])]
+  (assert (= 3 (get-in r [:tasks :total])))
+  (assert (= {"cancelled" 2 "in-flight" 1} (get-in r [:tasks :outcomes])))
+  (println "ok   状態 event だけを持つ task も集計から落とさない"))'
+
+tmp_bad=$(mktemp -d)
+mkdir -p "$tmp_bad/root/runs/BOXP-72/20261020T010000Z-aaaa" "$tmp_bad/root/runs/BOXP-72/20261020T030000Z-bbbb" "$tmp_bad/root/outbox" "$tmp_bad/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_bad/vault/Tickets/BOXP-72.md"
+echo '{:ticket "BOXP-72" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_bad/root/runs/BOXP-72/20261020T010000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-72" :run-id ' > "$tmp_bad/root/runs/BOXP-72/20261020T030000Z-bbbb/summary.edn"
+echo '{:ticket-id ' > "$tmp_bad/root/outbox/broken.edn"
+bb ai_ops_sli.bb extract "$tmp_bad/root" "$tmp_bad/vault" > "$tmp_bad/x.jsonl" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_bad/x.jsonl\")]
+  (assert (= 1 (get-in r [:input :unreadable-runs])))
+  (assert (= 1 (get-in r [:input :unreadable-inputs])))
+  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing])))
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :unevaluated-input-missing])))
+  (assert (= 1 (reduce + (map :unevaluated-input-missing (vals (:by-stratum r))))))
+  (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
+  (assert (re-find #\"ai_ops_collection_lost_events_total\\{reason=\\\"input_unreadable\\\"\\} 1\" (with-out-str (ai-ops-sli/prom \"$tmp_bad/x.jsonl\"))))
+  (println \"ok   破損した summary.edn/outbox は欠落として計数し、該当 task の first acceptance/是正率を未評価にする\"))"
+rm -rf "$tmp_bad"

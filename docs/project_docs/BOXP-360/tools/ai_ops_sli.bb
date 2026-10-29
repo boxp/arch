@@ -31,7 +31,7 @@
 
 (def enum-values
   {:snapshot #{"current"} :schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
-   :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"}
+   :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "run.unreadable" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"}
    :source #{"task-board-runner" "ticket-frontmatter" "derived" "outbox:task-board-runner" "outbox:board-diff" "synthetic:calibration" "synthetic:feedback" "synthetic:hermes" "synthetic:task-board"}
    :runtime #{"codex-cli" "claude-cli" "localllm" "hermes" "unknown"}
    :agent #{"codex" "codex-sol" "codex-sol-xhigh" "codex-astra" "claude-opus" "claude-fable" "fable" "localllm"}
@@ -85,7 +85,9 @@
 
 (def rejected-marker {:privacy_rejected "upstream"})
 ;; collector 停止で bounded buffer から溢れた/未配信の event の marker (本文・ID なし)
-(def lost-markers {{:collection_lost "buffer_dropped"} :buffer-dropped {:collection_lost "undelivered"} :undelivered})
+;; input_unreadable: extract で読めなかった summary.edn / outbox (task を特定できない欠落入力)
+(def lost-markers {{:collection_lost "buffer_dropped"} :buffer-dropped {:collection_lost "undelivered"} :undelivered
+                   {:collection_lost "input_unreadable"} :input-unreadable})
 (defn marker? [e] (or (= rejected-marker e) (contains? lost-markers e)))
 
 (defn emit-gated [stats e]
@@ -189,7 +191,12 @@
         tickets (->> (fs/glob (fs/path vault "Tickets") "BOXP-*.md")
                      (keep (fn [f] (when-let [fm (frontmatter f)] [(str (fs/strip-ext (fs/file-name f))) fm])))
                      (into {}))
-        runs (->> (fs/glob (fs/path root "runs") "*/*/summary.edn")
+        summaries (fs/glob (fs/path root "runs") "*/*/summary.edn")
+        ;; 読めない summary.edn は黙って捨てず run.unreadable として ticket に紐付け、その task の SLI を未評価にする
+        unreadable (->> summaries (remove read-edn)
+                        (map (fn [f] (let [d (fs/parent f)] {:ticket (str (fs/file-name (fs/parent d))) :run-id (str (fs/file-name d))})))
+                        (group-by :ticket))
+        runs (->> summaries
                   (keep (fn [f] (when-let [s (read-edn f)]
                                   (let [d (fs/path (fs/parent f) "delegation.json")]
                                     (cond-> s (fs/exists? d)
@@ -204,6 +211,10 @@
                          :request_id (str "req:" ticket) :source "ticket-frontmatter" :event_type "request.received"
                          :occurred_at (str (:created fm) "T00:00:00Z") :occurred_precision "day"}]
                        (mapcat #(summary->events ticket %) rs)
+                       (for [{:keys [run-id]} (get unreadable ticket)]
+                         {:schema_version schema-version :event_id (str ticket ":" run-id ":unreadable") :task_id ticket
+                          :request_id (str "req:" ticket) :run_id run-id :source "task-board-runner" :event_type "run.unreadable"
+                          :occurred_at (run-id->instant run-id) :occurred_precision "second"})
                        (derive-corrections ticket rs)
                        (when (not (str/blank? (:closed fm)))
                          [{:schema_version schema-version :event_id (str ticket ":accepted") :task_id ticket
@@ -223,8 +234,15 @@
     (doseq [f (fs/glob (fs/path root "outbox") "**.edn")
             :when (not= "board-lanes.edn" (str (fs/file-name f)))
             :let [e (read-edn f)]
-            ev (outbox->events e)]
-      (emit-gated stats ev))
+            ev (if (map? e) (outbox->events e) [::unreadable])]
+      (if (= ::unreadable ev)
+        (do (swap! stats update :input-unreadable (fnil inc 0))
+            (println (json/generate-string {:collection_lost "input_unreadable"})))
+        (emit-gated stats ev)))
+    ;; ticket が vault に無い run の破損 summary も欠落として残す
+    (doseq [[ticket us] unreadable :when (not (contains? tickets ticket)) _ us]
+      (swap! stats update :input-unreadable (fnil inc 0))
+      (println (json/generate-string {:collection_lost "input_unreadable"})))
     (binding [*out* *err*] (prn @stats))))
 
 ;; ---------------------------------------------------------------------------
@@ -330,12 +348,13 @@
         collection-lost (frequencies (keep lost-markers events))
         buffer-dropped (get collection-lost :buffer-dropped 0)
         undelivered (get collection-lost :undelivered 0)
+        input-unreadable (get collection-lost :input-unreadable 0)
         events (remove marker? events)
         gated (map privacy-gate (remove ::malformed events))
         rejected (count (filter #(and (:rejected? %) (not (:invalid-correlation? %))) gated))
         rejected-correlation (count (filter :invalid-correlation? gated))
         ;; 破損行と privacy gate で拒否した event は中身を検証できないため、zero-tolerance 指標を 0 件と確定しない
-        lost (+ malformed rejected rejected-correlation upstream-rejected buffer-dropped undelivered)
+        lost (+ malformed rejected rejected-correlation upstream-rejected buffer-dropped undelivered input-unreadable)
         events (keep :event gated)
         n-in (count events)
         uniq (unique-events events)
@@ -376,16 +395,18 @@
                           requested (some #(when (= "request.received" (:event_type %)) (parse-inst (:occurred_at %))) evs)
                           runs (filter #(= "run.started" (:event_type %)) evs)
                           finished (filter #(= "run.finished" (:event_type %)) evs)]
-                    :when (or (some #(#{"request.received" "task.accepted"} (:event_type %)) evs) (seq runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
+                    ;; 状態 event (state/cancelled/reopened) や読めない run も task の存在を示す
+                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable"} (:event_type %)) evs) (seq runs) (some :synthetic evs) (some #(= "lane.changed" (:event_type %)) evs))]
                 {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
+                 :unreadable-runs (count (filter #(= "run.unreadable" (:event_type %)) evs))
                  :interrupted (count (filter #(= "run.interrupted" (:event_type %)) evs))
                  :idle-timeouts (count (filter :idle_timeout finished))
                  :retrying (count (filter #(= "retrying" (:status %)) finished))
                  :agent-corr (count agent-corr) :unknown-corr (count unknown-corr)
                  :post-accept-corr (count post-accept-corr)
-                 :observed? (boolean (or (seq runs) (some :synthetic evs)))
+                 :observed? (boolean (or (seq runs) (some :synthetic evs) (some #(= "run.unreadable" (:event_type %)) evs)))
                  :reached-review? (boolean (and (or (seq runs) (some :synthetic evs)) (or first-review accepted)))
                  :accepted-unobserved? (boolean (and (= "accepted" (task-outcome evs)) accepted (empty? runs) (not-any? :synthetic evs)))
                  :first-pass? (and accepted (not-any? #(let [t (parse-inst (:occurred_at %))]
@@ -397,9 +418,13 @@
                  :agents (set (keep :agent runs))
                  :delegation (frequencies (keep :delegation_kind runs))})
         n (count tasks)
-        reached (filter :reached-review? tasks)
+        ;; 読めない run を持つ task は是正/差戻しを見落とし得るため、是正率と first acceptance の分子・分母から除き別掲する
+        input-missing (filter #(pos? (:unreadable-runs %)) tasks)
+        reached-all (filter :reached-review? tasks)
+        reached (remove #(pos? (:unreadable-runs %)) reached-all)
         observed-accepted (filter #(and (:observed? %) (= "accepted" (:outcome %))) tasks)
-        accepted (filter :accepted-at observed-accepted)
+        accepted-all (filter :accepted-at observed-accepted)
+        accepted (remove #(pos? (:unreadable-runs %)) accepted-all)
         accepted-without-acceptance-time (filter #(nil? (:accepted-at %)) observed-accepted)
         accepted-ever (filter :acceptance-history? tasks)
         sources (frequencies (map :source uniq))
@@ -413,7 +438,8 @@
         effects (duplicates "effect.applied" :effect_key)
         approvals (duplicates "approval.requested" :approval_key)]
     {:schema schema-version :classifier classifier-version
-     :input {:events n-in :malformed-lines malformed :unique (count uniq) :duplicates dup :order-inversions inversions
+     :input {:events n-in :malformed-lines malformed :unreadable-inputs input-unreadable
+             :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks)) :unique (count uniq) :duplicates dup :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
      :tasks {:total n :never-run (count (filter #(zero? (:runs %)) tasks))
              :accepted-without-run-history (count (filter :accepted-unobserved? tasks)) :outcomes (frequencies (map :outcome tasks))
@@ -422,6 +448,7 @@
      {:agent-system-correction-task-ratio
       (assoc (ratio (count (filter #(pos? (:agent-corr %)) reached)) (count reached))
              :unknown-cause-tasks (count (filter #(pos? (:unknown-corr %)) reached))
+             :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) reached-all))
              :note "分母=review 到達 task。unknown 原因は分子に入れず別掲 (成功扱いもしない)")
       :corrections-per-task {:agent-system (quantiles (map :agent-corr reached))
                              :unknown (quantiles (map :unknown-corr reached))
@@ -433,6 +460,7 @@
                                                 (+ (count (filter #(or (= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
                                                    (count (remove :reached-review? accepted-without-acceptance-time))))
              :accepted-without-acceptance-time (count accepted-without-acceptance-time)
+             :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) accepted-all))
              :not-yet-evaluated (count (filter #(and (not= "accepted" (:outcome %)) (nil? (:accepted-at %))) reached))
              :note "分母=受入時刻を確認できる観測済み受入 task。受入時刻不明と未評価は別掲し合格に数えない")
       :reopen-after-accept (if (connected? "acceptance-history") (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)) {:status :unknown :reason "acceptance history source not connected"})
@@ -454,7 +482,7 @@
                                            (pos? lost)
                                            {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信) があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered)}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable}
                                            (pos? unverifiable-type)
                                            {:status "unknown" :reason "event_type 欠落/不正の event があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :unverifiable-event-types unverifiable-type}
@@ -471,7 +499,7 @@
                                                 (pos? lost)
                                                 {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信) があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered)}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable}
                                                 (pos? unverifiable-type)
                                                 {:status "unknown" :reason "event_type 欠落/不正の event があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :unverifiable-event-types unverifiable-type}
@@ -488,7 +516,7 @@
                   :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
                   :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
-     :coverage {:collection-lost {:buffer-dropped buffer-dropped :undelivered undelivered} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
+     :coverage {:collection-lost {:buffer-dropped buffer-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
                 :hermes-conversation {:status (if (or (connected? "hermes-conversation")
                                                    (some #(or (= "hermes" (:runtime %))
@@ -497,15 +525,17 @@
      :by-stratum
      (into (sorted-map)
            (for [[s ts] (group-by :stratum tasks)
-                 :let [r (filter :reached-review? ts)
-                       observed-a (filter #(and (:observed? %) (= "accepted" (:outcome %))) ts)
+                 :let [ok (remove #(pos? (:unreadable-runs %)) ts)
+                       r (filter :reached-review? ok)
+                       observed-a (filter #(and (:observed? %) (= "accepted" (:outcome %))) ok)
                        a (filter :accepted-at observed-a)]]
              [s {:tasks (count ts) :reached-review (count r)
                  :agent-system-corr-tasks (count (filter #(pos? (:agent-corr %)) r))
                  :unknown-corr-tasks (count (filter #(pos? (:unknown-corr %)) r))
                  :accepted (count a)
                  :accepted-without-acceptance-time (count (remove :accepted-at observed-a))
-                 :first-pass (count (filter :first-pass? a))}]))}))
+                 :first-pass (count (filter :first-pass? a))
+                 :unevaluated-input-missing (count (filter #(pos? (:unreadable-runs %)) ts))}]))}))
 
 (defn aggregate [file] (aggregate* (read-events file)))
 
@@ -528,6 +558,7 @@
     (line "ai_ops_privacy_rejected_events_total" {:stage "upstream"} (get-in r [:coverage :privacy-rejected-upstream]))
     (line "ai_ops_collection_lost_events_total" {:reason "buffer_dropped"} (get-in r [:coverage :collection-lost :buffer-dropped]))
     (line "ai_ops_collection_lost_events_total" {:reason "undelivered"} (get-in r [:coverage :collection-lost :undelivered]))
+    (line "ai_ops_collection_lost_events_total" {:reason "input_unreadable"} (get-in r [:coverage :collection-lost :input-unreadable]))
     (line "ai_ops_event_order_inversions_total" {} (get-in r [:input :order-inversions]))
     (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
       (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))
