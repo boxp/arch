@@ -1500,6 +1500,26 @@ bb -e '
 
 bb -e '
 (load-file "ai_ops_sli.bb")
+;; extract と runner ledger を併用しても、バージョン/reasoning 付き担当名が ledger と同じ基本担当名で残る
+(let [run "20261029T114416Z-7a59ee61-f3ae-4a53-a6b7-ea575ed7d67b"
+      summ {:ticket "BOXP-95" :run-id run :agent "claude-opus-5-5" :status :succeeded :result :review :action :implement
+            :started-at "2026-10-29T11:44:16Z" :finished-at "2026-10-29T12:04:00Z"}
+      extract (keep (comp :event ai-ops-sli/privacy-gate) (ai-ops-sli/summary->events "BOXP-95" summ))
+      base {:task_id "BOXP-95" :request_id "req:BOXP-95" :run_id run :source "task-board-runner" :agent "claude-opus" :runtime "claude-cli"
+            :occurred_at "2026-10-29T11:44:16Z"}
+      ledger [(assoc base :event_id (str "BOXP-95/" run ":ledger:started") :event_type "run.started")
+              (assoc base :event_id (str "BOXP-95/" run ":ledger:finished") :event_type "run.finished" :status "succeeded" :result "review")]
+      merged (:events (ai-ops-sli/merge-ledger-events (concat extract ledger)))
+      runs (filter #(#{"run.started" "run.finished"} (:event_type %)) merged)]
+  (assert (seq runs))
+  (assert (every? #(= "claude-opus" (:agent %)) runs) (pr-str (map (juxt :event_id :agent) runs)))
+  (assert (every? #(= "claude-cli" (:runtime %)) runs))
+  (assert (= "codex-terra" (:agent (first (ai-ops-sli/summary->events "BOXP-95" (assoc summ :agent "codex-terra-high"))))))
+  (assert (= "unknown-agent-9" (ai-ops-sli/normalize-agent "unknown-agent-9"))))
+(println "ok   extract も ledger と同じ規則で担当名を正規化し、統合後も agent を失わない")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
 ;; 同じ review-fix run に「直前 run の gate 失敗由来の derived 是正」と「その run 自身の gate 失敗 (ledger)」がある場合は別の事実
 (let [r0 "20261029T055735Z-3652ef0a-df77-40e5-87fb-1105d53cbe57"
       r1 "20261029T063201Z-7d2adcd6-e49e-4399-b92c-d22645e07a3b"

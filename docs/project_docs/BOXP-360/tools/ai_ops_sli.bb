@@ -180,12 +180,24 @@
   "keyword/文字列の両形式を同じ文字列に正規化する (:review と \"review\" を区別しない)。"
   [v] (when (some? v) (if (keyword? v) (name v) (str v))))
 
+;; runner ledger (ai_ops_ledger.bb normalize-agent) と同じ規則で担当名を正規化する。
+;; extract 側だけ claude-opus-5-5 や codex-sol-xhigh を redact すると、ledger 統合時に ledger event が除外され agent が欠落するため
+(def reasoning-suffix-re #"(.+)-(minimal|low|medium|high|xhigh)")
+(def claude-model-re #"(claude-(?:fable|opus|sonnet))-\d+(?:-\d+)*")
+(defn normalize-agent [agent]
+  (if (and (string? agent) (not (contains? (:agent enum-values) agent)))
+    (let [unsuffixed (or (second (re-matches reasoning-suffix-re agent)) agent)
+          base (or (second (re-matches claude-model-re unsuffixed)) unsuffixed)]
+      (if (contains? (:agent enum-values) base) base agent))
+    agent))
+
 (defn summary->events [ticket s]
   (let [run-id (:run-id s)
         started (or (:started-at s) (run-id->instant run-id))
+        agent (normalize-agent (kw-or-str (:agent s)))
         base {:schema_version schema-version :task_id ticket :request_id (str "req:" ticket)
-              :run_id run-id :source "task-board-runner" :agent (kw-or-str (:agent s))
-              :runtime (let [a (or (kw-or-str (:agent s)) "")]
+              :run_id run-id :source "task-board-runner" :agent agent
+              :runtime (let [a (or agent "")]
                          (cond (str/starts-with? a "codex") "codex-cli"
                                (str/starts-with? a "localllm") "localllm"
                                (str/blank? a) "unknown"
