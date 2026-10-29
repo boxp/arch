@@ -2087,6 +2087,10 @@
        :failure-kind :merge-state-unknown
        :message (str "GitHub mergeStateStatus=" (or state "missing") " is not review-ready.")})))
 
+;; A passed merge state means the PR is neither a draft nor conflicting, so
+;; both the mergeability and conflict gates count a success.
+(def merge-pass-results [["mergeability" "pass"] ["conflict" "pass"]])
+
 (defn wait-for-pr-state! [pr-url]
   (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))
         skip-ci? (no-ci-repo? pr-url)]
@@ -2112,6 +2116,12 @@
            :failure-kind (:failure-kind merge)
            :url pr-url
            :retryable? true
+           ;; DIRTY is a known, non-draft state, so mergeability passed and
+           ;; only the conflict gate failed. A draft or unknown state leaves
+           ;; the conflict gate unevaluated.
+           :gate-results (if (= :conflict (:gate merge))
+                           [["mergeability" "pass"] ["conflict" "fail"]]
+                           [[(name (:gate merge)) "fail"]])
            :message (:message merge)}
 
           ;; Keep a passed mergeability in :gate-results, or its success
@@ -2123,7 +2133,7 @@
            :url pr-url
            :retryable? true
            :gate-results (cond-> []
-                           (= :passed (:state merge)) (conj ["mergeability" "pass"])
+                           (= :passed (:state merge)) (into merge-pass-results)
                            true (conj ["ci" "fail"]))
            :message (:message ci)}
 
@@ -2131,7 +2141,7 @@
                (= :passed (:state ci)))
           {:ok? true
            :url pr-url
-           :gate-results [["mergeability" "pass"] ["ci" "pass"]]
+           :gate-results (conj merge-pass-results ["ci" "pass"])
            :message (str (:message merge) " " (:message ci))}
 
           ;; Explicit opt-in: repo is listed in CODEX_TASK_BOARD_NO_CI_REPOS and
@@ -2140,7 +2150,7 @@
           (and skip-ci? no-checks? (= "CLEAN" (some-> (:mergeStateStatus pr) str/upper-case)))
           {:ok? true
            :url pr-url
-           :gate-results [["mergeability" "pass"] ["ci" "skip"]]
+           :gate-results (conj merge-pass-results ["ci" "skip"])
            :message (str (:message merge) " CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS.")}
 
           (> (System/currentTimeMillis) deadline)
@@ -2151,7 +2161,7 @@
            :retryable? true
            :gate-results (if (= :pending (:state merge))
                            [[(name (:gate merge)) "fail"]]
-                           [["mergeability" "pass"] ["ci" "fail"]])
+                           (conj merge-pass-results ["ci" "fail"]))
            :message (str "Timed out waiting for PR gates. " (:message merge) " " (:message ci))}
 
           :else
@@ -2243,7 +2253,7 @@
                 ;; summaries and must stay URL-only.
                 (:merged? pr-state)
                 (recur (rest remaining) passed (conj merged pr-url)
-                       (into results [["mergeability" "skip"] ["ci" "skip"] ["codex-review" "skip"]]))
+                       (into results [["mergeability" "skip"] ["conflict" "skip"] ["ci" "skip"] ["codex-review" "skip"]]))
 
                 :else
                 (let [review (run-codex-review! run-dir pr-url)
@@ -3927,6 +3937,20 @@
                                     [{:ok? true :skipped? true} nil]]]
       (when-not (= expected (gate-results gate-result))
         (swap! failures conj (str "gate-results for " gate-result))))
+    ;; BOXP-360: the conflict gate counts a pass when no conflict is found,
+    ;; so its failure rate is not 100% after a single conflict.
+    (doseq [[pr expected] [[{:mergeStateStatus "CLEAN" :statusCheckRollup [{:name "t" :status "COMPLETED" :conclusion "SUCCESS"}]}
+                            [["mergeability" "pass"] ["conflict" "pass"] ["ci" "pass"]]]
+                           [{:mergeStateStatus "CLEAN" :statusCheckRollup [{:name "t" :status "COMPLETED" :conclusion "FAILURE"}]}
+                            [["mergeability" "pass"] ["conflict" "pass"] ["ci" "fail"]]]
+                           [{:mergeStateStatus "DIRTY" :statusCheckRollup []}
+                            [["mergeability" "pass"] ["conflict" "fail"]]]
+                           [{:isDraft true :mergeStateStatus "DIRTY" :statusCheckRollup []}
+                            [["mergeability" "fail"]]]]]
+      (with-redefs [pr-view (fn [_] pr)
+                    no-ci-repo? (constantly false)]
+        (when-not (= expected (gate-results (wait-for-pr-state! "https://github.com/boxp/test/pull/1")))
+          (swap! failures conj (str "conflict gate-results for " pr)))))
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
     ;; Versioned projections cannot affect legacy candidate selection while off.
