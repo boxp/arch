@@ -30,6 +30,9 @@
     (println message))
   (System/exit 1))
 
+(defn new-rev []
+  (str (Long/toString (System/currentTimeMillis) 36) "-" (format "%04x" (rand-int 65536))))
+
 (defn now-date []
   (subs (.toString (java.time.LocalDate/now)) 0 10))
 
@@ -93,6 +96,7 @@
           "--note-file" (recur (nnext xs) (assoc opts :note (slurp (first more))))
           "--source" (recur (nnext xs) (assoc opts :source (first more)))
           "--intent" (recur (nnext xs) (assoc opts :intent (first more)))
+          "--expected-rev" (recur (nnext xs) (assoc opts :expected-rev (first more)))
           "--expected-revision" (recur (nnext xs) (assoc opts :expected-revision (first more)))
           "--actor" (recur (nnext xs) (assoc opts :actor (first more)))
           "--writer-generation" (recur (nnext xs) (assoc opts :writer-generation (first more)))
@@ -272,7 +276,8 @@
      :status (fm-get frontmatter-lines "status")
      :priority (fm-get frontmatter-lines "priority")
      :assignee (fm-get frontmatter-lines "assignee")
-     :repo (fm-get frontmatter-lines "repo")}))
+     :repo (fm-get frontmatter-lines "repo")
+     :rev (present (fm-get frontmatter-lines "board_rev"))}))
 
 (defn card-line? [line]
   (boolean (re-find #"- \[[ xX]\] \[\[Tickets/BOXP-\d+\|" line)))
@@ -294,6 +299,7 @@
      :status (second (re-find #"status::([^\s]+)" rest))
      :priority (second (re-find #"priority::([^\s]+)" rest))
      :assignee (second (re-find #"assignee::([^\s]+)" rest))
+     :rev (second (re-find #"rev::([^\s]+)" rest))
      :done-date (second (re-find #"done::([^\s]+)" rest))
      :repo (vec (map second (re-seq #"repo::([^\s]+)" rest)))
      :raw line}))
@@ -325,14 +331,15 @@
     (sequential? repo) (vec (remove str/blank? repo))
     :else (vec (remove str/blank? (map str/trim (str/split (str repo) #","))))))
 
-(defn card-line [{:keys [id title lane priority assignee repo done done-date]}]
+(defn card-line [{:keys [id title lane priority assignee repo rev done done-date]}]
   (let [status (lanes (require-lane lane))
         checkbox (if (or done (= lane "Done")) "x" " ")
         done-date (or done-date (when (= lane "Done") (now-date)))
         meta (cond-> [(str "status::" status)
                       (str "priority::" (or priority "medium"))]
                (seq assignee) (conj (str "assignee::" assignee))
-               (seq (repo-values repo)) (into (map #(str "repo::" %) (repo-values repo))))]
+               (seq (repo-values repo)) (into (map #(str "repo::" %) (repo-values repo)))
+               (seq rev) (conj (str "rev::" rev)))]
     (str "- [" checkbox "] [[Tickets/" id "|" id ": " (encode-card-title title) "]] #ticket " (str/join " " meta)
          (when (and (= lane "Done") (seq done-date)) (str " done::" done-date)))))
 
@@ -359,7 +366,8 @@
                       (fm-set fm k v))
                     fm0
                     (remove (fn [[_ v]] (nil? v))
-                            {"status" status
+                            {"board_rev" (:rev updates)
+                             "status" status
                              "priority" (:priority updates)
                              "assignee" (:assignee updates)
                              "repo" (:repo updates)
@@ -396,11 +404,12 @@
         ids (concat file-ids board-ids)]
     (str "BOXP-" (inc (apply max 0 ids)))))
 
-(defn create-ticket-content [{:keys [id title summary acceptance context plan notes priority assignee repo lane closed-date]}]
+(defn create-ticket-content [{:keys [id title summary acceptance context plan notes priority assignee repo lane closed-date rev]}]
   (let [status (lanes lane)]
     (str "---\n"
          "id: " id "\n"
          "type: task\n"
+         (str/join "\n" (fm-set [] "board_rev" rev)) "\n"
          "status: " status "\n"
          "priority: " (or priority "medium") "\n"
          "assignee: " (or assignee "boxp") "\n"
@@ -441,9 +450,47 @@
   (let [vault (vault-path opts)
         board (read-text (board-path vault))
         ticket (ticket-data vault id)
-        card (card-for board id)]
-    (print-result opts {:ticket (select-keys ticket [:id :path :title :status :priority :assignee :repo])
-                        :card card})))
+        cards (vec (filter #(= id (:id %)) (board-cards board)))
+        card (first cards)]
+    (print-result opts {:ticket (select-keys ticket [:id :path :title :status :priority :assignee :repo :rev])
+                        :card card
+                        :consistency {:ticket-rev (:rev ticket) :card-rev (:rev card)
+                                      :rev-match (= (:rev ticket) (:rev card))
+                                      :assignee-match (= (:assignee ticket) (:assignee card))
+                                      :duplicate-cards (count cards) :card-lanes (mapv :lane cards)}})))
+
+(defn cmd-verify-dispatch [opts id]
+  (let [expected (or (:expected-rev opts) (die "verify-dispatch requires --expected-rev"))
+        epoch (try (Long/parseLong (first (str/split expected #"-")) 36)
+                   (catch Exception _ (die "invalid --expected-rev")))
+        vault (vault-path opts)
+        ticket (ticket-data vault id)
+        cards (vec (filter #(= id (:id %)) (board-cards (read-text (board-path vault)))))
+        card (first cards)
+        notes (when-let [[start end] (find-section-range (:body-lines ticket) "Notes")]
+                (subvec (:body-lines ticket) start end))
+        started (when (#{"In Progress" "Review" "Blocked" "Done"} (:lane card))
+                  (some (fn [[_ run timestamp]]
+                          (try
+                            (let [fmt (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss'Z'")
+                                  instant (.toInstant (.atOffset (java.time.LocalDateTime/parse timestamp fmt) java.time.ZoneOffset/UTC))]
+                              (when (>= (.getEpochSecond instant) (quot epoch 1000)) run))
+                            (catch Exception _ nil)))
+                        (re-seq #"Codex task-board run ((\d{8}T\d{6}Z)[^\s]*) started from" (str/join "\n" notes))))
+        tr (:rev ticket) cr (:rev card) assignee (:assignee opts)
+        state (cond
+                (> (count cards) 1) "duplicate-cards"
+                started "started"
+                (or (and (= tr cr) (not= tr expected))
+                    (and (not= tr expected) (= cr expected) assignee (not= (:assignee ticket) assignee))) "reverted"
+                (not= tr cr) "pending-sync"
+                (and (= tr cr expected) (or (nil? assignee) (= assignee (:assignee ticket)))) "awaiting-pickup"
+                :else "unknown")]
+    (print-result opts {:action "verify-dispatch" :id id :state state :ticket-rev tr :card-rev cr
+                        :ticket-assignee (:assignee ticket) :card-assignee (:assignee card)
+                        :lane (:lane card) :started-run started :duplicate-cards (count cards)})
+    (when-let [code ({"duplicate-cards" 3 "reverted" 4 "pending-sync" 5 "unknown" 6} state)]
+      (System/exit code))))
 
 (defn cmd-create [opts]
   (let [vault (vault-path opts)
@@ -457,10 +504,11 @@
               id (next-ticket-id vault board)
               path (ticket-path vault id)
               done-date (when (= lane "Done") (now-date))
-              ticket-content (create-ticket-content (assoc opts :id id :title title :lane lane :closed-date done-date))
-              card {:id id :title title :lane lane :priority (:priority opts) :assignee (:assignee opts) :repo (:repo opts) :done-date done-date}
+              rev (new-rev)
+              ticket-content (create-ticket-content (assoc opts :id id :title title :lane lane :closed-date done-date :rev rev))
+              card {:id id :title title :lane lane :priority (:priority opts) :assignee (or (:assignee opts) "boxp") :repo (:repo opts) :done-date done-date :rev rev}
               new-board (insert-card board id card)
-              result {:action "create" :id id :ticket-path (str path) :lane lane :dry-run (boolean (:dry-run opts))}]
+              result {:action "create" :rev rev :id id :ticket-path (str path) :lane lane :dry-run (boolean (:dry-run opts))}]
           (when-not (:dry-run opts)
             (write-text! path ticket-content)
             (write-text! bpath new-board))
@@ -485,7 +533,9 @@
                   done-date (or (present (:done-date old-card))
                                 (present (fm-get (:frontmatter-lines ticket) "closed"))
                                 (when (= lane "Done") (now-date)))
-                  updates {:title (:title opts)
+                  rev (new-rev)
+                  updates {:rev rev :append-note (:note opts) :note-source (or (:source opts) "hermes-agent")
+                           :title (:title opts)
                            :summary (:summary opts)
                            :acceptance (:acceptance opts)
                            :context (:context opts)
@@ -503,9 +553,9 @@
                         :priority (or (:priority opts) (:priority ticket) (:priority old-card))
                         :assignee (or (:assignee opts) (:assignee ticket) (:assignee old-card))
                         :repo (or (:repo opts) (:repo old-card) (:repo ticket))
-                        :done-date done-date}
+                        :done-date done-date :rev rev}
                   new-board (insert-card board id card)
-                  result {:action "update" :id id :lane lane :status status :dry-run (boolean (:dry-run opts))}]
+                  result {:action "update" :rev rev :id id :lane lane :status status :dry-run (boolean (:dry-run opts))}]
               (when-not (:dry-run opts)
                 (write-text! path new-ticket)
                 (write-text! bpath new-board))
@@ -544,7 +594,8 @@
                   board (read-text bpath)
                   old-card (card-for board id)
                   status (lanes lane)
-                  new-ticket (apply-ticket-update ticket {:status status
+                  rev (new-rev)
+                  new-ticket (apply-ticket-update ticket {:rev rev :status status
                                                           :assignee "codex"
                                                           :closed ""
                                                           :append-note note
@@ -554,9 +605,9 @@
                         :lane lane
                         :priority (or (:priority ticket) (:priority old-card) "medium")
                         :assignee "codex"
-                        :repo (or (:repo ticket) (:repo old-card))}
+                        :repo (or (:repo ticket) (:repo old-card)) :rev rev}
                   new-board (insert-card board id card)
-                  result {:action "request-codex" :id id :lane lane :status status :assignee "codex" :dry-run (boolean (:dry-run opts))}]
+                  result {:action "request-codex" :rev rev :id id :lane lane :status status :assignee "codex" :dry-run (boolean (:dry-run opts))}]
               (when-not (:dry-run opts)
                 (write-text! path new-ticket)
                 (write-text! bpath new-board))
@@ -640,7 +691,7 @@
                         :writes []})))
 
 (defn usage []
-  (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|delete|control-intent> [args]"))
+  (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|verify-dispatch|delete|control-intent> [args]\nverify-dispatch ID --expected-rev R [--assignee A] [--json]: started/awaiting-pickup (0), duplicate-cards (3), reverted (4), pending-sync (5), unknown (6)"))
 
 (defn -main [& args]
   (let [cmd (first args)
@@ -648,6 +699,7 @@
         id (first (:positionals opts))]
     (case cmd
       "list" (cmd-list opts)
+      "verify-dispatch" (cmd-verify-dispatch opts (or id (die "verify-dispatch requires ticket id")))
       "show" (cmd-show opts (or id (die "show requires ticket id")))
       "create" (with-vault-writer-lock opts #(cmd-create opts))
       "update" (let [id (or id (die "update requires ticket id"))]
