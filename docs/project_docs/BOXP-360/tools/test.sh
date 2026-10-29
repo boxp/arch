@@ -227,7 +227,7 @@ bb -e '
 (let [r (edn/read-string (slurp (first *command-line-args*)))
       checks [["孤立した重大 event は重複排除して下限計上し、拒否 event があれば unknown" (= ["unknown" 1 1] ((juxt :status :observed-lower-bound :rejected-events) (get-in r [:zero-tolerance :critical-safety-events])))]
               ["通常モードの会話 ID は別 task として保持" (and (= 2 (get-in r [:tasks :total])) (= 2 (get-in r [:guardrails :tasks-per-request :denominator])) (every? #(not (ai-ops-sli/valid-value? :task_id %)) ["conv-sk-abcdefgh" "conv-abcdefghijklmnopqrstuvwxyz1234567890" "conv-abc/defgh" "conv-ABCDEFGH"]))]
-              ["重複承認率の分母は承認イベント総数" (= [2 3] ((juxt :count :denominator) (get-in r [:sli :duplicate-approval])))]
+              ["重複承認率の分母は承認イベント総数 (種別不明の拒否 event があるため unknown・観測値下限で確認)" (let [d (get-in r [:sli :duplicate-approval])] (and (= "unknown" (:status d)) (= [2 3] ((juxt :count :denominator) (:observed-lower-bound d)))))]
               ["受入と同時刻の是正は first-pass 不合格 (孤立是正があるため unknown・観測値も不合格)" (let [fa (get-in r [:sli :first-acceptance-conformance])] (and (= "unknown" (:status fa)) (= [0 1] ((juxt :count :denominator) (:observed fa)))))]]]
   (doseq [[label ok] checks] (println (if ok "ok  " "FAIL") label))
   (when (some (comp not second) checks) (System/exit 1)))' "$tmp/four-fixes.edn"
@@ -1145,3 +1145,32 @@ bb -e '
   (assert (= 1 (get-in r1 [:sli :duplicate-approval :unverifiable-approvals])) (pr-str (get-in r1 [:sli :duplicate-approval])))
   (assert (= [0 1] ((juxt :count :denominator) (get-in r2 [:sli :duplicate-approval]))) (pr-str (get-in r2 [:sli :duplicate-approval]))))
 (println "ok   approval_key 欠落/不正の承認があれば重複承認率を確定せず unknown (観測値は下限、検証不能件数を別掲)")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [ap {:event_id "BOXP-89:ap1" :task_id "BOXP-89" :event_type "approval.requested" :approval_key "op:one"}
+      rejected-ap {:event_id "bad id!" :task_id "BOXP-90" :event_type "approval.requested" :approval_key "op:one"}
+      notify-marker {:privacy_rejected "upstream" :event_type "notify.run-finished"}
+      r1 (ai-ops-sli/aggregate* [ap rejected-ap])
+      r2 (ai-ops-sli/aggregate* [ap {:collection_lost "buffer_dropped"}])
+      r3 (ai-ops-sli/aggregate* [ap notify-marker])]
+  (assert (= "unknown" (get-in r1 [:sli :duplicate-approval :status])) (pr-str (get-in r1 [:sli :duplicate-approval])))
+  (assert (= 1 (get-in r1 [:sli :duplicate-approval :lost-events])) (pr-str (get-in r1 [:sli :duplicate-approval])))
+  (assert (= "unknown" (get-in r2 [:sli :duplicate-approval :status])) (pr-str (get-in r2 [:sli :duplicate-approval])))
+  ;; 承認以外と分かる拒否 event では確定のまま
+  (assert (= [0 1] ((juxt :count :denominator) (get-in r3 [:sli :duplicate-approval]))) (pr-str (get-in r3 [:sli :duplicate-approval]))))
+(println "ok   承認 event だった可能性のある欠落 (privacy 拒否・drop) があれば重複承認率を unknown (承認以外と分かる拒否では確定)")'
+
+bb -e '
+(load-file "ai_ops_sli.bb")
+(let [base [{:event_id "BOXP-91:requested" :task_id "BOXP-91" :request_id "req:BOXP-91" :event_type "request.received"}
+            {:event_id "BOXP-91:rescue" :task_id "BOXP-91" :event_type "owner.rescue"}]
+      r0 (ai-ops-sli/aggregate* base)
+      r1 (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-92:rescue" :event_type "owner.rescue"}))
+      r2 (ai-ops-sli/aggregate* (conj base {:privacy_rejected "upstream" :event_type "owner.rescue"}))]
+  (assert (= 1 (get-in r0 [:sli :owner-rescue :count])) (pr-str (get-in r0 [:sli :owner-rescue])))
+  (assert (= "unknown" (get-in r1 [:sli :owner-rescue :status])) (pr-str (get-in r1 [:sli :owner-rescue])))
+  (assert (= 1 (get-in r1 [:sli :owner-rescue :unlinked-rescues])) (pr-str (get-in r1 [:sli :owner-rescue])))
+  (assert (= "unknown" (get-in r2 [:sli :owner-rescue :status])) (pr-str (get-in r2 [:sli :owner-rescue])))
+  (assert (= 1 (get-in r2 [:sli :owner-rescue :observed-lower-bound :count])) (pr-str (get-in r2 [:sli :owner-rescue]))))
+(println "ok   救援 event の欠落 (拒否等) や task_id 欠落の救援があれば Owner 救援率を unknown (観測値は下限)")'

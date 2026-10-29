@@ -451,6 +451,16 @@
         unverifiable-type (count (filter #(not (contains? (:event_type enum-values) (:event_type %))) uniq))
         ;; 種別不明の event は受入前の correction だった可能性を否定できないため、是正 SLI の欠落にも含める
         corr-lost (+ corr-lost unverifiable-type id-collisions)
+        ;; 指定種別の event だった可能性を否定できない欠落件数 (種別不明の破損行・drop・未配信・読めない入力・run、
+        ;; 種別不明または該当種別の privacy 拒否、event_type 不正、event_id 衝突)
+        lost-of-type (fn [t] (let [maybe? #(or (= t %) (not (contains? (:event_type enum-values) %)))]
+                               (+ malformed buffer-dropped undelivered input-unreadable unreadable-run-events id-collisions unverifiable-type
+                                  (count (filter #(maybe? (:event_type %)) upstream-markers))
+                                  (count (filter (fn [[e g]] (and (:rejected? g) (maybe? (:event_type e)))) (map vector raw-events gated))))))
+        approval-lost (lost-of-type "approval.requested")
+        rescue-lost (lost-of-type "owner.rescue")
+        ;; task_id 欠落の救援は救援発生 task 数に数えられない
+        rescue-unlinked (count (filter #(and (= "owner.rescue" (:event_type %)) (nil? (:task_id %))) uniq))
         dup (- n-in (count uniq))
         ;; 観測順と occurred_at 順の逆転、observed_at より未来の occurred_at (時刻ずれ)
         inversions (->> events (group-by :task_id) vals
@@ -617,10 +627,21 @@
                               :observed (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever))
                               :indeterminate (count (filter :post-accept-indeterminate? accepted-ever))}
                              :else (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever)))
-      :owner-rescue (if (some #(= "owner.rescue" (:event_type %)) uniq)
-                      (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
-                      {:status "unknown" :reason "rescue event の source 未接続"})
+      :owner-rescue (cond
+                      (not (some #(= "owner.rescue" (:event_type %)) uniq))
+                      {:status "unknown" :reason "rescue event の source 未接続"}
+                      ;; 救援 event が欠落/紐付け不能だと救援発生 task を過少計上するため確定しない (観測値は下限)
+                      (or (pos? rescue-lost) (pos? rescue-unlinked))
+                      {:status "unknown" :reason "救援 event だった可能性のある欠落 event または task_id 欠落の救援があり、救援発生 task 数を確定できない"
+                       :observed-lower-bound (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
+                       :lost-events rescue-lost :unlinked-rescues rescue-unlinked}
+                      :else (ratio (count (filter #(pos? (:rescue %)) tasks)) n))
       :duplicate-approval (cond
+                            ;; 承認 event だった可能性のある欠落 (拒否・drop・破損等) があると重複を見落とし得る
+                            (and (pos? approval-lost) (pos? (+ (:total approvals) (:unverifiable approvals))))
+                            {:status "unknown" :reason "承認 event だった可能性のある欠落 event (privacy 拒否・collector 欠落・破損行・読めない入力) があり重複承認の有無を確定できない"
+                             :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
+                             :lost-events approval-lost :unverifiable-approvals (:unverifiable approvals)}
                             ;; approval_key 欠落/不正の承認があると同 scope 重複の有無を確定できない (観測値は下限として別掲)
                             (pos? (:unverifiable approvals))
                             {:status "unknown" :reason "approval_key 欠落/不正の承認があり重複承認の有無を確定できない"
