@@ -2865,7 +2865,10 @@
         pinned (map :path (filter #(= "管理ノート" (:label %)) candidates))
         chosen (->> (:reference_images spec) (map str) (keep #(get by-file (fs/file-name %))))
         fallback (map :path (take 4 candidates))]
-    (vec (take 6 (distinct (if (or (seq pinned) (seq chosen)) (concat pinned chosen) fallback))))))
+    ;; A request-named character keeps up to 3 slots ahead of the pinned images.
+    (vec (take 6 (distinct (if (or (seq pinned) (seq chosen))
+                             (concat (when (:request_focus spec) (take 3 chosen)) pinned chosen)
+                             fallback))))))
 
 (defn valid-image? [path]
   (and (fs/regular-file? path) (pos? (fs/size path)) (image-magic-ok? path)))
@@ -3304,7 +3307,8 @@
             kept (filter #(or (contains? named-stems (:label %)) (not (contains? #{"名前一致" "リンク先"} (:source %)))) chosen)
             covered (set (map :label kept))
             extra (remove #(contains? covered (:label %)) named)]
-        (assoc spec :reference_images (vec (distinct (map :file (concat kept extra)))))))))
+        (assoc spec :reference_images (vec (distinct (map :file (concat (filter #(contains? named-stems (:label %)) kept) extra kept))))
+                    :request_focus true)))))
 
 (defn illustration-spec-with-request
   "BOXP-363: an image-only Review request directs the new illustration. Only the
@@ -3946,7 +3950,10 @@
            (let [cands [{:file "hero.png" :label "主人公" :source "名前一致"} {:file "hero2.png" :label "主人公" :source "名前一致"}
                         {:file "friend.png" :label "友人" :source "名前一致"} {:file "pin.png" :label "管理ノート" :source "管理ノート"}]
                  spec {:reference_images ["friend.png" "pin.png"]}]
-             (and (= ["pin.png" "hero.png" "hero2.png"] (:reference_images (focus-reference-images spec cands #{"主人公"})))
+             (and (= ["hero.png" "hero2.png" "pin.png"] (:reference_images (focus-reference-images spec cands #{"主人公"})))
+                  (let [pins (map #(hash-map :file (str "p" % ".png") :path (str "p" % ".png") :label "管理ノート" :source "管理ノート") (range 6))
+                        all (concat pins [{:file "hero.png" :path "hero.png" :label "主人公" :source "名前一致"}])]
+                    (some #{"hero.png"} (select-reference-images (focus-reference-images {:reference_images []} all #{"主人公"}) all)))
                   (= ["hero2.png"] (:reference_images (focus-reference-images {:reference_images ["hero2.png" "friend.png"]} cands #{"主人公"})))
                   (= spec (focus-reference-images spec cands #{}))
                   (= ["桜 一穂" "一穂"] (profile-names "- 偽名: 桜 一穂（さくら　いちほ）\n- 年齢: 16"))
