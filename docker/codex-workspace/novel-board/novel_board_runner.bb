@@ -2267,8 +2267,13 @@
                       :else
                       (let [text (slurp (str file)) fm (frontmatter-map (vec (str/split-lines text)))
                             refs (embedded-image-refs text)]
-                        (if (and (not nsfw) (= "true" (str/lower-case (str (:nsfw fm)))))
+                        (cond
+                          (and (not nsfw) (= "true" (str/lower-case (str (:nsfw fm)))))
                           (gap! :image-nsfw-excluded rel)
+                          ;; Automatic stages honour `canon: false` like the setting exploration.
+                          (and (not= "明示参照" source) (= "false" (str/lower-case (str (:canon fm)))))
+                          (gap! :image-noncanon-excluded rel)
+                          :else
                           (do (swap! explored conj {:rel rel :source source :images (count refs)})
                               (doseq [raw (take 4 refs)] (image! raw (fs/parent file) (str/replace (str (fs/file-name file)) #"\.md$" "") source false))
                               (when follow? (swap! links into (map #(vector % (fs/parent file)) (wiki-link-stems text)))))))))))]
@@ -3852,14 +3857,16 @@
           (with-open [out (io/output-stream (str path))] (.write out (byte-array [(unchecked-byte 0x89) 0x50 0x4e 0x47]))))
         (spit (str (fs/path root "S" "bad.png")) "bad")
         (spit (str (fs/path root "S" "人物.md")) "# 人物\n![[a.png]]\n![[bad.png]]\n![[missing.png]]\n[[資料]]")
-        (spit (str (fs/path root "S" "資料.md")) "# 資料\n![[b.png]]")
+        (spit (str (fs/path root "S" "資料.md")) "# 資料\n![[b.png]]\n[[非正典]]")
+        (spit (str (fs/path root "S" "非正典.md")) "---\ncanon: false\n---\n# 非正典\n![[a.png]]")
+        (spit (str (fs/path root "S" "人物2.md")) "# 人物\n[[非正典]]")
         (with-redefs [vault (constantly (str root)) work-dir (constantly work) setting-roots (constantly ["S"])
                       allowed-reference-dirs (constantly ["S" "NSFW" "Novels"])]
           (let [result (discover-reference-images "NOVEL-0" "## Requirements\n人物 `private.png|立ち絵`\n![[NSFW/x.png]]\n" {} false)
                 files (set (map :file (:candidates result))) gaps (set (map :type (:gaps result)))]
             (check "image discovery priorities and gaps"
                    (and (= #{"a.png" "b.png" "private.png"} files)
-                        (every? gaps [:image-not-found :image-invalid-bytes :image-nsfw-excluded])
+                        (every? gaps [:image-not-found :image-invalid-bytes :image-nsfw-excluded :image-noncanon-excluded])
                         (= #{"名前一致" "リンク先" "明示参照"} (set (map :source (:candidates result))))))))
         (finally (fs/delete-tree tmp))))
     (check "human assignee" (and (human-assignee? "boxp") (human-assignee? "") (not (human-assignee? "pi"))))
