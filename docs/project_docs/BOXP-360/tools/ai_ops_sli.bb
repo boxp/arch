@@ -69,7 +69,7 @@
     (= k :evidence_event_ids) (and (sequential? v) (every? #(and (string? %) (token-safe? %) (event-id? % synthetic?)) v))
     (= k :task_id) (and (string? v) (boolean (re-matches (if synthetic? #"(?:[A-Z]+[0-9]+|req:conv-[a-z0-9-]+)" #"(?:[A-Z]+-\d+|(?:req|conv)-[a-z0-9-]{8,64})") v)))
     (= k :request_id) (and (string? v) (boolean (re-matches (if synthetic? #"req:(?:[A-Z]+[0-9]+|conv-[a-z0-9-]+)" #"(?:req:[A-Z]+-\d+|(?:req|conv)-[a-z0-9-]{8,64})") v)))
-    (= k :run_id) (and (string? v) (boolean (re-matches (if synthetic? #"r[0-9]+" #"\d{8}T\d{6}Z(?:-[0-9a-f-]+)?") v)))
+    (= k :run_id) (and (string? v) (boolean (re-matches (if synthetic? #"r[0-9]+" #"\d{8}T\d{6}Z(?:-[0-9a-f-]+)?(?:-[a-z]+)?") v)))
     (#{:effect_key :approval_key} k) (and (string? v) (boolean (re-matches #"[a-z0-9:_-]{1,64}" v)))
     :else false)))
 
@@ -108,13 +108,19 @@
   (when-let [[_ y mo d h mi s] (re-find #"^(\d{4})(\d{2})(\d{2})T(\d{2})(\d{2})(\d{2})Z" (str run-id))]
     (str y "-" mo "-" d "T" h ":" mi ":" s "Z")))
 
-(defn frontmatter [f]
-  (let [lines (str/split-lines (slurp (str f)))]
-    (when (= "---" (first lines))
-      (->> (rest lines)
-           (take-while #(not= "---" %))
-           (keep #(when-let [[_ k v] (re-matches #"^([a-z_]+):\s*(.*)$" %)] [(keyword k) (str/trim v)]))
-           (into {})))))
+(defn frontmatter
+  "開始/終了の `---` が揃い、必須field (status / created) を持つ frontmatter だけを map で返す。
+  終了区切りが無い (本文の status: 等まで取り込み得る) / 必須field欠落は nil (呼び出し側で破損扱い)。"
+  [f]
+  (let [lines (str/split-lines (slurp (str f)))
+        body (rest lines)
+        fm-lines (take-while #(not= "---" %) body)]
+    (when (and (= "---" (first lines)) (< (count fm-lines) (count body)))
+      (let [m (->> fm-lines
+                   (keep #(when-let [[_ k v] (re-matches #"^([a-z_]+):\s*(.*)$" %)] [(keyword k) (str/trim v)]))
+                   (into {}))]
+        (when (and (not (str/blank? (:status m))) (re-matches #"\d{4}-\d{2}-\d{2}" (str (:created m))))
+          m)))))
 
 (def infra-repos #{"boxp/arch" "boxp/lolice" "boxp/is01-linux" "boxp/dotfiles" "boxp/palserver"})
 
@@ -195,7 +201,10 @@
                      ;; frontmatter を読めない ticket も黙って除外せず ::broken として残し、run 抽出と未評価扱いを保つ
                      (map (fn [f] [(str (fs/strip-ext (fs/file-name f))) (or (frontmatter f) ::broken)]))
                      (into {}))
-        summaries (fs/glob (fs/path root "runs") "*/*/summary.edn")
+        ;; summary.edn ではなく run ディレクトリを列挙し、summary.edn 自体が無い run も欠落として検出する
+        summaries (->> (fs/glob (fs/path root "runs") "*/*")
+                       (filter fs/directory?)
+                       (map #(fs/path % "summary.edn")))
         ;; 読めない/必須field (ticket・run-id がディレクトリと一致、status) を欠く summary.edn は黙って捨てず
         ;; run.unreadable として ディレクトリの ticket に紐付け、その task の SLI を未評価にする
         valid-summary? (fn [f] (let [s (read-edn f) d (fs/parent f)]

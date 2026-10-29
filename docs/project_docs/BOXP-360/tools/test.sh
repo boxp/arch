@@ -685,3 +685,21 @@ bb -e "
   (assert (= \"unknown\" (get-in r [:zero-tolerance :critical-safety-events :status])))
   (println \"ok   空/未知の outbox event-type と frontmatter 破損 ticket は欠落として計数し、run を保持して該当 task を未評価にする\"))"
 rm -rf "$tmp_fm"
+
+tmp_miss=$(mktemp -d)
+mkdir -p "$tmp_miss/root/runs/BOXP-81/20261020T010000Z-aaaa" "$tmp_miss/root/runs/BOXP-81/20261020T030000Z-bbbb" "$tmp_miss/root/outbox" "$tmp_miss/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_miss/vault/Tickets/BOXP-81.md"
+printf -- '---\ncreated: 2026-10-20\nstatus: ready\n\nbody\nstatus: done\nclosed: 2026-10-21\n' > "$tmp_miss/vault/Tickets/BOXP-82.md"
+printf -- '---\nid: BOXP-83\n---\n' > "$tmp_miss/vault/Tickets/BOXP-83.md"
+echo '{:ticket "BOXP-81" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_miss/root/runs/BOXP-81/20261020T010000Z-aaaa/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_miss/root" "$tmp_miss/vault" > "$tmp_miss/x.jsonl" 2>/dev/null
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_miss/x.jsonl\")]
+  (assert (= 3 (get-in r [:input :unreadable-runs])))
+  (assert (= 2 (get-in r [:input :unreadable-inputs])))
+  (assert (= 0 (get-in r [:sli :first-acceptance-conformance :denominator])))
+  (assert (= 1 (get-in r [:sli :first-acceptance-conformance :unevaluated-input-missing])))
+  (assert (not (re-find #\"BOXP-82:accepted\" (slurp \"$tmp_miss/x.jsonl\"))))
+  (println \"ok   summary.edn 不在の run と閉じ区切り/必須field欠落の frontmatter を欠落として該当 task を未評価にする\"))"
+rm -rf "$tmp_miss"
