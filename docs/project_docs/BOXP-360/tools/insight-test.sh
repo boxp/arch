@@ -98,3 +98,11 @@ check "時刻だけの上限では同じ秒の run を含め、次の秒の run 
   '(and (= 5 (get-in r [:snapshot :runs])) (nil? (get-in r [:gate-rework :by-gate "ci"])))' "$t3/r.edn"
 bb ai_ops_insight.bb report "$t3" 20261009T000000Z-aaaa >"$t3/r2.edn"
 check "完全な run ID の上限は従来どおり辞書順で比較" '(= 5 (get-in r [:snapshot :runs]))' "$t3/r2.edn"
+
+t4="$tmp/t4"; mkdir -p "$t4"
+# BOXP-909: gate 失敗の直後の review-fix だけで Review に到達 (遷移は gate_rework、Owner 可視の review-fix task としても数える)
+ROOT=$t4 run BOXP-909 20261010T000000Z retrying implement review codex-review
+ROOT=$t4 run BOXP-909 20261010T010000Z succeeded review-fix review
+bb ai_ops_insight.bb report "$t4" >"$t4/r.edn"
+check "gate 失敗直後の review-fix は遷移では gate_rework、Owner 可視 (review-fix) task にも計上" \
+  '(and (= 1 (get-in r [:transitions :v1 "gate_rework"])) (nil? (get-in r [:transitions :v1 "review_fix"])) (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 1 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-agent-system-tasks :n])))' "$t4/r.edn"

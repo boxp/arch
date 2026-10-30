@@ -161,8 +161,11 @@
                      {:ticket t :run r :followed? (some? nxt)})
         v1-agent (into (tasks-with #(= "agent-system" (get-in correction-kinds [(:v1 %) :origin])))
                        (map :ticket gate-fails))
-        v1-owner-visible (tasks-with #(get-in correction-kinds [(:v1 %) :owner-visible]))
-        v1-agent-owner-visible (tasks-with #(= "review_fix" (:v1 %)))
+        ;; Owner 可視の集計は v1 遷移分類と独立に、run 自身が review-fix かどうかで数える。
+        ;; gate 失敗直後の review-fix は遷移分類では gate_rework だが、review-fix run があること自体は Owner 可視の是正として残す。
+        review-fix? #(= "review-fix" (get-in % [:cur :action]))
+        v1-owner-visible (tasks-with #(or (get-in correction-kinds [(:v1 %) :owner-visible]) (review-fix? %)))
+        v1-agent-owner-visible (tasks-with review-fix?)
         count-by (fn [k pred] (frequencies (keep #(when (pred %) (k %)) trs)))
         gate-rework-by-task (frequencies (map :ticket gate-fails))
         gf-count-by (fn [f] (frequencies (map f gate-fails)))
