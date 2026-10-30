@@ -304,6 +304,17 @@ bb ai_ops_insight.bb report "$t14" 20261017T000000Z "$t14/vault" >"$t14/r.edn"
 check "最後の秒に種別の異なる契機があれば ambiguous、同種のみなら確定" \
   '(let [rr (:review-resume r)] (and (= 1 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "owner-relay"])) (= 1 (:same-second-boundary rr))))' "$t14/r.edn"
 
+# 未再開の停止では snapshot 上限 (until-at) と同じ秒の催促 note を確定計上せず、前後不明として別掲
+t15="$tmp/t15"; mkdir -p "$t15/vault/Tickets"
+ROOT=$t15 run BOXP-950 20261016T000000Z succeeded implement review
+cat >"$t15/vault/Tickets/BOXP-950.md" <<MD
+## Notes
+- 2026-10-17 00:00:00 UTC [kohako-supervisor]: nudge at snapshot boundary
+MD
+bb ai_ops_insight.bb report "$t15" 20261017T000000Z "$t15/vault" >"$t15/r.edn"
+check "未再開停止で上限と同秒の催促は確定計上せず ambiguous に別掲" \
+  '(let [rr (:review-resume r)] (and (= 0 (get-in rr [:supervisor-nudged :stalls])) (= 0 (get-in rr [:open-stalls :with-supervisor-nudge])) (= 1 (get-in rr [:open-stalls :n])) (= 1 (get-in rr [:supervisor-nudged :ambiguous-nudge-stalls])) (= 1 (:same-second-boundary rr))))' "$t15/r.edn"
+
 # 存在するが読めない Tickets ディレクトリは exit 2
 chmod 000 "$t9/vault/Tickets"
 if [ -r "$t9/vault/Tickets" ]; then

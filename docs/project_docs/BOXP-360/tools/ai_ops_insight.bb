@@ -304,9 +304,9 @@
                            ;; note 時刻は秒単位。prev 終了と同じ秒の note は前後を判定できないため、確実に後の note とは分ける
                            from-sec (when from (.truncatedTo from java.time.temporal.ChronoUnit/SECONDS))
                            ;; 次 run 開始側も同様。開始と同じ秒の note は開始前か後か判定できないため確定区間に入れない
-                           to-sec (when to (.truncatedTo to java.time.temporal.ChronoUnit/SECONDS))
-                           within-end? #(if to-sec (neg? (compare (:at %) to-sec))
-                                          (or (nil? end) (not (pos? (compare (:at %) end)))))
+                           ;; 次 run が無い停止は snapshot 上限 (until-at) を終端とし、上限と同じ秒の note も前後不明として確定区間に入れない
+                           to-sec (when end (.truncatedTo end java.time.temporal.ChronoUnit/SECONDS))
+                           within-end? #(or (nil? to-sec) (neg? (compare (:at %) to-sec)))
                            ts (when-not (unreadable? t) (get triggers t))
                            in (when from (filter #(and (pos? (compare (:at %) from-sec)) (within-end? %)) ts))
                            same-sec (when from (filter #(and (= (:at %) from-sec) (or (nil? to-sec) (not (pos? (compare (:at %) to-sec))))) ts))
