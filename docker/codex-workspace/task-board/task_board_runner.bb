@@ -1550,7 +1550,8 @@
   ;; structured status so run summaries and retry state never copy secrets.
   (select-keys review-gate [:ok? :gate :url :retryable? :retry-count
                             :retry-limit :retry-exhausted? :checked-pr-urls
-                            :merged-pr-urls :pr-urls :diagnostic]))
+                            :merged-pr-urls :pr-urls :diagnostic
+                            :budget-exhausted? :gate-budget]))
 
 (defn pr-gate-diagnostic [review-gate]
   ;; A gate's :message may contain gh stderr or review-agent text.  Keep a
@@ -1631,40 +1632,6 @@
          "- Previous run summary: " run-dir "/summary.edn\n"
          "- Previous run logs: " run-dir "/events.jsonl and " run-dir "/stderr.log\n"
          "- Expected completion state: update the same PR until draft/mergeability/CI/codex-review gates pass, then return TASK_BOARD_RESULT: review with the PR URL.\n\n")))
-
-(defn record-pr-gate-failure! [ticket-id run-id agent review-gate]
-  (let [limit (pr-gate-retry-limit)
-        fingerprint (retry-fingerprint review-gate)
-        path [:pr-gate-retries ticket-id fingerprint]
-        state (runner-state)
-        current (get-in state path)
-        count (inc (long (or (:count current) 0)))
-        record {:pr-url (:url review-gate)
-                :gate (some-> (:gate review-gate) name)
-                :message (persisted-review-gate-reason review-gate)
-                :diagnostic (:diagnostic review-gate)
-                :run-id run-id
-                :run-dir (str (run-dir ticket-id run-id))
-                :agent agent
-                :count count
-                :limit limit
-                :updated-at (now-str)}
-        next-state (assoc-in state path record)]
-    (write-runner-state! next-state)
-    (assoc review-gate
-           :retry-count count
-           :retry-limit limit
-           :retry-exhausted? (> count limit))))
-
-(defn clear-pr-gate-retries! [ticket-id]
-  (let [state (runner-state)
-        retries (dissoc (:pr-gate-retries state) ticket-id)
-        next-state (if (seq retries)
-                     (assoc state :pr-gate-retries retries)
-                     (dissoc state :pr-gate-retries))]
-    (when (not= state next-state)
-      (write-runner-state! next-state))))
-
 
 ;; --- BOXP-369: cumulative gate-failure budget ---------------------------
 ;; The short-term retry limit above is keyed by the failure fingerprint, so a
@@ -1837,6 +1804,47 @@
            budget (update budget :grants (fnil conj []) grant)]
        (write-gate-failure-budget! budget)
        (gate-budget-status budget scope key)))))
+
+(defn record-pr-gate-failure! [ticket-id run-id agent review-gate]
+  (let [limit (pr-gate-retry-limit)
+        fingerprint (retry-fingerprint review-gate)
+        path [:pr-gate-retries ticket-id fingerprint]
+        state (runner-state)
+        current (get-in state path)
+        count (inc (long (or (:count current) 0)))
+        record {:pr-url (:url review-gate)
+                :gate (some-> (:gate review-gate) name)
+                :message (persisted-review-gate-reason review-gate)
+                :diagnostic (:diagnostic review-gate)
+                :run-id run-id
+                :run-dir (str (run-dir ticket-id run-id))
+                :agent agent
+                :count count
+                :limit limit
+                :updated-at (now-str)}
+        next-state (assoc-in state path record)
+        ;; BOXP-369: the cumulative budget is counted independently of the
+        ;; fingerprint above, so a new failure text cannot reset it.
+        budget (record-gate-failure-budget! ticket-id run-id agent review-gate)]
+    (write-runner-state! next-state)
+    (assoc review-gate
+           :retry-count count
+           :retry-limit limit
+           :retry-exhausted? (> count limit)
+           :budget-exhausted? (:exhausted? budget)
+           :gate-budget (mapv #(select-keys % [:scope :key :used :limit]) (:statuses budget))
+           :gate-budget-report (when (:exhausted? budget)
+                                 (gate-budget-report ticket-id review-gate budget)))))
+
+(defn clear-pr-gate-retries! [ticket-id]
+  (let [state (runner-state)
+        retries (dissoc (:pr-gate-retries state) ticket-id)
+        next-state (if (seq retries)
+                     (assoc state :pr-gate-retries retries)
+                     (dissoc state :pr-gate-retries))]
+    (when (not= state next-state)
+      (write-runner-state! next-state))))
+
 
 (defn ticket-repos [ticket-id]
   (->> (str/split (or (:repo (ticket-frontmatter ticket-id)) "") #"[,\s]+")
@@ -3259,7 +3267,8 @@
       (and (= "review" intended)
            (not (:ok? review-gate))
            (:retryable? review-gate)
-           (not (:retry-exhausted? review-gate)))
+           (not (:retry-exhausted? review-gate))
+           (not (:budget-exhausted? review-gate)))
       "in-progress"
 
       (and (= "review" intended) (not (:ok? review-gate)))
@@ -3329,6 +3338,7 @@
     exception "runner-internal-error"
     (not (zero? (long (or exit 0)))) "agent-process-error"
     (= "blocked" result) "agent-reported-blocked"
+    (:budget-exhausted? review-gate) "gate-failure-budget-exhausted"
     (:retry-exhausted? review-gate) "pr-gate-retry-limit"
     (:gate review-gate) (str "pr-gate-" (name (:gate review-gate)))
     :else "reason-unavailable"))
@@ -3340,6 +3350,7 @@
     exception "Runner internal error; inspect the referenced run artifacts."
     (not (zero? (long (or exit 0)))) "Agent process exited unsuccessfully; inspect the referenced run artifacts."
     (= "blocked" result) "Agent reported blocked; inspect the referenced run artifacts."
+    (:gate-budget-report review-gate) (:gate-budget-report review-gate)
     (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
     :else "reason unavailable"))
 
@@ -3481,7 +3492,17 @@
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
         start-rev (:board_rev fm)
-        action (candidate-action card assignee)]
+        candidate (candidate-action card assignee)
+        ;; BOXP-369: once the cumulative gate-failure budget is spent, no
+        ;; automatic run may start again, even when the card or assignee was
+        ;; moved back.  Only an Owner `gate-budget-grant` reopens it.
+        action (if (and (#{:implement :review-fix :blocked-retry} candidate)
+                        (fs/exists? (gate-failure-budget-path))
+                        (gate-budget-exhausted-for-ticket? ticket-id))
+                 (do (log! (str "gate failure budget exhausted; not starting " ticket-id
+                                " until an Owner gate-budget-grant"))
+                     nil)
+                 candidate)]
     (when action
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (acquire-lock! ticket-id action effective-lane)]
@@ -4319,7 +4340,7 @@
     (recur)))
 
 (defn usage []
-  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-migrate-markers [--apply]>")
+  (println "usage: task_board_runner.bb <tick [--ticket BOXP-N]|loop|sync|prepare-shutdown|recover|prune-workspaces [--dry-run]|localllm-migrate-markers [--apply]|gate-budget-status BOXP-N|gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by NAME>")
   (System/exit 2))
 
 (defn arg-value [args flag]
@@ -5213,5 +5234,30 @@
                        (when-not (contains? #{[] ["--dry-run"]} (vec args))
                          (usage))
                        (prune-workspaces! {:dry-run? (= ["--dry-run"] (vec args))}))
+  "gate-budget-status" (let [[ticket-id] (rest *command-line-args*)]
+                         (when-not (and ticket-id (re-matches #"[A-Z]+-\d+" ticket-id)) (usage))
+                         (let [budget (read-gate-failure-budget)
+                               pr-ids (->> (vals (:failures budget))
+                                           (filter #(= ticket-id (:ticket %)))
+                                           (keep :pr) distinct)]
+                           (prn {:ticket ticket-id
+                                 :statuses (into [(gate-budget-status budget :ticket ticket-id)]
+                                                 (map #(gate-budget-status budget :pr %) pr-ids))
+                                 :failures (->> (vals (:failures budget))
+                                                (filter #(= ticket-id (:ticket %)))
+                                                (sort-by :recorded-at)
+                                                vec)})))
+  ;; BOXP-369: explicit Owner resume.  Not called by the runner itself.
+  "gate-budget-grant" (let [args (vec (rest *command-line-args*))
+                            target (first args)
+                            amount (some-> (arg-value args "--amount") parse-long)
+                            by (arg-value args "--by")
+                            [scope key] (cond
+                                          (and target (re-matches #"[A-Z]+-\d+" target)) [:ticket target]
+                                          (and target (re-matches #"[^/\s]+/[^/\s#]+#\d+" target))
+                                          [:pr (canonical-pr-id (str "github.com/" (str/replace target #"#" "/pull/")))]
+                                          :else nil)]
+                        (when-not (and scope key amount (pos? amount) (not (str/blank? by))) (usage))
+                        (prn (gate-budget-grant! scope key amount by)))
   "test" (run-tests!)
   (usage))
