@@ -18,7 +18,7 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 | 初期上限 | 10。`CODEX_TASK_BOARD_GATE_FAILURE_BUDGET` は **下げる方向のみ** 有効（10 超は 10 に丸め、最小 1） |
 | 停止 | used が limit に達した失敗（10 回目）で、短期上限が残っていても `in-progress` に戻さず Blocked + assignee boxp へ遷移。category=`gate-failure-budget-exhausted` |
 | 11 回目の防止 | 予算超過 ticket（ticket 自身、失敗歴のある PR、または ticket 本文/Notes が参照する PR のいずれか）は、カードや担当を戻しても `implement` / `review-fix` / `blocked-retry` の自動 run を開始しない（ログのみ）。PR URL は大文字小文字・scheme 有無を問わず抽出し正規化する |
-| 開始の直列化 | ticket lock 取得直後・lane/Notes 遷移前に、予算 lock 下で上限を再確認し `:reservations` に予約（ticket・run-id・対象 PR）を書く。別 ticket の生きた予約が同じ PR を持つ間はその run を開始しない（lock を戻すだけで状態変更なし）。予約の生存は「その ticket の lock が同じ run-id で stale でない」ことで判定するので、終了・クラッシュ・回収時の明示解放は不要 |
+| 開始の直列化 | ticket lock 取得直後・lane/Notes 遷移前に、予算 lock 下で上限を再確認し `:reservations` に予約（ticket・run-id・対象 PR）を書く。別 ticket の生きた予約が同じ PR を持つ間はその run を開始しない（lock を戻すだけで状態変更なし）。予約の生存は「その ticket の lock が同じ run-id で stale でない」ことで判定し（heartbeat の書換と競合しないよう ticket lock guard 下で読み、存在する空 lock は生存扱い）、終了・クラッシュ・回収時の明示解放は不要 |
 | reset 条件 | **なし**。成功（gate pass）、本文/head 変更、新 run、runner 再起動、担当交代、新 PR 作成のいずれでも減らない。成功時の短期 retry state（`clear-pr-gate-retries!`）は従来どおり消える |
 | 明示再開 | Owner が `bb task_board_runner.bb gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by <Owner>` で追加予算を **追記** し、担当を戻す。記録の削除では帳尻を合わせない。状況確認は `gate-budget-status BOXP-N` |
 
