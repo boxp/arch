@@ -2482,9 +2482,11 @@
 (defn localllm-coder-result [exit marker fallback?]
   ;; fallback? is also true when no assistant message named a model: a run
   ;; without model evidence is never reported as a local success.
+  ;; A missing marker means pi stopped mid-way (truncated output or the model
+  ;; quit early), so the partial patch never reaches Review (codex review).
   (cond (or (not= 0 exit) fallback?) "blocked"
-        (= "blocked" marker) "blocked"
-        :else "review"))
+        (contains? #{"done" "review"} marker) "review"
+        :else "blocked"))
 
 (defn localllm-coder-base-shas
   "HEAD of every repo worktree before pi starts, so the patch also holds
@@ -4802,7 +4804,10 @@
               ["coder preflight empty" (:ok? (localllm-coder-match-model {:data []} "m")) false]
               ["coder preflight other" (:ok? (localllm-coder-match-model {:data [{:id "other"}]} "m")) false]
               ["coder done" (localllm-coder-result 0 "done" false) "review"]
-              ["coder missing" (localllm-coder-result 0 nil false) "review"]
+              ["coder missing" (localllm-coder-result 0 nil false) "blocked"]
+              ["coder review" (localllm-coder-result 0 "review" false) "review"]
+              ["coder blocked" (localllm-coder-result 0 "blocked" false) "blocked"]
+              ["coder truncated" (localllm-coder-result 0 (result-marker (:last-message (localllm-coder-events ["{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed the bug; running tests\"}]}}"]))) false) "blocked"]
               ["coder fallback" (localllm-coder-result 0 "done" true) "blocked"]
               ["coder exit" (localllm-coder-result 1 "done" false) "blocked"]
               ["coder no model evidence" (:models-seen (localllm-coder-events [])) []]
