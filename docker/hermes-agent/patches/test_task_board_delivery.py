@@ -2,6 +2,7 @@
 import asyncio
 import ast
 import base64
+from contextlib import nullcontext
 import importlib.util
 import json
 import logging
@@ -120,6 +121,63 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
                 self.assertTrue((await self.send(recovered)).success)
                 self.assertEqual(self.calls, [recovered, report])
                 self.assertEqual(len(list(self.root.glob("*.json"))), 2)
+
+    async def test_recovered_prefix_uses_notice_receipt_and_preserves_unknown_report(self):
+        recovered = delivery.recovered_marker(self.source, "NO_REPLY", self.vault)
+        prefix = "♻️ Recovered reply — the gateway restarted during delivery, so this may be a duplicate:\n\n"
+        metadata = {"_boxp_task_board_final": True, "_boxp_task_board_notice": True}
+        async def recovered_send():
+            return await delivery.send_once(self.adapter, CHAT, prefix + recovered, metadata=metadata,
+                                            root=self.root, vault=self.vault)
+        self.assertTrue((await recovered_send()).success)
+        self.assertTrue((await recovered_send()).success)
+        self.assertTrue((await self.send("SFW report with unknown outcome")).success)
+        self.assertTrue((await self.send("SFW report with unknown outcome")).success)
+        self.assertEqual(len(self.calls), 2)
+        self.assertEqual(self.calls[0], prefix + recovered)
+        self.assertIn("missing_or_conflicting_receipt", self.calls[1])
+        self.assertEqual(len(list(self.root.glob("*.json"))), 2)
+
+    async def test_installed_startup_recovery_connects_to_delivery(self):
+        installed = Path("/opt/hermes/gateway/run_startup.py")
+        if not installed.exists():
+            self.skipTest("integration runs inside the built Hermes image")
+        from gateway.delivery_ledger import RECOVERED_MARKER
+        tree = ast.parse(installed.read_text())
+        method = next(node for cls in tree.body if isinstance(cls, ast.ClassDef)
+                      for node in cls.body if isinstance(node, ast.AsyncFunctionDef)
+                      and node.name == "_redeliver_claimed_obligations")
+        namespace = {"asyncio": asyncio, "logger": logging.getLogger("boxp.fixture"),
+                     "logging": logging, "_log_suppressed": lambda *a, **k: nullcontext()}
+        cls = ast.ClassDef(name="Probe", bases=[], keywords=[], body=[method], decorator_list=[])
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])),
+                     "installed_startup_fixture", "exec"), namespace)
+        probe = namespace["Probe"]()
+        async def adapter_for(row):
+            async def send(chat_id, content, metadata):
+                return await delivery.send_once(self.adapter, chat_id, content, metadata=metadata,
+                                                root=self.root, vault=self.vault)
+            return NS(send=send)
+        async def arm():
+            pass
+        probe._obligation_adapter = adapter_for
+        probe._arm_flood_timers_for_waiting_rows = arm
+        ledger = types.ModuleType("gateway.delivery_ledger")
+        ledger.RECOVERED_MARKER = RECOVERED_MARKER
+        ledger.mark_delivered = lambda *args: None
+        ledger.mark_failed = lambda *args: self.fail("unexpected delivery failure")
+        recovered = delivery.recovered_marker(self.source, "NO_REPLY", self.vault)
+        row = {"platform": "webhook", "chat_id": CHAT, "content": recovered,
+               "needs_marker": True, "obligation_id": "fixture", "attempts": 1}
+        with patch.dict(sys.modules, {"gateway.delivery_ledger": ledger,
+                                      "gateway.boxp_task_board_delivery": delivery}):
+            self.assertEqual(await probe._redeliver_claimed_obligations([row, row]), 2)
+        self.assertEqual(self.calls, [RECOVERED_MARKER + recovered])
+        self.note("notified")
+        await self.send("SFW business report")
+        await self.send("SFW business report")
+        self.assertEqual(self.calls, [RECOVERED_MARKER + recovered, "SFW business report"])
+        self.assertEqual(len(list(self.root.glob("*.json"))), 2)
 
     async def test_marker_plus_report_is_preserved_even_with_silent_receipt(self):
         self.note("silent")

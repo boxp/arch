@@ -55,12 +55,18 @@ def main(root):
             ('            metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None\n',
              '            metadata = {"thread_id": row["thread_id"]} if row.get("thread_id") else None\n'
              '            if row.get("platform") == "webhook":\n'
-             '                metadata = dict(metadata or {}, _boxp_task_board_final=True)\n'),
+             '                from gateway.boxp_task_board_delivery import NOTICE\n'
+             '                metadata = dict(metadata or {}, _boxp_task_board_final=True,\n'
+             '                                _boxp_task_board_notice=row["content"].startswith(NOTICE))\n'),
         ],
     }
     pending = {}
     for name, replacements in changes.items():
         text = (root / name).read_text()
+        if name == "gateway/run_startup.py":
+            previous = ('            if row.get("platform") == "webhook":\n'
+                        '                metadata = dict(metadata or {}, _boxp_task_board_final=True)\n')
+            text = text.replace(previous, "", 1)
         for old, new in replacements:
             if new in text:
                 continue

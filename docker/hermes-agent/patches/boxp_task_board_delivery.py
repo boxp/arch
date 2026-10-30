@@ -138,7 +138,8 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
         # A reconciliation notice is not the business report. Its successful
         # delivery must not consume the report's receipt if a later authorized
         # attempt supplies the missing report. Keep the same event-wide lock.
-        suffix = ".notice.json" if content.startswith(NOTICE) else ".json"
+        suffix = ".notice.json" if (content.startswith(NOTICE) or
+                                    (metadata or {}).get("_boxp_task_board_notice")) else ".json"
         path = root / (key + suffix)
         with (root / (key + ".lock")).open("a") as lock:
             try:

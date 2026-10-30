@@ -63,3 +63,9 @@
 - digest固定 Hermes v0.22.5 の隔離コンテナ（ネットワーク無効）へ fixture を渡し、patchを2回適用して4対象ファイルの SHA-256 が一致することを確認。同 image 内の unittest は18件すべて成功。実配送や稼働環境の変更はしていない。
 - 親の独立reviewで追加検出した「要確認通知のsentが後続の必要報告を抑止する」P1も修正。要確認通知は `.notice.json`、業務報告は `.json` で別receiptとし、eventの排他を共有する。同一eventへの無制限な再送は許可せず、各通知/報告はそれぞれ一度。未確認metadata付きでも本文を持つ報告は業務報告として重複を抑止する。
 - 最終版はホスト19件中18件pass/接続1件skip、image全体build内19件すべてpass。未解決通知→成功/要判断の報告→各重複を回帰し、通知が報告を消さないことを確認。指定helper委譲の証跡verifyも成功した。
+
+## PR14248 gate P1: 復旧接頭辞とreceipt
+
+- 固定Hermes v0.22.5の`_redeliver_claimed_obligations`は、保存本文の前に`RECOVERED_MARKER`等を付けてから`adapter.send`を呼ぶ。復旧通知を送信本文の先頭だけで判定すると業務報告のreceiptを消費する。
+- 起動配送は接頭辞付加前の保存本文から通知かを判定し、内部metadataで渡す。通知と業務報告のreceiptは引き続き別々で、eventの排他とunknown時のfail-closedを維持する。旧patch適用済みsourceへの再適用にも対応する。
+- SFWホスト試験は21件中19件成功、image専用2件skip。digest固定baseのネットワーク無効コンテナで初回・再適用後の4ファイルのSHA-256一致と21件成功を確認。実際の起動配送メソッド、上流`RECOVERED_MARKER`、偽adapter、一時receiptを接続し、復旧通知と後続業務報告それぞれの重複抑止を確認した。旧patch適用済みfixture imageでも再適用後21件成功。実event・外部配送・本番変更は行っていない。
