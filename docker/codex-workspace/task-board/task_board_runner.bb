@@ -2454,13 +2454,17 @@
          "HOME" home "PI_OFFLINE" "1"
          "CODEX_HOME" (str home "/.codex") "CLAUDE_CONFIG_DIR" (str home "/.claude")))
 
-(defn localllm-coder-env! [dir model]
+;; lolice mounts the codex-workspace-pi-config ConfigMap here.
+(defn localllm-coder-models-src []
+  (env "CODEX_TASK_BOARD_LOCALLLM_CODER_PI_MODELS" "/etc/pi-agent-config/models.json"))
+
+;; models-text is the content validated by the preflight, written as is so pi
+;; reads exactly the provider config that was checked.
+(defn localllm-coder-env! [dir model models-text]
   (let [home (fs/path dir "coder-home")
-        agent-dir (fs/path home ".pi" "agent")
-        ;; lolice mounts the codex-workspace-pi-config ConfigMap here.
-        models-src (env "CODEX_TASK_BOARD_LOCALLLM_CODER_PI_MODELS" "/etc/pi-agent-config/models.json")]
+        agent-dir (fs/path home ".pi" "agent")]
     (fs/create-dirs agent-dir)
-    (fs/copy models-src (fs/path agent-dir "models.json") {:replace-existing true})
+    (spit (str (fs/path agent-dir "models.json")) models-text)
     (spit (str (fs/path agent-dir "settings.json"))
           (json/generate-string {"defaultProvider" "llama.cpp" "defaultModel" model}))
     (spit (str (fs/path agent-dir "auth.json")) "{}")
@@ -2514,16 +2518,20 @@
 ;; Continuation (BOXP-367 codex review): every run starts from a fresh
 ;; worktree and the change only lives in the run dir patch, so a later run of
 ;; the same ticket (review-fix, retry) first re-applies the latest earlier patch.
+;; Ordered by the patch write time, not the run ID: the ID timestamp has only
+;; second resolution followed by a random UUID (codex review P2).
 (defn localllm-coder-previous-patch [ticket-id run-id]
   (let [runs-dir (fs/parent (run-dir ticket-id run-id))]
     (when (fs/exists? runs-dir)
       (->> (fs/list-dir runs-dir)
            (map (comp str fs/file-name))
-           (filter #(neg? (compare % run-id)))
-           (sort #(compare %2 %1))
-           (some (fn [r] (let [p (fs/path runs-dir r "localllm-coder.patch")]
+           (remove #(= % run-id))
+           (keep (fn [r] (let [p (fs/path runs-dir r "localllm-coder.patch")]
                            (when (and (fs/exists? p) (not (str/blank? (slurp (str p)))))
-                             {:run-id r :path (str p)}))))))))
+                             {:run-id r :path (str p) :mtime (.toMillis (fs/last-modified-time p))}))))
+           (sort-by (juxt :mtime :run-id) #(compare %2 %1))
+           first
+           (#(when % (dissoc % :mtime)))))))
 
 (defn localllm-coder-patch-sections [text]
   (into {} (for [[_ repo body] (re-seq #"(?ms)^# Repository: ([^\n]+)\n(.*?)(?=^# Repository: |\z)" text)
@@ -2552,10 +2560,25 @@
 
 ;; Without a prepared repository worktree pi would run in the bare workspace
 ;; dir and the forced review result would move an untouched ticket to Review.
+;; Every declared repo must be prepared, otherwise the patch would silently
+;; miss the repos whose worktree failed (codex review P1).
 (defn localllm-coder-workspace-check [workspace]
-  (if (seq (keep :path (:repo-worktrees workspace)))
-    {:ok? true}
-    {:ok? false :category "no-repo-worktree"}))
+  (let [worktrees (:repo-worktrees workspace)
+        missing (vec (keep #(when-not (:path %) (:repo %)) worktrees))]
+    (cond (empty? worktrees) {:ok? false :category "no-repo-worktree"}
+          (seq missing) {:ok? false :category "repo-worktree-failed" :repos missing}
+          :else {:ok? true})))
+
+;; The router preflight must hit the endpoint pi really uses (codex review P2):
+;; the base URL comes from the provider entry of the models.json copied into
+;; the run-local HOME, and the model has to be configured under that provider.
+(defn localllm-coder-pi-provider [models-config provider model]
+  (let [entry (get-in models-config [:providers (keyword provider)])
+        base-url (some-> (:baseUrl entry) (str/replace #"/+$" ""))]
+    (cond (not entry) {:ok? false :category "pi-provider-missing"}
+          (str/blank? base-url) {:ok? false :category "pi-provider-base-url-missing"}
+          (not (some #(= model (:id %)) (:models entry))) {:ok? false :category "pi-model-not-configured"}
+          :else {:ok? true :base-url base-url})))
 
 (defn run-localllm-coder! [ticket-id action lane agent lock]
   (let [run (:run-id lock) dir (run-dir ticket-id run)
@@ -2565,7 +2588,11 @@
         patch-path (fs/path dir "localllm-coder.patch")
         model (env "CODEX_TASK_BOARD_LOCALLLM_CODER_MODEL" "qwen3-coder-next")
         provider (env "CODEX_TASK_BOARD_LOCALLLM_CODER_PROVIDER" "llama.cpp")
-        base-url (str/replace (env "CODEX_TASK_BOARD_LOCALLLM_BASE_URL" "http://llama-server.local-llm.svc.cluster.local:8080/v1") #"/+$" "")
+        models-text (try (slurp (localllm-coder-models-src)) (catch Exception _ nil))
+        pi-provider (if-let [config (try (json/parse-string models-text true) (catch Exception _ nil))]
+                      (localllm-coder-pi-provider config provider model)
+                      {:ok? false :category "pi-models-config-unreadable"})
+        base-url (:base-url pi-provider)
         started-at (now-str) start-ms (System/currentTimeMillis)
         ;; HEAD before the restore and pi, so the new patch is cumulative.
         base-shas (localllm-coder-base-shas workspace)
@@ -2581,6 +2608,7 @@
           readback (cond
                      (not (:ok? ws-check)) ws-check
                      (not (:ok? restore)) restore
+                     (not (:ok? pi-provider)) pi-provider
                      :else
                      (try
                      (let [response @(p/process ["curl" "--fail" "--silent" "--show-error" "--max-time" "10" (str base-url "/models")] {:out :string :err :string})]
@@ -2592,7 +2620,7 @@
                       (try
                         (let [paths (keep :path (:repo-worktrees workspace))
                               cwd (if (= 1 (count paths)) (first paths) (:workspace-dir workspace))
-                              child-env (localllm-coder-env! dir model)
+                              child-env (localllm-coder-env! dir model models-text)
                               proc (p/process (localllm-coder-args provider model)
                                               {:dir cwd :env child-env :in (io/file (str prompt-path))
                                                :out (io/file (str events-path)) :err (io/file (str stderr-path))})]
@@ -4812,7 +4840,26 @@
                  [(:ok? r) (:repos r) (slurp (str (fs/path ok "a.txt")))])
                [false ["t/conflict"] "a\n"]]
               ["coder workspace check" (mapv localllm-coder-workspace-check [{:repo-worktrees []} {:repo-worktrees [{:repo "t/r" :error "x"}]} {:repo-worktrees [{:repo "t/r" :path "/w/r"}]}])
-               [{:ok? false :category "no-repo-worktree"} {:ok? false :category "no-repo-worktree"} {:ok? true}]]
+               [{:ok? false :category "no-repo-worktree"} {:ok? false :category "repo-worktree-failed" :repos ["t/r"]} {:ok? true}]]
+              ["coder workspace check partial" (localllm-coder-workspace-check {:repo-worktrees [{:repo "t/a" :path "/w/a"} {:repo "t/b" :worktree-failed true}]})
+               {:ok? false :category "repo-worktree-failed" :repos ["t/b"]}]
+              ["coder pi provider" (mapv #(localllm-coder-pi-provider % "llama.cpp" "m")
+                                         [{:providers {:llama.cpp {:baseUrl "http://r:8080/v1/" :models [{:id "m"}]}}}
+                                          {:providers {:other {:baseUrl "http://x/v1" :models [{:id "m"}]}}}
+                                          {:providers {:llama.cpp {:models [{:id "m"}]}}}
+                                          {:providers {:llama.cpp {:baseUrl "http://r:8080/v1" :models [{:id "other"}]}}}])
+               [{:ok? true :base-url "http://r:8080/v1"} {:ok? false :category "pi-provider-missing"}
+                {:ok? false :category "pi-provider-base-url-missing"} {:ok? false :category "pi-model-not-configured"}]]
+              ["coder previous patch by write time, same second"
+               (with-redefs [root (let [r (str (fs/create-temp-dir))] (constantly r))]
+                 (let [w (fn [run t] (let [p (fs/path (run-dir "T-1" run) "localllm-coder.patch")]
+                                       (fs/create-dirs (fs/parent p)) (spit (str p) "x\n")
+                                       (fs/set-last-modified-time p (java.nio.file.attribute.FileTime/fromMillis t))))]
+                   (w "20261030T000000Z-ffff" 1000)
+                   (w "20261030T000000Z-0000" 2000)
+                   (fs/create-dirs (run-dir "T-1" "20261030T000000Z-1111"))
+                   (:run-id (localllm-coder-previous-patch "T-1" "20261030T000000Z-1111"))))
+               "20261030T000000Z-0000"]
               ["coder restore without previous patch" (localllm-coder-restore! {:repo-worktrees []} nil) {:ok? true}]
               ["coder env allowlist" (localllm-coder-base-env {"PATH" "/usr/bin" "GH_TOKEN" "x" "AWS_PROFILE" "p" "KUBECONFIG" "k" "HOME" "/home/boxp" "ANTHROPIC_API_KEY" "a"} "/run/h")
                {"PATH" "/usr/bin" "HOME" "/run/h" "PI_OFFLINE" "1" "CODEX_HOME" "/run/h/.codex" "CLAUDE_CONFIG_DIR" "/run/h/.claude"}]
