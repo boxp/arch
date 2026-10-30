@@ -49,3 +49,16 @@ critical-safety-events は `coverage.connected`（対象 `critical-safety-events
 runner は `CODEX_TASK_BOARD_VAULT` が設定されている場合、全履歴から SLI を再集計して `ai-ops/sli.prom` に保存し、`ai-ops/metrics.prom` に追記する。更新間隔は `CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS`（既定 900 秒、0 で無効）、タイムアウトは `CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS`（既定 120 秒）。失敗時は前回の値を保持し、`ai_ops_sli_export_*` で状態を確認できる。
 
 `ai_ops_sli_info`、`ai_ops_sli_generated_timestamp_seconds`、`ai_ops_sli_determinable`、`ai_ops_sli_source_connected` と、first acceptance・correction・lead time・runs・stratum・guardrail の各系列を出力する。分子・分母を併記し、unknown の値は公開しない。値は全履歴から再計算したスナップショットであり `rate()` / `increase()` を使わない。
+
+## ai_ops_insight.bb (correction-rules/v1, 分析専用)
+
+```sh
+bb ai_ops_insight.bb report ~/.codex-task-board 20261030T065040Z   # run-id 上限で固定 snapshot を再現
+./insight-test.sh                                                   # 本票の実例を本文なしで再現する回帰 eval (test.sh からも実行)
+```
+
+summary.edn の status / action / result / blocker-category / agent / 時刻 / review-gate の gate 名と診断 category だけを読み、
+run 間の遷移を v0 (公開中の SLI と同じ規則) と v1 で並べて分類する。v1 は gate 失敗の retrying を内部再作業 (`gate_rework`) として数え、
+groom→implement・中断/blocked からの再開を是正から外し、Review 後の再開は原因 unknown のまま残す。
+連続 10 回以上の gate 失敗はレビュー反復ループ (`review-loops`) として検出する。公開 SLI と Prometheus 出力は変更しない。
+結果と読み方は `../insight-2026-10-30.md`。

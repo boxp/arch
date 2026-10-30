@@ -1665,3 +1665,4 @@ assert 'ai_ops_lead_time_hours{quantile="0.5"}' in extracted
 assert 'ai_ops_lead_time_precision_info{precision="day"} 1' in extracted
 print('ok   SLI snapshot metrics and unknown handling')
 PYTEST
+./insight-test.sh
