@@ -4961,6 +4961,7 @@
                         persist-pr-gate-diagnostic! (fn [& _] (record! :persist-pr-gate-diagnostic!) nil)
                         record-pr-gate-failure! (fn [& _] (record! :record-pr-gate-failure!) nil)
                         clear-pr-gate-retries! (partial record! :clear-pr-gate-retries!)
+                        reserve-gate-budget-run! (fn [& _] true)
                         log! (fn [& _] nil)
                         run-agent! (fn [& _]
                                      (record! :run-agent!)
