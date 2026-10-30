@@ -1,0 +1,259 @@
+"""SFW fixtures: no network, provider, live Notes, credentials or real recipients."""
+import asyncio
+import ast
+import base64
+import importlib.util
+import json
+import logging
+import sys
+import tempfile
+import types
+import unittest
+from pathlib import Path
+from types import SimpleNamespace as NS
+from unittest.mock import patch
+
+import boxp_task_board_delivery as delivery
+
+EVENT = "BOXP-999-20261030T120000Z-00000000-0000-0000-0000-000000000000-review"
+RUN = "20261030T120000Z-00000000-0000-0000-0000-000000000000"
+CHAT = "webhook:v2:" + base64.urlsafe_b64encode(json.dumps(["default", "task-board", EVENT]).encode()).decode().rstrip("=")
+
+
+class Fixtures(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.vault = Path(self.tmp.name) / "Tickets"
+        self.vault.mkdir()
+        self.root = Path(self.tmp.name) / "receipts"
+        self.source = NS(platform=NS(value="webhook"), chat_id=CHAT)
+        self.calls = []
+        self.fail = False
+        self.pause = False
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+
+        async def send(destination, chat, text):
+            self.calls.append(text)
+            if self.fail:
+                raise RuntimeError("private fixture error must never be persisted")
+            if self.pause:
+                self.started.set()
+                await self.release.wait()
+            return NS(success=True)
+
+        self.adapter = NS(_deliver_to=send)
+        base = types.ModuleType("gateway.platforms.base")
+        base.SendResult = lambda success, error=None: NS(success=success, error=error)
+        retained = types.ModuleType("gateway.platforms.webhook_delivery")
+        retained.retained_destination = lambda adapter, chat: {"deliver": "fixture"}
+        filters = types.ModuleType("gateway.response_filters")
+        filters.is_intentional_silence_response = lambda text: text.strip() in {"[SILENT]", "NO_REPLY"}
+        filters.is_autonomous_silence_response = lambda text: any(m in text for m in ["NO_REPLY", "[SILENT]"])
+        self.addCleanup(patch.stopall)
+        patch.dict(sys.modules, {"gateway.platforms.base": base,
+                                "gateway.platforms.webhook_delivery": retained,
+                                "gateway.response_filters": filters}).start()
+
+    def note(self, result, event=EVENT):
+        with (self.vault / "BOXP-999.md").open("a") as stream:
+            stream.write(f"- 2026-10-30 12:00:00 UTC [kohako-event]: [kohako-event] handled event={event} run={RUN} result={result} summary=SFW fixture\n")
+
+    async def send(self, text):
+        return await delivery.send_once(self.adapter, CHAT, text, metadata={"_boxp_task_board_final": True},
+                                        root=self.root, vault=self.vault)
+
+    def shape(self, text, *, marker=False, failed=False):
+        return delivery.shape(self.source, {"failed": failed}, text, marker, self.vault)
+
+    async def test_success_and_question_preserve_report_and_deduplicate(self):
+        for result in ["notified", "question"]:
+            with self.subTest(result=result):
+                (self.vault / "BOXP-999.md").unlink(missing_ok=True)
+                self.note(result)
+                self.root = Path(self.tmp.name) / result
+                text = "【Task Board 通知】SFW fixture"
+                self.assertEqual(self.shape(text), (text, False))
+                self.assertTrue((await self.send(text)).success)
+                self.assertTrue((await self.send(text)).success)
+                self.assertEqual(self.calls[-1], text)
+        self.assertEqual(len(self.calls), 2)
+
+    async def test_proven_silent_has_no_warning_or_egress(self):
+        self.note("silent")
+        self.assertEqual(self.shape("[SILENT]", marker=True), ("[SILENT]", True))
+        self.assertTrue((await self.send("NO_REPLY")).success)
+        self.assertFalse(self.calls)
+
+    async def test_silence_without_evidence_alerts_once(self):
+        text, silent = self.shape("[SILENT]", marker=True)
+        self.assertFalse(silent)
+        self.assertIn("reason=missing_reply", text)
+        await self.send(text)
+        await self.send(text)
+        self.assertEqual(len(self.calls), 1)
+        receipt = json.loads(next(self.root.glob("*.json")).read_text())
+        self.assertEqual(receipt["classification"], "unresolved")
+        self.assertEqual(receipt["state"], "sent")  # notice delivered; business outcome unresolved
+        self.assertEqual(set(receipt), {"event", "classification", "state", "updated_at"})
+
+    async def test_notified_but_missing_reply_is_not_silence(self):
+        self.note("notified")
+        text, silent = self.shape("NO_REPLY", marker=True)
+        self.assertFalse(silent)
+        self.assertIn("missing_reply", text)
+
+    async def test_marker_plus_report_is_preserved_even_with_silent_receipt(self):
+        self.note("silent")
+        for text in ["NO_REPLY\nSFW report", "SFW report\n[SILENT]"]:
+            with self.subTest(text=text):
+                self.root = Path(self.tmp.name) / str(len(self.calls))
+                self.assertEqual(self.shape(text), (text, False))
+                await self.send(text)
+                self.assertIn(text, self.calls[-1])
+                self.assertIn("missing_or_conflicting_receipt", self.calls[-1])
+
+    async def test_empty_and_failed_never_gain_silence(self):
+        self.note("silent")
+        for text, failed in [("", False), ("(empty)", False), ("NO_REPLY", True)]:
+            shaped, silent = self.shape(text, marker=text == "NO_REPLY", failed=failed)
+            self.assertFalse(silent)
+            self.assertTrue(shaped.startswith(delivery.NOTICE))
+            self.assertIn(EVENT, shaped)
+
+    async def test_partial_failed_work_report_is_preserved(self):
+        text = "SFW step A completed; step B failed"
+        shaped, silent = self.shape(text, failed=True)
+        self.assertFalse(silent)
+        self.assertIn(text, shaped)
+        self.assertIn("agent_failed", shaped)
+        await self.send(shaped)
+        self.assertEqual(self.calls, [shaped])
+
+    async def test_installed_adapter_marks_final_and_logs_undelivered_exception(self):
+        installed = Path("/opt/hermes/gateway/platforms/webhook.py")
+        if not installed.exists():
+            self.skipTest("integration runs inside the built Hermes image")
+        tree = ast.parse(installed.read_text())
+        names = {"_send_final_text", "_notify_turn_error"}
+        methods = [node for cls in tree.body if isinstance(cls, ast.ClassDef)
+                   for node in cls.body if isinstance(node, ast.AsyncFunctionDef) and node.name in names]
+        self.assertEqual({node.name for node in methods}, names)
+
+        class BaseProbe:
+            async def _send_final_text(self, *args):
+                return args[3]
+
+        logger = logging.getLogger("boxp.fixture")
+        namespace = {"BaseProbe": BaseProbe, "logger": logger}
+        cls = ast.ClassDef(name="Probe", bases=[ast.Name(id="BaseProbe", ctx=ast.Load())],
+                           keywords=[], body=methods, decorator_list=[])
+        code = ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[]))
+        exec(compile(code, "installed_adapter_fixture", "exec"), namespace)
+        probe = namespace["Probe"]()
+        final_meta = await probe._send_final_text(None, "fixture", "report", {"thread_id": "fixture"}, False, 0, None)
+        self.assertTrue(final_meta["_boxp_task_board_final"])
+        self.assertEqual(final_meta["thread_id"], "fixture")
+
+        async def failed_send(*args, **kwargs):
+            return NS(success=False)
+
+        probe.send = failed_send
+        with patch.dict(sys.modules, {"gateway.boxp_task_board_delivery": delivery}):
+            with self.assertLogs(logger, level="WARNING") as logs:
+                await probe._notify_turn_error(NS(source=self.source), RuntimeError("private fixture error"))
+        self.assertIn(EVENT, logs.output[0])
+        self.assertIn("recovery=reconcile_receipt_and_destination", logs.output[0])
+        self.assertNotIn("private fixture", logs.output[0])
+
+    async def test_crash_left_marker_uses_same_receipt_evidence(self):
+        self.assertIn("missing_reply", delivery.recovered_marker(self.source, "NO_REPLY", self.vault))
+        self.note("silent")
+        self.assertEqual(delivery.recovered_marker(self.source, "NO_REPLY", self.vault), "")
+        self.source.platform.value = "telegram"
+        self.assertIsNone(delivery.recovered_marker(self.source, "NO_REPLY", self.vault))
+
+    async def test_unknown_report_preserved_with_recovery_metadata(self):
+        await self.send("SFW work report")
+        self.assertIn("SFW work report", self.calls[0])
+        self.assertIn("missing_or_conflicting_receipt", self.calls[0])
+
+    async def test_conflicting_or_other_event_receipts_do_not_authorize_silence(self):
+        self.note("silent", event=EVENT + "-other")
+        self.assertFalse(self.shape("NO_REPLY", marker=True)[1])
+        self.note("silent")
+        self.note("notified")
+        self.assertFalse(self.shape("NO_REPLY", marker=True)[1])
+
+    async def test_exception_and_restart_never_resend_uncertain_egress(self):
+        self.note("question")
+        self.fail = True
+        self.assertFalse((await self.send("SFW question")).success)
+        self.fail = False
+        self.assertFalse((await self.send("SFW question")).success)
+        self.assertEqual(len(self.calls), 1)
+        text = next(self.root.glob("*.json")).read_text()
+        self.assertNotIn("SFW question", text)
+        self.assertNotIn("private fixture", text)
+        self.assertEqual(json.loads(text)["state"], "uncertain")
+
+    async def test_concurrent_delivery_does_not_block_event_loop_or_duplicate(self):
+        self.note("notified")
+        self.pause = True
+        first = asyncio.create_task(self.send("SFW report"))
+        await asyncio.wait_for(self.started.wait(), 1)
+        self.assertFalse((await asyncio.wait_for(self.send("SFW report"), 1)).success)
+        self.release.set()
+        self.assertTrue((await first).success)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_corrupt_storage_fails_closed(self):
+        self.note("notified")
+        await self.send("SFW report")
+        next(self.root.glob("*.json")).write_text("broken")
+        self.assertFalse((await self.send("SFW report")).success)
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_interim_never_consumes_final_receipt(self):
+        self.assertIsNone(await delivery.send_once(self.adapter, CHAT, "SFW progress", metadata={"_interim_send": True},
+                                                   root=self.root, vault=self.vault))
+        self.assertIsNone(await delivery.send_once(self.adapter, CHAT, "SFW progress", root=self.root, vault=self.vault))
+        self.assertFalse(self.root.exists())
+        self.note("notified")
+        self.assertTrue((await self.send("SFW final report")).success)
+        self.assertEqual(self.calls, ["SFW final report"])
+
+    async def test_destination_exception_is_failure_without_egress(self):
+        def missing(adapter, chat):
+            raise RuntimeError("fixture authorization revoked")
+        with patch.object(sys.modules["gateway.platforms.webhook_delivery"], "retained_destination", missing):
+            result = await self.send("SFW report")
+        self.assertFalse(result.success)
+        self.assertIn(EVENT, result.error)
+        self.assertFalse(self.calls)
+
+    async def test_human_and_other_webhooks_keep_existing_behavior(self):
+        self.source.platform.value = "telegram"
+        self.assertEqual(self.shape("NO_REPLY", marker=True), ("NO_REPLY", False))
+        self.assertIsNone(await delivery.send_once(self.adapter, "webhook:other:" + EVENT, "NO_REPLY"))
+        self.assertIsNone(delivery.identity("webhook:task-board:../../secrets"))
+
+
+class PatchBuild(unittest.TestCase):
+    def test_patch_anchor_mismatch_never_changes_files(self):
+        spec = importlib.util.spec_from_file_location("patch_delivery", Path(__file__).with_name("fix-task-board-delivery.py"))
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "gateway/run_turn_persistence.py"
+            path.parent.mkdir()
+            path.write_text("# changed upstream\n")
+            with self.assertRaises(RuntimeError):
+                module.main(root)
+            self.assertEqual(path.read_text(), "# changed upstream\n")
+
+
+if __name__ == "__main__":
+    unittest.main()
