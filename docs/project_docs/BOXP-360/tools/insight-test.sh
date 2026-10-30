@@ -74,3 +74,9 @@ check "先頭 run の review-fix も v1 で review_fix (agent-system・Owner 可
   '(and (= 1 (get-in r [:transitions :v1 "review_fix"])) (= 1 (get-in r [:transitions :v0->v1 ["correction" "review_fix"]])) (= 1 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])))' "$t2/r.edn"
 check "後続 run 未開始の最新 gate 失敗も内部再作業と agent-system task 率に入る (pending 別掲)" \
   '(and (= 11 (get-in r [:gate-rework :total])) (= 1 (get-in r [:gate-rework :pending])) (= 1 (get-in r [:gate-rework :top-tasks 1 1])) (= 2 (get-in r [:task-rates :v1-agent-system-tasks :n])) (= 3 (get-in r [:task-rates :denominator-reached-review])))' "$t2/r.edn"
+# BOXP-906: gate 失敗 (retrying, :result "review") だけで Review に未到達
+ROOT=$t2 run BOXP-906 20261007T000000Z retrying implement review codex-review
+ROOT=$t2 run BOXP-906 20261007T010000Z retrying implement review codex-review
+bb ai_ops_insight.bb report "$t2" >"$t2/r2.edn"
+check "gate 失敗の retrying だけの task は Review 到達の分母に入れない (gate_rework には計上)" \
+  '(and (= 3 (get-in r [:task-rates :denominator-reached-review])) (= 2 (get-in r [:task-rates :v1-agent-system-tasks :n])) (= 13 (get-in r [:gate-rework :total])))' "$t2/r2.edn"

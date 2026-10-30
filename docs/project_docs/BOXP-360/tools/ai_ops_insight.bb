@@ -145,7 +145,8 @@
 
 (defn report [runs-by-ticket]
   (let [trs (for [[t runs] runs-by-ticket, tr (transitions runs)] (assoc tr :ticket t))
-        reached-review (set (for [[t runs] runs-by-ticket :when (some #(= "review" (:result %)) runs)] t))
+        ;; Review 到達 = review で正常終了 (succeeded) した run がある task。gate 失敗 (retrying) の run も :result "review" を持つが Owner には届いていない。
+        reached-review (set (for [[t runs] runs-by-ticket :when (some #(and (= "succeeded" (:status %)) (= "review" (:result %))) runs)] t))
         tasks-with (fn [pred] (set (keep #(when (pred %) (:ticket %)) trs)))
         v0-tasks (tasks-with :v0)
         ;; gate 失敗は失敗 run 自体を 1 件と数える (後続 run が未開始の最新失敗も含める)。
