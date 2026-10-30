@@ -2499,7 +2499,9 @@
                       diff (git ["diff" "--binary" base])
                       untracked (git ["ls-files" "--others" "--exclude-standard" "-z"])
                       files (remove str/blank? (str/split (:out untracked) #"\u0000"))
-                      extra (map #(git ["diff" "--no-index" "--binary" "--" "/dev/null" (str (fs/path path %))]) files)]
+                      ;; Repo-relative names so the patch applies in another checkout (git -C
+                      ;; makes them relative to the worktree root).
+                      extra (map #(git ["diff" "--no-index" "--binary" "--" "/dev/null" %]) files)]
                   (when (or (some #(not= 0 (:exit %)) [stat status diff untracked])
                             (some #(not (contains? #{0 1} (:exit %))) extra))
                     (throw (ex-info "Failed to capture workspace diff" {:repo repo})))
@@ -2508,6 +2510,42 @@
                    :patch (str "# Repository: " repo "\n" (:out diff) (apply str (map :out extra)))}))]
     (spit (str patch-path) (apply str (map :patch parts)))
     (mapv #(select-keys % [:repo :stat :status :base :head :committed?]) parts)))
+
+;; Continuation (BOXP-367 codex review): every run starts from a fresh
+;; worktree and the change only lives in the run dir patch, so a later run of
+;; the same ticket (review-fix, retry) first re-applies the latest earlier patch.
+(defn localllm-coder-previous-patch [ticket-id run-id]
+  (let [runs-dir (fs/parent (run-dir ticket-id run-id))]
+    (when (fs/exists? runs-dir)
+      (->> (fs/list-dir runs-dir)
+           (map (comp str fs/file-name))
+           (filter #(neg? (compare % run-id)))
+           sort reverse
+           (some (fn [r] (let [p (fs/path runs-dir r "localllm-coder.patch")]
+                           (when (and (fs/exists? p) (not (str/blank? (slurp (str p)))))
+                             {:run-id r :path (str p)}))))))))
+
+(defn localllm-coder-patch-sections [text]
+  (into {} (for [[_ repo body] (re-seq #"(?ms)^# Repository: ([^\n]+)\n(.*?)(?=^# Repository: |\z)" text)
+                 :when (not (str/blank? body))]
+             [repo body])))
+
+(defn localllm-coder-restore! [workspace previous]
+  (if-not previous
+    {:ok? true}
+    (let [sections (localllm-coder-patch-sections (slurp (:path previous)))
+          paths (into {} (keep (fn [{:keys [repo path]}] (when path [repo path])) (:repo-worktrees workspace)))
+          missing (remove paths (keys sections))
+          failed (when (empty? missing)
+                   (doall (for [[repo body] sections
+                                :let [r @(p/process ["git" "-C" (get paths repo) "apply" "--binary" "--whitespace=nowarn" "-"]
+                                                    {:in body :out :string :err :string})]
+                                :when (not= 0 (:exit r))]
+                            repo)))]
+      (if (or (seq missing) (seq failed))
+        {:ok? false :category "previous-patch-restore-failed" :restored-from (:run-id previous)
+         :repos (vec (concat missing failed))}
+        {:ok? true :restored-from (:run-id previous) :repos (vec (sort (keys sections)))}))))
 
 (defn run-localllm-coder! [ticket-id action lane agent lock]
   (let [run (:run-id lock) dir (run-dir ticket-id run)
@@ -2518,18 +2556,25 @@
         model (env "CODEX_TASK_BOARD_LOCALLLM_CODER_MODEL" "qwen3-coder-next")
         provider (env "CODEX_TASK_BOARD_LOCALLLM_CODER_PROVIDER" "llama.cpp")
         base-url (str/replace (env "CODEX_TASK_BOARD_LOCALLLM_BASE_URL" "http://llama-server.local-llm.svc.cluster.local:8080/v1") #"/+$" "")
-        started-at (now-str) start-ms (System/currentTimeMillis)]
+        started-at (now-str) start-ms (System/currentTimeMillis)
+        ;; HEAD before the restore and pi, so the new patch is cumulative.
+        base-shas (localllm-coder-base-shas workspace)
+        restore (localllm-coder-restore! workspace (localllm-coder-previous-patch ticket-id run))]
     (fs/create-dirs dir)
     (spit (str prompt-path) (str (prompt-for action ticket-id lane workspace agent)
+                                 (when (:restored-from restore)
+                                   (str "\nThe uncommitted changes of the previous run " (:restored-from restore)
+                                        " are already applied in the workspace. Continue from them.\n"))
                                  "\nYou are a local model. Work only inside the workspace repositories. Run relevant tests. Do not git push or commit or create PRs. Do not run codex, claude, delegate.py or any other agent / cloud CLI. End with a TASK_BOARD_RESULT marker.\n"))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at started-at})
-    (let [readback (try
+    (let [readback (if-not (:ok? restore)
+                     restore
+                     (try
                      (let [response @(p/process ["curl" "--fail" "--silent" "--show-error" "--max-time" "10" (str base-url "/models")] {:out :string :err :string})]
                        (if (zero? (:exit response))
                          (localllm-coder-match-model (json/parse-string (:out response) true) model)
                          {:ok? false :category "preflight-request-failed"}))
-                     (catch Exception _ {:ok? false :category "preflight-request-failed"}))
-          base-shas (localllm-coder-base-shas workspace)
+                     (catch Exception _ {:ok? false :category "preflight-request-failed"})))
           execution (if (:ok? readback)
                       (try
                         (let [paths (keep :path (:repo-worktrees workspace))
@@ -2554,7 +2599,7 @@
                          (:last-message parsed))
           diff-stat (localllm-coder-diff! workspace base-shas patch-path)
           finished-at (now-str)
-          evidence {:model model :provider provider :base-url base-url :router-readback readback
+          evidence {:model model :provider provider :base-url base-url :router-readback readback :restore restore
                     :models-seen (:models-seen parsed) :fallback? fallback? :started-at started-at
                     :finished-at finished-at :elapsed-ms (- (System/currentTimeMillis) start-ms)
                     :exit exit :idle-timeout? (boolean (:idle-timeout? execution)) :diff-stat diff-stat
@@ -4713,6 +4758,30 @@
                      text (slurp patch)]
                  [(:committed? stat) (boolean (re-find #"\+b" text)) (boolean (re-find #"new\.txt" text))])
                [true true true]]
+              ["coder patch is repo-relative and restores into a fresh checkout"
+               (let [mk (fn [] (let [repo (str (fs/create-temp-dir))
+                                     git (fn [& args] @(p/process (into ["git" "-C" repo "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))]
+                                 (git "init" "-q")
+                                 (spit (str (fs/path repo "a.txt")) "a\n")
+                                 (git "add" "a.txt")
+                                 (git "commit" "-q" "-m" "init")
+                                 repo))
+                     src (mk) dst (mk)
+                     ws {:repo-worktrees [{:repo "t/r" :path src}]}
+                     bases (localllm-coder-base-shas ws)
+                     _ (spit (str (fs/path src "a.txt")) "b\n")
+                     _ (fs/create-dirs (fs/path src "d"))
+                     _ (spit (str (fs/path src "d" "new.txt")) "n\n")
+                     patch (str (fs/path (fs/create-temp-dir) "localllm-coder.patch"))
+                     _ (localllm-coder-diff! ws bases patch)
+                     text (slurp patch)
+                     restored (localllm-coder-restore! {:repo-worktrees [{:repo "t/r" :path dst}]} {:run-id "r1" :path patch})
+                     other (localllm-coder-restore! {:repo-worktrees [{:repo "t/other" :path dst}]} {:run-id "r1" :path patch})]
+                 [(boolean (re-find #"(?m)^\+\+\+ b/d/new\.txt$" text)) (:ok? restored) (:restored-from restored)
+                  (slurp (str (fs/path dst "a.txt"))) (slurp (str (fs/path dst "d" "new.txt")))
+                  (:category other)])
+               [true true "r1" "b\n" "n\n" "previous-patch-restore-failed"]]
+              ["coder restore without previous patch" (localllm-coder-restore! {:repo-worktrees []} nil) {:ok? true}]
               ["coder env allowlist" (localllm-coder-base-env {"PATH" "/usr/bin" "GH_TOKEN" "x" "AWS_PROFILE" "p" "KUBECONFIG" "k" "HOME" "/home/boxp" "ANTHROPIC_API_KEY" "a"} "/run/h")
                {"PATH" "/usr/bin" "HOME" "/run/h" "PI_OFFLINE" "1" "CODEX_HOME" "/run/h/.codex" "CLAUDE_CONFIG_DIR" "/run/h/.claude"}]
               ["coder events" (localllm-coder-events [(json/generate-string {:type "message_end" :message {:role "assistant" :model "m" :provider "llama.cpp" :content [{:type "text" :text "hello"}]}})
