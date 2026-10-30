@@ -2520,7 +2520,7 @@
       (->> (fs/list-dir runs-dir)
            (map (comp str fs/file-name))
            (filter #(neg? (compare % run-id)))
-           sort reverse
+           (sort #(compare %2 %1))
            (some (fn [r] (let [p (fs/path runs-dir r "localllm-coder.patch")]
                            (when (and (fs/exists? p) (not (str/blank? (slurp (str p)))))
                              {:run-id r :path (str p)}))))))))
