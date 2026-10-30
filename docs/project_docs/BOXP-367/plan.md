@@ -14,6 +14,7 @@
    - 実行前に router の `/v1/models` でその id が提供されているかを確認し、なければ blocked（別 model・cloud へは切り替えない）。
    - 実 model id・router の preset readback・所要時間・exit・diff stat・patch を run dir の `localllm-coder.edn` / `localllm-coder.patch` に残す。
    - push・PR 作成・merge はしない。patch は隔離した worktree と run dir に留め、Review で止める。
+   - 同じチケットで後続の localllm-coder run（review-fix・retry）が起きたら、直前の run の patch を新しい worktree へ `git apply` してから開始する。適用できなければ blocked にし、patch は worktree 相対パスで記録する。
    - 既存の Codex / Claude / localllm docs 経路と全 Board の既定は変えない。
 2. boxp/lolice（別 PR）: Task Board localllm 創作経路の既定を `ornith15-35b-a3b` にする（`CODEX_TASK_BOARD_LOCALLLM_MODEL`）。`CODEX_TASK_BOARD_LOCALLLM_CODER_MODEL=qwen3-coder-next`、pi models.json に `qwen3-coder-next` を追加。rollback は env を外すか `gemma4-26b` に戻す。uncensored 派生は使わない。
 
