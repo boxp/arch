@@ -2536,12 +2536,15 @@
     (let [sections (localllm-coder-patch-sections (slurp (:path previous)))
           paths (into {} (keep (fn [{:keys [repo path]}] (when path [repo path])) (:repo-worktrees workspace)))
           missing (remove paths (keys sections))
+          git-apply (fn [repo body & flags]
+                  (zero? (:exit @(p/process (concat ["git" "-C" (get paths repo) "apply" "--binary" "--whitespace=nowarn"] flags ["-"])
+                                            {:in body :out :string :err :string}))))
+          ;; Check every repo first so a failure leaves no partial restore.
           failed (when (empty? missing)
-                   (doall (for [[repo body] sections
-                                :let [r @(p/process ["git" "-C" (get paths repo) "apply" "--binary" "--whitespace=nowarn" "-"]
-                                                    {:in body :out :string :err :string})]
-                                :when (not= 0 (:exit r))]
-                            repo)))]
+                   (let [bad (vec (remove (fn [[repo body]] (git-apply repo body "--check")) sections))]
+                     (if (seq bad)
+                       (mapv first bad)
+                       (mapv first (remove (fn [[repo body]] (git-apply repo body)) sections)))))]
       (if (or (seq missing) (seq failed))
         {:ok? false :category "previous-patch-restore-failed" :restored-from (:run-id previous)
          :repos (vec (concat missing failed))}
@@ -2597,7 +2600,9 @@
           last-message (if (= "review" result)
                          (str (str/replace (:last-message parsed) #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" "[PR URL omitted]") "\nTASK_BOARD_REVIEW_PR: none\n")
                          (:last-message parsed))
-          diff-stat (localllm-coder-diff! workspace base-shas patch-path)
+          ;; No patch when the restore failed, so the next run still picks the
+          ;; earlier complete patch instead of this run's partial state.
+          diff-stat (when (:ok? restore) (localllm-coder-diff! workspace base-shas patch-path))
           finished-at (now-str)
           evidence {:model model :provider provider :base-url base-url :router-readback readback :restore restore
                     :models-seen (:models-seen parsed) :fallback? fallback? :started-at started-at
@@ -4781,6 +4786,21 @@
                   (slurp (str (fs/path dst "a.txt"))) (slurp (str (fs/path dst "d" "new.txt")))
                   (:category other)])
                [true true "r1" "b\n" "n\n" "previous-patch-restore-failed"]]
+              ["coder restore checks every repo before applying"
+               (let [mk (fn [content] (let [repo (str (fs/create-temp-dir))
+                                            git (fn [& args] @(p/process (into ["git" "-C" repo "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))]
+                                        (git "init" "-q")
+                                        (spit (str (fs/path repo "a.txt")) content)
+                                        (git "add" "a.txt")
+                                        (git "commit" "-q" "-m" "init")
+                                        repo))
+                     ok (mk "a\n") conflict (mk "z\n")
+                     body "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
+                     patch (str (fs/path (fs/create-temp-dir) "localllm-coder.patch"))
+                     _ (spit patch (str "# Repository: t/ok\n" body "# Repository: t/conflict\n" body))
+                     r (localllm-coder-restore! {:repo-worktrees [{:repo "t/ok" :path ok} {:repo "t/conflict" :path conflict}]} {:run-id "r1" :path patch})]
+                 [(:ok? r) (:repos r) (slurp (str (fs/path ok "a.txt")))])
+               [false ["t/conflict"] "a\n"]]
               ["coder restore without previous patch" (localllm-coder-restore! {:repo-worktrees []} nil) {:ok? true}]
               ["coder env allowlist" (localllm-coder-base-env {"PATH" "/usr/bin" "GH_TOKEN" "x" "AWS_PROFILE" "p" "KUBECONFIG" "k" "HOME" "/home/boxp" "ANTHROPIC_API_KEY" "a"} "/run/h")
                {"PATH" "/usr/bin" "HOME" "/run/h" "PI_OFFLINE" "1" "CODEX_HOME" "/run/h/.codex" "CLAUDE_CONFIG_DIR" "/run/h/.claude"}]
