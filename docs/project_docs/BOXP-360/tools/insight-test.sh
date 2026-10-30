@@ -219,6 +219,43 @@ bb ai_ops_insight.bb report "$t10" 20261017T000000Z "$t10/vault" >"$t10/r.edn"
 check "code block 内の ## Notes を節開始とせず、実際の Notes 節を読む" \
   '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t10/r.edn"
 
+# 種類の異なる fence (~~~ block 内の ```) で block を閉じたとみなさない
+t11="$tmp/t11"; mkdir -p "$t11/vault/Tickets"
+ROOT=$t11 run BOXP-919 20261016T000000Z succeeded implement review
+ROOT=$t11 run BOXP-919 20261016T060000Z succeeded implement review
+cat >"$t11/vault/Tickets/BOXP-919.md" <<'MD'
+## Notes
+~~~
+```
+- 2026-10-16 04:00:00 UTC [hermes-agent]: fake note in tilde block
+## Plan
+~~~
+- 2026-10-16 05:30:00 UTC [kohako-supervisor]: real note
+MD
+bb ai_ops_insight.bb report "$t11" 20261017T000000Z "$t11/vault" >"$t11/r.edn"
+check "~~~ block 内の \`\`\` で閉じず、対応する閉じフェンス後の契機を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t11/r.edn"
+
+# Review 終了と同じ秒の契機 note は前後不明 (ambiguous-same-second) として別掲し、none-observed にしない
+t12="$tmp/t12"; mkdir -p "$t12/vault/Tickets"
+ROOT=$t12 run BOXP-920 20261016T000000Z succeeded implement review
+ROOT=$t12 run BOXP-920 20261016T060000Z succeeded implement review
+ROOT=$t12 run BOXP-921 20261016T000000Z succeeded implement review
+ROOT=$t12 run BOXP-921 20261016T060000Z succeeded implement review
+sec="2026-10-16 00:00:00" # run() の finished-at は run-id と同じ秒
+cat >"$t12/vault/Tickets/BOXP-920.md" <<MD
+## Notes
+- $sec UTC [kohako-supervisor]: same second
+MD
+cat >"$t12/vault/Tickets/BOXP-921.md" <<MD
+## Notes
+- $sec UTC [hermes-agent]: same second
+- 2026-10-16 05:00:00 UTC [kohako-supervisor]: definitely after
+MD
+bb ai_ops_insight.bb report "$t12" 20261017T000000Z "$t12/vault" >"$t12/r.edn"
+check "同秒の契機のみは ambiguous-same-second、後に確実な契機があればそちらで分類" \
+  '(let [rr (:review-resume r)] (and (= 1 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "none-observed"])) (= 2 (:same-second-boundary rr))))' "$t12/r.edn"
+
 # 存在するが読めない Tickets ディレクトリは exit 2
 chmod 000 "$t9/vault/Tickets"
 if [ -r "$t9/vault/Tickets" ]; then

@@ -36,16 +36,24 @@
 
 (defn notes-lines
   "`## Notes` 見出しから次の `## ` 見出しまでの行だけを返す (fenced code block 内の行は除く)。
-  節の開始・終端とも fence の外にある見出しだけを見る (code block 内の `## Notes` / `## ` 行は無視)。"
+  節の開始・終端とも fence の外にある見出しだけを見る (code block 内の `## Notes` / `## ` 行は無視)。
+  開いた fence の文字種と長さを覚え、同じ文字種で同じ長さ以上の fence 行 (info string なし) だけで閉じる
+  (`~~~` block 内の ``` は閉じとみなさない)。"
   [lines]
   (loop [[line & more :as ls] lines
-         started? false fence? false acc []]
-    (cond (empty? ls) acc
-          (re-find #"^\s*(```|~~~)" line) (recur more started? (not fence?) acc)
-          fence? (recur more started? fence? acc)
-          (not started?) (recur more (boolean (re-matches #"^## Notes\s*$" line)) false acc)
-          (re-matches #"^## .*" line) acc
-          :else (recur more true fence? (conj acc line)))))
+         started? false fence nil acc []]
+    (if (empty? ls)
+      acc
+      (let [[_ marker info] (re-find #"^\s{0,3}(`{3,}|~{3,})(.*)$" line)]
+        (cond fence (recur more started?
+                           (when-not (and marker (= (first marker) (:ch fence)) (>= (count marker) (:len fence))
+                                          (re-matches #"\s*" info))
+                             fence)
+                           acc)
+              marker (recur more started? {:ch (first marker) :len (count marker)} acc)
+              (not started?) (recur more (boolean (re-matches #"^## Notes\s*$" line)) nil acc)
+              (re-matches #"^## .*" line) acc
+              :else (recur more true nil (conj acc line)))))))
 
 (defn read-note-triggers
   "ticket file の Notes 節から再開契機の候補 (時刻と種別だけ) を返す。行の残りは捨てる。
@@ -292,13 +300,18 @@
                      :let [from (instant (:finished-at prev))
                            to (when cur (or (instant (:started-at cur)) (run-id->instant (:run-id cur))))
                            end (or to until-at)
-                           in (when from
-                                (filter #(and (pos? (compare (:at %) from)) (or (nil? end) (not (pos? (compare (:at %) end)))))
-                                        (when-not (unreadable? t) (get triggers t))))
+                           ;; note 時刻は秒単位。prev 終了と同じ秒の note は前後を判定できないため、確実に後の note とは分ける
+                           from-sec (when from (.truncatedTo from java.time.temporal.ChronoUnit/SECONDS))
+                           within-end? #(or (nil? end) (not (pos? (compare (:at %) end))))
+                           ts (when-not (unreadable? t) (get triggers t))
+                           in (when from (filter #(and (pos? (compare (:at %) from-sec)) (within-end? %)) ts))
+                           same-sec (when from (filter #(and (= (:at %) from-sec) (within-end? %)) ts))
                            last-trigger (last (sort-by :at in))]]
                  {:ticket t :followed? (some? cur) :time-known? (some? from)
                   :next (when cur (classify-v1 prev cur))
-                  :trigger (cond (unreadable? t) "unknown-unreadable" (nil? from) "unknown-time" last-trigger (:kind last-trigger) :else "none-observed")
+                  :same-second? (boolean (seq same-sec))
+                  :trigger (cond (unreadable? t) "unknown-unreadable" (nil? from) "unknown-time" last-trigger (:kind last-trigger)
+                                 (seq same-sec) "ambiguous-same-second" :else "none-observed")
                   :nudges (count (filter #(= "supervisor" (:kind %)) in))
                   :ack-min (when (and to last-trigger) (/ (.toSeconds (java.time.Duration/between (:at last-trigger) to)) 60.0))})
         followed (filter :followed? stalls)
@@ -308,6 +321,9 @@
                                   :ack-p50-min (quantile (acks xs) 0.5) :ack-p90-min (quantile (acks xs) 0.9)}]))]
     {:definition "review で正常終了した run の後、次 run 開始までの最後の契機 note (Notes 見出しの source のみ) で再開契機を分類"
      :unreadable-tickets (count (filter unreadable? (keys runs-by-ticket)))
+     ;; 同秒の契機 note だけがある停止は ambiguous-same-second (none-observed にも契機ありにも入れない)。
+     ;; 後に確実な契機 note もある停止は そちらで分類し、ここで件数だけ示す
+     :same-second-boundary (count (filter :same-second? stalls))
      :review-finishes (count stalls) :followed (count followed)
      :by-trigger by-trigger
      :by-trigger-next (frequencies (map (juxt :trigger :next) followed))
