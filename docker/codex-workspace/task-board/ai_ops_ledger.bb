@@ -39,9 +39,9 @@
   {:schema_version #{schema-version}
    :source #{"task-board-runner"}
    :event_type #{"run.started" "run.finished" "run.interrupted" "lane.changed" "correction"}
-   :runtime #{"codex-cli" "claude-cli" "localllm" "unknown"}
+   :runtime #{"codex-cli" "claude-cli" "localllm" "localllm-coder" "unknown"}
    :agent #{"codex" "codex-terra" "codex-sol" "codex-full" "codex-mini" "codex-astra"
-            "claude-fable" "claude-opus" "claude-sonnet" "fable" "localllm"}
+            "claude-fable" "claude-opus" "claude-sonnet" "fable" "localllm" "localllm-coder"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
    :status #{"succeeded" "retrying" "blocked" "interrupted" "failed" "running" "superseded"}
    :result #{"review" "blocked" "done" "ready"}
