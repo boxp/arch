@@ -35,18 +35,17 @@
 (def note-header #"^- (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC \[([a-z][a-z0-9-]{0,40})\]:.*")
 
 (defn notes-lines
-  "`## Notes` 見出しから次の `## ` 見出しまでの行だけを返す (fenced code block 内の行は除く)。"
+  "`## Notes` 見出しから次の `## ` 見出しまでの行だけを返す (fenced code block 内の行は除く)。
+  code block 内の `## ` 行は節の終端とみなさない。"
   [lines]
-  (->> lines
-       (drop-while #(not (re-matches #"^## Notes\s*$" %)))
-       rest
-       (take-while #(not (re-matches #"^## .*" %)))
-       (reduce (fn [[acc fence?] line]
-                 (cond (re-find #"^\s*(```|~~~)" line) [acc (not fence?)]
-                       fence? [acc fence?]
-                       :else [(conj acc line) fence?]))
-               [[] false])
-       first))
+  (loop [[line & more :as ls] (drop-while #(not (re-matches #"^## Notes\s*$" %)) lines)
+         started? false fence? false acc []]
+    (cond (empty? ls) acc
+          (not started?) (recur more true false acc)
+          (re-find #"^\s*(```|~~~)" line) (recur more true (not fence?) acc)
+          fence? (recur more true fence? acc)
+          (re-matches #"^## .*" line) acc
+          :else (recur more true fence? (conj acc line)))))
 
 (defn read-note-triggers
   "ticket file の Notes 節から再開契機の候補 (時刻と種別だけ) を返す。行の残りは捨てる。
@@ -327,7 +326,9 @@
                (when (empty? runs)
                  (binding [*out* *err*] (println "no runs found under" root))
                  (System/exit 2))
-               (when (and vault (not (fs/directory? (fs/path vault "Tickets"))))
+               (when (and vault (let [d (fs/path vault "Tickets")]
+                                   (not (and (fs/directory? d) (fs/readable? d) (fs/executable? d)
+                                             (try (fs/list-dir d) true (catch Exception _ false))))))
                  (binding [*out* *err*] (println "vault Tickets dir not readable:" vault))
                  (System/exit 2))
                (prn (report runs

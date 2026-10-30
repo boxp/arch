@@ -184,3 +184,31 @@ chmod 600 "$t8/vault/Tickets/BOXP-916.md"
 check "無い/読めない ticket は unknown-unreadable として別掲し none-observed にしない" \
   '(and (= 2 (get-in r [:review-resume :unreadable-tickets])) (= 2 (get-in r [:review-resume :by-trigger "unknown-unreadable" :n])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t8/r.edn"
 if bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/no-such-vault" >/dev/null 2>&1; then echo "not ok - 存在しない vault で成功した"; exit 1; else echo "ok - 存在しない vault は exit 非0"; fi
+
+# Notes 内の code block にある `## ` 行で節を終えない (閉じフェンス以降の契機 note も読む)
+t9="$tmp/t9"; mkdir -p "$t9/vault/Tickets"
+ROOT=$t9 run BOXP-917 20261016T000000Z succeeded implement review
+ROOT=$t9 run BOXP-917 20261016T060000Z succeeded implement review
+cat >"$t9/vault/Tickets/BOXP-917.md" <<'MD'
+## Notes
+```
+## Plan
+```
+- 2026-10-16 05:00:00 UTC [kohako-supervisor]: after code block
+## Plan
+- 2026-10-16 05:30:00 UTC [hermes-agent]: outside notes
+MD
+bb ai_ops_insight.bb report "$t9" 20261017T000000Z "$t9/vault" >"$t9/r.edn"
+check "Notes 内 code block の見出しで節を終えず、閉じフェンス後の契機を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t9/r.edn"
+
+# 存在するが読めない Tickets ディレクトリは exit 2
+chmod 000 "$t9/vault/Tickets"
+if [ -r "$t9/vault/Tickets" ]; then
+  echo "ok - (skip) 権限で読めなくできない環境"
+else
+  set +e; bb ai_ops_insight.bb report "$t9" 20261017T000000Z "$t9/vault" >/dev/null 2>&1; rc=$?; set -e
+  chmod 700 "$t9/vault/Tickets"
+  if [ "$rc" = 2 ]; then echo "ok - 読めない Tickets ディレクトリは exit 2"; else echo "not ok - 読めない Tickets ディレクトリで exit $rc"; exit 1; fi
+fi
+chmod 700 "$t9/vault/Tickets"
