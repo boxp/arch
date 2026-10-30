@@ -2515,6 +2515,27 @@
     (spit (str patch-path) (apply str (map :patch parts)))
     (mapv #(select-keys % [:repo :stat :status :base :head :committed?]) parts)))
 
+;; After the patch is saved the worktree goes back to its base SHA (codex
+;; review P2): the patch in the run dir is the artifact, and a dirty checkout or
+;; an unpushed model commit in the HEAD reflog would make the workspace pruner
+;; hold the run workspace forever. Only this worktree's HEAD reflog and its
+;; per-run branch reflog are truncated (`git log -g HEAD` falls back to the
+;; branch reflog; `reflog expire --all` would touch the shared repo's refs).
+(defn localllm-coder-reset! [workspace base-shas]
+  (vec (for [{:keys [repo path]} (:repo-worktrees workspace) :when path
+             :let [git (fn [& args] @(p/process (into ["git" "-C" path] args) {:out :string :err :string}))
+                   base (get base-shas path "HEAD")
+                   steps [(git "reset" "-q" "--hard" base) (git "clean" "-q" "-fd")]
+                   branch (str/trim (:out (git "symbolic-ref" "-q" "HEAD")))
+                   logs (cons "logs/HEAD" (when-not (str/blank? branch) [(str "logs/" branch)]))
+                   truncated? (every? (fn [log]
+                                        (let [r (git "rev-parse" "--path-format=absolute" "--git-path" log)
+                                              f (str/trim (:out r))]
+                                          (and (zero? (:exit r))
+                                               (try (when (fs/exists? f) (spit f "")) true (catch Exception _ false)))))
+                                      logs)]]
+         {:repo repo :ok? (and truncated? (every? #(zero? (:exit %)) steps))})))
+
 ;; Continuation (BOXP-367 codex review): every run starts from a fresh
 ;; worktree and the change only lives in the run dir patch, so a later run of
 ;; the same ticket (review-fix, retry) first re-applies the latest earlier patch.
@@ -2641,11 +2662,12 @@
           ;; No patch when the restore failed, so the next run still picks the
           ;; earlier complete patch instead of this run's partial state.
           diff-stat (when (:ok? restore) (localllm-coder-diff! workspace base-shas patch-path))
+          cleanup (when diff-stat (localllm-coder-reset! workspace base-shas))
           finished-at (now-str)
           evidence {:model model :provider provider :base-url base-url :router-readback readback :restore restore
                     :models-seen (:models-seen parsed) :fallback? fallback? :started-at started-at
                     :finished-at finished-at :elapsed-ms (- (System/currentTimeMillis) start-ms)
-                    :exit exit :idle-timeout? (boolean (:idle-timeout? execution)) :diff-stat diff-stat
+                    :exit exit :idle-timeout? (boolean (:idle-timeout? execution)) :diff-stat diff-stat :cleanup cleanup
                     :patch-path (str patch-path) :result result}]
       (spit (str last-path) last-message)
       (spit (str (fs/path dir "localllm-coder.edn")) (pr-str evidence))
@@ -4860,6 +4882,26 @@
                    (fs/create-dirs (run-dir "T-1" "20261030T000000Z-1111"))
                    (:run-id (localllm-coder-previous-patch "T-1" "20261030T000000Z-1111"))))
                "20261030T000000Z-0000"]
+              ["coder reset after patch leaves a clean checkout"
+               (let [repo (str (fs/create-temp-dir))
+                     git (fn [& args] @(p/process (into ["git" "-C" repo "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))
+                     _ (git "init" "-q")
+                     _ (spit (str (fs/path repo "a.txt")) "a\n")
+                     _ (git "add" "a.txt")
+                     _ (git "commit" "-q" "-m" "init")
+                     ws {:repo-worktrees [{:repo "t/r" :path repo}]}
+                     bases (localllm-coder-base-shas ws)
+                     _ (spit (str (fs/path repo "a.txt")) "b\n")
+                     _ (git "commit" "-qam" "model commit")
+                     model-sha (str/trim (:out (git "rev-parse" "HEAD")))
+                     _ (spit (str (fs/path repo "new.txt")) "n\n")
+                     patch (str (fs/path (fs/create-temp-dir) "localllm-coder.patch"))
+                     _ (localllm-coder-diff! ws bases patch)
+                     r (localllm-coder-reset! ws bases)]
+                 [r (:out (git "status" "--porcelain")) (= (get bases repo) (str/trim (:out (git "rev-parse" "HEAD"))))
+                  (str/includes? (:out (git "log" "-g" "--format=%H" "HEAD")) model-sha)
+                  (boolean (re-find #"\+b" (slurp patch)))])
+               [[{:repo "t/r" :ok? true}] "" true false true]]
               ["coder restore without previous patch" (localllm-coder-restore! {:repo-worktrees []} nil) {:ok? true}]
               ["coder env allowlist" (localllm-coder-base-env {"PATH" "/usr/bin" "GH_TOKEN" "x" "AWS_PROFILE" "p" "KUBECONFIG" "k" "HOME" "/home/boxp" "ANTHROPIC_API_KEY" "a"} "/run/h")
                {"PATH" "/usr/bin" "HOME" "/run/h" "PI_OFFLINE" "1" "CODEX_HOME" "/run/h/.codex" "CLAUDE_CONFIG_DIR" "/run/h/.claude"}]
