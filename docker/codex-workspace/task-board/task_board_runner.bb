@@ -2600,11 +2600,13 @@
   (let [results (vec (for [{:keys [repo path]} (:repo-worktrees workspace) :when path]
                        (let [git (fn [& args] @(p/process (into ["git" "-C" path] args) {:out :string :err :string}))
                              fetch (git "fetch" "--quiet" "origin")
-                             head (str/trim (:out (git "symbolic-ref" "-q" "refs/remotes/origin/HEAD")))
-                             ref (if (str/blank? head) "refs/remotes/origin/main" head)
-                             reset (when (zero? (:exit fetch)) (git "reset" "--hard" "--quiet" ref))]
+                             ;; fetch does not move origin/HEAD (codex review): ask the remote.
+                             set-head (when (zero? (:exit fetch)) (git "remote" "set-head" "origin" "--auto"))
+                             ref (when (and set-head (zero? (:exit set-head)))
+                                   (not-empty (str/trim (:out (git "symbolic-ref" "-q" "refs/remotes/origin/HEAD")))))
+                             reset (when ref (git "reset" "--hard" "--quiet" ref))]
                          {:repo repo :ref ref
-                          :ok? (boolean (and (zero? (:exit fetch)) reset (zero? (:exit reset))))
+                          :ok? (boolean (and reset (zero? (:exit reset))))
                           :head (when (and reset (zero? (:exit reset))) (str/trim (:out (git "rev-parse" "HEAD"))))})))
         failed (vec (keep #(when-not (:ok? %) (:repo %)) results))]
     (if (seq failed)
@@ -4894,6 +4896,8 @@
                      _ (spit (str (fs/path origin "a.txt")) "old\n")
                      _ (git origin "add" "a.txt") _ (git origin "commit" "-q" "-m" "old")
                      _ (git work "clone" "-q" origin ".")
+                     ;; the remote default branch moves to trunk after the clone
+                     _ (git origin "checkout" "-q" "-b" "trunk")
                      _ (spit (str (fs/path origin "a.txt")) "new\n")
                      _ (git origin "commit" "-q" "-am" "new")
                      tip (str/trim (:out (git origin "rev-parse" "HEAD")))
