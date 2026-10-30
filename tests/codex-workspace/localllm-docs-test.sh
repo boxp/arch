@@ -3496,7 +3496,26 @@ test_canon_amend_card_back_in_backlog_is_regroomed_by_content_search() {
   assert_file_contains "${VAULT}/Tickets/BOXP-881.md" 'CODEX_TASK_BOARD_LOCALLLM_CANON_ROOTS が設定された runner でだけ'
 }
 
+# BOXP-367: Ornith 1.5 asks to read a corpus note by its wikilink form (no
+# `.md`). The same corpus note is read; a path outside the corpus stays refused.
+test_corpus_read_accepts_the_wikilink_form_of_a_corpus_note() {
+  local out
+  out="$(bb -e "
+(load-file \"${DOCS_MODULE}\")
+(let [notes [{:rel \"Verse/キャラ設定/研究者.md\" :text \"# 研究者\\n\\n本文 READ-OK\" :headings [\"# 研究者\"]}]
+      cfg {:read-max-chars 2000}
+      bare (localllm-docs/read-corpus-section cfg notes \"Verse/キャラ設定/研究者\" \"\")
+      full (localllm-docs/read-corpus-section cfg notes \"Verse/キャラ設定/研究者.md\" \"\")
+      other (localllm-docs/read-corpus-section cfg notes \"Verse/キャラ設定/別人\" \"\")]
+  (prn {:bare-ok? (:ok? bare) :bare-key (:key bare) :bare-body? (clojure.string/includes? (str (:text bare)) \"READ-OK\")
+        :full-ok? (:ok? full) :other-ok? (:ok? other)}))
+" 2>&1)"
+  [[ "${out}" == *':bare-ok? true'* && "${out}" == *':bare-key "Verse/キャラ設定/研究者.md"'* && "${out}" == *':bare-body? true'* ]] || fail "a corpus note named without .md must be read as that note: ${out}"
+  [[ "${out}" == *':full-ok? true'* && "${out}" == *':other-ok? false'* ]] || fail "the .md path still reads and a note outside the corpus stays refused: ${out}"
+}
+
 for t in \
+  test_corpus_read_accepts_the_wikilink_form_of_a_corpus_note \
   test_legacy_markers_are_migrated_once_and_safely \
   test_canon_select_grooms_by_content_then_amends_and_revises_in_place \
   test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings \
