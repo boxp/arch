@@ -9,9 +9,11 @@
 ;;   :status :action :result :blocker-category :started-at :finished-at :agent
 ;;   :review-gate の :gate / :diagnostic :category
 ;; prompt / last-message / events.jsonl は読まない。
-;; vault を与えた場合だけ、Tickets/BOXP-<n>.md の各行を正規表現
+;; vault を与えた場合だけ、Tickets/BOXP-<n>.md の `## Notes` 節 (次の `## ` 見出しまで、code block 内を除く) の各行を正規表現
 ;;   ^- YYYY-MM-DD HH:MM:SS UTC [<source>]:
 ;; と照合し、一致した行の「時刻」と「source (下の allowlist の語彙)」だけを残す。本文・タイトル・その他の行は保持も出力もしない。
+;; ticket file が無い/読めない ticket は trigger=unknown-unreadable として別掲し、観測なし (none-observed) にしない。
+;; vault/Tickets が読めなければ exit 2。
 ;; 公開中の SLI (ai_ops_sli.bb, correction-rules/v0) は変更しない。v1 は版を分けて並べて比較する。
 ;; until-run-id を与えると、その run-id 以下の run だけを使う (固定 snapshot で再現するため)。
 (ns ai-ops-insight
@@ -32,25 +34,41 @@
 
 (def note-header #"^- (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC \[([a-z][a-z0-9-]{0,40})\]:.*")
 
+(defn notes-lines
+  "`## Notes` 見出しから次の `## ` 見出しまでの行だけを返す (fenced code block 内の行は除く)。"
+  [lines]
+  (->> lines
+       (drop-while #(not (re-matches #"^## Notes\s*$" %)))
+       rest
+       (take-while #(not (re-matches #"^## .*" %)))
+       (reduce (fn [[acc fence?] line]
+                 (cond (re-find #"^\s*(```|~~~)" line) [acc (not fence?)]
+                       fence? [acc fence?]
+                       :else [(conj acc line) fence?]))
+               [[] false])
+       first))
+
 (defn read-note-triggers
-  "ticket file から再開契機の候補 (時刻と種別だけ) を返す。行の残りは捨てる。"
+  "ticket file の Notes 節から再開契機の候補 (時刻と種別だけ) を返す。行の残りは捨てる。
+  読めない場合は :unreadable を返す (観測なしと区別する)。"
   [f]
   (try
     (with-open [r (clojure.java.io/reader (str f))]
-      (vec (for [line (line-seq r)
+      (vec (for [line (notes-lines (line-seq r))
                  :let [[_ d t src] (re-matches note-header line)
                        kind (get trigger-sources src)]
                  :when kind
                  :let [at (try (java.time.Instant/parse (str d "T" t "Z")) (catch Exception _ nil))]
                  :when at]
              {:at at :kind kind})))
-    (catch Exception _ nil)))
+    (catch Exception _ :unreadable)))
 
-(defn load-triggers [vault tickets]
+(defn load-triggers
+  "ticket -> 契機 vector。ticket file が無い/読めない ticket は :unreadable (unknown として別掲)。"
+  [vault tickets]
   (into {} (for [t tickets
-                 :let [f (fs/path vault "Tickets" (str t ".md"))]
-                 :when (fs/exists? f)]
-             [t (read-note-triggers f)])))
+                 :let [f (fs/path vault "Tickets" (str t ".md"))]]
+             [t (if (fs/readable? f) (read-note-triggers f) :unreadable)])))
 
 (defn read-summary [f]
   (try
@@ -268,7 +286,8 @@
 ;;   nudges         : 区間内の supervisor note 数。2 以上は同じ停止に対する催促の繰返し
 ;; 業務上の差戻しか承認継続か新 scope かは本文を読まないため区別しない (correction-rules/v1 の reopen_after_review と同じく unknown)。
 (defn review-resume [runs-by-ticket triggers until-at]
-  (let [stalls (for [[t runs] runs-by-ticket
+  (let [unreadable? (fn [t] (= :unreadable (get triggers t)))
+        stalls (for [[t runs] runs-by-ticket
                      [prev cur] (map vector runs (concat (rest runs) [nil]))
                      :when (and (= "succeeded" (:status prev)) (= "review" (:result prev)))
                      :let [from (instant (:finished-at prev))
@@ -276,11 +295,11 @@
                            end (or to until-at)
                            in (when from
                                 (filter #(and (pos? (compare (:at %) from)) (or (nil? end) (not (pos? (compare (:at %) end)))))
-                                        (get triggers t)))
+                                        (when-not (unreadable? t) (get triggers t))))
                            last-trigger (last (sort-by :at in))]]
                  {:ticket t :followed? (some? cur) :time-known? (some? from)
                   :next (when cur (classify-v1 prev cur))
-                  :trigger (cond (nil? from) "unknown-time" last-trigger (:kind last-trigger) :else "none-observed")
+                  :trigger (cond (unreadable? t) "unknown-unreadable" (nil? from) "unknown-time" last-trigger (:kind last-trigger) :else "none-observed")
                   :nudges (count (filter #(= "supervisor" (:kind %)) in))
                   :ack-min (when (and to last-trigger) (/ (.toSeconds (java.time.Duration/between (:at last-trigger) to)) 60.0))})
         followed (filter :followed? stalls)
@@ -289,6 +308,7 @@
                               [k {:n (count xs) :tasks (count (set (map :ticket xs)))
                                   :ack-p50-min (quantile (acks xs) 0.5) :ack-p90-min (quantile (acks xs) 0.9)}]))]
     {:definition "review で正常終了した run の後、次 run 開始までの最後の契機 note (Notes 見出しの source のみ) で再開契機を分類"
+     :unreadable-tickets (count (filter unreadable? (keys runs-by-ticket)))
      :review-finishes (count stalls) :followed (count followed)
      :by-trigger by-trigger
      :by-trigger-next (frequencies (map (juxt :trigger :next) followed))
@@ -306,6 +326,9 @@
                    runs (load-runs root until)]
                (when (empty? runs)
                  (binding [*out* *err*] (println "no runs found under" root))
+                 (System/exit 2))
+               (when (and vault (not (fs/directory? (fs/path vault "Tickets"))))
+                 (binding [*out* *err*] (println "vault Tickets dir not readable:" vault))
                  (System/exit 2))
                (prn (report runs
                             (when vault (load-triggers vault (keys runs)))

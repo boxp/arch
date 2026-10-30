@@ -134,11 +134,13 @@ cat >"$t6/vault/Tickets/BOXP-911.md" <<'MD'
 - 2026-10-12 05:59:00 UTC [claude-opus]: agent log
 MD
 cat >"$t6/vault/Tickets/BOXP-912.md" <<'MD'
+## Notes
 - 2026-10-13 01:00:00 UTC [hermes-agent]: secret-body-should-not-appear
 - 2026-10-13 01:30:00 UTC [kohako-supervisor]: before-run-start-but-earlier
 - 2026-10-13 01:50:00 UTC [hermes-agent]: last trigger
 MD
 cat >"$t6/vault/Tickets/BOXP-913.md" <<'MD'
+## Notes
 - 2026-10-14 01:00:00 UTC [kohako-supervisor]: secret-body-should-not-appear
 MD
 bb ai_ops_insight.bb report "$t6" 20261015T000000Z "$t6/vault" >"$t6/r.edn"
@@ -151,3 +153,34 @@ check "同じ停止への催促 2 回を繰返しとして数え、未再開の�
 if grep -q "secret-body\|last trigger\|agent log" "$t6/r.edn"; then echo "not ok - Notes 本文が出力に含まれる"; exit 1; else echo "ok - Notes 本文は出力しない"; fi
 bb ai_ops_insight.bb report "$t6" 20261015T000000Z >"$t6/r2.edn"
 check "vault 未指定なら再開契機は unknown (0 にしない)" '(= "unknown" (get-in r [:review-resume :status]))' "$t6/r2.edn"
+
+# Notes 節以外 (別節・code block) の同形式の行は契機に数えない
+t7="$tmp/t7"; mkdir -p "$t7/vault/Tickets"
+ROOT=$t7 run BOXP-914 20261016T000000Z succeeded implement review
+ROOT=$t7 run BOXP-914 20261016T060000Z succeeded implement review
+cat >"$t7/vault/Tickets/BOXP-914.md" <<'MD'
+## Summary
+- 2026-10-16 01:00:00 UTC [kohako-supervisor]: outside notes
+## Notes
+```
+- 2026-10-16 02:00:00 UTC [hermes-agent]: inside code block
+```
+## Plan
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: after notes
+MD
+bb ai_ops_insight.bb report "$t7" 20261017T000000Z "$t7/vault" >"$t7/r.edn"
+check "Notes 節外・code block 内の行は契機に数えない" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "none-observed" :n])) (= 0 (get-in r [:review-resume :supervisor-nudged :stalls])))' "$t7/r.edn"
+
+# ticket file が無い/読めない場合は none-observed ではなく unknown-unreadable
+t8="$tmp/t8"; mkdir -p "$t8/vault/Tickets"
+ROOT=$t8 run BOXP-915 20261016T000000Z succeeded implement review
+ROOT=$t8 run BOXP-915 20261016T060000Z succeeded implement review
+ROOT=$t8 run BOXP-916 20261016T000000Z succeeded implement review
+ROOT=$t8 run BOXP-916 20261016T060000Z succeeded implement review
+printf '## Notes\n' >"$t8/vault/Tickets/BOXP-916.md"; chmod 000 "$t8/vault/Tickets/BOXP-916.md"
+bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/vault" >"$t8/r.edn"
+chmod 600 "$t8/vault/Tickets/BOXP-916.md"
+check "無い/読めない ticket は unknown-unreadable として別掲し none-observed にしない" \
+  '(and (= 2 (get-in r [:review-resume :unreadable-tickets])) (= 2 (get-in r [:review-resume :by-trigger "unknown-unreadable" :n])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t8/r.edn"
+if bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/no-such-vault" >/dev/null 2>&1; then echo "not ok - 存在しない vault で成功した"; exit 1; else echo "ok - 存在しない vault は exit 非0"; fi
