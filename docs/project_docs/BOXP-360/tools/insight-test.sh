@@ -106,3 +106,11 @@ ROOT=$t4 run BOXP-909 20261010T010000Z succeeded review-fix review
 bb ai_ops_insight.bb report "$t4" >"$t4/r.edn"
 check "gate 失敗直後の review-fix は遷移では gate_rework、Owner 可視 (review-fix) task にも計上" \
   '(and (= 1 (get-in r [:transitions :v1 "gate_rework"])) (nil? (get-in r [:transitions :v1 "review_fix"])) (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 1 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-agent-system-tasks :n])))' "$t4/r.edn"
+
+t5="$tmp/t5"; mkdir -p "$t5"
+# BOXP-910: Review 到達済み task で review-fix が gate 失敗のまま (Owner に届いていない) -> Owner 可視には数えない
+ROOT=$t5 run BOXP-910 20261011T000000Z succeeded implement review
+ROOT=$t5 run BOXP-910 20261011T010000Z retrying review-fix review codex-review
+bb ai_ops_insight.bb report "$t5" >"$t5/r.edn"
+check "gate 失敗した review-fix は Owner 可視の是正 task に数えない" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 0 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-agent-system-tasks :n])))' "$t5/r.edn"

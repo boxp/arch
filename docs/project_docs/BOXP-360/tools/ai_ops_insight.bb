@@ -163,8 +163,10 @@
                        (map :ticket gate-fails))
         ;; Owner 可視の集計は v1 遷移分類と独立に、run 自身が review-fix かどうかで数える。
         ;; gate 失敗直後の review-fix は遷移分類では gate_rework だが、review-fix run があること自体は Owner 可視の是正として残す。
-        review-fix? #(= "review-fix" (get-in % [:cur :action]))
-        v1-owner-visible (tasks-with #(or (get-in correction-kinds [(:v1 %) :owner-visible]) (review-fix? %)))
+        ;; gate 失敗 (retrying) 等で Owner に届いていない review-fix は数えない (run 自身が succeeded のものだけ)。
+        review-fix? #(and (= "review-fix" (get-in % [:cur :action])) (= "succeeded" (get-in % [:cur :status])))
+        ;; review_fix 遷移も同じ条件 (review-fix?) で判定し、gate 失敗した review-fix を遷移分類経由で数えない。
+        v1-owner-visible (tasks-with #(or (and (not= "review_fix" (:v1 %)) (get-in correction-kinds [(:v1 %) :owner-visible])) (review-fix? %)))
         v1-agent-owner-visible (tasks-with review-fix?)
         count-by (fn [k pred] (frequencies (keep #(when (pred %) (k %)) trs)))
         gate-rework-by-task (frequencies (map :ticket gate-fails))
