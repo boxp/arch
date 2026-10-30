@@ -114,3 +114,40 @@ ROOT=$t5 run BOXP-910 20261011T010000Z retrying review-fix review codex-review
 bb ai_ops_insight.bb report "$t5" >"$t5/r.edn"
 check "gate 失敗した review-fix は Owner 可視の是正 task に数えない" \
   '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 0 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-agent-system-tasks :n])))' "$t5/r.edn"
+
+# --- Review 停止からの再開契機 (Notes 見出しの時刻/source のみ) ---
+t6="$tmp/t6"; mkdir -p "$t6/vault/Tickets"
+# BOXP-911: review 終了 -> supervisor 催促 2 回 -> 再開 (同じ停止への催促の繰返し)
+ROOT=$t6 run BOXP-911 20261012T000000Z succeeded implement review
+ROOT=$t6 run BOXP-911 20261012T060000Z succeeded implement review
+# BOXP-912: review 終了 -> Owner 経由指示 -> 再開、もう一度 review 終了後は note なしで再開
+ROOT=$t6 run BOXP-912 20261013T000000Z succeeded implement review
+ROOT=$t6 run BOXP-912 20261013T020000Z succeeded implement review
+ROOT=$t6 run BOXP-912 20261013T040000Z succeeded implement review
+# BOXP-913: review 終了後に supervisor 催促があるが未再開 (停止中)
+ROOT=$t6 run BOXP-913 20261014T000000Z succeeded implement review
+cat >"$t6/vault/Tickets/BOXP-911.md" <<'MD'
+## Notes
+- 2026-10-12 00:30:00 UTC [kohako-event]: secret-body-should-not-appear handled
+- 2026-10-12 03:00:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+- 2026-10-12 05:58:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+- 2026-10-12 05:59:00 UTC [claude-opus]: agent log
+MD
+cat >"$t6/vault/Tickets/BOXP-912.md" <<'MD'
+- 2026-10-13 01:00:00 UTC [hermes-agent]: secret-body-should-not-appear
+- 2026-10-13 01:30:00 UTC [kohako-supervisor]: before-run-start-but-earlier
+- 2026-10-13 01:50:00 UTC [hermes-agent]: last trigger
+MD
+cat >"$t6/vault/Tickets/BOXP-913.md" <<'MD'
+- 2026-10-14 01:00:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+MD
+bb ai_ops_insight.bb report "$t6" 20261015T000000Z "$t6/vault" >"$t6/r.edn"
+check "再開契機を最後の契機 note で分類し、note がなければ none-observed" \
+  '(let [b (get-in r [:review-resume :by-trigger])] (and (= 3 (get-in r [:review-resume :followed])) (= 1 (get-in b ["supervisor" :n])) (= 1 (get-in b ["owner-relay" :n])) (= 1 (get-in b ["none-observed" :n]))))' "$t6/r.edn"
+check "契機 note -> 次 run 開始を ack 遅延 (分) とする" \
+  '(and (= 2.0 (get-in r [:review-resume :by-trigger "supervisor" :ack-p50-min])) (= 10.0 (get-in r [:review-resume :by-trigger "owner-relay" :ack-p50-min])))' "$t6/r.edn"
+check "同じ停止への催促 2 回を繰返しとして数え、未再開の停止中催促も別掲 (kohako-event は契機に含めない)" \
+  '(and (= 1 (get-in r [:review-resume :supervisor-nudged :repeated-nudge-stalls])) (= 3 (get-in r [:review-resume :supervisor-nudged :stalls])) (= 1 (get-in r [:review-resume :open-stalls :with-supervisor-nudge])))' "$t6/r.edn"
+if grep -q "secret-body\|last trigger\|agent log" "$t6/r.edn"; then echo "not ok - Notes 本文が出力に含まれる"; exit 1; else echo "ok - Notes 本文は出力しない"; fi
+bb ai_ops_insight.bb report "$t6" 20261015T000000Z >"$t6/r2.edn"
+check "vault 未指定なら再開契機は unknown (0 にしない)" '(= "unknown" (get-in r [:review-resume :status]))' "$t6/r2.edn"

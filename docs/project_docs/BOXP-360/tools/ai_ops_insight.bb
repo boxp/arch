@@ -2,22 +2,55 @@
 ;; BOXP-360: 是正・再作業の集中先分析と correction-rules/v1 (分析専用, metadata-only)
 ;;
 ;; Usage:
-;;   bb ai_ops_insight.bb report <task-board-root> [until-run-id]   EDN report (stdout)
+;;   bb ai_ops_insight.bb report <task-board-root> [until-run-id] [vault]   EDN report (stdout)
+;;   (until-run-id を使わず vault だけ渡す場合は until-run-id に "" を渡す)
 ;;
 ;; 読むのは runs/<ticket>/<run-id>/summary.edn の次の field だけ:
 ;;   :status :action :result :blocker-category :started-at :finished-at :agent
 ;;   :review-gate の :gate / :diagnostic :category
-;; prompt / last-message / events.jsonl / ticket 本文は読まない。
+;; prompt / last-message / events.jsonl は読まない。
+;; vault を与えた場合だけ、Tickets/BOXP-<n>.md の各行を正規表現
+;;   ^- YYYY-MM-DD HH:MM:SS UTC [<source>]:
+;; と照合し、一致した行の「時刻」と「source (下の allowlist の語彙)」だけを残す。本文・タイトル・その他の行は保持も出力もしない。
 ;; 公開中の SLI (ai_ops_sli.bb, correction-rules/v0) は変更しない。v1 は版を分けて並べて比較する。
 ;; until-run-id を与えると、その run-id 以下の run だけを使う (固定 snapshot で再現するため)。
 (ns ai-ops-insight
   (:require [babashka.fs :as fs]
+            [clojure.java.io]
             [clojure.edn :as edn]
             [clojure.string :as str]))
 
 (def rules-version "correction-rules/v1")
 
 (defn kw [v] (cond (keyword? v) (name v) (string? v) v :else nil))
+
+;; Notes 見出しの source -> Review 停止からの再開契機の種別 (allowlist。これ以外の source は無視)
+;; kohako-event は通知済み marker で再開契機ではないため含めない。agent 自身の作業ログも含めない。
+(def trigger-sources
+  {"kohako-supervisor" "supervisor" "kohako" "supervisor"
+   "hermes-agent" "owner-relay" "boxp" "owner-direct"})
+
+(def note-header #"^- (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC \[([a-z][a-z0-9-]{0,40})\]:.*")
+
+(defn read-note-triggers
+  "ticket file から再開契機の候補 (時刻と種別だけ) を返す。行の残りは捨てる。"
+  [f]
+  (try
+    (with-open [r (clojure.java.io/reader (str f))]
+      (vec (for [line (line-seq r)
+                 :let [[_ d t src] (re-matches note-header line)
+                       kind (get trigger-sources src)]
+                 :when kind
+                 :let [at (try (java.time.Instant/parse (str d "T" t "Z")) (catch Exception _ nil))]
+                 :when at]
+             {:at at :kind kind})))
+    (catch Exception _ nil)))
+
+(defn load-triggers [vault tickets]
+  (into {} (for [t tickets
+                 :let [f (fs/path vault "Tickets" (str t ".md"))]
+                 :when (fs/exists? f)]
+             [t (read-note-triggers f)])))
 
 (defn read-summary [f]
   (try
@@ -148,7 +181,9 @@
           :first-run-id (:run-id (first streak))
           :ongoing (= (last streak) (last runs))})))
 
-(defn report [runs-by-ticket]
+(declare review-resume)
+
+(defn report [runs-by-ticket & [triggers until-at]]
   (let [trs (for [[t runs] runs-by-ticket, tr (transitions runs)] (assoc tr :ticket t))
         ;; Review 到達 = review で正常終了 (succeeded) した run がある task。gate 失敗 (retrying) の run も :result "review" を持つが Owner には届いていない。
         reached-review (set (for [[t runs] runs-by-ticket :when (some #(and (= "succeeded" (:status %)) (= "review" (:result %))) runs)] t))
@@ -218,17 +253,64 @@
                    :over-24h (count (filter #(> (:hours %) 24) waited))
                    :by-next (into {} (for [[k xs] (group-by :next waited)]
                                        [k {:n (count xs) :p50-h (quantile (map :hours xs) 0.5) :p90-h (quantile (map :hours xs) 0.9)}]))}
+     :review-resume (if triggers
+                      (review-resume runs-by-ticket triggers until-at)
+                      {:status "unknown" :reason "vault 未指定 (Notes 見出しの時刻/source を読んでいない)"})
      :runs-by-status (frequencies (map :status all-runs))}))
+
+;; ---------------------------------------------------------------------------
+;; Review 停止からの再開契機 (Review停止催促 / Owner 経由指示 / 観測なし) と Ready→着手遅延の代理指標
+;;
+;; review で正常終了した run (prev) ごとに、prev 終了から次 run 開始まで (次 run が無ければ snapshot 上限まで) の
+;; 再開契機 note を見る。
+;;   trigger        : 区間内の最後の契機 note の種別。無ければ none-observed (Owner が直接 card を動かした等。原因は unknown)
+;;   ack-min        : 最後の契機 note -> 次 run 開始 (分)。Ready 遷移時刻の代理 (note 後に Ready へ戻す運用のため)
+;;   nudges         : 区間内の supervisor note 数。2 以上は同じ停止に対する催促の繰返し
+;; 業務上の差戻しか承認継続か新 scope かは本文を読まないため区別しない (correction-rules/v1 の reopen_after_review と同じく unknown)。
+(defn review-resume [runs-by-ticket triggers until-at]
+  (let [stalls (for [[t runs] runs-by-ticket
+                     [prev cur] (map vector runs (concat (rest runs) [nil]))
+                     :when (and (= "succeeded" (:status prev)) (= "review" (:result prev)))
+                     :let [from (instant (:finished-at prev))
+                           to (when cur (or (instant (:started-at cur)) (run-id->instant (:run-id cur))))
+                           end (or to until-at)
+                           in (when from
+                                (filter #(and (pos? (compare (:at %) from)) (or (nil? end) (not (pos? (compare (:at %) end)))))
+                                        (get triggers t)))
+                           last-trigger (last (sort-by :at in))]]
+                 {:ticket t :followed? (some? cur) :time-known? (some? from)
+                  :next (when cur (classify-v1 prev cur))
+                  :trigger (cond (nil? from) "unknown-time" last-trigger (:kind last-trigger) :else "none-observed")
+                  :nudges (count (filter #(= "supervisor" (:kind %)) in))
+                  :ack-min (when (and to last-trigger) (/ (.toSeconds (java.time.Duration/between (:at last-trigger) to)) 60.0))})
+        followed (filter :followed? stalls)
+        acks (fn [xs] (keep :ack-min xs))
+        by-trigger (into {} (for [[k xs] (group-by :trigger followed)]
+                              [k {:n (count xs) :tasks (count (set (map :ticket xs)))
+                                  :ack-p50-min (quantile (acks xs) 0.5) :ack-p90-min (quantile (acks xs) 0.9)}]))]
+    {:definition "review で正常終了した run の後、次 run 開始までの最後の契機 note (Notes 見出しの source のみ) で再開契機を分類"
+     :review-finishes (count stalls) :followed (count followed)
+     :by-trigger by-trigger
+     :by-trigger-next (frequencies (map (juxt :trigger :next) followed))
+     :supervisor-nudged {:stalls (count (filter #(pos? (:nudges %)) stalls))
+                         :tasks (count (set (map :ticket (filter #(pos? (:nudges %)) stalls))))
+                         :repeated-nudge-stalls (count (filter #(> (:nudges %) 1) stalls))}
+     :open-stalls {:n (count (remove :followed? stalls))
+                   :with-supervisor-nudge (count (filter #(and (not (:followed? %)) (pos? (:nudges %))) stalls))}
+     :ack-negative (count (filter #(neg? %) (acks followed)))}))
 
 (defn -main [cmd & args]
   (case cmd
-    "report" (let [[root until] args
+    "report" (let [[root until vault] args
+                   until (when-not (str/blank? until) until)
                    runs (load-runs root until)]
                (when (empty? runs)
                  (binding [*out* *err*] (println "no runs found under" root))
                  (System/exit 2))
-               (prn (report runs)))
-    (do (binding [*out* *err*] (println "usage: bb ai_ops_insight.bb report <task-board-root> [until-run-id]"))
+               (prn (report runs
+                            (when vault (load-triggers vault (keys runs)))
+                            (when until (run-id->instant until)))))
+    (do (binding [*out* *err*] (println "usage: bb ai_ops_insight.bb report <task-board-root> [until-run-id] [vault]"))
         (System/exit 1))))
 
 (when (= *file* (System/getProperty "babashka.file"))
