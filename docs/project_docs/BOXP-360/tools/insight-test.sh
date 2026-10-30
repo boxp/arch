@@ -183,6 +183,8 @@ bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/vault" >"$t8/r.edn"
 chmod 600 "$t8/vault/Tickets/BOXP-916.md"
 check "無い/読めない ticket は unknown-unreadable として別掲し none-observed にしない" \
   '(and (= 2 (get-in r [:review-resume :unreadable-tickets])) (= 2 (get-in r [:review-resume :by-trigger "unknown-unreadable" :n])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t8/r.edn"
+check "読めない ticket の停止は催促件数を 0 にせず判定不能として別掲" \
+  '(and (= 4 (get-in r [:review-resume :supervisor-nudged :unknown-nudge-stalls])) (= 2 (get-in r [:review-resume :open-stalls :nudge-unknown])) (= 0 (get-in r [:review-resume :open-stalls :with-supervisor-nudge])))' "$t8/r.edn"
 if bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/no-such-vault" >/dev/null 2>&1; then echo "not ok - 存在しない vault で成功した"; exit 1; else echo "ok - 存在しない vault は exit 非0"; fi
 
 # Notes 内の code block にある `## ` 行で節を終えない (閉じフェンス以降の契機 note も読む)

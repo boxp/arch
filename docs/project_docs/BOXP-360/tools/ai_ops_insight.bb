@@ -326,13 +326,15 @@
                                  (or end-conflict? last-conflict?) "ambiguous-same-second"
                                  last-trigger (:kind last-trigger)
                                  (seq same-sec) "ambiguous-same-second" :else "none-observed")
-                  :nudges (count (filter #(= "supervisor" (:kind %)) in))
+                  ;; ticket が読めない/Review 終了時刻が無い停止は催促の有無を判定できないため nil (0 にしない)
+                  :nudges (when (and from (not (unreadable? t))) (count (filter #(= "supervisor" (:kind %)) in)))
                   ;; 開始同秒の supervisor note は催促回数に確定計上せず別掲
                   :nudges-ambiguous (count (filter #(= "supervisor" (:kind %)) (concat same-sec end-same-sec)))
                   ;; 開始同秒の note があると最後の契機が不明なため ack 遅延は unknown (nil)
                   :ack-min (when (and to last-trigger (not end-ambiguous?))
                              (/ (.toSeconds (java.time.Duration/between (:at last-trigger) to)) 60.0))})
         followed (filter :followed? stalls)
+        nudged? #(pos? (or (:nudges %) 0))
         acks (fn [xs] (keep :ack-min xs))
         by-trigger (into {} (for [[k xs] (group-by :trigger followed)]
                               [k {:n (count xs) :tasks (count (set (map :ticket xs)))
@@ -345,13 +347,16 @@
      :review-finishes (count stalls) :followed (count followed)
      :by-trigger by-trigger
      :by-trigger-next (frequencies (map (juxt :trigger :next) followed))
-     :supervisor-nudged {:stalls (count (filter #(pos? (:nudges %)) stalls))
-                         :tasks (count (set (map :ticket (filter #(pos? (:nudges %)) stalls))))
-                         :repeated-nudge-stalls (count (filter #(> (:nudges %) 1) stalls))
+     :supervisor-nudged {:stalls (count (filter nudged? stalls))
+                         :tasks (count (set (map :ticket (filter nudged? stalls))))
+                         :repeated-nudge-stalls (count (filter #(> (or (:nudges %) 0) 1) stalls))
+                         ;; 催促の有無を判定できない停止 (ticket 読めない/時刻なし)。上の件数には含めない
+                         :unknown-nudge-stalls (count (filter #(nil? (:nudges %)) stalls))
                          ;; 同秒境界の supervisor note を持つ停止。上の件数は確定分のみで、これは下限との差の上限
                          :ambiguous-nudge-stalls (count (filter #(pos? (:nudges-ambiguous %)) stalls))}
      :open-stalls {:n (count (remove :followed? stalls))
-                   :with-supervisor-nudge (count (filter #(and (not (:followed? %)) (pos? (:nudges %))) stalls))}
+                   :with-supervisor-nudge (count (filter #(and (not (:followed? %)) (nudged? %)) stalls))
+                   :nudge-unknown (count (filter #(and (not (:followed? %)) (nil? (:nudges %))) stalls))}
      :ack-negative (count (filter #(neg? %) (acks followed)))}))
 
 (defn -main [cmd & args]
