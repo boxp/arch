@@ -140,6 +140,7 @@
   (let [a (str assignee)]
     (cond (str/starts-with? a "codex") "codex-cli"
           (= "localllm" a) "localllm"
+          (= "localllm-coder" a) "localllm-coder"
           (str/blank? a) "unknown"
           :else "claude-cli")))
 
@@ -291,6 +292,7 @@
       (contains? claude-assignee->model assignee)))
 
 (def localllm-assignee "localllm")
+(def localllm-coder-assignee "localllm-coder")
 
 (defn localllm-assignee? [assignee]
   (= localllm-assignee assignee))
@@ -298,6 +300,7 @@
 (defn supported-assignee? [assignee]
   (or (claude-assignee? assignee)
       (localllm-assignee? assignee)
+      (= localllm-coder-assignee assignee)
       (some? (parse-codex-assignee assignee))))
 
 (defn root []
@@ -1794,9 +1797,10 @@
          "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
 (defn delegation-required? [agent]
-  (or (contains? #{"fable" "claude-fable" "claude-opus"} agent)
-      (contains? #{"codex-sol" "codex-full" "codex-astra"}
-                 (:base-assignee (parse-codex-assignee agent)))))
+  (and (not= localllm-coder-assignee agent)
+       (or (contains? #{"fable" "claude-fable" "claude-opus"} agent)
+           (contains? #{"codex-sol" "codex-full" "codex-astra"}
+                      (:base-assignee (parse-codex-assignee agent))))))
 
 (def delegation-helper
   (str (fs/path (fs/parent (fs/absolutize (System/getProperty "babashka.file"))) "delegate.py")))
@@ -2425,6 +2429,119 @@
        :idle-timeout? idle-timeout?
        :shutdown? (boolean shutdown?)})))
 
+(defn localllm-coder-args [provider model]
+  ["setsid" "pi" "-p" "--mode" "json" "--provider" provider "--model" model
+   "--no-session" "--no-extensions" "--no-skills" "--no-mcp"
+   "--no-prompt-templates" "--thinking" "off"])
+
+(defn localllm-coder-match-model [body model]
+  (if-let [entry (some #(when (= model (:id %)) %) (:data body))]
+    (let [args (get-in entry [:status :args])
+          model-path (some (fn [[a b]] (when (= "--model" a) b)) (partition 2 1 args))]
+      {:ok? true :status (:status entry) :model-path (or model-path (get-in entry [:meta :model]) (get-in entry [:meta :path]))
+       :size (get-in entry [:meta :size])})
+    {:ok? false :category "model-not-found"}))
+
+(defn localllm-coder-events [lines]
+  (let [events (keep #(try (json/parse-string % true) (catch Exception _ nil)) lines)
+        messages (keep (fn [e] (let [m (:message e)] (when (= "assistant" (:role m)) m))) events)
+        final-message (last (keep (fn [e] (when (and (= "message_end" (:type e))
+                                                       (= "assistant" (get-in e [:message :role])))
+                                              (:message e))) events))]
+    {:models-seen (vec (distinct (keep :model messages)))
+     :last-message (str/join "\n" (keep #(when (= "text" (:type %)) (:text %)) (:content final-message)))}))
+
+(defn localllm-coder-result [exit marker fallback?]
+  ;; fallback? is also true when no assistant message named a model: a run
+  ;; without model evidence is never reported as a local success.
+  (cond (or (not= 0 exit) fallback?) "blocked"
+        (= "blocked" marker) "blocked"
+        :else "review"))
+
+(defn localllm-coder-diff! [workspace patch-path]
+  (let [parts (for [{:keys [repo path]} (:repo-worktrees workspace) :when path]
+                (let [git (fn [args] @(p/process (into ["git" "-C" path] args) {:out :string :err :string}))
+                      stat (git ["diff" "--stat" "HEAD"])
+                      status (git ["status" "--porcelain"])
+                      diff (git ["diff" "--binary" "HEAD"])
+                      untracked (git ["ls-files" "--others" "--exclude-standard" "-z"])
+                      files (remove str/blank? (str/split (:out untracked) #"\u0000"))
+                      extra (map #(git ["diff" "--no-index" "--binary" "--" "/dev/null" (str (fs/path path %))]) files)]
+                  (when (or (some #(not= 0 (:exit %)) [stat status diff untracked])
+                            (some #(not (contains? #{0 1} (:exit %))) extra))
+                    (throw (ex-info "Failed to capture workspace diff" {:repo repo})))
+                  {:repo repo :stat (:out stat) :status (:out status)
+                   :patch (str "# Repository: " repo "\n" (:out diff) (apply str (map :out extra)))}))]
+    (spit (str patch-path) (apply str (map :patch parts)))
+    (mapv #(select-keys % [:repo :stat :status]) parts)))
+
+(defn run-localllm-coder! [ticket-id action lane agent lock]
+  (let [run (:run-id lock) dir (run-dir ticket-id run)
+        workspace (prepare-run-workspace! ticket-id run)
+        prompt-path (fs/path dir "prompt.md") events-path (fs/path dir "events.jsonl")
+        stderr-path (fs/path dir "stderr.log") last-path (fs/path dir "last-message.md")
+        patch-path (fs/path dir "localllm-coder.patch")
+        model (env "CODEX_TASK_BOARD_LOCALLLM_CODER_MODEL" "qwen3-coder-next")
+        provider (env "CODEX_TASK_BOARD_LOCALLLM_CODER_PROVIDER" "llama.cpp")
+        base-url (str/replace (env "CODEX_TASK_BOARD_LOCALLLM_BASE_URL" "http://llama-server.local-llm.svc.cluster.local:8080/v1") #"/+$" "")
+        started-at (now-str) start-ms (System/currentTimeMillis)]
+    (fs/create-dirs dir)
+    (spit (str prompt-path) (str (prompt-for action ticket-id lane workspace agent)
+                                 "\nYou are a local model. Work only inside the workspace repositories. Run relevant tests. Do not git push or commit or create PRs. Do not run codex, claude, delegate.py or any other agent / cloud CLI. End with a TASK_BOARD_RESULT marker.\n"))
+    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at started-at})
+    (let [readback (try
+                     (let [response @(p/process ["curl" "--fail" "--silent" "--show-error" "--max-time" "10" (str base-url "/models")] {:out :string :err :string})]
+                       (if (zero? (:exit response))
+                         (localllm-coder-match-model (json/parse-string (:out response) true) model)
+                         {:ok? false :category "preflight-request-failed"}))
+                     (catch Exception _ {:ok? false :category "preflight-request-failed"}))
+          execution (if (:ok? readback)
+                      (try
+                        (let [paths (keep :path (:repo-worktrees workspace))
+                              cwd (if (= 1 (count paths)) (first paths) (:workspace-dir workspace))
+                              no-cloud (str (fs/create-dirs (fs/path dir "no-cloud-home")))
+                              ;; No cloud keys, and the codex / claude CLIs see an
+                              ;; empty config home, so the local model cannot hand
+                              ;; the task to a cloud agent (BOXP-367).
+                              child-env (assoc (apply dissoc (into {} (System/getenv))
+                                                      ["OPENAI_API_KEY" "ANTHROPIC_API_KEY" "GEMINI_API_KEY" "GOOGLE_API_KEY"
+                                                       "TASK_BOARD_DELEGATION_EVIDENCE" "TASK_BOARD_DELEGATION_ADD_DIRS"])
+                                               "CODEX_HOME" no-cloud "CLAUDE_CONFIG_DIR" no-cloud)
+                              proc (p/process (localllm-coder-args provider model)
+                                              {:dir cwd :env child-env :in (io/file (str prompt-path))
+                                               :out (io/file (str events-path)) :err (io/file (str stderr-path))})]
+                          (register-agent-process! run (:proc proc))
+                          (try (await-agent! proc [events-path stderr-path (ticket-path ticket-id)] (agent-idle-timeout-seconds))
+                               (finally (unregister-agent-process! run))))
+                        (catch Exception e (spit (str stderr-path) (.getMessage e)) {:proc {:exit 1}}))
+                      {:proc {:exit 1}})
+          exit (get-in execution [:proc :exit])
+          parsed (localllm-coder-events (if (fs/exists? events-path) (str/split-lines (slurp (str events-path))) []))
+          fallback? (or (empty? (:models-seen parsed))
+                        (boolean (some #(not= model %) (:models-seen parsed))))
+          result (localllm-coder-result exit (result-marker (:last-message parsed)) fallback?)
+          ;; Avoid a model-supplied PR URL taking precedence over the skip marker.
+          last-message (if (= "review" result)
+                         (str (str/replace (:last-message parsed) #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" "[PR URL omitted]") "\nTASK_BOARD_REVIEW_PR: none\n")
+                         (:last-message parsed))
+          diff-stat (localllm-coder-diff! workspace patch-path)
+          finished-at (now-str)
+          evidence {:model model :provider provider :base-url base-url :router-readback readback
+                    :models-seen (:models-seen parsed) :fallback? fallback? :started-at started-at
+                    :finished-at finished-at :elapsed-ms (- (System/currentTimeMillis) start-ms)
+                    :exit exit :idle-timeout? (boolean (:idle-timeout? execution)) :diff-stat diff-stat
+                    :patch-path (str patch-path) :result result}]
+      (spit (str last-path) last-message)
+      (spit (str (fs/path dir "localllm-coder.edn")) (pr-str evidence))
+      (if (:shutdown? execution)
+        (mark-run! ticket-id run :interrupted {:action action :agent agent :lane lane :reason "planned workspace shutdown"
+                                                :shutdown {:owner-id (owner-id) :instance-id runner-instance-id :agent-exit-code exit :agent-stopped-at finished-at}})
+        (mark-run! ticket-id run (if (= "blocked" result) :failed :succeeded)
+                   {:action action :agent agent :lane lane :exit-code exit :idle-timeout? (:idle-timeout? execution)
+                    :result result :finished-at finished-at :category (:category readback)}))
+      {:exit exit :result result :run-id run :dir (str dir) :last-message last-message
+       :idle-timeout? (boolean (:idle-timeout? execution)) :shutdown? (boolean (:shutdown? execution))})))
+
 ;; ---------------------------------------------------------------------------
 ;; localllm document-update route (BOXP-277)
 ;;
@@ -2799,6 +2916,14 @@
       ("ready" "in-progress" "review" "blocked") :docs-edit
       nil)
 
+    ;; The owner/cloud writes the plan and moves this ticket to Ready.
+    (= localllm-coder-assignee assignee)
+    (case status
+      ("ready" "in-progress") :implement
+      "review" :review-fix
+      "blocked" :blocked-retry
+      nil)
+
     (supported-assignee? assignee)
     (case status
       "backlog" :groom
@@ -3090,7 +3215,9 @@
               (let [agent-run (case action
                                 :docs-edit (run-localllm-docs! ticket-id action effective-lane lane assignee lock)
                                 :docs-groom (run-localllm-groom! ticket-id action effective-lane lane assignee lock)
-                                (run-agent! ticket-id action effective-lane assignee lock))
+                                (if (= localllm-coder-assignee assignee)
+                                  (run-localllm-coder! ticket-id action effective-lane assignee lock)
+                                  (run-agent! ticket-id action effective-lane assignee lock)))
                     {:keys [exit result run-id dir last-message idle-timeout? shutdown?]} agent-run
                     _ (when shutdown?
                         ;; `run-agent!` already recorded the interrupted run.
@@ -4522,6 +4649,30 @@
             (reset! committing-cards 0)
             (reset! shutdown-started-at-ms nil)))))
 
+    (doseq [[label actual expected]
+            (concat
+             (for [[status expected] {"backlog" nil "ready" :implement "in-progress" :implement
+                                      "review" :review-fix "blocked" :blocked-retry "done" nil}]
+               [(str "coder route " status) (candidate-action {:status status} "localllm-coder") expected])
+             [["coder supported" (supported-assignee? "localllm-coder") true]
+              ["coder runtime" (assignee-runtime "localllm-coder") "localllm-coder"]
+              ["coder delegation" (delegation-required? "localllm-coder") false]
+              ["coder args" (localllm-coder-args "llama.cpp" "m")
+               ["setsid" "pi" "-p" "--mode" "json" "--provider" "llama.cpp" "--model" "m" "--no-session" "--no-extensions" "--no-skills" "--no-mcp" "--no-prompt-templates" "--thinking" "off"]]
+              ["coder preflight match" (localllm-coder-match-model {:data [{:id "m" :status {:args ["--model" "/m"]} :meta {:size 42}}]} "m")
+               {:ok? true :status {:args ["--model" "/m"]} :model-path "/m" :size 42}]
+              ["coder preflight empty" (:ok? (localllm-coder-match-model {:data []} "m")) false]
+              ["coder preflight other" (:ok? (localllm-coder-match-model {:data [{:id "other"}]} "m")) false]
+              ["coder done" (localllm-coder-result 0 "done" false) "review"]
+              ["coder missing" (localllm-coder-result 0 nil false) "review"]
+              ["coder fallback" (localllm-coder-result 0 "done" true) "blocked"]
+              ["coder exit" (localllm-coder-result 1 "done" false) "blocked"]
+              ["coder no model evidence" (:models-seen (localllm-coder-events [])) []]
+              ["coder events" (localllm-coder-events [(json/generate-string {:type "message_end" :message {:role "assistant" :model "m" :provider "llama.cpp" :content [{:type "text" :text "hello"}]}})
+                                                        (json/generate-string {:type "message_end" :message {:role "assistant" :model "other" :content [{:type "text" :text "last"}]}})])
+               {:models-seen ["m" "other"] :last-message "last"}]] )]
+      (if (= actual expected) (println (str "PASS: " label))
+          (do (println (str "FAIL: " label " got " (pr-str actual))) (swap! failures conj label))))
     ;; BOXP-277: localllm maps to :docs-edit; BOXP-290: Backlog gets the runner-side groom.
     (doseq [[status expected] {"backlog" :docs-groom "ready" :docs-edit "in-progress" :docs-edit
                                "review" :docs-edit "blocked" :docs-edit "done" nil}]
