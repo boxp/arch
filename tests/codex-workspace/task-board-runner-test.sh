@@ -3414,7 +3414,7 @@ test_gate_failure_budget_boundary_9_10_11() {
   assert_file_contains "${vault}/Tickets/BOXP-369.md" 'category=gate-failure-budget-exhausted'
   assert_file_contains "${vault}/Tickets/BOXP-369.md" 'ゲート累積失敗上限に到達したため自動再試行を停止しました'
   assert_file_contains "${vault}/Tickets/BOXP-369.md" 'ticket BOXP-369 10/10, PR boxp/example#123 10/10'
-  assert_file_contains "${vault}/Tickets/BOXP-369.md" '分類=ci-failure \(gate=ci; failure-kind=none\)'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" '分類=ci-failure \(gate=ci; failure-kind=check-failure\)'
   assert_file_contains "${vault}/Tickets/BOXP-369.md" '未解決=ci-check-failure'
   assert_file_contains "${vault}/Tickets/BOXP-369.md" 'gate-budget-grant BOXP-369'
   assert_file_not_contains "${vault}/Tickets/BOXP-369.md" 'super-secret-token'

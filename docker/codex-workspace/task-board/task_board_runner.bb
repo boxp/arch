@@ -1788,7 +1788,7 @@
          (str/join ", " (map (fn [[k v]] (str k "=" v)) (sort by-class)))
          ")。 必要判断: 未解決指摘への方針を決め、続行する場合は Owner が"
          " `task_board_runner.bb gate-budget-grant " ticket-id
-         " --amount N` で追加予算を付与してから担当を戻してください。")))
+         " --amount N --by <Owner>` で追加予算を付与してから担当を戻してください。")))
 
 (defn gate-budget-grant!
   "Owner-only explicit resume: append a grant record.  Failure history is
