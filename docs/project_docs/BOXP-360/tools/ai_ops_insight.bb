@@ -35,11 +35,12 @@
 (def note-header #"^- (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC \[([a-z][a-z0-9-]{0,40})\]:.*")
 
 (defn notes-lines
-  "`## Notes` 見出しから次の `## ` 見出しまでの行だけを返す (fenced code block 内の行は除く)。
+  "`## Notes` 見出しから次の `## ` 見出しまでの各行に extract を適用し、nil 以外の結果だけを返す
+  (fenced code block 内の行は除く)。行そのものは蓄積しない (本文をメモリに保持しない)。
   節の開始・終端とも fence の外にある見出しだけを見る (code block 内の `## Notes` / `## ` 行は無視)。
   開いた fence の文字種と長さを覚え、同じ文字種で同じ長さ以上の fence 行 (info string なし) だけで閉じる
   (`~~~` block 内の ``` は閉じとみなさない)。"
-  [lines]
+  [extract lines]
   (loop [[line & more :as ls] lines
          started? false fence nil acc []]
     (if (empty? ls)
@@ -53,7 +54,7 @@
               marker (recur more started? {:ch (first marker) :len (count marker)} acc)
               (not started?) (recur more (boolean (re-matches #"^## Notes\s*$" line)) nil acc)
               (re-matches #"^## .*" line) acc
-              :else (recur more true nil (conj acc line)))))))
+              :else (recur more true nil (if-some [v (extract line)] (conj acc v) acc)))))))
 
 (defn read-note-triggers
   "ticket file の Notes 節から再開契機の候補 (時刻と種別だけ) を返す。行の残りは捨てる。
@@ -61,13 +62,13 @@
   [f]
   (try
     (with-open [r (clojure.java.io/reader (str f))]
-      (vec (for [line (notes-lines (line-seq r))
-                 :let [[_ d t src] (re-matches note-header line)
-                       kind (get trigger-sources src)]
-                 :when kind
-                 :let [at (try (java.time.Instant/parse (str d "T" t "Z")) (catch Exception _ nil))]
-                 :when at]
-             {:at at :kind kind})))
+      (notes-lines
+       (fn [line]
+         (let [[_ d t src] (re-matches note-header line)
+               kind (get trigger-sources src)
+               at (when kind (try (java.time.Instant/parse (str d "T" t "Z")) (catch Exception _ nil)))]
+           (when at {:at at :kind kind})))
+       (line-seq r)))
     (catch Exception _ :unreadable)))
 
 (defn load-triggers

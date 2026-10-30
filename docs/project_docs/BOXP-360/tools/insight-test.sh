@@ -314,3 +314,18 @@ else
   if [ "$rc" = 2 ]; then echo "ok - 読めない Tickets ディレクトリは exit 2"; else echo "not ok - 読めない Tickets ディレクトリで exit $rc"; exit 1; fi
 fi
 chmod 700 "$t9/vault/Tickets"
+
+# notes-lines は extract の結果だけを返し、行そのものを保持しない
+if bb -e '(load-file "ai_ops_insight.bb") (in-ns (quote ai-ops-insight))
+  (let [r (notes-lines (fn [l] (when (str/starts-with? l "- ") :hit)) ["# t" "## Notes" "- a secret" "body secret" "```" "- in fence" "```" "## Next" "- after"])]
+    (when-not (= [:hit] r) (System/exit 1)))'; then
+  echo "ok - notes-lines は抽出結果だけを返す (本文行を蓄積しない)"
+else echo "not ok - notes-lines が抽出結果以外を返した"; exit 1; fi
+
+# 固定 snapshot の EDN は現行 report の keyword key 構造をすべて含む (再集計漏れ検出)
+check "固定 snapshot EDN が現行 report の出力 key を欠かない" \
+  '(letfn [(paths [m p] (if (map? m) (mapcat (fn [[k v]] (when (keyword? k) (cons (conj p k) (paths v (conj p k))))) m) []))]
+     (let [snap (clojure.edn/read-string (slurp "../insight-2026-10-30-resume.edn"))
+           missing (remove (set (paths snap [])) (paths r []))]
+       (when (seq missing) (binding [*out* *err*] (prn :missing missing)))
+       (empty? missing)))' "$t14/r.edn"
