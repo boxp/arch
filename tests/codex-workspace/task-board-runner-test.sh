@@ -3469,6 +3469,46 @@ test_gate_failure_budget_multiple_prs_and_shared_pr() {
   printf '%s\n' '- see https://github.com/boxp/example/pull/209' >> "${vault}/Tickets/BOXP-469.md"
   budget_fail_tick "${vault}" "${state}" "${bin}" f 209 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
   [[ "$(budget_run_count "${state}" BOXP-469)" == 1 ]] || fail "an unexhausted PR reference must not block"
+  # URL spelling (host case, no scheme) must not bypass the up-front check.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-470|BOXP-470: upper pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-470 in-progress codex boxp/example
+  printf '%s\n' '- continue https://GitHub.com/BOXP/Example/pull/201' >> "${vault}/Tickets/BOXP-470.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" g 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-470)" == 0 ]] || fail "an upper-case PR URL must not bypass the PR budget"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-471|BOXP-471: bare pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-471 in-progress codex boxp/example
+  printf '%s\n' '- continue github.com/boxp/example/pull/201' >> "${vault}/Tickets/BOXP-471.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" h 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-471)" == 0 ]] || fail "a scheme-less PR URL must not bypass the PR budget"
+}
+
+test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized() {
+  local tmp vault state bin t
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  # PR 601 has 1 of 2 failures left.  Two tickets referencing it start in
+  # separate runner processes at the same time: only one may run, otherwise
+  # both would fail and the PR would overshoot its budget.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-472|BOXP-472: seed]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-472 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" seed 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-473|BOXP-473: race a]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-474|BOXP-474: race b]] #ticket status::in-progress"
+  for t in BOXP-473 BOXP-474; do
+    write_ticket "${vault}" "${t}" in-progress codex boxp/example
+    printf '%s\n' '- continue https://github.com/boxp/example/pull/601' >> "${vault}/Tickets/${t}.md"
+  done
+  for t in BOXP-473 BOXP-474; do
+    PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"r","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_SLEEP=3 CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/601\nTASK_BOARD_RESULT: review' CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket "${t}" >/dev/null &
+  done
+  wait
+  [[ "$(( $(budget_run_count "${state}" BOXP-473) + $(budget_run_count "${state}" BOXP-474) ))" == 1 ]] || fail "concurrent starts on one PR must be serialized"
+  [[ "$(grep -o ':pr "boxp/example#601"' "${state}/gate-failure-budget.edn" | wc -l)" == 2 ]] || fail "PR 601 must stop at 2/2"
+  # The loser stays untouched and, now that the PR is spent, never starts.
+  for t in BOXP-473 BOXP-474; do
+    PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket "${t}" >/dev/null
+  done
+  [[ "$(( $(budget_run_count "${state}" BOXP-473) + $(budget_run_count "${state}" BOXP-474) ))" == 1 ]] || fail "no run may start on the spent PR"
 }
 
 test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
@@ -3758,6 +3798,7 @@ test_gate_failure_budget_grant_resume_and_no_reset_on_success
 test_gate_failure_budget_stricter_short_term_limit_still_applies
 test_gate_failure_budget_concurrent_updates_do_not_lose_counts
 test_gate_failure_budget_concurrent_ticks_do_not_lose_counts
+test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized
 test_groom_prompt_contains_investigation_steps
 test_implement_prompt_includes_append_note
 test_fable_implement_prompt_includes_append_note

@@ -1644,8 +1644,6 @@
 ;; explicit Owner grant (`gate-budget-grant`), which adds budget instead of
 ;; deleting history.  See docs/project_docs/BOXP-369/plan.md.
 
-(declare github-pr-urls)
-
 (def gate-failure-budget-max 10)
 
 (defn gate-failure-budget-limit []
@@ -1674,7 +1672,7 @@
         (f)))))
 
 (defn read-gate-failure-budget []
-  (read-edn-file (gate-failure-budget-path) {:format-version 1 :failures {} :grants []}))
+  (read-edn-file (gate-failure-budget-path) {:format-version 1 :failures {} :grants [] :reservations {}}))
 
 (defn write-gate-failure-budget! [budget]
   ;; Write a sibling file and rename it so a crash never truncates history.
@@ -1756,21 +1754,81 @@
           :statuses statuses
           :exhausted? (boolean (some :exhausted? statuses))})))))
 
+(defn referenced-pr-ids
+  "Canonical PR ids referenced anywhere in `text`.  Matched case-insensitively
+  and without requiring a scheme, so `https://GitHub.com/...` or a bare
+  `github.com/...` cannot slip past the budget check."
+  [text]
+  (->> (re-seq #"(?i)github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))
+       (keep canonical-pr-id)
+       distinct))
+
+(defn gate-budget-ticket-pr-ids [budget ticket-id ticket-text]
+  ;; PRs the ticket has failed on plus PRs its body/Notes reference.
+  (->> (concat (->> (vals (:failures budget))
+                    (filter #(= ticket-id (:ticket %)))
+                    (keep :pr))
+               (referenced-pr-ids ticket-text))
+       distinct
+       vec))
+
+(defn gate-budget-exhausted-in? [budget ticket-id pr-ids]
+  (boolean (some :exhausted? (cons (gate-budget-status budget :ticket ticket-id)
+                                   (map #(gate-budget-status budget :pr %) pr-ids)))))
+
 (defn gate-budget-exhausted-for-ticket?
   "True when the ticket's own cumulative budget, or that of any PR it has
-  failed on or that its text (body/Notes) references, is spent.  Checked
-  before any automatic run starts, so moving an exhausted PR to another
-  ticket does not open a fresh automatic run on it.  `ticket-text` is the
-  ticket file content (nil when unreadable)."
+  failed on or that its text (body/Notes) references, is spent.  A cheap
+  pre-check before taking the ticket lock; `reserve-gate-budget-run!` is the
+  authoritative check.  `ticket-text` is the ticket file content (nil when
+  unreadable)."
   [ticket-id ticket-text]
-  (let [budget (read-gate-failure-budget)
-        pr-ids (->> (concat (->> (vals (:failures budget))
-                                 (filter #(= ticket-id (:ticket %)))
-                                 (keep :pr))
-                            (keep canonical-pr-id (github-pr-urls ticket-text)))
-                    distinct)]
-    (some :exhausted? (cons (gate-budget-status budget :ticket ticket-id)
-                            (map #(gate-budget-status budget :pr %) pr-ids)))))
+  (let [budget (read-gate-failure-budget)]
+    (gate-budget-exhausted-in? budget ticket-id
+                               (gate-budget-ticket-pr-ids budget ticket-id ticket-text))))
+
+(defn gate-budget-reservation-live?
+  "A reservation lives exactly as long as the ticket lock of its run, so a
+  finished, crashed or recovered run never needs an explicit release."
+  [{:keys [ticket run-id]}]
+  (let [lock (try (read-edn-file (lock-path ticket) nil)
+                  ;; A lock being rewritten is treated as live (fail closed);
+                  ;; the next tick re-reads it.
+                  (catch Exception _ {:run-id run-id :heartbeat-at (now-str)}))]
+    (boolean (and lock (= run-id (:run-id lock)) (not (stale-lock? lock))))))
+
+(defn reserve-gate-budget-run!
+  "Authoritative start check, taken after the ticket lock and before any
+  lane/Notes transition.  Under the budget lock it re-checks exhaustion and
+  serializes runs per PR: while another ticket's live run holds a PR this
+  ticket references or has failed on, this run does not start.  Without that,
+  two tickets on the same PR could both pass the check near the limit and
+  keep failing after it is spent.  Returns true when the run may start."
+  [ticket-id run-id ticket-text]
+  (with-gate-failure-budget-lock
+   (fn []
+     (let [budget (read-gate-failure-budget)
+           pr-ids (gate-budget-ticket-pr-ids budget ticket-id ticket-text)
+           live (into {} (filter (comp gate-budget-reservation-live? val))
+                      (:reservations budget))
+           held-by-other (->> (vals live)
+                              (remove #(= ticket-id (:ticket %)))
+                              (mapcat :prs)
+                              set)
+           conflict (first (filter held-by-other pr-ids))
+           exhausted? (gate-budget-exhausted-in? budget ticket-id pr-ids)
+           ok? (and (not exhausted?) (not conflict))]
+       (write-gate-failure-budget!
+        (assoc budget :reservations
+               (cond-> live
+                 ok? (assoc ticket-id {:ticket ticket-id :run-id run-id :prs pr-ids
+                                       :reserved-at (now-str)}))))
+       (cond
+         exhausted? (log! (str "gate failure budget exhausted; not starting " ticket-id
+                               " until an Owner gate-budget-grant"))
+         conflict (log! (str "gate failure budget: " conflict
+                             " is held by another ticket's run; not starting " ticket-id)))
+       ok?))))
 
 (defn gate-budget-report
   "Japanese stop report.  Built only from counts, gate names, classes and the
@@ -3517,7 +3575,17 @@
                  candidate)]
     (when action
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
-            lock (acquire-lock! ticket-id action effective-lane)]
+            lock (when-let [lock (acquire-lock! ticket-id action effective-lane)]
+                   ;; BOXP-369: the pre-check above is not atomic with the
+                   ;; start; reserve under the budget lock before any
+                   ;; lane/Notes transition and back out if it is refused.
+                   (if (or (not (#{:implement :review-fix :blocked-retry} action))
+                           (reserve-gate-budget-run!
+                            ticket-id (:run-id lock)
+                            (try (slurp (str (ticket-path ticket-id)))
+                                 (catch Exception _ nil))))
+                     lock
+                     (do (release-lock! ticket-id lock) nil)))]
         (when lock
           (let [stop? (atom false)
                 hb (heartbeat! ticket-id lock stop?)
