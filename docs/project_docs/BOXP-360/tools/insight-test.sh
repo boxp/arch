@@ -256,6 +256,31 @@ bb ai_ops_insight.bb report "$t12" 20261017T000000Z "$t12/vault" >"$t12/r.edn"
 check "同秒の契機のみは ambiguous-same-second、後に確実な契機があればそちらで分類" \
   '(let [rr (:review-resume r)] (and (= 1 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "none-observed"])) (= 2 (:same-second-boundary rr))))' "$t12/r.edn"
 
+# 次 run 開始と同じ秒の契機 note も前後不明。確定区間に入れず、ack 遅延・催促回数を確定しない
+t13="$tmp/t13"; mkdir -p "$t13/vault/Tickets"
+for t in BOXP-930 BOXP-931 BOXP-932; do
+  ROOT=$t13 run $t 20261016T000000Z succeeded implement review
+  ROOT=$t13 run $t 20261016T060000Z succeeded implement review
+done
+st="2026-10-16 06:00:00" # 次 run の開始 (run-id) と同じ秒。run() の finished-at も同秒のため後続停止の終了境界にも当たる
+cat >"$t13/vault/Tickets/BOXP-930.md" <<MD
+## Notes
+- $st UTC [kohako-supervisor]: start same second only
+MD
+cat >"$t13/vault/Tickets/BOXP-931.md" <<MD
+## Notes
+- 2026-10-16 03:00:00 UTC [hermes-agent]: definite owner relay
+- $st UTC [kohako-supervisor]: start same second, different kind
+MD
+cat >"$t13/vault/Tickets/BOXP-932.md" <<MD
+## Notes
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: definite nudge
+- $st UTC [kohako-supervisor]: start same second, same kind
+MD
+bb ai_ops_insight.bb report "$t13" 20261017T000000Z "$t13/vault" >"$t13/r.edn"
+check "開始同秒の note は確定せず、種別が異なれば ambiguous、ack は unknown、催促は確定分のみ" \
+  '(let [rr (:review-resume r)] (and (= 2 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "supervisor" :ack-p50-min])) (nil? (get-in rr [:by-trigger "none-observed"])) (= 6 (:same-second-boundary rr)) (= 1 (get-in rr [:supervisor-nudged :stalls])) (= 0 (get-in rr [:supervisor-nudged :repeated-nudge-stalls])) (= 6 (get-in rr [:supervisor-nudged :ambiguous-nudge-stalls]))))' "$t13/r.edn"
+
 # 存在するが読めない Tickets ディレクトリは exit 2
 chmod 000 "$t9/vault/Tickets"
 if [ -r "$t9/vault/Tickets" ]; then

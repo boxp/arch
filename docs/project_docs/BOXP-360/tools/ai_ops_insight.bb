@@ -302,18 +302,33 @@
                            end (or to until-at)
                            ;; note 時刻は秒単位。prev 終了と同じ秒の note は前後を判定できないため、確実に後の note とは分ける
                            from-sec (when from (.truncatedTo from java.time.temporal.ChronoUnit/SECONDS))
-                           within-end? #(or (nil? end) (not (pos? (compare (:at %) end))))
+                           ;; 次 run 開始側も同様。開始と同じ秒の note は開始前か後か判定できないため確定区間に入れない
+                           to-sec (when to (.truncatedTo to java.time.temporal.ChronoUnit/SECONDS))
+                           within-end? #(if to-sec (neg? (compare (:at %) to-sec))
+                                          (or (nil? end) (not (pos? (compare (:at %) end)))))
                            ts (when-not (unreadable? t) (get triggers t))
                            in (when from (filter #(and (pos? (compare (:at %) from-sec)) (within-end? %)) ts))
-                           same-sec (when from (filter #(and (= (:at %) from-sec) (within-end? %)) ts))
-                           last-trigger (last (sort-by :at in))]]
+                           same-sec (when from (filter #(and (= (:at %) from-sec) (or (nil? to-sec) (not (pos? (compare (:at %) to-sec))))) ts))
+                           end-same-sec (when (and from to-sec (pos? (compare to-sec from-sec)))
+                                          (filter #(= (:at %) to-sec) ts))
+                           last-trigger (last (sort-by :at in))
+                           ;; 開始同秒の note が最後の契機だった可能性があり、種別が違えば分類を確定しない
+                           end-ambiguous? (boolean (seq end-same-sec))
+                           end-conflict? (and end-ambiguous? (or (nil? last-trigger)
+                                                                 (some #(not= (:kind %) (:kind last-trigger)) end-same-sec)))]]
                  {:ticket t :followed? (some? cur) :time-known? (some? from)
                   :next (when cur (classify-v1 prev cur))
-                  :same-second? (boolean (seq same-sec))
-                  :trigger (cond (unreadable? t) "unknown-unreadable" (nil? from) "unknown-time" last-trigger (:kind last-trigger)
+                  :same-second? (boolean (or (seq same-sec) end-ambiguous?))
+                  :trigger (cond (unreadable? t) "unknown-unreadable" (nil? from) "unknown-time"
+                                 end-conflict? "ambiguous-same-second"
+                                 last-trigger (:kind last-trigger)
                                  (seq same-sec) "ambiguous-same-second" :else "none-observed")
                   :nudges (count (filter #(= "supervisor" (:kind %)) in))
-                  :ack-min (when (and to last-trigger) (/ (.toSeconds (java.time.Duration/between (:at last-trigger) to)) 60.0))})
+                  ;; 開始同秒の supervisor note は催促回数に確定計上せず別掲
+                  :nudges-ambiguous (count (filter #(= "supervisor" (:kind %)) (concat same-sec end-same-sec)))
+                  ;; 開始同秒の note があると最後の契機が不明なため ack 遅延は unknown (nil)
+                  :ack-min (when (and to last-trigger (not end-ambiguous?))
+                             (/ (.toSeconds (java.time.Duration/between (:at last-trigger) to)) 60.0))})
         followed (filter :followed? stalls)
         acks (fn [xs] (keep :ack-min xs))
         by-trigger (into {} (for [[k xs] (group-by :trigger followed)]
@@ -329,7 +344,9 @@
      :by-trigger-next (frequencies (map (juxt :trigger :next) followed))
      :supervisor-nudged {:stalls (count (filter #(pos? (:nudges %)) stalls))
                          :tasks (count (set (map :ticket (filter #(pos? (:nudges %)) stalls))))
-                         :repeated-nudge-stalls (count (filter #(> (:nudges %) 1) stalls))}
+                         :repeated-nudge-stalls (count (filter #(> (:nudges %) 1) stalls))
+                         ;; 同秒境界の supervisor note を持つ停止。上の件数は確定分のみで、これは下限との差の上限
+                         :ambiguous-nudge-stalls (count (filter #(pos? (:nudges-ambiguous %)) stalls))}
      :open-stalls {:n (count (remove :followed? stalls))
                    :with-supervisor-nudge (count (filter #(and (not (:followed? %)) (pos? (:nudges %))) stalls))}
      :ack-negative (count (filter #(neg? %) (acks followed)))}))
