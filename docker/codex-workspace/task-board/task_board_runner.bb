@@ -2550,6 +2550,13 @@
          :repos (vec (concat missing failed))}
         {:ok? true :restored-from (:run-id previous) :repos (vec (sort (keys sections)))}))))
 
+;; Without a prepared repository worktree pi would run in the bare workspace
+;; dir and the forced review result would move an untouched ticket to Review.
+(defn localllm-coder-workspace-check [workspace]
+  (if (seq (keep :path (:repo-worktrees workspace)))
+    {:ok? true}
+    {:ok? false :category "no-repo-worktree"}))
+
 (defn run-localllm-coder! [ticket-id action lane agent lock]
   (let [run (:run-id lock) dir (run-dir ticket-id run)
         workspace (prepare-run-workspace! ticket-id run)
@@ -2570,8 +2577,11 @@
                                         " are already applied in the workspace. Continue from them.\n"))
                                  "\nYou are a local model. Work only inside the workspace repositories. Run relevant tests. Do not git push or commit or create PRs. Do not run codex, claude, delegate.py or any other agent / cloud CLI. End with a TASK_BOARD_RESULT marker.\n"))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at started-at})
-    (let [readback (if-not (:ok? restore)
-                     restore
+    (let [ws-check (localllm-coder-workspace-check workspace)
+          readback (cond
+                     (not (:ok? ws-check)) ws-check
+                     (not (:ok? restore)) restore
+                     :else
                      (try
                      (let [response @(p/process ["curl" "--fail" "--silent" "--show-error" "--max-time" "10" (str base-url "/models")] {:out :string :err :string})]
                        (if (zero? (:exit response))
@@ -4801,6 +4811,8 @@
                      r (localllm-coder-restore! {:repo-worktrees [{:repo "t/ok" :path ok} {:repo "t/conflict" :path conflict}]} {:run-id "r1" :path patch})]
                  [(:ok? r) (:repos r) (slurp (str (fs/path ok "a.txt")))])
                [false ["t/conflict"] "a\n"]]
+              ["coder workspace check" (mapv localllm-coder-workspace-check [{:repo-worktrees []} {:repo-worktrees [{:repo "t/r" :error "x"}]} {:repo-worktrees [{:repo "t/r" :path "/w/r"}]}])
+               [{:ok? false :category "no-repo-worktree"} {:ok? false :category "no-repo-worktree"} {:ok? true}]]
               ["coder restore without previous patch" (localllm-coder-restore! {:repo-worktrees []} nil) {:ok? true}]
               ["coder env allowlist" (localllm-coder-base-env {"PATH" "/usr/bin" "GH_TOKEN" "x" "AWS_PROFILE" "p" "KUBECONFIG" "k" "HOME" "/home/boxp" "ANTHROPIC_API_KEY" "a"} "/run/h")
                {"PATH" "/usr/bin" "HOME" "/run/h" "PI_OFFLINE" "1" "CODEX_HOME" "/run/h/.codex" "CLAUDE_CONFIG_DIR" "/run/h/.claude"}]
