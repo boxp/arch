@@ -1665,6 +1665,179 @@
     (when (not= state next-state)
       (write-runner-state! next-state))))
 
+
+;; --- BOXP-369: cumulative gate-failure budget ---------------------------
+;; The short-term retry limit above is keyed by the failure fingerprint, so a
+;; changed review text (or a new head) starts a fresh 1/limit count; BOXP-360
+;; observed 58 consecutive automatic retries that way.  This budget counts
+;; every retryable gate failure per ticket and per canonical PR independently
+;; of the failure text, head, run, runner restart or assignee.  It lives in its
+;; own file so clear-pr-gate-retries! (success) never resets it, and records
+;; are only ever appended: the only way to continue after exhaustion is an
+;; explicit Owner grant (`gate-budget-grant`), which adds budget instead of
+;; deleting history.  See docs/project_docs/BOXP-369/plan.md.
+
+(def gate-failure-budget-max 10)
+
+(defn gate-failure-budget-limit []
+  ;; The environment may only tighten the initial budget, never loosen it.
+  (let [configured (try (env-long "CODEX_TASK_BOARD_GATE_FAILURE_BUDGET"
+                                  (str gate-failure-budget-max))
+                        (catch Exception _ gate-failure-budget-max))]
+    (max 1 (min gate-failure-budget-max configured))))
+
+(defn gate-failure-budget-path []
+  (fs/path (root) "gate-failure-budget.edn"))
+
+(defn gate-failure-budget-lock-path []
+  (fs/path (root) "locks" "gate-failure-budget.lock"))
+
+(def gate-failure-budget-mutex (Object.))
+
+(defn with-gate-failure-budget-lock [f]
+  ;; Same pattern as with-ticket-lock-guard: `locking` for threads in this JVM,
+  ;; FileLock for helper commands and replacement runner JVMs on the PVC.
+  (locking gate-failure-budget-mutex
+    (fs/create-dirs (fs/parent (gate-failure-budget-lock-path)))
+    (with-open [file (java.io.RandomAccessFile. (str (gate-failure-budget-lock-path)) "rw")
+                channel (.getChannel file)]
+      (let [_file-lock (.lock channel)]
+        (f)))))
+
+(defn read-gate-failure-budget []
+  (read-edn-file (gate-failure-budget-path) {:format-version 1 :failures {} :grants []}))
+
+(defn write-gate-failure-budget! [budget]
+  ;; Write a sibling file and rename it so a crash never truncates history.
+  (let [path (gate-failure-budget-path)
+        tmp (fs/path (fs/parent path) (str ".gate-failure-budget.edn." (random-uuid) ".tmp"))]
+    (write-edn-file! tmp budget)
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+
+(defn canonical-pr-id [pr-url]
+  ;; owner/repo#N, case-folded: the same PR under any URL spelling (trailing
+  ;; path, /files, different case) shares a single budget.
+  (when-let [[_ owner repo number] (re-find #"(?i)github\.com/([^/\s]+)/([^/\s]+)/pull/(\d+)"
+                                            (str pr-url))]
+    (str (str/lower-case owner) "/" (str/lower-case repo) "#" (Long/parseLong number))))
+
+(defn gate-failure-class [review-gate]
+  ;; Keep CI, review and merge-state failures apart from results that could
+  ;; not be determined.  Agent/infrastructure interruptions never reach a PR
+  ;; gate and are therefore not counted at all.
+  (let [gate (:gate review-gate)
+        kind (:failure-kind review-gate)]
+    (cond
+      (= :timeout kind) "result-unknown"
+      (= :ci gate) "ci-failure"
+      (= :codex-review gate) "review-findings"
+      (#{:mergeability :conflict} gate) "merge-state"
+      :else "result-unknown")))
+
+(defn gate-failure-class-basis [review-gate]
+  (str "gate=" (some-> (:gate review-gate) name)
+       "; failure-kind=" (or (some-> (:failure-kind review-gate) name) "none")))
+
+(defn gate-budget-granted [budget scope key]
+  (->> (:grants budget)
+       (filter #(and (= scope (:scope %)) (= key (:key %))))
+       (map #(long (or (:amount %) 0)))
+       (reduce + 0)))
+
+(defn gate-budget-usage [budget scope key]
+  (let [field (if (= :ticket scope) :ticket :pr)]
+    (count (filter #(= key (get % field)) (vals (:failures budget))))))
+
+(defn gate-budget-status [budget scope key]
+  (let [used (gate-budget-usage budget scope key)
+        limit (+ (gate-failure-budget-limit) (gate-budget-granted budget scope key))]
+    {:scope scope :key key :used used :limit limit :exhausted? (>= used limit)}))
+
+(defn gate-budget-statuses [budget ticket-id pr-id]
+  (cond-> [(gate-budget-status budget :ticket ticket-id)]
+    pr-id (conj (gate-budget-status budget :pr pr-id))))
+
+(defn record-gate-failure-budget!
+  "Count one retryable gate failure for the ticket and its canonical PR.  The
+  record key is ticket/run-id, so re-processing the same run is idempotent."
+  [ticket-id run-id agent review-gate]
+  (with-gate-failure-budget-lock
+   (fn []
+     (let [budget (read-gate-failure-budget)
+           pr-id (canonical-pr-id (:url review-gate))
+           event-id (str ticket-id "/" run-id)
+           event {:ticket ticket-id
+                  :pr pr-id
+                  :run-id run-id
+                  :agent agent
+                  :gate (some-> (:gate review-gate) name)
+                  :class (gate-failure-class review-gate)
+                  :class-basis (gate-failure-class-basis review-gate)
+                  :category (get-in review-gate [:diagnostic :category])
+                  :recorded-at (now-str)}
+           budget (if (contains? (:failures budget) event-id)
+                    budget
+                    (assoc-in budget [:failures event-id] event))]
+       (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_GATE_BUDGET_HOLD_MILLIS")]
+         ;; Deterministic black-box race hook; unset in the deployment.
+         (Thread/sleep (Long/parseLong hold-ms)))
+       (write-gate-failure-budget! budget)
+       (let [statuses (gate-budget-statuses budget ticket-id pr-id)]
+         {:event (get-in budget [:failures event-id])
+          :statuses statuses
+          :exhausted? (boolean (some :exhausted? statuses))})))))
+
+(defn gate-budget-exhausted-for-ticket?
+  "True when the ticket's own cumulative budget, or that of any PR it has
+  failed on, is spent.  Checked before any automatic run starts."
+  [ticket-id]
+  (let [budget (read-gate-failure-budget)
+        pr-ids (->> (vals (:failures budget))
+                    (filter #(= ticket-id (:ticket %)))
+                    (keep :pr)
+                    distinct)]
+    (some :exhausted? (cons (gate-budget-status budget :ticket ticket-id)
+                            (map #(gate-budget-status budget :pr %) pr-ids)))))
+
+(defn gate-budget-report
+  "Japanese stop report.  Built only from counts, gate names, classes and the
+  derived diagnostic category, never from agent, review or CLI text."
+  [ticket-id review-gate budget-result]
+  (let [statuses (:statuses budget-result)
+        failures (->> (vals (:failures (read-gate-failure-budget)))
+                      (filter #(= ticket-id (:ticket %))))
+        by-class (frequencies (map :class failures))]
+    (str "ゲート累積失敗上限に到達したため自動再試行を停止しました。"
+         " 上限: "
+         (str/join ", " (map #(str (if (= :ticket (:scope %)) "ticket " "PR ")
+                                   (:key %) " " (:used %) "/" (:limit %))
+                             statuses))
+         "。 直近: gate=" (some-> (:gate review-gate) name)
+         " 分類=" (gate-failure-class review-gate)
+         " (" (gate-failure-class-basis review-gate) ")"
+         (when-let [diagnostic (:diagnostic review-gate)]
+           (str " 未解決=" (:category diagnostic) " 根拠=" (:path diagnostic)))
+         "。 実施済み: 自動修正run " (count failures) "回 ("
+         (str/join ", " (map (fn [[k v]] (str k "=" v)) (sort by-class)))
+         ")。 必要判断: 未解決指摘への方針を決め、続行する場合は Owner が"
+         " `task_board_runner.bb gate-budget-grant " ticket-id
+         " --amount N` で追加予算を付与してから担当を戻してください。")))
+
+(defn gate-budget-grant!
+  "Owner-only explicit resume: append a grant record.  Failure history is
+  never deleted, so the count stays auditable."
+  [scope key amount granted-by]
+  (when-not (pos? amount)
+    (throw (ex-info "amount must be positive" {:amount amount})))
+  (with-gate-failure-budget-lock
+   (fn []
+     (let [budget (read-gate-failure-budget)
+           grant {:scope scope :key key :amount amount
+                  :granted-by granted-by :granted-at (now-str)}
+           budget (update budget :grants (fnil conj []) grant)]
+       (write-gate-failure-budget! budget)
+       (gate-budget-status budget scope key)))))
+
 (defn ticket-repos [ticket-id]
   (->> (str/split (or (:repo (ticket-frontmatter ticket-id)) "") #"[,\s]+")
        (map str/trim)
