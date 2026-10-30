@@ -312,15 +312,18 @@
                            end-same-sec (when (and from to-sec (pos? (compare to-sec from-sec)))
                                           (filter #(= (:at %) to-sec) ts))
                            last-trigger (last (sort-by :at in))
+                           ;; note 時刻は秒単位。最後の秒に種別の異なる note が複数あると、どれが最後か判定できない
+                           last-conflict? (and last-trigger
+                                               (> (count (set (map :kind (filter #(= (:at %) (:at last-trigger)) in)))) 1))
                            ;; 開始同秒の note が最後の契機だった可能性があり、種別が違えば分類を確定しない
                            end-ambiguous? (boolean (seq end-same-sec))
                            end-conflict? (and end-ambiguous? (or (nil? last-trigger)
                                                                  (some #(not= (:kind %) (:kind last-trigger)) end-same-sec)))]]
                  {:ticket t :followed? (some? cur) :time-known? (some? from)
                   :next (when cur (classify-v1 prev cur))
-                  :same-second? (boolean (or (seq same-sec) end-ambiguous?))
+                  :same-second? (boolean (or (seq same-sec) end-ambiguous? last-conflict?))
                   :trigger (cond (unreadable? t) "unknown-unreadable" (nil? from) "unknown-time"
-                                 end-conflict? "ambiguous-same-second"
+                                 (or end-conflict? last-conflict?) "ambiguous-same-second"
                                  last-trigger (:kind last-trigger)
                                  (seq same-sec) "ambiguous-same-second" :else "none-observed")
                   :nudges (count (filter #(= "supervisor" (:kind %)) in))
