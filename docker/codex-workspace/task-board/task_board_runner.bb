@@ -1644,6 +1644,8 @@
 ;; explicit Owner grant (`gate-budget-grant`), which adds budget instead of
 ;; deleting history.  See docs/project_docs/BOXP-369/plan.md.
 
+(declare github-pr-urls)
+
 (def gate-failure-budget-max 10)
 
 (defn gate-failure-budget-limit []
@@ -1756,12 +1758,16 @@
 
 (defn gate-budget-exhausted-for-ticket?
   "True when the ticket's own cumulative budget, or that of any PR it has
-  failed on, is spent.  Checked before any automatic run starts."
-  [ticket-id]
+  failed on or that its text (body/Notes) references, is spent.  Checked
+  before any automatic run starts, so moving an exhausted PR to another
+  ticket does not open a fresh automatic run on it.  `ticket-text` is the
+  ticket file content (nil when unreadable)."
+  [ticket-id ticket-text]
   (let [budget (read-gate-failure-budget)
-        pr-ids (->> (vals (:failures budget))
-                    (filter #(= ticket-id (:ticket %)))
-                    (keep :pr)
+        pr-ids (->> (concat (->> (vals (:failures budget))
+                                 (filter #(= ticket-id (:ticket %)))
+                                 (keep :pr))
+                            (keep canonical-pr-id (github-pr-urls ticket-text)))
                     distinct)]
     (some :exhausted? (cons (gate-budget-status budget :ticket ticket-id)
                             (map #(gate-budget-status budget :pr %) pr-ids)))))
@@ -1787,8 +1793,11 @@
          "。 実施済み: 自動修正run " (count failures) "回 ("
          (str/join ", " (map (fn [[k v]] (str k "=" v)) (sort by-class)))
          ")。 必要判断: 未解決指摘への方針を決め、続行する場合は Owner が"
-         " `task_board_runner.bb gate-budget-grant " ticket-id
-         " --amount N --by <Owner>` で追加予算を付与してから担当を戻してください。")))
+         " 上限到達した各スコープへ "
+         (str/join " と " (map #(str "`task_board_runner.bb gate-budget-grant " (:key %)
+                                      " --amount N --by <Owner>`")
+                               (filter :exhausted? statuses)))
+         " で追加予算を付与してから担当を戻してください。")))
 
 (defn gate-budget-grant!
   "Owner-only explicit resume: append a grant record.  Failure history is
@@ -3498,7 +3507,10 @@
         ;; moved back.  Only an Owner `gate-budget-grant` reopens it.
         action (if (and (#{:implement :review-fix :blocked-retry} candidate)
                         (fs/exists? (gate-failure-budget-path))
-                        (gate-budget-exhausted-for-ticket? ticket-id))
+                        (gate-budget-exhausted-for-ticket?
+                         ticket-id
+                         (try (slurp (str (ticket-path ticket-id)))
+                              (catch Exception _ nil))))
                  (do (log! (str "gate failure budget exhausted; not starting " ticket-id
                                 " until an Owner gate-budget-grant"))
                      nil)

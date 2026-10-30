@@ -3417,6 +3417,8 @@ test_gate_failure_budget_boundary_9_10_11() {
   assert_file_contains "${vault}/Tickets/BOXP-369.md" '分類=ci-failure \(gate=ci; failure-kind=check-failure\)'
   assert_file_contains "${vault}/Tickets/BOXP-369.md" '未解決=ci-check-failure'
   assert_file_contains "${vault}/Tickets/BOXP-369.md" 'gate-budget-grant BOXP-369'
+  # Every exhausted scope gets its own resume command (ticket and PR).
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'gate-budget-grant boxp/example#123 --amount N'
   assert_file_not_contains "${vault}/Tickets/BOXP-369.md" 'super-secret-token'
   assert_file_not_contains "${state}/gate-failure-budget.edn" 'super-secret-token'
   [[ "$(budget_run_count "${state}" BOXP-369)" == 10 ]] || fail "expected exactly 10 runs"
@@ -3450,6 +3452,23 @@ test_gate_failure_budget_multiple_prs_and_shared_pr() {
   budget_fail_tick "${vault}" "${state}" "${bin}" d 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
   assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-462: same pr\]\].*status::blocked'
   assert_file_contains "${vault}/Tickets/BOXP-462.md" 'PR boxp/example#201 2/2'
+  # Only the PR scope is spent for BOXP-462, so only its grant is suggested.
+  assert_file_contains "${vault}/Tickets/BOXP-462.md" 'gate-budget-grant boxp/example#201 --amount N'
+  assert_file_not_contains "${vault}/Tickets/BOXP-462.md" 'gate-budget-grant BOXP-462'
+
+  # Re-assigning the exhausted PR to a brand-new ticket must not start an
+  # automatic run: the PR referenced in the ticket text is checked up front.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-468|BOXP-468: moved pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-468 in-progress codex boxp/example
+  printf '%s\n' '- 2026-10-30: continue https://github.com/boxp/example/pull/201/files' >> "${vault}/Tickets/BOXP-468.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" e 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-468)" == 0 ]] || fail "a new ticket on an exhausted PR must not start"
+  # A new ticket referencing an unexhausted PR still runs normally.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-469|BOXP-469: fresh pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-469 in-progress codex boxp/example
+  printf '%s\n' '- see https://github.com/boxp/example/pull/209' >> "${vault}/Tickets/BOXP-469.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" f 209 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-469)" == 1 ]] || fail "an unexhausted PR reference must not block"
 }
 
 test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
