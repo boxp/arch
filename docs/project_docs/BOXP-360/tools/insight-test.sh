@@ -6,9 +6,10 @@ cd "$(dirname "$0")"
 tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
 
 run() { # ticket run-id status action result [gate]
-  mkdir -p "$tmp/runs/$1/$2"
+  local root=${ROOT:-$tmp}
+  mkdir -p "$root/runs/$1/$2"
   local gate=""; [ -n "${6:-}" ] && gate=":review-gate {:gate :$6 :diagnostic {:category \"codex-review-findings\"}}"
-  echo "{:ticket \"$1\" :run-id \"$2\" :status :$3 :action :$4 :result \"$5\" :agent \"claude-opus\" :finished-at \"$(echo "$2" | sed -E 's/^(....)(..)(..)T(..)(..)(..)Z.*/\1-\2-\3T\4:\5:\6Z/')\" $gate}" >"$tmp/runs/$1/$2/summary.edn"
+  echo "{:ticket \"$1\" :run-id \"$2\" :status :$3 :action :$4 :result \"$5\" :agent \"claude-opus\" :finished-at \"$(echo "$2" | sed -E 's/^(....)(..)(..)T(..)(..)(..)Z.*/\1-\2-\3T\4:\5:\6Z/')\" $gate}" >"$root/runs/$1/$2/summary.edn"
 }
 # BOXP-901: groom -> implement (是正ではない) -> gate 失敗 12 連続 -> pass -> Review 後に Owner 起点の再開
 run BOXP-901 20261001T000000Z groom groom review
@@ -27,11 +28,12 @@ sed -i 's/:status :groom :action :groom/:status :succeeded :action :groom/' "$tm
 
 bb ai_ops_insight.bb report "$tmp" 20261005T000000Z >"$tmp/r.edn"
 
-check() { # 説明 clojure-expr(r に report)
-  if bb -e "(let [r (clojure.edn/read-string (slurp \"$tmp/r.edn\"))] (when-not $2 (System/exit 1)))"; then
+check() { # 説明 clojure-expr(r に report)  [report file]
+  local f=${3:-$tmp/r.edn}
+  if bb -e "(let [r (clojure.edn/read-string (slurp \"$f\"))] (when-not $2 (System/exit 1)))"; then
     echo "ok - $1"
   else
-    echo "not ok - $1"; bb -e "(clojure.pprint/pprint (clojure.edn/read-string (slurp \"$tmp/r.edn\")))"; exit 1
+    echo "not ok - $1"; bb -e "(clojure.pprint/pprint (clojure.edn/read-string (slurp \"$f\")))"; exit 1
   fi
 }
 check "groom->implement は v0 では reopen、v1 では是正に数えない" \
@@ -50,3 +52,25 @@ check "snapshot 上限より後の run を除外" \
   '(and (= 19 (get-in r [:snapshot :runs])) (nil? (get-in r [:gate-rework :by-gate "ci"])))'
 check "Review 終了から次 run までの待ちを next 種別ごとに出す" \
   '(and (= 3 (get-in r [:review-wait :followed])) (= 3.0 (get-in r [:review-wait :by-next "reopen_after_review" :p50-h])))'
+
+# --- codex-review 指摘の回帰 (別 snapshot) ---
+t2="$tmp/t2"; mkdir -p "$t2"
+# BOXP-903: 履歴の先頭が review-fix。gate 失敗 5 回 -> gate 情報なし retry -> gate 失敗 5 回 -> pass
+ROOT=$t2 run BOXP-903 20261004T000000Z succeeded review-fix review
+for i in 10 11 12 13 14; do ROOT=$t2 run BOXP-903 20261004T${i}0000Z retrying implement review codex-review; done
+ROOT=$t2 run BOXP-903 20261004T150000Z retrying implement review
+for i in 16 17 18 19 20; do ROOT=$t2 run BOXP-903 20261004T${i}0000Z retrying implement review codex-review; done
+ROOT=$t2 run BOXP-903 20261004T210000Z succeeded implement review
+# BOXP-904: gate 情報なし retry が 10 連続 (レビュー反復ではない)
+for i in 10 11 12 13 14 15 16 17 18 19; do ROOT=$t2 run BOXP-904 20261005T${i}0000Z retrying implement review; done
+ROOT=$t2 run BOXP-904 20261005T200000Z succeeded implement review
+# BOXP-905: 最新 run が gate 失敗で後続 run 未開始
+ROOT=$t2 run BOXP-905 20261006T000000Z succeeded implement review
+ROOT=$t2 run BOXP-905 20261006T010000Z retrying implement review codex-review
+bb ai_ops_insight.bb report "$t2" >"$t2/r.edn"
+check "gate 情報なし retry はレビュー反復ループに数えず、gate 失敗の系列を区切る" \
+  '(and (empty? (get-in r [:review-loops :detected])) (= 5 (get-in r [:gate-rework :longest-streak 0 1])))' "$t2/r.edn"
+check "先頭 run の review-fix も v1 で review_fix (agent-system・Owner 可視)" \
+  '(and (= 1 (get-in r [:transitions :v1 "review_fix"])) (= 1 (get-in r [:transitions :v0->v1 ["correction" "review_fix"]])) (= 1 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])))' "$t2/r.edn"
+check "後続 run 未開始の最新 gate 失敗も内部再作業と agent-system task 率に入る (pending 別掲)" \
+  '(and (= 11 (get-in r [:gate-rework :total])) (= 1 (get-in r [:gate-rework :pending])) (= 1 (get-in r [:gate-rework :top-tasks 1 1])) (= 2 (get-in r [:task-rates :v1-agent-system-tasks :n])) (= 3 (get-in r [:task-rates :denominator-reached-review])))' "$t2/r.edn"

@@ -54,7 +54,8 @@
 ;;   cur.action=review-fix                          -> correction gate_defect (agent-system)
 ;;   prev succeeded & result review/done & cur implement/docs-edit -> reopen (unknown)
 ;; v1: 前 run の終わり方で「なぜ次の run が始まったか」を分ける。
-;;   gate_rework          : 前 run が review gate 失敗で retrying (Owner に届く前の内部再作業, agent-system)
+;;   gate_rework          : 前 run が review gate 失敗で retrying (Owner に届く前の内部再作業, agent-system)。
+;;                          件数・task 率は失敗 run 自体で数える (後続 run 未開始の最新失敗も含む)
 ;;   review_fix           : cur.action=review-fix (v0 と同じ, agent-system)
 ;;   groom_to_implement   : 前 run が groom/docs-groom で正常終了 (段階の継続, 是正ではない)
 ;;   resume_interrupted   : 前 run が interrupted / agent-process-error / failed (基盤要因, 是正ではない)
@@ -77,8 +78,8 @@
 
 (defn classify-v1 [prev cur]
   (cond
-    (nil? prev) nil
     (= "review-fix" (:action cur)) "review_fix"
+    (nil? prev) nil
     (= "retrying" (:status prev)) (if (:gate prev) "gate_rework" "retry_unknown")
     (or (#{"interrupted" "failed" "unreadable" "running"} (:status prev))
         (= "agent-process-error" (:blocker prev))) "resume_interrupted"
@@ -127,13 +128,16 @@
 
 (def loop-threshold 10)
 
+(defn gate-fail? [r] (and (= "retrying" (:status r)) (some? (:gate r))))
+
 (defn review-loops
-  "gate 失敗による連続 retrying が threshold 回に達した系列 (レビュー反復ループの検出器)。
-   :hit-run-id は threshold 回目の失敗 run、:ongoing は最新 run がまだ retrying か。"
+  "gate 失敗 (gate 情報のある retrying) の連続が threshold 回に達した系列 (レビュー反復ループの検出器)。
+   gate 情報のない retrying (retry_unknown) や他の run は系列を区切る。
+   :hit-run-id は threshold 回目の失敗 run、:ongoing は最新 run がまだ gate 失敗か。"
   [runs-by-ticket threshold]
   (vec (for [[t runs] runs-by-ticket
-             streak (partition-by #(= "retrying" (:status %)) runs)
-             :when (and (= "retrying" (:status (first streak))) (>= (count streak) threshold))]
+             streak (partition-by gate-fail? runs)
+             :when (and (gate-fail? (first streak)) (>= (count streak) threshold))]
          {:ticket t :length (count streak)
           :hit-run-id (:run-id (nth streak (dec threshold)))
           :first-run-id (:run-id (first streak))
@@ -144,11 +148,18 @@
         reached-review (set (for [[t runs] runs-by-ticket :when (some #(= "review" (:result %)) runs)] t))
         tasks-with (fn [pred] (set (keep #(when (pred %) (:ticket %)) trs)))
         v0-tasks (tasks-with :v0)
-        v1-agent (tasks-with #(= "agent-system" (get-in correction-kinds [(:v1 %) :origin])))
+        ;; gate 失敗は失敗 run 自体を 1 件と数える (後続 run が未開始の最新失敗も含める)。
+        gate-fails (for [[t runs] runs-by-ticket
+                         [r nxt] (map vector runs (concat (rest runs) [nil]))
+                         :when (gate-fail? r)]
+                     {:ticket t :run r :followed? (some? nxt)})
+        v1-agent (into (tasks-with #(= "agent-system" (get-in correction-kinds [(:v1 %) :origin])))
+                       (map :ticket gate-fails))
         v1-owner-visible (tasks-with #(get-in correction-kinds [(:v1 %) :owner-visible]))
         v1-agent-owner-visible (tasks-with #(= "review_fix" (:v1 %)))
         count-by (fn [k pred] (frequencies (keep #(when (pred %) (k %)) trs)))
-        gate-rework-by-task (count-by :ticket #(= "gate_rework" (:v1 %)))
+        gate-rework-by-task (frequencies (map :ticket gate-fails))
+        gf-count-by (fn [f] (frequencies (map f gate-fails)))
         reopen-by-task (count-by :ticket #(= "reopen_after_review" (:v1 %)))
         ;; Review 停滞: review で正常終了した run の終了から次 run 開始までの時間 (次 run が無いものは別掲)
         review-waits (for [[t runs] runs-by-ticket
@@ -170,16 +181,18 @@
                   :v1-agent-system-tasks {:n (count (filter reached-review v1-agent)) :pct (pct (count (filter reached-review v1-agent)) (count reached-review))}
                   :v1-owner-visible-tasks {:n (count (filter reached-review v1-owner-visible)) :pct (pct (count (filter reached-review v1-owner-visible)) (count reached-review))}
                   :v1-owner-visible-agent-system-tasks {:n (count (filter reached-review v1-agent-owner-visible))}}
-     :gate-rework {:total (reduce + (vals gate-rework-by-task))
-                   :by-gate (count-by #(get-in % [:prev :gate]) #(= "gate_rework" (:v1 %)))
-                   :by-category (count-by #(or (get-in % [:prev :gate-category]) "none") #(= "gate_rework" (:v1 %)))
+     :gate-rework {:definition "gate 失敗 run (retrying かつ gate 情報あり) の件数。後続 run 未開始の最新失敗も含み :pending で別掲"
+                   :total (reduce + (vals gate-rework-by-task))
+                   :pending (count (remove :followed? gate-fails))
+                   :by-gate (gf-count-by #(get-in % [:run :gate]))
+                   :by-category (gf-count-by #(or (get-in % [:run :gate-category]) "none"))
                    :tasks (count gate-rework-by-task)
                    :pareto-top1 (pareto gate-rework-by-task 1) :pareto-top5 (pareto gate-rework-by-task 5)
                    :top-tasks (top 10 gate-rework-by-task)
-                   :by-month (count-by #(month (:cur %)) #(= "gate_rework" (:v1 %)))
-                   :by-agent (count-by #(or (get-in % [:prev :agent]) "unknown") #(= "gate_rework" (:v1 %)))
+                   :by-month (gf-count-by #(month (:run %)))
+                   :by-agent (gf-count-by #(or (get-in % [:run :agent]) "unknown"))
                    :longest-streak (top 5 (into {} (for [[t runs] runs-by-ticket]
-                                                     [t (reduce max 0 (map count (filter #(= "retrying" (:status (first %))) (partition-by :status runs))))])))}
+                                                     [t (reduce max 0 (map count (filter #(gate-fail? (first %)) (partition-by gate-fail? runs))))])))}
      :review-loops {:threshold loop-threshold
                     :detected (->> (review-loops runs-by-ticket loop-threshold) (sort-by (comp - :length)) vec)}
      :reopen-after-review {:total (reduce + (vals reopen-by-task)) :tasks (count reopen-by-task)

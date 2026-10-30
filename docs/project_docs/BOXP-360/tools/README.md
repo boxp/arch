@@ -60,5 +60,6 @@ bb ai_ops_insight.bb report ~/.codex-task-board 20261030T065040Z   # run-id 上�
 summary.edn の status / action / result / blocker-category / agent / 時刻 / review-gate の gate 名と診断 category だけを読み、
 run 間の遷移を v0 (公開中の SLI と同じ規則) と v1 で並べて分類する。v1 は gate 失敗の retrying を内部再作業 (`gate_rework`) として数え、
 groom→implement・中断/blocked からの再開を是正から外し、Review 後の再開は原因 unknown のまま残す。
-連続 10 回以上の gate 失敗はレビュー反復ループ (`review-loops`) として検出する。公開 SLI と Prometheus 出力は変更しない。
+gate_rework の件数は失敗 run 自体で数える (後続 run 未開始の最新失敗は `pending` として別に示す)。
+連続 10 回以上の gate 失敗 (gate 情報のない retry は系列を区切る) はレビュー反復ループ (`review-loops`) として検出する。公開 SLI と Prometheus 出力は変更しない。
 結果と読み方は `../insight-2026-10-30.md`。
