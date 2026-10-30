@@ -42,7 +42,8 @@
                                          (if (fs/exists? f)
                                            (or (read-summary f) {:run-id (str (fs/file-name %)) :status "unreadable"})
                                            {:run-id (str (fs/file-name %)) :status "unreadable"})))
-                                (remove #(and until (pos? (compare (:run-id %) until))))
+                                ;; 上限は run ID の先頭を上限の長さで比較する (時刻だけの上限 20261030T065040Z では同じ秒の run も含める)
+                                (remove #(and until (pos? (compare (subs (:run-id %) 0 (min (count (:run-id %)) (count until))) until))))
                                 (sort-by :run-id))]
                 :when (seq runs)]
             [ticket runs]))))
@@ -56,7 +57,9 @@
 ;; v1: 前 run の終わり方で「なぜ次の run が始まったか」を分ける。
 ;;   gate_rework          : 前 run が review gate 失敗で retrying (Owner に届く前の内部再作業, agent-system)。
 ;;                          件数・task 率は失敗 run 自体で数える (後続 run 未開始の最新失敗も含む)
-;;   review_fix           : cur.action=review-fix (v0 と同じ, agent-system)
+;;                          前 run が gate 失敗なら cur が review-fix でも gate_rework を優先する。
+;;                          不変条件: transitions.v1.gate_rework = gate-rework.total - gate-rework.pending
+;;   review_fix           : cur.action=review-fix で前 run が gate 失敗でないもの (agent-system)
 ;;   groom_to_implement   : 前 run が groom/docs-groom で正常終了 (段階の継続, 是正ではない)
 ;;   resume_interrupted   : 前 run が interrupted / agent-process-error / failed (基盤要因, 是正ではない)
 ;;   resume_after_block   : 前 run が blocked (判断待ち解除。block 自体の妥当性は未評価)
@@ -78,9 +81,11 @@
 
 (defn classify-v1 [prev cur]
   (cond
+    ;; 前 run が gate 失敗なら、続く run が review-fix でも gate_rework (gate-rework の件数と遷移集計を一致させる)
+    (and prev (= "retrying" (:status prev)) (:gate prev)) "gate_rework"
     (= "review-fix" (:action cur)) "review_fix"
     (nil? prev) nil
-    (= "retrying" (:status prev)) (if (:gate prev) "gate_rework" "retry_unknown")
+    (= "retrying" (:status prev)) "retry_unknown"
     (or (#{"interrupted" "failed" "unreadable" "running"} (:status prev))
         (= "agent-process-error" (:blocker prev))) "resume_interrupted"
     (= "blocked" (:status prev)) "resume_after_block"
@@ -185,6 +190,7 @@
      :gate-rework {:definition "gate 失敗 run (retrying かつ gate 情報あり) の件数。後続 run 未開始の最新失敗も含み :pending で別掲"
                    :total (reduce + (vals gate-rework-by-task))
                    :pending (count (remove :followed? gate-fails))
+                   :followed (count (filter :followed? gate-fails))
                    :by-gate (gf-count-by #(get-in % [:run :gate]))
                    :by-category (gf-count-by #(or (get-in % [:run :gate-category]) "none"))
                    :tasks (count gate-rework-by-task)

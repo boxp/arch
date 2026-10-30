@@ -80,3 +80,21 @@ ROOT=$t2 run BOXP-906 20261007T010000Z retrying implement review codex-review
 bb ai_ops_insight.bb report "$t2" >"$t2/r2.edn"
 check "gate 失敗の retrying だけの task は Review 到達の分母に入れない (gate_rework には計上)" \
   '(and (= 3 (get-in r [:task-rates :denominator-reached-review])) (= 2 (get-in r [:task-rates :v1-agent-system-tasks :n])) (= 13 (get-in r [:gate-rework :total])))' "$t2/r2.edn"
+
+# --- codex-review 指摘の回帰 (2) ---
+t3="$tmp/t3"; mkdir -p "$t3"
+# BOXP-907: gate 失敗 -> review-fix (gate 失敗) -> review-fix 成功、最後に後続 run 未開始の gate 失敗
+ROOT=$t3 run BOXP-907 20261008T000000Z retrying implement review codex-review
+ROOT=$t3 run BOXP-907 20261008T010000Z retrying review-fix review codex-review
+ROOT=$t3 run BOXP-907 20261008T020000Z succeeded review-fix review
+ROOT=$t3 run BOXP-907 20261008T030000Z retrying review-fix review codex-review
+# BOXP-908: 上限と同じ秒に開始した run (run ID に suffix 付き) と、次の秒の run
+ROOT=$t3 run BOXP-908 20261009T000000Z-aaaa succeeded implement review
+ROOT=$t3 run BOXP-908 20261009T000001Z-bbbb retrying implement review ci
+bb ai_ops_insight.bb report "$t3" 20261009T000000Z >"$t3/r.edn"
+check "gate 失敗の後の review-fix は gate_rework (遷移集計 = total - pending で一致)" \
+  '(let [g (:gate-rework r)] (and (= 3 (:total g)) (= 1 (:pending g)) (= 2 (:followed g)) (= (- (:total g) (:pending g)) (get-in r [:transitions :v1 "gate_rework"])) (= 1 (get-in r [:transitions :v1 "review_fix"])) (= 2 (get-in r [:transitions :v0->v1 ["correction" "gate_rework"]]))))' "$t3/r.edn"
+check "時刻だけの上限では同じ秒の run を含め、次の秒の run は除外" \
+  '(and (= 5 (get-in r [:snapshot :runs])) (nil? (get-in r [:gate-rework :by-gate "ci"])))' "$t3/r.edn"
+bb ai_ops_insight.bb report "$t3" 20261009T000000Z-aaaa >"$t3/r2.edn"
+check "完全な run ID の上限は従来どおり辞書順で比較" '(= 5 (get-in r [:snapshot :runs]))' "$t3/r2.edn"

@@ -53,7 +53,7 @@ runner は `CODEX_TASK_BOARD_VAULT` が設定されている場合、全履歴�
 ## ai_ops_insight.bb (correction-rules/v1, 分析専用)
 
 ```sh
-bb ai_ops_insight.bb report ~/.codex-task-board 20261030T065040Z   # run-id 上限で固定 snapshot を再現
+bb ai_ops_insight.bb report ~/.codex-task-board 20261030T065040Z   # run-id 上限で固定 snapshot を再現 (上限の長さで先頭比較: 時刻だけなら同じ秒の run を含む)
 ./insight-test.sh                                                   # 本票の実例を本文なしで再現する回帰 eval (test.sh からも実行)
 ```
 
