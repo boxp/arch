@@ -2482,22 +2482,32 @@
         (= "blocked" marker) "blocked"
         :else "review"))
 
-(defn localllm-coder-diff! [workspace patch-path]
+(defn localllm-coder-base-shas
+  "HEAD of every repo worktree before pi starts, so the patch also holds
+  commits the model made against the instructions (codex review)."
+  [workspace]
+  (into {} (for [{:keys [path]} (:repo-worktrees workspace) :when path]
+             [path (str/trim (:out @(p/process ["git" "-C" path "rev-parse" "HEAD"] {:out :string :err :string})))])))
+
+(defn localllm-coder-diff! [workspace base-shas patch-path]
   (let [parts (for [{:keys [repo path]} (:repo-worktrees workspace) :when path]
                 (let [git (fn [args] @(p/process (into ["git" "-C" path] args) {:out :string :err :string}))
-                      stat (git ["diff" "--stat" "HEAD"])
+                      base (get base-shas path "HEAD")
+                      head (str/trim (:out (git ["rev-parse" "HEAD"])))
+                      stat (git ["diff" "--stat" base])
                       status (git ["status" "--porcelain"])
-                      diff (git ["diff" "--binary" "HEAD"])
+                      diff (git ["diff" "--binary" base])
                       untracked (git ["ls-files" "--others" "--exclude-standard" "-z"])
                       files (remove str/blank? (str/split (:out untracked) #"\u0000"))
                       extra (map #(git ["diff" "--no-index" "--binary" "--" "/dev/null" (str (fs/path path %))]) files)]
                   (when (or (some #(not= 0 (:exit %)) [stat status diff untracked])
                             (some #(not (contains? #{0 1} (:exit %))) extra))
                     (throw (ex-info "Failed to capture workspace diff" {:repo repo})))
-                  {:repo repo :stat (:out stat) :status (:out status)
+                  {:repo repo :stat (:out stat) :status (:out status) :base base :head head
+                   :committed? (and (not= "HEAD" base) (not= base head))
                    :patch (str "# Repository: " repo "\n" (:out diff) (apply str (map :out extra)))}))]
     (spit (str patch-path) (apply str (map :patch parts)))
-    (mapv #(select-keys % [:repo :stat :status]) parts)))
+    (mapv #(select-keys % [:repo :stat :status :base :head :committed?]) parts)))
 
 (defn run-localllm-coder! [ticket-id action lane agent lock]
   (let [run (:run-id lock) dir (run-dir ticket-id run)
@@ -2519,6 +2529,7 @@
                          (localllm-coder-match-model (json/parse-string (:out response) true) model)
                          {:ok? false :category "preflight-request-failed"}))
                      (catch Exception _ {:ok? false :category "preflight-request-failed"}))
+          base-shas (localllm-coder-base-shas workspace)
           execution (if (:ok? readback)
                       (try
                         (let [paths (keep :path (:repo-worktrees workspace))
@@ -2541,7 +2552,7 @@
           last-message (if (= "review" result)
                          (str (str/replace (:last-message parsed) #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" "[PR URL omitted]") "\nTASK_BOARD_REVIEW_PR: none\n")
                          (:last-message parsed))
-          diff-stat (localllm-coder-diff! workspace patch-path)
+          diff-stat (localllm-coder-diff! workspace base-shas patch-path)
           finished-at (now-str)
           evidence {:model model :provider provider :base-url base-url :router-readback readback
                     :models-seen (:models-seen parsed) :fallback? fallback? :started-at started-at
@@ -4685,6 +4696,23 @@
               ["coder fallback" (localllm-coder-result 0 "done" true) "blocked"]
               ["coder exit" (localllm-coder-result 1 "done" false) "blocked"]
               ["coder no model evidence" (:models-seen (localllm-coder-events [])) []]
+              ["coder patch keeps commits and untracked files"
+               (let [repo (str (fs/create-temp-dir))
+                     git (fn [& args] @(p/process (into ["git" "-C" repo "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))
+                     _ (git "init" "-q")
+                     _ (spit (str (fs/path repo "a.txt")) "a\n")
+                     _ (git "add" "a.txt")
+                     _ (git "commit" "-q" "-m" "init")
+                     ws {:repo-worktrees [{:repo "t/r" :path repo}]}
+                     bases (localllm-coder-base-shas ws)
+                     _ (spit (str (fs/path repo "a.txt")) "b\n")
+                     _ (git "commit" "-qam" "model commit")
+                     _ (spit (str (fs/path repo "new.txt")) "n\n")
+                     patch (str (fs/path repo ".." (str (fs/file-name repo) ".patch")))
+                     [stat] (localllm-coder-diff! ws bases patch)
+                     text (slurp patch)]
+                 [(:committed? stat) (boolean (re-find #"\+b" text)) (boolean (re-find #"new\.txt" text))])
+               [true true true]]
               ["coder env allowlist" (localllm-coder-base-env {"PATH" "/usr/bin" "GH_TOKEN" "x" "AWS_PROFILE" "p" "KUBECONFIG" "k" "HOME" "/home/boxp" "ANTHROPIC_API_KEY" "a"} "/run/h")
                {"PATH" "/usr/bin" "HOME" "/run/h" "PI_OFFLINE" "1" "CODEX_HOME" "/run/h/.codex" "CLAUDE_CONFIG_DIR" "/run/h/.claude"}]
               ["coder events" (localllm-coder-events [(json/generate-string {:type "message_end" :message {:role "assistant" :model "m" :provider "llama.cpp" :content [{:type "text" :text "hello"}]}})
