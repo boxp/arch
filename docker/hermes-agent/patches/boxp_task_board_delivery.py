@@ -86,19 +86,20 @@ def shape(source, result, response, marker, vault=VAULT):
 
 
 def recovered_marker(source, response, vault=VAULT):
-    """Crash-left marker: the same exact Notes completion proof as live shaping.
+    """A persisted marker does not establish whether the agent succeeded.
 
-    None means unrelated source; an empty string is proven intentional silence.
-    This is only called after upstream established a persisted final marker.
+    None means unrelated source. Even a silent Notes receipt cannot establish
+    the outcome of the crashed run, so require reconciliation instead of
+    suppressing a potentially undelivered failure.
     """
-    if getattr(getattr(source, "platform", None), "value", None) != "webhook" or not identity(source.chat_id):
+    ident = identity(source.chat_id)
+    if getattr(getattr(source, "platform", None), "value", None) != "webhook" or not ident:
         return None
-    text, silent = shape(source, {}, response, True, vault)
-    return "" if silent else text
+    return notice(ident[0], "recovered_outcome_unknown")
 
 
 async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vault=VAULT):
-    """None for unrelated routes. At most one send attempt per event.
+    """None for unrelated routes. At most one notice and one report per event.
 
     Persist intent BEFORE egress. Crashes/transport errors stay uncertain: a
     retry must reconcile the receipt and target, not risk a second side effect.
@@ -134,7 +135,11 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
         root = Path(root)
         root.mkdir(mode=0o700, parents=True, exist_ok=True)
         key = hashlib.sha256(event.encode()).hexdigest()
-        path = root / (key + ".json")
+        # A reconciliation notice is not the business report. Its successful
+        # delivery must not consume the report's receipt if a later authorized
+        # attempt supplies the missing report. Keep the same event-wide lock.
+        suffix = ".notice.json" if content.startswith(NOTICE) else ".json"
+        path = root / (key + suffix)
         with (root / (key + ".lock")).open("a") as lock:
             try:
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)

@@ -55,3 +55,11 @@
 - 独立codex-reviewで途中経過とfinalの分離、配送先例外、本文付きマーカー、起動後回復の指摘を受け、修正と回帰を追加した。最終review/CIの結果は票Notesを参照。
 
 - Trivy config全体検査を実行。変更対象Dockerfileのbaseline比較では既存DS-0002/DS-0026のみで増加なし（root実行/HEALTHCHECK未設定）。今回それら既存設計は変更しない。
+
+## P1 retry 実装・検証
+
+- 固定版の起動時復旧は保存された最終メッセージから単独マーカーを検出するが、agent の成功・失敗を復元しない。Notes の `result=silent` だけでは失敗後の配送前クラッシュを区別できないため、対象 task-board の復旧マーカーは `recovered_outcome_unknown` として event と照合手順を含む通知にする。成功した実行でもクラッシュ後は同じ通知になる。実行中に成功と silent receipt を確認できた場合の無通知は維持する。
+- SFW fixture で失敗・成否不明・成功の各復旧を確認し、silent receipt があっても通知されること、失敗時の通常処理と成功時の正当な無通知を確認した。ホストの `python3 -m unittest discover -s docker/hermes-agent/patches -p 'test_task_board_delivery.py' -v` は18件中17件成功、image内専用1件スキップ。
+- digest固定 Hermes v0.22.5 の隔離コンテナ（ネットワーク無効）へ fixture を渡し、patchを2回適用して4対象ファイルの SHA-256 が一致することを確認。同 image 内の unittest は18件すべて成功。実配送や稼働環境の変更はしていない。
+- 親の独立reviewで追加検出した「要確認通知のsentが後続の必要報告を抑止する」P1も修正。要確認通知は `.notice.json`、業務報告は `.json` で別receiptとし、eventの排他を共有する。同一eventへの無制限な再送は許可せず、各通知/報告はそれぞれ一度。未確認metadata付きでも本文を持つ報告は業務報告として重複を抑止する。
+- 最終版はホスト19件中18件pass/接続1件skip、image全体build内19件すべてpass。未解決通知→成功/要判断の報告→各重複を回帰し、通知が報告を消さないことを確認。指定helper委譲の証跡verifyも成功した。

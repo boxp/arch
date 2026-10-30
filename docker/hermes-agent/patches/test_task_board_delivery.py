@@ -104,6 +104,23 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(silent)
         self.assertIn("missing_reply", text)
 
+    async def test_reconciliation_notice_does_not_consume_later_report(self):
+        for outcome in ["notified", "question"]:
+            with self.subTest(outcome=outcome):
+                (self.vault / "BOXP-999.md").unlink(missing_ok=True)
+                self.root = Path(self.tmp.name) / outcome
+                self.calls.clear()
+                recovered = delivery.recovered_marker(self.source, "NO_REPLY", self.vault)
+                self.assertTrue((await self.send(recovered)).success)
+                self.assertTrue((await self.send(recovered)).success)
+                self.note(outcome)
+                report = "SFW recovered business report"
+                self.assertTrue((await self.send(report)).success)
+                self.assertTrue((await self.send(report)).success)
+                self.assertTrue((await self.send(recovered)).success)
+                self.assertEqual(self.calls, [recovered, report])
+                self.assertEqual(len(list(self.root.glob("*.json"))), 2)
+
     async def test_marker_plus_report_is_preserved_even_with_silent_receipt(self):
         self.note("silent")
         for text in ["NO_REPLY\nSFW report", "SFW report\n[SILENT]"]:
@@ -167,10 +184,27 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertIn("recovery=reconcile_receipt_and_destination", logs.output[0])
         self.assertNotIn("private fixture", logs.output[0])
 
-    async def test_crash_left_marker_uses_same_receipt_evidence(self):
-        self.assertIn("missing_reply", delivery.recovered_marker(self.source, "NO_REPLY", self.vault))
-        self.note("silent")
-        self.assertEqual(delivery.recovered_marker(self.source, "NO_REPLY", self.vault), "")
+    async def test_crash_left_marker_requires_outcome_reconciliation(self):
+        # Upstream recovers only the persisted marker, not the agent result.
+        # Failed, unknown and successful runs therefore have identical durable
+        # evidence and must all produce a notice, including with silent Notes.
+        for outcome, failed in [("failed", True), ("unknown", None), ("success", False)]:
+            with self.subTest(outcome=outcome):
+                (self.vault / "BOXP-999.md").unlink(missing_ok=True)
+                self.note("silent")
+                self.root = Path(self.tmp.name) / outcome
+                if failed is not None:
+                    live, silent = self.shape("NO_REPLY", marker=True, failed=failed)
+                    self.assertEqual(silent, not failed)
+                    if failed:
+                        self.assertIn("agent_failed", live)
+                recovered = delivery.recovered_marker(self.source, "NO_REPLY", self.vault)
+                self.assertIn("reason=recovered_outcome_unknown", recovered)
+                self.assertIn(EVENT, recovered)
+                self.assertTrue((await self.send(recovered)).success)
+                self.assertEqual(self.calls[-1], recovered)
+        (self.vault / "BOXP-999.md").unlink()
+        self.assertIn("recovered_outcome_unknown", delivery.recovered_marker(self.source, "NO_REPLY", self.vault))
         self.source.platform.value = "telegram"
         self.assertIsNone(delivery.recovered_marker(self.source, "NO_REPLY", self.vault))
 
