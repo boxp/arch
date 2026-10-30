@@ -3372,6 +3372,165 @@ test_outbox_disabled_by_env() {
   fi
 }
 
+# BOXP-369: cumulative gate-failure budget fixtures.  Each tick is a fresh
+# runner process, so every case also covers "runner restart".
+budget_fail_tick() {
+  # $1 vault $2 state $3 bin $4 check-name (varies the failure text) $5 PR number
+  PATH="${3}:$PATH" GH_FAKE_CHECKS="[{\"name\":\"${4}\",\"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\"}]" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/'"${5:-123}"$'\nTASK_BOARD_RESULT: review' run_tick "$1" "$2" env "${@:6}" >/dev/null
+}
+
+budget_set_lane() {
+  # Simulate the owner (or another assignee) putting the card back to work.
+  local vault="$1" ticket="$2" title="$3" assignee="$4"
+  write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: ${title}]] #ticket status::in-progress"
+  sed -i -e 's/^status: .*/status: in-progress/' -e "s/^assignee: .*/assignee: ${assignee}/" "${vault}/Tickets/${ticket}.md"
+}
+
+budget_run_count() {
+  find "$1/runs/$2" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l
+}
+
+test_gate_failure_budget_boundary_9_10_11() {
+  local tmp vault state bin i assignee
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-369|BOXP-369: budget]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-369 in-progress codex boxp/example
+
+  # A distinct failure text every run keeps the short-term fingerprint limit
+  # at 1/2 (the BOXP-360 pattern); assignees alternate (担当交代).  An env
+  # budget above 10 must not loosen the initial limit.
+  for i in 1 2 3 4 5 6 7 8 9; do
+    if (( i % 2 )); then assignee=codex; else assignee=codex-sol; fi
+    sed -i "s/^assignee: .*/assignee: ${assignee}/" "${vault}/Tickets/BOXP-369.md"
+    budget_fail_tick "${vault}" "${state}" "${bin}" "unit-${i}-token=super-secret-token" 123 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=50
+  done
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-369: budget\]\].*status::in-progress'
+  assert_file_not_contains "${vault}/Tickets/BOXP-369.md" 'gate-failure-budget-exhausted'
+
+  budget_fail_tick "${vault}" "${state}" "${bin}" "unit-10-token=super-secret-token" 123 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=50
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-369: budget\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'category=gate-failure-budget-exhausted'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'ゲート累積失敗上限に到達したため自動再試行を停止しました'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'ticket BOXP-369 10/10, PR boxp/example#123 10/10'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" '分類=ci-failure \(gate=ci; failure-kind=none\)'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" '未解決=ci-check-failure'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'gate-budget-grant BOXP-369'
+  assert_file_not_contains "${vault}/Tickets/BOXP-369.md" 'super-secret-token'
+  assert_file_not_contains "${state}/gate-failure-budget.edn" 'super-secret-token'
+  [[ "$(budget_run_count "${state}" BOXP-369)" == 10 ]] || fail "expected exactly 10 runs"
+
+  # 11th: moving the card / assignee back without a grant starts no run.
+  budget_set_lane "${vault}" BOXP-369 budget codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" "unit-11" 123
+  [[ "$(budget_run_count "${state}" BOXP-369)" == 10 ]] || fail "11th automatic attempt must not start"
+  # A new PR for the same ticket cannot escape the ticket budget either.
+  budget_fail_tick "${vault}" "${state}" "${bin}" "unit-11" 777
+  [[ "$(budget_run_count "${state}" BOXP-369)" == 10 ]] || fail "a new PR must not reopen the ticket budget"
+}
+
+test_gate_failure_budget_multiple_prs_and_shared_pr() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-461|BOXP-461: multi pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-461 in-progress codex boxp/example
+  # Ticket budget aggregates every PR: 3 different PRs exhaust budget 3.
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 202 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-461: multi pr\]\].*status::in-progress'
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 203 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-461: multi pr\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-461.md" 'ticket BOXP-461 3/3'
+
+  # PR budget aggregates tickets: a second ticket on PR 201 inherits its count.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-462|BOXP-462: same pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-462 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" d 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-462: same pr\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-462.md" 'PR boxp/example#201 2/2'
+}
+
+test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
+  local tmp vault state bin out
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-463|BOXP-463: grant]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-463 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::blocked'
+
+  # Invalid grants are rejected and change nothing.
+  if CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-463 --amount 0 --by boxp >/dev/null 2>&1; then
+    fail "grant with amount 0 must fail"
+  fi
+  # Ticket grant alone does not reopen while the PR budget is still spent.
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-463 --amount 1 --by boxp >/dev/null
+  budget_set_lane "${vault}" BOXP-463 grant codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-463)" == 2 ]] || fail "PR budget must still hold"
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant boxp/example#301 --amount 1 --by boxp >/dev/null
+  # Now one more run is allowed; it passes, and success does not reset counts.
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/301\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 >/dev/null
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::review'
+  out="$(CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 bb "${RUNNER}" gate-budget-status BOXP-463)"
+  [[ "${out}" == *':used 2, :limit 3'* ]] || fail "success must not reset the budget: ${out}"
+  # Granted budget is consumed by the next failure, which blocks again at 3/3.
+  budget_set_lane "${vault}" BOXP-463 grant codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" d 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-463.md" 'ticket BOXP-463 3/3, PR boxp/example#301 3/3'
+}
+
+test_gate_failure_budget_stricter_short_term_limit_still_applies() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-464|BOXP-464: short]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-464 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" same 401 CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=1
+  budget_fail_tick "${vault}" "${state}" "${bin}" same 401 CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=1
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-464: short\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-464.md" 'category=pr-gate-retry-limit'
+}
+
+test_gate_failure_budget_concurrent_updates_do_not_lose_counts() {
+  local tmp state i out
+  tmp="$(mktemp -d)"; state="${tmp}/state"
+  # Concurrent processes append grants under the FileLock; none may be lost.
+  for i in 1 2 3 4 5 6 7 8; do
+    CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-465 --amount 1 --by boxp >/dev/null &
+  done
+  wait
+  out="$(CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-status BOXP-465)"
+  [[ "${out}" == *':used 0, :limit 18'* ]] || fail "concurrent grants lost: ${out}"
+}
+
+test_gate_failure_budget_concurrent_ticks_do_not_lose_counts() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-466|BOXP-466: race a]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-467|BOXP-467: race b]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-466 in-progress codex boxp/example
+  write_ticket "${vault}" BOXP-467 in-progress codex boxp/example
+  # Both tickets fail on the same PR in separate processes while the budget
+  # writer holds the lock; the shared PR must count 2.
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"x","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/501\nTASK_BOARD_RESULT: review' CODEX_TASK_BOARD_TEST_GATE_BUDGET_HOLD_MILLIS=500 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-466 >/dev/null &
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"y","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/501\nTASK_BOARD_RESULT: review' CODEX_TASK_BOARD_TEST_GATE_BUDGET_HOLD_MILLIS=500 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-467 >/dev/null &
+  wait
+  [[ "$(grep -o ':pr "boxp/example#501"' "${state}/gate-failure-budget.edn" | wc -l)" == 2 ]] || fail "concurrent gate failures lost a count"
+}
+
+# Focused local runs: TASK_BOARD_TEST_ONLY="test_a test_b" runs only those.
+if [[ -n "${TASK_BOARD_TEST_ONLY:-}" ]]; then
+  for t in ${TASK_BOARD_TEST_ONLY}; do "${t}"; done
+  echo "selected task-board-runner tests passed"
+  exit 0
+fi
+
 test_parallel_codex_runs
 test_delegation_gate_end_to_end() {
   local tmp vault state bin mode ticket summary
@@ -3574,6 +3733,12 @@ test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes
 test_review_gate_retry_limit_blocks
 test_review_gate_retry_limit_is_scoped_to_failure_reason
 test_review_gate_pass_after_retry_moves_review
+test_gate_failure_budget_boundary_9_10_11
+test_gate_failure_budget_multiple_prs_and_shared_pr
+test_gate_failure_budget_grant_resume_and_no_reset_on_success
+test_gate_failure_budget_stricter_short_term_limit_still_applies
+test_gate_failure_budget_concurrent_updates_do_not_lose_counts
+test_gate_failure_budget_concurrent_ticks_do_not_lose_counts
 test_groom_prompt_contains_investigation_steps
 test_implement_prompt_includes_append_note
 test_fable_implement_prompt_includes_append_note
