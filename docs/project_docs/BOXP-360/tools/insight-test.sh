@@ -202,6 +202,23 @@ bb ai_ops_insight.bb report "$t9" 20261017T000000Z "$t9/vault" >"$t9/r.edn"
 check "Notes 内 code block の見出しで節を終えず、閉じフェンス後の契機を読む" \
   '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t9/r.edn"
 
+# 別節の code block 内にある `## Notes` 行を Notes 節の開始とみなさない (実際の Notes 節を読む)
+t10="$tmp/t10"; mkdir -p "$t10/vault/Tickets"
+ROOT=$t10 run BOXP-918 20261016T000000Z succeeded implement review
+ROOT=$t10 run BOXP-918 20261016T060000Z succeeded implement review
+cat >"$t10/vault/Tickets/BOXP-918.md" <<'MD'
+## Summary
+```
+## Notes
+- 2026-10-16 05:00:00 UTC [hermes-agent]: fake note in code block
+```
+## Notes
+- 2026-10-16 05:30:00 UTC [kohako-supervisor]: real note
+MD
+bb ai_ops_insight.bb report "$t10" 20261017T000000Z "$t10/vault" >"$t10/r.edn"
+check "code block 内の ## Notes を節開始とせず、実際の Notes 節を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t10/r.edn"
+
 # 存在するが読めない Tickets ディレクトリは exit 2
 chmod 000 "$t9/vault/Tickets"
 if [ -r "$t9/vault/Tickets" ]; then

@@ -36,14 +36,14 @@
 
 (defn notes-lines
   "`## Notes` 見出しから次の `## ` 見出しまでの行だけを返す (fenced code block 内の行は除く)。
-  code block 内の `## ` 行は節の終端とみなさない。"
+  節の開始・終端とも fence の外にある見出しだけを見る (code block 内の `## Notes` / `## ` 行は無視)。"
   [lines]
-  (loop [[line & more :as ls] (drop-while #(not (re-matches #"^## Notes\s*$" %)) lines)
+  (loop [[line & more :as ls] lines
          started? false fence? false acc []]
     (cond (empty? ls) acc
-          (not started?) (recur more true false acc)
-          (re-find #"^\s*(```|~~~)" line) (recur more true (not fence?) acc)
-          fence? (recur more true fence? acc)
+          (re-find #"^\s*(```|~~~)" line) (recur more started? (not fence?) acc)
+          fence? (recur more started? fence? acc)
+          (not started?) (recur more (boolean (re-matches #"^## Notes\s*$" line)) false acc)
           (re-matches #"^## .*" line) acc
           :else (recur more true fence? (conj acc line)))))
 
