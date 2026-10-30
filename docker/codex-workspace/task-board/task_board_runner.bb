@@ -1791,11 +1791,22 @@
   "A reservation lives exactly as long as the ticket lock of its run, so a
   finished, crashed or recovered run never needs an explicit release."
   [{:keys [ticket run-id]}]
-  (let [lock (try (read-edn-file (lock-path ticket) nil)
-                  ;; A lock being rewritten is treated as live (fail closed);
-                  ;; the next tick re-reads it.
-                  (catch Exception _ {:run-id run-id :heartbeat-at (now-str)}))]
-    (boolean (and lock (= run-id (:run-id lock)) (not (stale-lock? lock))))))
+  ;; Read under the ticket's lock guard: heartbeat!/acquire-lock! rewrite the
+  ;; lock file with a truncating `spit` under that guard, so an unguarded read
+  ;; could see an empty file (nil) and drop a live reservation.  Lock order is
+  ;; budget lock -> ticket guard; nothing takes the budget lock under a ticket
+  ;; guard.
+  (with-ticket-lock-guard
+   ticket
+   (fn []
+     (let [path (lock-path ticket)
+           live-fallback {:run-id run-id :heartbeat-at (now-str)}
+           lock (try (or (read-edn-file path nil)
+                         ;; An existing but empty/unreadable lock still fails
+                         ;; closed; the next tick re-reads it.
+                         (when (fs/exists? path) live-fallback))
+                     (catch Exception _ live-fallback))]
+       (boolean (and lock (= run-id (:run-id lock)) (not (stale-lock? lock))))))))
 
 (defn reserve-gate-budget-run!
   "Authoritative start check, taken after the ticket lock and before any
@@ -5263,6 +5274,43 @@
             (println "PASS: write-lines! replaces atomically and read-ticket derives frontmatter from the same text")
             (do (println (str "FAIL: atomic write / read-ticket leftovers=" (count leftovers) " fm=" frontmatter))
                 (swap! failures conj "atomic write / read-ticket"))))
+        (finally (fs/delete-tree tmp))))
+
+    ;; BOXP-369: a heartbeat rewrite truncates the lock file before writing it
+    ;; back (under the ticket guard).  A reservation check that lands in that
+    ;; window must still see the run as live, otherwise another ticket on the
+    ;; same PR could start while the budget has one failure left.
+    (let [tmp (str (fs/create-temp-dir))]
+      (try
+        (with-redefs [root (constantly tmp)]
+          (let [ticket "TEST-RESERVE"
+                path (lock-path ticket)
+                lock {:ticket ticket :run-id "r-1" :heartbeat-at (now-str)}
+                _ (write-edn-file! path lock)
+                in-window (promise)
+                writer (future
+                         (with-ticket-lock-guard
+                          ticket
+                          (fn []
+                            (spit (str path) "")
+                            (deliver in-window true)
+                            (Thread/sleep 300)
+                            (write-edn-file! path (assoc lock :heartbeat-at (now-str))))))
+                _ @in-window
+                during-rewrite (gate-budget-reservation-live? {:ticket ticket :run-id "r-1"})
+                _ @writer
+                ;; An existing but empty lock (no writer) still fails closed.
+                _ (spit (str path) "")
+                empty-lock (gate-budget-reservation-live? {:ticket ticket :run-id "r-1"})
+                _ (fs/delete path)
+                no-lock (gate-budget-reservation-live? {:ticket ticket :run-id "r-1"})
+                _ (write-edn-file! path (assoc lock :run-id "r-2"))
+                other-run (gate-budget-reservation-live? {:ticket ticket :run-id "r-1"})]
+            (if (and during-rewrite empty-lock (not no-lock) (not other-run))
+              (println "PASS: gate budget reservation stays live while its lock is being rewritten")
+              (do (println (str "FAIL: gate budget reservation liveness during=" during-rewrite
+                                " empty=" empty-lock " none=" no-lock " other=" other-run))
+                  (swap! failures conj "gate budget reservation liveness")))))
         (finally (fs/delete-tree tmp))))
 
     (if (seq @failures)
