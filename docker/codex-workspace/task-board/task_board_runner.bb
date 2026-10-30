@@ -2442,6 +2442,30 @@
        :size (get-in entry [:meta :size])})
     {:ok? false :category "model-not-found"}))
 
+;; Env passed to pi (BOXP-367 codex review P1): an allowlist instead of the
+;; runner env, and a run-local HOME holding only the pi llama.cpp provider
+;; config, so gh / aws / kubectl / codex / claude started by the model's bash
+;; tool find no credentials or config. Not an OS sandbox: absolute paths stay
+;; readable by the same uid (recorded as a known limit of the trial).
+(def localllm-coder-env-keys ["PATH" "LANG" "LC_ALL" "LC_CTYPE" "TERM" "TZ" "USER" "LOGNAME" "SHELL" "TMPDIR"])
+
+(defn localllm-coder-base-env [source-env home]
+  (assoc (select-keys source-env localllm-coder-env-keys)
+         "HOME" home "PI_OFFLINE" "1"
+         "CODEX_HOME" (str home "/.codex") "CLAUDE_CONFIG_DIR" (str home "/.claude")))
+
+(defn localllm-coder-env! [dir model]
+  (let [home (fs/path dir "coder-home")
+        agent-dir (fs/path home ".pi" "agent")
+        ;; lolice mounts the codex-workspace-pi-config ConfigMap here.
+        models-src (env "CODEX_TASK_BOARD_LOCALLLM_CODER_PI_MODELS" "/etc/pi-agent-config/models.json")]
+    (fs/create-dirs agent-dir)
+    (fs/copy models-src (fs/path agent-dir "models.json") {:replace-existing true})
+    (spit (str (fs/path agent-dir "settings.json"))
+          (json/generate-string {"defaultProvider" "llama.cpp" "defaultModel" model}))
+    (spit (str (fs/path agent-dir "auth.json")) "{}")
+    (localllm-coder-base-env (into {} (System/getenv)) (str home))))
+
 (defn localllm-coder-events [lines]
   (let [events (keep #(try (json/parse-string % true) (catch Exception _ nil)) lines)
         messages (keep (fn [e] (let [m (:message e)] (when (= "assistant" (:role m)) m))) events)
@@ -2499,14 +2523,7 @@
                       (try
                         (let [paths (keep :path (:repo-worktrees workspace))
                               cwd (if (= 1 (count paths)) (first paths) (:workspace-dir workspace))
-                              no-cloud (str (fs/create-dirs (fs/path dir "no-cloud-home")))
-                              ;; No cloud keys, and the codex / claude CLIs see an
-                              ;; empty config home, so the local model cannot hand
-                              ;; the task to a cloud agent (BOXP-367).
-                              child-env (assoc (apply dissoc (into {} (System/getenv))
-                                                      ["OPENAI_API_KEY" "ANTHROPIC_API_KEY" "GEMINI_API_KEY" "GOOGLE_API_KEY"
-                                                       "TASK_BOARD_DELEGATION_EVIDENCE" "TASK_BOARD_DELEGATION_ADD_DIRS"])
-                                               "CODEX_HOME" no-cloud "CLAUDE_CONFIG_DIR" no-cloud)
+                              child-env (localllm-coder-env! dir model)
                               proc (p/process (localllm-coder-args provider model)
                                               {:dir cwd :env child-env :in (io/file (str prompt-path))
                                                :out (io/file (str events-path)) :err (io/file (str stderr-path))})]
@@ -4668,6 +4685,8 @@
               ["coder fallback" (localllm-coder-result 0 "done" true) "blocked"]
               ["coder exit" (localllm-coder-result 1 "done" false) "blocked"]
               ["coder no model evidence" (:models-seen (localllm-coder-events [])) []]
+              ["coder env allowlist" (localllm-coder-base-env {"PATH" "/usr/bin" "GH_TOKEN" "x" "AWS_PROFILE" "p" "KUBECONFIG" "k" "HOME" "/home/boxp" "ANTHROPIC_API_KEY" "a"} "/run/h")
+               {"PATH" "/usr/bin" "HOME" "/run/h" "PI_OFFLINE" "1" "CODEX_HOME" "/run/h/.codex" "CLAUDE_CONFIG_DIR" "/run/h/.claude"}]
               ["coder events" (localllm-coder-events [(json/generate-string {:type "message_end" :message {:role "assistant" :model "m" :provider "llama.cpp" :content [{:type "text" :text "hello"}]}})
                                                         (json/generate-string {:type "message_end" :message {:role "assistant" :model "other" :content [{:type "text" :text "last"}]}})])
                {:models-seen ["m" "other"] :last-message "last"}]] )]
