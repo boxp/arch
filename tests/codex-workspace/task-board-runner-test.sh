@@ -3237,6 +3237,9 @@ test_ai_ops_ledger_records_run_lifecycle() {
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "pass"\] 2'
   # One-shot `tick` (not only `loop`) must refresh metrics.prom from the stats.
   assert_file_contains "${state}/ai-ops/metrics.prom" 'ai_ops_review_gate_total\{gate="ci",result="fail"\} 1'
+  # One-shot `tick` waits for the SLI refresh (bb exits without awaiting futures),
+  # so the attempt is finished, not left with only :last-attempt.
+  assert_file_contains "${state}/ai-ops/sli-export-status.edn" ':last-success|:failures'
 }
 
 test_ai_ops_ledger_groom_from_backlog_records_actual_lane() {

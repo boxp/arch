@@ -43,3 +43,9 @@ emit-sim は配信済みイベントを標準出力し、統計を標準エラ�
 critical-safety-events は `coverage.connected`（対象 `critical-safety-events`）がある場合のみ `coverage=connected` で件数を確定し、宣言なしで有効な severity の event だけを観測した場合は観測件数に `coverage=partial/undeclared` を付ける（0件でも「重大 event なし」とはしない）。どちらもない場合は unknown。
 
 是正率 / corrections-per-task / first acceptance は、task に紐付けられない欠落 event (破損行・privacy 拒否・drop・未配信・読めない入力) が 1 件でもあれば `status unknown` とし、観測値を `observed`、件数を `lost-events` に出す。生成元の拒否 marker は許可 enum の `event_type` だけを保持し、notify / owner.rescue / approval.* / effect.applied / coverage.connected の拒否は是正 SLI を unknown にしない。
+
+### Prometheus スナップショット
+
+runner は `CODEX_TASK_BOARD_VAULT` が設定されている場合、全履歴から SLI を再集計して `ai-ops/sli.prom` に保存し、`ai-ops/metrics.prom` に追記する。更新間隔は `CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS`（既定 900 秒、0 で無効）、タイムアウトは `CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS`（既定 120 秒）。失敗時は前回の値を保持し、`ai_ops_sli_export_*` で状態を確認できる。
+
+`ai_ops_sli_info`、`ai_ops_sli_generated_timestamp_seconds`、`ai_ops_sli_determinable`、`ai_ops_sli_source_connected` と、first acceptance・correction・lead time・runs・stratum・guardrail の各系列を出力する。分子・分母を併記し、unknown の値は公開しない。値は全履歴から再計算したスナップショットであり `rate()` / `increase()` を使わない。

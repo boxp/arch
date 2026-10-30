@@ -436,6 +436,12 @@
 (defn instant-seconds [s]
   (try (quot (.toEpochMilli (java.time.Instant/parse s)) 1000) (catch Exception _ nil)))
 
+;; Prometheus cannot see the zero before a series first appears, so increase()
+;; would miss the first event of a rarely seen label pair. Publish every
+;; allowlisted pair from zero; observed pairs outside the allowlist are kept.
+(defn zero-filled [xs ys m]
+  (merge (into {} (for [x xs y ys] [[x y] 0])) m))
+
 (defn metrics-text [stats now-seconds]
   (let [sorted (fn [m] (sort-by (comp str key) m))]
     (str
@@ -453,23 +459,225 @@
        (metric-lines "ai_ops_ledger_redacted_values_total" "counter" "Field values removed by the source privacy gate."
                      [[{} (:redacted-values stats 0)]])
        (metric-lines "ai_ops_runs_finished_total" "counter" "Finished runs by runtime and summary status."
-                     (for [[[rt st] n] (sorted (:run-finished stats))] [{:runtime rt :status st} n]))
+                     (for [[[rt st] n] (sorted (zero-filled (:runtime enum-values) (:status enum-values) (:run-finished stats)))] [{:runtime rt :status st} n]))
        (metric-lines "ai_ops_review_gate_total" "counter" "Review gate evaluations by gate and result."
-                     (for [[[g r] n] (sorted (:gate stats))] [{:gate g :result r} n]))
+                     (for [[[g r] n] (sorted (zero-filled gate-names gate-results (:gate stats)))] [{:gate g :result r} n]))
        (metric-lines "ai_ops_corrections_total" "counter" "Rule-classified corrections (provisional) by origin and class."
-                     (for [[[o c] n] (sorted (:corrections stats))] [{:origin o :class c} n]))
+                     (for [[[o c] n] (sorted (zero-filled (:correction_origin enum-values) (:correction_class enum-values) (:corrections stats)))] [{:origin o :class c} n]))
        (when-let [s (some-> (:last-emit-at stats) instant-seconds)]
          (metric-lines "ai_ops_ledger_last_emit_timestamp_seconds" "gauge" "Time of the last ledger write." [[{} s]]))
        (metric-lines "ai_ops_metrics_generated_timestamp_seconds" "gauge" "Time this exposition was generated."
                      [[{} now-seconds]])))
      "\n")))
 
+;; Review-gate corrections, collection_lost and privacy_rejected markers exist only in the runner
+;; ledger, so deleting an expired day file would make all-history SLIs undercount
+;; corrections or turn back into determined values. Before deleting, the SLI-relevant
+;; lines are copied into the SLI archive; a day file whose archive copy fails is kept.
+;; - Only metadata the source gate reproduces unchanged is copied verbatim (clean
+;;   corrections and the known body-less markers). Any other unclean line (unparsable,
+;;   `{}`, invalid IDs, values the gate would redact) is replaced by a body-less marker
+;;   so no expired raw content is retained: unparsable/non-object lines become
+;;   `{"collection_lost":"input_unreadable"}`, the rest `{"privacy_rejected":"upstream"}`
+;;   (keeping only an allowlisted event_type). Both keep the SLIs unknown.
+;; - Each day file is archived to its own file named by date, the hash and the length of
+;;   the archived day file content, written atomically. A day file is only appended to,
+;;   so an archive whose source is a prefix of the current day file content is a subset
+;;   of it (crash between archive and delete, or appends between retries) and is
+;;   superseded. An archive whose source is not a prefix came from an earlier
+;;   incarnation of the same date (the day file was pruned and later recreated, e.g. by
+;;   a pending ledger_dropped marker) and is kept alongside, so pruning the recreated
+;;   file never drops earlier archived corrections. Known limit: an incarnation whose
+;;   content is identical to a prefix of the earlier one (only ID-less markers) is
+;;   folded into it; the SLIs stay unknown but the lost-event count may be lower.
+(defn sli-archive-dir [root] (fs/path (ledger-dir root) "sli-archive"))
+(def archived-lost-markers
+  #{{:collection_lost "ledger_dropped"} {:collection_lost "buffer_dropped"}
+    {:collection_lost "undelivered"} {:collection_lost "input_unreadable"}})
+(defn- rejected-marker [e]
+  (cond-> {:privacy_rejected "upstream"}
+    (contains? (:event_type enum-values) (:event_type e)) (assoc :event_type (:event_type e))))
+(defn sli-archive-entry
+  "Body-less archive form of one expired ledger line, or nil when it is not needed."
+  [line]
+  (let [e (try (json/parse-string line true) (catch Exception _ ::unparsable))]
+    (cond
+      (or (= ::unparsable e) (not (map? e))) {:collection_lost "input_unreadable"}
+      (contains? archived-lost-markers e) e
+      (or (contains? e :collection_lost) (contains? e :privacy_rejected)) (rejected-marker e)
+      :else (let [[kept redacted] (gate e)]
+              (if (and kept (zero? redacted) (= kept e))
+                (when (= "correction" (:event_type e)) e)
+                (rejected-marker e))))))
+(defn- sha256-hex [^String s]
+  (let [d (.digest (java.security.MessageDigest/getInstance "SHA-256") (.getBytes s "UTF-8"))]
+    (apply str (map #(format "%02x" (bit-and % 0xff)) d))))
+(defn- source-hash [^String content] (subs (sha256-hex content) 0 16))
+(defn sli-archive-file [root date content]
+  (fs/path (sli-archive-dir root) (str "events-" date "-" (source-hash content) "-" (count content) ".jsonl")))
+(defn archive-superseded?
+  "True when archive file a was written from a prefix of day file content."
+  [a ^String content]
+  (when-let [[_ h n] (re-matches #"events-\d{4}-\d{2}-\d{2}-([0-9a-f]{16})-(\d+)\.jsonl" (str (fs/file-name a)))]
+    (let [n (parse-long n)]
+      (and (<= n (count content)) (= h (source-hash (subs content 0 n)))))))
+(defn sli-archive-files [root]
+  (if (fs/exists? (sli-archive-dir root)) (fs/glob (sli-archive-dir root) "events-*.jsonl") []))
+(defn sli-archive-files-for [root date]
+  (if (fs/exists? (sli-archive-dir root)) (fs/glob (sli-archive-dir root) (str "events-" date "-*.jsonl")) []))
+
 (defn prune! [root]
   (let [cutoff (.minusDays (java.time.LocalDate/now java.time.ZoneOffset/UTC) (retention-days))]
-    (doseq [f (fs/glob (ledger-dir root) "events-*.jsonl")
+    (doseq [f (sort (map str (fs/glob (ledger-dir root) "events-*.jsonl")))
             :let [d (second (re-matches #"events-(\d{4}-\d{2}-\d{2})\.jsonl" (str (fs/file-name f))))]
             :when (and d (.isBefore (java.time.LocalDate/parse d) cutoff))]
-      (fs/delete-if-exists f))))
+      (try
+        (let [content (slurp f)
+              entries (keep sli-archive-entry (remove str/blank? (str/split-lines content)))]
+          (when (seq entries)
+            (fs/create-dirs (sli-archive-dir root))
+            (atomic-spit! (sli-archive-file root d content)
+                          (str (str/join "\n" (map json/generate-string entries)) "\n")))
+          ;; Archives of earlier attempts on this same day file (its prefixes) are
+          ;; superseded; archives of earlier incarnations of the date are kept.
+          (let [keep-name (str (fs/file-name (sli-archive-file root d content)))]
+            (doseq [a (sli-archive-files-for root d)
+                    :when (and (not= keep-name (str (fs/file-name a))) (archive-superseded? a content))]
+              (fs/delete-if-exists a)))
+          (fs/delete-if-exists f))
+        (catch Exception _ nil)))))
+
+(def sli-script (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_sli.bb")))
+(def sli-limit (* 256 1024))
+(defn sli-status-path [root] (fs/path (ai-ops-dir root) "sli-export-status.edn"))
+(defn sli-path [root] (fs/path (ai-ops-dir root) "sli.prom"))
+(defn sli-interval [] (env-long "CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS" 900))
+(defn sli-timeout [] (env-long "CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS" 120))
+(defn sli-enabled? [] (and (enabled?) (pos? (sli-interval)) (not (str/blank? (System/getenv "CODEX_TASK_BOARD_VAULT")))))
+(defn read-sli-status [root]
+  (try (or (some-> (sli-status-path root) str slurp edn/read-string) {}) (catch Exception _ {})))
+
+(defn run-sli-command! [args output deadline]
+  (let [process (-> (ProcessBuilder. ^java.util.List (vec args))
+                    (.redirectOutput (java.io.File. (str output)))
+                    (.redirectError java.lang.ProcessBuilder$Redirect/DISCARD)
+                    (.start))]
+    (try
+      (let [remaining (max 0 (- deadline (System/currentTimeMillis)))]
+        (if (and (pos? remaining) (.waitFor process remaining java.util.concurrent.TimeUnit/MILLISECONDS))
+          (zero? (.exitValue process))
+          false))
+      (finally
+        (when (.isAlive process)
+          (let [children (vec (iterator-seq (.iterator (.descendants (.toHandle process)))))]
+            (doseq [child (reverse children)] (.destroyForcibly child))
+            (.destroyForcibly process)))))))
+
+;; extract only reads runs/outbox/tickets; review-gate corrections and
+;; ledger_dropped markers exist only in the runner ledger. Append every ledger
+;; day file so ai_ops_sli.bb merges them (merge-ledger-events) and turns
+;; collection_lost markers into unknown SLIs. A line still being appended has no
+;; trailing newline yet and is left out instead of being counted as malformed.
+(defn- file-date [f]
+  (second (re-matches #"events-(\d{4}-\d{2}-\d{2})(?:-[0-9a-f]+-\d+)?\.jsonl" (str (fs/file-name f)))))
+(defn- read-ledger-date
+  "Text for one ledger date. prune! writes the archive before deleting the day file
+  and this runs without the ledger lock, so both may exist (or the deletion may have
+  failed). Archives written from a prefix of the current day file are subsets of it
+  and skipped; archives of earlier incarnations of the date are read in addition, so
+  markers are never counted twice and earlier corrections are never dropped."
+  [root date]
+  (let [unreadable (str (json/generate-string {:collection_lost "input_unreadable"}) "\n")
+        ;; A file that vanished (pruned meanwhile) is fine; one that still exists but
+        ;; cannot be read (permissions, I/O) may hide corrections or loss markers, so
+        ;; it becomes a body-less input_unreadable marker and the SLIs stay unknown.
+        read-file (fn [f] (try (slurp (str f))
+                               (catch java.io.IOException e
+                                 (if (or (instance? java.nio.file.NoSuchFileException e) (not (fs/exists? f)))
+                                   nil
+                                   ::unreadable))))
+        day (fs/path (ledger-dir root) (str "events-" date ".jsonl"))
+        day-text (read-file day)
+        text (when (string? day-text) day-text)
+        archives (->> (sli-archive-files-for root date)
+                      (remove #(and text (archive-superseded? % text)))
+                      (sort-by str)
+                      (keep read-file)
+                      (map #(cond (= ::unreadable %) unreadable
+                                  (or (str/blank? %) (str/ends-with? % "\n")) %
+                                  :else (str % "\n"))))]
+    (apply str (concat archives [(cond (= ::unreadable day-text) unreadable :else (or text ""))]))))
+(defn append-ledger-events! [root target]
+  (with-open [w (java.io.FileWriter. (str target) true)]
+    (doseq [d (sort (distinct (keep file-date (if (fs/exists? (ledger-dir root)) (concat (fs/glob (ledger-dir root) "events-*.jsonl") (sli-archive-files root)) []))))
+            :let [text (read-ledger-date root d) end (inc (or (str/last-index-of text "\n") -1))]
+            :when (pos? end)]
+      (.write w (subs text 0 end))))
+  true)
+
+(defn sli-lock-path [root] (fs/path (ai-ops-dir root) "sli.lock"))
+
+(defn with-sli-lock
+  "Run f while holding an exclusive FileLock on `<root>/ai-ops/sli.lock`, so the
+  resident `loop` and a manual `tick` never both run an SLI refresh (due check
+  through saving sli.prom and the export status). Non-blocking: when another
+  process or thread holds it, return nil without running f."
+  [root f]
+  (fs/create-dirs (ai-ops-dir root))
+  (with-open [file (java.io.RandomAccessFile. (str (sli-lock-path root)) "rw")
+              channel (.getChannel file)]
+    ;; tryLock returns nil when another process holds it and throws when this
+    ;; JVM already does; both mean a refresh is running, so skip.
+    (when-let [_lock (try (.tryLock channel) (catch Exception _ nil))]
+      (f))))
+
+(defn- refresh-sli-locked! [root vault]
+  (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
+      (when (and (enabled?) (pos? interval) (not (str/blank? vault))
+                 (>= (- now (get status :last-attempt 0)) interval))
+        (let [attempt (assoc status :last-attempt now) tmp (atom nil) output (atom nil)
+              deadline (+ (System/currentTimeMillis) (* 1000 (max 0 (sli-timeout))))]
+          (try
+            (atomic-spit! (sli-status-path root) (pr-str attempt))
+            (reset! tmp (java.io.File/createTempFile "ai-ops-sli-" ".jsonl"))
+            (reset! output (java.io.File/createTempFile "ai-ops-sli-" ".prom"))
+            (if (and (run-sli-command! ["bb" sli-script "extract" (str root) (str vault)] @tmp deadline)
+                     (append-ledger-events! root @tmp)
+                     (run-sli-command! ["bb" sli-script "prom" (str @tmp)] @output deadline)
+                     (pos? (.length @output)) (< (.length @output) sli-limit))
+              (do (atomic-spit! (sli-path root) (slurp @output))
+                  (atomic-spit! (sli-status-path root) (pr-str (assoc attempt :last-success now))) true)
+              (do (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) false))
+            (catch Exception _
+              (try (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) (catch Exception _)) false)
+            (finally (when @tmp (fs/delete-if-exists @tmp)) (when @output (fs/delete-if-exists @output))))))))
+
+(defn refresh-sli! [root vault]
+  (try
+    ;; Check the cheap preconditions first: a disabled ledger must not even
+    ;; create ai-ops/ for the lock file.
+    (when (and (enabled?) (pos? (sli-interval)) (not (str/blank? vault)))
+      (with-sli-lock root #(refresh-sli-locked! root vault)))
+    (catch Exception _ nil)))
+
+;; The extract/prom subprocesses may take up to sli-timeout; never block the
+;; runner poll loop on them. At most one refresh runs at a time.
+(def sli-refresh-running (atom false))
+(defn refresh-sli-async! [root vault]
+  (when (compare-and-set! sli-refresh-running false true)
+    (future (try (refresh-sli! root vault) (finally (reset! sli-refresh-running false))))
+    true))
+
+(defn sli-export-metrics [root]
+  (let [s (read-sli-status root)]
+    (str (str/join "\n" (concat
+          (when-let [v (:last-success s)] (metric-lines "ai_ops_sli_export_last_success_timestamp_seconds" "gauge" "Last successful SLI export." [[{} v]]))
+          (metric-lines "ai_ops_sli_export_last_attempt_timestamp_seconds" "gauge" "Last SLI export attempt, or zero if never attempted." [[{} (:last-attempt s 0)]])
+          (metric-lines "ai_ops_sli_export_failures_total" "counter" "Failed SLI export attempts." [[{} (:failures s 0)]])
+          (metric-lines "ai_ops_sli_export_enabled" "gauge" "SLI export is enabled and configured." [[{} (if (sli-enabled?) 1 0)]]))) "\n")))
+
+(defn sli-snapshot [root]
+  (try (let [p (sli-path root)] (if (and (fs/regular-file? p) (<= (fs/size p) sli-limit)) (slurp (str p)) "")) (catch Exception _ "")))
 
 (defn write-metrics!
   "Write `<root>/ai-ops/metrics.prom` from the stats and prune old ledger files.
@@ -484,6 +692,7 @@
          (flush-unrecorded-write-errors! root)
          (when (fs/exists? (ledger-dir root)) (prune! root))
          (atomic-spit! (metrics-path root)
-                       (metrics-text (read-stats root) (quot (System/currentTimeMillis) 1000)))
+                       (str (metrics-text (read-stats root) (quot (System/currentTimeMillis) 1000))
+                            (sli-export-metrics root) (sli-snapshot root)))
          true))
       (catch Exception _ nil))))

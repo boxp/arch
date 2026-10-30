@@ -267,7 +267,7 @@ bb -e '
        ["extract でも危険値を redact" (and (= 3 (:privacy-redacted-values (edn/read-string (slurp extractst)))) (not (re-find #"Bearer|sk-abcdef" (slurp extract))))]
        ["source 未接続は unknown" (every? #(= "unknown" (get-in (edn/read-string (slurp extracted)) [:zero-tolerance % :status])) [:duplicate-effects :critical-safety-events])]
        ["coverage 宣言済みなら 0" (and (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :duplicate-effects :count])) (= 0 (get-in (edn/read-string (slurp coverage)) [:zero-tolerance :critical-safety-events :count])))]
-       ["未知の zero-tolerance を Prom に出さない" (not (re-find #"duplicate_effect|critical_safety" (slurp extractprom)))]
+       ["未知の zero-tolerance を Prom に出さない" (and (clojure.string/includes? (slurp extractprom) "ai_ops_sli_source_connected{sli=\"duplicate_effects\"} 0") (clojure.string/includes? (slurp extractprom) "ai_ops_sli_source_connected{sli=\"critical_safety_events\"} 0"))]
        ["受入前の非 agent 是正は first-pass を妨げず、受入後は reopen" (let [r (edn/read-string (slurp timing))] (and (= [2 2] ((juxt :count :denominator) (get-in r [:sli :first-acceptance-conformance]))) (= 1 (get-in r [:sli :reopen-after-accept :count]))))]
        ["生成元に本文が残らない" (not (re-find #"送ってはいけない|Bearer|/secret" (slurp (str (fs/parent ok) "/ok.jsonl"))))]
        ["重複 event を 1 件として数える" (= 1 (get-in r [:input :duplicates]))]
@@ -935,7 +935,10 @@ bb -e '
     (assert (str/includes? ok-out "ai_ops_reached_review_tasks 1") ok-out)
     (assert (str/includes? bad-out "ai_ops_sli_determinable{sli=\"agent_system_correction_task_ratio\"} 0") bad-out)
     (assert (str/includes? bad-out "ai_ops_sli_determinable{sli=\"first_acceptance_conformance\"} 0") bad-out)
-    (assert (not (re-find #"ai_ops_correction_tasks|ai_ops_reached_review_tasks" bad-out)) bad-out)))
+    (assert (not (re-find #"ai_ops_correction_tasks|ai_ops_reached_review_tasks" bad-out)) bad-out)
+    ;; 欠落 event の所属層は不明なので、層別の分子・分母も確定値として出さない
+    (assert (re-find #"ai_ops_stratum_tasks\{[^}]*kind=\"reached_review\"\} 1" ok-out) ok-out)
+    (assert (not (re-find #"ai_ops_stratum_tasks\{[^}]*kind=\"(reached_review|agent_system_corr|unknown_corr|accepted|first_pass)\"" bad-out)) bad-out)))
 (println "ok   種別不明 event は是正 SLI を unknown にし、Prom は unknown の是正率を確定値として出さず判定可否 gauge を出す")'
 tmp_zero=$(mktemp)
 echo '{"event_id":"BOXP-1:requested","task_id":"BOXP-1","event_type":"request.received","source":"ticket-frontmatter"}' > "$tmp_zero"
@@ -944,6 +947,23 @@ grep -q 'ai_ops_sli_determinable{sli="agent_system_correction_task_ratio"} 0' <<
   && grep -q 'ai_ops_sli_determinable{sli="first_acceptance_conformance"} 0' <<<"$zero_out" \
   || { echo "FAIL 分母 0 の SLI が判定可能と出力された"; echo "$zero_out"; exit 1; }
 echo "ok   分母 0 の SLI は Prom で判定不能 (determinable=0) として出す"
+tmp_partial=$(mktemp)
+cat >"$tmp_partial" <<'EOF'
+{"event_id":"BOXP-1:requested","task_id":"BOXP-1","event_type":"request.received","source":"ticket-frontmatter"}
+{"event_id":"BOXP-1:effect","task_id":"BOXP-1","event_type":"effect.applied","effect_key":"op:0000000b","severity":"low"}
+EOF
+partial_out=$(bb ai_ops_sli.bb prom "$tmp_partial")
+grep -q 'ai_ops_sli_source_connected{sli="duplicate_effects"} 0' <<<"$partial_out" \
+  && grep -q 'ai_ops_sli_source_partial{sli="duplicate_effects"} 1' <<<"$partial_out" \
+  && grep -q 'ai_ops_sli_source_connected{sli="critical_safety_events"} 0' <<<"$partial_out" \
+  && grep -q 'ai_ops_sli_source_partial{sli="critical_safety_events"} 1' <<<"$partial_out" \
+  || { echo "FAIL coverage 未宣言の部分観測が source 接続済みと出力された"; echo "$partial_out" | grep source_; exit 1; }
+printf '%s\n' '{"event_id":"cov-effects-0000000a","event_type":"coverage.connected","coverage_target":"duplicate-effects"}' >>"$tmp_partial"
+partial_out=$(bb ai_ops_sli.bb prom "$tmp_partial")
+grep -q 'ai_ops_sli_source_connected{sli="duplicate_effects"} 1' <<<"$partial_out" \
+  && grep -q 'ai_ops_sli_source_partial{sli="duplicate_effects"} 0' <<<"$partial_out" \
+  || { echo "FAIL coverage 宣言済みの source が接続済みと出力されない"; echo "$partial_out" | grep source_; exit 1; }
+echo "ok   coverage 未宣言の部分観測は source_connected=0/source_partial=1、宣言済みなら connected=1"
 
 
 tmp_cxl=$(mktemp -d)
@@ -1632,3 +1652,16 @@ bb -e "
   (assert (= 1 (get-in r [:sli :corrections-per-task :total-agent-system])) (pr-str (:sli r)))
   (assert (= {\"awaiting-review\" 1} (get-in r [:tasks :outcomes])) (pr-str (:tasks r))))"
 echo "ok   runner が実際に出力した ledger event (lane-start 含む) を通常モードで拒否せず集計する"
+python3 - "$tmp/ok.prom" "$tmp/extract.prom" <<'PYTEST'
+import sys
+ok, extracted = (open(p).read() for p in sys.argv[1:])
+for name in ('ai_ops_sli_info', 'ai_ops_sli_generated_timestamp_seconds', 'ai_ops_first_acceptance_tasks', 'ai_ops_first_acceptance_denominator_tasks', 'ai_ops_first_acceptance_excluded_tasks', 'ai_ops_first_acceptance_conservative_tasks', 'ai_ops_correction_events', 'ai_ops_correction_unevaluated_tasks', 'ai_ops_sli_source_connected', 'ai_ops_runs', 'ai_ops_stratum_tasks', 'ai_ops_guardrail_tasks'):
+    assert '# TYPE ' + name + ' gauge' in ok, name
+for sli in ('owner_rescue', 'duplicate_approval', 'reopen_after_accept'):
+    assert f'ai_ops_sli_determinable{{sli="{sli}"}} 0' in extracted
+    assert f'ai_ops_sli_count{{sli="{sli}"}}' not in extracted
+    assert f'ai_ops_sli_denominator{{sli="{sli}"}}' not in extracted
+assert 'ai_ops_lead_time_hours{quantile="0.5"}' in extracted
+assert 'ai_ops_lead_time_precision_info{precision="day"} 1' in extracted
+print('ok   SLI snapshot metrics and unknown handling')
+PYTEST

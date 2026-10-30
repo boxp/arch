@@ -148,6 +148,10 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
                "ai_ops_review_gate_total{gate=\"all\",result=\"pass\"} 1"
                "ai_ops_review_gate_total{gate=\"all\",result=\"skip\"} 1"
                "ai_ops_corrections_total{origin=\"agent-system\",class=\"gate_defect\"} 1"
+               ;; never-seen allowlisted pairs are published from zero for increase()
+               "ai_ops_review_gate_total{gate=\"ci\",result=\"fail\"} 0"
+               "ai_ops_runs_finished_total{runtime=\"claude-cli\",status=\"failed\"} 0"
+               "ai_ops_corrections_total{origin=\"unknown\",class=\"unknown\"} 0"
                "ai_ops_ledger_info{schema_version=\"ai-ops-event/v0\",definition_version=\"ledger/v1\"} 1"
                "# TYPE ai_ops_ledger_events_total counter"]]
       (check (str "metrics contain " s) (str/includes? m s)))
@@ -157,10 +161,65 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (let [root (str (fs/path tmp "g"))
       old (fs/path root "ai-ops" "ledger" "events-2000-01-01.jsonl")]
   (fs/create-dirs (fs/parent old))
-  (spit (str old) "{}\n")
-  (ev root "started" {:event_type "run.started"})
-  (ai-ops-ledger/write-metrics! root)
-  (check "old ledger file pruned" (not (fs/exists? old)))
+  (spit (str old) (str "{}\nnot json password=hunter2\n{\"event_id\":\"a\",\"event_type\":\"run.started\"}\n"
+                       (json/generate-string {:event_id (ai-ops-ledger/event-id "BOXP-1" "20261029T055735Z" "started")
+                                              :task_id "BOXP-1" :request_id "req:BOXP-1"
+                                              :run_id "20261029T055735Z" :event_type "run.started"}) "\n"
+                       "{\"event_id\":\"b\",\"event_type\":\"correction\",\"note\":\"token sk-secret\"}\n{\"collection_lost\":\"ledger_dropped\"}\n"
+                       "{\"privacy_rejected\":\"upstream\"}\n{\"privacy_rejected\":\"upstream\",\"event_type\":\"effect.applied\"}\n"
+                       "{\"privacy_rejected\":\"hunter2\",\"event_type\":\"password\"}\n"))
+  (let [content (slurp (str old))
+        archive (ai-ops-ledger/sli-archive-file root "2000-01-01" content)
+        expected [{:privacy_rejected "upstream"} {:collection_lost "input_unreadable"} {:privacy_rejected "upstream" :event_type "run.started"}
+                  {:privacy_rejected "upstream" :event_type "correction"} {:collection_lost "ledger_dropped"}
+                  {:privacy_rejected "upstream"} {:privacy_rejected "upstream"}
+                  {:privacy_rejected "upstream"}]
+        read-archive (fn [] (mapcat #(map (fn [l] (json/parse-string l true)) (remove str/blank? (str/split-lines (slurp (str %)))))
+                                   (ai-ops-ledger/sli-archive-files root)))]
+    ;; crash after archiving but before deleting: the retry must not duplicate markers
+    (with-redefs [fs/delete-if-exists (fn [_] (throw (ex-info "crash" {})))]
+      (ai-ops-ledger/prune! root))
+    (check "day file kept when delete fails" (fs/exists? old))
+    (ev root "started" {:event_type "run.started"})
+    (ai-ops-ledger/write-metrics! root)
+    (check "old ledger file pruned" (not (fs/exists? old)))
+    ;; unclean lines keep SLIs unknown as body-less markers; clean ordinary lines are dropped
+    (check "pruned corrections, loss markers and gate-rejected lines archived as body-less markers" (= expected (read-archive)))
+    (check "archive written once per day file content" (= [(str archive)] (map str (ai-ops-ledger/sli-archive-files root))))
+    (check "archive holds no expired raw content" (not (re-find #"hunter2|sk-secret|password|note|\"a\"|\"b\"" (slurp (str archive)))))
+    ;; the pruned date is recreated by a pending ledger_dropped marker: pruning it again
+    ;; must keep the earlier archive (corrections) next to the new one
+    (spit (str old) "{\"collection_lost\":\"ledger_dropped\"}\n")
+    (ai-ops-ledger/prune! root)
+    (check "recreated day file pruned" (not (fs/exists? old)))
+    (check "earlier archive kept when the pruned date is recreated" (fs/exists? archive))
+    (check "recreated day file archived in addition" (= (frequencies (conj expected {:collection_lost "ledger_dropped"})) (frequencies (read-archive))))
+    (let [read-date @(resolve (symbol "ai-ops-ledger" "read-ledger-date"))]
+      (check "SLI input reads both archives of the date"
+             (= 9 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))
+      ;; recreated again but not yet deleted: day file and its own archive are not both read
+      (spit (str old) "{\"collection_lost\":\"buffer_dropped\"}\n")
+      (with-redefs [fs/delete-if-exists (fn [_] (throw (ex-info "crash" {})))]
+        (ai-ops-ledger/prune! root))
+      (check "undeleted recreated day file and its archive counted once"
+             (= 10 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))
+      (fs/delete-if-exists old)
+      (check "after deletion every incarnation is read once"
+             (= 10 (count (remove str/blank? (str/split-lines (read-date root "2000-01-01"))))))
+      ;; unreadable (not missing) day file or archive: counted as a loss marker, not dropped
+      (spit (str old) "{\"collection_lost\":\"buffer_dropped\"}\n{\"collection_lost\":\"ledger_dropped\"}\n")
+      (let [real-slurp slurp
+            unreadable (fn [pred] (fn [f & opts] (if (pred (str f)) (throw (java.io.IOException. "Permission denied")) (apply real-slurp f opts))))
+            n-unreadable (fn [] (count (filter #{{:collection_lost "input_unreadable"}}
+                                               (map #(json/parse-string % true) (remove str/blank? (str/split-lines (read-date root "2000-01-01")))))))
+            base (n-unreadable)]
+        (with-redefs [slurp (unreadable #(= % (str old)))]
+          (check "unreadable day file becomes an input_unreadable marker" (= (inc base) (n-unreadable))))
+        (with-redefs [slurp (unreadable #(str/includes? % "sli-archive"))]
+          (check "unreadable archives become input_unreadable markers"
+                 (< base (n-unreadable))))
+        (check "readable files add no input_unreadable marker" (= base (n-unreadable))))
+      (fs/delete-if-exists old)))
   (check "current ledger file kept" (fs/exists? (ai-ops-ledger/day-file root))))
 
 (if (seq @failures)
@@ -412,3 +471,117 @@ AI_OPS_MODULE="${module}" AI_OPS_ROOT="${emit_marker_root}" bb -e '
 (when-not (every? second checks) (System/exit 1))
 (println "ai-ops-ledger-test: emit marker retry checks passed")
 '
+AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
+(require (quote [babashka.fs :as fs]) (quote [clojure.string :as str]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (str (fs/path (System/getenv "AI_OPS_TMP") "sli-root")))
+(def vault (str (fs/path (System/getenv "AI_OPS_TMP") "sli-vault")))
+(doseq [d [(fs/path root "runs") (fs/path root "outbox") (fs/path vault "Tickets")]] (fs/create-dirs d))
+(spit (str (fs/path vault "Tickets" "BOXP-1.md")) "---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n")
+(assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+(def old (slurp (str (ai-ops-ledger/sli-path root))))
+(assert (str/includes? old "ai_ops_sli_info"))
+(assert (ai-ops-ledger/write-metrics! root))
+(assert (str/includes? (slurp (str (ai-ops-ledger/metrics-path root))) "ai_ops_sli_info"))
+(assert (nil? (ai-ops-ledger/refresh-sli! root "/missing")))
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (false? (ai-ops-ledger/refresh-sli! root "/missing")))
+  (assert (= old (slurp (str (ai-ops-ledger/sli-path root)))))
+  (assert (= 1 (:failures (ai-ops-ledger/read-sli-status root))))
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (let [real-run ai-ops-ledger/run-sli-command!]
+    (with-redefs [ai-ops-ledger/sli-timeout (constantly 1)
+                  ai-ops-ledger/run-sli-command! (fn [_ output deadline] (real-run ["sh" "-c" "sleep 30 & wait"] output deadline))]
+      (let [start (System/currentTimeMillis)]
+        (assert (false? (ai-ops-ledger/refresh-sli! root vault)))
+        (assert (< (- (System/currentTimeMillis) start) 5000))
+        (assert (= 1 (:failures (ai-ops-ledger/read-sli-status root))))
+        (assert (= old (slurp (str (ai-ops-ledger/sli-path root)))))))))
+(println "ai-ops-ledger-test: SLI export success, failure, interval and timeout passed")
+(defn determinable [] (re-find #"ai_ops_collection_lost_events_total\{reason=\"ledger_dropped\"\} (\d+)" (slurp (str (ai-ops-ledger/sli-path root)))))
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+  (def before (determinable))
+  (fs/create-dirs (ai-ops-ledger/ledger-dir root))
+  ;; a complete ledger_dropped marker plus a partially appended line
+  (spit (str (ai-ops-ledger/day-file root "2026-10-21")) "{\"collection_lost\":\"ledger_dropped\"}\n{\"event_id\":\"BOXP-1")
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+  (let [text (slurp (str (ai-ops-ledger/sli-path root))) after (determinable)]
+    (println "ledger merge: before" (second before) "after" (second after))
+    (assert (= "0" (second before)) "no ledger loss before the ledger file exists")
+    (assert (= "1" (second after)) "ledger_dropped marker must reach the SLI aggregate")
+    (assert (not (re-find #"ai_ops_input_malformed_lines_total(\{[^}]*\})? [1-9]" text)) "partial ledger line must not be read")))
+;; retention: an expired day file holding the marker is pruned, but the marker
+;; survives in the SLI archive so the all-history SLI stays unknown
+(spit (str (ai-ops-ledger/day-file root "2000-01-01")) "{\"collection_lost\":\"ledger_dropped\"}\n")
+(fs/delete-if-exists (ai-ops-ledger/day-file root "2026-10-21"))
+(ai-ops-ledger/prune! root)
+(assert (not (fs/exists? (ai-ops-ledger/day-file root "2000-01-01"))) "expired day file must be pruned")
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault))))
+(assert (= "1" (second (determinable))) "pruned ledger_dropped marker must still reach the SLI aggregate")
+;; archived but not yet deleted (concurrent refresh or failed delete): the day
+;; file and its archive copy must not both be counted
+(spit (str (ai-ops-ledger/day-file root "2000-01-01")) "{\"collection_lost\":\"ledger_dropped\"}\n")
+(with-redefs [fs/delete-if-exists (fn [_] (throw (ex-info "crash" {})))]
+  (ai-ops-ledger/prune! root))
+(assert (fs/exists? (ai-ops-ledger/day-file root "2000-01-01")))
+(assert (seq (ai-ops-ledger/sli-archive-files-for root "2000-01-01")))
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault))))
+(assert (= "1" (second (determinable))) "archive and undeleted day file must not double-count markers")
+(fs/delete-tree (ai-ops-ledger/ledger-dir root))
+(let [real-run ai-ops-ledger/run-sli-command! calls (atom 0)]
+  (with-redefs [ai-ops-ledger/sli-interval (constantly 1)
+                ai-ops-ledger/run-sli-command! (fn [args output deadline] (swap! calls inc) (Thread/sleep 1500) (real-run args output deadline))]
+    (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+    (let [start (System/currentTimeMillis)]
+      (assert (true? (ai-ops-ledger/refresh-sli-async! root vault)))
+      (assert (nil? (ai-ops-ledger/refresh-sli-async! root vault)) "second refresh must not start while one runs")
+      (assert (< (- (System/currentTimeMillis) start) 500) "async refresh must not block the caller"))
+    (loop [i 0] (when (and @ai-ops-ledger/sli-refresh-running (< i 100)) (Thread/sleep 100) (recur (inc i))))
+    (assert (not @ai-ops-ledger/sli-refresh-running))
+    (assert (= 2 @calls))))
+(println "ai-ops-ledger-test: SLI export ledger merge and async refresh passed")'
+
+# A refresh in another process (resident loop vs manual tick) holds sli.lock
+# from the due check through saving sli.prom: a concurrent refresh must skip
+# without running the aggregate or touching sli.prom / the export status.
+sli_root="${tmp}/sli-root"
+AI_OPS_LOCK="${sli_root}/ai-ops/sli.lock" bb -e '
+(with-open [f (java.io.RandomAccessFile. (System/getenv "AI_OPS_LOCK") "rw")]
+  (.lock (.getChannel f))
+  (spit (str (System/getenv "AI_OPS_LOCK") ".held") "1")
+  (Thread/sleep 3000))
+' &
+sli_holder=$!
+for _ in $(seq 1 100); do [ -f "${sli_root}/ai-ops/sli.lock.held" ] && break; sleep 0.05; done
+AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
+(require (quote [babashka.fs :as fs]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (str (fs/path (System/getenv "AI_OPS_TMP") "sli-root")))
+(def vault (str (fs/path (System/getenv "AI_OPS_TMP") "sli-vault")))
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(def before (slurp (str (ai-ops-ledger/sli-path root))))
+(def calls (atom 0))
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)
+              ai-ops-ledger/run-sli-command! (fn [& _] (swap! calls inc) false)]
+  (assert (nil? (ai-ops-ledger/refresh-sli! root vault)) "refresh must skip while another process holds sli.lock"))
+(assert (zero? @calls) "aggregate must not run while another process refreshes")
+(assert (= "{:last-attempt 1}" (slurp (str (ai-ops-ledger/sli-status-path root)))) "export status must not be overwritten")
+(assert (= before (slurp (str (ai-ops-ledger/sli-path root)))) "sli.prom must not be overwritten")
+(println "ai-ops-ledger-test: SLI refresh cross-process lock passed")'
+wait "${sli_holder}"
+AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
+(require (quote [babashka.fs :as fs]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (str (fs/path (System/getenv "AI_OPS_TMP") "sli-root")))
+(def vault (str (fs/path (System/getenv "AI_OPS_TMP") "sli-vault")))
+(with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)) "refresh must run once the other process releases sli.lock"))
+(println "ai-ops-ledger-test: SLI refresh after lock release passed")'

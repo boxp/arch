@@ -77,3 +77,9 @@ Hermes の plugin API は配備版を read-only で調べた (`hermes-plugin-inv
 - runner は run 完了時に `lane.changed` (`lane_to: "done"`) を出すが、`task-outcome` は done への lane 遷移を状態判定に含めていなかった。そのため ledger 単独で Ready → In Progress → Done を集計すると最後の Done が無視され in-flight になっていた。done 遷移も時刻付き状態遷移として扱い outcome=accepted とする (現在状態 snapshot は従来どおり優先、done 後の再 open/lane 遷移は未完了に戻る)。first acceptance は受入履歴 (`task.accepted`) を基準とするため、lane の done だけでは受入時刻を持たず合格扱いにはしない。
 - codex-review指摘(P2): Backlogから開始したgroom/docs-groom runは開始時にIn Progressへ移らないため、終了時lane.changedのlane_fromを実際のlane(`ai-ops-run-lane`: Ready/Review/Blocked→in-progress、それ以外は開始時lane)で記録する。run.startedのlane_toも同様。回帰test `test_ai_ops_ledger_groom_from_backlog_records_actual_lane`。
 - codex-review指摘対応: 単発 `tick` 実行後にも `metrics.prom` を更新する（従来は `loop` のpoll毎のみ）。`claude-opus-5-5` 等のバージョン付きClaude model IDは基本担当名（`claude-opus`）へ正規化し、agentを欠落させない（reasoning suffix付きも同様）。
+
+#### SLI の Prometheus 公開
+
+runner は vault 設定時、既定 900 秒ごとに全履歴の SLI を再集計し、既存 `ai-ops/metrics.prom` に追記する。`CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS=0` で停止でき、タイムアウトは `CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS`（既定 120 秒）。`ai_ops_sli_determinable` / `ai_ops_sli_source_connected` と分子・分母で unknown を区別し、`ai_ops_sli_export_*` で更新状態を確認する。SLI 値はスナップショットなので `rate()` / `increase()` を適用しない。
+
+集計入力は extract の出力に runner ledger の日次 file (`ai-ops/ledger/events-*.jsonl`) を連結したもの。review gate の是正や `ledger_dropped` 欠落 marker は ledger にしか無いため、これを含めないと欠落があっても SLI を確定値として公開してしまう。ledger と extract が同じ事実を出す場合は `merge-ledger-events` で非 ledger 側に統合する。追記途中の末尾行 (改行なし) は読み込まない。再集計は runner の poll loop を止めないよう別 thread (`refresh-sli-async!`) で実行し、同時に 1 つしか走らせない。
