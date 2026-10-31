@@ -15,9 +15,9 @@
     cluster_dns: "{{ cluster.dns }}"
 
     # Kubernetes configuration
-    kubernetes_version: "1.36.5"
+    kubernetes_version: "1.37.2"
     kubernetes_package_version: "1.36.5-1.1"
-    crio_version: "1.36.6"
+    crio_version: "1.37.2"
     crio_package_version: "1.36.6-3.1"
 
     # Hardware configuration
