@@ -144,7 +144,7 @@ if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
 fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
 if [[ "${CLAUDE_FAKE_STREAM_JSON:-false}" == true ]]; then
-  printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"secret","uuid":"secret-uuid"}'
+  printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","secretField":"SECRET_RATE_LIMIT","unifiedWindows":{"five_hour":{"utilization":0.2,"note":"SECRET_WINDOW"}}},"session_id":"secret","uuid":"secret-uuid"}'
   sleep "${CLAUDE_FAKE_STREAM_DELAY:-0}"
   printf '%s\n' '{"type":"assistant","session_id":"secret","uuid":"secret-uuid","message":{"content":[{"type":"text","text":"working"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"SECRET_TOOL_INPUT"}}]}}' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"SECRET_TOOL_OUTPUT"}]},"tool_use_result":"SECRET_TOOL_OUTPUT"}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
 else
@@ -472,7 +472,9 @@ test_claude_events_log_omits_tool_payloads() {
   PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-stream-privacy.out
   events="$(find "${state}/runs/BOXP-148" -name events.jsonl -print -quit)"
   last_message="$(find "${state}/runs/BOXP-148" -name last-message.md -print -quit)"
-  assert_file_not_contains "${events}" 'SECRET_TOOL_INPUT|SECRET_TOOL_OUTPUT|"secret"|secret-uuid|session_id|"uuid"'
+  assert_file_not_contains "${events}" 'SECRET_TOOL_INPUT|SECRET_TOOL_OUTPUT|SECRET_RATE_LIMIT|SECRET_WINDOW|"secret"|secret-uuid|session_id|"uuid"'
+  assert_file_contains "${events}" '"status":"allowed"'
+  assert_file_contains "${events}" '"utilization":0.2'
   assert_file_contains "${events}" '"name":"Bash"'
   assert_file_contains "${events}" 'working'
   assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'

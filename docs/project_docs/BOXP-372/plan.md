@@ -29,6 +29,7 @@
 1. runner の Claude 起動を `--output-format stream-json --verbose` に変更する。
    - `last-message.md` は `result` event の `.result` から作る。stream-json でない出力の場合は従来どおり raw をコピーする。
    - 最新の `rate_limit_event` から数値と enum だけを `ai-ops/subscription/claude.json` に atomic に保存する（観測時刻つき）。
+   - `events.jsonl` の `rate_limit_event` も snapshot と同じ許可リストで絞り、未知の情報を記録しない。
 2. 新 module `ai_subscription_usage.bb`
    - Claude snapshot と、Codex の最新 rollout の `rate_limits` を読み、`ai-ops/subscription-usage.prom` を書く。
    - 失敗しても run に影響させない。取得できない場合は `ai_subscription_source_up=0` と理由 label を出す。取得できない窓を 0% として出力しない（`ai_subscription_window_used_percent` 自体を出さず、`source_up` / `window_present` で未取得と区別する）。公式出力が実際に 0% を返した場合はそのまま 0 を出力する。

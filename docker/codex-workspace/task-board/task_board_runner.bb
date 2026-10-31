@@ -2368,7 +2368,7 @@
 
 (defn sanitize-claude-line
   "Reduce one Claude stream-json line to what the run log needs: text blocks,
-  the final result, tool names and rate limit numbers. Tool inputs/outputs,
+  the final result, tool names and allowlisted rate limit values. Tool inputs/outputs,
   thinking, permission denials and session identifiers (session_id / uuid)
   are dropped so events.jsonl cannot leak file contents or credentials, nor
   be used to resume or trace the conversation."
@@ -2403,7 +2403,12 @@
                                                              (block-type block))) (:content message))
                                                    [])})))
                     "result" (select-keys event [:type :subtype :is_error :result :duration_ms :duration_api_ms :num_turns :usage :modelUsage])
-                    "rate_limit_event" (select-keys event [:type :rate_limit_info])
+                    "rate_limit_event" (try
+                                         (if-let [clean-info (when @subscription-module-loaded?
+                                                               (resolve 'ai-subscription-usage/clean-claude-rate-limit-info))]
+                                           {:type type :rate_limit_info (clean-info (:rate_limit_info event))}
+                                           {:type type})
+                                         (catch Exception _ {:type type}))
                     "system" (select-keys event [:type :subtype :model :cwd :permissionMode :claude_code_version])
                     (select-keys event [:type]))]
         (json/generate-string clean)))))

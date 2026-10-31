@@ -8,6 +8,13 @@ export TEST_ROOT="${tmp}/root" TEST_CODEX="${tmp}/codex" TEST_MODULE="${module}"
 mkdir -p "${TEST_CODEX}/sessions/2026/01"
 bb -e '
 (load-file (System/getenv "TEST_MODULE"))
+(let [clean (ai-subscription-usage/clean-claude-rate-limit-info
+             {:status "BAD VALUE" :rateLimitType "five_hour" :resetsAt 123 :isUsingOverage false
+              :secretToken "SECRET_TOP"
+              :unifiedWindows {"five_hour" {:utilization 0.2 :resetsAt 456 :status "allowed" :note "SECRET_WIN"}
+                               "Bad Key" {:utilization 0.5}}})]
+  (assert (= {:status "other" :rateLimitType "five_hour" :resetsAt 123 :isUsingOverage false
+              :unifiedWindows {"five_hour" {:utilization 0.2 :resetsAt 456 :status "allowed"}}} clean)))
 (let [root (System/getenv "TEST_ROOT") home (System/getenv "TEST_CODEX") now (quot (System/currentTimeMillis) 1000)
       event {:type "rate_limit_event" :uuid "SECRET_UUID" :session_id "SECRET_SESSION"
              :rate_limit_info {:status "BAD VALUE" :overageStatus "rejected" :isUsingOverage false

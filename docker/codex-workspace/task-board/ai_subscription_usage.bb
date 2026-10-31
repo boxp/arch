@@ -20,9 +20,8 @@
 
 (def claude-snapshot-lock (Object.))
 
-(defn record-claude-rate-limit! [root event observed-epoch-ms]
-  (let [info (:rate_limit_info event)
-        enums [:status :rateLimitType :overageStatus :overageDisabledReason]
+(defn clean-claude-rate-limit-info [info]
+  (let [enums [:status :rateLimitType :overageStatus :overageDisabledReason]
         clean (reduce (fn [m k] (if (some? (get info k)) (assoc m k (enum-value (get info k) "other")) m)) {} enums)
         clean (cond-> clean
                 (number? (:resetsAt info)) (assoc :resetsAt (:resetsAt info))
@@ -35,11 +34,15 @@
                                             (number? (:resetsAt v)) (assoc :resetsAt (:resetsAt v))
                                             (some? (:status v)) (assoc :status (enum-value (:status v) "other")))]))
                      (into {}))]
+    (assoc clean :unifiedWindows windows)))
+
+(defn record-claude-rate-limit! [root event observed-epoch-ms]
+  (let [clean (clean-claude-rate-limit-info (:rate_limit_info event))]
     (locking claude-snapshot-lock
       (let [path (fs/path root "ai-ops/subscription/claude.json")
             existing (snapshot path)]
         (when (or (not= "ok" (:state existing)) (<= (or (get-in existing [:data :observed_at_ms]) (* 1000 (get-in existing [:data :observed_at]))) observed-epoch-ms))
-          (atomic-write! path (json/generate-string {:observed_at (quot observed-epoch-ms 1000) :observed_at_ms observed-epoch-ms :rate_limit_info (assoc clean :unifiedWindows windows)})))))))
+          (atomic-write! path (json/generate-string {:observed_at (quot observed-epoch-ms 1000) :observed_at_ms observed-epoch-ms :rate_limit_info clean})))))))
 
 (def ^:dynamic *codex-read-error* nil)
 
