@@ -117,13 +117,14 @@
         ;; Contract: a window that was not observed emits no used_percent at all
         ;; (callers tell "unavailable" apart via source_up / window_present);
         ;; a genuine 0% reported by the official CLI output is emitted as 0.
-        window! (fn [provider limit window used reset duration status]
+        window! (fn [provider limit window used reset duration status observed-at]
                   (let [labels [[:provider provider] [:limit limit] [:name (window-name provider limit)] [:window window]]
                         expired (and (number? reset) (<= reset now-s))]
                     (when (number? reset) (emit "ai_subscription_window_expired" labels (if expired 1 0)))
                     (when (and (number? used) (not expired)) (emit "ai_subscription_window_used_percent" labels used))
                     (when (number? reset) (emit "ai_subscription_window_resets_at_seconds" labels reset))
                     (when (number? duration) (emit "ai_subscription_window_duration_seconds" labels duration))
+                    (when (number? observed-at) (emit "ai_subscription_window_observed_timestamp_seconds" labels observed-at))
                     (when (some? status) (emit "ai_subscription_window_status" (conj labels [:status (enum-value status "other")]) 1))))]
     (doseq [[provider source] [["claude" claude] ["codex" codex]]]
       (emit "ai_subscription_source_up" [[:provider provider]] (if (= "ok" (:state source)) 1 0))
@@ -140,7 +141,7 @@
       (doseq [[k v] (:unifiedWindows info) :when (and (map? v) (re-matches #"[a-z0-9_]{1,40}" (name k)))]
         (let [limit (name k) window (cond (= limit "five_hour") "5h" (str/starts-with? limit "seven_day") "7d" :else "unknown")
               u (:utilization v)]
-          (window! "claude" limit window (when (and (number? u) (<= 0 u 1)) (* 100 u)) (:resetsAt v) ({"5h" 18000 "7d" 604800} window) (:status v))))
+          (window! "claude" limit window (when (and (number? u) (<= 0 u 1)) (* 100 u)) (:resetsAt v) ({"5h" 18000 "7d" 604800} window) (:status v) (get-in claude [:data :observed_at]))))
       (emit "ai_subscription_extra_usage_status" [[:provider "claude"] [:status (enum-value (:overageStatus info) "unknown")] [:reason (enum-value (:overageDisabledReason info) "none")]] 1)
       (emit "ai_subscription_extra_usage_in_use" [[:provider "claude"]] (bool-num (:isUsingOverage info))))
     (when-let [buckets (get-in codex [:data :buckets])]
@@ -155,7 +156,7 @@
                                        (= 10080 minutes) "7d"
                                        (and (integer? minutes) (pos? minutes) (< minutes 1000000000)) (str minutes "m")
                                        :else "unknown")
-                   (:used_percent v) (:resets_at v) (when (and (number? minutes) (pos? minutes)) (* minutes 60)) nil)))
+                   (:used_percent v) (:resets_at v) (when (and (number? minutes) (pos? minutes)) (* minutes 60)) nil (:observed_at bucket))))
       (let [limits (:rate_limits (or (get buckets "codex") (apply max-key :observed_at (vals buckets))))
             credits (:credits limits) labels [[:provider "codex"]]]
 

@@ -63,6 +63,7 @@ bb -e '
                        :unifiedWindows {:seven_day_overage_included {:utilization 0.4 :resetsAt (+ now 100) :status "allowed"}}}} (+ (* now 1000) 4000))
   (let [out (ai-subscription-usage/prom-text root home now)]
     (doseq [part ["limit=\"seven_day_overage_included\",name=\"fable_7d\",window=\"7d\"} 40.0"
+                  (str "ai_subscription_window_observed_timestamp_seconds{provider=\"claude\",limit=\"seven_day_overage_included\",name=\"fable_7d\",window=\"7d\"} " (+ now 4))
                   "ai_subscription_window_present{provider=\"claude\",limit=\"seven_day_overage_included\",name=\"fable_7d\"} 1"
                   "ai_subscription_limiting_window{provider=\"claude\",limit=\"seven_day_overage_included\"} 1"
                   "# HELP ai_subscription_window_present AI subscription window_present."
@@ -90,12 +91,15 @@ bb -e '
     (let [out (ai-subscription-usage/prom-text root home now)]
       (assert (clojure.string/includes? out "limit=\"primary\",name=\"primary\",window=\"5h\"} 20.0")))
     (babashka.fs/delete older)
-    (spit newer (str (event (- now 10) {:limit_id "codex" :primary (window 30.0) :plan_type "pro"})
+    (spit newer (str (event (- now 259200) {:limit_id "codex" :primary (window 30.0) :plan_type "pro"})
                      (event now {:limit_id "other_bucket" :primary (window 40.0) :plan_type "other"})))
     (let [out (ai-subscription-usage/prom-text root home now)]
       (doseq [part ["limit=\"primary\",name=\"primary\",window=\"5h\"} 30.0"
                     "limit=\"other_bucket_primary\",name=\"other_bucket_primary\",window=\"5h\"} 40.0"
-                    "ai_subscription_plan_info{provider=\"codex\",plan=\"pro\"} 1"]]
+                    "ai_subscription_plan_info{provider=\"codex\",plan=\"pro\"} 1"
+                    (str "ai_subscription_window_observed_timestamp_seconds{provider=\"codex\",limit=\"primary\",name=\"primary\",window=\"5h\"} " (- now 259200))
+                    (str "ai_subscription_window_observed_timestamp_seconds{provider=\"codex\",limit=\"other_bucket_primary\",name=\"other_bucket_primary\",window=\"5h\"} " now)
+                    (str "ai_subscription_observed_timestamp_seconds{provider=\"codex\"} " now)]]
         (assert (clojure.string/includes? out part) part))))
   (let [dir (str home "/sessions/many")
         event (fn [t n] (str (cheshire.core/generate-string {:type "event_msg" :timestamp (str (java.time.Instant/ofEpochSecond t))
