@@ -19,7 +19,7 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 | 停止 | used が limit に達した失敗（10 回目）で、短期上限が残っていても `in-progress` に戻さず Blocked + assignee boxp へ遷移。category=`gate-failure-budget-exhausted` |
 | 11 回目の防止 | 予算超過 ticket（ticket 自身、失敗歴のある PR、または ticket 本文/Notes が参照する PR のいずれか）は、カードや担当を戻しても `implement` / `review-fix` / `blocked-retry` の自動 run を開始しない（ログのみ）。PR URL は大文字小文字・scheme 有無を問わず抽出し正規化する |
 | 開始の直列化 | ticket lock 取得直後・lane/Notes 遷移前に、予算 lock 下で上限を再確認し `:reservations` に予約（ticket・run-id・対象 PR）を書く。別 ticket の生きた予約が同じ PR を持つ間はその run を開始しない（lock を戻すだけで状態変更なし）。予約の生存は「その ticket の lock が同じ run-id で stale でない」ことで判定し（heartbeat の書換と競合しないよう ticket lock guard 下で読み、存在する空 lock は生存扱い）、終了・クラッシュ・回収時の明示解放は不要 |
-| 停止遷移の完遂 | 上限到達の記録と Blocked 遷移の間で runner が落ちた場合（または上限到達後にカード/担当が戻された場合）、次の tick は run を開始せず、ticket lock 下で予算を再確認したうえで日本語の停止報告（`run=none; transition-id=BOXP-N/gate-budget-stop-<id>`）を Notes に追記し Blocked + assignee boxp へ遷移する（`stop-exhausted-ticket!`）。Blocked + boxp には自動 action がないため 1 回で止まり、Notes を繰り返し書かない |
+| 停止遷移の完遂 | 上限到達の記録と Blocked 遷移の間で runner が落ちた場合（または上限到達後にカード/担当が戻された場合）、次の tick は run を開始せず、ticket lock 下で予算を再確認したうえで日本語の停止報告（`run=none; transition-id=BOXP-N/gate-budget-stop-<id>`）を Notes に追記し Blocked + assignee boxp へ遷移する（`stop-exhausted-ticket!`）。Blocked + boxp には自動 action がないため 1 回で止まり、Notes を繰り返し書かない。すでに Blocked のカードで担当だけが agent に戻された場合（candidate `:blocked-retry`）も同じ経路で停止報告を書き担当を boxp へ戻す（黙って拒否しない）。lock 取得後にカードを再読込し、並行 tick が先に停止を完了していれば（Blocked + boxp で候補 action なし）2 回目の報告や古い状態での復元をしない |
 | reset 条件 | **なし**。成功（gate pass）、本文/head 変更、新 run、runner 再起動、担当交代、新 PR 作成のいずれでも減らない。成功時の短期 retry state（`clear-pr-gate-retries!`）は従来どおり消える |
 | 明示再開 | Owner が `bb task_board_runner.bb gate-budget-grant <BOXP-N|owner/repo#N> --amount N --by <Owner>` で追加予算を **追記** し、担当を戻す。記録の削除では帳尻を合わせない。状況確認は `gate-budget-status BOXP-N` |
 
@@ -55,6 +55,8 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 - `test_gate_failure_budget_boundary_9_10_11`: 本文毎回変化・担当交代・各 tick が別プロセス（再起動）で 9 回目は継続、10 回目で Blocked、カード/担当を戻しても 11 回目の run が生まれない、新 PR でも迂回不可、env で上限を緩められない、秘密が Notes / 記録に残らない
 - `test_gate_failure_budget_multiple_prs_and_shared_pr`: 複数 PR の ticket 合算、同一 PR の ticket 横断合算、上限到達スコープごとの grant 案内、上限到達 PR を参照する新 ticket は run を開始しない（未到達 PR 参照は通常実行）、大文字ホスト/scheme なし URL でも迂回不可
 - `test_gate_failure_budget_grant_resume_and_no_reset_on_success`: 不正 grant 拒否、ticket grant のみでは PR 予算で止まる、両方 grant で 1 run 再開、成功で減らない、付与分消費後に再停止
+- `test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned`: 上限到達で Blocked + boxp になった ticket の担当だけを agent に戻した場合、run を開始せず Blocked のまま日本語停止報告（action=blocked-retry）を 1 回だけ書き担当を boxp へ戻す
+- `test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks`: 担当だけ戻された Blocked カードを 2 つの tick が同時に処理しても（test hook で pre-check と lock の間を広げる）、停止報告は 1 回だけで担当は boxp に戻る
 - `test_gate_failure_budget_stop_completes_after_interrupted_transition`: 上限到達の記録後に Blocked 遷移が失敗して In Progress に戻った ticket を、次の tick が run を開始せず Blocked + 日本語報告へ停止し、以降の tick で Notes を繰り返さず、両スコープの grant 後のみ 1 run 再開
 - `test_gate_failure_budget_stricter_short_term_limit_still_applies`: より厳しい既存短期上限が先に効く
 - `test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized`: 残り 1 回の PR を参照する 2 ticket を別プロセスで同時起動しても run は 1 つだけ、PR は 2/2 で止まり、以後どちらも開始しない

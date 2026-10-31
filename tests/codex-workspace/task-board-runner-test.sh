@@ -3598,6 +3598,74 @@ test_gate_failure_budget_stop_completes_after_interrupted_transition() {
   [[ "$(budget_run_count "${state}" BOXP-465)" == 4 ]] || fail "a grant for both scopes must allow one run"
 }
 
+test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-466|BOXP-466: reassigned]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-466 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" '^assignee: boxp$'
+  [[ "$(budget_run_count "${state}" BOXP-466)" == 2 ]] || fail "expected exactly 2 runs"
+  local stops_before
+  stops_before="$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-466.md" || true)"
+  [[ "${stops_before}" == 0 ]] || fail "no run=none stop expected before the reassignment"
+
+  # The Owner hands the card back to an agent but leaves it in Blocked
+  # (candidate :blocked-retry) without a grant: no run may start, and the
+  # refusal must not stay silent -- report + assignee boxp, card stays Blocked.
+  sed -i "s/^assignee: .*/assignee: codex/" "${vault}/Tickets/BOXP-466.md"
+  sed -i 's/\(BOXP-466: reassigned\]\].*\)assignee::boxp/\1assignee::codex/' "${vault}/Boards/Task Board.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-466)" == 2 ]] || fail "no run may start on the reassigned Blocked card"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-466: reassigned\]\].*status::blocked'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-466: reassigned\]\].*assignee::boxp'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" 'run=none; transition-id=BOXP-466/gate-budget-stop-'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" 'action=blocked-retry'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" 'ticket BOXP-466 2/2, PR boxp/example#601 2/2'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" 'gate-budget-grant BOXP-466 --amount N'
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-466.md")" == 1 ]] || fail "exactly one stop note expected"
+  if ls "${state}"/locks/BOXP-466.edn >/dev/null 2>&1; then
+    fail "the stop must release the ticket lock"
+  fi
+  # Blocked + boxp again: a further tick is silent.
+  budget_fail_tick "${vault}" "${state}" "${bin}" d 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-466)" == 2 ]] || fail "still no run after the stop"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-466.md")" == 1 ]] || fail "stop note must not repeat"
+}
+
+test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-468|BOXP-468: race stop]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-468 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 801 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 801 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Tickets/BOXP-468.md" '^assignee: boxp$'
+  sed -i "s/^assignee: .*/assignee: codex/" "${vault}/Tickets/BOXP-468.md"
+  sed -i 's/\(BOXP-468: race stop\]\].*\)assignee::boxp/\1assignee::codex/' "${vault}/Boards/Task Board.md"
+  # Two ticks both read the reassigned card before either takes the ticket
+  # lock (the hold widens that window deterministically); the second must
+  # re-read the card under the lock and not write a second stop report.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_MILLIS=1500 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-468 >/dev/null &
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_MILLIS=1500 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-468 >/dev/null &
+  wait
+  [[ "$(budget_run_count "${state}" BOXP-468)" == 2 ]] || fail "no run may start on the reassigned Blocked card"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-468.md")" == 1 ]] || fail "exactly one stop note expected under concurrent ticks"
+  assert_file_contains "${vault}/Tickets/BOXP-468.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-468.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-468: race stop\]\].*status::blocked'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-468: race stop\]\].*assignee::boxp'
+  if ls "${state}"/locks/BOXP-468.edn >/dev/null 2>&1; then
+    fail "the stop must release the ticket lock"
+  fi
+}
+
 test_gate_failure_budget_stricter_short_term_limit_still_applies() {
   local tmp vault state bin
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -3852,6 +3920,8 @@ test_gate_failure_budget_multiple_prs_and_shared_pr
 test_gate_failure_budget_grant_resume_and_no_reset_on_success
 test_gate_failure_budget_stricter_short_term_limit_still_applies
 test_gate_failure_budget_stop_completes_after_interrupted_transition
+test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned
+test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks
 test_gate_failure_budget_concurrent_updates_do_not_lose_counts
 test_gate_failure_budget_concurrent_ticks_do_not_lose_counts
 test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized
