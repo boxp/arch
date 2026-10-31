@@ -191,15 +191,23 @@
       (if (contains? (:agent enum-values) base) base agent))
     agent))
 
-;; 結果マーカーなしの正常終了は runner が既定で Review (groom/docs-groom は Ready、exit≠0 は Blocked) に進めるが、
-;; summary の :result は nil のまま保存される。集計も同じ既定で補完し、マーカーなしの Review 到達/再開を落とさない。
+;; runner の final-status (intended) と同じ規則で run の実際の終了先を決める。summary の :result は agent が出した
+;; マーカーの生値 (nil もあり得る) なので、そのまま使うと runner が Ready に進めた groom (マーカーが review でも
+;; Ready) を Review 到達/再開に数えてしまう。規則 (task_board_runner.bb final-status と一致させる):
+;;   failed (exit≠0) → blocked / groom → 常に ready / docs-groom → result=blocked なら blocked、それ以外 ready /
+;;   result が done|review|blocked ならその値 / それ以外 (マーカーなし・未知) → review。
+;; interrupted/running など終了先の無い status は :result の生値 (通常 nil) のまま。
 (defn effective-result [s]
-  (or (kw-or-str (:result s))
-      (case (:status s)
-        :succeeded (if (#{:groom :docs-groom} (:action s)) "ready" "review")
-        :retrying "review"
-        :failed "blocked"
-        nil)))
+  (let [result (kw-or-str (:result s)) action (:action s)]
+    (case (:status s)
+      :failed "blocked"
+      (:succeeded :retrying :blocked)
+      (cond
+        (= :groom action) "ready"
+        (= :docs-groom action) (if (= "blocked" result) "blocked" "ready")
+        (#{"done" "review" "blocked"} result) result
+        :else "review")
+      result)))
 
 ;; runner は中断 (interrupted) を外部から記録するため top-level の :action を書かず、中断時の lock (:previous-lock) に
 ;; :action を残す。集計はこれを正として補完する (推測ではなく runner が書いた値)。

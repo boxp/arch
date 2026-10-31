@@ -1762,3 +1762,28 @@ bb -e "
   (assert (= 1 (:unevaluated-input-missing ct)) (pr-str ct))
   (println \"ok   中断 run の :action を :previous-lock から補完して是正導出に使い、補完できない中断 run は該当 task を未評価にする\"))"
 rm -rf "$tmp_int"
+
+# codex-review 指摘: 結果補完は runner の final-status と同じ規則にする。groom は明示マーカーが review でも Ready に
+# 進む (Review 到達/再開に数えない)。docs-groom は result=blocked なら Blocked、それ以外は Ready。
+tmp_groom=$(mktemp -d)
+mkdir -p "$tmp_groom/root/runs/BOXP-94/20261020T000000Z-aaaa" "$tmp_groom/root/runs/BOXP-94/20261021T010000Z-bbbb" "$tmp_groom/root/runs/BOXP-93/20261020T000000Z-aaaa" "$tmp_groom/root/runs/BOXP-92/20261020T000000Z-aaaa" "$tmp_groom/root/outbox" "$tmp_groom/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: in-progress\n---\n' > "$tmp_groom/vault/Tickets/BOXP-94.md"
+printf -- '---\ncreated: 2026-10-20\nstatus: ready\n---\n' > "$tmp_groom/vault/Tickets/BOXP-93.md"
+printf -- '---\ncreated: 2026-10-20\nstatus: blocked\n---\n' > "$tmp_groom/vault/Tickets/BOXP-92.md"
+echo '{:ticket "BOXP-94" :run-id "20261020T000000Z-aaaa" :agent "claude-opus" :status :succeeded :result "review" :action :groom :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T00:30:00Z"}' > "$tmp_groom/root/runs/BOXP-94/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-94" :run-id "20261021T010000Z-bbbb" :agent "claude-opus" :status :succeeded :result "review" :action :implement :started-at "2026-10-21T01:00:00Z" :finished-at "2026-10-21T02:00:00Z"}' > "$tmp_groom/root/runs/BOXP-94/20261021T010000Z-bbbb/summary.edn"
+echo '{:ticket "BOXP-93" :run-id "20261020T000000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :docs-groom :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T00:30:00Z"}' > "$tmp_groom/root/runs/BOXP-93/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-92" :run-id "20261020T000000Z-aaaa" :agent "codex" :status :succeeded :result "blocked" :action :docs-groom :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T00:30:00Z"}' > "$tmp_groom/root/runs/BOXP-92/20261020T000000Z-aaaa/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_groom/root" "$tmp_groom/vault" > "$tmp_groom/x.jsonl"
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [evs (map #(cheshire.core/parse-string % true) (line-seq (java.io.BufferedReader. (java.io.StringReader. (slurp \"$tmp_groom/x.jsonl\")))))
+      by-id (into {} (map (juxt :event_id identity) evs))
+      r (ai-ops-sli/aggregate \"$tmp_groom/x.jsonl\")]
+  (assert (= \"ready\" (:result (by-id \"BOXP-94/20261020T000000Z-aaaa:finished\"))) \"groom の review マーカーは runner が Ready に進めるので ready\")
+  (assert (nil? (by-id \"BOXP-94/20261021T010000Z-bbbb:reopen\")) \"groom (Ready) の後の implement は Review 後の再開ではない\")
+  (assert (= \"ready\" (:result (by-id \"BOXP-93/20261020T000000Z-aaaa:finished\"))) \"docs-groom の review マーカーは ready\")
+  (assert (= \"blocked\" (:result (by-id \"BOXP-92/20261020T000000Z-aaaa:finished\"))) \"docs-groom の blocked は blocked\")
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :denominator])) (pr-str (get-in r [:sli :agent-system-correction-task-ratio])))
+  (println \"ok   groom/docs-groom の結果補完が runner final-status と一致 (groom の review マーカーを Review 到達/再開に数えない)\"))"
+rm -rf "$tmp_groom"

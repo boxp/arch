@@ -36,8 +36,8 @@ check() { # 説明 clojure-expr(r に report)  [report file]
     echo "not ok - $1"; bb -e "(clojure.pprint/pprint (clojure.edn/read-string (slurp \"$f\")))"; exit 1
   fi
 }
-check "groom->implement は v0 では reopen、v1 では是正に数えない" \
-  '(and (= 1 (get-in r [:transitions :v0->v1 ["reopen" "groom_to_implement"]])) (= 1 (get-in r [:non-correction :by-kind "groom_to_implement"])))'
+check "groom->implement は v0/v1 とも是正に数えない (groom は review マーカーでも runner が Ready に進めるため v0 の reopen にもならない)" \
+  '(and (nil? (get-in r [:transitions :v0->v1 ["reopen" "groom_to_implement"]])) (= 1 (get-in r [:transitions :v0 "reopen"])) (= 1 (get-in r [:non-correction :by-kind "groom_to_implement"])))'
 check "gate 失敗の retrying は v0 では是正に出ず、v1 で gate_rework 12 件" \
   '(and (= 12 (get-in r [:gate-rework :total])) (= 12 (get-in r [:transitions :v0->v1 [nil "gate_rework"]])))'
 check "連続 12 回の gate 失敗をレビュー反復ループとして 10 回目で検出" \
@@ -50,8 +50,8 @@ check "Owner に見える是正 task と agent-system task を分ける (分母�
   '(and (= 2 (get-in r [:task-rates :denominator-reached-review])) (= 2 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 2 (get-in r [:task-rates :v1-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])))'
 check "snapshot 上限より後の run を除外" \
   '(and (= 19 (get-in r [:snapshot :runs])) (nil? (get-in r [:gate-rework :by-gate "ci"])))'
-check "Review 終了から次 run までの待ちを next 種別ごとに出す" \
-  '(and (= 3 (get-in r [:review-wait :followed])) (= 3.0 (get-in r [:review-wait :by-next "reopen_after_review" :p50-h])))'
+check "Review 終了から次 run までの待ちを next 種別ごとに出す (groom の Ready 終了は Review 終了に含めない)" \
+  '(and (= 2 (get-in r [:review-wait :followed])) (nil? (get-in r [:review-wait :by-next "groom_to_implement"])) (= 3.0 (get-in r [:review-wait :by-next "reopen_after_review" :p50-h])))'
 
 # --- codex-review 指摘の回帰 (別 snapshot) ---
 t2="$tmp/t2"; mkdir -p "$t2"
@@ -486,3 +486,31 @@ if bb -e '(require (quote [clojure.string :as str]))
         (binding [*out* *err*] (prn :mismatch :share {:md [tot trig] :edn [etot etrig]})) (System/exit 1))))'; then
   echo "ok - insight md 第 7 節の再開契機表・契機あり割合が resume EDN と一致"
 else echo "not ok - insight md 第 7 節が resume EDN と不一致"; exit 1; fi
+
+# --- codex-review 指摘: 結果補完は runner の final-status と同じ規則にする ---
+# groom は明示マーカーが review でも Ready に進む (Review 到達ではない)。docs-groom は result=blocked なら Blocked、
+# それ以外 (review マーカー含む) は Ready。implement の未知マーカーは Review。
+t36="$tmp/t36"; mkdir -p "$t36/runs/BOXP-951/20261023T000000Z" "$t36/runs/BOXP-952/20261023T000000Z" "$t36/runs/BOXP-953/20261023T000000Z" "$t36/runs/BOXP-954/20261023T000000Z" "$t36/runs/BOXP-954/20261024T000000Z"
+echo '{:ticket "BOXP-951" :run-id "20261023T000000Z" :status :succeeded :action :groom :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t36/runs/BOXP-951/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-952" :run-id "20261023T000000Z" :status :succeeded :action :docs-groom :result "review" :agent "codex" :finished-at "2026-10-23T00:00:00Z"}' >"$t36/runs/BOXP-952/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-953" :run-id "20261023T000000Z" :status :succeeded :action :docs-groom :result "blocked" :agent "codex" :finished-at "2026-10-23T00:00:00Z"}' >"$t36/runs/BOXP-953/20261023T000000Z/summary.edn"
+# BOXP-954: groom (review マーカー → 実際は Ready) → implement。groom→implement は是正ではなく Review 後の再開でもない
+echo '{:ticket "BOXP-954" :run-id "20261023T000000Z" :status :succeeded :action :groom :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t36/runs/BOXP-954/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-954" :run-id "20261024T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-24T00:00:00Z"}' >"$t36/runs/BOXP-954/20261024T000000Z/summary.edn"
+bb ai_ops_insight.bb report "$t36" >"$t36/r.edn"
+check "groom の review マーカーは Ready 扱い (Review 到達は implement の 1 task のみ、groom 直後の implement は再開に数えない)" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:snapshot :unevaluated-tasks] 0)) (= 0 (get-in r [:reopen-after-review :total])) (= 1 (get-in r [:non-correction :by-kind "groom_to_implement"])) (= 0 (get-in r [:review-wait :followed] 0)))' "$t36/r.edn"
+bb -e '
+(load-file "ai_ops_insight.bb")
+(let [er (resolve (symbol "ai-ops-insight" "effective-result"))
+      er (or er (resolve (quote effective-result)))]
+  (assert (= "ready" (er "succeeded" "groom" "review")) "groom + review マーカー → ready")
+  (assert (= "ready" (er "succeeded" "groom" nil)) "groom + マーカーなし → ready")
+  (assert (= "ready" (er "succeeded" "docs-groom" "review")) "docs-groom + review → ready")
+  (assert (= "blocked" (er "succeeded" "docs-groom" "blocked")) "docs-groom + blocked → blocked")
+  (assert (= "review" (er "succeeded" "implement" nil)) "implement + マーカーなし → review")
+  (assert (= "review" (er "succeeded" "implement" "ready")) "implement + 未知マーカー → review")
+  (assert (= "done" (er "succeeded" "implement" "done")))
+  (assert (= "blocked" (er "failed" "groom" "review")) "exit≠0 は action に関わらず blocked")
+  (assert (nil? (er "interrupted" "implement" nil)) "中断は終了先なし")
+  (println "ok - effective-result は runner final-status の規則 (groom→ready / docs-groom→blocked|ready / done|review|blocked / それ以外 review) に一致"))'

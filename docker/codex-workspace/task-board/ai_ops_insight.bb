@@ -114,15 +114,19 @@
        (= (kw (:ticket s)) (str (fs/file-name (fs/parent dir))))
        (= (kw (:run-id s)) (str (fs/file-name dir)))))
 
-;; runner は結果マーカーのない正常終了 (exit 0) を既定で Review (groom/docs-groom は Ready) に進めるが、summary の
-;; :result は nil のまま保存する。集計も同じ既定を使い、マーカーなしの Review 到達を落とさない。
-;; interrupted/running は結果が無いので nil のまま。failed (exit≠0) は runner が blocked にするので blocked。
+;; runner の final-status (intended) と同じ規則で run の実際の終了先を決める。summary の :result は agent が出した
+;; マーカーの生値 (nil もあり得る) なので、そのまま使うと runner が Ready に進めた groom (マーカーが review でも
+;; Ready) を Review 到達に数えてしまう。規則 (task_board_runner.bb final-status と一致させる):
+;;   exit≠0 (failed) → blocked / groom → 常に ready / docs-groom → result=blocked なら blocked、それ以外 ready /
+;;   result が done|review|blocked ならその値 / それ以外 (マーカーなし・未知) → review。
+;; interrupted/running は終了先が無いので :result の生値 (通常 nil) のまま。
 (defn effective-result [status action result]
   (cond
-    result result
-    (contains? #{"interrupted" "running" "in-progress" "unreadable"} status) nil
+    (contains? #{"interrupted" "running" "in-progress" "unreadable"} status) result
     (= "failed" status) "blocked"
-    (contains? #{"groom" "docs-groom"} action) "ready"
+    (= "groom" action) "ready"
+    (= "docs-groom" action) (if (= "blocked" result) "blocked" "ready")
+    (contains? #{"done" "review" "blocked"} result) result
     :else "review"))
 
 (defn read-summary
