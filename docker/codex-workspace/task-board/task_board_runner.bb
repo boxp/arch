@@ -2449,11 +2449,10 @@
                   (try (.write writer (str (sanitize-claude-line line) "\n"))
                        (.flush writer)
                        (catch Exception e (warn! "claude events log write failed" e))))
-                (when (str/includes? line "rate_limit_event")
+                (when (and (map? event) (= "rate_limit_event" (:type event)))
                   (try
-                    (let [event (try (json/parse-string line true) (catch Exception _ nil))]
-                      (when (and (= "rate_limit_event" (:type event)) @subscription-module-loaded?)
-                        ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at)))
+                    (when @subscription-module-loaded?
+                      ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at))
                     (catch Exception e (warn! "claude subscription record failed" e))))))
             (finally
               (when writer (.close writer))))))
