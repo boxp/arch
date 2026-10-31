@@ -17,6 +17,12 @@ bb -e '
   (let [raw (slurp (str root "/ai-ops/subscription/claude.json"))]
     (assert (not (clojure.string/includes? raw "SECRET")))
     (assert (clojure.string/includes? raw "other")))
+  (let [path (str root "/ai-ops/subscription/claude.json")]
+    (ai-subscription-usage/record-claude-rate-limit! root {:rate_limit_info {:status "rejected"}} (- now 1))
+    (assert (= "other" (get-in (ai-subscription-usage/snapshot path) [:data :rate_limit_info :status])))
+    (ai-subscription-usage/record-claude-rate-limit! root {:rate_limit_info {:status "allowed"}} (+ now 1))
+    (assert (= "allowed" (get-in (ai-subscription-usage/snapshot path) [:data :rate_limit_info :status])))
+    (ai-subscription-usage/record-claude-rate-limit! root event (+ now 2)))
   (let [file (str home "/sessions/2026/01/rollout-test.jsonl")]
     (spit file (str "{\"secret\":\"SECRET_BODY\"}\n"
                     (cheshire.core/generate-string {:type "event_msg" :timestamp (str (java.time.Instant/ofEpochSecond now))
@@ -33,7 +39,7 @@ bb -e '
     (assert (not (re-find #"ai_subscription_window_used_percent\{[^\n]*seven_day" out))))
   (ai-subscription-usage/record-claude-rate-limit! root
     {:rate_limit_info {:rateLimitType "seven_day_overage_included"
-                       :unifiedWindows {:seven_day_overage_included {:utilization 0.4 :resetsAt (+ now 100) :status "allowed"}}}} now)
+                       :unifiedWindows {:seven_day_overage_included {:utilization 0.4 :resetsAt (+ now 100) :status "allowed"}}}} (+ now 3))
   (let [out (ai-subscription-usage/prom-text root home now)]
     (doseq [part ["limit=\"seven_day_overage_included\",name=\"fable_7d\",window=\"7d\"} 40.0"
                   "ai_subscription_window_present{provider=\"claude\",limit=\"seven_day_overage_included\",name=\"fable_7d\"} 1"
@@ -70,10 +76,25 @@ bb -e '
                     "limit=\"other_bucket_primary\",name=\"other_bucket_primary\",window=\"5h\"} 40.0"
                     "ai_subscription_plan_info{provider=\"codex\",plan=\"pro\"} 1"]]
         (assert (clojure.string/includes? out part) part))))
+  (let [dir (str home "/sessions/many")
+        event (fn [t n] (str (cheshire.core/generate-string {:type "event_msg" :timestamp (str (java.time.Instant/ofEpochSecond t))
+                         :payload {:type "token_count" :rate_limits {:limit_id "many" :primary {:used_percent n}}}}) "\n"))]
+    (babashka.fs/create-dirs dir)
+    (doseq [i (range 250)]
+      (let [path (str dir "/rollout-" i ".jsonl")]
+        (spit path (event (if (zero? i) now (- now 100)) (if (zero? i) 99 1)))
+        (babashka.fs/set-last-modified-time path (java.nio.file.attribute.FileTime/fromMillis (* 1000 (- now (if (zero? i) 300 0)))))))
+    (assert (= 99 (get-in (ai-subscription-usage/codex-latest-rate-limits home now) [:buckets "many" :rate_limits :primary :used_percent])))
+    (spit (str dir "/rollout-1.jsonl") (event (+ now 1) 77) :append true)
+    (assert (= 77 (get-in (ai-subscription-usage/codex-latest-rate-limits home now) [:buckets "many" :rate_limits :primary :used_percent])))
+    (babashka.fs/delete-tree dir))
   (spit (str home "/sessions/2026/01/rollout-test.jsonl") "{\"token_count\": malformed}\n")
   (assert (clojure.string/includes? (ai-subscription-usage/prom-text root home now) "provider=\"codex\",state=\"parse_error\""))
+  (assert (clojure.string/includes? (ai-subscription-usage/prom-text root home now) "provider=\"codex\",state=\"parse_error\""))
   (spit (str root "/ai-ops/subscription/claude.json") "not json")
-  (assert (clojure.string/includes? (ai-subscription-usage/prom-text root home now) "state=\"parse_error\"")))
+  (assert (clojure.string/includes? (ai-subscription-usage/prom-text root home now) "state=\"parse_error\""))
+  (ai-subscription-usage/record-claude-rate-limit! root event now)
+  (assert (= "ok" (:state (ai-subscription-usage/snapshot (str root "/ai-ops/subscription/claude.json"))))))
 '
 mkdir -p "${tmp}/vault/Boards" "${tmp}/vault/Tickets" "${tmp}/bin"
 cat >"${tmp}/vault/Boards/Task Board.md" <<'BOARD'

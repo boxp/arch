@@ -144,7 +144,9 @@ if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
 fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
 if [[ "${CLAUDE_FAKE_STREAM_JSON:-false}" == true ]]; then
-  printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"secret"}' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
+  printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"secret"}'
+  sleep "${CLAUDE_FAKE_STREAM_DELAY:-0}"
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
 else
   printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
 fi
@@ -351,11 +353,15 @@ test_fable_stream_json() {
   make_fake_claude "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-149|BOXP-149: stream]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-149 in-progress fable
-  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-stream.out
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true CLAUDE_FAKE_STREAM_DELAY=3 run_tick "${vault}" "${state}" env >/tmp/task-board-stream.out
   assert_file_contains "${vault}/Tickets/BOXP-149.md" '^status: done$'
   last_message="$(find "${state}/runs/BOXP-149" -name last-message.md -print | head -n 1)"
   [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
   [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+  local observed finished
+  observed="$(bb -e '(require (quote cheshire.core)) (println (:observed_at (cheshire.core/parse-string (slurp (first *command-line-args*)) true)))' "${state}/ai-ops/subscription/claude.json")"
+  finished="$(stat -c %Y "$(find "${state}/runs/BOXP-149" -name events.jsonl -print -quit)")"
+  (( observed <= finished - 2 )) || fail "subscription observation was delayed until process exit"
 }
 
 test_fable_assignee_runs_via_claude() {

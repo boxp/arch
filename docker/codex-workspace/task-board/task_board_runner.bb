@@ -2342,7 +2342,7 @@
 
 (defn claude-stream-summary
   "One pass over a Claude stream-json stdout, keeping only the last result,
-  assistant and rate_limit_event objects (the stream can be large)."
+  and assistant objects (the stream can be large)."
   [path]
   (with-open [reader (io/reader (str path))]
     (reduce (fn [acc line]
@@ -2352,8 +2352,7 @@
                   acc
                   (cond-> (assoc acc :json? true)
                     (and (= "result" (:type v)) (string? (:result v))) (assoc :result (:result v))
-                    (= "assistant" (:type v)) (assoc :assistant v)
-                    (= "rate_limit_event" (:type v)) (assoc :rate-limit v)))))
+                    (= "assistant" (:type v)) (assoc :assistant v)))))
             {} (line-seq reader))))
 
 (defn claude-last-message [path summary]
@@ -2364,12 +2363,41 @@
           (not json?) (slurp (str path))
           :else "")))
 
-(defn record-claude-subscription! [summary]
+(defn tail-claude-subscription!
+  "Follow a Claude stream-json stdout while the agent runs and record each
+  complete rate_limit_event line at the time it is observed (the event itself
+  carries no timestamp). Bytes are read in chunks from the last offset; a
+  trailing partial line is kept until its newline arrives. After `stopped?`
+  flips, one final drain pass reads whatever the agent wrote before exiting."
+  [path stopped?]
   (try
-    (when-let [event (:rate-limit summary)]
-      (when @subscription-module-loaded?
-        ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event (quot (System/currentTimeMillis) 1000))))
-    (catch Exception e (log! (str "claude subscription snapshot failed: " (.getMessage e))))))
+    (with-open [file (java.io.RandomAccessFile. (str path) "r")]
+      (let [buf (byte-array 65536)
+            record! (fn [line]
+                      (when (str/includes? line "rate_limit_event")
+                        (let [event (try (json/parse-string line true) (catch Exception _ nil))]
+                          (when (and (= "rate_limit_event" (:type event)) @subscription-module-loaded?)
+                            ((resolve 'ai-subscription-usage/record-claude-rate-limit!)
+                             (root) event (quot (System/currentTimeMillis) 1000))))))]
+        (loop [pending (java.io.ByteArrayOutputStream.)]
+          (let [final-drain? @stopped?
+                pending (loop [pending pending]
+                          (let [n (.read file buf)]
+                            (if (pos? n)
+                              (recur (let [chunk (if (zero? (.size pending)) (java.util.Arrays/copyOf buf n)
+                                                   (do (.write pending buf 0 n) (.toByteArray pending)))
+                                           last-nl (loop [i (dec (alength chunk))] (cond (neg? i) -1 (= 10 (aget chunk i)) i :else (recur (dec i))))]
+                                       (when (>= last-nl 0)
+                                         (doseq [line (str/split-lines (String. chunk 0 (inc last-nl) "UTF-8"))]
+                                           (record! line)))
+                                       (let [rest (java.io.ByteArrayOutputStream.)]
+                                         (.write rest chunk (inc last-nl) (- (alength chunk) (inc last-nl)))
+                                         rest)))
+                              pending)))]
+            (when-not final-drain?
+              (Thread/sleep 1000)
+              (recur pending))))))
+    (catch Exception e (log! (str "claude subscription tail failed: " (.getMessage e))))))
 
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
@@ -2422,11 +2450,15 @@
                                                                                            (vec (cons (vault) (workspace-add-dirs workspace))))}}
                                        (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
+          stopped? (atom false)
+          tail (when (claude-assignee? agent) (future (tail-claude-subscription! stdout-path stopped?)))
           _ (register-agent-process! run (:proc proc))
           {:keys [proc idle-timeout? shutdown?]} (try
                                                    (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
                                                    (finally
-                                                     (unregister-agent-process! run)))
+                                                     (unregister-agent-process! run)
+                                                     (reset! stopped? true)
+                                                     (when tail @tail)))
           raw-exit (:exit proc)
           claude-summary (when (and (claude-assignee? agent) (fs/exists? stdout-path))
                            (try (claude-stream-summary stdout-path)
@@ -2441,8 +2473,6 @@
                   (try (io/copy (io/file (str stdout-path)) (io/file (str last-message-path)))
                        (catch Exception copy-error
                          (log! (str "claude message fallback failed: " (.getMessage copy-error))))))))
-          _ (when claude-summary
-              (record-claude-subscription! claude-summary))
           last-message (when (fs/exists? last-message-path)
                          (slurp (str last-message-path)))
           marker (result-marker last-message)

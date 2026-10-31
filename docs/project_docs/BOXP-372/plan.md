@@ -61,3 +61,8 @@
 Claude Code 2.1.312 の公式 stream-json `rate_limit_event` は、モデル専用の週次枠を `unifiedWindows.seven_day_overage_included` として通知する。CLI の表示名は「Fable limit」で、レスポンスヘッダーは `anthropic-ratelimit-unified-7d_oi-*` 系列。この窓は応答に含まれるアカウントでのみ提供される。`seven_day_opus` / `seven_day_sonnet` はトップレベルの `rateLimitType` にのみ存在し、窓ごとの利用率としては提供されない。
 
 コレクターは `name="fable_7d"` の独立した系列と `ai_subscription_window_present` を出力し、窓がない場合は未提供と表示する。0% とせず、共有窓からも推測しない。probe、追加のモデル呼び出し、新たな課金は発生させない。
+
+### 観測時刻と読み取りの効率化
+
+- Claude の stream を実行中に追跡し、完結した rate limit event の受信時刻を記録する。終了後に残りを読み、既存 snapshot より古い観測は同一プロセス内のロックで比較・書き込みを直列化して破棄する。
+- Codex は８日以内の全候補をイベント時刻で比較する。ファイルのサイズと更新時刻が変わらなければ、そのファイルのバケット別最新値と読み取りエラー状態を再利用し、候補から外れたキャッシュを破棄する。

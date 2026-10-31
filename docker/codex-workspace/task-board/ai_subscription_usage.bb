@@ -16,6 +16,10 @@
          (fs/move tmp path {:replace-existing true :atomic-move true})
          (finally (fs/delete-if-exists tmp)))))
 
+(declare snapshot)
+
+(def claude-snapshot-lock (Object.))
+
 (defn record-claude-rate-limit! [root event observed-epoch-s]
   (let [info (:rate_limit_info event)
         enums [:status :rateLimitType :overageStatus :overageDisabledReason]
@@ -31,38 +35,59 @@
                                             (number? (:resetsAt v)) (assoc :resetsAt (:resetsAt v))
                                             (some? (:status v)) (assoc :status (enum-value (:status v) "other")))]))
                      (into {}))]
-    (atomic-write! (fs/path root "ai-ops/subscription/claude.json")
-                   (json/generate-string {:observed_at observed-epoch-s :rate_limit_info (assoc clean :unifiedWindows windows)}))))
+    (locking claude-snapshot-lock
+      (let [path (fs/path root "ai-ops/subscription/claude.json")
+            existing (snapshot path)]
+        (when (or (not= "ok" (:state existing)) (<= (get-in existing [:data :observed_at]) observed-epoch-s))
+          (atomic-write! path (json/generate-string {:observed_at observed-epoch-s :rate_limit_info (assoc clean :unifiedWindows windows)})))))))
 
 (def ^:dynamic *codex-read-error* nil)
 
+(def codex-file-cache (atom {}))
+(def codex-cache-lock (Object.))
+
+(defn read-codex-file [file mtime]
+  (let [error? (atom false)
+        buckets (try
+                  (with-open [reader (io/reader (str file))]
+                    (reduce (fn [hits line]
+                              (if (str/includes? line "\"token_count\"")
+                                (let [entry (try (json/parse-string line true) (catch Exception _ (reset! error? true) nil))
+                                      payload (:payload entry)
+                                      limits (:rate_limits payload)]
+                                  (if (and (= "event_msg" (:type entry)) (= "token_count" (:type payload)) (map? limits))
+                                    (let [bucket (or (:limit_id limits) "codex")
+                                          millis (try (.toEpochMilli (java.time.Instant/parse (:timestamp entry))) (catch Exception _ mtime))]
+                                      (if (> millis (get-in hits [bucket :millis] Long/MIN_VALUE))
+                                        (assoc hits bucket {:rate_limits limits :millis millis}) hits))
+                                    hits)) hits)) {} (line-seq reader)))
+                  (catch Exception _ (reset! error? true) {}))]
+    {:buckets buckets :error? @error?}))
+
 (defn codex-latest-rate-limits [codex-home now-s]
-  (let [dir (fs/path codex-home "sessions")
-        files (if (fs/exists? dir)
-                (->> (fs/glob dir "**/rollout-*.jsonl")
-                     (filter #(>= (quot (.toMillis (fs/last-modified-time %)) 1000) (- now-s (* 8 86400))))
-                     (sort-by #(.toMillis (fs/last-modified-time %)) >) (take 200)) [])]
-    (let [buckets (reduce (fn [buckets file]
-                            (let [mtime (.toMillis (fs/last-modified-time file))]
-                              (try
-                                (with-open [reader (io/reader (str file))]
-                                  (reduce (fn [hits line]
-                                            (if (str/includes? line "\"token_count\"")
-                                              (let [entry (try (json/parse-string line true) (catch Exception _ (when *codex-read-error* (reset! *codex-read-error* true)) nil))
-                                                    payload (:payload entry)
-                                                    limits (:rate_limits payload)]
-                                                (if (and (= "event_msg" (:type entry)) (= "token_count" (:type payload)) (map? limits))
-                                                  (let [bucket (or (:limit_id limits) "codex")
-                                                        millis (try (.toEpochMilli (java.time.Instant/parse (:timestamp entry))) (catch Exception _ mtime))]
-                                                    (if (> millis (get-in hits [bucket :millis] Long/MIN_VALUE))
-                                                      (assoc hits bucket {:rate_limits limits :observed_at (quot millis 1000) :millis millis})
-                                                      hits))
-                                                  hits))
-                                              hits)) buckets (line-seq reader)))
-                                (catch Exception _ (when *codex-read-error* (reset! *codex-read-error* true)) buckets)))) {} files)]
+  (locking codex-cache-lock
+    (let [dir (fs/path codex-home "sessions")
+          files (if (fs/exists? dir)
+                  (->> (fs/glob dir "**/rollout-*.jsonl")
+                       (filter #(>= (quot (.toMillis (fs/last-modified-time %)) 1000) (- now-s (* 8 86400))))) [])
+          paths (set (map str files))
+          _ (swap! codex-file-cache #(select-keys % paths))
+          buckets (reduce (fn [hits file]
+                            (let [path (str file)
+                                  size (fs/size file)
+                                  mtime (.toMillis (fs/last-modified-time file))
+                                  cached (get @codex-file-cache path)
+                                  entry (if (and (= size (:size cached)) (= mtime (:mtime cached))) cached
+                                          (assoc (read-codex-file file mtime) :size size :mtime mtime))]
+                              (swap! codex-file-cache assoc path entry)
+                              (when (and (:error? entry) *codex-read-error*) (reset! *codex-read-error* true))
+                              (reduce-kv (fn [acc bucket value]
+                                           (if (> (:millis value) (get-in acc [bucket :millis] Long/MIN_VALUE))
+                                             (assoc acc bucket value) acc)) hits (:buckets entry)))) {} files)]
       (when (seq buckets)
-        {:buckets (into {} (map (fn [[k v]] [k (dissoc v :millis)]) buckets))
-         :observed_at (apply max (map :observed_at (vals buckets)))}))))
+        {:buckets (into {} (map (fn [[k v]] [k (-> v (assoc :observed_at (quot (:millis v) 1000)) (dissoc :millis))]) buckets))
+         :observed_at (quot (apply max (map :millis (vals buckets))) 1000)}))))
+
 
 (defn snapshot [path]
   (if-not (fs/exists? path) {:state "no_snapshot"}
