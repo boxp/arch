@@ -114,3 +114,229 @@ ROOT=$t5 run BOXP-910 20261011T010000Z retrying review-fix review codex-review
 bb ai_ops_insight.bb report "$t5" >"$t5/r.edn"
 check "gate 失敗した review-fix は Owner 可視の是正 task に数えない" \
   '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 0 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-agent-system-tasks :n])))' "$t5/r.edn"
+
+# --- Review 停止からの再開契機 (Notes 見出しの時刻/source のみ) ---
+t6="$tmp/t6"; mkdir -p "$t6/vault/Tickets"
+# BOXP-911: review 終了 -> supervisor 催促 2 回 -> 再開 (同じ停止への催促の繰返し)
+ROOT=$t6 run BOXP-911 20261012T000000Z succeeded implement review
+ROOT=$t6 run BOXP-911 20261012T060000Z succeeded implement review
+# BOXP-912: review 終了 -> Owner 経由指示 -> 再開、もう一度 review 終了後は note なしで再開
+ROOT=$t6 run BOXP-912 20261013T000000Z succeeded implement review
+ROOT=$t6 run BOXP-912 20261013T020000Z succeeded implement review
+ROOT=$t6 run BOXP-912 20261013T040000Z succeeded implement review
+# BOXP-913: review 終了後に supervisor 催促があるが未再開 (停止中)
+ROOT=$t6 run BOXP-913 20261014T000000Z succeeded implement review
+cat >"$t6/vault/Tickets/BOXP-911.md" <<'MD'
+## Notes
+- 2026-10-12 00:30:00 UTC [kohako-event]: secret-body-should-not-appear handled
+- 2026-10-12 03:00:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+- 2026-10-12 05:58:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+- 2026-10-12 05:59:00 UTC [claude-opus]: agent log
+MD
+cat >"$t6/vault/Tickets/BOXP-912.md" <<'MD'
+## Notes
+- 2026-10-13 01:00:00 UTC [hermes-agent]: secret-body-should-not-appear
+- 2026-10-13 01:30:00 UTC [kohako-supervisor]: before-run-start-but-earlier
+- 2026-10-13 01:50:00 UTC [hermes-agent]: last trigger
+MD
+cat >"$t6/vault/Tickets/BOXP-913.md" <<'MD'
+## Notes
+- 2026-10-14 01:00:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+MD
+bb ai_ops_insight.bb report "$t6" 20261015T000000Z "$t6/vault" >"$t6/r.edn"
+check "再開契機を最後の契機 note で分類し、note がなければ none-observed" \
+  '(let [b (get-in r [:review-resume :by-trigger])] (and (= 3 (get-in r [:review-resume :followed])) (= 1 (get-in b ["supervisor" :n])) (= 1 (get-in b ["owner-relay" :n])) (= 1 (get-in b ["none-observed" :n]))))' "$t6/r.edn"
+check "契機 note -> 次 run 開始を ack 遅延 (分) とする" \
+  '(and (= 2.0 (get-in r [:review-resume :by-trigger "supervisor" :ack-p50-min])) (= 10.0 (get-in r [:review-resume :by-trigger "owner-relay" :ack-p50-min])))' "$t6/r.edn"
+check "同じ停止への催促 2 回を繰返しとして数え、未再開の停止中催促も別掲 (kohako-event は契機に含めない)" \
+  '(and (= 1 (get-in r [:review-resume :supervisor-nudged :repeated-nudge-stalls])) (= 3 (get-in r [:review-resume :supervisor-nudged :stalls])) (= 1 (get-in r [:review-resume :open-stalls :with-supervisor-nudge])))' "$t6/r.edn"
+if grep -q "secret-body\|last trigger\|agent log" "$t6/r.edn"; then echo "not ok - Notes 本文が出力に含まれる"; exit 1; else echo "ok - Notes 本文は出力しない"; fi
+bb ai_ops_insight.bb report "$t6" 20261015T000000Z >"$t6/r2.edn"
+check "vault 未指定なら再開契機は unknown (0 にしない)" '(= "unknown" (get-in r [:review-resume :status]))' "$t6/r2.edn"
+
+# Notes 節以外 (別節・code block) の同形式の行は契機に数えない
+t7="$tmp/t7"; mkdir -p "$t7/vault/Tickets"
+ROOT=$t7 run BOXP-914 20261016T000000Z succeeded implement review
+ROOT=$t7 run BOXP-914 20261016T060000Z succeeded implement review
+cat >"$t7/vault/Tickets/BOXP-914.md" <<'MD'
+## Summary
+- 2026-10-16 01:00:00 UTC [kohako-supervisor]: outside notes
+## Notes
+```
+- 2026-10-16 02:00:00 UTC [hermes-agent]: inside code block
+```
+## Plan
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: after notes
+MD
+bb ai_ops_insight.bb report "$t7" 20261017T000000Z "$t7/vault" >"$t7/r.edn"
+check "Notes 節外・code block 内の行は契機に数えない" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "none-observed" :n])) (= 0 (get-in r [:review-resume :supervisor-nudged :stalls])))' "$t7/r.edn"
+
+# ticket file が無い/読めない場合は none-observed ではなく unknown-unreadable
+t8="$tmp/t8"; mkdir -p "$t8/vault/Tickets"
+ROOT=$t8 run BOXP-915 20261016T000000Z succeeded implement review
+ROOT=$t8 run BOXP-915 20261016T060000Z succeeded implement review
+ROOT=$t8 run BOXP-916 20261016T000000Z succeeded implement review
+ROOT=$t8 run BOXP-916 20261016T060000Z succeeded implement review
+printf '## Notes\n' >"$t8/vault/Tickets/BOXP-916.md"; chmod 000 "$t8/vault/Tickets/BOXP-916.md"
+bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/vault" >"$t8/r.edn"
+chmod 600 "$t8/vault/Tickets/BOXP-916.md"
+check "無い/読めない ticket は unknown-unreadable として別掲し none-observed にしない" \
+  '(and (= 2 (get-in r [:review-resume :unreadable-tickets])) (= 2 (get-in r [:review-resume :by-trigger "unknown-unreadable" :n])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t8/r.edn"
+check "読めない ticket の停止は催促件数を 0 にせず判定不能として別掲" \
+  '(and (= 4 (get-in r [:review-resume :supervisor-nudged :unknown-nudge-stalls])) (= 2 (get-in r [:review-resume :open-stalls :nudge-unknown])) (= 0 (get-in r [:review-resume :open-stalls :with-supervisor-nudge])))' "$t8/r.edn"
+if bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/no-such-vault" >/dev/null 2>&1; then echo "not ok - 存在しない vault で成功した"; exit 1; else echo "ok - 存在しない vault は exit 非0"; fi
+
+# Notes 内の code block にある `## ` 行で節を終えない (閉じフェンス以降の契機 note も読む)
+t9="$tmp/t9"; mkdir -p "$t9/vault/Tickets"
+ROOT=$t9 run BOXP-917 20261016T000000Z succeeded implement review
+ROOT=$t9 run BOXP-917 20261016T060000Z succeeded implement review
+cat >"$t9/vault/Tickets/BOXP-917.md" <<'MD'
+## Notes
+```
+## Plan
+```
+- 2026-10-16 05:00:00 UTC [kohako-supervisor]: after code block
+## Plan
+- 2026-10-16 05:30:00 UTC [hermes-agent]: outside notes
+MD
+bb ai_ops_insight.bb report "$t9" 20261017T000000Z "$t9/vault" >"$t9/r.edn"
+check "Notes 内 code block の見出しで節を終えず、閉じフェンス後の契機を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t9/r.edn"
+
+# 別節の code block 内にある `## Notes` 行を Notes 節の開始とみなさない (実際の Notes 節を読む)
+t10="$tmp/t10"; mkdir -p "$t10/vault/Tickets"
+ROOT=$t10 run BOXP-918 20261016T000000Z succeeded implement review
+ROOT=$t10 run BOXP-918 20261016T060000Z succeeded implement review
+cat >"$t10/vault/Tickets/BOXP-918.md" <<'MD'
+## Summary
+```
+## Notes
+- 2026-10-16 05:00:00 UTC [hermes-agent]: fake note in code block
+```
+## Notes
+- 2026-10-16 05:30:00 UTC [kohako-supervisor]: real note
+MD
+bb ai_ops_insight.bb report "$t10" 20261017T000000Z "$t10/vault" >"$t10/r.edn"
+check "code block 内の ## Notes を節開始とせず、実際の Notes 節を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t10/r.edn"
+
+# 種類の異なる fence (~~~ block 内の ```) で block を閉じたとみなさない
+t11="$tmp/t11"; mkdir -p "$t11/vault/Tickets"
+ROOT=$t11 run BOXP-919 20261016T000000Z succeeded implement review
+ROOT=$t11 run BOXP-919 20261016T060000Z succeeded implement review
+cat >"$t11/vault/Tickets/BOXP-919.md" <<'MD'
+## Notes
+~~~
+```
+- 2026-10-16 04:00:00 UTC [hermes-agent]: fake note in tilde block
+## Plan
+~~~
+- 2026-10-16 05:30:00 UTC [kohako-supervisor]: real note
+MD
+bb ai_ops_insight.bb report "$t11" 20261017T000000Z "$t11/vault" >"$t11/r.edn"
+check "~~~ block 内の \`\`\` で閉じず、対応する閉じフェンス後の契機を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t11/r.edn"
+
+# Review 終了と同じ秒の契機 note は前後不明 (ambiguous-same-second) として別掲し、none-observed にしない
+t12="$tmp/t12"; mkdir -p "$t12/vault/Tickets"
+ROOT=$t12 run BOXP-920 20261016T000000Z succeeded implement review
+ROOT=$t12 run BOXP-920 20261016T060000Z succeeded implement review
+ROOT=$t12 run BOXP-921 20261016T000000Z succeeded implement review
+ROOT=$t12 run BOXP-921 20261016T060000Z succeeded implement review
+sec="2026-10-16 00:00:00" # run() の finished-at は run-id と同じ秒
+cat >"$t12/vault/Tickets/BOXP-920.md" <<MD
+## Notes
+- $sec UTC [kohako-supervisor]: same second
+MD
+cat >"$t12/vault/Tickets/BOXP-921.md" <<MD
+## Notes
+- $sec UTC [hermes-agent]: same second
+- 2026-10-16 05:00:00 UTC [kohako-supervisor]: definitely after
+MD
+bb ai_ops_insight.bb report "$t12" 20261017T000000Z "$t12/vault" >"$t12/r.edn"
+check "同秒の契機のみは ambiguous-same-second、後に確実な契機があればそちらで分類" \
+  '(let [rr (:review-resume r)] (and (= 1 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "none-observed"])) (= 2 (:same-second-boundary rr))))' "$t12/r.edn"
+
+# 次 run 開始と同じ秒の契機 note も前後不明。確定区間に入れず、ack 遅延・催促回数を確定しない
+t13="$tmp/t13"; mkdir -p "$t13/vault/Tickets"
+for t in BOXP-930 BOXP-931 BOXP-932; do
+  ROOT=$t13 run $t 20261016T000000Z succeeded implement review
+  ROOT=$t13 run $t 20261016T060000Z succeeded implement review
+done
+st="2026-10-16 06:00:00" # 次 run の開始 (run-id) と同じ秒。run() の finished-at も同秒のため後続停止の終了境界にも当たる
+cat >"$t13/vault/Tickets/BOXP-930.md" <<MD
+## Notes
+- $st UTC [kohako-supervisor]: start same second only
+MD
+cat >"$t13/vault/Tickets/BOXP-931.md" <<MD
+## Notes
+- 2026-10-16 03:00:00 UTC [hermes-agent]: definite owner relay
+- $st UTC [kohako-supervisor]: start same second, different kind
+MD
+cat >"$t13/vault/Tickets/BOXP-932.md" <<MD
+## Notes
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: definite nudge
+- $st UTC [kohako-supervisor]: start same second, same kind
+MD
+bb ai_ops_insight.bb report "$t13" 20261017T000000Z "$t13/vault" >"$t13/r.edn"
+check "開始同秒の note は確定せず、種別が異なれば ambiguous、ack は unknown、催促は確定分のみ" \
+  '(let [rr (:review-resume r)] (and (= 2 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "supervisor" :ack-p50-min])) (nil? (get-in rr [:by-trigger "none-observed"])) (= 6 (:same-second-boundary rr)) (= 1 (get-in rr [:supervisor-nudged :stalls])) (= 0 (get-in rr [:supervisor-nudged :repeated-nudge-stalls])) (= 6 (get-in rr [:supervisor-nudged :ambiguous-nudge-stalls]))))' "$t13/r.edn"
+
+# 停止区間内の最後の秒に種別の異なる契機 note が複数あれば、記載順で確定せず ambiguous-same-second
+t14="$tmp/t14"; mkdir -p "$t14/vault/Tickets"
+for t in BOXP-940 BOXP-941; do
+  ROOT=$t14 run $t 20261016T000000Z succeeded implement review
+  ROOT=$t14 run $t 20261016T060000Z succeeded implement review
+done
+cat >"$t14/vault/Tickets/BOXP-940.md" <<MD
+## Notes
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: nudge
+- 2026-10-16 03:00:00 UTC [hermes-agent]: relay in same second
+MD
+cat >"$t14/vault/Tickets/BOXP-941.md" <<MD
+## Notes
+- 2026-10-16 02:00:00 UTC [hermes-agent]: earlier relay
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: nudge a
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: nudge b
+MD
+bb ai_ops_insight.bb report "$t14" 20261017T000000Z "$t14/vault" >"$t14/r.edn"
+check "最後の秒に種別の異なる契機があれば ambiguous、同種のみなら確定" \
+  '(let [rr (:review-resume r)] (and (= 1 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "owner-relay"])) (= 1 (:same-second-boundary rr))))' "$t14/r.edn"
+
+# 未再開の停止では snapshot 上限 (until-at) と同じ秒の催促 note を確定計上せず、前後不明として別掲
+t15="$tmp/t15"; mkdir -p "$t15/vault/Tickets"
+ROOT=$t15 run BOXP-950 20261016T000000Z succeeded implement review
+cat >"$t15/vault/Tickets/BOXP-950.md" <<MD
+## Notes
+- 2026-10-17 00:00:00 UTC [kohako-supervisor]: nudge at snapshot boundary
+MD
+bb ai_ops_insight.bb report "$t15" 20261017T000000Z "$t15/vault" >"$t15/r.edn"
+check "未再開停止で上限と同秒の催促は確定計上せず ambiguous に別掲" \
+  '(let [rr (:review-resume r)] (and (= 0 (get-in rr [:supervisor-nudged :stalls])) (= 0 (get-in rr [:open-stalls :with-supervisor-nudge])) (= 1 (get-in rr [:open-stalls :n])) (= 1 (get-in rr [:supervisor-nudged :ambiguous-nudge-stalls])) (= 1 (:same-second-boundary rr))))' "$t15/r.edn"
+
+# 存在するが読めない Tickets ディレクトリは exit 2
+chmod 000 "$t9/vault/Tickets"
+if [ -r "$t9/vault/Tickets" ]; then
+  echo "ok - (skip) 権限で読めなくできない環境"
+else
+  set +e; bb ai_ops_insight.bb report "$t9" 20261017T000000Z "$t9/vault" >/dev/null 2>&1; rc=$?; set -e
+  chmod 700 "$t9/vault/Tickets"
+  if [ "$rc" = 2 ]; then echo "ok - 読めない Tickets ディレクトリは exit 2"; else echo "not ok - 読めない Tickets ディレクトリで exit $rc"; exit 1; fi
+fi
+chmod 700 "$t9/vault/Tickets"
+
+# notes-lines は extract の結果だけを返し、行そのものを保持しない
+if bb -e '(load-file "ai_ops_insight.bb") (in-ns (quote ai-ops-insight))
+  (let [r (notes-lines (fn [l] (when (str/starts-with? l "- ") :hit)) ["# t" "## Notes" "- a secret" "body secret" "```" "- in fence" "```" "## Next" "- after"])]
+    (when-not (= [:hit] r) (System/exit 1)))'; then
+  echo "ok - notes-lines は抽出結果だけを返す (本文行を蓄積しない)"
+else echo "not ok - notes-lines が抽出結果以外を返した"; exit 1; fi
+
+# 固定 snapshot の EDN は現行 report の keyword key 構造をすべて含む (再集計漏れ検出)
+check "固定 snapshot EDN が現行 report の出力 key を欠かない" \
+  '(letfn [(paths [m p] (if (map? m) (mapcat (fn [[k v]] (when (keyword? k) (cons (conj p k) (paths v (conj p k))))) m) []))]
+     (let [snap (clojure.edn/read-string (slurp "../insight-2026-10-30-resume.edn"))
+           missing (remove (set (paths snap [])) (paths r []))]
+       (when (seq missing) (binding [*out* *err*] (prn :missing missing)))
+       (empty? missing)))' "$t14/r.edn"

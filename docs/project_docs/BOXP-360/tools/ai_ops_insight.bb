@@ -2,22 +2,81 @@
 ;; BOXP-360: 是正・再作業の集中先分析と correction-rules/v1 (分析専用, metadata-only)
 ;;
 ;; Usage:
-;;   bb ai_ops_insight.bb report <task-board-root> [until-run-id]   EDN report (stdout)
+;;   bb ai_ops_insight.bb report <task-board-root> [until-run-id] [vault]   EDN report (stdout)
+;;   (until-run-id を使わず vault だけ渡す場合は until-run-id に "" を渡す)
 ;;
 ;; 読むのは runs/<ticket>/<run-id>/summary.edn の次の field だけ:
 ;;   :status :action :result :blocker-category :started-at :finished-at :agent
 ;;   :review-gate の :gate / :diagnostic :category
-;; prompt / last-message / events.jsonl / ticket 本文は読まない。
+;; prompt / last-message / events.jsonl は読まない。
+;; vault を与えた場合だけ、Tickets/BOXP-<n>.md の `## Notes` 節 (次の `## ` 見出しまで、code block 内を除く) の各行を正規表現
+;;   ^- YYYY-MM-DD HH:MM:SS UTC [<source>]:
+;; と照合し、一致した行の「時刻」と「source (下の allowlist の語彙)」だけを残す。本文・タイトル・その他の行は保持も出力もしない。
+;; ticket file が無い/読めない ticket は trigger=unknown-unreadable として別掲し、観測なし (none-observed) にしない。
+;; vault/Tickets が読めなければ exit 2。
 ;; 公開中の SLI (ai_ops_sli.bb, correction-rules/v0) は変更しない。v1 は版を分けて並べて比較する。
 ;; until-run-id を与えると、その run-id 以下の run だけを使う (固定 snapshot で再現するため)。
 (ns ai-ops-insight
   (:require [babashka.fs :as fs]
+            [clojure.java.io]
             [clojure.edn :as edn]
             [clojure.string :as str]))
 
 (def rules-version "correction-rules/v1")
 
 (defn kw [v] (cond (keyword? v) (name v) (string? v) v :else nil))
+
+;; Notes 見出しの source -> Review 停止からの再開契機の種別 (allowlist。これ以外の source は無視)
+;; kohako-event は通知済み marker で再開契機ではないため含めない。agent 自身の作業ログも含めない。
+(def trigger-sources
+  {"kohako-supervisor" "supervisor" "kohako" "supervisor"
+   "hermes-agent" "owner-relay" "boxp" "owner-direct"})
+
+(def note-header #"^- (\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) UTC \[([a-z][a-z0-9-]{0,40})\]:.*")
+
+(defn notes-lines
+  "`## Notes` 見出しから次の `## ` 見出しまでの各行に extract を適用し、nil 以外の結果だけを返す
+  (fenced code block 内の行は除く)。行そのものは蓄積しない (本文をメモリに保持しない)。
+  節の開始・終端とも fence の外にある見出しだけを見る (code block 内の `## Notes` / `## ` 行は無視)。
+  開いた fence の文字種と長さを覚え、同じ文字種で同じ長さ以上の fence 行 (info string なし) だけで閉じる
+  (`~~~` block 内の ``` は閉じとみなさない)。"
+  [extract lines]
+  (loop [[line & more :as ls] lines
+         started? false fence nil acc []]
+    (if (empty? ls)
+      acc
+      (let [[_ marker info] (re-find #"^\s{0,3}(`{3,}|~{3,})(.*)$" line)]
+        (cond fence (recur more started?
+                           (when-not (and marker (= (first marker) (:ch fence)) (>= (count marker) (:len fence))
+                                          (re-matches #"\s*" info))
+                             fence)
+                           acc)
+              marker (recur more started? {:ch (first marker) :len (count marker)} acc)
+              (not started?) (recur more (boolean (re-matches #"^## Notes\s*$" line)) nil acc)
+              (re-matches #"^## .*" line) acc
+              :else (recur more true nil (if-some [v (extract line)] (conj acc v) acc)))))))
+
+(defn read-note-triggers
+  "ticket file の Notes 節から再開契機の候補 (時刻と種別だけ) を返す。行の残りは捨てる。
+  読めない場合は :unreadable を返す (観測なしと区別する)。"
+  [f]
+  (try
+    (with-open [r (clojure.java.io/reader (str f))]
+      (notes-lines
+       (fn [line]
+         (let [[_ d t src] (re-matches note-header line)
+               kind (get trigger-sources src)
+               at (when kind (try (java.time.Instant/parse (str d "T" t "Z")) (catch Exception _ nil)))]
+           (when at {:at at :kind kind})))
+       (line-seq r)))
+    (catch Exception _ :unreadable)))
+
+(defn load-triggers
+  "ticket -> 契機 vector。ticket file が無い/読めない ticket は :unreadable (unknown として別掲)。"
+  [vault tickets]
+  (into {} (for [t tickets
+                 :let [f (fs/path vault "Tickets" (str t ".md"))]]
+             [t (if (fs/readable? f) (read-note-triggers f) :unreadable)])))
 
 (defn read-summary [f]
   (try
@@ -148,7 +207,9 @@
           :first-run-id (:run-id (first streak))
           :ongoing (= (last streak) (last runs))})))
 
-(defn report [runs-by-ticket]
+(declare review-resume)
+
+(defn report [runs-by-ticket & [triggers until-at]]
   (let [trs (for [[t runs] runs-by-ticket, tr (transitions runs)] (assoc tr :ticket t))
         ;; Review 到達 = review で正常終了 (succeeded) した run がある task。gate 失敗 (retrying) の run も :result "review" を持つが Owner には届いていない。
         reached-review (set (for [[t runs] runs-by-ticket :when (some #(and (= "succeeded" (:status %)) (= "review" (:result %))) runs)] t))
@@ -218,17 +279,104 @@
                    :over-24h (count (filter #(> (:hours %) 24) waited))
                    :by-next (into {} (for [[k xs] (group-by :next waited)]
                                        [k {:n (count xs) :p50-h (quantile (map :hours xs) 0.5) :p90-h (quantile (map :hours xs) 0.9)}]))}
+     :review-resume (if triggers
+                      (review-resume runs-by-ticket triggers until-at)
+                      {:status "unknown" :reason "vault 未指定 (Notes 見出しの時刻/source を読んでいない)"})
      :runs-by-status (frequencies (map :status all-runs))}))
+
+;; ---------------------------------------------------------------------------
+;; Review 停止からの再開契機 (Review停止催促 / Owner 経由指示 / 観測なし) と Ready→着手遅延の代理指標
+;;
+;; review で正常終了した run (prev) ごとに、prev 終了から次 run 開始まで (次 run が無ければ snapshot 上限まで) の
+;; 再開契機 note を見る。
+;;   trigger        : 区間内の最後の契機 note の種別。無ければ none-observed (Owner が直接 card を動かした等。原因は unknown)
+;;   ack-min        : 最後の契機 note -> 次 run 開始 (分)。Ready 遷移時刻の代理 (note 後に Ready へ戻す運用のため)
+;;   nudges         : 区間内の supervisor note 数。2 以上は同じ停止に対する催促の繰返し
+;; 業務上の差戻しか承認継続か新 scope かは本文を読まないため区別しない (correction-rules/v1 の reopen_after_review と同じく unknown)。
+(defn review-resume [runs-by-ticket triggers until-at]
+  (let [unreadable? (fn [t] (= :unreadable (get triggers t)))
+        stalls (for [[t runs] runs-by-ticket
+                     [prev cur] (map vector runs (concat (rest runs) [nil]))
+                     :when (and (= "succeeded" (:status prev)) (= "review" (:result prev)))
+                     :let [from (instant (:finished-at prev))
+                           to (when cur (or (instant (:started-at cur)) (run-id->instant (:run-id cur))))
+                           end (or to until-at)
+                           ;; note 時刻は秒単位。prev 終了と同じ秒の note は前後を判定できないため、確実に後の note とは分ける
+                           from-sec (when from (.truncatedTo from java.time.temporal.ChronoUnit/SECONDS))
+                           ;; 次 run 開始側も同様。開始と同じ秒の note は開始前か後か判定できないため確定区間に入れない
+                           ;; 次 run が無い停止は snapshot 上限 (until-at) を終端とし、上限と同じ秒の note も前後不明として確定区間に入れない
+                           to-sec (when end (.truncatedTo end java.time.temporal.ChronoUnit/SECONDS))
+                           within-end? #(or (nil? to-sec) (neg? (compare (:at %) to-sec)))
+                           ts (when-not (unreadable? t) (get triggers t))
+                           in (when from (filter #(and (pos? (compare (:at %) from-sec)) (within-end? %)) ts))
+                           same-sec (when from (filter #(and (= (:at %) from-sec) (or (nil? to-sec) (not (pos? (compare (:at %) to-sec))))) ts))
+                           end-same-sec (when (and from to-sec (pos? (compare to-sec from-sec)))
+                                          (filter #(= (:at %) to-sec) ts))
+                           last-trigger (last (sort-by :at in))
+                           ;; note 時刻は秒単位。最後の秒に種別の異なる note が複数あると、どれが最後か判定できない
+                           last-conflict? (and last-trigger
+                                               (> (count (set (map :kind (filter #(= (:at %) (:at last-trigger)) in)))) 1))
+                           ;; 開始同秒の note が最後の契機だった可能性があり、種別が違えば分類を確定しない
+                           end-ambiguous? (boolean (seq end-same-sec))
+                           end-conflict? (and end-ambiguous? (or (nil? last-trigger)
+                                                                 (some #(not= (:kind %) (:kind last-trigger)) end-same-sec)))]]
+                 {:ticket t :followed? (some? cur) :time-known? (some? from)
+                  :next (when cur (classify-v1 prev cur))
+                  :same-second? (boolean (or (seq same-sec) end-ambiguous? last-conflict?))
+                  :trigger (cond (unreadable? t) "unknown-unreadable" (nil? from) "unknown-time"
+                                 (or end-conflict? last-conflict?) "ambiguous-same-second"
+                                 last-trigger (:kind last-trigger)
+                                 (seq same-sec) "ambiguous-same-second" :else "none-observed")
+                  ;; ticket が読めない/Review 終了時刻が無い停止は催促の有無を判定できないため nil (0 にしない)
+                  :nudges (when (and from (not (unreadable? t))) (count (filter #(= "supervisor" (:kind %)) in)))
+                  ;; 開始同秒の supervisor note は催促回数に確定計上せず別掲
+                  :nudges-ambiguous (count (filter #(= "supervisor" (:kind %)) (concat same-sec end-same-sec)))
+                  ;; 開始同秒の note があると最後の契機が不明なため ack 遅延は unknown (nil)
+                  :ack-min (when (and to last-trigger (not end-ambiguous?))
+                             (/ (.toSeconds (java.time.Duration/between (:at last-trigger) to)) 60.0))})
+        followed (filter :followed? stalls)
+        nudged? #(pos? (or (:nudges %) 0))
+        acks (fn [xs] (keep :ack-min xs))
+        by-trigger (into {} (for [[k xs] (group-by :trigger followed)]
+                              [k {:n (count xs) :tasks (count (set (map :ticket xs)))
+                                  :ack-p50-min (quantile (acks xs) 0.5) :ack-p90-min (quantile (acks xs) 0.9)}]))]
+    {:definition "review で正常終了した run の後、次 run 開始までの最後の契機 note (Notes 見出しの source のみ) で再開契機を分類"
+     :unreadable-tickets (count (filter unreadable? (keys runs-by-ticket)))
+     ;; 同秒の契機 note だけがある停止は ambiguous-same-second (none-observed にも契機ありにも入れない)。
+     ;; 後に確実な契機 note もある停止は そちらで分類し、ここで件数だけ示す
+     :same-second-boundary (count (filter :same-second? stalls))
+     :review-finishes (count stalls) :followed (count followed)
+     :by-trigger by-trigger
+     :by-trigger-next (frequencies (map (juxt :trigger :next) followed))
+     :supervisor-nudged {:stalls (count (filter nudged? stalls))
+                         :tasks (count (set (map :ticket (filter nudged? stalls))))
+                         :repeated-nudge-stalls (count (filter #(> (or (:nudges %) 0) 1) stalls))
+                         ;; 催促の有無を判定できない停止 (ticket 読めない/時刻なし)。上の件数には含めない
+                         :unknown-nudge-stalls (count (filter #(nil? (:nudges %)) stalls))
+                         ;; 同秒境界の supervisor note を持つ停止。上の件数は確定分のみで、これは下限との差の上限
+                         :ambiguous-nudge-stalls (count (filter #(pos? (:nudges-ambiguous %)) stalls))}
+     :open-stalls {:n (count (remove :followed? stalls))
+                   :with-supervisor-nudge (count (filter #(and (not (:followed? %)) (nudged? %)) stalls))
+                   :nudge-unknown (count (filter #(and (not (:followed? %)) (nil? (:nudges %))) stalls))}
+     :ack-negative (count (filter #(neg? %) (acks followed)))}))
 
 (defn -main [cmd & args]
   (case cmd
-    "report" (let [[root until] args
+    "report" (let [[root until vault] args
+                   until (when-not (str/blank? until) until)
                    runs (load-runs root until)]
                (when (empty? runs)
                  (binding [*out* *err*] (println "no runs found under" root))
                  (System/exit 2))
-               (prn (report runs)))
-    (do (binding [*out* *err*] (println "usage: bb ai_ops_insight.bb report <task-board-root> [until-run-id]"))
+               (when (and vault (let [d (fs/path vault "Tickets")]
+                                   (not (and (fs/directory? d) (fs/readable? d) (fs/executable? d)
+                                             (try (fs/list-dir d) true (catch Exception _ false))))))
+                 (binding [*out* *err*] (println "vault Tickets dir not readable:" vault))
+                 (System/exit 2))
+               (prn (report runs
+                            (when vault (load-triggers vault (keys runs)))
+                            (when until (run-id->instant until)))))
+    (do (binding [*out* *err*] (println "usage: bb ai_ops_insight.bb report <task-board-root> [until-run-id] [vault]"))
         (System/exit 1))))
 
 (when (= *file* (System/getProperty "babashka.file"))
