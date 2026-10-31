@@ -3580,7 +3580,13 @@
   has an automatic candidate action, so this runs once per such state.
   A card that is already Blocked but was handed back to an agent assignee
   (candidate :blocked-retry) is stopped the same way: the report is written
-  and the assignee returned to boxp, so the refusal never stays silent."
+  and the assignee returned to boxp, so the refusal never stays silent.
+  The budget re-read, the exhaustion decision and the Blocked transition run
+  under the budget lock, so an Owner `gate-budget-grant` is serialized with
+  the stop: it lands either before the re-read (no stop) or after the
+  transition (the card is Blocked, the grant is recorded, and the Owner's
+  next lane move starts a run).  Lock order stays budget lock -> ticket
+  mutex / vault writer; nothing takes the budget lock under those."
   [ticket-id candidate status assignee lane ticket-text]
   (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_MILLIS")]
     ;; Test hook: widen the window between the pre-check and the lock so two
@@ -3589,43 +3595,52 @@
   (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)]
     (when-let [lock (acquire-lock! ticket-id candidate effective-lane)]
       (try
-        (let [budget (read-gate-failure-budget)
-              pr-ids (gate-budget-ticket-pr-ids budget ticket-id ticket-text)
-              statuses (into [(gate-budget-status budget :ticket ticket-id)]
-                             (filter :exhausted? (map #(gate-budget-status budget :pr %) pr-ids)))
-              ;; Re-read the card under the lock: a concurrent tick may have
-              ;; completed this stop already (Blocked + boxp has no candidate
-              ;; action), and the stale pre-lock status/assignee must not
-              ;; produce a second report or restore a stale state.
-              fm (try (frontmatter-map (vec (read-lines (ticket-path ticket-id))))
-                      (catch Exception _ nil))
-              status (or (:status fm) status)
-              assignee (or (:assignee fm) assignee)
-              still-candidate? (boolean (and fm (candidate-action {:status status :lane lane} assignee)))]
-          ;; Re-check under the lock: a grant may have landed since the pre-check.
-          (when (and still-candidate? (some :exhausted? statuses))
-            (let [report (gate-budget-report ticket-id nil statuses)
-                  transition-id (str ticket-id "/gate-budget-stop-" (:run-id lock))]
-              ;; Audit note first, state transition second (same order as block-ticket!).
-              (append-note! ticket-id
-                            (str "Blocked transition recorded: ticket=" ticket-id
-                                 "; run=none; transition-id=" transition-id
-                                 "; action=" (name candidate)
-                                 "; at=" (now-str)
-                                 "; category=gate-failure-budget-exhausted"
-                                 "; reason=" (sanitize-blocker-reason report)))
-              (try
-                (move-card! ticket-id "blocked" "boxp")
-                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
-                (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
-                (log! (str "gate failure budget exhausted; " ticket-id
-                           (if (= "blocked" status)
-                             " kept Blocked and returned to boxp without a run"
-                             " moved to Blocked without a run")))
-                (catch Exception e
-                  (log! (str "gate budget stop transition failed for " ticket-id
-                             "; restoring the prior card state: " (.getMessage e)))
-                  (restore-card-state! ticket-id status assignee))))))
+        (with-gate-failure-budget-lock
+         (fn []
+           (let [budget (read-gate-failure-budget)
+                 pr-ids (gate-budget-ticket-pr-ids budget ticket-id ticket-text)
+                 statuses (into [(gate-budget-status budget :ticket ticket-id)]
+                                (filter :exhausted? (map #(gate-budget-status budget :pr %) pr-ids)))
+                 ;; Re-read the card under the lock: a concurrent tick may have
+                 ;; completed this stop already (Blocked + boxp has no candidate
+                 ;; action), and the stale pre-lock status/assignee must not
+                 ;; produce a second report or restore a stale state.
+                 fm (try (frontmatter-map (vec (read-lines (ticket-path ticket-id))))
+                         (catch Exception _ nil))
+                 status (or (:status fm) status)
+                 assignee (or (:assignee fm) assignee)
+                 still-candidate? (boolean (and fm (candidate-action {:status status :lane lane} assignee)))]
+             (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_AFTER_READ_MILLIS")]
+               ;; Test hook: widen the window between the budget re-read and
+               ;; the Blocked transition while the budget lock is held, so a
+               ;; concurrent grant provably waits for the transition.
+               (spit (str (fs/path (root) "test-gate-budget-stop-holding")) (now-str))
+               (Thread/sleep (Long/parseLong hold-ms)))
+             ;; Re-check under both locks: a grant may have landed since the
+             ;; pre-check, and none can land between here and the transition.
+             (when (and still-candidate? (some :exhausted? statuses))
+               (let [report (gate-budget-report ticket-id nil statuses)
+                     transition-id (str ticket-id "/gate-budget-stop-" (:run-id lock))]
+                 ;; Audit note first, state transition second (same order as block-ticket!).
+                 (append-note! ticket-id
+                               (str "Blocked transition recorded: ticket=" ticket-id
+                                    "; run=none; transition-id=" transition-id
+                                    "; action=" (name candidate)
+                                    "; at=" (now-str)
+                                    "; category=gate-failure-budget-exhausted"
+                                    "; reason=" (sanitize-blocker-reason report)))
+                 (try
+                   (move-card! ticket-id "blocked" "boxp")
+                   (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                   (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                   (log! (str "gate failure budget exhausted; " ticket-id
+                              (if (= "blocked" status)
+                                " kept Blocked and returned to boxp without a run"
+                                " moved to Blocked without a run")))
+                   (catch Exception e
+                     (log! (str "gate budget stop transition failed for " ticket-id
+                                "; restoring the prior card state: " (.getMessage e)))
+                     (restore-card-state! ticket-id status assignee))))))))
         (finally
           (release-lock! ticket-id lock))))))
 

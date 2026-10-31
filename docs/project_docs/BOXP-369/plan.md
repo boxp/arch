@@ -28,6 +28,7 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 - ticket 単位予算はその ticket が報告したすべての PR の失敗を合算する。別 PR を作り直しても ticket 予算は戻らない。
 - PR 単位予算は同じ PR を扱うすべての ticket の失敗を合算する。別 ticket へ付け替えても PR 予算は戻らない。新 ticket でも本文/Notes に上限到達 PR の URL があれば run 開始前に止める。PR を参照しない新 ticket が上限到達 PR へ push した場合は、その 1 run の gate 失敗時点で即停止する（追加 run は生まない）。
 - 再開には停止原因となった単位（ticket / PR）の両方で予算が残っている必要がある。
+- run 外の正式停止（`stop-exhausted-ticket!`）は予算の再読込・上限判定・Blocked 遷移を予算 lock 下で行い、Owner の `gate-budget-grant` と直列化する。grant は再読込の前（停止しない）か遷移の後（Blocked + grant 記録済み、Owner のレーン移動で再開）のどちらかにしか着地せず、残予算があるのに「上限到達」として停止することはない。lock 順序は予算 lock → ticket mutex / vault writer のみで、逆順に取る経路はない。
 
 ### 既存保護との関係
 
@@ -57,6 +58,7 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 - `test_gate_failure_budget_grant_resume_and_no_reset_on_success`: 不正 grant 拒否、ticket grant のみでは PR 予算で止まる、両方 grant で 1 run 再開、成功で減らない、付与分消費後に再停止
 - `test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned`: 上限到達で Blocked + boxp になった ticket の担当だけを agent に戻した場合、run を開始せず Blocked のまま日本語停止報告（action=blocked-retry）を 1 回だけ書き担当を boxp へ戻す
 - `test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks`: 担当だけ戻された Blocked カードを 2 つの tick が同時に処理しても（test hook で pre-check と lock の間を広げる）、停止報告は 1 回だけで担当は boxp に戻る
+- `test_gate_failure_budget_stop_is_serialized_with_grant`: 停止処理が予算を再読込して Blocked 遷移する直前（test hook で予算 lock 保持中に待機）に Owner が grant を発行しても、grant は遷移完了まで待たされ（grant 復帰時点でカードは Blocked + boxp、停止報告 1 回、grant 記録あり）、再読込前に両スコープへ grant された場合は停止せず 1 run だけ再開する。lock を外した runner ではこの fixture が失敗することを確認済み
 - `test_gate_failure_budget_stop_completes_after_interrupted_transition`: 上限到達の記録後に Blocked 遷移が失敗して In Progress に戻った ticket を、次の tick が run を開始せず Blocked + 日本語報告へ停止し、以降の tick で Notes を繰り返さず、両スコープの grant 後のみ 1 run 再開
 - `test_gate_failure_budget_stricter_short_term_limit_still_applies`: より厳しい既存短期上限が先に効く
 - `test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized`: 残り 1 回の PR を参照する 2 ticket を別プロセスで同時起動しても run は 1 つだけ、PR は 2/2 で止まり、以後どちらも開始しない

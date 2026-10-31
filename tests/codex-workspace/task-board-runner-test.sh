@@ -3666,6 +3666,53 @@ test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks() {
   fi
 }
 
+test_gate_failure_budget_stop_is_serialized_with_grant() {
+  local tmp vault state bin i
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-469|BOXP-469: grant race]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-469 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 901 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 901 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Tickets/BOXP-469.md" '^assignee: boxp$'
+  sed -i "s/^assignee: .*/assignee: codex/" "${vault}/Tickets/BOXP-469.md"
+  sed -i 's/\(BOXP-469: grant race\]\].*\)assignee::boxp/\1assignee::codex/' "${vault}/Boards/Task Board.md"
+  # The stop re-reads the budget, then (test hook) holds the budget lock
+  # before the Blocked transition.  An Owner grant issued in that window must
+  # wait for the transition instead of landing between the re-read and the
+  # Blocked move; otherwise the card would be stopped as "exhausted" while
+  # the budget file already shows remaining budget.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_AFTER_READ_MILLIS=3000 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-469 >/dev/null &
+  local tick_pid=$!
+  for i in $(seq 1 100); do
+    [[ -f "${state}/test-gate-budget-stop-holding" ]] && break
+    sleep 0.1
+  done
+  [[ -f "${state}/test-gate-budget-stop-holding" ]] || fail "the stop never reached the hold window"
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-469 --amount 1 --by boxp >/dev/null
+  # The grant returned: the stop must already have completed (the grant was
+  # serialized behind the transition), and the card must not still be in the
+  # pre-stop state with the grant recorded underneath it.
+  assert_file_contains "${vault}/Tickets/BOXP-469.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-469.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-469.md" 'run=none; transition-id=BOXP-469/gate-budget-stop-'
+  wait "${tick_pid}"
+  [[ "$(budget_run_count "${state}" BOXP-469)" == 2 ]] || fail "no run may start on the reassigned Blocked card"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-469.md")" == 1 ]] || fail "exactly one stop note expected"
+  assert_file_contains "${state}/gate-failure-budget.edn" ':scope :ticket, :key "BOXP-469", :amount 1'
+  if ls "${state}"/locks/BOXP-469.edn >/dev/null 2>&1; then
+    fail "the stop must release the ticket lock"
+  fi
+  # A grant that lands before the re-read is honoured: with both scopes
+  # granted, the Owner's lane move starts exactly one run and no stop is
+  # written.
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant boxp/example#901 --amount 1 --by boxp >/dev/null
+  budget_set_lane "${vault}" BOXP-469 "grant race" codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 901 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-469)" == 3 ]] || fail "a grant for both scopes must allow one run"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-469.md")" == 1 ]] || fail "a granted card must not be stopped again"
+}
+
 test_gate_failure_budget_stricter_short_term_limit_still_applies() {
   local tmp vault state bin
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -3922,6 +3969,7 @@ test_gate_failure_budget_stricter_short_term_limit_still_applies
 test_gate_failure_budget_stop_completes_after_interrupted_transition
 test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned
 test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks
+test_gate_failure_budget_stop_is_serialized_with_grant
 test_gate_failure_budget_concurrent_updates_do_not_lose_counts
 test_gate_failure_budget_concurrent_ticks_do_not_lose_counts
 test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized
