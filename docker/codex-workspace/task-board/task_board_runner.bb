@@ -2373,9 +2373,14 @@
   are dropped so events.jsonl cannot leak file contents or credentials, nor
   be used to resume or trace the conversation."
   [line]
-  (let [event (when (str/starts-with? line "{")
-                (try (json/parse-string line true) (catch Exception _ nil)))]
+  (let [trimmed (str/triml line)
+        event (when (str/starts-with? trimmed "{")
+                (try (json/parse-string trimmed true) (catch Exception _ nil)))]
     (if-not (map? event)
+      ;; Not a stream-json event: plain text printed by an agent that does not
+      ;; speak stream-json. It is kept as-is so claude-last-message can fall
+      ;; back to it; stream-json events are always JSON objects and are
+      ;; reduced above even when prefixed by whitespace.
       line
       (let [type (:type event)
             block-type (fn [block] (select-keys block [:type]))
@@ -2389,7 +2394,7 @@
                                               (update :content
                                                       #(mapv (fn [block]
                                                                (case (:type block)
-                                                                 "text" block
+                                                                 "text" (select-keys block [:type :text])
                                                                  "tool_use" (select-keys block [:type :id :name])
                                                                  (block-type block))) %))))))
                     "user" (cond-> (select-keys event [:type :parent_tool_use_id :message])
