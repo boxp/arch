@@ -340,3 +340,18 @@ check "固定 snapshot EDN が現行 report の出力 key を欠かない" \
            missing (remove (set (paths snap [])) (paths r []))]
        (when (seq missing) (binding [*out* *err*] (prn :missing missing)))
        (empty? missing)))' "$t14/r.edn"
+
+# Prometheus 出力 (公開 SLI の v1 系列): 件数だけを出し、ticket ID を label や値に出さない
+bb ai_ops_insight.bb prom "$tmp" 20261005T000000Z >"$tmp/v1.prom"
+for want in 'ai_ops_v1_info{rules_version="correction-rules/v1",loop_threshold="10"} 1' \
+            'ai_ops_v1_gate_rework_runs{part="total"} 12' 'ai_ops_v1_gate_rework_runs{part="pending"} 0' \
+            'ai_ops_v1_gate_rework_runs_by_gate{gate="codex-review"} 12' 'ai_ops_v1_gate_rework_tasks 1' \
+            'ai_ops_v1_review_loops{part="series"} 1' 'ai_ops_v1_review_loops{part="tasks"} 1' 'ai_ops_v1_review_loops{part="max_length"} 12' \
+            'ai_ops_v1_transitions{kind="groom_to_implement"} 1' 'ai_ops_v1_transitions{kind="gate_rework"} 12' \
+            'ai_ops_v1_correction_tasks{kind="owner_visible_agent_system"} 1' 'ai_ops_v1_reached_review_tasks 2'; do
+  grep -qF "$want" "$tmp/v1.prom" || { echo "not ok - prom 出力に無い: $want"; cat "$tmp/v1.prom"; exit 1; }
+done
+if grep -q 'BOXP-' "$tmp/v1.prom"; then echo "not ok - prom 出力に ticket ID が含まれる"; exit 1; fi
+if grep -v '^#' "$tmp/v1.prom" | grep -qE 'rate\(|increase\('; then echo "not ok - prom 出力に rate/increase"; exit 1; fi
+if bb ai_ops_insight.bb prom "$tmp/no-such-root" >/dev/null 2>&1; then echo "not ok - runs 不在で exit 0"; exit 1; fi
+echo "ok - prom 出力 (v1) は件数のみで ticket ID を含まない"

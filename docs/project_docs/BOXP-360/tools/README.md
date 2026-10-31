@@ -48,13 +48,16 @@ critical-safety-events は `coverage.connected`（対象 `critical-safety-events
 
 runner は `CODEX_TASK_BOARD_VAULT` が設定されている場合、全履歴から SLI を再集計して `ai-ops/sli.prom` に保存し、`ai-ops/metrics.prom` に追記する。更新間隔は `CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS`（既定 900 秒、0 で無効）、タイムアウトは `CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS`（既定 120 秒）。失敗時は前回の値を保持し、`ai_ops_sli_export_*` で状態を確認できる。
 
-`ai_ops_sli_info`、`ai_ops_sli_generated_timestamp_seconds`、`ai_ops_sli_determinable`、`ai_ops_sli_source_connected` と、first acceptance・correction・lead time・runs・stratum・guardrail の各系列を出力する。分子・分母を併記し、unknown の値は公開しない。値は全履歴から再計算したスナップショットであり `rate()` / `increase()` を使わない。
+`ai_ops_sli_info`、`ai_ops_sli_generated_timestamp_seconds`、`ai_ops_sli_determinable`、`ai_ops_sli_source_connected` と、first acceptance・correction・lead time・runs・stratum・guardrail の各系列を出力する。分子・分母を併記し、unknown の値は公開しない。unknown の SLI / coverage には `ai_ops_sli_unknown_info{sli,category,reason_code}` を 1 行出し、`category` は Owner 向けの 4 分類 (`not_connected` 未接続 / `history_missing` 履歴欠損 / `unclassifiable` 分類不能 / `out_of_scope` 対象外)、欠落・拒否・読めない run などの件数は `ai_ops_sli_unknown_detail{sli,detail}` に出す (`unknown-classification`)。是正率が確定していても、原因 unknown の再開 task 数は `unclassifiable` として件数を出す。値は全履歴から再計算したスナップショットであり `rate()` / `increase()` を使わない。
 
-## ai_ops_insight.bb (correction-rules/v1, 分析専用)
+## ai_ops_insight.bb (correction-rules/v1)
+
+実体は `docker/codex-workspace/task-board/ai_ops_insight.bb` (ここは symlink)。`report` は分析専用、`prom` は runner image から 15 分ごとに呼ばれ公開 SLI の v1 系列を出す。
 
 ```sh
 bb ai_ops_insight.bb report ~/.codex-task-board 20261030T065040Z   # run-id 上限で固定 snapshot を再現 (上限の長さで先頭比較: 時刻だけなら同じ秒の run を含む)
 bb ai_ops_insight.bb report ~/.codex-task-board 20261030T140906Z "$CODEX_TASK_BOARD_VAULT"  # vault を渡すと Review 停止からの再開契機 (Notes 見出しの時刻/source のみ) も出す
+bb ai_ops_insight.bb prom ~/.codex-task-board                       # 公開 SLI の v1 系列 (ai_ops_v1_*)。runner の refresh-sli! が呼び sli.prom に連結する。件数のみで ticket ID は出さない。vault は読まない
 ./insight-test.sh                                                   # 本票の実例を本文なしで再現する回帰 eval (test.sh からも実行)
 ```
 

@@ -83,3 +83,9 @@ Hermes の plugin API は配備版を read-only で調べた (`hermes-plugin-inv
 runner は vault 設定時、既定 900 秒ごとに全履歴の SLI を再集計し、既存 `ai-ops/metrics.prom` に追記する。`CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS=0` で停止でき、タイムアウトは `CODEX_TASK_BOARD_AI_OPS_SLI_TIMEOUT_SECONDS`（既定 120 秒）。`ai_ops_sli_determinable` / `ai_ops_sli_source_connected` と分子・分母で unknown を区別し、`ai_ops_sli_export_*` で更新状態を確認する。SLI 値はスナップショットなので `rate()` / `increase()` を適用しない。
 
 集計入力は extract の出力に runner ledger の日次 file (`ai-ops/ledger/events-*.jsonl`) を連結したもの。review gate の是正や `ledger_dropped` 欠落 marker は ledger にしか無いため、これを含めないと欠落があっても SLI を確定値として公開してしまう。ledger と extract が同じ事実を出す場合は `merge-ledger-events` で非 ledger 側に統合する。追記途中の末尾行 (改行なし) は読み込まない。再集計は runner の poll loop を止めないよう別 thread (`refresh-sli-async!`) で実行し、同時に 1 つしか走らせない。
+
+#### 公開 SLI の v1 系列と unknown の理由 (2026-10-31)
+
+Owner の指摘「dashboard の unknown が多すぎる」への対応。`refresh-sli!` は v0 の `prom` 出力が成功した後に `ai_ops_insight.bb prom <root>` (correction-rules/v1、runs/ の summary.edn のみ・vault は読まない) を呼び、`ai_ops_v1_*` 系列を sli.prom に連結する。v1 側の失敗・タイムアウト・容量超過は `ai_ops_v1_export_ok 0` として出し、v0 の出力は止めない。v1 は内部 gate 再作業 (`gate_rework`、Owner に届く前) と Owner に見える是正 (`owner_visible`、succeeded した review-fix run または Review 後の再開) を別系列にし、v0 (`ai_ops_correction_tasks`) は比較用に残す。review 反復ループ・gate 別の再作業・Review 停滞 (p50/p90/24h 超) も件数のみで出し、ticket ID は label に出さない。
+
+unknown は `ai_ops_sli_unknown_info{sli,category,reason_code}` で 4 分類 (未接続 / 履歴欠損 / 分類不能 / 対象外) に分け、`ai_ops_sli_unknown_detail{sli,detail}` に件数 (拒否 event・読めない run・欠落 marker 等) を出す。分類は aggregate* の理由文と欠落の内訳 key から決め、確定している SLI には出さない。unknown を 0 や成功へ置き換えない。dashboard 側 (lolice `ai-ops-quality`) は測れる指標を先頭に、未計測の指標と理由の表を末尾に置く。

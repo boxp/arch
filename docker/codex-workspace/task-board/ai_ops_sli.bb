@@ -901,6 +901,45 @@
 ;; ---------------------------------------------------------------------------
 ;; prom: 低 cardinality のみ。task/run/request ID は trace 側 opaque correlation に残す
 
+;; unknown の理由を Owner 向けの 4 分類に写す。
+;;   not_connected   : source が無い / 配線されていない (emit や detector が存在しない)
+;;   history_missing : 入力の欠落・拒否・読めない run・時刻不明があり、確定値を出せない
+;;   unclassifiable  : metadata だけでは是正か継続か判別できない
+;;   out_of_scope    : 取得しない方針 (subscription の token/cost 等)
+;; 理由文は aggregate* の定数と一致させる。未知の理由は欠落の内訳 key から分類し、どれも無ければ other にする (0 や成功へは置き換えない)。
+(def unknown-not-connected-reasons
+  {"acceptance history source not connected" "acceptance_history_not_connected"
+   "rescue event の source 未接続" "rescue_source_not_connected"
+   "approval event 未接続" "approval_source_not_connected"
+   "effect source 未接続" "effect_source_not_connected"
+   "safety source 未接続" "safety_source_not_connected"
+   "leak detector 未接続。0件観測≠0件" "leak_detector_not_connected"
+   "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)" "ready_transition_not_emitted"})
+(def unknown-out-of-scope-reasons
+  {"subscription CLI は provider token/cost を返さない。API 単価換算はしない" "subscription_no_token_cost"})
+(def unknown-detail-keys
+  [:lost-events :unlinked-events :unlinked-corrections :unlinked-rescues :unlinked-task-events
+   :unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types
+   :indeterminate :unevaluated-input-missing :rejected-events :unreadable-runs :unreadable-inputs
+   :collection-lost-events :malformed-lines :id-collisions])
+(defn unknown-classification
+  "unknown な SLI/coverage map s に対して [category reason_code] を返す。確定している (unknown でない) 場合は nil。"
+  [s]
+  (let [status (some-> (:status s) name) reason (:reason s)
+        pos-any? (fn [ks] (some #(let [v (get s %)] (and (number? v) (pos? v))) ks))]
+    (cond
+      (nil? s) nil
+      (= status "not-connected") ["not_connected" "hermes_ledger_not_joined"]
+      (not= status "unknown") nil
+      (contains? unknown-out-of-scope-reasons reason) ["out_of_scope" (unknown-out-of-scope-reasons reason)]
+      (contains? unknown-not-connected-reasons reason) ["not_connected" (unknown-not-connected-reasons reason)]
+      (pos-any? [:unlinked-corrections :unlinked-events :unlinked-rescues :unlinked-task-events]) ["history_missing" "unlinked_task_events"]
+      (pos-any? [:lost-events :collection-lost-events :malformed-lines :id-collisions :rejected-events :unreadable-runs :unreadable-inputs]) ["history_missing" "input_loss"]
+      (pos-any? [:unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types]) ["history_missing" "unverifiable_fields"]
+      (pos-any? [:indeterminate]) ["history_missing" "time_indeterminate"]
+      (pos-any? [:unevaluated-input-missing]) ["history_missing" "input_missing_tasks"]
+      :else ["history_missing" "other"])))
+
 (defn prom [file]
   (let [evs (read-events file)
         r (aggregate* evs)
@@ -929,6 +968,25 @@
       (let [s (get-in r [:sli k])]
         ;; 分母 0 は率を計算できないので判定不能として扱う
         (line "ai_ops_sli_determinable" {:sli m} (if (or (#{"unknown" :unknown} (:status s)) (not (pos? (or (:denominator s) 0)))) 0 1))))
+    ;; unknown の理由を Owner 向けの 4 分類 (未接続/履歴欠損/分類不能/対象外) と件数で公開する。unknown を 0 や成功に置き換えない
+    (doseq [[label s] [["agent_system_correction_task_ratio" (get-in r [:sli :agent-system-correction-task-ratio])]
+                       ["first_acceptance_conformance" (get-in r [:sli :first-acceptance-conformance])]
+                       ["owner_rescue" (get-in r [:sli :owner-rescue])] ["duplicate_approval" (get-in r [:sli :duplicate-approval])]
+                       ["reopen_after_accept" (get-in r [:sli :reopen-after-accept])]
+                       ["ready_ack_latency" (get-in r [:coverage :ready-ack-latency])] ["tokens_cost" (get-in r [:coverage :tokens-cost])]
+                       ["hermes_conversation" (get-in r [:coverage :hermes-conversation])]
+                       ["critical_safety_events" (get-in r [:zero-tolerance :critical-safety-events])]
+                       ["duplicate_effects" (get-in r [:zero-tolerance :duplicate-effects])] ["private_leak" (get-in r [:zero-tolerance :private-leak])]]
+            :let [[category code] (unknown-classification s)]
+            :when category]
+      (line "ai_ops_sli_unknown_info" {:sli label :category category :reason_code code} 1)
+      (doseq [[k v] (select-keys s unknown-detail-keys) :when (number? v)]
+        (line "ai_ops_sli_unknown_detail" {:sli label :detail (str/replace (name k) "-" "_")} v)))
+    ;; 是正率が確定できても、原因 unknown の再開 (是正か継続か新 scope か metadata では判別不能) は分類不能として件数を出す
+    (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
+      (when (number? (:unknown-cause-tasks c))
+        (line "ai_ops_sli_unknown_info" {:sli "agent_system_correction_task_ratio" :category "unclassifiable" :reason_code "unknown_cause_reopen"} 1)
+        (line "ai_ops_sli_unknown_detail" {:sli "agent_system_correction_task_ratio" :detail "unknown_cause_tasks"} (:unknown-cause-tasks c))))
     (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
       (when-not (#{"unknown" :unknown} (:status c))
         (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))

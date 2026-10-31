@@ -1665,4 +1665,32 @@ assert 'ai_ops_lead_time_hours{quantile="0.5"}' in extracted
 assert 'ai_ops_lead_time_precision_info{precision="day"} 1' in extracted
 print('ok   SLI snapshot metrics and unknown handling')
 PYTEST
+# unknown の理由を Owner 向け 4 分類 (not_connected/history_missing/unclassifiable/out_of_scope) と件数で Prom に出す。
+# 確定している SLI には出さず、unknown を 0 や成功に置き換えない。
+grep -qF 'ai_ops_sli_unknown_info{sli="tokens_cost",category="out_of_scope",reason_code="subscription_no_token_cost"} 1' "$tmp/extract.prom"
+grep -qF 'ai_ops_sli_unknown_info{sli="owner_rescue",category="not_connected",reason_code="rescue_source_not_connected"} 1' "$tmp/extract.prom"
+grep -qF 'ai_ops_sli_unknown_info{sli="private_leak",category="not_connected",reason_code="leak_detector_not_connected"} 1' "$tmp/extract.prom"
+grep -qF 'ai_ops_sli_unknown_info{sli="agent_system_correction_task_ratio",category="unclassifiable",reason_code="unknown_cause_reopen"} 1' "$tmp/extract.prom"
+if grep -q 'ai_ops_sli_unknown_info{sli="first_acceptance_conformance"' "$tmp/extract.prom"; then echo "確定済み SLI に unknown_info が出ている" >&2; exit 1; fi
+tmp_unk=$(mktemp); cp "$tmp/extract.jsonl" "$tmp_unk"; echo 'not json' >>"$tmp_unk"
+bb ai_ops_sli.bb prom "$tmp_unk" >"$tmp_unk.prom"
+grep -qF 'ai_ops_sli_unknown_info{sli="critical_safety_events",category="history_missing",reason_code="input_loss"} 1' "$tmp_unk.prom"
+grep -qF 'ai_ops_sli_unknown_detail{sli="critical_safety_events",detail="malformed_lines"} 1' "$tmp_unk.prom"
+grep -qF 'ai_ops_sli_unknown_info{sli="agent_system_correction_task_ratio",category="history_missing",reason_code="input_loss"} 1' "$tmp_unk.prom"
+grep -qF 'ai_ops_sli_unknown_detail{sli="agent_system_correction_task_ratio",detail="lost_events"} 1' "$tmp_unk.prom"
+grep -qF 'ai_ops_sli_determinable{sli="agent_system_correction_task_ratio"} 0' "$tmp_unk.prom"
+# aggregate で unknown (または not-connected) な SLI/coverage には必ず unknown_info がある
+bb -e "(load-file \"ai_ops_sli.bb\")
+(let [r (ai-ops-sli/aggregate \"$tmp_unk\")
+      ps (with-out-str (ai-ops-sli/prom \"$tmp_unk\"))
+      unknown (for [[path label] [[[:sli :agent-system-correction-task-ratio] \"agent_system_correction_task_ratio\"] [[:sli :first-acceptance-conformance] \"first_acceptance_conformance\"]
+                                   [[:sli :owner-rescue] \"owner_rescue\"] [[:sli :duplicate-approval] \"duplicate_approval\"] [[:sli :reopen-after-accept] \"reopen_after_accept\"]
+                                   [[:coverage :ready-ack-latency] \"ready_ack_latency\"] [[:coverage :tokens-cost] \"tokens_cost\"] [[:coverage :hermes-conversation] \"hermes_conversation\"]
+                                   [[:zero-tolerance :critical-safety-events] \"critical_safety_events\"] [[:zero-tolerance :duplicate-effects] \"duplicate_effects\"] [[:zero-tolerance :private-leak] \"private_leak\"]]
+                     :when (#{\"unknown\" \"not-connected\"} (some-> (get-in r (conj path :status)) name))]
+                 label)]
+  (assert (seq unknown))
+  (doseq [l unknown] (assert (re-find (re-pattern (str \"ai_ops_sli_unknown_info\\\\{sli=\\\"\" l \"\\\",category=\\\"(not_connected|history_missing|unclassifiable|out_of_scope)\\\"\")) ps) l)))"
+rm -f "$tmp_unk" "$tmp_unk.prom"
+echo "ok   unknown reason classification (4 categories) exported to Prom"
 ./insight-test.sh
