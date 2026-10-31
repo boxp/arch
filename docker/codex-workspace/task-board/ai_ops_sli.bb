@@ -712,7 +712,13 @@
                                            (some phases [:unknown :before]) :fail
                                            (some phases [:same :ambiguous]) :ambiguous
                                            :else :pass)))
-                          first-review (some #(when (or (= "review" (:result %)) (= "review" (:lane_to %))
+                          ;; Review 到達 = review で正常終了 (status=succeeded) した run / Review lane への遷移 / review 状態 snapshot /
+                          ;; Owner 向け通知 (notify.run-finished は runner が最終結果を通知する時だけ出し、gate 失敗の retrying では出ない)。
+                          ;; gate で止まった retrying/blocked の run.finished も effective-result "review" を持ち得るが Owner には
+                          ;; 届いていないので数えない (status 欠落の run.finished も Review 到達の証拠にしない)。
+                          first-review (some #(when (or (and (= "run.finished" (:event_type %)) (= "review" (:result %)) (= "succeeded" (:status %)))
+                                                        (and (= "notify.run-finished" (:event_type %)) (= "review" (:result %)))
+                                                        (= "review" (:lane_to %))
                                                         (and (= "task.state" (:event_type %)) (= "review" (:status %))))
                                                 (or (parse-inst (:occurred_at %)) true)) evs)
                           post-accept-corr (when accepted (filter #(when-let [t (first (corr-interval %))]

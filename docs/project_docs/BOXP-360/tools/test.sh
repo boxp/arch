@@ -849,7 +849,7 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-70:run" :task_id "BOXP-70" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-            {:event_id "BOXP-70:fin" :task_id "BOXP-70" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-70:fin" :task_id "BOXP-70" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
             {:event_id "BOXP-70:accept" :task_id "BOXP-70" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       ok (ai-ops-sli/aggregate* base)
       r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-70:corr" :event_type "correction" :correction_class "instruction_violation"
@@ -868,7 +868,7 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-71:run" :task_id "BOXP-71" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-            {:event_id "BOXP-71:fin" :task_id "BOXP-71" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-71:fin" :task_id "BOXP-71" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
             {:event_id "BOXP-71:accept" :task_id "BOXP-71" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       ok (ai-ops-sli/aggregate* base)]
   (assert (= [1 1] ((juxt :count :denominator) (get-in ok [:sli :first-acceptance-conformance]))) (pr-str ok))
@@ -890,7 +890,7 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-72:run" :task_id "BOXP-72" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-            {:event_id "BOXP-72:fin" :task_id "BOXP-72" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-72:fin" :task_id "BOXP-72" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
             {:event_id "BOXP-72:accept" :task_id "BOXP-72" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       bad-corr {:event_id "bad id" :task_id "BOXP-72" :event_type "correction" :correction_origin "agent-system" :occurred_at "2026-10-20T03:00:00Z"}
       bad-notify {:event_id "bad id" :task_id "BOXP-72" :event_type "notify.run-finished" :occurred_at "2026-10-20T03:00:00Z"}
@@ -919,7 +919,7 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-72:run" :task_id "BOXP-72" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-            {:event_id "BOXP-72:fin" :task_id "BOXP-72" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-72:fin" :task_id "BOXP-72" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
             {:event_id "BOXP-72:accept" :task_id "BOXP-72" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       ;; 受入前の correction だった可能性がある種別不明 (欠落/不正) の event
       r (ai-ops-sli/aggregate* (conj base {:event_id "BOXP-72:x" :task_id "BOXP-72" :event_type "bogus" :occurred_at "2026-10-20T03:00:00Z"}))
@@ -1001,7 +1001,7 @@ rm -rf "$tmp_unk"
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-71:run" :task_id "BOXP-71" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-            {:event_id "BOXP-71:fin" :task_id "BOXP-71" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-71:fin" :task_id "BOXP-71" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
             {:event_id "BOXP-71:accept" :task_id "BOXP-71" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]]
   (doseq [e [{:event_id "BOXP-72:run" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
              {:event_id "BOXP-72:accept" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
@@ -1030,7 +1030,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [r (ai-ops-sli/aggregate*
          [{:event_id "BOXP-76:run" :task_id "BOXP-76" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-          {:event_id "BOXP-76:fin" :task_id "BOXP-76" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+          {:event_id "BOXP-76:fin" :task_id "BOXP-76" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
           {:event_id "BOXP-77:run" :task_id "BOXP-77" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
           {:event_id "BOXP-77:fin" :task_id "BOXP-77" :event_type "run.finished" :result "bogus_review" :occurred_at "2026-10-20T02:00:00Z"}])
       c (get-in r [:sli :agent-system-correction-task-ratio])]
@@ -1055,7 +1055,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [r (ai-ops-sli/aggregate*
          [{:event_id "BOXP-81:run" :task_id "BOXP-81" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
-          {:event_id "BOXP-81:fin" :task_id "BOXP-81" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T01:00:00Z"}
+          {:event_id "BOXP-81:fin" :task_id "BOXP-81" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T01:00:00Z"}
           {:event_id "BOXP-81:accept" :task_id "BOXP-81" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
           {:event_id "BOXP-81:state9" :task_id "BOXP-81" :event_type "task.state" :snapshot "current"}
           {:event_id "BOXP-82:run" :task_id "BOXP-82" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
@@ -1101,7 +1101,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [cov {:event_id "cov-acceptance-12345678" :event_type "coverage.connected" :coverage_target "acceptance-history"}
       base [{:event_id "BOXP-85:run" :task_id "BOXP-85" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
-            {:event_id "BOXP-85:fin" :task_id "BOXP-85" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T01:00:00Z"}
+            {:event_id "BOXP-85:fin" :task_id "BOXP-85" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T01:00:00Z"}
             {:event_id "BOXP-85:accept" :task_id "BOXP-85" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}
             cov]
       ok (get-in (ai-ops-sli/aggregate* base) [:sli :reopen-after-accept])
@@ -1239,7 +1239,7 @@ bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-95:requested" :task_id "BOXP-95" :request_id "req:BOXP-95" :event_type "request.received" :occurred_at "2026-10-20T00:00:00Z"}
             {:event_id "BOXP-95:run1:started" :task_id "BOXP-95" :run_id "20261020T010000Z-aaaa" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-            {:event_id "BOXP-95:run1:finished" :task_id "BOXP-95" :run_id "20261020T010000Z-aaaa" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-95:run1:finished" :task_id "BOXP-95" :run_id "20261020T010000Z-aaaa" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
             {:event_id "BOXP-95:accepted" :task_id "BOXP-95" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       r0 (ai-ops-sli/aggregate* base)
       _ (assert (= [1 1] ((juxt :count :denominator) (get-in r0 [:sli :first-acceptance-conformance]))) (pr-str (get-in r0 [:sli :first-acceptance-conformance])))
@@ -1262,7 +1262,7 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [base [{:event_id "BOXP-98:run" :task_id "BOXP-98" :run_id "20261020T010000Z-aaaa" :event_type "run.started" :occurred_at "2026-10-20T01:00:00Z"}
-            {:event_id "BOXP-98:fin" :task_id "BOXP-98" :run_id "20261020T010000Z-aaaa" :event_type "run.finished" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
+            {:event_id "BOXP-98:fin" :task_id "BOXP-98" :run_id "20261020T010000Z-aaaa" :event_type "run.finished" :status "succeeded" :result "review" :occurred_at "2026-10-20T02:00:00Z"}
             {:event_id "BOXP-98:accepted" :task_id "BOXP-98" :event_type "task.accepted" :occurred_at "2026-10-21T00:00:00Z"}]
       reopened {:event_id "BOXP-98:reopened" :task_id "BOXP-98" :event_type "task.reopened"}
       r (ai-ops-sli/aggregate* (conj base reopened))
@@ -1368,9 +1368,9 @@ bb -e '
 bb -e '
 (load-file "ai_ops_sli.bb")
 (let [evs [;; run.started を取得できず result=review の終了 event だけが残った task
-           {:event_id "BOXP-127/20261020T000000Z-ab12:finished" :task_id "BOXP-127" :run_id "20261020T000000Z-ab12" :event_type "run.finished" :occurred_at "2026-10-20T01:00:00Z" :result "review"}
+           {:event_id "BOXP-127/20261020T000000Z-ab12:finished" :task_id "BOXP-127" :run_id "20261020T000000Z-ab12" :event_type "run.finished" :status "succeeded" :occurred_at "2026-10-20T01:00:00Z" :result "review"}
            {:event_id "BOXP-128/20261020T000000Z-cd34:started" :task_id "BOXP-128" :run_id "20261020T000000Z-cd34" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
-           {:event_id "BOXP-128/20261020T000000Z-cd34:finished" :task_id "BOXP-128" :run_id "20261020T000000Z-cd34" :event_type "run.finished" :occurred_at "2026-10-20T01:00:00Z" :result "review"}]
+           {:event_id "BOXP-128/20261020T000000Z-cd34:finished" :task_id "BOXP-128" :run_id "20261020T000000Z-cd34" :event_type "run.finished" :status "succeeded" :occurred_at "2026-10-20T01:00:00Z" :result "review"}]
       r (ai-ops-sli/aggregate* evs)
       ct (get-in r [:sli :agent-system-correction-task-ratio])]
   ;; 終了 event 単独の task も計上し、run 履歴不足として未評価に別掲する (分母から黙って消さない)
@@ -1384,7 +1384,7 @@ bb -e '
 (let [evs [;; run/状態 event を取得できず task_id 付きの是正 event だけが届いた task
            {:event_id "BOXP-129:corr" :task_id "BOXP-129" :event_type "correction" :correction_class "instruction_violation" :correction_origin "agent-system" :occurred_at "2026-10-20T01:00:00Z"}
            {:event_id "BOXP-130/20261020T000000Z-ef56:started" :task_id "BOXP-130" :run_id "20261020T000000Z-ef56" :event_type "run.started" :occurred_at "2026-10-20T00:00:00Z"}
-           {:event_id "BOXP-130/20261020T000000Z-ef56:finished" :task_id "BOXP-130" :run_id "20261020T000000Z-ef56" :event_type "run.finished" :occurred_at "2026-10-20T01:00:00Z" :result "review"}]
+           {:event_id "BOXP-130/20261020T000000Z-ef56:finished" :task_id "BOXP-130" :run_id "20261020T000000Z-ef56" :event_type "run.finished" :status "succeeded" :occurred_at "2026-10-20T01:00:00Z" :result "review"}]
       r (ai-ops-sli/aggregate* evs)
       ct (get-in r [:sli :agent-system-correction-task-ratio])]
   ;; 是正 event 単独の task も計上し、run 履歴不足として未評価に別掲する (分母から黙って消さない)
@@ -1787,3 +1787,34 @@ bb -e "
   (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :denominator])) (pr-str (get-in r [:sli :agent-system-correction-task-ratio])))
   (println \"ok   groom/docs-groom の結果補完が runner final-status と一致 (groom の review マーカーを Review 到達/再開に数えない)\"))"
 rm -rf "$tmp_groom"
+
+# codex-review 指摘: 結果マーカーなしの retrying/blocked implement run にも effective-result "review" が補完されるが、
+# gate で止まった run は Owner の Review に到達していない。Review 到達 (是正率の分母) は status=succeeded の run に限る。
+tmp_gate=$(mktemp -d)
+mkdir -p "$tmp_gate/root/runs/BOXP-131/20261020T000000Z-aaaa" "$tmp_gate/root/runs/BOXP-132/20261020T000000Z-aaaa" "$tmp_gate/root/runs/BOXP-133/20261020T000000Z-aaaa" "$tmp_gate/root/runs/BOXP-134/20261020T000000Z-aaaa" "$tmp_gate/root/outbox" "$tmp_gate/vault/Tickets"
+for t in 131 132 133 134; do printf -- '---\ncreated: 2026-10-20\nstatus: in-progress\n---\n' > "$tmp_gate/vault/Tickets/BOXP-$t.md"; done
+# review マーカーあり・gate 失敗 (retrying) / マーカーなし・blocked / マーカーなし・成功 (runner 既定で Review) / review マーカーあり・成功
+echo '{:ticket "BOXP-131" :run-id "20261020T000000Z-aaaa" :agent "claude-opus" :status :retrying :result "review" :action :implement :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z"}' > "$tmp_gate/root/runs/BOXP-131/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-132" :run-id "20261020T000000Z-aaaa" :agent "claude-opus" :status :blocked :action :implement :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z"}' > "$tmp_gate/root/runs/BOXP-132/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-133" :run-id "20261020T000000Z-aaaa" :agent "claude-opus" :status :succeeded :action :implement :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z"}' > "$tmp_gate/root/runs/BOXP-133/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-134" :run-id "20261020T000000Z-aaaa" :agent "claude-opus" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z"}' > "$tmp_gate/root/runs/BOXP-134/20261020T000000Z-aaaa/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_gate/root" "$tmp_gate/vault" > "$tmp_gate/x.jsonl"
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [evs (map #(cheshire.core/parse-string % true) (line-seq (java.io.BufferedReader. (java.io.StringReader. (slurp \"$tmp_gate/x.jsonl\")))))
+      by-id (into {} (map (juxt :event_id identity) evs))
+      r (ai-ops-sli/aggregate \"$tmp_gate/x.jsonl\")
+      ct (get-in r [:sli :agent-system-correction-task-ratio])
+      reached (set (for [t [\"BOXP-131\" \"BOXP-132\" \"BOXP-133\" \"BOXP-134\"]
+                         :when (pos? (get-in (ai-ops-sli/aggregate* (filter #(= t (:task_id %)) evs)) [:sli :agent-system-correction-task-ratio :denominator]))] t))]
+  (assert (= [\"retrying\" \"review\"] ((juxt :status :result) (by-id \"BOXP-131/20261020T000000Z-aaaa:finished\"))) \"retrying run は result=review を持つが status で区別する\")
+  (assert (= [\"blocked\" \"review\"] ((juxt :status :result) (by-id \"BOXP-132/20261020T000000Z-aaaa:finished\"))) \"マーカーなし blocked run も補完で review になる\")
+  (assert (= #{\"BOXP-133\" \"BOXP-134\"} reached) (pr-str reached))
+  (assert (= 2 (:denominator ct)) (pr-str ct))
+  ;; aggregate* 直接入力: status 欠落/retrying の run.finished は Review 到達の証拠にしない (succeeded のみ)
+  (doseq [[label st expected] [[\"succeeded\" \"succeeded\" 1] [\"retrying\" \"retrying\" 0] [\"blocked\" \"blocked\" 0] [\"status 欠落\" nil 0]]]
+    (let [r2 (ai-ops-sli/aggregate* [{:event_id \"BOXP-135:run\" :task_id \"BOXP-135\" :event_type \"run.started\" :occurred_at \"2026-10-20T00:00:00Z\"}
+                                      (cond-> {:event_id \"BOXP-135:fin\" :task_id \"BOXP-135\" :event_type \"run.finished\" :result \"review\" :occurred_at \"2026-10-20T01:00:00Z\"} st (assoc :status st))])]
+      (assert (= expected (get-in r2 [:sli :agent-system-correction-task-ratio :denominator])) (str label \" \" (pr-str (get-in r2 [:sli :agent-system-correction-task-ratio]))))))
+  (println \"ok   gate で止まった retrying/blocked run (補完 result=review) を Review 到達に数えず、succeeded の run だけを是正率の分母にする\"))"
+rm -rf "$tmp_gate"
