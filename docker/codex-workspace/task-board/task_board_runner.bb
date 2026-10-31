@@ -1843,10 +1843,11 @@
 
 (defn gate-budget-report
   "Japanese stop report.  Built only from counts, gate names, classes and the
-  derived diagnostic category, never from agent, review or CLI text."
-  [ticket-id review-gate budget-result]
-  (let [statuses (:statuses budget-result)
-        failures (->> (vals (:failures (read-gate-failure-budget)))
+  derived diagnostic category, never from agent, review or CLI text.
+  `review-gate` is nil when the stop is made outside a run (see
+  `stop-exhausted-ticket!`)."
+  [ticket-id review-gate statuses]
+  (let [failures (->> (vals (:failures (read-gate-failure-budget)))
                       (filter #(= ticket-id (:ticket %))))
         by-class (frequencies (map :class failures))]
     (str "ゲート累積失敗上限に到達したため自動再試行を停止しました。"
@@ -1854,11 +1855,14 @@
          (str/join ", " (map #(str (if (= :ticket (:scope %)) "ticket " "PR ")
                                    (:key %) " " (:used %) "/" (:limit %))
                              statuses))
-         "。 直近: gate=" (some-> (:gate review-gate) name)
-         " 分類=" (gate-failure-class review-gate)
-         " (" (gate-failure-class-basis review-gate) ")"
-         (when-let [diagnostic (:diagnostic review-gate)]
-           (str " 未解決=" (:category diagnostic) " 根拠=" (:path diagnostic)))
+         (if review-gate
+           (str "。 直近: gate=" (some-> (:gate review-gate) name)
+                " 分類=" (gate-failure-class review-gate)
+                " (" (gate-failure-class-basis review-gate) ")"
+                (when-let [diagnostic (:diagnostic review-gate)]
+                  (str " 未解決=" (:category diagnostic) " 根拠=" (:path diagnostic))))
+           (str "。 直近: 上限到達済みの ticket/PR が自動 run の対象になっていたため"
+                "（前回の停止遷移が未完了、またはカード/担当が戻された）、run を開始せず停止状態へ戻しました"))
          "。 実施済み: 自動修正run " (count failures) "回 ("
          (str/join ", " (map (fn [[k v]] (str k "=" v)) (sort by-class)))
          ")。 必要判断: 未解決指摘への方針を決め、続行する場合は Owner が"
@@ -1912,7 +1916,7 @@
            :budget-exhausted? (:exhausted? budget)
            :gate-budget (mapv #(select-keys % [:scope :key :used :limit]) (:statuses budget))
            :gate-budget-report (when (:exhausted? budget)
-                                 (gate-budget-report ticket-id review-gate budget)))))
+                                 (gate-budget-report ticket-id review-gate (:statuses budget))))))
 
 (defn clear-pr-gate-retries! [ticket-id]
   (let [state (runner-state)
@@ -3566,6 +3570,47 @@
                   ") arrived during the run; lane and assignee were left as instructed.")]
     (if (:consistent? revision) (append-note! ticket-id note) (log! note))))
 
+(defn stop-exhausted-ticket!
+  "BOXP-369: formal stop made outside a run.  The ticket (or a PR it failed on
+  or references) is over budget but the card is not Blocked: the runner died
+  between the 10th record and the Blocked transition, or the card/assignee was
+  put back without a grant.  Logging alone would leave the card silently
+  stuck, so take the ticket lock (no reservation, no run), write the Japanese
+  report and move the card to Blocked + boxp.  After that the card no longer
+  has an automatic candidate action, so this runs once per such state."
+  [ticket-id candidate status assignee lane ticket-text]
+  (when (not= "blocked" status)
+    (let [effective-lane (if (#{"ready" "review"} status) "In Progress" lane)]
+      (when-let [lock (acquire-lock! ticket-id candidate effective-lane)]
+        (try
+          (let [budget (read-gate-failure-budget)
+                pr-ids (gate-budget-ticket-pr-ids budget ticket-id ticket-text)
+                statuses (into [(gate-budget-status budget :ticket ticket-id)]
+                               (filter :exhausted? (map #(gate-budget-status budget :pr %) pr-ids)))]
+            ;; Re-check under the lock: a grant may have landed since the pre-check.
+            (when (some :exhausted? statuses)
+              (let [report (gate-budget-report ticket-id nil statuses)
+                    transition-id (str ticket-id "/gate-budget-stop-" (:run-id lock))]
+                ;; Audit note first, state transition second (same order as block-ticket!).
+                (append-note! ticket-id
+                              (str "Blocked transition recorded: ticket=" ticket-id
+                                   "; run=none; transition-id=" transition-id
+                                   "; action=" (name candidate)
+                                   "; at=" (now-str)
+                                   "; category=gate-failure-budget-exhausted"
+                                   "; reason=" (sanitize-blocker-reason report)))
+                (try
+                  (move-card! ticket-id "blocked" "boxp")
+                  (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                  (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                  (log! (str "gate failure budget exhausted; " ticket-id " moved to Blocked without a run"))
+                  (catch Exception e
+                    (log! (str "gate budget stop transition failed for " ticket-id
+                               "; restoring the prior card state: " (.getMessage e)))
+                    (restore-card-state! ticket-id status assignee))))))
+          (finally
+            (release-lock! ticket-id lock)))))))
+
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
@@ -3574,14 +3619,17 @@
         ;; BOXP-369: once the cumulative gate-failure budget is spent, no
         ;; automatic run may start again, even when the card or assignee was
         ;; moved back.  Only an Owner `gate-budget-grant` reopens it.
+        ticket-text (when (#{:implement :review-fix :blocked-retry} candidate)
+                      (try (slurp (str (ticket-path ticket-id)))
+                           (catch Exception _ nil)))
         action (if (and (#{:implement :review-fix :blocked-retry} candidate)
                         (fs/exists? (gate-failure-budget-path))
-                        (gate-budget-exhausted-for-ticket?
-                         ticket-id
-                         (try (slurp (str (ticket-path ticket-id)))
-                              (catch Exception _ nil))))
+                        (gate-budget-exhausted-for-ticket? ticket-id ticket-text))
                  (do (log! (str "gate failure budget exhausted; not starting " ticket-id
                                 " until an Owner gate-budget-grant"))
+                     ;; A card left outside Blocked (interrupted transition, or
+                     ;; moved back without a grant) is stopped formally here.
+                     (stop-exhausted-ticket! ticket-id candidate status assignee lane ticket-text)
                      nil)
                  candidate)]
     (when action

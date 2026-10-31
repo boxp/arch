@@ -3530,7 +3530,14 @@ test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
   budget_set_lane "${vault}" BOXP-463 grant codex
   budget_fail_tick "${vault}" "${state}" "${bin}" c 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
   [[ "$(budget_run_count "${state}" BOXP-463)" == 2 ]] || fail "PR budget must still hold"
+  # The refused start is a formal stop again: Blocked + boxp with a report
+  # that names only the still-exhausted PR scope.
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-463.md" 'run=none; transition-id=BOXP-463/gate-budget-stop-'
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-463.md")" == 1 ]] || fail "exactly one stop note expected"
+  assert_file_contains "${vault}/Tickets/BOXP-463.md" 'ticket BOXP-463 2/3, PR boxp/example#301 2/2。'
   CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant boxp/example#301 --amount 1 --by boxp >/dev/null
+  budget_set_lane "${vault}" BOXP-463 grant codex
   # Now one more run is allowed; it passes, and success does not reset counts.
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/301\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 >/dev/null
   assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::review'
@@ -3541,6 +3548,54 @@ test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
   budget_fail_tick "${vault}" "${state}" "${bin}" d 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
   assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::blocked'
   assert_file_contains "${vault}/Tickets/BOXP-463.md" 'ticket BOXP-463 3/3, PR boxp/example#301 3/3'
+}
+
+test_gate_failure_budget_stop_completes_after_interrupted_transition() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-465|BOXP-465: interrupted]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-465 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  # The 3rd (last) failure is recorded in the budget, but the Blocked
+  # transition fails after the record (runner death / state write failure):
+  # the card is restored to its prior lane.
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3 CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE=true
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-465: interrupted\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" '^assignee: codex$'
+  [[ "$(grep -o ':class "ci-failure"' "${state}/gate-failure-budget.edn" | wc -l)" == 3 ]] || fail "3rd failure must be recorded"
+  [[ "$(budget_run_count "${state}" BOXP-465)" == 3 ]] || fail "expected exactly 3 runs"
+
+  # The next tick must not start a run; it completes the formal stop instead.
+  budget_fail_tick "${vault}" "${state}" "${bin}" d 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  [[ "$(budget_run_count "${state}" BOXP-465)" == 3 ]] || fail "no run may start on the exhausted ticket"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-465: interrupted\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'run=none; transition-id=BOXP-465/gate-budget-stop-'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'run を開始せず停止状態へ戻しました'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'ticket BOXP-465 3/3, PR boxp/example#501 3/3'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'gate-budget-grant BOXP-465 --amount N'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'gate-budget-grant boxp/example#501 --amount N'
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-465.md")" == 1 ]] || fail "exactly one stop note expected"
+  if ! ls "${state}"/outbox/pending/BOXP-465-*-blocked.edn >/dev/null 2>&1; then
+    fail "the formal stop must record a blocked event"
+  fi
+  if ls "${state}"/locks/BOXP-465.edn >/dev/null 2>&1; then
+    fail "the stop must release the ticket lock"
+  fi
+
+  # Blocked + boxp has no automatic action: a further tick changes nothing.
+  budget_fail_tick "${vault}" "${state}" "${bin}" e 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  [[ "$(budget_run_count "${state}" BOXP-465)" == 3 ]] || fail "still no run after the stop"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-465.md")" == 1 ]] || fail "stop note must not repeat"
+  # Only a grant for both exhausted scopes reopens one run.
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-465 --amount 1 --by boxp >/dev/null
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant boxp/example#501 --amount 1 --by boxp >/dev/null
+  budget_set_lane "${vault}" BOXP-465 interrupted codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" f 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  [[ "$(budget_run_count "${state}" BOXP-465)" == 4 ]] || fail "a grant for both scopes must allow one run"
 }
 
 test_gate_failure_budget_stricter_short_term_limit_still_applies() {
@@ -3796,6 +3851,7 @@ test_gate_failure_budget_boundary_9_10_11
 test_gate_failure_budget_multiple_prs_and_shared_pr
 test_gate_failure_budget_grant_resume_and_no_reset_on_success
 test_gate_failure_budget_stricter_short_term_limit_still_applies
+test_gate_failure_budget_stop_completes_after_interrupted_transition
 test_gate_failure_budget_concurrent_updates_do_not_lose_counts
 test_gate_failure_budget_concurrent_ticks_do_not_lose_counts
 test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized
