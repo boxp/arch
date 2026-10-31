@@ -114,6 +114,9 @@
                (when (some? value)
                  (swap! lines conj (str metric (when (seq labels) (str "{" (str/join "," (map (fn [[k v]] (str (name k) "=\"" v "\"")) labels)) "}")) " " value))))
         bool-num (fn [x] (when (boolean? x) (if x 1 0)))
+        ;; Contract: a window that was not observed emits no used_percent at all
+        ;; (callers tell "unavailable" apart via source_up / window_present);
+        ;; a genuine 0% reported by the official CLI output is emitted as 0.
         window! (fn [provider limit window used reset duration status]
                   (let [labels [[:provider provider] [:limit limit] [:name (window-name provider limit)] [:window window]]
                         expired (and (number? reset) (<= reset now-s))]

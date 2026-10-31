@@ -31,7 +31,7 @@
    - 最新の `rate_limit_event` から数値と enum だけを `ai-ops/subscription/claude.json` に atomic に保存する（観測時刻つき）。
 2. 新 module `ai_subscription_usage.bb`
    - Claude snapshot と、Codex の最新 rollout の `rate_limits` を読み、`ai-ops/subscription-usage.prom` を書く。
-   - 失敗しても run に影響させない。取得できない場合は `ai_subscription_source_up=0` と理由 label を出す。0% は出さない。
+   - 失敗しても run に影響させない。取得できない場合は `ai_subscription_source_up=0` と理由 label を出す。取得できない窓を 0% として出力しない（`ai_subscription_window_used_percent` 自体を出さず、`source_up` / `window_present` で未取得と区別する）。公式出力が実際に 0% を返した場合はそのまま 0 を出力する。
    - `resets_at` を過ぎた窓の利用率は出さず、expired=1 にする。
 3. 既存の 60 秒周期の metrics 書き出しから呼ぶ。
 4. テストを追加する。
@@ -60,7 +60,7 @@
 
 Claude Code 2.1.312 の公式 stream-json `rate_limit_event` は、モデル専用の週次枠を `unifiedWindows.seven_day_overage_included` として通知する。CLI の表示名は「Fable limit」で、レスポンスヘッダーは `anthropic-ratelimit-unified-7d_oi-*` 系列。この窓は応答に含まれるアカウントでのみ提供される。`seven_day_opus` / `seven_day_sonnet` はトップレベルの `rateLimitType` にのみ存在し、窓ごとの利用率としては提供されない。
 
-コレクターは `name="fable_7d"` の独立した系列と `ai_subscription_window_present` を出力し、窓がない場合は未提供と表示する。0% とせず、共有窓からも推測しない。probe、追加のモデル呼び出し、新たな課金は発生させない。
+コレクターは `name="fable_7d"` の独立した系列と `ai_subscription_window_present` を出力し、窓がない場合は未提供と表示する。未提供の窓を 0% と偽らず、共有窓からも推測しない。probe、追加のモデル呼び出し、新たな課金は発生させない。
 
 ### 観測時刻と読み取りの効率化
 
