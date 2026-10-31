@@ -425,3 +425,15 @@ for want in 'ai_ops_v1_gate_rework_runs_by_gate{gate="codex-review"} 1' 'ai_ops_
 done
 if grep -q 'somebodys-secret-gate' "$t32/v1.prom"; then echo "not ok - 未知の gate 名が label に出力された"; exit 1; fi
 echo "ok - 未知の gate 名は other に集約され label に出ない"
+
+# --- codex-review 指摘: 結果マーカーなしの正常終了 (:result nil) は runner の既定で Review に進む ---
+t33="$tmp/t33"; mkdir -p "$t33/runs/BOXP-941/20261023T000000Z" "$t33/runs/BOXP-941/20261023T010000Z" "$t33/runs/BOXP-941/20261024T000000Z" "$t33/runs/BOXP-942/20261023T000000Z"
+# BOXP-941: groom (マーカーなし -> Ready、Review ではない) -> implement (マーカーなし -> Review 到達) -> 翌日 implement (Review 後の再開)
+echo '{:ticket "BOXP-941" :run-id "20261023T000000Z" :status :succeeded :action :groom :result nil :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t33/runs/BOXP-941/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-941" :run-id "20261023T010000Z" :status :succeeded :action :implement :result nil :agent "claude-opus" :finished-at "2026-10-23T01:00:00Z"}' >"$t33/runs/BOXP-941/20261023T010000Z/summary.edn"
+echo '{:ticket "BOXP-941" :run-id "20261024T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-24T00:00:00Z"}' >"$t33/runs/BOXP-941/20261024T000000Z/summary.edn"
+# BOXP-942: groom のマーカーなし終了だけ (Ready 止まり。Review 到達ではない)
+echo '{:ticket "BOXP-942" :run-id "20261023T000000Z" :status :succeeded :action :groom :result nil :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t33/runs/BOXP-942/20261023T000000Z/summary.edn"
+bb ai_ops_insight.bb report "$t33" >"$t33/r.edn"
+check "マーカーなしの implement 正常終了を Review 到達に数え、Review 後の再開と待ち時間も出す (groom のマーカーなしは Ready 扱い)" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:snapshot :unevaluated-tasks] 0)) (= 1 (get-in r [:reopen-after-review :total])) (= 1 (get-in r [:non-correction :by-kind "groom_to_implement"])) (= 1 (get-in r [:review-wait :followed])) (= 23.0 (get-in r [:review-wait :by-next "reopen_after_review" :p50-h])))' "$t33/r.edn"

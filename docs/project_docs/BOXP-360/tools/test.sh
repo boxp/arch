@@ -1694,3 +1694,24 @@ bb -e "(load-file \"ai_ops_sli.bb\")
 rm -f "$tmp_unk" "$tmp_unk.prom"
 echo "ok   unknown reason classification (4 categories) exported to Prom"
 ./insight-test.sh
+
+# codex-review 指摘: 結果マーカーなしの正常終了 (:result nil) は runner が既定で Review (groom は Ready) に進める。
+# extract も同じ既定で補完し、Review 到達 (分母) と Review 後の再開を落とさない。
+tmp_nil=$(mktemp -d)
+mkdir -p "$tmp_nil/root/runs/BOXP-98/20261020T000000Z-aaaa" "$tmp_nil/root/runs/BOXP-98/20261020T010000Z-bbbb" "$tmp_nil/root/runs/BOXP-98/20261021T010000Z-cccc" "$tmp_nil/root/outbox" "$tmp_nil/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: review\n---\n' > "$tmp_nil/vault/Tickets/BOXP-98.md"
+echo '{:ticket "BOXP-98" :run-id "20261020T000000Z-aaaa" :agent "codex" :status :succeeded :result nil :action :groom :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T00:30:00Z"}' > "$tmp_nil/root/runs/BOXP-98/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-98" :run-id "20261020T010000Z-bbbb" :agent "codex" :status :succeeded :result nil :action :implement :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_nil/root/runs/BOXP-98/20261020T010000Z-bbbb/summary.edn"
+echo '{:ticket "BOXP-98" :run-id "20261021T010000Z-cccc" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-21T01:00:00Z" :finished-at "2026-10-21T02:00:00Z"}' > "$tmp_nil/root/runs/BOXP-98/20261021T010000Z-cccc/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_nil/root" "$tmp_nil/vault" > "$tmp_nil/x.jsonl"
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [evs (map #(cheshire.core/parse-string % true) (line-seq (java.io.BufferedReader. (java.io.StringReader. (slurp \"$tmp_nil/x.jsonl\")))))
+      by-id (into {} (map (juxt :event_id identity) evs))
+      r (ai-ops-sli/aggregate \"$tmp_nil/x.jsonl\")]
+  (assert (= \"ready\" (:result (by-id \"BOXP-98/20261020T000000Z-aaaa:finished\"))) \"groom のマーカーなしは ready\")
+  (assert (= \"review\" (:result (by-id \"BOXP-98/20261020T010000Z-bbbb:finished\"))) \"implement のマーカーなしは review\")
+  (assert (= \"task.reopened\" (:event_type (by-id \"BOXP-98/20261021T010000Z-cccc:reopen\"))) \"マーカーなし Review の後の implement は再開\")
+  (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :denominator])) (pr-str (get-in r [:sli :agent-system-correction-task-ratio])))
+  (println \"ok   結果マーカーなしの正常終了を runner の既定 (Review/Ready) で補完し、Review 到達と再開を落とさない\"))"
+rm -rf "$tmp_nil"

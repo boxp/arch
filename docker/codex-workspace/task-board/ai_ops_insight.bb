@@ -105,6 +105,17 @@
        (= (kw (:ticket s)) (str (fs/file-name (fs/parent dir))))
        (= (kw (:run-id s)) (str (fs/file-name dir)))))
 
+;; runner は結果マーカーのない正常終了 (exit 0) を既定で Review (groom/docs-groom は Ready) に進めるが、summary の
+;; :result は nil のまま保存する。集計も同じ既定を使い、マーカーなしの Review 到達を落とさない。
+;; interrupted/running は結果が無いので nil のまま。failed (exit≠0) は runner が blocked にするので blocked。
+(defn effective-result [status action result]
+  (cond
+    result result
+    (contains? #{"interrupted" "running" "in-progress" "unreadable"} status) nil
+    (= "failed" status) "blocked"
+    (contains? #{"groom" "docs-groom"} action) "ready"
+    :else "review"))
+
 (defn read-summary
   "読めて検証を通った summary だけ map を返す。それ以外は nil (呼び出し側で unreadable 扱い)。"
   [f]
@@ -112,7 +123,8 @@
     (let [s (edn/read-string {:default (fn [_ v] v)} (slurp (str f)))]
       (when (valid-summary? s (fs/parent f))
         {:run-id (str (fs/file-name (fs/parent f)))
-         :status (kw (:status s)) :action (kw (:action s)) :result (kw (:result s))
+         :status (kw (:status s)) :action (kw (:action s))
+         :result (effective-result (kw (:status s)) (kw (:action s)) (kw (:result s)))
          :blocker (kw (:blocker-category s)) :agent (kw (:agent s))
          :started-at (:started-at s) :finished-at (:finished-at s)
          :gate (kw (get-in s [:review-gate :gate]))
