@@ -634,19 +634,27 @@
     (when-let [_lock (try (.tryLock channel) (catch Exception _ nil))]
       (f))))
 
+(defn- utf8-length [^String s] (alength (.getBytes s "UTF-8")))
 (defn v1-export-text
   "Run the v1 export into `tmp` and return the text to append to sli.prom: the v1
   series plus `ai_ops_v1_export_ok`, which is 0 when the export failed, timed out,
-  produced nothing or would push sli.prom past `budget` bytes."
+  produced nothing or would push sli.prom past `budget` bytes. The limit is checked
+  on the exact bytes that will be appended (body + the export_ok lines), so a v1
+  failure near the limit never pushes the v0 output over sli-limit. When even the
+  export_ok lines do not fit, nothing is appended and the v0 output stands alone."
   [root tmp deadline budget]
-  (let [ok? (try (and (run-sli-command! ["bb" insight-script "prom" (str root)] tmp deadline)
-                      (pos? (.length tmp)) (< (+ (.length tmp) 128) budget))
-                 (catch Exception _ false))
-        body (if ok? (let [s (slurp tmp)] (if (str/ends-with? s "\n") s (str s "\n"))) "")]
-    (str body
-         "# HELP ai_ops_v1_export_ok correction-rules/v1 export succeeded in the last SLI refresh (0 = v1 series are stale or absent).\n"
-         "# TYPE ai_ops_v1_export_ok gauge\n"
-         "ai_ops_v1_export_ok " (if ok? 1 0) "\n")))
+  (let [tail (fn [ok?] (str "# HELP ai_ops_v1_export_ok correction-rules/v1 export succeeded in the last SLI refresh (0 = v1 series are stale or absent).\n"
+                            "# TYPE ai_ops_v1_export_ok gauge\n"
+                            "ai_ops_v1_export_ok " (if ok? 1 0) "\n"))
+        body (try (when (and (run-sli-command! ["bb" insight-script "prom" (str root)] tmp deadline)
+                             (pos? (.length tmp)))
+                    (let [s (slurp tmp)] (if (str/ends-with? s "\n") s (str s "\n"))))
+                  (catch Exception _ nil))
+        ok-text (when body (str body (tail true)))
+        fail-text (tail false)]
+    (cond (and ok-text (<= (utf8-length ok-text) budget)) ok-text
+          (<= (utf8-length fail-text) budget) fail-text
+          :else "")))
 (defn- refresh-sli-locked! [root vault]
   (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
       (when (and (enabled?) (pos? interval) (not (str/blank? vault))
@@ -661,7 +669,7 @@
             (if (and (run-sli-command! ["bb" sli-script "extract" (str root) (str vault)] @tmp deadline)
                      (append-ledger-events! root @tmp)
                      (run-sli-command! ["bb" sli-script "prom" (str @tmp)] @output deadline)
-                     (pos? (.length @output)) (< (.length @output) sli-limit))
+                     (pos? (.length @output)) (<= (.length @output) sli-limit))
               (let [v1-text (v1-export-text root @v1 deadline (- sli-limit (.length @output)))]
                 (atomic-spit! (sli-path root) (str (slurp @output) v1-text))
                 (atomic-spit! (sli-status-path root) (pr-str (assoc attempt :last-success now))) true)

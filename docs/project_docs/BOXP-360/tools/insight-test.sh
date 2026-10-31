@@ -354,4 +354,32 @@ done
 if grep -q 'BOXP-' "$tmp/v1.prom"; then echo "not ok - prom 出力に ticket ID が含まれる"; exit 1; fi
 if grep -v '^#' "$tmp/v1.prom" | grep -qE 'rate\(|increase\('; then echo "not ok - prom 出力に rate/increase"; exit 1; fi
 if bb ai_ops_insight.bb prom "$tmp/no-such-root" >/dev/null 2>&1; then echo "not ok - runs 不在で exit 0"; exit 1; fi
+grep -qF 'ai_ops_v1_snapshot{part="unevaluated_tasks"} 0' "$tmp/v1.prom" || { echo "not ok - 読めない run が無いのに unevaluated_tasks 0 が無い"; exit 1; }
 echo "ok - prom 出力 (v1) は件数のみで ticket ID を含まない"
+
+# 読めない run (summary.edn 欠落/破損) を持つ task は v1 の分母・分子・遷移・ループ・停滞から除外し、
+# unevaluated_tasks として件数だけ別掲する (欠落 run が Review 到達や gate 失敗を含んでいた可能性があり、過少な値を確定値として公開しない)。
+# 読める task だけの集計はそのまま出す。
+t30="$tmp/t30"; mkdir -p "$t30"
+# BOXP-920: 正常 run 2 件 + 破損 summary 1 件 -> 全集計から除外
+ROOT=$t30 run BOXP-920 20261020T000000Z succeeded implement review
+ROOT=$t30 run BOXP-920 20261020T010000Z retrying implement review codex-review
+mkdir -p "$t30/runs/BOXP-920/20261020T020000Z"
+echo '{:ticket "BOXP-920" :run-id' >"$t30/runs/BOXP-920/20261020T020000Z/summary.edn"
+# BOXP-921: summary.edn 欠落のみ -> 除外
+mkdir -p "$t30/runs/BOXP-921/20261020T030000Z"
+# BOXP-922: 読める task (Review 到達 1、gate 失敗 1) -> そのまま集計
+ROOT=$t30 run BOXP-922 20261020T040000Z retrying implement review ci
+ROOT=$t30 run BOXP-922 20261020T050000Z succeeded implement review
+bb ai_ops_insight.bb report "$t30" >"$t30/r.edn"
+check "読めない run を持つ task は v1 集計から除外し unevaluated-tasks に別掲 (snapshot の runs/unreadable は入力全体)" \
+  '(and (= 3 (get-in r [:snapshot :tickets])) (= 6 (get-in r [:snapshot :runs])) (= 2 (get-in r [:snapshot :unreadable-runs])) (= 2 (get-in r [:snapshot :unevaluated-tasks]))
+        (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:gate-rework :total])) (= {"ci" 1} (get-in r [:gate-rework :by-gate]))
+        (= 1 (get-in r [:transitions :v1 "gate_rework"])) (nil? (get-in r [:transitions :v1 "reopen_after_review"])))' "$t30/r.edn"
+bb ai_ops_insight.bb prom "$t30" >"$t30/v1.prom"
+for want in 'ai_ops_v1_snapshot{part="unreadable_runs"} 2' 'ai_ops_v1_snapshot{part="unevaluated_tasks"} 2' 'ai_ops_v1_snapshot{part="runs"} 6' \
+            'ai_ops_v1_reached_review_tasks 1' 'ai_ops_v1_gate_rework_runs{part="total"} 1' 'ai_ops_v1_gate_rework_runs_by_gate{gate="ci"} 1'; do
+  grep -qF "$want" "$t30/v1.prom" || { echo "not ok - prom 出力に無い: $want"; cat "$t30/v1.prom"; exit 1; }
+done
+if grep -qF 'gate="codex-review"' "$t30/v1.prom"; then echo "not ok - 読めない run を持つ task の gate 失敗が確定値として出力された"; cat "$t30/v1.prom"; exit 1; fi
+echo "ok - 読めない run を持つ task は v1 の prom 出力からも除外され unevaluated_tasks に別掲"

@@ -209,8 +209,14 @@
 
 (declare review-resume)
 
-(defn report [runs-by-ticket & [triggers until-at]]
-  (let [trs (for [[t runs] runs-by-ticket, tr (transitions runs)] (assoc tr :ticket t))
+(defn report [all-runs-by-ticket & [triggers until-at]]
+  ;; 読めない run (summary.edn 欠落/破損/不正型) を 1 件でも持つ task は、その run が Review 到達・gate 失敗・review-fix の
+  ;; どれだったか分からないため、v1 の分母・分子・遷移・ループ・停滞のすべてから除外し :snapshot :unevaluated-tasks に
+  ;; 件数だけを別掲する (v0 ai_ops_sli.bb の unevaluated-input-missing と同じ扱い。過少な値を確定値として公開しない)。
+  ;; :snapshot の :tickets/:runs/:unreadable-runs は除外前の入力全体を数える。
+  (let [unreadable-task? (fn [[_ runs]] (some #(= "unreadable" (:status %)) runs))
+        runs-by-ticket (into {} (remove unreadable-task? all-runs-by-ticket))
+        trs (for [[t runs] runs-by-ticket, tr (transitions runs)] (assoc tr :ticket t))
         ;; Review 到達 = review で正常終了 (succeeded) した run がある task。gate 失敗 (retrying) の run も :result "review" を持つが Owner には届いていない。
         reached-review (set (for [[t runs] runs-by-ticket :when (some #(and (= "succeeded" (:status %)) (= "review" (:result %))) runs)] t))
         tasks-with (fn [pred] (set (keep #(when (pred %) (:ticket %)) trs)))
@@ -240,12 +246,13 @@
                        {:ticket t :followed? (some? cur) :next (when cur (classify-v1 prev cur))
                         :hours (when cur (hours (instant (:finished-at prev)) (or (instant (:started-at cur)) (run-id->instant (:run-id cur)))))})
         waited (filter :hours review-waits)
-        all-runs (mapcat val runs-by-ticket)
+        all-runs (mapcat val all-runs-by-ticket)
         month (fn [r] (subs (:run-id r) 0 6))]
     {:rules-version rules-version
-     :snapshot {:tickets (count runs-by-ticket) :runs (count all-runs)
+     :snapshot {:tickets (count all-runs-by-ticket) :runs (count all-runs)
                 :last-run-id (last (sort (map :run-id all-runs)))
-                :unreadable-runs (count (filter #(= "unreadable" (:status %)) all-runs))}
+                :unreadable-runs (count (filter #(= "unreadable" (:status %)) all-runs))
+                :unevaluated-tasks (count (filter unreadable-task? all-runs-by-ticket))}
      :transitions {:v0 (frequencies (keep :v0 trs)) :v1 (frequencies (keep :v1 trs))
                    :v0->v1 (frequencies (for [tr trs :when (or (:v0 tr) (correction-kinds (:v1 tr)))] [(:v0 tr) (:v1 tr)]))}
      :task-rates {:denominator-reached-review (count reached-review)
@@ -389,6 +396,8 @@
     (line "ai_ops_v1_generated_timestamp_seconds" {} (quot (System/currentTimeMillis) 1000))
     (doseq [[p k] [["tickets" :tickets] ["runs" :runs] ["unreadable_runs" :unreadable-runs]]]
       (line "ai_ops_v1_snapshot" {:part p} (get-in r [:snapshot k] 0)))
+    ;; 読めない run を持つ task は v1 の全集計から除外し、件数だけをここに出す (v0 の unevaluated-input-missing と同じ扱い)。
+    (line "ai_ops_v1_snapshot" {:part "unevaluated_tasks"} (get-in r [:snapshot :unevaluated-tasks] 0))
     (line "ai_ops_v1_reached_review_tasks" {} (:denominator-reached-review rates 0))
     (doseq [[k key] [["v0_candidate" :v0-correction-tasks] ["agent_system" :v1-agent-system-tasks]
                      ["owner_visible" :v1-owner-visible-tasks] ["owner_visible_agent_system" :v1-owner-visible-agent-system-tasks]]]

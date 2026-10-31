@@ -508,6 +508,35 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
 (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
 (def old (slurp (str (ai-ops-ledger/sli-path root))))
+;; 容量上限付近: v1 の追記は実際に追記するバイト数で判定し、v0 の出力を上限超えにしない。
+;; (旧実装は余白を 128 bytes 固定と見積もり、export_ok の HELP/TYPE/値だけでそれを超えて sli.prom 全体が
+;;  sli-limit を超え、sli-snapshot が空文字になって v0 の SLI まで消えていた)
+(let [v0-len (count (.getBytes (first (str/split old #"# HELP ai_ops_v1_info")) "UTF-8"))
+      fail-tail-len (with-redefs [ai-ops-ledger/insight-script "/nonexistent/ai_ops_insight.bb"]
+                      (count (.getBytes (ai-ops-ledger/v1-export-text root (java.io.File/createTempFile "v1-" ".prom") (System/currentTimeMillis) Long/MAX_VALUE) "UTF-8")))]
+  ;; v1 本体は入らないが export_ok 0 の行は入る余白 -> v0 + export_ok 0、snapshot は空にならない
+  (with-redefs [ai-ops-ledger/sli-limit (+ v0-len fail-tail-len 8)]
+    (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+    (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+    (let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+      (assert (<= (count (.getBytes s "UTF-8")) ai-ops-ledger/sli-limit))
+      (assert (str/includes? s "ai_ops_sli_info"))
+      (assert (str/includes? s "\nai_ops_v1_export_ok 0\n"))
+      (assert (not (str/includes? s "ai_ops_v1_info")))
+      (assert (str/includes? (ai-ops-ledger/sli-snapshot root) "ai_ops_sli_info"))))
+  ;; export_ok 0 の行すら入らない余白 -> v0 だけを書き、snapshot は空にならない
+  (with-redefs [ai-ops-ledger/sli-limit (+ v0-len 8)]
+    (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+    (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+    (let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+      (assert (<= (count (.getBytes s "UTF-8")) ai-ops-ledger/sli-limit))
+      (assert (str/includes? s "ai_ops_sli_info"))
+      (assert (not (str/includes? s "ai_ops_v1_export_ok")))
+      (assert (str/includes? (ai-ops-ledger/sli-snapshot root) "ai_ops_sli_info")))))
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+(assert (= old (slurp (str (ai-ops-ledger/sli-path root)))))
+(println "ai-ops-ledger-test: v1 append respects the byte budget near sli-limit")
 (assert (str/includes? old "ai_ops_sli_info"))
 (assert (ai-ops-ledger/write-metrics! root))
 (assert (str/includes? (slurp (str (ai-ops-ledger/metrics-path root))) "ai_ops_sli_info"))
