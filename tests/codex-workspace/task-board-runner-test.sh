@@ -111,7 +111,7 @@ fi
 prompt="$(cat)"
 if [[ "${prompt}" == *'Delegation contract:'* ]]; then
   case "${TEST_DELEGATION_MODE:-exempt}" in
-    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run || true ;;
+    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run >&2 || true ;;
     missing) ;;
     *) python3 "${TASK_BOARD_DELEGATION_HELPER}" exempt small-task ;;
   esac
@@ -143,7 +143,20 @@ if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
   wait "$!"
 fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
-printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+if [[ "${CLAUDE_FAKE_STREAM_JSON:-false}" == true ]]; then
+  if [[ -n "${CLAUDE_FAKE_STREAM_PROGRESS_COUNT:-}" ]]; then
+    for _ in $(seq 1 "${CLAUDE_FAKE_STREAM_PROGRESS_COUNT}"); do
+      sleep "${CLAUDE_FAKE_STREAM_PROGRESS_INTERVAL:-0}"
+      printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"streaming progress"}]}}'
+    done
+  fi
+  printf '%s\n' '  {"type":"rate_limit_event","rate_limit_info":{"status":"allowed","secretField":"SECRET_RATE_LIMIT","unifiedWindows":{"five_hour":{"utilization":0.2,"note":"SECRET_WINDOW"}}},"session_id":"secret","uuid":"secret-uuid"}'
+  sleep "${CLAUDE_FAKE_STREAM_DELAY:-0}"
+  printf '%s\n' '   {"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-0","name":"Bash","input":{"command":"SECRET_WS_INPUT"}}]}}'
+  printf '%s\n' '{"type":"assistant","session_id":"secret","uuid":"secret-uuid","message":{"content":[{"type":"text","text":"working","citations":"SECRET_TEXT_EXTRA"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"SECRET_TOOL_INPUT"}}]}}' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"SECRET_TOOL_OUTPUT"}]},"tool_use_result":"SECRET_TOOL_OUTPUT"}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
+else
+  printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+fi
 exit "${CLAUDE_FAKE_EXIT:-0}"
 EOF
   chmod +x "${bin_dir}/claude"
@@ -339,6 +352,196 @@ test_parallel_codex_runs() {
   assert_file_contains "${vault}/Tickets/BOXP-102.md" '^status: done$'
 }
 
+test_fable_stream_json() {
+  local tmp vault state bin last_message
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-149|BOXP-149: stream]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-149 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true CLAUDE_FAKE_STREAM_DELAY=3 run_tick "${vault}" "${state}" env >/tmp/task-board-stream.out
+  assert_file_contains "${vault}/Tickets/BOXP-149.md" '^status: done$'
+  last_message="$(find "${state}/runs/BOXP-149" -name last-message.md -print | head -n 1)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
+  [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+  local observed finished
+  observed="$(bb -e '(require (quote cheshire.core)) (println (:observed_at (cheshire.core/parse-string (slurp (first *command-line-args*)) true)))' "${state}/ai-ops/subscription/claude.json")"
+  finished="$(stat -c %Y "$(find "${state}/runs/BOXP-149" -name events.jsonl -print -quit)")"
+  (( observed <= finished - 2 )) || fail "subscription observation was delayed until process exit"
+}
+
+test_claude_pump_drains_when_events_log_cannot_open() {
+  local tmp
+  tmp="$(mktemp -d)"
+  mkdir -p "${tmp}/events.jsonl"
+  TEST_RUNNER="${RUNNER}" TEST_STATE="${tmp}/state" TEST_LOG_PATH="${tmp}/events.jsonl" bb -e '
+    (require (quote [clojure.java.io :as io]) (quote [clojure.string :as str]) (quote [cheshire.core :as json]))
+    (load-file (str (.getParent (io/file (System/getenv "TEST_RUNNER"))) "/ai_subscription_usage.bb"))
+    (def subscription-module-loaded? (atom true))
+    (defn root [] (System/getenv "TEST_STATE"))
+    (def warnings (atom []))
+    (defn log! [message] (swap! warnings conj message))
+    (defn sanitize-claude-line [line] line)
+    (with-open [reader (java.io.PushbackReader. (io/reader (System/getenv "TEST_RUNNER")))]
+      (loop []
+        (let [form (read {:eof nil} reader)]
+          (when form
+            (when (and (seq? form) (= (first form) (quote defn)) (contains? (quote #{pump-claude-stream! await-claude-pump!}) (second form)))
+              (eval form))
+            (when-not (resolve (quote await-claude-pump!)) (recur))))))
+    (let [input (java.io.ByteArrayInputStream. (.getBytes (str (apply str (repeat 10000 "{\"type\":\"assistant\"}\n")) "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}\n" "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: done\"}\n") "UTF-8"))]
+      (assert (= "TASK_BOARD_RESULT: done" (:result (pump-claude-stream! input (System/getenv "TEST_LOG_PATH")))))
+      (assert (zero? (.available input)))
+      (assert (= "allowed" (get-in (ai-subscription-usage/snapshot (str (root) "/ai-ops/subscription/claude.json")) [:data :rate_limit_info :status])))
+      (assert (= 1 (count (filter #(str/includes? % "claude events log open failed") @warnings)))))
+    ;; The caller may stop waiting for the drain (deref timeout): the shared
+    ;; summary atom must already hold the result while the stream is still open.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))]
+      (.write out (.getBytes "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"late\"}]}}\n{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: blocked\"}\n" "UTF-8"))
+      (.flush out)
+      (loop [n 0]
+        (when (and (not= "TASK_BOARD_RESULT: blocked" (:result @summary)) (< n 200))
+          (Thread/sleep 25)
+          (recur (inc n))))
+      (assert (= "TASK_BOARD_RESULT: blocked" (:result @summary)))
+      (assert (= "late" (get-in @summary [:assistant :message :content 0 :text])))
+      (assert (not (realized? pump)))
+      (.close out)
+      (assert (= "TASK_BOARD_RESULT: blocked" (:result (deref pump 5000 nil)))))
+    ;; await-claude-pump!: when the drain outlives the grace period, keep
+    ;; polling until the late result line arrives instead of reading the atom once.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))
+          _ (.write out (.getBytes "{\"type\":\"assistant\"}\n" "UTF-8"))
+          _ (.flush out)
+          writer (future (Thread/sleep 700)
+                         (.write out (.getBytes "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: review\"}\n" "UTF-8"))
+                         (.flush out))
+          started (System/currentTimeMillis)
+          awaited (await-claude-pump! pump summary 100 10000)]
+      (assert (= "TASK_BOARD_RESULT: review" (:result awaited)))
+      (assert (< (- (System/currentTimeMillis) started) 9000))
+      (assert (not (realized? pump)))
+      (deref writer 5000 nil)
+      (.close out)
+      (deref pump 5000 nil)
+      (assert (some #(str/includes? % "final result received") @warnings)))
+    ;; ...and gives up at max-ms when no result ever arrives, returning what it has.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))
+          _ (.write out (.getBytes "{\"type\":\"assistant\"}\n" "UTF-8"))
+          _ (.flush out)
+          started (System/currentTimeMillis)
+          awaited (await-claude-pump! pump summary 100 1200)]
+      (assert (nil? (:result awaited)))
+      (assert (:json? awaited))
+      (assert (>= (- (System/currentTimeMillis) started) 1000))
+      (.close out)
+      (deref pump 5000 nil)
+      (assert (some #(str/includes? % "no final result received") @warnings)))'
+}
+
+test_claude_result_survives_events_log_failure() {
+  local tmp vault state bin last_message RUNNER
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${tmp}/runner"
+  cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
+  RUNNER="${tmp}/runner/task_board_runner.bb"
+  # Make the runner create a directory at the run's events.jsonl path so every
+  # log open/write fails while the agent is still streaming its result.
+  sed -i '/^(defn run-agent!/,/^    (fs\/create-dirs dir)$/ s|^    (fs/create-dirs dir)$|    (fs/create-dirs dir)\n    (fs/create-dirs stdout-path)|' "${RUNNER}"
+  grep -q '(fs/create-dirs stdout-path)' "${RUNNER}" || fail "runner patch for log failure did not apply"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-144|BOXP-144: log failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-144 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-log-failure.out
+  last_message="$(find "${state}/runs/BOXP-144" -name last-message.md -print -quit)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when events log cannot be written"
+  assert_file_contains "${vault}/Tickets/BOXP-144.md" '^status: done$'
+  [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
+}
+
+test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable() {
+  local tmp vault state bin last_message RUNNER
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${tmp}/runner"
+  cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
+  RUNNER="${tmp}/runner/task_board_runner.bb"
+  sed -i '/^(defn run-agent!/,/^    (fs\/create-dirs dir)$/ s|^    (fs/create-dirs dir)$|    (fs/create-dirs dir)\n    (fs/create-dirs stdout-path)|' "${RUNNER}"
+  grep -q '(fs/create-dirs stdout-path)' "${RUNNER}" || fail "runner patch for log failure did not apply"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-145|BOXP-145: streaming progress]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-145 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true CLAUDE_FAKE_STREAM_PROGRESS_COUNT=6 CLAUDE_FAKE_STREAM_PROGRESS_INTERVAL=0.5 CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 run_tick "${vault}" "${state}" env >/tmp/task-board-stream-progress-log-failure.out
+  last_message="$(find "${state}/runs/BOXP-145" -name last-message.md -print -quit)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when streaming with an unwritable log"
+  assert_file_contains "${vault}/Tickets/BOXP-145.md" '^status: done$'
+  assert_run_summary_contains "${state}" BOXP-145 ':idle-timeout\? false'
+  [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
+}
+
+test_claude_events_log_omits_tool_payloads() {
+  local tmp vault state bin events last_message
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-148|BOXP-148: stream privacy]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-148 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-stream-privacy.out
+  events="$(find "${state}/runs/BOXP-148" -name events.jsonl -print -quit)"
+  last_message="$(find "${state}/runs/BOXP-148" -name last-message.md -print -quit)"
+  assert_file_not_contains "${events}" 'SECRET_TOOL_INPUT|SECRET_TOOL_OUTPUT|SECRET_RATE_LIMIT|SECRET_WINDOW|SECRET_WS_INPUT|SECRET_TEXT_EXTRA|"secret"|secret-uuid|session_id|"uuid"'
+  assert_file_contains "${events}" '"status":"allowed"'
+  assert_file_contains "${events}" '"utilization":0.2'
+  assert_file_contains "${events}" '"name":"Bash"'
+  assert_file_contains "${events}" 'working'
+  assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
+  [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+}
+
+test_claude_run_survives_subscription_snapshot_failure() {
+  local tmp vault state bin events last_message
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${state}/ai-ops"
+  # A regular file where the snapshot directory should be makes every
+  # record-claude-rate-limit! call throw; the run itself must still finish.
+  : >"${state}/ai-ops/subscription"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-145|BOXP-145: snapshot failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-145 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-snapshot-failure.out
+  events="$(find "${state}/runs/BOXP-145" -name events.jsonl -print -quit)"
+  last_message="$(find "${state}/runs/BOXP-145" -name last-message.md -print -quit)"
+  assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "run must finish when the subscription snapshot cannot be written"
+  assert_file_contains "${vault}/Tickets/BOXP-145.md" '^status: done$'
+  [[ -f "${state}/ai-ops/subscription" ]] || fail "placeholder must stay a file"
+}
+
+test_subscription_metrics_disabled_removes_prom() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-146|BOXP-146: metrics]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-146 in-progress codex
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >/tmp/task-board-metrics-on.out
+  [[ -f "${state}/ai-ops/subscription-usage.prom" ]] || fail "missing subscription metrics"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-147|BOXP-147: metrics disabled]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-147 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_SUBSCRIPTION_METRICS=false run_tick "${vault}" "${state}" env >/tmp/task-board-metrics-off.out
+  [[ ! -e "${state}/ai-ops/subscription-usage.prom" ]] || fail "subscription metrics still present"
+}
+
 test_fable_assignee_runs_via_claude() {
   local tmp vault state bin prompt_log args_log summary last_message events
   tmp="$(mktemp -d)"
@@ -359,7 +562,7 @@ test_fable_assignee_runs_via_claude() {
     CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-fable.out
 
-  assert_file_contains "${args_log}" '.*--print --output-format text.*--agent fable'
+  assert_file_contains "${args_log}" '.*--print --output-format stream-json --verbose.*--agent fable'
   assert_file_not_contains "${args_log}" '--model'
   assert_file_not_contains "${args_log}" 'BOXP-150'
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: fable$'
@@ -3293,7 +3496,8 @@ test_ai_ops_ledger_disabled_by_env() {
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_AI_OPS_LEDGER_ENABLED=false run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-off.out
 
   assert_file_contains "${vault}/Tickets/BOXP-417.md" '^status: done$'
-  [[ ! -e "${state}/ai-ops" ]] || fail "ledger must not be written when disabled"
+  [[ ! -e "${state}/ai-ops/ledger" ]] || fail "ledger must not be written when disabled"
+  [[ -f "${state}/ai-ops/subscription-usage.prom" ]] || fail "subscription metrics must remain enabled"
 }
 
 test_run_finished_records_outbox_event() {
@@ -3514,6 +3718,13 @@ test_assignment_revisions
 test_assignment_superseded
 test_assignment_repairs
 test_delegation_gate_end_to_end
+test_fable_stream_json
+test_claude_pump_drains_when_events_log_cannot_open
+test_claude_result_survives_events_log_failure
+test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable
+test_claude_events_log_omits_tool_payloads
+test_claude_run_survives_subscription_snapshot_failure
+test_subscription_metrics_disabled_removes_prom
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
 test_fable_model_environment_is_legacy_only
