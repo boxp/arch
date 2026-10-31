@@ -1940,15 +1940,25 @@
       (log! (str "failed to send " signal " to idle agent process group: "
                  (str/trim (:err result)))))))
 
-(defn await-agent! [proc progress-paths idle-timeout-seconds]
+(defn await-agent!
+  "Poll until the agent exits or stays idle for `idle-timeout-seconds`.
+  Progress is the newest mtime of `progress-paths`, combined with
+  `progress-millis-fn` (optional, returns millis or nil): the Claude stdout
+  pump passes its last line receive time so an agent that keeps streaming
+  still counts as active when events.jsonl cannot be written."
+  ([proc progress-paths idle-timeout-seconds]
+   (await-agent! proc progress-paths idle-timeout-seconds nil))
+  ([proc progress-paths idle-timeout-seconds progress-millis-fn]
   (let [process (:proc proc)
-        started-at (System/currentTimeMillis)]
-    (loop [last-progress-at (max started-at (latest-modification-millis progress-paths))]
+        started-at (System/currentTimeMillis)
+        progress-millis (fn [] (max (latest-modification-millis progress-paths)
+                                    (or (when progress-millis-fn (progress-millis-fn)) 0)))]
+    (loop [last-progress-at (max started-at (progress-millis))]
       (if-not (.isAlive process)
         {:proc @proc :idle-timeout? false :shutdown? @shutdown-requested?}
         (do
           (Thread/sleep 1000)
-          (let [observed-at (latest-modification-millis progress-paths)
+          (let [observed-at (progress-millis)
                 last-progress-at (max last-progress-at observed-at)
                 idle-millis (- (System/currentTimeMillis) last-progress-at)]
             (cond
@@ -1972,7 +1982,7 @@
                   {:proc @proc :idle-timeout? true}))
 
               :else
-              (recur last-progress-at))))))))
+              (recur last-progress-at)))))))))
 
 (defn no-ci-repos []
   ;; Explicit opt-in list of repos (owner/name) known to have no PR CI workflows.
@@ -2441,6 +2451,7 @@
               (let [received-at (System/currentTimeMillis)
                     event (when (str/starts-with? (str/triml line) "{")
                             (try (json/parse-string line true) (catch Exception _ nil)))]
+                (swap! summary assoc :received-at-ms received-at)
                 (when (map? event)
                   (swap! summary #(cond-> (assoc % :json? true)
                                     (and (= "result" (:type event)) (string? (:result event))) (assoc :result (:result event))
@@ -2545,7 +2556,9 @@
           tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path pump-summary-atom)))
           _ (register-agent-process! run (:proc proc))
           {:keys [proc idle-timeout? shutdown?]} (try
-                                                   (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
+                                                   (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds
+                                                                 (when (claude-assignee? agent)
+                                                                   (fn [] (:received-at-ms @pump-summary-atom))))
                                                    (finally
                                                      (unregister-agent-process! run)
                                                      (when tail (deref tail 10000 nil))))

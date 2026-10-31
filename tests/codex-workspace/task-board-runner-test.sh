@@ -144,6 +144,12 @@ if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
 fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
 if [[ "${CLAUDE_FAKE_STREAM_JSON:-false}" == true ]]; then
+  if [[ -n "${CLAUDE_FAKE_STREAM_PROGRESS_COUNT:-}" ]]; then
+    for _ in $(seq 1 "${CLAUDE_FAKE_STREAM_PROGRESS_COUNT}"); do
+      sleep "${CLAUDE_FAKE_STREAM_PROGRESS_INTERVAL:-0}"
+      printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"streaming progress"}]}}'
+    done
+  fi
   printf '%s\n' '  {"type":"rate_limit_event","rate_limit_info":{"status":"allowed","secretField":"SECRET_RATE_LIMIT","unifiedWindows":{"five_hour":{"utilization":0.2,"note":"SECRET_WINDOW"}}},"session_id":"secret","uuid":"secret-uuid"}'
   sleep "${CLAUDE_FAKE_STREAM_DELAY:-0}"
   printf '%s\n' '   {"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-0","name":"Bash","input":{"command":"SECRET_WS_INPUT"}}]}}'
@@ -460,6 +466,25 @@ test_claude_result_survives_events_log_failure() {
   last_message="$(find "${state}/runs/BOXP-144" -name last-message.md -print -quit)"
   [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when events log cannot be written"
   assert_file_contains "${vault}/Tickets/BOXP-144.md" '^status: done$'
+  [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
+}
+
+test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable() {
+  local tmp vault state bin last_message RUNNER
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${tmp}/runner"
+  cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
+  RUNNER="${tmp}/runner/task_board_runner.bb"
+  sed -i '/^(defn run-agent!/,/^    (fs\/create-dirs dir)$/ s|^    (fs/create-dirs dir)$|    (fs/create-dirs dir)\n    (fs/create-dirs stdout-path)|' "${RUNNER}"
+  grep -q '(fs/create-dirs stdout-path)' "${RUNNER}" || fail "runner patch for log failure did not apply"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-145|BOXP-145: streaming progress]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-145 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true CLAUDE_FAKE_STREAM_PROGRESS_COUNT=6 CLAUDE_FAKE_STREAM_PROGRESS_INTERVAL=0.5 CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 run_tick "${vault}" "${state}" env >/tmp/task-board-stream-progress-log-failure.out
+  last_message="$(find "${state}/runs/BOXP-145" -name last-message.md -print -quit)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when streaming with an unwritable log"
+  assert_file_contains "${vault}/Tickets/BOXP-145.md" '^status: done$'
+  assert_run_summary_contains "${state}" BOXP-145 ':idle-timeout\? false'
   [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
 }
 
@@ -3696,6 +3721,7 @@ test_delegation_gate_end_to_end
 test_fable_stream_json
 test_claude_pump_drains_when_events_log_cannot_open
 test_claude_result_survives_events_log_failure
+test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable
 test_claude_events_log_omits_tool_payloads
 test_claude_run_survives_subscription_snapshot_failure
 test_subscription_metrics_disabled_removes_prom

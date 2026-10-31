@@ -78,3 +78,8 @@ Claude Code 2.1.312 の公式 stream-json `rate_limit_event` は、モデル専�
 - subscription metrics の無効化時は既存の Prometheus ファイルを削除する。
 - Claude の stream-json 行は先頭の空白を除いてから JSON として解釈し、空白付きの event も同じ許可リストで絞る。text ブロックは `type` / `text` のみ残す。JSON object でない行は stream-json を話さない agent の素のテキスト出力なので、last-message.md の fallback のためそのまま残す（stream-json の event は常に JSON object なので、この経路に秘匿情報は乗らない）。
 - 採用しなかった指摘: Codex rollout の event timestamp が解釈できない場合に file の mtime で代用する点は、公式 rollout が常に timestamp を持つため欠損時の縮退として維持する。`enum-value` の文字種・長さ検証は公式出力の enum field のみに適用しており、既知値への限定はしない（新しい enum 値が出た際に `other` へ潰れて状態が読めなくなるのを避ける）。
+
+### Claude のアイドル判定
+
+- イベントログに書き込めない場合、stdout を受信し続けてもアイドルタイムアウトする指摘に対応する。pump の行受信時刻を `await-agent!` の進捗判定に加え、ログ書き込みに失敗しても進捗を認識する。
+- ログパスを塞いだ状態でタイムアウト時間を超えて stream を送る回帰テストを追加する。
