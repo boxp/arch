@@ -3610,12 +3610,17 @@
                  status (or (:status fm) status)
                  assignee (or (:assignee fm) assignee)
                  still-candidate? (boolean (and fm (candidate-action {:status status :lane lane} assignee)))]
-             (when-let [hold-ms (System/getenv "CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_AFTER_READ_MILLIS")]
-               ;; Test hook: widen the window between the budget re-read and
-               ;; the Blocked transition while the budget lock is held, so a
+             (when-let [max-ms (System/getenv "CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_AFTER_READ_MILLIS")]
+               ;; Test hook: hold the window between the budget re-read and
+               ;; the Blocked transition, with the budget lock held, until the
+               ;; test writes the release file (or max-ms elapse), so a
                ;; concurrent grant provably waits for the transition.
-               (spit (str (fs/path (root) "test-gate-budget-stop-holding")) (now-str))
-               (Thread/sleep (Long/parseLong hold-ms)))
+               (let [release (fs/path (root) "test-gate-budget-stop-release")
+                     deadline (+ (System/currentTimeMillis) (Long/parseLong max-ms))]
+                 (spit (str (fs/path (root) "test-gate-budget-stop-holding")) (now-str))
+                 (while (and (not (fs/exists? release))
+                             (< (System/currentTimeMillis) deadline))
+                   (Thread/sleep 50))))
              ;; Re-check under both locks: a grant may have landed since the
              ;; pre-check, and none can land between here and the transition.
              (when (and still-candidate? (some :exhausted? statuses))

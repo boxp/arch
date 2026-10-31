@@ -58,7 +58,7 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 - `test_gate_failure_budget_grant_resume_and_no_reset_on_success`: 不正 grant 拒否、ticket grant のみでは PR 予算で止まる、両方 grant で 1 run 再開、成功で減らない、付与分消費後に再停止
 - `test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned`: 上限到達で Blocked + boxp になった ticket の担当だけを agent に戻した場合、run を開始せず Blocked のまま日本語停止報告（action=blocked-retry）を 1 回だけ書き担当を boxp へ戻す
 - `test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks`: 担当だけ戻された Blocked カードを 2 つの tick が同時に処理しても（test hook で pre-check と lock の間を広げる）、停止報告は 1 回だけで担当は boxp に戻る
-- `test_gate_failure_budget_stop_is_serialized_with_grant`: 停止処理が予算を再読込して Blocked 遷移する直前（test hook で予算 lock 保持中に待機）に Owner が grant を発行しても、grant は遷移完了まで待たされ（grant 復帰時点でカードは Blocked + boxp、停止報告 1 回、grant 記録あり）、再読込前に両スコープへ grant された場合は停止せず 1 run だけ再開する。lock を外した runner ではこの fixture が失敗することを確認済み
+- `test_gate_failure_budget_stop_is_serialized_with_grant`: 停止処理が予算を再読込して Blocked 遷移する直前（test hook で予算 lock 保持中に release file を待つ）に Owner が grant を発行しても、grant プロセスが lock 待ちに入った後も予算ファイルに grant は記録されず、release 後に遷移完了してから grant が着地する（grant 復帰時点でカードは Blocked + boxp、停止報告 1 回、grant 記録あり）。再読込前に両スコープへ grant された場合は停止せず 1 run だけ再開する。時間待ちではなく release file と /proc の状態で同期するため起動時間に依存しない。予算 lock を外した runner ではこの fixture が「保持中に grant が記録された」で失敗することを確認済み
 - `test_gate_failure_budget_stop_completes_after_interrupted_transition`: 上限到達の記録後に Blocked 遷移が失敗して In Progress に戻った ticket を、次の tick が run を開始せず Blocked + 日本語報告へ停止し、以降の tick で Notes を繰り返さず、両スコープの grant 後のみ 1 run 再開
 - `test_gate_failure_budget_stricter_short_term_limit_still_applies`: より厳しい既存短期上限が先に効く
 - `test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized`: 残り 1 回の PR を参照する 2 ticket を別プロセスで同時起動しても run は 1 つだけ、PR は 2/2 で止まり、以後どちらも開始しない

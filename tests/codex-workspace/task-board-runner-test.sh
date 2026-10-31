@@ -3682,14 +3682,30 @@ test_gate_failure_budget_stop_is_serialized_with_grant() {
   # wait for the transition instead of landing between the re-read and the
   # Blocked move; otherwise the card would be stopped as "exhausted" while
   # the budget file already shows remaining budget.
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_AFTER_READ_MILLIS=3000 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-469 >/dev/null &
+  # The hold lasts until the release file is written (30s cap), so the
+  # check below does not depend on process start-up time.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_AFTER_READ_MILLIS=30000 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-469 >/dev/null &
   local tick_pid=$!
-  for i in $(seq 1 100); do
+  for i in $(seq 1 300); do
     [[ -f "${state}/test-gate-budget-stop-holding" ]] && break
     sleep 0.1
   done
   [[ -f "${state}/test-gate-budget-stop-holding" ]] || fail "the stop never reached the hold window"
-  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-469 --amount 1 --by boxp >/dev/null
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-469 --amount 1 --by boxp >/dev/null &
+  local grant_pid=$!
+  # Wait until the grant process has opened the budget lock file (it is then
+  # inside the lock attempt) or has already finished (zombie / gone).  While
+  # the stop still holds the lock, the grant must not have been recorded.
+  for i in $(seq 1 300); do
+    if ! grep -q 'State:[[:space:]]*[RSD]' "/proc/${grant_pid}/status" 2>/dev/null; then break; fi
+    if ls -l "/proc/${grant_pid}/fd" 2>/dev/null | grep -q 'gate-failure-budget.lock'; then break; fi
+    sleep 0.1
+  done
+  sleep 0.5
+  assert_file_not_contains "${state}/gate-failure-budget.edn" ':scope :ticket, :key "BOXP-469", :amount 1'
+  assert_file_not_contains "${vault}/Tickets/BOXP-469.md" 'gate-budget-stop-'
+  : > "${state}/test-gate-budget-stop-release"
+  wait "${grant_pid}" || fail "grant must succeed after the stop"
   # The grant returned: the stop must already have completed (the grant was
   # serialized behind the transition), and the card must not still be in the
   # pre-stop state with the grant recorded underneath it.
