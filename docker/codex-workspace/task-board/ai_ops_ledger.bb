@@ -549,6 +549,9 @@
 
 (def sli-script (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_sli.bb")))
 (def sli-limit (* 256 1024))
+;; correction-rules/v1 (内部 gate 再作業と Owner 可視是正の分離) は runs/ の summary.edn だけから集計する。
+;; SLI v0 の export が成功した後に連結し、v1 側の失敗は ai_ops_v1_export_ok=0 として出す (v0 の出力は止めない)。
+(def insight-script (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_insight.bb")))
 (defn sli-status-path [root] (fs/path (ai-ops-dir root) "sli-export-status.edn"))
 (defn sli-path [root] (fs/path (ai-ops-dir root) "sli.prom"))
 (defn sli-interval [] (env-long "CODEX_TASK_BOARD_AI_OPS_SLI_INTERVAL_SECONDS" 900))
@@ -631,26 +634,49 @@
     (when-let [_lock (try (.tryLock channel) (catch Exception _ nil))]
       (f))))
 
+(defn- utf8-length [^String s] (alength (.getBytes s "UTF-8")))
+(defn v1-export-text
+  "Run the v1 export into `tmp` and return the text to append to sli.prom: the v1
+  series plus `ai_ops_v1_export_ok`, which is 0 when the export failed, timed out,
+  produced nothing or would push sli.prom past `budget` bytes. The limit is checked
+  on the exact bytes that will be appended (body + the export_ok lines), so a v1
+  failure near the limit never pushes the v0 output over sli-limit. When even the
+  export_ok lines do not fit, nothing is appended and the v0 output stands alone."
+  [root tmp deadline budget]
+  (let [tail (fn [ok?] (str "# HELP ai_ops_v1_export_ok correction-rules/v1 export succeeded in the last SLI refresh (0 = v1 series are stale or absent).\n"
+                            "# TYPE ai_ops_v1_export_ok gauge\n"
+                            "ai_ops_v1_export_ok " (if ok? 1 0) "\n"))
+        body (try (when (and (run-sli-command! ["bb" insight-script "prom" (str root)] tmp deadline)
+                             (pos? (.length tmp)))
+                    (let [s (slurp tmp)] (if (str/ends-with? s "\n") s (str s "\n"))))
+                  (catch Exception _ nil))
+        ok-text (when body (str body (tail true)))
+        fail-text (tail false)]
+    (cond (and ok-text (<= (utf8-length ok-text) budget)) ok-text
+          (<= (utf8-length fail-text) budget) fail-text
+          :else "")))
 (defn- refresh-sli-locked! [root vault]
   (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
       (when (and (enabled?) (pos? interval) (not (str/blank? vault))
                  (>= (- now (get status :last-attempt 0)) interval))
-        (let [attempt (assoc status :last-attempt now) tmp (atom nil) output (atom nil)
+        (let [attempt (assoc status :last-attempt now) tmp (atom nil) output (atom nil) v1 (atom nil)
               deadline (+ (System/currentTimeMillis) (* 1000 (max 0 (sli-timeout))))]
           (try
             (atomic-spit! (sli-status-path root) (pr-str attempt))
             (reset! tmp (java.io.File/createTempFile "ai-ops-sli-" ".jsonl"))
             (reset! output (java.io.File/createTempFile "ai-ops-sli-" ".prom"))
+            (reset! v1 (java.io.File/createTempFile "ai-ops-v1-" ".prom"))
             (if (and (run-sli-command! ["bb" sli-script "extract" (str root) (str vault)] @tmp deadline)
                      (append-ledger-events! root @tmp)
                      (run-sli-command! ["bb" sli-script "prom" (str @tmp)] @output deadline)
-                     (pos? (.length @output)) (< (.length @output) sli-limit))
-              (do (atomic-spit! (sli-path root) (slurp @output))
-                  (atomic-spit! (sli-status-path root) (pr-str (assoc attempt :last-success now))) true)
+                     (pos? (.length @output)) (<= (.length @output) sli-limit))
+              (let [v1-text (v1-export-text root @v1 deadline (- sli-limit (.length @output)))]
+                (atomic-spit! (sli-path root) (str (slurp @output) v1-text))
+                (atomic-spit! (sli-status-path root) (pr-str (assoc attempt :last-success now))) true)
               (do (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) false))
             (catch Exception _
               (try (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) (catch Exception _)) false)
-            (finally (when @tmp (fs/delete-if-exists @tmp)) (when @output (fs/delete-if-exists @output))))))))
+            (finally (doseq [f [@tmp @output @v1]] (when f (fs/delete-if-exists f)))))))))
 
 (defn refresh-sli! [root vault]
   (try
