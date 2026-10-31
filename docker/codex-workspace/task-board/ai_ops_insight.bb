@@ -88,11 +88,20 @@
 
 (defn parse-inst [s] (try (java.time.Instant/parse s) (catch Exception _ nil)))
 
+;; runner は中断 (interrupted) を外部から記録するため top-level の :action を書かず、中断時の lock (:previous-lock) に
+;; :action を残す。集計はこれを正として補完する (推測ではなく runner が書いた値)。
+(defn summary-action [s] (or (:action s) (get-in s [:previous-lock :action])))
+
 (defn valid-summary?
   "summary.edn の map s が dir (runs/<ticket>/<run-id>) の run として集計可能か。"
   [s dir]
   (and (map? s)
        (some? (:status s))
+       ;; :action は effective-result (結果マーカーなし → Review/Ready) と遷移分類 (review-fix 等) の根拠なので必須。
+       ;; 欠落すると groom の Ready を Review と補完したり review-fix の是正を落とすため unreadable として未評価にする
+       (some? (summary-action s))
+       (let [v (summary-action s)] (or (keyword? v) (string? v)))
+       (contains? (:action summary-enums) (kw (summary-action s)))
        (every? #(let [v (get s %)] (or (nil? v) (keyword? v) (string? v))) [:status :action :result :agent :blocker-category])
        (every? #(let [v (get s %)] (or (nil? v) (string? v))) [:started-at :finished-at :updated-at])
        (every? #(let [v (get s %)] (or (nil? v) (some? (parse-inst v)))) [:started-at :finished-at :updated-at])
@@ -123,8 +132,8 @@
     (let [s (edn/read-string {:default (fn [_ v] v)} (slurp (str f)))]
       (when (valid-summary? s (fs/parent f))
         {:run-id (str (fs/file-name (fs/parent f)))
-         :status (kw (:status s)) :action (kw (:action s))
-         :result (effective-result (kw (:status s)) (kw (:action s)) (kw (:result s)))
+         :status (kw (:status s)) :action (kw (summary-action s))
+         :result (effective-result (kw (:status s)) (kw (summary-action s)) (kw (:result s)))
          :blocker (kw (:blocker-category s)) :agent (kw (:agent s))
          :started-at (:started-at s) :finished-at (:finished-at s)
          :gate (kw (get-in s [:review-gate :gate]))

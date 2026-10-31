@@ -201,6 +201,13 @@
         :failed "blocked"
         nil)))
 
+;; runner は中断 (interrupted) を外部から記録するため top-level の :action を書かず、中断時の lock (:previous-lock) に
+;; :action を残す。集計はこれを正として補完する (推測ではなく runner が書いた値)。
+(defn resolve-summary-action [s]
+  (if (and (map? s) (nil? (:action s)) (some? (get-in s [:previous-lock :action])))
+    (assoc s :action (get-in s [:previous-lock :action]))
+    s))
+
 (defn summary->events [ticket s]
   (let [run-id (:run-id s)
         started (or (:started-at s) (run-id->instant run-id))
@@ -291,10 +298,13 @@
                        (map #(fs/path % "summary.edn")))
         ;; 読めない/必須field (ticket・run-id がディレクトリと一致、status) を欠く summary.edn は黙って捨てず
         ;; run.unreadable として ディレクトリの ticket に紐付け、その task の SLI を未評価にする
-        valid-summary? (fn [f] (let [s (read-edn f) d (fs/parent f)]
+        valid-summary? (fn [f] (let [s (resolve-summary-action (read-edn f)) d (fs/parent f)]
                                  ;; summary->events/derive-corrections が name/str を呼ぶ field の型も検証する (不正型は欠落扱い)
                                  (and (map? s) (some? (:status s))
-                                      (every? #(let [v (get s %)] (or (keyword? v) (string? v))) [:status])
+                                      ;; :action は effective-result (マーカーなし終了の Review/Ready 既定) と是正導出 (review-fix) の根拠なので必須
+                                      ;; (中断 run は runner が :previous-lock に書いた :action を resolve-summary-action で補完済み)
+                                      (some? (:action s))
+                                      (every? #(let [v (get s %)] (or (keyword? v) (string? v))) [:status :action])
                                       (every? #(let [v (get s %)] (or (nil? v) (keyword? v) (string? v))) [:action :agent :result :blocker-category])
                                       (every? #(let [v (get s %)] (or (nil? v) (string? v))) [:started-at :finished-at :updated-at])
                                       ;; 時刻は解釈可能であること (不正時刻は privacy gate で redact され是正の前後を誤判定するため欠落入力として扱う)
@@ -314,7 +324,7 @@
                         (map (fn [f] (let [d (fs/parent f)] {:ticket (str (fs/file-name (fs/parent d))) :run-id (str (fs/file-name d))})))
                         (group-by :ticket))
         runs (->> summaries
-                  (keep (fn [f] (when-let [s (and (valid-summary? f) (read-edn f))]
+                  (keep (fn [f] (when-let [s (and (valid-summary? f) (resolve-summary-action (read-edn f)))]
                                   ;; :status/:action は文字列形式も許可するため keyword に正規化してから比較する
                                   (let [s (cond-> (update s :status keyword) (:action s) (update :action keyword))
                                         d (fs/path (fs/parent f) "delegation.json")]

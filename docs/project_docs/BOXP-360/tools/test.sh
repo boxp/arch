@@ -23,7 +23,7 @@ closed: 2026-10-21
 ---
 EOF
 cat >"$tmp/root/runs/BOXP-999/20261020T010000Z-abcd/summary.edn" <<'EOF'
-{:ticket "BOXP-999" :run-id "20261020T010000Z-abcd" :agent "sk-abcdef" :status :succeeded :result "review" :blocker-category "Bearer fake-secret" :finished-at "2026-10-20T02:00:00Z"}
+{:ticket "BOXP-999" :run-id "20261020T010000Z-abcd" :agent "sk-abcdef" :status :succeeded :action :implement :result "review" :blocker-category "Bearer fake-secret" :finished-at "2026-10-20T02:00:00Z"}
 EOF
 bb ai_ops_sli.bb extract "$tmp/root" "$tmp/vault" >"$tmp/extract.jsonl" 2>"$tmp/extract.stats"
 bb ai_ops_sli.bb aggregate "$tmp/extract.jsonl" >"$tmp/extract.edn"
@@ -642,7 +642,7 @@ bb -e '
 tmp_inc=$(mktemp -d)
 mkdir -p "$tmp_inc/root/runs/BOXP-74/20261020T010000Z-aaaa" "$tmp_inc/root/runs/BOXP-74/20261020T030000Z-bbbb" "$tmp_inc/root/runs/BOXP-74/20261020T040000Z-cccc" "$tmp_inc/root/outbox" "$tmp_inc/vault/Tickets"
 printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_inc/vault/Tickets/BOXP-74.md"
-echo '{:ticket "BOXP-74" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_inc/root/runs/BOXP-74/20261020T010000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-74" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :action :implement :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_inc/root/runs/BOXP-74/20261020T010000Z-aaaa/summary.edn"
 echo '{}' > "$tmp_inc/root/runs/BOXP-74/20261020T030000Z-bbbb/summary.edn"
 echo '{:ticket "BOXP-99" :run-id "20261020T040000Z-cccc" :status :succeeded}' > "$tmp_inc/root/runs/BOXP-74/20261020T040000Z-cccc/summary.edn"
 bb ai_ops_sli.bb extract "$tmp_inc/root" "$tmp_inc/vault" > "$tmp_inc/x.jsonl" 2>/dev/null
@@ -659,7 +659,7 @@ rm -rf "$tmp_inc"
 tmp_bad=$(mktemp -d)
 mkdir -p "$tmp_bad/root/runs/BOXP-72/20261020T010000Z-aaaa" "$tmp_bad/root/runs/BOXP-72/20261020T030000Z-bbbb" "$tmp_bad/root/outbox" "$tmp_bad/vault/Tickets"
 printf -- '---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n' > "$tmp_bad/vault/Tickets/BOXP-72.md"
-echo '{:ticket "BOXP-72" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_bad/root/runs/BOXP-72/20261020T010000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-72" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :action :implement :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_bad/root/runs/BOXP-72/20261020T010000Z-aaaa/summary.edn"
 echo '{:ticket "BOXP-72" :run-id ' > "$tmp_bad/root/runs/BOXP-72/20261020T030000Z-bbbb/summary.edn"
 echo '{:ticket-id ' > "$tmp_bad/root/outbox/broken.edn"
 echo '{}' > "$tmp_bad/root/outbox/incomplete.edn"
@@ -970,7 +970,7 @@ tmp_cxl=$(mktemp -d)
 mkdir -p "$tmp_cxl/root/runs/BOXP-110/20261020T010000Z-aaaa" "$tmp_cxl/root/outbox" "$tmp_cxl/vault/Tickets"
 printf -- '---\ncreated: 2026-10-20\nstatus: cancelled\nclosed: 2026-10-22\n---\n' > "$tmp_cxl/vault/Tickets/BOXP-110.md"
 printf -- '---\ncreated: 2026-10-20\nstatus: cancelled\n---\n' > "$tmp_cxl/vault/Tickets/BOXP-111.md"
-echo '{:ticket "BOXP-110" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_cxl/root/runs/BOXP-110/20261020T010000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-110" :run-id "20261020T010000Z-aaaa" :agent "codex" :status :succeeded :action :implement :result "review" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_cxl/root/runs/BOXP-110/20261020T010000Z-aaaa/summary.edn"
 bb ai_ops_sli.bb extract "$tmp_cxl/root" "$tmp_cxl/vault" > "$tmp_cxl/x.jsonl" 2>/dev/null
 bb -e "
 (load-file \"ai_ops_sli.bb\")
@@ -1715,3 +1715,50 @@ bb -e "
   (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :denominator])) (pr-str (get-in r [:sli :agent-system-correction-task-ratio])))
   (println \"ok   結果マーカーなしの正常終了を runner の既定 (Review/Ready) で補完し、Review 到達と再開を落とさない\"))"
 rm -rf "$tmp_nil"
+
+# codex-review 指摘: :action 欠落の run は effective-result の既定 (Review/Ready) も review-fix の是正導出もできない。
+# 読めない run (run.unreadable) として該当 task を未評価にし、Review 到達や是正を確定値に入れない。
+tmp_noact=$(mktemp -d)
+mkdir -p "$tmp_noact/root/runs/BOXP-97/20261020T000000Z-aaaa" "$tmp_noact/root/runs/BOXP-97/20261020T010000Z-bbbb" "$tmp_noact/root/outbox" "$tmp_noact/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: review\n---\n' > "$tmp_noact/vault/Tickets/BOXP-97.md"
+echo '{:ticket "BOXP-97" :run-id "20261020T000000Z-aaaa" :agent "codex" :status :succeeded :result nil :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T00:30:00Z"}' > "$tmp_noact/root/runs/BOXP-97/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-97" :run-id "20261020T010000Z-bbbb" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T01:00:00Z" :finished-at "2026-10-20T02:00:00Z"}' > "$tmp_noact/root/runs/BOXP-97/20261020T010000Z-bbbb/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_noact/root" "$tmp_noact/vault" > "$tmp_noact/x.jsonl"
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [evs (map #(cheshire.core/parse-string % true) (line-seq (java.io.BufferedReader. (java.io.StringReader. (slurp \"$tmp_noact/x.jsonl\")))))
+      types (set (map :event_type evs))
+      r (ai-ops-sli/aggregate \"$tmp_noact/x.jsonl\")
+      ct (get-in r [:sli :agent-system-correction-task-ratio])]
+  (assert (contains? types \"run.unreadable\") (pr-str types))
+  (assert (not-any? #(= \"BOXP-97/20261020T000000Z-aaaa:finished\" (:event_id %)) evs) \":action 欠落 run を正常 run として出力しない\")
+  (assert (= 0 (:denominator ct)) (pr-str ct))
+  (assert (= 1 (:unevaluated-input-missing ct)) (pr-str ct))
+  (println \"ok   :action 欠落の run は unreadable として該当 task を未評価にし Review 到達を確定値に入れない\"))"
+rm -rf "$tmp_noact"
+
+# 中断 (interrupted) run は runner が top-level :action を書かず :previous-lock に残す。extract はこれを補完して
+# run.started の action と是正導出 (review-fix) に使い、補完できない中断 run は run.unreadable として該当 task を未評価にする。
+tmp_int=$(mktemp -d)
+mkdir -p "$tmp_int/root/runs/BOXP-96/20261020T000000Z-aaaa" "$tmp_int/root/runs/BOXP-96/20261020T010000Z-bbbb" "$tmp_int/root/runs/BOXP-95/20261020T000000Z-aaaa" "$tmp_int/root/runs/BOXP-95/20261020T010000Z-bbbb" "$tmp_int/root/outbox" "$tmp_int/vault/Tickets"
+printf -- '---\ncreated: 2026-10-20\nstatus: review\n---\n' > "$tmp_int/vault/Tickets/BOXP-96.md"
+printf -- '---\ncreated: 2026-10-20\nstatus: review\n---\n' > "$tmp_int/vault/Tickets/BOXP-95.md"
+echo '{:ticket "BOXP-96" :run-id "20261020T000000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T00:30:00Z"}' > "$tmp_int/root/runs/BOXP-96/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-96" :run-id "20261020T010000Z-bbbb" :status :interrupted :updated-at "2026-10-20T01:10:00Z" :previous-lock {:action :review-fix :ticket "BOXP-96" :started-at "2026-10-20T01:00:00Z"}}' > "$tmp_int/root/runs/BOXP-96/20261020T010000Z-bbbb/summary.edn"
+echo '{:ticket "BOXP-95" :run-id "20261020T000000Z-aaaa" :agent "codex" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T00:30:00Z"}' > "$tmp_int/root/runs/BOXP-95/20261020T000000Z-aaaa/summary.edn"
+echo '{:ticket "BOXP-95" :run-id "20261020T010000Z-bbbb" :status :interrupted :updated-at "2026-10-20T01:10:00Z" :previous-lock {:ticket "BOXP-95"}}' > "$tmp_int/root/runs/BOXP-95/20261020T010000Z-bbbb/summary.edn"
+bb ai_ops_sli.bb extract "$tmp_int/root" "$tmp_int/vault" > "$tmp_int/x.jsonl"
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [evs (map #(cheshire.core/parse-string % true) (line-seq (java.io.BufferedReader. (java.io.StringReader. (slurp \"$tmp_int/x.jsonl\")))))
+      by-id (into {} (map (juxt :event_id identity) evs))
+      r (ai-ops-sli/aggregate \"$tmp_int/x.jsonl\")
+      ct (get-in r [:sli :agent-system-correction-task-ratio])]
+  (assert (= \"review-fix\" (:action (by-id \"BOXP-96/20261020T010000Z-bbbb:started\"))) (pr-str (by-id \"BOXP-96/20261020T010000Z-bbbb:started\")))
+  (assert (= \"run.interrupted\" (:event_type (by-id \"BOXP-96/20261020T010000Z-bbbb:interrupted\"))))
+  (assert (= \"agent-system\" (:correction_origin (by-id \"BOXP-96/20261020T010000Z-bbbb:corr\"))) \"中断した review-fix も是正として導出\")
+  (assert (some #(and (= \"run.unreadable\" (:event_type %)) (= \"BOXP-95\" (:task_id %))) evs) \":action を補完できない中断 run は unreadable\")
+  (assert (= [1 1] ((juxt :count :denominator) ct)) (pr-str ct))
+  (assert (= 1 (:unevaluated-input-missing ct)) (pr-str ct))
+  (println \"ok   中断 run の :action を :previous-lock から補完して是正導出に使い、補完できない中断 run は該当 task を未評価にする\"))"
+rm -rf "$tmp_int"

@@ -158,3 +158,10 @@ privacy gate で拒否した event (不正な event_id や task/request/run ID) 
 - runner は `TASK_BOARD_RESULT` マーカーのない正常終了 (exit 0) を既定で Review (groom/docs-groom は Ready、exit≠0 は Blocked) に進めるが、summary.edn の `:result` は nil のまま保存する。`ai_ops_insight.bb` の Review 到達判定は `:result "review"` だけを見ていたため、該当 task が Review 到達の分母・Review 後の再開・待ち時間から黙って落ちていた (unevaluated にも入らない)。
 - 修正: `ai_ops_insight.bb` の `read-summary` と `ai_ops_sli.bb` の `summary->events` / `derive-corrections` に同じ既定 (`effective-result`) を入れ、`:result nil` を status/action から補完する。interrupted/running は nil のまま。
 - 回帰 test を insight-test.sh / test.sh に追加 (旧実装で失敗を確認)。固定 snapshot (≤20261030T065040Z) は再生成しても committed EDN と完全一致 (live に該当する implement run が無く、唯一の nil result は BOXP-117 の groom で Ready 扱い)。
+
+### 2026-10-31 codex-review 指摘 (PR #14249、`:action` 欠落 run)
+
+- 指摘: `valid-summary?` が `:action nil` を許可する一方、`effective-result` は `succeeded` かつ `:result nil` を Review と補完するため、元が groom の run を Review 到達に数え、欠落した action が review-fix だった可能性も落としていた。
+- 修正: v0 (`ai_ops_sli.bb`) / v1 (`ai_ops_insight.bb`) ともに `:action` を必須にし、判定できない run は unreadable として該当 task を未評価 (`unevaluated-input-missing` / `unevaluated-tasks`) にする。runner は中断 (interrupted) run の top-level に `:action` を書かず `:previous-lock` に残す (live 162 件すべて) ので、集計はそれを正として補完する (`summary-action` / `resolve-summary-action`、推測ではなく runner が書いた値)。
+- 影響: 補完により中断 run の遷移が分類され、固定 snapshot (≤065040Z) は その他 23→3、review_fix 84→93、Review 後の再開 107→119、v0 reopen 211→230、task 率 v0 149→156 / v1 agent-system 119→120 / Owner 可視 78→81 に変わる (gate_rework・反復ループ・催促・unevaluated は不変)。両 snapshot EDN は、修正前コードで committed EDN と完全一致することを確認したうえで再生成した。v0 公開 SLI も中断した review-fix run を是正として導出するため、live で是正 task 43→47 / 296、first acceptance 99/154→93/151 に変わる。
+- 回帰 test 4 件 (`:action` 欠落→未評価、中断 run の補完と補完不能→unreadable、v0/v1 各 2 件) を追加し旧実装で失敗することを確認。既存 fixture 4 件に `:action :implement` を補った。insight-test / tools/test.sh 186 件 / ai-ops-ledger-test ok。

@@ -437,3 +437,27 @@ echo '{:ticket "BOXP-942" :run-id "20261023T000000Z" :status :succeeded :action 
 bb ai_ops_insight.bb report "$t33" >"$t33/r.edn"
 check "マーカーなしの implement 正常終了を Review 到達に数え、Review 後の再開と待ち時間も出す (groom のマーカーなしは Ready 扱い)" \
   '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:snapshot :unevaluated-tasks] 0)) (= 1 (get-in r [:reopen-after-review :total])) (= 1 (get-in r [:non-correction :by-kind "groom_to_implement"])) (= 1 (get-in r [:review-wait :followed])) (= 23.0 (get-in r [:review-wait :by-next "reopen_after_review" :p50-h])))' "$t33/r.edn"
+
+# --- codex-review 指摘: :action 欠落の run は effective-result の既定 (Review/Ready) も review-fix 判定もできないため unreadable ---
+t34="$tmp/t34"; mkdir -p "$t34/runs/BOXP-943/20261023T000000Z" "$t34/runs/BOXP-943/20261023T010000Z" "$t34/runs/BOXP-944/20261023T000000Z"
+# BOXP-943: :action 欠落 (元が groom なら Ready なのに Review と補完される) -> task ごと未評価
+echo '{:ticket "BOXP-943" :run-id "20261023T000000Z" :status :succeeded :result nil :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t34/runs/BOXP-943/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-943" :run-id "20261023T010000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-23T01:00:00Z"}' >"$t34/runs/BOXP-943/20261023T010000Z/summary.edn"
+# BOXP-944: 正常 (比較用)
+echo '{:ticket "BOXP-944" :run-id "20261023T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t34/runs/BOXP-944/20261023T000000Z/summary.edn"
+bb ai_ops_insight.bb report "$t34" >"$t34/r.edn"
+check ":action 欠落の run を持つ task は確定値に入れず unevaluated-tasks に別掲する" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:snapshot :unevaluated-tasks])) (= 0 (get-in r [:reopen-after-review :total])))' "$t34/r.edn"
+# 中断 (interrupted) run は runner が top-level :action を書かず :previous-lock に残す。これを補完して集計し、
+# 補完できない中断 run は unreadable にする。
+t35="$tmp/t35"; mkdir -p "$t35/runs/BOXP-945/20261023T000000Z" "$t35/runs/BOXP-945/20261023T010000Z" "$t35/runs/BOXP-945/20261023T020000Z" "$t35/runs/BOXP-946/20261023T000000Z" "$t35/runs/BOXP-946/20261023T010000Z"
+# BOXP-945: implement(review) -> review-fix が中断 (previous-lock に :action :review-fix) -> review-fix 成功
+echo '{:ticket "BOXP-945" :run-id "20261023T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t35/runs/BOXP-945/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-945" :run-id "20261023T010000Z" :status :interrupted :updated-at "2026-10-23T01:10:00Z" :previous-lock {:action :review-fix :ticket "BOXP-945"}}' >"$t35/runs/BOXP-945/20261023T010000Z/summary.edn"
+echo '{:ticket "BOXP-945" :run-id "20261023T020000Z" :status :succeeded :action :review-fix :result "review" :agent "claude-opus" :finished-at "2026-10-23T02:00:00Z"}' >"$t35/runs/BOXP-945/20261023T020000Z/summary.edn"
+# BOXP-946: implement(review) -> 中断 run に :action がどこにも無い -> task 未評価
+echo '{:ticket "BOXP-946" :run-id "20261023T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t35/runs/BOXP-946/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-946" :run-id "20261023T010000Z" :status :interrupted :updated-at "2026-10-23T01:10:00Z" :previous-lock {:ticket "BOXP-946"}}' >"$t35/runs/BOXP-946/20261023T010000Z/summary.edn"
+bb ai_ops_insight.bb report "$t35" >"$t35/r.edn"
+check "中断 run の :action を :previous-lock から補完して review_fix に分類し、補完できない中断 run は unreadable として task を未評価化する" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:snapshot :unevaluated-tasks])) (= 1 (get-in r [:snapshot :unreadable-runs])) (= 2 (get-in r [:transitions :v1 "review_fix"])) (= 0 (get-in r [:transitions :v1 "other"] 0)) (= 1 (get-in r [:task-rates :v1-owner-visible-tasks :n])))' "$t35/r.edn"
