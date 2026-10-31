@@ -713,11 +713,13 @@
                                            (some phases [:same :ambiguous]) :ambiguous
                                            :else :pass)))
                           ;; Review 到達 = review で正常終了 (status=succeeded) した run / Review lane への遷移 / review 状態 snapshot /
-                          ;; Owner 向け通知 (notify.run-finished は runner が最終結果を通知する時だけ出し、gate 失敗の retrying では出ない)。
+                          ;; Owner 向け通知 (notify.run-finished) は lane_to=review の時だけ Review 到達とする。通知の :result は agent の
+                          ;; 生の結果マーカーで最終遷移先ではない (review マーカーを出した run が非 retryable な gate 失敗で Blocked に
+                          ;; 移ると to-status=blocked/result=review になる) ため、result では判定しない。
                           ;; gate で止まった retrying/blocked の run.finished も effective-result "review" を持ち得るが Owner には
                           ;; 届いていないので数えない (status 欠落の run.finished も Review 到達の証拠にしない)。
                           first-review (some #(when (or (and (= "run.finished" (:event_type %)) (= "review" (:result %)) (= "succeeded" (:status %)))
-                                                        (and (= "notify.run-finished" (:event_type %)) (= "review" (:result %)))
+                                                        (and (= "notify.run-finished" (:event_type %)) (= "review" (:lane_to %)))
                                                         (= "review" (:lane_to %))
                                                         (and (= "task.state" (:event_type %)) (= "review" (:status %))))
                                                 (or (parse-inst (:occurred_at %)) true)) evs)

@@ -1818,3 +1818,32 @@ bb -e "
       (assert (= expected (get-in r2 [:sli :agent-system-correction-task-ratio :denominator])) (str label \" \" (pr-str (get-in r2 [:sli :agent-system-correction-task-ratio]))))))
   (println \"ok   gate で止まった retrying/blocked run (補完 result=review) を Review 到達に数えず、succeeded の run だけを是正率の分母にする\"))"
 rm -rf "$tmp_gate"
+
+# codex-review 指摘: notify.run-finished の :result は agent の生の結果マーカーで最終遷移先ではない。review マーカーを出した run が
+# 非 retryable な gate 失敗で Blocked に移ると to-status=blocked/result=review の通知になる。Review 到達は通知の lane_to=review で判定する。
+tmp_nb=$(mktemp -d)
+mkdir -p "$tmp_nb/root/runs/BOXP-136/20261020T000000Z-aaaa" "$tmp_nb/root/runs/BOXP-137/20261020T000000Z-aaaa" "$tmp_nb/root/outbox" "$tmp_nb/vault/Tickets"
+for t in 136 137; do printf -- '---\ncreated: 2026-10-20\nstatus: in-progress\n---\n' > "$tmp_nb/vault/Tickets/BOXP-$t.md"; done
+# BOXP-136: review マーカー + 非 retryable gate 失敗で Blocked (runner summary status=blocked、通知 to-status=blocked/result=review)
+echo '{:ticket "BOXP-136" :run-id "20261020T000000Z-aaaa" :agent "claude-opus" :status :blocked :result "review" :action :implement :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z"}' > "$tmp_nb/root/runs/BOXP-136/20261020T000000Z-aaaa/summary.edn"
+echo '{:event-id "BOXP-136-20261020T000000Z-aaaa-blocked" :run-id "20261020T000000Z-aaaa" :ticket-id "BOXP-136" :event-type "task-board.run-finished" :source "task-board-runner" :from-status "ready" :to-status "blocked" :result "review" :hermes-status "accepted" :created-at "2026-10-20T01:00:01Z" :accepted-at "2026-10-20T01:00:05Z"}' > "$tmp_nb/root/outbox/nb1.edn"
+# BOXP-137: 同じ review マーカーで gate 通過 (to-status=review)
+echo '{:ticket "BOXP-137" :run-id "20261020T000000Z-aaaa" :agent "claude-opus" :status :succeeded :result "review" :action :implement :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z"}' > "$tmp_nb/root/runs/BOXP-137/20261020T000000Z-aaaa/summary.edn"
+echo '{:event-id "BOXP-137-20261020T000000Z-aaaa-review" :run-id "20261020T000000Z-aaaa" :ticket-id "BOXP-137" :event-type "task-board.run-finished" :source "task-board-runner" :from-status "ready" :to-status "review" :result "review" :hermes-status "accepted" :created-at "2026-10-20T01:00:01Z" :accepted-at "2026-10-20T01:00:05Z"}' > "$tmp_nb/root/outbox/nb2.edn"
+bb ai_ops_sli.bb extract "$tmp_nb/root" "$tmp_nb/vault" > "$tmp_nb/x.jsonl"
+bb -e "
+(load-file \"ai_ops_sli.bb\")
+(let [evs (map #(cheshire.core/parse-string % true) (line-seq (java.io.BufferedReader. (java.io.StringReader. (slurp \"$tmp_nb/x.jsonl\")))))
+      notify (filter #(= \"notify.run-finished\" (:event_type %)) evs)
+      reached (set (for [t [\"BOXP-136\" \"BOXP-137\"]
+                         :when (pos? (get-in (ai-ops-sli/aggregate* (filter #(= t (:task_id %)) evs)) [:sli :agent-system-correction-task-ratio :denominator]))] t))]
+  (assert (= 2 (count notify)) (pr-str evs))
+  (assert (= #{[\"blocked\" \"review\"] [\"review\" \"review\"]} (set (map (juxt :lane_to :result) notify))) (pr-str notify))
+  (assert (= #{\"BOXP-137\"} reached) (pr-str reached))
+  ;; aggregate* 直接入力: notify.run-finished は lane_to=review のみ Review 到達。result=review でも lane_to=blocked/欠落は数えない
+  (doseq [[label lane expected] [[\"lane_to review\" \"review\" 1] [\"lane_to blocked\" \"blocked\" 0] [\"lane_to 欠落\" nil 0]]]
+    (let [r2 (ai-ops-sli/aggregate* [{:event_id \"BOXP-138/20261020T000000Z-aaaa:started\" :task_id \"BOXP-138\" :run_id \"20261020T000000Z-aaaa\" :event_type \"run.started\" :occurred_at \"2026-10-20T00:00:00Z\"}
+                                      (cond-> {:event_id \"BOXP-138-20261020T000000Z-aaaa-blocked\" :task_id \"BOXP-138\" :run_id \"20261020T000000Z-aaaa\" :event_type \"notify.run-finished\" :result \"review\" :occurred_at \"2026-10-20T01:00:00Z\"} lane (assoc :lane_to lane))])]
+      (assert (= expected (get-in r2 [:sli :agent-system-correction-task-ratio :denominator])) (str label \" \" (pr-str (get-in r2 [:sli :agent-system-correction-task-ratio]))))))
+  (println \"ok   Blocked に移った run の通知 (to-status=blocked/result=review) を Review 到達に数えず、通知は lane_to=review のみ分母にする\"))"
+rm -rf "$tmp_nb"

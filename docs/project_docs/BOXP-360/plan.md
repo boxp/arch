@@ -176,7 +176,13 @@ privacy gate で拒否した event (不正な event_id や task/request/run ID) 
 ### 2026-10-31 codex-review 指摘 (PR #14249、gate で止まった run を Review 到達に数える)
 
 - 指摘: v0 (`ai_ops_sli.bb`) の `effective-result` は結果マーカーのない `:retrying` / `:blocked` の implement run にも `review` を補完する。後段の `first-review` は run の status を見ずに `result` だけを見ていたため、review gate で retry または blocked になり Owner の Review に到達していない task まで公開 SLI (是正率) の分母に入っていた (v1 `ai_ops_insight.bb` は既に `succeeded` を要求していた)。
-- 修正: `first-review` の判定を「`run.finished` は `result=review` かつ `status=succeeded` のみ / `notify.run-finished` の `result=review` (runner が最終結果を Owner に通知する時だけ出し、gate 失敗の retrying では出ない。live outbox 214 件の result は review/blocked/done のみ) / `lane.changed lane_to=review` / `task.state status=review`」に限定した。status 欠落の `run.finished` も Review 到達の証拠にしない。
+- 修正: `first-review` の判定を「`run.finished` は `result=review` かつ `status=succeeded` のみ / `notify.run-finished` の `result=review` (この条件は次項の指摘で `lane_to=review` に置き換えた) / `lane.changed lane_to=review` / `task.state status=review`」に限定した。status 欠落の `run.finished` も Review 到達の証拠にしない。
 - 回帰 test: extract 経由 (retrying+review マーカー / blocked マーカーなし / succeeded マーカーなし / succeeded+review) で分母が succeeded の 2 task だけになること、aggregate* 直接入力で status が succeeded/retrying/blocked/欠落の run.finished の分母が 1/0/0/0 になることを追加 (旧実装では 4 task 全部が分母に入り失敗)。既存 fixture の status 無し `run.finished` には本番と同じ `status "succeeded"` を付けた。tools/test.sh 191 件 / insight-test / ai-ops-ledger-test pass。
 - 影響 (同じ live データ run 1679、extract 出力は修正前後で同一): 是正 task 47/279→47/275 (16.8→17.1%)、保守的 first acceptance 152/338→152/334、first acceptance 152/182 と outcome 分布は不変。固定 snapshot (v1) は既に succeeded 条件のため不変。
 
+### 2026-10-31 codex-review 指摘 (PR #14249、Blocked 通知の result=review を Review 到達に数える)
+
+- 指摘: `notify.run-finished` の `result` は最終遷移先ではなく agent の生の結果マーカー。`review` マーカーを出した run が非 retryable な review gate 失敗で Blocked に移ると、通知は `to-status=blocked` / `result=review` になる (live outbox にも実在する組合せ)。前項の修正は run.finished の status だけを見ていたので、この通知を持つ task が Review 到達 (是正率の分母) に残っていた。
+- 修正: `first-review` の `notify.run-finished` 判定を `result=review` から `lane_to=review` (outbox の `to-status`) に変えた。`lane_to` が blocked/欠落の通知は result に関わらず Review 到達の証拠にしない。
+- 回帰 test: extract 経由 (summary status=blocked + review マーカー + 通知 to-status=blocked/result=review の task と、同じマーカーで gate 通過 to-status=review の task) で分母が後者だけになること、aggregate* 直接入力で通知の `lane_to` が review/blocked/欠落の分母が 1/0/0 になることを追加。旧実装では両 task が分母に入り失敗することを確認。tools/test.sh 192 件 / insight-test / ai-ops-ledger-test pass。
+- 影響 (同じ live データ、extract 出力は修正前後で同一): 是正 task 47/275、first acceptance 152/182、保守的 152/334、outcome 分布とも不変。該当する Blocked 通知の task は、別の lane.changed (board-diff) か後続 run の succeeded で Review に到達済みだったため。固定 snapshot (v1) は通知を読まないため不変。
