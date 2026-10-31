@@ -111,7 +111,7 @@ fi
 prompt="$(cat)"
 if [[ "${prompt}" == *'Delegation contract:'* ]]; then
   case "${TEST_DELEGATION_MODE:-exempt}" in
-    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run || true ;;
+    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run >&2 || true ;;
     missing) ;;
     *) python3 "${TASK_BOARD_DELEGATION_HELPER}" exempt small-task ;;
   esac
@@ -143,7 +143,11 @@ if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
   wait "$!"
 fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
-printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+if [[ "${CLAUDE_FAKE_STREAM_JSON:-false}" == true ]]; then
+  printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"secret"}' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
+else
+  printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+fi
 exit "${CLAUDE_FAKE_EXIT:-0}"
 EOF
   chmod +x "${bin_dir}/claude"
@@ -339,6 +343,21 @@ test_parallel_codex_runs() {
   assert_file_contains "${vault}/Tickets/BOXP-102.md" '^status: done$'
 }
 
+test_fable_stream_json() {
+  local tmp vault state bin last_message
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-149|BOXP-149: stream]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-149 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-stream.out
+  assert_file_contains "${vault}/Tickets/BOXP-149.md" '^status: done$'
+  last_message="$(find "${state}/runs/BOXP-149" -name last-message.md -print | head -n 1)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
+  [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+}
+
 test_fable_assignee_runs_via_claude() {
   local tmp vault state bin prompt_log args_log summary last_message events
   tmp="$(mktemp -d)"
@@ -359,7 +378,7 @@ test_fable_assignee_runs_via_claude() {
     CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-fable.out
 
-  assert_file_contains "${args_log}" '.*--print --output-format text.*--agent fable'
+  assert_file_contains "${args_log}" '.*--print --output-format stream-json --verbose.*--agent fable'
   assert_file_not_contains "${args_log}" '--model'
   assert_file_not_contains "${args_log}" 'BOXP-150'
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: fable$'
@@ -3293,7 +3312,8 @@ test_ai_ops_ledger_disabled_by_env() {
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_AI_OPS_LEDGER_ENABLED=false run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-off.out
 
   assert_file_contains "${vault}/Tickets/BOXP-417.md" '^status: done$'
-  [[ ! -e "${state}/ai-ops" ]] || fail "ledger must not be written when disabled"
+  [[ ! -e "${state}/ai-ops/ledger" ]] || fail "ledger must not be written when disabled"
+  [[ -f "${state}/ai-ops/subscription-usage.prom" ]] || fail "subscription metrics must remain enabled"
 }
 
 test_run_finished_records_outbox_event() {
@@ -3514,6 +3534,7 @@ test_assignment_revisions
 test_assignment_superseded
 test_assignment_repairs
 test_delegation_gate_end_to_end
+test_fable_stream_json
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
 test_fable_model_environment_is_legacy_only

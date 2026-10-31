@@ -134,6 +134,14 @@
         (log! (str "ai ops ledger module unavailable (" ai-ops-module-path "): " (.getMessage e)))
         false))))
 
+(def subscription-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_subscription_usage.bb")))
+
+(def subscription-module-loaded?
+  (delay (try (load-file subscription-module-path) true
+              (catch Exception e
+                (log! (str "subscription module unavailable: " (.getMessage e))) false))))
+
 (declare root)
 
 (defn assignee-runtime [assignee]
@@ -235,15 +243,20 @@
   ;; SLI refresh must complete before metrics.prom is written.
   ([] (maybe-write-ai-ops-metrics! false))
   ([sync?]
-  (try
-    (let [now-ms (System/currentTimeMillis)]
-      (when (and @ai-ops-module-loaded? (>= (- now-ms @ai-ops-metrics-last-ms) 60000))
-        (reset! ai-ops-metrics-last-ms now-ms)
-        ((resolve (if sync? 'ai-ops-ledger/refresh-sli! 'ai-ops-ledger/refresh-sli-async!))
-         (root) (System/getenv "CODEX_TASK_BOARD_VAULT"))
-        ((resolve 'ai-ops-ledger/write-metrics!) (root))))
-    (catch Exception e
-      (log! (str "ai ops metrics write failed: " (.getMessage e)))))))
+  (let [now-ms (System/currentTimeMillis)]
+    (when (>= (- now-ms @ai-ops-metrics-last-ms) 60000)
+      (reset! ai-ops-metrics-last-ms now-ms)
+      (try
+        (when @ai-ops-module-loaded?
+          ((resolve (if sync? 'ai-ops-ledger/refresh-sli! 'ai-ops-ledger/refresh-sli-async!))
+           (root) (System/getenv "CODEX_TASK_BOARD_VAULT"))
+          ((resolve 'ai-ops-ledger/write-metrics!) (root)))
+        (catch Exception e (log! (str "ai ops metrics write failed: " (.getMessage e)))))
+      (try
+        (when (and (not= "false" (env "CODEX_TASK_BOARD_SUBSCRIPTION_METRICS" "true"))
+                   @subscription-module-loaded?)
+          ((resolve 'ai-subscription-usage/write-metrics!) (root)))
+        (catch Exception e (log! (str "subscription metrics write failed: " (.getMessage e)))))))))
 
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
@@ -2327,6 +2340,37 @@
     (fable-model-args)
     ["--model" (get claude-assignee->model agent)]))
 
+(defn claude-stream-summary
+  "One pass over a Claude stream-json stdout, keeping only the last result,
+  assistant and rate_limit_event objects (the stream can be large)."
+  [path]
+  (with-open [reader (io/reader (str path))]
+    (reduce (fn [acc line]
+              (let [v (when (str/starts-with? (str/triml line) "{")
+                        (try (json/parse-string line true) (catch Exception _ nil)))]
+                (if-not (map? v)
+                  acc
+                  (cond-> (assoc acc :json? true)
+                    (and (= "result" (:type v)) (string? (:result v))) (assoc :result (:result v))
+                    (= "assistant" (:type v)) (assoc :assistant v)
+                    (= "rate_limit_event" (:type v)) (assoc :rate-limit v)))))
+            {} (line-seq reader))))
+
+(defn claude-last-message [path summary]
+  (let [{:keys [json? result assistant]} summary]
+    (cond result result
+          assistant (str/join "\n" (keep #(when (and (= "text" (:type %)) (string? (:text %))) (:text %))
+                                         (get-in assistant [:message :content])))
+          (not json?) (slurp (str path))
+          :else "")))
+
+(defn record-claude-subscription! [summary]
+  (try
+    (when-let [event (:rate-limit summary)]
+      (when @subscription-module-loaded?
+        ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event (quot (System/currentTimeMillis) 1000))))
+    (catch Exception e (log! (str "claude subscription snapshot failed: " (.getMessage e))))))
+
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
@@ -2340,7 +2384,7 @@
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
     (let [agent-args (if (claude-assignee? agent)
-                       (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "text"]
+                       (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "stream-json" "--verbose"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-skip-permissions")
 
@@ -2384,9 +2428,21 @@
                                                    (finally
                                                      (unregister-agent-process! run)))
           raw-exit (:exit proc)
+          claude-summary (when (and (claude-assignee? agent) (fs/exists? stdout-path))
+                           (try (claude-stream-summary stdout-path)
+                                (catch Exception e
+                                  (log! (str "claude stream read failed: " (.getMessage e)))
+                                  nil)))
           _ (when (and (claude-assignee? agent) (fs/exists? stdout-path))
-              (io/copy (io/file (str stdout-path))
-                       (io/file (str last-message-path))))
+              (try
+                (spit (str last-message-path) (claude-last-message stdout-path (or claude-summary {})))
+                (catch Exception e
+                  (log! (str "claude message extraction failed: " (.getMessage e)))
+                  (try (io/copy (io/file (str stdout-path)) (io/file (str last-message-path)))
+                       (catch Exception copy-error
+                         (log! (str "claude message fallback failed: " (.getMessage copy-error))))))))
+          _ (when claude-summary
+              (record-claude-subscription! claude-summary))
           last-message (when (fs/exists? last-message-path)
                          (slurp (str last-message-path)))
           marker (result-marker last-message)
