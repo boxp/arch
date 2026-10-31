@@ -382,6 +382,25 @@ test_claude_events_log_omits_tool_payloads() {
   [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
 }
 
+test_claude_run_survives_subscription_snapshot_failure() {
+  local tmp vault state bin events last_message
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${state}/ai-ops"
+  # A regular file where the snapshot directory should be makes every
+  # record-claude-rate-limit! call throw; the run itself must still finish.
+  : >"${state}/ai-ops/subscription"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-145|BOXP-145: snapshot failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-145 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-snapshot-failure.out
+  events="$(find "${state}/runs/BOXP-145" -name events.jsonl -print -quit)"
+  last_message="$(find "${state}/runs/BOXP-145" -name last-message.md -print -quit)"
+  assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "run must finish when the subscription snapshot cannot be written"
+  assert_file_contains "${vault}/Tickets/BOXP-145.md" '^status: done$'
+  [[ -f "${state}/ai-ops/subscription" ]] || fail "placeholder must stay a file"
+}
+
 test_subscription_metrics_disabled_removes_prom() {
   local tmp vault state bin
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -3575,6 +3594,7 @@ test_assignment_repairs
 test_delegation_gate_end_to_end
 test_fable_stream_json
 test_claude_events_log_omits_tool_payloads
+test_claude_run_survives_subscription_snapshot_failure
 test_subscription_metrics_disabled_removes_prom
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary

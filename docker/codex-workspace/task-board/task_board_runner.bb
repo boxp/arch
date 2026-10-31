@@ -2408,19 +2408,30 @@
                     (select-keys event [:type]))]
         (json/generate-string clean)))))
 
-(defn pump-claude-stream! [stream path]
-  (try
-    (with-open [reader (io/reader stream)
-                writer (io/writer (str path) :append true)]
-      (doseq [line (line-seq reader)]
-        (let [received-at (quot (System/currentTimeMillis) 1000)
-              event (when (str/includes? line "rate_limit_event")
-                      (try (json/parse-string line true) (catch Exception _ nil)))]
-          (.write writer (str (sanitize-claude-line line) "\n"))
-          (.flush writer)
-          (when (and (= "rate_limit_event" (:type event)) @subscription-module-loaded?)
-            ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at)))))
-    (catch Exception e (log! (str "claude stream pump failed: " (.getMessage e))))))
+(defn pump-claude-stream!
+  "Drain the Claude stdout pipe until EOF, appending sanitized lines to `path`
+  and recording rate_limit_event at its receive time. The drain must never stop
+  early: if it did, the agent would block on a full pipe or hit a broken pipe
+  and the final result would be lost. Failures of the log write or of the
+  subscription snapshot are therefore caught per line and only logged."
+  [stream path]
+  (let [logged (atom #{})
+        warn! (fn [k e] (when-not (@logged k) (swap! logged conj k) (log! (str k ": " (.getMessage e)))))]
+    (try
+      (with-open [reader (io/reader stream)
+                  writer (io/writer (str path) :append true)]
+        (doseq [line (line-seq reader)]
+          (let [received-at (quot (System/currentTimeMillis) 1000)]
+            (try (.write writer (str (sanitize-claude-line line) "\n"))
+                 (.flush writer)
+                 (catch Exception e (warn! "claude events log write failed" e)))
+            (when (str/includes? line "rate_limit_event")
+              (try
+                (let [event (try (json/parse-string line true) (catch Exception _ nil))]
+                  (when (and (= "rate_limit_event" (:type event)) @subscription-module-loaded?)
+                    ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at)))
+                (catch Exception e (warn! "claude subscription record failed" e)))))))
+      (catch Exception e (log! (str "claude stream pump failed: " (.getMessage e)))))))
 
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
