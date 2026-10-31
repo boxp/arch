@@ -13,16 +13,37 @@ bb -e '
              :rate_limit_info {:status "BAD VALUE" :overageStatus "rejected" :isUsingOverage false
                                :unifiedWindows {:five_hour {:utilization 0.2 :resetsAt (+ now 100) :status "allowed"}
                                                 :seven_day {:utilization 0.73 :resetsAt (- now 1) :status "allowed"}}}}]
-  (ai-subscription-usage/record-claude-rate-limit! root event now)
+  (ai-subscription-usage/record-claude-rate-limit! root event (* now 1000))
   (let [raw (slurp (str root "/ai-ops/subscription/claude.json"))]
     (assert (not (clojure.string/includes? raw "SECRET")))
     (assert (clojure.string/includes? raw "other")))
   (let [path (str root "/ai-ops/subscription/claude.json")]
-    (ai-subscription-usage/record-claude-rate-limit! root {:rate_limit_info {:status "rejected"}} (- now 1))
+    (ai-subscription-usage/record-claude-rate-limit! root {:rate_limit_info {:status "rejected"}} (- (* now 1000) 1))
     (assert (= "other" (get-in (ai-subscription-usage/snapshot path) [:data :rate_limit_info :status])))
-    (ai-subscription-usage/record-claude-rate-limit! root {:rate_limit_info {:status "allowed"}} (+ now 1))
+    (ai-subscription-usage/record-claude-rate-limit! root {:rate_limit_info {:status "allowed"}} (+ (* now 1000) 1))
     (assert (= "allowed" (get-in (ai-subscription-usage/snapshot path) [:data :rate_limit_info :status])))
-    (ai-subscription-usage/record-claude-rate-limit! root event (+ now 2)))
+    (ai-subscription-usage/record-claude-rate-limit! root event (+ (* now 1000) 2)))
+  ;; Same-second observations, equal timestamps, and legacy snapshots.
+  (let [path (str root "/ai-ops/subscription/claude.json") base (* now 1000)
+        record (fn [ms status] (ai-subscription-usage/record-claude-rate-limit! root {:rate_limit_info {:status status}} ms))]
+    (record (+ base 900) "newest")
+    (record (+ base 100) "older")
+    (assert (= "newest" (get-in (ai-subscription-usage/snapshot path) [:data :rate_limit_info :status])))
+    (record (+ base 900) "equal")
+    (assert (= "equal" (get-in (ai-subscription-usage/snapshot path) [:data :rate_limit_info :status])))
+    (spit path (cheshire.core/generate-string {:observed_at now :rate_limit_info {:status "legacy"}}))
+    (assert (= "ok" (:state (ai-subscription-usage/snapshot path))))
+    (record (dec base) "older")
+    (assert (= "legacy" (get-in (ai-subscription-usage/snapshot path) [:data :rate_limit_info :status])))
+    (record (inc base) "newer")
+    (assert (= "newer" (get-in (ai-subscription-usage/snapshot path) [:data :rate_limit_info :status])))
+    (let [jobs (doall (for [i (shuffle (range 40))] (future (record (+ base 2000 i) (str "event_" i)))))]
+      (doseq [job jobs] @job)
+      (let [data (:data (ai-subscription-usage/snapshot path))]
+        (assert (= (+ base 2039) (:observed_at_ms data)))
+        (assert (= (+ now 2) (:observed_at data)))
+        (assert (= "event_39" (get-in data [:rate_limit_info :status])))))
+    (ai-subscription-usage/record-claude-rate-limit! root event (+ base 3000)))
   (let [file (str home "/sessions/2026/01/rollout-test.jsonl")]
     (spit file (str "{\"secret\":\"SECRET_BODY\"}\n"
                     (cheshire.core/generate-string {:type "event_msg" :timestamp (str (java.time.Instant/ofEpochSecond now))
@@ -39,7 +60,7 @@ bb -e '
     (assert (not (re-find #"ai_subscription_window_used_percent\{[^\n]*seven_day" out))))
   (ai-subscription-usage/record-claude-rate-limit! root
     {:rate_limit_info {:rateLimitType "seven_day_overage_included"
-                       :unifiedWindows {:seven_day_overage_included {:utilization 0.4 :resetsAt (+ now 100) :status "allowed"}}}} (+ now 3))
+                       :unifiedWindows {:seven_day_overage_included {:utilization 0.4 :resetsAt (+ now 100) :status "allowed"}}}} (+ (* now 1000) 4000))
   (let [out (ai-subscription-usage/prom-text root home now)]
     (doseq [part ["limit=\"seven_day_overage_included\",name=\"fable_7d\",window=\"7d\"} 40.0"
                   "ai_subscription_window_present{provider=\"claude\",limit=\"seven_day_overage_included\",name=\"fable_7d\"} 1"
@@ -93,7 +114,7 @@ bb -e '
   (assert (clojure.string/includes? (ai-subscription-usage/prom-text root home now) "provider=\"codex\",state=\"parse_error\""))
   (spit (str root "/ai-ops/subscription/claude.json") "not json")
   (assert (clojure.string/includes? (ai-subscription-usage/prom-text root home now) "state=\"parse_error\""))
-  (ai-subscription-usage/record-claude-rate-limit! root event now)
+  (ai-subscription-usage/record-claude-rate-limit! root event (* now 1000))
   (assert (= "ok" (:state (ai-subscription-usage/snapshot (str root "/ai-ops/subscription/claude.json"))))))
 '
 mkdir -p "${tmp}/vault/Boards" "${tmp}/vault/Tickets" "${tmp}/bin"

@@ -2418,19 +2418,24 @@
   (let [logged (atom #{})
         warn! (fn [k e] (when-not (@logged k) (swap! logged conj k) (log! (str k ": " (.getMessage e)))))]
     (try
-      (with-open [reader (io/reader stream)
-                  writer (io/writer (str path) :append true)]
-        (doseq [line (line-seq reader)]
-          (let [received-at (quot (System/currentTimeMillis) 1000)]
-            (try (.write writer (str (sanitize-claude-line line) "\n"))
-                 (.flush writer)
-                 (catch Exception e (warn! "claude events log write failed" e)))
-            (when (str/includes? line "rate_limit_event")
-              (try
-                (let [event (try (json/parse-string line true) (catch Exception _ nil))]
-                  (when (and (= "rate_limit_event" (:type event)) @subscription-module-loaded?)
-                    ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at)))
-                (catch Exception e (warn! "claude subscription record failed" e)))))))
+      (with-open [reader (io/reader stream)]
+        (let [writer (try (io/writer (str path) :append true)
+                          (catch Exception e (warn! "claude events log open failed" e) nil))]
+          (try
+            (doseq [line (line-seq reader)]
+              (let [received-at (System/currentTimeMillis)]
+                (when writer
+                  (try (.write writer (str (sanitize-claude-line line) "\n"))
+                       (.flush writer)
+                       (catch Exception e (warn! "claude events log write failed" e))))
+                (when (str/includes? line "rate_limit_event")
+                  (try
+                    (let [event (try (json/parse-string line true) (catch Exception _ nil))]
+                      (when (and (= "rate_limit_event" (:type event)) @subscription-module-loaded?)
+                        ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at)))
+                    (catch Exception e (warn! "claude subscription record failed" e))))))
+            (finally
+              (when writer (.close writer))))))
       (catch Exception e (log! (str "claude stream pump failed: " (.getMessage e)))))))
 
 (defn run-agent! [ticket-id action lane agent lock]
@@ -2487,7 +2492,9 @@
           ;; The pump creates events.jsonl on the first line; touch it up front so
           ;; the file exists (as it did with direct file output) even if the
           ;; agent exits without writing anything.
-          _ (when (claude-assignee? agent) (spit (str stdout-path) "" :append true))
+          _ (when (claude-assignee? agent)
+              (try (spit (str stdout-path) "" :append true)
+                   (catch Exception e (log! (str "claude events log touch failed: " (.getMessage e))))))
           tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path)))
           _ (register-agent-process! run (:proc proc))
           {:keys [proc idle-timeout? shutdown?]} (try

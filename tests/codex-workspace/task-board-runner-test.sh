@@ -364,6 +364,32 @@ test_fable_stream_json() {
   (( observed <= finished - 2 )) || fail "subscription observation was delayed until process exit"
 }
 
+test_claude_pump_drains_when_events_log_cannot_open() {
+  local tmp
+  tmp="$(mktemp -d)"
+  mkdir -p "${tmp}/events.jsonl"
+  TEST_RUNNER="${RUNNER}" TEST_STATE="${tmp}/state" TEST_LOG_PATH="${tmp}/events.jsonl" bb -e '
+    (require (quote [clojure.java.io :as io]) (quote [clojure.string :as str]) (quote [cheshire.core :as json]))
+    (load-file (str (.getParent (io/file (System/getenv "TEST_RUNNER"))) "/ai_subscription_usage.bb"))
+    (def subscription-module-loaded? (atom true))
+    (defn root [] (System/getenv "TEST_STATE"))
+    (def warnings (atom []))
+    (defn log! [message] (swap! warnings conj message))
+    (defn sanitize-claude-line [line] line)
+    (with-open [reader (java.io.PushbackReader. (io/reader (System/getenv "TEST_RUNNER")))]
+      (loop []
+        (let [form (read {:eof nil} reader)]
+          (when form
+            (if (and (seq? form) (= (first form) (quote defn)) (= (second form) (quote pump-claude-stream!)))
+              (eval form)
+              (recur))))))
+    (let [input (java.io.ByteArrayInputStream. (.getBytes (str (apply str (repeat 10000 "{\"type\":\"assistant\"}\n")) "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}\n" "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: done\"}\n") "UTF-8"))]
+      (pump-claude-stream! input (System/getenv "TEST_LOG_PATH"))
+      (assert (zero? (.available input)))
+      (assert (= "allowed" (get-in (ai-subscription-usage/snapshot (str (root) "/ai-ops/subscription/claude.json")) [:data :rate_limit_info :status])))
+      (assert (= 1 (count (filter #(str/includes? % "claude events log open failed") @warnings)))))'
+}
+
 test_claude_events_log_omits_tool_payloads() {
   local tmp vault state bin events last_message
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -3593,6 +3619,7 @@ test_assignment_superseded
 test_assignment_repairs
 test_delegation_gate_end_to_end
 test_fable_stream_json
+test_claude_pump_drains_when_events_log_cannot_open
 test_claude_events_log_omits_tool_payloads
 test_claude_run_survives_subscription_snapshot_failure
 test_subscription_metrics_disabled_removes_prom
