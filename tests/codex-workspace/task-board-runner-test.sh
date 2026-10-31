@@ -380,14 +380,86 @@ test_claude_pump_drains_when_events_log_cannot_open() {
       (loop []
         (let [form (read {:eof nil} reader)]
           (when form
-            (if (and (seq? form) (= (first form) (quote defn)) (= (second form) (quote pump-claude-stream!)))
-              (eval form)
-              (recur))))))
+            (when (and (seq? form) (= (first form) (quote defn)) (contains? (quote #{pump-claude-stream! await-claude-pump!}) (second form)))
+              (eval form))
+            (when-not (resolve (quote await-claude-pump!)) (recur))))))
     (let [input (java.io.ByteArrayInputStream. (.getBytes (str (apply str (repeat 10000 "{\"type\":\"assistant\"}\n")) "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}\n" "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: done\"}\n") "UTF-8"))]
-      (pump-claude-stream! input (System/getenv "TEST_LOG_PATH"))
+      (assert (= "TASK_BOARD_RESULT: done" (:result (pump-claude-stream! input (System/getenv "TEST_LOG_PATH")))))
       (assert (zero? (.available input)))
       (assert (= "allowed" (get-in (ai-subscription-usage/snapshot (str (root) "/ai-ops/subscription/claude.json")) [:data :rate_limit_info :status])))
-      (assert (= 1 (count (filter #(str/includes? % "claude events log open failed") @warnings)))))'
+      (assert (= 1 (count (filter #(str/includes? % "claude events log open failed") @warnings)))))
+    ;; The caller may stop waiting for the drain (deref timeout): the shared
+    ;; summary atom must already hold the result while the stream is still open.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))]
+      (.write out (.getBytes "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"late\"}]}}\n{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: blocked\"}\n" "UTF-8"))
+      (.flush out)
+      (loop [n 0]
+        (when (and (not= "TASK_BOARD_RESULT: blocked" (:result @summary)) (< n 200))
+          (Thread/sleep 25)
+          (recur (inc n))))
+      (assert (= "TASK_BOARD_RESULT: blocked" (:result @summary)))
+      (assert (= "late" (get-in @summary [:assistant :message :content 0 :text])))
+      (assert (not (realized? pump)))
+      (.close out)
+      (assert (= "TASK_BOARD_RESULT: blocked" (:result (deref pump 5000 nil)))))
+    ;; await-claude-pump!: when the drain outlives the grace period, keep
+    ;; polling until the late result line arrives instead of reading the atom once.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))
+          _ (.write out (.getBytes "{\"type\":\"assistant\"}\n" "UTF-8"))
+          _ (.flush out)
+          writer (future (Thread/sleep 700)
+                         (.write out (.getBytes "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: review\"}\n" "UTF-8"))
+                         (.flush out))
+          started (System/currentTimeMillis)
+          awaited (await-claude-pump! pump summary 100 10000)]
+      (assert (= "TASK_BOARD_RESULT: review" (:result awaited)))
+      (assert (< (- (System/currentTimeMillis) started) 9000))
+      (assert (not (realized? pump)))
+      (deref writer 5000 nil)
+      (.close out)
+      (deref pump 5000 nil)
+      (assert (some #(str/includes? % "final result received") @warnings)))
+    ;; ...and gives up at max-ms when no result ever arrives, returning what it has.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))
+          _ (.write out (.getBytes "{\"type\":\"assistant\"}\n" "UTF-8"))
+          _ (.flush out)
+          started (System/currentTimeMillis)
+          awaited (await-claude-pump! pump summary 100 1200)]
+      (assert (nil? (:result awaited)))
+      (assert (:json? awaited))
+      (assert (>= (- (System/currentTimeMillis) started) 1000))
+      (.close out)
+      (deref pump 5000 nil)
+      (assert (some #(str/includes? % "no final result received") @warnings)))'
+}
+
+test_claude_result_survives_events_log_failure() {
+  local tmp vault state bin last_message RUNNER
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${tmp}/runner"
+  cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
+  RUNNER="${tmp}/runner/task_board_runner.bb"
+  # Make the runner create a directory at the run's events.jsonl path so every
+  # log open/write fails while the agent is still streaming its result.
+  sed -i '/^(defn run-agent!/,/^    (fs\/create-dirs dir)$/ s|^    (fs/create-dirs dir)$|    (fs/create-dirs dir)\n    (fs/create-dirs stdout-path)|' "${RUNNER}"
+  grep -q '(fs/create-dirs stdout-path)' "${RUNNER}" || fail "runner patch for log failure did not apply"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-144|BOXP-144: log failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-144 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-log-failure.out
+  last_message="$(find "${state}/runs/BOXP-144" -name last-message.md -print -quit)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when events log cannot be written"
+  assert_file_contains "${vault}/Tickets/BOXP-144.md" '^status: done$'
+  [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
 }
 
 test_claude_events_log_omits_tool_payloads() {
@@ -3620,6 +3692,7 @@ test_assignment_repairs
 test_delegation_gate_end_to_end
 test_fable_stream_json
 test_claude_pump_drains_when_events_log_cannot_open
+test_claude_result_survives_events_log_failure
 test_claude_events_log_omits_tool_payloads
 test_claude_run_survives_subscription_snapshot_failure
 test_subscription_metrics_disabled_removes_prom

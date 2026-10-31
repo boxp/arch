@@ -70,6 +70,7 @@ Claude Code 2.1.312 の公式 stream-json `rate_limit_event` は、モデル専�
 
 ### レビュー指摘の対応
 
+- Claude のイベントログが書けない場合も、pump が共有 atom に保持した最終 result から last-message.md を生成する。終了後も drain が続く場合は最終 result の到着（上限 120 秒）まで再確認する。
 - Claude のイベントログを開けない場合も stdout の読み取りを最後まで続ける。
 - Claude の rate limit イベントは受信時刻をミリ秒精度で比較する。
 - Claude の stream-json は保存前に tool 入出力・thinking・permission_denials・session_id / uuid を除去し、各行を即時 flush する。rate limit は受信時刻で記録する。

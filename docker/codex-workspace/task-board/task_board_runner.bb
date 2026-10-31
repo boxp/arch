@@ -2363,7 +2363,7 @@
     (cond result result
           assistant (str/join "\n" (keep #(when (and (= "text" (:type %)) (string? (:text %))) (:text %))
                                          (get-in assistant [:message :content])))
-          (not json?) (slurp (str path))
+          (and (not json?) (fs/exists? path)) (slurp (str path))
           :else "")))
 
 (defn sanitize-claude-line
@@ -2413,8 +2413,13 @@
   and recording rate_limit_event at its receive time. The drain must never stop
   early: if it did, the agent would block on a full pipe or hit a broken pipe
   and the final result would be lost. Failures of the log write or of the
-  subscription snapshot are therefore caught per line and only logged."
-  [stream path]
+  subscription snapshot are therefore caught per line and only logged.
+  The running summary (last result / assistant event, as in
+  claude-stream-summary) is kept in `summary` (an atom the caller may pass in)
+  so the final result survives even when the log cannot be written or the
+  caller stops waiting for the drain; the atom's value is also returned."
+  ([stream path] (pump-claude-stream! stream path (atom {})))
+  ([stream path summary]
   (let [logged (atom #{})
         warn! (fn [k e] (when-not (@logged k) (swap! logged conj k) (log! (str k ": " (.getMessage e)))))]
     (try
@@ -2423,7 +2428,13 @@
                           (catch Exception e (warn! "claude events log open failed" e) nil))]
           (try
             (doseq [line (line-seq reader)]
-              (let [received-at (System/currentTimeMillis)]
+              (let [received-at (System/currentTimeMillis)
+                    event (when (str/starts-with? (str/triml line) "{")
+                            (try (json/parse-string line true) (catch Exception _ nil)))]
+                (when (map? event)
+                  (swap! summary #(cond-> (assoc % :json? true)
+                                    (and (= "result" (:type event)) (string? (:result event))) (assoc :result (:result event))
+                                    (= "assistant" (:type event)) (assoc :assistant event))))
                 (when writer
                   (try (.write writer (str (sanitize-claude-line line) "\n"))
                        (.flush writer)
@@ -2436,7 +2447,31 @@
                     (catch Exception e (warn! "claude subscription record failed" e))))))
             (finally
               (when writer (.close writer))))))
-      (catch Exception e (log! (str "claude stream pump failed: " (.getMessage e)))))))
+      (catch Exception e (log! (str "claude stream pump failed: " (.getMessage e)))))
+    @summary)))
+
+(defn await-claude-pump!
+  "Wait for the Claude stdout pump after the agent exited. Normally the drain
+  finishes within `grace-ms`. If it is still running (large backlog while the
+  events log cannot be written, slow snapshot writes), keep polling the shared
+  `summary` atom until the final result line has arrived or `max-ms` elapsed,
+  so a late result is not missed by reading the atom only once. Returns the
+  summary value to use."
+  [tail summary grace-ms max-ms]
+  (when (and tail (nil? (deref tail grace-ms nil)))
+    (log! "claude stream pump still draining after agent exit; waiting for the final result")
+    (let [deadline (+ (System/currentTimeMillis) (max 0 (- max-ms grace-ms)))]
+      (loop []
+        (when (and (not (realized? tail))
+                   (nil? (:result @summary))
+                   (< (System/currentTimeMillis) deadline))
+          (deref tail 250 nil)
+          (recur))))
+    (when-not (realized? tail)
+      (log! (if (:result @summary)
+              "claude stream pump still draining; final result received, using it"
+              "claude stream pump still draining; no final result received, using the summary so far"))))
+  @summary)
 
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
@@ -2495,20 +2530,27 @@
           _ (when (claude-assignee? agent)
               (try (spit (str stdout-path) "" :append true)
                    (catch Exception e (log! (str "claude events log touch failed: " (.getMessage e))))))
-          tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path)))
+          ;; The pump fills this atom as lines arrive, so the final result is
+          ;; available even if the deref below times out before the drain ends.
+          pump-summary-atom (atom {})
+          tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path pump-summary-atom)))
           _ (register-agent-process! run (:proc proc))
           {:keys [proc idle-timeout? shutdown?]} (try
                                                    (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
                                                    (finally
                                                      (unregister-agent-process! run)
                                                      (when tail (deref tail 10000 nil))))
+          pump-summary (when tail (await-claude-pump! tail pump-summary-atom 0 120000))
           raw-exit (:exit proc)
-          claude-summary (when (and (claude-assignee? agent) (fs/exists? stdout-path))
-                           (try (claude-stream-summary stdout-path)
-                                (catch Exception e
-                                  (log! (str "claude stream read failed: " (.getMessage e)))
-                                  nil)))
-          _ (when (and (claude-assignee? agent) (fs/exists? stdout-path))
+          claude-summary (when (claude-assignee? agent)
+                           (if (and (map? pump-summary) (or (:result pump-summary) (:assistant pump-summary)))
+                             pump-summary
+                             (when (fs/exists? stdout-path)
+                               (try (claude-stream-summary stdout-path)
+                                    (catch Exception e
+                                      (log! (str "claude stream read failed: " (.getMessage e)))
+                                      nil)))))
+          _ (when (and (claude-assignee? agent) (or (:result claude-summary) (:assistant claude-summary) (fs/exists? stdout-path)))
               (try
                 (spit (str last-message-path) (claude-last-message stdout-path (or claude-summary {})))
                 (catch Exception e
