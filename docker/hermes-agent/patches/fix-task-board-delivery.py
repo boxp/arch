@@ -17,6 +17,11 @@ def main(root):
              'if _intentional_silence and not (_boxp_proven_silence or silence_allowed(_silence_kind, _silence_reply_expected)):'),
         ],
         "gateway/run_turn.py": [
+            ('        """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""\n',
+             '        """Platform stream consumer for the proxy path when streaming is enabled, else ``None``."""\n'
+             '        from gateway.boxp_task_board_delivery import is_task_board_source\n'
+             '        if is_task_board_source(source):\n'
+             '            return None\n'),
             ('        # Same silence predicate as the normal path, else this branch leaks the literal marker.\n',
              '        from gateway.boxp_task_board_delivery import identity as _boxp_identity, shape as _boxp_shape\n'
              '        _boxp_queued = (getattr(getattr(turn_ctx.source, "platform", None), "value", None) == "webhook"\n'
@@ -26,7 +31,6 @@ def main(root):
              '            first_response, _boxp_proven_silence = _boxp_shape(\n'
              '                turn_ctx.source, _delivery_result, first_response,\n'
              '                self._is_intentional_silence(_delivery_result, first_response))\n'
-             '            _already_streamed = False\n'
              '        # Same silence predicate as the normal path, else this branch leaks the literal marker.\n'),
             ('            if silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected):',
              '            if _boxp_proven_silence or silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected):'),
@@ -34,6 +38,14 @@ def main(root):
              '                    metadata=(dict(turn_ctx._status_thread_metadata or {}, _boxp_task_board_final=True,\n'
              '                                   ) if _boxp_queued\n'
              '                              else turn_ctx._status_thread_metadata), event_message_id=turn_ctx.event_message_id,'),
+        ],
+        "gateway/run_turn_runner.py": [
+            ('        ctx = self._ctx\n        if ctx.mute_notification_reply:\n',
+             '        ctx = self._ctx\n'
+             '        from gateway.boxp_task_board_delivery import is_task_board_source\n'
+             '        if is_task_board_source(ctx.source):\n'
+             '            return None, None, None, False\n'
+             '        if ctx.mute_notification_reply:\n'),
         ],
         "gateway/platforms/webhook.py": [
             ('    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,',
@@ -82,6 +94,11 @@ def main(root):
     pending = {}
     for name, replacements in changes.items():
         text = (root / name).read_text()
+        if name == "gateway/run_turn.py":
+            # Upgrade the previous queued patch without discarding confirmed delivery.
+            previous = ("                self._is_intentional_silence(_delivery_result, first_response))\n"
+                        "            _already_streamed = False\n")
+            text = text.replace(previous, previous.replace("            _already_streamed = False\n", ""), 1)
         if name == "gateway/run_startup.py":
             previous = ('            if row.get("platform") == "webhook":\n'
                         '                metadata = dict(metadata or {}, _boxp_task_board_final=True)\n')

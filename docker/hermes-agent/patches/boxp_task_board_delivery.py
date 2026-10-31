@@ -37,6 +37,11 @@ def identity(chat_id):
     return None
 
 
+
+def is_task_board_source(source):
+    return (getattr(getattr(source, "platform", None), "value", None) == "webhook"
+            and identity(getattr(source, "chat_id", None)) is not None)
+
 def receipt(event, ticket, vault=VAULT):
     """Read only exact helper-produced event receipts, never retain Notes bodies."""
     pattern = re.compile(

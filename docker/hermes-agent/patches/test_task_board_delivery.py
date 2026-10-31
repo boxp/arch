@@ -179,6 +179,57 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls, [RECOVERED_MARKER + recovered, "SFW business report"])
         self.assertEqual(len(list(self.root.glob("*.json"))), 2)
 
+    async def test_installed_streaming_enabled_only_skips_task_board(self):
+        runner = Path("/opt/hermes/gateway/run_turn_runner.py")
+        turn = Path("/opt/hermes/gateway/run_turn.py")
+        if not runner.exists() or not turn.exists():
+            self.skipTest("integration runs inside the pinned Hermes image")
+        names = {"_setup_stream_consumer", "_proxy_stream_consumer"}
+        methods = [node for path in (runner, turn)
+                   for cls in ast.parse(path.read_text()).body if isinstance(cls, ast.ClassDef)
+                   for node in cls.body if isinstance(node, ast.FunctionDef) and node.name in names]
+        self.assertEqual({node.name for node in methods}, names)
+        consumer = types.ModuleType("gateway.stream_consumer")
+        class Consumer:
+            def __init__(self, **kwargs):
+                self.stream_deltas_enabled = True
+        consumer.GatewayStreamConsumer = Consumer
+        run = types.ModuleType("gateway.run")
+        run._load_gateway_config = lambda: {}
+        run._platform_config_key = lambda platform: "webhook"
+        display = types.ModuleType("gateway.display_config")
+        display.resolve_display_setting = lambda *args: True
+        bridge = types.ModuleType("gateway.boxp_task_board_delivery")
+        bridge.is_task_board_source = delivery.is_task_board_source
+        platform = NS(LOCAL=object())
+        namespace = {"SessionSource": object, "Platform": platform,
+                     "_finite_viewer_turn": lambda: False, "logger": logging.getLogger("fixture")}
+        cls = ast.ClassDef(name="Probe", bases=[], keywords=[], body=methods, decorator_list=[])
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])),
+                     "installed_stream_fixture", "exec"), namespace)
+        probe = namespace["Probe"]()
+        config = NS(globally_enabled=True, enabled_for=lambda setting: True)
+        probe.config = NS(streaming=config)
+        probe._delivery_adapter_for = lambda source: NS(SUPPORTS_MESSAGE_EDITING=True)
+        probe._build_stream_consumer_config = lambda *args, **kwargs: (NS(), None)
+        ctx = NS(source=self.source, mute_notification_reply=False,
+                 streaming_tts_consumer_holder=[None], stream_consumer_holder=[None],
+                 resolve_display_setting=lambda *args: True, user_config={}, scheduled_heartbeat=False,
+                 interim_assistant_messages_enabled=False, _status_thread_metadata=None,
+                 progress_queue=None, event_message_id=None, _run_still_current=lambda: True)
+        probe._ctx = ctx
+        probe._runner = probe
+        with patch.dict(sys.modules, {"gateway.boxp_task_board_delivery": bridge,
+                                      "gateway.stream_consumer": consumer, "gateway.run": run,
+                                      "gateway.display_config": display}):
+            self.assertEqual(probe._setup_stream_consumer("webhook"), (None, None, None, False))
+            self.assertIsNone(probe._proxy_stream_consumer(self.source, None, None, lambda: True))
+            # A non-task-board webhook still follows the enabled streaming configuration.
+            other = NS(platform=NS(value="webhook"), chat_id="webhook:other:event")
+            ctx.source = other
+            self.assertIsNotNone(probe._proxy_stream_consumer(other, None, None, lambda: True))
+            self.assertIsNotNone(probe._setup_stream_consumer("webhook")[0])
+
     async def test_installed_queued_path_shapes_and_records_first_response(self):
         turn = Path("/opt/hermes/gateway/run_turn.py")
         notifications = Path("/opt/hermes/gateway/run_notifications.py")

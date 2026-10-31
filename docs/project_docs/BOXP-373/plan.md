@@ -43,7 +43,7 @@
 - SFW fixtureは一時vault/receiptと偽adapterだけを使い、実モデル/実通知/実会話を使わない。成功・要判断・重複・既対応silence・空出力・例外・再送・競合・記録破損・他platformの保持を回帰する。
 - 稼働Podからsourceコード3ファイルだけを一時領域へ取得し、patchの初回/再適用と構文compileを確認。稼働Podのファイルは編集しない。
 - 独立codex-review、image build、CIを確認する。最終結果は票Notesへ記録。
-- **本PRはmerge保留**。mainへmergeするとimage build/Image UpdaterによりHermes再作成が起こり得る。本票では追加再作成が未承認なので、CI/review完了後に「このimage patchの反映でHermes再作成1回」を一点相談する。
+- mainへのmergeはimage build/Image UpdaterによりHermes再作成を伴い得る。00:05:59の票Notesで追加再作成は承認済み。実反映・再起動は親が実施する。
 - 承認後のみ通常merge→image更新→rollout回数/稼働image/patch/receipt storageをreadback。既存eventを再実行せず、新規の隔離fixture/実通知確認が許可された範囲を区別して記録する。未配備・実通知未確認のまま完了扱いにしない。
 
 ## 検証記録
@@ -75,3 +75,11 @@
 - 固定baseの `_run_agent_deliver_first_response` は通常shaperより先に応答を送るため、対象task-boardでは同じNotes照合と失敗判定を適用し、queued送信にfinal metadataを付ける。証拠付きsilentだけ抑止し、失敗・証拠不明は要確認通知にする。
 - 親検証でqueued専用receipt案を修正。同一eventのqueued報告・通常fallback・起動回復は同じ業務receiptを共有し、送信済み/未確定とも二重配送を防ぐ。次のinbound eventは独自source/event IDにより別receiptを持ち、必要報告を保持する。要確認通知は業務報告と分離する。
 - ホスト `python3 -m unittest discover -s docker/hermes-agent/patches -p 'test_task_board_delivery.py'` は23件中20件成功、固定image専用3件skip。digest固定v0.22.5のネットワーク無効コンテナへfixtureを `docker cp` し、patchを2回実行後に5ファイルのSHA-256一致、同unittest 23件成功。実際のqueued経路の3メソッドと一時vault・偽adapterを接続し、silent、失敗、未知、後続報告、重複、および未確定時のfallback停止を確認した。実配送・本番変更なし。親によるimage全体buildも成功（`boxp373-hermes-queued-fixture`、23試験全pass）。同imageの5対象ファイルはpatch再適用後もSHA-256一致。親修正後も通常/復旧fallback重複抑止と別event後続報告の保持を確認。
+
+## PR14248 gate P1: streaming と queued 配送
+
+- 固定 Hermes v0.22.5 では stream consumer が final metadata を付けずに送信する。default profile の task-board event に限り、通常 runner と proxy の両方で consumer を生成せず、最初の最終送信から shaper と receipt を通す。途中 commentary も同 consumer で送信されるため対象では無効化する。他の route/platform は既存設定を維持する。
+- queued 経路の `_already_streamed` 強制上書きを撤去し、旧patchからの更新も可能にする。queued・通常final・復旧fallbackのreceipt共有、unknown時のfail-closed、既存の認可・lockを維持する。
+- ネットワーク無効の固定 Hermes fixture imageで未適用sourceと旧queued patch適用済みsourceそれぞれに初回・再適用し、6対象ファイルのSHA-256一致、24試験全成功を確認。実際の固定sourceの通常runnerとproxyのconsumer生成メソッドに接続し、streaming ON時の対象抑止と別routeの維持を確認。queued・通常final・fallback・silence証拠不足・uncertain receiptの既存回帰も実行した。実通知・本番操作は行っていない。
+
+- 親検証: image全体build `boxp373-hermes-stream-fixture` 成功、build内24試験すべてpass。ホスト20pass/4skip、指定helperの委譲証跡verify成功、Trivy全体検査の対象Dockerfileは既存DS-0002/DS-0026のみ。
