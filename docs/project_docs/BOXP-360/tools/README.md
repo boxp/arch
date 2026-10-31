@@ -54,6 +54,7 @@ runner は `CODEX_TASK_BOARD_VAULT` が設定されている場合、全履歴�
 
 ```sh
 bb ai_ops_insight.bb report ~/.codex-task-board 20261030T065040Z   # run-id 上限で固定 snapshot を再現 (上限の長さで先頭比較: 時刻だけなら同じ秒の run を含む)
+bb ai_ops_insight.bb report ~/.codex-task-board 20261030T140906Z "$CODEX_TASK_BOARD_VAULT"  # vault を渡すと Review 停止からの再開契機 (Notes 見出しの時刻/source のみ) も出す
 ./insight-test.sh                                                   # 本票の実例を本文なしで再現する回帰 eval (test.sh からも実行)
 ```
 
