@@ -383,3 +383,45 @@ for want in 'ai_ops_v1_snapshot{part="unreadable_runs"} 2' 'ai_ops_v1_snapshot{p
 done
 if grep -qF 'gate="codex-review"' "$t30/v1.prom"; then echo "not ok - 読めない run を持つ task の gate 失敗が確定値として出力された"; cat "$t30/v1.prom"; exit 1; fi
 echo "ok - 読めない run を持つ task は v1 の prom 出力からも除外され unevaluated_tasks に別掲"
+
+# codex-review 指摘: EDN が map でも必須 field 欠落/不正型/未知値/不正時刻/ディレクトリ不一致の summary は
+# 読めない run (unreadable) として扱い、その task を v1 集計から除外する (`{}` を :status nil の正常 run にしない)。
+t31="$tmp/t31"; mkdir -p "$t31"
+# BOXP-930: 正常 gate 失敗 1 + `{}` (必須 field 欠落) -> 除外
+ROOT=$t31 run BOXP-930 20261021T000000Z retrying implement review codex-review
+mkdir -p "$t31/runs/BOXP-930/20261021T010000Z"; echo '{}' >"$t31/runs/BOXP-930/20261021T010000Z/summary.edn"
+# BOXP-931: 未知の :action (review_fix) -> 除外
+ROOT=$t31 run BOXP-931 20261021T020000Z succeeded review_fix review
+# BOXP-932: 終了状態なのに :finished-at 欠落 -> 除外
+ROOT=$t31 run BOXP-932 20261021T030000Z succeeded implement review
+sed -i 's/ :finished-at "[^"]*"//' "$t31/runs/BOXP-932/20261021T030000Z/summary.edn"
+# BOXP-933: :ticket がディレクトリと不一致 -> 除外
+ROOT=$t31 run BOXP-933 20261021T040000Z succeeded implement review
+sed -i 's/:ticket "BOXP-933"/:ticket "BOXP-999"/' "$t31/runs/BOXP-933/20261021T040000Z/summary.edn"
+# BOXP-934: 不正時刻 -> 除外
+ROOT=$t31 run BOXP-934 20261021T050000Z succeeded implement review
+sed -i 's/:finished-at "[^"]*"/:finished-at "yesterday"/' "$t31/runs/BOXP-934/20261021T050000Z/summary.edn"
+# BOXP-935: 正常 (interrupted は finished-at 不要、文字列 status/action も可) -> 集計
+ROOT=$t31 run BOXP-935 20261021T060000Z interrupted implement review
+sed -i 's/ :finished-at "[^"]*"//; s/:status :interrupted/:status "interrupted"/; s/:action :implement/:action "implement"/' "$t31/runs/BOXP-935/20261021T060000Z/summary.edn"
+ROOT=$t31 run BOXP-935 20261021T070000Z succeeded implement review
+bb ai_ops_insight.bb report "$t31" >"$t31/r.edn"
+check "必須 field 欠落/未知値/finished-at 欠落/ディレクトリ不一致/不正時刻の summary は unreadable として task を未評価化" \
+  '(and (= 6 (get-in r [:snapshot :tickets])) (= 8 (get-in r [:snapshot :runs])) (= 5 (get-in r [:snapshot :unreadable-runs])) (= 5 (get-in r [:snapshot :unevaluated-tasks]))
+        (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:gate-rework :total] 0)) (nil? (get-in r [:gate-rework :by-gate "codex-review"]))
+        (= 1 (get-in r [:non-correction :by-kind "resume_interrupted"])))' "$t31/r.edn"
+
+# codex-review 指摘: gate label は runner の固定語彙 (pr-url/mergeability/conflict/ci/codex-review/pr-gate/none) に限定し、
+# 未知の gate 名は "other" に集約する (summary の任意文字列で系列数を増やさない)
+t32="$tmp/t32"; mkdir -p "$t32"
+ROOT=$t32 run BOXP-940 20261022T000000Z retrying implement review codex-review
+ROOT=$t32 run BOXP-940 20261022T010000Z retrying implement review somebodys-secret-gate
+ROOT=$t32 run BOXP-940 20261022T020000Z retrying implement review mergeability
+ROOT=$t32 run BOXP-940 20261022T030000Z succeeded implement review
+bb ai_ops_insight.bb prom "$t32" >"$t32/v1.prom"
+for want in 'ai_ops_v1_gate_rework_runs_by_gate{gate="codex-review"} 1' 'ai_ops_v1_gate_rework_runs_by_gate{gate="mergeability"} 1' \
+            'ai_ops_v1_gate_rework_runs_by_gate{gate="other"} 1' 'ai_ops_v1_gate_rework_runs{part="total"} 3'; do
+  grep -qF "$want" "$t32/v1.prom" || { echo "not ok - prom 出力に無い: $want"; cat "$t32/v1.prom"; exit 1; }
+done
+if grep -q 'somebodys-secret-gate' "$t32/v1.prom"; then echo "not ok - 未知の gate 名が label に出力された"; exit 1; fi
+echo "ok - 未知の gate 名は other に集約され label に出ない"

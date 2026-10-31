@@ -78,10 +78,39 @@
                  :let [f (fs/path vault "Tickets" (str t ".md"))]]
              [t (if (fs/readable? f) (read-note-triggers f) :unreadable)])))
 
-(defn read-summary [f]
+;; summary.edn の許可値 (ai_ops_sli.bb enum-values と同じ)。集計に使う値が未知なら遷移分類から黙って漏れるため、
+;; 必須 field 欠落・不正型・未知値・不正時刻・ディレクトリ不一致の summary は読めない run (unreadable) として扱い、
+;; その task を v1 集計から除外する (`{}` を :status nil の正常 run にしない)。
+(def summary-enums
+  {:status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled" "superseded"}
+   :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
+   :result #{"review" "blocked" "done" "ready"}})
+
+(defn parse-inst [s] (try (java.time.Instant/parse s) (catch Exception _ nil)))
+
+(defn valid-summary?
+  "summary.edn の map s が dir (runs/<ticket>/<run-id>) の run として集計可能か。"
+  [s dir]
+  (and (map? s)
+       (some? (:status s))
+       (every? #(let [v (get s %)] (or (nil? v) (keyword? v) (string? v))) [:status :action :result :agent :blocker-category])
+       (every? #(let [v (get s %)] (or (nil? v) (string? v))) [:started-at :finished-at :updated-at])
+       (every? #(let [v (get s %)] (or (nil? v) (some? (parse-inst v)))) [:started-at :finished-at :updated-at])
+       (every? (fn [[k ek]] (let [v (get s k)] (or (nil? v) (contains? (ek summary-enums) (kw v))))) [[:status :status] [:action :action] [:result :result]])
+       (let [g (:review-gate s)] (or (nil? g) (and (map? g) (let [v (:gate g)] (or (nil? v) (keyword? v) (string? v)))
+                                                  (let [v (get-in g [:diagnostic :category])] (or (nil? v) (keyword? v) (string? v))))))
+       ;; 実行中/中断以外の終了状態は :finished-at 必須 (欠けると Review 到達/retry が黙って消える)
+       (or (contains? #{"running" "in-progress" "interrupted"} (kw (:status s)))
+           (not (str/blank? (:finished-at s))))
+       (= (kw (:ticket s)) (str (fs/file-name (fs/parent dir))))
+       (= (kw (:run-id s)) (str (fs/file-name dir)))))
+
+(defn read-summary
+  "読めて検証を通った summary だけ map を返す。それ以外は nil (呼び出し側で unreadable 扱い)。"
+  [f]
   (try
     (let [s (edn/read-string {:default (fn [_ v] v)} (slurp (str f)))]
-      (when (map? s)
+      (when (valid-summary? s (fs/parent f))
         {:run-id (str (fs/file-name (fs/parent f)))
          :status (kw (:status s)) :action (kw (:action s)) :result (kw (:result s))
          :blocker (kw (:blocker-category s)) :agent (kw (:agent s))
@@ -375,6 +404,8 @@
 ;; (top-tasks / review-loops の ticket は件数だけに畳む)。Notes (vault) は読まない。
 (def v1-transition-kinds ["gate_rework" "review_fix" "reopen_after_review" "retry_unknown"
                           "resume_interrupted" "resume_after_block" "groom_to_implement" "other"])
+;; task_board_runner.bb review-gate! が :gate に入れる固定語彙 + gate 情報なし ("none")。これ以外は label "other"。
+(def gate-names #{"pr-url" "mergeability" "conflict" "ci" "codex-review" "pr-gate" "none"})
 
 (defn prom-lines
   "report の結果 r を Prometheus text format で標準出力に書く。"
@@ -389,8 +420,9 @@
                (println (str m (when (seq labels)
                                  (str "{" (str/join "," (map (fn [[k v]] (str (name k) "=\"" (esc v) "\"")) labels)) "}"))
                              " " v)))
-        ;; gate 名は runner の固定語彙だが、未知の値が混ざっても label を汚さない
-        safe (fn [v] (if (and (string? v) (re-matches #"[a-z0-9_.-]{1,40}" v)) v "other"))
+        ;; gate 名は runner の固定語彙 (gate-names) に限定し、未知の値は "other" に集約する
+        ;; (summary に任意の文字列が入っても系列数が増えず、想定外の文字列を label に出さない)
+        safe (fn [v] (if (contains? gate-names v) v "other"))
         rates (:task-rates r) gr (:gate-rework r) rw (:review-wait r) loops (:detected (:review-loops r))]
     (line "ai_ops_v1_info" {:rules_version rules-version :loop_threshold loop-threshold} 1)
     (line "ai_ops_v1_generated_timestamp_seconds" {} (quot (System/currentTimeMillis) 1000))
