@@ -42,19 +42,27 @@
                 (->> (fs/glob dir "**/rollout-*.jsonl")
                      (filter #(>= (quot (.toMillis (fs/last-modified-time %)) 1000) (- now-s (* 8 86400))))
                      (sort-by #(.toMillis (fs/last-modified-time %)) >) (take 200)) [])]
-    (some (fn [file]
-            (try
-              (with-open [reader (io/reader (str file))]
-                (reduce (fn [last-hit line]
-                          (if (str/includes? line "\"token_count\"")
-                            (let [entry (try (json/parse-string line true) (catch Exception _ (when *codex-read-error* (reset! *codex-read-error* true)) nil))
-                                  payload (:payload entry)]
-                              (if (and (= "event_msg" (:type entry)) (= "token_count" (:type payload)) (map? (:rate_limits payload)))
-                                {:rate_limits (:rate_limits payload)
-                                 :observed_at (try (.getEpochSecond (java.time.Instant/parse (:timestamp entry)))
-                                                   (catch Exception _ (quot (.toMillis (fs/last-modified-time file)) 1000)))}
-                                last-hit)) last-hit)) nil (line-seq reader)))
-              (catch Exception _ (when *codex-read-error* (reset! *codex-read-error* true)) nil))) files)))
+    (let [buckets (reduce (fn [buckets file]
+                            (let [mtime (.toMillis (fs/last-modified-time file))]
+                              (try
+                                (with-open [reader (io/reader (str file))]
+                                  (reduce (fn [hits line]
+                                            (if (str/includes? line "\"token_count\"")
+                                              (let [entry (try (json/parse-string line true) (catch Exception _ (when *codex-read-error* (reset! *codex-read-error* true)) nil))
+                                                    payload (:payload entry)
+                                                    limits (:rate_limits payload)]
+                                                (if (and (= "event_msg" (:type entry)) (= "token_count" (:type payload)) (map? limits))
+                                                  (let [bucket (or (:limit_id limits) "codex")
+                                                        millis (try (.toEpochMilli (java.time.Instant/parse (:timestamp entry))) (catch Exception _ mtime))]
+                                                    (if (> millis (get-in hits [bucket :millis] Long/MIN_VALUE))
+                                                      (assoc hits bucket {:rate_limits limits :observed_at (quot millis 1000) :millis millis})
+                                                      hits))
+                                                  hits))
+                                              hits)) buckets (line-seq reader)))
+                                (catch Exception _ (when *codex-read-error* (reset! *codex-read-error* true)) buckets)))) {} files)]
+      (when (seq buckets)
+        {:buckets (into {} (map (fn [[k v]] [k (dissoc v :millis)]) buckets))
+         :observed_at (apply max (map :observed_at (vals buckets)))}))))
 
 (defn snapshot [path]
   (if-not (fs/exists? path) {:state "no_snapshot"}
@@ -107,21 +115,22 @@
           (window! "claude" limit window (when (and (number? u) (<= 0 u 1)) (* 100 u)) (:resetsAt v) ({"5h" 18000 "7d" 604800} window) (:status v))))
       (emit "ai_subscription_extra_usage_status" [[:provider "claude"] [:status (enum-value (:overageStatus info) "unknown")] [:reason (enum-value (:overageDisabledReason info) "none")]] 1)
       (emit "ai_subscription_extra_usage_in_use" [[:provider "claude"]] (bool-num (:isUsingOverage info))))
-    (when-let [limits (get-in codex [:data :rate_limits])]
-      ;; Codex reports one bucket per event (limit_id, "codex" for the plan-wide limit).
-      ;; Other buckets get their own limit label so they never overwrite the plan window.
-      (doseq [slot [:primary :secondary] :let [v (slot limits)] :when (map? v)]
+    (when-let [buckets (get-in codex [:data :buckets])]
+      (doseq [[limit-id bucket] buckets
+              slot [:primary :secondary]
+              :let [v (get-in bucket [:rate_limits slot])]
+              :when (map? v)]
         (let [minutes (:window_minutes v)
-              limit-id (:limit_id limits)
-              limit (if (or (nil? limit-id) (= "codex" limit-id))
-                      (name slot)
-                      (enum-value (str limit-id "_" (name slot)) "other"))]
+              limit (if (= "codex" limit-id) (name slot)
+                        (enum-value (str limit-id "_" (name slot)) "other"))]
           (window! "codex" limit (cond (= 300 minutes) "5h"
                                        (= 10080 minutes) "7d"
                                        (and (integer? minutes) (pos? minutes) (< minutes 1000000000)) (str minutes "m")
                                        :else "unknown")
                    (:used_percent v) (:resets_at v) (when (and (number? minutes) (pos? minutes)) (* minutes 60)) nil)))
-      (let [credits (:credits limits) labels [[:provider "codex"]]]
+      (let [limits (:rate_limits (or (get buckets "codex") (apply max-key :observed_at (vals buckets))))
+            credits (:credits limits) labels [[:provider "codex"]]]
+
         (emit "ai_subscription_credits_available" labels (bool-num (:has_credits credits)))
         (emit "ai_subscription_credits_unlimited" labels (bool-num (:unlimited credits)))
         (emit "ai_subscription_credits_balance" labels (try (when (string? (:balance credits)) (let [n (Double/parseDouble (:balance credits))] (when (Double/isFinite n) n))) (catch Exception _ nil)))

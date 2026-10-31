@@ -19,6 +19,7 @@
 
 - 追加の model 呼出し（probe）はしない。Claude は task-board runner の通常 run を観測し、Codex は CLI が書く rollout を読むだけにする。
 - rollout は `token_count` 行の `rate_limits` だけを抽出する。会話本文・資格情報は読まず、出力もしない。
+- Codex は対象 rollout 全体からイベント時刻でバケットごとの最新値を選び、時刻を解析できない場合はファイルの更新時刻を使う。
 - 非公式 endpoint（claude.ai usage endpoint など）や認証情報の外部送信には依存しない。
 
 ## 実装

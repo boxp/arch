@@ -50,6 +50,26 @@ bb -e '
   (let [out (ai-subscription-usage/prom-text root home now)]
     (assert (clojure.string/includes? out "limit=\"codex_other_primary\",name=\"codex_other_primary\",window=\"5h\"} 5.0"))
     (assert (not (clojure.string/includes? out "limit=\"primary\""))))
+  (let [older (str home "/sessions/2026/01/rollout-older.jsonl")
+        newer (str home "/sessions/2026/01/rollout-test.jsonl")
+        event (fn [timestamp limits]
+                (str (cheshire.core/generate-string {:type "event_msg" :timestamp (str (java.time.Instant/ofEpochSecond timestamp))
+                      :payload {:type "token_count" :rate_limits limits}}) "\n"))
+        window (fn [used] {:used_percent used :window_minutes 300 :resets_at (+ now 100)})]
+    (spit older (event (- now 20) {:limit_id "codex" :primary (window 10.0)}))
+    (spit newer (event (- now 10) {:limit_id "codex" :primary (window 20.0)}))
+    (babashka.fs/set-last-modified-time older (java.nio.file.attribute.FileTime/fromMillis (* 1000 now)))
+    (babashka.fs/set-last-modified-time newer (java.nio.file.attribute.FileTime/fromMillis (* 1000 (- now 30))))
+    (let [out (ai-subscription-usage/prom-text root home now)]
+      (assert (clojure.string/includes? out "limit=\"primary\",name=\"primary\",window=\"5h\"} 20.0")))
+    (babashka.fs/delete older)
+    (spit newer (str (event (- now 10) {:limit_id "codex" :primary (window 30.0) :plan_type "pro"})
+                     (event now {:limit_id "other_bucket" :primary (window 40.0) :plan_type "other"})))
+    (let [out (ai-subscription-usage/prom-text root home now)]
+      (doseq [part ["limit=\"primary\",name=\"primary\",window=\"5h\"} 30.0"
+                    "limit=\"other_bucket_primary\",name=\"other_bucket_primary\",window=\"5h\"} 40.0"
+                    "ai_subscription_plan_info{provider=\"codex\",plan=\"pro\"} 1"]]
+        (assert (clojure.string/includes? out part) part))))
   (spit (str home "/sessions/2026/01/rollout-test.jsonl") "{\"token_count\": malformed}\n")
   (assert (clojure.string/includes? (ai-subscription-usage/prom-text root home now) "provider=\"codex\",state=\"parse_error\""))
   (spit (str root "/ai-ops/subscription/claude.json") "not json")
