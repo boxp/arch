@@ -69,5 +69,5 @@ Claude Code 2.1.312 の公式 stream-json `rate_limit_event` は、モデル専�
 
 ### レビュー指摘の対応
 
-- Claude の stream-json は保存前に tool 入出力などを除去し、各行を即時 flush する。rate limit は受信時刻で記録する。
+- Claude の stream-json は保存前に tool 入出力・thinking・permission_denials・session_id / uuid を除去し、各行を即時 flush する。rate limit は受信時刻で記録する。
 - subscription metrics の無効化時は既存の Prometheus ファイルを削除する。

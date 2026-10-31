@@ -2366,7 +2366,13 @@
           (not json?) (slurp (str path))
           :else "")))
 
-(defn sanitize-claude-line [line]
+(defn sanitize-claude-line
+  "Reduce one Claude stream-json line to what the run log needs: text blocks,
+  the final result, tool names and rate limit numbers. Tool inputs/outputs,
+  thinking, permission denials and session identifiers (session_id / uuid)
+  are dropped so events.jsonl cannot leak file contents or credentials, nor
+  be used to resume or trace the conversation."
+  [line]
   (let [event (when (str/starts-with? line "{")
                 (try (json/parse-string line true) (catch Exception _ nil)))]
     (if-not (map? event)
@@ -2374,7 +2380,7 @@
       (let [type (:type event)
             block-type (fn [block] (select-keys block [:type]))
             clean (case type
-                    "assistant" (cond-> (select-keys event [:type :session_id :uuid :parent_tool_use_id :message])
+                    "assistant" (cond-> (select-keys event [:type :parent_tool_use_id :message])
                                   (map? (:message event))
                                   (update :message
                                           (fn [message]
@@ -2386,7 +2392,7 @@
                                                                  "text" block
                                                                  "tool_use" (select-keys block [:type :id :name])
                                                                  (block-type block))) %))))))
-                    "user" (cond-> (select-keys event [:type :session_id :uuid :parent_tool_use_id :message])
+                    "user" (cond-> (select-keys event [:type :parent_tool_use_id :message])
                              (map? (:message event))
                              (update :message
                                      (fn [message]
@@ -2396,9 +2402,9 @@
                                                              (select-keys block [:type :tool_use_id :is_error])
                                                              (block-type block))) (:content message))
                                                    [])})))
-                    "result" (select-keys event [:type :subtype :is_error :result :duration_ms :duration_api_ms :num_turns :session_id :uuid :usage :modelUsage])
+                    "result" (select-keys event [:type :subtype :is_error :result :duration_ms :duration_api_ms :num_turns :usage :modelUsage])
                     "rate_limit_event" (select-keys event [:type :rate_limit_info])
-                    "system" (select-keys event [:type :subtype :session_id :model :cwd :permissionMode :claude_code_version])
+                    "system" (select-keys event [:type :subtype :model :cwd :permissionMode :claude_code_version])
                     (select-keys event [:type]))]
         (json/generate-string clean)))))
 
