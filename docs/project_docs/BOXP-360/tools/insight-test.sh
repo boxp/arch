@@ -461,3 +461,28 @@ echo '{:ticket "BOXP-946" :run-id "20261023T010000Z" :status :interrupted :updat
 bb ai_ops_insight.bb report "$t35" >"$t35/r.edn"
 check "中断 run の :action を :previous-lock から補完して review_fix に分類し、補完できない中断 run は unreadable として task を未評価化する" \
   '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:snapshot :unevaluated-tasks])) (= 1 (get-in r [:snapshot :unreadable-runs])) (= 2 (get-in r [:transitions :v1 "review_fix"])) (= 0 (get-in r [:transitions :v1 "other"] 0)) (= 1 (get-in r [:task-rates :v1-owner-visible-tasks :n])))' "$t35/r.edn"
+
+# 固定 snapshot の insight md 第 7 節 (再開契機表・契機あり割合) が resume EDN と一致する (文書と EDN の矛盾検出)
+if bb -e '(require (quote [clojure.string :as str]))
+  (let [edn (:review-resume (clojure.edn/read-string (slurp "../insight-2026-10-30-resume.edn")))
+        bt (:by-trigger edn) btn (:by-trigger-next edn)
+        kinds {"groom→implement" "groom_to_implement" "review_fix" "review_fix" "Review 後の再開" "reopen_after_review" "その他" "other"}
+        md (slurp "../insight-2026-10-30.md")
+        row (fn [label trig]
+              (let [line (first (filter #(str/starts-with? % (str "| " label)) (str/split-lines md)))
+                    cells (map str/trim (str/split (subs line 1) #"\|"))
+                    [_ n tasks] (re-matches #"(\d+) \((\d+)\)" (nth cells 1))
+                    parts (into {} (for [p (str/split (nth cells 3) #" / ")] (let [[_ k v] (re-matches #"(.+) (\d+)" p)] [(kinds k) (parse-long v)])))
+                    want (into {} (for [[[t k] v] btn :when (= t trig)] [k v]))]
+                (when-not (and (= (parse-long n) (:n (bt trig))) (= (parse-long tasks) (:tasks (bt trig))) (= parts want))
+                  (binding [*out* *err*] (prn :mismatch label {:md [n tasks parts] :edn [(bt trig) want]}))
+                  (System/exit 1))))]
+    (row "観測なし" "none-observed") (row "Owner 経由指示" "owner-relay") (row "監督催促" "supervisor") (row "Owner 直接 note" "owner-direct")
+    (let [[_ tot trig] (re-find #"Review 後の再開 (\d+) 件のうち、(\d+) 件 \(\d+%\) は Owner 経由" md)
+          rr (fn [t] (get btn [t "reopen_after_review"] 0))
+          etot (reduce + (map rr ["none-observed" "owner-relay" "owner-direct" "supervisor"]))
+          etrig (reduce + (map rr ["owner-relay" "owner-direct" "supervisor"]))]
+      (when-not (and tot (= (parse-long tot) etot) (= (parse-long trig) etrig))
+        (binding [*out* *err*] (prn :mismatch :share {:md [tot trig] :edn [etot etrig]})) (System/exit 1))))'; then
+  echo "ok - insight md 第 7 節の再開契機表・契機あり割合が resume EDN と一致"
+else echo "not ok - insight md 第 7 節が resume EDN と不一致"; exit 1; fi
