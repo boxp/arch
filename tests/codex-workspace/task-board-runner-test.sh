@@ -146,7 +146,7 @@ sleep "${CLAUDE_FAKE_SLEEP:-0}"
 if [[ "${CLAUDE_FAKE_STREAM_JSON:-false}" == true ]]; then
   printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed"},"session_id":"secret"}'
   sleep "${CLAUDE_FAKE_STREAM_DELAY:-0}"
-  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"working"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"SECRET_TOOL_INPUT"}}]}}' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"SECRET_TOOL_OUTPUT"}]},"tool_use_result":"SECRET_TOOL_OUTPUT"}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
 else
   printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
 fi
@@ -362,6 +362,39 @@ test_fable_stream_json() {
   observed="$(bb -e '(require (quote cheshire.core)) (println (:observed_at (cheshire.core/parse-string (slurp (first *command-line-args*)) true)))' "${state}/ai-ops/subscription/claude.json")"
   finished="$(stat -c %Y "$(find "${state}/runs/BOXP-149" -name events.jsonl -print -quit)")"
   (( observed <= finished - 2 )) || fail "subscription observation was delayed until process exit"
+}
+
+test_claude_events_log_omits_tool_payloads() {
+  local tmp vault state bin events last_message
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-148|BOXP-148: stream privacy]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-148 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-stream-privacy.out
+  events="$(find "${state}/runs/BOXP-148" -name events.jsonl -print -quit)"
+  last_message="$(find "${state}/runs/BOXP-148" -name last-message.md -print -quit)"
+  assert_file_not_contains "${events}" 'SECRET_TOOL_INPUT|SECRET_TOOL_OUTPUT|"secret"'
+  assert_file_contains "${events}" '"name":"Bash"'
+  assert_file_contains "${events}" 'working'
+  assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
+  [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+}
+
+test_subscription_metrics_disabled_removes_prom() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-146|BOXP-146: metrics]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-146 in-progress codex
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >/tmp/task-board-metrics-on.out
+  [[ -f "${state}/ai-ops/subscription-usage.prom" ]] || fail "missing subscription metrics"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-147|BOXP-147: metrics disabled]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-147 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_SUBSCRIPTION_METRICS=false run_tick "${vault}" "${state}" env >/tmp/task-board-metrics-off.out
+  [[ ! -e "${state}/ai-ops/subscription-usage.prom" ]] || fail "subscription metrics still present"
 }
 
 test_fable_assignee_runs_via_claude() {
@@ -3541,6 +3574,8 @@ test_assignment_superseded
 test_assignment_repairs
 test_delegation_gate_end_to_end
 test_fable_stream_json
+test_claude_events_log_omits_tool_payloads
+test_subscription_metrics_disabled_removes_prom
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
 test_fable_model_environment_is_legacy_only

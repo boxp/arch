@@ -66,3 +66,8 @@ Claude Code 2.1.312 の公式 stream-json `rate_limit_event` は、モデル専�
 
 - Claude の stream を実行中に追跡し、完結した rate limit event の受信時刻を記録する。終了後に残りを読み、既存 snapshot より古い観測は同一プロセス内のロックで比較・書き込みを直列化して破棄する。
 - Codex は８日以内の全候補をイベント時刻で比較する。ファイルのサイズと更新時刻が変わらなければ、そのファイルのバケット別最新値と読み取りエラー状態を再利用し、候補から外れたキャッシュを破棄する。
+
+### レビュー指摘の対応
+
+- Claude の stream-json は保存前に tool 入出力などを除去し、各行を即時 flush する。rate limit は受信時刻で記録する。
+- subscription metrics の無効化時は既存の Prometheus ファイルを削除する。

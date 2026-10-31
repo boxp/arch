@@ -244,6 +244,9 @@
   ([] (maybe-write-ai-ops-metrics! false))
   ([sync?]
   (let [now-ms (System/currentTimeMillis)]
+    (when (= "false" (env "CODEX_TASK_BOARD_SUBSCRIPTION_METRICS" "true"))
+      (try (fs/delete-if-exists (fs/path (root) "ai-ops/subscription-usage.prom"))
+           (catch Exception e (log! (str "subscription metrics delete failed: " (.getMessage e))))))
     (when (>= (- now-ms @ai-ops-metrics-last-ms) 60000)
       (reset! ai-ops-metrics-last-ms now-ms)
       (try
@@ -2363,41 +2366,55 @@
           (not json?) (slurp (str path))
           :else "")))
 
-(defn tail-claude-subscription!
-  "Follow a Claude stream-json stdout while the agent runs and record each
-  complete rate_limit_event line at the time it is observed (the event itself
-  carries no timestamp). Bytes are read in chunks from the last offset; a
-  trailing partial line is kept until its newline arrives. After `stopped?`
-  flips, one final drain pass reads whatever the agent wrote before exiting."
-  [path stopped?]
+(defn sanitize-claude-line [line]
+  (let [event (when (str/starts-with? line "{")
+                (try (json/parse-string line true) (catch Exception _ nil)))]
+    (if-not (map? event)
+      line
+      (let [type (:type event)
+            block-type (fn [block] (select-keys block [:type]))
+            clean (case type
+                    "assistant" (cond-> (select-keys event [:type :session_id :uuid :parent_tool_use_id :message])
+                                  (map? (:message event))
+                                  (update :message
+                                          (fn [message]
+                                            (cond-> (select-keys message [:id :model :role :stop_reason :usage :content])
+                                              (sequential? (:content message))
+                                              (update :content
+                                                      #(mapv (fn [block]
+                                                               (case (:type block)
+                                                                 "text" block
+                                                                 "tool_use" (select-keys block [:type :id :name])
+                                                                 (block-type block))) %))))))
+                    "user" (cond-> (select-keys event [:type :session_id :uuid :parent_tool_use_id :message])
+                             (map? (:message event))
+                             (update :message
+                                     (fn [message]
+                                       {:content (if (sequential? (:content message))
+                                                   (mapv (fn [block]
+                                                           (if (= "tool_result" (:type block))
+                                                             (select-keys block [:type :tool_use_id :is_error])
+                                                             (block-type block))) (:content message))
+                                                   [])})))
+                    "result" (select-keys event [:type :subtype :is_error :result :duration_ms :duration_api_ms :num_turns :session_id :uuid :usage :modelUsage])
+                    "rate_limit_event" (select-keys event [:type :rate_limit_info])
+                    "system" (select-keys event [:type :subtype :session_id :model :cwd :permissionMode :claude_code_version])
+                    (select-keys event [:type]))]
+        (json/generate-string clean)))))
+
+(defn pump-claude-stream! [stream path]
   (try
-    (with-open [file (java.io.RandomAccessFile. (str path) "r")]
-      (let [buf (byte-array 65536)
-            record! (fn [line]
-                      (when (str/includes? line "rate_limit_event")
-                        (let [event (try (json/parse-string line true) (catch Exception _ nil))]
-                          (when (and (= "rate_limit_event" (:type event)) @subscription-module-loaded?)
-                            ((resolve 'ai-subscription-usage/record-claude-rate-limit!)
-                             (root) event (quot (System/currentTimeMillis) 1000))))))]
-        (loop [pending (java.io.ByteArrayOutputStream.)]
-          (let [final-drain? @stopped?
-                pending (loop [pending pending]
-                          (let [n (.read file buf)]
-                            (if (pos? n)
-                              (recur (let [chunk (if (zero? (.size pending)) (java.util.Arrays/copyOf buf n)
-                                                   (do (.write pending buf 0 n) (.toByteArray pending)))
-                                           last-nl (loop [i (dec (alength chunk))] (cond (neg? i) -1 (= 10 (aget chunk i)) i :else (recur (dec i))))]
-                                       (when (>= last-nl 0)
-                                         (doseq [line (str/split-lines (String. chunk 0 (inc last-nl) "UTF-8"))]
-                                           (record! line)))
-                                       (let [rest (java.io.ByteArrayOutputStream.)]
-                                         (.write rest chunk (inc last-nl) (- (alength chunk) (inc last-nl)))
-                                         rest)))
-                              pending)))]
-            (when-not final-drain?
-              (Thread/sleep 1000)
-              (recur pending))))))
-    (catch Exception e (log! (str "claude subscription tail failed: " (.getMessage e))))))
+    (with-open [reader (io/reader stream)
+                writer (io/writer (str path) :append true)]
+      (doseq [line (line-seq reader)]
+        (let [received-at (quot (System/currentTimeMillis) 1000)
+              event (when (str/includes? line "rate_limit_event")
+                      (try (json/parse-string line true) (catch Exception _ nil)))]
+          (.write writer (str (sanitize-claude-line line) "\n"))
+          (.flush writer)
+          (when (and (= "rate_limit_event" (:type event)) @subscription-module-loaded?)
+            ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at)))))
+    (catch Exception e (log! (str "claude stream pump failed: " (.getMessage e))))))
 
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
@@ -2443,22 +2460,24 @@
                    (conj "-")))
           idle-timeout-seconds (agent-idle-timeout-seconds)
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
-                                              :out (io/file (str stdout-path))
+                                              :out (if (claude-assignee? agent) :stream (io/file (str stdout-path)))
                                               :err (io/file (str stderr-path))
                                               :extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path
                                                           "TASK_BOARD_DELEGATION_ADD_DIRS" (json/generate-string
                                                                                            (vec (cons (vault) (workspace-add-dirs workspace))))}}
                                        (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
-          stopped? (atom false)
-          tail (when (claude-assignee? agent) (future (tail-claude-subscription! stdout-path stopped?)))
+          ;; The pump creates events.jsonl on the first line; touch it up front so
+          ;; the file exists (as it did with direct file output) even if the
+          ;; agent exits without writing anything.
+          _ (when (claude-assignee? agent) (spit (str stdout-path) "" :append true))
+          tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path)))
           _ (register-agent-process! run (:proc proc))
           {:keys [proc idle-timeout? shutdown?]} (try
                                                    (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
                                                    (finally
                                                      (unregister-agent-process! run)
-                                                     (reset! stopped? true)
-                                                     (when tail @tail)))
+                                                     (when tail (deref tail 10000 nil))))
           raw-exit (:exit proc)
           claude-summary (when (and (claude-assignee? agent) (fs/exists? stdout-path))
                            (try (claude-stream-summary stdout-path)
