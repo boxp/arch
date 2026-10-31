@@ -16,6 +16,25 @@ def main(root):
             ('if _intentional_silence and not silence_allowed(_silence_kind, _silence_reply_expected):',
              'if _intentional_silence and not (_boxp_proven_silence or silence_allowed(_silence_kind, _silence_reply_expected)):'),
         ],
+        "gateway/run_turn.py": [
+            ('        # Same silence predicate as the normal path, else this branch leaks the literal marker.\n',
+             '        from gateway.boxp_task_board_delivery import identity as _boxp_identity, shape as _boxp_shape\n'
+             '        _boxp_queued = (getattr(getattr(turn_ctx.source, "platform", None), "value", None) == "webhook"\n'
+             '                        and _boxp_identity(turn_ctx.source.chat_id) is not None)\n'
+             '        _boxp_proven_silence = False\n'
+             '        if _boxp_queued:\n'
+             '            first_response, _boxp_proven_silence = _boxp_shape(\n'
+             '                turn_ctx.source, _delivery_result, first_response,\n'
+             '                self._is_intentional_silence(_delivery_result, first_response))\n'
+             '            _already_streamed = False\n'
+             '        # Same silence predicate as the normal path, else this branch leaks the literal marker.\n'),
+            ('            if silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected):',
+             '            if _boxp_proven_silence or silence_allowed(turn_ctx.persist_user_display_kind, turn_ctx.reply_expected):'),
+            ('                    metadata=turn_ctx._status_thread_metadata, event_message_id=turn_ctx.event_message_id,',
+             '                    metadata=(dict(turn_ctx._status_thread_metadata or {}, _boxp_task_board_final=True,\n'
+             '                                   ) if _boxp_queued\n'
+             '                              else turn_ctx._status_thread_metadata), event_message_id=turn_ctx.event_message_id,'),
+        ],
         "gateway/platforms/webhook.py": [
             ('    async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,',
              '    async def _send_final_text(self, event, session_key, text_content, metadata,\n'

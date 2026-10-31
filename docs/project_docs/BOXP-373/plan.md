@@ -69,3 +69,9 @@
 - 固定Hermes v0.22.5の`_redeliver_claimed_obligations`は、保存本文の前に`RECOVERED_MARKER`等を付けてから`adapter.send`を呼ぶ。復旧通知を送信本文の先頭だけで判定すると業務報告のreceiptを消費する。
 - 起動配送は接頭辞付加前の保存本文から通知かを判定し、内部metadataで渡す。通知と業務報告のreceiptは引き続き別々で、eventの排他とunknown時のfail-closedを維持する。旧patch適用済みsourceへの再適用にも対応する。
 - SFWホスト試験は21件中19件成功、image専用2件skip。digest固定baseのネットワーク無効コンテナで初回・再適用後の4ファイルのSHA-256一致と21件成功を確認。実際の起動配送メソッド、上流`RECOVERED_MARKER`、偽adapter、一時receiptを接続し、復旧通知と後続業務報告それぞれの重複抑止を確認した。旧patch適用済みfixture imageでも再適用後21件成功。実event・外部配送・本番変更は行っていない。
+
+## PR gate P1: queued first response
+
+- 固定baseの `_run_agent_deliver_first_response` は通常shaperより先に応答を送るため、対象task-boardでは同じNotes照合と失敗判定を適用し、queued送信にfinal metadataを付ける。証拠付きsilentだけ抑止し、失敗・証拠不明は要確認通知にする。
+- 親検証でqueued専用receipt案を修正。同一eventのqueued報告・通常fallback・起動回復は同じ業務receiptを共有し、送信済み/未確定とも二重配送を防ぐ。次のinbound eventは独自source/event IDにより別receiptを持ち、必要報告を保持する。要確認通知は業務報告と分離する。
+- ホスト `python3 -m unittest discover -s docker/hermes-agent/patches -p 'test_task_board_delivery.py'` は23件中20件成功、固定image専用3件skip。digest固定v0.22.5のネットワーク無効コンテナへfixtureを `docker cp` し、patchを2回実行後に5ファイルのSHA-256一致、同unittest 23件成功。実際のqueued経路の3メソッドと一時vault・偽adapterを接続し、silent、失敗、未知、後続報告、重複、および未確定時のfallback停止を確認した。実配送・本番変更なし。親によるimage全体buildも成功（`boxp373-hermes-queued-fixture`、23試験全pass）。同imageの5対象ファイルはpatch再適用後もSHA-256一致。親修正後も通常/復旧fallback重複抑止と別event後続報告の保持を確認。

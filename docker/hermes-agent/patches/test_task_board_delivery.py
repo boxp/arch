@@ -179,6 +179,94 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.calls, [RECOVERED_MARKER + recovered, "SFW business report"])
         self.assertEqual(len(list(self.root.glob("*.json"))), 2)
 
+    async def test_installed_queued_path_shapes_and_records_first_response(self):
+        turn = Path("/opt/hermes/gateway/run_turn.py")
+        notifications = Path("/opt/hermes/gateway/run_notifications.py")
+        if not turn.exists() or not notifications.exists():
+            self.skipTest("integration runs inside the pinned Hermes image")
+        names = {"_run_agent_deliver_first_response", "_deliver_queued_first_response",
+                 "_send_queued_final_text"}
+        methods = [node for path in (turn, notifications)
+                   for cls in ast.parse(path.read_text()).body if isinstance(cls, ast.ClassDef)
+                   for node in cls.body if isinstance(node, ast.AsyncFunctionDef) and node.name in names]
+        self.assertEqual({node.name for node in methods}, names)
+        # Evaluate the installed methods with their actual control flow, using only
+        # a fake adapter and temporary vault/receipts.
+        from contextlib import suppress
+        namespace = {"Any": object, "Optional": __import__("typing").Optional,
+                     "TurnContext": object, "SessionSource": object, "MessageEvent": lambda **kw: NS(**kw),
+                     "BasePlatformAdapter": type("BasePlatformAdapter", (), {}),
+                     "logger": logging.getLogger("boxp.fixture"), "suppress": suppress,
+                     "silence_allowed": lambda *args: False,
+                     "_unexpected_silence_reply": lambda: "unexpected warning"}
+        cls = ast.ClassDef(name="Probe", bases=[], keywords=[], body=methods, decorator_list=[])
+        exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])),
+                     "installed_queued_fixture", "exec"), namespace)
+        probe = namespace["Probe"]()
+        probe._is_intentional_silence = lambda result, text: not result.get("failed") and text.strip() in {"NO_REPLY", "[SILENT]"}
+        probe._run_agent_stream_confirmed_final_delivery = lambda *args, **kwargs: False
+        probe._pop_post_delivery_callback = lambda *args: None
+        async def media(*args, **kwargs):
+            pass
+        probe._deliver_media_from_response = media
+        async def send(chat_id, content, metadata=None):
+            return await delivery.send_once(self.adapter, chat_id, content, metadata=metadata,
+                                            root=self.root, vault=self.vault)
+        adapter = NS(send=send)
+        run = types.ModuleType("gateway.run")
+        run._strip_response_attachments_for_direct_send = lambda text, adapter: text
+        bridge = types.ModuleType("gateway.boxp_task_board_delivery")
+        bridge.identity = delivery.identity
+        bridge.shape = lambda source, result, response, marker: delivery.shape(source, result, response, marker, self.vault)
+        ctx = NS(mute_notification_reply=False, session_key="fixture", stream_consumer_holder=[None],
+                 source=self.source, persist_user_display_kind="human", reply_expected=None,
+                 _status_thread_metadata=None, event_message_id=None, inbound_message_id="fixture",
+                 run_generation=1)
+        async def queued(text, failed=False):
+            result = {"final_response": text, "failed": failed}
+            await probe._run_agent_deliver_first_response(ctx, adapter, result, result, None)
+            return result
+        with patch.dict(sys.modules, {"gateway.run": run, "gateway.boxp_task_board_delivery": bridge}):
+            self.note("silent")
+            await queued("NO_REPLY")
+            self.assertEqual(self.calls, [])
+            await queued("NO_REPLY", failed=True)
+            self.assertIn("agent_failed", self.calls[-1])
+            self.assertEqual(len(self.calls), 1)
+            (self.vault / "BOXP-999.md").unlink()
+            await queued("NO_REPLY")  # notice deduplicated, unknown is not silent
+            self.assertEqual(len(self.calls), 1)
+            self.note("notified")
+            first = await queued("SFW first report")
+            self.assertTrue(first["already_sent"])
+            await queued("SFW first report")
+            # Normal fallback and startup recovery for this event share the
+            # queued report receipt, including after a crash before ledger ack.
+            await self.send("SFW first report")
+            await self.send("Recovered: SFW first report")
+            self.assertEqual(self.calls[1:], ["SFW first report"])
+            # A real queued inbound event supplies its own source/event identity.
+            next_event = EVENT.replace("120000Z", "120001Z")
+            next_chat = CHAT[:len("webhook:v2:")] + base64.urlsafe_b64encode(
+                json.dumps(["default", "task-board", next_event]).encode()).decode().rstrip("=")
+            self.note("question", next_event)
+            ctx.source = NS(platform=NS(value="webhook"), chat_id=next_chat)
+            await queued("SFW follow-up report")
+            await queued("SFW follow-up report")
+            self.assertEqual(self.calls[1:], ["SFW first report", "SFW follow-up report"])
+            self.assertEqual(len(list(self.root.glob("*.json"))), 3)
+
+    async def test_uncertain_queued_send_blocks_normal_fallback(self):
+        self.note("notified")
+        self.fail = True
+        result = await delivery.send_once(self.adapter, CHAT, "SFW first report",
+            metadata={"_boxp_task_board_final": True, "_boxp_task_board_queued": True},
+            root=self.root, vault=self.vault)
+        self.assertFalse(result.success)
+        self.fail = False
+        self.assertFalse((await self.send("SFW fallback report")).success)
+        self.assertEqual(len(self.calls), 1)
+
     async def test_marker_plus_report_is_preserved_even_with_silent_receipt(self):
         self.note("silent")
         for text in ["NO_REPLY\nSFW report", "SFW report\n[SILENT]"]:
