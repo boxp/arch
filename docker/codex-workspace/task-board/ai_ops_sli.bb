@@ -649,7 +649,10 @@
         ;; request.received / task.* / correction / lane.changed 等を持つ ticket なしの依頼は従来どおり request_id 単位の task
         ;; mirror が受け入れる source は hermes-observer。runtime が欠落/redact された有効 event も会話として扱う
         hermes-event? #(or (= "hermes" (:runtime %)) (boolean (re-matches #"(?:[^:]+:)?hermes(?:-observer)?" (or (:source %) ""))))
-        turn-only? (fn [evs] (every? #(let [t (:event_type %)] (or (some-> t (str/starts-with? "run.")) (some-> t (str/starts-with? "approval.")))) evs))
+        ;; event_type が欠落/redact (mirror の gate が enum 外を置換) の event は種別不明: 会話を Board task に昇格させる根拠にしない
+        ;; (種別不明 event は全体の unverifiable-event-types / lost-events として別に計数され、関連 SLI を unknown にする)
+        unknown-type? #(let [t (:event_type %)] (or (nil? t) (= "redacted" t)))
+        turn-only? (fn [evs] (every? #(let [t (:event_type %)] (or (unknown-type? %) (some-> t (str/starts-with? "run.")) (some-> t (str/starts-with? "approval.")))) evs))
         conversation-ids (set (for [[tid evs] by-task
                                     :when (and (every? hermes-event? evs) (turn-only? evs) (not (re-matches #"[A-Z]+-\d+" (str tid))))] tid))
         conv-events (mapcat val (filter (comp conversation-ids key) by-task))
@@ -961,6 +964,7 @@
                                                           :turns-finished (frequencies (map #(if (contains? (:status enum-values) (:status %)) (:status %) "unknown") turns))
                                                           :approvals-requested (count (filter #(= "approval.requested" (:event_type %)) conv-events))
                                                           :approvals-resolved (count (filter #(= "approval.resolved" (:event_type %)) conv-events))
+                                                          :unverifiable-event-types (count (filter unknown-type? conv-events))
                                                           :stale-snapshot-markers hermes-stale)))}
      :by-stratum
      (into (sorted-map)
@@ -1130,7 +1134,9 @@
         (line "ai_ops_hermes_conversation_turns" {:kind "started"} (:turns-started h))
         (doseq [[st n] (sort (:turns-finished h))] (line "ai_ops_hermes_conversation_turns" {:kind (str "finished_" st)} n))
         (line "ai_ops_hermes_approval_events" {:kind "requested"} (:approvals-requested h))
-        (line "ai_ops_hermes_approval_events" {:kind "resolved"} (:approvals-resolved h))))))
+        (line "ai_ops_hermes_approval_events" {:kind "resolved"} (:approvals-resolved h))
+        ;; 種別不明 (欠落/redact) の会話 event: Board task に昇格させず件数だけ出す
+        (line "ai_ops_hermes_conversation_events" {:kind "unverifiable_type"} (:unverifiable-event-types h 0))))))
 
 ;; ---------------------------------------------------------------------------
 

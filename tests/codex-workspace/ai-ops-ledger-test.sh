@@ -704,10 +704,37 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (str/includes? snap "{\"collection_lost\":\"input_unreadable\"}") snap)
     (assert (not (str/includes? snap "task-board-runner")))
     (assert (= 1 (:malformed-lines s))) (assert (= 1 (:foreign-lines s))) (assert (= 3 (:lines s))))
-  ;; 追記途中の末尾行 (改行なし) は落とす
-  (spit src (str (str/join "\n" hermes-lines) "\n{\"source\":\"hermes-observer\",\"event_type\":\"run.sta"))
+  ;; 追記途中の末尾行 (改行なし) は落とすが、落とした取り込みは「成功」にしない: snapshot は最新の完全な行で置き換えつつ
+  ;; partial として記録し、集計入力には stale marker を付ける (末尾が書き込み途中の approval.requested だった場合に
+  ;; 承認を欠いた snapshot で重複承認率を確定しない)。次の完全な取り込みで解消する
+  (spit src (str (str/join "\n" hermes-lines) "\n{\"source\":\"hermes-observer\",\"event_type\":\"approval.requ"))
+  (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)) "a pull that dropped an unterminated tail line is not a clean success")
+  (assert (= hermes-maps (snapshot-maps)) "complete lines still replace the snapshot")
+  (let [s (ai-ops-ledger/read-hermes-mirror-status root) m (ai-ops-ledger/sli-export-metrics root)]
+    (assert (= "partial" (:last-result s)) (pr-str s))
+    (assert (= 1 (:truncated-tail-lines s))) (assert (= 1 (:partial-pulls s)))
+    (assert (ai-ops-ledger/hermes-mirror-stale? s) "partial snapshot stays stale until a complete pull")
+    (assert (str/includes? m "ai_ops_hermes_mirror_stale 1") m)
+    (assert (str/includes? m "ai_ops_hermes_mirror_partial_pulls_total 1") m)
+    (assert (str/includes? m "ai_ops_hermes_mirror_snapshot_lines{kind=\"truncated_tail\"} 1") m))
+  (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
+    (ai-ops-ledger/append-hermes-mirror! root (str t))
+    (let [lines (str/split-lines (slurp (str t)))]
+      (assert (= 3 (count lines)) (pr-str lines))
+      (assert (= ai-ops-ledger/hermes-stale-marker-line (last lines)) "stale marker follows the partial snapshot")
+      (assert (not (str/includes? (slurp (str t)) "approval.requ")) "the dropped tail never reaches the input"))
+    ;; 集計側: 重複承認率は stale snapshot として unknown
+    (ai-ops-ledger/run-sli-command! ["bb" ai-ops-ledger/sli-script "aggregate" (str t)] (str t ".out") far-deadline)
+    (let [out (slurp (str t ".out"))]
+      (assert (str/includes? out ":stale-snapshot-markers 1") out)
+      (assert (re-find #":duplicate-approval\s*\{:status \"unknown\"" out) out)))
+  ;; 完全な取り込みで解消
+  (spit src (str (str/join "\n" hermes-lines) "\n"))
   (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
-  (assert (= hermes-maps (snapshot-maps)))
+  (let [s (ai-ops-ledger/read-hermes-mirror-status root)]
+    (assert (= "ok" (:last-result s))) (assert (zero? (:truncated-tail-lines s))) (assert (= 1 (:partial-pulls s)))
+    (assert (not (ai-ops-ledger/hermes-mirror-stale? s)))
+    (assert (str/includes? (ai-ops-ledger/sli-export-metrics root) "ai_ops_hermes_mirror_stale 0")))
   ;; allowlist 外の key (本文・引数等) と長すぎる値は snapshot に保存しない (集計側 gate の前で落とす)
   (spit src (str (json/generate-string (assoc (first hermes-maps) :body "secret text" :tool_args {:q "x"} :status (apply str (repeat 300 "a")))) "\n"))
   (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))

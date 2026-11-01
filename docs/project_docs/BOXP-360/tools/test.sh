@@ -1865,7 +1865,7 @@ bb -e "
       h (get-in j [:coverage :hermes-conversation])]
   (assert (= \"not-connected\" (get-in b [:coverage :hermes-conversation :status])))
   (assert (= {:status \"connected\" :coverage \"connected\" :conversations 1 :turns-started 2 :turns-finished {\"succeeded\" 1}
-              :approvals-requested 1 :approvals-resolved 0 :stale-snapshot-markers 0} h) (pr-str h))
+              :approvals-requested 1 :approvals-resolved 0 :unverifiable-event-types 0 :stale-snapshot-markers 0} h) (pr-str h))
   ;; 会話は Board の task 集計 (総数・outcome・層別) に入れず、件数を :tasks :conversations に別掲する
   (assert (= 1 (get-in j [:tasks :total])) (pr-str (:tasks j)))
   (assert (= 1 (get-in j [:tasks :conversations])))
@@ -1951,6 +1951,34 @@ bb -e "(load-file \"ai_ops_sli.bb\")
   (let [d0 (get-in (ai-ops-sli/aggregate* (concat board [ai-ops-sli/stale-source-marker])) [:sli :duplicate-approval])]
     (assert (= \"unknown\" (:status d0))) (assert (= 1 (:stale-snapshot-markers d0)) (pr-str d0))))
 (println \"ok   hermes-observer source だけの event を会話と認識し、初回取り込み失敗 (stale marker のみ) では重複承認率を確定せず取り込み失敗として別掲\")"
+# 回帰: event_type が欠落/redact (mirror の gate が enum 外を置換) の event を含む Hermes 会話は、同じ会話に有効な run.started が
+# あっても Board task に昇格させない (task 総数・run 数・救援率の分母を変えない)。種別不明 event は会話 coverage に別掲し、
+# 全体の unverifiable-event-types として zero-tolerance 指標を unknown にする (黙って捨てない)
+bb -e "(load-file \"ai_ops_sli.bb\")
+(def conv \"conv-29344c58-47e8-dc1a-68fd-feab0fc10335\")
+(def board [{:event_id \"BOXP-140/20261020T000000Z-aaaa:started\" :task_id \"BOXP-140\" :run_id \"20261020T000000Z-aaaa\" :event_type \"run.started\" :occurred_at \"2026-10-20T00:00:00Z\" :stratum \"infra\"}
+            {:event_id \"BOXP-140/20261020T000000Z-aaaa:finished\" :task_id \"BOXP-140\" :run_id \"20261020T000000Z-aaaa\" :event_type \"run.finished\" :status \"succeeded\" :result \"review\" :occurred_at \"2026-10-20T01:00:00Z\"}
+            {:event_id \"BOXP-140:state\" :task_id \"BOXP-140\" :event_type \"task.state\" :status \"review\" :snapshot \"current\"}
+            {:event_id \"BOXP-140/20261020T000000Z-aaaa:rescue\" :task_id \"BOXP-140\" :run_id \"20261020T000000Z-aaaa\" :event_type \"owner.rescue\" :occurred_at \"2026-10-20T00:30:00Z\"}])
+(def mixed [{:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :run_id \"20261031T000003Z-ee2d7526\" :event_type \"run.started\" :occurred_at \"2026-10-31T00:00:03Z\" :event_id (str conv \"/20261031T000003Z-ee2d7526:started\")}
+            {:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :run_id \"20261031T000003Z-ee2d7526\" :event_type \"redacted\" :occurred_at \"2026-10-31T00:00:05Z\" :event_id (str conv \"/20261031T000003Z-ee2d7526:rescue\")}
+            {:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :run_id \"20261031T000003Z-ee2d7526\" :occurred_at \"2026-10-31T00:00:06Z\" :event_id (str conv \"/20261031T000003Z-ee2d7526:req1\")}
+            {:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :run_id \"20261031T000003Z-ee2d7526\" :event_type \"run.finished\" :status \"succeeded\" :occurred_at \"2026-10-31T00:00:09Z\" :event_id (str conv \"/20261031T000003Z-ee2d7526:finished\")}])
+(let [b (ai-ops-sli/aggregate* board) j (ai-ops-sli/aggregate* (concat board mixed)) h (get-in j [:coverage :hermes-conversation])]
+  (assert (= 1 (get-in j [:tasks :total])) (str \"conversation with unknown-type events must not become a Board task: \" (pr-str (:tasks j))))
+  (assert (= (:runs b) (:runs j)) \"its turns must not be counted as Board runs\")
+  ;; 救援率: 会話は分母に入らない (観測値の分母は Board だけの集計と同じ)。種別不明 event は救援だった可能性があるので確定はしない
+  (let [o (get-in j [:sli :owner-rescue])]
+    (assert (= \"unknown\" (:status o)) (pr-str o))
+    (assert (= (get-in b [:sli :owner-rescue :denominator]) (get-in o [:observed-lower-bound :denominator])) (pr-str o))
+    (assert (= 2 (:lost-events o))))
+  (assert (= 1 (:conversations h)) (pr-str h))
+  (assert (= 2 (:unverifiable-event-types h)) (pr-str h))
+  (assert (= \"connected\" (:status h)))
+  ;; 種別不明 event は黙って消えない: 全体の unverifiable-event-types として zero-tolerance 指標を確定しない
+  (assert (= 2 (get-in j [:zero-tolerance :duplicate-effects :unverifiable-event-types])) (pr-str (get-in j [:zero-tolerance :duplicate-effects])))
+  (assert (= \"unknown\" (get-in j [:zero-tolerance :duplicate-effects :status]))))
+(println \"ok   種別不明 event を含む Hermes 会話を Board task に混ぜず、件数を会話 coverage と unverifiable-event-types に別掲\")"
 tmp_hj=$(mktemp -d)
 cat >"$tmp_hj/j.jsonl" <<'EOF'
 {"source":"hermes-observer","runtime":"hermes","task_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335","request_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335","run_id":"20261031T000003Z-ee2d7526","event_type":"run.started","occurred_at":"2026-10-31T00:00:03Z","event_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335/20261031T000003Z-ee2d7526:started"}
@@ -1963,6 +1991,7 @@ grep -q 'ai_ops_sli_source_partial{sli="hermes_conversation"} 1' "$tmp_hj/j.prom
 grep -q 'ai_ops_source_stale_snapshot_markers{source="hermes-observer"} 1' "$tmp_hj/j.prom"
 grep -q '^ai_ops_hermes_conversations 1$' "$tmp_hj/j.prom"
 grep -q 'ai_ops_hermes_conversation_turns{kind="finished_succeeded"} 1' "$tmp_hj/j.prom"
+grep -q 'ai_ops_hermes_conversation_events{kind="unverifiable_type"} 0' "$tmp_hj/j.prom"
 grep -q 'ai_ops_guardrail_tasks{kind="conversations_unobserved"} 1' "$tmp_hj/j.prom"
 grep -q 'ai_ops_runs{status="all"} 0' "$tmp_hj/j.prom"
 ! grep -q 'conv-29344c58' "$tmp_hj/j.prom"
