@@ -63,3 +63,9 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 - `test_gate_failure_budget_stricter_short_term_limit_still_applies`: より厳しい既存短期上限が先に効く
 - `test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized`: 残り 1 回の PR を参照する 2 ticket を別プロセスで同時起動しても run は 1 つだけ、PR は 2/2 で止まり、以後どちらも開始しない
 - `test_gate_failure_budget_concurrent_updates_do_not_lose_counts` / `..._concurrent_ticks_...`: 並行 grant・並行 gate 失敗で記録が欠落しない
+
+## 配備と readback・隔離 E2E（merge 後）
+
+- 配備経路: PR #14242 を通常 merge → main の `Build Codex Workspace Image` が `ghcr.io/boxp/arch/codex-workspace` を push → Image Updater が codex-workspace pod を再起動（runner は pod 内 PID 1 の `task_board_runner.bb loop`）。再起動時点で進行中の run は planned shutdown / interrupted になるため、継続 run が以下を行う。
+- 稼働 revision readback: `/opt/codex-workspace/task-board/task_board_runner.bb` の sha256 が main の同ファイルと一致し、`gate-failure-budget` の実装（`gate-budget-status` / `gate-budget-grant` サブコマンド）を含むことを確認する。稼働 root（`$CODEX_TASK_BOARD_ROOT`）の `gate-failure-budget.edn` は本票の merge 前には存在せず、存在しても読み取り専用の `gate-budget-status` でのみ確認する。
+- 隔離 E2E: fixture の `RUNNER` を稼働版 `/opt/.../task_board_runner.bb` に差し替え、一時 root / 一時 vault（`mktemp -d`）の下で `test_gate_failure_budget_boundary_9_10_11` 等の予算 fixture を実行する。稼働 root・本番 vault・本番 ticket には失敗を注入しない。進行中の他 ticket / run を止めない。
