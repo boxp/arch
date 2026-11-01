@@ -1866,20 +1866,30 @@ bb -e "
   (assert (= \"not-connected\" (get-in b [:coverage :hermes-conversation :status])))
   (assert (= {:status \"connected\" :coverage \"connected\" :conversations 1 :turns-started 2 :turns-finished {\"succeeded\" 1}
               :approvals-requested 1 :approvals-resolved 0 :stale-snapshot-markers 0} h) (pr-str h))
-  ;; task としては残る (ticket を作らず request_id 単位)、層は assistant、outcome は unobserved
-  (assert (= 2 (get-in j [:tasks :total])))
-  (assert (= 1 (get-in j [:tasks :by-stratum \"assistant\"])) (pr-str (:tasks j)))
-  (assert (= 1 (get-in j [:tasks :outcomes \"unobserved\"])))
-  ;; 未完了 guardrail・run 数・SLI は Board 側と同じ (会話を混ぜない)
-  (assert (= (get-in b [:guardrails :unfinished]) (get-in j [:guardrails :unfinished])) (pr-str (:guardrails j)))
-  (assert (= 0 (get-in j [:guardrails :unobserved])))
+  ;; 会話は Board の task 集計 (総数・outcome・層別) に入れず、件数を :tasks :conversations に別掲する
+  (assert (= 1 (get-in j [:tasks :total])) (pr-str (:tasks j)))
+  (assert (= 1 (get-in j [:tasks :conversations])))
+  (assert (nil? (get-in j [:tasks :by-stratum \"assistant\"])))
+  (assert (nil? (get-in j [:tasks :outcomes \"unobserved\"])))
+  ;; 未完了 guardrail・tasks-per-request・run 数・SLI は Board 側と同じ (会話を混ぜない)
+  (assert (= (dissoc (:guardrails b) :conversations-unobserved) (dissoc (:guardrails j) :conversations-unobserved)) (pr-str (:guardrails j)))
   (assert (= 1 (get-in j [:guardrails :conversations-unobserved])))
+  ;; 救援率の分母 (全 task 数) も会話で変わらない
+  (let [rescue {:event_id \"BOXP-140:rescue\" :task_id \"BOXP-140\" :event_type \"owner.rescue\" :occurred_at \"2026-10-20T02:00:00Z\"}
+        rb (ai-ops-sli/aggregate* (conj board rescue)) rj (ai-ops-sli/aggregate* (concat board [rescue] hermes))]
+    (assert (= {:count 1 :denominator 1 :permille 1000} (get-in rb [:sli :owner-rescue])) (pr-str (get-in rb [:sli :owner-rescue])))
+    (assert (= (get-in rb [:sli :owner-rescue]) (get-in rj [:sli :owner-rescue])) (pr-str (get-in rj [:sli :owner-rescue]))))
   (assert (= (get-in b [:sli :run-reliability]) (get-in j [:sli :run-reliability])) (pr-str (get-in j [:sli :run-reliability])))
   (assert (= 1 (get-in j [:sli :run-reliability :runs])))
   (assert (= (get-in b [:sli :agent-system-correction-task-ratio]) (get-in j [:sli :agent-system-correction-task-ratio])))
   (assert (= (get-in b [:sli :first-acceptance-conformance]) (get-in j [:sli :first-acceptance-conformance])))
   ;; Hermes 由来の承認 event は重複承認 SLI の入力に残る (会話を除外しない)
   (assert (= 1 (get-in j [:sli :duplicate-approval :denominator])) (pr-str (get-in j [:sli :duplicate-approval])))
+  ;; request.received / task.state 等を持つ ticket なしの依頼は従来どおり task (会話扱いにしない)
+  (let [t (ai-ops-sli/aggregate* (concat hermes [{:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :event_type \"request.received\" :occurred_at \"2026-10-31T00:00:00Z\" :event_id (str conv \"/req\")}]))]
+    (assert (= 1 (get-in t [:tasks :total])) (pr-str (:tasks t)))
+    (assert (= 0 (get-in t [:tasks :conversations])))
+    (assert (= 1 (get-in t [:guardrails :unfinished]))))
   ;; ticket 形式の task_id を持つ Hermes event (将来の ticket 付き会話) は会話扱いにしない
   (let [t (ai-ops-sli/aggregate* [(assoc (first hermes) :task_id \"BOXP-141\" :request_id nil :event_id \"BOXP-141/20261031T000003Z-ee2d7526:started\")])]
     (assert (= \"connected\" (get-in t [:coverage :hermes-conversation :status])))
@@ -1892,7 +1902,7 @@ bb -e "
     (assert (= 1 (get-in s [:coverage :source-stale :hermes-observer])))
     (assert (= (:sli j) (:sli s)))
     (assert (= (:zero-tolerance j) (:zero-tolerance s)) \"stale marker is not a lost event\"))
-  (println \"ok   Hermes ledger join: 会話は task として残し層 assistant、未完了 guardrail/run 数/SLI は不変、会話/turn/承認数を別掲、stale は partial\"))"
+  (println \"ok   Hermes ledger join: 会話は task 集計から分け件数を別掲、未完了 guardrail/救援率/run 数/SLI は不変、会話/turn/承認数を別掲、stale は partial\"))"
 tmp_hj=$(mktemp -d)
 cat >"$tmp_hj/j.jsonl" <<'EOF'
 {"source":"hermes-observer","runtime":"hermes","task_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335","request_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335","run_id":"20261031T000003Z-ee2d7526","event_type":"run.started","occurred_at":"2026-10-31T00:00:03Z","event_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335/20261031T000003Z-ee2d7526:started"}

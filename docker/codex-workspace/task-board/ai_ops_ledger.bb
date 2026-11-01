@@ -638,19 +638,76 @@
 (def hermes-stale-marker-line (json/generate-string {:source_stale "hermes-observer"}))
 (def input-unreadable-marker-line (json/generate-string {:collection_lost "input_unreadable"}))
 
+;; snapshot に保存する key は集計側 (ai_ops_sli.bb) の allowlist と同じ。本文・引数・header 等の未知 key は
+;; 取り込み時点で落とし (永続 snapshot に残さない)、値は scalar/短い文字列だけを許す。値の形式検証は集計側 gate が行う
+(def hermes-allowed-keys
+  #{:schema_version :event_id :request_id :task_id :run_id :attempt :parent_event_id
+    :source :runtime :agent :event_type :occurred_at :observed_at :occurred_precision
+    :lane_from :lane_to :status :result :action :exit_code :idle_timeout :blocker_category
+    :correction_class :correction_origin :classifier :classifier_version :confidence
+    :evidence_event_ids :stratum :delegation_kind :tokens_in :tokens_out :cost_source
+    :severity :effect_key :approval_key :redelivery :coverage_target :snapshot})
+(def hermes-max-value-length 256)
+(defn- hermes-gate
+  "Allowlist a Hermes event for the snapshot. Returns [event dropped-keys]."
+  [m]
+  (let [ok-val? (fn [v] (or (nil? v) (boolean? v) (number? v)
+                            (and (string? v) (<= (count v) hermes-max-value-length))))
+        kept (into {} (for [[k v] m :when (contains? hermes-allowed-keys k)]
+                        [k (cond (= k :evidence_event_ids) (if (and (sequential? v) (every? #(and (string? %) (<= (count %) hermes-max-value-length)) v) (<= (count v) 16)) (vec v) "redacted")
+                                 (ok-val? v) v
+                                 :else "redacted")]))]
+    [kept (- (count m) (count kept))]))
 (defn- hermes-snapshot-lines
-  "Keep only lines whose JSON `source` is hermes-observer. A line that is not a JSON
-  object becomes a body-less input_unreadable marker (the aggregate turns it into
-  unknown zero-tolerance SLIs instead of silently dropping it); a JSON line from
-  another source means the command is misconfigured, so it is dropped and counted."
+  "Keep only lines whose JSON `source` is hermes-observer, re-serialised with the
+  allowlisted keys only (no body/argument keys reach the persistent snapshot). A line
+  that is not a JSON object becomes a body-less input_unreadable marker (the aggregate
+  turns it into unknown zero-tolerance SLIs instead of silently dropping it); a JSON
+  line from another source means the command is misconfigured, so it is dropped and
+  counted."
   [text]
   (reduce (fn [acc line]
             (let [m (try (json/parse-string line true) (catch Exception _ nil))]
               (cond (not (map? m)) (-> acc (update :lines conj input-unreadable-marker-line) (update :malformed inc))
-                    (= "hermes-observer" (:source m)) (update acc :lines conj line)
+                    (= "hermes-observer" (:source m))
+                    (let [[kept dropped] (hermes-gate m)]
+                      (-> acc (update :lines conj (json/generate-string kept)) (update :dropped-keys + dropped)))
                     :else (update acc :foreign inc))))
-          {:lines [] :malformed 0 :foreign 0}
+          {:lines [] :malformed 0 :foreign 0 :dropped-keys 0}
           (remove str/blank? (str/split-lines text))))
+
+(defn- run-bounded-command!
+  "Run `args`, reading stdout into memory up to `max-bytes` (+1 so an overflow is
+  detectable) and no longer than `deadline`. Returns {:status :ok :text s},
+  {:status :too_large}, {:status :timeout} or {:status :failed}. The process is
+  destroyed on overflow/timeout so it never fills the runner's disk or blocks."
+  [args max-bytes deadline]
+  (let [process (-> (ProcessBuilder. ^java.util.List (vec args))
+                    (.redirectError java.lang.ProcessBuilder$Redirect/DISCARD)
+                    (.start))
+        in (.getInputStream process)
+        buf (java.io.ByteArrayOutputStream.)
+        chunk (byte-array 65536)
+        overflow (atom false)
+        reader (future (try (loop []
+                              (let [n (.read in chunk)]
+                                (when (pos? n)
+                                  (.write buf chunk 0 n)
+                                  (if (> (.size buf) max-bytes) (reset! overflow true) (recur)))))
+                            (catch Exception _ nil)))
+        remaining (max 0 (- deadline (System/currentTimeMillis)))
+        finished (try (deref reader remaining ::timeout) (catch Exception _ ::timeout))
+        kill! (fn [] (when (.isAlive process)
+                       (doseq [c (reverse (vec (iterator-seq (.iterator (.descendants (.toHandle process))))))] (.destroyForcibly c))
+                       (.destroyForcibly process)))]
+    (try
+      (cond @overflow (do (kill!) {:status :too_large})
+            (= finished ::timeout) (do (kill!) {:status :timeout})
+            :else (let [exited (.waitFor process (max 0 (- deadline (System/currentTimeMillis))) java.util.concurrent.TimeUnit/MILLISECONDS)]
+                    (cond (not exited) (do (kill!) {:status :timeout})
+                          (zero? (.exitValue process)) {:status :ok :text (String. (.toByteArray buf) "UTF-8")}
+                          :else {:status :failed})))
+      (finally (kill!) (future-cancel reader) (try (.close in) (catch Exception _))))))
 
 (defn mirror-hermes-ledger!
   "Run the configured command (bounded by `deadline` and the mirror timeout) and
@@ -665,28 +722,25 @@
           budget (min deadline (+ (System/currentTimeMillis) (* 1000 (max 1 (hermes-mirror-timeout)))))
           fail! (fn [reason] (try (atomic-spit! (hermes-mirror-status-path root)
                                                 (pr-str (-> attempt (update :failures (fnil inc 0)) (assoc :last-failure reason :last-result "fail"))))
-                                  (catch Exception _)) false)
-          tmp (atom nil)]
+                                  (catch Exception _)) false)]
       (try
         (fs/create-dirs (hermes-mirror-dir root))
         (atomic-spit! (hermes-mirror-status-path root) (pr-str attempt))
-        (reset! tmp (java.io.File/createTempFile "ai-ops-hermes-" ".jsonl"))
-        (let [ok (run-sli-command! ["sh" "-c" cmd] @tmp budget) size (.length ^java.io.File @tmp)]
-          (cond (not ok) (fail! "command")
-                (zero? size) (fail! "empty")
-                (> size (hermes-mirror-max-bytes)) (fail! "too_large")
+        (let [{:keys [status text]} (run-bounded-command! ["sh" "-c" cmd] (hermes-mirror-max-bytes) budget)]
+          (cond (= status :too_large) (fail! "too_large")
+                (= status :timeout) (fail! "timeout")
+                (not= status :ok) (fail! "command")
+                (str/blank? text) (fail! "empty")
                 :else
-                (let [text (slurp @tmp)
-                      ;; 追記途中の末尾行 (改行なし) は落とす
+                (let [;; 追記途中の末尾行 (改行なし) は落とす
                       end (inc (or (str/last-index-of text "\n") -1))
-                      {:keys [lines malformed foreign]} (hermes-snapshot-lines (subs text 0 end))]
+                      {:keys [lines malformed foreign dropped-keys]} (hermes-snapshot-lines (subs text 0 end))]
                   (atomic-spit! (hermes-mirror-path root) (str/join "" (map #(str % "\n") lines)))
                   (atomic-spit! (hermes-mirror-status-path root)
                                 (pr-str (assoc attempt :last-success now :last-result "ok" :lines (count lines) :bytes end
-                                               :malformed-lines malformed :foreign-lines foreign)))
+                                               :malformed-lines malformed :foreign-lines foreign :dropped-keys dropped-keys)))
                   true)))
-        (catch Exception _ (fail! "exception"))
-        (finally (when @tmp (fs/delete-if-exists @tmp)))))))
+        (catch Exception _ (fail! "exception"))))))
 
 (defn hermes-mirror-stale?
   "True when the latest pull did not succeed (the SLI input is using the previous
@@ -724,7 +778,9 @@
           (metric-lines "ai_ops_hermes_mirror_last_attempt_timestamp_seconds" "gauge" "Last Hermes ledger pull attempt, or zero if never attempted." [[{} (:last-attempt s 0)]])
           (metric-lines "ai_ops_hermes_mirror_failures_total" "counter" "Failed Hermes ledger pulls (previous snapshot kept)." [[{} (:failures s 0)]])
           (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed and the SLI input uses the previous snapshot." [[{} (if (and configured (:last-success s) (hermes-mirror-stale? s)) 1 0)]])
-          (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot." [[{:kind "hermes"} (:lines s 0)] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)]])))
+          ;; 成功した snapshot が無ければ件数を出さない (未取得と空の snapshot を区別する)
+          (when (:last-success s)
+            (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot." [[{:kind "hermes"} (:lines s 0)] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)] [{:kind "dropped_keys"} (:dropped-keys s 0)]]))))
          "\n")))
 
 (defn sli-lock-path [root] (fs/path (ai-ops-dir root) "sli.lock"))

@@ -668,6 +668,8 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
                           :run_id "20261031T000003Z-ee2d7526" :event_id (str conv "/20261031T000003Z-ee2d7526:finished")})])
 (spit src (str (str/join "\n" hermes-lines) "\n"))
 (def far-deadline (+ (System/currentTimeMillis) 60000))
+(defn snapshot-maps [] (map #(json/parse-string % true) (str/split-lines (slurp (str (ai-ops-ledger/hermes-mirror-path root))))))
+(def hermes-maps (map #(json/parse-string % true) hermes-lines))
 ;; 未設定: 何もしない (nil)、入力にも何も足さない
 (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
   (assert (nil? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
@@ -678,7 +680,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
               ai-ops-ledger/sli-interval (constantly 1)]
   ;; 成功: snapshot と status、SLI 入力へ連結、集計で hermes_conversation が connected・会話/turn 数が出る
   (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
-  (assert (= (str (str/join "\n" hermes-lines) "\n") (slurp (str (ai-ops-ledger/hermes-mirror-path root)))))
+  (assert (= hermes-maps (snapshot-maps)) (pr-str (snapshot-maps)))
   (let [s (ai-ops-ledger/read-hermes-mirror-status root)]
     (assert (= 2 (:lines s))) (assert (:last-success s)) (assert (not (ai-ops-ledger/hermes-mirror-stale? s))))
   (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
@@ -705,13 +707,24 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   ;; 追記途中の末尾行 (改行なし) は落とす
   (spit src (str (str/join "\n" hermes-lines) "\n{\"source\":\"hermes-observer\",\"event_type\":\"run.sta"))
   (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
-  (assert (= (str (str/join "\n" hermes-lines) "\n") (slurp (str (ai-ops-ledger/hermes-mirror-path root))))))
+  (assert (= hermes-maps (snapshot-maps)))
+  ;; allowlist 外の key (本文・引数等) と長すぎる値は snapshot に保存しない (集計側 gate の前で落とす)
+  (spit src (str (json/generate-string (assoc (first hermes-maps) :body "secret text" :tool_args {:q "x"} :status (apply str (repeat 300 "a")))) "\n"))
+  (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (let [snap (slurp (str (ai-ops-ledger/hermes-mirror-path root))) m (first (snapshot-maps)) s (ai-ops-ledger/read-hermes-mirror-status root)]
+    (assert (not (str/includes? snap "secret text")) snap)
+    (assert (not (str/includes? snap "tool_args")))
+    (assert (= "redacted" (:status m)))
+    (assert (= 2 (:dropped-keys s)))
+    (assert (str/includes? (ai-ops-ledger/sli-export-metrics root) "ai_ops_hermes_mirror_snapshot_lines{kind=\"dropped_keys\"} 2")))
+  (spit src (str (str/join "\n" hermes-lines) "\n"))
+  (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline))))
 ;; 失敗 (コマンド異常終了): 前回 snapshot を保持し stale。SLI refresh は成功のまま、hermes は partial/stale で接続済みにしない
 (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "exit 3") ai-ops-ledger/sli-interval (constantly 1)]
   (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
   (let [s (ai-ops-ledger/read-hermes-mirror-status root)]
     (assert (= 1 (:failures s))) (assert (= "command" (:last-failure s))) (assert (ai-ops-ledger/hermes-mirror-stale? s)))
-  (assert (= (str (str/join "\n" hermes-lines) "\n") (slurp (str (ai-ops-ledger/hermes-mirror-path root)))) "previous snapshot kept")
+  (assert (= hermes-maps (snapshot-maps)) "previous snapshot kept")
   (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
   (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
   (let [p (slurp (str (ai-ops-ledger/sli-path root))) m (ai-ops-ledger/sli-export-metrics root)]
@@ -730,11 +743,28 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
   (assert (= "too_large" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root))))
   (assert (= 4 (:failures (ai-ops-ledger/read-hermes-mirror-status root)))))
+;; 無限に出力するコマンド: 上限 (メモリ内) で打ち切り、ディスクに一時ファイルを書かず、タイムアウトを待たない
+(with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "yes") ai-ops-ledger/hermes-mirror-max-bytes (constantly 65536) ai-ops-ledger/hermes-mirror-timeout (constantly 20)]
+  (let [t0 (System/currentTimeMillis)]
+    (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+    (assert (= "too_large" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root))))
+    (assert (< (- (System/currentTimeMillis) t0) 5000) "overflow must stop the command immediately")
+    (assert (= hermes-maps (snapshot-maps)) "previous snapshot kept")
+    (assert (empty? (filter #(let [n (str (fs/file-name %))] (and (str/starts-with? n "ai-ops-hermes-") (not (str/starts-with? n "ai-ops-hermes-input-")))) (fs/list-dir (fs/temp-dir)))) "no temp file left")))
+;; 未設定/未取得の間は snapshot 件数を 0 として公開しない
+(let [root2 (str (fs/path (System/getenv "AI_OPS_TMP") "hermes-root-2"))]
+  (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "exit 1")]
+    (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root2 far-deadline)))
+    (let [m (ai-ops-ledger/sli-export-metrics root2)]
+      (assert (not (str/includes? m "ai_ops_hermes_mirror_snapshot_lines")) m)
+      (assert (str/includes? m "ai_ops_hermes_mirror_stale 0") "nothing to be stale before the first success")
+      (assert (str/includes? m "ai_ops_hermes_mirror_failures_total 1")))))
 ;; タイムアウト: 上限を超えるコマンドは打ち切り、失敗として記録する (runner を止めない)
 (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "sleep 30") ai-ops-ledger/hermes-mirror-timeout (constantly 1)]
   (let [t0 (System/currentTimeMillis)]
     (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
-    (assert (< (- (System/currentTimeMillis) t0) 10000) "pull must be bounded by the mirror timeout")))
+    (assert (< (- (System/currentTimeMillis) t0) 10000) "pull must be bounded by the mirror timeout")
+    (assert (= "timeout" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root))))))
 ;; 読めない snapshot は input_unreadable marker として集計入力に入る (黙って落とさない)
 (when-not (= "root" (System/getProperty "user.name"))
   (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl") p (ai-ops-ledger/hermes-mirror-path root)]

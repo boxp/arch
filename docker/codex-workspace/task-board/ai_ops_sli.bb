@@ -643,11 +643,14 @@
         skew (->> uniq (filter #(let [o (parse-inst (:occurred_at %)) w (parse-inst (:observed_at %))]
                                    (and o w (.isAfter o (.plusSeconds w 300))))) count)
         by-task (group-by :task_id (filter :task_id uniq))
-        ;; Hermes の会話 (hermes-observer ledger): task_id は opaque な conv- ID で、Board の ticket とは join できない。
-        ;; ticket の起票を求めずに request_id 単位の 1 task として残すが、Board の task ではないので
-        ;; 未完了 guardrail からは分け、層は assistant に補完し、会話数/turn 数は coverage に別掲する
+        ;; Hermes の turn だけの会話 (hermes-observer ledger): task_id は opaque な conv- ID で Board の ticket とは join できず、
+        ;; event も run.*/approval.* だけで outcome を持ち得ない。ticket の起票は求めないが Board の task 集計 (総数・outcome・
+        ;; guardrail・救援率の分母・run 数) には入れず、会話数/turn 数/承認 event 数を coverage に別掲する。
+        ;; request.received / task.* / correction / lane.changed 等を持つ ticket なしの依頼は従来どおり request_id 単位の task
         hermes-event? #(or (= "hermes" (:runtime %)) (boolean (re-matches #"(?:[^:]+:)?hermes" (or (:source %) ""))))
-        conversation-ids (set (for [[tid evs] by-task :when (and (every? hermes-event? evs) (not (re-matches #"[A-Z]+-\d+" (str tid))))] tid))
+        turn-only? (fn [evs] (every? #(let [t (:event_type %)] (or (some-> t (str/starts-with? "run.")) (some-> t (str/starts-with? "approval.")))) evs))
+        conversation-ids (set (for [[tid evs] by-task
+                                    :when (and (every? hermes-event? evs) (turn-only? evs) (not (re-matches #"[A-Z]+-\d+" (str tid))))] tid))
         conv-events (mapcat val (filter (comp conversation-ids key) by-task))
         ;; task に紐付くべき event で task_id が欠落したもの: 集計から黙って除外せず件数を別掲し、是正が欠落していれば SLI を確定しない
         task-scoped? #(or (#{"correction" "request.received" "lane.changed"} (:event_type %))
@@ -783,6 +786,10 @@
                  :effects (frequencies (keep :effect_key (filter #(= "effect.applied" (:event_type %)) evs)))
                  :agents (set (keep :agent runs))
                  :delegation (frequencies (keep :delegation_kind runs))})
+        ;; Hermes 会話は Board の task ではないので、task 集計 (総数・outcome・層別・guardrail・救援率の分母・run 数) は
+        ;; Board task だけで行い、会話は coverage :hermes-conversation に別掲する (join の前後で SLI を変えない)
+        conversations (filter :conversation? tasks)
+        tasks (remove :conversation? tasks)
         n (count tasks)
         ;; 読めない run を持つ task は是正/差戻しを見落とし得るため、是正率と first acceptance の分子・分母から除き別掲する
         input-missing (filter #(input-missing? %) tasks)
@@ -811,7 +818,7 @@
              :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks))
              :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :id-collisions id-collisions :ledger-merged ledger-merged :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
-     :tasks {:total n :never-run (count (filter #(and (zero? (:runs %)) (zero? (:orphan-runs % 0))) tasks))
+     :tasks {:total n :conversations (count conversations) :never-run (count (filter #(and (zero? (:runs %)) (zero? (:orphan-runs % 0))) tasks))
              :orphan-run-events (reduce + (map #(:orphan-runs % 0) tasks))
              :accepted-without-run-history (count (filter :accepted-unobserved? tasks)) :outcomes (frequencies (map :outcome tasks))
              :by-stratum (frequencies (map :stratum tasks))}
@@ -883,12 +890,11 @@
                               :note "request.received/accepted は日粒度 (frontmatter)。queue/active/approval/wait/blocked 分解は lane timestamp 不足で unknown")
       ;; run の信頼性と委譲は Board runner の run が対象。Hermes 会話の turn (run.started/finished) は
       ;; coverage :hermes-conversation の turn 数に別掲し、ここへ混ぜない
-      :run-reliability (let [board-tasks (remove :conversation? tasks)]
-                         {:runs (reduce + (map :runs board-tasks))
-                          :interrupted (reduce + (map :interrupted board-tasks))
-                          :idle-timeouts (reduce + (map :idle-timeouts board-tasks))
-                          :retrying (reduce + (map :retrying board-tasks))})
-      :delegation (apply merge-with + (map :delegation (remove :conversation? tasks)))}
+      :run-reliability {:runs (reduce + (map :runs tasks))
+                        :interrupted (reduce + (map :interrupted tasks))
+                        :idle-timeouts (reduce + (map :idle-timeouts tasks))
+                        :retrying (reduce + (map :retrying tasks))}
+      :delegation (apply merge-with + (map :delegation tasks))}
      :zero-tolerance {:duplicate-effects (cond
                                            ;; 破損行・拒否 event に effect が含まれていた可能性があるため 0 件と確定しない
                                            (pos? lost)
@@ -924,13 +930,12 @@
                                                 :else {:status "unknown" :reason "safety source 未接続"})
                       :private-leak {:status "unknown" :reason "leak detector 未接続。0件観測≠0件"}}
      :guardrails {:pending-over-7d "要 lane timestamp (unknown)"
-                  :tasks-per-request (ratio n (count (set (keep :request_id uniq))))
-                  ;; Hermes 会話は受入/取消の状態を持たない (unobserved) ので、Board task の未完了放置とは分けて数える
-                  :unfinished (count (filter #(and (not (contains? #{"accepted" "cancelled"} (:outcome %)))
-                                                   (not (and (:conversation? %) (= "unobserved" (:outcome %))))) tasks))
+                  :tasks-per-request (ratio n (count (set (keep :request_id (remove #(contains? conversation-ids (:task_id %)) uniq)))))
+                  :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
-                  :unobserved (count (filter #(and (= "unobserved" (:outcome %)) (not (:conversation? %))) tasks))
-                  :conversations-unobserved (count (filter #(and (= "unobserved" (:outcome %)) (:conversation? %)) tasks))}
+                  :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))
+                  ;; Hermes 会話は受入/取消の状態を持たない (unobserved)。Board task の未完了放置とは別に数える
+                  :conversations-unobserved (count (filter #(= "unobserved" (:outcome %)) conversations))}
      :coverage {:collection-lost {:buffer-dropped (- buffer-dropped ledger-dropped) :ledger-dropped ledger-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :unlinked-task-events (count unlinked) :unlinked-corrections unlinked-corr :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
                 :source-stale {:hermes-observer hermes-stale}
