@@ -3051,16 +3051,22 @@
 ;; BOXP-367 (BOXP-371 pilot): the per-run worktree starts at the shared
 ;; checkout's HEAD, which can be a stale feature branch. Cloud agents fetch for
 ;; themselves; pi runs without credentials, so the runner moves the fresh run
-;; branch to origin's default branch before pi starts (fail closed).
+;; branch to the remote's default branch before pi starts (fail closed).
+;; The remote HEAD is fetched into this worktree's own FETCH_HEAD: linked
+;; worktrees share refs/remotes/origin/*, so updating those from concurrent
+;; runs of the same repo would race on ref locks (codex review P2). The
+;; branch name comes from a read-only ls-remote and is evidence only.
 (defn localllm-coder-sync-base! [workspace]
   (let [results (vec (for [{:keys [repo path]} (:repo-worktrees workspace) :when path]
                        (let [git (fn [& args] @(p/process (into ["git" "-C" path] args) {:out :string :err :string}))
-                             fetch (git "fetch" "--quiet" "origin")
-                             ;; fetch does not move origin/HEAD (codex review): ask the remote.
-                             set-head (when (zero? (:exit fetch)) (git "remote" "set-head" "origin" "--auto"))
-                             ref (when (and set-head (zero? (:exit set-head)))
-                                   (not-empty (str/trim (:out (git "symbolic-ref" "-q" "refs/remotes/origin/HEAD")))))
-                             reset (when ref (git "reset" "--hard" "--quiet" ref))]
+                             fetch (git "fetch" "--quiet" "origin" "HEAD")
+                             fetched (when (zero? (:exit fetch))
+                                       (not-empty (str/trim (:out (git "rev-parse" "--verify" "-q" "FETCH_HEAD")))))
+                             symref (when fetched (git "ls-remote" "--symref" "origin" "HEAD"))
+                             ref (or (when (and symref (zero? (:exit symref)))
+                                       (second (re-find #"(?m)^ref: (\S+)\tHEAD$" (:out symref))))
+                                     (when fetched "HEAD"))
+                             reset (when fetched (git "reset" "--hard" "--quiet" fetched))]
                          {:repo repo :ref ref
                           :ok? (boolean (and reset (zero? (:exit reset))))
                           :head (when (and reset (zero? (:exit reset))) (str/trim (:out (git "rev-parse" "HEAD"))))})))
@@ -5467,10 +5473,15 @@
                      _ (git origin "commit" "-q" "-am" "new")
                      tip (str/trim (:out (git origin "rev-parse" "HEAD")))
                      _ (git lone "init" "-q")
+                     stale (str/trim (:out (git work "rev-parse" "refs/remotes/origin/main")))
                      ok (localllm-coder-sync-base! {:repo-worktrees [{:repo "t/r" :path work}]})
                      bad (localllm-coder-sync-base! {:repo-worktrees [{:repo "t/r" :path work} {:repo "t/lone" :path lone}]})]
-                 [(:ok? ok) (= tip (:head (first (:bases ok)))) (slurp (str (fs/path work "a.txt"))) (dissoc bad :bases)])
-               [true true "new\n" {:ok? false :category "repo-base-sync-failed" :repos ["t/lone"]}]]
+                 [(:ok? ok) (= tip (:head (first (:bases ok)))) (:ref (first (:bases ok))) (slurp (str (fs/path work "a.txt")))
+                  ;; shared remote-tracking refs are left alone (no ref-lock races between runs)
+                  (= stale (str/trim (:out (git work "rev-parse" "refs/remotes/origin/main"))))
+                  (:exit (git work "rev-parse" "--verify" "-q" "refs/remotes/origin/trunk"))
+                  (dissoc bad :bases)])
+               [true true "refs/heads/trunk" "new\n" true 1 {:ok? false :category "repo-base-sync-failed" :repos ["t/lone"]}]]
               ["coder workspace check" (mapv localllm-coder-workspace-check [{:repo-worktrees []} {:repo-worktrees [{:repo "t/r" :error "x"}]} {:repo-worktrees [{:repo "t/r" :path "/w/r"}]}])
                [{:ok? false :category "no-repo-worktree"} {:ok? false :category "repo-worktree-failed" :repos ["t/r"]} {:ok? true}]]
               ["coder workspace check partial" (localllm-coder-workspace-check {:repo-worktrees [{:repo "t/a" :path "/w/a"} {:repo "t/b" :worktree-failed true}]})
