@@ -792,8 +792,30 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root2 far-deadline)))
     (let [m (ai-ops-ledger/sli-export-metrics root2)]
       (assert (not (str/includes? m "ai_ops_hermes_mirror_snapshot_lines")) m)
-      (assert (str/includes? m "ai_ops_hermes_mirror_stale 0") "nothing to be stale before the first success")
-      (assert (str/includes? m "ai_ops_hermes_mirror_failures_total 1")))))
+      ;; 初回失敗: 前回 snapshot すら無いが、Hermes の承認履歴が入力に無いことは stale として伝える
+      (assert (str/includes? m "ai_ops_hermes_mirror_stale 1") m)
+      (assert (str/includes? m "ai_ops_hermes_mirror_failures_total 1")))
+    ;; 初回失敗 (タイムアウト/コマンドエラー) でも集計入力に stale marker を出し、他 source の承認があっても承認 SLI を確定しない
+    (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
+      (assert (true? (ai-ops-ledger/append-hermes-mirror! root2 (str t))))
+      (assert (= [{:source_stale "hermes-observer"}] (map #(json/parse-string % true) (str/split-lines (slurp (str t))))) (slurp (str t))))
+    (let [vault2 (str (fs/path (System/getenv "AI_OPS_TMP") "hermes-vault-2"))
+          run-dir (fs/path root2 "runs" "BOXP-2" "20261020T000000Z-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")]
+      (fs/create-dirs (fs/path vault2 "Tickets")) (fs/create-dirs (fs/path root2 "outbox")) (fs/create-dirs run-dir)
+      (spit (str (fs/path vault2 "Tickets" "BOXP-2.md")) "---\ncreated: 2026-10-20\nstatus: review\n---\n")
+      (spit (str (fs/path run-dir "summary.edn")) (pr-str {:ticket "BOXP-2" :run-id "20261020T000000Z-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" :status :succeeded :action :implement :result "review" :agent "codex" :lane "In Progress" :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T01:00:00Z" :updated-at "2026-10-20T01:00:00Z"}))
+      (fs/create-dirs (fs/path root2 "ai-ops"))
+      (spit (str (fs/path root2 "ai-ops" "events-2026-10-20.jsonl"))
+            (str (json/generate-string {:schema_version "ai-ops-event/v0" :source "task-board-runner" :event_id "BOXP-2/20261020T000000Z-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:req1" :task_id "BOXP-2" :run_id "20261020T000000Z-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" :event_type "approval.requested" :approval_key "op:0000000a" :occurred_at "2026-10-20T00:10:00Z"}) "\n"
+                 (json/generate-string {:schema_version "ai-ops-event/v0" :source "task-board-runner" :event_id "BOXP-2/20261020T000000Z-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa:req2" :task_id "BOXP-2" :run_id "20261020T000000Z-aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa" :event_type "approval.requested" :approval_key "op:0000000b" :occurred_at "2026-10-20T00:20:00Z"}) "\n"))
+      (with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
+        (assert (true? (ai-ops-ledger/refresh-sli! root2 vault2))))
+      (let [p (slurp (str (ai-ops-ledger/sli-path root2)))]
+        (assert (str/includes? p "ai_ops_source_stale_snapshot_markers{source=\"hermes-observer\"} 1") p)
+        (assert (str/includes? p "ai_ops_sli_determinable{sli=\"duplicate_approval\"} 0") "approval SLI must stay unknown while Hermes history was never obtained")
+        (assert (str/includes? p "ai_ops_sli_unknown_info{sli=\"duplicate_approval\",category=\"history_missing\",reason_code=\"stale_source_snapshot\"} 1") p)
+        (assert (str/includes? p "ai_ops_sli_unknown_info{sli=\"hermes_conversation\",category=\"history_missing\",reason_code=\"stale_source_snapshot\"} 1") p)
+        (assert (str/includes? p "ai_ops_sli_source_connected{sli=\"hermes_conversation\"} 0"))))))
 ;; 有効な hermes-observer event が 1 件もない出力 (途中行だけ / 他 source だけ / 全行破損) は成功にせず前回 snapshot を保持する
 (doseq [[label text] [["partial line only" "{\"source\":\"hermes-observer\",\"event_type\":\"run.sta"]
                       ["foreign source only" (str (json/generate-string {:source "task-board-runner" :event_type "run.started"}) "\n")]

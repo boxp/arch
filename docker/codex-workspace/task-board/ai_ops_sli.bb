@@ -647,7 +647,8 @@
         ;; event も run.*/approval.* だけで outcome を持ち得ない。ticket の起票は求めないが Board の task 集計 (総数・outcome・
         ;; guardrail・救援率の分母・run 数) には入れず、会話数/turn 数/承認 event 数を coverage に別掲する。
         ;; request.received / task.* / correction / lane.changed 等を持つ ticket なしの依頼は従来どおり request_id 単位の task
-        hermes-event? #(or (= "hermes" (:runtime %)) (boolean (re-matches #"(?:[^:]+:)?hermes" (or (:source %) ""))))
+        ;; mirror が受け入れる source は hermes-observer。runtime が欠落/redact された有効 event も会話として扱う
+        hermes-event? #(or (= "hermes" (:runtime %)) (boolean (re-matches #"(?:[^:]+:)?hermes(?:-observer)?" (or (:source %) ""))))
         turn-only? (fn [evs] (every? #(let [t (:event_type %)] (or (some-> t (str/starts-with? "run.")) (some-> t (str/starts-with? "approval.")))) evs))
         conversation-ids (set (for [[tid evs] by-task
                                     :when (and (every? hermes-event? evs) (turn-only? evs) (not (re-matches #"[A-Z]+-\d+" (str tid))))] tid))
@@ -886,8 +887,9 @@
                              :unverifiable-approvals (:unverifiable approvals) :coverage "partial/unverifiable-keys"}
                             ;; 承認 event の source (Hermes ledger mirror) の最新取り込みに失敗して前回 snapshot を使っている間は、
                             ;; 失敗中に発生した承認 (重複を含む) が入力に無いため確定しない (観測値は下限、coverage は partial/stale)
-                            (and (pos? hermes-stale) (pos? (+ (:total approvals) (:unverifiable approvals))))
-                            {:status "unknown" :reason "承認 event の source (hermes-observer) の最新取り込みに失敗し前回 snapshot を使っており、失敗中の承認を含まないため重複承認の有無を確定できない"
+                            ;; 観測済み承認 0 件 (初回取り込み失敗で snapshot が無い等) でも「未接続」ではなく欠落として報告する
+                            (pos? hermes-stale)
+                            {:status "unknown" :reason "承認 event の source (hermes-observer) の最新取り込みに失敗し前回 snapshot (無ければ空) を使っており、失敗中の承認を含まないため重複承認の有無を確定できない"
                              :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
                              :stale-snapshot-markers hermes-stale :coverage "partial/stale"}
                             (pos? (:scopes approvals))
@@ -951,6 +953,8 @@
                 :hermes-conversation (let [connected (boolean (or (connected? "hermes-conversation") (some hermes-event? uniq)))
                                            turns (filter #(= "run.finished" (:event_type %)) conv-events)]
                                        (cond-> {:status (if connected "connected" "not-connected")}
+                                         ;; snapshot が一度も取れていない (stale marker のみ): 未配線ではなく取り込み失敗として別掲
+                                         (and (not connected) (pos? hermes-stale)) (assoc :coverage "missing/stale" :stale-snapshot-markers hermes-stale)
                                          connected (assoc :coverage (if (pos? hermes-stale) "partial/stale" "connected")
                                                           :conversations (count conversation-ids)
                                                           :turns-started (count (filter #(= "run.started" (:event_type %)) conv-events))
@@ -1008,6 +1012,7 @@
         pos-any? (fn [ks] (some #(let [v (get s %)] (and (number? v) (pos? v))) ks))]
     (cond
       (nil? s) nil
+      (and (= status "not-connected") (pos-any? [:stale-snapshot-markers])) ["history_missing" "stale_source_snapshot"]
       (= status "not-connected") ["not_connected" "hermes_ledger_not_joined"]
       (not= status "unknown") nil
       (contains? unknown-out-of-scope-reasons reason) ["out_of_scope" (unknown-out-of-scope-reasons reason)]
