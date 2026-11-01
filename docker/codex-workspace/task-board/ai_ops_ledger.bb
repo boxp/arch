@@ -762,21 +762,29 @@
   values reach the persistent snapshot). A line that is not a JSON object becomes a
   body-less input_unreadable marker and an event with an invalid identifier a
   body-less privacy_rejected marker (the aggregate turns both into unknown SLIs
-  instead of silently dropping them); a JSON line from another source means the
-  command is misconfigured, so it is dropped and counted. :hermes counts the events
-  kept as events (markers excluded)."
+  instead of silently dropping them); a JSON object whose `source` is missing or
+  not a well-formed source name cannot be told apart from a damaged Hermes event
+  (an approval or correction with its source lost), so it also becomes an
+  input_unreadable marker (:missing-source); a JSON line from another well-formed
+  source means the command is misconfigured, so it is dropped and counted
+  (:foreign). :hermes counts the events kept as events (markers excluded)."
   [text]
   (reduce (fn [acc line]
-            (let [m (try (json/parse-string line true) (catch Exception _ nil))]
+            (let [m (try (json/parse-string line true) (catch Exception _ nil))
+                  source (when (map? m) (:source m))]
               (cond (not (map? m)) (-> acc (update :lines conj input-unreadable-marker-line) (update :malformed inc))
-                    (= "hermes-observer" (:source m))
+                    (= "hermes-observer" source)
                     (let [{:keys [event rejected dropped redacted]} (hermes-gate m)]
                       (if rejected
                         (-> acc (update :lines conj (json/generate-string rejected)) (update :rejected inc) (update :dropped-keys + dropped))
                         (-> acc (update :lines conj (json/generate-string event)) (update :hermes inc)
                             (update :dropped-keys + dropped) (update :redacted-values + redacted))))
+                    ;; source 欠落/不正 (非文字列・空・識別子でない): 他 source の行とは区別できず、source を失った Hermes の
+                    ;; 承認/是正 event かもしれないので黙って捨てず入力欠落 marker にする (関連 SLI を確定させない)
+                    (not (and (string? source) (re-matches #"[a-z][a-z0-9-]{0,63}" source)))
+                    (-> acc (update :lines conj input-unreadable-marker-line) (update :missing-source inc))
                     :else (update acc :foreign inc))))
-          {:lines [] :hermes 0 :malformed 0 :foreign 0 :rejected 0 :dropped-keys 0 :redacted-values 0}
+          {:lines [] :hermes 0 :malformed 0 :missing-source 0 :foreign 0 :rejected 0 :dropped-keys 0 :redacted-values 0}
           (remove str/blank? (str/split-lines text))))
 
 (defn- run-bounded-command!
@@ -855,10 +863,14 @@
                   (str/blank? text) (fail! "empty")
                   :else
                   (let [;; 追記途中の末尾行 (改行なし) は落とす。落とした場合は snapshot が不完全 (末尾の承認等が欠け得る) なので
-                        ;; "partial" として記録し、集計入力には stale marker を付けて関連 SLI を確定させない (次の完全な取り込みで解消)
+                        ;; "partial" として記録し、集計入力には stale marker を付けて関連 SLI を確定させない (次の完全な取り込みで解消)。
+                        ;; 落とした行の種別は判別できない (是正かもしれない) ため、stale marker (重複承認 SLI のみ unknown) に加えて
+                        ;; snapshot 自体に input_unreadable marker を残し、完全な取り込みで snapshot が置き換わるまで
+                        ;; 是正率/first acceptance/zero-tolerance も確定させない (後続の取り込み失敗で snapshot が残っても有効)
                         end (inc (or (str/last-index-of text "\n") -1))
                         truncated (if (str/blank? (subs text end)) 0 1)
-                        {:keys [lines hermes malformed foreign rejected dropped-keys redacted-values]} (hermes-snapshot-lines (subs text 0 end))]
+                        {:keys [lines hermes malformed missing-source foreign rejected dropped-keys redacted-values]} (hermes-snapshot-lines (subs text 0 end))
+                        lines (cond-> lines (pos? truncated) (conj input-unreadable-marker-line))]
                     ;; 有効な hermes-observer event が 1 件もない出力 (途中行だけ・他 source だけ・全行破損/拒否) は
                     ;; 収集結果として信用せず、前回 snapshot を置き換えない (stale として扱う)
                     (if (zero? hermes)
@@ -879,7 +891,7 @@
                           (fs/delete-if-exists (hermes-mirror-failed-markers-path root)))
                         (atomic-spit! (hermes-mirror-status-path root)
                                       (pr-str (cond-> (assoc attempt :last-success now :last-result (if (pos? truncated) "partial" "ok") :lines (count lines) :bytes end
-                                                             :hermes-lines hermes :malformed-lines malformed :foreign-lines foreign :truncated-tail-lines truncated
+                                                             :hermes-lines hermes :malformed-lines malformed :missing-source-lines missing-source :foreign-lines foreign :truncated-tail-lines truncated
                                                              :rejected-lines rejected :dropped-keys dropped-keys :redacted-values redacted-values)
                                                 (pos? truncated) (update :partial-pulls (fnil inc 0)))))
                         (zero? truncated)))))))
@@ -944,7 +956,7 @@
           (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed or was partial: the SLI input uses the previous/incomplete snapshot plus a source_stale marker, or only a source_stale marker when no snapshot was ever obtained." [[{} (if (and configured (pos? (:last-attempt s 0)) (hermes-mirror-stale? s)) 1 0)]])
           ;; 成功した snapshot が無ければ件数を出さない (未取得と空の snapshot を区別する)
           (when (:last-success s)
-            (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot." [[{:kind "hermes"} (:hermes-lines s (:lines s 0))] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)] [{:kind "rejected"} (:rejected-lines s 0)] [{:kind "truncated_tail"} (:truncated-tail-lines s 0)] [{:kind "dropped_keys"} (:dropped-keys s 0)] [{:kind "redacted_values"} (:redacted-values s 0)]]))))
+            (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot (malformed, missing_source and truncated_tail lines are stored as input_unreadable markers; foreign_source lines are dropped)." [[{:kind "hermes"} (:hermes-lines s (:lines s 0))] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "missing_source"} (:missing-source-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)] [{:kind "rejected"} (:rejected-lines s 0)] [{:kind "truncated_tail"} (:truncated-tail-lines s 0)] [{:kind "dropped_keys"} (:dropped-keys s 0)] [{:kind "redacted_values"} (:redacted-values s 0)]]))))
          "\n")))
 
 (defn sli-lock-path [root] (fs/path (ai-ops-dir root) "sli.lock"))
