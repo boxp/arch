@@ -953,7 +953,12 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
         (assert (= 3 (get-in r [:coverage :privacy-rejected-upstream])) out)
         (assert (= 3 (get-in r [:coverage :collection-lost :input-unreadable])) out)
         (assert (= "unknown" (get-in r [:sli :duplicate-approval :status])) out)
-        (assert (= 5 (get-in r [:sli :duplicate-approval :lost-events])) "rejected approvals and unreadable lines (not the run.started rejection) are reported as lost, not as an unconnected source")
+        (assert (= 6 (get-in r [:sli :duplicate-approval :lost-events])) "rejected approvals, unreadable lines and the stale snapshot marker (not the run.started rejection) are reported as lost, not as an unconnected source")
+        (assert (= 1 (get-in r [:sli :duplicate-approval :stale-snapshot-markers])) out)
+        ;; stale の間は失敗中に Hermes 側で起きた是正/effect も入力に無い: 是正率・zero-tolerance も確定しない
+        (assert (= "unknown" (get-in r [:sli :agent-system-correction-task-ratio :status])) out)
+        (assert (= 1 (get-in r [:sli :agent-system-correction-task-ratio :stale-snapshot-markers])) out)
+        (assert (= 1 (get-in r [:zero-tolerance :duplicate-effects :stale-snapshot-markers])) out)
         (assert (= "unknown" (get-in r [:zero-tolerance :critical-safety-events :status])) out)
         (assert (= 3 (get-in r [:zero-tolerance :critical-safety-events :rejected-events])) out))))
   ;; 是正の拒否 → 承認だけの拒否 と連続しても、是正の欠落は集計入力に残り是正 SLI は unknown のまま

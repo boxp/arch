@@ -601,6 +601,8 @@
         buffer-dropped (+ (get collection-lost :buffer-dropped 0) ledger-dropped)
         undelivered (get collection-lost :undelivered 0)
         input-unreadable (get collection-lost :input-unreadable 0)
+        ;; Hermes ledger mirror の最新取り込みに失敗し前回 snapshot を使っている間は、失敗中に Hermes 側で起きた event (是正・承認・
+        ;; effect・重大 event を含み得る) が入力に無い。種別不明の欠落 (drop/未配信と同じ) として全 SLI の確定を止める
         hermes-stale (count (filter stale-source-marker? events))
         events (remove marker? events)
         raw-events (remove ::malformed events)
@@ -608,9 +610,9 @@
         rejected (count (filter #(and (:rejected? %) (not (:invalid-correlation? %))) gated))
         rejected-correlation (count (filter :invalid-correlation? gated))
         ;; 破損行と privacy gate で拒否した event は中身を検証できないため、zero-tolerance 指標を 0 件と確定しない
-        lost (+ malformed rejected rejected-correlation upstream-rejected buffer-dropped undelivered input-unreadable)
+        lost (+ malformed rejected rejected-correlation upstream-rejected buffer-dropped undelivered input-unreadable hermes-stale)
         ;; 是正 SLI 用の欠落: 種別が是正に無関係と分かる拒否 event (notify 等) は除く。破損行・drop・未配信・読めない入力は種別不明なので含める
-        corr-lost (+ malformed buffer-dropped undelivered input-unreadable
+        corr-lost (+ malformed buffer-dropped undelivered input-unreadable hermes-stale
                      (count (filter #(may-affect-corrections? (:event_type %)) upstream-markers))
                      (count (filter (fn [[e g]] (and (:rejected? g) (may-affect-corrections? (:event_type e)))) (map vector raw-events gated))))
         {events :events ledger-merged :merged} (merge-ledger-events (keep :event gated))
@@ -628,7 +630,7 @@
         ;; 指定種別の event だった可能性を否定できない欠落件数 (種別不明の破損行・drop・未配信・読めない入力・run、
         ;; 種別不明または該当種別の privacy 拒否、event_type 不正、event_id 衝突)
         lost-of-type (fn [t] (let [maybe? #(or (= t %) (not (contains? (:event_type enum-values) %)))]
-                               (+ malformed buffer-dropped undelivered input-unreadable unreadable-run-events id-collisions unverifiable-type
+                               (+ malformed buffer-dropped undelivered input-unreadable hermes-stale unreadable-run-events id-collisions unverifiable-type
                                   (count (filter #(maybe? (:event_type %)) upstream-markers))
                                   (count (filter (fn [[e g]] (and (:rejected? g) (maybe? (:event_type e)))) (map vector raw-events gated))))))
         approval-lost (lost-of-type "approval.requested")
@@ -668,10 +670,10 @@
         unlinked-guard (fn [m] (cond
                                  (pos? unlinked-corr)
                                  {:status "unknown" :reason "task_id 欠落の task 紐付け event (是正・run・受入・状態) があり、どの task の分子/分母か確定できない (合格扱いしない)"
-                                  :observed m :unlinked-corrections unlinked-corr :lost-events corr-lost}
+                                  :observed m :unlinked-corrections unlinked-corr :lost-events corr-lost :stale-snapshot-markers hermes-stale}
                                  (pos? corr-lost)
                                  {:status "unknown" :reason "task に紐付けられない欠落 event (破損行・privacy 拒否・collector 欠落・読めない入力) があり、是正の有無を確定できない (観測値は observed)"
-                                  :observed m :lost-events corr-lost}
+                                  :observed m :lost-events corr-lost :stale-snapshot-markers hermes-stale}
                                  :else m))
         tasks (for [[tid evs] by-task
                     :let [evs (sort-by event-time-key evs)
@@ -856,7 +858,7 @@
                              (or (pos? unlinked-corr) (pos? corr-lost) (some input-missing? accepted-ever))
                              {:status :unknown :reason "欠落 event (破損行・privacy 拒否・collector 欠落・読めない入力)・task_id 欠落 event・受入履歴を持つ task の入力欠落があり受入後の再オープンを確定できない"
                               :observed (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever))
-                              :lost-events corr-lost :unlinked-events unlinked-corr
+                              :lost-events corr-lost :unlinked-events unlinked-corr :stale-snapshot-markers hermes-stale
                               :unevaluated-input-missing (count (filter input-missing? accepted-ever))}
                              ;; 前後関係を確定できない task があれば率を確定しない (観測値は下限として別掲)
                              (some :post-accept-indeterminate? accepted-ever)
@@ -871,32 +873,32 @@
                       (or (pos? rescue-lost) (pos? rescue-unlinked))
                       {:status "unknown" :reason "救援 event だった可能性のある欠落 event または task_id 欠落の救援があり、救援発生 task 数を確定できない"
                        :observed-lower-bound (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
-                       :lost-events rescue-lost :unlinked-rescues rescue-unlinked}
+                       :lost-events rescue-lost :unlinked-rescues rescue-unlinked :stale-snapshot-markers hermes-stale}
                       ;; task 紐付け event の欠落/task_id 欠落は分母 (全 task 数) を過少にするため確定しない
                       (or (pos? corr-lost) (pos? unlinked-corr))
                       {:status "unknown" :reason "task の存在を示す event だった可能性のある欠落 event または task_id 欠落の task 紐付け event があり、救援率の分母を確定できない"
                        :observed (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
-                       :lost-events corr-lost :unlinked-task-events unlinked-corr}
+                       :lost-events corr-lost :unlinked-task-events unlinked-corr :stale-snapshot-markers hermes-stale}
                       :else (ratio (count (filter #(pos? (:rescue %)) tasks)) n))
       :duplicate-approval (cond
-                            ;; 承認 event だった可能性のある欠落 (拒否・drop・破損等) があると重複を見落とし得る
-                            ;; 観測済みの承認が 0 件でも、欠落側に承認があった可能性があれば「未接続」ではなく欠落として報告する
-                            (pos? approval-lost)
-                            {:status "unknown" :reason "承認 event だった可能性のある欠落 event (privacy 拒否・collector 欠落・破損行・読めない入力) があり重複承認の有無を確定できない"
-                             :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
-                             :lost-events approval-lost :unverifiable-approvals (:unverifiable approvals)}
-                            ;; approval_key 欠落/不正の承認があると同 scope 重複の有無を確定できない (観測値は下限として別掲)
-                            (pos? (:unverifiable approvals))
-                            {:status "unknown" :reason "approval_key 欠落/不正の承認があり重複承認の有無を確定できない"
-                             :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
-                             :unverifiable-approvals (:unverifiable approvals) :coverage "partial/unverifiable-keys"}
                             ;; 承認 event の source (Hermes ledger mirror) の最新取り込みに失敗して前回 snapshot を使っている間は、
                             ;; 失敗中に発生した承認 (重複を含む) が入力に無いため確定しない (観測値は下限、coverage は partial/stale)
                             ;; 観測済み承認 0 件 (初回取り込み失敗で snapshot が無い等) でも「未接続」ではなく欠落として報告する
                             (pos? hermes-stale)
                             {:status "unknown" :reason "承認 event の source (hermes-observer) の最新取り込みに失敗し前回 snapshot (無ければ空) を使っており、失敗中の承認を含まないため重複承認の有無を確定できない"
                              :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
-                             :stale-snapshot-markers hermes-stale :coverage "partial/stale"}
+                             :stale-snapshot-markers hermes-stale :coverage "partial/stale" :lost-events approval-lost}
+                            ;; 承認 event だった可能性のある欠落 (拒否・drop・破損等) があると重複を見落とし得る
+                            ;; 観測済みの承認が 0 件でも、欠落側に承認があった可能性があれば「未接続」ではなく欠落として報告する
+                            (pos? approval-lost)
+                            {:status "unknown" :reason "承認 event だった可能性のある欠落 event (privacy 拒否・collector 欠落・破損行・読めない入力) があり重複承認の有無を確定できない"
+                             :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
+                             :lost-events approval-lost :unverifiable-approvals (:unverifiable approvals) :stale-snapshot-markers hermes-stale}
+                            ;; approval_key 欠落/不正の承認があると同 scope 重複の有無を確定できない (観測値は下限として別掲)
+                            (pos? (:unverifiable approvals))
+                            {:status "unknown" :reason "approval_key 欠落/不正の承認があり重複承認の有無を確定できない"
+                             :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
+                             :unverifiable-approvals (:unverifiable approvals) :coverage "partial/unverifiable-keys"}
                             (pos? (:scopes approvals))
                             (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
                             :else {:status "unknown" :reason "approval event 未接続"})
@@ -914,7 +916,7 @@
                                            (pos? lost)
                                            {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run・event_id 衝突があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions :stale-snapshot-markers hermes-stale}
                                            (pos? unverifiable-type)
                                            {:status "unknown" :reason "event_type 欠落/不正の event があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :unverifiable-event-types unverifiable-type}
@@ -931,7 +933,7 @@
                                                 (pos? lost)
                                                 {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run・event_id 衝突があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions :stale-snapshot-markers hermes-stale}
                                                 (pos? unverifiable-type)
                                                 {:status "unknown" :reason "event_type 欠落/不正の event があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :unverifiable-event-types unverifiable-type}
@@ -1024,11 +1026,11 @@
       (contains? unknown-out-of-scope-reasons reason) ["out_of_scope" (unknown-out-of-scope-reasons reason)]
       (contains? unknown-not-connected-reasons reason) ["not_connected" (unknown-not-connected-reasons reason)]
       (pos-any? [:unlinked-corrections :unlinked-events :unlinked-rescues :unlinked-task-events]) ["history_missing" "unlinked_task_events"]
+      ;; source の最新取り込みに失敗し前回 snapshot を使っている (失敗中の event が入力に無い): 欠落の種類として input_loss より先に出す
+      (pos-any? [:stale-snapshot-markers]) ["history_missing" "stale_source_snapshot"]
       (pos-any? [:lost-events :collection-lost-events :malformed-lines :id-collisions :rejected-events :unreadable-runs :unreadable-inputs]) ["history_missing" "input_loss"]
       (pos-any? [:unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types]) ["history_missing" "unverifiable_fields"]
       (pos-any? [:indeterminate]) ["history_missing" "time_indeterminate"]
-      ;; source の最新取り込みに失敗し前回 snapshot を使っている (失敗中の event が入力に無い)
-      (pos-any? [:stale-snapshot-markers]) ["history_missing" "stale_source_snapshot"]
       (pos-any? [:unevaluated-input-missing]) ["history_missing" "input_missing_tasks"]
       :else ["history_missing" "other"])))
 

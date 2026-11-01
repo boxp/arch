@@ -1910,12 +1910,21 @@ bb -e "
     (assert (= \"connected\" (get-in t [:coverage :hermes-conversation :status])))
     (assert (= 0 (get-in t [:coverage :hermes-conversation :conversations])))
     (assert (= 1 (get-in t [:sli :run-reliability :runs]))))
-  ;; stale marker: 前回 snapshot を使っているので partial/stale (接続済みにしない)。SLI・件数は変えない
+  ;; stale marker: 前回 snapshot を使っているので partial/stale (接続済みにしない)。失敗中に Hermes 側で起きた event (是正・effect・
+  ;; 重大 event を含み得る) が入力に無いため、重複承認だけでなく是正率/first acceptance/zero-tolerance も確定しない (観測値は observed)
   (let [s (ai-ops-sli/aggregate* (concat board hermes [ai-ops-sli/stale-source-marker]))]
     (assert (= \"partial/stale\" (get-in s [:coverage :hermes-conversation :coverage])))
     (assert (= 1 (get-in s [:coverage :hermes-conversation :stale-snapshot-markers])))
     (assert (= 1 (get-in s [:coverage :source-stale :hermes-observer])))
-    (assert (= (dissoc (:sli j) :duplicate-approval) (dissoc (:sli s) :duplicate-approval)) \"stale marker changes no SLI but the approval one\")
+    (doseq [k [:agent-system-correction-task-ratio :first-acceptance-conformance]]
+      (assert (not= \"unknown\" (str (get-in j [:sli k :status]))) (pr-str k (get-in j [:sli k])))
+      (assert (= \"unknown\" (str (get-in s [:sli k :status]))) (pr-str k (get-in s [:sli k])))
+      (assert (= 1 (get-in s [:sli k :stale-snapshot-markers])) (pr-str k (get-in s [:sli k])))
+      (assert (= [\"history_missing\" \"stale_source_snapshot\"] (ai-ops-sli/unknown-classification (get-in s [:sli k]))) (pr-str k)))
+    (assert (= (get-in j [:sli :agent-system-correction-task-ratio]) (get-in s [:sli :agent-system-correction-task-ratio :observed])) \"observed value is the fresh one\")
+    (assert (= 1 (get-in s [:sli :agent-system-correction-task-ratio :lost-events])) (pr-str (get-in s [:sli :agent-system-correction-task-ratio])))
+    ;; lead time は欠落で変わらない
+    (assert (= (get-in j [:sli :lead-time-hours]) (get-in s [:sli :lead-time-hours])))
     ;; 承認 event の source が stale の間は、失敗中に起きた承認 (重複を含む) が入力に無いので重複承認率を確定しない
     (assert (= {:count 0 :denominator 1} (select-keys (get-in j [:sli :duplicate-approval]) [:count :denominator])) (pr-str (get-in j [:sli :duplicate-approval])))
     (let [d (get-in s [:sli :duplicate-approval])]
@@ -1930,7 +1939,18 @@ bb -e "
       (assert (= {:count 1 :denominator 2} (select-keys (get-in fresh [:sli :duplicate-approval]) [:count :denominator])) (pr-str (get-in fresh [:sli :duplicate-approval])))
       (assert (= \"unknown\" (get-in stale [:sli :duplicate-approval :status])))
       (assert (= {:count 1 :denominator 2} (select-keys (get-in stale [:sli :duplicate-approval :observed-lower-bound]) [:count :denominator]))))
-    (assert (= (:zero-tolerance j) (:zero-tolerance s)) \"stale marker is not a lost event\"))
+    ;; 回帰: 失敗中に Hermes 側で起きた effect.applied (二重実行) / correction は snapshot に無い。stale の間は zero-tolerance を
+    ;; 0 件・是正率を確定値として公開しない (次の完全な取り込みで届いて初めて確定する)
+    (doseq [k [:duplicate-effects :critical-safety-events]]
+      (assert (= \"unknown\" (str (get-in s [:zero-tolerance k :status]))) (pr-str k (get-in s [:zero-tolerance k])))
+      (assert (= 1 (get-in s [:zero-tolerance k :stale-snapshot-markers])) (pr-str k (get-in s [:zero-tolerance k]))))
+    (let [eff {:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :event_type \"effect.applied\" :effect_key \"op:0000000b\" :occurred_at \"2026-10-31T00:01:07Z\" :event_id (str conv \"/20261031T000103Z-ee2d7527:effect1\")}
+          eff2 (assoc eff :occurred_at \"2026-10-31T00:01:08Z\" :event_id (str conv \"/20261031T000103Z-ee2d7527:effect2\"))
+          fresh (ai-ops-sli/aggregate* (concat board hermes [eff eff2 {:event_id \"cov-effects-12345678\" :event_type \"coverage.connected\" :coverage_target \"duplicate-effects\"}]))
+          stale (ai-ops-sli/aggregate* (concat board hermes [eff ai-ops-sli/stale-source-marker {:event_id \"cov-effects-12345678\" :event_type \"coverage.connected\" :coverage_target \"duplicate-effects\"}]))]
+      (assert (= 1 (get-in fresh [:zero-tolerance :duplicate-effects :count])) (pr-str (get-in fresh [:zero-tolerance :duplicate-effects])))
+      (assert (= \"unknown\" (get-in stale [:zero-tolerance :duplicate-effects :status])) \"stale snapshot must not settle duplicate effects at 0\")
+      (assert (= 0 (get-in stale [:zero-tolerance :duplicate-effects :observed-duplicates-lower-bound])))))
   (println \"ok   Hermes ledger join: 会話は task 集計から分け件数を別掲、未完了 guardrail/救援率/run 数/SLI は不変、会話/turn/承認数を別掲、stale は partial\"))"
 
 # 回帰: (1) mirror が受け入れる source は hermes-observer。runtime が欠落/redact された有効 event も会話として扱い、
