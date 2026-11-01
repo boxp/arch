@@ -1090,4 +1090,44 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
       (assert (true? (ai-ops-ledger/append-hermes-mirror! root (str t)))))
     (fs/set-posix-file-permissions p "rw-r--r--")
     (assert (str/includes? (slurp t) "{\"collection_lost\":\"input_unreadable\"}"))))
+;; status.edn が書けない (ディスク容量不足・権限喪失) 間に取り込みが失敗しても、古い snapshot を最新として集計しない:
+;; status には前回の "ok" が残るが、取り込み結果は戻り値 / この process の記録で集計側へ渡し stale marker を付ける
+(let [root2 (str (fs/path (System/getenv "AI_OPS_TMP") "hermes-root-status-fail"))
+      status-path (ai-ops-ledger/hermes-mirror-status-path root2)
+      orig-spit ai-ops-ledger/atomic-spit!
+      appr (fn [i] (json/generate-string {:schema_version "ai-ops-event/v0" :source "task-board-runner" :runtime "codex-cli" :task_id "BOXP-1" :request_id "req:BOXP-1"
+                                          :event_type "approval.requested" :approval_key "approval:0123456789abcdef" :occurred_at (str "2026-10-20T0" i ":00:00Z") :occurred_precision "second"
+                                          :run_id "20261020T010000Z-aaaaaaaa" :event_id (str "BOXP-1/20261020T010000Z-aaaaaaaa:approval-" i)}))]
+  (fs/create-dirs root2)
+  (spit src (str (str/join "\n" hermes-lines) "\n"))
+  (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "cat " src))]
+    (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root2 far-deadline)))
+    (assert (= "ok" (:last-result (ai-ops-ledger/read-hermes-mirror-status root2)))))
+  ;; 取り込みが失敗し、かつ status.edn の書き込みも失敗する
+  (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "false")
+                ai-ops-ledger/atomic-spit! (fn [path content] (if (= (str path) (str status-path)) (throw (java.io.IOException. "no space left")) (orig-spit path content)))]
+    (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root2 far-deadline)) "a failed pull returns false even when status.edn cannot be written")
+    (let [s (ai-ops-ledger/read-hermes-mirror-status root2)]
+      (assert (= "ok" (:last-result s)) "status.edn still carries the previous success (the write failed)")
+      (assert (not (ai-ops-ledger/hermes-mirror-stale? s)) "status alone would present the old snapshot as fresh"))
+    (assert (str/includes? (ai-ops-ledger/sli-export-metrics root2) "ai_ops_hermes_mirror_stale 1") "the stale gauge follows the pull made in this process")
+    ;; 暗黙 (この process の記録) と明示 (refresh-sli! が渡す戻り値) のどちらでも stale marker が付く
+    (doseq [explicit [::implicit false]]
+      (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
+        (spit (str t) (str (appr 1) "\n" (appr 2) "\n"))
+        (if (= ::implicit explicit)
+          (ai-ops-ledger/append-hermes-mirror! root2 (str t))
+          (ai-ops-ledger/append-hermes-mirror! root2 (str t) explicit))
+        (assert (= ai-ops-ledger/hermes-stale-marker-line (last (str/split-lines (slurp (str t))))) (str "stale marker must follow the old snapshot when the status write failed (" explicit ")"))
+        (ai-ops-ledger/run-sli-command! ["bb" ai-ops-ledger/sli-script "aggregate" (str t)] (str t ".out") far-deadline)
+        (let [r (clojure.edn/read-string (slurp (str t ".out")))]
+          (assert (= "unknown" (get-in r [:sli :duplicate-approval :status])) (pr-str (get-in r [:sli :duplicate-approval])))
+          (assert (= "unknown" (get-in r [:sli :agent-system-correction-task-ratio :status])))))))
+  ;; 次の完全な取り込みが成功すれば (status も書ける) stale は解消する
+  (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "cat " src))]
+    (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root2 far-deadline)))
+    (assert (str/includes? (ai-ops-ledger/sli-export-metrics root2) "ai_ops_hermes_mirror_stale 0"))
+    (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
+      (ai-ops-ledger/append-hermes-mirror! root2 (str t))
+      (assert (not (str/includes? (slurp (str t)) "source_stale")) "no stale marker after a complete pull"))))
 (println "ai-ops-ledger-test: Hermes ledger mirror checks passed")'

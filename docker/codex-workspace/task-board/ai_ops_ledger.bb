@@ -830,7 +830,7 @@
   (min (- deadline (* 1000 (max 0 (hermes-mirror-reserve))))
        (+ (System/currentTimeMillis) (* 1000 (max 1 (hermes-mirror-timeout))))))
 
-(defn mirror-hermes-ledger!
+(defn mirror-hermes-ledger*
   "Run the configured command (bounded by `deadline` minus the reserve and by the
   mirror timeout) and replace `<root>/ai-ops/hermes-ledger/snapshot.jsonl`
   atomically on success. When the output ended in an unterminated line (a write in
@@ -897,6 +897,21 @@
                         (zero? truncated)))))))
         (catch Exception _ (fail! "exception"))))))
 
+;; この process で最後に行った取り込みの結果。status.edn の書き込みに失敗した (ディスク容量不足・権限喪失) 場合、
+;; status には前回の "ok" が残るため、集計側へ stale を伝える判断は status ではなくこの値を優先する。
+(def hermes-mirror-last-pull (atom nil))
+
+(defn mirror-hermes-ledger!
+  "Like `mirror-hermes-ledger*` but also records the outcome of this pull in
+  memory (`hermes-mirror-last-pull`) so the SLI input and the stale gauge do not
+  depend on status.edn being writable. Returns true on success, false on failure
+  (including an unexpected exception), nil when not configured."
+  [root deadline]
+  (let [r (try (mirror-hermes-ledger* root deadline) (catch Exception _ false))]
+    (when (some? r)
+      (reset! hermes-mirror-last-pull {:root (str root) :stale? (not (true? r)) :at (quot (System/currentTimeMillis) 1000)}))
+    r))
+
 (defn hermes-mirror-stale?
   "True when the latest pull did not succeed (the SLI input is using the previous
   snapshot) or succeeded only partially (an unterminated tail line was dropped, so
@@ -906,6 +921,16 @@
   (if (contains? status :last-result)
     (not= "ok" (:last-result status))
     (> (:last-attempt status 0) (:last-success status 0))))
+
+(defn hermes-mirror-stale-for?
+  "Staleness for `root`: the outcome of the pull made in this process (when one
+  was made for this root) wins over status.edn, which may still say \"ok\" when
+  the status write itself failed. Falls back to the recorded status otherwise."
+  [root status]
+  (let [last @hermes-mirror-last-pull]
+    (if (and last (= (:root last) (str root)))
+      (boolean (:stale? last))
+      (hermes-mirror-stale? status))))
 
 (defn append-hermes-mirror!
   "Append the Hermes snapshot to the SLI input. When the latest pull failed the
@@ -917,10 +942,17 @@
   the mirror is configured but no snapshot has ever been obtained (the first pull
   timed out / failed / never ran) only the source_stale marker is appended: the
   Hermes approval history is missing from the input, so the aggregate must not
-  settle the approval SLI from the other sources. No-op when not configured."
-  [root target]
+  settle the approval SLI from the other sources. No-op when not configured.
+  `pull-result` is the return value of the `mirror-hermes-ledger!` call this
+  input belongs to (true = complete pull); when omitted the in-process result of
+  the last pull for this root is used, and status.edn only as a last resort, so a
+  status write that failed (disk full, lost permission) cannot present the
+  previous snapshot as fresh."
+  ([root target] (append-hermes-mirror! root target ::unspecified))
+  ([root target pull-result]
   (when (hermes-mirror-command)
     (let [p (hermes-mirror-path root) fp (hermes-mirror-failed-markers-path root) status (read-hermes-mirror-status root)
+          stale? (if (= ::unspecified pull-result) (hermes-mirror-stale-for? root status) (not (true? pull-result)))
           read-lines (fn [path] (let [text (try (slurp (str path)) (catch java.io.IOException _ ::unreadable))]
                                   (if (string? text)
                                     (let [end (inc (or (str/last-index-of text "\n") -1))] (when (pos? end) (subs text 0 end)))
@@ -928,12 +960,12 @@
       (with-open [w (java.io.FileWriter. (str target) true)]
         (if (fs/exists? p)
           (do (some->> (read-lines p) (.write w))
-              (when (hermes-mirror-stale? status) (.write w (str hermes-stale-marker-line "\n"))))
+              (when stale? (.write w (str hermes-stale-marker-line "\n"))))
           ;; snapshot が一度も取得できていない: 前回分すら無いので stale marker だけを出す (初回失敗を集計側へ伝える)
           (.write w (str hermes-stale-marker-line "\n")))
         (when (fs/exists? fp)
           (some->> (read-lines fp) (.write w))))))
-  true)
+  true))
 
 (defn hermes-mirror-failed-marker-lines
   "Marker lines accumulated from no_events pulls since the last success (0 when none; an unreadable file counts as 1)."
@@ -953,7 +985,7 @@
           (metric-lines "ai_ops_hermes_mirror_failed_pull_marker_lines" "gauge" "Body-less lost-input markers accumulated from no_events pulls since the last successful pull and still appended to the SLI input (0 once a complete pull succeeds; a partial pull keeps them; capped with an input_unreadable marker kept first, see _failed_pull_markers_overflow_total)." [[{} (hermes-mirror-failed-marker-lines root)]])
           (metric-lines "ai_ops_hermes_mirror_failed_pull_markers_overflow_total" "counter" "Marker lines from no_events pulls that did not fit the failed-pull marker cap (the kept count is a lower bound; affected SLIs stay unknown)." [[{} (:failed-markers-overflow s 0)]])
           (metric-lines "ai_ops_hermes_mirror_partial_pulls_total" "counter" "Hermes ledger pulls whose output ended in an unterminated line: the snapshot was replaced but kept stale until a complete pull." [[{} (:partial-pulls s 0)]])
-          (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed or was partial: the SLI input uses the previous/incomplete snapshot plus a source_stale marker, or only a source_stale marker when no snapshot was ever obtained." [[{} (if (and configured (pos? (:last-attempt s 0)) (hermes-mirror-stale? s)) 1 0)]])
+          (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed or was partial (judged by the pull made in this process when there is one, so an unwritable status.edn cannot hide it): the SLI input uses the previous/incomplete snapshot plus a source_stale marker, or only a source_stale marker when no snapshot was ever obtained." [[{} (if (and configured (or (pos? (:last-attempt s 0)) (some-> @hermes-mirror-last-pull :root (= (str root)))) (hermes-mirror-stale-for? root s)) 1 0)]])
           ;; 成功した snapshot が無ければ件数を出さない (未取得と空の snapshot を区別する)
           (when (:last-success s)
             (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot (malformed, missing_source and truncated_tail lines are stored as input_unreadable markers; foreign_source lines are dropped)." [[{:kind "hermes"} (:hermes-lines s (:lines s 0))] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "missing_source"} (:missing-source-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)] [{:kind "rejected"} (:rejected-lines s 0)] [{:kind "truncated_tail"} (:truncated-tail-lines s 0)] [{:kind "dropped_keys"} (:dropped-keys s 0)] [{:kind "redacted_values"} (:redacted-values s 0)]]))))
@@ -1010,7 +1042,8 @@
             (if (and (run-sli-command! ["bb" sli-script "extract" (str root) (str vault)] @tmp deadline)
                      (append-ledger-events! root @tmp)
                      ;; Hermes ledger の取り込み失敗は SLI refresh を失敗にしない (前回 snapshot + stale marker で続ける)
-                     (do (mirror-hermes-ledger! root deadline) (append-hermes-mirror! root @tmp))
+                     ;; 取り込み結果は status.edn でなく戻り値で集計側へ渡す (status の書き込み失敗で古い snapshot を最新に見せない)
+                     (let [r (mirror-hermes-ledger! root deadline)] (append-hermes-mirror! root @tmp r))
                      (run-sli-command! ["bb" sli-script "prom" (str @tmp)] @output deadline)
                      (pos? (.length @output)) (<= (.length @output) sli-limit))
               (let [v1-text (v1-export-text root @v1 deadline (- sli-limit (.length @output)))]
