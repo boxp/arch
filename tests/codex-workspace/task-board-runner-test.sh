@@ -111,7 +111,7 @@ fi
 prompt="$(cat)"
 if [[ "${prompt}" == *'Delegation contract:'* ]]; then
   case "${TEST_DELEGATION_MODE:-exempt}" in
-    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run || true ;;
+    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run >&2 || true ;;
     missing) ;;
     *) python3 "${TASK_BOARD_DELEGATION_HELPER}" exempt small-task ;;
   esac
@@ -143,7 +143,20 @@ if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
   wait "$!"
 fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
-printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+if [[ "${CLAUDE_FAKE_STREAM_JSON:-false}" == true ]]; then
+  if [[ -n "${CLAUDE_FAKE_STREAM_PROGRESS_COUNT:-}" ]]; then
+    for _ in $(seq 1 "${CLAUDE_FAKE_STREAM_PROGRESS_COUNT}"); do
+      sleep "${CLAUDE_FAKE_STREAM_PROGRESS_INTERVAL:-0}"
+      printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"streaming progress"}]}}'
+    done
+  fi
+  printf '%s\n' '  {"type":"rate_limit_event","rate_limit_info":{"status":"allowed","secretField":"SECRET_RATE_LIMIT","unifiedWindows":{"five_hour":{"utilization":0.2,"note":"SECRET_WINDOW"}}},"session_id":"secret","uuid":"secret-uuid"}'
+  sleep "${CLAUDE_FAKE_STREAM_DELAY:-0}"
+  printf '%s\n' '   {"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-0","name":"Bash","input":{"command":"SECRET_WS_INPUT"}}]}}'
+  printf '%s\n' '{"type":"assistant","session_id":"secret","uuid":"secret-uuid","message":{"content":[{"type":"text","text":"working","citations":"SECRET_TEXT_EXTRA"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"SECRET_TOOL_INPUT"}}]}}' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"SECRET_TOOL_OUTPUT"}]},"tool_use_result":"SECRET_TOOL_OUTPUT"}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
+else
+  printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+fi
 exit "${CLAUDE_FAKE_EXIT:-0}"
 EOF
   chmod +x "${bin_dir}/claude"
@@ -339,6 +352,196 @@ test_parallel_codex_runs() {
   assert_file_contains "${vault}/Tickets/BOXP-102.md" '^status: done$'
 }
 
+test_fable_stream_json() {
+  local tmp vault state bin last_message
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-149|BOXP-149: stream]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-149 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true CLAUDE_FAKE_STREAM_DELAY=3 run_tick "${vault}" "${state}" env >/tmp/task-board-stream.out
+  assert_file_contains "${vault}/Tickets/BOXP-149.md" '^status: done$'
+  last_message="$(find "${state}/runs/BOXP-149" -name last-message.md -print | head -n 1)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
+  [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+  local observed finished
+  observed="$(bb -e '(require (quote cheshire.core)) (println (:observed_at (cheshire.core/parse-string (slurp (first *command-line-args*)) true)))' "${state}/ai-ops/subscription/claude.json")"
+  finished="$(stat -c %Y "$(find "${state}/runs/BOXP-149" -name events.jsonl -print -quit)")"
+  (( observed <= finished - 2 )) || fail "subscription observation was delayed until process exit"
+}
+
+test_claude_pump_drains_when_events_log_cannot_open() {
+  local tmp
+  tmp="$(mktemp -d)"
+  mkdir -p "${tmp}/events.jsonl"
+  TEST_RUNNER="${RUNNER}" TEST_STATE="${tmp}/state" TEST_LOG_PATH="${tmp}/events.jsonl" bb -e '
+    (require (quote [clojure.java.io :as io]) (quote [clojure.string :as str]) (quote [cheshire.core :as json]))
+    (load-file (str (.getParent (io/file (System/getenv "TEST_RUNNER"))) "/ai_subscription_usage.bb"))
+    (def subscription-module-loaded? (atom true))
+    (defn root [] (System/getenv "TEST_STATE"))
+    (def warnings (atom []))
+    (defn log! [message] (swap! warnings conj message))
+    (defn sanitize-claude-line [line] line)
+    (with-open [reader (java.io.PushbackReader. (io/reader (System/getenv "TEST_RUNNER")))]
+      (loop []
+        (let [form (read {:eof nil} reader)]
+          (when form
+            (when (and (seq? form) (= (first form) (quote defn)) (contains? (quote #{pump-claude-stream! await-claude-pump!}) (second form)))
+              (eval form))
+            (when-not (resolve (quote await-claude-pump!)) (recur))))))
+    (let [input (java.io.ByteArrayInputStream. (.getBytes (str (apply str (repeat 10000 "{\"type\":\"assistant\"}\n")) "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}\n" "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: done\"}\n") "UTF-8"))]
+      (assert (= "TASK_BOARD_RESULT: done" (:result (pump-claude-stream! input (System/getenv "TEST_LOG_PATH")))))
+      (assert (zero? (.available input)))
+      (assert (= "allowed" (get-in (ai-subscription-usage/snapshot (str (root) "/ai-ops/subscription/claude.json")) [:data :rate_limit_info :status])))
+      (assert (= 1 (count (filter #(str/includes? % "claude events log open failed") @warnings)))))
+    ;; The caller may stop waiting for the drain (deref timeout): the shared
+    ;; summary atom must already hold the result while the stream is still open.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))]
+      (.write out (.getBytes "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"late\"}]}}\n{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: blocked\"}\n" "UTF-8"))
+      (.flush out)
+      (loop [n 0]
+        (when (and (not= "TASK_BOARD_RESULT: blocked" (:result @summary)) (< n 200))
+          (Thread/sleep 25)
+          (recur (inc n))))
+      (assert (= "TASK_BOARD_RESULT: blocked" (:result @summary)))
+      (assert (= "late" (get-in @summary [:assistant :message :content 0 :text])))
+      (assert (not (realized? pump)))
+      (.close out)
+      (assert (= "TASK_BOARD_RESULT: blocked" (:result (deref pump 5000 nil)))))
+    ;; await-claude-pump!: when the drain outlives the grace period, keep
+    ;; polling until the late result line arrives instead of reading the atom once.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))
+          _ (.write out (.getBytes "{\"type\":\"assistant\"}\n" "UTF-8"))
+          _ (.flush out)
+          writer (future (Thread/sleep 700)
+                         (.write out (.getBytes "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: review\"}\n" "UTF-8"))
+                         (.flush out))
+          started (System/currentTimeMillis)
+          awaited (await-claude-pump! pump summary 100 10000)]
+      (assert (= "TASK_BOARD_RESULT: review" (:result awaited)))
+      (assert (< (- (System/currentTimeMillis) started) 9000))
+      (assert (not (realized? pump)))
+      (deref writer 5000 nil)
+      (.close out)
+      (deref pump 5000 nil)
+      (assert (some #(str/includes? % "final result received") @warnings)))
+    ;; ...and gives up at max-ms when no result ever arrives, returning what it has.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))
+          _ (.write out (.getBytes "{\"type\":\"assistant\"}\n" "UTF-8"))
+          _ (.flush out)
+          started (System/currentTimeMillis)
+          awaited (await-claude-pump! pump summary 100 1200)]
+      (assert (nil? (:result awaited)))
+      (assert (:json? awaited))
+      (assert (>= (- (System/currentTimeMillis) started) 1000))
+      (.close out)
+      (deref pump 5000 nil)
+      (assert (some #(str/includes? % "no final result received") @warnings)))'
+}
+
+test_claude_result_survives_events_log_failure() {
+  local tmp vault state bin last_message RUNNER
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${tmp}/runner"
+  cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
+  RUNNER="${tmp}/runner/task_board_runner.bb"
+  # Make the runner create a directory at the run's events.jsonl path so every
+  # log open/write fails while the agent is still streaming its result.
+  sed -i '/^(defn run-agent!/,/^    (fs\/create-dirs dir)$/ s|^    (fs/create-dirs dir)$|    (fs/create-dirs dir)\n    (fs/create-dirs stdout-path)|' "${RUNNER}"
+  grep -q '(fs/create-dirs stdout-path)' "${RUNNER}" || fail "runner patch for log failure did not apply"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-144|BOXP-144: log failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-144 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-log-failure.out
+  last_message="$(find "${state}/runs/BOXP-144" -name last-message.md -print -quit)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when events log cannot be written"
+  assert_file_contains "${vault}/Tickets/BOXP-144.md" '^status: done$'
+  [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
+}
+
+test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable() {
+  local tmp vault state bin last_message RUNNER
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${tmp}/runner"
+  cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
+  RUNNER="${tmp}/runner/task_board_runner.bb"
+  sed -i '/^(defn run-agent!/,/^    (fs\/create-dirs dir)$/ s|^    (fs/create-dirs dir)$|    (fs/create-dirs dir)\n    (fs/create-dirs stdout-path)|' "${RUNNER}"
+  grep -q '(fs/create-dirs stdout-path)' "${RUNNER}" || fail "runner patch for log failure did not apply"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-145|BOXP-145: streaming progress]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-145 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true CLAUDE_FAKE_STREAM_PROGRESS_COUNT=6 CLAUDE_FAKE_STREAM_PROGRESS_INTERVAL=0.5 CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 run_tick "${vault}" "${state}" env >/tmp/task-board-stream-progress-log-failure.out
+  last_message="$(find "${state}/runs/BOXP-145" -name last-message.md -print -quit)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when streaming with an unwritable log"
+  assert_file_contains "${vault}/Tickets/BOXP-145.md" '^status: done$'
+  assert_run_summary_contains "${state}" BOXP-145 ':idle-timeout\? false'
+  [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
+}
+
+test_claude_events_log_omits_tool_payloads() {
+  local tmp vault state bin events last_message
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-148|BOXP-148: stream privacy]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-148 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-stream-privacy.out
+  events="$(find "${state}/runs/BOXP-148" -name events.jsonl -print -quit)"
+  last_message="$(find "${state}/runs/BOXP-148" -name last-message.md -print -quit)"
+  assert_file_not_contains "${events}" 'SECRET_TOOL_INPUT|SECRET_TOOL_OUTPUT|SECRET_RATE_LIMIT|SECRET_WINDOW|SECRET_WS_INPUT|SECRET_TEXT_EXTRA|"secret"|secret-uuid|session_id|"uuid"'
+  assert_file_contains "${events}" '"status":"allowed"'
+  assert_file_contains "${events}" '"utilization":0.2'
+  assert_file_contains "${events}" '"name":"Bash"'
+  assert_file_contains "${events}" 'working'
+  assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
+  [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+}
+
+test_claude_run_survives_subscription_snapshot_failure() {
+  local tmp vault state bin events last_message
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${state}/ai-ops"
+  # A regular file where the snapshot directory should be makes every
+  # record-claude-rate-limit! call throw; the run itself must still finish.
+  : >"${state}/ai-ops/subscription"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-145|BOXP-145: snapshot failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-145 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-snapshot-failure.out
+  events="$(find "${state}/runs/BOXP-145" -name events.jsonl -print -quit)"
+  last_message="$(find "${state}/runs/BOXP-145" -name last-message.md -print -quit)"
+  assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "run must finish when the subscription snapshot cannot be written"
+  assert_file_contains "${vault}/Tickets/BOXP-145.md" '^status: done$'
+  [[ -f "${state}/ai-ops/subscription" ]] || fail "placeholder must stay a file"
+}
+
+test_subscription_metrics_disabled_removes_prom() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-146|BOXP-146: metrics]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-146 in-progress codex
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >/tmp/task-board-metrics-on.out
+  [[ -f "${state}/ai-ops/subscription-usage.prom" ]] || fail "missing subscription metrics"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-147|BOXP-147: metrics disabled]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-147 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_SUBSCRIPTION_METRICS=false run_tick "${vault}" "${state}" env >/tmp/task-board-metrics-off.out
+  [[ ! -e "${state}/ai-ops/subscription-usage.prom" ]] || fail "subscription metrics still present"
+}
+
 test_fable_assignee_runs_via_claude() {
   local tmp vault state bin prompt_log args_log summary last_message events
   tmp="$(mktemp -d)"
@@ -359,7 +562,7 @@ test_fable_assignee_runs_via_claude() {
     CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-fable.out
 
-  assert_file_contains "${args_log}" '.*--print --output-format text.*--agent fable'
+  assert_file_contains "${args_log}" '.*--print --output-format stream-json --verbose.*--agent fable'
   assert_file_not_contains "${args_log}" '--model'
   assert_file_not_contains "${args_log}" 'BOXP-150'
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: fable$'
@@ -1450,6 +1653,7 @@ test_fable_reported_blocked_is_audited() {
   PATH="${bin}:$PATH" CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_RESULT: blocked\napi_key=do-not-expose' run_tick "${vault}" "${state}" env >/tmp/task-board-fable-blocked.out
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-302\|BOXP-302: fable blocked\]\].*status::blocked'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'status::blocked.*assignee::boxp'
   assert_file_contains "${vault}/Tickets/BOXP-302.md" 'category=agent-reported-blocked'
   assert_file_contains "${vault}/Tickets/BOXP-302.md" 'reason=Agent reported blocked; inspect the referenced run artifacts'
   assert_file_not_contains "${vault}/Tickets/BOXP-302.md" 'do-not-expose'
@@ -1622,6 +1826,12 @@ test_review_without_repo_marker_skips_pr_gates() {
 
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-402\|BOXP-402: no repo review\]\].*status::review'
   assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: review$'
+  # A skipped gate (no PR to check) must not be counted as a pass.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "skip"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "skip"\] 1'
+  if grep -q '\["all" "pass"\]' "${state}/ai-ops/ledger-stats.edn"; then
+    fail "review-none gate must not be counted as pass"
+  fi
 }
 
 test_review_with_conflict_is_blocked() {
@@ -3182,6 +3392,114 @@ test_loop_prune_can_be_disabled() {
 }
 
 
+test_ai_ops_ledger_records_run_lifecycle() {
+  local tmp vault state bin ledger
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+  write_board "${vault}" ""
+  # The card starts in the Ready lane so run.started records the Ready -> ack transition.
+  sed -i 's/^## Ready$/## Ready\n- [ ] [[Tickets\/BOXP-416|BOXP-416: ledger secret title]] #ticket status::ready/' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-416 ready codex boxp/example
+
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-1.out
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-2.out
+
+  ledger="$(ls "${state}"/ai-ops/ledger/events-*.jsonl)"
+  # JSON key order is not fixed: select each event by its id suffix, then check fields.
+  grep ':ledger:started"' "${ledger}" | grep -q '"lane_from":"ready"' || fail "expected run.started from ready"
+  grep ':ledger:correction"' "${ledger}" | grep '"correction_class":"gate_defect"' | grep -q '"correction_origin":"agent-system"' \
+    || fail "expected an agent-system gate_defect correction"
+  grep ':ledger:finished"' "${ledger}" | grep -q '"status":"retrying"' || fail "expected a retrying run.finished"
+  grep ':ledger:finished"' "${ledger}" | grep -q '"status":"succeeded"' || fail "expected a succeeded run.finished"
+  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_to":"review"' || fail "expected lane.changed to review"
+  assert_file_not_contains "${ledger}" 'secret title'
+  assert_file_not_contains "${ledger}" 'http'
+  assert_file_not_contains "${ledger}" 'privacy_rejected'
+  [[ "$(grep -c '"event_type":"run.started"' "${ledger}")" -eq 2 ]] || fail "expected two run.started ledger events"
+  grep ':ledger:lane-start"' "${ledger}" | grep '"lane_from":"ready"' | grep -q '"lane_to":"in-progress"' \
+    || fail "expected a start lane.changed ready -> in-progress"
+  # Start Ready -> In Progress, finish In Progress -> Review. A retry stays In
+  # Progress: no lane.changed for in-progress -> in-progress.
+  [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 2 ]] || fail "expected two lane.changed ledger events"
+  grep ':ledger:correction"' "${ledger}" | grep -q '"confidence":"high"' \
+    || fail "expected a failed CI check to be a high-confidence correction"
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "fail"\] 1'
+  # gate="all" is the overall denominator and must count the failure too.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "fail"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "pass"\] 1'
+  # Individual gates count their successes too, not only failures.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["ci" "pass"\] 1'
+  # The CI-failed run also passed mergeability; that success must be counted.
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["mergeability" "pass"\] 2'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["codex-review" "pass"\] 1'
+  assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "pass"\] 2'
+  # One-shot `tick` (not only `loop`) must refresh metrics.prom from the stats.
+  assert_file_contains "${state}/ai-ops/metrics.prom" 'ai_ops_review_gate_total\{gate="ci",result="fail"\} 1'
+  # One-shot `tick` waits for the SLI refresh (bb exits without awaiting futures),
+  # so the attempt is finished, not left with only :last-attempt.
+  assert_file_contains "${state}/ai-ops/sli-export-status.edn" ':last-success|:failures'
+}
+
+test_ai_ops_ledger_groom_from_backlog_records_actual_lane() {
+  local tmp vault state bin ledger
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}" "${vault}/Boards" "${vault}/Tickets"
+  make_fake_codex "${bin}"
+  cat >"${vault}/Boards/Task Board.md" <<'EOF'
+# Task Board
+
+## Backlog
+- [ ] [[Tickets/BOXP-418|BOXP-418: ledger groom]] #ticket status::backlog
+
+## Ready
+
+## In Progress
+
+## Blocked
+
+## Review
+
+## Done
+EOF
+  write_ticket "${vault}" BOXP-418 backlog codex
+
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-groom.out
+
+  ledger="$(ls "${state}"/ai-ops/ledger/events-*.jsonl)"
+  # A Backlog groom run never moves the card to In Progress: no start
+  # transition, and the finish transition starts from backlog.
+  assert_file_not_contains "${ledger}" ':ledger:lane-start"'
+  assert_file_not_contains "${ledger}" '"lane_from":"in-progress"'
+  grep ':ledger:started"' "${ledger}" | grep -q '"lane_to":"backlog"' || fail "expected run.started to stay in backlog"
+  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_from":"backlog"' || fail "expected lane.changed from backlog"
+}
+
+test_ai_ops_ledger_disabled_by_env() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-417|BOXP-417: ledger off]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-417 in-progress codex
+
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_AI_OPS_LEDGER_ENABLED=false run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-off.out
+
+  assert_file_contains "${vault}/Tickets/BOXP-417.md" '^status: done$'
+  [[ ! -e "${state}/ai-ops/ledger" ]] || fail "ledger must not be written when disabled"
+  [[ -f "${state}/ai-ops/subscription-usage.prom" ]] || fail "subscription metrics must remain enabled"
+}
+
 test_run_finished_records_outbox_event() {
   local tmp vault state bin event
   tmp="$(mktemp -d)"
@@ -3304,7 +3622,109 @@ CHECK
   done
 }
 
+test_assignment_revisions() {
+  local tmp vault state bin rev result code
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::boxp'
+  write_ticket "${vault}" BOXP-990 review boxp
+  result="$(bb "${HELPER}" update BOXP-990 --vault "${vault}" --lane Ready --assignee codex --note 'assignment note' --json)"
+  rev="$(printf '%s' "${result}" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" "^board_rev: ${rev}$"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" 'assignment note'
+  assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev}"
+  bb "${HELPER}" show BOXP-990 --vault "${vault}" --json | python3 -c 'import json,sys; x=json.load(sys.stdin); assert x["consistency"]["rev-match"] and x["consistency"]["assignee-match"]'
+  bb "${HELPER}" verify-dispatch BOXP-990 --vault "${vault}" --expected-rev "${rev}" --assignee codex --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["state"] == "awaiting-pickup"'
+  sed -i "s/^board_rev: .*/board_rev: old/; s/^assignee: .*/assignee: boxp/; s/^status: .*/status: review/" "${vault}/Tickets/BOXP-990.md"
+  cp "${vault}/Tickets/BOXP-990.md" "${tmp}/before"
+  set +e
+  bb "${HELPER}" verify-dispatch BOXP-990 --vault "${vault}" --expected-rev "${rev}" --json >"${tmp}/verify"
+  code=$?
+  set -e
+  [[ "$code" == 5 ]] || fail 'expected pending-sync exit 5'
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick"
+  cmp "${tmp}/before" "${vault}/Tickets/BOXP-990.md" || fail 'mismatch rewrote ticket'
+  [[ ! -e "${tmp}/starts" ]] || fail 'mismatch started agent'
+  sed -i "s/^board_rev: .*/board_rev: ${rev}/; s/^assignee: .*/assignee: codex/; s/^status: .*/status: ready/" "${vault}/Tickets/BOXP-990.md"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick2"
+  assert_file_contains "${tmp}/starts" BOXP-990
+  assert_file_contains "${vault}/Boards/Task Board.md" 'assignee::boxp'
+  bb "${HELPER}" verify-dispatch BOXP-990 --vault "${vault}" --expected-rev "${rev}" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["state"] == "started"'
+  sed -n '/\[\[Tickets\/BOXP-990|/p' "${vault}/Boards/Task Board.md" >>"${vault}/Boards/Task Board.md"
+  bb "${HELPER}" show BOXP-990 --vault "${vault}" --json | python3 -c 'import json,sys; assert json.load(sys.stdin)["consistency"]["duplicate-cards"] == 2'
+}
+
+test_assignment_superseded() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-991 in-progress codex
+  bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee codex >/dev/null
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  local pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
+  bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee boxp --note 'new assignment' >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-991.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-991.md" 'newer assignment \(board_rev'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'status::ready.*assignee::boxp'
+  assert_run_summary_contains "${state}" BOXP-991 ':superseded-by'
+}
+
+test_assignment_repairs() {
+  local tmp vault state bin old new rev1 rev2
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  old="rs-0000"; new="pnhdlqrk-0000"
+  # A newer ticket is a complete helper write whose card update was lost: the card is repaired and dispatched.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::boxp rev::${old}"
+  write_ticket "${vault}" BOXP-992 ready codex
+  sed -i "s/^type: task$/type: task\nboard_rev: ${new}/" "${vault}/Tickets/BOXP-992.md"
+  cp "${vault}/Boards/Task Board.md" "${tmp}/board-before"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/tick0" 2>&1
+  cmp "${tmp}/board-before" "${vault}/Boards/Task Board.md" || fail 'card repaired inside the warn window'
+  [[ ! -e "${tmp}/starts" ]] || fail 'stale card dispatched inside the warn window'
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
+  assert_file_contains "${tmp}/tick" 'the card write was lost, repairing the card from ticket rev=.* for BOXP-992|BOXP-992; the card write was lost'
+  assert_file_contains "${tmp}/starts" BOXP-992
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${new}"
+  # A newer card whose ticket never arrives: after the warn window the ticket frontmatter is repaired from the card.
+  rm -rf "${vault}" "${state}" "${tmp}/starts"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::codex rev::${new}"
+  write_ticket "${vault}" BOXP-993 review boxp
+  sed -i "s/^type: task$/type: task\nboard_rev: ${old}/" "${vault}/Tickets/BOXP-993.md"
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
+  assert_file_contains "${tmp}/tick" 'WARN: assignment revision mismatch persisted for BOXP-993'
+  assert_file_contains "${vault}/Tickets/BOXP-993.md" "^board_rev: ${new}$"
+  # The repaired ticket carries the card's assignee, so the same tick dispatches it.
+  assert_file_contains "${tmp}/tick" 'processing BOXP-993 from In Progress'
+  assert_file_contains "${tmp}/starts" BOXP-993
+  # Notes and text edits keep the revision; only a lane or assignee change issues a new one.
+  rm -rf "${vault}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-994|BOXP-994: test]] #ticket status::in-progress assignee::boxp'
+  write_ticket "${vault}" BOXP-994 in-progress boxp
+  rev1="$(bb "${HELPER}" update BOXP-994 --vault "${vault}" --lane Ready --assignee codex --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  rev2="$(bb "${HELPER}" update BOXP-994 --vault "${vault}" --note 'progress only' --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  [[ -n "${rev1}" && "${rev1}" == "${rev2}" ]] || fail "note-only update changed revision ${rev1} -> ${rev2}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev1}"
+}
+
+test_assignment_revisions
+test_assignment_superseded
+test_assignment_repairs
 test_delegation_gate_end_to_end
+test_fable_stream_json
+test_claude_pump_drains_when_events_log_cannot_open
+test_claude_result_survives_events_log_failure
+test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable
+test_claude_events_log_omits_tool_payloads
+test_claude_run_survives_subscription_snapshot_failure
+test_subscription_metrics_disabled_removes_prom
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
 test_fable_model_environment_is_legacy_only
@@ -3388,5 +3808,11 @@ test_loop_prune_can_be_disabled
 test_run_finished_records_outbox_event
 test_in_progress_retry_records_no_outbox_event
 test_outbox_disabled_by_env
+test_ai_ops_ledger_records_run_lifecycle
+test_ai_ops_ledger_disabled_by_env
+test_ai_ops_ledger_groom_from_backlog_records_actual_lane
 
 echo "task-board-runner tests passed"
+
+# BOXP-344: isolated shared-GPU evaluation state machine; no model/network.
+python3 -B -m unittest discover -s "${ROOT_DIR}/tests/qwen-eval" -v

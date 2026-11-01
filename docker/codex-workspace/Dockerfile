@@ -1,16 +1,16 @@
 FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b1115fb944
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
-ARG CODEX_VERSION=0.164.0
-ARG CLAUDE_CODE_VERSION=2.1.310
+ARG CODEX_VERSION=0.165.0
+ARG CLAUDE_CODE_VERSION=2.1.312
 ARG EVEN_TERMINAL_VERSION=0.10.5
 ARG PI_AGENT_VERSION=1.4.0
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
-ARG GH_VERSION=2.103.2
+ARG GH_VERSION=2.103.3
 ARG GHQ_VERSION=1.11.2
 ARG GWQ_VERSION=0.1.2
 ARG CEEKER_VERSION=0.5.0
-ARG BABASHKA_VERSION=1.13.227
+ARG BABASHKA_VERSION=1.13.229
 ARG LAZYGIT_VERSION=0.66.2
 ARG YAZI_VERSION=26.9.1
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
@@ -154,6 +154,7 @@ COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
 COPY dotfiles-sync.sh /opt/codex-workspace/dotfiles-sync.sh
 COPY cron/ /opt/codex-workspace/cron/
 COPY task-board/ /opt/codex-workspace/task-board/
+COPY qwen-eval/ /opt/codex-workspace/qwen-eval/
 COPY novel-board/ /opt/codex-workspace/novel-board/
 COPY recurring-events/ /opt/codex-workspace/recurring-events/
 COPY skills/ /opt/codex-workspace/skills/

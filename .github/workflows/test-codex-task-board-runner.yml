@@ -6,11 +6,14 @@ on:
       - docker/codex-workspace/Dockerfile
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
+      - docker/codex-workspace/qwen-eval/**
+      - tests/qwen-eval/**
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/novel-board/**
       - docker/codex-workspace/recurring-events/**
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
+      - docs/project_docs/BOXP-360/tools/**
       - .github/workflows/test-codex-task-board-runner.yml
   push:
     branches: [main]
@@ -18,11 +21,14 @@ on:
       - docker/codex-workspace/Dockerfile
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
+      - docker/codex-workspace/qwen-eval/**
+      - tests/qwen-eval/**
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/novel-board/**
       - docker/codex-workspace/recurring-events/**
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
+      - docs/project_docs/BOXP-360/tools/**
       - .github/workflows/test-codex-task-board-runner.yml
   workflow_dispatch: {}
 
@@ -51,6 +57,9 @@ jobs:
       - run: python3 tests/codex-workspace/delegation-test.py
       - run: tests/codex-workspace/task-board-runner-test.sh
       - run: tests/codex-workspace/task-board-events-test.sh
+      - run: tests/codex-workspace/ai-ops-ledger-test.sh
+      - run: bash tests/codex-workspace/ai-subscription-usage-test.sh
+      - run: docs/project_docs/BOXP-360/tools/test.sh
       - run: tests/codex-workspace/localllm-docs-test.sh
       - run: tests/codex-workspace/localllm-source-check-test.sh
       - run: bb docker/codex-workspace/novel-board/novel_board_runner.bb test

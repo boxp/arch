@@ -207,12 +207,27 @@ case "${mode}" in
     echo '{"scene":"start line","prompt":"girl at the start line","reference_images":["ref-rin.png"]}' >"${work}/illustration.json"
     echo "NOVEL_BOARD_RESULT: done"
     ;;
-  groom)
+  groom|groom-overreach)
+    allowed="$(printf '%s\n' "${prompt}" | grep '^Allowed writes:' || true)"
+    if [[ "${allowed}" != *'## Requirements'* || "${allowed}" != *'## Outline'* ]]; then
+      echo "NOVEL_BOARD_RESULT: blocked Requirements/Outline are not allowed"
+      exit 0
+    fi
     note="${CODEX_NOVEL_BOARD_VAULT}/Novels/${id}.md"
     printf -- '- Title: クラウド要件\n- Synopsis: あらすじ\n' >"${work}/groom.txt"
     bb "${FAKE_EDIT_BB}" replace-section "${note}" Requirements "${work}/groom.txt"
     printf -- '1. 導入\n2. 展開\n' >"${work}/outline.txt"
     bb "${FAKE_EDIT_BB}" replace-section "${note}" Outline "${work}/outline.txt"
+    if [[ "${mode}" == groom-overreach ]]; then
+      printf '許可外の変更\n' >"${work}/overreach.txt"
+      bb "${FAKE_EDIT_BB}" replace-section "${note}" 'Draft Preview' "${work}/overreach.txt"
+    fi
+    echo "NOVEL_BOARD_RESULT: done"
+    ;;
+  write-overreach)
+    note="${CODEX_NOVEL_BOARD_VAULT}/Novels/${id}.md"
+    printf '許可外の変更\n' >"${work}/overreach.txt"
+    bb "${FAKE_EDIT_BB}" replace-section "${note}" Requirements "${work}/overreach.txt"
     echo "NOVEL_BOARD_RESULT: done"
     ;;
   regroom)
@@ -878,6 +893,10 @@ cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-11.md"
 tick
 [[ "$(lane_of "${BOARD}" NOVEL-11)" == "Draft" ]] || fail "cloud groom should move to Draft"
 assert_contains "${VAULT}/Novels/NOVEL-11.md" "- Title: クラウド要件"
+sed -n '/^## Reference Context$/,/^## Review Instructions$/p' "${VAULT}/Novels/NOVEL-11.md" >"${TMP}/cloud-reference.txt"
+assert_not_contains "${TMP}/cloud-reference.txt" "読取 0"
+assert_not_contains "${TMP}/cloud-reference.txt" "不足/未解決: なし"
+assert_contains "${TMP}/cloud-reference.txt" "runner 未判定"
 echo done >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud route failures and groom"
 
@@ -1442,7 +1461,8 @@ assert_contains "${PROMPT85}" "Common rules you MUST read before planning: \`ひ
 assert_contains "${PROMPT85}" "\`ひとはこさんバース/キャラ設定/lilith-tail.md\`"
 assert_contains "${PROMPT85}" "listing the setting notes you actually read"
 assert_not_contains "${PROMPT85}" "ALIAS-MARKER"
-grep -Fq -- "読取は agent 側で行うため、ここでは候補のみ" <<<"$(reference_context NOVEL-85)" || fail "cloud Reference Context must say the agent reads"
+grep -Fq -- "runner は本文未読・読取と未解決は agent の自己申告で runner 未検証" <<<"$(reference_context NOVEL-85)" || fail "cloud Reference Context must say the agent reads and the runner did not verify"
+if grep -Fq -- "読取 0" <<<"$(reference_context NOVEL-85)"; then fail "cloud Reference Context must not claim 読取 0"; fi
 echo done >"${FAKE_CLAUDE_MODE_FILE}"
 echo "PASS: cloud groom receives the names-only exploration"
 
@@ -1678,5 +1698,77 @@ assert_not_contains "${BOARD}" "NOVEL-17"
 
 # Private root permissions
 [[ "$(stat -c %a "${STATE}")" == "700" ]] || fail "state root must be 0700"
+
+# Cloud agents cannot change management note sections outside their action.
+echo groom-overreach >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Backlog "- [ ] [[Novels/NOVEL-9901|NOVEL-9901: 許可外変更]] #novel status::backlog assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-9901.md"
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-9901)" == "Backlog" ]] || fail "groom overreach must stay in Backlog"
+assert_contains "${VAULT}/Novels/NOVEL-9901.md" "許可されていないセクションを変更しました: ## Draft Preview"
+echo write-overreach >"${FAKE_CLAUDE_MODE_FILE}"
+add_card Draft "- [ ] [[Novels/NOVEL-9902|NOVEL-9902: 執筆時の許可外変更]] #novel status::draft assignee::claude-sonnet"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-9902.md"
+write_requirements NOVEL-9902
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-9902)" == "Draft" ]] || fail "write overreach must stay in Draft"
+assert_contains "${VAULT}/Novels/NOVEL-9902.md" "許可されていないセクションを変更しました: ## Requirements"
+echo "PASS: cloud note write boundaries"
+
+# Image-only Review uses name matching and one linked note, and is idempotent.
+mkdir -p "${VAULT}/ひとはこさんバース/BOXP363" "${STATE}/work/NOVEL-8801"
+printf '\211PNG\r\n\032\nfixture' >"${VAULT}/ひとはこさんバース/BOXP363/name.png"
+printf '\211PNG\r\n\032\nfixture' >"${VAULT}/ひとはこさんバース/BOXP363/link.png"
+printf '# 星野太郎\n![[name.png]]\n[[BOXP363資料]]\n' >"${VAULT}/ひとはこさんバース/BOXP363/星野太郎.md"
+printf '# 資料\n![[link.png]]\n' >"${VAULT}/ひとはこさんバース/BOXP363/BOXP363資料.md"
+cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-8801.md"
+sed -i '/^TBD$/d' "${VAULT}/Novels/NOVEL-8801.md"
+printf '%s\n' '- Characters: 星野太郎' >"${TMP}/image-req.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" Requirements "${TMP}/image-req.txt"
+printf '%s\n' '- 挿絵も用意してください' >"${TMP}/image-instructions.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" 'Review Instructions' "${TMP}/image-instructions.txt"
+for _ in $(seq 1 300); do printf '穏やかな朝の物語。' >>"${STATE}/work/NOVEL-8801/manuscript.md"; done
+before_image_body="$(sha256sum "${STATE}/work/NOVEL-8801/manuscript.md" | cut -d' ' -f1)"
+: >>"${FAKE_IMAGE_LOG}"
+image_calls_before="$(wc -l <"${FAKE_IMAGE_LOG}")"
+add_card Review '- [ ] [[Novels/NOVEL-8801|NOVEL-8801: 試験作品]] #novel status::review assignee::localllm'
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-8801)" == Review ]] || fail 'image-only must remain Review'
+card_line "${BOARD}" NOVEL-8801 | grep -Fq 'assignee::boxp' || fail 'image-only must return to boxp'
+[[ "$(sha256sum "${STATE}/work/NOVEL-8801/manuscript.md" | cut -d' ' -f1)" == "${before_image_body}" ]] || fail 'image-only changed manuscript'
+[[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'image-only must call generator once'
+tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq 'name.png' || fail 'name-matched image missing'
+tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq 'link.png' || fail 'linked image missing'
+tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq "Owner's request for this illustration (highest priority; it overrides the composition, scene and number of characters described afterwards): 挿絵も用意してください" || fail 'image-only prompt must carry the review request'
+[[ -s "${VAULT}/Novels/Drafts/NOVEL-8801/attachments/illustration.png" ]] || fail 'image-only draft missing image'
+assert_contains "${VAULT}/Novels/NOVEL-8801.md" '![[Novels/Drafts/NOVEL-8801/attachments/illustration.png]]'
+set_assignee NOVEL-8801 localllm
+tick
+[[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'duplicate image generation'
+assert_contains "${VAULT}/Novels/NOVEL-8801.md" '同じ依頼で生成済みの画像をそのまま使用（新規生成なし）'
+
+# Recovery adopts a valid pending image without calling the generator.
+cp "${STATE}/work/NOVEL-8801/illustration.png" "${STATE}/work/NOVEL-8801/illustration.pending-crash.png"
+printf '{:status :running :run-id "crash" :manuscript-sha "%s" :pending "%s"}\n' "${before_image_body}" "${STATE}/work/NOVEL-8801/illustration.pending-crash.png" >"${STATE}/work/NOVEL-8801/illustration-job.edn"
+set_assignee NOVEL-8801 localllm
+tick
+[[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'recovery called generator'
+[[ ! -f "${STATE}/work/NOVEL-8801/illustration.pending-crash.png" ]] || fail 'pending image not adopted'
+
+# Missing references preserve both manuscript and the previous image.
+cp "${STATE}/work/NOVEL-8801/illustration.png" "${TMP}/image-before-shortage.png"
+sed -i '/^- Characters: 星野太郎$/d' "${VAULT}/Novels/NOVEL-8801.md"
+printf '%s\n' '- Characters: 未知の人物' >"${TMP}/image-req.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" Requirements "${TMP}/image-req.txt"
+printf '%s\n' '- 挿絵を作り直してください' >"${TMP}/image-instructions.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" 'Review Instructions' "${TMP}/image-instructions.txt"
+set_assignee NOVEL-8801 localllm
+tick
+[[ "$(lane_of "${BOARD}" NOVEL-8801)" == Review ]] || fail 'missing image must remain Review'
+card_line "${BOARD}" NOVEL-8801 | grep -Fq 'assignee::boxp' || fail 'missing image must return to boxp'
+assert_contains "${VAULT}/Novels/NOVEL-8801.md" '探索ノート数'
+cmp "${TMP}/image-before-shortage.png" "${STATE}/work/NOVEL-8801/illustration.png" || fail 'missing image changed previous image'
+[[ "$(sha256sum "${STATE}/work/NOVEL-8801/manuscript.md" | cut -d' ' -f1)" == "${before_image_body}" ]] || fail 'missing image changed manuscript'
+echo 'PASS: image-only generation, reuse, recovery and shortage'
 
 echo "All novel-board runner tests passed."

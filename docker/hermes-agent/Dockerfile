@@ -6,8 +6,8 @@
 FROM docker.io/nousresearch/hermes-agent:v0.22.5@sha256:9c5561579f3ffdf333401797094ac3a743738d6c25d40f4331c7bf77b694238d
 
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
-ARG BABASHKA_VERSION=1.13.227
-ARG BABASHKA_SHA256=bf89e909c4025edf2d669921c81107435b7244840d8f4306f58439c328a342f9
+ARG BABASHKA_VERSION=1.13.229
+ARG BABASHKA_SHA256=64fb984991c6e68f44e8a9391176a9bb411f9b9ae9959a6bca5307c75a7414da
 
 # Keep the upstream PATH order (hermes shim, venv, then the pm-managed node/python
 # symlinks under /usr/local/bin) and prepend only the obsidian-headless prefix.
@@ -84,3 +84,9 @@ RUN chmod 0644 /opt/boxp/hermes-agent/skills/obsidian-task-board/SKILL.md \
 RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-scheduler-network-unreachable.py \
     && /opt/hermes/.venv/bin/python -m py_compile /opt/hermes/cron/scheduler.py \
     && grep -q 'mirror_to_session' /opt/hermes/gateway/platforms/webhook.py
+
+# BOXP-373: task-board silence requires an exact Notes receipt. Unknown/failed
+# replies stay visible; metadata-only receipts prevent duplicate delivery after
+# a retry/restart. Build fails if upstream changes the reviewed integration.
+RUN /opt/hermes/.venv/bin/python /opt/boxp/hermes-agent/patches/fix-task-board-delivery.py \
+    && /opt/hermes/.venv/bin/python -m unittest discover -s /opt/boxp/hermes-agent/patches -p 'test_task_board_delivery.py'

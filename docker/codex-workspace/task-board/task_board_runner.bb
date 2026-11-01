@@ -119,6 +119,148 @@
       (catch Exception e
         (log! (str "event outbox record failed for " ticket-id "/" run-id ": " (.getMessage e)))))))
 
+;; BOXP-360: metadata-only AI ops ledger. Loaded lazily like the event outbox;
+;; a missing or broken module, a full disk or a privacy rejection only loses
+;; (and counts) observation events and never affects a run.
+(def ai-ops-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_ops_ledger.bb")))
+
+(def ai-ops-module-loaded?
+  (delay
+    (try
+      (load-file ai-ops-module-path)
+      true
+      (catch Exception e
+        (log! (str "ai ops ledger module unavailable (" ai-ops-module-path "): " (.getMessage e)))
+        false))))
+
+(def subscription-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_subscription_usage.bb")))
+
+(def subscription-module-loaded?
+  (delay (try (load-file subscription-module-path) true
+              (catch Exception e
+                (log! (str "subscription module unavailable: " (.getMessage e))) false))))
+
+(declare root)
+
+(defn assignee-runtime [assignee]
+  (let [a (str assignee)]
+    (cond (str/starts-with? a "codex") "codex-cli"
+          (= "localllm" a) "localllm"
+          (= "localllm-coder" a) "localllm-coder"
+          (str/blank? a) "unknown"
+          :else "claude-cli")))
+
+(defn record-ai-ops-event!
+  "Append one run lifecycle fact to the AI ops ledger. `word` selects the
+  ledger event id suffix; `fields` are ai-ops-event/v0 keys."
+  [ticket-id run-id assignee action word fields]
+  (try
+    (when @ai-ops-module-loaded?
+      ((resolve 'ai-ops-ledger/emit!)
+       (root)
+       (merge {:event_id ((resolve 'ai-ops-ledger/event-id) ticket-id run-id word)
+               :task_id ticket-id
+               :request_id (str "req:" ticket-id)
+               :run_id run-id
+               :agent assignee
+               :runtime (assignee-runtime assignee)
+               :action (some-> action name)}
+              fields)))
+    (catch Exception e
+      (log! (str "ai ops ledger record failed for " ticket-id "/" run-id ": " (.getMessage e))))))
+
+(defn gate-correction
+  "Provisional rule classification of a failed review gate. Only failures
+  that show a defect in the agent's output (failed CI checks, review
+  findings, draft or conflicting merge state, missing PR URL) count as
+  agent-system. A gate that could not evaluate (CI wait timeout, missing or
+  unknown mergeStateStatus, review command error, gate API error) or a
+  failure without a known kind is unknown."
+  [review-gate]
+  (case [(:gate review-gate) (:failure-kind review-gate)]
+    ([:ci :check-failure] [:codex-review :findings])
+    {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "high"}
+    ([:mergeability :merge-state] [:conflict :merge-state] [:pr-url nil])
+    {:correction_class "gate_defect" :correction_origin "agent-system" :confidence "medium"}
+    {:correction_class "unknown" :correction_origin "unknown" :confidence "low"}))
+
+(defn gate-results
+  "Individual [gate result] pairs of a review gate, excluding gate=all."
+  [review-gate]
+  (or (not-empty (:gate-results review-gate))
+      (when (and (not (:ok? review-gate)) (:gate review-gate))
+        [[(name (:gate review-gate)) "fail"]])))
+
+(defn record-ai-ops-gate!
+  "Count the review gate result and record a failed gate as a correction."
+  [ticket-id run-id assignee action review-gate]
+  (try
+    ;; Count every individual gate result (pass / fail / skip), so a
+    ;; per-gate failure rate has its successes in the denominator. A gate
+    ;; result without :gate-results falls back to counting the failed gate.
+    (when @ai-ops-module-loaded?
+      (doseq [[gate result] (gate-results review-gate)]
+        ((resolve 'ai-ops-ledger/record-gate!) (root) gate result)))
+    ;; gate="all" is the overall denominator: count every evaluated result,
+    ;; failures included, or the overall failure rate is understated.
+    (when (and @ai-ops-module-loaded? (not (:ok? review-gate)))
+      ((resolve 'ai-ops-ledger/record-gate!) (root) "all" false))
+    ;; A gate that checked nothing (TASK_BOARD_REVIEW_PR: none, or only
+    ;; already-merged PRs) is counted as skip, not pass.
+    (when (and @ai-ops-module-loaded? (:ok? review-gate))
+      ((resolve 'ai-ops-ledger/record-gate!) (root) "all" (if (:skipped? review-gate) "skip" "pass")))
+    (catch Exception e
+      (log! (str "ai ops gate record failed for " ticket-id "/" run-id ": " (.getMessage e)))))
+  (when-not (:ok? review-gate)
+    (record-ai-ops-event! ticket-id run-id assignee action "correction"
+                          (merge {:event_type "correction"
+                                  :classifier "rule"
+                                  :classifier_version "correction-rules/v0"
+                                  :evidence_event_ids [(str ticket-id "/" run-id ":ledger:started")]}
+                                 (gate-correction review-gate)))))
+
+(defn record-ai-ops-finish!
+  "Record run.finished and, when the card moved, lane.changed."
+  [ticket-id run-id assignee action from-status to-status summary-status fields]
+  (record-ai-ops-event! ticket-id run-id assignee action "finished"
+                        (merge {:event_type "run.finished" :status summary-status} fields))
+  (when (and to-status (not= from-status to-status))
+    (record-ai-ops-event! ticket-id run-id assignee action "lane"
+                          {:event_type "lane.changed" :lane_from from-status :lane_to to-status})))
+
+(defn ai-ops-run-lane
+  "Lane the card is in while the run executes: Ready/Review/Blocked cards are
+  moved to In Progress at start, others (Backlog groom, In Progress) stay put."
+  [status]
+  (if (#{"ready" "review" "blocked"} status) "in-progress" status))
+
+(def ai-ops-metrics-last-ms (atom 0))
+
+(defn maybe-write-ai-ops-metrics!
+  ;; sync? (one-shot `tick`): Babashka exits without waiting for futures, so the
+  ;; SLI refresh must complete before metrics.prom is written.
+  ([] (maybe-write-ai-ops-metrics! false))
+  ([sync?]
+  (let [now-ms (System/currentTimeMillis)]
+    (when (= "false" (env "CODEX_TASK_BOARD_SUBSCRIPTION_METRICS" "true"))
+      (try (fs/delete-if-exists (fs/path (root) "ai-ops/subscription-usage.prom"))
+           (catch Exception e (log! (str "subscription metrics delete failed: " (.getMessage e))))))
+    (when (>= (- now-ms @ai-ops-metrics-last-ms) 60000)
+      (reset! ai-ops-metrics-last-ms now-ms)
+      (try
+        (when @ai-ops-module-loaded?
+          ((resolve (if sync? 'ai-ops-ledger/refresh-sli! 'ai-ops-ledger/refresh-sli-async!))
+           (root) (System/getenv "CODEX_TASK_BOARD_VAULT"))
+          ((resolve 'ai-ops-ledger/write-metrics!) (root)))
+        (catch Exception e (log! (str "ai ops metrics write failed: " (.getMessage e)))))
+      (try
+        (when (and (not= "false" (env "CODEX_TASK_BOARD_SUBSCRIPTION_METRICS" "true"))
+                   @subscription-module-loaded?)
+          ((resolve 'ai-subscription-usage/write-metrics!) (root)))
+        (catch Exception e (log! (str "subscription metrics write failed: " (.getMessage e)))))))))
+
 ;; BOXP-201 I3: opt-in lock shared with the helper and vault_writer.bb so that
 ;; Board/ticket read-modify-write cycles serialize across processes. Unset in
 ;; deployment, where writes behave exactly as before; every writer moves onto it
@@ -166,6 +308,7 @@
       (contains? claude-assignee->model assignee)))
 
 (def localllm-assignee "localllm")
+(def localllm-coder-assignee "localllm-coder")
 
 (defn localllm-assignee? [assignee]
   (= localllm-assignee assignee))
@@ -173,6 +316,7 @@
 (defn supported-assignee? [assignee]
   (or (claude-assignee? assignee)
       (localllm-assignee? assignee)
+      (= localllm-coder-assignee assignee)
       (some? (parse-codex-assignee assignee))))
 
 (defn root []
@@ -601,6 +745,76 @@
 (defn attr-value [line key]
   (second (re-find (re-pattern (str "(?:^|\\s)" key "::([^\\s]+)")) line)))
 
+(defn card-rev [card] (when-let [line (:line card)] (attr-value line "rev")))
+
+(defn rev-mismatch? [card fm]
+  (and (card-rev card) (not= (card-rev card) (:board_rev fm))))
+
+(def revision-mismatches (atom {}))
+
+(defn rev-epoch
+  "Epoch millis encoded in a helper revision (`<base36 millis>-<hex>`), or nil."
+  [rev]
+  (try (Long/parseLong (first (str/split (str rev) #"-")) 36)
+       (catch Exception _ nil)))
+
+(defn rev-mismatch-warn-seconds []
+  (try (Long/parseLong (env "CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS" "300"))
+       (catch Exception _ 300)))
+
+(declare repair-card-revision! repair-ticket-revision! update-frontmatter! ticket-frontmatter)
+
+(defn sync-revision!
+  "BOXP-357: the helper stamps one revision on the ticket (board_rev) and its
+  card (rev::). While they differ this replica holds one side of an update the
+  other side of which has not arrived (or was lost to a last-writer-wins sync),
+  so the stale ticket must not be rewritten nor dispatched. Normally the other
+  side arrives within a few sync intervals. Only when the same pair outlives
+  the warn window is the older side taken as lost and repaired from the newer
+  one: a newer ticket is a complete helper write, so the card is repaired from
+  it (the shared board file can be reverted by another card's write); a newer
+  card repairs the ticket frontmatter. Repairing earlier would overwrite the
+  helper's in-flight write of the other file. Returns false
+  when consistent, true to hold the projection, or a repair fn that also holds
+  it. The caller runs the fn after releasing its ticket / vault locks, because
+  the board repair takes the board mutex (lock order: board mutex, vault lock)."
+  [card fm]
+  (let [id (:ticket-id card)
+        card-rev' (card-rev card)
+        ticket-rev (:board_rev fm)
+        pair [card-rev' ticket-rev]]
+    (if-not (rev-mismatch? card fm)
+      (do (swap! revision-mismatches dissoc id) false)
+      (let [entry (get (swap! revision-mismatches
+                              (fn [m] (if (= pair (get-in m [id :pair])) m
+                                          (assoc m id {:pair pair :first-seen (now)}))))
+                       id)
+            card-at (rev-epoch card-rev')
+            ticket-at (rev-epoch ticket-rev)
+            ticket-lane (status->lane (:status fm))
+            card-assignee (attr-value (:line card) "assignee")
+            expired? (> (.toNanos (java.time.Duration/between (:first-seen entry) (now)))
+                        (* 1000000000 (rev-mismatch-warn-seconds)))]
+        (cond
+          (and expired? card-at ticket-at (> ticket-at card-at) ticket-lane)
+          (do (log! (str "WARN: assignment revision mismatch persisted for " id "; the card write was lost, repairing the card from ticket rev=" ticket-rev
+                         " (card rev=" card-rev' ")"))
+              (swap! revision-mismatches dissoc id)
+              #(repair-card-revision! id (:status fm) (:assignee fm) ticket-rev card-rev'))
+
+          (and expired? card-at (or (nil? ticket-at) (> card-at ticket-at)) card-assignee)
+          (do (log! (str "WARN: assignment revision mismatch persisted for " id " card rev=" card-rev'
+                         " ticket rev=" ticket-rev "; the ticket write was lost, repairing its frontmatter from the card"))
+              (swap! revision-mismatches dissoc id)
+              #(repair-ticket-revision! id {:status (:status card) :assignee card-assignee :board_rev card-rev'} ticket-rev))
+
+          :else
+          (do (when-not (:logged? entry)
+                (swap! revision-mismatches assoc-in [id :logged?] true)
+                (log! (str "assignment sync pending for " id ": card rev=" card-rev'
+                           " ticket rev=" ticket-rev " lane=" (:lane card))))
+              true))))))
+
 (defn parse-board-cards [lines]
   (->> lane->status
        keys
@@ -654,7 +868,9 @@
 (defn remove-index [lines idx]
   (vec (concat (subvec lines 0 idx) (subvec lines (inc idx)))))
 
-(defn move-card! [ticket-id target-status]
+(defn move-card!
+  ([ticket-id target-status] (move-card! ticket-id target-status nil))
+  ([ticket-id target-status assignee]
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
@@ -665,10 +881,45 @@
                              (fail (str "invalid target status: " target-status)))]
          (when-not card
            (fail (str "ticket card not found: " ticket-id)))
-         (let [new-line (normalize-card-line (:line card) target-status)
+         (let [new-line (cond-> (normalize-card-line (:line card) target-status)
+                          assignee (replace-or-add-attr "assignee" assignee))
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
-           (write-lines! path moved)))))))
+           (write-lines! path moved))))))))
+
+(defn repair-card-revision!
+  "Move a card to the ticket's lane and copy the ticket's assignee and
+  revision onto it, in one board write (see `sync-revision!`). Skipped when
+  either side changed since the mismatch was observed."
+  [ticket-id target-status assignee rev expected-card-rev]
+  (locking board-mutex
+    (with-vault-writer-lock
+     (fn []
+       (let [path (board-path)
+             lines (vec (read-lines path))
+             card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))]
+         (when (and card
+                    (= expected-card-rev (card-rev card))
+                    (= rev (:board_rev (ticket-frontmatter ticket-id))))
+           (let [new-line (cond-> (-> (normalize-card-line (:line card) target-status)
+                                      (replace-or-add-attr "rev" rev))
+                            assignee (replace-or-add-attr "assignee" assignee))]
+             (write-lines! path (insert-after-heading (remove-index lines (:idx card))
+                                                      (status->lane target-status) new-line)))))))))
+
+(defn repair-ticket-revision!
+  "Copy the card's lane status, assignee and revision onto the ticket
+  frontmatter (see `sync-revision!`). Skipped when either side changed since
+  the mismatch was observed."
+  [ticket-id {:keys [board_rev] :as updates} expected-ticket-rev]
+  (locking (ticket-mutex ticket-id)
+    (with-vault-writer-lock
+     (fn []
+       (let [card (first (filter #(= ticket-id (:ticket-id %))
+                                 (parse-board-cards (vec (read-lines (board-path))))))]
+         (when (and (= board_rev (card-rev card))
+                    (= expected-ticket-rev (:board_rev (ticket-frontmatter ticket-id))))
+           (update-frontmatter! ticket-id updates)))))))
 
 (declare only-ticket)
 
@@ -790,14 +1041,21 @@
         ;; With the shared lock, another writer may move the card after the
         ;; snapshot above. Re-read the lane inside the lock so a stale status is
         ;; never projected. Lock order stays ticket mutex, then vault lock.
-        (locking (ticket-mutex ticket-id)
-          (with-vault-writer-lock
-           (fn []
-             (when-let [current (first (filter #(= ticket-id (:ticket-id %))
-                                               (parse-board-cards (vec (read-lines (board-path))))))]
-               (when (fs/exists? path)
-                 (project-ticket-status! ticket-id current))))))
-        (project-ticket-status! ticket-id card)))))
+        (let [held (locking (ticket-mutex ticket-id)
+                     (with-vault-writer-lock
+                      (fn []
+                        (when-let [current (first (filter #(= ticket-id (:ticket-id %))
+                                                          (parse-board-cards (vec (read-lines (board-path))))))]
+                          (when (fs/exists? path)
+                            (let [held (sync-revision! current (ticket-frontmatter ticket-id))]
+                              (when-not held
+                                (project-ticket-status! ticket-id current))
+                              held))))))]
+          (when (fn? held) (held)))
+        (let [held (sync-revision! card (ticket-frontmatter ticket-id))]
+          (cond
+            (fn? held) (held)
+            (not held) (project-ticket-status! ticket-id card)))))))
 
 (defn sync-all! []
   (sync-board-statuses!)
@@ -948,7 +1206,7 @@
               ticket-exists? (fs/exists? (ticket-path ticket-id))
               complete! (fn []
                           (when ticket-exists?
-                            (move-card! ticket-id next-status)
+                            (move-card! ticket-id next-status "boxp")
                             (update-frontmatter! ticket-id {:status next-status :assignee "boxp"})
                             (record-localllm-commit! ticket-id run-id :committed next-status))
                           {:completed next-status})
@@ -971,7 +1229,7 @@
               (log! (str "run " run-id " for " ticket-id ": did not complete the interrupted localllm transition, the written notes changed since the write: " reason))
               (record-localllm-commit! ticket-id run-id :conflict nil)
               (when ticket-exists?
-                (move-card! ticket-id "blocked")
+                (move-card! ticket-id "blocked" "boxp")
                 (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
                 (append-note! ticket-id (str "localllm docs run " run-id
                                              " は文書を更新した後の lane / frontmatter 遷移の途中で終了し、その後に対象文書が run の書込み内容から変わっていたため、遷移を完了せず Blocked にしました（文書は現在の内容のまま。backup からの復元もしていません。確認後に手動で Review / 再実行を判断してください）: "
@@ -1555,9 +1813,10 @@
          "  bb " helper " append-note " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n")))
 
 (defn delegation-required? [agent]
-  (or (contains? #{"fable" "claude-fable" "claude-opus"} agent)
-      (contains? #{"codex-sol" "codex-full" "codex-astra"}
-                 (:base-assignee (parse-codex-assignee agent)))))
+  (and (not= localllm-coder-assignee agent)
+       (or (contains? #{"fable" "claude-fable" "claude-opus"} agent)
+           (contains? #{"codex-sol" "codex-full" "codex-astra"}
+                      (:base-assignee (parse-codex-assignee agent))))))
 
 (def delegation-helper
   (str (fs/path (fs/parent (fs/absolutize (System/getProperty "babashka.file"))) "delegate.py")))
@@ -1681,15 +1940,25 @@
       (log! (str "failed to send " signal " to idle agent process group: "
                  (str/trim (:err result)))))))
 
-(defn await-agent! [proc progress-paths idle-timeout-seconds]
+(defn await-agent!
+  "Poll until the agent exits or stays idle for `idle-timeout-seconds`.
+  Progress is the newest mtime of `progress-paths`, combined with
+  `progress-millis-fn` (optional, returns millis or nil): the Claude stdout
+  pump passes its last line receive time so an agent that keeps streaming
+  still counts as active when events.jsonl cannot be written."
+  ([proc progress-paths idle-timeout-seconds]
+   (await-agent! proc progress-paths idle-timeout-seconds nil))
+  ([proc progress-paths idle-timeout-seconds progress-millis-fn]
   (let [process (:proc proc)
-        started-at (System/currentTimeMillis)]
-    (loop [last-progress-at (max started-at (latest-modification-millis progress-paths))]
+        started-at (System/currentTimeMillis)
+        progress-millis (fn [] (max (latest-modification-millis progress-paths)
+                                    (or (when progress-millis-fn (progress-millis-fn)) 0)))]
+    (loop [last-progress-at (max started-at (progress-millis))]
       (if-not (.isAlive process)
         {:proc @proc :idle-timeout? false :shutdown? @shutdown-requested?}
         (do
           (Thread/sleep 1000)
-          (let [observed-at (latest-modification-millis progress-paths)
+          (let [observed-at (progress-millis)
                 last-progress-at (max last-progress-at observed-at)
                 idle-millis (- (System/currentTimeMillis) last-progress-at)]
             (cond
@@ -1713,7 +1982,7 @@
                   {:proc @proc :idle-timeout? true}))
 
               :else
-              (recur last-progress-at))))))))
+              (recur last-progress-at)))))))))
 
 (defn no-ci-repos []
   ;; Explicit opt-in list of repos (owner/name) known to have no PR CI workflows.
@@ -1828,11 +2097,13 @@
       (:isDraft pr)
       {:state :failed
        :gate :mergeability
+       :failure-kind :merge-state
        :message "GitHub reports this PR is still a draft."}
 
       (= "DIRTY" state)
       {:state :failed
        :gate :conflict
+       :failure-kind :merge-state
        :message "GitHub reports mergeStateStatus=DIRTY, which indicates conflicts with the base branch."}
 
       (#{"UNKNOWN" "BEHIND"} state)
@@ -1844,10 +2115,17 @@
       {:state :passed
        :message (str "GitHub mergeStateStatus=" state ".")}
 
+      ;; A missing or unrecognized state could not be evaluated, so it is not
+      ;; evidence of an output defect.
       :else
       {:state :failed
        :gate :mergeability
+       :failure-kind :merge-state-unknown
        :message (str "GitHub mergeStateStatus=" (or state "missing") " is not review-ready.")})))
+
+;; A passed merge state means the PR is neither a draft nor conflicting, so
+;; both the mergeability and conflict gates count a success.
+(def merge-pass-results [["mergeability" "pass"] ["conflict" "pass"]])
 
 (defn wait-for-pr-state! [pr-url]
   (let [deadline (+ (System/currentTimeMillis) (* 1000 (pr-gate-timeout-seconds)))
@@ -1871,21 +2149,35 @@
           (= :failed (:state merge))
           {:ok? false
            :gate (:gate merge)
+           :failure-kind (:failure-kind merge)
            :url pr-url
            :retryable? true
+           ;; DIRTY is a known, non-draft state, so mergeability passed and
+           ;; only the conflict gate failed. A draft or unknown state leaves
+           ;; the conflict gate unevaluated.
+           :gate-results (if (= :conflict (:gate merge))
+                           [["mergeability" "pass"] ["conflict" "fail"]]
+                           [[(name (:gate merge)) "fail"]])
            :message (:message merge)}
 
+          ;; Keep a passed mergeability in :gate-results, or its success
+          ;; drops out of the per-gate denominator when CI fails.
           (= :failed (:state ci))
           {:ok? false
            :gate :ci
+           :failure-kind :check-failure
            :url pr-url
            :retryable? true
+           :gate-results (cond-> []
+                           (= :passed (:state merge)) (into merge-pass-results)
+                           true (conj ["ci" "fail"]))
            :message (:message ci)}
 
           (and (= :passed (:state merge))
                (= :passed (:state ci)))
           {:ok? true
            :url pr-url
+           :gate-results (conj merge-pass-results ["ci" "pass"])
            :message (str (:message merge) " " (:message ci))}
 
           ;; Explicit opt-in: repo is listed in CODEX_TASK_BOARD_NO_CI_REPOS and
@@ -1894,13 +2186,18 @@
           (and skip-ci? no-checks? (= "CLEAN" (some-> (:mergeStateStatus pr) str/upper-case)))
           {:ok? true
            :url pr-url
+           :gate-results (conj merge-pass-results ["ci" "skip"])
            :message (str (:message merge) " CI skipped: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS.")}
 
           (> (System/currentTimeMillis) deadline)
           {:ok? false
            :gate (if (= :pending (:state merge)) (:gate merge) :ci)
+           :failure-kind :timeout
            :url pr-url
            :retryable? true
+           :gate-results (if (= :pending (:state merge))
+                           [[(name (:gate merge)) "fail"]]
+                           (conj merge-pass-results ["ci" "fail"]))
            :message (str "Timed out waiting for PR gates. " (:message merge) " " (:message ci))}
 
           :else
@@ -1942,6 +2239,7 @@
       (not (zero? (:exit proc)))
       {:ok? false
        :gate :codex-review
+       :failure-kind :command-error
        :url pr-url
        :retryable? false
        :message (str "codex review command failed: " (:err proc))}
@@ -1949,30 +2247,39 @@
       (codex-review-clean? last-message)
       {:ok? true
        :url pr-url
+       :gate-results [["codex-review" "pass"]]
        :message "codex review reported no actionable findings."}
 
       :else
       {:ok? false
        :gate :codex-review
+       :failure-kind :findings
        :url pr-url
        :retryable? true
        :message (str "codex review reported actionable findings"
                      (when-let [summary (not-empty (codex-review-summary last-message))]
                        (str ": " summary)))})))
 
-(defn review-gate! [run-dir last-message]
+(defn review-gate!
+  "Evaluate the PR gates. :gate-results lists every individual gate result as
+  [gate pass|fail|skip] so per-gate success is counted, not only failures."
+  [run-dir last-message]
   (try
     (let [pr-urls (github-pr-urls last-message)]
       (cond
         (seq pr-urls)
         (loop [remaining pr-urls
                passed []
-               merged []]
+               merged []
+               results [["pr-url" "pass"]]]
           (if-let [pr-url (first remaining)]
             (let [pr-state (wait-for-pr-state! pr-url)]
               (cond
                 (not (:ok? pr-state))
                 (assoc pr-state
+                       :gate-results (into results
+                                           (or (not-empty (:gate-results pr-state))
+                                               [[(name (:gate pr-state)) "fail"]]))
                        :checked-pr-urls passed
                        :merged-pr-urls merged
                        :pr-urls pr-urls)
@@ -1981,20 +2288,26 @@
                 ;; review is skipped too. Both lists below are persisted in
                 ;; summaries and must stay URL-only.
                 (:merged? pr-state)
-                (recur (rest remaining) passed (conj merged pr-url))
+                (recur (rest remaining) passed (conj merged pr-url)
+                       (into results [["mergeability" "skip"] ["conflict" "skip"] ["ci" "skip"] ["codex-review" "skip"]]))
 
                 :else
-                (let [review (run-codex-review! run-dir pr-url)]
+                (let [review (run-codex-review! run-dir pr-url)
+                      results (into results (:gate-results pr-state))]
                   (if-not (:ok? review)
                     (assoc review
+                           :gate-results (conj results [(name (:gate review)) "fail"])
                            :checked-pr-urls passed
                            :merged-pr-urls merged
                            :pr-urls pr-urls
                            :message (str pr-url ": " (:message pr-state) " " (:message review)))
                     ;; This field is persisted in summaries, so it must remain a
                     ;; URL list rather than carrying arbitrary check/review text.
-                    (recur (rest remaining) (conj passed pr-url) merged)))))
+                    (recur (rest remaining) (conj passed pr-url) merged
+                           (into results (:gate-results review)))))))
             {:ok? true
+             :skipped? (empty? passed)
+             :gate-results results
              :pr-urls pr-urls
              :checked-pr-urls passed
              :merged-pr-urls merged
@@ -2004,6 +2317,8 @@
 
         (no-repo-review-marker? last-message)
         {:ok? true
+         :skipped? true
+         :gate-results [["pr-url" "skip"]]
          :message "TASK_BOARD_REVIEW_PR: none was provided; PR gates were skipped because no repository changes were reported."}
 
         :else
@@ -2038,6 +2353,146 @@
     (fable-model-args)
     ["--model" (get claude-assignee->model agent)]))
 
+(defn claude-stream-summary
+  "One pass over a Claude stream-json stdout, keeping only the last result,
+  and assistant objects (the stream can be large)."
+  [path]
+  (with-open [reader (io/reader (str path))]
+    (reduce (fn [acc line]
+              (let [v (when (str/starts-with? (str/triml line) "{")
+                        (try (json/parse-string line true) (catch Exception _ nil)))]
+                (if-not (map? v)
+                  acc
+                  (cond-> (assoc acc :json? true)
+                    (and (= "result" (:type v)) (string? (:result v))) (assoc :result (:result v))
+                    (= "assistant" (:type v)) (assoc :assistant v)))))
+            {} (line-seq reader))))
+
+(defn claude-last-message [path summary]
+  (let [{:keys [json? result assistant]} summary]
+    (cond result result
+          assistant (str/join "\n" (keep #(when (and (= "text" (:type %)) (string? (:text %))) (:text %))
+                                         (get-in assistant [:message :content])))
+          (and (not json?) (fs/exists? path)) (slurp (str path))
+          :else "")))
+
+(defn sanitize-claude-line
+  "Reduce one Claude stream-json line to what the run log needs: text blocks,
+  the final result, tool names and allowlisted rate limit values. Tool inputs/outputs,
+  thinking, permission denials and session identifiers (session_id / uuid)
+  are dropped so events.jsonl cannot leak file contents or credentials, nor
+  be used to resume or trace the conversation."
+  [line]
+  (let [trimmed (str/triml line)
+        event (when (str/starts-with? trimmed "{")
+                (try (json/parse-string trimmed true) (catch Exception _ nil)))]
+    (if-not (map? event)
+      ;; Not a stream-json event: plain text printed by an agent that does not
+      ;; speak stream-json. It is kept as-is so claude-last-message can fall
+      ;; back to it; stream-json events are always JSON objects and are
+      ;; reduced above even when prefixed by whitespace.
+      line
+      (let [type (:type event)
+            block-type (fn [block] (select-keys block [:type]))
+            clean (case type
+                    "assistant" (cond-> (select-keys event [:type :parent_tool_use_id :message])
+                                  (map? (:message event))
+                                  (update :message
+                                          (fn [message]
+                                            (cond-> (select-keys message [:id :model :role :stop_reason :usage :content])
+                                              (sequential? (:content message))
+                                              (update :content
+                                                      #(mapv (fn [block]
+                                                               (case (:type block)
+                                                                 "text" (select-keys block [:type :text])
+                                                                 "tool_use" (select-keys block [:type :id :name])
+                                                                 (block-type block))) %))))))
+                    "user" (cond-> (select-keys event [:type :parent_tool_use_id :message])
+                             (map? (:message event))
+                             (update :message
+                                     (fn [message]
+                                       {:content (if (sequential? (:content message))
+                                                   (mapv (fn [block]
+                                                           (if (= "tool_result" (:type block))
+                                                             (select-keys block [:type :tool_use_id :is_error])
+                                                             (block-type block))) (:content message))
+                                                   [])})))
+                    "result" (select-keys event [:type :subtype :is_error :result :duration_ms :duration_api_ms :num_turns :usage :modelUsage])
+                    "rate_limit_event" (try
+                                         (if-let [clean-info (when @subscription-module-loaded?
+                                                               (resolve 'ai-subscription-usage/clean-claude-rate-limit-info))]
+                                           {:type type :rate_limit_info (clean-info (:rate_limit_info event))}
+                                           {:type type})
+                                         (catch Exception _ {:type type}))
+                    "system" (select-keys event [:type :subtype :model :cwd :permissionMode :claude_code_version])
+                    (select-keys event [:type]))]
+        (json/generate-string clean)))))
+
+(defn pump-claude-stream!
+  "Drain the Claude stdout pipe until EOF, appending sanitized lines to `path`
+  and recording rate_limit_event at its receive time. The drain must never stop
+  early: if it did, the agent would block on a full pipe or hit a broken pipe
+  and the final result would be lost. Failures of the log write or of the
+  subscription snapshot are therefore caught per line and only logged.
+  The running summary (last result / assistant event, as in
+  claude-stream-summary) is kept in `summary` (an atom the caller may pass in)
+  so the final result survives even when the log cannot be written or the
+  caller stops waiting for the drain; the atom's value is also returned."
+  ([stream path] (pump-claude-stream! stream path (atom {})))
+  ([stream path summary]
+  (let [logged (atom #{})
+        warn! (fn [k e] (when-not (@logged k) (swap! logged conj k) (log! (str k ": " (.getMessage e)))))]
+    (try
+      (with-open [reader (io/reader stream)]
+        (let [writer (try (io/writer (str path) :append true)
+                          (catch Exception e (warn! "claude events log open failed" e) nil))]
+          (try
+            (doseq [line (line-seq reader)]
+              (let [received-at (System/currentTimeMillis)
+                    event (when (str/starts-with? (str/triml line) "{")
+                            (try (json/parse-string line true) (catch Exception _ nil)))]
+                (swap! summary assoc :received-at-ms received-at)
+                (when (map? event)
+                  (swap! summary #(cond-> (assoc % :json? true)
+                                    (and (= "result" (:type event)) (string? (:result event))) (assoc :result (:result event))
+                                    (= "assistant" (:type event)) (assoc :assistant event))))
+                (when writer
+                  (try (.write writer (str (sanitize-claude-line line) "\n"))
+                       (.flush writer)
+                       (catch Exception e (warn! "claude events log write failed" e))))
+                (when (and (map? event) (= "rate_limit_event" (:type event)))
+                  (try
+                    (when @subscription-module-loaded?
+                      ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at))
+                    (catch Exception e (warn! "claude subscription record failed" e))))))
+            (finally
+              (when writer (.close writer))))))
+      (catch Exception e (log! (str "claude stream pump failed: " (.getMessage e)))))
+    @summary)))
+
+(defn await-claude-pump!
+  "Wait for the Claude stdout pump after the agent exited. Normally the drain
+  finishes within `grace-ms`. If it is still running (large backlog while the
+  events log cannot be written, slow snapshot writes), keep polling the shared
+  `summary` atom until the final result line has arrived or `max-ms` elapsed,
+  so a late result is not missed by reading the atom only once. Returns the
+  summary value to use."
+  [tail summary grace-ms max-ms]
+  (when (and tail (nil? (deref tail grace-ms nil)))
+    (log! "claude stream pump still draining after agent exit; waiting for the final result")
+    (let [deadline (+ (System/currentTimeMillis) (max 0 (- max-ms grace-ms)))]
+      (loop []
+        (when (and (not (realized? tail))
+                   (nil? (:result @summary))
+                   (< (System/currentTimeMillis) deadline))
+          (deref tail 250 nil)
+          (recur))))
+    (when-not (realized? tail)
+      (log! (if (:result @summary)
+              "claude stream pump still draining; final result received, using it"
+              "claude stream pump still draining; no final result received, using the summary so far"))))
+  @summary)
+
 (defn run-agent! [ticket-id action lane agent lock]
   (let [run (:run-id lock)
         dir (run-dir ticket-id run)
@@ -2051,7 +2506,7 @@
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
     (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
     (let [agent-args (if (claude-assignee? agent)
-                       (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "text"]
+                       (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "stream-json" "--verbose"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-skip-permissions")
 
@@ -2082,22 +2537,49 @@
                    (conj "-")))
           idle-timeout-seconds (agent-idle-timeout-seconds)
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
-                                              :out (io/file (str stdout-path))
+                                              :out (if (claude-assignee? agent) :stream (io/file (str stdout-path)))
                                               :err (io/file (str stderr-path))
                                               :extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path
                                                           "TASK_BOARD_DELEGATION_ADD_DIRS" (json/generate-string
                                                                                            (vec (cons (vault) (workspace-add-dirs workspace))))}}
                                        (claude-assignee? agent)
                                        (assoc :dir (:workspace-dir workspace))))
+          ;; The pump creates events.jsonl on the first line; touch it up front so
+          ;; the file exists (as it did with direct file output) even if the
+          ;; agent exits without writing anything.
+          _ (when (claude-assignee? agent)
+              (try (spit (str stdout-path) "" :append true)
+                   (catch Exception e (log! (str "claude events log touch failed: " (.getMessage e))))))
+          ;; The pump fills this atom as lines arrive, so the final result is
+          ;; available even if the deref below times out before the drain ends.
+          pump-summary-atom (atom {})
+          tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path pump-summary-atom)))
           _ (register-agent-process! run (:proc proc))
           {:keys [proc idle-timeout? shutdown?]} (try
-                                                   (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds)
+                                                   (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds
+                                                                 (when (claude-assignee? agent)
+                                                                   (fn [] (:received-at-ms @pump-summary-atom))))
                                                    (finally
-                                                     (unregister-agent-process! run)))
+                                                     (unregister-agent-process! run)
+                                                     (when tail (deref tail 10000 nil))))
+          pump-summary (when tail (await-claude-pump! tail pump-summary-atom 0 120000))
           raw-exit (:exit proc)
-          _ (when (and (claude-assignee? agent) (fs/exists? stdout-path))
-              (io/copy (io/file (str stdout-path))
-                       (io/file (str last-message-path))))
+          claude-summary (when (claude-assignee? agent)
+                           (if (and (map? pump-summary) (or (:result pump-summary) (:assistant pump-summary)))
+                             pump-summary
+                             (when (fs/exists? stdout-path)
+                               (try (claude-stream-summary stdout-path)
+                                    (catch Exception e
+                                      (log! (str "claude stream read failed: " (.getMessage e)))
+                                      nil)))))
+          _ (when (and (claude-assignee? agent) (or (:result claude-summary) (:assistant claude-summary) (fs/exists? stdout-path)))
+              (try
+                (spit (str last-message-path) (claude-last-message stdout-path (or claude-summary {})))
+                (catch Exception e
+                  (log! (str "claude message extraction failed: " (.getMessage e)))
+                  (try (io/copy (io/file (str stdout-path)) (io/file (str last-message-path)))
+                       (catch Exception copy-error
+                         (log! (str "claude message fallback failed: " (.getMessage copy-error))))))))
           last-message (when (fs/exists? last-message-path)
                          (slurp (str last-message-path)))
           marker (result-marker last-message)
@@ -2139,6 +2621,259 @@
        :last-message last-message
        :idle-timeout? idle-timeout?
        :shutdown? (boolean shutdown?)})))
+
+(defn localllm-coder-args [provider model]
+  ["setsid" "pi" "-p" "--mode" "json" "--provider" provider "--model" model
+   "--no-session" "--no-extensions" "--no-skills" "--no-mcp"
+   "--no-prompt-templates" "--thinking" "off"])
+
+(defn localllm-coder-match-model [body model]
+  (if-let [entry (some #(when (= model (:id %)) %) (:data body))]
+    (let [args (get-in entry [:status :args])
+          model-path (some (fn [[a b]] (when (= "--model" a) b)) (partition 2 1 args))]
+      {:ok? true :status (:status entry) :model-path (or model-path (get-in entry [:meta :model]) (get-in entry [:meta :path]))
+       :size (get-in entry [:meta :size])})
+    {:ok? false :category "model-not-found"}))
+
+;; Env passed to pi (BOXP-367 codex review P1): an allowlist instead of the
+;; runner env, and a run-local HOME holding only the pi llama.cpp provider
+;; config, so gh / aws / kubectl / codex / claude started by the model's bash
+;; tool find no credentials or config. Not an OS sandbox: absolute paths stay
+;; readable by the same uid (recorded as a known limit of the trial).
+(def localllm-coder-env-keys ["PATH" "LANG" "LC_ALL" "LC_CTYPE" "TERM" "TZ" "USER" "LOGNAME" "SHELL" "TMPDIR"])
+
+(defn localllm-coder-base-env [source-env home]
+  (assoc (select-keys source-env localllm-coder-env-keys)
+         "HOME" home "PI_OFFLINE" "1"
+         "CODEX_HOME" (str home "/.codex") "CLAUDE_CONFIG_DIR" (str home "/.claude")))
+
+;; lolice mounts the codex-workspace-pi-config ConfigMap here.
+(defn localllm-coder-models-src []
+  (env "CODEX_TASK_BOARD_LOCALLLM_CODER_PI_MODELS" "/etc/pi-agent-config/models.json"))
+
+;; models-text is the content validated by the preflight, written as is so pi
+;; reads exactly the provider config that was checked.
+(defn localllm-coder-env! [dir model models-text]
+  (let [home (fs/path dir "coder-home")
+        agent-dir (fs/path home ".pi" "agent")]
+    (fs/create-dirs agent-dir)
+    (spit (str (fs/path agent-dir "models.json")) models-text)
+    (spit (str (fs/path agent-dir "settings.json"))
+          (json/generate-string {"defaultProvider" "llama.cpp" "defaultModel" model}))
+    (spit (str (fs/path agent-dir "auth.json")) "{}")
+    (localllm-coder-base-env (into {} (System/getenv)) (str home))))
+
+(defn localllm-coder-events [lines]
+  (let [events (keep #(try (json/parse-string % true) (catch Exception _ nil)) lines)
+        messages (keep (fn [e] (let [m (:message e)] (when (= "assistant" (:role m)) m))) events)
+        final-message (last (keep (fn [e] (when (and (= "message_end" (:type e))
+                                                       (= "assistant" (get-in e [:message :role])))
+                                              (:message e))) events))]
+    {:models-seen (vec (distinct (keep :model messages)))
+     :last-message (str/join "\n" (keep #(when (= "text" (:type %)) (:text %)) (:content final-message)))}))
+
+(defn localllm-coder-result [exit marker fallback?]
+  ;; fallback? is also true when no assistant message named a model: a run
+  ;; without model evidence is never reported as a local success.
+  ;; A missing marker means pi stopped mid-way (truncated output or the model
+  ;; quit early), so the partial patch never reaches Review (codex review).
+  (cond (or (not= 0 exit) fallback?) "blocked"
+        (contains? #{"done" "review"} marker) "review"
+        :else "blocked"))
+
+(defn localllm-coder-base-shas
+  "HEAD of every repo worktree before pi starts, so the patch also holds
+  commits the model made against the instructions (codex review)."
+  [workspace]
+  (into {} (for [{:keys [path]} (:repo-worktrees workspace) :when path]
+             [path (str/trim (:out @(p/process ["git" "-C" path "rev-parse" "HEAD"] {:out :string :err :string})))])))
+
+(defn localllm-coder-diff! [workspace base-shas patch-path]
+  (let [parts (for [{:keys [repo path]} (:repo-worktrees workspace) :when path]
+                (let [git (fn [args] @(p/process (into ["git" "-C" path] args) {:out :string :err :string}))
+                      base (get base-shas path "HEAD")
+                      head (str/trim (:out (git ["rev-parse" "HEAD"])))
+                      stat (git ["diff" "--stat" base])
+                      status (git ["status" "--porcelain"])
+                      diff (git ["diff" "--binary" base])
+                      untracked (git ["ls-files" "--others" "--exclude-standard" "-z"])
+                      files (remove str/blank? (str/split (:out untracked) #"\u0000"))
+                      ;; Repo-relative names so the patch applies in another checkout (git -C
+                      ;; makes them relative to the worktree root).
+                      extra (map #(git ["diff" "--no-index" "--binary" "--" "/dev/null" %]) files)]
+                  (when (or (some #(not= 0 (:exit %)) [stat status diff untracked])
+                            (some #(not (contains? #{0 1} (:exit %))) extra))
+                    (throw (ex-info "Failed to capture workspace diff" {:repo repo})))
+                  {:repo repo :stat (:out stat) :status (:out status) :base base :head head
+                   :committed? (and (not= "HEAD" base) (not= base head))
+                   :patch (str "# Repository: " repo "\n" (:out diff) (apply str (map :out extra)))}))]
+    (spit (str patch-path) (apply str (map :patch parts)))
+    (mapv #(select-keys % [:repo :stat :status :base :head :committed?]) parts)))
+
+;; After the patch is saved the worktree goes back to its base SHA (codex
+;; review P2): the patch in the run dir is the artifact, and a dirty checkout or
+;; an unpushed model commit in the HEAD reflog would make the workspace pruner
+;; hold the run workspace forever. Only this worktree's HEAD reflog and its
+;; per-run branch reflog are truncated (`git log -g HEAD` falls back to the
+;; branch reflog; `reflog expire --all` would touch the shared repo's refs).
+(defn localllm-coder-reset! [workspace base-shas]
+  (vec (for [{:keys [repo path]} (:repo-worktrees workspace) :when path
+             :let [git (fn [& args] @(p/process (into ["git" "-C" path] args) {:out :string :err :string}))
+                   base (get base-shas path "HEAD")
+                   steps [(git "reset" "-q" "--hard" base) (git "clean" "-q" "-fd")]
+                   branch (str/trim (:out (git "symbolic-ref" "-q" "HEAD")))
+                   logs (cons "logs/HEAD" (when-not (str/blank? branch) [(str "logs/" branch)]))
+                   truncated? (every? (fn [log]
+                                        (let [r (git "rev-parse" "--path-format=absolute" "--git-path" log)
+                                              f (str/trim (:out r))]
+                                          (and (zero? (:exit r))
+                                               (try (when (fs/exists? f) (spit f "")) true (catch Exception _ false)))))
+                                      logs)]]
+         {:repo repo :ok? (and truncated? (every? #(zero? (:exit %)) steps))})))
+
+;; Continuation (BOXP-367 codex review): every run starts from a fresh
+;; worktree and the change only lives in the run dir patch, so a later run of
+;; the same ticket (review-fix, retry) first re-applies the latest earlier patch.
+;; Ordered by the patch write time, not the run ID: the ID timestamp has only
+;; second resolution followed by a random UUID (codex review P2).
+(defn localllm-coder-previous-patch [ticket-id run-id]
+  (let [runs-dir (fs/parent (run-dir ticket-id run-id))]
+    (when (fs/exists? runs-dir)
+      (->> (fs/list-dir runs-dir)
+           (map (comp str fs/file-name))
+           (remove #(= % run-id))
+           (keep (fn [r] (let [p (fs/path runs-dir r "localllm-coder.patch")]
+                           (when (and (fs/exists? p) (not (str/blank? (slurp (str p)))))
+                             {:run-id r :path (str p) :mtime (.toMillis (fs/last-modified-time p))}))))
+           (sort-by (juxt :mtime :run-id) #(compare %2 %1))
+           first
+           (#(when % (dissoc % :mtime)))))))
+
+(defn localllm-coder-patch-sections [text]
+  (into {} (for [[_ repo body] (re-seq #"(?ms)^# Repository: ([^\n]+)\n(.*?)(?=^# Repository: |\z)" text)
+                 :when (not (str/blank? body))]
+             [repo body])))
+
+(defn localllm-coder-restore! [workspace previous]
+  (if-not previous
+    {:ok? true}
+    (let [sections (localllm-coder-patch-sections (slurp (:path previous)))
+          paths (into {} (keep (fn [{:keys [repo path]}] (when path [repo path])) (:repo-worktrees workspace)))
+          missing (remove paths (keys sections))
+          git-apply (fn [repo body & flags]
+                  (zero? (:exit @(p/process (concat ["git" "-C" (get paths repo) "apply" "--binary" "--whitespace=nowarn"] flags ["-"])
+                                            {:in body :out :string :err :string}))))
+          ;; Check every repo first so a failure leaves no partial restore.
+          failed (when (empty? missing)
+                   (let [bad (vec (remove (fn [[repo body]] (git-apply repo body "--check")) sections))]
+                     (if (seq bad)
+                       (mapv first bad)
+                       (mapv first (remove (fn [[repo body]] (git-apply repo body)) sections)))))]
+      (if (or (seq missing) (seq failed))
+        {:ok? false :category "previous-patch-restore-failed" :restored-from (:run-id previous)
+         :repos (vec (concat missing failed))}
+        {:ok? true :restored-from (:run-id previous) :repos (vec (sort (keys sections)))}))))
+
+;; Without a prepared repository worktree pi would run in the bare workspace
+;; dir and the forced review result would move an untouched ticket to Review.
+;; Every declared repo must be prepared, otherwise the patch would silently
+;; miss the repos whose worktree failed (codex review P1).
+(defn localllm-coder-workspace-check [workspace]
+  (let [worktrees (:repo-worktrees workspace)
+        missing (vec (keep #(when-not (:path %) (:repo %)) worktrees))]
+    (cond (empty? worktrees) {:ok? false :category "no-repo-worktree"}
+          (seq missing) {:ok? false :category "repo-worktree-failed" :repos missing}
+          :else {:ok? true})))
+
+;; The router preflight must hit the endpoint pi really uses (codex review P2):
+;; the base URL comes from the provider entry of the models.json copied into
+;; the run-local HOME, and the model has to be configured under that provider.
+(defn localllm-coder-pi-provider [models-config provider model]
+  (let [entry (get-in models-config [:providers (keyword provider)])
+        base-url (some-> (:baseUrl entry) (str/replace #"/+$" ""))]
+    (cond (not entry) {:ok? false :category "pi-provider-missing"}
+          (str/blank? base-url) {:ok? false :category "pi-provider-base-url-missing"}
+          (not (some #(= model (:id %)) (:models entry))) {:ok? false :category "pi-model-not-configured"}
+          :else {:ok? true :base-url base-url})))
+
+(defn run-localllm-coder! [ticket-id action lane agent lock]
+  (let [run (:run-id lock) dir (run-dir ticket-id run)
+        workspace (prepare-run-workspace! ticket-id run)
+        prompt-path (fs/path dir "prompt.md") events-path (fs/path dir "events.jsonl")
+        stderr-path (fs/path dir "stderr.log") last-path (fs/path dir "last-message.md")
+        patch-path (fs/path dir "localllm-coder.patch")
+        model (env "CODEX_TASK_BOARD_LOCALLLM_CODER_MODEL" "qwen3-coder-next")
+        provider (env "CODEX_TASK_BOARD_LOCALLLM_CODER_PROVIDER" "llama.cpp")
+        models-text (try (slurp (localllm-coder-models-src)) (catch Exception _ nil))
+        pi-provider (if-let [config (try (json/parse-string models-text true) (catch Exception _ nil))]
+                      (localllm-coder-pi-provider config provider model)
+                      {:ok? false :category "pi-models-config-unreadable"})
+        base-url (:base-url pi-provider)
+        started-at (now-str) start-ms (System/currentTimeMillis)
+        ;; HEAD before the restore and pi, so the new patch is cumulative.
+        base-shas (localllm-coder-base-shas workspace)
+        restore (localllm-coder-restore! workspace (localllm-coder-previous-patch ticket-id run))]
+    (fs/create-dirs dir)
+    (spit (str prompt-path) (str (prompt-for action ticket-id lane workspace agent)
+                                 (when (:restored-from restore)
+                                   (str "\nThe uncommitted changes of the previous run " (:restored-from restore)
+                                        " are already applied in the workspace. Continue from them.\n"))
+                                 "\nYou are a local model. Work only inside the workspace repositories. Run relevant tests. Do not git push or commit or create PRs. Do not run codex, claude, delegate.py or any other agent / cloud CLI. End with a TASK_BOARD_RESULT marker.\n"))
+    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at started-at})
+    (let [ws-check (localllm-coder-workspace-check workspace)
+          readback (cond
+                     (not (:ok? ws-check)) ws-check
+                     (not (:ok? restore)) restore
+                     (not (:ok? pi-provider)) pi-provider
+                     :else
+                     (try
+                     (let [response @(p/process ["curl" "--fail" "--silent" "--show-error" "--max-time" "10" (str base-url "/models")] {:out :string :err :string})]
+                       (if (zero? (:exit response))
+                         (localllm-coder-match-model (json/parse-string (:out response) true) model)
+                         {:ok? false :category "preflight-request-failed"}))
+                     (catch Exception _ {:ok? false :category "preflight-request-failed"})))
+          execution (if (:ok? readback)
+                      (try
+                        (let [paths (keep :path (:repo-worktrees workspace))
+                              cwd (if (= 1 (count paths)) (first paths) (:workspace-dir workspace))
+                              child-env (localllm-coder-env! dir model models-text)
+                              proc (p/process (localllm-coder-args provider model)
+                                              {:dir cwd :env child-env :in (io/file (str prompt-path))
+                                               :out (io/file (str events-path)) :err (io/file (str stderr-path))})]
+                          (register-agent-process! run (:proc proc))
+                          (try (await-agent! proc [events-path stderr-path (ticket-path ticket-id)] (agent-idle-timeout-seconds))
+                               (finally (unregister-agent-process! run))))
+                        (catch Exception e (spit (str stderr-path) (.getMessage e)) {:proc {:exit 1}}))
+                      {:proc {:exit 1}})
+          exit (get-in execution [:proc :exit])
+          parsed (localllm-coder-events (if (fs/exists? events-path) (str/split-lines (slurp (str events-path))) []))
+          fallback? (or (empty? (:models-seen parsed))
+                        (boolean (some #(not= model %) (:models-seen parsed))))
+          result (localllm-coder-result exit (result-marker (:last-message parsed)) fallback?)
+          ;; Avoid a model-supplied PR URL taking precedence over the skip marker.
+          last-message (if (= "review" result)
+                         (str (str/replace (:last-message parsed) #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" "[PR URL omitted]") "\nTASK_BOARD_REVIEW_PR: none\n")
+                         (:last-message parsed))
+          ;; No patch when the restore failed, so the next run still picks the
+          ;; earlier complete patch instead of this run's partial state.
+          diff-stat (when (:ok? restore) (localllm-coder-diff! workspace base-shas patch-path))
+          cleanup (when diff-stat (localllm-coder-reset! workspace base-shas))
+          finished-at (now-str)
+          evidence {:model model :provider provider :base-url base-url :router-readback readback :restore restore
+                    :models-seen (:models-seen parsed) :fallback? fallback? :started-at started-at
+                    :finished-at finished-at :elapsed-ms (- (System/currentTimeMillis) start-ms)
+                    :exit exit :idle-timeout? (boolean (:idle-timeout? execution)) :diff-stat diff-stat :cleanup cleanup
+                    :patch-path (str patch-path) :result result}]
+      (spit (str last-path) last-message)
+      (spit (str (fs/path dir "localllm-coder.edn")) (pr-str evidence))
+      (if (:shutdown? execution)
+        (mark-run! ticket-id run :interrupted {:action action :agent agent :lane lane :reason "planned workspace shutdown"
+                                                :shutdown {:owner-id (owner-id) :instance-id runner-instance-id :agent-exit-code exit :agent-stopped-at finished-at}})
+        (mark-run! ticket-id run (if (= "blocked" result) :failed :succeeded)
+                   {:action action :agent agent :lane lane :exit-code exit :idle-timeout? (:idle-timeout? execution)
+                    :result result :finished-at finished-at :category (:category readback)}))
+      {:exit exit :result result :run-id run :dir (str dir) :last-message last-message
+       :idle-timeout? (boolean (:idle-timeout? execution)) :shutdown? (boolean (:shutdown? execution))})))
 
 ;; ---------------------------------------------------------------------------
 ;; localllm document-update route (BOXP-277)
@@ -2514,6 +3249,14 @@
       ("ready" "in-progress" "review" "blocked") :docs-edit
       nil)
 
+    ;; The owner/cloud writes the plan and moves this ticket to Ready.
+    (= localllm-coder-assignee assignee)
+    (case status
+      ("ready" "in-progress") :implement
+      "review" :review-fix
+      "blocked" :blocked-retry
+      nil)
+
     (supported-assignee? assignee)
     (case status
       "backlog" :groom
@@ -2674,7 +3417,7 @@
       ;; have been updated.  A later card/frontmatter failure is recovered to
       ;; the prior lane by process-card!, so recording :blocked beforehand
       ;; would leave summary.edn contradicting the restored ticket state.
-      (move-card! ticket-id "blocked")
+      (move-card! ticket-id "blocked" "boxp")
       ;; Deterministic black-box failure hook; unset in deployment.
       (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
         (throw (ex-info "forced blocked state update failure" {})))
@@ -2697,7 +3440,7 @@
         false))))
 
 (defn restore-card-state! [ticket-id status assignee]
-  (move-card! ticket-id status)
+  (move-card! ticket-id status assignee)
   (update-frontmatter! ticket-id {:status status :assignee assignee}))
 
 (defn ensure-not-shutting-down!
@@ -2724,9 +3467,40 @@
     (ensure-not-shutting-down! "before lifecycle commit")
     (swap! committing-cards inc)))
 
+;; A newer helper update (board_rev) that reached this replica during the run
+;; wins over the old run's final transition. A localllm docs write already
+;; applied keeps its journaled transition, and an unreadable state falls back
+;; to the normal transition.
+(defn superseded-revision [ticket-id start-rev]
+  (try
+    (let [ticket-rev (:board_rev (ticket-frontmatter ticket-id))
+          card (when (fs/exists? (board-path))
+                 (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))))
+          cr (card-rev card)]
+      (when (or (not= ticket-rev start-rev) (and cr (not= cr start-rev)))
+        {:rev (if (not= ticket-rev start-rev) ticket-rev cr) :consistent? (= ticket-rev cr)}))
+    (catch Exception e
+      (log! (str "superseded check failed for " ticket-id ": " (.getMessage e)))
+      nil)))
+
+(defn record-superseded! [ticket-id run-id action agent lane result exit review-gate revision]
+  ;; :superseded, not :succeeded / :blocked: the lane was left to the newer
+  ;; assignment, so no lane-derived status would match the ticket.
+  (mark-run! ticket-id run-id :superseded
+             {:action action :agent agent :lane lane :exit-code exit :result result
+              :review-gate (persisted-review-gate review-gate) :finished-at (now-str)
+              :superseded-by (:rev revision)})
+  ;; The lane belongs to the newer assignment: no lane.changed.
+  (record-ai-ops-finish! ticket-id run-id agent action nil nil "superseded" {:result result :exit_code exit})
+  (let [note (str "Codex task-board run " run-id " finished with result " (or result "error")
+                  ", but a newer assignment (board_rev " (:rev revision)
+                  ") arrived during the run; lane and assignee were left as instructed.")]
+    (if (:consistent? revision) (append-note! ticket-id note) (log! note))))
+
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
+        start-rev (:board_rev fm)
         action (candidate-action card assignee)]
     (when action
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
@@ -2757,6 +3531,14 @@
                   (move-card! ticket-id "in-progress")
                   (update-frontmatter! ticket-id {:status "in-progress"}))
                 (append-note! ticket-id (str "Codex task-board run " (:run-id lock) " started from " lane " with action " (name action) " using " assignee "."))
+                (record-ai-ops-event! ticket-id (:run-id lock) assignee action "started"
+                                      {:event_type "run.started" :lane_from status :lane_to (ai-ops-run-lane status)})
+                ;; The card actually moved: record the start transition as well so
+                ;; the ledger lane history matches the board (run.started is not a
+                ;; state transition for the aggregator).
+                (when (#{"ready" "review" "blocked"} status)
+                  (record-ai-ops-event! ticket-id (:run-id lock) assignee action "lane-start"
+                                        {:event_type "lane.changed" :lane_from status :lane_to "in-progress"}))
                 (finally
                   (reset! committing? false)
                   (swap! committing-cards dec)))
@@ -2766,7 +3548,9 @@
               (let [agent-run (case action
                                 :docs-edit (run-localllm-docs! ticket-id action effective-lane lane assignee lock)
                                 :docs-groom (run-localllm-groom! ticket-id action effective-lane lane assignee lock)
-                                (run-agent! ticket-id action effective-lane assignee lock))
+                                (if (= localllm-coder-assignee assignee)
+                                  (run-localllm-coder! ticket-id action effective-lane assignee lock)
+                                  (run-agent! ticket-id action effective-lane assignee lock)))
                     {:keys [exit result run-id dir last-message idle-timeout? shutdown?]} agent-run
                     _ (when shutdown?
                         ;; `run-agent!` already recorded the interrupted run.
@@ -2792,6 +3576,8 @@
                     ;; commit boundary below.
                     gate-result (when (= "review" intended)
                                   (review-gate! dir last-message))
+                    _ (when gate-result
+                        (record-ai-ops-gate! ticket-id run-id assignee action gate-result))
                     _ (do (begin-lifecycle-commit!)
                           (reset! committing? true))
                     ;; localllm docs-edit: the document write was staged, not
@@ -2843,9 +3629,13 @@
                               :finished-at (now-str)}))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
-                (if (= "blocked" next-status)
+                (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
+                  (record-superseded! ticket-id run-id action assignee effective-lane result exit review-gate revision)
+                  (if (= "blocked" next-status)
                   (if (block-ticket! ticket-id run-id action result exit review-gate nil)
-                    (record-task-board-event! ticket-id run-id status "blocked" result)
+                    (do (record-task-board-event! ticket-id run-id status "blocked" result)
+                        (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) "blocked" "blocked"
+                                               {:result result :exit_code exit}))
                     (restore-card-state! ticket-id status assignee))
                   (do
                     ;; localllm docs-edit: journal the transition before it
@@ -2853,7 +3643,7 @@
                     ;; back) by `recover-localllm-write!`.
                     (when @docs-applied?
                       (record-localllm-commit! ticket-id run-id :committing next-status))
-                    (move-card! ticket-id next-status)
+                    (move-card! ticket-id next-status (if (= "in-progress" next-status) assignee "boxp"))
                     (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION"))
                       ;; Deterministic black-box failure hook after the document
                       ;; write and the lane move; unset in deployment.
@@ -2869,7 +3659,12 @@
                       (record-localllm-commit! ticket-id run-id :committed next-status))
                     (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
                     ;; After lane, frontmatter and Notes are durable: wake Kohako.
-                    (record-task-board-event! ticket-id run-id status next-status result)))
+                    (record-task-board-event! ticket-id run-id status next-status result)
+                    (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) next-status
+                                           (cond
+                                             (= "in-progress" next-status) "retrying"
+                                             :else "succeeded")
+                                           {:result result :exit_code exit :idle_timeout (boolean idle-timeout?)}))))
                 true)
               (catch Exception e
                 (if (or (= ::planned-shutdown (:type (ex-data e)))
@@ -2888,9 +3683,13 @@
                                              :instance-id runner-instance-id
                                              :error (.getMessage e)
                                              :agent-stopped-at (now-str)}}))
+                    (record-ai-ops-event! ticket-id (:run-id lock) assignee action "interrupted"
+                                          {:event_type "run.interrupted" :status "interrupted"})
                     (log! (str "run " (:run-id lock) " for " ticket-id
                                " interrupted by planned workspace shutdown; lock kept for the next owner")))
-                  (do
+                  (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
+                    (record-superseded! ticket-id (:run-id lock) action assignee effective-lane nil nil nil revision)
+                    (do
                     (when @docs-applied?
                       ;; The target notes were written but the transition did
                       ;; not complete: restore them from this run's backup
@@ -2907,8 +3706,9 @@
                                                      " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
                     (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
-                      (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
-                      (restore-card-state! ticket-id status assignee))))
+                      (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
+                          (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
+                      (restore-card-state! ticket-id status assignee)))))
                 true)
               (finally
                 (reset! stop? true)
@@ -2937,7 +3737,9 @@
     (->> cards
          (filter (fn [{:keys [ticket-id] :as card}]
                    (and (or (nil? @only-ticket) (= @only-ticket ticket-id))
-                        (some? (candidate-action card (ticket-assignee ticket-id))))))
+                        (let [assignee (ticket-assignee ticket-id)]
+                          (and assignee (not (rev-mismatch? card (ticket-frontmatter ticket-id)))
+                               (some? (candidate-action card assignee)))))))
          vec)))
 
 ;; ---------------------------------------------------------------------------
@@ -3528,6 +4330,7 @@
           (println (str "task-board tick failed: " (.getMessage e))))))
     ;; After the tick so the first pass never delays startup; one-shot `tick`
     ;; does not prune.
+    (maybe-write-ai-ops-metrics!)
     (try
       (maybe-start-workspace-prune!)
       (catch Exception e
@@ -3549,7 +4352,9 @@
   ;; BOXP-270: the lifecycle self-tests below drive the real finish path, whose
   ;; outbox hook would otherwise write TEST-* events into the operator's live
   ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
-  (with-redefs [record-task-board-event! (fn [& _] nil)]
+  (with-redefs [record-task-board-event! (fn [& _] nil)
+                record-ai-ops-event! (fn [& _] nil)
+                record-ai-ops-gate! (fn [& _] nil)]
     (run-tests*!)))
 
 (defn run-tests*! []
@@ -3563,6 +4368,55 @@
                                         "claude-opus" "claude-opus-5-5"
                                         "claude-sonnet" "claude-sonnet-5-5"})
       (swap! failures conj "review delegation policy for changed Claude routes"))
+    ;; BOXP-360: draft / conflict are output defects; a missing or unknown
+    ;; mergeStateStatus could not be evaluated and is classified unknown.
+    (doseq [[pr expected] [[{:isDraft true :mergeStateStatus "CLEAN"} "agent-system"]
+                           [{:mergeStateStatus "DIRTY"} "agent-system"]
+                           [{} "unknown"]
+                           [{:mergeStateStatus "SOMETHING_NEW"} "unknown"]]]
+      (let [merge (merge-state pr)]
+        (when-not (and (= :failed (:state merge))
+                       (= expected (:correction_origin
+                                    (gate-correction (select-keys merge [:gate :failure-kind])))))
+          (swap! failures conj (str "merge-state classification for " pr)))))
+    ;; BOXP-360: only gate failures that show an output defect are agent-system
+    ;; corrections; a gate that could not evaluate stays unknown.
+    (doseq [[gate-result expected] [[{:gate :ci :failure-kind :check-failure} "agent-system"]
+                                    [{:gate :codex-review :failure-kind :findings} "agent-system"]
+                                    [{:gate :conflict :failure-kind :merge-state} "agent-system"]
+                                    [{:gate :pr-url} "agent-system"]
+                                    [{:gate :mergeability :failure-kind :merge-state-unknown} "unknown"]
+                                    [{:gate :ci :failure-kind :timeout} "unknown"]
+                                    [{:gate :mergeability :failure-kind :timeout} "unknown"]
+                                    [{:gate :codex-review :failure-kind :command-error} "unknown"]
+                                    [{:gate :pr-gate} "unknown"]
+                                    [{:gate :ci} "unknown"]]]
+      (when-not (= expected (:correction_origin (gate-correction gate-result)))
+        (swap! failures conj (str "gate-correction origin for " gate-result))))
+    ;; BOXP-360: each individual gate is counted pass / fail / skip, so the
+    ;; per-gate failure rate has its successes in the denominator.
+    (doseq [[gate-result expected] [[{:ok? true :gate-results [["pr-url" "pass"] ["ci" "pass"] ["codex-review" "pass"]]}
+                                     [["pr-url" "pass"] ["ci" "pass"] ["codex-review" "pass"]]]
+                                    [{:ok? false :gate :codex-review :gate-results [["ci" "pass"] ["codex-review" "fail"]]}
+                                     [["ci" "pass"] ["codex-review" "fail"]]]
+                                    [{:ok? false :gate :pr-url} [["pr-url" "fail"]]]
+                                    [{:ok? true :skipped? true} nil]]]
+      (when-not (= expected (gate-results gate-result))
+        (swap! failures conj (str "gate-results for " gate-result))))
+    ;; BOXP-360: the conflict gate counts a pass when no conflict is found,
+    ;; so its failure rate is not 100% after a single conflict.
+    (doseq [[pr expected] [[{:mergeStateStatus "CLEAN" :statusCheckRollup [{:name "t" :status "COMPLETED" :conclusion "SUCCESS"}]}
+                            [["mergeability" "pass"] ["conflict" "pass"] ["ci" "pass"]]]
+                           [{:mergeStateStatus "CLEAN" :statusCheckRollup [{:name "t" :status "COMPLETED" :conclusion "FAILURE"}]}
+                            [["mergeability" "pass"] ["conflict" "pass"] ["ci" "fail"]]]
+                           [{:mergeStateStatus "DIRTY" :statusCheckRollup []}
+                            [["mergeability" "pass"] ["conflict" "fail"]]]
+                           [{:isDraft true :mergeStateStatus "DIRTY" :statusCheckRollup []}
+                            [["mergeability" "fail"]]]]]
+      (with-redefs [pr-view (fn [_] pr)
+                    no-ci-repo? (constantly false)]
+        (when-not (= expected (gate-results (wait-for-pr-state! "https://github.com/boxp/test/pull/1")))
+          (swap! failures conj (str "conflict gate-results for " pr)))))
     (when (autonomy-v2-enabled?)
       (swap! failures conj "I1 autonomy v2 must remain disabled"))
     ;; Versioned projections cannot affect legacy candidate selection while off.
@@ -4128,6 +4982,132 @@
             (reset! committing-cards 0)
             (reset! shutdown-started-at-ms nil)))))
 
+    (doseq [[label actual expected]
+            (concat
+             (for [[status expected] {"backlog" nil "ready" :implement "in-progress" :implement
+                                      "review" :review-fix "blocked" :blocked-retry "done" nil}]
+               [(str "coder route " status) (candidate-action {:status status} "localllm-coder") expected])
+             [["coder supported" (supported-assignee? "localllm-coder") true]
+              ["coder runtime" (assignee-runtime "localllm-coder") "localllm-coder"]
+              ["coder delegation" (delegation-required? "localllm-coder") false]
+              ["coder args" (localllm-coder-args "llama.cpp" "m")
+               ["setsid" "pi" "-p" "--mode" "json" "--provider" "llama.cpp" "--model" "m" "--no-session" "--no-extensions" "--no-skills" "--no-mcp" "--no-prompt-templates" "--thinking" "off"]]
+              ["coder preflight match" (localllm-coder-match-model {:data [{:id "m" :status {:args ["--model" "/m"]} :meta {:size 42}}]} "m")
+               {:ok? true :status {:args ["--model" "/m"]} :model-path "/m" :size 42}]
+              ["coder preflight empty" (:ok? (localllm-coder-match-model {:data []} "m")) false]
+              ["coder preflight other" (:ok? (localllm-coder-match-model {:data [{:id "other"}]} "m")) false]
+              ["coder done" (localllm-coder-result 0 "done" false) "review"]
+              ["coder missing" (localllm-coder-result 0 nil false) "blocked"]
+              ["coder review" (localllm-coder-result 0 "review" false) "review"]
+              ["coder blocked" (localllm-coder-result 0 "blocked" false) "blocked"]
+              ["coder truncated" (localllm-coder-result 0 (result-marker (:last-message (localllm-coder-events ["{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed the bug; running tests\"}]}}"]))) false) "blocked"]
+              ["coder fallback" (localllm-coder-result 0 "done" true) "blocked"]
+              ["coder exit" (localllm-coder-result 1 "done" false) "blocked"]
+              ["coder no model evidence" (:models-seen (localllm-coder-events [])) []]
+              ["coder patch keeps commits and untracked files"
+               (let [repo (str (fs/create-temp-dir))
+                     git (fn [& args] @(p/process (into ["git" "-C" repo "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))
+                     _ (git "init" "-q")
+                     _ (spit (str (fs/path repo "a.txt")) "a\n")
+                     _ (git "add" "a.txt")
+                     _ (git "commit" "-q" "-m" "init")
+                     ws {:repo-worktrees [{:repo "t/r" :path repo}]}
+                     bases (localllm-coder-base-shas ws)
+                     _ (spit (str (fs/path repo "a.txt")) "b\n")
+                     _ (git "commit" "-qam" "model commit")
+                     _ (spit (str (fs/path repo "new.txt")) "n\n")
+                     patch (str (fs/path repo ".." (str (fs/file-name repo) ".patch")))
+                     [stat] (localllm-coder-diff! ws bases patch)
+                     text (slurp patch)]
+                 [(:committed? stat) (boolean (re-find #"\+b" text)) (boolean (re-find #"new\.txt" text))])
+               [true true true]]
+              ["coder patch is repo-relative and restores into a fresh checkout"
+               (let [mk (fn [] (let [repo (str (fs/create-temp-dir))
+                                     git (fn [& args] @(p/process (into ["git" "-C" repo "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))]
+                                 (git "init" "-q")
+                                 (spit (str (fs/path repo "a.txt")) "a\n")
+                                 (git "add" "a.txt")
+                                 (git "commit" "-q" "-m" "init")
+                                 repo))
+                     src (mk) dst (mk)
+                     ws {:repo-worktrees [{:repo "t/r" :path src}]}
+                     bases (localllm-coder-base-shas ws)
+                     _ (spit (str (fs/path src "a.txt")) "b\n")
+                     _ (fs/create-dirs (fs/path src "d"))
+                     _ (spit (str (fs/path src "d" "new.txt")) "n\n")
+                     patch (str (fs/path (fs/create-temp-dir) "localllm-coder.patch"))
+                     _ (localllm-coder-diff! ws bases patch)
+                     text (slurp patch)
+                     restored (localllm-coder-restore! {:repo-worktrees [{:repo "t/r" :path dst}]} {:run-id "r1" :path patch})
+                     other (localllm-coder-restore! {:repo-worktrees [{:repo "t/other" :path dst}]} {:run-id "r1" :path patch})]
+                 [(boolean (re-find #"(?m)^\+\+\+ b/d/new\.txt$" text)) (:ok? restored) (:restored-from restored)
+                  (slurp (str (fs/path dst "a.txt"))) (slurp (str (fs/path dst "d" "new.txt")))
+                  (:category other)])
+               [true true "r1" "b\n" "n\n" "previous-patch-restore-failed"]]
+              ["coder restore checks every repo before applying"
+               (let [mk (fn [content] (let [repo (str (fs/create-temp-dir))
+                                            git (fn [& args] @(p/process (into ["git" "-C" repo "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))]
+                                        (git "init" "-q")
+                                        (spit (str (fs/path repo "a.txt")) content)
+                                        (git "add" "a.txt")
+                                        (git "commit" "-q" "-m" "init")
+                                        repo))
+                     ok (mk "a\n") conflict (mk "z\n")
+                     body "diff --git a/a.txt b/a.txt\n--- a/a.txt\n+++ b/a.txt\n@@ -1 +1 @@\n-a\n+b\n"
+                     patch (str (fs/path (fs/create-temp-dir) "localllm-coder.patch"))
+                     _ (spit patch (str "# Repository: t/ok\n" body "# Repository: t/conflict\n" body))
+                     r (localllm-coder-restore! {:repo-worktrees [{:repo "t/ok" :path ok} {:repo "t/conflict" :path conflict}]} {:run-id "r1" :path patch})]
+                 [(:ok? r) (:repos r) (slurp (str (fs/path ok "a.txt")))])
+               [false ["t/conflict"] "a\n"]]
+              ["coder workspace check" (mapv localllm-coder-workspace-check [{:repo-worktrees []} {:repo-worktrees [{:repo "t/r" :error "x"}]} {:repo-worktrees [{:repo "t/r" :path "/w/r"}]}])
+               [{:ok? false :category "no-repo-worktree"} {:ok? false :category "repo-worktree-failed" :repos ["t/r"]} {:ok? true}]]
+              ["coder workspace check partial" (localllm-coder-workspace-check {:repo-worktrees [{:repo "t/a" :path "/w/a"} {:repo "t/b" :worktree-failed true}]})
+               {:ok? false :category "repo-worktree-failed" :repos ["t/b"]}]
+              ["coder pi provider" (mapv #(localllm-coder-pi-provider % "llama.cpp" "m")
+                                         [{:providers {:llama.cpp {:baseUrl "http://r:8080/v1/" :models [{:id "m"}]}}}
+                                          {:providers {:other {:baseUrl "http://x/v1" :models [{:id "m"}]}}}
+                                          {:providers {:llama.cpp {:models [{:id "m"}]}}}
+                                          {:providers {:llama.cpp {:baseUrl "http://r:8080/v1" :models [{:id "other"}]}}}])
+               [{:ok? true :base-url "http://r:8080/v1"} {:ok? false :category "pi-provider-missing"}
+                {:ok? false :category "pi-provider-base-url-missing"} {:ok? false :category "pi-model-not-configured"}]]
+              ["coder previous patch by write time, same second"
+               (with-redefs [root (let [r (str (fs/create-temp-dir))] (constantly r))]
+                 (let [w (fn [run t] (let [p (fs/path (run-dir "T-1" run) "localllm-coder.patch")]
+                                       (fs/create-dirs (fs/parent p)) (spit (str p) "x\n")
+                                       (fs/set-last-modified-time p (java.nio.file.attribute.FileTime/fromMillis t))))]
+                   (w "20261030T000000Z-ffff" 1000)
+                   (w "20261030T000000Z-0000" 2000)
+                   (fs/create-dirs (run-dir "T-1" "20261030T000000Z-1111"))
+                   (:run-id (localllm-coder-previous-patch "T-1" "20261030T000000Z-1111"))))
+               "20261030T000000Z-0000"]
+              ["coder reset after patch leaves a clean checkout"
+               (let [repo (str (fs/create-temp-dir))
+                     git (fn [& args] @(p/process (into ["git" "-C" repo "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))
+                     _ (git "init" "-q")
+                     _ (spit (str (fs/path repo "a.txt")) "a\n")
+                     _ (git "add" "a.txt")
+                     _ (git "commit" "-q" "-m" "init")
+                     ws {:repo-worktrees [{:repo "t/r" :path repo}]}
+                     bases (localllm-coder-base-shas ws)
+                     _ (spit (str (fs/path repo "a.txt")) "b\n")
+                     _ (git "commit" "-qam" "model commit")
+                     model-sha (str/trim (:out (git "rev-parse" "HEAD")))
+                     _ (spit (str (fs/path repo "new.txt")) "n\n")
+                     patch (str (fs/path (fs/create-temp-dir) "localllm-coder.patch"))
+                     _ (localllm-coder-diff! ws bases patch)
+                     r (localllm-coder-reset! ws bases)]
+                 [r (:out (git "status" "--porcelain")) (= (get bases repo) (str/trim (:out (git "rev-parse" "HEAD"))))
+                  (str/includes? (:out (git "log" "-g" "--format=%H" "HEAD")) model-sha)
+                  (boolean (re-find #"\+b" (slurp patch)))])
+               [[{:repo "t/r" :ok? true}] "" true false true]]
+              ["coder restore without previous patch" (localllm-coder-restore! {:repo-worktrees []} nil) {:ok? true}]
+              ["coder env allowlist" (localllm-coder-base-env {"PATH" "/usr/bin" "GH_TOKEN" "x" "AWS_PROFILE" "p" "KUBECONFIG" "k" "HOME" "/home/boxp" "ANTHROPIC_API_KEY" "a"} "/run/h")
+               {"PATH" "/usr/bin" "HOME" "/run/h" "PI_OFFLINE" "1" "CODEX_HOME" "/run/h/.codex" "CLAUDE_CONFIG_DIR" "/run/h/.claude"}]
+              ["coder events" (localllm-coder-events [(json/generate-string {:type "message_end" :message {:role "assistant" :model "m" :provider "llama.cpp" :content [{:type "text" :text "hello"}]}})
+                                                        (json/generate-string {:type "message_end" :message {:role "assistant" :model "other" :content [{:type "text" :text "last"}]}})])
+               {:models-seen ["m" "other"] :last-message "last"}]] )]
+      (if (= actual expected) (println (str "PASS: " label))
+          (do (println (str "FAIL: " label " got " (pr-str actual))) (swap! failures conj label))))
     ;; BOXP-277: localllm maps to :docs-edit; BOXP-290: Backlog gets the runner-side groom.
     (doseq [[status expected] {"backlog" :docs-groom "ready" :docs-edit "in-progress" :docs-edit
                                "review" :docs-edit "blocked" :docs-edit "done" nil}]
@@ -4220,7 +5200,10 @@
            (when (= 2 (count args))
              (when-not (= "--ticket" (first args)) (usage))
              (reset! only-ticket (second args)))
-           (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+           (recover-locks!) (tick!) (drain-in-flight!) (sync-all!)
+           ;; One-shot ticks also refresh metrics.prom (loop! does it per poll),
+           ;; waiting for the SLI refresh because the process exits next.
+           (maybe-write-ai-ops-metrics! true))
   ;; BOXP-306: the operator accept / rollback commands are retired. Both print
   ;; the notice and exit without touching any file (a copied command from an
   ;; old Notes line must not restore or rewrite a note by surprise).
