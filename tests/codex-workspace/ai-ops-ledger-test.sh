@@ -716,7 +716,42 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (not (str/includes? snap "tool_args")))
     (assert (= "redacted" (:status m)))
     (assert (= 2 (:dropped-keys s)))
-    (assert (str/includes? (ai-ops-ledger/sli-export-metrics root) "ai_ops_hermes_mirror_snapshot_lines{kind=\"dropped_keys\"} 2")))
+    (assert (= 1 (:redacted-values s)))
+    (assert (str/includes? (ai-ops-ledger/sli-export-metrics root) "ai_ops_hermes_mirror_snapshot_lines{kind=\"dropped_keys\"} 2"))
+    (assert (str/includes? (ai-ops-ledger/sli-export-metrics root) "ai_ops_hermes_mirror_snapshot_lines{kind=\"redacted_values\"} 1")))
+  ;; 許可 key でも値の形式が集計側 gate と合わない短い値 (本文・秘密値が入り得る) は保存前に redact し、
+  ;; event_id / task_id / request_id / run_id が形式外の event は本文・ID なしの privacy_rejected marker に置換する
+  (spit src (str (json/generate-string (assoc (first hermes-maps) :status "password hunter2 in status" :occurred_at "2026-10-31 00:00:03 secret"
+                                              :agent "someone@example.com" :lane_to "not-a-lane")) "\n"
+                 (json/generate-string (assoc (second hermes-maps) :event_id "conv-secret-token-hunter2-value")) "\n"
+                 (json/generate-string (assoc (second hermes-maps) :task_id "my secret task" :event_type "approval.requested")) "\n"
+                 (json/generate-string (assoc (second hermes-maps) :run_id "run secret" :event_type "not-an-enum")) "\n"))
+  (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (let [snap (slurp (str (ai-ops-ledger/hermes-mirror-path root))) ms (vec (snapshot-maps)) s (ai-ops-ledger/read-hermes-mirror-status root)]
+    (doseq [secret ["hunter2" "secret" "example.com" "not-a-lane" "not-an-enum"]]
+      (assert (not (str/includes? snap secret)) (str secret " must not reach the snapshot: " snap)))
+    (assert (= ["redacted" "redacted" "redacted" "redacted"] ((juxt :status :occurred_at :agent :lane_to) (first ms))) (pr-str (first ms)))
+    (assert (= (:event_id (first hermes-maps)) (:event_id (first ms))) "valid identifiers are kept")
+    (assert (= {:privacy_rejected "upstream" :event_type "run.finished"} (nth ms 1)) (pr-str (nth ms 1)))
+    (assert (= {:privacy_rejected "upstream" :event_type "approval.requested"} (nth ms 2)))
+    (assert (= {:privacy_rejected "upstream"} (nth ms 3)) "invalid event_type is not copied into the marker")
+    (assert (= 1 (:hermes-lines s))) (assert (= 3 (:rejected-lines s))) (assert (= 4 (:redacted-values s)))
+    (assert (str/includes? (ai-ops-ledger/sli-export-metrics root) "ai_ops_hermes_mirror_snapshot_lines{kind=\"rejected\"} 3"))
+    ;; 集計側は upstream 拒否として計数し、是正に影響し得る種別があるので zero-tolerance / 是正 SLI を確定しない
+    (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
+      (ai-ops-ledger/append-hermes-mirror! root (str t))
+      (let [r (with-out-str (ai-ops-ledger/run-sli-command! ["bb" ai-ops-ledger/sli-script "aggregate" (str t)] (str t ".out") far-deadline))
+            out (slurp (str t ".out"))]
+        (assert (str/includes? out ":privacy-rejected-upstream 3") out))))
+  ;; 集計側の gate は保存済み snapshot の値を 1 つも redact/拒否しない (保存前の検証が集計側と同じであること)
+  (spit src (str (str/join "\n" hermes-lines) "\n"))
+  (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
+    (ai-ops-ledger/append-hermes-mirror! root (str t))
+    (ai-ops-ledger/run-sli-command! ["bb" ai-ops-ledger/sli-script "aggregate" (str t)] (str t ".out") far-deadline)
+    (let [out (slurp (str t ".out"))]
+      (assert (str/includes? out ":privacy-rejected-upstream 0") out)
+      (assert (str/includes? out ":privacy-rejected-invalid-id 0") out)))
   (spit src (str (str/join "\n" hermes-lines) "\n"))
   (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline))))
 ;; 失敗 (コマンド異常終了): 前回 snapshot を保持し stale。SLI refresh は成功のまま、hermes は partial/stale で接続済みにしない
@@ -759,6 +794,44 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
       (assert (not (str/includes? m "ai_ops_hermes_mirror_snapshot_lines")) m)
       (assert (str/includes? m "ai_ops_hermes_mirror_stale 0") "nothing to be stale before the first success")
       (assert (str/includes? m "ai_ops_hermes_mirror_failures_total 1")))))
+;; 有効な hermes-observer event が 1 件もない出力 (途中行だけ / 他 source だけ / 全行破損) は成功にせず前回 snapshot を保持する
+(doseq [[label text] [["partial line only" "{\"source\":\"hermes-observer\",\"event_type\":\"run.sta"]
+                      ["foreign source only" (str (json/generate-string {:source "task-board-runner" :event_type "run.started"}) "\n")]
+                      ["malformed only" "not json\nstill not json\n"]
+                      ["rejected only" (str (json/generate-string (assoc (first hermes-maps) :event_id "bad id")) "\n")]]]
+  (spit src text)
+  (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "cat " src))]
+    (let [before (slurp (str (ai-ops-ledger/hermes-mirror-path root)))]
+      (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)) label)
+      (let [s (ai-ops-ledger/read-hermes-mirror-status root)]
+        (assert (= "no_events" (:last-failure s)) (str label ": " (pr-str s)))
+        (assert (ai-ops-ledger/hermes-mirror-stale? s) label))
+      (assert (= before (slurp (str (ai-ops-ledger/hermes-mirror-path root)))) (str label ": previous snapshot must be kept")))))
+(spit src (str (str/join "\n" hermes-lines) "\n"))
+;; 時間予算: SLI deadline のうち後続 (prom / v1) の reserve を残した範囲しか待たない。残り時間が reserve 以下なら
+;; コマンドを実行せず no_time で前回 snapshot を使う
+(let [probe (str (fs/path (System/getenv "AI_OPS_TMP") "hermes-probe"))]
+  (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "touch " probe "; cat " src)) ai-ops-ledger/hermes-mirror-reserve (constantly 45)]
+    (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root (+ (System/currentTimeMillis) 44000))))
+    (assert (= "no_time" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root))))
+    (assert (not (fs/exists? probe)) "command must not run when no time is left")
+    (assert (= hermes-maps (snapshot-maps)) "previous snapshot kept"))
+  ;; deadline まで 46s あっても reserve 45s を引いた 1s しか待たない (SLI deadline まで待たない)
+  (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "sleep 30; cat " src)) ai-ops-ledger/hermes-mirror-reserve (constantly 45) ai-ops-ledger/hermes-mirror-timeout (constantly 30)]
+    (let [t0 (System/currentTimeMillis)]
+      (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root (+ t0 46000))))
+      (assert (< (- (System/currentTimeMillis) t0) 8000) "pull must stop at deadline minus reserve")
+      (assert (= "timeout" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root)))))))
+;; refresh-sli! 全体: mirror が遅くても prom まで時間が残り、SLI refresh は成功する (前回 snapshot + stale marker)
+(with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "sleep 60") ai-ops-ledger/sli-interval (constantly 1)
+              ai-ops-ledger/sli-timeout (constantly 25) ai-ops-ledger/hermes-mirror-reserve (constantly 15) ai-ops-ledger/hermes-mirror-timeout (constantly 60)]
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (let [t0 (System/currentTimeMillis)]
+    (assert (true? (ai-ops-ledger/refresh-sli! root vault)) "SLI refresh must succeed after a slow mirror")
+    (assert (< (- (System/currentTimeMillis) t0) 25000))
+    (let [p (slurp (str (ai-ops-ledger/sli-path root)))]
+      (assert (str/includes? p "ai_ops_sli_source_partial{sli=\"hermes_conversation\"} 1") p)
+      (assert (str/includes? p "ai_ops_hermes_conversations 1") "last good snapshot still joined"))))
 ;; タイムアウト: 上限を超えるコマンドは打ち切り、失敗として記録する (runner を止めない)
 (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "sleep 30") ai-ops-ledger/hermes-mirror-timeout (constantly 1)]
   (let [t0 (System/currentTimeMillis)]

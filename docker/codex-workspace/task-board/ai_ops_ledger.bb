@@ -647,33 +647,102 @@
     :correction_class :correction_origin :classifier :classifier_version :confidence
     :evidence_event_ids :stratum :delegation_kind :tokens_in :tokens_out :cost_source
     :severity :effect_key :approval_key :redelivery :coverage_target :snapshot})
-(def hermes-max-value-length 256)
-(defn- hermes-gate
-  "Allowlist a Hermes event for the snapshot. Returns [event dropped-keys]."
+;; 値の形式検証は集計側 (ai_ops_sli.bb の本番モード privacy gate) と同じ規則を保存前にも適用する。
+;; 許可 key でも enum 外・ID 形式外・token 形状の値 (本文や秘密値が入り得る) は snapshot に残さず "redacted" に置換し、
+;; event_id / task_id / request_id / run_id が形式外の event は本文・ID なしの {privacy_rejected: upstream} marker に置換する
+;; (集計側は upstream 拒否として計数し、是正に影響し得る種別なら SLI を unknown にする)。
+(def hermes-enum-values
+  {:snapshot #{"current"} :schema_version #{"ai-ops-event/v0"} :classifier_version #{"correction-rules/v0"}
+   :event_type #{"request.received" "run.started" "run.finished" "run.interrupted" "task.accepted" "task.reopened" "task.state" "task.cancelled" "run.unreadable" "lane.changed" "notify.run-finished" "correction" "owner.rescue" "approval.requested" "approval.resolved" "effect.applied" "coverage.connected"}
+   :source #{"hermes-observer"}
+   :runtime #{"codex-cli" "claude-cli" "localllm" "localllm-coder" "hermes" "unknown"}
+   :agent #{"codex" "codex-terra" "codex-sol" "codex-sol-xhigh" "codex-full" "codex-mini" "codex-astra" "claude-opus" "claude-fable" "claude-sonnet" "fable" "localllm" "localllm-coder"}
+   :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
+   :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled" "superseded"}
+   :result #{"review" "blocked" "done" "ready"}
+   :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
+   :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
+   :correction_class #{"gate_defect" "unknown" "done_claim_without_execution" "instruction_violation" "source_mismatch" "assignee_regression" "preference_adjustment" "scope_addition" "unavoidable_safety_decision" "external_failure"}
+   :correction_origin #{"agent-system" "non-agent" "unknown"} :classifier #{"rule" "human" "model"}
+   :confidence #{"high" "medium" "low"} :severity #{"critical" "high" "medium" "low"}
+   :cost_source #{"unknown"} :occurred_precision #{"day" "second" "ns"}
+   :delegation_kind #{"delegated" "exempt" "failed" "unparsable"}
+   :stratum #{"assistant-or-research" "assistant" "research" "creative" "dev" "infra"}
+   :blocker_category #{"external" "agent-reported-blocked" "agent-process-error" "pr-gate-pr-url"}
+   :coverage_target #{"duplicate-effects" "critical-safety-events" "acceptance-history" "hermes-conversation"}})
+(def hermes-token-pattern #"(?i)(?:^|[^a-z0-9])(ghp_|gho_|github_pat_|xox[bp]-|AKIA|sk-|glpat-)[a-z0-9_-]+|[a-z0-9]{32,}")
+(def hermes-id-words
+  ["frontmatter-unreadable" "ticket-missing" "accepted-again" "in-progress" "interrupted" "unreadable"
+   "correction" "requested" "cancelled" "finished" "approval" "coverage" "critical" "reopened" "accepted"
+   "request" "started" "running" "blocked" "backlog" "pending" "review" "rescue" "effect" "reopen"
+   "safety" "cancel" "accept" "failed" "state" "event" "start" "ready" "lane" "done" "corr" "fin" "req" "run" "rule" "human" "model" "ledger" "lane-start"])
+(def hermes-run-id-re "\\d{8}T\\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-[0-9a-f]{1,8})?(?:-groom)?")
+(def hermes-id-segment-re (str "(?:" hermes-run-id-re "|(?:" (str/join "|" hermes-id-words) ")\\d{0,3}|[0-9a-f]{8,16}|\\d{1,6}|[a-z]\\d{0,3})"))
+(def hermes-conv-id-re "(?:req|conv)-[0-9a-f]{8}(?:-[0-9a-f]{4}){0,3}(?:-[0-9a-f]{12})?")
+(def hermes-event-id-re
+  (re-pattern (str "(?:[A-Z]+-\\d+(?:[/:-]" hermes-id-segment-re "){0,4}"
+                   "|cov-(?:acceptance|effects|safety|hermes|approvals)-[0-9a-f]{8}"
+                   "|" hermes-conv-id-re "(?:[/:]" hermes-id-segment-re "){0,3})")))
+(def hermes-task-id-re (re-pattern (str "(?:[A-Z]+-\\d+|" hermes-conv-id-re ")")))
+(def hermes-request-id-re (re-pattern (str "(?:req:[A-Z]+-\\d+|" hermes-conv-id-re ")")))
+(def hermes-run-id-pattern (re-pattern hermes-run-id-re))
+(def hermes-key-re #"(?:op|pr|merge|deploy|notify|lane|approval|effect):[0-9a-f]{8,16}")
+(def hermes-numeric-ranges {:attempt [0 1000] :redelivery [0 1000] :exit_code [-255 255] :tokens_in [0 100000000] :tokens_out [0 100000000]})
+(defn- hermes-event-id? [s] (and (string? s) (<= (count s) 128) (not (re-find hermes-token-pattern s)) (boolean (re-matches hermes-event-id-re s))))
+(defn hermes-valid-value?
+  "Same acceptance rules as the aggregate's production-mode privacy gate."
+  [k v]
+  (cond
+    (nil? v) true
+    (and (string? v) (re-find hermes-token-pattern v)) false
+    (contains? hermes-enum-values k) (and (string? v) (contains? (hermes-enum-values k) v))
+    (contains? hermes-numeric-ranges k) (let [[lo hi] (hermes-numeric-ranges k)] (and (integer? v) (<= lo v hi)))
+    (= k :idle_timeout) (boolean? v)
+    (#{:occurred_at :observed_at} k) (instant-string? v)
+    (#{:event_id :parent_event_id} k) (hermes-event-id? v)
+    (= k :evidence_event_ids) (and (sequential? v) (<= (count v) 16) (every? hermes-event-id? v))
+    (= k :task_id) (and (string? v) (boolean (re-matches hermes-task-id-re v)))
+    (= k :request_id) (and (string? v) (boolean (re-matches hermes-request-id-re v)))
+    (= k :run_id) (and (string? v) (boolean (re-matches hermes-run-id-pattern v)))
+    (#{:effect_key :approval_key} k) (and (string? v) (boolean (re-matches hermes-key-re v)))
+    :else false))
+(defn hermes-gate
+  "Allowlist and validate a Hermes event for the snapshot. Returns
+  {:event m :dropped n :redacted n} or, when an identifier is invalid,
+  {:rejected marker :dropped n} where marker carries no body or ID."
   [m]
-  (let [ok-val? (fn [v] (or (nil? v) (boolean? v) (number? v)
-                            (and (string? v) (<= (count v) hermes-max-value-length))))
-        kept (into {} (for [[k v] m :when (contains? hermes-allowed-keys k)]
-                        [k (cond (= k :evidence_event_ids) (if (and (sequential? v) (every? #(and (string? %) (<= (count %) hermes-max-value-length)) v) (<= (count v) 16)) (vec v) "redacted")
-                                 (ok-val? v) v
-                                 :else "redacted")]))]
-    [kept (- (count m) (count kept))]))
+  (let [selected (select-keys m hermes-allowed-keys)
+        dropped (- (count m) (count selected))
+        invalid (set (for [[k v] selected :when (not (hermes-valid-value? k v))] k))
+        rejected? (or (nil? (:event_id m)) (invalid :event_id)
+                      (some #(and (some? (get m %)) (invalid %)) [:task_id :request_id :run_id]))]
+    (if rejected?
+      {:rejected (cond-> {:privacy_rejected "upstream"}
+                   (contains? (:event_type hermes-enum-values) (:event_type m)) (assoc :event_type (:event_type m)))
+       :dropped dropped}
+      {:event (reduce (fn [acc k] (assoc acc k "redacted")) selected invalid)
+       :dropped dropped :redacted (count invalid)})))
 (defn- hermes-snapshot-lines
   "Keep only lines whose JSON `source` is hermes-observer, re-serialised with the
-  allowlisted keys only (no body/argument keys reach the persistent snapshot). A line
-  that is not a JSON object becomes a body-less input_unreadable marker (the aggregate
-  turns it into unknown zero-tolerance SLIs instead of silently dropping it); a JSON
-  line from another source means the command is misconfigured, so it is dropped and
-  counted."
+  allowlisted keys and validated values only (no body/argument keys or free-form
+  values reach the persistent snapshot). A line that is not a JSON object becomes a
+  body-less input_unreadable marker and an event with an invalid identifier a
+  body-less privacy_rejected marker (the aggregate turns both into unknown SLIs
+  instead of silently dropping them); a JSON line from another source means the
+  command is misconfigured, so it is dropped and counted. :hermes counts the events
+  kept as events (markers excluded)."
   [text]
   (reduce (fn [acc line]
             (let [m (try (json/parse-string line true) (catch Exception _ nil))]
               (cond (not (map? m)) (-> acc (update :lines conj input-unreadable-marker-line) (update :malformed inc))
                     (= "hermes-observer" (:source m))
-                    (let [[kept dropped] (hermes-gate m)]
-                      (-> acc (update :lines conj (json/generate-string kept)) (update :dropped-keys + dropped)))
+                    (let [{:keys [event rejected dropped redacted]} (hermes-gate m)]
+                      (if rejected
+                        (-> acc (update :lines conj (json/generate-string rejected)) (update :rejected inc) (update :dropped-keys + dropped))
+                        (-> acc (update :lines conj (json/generate-string event)) (update :hermes inc)
+                            (update :dropped-keys + dropped) (update :redacted-values + redacted))))
                     :else (update acc :foreign inc))))
-          {:lines [] :malformed 0 :foreign 0 :dropped-keys 0}
+          {:lines [] :hermes 0 :malformed 0 :foreign 0 :rejected 0 :dropped-keys 0 :redacted-values 0}
           (remove str/blank? (str/split-lines text))))
 
 (defn- run-bounded-command!
@@ -709,37 +778,57 @@
                           :else {:status :failed})))
       (finally (kill!) (future-cancel reader) (try (.close in) (catch Exception _))))))
 
+;; mirror は SLI refresh 全体の deadline のうち、後続の prom / v1 export に残す時間 (reserve) を差し引いた範囲でしか
+;; 待たない。先行の extract が時間を使い切っていれば取り込みを試みず前回 snapshot (stale) で続ける。
+(defn hermes-mirror-reserve [] (env-long "CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_RESERVE_SECONDS" 45))
+(defn hermes-mirror-budget
+  "Deadline for the pull: at most the mirror timeout from now and never past
+  `deadline` minus the reserve kept for the aggregate/export steps that follow."
+  [deadline]
+  (min (- deadline (* 1000 (max 0 (hermes-mirror-reserve))))
+       (+ (System/currentTimeMillis) (* 1000 (max 1 (hermes-mirror-timeout))))))
+
 (defn mirror-hermes-ledger!
-  "Run the configured command (bounded by `deadline` and the mirror timeout) and
-  replace `<root>/ai-ops/hermes-ledger/snapshot.jsonl` atomically on success.
-  On any failure (command error, timeout, empty output, output over the byte cap)
-  the previous snapshot is kept and the failure is recorded in status.edn.
-  Returns true on success, false on failure, nil when not configured. Never throws."
+  "Run the configured command (bounded by `deadline` minus the reserve and by the
+  mirror timeout) and replace `<root>/ai-ops/hermes-ledger/snapshot.jsonl`
+  atomically on success. On any failure (no time left, command error, timeout,
+  empty output, output over the byte cap, or output without a single valid
+  hermes-observer event) the previous snapshot is kept and the failure is recorded
+  in status.edn. Returns true on success, false on failure, nil when not
+  configured. Never throws."
   [root deadline]
   (when-let [cmd (hermes-mirror-command)]
     (let [now (quot (System/currentTimeMillis) 1000)
           attempt (assoc (read-hermes-mirror-status root) :last-attempt now)
-          budget (min deadline (+ (System/currentTimeMillis) (* 1000 (max 1 (hermes-mirror-timeout)))))
+          budget (hermes-mirror-budget deadline)
           fail! (fn [reason] (try (atomic-spit! (hermes-mirror-status-path root)
                                                 (pr-str (-> attempt (update :failures (fnil inc 0)) (assoc :last-failure reason :last-result "fail"))))
                                   (catch Exception _)) false)]
       (try
         (fs/create-dirs (hermes-mirror-dir root))
         (atomic-spit! (hermes-mirror-status-path root) (pr-str attempt))
-        (let [{:keys [status text]} (run-bounded-command! ["sh" "-c" cmd] (hermes-mirror-max-bytes) budget)]
-          (cond (= status :too_large) (fail! "too_large")
-                (= status :timeout) (fail! "timeout")
-                (not= status :ok) (fail! "command")
-                (str/blank? text) (fail! "empty")
-                :else
-                (let [;; 追記途中の末尾行 (改行なし) は落とす
-                      end (inc (or (str/last-index-of text "\n") -1))
-                      {:keys [lines malformed foreign dropped-keys]} (hermes-snapshot-lines (subs text 0 end))]
-                  (atomic-spit! (hermes-mirror-path root) (str/join "" (map #(str % "\n") lines)))
-                  (atomic-spit! (hermes-mirror-status-path root)
-                                (pr-str (assoc attempt :last-success now :last-result "ok" :lines (count lines) :bytes end
-                                               :malformed-lines malformed :foreign-lines foreign :dropped-keys dropped-keys)))
-                  true)))
+        (if (<= budget (System/currentTimeMillis))
+          (fail! "no_time")
+          (let [{:keys [status text]} (run-bounded-command! ["sh" "-c" cmd] (hermes-mirror-max-bytes) budget)]
+            (cond (= status :too_large) (fail! "too_large")
+                  (= status :timeout) (fail! "timeout")
+                  (not= status :ok) (fail! "command")
+                  (str/blank? text) (fail! "empty")
+                  :else
+                  (let [;; 追記途中の末尾行 (改行なし) は落とす
+                        end (inc (or (str/last-index-of text "\n") -1))
+                        {:keys [lines hermes malformed foreign rejected dropped-keys redacted-values]} (hermes-snapshot-lines (subs text 0 end))]
+                    ;; 有効な hermes-observer event が 1 件もない出力 (途中行だけ・他 source だけ・全行破損/拒否) は
+                    ;; 収集結果として信用せず、前回 snapshot を置き換えない (stale として扱う)
+                    (if (zero? hermes)
+                      (fail! "no_events")
+                      (do
+                        (atomic-spit! (hermes-mirror-path root) (str/join "" (map #(str % "\n") lines)))
+                        (atomic-spit! (hermes-mirror-status-path root)
+                                      (pr-str (assoc attempt :last-success now :last-result "ok" :lines (count lines) :bytes end
+                                                     :hermes-lines hermes :malformed-lines malformed :foreign-lines foreign
+                                                     :rejected-lines rejected :dropped-keys dropped-keys :redacted-values redacted-values)))
+                        true))))))
         (catch Exception _ (fail! "exception"))))))
 
 (defn hermes-mirror-stale?
@@ -780,7 +869,7 @@
           (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed and the SLI input uses the previous snapshot." [[{} (if (and configured (:last-success s) (hermes-mirror-stale? s)) 1 0)]])
           ;; 成功した snapshot が無ければ件数を出さない (未取得と空の snapshot を区別する)
           (when (:last-success s)
-            (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot." [[{:kind "hermes"} (:lines s 0)] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)] [{:kind "dropped_keys"} (:dropped-keys s 0)]]))))
+            (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot." [[{:kind "hermes"} (:hermes-lines s (:lines s 0))] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)] [{:kind "rejected"} (:rejected-lines s 0)] [{:kind "dropped_keys"} (:dropped-keys s 0)] [{:kind "redacted_values"} (:redacted-values s 0)]]))))
          "\n")))
 
 (defn sli-lock-path [root] (fs/path (ai-ops-dir root) "sli.lock"))
