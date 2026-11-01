@@ -1847,3 +1847,67 @@ bb -e "
       (assert (= expected (get-in r2 [:sli :agent-system-correction-task-ratio :denominator])) (str label \" \" (pr-str (get-in r2 [:sli :agent-system-correction-task-ratio]))))))
   (println \"ok   Blocked に移った run の通知 (to-status=blocked/result=review) を Review 到達に数えず、通知は lane_to=review のみ分母にする\"))"
 rm -rf "$tmp_nb"
+
+# Hermes ledger の join: 会話 (hermes-observer、opaque conv- ID) は task として残すが Board の未完了 guardrail・run 数には
+# 混ぜず、層は assistant に補完し、会話/turn/承認 event 数を coverage に別掲する。source_stale marker があれば partial/stale。
+bb -e "
+(require '[clojure.string :as str])
+(load-file \"ai_ops_sli.bb\")
+(def conv \"conv-29344c58-47e8-dc1a-68fd-feab0fc10335\")
+(def board [{:event_id \"BOXP-140/20261020T000000Z-aaaa:started\" :task_id \"BOXP-140\" :run_id \"20261020T000000Z-aaaa\" :event_type \"run.started\" :occurred_at \"2026-10-20T00:00:00Z\" :stratum \"infra\"}
+            {:event_id \"BOXP-140/20261020T000000Z-aaaa:finished\" :task_id \"BOXP-140\" :run_id \"20261020T000000Z-aaaa\" :event_type \"run.finished\" :status \"succeeded\" :result \"review\" :occurred_at \"2026-10-20T01:00:00Z\"}
+            {:event_id \"BOXP-140:state\" :task_id \"BOXP-140\" :event_type \"task.state\" :status \"review\" :snapshot \"current\"}])
+(def hermes [{:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :run_id \"20261031T000003Z-ee2d7526\" :event_type \"run.started\" :occurred_at \"2026-10-31T00:00:03Z\" :event_id (str conv \"/20261031T000003Z-ee2d7526:started\")}
+             {:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :run_id \"20261031T000003Z-ee2d7526\" :event_type \"run.finished\" :status \"succeeded\" :occurred_at \"2026-10-31T00:00:09Z\" :event_id (str conv \"/20261031T000003Z-ee2d7526:finished\")}
+             {:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :run_id \"20261031T000103Z-ee2d7527\" :event_type \"run.started\" :occurred_at \"2026-10-31T00:01:03Z\" :event_id (str conv \"/20261031T000103Z-ee2d7527:started\")}
+             {:source \"hermes-observer\" :runtime \"hermes\" :task_id conv :request_id conv :event_type \"approval.requested\" :approval_key \"op:0000000a\" :occurred_at \"2026-10-31T00:01:05Z\" :event_id (str conv \"/20261031T000103Z-ee2d7527:req\")}])
+(let [b (ai-ops-sli/aggregate* board) j (ai-ops-sli/aggregate* (concat board hermes))
+      h (get-in j [:coverage :hermes-conversation])]
+  (assert (= \"not-connected\" (get-in b [:coverage :hermes-conversation :status])))
+  (assert (= {:status \"connected\" :coverage \"connected\" :conversations 1 :turns-started 2 :turns-finished {\"succeeded\" 1}
+              :approvals-requested 1 :approvals-resolved 0 :stale-snapshot-markers 0} h) (pr-str h))
+  ;; task としては残る (ticket を作らず request_id 単位)、層は assistant、outcome は unobserved
+  (assert (= 2 (get-in j [:tasks :total])))
+  (assert (= 1 (get-in j [:tasks :by-stratum \"assistant\"])) (pr-str (:tasks j)))
+  (assert (= 1 (get-in j [:tasks :outcomes \"unobserved\"])))
+  ;; 未完了 guardrail・run 数・SLI は Board 側と同じ (会話を混ぜない)
+  (assert (= (get-in b [:guardrails :unfinished]) (get-in j [:guardrails :unfinished])) (pr-str (:guardrails j)))
+  (assert (= 0 (get-in j [:guardrails :unobserved])))
+  (assert (= 1 (get-in j [:guardrails :conversations-unobserved])))
+  (assert (= (get-in b [:sli :run-reliability]) (get-in j [:sli :run-reliability])) (pr-str (get-in j [:sli :run-reliability])))
+  (assert (= 1 (get-in j [:sli :run-reliability :runs])))
+  (assert (= (get-in b [:sli :agent-system-correction-task-ratio]) (get-in j [:sli :agent-system-correction-task-ratio])))
+  (assert (= (get-in b [:sli :first-acceptance-conformance]) (get-in j [:sli :first-acceptance-conformance])))
+  ;; Hermes 由来の承認 event は重複承認 SLI の入力に残る (会話を除外しない)
+  (assert (= 1 (get-in j [:sli :duplicate-approval :denominator])) (pr-str (get-in j [:sli :duplicate-approval])))
+  ;; ticket 形式の task_id を持つ Hermes event (将来の ticket 付き会話) は会話扱いにしない
+  (let [t (ai-ops-sli/aggregate* [(assoc (first hermes) :task_id \"BOXP-141\" :request_id nil :event_id \"BOXP-141/20261031T000003Z-ee2d7526:started\")])]
+    (assert (= \"connected\" (get-in t [:coverage :hermes-conversation :status])))
+    (assert (= 0 (get-in t [:coverage :hermes-conversation :conversations])))
+    (assert (= 1 (get-in t [:sli :run-reliability :runs]))))
+  ;; stale marker: 前回 snapshot を使っているので partial/stale (接続済みにしない)。SLI・件数は変えない
+  (let [s (ai-ops-sli/aggregate* (concat board hermes [ai-ops-sli/stale-source-marker]))]
+    (assert (= \"partial/stale\" (get-in s [:coverage :hermes-conversation :coverage])))
+    (assert (= 1 (get-in s [:coverage :hermes-conversation :stale-snapshot-markers])))
+    (assert (= 1 (get-in s [:coverage :source-stale :hermes-observer])))
+    (assert (= (:sli j) (:sli s)))
+    (assert (= (:zero-tolerance j) (:zero-tolerance s)) \"stale marker is not a lost event\"))
+  (println \"ok   Hermes ledger join: 会話は task として残し層 assistant、未完了 guardrail/run 数/SLI は不変、会話/turn/承認数を別掲、stale は partial\"))"
+tmp_hj=$(mktemp -d)
+cat >"$tmp_hj/j.jsonl" <<'EOF'
+{"source":"hermes-observer","runtime":"hermes","task_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335","request_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335","run_id":"20261031T000003Z-ee2d7526","event_type":"run.started","occurred_at":"2026-10-31T00:00:03Z","event_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335/20261031T000003Z-ee2d7526:started"}
+{"source":"hermes-observer","runtime":"hermes","task_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335","request_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335","run_id":"20261031T000003Z-ee2d7526","event_type":"run.finished","status":"succeeded","occurred_at":"2026-10-31T00:00:09Z","event_id":"conv-29344c58-47e8-dc1a-68fd-feab0fc10335/20261031T000003Z-ee2d7526:finished"}
+{"source_stale":"hermes-observer"}
+EOF
+bb ai_ops_sli.bb prom "$tmp_hj/j.jsonl" >"$tmp_hj/j.prom"
+grep -q 'ai_ops_sli_source_connected{sli="hermes_conversation"} 0' "$tmp_hj/j.prom"
+grep -q 'ai_ops_sli_source_partial{sli="hermes_conversation"} 1' "$tmp_hj/j.prom"
+grep -q 'ai_ops_source_stale_snapshot_markers{source="hermes-observer"} 1' "$tmp_hj/j.prom"
+grep -q '^ai_ops_hermes_conversations 1$' "$tmp_hj/j.prom"
+grep -q 'ai_ops_hermes_conversation_turns{kind="finished_succeeded"} 1' "$tmp_hj/j.prom"
+grep -q 'ai_ops_guardrail_tasks{kind="conversations_unobserved"} 1' "$tmp_hj/j.prom"
+grep -q 'ai_ops_runs{status="all"} 0' "$tmp_hj/j.prom"
+! grep -q 'conv-29344c58' "$tmp_hj/j.prom"
+! grep -q 'sli="hermes_conversation",category' "$tmp_hj/j.prom"
+echo "ok   prom: 通常モードの実 Hermes ledger 形式 (stale marker 付き) で partial 表示・会話件数・ID 非含有"
+rm -rf "$tmp_hj"

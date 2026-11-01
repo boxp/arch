@@ -618,6 +618,115 @@
       (.write w (subs text 0 end))))
   true)
 
+;; ---------------------------------------------------------------------------
+;; Hermes ledger mirror (BOXP-360 第 1 段階の join)
+;; hermes-agent pod の metadata-only ledger (/opt/data/ai-ops/ledger/events-*.jsonl、本文なし・opaque ID) を、
+;; codex-workspace の既存 ServiceAccount 権限 (hermes-agent namespace の Role codex-workspace-debug: pods/exec) で
+;; read-only に取り込み、SLI 集計入力へ join する。opt-in: CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_COMMAND に
+;; 取り込みコマンド (sh -c で実行、stdout が JSONL) を置いたときだけ動く。取り込みは上限付き (時間・バイト数) で、
+;; 失敗しても前回成功時の snapshot を使い、その場合は本文なしの {source_stale: hermes-observer} marker を集計入力に
+;; 付けて Hermes 会話の coverage を partial/stale にする (0 件や接続済みに見せない)。runner を止めない。
+(defn hermes-mirror-command []
+  (let [c (System/getenv "CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_COMMAND")] (when-not (str/blank? c) c)))
+(defn hermes-mirror-max-bytes [] (env-long "CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_MAX_BYTES" 8388608))
+(defn hermes-mirror-timeout [] (env-long "CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_TIMEOUT_SECONDS" 30))
+(defn hermes-mirror-dir [root] (fs/path (ai-ops-dir root) "hermes-ledger"))
+(defn hermes-mirror-path [root] (fs/path (hermes-mirror-dir root) "snapshot.jsonl"))
+(defn hermes-mirror-status-path [root] (fs/path (hermes-mirror-dir root) "status.edn"))
+(defn read-hermes-mirror-status [root]
+  (try (or (some-> (hermes-mirror-status-path root) str slurp edn/read-string) {}) (catch Exception _ {})))
+(def hermes-stale-marker-line (json/generate-string {:source_stale "hermes-observer"}))
+(def input-unreadable-marker-line (json/generate-string {:collection_lost "input_unreadable"}))
+
+(defn- hermes-snapshot-lines
+  "Keep only lines whose JSON `source` is hermes-observer. A line that is not a JSON
+  object becomes a body-less input_unreadable marker (the aggregate turns it into
+  unknown zero-tolerance SLIs instead of silently dropping it); a JSON line from
+  another source means the command is misconfigured, so it is dropped and counted."
+  [text]
+  (reduce (fn [acc line]
+            (let [m (try (json/parse-string line true) (catch Exception _ nil))]
+              (cond (not (map? m)) (-> acc (update :lines conj input-unreadable-marker-line) (update :malformed inc))
+                    (= "hermes-observer" (:source m)) (update acc :lines conj line)
+                    :else (update acc :foreign inc))))
+          {:lines [] :malformed 0 :foreign 0}
+          (remove str/blank? (str/split-lines text))))
+
+(defn mirror-hermes-ledger!
+  "Run the configured command (bounded by `deadline` and the mirror timeout) and
+  replace `<root>/ai-ops/hermes-ledger/snapshot.jsonl` atomically on success.
+  On any failure (command error, timeout, empty output, output over the byte cap)
+  the previous snapshot is kept and the failure is recorded in status.edn.
+  Returns true on success, false on failure, nil when not configured. Never throws."
+  [root deadline]
+  (when-let [cmd (hermes-mirror-command)]
+    (let [now (quot (System/currentTimeMillis) 1000)
+          attempt (assoc (read-hermes-mirror-status root) :last-attempt now)
+          budget (min deadline (+ (System/currentTimeMillis) (* 1000 (max 1 (hermes-mirror-timeout)))))
+          fail! (fn [reason] (try (atomic-spit! (hermes-mirror-status-path root)
+                                                (pr-str (-> attempt (update :failures (fnil inc 0)) (assoc :last-failure reason :last-result "fail"))))
+                                  (catch Exception _)) false)
+          tmp (atom nil)]
+      (try
+        (fs/create-dirs (hermes-mirror-dir root))
+        (atomic-spit! (hermes-mirror-status-path root) (pr-str attempt))
+        (reset! tmp (java.io.File/createTempFile "ai-ops-hermes-" ".jsonl"))
+        (let [ok (run-sli-command! ["sh" "-c" cmd] @tmp budget) size (.length ^java.io.File @tmp)]
+          (cond (not ok) (fail! "command")
+                (zero? size) (fail! "empty")
+                (> size (hermes-mirror-max-bytes)) (fail! "too_large")
+                :else
+                (let [text (slurp @tmp)
+                      ;; 追記途中の末尾行 (改行なし) は落とす
+                      end (inc (or (str/last-index-of text "\n") -1))
+                      {:keys [lines malformed foreign]} (hermes-snapshot-lines (subs text 0 end))]
+                  (atomic-spit! (hermes-mirror-path root) (str/join "" (map #(str % "\n") lines)))
+                  (atomic-spit! (hermes-mirror-status-path root)
+                                (pr-str (assoc attempt :last-success now :last-result "ok" :lines (count lines) :bytes end
+                                               :malformed-lines malformed :foreign-lines foreign)))
+                  true)))
+        (catch Exception _ (fail! "exception"))
+        (finally (when @tmp (fs/delete-if-exists @tmp)))))))
+
+(defn hermes-mirror-stale?
+  "True when the latest pull did not succeed (the SLI input is using the previous
+  snapshot). Uses the recorded result of the last attempt; attempts within the
+  same second as the last success are not mistaken for fresh."
+  [status]
+  (if (contains? status :last-result)
+    (not= "ok" (:last-result status))
+    (> (:last-attempt status 0) (:last-success status 0))))
+
+(defn append-hermes-mirror!
+  "Append the Hermes snapshot to the SLI input. When the latest pull failed the
+  snapshot is still appended (it is the last good copy) followed by the
+  source_stale marker, so the aggregate reports partial/stale coverage. A snapshot
+  that exists but cannot be read becomes an input_unreadable marker. No-op when
+  the mirror is not configured or has never succeeded."
+  [root target]
+  (when (hermes-mirror-command)
+    (let [p (hermes-mirror-path root) status (read-hermes-mirror-status root)]
+      (when (fs/exists? p)
+        (let [text (try (slurp (str p)) (catch java.io.IOException _ ::unreadable))
+              end (when (string? text) (inc (or (str/last-index-of text "\n") -1)))]
+          (with-open [w (java.io.FileWriter. (str target) true)]
+            (if (string? text)
+              (when (pos? end) (.write w (subs text 0 end)))
+              (.write w (str input-unreadable-marker-line "\n")))
+            (when (hermes-mirror-stale? status) (.write w (str hermes-stale-marker-line "\n"))))))))
+  true)
+
+(defn hermes-mirror-metrics [root]
+  (let [s (read-hermes-mirror-status root) configured (some? (hermes-mirror-command))]
+    (str (str/join "\n" (concat
+          (metric-lines "ai_ops_hermes_mirror_enabled" "gauge" "Hermes ledger mirror command is configured." [[{} (if configured 1 0)]])
+          (when-let [v (:last-success s)] (metric-lines "ai_ops_hermes_mirror_last_success_timestamp_seconds" "gauge" "Last successful Hermes ledger pull." [[{} v]]))
+          (metric-lines "ai_ops_hermes_mirror_last_attempt_timestamp_seconds" "gauge" "Last Hermes ledger pull attempt, or zero if never attempted." [[{} (:last-attempt s 0)]])
+          (metric-lines "ai_ops_hermes_mirror_failures_total" "counter" "Failed Hermes ledger pulls (previous snapshot kept)." [[{} (:failures s 0)]])
+          (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed and the SLI input uses the previous snapshot." [[{} (if (and configured (:last-success s) (hermes-mirror-stale? s)) 1 0)]])
+          (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot." [[{:kind "hermes"} (:lines s 0)] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)]])))
+         "\n")))
+
 (defn sli-lock-path [root] (fs/path (ai-ops-dir root) "sli.lock"))
 
 (defn with-sli-lock
@@ -668,6 +777,8 @@
             (reset! v1 (java.io.File/createTempFile "ai-ops-v1-" ".prom"))
             (if (and (run-sli-command! ["bb" sli-script "extract" (str root) (str vault)] @tmp deadline)
                      (append-ledger-events! root @tmp)
+                     ;; Hermes ledger の取り込み失敗は SLI refresh を失敗にしない (前回 snapshot + stale marker で続ける)
+                     (do (mirror-hermes-ledger! root deadline) (append-hermes-mirror! root @tmp))
                      (run-sli-command! ["bb" sli-script "prom" (str @tmp)] @output deadline)
                      (pos? (.length @output)) (<= (.length @output) sli-limit))
               (let [v1-text (v1-export-text root @v1 deadline (- sli-limit (.length @output)))]
@@ -700,7 +811,8 @@
           (when-let [v (:last-success s)] (metric-lines "ai_ops_sli_export_last_success_timestamp_seconds" "gauge" "Last successful SLI export." [[{} v]]))
           (metric-lines "ai_ops_sli_export_last_attempt_timestamp_seconds" "gauge" "Last SLI export attempt, or zero if never attempted." [[{} (:last-attempt s 0)]])
           (metric-lines "ai_ops_sli_export_failures_total" "counter" "Failed SLI export attempts." [[{} (:failures s 0)]])
-          (metric-lines "ai_ops_sli_export_enabled" "gauge" "SLI export is enabled and configured." [[{} (if (sli-enabled?) 1 0)]]))) "\n")))
+          (metric-lines "ai_ops_sli_export_enabled" "gauge" "SLI export is enabled and configured." [[{} (if (sli-enabled?) 1 0)]]))) "\n"
+         (hermes-mirror-metrics root))))
 
 (defn sli-snapshot [root]
   (try (let [p (sli-path root)] (if (and (fs/regular-file? p) (<= (fs/size p) sli-limit)) (slurp (str p)) "")) (catch Exception _ "")))

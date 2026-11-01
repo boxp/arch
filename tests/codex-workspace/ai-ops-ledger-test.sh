@@ -648,3 +648,99 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (with-redefs [ai-ops-ledger/sli-interval (constantly 1)]
   (assert (true? (ai-ops-ledger/refresh-sli! root vault)) "refresh must run once the other process releases sli.lock"))
 (println "ai-ops-ledger-test: SLI refresh after lock release passed")'
+# Hermes ledger mirror: opt-in の取り込みコマンドで snapshot を作り SLI 入力へ join する。取り込み失敗時は
+# 前回 snapshot + source_stale marker (partial/stale)、容量超過・空出力は失敗、未設定なら何もしない。
+AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
+(require (quote [babashka.fs :as fs]) (quote [clojure.string :as str]) (quote [cheshire.core :as json]))
+(load-file (System/getenv "AI_OPS_MODULE"))
+(def root (str (fs/path (System/getenv "AI_OPS_TMP") "hermes-root")))
+(def vault (str (fs/path (System/getenv "AI_OPS_TMP") "hermes-vault")))
+(doseq [d [(fs/path root "runs") (fs/path root "outbox") (fs/path vault "Tickets")]] (fs/create-dirs d))
+(spit (str (fs/path vault "Tickets" "BOXP-1.md")) "---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n")
+(def src (str (fs/path (System/getenv "AI_OPS_TMP") "hermes-source.jsonl")))
+(def conv "conv-29344c58-47e8-dc1a-68fd-feab0fc10335")
+(def hermes-lines
+  [(json/generate-string {:schema_version "ai-ops-event/v0" :source "hermes-observer" :runtime "hermes" :task_id conv :request_id conv
+                          :event_type "run.started" :occurred_at "2026-10-31T00:00:03Z" :occurred_precision "second"
+                          :run_id "20261031T000003Z-ee2d7526" :event_id (str conv "/20261031T000003Z-ee2d7526:started")})
+   (json/generate-string {:schema_version "ai-ops-event/v0" :source "hermes-observer" :runtime "hermes" :task_id conv :request_id conv
+                          :event_type "run.finished" :status "succeeded" :occurred_at "2026-10-31T00:00:09Z" :occurred_precision "second"
+                          :run_id "20261031T000003Z-ee2d7526" :event_id (str conv "/20261031T000003Z-ee2d7526:finished")})])
+(spit src (str (str/join "\n" hermes-lines) "\n"))
+(def far-deadline (+ (System/currentTimeMillis) 60000))
+;; 未設定: 何もしない (nil)、入力にも何も足さない
+(let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
+  (assert (nil? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (assert (true? (ai-ops-ledger/append-hermes-mirror! root (str t))))
+  (assert (zero? (.length t)))
+  (assert (not (fs/exists? (ai-ops-ledger/hermes-mirror-dir root)))))
+(with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "cat " src))
+              ai-ops-ledger/sli-interval (constantly 1)]
+  ;; 成功: snapshot と status、SLI 入力へ連結、集計で hermes_conversation が connected・会話/turn 数が出る
+  (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (assert (= (str (str/join "\n" hermes-lines) "\n") (slurp (str (ai-ops-ledger/hermes-mirror-path root)))))
+  (let [s (ai-ops-ledger/read-hermes-mirror-status root)]
+    (assert (= 2 (:lines s))) (assert (:last-success s)) (assert (not (ai-ops-ledger/hermes-mirror-stale? s))))
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+  (let [p (slurp (str (ai-ops-ledger/sli-path root)))]
+    (assert (str/includes? p "ai_ops_sli_source_connected{sli=\"hermes_conversation\"} 1") p)
+    (assert (str/includes? p "ai_ops_sli_source_partial{sli=\"hermes_conversation\"} 0"))
+    (assert (str/includes? p "ai_ops_hermes_conversations 1"))
+    (assert (str/includes? p "ai_ops_hermes_conversation_turns{kind=\"finished_succeeded\"} 1"))
+    (assert (str/includes? p "ai_ops_guardrail_tasks{kind=\"conversations_unobserved\"} 1"))
+    ;; Hermes の turn は Board の run 数に混ぜない
+    (assert (str/includes? p "ai_ops_runs{status=\"all\"} 0") p)
+    (assert (not (str/includes? p "sli=\"hermes_conversation\",category")) "joined hermes must not be listed as unknown"))
+  (let [m (ai-ops-ledger/sli-export-metrics root)]
+    (assert (str/includes? m "ai_ops_hermes_mirror_enabled 1"))
+    (assert (str/includes? m "ai_ops_hermes_mirror_stale 0"))
+    (assert (str/includes? m "ai_ops_hermes_mirror_snapshot_lines{kind=\"hermes\"} 2")))
+  ;; JSON でない行は input_unreadable marker に、他 source の行は落として件数だけ残す
+  (spit src (str (str/join "\n" hermes-lines) "\nnot json\n" (json/generate-string {:source "task-board-runner" :event_type "run.started"}) "\n"))
+  (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (let [snap (slurp (str (ai-ops-ledger/hermes-mirror-path root))) s (ai-ops-ledger/read-hermes-mirror-status root)]
+    (assert (str/includes? snap "{\"collection_lost\":\"input_unreadable\"}") snap)
+    (assert (not (str/includes? snap "task-board-runner")))
+    (assert (= 1 (:malformed-lines s))) (assert (= 1 (:foreign-lines s))) (assert (= 3 (:lines s))))
+  ;; 追記途中の末尾行 (改行なし) は落とす
+  (spit src (str (str/join "\n" hermes-lines) "\n{\"source\":\"hermes-observer\",\"event_type\":\"run.sta"))
+  (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (assert (= (str (str/join "\n" hermes-lines) "\n") (slurp (str (ai-ops-ledger/hermes-mirror-path root))))))
+;; 失敗 (コマンド異常終了): 前回 snapshot を保持し stale。SLI refresh は成功のまま、hermes は partial/stale で接続済みにしない
+(with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "exit 3") ai-ops-ledger/sli-interval (constantly 1)]
+  (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (let [s (ai-ops-ledger/read-hermes-mirror-status root)]
+    (assert (= 1 (:failures s))) (assert (= "command" (:last-failure s))) (assert (ai-ops-ledger/hermes-mirror-stale? s)))
+  (assert (= (str (str/join "\n" hermes-lines) "\n") (slurp (str (ai-ops-ledger/hermes-mirror-path root)))) "previous snapshot kept")
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+  (let [p (slurp (str (ai-ops-ledger/sli-path root))) m (ai-ops-ledger/sli-export-metrics root)]
+    (assert (str/includes? p "ai_ops_sli_source_connected{sli=\"hermes_conversation\"} 0") p)
+    (assert (str/includes? p "ai_ops_sli_source_partial{sli=\"hermes_conversation\"} 1"))
+    (assert (str/includes? p "ai_ops_source_stale_snapshot_markers{source=\"hermes-observer\"} 1"))
+    (assert (str/includes? p "ai_ops_hermes_conversations 1") "last good snapshot still joined")
+    (assert (str/includes? m "ai_ops_hermes_mirror_stale 1"))
+    ;; 直接の失敗 1 回 + refresh-sli! 内の再取り込み失敗 1 回
+    (assert (str/includes? m "ai_ops_hermes_mirror_failures_total 2") m)))
+;; 空出力と容量超過も失敗 (snapshot は置き換えない)
+(with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "true")]
+  (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (assert (= "empty" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root)))))
+(with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "cat " src)) ai-ops-ledger/hermes-mirror-max-bytes (constantly 16)]
+  (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+  (assert (= "too_large" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root))))
+  (assert (= 4 (:failures (ai-ops-ledger/read-hermes-mirror-status root)))))
+;; タイムアウト: 上限を超えるコマンドは打ち切り、失敗として記録する (runner を止めない)
+(with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "sleep 30") ai-ops-ledger/hermes-mirror-timeout (constantly 1)]
+  (let [t0 (System/currentTimeMillis)]
+    (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+    (assert (< (- (System/currentTimeMillis) t0) 10000) "pull must be bounded by the mirror timeout")))
+;; 読めない snapshot は input_unreadable marker として集計入力に入る (黙って落とさない)
+(when-not (= "root" (System/getProperty "user.name"))
+  (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl") p (ai-ops-ledger/hermes-mirror-path root)]
+    (fs/set-posix-file-permissions p "---------")
+    (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "true")]
+      (assert (true? (ai-ops-ledger/append-hermes-mirror! root (str t)))))
+    (fs/set-posix-file-permissions p "rw-r--r--")
+    (assert (str/includes? (slurp t) "{\"collection_lost\":\"input_unreadable\"}"))))
+(println "ai-ops-ledger-test: Hermes ledger mirror checks passed")'

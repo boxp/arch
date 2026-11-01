@@ -50,6 +50,16 @@ runner は `CODEX_TASK_BOARD_VAULT` が設定されている場合、全履歴�
 
 `ai_ops_sli_info`、`ai_ops_sli_generated_timestamp_seconds`、`ai_ops_sli_determinable`、`ai_ops_sli_source_connected` と、first acceptance・correction・lead time・runs・stratum・guardrail の各系列を出力する。分子・分母を併記し、unknown の値は公開しない。unknown の SLI / coverage には `ai_ops_sli_unknown_info{sli,category,reason_code}` を 1 行出し、`category` は Owner 向けの 4 分類 (`not_connected` 未接続 / `history_missing` 履歴欠損 / `unclassifiable` 分類不能 / `out_of_scope` 対象外)、欠落・拒否・読めない run などの件数は `ai_ops_sli_unknown_detail{sli,detail}` に出す (`unknown-classification`)。是正率が確定していても、原因 unknown の再開 task 数は `unclassifiable` として件数を出す。値は全履歴から再計算したスナップショットであり `rate()` / `increase()` を使わない。
 
+### Hermes ledger の join (mirror)
+
+runner は `CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_COMMAND` が設定されている場合、SLI 再集計のたびにそのコマンド (`sh -c`、stdout が JSONL) で Hermes の metadata-only ledger を取り込み、`ai-ops/hermes-ledger/snapshot.jsonl` を置き換えて集計入力に連結する (join)。本番の値は `kubectl exec -n hermes-agent deploy/hermes-agent -c hermes-agent -- sh -c 'cat /opt/data/ai-ops/ledger/events-*.jsonl'` で、codex-workspace の ServiceAccount が既に持つ hermes-agent namespace の Role `codex-workspace-debug` (pods/exec) を使う。新しい権限・secret・外部送信・Hermes の再起動は要らない。未設定なら何もしない (hermes_conversation は not-connected のまま)。
+
+- 上限: `CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_TIMEOUT_SECONDS` (既定 30 秒、SLI 全体の deadline とも短い方) と `CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_MAX_BYTES` (既定 8 MiB)。超えた場合・コマンド失敗・空出力は失敗として `status.edn` に記録し、前回成功時の snapshot を残す。SLI refresh 自体は失敗にしない。
+- 失敗中 (`last-result` が ok でない) は、前回 snapshot に続けて本文・ID なしの marker `{"source_stale":"hermes-observer"}` を集計入力に付ける。aggregate は `coverage.hermes-conversation.coverage` を `partial/stale` にし、Prometheus では `ai_ops_sli_source_connected{sli="hermes_conversation"} 0` / `ai_ops_sli_source_partial{sli="hermes_conversation"} 1` / `ai_ops_source_stale_snapshot_markers{source="hermes-observer"}` になる (接続済みにも 0 件にも見せない)。この marker は欠落 event ではないので zero-tolerance・是正 SLI は変えない。
+- snapshot に入れるのは `source` が `hermes-observer` の JSON 行だけ。JSON でない行は `{"collection_lost":"input_unreadable"}` marker に置き換える (黙って落とさない)。他 source の JSON 行はコマンドの誤設定なので落として `foreign-lines` に数える。追記途中の末尾行 (改行なし) は落とす。本文・ID の検証は集計側の privacy gate が従来どおり行う。
+- 会話 (opaque な `conv-` ID、ticket と join できない) は ticket を作らずに request_id 単位の task として残すが、Board の task ではないので `guardrails.unfinished` / `unobserved` には数えず `conversations-unobserved` に分け、層は `assistant` に補完し、`run-reliability` / `delegation` (Board runner の run) にも混ぜない。会話数・turn 数・承認 event 数は `coverage.hermes-conversation` と `ai_ops_hermes_conversations` / `ai_ops_hermes_conversation_turns{kind}` / `ai_ops_hermes_approval_events{kind}` に出す。Hermes 由来の `approval.*` は重複承認 SLI の入力に残る。ticket 形式の task_id を持つ Hermes event は会話扱いにしない。
+- mirror の健全性: `ai_ops_hermes_mirror_enabled` / `_last_success_timestamp_seconds` / `_last_attempt_timestamp_seconds` / `_failures_total` / `_stale` / `_snapshot_lines{kind=hermes|malformed|foreign_source}` (metrics.prom)。
+
 ## ai_ops_insight.bb (correction-rules/v1)
 
 実体は `docker/codex-workspace/task-board/ai_ops_insight.bb` (ここは symlink)。`report` は分析専用、`prom` は runner image から 15 分ごとに呼ばれ公開 SLI の v1 系列を出す。

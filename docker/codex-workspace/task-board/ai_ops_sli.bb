@@ -118,7 +118,11 @@
 ;; ledger_dropped: runner ledger が容量超過/書き込み失敗で書けなかった event (task_board ai_ops_ledger.bb が出す)
 (def lost-markers {{:collection_lost "buffer_dropped"} :buffer-dropped {:collection_lost "undelivered"} :undelivered
                    {:collection_lost "input_unreadable"} :input-unreadable {:collection_lost "ledger_dropped"} :ledger-dropped})
-(defn marker? [e] (or (rejected-marker? e) (contains? lost-markers e)))
+;; Hermes ledger の mirror (runner が kubectl exec で read-only に取り込む snapshot) が最新の取り込みに失敗し、
+;; 前回成功時の snapshot を集計している (本文・ID なし)。Hermes 会話の coverage を partial/stale にする
+(def stale-source-marker {:source_stale "hermes-observer"})
+(defn stale-source-marker? [e] (= stale-source-marker e))
+(defn marker? [e] (or (rejected-marker? e) (contains? lost-markers e) (stale-source-marker? e)))
 
 (defn emit-gated [stats e]
   (let [{:keys [event dropped-keys redacted-values rejected?]} (privacy-gate e)]
@@ -597,6 +601,7 @@
         buffer-dropped (+ (get collection-lost :buffer-dropped 0) ledger-dropped)
         undelivered (get collection-lost :undelivered 0)
         input-unreadable (get collection-lost :input-unreadable 0)
+        hermes-stale (count (filter stale-source-marker? events))
         events (remove marker? events)
         raw-events (remove ::malformed events)
         gated (map privacy-gate raw-events)
@@ -638,6 +643,12 @@
         skew (->> uniq (filter #(let [o (parse-inst (:occurred_at %)) w (parse-inst (:observed_at %))]
                                    (and o w (.isAfter o (.plusSeconds w 300))))) count)
         by-task (group-by :task_id (filter :task_id uniq))
+        ;; Hermes の会話 (hermes-observer ledger): task_id は opaque な conv- ID で、Board の ticket とは join できない。
+        ;; ticket の起票を求めずに request_id 単位の 1 task として残すが、Board の task ではないので
+        ;; 未完了 guardrail からは分け、層は assistant に補完し、会話数/turn 数は coverage に別掲する
+        hermes-event? #(or (= "hermes" (:runtime %)) (boolean (re-matches #"(?:[^:]+:)?hermes" (or (:source %) ""))))
+        conversation-ids (set (for [[tid evs] by-task :when (and (every? hermes-event? evs) (not (re-matches #"[A-Z]+-\d+" (str tid))))] tid))
+        conv-events (mapcat val (filter (comp conversation-ids key) by-task))
         ;; task に紐付くべき event で task_id が欠落したもの: 集計から黙って除外せず件数を別掲し、是正が欠落していれば SLI を確定しない
         task-scoped? #(or (#{"correction" "request.received" "lane.changed"} (:event_type %))
                           (some-> (:event_type %) (str/starts-with? "task."))
@@ -740,7 +751,9 @@
                                               (filter #(= "correction" (:event_type %)) evs))]
                     ;; 状態 event (state/cancelled/reopened)・読めない run・救援 event も task の存在を示す (救援単独 task を救援率から落とさない)
                     :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue" "correction"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (syn-evs? evs) (some #(= "lane.changed" (:event_type %)) evs))]
-                {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
+                {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted
+                 :stratum (or (some :stratum evs) (when (contains? conversation-ids tid) "assistant")) :outcome (task-outcome evs)
+                 :conversation? (contains? conversation-ids tid)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
                  :unreadable-runs (+ (count (filter #(= "run.unreadable" (:event_type %)) evs)) (count orphan-runs) (if (seq history-less-corr) 1 0))
@@ -868,11 +881,14 @@
                             :else {:status "unknown" :reason "approval event 未接続"})
       :lead-time-hours (assoc (quantiles (keep :lead-h accepted))
                               :note "request.received/accepted は日粒度 (frontmatter)。queue/active/approval/wait/blocked 分解は lane timestamp 不足で unknown")
-      :run-reliability {:runs (reduce + (map :runs tasks))
-                        :interrupted (reduce + (map :interrupted tasks))
-                        :idle-timeouts (reduce + (map :idle-timeouts tasks))
-                        :retrying (reduce + (map :retrying tasks))}
-      :delegation (apply merge-with + (map :delegation tasks))}
+      ;; run の信頼性と委譲は Board runner の run が対象。Hermes 会話の turn (run.started/finished) は
+      ;; coverage :hermes-conversation の turn 数に別掲し、ここへ混ぜない
+      :run-reliability (let [board-tasks (remove :conversation? tasks)]
+                         {:runs (reduce + (map :runs board-tasks))
+                          :interrupted (reduce + (map :interrupted board-tasks))
+                          :idle-timeouts (reduce + (map :idle-timeouts board-tasks))
+                          :retrying (reduce + (map :retrying board-tasks))})
+      :delegation (apply merge-with + (map :delegation (remove :conversation? tasks)))}
      :zero-tolerance {:duplicate-effects (cond
                                            ;; 破損行・拒否 event に effect が含まれていた可能性があるため 0 件と確定しない
                                            (pos? lost)
@@ -909,15 +925,27 @@
                       :private-leak {:status "unknown" :reason "leak detector 未接続。0件観測≠0件"}}
      :guardrails {:pending-over-7d "要 lane timestamp (unknown)"
                   :tasks-per-request (ratio n (count (set (keep :request_id uniq))))
-                  :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
+                  ;; Hermes 会話は受入/取消の状態を持たない (unobserved) ので、Board task の未完了放置とは分けて数える
+                  :unfinished (count (filter #(and (not (contains? #{"accepted" "cancelled"} (:outcome %)))
+                                                   (not (and (:conversation? %) (= "unobserved" (:outcome %))))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
-                  :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
+                  :unobserved (count (filter #(and (= "unobserved" (:outcome %)) (not (:conversation? %))) tasks))
+                  :conversations-unobserved (count (filter #(and (= "unobserved" (:outcome %)) (:conversation? %)) tasks))}
      :coverage {:collection-lost {:buffer-dropped (- buffer-dropped ledger-dropped) :ledger-dropped ledger-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :unlinked-task-events (count unlinked) :unlinked-corrections unlinked-corr :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
-                :hermes-conversation {:status (if (or (connected? "hermes-conversation")
-                                                   (some #(or (= "hermes" (:runtime %))
-                                                              (boolean (re-matches #"(?:[^:]+:)?hermes" (or (:source %) "")))) uniq))
-                                             "connected" "not-connected")}}
+                :source-stale {:hermes-observer hermes-stale}
+                ;; Hermes ledger が join されていれば connected。mirror の最新取り込みに失敗して前回 snapshot を使っていれば
+                ;; partial/stale (接続済みとは表示しない)。会話は task と join できないため件数の別掲まで
+                :hermes-conversation (let [connected (boolean (or (connected? "hermes-conversation") (some hermes-event? uniq)))
+                                           turns (filter #(= "run.finished" (:event_type %)) conv-events)]
+                                       (cond-> {:status (if connected "connected" "not-connected")}
+                                         connected (assoc :coverage (if (pos? hermes-stale) "partial/stale" "connected")
+                                                          :conversations (count conversation-ids)
+                                                          :turns-started (count (filter #(= "run.started" (:event_type %)) conv-events))
+                                                          :turns-finished (frequencies (map #(if (contains? (:status enum-values) (:status %)) (:status %) "unknown") turns))
+                                                          :approvals-requested (count (filter #(= "approval.requested" (:event_type %)) conv-events))
+                                                          :approvals-resolved (count (filter #(= "approval.resolved" (:event_type %)) conv-events))
+                                                          :stale-snapshot-markers hermes-stale)))}
      :by-stratum
      (into (sorted-map)
            (for [[s ts] (group-by :stratum tasks)
@@ -1073,8 +1101,17 @@
             ;; 欠落 event の所属層は不明なので、全体 SLI が unknown の間は対応する層別の分子・分母も出さない
             :when (or (nil? sli) (not (#{"unknown" :unknown} (get-in r [:sli sli :status]))))]
       (line "ai_ops_stratum_tasks" {:stratum s :kind label} (get values k 0)))
-    (doseq [[label k] [["unfinished" :unfinished] ["awaiting_review" :awaiting-review] ["unobserved" :unobserved]]]
-      (line "ai_ops_guardrail_tasks" {:kind label} (get-in r [:guardrails k])))))
+    (doseq [[label k] [["unfinished" :unfinished] ["awaiting_review" :awaiting-review] ["unobserved" :unobserved] ["conversations_unobserved" :conversations-unobserved]]]
+      (line "ai_ops_guardrail_tasks" {:kind label} (get-in r [:guardrails k])))
+    ;; Hermes 会話 (join 済みのときだけ件数を出す。stale snapshot の件数は常に出す)
+    (line "ai_ops_source_stale_snapshot_markers" {:source "hermes-observer"} (get-in r [:coverage :source-stale :hermes-observer] 0))
+    (let [h (get-in r [:coverage :hermes-conversation])]
+      (when (= "connected" (:status h))
+        (line "ai_ops_hermes_conversations" {} (:conversations h))
+        (line "ai_ops_hermes_conversation_turns" {:kind "started"} (:turns-started h))
+        (doseq [[st n] (sort (:turns-finished h))] (line "ai_ops_hermes_conversation_turns" {:kind (str "finished_" st)} n))
+        (line "ai_ops_hermes_approval_events" {:kind "requested"} (:approvals-requested h))
+        (line "ai_ops_hermes_approval_events" {:kind "resolved"} (:approvals-resolved h))))))
 
 ;; ---------------------------------------------------------------------------
 
