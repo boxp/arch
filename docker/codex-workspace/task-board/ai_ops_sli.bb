@@ -874,7 +874,8 @@
                       :else (ratio (count (filter #(pos? (:rescue %)) tasks)) n))
       :duplicate-approval (cond
                             ;; 承認 event だった可能性のある欠落 (拒否・drop・破損等) があると重複を見落とし得る
-                            (and (pos? approval-lost) (pos? (+ (:total approvals) (:unverifiable approvals))))
+                            ;; 観測済みの承認が 0 件でも、欠落側に承認があった可能性があれば「未接続」ではなく欠落として報告する
+                            (pos? approval-lost)
                             {:status "unknown" :reason "承認 event だった可能性のある欠落 event (privacy 拒否・collector 欠落・破損行・読めない入力) があり重複承認の有無を確定できない"
                              :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
                              :lost-events approval-lost :unverifiable-approvals (:unverifiable approvals)}
@@ -883,6 +884,12 @@
                             {:status "unknown" :reason "approval_key 欠落/不正の承認があり重複承認の有無を確定できない"
                              :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
                              :unverifiable-approvals (:unverifiable approvals) :coverage "partial/unverifiable-keys"}
+                            ;; 承認 event の source (Hermes ledger mirror) の最新取り込みに失敗して前回 snapshot を使っている間は、
+                            ;; 失敗中に発生した承認 (重複を含む) が入力に無いため確定しない (観測値は下限、coverage は partial/stale)
+                            (and (pos? hermes-stale) (pos? (+ (:total approvals) (:unverifiable approvals))))
+                            {:status "unknown" :reason "承認 event の source (hermes-observer) の最新取り込みに失敗し前回 snapshot を使っており、失敗中の承認を含まないため重複承認の有無を確定できない"
+                             :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
+                             :stale-snapshot-markers hermes-stale :coverage "partial/stale"}
                             (pos? (:scopes approvals))
                             (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
                             :else {:status "unknown" :reason "approval event 未接続"})
@@ -993,7 +1000,7 @@
   [:lost-events :unlinked-events :unlinked-corrections :unlinked-rescues :unlinked-task-events
    :unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types
    :indeterminate :unevaluated-input-missing :rejected-events :unreadable-runs :unreadable-inputs
-   :collection-lost-events :malformed-lines :id-collisions])
+   :collection-lost-events :malformed-lines :id-collisions :stale-snapshot-markers])
 (defn unknown-classification
   "unknown な SLI/coverage map s に対して [category reason_code] を返す。確定している (unknown でない) 場合は nil。"
   [s]
@@ -1009,6 +1016,8 @@
       (pos-any? [:lost-events :collection-lost-events :malformed-lines :id-collisions :rejected-events :unreadable-runs :unreadable-inputs]) ["history_missing" "input_loss"]
       (pos-any? [:unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types]) ["history_missing" "unverifiable_fields"]
       (pos-any? [:indeterminate]) ["history_missing" "time_indeterminate"]
+      ;; source の最新取り込みに失敗し前回 snapshot を使っている (失敗中の event が入力に無い)
+      (pos-any? [:stale-snapshot-markers]) ["history_missing" "stale_source_snapshot"]
       (pos-any? [:unevaluated-input-missing]) ["history_missing" "input_missing_tasks"]
       :else ["history_missing" "other"])))
 

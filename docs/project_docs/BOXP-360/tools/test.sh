@@ -1900,7 +1900,21 @@ bb -e "
     (assert (= \"partial/stale\" (get-in s [:coverage :hermes-conversation :coverage])))
     (assert (= 1 (get-in s [:coverage :hermes-conversation :stale-snapshot-markers])))
     (assert (= 1 (get-in s [:coverage :source-stale :hermes-observer])))
-    (assert (= (:sli j) (:sli s)))
+    (assert (= (dissoc (:sli j) :duplicate-approval) (dissoc (:sli s) :duplicate-approval)) \"stale marker changes no SLI but the approval one\")
+    ;; 承認 event の source が stale の間は、失敗中に起きた承認 (重複を含む) が入力に無いので重複承認率を確定しない
+    (assert (= {:count 0 :denominator 1} (select-keys (get-in j [:sli :duplicate-approval]) [:count :denominator])) (pr-str (get-in j [:sli :duplicate-approval])))
+    (let [d (get-in s [:sli :duplicate-approval])]
+      (assert (= \"unknown\" (:status d)) (pr-str d))
+      (assert (= \"partial/stale\" (:coverage d)))
+      (assert (= 1 (:stale-snapshot-markers d)))
+      (assert (= {:count 0 :denominator 1} (select-keys (:observed-lower-bound d) [:count :denominator]))))
+    ;; 失敗中に重複承認が増えても (次の取り込みで届く)、stale のまま確定値へ戻らない
+    (let [dup (assoc (last hermes) :event_id (str conv \"/20261031T000103Z-ee2d7527:req2\") :occurred_at \"2026-10-31T00:01:06Z\")
+          fresh (ai-ops-sli/aggregate* (concat board hermes [dup]))
+          stale (ai-ops-sli/aggregate* (concat board hermes [dup ai-ops-sli/stale-source-marker]))]
+      (assert (= {:count 1 :denominator 2} (select-keys (get-in fresh [:sli :duplicate-approval]) [:count :denominator])) (pr-str (get-in fresh [:sli :duplicate-approval])))
+      (assert (= \"unknown\" (get-in stale [:sli :duplicate-approval :status])))
+      (assert (= {:count 1 :denominator 2} (select-keys (get-in stale [:sli :duplicate-approval :observed-lower-bound]) [:count :denominator]))))
     (assert (= (:zero-tolerance j) (:zero-tolerance s)) \"stale marker is not a lost event\"))
   (println \"ok   Hermes ledger join: 会話は task 集計から分け件数を別掲、未完了 guardrail/救援率/run 数/SLI は不変、会話/turn/承認数を別掲、stale は partial\"))"
 tmp_hj=$(mktemp -d)

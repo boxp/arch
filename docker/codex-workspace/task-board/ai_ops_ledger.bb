@@ -633,6 +633,9 @@
 (defn hermes-mirror-dir [root] (fs/path (ai-ops-dir root) "hermes-ledger"))
 (defn hermes-mirror-path [root] (fs/path (hermes-mirror-dir root) "snapshot.jsonl"))
 (defn hermes-mirror-status-path [root] (fs/path (hermes-mirror-dir root) "status.edn"))
+;; 有効 event 0 件で失敗した取り込み (no_events) が出した本文・ID なしの欠落 marker (privacy_rejected / input_unreadable)。
+;; 前回 snapshot を置き換えない代わりにここへ残し、次の成功まで集計入力へ付けて関連 SLI を確定させない
+(defn hermes-mirror-failed-markers-path [root] (fs/path (hermes-mirror-dir root) "failed-pull-markers.jsonl"))
 (defn read-hermes-mirror-status [root]
   (try (or (some-> (hermes-mirror-status-path root) str slurp edn/read-string) {}) (catch Exception _ {})))
 (def hermes-stale-marker-line (json/generate-string {:source_stale "hermes-observer"}))
@@ -821,9 +824,16 @@
                     ;; 有効な hermes-observer event が 1 件もない出力 (途中行だけ・他 source だけ・全行破損/拒否) は
                     ;; 収集結果として信用せず、前回 snapshot を置き換えない (stale として扱う)
                     (if (zero? hermes)
-                      (fail! "no_events")
+                      ;; 検出した拒否・破損 marker は捨てず残す (全行の ID が不正になった等、是正に影響し得る拒否を
+                      ;; 集計側が認識できないまま SLI を確定させない)。marker が無い出力 (途中行だけ等) は前回の marker を残す
+                      (do (when (seq lines)
+                            (try (atomic-spit! (hermes-mirror-failed-markers-path root) (str/join "" (map #(str % "\n") lines)))
+                                 (catch Exception _)))
+                          (fail! "no_events"))
                       (do
                         (atomic-spit! (hermes-mirror-path root) (str/join "" (map #(str % "\n") lines)))
+                        ;; 成功した snapshot は ledger 全体を読み直したものなので、失敗時の marker は不要になる
+                        (fs/delete-if-exists (hermes-mirror-failed-markers-path root))
                         (atomic-spit! (hermes-mirror-status-path root)
                                       (pr-str (assoc attempt :last-success now :last-result "ok" :lines (count lines) :bytes end
                                                      :hermes-lines hermes :malformed-lines malformed :foreign-lines foreign
@@ -844,20 +854,34 @@
   "Append the Hermes snapshot to the SLI input. When the latest pull failed the
   snapshot is still appended (it is the last good copy) followed by the
   source_stale marker, so the aggregate reports partial/stale coverage. A snapshot
-  that exists but cannot be read becomes an input_unreadable marker. No-op when
-  the mirror is not configured or has never succeeded."
+  that exists but cannot be read becomes an input_unreadable marker. The body-less
+  markers kept from a `no_events` pull are appended too (an unreadable marker file
+  counts as lost input) so the aggregate does not settle the affected SLIs. No-op
+  when the mirror is not configured, or has never succeeded and never failed with
+  markers."
   [root target]
   (when (hermes-mirror-command)
-    (let [p (hermes-mirror-path root) status (read-hermes-mirror-status root)]
-      (when (fs/exists? p)
-        (let [text (try (slurp (str p)) (catch java.io.IOException _ ::unreadable))
-              end (when (string? text) (inc (or (str/last-index-of text "\n") -1)))]
-          (with-open [w (java.io.FileWriter. (str target) true)]
-            (if (string? text)
-              (when (pos? end) (.write w (subs text 0 end)))
-              (.write w (str input-unreadable-marker-line "\n")))
-            (when (hermes-mirror-stale? status) (.write w (str hermes-stale-marker-line "\n"))))))))
+    (let [p (hermes-mirror-path root) fp (hermes-mirror-failed-markers-path root) status (read-hermes-mirror-status root)
+          read-lines (fn [path] (let [text (try (slurp (str path)) (catch java.io.IOException _ ::unreadable))]
+                                  (if (string? text)
+                                    (let [end (inc (or (str/last-index-of text "\n") -1))] (when (pos? end) (subs text 0 end)))
+                                    (str input-unreadable-marker-line "\n"))))]
+      (when (or (fs/exists? p) (fs/exists? fp))
+        (with-open [w (java.io.FileWriter. (str target) true)]
+          (when (fs/exists? p)
+            (some->> (read-lines p) (.write w))
+            (when (hermes-mirror-stale? status) (.write w (str hermes-stale-marker-line "\n"))))
+          (when (fs/exists? fp)
+            (some->> (read-lines fp) (.write w)))))))
   true)
+
+(defn hermes-mirror-failed-marker-lines
+  "Marker lines kept from the last no_events pull (0 when none; an unreadable file counts as 1)."
+  [root]
+  (let [fp (hermes-mirror-failed-markers-path root)]
+    (if (fs/exists? fp)
+      (try (count (remove str/blank? (str/split-lines (slurp (str fp))))) (catch java.io.IOException _ 1))
+      0)))
 
 (defn hermes-mirror-metrics [root]
   (let [s (read-hermes-mirror-status root) configured (some? (hermes-mirror-command))]
@@ -866,6 +890,7 @@
           (when-let [v (:last-success s)] (metric-lines "ai_ops_hermes_mirror_last_success_timestamp_seconds" "gauge" "Last successful Hermes ledger pull." [[{} v]]))
           (metric-lines "ai_ops_hermes_mirror_last_attempt_timestamp_seconds" "gauge" "Last Hermes ledger pull attempt, or zero if never attempted." [[{} (:last-attempt s 0)]])
           (metric-lines "ai_ops_hermes_mirror_failures_total" "counter" "Failed Hermes ledger pulls (previous snapshot kept)." [[{} (:failures s 0)]])
+          (metric-lines "ai_ops_hermes_mirror_failed_pull_marker_lines" "gauge" "Body-less lost-input markers kept from the last no_events pull and still appended to the SLI input (0 once a pull succeeds)." [[{} (hermes-mirror-failed-marker-lines root)]])
           (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed and the SLI input uses the previous snapshot." [[{} (if (and configured (:last-success s) (hermes-mirror-stale? s)) 1 0)]])
           ;; 成功した snapshot が無ければ件数を出さない (未取得と空の snapshot を区別する)
           (when (:last-success s)
