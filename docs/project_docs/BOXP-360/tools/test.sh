@@ -1890,6 +1890,21 @@ bb -e "
     (assert (= 1 (get-in t [:tasks :total])) (pr-str (:tasks t)))
     (assert (= 0 (get-in t [:tasks :conversations])))
     (assert (= 1 (get-in t [:guardrails :unfinished]))))
+  ;; 承認 event だけの会話 (turn の run.* を持たない) も会話として数える: coverage の会話数と tasks.conversations /
+  ;; guardrails.conversations-unobserved を一致させる (Board task には入れない)
+  (let [conv2 \"conv-3a4b5c6d-0000-1111-2222-333344445555\"
+        approval-only [{:source \"hermes-observer\" :runtime \"hermes\" :task_id conv2 :request_id conv2 :event_type \"approval.requested\" :approval_key \"op:0000000b\" :occurred_at \"2026-10-31T00:02:05Z\" :event_id (str conv2 \"/20261031T000203Z-ee2d7528:req\")}
+                       {:source \"hermes-observer\" :runtime \"hermes\" :task_id conv2 :request_id conv2 :event_type \"approval.resolved\" :approval_key \"op:0000000b\" :occurred_at \"2026-10-31T00:02:09Z\" :event_id (str conv2 \"/20261031T000203Z-ee2d7528:approval\")}]
+        a (ai-ops-sli/aggregate* (concat board hermes approval-only))
+        ha (get-in a [:coverage :hermes-conversation])]
+    (assert (= 2 (:conversations ha)) (pr-str ha))
+    (assert (= 2 (get-in a [:tasks :conversations])) (pr-str (:tasks a)))
+    (assert (= 2 (get-in a [:guardrails :conversations-unobserved])) (pr-str (:guardrails a)))
+    (assert (= 1 (get-in a [:tasks :total])) \"approval-only conversation is not a Board task\")
+    (assert (= 2 (:approvals-requested ha)))
+    (assert (= 1 (:approvals-resolved ha)))
+    (assert (= (dissoc (:guardrails b) :conversations-unobserved) (dissoc (:guardrails a) :conversations-unobserved)) (pr-str (:guardrails a)))
+    (assert (= 2 (get-in a [:sli :duplicate-approval :denominator])) (pr-str (get-in a [:sli :duplicate-approval]))))
   ;; ticket 形式の task_id を持つ Hermes event (将来の ticket 付き会話) は会話扱いにしない
   (let [t (ai-ops-sli/aggregate* [(assoc (first hermes) :task_id \"BOXP-141\" :request_id nil :event_id \"BOXP-141/20261031T000003Z-ee2d7526:started\")])]
     (assert (= \"connected\" (get-in t [:coverage :hermes-conversation :status])))

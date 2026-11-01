@@ -757,7 +757,9 @@
                           history-less-corr (when (and (empty? runs) (empty? orphan-runs) (not (syn-evs? evs)))
                                               (filter #(= "correction" (:event_type %)) evs))]
                     ;; 状態 event (state/cancelled/reopened)・読めない run・救援 event も task の存在を示す (救援単独 task を救援率から落とさない)
-                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue" "correction"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (syn-evs? evs) (some #(= "lane.changed" (:event_type %)) evs))]
+                    ;; Hermes 会話は approval.* だけでも会話として存在する (coverage の会話数と tasks.conversations / guardrail の会話数を一致させる)
+                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue" "correction"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (syn-evs? evs) (some #(= "lane.changed" (:event_type %)) evs)
+                              (contains? conversation-ids tid))]
                 {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted
                  :stratum (or (some :stratum evs) (when (contains? conversation-ids tid) "assistant")) :outcome (task-outcome evs)
                  :conversation? (contains? conversation-ids tid)

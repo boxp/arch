@@ -636,10 +636,30 @@
 ;; 有効 event 0 件で失敗した取り込み (no_events) が出した本文・ID なしの欠落 marker (privacy_rejected / input_unreadable)。
 ;; 前回 snapshot を置き換えない代わりにここへ残し、次の成功まで集計入力へ付けて関連 SLI を確定させない
 (defn hermes-mirror-failed-markers-path [root] (fs/path (hermes-mirror-dir root) "failed-pull-markers.jsonl"))
+;; 連続して no_events で失敗した場合、marker は上書きせず積み上げる (前回の是正拒否が今回の承認拒否で消えると、
+;; 完全な取り込みが成功する前に是正 SLI が確定してしまう)。無制限に増えないよう行数上限を置く。上限到達後は
+;; 件数が下限になるだけで、1 件でも残っていれば関連 SLI は unknown のまま
+(def input-unreadable-marker-line (json/generate-string {:collection_lost "input_unreadable"}))
+(defn hermes-mirror-failed-markers-max-lines [] (env-long "CODEX_TASK_BOARD_AI_OPS_HERMES_LEDGER_FAILED_MARKER_MAX_LINES" 10000))
+(defn keep-hermes-failed-markers!
+  "Merge `new-lines` (body-less marker lines from a no_events pull) into the
+  failed-pull marker file without discarding the markers of earlier failed pulls.
+  An existing file that cannot be read is replaced by a single input_unreadable
+  marker followed by the new lines (lost input stays visible). The file is capped
+  at the configured line count; returns the number of lines that did not fit."
+  [root new-lines]
+  (let [fp (hermes-mirror-failed-markers-path root)
+        existing (when (fs/exists? fp)
+                   (try (remove str/blank? (str/split-lines (slurp (str fp))))
+                        (catch java.io.IOException _ [input-unreadable-marker-line])))
+        all (concat existing new-lines)
+        cap (max 1 (hermes-mirror-failed-markers-max-lines))
+        kept (take cap all)]
+    (atomic-spit! fp (str/join "" (map #(str % "\n") kept)))
+    (max 0 (- (count all) cap))))
 (defn read-hermes-mirror-status [root]
   (try (or (some-> (hermes-mirror-status-path root) str slurp edn/read-string) {}) (catch Exception _ {})))
 (def hermes-stale-marker-line (json/generate-string {:source_stale "hermes-observer"}))
-(def input-unreadable-marker-line (json/generate-string {:collection_lost "input_unreadable"}))
 
 ;; snapshot に保存する key は集計側 (ai_ops_sli.bb) の allowlist と同じ。本文・引数・header 等の未知 key は
 ;; 取り込み時点で落とし (永続 snapshot に残さない)、値は scalar/短い文字列だけを許す。値の形式検証は集計側 gate が行う
@@ -806,8 +826,10 @@
     (let [now (quot (System/currentTimeMillis) 1000)
           attempt (assoc (read-hermes-mirror-status root) :last-attempt now)
           budget (hermes-mirror-budget deadline)
+          failed-marker-overflow (atom 0)
           fail! (fn [reason] (try (atomic-spit! (hermes-mirror-status-path root)
-                                                (pr-str (-> attempt (update :failures (fnil inc 0)) (assoc :last-failure reason :last-result "fail"))))
+                                                (pr-str (cond-> (-> attempt (update :failures (fnil inc 0)) (assoc :last-failure reason :last-result "fail"))
+                                                          (pos? @failed-marker-overflow) (update :failed-markers-overflow (fnil + 0) @failed-marker-overflow))))
                                   (catch Exception _)) false)]
       (try
         (fs/create-dirs (hermes-mirror-dir root))
@@ -830,8 +852,10 @@
                     (if (zero? hermes)
                       ;; 検出した拒否・破損 marker は捨てず残す (全行の ID が不正になった等、是正に影響し得る拒否を
                       ;; 集計側が認識できないまま SLI を確定させない)。marker が無い出力 (途中行だけ等) は前回の marker を残す
+                      ;; 前回の失敗で残した marker (別種別の拒否かもしれない) は消さず積み上げる
                       (do (when (seq lines)
-                            (try (atomic-spit! (hermes-mirror-failed-markers-path root) (str/join "" (map #(str % "\n") lines)))
+                            (try (let [over (keep-hermes-failed-markers! root lines)]
+                                   (when (pos? over) (swap! failed-marker-overflow + over)))
                                  (catch Exception _)))
                           (fail! "no_events"))
                       (do
@@ -885,7 +909,7 @@
   true)
 
 (defn hermes-mirror-failed-marker-lines
-  "Marker lines kept from the last no_events pull (0 when none; an unreadable file counts as 1)."
+  "Marker lines accumulated from no_events pulls since the last success (0 when none; an unreadable file counts as 1)."
   [root]
   (let [fp (hermes-mirror-failed-markers-path root)]
     (if (fs/exists? fp)
@@ -899,7 +923,8 @@
           (when-let [v (:last-success s)] (metric-lines "ai_ops_hermes_mirror_last_success_timestamp_seconds" "gauge" "Last successful Hermes ledger pull." [[{} v]]))
           (metric-lines "ai_ops_hermes_mirror_last_attempt_timestamp_seconds" "gauge" "Last Hermes ledger pull attempt, or zero if never attempted." [[{} (:last-attempt s 0)]])
           (metric-lines "ai_ops_hermes_mirror_failures_total" "counter" "Failed Hermes ledger pulls (previous snapshot kept)." [[{} (:failures s 0)]])
-          (metric-lines "ai_ops_hermes_mirror_failed_pull_marker_lines" "gauge" "Body-less lost-input markers kept from the last no_events pull and still appended to the SLI input (0 once a pull succeeds)." [[{} (hermes-mirror-failed-marker-lines root)]])
+          (metric-lines "ai_ops_hermes_mirror_failed_pull_marker_lines" "gauge" "Body-less lost-input markers accumulated from no_events pulls since the last successful pull and still appended to the SLI input (0 once a pull succeeds; capped, see _failed_pull_markers_overflow_total)." [[{} (hermes-mirror-failed-marker-lines root)]])
+          (metric-lines "ai_ops_hermes_mirror_failed_pull_markers_overflow_total" "counter" "Marker lines from no_events pulls that did not fit the failed-pull marker cap (the kept count is a lower bound; affected SLIs stay unknown)." [[{} (:failed-markers-overflow s 0)]])
           (metric-lines "ai_ops_hermes_mirror_partial_pulls_total" "counter" "Hermes ledger pulls whose output ended in an unterminated line: the snapshot was replaced but kept stale until a complete pull." [[{} (:partial-pulls s 0)]])
           (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed or was partial: the SLI input uses the previous/incomplete snapshot plus a source_stale marker, or only a source_stale marker when no snapshot was ever obtained." [[{} (if (and configured (pos? (:last-attempt s 0)) (hermes-mirror-stale? s)) 1 0)]])
           ;; 成功した snapshot が無ければ件数を出さない (未取得と空の snapshot を区別する)
