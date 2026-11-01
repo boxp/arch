@@ -191,6 +191,31 @@
       (if (contains? (:agent enum-values) base) base agent))
     agent))
 
+;; runner の final-status (intended) と同じ規則で run の実際の終了先を決める。summary の :result は agent が出した
+;; マーカーの生値 (nil もあり得る) なので、そのまま使うと runner が Ready に進めた groom (マーカーが review でも
+;; Ready) を Review 到達/再開に数えてしまう。規則 (task_board_runner.bb final-status と一致させる):
+;;   failed (exit≠0) → blocked / groom → 常に ready / docs-groom → result=blocked なら blocked、それ以外 ready /
+;;   result が done|review|blocked ならその値 / それ以外 (マーカーなし・未知) → review。
+;; interrupted/running など終了先の無い status は :result の生値 (通常 nil) のまま。
+(defn effective-result [s]
+  (let [result (kw-or-str (:result s)) action (:action s)]
+    (case (:status s)
+      :failed "blocked"
+      (:succeeded :retrying :blocked)
+      (cond
+        (= :groom action) "ready"
+        (= :docs-groom action) (if (= "blocked" result) "blocked" "ready")
+        (#{"done" "review" "blocked"} result) result
+        :else "review")
+      result)))
+
+;; runner は中断 (interrupted) を外部から記録するため top-level の :action を書かず、中断時の lock (:previous-lock) に
+;; :action を残す。集計はこれを正として補完する (推測ではなく runner が書いた値)。
+(defn resolve-summary-action [s]
+  (if (and (map? s) (nil? (:action s)) (some? (get-in s [:previous-lock :action])))
+    (assoc s :action (get-in s [:previous-lock :action]))
+    s))
+
 (defn summary->events [ticket s]
   (let [run-id (:run-id s)
         started (or (:started-at s) (run-id->instant run-id))
@@ -210,7 +235,10 @@
       (and (:finished-at s) (not= :interrupted (:status s)))
       (conj (assoc base :event_id (str ticket "/" run-id ":finished") :event_type "run.finished"
                    :occurred_at (:finished-at s) :occurred_precision "ns"
-                   :status (some-> (:status s) name) :result (kw-or-str (:result s))
+                   :status (some-> (:status s) name)
+                   ;; 結果マーカーなしの正常終了は runner が既定で Review (groom/docs-groom は Ready) に進める。
+                   ;; summary の :result は nil のままなので、同じ既定で補完し Review 到達を落とさない。
+                   :result (effective-result s)
                    :exit_code (:exit-code s) :idle_timeout (boolean (:idle-timeout? s))
                    :blocker_category (kw-or-str (:blocker-category s))))
       (= :interrupted (:status s))
@@ -236,7 +264,7 @@
                 [(assoc base :event_id (str ticket "/" (:run-id cur) ":corr") :event_type "correction"
                         :correction_class "gate_defect" :correction_origin "agent-system" :confidence "medium")]
                 ;; review/done 後に再び implement: Owner 差戻し or scope 追加。原因は metadata だけでは判別不能
-                (and prev (= :succeeded (:status prev)) (#{"review" "done"} (kw-or-str (:result prev)))
+                (and prev (= :succeeded (:status prev)) (#{"review" "done"} (effective-result prev))
                      (#{:implement :docs-edit} (:action cur)))
                 [(assoc base :event_id (str ticket "/" (:run-id cur) ":reopen") :event_type "task.reopened"
                         :correction_class "unknown" :correction_origin "unknown" :confidence "low")]
@@ -278,10 +306,13 @@
                        (map #(fs/path % "summary.edn")))
         ;; 読めない/必須field (ticket・run-id がディレクトリと一致、status) を欠く summary.edn は黙って捨てず
         ;; run.unreadable として ディレクトリの ticket に紐付け、その task の SLI を未評価にする
-        valid-summary? (fn [f] (let [s (read-edn f) d (fs/parent f)]
+        valid-summary? (fn [f] (let [s (resolve-summary-action (read-edn f)) d (fs/parent f)]
                                  ;; summary->events/derive-corrections が name/str を呼ぶ field の型も検証する (不正型は欠落扱い)
                                  (and (map? s) (some? (:status s))
-                                      (every? #(let [v (get s %)] (or (keyword? v) (string? v))) [:status])
+                                      ;; :action は effective-result (マーカーなし終了の Review/Ready 既定) と是正導出 (review-fix) の根拠なので必須
+                                      ;; (中断 run は runner が :previous-lock に書いた :action を resolve-summary-action で補完済み)
+                                      (some? (:action s))
+                                      (every? #(let [v (get s %)] (or (keyword? v) (string? v))) [:status :action])
                                       (every? #(let [v (get s %)] (or (nil? v) (keyword? v) (string? v))) [:action :agent :result :blocker-category])
                                       (every? #(let [v (get s %)] (or (nil? v) (string? v))) [:started-at :finished-at :updated-at])
                                       ;; 時刻は解釈可能であること (不正時刻は privacy gate で redact され是正の前後を誤判定するため欠落入力として扱う)
@@ -301,7 +332,7 @@
                         (map (fn [f] (let [d (fs/parent f)] {:ticket (str (fs/file-name (fs/parent d))) :run-id (str (fs/file-name d))})))
                         (group-by :ticket))
         runs (->> summaries
-                  (keep (fn [f] (when-let [s (and (valid-summary? f) (read-edn f))]
+                  (keep (fn [f] (when-let [s (and (valid-summary? f) (resolve-summary-action (read-edn f)))]
                                   ;; :status/:action は文字列形式も許可するため keyword に正規化してから比較する
                                   (let [s (cond-> (update s :status keyword) (:action s) (update :action keyword))
                                         d (fs/path (fs/parent f) "delegation.json")]
@@ -681,7 +712,15 @@
                                            (some phases [:unknown :before]) :fail
                                            (some phases [:same :ambiguous]) :ambiguous
                                            :else :pass)))
-                          first-review (some #(when (or (= "review" (:result %)) (= "review" (:lane_to %))
+                          ;; Review 到達 = review で正常終了 (status=succeeded) した run / Review lane への遷移 / review 状態 snapshot /
+                          ;; Owner 向け通知 (notify.run-finished) は lane_to=review の時だけ Review 到達とする。通知の :result は agent の
+                          ;; 生の結果マーカーで最終遷移先ではない (review マーカーを出した run が非 retryable な gate 失敗で Blocked に
+                          ;; 移ると to-status=blocked/result=review になる) ため、result では判定しない。
+                          ;; gate で止まった retrying/blocked の run.finished も effective-result "review" を持ち得るが Owner には
+                          ;; 届いていないので数えない (status 欠落の run.finished も Review 到達の証拠にしない)。
+                          first-review (some #(when (or (and (= "run.finished" (:event_type %)) (= "review" (:result %)) (= "succeeded" (:status %)))
+                                                        (and (= "notify.run-finished" (:event_type %)) (= "review" (:lane_to %)))
+                                                        (= "review" (:lane_to %))
                                                         (and (= "task.state" (:event_type %)) (= "review" (:status %))))
                                                 (or (parse-inst (:occurred_at %)) true)) evs)
                           post-accept-corr (when accepted (filter #(when-let [t (first (corr-interval %))]
@@ -901,6 +940,45 @@
 ;; ---------------------------------------------------------------------------
 ;; prom: 低 cardinality のみ。task/run/request ID は trace 側 opaque correlation に残す
 
+;; unknown の理由を Owner 向けの 4 分類に写す。
+;;   not_connected   : source が無い / 配線されていない (emit や detector が存在しない)
+;;   history_missing : 入力の欠落・拒否・読めない run・時刻不明があり、確定値を出せない
+;;   unclassifiable  : metadata だけでは是正か継続か判別できない
+;;   out_of_scope    : 取得しない方針 (subscription の token/cost 等)
+;; 理由文は aggregate* の定数と一致させる。未知の理由は欠落の内訳 key から分類し、どれも無ければ other にする (0 や成功へは置き換えない)。
+(def unknown-not-connected-reasons
+  {"acceptance history source not connected" "acceptance_history_not_connected"
+   "rescue event の source 未接続" "rescue_source_not_connected"
+   "approval event 未接続" "approval_source_not_connected"
+   "effect source 未接続" "effect_source_not_connected"
+   "safety source 未接続" "safety_source_not_connected"
+   "leak detector 未接続。0件観測≠0件" "leak_detector_not_connected"
+   "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)" "ready_transition_not_emitted"})
+(def unknown-out-of-scope-reasons
+  {"subscription CLI は provider token/cost を返さない。API 単価換算はしない" "subscription_no_token_cost"})
+(def unknown-detail-keys
+  [:lost-events :unlinked-events :unlinked-corrections :unlinked-rescues :unlinked-task-events
+   :unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types
+   :indeterminate :unevaluated-input-missing :rejected-events :unreadable-runs :unreadable-inputs
+   :collection-lost-events :malformed-lines :id-collisions])
+(defn unknown-classification
+  "unknown な SLI/coverage map s に対して [category reason_code] を返す。確定している (unknown でない) 場合は nil。"
+  [s]
+  (let [status (some-> (:status s) name) reason (:reason s)
+        pos-any? (fn [ks] (some #(let [v (get s %)] (and (number? v) (pos? v))) ks))]
+    (cond
+      (nil? s) nil
+      (= status "not-connected") ["not_connected" "hermes_ledger_not_joined"]
+      (not= status "unknown") nil
+      (contains? unknown-out-of-scope-reasons reason) ["out_of_scope" (unknown-out-of-scope-reasons reason)]
+      (contains? unknown-not-connected-reasons reason) ["not_connected" (unknown-not-connected-reasons reason)]
+      (pos-any? [:unlinked-corrections :unlinked-events :unlinked-rescues :unlinked-task-events]) ["history_missing" "unlinked_task_events"]
+      (pos-any? [:lost-events :collection-lost-events :malformed-lines :id-collisions :rejected-events :unreadable-runs :unreadable-inputs]) ["history_missing" "input_loss"]
+      (pos-any? [:unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types]) ["history_missing" "unverifiable_fields"]
+      (pos-any? [:indeterminate]) ["history_missing" "time_indeterminate"]
+      (pos-any? [:unevaluated-input-missing]) ["history_missing" "input_missing_tasks"]
+      :else ["history_missing" "other"])))
+
 (defn prom [file]
   (let [evs (read-events file)
         r (aggregate* evs)
@@ -929,6 +1007,25 @@
       (let [s (get-in r [:sli k])]
         ;; 分母 0 は率を計算できないので判定不能として扱う
         (line "ai_ops_sli_determinable" {:sli m} (if (or (#{"unknown" :unknown} (:status s)) (not (pos? (or (:denominator s) 0)))) 0 1))))
+    ;; unknown の理由を Owner 向けの 4 分類 (未接続/履歴欠損/分類不能/対象外) と件数で公開する。unknown を 0 や成功に置き換えない
+    (doseq [[label s] [["agent_system_correction_task_ratio" (get-in r [:sli :agent-system-correction-task-ratio])]
+                       ["first_acceptance_conformance" (get-in r [:sli :first-acceptance-conformance])]
+                       ["owner_rescue" (get-in r [:sli :owner-rescue])] ["duplicate_approval" (get-in r [:sli :duplicate-approval])]
+                       ["reopen_after_accept" (get-in r [:sli :reopen-after-accept])]
+                       ["ready_ack_latency" (get-in r [:coverage :ready-ack-latency])] ["tokens_cost" (get-in r [:coverage :tokens-cost])]
+                       ["hermes_conversation" (get-in r [:coverage :hermes-conversation])]
+                       ["critical_safety_events" (get-in r [:zero-tolerance :critical-safety-events])]
+                       ["duplicate_effects" (get-in r [:zero-tolerance :duplicate-effects])] ["private_leak" (get-in r [:zero-tolerance :private-leak])]]
+            :let [[category code] (unknown-classification s)]
+            :when category]
+      (line "ai_ops_sli_unknown_info" {:sli label :category category :reason_code code} 1)
+      (doseq [[k v] (select-keys s unknown-detail-keys) :when (number? v)]
+        (line "ai_ops_sli_unknown_detail" {:sli label :detail (str/replace (name k) "-" "_")} v)))
+    ;; 是正率が確定できても、原因 unknown の再開 (是正か継続か新 scope か metadata では判別不能) は分類不能として件数を出す
+    (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
+      (when (number? (:unknown-cause-tasks c))
+        (line "ai_ops_sli_unknown_info" {:sli "agent_system_correction_task_ratio" :category "unclassifiable" :reason_code "unknown_cause_reopen"} 1)
+        (line "ai_ops_sli_unknown_detail" {:sli "agent_system_correction_task_ratio" :detail "unknown_cause_tasks"} (:unknown-cause-tasks c))))
     (let [c (get-in r [:sli :agent-system-correction-task-ratio])]
       (when-not (#{"unknown" :unknown} (:status c))
         (line "ai_ops_correction_tasks" {:origin "agent-system"} (:count c))

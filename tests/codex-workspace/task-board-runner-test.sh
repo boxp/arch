@@ -111,7 +111,7 @@ fi
 prompt="$(cat)"
 if [[ "${prompt}" == *'Delegation contract:'* ]]; then
   case "${TEST_DELEGATION_MODE:-exempt}" in
-    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run || true ;;
+    run) printf 'test subtask' | python3 "${TASK_BOARD_DELEGATION_HELPER}" run >&2 || true ;;
     missing) ;;
     *) python3 "${TASK_BOARD_DELEGATION_HELPER}" exempt small-task ;;
   esac
@@ -143,7 +143,20 @@ if [[ -n "${CLAUDE_FAKE_CHILD_PID_FILE:-}" ]]; then
   wait "$!"
 fi
 sleep "${CLAUDE_FAKE_SLEEP:-0}"
-printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+if [[ "${CLAUDE_FAKE_STREAM_JSON:-false}" == true ]]; then
+  if [[ -n "${CLAUDE_FAKE_STREAM_PROGRESS_COUNT:-}" ]]; then
+    for _ in $(seq 1 "${CLAUDE_FAKE_STREAM_PROGRESS_COUNT}"); do
+      sleep "${CLAUDE_FAKE_STREAM_PROGRESS_INTERVAL:-0}"
+      printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"streaming progress"}]}}'
+    done
+  fi
+  printf '%s\n' '  {"type":"rate_limit_event","rate_limit_info":{"status":"allowed","secretField":"SECRET_RATE_LIMIT","unifiedWindows":{"five_hour":{"utilization":0.2,"note":"SECRET_WINDOW"}}},"session_id":"secret","uuid":"secret-uuid"}'
+  sleep "${CLAUDE_FAKE_STREAM_DELAY:-0}"
+  printf '%s\n' '   {"type":"assistant","message":{"content":[{"type":"tool_use","id":"tool-0","name":"Bash","input":{"command":"SECRET_WS_INPUT"}}]}}'
+  printf '%s\n' '{"type":"assistant","session_id":"secret","uuid":"secret-uuid","message":{"content":[{"type":"text","text":"working","citations":"SECRET_TEXT_EXTRA"},{"type":"tool_use","id":"tool-1","name":"Bash","input":{"command":"SECRET_TOOL_INPUT"}}]}}' '{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"tool-1","content":"SECRET_TOOL_OUTPUT"}]},"tool_use_result":"SECRET_TOOL_OUTPUT"}' '{"type":"result","result":"TASK_BOARD_RESULT: done"}'
+else
+  printf '%s\n' "${CLAUDE_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}"
+fi
 exit "${CLAUDE_FAKE_EXIT:-0}"
 EOF
   chmod +x "${bin_dir}/claude"
@@ -339,6 +352,196 @@ test_parallel_codex_runs() {
   assert_file_contains "${vault}/Tickets/BOXP-102.md" '^status: done$'
 }
 
+test_fable_stream_json() {
+  local tmp vault state bin last_message
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-149|BOXP-149: stream]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-149 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true CLAUDE_FAKE_STREAM_DELAY=3 run_tick "${vault}" "${state}" env >/tmp/task-board-stream.out
+  assert_file_contains "${vault}/Tickets/BOXP-149.md" '^status: done$'
+  last_message="$(find "${state}/runs/BOXP-149" -name last-message.md -print | head -n 1)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
+  [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+  local observed finished
+  observed="$(bb -e '(require (quote cheshire.core)) (println (:observed_at (cheshire.core/parse-string (slurp (first *command-line-args*)) true)))' "${state}/ai-ops/subscription/claude.json")"
+  finished="$(stat -c %Y "$(find "${state}/runs/BOXP-149" -name events.jsonl -print -quit)")"
+  (( observed <= finished - 2 )) || fail "subscription observation was delayed until process exit"
+}
+
+test_claude_pump_drains_when_events_log_cannot_open() {
+  local tmp
+  tmp="$(mktemp -d)"
+  mkdir -p "${tmp}/events.jsonl"
+  TEST_RUNNER="${RUNNER}" TEST_STATE="${tmp}/state" TEST_LOG_PATH="${tmp}/events.jsonl" bb -e '
+    (require (quote [clojure.java.io :as io]) (quote [clojure.string :as str]) (quote [cheshire.core :as json]))
+    (load-file (str (.getParent (io/file (System/getenv "TEST_RUNNER"))) "/ai_subscription_usage.bb"))
+    (def subscription-module-loaded? (atom true))
+    (defn root [] (System/getenv "TEST_STATE"))
+    (def warnings (atom []))
+    (defn log! [message] (swap! warnings conj message))
+    (defn sanitize-claude-line [line] line)
+    (with-open [reader (java.io.PushbackReader. (io/reader (System/getenv "TEST_RUNNER")))]
+      (loop []
+        (let [form (read {:eof nil} reader)]
+          (when form
+            (when (and (seq? form) (= (first form) (quote defn)) (contains? (quote #{pump-claude-stream! await-claude-pump!}) (second form)))
+              (eval form))
+            (when-not (resolve (quote await-claude-pump!)) (recur))))))
+    (let [input (java.io.ByteArrayInputStream. (.getBytes (str (apply str (repeat 10000 "{\"type\":\"assistant\"}\n")) "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}\n" "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: done\"}\n") "UTF-8"))]
+      (assert (= "TASK_BOARD_RESULT: done" (:result (pump-claude-stream! input (System/getenv "TEST_LOG_PATH")))))
+      (assert (zero? (.available input)))
+      (assert (= "allowed" (get-in (ai-subscription-usage/snapshot (str (root) "/ai-ops/subscription/claude.json")) [:data :rate_limit_info :status])))
+      (assert (= 1 (count (filter #(str/includes? % "claude events log open failed") @warnings)))))
+    ;; The caller may stop waiting for the drain (deref timeout): the shared
+    ;; summary atom must already hold the result while the stream is still open.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))]
+      (.write out (.getBytes "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"late\"}]}}\n{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: blocked\"}\n" "UTF-8"))
+      (.flush out)
+      (loop [n 0]
+        (when (and (not= "TASK_BOARD_RESULT: blocked" (:result @summary)) (< n 200))
+          (Thread/sleep 25)
+          (recur (inc n))))
+      (assert (= "TASK_BOARD_RESULT: blocked" (:result @summary)))
+      (assert (= "late" (get-in @summary [:assistant :message :content 0 :text])))
+      (assert (not (realized? pump)))
+      (.close out)
+      (assert (= "TASK_BOARD_RESULT: blocked" (:result (deref pump 5000 nil)))))
+    ;; await-claude-pump!: when the drain outlives the grace period, keep
+    ;; polling until the late result line arrives instead of reading the atom once.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))
+          _ (.write out (.getBytes "{\"type\":\"assistant\"}\n" "UTF-8"))
+          _ (.flush out)
+          writer (future (Thread/sleep 700)
+                         (.write out (.getBytes "{\"type\":\"result\",\"result\":\"TASK_BOARD_RESULT: review\"}\n" "UTF-8"))
+                         (.flush out))
+          started (System/currentTimeMillis)
+          awaited (await-claude-pump! pump summary 100 10000)]
+      (assert (= "TASK_BOARD_RESULT: review" (:result awaited)))
+      (assert (< (- (System/currentTimeMillis) started) 9000))
+      (assert (not (realized? pump)))
+      (deref writer 5000 nil)
+      (.close out)
+      (deref pump 5000 nil)
+      (assert (some #(str/includes? % "final result received") @warnings)))
+    ;; ...and gives up at max-ms when no result ever arrives, returning what it has.
+    (let [out (java.io.PipedOutputStream.)
+          in (java.io.PipedInputStream. out)
+          summary (atom {})
+          pump (future (pump-claude-stream! in (System/getenv "TEST_LOG_PATH") summary))
+          _ (.write out (.getBytes "{\"type\":\"assistant\"}\n" "UTF-8"))
+          _ (.flush out)
+          started (System/currentTimeMillis)
+          awaited (await-claude-pump! pump summary 100 1200)]
+      (assert (nil? (:result awaited)))
+      (assert (:json? awaited))
+      (assert (>= (- (System/currentTimeMillis) started) 1000))
+      (.close out)
+      (deref pump 5000 nil)
+      (assert (some #(str/includes? % "no final result received") @warnings)))'
+}
+
+test_claude_result_survives_events_log_failure() {
+  local tmp vault state bin last_message RUNNER
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${tmp}/runner"
+  cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
+  RUNNER="${tmp}/runner/task_board_runner.bb"
+  # Make the runner create a directory at the run's events.jsonl path so every
+  # log open/write fails while the agent is still streaming its result.
+  sed -i '/^(defn run-agent!/,/^    (fs\/create-dirs dir)$/ s|^    (fs/create-dirs dir)$|    (fs/create-dirs dir)\n    (fs/create-dirs stdout-path)|' "${RUNNER}"
+  grep -q '(fs/create-dirs stdout-path)' "${RUNNER}" || fail "runner patch for log failure did not apply"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-144|BOXP-144: log failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-144 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-log-failure.out
+  last_message="$(find "${state}/runs/BOXP-144" -name last-message.md -print -quit)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when events log cannot be written"
+  assert_file_contains "${vault}/Tickets/BOXP-144.md" '^status: done$'
+  [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
+}
+
+test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable() {
+  local tmp vault state bin last_message RUNNER
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${tmp}/runner"
+  cp "$(dirname "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb")"/*.bb "${tmp}/runner/"
+  RUNNER="${tmp}/runner/task_board_runner.bb"
+  sed -i '/^(defn run-agent!/,/^    (fs\/create-dirs dir)$/ s|^    (fs/create-dirs dir)$|    (fs/create-dirs dir)\n    (fs/create-dirs stdout-path)|' "${RUNNER}"
+  grep -q '(fs/create-dirs stdout-path)' "${RUNNER}" || fail "runner patch for log failure did not apply"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-145|BOXP-145: streaming progress]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-145 in-progress claude-sonnet
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true CLAUDE_FAKE_STREAM_PROGRESS_COUNT=6 CLAUDE_FAKE_STREAM_PROGRESS_INTERVAL=0.5 CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=1 run_tick "${vault}" "${state}" env >/tmp/task-board-stream-progress-log-failure.out
+  last_message="$(find "${state}/runs/BOXP-145" -name last-message.md -print -quit)"
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "result lost when streaming with an unwritable log"
+  assert_file_contains "${vault}/Tickets/BOXP-145.md" '^status: done$'
+  assert_run_summary_contains "${state}" BOXP-145 ':idle-timeout\? false'
+  [[ -d "$(dirname "${last_message}")/events.jsonl" ]] || fail "events log path was not blocked"
+}
+
+test_claude_events_log_omits_tool_payloads() {
+  local tmp vault state bin events last_message
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-148|BOXP-148: stream privacy]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-148 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-stream-privacy.out
+  events="$(find "${state}/runs/BOXP-148" -name events.jsonl -print -quit)"
+  last_message="$(find "${state}/runs/BOXP-148" -name last-message.md -print -quit)"
+  assert_file_not_contains "${events}" 'SECRET_TOOL_INPUT|SECRET_TOOL_OUTPUT|SECRET_RATE_LIMIT|SECRET_WINDOW|SECRET_WS_INPUT|SECRET_TEXT_EXTRA|"secret"|secret-uuid|session_id|"uuid"'
+  assert_file_contains "${events}" '"status":"allowed"'
+  assert_file_contains "${events}" '"utilization":0.2'
+  assert_file_contains "${events}" '"name":"Bash"'
+  assert_file_contains "${events}" 'working'
+  assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "unexpected stream result"
+  [[ -f "${state}/ai-ops/subscription/claude.json" ]] || fail "missing subscription snapshot"
+}
+
+test_claude_run_survives_subscription_snapshot_failure() {
+  local tmp vault state bin events last_message
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}" "${state}/ai-ops"
+  # A regular file where the snapshot directory should be makes every
+  # record-claude-rate-limit! call throw; the run itself must still finish.
+  : >"${state}/ai-ops/subscription"
+  make_fake_claude "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-145|BOXP-145: snapshot failure]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-145 in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_STREAM_JSON=true run_tick "${vault}" "${state}" env >/tmp/task-board-snapshot-failure.out
+  events="$(find "${state}/runs/BOXP-145" -name events.jsonl -print -quit)"
+  last_message="$(find "${state}/runs/BOXP-145" -name last-message.md -print -quit)"
+  assert_file_contains "${events}" 'TASK_BOARD_RESULT: done'
+  [[ "$(cat "${last_message}")" == 'TASK_BOARD_RESULT: done' ]] || fail "run must finish when the subscription snapshot cannot be written"
+  assert_file_contains "${vault}/Tickets/BOXP-145.md" '^status: done$'
+  [[ -f "${state}/ai-ops/subscription" ]] || fail "placeholder must stay a file"
+}
+
+test_subscription_metrics_disabled_removes_prom() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-146|BOXP-146: metrics]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-146 in-progress codex
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >/tmp/task-board-metrics-on.out
+  [[ -f "${state}/ai-ops/subscription-usage.prom" ]] || fail "missing subscription metrics"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-147|BOXP-147: metrics disabled]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-147 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_SUBSCRIPTION_METRICS=false run_tick "${vault}" "${state}" env >/tmp/task-board-metrics-off.out
+  [[ ! -e "${state}/ai-ops/subscription-usage.prom" ]] || fail "subscription metrics still present"
+}
+
 test_fable_assignee_runs_via_claude() {
   local tmp vault state bin prompt_log args_log summary last_message events
   tmp="$(mktemp -d)"
@@ -359,7 +562,7 @@ test_fable_assignee_runs_via_claude() {
     CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-fable.out
 
-  assert_file_contains "${args_log}" '.*--print --output-format text.*--agent fable'
+  assert_file_contains "${args_log}" '.*--print --output-format stream-json --verbose.*--agent fable'
   assert_file_not_contains "${args_log}" '--model'
   assert_file_not_contains "${args_log}" 'BOXP-150'
   assert_file_contains "${prompt_log}" '^Task Board assignee/agent: fable$'
@@ -3293,7 +3496,8 @@ test_ai_ops_ledger_disabled_by_env() {
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_AI_OPS_LEDGER_ENABLED=false run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-off.out
 
   assert_file_contains "${vault}/Tickets/BOXP-417.md" '^status: done$'
-  [[ ! -e "${state}/ai-ops" ]] || fail "ledger must not be written when disabled"
+  [[ ! -e "${state}/ai-ops/ledger" ]] || fail "ledger must not be written when disabled"
+  [[ -f "${state}/ai-ops/subscription-usage.prom" ]] || fail "subscription metrics must remain enabled"
 }
 
 test_run_finished_records_outbox_event() {
@@ -3371,6 +3575,410 @@ test_outbox_disabled_by_env() {
     fail "outbox must stay empty when CODEX_TASK_BOARD_EVENTS_ENABLED=false"
   fi
 }
+
+# BOXP-369: cumulative gate-failure budget fixtures.  Each tick is a fresh
+# runner process, so every case also covers "runner restart".
+budget_fail_tick() {
+  # $1 vault $2 state $3 bin $4 check-name (varies the failure text) $5 PR number
+  PATH="${3}:$PATH" GH_FAKE_CHECKS="[{\"name\":\"${4}\",\"status\":\"COMPLETED\",\"conclusion\":\"FAILURE\"}]" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/'"${5:-123}"$'\nTASK_BOARD_RESULT: review' run_tick "$1" "$2" env "${@:6}" >/dev/null
+}
+
+budget_set_lane() {
+  # Simulate the owner (or another assignee) putting the card back to work.
+  local vault="$1" ticket="$2" title="$3" assignee="$4"
+  write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: ${title}]] #ticket status::in-progress"
+  sed -i -e 's/^status: .*/status: in-progress/' -e "s/^assignee: .*/assignee: ${assignee}/" "${vault}/Tickets/${ticket}.md"
+}
+
+budget_run_count() {
+  find "$1/runs/$2" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l
+}
+
+test_gate_failure_budget_boundary_9_10_11() {
+  local tmp vault state bin i assignee
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-369|BOXP-369: budget]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-369 in-progress codex boxp/example
+
+  # A distinct failure text every run keeps the short-term fingerprint limit
+  # at 1/2 (the BOXP-360 pattern); assignees alternate (担当交代).  An env
+  # budget above 10 must not loosen the initial limit.
+  for i in 1 2 3 4 5 6 7 8 9; do
+    if (( i % 2 )); then assignee=codex; else assignee=codex-sol; fi
+    sed -i "s/^assignee: .*/assignee: ${assignee}/" "${vault}/Tickets/BOXP-369.md"
+    budget_fail_tick "${vault}" "${state}" "${bin}" "unit-${i}-token=super-secret-token" 123 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=50
+  done
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-369: budget\]\].*status::in-progress'
+  assert_file_not_contains "${vault}/Tickets/BOXP-369.md" 'gate-failure-budget-exhausted'
+
+  budget_fail_tick "${vault}" "${state}" "${bin}" "unit-10-token=super-secret-token" 123 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=50
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-369: budget\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'category=gate-failure-budget-exhausted'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'ゲート累積失敗上限に到達したため自動再試行を停止しました'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'ticket BOXP-369 10/10, PR boxp/example#123 10/10'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" '分類=ci-failure \(gate=ci; failure-kind=check-failure\)'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" '未解決=ci-check-failure'
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'gate-budget-grant BOXP-369'
+  # Every exhausted scope gets its own resume command (ticket and PR).
+  assert_file_contains "${vault}/Tickets/BOXP-369.md" 'gate-budget-grant boxp/example#123 --amount N'
+  assert_file_not_contains "${vault}/Tickets/BOXP-369.md" 'super-secret-token'
+  assert_file_not_contains "${state}/gate-failure-budget.edn" 'super-secret-token'
+  [[ "$(budget_run_count "${state}" BOXP-369)" == 10 ]] || fail "expected exactly 10 runs"
+
+  # 11th: moving the card / assignee back without a grant starts no run.
+  budget_set_lane "${vault}" BOXP-369 budget codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" "unit-11" 123
+  [[ "$(budget_run_count "${state}" BOXP-369)" == 10 ]] || fail "11th automatic attempt must not start"
+  # A new PR for the same ticket cannot escape the ticket budget either.
+  budget_fail_tick "${vault}" "${state}" "${bin}" "unit-11" 777
+  [[ "$(budget_run_count "${state}" BOXP-369)" == 10 ]] || fail "a new PR must not reopen the ticket budget"
+}
+
+test_gate_failure_budget_multiple_prs_and_shared_pr() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-461|BOXP-461: multi pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-461 in-progress codex boxp/example
+  # Ticket budget aggregates every PR: 3 different PRs exhaust budget 3.
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 202 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-461: multi pr\]\].*status::in-progress'
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 203 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-461: multi pr\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-461.md" 'ticket BOXP-461 3/3'
+
+  # PR budget aggregates tickets: a second ticket on PR 201 inherits its count.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-462|BOXP-462: same pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-462 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" d 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-462: same pr\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-462.md" 'PR boxp/example#201 2/2'
+  # Only the PR scope is spent for BOXP-462, so only its grant is suggested.
+  assert_file_contains "${vault}/Tickets/BOXP-462.md" 'gate-budget-grant boxp/example#201 --amount N'
+  assert_file_not_contains "${vault}/Tickets/BOXP-462.md" 'gate-budget-grant BOXP-462'
+
+  # Re-assigning the exhausted PR to a brand-new ticket must not start an
+  # automatic run: the PR referenced in the ticket text is checked up front.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-468|BOXP-468: moved pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-468 in-progress codex boxp/example
+  printf '%s\n' '- 2026-10-30: continue https://github.com/boxp/example/pull/201/files' >> "${vault}/Tickets/BOXP-468.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" e 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-468)" == 0 ]] || fail "a new ticket on an exhausted PR must not start"
+  # A new ticket referencing an unexhausted PR still runs normally.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-469|BOXP-469: fresh pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-469 in-progress codex boxp/example
+  printf '%s\n' '- see https://github.com/boxp/example/pull/209' >> "${vault}/Tickets/BOXP-469.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" f 209 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-469)" == 1 ]] || fail "an unexhausted PR reference must not block"
+  # URL spelling (host case, no scheme) must not bypass the up-front check.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-470|BOXP-470: upper pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-470 in-progress codex boxp/example
+  printf '%s\n' '- continue https://GitHub.com/BOXP/Example/pull/201' >> "${vault}/Tickets/BOXP-470.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" g 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-470)" == 0 ]] || fail "an upper-case PR URL must not bypass the PR budget"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-471|BOXP-471: bare pr]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-471 in-progress codex boxp/example
+  printf '%s\n' '- continue github.com/boxp/example/pull/201' >> "${vault}/Tickets/BOXP-471.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" h 201 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-471)" == 0 ]] || fail "a scheme-less PR URL must not bypass the PR budget"
+}
+
+test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized() {
+  local tmp vault state bin t
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  # PR 601 has 1 of 2 failures left.  Two tickets referencing it start in
+  # separate runner processes at the same time: only one may run, otherwise
+  # both would fail and the PR would overshoot its budget.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-472|BOXP-472: seed]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-472 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" seed 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-473|BOXP-473: race a]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-474|BOXP-474: race b]] #ticket status::in-progress"
+  for t in BOXP-473 BOXP-474; do
+    write_ticket "${vault}" "${t}" in-progress codex boxp/example
+    printf '%s\n' '- continue https://github.com/boxp/example/pull/601' >> "${vault}/Tickets/${t}.md"
+  done
+  for t in BOXP-473 BOXP-474; do
+    PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"r","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_SLEEP=3 CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/601\nTASK_BOARD_RESULT: review' CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket "${t}" >/dev/null &
+  done
+  wait
+  [[ "$(( $(budget_run_count "${state}" BOXP-473) + $(budget_run_count "${state}" BOXP-474) ))" == 1 ]] || fail "concurrent starts on one PR must be serialized"
+  [[ "$(grep -o ':pr "boxp/example#601"' "${state}/gate-failure-budget.edn" | wc -l)" == 2 ]] || fail "PR 601 must stop at 2/2"
+  # The loser stays untouched and, now that the PR is spent, never starts.
+  for t in BOXP-473 BOXP-474; do
+    PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket "${t}" >/dev/null
+  done
+  [[ "$(( $(budget_run_count "${state}" BOXP-473) + $(budget_run_count "${state}" BOXP-474) ))" == 1 ]] || fail "no run may start on the spent PR"
+}
+
+test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
+  local tmp vault state bin out
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-463|BOXP-463: grant]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-463 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::blocked'
+
+  # Invalid grants are rejected and change nothing.
+  if CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-463 --amount 0 --by boxp >/dev/null 2>&1; then
+    fail "grant with amount 0 must fail"
+  fi
+  # Ticket grant alone does not reopen while the PR budget is still spent.
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-463 --amount 1 --by boxp >/dev/null
+  budget_set_lane "${vault}" BOXP-463 grant codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-463)" == 2 ]] || fail "PR budget must still hold"
+  # The refused start is a formal stop again: Blocked + boxp with a report
+  # that names only the still-exhausted PR scope.
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-463.md" 'run=none; transition-id=BOXP-463/gate-budget-stop-'
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-463.md")" == 1 ]] || fail "exactly one stop note expected"
+  assert_file_contains "${vault}/Tickets/BOXP-463.md" 'ticket BOXP-463 2/3, PR boxp/example#301 2/2。'
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant boxp/example#301 --amount 1 --by boxp >/dev/null
+  budget_set_lane "${vault}" BOXP-463 grant codex
+  # Now one more run is allowed; it passes, and success does not reset counts.
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/301\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 >/dev/null
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::review'
+  out="$(CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 bb "${RUNNER}" gate-budget-status BOXP-463)"
+  [[ "${out}" == *':used 2, :limit 3'* ]] || fail "success must not reset the budget: ${out}"
+  # Granted budget is consumed by the next failure, which blocks again at 3/3.
+  budget_set_lane "${vault}" BOXP-463 grant codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" d 301 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-463.md" 'ticket BOXP-463 3/3, PR boxp/example#301 3/3'
+}
+
+test_gate_failure_budget_stop_completes_after_interrupted_transition() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-465|BOXP-465: interrupted]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-465 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  # The 3rd (last) failure is recorded in the budget, but the Blocked
+  # transition fails after the record (runner death / state write failure):
+  # the card is restored to its prior lane.
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3 CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE=true
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-465: interrupted\]\].*status::in-progress'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" '^assignee: codex$'
+  [[ "$(grep -o ':class "ci-failure"' "${state}/gate-failure-budget.edn" | wc -l)" == 3 ]] || fail "3rd failure must be recorded"
+  [[ "$(budget_run_count "${state}" BOXP-465)" == 3 ]] || fail "expected exactly 3 runs"
+
+  # The next tick must not start a run; it completes the formal stop instead.
+  budget_fail_tick "${vault}" "${state}" "${bin}" d 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  [[ "$(budget_run_count "${state}" BOXP-465)" == 3 ]] || fail "no run may start on the exhausted ticket"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-465: interrupted\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'run=none; transition-id=BOXP-465/gate-budget-stop-'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'run を開始せず停止状態へ戻しました'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'ticket BOXP-465 3/3, PR boxp/example#501 3/3'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'gate-budget-grant BOXP-465 --amount N'
+  assert_file_contains "${vault}/Tickets/BOXP-465.md" 'gate-budget-grant boxp/example#501 --amount N'
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-465.md")" == 1 ]] || fail "exactly one stop note expected"
+  if ! ls "${state}"/outbox/pending/BOXP-465-*-blocked.edn >/dev/null 2>&1; then
+    fail "the formal stop must record a blocked event"
+  fi
+  if ls "${state}"/locks/BOXP-465.edn >/dev/null 2>&1; then
+    fail "the stop must release the ticket lock"
+  fi
+
+  # Blocked + boxp has no automatic action: a further tick changes nothing.
+  budget_fail_tick "${vault}" "${state}" "${bin}" e 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  [[ "$(budget_run_count "${state}" BOXP-465)" == 3 ]] || fail "still no run after the stop"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-465.md")" == 1 ]] || fail "stop note must not repeat"
+  # Only a grant for both exhausted scopes reopens one run.
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-465 --amount 1 --by boxp >/dev/null
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant boxp/example#501 --amount 1 --by boxp >/dev/null
+  budget_set_lane "${vault}" BOXP-465 interrupted codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" f 501 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=3
+  [[ "$(budget_run_count "${state}" BOXP-465)" == 4 ]] || fail "a grant for both scopes must allow one run"
+}
+
+test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-466|BOXP-466: reassigned]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-466 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" '^assignee: boxp$'
+  [[ "$(budget_run_count "${state}" BOXP-466)" == 2 ]] || fail "expected exactly 2 runs"
+  local stops_before
+  stops_before="$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-466.md" || true)"
+  [[ "${stops_before}" == 0 ]] || fail "no run=none stop expected before the reassignment"
+
+  # The Owner hands the card back to an agent but leaves it in Blocked
+  # (candidate :blocked-retry) without a grant: no run may start, and the
+  # refusal must not stay silent -- report + assignee boxp, card stays Blocked.
+  sed -i "s/^assignee: .*/assignee: codex/" "${vault}/Tickets/BOXP-466.md"
+  sed -i 's/\(BOXP-466: reassigned\]\].*\)assignee::boxp/\1assignee::codex/' "${vault}/Boards/Task Board.md"
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-466)" == 2 ]] || fail "no run may start on the reassigned Blocked card"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-466: reassigned\]\].*status::blocked'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-466: reassigned\]\].*assignee::boxp'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" 'run=none; transition-id=BOXP-466/gate-budget-stop-'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" 'action=blocked-retry'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" 'ticket BOXP-466 2/2, PR boxp/example#601 2/2'
+  assert_file_contains "${vault}/Tickets/BOXP-466.md" 'gate-budget-grant BOXP-466 --amount N'
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-466.md")" == 1 ]] || fail "exactly one stop note expected"
+  if ls "${state}"/locks/BOXP-466.edn >/dev/null 2>&1; then
+    fail "the stop must release the ticket lock"
+  fi
+  # Blocked + boxp again: a further tick is silent.
+  budget_fail_tick "${vault}" "${state}" "${bin}" d 601 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-466)" == 2 ]] || fail "still no run after the stop"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-466.md")" == 1 ]] || fail "stop note must not repeat"
+}
+
+test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-468|BOXP-468: race stop]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-468 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 801 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 801 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Tickets/BOXP-468.md" '^assignee: boxp$'
+  sed -i "s/^assignee: .*/assignee: codex/" "${vault}/Tickets/BOXP-468.md"
+  sed -i 's/\(BOXP-468: race stop\]\].*\)assignee::boxp/\1assignee::codex/' "${vault}/Boards/Task Board.md"
+  # Two ticks both read the reassigned card before either takes the ticket
+  # lock (the hold widens that window deterministically); the second must
+  # re-read the card under the lock and not write a second stop report.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_MILLIS=1500 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-468 >/dev/null &
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_MILLIS=1500 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-468 >/dev/null &
+  wait
+  [[ "$(budget_run_count "${state}" BOXP-468)" == 2 ]] || fail "no run may start on the reassigned Blocked card"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-468.md")" == 1 ]] || fail "exactly one stop note expected under concurrent ticks"
+  assert_file_contains "${vault}/Tickets/BOXP-468.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-468.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-468: race stop\]\].*status::blocked'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-468: race stop\]\].*assignee::boxp'
+  if ls "${state}"/locks/BOXP-468.edn >/dev/null 2>&1; then
+    fail "the stop must release the ticket lock"
+  fi
+}
+
+test_gate_failure_budget_stop_is_serialized_with_grant() {
+  local tmp vault state bin i
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-469|BOXP-469: grant race]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-469 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" a 901 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  budget_fail_tick "${vault}" "${state}" "${bin}" b 901 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  assert_file_contains "${vault}/Tickets/BOXP-469.md" '^assignee: boxp$'
+  sed -i "s/^assignee: .*/assignee: codex/" "${vault}/Tickets/BOXP-469.md"
+  sed -i 's/\(BOXP-469: grant race\]\].*\)assignee::boxp/\1assignee::codex/' "${vault}/Boards/Task Board.md"
+  # The stop re-reads the budget, then (test hook) holds the budget lock
+  # before the Blocked transition.  An Owner grant issued in that window must
+  # wait for the transition instead of landing between the re-read and the
+  # Blocked move; otherwise the card would be stopped as "exhausted" while
+  # the budget file already shows remaining budget.
+  # The hold lasts until the release file is written (30s cap), so the
+  # check below does not depend on process start-up time.
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 CODEX_TASK_BOARD_TEST_GATE_BUDGET_STOP_HOLD_AFTER_READ_MILLIS=30000 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-469 >/dev/null &
+  local tick_pid=$!
+  for i in $(seq 1 300); do
+    [[ -f "${state}/test-gate-budget-stop-holding" ]] && break
+    sleep 0.1
+  done
+  [[ -f "${state}/test-gate-budget-stop-holding" ]] || fail "the stop never reached the hold window"
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-469 --amount 1 --by boxp >/dev/null &
+  local grant_pid=$!
+  # Wait until the grant process has opened the budget lock file (it is then
+  # inside the lock attempt) or has already finished (zombie / gone).  While
+  # the stop still holds the lock, the grant must not have been recorded.
+  for i in $(seq 1 300); do
+    if ! grep -q 'State:[[:space:]]*[RSD]' "/proc/${grant_pid}/status" 2>/dev/null; then break; fi
+    if ls -l "/proc/${grant_pid}/fd" 2>/dev/null | grep -q 'gate-failure-budget.lock'; then break; fi
+    sleep 0.1
+  done
+  sleep 0.5
+  assert_file_not_contains "${state}/gate-failure-budget.edn" ':scope :ticket, :key "BOXP-469", :amount 1'
+  assert_file_not_contains "${vault}/Tickets/BOXP-469.md" 'gate-budget-stop-'
+  : > "${state}/test-gate-budget-stop-release"
+  wait "${grant_pid}" || fail "grant must succeed after the stop"
+  # The grant returned: the stop must already have completed (the grant was
+  # serialized behind the transition), and the card must not still be in the
+  # pre-stop state with the grant recorded underneath it.
+  assert_file_contains "${vault}/Tickets/BOXP-469.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-469.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-469.md" 'run=none; transition-id=BOXP-469/gate-budget-stop-'
+  wait "${tick_pid}"
+  [[ "$(budget_run_count "${state}" BOXP-469)" == 2 ]] || fail "no run may start on the reassigned Blocked card"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-469.md")" == 1 ]] || fail "exactly one stop note expected"
+  assert_file_contains "${state}/gate-failure-budget.edn" ':scope :ticket, :key "BOXP-469", :amount 1'
+  if ls "${state}"/locks/BOXP-469.edn >/dev/null 2>&1; then
+    fail "the stop must release the ticket lock"
+  fi
+  # A grant that lands before the re-read is honoured: with both scopes
+  # granted, the Owner's lane move starts exactly one run and no stop is
+  # written.
+  CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant boxp/example#901 --amount 1 --by boxp >/dev/null
+  budget_set_lane "${vault}" BOXP-469 "grant race" codex
+  budget_fail_tick "${vault}" "${state}" "${bin}" c 901 CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2
+  [[ "$(budget_run_count "${state}" BOXP-469)" == 3 ]] || fail "a grant for both scopes must allow one run"
+  [[ "$(grep -c 'gate-budget-stop-' "${vault}/Tickets/BOXP-469.md")" == 1 ]] || fail "a granted card must not be stopped again"
+}
+
+test_gate_failure_budget_stricter_short_term_limit_still_applies() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-464|BOXP-464: short]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-464 in-progress codex boxp/example
+  budget_fail_tick "${vault}" "${state}" "${bin}" same 401 CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=1
+  budget_fail_tick "${vault}" "${state}" "${bin}" same 401 CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=1
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-464: short\]\].*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-464.md" 'category=pr-gate-retry-limit'
+}
+
+test_gate_failure_budget_concurrent_updates_do_not_lose_counts() {
+  local tmp state i out
+  tmp="$(mktemp -d)"; state="${tmp}/state"
+  # Concurrent processes append grants under the FileLock; none may be lost.
+  for i in 1 2 3 4 5 6 7 8; do
+    CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-grant BOXP-465 --amount 1 --by boxp >/dev/null &
+  done
+  wait
+  out="$(CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" gate-budget-status BOXP-465)"
+  [[ "${out}" == *':used 0, :limit 18'* ]] || fail "concurrent grants lost: ${out}"
+}
+
+test_gate_failure_budget_concurrent_ticks_do_not_lose_counts() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-466|BOXP-466: race a]] #ticket status::in-progress
+- [ ] [[Tickets/BOXP-467|BOXP-467: race b]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-466 in-progress codex boxp/example
+  write_ticket "${vault}" BOXP-467 in-progress codex boxp/example
+  # Both tickets fail on the same PR in separate processes while the budget
+  # writer holds the lock; the shared PR must count 2.
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"x","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/501\nTASK_BOARD_RESULT: review' CODEX_TASK_BOARD_TEST_GATE_BUDGET_HOLD_MILLIS=500 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-466 >/dev/null &
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"y","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/501\nTASK_BOARD_RESULT: review' CODEX_TASK_BOARD_TEST_GATE_BUDGET_HOLD_MILLIS=500 CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" bb "${RUNNER}" tick --ticket BOXP-467 >/dev/null &
+  wait
+  [[ "$(grep -o ':pr "boxp/example#501"' "${state}/gate-failure-budget.edn" | wc -l)" == 2 ]] || fail "concurrent gate failures lost a count"
+}
+
+# Focused local runs: TASK_BOARD_TEST_ONLY="test_a test_b" runs only those.
+if [[ -n "${TASK_BOARD_TEST_ONLY:-}" ]]; then
+  for t in ${TASK_BOARD_TEST_ONLY}; do "${t}"; done
+  echo "selected task-board-runner tests passed"
+  exit 0
+fi
 
 test_parallel_codex_runs
 test_delegation_gate_end_to_end() {
@@ -3514,6 +4122,13 @@ test_assignment_revisions
 test_assignment_superseded
 test_assignment_repairs
 test_delegation_gate_end_to_end
+test_fable_stream_json
+test_claude_pump_drains_when_events_log_cannot_open
+test_claude_result_survives_events_log_failure
+test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable
+test_claude_events_log_omits_tool_payloads
+test_claude_run_survives_subscription_snapshot_failure
+test_subscription_metrics_disabled_removes_prom
 test_fable_assignee_runs_via_claude
 test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
 test_fable_model_environment_is_legacy_only
@@ -3574,6 +4189,17 @@ test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes
 test_review_gate_retry_limit_blocks
 test_review_gate_retry_limit_is_scoped_to_failure_reason
 test_review_gate_pass_after_retry_moves_review
+test_gate_failure_budget_boundary_9_10_11
+test_gate_failure_budget_multiple_prs_and_shared_pr
+test_gate_failure_budget_grant_resume_and_no_reset_on_success
+test_gate_failure_budget_stricter_short_term_limit_still_applies
+test_gate_failure_budget_stop_completes_after_interrupted_transition
+test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned
+test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks
+test_gate_failure_budget_stop_is_serialized_with_grant
+test_gate_failure_budget_concurrent_updates_do_not_lose_counts
+test_gate_failure_budget_concurrent_ticks_do_not_lose_counts
+test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized
 test_groom_prompt_contains_investigation_steps
 test_implement_prompt_includes_append_note
 test_fable_implement_prompt_includes_append_note
