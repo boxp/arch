@@ -479,7 +479,69 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (doseq [d [(fs/path root "runs") (fs/path root "outbox") (fs/path vault "Tickets")]] (fs/create-dirs d))
 (spit (str (fs/path vault "Tickets" "BOXP-1.md")) "---\ncreated: 2026-10-20\nstatus: done\nclosed: 2026-10-21\n---\n")
 (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+;; correction-rules/v1 (ai_ops_insight.bb prom) は v0 の export に連結する。runs/ に summary.edn が無ければ
+;; ai_ops_v1_export_ok 0 だけを出し (v0 の出力は止めない)、あれば 1 と v1 系列を出す。
+(assert (str/includes? (slurp (str (ai-ops-ledger/sli-path root))) "\nai_ops_v1_export_ok 0\n"))
+(assert (not (str/includes? (slurp (str (ai-ops-ledger/sli-path root))) "ai_ops_v1_info")))
+(let [run-id "20261020T000000Z-11111111-1111-1111-1111-111111111111"
+      d (fs/path root "runs" "BOXP-1" run-id)]
+  (fs/create-dirs d)
+  (spit (str (fs/path d "summary.edn"))
+        (pr-str {:ticket "BOXP-1" :run-id run-id :status :succeeded :action :implement :result "review" :agent "codex-sol"
+                 :started-at "2026-10-20T00:00:00Z" :finished-at "2026-10-20T00:10:00Z" :updated-at "2026-10-20T00:10:00Z"})))
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+(let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+  (assert (str/includes? s "\nai_ops_v1_export_ok 1\n"))
+  (assert (str/includes? s "ai_ops_v1_info{rules_version=\"correction-rules/v1\",loop_threshold=\"10\"} 1"))
+  (assert (str/includes? s "ai_ops_v1_reached_review_tasks 1"))
+  ;; v0 の系列は v1 の連結後も残る
+  (assert (str/includes? s "ai_ops_sli_info")))
+;; v1 側だけが失敗しても v0 export は成功のまま、export_ok 0 を出す
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(with-redefs [ai-ops-ledger/insight-script "/nonexistent/ai_ops_insight.bb"]
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault))))
+(let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+  (assert (str/includes? s "ai_ops_sli_info"))
+  (assert (str/includes? s "\nai_ops_v1_export_ok 0\n"))
+  (assert (not (str/includes? s "ai_ops_v1_info"))))
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(assert (true? (ai-ops-ledger/refresh-sli! root vault)))
 (def old (slurp (str (ai-ops-ledger/sli-path root))))
+;; 容量上限付近: v1 の追記は実際に追記するバイト数で判定し、v0 の出力を上限超えにしない。
+;; (旧実装は余白を 128 bytes 固定と見積もり、export_ok の HELP/TYPE/値だけでそれを超えて sli.prom 全体が
+;;  sli-limit を超え、sli-snapshot が空文字になって v0 の SLI まで消えていた)
+(let [v0-len (count (.getBytes (first (str/split old #"# HELP ai_ops_v1_info")) "UTF-8"))
+      fail-tail-len (with-redefs [ai-ops-ledger/insight-script "/nonexistent/ai_ops_insight.bb"]
+                      (count (.getBytes (ai-ops-ledger/v1-export-text root (java.io.File/createTempFile "v1-" ".prom") (System/currentTimeMillis) Long/MAX_VALUE) "UTF-8")))]
+  ;; v1 本体は入らないが export_ok 0 の行は入る余白 -> v0 + export_ok 0、snapshot は空にならない
+  (with-redefs [ai-ops-ledger/sli-limit (+ v0-len fail-tail-len 8)]
+    (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+    (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+    (let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+      (assert (<= (count (.getBytes s "UTF-8")) ai-ops-ledger/sli-limit))
+      (assert (str/includes? s "ai_ops_sli_info"))
+      (assert (str/includes? s "\nai_ops_v1_export_ok 0\n"))
+      (assert (not (str/includes? s "ai_ops_v1_info")))
+      (assert (str/includes? (ai-ops-ledger/sli-snapshot root) "ai_ops_sli_info"))))
+  ;; export_ok 0 の行すら入らない余白 -> v0 だけを書き、snapshot は空にならない
+  (with-redefs [ai-ops-ledger/sli-limit (+ v0-len 8)]
+    (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+    (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+    (let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+      (assert (<= (count (.getBytes s "UTF-8")) ai-ops-ledger/sli-limit))
+      (assert (str/includes? s "ai_ops_sli_info"))
+      (assert (not (str/includes? s "ai_ops_v1_export_ok")))
+      (assert (str/includes? (ai-ops-ledger/sli-snapshot root) "ai_ops_sli_info")))))
+;; 上限を戻せば v1 本体と export_ok 1 が再び連結される (timestamp 系列は秒で変わるため全文比較はしない)
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+(let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+  (assert (str/includes? s "ai_ops_sli_info"))
+  (assert (str/includes? s "ai_ops_v1_info"))
+  (assert (str/includes? s "\nai_ops_v1_export_ok 1\n")))
+(def old (slurp (str (ai-ops-ledger/sli-path root))))
+(println "ai-ops-ledger-test: v1 append respects the byte budget near sli-limit")
 (assert (str/includes? old "ai_ops_sli_info"))
 (assert (ai-ops-ledger/write-metrics! root))
 (assert (str/includes? (slurp (str (ai-ops-ledger/metrics-path root))) "ai_ops_sli_info"))
@@ -546,7 +608,8 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
       (assert (< (- (System/currentTimeMillis) start) 500) "async refresh must not block the caller"))
     (loop [i 0] (when (and @ai-ops-ledger/sli-refresh-running (< i 100)) (Thread/sleep 100) (recur (inc i))))
     (assert (not @ai-ops-ledger/sli-refresh-running))
-    (assert (= 2 @calls))))
+    ;; extract + prom (v0) + insight prom (v1)
+    (assert (= 3 @calls))))
 (println "ai-ops-ledger-test: SLI export ledger merge and async refresh passed")'
 
 # A refresh in another process (resident loop vs manual tick) holds sli.lock

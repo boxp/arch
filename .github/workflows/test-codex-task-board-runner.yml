@@ -58,6 +58,7 @@ jobs:
       - run: tests/codex-workspace/task-board-runner-test.sh
       - run: tests/codex-workspace/task-board-events-test.sh
       - run: tests/codex-workspace/ai-ops-ledger-test.sh
+      - run: bash tests/codex-workspace/ai-subscription-usage-test.sh
       - run: docs/project_docs/BOXP-360/tools/test.sh
       - run: tests/codex-workspace/localllm-docs-test.sh
       - run: tests/codex-workspace/localllm-source-check-test.sh
