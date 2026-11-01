@@ -1341,8 +1341,13 @@
   of the read text that resolve inside the corpus are appended so the model can
   follow them (BOXP-282)."
   [cfg notes rel heading]
-  (if-let [note (first (filter #(= rel (:rel %)) notes))]
-    (let [lines (vec (str/split-lines (:text note)))
+  ;; BOXP-367: Ornith 1.5 names notes by their wikilink form (no `.md`); the
+  ;; same corpus note is read, nothing outside the corpus becomes readable.
+  (if-let [note (or (first (filter #(= rel (:rel %)) notes))
+                    (when-not (str/ends-with? rel ".md")
+                      (first (filter #(= (str rel ".md") (:rel %)) notes))))]
+    (let [rel (:rel note)
+          lines (vec (str/split-lines (:text note)))
           heading (str/trim (or heading ""))
           limit (:read-max-chars cfg)
           with-links (fn [m piece]

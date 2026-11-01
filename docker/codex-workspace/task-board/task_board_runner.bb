@@ -3048,6 +3048,33 @@
           (seq missing) {:ok? false :category "repo-worktree-failed" :repos missing}
           :else {:ok? true})))
 
+;; BOXP-367 (BOXP-371 pilot): the per-run worktree starts at the shared
+;; checkout's HEAD, which can be a stale feature branch. Cloud agents fetch for
+;; themselves; pi runs without credentials, so the runner moves the fresh run
+;; branch to the remote's default branch before pi starts (fail closed).
+;; The remote HEAD is fetched into this worktree's own FETCH_HEAD: linked
+;; worktrees share refs/remotes/origin/*, so updating those from concurrent
+;; runs of the same repo would race on ref locks (codex review P2). The
+;; branch name comes from a read-only ls-remote and is evidence only.
+(defn localllm-coder-sync-base! [workspace]
+  (let [results (vec (for [{:keys [repo path]} (:repo-worktrees workspace) :when path]
+                       (let [git (fn [& args] @(p/process (into ["git" "-C" path] args) {:out :string :err :string}))
+                             fetch (git "fetch" "--quiet" "origin" "HEAD")
+                             fetched (when (zero? (:exit fetch))
+                                       (not-empty (str/trim (:out (git "rev-parse" "--verify" "-q" "FETCH_HEAD")))))
+                             symref (when fetched (git "ls-remote" "--symref" "origin" "HEAD"))
+                             ref (or (when (and symref (zero? (:exit symref)))
+                                       (second (re-find #"(?m)^ref: (\S+)\tHEAD$" (:out symref))))
+                                     (when fetched "HEAD"))
+                             reset (when fetched (git "reset" "--hard" "--quiet" fetched))]
+                         {:repo repo :ref ref
+                          :ok? (boolean (and reset (zero? (:exit reset))))
+                          :head (when (and reset (zero? (:exit reset))) (str/trim (:out (git "rev-parse" "HEAD"))))})))
+        failed (vec (keep #(when-not (:ok? %) (:repo %)) results))]
+    (if (seq failed)
+      {:ok? false :category "repo-base-sync-failed" :repos failed}
+      {:ok? true :bases (mapv #(select-keys % [:repo :ref :head]) results)})))
+
 ;; The router preflight must hit the endpoint pi really uses (codex review P2):
 ;; the base URL comes from the provider entry of the models.json copied into
 ;; the run-local HOME, and the model has to be configured under that provider.
@@ -3073,6 +3100,7 @@
                       {:ok? false :category "pi-models-config-unreadable"})
         base-url (:base-url pi-provider)
         started-at (now-str) start-ms (System/currentTimeMillis)
+        base-sync (localllm-coder-sync-base! workspace)
         ;; HEAD before the restore and pi, so the new patch is cumulative.
         base-shas (localllm-coder-base-shas workspace)
         restore (localllm-coder-restore! workspace (localllm-coder-previous-patch ticket-id run))]
@@ -3086,6 +3114,7 @@
     (let [ws-check (localllm-coder-workspace-check workspace)
           readback (cond
                      (not (:ok? ws-check)) ws-check
+                     (not (:ok? base-sync)) base-sync
                      (not (:ok? restore)) restore
                      (not (:ok? pi-provider)) pi-provider
                      :else
@@ -3122,7 +3151,7 @@
           diff-stat (when (:ok? restore) (localllm-coder-diff! workspace base-shas patch-path))
           cleanup (when diff-stat (localllm-coder-reset! workspace base-shas))
           finished-at (now-str)
-          evidence {:model model :provider provider :base-url base-url :router-readback readback :restore restore
+          evidence {:model model :provider provider :base-url base-url :router-readback readback :base-sync base-sync :restore restore
                     :models-seen (:models-seen parsed) :fallback? fallback? :started-at started-at
                     :finished-at finished-at :elapsed-ms (- (System/currentTimeMillis) start-ms)
                     :exit exit :idle-timeout? (boolean (:idle-timeout? execution)) :diff-stat diff-stat :cleanup cleanup
@@ -5431,6 +5460,28 @@
                      r (localllm-coder-restore! {:repo-worktrees [{:repo "t/ok" :path ok} {:repo "t/conflict" :path conflict}]} {:run-id "r1" :path patch})]
                  [(:ok? r) (:repos r) (slurp (str (fs/path ok "a.txt")))])
                [false ["t/conflict"] "a\n"]]
+              ["coder base sync moves the run worktree to origin's default branch"
+               (let [git (fn [dir & args] @(p/process (into ["git" "-C" dir "-c" "user.email=t@example.invalid" "-c" "user.name=t"] args) {:out :string :err :string}))
+                     origin (str (fs/create-temp-dir)) work (str (fs/create-temp-dir)) lone (str (fs/create-temp-dir))
+                     _ (git origin "init" "-q" "-b" "main")
+                     _ (spit (str (fs/path origin "a.txt")) "old\n")
+                     _ (git origin "add" "a.txt") _ (git origin "commit" "-q" "-m" "old")
+                     _ (git work "clone" "-q" origin ".")
+                     ;; the remote default branch moves to trunk after the clone
+                     _ (git origin "checkout" "-q" "-b" "trunk")
+                     _ (spit (str (fs/path origin "a.txt")) "new\n")
+                     _ (git origin "commit" "-q" "-am" "new")
+                     tip (str/trim (:out (git origin "rev-parse" "HEAD")))
+                     _ (git lone "init" "-q")
+                     stale (str/trim (:out (git work "rev-parse" "refs/remotes/origin/main")))
+                     ok (localllm-coder-sync-base! {:repo-worktrees [{:repo "t/r" :path work}]})
+                     bad (localllm-coder-sync-base! {:repo-worktrees [{:repo "t/r" :path work} {:repo "t/lone" :path lone}]})]
+                 [(:ok? ok) (= tip (:head (first (:bases ok)))) (:ref (first (:bases ok))) (slurp (str (fs/path work "a.txt")))
+                  ;; shared remote-tracking refs are left alone (no ref-lock races between runs)
+                  (= stale (str/trim (:out (git work "rev-parse" "refs/remotes/origin/main"))))
+                  (:exit (git work "rev-parse" "--verify" "-q" "refs/remotes/origin/trunk"))
+                  (dissoc bad :bases)])
+               [true true "refs/heads/trunk" "new\n" true 1 {:ok? false :category "repo-base-sync-failed" :repos ["t/lone"]}]]
               ["coder workspace check" (mapv localllm-coder-workspace-check [{:repo-worktrees []} {:repo-worktrees [{:repo "t/r" :error "x"}]} {:repo-worktrees [{:repo "t/r" :path "/w/r"}]}])
                [{:ok? false :category "no-repo-worktree"} {:ok? false :category "repo-worktree-failed" :repos ["t/r"]} {:ok? true}]]
               ["coder workspace check partial" (localllm-coder-workspace-check {:repo-worktrees [{:repo "t/a" :path "/w/a"} {:repo "t/b" :worktree-failed true}]})
