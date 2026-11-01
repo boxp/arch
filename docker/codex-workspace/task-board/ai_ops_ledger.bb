@@ -646,7 +646,10 @@
   failed-pull marker file without discarding the markers of earlier failed pulls.
   An existing file that cannot be read is replaced by a single input_unreadable
   marker followed by the new lines (lost input stays visible). The file is capped
-  at the configured line count; returns the number of lines that did not fit."
+  at the configured line count; when the cap is exceeded an input_unreadable
+  marker (affecting every SLI) is kept first and one line per distinct marker is
+  kept before any duplicate, so no marker kind is hidden. Returns the number of
+  lines that did not fit."
   [root new-lines]
   (let [fp (hermes-mirror-failed-markers-path root)
         existing (when (fs/exists? fp)
@@ -654,7 +657,15 @@
                         (catch java.io.IOException _ [input-unreadable-marker-line])))
         all (concat existing new-lines)
         cap (max 1 (hermes-mirror-failed-markers-max-lines))
-        kept (take cap all)]
+        ;; 上限超過時は先着順に切り捨てない: 承認拒否で上限に達した後の是正拒否が捨てられると、是正 SLI が確定し得る。
+        ;; 全種別の SLI に効く input_unreadable marker を先頭に置き (切り捨てた行の欠落そのもの)、続けて種別ごとに
+        ;; 1 行ずつ (distinct)、残りを重複分で埋める。集計側は種別ごとの有無で unknown を決めるため、件数は下限でよい
+        kept (if (> (count all) cap)
+               (let [others (remove #{input-unreadable-marker-line} all)
+                     distinct-lines (distinct others)
+                     duplicates (mapcat (fn [[line n]] (repeat (dec n) line)) (frequencies others))]
+                 (take cap (concat [input-unreadable-marker-line] distinct-lines duplicates)))
+               all)]
     (atomic-spit! fp (str/join "" (map #(str % "\n") kept)))
     (max 0 (- (count all) cap))))
 (defn read-hermes-mirror-status [root]
@@ -816,7 +827,8 @@
   mirror timeout) and replace `<root>/ai-ops/hermes-ledger/snapshot.jsonl`
   atomically on success. When the output ended in an unterminated line (a write in
   progress) the snapshot is still replaced but the pull is recorded as partial
-  (stale until a complete pull) and false is returned. On any failure (no time left, command error, timeout,
+  (stale until a complete pull), the failed-pull markers are kept, and false is
+  returned. On any failure (no time left, command error, timeout,
   empty output, output over the byte cap, or output without a single valid
   hermes-observer event) the previous snapshot is kept and the failure is recorded
   in status.edn. Returns true on success, false on failure, nil when not
@@ -860,8 +872,11 @@
                           (fail! "no_events"))
                       (do
                         (atomic-spit! (hermes-mirror-path root) (str/join "" (map #(str % "\n") lines)))
-                        ;; 成功した snapshot は ledger 全体を読み直したものなので、失敗時の marker は不要になる
-                        (fs/delete-if-exists (hermes-mirror-failed-markers-path root))
+                        ;; 完全な取り込みに成功した snapshot は ledger 全体を読み直したものなので、失敗時の marker は不要になる。
+                        ;; 末尾行を落とした partial pull では消さない (落とした行が前回検出した是正拒否だった場合、stale marker は
+                        ;; 是正 SLI を unknown にしないため、完全な取り込み前に是正率が確定してしまう)
+                        (when (zero? truncated)
+                          (fs/delete-if-exists (hermes-mirror-failed-markers-path root)))
                         (atomic-spit! (hermes-mirror-status-path root)
                                       (pr-str (cond-> (assoc attempt :last-success now :last-result (if (pos? truncated) "partial" "ok") :lines (count lines) :bytes end
                                                              :hermes-lines hermes :malformed-lines malformed :foreign-lines foreign :truncated-tail-lines truncated
@@ -923,7 +938,7 @@
           (when-let [v (:last-success s)] (metric-lines "ai_ops_hermes_mirror_last_success_timestamp_seconds" "gauge" "Last successful Hermes ledger pull." [[{} v]]))
           (metric-lines "ai_ops_hermes_mirror_last_attempt_timestamp_seconds" "gauge" "Last Hermes ledger pull attempt, or zero if never attempted." [[{} (:last-attempt s 0)]])
           (metric-lines "ai_ops_hermes_mirror_failures_total" "counter" "Failed Hermes ledger pulls (previous snapshot kept)." [[{} (:failures s 0)]])
-          (metric-lines "ai_ops_hermes_mirror_failed_pull_marker_lines" "gauge" "Body-less lost-input markers accumulated from no_events pulls since the last successful pull and still appended to the SLI input (0 once a pull succeeds; capped, see _failed_pull_markers_overflow_total)." [[{} (hermes-mirror-failed-marker-lines root)]])
+          (metric-lines "ai_ops_hermes_mirror_failed_pull_marker_lines" "gauge" "Body-less lost-input markers accumulated from no_events pulls since the last successful pull and still appended to the SLI input (0 once a complete pull succeeds; a partial pull keeps them; capped with an input_unreadable marker kept first, see _failed_pull_markers_overflow_total)." [[{} (hermes-mirror-failed-marker-lines root)]])
           (metric-lines "ai_ops_hermes_mirror_failed_pull_markers_overflow_total" "counter" "Marker lines from no_events pulls that did not fit the failed-pull marker cap (the kept count is a lower bound; affected SLIs stay unknown)." [[{} (:failed-markers-overflow s 0)]])
           (metric-lines "ai_ops_hermes_mirror_partial_pulls_total" "counter" "Hermes ledger pulls whose output ended in an unterminated line: the snapshot was replaced but kept stale until a complete pull." [[{} (:partial-pulls s 0)]])
           (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed or was partial: the SLI input uses the previous/incomplete snapshot plus a source_stale marker, or only a source_stale marker when no snapshot was ever obtained." [[{} (if (and configured (pos? (:last-attempt s 0)) (hermes-mirror-stale? s)) 1 0)]])
