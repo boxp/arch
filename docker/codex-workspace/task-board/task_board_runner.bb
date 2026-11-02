@@ -2306,6 +2306,12 @@
   ;; Extract "owner/repo" from a GitHub PR URL like https://github.com/owner/repo/pull/N
   (second (re-find #"github\.com/([^/]+/[^/]+)/pull/" (str pr-url))))
 
+(defn codex-review-artifact-base [pr-url]
+  (str "codex-review-"
+       (when-let [repo (repo-from-pr-url pr-url)]
+         (str (str/replace repo "/" "-") "-"))
+       (last (str/split pr-url #"/"))))
+
 (defn no-ci-repo? [pr-url]
   (let [repos (no-ci-repos)
         repo (repo-from-pr-url pr-url)]
@@ -2513,15 +2519,16 @@
                      (some #(and (nil? (:severity %)) (str/blank? (:severity-token %))) findings) :missing-severity
                      (some #(nil? (:severity %)) findings) :unknown-severity
                      (and (= marker "issues") (empty? findings)) :missing-severity
-                     ;; Prose outside the contract may be an unformatted finding; without a
-                     ;; P0/P1 line to block on it cannot be judged, whatever the marker says.
-                     (and unstructured? (empty? blocking)) :unstructured-findings)]
+                     ;; Prose outside the contract may be an unformatted finding, so the output
+                     ;; cannot be judged whatever the marker or other lines say.
+                     unstructured? :unstructured-findings)]
     {:verdict (cond reason :invalid (seq blocking) :blocking (seq low) :pass-low :else :clean)
      :reason reason :blocking blocking :low low}))
 
 (defn run-codex-review! [run-dir pr-url]
   (let [diff (run-string! ["gh" "pr" "diff" pr-url] {})
-        review-path (fs/path run-dir (str "codex-review-" (last (str/split pr-url #"/")) ".md"))
+        artifact-base (codex-review-artifact-base pr-url)
+        review-path (fs/path run-dir (str artifact-base ".md"))
         prompt (str "CODEX_REVIEW_GATE\n"
                     "Review this GitHub PR diff for actionable bugs, regressions, missing tests, or acceptance-criteria gaps.\n"
                     "Severity policy: P0 is a critical safety problem (secret/credential leakage, data loss, destructive or irreversible operation, security hole); always blocking.\n"
@@ -2560,7 +2567,7 @@
           :pass-low {:ok? true :url pr-url :gate-results [["codex-review" "pass"]]
                      :low-priority-findings low-info
                      :message (str "codex review reported only non-blocking low-priority findings (P2/P3/nit): " (count low) "; kept for reference in " review-path)}
-          :blocking (let [path (fs/path run-dir (str "codex-review-" (last (str/split pr-url #"/")) "-blocking.md"))
+          :blocking (let [path (fs/path run-dir (str artifact-base "-blocking.md"))
                           lines (mapv :line blocking)]
                       (spit (str path) (str "Blocking codex review findings (P0/P1):\n" (str/join "\n" lines) "\n"))
                       {:ok? false :gate :codex-review :failure-kind :findings :url pr-url :retryable? true
@@ -4819,7 +4826,8 @@
   (let [failures (atom [])]
     (doseq [[input verdict reason blocking low]
             [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\n- real P1 defect in prose" :invalid :unstructured-findings 0 1]
-             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\n- extra prose" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\n- extra prose" :invalid :unstructured-findings 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P0 | x | a\n- extra prose" :invalid :unstructured-findings 1 0]
              ["CODEX_REVIEW_RESULT: clean\nNo issues found." :invalid :unstructured-findings 0 0]
              ["CODEX_REVIEW_RESULT: clean" :clean nil 0 0]
              ["CODEX_REVIEW_RESULT: clean\n\n" :clean nil 0 0]
@@ -4842,6 +4850,10 @@
       (let [result (classify-codex-review input)]
         (when-not (= [verdict reason blocking low] [(:verdict result) (:reason result) (count (:blocking result)) (count (:low result))])
           (swap! failures conj (str "codex review classification: " input)))))
+    (doseq [[url expected] [["https://github.com/boxp/example/pull/123" "codex-review-boxp-example-123"]
+                            ["https://example.test/pr/123" "codex-review-123"]]]
+      (when-not (= expected (codex-review-artifact-base url))
+        (swap! failures conj (str "codex review artifact base: " url))))
     (let [gate {:url "https://example.test/pr/1" :gate :codex-review :fingerprint-key "P1 finding" :message "first"}
           fingerprint (retry-fingerprint gate)]
       (when-not (and (= fingerprint (retry-fingerprint (assoc gate :message "second")))
