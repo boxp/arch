@@ -5777,6 +5777,9 @@
            (log! (str "error completing " ticket-id ": " (.getMessage e))))))
   (reset! in-flight-futures {}))
 
+;; Only dispatch when executed as a script (`bb task_board_runner.bb ...`), so that
+;; tests can `load-file` this file to exercise pure functions without side effects.
+(when (= *file* (System/getProperty "babashka.file"))
 (case (or (first *command-line-args*) "tick")
   "tick" (let [args (vec (rest *command-line-args*))]
            (when-not (contains? #{0 2} (count args)) (usage))
@@ -5842,4 +5845,4 @@
                         (when-not (and scope key amount (pos? amount) (not (str/blank? by))) (usage))
                         (prn (gate-budget-grant! scope key amount by)))
   "test" (run-tests!)
-  (usage))
+  (usage)))

@@ -312,7 +312,12 @@
       cards
       (let [line (first lines)
             heading (second (re-find #"^##\s+(.+?)\s*$" line))
-            lane (if (contains? lanes heading) heading lane)
+            ;; A non-lane heading (e.g. "## Notes") ends the current lane: cards
+            ;; below it belong to no lane, matching the runner's parse-board-cards.
+            lane (cond
+                   (nil? heading) lane
+                   (contains? lanes heading) heading
+                   :else nil)
             card (and lane (parse-card lane line))]
         (recur (rest lines) lane (cond-> cards card (conj card)))))))
 
@@ -323,7 +328,17 @@
     (first cards)))
 
 (defn remove-card [lines id]
-  (vec (remove #(str/includes? % (str "[[Tickets/" id "|")) lines)))
+  ;; Foreign sections can contain copies that must survive lane updates.
+  (loop [remaining lines lane nil result []]
+    (if (empty? remaining)
+      result
+      (let [line (first remaining)
+            heading (second (re-find #"^##\s+(.+?)\s*$" line))
+            lane (cond (nil? heading) lane (contains? lanes heading) heading :else nil)]
+        (recur (rest remaining) lane
+               (if (and lane (card-line? line) (str/includes? line (str "[[Tickets/" id "|")))
+                 result
+                 (conj result line)))))))
 
 (defn repo-values [repo]
   (cond
@@ -720,4 +735,5 @@
       "control-intent" (cmd-control-intent opts (or id (die "control-intent requires ticket id")))
       (usage))))
 
-(apply -main *command-line-args*)
+(when (= *file* (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))
