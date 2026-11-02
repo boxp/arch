@@ -1923,25 +1923,143 @@ test_review_with_ci_failure_is_blocked() {
   assert_file_not_contains "${vault}/Tickets/BOXP-404.md" 'unit=FAILURE'
 }
 
-test_review_with_codex_review_issue_is_blocked() {
-  local tmp vault state bin
-  tmp="$(mktemp -d)"
-  vault="${tmp}/vault"
-  state="${tmp}/state"
-  bin="${tmp}/bin"
+review_severity_setup() {
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
   make_fake_gh "${bin}"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-405|BOXP-405: review issue]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-405 in-progress codex boxp/example
+}
 
-  PATH="${bin}:$PATH" CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\n- missing regression test' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-issue.out
+review_severity_tick() {
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >"${tmp}/tick.out"
+}
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-405\|BOXP-405: review issue\]\].*status::in-progress'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: in-progress$'
+assert_no_review_budget() {
+  if [[ -f "${state}/gate-failure-budget.edn" ]]; then
+    assert_file_contains "${state}/gate-failure-budget.edn" ':failures \{\}'
+  fi
+  if [[ -f "${state}/state.edn" ]]; then
+    assert_file_not_contains "${state}/state.edn" ':pr-gate-retries'
+  fi
+}
+
+test_review_with_codex_review_issue_is_blocked() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\n- missing regression test' review_severity_tick
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-405: review issue.*status::blocked'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Review gate failed \(codex-review\)'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'PR gate failed; inspect the referenced run artifacts\.'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
   assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'missing regression test'
+  assert_no_review_budget
+}
+
+test_review_p1_finding_retries_and_consumes_budget() {
+  local tmp vault state bin artifact
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | src/a.clj:10 | nil deref on empty input' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Retrying with Codex instruction 1/2'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-findings'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'nil deref'
+  artifact="$(find "${state}/runs/BOXP-405" -name codex-review-123-blocking.md -print -quit)"
+  assert_file_contains "${artifact}" 'nil deref on empty input'
+  assert_file_contains "${state}/gate-failure-budget.edn" 'BOXP-405'
+  [[ "$(grep -o ':class "review-findings"' "${state}/gate-failure-budget.edn" | wc -l)" == 1 ]] || fail "expected one budget failure"
+}
+
+test_review_p0_finding_blocks() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P0 | x | credential leak' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Retrying with Codex instruction 1/2'
+  [[ "$(grep -o ':class "review-findings"' "${state}/gate-failure-budget.edn" | wc -l)" == 1 ]] || fail "expected one budget failure"
+}
+
+test_review_p2_only_passes_without_budget() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | improve wording\nCODEX_REVIEW_FINDING: P3 | x | rename\nCODEX_REVIEW_FINDING: nit | x | cleanup' review_severity_tick
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-405: review issue.*status::review'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Review gates passed'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Non-blocking low-priority review findings \(P2/P3/nit\): 3'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'improve wording'
+  assert_run_summary_contains "${state}" BOXP-405 ':low-priority-findings'
+  assert_no_review_budget
+}
+
+test_review_mixed_findings_retry_targets_only_blocking() {
+  local tmp vault state bin artifact
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | real defect\nCODEX_REVIEW_FINDING: P2 | x | optional wording' review_severity_tick
+  artifact="$(find "${state}/runs/BOXP-405" -name codex-review-123-blocking.md -print -quit)"
+  assert_file_contains "${artifact}" 'real defect'
+  assert_file_not_contains "${artifact}" 'optional wording'
+  CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: clean' review_severity_tick
+  assert_file_contains "${tmp}/prompt" 'Severity policy \(BOXP-377\)'
+  assert_file_contains "${tmp}/prompt" 'codex-review-123-blocking.md'
+  assert_file_not_contains "${tmp}/prompt" 'optional wording'
+}
+
+test_review_unknown_severity_output_stops() {
+  local tmp vault state bin message
+  for message in $'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P9 | x | y' 'no marker'; do
+    review_severity_setup
+    CODEX_FAKE_REVIEW_MESSAGE="${message}" review_severity_tick
+    assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+    assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
+    assert_no_review_budget
+  done
+}
+
+test_review_p2_with_unstructured_lines_stops() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | wording\n- unformatted real defect' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'unformatted real defect'
+  assert_no_review_budget
+}
+
+test_review_clean_with_unstructured_lines_stops() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: clean\n- unformatted real defect' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'unformatted real defect'
+  assert_no_review_budget
+}
+
+test_review_finding_without_severity_stops() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | wording\nCODEX_REVIEW_FINDING: | x | real defect' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'real defect'
+  assert_no_review_budget
+}
+
+test_review_same_p1_retry_count_survives_p2_changes() {
+  local tmp vault state bin count i message
+  review_severity_setup
+  for count in 1 2 3; do
+    message=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | real defect'
+    for ((i = 1; i <= count; i++)); do
+      message+=$'\nCODEX_REVIEW_FINDING: P2 | x | wording'
+    done
+    CODEX_FAKE_REVIEW_MESSAGE="${message}" review_severity_tick
+  done
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Retrying with Codex instruction 2/2'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=pr-gate-retry-limit'
 }
 
 test_review_with_pr_and_none_marker_checks_pr() {
@@ -4170,6 +4288,15 @@ test_pr_gate_api_failure_is_audited
 test_fable_review_gate_retry_keeps_fable_assignee
 test_review_with_ci_failure_is_blocked
 test_review_with_codex_review_issue_is_blocked
+test_review_p1_finding_retries_and_consumes_budget
+test_review_p0_finding_blocks
+test_review_p2_only_passes_without_budget
+test_review_mixed_findings_retry_targets_only_blocking
+test_review_unknown_severity_output_stops
+test_review_p2_with_unstructured_lines_stops
+test_review_clean_with_unstructured_lines_stops
+test_review_finding_without_severity_stops
+test_review_same_p1_retry_count_survives_p2_changes
 test_review_with_pr_and_none_marker_checks_pr
 test_review_with_multiple_pr_urls_checks_all
 test_review_with_multiple_pr_urls_blocks_on_second_failure
