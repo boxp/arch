@@ -2510,7 +2510,8 @@
        vec))
 
 (defn classify-codex-review [text]
-  (let [marker (some-> (re-find #"(?im)^CODEX_REVIEW_RESULT:\s*(clean|issues)\s*$" (or text "")) second str/lower-case)
+  (let [markers (re-seq #"(?im)^CODEX_REVIEW_RESULT:\s*(clean|issues)\s*$" (or text ""))
+        marker (some-> markers first second str/lower-case)
         findings (codex-review-findings text)
         blocking (filterv #(contains? #{"P0" "P1"} (:severity %)) findings)
         low (filterv #(contains? #{"P2" "P3" "nit"} (:severity %)) findings)
@@ -2520,6 +2521,7 @@
                             (str/split-lines (or text "")))
         reason (cond (str/blank? text) :empty-output
                      (nil? marker) :missing-result-marker
+                     (> (count markers) 1) :conflicting-result-marker
                      (some #(and (nil? (:severity %)) (str/blank? (:severity-token %))) findings) :missing-severity
                      (some #(nil? (:severity %)) findings) :unknown-severity
                      (some :malformed? findings) :malformed-finding
@@ -2540,7 +2542,7 @@
                     "P1 is a concrete defect in this diff with real impact and reproducible evidence (wrong behavior, regression, broken required test, unmet acceptance criterion); blocking.\n"
                     "P2 is an improvement worth considering, not blocking. P3 / nit is style, naming, wording or optional cleanup, not blocking.\n"
                     "Do not inflate severity: a hypothetical future risk, a preference, or a re-worded P2 is not a P1.\n"
-                    "For a clean result, output exactly the single line CODEX_REVIEW_RESULT: clean and nothing else. Otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every CODEX_REVIEW_FINDING line must carry one of the allowed severities and contain all three fields separated by \" | \", with a non-empty location and description. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
+                    "Exactly one CODEX_REVIEW_RESULT line must appear. For a clean result, output exactly the single line CODEX_REVIEW_RESULT: clean and nothing else. Otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every CODEX_REVIEW_FINDING line must carry one of the allowed severities and contain all three fields separated by \" | \", with a non-empty location and description. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
                     "PR: " pr-url "\n\n"
                     diff)
         proc @(p/process (cond-> ["codex" "exec"
@@ -2584,6 +2586,7 @@
           :invalid {:ok? false :gate :codex-review :failure-kind :invalid-output :url pr-url :retryable? false
                     :review-judgment-failure (name reason)
                     :message (str "codex review output could not be judged (" (name reason) "); "
+                                  (when (= reason :conflicting-result-marker) "The output contains more than one CODEX_REVIEW_RESULT line; exactly one is required. ")
                                   (when (= reason :malformed-finding) "A CODEX_REVIEW_FINDING line is missing its location or description. ")
                                   "review artifact: " review-path)})))))
 
@@ -4855,6 +4858,10 @@
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P0 | x | a" :blocking nil 1 0]
              ["CODEX_REVIEW_RESULT: issues\n- missing regression test" :invalid :missing-severity 0 0]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P9 | x | y" :invalid :unknown-severity 0 0]
+             ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_RESULT: issues" :invalid :conflicting-result-marker 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a" :invalid :conflicting-result-marker 0 1]
+             ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_RESULT: clean" :invalid :conflicting-result-marker 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P1 | x | a" :invalid :conflicting-result-marker 1 0]
              ["no marker" :invalid :missing-result-marker 0 0]
              ["" :invalid :empty-output 0 0]
              ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P1 | x | a" :blocking nil 1 0]

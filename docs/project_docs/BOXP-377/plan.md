@@ -69,5 +69,7 @@ retryable な gate 失敗となり、短期 retry（fingerprint 単位、既定 
 
 ## レビューゲートの追加調整
 
+- `CODEX_REVIEW_RESULT` が複数行ある場合は `conflicting-result-marker` の判定失敗として停止する。
+
 - 形式外の非空行は、blocking 行の有無に関わらず判定失敗とする。
 - artifact 名は `owner-repo-番号` を含め、異なるリポジトリの同番号 PR が衝突しないようにする。

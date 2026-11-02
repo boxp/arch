@@ -2066,6 +2066,15 @@ test_review_malformed_finding_stops() {
   assert_no_review_budget
 }
 
+test_review_conflicting_result_marker_stops() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_RESULT: issues' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
+  assert_no_review_budget
+}
+
 test_review_same_p1_retry_count_survives_p2_changes() {
   local tmp vault state bin count i message
   review_severity_setup
@@ -4317,6 +4326,7 @@ test_review_p1_with_unstructured_lines_stops
 test_review_clean_with_unstructured_lines_stops
 test_review_finding_without_severity_stops
 test_review_malformed_finding_stops
+test_review_conflicting_result_marker_stops
 test_review_same_p1_retry_count_survives_p2_changes
 test_review_with_pr_and_none_marker_checks_pr
 test_review_with_multiple_pr_urls_checks_all
