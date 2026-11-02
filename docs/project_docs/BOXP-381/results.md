@@ -105,15 +105,26 @@ PBT スクリプト全体の実時間: 約 0.28 秒（`time bb tests/codex-works
 
 ## CI 時間への影響
 
-ローカル（同一マシン、同条件）で `tests/codex-workspace/task-board-runner-test.sh` を前後で実測:
+ローカル（同一マシン、同条件、逐次実行）で `tests/codex-workspace/task-board-runner-test.sh` を前後で実測:
 
 | 条件 | real |
 |---|---|
-| 変更前（HEAD の複製で実行） | 2m17.9s |
-| 変更後（PBT 4 性質 + mutant sentinel + 回帰を追加） | 2m18.4s |
+| 作業開始時の base（古い main）で実行 | 2m17.9s |
+| 同 base + PBT 追加 | 2m18.4s |
+| 現 `origin/main`（1b27cdf3d）の複製で実行 | 10m51.1s |
+| 現 main をマージした本ブランチ（PBT 追加後） | 10m52.4s |
 
-差分は約 0.5 秒（PBT スクリプト単体 0.28 秒）。GitHub Actions 上の実測は PR の
-`Test Codex Task Board Runner` ジョブで確認する（下記 PR 参照、結果は本票 Notes に追記）。
+差分はいずれも約 0.5〜1.3 秒（PBT スクリプト単体 0.28 秒）。
+
+GitHub Actions `Test Codex Task Board Runner` の実測:
+
+| 対象 | job 時間 |
+|---|---|
+| main 直近 3 run（41369997097 / 41369483395 / 41284319288） | 16m40s / 17m20s / 16m49s |
+| 本 PR run 41394790490（PBT 込み） | 16m44s |
+
+CI ログ上の PBT 行（bb 1.12.218）: P1 16 ms / P2 34 ms / P3 260 ms / P3' 311 ms、
+`Ran 3 tests containing 9 assertions. 0 failures, 0 errors.`
 
 ## 現行 TDD の red → green 証拠について
 
