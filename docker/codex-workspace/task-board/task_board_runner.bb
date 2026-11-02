@@ -1595,7 +1595,7 @@
                :conflict "The PR has merge conflicts. Resolve conflicts and update the PR."
                :codex-review (case (:failure-kind review-gate)
                                :findings (str "Codex review reported P0/P1 blocking finding(s). Fix only the findings listed in the blocking artifact; P2/P3/nit findings are non-blocking reference and are not retry conditions. Blocking artifact: " (get-in review-gate [:blocking-findings :path]))
-                               :invalid-output (str "Codex review output lacked a valid CODEX_REVIEW_RESULT marker or finding severity (" (:review-judgment-failure review-gate) "); the gate could not be judged and this is not treated as a finding. Inspect the review artifact and re-run review manually.")
+                               :invalid-output (str "Codex review output violated the result or finding format (" (:review-judgment-failure review-gate) "); the gate could not be judged and this is not treated as a finding. Inspect the review artifact and re-run review manually.")
                                "Codex review command failed; the gate could not evaluate.")
                :pr-url "Review was requested without a GitHub PR URL."
                :pr-gate "PR gate evaluation failed. Re-run the gate after checking GitHub availability."
@@ -2494,14 +2494,18 @@
   (->> (str/split-lines (or text ""))
        (keep (fn [line]
                (when-let [[_ body] (re-find #"(?i)^CODEX_REVIEW_FINDING:(.*)$" line)]
-                 (let [token (str/trim (if (str/includes? body "|")
-                                         (first (str/split body #"\|" 2))
-                                         (or (first (str/split (str/trim body) #"\s+")) "")))
+                 (let [parts (str/split body #"\|" 3)
+                       token (str/trim (or (nth parts 0 nil) ""))
+                       location (str/trim (or (nth parts 1 nil) ""))
+                       description (str/trim (or (nth parts 2 nil) ""))
                        upper (str/upper-case token)]
                    {:severity (cond (contains? #{"P0" "P1" "P2" "P3"} upper) upper
                                     (= "NIT" upper) "nit"
                                     :else nil)
                     :severity-token token
+                    :location location
+                    :description description
+                    :malformed? (or (< (count parts) 3) (str/blank? location) (str/blank? description))
                     :line (str/trim line)}))))
        vec))
 
@@ -2518,6 +2522,7 @@
                      (nil? marker) :missing-result-marker
                      (some #(and (nil? (:severity %)) (str/blank? (:severity-token %))) findings) :missing-severity
                      (some #(nil? (:severity %)) findings) :unknown-severity
+                     (some :malformed? findings) :malformed-finding
                      (and (= marker "issues") (empty? findings)) :missing-severity
                      ;; Prose outside the contract may be an unformatted finding, so the output
                      ;; cannot be judged whatever the marker or other lines say.
@@ -2535,7 +2540,7 @@
                     "P1 is a concrete defect in this diff with real impact and reproducible evidence (wrong behavior, regression, broken required test, unmet acceptance criterion); blocking.\n"
                     "P2 is an improvement worth considering, not blocking. P3 / nit is style, naming, wording or optional cleanup, not blocking.\n"
                     "Do not inflate severity: a hypothetical future risk, a preference, or a re-worded P2 is not a P1.\n"
-                    "For a clean result, output exactly the single line CODEX_REVIEW_RESULT: clean and nothing else. Otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every CODEX_REVIEW_FINDING line must carry one of the allowed severities. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
+                    "For a clean result, output exactly the single line CODEX_REVIEW_RESULT: clean and nothing else. Otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every CODEX_REVIEW_FINDING line must carry one of the allowed severities and contain all three fields separated by \" | \", with a non-empty location and description. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
                     "PR: " pr-url "\n\n"
                     diff)
         proc @(p/process (cond-> ["codex" "exec"
@@ -2578,7 +2583,9 @@
                                      (when (pos? (count low)) (str "; " (count low) " low-priority finding(s) (P2/P3/nit) are non-blocking and excluded from the retry instruction")))})
           :invalid {:ok? false :gate :codex-review :failure-kind :invalid-output :url pr-url :retryable? false
                     :review-judgment-failure (name reason)
-                    :message (str "codex review output could not be judged (" (name reason) "); review artifact: " review-path)})))))
+                    :message (str "codex review output could not be judged (" (name reason) "); "
+                                  (when (= reason :malformed-finding) "A CODEX_REVIEW_FINDING line is missing its location or description. ")
+                                  "review artifact: " review-path)})))))
 
 (defn review-gate!
   "Evaluate the PR gates. :gate-results lists every individual gate result as
@@ -4835,6 +4842,11 @@
              ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P2 | x | a\n- real defect in prose" :invalid :unstructured-findings 0 1]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: | x | b" :invalid :missing-severity 0 1]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING:" :invalid :missing-severity 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2" :invalid :malformed-finding 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x" :invalid :malformed-finding 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | | a" :invalid :malformed-finding 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1" :invalid :malformed-finding 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a | b" :blocking nil 1 0]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: P9 | x | b" :invalid :unknown-severity 0 1]
              ["CODEX_REVIEW_RESULT: issues\n\nCODEX_REVIEW_FINDING: P2 | x | a\n" :pass-low nil 0 1]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | defect" :blocking nil 1 0]
