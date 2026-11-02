@@ -61,6 +61,52 @@ PBT スクリプト全体の実時間: 約 0.28 秒（`time bb tests/codex-works
   現時点の運用に影響はない。将来 Board に `## Notes` 等を追記した場合に helper の
   `list` / `show` / `update` が誤ったレーンを返す潜在不具合の解消。
 
+## レビュー指摘から追加した性質 P4（remove-card はレーン内カードのみ削除）
+
+PR #14332 の codex-review が P1 として指摘: `board-cards` がレーン外見出し配下のカードを無視するようになった結果、
+同じチケットがレーン内と `## Notes` 配下の両方にある場合、`card-for` は重複と判定しなくなる一方、
+`cmd-update` → `insert-card` → `remove-card` は Board 全体から該当チケット ID を含む行を削除していたため、
+通常の更新で Notes 内のコピーが黙って消える（修正前は `Multiple board cards found` で停止していた）。
+
+- 利用者意図: レーン位置が状態の SSOT であり、レーン外見出し配下の行は helper の更新対象ではない。
+  更新・削除はレーン内のカード行だけを動かし、それ以外の行は一字一句保持する。
+- 性質 P4 `remove-card-only-touches-lane-cards`: `(board-gen true)`（`## Notes` / `## Archive` 配下のカードを含む
+  生成 Board）と Board 内に存在する任意の ID について、`task-board/remove-card` の結果が
+  「runner `parse-board-cards` が返すその ID のカードの `:idx` だけを取り除いた行列」と一致する。
+  oracle は runner 側（独立実装）で、helper 自身は使わない。
+- 修正（最小）: `remove-card` を `board-cards` と同じ見出し規則でレーンを追跡し、
+  「レーン区間内 かつ `card-line?` かつ 該当 ID を含む行」のみ除去するよう変更。
+
+red → green の証拠（seed 20261102, num-tests 200, max-size 50）:
+
+```text
+# 修正前（remove-card を旧実装に戻して実行）
+PBT remove-card-only-touches-lane-cards pass?=false num-tests=4 seed=20261102 max-size=50 elapsed-ms=379
+  shrunk smallest: [[["---" "kanban-plugin: board" "---" ""
+                      "## Backlog" "- [ ] [[Tickets/BOXP-1|BOXP-1: !]] #ticket status::backlog priority::low"
+                      "## Ready" "## In Progress" "- [ ] [[Tickets/BOXP-2|...]]" "- [ ] [[Tickets/BOXP-3|...]]"
+                      "## Blocked" "- [ ] [[Tickets/BOXP-4|...]]" "- [ ] [[Tickets/BOXP-5|...]]"
+                      "## Review" "## Notes" "- [ ] [[Tickets/BOXP-6|BOXP-6: !]] #ticket status::review priority::low"
+                      "## Done" "- [x] [[Tickets/BOXP-7|BOXP-7: !]] #ticket status::done priority::low done::2026-11-02"] "BOXP-6"]]
+FAIL in (regression-update-keeps-card-copy-under-foreign-heading) ×2
+3 failures, 0 errors.
+
+# 修正後
+PBT remove-card-only-touches-lane-cards pass?=true num-tests=200 seed=20261102 max-size=50 elapsed-ms=162
+Ran 4 tests containing 15 assertions. 0 failures, 0 errors.   (real 0.64s)
+# seed 7 / num-tests 1000 でも pass（elapsed 1459 ms）
+```
+
+- 回帰: 決定的 `deftest regression-update-keeps-card-copy-under-foreign-heading`（Ready と `## Notes` に同じカード、
+  `insert-card` で In Progress へ移動後も Notes 区間が原文のまま、Ready から消え、In Progress に 1 枚）と、
+  bash 黒箱 `test_helper_update_keeps_notes_copy`（`task-board.bb update --lane Ready` 実行後に Notes のコピーと
+  メモ行が残り、In Progress から Ready へ移る）を追加。
+- 付随する挙動変更: 旧 `remove-card` はレーン内の「カードではない行」（例: チケット ID を含むメモ）も削除していたが、
+  新実装はカード行のみ削除する。`cmd-delete` も同じ関数を使うため、レーン外のコピーは delete でも残る
+  （Notes 等はユーザー管理の本文として扱う）。
+- この指摘は Fable 側の `board-cards` 修正が生んだ派生不具合で、P3' だけでは検出できなかった
+  （P3' は読み取り一致のみを見る）。書き込み系の純粋関数にも oracle 付き性質を置く必要があることが分かった。
+
 ## 人工 mutant による検出能力確認（実バグとは区別）
 
 - mutant: `task-board/encode-card-title` を `identity` に差し替え（タイトルの `]` と `\` を
@@ -90,6 +136,8 @@ PBT スクリプト全体の実時間: 約 0.28 秒（`time bb tests/codex-works
 ## 何を検査でき、何を保証しないか
 
 - 検査できること
+  - helper `remove-card` が、runner `parse-board-cards` の返すレーン内カードだけを取り除き、
+    レーン外（frontmatter, `## Notes` 等）の行を保持すること（P4）。
   - helper のカード render → parse が id / title / lane / priority / assignee / repo / done を
     保存すること（タイトルに `]`, `\`, `|`, `#`, `::`, 日本語を含む場合を含む）。
   - runner `normalize-card-line` が冪等で、`status::` / `done::` 以外のトークンを保存すること。

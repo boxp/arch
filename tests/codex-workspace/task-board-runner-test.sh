@@ -4028,6 +4028,24 @@ CHECK
   done
 }
 
+test_helper_update_keeps_notes_copy() {
+  local tmp vault board copy
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; board="${vault}/Boards/Task Board.md"
+  copy='- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::boxp'
+  write_board "${vault}" "${copy}"
+  write_ticket "${vault}" BOXP-993 in-progress boxp
+  printf '\n## Notes\n%s\nnote about BOXP-993\n' "${copy}" >>"${board}"
+  bb "${HELPER}" update BOXP-993 --vault "${vault}" --lane Ready --json >/dev/null
+  [[ "$(grep -Fc '[[Tickets/BOXP-993|' "${board}")" == 2 ]] || fail 'expected two BOXP-993 copies'
+  sed -n '/^## Notes/,/^## /p' "${board}" | grep -Fxq -- "${copy}" || fail 'Notes copy missing'
+  assert_file_contains "${board}" '^note about BOXP-993$'
+  sed -n '/^## Ready/,/^## In Progress/p' "${board}" | grep -Fq '[[Tickets/BOXP-993|' || fail 'Ready card missing'
+  if sed -n '/^## In Progress/,/^## Blocked/p' "${board}" | grep -Fq '[[Tickets/BOXP-993|'; then
+    fail 'In Progress card remains'
+  fi
+  rm -rf "${tmp}"
+}
+
 test_assignment_revisions() {
   local tmp vault state bin rev result code
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -4228,6 +4246,7 @@ test_outbox_disabled_by_env
 test_ai_ops_ledger_records_run_lifecycle
 test_ai_ops_ledger_disabled_by_env
 test_ai_ops_ledger_groom_from_backlog_records_actual_lane
+test_helper_update_keeps_notes_copy
 test_task_board_pbt_properties
 
 echo "task-board-runner tests passed"

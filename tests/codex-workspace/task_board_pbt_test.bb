@@ -110,13 +110,24 @@
 (def board-property (prop/for-all [lines (board-gen false)] (parsers-agree? lines)))
 (def foreign-property (prop/for-all [lines (board-gen true)] (parsers-agree? lines)))
 
+(def remove-card-property
+  (prop/for-all [[lines id] (gen/bind (board-gen true)
+                              (fn [lines]
+                                (let [ids (mapv second (keep #(re-find #"\[\[Tickets/(BOXP-\d+)\|" %) lines))]
+                                  (gen/fmap #(vector lines %) (if (seq ids) (gen/elements ids) (gen/return "BOXP-1"))))))]
+    (let [indices (set (map :idx (filter #(= id (:ticket-id %)) (runner/parse-board-cards lines))))]
+      (= (task-board/remove-card lines id)
+         (vec (keep-indexed #(when-not (indices %1) %2) lines))))))
+
 (deftest properties
   (doseq [[name property] [["card-render-parse-roundtrip" roundtrip-property]
                            ["normalize-card-line-idempotent-and-preserving" normalize-property]
                            ["runner-and-helper-board-parsers-agree" board-property]
                            ;; Promoted from exploratory after it found a real helper bug
                            ;; (see docs/project_docs/BOXP-381/results.md).
-                           ["board-parsers-agree-with-foreign-headings" foreign-property]]]
+                           ["board-parsers-agree-with-foreign-headings" foreign-property]
+                           ;; Added after review found foreign cards were removed on update.
+                           ["remove-card-only-touches-lane-cards" remove-card-property]]]
     (let [result (check! name property)] (is (:pass? result) name))))
 
 ;; Deterministic regression for the shrunk counterexample found by
@@ -131,6 +142,24 @@
     (is (empty? (runner/parse-board-cards lines)))
     (is (empty? (task-board/board-cards (str (str/join "\n" lines) "\n"))))
     (is (parsers-agree? lines))))
+
+(deftest regression-update-keeps-card-copy-under-foreign-heading
+  (let [copy "- [ ] [[Tickets/BOXP-7|BOXP-7: sample]] #ticket status::ready priority::medium"
+        lines ["---" "kanban-plugin: board" "---" "" "## Backlog" "" "## Ready" "" copy ""
+               "## In Progress" "" "## Blocked" "" "## Review" "" "## Done" ""
+               "## Notes" "" copy "memo about BOXP-7"]
+        board (str (str/join "\n" lines) "\n")
+        section (fn [xs heading]
+                  (let [{:keys [body-start end]} (runner/section-range xs heading)]
+                    (subvec (vec xs) body-start end)))
+        removed (task-board/remove-card lines "BOXP-7")
+        updated (vec (str/split-lines (task-board/insert-card board "BOXP-7"
+                                          {:id "BOXP-7" :title "sample" :lane "In Progress" :priority "medium"})))]
+    (is (= "Ready" (:lane (task-board/card-for board "BOXP-7"))))
+    (is (= ["" copy "memo about BOXP-7"] (section removed "Notes")))
+    (is (= ["" copy "memo about BOXP-7"] (section updated "Notes")))
+    (is (not-any? #(str/includes? % "[[Tickets/BOXP-7|") (section updated "Ready")))
+    (is (= 1 (count (filter #(str/includes? % "[[Tickets/BOXP-7|") (section updated "In Progress")))))))
 
 (deftest mutant-unescaped-title-is-detected
   (with-redefs [task-board/encode-card-title identity]

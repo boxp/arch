@@ -67,6 +67,12 @@ clojure.spec.alpha と clojure.test.check を使った小規模な Property-Base
 - 拡張探索（結果を記録する）: 見出しの末尾空白、レーン外見出し（`## Notes` 等）を混ぜた
   場合に両者が食い違うかを探索し、実バグか仕様差かを判定して報告する。
 
+### P4（レビュー指摘後に追加）: helper `remove-card` はレーン内カードのみ削除
+
+- 利用者意図: 更新・削除はレーン内カードだけを動かし、`## Notes` などレーン外の行は保持する。
+- 性質: レーン外見出しを含む生成 Board と任意の存在 ID について、`remove-card` の結果が
+  runner `parse-board-cards` の該当 ID の `:idx` を取り除いた行列と一致する（oracle は runner）。
+
 ## 反例探索の実証計画
 
 1. 各性質を `tc/quick-check` で `:seed` 固定、`num-tests` 200 程度で実行し、

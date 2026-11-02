@@ -328,7 +328,17 @@
     (first cards)))
 
 (defn remove-card [lines id]
-  (vec (remove #(str/includes? % (str "[[Tickets/" id "|")) lines)))
+  ;; Foreign sections can contain copies that must survive lane updates.
+  (loop [remaining lines lane nil result []]
+    (if (empty? remaining)
+      result
+      (let [line (first remaining)
+            heading (second (re-find #"^##\s+(.+?)\s*$" line))
+            lane (cond (nil? heading) lane (contains? lanes heading) heading :else nil)]
+        (recur (rest remaining) lane
+               (if (and lane (card-line? line) (str/includes? line (str "[[Tickets/" id "|")))
+                 result
+                 (conj result line)))))))
 
 (defn repo-values [repo]
   (cond
