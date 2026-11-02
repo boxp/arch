@@ -1567,21 +1567,25 @@
   (select-keys review-gate [:ok? :gate :url :retryable? :retry-count
                             :retry-limit :retry-exhausted? :checked-pr-urls
                             :merged-pr-urls :pr-urls :diagnostic
-                            :budget-exhausted? :gate-budget]))
+                            :budget-exhausted? :gate-budget :low-priority-findings :blocking-findings
+                            :review-judgment-failure]))
 
 (defn pr-gate-diagnostic [review-gate]
   ;; A gate's :message may contain gh stderr or review-agent text.  Keep a
   ;; useful but entirely derived diagnosis: it identifies the failing class
   ;; and next action without retaining any untrusted diagnostic text.
   (let [gate (:gate review-gate)]
-    {:format-version 1
+    (merge {:format-version 1
      :gate (some-> gate name)
      :pr-url (:url review-gate)
      :category (case gate
                  :ci "ci-check-failure"
                  :mergeability "mergeability"
                  :conflict "merge-conflict"
-                 :codex-review "codex-review-findings"
+                 :codex-review (case (:failure-kind review-gate)
+                                 :findings "codex-review-findings"
+                                 :invalid-output "codex-review-invalid-output"
+                                 "codex-review-command-error")
                  :pr-url "missing-pr-url"
                  :pr-gate "pr-gate-api-error"
                  "pr-gate-failure")
@@ -1589,10 +1593,17 @@
                :ci "One or more required CI checks failed. Inspect the PR checks."
                :mergeability "The PR is not mergeable yet. Inspect its merge state."
                :conflict "The PR has merge conflicts. Resolve conflicts and update the PR."
-               :codex-review "Codex review reported actionable findings. Inspect the review artifact."
+               :codex-review (case (:failure-kind review-gate)
+                               :findings (str "Codex review reported P0/P1 blocking finding(s). Fix only the findings listed in the blocking artifact; P2/P3/nit findings are non-blocking reference and are not retry conditions. Blocking artifact: " (get-in review-gate [:blocking-findings :path]))
+                               :invalid-output (str "Codex review output lacked a valid CODEX_REVIEW_RESULT marker or finding severity (" (:review-judgment-failure review-gate) "); the gate could not be judged and this is not treated as a finding. Inspect the review artifact and re-run review manually.")
+                               "Codex review command failed; the gate could not evaluate.")
                :pr-url "Review was requested without a GitHub PR URL."
                :pr-gate "PR gate evaluation failed. Re-run the gate after checking GitHub availability."
-               "PR gate failed; inspect the PR and referenced run artifacts.")}))
+               "PR gate failed; inspect the PR and referenced run artifacts.")}
+     (when (and (= :codex-review gate) (= :findings (:failure-kind review-gate)))
+       {:blocking-findings-path (get-in review-gate [:blocking-findings :path])
+        :blocking-findings-count (get-in review-gate [:blocking-findings :count])
+        :low-priority-findings-count (get-in review-gate [:low-priority-findings :count])}))))
 
 (defn persist-pr-gate-diagnostic! [ticket-id run-id review-gate]
   (when (and (not (:ok? review-gate)) (:gate review-gate))
@@ -1611,7 +1622,9 @@
     (str "Review gates passed."
          (when-let [merged (seq (:merged-pr-urls review-gate))]
            (str " Already-merged PR(s) skipped gates and codex review: "
-                (str/join ", " merged) ".")))
+                (str/join ", " merged) "."))
+         (when (pos? (get-in review-gate [:low-priority-findings :count] 0))
+           (str " Non-blocking low-priority review findings (P2/P3/nit): " (get-in review-gate [:low-priority-findings :count]) "; kept for reference in the review artifact(s).")))
     (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
     :else "reason unavailable"))
 
@@ -1643,6 +1656,8 @@
          (when diagnostic
            (str "- Safe diagnostic: " (:path diagnostic)
                 " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ")\n"))
+         (when (= gate "codex-review")
+           "- Severity policy (BOXP-377): only P0/P1 findings in the blocking artifact are conditions for this retry; P2/P3/nit findings are non-blocking reference, must not be re-labelled as P1, and must not be addressed as a retry condition.\n")
          "- Retry agent: " (or agent "codex") "\n"
          "- Retry count for this same PR/gate/reason: " count "/" limit "\n"
          "- Previous run summary: " run-dir "/summary.edn\n"
@@ -2110,7 +2125,8 @@
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
                     (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     "Ticket contents:\n\n" ticket-text "\n\n")
-        review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
+        review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
+                             "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
                              "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
     (case action
       :groom
@@ -2468,23 +2484,39 @@
             (Thread/sleep (* 1000 (pr-gate-poll-seconds)))
             (recur)))))))
 
-(defn codex-review-clean? [text]
-  (boolean (re-find #"(?im)^CODEX_REVIEW_RESULT:\s*clean\s*$" (or text ""))))
-
-(defn codex-review-summary [text]
+(defn codex-review-findings [text]
   (->> (str/split-lines (or text ""))
-       (remove #(re-find #"(?im)^CODEX_REVIEW_RESULT:" %))
-       (remove str/blank?)
-       (take 6)
-       (str/join " ")))
+       (keep (fn [line]
+               (when-let [[_ token] (re-find #"(?i)^CODEX_REVIEW_FINDING:\s*([^|\s]+)\s*\|?(.*)$" line)]
+                 (let [upper (str/upper-case token)]
+                   {:severity (cond (contains? #{"P0" "P1" "P2" "P3"} upper) upper
+                                    (= "NIT" upper) "nit"
+                                    :else nil)
+                    :line (str/trim line)}))))
+       vec))
+
+(defn classify-codex-review [text]
+  (let [marker (some-> (re-find #"(?im)^CODEX_REVIEW_RESULT:\s*(clean|issues)\s*$" (or text "")) second str/lower-case)
+        findings (codex-review-findings text)
+        blocking (filterv #(contains? #{"P0" "P1"} (:severity %)) findings)
+        low (filterv #(contains? #{"P2" "P3" "nit"} (:severity %)) findings)
+        reason (cond (str/blank? text) :empty-output
+                     (nil? marker) :missing-result-marker
+                     (some #(nil? (:severity %)) findings) :unknown-severity
+                     (and (= marker "issues") (empty? findings)) :missing-severity)]
+    {:verdict (cond reason :invalid (seq blocking) :blocking (seq low) :pass-low :else :clean)
+     :reason reason :blocking blocking :low low}))
 
 (defn run-codex-review! [run-dir pr-url]
   (let [diff (run-string! ["gh" "pr" "diff" pr-url] {})
         review-path (fs/path run-dir (str "codex-review-" (last (str/split pr-url #"/")) ".md"))
         prompt (str "CODEX_REVIEW_GATE\n"
                     "Review this GitHub PR diff for actionable bugs, regressions, missing tests, or acceptance-criteria gaps.\n"
-                    "Return CODEX_REVIEW_RESULT: clean only if there are no actionable findings.\n"
-                    "Return CODEX_REVIEW_RESULT: issues when any actionable finding remains, followed by a concise summary.\n\n"
+                    "Severity policy: P0 is a critical safety problem (secret/credential leakage, data loss, destructive or irreversible operation, security hole); always blocking.\n"
+                    "P1 is a concrete defect in this diff with real impact and reproducible evidence (wrong behavior, regression, broken required test, unmet acceptance criterion); blocking.\n"
+                    "P2 is an improvement worth considering, not blocking. P3 / nit is style, naming, wording or optional cleanup, not blocking.\n"
+                    "Do not inflate severity: a hypothetical future risk, a preference, or a re-worded P2 is not a P1.\n"
+                    "Return CODEX_REVIEW_RESULT: clean only if there are no findings at all; otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every finding must have such a line.\n\n"
                     "PR: " pr-url "\n\n"
                     diff)
         proc @(p/process (cond-> ["codex" "exec"
@@ -2507,21 +2539,26 @@
        :retryable? false
        :message (str "codex review command failed: " (:err proc))}
 
-      (codex-review-clean? last-message)
-      {:ok? true
-       :url pr-url
-       :gate-results [["codex-review" "pass"]]
-       :message "codex review reported no actionable findings."}
-
       :else
-      {:ok? false
-       :gate :codex-review
-       :failure-kind :findings
-       :url pr-url
-       :retryable? true
-       :message (str "codex review reported actionable findings"
-                     (when-let [summary (not-empty (codex-review-summary last-message))]
-                       (str ": " summary)))})))
+      (let [{:keys [verdict reason blocking low]} (classify-codex-review last-message)
+            low-info {:count (count low) :paths [(str review-path)]}]
+        (case verdict
+          :clean {:ok? true :url pr-url :gate-results [["codex-review" "pass"]]
+                  :message "codex review reported no actionable findings."}
+          :pass-low {:ok? true :url pr-url :gate-results [["codex-review" "pass"]]
+                     :low-priority-findings low-info
+                     :message (str "codex review reported only non-blocking low-priority findings (P2/P3/nit): " (count low) "; kept for reference in " review-path)}
+          :blocking (let [path (fs/path run-dir (str "codex-review-" (last (str/split pr-url #"/")) "-blocking.md"))
+                          lines (mapv :line blocking)]
+                      (spit (str path) (str "Blocking codex review findings (P0/P1):\n" (str/join "\n" lines) "\n"))
+                      {:ok? false :gate :codex-review :failure-kind :findings :url pr-url :retryable? true
+                       :blocking-findings {:count (count blocking) :path (str path)}
+                       :low-priority-findings low-info
+                       :message (str "codex review reported " (count blocking) " blocking finding(s) (P0/P1): " (str/join " " lines)
+                                     (when (pos? (count low)) (str "; " (count low) " low-priority finding(s) (P2/P3/nit) are non-blocking and excluded from the retry instruction")))})
+          :invalid {:ok? false :gate :codex-review :failure-kind :invalid-output :url pr-url :retryable? false
+                    :review-judgment-failure (name reason)
+                    :message (str "codex review output could not be judged (" (name reason) "); review artifact: " review-path)})))))
 
 (defn review-gate!
   "Evaluate the PR gates. :gate-results lists every individual gate result as
@@ -2534,6 +2571,7 @@
         (loop [remaining pr-urls
                passed []
                merged []
+               low-info {:count 0 :paths []}
                results [["pr-url" "pass"]]]
           (if-let [pr-url (first remaining)]
             (let [pr-state (wait-for-pr-state! pr-url)]
@@ -2551,7 +2589,7 @@
                 ;; review is skipped too. Both lists below are persisted in
                 ;; summaries and must stay URL-only.
                 (:merged? pr-state)
-                (recur (rest remaining) passed (conj merged pr-url)
+                (recur (rest remaining) passed (conj merged pr-url) low-info
                        (into results [["mergeability" "skip"] ["conflict" "skip"] ["ci" "skip"] ["codex-review" "skip"]]))
 
                 :else
@@ -2567,8 +2605,11 @@
                     ;; This field is persisted in summaries, so it must remain a
                     ;; URL list rather than carrying arbitrary check/review text.
                     (recur (rest remaining) (conj passed pr-url) merged
+                           (-> low-info
+                               (update :count + (get-in review [:low-priority-findings :count] 0))
+                               (update :paths into (get-in review [:low-priority-findings :paths] [])))
                            (into results (:gate-results review)))))))
-            {:ok? true
+            (cond-> {:ok? true
              :skipped? (empty? passed)
              :gate-results results
              :pr-urls pr-urls
@@ -2576,7 +2617,8 @@
              :merged-pr-urls merged
              :message (str "PR gates passed."
                            (when (seq merged)
-                             (str " Merged PR(s) skipped: " (str/join ", " merged) ".")))}))
+                             (str " Merged PR(s) skipped: " (str/join ", " merged) ".")))}
+              (pos? (:count low-info)) (assoc :low-priority-findings low-info))))
 
         (no-repo-review-marker? last-message)
         {:ok? true
@@ -3644,6 +3686,7 @@
     (= "blocked" result) "agent-reported-blocked"
     (:budget-exhausted? review-gate) "gate-failure-budget-exhausted"
     (:retry-exhausted? review-gate) "pr-gate-retry-limit"
+    (and (= :codex-review (:gate review-gate)) (= :invalid-output (:failure-kind review-gate))) "codex-review-invalid-output"
     (:gate review-gate) (str "pr-gate-" (name (:gate review-gate)))
     :else "reason-unavailable"))
 
@@ -3655,6 +3698,8 @@
     (not (zero? (long (or exit 0)))) "Agent process exited unsuccessfully; inspect the referenced run artifacts."
     (= "blocked" result) "Agent reported blocked; inspect the referenced run artifacts."
     (:gate-budget-report review-gate) (:gate-budget-report review-gate)
+    (and (= :codex-review (:gate review-gate)) (= :invalid-output (:failure-kind review-gate)))
+    (str "Review gate failed (codex-review); " (get-in review-gate [:diagnostic :detail]) " Diagnostic: " (get-in review-gate [:diagnostic :path]))
     (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
     :else "reason unavailable"))
 
@@ -4759,6 +4804,20 @@
 
 (defn run-tests*! []
   (let [failures (atom [])]
+    (doseq [[input verdict reason blocking low]
+            [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | defect" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: P3 | x | b\nCODEX_REVIEW_FINDING: NIT | x | c" :pass-low nil 0 3]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\nCODEX_REVIEW_FINDING: P2 | x | b" :blocking nil 1 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P0 | x | a" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: issues\n- missing regression test" :invalid :missing-severity 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P9 | x | y" :invalid :unknown-severity 0 0]
+             ["no marker" :invalid :missing-result-marker 0 0]
+             ["" :invalid :empty-output 0 0]
+             ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P1 | x | a" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: nit | x | a\nCODEX_REVIEW_FINDING: NIT | x | b" :pass-low nil 0 2]]]
+      (let [result (classify-codex-review input)]
+        (when-not (= [verdict reason blocking low] [(:verdict result) (:reason result) (count (:blocking result)) (count (:low result))])
+          (swap! failures conj (str "codex review classification: " input)))))
     ;; Route additions or model changes require an explicit delegation-policy review.
     (when-not (= assignee->model {"codex" "gpt-6.1-terra" "codex-terra" "gpt-6.1-terra"
                                   "codex-sol" "gpt-6.1-sol" "codex-full" "gpt-6.1-sol"
@@ -4789,6 +4848,7 @@
                                     [{:gate :ci :failure-kind :timeout} "unknown"]
                                     [{:gate :mergeability :failure-kind :timeout} "unknown"]
                                     [{:gate :codex-review :failure-kind :command-error} "unknown"]
+                                    [{:gate :codex-review :failure-kind :invalid-output} "unknown"]
                                     [{:gate :pr-gate} "unknown"]
                                     [{:gate :ci} "unknown"]]]
       (when-not (= expected (:correction_origin (gate-correction gate-result)))
