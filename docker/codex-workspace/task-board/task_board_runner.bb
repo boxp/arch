@@ -2309,7 +2309,8 @@
 (defn codex-review-artifact-base [pr-url]
   (str "codex-review-"
        (when-let [repo (repo-from-pr-url pr-url)]
-         (str (str/replace repo "/" "-") "-"))
+         ;; GitHub owner names cannot contain underscores, so the first __ marks the boundary.
+         (str (str/replace repo "/" "__") "-"))
        (last (str/split pr-url #"/"))))
 
 (defn no-ci-repo? [pr-url]
@@ -4869,7 +4870,9 @@
       (let [result (classify-codex-review input)]
         (when-not (= [verdict reason blocking low] [(:verdict result) (:reason result) (count (:blocking result)) (count (:low result))])
           (swap! failures conj (str "codex review classification: " input)))))
-    (doseq [[url expected] [["https://github.com/boxp/example/pull/123" "codex-review-boxp-example-123"]
+    (doseq [[url expected] [["https://github.com/boxp/example/pull/123" "codex-review-boxp__example-123"]
+                            ["https://github.com/a-b/c/pull/123" "codex-review-a-b__c-123"]
+                            ["https://github.com/a/b-c/pull/123" "codex-review-a__b-c-123"]
                             ["https://example.test/pr/123" "codex-review-123"]]]
       (when-not (= expected (codex-review-artifact-base url))
         (swap! failures conj (str "codex review artifact base: " url))))

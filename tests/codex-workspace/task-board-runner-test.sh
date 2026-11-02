@@ -1965,7 +1965,7 @@ test_review_p1_finding_retries_and_consumes_budget() {
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Retrying with Codex instruction 1/2'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-findings'
   assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'nil deref'
-  artifact="$(find "${state}/runs/BOXP-405" -name codex-review-boxp-example-123-blocking.md -print -quit)"
+  artifact="$(find "${state}/runs/BOXP-405" -name codex-review-boxp__example-123-blocking.md -print -quit)"
   assert_file_contains "${artifact}" 'nil deref on empty input'
   assert_file_contains "${state}/gate-failure-budget.edn" 'BOXP-405'
   [[ "$(grep -o ':class "review-findings"' "${state}/gate-failure-budget.edn" | wc -l)" == 1 ]] || fail "expected one budget failure"
@@ -1997,12 +1997,12 @@ test_review_mixed_findings_retry_targets_only_blocking() {
   local tmp vault state bin artifact
   review_severity_setup
   CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | real defect\nCODEX_REVIEW_FINDING: P2 | x | optional wording' review_severity_tick
-  artifact="$(find "${state}/runs/BOXP-405" -name codex-review-boxp-example-123-blocking.md -print -quit)"
+  artifact="$(find "${state}/runs/BOXP-405" -name codex-review-boxp__example-123-blocking.md -print -quit)"
   assert_file_contains "${artifact}" 'real defect'
   assert_file_not_contains "${artifact}" 'optional wording'
   CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: clean' review_severity_tick
   assert_file_contains "${tmp}/prompt" 'Severity policy \(BOXP-377\)'
-  assert_file_contains "${tmp}/prompt" 'codex-review-boxp-example-123-blocking.md'
+  assert_file_contains "${tmp}/prompt" 'codex-review-boxp__example-123-blocking.md'
   assert_file_not_contains "${tmp}/prompt" 'optional wording'
 }
 
@@ -2199,7 +2199,7 @@ test_review_gate_passes_codex_model_profile_to_review() {
     CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-review-codex-config.out
 
-  assert_file_contains "${log}" 'codex-review-boxp-example-123\.md.*--model gpt-test.*--profile review-profile'
+  assert_file_contains "${log}" 'codex-review-boxp__example-123\.md.*--model gpt-test.*--profile review-profile'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-413\|BOXP-413: review codex config\]\].*status::review'
 }
 
