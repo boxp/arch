@@ -1,0 +1,4 @@
+# Pages プロジェクト名はデプロイ時に --project-name で明示する（stage: boxp-portfolio-stage, 本番: boxp-portfolio）。
+name = "boxp-portfolio"
+compatibility_date = "2026-10-01"
+pages_build_output_dir = "./dist"

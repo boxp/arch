@@ -2,7 +2,17 @@
 # Target versions
 kubernetes_upgrade_version: ""       # e.g., "1.35.1"
 kubernetes_upgrade_package: ""       # e.g., "1.35.1-1.1"
-crio_upgrade_version: ""             # e.g., "1.35.0" or "1.35" (both X.Y and X.Y.Z accepted)
+crio_upgrade_version: ""             # e.g., "1.35.1"
+crio_upgrade_package: ""             # exact apt revision, e.g., "1.35.1-1.1"
+kubernetes_upgrade_apt_preflight_temp_root: /var/tmp
+kubernetes_upgrade_apt_preflight_kubernetes_key_url: >-
+  https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_upgrade_version.split('.')[:2] | join('.') }}/deb/Release.key
+kubernetes_upgrade_apt_preflight_crio_key_url: >-
+  https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/deb/Release.key
+kubernetes_upgrade_apt_preflight_kubernetes_repository: >-
+  https://pkgs.k8s.io/core:/stable:/v{{ kubernetes_upgrade_version.split('.')[:2] | join('.') }}/deb/
+kubernetes_upgrade_apt_preflight_crio_repository: >-
+  https://download.opensuse.org/repositories/isv:/cri-o:/stable:/v{{ crio_upgrade_version.split('.')[:2] | join('.') }}/deb/
 
 # Previous versions (for rollback reference — actual rollback uses etcd snapshot)
 kubernetes_previous_version: ""      # e.g., "1.34"
@@ -19,6 +29,16 @@ upgrade_uncordon_delay: 10           # seconds
 kubeadm_upgrade_etcd: false          # skip kubeadm's etcd static pod phase unless explicitly enabled
 kubernetes_worker_drain_delegate: "{{ groups['control_plane'][1] | default(groups['control_plane'][0]) }}"
 
+# Pre-check readiness retry: first attempt plus this many retries, with the
+# delay between them (12 x 15s = at least 3 minutes of waiting). Bounded so one
+# apiserver liveness restart is tolerated but a persistently NotReady node or
+# an unreachable API still fails.
+kubernetes_upgrade_pre_check_ready_retries: 12
+kubernetes_upgrade_pre_check_ready_delay: 15   # seconds
+# Worker pre-checks run kubectl on kubernetes_worker_drain_delegate but target
+# the cluster VIP so one control plane's apiserver restart does not fail them
+kubernetes_upgrade_worker_pre_check_api_server: "https://{{ cluster_vip }}:6443"
+
 # etcd snapshot
 etcd_snapshot_dir: /var/lib/etcd-snapshots
 etcd_snapshot_pod_dir: /var/lib/etcd
@@ -29,6 +49,7 @@ etcd_snapshot_store_namespace: etcd-snapshots
 etcd_snapshot_store_pod_selector: app.kubernetes.io/name=etcd-snapshot-store
 etcd_snapshot_store_mount_path: /snapshots
 etcd_snapshot_store_retention_count: 3
+etcd_snapshot_store_min_free_bytes: 1073741824
 etcd_cacert: /etc/kubernetes/pki/etcd/ca.crt
 etcd_cert: /etc/kubernetes/pki/etcd/healthcheck-client.crt
 etcd_key: /etc/kubernetes/pki/etcd/healthcheck-client.key

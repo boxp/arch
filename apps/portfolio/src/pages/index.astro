@@ -1,0 +1,240 @@
+---
+import { getCollection, render } from 'astro:content';
+import Layout from '../layouts/Layout.astro';
+import Section from '../components/Section.astro';
+import ExternalLink from '../components/ExternalLink.astro';
+import ProjectCard from '../components/ProjectCard.astro';
+import { Image } from 'astro:assets';
+import profile from '../content/profile.json';
+// 本人プロフィール画像: GitHub アカウント boxp のアバター（https://github.com/boxp、原寸 460x460）。再生成・改変はしない。
+import avatar from '../assets/boxp-github-avatar.jpg';
+
+const byDateDesc = (a: string, b: string) => b.localeCompare(a);
+
+const experience = (await getCollection('experience')).sort((a, b) => byDateDesc(a.data.start, b.data.start));
+const experienceRendered = await Promise.all(
+  experience.map(async (entry) => ({ entry, Content: (await render(entry)).Content })),
+);
+
+const skills = (await getCollection('skills')).sort((a, b) => a.data.order - b.data.order);
+
+const projects = await getCollection('projects');
+const activeProjects = projects
+  .filter((p) => !p.data.archived)
+  .sort((a, b) => byDateDesc(a.data.lastUpdated, b.data.lastUpdated));
+const pastProjects = projects
+  .filter((p) => p.data.archived)
+  .sort((a, b) => byDateDesc(a.data.lastUpdated, b.data.lastUpdated));
+
+const articles = (await getCollection('articles')).sort((a, b) => byDateDesc(a.data.publishedAt, b.data.publishedAt));
+const talks = (await getCollection('talks')).sort((a, b) => byDateDesc(a.data.date, b.data.date));
+const engineeringTalks = talks.filter((t) => t.data.category === 'engineering');
+const hobbyTalks = talks.filter((t) => t.data.category === 'hobby');
+
+const socialLinks = [
+  { label: 'GitHub', href: profile.links.github },
+  { label: 'X', href: profile.links.x },
+  { label: 'YouTube', href: profile.links.youtube },
+  { label: 'LinkedIn', href: profile.links.linkedin },
+  { label: 'Speaker Deck', href: profile.links.speakerdeck },
+  { label: 'Medium', href: profile.links.medium },
+].filter((l): l is { label: string; href: string } => typeof l.href === 'string' && l.href.length > 0);
+
+const nav = [
+  { href: '#experience', label: 'Experience' },
+  { href: '#skills', label: 'Skills' },
+  { href: '#projects', label: 'Projects' },
+  { href: '#writing', label: 'Writing & Talks' },
+  { href: '#contact', label: 'Contact' },
+];
+
+const title = `${profile.name} (${profile.handle}) — Software Engineer`;
+const description = profile.tagline;
+
+const formatPeriod = (start: string, end: string | null) => `${start.replace('-', '/')} – ${end ? end.replace('-', '/') : '現在'}`;
+---
+
+<Layout title={title} description={description}>
+  <a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:rounded focus:bg-accent focus:px-3 focus:py-2 focus:text-ink">
+    本文へスキップ
+  </a>
+  <header class="sticky top-0 z-10 border-b border-line bg-ink/90 backdrop-blur">
+    <nav class="mx-auto flex max-w-3xl items-center justify-between gap-4 px-5 py-3" aria-label="ページ内ナビゲーション">
+      <a href="#top" class="font-mono text-sm font-semibold text-accent">b0xp.io</a>
+      <ul class="flex flex-wrap justify-end gap-x-4 gap-y-1 text-sm text-muted">
+        {nav.map((item) => (
+          <li><a href={item.href} class="hover:text-fg">{item.label}</a></li>
+        ))}
+      </ul>
+    </nav>
+  </header>
+
+  <main id="main" class="mx-auto max-w-3xl px-5 pb-20">
+    <section id="top" class="py-16">
+      <div class="flex flex-col gap-6 sm:flex-row sm:items-start sm:gap-8">
+        <Image
+          src={avatar}
+          alt={`${profile.name} (${profile.handle}) の GitHub プロフィール画像`}
+          width={160}
+          height={160}
+          densities={[1, 2]}
+          loading="eager"
+          class="h-28 w-28 shrink-0 rounded-full border border-line object-cover sm:h-40 sm:w-40"
+        />
+        <div>
+          <p class="font-mono text-sm text-accent">{profile.handle}</p>
+          <h1 class="mt-2 text-4xl font-bold tracking-tight sm:text-5xl">{profile.name}</h1>
+          <p class="mt-5 max-w-2xl text-lg leading-relaxed text-fg/90">{profile.tagline}</p>
+          <p class="mt-2 max-w-2xl text-sm text-muted" lang="en">{profile.taglineEn}</p>
+          <p class="mt-4 text-sm text-muted">{profile.location}</p>
+        </div>
+      </div>
+      <ul class="mt-8 flex flex-wrap gap-3" aria-label="SNS リンク">
+        {socialLinks.map((link) => (
+          <li>
+            <a
+              href={link.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              class="inline-block rounded border border-line px-3 py-1.5 text-sm transition hover:border-accent hover:text-accent"
+            >
+              {link.label}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+
+    <Section id="experience" title="Experience" subtitle="経歴の正本は LinkedIn プロフィールです。ここでは会社・役職・期間・担当領域の要約のみ掲載しています。">
+      {experienceRendered.length === 0 ? (
+        <p class="rounded-lg border border-dashed border-line p-5 text-sm text-muted">
+          経歴は準備中です。{profile.links.linkedin ? (<>詳細は <ExternalLink href={profile.links.linkedin}>LinkedIn</ExternalLink> をご覧ください。</>) : null}
+        </p>
+      ) : (
+        <ol class="space-y-8">
+          {experienceRendered.map(({ entry, Content }) => (
+            <li class="grid gap-2 sm:grid-cols-[10rem_1fr]">
+              <p class="font-mono text-sm text-muted">{formatPeriod(entry.data.start, entry.data.end)}</p>
+              <div>
+                <h3 class="font-semibold">{entry.data.title} <span class="text-muted">@ {entry.data.company}</span></h3>
+                {entry.data.location && <p class="text-xs text-muted">{entry.data.location}</p>}
+                <p class="mt-2 text-sm leading-relaxed">{entry.data.summary}</p>
+                <div class="prose-sm mt-2 text-sm text-fg/80 [&_ul]:list-disc [&_ul]:pl-5">
+                  <Content />
+                </div>
+              </div>
+            </li>
+          ))}
+        </ol>
+      )}
+      {profile.links.linkedin && experienceRendered.length > 0 && (
+        <p class="mt-8 text-sm text-muted">
+          詳細な職歴は <ExternalLink href={profile.links.linkedin}>LinkedIn</ExternalLink> を参照してください。
+        </p>
+      )}
+    </Section>
+
+    <Section id="skills" title="Skills" subtitle="公開リポジトリで実績のある技術を中心に掲載しています。">
+      <div class="grid gap-6 sm:grid-cols-3">
+        {skills.map((group) => (
+          <div>
+            <h3 class="font-mono text-sm font-semibold text-accent">{group.data.category}</h3>
+            <ul class="mt-3 space-y-2 text-sm">
+              {group.data.items.map((item) => (
+                <li>
+                  <span>{item.name}</span>
+                  {item.evidence.length > 0 && (
+                    <span class="block font-mono text-xs text-muted">
+                      {item.evidence.map((repo, i) => (
+                        <>
+                          {i > 0 && ', '}
+                          <a href={`https://github.com/${repo}`} target="_blank" rel="noopener noreferrer" class="hover:text-accent">{repo.replace('boxp/', '')}</a>
+                        </>
+                      ))}
+                    </span>
+                  )}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </Section>
+
+    <Section id="projects" title="Projects" subtitle="最終更新が新しい順に掲載しています。">
+      <ul class="grid gap-4 sm:grid-cols-2">
+        {activeProjects.map((p) => <ProjectCard project={p.data} />)}
+      </ul>
+      {pastProjects.length > 0 && (
+        <details class="mt-8 rounded-lg border border-line p-4">
+          <summary class="cursor-pointer text-sm font-semibold text-muted">過去の取り組み（最終更新が 2 年以上前）</summary>
+          <ul class="mt-4 grid gap-4 sm:grid-cols-2">
+            {pastProjects.map((p) => <ProjectCard project={p.data} />)}
+          </ul>
+        </details>
+      )}
+      <p class="mt-6 text-sm text-muted">
+        その他のリポジトリは <ExternalLink href={profile.links.github}>GitHub</ExternalLink> を参照してください。
+      </p>
+    </Section>
+
+    <Section id="writing" title="Writing & Talks">
+      <h3 class="font-mono text-sm font-semibold text-accent">Articles</h3>
+      <ul class="mt-3 space-y-4">
+        {articles.map((a) => (
+          <li>
+            <ExternalLink href={a.data.url} class="font-semibold">{a.data.title}</ExternalLink>
+            <p class="mt-1 text-xs text-muted">
+              <time datetime={a.data.publishedAt}>{a.data.publishedAt}</time> · {a.data.publisher}
+            </p>
+            {a.data.summary && <p class="mt-1 text-sm text-fg/80">{a.data.summary}</p>}
+          </li>
+        ))}
+      </ul>
+
+      <h3 class="mt-10 font-mono text-sm font-semibold text-accent">Talks</h3>
+      <ul class="mt-3 space-y-3">
+        {engineeringTalks.map((t) => (
+          <li class="grid gap-1 sm:grid-cols-[7rem_1fr]">
+            <time datetime={t.data.date} class="font-mono text-xs text-muted">{t.data.date}</time>
+            <div>
+              <ExternalLink href={t.data.url}>{t.data.title}</ExternalLink>
+              {t.data.event && <span class="ml-2 text-xs text-muted">{t.data.event}</span>}
+            </div>
+          </li>
+        ))}
+      </ul>
+      {hobbyTalks.length > 0 && (
+        <details class="mt-6 rounded-lg border border-line p-4">
+          <summary class="cursor-pointer text-sm font-semibold text-muted">VR / アバター関連の登壇（趣味）</summary>
+          <ul class="mt-4 space-y-3">
+            {hobbyTalks.map((t) => (
+              <li class="grid gap-1 sm:grid-cols-[7rem_1fr]">
+                <time datetime={t.data.date} class="font-mono text-xs text-muted">{t.data.date}</time>
+                <ExternalLink href={t.data.url}>{t.data.title}</ExternalLink>
+              </li>
+            ))}
+          </ul>
+        </details>
+      )}
+      <p class="mt-6 text-sm text-muted">
+        すべての登壇資料は <ExternalLink href={profile.links.speakerdeck}>Speaker Deck</ExternalLink> にあります。
+      </p>
+    </Section>
+
+    <Section id="contact" title="Contact">
+      <p class="text-sm leading-relaxed">お仕事のご相談やご連絡は、以下の SNS の DM からお願いします。</p>
+      <ul class="mt-4 flex flex-wrap gap-3">
+        {socialLinks.map((link) => (
+          <li>
+            <ExternalLink href={link.href}>{link.label}</ExternalLink>
+          </li>
+        ))}
+      </ul>
+    </Section>
+  </main>
+
+  <footer class="border-t border-line py-8 text-center text-xs text-muted">
+    <p>© {new Date().getFullYear()} {profile.name}. Built with <ExternalLink href="https://astro.build">Astro</ExternalLink>, hosted on Cloudflare Pages. <ExternalLink href="https://github.com/boxp/arch/tree/main/apps/portfolio">Source</ExternalLink></p>
+  </footer>
+</Layout>

@@ -74,6 +74,27 @@ resource "cloudflare_zero_trust_device_default_profile" "warp_include" {
       address     = "192.168.10.108/32"
       description = "palserver-2"
     },
+    {
+      address     = "10.104.181.159/32"
+      description = "even-g2-main"
+    },
+    {
+      # BOXP-328: send Kohako G2 (published route on Cloudflare shared IPs)
+      # through WARP/Gateway so the Access "Require Gateway" posture matches.
+      # Side effect: other sites on the same Cloudflare IPs also go through
+      # WARP while connected (rules are built from the IPs resolved at connect).
+      host        = "kohako-g2.b0xp.io"
+      description = "kohako-g2 (Access Require Gateway)"
+    },
+    {
+      # BOXP-328: Split Tunnels Include mode must also include the team domain
+      # (<team>.cloudflareaccess.com) for device posture checks and client
+      # sessions (Cloudflare docs: "Routes for Split Tunnels Include mode").
+      # The Owner device hit "Please enable WARP" on the team domain while only
+      # kohako-g2.b0xp.io was included. Same shared-IP side effect as above.
+      host        = data.cloudflare_zero_trust_organization.current.auth_domain
+      description = "Access team domain (One Client auth / Require Gateway)"
+    },
   ]
 }
 

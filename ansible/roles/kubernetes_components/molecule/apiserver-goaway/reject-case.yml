@@ -1,0 +1,43 @@
+---
+# verify.yml から 1 ケースずつ呼ばれる。不正な apiserver_goaway_chance で role を有効化し、
+# 最初の検証 (assert) で止まってマニフェストが書き換えられないことを確認する。
+- name: "Run the goaway tasks with a value that must be rejected ({{ reject_case.value }})"
+  block:
+    - name: "Include the goaway tasks ({{ reject_case.value }})"
+      ansible.builtin.include_role:
+        name: ../../../../kubernetes_components
+        tasks_from: apiserver_goaway.yml
+      vars:
+        apiserver_goaway_chance_enabled: true
+        apiserver_goaway_chance: "{{ reject_case.value }}"
+
+    - name: "Record that the value was NOT rejected ({{ reject_case.value }})"
+      ansible.builtin.set_fact:
+        reject_case_outcome: "accepted"
+  rescue:
+    - name: "Record how the value was rejected ({{ reject_case.value }})"
+      ansible.builtin.set_fact:
+        reject_case_outcome: "rejected"
+        reject_case_message: "{{ ansible_failed_result.msg | default('') }}"
+
+- name: "Assert the value was rejected by the expected validation ({{ reject_case.value }})"
+  ansible.builtin.assert:
+    that:
+      - reject_case_outcome == "rejected"
+      - reject_case.expect in reject_case_message
+    fail_msg: >-
+      apiserver_goaway_chance={{ reject_case.value }} should have been rejected with
+      "{{ reject_case.expect }}", got outcome={{ reject_case_outcome }} msg={{ reject_case_message | default('') }}
+
+- name: "Read the manifest after the rejected run ({{ reject_case.value }})"
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: reject_case_manifest
+  become: true
+
+- name: "Assert the rejected value never reached the manifest ({{ reject_case.value }})"
+  ansible.builtin.assert:
+    that:
+      - ("--goaway-chance=" ~ reject_case.value) not in (reject_case_manifest.content | b64decode)
+      - ("- --goaway-chance=" ~ apiserver_goaway_chance) in (reject_case_manifest.content | b64decode)
+    fail_msg: "the kube-apiserver manifest was modified by a rejected apiserver_goaway_chance value"

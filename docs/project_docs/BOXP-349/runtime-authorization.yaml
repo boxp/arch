@@ -1,0 +1,62 @@
+# PROPOSAL ONLY. No kustomization references this file. Requires Owner decision.
+# Credentials belong to a dedicated worker, never the existing Board runner SA.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qwen-runtime-controller
+  namespace: local-llm
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: qwen-runtime-controller
+  namespace: local-llm
+rules:
+  - apiGroups: [apps]
+    resources: [deployments/scale]
+    resourceNames: [llama-server]
+    verbs: [get, patch]
+  - apiGroups: [""]
+    resources: [configmaps]
+    resourceNames: [llama-server-admission]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: qwen-runtime-controller
+  namespace: local-llm
+subjects:
+  - kind: ServiceAccount
+    name: qwen-runtime-controller
+    namespace: local-llm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: qwen-runtime-controller
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: qwen-runtime-controller
+  namespace: stable-diffusion
+rules:
+  - apiGroups: [apps]
+    resources: [deployments/scale]
+    resourceNames: [qwen-image-eval]
+    verbs: [get, patch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: qwen-runtime-controller
+  namespace: stable-diffusion
+subjects:
+  - kind: ServiceAccount
+    name: qwen-runtime-controller
+    namespace: local-llm
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: qwen-runtime-controller

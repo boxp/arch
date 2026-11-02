@@ -1,0 +1,314 @@
+---
+- name: Verify
+  hosts: all
+  # normalize-case.yml は role のタスクでマニフェストを実際に書き換えるため、
+  # docker 環境での PID 待ち除外 (ansible_virtualization_type) に facts が要る。
+  gather_facts: true
+  vars:
+    # converge.yml と揃える (verify は別 play で role defaults を見ない)。
+    apiserver_gomemlimit: "1536MiB"
+  tasks:
+    - name: Read the kube-apiserver manifest
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/manifests/kube-apiserver.yaml
+      register: apiserver_manifest_content
+      become: true
+
+    - name: Decode the manifest
+      ansible.builtin.set_fact:
+        apiserver_manifest_text: "{{ apiserver_manifest_content.content | b64decode }}"
+        apiserver_manifest: "{{ apiserver_manifest_content.content | b64decode | from_yaml }}"
+
+    - name: Locate the kube-apiserver container
+      ansible.builtin.set_fact:
+        apiserver_container: "{{ apiserver_manifest.spec.containers | selectattr('name', 'equalto', 'kube-apiserver') | first }}"
+
+    # idempotence (molecule の 2 回目の converge) で重複追加されないことは「exactly once」が担う。
+    - name: Assert GOMEMLIMIT was added to the kube-apiserver env exactly once with the declared value
+      ansible.builtin.assert:
+        that:
+          - apiserver_manifest.kind == 'Pod'
+          - apiserver_manifest.spec.containers | length == 1
+          - "apiserver_container.env == [{'name': 'GOMEMLIMIT', 'value': apiserver_gomemlimit}]"
+          - apiserver_manifest_text.count('GOMEMLIMIT') == 1
+        fail_msg: "GOMEMLIMIT is missing, duplicated, or has an unexpected value: {{ apiserver_container.env | default('missing') }}"
+
+    - name: Assert the command and the rest of the container survived
+      ansible.builtin.assert:
+        that:
+          - apiserver_container.command[0] == 'kube-apiserver'
+          - "'--authorization-mode=Node,RBAC' in apiserver_container.command"
+          - "'--advertise-address=192.168.10.102' in apiserver_container.command"
+          - "'--secure-port=6443' in apiserver_container.command"
+          - apiserver_container.image == 'registry.k8s.io/kube-apiserver:v1.36.1'
+          - apiserver_manifest.spec.hostNetwork | bool
+          - apiserver_manifest.spec.priorityClassName == 'system-node-critical'
+          - apiserver_manifest.metadata.labels.component == 'kube-apiserver'
+        fail_msg: "existing kube-apiserver manifest content was altered"
+
+    # goaway は converge で無効のまま (defaults false) なので、command にそのフラグが混ざらないことも確認する。
+    - name: Assert the disabled goaway tasks did not touch the command
+      ansible.builtin.assert:
+        that:
+          - apiserver_container.command | select('match', '^--goaway-chance') | list | length == 0
+        fail_msg: "--goaway-chance appeared although apiserver_goaway_chance_enabled is false"
+
+    - name: Check the pristine backup
+      ansible.builtin.stat:
+        path: /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig
+      register: apiserver_backup
+      become: true
+
+    - name: Read the pristine backup
+      ansible.builtin.slurp:
+        src: /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig
+      register: apiserver_backup_content
+      become: true
+
+    - name: Assert the backup exists outside the static pod directory and predates the edit
+      ansible.builtin.assert:
+        that:
+          - apiserver_backup.stat.exists
+          - apiserver_backup.stat.mode == '0600'
+          - "'GOMEMLIMIT' not in (apiserver_backup_content.content | b64decode)"
+        fail_msg: "the pristine kube-apiserver backup is missing or already contains the env"
+
+    - name: Find stray files inside the static pod directory
+      ansible.builtin.find:
+        paths: /etc/kubernetes/manifests
+        file_type: file
+      register: static_pod_files
+
+    - name: Assert no backup was left inside the static pod directory
+      ansible.builtin.assert:
+        that:
+          - static_pod_files.files | map(attribute='path') | list == ['/etc/kubernetes/manifests/kube-apiserver.yaml']
+        fail_msg: "unexpected files in /etc/kubernetes/manifests (kubelet would load them as static pods)"
+
+    # ---- kube-system/kubeadm-config への保存経路 (mock kubectl / kubeadm 経由) ----
+    - name: Read the ClusterConfiguration held by the mock kubeadm store
+      ansible.builtin.slurp:
+        src: /var/lib/molecule-kubeadm/ClusterConfiguration.yaml
+      register: cc_store_content
+      become: true
+
+    - name: Read the upload-config log left by the mock kubeadm
+      ansible.builtin.slurp:
+        src: /var/lib/molecule-kubeadm/upload-config.log
+      register: cc_upload_log
+      become: true
+
+    - name: Parse the stored ClusterConfiguration
+      ansible.builtin.set_fact:
+        cc_stored: "{{ cc_store_content.content | b64decode | from_yaml }}"
+        cc_upload_lines: "{{ (cc_upload_log.content | b64decode).splitlines() }}"
+
+    - name: Assert GOMEMLIMIT was added to apiServer.extraEnvs exactly once, keeping existing extraArgs
+      ansible.builtin.assert:
+        that:
+          - "cc_stored.apiServer.extraEnvs == [{'name': 'GOMEMLIMIT', 'value': apiserver_gomemlimit}]"
+          - "cc_stored.apiServer.extraArgs == [{'name': 'authorization-mode', 'value': 'Node,RBAC'}]"
+        fail_msg: "apiServer.extraEnvs / extraArgs in the uploaded ClusterConfiguration is wrong: {{ cc_stored.apiServer | default('missing') }}"
+
+    - name: Assert the rest of the ClusterConfiguration survived the merge untouched
+      ansible.builtin.assert:
+        that:
+          - cc_stored.kind == 'ClusterConfiguration'
+          - cc_stored.apiVersion == 'kubeadm.k8s.io/v1beta4'
+          - cc_stored.kubernetesVersion == 'v1.36.1'
+          - cc_stored.controlPlaneEndpoint == '192.168.10.100:6443'
+          - cc_stored.apiServer.certSANs == ['192.168.10.100', 'k8s.example.internal']
+          - "cc_stored.controllerManager.extraArgs == [{'name': 'bind-address', 'value': '0.0.0.0'}]"
+          - cc_stored.etcd.local.dataDir == '/var/lib/etcd'
+          - "cc_stored.etcd.local.extraArgs == [{'name': 'listen-metrics-urls', 'value': 'http://0.0.0.0:2381'}]"
+          - cc_stored.networking.podSubnet == '10.244.0.0/16'
+          - cc_stored.networking.serviceSubnet == '10.96.0.0/12'
+          - cc_stored.certificatesDir == '/etc/kubernetes/pki'
+          - cc_stored.imageRepository == 'registry.k8s.io'
+        fail_msg: "keys other than apiServer.extraEnvs changed in the uploaded ClusterConfiguration"
+
+    # molecule test は converge → idempotence (2 回目の converge) → verify の順なので、
+    # ここで upload が 1 回だけなら「2 回目は live と一致して書き戻さない」ことが確認できる。
+    - name: Assert upload-config ran exactly once across converge and idempotence
+      ansible.builtin.assert:
+        that:
+          - cc_upload_lines | length == 1
+          - cc_upload_lines[0] is match('^upload-config /etc/kubernetes/kubeadm-clusterconfig-gomemlimit-merged\.yaml ')
+        fail_msg: "expected exactly one upload-config call, got: {{ cc_upload_lines }}"
+
+    - name: Check the merged ClusterConfiguration file handed to kubeadm
+      ansible.builtin.stat:
+        path: /etc/kubernetes/kubeadm-clusterconfig-gomemlimit-merged.yaml
+      register: cc_merged_file
+      become: true
+
+    - name: Read the merged ClusterConfiguration file handed to kubeadm
+      ansible.builtin.slurp:
+        src: /etc/kubernetes/kubeadm-clusterconfig-gomemlimit-merged.yaml
+      register: cc_merged_content
+      become: true
+
+    - name: Assert the merged file is root-only and matches what was uploaded
+      ansible.builtin.assert:
+        that:
+          - cc_merged_file.stat.exists
+          - cc_merged_file.stat.mode == '0600'
+          - (cc_merged_content.content | b64decode | from_yaml) == cc_stored
+        fail_msg: "the merged ClusterConfiguration file is missing, too permissive, or differs from the uploaded one"
+
+    # ---- 不正値の拒否 ----
+    # Go が解釈できない / 意図と違う形式 (単位なし・小数・10 進単位・指数・大文字 OFF) と、
+    # control plane の RAM に対して意味のない範囲 (live heap 未満・RAM 以上) を、マニフェストに触れる前に止める。
+    - name: Verify invalid GOMEMLIMIT values are rejected before touching the manifest
+      ansible.builtin.include_tasks: reject-case.yml
+      loop:
+        - { value: "1536", expect: "integer with a binary unit" }
+        - { value: "1.5GiB", expect: "integer with a binary unit" }
+        - { value: "1536MB", expect: "integer with a binary unit" }
+        - { value: "1e3MiB", expect: "integer with a binary unit" }
+        - { value: "OFF", expect: "integer with a binary unit" }
+        - { value: "512MiB", expect: "between 1024MiB and 3072MiB" }
+        - { value: "4GiB", expect: "between 1024MiB and 3072MiB" }
+      loop_control:
+        loop_var: reject_case
+        label: "{{ reject_case.value }}"
+
+    # 新規 control plane 構築では kubeadm-config.yaml.j2 が値をそのまま書き出すため、
+    # 検証 (apiserver_gomemlimit_validate.yml) が kubeadm.yml より前に include されている順序を固定する。
+    - name: Read the role task order
+      ansible.builtin.set_fact:
+        role_main_tasks: "{{ lookup('file', playbook_dir ~ '/../../tasks/main.yml') | regex_findall('include_tasks:\\s*(\\S+)') }}"
+
+    - name: Assert the GOMEMLIMIT validation runs before the kubeadm config is rendered
+      ansible.builtin.assert:
+        that:
+          - "'apiserver_gomemlimit_validate.yml' in role_main_tasks"
+          - role_main_tasks.index('apiserver_gomemlimit_validate.yml') < role_main_tasks.index('kubeadm.yml')
+          - role_main_tasks.index('kubeadm.yml') < role_main_tasks.index('apiserver_gomemlimit.yml')
+        fail_msg: "tasks/main.yml must include apiserver_gomemlimit_validate.yml before kubeadm.yml: {{ role_main_tasks }}"
+
+    # ---- 非標準マニフェストの正規化と rollback 値 ----
+    # (a) GOMEMLIMIT の重複 (値違い・valueFrom 形式) と他の env の混在 → GOMEMLIMIT 1 つに正規化、他の env は順序ごと保持
+    # (b) 先行する initContainer / sidecar に同名 env と "kube-apiserver" command があっても、name: kube-apiserver の env だけが編集される
+    # (c) rollback 値 "off" が受理され、env の値としてそのまま書かれる (Go ランタイムは limit なしになる)
+    - name: Verify non-standard manifests are normalized to a single GOMEMLIMIT entry
+      ansible.builtin.include_tasks: normalize-case.yml
+      loop:
+        - name: duplicated-and-mixed-env
+          other_env:
+            - { name: HTTPS_PROXY, value: "http://proxy.example.invalid:3128" }
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              annotations:
+                example.invalid/note: "GOMEMLIMIT=1024MiB is managed by ansible"
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              containers:
+              - command:
+                - kube-apiserver
+                - --advertise-address=192.168.10.102
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --service-cluster-ip-range=10.96.0.0/12
+                env:
+                - name: GOMEMLIMIT
+                  value: 1024MiB
+                - name: HTTPS_PROXY
+                  value: http://proxy.example.invalid:3128
+                - name: GOMEMLIMIT
+                  valueFrom:
+                    configMapKeyRef:
+                      key: limit
+                      name: stale
+                - name: NODE_NAME
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: spec.nodeName
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+        - name: sidecar-and-init-container-mention
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              initContainers:
+              - command:
+                - kube-apiserver
+                - --secure-port=6443
+                env:
+                - name: GOMEMLIMIT
+                  value: 128MiB
+                image: registry.example.invalid/wait-for-etcd:1
+                name: wait-for-etcd
+              containers:
+              - command:
+                - /bin/audit-shipper
+                env:
+                - name: GOMEMLIMIT
+                  value: 64MiB
+                image: registry.example.invalid/audit-shipper:1
+                name: audit-shipper
+              - command:
+                - kube-apiserver
+                - --advertise-address=192.168.10.102
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --service-cluster-ip-range=10.96.0.0/12
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+        - name: rollback-value-off
+          value: "off"
+          manifest: |
+            apiVersion: v1
+            kind: Pod
+            metadata:
+              labels:
+                component: kube-apiserver
+                tier: control-plane
+              name: kube-apiserver
+              namespace: kube-system
+            spec:
+              containers:
+              - command:
+                - kube-apiserver
+                - --advertise-address=192.168.10.102
+                - --allow-privileged=true
+                - --authorization-mode=Node,RBAC
+                - --secure-port=6443
+                - --service-cluster-ip-range=10.96.0.0/12
+                env:
+                - name: GOMEMLIMIT
+                  value: 1536MiB
+                image: registry.k8s.io/kube-apiserver:v1.36.1
+                name: kube-apiserver
+              hostNetwork: true
+              priorityClassName: system-node-critical
+      loop_control:
+        loop_var: normalize_case
+        label: "{{ normalize_case.name }}"
+
+    # ---- check mode (plan-ansible.yml の --check) で失敗しないこと ----
+    - name: Verify the GOMEMLIMIT tasks survive check mode without writing the manifest
+      ansible.builtin.include_tasks: check-mode-case.yml

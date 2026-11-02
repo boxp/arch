@@ -1,0 +1,4 @@
+# shanghai-1 (updating) is down the whole time; shanghai-2 also down from 30s.
+# Only one non-updating CP failed -> no halt.
+0 200 000 200 200
+30 200 000 000 200

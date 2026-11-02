@@ -1,0 +1,142 @@
+---
+- name: Resolve exact package revisions from isolated target repositories
+  tags: [pre_checks, upgrade]
+  # Do not use the host's sources, cached lists, trusted keyring, or APT hooks.
+  # This runs during --check so a dry run cannot accept a stale candidate.
+  # apt.conf(5): APT_CONFIG is read FIRST, before Dir::Etc::parts/main.
+  # Do not replace this environment variable with late-loaded -c/-o options.
+  block:
+    - name: Create temporary directory for APT preflight
+      ansible.builtin.tempfile:
+        state: directory
+        path: "{{ kubernetes_upgrade_apt_preflight_temp_root }}"
+        prefix: kubernetes-upgrade-apt-
+      register: kubernetes_upgrade_apt_preflight_dir
+      become: true
+      check_mode: false
+      changed_when: false
+
+    - name: Allow APT sandbox access to temporary preflight state
+      ansible.builtin.file:
+        path: "{{ kubernetes_upgrade_apt_preflight_dir.path }}"
+        mode: '0755'
+      become: true
+      check_mode: false
+      changed_when: false
+
+    - name: Create isolated APT state directories
+      ansible.builtin.file:
+        path: "{{ kubernetes_upgrade_apt_preflight_dir.path }}/{{ item }}"
+        state: directory
+        mode: '0755'
+      loop: [lists, archives, cache]
+      become: true
+      check_mode: false
+      changed_when: false
+
+    - name: Download target repository signing keys for isolated APT preflight
+      ansible.builtin.get_url:
+        url: "{{ item.url }}"
+        dest: "{{ kubernetes_upgrade_apt_preflight_dir.path }}/{{ item.name }}.asc"
+        mode: '0644'
+      loop:
+        - name: kubernetes
+          url: "{{ kubernetes_upgrade_apt_preflight_kubernetes_key_url }}"
+        - name: crio
+          url: "{{ kubernetes_upgrade_apt_preflight_crio_key_url }}"
+      become: true
+      check_mode: false
+      changed_when: false
+
+    - name: Convert target repository signing keys for isolated APT preflight
+      ansible.builtin.command:
+        argv:
+          - gpg
+          - --dearmor
+          - --yes
+          - --output
+          - "{{ kubernetes_upgrade_apt_preflight_dir.path }}/{{ item }}.gpg"
+          - "{{ kubernetes_upgrade_apt_preflight_dir.path }}/{{ item }}.asc"
+      loop: [kubernetes, crio]
+      become: true
+      check_mode: false
+      changed_when: false
+
+    - name: Configure isolated APT sources and state
+      ansible.builtin.copy:
+        dest: "{{ kubernetes_upgrade_apt_preflight_dir.path }}/apt.conf"
+        content: |
+          Dir::Etc::main "-";
+          Dir::Etc::parts "-";
+          Dir::Etc::sourcelist "{{ kubernetes_upgrade_apt_preflight_dir.path }}/sources.list";
+          Dir::Etc::sourceparts "-";
+          Dir::State::Lists "{{ kubernetes_upgrade_apt_preflight_dir.path }}/lists";
+          Dir::Cache "{{ kubernetes_upgrade_apt_preflight_dir.path }}/cache";
+          Dir::Cache::Archives "{{ kubernetes_upgrade_apt_preflight_dir.path }}/archives";
+          APT::Get::List-Cleanup "0";
+          APT::Update::Error-Mode "any";
+        mode: '0644'
+      become: true
+      check_mode: false
+      changed_when: false
+
+    - name: Configure isolated target repository source list
+      ansible.builtin.copy:
+        dest: "{{ kubernetes_upgrade_apt_preflight_dir.path }}/sources.list"
+        content: |
+          deb [signed-by={{ kubernetes_upgrade_apt_preflight_dir.path }}/kubernetes.gpg] {{ kubernetes_upgrade_apt_preflight_kubernetes_repository }} /
+          deb [signed-by={{ kubernetes_upgrade_apt_preflight_dir.path }}/crio.gpg] {{ kubernetes_upgrade_apt_preflight_crio_repository }} /
+        mode: '0644'
+      become: true
+      check_mode: false
+      changed_when: false
+
+    - name: Update isolated APT lists from target repositories
+      ansible.builtin.command:
+        argv:
+          - apt-get
+          - update
+      environment:
+        APT_CONFIG: "{{ kubernetes_upgrade_apt_preflight_dir.path }}/apt.conf"
+      become: true
+      check_mode: false
+      changed_when: false
+
+    - name: Resolve exact revisions from isolated APT lists
+      ansible.builtin.command:
+        argv:
+          - apt-cache
+          - madison
+          - "{{ item.name }}"
+      environment:
+        APT_CONFIG: "{{ kubernetes_upgrade_apt_preflight_dir.path }}/apt.conf"
+      loop:
+        - {name: kubeadm, version: "{{ kubernetes_upgrade_package }}"}
+        - {name: kubelet, version: "{{ kubernetes_upgrade_package }}"}
+        - {name: kubectl, version: "{{ kubernetes_upgrade_package }}"}
+        - {name: cri-o, version: "{{ crio_upgrade_package }}"}
+      register: isolated_upgrade_package_candidates
+      become: true
+      check_mode: false
+      changed_when: false
+      failed_when: >-
+        isolated_upgrade_package_candidates.rc != 0 or
+        item.version not in
+        (isolated_upgrade_package_candidates.stdout | regex_findall('\|\s*([^\s|]+)\s*\|'))
+  always:
+    - name: Remove isolated APT preflight state
+      ansible.builtin.file:
+        path: "{{ kubernetes_upgrade_apt_preflight_dir.path }}"
+        state: absent
+      when: >-
+        kubernetes_upgrade_apt_preflight_dir is defined and
+        kubernetes_upgrade_apt_preflight_dir.path is defined
+      become: true
+      check_mode: false
+      changed_when: false
+
+- name: Mark isolated APT preflight as complete
+  ansible.builtin.set_fact:
+    kubernetes_upgrade_apt_preflight_completed: true
+  check_mode: false
+  tags: [pre_checks, upgrade]

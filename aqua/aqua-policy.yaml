@@ -3,7 +3,8 @@
 # https://aquaproj.github.io/docs/reference/security/policy-as-code
 registries:
   - type: standard
-    ref: semver(">= 3.0.0")
+    # The ghalint fix is currently pinned to an upstream commit, not a semver tag.
+    ref: 'Version == "3546ea19be0d0f225b5e97719e82a6cb802bd2b1" || semver(">= 3.0.0")'
   - name: local
     type: local
     path: registry.yaml

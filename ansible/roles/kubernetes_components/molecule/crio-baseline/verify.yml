@@ -1,0 +1,41 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    crio_installed_revision: "1.32.13-1.1"
+    crio_baseline_revision: "1.32.12-1.1"
+  tasks:
+    - name: Gather package facts
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Assert CRI-O was not downgraded to the older baseline (BOXP-222)
+      ansible.builtin.assert:
+        that:
+          - "'cri-o' in ansible_facts.packages"
+          - ansible_facts.packages['cri-o'][0].version == crio_installed_revision
+          - ansible_facts.packages['cri-o'][0].version != crio_baseline_revision
+        fail_msg: "cri-o is {{ ansible_facts.packages['cri-o'][0].version }}; expected the newer {{ crio_installed_revision }} to stay installed"
+
+    - name: Read apt hold list
+      ansible.builtin.command: apt-mark showhold
+      changed_when: false
+      register: crio_apt_hold
+
+    - name: Assert CRI-O package stays on apt hold
+      ansible.builtin.assert:
+        that:
+          - "'cri-o' in crio_apt_hold.stdout_lines"
+        fail_msg: "cri-o is not on apt hold"
+
+    - name: Check the CRI-O checkpoint/restore drop-in written by the CRI-O tasks
+      ansible.builtin.stat:
+        path: /etc/crio/crio.conf.d/05-checkpoint-restore.conf
+      register: crio_checkpoint_restore_config
+
+    - name: Assert the CRI-O drop-ins are still written when the package install is skipped
+      ansible.builtin.assert:
+        that:
+          - crio_checkpoint_restore_config.stat.exists
+        fail_msg: "05-checkpoint-restore.conf was not written"

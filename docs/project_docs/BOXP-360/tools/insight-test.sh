@@ -1,0 +1,516 @@
+#!/usr/bin/env bash
+# BOXP-360 correction-rules/v1 回帰 eval: 本票自身の実例 (gate 失敗の連続 retrying = レビュー反復ループ、
+# groom→implement の誤計上、中断からの再開、Review 後の再開) を本文なしの summary.edn だけで再現する。
+set -euo pipefail
+cd "$(dirname "$0")"
+tmp=$(mktemp -d); trap 'rm -rf "$tmp"' EXIT
+
+run() { # ticket run-id status action result [gate]
+  local root=${ROOT:-$tmp}
+  mkdir -p "$root/runs/$1/$2"
+  local gate=""; [ -n "${6:-}" ] && gate=":review-gate {:gate :$6 :diagnostic {:category \"codex-review-findings\"}}"
+  echo "{:ticket \"$1\" :run-id \"$2\" :status :$3 :action :$4 :result \"$5\" :agent \"claude-opus\" :finished-at \"$(echo "$2" | sed -E 's/^(....)(..)(..)T(..)(..)(..)Z.*/\1-\2-\3T\4:\5:\6Z/')\" $gate}" >"$root/runs/$1/$2/summary.edn"
+}
+# BOXP-901: groom -> implement (是正ではない) -> gate 失敗 12 連続 -> pass -> Review 後に Owner 起点の再開
+run BOXP-901 20261001T000000Z groom groom review
+for i in $(seq 10 21); do run BOXP-901 20261001T${i}0000Z retrying implement review codex-review; done
+run BOXP-901 20261001T220000Z succeeded implement review
+run BOXP-901 20261002T010000Z succeeded implement review
+# BOXP-902: 中断 -> 再開 (是正ではない), blocked -> 再開 (是正ではない), review-fix (agent-system)
+run BOXP-902 20261003T000000Z interrupted implement review
+run BOXP-902 20261003T010000Z blocked implement blocked
+run BOXP-902 20261003T020000Z succeeded implement review
+run BOXP-902 20261003T030000Z succeeded review-fix review
+# snapshot の上限より後の run は無視される
+run BOXP-902 20261009T000000Z retrying implement review ci
+# groom の status は succeeded に直す
+sed -i 's/:status :groom :action :groom/:status :succeeded :action :groom/' "$tmp/runs/BOXP-901/20261001T000000Z/summary.edn"
+
+bb ai_ops_insight.bb report "$tmp" 20261005T000000Z >"$tmp/r.edn"
+
+check() { # 説明 clojure-expr(r に report)  [report file]
+  local f=${3:-$tmp/r.edn}
+  if bb -e "(let [r (clojure.edn/read-string (slurp \"$f\"))] (when-not $2 (System/exit 1)))"; then
+    echo "ok - $1"
+  else
+    echo "not ok - $1"; bb -e "(clojure.pprint/pprint (clojure.edn/read-string (slurp \"$f\")))"; exit 1
+  fi
+}
+check "groom->implement は v0/v1 とも是正に数えない (groom は review マーカーでも runner が Ready に進めるため v0 の reopen にもならない)" \
+  '(and (nil? (get-in r [:transitions :v0->v1 ["reopen" "groom_to_implement"]])) (= 1 (get-in r [:transitions :v0 "reopen"])) (= 1 (get-in r [:non-correction :by-kind "groom_to_implement"])))'
+check "gate 失敗の retrying は v0 では是正に出ず、v1 で gate_rework 12 件" \
+  '(and (= 12 (get-in r [:gate-rework :total])) (= 12 (get-in r [:transitions :v0->v1 [nil "gate_rework"]])))'
+check "連続 12 回の gate 失敗をレビュー反復ループとして 10 回目で検出" \
+  '(let [[d & more] (get-in r [:review-loops :detected])] (and (nil? more) (= "BOXP-901" (:ticket d)) (= 12 (:length d)) (= "20261001T190000Z" (:hit-run-id d)) (false? (:ongoing d))))'
+check "中断/blocked からの再開は是正に数えない" \
+  '(and (= 1 (get-in r [:non-correction :by-kind "resume_interrupted"])) (= 1 (get-in r [:non-correction :by-kind "resume_after_block"])))'
+check "review-fix は agent-system、Review 後の implement 再開は原因 unknown のまま" \
+  '(and (= 1 (get-in r [:transitions :v1 "review_fix"])) (= 1 (get-in r [:reopen-after-review :total])))'
+check "Owner に見える是正 task と agent-system task を分ける (分母は Review 到達 2 task)" \
+  '(and (= 2 (get-in r [:task-rates :denominator-reached-review])) (= 2 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 2 (get-in r [:task-rates :v1-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])))'
+check "snapshot 上限より後の run を除外" \
+  '(and (= 19 (get-in r [:snapshot :runs])) (nil? (get-in r [:gate-rework :by-gate "ci"])))'
+check "Review 終了から次 run までの待ちを next 種別ごとに出す (groom の Ready 終了は Review 終了に含めない)" \
+  '(and (= 2 (get-in r [:review-wait :followed])) (nil? (get-in r [:review-wait :by-next "groom_to_implement"])) (= 3.0 (get-in r [:review-wait :by-next "reopen_after_review" :p50-h])))'
+
+# --- codex-review 指摘の回帰 (別 snapshot) ---
+t2="$tmp/t2"; mkdir -p "$t2"
+# BOXP-903: 履歴の先頭が review-fix。gate 失敗 5 回 -> gate 情報なし retry -> gate 失敗 5 回 -> pass
+ROOT=$t2 run BOXP-903 20261004T000000Z succeeded review-fix review
+for i in 10 11 12 13 14; do ROOT=$t2 run BOXP-903 20261004T${i}0000Z retrying implement review codex-review; done
+ROOT=$t2 run BOXP-903 20261004T150000Z retrying implement review
+for i in 16 17 18 19 20; do ROOT=$t2 run BOXP-903 20261004T${i}0000Z retrying implement review codex-review; done
+ROOT=$t2 run BOXP-903 20261004T210000Z succeeded implement review
+# BOXP-904: gate 情報なし retry が 10 連続 (レビュー反復ではない)
+for i in 10 11 12 13 14 15 16 17 18 19; do ROOT=$t2 run BOXP-904 20261005T${i}0000Z retrying implement review; done
+ROOT=$t2 run BOXP-904 20261005T200000Z succeeded implement review
+# BOXP-905: 最新 run が gate 失敗で後続 run 未開始
+ROOT=$t2 run BOXP-905 20261006T000000Z succeeded implement review
+ROOT=$t2 run BOXP-905 20261006T010000Z retrying implement review codex-review
+bb ai_ops_insight.bb report "$t2" >"$t2/r.edn"
+check "gate 情報なし retry はレビュー反復ループに数えず、gate 失敗の系列を区切る" \
+  '(and (empty? (get-in r [:review-loops :detected])) (= 5 (get-in r [:gate-rework :longest-streak 0 1])))' "$t2/r.edn"
+check "先頭 run の review-fix も v1 で review_fix (agent-system・Owner 可視)" \
+  '(and (= 1 (get-in r [:transitions :v1 "review_fix"])) (= 1 (get-in r [:transitions :v0->v1 ["correction" "review_fix"]])) (= 1 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])))' "$t2/r.edn"
+check "後続 run 未開始の最新 gate 失敗も内部再作業と agent-system task 率に入る (pending 別掲)" \
+  '(and (= 11 (get-in r [:gate-rework :total])) (= 1 (get-in r [:gate-rework :pending])) (= 1 (get-in r [:gate-rework :top-tasks 1 1])) (= 2 (get-in r [:task-rates :v1-agent-system-tasks :n])) (= 3 (get-in r [:task-rates :denominator-reached-review])))' "$t2/r.edn"
+# BOXP-906: gate 失敗 (retrying, :result "review") だけで Review に未到達
+ROOT=$t2 run BOXP-906 20261007T000000Z retrying implement review codex-review
+ROOT=$t2 run BOXP-906 20261007T010000Z retrying implement review codex-review
+bb ai_ops_insight.bb report "$t2" >"$t2/r2.edn"
+check "gate 失敗の retrying だけの task は Review 到達の分母に入れない (gate_rework には計上)" \
+  '(and (= 3 (get-in r [:task-rates :denominator-reached-review])) (= 2 (get-in r [:task-rates :v1-agent-system-tasks :n])) (= 13 (get-in r [:gate-rework :total])))' "$t2/r2.edn"
+
+# --- codex-review 指摘の回帰 (2) ---
+t3="$tmp/t3"; mkdir -p "$t3"
+# BOXP-907: gate 失敗 -> review-fix (gate 失敗) -> review-fix 成功、最後に後続 run 未開始の gate 失敗
+ROOT=$t3 run BOXP-907 20261008T000000Z retrying implement review codex-review
+ROOT=$t3 run BOXP-907 20261008T010000Z retrying review-fix review codex-review
+ROOT=$t3 run BOXP-907 20261008T020000Z succeeded review-fix review
+ROOT=$t3 run BOXP-907 20261008T030000Z retrying review-fix review codex-review
+# BOXP-908: 上限と同じ秒に開始した run (run ID に suffix 付き) と、次の秒の run
+ROOT=$t3 run BOXP-908 20261009T000000Z-aaaa succeeded implement review
+ROOT=$t3 run BOXP-908 20261009T000001Z-bbbb retrying implement review ci
+bb ai_ops_insight.bb report "$t3" 20261009T000000Z >"$t3/r.edn"
+check "gate 失敗の後の review-fix は gate_rework (遷移集計 = total - pending で一致)" \
+  '(let [g (:gate-rework r)] (and (= 3 (:total g)) (= 1 (:pending g)) (= 2 (:followed g)) (= (- (:total g) (:pending g)) (get-in r [:transitions :v1 "gate_rework"])) (= 1 (get-in r [:transitions :v1 "review_fix"])) (= 2 (get-in r [:transitions :v0->v1 ["correction" "gate_rework"]]))))' "$t3/r.edn"
+check "時刻だけの上限では同じ秒の run を含め、次の秒の run は除外" \
+  '(and (= 5 (get-in r [:snapshot :runs])) (nil? (get-in r [:gate-rework :by-gate "ci"])))' "$t3/r.edn"
+bb ai_ops_insight.bb report "$t3" 20261009T000000Z-aaaa >"$t3/r2.edn"
+check "完全な run ID の上限は従来どおり辞書順で比較" '(= 5 (get-in r [:snapshot :runs]))' "$t3/r2.edn"
+
+t4="$tmp/t4"; mkdir -p "$t4"
+# BOXP-909: gate 失敗の直後の review-fix だけで Review に到達 (遷移は gate_rework、Owner 可視の review-fix task としても数える)
+ROOT=$t4 run BOXP-909 20261010T000000Z retrying implement review codex-review
+ROOT=$t4 run BOXP-909 20261010T010000Z succeeded review-fix review
+bb ai_ops_insight.bb report "$t4" >"$t4/r.edn"
+check "gate 失敗直後の review-fix は遷移では gate_rework、Owner 可視 (review-fix) task にも計上" \
+  '(and (= 1 (get-in r [:transitions :v1 "gate_rework"])) (nil? (get-in r [:transitions :v1 "review_fix"])) (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 1 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-agent-system-tasks :n])))' "$t4/r.edn"
+
+t5="$tmp/t5"; mkdir -p "$t5"
+# BOXP-910: Review 到達済み task で review-fix が gate 失敗のまま (Owner に届いていない) -> Owner 可視には数えない
+ROOT=$t5 run BOXP-910 20261011T000000Z succeeded implement review
+ROOT=$t5 run BOXP-910 20261011T010000Z retrying review-fix review codex-review
+bb ai_ops_insight.bb report "$t5" >"$t5/r.edn"
+check "gate 失敗した review-fix は Owner 可視の是正 task に数えない" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:task-rates :v1-owner-visible-tasks :n])) (= 0 (get-in r [:task-rates :v1-owner-visible-agent-system-tasks :n])) (= 1 (get-in r [:task-rates :v1-agent-system-tasks :n])))' "$t5/r.edn"
+
+# --- Review 停止からの再開契機 (Notes 見出しの時刻/source のみ) ---
+t6="$tmp/t6"; mkdir -p "$t6/vault/Tickets"
+# BOXP-911: review 終了 -> supervisor 催促 2 回 -> 再開 (同じ停止への催促の繰返し)
+ROOT=$t6 run BOXP-911 20261012T000000Z succeeded implement review
+ROOT=$t6 run BOXP-911 20261012T060000Z succeeded implement review
+# BOXP-912: review 終了 -> Owner 経由指示 -> 再開、もう一度 review 終了後は note なしで再開
+ROOT=$t6 run BOXP-912 20261013T000000Z succeeded implement review
+ROOT=$t6 run BOXP-912 20261013T020000Z succeeded implement review
+ROOT=$t6 run BOXP-912 20261013T040000Z succeeded implement review
+# BOXP-913: review 終了後に supervisor 催促があるが未再開 (停止中)
+ROOT=$t6 run BOXP-913 20261014T000000Z succeeded implement review
+cat >"$t6/vault/Tickets/BOXP-911.md" <<'MD'
+## Notes
+- 2026-10-12 00:30:00 UTC [kohako-event]: secret-body-should-not-appear handled
+- 2026-10-12 03:00:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+- 2026-10-12 05:58:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+- 2026-10-12 05:59:00 UTC [claude-opus]: agent log
+MD
+cat >"$t6/vault/Tickets/BOXP-912.md" <<'MD'
+## Notes
+- 2026-10-13 01:00:00 UTC [hermes-agent]: secret-body-should-not-appear
+- 2026-10-13 01:30:00 UTC [kohako-supervisor]: before-run-start-but-earlier
+- 2026-10-13 01:50:00 UTC [hermes-agent]: last trigger
+MD
+cat >"$t6/vault/Tickets/BOXP-913.md" <<'MD'
+## Notes
+- 2026-10-14 01:00:00 UTC [kohako-supervisor]: secret-body-should-not-appear
+MD
+bb ai_ops_insight.bb report "$t6" 20261015T000000Z "$t6/vault" >"$t6/r.edn"
+check "再開契機を最後の契機 note で分類し、note がなければ none-observed" \
+  '(let [b (get-in r [:review-resume :by-trigger])] (and (= 3 (get-in r [:review-resume :followed])) (= 1 (get-in b ["supervisor" :n])) (= 1 (get-in b ["owner-relay" :n])) (= 1 (get-in b ["none-observed" :n]))))' "$t6/r.edn"
+check "契機 note -> 次 run 開始を ack 遅延 (分) とする" \
+  '(and (= 2.0 (get-in r [:review-resume :by-trigger "supervisor" :ack-p50-min])) (= 10.0 (get-in r [:review-resume :by-trigger "owner-relay" :ack-p50-min])))' "$t6/r.edn"
+check "同じ停止への催促 2 回を繰返しとして数え、未再開の停止中催促も別掲 (kohako-event は契機に含めない)" \
+  '(and (= 1 (get-in r [:review-resume :supervisor-nudged :repeated-nudge-stalls])) (= 3 (get-in r [:review-resume :supervisor-nudged :stalls])) (= 1 (get-in r [:review-resume :open-stalls :with-supervisor-nudge])))' "$t6/r.edn"
+if grep -q "secret-body\|last trigger\|agent log" "$t6/r.edn"; then echo "not ok - Notes 本文が出力に含まれる"; exit 1; else echo "ok - Notes 本文は出力しない"; fi
+bb ai_ops_insight.bb report "$t6" 20261015T000000Z >"$t6/r2.edn"
+check "vault 未指定なら再開契機は unknown (0 にしない)" '(= "unknown" (get-in r [:review-resume :status]))' "$t6/r2.edn"
+
+# Notes 節以外 (別節・code block) の同形式の行は契機に数えない
+t7="$tmp/t7"; mkdir -p "$t7/vault/Tickets"
+ROOT=$t7 run BOXP-914 20261016T000000Z succeeded implement review
+ROOT=$t7 run BOXP-914 20261016T060000Z succeeded implement review
+cat >"$t7/vault/Tickets/BOXP-914.md" <<'MD'
+## Summary
+- 2026-10-16 01:00:00 UTC [kohako-supervisor]: outside notes
+## Notes
+```
+- 2026-10-16 02:00:00 UTC [hermes-agent]: inside code block
+```
+## Plan
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: after notes
+MD
+bb ai_ops_insight.bb report "$t7" 20261017T000000Z "$t7/vault" >"$t7/r.edn"
+check "Notes 節外・code block 内の行は契機に数えない" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "none-observed" :n])) (= 0 (get-in r [:review-resume :supervisor-nudged :stalls])))' "$t7/r.edn"
+
+# ticket file が無い/読めない場合は none-observed ではなく unknown-unreadable
+t8="$tmp/t8"; mkdir -p "$t8/vault/Tickets"
+ROOT=$t8 run BOXP-915 20261016T000000Z succeeded implement review
+ROOT=$t8 run BOXP-915 20261016T060000Z succeeded implement review
+ROOT=$t8 run BOXP-916 20261016T000000Z succeeded implement review
+ROOT=$t8 run BOXP-916 20261016T060000Z succeeded implement review
+printf '## Notes\n' >"$t8/vault/Tickets/BOXP-916.md"; chmod 000 "$t8/vault/Tickets/BOXP-916.md"
+bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/vault" >"$t8/r.edn"
+chmod 600 "$t8/vault/Tickets/BOXP-916.md"
+check "無い/読めない ticket は unknown-unreadable として別掲し none-observed にしない" \
+  '(and (= 2 (get-in r [:review-resume :unreadable-tickets])) (= 2 (get-in r [:review-resume :by-trigger "unknown-unreadable" :n])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t8/r.edn"
+check "読めない ticket の停止は催促件数を 0 にせず判定不能として別掲" \
+  '(and (= 4 (get-in r [:review-resume :supervisor-nudged :unknown-nudge-stalls])) (= 2 (get-in r [:review-resume :open-stalls :nudge-unknown])) (= 0 (get-in r [:review-resume :open-stalls :with-supervisor-nudge])))' "$t8/r.edn"
+if bb ai_ops_insight.bb report "$t8" 20261017T000000Z "$t8/no-such-vault" >/dev/null 2>&1; then echo "not ok - 存在しない vault で成功した"; exit 1; else echo "ok - 存在しない vault は exit 非0"; fi
+
+# Notes 内の code block にある `## ` 行で節を終えない (閉じフェンス以降の契機 note も読む)
+t9="$tmp/t9"; mkdir -p "$t9/vault/Tickets"
+ROOT=$t9 run BOXP-917 20261016T000000Z succeeded implement review
+ROOT=$t9 run BOXP-917 20261016T060000Z succeeded implement review
+cat >"$t9/vault/Tickets/BOXP-917.md" <<'MD'
+## Notes
+```
+## Plan
+```
+- 2026-10-16 05:00:00 UTC [kohako-supervisor]: after code block
+## Plan
+- 2026-10-16 05:30:00 UTC [hermes-agent]: outside notes
+MD
+bb ai_ops_insight.bb report "$t9" 20261017T000000Z "$t9/vault" >"$t9/r.edn"
+check "Notes 内 code block の見出しで節を終えず、閉じフェンス後の契機を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t9/r.edn"
+
+# 別節の code block 内にある `## Notes` 行を Notes 節の開始とみなさない (実際の Notes 節を読む)
+t10="$tmp/t10"; mkdir -p "$t10/vault/Tickets"
+ROOT=$t10 run BOXP-918 20261016T000000Z succeeded implement review
+ROOT=$t10 run BOXP-918 20261016T060000Z succeeded implement review
+cat >"$t10/vault/Tickets/BOXP-918.md" <<'MD'
+## Summary
+```
+## Notes
+- 2026-10-16 05:00:00 UTC [hermes-agent]: fake note in code block
+```
+## Notes
+- 2026-10-16 05:30:00 UTC [kohako-supervisor]: real note
+MD
+bb ai_ops_insight.bb report "$t10" 20261017T000000Z "$t10/vault" >"$t10/r.edn"
+check "code block 内の ## Notes を節開始とせず、実際の Notes 節を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t10/r.edn"
+
+# 種類の異なる fence (~~~ block 内の ```) で block を閉じたとみなさない
+t11="$tmp/t11"; mkdir -p "$t11/vault/Tickets"
+ROOT=$t11 run BOXP-919 20261016T000000Z succeeded implement review
+ROOT=$t11 run BOXP-919 20261016T060000Z succeeded implement review
+cat >"$t11/vault/Tickets/BOXP-919.md" <<'MD'
+## Notes
+~~~
+```
+- 2026-10-16 04:00:00 UTC [hermes-agent]: fake note in tilde block
+## Plan
+~~~
+- 2026-10-16 05:30:00 UTC [kohako-supervisor]: real note
+MD
+bb ai_ops_insight.bb report "$t11" 20261017T000000Z "$t11/vault" >"$t11/r.edn"
+check "~~~ block 内の \`\`\` で閉じず、対応する閉じフェンス後の契機を読む" \
+  '(and (= 1 (get-in r [:review-resume :by-trigger "supervisor" :n])) (nil? (get-in r [:review-resume :by-trigger "owner-relay"])) (nil? (get-in r [:review-resume :by-trigger "none-observed"])))' "$t11/r.edn"
+
+# Review 終了と同じ秒の契機 note は前後不明 (ambiguous-same-second) として別掲し、none-observed にしない
+t12="$tmp/t12"; mkdir -p "$t12/vault/Tickets"
+ROOT=$t12 run BOXP-920 20261016T000000Z succeeded implement review
+ROOT=$t12 run BOXP-920 20261016T060000Z succeeded implement review
+ROOT=$t12 run BOXP-921 20261016T000000Z succeeded implement review
+ROOT=$t12 run BOXP-921 20261016T060000Z succeeded implement review
+sec="2026-10-16 00:00:00" # run() の finished-at は run-id と同じ秒
+cat >"$t12/vault/Tickets/BOXP-920.md" <<MD
+## Notes
+- $sec UTC [kohako-supervisor]: same second
+MD
+cat >"$t12/vault/Tickets/BOXP-921.md" <<MD
+## Notes
+- $sec UTC [hermes-agent]: same second
+- 2026-10-16 05:00:00 UTC [kohako-supervisor]: definitely after
+MD
+bb ai_ops_insight.bb report "$t12" 20261017T000000Z "$t12/vault" >"$t12/r.edn"
+check "同秒の契機のみは ambiguous-same-second、後に確実な契機があればそちらで分類" \
+  '(let [rr (:review-resume r)] (and (= 1 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "none-observed"])) (= 2 (:same-second-boundary rr))))' "$t12/r.edn"
+
+# 次 run 開始と同じ秒の契機 note も前後不明。確定区間に入れず、ack 遅延・催促回数を確定しない
+t13="$tmp/t13"; mkdir -p "$t13/vault/Tickets"
+for t in BOXP-930 BOXP-931 BOXP-932; do
+  ROOT=$t13 run $t 20261016T000000Z succeeded implement review
+  ROOT=$t13 run $t 20261016T060000Z succeeded implement review
+done
+st="2026-10-16 06:00:00" # 次 run の開始 (run-id) と同じ秒。run() の finished-at も同秒のため後続停止の終了境界にも当たる
+cat >"$t13/vault/Tickets/BOXP-930.md" <<MD
+## Notes
+- $st UTC [kohako-supervisor]: start same second only
+MD
+cat >"$t13/vault/Tickets/BOXP-931.md" <<MD
+## Notes
+- 2026-10-16 03:00:00 UTC [hermes-agent]: definite owner relay
+- $st UTC [kohako-supervisor]: start same second, different kind
+MD
+cat >"$t13/vault/Tickets/BOXP-932.md" <<MD
+## Notes
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: definite nudge
+- $st UTC [kohako-supervisor]: start same second, same kind
+MD
+bb ai_ops_insight.bb report "$t13" 20261017T000000Z "$t13/vault" >"$t13/r.edn"
+check "開始同秒の note は確定せず、種別が異なれば ambiguous、ack は unknown、催促は確定分のみ" \
+  '(let [rr (:review-resume r)] (and (= 2 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "supervisor" :ack-p50-min])) (nil? (get-in rr [:by-trigger "none-observed"])) (= 6 (:same-second-boundary rr)) (= 1 (get-in rr [:supervisor-nudged :stalls])) (= 0 (get-in rr [:supervisor-nudged :repeated-nudge-stalls])) (= 6 (get-in rr [:supervisor-nudged :ambiguous-nudge-stalls]))))' "$t13/r.edn"
+
+# 停止区間内の最後の秒に種別の異なる契機 note が複数あれば、記載順で確定せず ambiguous-same-second
+t14="$tmp/t14"; mkdir -p "$t14/vault/Tickets"
+for t in BOXP-940 BOXP-941; do
+  ROOT=$t14 run $t 20261016T000000Z succeeded implement review
+  ROOT=$t14 run $t 20261016T060000Z succeeded implement review
+done
+cat >"$t14/vault/Tickets/BOXP-940.md" <<MD
+## Notes
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: nudge
+- 2026-10-16 03:00:00 UTC [hermes-agent]: relay in same second
+MD
+cat >"$t14/vault/Tickets/BOXP-941.md" <<MD
+## Notes
+- 2026-10-16 02:00:00 UTC [hermes-agent]: earlier relay
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: nudge a
+- 2026-10-16 03:00:00 UTC [kohako-supervisor]: nudge b
+MD
+bb ai_ops_insight.bb report "$t14" 20261017T000000Z "$t14/vault" >"$t14/r.edn"
+check "最後の秒に種別の異なる契機があれば ambiguous、同種のみなら確定" \
+  '(let [rr (:review-resume r)] (and (= 1 (get-in rr [:by-trigger "ambiguous-same-second" :n])) (= 1 (get-in rr [:by-trigger "supervisor" :n])) (nil? (get-in rr [:by-trigger "owner-relay"])) (= 1 (:same-second-boundary rr))))' "$t14/r.edn"
+
+# 未再開の停止では snapshot 上限 (until-at) と同じ秒の催促 note を確定計上せず、前後不明として別掲
+t15="$tmp/t15"; mkdir -p "$t15/vault/Tickets"
+ROOT=$t15 run BOXP-950 20261016T000000Z succeeded implement review
+cat >"$t15/vault/Tickets/BOXP-950.md" <<MD
+## Notes
+- 2026-10-17 00:00:00 UTC [kohako-supervisor]: nudge at snapshot boundary
+MD
+bb ai_ops_insight.bb report "$t15" 20261017T000000Z "$t15/vault" >"$t15/r.edn"
+check "未再開停止で上限と同秒の催促は確定計上せず ambiguous に別掲" \
+  '(let [rr (:review-resume r)] (and (= 0 (get-in rr [:supervisor-nudged :stalls])) (= 0 (get-in rr [:open-stalls :with-supervisor-nudge])) (= 1 (get-in rr [:open-stalls :n])) (= 1 (get-in rr [:supervisor-nudged :ambiguous-nudge-stalls])) (= 1 (:same-second-boundary rr))))' "$t15/r.edn"
+
+# 存在するが読めない Tickets ディレクトリは exit 2
+chmod 000 "$t9/vault/Tickets"
+if [ -r "$t9/vault/Tickets" ]; then
+  echo "ok - (skip) 権限で読めなくできない環境"
+else
+  set +e; bb ai_ops_insight.bb report "$t9" 20261017T000000Z "$t9/vault" >/dev/null 2>&1; rc=$?; set -e
+  chmod 700 "$t9/vault/Tickets"
+  if [ "$rc" = 2 ]; then echo "ok - 読めない Tickets ディレクトリは exit 2"; else echo "not ok - 読めない Tickets ディレクトリで exit $rc"; exit 1; fi
+fi
+chmod 700 "$t9/vault/Tickets"
+
+# notes-lines は extract の結果だけを返し、行そのものを保持しない
+if bb -e '(load-file "ai_ops_insight.bb") (in-ns (quote ai-ops-insight))
+  (let [r (notes-lines (fn [l] (when (str/starts-with? l "- ") :hit)) ["# t" "## Notes" "- a secret" "body secret" "```" "- in fence" "```" "## Next" "- after"])]
+    (when-not (= [:hit] r) (System/exit 1)))'; then
+  echo "ok - notes-lines は抽出結果だけを返す (本文行を蓄積しない)"
+else echo "not ok - notes-lines が抽出結果以外を返した"; exit 1; fi
+
+# 固定 snapshot の EDN は現行 report の keyword key 構造をすべて含む (再集計漏れ検出)
+check "固定 snapshot EDN が現行 report の出力 key を欠かない" \
+  '(letfn [(paths [m p] (if (map? m) (mapcat (fn [[k v]] (when (keyword? k) (cons (conj p k) (paths v (conj p k))))) m) []))]
+     (let [snap (clojure.edn/read-string (slurp "../insight-2026-10-30-resume.edn"))
+           missing (remove (set (paths snap [])) (paths r []))]
+       (when (seq missing) (binding [*out* *err*] (prn :missing missing)))
+       (empty? missing)))' "$t14/r.edn"
+
+# Prometheus 出力 (公開 SLI の v1 系列): 件数だけを出し、ticket ID を label や値に出さない
+bb ai_ops_insight.bb prom "$tmp" 20261005T000000Z >"$tmp/v1.prom"
+for want in 'ai_ops_v1_info{rules_version="correction-rules/v1",loop_threshold="10"} 1' \
+            'ai_ops_v1_gate_rework_runs{part="total"} 12' 'ai_ops_v1_gate_rework_runs{part="pending"} 0' \
+            'ai_ops_v1_gate_rework_runs_by_gate{gate="codex-review"} 12' 'ai_ops_v1_gate_rework_tasks 1' \
+            'ai_ops_v1_review_loops{part="series"} 1' 'ai_ops_v1_review_loops{part="tasks"} 1' 'ai_ops_v1_review_loops{part="max_length"} 12' \
+            'ai_ops_v1_transitions{kind="groom_to_implement"} 1' 'ai_ops_v1_transitions{kind="gate_rework"} 12' \
+            'ai_ops_v1_correction_tasks{kind="owner_visible_agent_system"} 1' 'ai_ops_v1_reached_review_tasks 2'; do
+  grep -qF "$want" "$tmp/v1.prom" || { echo "not ok - prom 出力に無い: $want"; cat "$tmp/v1.prom"; exit 1; }
+done
+if grep -q 'BOXP-' "$tmp/v1.prom"; then echo "not ok - prom 出力に ticket ID が含まれる"; exit 1; fi
+if grep -v '^#' "$tmp/v1.prom" | grep -qE 'rate\(|increase\('; then echo "not ok - prom 出力に rate/increase"; exit 1; fi
+if bb ai_ops_insight.bb prom "$tmp/no-such-root" >/dev/null 2>&1; then echo "not ok - runs 不在で exit 0"; exit 1; fi
+grep -qF 'ai_ops_v1_snapshot{part="unevaluated_tasks"} 0' "$tmp/v1.prom" || { echo "not ok - 読めない run が無いのに unevaluated_tasks 0 が無い"; exit 1; }
+echo "ok - prom 出力 (v1) は件数のみで ticket ID を含まない"
+
+# 読めない run (summary.edn 欠落/破損) を持つ task は v1 の分母・分子・遷移・ループ・停滞から除外し、
+# unevaluated_tasks として件数だけ別掲する (欠落 run が Review 到達や gate 失敗を含んでいた可能性があり、過少な値を確定値として公開しない)。
+# 読める task だけの集計はそのまま出す。
+t30="$tmp/t30"; mkdir -p "$t30"
+# BOXP-920: 正常 run 2 件 + 破損 summary 1 件 -> 全集計から除外
+ROOT=$t30 run BOXP-920 20261020T000000Z succeeded implement review
+ROOT=$t30 run BOXP-920 20261020T010000Z retrying implement review codex-review
+mkdir -p "$t30/runs/BOXP-920/20261020T020000Z"
+echo '{:ticket "BOXP-920" :run-id' >"$t30/runs/BOXP-920/20261020T020000Z/summary.edn"
+# BOXP-921: summary.edn 欠落のみ -> 除外
+mkdir -p "$t30/runs/BOXP-921/20261020T030000Z"
+# BOXP-922: 読める task (Review 到達 1、gate 失敗 1) -> そのまま集計
+ROOT=$t30 run BOXP-922 20261020T040000Z retrying implement review ci
+ROOT=$t30 run BOXP-922 20261020T050000Z succeeded implement review
+bb ai_ops_insight.bb report "$t30" >"$t30/r.edn"
+check "読めない run を持つ task は v1 集計から除外し unevaluated-tasks に別掲 (snapshot の runs/unreadable は入力全体)" \
+  '(and (= 3 (get-in r [:snapshot :tickets])) (= 6 (get-in r [:snapshot :runs])) (= 2 (get-in r [:snapshot :unreadable-runs])) (= 2 (get-in r [:snapshot :unevaluated-tasks]))
+        (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:gate-rework :total])) (= {"ci" 1} (get-in r [:gate-rework :by-gate]))
+        (= 1 (get-in r [:transitions :v1 "gate_rework"])) (nil? (get-in r [:transitions :v1 "reopen_after_review"])))' "$t30/r.edn"
+bb ai_ops_insight.bb prom "$t30" >"$t30/v1.prom"
+for want in 'ai_ops_v1_snapshot{part="unreadable_runs"} 2' 'ai_ops_v1_snapshot{part="unevaluated_tasks"} 2' 'ai_ops_v1_snapshot{part="runs"} 6' \
+            'ai_ops_v1_reached_review_tasks 1' 'ai_ops_v1_gate_rework_runs{part="total"} 1' 'ai_ops_v1_gate_rework_runs_by_gate{gate="ci"} 1'; do
+  grep -qF "$want" "$t30/v1.prom" || { echo "not ok - prom 出力に無い: $want"; cat "$t30/v1.prom"; exit 1; }
+done
+if grep -qF 'gate="codex-review"' "$t30/v1.prom"; then echo "not ok - 読めない run を持つ task の gate 失敗が確定値として出力された"; cat "$t30/v1.prom"; exit 1; fi
+echo "ok - 読めない run を持つ task は v1 の prom 出力からも除外され unevaluated_tasks に別掲"
+
+# codex-review 指摘: EDN が map でも必須 field 欠落/不正型/未知値/不正時刻/ディレクトリ不一致の summary は
+# 読めない run (unreadable) として扱い、その task を v1 集計から除外する (`{}` を :status nil の正常 run にしない)。
+t31="$tmp/t31"; mkdir -p "$t31"
+# BOXP-930: 正常 gate 失敗 1 + `{}` (必須 field 欠落) -> 除外
+ROOT=$t31 run BOXP-930 20261021T000000Z retrying implement review codex-review
+mkdir -p "$t31/runs/BOXP-930/20261021T010000Z"; echo '{}' >"$t31/runs/BOXP-930/20261021T010000Z/summary.edn"
+# BOXP-931: 未知の :action (review_fix) -> 除外
+ROOT=$t31 run BOXP-931 20261021T020000Z succeeded review_fix review
+# BOXP-932: 終了状態なのに :finished-at 欠落 -> 除外
+ROOT=$t31 run BOXP-932 20261021T030000Z succeeded implement review
+sed -i 's/ :finished-at "[^"]*"//' "$t31/runs/BOXP-932/20261021T030000Z/summary.edn"
+# BOXP-933: :ticket がディレクトリと不一致 -> 除外
+ROOT=$t31 run BOXP-933 20261021T040000Z succeeded implement review
+sed -i 's/:ticket "BOXP-933"/:ticket "BOXP-999"/' "$t31/runs/BOXP-933/20261021T040000Z/summary.edn"
+# BOXP-934: 不正時刻 -> 除外
+ROOT=$t31 run BOXP-934 20261021T050000Z succeeded implement review
+sed -i 's/:finished-at "[^"]*"/:finished-at "yesterday"/' "$t31/runs/BOXP-934/20261021T050000Z/summary.edn"
+# BOXP-935: 正常 (interrupted は finished-at 不要、文字列 status/action も可) -> 集計
+ROOT=$t31 run BOXP-935 20261021T060000Z interrupted implement review
+sed -i 's/ :finished-at "[^"]*"//; s/:status :interrupted/:status "interrupted"/; s/:action :implement/:action "implement"/' "$t31/runs/BOXP-935/20261021T060000Z/summary.edn"
+ROOT=$t31 run BOXP-935 20261021T070000Z succeeded implement review
+bb ai_ops_insight.bb report "$t31" >"$t31/r.edn"
+check "必須 field 欠落/未知値/finished-at 欠落/ディレクトリ不一致/不正時刻の summary は unreadable として task を未評価化" \
+  '(and (= 6 (get-in r [:snapshot :tickets])) (= 8 (get-in r [:snapshot :runs])) (= 5 (get-in r [:snapshot :unreadable-runs])) (= 5 (get-in r [:snapshot :unevaluated-tasks]))
+        (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:gate-rework :total] 0)) (nil? (get-in r [:gate-rework :by-gate "codex-review"]))
+        (= 1 (get-in r [:non-correction :by-kind "resume_interrupted"])))' "$t31/r.edn"
+
+# codex-review 指摘: gate label は runner の固定語彙 (pr-url/mergeability/conflict/ci/codex-review/pr-gate/none) に限定し、
+# 未知の gate 名は "other" に集約する (summary の任意文字列で系列数を増やさない)
+t32="$tmp/t32"; mkdir -p "$t32"
+ROOT=$t32 run BOXP-940 20261022T000000Z retrying implement review codex-review
+ROOT=$t32 run BOXP-940 20261022T010000Z retrying implement review somebodys-secret-gate
+ROOT=$t32 run BOXP-940 20261022T020000Z retrying implement review mergeability
+ROOT=$t32 run BOXP-940 20261022T030000Z succeeded implement review
+bb ai_ops_insight.bb prom "$t32" >"$t32/v1.prom"
+for want in 'ai_ops_v1_gate_rework_runs_by_gate{gate="codex-review"} 1' 'ai_ops_v1_gate_rework_runs_by_gate{gate="mergeability"} 1' \
+            'ai_ops_v1_gate_rework_runs_by_gate{gate="other"} 1' 'ai_ops_v1_gate_rework_runs{part="total"} 3'; do
+  grep -qF "$want" "$t32/v1.prom" || { echo "not ok - prom 出力に無い: $want"; cat "$t32/v1.prom"; exit 1; }
+done
+if grep -q 'somebodys-secret-gate' "$t32/v1.prom"; then echo "not ok - 未知の gate 名が label に出力された"; exit 1; fi
+echo "ok - 未知の gate 名は other に集約され label に出ない"
+
+# --- codex-review 指摘: 結果マーカーなしの正常終了 (:result nil) は runner の既定で Review に進む ---
+t33="$tmp/t33"; mkdir -p "$t33/runs/BOXP-941/20261023T000000Z" "$t33/runs/BOXP-941/20261023T010000Z" "$t33/runs/BOXP-941/20261024T000000Z" "$t33/runs/BOXP-942/20261023T000000Z"
+# BOXP-941: groom (マーカーなし -> Ready、Review ではない) -> implement (マーカーなし -> Review 到達) -> 翌日 implement (Review 後の再開)
+echo '{:ticket "BOXP-941" :run-id "20261023T000000Z" :status :succeeded :action :groom :result nil :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t33/runs/BOXP-941/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-941" :run-id "20261023T010000Z" :status :succeeded :action :implement :result nil :agent "claude-opus" :finished-at "2026-10-23T01:00:00Z"}' >"$t33/runs/BOXP-941/20261023T010000Z/summary.edn"
+echo '{:ticket "BOXP-941" :run-id "20261024T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-24T00:00:00Z"}' >"$t33/runs/BOXP-941/20261024T000000Z/summary.edn"
+# BOXP-942: groom のマーカーなし終了だけ (Ready 止まり。Review 到達ではない)
+echo '{:ticket "BOXP-942" :run-id "20261023T000000Z" :status :succeeded :action :groom :result nil :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t33/runs/BOXP-942/20261023T000000Z/summary.edn"
+bb ai_ops_insight.bb report "$t33" >"$t33/r.edn"
+check "マーカーなしの implement 正常終了を Review 到達に数え、Review 後の再開と待ち時間も出す (groom のマーカーなしは Ready 扱い)" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:snapshot :unevaluated-tasks] 0)) (= 1 (get-in r [:reopen-after-review :total])) (= 1 (get-in r [:non-correction :by-kind "groom_to_implement"])) (= 1 (get-in r [:review-wait :followed])) (= 23.0 (get-in r [:review-wait :by-next "reopen_after_review" :p50-h])))' "$t33/r.edn"
+
+# --- codex-review 指摘: :action 欠落の run は effective-result の既定 (Review/Ready) も review-fix 判定もできないため unreadable ---
+t34="$tmp/t34"; mkdir -p "$t34/runs/BOXP-943/20261023T000000Z" "$t34/runs/BOXP-943/20261023T010000Z" "$t34/runs/BOXP-944/20261023T000000Z"
+# BOXP-943: :action 欠落 (元が groom なら Ready なのに Review と補完される) -> task ごと未評価
+echo '{:ticket "BOXP-943" :run-id "20261023T000000Z" :status :succeeded :result nil :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t34/runs/BOXP-943/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-943" :run-id "20261023T010000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-23T01:00:00Z"}' >"$t34/runs/BOXP-943/20261023T010000Z/summary.edn"
+# BOXP-944: 正常 (比較用)
+echo '{:ticket "BOXP-944" :run-id "20261023T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t34/runs/BOXP-944/20261023T000000Z/summary.edn"
+bb ai_ops_insight.bb report "$t34" >"$t34/r.edn"
+check ":action 欠落の run を持つ task は確定値に入れず unevaluated-tasks に別掲する" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:snapshot :unevaluated-tasks])) (= 0 (get-in r [:reopen-after-review :total])))' "$t34/r.edn"
+# 中断 (interrupted) run は runner が top-level :action を書かず :previous-lock に残す。これを補完して集計し、
+# 補完できない中断 run は unreadable にする。
+t35="$tmp/t35"; mkdir -p "$t35/runs/BOXP-945/20261023T000000Z" "$t35/runs/BOXP-945/20261023T010000Z" "$t35/runs/BOXP-945/20261023T020000Z" "$t35/runs/BOXP-946/20261023T000000Z" "$t35/runs/BOXP-946/20261023T010000Z"
+# BOXP-945: implement(review) -> review-fix が中断 (previous-lock に :action :review-fix) -> review-fix 成功
+echo '{:ticket "BOXP-945" :run-id "20261023T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t35/runs/BOXP-945/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-945" :run-id "20261023T010000Z" :status :interrupted :updated-at "2026-10-23T01:10:00Z" :previous-lock {:action :review-fix :ticket "BOXP-945"}}' >"$t35/runs/BOXP-945/20261023T010000Z/summary.edn"
+echo '{:ticket "BOXP-945" :run-id "20261023T020000Z" :status :succeeded :action :review-fix :result "review" :agent "claude-opus" :finished-at "2026-10-23T02:00:00Z"}' >"$t35/runs/BOXP-945/20261023T020000Z/summary.edn"
+# BOXP-946: implement(review) -> 中断 run に :action がどこにも無い -> task 未評価
+echo '{:ticket "BOXP-946" :run-id "20261023T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t35/runs/BOXP-946/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-946" :run-id "20261023T010000Z" :status :interrupted :updated-at "2026-10-23T01:10:00Z" :previous-lock {:ticket "BOXP-946"}}' >"$t35/runs/BOXP-946/20261023T010000Z/summary.edn"
+bb ai_ops_insight.bb report "$t35" >"$t35/r.edn"
+check "中断 run の :action を :previous-lock から補完して review_fix に分類し、補完できない中断 run は unreadable として task を未評価化する" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 1 (get-in r [:snapshot :unevaluated-tasks])) (= 1 (get-in r [:snapshot :unreadable-runs])) (= 2 (get-in r [:transitions :v1 "review_fix"])) (= 0 (get-in r [:transitions :v1 "other"] 0)) (= 1 (get-in r [:task-rates :v1-owner-visible-tasks :n])))' "$t35/r.edn"
+
+# 固定 snapshot の insight md 第 7 節 (再開契機表・契機あり割合) が resume EDN と一致する (文書と EDN の矛盾検出)
+if bb -e '(require (quote [clojure.string :as str]))
+  (let [edn (:review-resume (clojure.edn/read-string (slurp "../insight-2026-10-30-resume.edn")))
+        bt (:by-trigger edn) btn (:by-trigger-next edn)
+        kinds {"groom→implement" "groom_to_implement" "review_fix" "review_fix" "Review 後の再開" "reopen_after_review" "その他" "other"}
+        md (slurp "../insight-2026-10-30.md")
+        row (fn [label trig]
+              (let [line (first (filter #(str/starts-with? % (str "| " label)) (str/split-lines md)))
+                    cells (map str/trim (str/split (subs line 1) #"\|"))
+                    [_ n tasks] (re-matches #"(\d+) \((\d+)\)" (nth cells 1))
+                    parts (into {} (for [p (str/split (nth cells 3) #" / ")] (let [[_ k v] (re-matches #"(.+) (\d+)" p)] [(kinds k) (parse-long v)])))
+                    want (into {} (for [[[t k] v] btn :when (= t trig)] [k v]))]
+                (when-not (and (= (parse-long n) (:n (bt trig))) (= (parse-long tasks) (:tasks (bt trig))) (= parts want))
+                  (binding [*out* *err*] (prn :mismatch label {:md [n tasks parts] :edn [(bt trig) want]}))
+                  (System/exit 1))))]
+    (row "観測なし" "none-observed") (row "Owner 経由指示" "owner-relay") (row "監督催促" "supervisor") (row "Owner 直接 note" "owner-direct")
+    (let [[_ tot trig] (re-find #"Review 後の再開 (\d+) 件のうち、(\d+) 件 \(\d+%\) は Owner 経由" md)
+          rr (fn [t] (get btn [t "reopen_after_review"] 0))
+          etot (reduce + (map rr ["none-observed" "owner-relay" "owner-direct" "supervisor"]))
+          etrig (reduce + (map rr ["owner-relay" "owner-direct" "supervisor"]))]
+      (when-not (and tot (= (parse-long tot) etot) (= (parse-long trig) etrig))
+        (binding [*out* *err*] (prn :mismatch :share {:md [tot trig] :edn [etot etrig]})) (System/exit 1))))'; then
+  echo "ok - insight md 第 7 節の再開契機表・契機あり割合が resume EDN と一致"
+else echo "not ok - insight md 第 7 節が resume EDN と不一致"; exit 1; fi
+
+# --- codex-review 指摘: 結果補完は runner の final-status と同じ規則にする ---
+# groom は明示マーカーが review でも Ready に進む (Review 到達ではない)。docs-groom は result=blocked なら Blocked、
+# それ以外 (review マーカー含む) は Ready。implement の未知マーカーは Review。
+t36="$tmp/t36"; mkdir -p "$t36/runs/BOXP-951/20261023T000000Z" "$t36/runs/BOXP-952/20261023T000000Z" "$t36/runs/BOXP-953/20261023T000000Z" "$t36/runs/BOXP-954/20261023T000000Z" "$t36/runs/BOXP-954/20261024T000000Z"
+echo '{:ticket "BOXP-951" :run-id "20261023T000000Z" :status :succeeded :action :groom :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t36/runs/BOXP-951/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-952" :run-id "20261023T000000Z" :status :succeeded :action :docs-groom :result "review" :agent "codex" :finished-at "2026-10-23T00:00:00Z"}' >"$t36/runs/BOXP-952/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-953" :run-id "20261023T000000Z" :status :succeeded :action :docs-groom :result "blocked" :agent "codex" :finished-at "2026-10-23T00:00:00Z"}' >"$t36/runs/BOXP-953/20261023T000000Z/summary.edn"
+# BOXP-954: groom (review マーカー → 実際は Ready) → implement。groom→implement は是正ではなく Review 後の再開でもない
+echo '{:ticket "BOXP-954" :run-id "20261023T000000Z" :status :succeeded :action :groom :result "review" :agent "claude-opus" :finished-at "2026-10-23T00:00:00Z"}' >"$t36/runs/BOXP-954/20261023T000000Z/summary.edn"
+echo '{:ticket "BOXP-954" :run-id "20261024T000000Z" :status :succeeded :action :implement :result "review" :agent "claude-opus" :finished-at "2026-10-24T00:00:00Z"}' >"$t36/runs/BOXP-954/20261024T000000Z/summary.edn"
+bb ai_ops_insight.bb report "$t36" >"$t36/r.edn"
+check "groom の review マーカーは Ready 扱い (Review 到達は implement の 1 task のみ、groom 直後の implement は再開に数えない)" \
+  '(and (= 1 (get-in r [:task-rates :denominator-reached-review])) (= 0 (get-in r [:snapshot :unevaluated-tasks] 0)) (= 0 (get-in r [:reopen-after-review :total])) (= 1 (get-in r [:non-correction :by-kind "groom_to_implement"])) (= 0 (get-in r [:review-wait :followed] 0)))' "$t36/r.edn"
+bb -e '
+(load-file "ai_ops_insight.bb")
+(let [er (resolve (symbol "ai-ops-insight" "effective-result"))
+      er (or er (resolve (quote effective-result)))]
+  (assert (= "ready" (er "succeeded" "groom" "review")) "groom + review マーカー → ready")
+  (assert (= "ready" (er "succeeded" "groom" nil)) "groom + マーカーなし → ready")
+  (assert (= "ready" (er "succeeded" "docs-groom" "review")) "docs-groom + review → ready")
+  (assert (= "blocked" (er "succeeded" "docs-groom" "blocked")) "docs-groom + blocked → blocked")
+  (assert (= "review" (er "succeeded" "implement" nil)) "implement + マーカーなし → review")
+  (assert (= "review" (er "succeeded" "implement" "ready")) "implement + 未知マーカー → review")
+  (assert (= "done" (er "succeeded" "implement" "done")))
+  (assert (= "blocked" (er "failed" "groom" "review")) "exit≠0 は action に関わらず blocked")
+  (assert (nil? (er "interrupted" "implement" nil)) "中断は終了先なし")
+  (println "ok - effective-result は runner final-status の規則 (groom→ready / docs-groom→blocked|ready / done|review|blocked / それ以外 review) に一致"))'
