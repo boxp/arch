@@ -59,6 +59,9 @@ retryable な gate 失敗となり、短期 retry（fingerprint 単位、既定 
 - fingerprint に低優先件数が混入し同じ P1 でも短期 retry 回数が戻る → `:fingerprint-key`（blocking 行のみ）で計算
 - `issues` 出力に有効な P2 行があると形式外の P1 所見が混在しても pass-low → `unstructured-findings` の判定失敗（Blocked、非 retryable、budget 非消費）。review prompt にも「finding 行以外は出力しない」を追記
 
+- `clean` に形式外の非空行が続く場合は判定失敗とし、未整形の所見を見落とさない。
+- finding 行の severity 欠落・未知値を区別して判定失敗とし、有効な低優先所見との混在でも合格させない。
+
 ## 安全条件
 
 新権限 / 秘密取得 / 課金 fallback / 外送信 / Hermes 再起動 / 実票への失敗注入 / active 強制停止 / lock 削除 / 予算直接編集はしない。

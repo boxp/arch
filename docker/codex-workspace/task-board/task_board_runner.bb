@@ -2487,11 +2487,15 @@
 (defn codex-review-findings [text]
   (->> (str/split-lines (or text ""))
        (keep (fn [line]
-               (when-let [[_ token] (re-find #"(?i)^CODEX_REVIEW_FINDING:\s*([^|\s]+)\s*\|?(.*)$" line)]
-                 (let [upper (str/upper-case token)]
+               (when-let [[_ body] (re-find #"(?i)^CODEX_REVIEW_FINDING:(.*)$" line)]
+                 (let [token (str/trim (if (str/includes? body "|")
+                                         (first (str/split body #"\|" 2))
+                                         (or (first (str/split (str/trim body) #"\s+")) "")))
+                       upper (str/upper-case token)]
                    {:severity (cond (contains? #{"P0" "P1" "P2" "P3"} upper) upper
                                     (= "NIT" upper) "nit"
                                     :else nil)
+                    :severity-token token
                     :line (str/trim line)}))))
        vec))
 
@@ -2506,9 +2510,12 @@
                             (str/split-lines (or text "")))
         reason (cond (str/blank? text) :empty-output
                      (nil? marker) :missing-result-marker
+                     (some #(and (nil? (:severity %)) (str/blank? (:severity-token %))) findings) :missing-severity
                      (some #(nil? (:severity %)) findings) :unknown-severity
                      (and (= marker "issues") (empty? findings)) :missing-severity
-                     (and (= marker "issues") (empty? blocking) unstructured?) :unstructured-findings)]
+                     ;; Prose outside the contract may be an unformatted finding; without a
+                     ;; P0/P1 line to block on it cannot be judged, whatever the marker says.
+                     (and unstructured? (empty? blocking)) :unstructured-findings)]
     {:verdict (cond reason :invalid (seq blocking) :blocking (seq low) :pass-low :else :clean)
      :reason reason :blocking blocking :low low}))
 
@@ -2521,7 +2528,7 @@
                     "P1 is a concrete defect in this diff with real impact and reproducible evidence (wrong behavior, regression, broken required test, unmet acceptance criterion); blocking.\n"
                     "P2 is an improvement worth considering, not blocking. P3 / nit is style, naming, wording or optional cleanup, not blocking.\n"
                     "Do not inflate severity: a hypothetical future risk, a preference, or a re-worded P2 is not a P1.\n"
-                    "Return CODEX_REVIEW_RESULT: clean only if there are no findings at all; otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
+                    "For a clean result, output exactly the single line CODEX_REVIEW_RESULT: clean and nothing else. Otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every CODEX_REVIEW_FINDING line must carry one of the allowed severities. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
                     "PR: " pr-url "\n\n"
                     diff)
         proc @(p/process (cond-> ["codex" "exec"
@@ -4813,7 +4820,14 @@
     (doseq [[input verdict reason blocking low]
             [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\n- real P1 defect in prose" :invalid :unstructured-findings 0 1]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\n- extra prose" :blocking nil 1 0]
-             ["CODEX_REVIEW_RESULT: clean\nNo issues found." :clean nil 0 0]
+             ["CODEX_REVIEW_RESULT: clean\nNo issues found." :invalid :unstructured-findings 0 0]
+             ["CODEX_REVIEW_RESULT: clean" :clean nil 0 0]
+             ["CODEX_REVIEW_RESULT: clean\n\n" :clean nil 0 0]
+             ["CODEX_REVIEW_RESULT: clean\n- real defect in prose" :invalid :unstructured-findings 0 0]
+             ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P2 | x | a\n- real defect in prose" :invalid :unstructured-findings 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: | x | b" :invalid :missing-severity 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING:" :invalid :missing-severity 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: P9 | x | b" :invalid :unknown-severity 0 1]
              ["CODEX_REVIEW_RESULT: issues\n\nCODEX_REVIEW_FINDING: P2 | x | a\n" :pass-low nil 0 1]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | defect" :blocking nil 1 0]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: P3 | x | b\nCODEX_REVIEW_FINDING: NIT | x | c" :pass-low nil 0 3]

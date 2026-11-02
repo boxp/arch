@@ -2027,6 +2027,26 @@ test_review_p2_with_unstructured_lines_stops() {
   assert_no_review_budget
 }
 
+test_review_clean_with_unstructured_lines_stops() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: clean\n- unformatted real defect' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'unformatted real defect'
+  assert_no_review_budget
+}
+
+test_review_finding_without_severity_stops() {
+  local tmp vault state bin
+  review_severity_setup
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | wording\nCODEX_REVIEW_FINDING: | x | real defect' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'real defect'
+  assert_no_review_budget
+}
+
 test_review_same_p1_retry_count_survives_p2_changes() {
   local tmp vault state bin count i message
   review_severity_setup
@@ -4274,6 +4294,8 @@ test_review_p2_only_passes_without_budget
 test_review_mixed_findings_retry_targets_only_blocking
 test_review_unknown_severity_output_stops
 test_review_p2_with_unstructured_lines_stops
+test_review_clean_with_unstructured_lines_stops
+test_review_finding_without_severity_stops
 test_review_same_p1_retry_count_survives_p2_changes
 test_review_with_pr_and_none_marker_checks_pr
 test_review_with_multiple_pr_urls_checks_all
