@@ -161,6 +161,7 @@ Ran 4 tests containing 15 assertions. 0 failures, 0 errors.   (real 0.64s)
 | 同 base + PBT 追加 | 2m18.4s |
 | 現 `origin/main`（1b27cdf3d）の複製で実行 | 10m51.1s |
 | 現 main をマージした本ブランチ（PBT 追加後） | 10m52.4s |
+| 同 + P4 性質 / 回帰 2 件追加後（1f437cfce） | 10m54.1s |
 
 差分はいずれも約 0.5〜1.3 秒（PBT スクリプト単体 0.28 秒）。
 
@@ -170,9 +171,13 @@ GitHub Actions `Test Codex Task Board Runner` の実測:
 |---|---|
 | main 直近 3 run（41369997097 / 41369483395 / 41284319288） | 16m40s / 17m20s / 16m49s |
 | 本 PR run 41394790490（PBT 込み） | 16m44s |
+| 本 PR run 41399179636（P4 + 回帰 2 件追加後） | 17m32s |
 
 CI ログ上の PBT 行（bb 1.12.218）: P1 16 ms / P2 34 ms / P3 260 ms / P3' 311 ms、
 `Ran 3 tests containing 9 assertions. 0 failures, 0 errors.`
+
+P4 追加後の CI run 41399179636: `PBT remove-card-only-touches-lane-cards pass?=true num-tests=200 ... elapsed-ms=388`、
+`Ran 4 tests containing 15 assertions. 0 failures, 0 errors.`（PBT スクリプト単体はローカル 0.64 秒）。
 
 ## 現行 TDD の red → green 証拠について
 
