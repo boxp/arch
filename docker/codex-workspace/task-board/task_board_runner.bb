@@ -1633,7 +1633,7 @@
   ;; still distinguishes separate failures of the same PR gate, preventing a
   ;; new failure from consuming the retry budget of an earlier one.
   (let [digest (java.security.MessageDigest/getInstance "SHA-256")
-        reason (str (or (:message review-gate) "reason unavailable"))
+        reason (str (or (:fingerprint-key review-gate) (:message review-gate) "reason unavailable"))
         reason-hash (->> (.digest digest (.getBytes reason "UTF-8"))
                          (map #(format "%02x" (bit-and 0xff %)))
                          (apply str))]
@@ -2500,10 +2500,15 @@
         findings (codex-review-findings text)
         blocking (filterv #(contains? #{"P0" "P1"} (:severity %)) findings)
         low (filterv #(contains? #{"P2" "P3" "nit"} (:severity %)) findings)
+        unstructured? (some #(and (not (str/blank? %))
+                                  (not (re-matches #"(?i)^CODEX_REVIEW_RESULT:\s*(clean|issues)\s*$" %))
+                                  (not (re-find #"(?i)^CODEX_REVIEW_FINDING:" %)))
+                            (str/split-lines (or text "")))
         reason (cond (str/blank? text) :empty-output
                      (nil? marker) :missing-result-marker
                      (some #(nil? (:severity %)) findings) :unknown-severity
-                     (and (= marker "issues") (empty? findings)) :missing-severity)]
+                     (and (= marker "issues") (empty? findings)) :missing-severity
+                     (and (= marker "issues") (empty? blocking) unstructured?) :unstructured-findings)]
     {:verdict (cond reason :invalid (seq blocking) :blocking (seq low) :pass-low :else :clean)
      :reason reason :blocking blocking :low low}))
 
@@ -2516,7 +2521,7 @@
                     "P1 is a concrete defect in this diff with real impact and reproducible evidence (wrong behavior, regression, broken required test, unmet acceptance criterion); blocking.\n"
                     "P2 is an improvement worth considering, not blocking. P3 / nit is style, naming, wording or optional cleanup, not blocking.\n"
                     "Do not inflate severity: a hypothetical future risk, a preference, or a re-worded P2 is not a P1.\n"
-                    "Return CODEX_REVIEW_RESULT: clean only if there are no findings at all; otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every finding must have such a line.\n\n"
+                    "Return CODEX_REVIEW_RESULT: clean only if there are no findings at all; otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
                     "PR: " pr-url "\n\n"
                     diff)
         proc @(p/process (cond-> ["codex" "exec"
@@ -2552,6 +2557,7 @@
                           lines (mapv :line blocking)]
                       (spit (str path) (str "Blocking codex review findings (P0/P1):\n" (str/join "\n" lines) "\n"))
                       {:ok? false :gate :codex-review :failure-kind :findings :url pr-url :retryable? true
+                       :fingerprint-key (str/join "\n" lines)
                        :blocking-findings {:count (count blocking) :path (str path)}
                        :low-priority-findings low-info
                        :message (str "codex review reported " (count blocking) " blocking finding(s) (P0/P1): " (str/join " " lines)
@@ -4805,7 +4811,11 @@
 (defn run-tests*! []
   (let [failures (atom [])]
     (doseq [[input verdict reason blocking low]
-            [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | defect" :blocking nil 1 0]
+            [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\n- real P1 defect in prose" :invalid :unstructured-findings 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\n- extra prose" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: clean\nNo issues found." :clean nil 0 0]
+             ["CODEX_REVIEW_RESULT: issues\n\nCODEX_REVIEW_FINDING: P2 | x | a\n" :pass-low nil 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | defect" :blocking nil 1 0]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: P3 | x | b\nCODEX_REVIEW_FINDING: NIT | x | c" :pass-low nil 0 3]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\nCODEX_REVIEW_FINDING: P2 | x | b" :blocking nil 1 1]
              ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P0 | x | a" :blocking nil 1 0]
@@ -4818,6 +4828,11 @@
       (let [result (classify-codex-review input)]
         (when-not (= [verdict reason blocking low] [(:verdict result) (:reason result) (count (:blocking result)) (count (:low result))])
           (swap! failures conj (str "codex review classification: " input)))))
+    (let [gate {:url "https://example.test/pr/1" :gate :codex-review :fingerprint-key "P1 finding" :message "first"}
+          fingerprint (retry-fingerprint gate)]
+      (when-not (and (= fingerprint (retry-fingerprint (assoc gate :message "second")))
+                     (not= fingerprint (retry-fingerprint (assoc gate :fingerprint-key "another P1 finding"))))
+        (swap! failures conj "codex review retry fingerprint")))
     ;; Route additions or model changes require an explicit delegation-policy review.
     (when-not (= assignee->model {"codex" "gpt-6.1-terra" "codex-terra" "gpt-6.1-terra"
                                   "codex-sol" "gpt-6.1-sol" "codex-full" "gpt-6.1-sol"

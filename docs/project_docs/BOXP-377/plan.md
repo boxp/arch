@@ -22,8 +22,8 @@ retryable な gate 失敗となり、短期 retry（fingerprint 単位、既定 
 | 昇格禁止 | 将来仮説・好み・P2 の言い換えを P1 にしない（prompt に明記）。累積 budget（BOXP-369）はそのまま残るので、仮に言い換えが起きても無限反復にはならない |
 | blocking 判定 | P0 / P1 が 1 件以上 → 従来どおり `:failure-kind :findings`、retryable、短期 retry と累積 budget を 1 消費 |
 | pass 判定 | 所見が P2 / P3 / nit のみ → `codex-review` gate は `pass`。`record-pr-gate-failure!` を呼ばず budget も retry state も消費しない。件数だけを `:low-priority-findings {:count N :paths [...]}` として summary と Notes（「非 blocking の低優先所見 (P2/P3/nit): N 件。参考として review artifact に保持」）に残す。本文は Notes に書かない。後続票は自動で作らない |
-| 混在時 | P0 / P1 行だけを `codex-review-<N>-blocking.md` に書き出し、diagnostic detail と retry prompt はこの artifact を指す。retry prompt に「P2/P3/nit は今回の修正条件ではない」と明記し、低優先行は含めない。retry fingerprint の元になる `:message` も blocking 行だけから作るので、同じ P1 の再試行は従来どおり count が累積し、P2 の文言変化で count が戻らない |
-| 判定失敗 | review 出力が空 / `CODEX_REVIEW_RESULT` 欠落 / `issues` なのに finding 行ゼロ（severity 欠落＝旧形式）/ 未知の severity → `:failure-kind :invalid-output`、non-retryable。自動合格にも自動再試行にもせず Blocked（正式停止）。category は `codex-review-invalid-output`、`gate-correction` は unknown、budget は消費しない（non-retryable は従来から数えない） |
+| 混在時 | P0 / P1 行だけを `codex-review-<N>-blocking.md` に書き出し、diagnostic detail と retry prompt はこの artifact を指す。retry prompt に「P2/P3/nit は今回の修正条件ではない」と明記し、低優先行は含めない。retry fingerprint は `:message` ではなく blocking 行だけを連結した `:fingerprint-key` から計算するので、同じ P1 の再試行は従来どおり count が累積し、P2 の文言・件数の変化で count が戻らない（`:fingerprint-key` は `persisted-review-gate` の select-keys に含めず Notes/summary/state には書かない） |
+| 判定失敗 | review 出力が空 / `CODEX_REVIEW_RESULT` 欠落 / `issues` なのに finding 行ゼロ（severity 欠落＝旧形式）/ 未知の severity / `issues` で P0・P1 行がなく finding 形式外の非空行（未整形の所見の可能性）が混在（`unstructured-findings`）→ `:failure-kind :invalid-output`、non-retryable。自動合格にも自動再試行にもせず Blocked（正式停止）。category は `codex-review-invalid-output`、`gate-correction` は unknown、budget は消費しない（non-retryable は従来から数えない） |
 | `clean` と finding 行が併存 | 矛盾出力。finding 行の severity に従って判定する（P0/P1 があれば blocking、低優先のみなら pass + 件数保持） |
 | 変更しない gate | CI / 必須 check / mergeability / conflict / PR URL / 機密 redaction / lock / heartbeat / planned shutdown / 短期 retry 上限 / 累積 budget と grant / `stop-exhausted-ticket!` はすべて従来どおり |
 
@@ -42,7 +42,8 @@ retryable な gate 失敗となり、短期 retry（fingerprint 単位、既定 
   - 混在 → In Progress、blocking artifact に P1 行のみ、次 tick の prompt に blocking artifact パスと方針があり P2 本文がない
   - P0 のみ → In Progress（blocking）
   - severity 欠落（旧形式）/ 未知 severity / marker 欠落 → Blocked、category `codex-review-invalid-output`、budget 非消費
-  - 同じ P1 を 2 回（P2 文言は毎回変化）→ count 1/2 → 2/2 → 3 回目で短期上限 Blocked（P2 の変化で count が戻らない）
+  - 同じ P1 を 3 回（P2 行の件数を 1→2→3 と変化）→ count 1/2 → 2/2 → 3 回目で短期上限 Blocked（P2 の件数変化で count が戻らない）
+  - P2 行 + 形式外の箇条書き行 → Blocked、category `codex-review-invalid-output`、budget 非消費（形式外の P1 を見落として pass しない）
   - 既存 `test_review_with_codex_review_issue_is_blocked` は旧形式（severity なし）が判定失敗で Blocked になる回帰に置き換える
 - `docs/project_docs/BOXP-377/plan.md`（本書）
 
@@ -52,6 +53,11 @@ retryable な gate 失敗となり、短期 retry（fingerprint 単位、既定 
 2. `tests/codex-workspace/task-board-runner-test.sh`（CI `test-codex-task-board-runner.yml` と同じ）。旧実装では新 fixture（P2 のみ pass、混在、invalid）が失敗することを確認する
 3. 通常の PR → CI → codex review → merge
 4. merge 後: `Build Codex Workspace Image` → Image Updater で codex-workspace pod が再起動。稼働 revision readback は `/opt/codex-workspace/task-board/task_board_runner.bb` の sha256 が main と一致し `classify-codex-review` を含むことで確認。隔離 E2E は fixture の `RUNNER` を稼働版に差し替え、一時 root / 一時 vault で severity fixture を実行する。稼働 root・本番 vault・実票には失敗を注入しない
+
+## レビュー指摘への対応（PR #14331 retry 1/2）
+
+- fingerprint に低優先件数が混入し同じ P1 でも短期 retry 回数が戻る → `:fingerprint-key`（blocking 行のみ）で計算
+- `issues` 出力に有効な P2 行があると形式外の P1 所見が混在しても pass-low → `unstructured-findings` の判定失敗（Blocked、非 retryable、budget 非消費）。review prompt にも「finding 行以外は出力しない」を追記
 
 ## 安全条件
 

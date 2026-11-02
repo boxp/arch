@@ -2017,11 +2017,25 @@ test_review_unknown_severity_output_stops() {
   done
 }
 
-test_review_same_p1_retry_count_survives_p2_changes() {
-  local tmp vault state bin wording
+test_review_p2_with_unstructured_lines_stops() {
+  local tmp vault state bin
   review_severity_setup
-  for wording in wording-one wording-two wording-two; do
-    CODEX_FAKE_REVIEW_MESSAGE="$(printf 'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | real defect\nCODEX_REVIEW_FINDING: P2 | x | %s' "${wording}")" review_severity_tick
+  CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | wording\n- unformatted real defect' review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" 'category=codex-review-invalid-output'
+  assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'unformatted real defect'
+  assert_no_review_budget
+}
+
+test_review_same_p1_retry_count_survives_p2_changes() {
+  local tmp vault state bin count i message
+  review_severity_setup
+  for count in 1 2 3; do
+    message=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | real defect'
+    for ((i = 1; i <= count; i++)); do
+      message+=$'\nCODEX_REVIEW_FINDING: P2 | x | wording'
+    done
+    CODEX_FAKE_REVIEW_MESSAGE="${message}" review_severity_tick
   done
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Retrying with Codex instruction 2/2'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: blocked$'
@@ -4259,6 +4273,7 @@ test_review_p0_finding_blocks
 test_review_p2_only_passes_without_budget
 test_review_mixed_findings_retry_targets_only_blocking
 test_review_unknown_severity_output_stops
+test_review_p2_with_unstructured_lines_stops
 test_review_same_p1_retry_count_survives_p2_changes
 test_review_with_pr_and_none_marker_checks_pr
 test_review_with_multiple_pr_urls_checks_all
