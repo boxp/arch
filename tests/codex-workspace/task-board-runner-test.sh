@@ -1839,6 +1839,8 @@ BOARD
     || fail "concurrent board updates lost entries in ${failures}/${rounds} rounds"
 }
 
+test_task_board_pbt_properties() { bb "${ROOT_DIR}/tests/codex-workspace/task_board_pbt_test.bb"; }
+
 test_parallel_codex_runs
 test_fable_assignee_runs_via_claude
 test_fable_agent_idle_timeout_retries
@@ -1892,5 +1894,6 @@ test_invalid_reasoning_assignees_are_ignored
 test_concurrent_append_note_no_lost_writes
 test_cross_vault_lock_isolation
 test_concurrent_board_update_no_lost_writes
+test_task_board_pbt_properties
 
 echo "task-board-runner tests passed"

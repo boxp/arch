@@ -287,7 +287,12 @@
       cards
       (let [line (first lines)
             heading (second (re-find #"^##\s+(.+?)\s*$" line))
-            lane (if (contains? lanes heading) heading lane)
+            ;; A non-lane heading (e.g. "## Notes") ends the current lane: cards
+            ;; below it belong to no lane, matching the runner's parse-board-cards.
+            lane (cond
+                   (nil? heading) lane
+                   (contains? lanes heading) heading
+                   :else nil)
             card (and lane (parse-card lane line))]
         (recur (rest lines) lane (cond-> cards card (conj card)))))))
 
@@ -584,4 +589,5 @@
       "delete" (cmd-delete opts (or id (die "delete requires ticket id")))
       (usage))))
 
-(apply -main *command-line-args*)
+(when (= *file* (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

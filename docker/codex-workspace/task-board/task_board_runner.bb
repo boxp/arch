@@ -1926,11 +1926,17 @@
            (log! (str "error completing " ticket-id ": " (.getMessage e))))))
   (reset! in-flight-futures {}))
 
-(case (or (first *command-line-args*) "tick")
-  "tick" (do (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
-  "loop" (loop!)
-  "sync" (do (ensure-root!) (sync-all!))
-  "prepare-shutdown" (prepare-shutdown!)
-  "recover" (recover-locks!)
-  "test" (run-tests!)
-  (usage))
+(defn -main [& args]
+  (case (or (first args) "tick")
+    "tick" (do (recover-locks!) (tick!) (drain-in-flight!) (sync-all!))
+    "loop" (loop!)
+    "sync" (do (ensure-root!) (sync-all!))
+    "prepare-shutdown" (prepare-shutdown!)
+    "recover" (recover-locks!)
+    "test" (run-tests!)
+    (usage)))
+
+;; Only dispatch when executed as a script (`bb task_board_runner.bb ...`), so that
+;; tests can `load-file` this file to exercise pure functions without side effects.
+(when (= *file* (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))
