@@ -1,0 +1,323 @@
+---
+# kube-apiserver に Go ランタイムの soft memory limit (環境変数 GOMEMLIMIT) を設定し、
+# ヒープのピークがページキャッシュを押し出すのを抑える。
+#
+# 背景 (BOXP-225 M1、2026-10-09 実測):
+# - W1 (--goaway-chance) で watch の偏りは 3 台へ均されたが、apiserver の Go heap goal は 3 台とも
+#   最大 1.8GiB (runtime sys 2.07〜2.38GiB) まで伸び、ノードの MemAvailable 10 分最小が 324〜356MiB、
+#   ページキャッシュが 267MiB まで縮み、etcd (bbolt mmap) の major fault と commit 遅延 (p99 1 秒) に至った。
+# - 既定の GOGC=100 では「live heap の 2 倍」までヒープを伸ばしてから GC するため、live heap が
+#   約 1GiB (7 日最大 977〜1,030MiB) でもピークは 2GiB になる。ピークは短時間でも etcd の I/O を止める。
+#
+# GOMEMLIMIT は Go ランタイムの soft limit。limit に近づくと GC を前倒しし、使っていないヒープを OS へ返す。
+# cgroup の memory limit (OOM-kill 経路) ではなく、超えても kill されない (GC の CPU は 50% で頭打ち)。
+# kube-apiserver は debug.SetMemoryLimit を呼ばないので環境変数がそのまま効き、
+# 反映は go_gc_gomemlimit_bytes (metrics) で確認できる。
+#
+# 変更は apiserver_goaway.yml と同じ二段構え:
+#   (1) 稼働中の静的 Pod マニフェストの kube-apiserver コンテナ env へ冪等に反映する (kubelet が apiserver を再起動する)
+#   (2) kube-system/kubeadm-config の ClusterConfiguration apiServer.extraEnvs (v1beta4) にも保存し、
+#       次回 kubeadm upgrade でマニフェストが再生成されても消えないようにする
+# 直列化の本体は playbooks/control-plane.yml の serial: 1 で、本ファイルの throttle: 1 は補助。
+# rollback は値を "off" にして同じ経路で apply する (env は残り、Go ランタイムは limit なしになる)。
+
+- name: Validate the GOMEMLIMIT value before touching any manifest
+  ansible.builtin.include_tasks: apiserver_gomemlimit_validate.yml
+
+- name: Check if the kube-apiserver manifest exists (gomemlimit)
+  ansible.builtin.stat:
+    path: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: apiserver_gomemlimit_manifest_stat
+  become: true
+  when:
+    - apiserver_gomemlimit_enabled | bool
+    - inventory_hostname in groups['control_plane'] | default([])
+
+- name: Decide whether this node carries a kube-apiserver static pod (gomemlimit)
+  ansible.builtin.set_fact:
+    apiserver_gomemlimit_applicable: >-
+      {{
+        (apiserver_gomemlimit_enabled | bool)
+        and (inventory_hostname in groups['control_plane'] | default([]))
+        and (apiserver_gomemlimit_manifest_stat.stat.exists | default(false))
+      }}
+
+- name: Ensure the manifest backup directory exists (gomemlimit)
+  ansible.builtin.file:
+    path: /var/backups/kubernetes-manifests
+    state: directory
+    mode: '0700'
+  become: true
+  when:
+    - apiserver_gomemlimit_applicable | bool
+
+# 静的 Pod ディレクトリ内にバックアップを置くと kubelet がそれも Pod として読むため、外へ退避する。
+# apiserver_goaway.yml が既に退避していれば force: false でそのまま (最初の原本を保つ)。
+- name: Keep a pristine copy of the kube-apiserver manifest outside the static pod directory (gomemlimit)
+  ansible.builtin.copy:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+    dest: /var/backups/kubernetes-manifests/kube-apiserver.yaml.orig
+    remote_src: true
+    force: false
+    mode: '0600'
+  become: true
+  when:
+    - apiserver_gomemlimit_applicable | bool
+
+- name: Record the running kube-apiserver PID before touching the manifest (gomemlimit)
+  ansible.builtin.command: pgrep -x kube-apiserver
+  register: apiserver_gomemlimit_pid_before
+  changed_when: false
+  failed_when: false
+  become: true
+  when:
+    - apiserver_gomemlimit_applicable | bool
+
+- name: Read the kube-apiserver manifest to check the GOMEMLIMIT env
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: apiserver_gomemlimit_manifest_raw
+  become: true
+  when:
+    - apiserver_gomemlimit_applicable | bool
+
+# 判定と編集はマニフェストを YAML として解析した kube-apiserver コンテナ (name: kube-apiserver) の env に対して
+# 行い、env を差し替えたマニフェスト全体を書き戻す (apiserver_goaway.yml と同じ構造化更新)。
+# 他のコンテナ・initContainers・metadata・command には触れない。
+- name: Parse the kube-apiserver manifest and locate the apiserver container env (gomemlimit)
+  ansible.builtin.set_fact:
+    apiserver_gomemlimit_manifest: "{{ apiserver_gomemlimit_manifest_parsed }}"
+    apiserver_gomemlimit_container_names: "{{ apiserver_gomemlimit_manifest_parsed.spec.containers | default([]) | map(attribute='name') | list }}"
+    apiserver_gomemlimit_env: >-
+      {{
+        (apiserver_gomemlimit_manifest_parsed.spec.containers | default([])
+         | selectattr('name', 'equalto', 'kube-apiserver') | first | default({})).env | default([], true)
+      }}
+  vars:
+    apiserver_gomemlimit_manifest_parsed: "{{ apiserver_gomemlimit_manifest_raw.content | default('') | b64decode | from_yaml }}"
+  when:
+    - apiserver_gomemlimit_applicable | bool
+
+- name: Assert the manifest has exactly one kube-apiserver container (gomemlimit)
+  ansible.builtin.assert:
+    that:
+      - apiserver_gomemlimit_container_names | select('equalto', 'kube-apiserver') | list | length == 1
+      - apiserver_gomemlimit_env is not string
+      - apiserver_gomemlimit_env is iterable
+    fail_msg: >-
+      /etc/kubernetes/manifests/kube-apiserver.yaml must have exactly one container named kube-apiserver with a
+      list-valued (or absent) env; refusing to edit it. containers={{ apiserver_gomemlimit_container_names }}
+      env={{ apiserver_gomemlimit_env }}
+  when:
+    - apiserver_gomemlimit_applicable | bool
+
+# 望ましい env = 既存の GOMEMLIMIT 要素 (重複・値違い・valueFrom 形式を含む) をすべて除き、末尾に宣言値を
+# 1 つ足したもの。GOMEMLIMIT 以外の要素 (kubeadm の extraEnvs や proxy 設定) は順序ごと保つ。
+- name: Build the desired kube-apiserver env with a single GOMEMLIMIT entry
+  ansible.builtin.set_fact:
+    apiserver_gomemlimit_env_desired: >-
+      {{
+        (apiserver_gomemlimit_env | rejectattr('name', 'equalto', 'GOMEMLIMIT') | list)
+        + [{'name': 'GOMEMLIMIT', 'value': apiserver_gomemlimit | string}]
+      }}
+  when:
+    - apiserver_gomemlimit_applicable | bool
+
+# kube-apiserver コンテナの env だけを差し替え、他のコンテナ・initContainers・metadata・command はそのまま。
+- name: Write the kube-apiserver manifest with the updated env (gomemlimit)
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/manifests/kube-apiserver.yaml
+    mode: '0600'
+    content: "{{ apiserver_gomemlimit_manifest_desired | to_nice_yaml(indent=2, width=4096) }}"
+  vars:
+    apiserver_gomemlimit_ci: "{{ apiserver_gomemlimit_container_names.index('kube-apiserver') }}"
+    apiserver_gomemlimit_containers_desired: >-
+      {{
+        apiserver_gomemlimit_manifest.spec.containers[:apiserver_gomemlimit_ci | int]
+        + [apiserver_gomemlimit_manifest.spec.containers[apiserver_gomemlimit_ci | int] | combine({'env': apiserver_gomemlimit_env_desired})]
+        + apiserver_gomemlimit_manifest.spec.containers[apiserver_gomemlimit_ci | int + 1:]
+      }}
+    apiserver_gomemlimit_manifest_desired: >-
+      {{
+        apiserver_gomemlimit_manifest | combine({'spec': {'containers': apiserver_gomemlimit_containers_desired}}, recursive=True)
+      }}
+  become: true
+  throttle: 1
+  register: apiserver_gomemlimit_written
+  when:
+    - apiserver_gomemlimit_applicable | bool
+    - apiserver_gomemlimit_env_desired != apiserver_gomemlimit_env
+
+- name: Note whether the kube-apiserver manifest changed (gomemlimit)
+  ansible.builtin.set_fact:
+    apiserver_gomemlimit_manifest_edited: "{{ apiserver_gomemlimit_written.changed | default(false) }}"
+
+# check mode (plan-ansible.yml の --check) では copy が「変更あり」を返すだけでファイルは書かれないため、
+# 再読込後の assert・PID 変化待ち・readyz 待ちは実行しない (実行すると plan が必ず失敗する)。
+- name: Re-read the kube-apiserver manifest after editing (gomemlimit)
+  ansible.builtin.slurp:
+    src: /etc/kubernetes/manifests/kube-apiserver.yaml
+  register: apiserver_gomemlimit_manifest_edited_raw
+  become: true
+  when:
+    - apiserver_gomemlimit_applicable | bool
+    - not ansible_check_mode
+
+- name: Assert the kube-apiserver env carries exactly one GOMEMLIMIT entry and nothing else changed
+  ansible.builtin.assert:
+    that:
+      - >-
+        (apiserver_gomemlimit_env_after | selectattr('name', 'equalto', 'GOMEMLIMIT') | list)
+        == [{'name': 'GOMEMLIMIT', 'value': apiserver_gomemlimit | string}]
+      - apiserver_gomemlimit_env_after == apiserver_gomemlimit_env_desired
+      - >-
+        (apiserver_gomemlimit_container_after | combine({'env': []}))
+        == (apiserver_gomemlimit_container_before | combine({'env': []}))
+      - (apiserver_gomemlimit_manifest_after.spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | list)
+        == (apiserver_gomemlimit_manifest.spec.containers | rejectattr('name', 'equalto', 'kube-apiserver') | list)
+      - (apiserver_gomemlimit_manifest_after.spec.initContainers | default([])) == (apiserver_gomemlimit_manifest.spec.initContainers | default([]))
+      - apiserver_gomemlimit_manifest_after.metadata == apiserver_gomemlimit_manifest.metadata
+    fail_msg: >-
+      the kube-apiserver manifest did not end up with exactly one GOMEMLIMIT={{ apiserver_gomemlimit }} in the
+      kube-apiserver container env (or something else changed). env={{ apiserver_gomemlimit_env_after }}
+  vars:
+    apiserver_gomemlimit_manifest_after: "{{ apiserver_gomemlimit_manifest_edited_raw.content | default('') | b64decode | from_yaml }}"
+    apiserver_gomemlimit_container_after: >-
+      {{
+        apiserver_gomemlimit_manifest_after.spec.containers | default([])
+        | selectattr('name', 'equalto', 'kube-apiserver') | first | default({})
+      }}
+    apiserver_gomemlimit_container_before: >-
+      {{
+        apiserver_gomemlimit_manifest.spec.containers | default([])
+        | selectattr('name', 'equalto', 'kube-apiserver') | first | default({})
+      }}
+    apiserver_gomemlimit_env_after: "{{ apiserver_gomemlimit_container_after.env | default([], true) }}"
+  when:
+    - apiserver_gomemlimit_applicable | bool
+    - not ansible_check_mode
+
+# kubelet がマニフェスト変更を検知して apiserver を入れ替えるのは非同期。
+# PID が変わる前に readyz を見ると「変更前の apiserver」で即成功し、次のノードへ進んでしまう。
+- name: Wait for kubelet to restart the kube-apiserver static pod (gomemlimit)  # noqa: no-handler
+  ansible.builtin.command: pgrep -x kube-apiserver
+  register: apiserver_gomemlimit_pid_after
+  changed_when: false
+  failed_when: false
+  become: true
+  throttle: 1
+  until:
+    - apiserver_gomemlimit_pid_after.stdout | trim | length > 0
+    - (apiserver_gomemlimit_pid_after.stdout | trim) != (apiserver_gomemlimit_pid_before.stdout | default('') | trim)
+  retries: 30
+  delay: 10
+  when:
+    - apiserver_gomemlimit_manifest_edited | bool
+    - not ansible_check_mode
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+- name: Assert the kube-apiserver static pod actually restarted (gomemlimit)
+  ansible.builtin.assert:
+    that:
+      - apiserver_gomemlimit_pid_after.stdout | trim | length > 0
+      - (apiserver_gomemlimit_pid_after.stdout | trim) != (apiserver_gomemlimit_pid_before.stdout | default('') | trim)
+    fail_msg: >-
+      kube-apiserver static pod did not restart after the manifest change.
+      Proceeding to the next node could leave several apiservers restarting at once.
+  when:
+    - apiserver_gomemlimit_manifest_edited | bool
+    - not ansible_check_mode
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# /readyz は system:public-info-viewer により未認証でも読める。
+- name: Wait for the local kube-apiserver to report ready (gomemlimit)
+  ansible.builtin.uri:
+    url: https://127.0.0.1:6443/readyz
+    validate_certs: false
+    status_code: 200
+    return_content: false
+  register: apiserver_gomemlimit_readyz
+  until: apiserver_gomemlimit_readyz.status | default(0) == 200
+  retries: 60
+  delay: 5
+  throttle: 1
+  when:
+    - apiserver_gomemlimit_manifest_edited | bool
+    - not ansible_check_mode
+    - ansible_virtualization_type | default('') != "docker"
+    - chroot_build is not defined or not chroot_build
+
+# ここまでは稼働中のマニフェストを直しただけ。kubeadm upgrade apply/node は --config なしで
+# kube-system/kubeadm-config の ClusterConfiguration からマニフェストを再生成するため、
+# apiServer.extraEnvs (v1beta4) にも保存しないと次回アップグレードで env が消える。
+# ⚠️ ローカルのテンプレートを upload-config に渡してはいけない (control_plane_metrics.yml 参照)。
+#    必ず「稼働中の ClusterConfiguration を読み、必要なキーだけ足して」書き戻す。
+- name: Check whether this node has an initialized control plane (gomemlimit)
+  ansible.builtin.stat:
+    path: /etc/kubernetes/admin.conf
+  register: apiserver_gomemlimit_admin_conf
+  become: true
+  run_once: true
+  when:
+    - apiserver_gomemlimit_applicable | bool
+
+- name: Read the live kubeadm ClusterConfiguration (gomemlimit)
+  ansible.builtin.command:
+    cmd: >-
+      kubectl --kubeconfig /etc/kubernetes/admin.conf
+      -n kube-system get cm kubeadm-config -o jsonpath={.data.ClusterConfiguration}
+  register: apiserver_gomemlimit_live_cc
+  changed_when: false
+  become: true
+  run_once: true
+  when:
+    - apiserver_gomemlimit_applicable | bool
+    - apiserver_gomemlimit_admin_conf.stat.exists | default(false)
+
+# combine(recursive=True) はリストを置換するため、apiServer.extraEnvs の既存要素を残して GOMEMLIMIT だけ差し替える。
+- name: Build the merged ClusterConfiguration (gomemlimit)
+  ansible.builtin.set_fact:
+    apiserver_gomemlimit_cc_live: "{{ apiserver_gomemlimit_cc_live_parsed }}"
+    apiserver_gomemlimit_cc_merged: >-
+      {{
+        apiserver_gomemlimit_cc_live_parsed | combine({
+          'apiServer': {'extraEnvs': apiserver_gomemlimit_cc_envs}
+        }, recursive=True)
+      }}
+  vars:
+    apiserver_gomemlimit_cc_live_parsed: "{{ apiserver_gomemlimit_live_cc.stdout | from_yaml }}"
+    apiserver_gomemlimit_cc_want:
+      name: GOMEMLIMIT
+      value: "{{ apiserver_gomemlimit | string }}"
+    apiserver_gomemlimit_cc_envs: >-
+      {{
+        ((apiserver_gomemlimit_live_cc.stdout | from_yaml).apiServer | default({}, true)).extraEnvs | default([], true)
+        | rejectattr('name', 'equalto', 'GOMEMLIMIT') | list + [apiserver_gomemlimit_cc_want]
+      }}
+  run_once: true
+  when:
+    - apiserver_gomemlimit_applicable | bool
+    - (apiserver_gomemlimit_live_cc.stdout | default('')) | length > 0
+
+- name: Write the merged ClusterConfiguration (gomemlimit)
+  ansible.builtin.copy:
+    dest: /etc/kubernetes/kubeadm-clusterconfig-gomemlimit-merged.yaml
+    mode: '0600'
+    content: "{{ apiserver_gomemlimit_cc_merged | to_nice_yaml(indent=2) }}"
+  become: true
+  run_once: true
+  when:
+    - apiserver_gomemlimit_cc_merged is defined
+    - apiserver_gomemlimit_cc_merged != apiserver_gomemlimit_cc_live
+
+- name: Upload the ClusterConfiguration so kubeadm upgrade keeps the GOMEMLIMIT env
+  ansible.builtin.command:
+    cmd: kubeadm init phase upload-config kubeadm --config /etc/kubernetes/kubeadm-clusterconfig-gomemlimit-merged.yaml
+  become: true
+  run_once: true
+  changed_when: true
+  when:
+    - apiserver_gomemlimit_cc_merged is defined
+    - apiserver_gomemlimit_cc_merged != apiserver_gomemlimit_cc_live

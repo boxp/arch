@@ -1,4 +1,8 @@
 ---
+- name: Run dedicated dry-run regression coverage
+  ansible.builtin.import_playbook: check_mode.yml
+  when: ansible_check_mode
+
 - name: Converge
   hosts: all
   become: true
@@ -8,6 +12,7 @@
       ansible.builtin.include_role:
         name: kubernetes_upgrade
         tasks_from: pre_checks.yml
+      when: not ansible_check_mode
       tags: [pre_checks]
 
     # Test etcd snapshot tasks
@@ -15,6 +20,7 @@
       ansible.builtin.include_role:
         name: kubernetes_upgrade
         tasks_from: etcd_snapshot.yml
+      when: not ansible_check_mode
       tags: [etcd_snapshot]
 
     # Test apt source update template generation
@@ -22,6 +28,7 @@
       ansible.builtin.include_role:
         name: kubernetes_upgrade
         tasks_from: upgrade_apt_source.yml
+      when: not ansible_check_mode
       tags: [upgrade]
 
     # Test health check tasks
@@ -29,4 +36,5 @@
       ansible.builtin.include_role:
         name: kubernetes_upgrade
         tasks_from: health_check.yml
+      when: not ansible_check_mode
       tags: [health_check]

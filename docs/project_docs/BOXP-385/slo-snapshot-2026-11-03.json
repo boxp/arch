@@ -1,0 +1,198 @@
+{
+  "note" : "counts only. window by stop time (first_run_to_review: by first run start)",
+  "all_history" : {
+    "instructed_not_started" : {
+      "followed_over_1h" : 11,
+      "followed_over_24h" : 2,
+      "open_over_1h" : 14,
+      "open_over_24h" : 11,
+      "unevaluated_stops" : 0
+    },
+    "resume_last_contact" : {
+      "owner-relay" : 97,
+      "owner-direct" : 3,
+      "supervisor" : 17,
+      "none-observed" : 126,
+      "unknown-unreadable" : 0
+    },
+    "since" : null,
+    "ready_queue" : {
+      "cards" : 21,
+      "card_ticket_assignee_mismatch" : 13
+    },
+    "generated_at" : "2026-11-03T19:00:11.208654532Z",
+    "stall_reference" : {
+      "followed_only" : {
+        "numerator" : 12,
+        "denominator" : 243
+      },
+      "with_open_as_stalled" : {
+        "numerator" : 50,
+        "denominator" : 289
+      },
+      "approved_work_stall" : "unknown: wait_reason 未記録"
+    },
+    "coverage" : {
+      "complete" : false,
+      "unreadable_runs" : 1,
+      "tasks_with_unreadable_runs" : 1,
+      "stops_with_unknown_contacts" : 0,
+      "stops_with_unknown_resume" : 0
+    },
+    "review_stops" : {
+      "followed" : 243,
+      "open" : 46,
+      "open_over_24h_by_lane" : {
+        "Review" : 36,
+        "Backlog" : 2
+      },
+      "unknown_lane" : 0,
+      "followed_over_24h" : 12,
+      "open_over_24h" : 38,
+      "total" : 433,
+      "closed_by_acceptance" : 144,
+      "unknown_resume" : 0
+    },
+    "definition_version" : "slo-draft/v1",
+    "first_run_to_review" : {
+      "reached" : 218,
+      "censored" : 105,
+      "unevaluated" : 1,
+      "p50_h" : 0.8522222222222222,
+      "p90_h" : 9.145277777777778
+    },
+    "owner_rescue" : {
+      "status" : "unknown",
+      "reason" : "wait_reason 未記録"
+    }
+  },
+  "windows" : [ {
+    "instructed_not_started" : {
+      "followed_over_1h" : 10,
+      "followed_over_24h" : 1,
+      "open_over_1h" : 13,
+      "open_over_24h" : 10,
+      "unevaluated_stops" : 0
+    },
+    "resume_last_contact" : {
+      "owner-relay" : 93,
+      "owner-direct" : 3,
+      "supervisor" : 17,
+      "none-observed" : 31,
+      "unknown-unreadable" : 0
+    },
+    "since" : "2026-10-06T00:00:00Z",
+    "ready_queue" : {
+      "cards" : 21,
+      "card_ticket_assignee_mismatch" : 13
+    },
+    "generated_at" : "2026-11-03T19:00:10.846992659Z",
+    "stall_reference" : {
+      "followed_only" : {
+        "numerator" : 5,
+        "denominator" : 144
+      },
+      "with_open_as_stalled" : {
+        "numerator" : 37,
+        "denominator" : 184
+      },
+      "approved_work_stall" : "unknown: wait_reason 未記録"
+    },
+    "coverage" : {
+      "complete" : false,
+      "unreadable_runs" : 1,
+      "tasks_with_unreadable_runs" : 1,
+      "stops_with_unknown_contacts" : 0,
+      "stops_with_unknown_resume" : 0
+    },
+    "review_stops" : {
+      "followed" : 144,
+      "open" : 40,
+      "open_over_24h_by_lane" : {
+        "Review" : 32
+      },
+      "unknown_lane" : 0,
+      "followed_over_24h" : 5,
+      "open_over_24h" : 32,
+      "total" : 264,
+      "closed_by_acceptance" : 80,
+      "unknown_resume" : 0
+    },
+    "definition_version" : "slo-draft/v1",
+    "first_run_to_review" : {
+      "reached" : 130,
+      "censored" : 50,
+      "unevaluated" : 1,
+      "p50_h" : 0.8194444444444444,
+      "p90_h" : 5.441944444444444
+    },
+    "owner_rescue" : {
+      "status" : "unknown",
+      "reason" : "wait_reason 未記録"
+    }
+  }, {
+    "instructed_not_started" : {
+      "followed_over_1h" : 6,
+      "followed_over_24h" : 1,
+      "open_over_1h" : 6,
+      "open_over_24h" : 3,
+      "unevaluated_stops" : 0
+    },
+    "resume_last_contact" : {
+      "owner-relay" : 35,
+      "owner-direct" : 0,
+      "supervisor" : 13,
+      "none-observed" : 2,
+      "unknown-unreadable" : 0
+    },
+    "since" : "2026-10-29T00:00:00Z",
+    "ready_queue" : {
+      "cards" : 21,
+      "card_ticket_assignee_mismatch" : 13
+    },
+    "generated_at" : "2026-11-03T19:00:11.028323080Z",
+    "stall_reference" : {
+      "followed_only" : {
+        "numerator" : 4,
+        "denominator" : 50
+      },
+      "with_open_as_stalled" : {
+        "numerator" : 15,
+        "denominator" : 69
+      },
+      "approved_work_stall" : "unknown: wait_reason 未記録"
+    },
+    "coverage" : {
+      "complete" : true,
+      "unreadable_runs" : 0,
+      "tasks_with_unreadable_runs" : 0,
+      "stops_with_unknown_contacts" : 0,
+      "stops_with_unknown_resume" : 0
+    },
+    "review_stops" : {
+      "followed" : 50,
+      "open" : 19,
+      "open_over_24h_by_lane" : {
+        "Review" : 11
+      },
+      "unknown_lane" : 0,
+      "followed_over_24h" : 4,
+      "open_over_24h" : 11,
+      "total" : 76,
+      "closed_by_acceptance" : 7,
+      "unknown_resume" : 0
+    },
+    "definition_version" : "slo-draft/v1",
+    "first_run_to_review" : {
+      "reached" : 31,
+      "censored" : 8,
+      "unevaluated" : 0,
+      "p50_h" : 0.585,
+      "p90_h" : 8.394722222222223
+    },
+    "owner_rescue" : {
+      "status" : "unknown",
+      "reason" : "wait_reason 未記録"
+    }
+  } ]
+}

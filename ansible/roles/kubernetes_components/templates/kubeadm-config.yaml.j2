@@ -57,6 +57,20 @@ apiServer:
 {% if cluster_vip is defined and cluster_vip != "" %}
     - "{{ cluster_vip }}"
 {% endif %}
+{% if apiserver_goaway_chance_enabled | default(false) | bool %}
+  # HTTP/2 watch 接続の再分散 (BOXP-225)。稼働中クラスタへの反映と kube-system/kubeadm-config への
+  # 保存は tasks/apiserver_goaway.yml が同じ変数から行う。ここは新規クラスタ / --config 利用時の宣言。
+  extraArgs:
+    - name: goaway-chance
+      value: "{{ apiserver_goaway_chance }}"
+{% endif %}
+{% if apiserver_gomemlimit_enabled | default(false) | bool %}
+  # Go ランタイムの soft memory limit (BOXP-225 M1)。稼働中クラスタへの反映と kube-system/kubeadm-config への
+  # 保存は tasks/apiserver_gomemlimit.yml が同じ変数から行う。ここは新規クラスタ / --config 利用時の宣言。
+  extraEnvs:
+    - name: GOMEMLIMIT
+      value: "{{ apiserver_gomemlimit }}"
+{% endif %}
 ---
 apiVersion: kubeadm.k8s.io/v1beta4
 kind: InitConfiguration

@@ -1,0 +1,150 @@
+;; BOXP-277 owner-purpose evaluation: propose a NEW setting from many setting
+;; notes (docs-mode: propose). Fixture: setting_fixture.bb (see its header for
+;; the canon). Every case is a natural-language request on a Task Board card;
+;; the adapter researches the declared corpus by itself (search condition), the
+;; runner appends / replaces one `## 提案（未承認）<ticket>` section.
+;;
+;; Extra :expect keys for propose cases (:propose? true)
+;;   :section-must-contain       regexes on the whole proposal section
+;;   :proposal-must-not-contain  regexes on the 新規提案 subsection only (canon
+;;                               errors / unapproved drafts asserted as fact)
+;;   :conflict-must-contain      regexes on the 矛盾・要確認 subsection
+;;   :gold-sources / :forbidden-sources as in corpus_cases.edn
+;; The canon above the section must be byte-identical (checked for every case).
+[{:id "P01" :title "S / ユイの冬祭り用新衣装の案（既存の色遣いを引き継ぐ）" :group "search" :scale "S" :mode "propose"
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "ユイの冬祭り（霜灯祭）用の新しい衣装の設定案"
+           :summary "篝火ユイが冬の霜灯祭に着る新しい衣装の設定を考えて、ユイのノートに加筆案として書いてほしい。普段の衣装の色遣いを引き継ぎつつ、祭りの伝統との折り合いも考えてほしい。年齢や口調など既存の設定は変えない。"
+           :acceptance ["衣装の見た目（色・小物）が具体的に書かれている" "既存の設定（年齢・口調・普段の衣装・関係性）と矛盾しない" "参照した既存設定と新しい案が分けて書かれている"]
+           :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
+           :notes []}
+  :expect {:propose? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+           :section-must-contain ["藍" "霜灯祭|冬"]
+           :proposal-must-not-contain ["17 ?歳" "ですわ|ごきげんよう" "灯を継ぐ役目" "幼馴染"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/setting/world/festivals.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/characters/yui-v1.md" "Projects/task-board-localllm-docs/refs/setting/proposals/draft-yuki-lantern.md"]}}
+
+ {:id "P02" :title "S / ミオとレンの初対面エピソード案（年表・却下案・未承認案の扱い）" :group "search" :scale "S" :mode "propose"
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/relationships.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "水瀬ミオと鐘守レンの初対面エピソードの設定案"
+           :summary "鐘楼で働く水瀬ミオと鐘守レンが初めて言葉を交わしたエピソードの案を考えて、関係性ノートに加筆案として書いてほしい。二人の口調と、それぞれが鐘楼に関わるようになった時期（年表）に合わせること。"
+           :acceptance ["二人の口調が既存設定どおり" "出来事の時期が年表と矛盾しない" "未承認の下書きや却下された案を事実として使っていない"]
+           :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
+           :notes []}
+  :expect {:propose? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/relationships.md"]
+           :section-must-contain ["ミオ" "レン" "11[89] ?年|120 ?年"]
+           :proposal-must-not-contain ["ミナの妹|姉妹" "幼馴染" "まいど" "ですわ"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/setting/characters/mio.md" "Projects/task-board-localllm-docs/refs/setting/characters/ren.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/proposals/draft-mio-sister.md"]}}
+
+ {:id "P03" :title "M / P01 と同じ依頼、無関係 40 ノート（料理人のユイ等の囮を含む）" :group "search" :scale "M" :mode "propose"
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "M"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "ユイの冬祭り（霜灯祭）用の新しい衣装の設定案"
+           :summary "篝火ユイが冬の霜灯祭に着る新しい衣装の設定を考えて、ユイのノートに加筆案として書いてほしい。普段の衣装の色遣いを引き継ぎつつ、祭りの伝統との折り合いも考えてほしい。年齢や口調など既存の設定は変えない。"
+           :acceptance ["衣装の見た目（色・小物）が具体的に書かれている" "既存の設定（年齢・口調・普段の衣装・関係性）と矛盾しない" "参照した既存設定と新しい案が分けて書かれている"]
+           :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
+           :notes []}
+  :expect {:propose? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+           :section-must-contain ["藍" "霜灯祭|冬"]
+           :proposal-must-not-contain ["17 ?歳" "ですわ|ごきげんよう" "料理|レシピ|煮込み" "幼馴染"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/setting/world/festivals.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/characters/yui-v1.md" "Projects/task-board-localllm-docs/refs/setting/unrelated/料理レシピ/memo-01.md"]}}
+
+ {:id "P04" :title "S / 似た名前の別人: ユキ（ユイではない）の決め台詞案" :group "search" :scale "S" :mode "propose"
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/setting/characters/yuki.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "篝火ユキの決め台詞の案"
+           :summary "篝火ユキ（妹のユイではなく姉のユキ）が祭りの支度を締めくくるときに言う決め台詞を 3 つ考えて、ユキのノートに加筆案として書いてほしい。ユキの口調と立場（事務方、灯火術は使えない）に合わせること。"
+           :acceptance ["3 つの台詞がユキの口調（丁寧語）である" "ユイの口調や役割と混同していない"]
+           :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
+           :notes []}
+  :expect {:propose? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/characters/yuki.md"]
+           :section-must-contain ["ですわ|ごきげんよう|わたくし"]
+           :proposal-must-not-contain ["だぜ" "任せろ" "あたし" "灯を継ぐ"]
+           :gold-sources []
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/proposals/draft-yuki-lantern.md"]}}
+
+ {:id "P05" :title "S / 依頼が canon と矛盾（ユイが灯火術を使えない前提）: 矛盾を明示して案を出す" :group "search" :scale "S" :mode "propose"
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "ユイが灯火術を使えなくなる短いエピソード案"
+           :summary "篝火ユイが灯火術を使えないという前提で、宵祭りで灯を継げずに悩む短いエピソードの案を考えて、ユイのノートに加筆案として書いてほしい。既存設定と食い違う点があれば、止まらずに明記したうえで案を書くこと。"
+           :acceptance ["エピソード案が書かれている" "既存設定との食い違い（灯火術師である等）が明記されている"]
+           :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
+           :notes []}
+  :expect {:propose? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+           :section-must-contain ["宵祭り|灯"]
+           :conflict-must-contain ["灯火術"]
+           :proposal-must-not-contain ["17 ?歳" "ですわ"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/setting/world/lantern-craft.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/characters/yui-v1.md"]}}
+
+ {:id "P06" :title "S / canon 本文の書き換え依頼（年齢を 17 に戻す）: 提案せず停止" :group "search" :scale "S" :mode "propose"
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "ユイの年齢を 17 歳に戻す"
+           :summary "ユイのノートの「## 基本情報」の年齢を 19 歳から 17 歳に書き換えてください。新しい設定の提案は不要です。"
+           :acceptance ["基本情報の年齢が 17 歳になっている"]
+           :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
+           :notes []}
+  :expect {:propose? true :stop? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]}}
+
+ {:id "P07" :title "S / 対象人物が不明（「彼」の新設定）: 停止または質問" :group "search" :scale "S" :mode "propose"
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/relationships.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "彼の新しい設定"
+           :summary "彼の新しい設定をいい感じに考えて関係性ノートに書いてください。"
+           :acceptance ["何か書かれている"]
+           :context []
+           :notes []}
+  :expect {:propose? true :stop? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/relationships.md"]}}
+
+ {:id "P08" :title "S / 複数ターン改稿: P01 の案を Review 指示で改稿（藍と白、提灯型の飾り）" :group "search" :scale "S" :mode "propose" :multi-turn true
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "ユイの冬祭り（霜灯祭）用の新しい衣装の設定案"
+           :summary "篝火ユイが冬の霜灯祭に着る新しい衣装の設定を考えて、ユイのノートに加筆案として書いてほしい。普段の衣装の色遣いを引き継ぎつつ、祭りの伝統との折り合いも考えてほしい。年齢や口調など既存の設定は変えない。"
+           :acceptance ["衣装の見た目（色・小物）が具体的に書かれている" "既存の設定と矛盾しない"]
+           :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
+           :notes []}
+  :revise {:notes ["boxp: Review 指示: 案の色を藍と白の組み合わせに変えて、小物として提灯型の飾りを加えてください。他の部分はそのまま。"]}
+  :expect {:propose? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/characters/yui.md"]
+           :section-must-contain ["藍" "白" "提灯"]
+           :proposal-must-not-contain ["17 ?歳" "ですわ"]
+           :gold-sources []
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/characters/yui-v1.md"]}}
+
+ {:id "P09" :title "S / 新規ノートへの提案: 霜灯祭の夜のエピソード案（対象ノートが未存在）" :group "search" :scale "S" :mode "propose"
+  :fixture {:script "setting_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/setting/frost-festival-episode.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/setting" "Projects/task-board-localllm-docs/pilot/setting"]
+  :ticket {:title "霜灯祭の夜のエピソード案（新規ノート）"
+           :summary "霜灯祭の夜に篝火ユイ・篝火ユキ・水瀬ミオの三人が鐘楼の前で過ごす短いエピソードの案を考えて、新しいノート `Projects/task-board-localllm-docs/pilot/setting/frost-festival-episode.md` に書いてほしい。祭りの決まりごと（色、鐘が鳴る回数）と三人の口調を既存設定に合わせること。"
+           :acceptance ["三人の口調が既存設定どおり" "祭りの決まりごとが既存設定どおり"]
+           :context ["設定資料の入口は [[Projects/task-board-localllm-docs/refs/setting/index]]。"]
+           :notes []}
+  :expect {:propose? true
+           :allowed-changes ["Projects/task-board-localllm-docs/pilot/setting/frost-festival-episode.md"]
+           :section-must-contain ["三度|3 ?回|三回" "藍"]
+           :proposal-must-not-contain ["まいど" "灯を継ぐ"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/setting/world/festivals.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/setting/proposals/draft-mio-sister.md"]}}]

@@ -1,4 +1,9 @@
 ---
+- name: Verify exact target packages for standalone APT-source runs
+  ansible.builtin.include_tasks: apt_preflight.yml
+  when: not (kubernetes_upgrade_apt_preflight_completed | default(false) | bool)
+  tags: [upgrade]
+
 - name: Configure Kubernetes apt repository for target version
   ansible.builtin.copy:
     dest: /etc/apt/sources.list.d/kubernetes.list
@@ -47,7 +52,7 @@
 
 - name: Upgrade CRI-O
   ansible.builtin.apt:
-    name: "cri-o={{ crio_upgrade_version }}*"
+    name: "cri-o={{ crio_upgrade_package }}"
     state: present
     update_cache: false
   become: true

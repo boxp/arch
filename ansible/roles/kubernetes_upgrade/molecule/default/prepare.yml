@@ -169,15 +169,25 @@
               ;;
             *"exec -i "*" sh -c "*"cat > "*)
               shell_command="${@: -1}"
-              snapshot_path="${shell_command#cat > }"
-              snapshot_path="${snapshot_path%\'}"
-              snapshot_path="${snapshot_path#\'}"
-              mkdir -p "$(dirname "$snapshot_path")"
-              cat > "$snapshot_path"
+              mkdir -p /snapshots
+              bash -c "$shell_command"
+              ;;
+            *"exec "*" df -PB1 "*)
+              printf 'Filesystem 1-blocks Used Available Capacity Mounted on\n'
+              printf 'mock 10737418240 1 10737418239 1%% /snapshots\n'
               ;;
             *"exec "*" test -s "*)
               snapshot_path="${@: -1}"
               test -s "$snapshot_path"
+              ;;
+            *"exec "*" stat -c %s "*)
+              snapshot_path="${@: -1}"
+              stat -c %s "$snapshot_path"
+              ;;
+            *"exec "*" mv "*)
+              source_path="${@: -2:1}"
+              destination_path="${@: -1}"
+              mv "$source_path" "$destination_path"
               ;;
             *"exec "*" sh -c "*"ls -1t "*"pre-upgrade-"*)
               shell_command="${@: -1}"

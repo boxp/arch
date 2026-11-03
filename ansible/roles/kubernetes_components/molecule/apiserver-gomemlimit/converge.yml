@@ -1,0 +1,12 @@
+---
+- name: Converge
+  hosts: all
+  become: true
+  roles:
+    - role: ../../../../kubernetes_components
+  vars:
+    kubernetes_disable_swap: false
+    kubernetes_enable_modules: false
+    # 検証対象: 既定 (false) では何もしないフラグを有効化し、模擬マニフェストへの反映を通す。
+    apiserver_gomemlimit_enabled: true
+    apiserver_gomemlimit: "1536MiB"
