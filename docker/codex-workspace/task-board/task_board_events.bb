@@ -35,11 +35,16 @@
    "Ready" "ready"
    "In Progress" "in-progress"
    "Blocked" "blocked"
-   "Review" "review"
    "Done" "done"})
 
+;; BOXP-395: Review is retired. A card under a leftover heading stays readable so
+;; the lane snapshot keeps knowing where it came from (see `detect-lane-changes!`).
+(def legacy-lane->status (assoc lane->status "Review" "review"))
+
 ;; Transitions that wake Kohako. Start / heartbeat / minor progress never do.
-(def trigger-statuses #{"blocked" "review" "done"})
+;; A pending "review" event from before the retirement is still delivered: the
+;; delivery path reads the outbox and does not consult this set.
+(def trigger-statuses #{"blocked" "done"})
 
 (def schema-version 1)
 
@@ -122,7 +127,7 @@
       (let [heading (when-let [[_ h] (re-matches #"^##\s+(.+?)\s*$" line)] h)
             card-id (when-let [[_ id] (re-find #"\[\[Tickets/(BOXP-\d+)\|" line)] id)]
         (cond
-          heading (recur (rest lines) (lane->status heading) acc)
+          heading (recur (rest lines) (legacy-lane->status heading) acc)
           (and card-id lane (not (contains? acc card-id)))
           (recur (rest lines) lane (assoc acc card-id lane))
           :else (recur (rest lines) lane acc)))
@@ -257,7 +262,11 @@
       (let [recorded (doall
                       (for [[ticket-id status] current
                             :let [prev (get previous ticket-id)]
+                            ;; Leaving the retired Review lane is the one-time
+                            ;; migration, not news: one digest reports it instead
+                            ;; of one notification per card (BOXP-395).
                             :when (and (not= prev status)
+                                       (not= "review" prev)
                                        (contains? trigger-statuses status))
                             :let [path (record-event! {:event-id (str ticket-id "-lane-" status "-" (compact-ts) "-" (short-uuid))
                                                        :ticket-id ticket-id

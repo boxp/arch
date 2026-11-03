@@ -181,6 +181,11 @@ if [[ "${GH_FAKE_FAIL:-false}" == true ]]; then
   exit 1
 fi
 
+if [[ "$1 $2" == "pr view" && "$*" == *"--json headRefOid"* ]]; then
+  printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  exit 0
+fi
+
 if [[ "$1 $2" == "pr view" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9]+$ ]]; then
   if [[ -n "${GH_FAKE_LOCK_MTIME_LOG:-}" && -n "${GH_FAKE_LOCK_FILE:-}" ]]; then
     before="$(stat -c %Y "${GH_FAKE_LOCK_FILE}")"
@@ -332,6 +337,91 @@ run_tick() {
   CODEX_TASK_BOARD_ROOT="${state_root}" \
   CODEX_TASK_BOARD_LOCK_STALE_SECONDS="${CODEX_TASK_BOARD_LOCK_STALE_SECONDS:-180}" \
   "$@" bb "${RUNNER}" tick
+}
+
+test_review_lane_retirement_contract() {
+  local tmp vault state bin prompt_log pr_message
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/prompt"
+  pr_message=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: continue'
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+
+  # Gate pass and unmerged: back to Ready with the same assignee, nobody is waited for.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-501|BOXP-501: continue]] #ticket status::in-progress"
+  sed -i '/^## Review$/d' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-501 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${prompt_log}" CODEX_FAKE_MESSAGE="${pr_message}" run_tick "${vault}" "${state}" env >"${tmp}/tick1"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-501: continue\]\].*status::ready.*assignee::codex'
+  assert_file_contains "${vault}/Tickets/BOXP-501.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-501.md" '^assignee: codex$'
+  assert_file_contains "${vault}/Tickets/BOXP-501.md" 'Ready継続: 担当 codex のまま次 run へ（自動継続 1/8）'
+  assert_file_contains "${prompt_log}" 'the board has no Review lane'
+  assert_file_contains "${prompt_log}" 'TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked'
+  assert_file_not_contains "${prompt_log}" 'TASK_BOARD_RESULT: review'
+  assert_file_not_contains "${vault}/Boards/Task Board.md" '^## Review'
+
+  # The next tick continues it and names the head the gates passed.
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${prompt_log}" CODEX_FAKE_MESSAGE=$'merged and verified\nTASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/tick2"
+  assert_file_contains "${prompt_log}" 'https://github.com/boxp/example/pull/123 @ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  assert_file_contains "${vault}/Tickets/BOXP-501.md" '^status: done$'
+  assert_file_not_contains "${state}/continuation-budget.edn" 'BOXP-501'
+
+  # A legacy marker from a run started before the rollout does not re-create Review.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-502|BOXP-502: legacy]] #ticket status::in-progress"
+  sed -i '/^## Review$/d' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-502 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >"${tmp}/tick3"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-502: legacy\]\].*status::ready.*assignee::codex'
+  assert_file_not_contains "${vault}/Boards/Task Board.md" '^## Review'
+  assert_file_not_contains "${vault}/Boards/Task Board.md" 'status::review'
+
+  # Fixable gate failure: stays with the worker in In Progress, not with a person.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-503|BOXP-503: fixable]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-503 in-progress codex
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE="${pr_message}" run_tick "${vault}" "${state}" env >"${tmp}/tick4"
+  assert_file_contains "${vault}/Tickets/BOXP-503.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-503.md" '^assignee: codex$'
+
+  # The worker's own blocked: named input, resolver and next action, nothing merged.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-504|BOXP-504: scope]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-504 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >"${tmp}/tick5"
+  assert_file_contains "${vault}/Tickets/BOXP-504.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-504.md" 'needed-input=.*resolver=.*next-action='
+
+  # A run that never finishes stops at the finite limit and is resumed only explicitly.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-505|BOXP-505: loop]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-505 in-progress codex
+  local round
+  for round in 1 2 3; do
+    PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT=2 CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/loop${round}"
+  done
+  assert_file_contains "${vault}/Tickets/BOXP-505.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-505.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-505.md" 'category=continuation-limit'
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-505'
+  # Stays stopped: no candidate action while it belongs to boxp.
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/loop4"
+  [[ ! -e "${tmp}/starts" ]] || fail 'a stopped continuation must not start again by itself'
+  bb "${HELPER}" update BOXP-505 --vault "${vault}" --lane Blocked --assignee codex >/dev/null
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT=2 CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/loop5"
+  assert_file_contains "${vault}/Tickets/BOXP-505.md" '^status: ready$'
+
+  # A leftover Review card: with a worker it is continued, for boxp it stays visible.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-506|BOXP-506: worker]] #ticket status::in-progress"
+  sed -i '/BOXP-506/d; s/^## Review$/## Review\n\n- [ ] [[Tickets\/BOXP-506|BOXP-506: worker]] #ticket status::review\n- [ ] [[Tickets\/BOXP-507|BOXP-507: owner]] #ticket status::review/' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-506 review codex
+  write_ticket "${vault}" BOXP-507 review boxp
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/legacy"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-506: worker\]\].*status::ready'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-507: owner\]\].*status::review'
+  bb "${HELPER}" update BOXP-507 --vault "${vault}" --lane Blocked >/dev/null
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-507:.*status::blocked'
 }
 
 test_parallel_codex_runs() {
@@ -725,7 +815,7 @@ test_explicit_claude_error_and_review_markers_are_processed() {
   PATH="${bin}:$PATH" \
     CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-claude-review.out
-  assert_file_contains "${vault}/Tickets/BOXP-162.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-162.md" '^status: ready$'
   assert_run_summary_contains "${state}" BOXP-162 ':agent "claude-opus"'
   summary="$(find "${state}/runs/BOXP-162" -name last-message.md -print | sort | tail -n 1)"
   assert_file_contains "${summary}" '^TASK_BOARD_RESULT: review$'
@@ -1662,7 +1752,7 @@ test_review_without_pr_is_blocked() {
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'Blocked transition recorded: ticket=BOXP-301; run='
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'action=implement; at=.*category=pr-gate-pr-url'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'inspect run artifacts: .*/summary\.edn, .*/last-message\.md, .*/events\.jsonl, .*/stderr\.log'
-  assert_file_not_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::review'
+  assert_file_not_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::ready'
 }
 
 test_fable_reported_blocked_is_audited() {
@@ -1756,14 +1846,14 @@ test_blocker_note_failure_restores_original_lane() {
   bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
-  write_board "${vault}" "- [ ] [[Tickets/BOXP-306|BOXP-306: restore review]] #ticket status::review"
-  write_ticket "${vault}" BOXP-306 review codex
-  bb "${HELPER}" update BOXP-306 --vault "${vault}" --lane Review >/dev/null
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-306|BOXP-306: restore ready]] #ticket status::ready"
+  write_ticket "${vault}" BOXP-306 ready codex
+  bb "${HELPER}" update BOXP-306 --vault "${vault}" --lane Ready >/dev/null
 
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-blocker-note-restore.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-306\|BOXP-306: test ticket\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-306.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-306\|BOXP-306: test ticket\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-306.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-306.md" '^assignee: codex$'
 }
 
@@ -1830,9 +1920,9 @@ test_review_with_pr_url_is_noted() {
 
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-pr.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-401\|BOXP-401: review pr\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^status: review$'
-  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-401\|BOXP-401: review pr\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^assignee: codex$'
   assert_file_contains "${vault}/Tickets/BOXP-401.md" 'PR: https://github.com/boxp/example/pull/123'
   assert_file_contains "${vault}/Tickets/BOXP-401.md" 'Review gates passed'
 }
@@ -1850,8 +1940,8 @@ test_review_without_repo_marker_skips_pr_gates() {
 
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-none.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-402\|BOXP-402: no repo review\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-402\|BOXP-402: no repo review\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: ready$'
   # A skipped gate (no PR to check) must not be counted as a pass.
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "skip"\] 1'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "skip"\] 1'
@@ -2010,8 +2100,8 @@ test_review_p2_only_passes_without_budget() {
   local tmp vault state bin
   review_severity_setup
   CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | improve wording\nCODEX_REVIEW_FINDING: P3 | x | rename\nCODEX_REVIEW_FINDING: nit | x | cleanup' review_severity_tick
-  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-405: review issue.*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-405: review issue.*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Review gates passed'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Non-blocking low-priority review findings \(P2/P3/nit\): 3'
   assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'improve wording'
@@ -2130,7 +2220,7 @@ test_review_with_pr_and_none_marker_checks_pr() {
 
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nCreated PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-pr-wins.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-406\|BOXP-406: pr wins\]\].*status::review'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-406\|BOXP-406: pr wins\]\].*status::ready'
   assert_file_contains "${vault}/Tickets/BOXP-406.md" 'Review gates passed'
 }
 
@@ -2148,8 +2238,8 @@ test_review_with_multiple_pr_urls_checks_all() {
 
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PRs:\nhttps://github.com/boxp/example/pull/123\nhttps://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-multiple-prs.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-410\|BOXP-410: multiple prs\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-410.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-410\|BOXP-410: multiple prs\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-410.md" 'PR: https://github.com/boxp/example/pull/123, https://github.com/boxp/example/pull/456'
   assert_file_contains "${vault}/Tickets/BOXP-410.md" 'Review gates passed\.'
   assert_file_not_contains "${vault}/Tickets/BOXP-410.md" 'GitHub mergeStateStatus'
@@ -2202,7 +2292,7 @@ test_review_gate_keeps_lock_heartbeat_active() {
 
   read -r before after <"${log}"
   [[ "${after}" -gt "${before}" ]] || fail "expected lock heartbeat to update during PR gate, got ${before} -> ${after}"
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-412\|BOXP-412: gate heartbeat\]\].*status::review'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-412\|BOXP-412: gate heartbeat\]\].*status::ready'
 }
 
 test_review_gate_passes_codex_model_profile_to_review() {
@@ -2232,14 +2322,14 @@ test_review_gate_passes_codex_model_profile_to_review() {
   assert_file_contains "${usage_file}" '"input_tokens":120'
   assert_file_contains "${usage_file}" '"thread_id":"fake-review-thread"'
   assert_file_not_contains "${usage_file}" 'gpt-|CODEX_REVIEW'
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-413\|BOXP-413: review codex config\]\].*status::review'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-413\|BOXP-413: review codex config\]\].*status::ready'
 }
 
 test_review_gate_missing_usage_still_passes() {
   local tmp vault state bin usage_file
   review_severity_setup
   CODEX_FAKE_REVIEW_NO_JSON=1 review_severity_tick
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: ready$'
   usage_file="$(find "${state}/runs/BOXP-405" -name codex-review-boxp__example-123-usage.jsonl -print -quit)"
   assert_file_contains "${usage_file}" '"usage_status":"unrecorded"'
 }
@@ -2280,8 +2370,8 @@ test_review_with_empty_ci_rollup_passes_for_no_ci_repo() {
   # Explicit opt-in: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS → empty checks + CLEAN merge passes immediately
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=10 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_TASK_BOARD_NO_CI_REPOS='boxp/example' GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-no-ci-repo.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-450\|BOXP-450: no ci repo\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-450.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-450\|BOXP-450: no ci repo\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-450.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-450.md" 'Review gates passed\.'
 }
 
@@ -2443,8 +2533,8 @@ test_review_with_merged_pr_skips_gates() {
   # would poll until this timeout and fail with gate=mergeability.
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_PROMPT_LOG="${prompt_log}" GH_FAKE_PR_STATE=MERGED CODEX_FAKE_MESSAGE=$'Merged PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-merged-pr.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-420\|BOXP-420: merged pr\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-420.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-420\|BOXP-420: merged pr\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-420.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-420.md" 'Review gates passed\. Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123\.'
   summary="$(find "${state}/runs/BOXP-420" -name summary.edn -print | sort | tail -n 1)"
   assert_file_contains "${summary}" ':ok\? true'
@@ -2472,8 +2562,8 @@ test_review_with_none_marker_and_merged_pr_moves_review() {
   # merged PRs must not stall the gate until the timeout.
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 GH_FAKE_PR_STATE=MERGED CODEX_FAKE_MESSAGE=$'Deployed https://github.com/boxp/example/pull/123 and https://github.com/boxp/example/pull/456 earlier.\nTASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-none-merged.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-421\|BOXP-421: none plus merged\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-421.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-421\|BOXP-421: none plus merged\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-421.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-421.md" 'Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123, https://github.com/boxp/example/pull/456\.'
   assert_file_not_contains "${vault}/Tickets/BOXP-421.md" 'Review gate failed'
   summary="$(find "${state}/runs/BOXP-421" -name summary.edn -print | sort | tail -n 1)"
@@ -2495,8 +2585,8 @@ test_review_with_open_and_merged_prs_gates_open_only() {
 
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_PROMPT_LOG="${prompt_log}" GH_FAKE_PR_STATE_123=MERGED CODEX_FAKE_MESSAGE=$'Context: https://github.com/boxp/example/pull/123 (merged)\nCreated PR: https://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-open-and-merged.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-422\|BOXP-422: open and merged\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-422.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-422\|BOXP-422: open and merged\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-422.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-422.md" 'Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123\.'
   summary="$(find "${state}/runs/BOXP-422" -name summary.edn -print | sort | tail -n 1)"
   assert_file_contains "${summary}" ':checked-pr-urls \["https://github.com/boxp/example/pull/456"\]'
@@ -2595,8 +2685,8 @@ test_review_gate_pass_after_retry_moves_review() {
   PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-retry-then-pass-1.out
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-retry-then-pass-2.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-415\|BOXP-415: pass after retry\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-415.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-415\|BOXP-415: pass after retry\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-415.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-415.md" 'PR: https://github.com/boxp/example/pull/123'
   assert_file_contains "${vault}/Tickets/BOXP-415.md" 'Review gates passed'
   assert_file_not_contains "${state}/state.edn" 'BOXP-415'
@@ -3605,14 +3695,14 @@ test_ai_ops_ledger_records_run_lifecycle() {
     || fail "expected an agent-system gate_defect correction"
   grep ':ledger:finished"' "${ledger}" | grep -q '"status":"retrying"' || fail "expected a retrying run.finished"
   grep ':ledger:finished"' "${ledger}" | grep -q '"status":"succeeded"' || fail "expected a succeeded run.finished"
-  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_to":"review"' || fail "expected lane.changed to review"
+  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_to":"ready"' || fail "expected lane.changed to ready"
   assert_file_not_contains "${ledger}" 'secret title'
   assert_file_not_contains "${ledger}" 'http'
   assert_file_not_contains "${ledger}" 'privacy_rejected'
   [[ "$(grep -c '"event_type":"run.started"' "${ledger}")" -eq 2 ]] || fail "expected two run.started ledger events"
   grep ':ledger:lane-start"' "${ledger}" | grep '"lane_from":"ready"' | grep -q '"lane_to":"in-progress"' \
     || fail "expected a start lane.changed ready -> in-progress"
-  # Start Ready -> In Progress, finish In Progress -> Review. A retry stays In
+  # Start Ready -> In Progress, finish In Progress -> Ready. A retry stays In
   # Progress: no lane.changed for in-progress -> in-progress.
   [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 2 ]] || fail "expected two lane.changed ledger events"
   grep ':ledger:correction"' "${ledger}" | grep -q '"confidence":"high"' \
@@ -3933,7 +4023,7 @@ test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
   budget_set_lane "${vault}" BOXP-463 grant codex
   # Now one more run is allowed; it passes, and success does not reset counts.
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/301\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 >/dev/null
-  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::review'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::ready'
   out="$(CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 bb "${RUNNER}" gate-budget-status BOXP-463)"
   [[ "${out}" == *':used 2, :limit 3'* ]] || fail "success must not reset the budget: ${out}"
   # Granted budget is consumed by the next failure, which blocks again at 3/3.
@@ -4273,8 +4363,11 @@ test_assignment_superseded() {
   make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-991 in-progress codex
+  # A superseded run's done is discarded, so it must not reset the continuation budget.
+  mkdir -p "${state}"
+  printf '{"BOXP-991" {:count 3}}\n' >"${state}/continuation-budget.edn"
   bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee codex >/dev/null
-  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/tick" &
   local pid=$!
   for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
   [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
@@ -4284,6 +4377,7 @@ test_assignment_superseded() {
   assert_file_contains "${vault}/Tickets/BOXP-991.md" 'newer assignment \(board_rev'
   assert_file_contains "${vault}/Boards/Task Board.md" 'status::ready.*assignee::boxp'
   assert_run_summary_contains "${state}" BOXP-991 ':superseded-by'
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-991'
 }
 
 test_assignment_repairs() {
@@ -4453,3 +4547,4 @@ echo "task-board-runner tests passed"
 
 # BOXP-344: isolated shared-GPU evaluation state machine; no model/network.
 python3 -B -m unittest discover -s "${ROOT_DIR}/tests/qwen-eval" -v
+test_review_lane_retirement_contract

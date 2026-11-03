@@ -38,7 +38,7 @@
    :agent #{"codex" "codex-terra" "codex-sol" "codex-sol-xhigh" "codex-full" "codex-mini" "codex-astra" "claude-opus" "claude-fable" "claude-sonnet" "fable" "localllm" "localllm-coder"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
    :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled" "superseded"}
-   :result #{"review" "blocked" "done" "ready"}
+   :result #{"review" "continue" "owner-acceptance" "blocked" "done" "ready"}
    :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :correction_class #{"gate_defect" "unknown" "done_claim_without_execution" "instruction_violation" "source_mismatch" "assignee_regression" "preference_adjustment" "scope_addition" "unavoidable_safety_decision" "external_failure"}
@@ -209,7 +209,7 @@
       (cond
         (= :groom action) "ready"
         (= :docs-groom action) (if (= "blocked" result) "blocked" "ready")
-        (#{"done" "review" "blocked"} result) result
+        (#{"done" "review" "continue" "owner-acceptance" "blocked"} result) result
         :else "review")
       result)))
 
@@ -738,7 +738,7 @@
                           ;; 移ると to-status=blocked/result=review になる) ため、result では判定しない。
                           ;; gate で止まった retrying/blocked の run.finished も effective-result "review" を持ち得るが Owner には
                           ;; 届いていないので数えない (status 欠落の run.finished も Review 到達の証拠にしない)。
-                          first-review (some #(when (or (and (= "run.finished" (:event_type %)) (= "review" (:result %)) (= "succeeded" (:status %)))
+                          first-review (some #(when (or (and (= "run.finished" (:event_type %)) (#{"review" "owner-acceptance"} (:result %)) (= "succeeded" (:status %)))
                                                         (and (= "notify.run-finished" (:event_type %)) (= "review" (:lane_to %)))
                                                         (= "review" (:lane_to %))
                                                         (and (= "task.state" (:event_type %)) (= "review" (:status %))))

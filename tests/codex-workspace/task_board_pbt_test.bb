@@ -82,7 +82,7 @@
            (= (= "done" status) (boolean (re-find #"^- \[x\]" n1)))
            (boolean (re-find #"^- \[[ x]\]" n1))))))
 
-(def lane-order ["Backlog" "Ready" "In Progress" "Blocked" "Review" "Done"])
+(def lane-order ["Backlog" "Ready" "In Progress" "Blocked" "Done"])
 (def section-gen
   (gen/let [before (gen/choose 0 2) cards (gen/vector card-gen 0 4) after (gen/choose 0 2)]
     {:before before :cards cards :after after}))
@@ -136,7 +136,7 @@
 ;; "## Done" was reported as a Done card while the runner ignored it.
 (deftest regression-card-under-foreign-heading-belongs-to-no-lane
   (let [lines ["---" "kanban-plugin: board" "---" ""
-               "## Backlog" "## Ready" "## In Progress" "## Blocked" "## Review" "## Done"
+               "## Backlog" "## Ready" "## In Progress" "## Blocked" "## Done"
                "## Notes"
                "- [x] [[Tickets/BOXP-1|BOXP-1: !]] #ticket status::done priority::low done::2026-11-02"]]
     (is (empty? (runner/parse-board-cards lines)))
@@ -146,7 +146,7 @@
 (deftest regression-update-keeps-card-copy-under-foreign-heading
   (let [copy "- [ ] [[Tickets/BOXP-7|BOXP-7: sample]] #ticket status::ready priority::medium"
         lines ["---" "kanban-plugin: board" "---" "" "## Backlog" "" "## Ready" "" copy ""
-               "## In Progress" "" "## Blocked" "" "## Review" "" "## Done" ""
+               "## In Progress" "" "## Blocked" "" "## Done" ""
                "## Notes" "" copy "memo about BOXP-7"]
         board (str (str/join "\n" lines) "\n")
         section (fn [xs heading]
