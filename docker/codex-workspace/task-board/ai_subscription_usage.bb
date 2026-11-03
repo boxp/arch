@@ -80,8 +80,10 @@
   (with-open [channel (java.nio.channels.FileChannel/open
                        (fs/path (str path ".lock"))
                        (into-array java.nio.file.OpenOption [java.nio.file.StandardOpenOption/CREATE
-                                                             java.nio.file.StandardOpenOption/WRITE]))
-              _lock (.lock channel)]
+                                                             java.nio.file.StandardOpenOption/WRITE]))]
+    ;; Closing the channel releases the lock; the lock object itself must not be
+    ;; closed, because babashka does not expose FileLock.close on every version.
+    (.lock channel)
     (thunk)))
 
 (defn record-claude-rate-limit!
