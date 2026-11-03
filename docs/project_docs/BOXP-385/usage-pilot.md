@@ -75,4 +75,4 @@ python3 -m unittest discover -s tests/ai-observability -v
 
 billing_mode は固定 enum には一致しなかったが pattern 分類では subscription 系 2,010、null 167。したがって Hermes の cloud 呼出しはほぼ subscription 経路で、Gemma は local と確定した。Qwen は 0 件。
 
-Hermes cron の `usage_audit.jsonl`（77 行、全行に prompt/completion/total/duration/error）を job の出現順で集計した。job 2（interval 180 分、Sol）が 63 fire / 55,325,915 token / 平均 84.6 秒、job 1（毎日 10:00 JST、Sol）8 fire / 1,402,055、job 3（平日 18:00 JST、Sol）6 fire / 1,932,194。4 番目の 15 分毎 job（terra）は usage_audit に行がなく、`no_agent` 系のため LLM 呼出しがないか記録経路が別。error は 0。名称・prompt・配信先は出力しない。週次 stale-PR 監査は Hermes cron ではなく vault の Codex Cron（Sun 11:00 JST、claude-opus-5-5）に属する。
+Hermes cron の `usage_audit.jsonl`（77 行、全行に prompt/completion/total/duration/error）を job の出現順で集計した。job 2（interval 180 分、Sol）が 63 fire / 55,325,915 token / 平均 84.6 秒、job 1（平日 18:00 JST、Sol）6 fire / 1,932,194、job 3（毎日 10:00 JST、Sol）8 fire / 1,402,055。job 番号は usage_audit の初出順で、pod 内 jobs.json の schedule と突合して確認した。4 番目の 15 分毎 job（terra）は usage_audit に行がなく、`no_agent` 系のため LLM 呼出しがないか記録経路が別。error は 0。名称・prompt・配信先は出力しない。週次 stale-PR 監査は Hermes cron ではなく vault の Codex Cron（Sun 11:00 JST、claude-opus-5-5）に属する。
