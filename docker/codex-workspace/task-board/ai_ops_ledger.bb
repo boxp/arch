@@ -766,8 +766,8 @@
   not a well-formed source name cannot be told apart from a damaged Hermes event
   (an approval or correction with its source lost), so it also becomes an
   input_unreadable marker (:missing-source); a JSON line from another well-formed
-  source means the command is misconfigured, so it is dropped and counted
-  (:foreign). :hermes counts the events kept as events (markers excluded)."
+  source may hide a misconfigured Hermes event, so it becomes the same marker
+  and is counted (:foreign). :hermes counts the events kept as events (markers excluded)."
   [text]
   (reduce (fn [acc line]
             (let [m (try (json/parse-string line true) (catch Exception _ nil))
@@ -783,7 +783,7 @@
                     ;; 承認/是正 event かもしれないので黙って捨てず入力欠落 marker にする (関連 SLI を確定させない)
                     (not (and (string? source) (re-matches #"[a-z][a-z0-9-]{0,63}" source)))
                     (-> acc (update :lines conj input-unreadable-marker-line) (update :missing-source inc))
-                    :else (update acc :foreign inc))))
+                    :else (-> acc (update :lines conj input-unreadable-marker-line) (update :foreign inc)))))
           {:lines [] :hermes 0 :malformed 0 :missing-source 0 :foreign 0 :rejected 0 :dropped-keys 0 :redacted-values 0}
           (remove str/blank? (str/split-lines text))))
 
@@ -988,7 +988,7 @@
           (metric-lines "ai_ops_hermes_mirror_stale" "gauge" "1 when the latest Hermes ledger pull failed or was partial (judged by the pull made in this process when there is one, so an unwritable status.edn cannot hide it): the SLI input uses the previous/incomplete snapshot plus a source_stale marker, or only a source_stale marker when no snapshot was ever obtained." [[{} (if (and configured (or (pos? (:last-attempt s 0)) (some-> @hermes-mirror-last-pull :root (= (str root)))) (hermes-mirror-stale-for? root s)) 1 0)]])
           ;; 成功した snapshot が無ければ件数を出さない (未取得と空の snapshot を区別する)
           (when (:last-success s)
-            (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot (malformed, missing_source and truncated_tail lines are stored as input_unreadable markers; foreign_source lines are dropped)." [[{:kind "hermes"} (:hermes-lines s (:lines s 0))] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "missing_source"} (:missing-source-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)] [{:kind "rejected"} (:rejected-lines s 0)] [{:kind "truncated_tail"} (:truncated-tail-lines s 0)] [{:kind "dropped_keys"} (:dropped-keys s 0)] [{:kind "redacted_values"} (:redacted-values s 0)]]))))
+            (metric-lines "ai_ops_hermes_mirror_snapshot_lines" "gauge" "Lines in the last successful Hermes ledger snapshot (malformed, missing_source, foreign_source and truncated_tail lines are stored as input_unreadable markers)." [[{:kind "hermes"} (:hermes-lines s (:lines s 0))] [{:kind "malformed"} (:malformed-lines s 0)] [{:kind "missing_source"} (:missing-source-lines s 0)] [{:kind "foreign_source"} (:foreign-lines s 0)] [{:kind "rejected"} (:rejected-lines s 0)] [{:kind "truncated_tail"} (:truncated-tail-lines s 0)] [{:kind "dropped_keys"} (:dropped-keys s 0)] [{:kind "redacted_values"} (:redacted-values s 0)]]))))
          "\n")))
 
 (defn sli-lock-path [root] (fs/path (ai-ops-dir root) "sli.lock"))

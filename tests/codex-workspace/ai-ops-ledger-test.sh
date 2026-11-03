@@ -697,13 +697,42 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (str/includes? m "ai_ops_hermes_mirror_enabled 1"))
     (assert (str/includes? m "ai_ops_hermes_mirror_stale 0"))
     (assert (str/includes? m "ai_ops_hermes_mirror_snapshot_lines{kind=\"hermes\"} 2")))
-  ;; JSON でない行は input_unreadable marker に、他 source の行は落として件数だけ残す
+  ;; 整形式の foreign 行だけで欠測を知らせ、秘密や ID を保存しない。
+  (let [foreign (json/generate-string {:source "secret-foreign-source" :event_type "approval.requested" :event_id "secret-foreign-id" :body "secret-foreign-body"})]
+    (spit src (str (str/join "\n" hermes-lines) "\n" foreign "\n"))
+    (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+    (let [snap (slurp (str (ai-ops-ledger/hermes-mirror-path root))) s (ai-ops-ledger/read-hermes-mirror-status root)]
+      (assert (= (conj (vec hermes-maps) {:collection_lost "input_unreadable"}) (vec (snapshot-maps))) snap)
+      (assert (= 1 (:foreign-lines s)))
+      (assert (not (str/includes? snap "secret-foreign"))))
+    (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+    (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+    (let [p (slurp (str (ai-ops-ledger/sli-path root)))]
+      (assert (str/includes? p "ai_ops_runs{status=\"all\"} 0") p)
+      (assert (str/includes? p "ai_ops_sli_determinable{sli=\"duplicate_approval\"} 0") p))
+    (let [t (java.io.File/createTempFile "ai-ops-foreign-" ".jsonl")]
+      (ai-ops-ledger/append-hermes-mirror! root (str t))
+      (ai-ops-ledger/run-sli-command! ["bb" ai-ops-ledger/sli-script "aggregate" (str t)] (str t ".out") far-deadline)
+      (let [r (clojure.edn/read-string (slurp (str t ".out")))]
+        (doseq [k [:duplicate-approval :agent-system-correction-task-ratio :first-acceptance-conformance]]
+          (assert (= "unknown" (get-in r [:sli k :status])) (pr-str r)))))
+    (let [before (slurp (str (ai-ops-ledger/hermes-mirror-path root)))]
+      (spit src (str foreign "\n"))
+      (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
+      (assert (= "no_events" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root))))
+      (assert (= before (slurp (str (ai-ops-ledger/hermes-mirror-path root)))))
+      (let [markers (slurp (str (ai-ops-ledger/hermes-mirror-failed-markers-path root)))]
+        (assert (= [{:collection_lost "input_unreadable"}] (map #(json/parse-string % true) (str/split-lines markers))) markers)
+        (assert (not (str/includes? markers "secret-foreign")))))
+    (spit src (str (str/join "\n" hermes-lines) "\n"))
+    (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline))))
+  ;; JSON でない行は input_unreadable marker に、他 source の行も marker にして件数を残す
   (spit src (str (str/join "\n" hermes-lines) "\nnot json\n" (json/generate-string {:source "task-board-runner" :event_type "run.started"}) "\n"))
   (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
   (let [snap (slurp (str (ai-ops-ledger/hermes-mirror-path root))) s (ai-ops-ledger/read-hermes-mirror-status root)]
     (assert (str/includes? snap "{\"collection_lost\":\"input_unreadable\"}") snap)
     (assert (not (str/includes? snap "task-board-runner")))
-    (assert (= 1 (:malformed-lines s))) (assert (= 1 (:foreign-lines s))) (assert (= 3 (:lines s))))
+    (assert (= 1 (:malformed-lines s))) (assert (= 1 (:foreign-lines s))) (assert (= 4 (:lines s))))
   ;; 追記途中の末尾行 (改行なし) は落とすが、落とした取り込みは「成功」にしない: snapshot は最新の完全な行で置き換えつつ
   ;; partial として記録し、集計入力には stale marker を付ける (末尾が書き込み途中の approval.requested だった場合に
   ;; 承認を欠いた snapshot で重複承認率を確定しない)。次の完全な取り込みで解消する
@@ -770,7 +799,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
       (assert (not= "unknown" (get-in (clojure.edn/read-string (slurp (str t ".out"))) [:sli :agent-system-correction-task-ratio :status])) "the correction SLI settles again after a complete pull")))
   ;; source 欠落/不正 (非文字列・空・識別子でない) の JSON 行は他 source の行と区別せず捨てない: 承認/是正の source を失った
   ;; Hermes event かもしれないので input_unreadable marker として snapshot に残し、関連 SLI を確定させない。
-  ;; 整った別 source 名の行だけが foreign として落ちる
+  ;; 整った別 source 名の行も foreign として数え marker にする
   (let [no-source (json/generate-string (dissoc (first hermes-maps) :source))
         bad-sources [(json/generate-string (assoc (first hermes-maps) :source 42))
                      (json/generate-string (assoc (first hermes-maps) :source ""))
@@ -780,8 +809,8 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (true? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)) "a complete pull with valid events still succeeds")
     (let [snap (snapshot-maps) s (ai-ops-ledger/read-hermes-mirror-status root) m (ai-ops-ledger/sli-export-metrics root)]
       (assert (= hermes-maps (take 2 snap)))
-      (assert (= 4 (count (filter #(= {:collection_lost "input_unreadable"} %) snap))) (pr-str snap))
-      (assert (not (some #(= "task-board-runner" (:source %)) snap)) "a well-formed foreign source is still dropped")
+      (assert (= 5 (count (filter #(= {:collection_lost "input_unreadable"} %) snap))) (pr-str snap))
+      (assert (not (some #(= "task-board-runner" (:source %)) snap)) "a well-formed foreign source is not retained")
       (assert (= 4 (:missing-source-lines s)) (pr-str s)) (assert (= 1 (:foreign-lines s))) (assert (zero? (:malformed-lines s)))
       (assert (str/includes? m "ai_ops_hermes_mirror_snapshot_lines{kind=\"missing_source\"} 4") m))
     (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
@@ -850,7 +879,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "exit 3") ai-ops-ledger/sli-interval (constantly 1)]
   (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
   (let [s (ai-ops-ledger/read-hermes-mirror-status root)]
-    (assert (= 2 (:failures s)) "one earlier command failure in the partial-tail scenario") (assert (= "command" (:last-failure s))) (assert (ai-ops-ledger/hermes-mirror-stale? s)))
+    (assert (= 3 (:failures s)) "earlier foreign-only and partial-tail failures are counted") (assert (= "command" (:last-failure s))) (assert (ai-ops-ledger/hermes-mirror-stale? s)))
   (assert (= hermes-maps (snapshot-maps)) "previous snapshot kept")
   (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
   (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
@@ -860,8 +889,8 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (str/includes? p "ai_ops_source_stale_snapshot_markers{source=\"hermes-observer\"} 1"))
     (assert (str/includes? p "ai_ops_hermes_conversations 1") "last good snapshot still joined")
     (assert (str/includes? m "ai_ops_hermes_mirror_stale 1"))
-    ;; 直接の失敗 1 回 + refresh-sli! 内の再取り込み失敗 1 回 (+ partial-tail シナリオの command 失敗 1 回)
-    (assert (str/includes? m "ai_ops_hermes_mirror_failures_total 3") m)))
+    ;; 直接の失敗 1 回 + refresh-sli! 内の再取り込み失敗 1 回 (+ partial-tail の command 失敗と foreign-only 失敗が各 1 回)
+    (assert (str/includes? m "ai_ops_hermes_mirror_failures_total 4") m)))
 ;; 空出力と容量超過も失敗 (snapshot は置き換えない)
 (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "true")]
   (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
@@ -869,7 +898,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "cat " src)) ai-ops-ledger/hermes-mirror-max-bytes (constantly 16)]
   (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
   (assert (= "too_large" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root))))
-  (assert (= 5 (:failures (ai-ops-ledger/read-hermes-mirror-status root)))))
+  (assert (= 6 (:failures (ai-ops-ledger/read-hermes-mirror-status root)))))
 ;; 無限に出力するコマンド: 上限 (メモリ内) で打ち切り、ディスクに一時ファイルを書かず、タイムアウトを待たない
 (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly "yes") ai-ops-ledger/hermes-mirror-max-bytes (constantly 65536) ai-ops-ledger/hermes-mirror-timeout (constantly 20)]
   (let [t0 (System/currentTimeMillis)]
@@ -925,11 +954,11 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 ;; 是正に影響し得る拒否を集計側が認識できず、関連 SLI が確定したままになっていた)。直前の "rejected only" の marker が残る
 (let [fp (ai-ops-ledger/hermes-mirror-failed-markers-path root)]
   (assert (fs/exists? fp) "markers from the no_events pull must be kept")
-  ;; 直前の "partial line only" (落とした途中行の input_unreadable 1 件) と "malformed only" (input_unreadable 2 件) の
+  ;; 直前の "partial line only"、"foreign source only"、"malformed only" の
   ;; marker も上書きされずに残る (連続失敗で積み上げる)
-  (assert (= [{:collection_lost "input_unreadable"} {:collection_lost "input_unreadable"} {:collection_lost "input_unreadable"} {:privacy_rejected "upstream" :event_type "run.started"}]
+  (assert (= [{:collection_lost "input_unreadable"} {:collection_lost "input_unreadable"} {:collection_lost "input_unreadable"} {:collection_lost "input_unreadable"} {:privacy_rejected "upstream" :event_type "run.started"}]
              (map #(json/parse-string % true) (str/split-lines (slurp (str fp))))) (slurp (str fp)))
-  (assert (str/includes? (ai-ops-ledger/sli-export-metrics root) "ai_ops_hermes_mirror_failed_pull_marker_lines 4"))
+  (assert (str/includes? (ai-ops-ledger/sli-export-metrics root) "ai_ops_hermes_mirror_failed_pull_marker_lines 5"))
   ;; 全行が approval.requested で ID 不正: 前回 snapshot + stale + 拒否 marker が入力に付き、重複承認・zero-tolerance は unknown
   (spit src (str (json/generate-string (assoc (second hermes-maps) :event_type "approval.requested" :approval_key "op:0000000a" :event_id "bad id")) "\n"
                  (json/generate-string (assoc (second hermes-maps) :event_type "approval.requested" :approval_key "op:0000000a" :event_id "bad id 2")) "\n"))
@@ -938,22 +967,22 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (= "no_events" (:last-failure (ai-ops-ledger/read-hermes-mirror-status root))))
     ;; 連続失敗では前回の marker (run.started の拒否) を上書きせず積み上げる: 前回検出した是正・run の欠落が
     ;; 今回の承認拒否で消えると、完全な取り込みが成功する前に是正 SLI が確定してしまう
-    (assert (= 6 (ai-ops-ledger/hermes-mirror-failed-marker-lines root)) "markers from earlier failed pulls must be kept")
+    (assert (= 7 (ai-ops-ledger/hermes-mirror-failed-marker-lines root)) "markers from earlier failed pulls must be kept")
     (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
       (ai-ops-ledger/append-hermes-mirror! root (str t))
       (let [lines (str/split-lines (slurp (str t)))]
         (assert (= hermes-maps (map #(json/parse-string % true) (take 2 lines))) "last good snapshot still joined")
         (assert (some #(= {:source_stale "hermes-observer"} (json/parse-string % true)) lines) (pr-str lines))
         (assert (= 1 (count (filter #(= {:privacy_rejected "upstream" :event_type "run.started"} (json/parse-string % true)) lines))) (pr-str lines))
-        (assert (= 3 (count (filter #(= {:collection_lost "input_unreadable"} (json/parse-string % true)) lines))) (pr-str lines))
+        (assert (= 4 (count (filter #(= {:collection_lost "input_unreadable"} (json/parse-string % true)) lines))) (pr-str lines))
         (assert (= 2 (count (filter #(= {:privacy_rejected "upstream" :event_type "approval.requested"} (json/parse-string % true)) lines))) (pr-str lines))
         (assert (not (str/includes? (slurp (str t)) "bad id")) "rejected identifiers never reach the SLI input"))
       (ai-ops-ledger/run-sli-command! ["bb" ai-ops-ledger/sli-script "aggregate" (str t)] (str t ".out") far-deadline)
       (let [out (slurp (str t ".out")) r (clojure.edn/read-string out)]
         (assert (= 3 (get-in r [:coverage :privacy-rejected-upstream])) out)
-        (assert (= 3 (get-in r [:coverage :collection-lost :input-unreadable])) out)
+        (assert (= 4 (get-in r [:coverage :collection-lost :input-unreadable])) out)
         (assert (= "unknown" (get-in r [:sli :duplicate-approval :status])) out)
-        (assert (= 6 (get-in r [:sli :duplicate-approval :lost-events])) "rejected approvals, unreadable lines and the stale snapshot marker (not the run.started rejection) are reported as lost, not as an unconnected source")
+        (assert (= 7 (get-in r [:sli :duplicate-approval :lost-events])) "rejected approvals, unreadable lines and the stale snapshot marker (not the run.started rejection) are reported as lost, not as an unconnected source")
         (assert (= 1 (get-in r [:sli :duplicate-approval :stale-snapshot-markers])) out)
         ;; stale の間は失敗中に Hermes 側で起きた是正/effect も入力に無い: 是正率・zero-tolerance も確定しない
         (assert (= "unknown" (get-in r [:sli :agent-system-correction-task-ratio :status])) out)
@@ -1026,7 +1055,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   (spit src "{\"source\":\"hermes-observer\",\"event_type\":\"run.sta")
   (with-redefs [ai-ops-ledger/hermes-mirror-command (constantly (str "cat " src))]
     (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
-    (assert (= 7 (ai-ops-ledger/hermes-mirror-failed-marker-lines root)) "markers stay until a pull succeeds; the dropped tail adds a lost-input marker"))
+    (assert (= 8 (ai-ops-ledger/hermes-mirror-failed-marker-lines root)) "markers stay until a pull succeeds; the dropped tail adds a lost-input marker"))
   ;; 末尾行を落とした partial pull では marker を消さない (落とした行が前回検出した是正拒否なら、stale marker だけでは
   ;; 是正 SLI が確定してしまう)。snapshot は完全な行で置き換わり、marker は集計入力に付いたまま
   (spit src (str (str/join "\n" hermes-lines) "\n{\"source\":\"hermes-observer\",\"event_type\":\"correc"))
@@ -1034,7 +1063,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (assert (false? (ai-ops-ledger/mirror-hermes-ledger! root far-deadline)))
     (assert (= "partial" (:last-result (ai-ops-ledger/read-hermes-mirror-status root))))
     (assert (fs/exists? fp) "a partial pull must not delete the failed-pull markers")
-    (assert (= 7 (ai-ops-ledger/hermes-mirror-failed-marker-lines root)))
+    (assert (= 8 (ai-ops-ledger/hermes-mirror-failed-marker-lines root)))
     (let [t (java.io.File/createTempFile "ai-ops-hermes-input-" ".jsonl")]
       (ai-ops-ledger/append-hermes-mirror! root (str t))
       (let [lines (map #(json/parse-string % true) (str/split-lines (slurp (str t))))]
