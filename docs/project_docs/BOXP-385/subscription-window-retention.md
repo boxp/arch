@@ -27,7 +27,7 @@ Grafana 側の変更は不要で、既存の窓別 observed/expired/present を�
 
 ## account 境界
 
-event に account 識別子はない。`~/.claude.json` の `oauthAccount.accountUuid` の SHA-256 先頭 16 桁を 0600 の snapshot にだけ保存し、Prom へは出さない。他の profile field は読まない。取得できないとき（nil）は境界を判定できないので窓を保持する。
+event に account 識別子はない。`~/.claude.json` の `oauthAccount.accountUuid` の SHA-256 先頭 16 桁を 0600 の snapshot にだけ保存し、Prom へは出さない。他の profile field は読まない。取得できないとき（nil）は境界を判定できないので窓を保持し、更新・追加した窓には直前の既知 scope を引き継ぐ。引き継がないと、その後の account 切替で旧窓を削除できず、新 account の値に見えてしまう。既知 scope が一つもない窓だけは切替後も残る。
 
 ## 限界
 

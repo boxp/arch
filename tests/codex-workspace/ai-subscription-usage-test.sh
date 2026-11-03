@@ -131,6 +131,18 @@ bb -e '
       (has out (str "ai_subscription_window_used_percent{" shared-labels "} 5.0")))
     ;; The scope never reaches the exposition.
     (assert (not (clojure.string/includes? (prom now) "acct-")))
+    ;; An unknown-scope event keeps the last known boundary, both on a refreshed
+    ;; window and on a window it adds, so a later account switch still drops them.
+    (rec {:seven_day (win 0.06 (+ now 500))} (+ base 4000) nil)
+    (rec {:five_hour (win 0.07 (+ now 100))} (+ base 5000) nil)
+    (let [out (prom now)]
+      (has out (str "ai_subscription_window_used_percent{" shared-labels "} 6.0"))
+      (has out "ai_subscription_window_used_percent{provider=\"claude\",limit=\"five_hour\",name=\"shared_5h\",window=\"5h\"} 7.0"))
+    (rec {:seven_day_sonnet (win 0.08 (+ now 500))} (+ base 6000) "acct-c")
+    (let [out (prom now)]
+      (lacks out #"ai_subscription_window_used_percent\{[^\n]*limit=\"seven_day\"")
+      (lacks out #"ai_subscription_window_used_percent\{[^\n]*limit=\"five_hour\"")
+      (has out "ai_subscription_window_used_percent{provider=\"claude\",limit=\"seven_day_sonnet\",name=\"sonnet_7d\",window=\"7d\"} 8.0"))
     ;; Legacy snapshot without per-window time inherits the file time, then merges.
     (spit path (cheshire.core/generate-string {:observed_at (- now 10) :rate_limit_info {:status "allowed" :unifiedWindows {:seven_day_overage_included (win 0.7 (+ now 500))}}}))
     (rec {:seven_day (win 0.3 (+ now 500))} base "acct-a")

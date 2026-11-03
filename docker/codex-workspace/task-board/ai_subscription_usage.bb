@@ -60,10 +60,14 @@
         newer? (or (nil? prior-ms) (<= prior-ms observed-ms))
         prior (into {} (map (fn [[k v]] [(keyword (name k)) (update v :observed_at_ms #(or % prior-ms))]))
                     (get-in data [:rate_limit_info :unifiedWindows]))
-        foreign? (fn [[_ v]] (and scope (:account_scope v) (not= scope (:account_scope v))))]
+        foreign? (fn [[_ v]] (and scope (:account_scope v) (not= scope (:account_scope v))))
+        ;; A known-scope event removes every other scope, so at most one remains.
+        ;; An unknown-scope event carries it forward; otherwise a later account
+        ;; switch could not recognize these windows as the old account's.
+        stamp (or scope (some :account_scope (vals prior)))]
     (when (or newer? (not-any? foreign? prior))
       (let [incoming (into {} (map (fn [[k v]] [(keyword (name k)) (cond-> (assoc v :observed_at_ms observed-ms)
-                                                                      scope (assoc :account_scope scope))]))
+                                                                      stamp (assoc :account_scope stamp))]))
                            (:unifiedWindows clean))
             windows (merge-with (fn [old new] (if (<= (:observed_at_ms old) (:observed_at_ms new)) new old))
                                 (into {} (remove foreign? prior)) incoming)
