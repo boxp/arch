@@ -1,0 +1,46 @@
+---
+name: actions-lock-verify
+# BOXP-234/BOXP-235: GitHub Actions workflow dependency lockfile (public preview) の検証。
+# .github/workflows/actions.lock は全 workflow を onboard 済み (BOXP-235)。依存 action が
+# lockfile に揃っているか (lock 不足・ref 移動・未 onboard の新規 workflow) を読み取り専用で確認する。
+# この check の失敗は「PR 時点で lockfile が古い」ことを示す。runner による job 開始時の拒否
+# (onboard 済み workflow が lock に無い action を使うと job が始まらない) とは別の仕組みで、
+# merge 必須 check にも入れていない。
+# BOXP-207 の制約 (test.yaml / wc-*.yaml の変更は hold の原因になり得る) を避けるため、
+# status-check には組み込まず独立した pull_request workflow にしている。
+# 週次の "GitHub Actions workflows" PR (手動 merge) では Renovate が actions.lock を再生成して
+# 同じ branch に commit する (renovate.json5 の constraints.ghActionsLock)。再生成が無い/失敗した
+# 場合や、新しい workflow を追加した場合は、その branch で
+#   gh actions-lock --no-interactive --no-narrow --no-migrate-local-actions
+# を実行して lockfile を追従させる (lockfile は手編集しない)。手順: docs/project_docs/BOXP-235/plan.md
+on:
+  pull_request:
+    paths:
+      - .github/workflows/**
+      - .github/actions/**
+
+permissions: {}
+
+jobs:
+  actions-lock-verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install gh-actions-lock
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # renovate.json5 の constraints.ghActionsLock と揃える。
+          # 更新時は docs/project_docs/BOXP-235/plan.md の再検証手順に従う。
+          GH_ACTIONS_LOCK_VERSION: v0.2.0
+        run: gh extension install github/gh-actions-lock --pin "$GH_ACTIONS_LOCK_VERSION" --force
+
+      - name: Verify actions.lock (read-only)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh actions-lock --verify --no-interactive

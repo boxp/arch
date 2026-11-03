@@ -25,3 +25,7 @@ codex-workspace内のGitHub向けclone/fetch/pull/pushを既存SSH鍵へ統一�
 - カスタムXDGでの冪等bootstrapと実Git fixture clone/fetchを検証する。
 - image CIで既定HOMEに加えカスタムXDGの起動を試し、端末プロセスの実環境、SSHログイン環境、GitHub URLのSSH解決を確認する。
 - 同一PR #13622へ通常SSH pushし、CIとレビューを再確認する。稼働HOME/Podへの反映は引継ぎまで行わない。
+
+## main 取り込み（2026-11-03）
+
+PR head `55f07da5c11a53ca69947751408f9613b3c1777e` に main `8bfa16e82049933906187ba7ea933f7b23c72b88` をマージする。runner CI の対象パスとテストは両方の追加を維持し、entrypoint と image の自動統合を確認する。SSH fixture、関連回帰、構文と workflow lint を実行し、結果を validation に記録して通常 SSH push する。

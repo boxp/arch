@@ -1,0 +1,18 @@
+{
+  "clears": [
+    { "game": "バトルガレッガ", "mode": "ARCADE", "ship": "4号機", "result": "1CC", "note": "初 1CC", "date": "2025-09 頃", "url": "https://www.youtube.com/watch?v=dXN3uB2lk-8" },
+    { "game": "バトルガレッガ", "mode": "ARCADE", "ship": "3号機", "result": "1CC", "note": "", "date": "2026-08 頃", "url": "https://www.youtube.com/watch?v=XPmkPRmtj6E" },
+    { "game": "バトライダー", "mode": "上級", "ship": "ショーティ", "result": "1CC", "note": "配信外で達成", "date": "2025-11 以前", "url": "" },
+    { "game": "バトライダー", "mode": "上級", "ship": "ミヤモト", "result": "1CC", "note": "", "date": "", "url": "" },
+    { "game": "バトライダー", "mode": "上級", "ship": "3号機", "result": "1CC", "note": "", "date": "2025-11", "url": "https://www.youtube.com/watch?v=FlxpOKTcpc4" },
+    { "game": "バトライダー", "mode": "上級", "ship": "3号機＋ミヤモト＋ストローマン", "result": "1CC", "note": "2・3・4面スキップ、バシネットR / グロウスクイードをスキップ", "date": "2026-10 頃", "url": "https://www.youtube.com/watch?v=hGQrA13joMs" },
+    { "game": "戦刃アレスタ", "mode": "ORIGINAL", "ship": "赤リーダー", "result": "1CC", "note": "no true boss", "date": "2026-10-16", "url": "" },
+    { "game": "東方紅魔郷 New Classic", "mode": "Normal", "ship": "霊夢A", "result": "1CC", "note": "", "date": "2026-10-18", "url": "https://www.youtube.com/watch?v=finWZZIS01A" },
+    { "game": "東方風神録", "mode": "Normal", "ship": "霊夢A", "result": "1CC", "note": "", "date": "2026-10-07", "url": "https://www.youtube.com/watch?v=fxV3X_JwHEo" }
+  ],
+  "inProgress": [
+    { "game": "バトルガレッガ", "goal": "5面まで勲章を維持して 1CC", "ship": "4号機" },
+    { "game": "バトライダー", "goal": "2・3・4面スキップ、ボス ALL", "ship": "" },
+    { "game": "戦刃アレスタ", "goal": "EXPERT 1CC", "ship": "" }
+  ]
+}

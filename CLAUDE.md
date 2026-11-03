@@ -28,6 +28,7 @@
 - `actionlint` - GitHub Actionsワークフローをリント
 - `ghalint run` - GitHub Actionsワークフローリンティング
 - `cd ansible && uv run ansible-lint` - Ansibleプレイブック/ロールをリント
+- `.regomark/check.sh` - ADR の構造検査と ADR policy の Rego lint (`docs/adr/README.md`)
 
 ### コミット前の必須チェック
 **重要**: コミット前に必ず以下のlintチェックを実行してください：

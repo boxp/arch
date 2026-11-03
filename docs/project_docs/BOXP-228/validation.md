@@ -76,3 +76,10 @@ dotfiles同期のorigin allowlistはraw `remote.origin.url`と実効`remote get-
 条件付き`includeIf`（gitdir/onbranch等）は起動時のrepo外検証で成立条件を網羅できないため、直接・通常include内のどちらもbootstrapで理由を示して停止する。identityだけの条件付きincludeも未対応として扱う。通常includeは従来どおり検証する。inactive gitdir/onbranchとnested includeIfのfixtureで拒否を確認する。後から任意ユーザーがローカルGit設定や環境overrideを追加する操作はサポート対象外であり、既存設定を変更する前にrunnerを停止し再bootstrapで検証する。
 
 ローカルGit configでdotfilesの実効URLを別hostへrewriteしたfixtureを追加し、raw originが正しい場合でもfetch前に拒否することを確認する。不正URL値は検証エラーログへ表示しない。
+
+## main 取り込み検証（2026-11-03）
+
+- PR head `55f07da5c11a53ca69947751408f9613b3c1777e` に main `8bfa16e82049933906187ba7ea933f7b23c72b88` をマージ。競合した runner workflow の pull_request/push 対象パスは SSH・dotfiles と qwen-eval の双方を残し、main の新テストと SSH fixture を維持した。Dockerfile の新規コンポーネントと entrypoint の sidecar、seed-only 分岐を維持し、通常 workspace の dotfiles 同期前に SSH bootstrap を配置した。
+- `github-git-ssh-test.sh`、`bash -n`（変更 shell と smoke test）、actionlint v1.7.12、ghalint v1.6.0、delegation test、task-board-events test、autonomy-policy/control、vault-writer は成功。recurring-events は成功したが passwordless sudo 不可のため seed ownership ケースは skip。
+- PR 差分の `git diff --check` は成功。main 側には `plan-ansible-node.yml` の末尾空行と `ai-subscription-usage-test.sh` の末尾空白が既存で存在。
+- `trivy config . --quiet` は応答を待った後に中断し、結果未取得。image build とコンテナ smoke は未実行。runner 回帰の結果は別途確認が必要。

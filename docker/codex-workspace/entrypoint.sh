@@ -1,10 +1,31 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# novel-board-runner sidecar compatibility stub: keeps the sidecar alive as a
-# no-op while boxp/lolice deployment removes the container. Removed once the
-# lolice sidecar deletion is merged.
+# novel-board-runner sidecar (BOXP-246): runs as the non-root container user
+# (runAsUser 1000) on the shared home PVC, so none of the privileged workspace
+# setup below applies. An image without the runner stays a harmless no-op so
+# the lolice sidecar and the arch image can roll out in either order.
+# BOXP-270: Task Board -> Hermes event dispatcher sidecar. It only needs the
+# outbox on the shared home PVC and the webhook URL / secret from its own env;
+# an older image without the script idles instead of crashlooping the Pod.
+if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "task-board-event-dispatcher" ]]; then
+  event_dispatcher=/opt/codex-workspace/task-board/task_board_events.bb
+  if [[ -x "${event_dispatcher}" ]]; then
+    exec /usr/bin/tini -- "${event_dispatcher}" loop
+  fi
+  echo "codex-workspace-entrypoint: ${event_dispatcher} not found in this image; idling" >&2
+  exec sleep infinity
+fi
+
 if [[ "${CODEX_WORKSPACE_ROLE:-workspace}" == "novel-board-runner" ]]; then
+  novel_board_runner=/opt/codex-workspace/novel-board/novel_board_runner.bb
+  if [[ -x "${novel_board_runner}" ]]; then
+    # tini keeps PID 1 out of the runner (BOXP-252): orphaned agent children are
+    # reaped and SIGTERM is forwarded to the runner, whose shutdown hook then
+    # signals the agent process groups with a bounded grace.
+    exec /usr/bin/tini -- "${novel_board_runner}" loop
+  fi
+  echo "codex-workspace-entrypoint: ${novel_board_runner} not found in this image; idling" >&2
   exec sleep infinity
 fi
 

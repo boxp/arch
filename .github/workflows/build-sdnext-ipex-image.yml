@@ -15,7 +15,7 @@ on:
       sdnext_ref:
         description: 'SD.Next source ref'
         required: true
-        default: 'master'
+        default: 'b7dcb0ce870181a40d1246fde1febbff5593a750'
 
 jobs:
   build-and-push:
@@ -36,7 +36,7 @@ jobs:
           INPUT_SDNEXT_REF: ${{ inputs.sdnext_ref }}
         run: |
           repo="${INPUT_SDNEXT_REPO:-https://github.com/vladmandic/sdnext.git}"
-          ref="${INPUT_SDNEXT_REF:-master}"
+          ref="${INPUT_SDNEXT_REF:-b7dcb0ce870181a40d1246fde1febbff5593a750}"
           echo "repo=$repo" >> "$GITHUB_OUTPUT"
           echo "ref=$ref" >> "$GITHUB_OUTPUT"
 

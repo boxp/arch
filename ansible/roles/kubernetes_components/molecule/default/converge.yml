@@ -8,6 +8,9 @@
     # Test-specific overrides for container environment
     kubernetes_disable_swap: false  # Skip swap operations in container
     kubernetes_enable_modules: false  # Skip module loading in container
+    # BOXP-222: crio_package_version 指定時の baseline 比較 (未導入 → 指定版を導入 + hold) を通す。
+    # OBS isv:/cri-o:/stable:/v1.32 に amd64/arm64 とも存在する revision を固定する。
+    crio_package_version: "1.32.13-1.1"
     journald_persistent_storage: true  # Validate the persistent-storage code path
     node_resilience_watchdog: true  # Validate the watchdog drop-in code path
     node_resilience_hung_task_panic: true  # Validate the hung-task sysctl code path

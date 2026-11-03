@@ -1,0 +1,33 @@
+---
+# BOXP-222: crio_package_version の baseline 比較が「指定版より新しい cri-o を downgrade しない」ことを検証する。
+# prepare.yml で新しい revision を入れてから、converge.yml で古い revision を指定して tasks/crio.yml だけを通す。
+dependency:
+  name: galaxy
+driver:
+  name: docker
+platforms:
+  - name: instance
+    image: "geerlingguy/docker-ubuntu2404-ansible:latest"
+    platform: "${MOLECULE_DOCKER_PLATFORM:-linux/amd64}"
+    pre_build_image: true
+    privileged: true
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:rw
+    cgroupns_mode: host
+    command: /lib/systemd/systemd
+    env:
+      DEBIAN_FRONTEND: noninteractive
+    groups:
+      - orange_pi_zero3
+provisioner:
+  name: ansible
+  playbooks:
+    prepare: prepare.yml
+  inventory:
+    host_vars:
+      instance:
+        ansible_python_interpreter: /usr/bin/python3
+        hardware_type: orange_pi_zero3
+        architecture: arm64
+verifier:
+  name: ansible

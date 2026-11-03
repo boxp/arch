@@ -1,0 +1,154 @@
+;; BOXP-277 main-use-case evaluation: update one note from many notes.
+;; Fixture: corpus_fixture.bb (see its header for the ground truth).
+;;
+;; Conditions
+;;   given  the ticket lists the correct sources as wikilinks and declares no
+;;          docs-sources -> the adapter collects only the linked notes (control)
+;;   search the ticket declares docs-sources (the whole corpus folder) and names
+;;          no source -> the adapter runs staged research (index / search / read)
+;;
+;; Extra :expect keys
+;;   :gold-sources       notes that must have been read (retrieval recall)
+;;   :forbidden-sources  notes that must not be cited as sources
+[{:id "M01" :title "S / 正解資料付与: 現状節を 6 資料から最新化" :group "given" :scale "S"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :ticket {:title "overview の現状節を資料にもとづいて最新化"
+           :summary "`Projects/task-board-localllm-docs/pilot/overview.md` の「## 現状」節を、Context に挙げた資料の内容で最新の状態に書き直す。採用済みの決定だけを反映し、却下・検討中の内容は反映しない。他の節は変更しない。"
+           :acceptance ["現状節の稼働バージョン・待受ポート・replica 数・ログ保持日数・Ingress・証明書更新間隔が資料と一致している" "却下・検討中の決定や別プロジェクトの情報を書いていない" "他の節・frontmatter・リンクは変更しない"]
+           :context ["資料: [[Projects/task-board-localllm-docs/refs/corpus/design/design-v2]]、[[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3]]、[[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-002-nginx]]、[[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d]]、[[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-004-tls-30d]]、[[Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17]]"]
+           :notes []}
+  :expect {:allowed-changes ["Projects/task-board-localllm-docs/pilot/overview.md"]
+           :must-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.4" "8081" "replica[^\\n]{0,8}3|3 replica" "30 ?日" "Envoy" "60 ?日"]}
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.2" "v1\\.3" "v1\\.5" "v2\\.[01]" "8080" "9090" "replica 数は 2" "Nginx" "30 ?日ごと"]}
+           :unchanged-sections {"Projects/task-board-localllm-docs/pilot/overview.md" ["## 概要" "## 決定事項" "## 次の予定" "## 関連"]}
+           :numbers-from ["Projects/task-board-localllm-docs/refs/corpus/design/design-v2.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]}}
+
+ {:id "M02" :title "S / 自力探索: 現状節を資料群から最新化（14 ノート）" :group "search" :scale "S"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "S"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/corpus"]
+  :ticket {:title "overview の現状節を資料群から最新化"
+           :summary "docs-sources の資料群（設計メモ・決定記録 ADR・週次進捗・会議メモ）を調べ、`Projects/task-board-localllm-docs/pilot/overview.md` の「## 現状」節を `sample-stream` の最新の状態に書き直す。稼働バージョン・待受ポート・replica 数・ログ保持日数・Ingress・TLS 証明書の更新間隔を扱う。採用済みの決定だけを反映し、却下・検討中・旧版の内容や別プロジェクトの情報は反映しない。他の節は変更しない。"
+           :acceptance ["現状節の各項目が資料の最新かつ有効な内容と一致している" "却下・検討中の決定、旧版、別プロジェクトの情報を書いていない" "他の節・frontmatter・リンクは変更しない"]
+           :context ["資料群の入口は [[Projects/task-board-localllm-docs/refs/corpus/index]]。"]
+           :notes []}
+  :expect {:allowed-changes ["Projects/task-board-localllm-docs/pilot/overview.md"]
+           :must-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.4" "8081" "replica[^\\n]{0,8}3|3 replica" "30 ?日" "Envoy" "60 ?日"]}
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.2" "v1\\.3" "v1\\.5" "v2\\.[01]" "8080" "9090" "replica 数は 2" "Nginx" "30 ?日ごと"]}
+           :unchanged-sections {"Projects/task-board-localllm-docs/pilot/overview.md" ["## 概要" "## 決定事項" "## 次の予定" "## 関連"]}
+           :numbers-from ["Projects/task-board-localllm-docs/refs/corpus/design/design-v2.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/corpus/design/design-v2.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/corpus/design/design-v1.md" "Projects/task-board-localllm-docs/refs/corpus/unrelated/sample-streamer/overview.md" "Projects/task-board-localllm-docs/refs/corpus/unrelated/sample-streamer/progress-2026-10-18.md"]}}
+
+ {:id "M03" :title "M / 自力探索: 同じ依頼、無関係 40 ノート追加（総量 > context 予算）" :group "search" :scale "M"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "M"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/corpus"]
+  :ticket {:title "overview の現状節を資料群から最新化"
+           :summary "docs-sources の資料群（設計メモ・決定記録 ADR・週次進捗・会議メモ）を調べ、`Projects/task-board-localllm-docs/pilot/overview.md` の「## 現状」節を `sample-stream` の最新の状態に書き直す。稼働バージョン・待受ポート・replica 数・ログ保持日数・Ingress・TLS 証明書の更新間隔を扱う。採用済みの決定だけを反映し、却下・検討中・旧版の内容や別プロジェクトの情報は反映しない。他の節は変更しない。"
+           :acceptance ["現状節の各項目が資料の最新かつ有効な内容と一致している" "却下・検討中の決定、旧版、別プロジェクトの情報を書いていない" "他の節・frontmatter・リンクは変更しない"]
+           :context ["資料群の入口は [[Projects/task-board-localllm-docs/refs/corpus/index]]。"]
+           :notes []}
+  :expect {:allowed-changes ["Projects/task-board-localllm-docs/pilot/overview.md"]
+           :must-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.4" "8081" "replica[^\\n]{0,8}3|3 replica" "30 ?日" "Envoy" "60 ?日"]}
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.2" "v1\\.3" "v1\\.5" "v2\\.[01]" "v3\\." "8080" "9090" "7\\d\\d\\d" "replica 数は 2" "Nginx" "30 ?日ごと"]}
+           :unchanged-sections {"Projects/task-board-localllm-docs/pilot/overview.md" ["## 概要" "## 決定事項" "## 次の予定" "## 関連"]}
+           :numbers-from ["Projects/task-board-localllm-docs/refs/corpus/design/design-v2.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/corpus/design/design-v2.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/corpus/design/design-v1.md" "Projects/task-board-localllm-docs/refs/corpus/unrelated/sample-streamer/overview.md" "Projects/task-board-localllm-docs/refs/corpus/unrelated/sample-streamer/progress-2026-10-18.md"]}}
+
+ {:id "M04" :title "L / 自力探索: 同じ依頼、無関係 160 ノート追加（index も予算超過）" :group "search" :scale "L"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "L"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/corpus"]
+  :ticket {:title "overview の現状節を資料群から最新化"
+           :summary "docs-sources の資料群（設計メモ・決定記録 ADR・週次進捗・会議メモ）を調べ、`Projects/task-board-localllm-docs/pilot/overview.md` の「## 現状」節を `sample-stream` の最新の状態に書き直す。稼働バージョン・待受ポート・replica 数・ログ保持日数・Ingress・TLS 証明書の更新間隔を扱う。採用済みの決定だけを反映し、却下・検討中・旧版の内容や別プロジェクトの情報は反映しない。他の節は変更しない。"
+           :acceptance ["現状節の各項目が資料の最新かつ有効な内容と一致している" "却下・検討中の決定、旧版、別プロジェクトの情報を書いていない" "他の節・frontmatter・リンクは変更しない"]
+           :context ["資料群の入口は [[Projects/task-board-localllm-docs/refs/corpus/index]]。"]
+           :notes []}
+  :expect {:allowed-changes ["Projects/task-board-localllm-docs/pilot/overview.md"]
+           :must-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.4" "8081" "replica[^\\n]{0,8}3|3 replica" "30 ?日" "Envoy" "60 ?日"]}
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.2" "v1\\.3" "v1\\.5" "v2\\.[01]" "v3\\." "8080" "9090" "7\\d\\d\\d" "replica 数は 2" "Nginx" "30 ?日ごと"]}
+           :unchanged-sections {"Projects/task-board-localllm-docs/pilot/overview.md" ["## 概要" "## 決定事項" "## 次の予定" "## 関連"]}
+           :numbers-from ["Projects/task-board-localllm-docs/refs/corpus/design/design-v2.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/corpus/design/design-v2.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/corpus/design/design-v1.md" "Projects/task-board-localllm-docs/refs/corpus/unrelated/sample-streamer/overview.md" "Projects/task-board-localllm-docs/refs/corpus/unrelated/sample-streamer/progress-2026-10-18.md"]}}
+
+ {:id "M05" :title "M / 自力探索: 決定事項節を採用済み ADR の一覧（出典 wikilink 付き）に差し替え" :group "search" :scale "M"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "M"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/corpus"]
+  :ticket {:title "overview の決定事項節を採用済み ADR で整理"
+           :summary "docs-sources の決定記録（ADR）を調べ、`Projects/task-board-localllm-docs/pilot/overview.md` の「## 決定事項」節を、**採用済み**の ADR だけを 1 行ずつ（決定内容の要約 + その ADR への wikilink）並べた箇条書きに差し替える。却下・検討中・テンプレートの ADR は載せない。他の節は変更しない。"
+           :acceptance ["採用済み ADR がすべて wikilink 付きで載っている" "却下・検討中・テンプレートの ADR は載っていない" "他の節・frontmatter は変更しない"]
+           :context ["資料群の入口は [[Projects/task-board-localllm-docs/refs/corpus/index]]。"]
+           :notes []}
+  :expect {:allowed-changes ["Projects/task-board-localllm-docs/pilot/overview.md"]
+           :must-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["\\[\\[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3" "\\[\\[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d" "replica|レプリカ" "30 ?日"]}
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["ADR-002" "ADR-004" "ADR-000" "Nginx"]}
+           :unchanged-sections {"Projects/task-board-localllm-docs/pilot/overview.md" ["## 概要" "## 現状" "## 次の予定" "## 関連"]}
+           :numbers-from ["Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md"]
+           :forbidden-sources []}}
+
+ {:id "M06" :title "M / 自力探索: 解消できない矛盾（ポート 8082 採用 ADR vs 8081 のまま運用）では停止" :group "search-stop" :scale "M"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "M" "--variant" "contradiction"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/corpus"]
+  :ticket {:title "overview の現状節の待受ポートを資料群から最新化"
+           :summary "docs-sources の資料群を調べ、`Projects/task-board-localllm-docs/pilot/overview.md` の「## 現状」節の待受ポートの記述を最新の状態にする。資料が矛盾していて現在のポートが確定できない場合は変更せず、矛盾する資料を挙げて人間に確認を求める。"
+           :acceptance ["待受ポートが資料から一意に確定できる場合だけ更新する" "確定できない場合は変更せず理由を返す"]
+           :context ["資料群の入口は [[Projects/task-board-localllm-docs/refs/corpus/index]]。"]
+           :notes []}
+  :expect {:stop? true
+           :allowed-changes []
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["8082"]}
+           :gold-sources ["Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-005-port-8082.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-19.md"]
+           :forbidden-sources []}}
+
+ {:id "M07" :title "M / 自力探索: 資料に無い事実（SLO）を求められたら停止" :group "search-stop" :scale "M"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "M" "--variant" "missing"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/corpus"]
+  :ticket {:title "overview の現状節に可用性 SLO を追記"
+           :summary "docs-sources の資料群を調べ、`Projects/task-board-localllm-docs/pilot/overview.md` の「## 現状」節に `sample-stream` の可用性 SLO（目標値と計測期間）を 1 行追記する。資料に SLO の記載が無ければ推測で書かず、変更せずに人間へ確認を求める。"
+           :acceptance ["SLO が資料に書かれている場合だけ追記する" "無ければ変更しない"]
+           :context ["資料群の入口は [[Projects/task-board-localllm-docs/refs/corpus/index]]。"]
+           :notes []}
+  :expect {:stop? true
+           :allowed-changes []
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["SLO" "99\\."]}
+           :gold-sources []
+           :forbidden-sources []}}
+
+ {:id "M08" :title "M / 自力探索: 同名類似プロジェクトの混同（稼働バージョンだけ更新）" :group "search" :scale "M"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "M"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :docs-sources ["Projects/task-board-localllm-docs/refs/corpus"]
+  :ticket {:title "overview の稼働バージョンを最新化"
+           :summary "docs-sources の週次進捗を調べ、`Projects/task-board-localllm-docs/pilot/overview.md` の「## 現状」節にある `sample-stream` の稼働バージョンの記述だけを、現在稼働している最新バージョンに直す。待受ポートなど他の項目や他の節は変更しない。予定（未リリース）のバージョンや別プロジェクト（`sample-streamer` など）のバージョンは使わない。"
+           :acceptance ["稼働バージョンが週次進捗の最新の反映済みバージョンになっている" "他の項目・他の節は変更しない"]
+           :context ["資料群の入口は [[Projects/task-board-localllm-docs/refs/corpus/index]]。"]
+           :notes []}
+  :expect {:allowed-changes ["Projects/task-board-localllm-docs/pilot/overview.md"]
+           :must-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.4" "8080" "replica 数は 2"]}
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.2" "v1\\.3" "v1\\.5" "v2\\.[01]" "v3\\."]}
+           :unchanged-sections {"Projects/task-board-localllm-docs/pilot/overview.md" ["## 概要" "## 決定事項" "## 次の予定" "## 関連"]}
+           :numbers-from ["Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]
+           :gold-sources ["Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]
+           :forbidden-sources ["Projects/task-board-localllm-docs/refs/corpus/unrelated/sample-streamer/progress-2026-10-18.md" "Projects/task-board-localllm-docs/refs/corpus/unrelated/sample-streamer/overview.md"]}}
+
+ {:id "M09" :title "L / 正解資料付与: 現状節を 6 資料から最新化（M01 と同じ依頼、規模 L）" :group "given" :scale "L"
+  :fixture {:script "corpus_fixture.bb" :args ["--scale" "L"]}
+  :targets ["Projects/task-board-localllm-docs/pilot/overview.md"]
+  :ticket {:title "overview の現状節を資料にもとづいて最新化"
+           :summary "`Projects/task-board-localllm-docs/pilot/overview.md` の「## 現状」節を、Context に挙げた資料の内容で最新の状態に書き直す。採用済みの決定だけを反映し、却下・検討中の内容は反映しない。他の節は変更しない。"
+           :acceptance ["現状節の稼働バージョン・待受ポート・replica 数・ログ保持日数・Ingress・証明書更新間隔が資料と一致している" "却下・検討中の決定や別プロジェクトの情報を書いていない" "他の節・frontmatter・リンクは変更しない"]
+           :context ["資料: [[Projects/task-board-localllm-docs/refs/corpus/design/design-v2]]、[[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3]]、[[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-002-nginx]]、[[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d]]、[[Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-004-tls-30d]]、[[Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17]]"]
+           :notes []}
+  :expect {:allowed-changes ["Projects/task-board-localllm-docs/pilot/overview.md"]
+           :must-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.4" "8081" "replica[^\\n]{0,8}3|3 replica" "30 ?日" "Envoy" "60 ?日"]}
+           :must-not-contain {"Projects/task-board-localllm-docs/pilot/overview.md" ["v1\\.2" "v1\\.3" "v1\\.5" "v2\\.[01]" "8080" "9090" "replica 数は 2" "Nginx" "30 ?日ごと"]}
+           :unchanged-sections {"Projects/task-board-localllm-docs/pilot/overview.md" ["## 概要" "## 決定事項" "## 次の予定" "## 関連"]}
+           :numbers-from ["Projects/task-board-localllm-docs/refs/corpus/design/design-v2.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-001-replica-3.md" "Projects/task-board-localllm-docs/refs/corpus/decisions/ADR-003-log-retention-30d.md" "Projects/task-board-localllm-docs/refs/corpus/progress/2026-10-17.md"]}}]
