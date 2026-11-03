@@ -143,4 +143,39 @@
         (is (= {:reached 3 :censored 0 :unevaluated 1}
                (select-keys (:first_run_to_review j) [:reached :censored :unevaluated])))))))
 
+(deftest unreadable-run-before-window
+  (fs/with-temp-dir [d {}]
+    (let [runs (fs/path d "root/runs") vault (fs/path d "vault")
+          run (fn [t id body]
+                (let [dir (fs/path runs t id)]
+                  (fs/create-dirs dir)
+                  (when body (spit (str (fs/path dir "summary.edn")) body))))
+          ok (fn [t id at]
+               (pr-str {:ticket t :run-id id :action "implement" :status "succeeded" :result "review"
+                        :started-at at :finished-at at}))
+          snap (fn [] (json/parse-string (run-tool (str (fs/path d "root")) (str vault) "--since" "2026-10-01") true))]
+      (fs/create-dirs (fs/path vault "Tickets"))
+      (fs/create-dirs (fs/path vault "Boards"))
+      (spit (str (fs/path vault "Boards" "Task Board.md")) "## Review\n")
+      (testing "次の run が窓より前に始まっていれば、窓の外と確定できる"
+        (run "BOXP-11" "20260901T000000Z" nil)
+        (run "BOXP-11" "20260902T000000Z" (ok "BOXP-11" "20260902T000000Z" "2026-09-02T00:00:00Z"))
+        (is (= {:complete true :unreadable_runs 0 :tasks_with_unreadable_runs 0}
+               (select-keys (:coverage (snap)) [:complete :unreadable_runs :tasks_with_unreadable_runs]))))
+      (testing "窓より前に始まり次の run が無い run は、窓の中で終わった可能性を残す"
+        (run "BOXP-12" "20260901T000000Z" nil)
+        (is (= {:complete false :unreadable_runs 1 :tasks_with_unreadable_runs 1}
+               (select-keys (:coverage (snap)) [:complete :unreadable_runs :tasks_with_unreadable_runs]))))
+      (testing "窓より前に始まり次の run が窓の中で始まる run も同じ"
+        (run "BOXP-13" "20260901T000000Z" nil)
+        (run "BOXP-13" "20261002T000000Z" (ok "BOXP-13" "20261002T000000Z" "2026-10-02T00:00:00Z"))
+        (is (= {:complete false :unreadable_runs 2 :tasks_with_unreadable_runs 2}
+               (select-keys (:coverage (snap)) [:complete :unreadable_runs :tasks_with_unreadable_runs]))))
+      (testing "次の run の開始時刻が分からない run も窓の外と確定しない"
+        (run "BOXP-14" "20260901T000000Z" nil)
+        (run "BOXP-14" "zz-no-time" "{:broken")
+        ;; zz-no-time 自身も次の run が無いので数える
+        (is (= {:complete false :unreadable_runs 4 :tasks_with_unreadable_runs 3}
+               (select-keys (:coverage (snap)) [:complete :unreadable_runs :tasks_with_unreadable_runs])))))))
+
 (let [{:keys [fail error]} (run-tests)] (System/exit (if (pos? (+ fail error)) 1 0)))

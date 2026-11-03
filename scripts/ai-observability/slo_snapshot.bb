@@ -35,6 +35,8 @@
     (and resumed? (> seconds-since-stop rescue-grace-seconds)) :rescue
     :else :not-rescue))
 
+(defn run-start [r] (or (ai-ops-insight/parse-inst (:started-at r)) (ai-ops-insight/run-id->instant (:run-id r))))
+
 (defn hours-between [a b] (/ (.toSeconds (java.time.Duration/between a b)) 3600.0))
 
 (defn parse-board
@@ -65,7 +67,7 @@
         [prev cur] (map vector runs (concat (rest runs) [nil]))
         :when (and (= "succeeded" (:status prev)) (= "review" (:result prev)) (:finished-at prev))
         :let [from (java.time.Instant/parse (:finished-at prev))
-              to (when cur (or (ai-ops-insight/parse-inst (:started-at cur)) (ai-ops-insight/run-id->instant (:run-id cur))))
+              to (when cur (run-start cur))
               resume-unknown? (and (some? cur) (nil? to))
               ts (let [v (get triggers t)] (when (sequential? v) v))
               contacts-known? (and (some? ts) (not resume-unknown?))
@@ -89,7 +91,7 @@
   [runs-by-ticket since]
   (let [review? #(and (= "succeeded" (:status %)) (= "review" (:result %)) (:finished-at %))
         xs (for [[_ runs] runs-by-ticket
-                 :let [start (some #(or (ai-ops-insight/parse-inst (:started-at %)) (ai-ops-insight/run-id->instant (:run-id %))) runs)]
+                 :let [start (some run-start runs)]
                  :when (or (nil? start) (nil? since) (not (neg? (compare start since))))
                  :let [stop (some-> (some #(when (review? %) %) runs) :finished-at java.time.Instant/parse)
                        unknown? (or (nil? start)
@@ -106,11 +108,15 @@
 
 (defn coverage
   "窓の中で欠けた入力の件数。読めない run は Review 停止だったか不明なので、停止の件数には入らない。
-  時刻を出せない run は窓を判定できないので、since があっても数える。"
+  読めない run は終了時刻が分からないので、開始時刻では窓を判定しない。同じ task の run は順に走るので、次の run が窓より前に
+  始まっているときだけ窓の外と確定できる。次の run が無い、または次の run の開始時刻が分からない run は、since があっても数える。"
   [runs-by-ticket ss since]
-  (let [in-window? (fn [r] (let [at (ai-ops-insight/run-id->instant (:run-id r))]
-                             (or (nil? since) (nil? at) (not (neg? (compare at since))))))
-        by-task (for [[_ runs] runs-by-ticket] (filter #(and (= "unreadable" (:status %)) (in-window? %)) runs))
+  (let [maybe-in-window? (fn [next-run] (let [next-start (some-> next-run run-start)]
+                                          (or (nil? since) (nil? next-start) (not (neg? (compare next-start since))))))
+        by-task (for [[_ runs] runs-by-ticket]
+                  (for [[r next-run] (map vector runs (concat (rest runs) [nil]))
+                        :when (and (= "unreadable" (:status r)) (maybe-in-window? next-run))]
+                    r))
         unreadable (count (mapcat identity by-task))
         unknown-contacts (count (remove :contacts-known? ss))
         unknown-resume (count (filter #(= :unknown-resume (:state %)) ss))]
