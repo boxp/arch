@@ -60,3 +60,19 @@ python3 -m unittest discover -s tests/ai-observability -v
 ## security scan補足
 
 初期PATHにはtrivyがなかったため、公式GitHub releaseのTrivy 0.76.1を一時領域へ取得し、同releaseのchecksumと照合した。通常の`trivy config .`はcheck bundle更新待ちが続いたため停止し、`trivy config . --skip-check-update --timeout 60s`で既存cache/同梱checkによるscanを完了（exit0）。config結果59、変更外の既存設定にHIGH5/MEDIUM1/LOW7、変更pathのfindingは0。全体無指摘やcheckの最新性は主張しない。repoの設定変更・依存追加はしていない。
+
+## Hermes の local/cloud 区別と cron usage（claude-fable、07:45 UTC 頃）
+
+`hermes_inventory.py` に固定 pattern の分類を足した。`billing_base_url` が localhost/ollama/`.svc` 等なら local、他の非空 URL は cloud、空は unknown とし、model family は gemma/qwen/other だけを数える。URL と model 文字列は出力しない。同じ pod で `mode=ro` 実行した結果（`hermes-inventory-2026-11-03b.json`）:
+
+| 配置 / family | 件数 |
+|---|---:|
+| local / gemma | 11 |
+| local / other | 1 |
+| unknown / gemma | 1 |
+| cloud / other | 2,141 |
+| unknown / other | 23 |
+
+billing_mode は固定 enum には一致しなかったが pattern 分類では subscription 系 2,010、null 167。したがって Hermes の cloud 呼出しはほぼ subscription 経路で、Gemma は local と確定した。Qwen は 0 件。
+
+Hermes cron の `usage_audit.jsonl`（77 行、全行に prompt/completion/total/duration/error）を job の出現順で集計した。job 2（interval 180 分、Sol）が 63 fire / 55,325,915 token / 平均 84.6 秒、job 1（毎日 10:00 JST、Sol）8 fire / 1,402,055、job 3（平日 18:00 JST、Sol）6 fire / 1,932,194。4 番目の 15 分毎 job（terra）は usage_audit に行がなく、`no_agent` 系のため LLM 呼出しがないか記録経路が別。error は 0。名称・prompt・配信先は出力しない。週次 stale-PR 監査は Hermes cron ではなく vault の Codex Cron（Sun 11:00 JST、claude-opus-5-5）に属する。
