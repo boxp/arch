@@ -28,8 +28,17 @@ category（既承認で継続漏れ / 技術阻害 / Owner 入力待ち / 意図
 
 1. 隔離 fixture 試験（分類ヒント / dedupe / totalCount 不一致 / 差分 / 静音 / 部分失敗 / 判定引継ぎ / 実行台帳の重複・同時実行防止）。
 2. 実データで初回 inventory を取得し、全件台帳と Owner 向け入口を作成。
-3. job 登録後に `show` で schedule / enabled / prompt を readback し、次回予定（日曜 11:00 JST）を確認。
+3. job 登録後に `jobs.edn` から schedule / enabled / prompt を、`jobs-state.edn` から最終発火を直接読み取り、次回予定（日曜 11:00 JST）を確認。
 4. 手動 `run` で cron 経路の実行を確認（同一週 dedupe により日曜の自然発火は 2 回目以降の週で差分処理となる）。
+
+## 運用実績（2026-11-04 時点）
+
+- job `weekly-stale-pr-audit` は vault の `Infrastructure/Codex Cron/jobs.edn` に登録済み。schedule `0 11 * * 0`、time-zone `Asia/Tokyo`、runner `claude`、model `claude-opus-5-5`、enabled `true`、prompt-file `prompts/weekly-stale-pr-audit.md`、output-root は vault の `Infrastructure/Codex Cron/runs`。
+- 手動 run（cron 経路）: run-id `20261030T163213Z`、exit 0、約 2 分で完走。
+- 初回の自然発火: 2026-11-01 11:00 JST（run-id `20261101T020006Z`、status `ok`、exit 0、2026-11-01T02:00:06Z〜02:05:40Z）。対象 16 repo すべて取得成功、unverified 0。差分は PR new 5 / changed 14 / gone 4、票 new 6 / changed 24 / gone 7。report は vault の `Projects/stale-pr-audit/reports/2026-11-01.md`。
+- 通知経路: 同 run が BOXP-368 の Notes に要約を追記し、Hermes 経由で Owner へ判断事項 A/B/C が提示された。Owner は 2026-11-01 12:55 UTC に判断 A（arch #14252 を k8s 1.37 系と同様に未 merge 保留）を回答。B/C は未回答。
+- 次回予定: 2026-11-08 11:00 JST（`jobs-state.edn` の last-fired が 2026-11-01T11:00+09:00 のため）。
+- readback: `scheduler.bb` に show サブコマンドはない。schedule / enabled / prompt は `jobs.edn`、最終発火は `jobs-state.edn` を直接読む。`scheduler.bb` を引数付きで直接実行すると常駐ループが起動するため、readback 目的で実行しない。
 
 ## 承認 scope 外（行わない）
 
