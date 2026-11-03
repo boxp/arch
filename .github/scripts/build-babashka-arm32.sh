@@ -211,7 +211,7 @@ JAVA
 phase_cap() {
   setup_graal
   write_hello
-  local query="$WORK/query" cap="$WORK/capcache" status=0 count=0
+  local query="$WORK/query" cap="$WORK/capcache" status=0 count=0 name
   local gcc_include
   rm -rf "$query" "$cap"
   mkdir -p "$query" "$cap"
@@ -223,16 +223,18 @@ phase_cap() {
   echo "query generation finished with status $status"
   gcc_include="$(arm-linux-gnueabihf-gcc --print-file-name=include)"
   for q in "$query"/*.c; do
-    local name
     name="$(basename "$q" .c)"
     arm-linux-gnueabihf-gcc "$q" "-I$GRAALVM_HOME/include" "-I$GRAALVM_HOME/include/linux" "-I$gcc_include" -lm -o "$query/$name"
     qemu_run "$query/$name" >"$cap/$name.cap"
     count=$((count + 1))
   done
-  if [ "$count" -lt 6 ]; then
-    echo "::error::only $count C annotation queries were generated"
-    exit 1
-  fi
+  echo "generated $count C annotation caches"
+  for name in BuiltinDirectives JNIHeaderDirectives LLVMDirectives PosixDirectives; do
+    if [ ! -s "$cap/$name.cap" ]; then
+      echo "::error::missing C annotation cache $name"
+      exit 1
+    fi
+  done
 }
 
 phase_hello() {
