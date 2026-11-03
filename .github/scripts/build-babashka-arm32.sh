@@ -166,7 +166,7 @@ phase_jdk() {
   rm -f "$dest/libjvm.a"
   rm -rf "$src"
   for lib in java nio net zip; do
-    arm-linux-gnueabihf-readelf -h "$dest/lib$lib.a" | grep -q 'Machine: *ARM' || { echo "::error::lib$lib.a is not ARM"; exit 1; }
+    grep -q 'Machine: *ARM' <<<"$(arm-linux-gnueabihf-readelf -h "$dest/lib$lib.a")" || { echo "::error::lib$lib.a is not ARM"; exit 1; }
   done
 }
 
