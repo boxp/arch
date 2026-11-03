@@ -4305,6 +4305,32 @@ CHECK
   done
 }
 
+test_recoverable_delegation_failure_continues() {
+  # BOXP-395: a run-local delegation failure stays with the worker, inside the
+  # continuation limit. It does not wait for a person and cannot reach done.
+  local tmp vault state bin ticket=BOXP-998 prompt_log
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; prompt_log="${tmp}/prompt"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  printf '#!/bin/sh\nexit 1\n' >"${bin}/codex"
+  chmod +x "${bin}/codex"
+  write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: delegation]] #ticket status::in-progress"
+  write_ticket "${vault}" "${ticket}" in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" TEST_DELEGATION_MODE=run \
+    CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >/dev/null
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^assignee: fable$'
+  assert_file_contains "${prompt_log}" 'is not a blocker by itself'
+  # The failed attempt is not erased.
+  assert_file_contains "$(find "${state}/runs/${ticket}" -name delegation.json | head -n 1)" 'failed|"exit": 1'
+
+  # The next run has its own attempt, and done without verified delegation is still refused.
+  PATH="${bin}:$PATH" TEST_DELEGATION_MODE=run CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >/dev/null
+  assert_file_not_contains "${vault}/Tickets/${ticket}.md" '^status: done$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" 'category=agent-process-error'
+}
+
 test_helper_update_keeps_notes_copy() {
   local tmp vault board copy
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; board="${vault}/Boards/Task Board.md"
@@ -4423,6 +4449,7 @@ test_assignment_revisions
 test_assignment_superseded
 test_assignment_repairs
 test_delegation_gate_end_to_end
+test_recoverable_delegation_failure_continues
 test_fable_stream_json
 test_claude_pump_drains_when_events_log_cannot_open
 test_claude_result_survives_events_log_failure
