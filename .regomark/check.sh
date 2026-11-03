@@ -40,6 +40,10 @@ if [ -f .regomark/tools.env ]; then
 	regal=$(command -v regal)
 elif command -v aqua >/dev/null 2>&1 && [ -f aqua/aqua.yaml ]; then
 	export AQUA_POLICY_CONFIG="$root/aqua/aqua-policy.yaml"
+	# aqua which は導入しないので、先に aqua exec で導入する。
+	aqua exec -- regomark --version >/dev/null
+	aqua exec -- opa version >/dev/null
+	aqua exec -- regal version >/dev/null
 	regomark=$(aqua which regomark)
 	opa=$(aqua which opa)
 	regal=$(aqua which regal)
