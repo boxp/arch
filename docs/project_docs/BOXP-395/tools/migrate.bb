@@ -85,10 +85,13 @@
       (helper! "append-note" id "--vault" vault "--source" "claude-opus" "--note" (note-for d)))
     ;; The helper compares these under its locks: re-checking here would still
     ;; leave a window in which an Owner or worker change gets overwritten.
-    (let [c (check d)]
-      (when-not (:ok? c) (throw (ex-info (str "changed during migration: " (:hold c)) {}))))
-    (helper! "update" id "--vault" vault "--lane" lane "--assignee" assignee
-             "--expected-lane" "Review" "--expected-ticket-sha256" (sha256 (ticket-text id)))
+    ;; Hash before checking: a change after the hash is refused by the helper, and
+    ;; one before it is caught by the check.
+    (let [sha (sha256 (ticket-text id))
+          c (check d)]
+      (when-not (:ok? c) (throw (ex-info (str "changed during migration: " (:hold c)) {})))
+      (helper! "update" id "--vault" vault "--lane" lane "--assignee" assignee
+               "--expected-lane" "Review" "--expected-ticket-sha256" sha))
     (let [text (ticket-text id)]
       {:read-back-lanes (board-lane id)
        :read-back-status (frontmatter text "status")
