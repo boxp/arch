@@ -58,8 +58,12 @@ jobs:
           while IFS= read -r question; do
             key=$(jq -r .key <<<"$question")
             # 回答できなかった質問は書かない。regomark が provider_failed として warning にする。
-            if jq -r .prompt <<<"$question" |
-              timeout 90 claude/node_modules/.bin/claude -p --output-format json --model sonnet --tools "" --json-schema "$schema" >answer.json; then
+            status=0
+            jq -r .prompt <<<"$question" |
+              timeout 90 claude/node_modules/.bin/claude -p --output-format json --model sonnet --tools "" --json-schema "$schema" >answer.json || status=$?
+            # 本文は出さず、失敗の種類だけを記録する。
+            jq -r --arg status "$status" '"判定結果: exit=\($status) subtype=\(.subtype // "-") is_error=\(.is_error // "-") api_status=\(.api_error_status // "-")"' answer.json || echo "判定結果: exit=$status (JSON なし)"
+            if [ "$status" -eq 0 ]; then
               jq -c --arg key "$key" '.structured_output | select(. != null) | {key: $key, verdict, reason, evidence_line}' answer.json >>answers.jsonl || true
             fi
           done < <(jq -c '.questions[]' questions.json)
