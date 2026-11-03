@@ -26,6 +26,14 @@
   (doseq [[name input expected] rescue-cases]
     (is (= expected (user/rescue-class input)) name)))
 
+(defn write-ledger
+  "移行 ledger を置く。rows は [ticket 新レーン]。"
+  [vault rows]
+  (let [f (apply fs/path vault user/migration-ledger-path)]
+    (fs/create-dirs (fs/parent f))
+    (spit (str f) (str/join "\n" (cons "| 票 | 元担当 | 新レーン | 根拠 |"
+                                        (for [[t lane] rows] (format "| [[Tickets/%s|%s]] | boxp/boxp | %s | SECRETBODY |" t t lane)))))))
+
 (defn write-fixture [dir]
   (let [runs (fs/path dir "root/runs") vault (fs/path dir "vault")
         run (fn [t id m]
@@ -62,6 +70,7 @@
                           "## Done"
                           "- [x] [[Tickets/BOXP-2|SECRETTITLE]] #ticket assignee::boxp"
                           "- [x] [[Tickets/BOXP-4|SECRETTITLE]] #ticket assignee::boxp"]))
+    (write-ledger vault [["BOXP-99" "Done"]])
     [(str (fs/path dir "root")) (str vault)]))
 
 (defn run-tool [& args]
@@ -74,7 +83,7 @@
           j (json/parse-string out true)]
       (is (not (str/includes? out "SECRET")) "本文・タイトルを出さない")
       (is (not (str/includes? out "BOXP-")) "--ids なしでは ticket ID を出さない")
-      (is (= {:total 3 :closed_by_acceptance 1 :closed_by_migration 0 :followed 1 :followed_over_24h 1 :open 1 :open_over_24h 1
+      (is (= {:total 3 :closed_by_acceptance 1 :closed_by_migration 0 :closed_unclassified 0 :followed 1 :followed_over_24h 1 :open 1 :open_over_24h 1
               :open_over_24h_by_lane {:Review 1} :unknown_lane 0 :unknown_resume 0}
              (:review_stops j)))
       (is (= {:numerator 2 :denominator 2} (get-in j [:stall_reference :with_open_as_stalled])))
@@ -120,6 +129,7 @@
                           "- [ ] [[Tickets/BOXP-8|T]] #ticket assignee::boxp"
                           "- [ ] [[Tickets/BOXP-9|T]] #ticket assignee::boxp"
                           "- [ ] [[Tickets/BOXP-10|T]] #ticket assignee::boxp"]))
+    (write-ledger vault [["BOXP-99" "Done"]])
     [(str (fs/path dir "root")) (str vault)]))
 
 (deftest unreadable-inputs-stay-visible
@@ -132,7 +142,7 @@
                (select-keys (:review_stops j) [:total :followed :open :unknown_resume]))))
       (testing "欠けた入力を件数で出す"
         (is (= {:complete false :unreadable_runs 3 :tasks_with_unreadable_runs 3
-                :stops_with_unknown_contacts 3 :stops_with_unknown_resume 1}
+                :stops_with_unknown_contacts 3 :stops_with_unknown_resume 1 :migration_ledger_read true}
                (:coverage j))))
       (testing "ticket が読めない停止を接触なしに数えない"
         ;; followed 2 件のうち BOXP-9 は unknown。BOXP-7 だけが接触なしと確認できる
@@ -158,6 +168,7 @@
       (fs/create-dirs (fs/path vault "Tickets"))
       (fs/create-dirs (fs/path vault "Boards"))
       (spit (str (fs/path vault "Boards" "Task Board.md")) "## Review\n")
+      (write-ledger vault [["BOXP-99" "Done"]])
       (testing "次の run が窓より前に始まっていれば、窓の外と確定できる"
         (run "BOXP-11" "20260901T000000Z" nil)
         (run "BOXP-11" "20260902T000000Z" (ok "BOXP-11" "20260902T000000Z" "2026-09-02T00:00:00Z"))
@@ -260,5 +271,64 @@
       (let [j (json/parse-string (run-tool root vault) true)]
         (is (= {:rescue 0 :not_rescue 2 :unknown 1} (select-keys (:owner_rescue j) [:rescue :not_rescue :unknown])))
         (is (false? (get-in j [:coverage :complete])))))))
+
+(deftest unreadable-ledger-does-not-inflate-acceptance
+  (let [unknown (fn [root vault label]
+                  (let [j (json/parse-string (run-tool root vault) true)]
+                    (testing label
+                      (is (= {:closed_by_acceptance nil :closed_by_migration nil :closed_unclassified 2}
+                             (select-keys (:review_stops j) [:closed_by_acceptance :closed_by_migration :closed_unclassified]))
+                          "移行か受入か分からない Done を受入に数えない")
+                      (is (= {:ledger_read false :tickets_moved_to_done nil} (:migration j)))
+                      (is (false? (get-in j [:coverage :migration_ledger_read])))
+                      (is (false? (get-in j [:coverage :complete]))))))
+        ledger #(apply fs/path % user/migration-ledger-path)]
+    (fs/with-temp-dir [d {}]
+      (let [[root vault] (write-continue-fixture d)]
+        (fs/delete (ledger vault))
+        (unknown root vault "ledger が無い")
+        (spit (str (ledger vault)) "# 形式が変わった ledger\n\n- BOXP-26 Done\n")
+        (unknown root vault "行を 1 件も認識できない")
+        (fs/delete (ledger vault))
+        (fs/create-dirs (ledger vault))
+        (unknown root vault "ファイルとして読めない")
+        (fs/delete (ledger vault))
+        (write-ledger vault [["BOXP-22" "Ready"]])
+        (is (= {:closed_by_acceptance 2 :closed_by_migration 0 :closed_unclassified 0}
+               (select-keys (:review_stops (json/parse-string (run-tool root vault) true))
+                            [:closed_by_acceptance :closed_by_migration :closed_unclassified]))
+            "読めて Done が 0 行なら、移行は 0 件と確定できる")))))
+
+(deftest later-owner-contact-counts-as-rescue
+  (fs/with-temp-dir [d {}]
+    (let [runs (fs/path d "root/runs") vault (fs/path d "vault")
+          run (fn [t id start end result]
+                (let [dir (fs/path runs t id)]
+                  (fs/create-dirs dir)
+                  (spit (str (fs/path dir "summary.edn"))
+                        (pr-str {:ticket t :run-id id :action "implement" :status "succeeded" :result result
+                                 :started-at start :finished-at end}))))
+          ticket (fn [t & notes]
+                   (spit (str (fs/path vault "Tickets" (str t ".md")))
+                         (str "---\nassignee: boxp\n---\n## Notes\n\n" (str/join "\n" notes) "\n")))
+          stop-and-resume (fn [t]
+                            (run t "20261101T000000Z" "2026-11-01T00:00:00Z" "2026-11-01T01:00:00Z" "continue")
+                            (run t "20261101T030000Z" "2026-11-01T03:00:00Z" "2026-11-01T04:00:00Z" "done"))
+          early "- 2026-11-01 01:05:00 UTC [hermes-agent]: SECRETBODY"
+          late "- 2026-11-01 02:00:00 UTC [hermes-agent]: SECRETBODY"
+          rescue #(select-keys (:owner_rescue (json/parse-string (run-tool (str (fs/path d "root")) (str vault)) true))
+                               [:rescue :not_rescue :unknown])]
+      (fs/create-dirs (fs/path vault "Tickets"))
+      (fs/create-dirs (fs/path vault "Boards"))
+      (spit (str (fs/path vault "Boards" "Task Board.md")) "## Done\n")
+      (write-ledger vault [["BOXP-99" "Done"]])
+      (stop-and-resume "BOXP-30")
+      (ticket "BOXP-30" early)
+      (is (= {:rescue 0 :not_rescue 1 :unknown 0} (rescue)) "猶予内の接触だけなら救援でない")
+      (ticket "BOXP-30" early late)
+      (is (= {:rescue 1 :not_rescue 0 :unknown 0} (rescue)) "猶予内の接触のあと猶予を過ぎて再度接触し再開したら救援")
+      (stop-and-resume "BOXP-31")
+      (ticket "BOXP-31" late)
+      (is (= {:rescue 2 :not_rescue 0 :unknown 0} (rescue)) "猶予を過ぎた接触 1 回でも救援"))))
 
 (let [{:keys [fail error]} (run-tests)] (System/exit (if (pos? (+ fail error)) 1 0)))

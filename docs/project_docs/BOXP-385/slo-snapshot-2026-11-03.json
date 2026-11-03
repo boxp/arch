@@ -1,5 +1,5 @@
 {
-  "note": "slo_snapshot.bb の出力 (定義版 slo-draft/v2、BOXP-395 の Review 廃止後)。提案の根拠で、正式な判定ではない。continue の停止は切替直後のため観測 0。",
+  "note": "slo_snapshot.bb の出力 (定義版 slo-draft/v2、BOXP-395 の Review 廃止後)。提案の根拠で、正式な判定ではない。continue の停止は切替直後で、生成時点の 28 日窓は 1 件 (開いたまま、15 分以内) だけ。率として読まない。",
   "windows": {
     "since_2026-10-06": {
       "blocked_stops": {
@@ -20,10 +20,10 @@
         "unevaluated_stops": 0
       },
       "first_run_to_first_outcome": {
-        "reached": 167,
+        "reached": 168,
         "censored": 14,
         "unevaluated": 1,
-        "p50_h": 0.7586111111111111,
+        "p50_h": 0.7675,
         "p90_h": 5.163611111111111
       },
       "resume_last_contact": {
@@ -40,17 +40,17 @@
       },
       "continue_stops": {
         "followed": 0,
-        "open": 0,
+        "open": 1,
         "closed": 0,
         "unknown_lane": 0,
         "followed_over_24h": 0,
         "followed_over_15m": 0,
         "open_over_24h": 0,
-        "total": 0,
+        "total": 1,
         "unknown_resume": 0,
         "open_over_15m": 0
       },
-      "generated_at": "2026-11-03T21:21:31.155427713Z",
+      "generated_at": "2026-11-03T21:26:08.780885076Z",
       "stall_reference": {
         "followed_only": {
           "numerator": 8,
@@ -66,7 +66,8 @@
         "unreadable_runs": 1,
         "tasks_with_unreadable_runs": 1,
         "stops_with_unknown_contacts": 0,
-        "stops_with_unknown_resume": 0
+        "stops_with_unknown_resume": 0,
+        "migration_ledger_read": true
       },
       "owner_acceptance_stops": {
         "total": 0
@@ -83,20 +84,21 @@
         "total": 266,
         "closed_by_acceptance": 80,
         "closed_by_migration": 20,
-        "unknown_resume": 0
+        "unknown_resume": 0,
+        "closed_unclassified": 0
       },
       "definition_version": "slo-draft/v2",
       "owner_rescue": {
-        "status": "no_observations",
+        "status": "continue_stops_only",
         "rescue": 0,
-        "not_rescue": 0,
+        "not_rescue": 1,
         "unknown": 0,
         "excluded_unclassified_blocked": 99
       },
       "approved_work_stall": {
-        "status": "no_observations",
+        "status": "measuring",
         "numerator": 0,
-        "denominator": 0,
+        "denominator": 1,
         "excluded_unclassified_blocked": 99
       },
       "migration": {
@@ -125,7 +127,7 @@
       "unevaluated_stops": 0
     },
     "first_run_to_first_outcome": {
-      "reached": 268,
+      "reached": 269,
       "censored": 56,
       "unevaluated": 1,
       "p50_h": 0.7836111111111111,
@@ -145,17 +147,17 @@
     },
     "continue_stops": {
       "followed": 0,
-      "open": 0,
+      "open": 1,
       "closed": 0,
       "unknown_lane": 0,
       "followed_over_24h": 0,
       "followed_over_15m": 0,
       "open_over_24h": 0,
-      "total": 0,
+      "total": 1,
       "unknown_resume": 0,
       "open_over_15m": 0
     },
-    "generated_at": "2026-11-03T21:21:31.350087488Z",
+    "generated_at": "2026-11-03T21:26:08.434287507Z",
     "stall_reference": {
       "followed_only": {
         "numerator": 15,
@@ -171,7 +173,8 @@
       "unreadable_runs": 1,
       "tasks_with_unreadable_runs": 1,
       "stops_with_unknown_contacts": 0,
-      "stops_with_unknown_resume": 0
+      "stops_with_unknown_resume": 0,
+      "migration_ledger_read": true
     },
     "owner_acceptance_stops": {
       "total": 0
@@ -189,20 +192,21 @@
       "total": 435,
       "closed_by_acceptance": 144,
       "closed_by_migration": 20,
-      "unknown_resume": 0
+      "unknown_resume": 0,
+      "closed_unclassified": 0
     },
     "definition_version": "slo-draft/v2",
     "owner_rescue": {
-      "status": "no_observations",
+      "status": "continue_stops_only",
       "rescue": 0,
-      "not_rescue": 0,
+      "not_rescue": 1,
       "unknown": 0,
       "excluded_unclassified_blocked": 152
     },
     "approved_work_stall": {
-      "status": "no_observations",
+      "status": "measuring",
       "numerator": 0,
-      "denominator": 0,
+      "denominator": 1,
       "excluded_unclassified_blocked": 152
     },
     "migration": {

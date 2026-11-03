@@ -28,7 +28,7 @@ Prometheus は `$GRAFANA_URL/api/datasources/proxy/uid/<prometheus uid>/api/v1/q
 | 目標 | source | 状態（2026-11-03） |
 |---|---|---|
 | 救援なし完了 | `owner_rescue`（continue の停止）。定義は `rescue-class`（合成 14 ケース）。`ai_ops_sli_determinable{sli="owner_rescue"}` は 0 のまま | 今後のみ測定（BOXP-395 の切替 2026-11-03 21:16Z 以降）。観測 0。Blocked は未分類 |
-| 既承認の停滞 | `approved_work_stall`（continue の停止）。旧定義の代理は `review_stops` / `stall_reference`。ほかに `instructed_not_started` / `ready_queue` | 今後のみ測定。観測 0。Blocked は未分類 |
+| 既承認の停滞 | `approved_work_stall`（continue の停止）。旧定義の代理は `review_stops` / `stall_reference`。ほかに `instructed_not_started` / `ready_queue` | 今後のみ測定。2026-11-03 21:26 UTC 時点の観測は 1 件で、率として読まない。Blocked は未分類 |
 | 初回適合 | `ai_ops_first_acceptance_*`、`ai_ops_stratum_tasks` | 累積は測定済み。28 日窓は上の手順 |
 | 所要時間 | `first_run_to_first_outcome`（秒精度、全層まとめ）、`ai_ops_lead_time_*`（日精度） | 測定済み。層別と baseline は未実装 |
 | 重大事象 | `critical_safety_events` / `duplicate_effects` / `private_leak` | unknown |
@@ -38,8 +38,8 @@ Prometheus は `$GRAFANA_URL/api/datasources/proxy/uid/<prometheus uid>/api/v1/q
 - `coverage` は欠けた入力の件数で、`complete` が false なら値は欠測を含む。読めない run（summary 未作成の実行中 run を含む）は Review 停止だったか不明なので停止に数えないが、同じ task の読める run の停止は残す。読めない run は終了時刻が分からないので、次の run が窓より前に始まっているときだけ窓の外とする。次の run が無い run や次の run の開始時刻が分からない run は、窓より前に始まっていても数える。
 - `resume_last_contact.unknown-unreadable` と `instructed_not_started.unevaluated_stops` は ticket が読めず接触の有無が不明な停止で、接触なしには数えない。
 - `first_run_to_first_outcome` は最初の run 開始から、最初に `review` / `continue` / `owner-acceptance` / `done` で正常終了するまで。`unevaluated` は最初の結果を特定できない task で、分位にも打切りにも入れない。
-- `review_stops` は切替前の系列で、今後は増えない。`open` は Done 以外のレーンにある、再開していない Review 停止で、正当な Owner 待ちを含む。`closed_by_migration` は移行で Done になった票で、Owner の受入ではないので `closed_by_acceptance` と分ける。
-- `continue_stops` は gate を通って既承認の残作業がある停止。次 run がすぐ始まるのが正常で、`*_over_15m` が救援の猶予、`*_over_24h` が停滞の基準。`approved_work_stall` の `status` が `no_observations` のときは 0% ではなく観測なし。
+- `review_stops` は切替前の系列で、今後は増えない。`open` は Done 以外のレーンにある、再開していない Review 停止で、正当な Owner 待ちを含む。`closed_by_migration` は移行で Done になった票で、Owner の受入ではないので `closed_by_acceptance` と分ける。移行 ledger が読めない、または票の行を 1 件も認識できないときは、両方を null にして `closed_unclassified` へ出し、`coverage.complete` を false にする。
+- `continue_stops` は gate を通って既承認の残作業がある停止。次 run がすぐ始まるのが正常で、`*_over_15m` が救援の猶予、`*_over_24h` が停滞の基準。`approved_work_stall` の `status` が `no_observations` のときは 0% ではなく観測なし。`owner_rescue` の猶予は再開前の最後の Owner 接触で判定するので、猶予内の接触のあとに猶予を過ぎて再度接触して再開した停止は救援に入る。
 - `blocked_stops` は Blocked で止まった run。`by_category` は runner の分類で、`agent-reported-blocked` は Owner 判断待ちか外部 hold か新 scope かを区別できない。救援にも停滞にも入れず、`excluded_unclassified_blocked` に件数を出す。
 - `owner_acceptance_stops` は Owner の確認を待つ停止で、停滞に入れない。
 - `stall_reference.with_open_as_stalled` は開いた停止をすべて停滞と置いた参考値で、真の率でも下限でもない。

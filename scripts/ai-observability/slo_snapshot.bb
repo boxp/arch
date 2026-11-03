@@ -55,9 +55,19 @@
            [{} nil] lines)))
 
 (defn parse-migrated-done
-  "BOXP-395 の移行で Done になった ticket ID。移行の判定で閉じた票で、Owner の受入ではない。ID と新レーン以外は捨てる。"
+  "BOXP-395 の移行で Done になった ticket ID。移行の判定で閉じた票で、Owner の受入ではない。ID と新レーン以外は捨てる。
+  票の行を 1 件も認識できないときは nil (移行 0 件と区別する)。"
   [lines]
-  (set (keep #(second (re-find #"^\| \[\[Tickets/([A-Z]+-\d+)\|[^\]]*\]\] \| [^|]* \| Done \|" %)) lines)))
+  (let [rows (keep #(next (re-find #"^\| \[\[Tickets/([A-Z]+-\d+)\|[^\]]*\]\] \| [^|]* \| ([^|]*?) \|" %)) lines)]
+    (when (seq rows)
+      (set (keep (fn [[t lane]] (when (= "Done" lane) t)) rows)))))
+
+(defn read-migrated-done
+  "ledger を読めないときは nil。"
+  [ledger]
+  (try
+    (when (fs/regular-file? ledger) (parse-migrated-done (fs/read-all-lines ledger)))
+    (catch java.io.IOException _ nil)))
 
 (defn ticket-assignee [vault t]
   (let [f (fs/path vault "Tickets" (str t ".md"))]
@@ -90,7 +100,7 @@
      :state (cond resume-unknown? :unknown-resume (some? cur) :followed (nil? lane) :unknown-lane (= "Done" lane) :closed :else :open)
      :hours (when-not resume-unknown? (hours-between from (or to now)))
      :contact-kinds (map :kind in)
-     :first-owner-contact-at (:at (first (filter #(owner-contact-kinds (:kind %)) in)))
+     :last-owner-contact-at (:at (last (filter #(owner-contact-kinds (:kind %)) in)))
      :last-kind (:kind (last in))
      :first-contact-wait-h (when (first in) (hours-between (:at (first in)) (or to now)))}))
 
@@ -119,14 +129,15 @@
 
 (defn continue-rescue
   "continue の停止は result が既承認の残作業を示すので、停止理由は agent-continue と決まる。:unknown は接触の有無が不明な停止。
-  run の前後関係は停止の区間そのものなので run-active? は常に偽。カードと ticket の担当不一致は現在のボードしか分からないのでここでは見ない。"
-  [{:keys [contacts-known? from to first-owner-contact-at state]}]
+  run の前後関係は停止の区間そのものなので run-active? は常に偽。カードと ticket の担当不一致は現在のボードしか分からないのでここでは見ない。
+  猶予の判定は再開前の最後の Owner 接触で行う。猶予内の接触のあとに猶予を過ぎて再度接触して再開した停止も救援にするため。"
+  [{:keys [contacts-known? from to last-owner-contact-at state]}]
   (if (or (not contacts-known?) (= :unknown-resume state))
     :unknown
-    (rescue-class {:contact? (some? first-owner-contact-at)
+    (rescue-class {:contact? (some? last-owner-contact-at)
                    :wait-reason "agent-continue"
-                   :seconds-since-stop (when first-owner-contact-at
-                                         (.toSeconds (java.time.Duration/between from first-owner-contact-at)))
+                   :seconds-since-stop (when last-owner-contact-at
+                                         (.toSeconds (java.time.Duration/between from last-owner-contact-at)))
                    :resumed? (some? to)})))
 
 (defn blocked-stops
@@ -145,7 +156,7 @@
   "窓の中で欠けた入力の件数。読めない run は Review 停止だったか不明なので、停止の件数には入らない。
   読めない run は終了時刻が分からないので、開始時刻では窓を判定しない。同じ task の run は順に走るので、次の run が窓より前に
   始まっているときだけ窓の外と確定できる。次の run が無い、または次の run の開始時刻が分からない run は、since があっても数える。"
-  [runs-by-ticket ss since]
+  [runs-by-ticket ss since ledger-read?]
   (let [maybe-in-window? (fn [next-run] (let [next-start (some-> next-run run-start)]
                                           (or (nil? since) (nil? next-start) (not (neg? (compare next-start since))))))
         by-task (for [[_ runs] runs-by-ticket]
@@ -155,14 +166,16 @@
         unreadable (count (mapcat identity by-task))
         unknown-contacts (count (remove :contacts-known? ss))
         unknown-resume (count (filter #(= :unknown-resume (:state %)) ss))]
-    {:complete (and (zero? unreadable) (zero? unknown-contacts))
+    {:complete (and (zero? unreadable) (zero? unknown-contacts) ledger-read?)
      :unreadable_runs unreadable
      :tasks_with_unreadable_runs (count (filter seq by-task))
      :stops_with_unknown_contacts unknown-contacts
-     :stops_with_unknown_resume unknown-resume}))
+     :stops_with_unknown_resume unknown-resume
+     :migration_ledger_read ledger-read?}))
 
-(defn snapshot [runs-by-ticket triggers board assignee-of now {:keys [since ids? migrated-done ledger-read?]}]
-  (let [all (stops runs-by-ticket triggers board now)
+(defn snapshot [runs-by-ticket triggers board assignee-of now {:keys [since ids? migrated-done]}]
+  (let [ledger-read? (some? migrated-done)
+        all (stops runs-by-ticket triggers board now)
         windowed (if since (filter #(not (neg? (compare (:from %) since))) all) all)
         by-kind (group-by :kind windowed)
         ss (get by-kind "review")
@@ -184,7 +197,8 @@
         unclassified-blocked (count blocked-categories)
         rescue (frequencies (map continue-rescue cs))
         closed (:closed st)
-        closed-migrated (count (filter #(contains? migrated-done (:ticket %)) closed))
+        ;; ledger が読めないと移行か受入か分からないので、どちらにも数えず closed_unclassified へ出す
+        closed-migrated (when ledger-read? (count (filter #(contains? migrated-done (:ticket %)) closed)))
         ready (filter (fn [[_ c]] (= "Ready" (:lane c))) board)
         mismatch (for [[t c] ready
                        :let [a (assignee-of t)]
@@ -194,11 +208,12 @@
      {:definition_version definition-version
       :generated_at (str now)
       :since (some-> since str)
-      :coverage (coverage runs-by-ticket windowed since)
+      :coverage (coverage runs-by-ticket windowed since ledger-read?)
       :review_stops {:total (count ss)
-                     :closed_by_acceptance (- (count closed) closed-migrated)
+                     :closed_by_acceptance (when ledger-read? (- (count closed) closed-migrated))
                      ;; BOXP-395 の移行で Done になった票。Owner の受入ではない
                      :closed_by_migration closed-migrated
+                     :closed_unclassified (if ledger-read? 0 (count closed))
                      :followed (count followed)
                      :followed_over_24h over24f
                      :open (count open)
@@ -219,7 +234,7 @@
                        :unknown_resume (count (:unknown-resume cst))}
       :owner_acceptance_stops {:total (count (get by-kind "owner-acceptance"))}
       :blocked_stops {:total unclassified-blocked :reason_classified false :by_category (frequencies blocked-categories)}
-      :migration {:ledger_read ledger-read? :tickets_moved_to_done (count migrated-done)}
+      :migration {:ledger_read ledger-read? :tickets_moved_to_done (when ledger-read? (count migrated-done))}
       ;; 旧 SLI は分母が再開済みの停止だけで、開いたままの停止を落としていた。
       ;; 下の参考率は開いた停止をすべて停滞と置いた値。正当な待ちを含むので真の率でも下限でもない。
       :stall_reference {:followed_only {:numerator over24f :denominator (count followed)}
@@ -262,12 +277,10 @@
     (let [runs (ai-ops-insight/load-runs root nil)
           board-file (fs/path vault "Boards" "Task Board.md")
           board (parse-board (fs/read-all-lines board-file))
-          ledger (apply fs/path vault migration-ledger-path)
-          ledger-read? (fs/readable? ledger)
-          migrated-done (if ledger-read? (parse-migrated-done (fs/read-all-lines ledger)) #{})]
+          migrated-done (read-migrated-done (apply fs/path vault migration-ledger-path))]
       (println (json/generate-string
                 (snapshot runs (ai-ops-insight/load-triggers vault (keys runs)) board
-                          #(ticket-assignee vault %) (java.time.Instant/now) {:since since :ids? ids? :migrated-done migrated-done :ledger-read? ledger-read?}))))))
+                          #(ticket-assignee vault %) (java.time.Instant/now) {:since since :ids? ids? :migrated-done migrated-done}))))))
 
 (when (= *file* (System/getProperty "babashka.file"))
   (apply -main *command-line-args*))
