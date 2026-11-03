@@ -12,9 +12,9 @@ TICKET = re.compile(r'[A-Z]+-\d+\Z')
 # Same shape as the ledger's run-id-re: full uuid, short hex suffix, or none, with optional -groom.
 RUN = re.compile(r'\d{8}T\d{6}Z(?:-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|-[0-9a-f]{1,8})?(?:-groom)?\Z')
 UUID = re.compile(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\Z')
-MODELS = {'gpt-6.1-terra': 'codex-terra', 'gpt-6.1-sol': 'codex-sol', 'gpt-6-astra': 'codex-astra', 'claude-fable-5-1': 'claude-fable', 'claude-opus-5-5': 'claude-opus', 'claude-sonnet-5-5': 'claude-sonnet'}
+MODELS = {'gpt-6.1-terra': 'codex-terra', 'gpt-6.1-sol': 'codex-sol', 'gpt-6-astra': 'codex-astra', 'claude-fable-5-1': 'claude-fable', 'claude-opus-5-5': 'claude-opus', 'claude-sonnet-5-5': 'claude-sonnet', 'claude-haiku-5-5': 'claude-haiku'}
 ALLOWED = {'agent': set('codex codex-terra codex-sol codex-full codex-mini codex-astra claude-fable claude-opus claude-sonnet fable localllm localllm-coder'.split()), 'status': set('succeeded retrying blocked interrupted failed running superseded'.split()), 'result': set('review blocked done ready'.split()), 'action': set('implement groom review-fix blocked-retry docs-edit docs-groom'.split())}
-REASONS = ('no_events', 'unreadable', 'no_usage_event', 'multiple_usage_events', 'child_session_not_found', 'child_session_ambiguous', 'child_session_unreadable', 'child_no_token_count', 'summary_missing', 'delegation_missing', 'delegation_failed', 'review_gate_usage_unrecorded')
+REASONS = ('no_events', 'unreadable', 'no_usage_event', 'multiple_usage_events', 'child_session_not_found', 'child_session_ambiguous', 'child_session_unreadable', 'child_no_token_count', 'summary_missing', 'delegation_missing', 'delegation_failed', 'review_gate_usage_unrecorded', 'claude_subagent_usage_unknown', 'claude_usage_lower_bound_only')
 
 
 def enum(value, allowed):
@@ -35,6 +35,29 @@ def usage(raw, runtime):
         return None
     values['total_tokens'] = sum(values[key] for key in required)
     return values
+
+
+CLAUDE_KEYS = ('input_tokens', 'output_tokens', 'cache_read_input_tokens', 'cache_creation_input_tokens')
+MODEL_KEYS = ('inputTokens', 'outputTokens', 'cacheReadInputTokens', 'cacheCreationInputTokens')
+
+
+def model_usage(raw):
+    if not isinstance(raw, dict):
+        return None
+    totals = dict.fromkeys(CLAUDE_KEYS, 0)
+    models = {}
+    for model, values in raw.items():
+        if not isinstance(model, str) or not isinstance(values, dict):
+            return None
+        parsed = [number(values.get(key)) for key in MODEL_KEYS]
+        if any(value is None for value in parsed):
+            return None
+        for key, value in zip(CLAUDE_KEYS, parsed):
+            totals[key] += value
+        mapped = MODELS.get(model, 'other')
+        models[mapped] = models.get(mapped, 0) + sum(parsed)
+    totals['total_tokens'] = sum(totals.values())
+    return totals, models
 
 
 def read_events(path):
@@ -167,6 +190,7 @@ def run(path, sessions, ordinal, no_ids):
     row['parent_model'] = None
     row['counts'] = None
     row['assistant_usage_observation'] = None
+    row.update(subagent_usage=None, usage_completeness=None, lower_bound_tokens=None, claude_model_totals=None)
     if runtime == 'codex':
         row['counts'] = {name.replace('.', '_') + '_count': sum(e.get('type') == name for e in events) for name in ('item.started', 'item.completed')}
         candidates = [e for e in events if e.get('type') == 'turn.completed']
@@ -174,7 +198,10 @@ def run(path, sessions, ordinal, no_ids):
         candidates = [e for e in events if e.get('type') == 'result']
         counts = dict.fromkeys(('tool_use_count', 'tool_result_error_count', 'subagent_message_count', 'assistant_message_count'), 0)
         observations = []
-        for event in events:
+        last_result_index = max((i for i, e in enumerate(events) if e.get('type') == 'result'), default=-1)
+        first_seen = {}
+        snapshots = {}
+        for index, event in enumerate(events):
             kind = event.get('type')
             message = event.get('message')
             if not isinstance(message, dict):
@@ -183,11 +210,15 @@ def run(path, sessions, ordinal, no_ids):
                 counts['assistant_message_count'] += 1
                 counts['subagent_message_count'] += event.get('parent_tool_use_id') is not None
                 model = message.get('model')
-                if isinstance(model, str):
+                if isinstance(model, str) and event.get('parent_tool_use_id') is None:
                     row['parent_model'] = MODELS.get(model, 'other')
                 observed = usage(message.get('usage'), 'claude')
                 if observed is not None:
                     observations.append(observed)
+                message_id = message.get('id')
+                if isinstance(message_id, str):
+                    first_seen.setdefault(message_id, index)
+                    snapshots[message_id] = observed
             blocks = message.get('content')
             if isinstance(blocks, list):
                 for block in blocks:
@@ -198,7 +229,44 @@ def run(path, sessions, ordinal, no_ids):
         row['assistant_usage_observation'] = {'messages_with_usage': len(observations), 'sum_total_tokens': sum(x['total_tokens'] for x in observations) if observations else None, 'stream_reemission_duplicates_possible': True}
     else:
         candidates = []
-    if len(candidates) > 1:
+    if runtime == 'claude':
+        parsed_parents = [usage(e.get('usage'), 'claude') for e in candidates]
+        summed_parent = ({key: sum(value[key] for value in parsed_parents) for key in (*CLAUDE_KEYS, 'total_tokens')}
+                         if parsed_parents and all(value is not None for value in parsed_parents) else None)
+        cumulative = None
+        valid_sequence = True
+        previous = None
+        for event in candidates:
+            parsed = model_usage(event.get('modelUsage'))
+            if parsed is None:
+                valid_sequence = False
+                continue
+            totals, models = parsed
+            if previous is not None and any(totals[key] < previous[key] for key in CLAUDE_KEYS):
+                valid_sequence = False
+                continue
+            previous = totals
+            cumulative = totals
+            row['claude_model_totals'] = models
+        trailing = [message_id for message_id, index in first_seen.items() if index > last_result_index]
+        complete = bool(candidates) and not trailing and row['status'] not in (None, 'interrupted', 'running')
+        row['usage_completeness'] = 'complete' if complete else 'lower_bound'
+        if not complete:
+            base = cumulative['total_tokens'] if cumulative is not None else summed_parent['total_tokens'] if summed_parent is not None else 0
+            row['lower_bound_tokens'] = base + sum(snapshots[i]['total_tokens'] for i in trailing if snapshots[i] is not None)
+            reasons.add('claude_usage_lower_bound_only')
+        else:
+            parent = summed_parent
+            if parent is None:
+                reasons.add('no_usage_event')
+            if valid_sequence and cumulative is not None and parent is not None:
+                difference = {key: cumulative[key] - parent[key] for key in CLAUDE_KEYS}
+                if all(value >= 0 for value in difference.values()):
+                    difference['total_tokens'] = sum(difference.values())
+                    row['subagent_usage'] = difference
+            if row['subagent_usage'] is None:
+                reasons.add('claude_subagent_usage_unknown')
+    elif len(candidates) > 1:
         reasons.add('multiple_usage_events')
     elif candidates:
         parent = usage(candidates[0].get('usage'), runtime)
@@ -216,7 +284,7 @@ def run(path, sessions, ordinal, no_ids):
     # otherwise look complete when another PR's record exists. Unparseable/unrecorded lines are counted but not summed.
     if calls < expected_calls or calls > recorded:
         reasons.add('review_gate_usage_unrecorded')
-    if parent is None:
+    if parent is None or (runtime == 'claude' and row['subagent_usage'] is None):
         row['run_total_known'] = None
     elif row['child_absent']:
         row['run_total_known'] = parent['total_tokens']
@@ -228,6 +296,9 @@ def run(path, sessions, ordinal, no_ids):
         row['run_output_tokens_known'] = None
     else:
         row['run_output_tokens_known'] = parent['output_tokens'] + (0 if row['child_absent'] else row['child_usage']['output_tokens'])
+    if row['run_total_known'] is not None and row['subagent_usage'] is not None:
+        row['run_total_known'] += row['subagent_usage']['total_tokens']
+        row['run_output_tokens_known'] += row['subagent_usage']['output_tokens']
     if row['run_total_known'] is not None and review is not None:
         row['run_total_known'] += review['total_tokens']
         row['run_output_tokens_known'] += review['output_tokens']
@@ -258,13 +329,15 @@ def report(root, sessions, limit=None, ticket=None, no_ids=False, include_rows=F
         mid = len(known) // 2
         median = (known[mid] if len(known) % 2 else (known[mid - 1] + known[mid]) / 2) if known else None
         parents = [r['parent_usage']['total_tokens'] for r in subset if r['parent_usage'] is not None]
-        groups.append({'agent': agent, 'status': status, 'count': len(subset), 'runs_with_total_known': len(known), 'runs_with_parent_known': len(parents), 'sum_known_parent_totals': sum(parents) if parents else None, 'sum_known_totals': sum(known) if known else None, 'sum_known_output_tokens': sum(r['run_output_tokens_known'] for r in subset if r['run_output_tokens_known'] is not None) if known else None, 'median_known_totals': median, 'p90_known_totals': known[math.ceil(len(known) * .9) - 1] if known else None})
+        bounds = [r['lower_bound_tokens'] for r in subset if r['lower_bound_tokens'] is not None]
+        groups.append({'runs_with_lower_bound_only': len(bounds), 'sum_lower_bound_tokens': sum(bounds) if bounds else None, 'agent': agent, 'status': status, 'count': len(subset), 'runs_with_total_known': len(known), 'runs_with_parent_known': len(parents), 'sum_known_parent_totals': sum(parents) if parents else None, 'sum_known_totals': sum(known) if known else None, 'sum_known_output_tokens': sum(r['run_output_tokens_known'] for r in subset if r['run_output_tokens_known'] is not None) if known else None, 'median_known_totals': median, 'p90_known_totals': known[math.ceil(len(known) * .9) - 1] if known else None})
     agents = []
     for agent in sorted({r['agent'] for r in rows}, key=lambda x: x or ''):
         subset = [r for r in rows if r['agent'] == agent]
         success = sum(r['status'] == 'succeeded' and r['result'] in ('review', 'done') for r in subset)
         agents.append({'agent': agent, 'success': success, 'non_success': len(subset) - success, 'success_rate': success / len(subset) if subset else None})
-    result = {'runs_scanned': len(rows), 'runs_by_runtime': {k: sum(r['runtime'] == k for r in rows) for k in ('codex', 'claude', 'unknown')}, 'runs_with_parent_usage_known': sum(r['parent_usage'] is not None for r in rows), 'runs_with_child_usage_known': sum(r['child_usage'] is not None for r in rows), 'runs_with_review_gate_usage_recorded': sum(r['review_gate_recorded_calls'] > 0 for r in rows), 'runs_with_run_total_known': sum(r['run_total_known'] is not None for r in rows), 'unknown_reasons': {k: histogram[k] for k in REASONS}, 'groups': groups, 'agents': agents}
+    bounds = [r['lower_bound_tokens'] for r in rows if r['lower_bound_tokens'] is not None]
+    result = {'runs_with_lower_bound_only': len(bounds), 'sum_lower_bound_tokens': sum(bounds) if bounds else None, 'runs_scanned': len(rows), 'runs_by_runtime': {k: sum(r['runtime'] == k for r in rows) for k in ('codex', 'claude', 'unknown')}, 'runs_with_parent_usage_known': sum(r['parent_usage'] is not None for r in rows), 'runs_with_child_usage_known': sum(r['child_usage'] is not None for r in rows), 'runs_with_review_gate_usage_recorded': sum(r['review_gate_recorded_calls'] > 0 for r in rows), 'runs_with_run_total_known': sum(r['run_total_known'] is not None for r in rows), 'unknown_reasons': {k: histogram[k] for k in REASONS}, 'groups': groups, 'agents': agents}
     if include_rows:
         result['rows'] = rows
     return result

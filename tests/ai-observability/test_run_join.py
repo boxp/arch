@@ -48,12 +48,12 @@ class JoinTest(unittest.TestCase):
 
     def test_claude_counts_and_missing(self):
         u = {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
+        (self.path / 'summary.edn').write_text('{:status :succeeded}')
         self.write_events([{'type': 'assistant', 'parent_tool_use_id': 'SECRET-XYZ', 'message': {'model': 'claude-opus-5-5', 'usage': u, 'content': [{'type': 'tool_use', 'id': 'SECRET-XYZ', 'name': 'SECRET-XYZ'}]}}, {'type': 'user', 'message': {'content': [{'type': 'tool_result', 'is_error': True}]}}, {'type': 'result', 'usage': u}])
         row = self.get()['rows'][0]
         self.assertEqual(row['parent_usage']['total_tokens'], 19)
         self.assertEqual(row['assistant_usage_observation']['sum_total_tokens'], 19)
         self.assertEqual(row['counts'], {'tool_use_count': 1, 'tool_result_error_count': 1, 'subagent_message_count': 1, 'assistant_message_count': 1})
-        self.assertIn('summary_missing', row['unknown_reasons'])
         self.assertIn('delegation_missing', row['unknown_reasons'])
         self.assertIsNone(row['run_total_known'])
         self.assertNotIn('SECRET-XYZ', json.dumps(self.get()))
@@ -120,6 +120,70 @@ class JoinTest(unittest.TestCase):
         row = self.get()['rows'][0]
         self.assertIsNone(row['parent_usage'])
         self.assertIn('multiple_usage_events', row['unknown_reasons'])
+
+    def claude_setup(self, status='succeeded'):
+        (self.path / 'summary.edn').write_text('{:status :' + status + '}')
+        (self.path / 'delegation.json').write_text(json.dumps({'kind': 'exempt'}))
+
+    def test_claude_results_and_subagents(self):
+        self.claude_setup()
+        u = {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
+        def model(a, b, c, d):
+            return {'inputTokens': a, 'outputTokens': b, 'cacheReadInputTokens': c, 'cacheCreationInputTokens': d}
+        self.write_events([{'type': 'result', 'usage': u, 'modelUsage': {'claude-opus-5-5': model(11, 3, 3, 4)}},
+                           {'type': 'result', 'usage': u, 'modelUsage': {'claude-opus-5-5': model(22, 6, 6, 8), 'private-model': model(1, 1, 0, 0)}}])
+        report = self.get()
+        row = report['rows'][0]
+        self.assertEqual(row['parent_usage']['total_tokens'], 38)
+        self.assertEqual(row['subagent_usage'], {'input_tokens': 3, 'output_tokens': 3, 'cache_read_input_tokens': 0, 'cache_creation_input_tokens': 0, 'total_tokens': 6})
+        self.assertEqual((row['run_total_known'], row['run_output_tokens_known']), (44, 7))
+        self.assertEqual(row['claude_model_totals'], {'claude-opus': 42, 'other': 2})
+        self.assertNotIn('private-model', json.dumps(report))
+        self.assertNotIn('multiple_usage_events', row['unknown_reasons'])
+        self.write_events([{'type': 'result', 'usage': u, 'modelUsage': {'claude-opus-5-5': model(11, 3, 3, 4)}}])
+        self.assertEqual(self.get()['rows'][0]['run_total_known'], 21)
+
+    def test_claude_invalid_cumulative(self):
+        self.claude_setup()
+        u = {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
+        def m(n):
+            return {'private-model': {'inputTokens': n, 'outputTokens': 2, 'cacheReadInputTokens': 3, 'cacheCreationInputTokens': 4}}
+        for events in ([{'type': 'result', 'usage': u}],
+                       [{'type': 'result', 'usage': u, 'modelUsage': m(11)}, {'type': 'result', 'usage': u, 'modelUsage': m(10)}],
+                       [{'type': 'result', 'usage': u, 'modelUsage': m(9)}],
+                       [{'type': 'result', 'usage': u, 'modelUsage': m(-1)}]):
+            with self.subTest(events=events):
+                self.write_events(events)
+                row = self.get()['rows'][0]
+                self.assertIsNone(row['run_total_known'])
+                self.assertIn('claude_subagent_usage_unknown', row['unknown_reasons'])
+
+    def test_claude_lower_bounds_and_privacy(self):
+        u = {'input_tokens': 10, 'output_tokens': 2, 'cache_read_input_tokens': 3, 'cache_creation_input_tokens': 4}
+        later = dict(u, output_tokens=5)
+        def assistant(mid, value, parent=None, model='claude-opus-5-5'):
+            return {'type': 'assistant', 'parent_tool_use_id': parent, 'message': {'id': mid, 'model': model, 'usage': value}}
+        self.claude_setup('interrupted')
+        self.write_events([assistant('private-id', u), assistant('private-id', later), assistant(None, u)])
+        report = self.get()
+        row = report['rows'][0]
+        self.assertEqual(row['lower_bound_tokens'], 22)
+        self.assertIsNone(row['parent_usage'])
+        self.assertEqual((report['runs_with_lower_bound_only'], report['sum_lower_bound_tokens']), (1, 22))
+        self.assertEqual((report['groups'][0]['runs_with_lower_bound_only'], report['groups'][0]['sum_lower_bound_tokens']), (1, 22))
+        self.assertNotIn('private-id', json.dumps(report))
+        self.assertNotIn('no_usage_event', row['unknown_reasons'])
+        model = {'claude-haiku-5-5': {'inputTokens': 11, 'outputTokens': 3, 'cacheReadInputTokens': 3, 'cacheCreationInputTokens': 4}}
+        events = [assistant('old-id', u), {'type': 'result', 'usage': u, 'modelUsage': model}, assistant('new-id', later, 'tool', 'private-model')]
+        self.write_events(events)
+        row = self.get()['rows'][0]
+        self.assertEqual(row['lower_bound_tokens'], 43)
+        self.assertEqual(row['parent_model'], 'claude-opus')
+        self.assertEqual(row['claude_model_totals'], {'claude-haiku': 21})
+        self.assertIsNone(row['run_total_known'])
+        self.claude_setup('succeeded')
+        self.assertEqual(self.get()['rows'][0]['usage_completeness'], 'lower_bound')
+        self.assertNotIn('private-model', json.dumps(self.get()))
 
     def test_exempt_delegation_uses_parent_total_and_short_run_id(self):
         short = self.root / 'runs' / 'BOXP-1' / '20261001T000000Z-1a2b3c4d'
