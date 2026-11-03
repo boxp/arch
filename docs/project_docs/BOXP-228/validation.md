@@ -83,3 +83,4 @@ dotfiles同期のorigin allowlistはraw `remote.origin.url`と実効`remote get-
 - `github-git-ssh-test.sh`、`bash -n`（変更 shell と smoke test）、actionlint v1.7.12、ghalint v1.6.0、delegation test、task-board-events test、autonomy-policy/control、vault-writer は成功。recurring-events は成功したが passwordless sudo 不可のため seed ownership ケースは skip。
 - PR 差分の `git diff --check` は成功。main 側には `plan-ansible-node.yml` の末尾空行と `ai-subscription-usage-test.sh` の末尾空白が既存で存在。
 - `trivy config . --quiet` は応答を待った後に中断し、結果未取得。image build とコンテナ smoke は未実行。runner 回帰の結果は別途確認が必要。
+- runner 回帰は約5分実行し shutdown recovery の途中結果成功を確認したが、全体完了前に中断したため未検証として扱う。
