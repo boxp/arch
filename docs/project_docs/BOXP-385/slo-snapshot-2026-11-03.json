@@ -50,7 +50,7 @@
         "unknown_resume": 0,
         "open_over_15m": 0
       },
-      "generated_at": "2026-11-03T21:30:58.472437162Z",
+      "generated_at": "2026-11-03T21:34:50.706853774Z",
       "stall_reference": {
         "followed_only": {
           "numerator": 8,
@@ -110,10 +110,10 @@
   },
   "all_history": {
     "blocked_stops": {
-      "total": 152,
+      "total": 184,
       "reason_classified": false,
       "by_category": {
-        "none-recorded": 20,
+        "none-recorded": 52,
         "agent-reported-blocked": 85,
         "agent-process-error": 38,
         "pr-gate-pr-url": 8,
@@ -158,7 +158,7 @@
       "unknown_resume": 0,
       "open_over_15m": 0
     },
-    "generated_at": "2026-11-03T21:30:58.667718927Z",
+    "generated_at": "2026-11-03T21:34:50.881584966Z",
     "stall_reference": {
       "followed_only": {
         "numerator": 15,
@@ -202,13 +202,13 @@
       "rescue": 0,
       "not_rescue": 2,
       "unknown": 0,
-      "excluded_unclassified_blocked": 152
+      "excluded_unclassified_blocked": 184
     },
     "approved_work_stall": {
       "status": "measuring",
       "numerator": 0,
       "denominator": 2,
-      "excluded_unclassified_blocked": 152
+      "excluded_unclassified_blocked": 184
     },
     "migration": {
       "ledger_read": true,

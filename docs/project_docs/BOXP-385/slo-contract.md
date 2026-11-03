@@ -40,7 +40,7 @@ Prometheus は `$GRAFANA_URL/api/datasources/proxy/uid/<prometheus uid>/api/v1/q
 - `first_run_to_first_outcome` は最初の run 開始から、最初に `review` / `continue` / `owner-acceptance` / `done` で正常終了するまで。`unevaluated` は最初の結果を特定できない task で、分位にも打切りにも入れない。
 - `review_stops` は切替前の系列で、今後は増えない。`open` は Done 以外のレーンにある、再開していない Review 停止で、正当な Owner 待ちを含む。`closed_by_migration` は移行で Done になった票のうち Owner の受入が無い票で、`closed_by_acceptance` と分ける。受入が Notes にある BOXP-387 と BOXP-215 は `migrated-owner-accepted` に固定した ID で受入へ数える。BOXP-215 は受入が 10-07 で closed が移行日の 11-03 なので、依頼→受入の時間を歪めないよう 28 日窓の手順では除く。移行 ledger が読めない、または票の行を 1 件も認識できないときは、両方を null にして `closed_unclassified` へ出し、`coverage.complete` を false にする。
 - `continue_stops` は gate を通って既承認の残作業がある停止。次 run がすぐ始まるのが正常で、`*_over_15m` が救援の猶予、`*_over_24h` が停滞の基準。`approved_work_stall` の `status` が `no_observations` のときは 0% ではなく観測なし。`owner_rescue` の猶予は再開前の最後の Owner 接触で判定するので、猶予内の接触のあとに猶予を過ぎて再度接触して再開した停止は救援に入る。
-- `blocked_stops` は Blocked で止まった run。`by_category` は runner の分類で、`agent-reported-blocked` は Owner 判断待ちか外部 hold か新 scope かを区別できない。救援にも停滞にも入れず、`excluded_unclassified_blocked` に件数を出す。
+- `blocked_stops` は Blocked で止まった run。status が `blocked` の run に加え、`result` が blocked の `succeeded` と、exit≠0 の `failed` を含む（`effective-result` の規則。Ready へ進む groom は含まない）。`by_category` は runner の分類で、`agent-reported-blocked` は Owner 判断待ちか外部 hold か新 scope かを区別できない。救援にも停滞にも入れず、`excluded_unclassified_blocked` に件数を出す。
 - `owner_acceptance_stops` は Owner の確認を待つ停止で、停滞に入れない。
 - `stall_reference.with_open_as_stalled` は開いた停止をすべて停滞と置いた参考値で、真の率でも下限でもない。
 - `instructed_not_started` は、停止中の最初の Owner 経由または監督 note から、次の run 開始または現在までの時間で数える。note の内容は見ないので、指示なのか状況確認なのかは区別しない。

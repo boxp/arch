@@ -264,6 +264,30 @@
         (is (= {:reached 6 :censored 2 :unevaluated 0}
                (select-keys (:first_run_to_first_outcome j) [:reached :censored :unevaluated])))))))
 
+(deftest blocked-stops-follow-effective-result
+  (fs/with-temp-dir [d {}]
+    (let [runs (fs/path d "root/runs") vault (fs/path d "vault")
+          run (fn [t m]
+                (let [id "20261101T000000Z" r (fs/path runs t id)]
+                  (fs/create-dirs r)
+                  (spit (str (fs/path r "summary.edn"))
+                        (pr-str (merge {:ticket t :run-id id :action "implement"
+                                        :started-at "2026-11-01T00:00:00Z" :finished-at "2026-11-01T01:00:00Z"} m)))))]
+      (fs/create-dirs (fs/path vault "Tickets"))
+      (fs/create-dirs (fs/path vault "Boards"))
+      (spit (str (fs/path vault "Boards" "Task Board.md")) "## Blocked\n")
+      ;; runner の final-status で Blocked へ止まる 3 通り
+      (run "BOXP-30" {:status "blocked" :result "review" :blocker-category "pr-gate-budget"})
+      (run "BOXP-31" {:status "succeeded" :result "blocked" :blocker-category "agent-reported-blocked"})
+      (run "BOXP-32" {:status "failed" :exit-code 1})
+      ;; groom は marker が blocked でも Ready へ進むので Blocked ではない
+      (run "BOXP-33" {:status "succeeded" :result "blocked" :action "groom"})
+      (let [j (json/parse-string (run-tool (str (fs/path d "root")) (str vault)) true)]
+        (is (= {:total 3 :reason_classified false
+                :by_category {:pr-gate-budget 1 :agent-reported-blocked 1 :none-recorded 1}}
+               (:blocked_stops j)))
+        (is (= 3 (get-in j [:approved_work_stall :excluded_unclassified_blocked])))))))
+
 (deftest continue-stop-with-unreadable-ticket-stays-unknown
   (fs/with-temp-dir [d {}]
     (let [[root vault] (write-continue-fixture d)]

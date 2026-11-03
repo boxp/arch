@@ -146,11 +146,12 @@
 
 (defn blocked-stops
   "窓の中で Blocked へ止まった run の blocker category。Owner 判断待ちか外部 hold か既承認の修復待ちかは未分類で、救援にも停滞にも数えない。
+  status が blocked の run に加え、result が blocked の run も数える。:result は effective-result なので、exit≠0 の failed を含み、Ready へ進む groom を含まない。
   category は runner の固定語彙だが、語彙外の値をそのまま出さないよう形式を検査する。"
   [runs-by-ticket since]
   (for [[_ runs] runs-by-ticket, r runs
         :let [at (ai-ops-insight/parse-inst (:finished-at r))]
-        :when (and (= "blocked" (:status r)) at (or (nil? since) (not (neg? (compare at since)))))]
+        :when (and (or (= "blocked" (:status r)) (= "blocked" (:result r))) at (or (nil? since) (not (neg? (compare at since)))))]
     (let [c (:blocker r)]
       (cond (nil? c) "none-recorded"
             (re-matches #"[a-z][a-z-]{0,40}" (str c)) (str c)
