@@ -20,7 +20,7 @@ OUT="${OUT:-$PWD/out}"
 LLVM_REPO=https://github.com/boxp/llvm-project.git
 LLVM_SHA=9828c929f29aa94bc6ce1d87f33727bc309cd25d
 GRAAL_REPO=https://github.com/boxp/graal.git
-GRAAL_SHA="${GRAAL_SHA:-6a3637a981ad1d98583b06970f4a8cf49b6efa26}"
+GRAAL_SHA="${GRAAL_SHA:-ceea5a19d14f198d00e0488a0ea0179cc5774db7}"
 MX_REPO=https://github.com/graalvm/mx.git
 MX_SHA=2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
 LABSJDK_TAG=jvmci-25.3-b21
@@ -238,12 +238,59 @@ phase_cap() {
   done
 }
 
+# Arrays have no monitor slot, so each synchronized takes the lock of the additional monitor map. This
+# depends on StoreLoad ordering: without real barriers about 7 of 8 runs lost a wakeup and hung.
+write_contention() {
+  mkdir -p "$WORK/contention"
+  cat >"$WORK/contention/Contention.java" <<'JAVA'
+public class Contention {
+    public static void main(String[] args) throws Exception {
+        int iterations = 1_000_000;
+        int[] counter = new int[1];
+        Thread[] threads = new Thread[2];
+        for (int i = 0; i < threads.length; i++) {
+            threads[i] = new Thread(() -> {
+                for (int j = 0; j < iterations; j++) {
+                    synchronized (counter) {
+                        counter[0]++;
+                    }
+                }
+            });
+            threads[i].start();
+        }
+        for (Thread thread : threads) {
+            thread.join();
+        }
+        System.out.println("contended " + counter[0]);
+    }
+}
+JAVA
+  javac -d "$WORK/contention" "$WORK/contention/Contention.java"
+}
+
+check_barriers() {
+  # qemu-arm treats the legacy CP15 barrier as a nop, and it is deprecated on ARMv7.
+  local legacy
+  legacy="$(arm-linux-gnueabihf-objdump -d "$1" | grep -cE 'mcr.*cr7, cr10, \{5\}' || true)"
+  if [ "$legacy" -ne 0 ]; then
+    echo "::error::$1 has $legacy legacy CP15 barriers"
+    return 1
+  fi
+}
+
 phase_hello() {
+  local run
   setup_graal
   write_hello
   (cd "$WORK/hello" && native_image_arm32 -cp . Hello "$OUT/hello-arm32")
   check_elf "$OUT/hello-arm32"
+  check_barriers "$OUT/hello-arm32"
   expect_output 'Hello ARM32 from native-image' "$OUT/hello-arm32"
+  write_contention
+  (cd "$WORK/contention" && native_image_arm32 -cp . Contention "$WORK/contention/contention-arm32")
+  for run in 1 2 3 4 5 6 7 8 9 10; do
+    expect_output 'contended 2000000' "$WORK/contention/contention-arm32"
+  done
 }
 
 phase_babashka() {
@@ -283,6 +330,7 @@ phase_babashka() {
   expect_output '{"a":[1,2,{"b":"c"}]}' "$image" -e '(require (quote [cheshire.core :as j])) (println (j/generate-string {:a [1 2 {:b "c"}]}))'
   expect_output '1 true' "$image" -e '(spit "/tmp/bb-arm32.txt" "x") (println (count (slurp "/tmp/bb-arm32.txt")) (pos? (count (file-seq (java.io.File. "/tmp")))))'
   expect_output '100000' "$image" -e '(println (count (reduce (fn [a i] (assoc a i (str i))) {} (range 100000))))'
+  expect_output ':contended 40000' "$image" -e '(let [a (int-array 1) fs (doall (for [_ (range 2)] (future (dotimes [_ 20000] (locking a (aset a 0 (inc (aget a 0))))))))] (run! deref fs) (println :contended (aget a 0)))'
   echo "babashka ${version} works under qemu-arm (this does not prove that it works on IS01)"
 }
 

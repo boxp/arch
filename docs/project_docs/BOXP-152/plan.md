@@ -9,10 +9,14 @@
 
 ## 検証範囲
 
-- qemu-arm 上の `--version`、式評価、例外、スレッド、JSON、ファイル操作、GC
+- qemu-arm 上の `--version`、式評価、例外、スレッド、JSON、ファイル操作、GC、配列モニタの高競合
 - IS01 実機は未検証。qemu の成功は実機の成功を意味しない
 
 ## 既知の制限
 
-- 配列をモニタにした `synchronized` の高競合で停止する (2 スレッド 100 万回で再現)
 - 実行ファイルが大きい (text 約 94MB、data 約 47MB)。RAM 204MB の IS01 では別途検証が必要
+
+## 解決済みの不具合
+
+- 配列をモニタにした `synchronized` の高競合で停止していた (2 スレッド 40 万回で 8 回中 7 回)。原因は `llc` に `+db` を渡しておらず、fence が qemu-arm で nop になる CP15 バリアに変換されていたこと。`dmb` を使うように直し、hello フェーズで競合テストを 10 回実行して回帰を検出する
+- atomic read-modify-write の順序が monotonic だったため sequentially consistent に変更した。x86 上の qemu では差が出ないため、実機での確認は未実施
