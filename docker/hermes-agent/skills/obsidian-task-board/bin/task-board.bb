@@ -10,13 +10,16 @@
   {"Backlog" "backlog"
    "Ready" "ready"
    "In Progress" "in-progress"
-   "Review" "review"
    "Blocked" "blocked"
    "Done" "done"})
 
+;; BOXP-395: Review is retired and cannot be a destination. A leftover card stays
+;; readable so it can be moved out rather than vanish from the board.
+(def readable-lanes (assoc lanes "Review" "review"))
+
 (def status->lane (into {} (map (fn [[lane status]] [status lane]) lanes)))
 
-(def codex-request-lanes #{"Backlog" "Ready" "Review" "Blocked"})
+(def codex-request-lanes #{"Backlog" "Ready" "Blocked"})
 
 (def section-names
   {"summary" "Summary"
@@ -316,7 +319,7 @@
             ;; below it belong to no lane, matching the runner's parse-board-cards.
             lane (cond
                    (nil? heading) lane
-                   (contains? lanes heading) heading
+                   (contains? readable-lanes heading) heading
                    :else nil)
             card (and lane (parse-card lane line))]
         (recur (rest lines) lane (cond-> cards card (conj card)))))))
@@ -334,7 +337,7 @@
       result
       (let [line (first remaining)
             heading (second (re-find #"^##\s+(.+?)\s*$" line))
-            lane (cond (nil? heading) lane (contains? lanes heading) heading :else nil)]
+            lane (cond (nil? heading) lane (contains? readable-lanes heading) heading :else nil)]
         (recur (rest remaining) lane
                (if (and lane (card-line? line) (str/includes? line (str "[[Tickets/" id "|")))
                  result
@@ -607,7 +610,7 @@
         bpath (board-path vault)
         result-atom (atom nil)]
     (when-not (contains? codex-request-lanes lane)
-      (die "request-codex lane must be one of Backlog, Ready, Review, or Blocked"))
+      (die "request-codex lane must be one of Backlog, Ready, or Blocked"))
     (with-board-lock bpath
       (fn []
         (with-ticket-lock path
