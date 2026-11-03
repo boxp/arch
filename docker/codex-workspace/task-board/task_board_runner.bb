@@ -1177,6 +1177,8 @@
 
 (declare sanitize-blocker-reason)
 
+(declare owner-acceptance-contract)
+
 (defn recover-localllm-write!
   "Crash recovery for a localllm docs-edit run (BOXP-277): the audit written
   right after the note write is the persistent journal of the write, and
@@ -1227,7 +1229,8 @@
               (when ticket-exists?
                 (append-note! ticket-id (str "localllm docs run " run-id
                                              " は文書を更新した後の lane / frontmatter 遷移の途中で終了していたため、遷移を " next-status
-                                             " として完了させました（文書の更新は適用済み。戻す場合は Obsidian の履歴機能で）")))
+                                             " として完了させました（文書の更新は適用済み。戻す場合は Obsidian の履歴機能で）"
+                                             (when (= "blocked" next-status) owner-acceptance-contract))))
               (:result r))
             (let [reason (sanitize-blocker-reason (str (:reason r)))]
               ;; The notes no longer match what the run wrote (edited, restored
@@ -4282,8 +4285,6 @@
                               :result (if (= "continue" intended) "continue" result)
                               :review-gate (persisted-review-gate review-gate)
                               :finished-at (now-str)}))
-                (when (= "done" next-status)
-                  (clear-continuation-budget! ticket-id))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
                 (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
@@ -4311,6 +4312,10 @@
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee next-assignee}
                                                       (= "done" next-status) (assoc :closed (today))))
+                    ;; Only a completed transition ends the budget: a superseded
+                    ;; run's `done` was discarded and must not reset it.
+                    (when (= "done" next-status)
+                      (clear-continuation-budget! ticket-id))
                     ;; localllm docs-edit: lane and frontmatter are durable, so
                     ;; a crash from here on must not roll the note write back
                     ;; (crash recovery reads this run-specific record, see

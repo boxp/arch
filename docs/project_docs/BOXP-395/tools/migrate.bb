@@ -41,6 +41,10 @@
          (remove #(str/includes? % migration-mark))
          last)))
 
+(defn sha256 [text]
+  (apply str (map #(format "%02x" %)
+                  (.digest (java.security.MessageDigest/getInstance "SHA-256") (.getBytes ^String text "UTF-8")))))
+
 (defn running? [id] (fs/exists? (fs/path state-root "locks" (str id ".edn"))))
 
 (defn check [{:keys [id expected-last-note expected-assignee]}]
@@ -76,8 +80,15 @@
   (helper! "update" id "--vault" vault "--lane" lane "--assignee" assignee "--dry-run")
   (when apply?
     ;; Audit note first, state second: same order as the runner's blocked path.
-    (helper! "append-note" id "--vault" vault "--source" "claude-opus" "--note" (note-for d))
-    (helper! "update" id "--vault" vault "--lane" lane "--assignee" assignee)
+    ;; A crash between the two must not write the note twice on the re-run.
+    (when-not (str/includes? (ticket-text id) migration-mark)
+      (helper! "append-note" id "--vault" vault "--source" "claude-opus" "--note" (note-for d)))
+    ;; The helper compares these under its locks: re-checking here would still
+    ;; leave a window in which an Owner or worker change gets overwritten.
+    (let [c (check d)]
+      (when-not (:ok? c) (throw (ex-info (str "changed during migration: " (:hold c)) {}))))
+    (helper! "update" id "--vault" vault "--lane" lane "--assignee" assignee
+             "--expected-lane" "Review" "--expected-ticket-sha256" (sha256 (ticket-text id)))
     (let [text (ticket-text id)]
       {:read-back-lanes (board-lane id)
        :read-back-status (frontmatter text "status")
