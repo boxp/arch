@@ -118,7 +118,11 @@
 ;; ledger_dropped: runner ledger が容量超過/書き込み失敗で書けなかった event (task_board ai_ops_ledger.bb が出す)
 (def lost-markers {{:collection_lost "buffer_dropped"} :buffer-dropped {:collection_lost "undelivered"} :undelivered
                    {:collection_lost "input_unreadable"} :input-unreadable {:collection_lost "ledger_dropped"} :ledger-dropped})
-(defn marker? [e] (or (rejected-marker? e) (contains? lost-markers e)))
+;; Hermes ledger の mirror (runner が kubectl exec で read-only に取り込む snapshot) が最新の取り込みに失敗し、
+;; 前回成功時の snapshot を集計している (本文・ID なし)。Hermes 会話の coverage を partial/stale にする
+(def stale-source-marker {:source_stale "hermes-observer"})
+(defn stale-source-marker? [e] (= stale-source-marker e))
+(defn marker? [e] (or (rejected-marker? e) (contains? lost-markers e) (stale-source-marker? e)))
 
 (defn emit-gated [stats e]
   (let [{:keys [event dropped-keys redacted-values rejected?]} (privacy-gate e)]
@@ -597,15 +601,18 @@
         buffer-dropped (+ (get collection-lost :buffer-dropped 0) ledger-dropped)
         undelivered (get collection-lost :undelivered 0)
         input-unreadable (get collection-lost :input-unreadable 0)
+        ;; Hermes ledger mirror の最新取り込みに失敗し前回 snapshot を使っている間は、失敗中に Hermes 側で起きた event (是正・承認・
+        ;; effect・重大 event を含み得る) が入力に無い。種別不明の欠落 (drop/未配信と同じ) として全 SLI の確定を止める
+        hermes-stale (count (filter stale-source-marker? events))
         events (remove marker? events)
         raw-events (remove ::malformed events)
         gated (map privacy-gate raw-events)
         rejected (count (filter #(and (:rejected? %) (not (:invalid-correlation? %))) gated))
         rejected-correlation (count (filter :invalid-correlation? gated))
         ;; 破損行と privacy gate で拒否した event は中身を検証できないため、zero-tolerance 指標を 0 件と確定しない
-        lost (+ malformed rejected rejected-correlation upstream-rejected buffer-dropped undelivered input-unreadable)
+        lost (+ malformed rejected rejected-correlation upstream-rejected buffer-dropped undelivered input-unreadable hermes-stale)
         ;; 是正 SLI 用の欠落: 種別が是正に無関係と分かる拒否 event (notify 等) は除く。破損行・drop・未配信・読めない入力は種別不明なので含める
-        corr-lost (+ malformed buffer-dropped undelivered input-unreadable
+        corr-lost (+ malformed buffer-dropped undelivered input-unreadable hermes-stale
                      (count (filter #(may-affect-corrections? (:event_type %)) upstream-markers))
                      (count (filter (fn [[e g]] (and (:rejected? g) (may-affect-corrections? (:event_type e)))) (map vector raw-events gated))))
         {events :events ledger-merged :merged} (merge-ledger-events (keep :event gated))
@@ -623,7 +630,7 @@
         ;; 指定種別の event だった可能性を否定できない欠落件数 (種別不明の破損行・drop・未配信・読めない入力・run、
         ;; 種別不明または該当種別の privacy 拒否、event_type 不正、event_id 衝突)
         lost-of-type (fn [t] (let [maybe? #(or (= t %) (not (contains? (:event_type enum-values) %)))]
-                               (+ malformed buffer-dropped undelivered input-unreadable unreadable-run-events id-collisions unverifiable-type
+                               (+ malformed buffer-dropped undelivered input-unreadable hermes-stale unreadable-run-events id-collisions unverifiable-type
                                   (count (filter #(maybe? (:event_type %)) upstream-markers))
                                   (count (filter (fn [[e g]] (and (:rejected? g) (maybe? (:event_type e)))) (map vector raw-events gated))))))
         approval-lost (lost-of-type "approval.requested")
@@ -638,6 +645,19 @@
         skew (->> uniq (filter #(let [o (parse-inst (:occurred_at %)) w (parse-inst (:observed_at %))]
                                    (and o w (.isAfter o (.plusSeconds w 300))))) count)
         by-task (group-by :task_id (filter :task_id uniq))
+        ;; Hermes の turn だけの会話 (hermes-observer ledger): task_id は opaque な conv- ID で Board の ticket とは join できず、
+        ;; event も run.*/approval.* だけで outcome を持ち得ない。ticket の起票は求めないが Board の task 集計 (総数・outcome・
+        ;; guardrail・救援率の分母・run 数) には入れず、会話数/turn 数/承認 event 数を coverage に別掲する。
+        ;; request.received / task.* / correction / lane.changed 等を持つ ticket なしの依頼は従来どおり request_id 単位の task
+        ;; mirror が受け入れる source は hermes-observer。runtime が欠落/redact された有効 event も会話として扱う
+        hermes-event? #(or (= "hermes" (:runtime %)) (boolean (re-matches #"(?:[^:]+:)?hermes(?:-observer)?" (or (:source %) ""))))
+        ;; event_type が欠落/redact (mirror の gate が enum 外を置換) の event は種別不明: 会話を Board task に昇格させる根拠にしない
+        ;; (種別不明 event は全体の unverifiable-event-types / lost-events として別に計数され、関連 SLI を unknown にする)
+        unknown-type? #(let [t (:event_type %)] (or (nil? t) (= "redacted" t)))
+        turn-only? (fn [evs] (every? #(let [t (:event_type %)] (or (unknown-type? %) (some-> t (str/starts-with? "run.")) (some-> t (str/starts-with? "approval.")))) evs))
+        conversation-ids (set (for [[tid evs] by-task
+                                    :when (and (every? hermes-event? evs) (turn-only? evs) (not (re-matches #"[A-Z]+-\d+" (str tid))))] tid))
+        conv-events (mapcat val (filter (comp conversation-ids key) by-task))
         ;; task に紐付くべき event で task_id が欠落したもの: 集計から黙って除外せず件数を別掲し、是正が欠落していれば SLI を確定しない
         task-scoped? #(or (#{"correction" "request.received" "lane.changed"} (:event_type %))
                           (some-> (:event_type %) (str/starts-with? "task."))
@@ -650,10 +670,10 @@
         unlinked-guard (fn [m] (cond
                                  (pos? unlinked-corr)
                                  {:status "unknown" :reason "task_id 欠落の task 紐付け event (是正・run・受入・状態) があり、どの task の分子/分母か確定できない (合格扱いしない)"
-                                  :observed m :unlinked-corrections unlinked-corr :lost-events corr-lost}
+                                  :observed m :unlinked-corrections unlinked-corr :lost-events corr-lost :stale-snapshot-markers hermes-stale}
                                  (pos? corr-lost)
                                  {:status "unknown" :reason "task に紐付けられない欠落 event (破損行・privacy 拒否・collector 欠落・読めない入力) があり、是正の有無を確定できない (観測値は observed)"
-                                  :observed m :lost-events corr-lost}
+                                  :observed m :lost-events corr-lost :stale-snapshot-markers hermes-stale}
                                  :else m))
         tasks (for [[tid evs] by-task
                     :let [evs (sort-by event-time-key evs)
@@ -739,8 +759,12 @@
                           history-less-corr (when (and (empty? runs) (empty? orphan-runs) (not (syn-evs? evs)))
                                               (filter #(= "correction" (:event_type %)) evs))]
                     ;; 状態 event (state/cancelled/reopened)・読めない run・救援 event も task の存在を示す (救援単独 task を救援率から落とさない)
-                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue" "correction"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (syn-evs? evs) (some #(= "lane.changed" (:event_type %)) evs))]
-                {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted :stratum (some :stratum evs) :outcome (task-outcome evs)
+                    ;; Hermes 会話は approval.* だけでも会話として存在する (coverage の会話数と tasks.conversations / guardrail の会話数を一致させる)
+                    :when (or (some #(#{"request.received" "task.accepted" "task.state" "task.cancelled" "task.reopened" "run.unreadable" "owner.rescue" "correction"} (:event_type %)) evs) (seq runs) (seq orphan-runs) (syn-evs? evs) (some #(= "lane.changed" (:event_type %)) evs)
+                              (contains? conversation-ids tid))]
+                {:task tid :acceptance-history? (boolean (some #(= "task.accepted" (:event_type %)) evs)) :accepted-at accepted
+                 :stratum (or (some :stratum evs) (when (contains? conversation-ids tid) "assistant")) :outcome (task-outcome evs)
+                 :conversation? (contains? conversation-ids tid)
                  :current-state (some #(when (= "task.state" (:event_type %)) (:status %)) evs)
                  :runs (count runs) :finished (count finished)
                  :unreadable-runs (+ (count (filter #(= "run.unreadable" (:event_type %)) evs)) (count orphan-runs) (if (seq history-less-corr) 1 0))
@@ -770,6 +794,10 @@
                  :effects (frequencies (keep :effect_key (filter #(= "effect.applied" (:event_type %)) evs)))
                  :agents (set (keep :agent runs))
                  :delegation (frequencies (keep :delegation_kind runs))})
+        ;; Hermes 会話は Board の task ではないので、task 集計 (総数・outcome・層別・guardrail・救援率の分母・run 数) は
+        ;; Board task だけで行い、会話は coverage :hermes-conversation に別掲する (join の前後で SLI を変えない)
+        conversations (filter :conversation? tasks)
+        tasks (remove :conversation? tasks)
         n (count tasks)
         ;; 読めない run を持つ task は是正/差戻しを見落とし得るため、是正率と first acceptance の分子・分母から除き別掲する
         input-missing (filter #(input-missing? %) tasks)
@@ -798,7 +826,7 @@
              :tasks-with-unreadable-runs (count input-missing) :unreadable-runs (reduce + (map :unreadable-runs tasks))
              :unverifiable-state-events (reduce + (map :unverifiable-state tasks)) :unique (count uniq) :duplicates dup :id-collisions id-collisions :ledger-merged ledger-merged :order-inversions inversions
              :clock-skew-gt-5m skew :sources sources}
-     :tasks {:total n :never-run (count (filter #(and (zero? (:runs %)) (zero? (:orphan-runs % 0))) tasks))
+     :tasks {:total n :conversations (count conversations) :never-run (count (filter #(and (zero? (:runs %)) (zero? (:orphan-runs % 0))) tasks))
              :orphan-run-events (reduce + (map #(:orphan-runs % 0) tasks))
              :accepted-without-run-history (count (filter :accepted-unobserved? tasks)) :outcomes (frequencies (map :outcome tasks))
              :by-stratum (frequencies (map :stratum tasks))}
@@ -830,7 +858,7 @@
                              (or (pos? unlinked-corr) (pos? corr-lost) (some input-missing? accepted-ever))
                              {:status :unknown :reason "欠落 event (破損行・privacy 拒否・collector 欠落・読めない入力)・task_id 欠落 event・受入履歴を持つ task の入力欠落があり受入後の再オープンを確定できない"
                               :observed (ratio (count (filter #(pos? (:post-accept-corr %)) accepted-ever)) (count accepted-ever))
-                              :lost-events corr-lost :unlinked-events unlinked-corr
+                              :lost-events corr-lost :unlinked-events unlinked-corr :stale-snapshot-markers hermes-stale
                               :unevaluated-input-missing (count (filter input-missing? accepted-ever))}
                              ;; 前後関係を確定できない task があれば率を確定しない (観測値は下限として別掲)
                              (some :post-accept-indeterminate? accepted-ever)
@@ -845,19 +873,27 @@
                       (or (pos? rescue-lost) (pos? rescue-unlinked))
                       {:status "unknown" :reason "救援 event だった可能性のある欠落 event または task_id 欠落の救援があり、救援発生 task 数を確定できない"
                        :observed-lower-bound (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
-                       :lost-events rescue-lost :unlinked-rescues rescue-unlinked}
+                       :lost-events rescue-lost :unlinked-rescues rescue-unlinked :stale-snapshot-markers hermes-stale}
                       ;; task 紐付け event の欠落/task_id 欠落は分母 (全 task 数) を過少にするため確定しない
                       (or (pos? corr-lost) (pos? unlinked-corr))
                       {:status "unknown" :reason "task の存在を示す event だった可能性のある欠落 event または task_id 欠落の task 紐付け event があり、救援率の分母を確定できない"
                        :observed (ratio (count (filter #(pos? (:rescue %)) tasks)) n)
-                       :lost-events corr-lost :unlinked-task-events unlinked-corr}
+                       :lost-events corr-lost :unlinked-task-events unlinked-corr :stale-snapshot-markers hermes-stale}
                       :else (ratio (count (filter #(pos? (:rescue %)) tasks)) n))
       :duplicate-approval (cond
+                            ;; 承認 event の source (Hermes ledger mirror) の最新取り込みに失敗して前回 snapshot を使っている間は、
+                            ;; 失敗中に発生した承認 (重複を含む) が入力に無いため確定しない (観測値は下限、coverage は partial/stale)
+                            ;; 観測済み承認 0 件 (初回取り込み失敗で snapshot が無い等) でも「未接続」ではなく欠落として報告する
+                            (pos? hermes-stale)
+                            {:status "unknown" :reason "承認 event の source (hermes-observer) の最新取り込みに失敗し前回 snapshot (無ければ空) を使っており、失敗中の承認を含まないため重複承認の有無を確定できない"
+                             :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
+                             :stale-snapshot-markers hermes-stale :coverage "partial/stale" :lost-events approval-lost}
                             ;; 承認 event だった可能性のある欠落 (拒否・drop・破損等) があると重複を見落とし得る
-                            (and (pos? approval-lost) (pos? (+ (:total approvals) (:unverifiable approvals))))
+                            ;; 観測済みの承認が 0 件でも、欠落側に承認があった可能性があれば「未接続」ではなく欠落として報告する
+                            (pos? approval-lost)
                             {:status "unknown" :reason "承認 event だった可能性のある欠落 event (privacy 拒否・collector 欠落・破損行・読めない入力) があり重複承認の有無を確定できない"
                              :observed-lower-bound (assoc (ratio (:count approvals) (:total approvals)) :tasks-involved (:tasks-involved approvals))
-                             :lost-events approval-lost :unverifiable-approvals (:unverifiable approvals)}
+                             :lost-events approval-lost :unverifiable-approvals (:unverifiable approvals) :stale-snapshot-markers hermes-stale}
                             ;; approval_key 欠落/不正の承認があると同 scope 重複の有無を確定できない (観測値は下限として別掲)
                             (pos? (:unverifiable approvals))
                             {:status "unknown" :reason "approval_key 欠落/不正の承認があり重複承認の有無を確定できない"
@@ -868,6 +904,8 @@
                             :else {:status "unknown" :reason "approval event 未接続"})
       :lead-time-hours (assoc (quantiles (keep :lead-h accepted))
                               :note "request.received/accepted は日粒度 (frontmatter)。queue/active/approval/wait/blocked 分解は lane timestamp 不足で unknown")
+      ;; run の信頼性と委譲は Board runner の run が対象。Hermes 会話の turn (run.started/finished) は
+      ;; coverage :hermes-conversation の turn 数に別掲し、ここへ混ぜない
       :run-reliability {:runs (reduce + (map :runs tasks))
                         :interrupted (reduce + (map :interrupted tasks))
                         :idle-timeouts (reduce + (map :idle-timeouts tasks))
@@ -878,7 +916,7 @@
                                            (pos? lost)
                                            {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run・event_id 衝突があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions :stale-snapshot-markers hermes-stale}
                                            (pos? unverifiable-type)
                                            {:status "unknown" :reason "event_type 欠落/不正の event があり重複の有無を確定できない"
                                             :observed-duplicates-lower-bound (:count effects) :unverifiable-event-types unverifiable-type}
@@ -895,7 +933,7 @@
                                                 (pos? lost)
                                                 {:status "unknown" :reason "破損した入力行・拒否 event・collector 欠落 (drop/未配信)・読めない run・event_id 衝突があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :malformed-lines malformed :rejected-events (+ rejected rejected-correlation upstream-rejected)
-                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions}
+                                            :collection-lost-events (+ buffer-dropped undelivered) :unreadable-inputs input-unreadable :unreadable-runs unreadable-run-events :id-collisions id-collisions :stale-snapshot-markers hermes-stale}
                                                 (pos? unverifiable-type)
                                                 {:status "unknown" :reason "event_type 欠落/不正の event があり重大 event の有無を確定できない"
                                                  :observed-lower-bound (count (filter #(= "critical" (:severity %)) uniq)) :unverifiable-event-types unverifiable-type}
@@ -908,16 +946,30 @@
                                                 :else {:status "unknown" :reason "safety source 未接続"})
                       :private-leak {:status "unknown" :reason "leak detector 未接続。0件観測≠0件"}}
      :guardrails {:pending-over-7d "要 lane timestamp (unknown)"
-                  :tasks-per-request (ratio n (count (set (keep :request_id uniq))))
+                  :tasks-per-request (ratio n (count (set (keep :request_id (remove #(contains? conversation-ids (:task_id %)) uniq)))))
                   :unfinished (count (filter #(not (contains? #{"accepted" "cancelled"} (:outcome %))) tasks))
                   :awaiting-review (count (filter #(= "awaiting-review" (:outcome %)) tasks))
-                  :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))}
+                  :unobserved (count (filter #(= "unobserved" (:outcome %)) tasks))
+                  ;; Hermes 会話は受入/取消の状態を持たない (unobserved)。Board task の未完了放置とは別に数える
+                  :conversations-unobserved (count (filter #(= "unobserved" (:outcome %)) conversations))}
      :coverage {:collection-lost {:buffer-dropped (- buffer-dropped ledger-dropped) :ledger-dropped ledger-dropped :undelivered undelivered :input-unreadable input-unreadable} :privacy-rejected-invalid-id rejected :privacy-rejected-upstream upstream-rejected :privacy-rejected-invalid-correlation-id rejected-correlation :unlinked-task-events (count unlinked) :unlinked-corrections unlinked-corr :ready-ack-latency {:status "unknown" :reason "Ready 遷移時刻 event なし (board-diff は Ready→ を出さない)"}
                 :tokens-cost {:status "unknown" :reason "subscription CLI は provider token/cost を返さない。API 単価換算はしない"}
-                :hermes-conversation {:status (if (or (connected? "hermes-conversation")
-                                                   (some #(or (= "hermes" (:runtime %))
-                                                              (boolean (re-matches #"(?:[^:]+:)?hermes" (or (:source %) "")))) uniq))
-                                             "connected" "not-connected")}}
+                :source-stale {:hermes-observer hermes-stale}
+                ;; Hermes ledger が join されていれば connected。mirror の最新取り込みに失敗して前回 snapshot を使っていれば
+                ;; partial/stale (接続済みとは表示しない)。会話は task と join できないため件数の別掲まで
+                :hermes-conversation (let [connected (boolean (or (connected? "hermes-conversation") (some hermes-event? uniq)))
+                                           turns (filter #(= "run.finished" (:event_type %)) conv-events)]
+                                       (cond-> {:status (if connected "connected" "not-connected")}
+                                         ;; snapshot が一度も取れていない (stale marker のみ): 未配線ではなく取り込み失敗として別掲
+                                         (and (not connected) (pos? hermes-stale)) (assoc :coverage "missing/stale" :stale-snapshot-markers hermes-stale)
+                                         connected (assoc :coverage (if (pos? hermes-stale) "partial/stale" "connected")
+                                                          :conversations (count conversation-ids)
+                                                          :turns-started (count (filter #(= "run.started" (:event_type %)) conv-events))
+                                                          :turns-finished (frequencies (map #(if (contains? (:status enum-values) (:status %)) (:status %) "unknown") turns))
+                                                          :approvals-requested (count (filter #(= "approval.requested" (:event_type %)) conv-events))
+                                                          :approvals-resolved (count (filter #(= "approval.resolved" (:event_type %)) conv-events))
+                                                          :unverifiable-event-types (count (filter unknown-type? conv-events))
+                                                          :stale-snapshot-markers hermes-stale)))}
      :by-stratum
      (into (sorted-map)
            (for [[s ts] (group-by :stratum tasks)
@@ -960,7 +1012,7 @@
   [:lost-events :unlinked-events :unlinked-corrections :unlinked-rescues :unlinked-task-events
    :unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types
    :indeterminate :unevaluated-input-missing :rejected-events :unreadable-runs :unreadable-inputs
-   :collection-lost-events :malformed-lines :id-collisions])
+   :collection-lost-events :malformed-lines :id-collisions :stale-snapshot-markers])
 (defn unknown-classification
   "unknown な SLI/coverage map s に対して [category reason_code] を返す。確定している (unknown でない) 場合は nil。"
   [s]
@@ -968,11 +1020,14 @@
         pos-any? (fn [ks] (some #(let [v (get s %)] (and (number? v) (pos? v))) ks))]
     (cond
       (nil? s) nil
+      (and (= status "not-connected") (pos-any? [:stale-snapshot-markers])) ["history_missing" "stale_source_snapshot"]
       (= status "not-connected") ["not_connected" "hermes_ledger_not_joined"]
       (not= status "unknown") nil
       (contains? unknown-out-of-scope-reasons reason) ["out_of_scope" (unknown-out-of-scope-reasons reason)]
       (contains? unknown-not-connected-reasons reason) ["not_connected" (unknown-not-connected-reasons reason)]
       (pos-any? [:unlinked-corrections :unlinked-events :unlinked-rescues :unlinked-task-events]) ["history_missing" "unlinked_task_events"]
+      ;; source の最新取り込みに失敗し前回 snapshot を使っている (失敗中の event が入力に無い): 欠落の種類として input_loss より先に出す
+      (pos-any? [:stale-snapshot-markers]) ["history_missing" "stale_source_snapshot"]
       (pos-any? [:lost-events :collection-lost-events :malformed-lines :id-collisions :rejected-events :unreadable-runs :unreadable-inputs]) ["history_missing" "input_loss"]
       (pos-any? [:unverifiable-approvals :unverifiable-effects :unverifiable-severity :unverifiable-event-types]) ["history_missing" "unverifiable_fields"]
       (pos-any? [:indeterminate]) ["history_missing" "time_indeterminate"]
@@ -1073,8 +1128,19 @@
             ;; 欠落 event の所属層は不明なので、全体 SLI が unknown の間は対応する層別の分子・分母も出さない
             :when (or (nil? sli) (not (#{"unknown" :unknown} (get-in r [:sli sli :status]))))]
       (line "ai_ops_stratum_tasks" {:stratum s :kind label} (get values k 0)))
-    (doseq [[label k] [["unfinished" :unfinished] ["awaiting_review" :awaiting-review] ["unobserved" :unobserved]]]
-      (line "ai_ops_guardrail_tasks" {:kind label} (get-in r [:guardrails k])))))
+    (doseq [[label k] [["unfinished" :unfinished] ["awaiting_review" :awaiting-review] ["unobserved" :unobserved] ["conversations_unobserved" :conversations-unobserved]]]
+      (line "ai_ops_guardrail_tasks" {:kind label} (get-in r [:guardrails k])))
+    ;; Hermes 会話 (join 済みのときだけ件数を出す。stale snapshot の件数は常に出す)
+    (line "ai_ops_source_stale_snapshot_markers" {:source "hermes-observer"} (get-in r [:coverage :source-stale :hermes-observer] 0))
+    (let [h (get-in r [:coverage :hermes-conversation])]
+      (when (= "connected" (:status h))
+        (line "ai_ops_hermes_conversations" {} (:conversations h))
+        (line "ai_ops_hermes_conversation_turns" {:kind "started"} (:turns-started h))
+        (doseq [[st n] (sort (:turns-finished h))] (line "ai_ops_hermes_conversation_turns" {:kind (str "finished_" st)} n))
+        (line "ai_ops_hermes_approval_events" {:kind "requested"} (:approvals-requested h))
+        (line "ai_ops_hermes_approval_events" {:kind "resolved"} (:approvals-resolved h))
+        ;; 種別不明 (欠落/redact) の会話 event: Board task に昇格させず件数だけ出す
+        (line "ai_ops_hermes_conversation_events" {:kind "unverifiable_type"} (:unverifiable-event-types h 0))))))
 
 ;; ---------------------------------------------------------------------------
 

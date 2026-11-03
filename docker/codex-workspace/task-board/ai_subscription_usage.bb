@@ -36,13 +36,82 @@
                      (into {}))]
     (assoc clean :unifiedWindows windows)))
 
-(defn record-claude-rate-limit! [root event observed-epoch-ms]
-  (let [clean (clean-claude-rate-limit-info (:rate_limit_info event))]
-    (locking claude-snapshot-lock
-      (let [path (fs/path root "ai-ops/subscription/claude.json")
-            existing (snapshot path)]
-        (when (or (not= "ok" (:state existing)) (<= (or (get-in existing [:data :observed_at_ms]) (* 1000 (get-in existing [:data :observed_at]))) observed-epoch-ms))
-          (atomic-write! path (json/generate-string {:observed_at (quot observed-epoch-ms 1000) :observed_at_ms observed-epoch-ms :rate_limit_info clean})))))))
+(def max-claude-windows 20)
+
+(defn claude-account-scope
+  "Opaque local boundary for the logged-in Claude account, or nil when unknown.
+  Only a truncated digest stays in the 0600 snapshot; it is never exported."
+  []
+  (try
+    (let [dir (or (System/getenv "CLAUDE_CONFIG_DIR") (System/getProperty "user.home"))
+          account (some-> (slurp (str (fs/path dir ".claude.json"))) (json/parse-string true) (get-in [:oauthAccount :accountUuid]))]
+      (when (and (string? account) (seq account))
+        (let [digest (.digest (java.security.MessageDigest/getInstance "SHA-256") (.getBytes ^String account "UTF-8"))]
+          (subs (apply str (map #(format "%02x" %) digest)) 0 16))))
+    (catch Exception _ nil)))
+
+(defn merge-claude-snapshot
+  "Merge one cleaned event into the snapshot window by window. An event lists
+  only some windows, so an absent window keeps its own last observation and
+  identity instead of being deleted. Returns nil when the event must be ignored
+  (an older event from another account)."
+  [data clean observed-ms scope]
+  (let [prior-ms (when data (or (:observed_at_ms data) (* 1000 (:observed_at data))))
+        newer? (or (nil? prior-ms) (<= prior-ms observed-ms))
+        prior (into {} (map (fn [[k v]] [(keyword (name k)) (update v :observed_at_ms #(or % prior-ms))]))
+                    (get-in data [:rate_limit_info :unifiedWindows]))
+        foreign? (fn [[_ v]] (and scope (:account_scope v) (not= scope (:account_scope v))))
+        ;; A known-scope event removes every other scope, so at most one remains.
+        ;; An unknown-scope event carries it forward; otherwise a later account
+        ;; switch could not recognize these windows as the old account's.
+        stamp (or scope (some :account_scope (vals prior)))]
+    (when (or newer? (not-any? foreign? prior))
+      (let [incoming (into {} (map (fn [[k v]] [(keyword (name k)) (cond-> (assoc v :observed_at_ms observed-ms)
+                                                                      stamp (assoc :account_scope stamp))]))
+                           (:unifiedWindows clean))
+            windows (merge-with (fn [old new] (if (<= (:observed_at_ms old) (:observed_at_ms new)) new old))
+                                (into {} (remove foreign? prior)) incoming)
+            windows (into {} (take max-claude-windows (sort-by (comp - :observed_at_ms val) windows)))
+            top-ms (if newer? observed-ms prior-ms)]
+        {:observed_at (quot top-ms 1000) :observed_at_ms top-ms
+         :rate_limit_info (assoc (if newer? clean (:rate_limit_info data)) :unifiedWindows windows)}))))
+
+(defn with-snapshot-file-lock
+  "Serialize read-merge-write across runner processes. `locking` alone covers
+  only this process, and a lost update would drop a window again."
+  [path thunk]
+  (fs/create-dirs (fs/parent path))
+  (with-open [channel (java.nio.channels.FileChannel/open
+                       (fs/path (str path ".lock"))
+                       (into-array java.nio.file.OpenOption [java.nio.file.StandardOpenOption/CREATE
+                                                             java.nio.file.StandardOpenOption/WRITE]))]
+    ;; Closing the channel releases the lock; the lock object itself must not be
+    ;; closed, because babashka does not expose FileLock.close on every version.
+    (.lock channel)
+    (thunk)))
+
+(defn record-claude-rate-limit!
+  ([root event observed-epoch-ms] (record-claude-rate-limit! root event observed-epoch-ms (claude-account-scope)))
+  ([root event observed-epoch-ms scope]
+   (let [clean (clean-claude-rate-limit-info (:rate_limit_info event))
+         path (fs/path root "ai-ops/subscription/claude.json")]
+     (locking claude-snapshot-lock
+       (with-snapshot-file-lock path
+         (fn []
+           (let [existing (snapshot path)]
+             (when-let [merged (merge-claude-snapshot (when (= "ok" (:state existing)) (:data existing)) clean observed-epoch-ms scope)]
+               (atomic-write! path (json/generate-string merged))))))))))
+
+(defn record-claude-run-rate-limit!
+  "Record an event of a run whose account scope was fixed when its process
+  started. The event has no account id and the process may or may not follow a
+  later login, so once the login differs from the start scope the event cannot be
+  attributed to either account and is dropped. Returns false when dropped."
+  [root event observed-epoch-ms run-scope]
+  (let [current (claude-account-scope)]
+    (if (or (nil? current) (= current run-scope))
+      (do (record-claude-rate-limit! root event observed-epoch-ms run-scope) true)
+      false)))
 
 (def ^:dynamic *codex-read-error* nil)
 
@@ -128,7 +197,7 @@
                     (when (number? reset) (emit "ai_subscription_window_resets_at_seconds" labels reset))
                     (when (number? duration) (emit "ai_subscription_window_duration_seconds" labels duration))
                     (when (number? observed-at) (emit "ai_subscription_window_observed_timestamp_seconds" labels observed-at))
-                    (when (some? status) (emit "ai_subscription_window_status" (conj labels [:status (enum-value status "other")]) 1))))]
+                    (when (and (some? status) (not expired)) (emit "ai_subscription_window_status" (conj labels [:status (enum-value status "other")]) 1))))]
     (doseq [[provider source] [["claude" claude] ["codex" codex]]]
       (emit "ai_subscription_source_up" [[:provider provider]] (if (= "ok" (:state source)) 1 0))
       (emit "ai_subscription_source_state" [[:provider provider] [:state (:state source)]] 1)
@@ -144,7 +213,8 @@
       (doseq [[k v] (:unifiedWindows info) :when (and (map? v) (re-matches #"[a-z0-9_]{1,40}" (name k)))]
         (let [limit (name k) window (cond (= limit "five_hour") "5h" (str/starts-with? limit "seven_day") "7d" :else "unknown")
               u (:utilization v)]
-          (window! "claude" limit window (when (and (number? u) (<= 0 u 1)) (* 100 u)) (:resetsAt v) ({"5h" 18000 "7d" 604800} window) (:status v) (get-in claude [:data :observed_at]))))
+          (window! "claude" limit window (when (and (number? u) (<= 0 u 1)) (* 100 u)) (:resetsAt v) ({"5h" 18000 "7d" 604800} window) (:status v)
+                   (if (number? (:observed_at_ms v)) (quot (:observed_at_ms v) 1000) (get-in claude [:data :observed_at])))))
       (emit "ai_subscription_extra_usage_status" [[:provider "claude"] [:status (enum-value (:overageStatus info) "unknown")] [:reason (enum-value (:overageDisabledReason info) "none")]] 1)
       (emit "ai_subscription_extra_usage_in_use" [[:provider "claude"]] (bool-num (:isUsingOverage info))))
     (when-let [buckets (get-in codex [:data :buckets])]
