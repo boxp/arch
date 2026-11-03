@@ -94,7 +94,7 @@ join は全 usage ファイルの行数と記録済み行数を数え、記録�
 | 親子 run total 既知（全 runtime 合計） | 54 | 69 |
 | `multiple_usage_events` | 22 | 0 |
 | subagent 分の過少計上 | 2 run で 477,611 token | 0（加算） |
-| 下限のみ（interrupted 17 / running 2） | 値なし | 19 run、96,679,889 token 以上 |
+| 下限のみ（interrupted 17 / running 2） | 値なし | 19 run、96,989,221 token 以上（running 分は集計時点の値で増え得る） |
 
 Codex runtime の行は修正前後で一致した（parent/child/total/review 記録の差分 0）。集計は `run-join-2026-11-03e.json`。1,199 run の平文 Claude は引き続き取得不能。
 
