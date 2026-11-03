@@ -16,6 +16,10 @@
 (def definition-version "slo-draft/v2")
 (def owner-contact-kinds #{"owner-relay" "owner-direct"})
 (def migration-ledger-path ["Projects" "task-board-review-retirement" "migration-ledger.md"])
+;; 移行で Done になった票のうち、Owner の受入が Notes にある票。ledger は 1 回限りの移行の記録で今後は増えない。
+;; 根拠は自由文なので実行時には読まず、ledger の根拠と票の Notes を人が照合した ID をここに固定する。
+;; BOXP-387: 2026-11-03 Owner が実機の接続・音声対話の成功を報告。BOXP-215: 2026-10-07 Owner が preflight の成果を採用。
+(def migrated-owner-accepted #{"BOXP-387" "BOXP-215"})
 (def rescue-grace-seconds (* 15 60))
 (def acceptable-wait-reasons #{"owner-decision" "owner-acceptance" "external-hold" "new-scope"})
 
@@ -55,7 +59,7 @@
            [{} nil] lines)))
 
 (defn parse-migrated-done
-  "BOXP-395 の移行で Done になった ticket ID。移行の判定で閉じた票で、Owner の受入ではない。ID と新レーン以外は捨てる。
+  "BOXP-395 の移行で Done になった ticket ID。Owner の受入があった票も含む (migrated-owner-accepted で分ける)。ID と新レーン以外は捨てる。
   票の行を 1 件も認識できないときは nil (移行 0 件と区別する)。"
   [lines]
   (let [rows (keep #(next (re-find #"^\| \[\[Tickets/([A-Z]+-\d+)\|[^\]]*\]\] \| [^|]* \| ([^|]*?) \|" %)) lines)]
@@ -198,7 +202,7 @@
         rescue (frequencies (map continue-rescue cs))
         closed (:closed st)
         ;; ledger が読めないと移行か受入か分からないので、どちらにも数えず closed_unclassified へ出す
-        closed-migrated (when ledger-read? (count (filter #(contains? migrated-done (:ticket %)) closed)))
+        closed-migrated (when ledger-read? (count (filter #(and (contains? migrated-done (:ticket %)) (not (contains? migrated-owner-accepted (:ticket %)))) closed)))
         ready (filter (fn [[_ c]] (= "Ready" (:lane c))) board)
         mismatch (for [[t c] ready
                        :let [a (assignee-of t)]
@@ -211,7 +215,7 @@
       :coverage (coverage runs-by-ticket windowed since ledger-read?)
       :review_stops {:total (count ss)
                      :closed_by_acceptance (when ledger-read? (- (count closed) closed-migrated))
-                     ;; BOXP-395 の移行で Done になった票。Owner の受入ではない
+                     ;; BOXP-395 の移行で Done になった票のうち、Owner の受入が無い票
                      :closed_by_migration closed-migrated
                      :closed_unclassified (if ledger-read? 0 (count closed))
                      :followed (count followed)
@@ -234,7 +238,8 @@
                        :unknown_resume (count (:unknown-resume cst))}
       :owner_acceptance_stops {:total (count (get by-kind "owner-acceptance"))}
       :blocked_stops {:total unclassified-blocked :reason_classified false :by_category (frequencies blocked-categories)}
-      :migration {:ledger_read ledger-read? :tickets_moved_to_done (when ledger-read? (count migrated-done))}
+      :migration {:ledger_read ledger-read? :tickets_moved_to_done (when ledger-read? (count migrated-done))
+                  :tickets_with_owner_acceptance (when ledger-read? (count (filter migrated-owner-accepted migrated-done)))}
       ;; 旧 SLI は分母が再開済みの停止だけで、開いたままの停止を落としていた。
       ;; 下の参考率は開いた停止をすべて停滞と置いた値。正当な待ちを含むので真の率でも下限でもない。
       :stall_reference {:followed_only {:numerator over24f :denominator (count followed)}

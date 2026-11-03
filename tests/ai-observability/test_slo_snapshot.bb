@@ -257,7 +257,7 @@
         (is (= 1 (get-in j [:owner_acceptance_stops :total]))))
       (testing "移行で Done になった票を受入に数えない。新レーンが Done の行だけを見る"
         (is (= {:closed_by_acceptance 1 :closed_by_migration 1} (select-keys (:review_stops j) [:closed_by_acceptance :closed_by_migration])))
-        (is (= {:ledger_read true :tickets_moved_to_done 1} (:migration j))))
+        (is (= {:ledger_read true :tickets_moved_to_done 1 :tickets_with_owner_acceptance 0} (:migration j))))
       (testing "Blocked の category は件数だけ出し、理由は分類済みと扱わない"
         (is (= {:total 1 :reason_classified false :by_category {:none-recorded 1}} (:blocked_stops j))))
       (testing "continue と done を最初の結果に数え、gate 失敗と Blocked だけの task は打切り"
@@ -272,6 +272,17 @@
         (is (= {:rescue 0 :not_rescue 2 :unknown 1} (select-keys (:owner_rescue j) [:rescue :not_rescue :unknown])))
         (is (false? (get-in j [:coverage :complete])))))))
 
+(deftest migrated-owner-acceptance-stays-acceptance
+  (testing "migrated-owner-accepted の票は ledger で Done でも受入に数え、移行に数えない"
+    (let [review (fn [t] {:ticket t :kind "review" :state :closed :from (java.time.Instant/parse "2026-11-01T00:00:00Z")})
+          closed [(review "BOXP-387") (review "BOXP-215") (review "BOXP-1000") (review "BOXP-1001")]]
+      (with-redefs [user/stops (fn [& _] closed)]
+        (let [j (user/snapshot {} {} {} (constantly nil) (java.time.Instant/parse "2026-11-03T00:00:00Z")
+                               {:migrated-done #{"BOXP-387" "BOXP-215" "BOXP-1000"}})]
+          (is (= {:closed_by_acceptance 3 :closed_by_migration 1 :closed_unclassified 0}
+                 (select-keys (:review_stops j) [:closed_by_acceptance :closed_by_migration :closed_unclassified])))
+          (is (= {:ledger_read true :tickets_moved_to_done 3 :tickets_with_owner_acceptance 2} (:migration j))))))))
+
 (deftest unreadable-ledger-does-not-inflate-acceptance
   (let [unknown (fn [root vault label]
                   (let [j (json/parse-string (run-tool root vault) true)]
@@ -279,7 +290,7 @@
                       (is (= {:closed_by_acceptance nil :closed_by_migration nil :closed_unclassified 2}
                              (select-keys (:review_stops j) [:closed_by_acceptance :closed_by_migration :closed_unclassified]))
                           "移行か受入か分からない Done を受入に数えない")
-                      (is (= {:ledger_read false :tickets_moved_to_done nil} (:migration j)))
+                      (is (= {:ledger_read false :tickets_moved_to_done nil :tickets_with_owner_acceptance nil} (:migration j)))
                       (is (false? (get-in j [:coverage :migration_ledger_read])))
                       (is (false? (get-in j [:coverage :complete]))))))
         ledger #(apply fs/path % user/migration-ledger-path)]

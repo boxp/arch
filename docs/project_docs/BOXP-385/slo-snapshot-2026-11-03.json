@@ -1,5 +1,5 @@
 {
-  "note": "slo_snapshot.bb の出力 (定義版 slo-draft/v2、BOXP-395 の Review 廃止後)。提案の根拠で、正式な判定ではない。continue の停止は切替直後で、生成時点の 28 日窓は 1 件 (開いたまま、15 分以内) だけ。率として読まない。",
+  "note": "slo_snapshot.bb の出力 (定義版 slo-draft/v2、BOXP-395 の Review 廃止後)。提案の根拠で、正式な判定ではない。continue の停止は切替直後で、生成時点の 28 日窓は 2 件 (再開 1、開いたまま 1 が 15 分以内) だけ。率として読まない。",
   "windows": {
     "since_2026-10-06": {
       "blocked_stops": {
@@ -20,17 +20,17 @@
         "unevaluated_stops": 0
       },
       "first_run_to_first_outcome": {
-        "reached": 168,
-        "censored": 14,
+        "reached": 169,
+        "censored": 13,
         "unevaluated": 1,
-        "p50_h": 0.7675,
+        "p50_h": 0.7586111111111111,
         "p90_h": 5.163611111111111
       },
       "resume_last_contact": {
         "owner-relay": 94,
         "owner-direct": 3,
         "supervisor": 17,
-        "none-observed": 34,
+        "none-observed": 35,
         "unknown-unreadable": 0
       },
       "since": "2026-10-06T00:00:00Z",
@@ -39,18 +39,18 @@
         "card_ticket_assignee_mismatch": 13
       },
       "continue_stops": {
-        "followed": 0,
+        "followed": 1,
         "open": 1,
         "closed": 0,
         "unknown_lane": 0,
         "followed_over_24h": 0,
         "followed_over_15m": 0,
         "open_over_24h": 0,
-        "total": 1,
+        "total": 2,
         "unknown_resume": 0,
         "open_over_15m": 0
       },
-      "generated_at": "2026-11-03T21:26:08.780885076Z",
+      "generated_at": "2026-11-03T21:30:58.472437162Z",
       "stall_reference": {
         "followed_only": {
           "numerator": 8,
@@ -70,7 +70,7 @@
         "migration_ledger_read": true
       },
       "owner_acceptance_stops": {
-        "total": 0
+        "total": 2
       },
       "review_stops": {
         "followed": 148,
@@ -82,8 +82,8 @@
         "followed_over_24h": 8,
         "open_over_24h": 12,
         "total": 266,
-        "closed_by_acceptance": 80,
-        "closed_by_migration": 20,
+        "closed_by_acceptance": 82,
+        "closed_by_migration": 18,
         "unknown_resume": 0,
         "closed_unclassified": 0
       },
@@ -91,19 +91,20 @@
       "owner_rescue": {
         "status": "continue_stops_only",
         "rescue": 0,
-        "not_rescue": 1,
+        "not_rescue": 2,
         "unknown": 0,
         "excluded_unclassified_blocked": 99
       },
       "approved_work_stall": {
         "status": "measuring",
         "numerator": 0,
-        "denominator": 1,
+        "denominator": 2,
         "excluded_unclassified_blocked": 99
       },
       "migration": {
         "ledger_read": true,
-        "tickets_moved_to_done": 20
+        "tickets_moved_to_done": 20,
+        "tickets_with_owner_acceptance": 2
       }
     }
   },
@@ -127,8 +128,8 @@
       "unevaluated_stops": 0
     },
     "first_run_to_first_outcome": {
-      "reached": 269,
-      "censored": 56,
+      "reached": 270,
+      "censored": 55,
       "unevaluated": 1,
       "p50_h": 0.7836111111111111,
       "p90_h": 8.287222222222223
@@ -137,7 +138,7 @@
       "owner-relay": 98,
       "owner-direct": 3,
       "supervisor": 17,
-      "none-observed": 129,
+      "none-observed": 130,
       "unknown-unreadable": 0
     },
     "since": null,
@@ -146,18 +147,18 @@
       "card_ticket_assignee_mismatch": 13
     },
     "continue_stops": {
-      "followed": 0,
+      "followed": 1,
       "open": 1,
       "closed": 0,
       "unknown_lane": 0,
       "followed_over_24h": 0,
       "followed_over_15m": 0,
       "open_over_24h": 0,
-      "total": 1,
+      "total": 2,
       "unknown_resume": 0,
       "open_over_15m": 0
     },
-    "generated_at": "2026-11-03T21:26:08.434287507Z",
+    "generated_at": "2026-11-03T21:30:58.667718927Z",
     "stall_reference": {
       "followed_only": {
         "numerator": 15,
@@ -177,7 +178,7 @@
       "migration_ledger_read": true
     },
     "owner_acceptance_stops": {
-      "total": 0
+      "total": 2
     },
     "review_stops": {
       "followed": 247,
@@ -190,8 +191,8 @@
       "followed_over_24h": 15,
       "open_over_24h": 18,
       "total": 435,
-      "closed_by_acceptance": 144,
-      "closed_by_migration": 20,
+      "closed_by_acceptance": 146,
+      "closed_by_migration": 18,
       "unknown_resume": 0,
       "closed_unclassified": 0
     },
@@ -199,19 +200,20 @@
     "owner_rescue": {
       "status": "continue_stops_only",
       "rescue": 0,
-      "not_rescue": 1,
+      "not_rescue": 2,
       "unknown": 0,
       "excluded_unclassified_blocked": 152
     },
     "approved_work_stall": {
       "status": "measuring",
       "numerator": 0,
-      "denominator": 1,
+      "denominator": 2,
       "excluded_unclassified_blocked": 152
     },
     "migration": {
       "ledger_read": true,
-      "tickets_moved_to_done": 20
+      "tickets_moved_to_done": 20,
+      "tickets_with_owner_acceptance": 2
     }
   }
 }

@@ -40,3 +40,4 @@
 - PR #14447 を gate 通過 head で merge する。
 - BOXP-395 の `sli-semantic-change.md` に合わせ、`slo_snapshot.bb` を slo-draft/v2 にする。`continue` の停止を既承認の停滞と救援の source にし、Blocked は未分類のまま分母から外す。移行で Done になった票を受入と分ける。
 - `ai_ops_sli.bb` は BOXP-360 の管理なので変更しない。初回適合の移行分は再現手順で除き、BOXP-360 へ連絡する。
+- `migrated-owner-accepted` に BOXP-387 と BOXP-215 を固定する。ledger の根拠と票の Notes で Owner の受入を確認した 2 票で、自由文は実行時に読まない。BOXP-215 は closed が移行日なので 28 日窓の手順では除く。
