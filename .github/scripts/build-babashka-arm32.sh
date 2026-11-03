@@ -243,13 +243,22 @@ phase_cap() {
 write_contention() {
   mkdir -p "$WORK/contention"
   cat >"$WORK/contention/Contention.java" <<'JAVA'
+import java.util.concurrent.CountDownLatch;
+
 public class Contention {
     public static void main(String[] args) throws Exception {
         int iterations = 1_000_000;
         int[] counter = new int[1];
         Thread[] threads = new Thread[2];
+        CountDownLatch start = new CountDownLatch(threads.length);
         for (int i = 0; i < threads.length; i++) {
             threads[i] = new Thread(() -> {
+                start.countDown();
+                try {
+                    start.await();
+                } catch (InterruptedException e) {
+                    throw new IllegalStateException(e);
+                }
                 for (int j = 0; j < iterations; j++) {
                     synchronized (counter) {
                         counter[0]++;
@@ -270,12 +279,13 @@ JAVA
 
 check_barriers() {
   # qemu-arm treats the legacy CP15 barrier as a nop, and it is deprecated on ARMv7.
-  local legacy
-  legacy="$(arm-linux-gnueabihf-objdump -d "$1" | grep -cE 'mcr.*cr7, cr10, \{5\}' || true)"
-  if [ "$legacy" -ne 0 ]; then
-    echo "::error::$1 has $legacy legacy CP15 barriers"
+  local disassembly
+  disassembly="$(arm-linux-gnueabihf-objdump -d "$1")"
+  if grep -qE 'mcr.*cr7, cr10, \{5\}' <<<"$disassembly"; then
+    echo "::error::$1 has legacy CP15 barriers"
     return 1
   fi
+  grep -qE '\bdmb\b' <<<"$disassembly" || { echo "::error::$1 has no dmb barrier"; return 1; }
 }
 
 phase_hello() {
