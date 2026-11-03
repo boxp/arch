@@ -194,16 +194,16 @@ new_case() {
 test_signed_delivery_is_accepted() {
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress review review >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >"${CASE_TMP}/tick.out"
 
   assert_file_contains "${CASE_TMP}/receiver.log" '"outcome":"accepted"'
-  assert_file_contains "${CASE_TMP}/receiver.log" '"event_id":"BOXP-901-r1-review"'
+  assert_file_contains "${CASE_TMP}/receiver.log" '"event_id":"BOXP-901-r1-blocked"'
   assert_file_contains "${CASE_TMP}/receiver.log" '"event_type":"task-board.run-finished"'
-  assert_file_contains "${CASE_TMP}/receiver.log" '"to_status":"review"'
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':status :accepted'
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':hermes-status "accepted"'
+  assert_file_contains "${CASE_TMP}/receiver.log" '"to_status":"blocked"'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':status :accepted'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':hermes-status "accepted"'
   # Transport acceptance alone never completes the event.
   [[ "$(count_files "${CASE_STATE}/outbox/done")" -eq 0 ]] || fail "accepted event must not be done yet"
   assert_file_not_contains "${CASE_TMP}/tick.out" "${SECRET}"
@@ -257,22 +257,22 @@ test_duplicate_event_id_is_reported_as_duplicate() {
 
 test_receiver_down_keeps_event_until_recovery() {
   new_case
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress review review >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
   # Nothing listens on the port yet.
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >"${CASE_TMP}/down.out"
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':status :pending'
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':attempts 1'
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':last-error "transport'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':status :pending'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':attempts 1'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':last-error "transport'
 
   # Receiver comes back; the dispatcher process is "restarted" (new process) and
   # the persisted event is delivered once the backoff elapsed.
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
-  sed -i 's/:next-attempt-at "[^"]*"/:next-attempt-at "2000-01-01T00:00:00Z"/' "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn"
+  sed -i 's/:next-attempt-at "[^"]*"/:next-attempt-at "2000-01-01T00:00:00Z"/' "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn"
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':status :accepted'
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':attempts 2'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':status :accepted'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':attempts 2'
   assert_file_contains "${CASE_TMP}/receiver.log" '"outcome":"accepted"'
   stop_receiver
 }
@@ -281,14 +281,14 @@ test_server_error_moves_to_failed_after_max_attempts() {
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
   echo 500 >"${CASE_TMP}/mode"
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress review review >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
   for _ in 1 2; do
-    sed -i 's/:next-attempt-at "[^"]*"/:next-attempt-at "2000-01-01T00:00:00Z"/' "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" 2>/dev/null || true
+    sed -i 's/:next-attempt-at "[^"]*"/:next-attempt-at "2000-01-01T00:00:00Z"/' "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" 2>/dev/null || true
     run_events "${CASE_VAULT}" "${CASE_STATE}" env CODEX_TASK_BOARD_EVENT_MAX_ATTEMPTS=2 \
       CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   done
-  [[ -f "${CASE_STATE}/outbox/failed/BOXP-901-r1-review.edn" ]] || fail "exhausted event must move to failed/"
-  assert_file_contains "${CASE_STATE}/outbox/failed/BOXP-901-r1-review.edn" ':status :failed'
+  [[ -f "${CASE_STATE}/outbox/failed/BOXP-901-r1-blocked.edn" ]] || fail "exhausted event must move to failed/"
+  assert_file_contains "${CASE_STATE}/outbox/failed/BOXP-901-r1-blocked.edn" ':status :failed'
   [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 0 ]] || fail "failed event must leave pending/"
   stop_receiver
 }
@@ -298,7 +298,7 @@ test_quiet_hours_defer_and_flush_in_order() {
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
   # 03:30 JST = 18:30 UTC previous day: quiet.
   CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-10-21T18:30:00Z" record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
-  CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-10-21T18:31:00Z" record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress review review >/dev/null
+  CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-10-21T18:31:00Z" record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress blocked blocked >/dev/null
   CODEX_TASK_BOARD_EVENT_QUIET_HOURS="2-9" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-10-21T18:35:00Z" \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >"${CASE_TMP}/quiet.out"
@@ -313,13 +313,13 @@ test_quiet_hours_defer_and_flush_in_order() {
   CODEX_TASK_BOARD_EVENT_QUIET_HOURS="off" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   [[ "$(sed -n '1p' "${CASE_TMP}/receiver.log")" == *'"id":"BOXP-901-r1-blocked"'* ]] || fail "oldest event must be sent first"
-  [[ "$(sed -n '2p' "${CASE_TMP}/receiver.log")" == *'"id":"BOXP-902-r2-review"'* ]] || fail "second event must follow"
+  [[ "$(sed -n '2p' "${CASE_TMP}/receiver.log")" == *'"id":"BOXP-902-r2-blocked"'* ]] || fail "second event must follow"
   stop_receiver
 }
 
 test_quiet_hours_gate_uses_jst_window() {
   new_case
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress review review >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
   # 08:59 JST quiet, 09:00 JST open (no receiver: an attempt shows as transport error).
   CODEX_TASK_BOARD_EVENT_QUIET_HOURS="2-9" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-10-21T23:59:00Z" \
@@ -363,34 +363,34 @@ test_runner_event_and_board_diff_collapse() {
   run_events "${CASE_VAULT}" "${CASE_STATE}" env >/dev/null
   # The runner committed the transition and recorded its event; the Board now
   # shows the same move. The diff pass must not add a second wake-up.
-  move_card "${CASE_VAULT}" BOXP-901 Review review
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress review review >/dev/null
+  move_card "${CASE_VAULT}" BOXP-901 Blocked blocked
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env >"${CASE_TMP}/diff.out"
   [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 1 ]] || fail "runner event and board diff must collapse into one"
-  assert_file_contains "${CASE_TMP}/diff.out" 'skip duplicate event for BOXP-901 -> review'
+  assert_file_contains "${CASE_TMP}/diff.out" 'skip duplicate event for BOXP-901 -> blocked'
   # Same ticket and target again from another run outside the window is a new event.
   CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="$(date -u -d '+1 hour' +%Y-%m-%dT%H:%M:%SZ)" \
-    record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r2 in-progress review review >/dev/null
+    record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r2 in-progress blocked blocked >/dev/null
   [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 2 ]] || fail "a later run must produce its own event"
 }
 
 test_handled_marker_completes_event() {
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress review review >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':status :accepted'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':status :accepted'
 
   # Kohako records completion in the ticket Notes (via the helper in production).
-  echo "- 2026-10-22: [kohako-event] handled event=BOXP-901-r1-review ticket=BOXP-901 result=notified" >>"${CASE_VAULT}/Tickets/BOXP-901.md"
+  echo "- 2026-10-22: [kohako-event] handled event=BOXP-901-r1-blocked ticket=BOXP-901 result=notified" >>"${CASE_VAULT}/Tickets/BOXP-901.md"
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
-  [[ -f "${CASE_STATE}/outbox/done/BOXP-901-r1-review.edn" ]] || fail "handled event must move to done/"
-  assert_file_contains "${CASE_STATE}/outbox/done/BOXP-901-r1-review.edn" ':status :handled'
+  [[ -f "${CASE_STATE}/outbox/done/BOXP-901-r1-blocked.edn" ]] || fail "handled event must move to done/"
+  assert_file_contains "${CASE_STATE}/outbox/done/BOXP-901-r1-blocked.edn" ':status :handled'
   [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 0 ]] || fail "pending must be empty"
   # Only one delivery happened.
-  [[ "$(grep -c '"id":"BOXP-901-r1-review"' "${CASE_TMP}/receiver.log")" -eq 1 ]] || fail "handled event must not be redelivered"
+  [[ "$(grep -c '"id":"BOXP-901-r1-blocked"' "${CASE_TMP}/receiver.log")" -eq 1 ]] || fail "handled event must not be redelivered"
   stop_receiver
 }
 
@@ -434,14 +434,41 @@ test_non_trigger_statuses_are_ignored() {
 test_missing_secret_never_sends() {
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
-  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress review review >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
   run_events "${CASE_VAULT}" "${CASE_STATE}" env CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" >"${CASE_TMP}/nosecret.out"
   [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "no request may be sent without a secret"
-  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-review.edn" ':last-error "CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET is not set"'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ':last-error "CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET is not set"'
   stop_receiver
 }
 
 bb "${EVENTS}" test
+
+# BOXP-395: leaving the retired Review lane is one migration, not one wake-up per card.
+test_review_lane_migration_is_silent() {
+  new_case
+  move_card "${CASE_VAULT}" BOXP-901 Review review
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env >/dev/null
+  move_card "${CASE_VAULT}" BOXP-901 Blocked blocked
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env >/dev/null
+  [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 0 ]] || fail "migration out of Review must not notify"
+  # A later real transition of the same card still notifies.
+  move_card "${CASE_VAULT}" BOXP-901 Done done
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env >/dev/null
+  [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 1 ]] || fail "a real transition after migration must notify"
+}
+
+# An event recorded for Review before the rollout must not be lost.
+test_pending_legacy_review_event_is_still_delivered() {
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="" record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r9 in-progress blocked blocked >/dev/null
+  sed -i 's/:to-status "blocked"/:to-status "review"/' "${CASE_STATE}/outbox/pending/BOXP-901-r9-blocked.edn"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  assert_file_contains "${CASE_TMP}/receiver.log" '"to_status":"review"'
+  stop_receiver
+}
+
 test_signed_delivery_is_accepted
 test_wrong_secret_is_rejected_and_retried_with_backoff
 test_duplicate_event_id_is_reported_as_duplicate
@@ -455,5 +482,7 @@ test_handled_marker_completes_event
 test_unhandled_event_is_redelivered_then_parked
 test_non_trigger_statuses_are_ignored
 test_missing_secret_never_sends
+test_review_lane_migration_is_silent
+test_pending_legacy_review_event_is_still_delivered
 
 echo "task-board-events tests passed"

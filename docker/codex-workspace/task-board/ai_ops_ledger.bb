@@ -44,7 +44,7 @@
             "claude-fable" "claude-opus" "claude-sonnet" "fable" "localllm" "localllm-coder"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
    :status #{"succeeded" "retrying" "blocked" "interrupted" "failed" "running" "superseded"}
-   :result #{"review" "blocked" "done" "ready"}
+   :result #{"review" "continue" "owner-acceptance" "blocked" "done" "ready"}
    :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :occurred_precision #{"ns"}
@@ -693,7 +693,7 @@
    :agent #{"codex" "codex-terra" "codex-sol" "codex-sol-xhigh" "codex-full" "codex-mini" "codex-astra" "claude-opus" "claude-fable" "claude-sonnet" "fable" "localllm" "localllm-coder"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
    :status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled" "superseded"}
-   :result #{"review" "blocked" "done" "ready"}
+   :result #{"review" "continue" "owner-acceptance" "blocked" "done" "ready"}
    :lane_from #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :lane_to #{"ready" "review" "blocked" "backlog" "in-progress" "done"}
    :correction_class #{"gate_defect" "unknown" "done_claim_without_execution" "instruction_violation" "source_mismatch" "assignee_regression" "preference_adjustment" "scope_addition" "unavoidable_safety_decision" "external_failure"}
