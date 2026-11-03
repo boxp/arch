@@ -90,6 +90,31 @@ class JoinTest(unittest.TestCase):
         summary.write_text('{:review-gate {:gate :ci :pr-urls ["private"] :checked-pr-urls []}}')
         self.assertNotIn('review_gate_usage_unrecorded', self.get()['rows'][0]['unknown_reasons'])
 
+    def test_review_gate_partial_records_across_multiple_prs(self):
+        self.write_events([{'type': 'turn.completed', 'usage': {'input_tokens': 100, 'output_tokens': 20}}])
+        (self.path / 'delegation.json').write_text(json.dumps({'kind': 'exempt'}))
+        summary = self.path / 'summary.edn'
+        record = json.dumps({'usage_status': 'recorded', 'usage': {'input_tokens': 120, 'cached_input_tokens': 20, 'output_tokens': 30}}) + '\n'
+        (self.path / 'codex-review-boxp__example-1-usage.jsonl').write_text(record)
+        # Two PRs passed the gate but only one usage file was written: the sum is a lower bound, not a complete value.
+        summary.write_text('{:review-gate {:checked-pr-urls ["https://example.invalid/1" "https://example.invalid/2"]}}')
+        row = self.get()['rows'][0]
+        self.assertEqual((row['review_gate_expected_calls'], row['review_gate_calls'], row['review_gate_recorded_calls']), (2, 1, 1))
+        self.assertEqual(row['run_total_known'], 270)
+        self.assertIn('review_gate_usage_unrecorded', row['unknown_reasons'])
+        # One PR passed and a second one failed the codex-review gate: both were reviewed, so two records are expected.
+        summary.write_text('{:review-gate {:gate :codex-review :url "https://example.invalid/2" :checked-pr-urls ["https://example.invalid/1"]}}')
+        row = self.get()['rows'][0]
+        self.assertEqual(row['review_gate_expected_calls'], 2)
+        self.assertIn('review_gate_usage_unrecorded', row['unknown_reasons'])
+        (self.path / 'codex-review-boxp__example-2-usage.jsonl').write_text(record)
+        report = self.get()
+        row = report['rows'][0]
+        self.assertEqual((row['review_gate_expected_calls'], row['review_gate_calls'], row['review_gate_recorded_calls']), (2, 2, 2))
+        self.assertEqual((row['run_total_known'], row['run_output_tokens_known']), (420, 80))
+        self.assertNotIn('review_gate_usage_unrecorded', row['unknown_reasons'])
+        self.assertNotIn('example.invalid', json.dumps(report))
+
     def test_multiple_results_unknown(self):
         self.write_events([{'type': 'turn.completed', 'usage': {'input_tokens': 1, 'output_tokens': 2}}] * 2)
         row = self.get()['rows'][0]

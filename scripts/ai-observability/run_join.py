@@ -69,9 +69,13 @@ def summary(path, reasons):
         result[key] = enum(match.group(1) if match else None, ALLOWED[key])
     match = re.search(r'(?<![\w-]):exit-code\s+(-?\d+)(?![\w-])', text)
     result['exit_code'] = int(match.group(1)) if match and len(match.group(1)) <= 12 else None
-    # The codex-review gate certainly ran only when a PR passed it (checked-pr-urls) or it is the failing gate.
-    # pr-urls alone also covers runs that stopped at the CI/draft/mergeability gate, so it is not evidence.
-    result['review_gate_ran'] = bool(re.search(r':checked-pr-urls\s+\[\s*[^\s\]]', text) or re.search(r':gate\s+:codex-review\b', text))
+    # The runner calls codex review exactly once per reviewed PR: every PR in checked-pr-urls passed it, and the
+    # PR named by a failing :gate :codex-review was reviewed too. pr-urls alone also covers runs that stopped at the
+    # CI/draft/mergeability gate, so it is not evidence. Only the count is kept; URLs are never copied into the report.
+    checked = re.search(r':checked-pr-urls\s+\[([^\]]*)\]', text)
+    expected = len(re.findall(r'"[^"\\]*"', checked.group(1))) if checked else 0
+    expected += bool(re.search(r':gate\s+:codex-review\b', text))
+    result['review_gate_expected_calls'] = expected
     return result
 
 
@@ -147,7 +151,7 @@ def run(path, sessions, ordinal, no_ids):
     reasons = set()
     row = {'ordinal': ordinal} if no_ids else {'ticket': path.parent.name, 'run_id': path.name}
     metadata = summary(path / 'summary.edn', reasons)
-    gate_ran = metadata.pop('review_gate_ran', False)
+    expected_calls = metadata.pop('review_gate_expected_calls', 0)
     row.update(metadata)
     events_path = path / 'events.jsonl'
     events = read_events(events_path)
@@ -207,8 +211,10 @@ def run(path, sessions, ordinal, no_ids):
     row['child_absent'] = child_usage == 'absent'
     row['child_usage'] = None if row['child_absent'] else child_usage
     calls, recorded, review = review_usage(path)
-    row.update(review_gate_calls=calls, review_gate_recorded_calls=recorded, review_gate_usage=review)
-    if (gate_ran and not calls) or calls > recorded:
+    row.update(review_gate_expected_calls=expected_calls, review_gate_calls=calls, review_gate_recorded_calls=recorded, review_gate_usage=review)
+    # Fewer usage lines than reviewed PRs means a producer-side write failed for at least one PR; a partial sum would
+    # otherwise look complete when another PR's record exists. Unparseable/unrecorded lines are counted but not summed.
+    if calls < expected_calls or calls > recorded:
         reasons.add('review_gate_usage_unrecorded')
     if parent is None:
         row['run_total_known'] = None

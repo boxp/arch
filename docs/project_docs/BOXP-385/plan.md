@@ -22,3 +22,7 @@
 10. review gate の usage 未記録を producer 側で埋める: runner の `run-codex-review!` に `--json` を付け、`thread.started.thread_id` と `turn.completed.usage` の整数値のみを `codex-review-<owner>__<repo>-<n>-usage.jsonl` へ allowlist 記録する。欠落時は `usage_status: unrecorded` を残し、gate 判定には影響させない。実装は子 Codex（terra）へ 1 回委譲し、親が検証する。中断で残った未 commit 差分は新 worktree へ移送して継続する。
 11. `run_join.py` は記録済み review gate usage を親子合計へ加算し、gate が確実に実行された run（`checked-pr-urls` あり、または失敗 gate が `codex-review`）で記録がない場合だけ `review_gate_usage_unrecorded` を付ける。merge 後の稼働版再集計を `run-join-2026-11-03b.json` に残す。
 12. 全 runner test suite を子 Codex へ 1 回委譲して実行し、親が unit / 対象 bb test を直接確認する。本 PR 自身の review gate は旧稼働版 runner で走るため、usage 記録の実 readback は merge と workspace 反映後の次 run で行う。
+
+## claude-fable retry 1/2（2026-11-03 08:30 UTC run、PR #14411 codex review P1 対応）
+
+13. P1 指摘（複数 PR を review した run で一部 usage ファイルの書き込みが失敗しても、別の記録が1件あれば欠測と判定されず合計が完全な値に見える）を修正する。runner は review した PR ごとに codex を1回呼ぶので、`summary.edn` の `checked-pr-urls` 件数に失敗 gate が `codex-review` なら1を足した `review_gate_expected_calls` を期待呼出し数とし、usage 行数がそれに満たない場合も `review_gate_usage_unrecorded` を付ける。URL は件数だけ使い、レポートへ出さない。unit に複数 PR の部分記録ケースを追加し、集計を `run-join-2026-11-03c.json` に残す（既存 run は review 記録 0 のため件数差は新規 run 分のみ）。
