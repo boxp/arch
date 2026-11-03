@@ -2075,7 +2075,7 @@
        "- Focus your own effort on task decomposition, results integration, critical decisions, and final review.\n"
        "- Delegate independent investigation, implementation, and verification to lower-cost models whenever practical. Use the codex (gpt-6.1-terra) assignee as the default delegation route, unless CODEX_TASK_BOARD_MODEL overrides it.\n"
        "- Do NOT delegate: tasks smaller than the delegation overhead, tasks requiring shared context or elevated permissions, and tasks requiring final judgment or acceptance.\n"
-       "- If delegation fails or is unavailable, report blocked. Do not use recursive delegation.\n"
+       "- If delegation fails, follow the Delegation contract. Do not use recursive delegation.\n"
        "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
@@ -2087,7 +2087,7 @@
        "- Reserve your own compute for the most demanding subtasks: complex reasoning, cross-cutting architectural decisions, synthesis of ambiguous requirements, and final acceptance checks.\n"
        "- Aggressively delegate to lower-cost models for any work that does not require gpt-6-astra capability. Use the delegation helper for implementation and investigation.\n"
        "- Do NOT delegate: tasks requiring your full reasoning capacity, tasks with shared context that cannot be serialized, and final quality judgments.\n"
-       "- If delegation fails or is unavailable, report blocked. Do not escalate or use recursive delegation.\n"
+       "- If delegation fails, follow the Delegation contract. Do not escalate or use recursive delegation.\n"
        "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
        "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
@@ -2113,10 +2113,12 @@
 
 (defn delegation-prompt []
   (str "Delegation contract: run `python3 " delegation-helper " run` with the subtask on stdin. "
-       "This runs one lower-cost Codex child; verify its result. If it fails or is unavailable, return blocked; do not substitute another model or API. "
+       "This runs one lower-cost Codex child; verify its result. Each run gets one attempt, so put the whole subtask in it, and let the helper finish: it stops itself after 30 minutes, so give any wrapper a longer timeout and do not stop it early. "
+       "A refused second attempt ('Delegation already attempted'), a child failure or a timeout is not a blocker by itself: record what happened in Notes, then finish what you safely can or return continue so the next run gets a new attempt (automatic continuations are limited). "
+       "Delegation counts as unavailable, so return blocked, only when a retry cannot help: missing authentication or permission, an authentication or budget hold, or the same failure repeating across runs. Never substitute another model or API. "
        "If the entire task is exempt, record exactly one reason using `python3 " delegation-helper
        " exempt <reason>` where reason is small-task, shared-context, elevated-permissions, final-judgment, or full-reasoning. "
-       "Exemptions are self-reported. A successful result requires verified delegation or an explicit exemption.\n\n"))
+       "Exemptions are self-reported. A done result requires verified delegation or an explicit exemption.\n\n"))
 
 (def lane-contract
   ;; BOXP-395: there is no Review lane. PR code review and the runner's gates remain.
@@ -3012,6 +3014,10 @@
                              (not (zero? raw-exit))
                              shutdown? idle-timeout?
                              (= "blocked" marker)
+                             ;; BOXP-395: continue is not a finished result. A failed attempt stays in
+                             ;; the evidence, the next run gets its own, and done still has to verify.
+                             ;; The continuation limit keeps this finite.
+                             (= "continue" marker)
                              (zero? (:exit @(p/process ["python3" delegation-helper "verify"]
                                                        {:extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path}
                                                         :out :string :err :string}))))
