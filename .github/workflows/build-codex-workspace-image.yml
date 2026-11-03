@@ -47,6 +47,10 @@ jobs:
           platforms: linux/amd64
       - name: Smoke test even-terminal startup
         run: tests/codex-workspace/even-terminal-smoke-test.sh codex-workspace:smoke-test
+      - name: Smoke test custom XDG startup and SSH login environment
+        env:
+          CODEX_WORKSPACE_SMOKE_XDG_CONFIG_HOME: /home/boxp/custom-config
+        run: tests/codex-workspace/even-terminal-smoke-test.sh codex-workspace:smoke-test
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: docker/codex-workspace

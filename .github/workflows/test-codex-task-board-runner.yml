@@ -6,6 +6,8 @@ on:
       - docker/codex-workspace/Dockerfile
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
+      - docker/codex-workspace/github-git-ssh.sh
+      - docker/codex-workspace/dotfiles-sync.sh
       - docker/codex-workspace/qwen-eval/**
       - tests/qwen-eval/**
       - docker/codex-workspace/task-board/**
@@ -21,6 +23,8 @@ on:
       - docker/codex-workspace/Dockerfile
       - docker/codex-workspace/cron/**
       - docker/codex-workspace/entrypoint.sh
+      - docker/codex-workspace/github-git-ssh.sh
+      - docker/codex-workspace/dotfiles-sync.sh
       - docker/codex-workspace/qwen-eval/**
       - tests/qwen-eval/**
       - docker/codex-workspace/task-board/**
@@ -65,6 +69,7 @@ jobs:
       - run: bb docker/codex-workspace/novel-board/novel_board_runner.bb test
       - run: tests/codex-workspace/novel-board-runner-test.sh
       - run: tests/codex-workspace/recurring-events-test.sh
+      - run: tests/codex-workspace/github-git-ssh-test.sh
       - run: bb tests/codex-workspace/autonomy-policy-test.bb
       - run: bb tests/codex-workspace/autonomy-control-test.bb
       - run: bb tests/codex-workspace/vault-writer-test.bb

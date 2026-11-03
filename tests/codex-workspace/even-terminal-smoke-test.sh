@@ -11,6 +11,7 @@ IMAGE="${1:-}"
 SUBNET="${EVEN_TERMINAL_SMOKE_SUBNET:-203.0.113.0/24}"
 TIMEOUT_SECONDS="${EVEN_TERMINAL_SMOKE_TIMEOUT_SECONDS:-90}"
 PORT=3456
+XDG_PATH="${CODEX_WORKSPACE_SMOKE_XDG_CONFIG_HOME:-}"
 
 if [[ -z "${IMAGE}" ]]; then
   echo "usage: $0 <image>" >&2
@@ -49,8 +50,12 @@ http_status() {
 }
 
 docker network create --subnet "${SUBNET}" "${network}" >/dev/null
+env_args=()
+if [[ -n "${XDG_PATH}" ]]; then
+  env_args=(-e "XDG_CONFIG_HOME=${XDG_PATH}")
+fi
 docker run -d --name "${container}" --network "${network}" \
-  -e EVEN_TERMINAL_TOKEN="${token}" \
+  -e EVEN_TERMINAL_TOKEN="${token}" "${env_args[@]}" \
   "${IMAGE}" >/dev/null
 
 address="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "${container}")"
@@ -74,6 +79,45 @@ status="$(http_status "${base_url}/api/metrics" -H "Authorization: Bearer ${toke
 
 config_stat="$(docker exec "${container}" stat -c '%U:%G %a' /home/boxp/.even-terminal/config.json)"
 [[ "${config_stat}" == "boxp:boxp 600" ]] || fail "unexpected config.json owner/mode: ${config_stat}"
+
+# Check the real entrypoint child; docker exec's inherited environment alone
+# can hide a runuser/login regression. Only print the nonsecret XDG variable.
+docker exec -u boxp -i "${container}" bash -s -- "${XDG_PATH}" <<'EOF'
+set -euo pipefail
+expected="$1"
+pid=""
+for cmdline_file in /proc/[0-9]*/cmdline; do
+  [[ "$(stat -c %U "${cmdline_file}" 2>/dev/null)" == boxp ]] || continue
+  # even-terminal is a Node CLI, so the process comm is node. Locate its
+  # script argument without printing command lines or unrelated environment.
+  while IFS= read -r -d '' arg; do
+    case "${arg}" in
+      */even-terminal|*/@evenrealities/even-terminal/bin/cli.js)
+        pid="${cmdline_file%/cmdline}" ;;
+    esac
+  done <"${cmdline_file}"
+  [[ -z "${pid}" ]] || break
+done
+[[ -n "${pid}" ]] || { echo "even-terminal process not found" >&2; exit 1; }
+actual=""
+while IFS= read -r -d '' entry; do
+  case "${entry}" in XDG_CONFIG_HOME=*) actual="${entry#*=}" ;; esac
+done <"${pid}/environ"
+[[ "${actual}" == "${expected}" ]] || { echo "terminal XDG environment mismatch" >&2; exit 1; }
+args=()
+[[ -z "${expected}" ]] || args=("XDG_CONFIG_HOME=${actual}")
+fixture="$(mktemp -d)"
+git init -q "${fixture}"
+git -C "${fixture}" remote add fixture https://github.com/boxp/fixture.git
+env -u XDG_CONFIG_HOME HOME=/home/boxp "${args[@]}" \
+  git -C "${fixture}" remote get-url fixture \
+  | grep -Fxq ssh://git@github.com/boxp/fixture.git
+EOF
+if [[ -n "${XDG_PATH}" ]]; then
+  # SSH login shells read the startup environment through this profile.
+  login_xdg="$(docker exec "${container}" /usr/sbin/runuser -l boxp -c 'printf "%s" "${XDG_CONFIG_HOME:-}"')"
+  [[ "${login_xdg}" == "${XDG_PATH}" ]] || fail "SSH login XDG environment mismatch"
+fi
 
 sleep 5
 container_running || fail "container exited after even-terminal started"
