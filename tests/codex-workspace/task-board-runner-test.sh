@@ -403,6 +403,24 @@ test_claude_pump_drains_when_events_log_cannot_open() {
       (assert (zero? (.available input)))
       (assert (= "allowed" (get-in (ai-subscription-usage/snapshot (str (root) "/ai-ops/subscription/claude.json")) [:data :rate_limit_info :status])))
       (assert (= 1 (count (filter #(str/includes? % "claude events log open failed") @warnings)))))
+    ;; The pump attributes events to the scope fixed at process start, not to the
+    ;; login at receive time.
+    (let [home (str (System/getenv "TEST_STATE") "-home")
+          state (str (System/getenv "TEST_STATE") "-switch")
+          snapshot-path (str state "/ai-ops/subscription/claude.json")
+          event-line "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}\n"
+          pump! (fn [scope] (with-redefs [root (constantly state)]
+                              (pump-claude-stream! (java.io.ByteArrayInputStream. (.getBytes event-line "UTF-8")) (System/getenv "TEST_LOG_PATH") (atom {}) scope)))
+          old-home (System/getProperty "user.home")]
+      (babashka.fs/create-dirs home)
+      (spit (str home "/.claude.json") (json/generate-string {:oauthAccount {:accountUuid "account-b"}}))
+      (System/setProperty "user.home" home)
+      (try
+        (pump! "scope-of-account-a")
+        (assert (not (babashka.fs/exists? snapshot-path)) "event of a run started under another account must not be recorded")
+        (pump! (ai-subscription-usage/claude-account-scope))
+        (assert (babashka.fs/exists? snapshot-path) "event of a run under the current account must be recorded")
+        (finally (System/setProperty "user.home" old-home))))
     ;; The caller may stop waiting for the drain (deref timeout): the shared
     ;; summary atom must already hold the result while the stream is still open.
     (let [out (java.io.PipedOutputStream.)

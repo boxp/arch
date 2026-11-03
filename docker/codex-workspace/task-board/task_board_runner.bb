@@ -2797,9 +2797,13 @@
   The running summary (last result / assistant event, as in
   claude-stream-summary) is kept in `summary` (an atom the caller may pass in)
   so the final result survives even when the log cannot be written or the
-  caller stops waiting for the drain; the atom's value is also returned."
+  caller stops waiting for the drain; the atom's value is also returned.
+  `account-scope` is the login fixed just before the process started."
   ([stream path] (pump-claude-stream! stream path (atom {})))
   ([stream path summary]
+   (pump-claude-stream! stream path summary
+                        (when @subscription-module-loaded? ((resolve 'ai-subscription-usage/claude-account-scope)))))
+  ([stream path summary account-scope]
   (let [logged (atom #{})
         warn! (fn [k e] (when-not (@logged k) (swap! logged conj k) (log! (str k ": " (.getMessage e)))))]
     (try
@@ -2823,7 +2827,10 @@
                 (when (and (map? event) (= "rate_limit_event" (:type event)))
                   (try
                     (when @subscription-module-loaded?
-                      ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at))
+                      (when (false? ((resolve 'ai-subscription-usage/record-claude-run-rate-limit!) (root) event received-at account-scope))
+                        (when-not (@logged "claude subscription account changed")
+                          (swap! logged conj "claude subscription account changed")
+                          (log! "claude subscription events skipped: login differs from run start"))))
                     (catch Exception e (warn! "claude subscription record failed" e))))))
             (finally
               (when writer (.close writer))))))
@@ -2896,6 +2903,10 @@
                    true
                    (conj "-")))
           idle-timeout-seconds (agent-idle-timeout-seconds)
+          ;; Fix the account before the process can start using it: events carry
+          ;; no account id, and the login may change while the run is active.
+          claude-account-scope (when (and (claude-assignee? agent) @subscription-module-loaded?)
+                                 ((resolve 'ai-subscription-usage/claude-account-scope)))
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
                                               :out (if (claude-assignee? agent) :stream (io/file (str stdout-path)))
                                               :err (io/file (str stderr-path))
@@ -2913,7 +2924,7 @@
           ;; The pump fills this atom as lines arrive, so the final result is
           ;; available even if the deref below times out before the drain ends.
           pump-summary-atom (atom {})
-          tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path pump-summary-atom)))
+          tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path pump-summary-atom claude-account-scope)))
           _ (register-agent-process! run (:proc proc))
           {:keys [proc idle-timeout? shutdown?]} (try
                                                    (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds
