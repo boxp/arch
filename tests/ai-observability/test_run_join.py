@@ -58,6 +58,38 @@ class JoinTest(unittest.TestCase):
         self.assertIsNone(row['run_total_known'])
         self.assertNotIn('SECRET-XYZ', json.dumps(self.get()))
 
+    def test_review_gate_usage_and_missing_records(self):
+        self.write_events([{'type': 'turn.completed', 'usage': {'input_tokens': 100, 'output_tokens': 20}}])
+        (self.path / 'delegation.json').write_text(json.dumps({'kind': 'exempt'}))
+        summary = self.path / 'summary.edn'
+        summary.write_text('{:review-gate {:checked-pr-urls ["https://example.invalid/private"]}}')
+        row = self.get()['rows'][0]
+        self.assertIn('review_gate_usage_unrecorded', row['unknown_reasons'])
+        summary.write_text('{}')
+        self.assertNotIn('review_gate_usage_unrecorded', self.get()['rows'][0]['unknown_reasons'])
+        summary.write_text('{:review-gate {:gate :codex-review}}')
+        file = self.path / 'codex-review-boxp__example-123-usage.jsonl'
+        record = {'usage_status': 'recorded', 'thread_id': 'SECRET-XYZ', 'pr_url': 'SECRET-XYZ', 'usage': {'input_tokens': 120, 'cached_input_tokens': 20, 'output_tokens': 30, 'reasoning_output_tokens': 5}}
+        file.write_text(json.dumps(record) + '\n')
+        report = self.get()
+        row = report['rows'][0]
+        self.assertEqual((row['review_gate_calls'], row['review_gate_recorded_calls']), (1, 1))
+        self.assertEqual((row['run_total_known'], row['run_output_tokens_known']), (270, 50))
+        self.assertEqual(report['runs_with_review_gate_usage_recorded'], 1)
+        self.assertNotIn('review_gate_usage_unrecorded', row['unknown_reasons'])
+        self.assertNotIn('SECRET-XYZ', json.dumps(report))
+        with file.open('a') as stream:
+            stream.write('malformed\n')
+        row = self.get()['rows'][0]
+        self.assertEqual((row['review_gate_calls'], row['review_gate_recorded_calls']), (2, 1))
+        self.assertEqual(row['run_total_known'], 270)
+        self.assertIn('review_gate_usage_unrecorded', row['unknown_reasons'])
+        summary.write_text('{:review-gate {:gate :codex-review :pr-urls ["private"]}}')
+        file.unlink()
+        self.assertIn('review_gate_usage_unrecorded', self.get()['rows'][0]['unknown_reasons'])
+        summary.write_text('{:review-gate {:gate :ci :pr-urls ["private"] :checked-pr-urls []}}')
+        self.assertNotIn('review_gate_usage_unrecorded', self.get()['rows'][0]['unknown_reasons'])
+
     def test_multiple_results_unknown(self):
         self.write_events([{'type': 'turn.completed', 'usage': {'input_tokens': 1, 'output_tokens': 2}}] * 2)
         row = self.get()['rows'][0]
@@ -82,14 +114,14 @@ class JoinTest(unittest.TestCase):
         self.assertIsNone(exempt['child_usage'])
         self.assertEqual(exempt['run_total_known'], 110)  # subsets are not re-added
         self.assertEqual(exempt['run_output_tokens_known'], 10)
-        self.assertEqual(exempt['unknown_reasons'], ['review_gate_usage_unrecorded'])
+        self.assertEqual(exempt['unknown_reasons'], [])
         failed = rows[2]
         self.assertFalse(failed['child_absent'])
         self.assertIsNone(failed['run_total_known'])
         self.assertIn('delegation_failed', failed['unknown_reasons'])
         group = [g for g in out['groups'] if g['status'] == 'failed'][0]
         self.assertEqual((group['runs_with_parent_known'], group['sum_known_parent_totals'], group['sum_known_totals']), (1, 10, None))
-        self.assertEqual(out['unknown_reasons']['review_gate_usage_unrecorded'], 2)
+        self.assertEqual(out['unknown_reasons']['review_gate_usage_unrecorded'], 0)
 
 
 if __name__ == '__main__':

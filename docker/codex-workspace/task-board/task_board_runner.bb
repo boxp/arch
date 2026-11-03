@@ -2533,6 +2533,26 @@
     {:verdict (cond reason :invalid (seq blocking) :blocking (seq low) :pass-low :else :clean)
      :reason reason :blocking blocking :low low}))
 
+(defn record-codex-review-usage! [run-dir artifact-base pr-url proc duration-ms]
+  (try
+    (let [events (keep (fn [line]
+                         (try (json/parse-string line true)
+                              (catch Exception _ nil)))
+                       (str/split-lines (or (:out proc) "")))
+          thread-id (:thread_id (first (filter #(= "thread.started" (:type %)) events)))
+          raw-usage (:usage (last (filter #(= "turn.completed" (:type %)) events)))
+          keys [:input_tokens :cached_input_tokens :output_tokens :reasoning_output_tokens :cache_write_input_tokens]
+          allowed (into {} (filter (comp integer? val) (select-keys (if (map? raw-usage) raw-usage {}) keys)))
+          recorded? (and (contains? allowed :input_tokens) (contains? allowed :output_tokens))
+          record {:schema "codex-review-usage/v0" :recorded_at (str (java.time.Instant/now))
+                  :pr_url pr-url :exit_code (:exit proc) :duration_ms duration-ms
+                  :thread_id (when (string? thread-id) thread-id)
+                  :usage (when recorded? allowed) :usage_status (if recorded? "recorded" "unrecorded")}]
+      (spit (str (fs/path run-dir (str artifact-base "-usage.jsonl")))
+            (str (json/generate-string record) "\n") :append true))
+    (catch Exception e
+      (binding [*out* *err*] (println "Failed to record codex review usage:" (.getMessage e))))))
+
 (defn run-codex-review! [run-dir pr-url]
   (let [diff (run-string! ["gh" "pr" "diff" pr-url] {})
         artifact-base (codex-review-artifact-base pr-url)
@@ -2546,7 +2566,9 @@
                     "Exactly one CODEX_REVIEW_RESULT line must appear. For a clean result, output exactly the single line CODEX_REVIEW_RESULT: clean and nothing else. Otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every CODEX_REVIEW_FINDING line must carry one of the allowed severities and contain all three fields separated by \" | \", with a non-empty location and description. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
                     "PR: " pr-url "\n\n"
                     diff)
+        started-ns (System/nanoTime)
         proc @(p/process (cond-> ["codex" "exec"
+                                  "--json"
                                   "--skip-git-repo-check"
                                   "--output-last-message" (str review-path)]
                            true
@@ -2555,6 +2577,8 @@
                            true
                            (conj "-"))
                          {:in prompt :out :string :err :string})
+        duration-ms (quot (- (System/nanoTime) started-ns) 1000000)
+        _ (record-codex-review-usage! run-dir artifact-base pr-url proc duration-ms)
         last-message (when (fs/exists? review-path)
                        (slurp (str review-path)))]
     (cond

@@ -70,3 +70,9 @@ python3 -m unittest discover -s tests/ai-observability -v                       
 ```
 
 集計 JSON は `run-join-2026-11-03.json`（`--no-ids`、rows なし）。
+
+## review gate usageの記録
+
+runner は codex-review の呼び出しごとに `codex-review-<owner>__<repo>-<number>-usage.jsonl` へ1行追記する。許可する項目は schema、記録日時、PR URL、終了コード、所要ミリ秒、thread ID、usage status と、usage の input・cached input・output・reasoning output・cache write input の整数値のみ。プロンプト、差分、レビュー本文、モデル名、パスや生のイベントは保存しない。
+
+join は全 usage ファイルの行数と記録済み行数を数え、記録済み分の input と output を親子の既知合計に加算する。cached と reasoning はそれぞれ input と output の内数として扱う。ゲートが確実に実行された run（`checked-pr-urls` あり、または失敗 gate が `codex-review`）でファイルがない場合や未記録・不正な行がある場合は `review_gate_usage_unrecorded` を残し、合計は下限となる。レポートに PR URL と thread ID は出力しない。

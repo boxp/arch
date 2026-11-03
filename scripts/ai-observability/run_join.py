@@ -69,6 +69,9 @@ def summary(path, reasons):
         result[key] = enum(match.group(1) if match else None, ALLOWED[key])
     match = re.search(r'(?<![\w-]):exit-code\s+(-?\d+)(?![\w-])', text)
     result['exit_code'] = int(match.group(1)) if match and len(match.group(1)) <= 12 else None
+    # The codex-review gate certainly ran only when a PR passed it (checked-pr-urls) or it is the failing gate.
+    # pr-urls alone also covers runs that stopped at the CI/draft/mergeability gate, so it is not evidence.
+    result['review_gate_ran'] = bool(re.search(r':checked-pr-urls\s+\[\s*[^\s\]]', text) or re.search(r':gate\s+:codex-review\b', text))
     return result
 
 
@@ -117,10 +120,35 @@ def child(path, sessions, reasons):
     return latest, model
 
 
+def review_usage(path):
+    calls = recorded = 0
+    usages = []
+    for file in sorted(path.glob('codex-review-*-usage.jsonl')):
+        try:
+            with file.open(encoding='utf-8') as stream:
+                for line in stream:
+                    calls += 1
+                    try:
+                        data = json.loads(line)
+                        value = usage(data.get('usage'), 'codex') if isinstance(data, dict) and data.get('usage_status') == 'recorded' else None
+                    except ValueError:
+                        value = None
+                    if value is not None:
+                        recorded += 1
+                        usages.append(value)
+        except (OSError, UnicodeError):
+            calls += 1  # An unreadable file represents at least one unknown call.
+    if not usages:
+        return calls, recorded, None
+    return calls, recorded, {key: sum(u[key] for u in usages if u[key] is not None) if any(u[key] is not None for u in usages) else None for key in usages[0]}
+
+
 def run(path, sessions, ordinal, no_ids):
     reasons = set()
     row = {'ordinal': ordinal} if no_ids else {'ticket': path.parent.name, 'run_id': path.name}
-    row.update(summary(path / 'summary.edn', reasons))
+    metadata = summary(path / 'summary.edn', reasons)
+    gate_ran = metadata.pop('review_gate_ran', False)
+    row.update(metadata)
     events_path = path / 'events.jsonl'
     events = read_events(events_path)
     if events is None:
@@ -178,8 +206,10 @@ def run(path, sessions, ordinal, no_ids):
     child_usage, row['child_model'] = child(path / 'delegation.json', sessions, reasons)
     row['child_absent'] = child_usage == 'absent'
     row['child_usage'] = None if row['child_absent'] else child_usage
-    # The codex-review gate runs a separate codex session whose usage is not recorded in the run dir.
-    reasons.add('review_gate_usage_unrecorded')
+    calls, recorded, review = review_usage(path)
+    row.update(review_gate_calls=calls, review_gate_recorded_calls=recorded, review_gate_usage=review)
+    if (gate_ran and not calls) or calls > recorded:
+        reasons.add('review_gate_usage_unrecorded')
     if parent is None:
         row['run_total_known'] = None
     elif row['child_absent']:
@@ -192,6 +222,9 @@ def run(path, sessions, ordinal, no_ids):
         row['run_output_tokens_known'] = None
     else:
         row['run_output_tokens_known'] = parent['output_tokens'] + (0 if row['child_absent'] else row['child_usage']['output_tokens'])
+    if row['run_total_known'] is not None and review is not None:
+        row['run_total_known'] += review['total_tokens']
+        row['run_output_tokens_known'] += review['output_tokens']
     row['unknown_reasons'] = [reason for reason in REASONS if reason in reasons]
     return row
 
@@ -225,7 +258,7 @@ def report(root, sessions, limit=None, ticket=None, no_ids=False, include_rows=F
         subset = [r for r in rows if r['agent'] == agent]
         success = sum(r['status'] == 'succeeded' and r['result'] in ('review', 'done') for r in subset)
         agents.append({'agent': agent, 'success': success, 'non_success': len(subset) - success, 'success_rate': success / len(subset) if subset else None})
-    result = {'runs_scanned': len(rows), 'runs_by_runtime': {k: sum(r['runtime'] == k for r in rows) for k in ('codex', 'claude', 'unknown')}, 'runs_with_parent_usage_known': sum(r['parent_usage'] is not None for r in rows), 'runs_with_child_usage_known': sum(r['child_usage'] is not None for r in rows), 'runs_with_run_total_known': sum(r['run_total_known'] is not None for r in rows), 'unknown_reasons': {k: histogram[k] for k in REASONS}, 'groups': groups, 'agents': agents}
+    result = {'runs_scanned': len(rows), 'runs_by_runtime': {k: sum(r['runtime'] == k for r in rows) for k in ('codex', 'claude', 'unknown')}, 'runs_with_parent_usage_known': sum(r['parent_usage'] is not None for r in rows), 'runs_with_child_usage_known': sum(r['child_usage'] is not None for r in rows), 'runs_with_review_gate_usage_recorded': sum(r['review_gate_recorded_calls'] > 0 for r in rows), 'runs_with_run_total_known': sum(r['run_total_known'] is not None for r in rows), 'unknown_reasons': {k: histogram[k] for k in REASONS}, 'groups': groups, 'agents': agents}
     if include_rows:
         result['rows'] = rows
     return result
