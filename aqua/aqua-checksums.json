@@ -1,6 +1,26 @@
 {
   "checksums": [
     {
+      "id": "github_release/github.com/babarot/regomark/v0.3.0/regomark_darwin_amd64.tar.gz",
+      "checksum": "8E0F49FDDA4B87239EC2C640AA678F03A90AD042AED5F65A4D3DA13763BBB828",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/babarot/regomark/v0.3.0/regomark_darwin_arm64.tar.gz",
+      "checksum": "E99E14F9DB432E38766CD894C158ECF39A53AFBAD9BADC45958DBAC47EFEC783",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/babarot/regomark/v0.3.0/regomark_linux_amd64.tar.gz",
+      "checksum": "C81C15DF18229306B47E9465141ACE17C04018B65D2B5950C690F3FE58457394",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/babarot/regomark/v0.3.0/regomark_linux_arm64.tar.gz",
+      "checksum": "C5C363A025AF1DDFD597AC6DEC2A22752EF48F1192F363610B90D099A557274B",
+      "algorithm": "sha256"
+    },
+    {
       "id": "github_release/github.com/boxp/ansible-plan-formatter/v1.0.0/ansible-plan-formatter_linux_amd64.tar.gz",
       "checksum": "3A0331FC6360F5F8F592ED2257A2E3AA451B2C61461D3E82858893D30C4BFC87",
       "algorithm": "sha256"
@@ -138,6 +158,31 @@
     {
       "id": "github_release/github.com/open-policy-agent/opa/v1.22.0/opa_windows_amd64.exe",
       "checksum": "0C5972EF7B7042B595F92DB690FBB8BD8CF0F9A2782AB802C95C4AA58C1F05E5",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Darwin_arm64",
+      "checksum": "23A6E4EF62F288C53E65D770E9325E6D8A9C35CA3F33F6FFB5943C1F381EF540",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Darwin_x86_64",
+      "checksum": "F33FC0AC70B6A5783B92C324123C314F7FF127BB970CF1E3DDE807925CD821B7",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Linux_arm64",
+      "checksum": "D4FD44A191D5B12A5AB980F56D7EDDFED0718129C43D1EDE5E8DBC9D217FDCB8",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Linux_x86_64",
+      "checksum": "5E7D030064E307D54E6FFA3D85B8D9052D3D40B7AFA10262C86C886F8A76559D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Windows_x86_64.exe",
+      "checksum": "7239B548B0298FD4538B2555CCE9B09A359E4D77E12D31E4210B94F154C75215",
       "algorithm": "sha256"
     },
     {
