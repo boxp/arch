@@ -227,7 +227,37 @@ bb -e '
   (System/setProperty "user.home" dir)
   (let [scope (ai-subscription-usage/claude-account-scope)]
     (assert (re-matches #"[0-9a-f]{16}" scope)))
-  (babashka.fs/delete (str dir "/.claude.json"))
+  ;; A run stays bound to the account it started with. After a login switch its
+  ;; later events cannot be attributed, so they must not enter the snapshot under
+  ;; either account; the windows of the account now logged in stay intact.
+  (let [login (fn [account] (spit (str dir "/.claude.json") (cheshire.core/generate-string {:oauthAccount {:accountUuid account}})) (ai-subscription-usage/claude-account-scope))
+        rroot (str (System/getenv "TEST_ROOT") "-run-scope")
+        file (str rroot "/ai-ops/subscription/claude.json")
+        used (fn [] (get-in (ai-subscription-usage/snapshot file) [:data :rate_limit_info :unifiedWindows :seven_day :utilization]))
+        scope-of (fn [] (get-in (ai-subscription-usage/snapshot file) [:data :rate_limit_info :unifiedWindows :seven_day :account_scope]))
+        rec (fn [u ms run-scope] (ai-subscription-usage/record-claude-run-rate-limit! rroot {:rate_limit_info {:unifiedWindows {:seven_day {:utilization u}}}} ms run-scope))
+        base 1800000000000
+        a (login "account-a")]
+    (rec 0.1 base a)
+    (assert (= [0.1 a] [(used) (scope-of)]))
+    (let [b (login "account-b")]
+      ;; Run A, login now B: dropped although it is the newest event.
+      (rec 0.9 (+ base 1000) a)
+      (assert (= [0.1 a] [(used) (scope-of)]))
+      ;; A run started under B replaces the old account.
+      (rec 0.2 (+ base 2000) b)
+      (assert (= [0.2 b] [(used) (scope-of)]))
+      ;; A late event of run A cannot take the snapshot back from B.
+      (rec 0.8 (+ base 3000) a)
+      (assert (= [0.2 b] [(used) (scope-of)]))
+      ;; Unknown at start but known now: the boundary is unverified, so drop.
+      (rec 0.7 (+ base 4000) nil)
+      (assert (= [0.2 b] [(used) (scope-of)]))
+      ;; Config temporarily unreadable: the start scope still identifies the run.
+      (babashka.fs/delete (str dir "/.claude.json"))
+      (rec 0.3 (+ base 5000) b)
+      (assert (= [0.3 b] [(used) (scope-of)]))))
+  (babashka.fs/delete-if-exists (str dir "/.claude.json"))
   (assert (nil? (ai-subscription-usage/claude-account-scope))))' >/dev/null
 mkdir -p "${tmp}/vault/Boards" "${tmp}/vault/Tickets" "${tmp}/bin"
 cat >"${tmp}/vault/Boards/Task Board.md" <<'BOARD'

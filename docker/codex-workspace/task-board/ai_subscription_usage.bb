@@ -102,6 +102,17 @@
              (when-let [merged (merge-claude-snapshot (when (= "ok" (:state existing)) (:data existing)) clean observed-epoch-ms scope)]
                (atomic-write! path (json/generate-string merged))))))))))
 
+(defn record-claude-run-rate-limit!
+  "Record an event of a run whose account scope was fixed when its process
+  started. The event has no account id and the process may or may not follow a
+  later login, so once the login differs from the start scope the event cannot be
+  attributed to either account and is dropped. Returns false when dropped."
+  [root event observed-epoch-ms run-scope]
+  (let [current (claude-account-scope)]
+    (if (or (nil? current) (= current run-scope))
+      (do (record-claude-rate-limit! root event observed-epoch-ms run-scope) true)
+      false)))
+
 (def ^:dynamic *codex-read-error* nil)
 
 (def codex-file-cache (atom {}))

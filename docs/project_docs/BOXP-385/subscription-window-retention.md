@@ -27,7 +27,11 @@ Grafana 側の変更は不要で、既存の窓別 observed/expired/present を�
 
 ## account 境界
 
-event に account 識別子はない。`~/.claude.json` の `oauthAccount.accountUuid` の SHA-256 先頭 16 桁を 0600 の snapshot にだけ保存し、Prom へは出さない。他の profile field は読まない。取得できないとき（nil）は境界を判定できないので窓を保持し、更新・追加した窓には直前の既知 scope を引き継ぐ。引き継がないと、その後の account 切替で旧窓を削除できず、新 account の値に見えてしまう。既知 scope が一つもない窓だけは切替後も残る。
+event に account 識別子はない。`~/.claude.json` の `oauthAccount.accountUuid` の SHA-256 先頭 16 桁を 0600 の snapshot にだけ保存し、Prom へは出さない。他の profile field は読まない。
+
+runner は Claude プロセスの起動直前に scope を固定し、その run の event をこの scope に帰属させる。受信時の login で判定すると、A の run の後続 event が B の値になるため。実行中の login 切替後は、プロセスが旧 token のままか新 login へ追従したかを event から判別できない。そのため、受信時の login が既知で起動時 scope と異なる event（起動時 scope が不明な場合も含む）は記録しない。この event の値は `events.jsonl` にだけ残り、Prom では既存の窓の観測時刻が古くなる形で現れる。login が一時的に読めないときは起動時 scope で記録する。
+
+取得できないとき（nil）は境界を判定できないので窓を保持し、更新・追加した窓には直前の既知 scope を引き継ぐ。引き継がないと、その後の account 切替で旧窓を削除できず、新 account の値に見えてしまう。既知 scope が一つもない窓だけは切替後も残る。
 
 ## 限界
 
@@ -40,6 +44,7 @@ event に account 識別子はない。`~/.claude.json` の `oauthAccount.accoun
     jq -c 'select(.type=="rate_limit_event" and (.rate_limit_info.unifiedWindows.seven_day_overage_included != null))' \
       "$CODEX_TASK_BOARD_ROOT/runs/BOXP-387/20261103T091739Z-a1272891-af96-483d-82b6-88ac6fdb4e49/events.jsonl" | tail -1 >/tmp/fable-event.json
     bb -e '(load-file "/opt/codex-workspace/task-board/ai_subscription_usage.bb")
+           ;; 3 引数形は現在の login の scope を付ける。元 run と同じ account であることを先に確認する
            (ai-subscription-usage/record-claude-rate-limit!
              (System/getenv "CODEX_TASK_BOARD_ROOT")
              (cheshire.core/parse-string (slurp "/tmp/fable-event.json") true)
