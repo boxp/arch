@@ -5611,7 +5611,10 @@
                                        (record! :review-gate!)
                                        (when (= :during-gate raise-at)
                                          (reset! shutdown-requested? true))
-                                       {:ok? true :pr-urls ["https://github.com/boxp/arch/pull/1"]})]
+                                       {:ok? true :pr-urls ["https://github.com/boxp/arch/pull/1"]})
+                        ;; The real one writes under the deployed state root.
+                        consume-continuation! (fn [_ _ gate] gate)
+                        clear-continuation-budget! (fn [_] nil)]
             (process-card! card))
           (finally
             (reset! shutdown-requested? false)))
