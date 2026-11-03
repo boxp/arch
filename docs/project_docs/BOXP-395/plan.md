@@ -12,7 +12,7 @@
 | `owner-acceptance`（localllm の適用済み結果） | なし | Blocked（本人確認待ち） | boxp |
 | groom | なし | Ready | boxp |
 
-- PR gate と codex review は変更しない。廃止するのはレーンだけ。
+- PR URL の報告漏れは既存の有限の gate 再試行対象とする。その他の PR gate と codex review は変更しない。
 - `TASK_BOARD_REVIEW_PR: none` は PR review の話なので名前を変えない。
 - Ready に戻すのは既存 scheduler に任せるため。新しい常設レーンも新 cron も作らない。
 

@@ -823,8 +823,9 @@ test_explicit_claude_error_and_review_markers_are_processed() {
   write_board "${vault}" "- [ ] [[Tickets/BOXP-166|BOXP-166: missing marker]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-166 in-progress claude-fable
   PATH="${bin}:$PATH" CLAUDE_FAKE_MESSAGE='completed without a task board marker' run_tick "${vault}" "${state}" env >/tmp/task-board-claude-missing-marker.out
-  assert_file_contains "${vault}/Tickets/BOXP-166.md" '^status: blocked$'
-  assert_run_summary_contains "${state}" BOXP-166 ':blocker-category "pr-gate-pr-url"'
+  assert_file_contains "${vault}/Tickets/BOXP-166.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-166.md" '^assignee: claude-fable$'
+  assert_run_summary_contains "${state}" BOXP-166 ':status :retrying'
 
   write_board "${vault}" "- [ ] [[Tickets/BOXP-167|BOXP-167: blocked marker]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-167 in-progress claude-fable
@@ -1745,6 +1746,16 @@ test_review_without_pr_is_blocked() {
 
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review.out
 
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^assignee: codex$'
+  assert_run_summary_contains "${state}" BOXP-301 ':status :retrying'
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >"${tmp}/retry"
+  assert_file_contains "${tmp}/prompt" 'Re-check Notes and PR state'
+  assert_file_contains "${tmp}/prompt" 'TASK_BOARD_REVIEW_PR: none if no repository change was made, plus exactly one TASK_BOARD_RESULT marker'
+  assert_file_contains "${tmp}/prompt" 'trailing reply to a background notification must not replace this report'
+  assert_file_not_contains "${tmp}/prompt" 'Target PR URL: nil'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: in-progress$'
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >"${tmp}/exhausted"
   assert_file_contains "${vault}/Boards/Task Board.md" '## Blocked'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::blocked'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: blocked$'
@@ -1753,6 +1764,15 @@ test_review_without_pr_is_blocked() {
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'action=implement; at=.*category=pr-gate-pr-url'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'inspect run artifacts: .*/summary\.edn, .*/last-message\.md, .*/events\.jsonl, .*/stderr\.log'
   assert_file_not_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::ready'
+
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-399|BOXP-399: retry succeeds]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-399 in-progress codex boxp/example
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/missing"
+  assert_file_contains "${vault}/Tickets/BOXP-399.md" '^status: in-progress$'
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/success"
+  assert_file_contains "${vault}/Tickets/BOXP-399.md" '^status: ready$'
+  assert_file_not_contains "${state}/state.edn" '"BOXP-399"'
 }
 
 test_fable_reported_blocked_is_audited() {
@@ -1891,10 +1911,10 @@ test_nonretryable_pr_gate_blocked_state_failure_keeps_summary_consistent() {
   write_board "${vault}" "- [ ] [[Tickets/BOXP-308|BOXP-308: nonretryable gate state failure]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-308 in-progress codex
 
-  # A review result without a PR URL is a non-retryable :pr-url gate
-  # failure.  The forced Blocked-state failure must restore the ticket while
+  # A zero retry limit exhausts the :pr-url gate immediately.
+  # The forced Blocked-state failure must restore the ticket while
   # keeping the provisional succeeded summary, rather than persisting :blocked.
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE=true \
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE=true CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=0 \
     CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-nonretryable-gate-state-failure.out
 
@@ -3792,11 +3812,11 @@ test_run_finished_records_outbox_event() {
 
   PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-done.out
 
-  # Second ticket in a later tick: a review result without a PR is blocked by the gate.
+  # Second ticket: exhaust the PR URL retry limit to exercise the Blocked event.
   write_board "${vault}" "- [ ] [[Tickets/BOXP-701|BOXP-701: done]] #ticket status::done
 - [ ] [[Tickets/BOXP-702|BOXP-702: blocked]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-702 in-progress codex
-  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-blocked.out
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=0 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-blocked.out
 
   # done: lane, frontmatter and Notes are committed before the event is written.
   event="$(ls "${state}"/outbox/pending/BOXP-701-*-done.edn)"
