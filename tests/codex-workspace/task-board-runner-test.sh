@@ -49,11 +49,16 @@ make_fake_codex() {
 set -euo pipefail
 
 last_message=""
+json=false
 if [[ -n "${CODEX_FAKE_ARG_LOG:-}" ]]; then
   printf '%s\n' "$*" >>"${CODEX_FAKE_ARG_LOG}"
 fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --json)
+      json=true
+      shift
+      ;;
     --output-last-message)
       last_message="$2"
       shift 2
@@ -76,6 +81,9 @@ fi
 mkdir -p "$(dirname "${last_message}")"
 if grep -q '^CODEX_REVIEW_GATE$' "${prompt}"; then
   printf '%s\n' "${CODEX_FAKE_REVIEW_MESSAGE:-CODEX_REVIEW_RESULT: clean}" >"${last_message}"
+  if [[ "${json}" == true && "${CODEX_FAKE_REVIEW_NO_JSON:-0}" != 1 ]]; then
+    printf '%s\n' '{"type":"thread.started","thread_id":"fake-review-thread"}' '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5}}'
+  fi
   rm -f "${prompt}"
   exit 0
 fi
@@ -2199,8 +2207,23 @@ test_review_gate_passes_codex_model_profile_to_review() {
     CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-review-codex-config.out
 
-  assert_file_contains "${log}" 'codex-review-boxp__example-123\.md.*--model gpt-test.*--profile review-profile'
+  assert_file_contains "${log}" '--json.*codex-review-boxp__example-123\.md.*--model gpt-test.*--profile review-profile'
+  local usage_file
+  usage_file="$(find "${state}/runs/BOXP-413" -name codex-review-boxp__example-123-usage.jsonl -print -quit)"
+  assert_file_contains "${usage_file}" '"usage_status":"recorded"'
+  assert_file_contains "${usage_file}" '"input_tokens":120'
+  assert_file_contains "${usage_file}" '"thread_id":"fake-review-thread"'
+  assert_file_not_contains "${usage_file}" 'gpt-|CODEX_REVIEW'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-413\|BOXP-413: review codex config\]\].*status::review'
+}
+
+test_review_gate_missing_usage_still_passes() {
+  local tmp vault state bin usage_file
+  review_severity_setup
+  CODEX_FAKE_REVIEW_NO_JSON=1 review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: review$'
+  usage_file="$(find "${state}/runs/BOXP-405" -name codex-review-boxp__example-123-usage.jsonl -print -quit)"
+  assert_file_contains "${usage_file}" '"usage_status":"unrecorded"'
 }
 
 test_review_with_empty_ci_rollup_times_out() {
@@ -4353,6 +4376,7 @@ test_review_with_multiple_pr_urls_checks_all
 test_review_with_multiple_pr_urls_blocks_on_second_failure
 test_review_gate_keeps_lock_heartbeat_active
 test_review_gate_passes_codex_model_profile_to_review
+test_review_gate_missing_usage_still_passes
 test_review_with_empty_ci_rollup_times_out
 test_review_with_empty_ci_rollup_passes_for_no_ci_repo
 test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in
