@@ -32,6 +32,9 @@ Prometheus は `$GRAFANA_URL/api/datasources/proxy/uid/<prometheus uid>/api/v1/q
 
 ## 値の読み方
 
+- `coverage` は欠けた入力の件数で、`complete` が false なら値は欠測を含む。読めない run（summary 未作成の実行中 run を含む）は Review 停止だったか不明なので停止に数えないが、同じ task の読める run の停止は残す。
+- `resume_last_contact.unknown-unreadable` と `instructed_not_started.unevaluated_stops` は ticket が読めず接触の有無が不明な停止で、接触なしには数えない。
+- `first_run_to_review.unevaluated` は最初の Review を特定できない task で、分位にも打切りにも入れない。
 - `review_stops.open` は Done 以外のレーンにある、再開していない Review 停止。正当な Owner 待ちを含む。
 - `stall_reference.with_open_as_stalled` は開いた停止をすべて停滞と置いた参考値で、真の率でも下限でもない。
 - `instructed_not_started` は、停止中の最初の Owner 経由または監督 note から、次の run 開始または現在までの時間で数える。note の内容は見ないので、指示なのか状況確認なのかは区別しない。

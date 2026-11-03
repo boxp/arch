@@ -32,3 +32,4 @@
 - PR lolice#1001 を通常 merge し、Fable パネルの実 query を照合する。再復元はしない。
 - 既存 metadata だけで SLO 案の現在値を出す `scripts/ai-observability/slo_snapshot.bb` を追加し、合成ケースで救援の定義を固定する。runner・image・Hermes は変更しない。
 - Owner 向けの入口は vault の `slo-owner-decision.md`。定義と再現手順は `slo-contract.md`。新しい記録項目・alert・cron は Owner 判断の後。
+- P1 指摘 2 件を修正する。summary が読めない run があっても同じ task の読める停止を残し、ticket が読めない停止を接触なしに数えない。欠けた入力は `coverage` などの件数で出す。

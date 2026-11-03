@@ -1,6 +1,6 @@
 #!/usr/bin/env bb
 ;; 合成 metadata だけを使う (本文なし)。実行: bb tests/ai-observability/test_slo_snapshot.bb
-(require '[babashka.fs :as fs] '[clojure.test :refer [deftest is run-tests]] '[cheshire.core :as json] '[babashka.process :as p] '[clojure.string :as str])
+(require '[babashka.fs :as fs] '[clojure.test :refer [deftest is run-tests testing]] '[cheshire.core :as json] '[babashka.process :as p] '[clojure.string :as str])
 (def repo (fs/parent (fs/parent (fs/parent (fs/absolutize *file*)))))
 (def tool (str (fs/path repo "scripts/ai-observability/slo_snapshot.bb")))
 (load-file tool)
@@ -75,16 +75,72 @@
       (is (not (str/includes? out "SECRET")) "本文・タイトルを出さない")
       (is (not (str/includes? out "BOXP-")) "--ids なしでは ticket ID を出さない")
       (is (= {:total 3 :closed_by_acceptance 1 :followed 1 :followed_over_24h 1 :open 1 :open_over_24h 1
-              :open_over_24h_by_lane {:Review 1} :unknown_lane 0}
+              :open_over_24h_by_lane {:Review 1} :unknown_lane 0 :unknown_resume 0}
              (:review_stops j)))
       (is (= {:numerator 2 :denominator 2} (get-in j [:stall_reference :with_open_as_stalled])))
       (is (= {:numerator 1 :denominator 1} (get-in j [:stall_reference :followed_only])))
-      (is (= {:followed_over_1h 1 :followed_over_24h 1 :open_over_1h 1 :open_over_24h 1} (:instructed_not_started j)))
+      (is (= {:followed_over_1h 1 :followed_over_24h 1 :open_over_1h 1 :open_over_24h 1 :unevaluated_stops 0} (:instructed_not_started j)))
+      (is (true? (get-in j [:coverage :complete])) "欠けた入力がなければ complete")
       (is (= 1 (get-in j [:resume_last_contact :owner-relay])))
       (is (= "unknown" (get-in j [:owner_rescue :status])) "未接続を 0 にしない")
       (is (= {:reached 3 :censored 0} (select-keys (:first_run_to_review j) [:reached :censored])))
       (is (= 1.0 (get-in j [:first_run_to_review :p50_h])))
       (is (= {:cards 2 :card_ticket_assignee_mismatch 1} (:ready_queue j)))
       (is (= ["BOXP-5"] (get-in (json/parse-string (run-tool root vault "--ids") true) [:ready_queue :mismatch_ids]))))))
+
+(defn write-coverage-fixture
+  "読めない summary と読めない ticket を含む合成データ。"
+  [dir]
+  (let [runs (fs/path dir "root/runs") vault (fs/path dir "vault")
+        run (fn [t id body]
+              (let [d (fs/path runs t id)]
+                (fs/create-dirs d)
+                (when body (spit (str (fs/path d "summary.edn")) body))))
+        ok (fn [t id m] (pr-str (merge {:ticket t :run-id id :action "implement" :status "succeeded" :result "review"} m)))]
+    (fs/create-dirs (fs/path vault "Tickets"))
+    (fs/create-dirs (fs/path vault "Boards"))
+    ;; BOXP-7: 読める停止のあとに壊れた summary の run。停止は再開済みとして残る
+    (run "BOXP-7" "20261001T000000Z" (ok "BOXP-7" "20261001T000000Z" {:started-at "2026-10-01T00:00:00Z" :finished-at "2026-10-01T01:00:00Z"}))
+    (run "BOXP-7" "20261003T010000Z" "{:broken")
+    ;; BOXP-8: 先頭 run が読めない。最初の Review は特定できない
+    (run "BOXP-8" "20261001T000000Z" nil)
+    (run "BOXP-8" "20261002T000000Z" (ok "BOXP-8" "20261002T000000Z" {:started-at "2026-10-02T00:00:00Z" :finished-at "2026-10-02T01:00:00Z"}))
+    ;; BOXP-9: ticket が無く Notes を読めない。再開済みの停止と開いた停止
+    (run "BOXP-9" "20261001T000000Z" (ok "BOXP-9" "20261001T000000Z" {:started-at "2026-10-01T00:00:00Z" :finished-at "2026-10-01T01:00:00Z"}))
+    (run "BOXP-9" "20261003T010000Z" (ok "BOXP-9" "20261003T010000Z" {:started-at "2026-10-03T01:00:00Z" :finished-at "2026-10-03T02:00:00Z"}))
+    ;; BOXP-10: run ID から時刻を出せない読めない run が続き、再開時刻が不明
+    (run "BOXP-10" "20261001T000000Z" (ok "BOXP-10" "20261001T000000Z" {:started-at "2026-10-01T00:00:00Z" :finished-at "2026-10-01T01:00:00Z"}))
+    (run "BOXP-10" "zz-no-time" nil)
+    (doseq [t ["BOXP-7" "BOXP-8" "BOXP-10"]]
+      (spit (str (fs/path vault "Tickets" (str t ".md"))) "---\nassignee: boxp\n---\n## Notes\n"))
+    (spit (str (fs/path vault "Boards" "Task Board.md"))
+          (str/join "\n" ["## Review"
+                          "- [ ] [[Tickets/BOXP-7|T]] #ticket assignee::boxp"
+                          "- [ ] [[Tickets/BOXP-8|T]] #ticket assignee::boxp"
+                          "- [ ] [[Tickets/BOXP-9|T]] #ticket assignee::boxp"
+                          "- [ ] [[Tickets/BOXP-10|T]] #ticket assignee::boxp"]))
+    [(str (fs/path dir "root")) (str vault)]))
+
+(deftest unreadable-inputs-stay-visible
+  (fs/with-temp-dir [d {}]
+    (let [[root vault] (write-coverage-fixture d)
+          j (json/parse-string (run-tool root vault) true)]
+      (testing "読めない run があっても、読める run の停止は残す"
+        ;; BOXP-7 再開済み / BOXP-8 開いた停止 / BOXP-9 再開済みと開いた停止 / BOXP-10 再開時刻不明
+        (is (= {:total 5 :followed 2 :open 2 :unknown_resume 1}
+               (select-keys (:review_stops j) [:total :followed :open :unknown_resume]))))
+      (testing "欠けた入力を件数で出す"
+        (is (= {:complete false :unreadable_runs 3 :tasks_with_unreadable_runs 3
+                :stops_with_unknown_contacts 3 :stops_with_unknown_resume 1}
+               (:coverage j))))
+      (testing "ticket が読めない停止を接触なしに数えない"
+        ;; followed 2 件のうち BOXP-9 は unknown。BOXP-7 だけが接触なしと確認できる
+        (is (= {:none-observed 1 :unknown-unreadable 1}
+               (select-keys (:resume_last_contact j) [:none-observed :unknown-unreadable])))
+        (is (= 2 (get-in j [:instructed_not_started :unevaluated_stops]))))
+      (testing "最初の Review を特定できない task は分位にも打切りにも入れない"
+        ;; BOXP-7/9/10 は先頭 run が読める。BOXP-8 だけ未評価
+        (is (= {:reached 3 :censored 0 :unevaluated 1}
+               (select-keys (:first_run_to_review j) [:reached :censored :unevaluated])))))))
 
 (let [{:keys [fail error]} (run-tests)] (System/exit (if (pos? (+ fail error)) 1 0)))

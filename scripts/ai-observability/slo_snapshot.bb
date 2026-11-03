@@ -57,42 +57,68 @@
              (some #(second (re-matches #"assignee:\s*([A-Za-z0-9_-]+)\s*" %))))))))
 
 (defn stops
-  "review で正常終了した run ごとの停止。再開は次 run の開始、契機は区間内の Notes 見出し (時刻と種別のみ)。"
+  "review で正常終了した run ごとの停止。再開は次 run の開始、契機は区間内の Notes 見出し (時刻と種別のみ)。
+  読めない run があっても読める run の停止は残す (読めない run は次 run の開始時刻としてだけ使い、件数は :coverage へ出す)。
+  ticket が読めない、または再開時刻が不明な停止は :contacts-known? false とし、接触なしと区別する。"
   [runs-by-ticket triggers board now]
   (for [[t runs] runs-by-ticket
-        :when (not-any? #(= "unreadable" (:status %)) runs)
         [prev cur] (map vector runs (concat (rest runs) [nil]))
         :when (and (= "succeeded" (:status prev)) (= "review" (:result prev)) (:finished-at prev))
         :let [from (java.time.Instant/parse (:finished-at prev))
               to (when cur (or (ai-ops-insight/parse-inst (:started-at cur)) (ai-ops-insight/run-id->instant (:run-id cur))))
+              resume-unknown? (and (some? cur) (nil? to))
               ts (let [v (get triggers t)] (when (sequential? v) v))
-              in (sort-by :at (filter #(and (pos? (compare (:at %) from)) (or (nil? to) (neg? (compare (:at %) to)))) ts))
+              contacts-known? (and (some? ts) (not resume-unknown?))
+              in (when contacts-known?
+                   (sort-by :at (filter #(and (pos? (compare (:at %) from)) (or (nil? to) (neg? (compare (:at %) to)))) ts)))
               lane (get-in board [t :lane])]]
     {:ticket t :from from :to to
      :followed? (some? cur)
      :lane lane
-     :state (cond (some? cur) :followed (nil? lane) :unknown-lane (= "Done" lane) :closed :else :open)
-     :hours (when (or to now) (hours-between from (or to now)))
+     :contacts-known? contacts-known?
+     :state (cond resume-unknown? :unknown-resume (some? cur) :followed (nil? lane) :unknown-lane (= "Done" lane) :closed :else :open)
+     :hours (when-not resume-unknown? (hours-between from (or to now)))
      :contact-kinds (map :kind in)
      :last-kind (:kind (last in))
      :first-contact-wait-h (when (first in) (hours-between (:at (first in)) (or to now)))}))
 
 (defn first-run-to-review
   "秒精度で測れる区間: 最初の run 開始 -> 最初の Review 到達。Owner の受入待ちを含まない。
-  未到達の task は打切りとして別掲し、分位に入れない。"
+  未到達の task は打切りとして別掲し、分位に入れない。
+  最初の読める Review より前 (未到達ならいずれか) に読めない run がある task は、最初の Review を特定できないので :unevaluated へ出す。"
   [runs-by-ticket since]
-  (let [xs (for [[_ runs] runs-by-ticket
-                 :when (not-any? #(= "unreadable" (:status %)) runs)
+  (let [review? #(and (= "succeeded" (:status %)) (= "review" (:result %)) (:finished-at %))
+        xs (for [[_ runs] runs-by-ticket
                  :let [start (some #(or (ai-ops-insight/parse-inst (:started-at %)) (ai-ops-insight/run-id->instant (:run-id %))) runs)]
-                 :when (and start (or (nil? since) (not (neg? (compare start since)))))
-                 :let [stop (some #(when (and (= "succeeded" (:status %)) (= "review" (:result %)) (:finished-at %))
-                                     (java.time.Instant/parse (:finished-at %))) runs)]]
-             (when-not (and stop (neg? (compare stop start))) {:h (when stop (hours-between start stop))}))
-        done (keep :h (remove nil? xs))]
-    {:reached (count done) :censored (count (remove :h (remove nil? xs)))
+                 :when (or (nil? start) (nil? since) (not (neg? (compare start since))))
+                 :let [stop (some-> (some #(when (review? %) %) runs) :finished-at java.time.Instant/parse)
+                       unknown? (or (nil? start)
+                                    (some #(= "unreadable" (:status %)) (take-while (complement review?) runs))
+                                    (and stop (neg? (compare stop start))))]]
+             (cond unknown? :unevaluated
+                   stop (hours-between start stop)
+                   :else :censored))
+        done (filter number? xs)]
+    {:reached (count done) :censored (count (filter #{:censored} xs)) :unevaluated (count (filter #{:unevaluated} xs))
      :p50_h (ai-ops-insight/quantile done 0.5) :p90_h (ai-ops-insight/quantile done 0.9)}))
 
 (defn over [h] (fn [s] (> (or (:hours s) 0) h)))
+
+(defn coverage
+  "窓の中で欠けた入力の件数。読めない run は Review 停止だったか不明なので、停止の件数には入らない。
+  時刻を出せない run は窓を判定できないので、since があっても数える。"
+  [runs-by-ticket ss since]
+  (let [in-window? (fn [r] (let [at (ai-ops-insight/run-id->instant (:run-id r))]
+                             (or (nil? since) (nil? at) (not (neg? (compare at since))))))
+        by-task (for [[_ runs] runs-by-ticket] (filter #(and (= "unreadable" (:status %)) (in-window? %)) runs))
+        unreadable (count (mapcat identity by-task))
+        unknown-contacts (count (remove :contacts-known? ss))
+        unknown-resume (count (filter #(= :unknown-resume (:state %)) ss))]
+    {:complete (and (zero? unreadable) (zero? unknown-contacts))
+     :unreadable_runs unreadable
+     :tasks_with_unreadable_runs (count (filter seq by-task))
+     :stops_with_unknown_contacts unknown-contacts
+     :stops_with_unknown_resume unknown-resume}))
 
 (defn snapshot [runs-by-ticket triggers board assignee-of now {:keys [since ids?]}]
   (let [all (stops runs-by-ticket triggers board now)
@@ -111,6 +137,7 @@
      {:definition_version definition-version
       :generated_at (str now)
       :since (some-> since str)
+      :coverage (coverage runs-by-ticket ss since)
       :review_stops {:total (count ss)
                      :closed_by_acceptance (count (:closed st))
                      :followed (count followed)
@@ -118,7 +145,8 @@
                      :open (count open)
                      :open_over_24h (count over24o)
                      :open_over_24h_by_lane (frequencies (map :lane over24o))
-                     :unknown_lane (count (:unknown-lane st))}
+                     :unknown_lane (count (:unknown-lane st))
+                     :unknown_resume (count (:unknown-resume st))}
       ;; 旧 SLI は分母が再開済みの停止だけで、開いたままの停止を落としていた。
       ;; 下の参考率は開いた停止をすべて停滞と置いた値。正当な待ちを含むので真の率でも下限でもない。
       :stall_reference {:followed_only {:numerator over24f :denominator (count followed)}
@@ -128,10 +156,13 @@
       :instructed_not_started {:followed_over_1h (count (filter #(and (:followed? %) (> (:first-contact-wait-h %) 1)) waited))
                                :followed_over_24h (count (filter #(and (:followed? %) (> (:first-contact-wait-h %) 24)) waited))
                                :open_over_1h (count (filter #(and (= :open (:state %)) (> (:first-contact-wait-h %) 1)) waited))
-                               :open_over_24h (count (filter #(and (= :open (:state %)) (> (:first-contact-wait-h %) 24)) waited))}
+                               :open_over_24h (count (filter #(and (= :open (:state %)) (> (:first-contact-wait-h %) 24)) waited))
+                               ;; ticket が読めず接触の有無が不明な停止。上の件数には入らないので過少でありうる
+                               :unevaluated_stops (count (remove :contacts-known? (concat followed open)))}
       ;; 再開の直前にあった note の source。承認継続・差戻し・新 scope を区別していないので救援率ではない。
-      :resume_last_contact (let [f (frequencies (map #(or (:last-kind %) "none-observed") followed))]
-                             (into {} (map (fn [k] [k (get f k 0)]) ["owner-relay" "owner-direct" "supervisor" "none-observed"])))
+      :resume_last_contact (let [f (frequencies (map #(cond (not (:contacts-known? %)) "unknown-unreadable"
+                                                               :else (or (:last-kind %) "none-observed")) followed))]
+                             (into {} (map (fn [k] [k (get f k 0)]) ["owner-relay" "owner-direct" "supervisor" "none-observed" "unknown-unreadable"])))
       :first_run_to_review (first-run-to-review runs-by-ticket since)
       :ready_queue {:cards (count ready) :card_ticket_assignee_mismatch (count mismatch)}
       :owner_rescue {:status "unknown" :reason "wait_reason 未記録"}}
