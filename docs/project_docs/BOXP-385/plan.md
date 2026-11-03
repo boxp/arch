@@ -34,3 +34,10 @@
 - Owner 向けの入口は vault の `slo-owner-decision.md`。定義と再現手順は `slo-contract.md`。新しい記録項目・alert・cron は Owner 判断の後。
 - P1 指摘 2 件を修正する。summary が読めない run があっても同じ task の読める停止を残し、ticket が読めない停止を接触なしに数えない。欠けた入力は `coverage` などの件数で出す。
 - P1 指摘 1 件を修正する。読めない run を開始時刻で窓の外と判定せず、次の run が窓より前に始まっているときだけ窓の外とする。
+
+## claude-opus Review 廃止への追随（2026-11-03 21:16 UTC run）
+
+- PR #14447 を gate 通過 head で merge する。
+- BOXP-395 の `sli-semantic-change.md` に合わせ、`slo_snapshot.bb` を slo-draft/v2 にする。`continue` の停止を既承認の停滞と救援の source にし、Blocked は未分類のまま分母から外す。移行で Done になった票を受入と分ける。
+- `ai_ops_sli.bb` は BOXP-360 の管理なので変更しない。初回適合の移行分は再現手順で除き、BOXP-360 へ連絡する。
+- `migrated-owner-accepted` に BOXP-387 と BOXP-215 を固定する。ledger の根拠と票の Notes で Owner の受入を確認した 2 票で、自由文は実行時に読まない。BOXP-215 は closed が移行日なので 28 日窓の手順では除く。
