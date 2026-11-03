@@ -28,7 +28,8 @@ LABSJDK_URL="https://github.com/graalvm/labs-openjdk/releases/download/${LABSJDK
 
 ARM_CFLAGS="-march=armv7-a -mfpu=vfpv3-d16 -mfloat-abi=hard"
 LLVM_TOOLS=(llc opt llvm-link llvm-config llvm-objcopy llvm-nm llvm-ar llvm-objdump llvm-readobj lld)
-QEMU_SYSROOT=/usr/arm-linux-gnueabihf
+# libc6:armhf must be used: the older libc6-armhf-cross loader crashes together with it in pthread_create.
+QEMU_SYSROOT=/
 
 mkdir -p "$WORK" "$OUT"
 
