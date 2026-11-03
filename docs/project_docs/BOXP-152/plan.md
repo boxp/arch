@@ -20,3 +20,4 @@
 
 - 配列をモニタにした `synchronized` の高競合で停止していた (2 スレッド 40 万回で 8 回中 7 回)。原因は `llc` に `+db` を渡しておらず、fence が qemu-arm で nop になる CP15 バリアに変換されていたこと。`dmb` を使うように直し、hello フェーズで競合テストを 10 回実行して回帰を検出する
 - atomic read-modify-write の順序が monotonic だったため sequentially consistent に変更した。x86 上の qemu では差が出ないため、実機での確認は未実施
+- 32bit 以下の volatile アクセスが LLVM 上で非 atomic だった。競合する非 atomic load の値は LLVM では未定義なので、`PLAIN` 以外をすべて monotonic atomic に変更した。hello フェーズで volatile long の tearing と volatile int の受け渡しを検査する

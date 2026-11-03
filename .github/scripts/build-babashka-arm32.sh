@@ -20,7 +20,7 @@ OUT="${OUT:-$PWD/out}"
 LLVM_REPO=https://github.com/boxp/llvm-project.git
 LLVM_SHA=9828c929f29aa94bc6ce1d87f33727bc309cd25d
 GRAAL_REPO=https://github.com/boxp/graal.git
-GRAAL_SHA="${GRAAL_SHA:-ceea5a19d14f198d00e0488a0ea0179cc5774db7}"
+GRAAL_SHA="${GRAAL_SHA:-717c28d5b92225f34460be99a80b79e3686104ad}"
 MX_REPO=https://github.com/graalvm/mx.git
 MX_SHA=2675b13e58f97d6d37a4090cdcb5a52c280e1d8c
 LABSJDK_TAG=jvmci-25.3-b21
@@ -277,6 +277,58 @@ JAVA
   javac -d "$WORK/contention" "$WORK/contention/Contention.java"
 }
 
+# A torn volatile long or a lost volatile int handoff means that the atomic accesses are wrong.
+write_volatile_stress() {
+  mkdir -p "$WORK/volatile"
+  cat >"$WORK/volatile/VolatileStress.java" <<'JAVA'
+public class VolatileStress {
+    private static final long A = 0xAAAAAAAA55555555L;
+    private static final long B = 0x55555555AAAAAAAAL;
+    static volatile long wide = A;
+    static volatile int turn;
+    static volatile boolean done;
+
+    public static void main(String[] args) throws Exception {
+        Thread writer = new Thread(() -> {
+            while (!done) {
+                wide = B;
+                wide = A;
+            }
+        });
+        writer.start();
+        for (int i = 0; i < 5_000_000; i++) {
+            long seen = wide;
+            if (seen != A && seen != B) {
+                throw new IllegalStateException("torn volatile long: " + Long.toHexString(seen));
+            }
+        }
+        done = true;
+        writer.join();
+
+        int rounds = 200_000;
+        Thread partner = new Thread(() -> {
+            for (int i = 0; i < rounds; i++) {
+                while (turn != 1) {
+                    Thread.onSpinWait();
+                }
+                turn = 0;
+            }
+        });
+        partner.start();
+        for (int i = 0; i < rounds; i++) {
+            turn = 1;
+            while (turn != 0) {
+                Thread.onSpinWait();
+            }
+        }
+        partner.join();
+        System.out.println("volatile ok");
+    }
+}
+JAVA
+  javac -d "$WORK/volatile" "$WORK/volatile/VolatileStress.java"
+}
+
 check_barriers() {
   # qemu-arm treats the legacy CP15 barrier as a nop, and it is deprecated on ARMv7.
   local disassembly
@@ -301,6 +353,11 @@ phase_hello() {
   for run in 1 2 3 4 5 6 7 8 9 10; do
     expect_output 'contended 2000000' "$WORK/contention/contention-arm32"
   done
+  write_volatile_stress
+  (cd "$WORK/volatile" && native_image_arm32 -cp . VolatileStress "$WORK/volatile/volatile-arm32")
+  expect_output 'volatile ok' "$WORK/volatile/volatile-arm32"
+  # 64-bit volatile accesses have to use the exclusive pair: ldrd alone is not single-copy atomic on ARMv7 without LPAE.
+  grep -qE '\bldrexd\b' <<<"$(arm-linux-gnueabihf-objdump -d "$WORK/volatile/volatile-arm32")" || { echo "::error::no ldrexd in the volatile test image"; exit 1; }
 }
 
 phase_babashka() {
