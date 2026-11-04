@@ -121,7 +121,10 @@
                                                      (:children i)))
                                           :deferred
                                           (not (same? (:id i))) :unreceived
+                                          ;; A duplicate ID is :invalid but still has a checkbox
+                                          ;; and evidence; it stays open until repaired.
                                           (and (:checked? i)
+                                               (not= :invalid (:tag i))
                                                (some #(re-find #"^\s*[-*]\s*証拠:\s*\S" %)
                                                      (:children i)))
                                           :verified

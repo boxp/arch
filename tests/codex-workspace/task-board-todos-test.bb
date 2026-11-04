@@ -147,6 +147,34 @@
     (is (= 4 (:exit (run "skip" "BOXP-4" "TD-01" "--vault" d "--reason" "x"))))
     (is (zero? (:exit (run "change" "BOXP-4" "TD-01" "--vault" d "--required" "--source" "t"))))
     (is (= :required (:tag (first (task-board-todos/parse-items (slurp (str path)))))))))
+(deftest duplicate-ids-never-pass-the-done-gate
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-12.md")
+        run (fn [& args] @(p/process (into ["bb" module] args) {:out :string :err :string}))
+        view #(task-board-todos/ticket-view (slurp (str path)))
+        gate #(task-board-todos/gate-decision {:view (view) :result %})]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) (str "---\ntodo_contract: v1\n---\n## Summary\nhello\n## Plan\n"
+                          "- [x] TD-01【必須】first\n  - 証拠: a\n"
+                          "- [x] TD-01【必須】second\n  - 証拠: b\n"
+                          "## Notes\n"))
+    (is (zero? (:exit (run "ack" "BOXP-12" "--vault" d "--rev" (:rev (view))))))
+    (testing "received, checked and with evidence on both lines, yet not verified"
+      (is (= [:invalid :invalid] (mapv :tag (:items (view)))))
+      (is (= [:received :received] (mapv :state (:items (view)))))
+      (is (not (str/includes? (task-board-todos/state-summary (view)) "done=2"))))
+    (testing "done is held, blocked is not since the items are already received"
+      (is (:hold? (gate "done")))
+      (is (= ["TD-01"] (:blocking-ids (gate "done"))))
+      (is (not (:hold? (gate "blocked")))))
+    (testing "a repaired ID is judged again and can pass"
+      (spit (str path) (str/replace (slurp (str path)) "TD-01【必須】second" "TD-02【必須】second"))
+      (is (zero? (:exit (run "ack" "BOXP-12" "--vault" d "--rev" (:rev (view))))))
+      ;; TD-01's content changed (it was invalid), so its old check and evidence are gone.
+      (is (= :received (:state (first (:items (view))))))
+      (is (= ["TD-01"] (:blocking-ids (gate "done"))))
+      (is (zero? (:exit (run "done" "BOXP-12" "TD-01" "--vault" d "--evidence" "a"))))
+      (is (= [:verified :verified] (mapv :state (:items (view)))))
+      (is (not (:hold? (gate "done")))))))
 (deftest hook-fail-open-mock-path
   (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-3.md") dir (fs/path d "run")
         hook (fn [event input] @(p/process ["bb" module "hook" "--vault" d "--ticket" "BOXP-3" "--run-dir" (str dir) "--event" event] {:in input :out :string :err :string}))]
