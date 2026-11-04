@@ -90,6 +90,14 @@ AI_OPS_REPO="${repo_root}" AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
 (let [root (str (fs/path tmp "c2"))
       sli (str (fs/path (System/getenv "AI_OPS_REPO") "docs" "project_docs" "BOXP-360" "tools" "ai_ops_sli.bb"))]
   (load-file sli)
+  (let [effective (resolve (quote ai-ops-sli/effective-result))
+        unmarked {:status :succeeded :action :implement}]
+    (check "unmarked run before the Review retirement stays review"
+           (= "review" (effective (assoc unmarked :finished-at "2026-11-03T21:11:59Z"))))
+    (check "unmarked run after the Review retirement is continue"
+           (= "continue" (effective (assoc unmarked :finished-at "2026-11-03T21:12:00Z"))))
+    (check "unmarked run without a readable finish time stays review"
+           (= "review" (effective unmarked))))
   (ev root "started" {:event_type "run.started"})
   (ev root "finished" {:event_type "run.finished" :status "succeeded" :result "review"})
   (let [f (ai-ops-ledger/day-file root)
