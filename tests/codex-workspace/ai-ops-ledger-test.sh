@@ -515,6 +515,17 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
   (assert (not (str/includes? s "ai_ops_v1_info"))))
 (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
 (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+(fs/create-dirs (fs/path vault "Boards"))
+(spit (str (fs/path vault "Boards" "Task Board.md")) "## Ready\n")
+(ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+(assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+(assert (str/includes? (slurp (str (ai-ops-ledger/sli-path root))) "ai_ops_v2_export_ok 1"))
+(let [tmpfile (java.io.File/createTempFile "v2-test" ".prom") deadline (+ (System/currentTimeMillis) 30000)]
+  (assert (str/includes? (ai-ops-ledger/v2-export-text root vault tmpfile deadline 200) "ai_ops_v2_export_ok 0"))
+  (with-redefs [ai-ops-ledger/slo-script "/nonexistent"]
+    (let [s (ai-ops-ledger/v2-export-text root vault tmpfile deadline 10000)]
+      (assert (str/includes? s "ai_ops_v2_export_ok 0"))
+      (assert (not (str/includes? s "ai_ops_v2_info"))))))
 (def old (slurp (str (ai-ops-ledger/sli-path root))))
 ;; 容量上限付近: v1 の追記は実際に追記するバイト数で判定し、v0 の出力を上限超えにしない。
 ;; (旧実装は余白を 128 bytes 固定と見積もり、export_ok の HELP/TYPE/値だけでそれを超えて sli.prom 全体が
@@ -617,7 +628,7 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (loop [i 0] (when (and @ai-ops-ledger/sli-refresh-running (< i 100)) (Thread/sleep 100) (recur (inc i))))
     (assert (not @ai-ops-ledger/sli-refresh-running))
     ;; extract + prom (v0) + insight prom (v1)
-    (assert (= 3 @calls))))
+    (assert (= 4 @calls))))
 (println "ai-ops-ledger-test: SLI export ledger merge and async refresh passed")'
 
 # A refresh in another process (resident loop vs manual tick) holds sli.lock
