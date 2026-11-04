@@ -219,4 +219,16 @@
     (let [processes (doall (repeatedly 6 #(p/process ["bb" module "hook" "--vault" d "--ticket" "BOXP-9" "--run-dir" (str dir) "--event" "stop"] {:in "{}" :out :string :err :string})))
           outputs (mapv #(-> @% :out) processes)]
       (is (= 2 (count (remove str/blank? outputs)))))))
+(deftest writes-keep-ticket-permissions-mock-path
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-10.md")
+        run (fn [& args] @(p/process (into ["bb" module] args) {:out :string :err :string}))
+        mode #(fs/str->posix (fs/posix->str (fs/posix-file-permissions path)))]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) sample)
+    (doseq [perm ["rw-r--r--" "rw-rw-r--"]]
+      (fs/set-posix-file-permissions path perm)
+      (let [before (mode)]
+        (is (zero? (:exit (run "add" "BOXP-10" "--vault" d "--optional" "--text" (str "perm " perm) "--source" "test"))))
+        (is (= (fs/posix->str before) (fs/posix->str (mode))))
+        (is (str/includes? (slurp (str path)) (str "perm " perm)))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))

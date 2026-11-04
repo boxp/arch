@@ -213,6 +213,15 @@
                                   ".tmp"
                                   (make-array java.nio.file.attribute.FileAttribute 0))]
     (try (spit (str tmp) text)
+         ;; createTempFile is 0600: a replaced ticket keeps its mode and group so
+         ;; other readers (runner, Hermes, sync) are not locked out.
+         (when (Files/exists p (make-array java.nio.file.LinkOption 0))
+           (try (fs/set-posix-file-permissions tmp (fs/posix-file-permissions p))
+                (catch UnsupportedOperationException _ nil))
+           (try (Files/setAttribute tmp "posix:group"
+                                    (Files/getAttribute p "posix:group" (make-array java.nio.file.LinkOption 0))
+                                    (make-array java.nio.file.LinkOption 0))
+                (catch Exception _ nil)))
          (Files/move tmp
                      p
                      (into-array StandardCopyOption

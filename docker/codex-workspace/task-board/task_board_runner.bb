@@ -329,6 +329,14 @@
 (defn localllm-assignee? [assignee]
   (= localllm-assignee assignee))
 
+(defn todo-contract-agent?
+  "Only the Claude and Codex CLI workers run under the TODO contract: they get
+  its commands and hooks, and `todo-start.edn` subjects their result to the gate.
+  localllm and localllm-coder get none of these, so holding them would only use
+  up the continuation budget."
+  [agent]
+  (and (not (localllm-assignee? agent)) (not= localllm-coder-assignee agent)))
+
 (defn supported-assignee? [assignee]
   (or (claude-assignee? assignee)
       (localllm-assignee? assignee)
@@ -2298,7 +2306,7 @@
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
                     (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     (ai-ops-decision-prompt ai-ops)
-                    (when (and (#{:implement :review-fix :blocked-retry} action) (not= "localllm" agent))
+                    (when (and (#{:implement :review-fix :blocked-retry} action) (todo-contract-agent? agent))
                       (when-let [view (todo-view ticket-id)]
                         (str "TODO revision " (:rev view) " mode " (name (:mode view)) ". "
                              ((resolve 'task-board-todos/diff-text) view) "\n"
@@ -3080,7 +3088,7 @@
         ai-ops (fetch-ai-ops-alerts)
         ai-ops-fields (ai-ops-summary-fields ai-ops)]
     (fs/create-dirs dir)
-    (when-let [view (and (#{:implement :review-fix :blocked-retry} action) (todo-view ticket-id))]
+    (when-let [view (and (#{:implement :review-fix :blocked-retry} action) (todo-contract-agent? agent) (todo-view ticket-id))]
       (spit (str (fs/path dir "todo-start.edn")) (pr-str (select-keys view [:rev :mode])))
       (refresh-todo-state! ticket-id))
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent ai-ops))
@@ -6184,6 +6192,11 @@
                {:models-seen ["m" "other"] :last-message "last"}]] )]
       (if (= actual expected) (println (str "PASS: " label))
           (do (println (str "FAIL: " label " got " (pr-str actual))) (swap! failures conj label))))
+    ;; BOXP-408: only the Claude and Codex CLI workers run under the TODO contract.
+    (doseq [[agent expected] {"claude-opus" true "codex" true "codex-sol" true "localllm" false "localllm-coder" false}]
+      (if (= expected (todo-contract-agent? agent))
+        (println (str "PASS: todo contract " agent))
+        (do (println (str "FAIL: todo contract " agent)) (swap! failures conj (str "todo contract " agent)))))
     ;; BOXP-277: localllm maps to :docs-edit; BOXP-290: Backlog gets the runner-side groom.
     (doseq [[status expected] {"backlog" :docs-groom "ready" :docs-edit "in-progress" :docs-edit
                                "review" :docs-edit "blocked" :docs-edit "done" nil}]
