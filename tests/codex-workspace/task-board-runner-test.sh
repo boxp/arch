@@ -230,6 +230,25 @@ EOF
   chmod +x "${bin_dir}/claude"
 }
 
+make_fake_curl() {
+  # BOXP-405: stands in for the Grafana datasource proxy read. Serves
+  # CURL_FAKE_RESPONSE_FILE, or fails with CURL_FAKE_EXIT; logs its arguments.
+  local bin_dir="$1"
+  cat >"${bin_dir}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${CURL_FAKE_ARG_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"${CURL_FAKE_ARG_LOG}"
+fi
+if [[ "${CURL_FAKE_EXIT:-0}" != 0 ]]; then
+  echo "curl: (${CURL_FAKE_EXIT}) fake failure" >&2
+  exit "${CURL_FAKE_EXIT}"
+fi
+cat "${CURL_FAKE_RESPONSE_FILE}"
+EOF
+  chmod +x "${bin_dir}/curl"
+}
+
 make_fake_gh() {
   local bin_dir="$1"
   cat >"${bin_dir}/gh" <<'EOF'
@@ -2854,6 +2873,135 @@ test_fable_implement_prompt_includes_append_note() {
   assert_file_contains "${prompt_log}" 'append-note BOXP-604'
   assert_file_contains "${prompt_log}" 'milestone'
   assert_file_contains "${prompt_log}" '\.claude/skills/obsidian-task-board'
+}
+
+test_ai_ops_alerts_prompt_section_and_summary() {
+  # BOXP-405: the runner reads AiOps* alerts once per run and shows the agent
+  # only allowlisted names; summary.edn keeps the names and the read status.
+  local tmp vault state bin prompt_log response arg_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  response="${tmp}/alerts.json"
+  arg_log="${tmp}/curl-args.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  make_fake_curl "${bin}"
+  cat >"${response}" <<'EOF'
+{"status":"success","data":{"alerts":[
+ {"labels":{"alertname":"Watchdog","severity":"none"},"annotations":{"description":"pipeline"},"state":"firing","activeAt":"2026-11-04T00:00:00Z","value":"1e+00"},
+ {"labels":{"alertname":"AiOpsOutcomeMeasurementStale","severity":"warning","component":"ai-ops","definition_version":"outcome/v1-draft"},"annotations":{"description":"SECRET-ANNOTATION"},"state":"pending","activeAt":"2026-11-04T00:00:00Z","value":"0e+00"},
+ {"labels":{"alertname":"AiOpsOutcomeBurnFast","severity":"warning","component":"ai-ops","window":"7d","definition_version":"outcome/v1-draft"},"annotations":{"description":"SECRET-ANNOTATION"},"state":"firing","activeAt":"2026-11-04T00:00:00Z","value":"2.5e+00"}
+]}}
+EOF
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-640|BOXP-640: ai ops alerts]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-640 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=ds-test \
+    GRAFANA_URL='http://grafana.test:3000/' \
+    GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
+    CURL_FAKE_RESPONSE_FILE="${response}" \
+    CURL_FAKE_ARG_LOG="${arg_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-alerts.out
+
+  assert_file_contains "${prompt_log}" '^AI Ops decision support'
+  assert_file_contains "${prompt_log}" 'Status: alerts AiOpsOutcomeBurnFast\{state=firing,severity=warning,window=7d,definition_version=outcome/v1-draft\}; AiOpsOutcomeMeasurementStale\{state=pending,severity=warning,definition_version=outcome/v1-draft\}\.'
+  assert_file_contains "${prompt_log}" 'Not allowed because of these alerts'
+  assert_file_not_contains "${prompt_log}" 'Watchdog'
+  assert_file_not_contains "${prompt_log}" 'SECRET-ANNOTATION'
+  assert_file_not_contains "${prompt_log}" 'glsa_fake_token_value'
+  assert_file_contains "${arg_log}" '--max-time 5 .*http://grafana.test:3000/api/datasources/proxy/uid/ds-test/api/v1/alerts'
+  assert_file_not_contains "${arg_log}" 'glsa_fake_token_value'
+  assert_run_summary_contains "${state}" BOXP-640 ':ai-ops-alerts-status "ok"'
+  assert_run_summary_contains "${state}" BOXP-640 ':ai-ops-alerts \["AiOpsOutcomeBurnFast" "AiOpsOutcomeMeasurementStale"\]'
+  assert_run_summary_contains "${state}" BOXP-640 ':result "done"'
+  if grep -q 'SECRET-ANNOTATION' "$(find "${state}/runs/BOXP-640" -name summary.edn | sort | tail -n 1)"; then
+    fail "summary must not keep alert annotations"
+  fi
+}
+
+test_ai_ops_alerts_read_failure_is_unknown_not_empty() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  make_fake_curl "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-641|BOXP-641: ai ops alerts down]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-641 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=ds-test \
+    GRAFANA_URL='http://grafana.test:3000' \
+    GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
+    CURL_FAKE_EXIT=7 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-alerts-down.out
+
+  assert_file_contains "${prompt_log}" "Status: unavailable \(measurement could not be read: curl-exit-7\)\. Treat this as unknown, not as 'no alerts'\."
+  assert_run_summary_contains "${state}" BOXP-641 ':ai-ops-alerts-status "unavailable"'
+  assert_run_summary_contains "${state}" BOXP-641 ':result "done"'
+  if grep -q ':ai-ops-alerts \[' "$(find "${state}/runs/BOXP-641" -name summary.edn | sort | tail -n 1)"; then
+    fail "an unavailable read must not record an empty alert list"
+  fi
+}
+
+test_ai_ops_alerts_section_absent_when_disabled() {
+  local tmp vault state bin prompt_log response
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  response="${tmp}/alerts.json"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_curl "${bin}"
+  printf '%s\n' '{"status":"success","data":{"alerts":[]}}' >"${response}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-642|BOXP-642: ai ops alerts off]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-642 in-progress codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID= \
+    GRAFANA_URL='http://grafana.test:3000' \
+    GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
+    CURL_FAKE_RESPONSE_FILE="${response}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-alerts-off.out
+
+  assert_file_not_contains "${prompt_log}" 'AI Ops decision support'
+  if grep -q ':ai-ops-alerts' "$(find "${state}/runs/BOXP-642" -name summary.edn | sort | tail -n 1)"; then
+    fail "summary must not mention AI Ops alerts when the read is disabled"
+  fi
+
+  # Enabled with no AiOps alert firing: the section says so explicitly and
+  # the summary records an empty list, distinct from an unavailable read.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-643|BOXP-643: ai ops alerts none]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-643 in-progress codex
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=ds-test \
+    GRAFANA_URL='http://grafana.test:3000' \
+    GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
+    CURL_FAKE_RESPONSE_FILE="${response}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-alerts-none.out
+
+  assert_file_contains "${prompt_log}" 'Status: no AiOps alerts are firing or pending\.'
+  assert_run_summary_contains "${state}" BOXP-643 ':ai-ops-alerts-status "ok"'
+  assert_run_summary_contains "${state}" BOXP-643 ':ai-ops-alerts \[\]'
 }
 
 test_groom_prompt_includes_append_note() {
