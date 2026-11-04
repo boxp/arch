@@ -1,5 +1,5 @@
 #!/usr/bin/env bb
-(require '[clojure.test :refer [deftest is run-tests]] '[clojure.string :as str] '[babashka.fs :as fs] '[babashka.process :as p])
+(require '[clojure.test :refer [deftest is run-tests testing]] '[clojure.string :as str] '[babashka.fs :as fs] '[babashka.process :as p])
 (load-file "docker/codex-workspace/task-board/task_board_todos.bb")
 (def module "docker/codex-workspace/task-board/task_board_todos.bb")
 (def sample "---\ntodo_contract: v1\n---\n## Summary\nhello\n## Acceptance Criteria\ncheck\n## Plan\n- [ ] TD-01【必須】test\n  - AC: one\n> - [ ] TD-02【必須】ignored\n```\n- [ ] TD-03【必須】ignored\n```\n  - [ ] TD-04【必須】ignored\n## Notes\n- [ ] TD-05【必須】ignored\n")
@@ -163,6 +163,54 @@
     (is (zero? (:exit (run "cancel" "BOXP-8" "TD-01" "--vault" d "--reason" "withdrawn" "--source" "test"))))
     (is (:hold? (gate)))
     (is (str/includes? (slurp (str path)) "deferred=1"))))
+(deftest changed-completion-does-not-carry-over-mock-path
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-10.md")
+        run (fn [& args] @(p/process (into ["bb" module] args) {:out :string :err :string}))
+        view #(task-board-todos/ticket-view (slurp (str path)))
+        state (fn [id] (:state (some (fn [i] (when (= id (:id i)) i)) (:items (view)))))
+        gate #(task-board-todos/gate-decision {:view (view) :start-rev "start" :result "done"})
+        ack #(is (zero? (:exit (run "ack" "BOXP-10" "--vault" d "--rev" (:rev (view))))))
+        finish (fn [] (ack) (is (zero? (:exit (run "done" "BOXP-10" "TD-01" "--vault" d "--evidence" "old-proof"))))
+                 (is (= :verified (state "TD-01"))) (is (not (:hold? (gate)))))]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) "---\ntodo_contract: v1\n---\n## Summary\nx\n## Plan\n- [ ] TD-01【必須】first\n  - AC: keep\n- [ ] TD-02【任意】other\n")
+    (testing "change command: acknowledging the new content is not doing it"
+      (finish)
+      (let [rev (:rev (view))]
+        (is (zero? (:exit (run "change" "BOXP-10" "TD-01" "--vault" d "--text" "second" "--source" "owner"))))
+        (is (not= rev (:rev (view)))))
+      (is (= :unreceived (state "TD-01")))
+      (is (not (str/includes? (slurp (str path)) "old-proof")))
+      (is (str/includes? (slurp (str path)) "- [ ] TD-01【必須】second\n  - AC: keep"))
+      (ack)
+      (is (= :received (state "TD-01")))
+      (is (:hold? (gate)))
+      (is (zero? (:exit (run "done" "BOXP-10" "TD-01" "--vault" d "--evidence" "new-proof"))))
+      (is (= :verified (state "TD-01"))))
+    (testing "a change that repeats the current content keeps the completion"
+      (is (zero? (:exit (run "change" "BOXP-10" "TD-01" "--vault" d "--text" "second" "--required" "--source" "owner"))))
+      (is (= :verified (state "TD-01")))
+      (is (str/includes? (slurp (str path)) "new-proof")))
+    (testing "a hand edit in the vault cannot carry the completion through ack either"
+      (spit (str path) (str/replace (slurp (str path)) "【必須】second" "【必須】third"))
+      (is (= :unreceived (state "TD-01")))
+      (let [rev (:rev (view))]
+        (ack)
+        (is (= rev (:rev (view))) "reopening must not create a new revision"))
+      (is (= :received (state "TD-01")))
+      (is (not (str/includes? (slurp (str path)) "new-proof")))
+      (is (str/includes? (slurp (str path)) "- [ ] TD-01【必須】third\n  - AC: keep"))
+      (is (:hold? (gate))))
+    (testing "ack leaves untouched items and a stale deferral is dropped"
+      (is (zero? (:exit (run "done" "BOXP-10" "TD-01" "--vault" d "--evidence" "third-proof"))))
+      (is (zero? (:exit (run "skip" "BOXP-10" "TD-02" "--vault" d "--reason" "later"))))
+      (is (= :deferred (state "TD-02")))
+      (spit (str path) (str/replace (slurp (str path)) "【任意】other" "【任意】other2"))
+      (ack)
+      (is (= :received (state "TD-02")))
+      (is (= :verified (state "TD-01")))
+      (is (str/includes? (slurp (str path)) "third-proof"))
+      (is (not (:hold? (gate)))))))
 (deftest concurrent-stop-limit-mock-path
   (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-9.md") dir (fs/path d "run")]
     (fs/create-dirs (fs/parent path)) (fs/create-dirs dir)

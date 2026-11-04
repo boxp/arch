@@ -252,6 +252,26 @@
                        (re-pattern (str "(?ms)(^## Plan[^\n]*\n)"
                                         (java.util.regex.Pattern/quote plan)))
                        (fn [[_ header]] (str header new-plan)))))
+(def tag-labels {:required "必須", :optional "任意", :cancelled "取消"})
+(defn completion-child? [line] (boolean (re-find #"^\s*[-*]\s*(証拠|見送り):" line)))
+(defn reopened-item
+  "A completion or deferral belongs to the content it was recorded for, so new content
+  starts open. Neither the mark nor these children are hashed: the revision is unchanged."
+  [id tag body children]
+  (str/join "\n" (cons (str "- [ ] " id "【" (tag-labels tag) "】" body)
+                        (remove completion-child? children))))
+(defn reopen-changed
+  "Covers hand edits in the vault, which never pass through the change command."
+  [text view]
+  (reduce (fn [current id]
+            (let [item (some #(when (= id (:id %)) %) (parse-items current))]
+              (if (and item
+                       (#{:required :optional} (:tag item))
+                       (or (:checked? item) (some completion-child? (:children item))))
+                (replace-item current item (reopened-item id (:tag item) (:text item) (:children item)))
+                current)))
+          text
+          (get-in view [:diff :changed])))
 (defn opts
   [args]
   (loop [xs args
@@ -358,7 +378,7 @@
                     tag (cond (:required o) :required
                               (:optional o) :optional
                               :else (:tag item))
-                    label {:required "必須", :optional "任意", :cancelled "取消"}
+                    label tag-labels
                     new-text
                     (case cmd
                       "add"
@@ -405,20 +425,25 @@
                                               (not (str/starts-with? (:hash item)
                                                                      (:expect-hash o))))
                                      (die "hash mismatch" 3))
-                                   (replace-item
-                                    text
-                                    item
-                                    (str "- ["
-                                         (if (:checked? item) "x" " ")
-                                         "] "
-                                         item-id
-                                         "【"
-                                         (label tag)
-                                         "】"
-                                         (or (:text o) (:text item))
-                                         (when (seq (:children item))
-                                           (str "\n"
-                                                (str/join "\n" (:children item)))))))
+                                   (let [body (or (:text o) (:text item))
+                                         unchanged? (= (:hash item)
+                                                       (item-hash (assoc item :tag tag :text body)))]
+                                     (replace-item
+                                      text
+                                      item
+                                      (if unchanged?
+                                        (str "- ["
+                                             (if (:checked? item) "x" " ")
+                                             "] "
+                                             item-id
+                                             "【"
+                                             (label tag)
+                                             "】"
+                                             body
+                                             (when (seq (:children item))
+                                               (str "\n"
+                                                    (str/join "\n" (:children item)))))
+                                        (reopened-item item-id tag body (:children item))))))
                       "cancel" (replace-item text
                                              item
                                              (str "- [ ] " item-id
@@ -432,6 +457,7 @@
                           (if (= (:ack-rev view) (:rev view))
                             text
                             (-> text
+                                (reopen-changed view)
                                 (set-fm "todo_ack_rev" (:rev view))
                                 (set-fm "todo_ack_items"
                                         (str/join ","
