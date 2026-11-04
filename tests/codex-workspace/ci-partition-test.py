@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def check_cases(cases, definitions):
-    if len(cases) != 130 or len(set(cases)) != len(cases):
+    if len(cases) != 131 or len(set(cases)) != len(cases):
         raise ValueError('missing or duplicate baseline case')
     if set(cases) != {name for name in definitions if name.startswith('test_')} | {'root_guard_test'}:
         raise ValueError('missing or unknown case')
@@ -52,6 +52,7 @@ class PartitionTest(unittest.TestCase):
             'bb tests/codex-workspace/autonomy-policy-test.bb',
             'bb tests/codex-workspace/autonomy-control-test.bb',
             'bb tests/codex-workspace/vault-writer-test.bb',
+            'bb tests/codex-workspace/task-board-todos-test.bb',
         ]
         for command in commands:
             self.assertEqual(workflow.count(command), 1, command)

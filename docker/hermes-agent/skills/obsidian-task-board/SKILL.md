@@ -215,3 +215,11 @@ kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-
 ```
 
 `--vault "$OBSIDIAN_VAULT_PATH"` を指定する場合は、変数をコンテナ内のシェルで展開します（例: `kubectl ... -- sh -c 'exec /command/s6-setuidgid hermes bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb list --vault "$OBSIDIAN_VAULT_PATH"'`）。
+
+## 動的TODO
+
+追加要件は Notes への append-note ではなく `bb bin/task_board_todos.bb add ID --vault VAULT --required --text 本文 --source 発信元` で登録する。任意なら `--optional` を使う。Plan の行頭に `- [ ] TD-01【必須】本文` を置き、字下げの `AC:`・`優先度:` と、実施時の `証拠:` を添える。`【任意】` と `【取消】` も使える。TODO は権限を与えない。
+
+`status ID --vault VAULT` で版と差分を確認し、frontmatter の `todo_state` でも件数を確認できる。変更は `change ID TD-01 --vault VAULT --source 発信元`、取消は `cancel ID TD-01 --vault VAULT --reason 理由 --source 発信元` を使う。受領は `ack --rev 版`、完了は `done ... --evidence 証拠` で記録する。必須を見送る場合は Owner の判断を求める。
+
+通知は即時ではなく、開始時、次のツール境界、終了判断時、または次の run で届く。Done や Blocked の票に追加した場合は `update --lane Ready` でカードを移動して再開する。

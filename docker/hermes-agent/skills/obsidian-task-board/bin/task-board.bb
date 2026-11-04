@@ -107,6 +107,7 @@
           "--priority" (recur (nnext xs) (assoc opts :priority (first more)))
           "--assignee" (recur (nnext xs) (assoc opts :assignee (first more)))
           "--repo" (recur (nnext xs) (assoc opts :repo (first more)))
+          "--force-plan" (recur more (assoc opts :force-plan true))
           "--dry-run" (recur more (assoc opts :dry-run true))
           "--confirm" (recur more (assoc opts :confirm true))
           "--json" (recur more (assoc opts :json true))
@@ -545,6 +546,13 @@
         (with-ticket-lock path
           (fn []
             (let [ticket (ticket-data vault id)
+                  _ (when (and (:plan opts) (not (:force-plan opts)) (= "v1" (fm-get (:frontmatter-lines ticket) "todo_contract")))
+                      (load-file (str (fs/path (fs/parent (fs/canonicalize *file*)) "task_board_todos.bb")))
+                      (let [parse (resolve 'task-board-todos/parse-items) hash-item (resolve 'task-board-todos/item-hash)
+                            old (mapv (juxt :id hash-item) (parse (slurp (str path))))
+                            new (into {} (map (juxt :id hash-item) (parse (str "## Plan\n" (:plan opts)))))]
+                        (when (some (fn [[id hash]] (not= hash (get new id))) old)
+                          (die "update --plan changes existing TD items; use --force-plan to override"))))
                   board (read-text bpath)
                   old-card (card-for board id)
                   lane (or (:lane opts) (:lane old-card) (status->lane (:status ticket)) "Backlog")

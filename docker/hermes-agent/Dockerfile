@@ -73,7 +73,7 @@ COPY skills/ /opt/boxp/hermes-agent/skills/
 COPY patches/ /opt/boxp/hermes-agent/patches/
 
 RUN chmod 0644 /opt/boxp/hermes-agent/skills/obsidian-task-board/SKILL.md \
-    && chmod 0755 /opt/boxp/hermes-agent/skills/obsidian-task-board/bin/task-board.bb \
+    && chmod 0755 /opt/boxp/hermes-agent/skills/obsidian-task-board/bin/task-board.bb /opt/boxp/hermes-agent/skills/obsidian-task-board/bin/task_board_todos.bb \
     && chown -R root:root /opt/obsidian-headless /opt/boxp/hermes-agent/skills
 
 # Patch upstream cron/scheduler.py: report ENETUNREACH / Errno 101 as "network

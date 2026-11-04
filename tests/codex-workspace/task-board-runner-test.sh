@@ -4666,6 +4666,28 @@ test_assignment_repairs() {
 }
 
 
+test_dynamic_todo_midrun() {
+  local tmp vault state bin pid rev
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-990 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-990 --vault "${vault}" --required --text task --source test >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^assignee: codex$'
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" 'runの結果を保留'
+  rev="$(bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" status BOXP-990 --vault "${vault}" --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["rev"])')"
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" ack BOXP-990 --vault "${vault}" --rev "${rev}" >/dev/null
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" done BOXP-990 TD-01 --vault "${vault}" --evidence test >/dev/null
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >"${tmp}/tick2"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^status: done$'
+}
+
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
 mapfile -t cases < "${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"

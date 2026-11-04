@@ -93,6 +93,7 @@ jobs:
           time bb tests/codex-workspace/autonomy-policy-test.bb
           time bb tests/codex-workspace/autonomy-control-test.bb
           time bb tests/codex-workspace/vault-writer-test.bb
+          time bb tests/codex-workspace/task-board-todos-test.bb
 
   test:
     timeout-minutes: 2
