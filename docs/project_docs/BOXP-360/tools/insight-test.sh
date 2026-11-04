@@ -503,14 +503,21 @@ check "groom の review マーカーは Ready 扱い (Review 到達は implement
 bb -e '
 (load-file "ai_ops_insight.bb")
 (let [er (resolve (symbol "ai-ops-insight" "effective-result"))
-      er (or er (resolve (quote effective-result)))]
-  (assert (= "ready" (er "succeeded" "groom" "review")) "groom + review マーカー → ready")
-  (assert (= "ready" (er "succeeded" "groom" nil)) "groom + マーカーなし → ready")
-  (assert (= "ready" (er "succeeded" "docs-groom" "review")) "docs-groom + review → ready")
-  (assert (= "blocked" (er "succeeded" "docs-groom" "blocked")) "docs-groom + blocked → blocked")
-  (assert (= "review" (er "succeeded" "implement" nil)) "implement + マーカーなし → review")
-  (assert (= "review" (er "succeeded" "implement" "ready")) "implement + 未知マーカー → review")
-  (assert (= "done" (er "succeeded" "implement" "done")))
-  (assert (= "blocked" (er "failed" "groom" "review")) "exit≠0 は action に関わらず blocked")
-  (assert (nil? (er "interrupted" "implement" nil)) "中断は終了先なし")
-  (println "ok - effective-result は runner final-status の規則 (groom→ready / docs-groom→blocked|ready / done|review|blocked / それ以外 review) に一致"))'
+      er (or er (resolve (quote effective-result)))
+      before "2026-11-03T21:11:59Z"
+      after "2026-11-03T21:12:00Z"]
+  (assert (= "ready" (er "succeeded" "groom" "review" before)) "groom + review マーカー → ready")
+  (assert (= "ready" (er "succeeded" "groom" nil before)) "groom + マーカーなし → ready")
+  (assert (= "ready" (er "succeeded" "docs-groom" "review" before)) "docs-groom + review → ready")
+  (assert (= "blocked" (er "succeeded" "docs-groom" "blocked" before)) "docs-groom + blocked → blocked")
+  (assert (= "review" (er "succeeded" "implement" nil before)) "implement + マーカーなし → review")
+  (assert (= "review" (er "succeeded" "implement" "ready" before)) "implement + 未知マーカー → review")
+  (assert (= "continue" (er "succeeded" "implement" nil after)) "切替後の implement + マーカーなし → continue")
+  (assert (= "continue" (er "succeeded" "implement" "ready" after)) "切替後の implement + 未知マーカー → continue")
+  (assert (= "review" (er "succeeded" "implement" nil nil)) "終了時刻が読めない run は旧定義のまま review")
+  (assert (= "review" (er "succeeded" "implement" "review" after)) "切替後も旧 review マーカーの生値は変えない")
+  (assert (= "ready" (er "succeeded" "groom" nil after)) "切替後も groom は ready")
+  (assert (= "done" (er "succeeded" "implement" "done" before)))
+  (assert (= "blocked" (er "failed" "groom" "review" before)) "exit≠0 は action に関わらず blocked")
+  (assert (nil? (er "interrupted" "implement" nil before)) "中断は終了先なし")
+  (println "ok - effective-result は runner final-status の規則 (groom→ready / docs-groom→blocked|ready / done|review|continue|owner-acceptance|blocked / それ以外は切替前 review・切替後 continue) に一致"))'

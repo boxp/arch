@@ -26,3 +26,18 @@
 ## claude-fable retry 1/2（2026-11-03 08:30 UTC run、PR #14411 codex review P1 対応）
 
 13. P1 指摘（複数 PR を review した run で一部 usage ファイルの書き込みが失敗しても、別の記録が1件あれば欠測と判定されず合計が完全な値に見える）を修正する。runner は review した PR ごとに codex を1回呼ぶので、`summary.edn` の `checked-pr-urls` 件数に失敗 gate が `codex-review` なら1を足した `review_gate_expected_calls` を期待呼出し数とし、usage 行数がそれに満たない場合も `review_gate_usage_unrecorded` を付ける。URL は件数だけ使い、レポートへ出さない。unit に複数 PR の部分記録ケースを追加し、集計を `run-join-2026-11-03c.json` に残す（既存 run は review 記録 0 のため件数差は新規 run 分のみ）。
+
+## claude-opus SLO 収束（2026-11-03 18:41 UTC run）
+
+- PR lolice#1001 を通常 merge し、Fable パネルの実 query を照合する。再復元はしない。
+- 既存 metadata だけで SLO 案の現在値を出す `scripts/ai-observability/slo_snapshot.bb` を追加し、合成ケースで救援の定義を固定する。runner・image・Hermes は変更しない。
+- Owner 向けの入口は vault の `slo-owner-decision.md`。定義と再現手順は `slo-contract.md`。新しい記録項目・alert・cron は Owner 判断の後。
+- P1 指摘 2 件を修正する。summary が読めない run があっても同じ task の読める停止を残し、ticket が読めない停止を接触なしに数えない。欠けた入力は `coverage` などの件数で出す。
+- P1 指摘 1 件を修正する。読めない run を開始時刻で窓の外と判定せず、次の run が窓より前に始まっているときだけ窓の外とする。
+
+## claude-opus Review 廃止への追随（2026-11-03 21:16 UTC run）
+
+- PR #14447 を gate 通過 head で merge する。
+- BOXP-395 の `sli-semantic-change.md` に合わせ、`slo_snapshot.bb` を slo-draft/v2 にする。`continue` の停止を既承認の停滞と救援の source にし、Blocked は未分類のまま分母から外す。移行で Done になった票を受入と分ける。
+- `ai_ops_sli.bb` は BOXP-360 の管理なので変更しない。初回適合の移行分は再現手順で除き、BOXP-360 へ連絡する。
+- `migrated-owner-accepted` に BOXP-387 と BOXP-215 を固定する。ledger の根拠と票の Notes で Owner の受入を確認した 2 票で、自由文は実行時に読まない。BOXP-215 は closed が移行日なので 28 日窓の手順では除く。

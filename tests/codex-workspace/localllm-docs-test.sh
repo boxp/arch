@@ -95,7 +95,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         research? (= "docs_research_step" schema-name)
         propose? (= "docs_setting_proposal" schema-name)
         verify? (= "docs_setting_verify" schema-name)
-        revise? (str/includes? (str user) "Review にあり")
+        revise? (str/includes? (str user) "人間の追加指示（改稿指示）")
         corpus-note "Projects/task-board-localllm-docs/refs/corpus/design-v2.md"
         ;; propose mode answers (BOXP-277 owner purpose): canon facts cite the
         ;; corpus note the scripted research read; the proposal is new text.
@@ -168,7 +168,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                            :changes changes :conflicts ["AMEND-CONFLICT: 射程の記述は原典に無い"] :questions ["射程は何歩か"] :sources [rule]}))]
     (spit req-log (str (pr-str {:uri uri :model (:model parsed) :mode mode :schema? (some? (:response_format parsed))
                                 :schema-name schema-name
-                                :stream? (:stream parsed) :revise? (str/includes? (str user) "Review にあり")
+                                :stream? (:stream parsed) :revise? (str/includes? (str user) "人間の追加指示（改稿指示）")
                                 :mentions-secret? (str/includes? (str user) "FIXTURE-DECOY")
                                 :sees-token-value? (str/includes? (str user) "SECRET-LINE-TOKEN-VALUE")
                                 :sees-redaction-marker? (str/includes? (str user) "〔秘匿")
@@ -456,12 +456,12 @@ test_docs_model_selects_a_served_model() {
   write_ticket "${VAULT}" BOXP-740 ready localllm "${PILOT}/runbook.md" "" "" "qwen38-27b"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   assert_no_cloud
-  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-740\|.*status::review'
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-740\|.*status::blocked'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
   assert_file_contains "${REQ_LOG}" ':uri "/v1/models"'
   assert_file_contains "${REQ_LOG}" ':model "qwen38-27b"'
   assert_file_not_contains "${REQ_LOG}" ':model "gemma4-26b"'
-  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" 'Review で停止しました.*model=qwen38-27b'
+  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '本人確認待ちで停止しました.*model=qwen38-27b'
   local run_dir
   run_dir="$(find "${STATE}/runs/BOXP-740" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   assert_file_contains "${run_dir}/localllm-audit.edn" ':model "qwen38-27b"'
@@ -479,7 +479,7 @@ test_revision_keeps_the_notes_model_or_blocks() {
   write_create_ticket "${VAULT}" BOXP-745 ready "灯火街に灯籠組合の見習いの新しいキャラを追加してほしい。" "" "${CORPUS}"
   sed -i 's/^docs-mode: create$/docs-model: qwen38-27b\ndocs-mode: create/' "${VAULT}/Tickets/BOXP-745.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-745.md" 'Review で停止しました.*model=qwen38-27b'
+  assert_file_contains "${VAULT}/Tickets/BOXP-745.md" '本人確認待ちで停止しました.*model=qwen38-27b'
   assert_file_not_contains "${REQ_LOG}" ':model "gemma4-26b"'
   local note="${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md"
   [[ -f "${note}" ]] || fail "proposal note must be created"
@@ -504,7 +504,7 @@ test_revision_keeps_the_notes_model_or_blocks() {
   printf -- '- 2026-10-23: boxp: gemma4-26b で改稿してください\n' >>"${VAULT}/Tickets/BOXP-745.md"
   : >"${REQ_LOG}"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out3"
-  assert_file_contains "${VAULT}/Tickets/BOXP-745.md" '改稿（置換） し Review で停止しました.*model=gemma4-26b'
+  assert_file_contains "${VAULT}/Tickets/BOXP-745.md" '改稿（置換） し 本人確認待ちで停止しました.*model=gemma4-26b'
   assert_file_contains "${REQ_LOG}" ':model "gemma4-26b"'
   assert_file_not_contains "${REQ_LOG}" ':model "qwen38-27b"'
   [[ "$(proposal_count)" == 1 ]] || fail "revision must not create a second note"
@@ -550,10 +550,10 @@ test_apply_moves_to_review_without_cloud() {
   write_ticket "${VAULT}" BOXP-700 ready localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   assert_no_cloud
-  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-700\|.*status::review'
-  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '^status: review$'
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-700\|.*status::blocked'
+  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '^assignee: boxp$'
-  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" 'localllm docs run .* が 1 ファイルを更新し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-700.md" 'localllm docs run .* が 1 ファイルを更新し 本人確認待ちで停止しました'
   # BOXP-306: Notes point at the audit only; no accept / rollback command
   assert_file_contains "${VAULT}/Tickets/BOXP-700.md" '; audit: '
   assert_file_not_contains "${VAULT}/Tickets/BOXP-700.md" 'rollback: |localllm-accept|localllm-rollback'
@@ -570,13 +570,13 @@ test_apply_moves_to_review_without_cloud() {
   local run_dir summary
   run_dir="$(find "${STATE}/runs/BOXP-700" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   summary="${run_dir}/summary.edn"
-  assert_file_contains "${summary}" ':result "review"'
+  assert_file_contains "${summary}" ':result "owner-acceptance"'
   assert_file_contains "${run_dir}/last-message.md" '^TASK_BOARD_REVIEW_PR: none$'
-  assert_file_contains "${run_dir}/last-message.md" '^TASK_BOARD_RESULT: review$'
+  assert_file_contains "${run_dir}/last-message.md" '^TASK_BOARD_RESULT: continue$'
   assert_file_contains "${run_dir}/localllm-audit.edn" ':status :review'
   assert_file_contains "${run_dir}/localllm-audit.edn" ':after-sha256'
   assert_file_contains "${run_dir}/localllm-committed.edn" ':phase :committed'
-  assert_file_contains "${run_dir}/localllm-committed.edn" ':status "review"'
+  assert_file_contains "${run_dir}/localllm-committed.edn" ':status "blocked"'
   assert_file_not_contains "${run_dir}/llm-evidence.edn" 'v1\.3'
   # the recovery journal of the write stays in the run directory (runner-internal restore only)
   grep -q 'v1.2' "${run_dir}/backup/${PILOT}/runbook.md" || fail "recovery copy should hold the original"
@@ -604,7 +604,7 @@ test_stream_response_is_applied() {
   write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-701|BOXP-701: docs]] #ticket status::in-progress"
   write_ticket "${VAULT}" BOXP-701 in-progress localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-701.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-701.md" '^status: blocked$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
 }
 
@@ -728,7 +728,7 @@ test_section_rewrite_keeps_links_outside_the_section() {
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-719|BOXP-719: docs]] #ticket status::ready"
   write_ticket "${VAULT}" BOXP-719 ready localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-719.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-719.md" '^status: blocked$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'source-a\|A'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^特になし$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.2'
@@ -740,7 +740,7 @@ test_rejected_proposal_gets_one_correction_round() {
   write_ticket "${VAULT}" BOXP-730 ready localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   [[ "$(request_count)" == 2 ]] || fail "expected the rejected proposal to be re-asked once, got $(request_count)"
-  assert_file_contains "${VAULT}/Tickets/BOXP-730.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-730.md" '^status: blocked$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
   local audit
   audit="$(find "${STATE}/runs/BOXP-730" -name localllm-audit.edn | head -n 1)"
@@ -760,7 +760,7 @@ test_heading_without_hashes_is_matched_by_text() {
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-732|BOXP-732: docs]] #ticket status::ready"
   write_ticket "${VAULT}" BOXP-732 ready localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-732.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-732.md" '^status: blocked$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 現状$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
 }
@@ -788,7 +788,7 @@ test_noop_proposal_is_not_applied() {
   assert_no_cloud
   assert_blocked BOXP-780 '(同じ内容のため適用しません|本文が変わりません)'
   assert_runbook_unchanged
-  assert_file_not_contains "${VAULT}/Tickets/BOXP-780.md" 'Review で停止しました'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-780.md" '本人確認待ちで停止しました'
 }
 
 test_crash_right_after_the_review_note_completes_the_transition() {
@@ -802,7 +802,7 @@ test_crash_right_after_the_review_note_completes_the_transition() {
   write_ticket "${VAULT}" BOXP-781 ready localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_TEST_EXIT_AFTER_LOCALLLM_REVIEW_NOTE=true >"${CASE_DIR}/out" 2>&1 || true
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
-  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" 'Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '本人確認待ちで停止しました'
   assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '^status: in-progress$'
   [[ -e "${STATE}/locks/BOXP-781.edn" ]] || fail "the killed run must leave its lock behind"
   local old_run
@@ -812,10 +812,10 @@ test_crash_right_after_the_review_note_completes_the_transition() {
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out2" 2>&1
   assert_no_cloud
   [[ "$(request_count)" == 1 ]] || fail "completing the transition must not start a new model run, got $(request_count) requests"
-  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-781\|.*status::review'
-  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '^status: review$'
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-781\|.*status::blocked'
+  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '^assignee: boxp$'
-  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '遷移の途中で終了していたため、遷移を review として完了させました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-781.md" '遷移の途中で終了していたため、遷移を blocked として完了させました'
   assert_file_not_contains "${VAULT}/Tickets/BOXP-781.md" 'backup から復元しました'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
   assert_file_contains "${STATE}/runs/BOXP-781/${old_run}/localllm-committed.edn" ':phase :committed'
@@ -880,7 +880,7 @@ test_review_lane_reruns_as_revision() {
   write_ticket "${VAULT}" BOXP-725 review localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   assert_file_contains "${REQ_LOG}" ':revise\? true'
-  assert_file_contains "${VAULT}/Tickets/BOXP-725.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-725.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-725.md" '^assignee: boxp$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
 }
@@ -909,9 +909,9 @@ test_tick_ticket_filter_claims_only_one_card() {
     bb "${RUNNER}" tick --ticket BOXP-727 >"${CASE_DIR}/out-sync"
   assert_file_contains "${VAULT}/Tickets/BOXP-726.md" '^status: backlog$'
   assert_file_not_contains "${VAULT}/Boards/Task Board.md" 'BOXP-726: docs\]\] #ticket status::'
-  assert_file_contains "${VAULT}/Boards/Task Board.md" 'BOXP-727: docs\]\] #ticket status::review'
+  assert_file_contains "${VAULT}/Boards/Task Board.md" 'BOXP-727: docs\]\] #ticket status::blocked'
   sed -i 's/^status: backlog$/status: ready/' "${VAULT}/Tickets/BOXP-726.md"
-  assert_file_contains "${VAULT}/Tickets/BOXP-727.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-727.md" '^status: blocked$'
   [[ -e "${STATE}/locks/BOXP-726.edn" ]] || fail "a stale lock outside --ticket must be left alone"
   assert_file_not_contains "${VAULT}/Tickets/BOXP-726.md" 'interrupted'
   assert_file_not_contains "${CASE_DIR}/out" 'closing stale lock: BOXP-726'
@@ -946,7 +946,7 @@ test_tick_ticket_filter_claims_only_one_card() {
   assert_file_contains "${CASE_DIR}/out3" 'closing lock from planned owner shutdown: BOXP-727'
   assert_file_not_contains "${CASE_DIR}/out3" 'planned owner shutdown: BOXP-726'
   assert_file_contains "${VAULT}/Tickets/BOXP-727.md" 'planned workspace shutdown of owner old-pod'
-  assert_file_contains "${VAULT}/Tickets/BOXP-727.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-727.md" '^status: blocked$'
   [[ ! -d "${STATE}/runs/BOXP-726" ]] || fail "the other card must not run"
   [[ -e "${STATE}/locks/BOXP-726.edn" ]] || fail "the other card's planned-shutdown lock must be left alone"
   assert_file_not_contains "${VAULT}/Tickets/BOXP-726.md" 'planned workspace shutdown'
@@ -967,7 +967,7 @@ test_parallel_ticks_run_once_per_card() {
   wait "${p1}" "${p2}"
   [[ "$(find "${STATE}/runs/BOXP-728" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" == 1 ]] || fail "expected a single run under concurrent ticks"
   [[ "$(request_count)" == 1 ]] || fail "expected one model request under concurrent ticks, got $(request_count)"
-  assert_file_contains "${VAULT}/Tickets/BOXP-728.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-728.md" '^status: blocked$'
 }
 
 CORPUS="Projects/task-board-localllm-docs/refs/corpus"
@@ -984,7 +984,7 @@ test_research_collects_evidence_then_applies_with_sources() {
   # the corpus body reaches the model only after it asked to read that section
   [[ "$(sed -n 1p "${REQ_LOG}")" == *':sees-corpus-body? false'* ]] || fail "round 1 must not include corpus bodies"
   [[ "$(sed -n 3p "${REQ_LOG}")" == *':sees-corpus-body? true'* ]] || fail "evidence must be shown after the read"
-  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
   assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '調査: corpus 2 ノート'
   assert_file_contains "${VAULT}/Tickets/BOXP-740.md" '読んだ資料: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
@@ -1008,7 +1008,7 @@ test_research_sources_must_be_notes_the_model_read() {
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   # 3 research + rejected proposal + corrected proposal
   [[ "$(request_count)" == 5 ]] || fail "expected 5 requests, got $(request_count)"
-  assert_file_contains "${VAULT}/Tickets/BOXP-741.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-741.md" '^status: blocked$'
   local audit
   audit="$(find "${STATE}/runs/BOXP-741" -name localllm-audit.edn | head -n 1)"
   assert_file_contains "${audit}" ':corrections 1'
@@ -1094,7 +1094,7 @@ test_oversized_target_and_reference_are_refused_before_reading() {
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_NOTE_CHARS=1000 >"${CASE_DIR}/out"
   assert_no_cloud
   [[ "$(request_count)" == 1 ]] || fail "expected one model request, got $(request_count)"
-  assert_file_contains "${VAULT}/Tickets/BOXP-751.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-751.md" '^status: blocked$'
   local audit
   audit="$(find "${STATE}/runs/BOXP-751" -name localllm-audit.edn | head -n 1)"
   assert_file_not_contains "${audit}" ':included \[[^]]*source-a'
@@ -1173,7 +1173,7 @@ test_research_finish_without_reads_auto_reads_the_hits() {
   assert_no_cloud
   # search -> finish (no read) -> runner reads the hit -> proposal citing it is accepted
   [[ "$(request_count)" == 3 ]] || fail "expected 3 requests, got $(request_count)"
-  assert_file_contains "${VAULT}/Tickets/BOXP-750.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-750.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-750.md" '読んだ資料: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
   local audit
   audit="$(find "${STATE}/runs/BOXP-750" -name localllm-audit.edn | head -n 1)"
@@ -1352,10 +1352,10 @@ test_stale_lock_recovery_is_decided_by_the_run_commit_record() {
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCK_STALE_SECONDS=1 >"${CASE_DIR}/out"
   assert_no_cloud
   [[ "$(request_count)" == 0 ]] || fail "completing the transition must not start a new model run"
-  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-764\|.*status::review'
-  assert_file_contains "${VAULT}/Tickets/BOXP-764.md" '^status: review$'
+  assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-764\|.*status::blocked'
+  assert_file_contains "${VAULT}/Tickets/BOXP-764.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-764.md" '^assignee: boxp$'
-  assert_file_contains "${VAULT}/Tickets/BOXP-764.md" '遷移の途中で終了していたため、遷移を review として完了させました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-764.md" '遷移の途中で終了していたため、遷移を blocked として完了させました'
   assert_file_not_contains "${VAULT}/Tickets/BOXP-764.md" 'backup から復元しました'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.3'
   assert_file_contains "${STATE}/runs/BOXP-764/${old_run}/localllm-committed.edn" ':phase :committed'
@@ -1380,12 +1380,11 @@ test_committing_recovery_blocks_when_the_note_changed_after_the_write() {
   assert_no_cloud
   [[ "$(request_count)" == 0 ]] || fail "a conflicting recovery must not start a new model run"
   assert_file_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-782\|.*status::blocked'
-  assert_file_not_contains "${VAULT}/Boards/Task Board.md" '\[\[Tickets/BOXP-782\|.*status::review'
   assert_file_contains "${VAULT}/Tickets/BOXP-782.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-782.md" '^assignee: boxp$'
   assert_file_contains "${VAULT}/Tickets/BOXP-782.md" '対象文書が run の書込み内容から変わっていたため、遷移を完了せず Blocked にしました'
   assert_file_contains "${VAULT}/Tickets/BOXP-782.md" 'runbook.md changed'
-  assert_file_not_contains "${VAULT}/Tickets/BOXP-782.md" '遷移を review として完了させました'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-782.md" '遷移を blocked として完了させました'
   assert_file_not_contains "${VAULT}/Tickets/BOXP-782.md" 'backup から復元しました'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.4 \(手動修正\)'
   assert_file_not_contains "${VAULT}/${PILOT}/runbook.md" 'v1\.2'
@@ -1421,9 +1420,9 @@ test_two_tickets_on_the_same_target_do_not_overwrite_each_other() {
   assert_no_cloud
   [[ "$(request_count)" == 2 ]] || fail "expected 2 requests, got $(request_count)"
   local reviews blocked
-  reviews="$(grep -c '^status: review$' "${VAULT}/Tickets/BOXP-752.md" "${VAULT}/Tickets/BOXP-753.md" | awk -F: '{s+=$2} END {print s}')"
+  reviews="$(grep -c '本人確認待ちで停止しました' "${VAULT}/Tickets/BOXP-752.md" "${VAULT}/Tickets/BOXP-753.md" | awk -F: '{s+=$2} END {print s}')"
   blocked="$(grep -c '^status: blocked$' "${VAULT}/Tickets/BOXP-752.md" "${VAULT}/Tickets/BOXP-753.md" | awk -F: '{s+=$2} END {print s}')"
-  [[ "${reviews}" == 1 && "${blocked}" == 1 ]] || fail "expected exactly one review and one blocked, got review=${reviews} blocked=${blocked}"
+  [[ "${reviews}" == 1 && "${blocked}" == 2 ]] || fail "expected one applied note and both cards Blocked, got review=${reviews} blocked=${blocked}"
   grep -q '競合のため未適用' "${VAULT}/Tickets/BOXP-752.md" "${VAULT}/Tickets/BOXP-753.md" || fail "the second write must stop as a conflict"
   [[ "$(grep -c 'v1\.3' "${VAULT}/${PILOT}/runbook.md")" == 1 ]] || fail "the note must carry exactly one applied update"
   [[ "$(grep -c 'v1\.2' "${VAULT}/${PILOT}/runbook.md")" == 0 ]] || fail "the applied update must replace the old line"
@@ -1574,7 +1573,7 @@ test_crash_right_after_the_write_is_recovered_from_the_journal() {
   audit="$(find "${STATE}/runs/BOXP-777" -name localllm-audit.edn | head -n 1)"
   assert_file_contains "${audit}" ':applied \['
   assert_file_contains "${audit}" ':write-phase :writing'
-  assert_file_not_contains "${VAULT}/Tickets/BOXP-777.md" 'Review で停止しました'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-777.md" '本人確認待ちで停止しました'
   # hand the card to a human so the next tick only recovers and does not start a new model run
   sed -i 's/^assignee: localllm$/assignee: boxp/' "${VAULT}/Tickets/BOXP-777.md"
   sleep 2
@@ -1630,7 +1629,7 @@ test_model_supplied_sources_outside_the_runner_reads_are_not_recorded() {
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-759|BOXP-759: docs]] #ticket status::ready"
   write_ticket "${VAULT}" BOXP-759 ready localllm "${PILOT}/runbook.md"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-759.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-759.md" '^status: blocked$'
   # the fabricated source never reaches Notes; the reference the runner read does
   assert_file_not_contains "${VAULT}/Tickets/BOXP-759.md" '偽の監査行'
   assert_file_not_contains "${VAULT}/Tickets/BOXP-759.md" 'Secret/keys'
@@ -1681,9 +1680,9 @@ test_propose_appends_an_unapproved_section_and_keeps_canon() {
   [[ "$(request_count)" == 5 ]] || fail "expected 5 requests (3 research + proposal + verify), got $(request_count)"
   [[ "$(grep -c ':schema-name "docs_setting_proposal"' "${REQ_LOG}")" == 1 ]] || fail "expected one proposal request"
   [[ "$(grep -c ':schema-name "docs_setting_verify"' "${REQ_LOG}")" == 1 ]] || fail "expected one verify request"
-  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '^assignee: boxp$'
-  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '『提案（未承認）BOXP-790』節を 追加 し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '『提案（未承認）BOXP-790』節を 追加 し 本人確認待ちで停止しました'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '参照した既存設定 1 件、矛盾・要確認 4 件（うち自動検査 3 件）、質問 1 件'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '未解決の wikilink を平文化 1 件'
   assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
@@ -1726,7 +1725,7 @@ test_propose_appends_an_unapproved_section_and_keeps_canon() {
   # the previous draft is shown as 前回の案, never inside the canon block (proposal, verify and research requests)
   grep -q ':prev-proposal? true' "${REQ_LOG}" || fail "revision must show the previous draft separately"
   assert_file_not_contains "${REQ_LOG}" ':canon-block-has-proposal? true'
-  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '『提案（未承認）BOXP-790』節を 改稿（置換） し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-790.md" '『提案（未承認）BOXP-790』節を 改稿（置換） し 本人確認待ちで停止しました'
   assert_canon_intact "${note}"
   [[ "$(grep -c '^## 提案（未承認）BOXP-790$' "${note}")" == 1 ]] || fail "revision must replace, not duplicate, the proposal section"
   assert_file_contains "${note}" 'PROPOSAL-REVISED'
@@ -1739,7 +1738,7 @@ test_propose_without_declared_sources_uses_the_default_corpus() {
   write_ticket "${VAULT}" BOXP-791 ready localllm "${PILOT}/runbook.md" "" propose
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_DEFAULT_SOURCES="${CORPUS}" >"${CASE_DIR}/out"
   [[ "$(grep -c ':schema-name "docs_research_step"' "${REQ_LOG}")" == 3 ]] || fail "default corpus must be researched"
-  assert_file_contains "${VAULT}/Tickets/BOXP-791.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-791.md" '^status: blocked$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 提案（未承認）BOXP-791$'
   # the default corpus is validated like a declared one: outside the read roots -> blocked, no request
   setup; echo propose >"${MODE_FILE}"
@@ -1758,7 +1757,7 @@ test_propose_facts_must_cite_read_notes_then_one_correction() {
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   # 3 research + rejected proposal (no verify) + corrected proposal + verify
   [[ "$(request_count)" == 6 ]] || fail "expected 6 requests, got $(request_count)"
-  assert_file_contains "${VAULT}/Tickets/BOXP-793.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-793.md" '^status: blocked$'
   local note="${VAULT}/${PILOT}/runbook.md"
   assert_canon_intact "${note}"
   assert_file_contains "${note}" '出典: \[\[Projects/task-board-localllm-docs/refs/corpus/design-v2\]\]'
@@ -1807,7 +1806,7 @@ test_propose_without_a_corpus_cites_the_target_and_verifies_against_it() {
   # no research; the target canon alone is checked: proposal + verify
   [[ "$(request_count)" == 2 ]] || fail "expected 2 requests, got $(request_count)"
   [[ "$(grep -c ':schema-name "docs_setting_verify"' "${REQ_LOG}")" == 1 ]] || fail "expected one verify request"
-  assert_file_contains "${VAULT}/Tickets/BOXP-797.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-797.md" '^status: blocked$'
   local note="${VAULT}/${PILOT}/runbook.md"
   assert_canon_intact "${note}"
   assert_file_contains "${note}" '^## 提案（未承認）BOXP-797$'
@@ -1830,7 +1829,7 @@ test_propose_heading_only_answer_is_rejected_and_titles_stay_inside_the_section(
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-799|BOXP-799: setting]] #ticket status::ready"
   write_ticket "${VAULT}" BOXP-799 ready localllm "${PILOT}/runbook.md" "${CORPUS}" propose
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-799.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-799.md" '^status: blocked$'
   local note="${VAULT}/${PILOT}/runbook.md"
   assert_canon_intact "${note}"
   assert_file_not_contains "${note}" '^## 偽の節'
@@ -1869,9 +1868,9 @@ test_create_makes_an_unapproved_note_and_revises_it() {
   # search -> read -> finish -> create -> verify
   [[ "$(request_count)" == 5 ]] || fail "expected 5 requests (3 research + create + verify), got $(request_count)"
   [[ "$(grep -c ':schema-name "docs_setting_create"' "${REQ_LOG}")" == 1 ]] || fail "expected one create request"
-  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^assignee: boxp$'
-  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '新規キャラクター設定の提案ノートを 作成 し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '新規キャラクター設定の提案ノートを 作成 し 本人確認待ちで停止しました'
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '参照した既存設定 1 件、矛盾・要確認 4 件（うち自動検査 3 件、名前が近い既存ノート 0 件）、質問 1 件'
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '未解決の wikilink を平文化 1 件'
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" "対象: \[\[${PROPOSALS}/characters/hotaru-lantern-keeper\]\]（新規）"
@@ -1927,7 +1926,7 @@ test_create_makes_an_unapproved_note_and_revises_it() {
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out2"
   assert_file_contains "${REQ_LOG}" ':revise\? true'
   grep -q ':prev-create? true' "${REQ_LOG}" || fail "revision must show the previous note body separately"
-  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '新規キャラクター設定の提案ノートを 改稿（置換） し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '新規キャラクター設定の提案ノートを 改稿（置換） し 本人確認待ちで停止しました'
   # the frontmatter follows the revision (aliases) while created / run / slug / ticket are carried over
   assert_file_contains "${note}" '^  - "蛍"$'
   assert_file_contains "${note}" '^slug: hotaru-lantern-keeper$'
@@ -1953,7 +1952,7 @@ test_create_kind_comes_from_docs_kind_or_wording_or_is_asked_without_a_request()
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-801|BOXP-801: 追加]] #ticket status::ready"
   write_create_ticket "${VAULT}" BOXP-801 ready "山あいの沢に棲む新しい存在を 1 種考えてほしい。" monster "${CORPUS}"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-801.md" '新規魔物設定の提案ノートを 作成 し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-801.md" '新規魔物設定の提案ノートを 作成 し 本人確認待ちで停止しました'
   local note="${VAULT}/${PROPOSALS}/monsters/hotaru-lantern-keeper.md"
   [[ -f "${note}" ]] || fail "monster note must be created under monsters/"
   assert_file_contains "${note}" '^type: monster-proposal$'
@@ -2003,7 +2002,7 @@ test_create_name_and_slug_collisions_get_one_correction_then_block() {
   write_create_ticket "${VAULT}" BOXP-805 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
   [[ "$(grep -c ':schema-name "docs_setting_create"' "${REQ_LOG}")" == 2 ]] || fail "expected one correction round"
-  assert_file_contains "${VAULT}/Tickets/BOXP-805.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-805.md" '^status: blocked$'
   [[ -f "${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md" ]] || fail "corrected note expected"
   [[ ! -e "${VAULT}/${PROPOSALS}/characters/design-v2-dup.md" ]] || fail "the colliding note must not be written"
   local audit
@@ -2021,7 +2020,7 @@ test_create_name_and_slug_collisions_get_one_correction_then_block() {
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-807|BOXP-807: 新キャラ]] #ticket status::ready"
   write_create_ticket "${VAULT}" BOXP-807 ready "新しいキャラを追加してほしい。" "" "${CORPUS}"
   run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-807.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-807.md" '^status: blocked$'
   [[ "$(proposal_count)" == 1 ]] || fail "one note expected after the slug correction"
   # another ticket's proposal already uses the name / slug: never overwritten
   setup; echo create >"${MODE_FILE}"
@@ -2065,7 +2064,7 @@ test_create_refuses_raw_credential_values_and_redacts_wikilinked_references() {
   write_ticket "${VAULT}" BOXP-814 ready localllm "${PILOT}/runbook.md"
   printf -- '- 2026-10-23: 参考: [[Infrastructure/creds-note]]\n' >>"${VAULT}/Tickets/BOXP-814.md"
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-814.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-814.md" '^status: blocked$'
   grep -q ':sees-redaction-marker? true' "${REQ_LOG}" || fail "the wikilinked reference must be redacted"
   assert_file_not_contains "${REQ_LOG}" ':sees-token-value\? true'
 }
@@ -2141,9 +2140,9 @@ test_natural_language_backlog_card_is_groomed_then_runs_revises_and_refuses_an_u
   groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
   assert_no_cloud
   [[ "$(grep -c ':schema-name "docs_setting_create"' "${REQ_LOG}")" == 1 ]] || fail "expected one create request"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   assert_file_contains "${ticket}" '^assignee: boxp$'
-  assert_file_contains "${ticket}" '新規キャラクター設定の提案ノートを 作成 し Review で停止しました'
+  assert_file_contains "${ticket}" '新規キャラクター設定の提案ノートを 作成 し 本人確認待ちで停止しました'
   local note="${VAULT}/${PROPOSALS}/characters/hotaru-lantern-keeper.md"
   [[ -f "${note}" ]] || fail "proposal note must be created"
   [[ "$(proposal_count)" == 1 ]] || fail "exactly one proposal note"
@@ -2171,8 +2170,8 @@ test_natural_language_backlog_card_is_groomed_then_runs_revises_and_refuses_an_u
   groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out4"
   assert_file_contains "${REQ_LOG}" ':revise\? true'
   grep -q ':prev-create? true' "${REQ_LOG}" || fail "revision must show the previous note body"
-  assert_file_contains "${ticket}" '新規キャラクター設定の提案ノートを 改稿（置換） し Review で停止しました'
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '新規キャラクター設定の提案ノートを 改稿（置換） し 本人確認待ちで停止しました'
+  assert_file_contains "${ticket}" '^status: blocked$'
   assert_file_contains "${ticket}" '^assignee: boxp$'
   assert_file_contains "${note}" 'CREATE-REVISED'
   assert_file_not_contains "${note}" 'CREATE-SUMMARY'
@@ -2190,7 +2189,7 @@ test_natural_language_ready_card_infers_create_without_groom_and_explicit_source
   write_nl_ticket "${VAULT}" BOXP-821 ready localllm "新怪獣を 1 種追加" "山あいの沢に出る新しい怪獣を 1 種考えてほしい。既存の怪獣・人物・組織の事実は変えない。"
   groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
   assert_no_cloud
-  assert_file_contains "${VAULT}/Tickets/BOXP-821.md" '新規魔物設定の提案ノートを 作成 し Review で停止しました'
+  assert_file_contains "${VAULT}/Tickets/BOXP-821.md" '新規魔物設定の提案ノートを 作成 し 本人確認待ちで停止しました'
   [[ -f "${VAULT}/${PROPOSALS}/monsters/hotaru-lantern-keeper.md" ]] || fail "monster note expected"
   local audit
   audit="$(find "${STATE}/runs/BOXP-821" -name localllm-audit.edn | head -n 1)"
@@ -2237,7 +2236,7 @@ test_natural_language_propose_target_comes_from_one_wikilink_inside_the_write_ro
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-824|BOXP-824: 加筆]] #ticket status::ready"
   groom_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   assert_file_contains "${VAULT}/${PILOT}/runbook.md" '^## 提案（未承認）BOXP-824$'
   grep -q 'v1.2' "${VAULT}/${PILOT}/runbook.md" || fail "canon must be unchanged"
   # Ready directly, no groom: the same inference applies at run time
@@ -2342,7 +2341,7 @@ test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts
   # a small index budget stands in for a vault-sized corpus: the flat listing does not fit, so the folder tree is shown
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_INDEX_CHAR_BUDGET=1500 CODEX_TASK_BOARD_LOCALLLM_MAX_READS_PER_ROUND=5 >"${CASE_DIR}/out"
   assert_no_cloud
-  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: blocked$'
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '出典: \[\[Infrastructure/creds-note\]\]'
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" 'list 1, read 1'
   assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '秘匿行の除去 1 行'
@@ -2374,7 +2373,7 @@ test_vault_wide_read_root_excludes_tickets_hidden_dirs_and_proposals_and_redacts
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-800|BOXP-800: 新キャラ]] #ticket status::ready"
   write_create_ticket "${VAULT}" BOXP-800 ready "新しいキャラを追加してほしい。[[Drafts/llm/characters/other-ticket]] も参考に。" "" "."
   run_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_READ_ROOTS="." CODEX_TASK_BOARD_LOCALLLM_PROPOSAL_ROOT="Drafts/llm" CODEX_TASK_BOARD_LOCALLLM_EXCLUDE_PATHS="Tickets,Boards" >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-800.md" '^status: blocked$'
   [[ -f "${VAULT}/Drafts/llm/characters/hotaru-lantern-keeper.md" ]] || fail "note must be created under the custom proposal root"
   grep -q 'CUSTOM-ROOT-PROPOSAL-BODY' "${REQ_LOG}" && fail "a proposal under the custom root must not reach the model"
   local audit
@@ -2487,7 +2486,7 @@ test_canon_select_grooms_by_content_then_amends_and_revises_in_place() {
   assert_no_cloud
   [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 1 ]] || fail "expected one amend request"
   grep -q ':sees-verse-plan? true' "${REQ_LOG}" || fail "the amend prompt must carry the confirmed plan"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   assert_file_contains "${ticket}" '^assignee: boxp$'
   local yui="${VAULT}/${VERSE}/キャラ設定/ユイ.md"
   local amend_run; amend_run="$(latest_run BOXP-830)"
@@ -2501,7 +2500,7 @@ test_canon_select_grooms_by_content_then_amends_and_revises_in_place() {
   assert_file_contains "${yui}" '^- \[\[Refs/verse/キャラ設定/ユウ\|ユウ\]\] は幼なじみ。$'
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md"
   # Notes: counts, report path, revert hint; no accept / rollback command, no model text
-  assert_file_contains "${ticket}" 'が groom 計画の対象ノートへ追記・編集を 1 件適用し Review で停止しました（通常の本文として直接反映'
+  assert_file_contains "${ticket}" 'が groom 計画の対象ノートへ追記・編集を 1 件適用し 本人確認待ちで停止しました（通常の本文として直接反映'
   assert_file_contains "${ticket}" 'Obsidian の履歴機能で'
   assert_file_not_contains "${ticket}" 'localllm-accept|localllm-rollback|マーカー内|マーカー付き|HTML コメントのマーカー'
   assert_file_contains "${ticket}" '操作: append-to-section×1、参照した既存設定 1 件、矛盾・要確認 [1-9][0-9]* 件'
@@ -2545,7 +2544,7 @@ test_canon_select_grooms_by_content_then_amends_and_revises_in_place() {
   assert_file_contains "${REQ_LOG}" ':revise\? true'
   grep -q ':prev-proposal? true' "${REQ_LOG}" || fail "revision must show the previous write as 前回書いた内容"
   grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':sees-amend-body? true' || fail "the revision prompt must show the note with the previous write"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   local revise_run; revise_run="$(latest_run BOXP-830)"
   assert_file_contains "${yui}" '^- 鈴鳴り（新規）: 鈴の音で仲間に合図を送る。射程は十歩。AMEND-REVISED$'
   assert_file_not_contains "${yui}" 'AMEND-BODY'
@@ -2584,7 +2583,7 @@ test_canon_select_multi_target_replace_is_plain_text_read_by_other_tickets() {
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-840|BOXP-840: 鈴の技]] #ticket status::ready"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   local yui="${VAULT}/${VERSE}/キャラ設定/ユイ.md" bell="${VAULT}/${VERSE}/アイテム設定/鈴.md"
   local run; run="$(latest_run BOXP-840)"
   assert_file_contains "${yui}" 'AMEND-BODY'
@@ -2596,7 +2595,7 @@ test_canon_select_multi_target_replace_is_plain_text_read_by_other_tickets() {
   assert_file_contains "${yui}" '^- 鈴鳴り（新規）: 鈴の音で合図を送る。AMEND-BODY$'
   assert_file_contains "${bell}" '^- 鐘楼に伝わる。$'
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md" "${VERSE}/アイテム設定/鈴.md"
-  assert_file_contains "${ticket}" '追記・編集を 2 件適用し Review で停止しました（通常の本文として直接反映'
+  assert_file_contains "${ticket}" '追記・編集を 2 件適用し 本人確認待ちで停止しました（通常の本文として直接反映'
   assert_file_contains "${ticket}" '操作: (append-to-section×1, replace-text×1|replace-text×1, append-to-section×1)'
   assert_file_not_contains "${ticket}" 'localllm-accept|localllm-rollback'
   [[ ! -e "${STATE}/runs/BOXP-840/${run}/localllm-accepted.edn" ]] || fail "no accept record is written"
@@ -2631,7 +2630,7 @@ test_canon_select_multi_target_replace_is_plain_text_read_by_other_tickets() {
   sed -i 's/^assignee: boxp$/assignee: localllm/; s/^docs-mode: amend$/docs-mode: amend\ndocs-model: qwen38-27b/' "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-842|BOXP-842: 鈴の音]] #ticket status::ready"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out-842b"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   run="$(latest_run BOXP-842)"
   assert_file_contains "${STATE}/runs/BOXP-842/${run}/localllm-audit.edn" ':model "qwen38-27b"'
   assert_file_not_contains "${STATE}/runs/BOXP-842/${run}/localllm-audit.edn" "ユイ.md\" :after-sha256"
@@ -2731,7 +2730,7 @@ test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note() {
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-860|BOXP-860: 脇役]] #ticket status::ready"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   local note="${VAULT}/${VERSE}/キャラ設定/モブ/hotaru-lantern-keeper.md"
   [[ -f "${note}" ]] || fail "note must be created in the chosen canon folder"
   [[ "$(proposal_count)" == 0 ]] || fail "nothing under the proposal root"
@@ -2744,7 +2743,7 @@ test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note() {
   assert_file_not_contains "${note}" '^localllm-proposal:'
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/モブ/hotaru-lantern-keeper.md"
   local run; run="$(latest_run BOXP-860)"
-  assert_file_contains "${ticket}" 'が新規キャラクター設定のノート（groom 計画で確認した設定フォルダ内）を 作成 し Review で停止しました（既存のノートは変更していません。通常のノートとして保存'
+  assert_file_contains "${ticket}" 'が新規キャラクター設定のノート（groom 計画で確認した設定フォルダ内）を 作成 し 本人確認待ちで停止しました（既存のノートは変更していません。通常のノートとして保存'
   assert_file_not_contains "${ticket}" 'localllm-accept|localllm-rollback'
   assert_file_contains "${STATE}/runs/BOXP-860/${run}/localllm-audit.edn" ":canon-folder|:docs-roots \[.*\"${VERSE}\""
   # another ticket's groom reads the new note like any other note
@@ -2762,7 +2761,7 @@ test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note() {
   printf -- '- 2026-10-25: boxp: 年齢は 15 歳にしてください。\n' >>"${ticket}"
   write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-860|BOXP-860: 脇役]] #ticket status::review"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out3"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   assert_file_contains "${note}" 'CREATE-REVISED'
   assert_file_not_contains "${note}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）'
   assert_file_contains "${note}" '^ticket: BOXP-860$'
@@ -2796,10 +2795,10 @@ test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note() {
   printf -- "- 2026-10-25: boxp: 口調をもう少し丁寧に。\n" >>"${ticket}"
   write_board "${VAULT}" Review "- [ ] [[Tickets/BOXP-860|BOXP-860: 脇役]] #ticket status::review"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out5"
-  assert_file_contains "${ticket}" "^status: review$"
+  assert_file_contains "${ticket}" "^status: blocked$"
   [[ "$(find "${VAULT}/${VERSE}/キャラ設定/モブ" -name "*.md" | wc -l | tr -d " ")" == 2 ]] || fail "a second revision must not create a second note"
   assert_file_not_contains "${note}" '^localllm-unreviewed:|^status: unapproved|未確認（localllm）'
-  assert_file_contains "${ticket}" "設定フォルダ内）を 改稿（置換） し Review で停止しました"
+  assert_file_contains "${ticket}" "設定フォルダ内）を 改稿（置換） し 本人確認待ちで停止しました"
   # a hand-written docs-folder without a groom plan is refused on a Ready card
   setup; make_verse; echo select-new >"${MODE_FILE}"; sums="$(verse_sums)"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-862|BOXP-862: 脇役]] #ticket status::ready"
@@ -2813,7 +2812,7 @@ test_canon_select_new_note_goes_to_the_chosen_folder_as_a_plain_note() {
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-863|BOXP-863: 新キャラ]] #ticket status::ready"
   write_nl_ticket "${VAULT}" BOXP-863 ready localllm "新キャラを 1 名追加" "鐘楼で働く新しいキャラを 1 名。"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out"
-  assert_file_contains "${VAULT}/Tickets/BOXP-863.md" '^status: review$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-863.md" '^status: blocked$'
   [[ "$(proposal_count)" == 1 ]] || fail "Ready-direct create must go to the proposal root"
   assert_file_not_contains "${REQ_LOG}" ':schema-name "docs_target_selection"'
   assert_verse_unchanged_except "${sums}"
@@ -2853,7 +2852,7 @@ test_canon_amend_stops_when_the_plan_is_stale_or_missing() {
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-871|BOXP-871: 技]] #ticket status::ready"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   assert_file_not_contains "${ticket}" 'localllm-other-unreviewed'
   assert_file_contains "${yui}" 'OTHER-WRITE-BODY'
   assert_file_contains "${yui}" 'AMEND-BODY'
@@ -2957,7 +2956,7 @@ test_canon_amend_rejects_changes_outside_the_planned_section_and_needs_human() {
   sed -i "s/^assignee: boxp$/assignee: localllm/" "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-881|BOXP-881: 装備]] #ticket status::ready"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
-  assert_file_contains "${ticket}" "^status: review$"
+  assert_file_contains "${ticket}" "^status: blocked$"
   assert_file_contains "${VAULT}/${VERSE}/キャラ設定/ユイ.md" "^## 装備$"
   assert_file_contains "${VAULT}/${VERSE}/キャラ設定/ユイ.md" "AMEND-BODY"
   assert_verse_unchanged_except "${sums}" "${VERSE}/キャラ設定/ユイ.md"
@@ -3026,7 +3025,7 @@ test_canon_amend_replace_text_accepts_a_line_id_and_refuses_headings() {
     if [[ "${mode}" == amend-quote ]]; then
       [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
       grep -q ':correction-has-id-hint? true' "${REQ_LOG}" || fail "the correction request must name the id range"
-      assert_file_contains "${ticket}" '^status: review$'
+      assert_file_contains "${ticket}" '^status: blocked$'
       run="$(latest_run BOXP-890)"
       assert_file_contains "${STATE}/runs/BOXP-890/${run}/localllm-audit.edn" ':line-ids 1'
       # BOXP-306: the replaced line is plain text in place
@@ -3134,7 +3133,7 @@ test_canon_amend_line_listing_shares_one_budget_across_targets() {
   verse_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS=20000 >"${CASE_DIR}/out2"
   assert_no_cloud
   assert_file_not_contains "${ticket}" 'localllm-context-exceeded'
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   grep -q ':schema-name "docs_setting_amend"' "${REQ_LOG}" || fail "the amend request must be sent"
   grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':line-list-truncated? true' || fail "the long listing must be truncated to the shared budget"
   local chars; chars="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | sed -E 's/.*:prompt-chars ([0-9]+).*/\1/')"
@@ -3169,7 +3168,7 @@ test_canon_amend_line_id_replaces_one_of_two_identical_lines() {
     write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-891|BOXP-891: 口調]] #ticket status::ready"
     verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
     if [[ "${mode}" == amend-quote-dup ]]; then
-      assert_file_contains "${ticket}" '^status: review$'
+      assert_file_contains "${ticket}" '^status: blocked$'
       run="$(latest_run BOXP-891)"
       assert_file_contains "${STATE}/runs/BOXP-891/${run}/localllm-audit.edn" ':line-ids 1'
       # the second 「はい」 (L3) is replaced, the first (L2) and everything else stay
@@ -3348,7 +3347,7 @@ test_canon_amend_correction_round_refits_the_line_listing_to_the_cap() {
   sed -i 's/^assignee: boxp$/assignee: localllm/' "${ticket}"
   write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-892|BOXP-892: 口調]] #ticket status::ready"
   verse_tick "${VAULT}" "${STATE}" >"${CASE_DIR}/out2"
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "one correction round expected"
   if grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | grep -q ':line-list-truncated? true'; then fail "the uncapped listing must be complete"; fi
   first_chars="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | head -n 1 | sed -E 's/.*:all-chars ([0-9]+).*/\1/')"
@@ -3368,7 +3367,7 @@ test_canon_amend_correction_round_refits_the_line_listing_to_the_cap() {
   verse_tick "${VAULT}" "${STATE}" env CODEX_TASK_BOARD_LOCALLLM_MAX_PROMPT_CHARS="${first_chars}" >"${CASE_DIR}/out2"
   assert_no_cloud
   assert_file_not_contains "${ticket}" 'localllm-context-exceeded'
-  assert_file_contains "${ticket}" '^status: review$'
+  assert_file_contains "${ticket}" '^status: blocked$'
   [[ "$(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}")" == 2 ]] || fail "the correction round must be sent at the cap (requests: $(grep -c ':schema-name "docs_setting_amend"' "${REQ_LOG}"))"
   local second; second="$(grep ':schema-name "docs_setting_amend"' "${REQ_LOG}" | sed -n 2p)"
   [[ "${second}" == *':first-user-truncated? true'* ]] || fail "the correction round must show a shorter listing: ${second}"
