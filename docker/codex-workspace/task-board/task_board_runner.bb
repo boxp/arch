@@ -3978,14 +3978,16 @@
       ;; interpreted. Correct that provisional status only after the Blocked
       ;; transition itself has succeeded.
       (mark-run! ticket-id run-id :blocked
-                 {:action action
-                  :exit-code exit
-                  :result result
-                  :review-gate (persisted-review-gate review-gate)
-                  :blocker-category (blocker-category result exit review-gate exception)
-                  :blocker-reason (blocker-safe-reason result exit review-gate exception)
-                  :wait-reason (when (and (= "agent-reported-blocked" (blocker-category result exit review-gate exception)) (or (nil? review-gate) (:ok? review-gate))) (wait-reason-marker last-message))
-                  :finished-at (now-str)})
+                 (cond-> {:action action
+                          :exit-code exit
+                          :result result
+                          :review-gate (persisted-review-gate review-gate)
+                          :blocker-category (blocker-category result exit review-gate exception)
+                          :blocker-reason (blocker-safe-reason result exit review-gate exception)
+                          :finished-at (now-str)}
+                   (and (= "agent-reported-blocked" (blocker-category result exit review-gate exception))
+                        (or (nil? review-gate) (:ok? review-gate)))
+                   (assoc :wait-reason (wait-reason-marker last-message))))
       true
       (catch Exception e
         (log! (str "blocked transition state update failed for " ticket-id "/" run-id
