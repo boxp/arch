@@ -341,4 +341,68 @@
                                 (with-out-str (task-board-todos/-main "add" "BOXP-14" "--vault" d "--optional" "--text" "never" "--source" "test")))))
         (is (= 3 @calls))
         (is (= before (slurp (str path))))))))
+(defn- leftovers [dir]
+  (map str (fs/glob dir ".todo-*" {:hidden true})))
+(deftest compare-and-swap-keeps-writers-between-compare-and-replace
+  (let [dir (str (fs/create-temp-dir))
+        path (fs/path dir "BOXP-15.md")
+        original task-board-todos/exchange-files
+        ;; Each write lands after the pre-check and before the first swap.
+        racing (fn [write]
+                 (let [calls (atom 0)]
+                   (fn [a b]
+                     (when (= 1 (swap! calls inc)) (write))
+                     (original a b))))]
+    (testing "no writer: replaced, mode kept, no temp left"
+      (spit (str path) "base")
+      (fs/set-posix-file-permissions path "rw-rw-r--")
+      (is (true? (task-board-todos/write-if-unchanged path "base" "mine")))
+      (is (= "mine" (slurp (str path))))
+      (is (= "rw-rw-r--" (fs/posix->str (fs/posix-file-permissions path))))
+      (is (empty? (leftovers dir))))
+    (testing "in-place write (ob sync) just before the swap survives"
+      (spit (str path) "base")
+      (with-redefs [task-board-todos/exchange-files (racing #(spit (str path) "synced"))]
+        (is (false? (task-board-todos/write-if-unchanged path "base" "mine"))))
+      (is (= "synced" (slurp (str path))))
+      (is (empty? (leftovers dir))))
+    (testing "rename-based write just before the swap survives"
+      (spit (str path) "base")
+      (with-redefs [task-board-todos/exchange-files
+                    (racing #(task-board-todos/atomic-write path "renamed"))]
+        (is (false? (task-board-todos/write-if-unchanged path "base" "mine"))))
+      (is (= "renamed" (slurp (str path))))
+      (is (empty? (leftovers dir))))
+    (testing "in-place writer that opened before the swap and finishes after it"
+      (spit (str path) "base")
+      (let [writer (atom nil)]
+        (with-redefs [task-board-todos/exchange-files
+                      (racing #(reset! writer (java.io.FileOutputStream. (str path))))]
+          (is (false? (task-board-todos/write-if-unchanged path "base" "mine"))))
+        (with-open [w @writer] (.write w (.getBytes "finished late"))))
+      (is (= "finished late" (slurp (str path))))
+      (is (empty? (leftovers dir))))
+    (testing "a second writer during the rollback: newest stays at path, earlier is kept, it fails"
+      (spit (str path) "base")
+      (let [calls (atom 0)]
+        (with-redefs [task-board-todos/exchange-files
+                      (fn [a b]
+                        (case (swap! calls inc)
+                          1 (spit (str path) "first")
+                          2 (spit (str path) "second")
+                          nil)
+                        (original a b))]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"changed twice"
+                                (task-board-todos/write-if-unchanged path "base" "mine")))))
+      (is (= "second" (slurp (str path))))
+      (is (= ["first"] (map slurp (leftovers dir))))
+      (run! fs/delete (leftovers dir)))
+    (testing "without exchange support the plain path still writes and rechecks"
+      (spit (str path) "base")
+      (with-redefs [task-board-todos/exchange-files (fn [_ _] false)]
+        (is (true? (task-board-todos/write-if-unchanged path "base" "mine")))
+        (is (= "mine" (slurp (str path))))
+        (is (not (task-board-todos/write-if-unchanged path "base" "other")))
+        (is (= "mine" (slurp (str path)))))
+      (is (empty? (leftovers dir))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))

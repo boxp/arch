@@ -226,36 +226,81 @@
                     c (.getChannel r)]
           (let [_lock (.lock c)] (with-lock path f))))
     (with-lock path f)))
-(defn atomic-write
-  [path text]
-  (let [p (.toPath (java.io.File. (str path)))
-        tmp (Files/createTempFile (.getParent p)
+(defn temp-copy
+  "A hidden temp file beside p holding text. createTempFile is 0600: a ticket's mode
+  and group carry over so other readers (runner, Hermes, sync) are not locked out."
+  [p text]
+  (let [tmp (Files/createTempFile (.getParent p)
                                   ".todo-"
                                   ".tmp"
                                   (make-array java.nio.file.attribute.FileAttribute 0))]
-    (try (spit (str tmp) text)
-         ;; createTempFile is 0600: a replaced ticket keeps its mode and group so
-         ;; other readers (runner, Hermes, sync) are not locked out.
-         (when (Files/exists p (make-array java.nio.file.LinkOption 0))
-           (try (fs/set-posix-file-permissions tmp (fs/posix-file-permissions p))
-                (catch UnsupportedOperationException _ nil))
-           (try (Files/setAttribute tmp "posix:group"
-                                    (Files/getAttribute p "posix:group" (make-array java.nio.file.LinkOption 0))
-                                    (make-array java.nio.file.LinkOption 0))
-                (catch Exception _ nil)))
-         (Files/move tmp
-                     p
-                     (into-array StandardCopyOption
-                                 [StandardCopyOption/REPLACE_EXISTING
-                                  StandardCopyOption/ATOMIC_MOVE]))
+    (spit (str tmp) text)
+    (when (Files/exists p (make-array java.nio.file.LinkOption 0))
+      (try (fs/set-posix-file-permissions tmp (fs/posix-file-permissions p))
+           (catch UnsupportedOperationException _ nil))
+      (try (Files/setAttribute tmp "posix:group"
+                               (Files/getAttribute p "posix:group" (make-array java.nio.file.LinkOption 0))
+                               (make-array java.nio.file.LinkOption 0))
+           (catch Exception _ nil)))
+    tmp))
+(defn replace-file
+  [tmp p]
+  (Files/move tmp
+              p
+              (into-array StandardCopyOption
+                          [StandardCopyOption/REPLACE_EXISTING
+                           StandardCopyOption/ATOMIC_MOVE])))
+(defn atomic-write
+  [path text]
+  (let [p (.toPath (java.io.File. (str path)))
+        tmp (temp-copy p text)]
+    (try (replace-file tmp p)
          (finally (Files/deleteIfExists tmp)))))
+(defn exchange-files
+  "Atomically swap two paths (renameat2 RENAME_EXCHANGE through coreutils >= 9.5).
+  False when the swap did not happen, including where it is unsupported."
+  [a b]
+  (try (zero? (:exit (shell/sh "mv" "--exchange" "--no-copy" "-T" "--" (str a) (str b))))
+       (catch java.io.IOException _ false)))
+(defn keep-conflict!
+  "Move a copy no longer at the ticket path aside and fail loudly with its location."
+  [tmp p detail]
+  (let [kept (Files/createTempFile (.getParent p)
+                                   ".todo-conflict-"
+                                   ".md"
+                                   (make-array java.nio.file.attribute.FileAttribute 0))]
+    (replace-file tmp kept)
+    (throw (ex-info (str detail "; other copy kept at " kept) {}))))
 (defn write-if-unchanged
-  "Replace path only if it still holds expected. False means a writer outside our
-  locks changed it (sync daemon, another replica): re-read rather than overwrite."
+  "Compare-and-swap against writers outside our locks (ob sync, other containers).
+  False means path no longer holds expected: re-read rather than overwrite.
+
+  Swapping instead of renaming over path keeps whatever was displaced, so the compare
+  happens on that file after the swap and cannot go stale. A rename-based writer that
+  landed first is the displaced file. An in-place writer (ob sync: open with O_TRUNC)
+  that opened path before the swap has already truncated the displaced file, so it
+  cannot compare equal, and swapping back lets its remaining writes land at path."
   [path expected text]
   (when (= expected (slurp (str path)))
-    (atomic-write path text)
-    true))
+    (let [p (.toPath (java.io.File. (str path)))
+          tmp (temp-copy p text)]
+      (try
+        (if (exchange-files tmp p)
+          (or (= expected (slurp (str tmp)))
+              (if (exchange-files tmp p)
+                (if (= text (slurp (str tmp)))
+                  false
+                  ;; A later write landed on our copy, so tmp is the newer one: it goes
+                  ;; back to path and the earlier one is kept.
+                  (do (exchange-files tmp p)
+                      (keep-conflict! tmp p "ticket changed twice during the write")))
+                (keep-conflict! tmp p "could not restore the ticket after a conflict")))
+          ;; No exchange here (older coreutils, other filesystem): the compare and the
+          ;; rename are separate steps, so a writer between them is still overwritten.
+          (when (= expected (slurp (str path)))
+            (replace-file tmp p)
+            true))
+        (finally (Files/deleteIfExists tmp))))))
 (defn with-conflict-retry
   "Run f again from a fresh read when it reports a :todo-conflict."
   [f]
