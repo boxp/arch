@@ -537,6 +537,56 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
       (assert (str/includes? out "ai_ops_outcome_export_ok 0"))
       (assert (not (str/includes? out "ai_ops_outcome_info")))))
   (fs/delete-if-exists tmpfile))
+;; latest が無い場合は未評価として出し、既存の v2 / outcome 系列を残す。
+(let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+  (assert (str/includes? s "ai_ops_harness_eval_present 0\n"))
+  (assert (str/includes? s "ai_ops_harness_eval_export_ok 1\n"))
+  (assert (not (str/includes? s "ai_ops_harness_eval_info")))
+  (assert (str/includes? s "ai_ops_v2_info"))
+  (assert (str/includes? s "ai_ops_outcome_info")))
+(let [latest (fs/path root "ai-ops" "harness-eval" "latest")
+      eval-dir (fs/path root "eval")
+      tool ai-ops-ledger/harness-eval-script
+      fake (str (fs/path (fs/parent (fs/parent (fs/parent (fs/parent tool)))) "tests" "harness-eval" "fake_agent.bb"))
+      exec (fn [& args] @(babashka.process/process (into ["bb" tool] args) {:out :string :err :string}))]
+  (fs/create-dirs (fs/parent latest))
+  (let [r (exec "plan" "--out" (str eval-dir) "--only" "T01")]
+    (assert (zero? (:exit r)) (:err r)))
+  (let [r (exec "run" "--out" (str eval-dir) "--agent-cmd" (str "bb " fake))]
+    (assert (zero? (:exit r)) (:err r)))
+  (fs/create-sym-link latest eval-dir)
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+  (let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+    (assert (str/includes? s "ai_ops_harness_eval_present 1\n"))
+    (assert (str/includes? s "ai_ops_harness_eval_export_ok 1\n"))
+    (assert (str/includes? s "ai_ops_harness_eval_regression{"))
+    (assert (str/includes? s "ai_ops_v2_info"))
+    (assert (str/includes? s "ai_ops_outcome_info")))
+  (let [tmpfile (java.io.File/createTempFile "harness-test" ".prom")
+        deadline (+ (System/currentTimeMillis) 30000)
+        fail-text (with-redefs [ai-ops-ledger/harness-eval-script "/nonexistent"]
+                    (ai-ops-ledger/harness-eval-export-text root tmpfile deadline 10000))
+        n (count (.getBytes fail-text "UTF-8"))]
+    (assert (= fail-text (ai-ops-ledger/harness-eval-export-text root tmpfile deadline n)))
+    (assert (= "" (ai-ops-ledger/harness-eval-export-text root tmpfile deadline (dec n))))
+    (with-redefs [ai-ops-ledger/run-sli-command! (fn [_ f _] (spit f "") true)]
+      (assert (= fail-text (ai-ops-ledger/harness-eval-export-text root tmpfile deadline 10000))))
+    (assert (= fail-text (ai-ops-ledger/harness-eval-export-text root tmpfile 0 10000)))
+    (fs/delete-if-exists tmpfile))
+  (fs/delete latest)
+  (fs/create-dirs latest)
+  (ai-ops-ledger/atomic-spit! (ai-ops-ledger/sli-status-path root) "{:last-attempt 1}")
+  (assert (true? (ai-ops-ledger/refresh-sli! root vault)))
+  (let [s (slurp (str (ai-ops-ledger/sli-path root)))]
+    (assert (str/includes? s "ai_ops_harness_eval_present 1\n"))
+    (assert (str/includes? s "ai_ops_harness_eval_export_ok 0\n"))
+    (assert (not (str/includes? s "ai_ops_harness_eval_info")))
+    (assert (str/includes? s "ai_ops_v2_info"))
+    (assert (str/includes? s "ai_ops_outcome_info"))
+    (assert (:last-success (ai-ops-ledger/read-sli-status root))))
+  (fs/delete-tree latest))
+(println "ai-ops-ledger-test: harness evaluation absent, valid and broken")
 (def old (slurp (str (ai-ops-ledger/sli-path root))))
 ;; 容量上限付近: v1 の追記は実際に追記するバイト数で判定し、v0 の出力を上限超えにしない。
 ;; (旧実装は余白を 128 bytes 固定と見積もり、export_ok の HELP/TYPE/値だけでそれを超えて sli.prom 全体が

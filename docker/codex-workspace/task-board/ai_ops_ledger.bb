@@ -553,6 +553,7 @@
 ;; SLI v0 の export が成功した後に連結し、v1 側の失敗は ai_ops_v1_export_ok=0 として出す (v0 の出力は止めない)。
 (def slo-script (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_slo.bb")))
 (def outcome-script (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_outcome.bb")))
+(def harness-eval-script (str (fs/path (fs/parent (fs/absolutize *file*)) "harness_eval.bb")))
 (def insight-script (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_insight.bb")))
 (defn sli-status-path [root] (fs/path (ai-ops-dir root) "sli-export-status.edn"))
 (defn sli-path [root] (fs/path (ai-ops-dir root) "sli.prom"))
@@ -1070,6 +1071,27 @@
     (cond (and ok-text (<= (utf8-length ok-text) budget)) ok-text
           (<= (utf8-length fail-text) budget) fail-text
           :else "")))
+(defn harness-eval-export-text
+  "Append the latest harness evaluation and its presence/export status within budget."
+  [root tmp deadline budget]
+  (let [latest (fs/path (ai-ops-dir root) "harness-eval" "latest")
+        present? (java.nio.file.Files/exists latest (into-array java.nio.file.LinkOption [java.nio.file.LinkOption/NOFOLLOW_LINKS]))
+        tail (fn [ok?] (str "# HELP ai_ops_harness_eval_present 1 when a latest harness evaluation is configured.\n"
+                            "# TYPE ai_ops_harness_eval_present gauge\n"
+                            "ai_ops_harness_eval_present " (if present? 1 0) "\n"
+                            "# HELP ai_ops_harness_eval_export_ok Harness evaluation export succeeded in the last SLI refresh.\n"
+                            "# TYPE ai_ops_harness_eval_export_ok gauge\n"
+                            "ai_ops_harness_eval_export_ok " (if ok? 1 0) "\n"))
+        body (when present?
+               (try (when (and (run-sli-command! ["bb" harness-eval-script "prom" "--out" (str latest)] tmp deadline)
+                               (pos? (.length tmp)))
+                      (let [s (slurp tmp)] (if (str/ends-with? s "\n") s (str s "\n"))))
+                    (catch Exception _ nil)))
+        ok-text (when (or (not present?) body) (str body (tail true)))
+        fail-text (tail false)]
+    (cond (and ok-text (<= (utf8-length ok-text) budget)) ok-text
+          (and present? (<= (utf8-length fail-text) budget)) fail-text
+          :else "")))
 (defn- refresh-sli-locked! [root vault]
   (let [now (quot (System/currentTimeMillis) 1000) status (read-sli-status root) interval (sli-interval)]
       (when (and (enabled?) (pos? interval) (not (str/blank? vault))
@@ -1092,8 +1114,9 @@
                      (pos? (.length @output)) (<= (.length @output) sli-limit))
               (let [v1-text (v1-export-text root @v1 deadline (- sli-limit (.length @output)))
                     v2-text (v2-export-text root vault @v2 deadline (- sli-limit (.length @output) (utf8-length v1-text)))
-                    outcome-text (outcome-export-text root vault @outcome deadline (- sli-limit (.length @output) (utf8-length v1-text) (utf8-length v2-text)))]
-                (atomic-spit! (sli-path root) (str (slurp @output) v1-text v2-text outcome-text))
+                    outcome-text (outcome-export-text root vault @outcome deadline (- sli-limit (.length @output) (utf8-length v1-text) (utf8-length v2-text)))
+                    harness-text (harness-eval-export-text root @outcome deadline (- sli-limit (.length @output) (utf8-length v1-text) (utf8-length v2-text) (utf8-length outcome-text)))]
+                (atomic-spit! (sli-path root) (str (slurp @output) v1-text v2-text outcome-text harness-text))
                 (atomic-spit! (sli-status-path root) (pr-str (assoc attempt :last-success now))) true)
               (do (atomic-spit! (sli-status-path root) (pr-str (update attempt :failures (fnil inc 0)))) false))
             (catch Exception _
