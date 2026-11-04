@@ -50,6 +50,65 @@
           (subs (apply str (map #(format "%02x" %) digest)) 0 16))))
     (catch Exception _ nil)))
 
+(defn- named-limit
+  "The window key an event's top-level fields talk about, or nil."
+  [info]
+  (let [limit (:rateLimitType info)]
+    (when (and (string? limit) (not= "other" limit)) (keyword limit))))
+
+(defn- promote-top-rejection
+  "Write an event-level rejection into the window it names. The top-level fields
+  are replaced by the next event, so a rejection left only there would be lost
+  before its reset. It wins over a same-event window status, as a stop reason."
+  [windows info]
+  (let [k (named-limit info)]
+    (if (and k (= "rejected" (:status info)))
+      (let [reset (or (:resetsAt info) (get-in windows [k :resetsAt]))]
+        (assoc windows k (cond-> (assoc (get windows k {}) :status "rejected")
+                           (number? reset) (assoc :resetsAt reset))))
+      windows)))
+
+(defn- release-named-window
+  "A later event saying its named limit is allowed ends that limit's recorded
+  rejection, even when its window entry has no status or is absent."
+  [incoming info prior]
+  (let [k (named-limit info)]
+    (if (and k (contains? #{"allowed" "allowed_warning"} (:status info))
+             (= "rejected" (get-in prior [k :status]))
+             (nil? (get-in incoming [k :status])))
+      (assoc-in incoming [k :status] (:status info))
+      incoming)))
+
+(defn- keep-rejection
+  "A newer observation with no status says nothing about the rejection, which
+  stays until its reset. With no reset time anywhere the rejection keeps its own
+  observation time, so that it can still go stale instead of being renewed forever."
+  [old new]
+  (let [old-reset (:resetsAt old)
+        expired? (and (number? old-reset) (<= old-reset (quot (:observed_at_ms new) 1000)))]
+    (if (and (= "rejected" (:status old)) (nil? (:status new)) (not expired?))
+      (let [reset (or (:resetsAt new) old-reset)]
+        (cond-> (assoc new :status "rejected")
+          (number? reset) (assoc :resetsAt reset)
+          (not (number? reset)) (assoc :observed_at_ms (:observed_at_ms old))))
+      new)))
+
+(defn- prior-windows
+  "The snapshot's windows with observation times filled in. A snapshot written
+  before rejections were promoted may still hold one only at its top level; it is
+  moved into its window unless that window was observed strictly later."
+  [data prior-ms]
+  (let [info (:rate_limit_info data)
+        windows (into {} (map (fn [[k v]] [(keyword (name k)) (update v :observed_at_ms #(or % prior-ms))]))
+                      (:unifiedWindows info))
+        k (named-limit info)]
+    (if (and k prior-ms (= "rejected" (:status info))
+             (not (> (get-in windows [k :observed_at_ms] 0) prior-ms)))
+      (let [account (or (:account_scope data) (some :account_scope (vals windows)))]
+        (update (promote-top-rejection windows info) k
+                #(cond-> (assoc % :observed_at_ms prior-ms) account (assoc :account_scope account))))
+      windows)))
+
 (defn merge-claude-snapshot
   "Merge one cleaned event into the snapshot window by window. An event lists
   only some windows, so an absent window keeps its own last observation and
@@ -58,8 +117,7 @@
   [data clean observed-ms scope]
   (let [prior-ms (when data (or (:observed_at_ms data) (* 1000 (:observed_at data))))
         newer? (or (nil? prior-ms) (<= prior-ms observed-ms))
-        prior (into {} (map (fn [[k v]] [(keyword (name k)) (update v :observed_at_ms #(or % prior-ms))]))
-                    (get-in data [:rate_limit_info :unifiedWindows]))
+        prior (prior-windows data prior-ms)
         foreign? (fn [[_ v]] (and scope (:account_scope v) (not= scope (:account_scope v))))
         ;; A known-scope event removes every other scope, so at most one remains.
         ;; An unknown-scope event carries it forward; otherwise a later account
@@ -68,8 +126,10 @@
     (when (or newer? (not-any? foreign? prior))
       (let [incoming (into {} (map (fn [[k v]] [(keyword (name k)) (cond-> (assoc v :observed_at_ms observed-ms)
                                                                       stamp (assoc :account_scope stamp))]))
-                           (:unifiedWindows clean))
-            windows (merge-with (fn [old new] (if (<= (:observed_at_ms old) (:observed_at_ms new)) new old))
+                           (-> (:unifiedWindows clean)
+                               (promote-top-rejection clean)
+                               (release-named-window clean prior)))
+            windows (merge-with (fn [old new] (if (<= (:observed_at_ms old) (:observed_at_ms new)) (keep-rejection old new) old))
                                 (into {} (remove foreign? prior)) incoming)
             windows (into {} (take max-claude-windows (sort-by (comp - :observed_at_ms val) windows)))
             top-ms (if newer? observed-ms prior-ms)]

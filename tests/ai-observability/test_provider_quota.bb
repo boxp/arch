@@ -128,6 +128,82 @@
         (is (not= :hold (:decision (q/route-status rejected "claude-opus" now "other"))))
         (is (not= :hold (:decision (q/route-status allowed "claude-opus" now "mine"))))))))
 
+(load-file (str (fs/path (fs/parent (fs/parent (fs/parent (fs/canonicalize *file*))))
+                         "docker/codex-workspace/task-board/ai_subscription_usage.bb")))
+
+(deftest rejection-survives-later-events
+  (let [merge! (resolve 'ai-subscription-usage/merge-claude-snapshot)
+        clean (resolve 'ai-subscription-usage/clean-claude-rate-limit-info)
+        ms (* 1000 (- now 600))
+        step (fn [d event offset-s] (merge! d (clean event) (+ ms (* 1000 offset-s)) "mine"))
+        hold? (fn [d] (= :hold (:decision (q/route-status d "claude-opus" now "mine"))))
+        rejected (step nil {:status "rejected" :rateLimitType "seven_day_opus" :resetsAt reset
+                            :unifiedWindows {:seven_day_opus {:utilization 1 :resetsAt reset}}} 0)
+        other {:status "allowed" :rateLimitType "five_hour" :resetsAt reset
+               :unifiedWindows {:five_hour {:status "allowed" :utilization 0.1 :resetsAt reset}}}]
+    (testing "別の制限の新しい event で最上位が上書きされても reset まで hold する"
+      (let [d (step rejected other 60)]
+        (is (= "five_hour" (get-in d [:rate_limit_info :rateLimitType])))
+        (is (hold? d))
+        (is (= reset (:resets-at (q/route-status d "claude-opus" now "mine"))))))
+    (testing "該当窓がなくても同じ"
+      (let [d (step (step nil {:status "rejected" :rateLimitType "seven_day_opus" :resetsAt reset} 0) other 60)]
+        (is (hold? d))))
+    (testing "最上位の別の拒否で上書きされても両方残る"
+      (let [d (step rejected {:status "rejected" :rateLimitType "seven_day_sonnet" :resetsAt reset} 60)]
+        (is (hold? d))
+        (is (= :hold (:decision (q/route-status d "claude-sonnet" now "mine"))))))
+    (testing "status のない窓の新しい観測では解除しない"
+      (is (hold? (step rejected {:status "allowed" :rateLimitType "five_hour"
+                                 :unifiedWindows {:seven_day_opus {:utilization 0.5 :resetsAt reset}}} 60))))
+    (testing "reset のない拒否は新しい観測で延命せず、いずれ stale になる"
+      (let [d (step (step nil {:status "rejected" :rateLimitType "seven_day_opus"} 0)
+                    {:status "allowed" :rateLimitType "five_hour" :unifiedWindows {:seven_day_opus {:utilization 0.5}}} 60)]
+        (is (= ms (get-in d [:rate_limit_info :unifiedWindows :seven_day_opus :observed_at_ms])))
+        (is (hold? d))))
+    (testing "reset 後の status のない観測には拒否を持ち越さない"
+      (let [short-reset (- now 300)
+            d (step (step nil {:status "rejected" :rateLimitType "seven_day_opus" :resetsAt short-reset} 0)
+                    {:status "allowed" :rateLimitType "five_hour"
+                     :unifiedWindows {:seven_day_opus {:utilization 0.1 :resetsAt reset}}} 400)]
+        (is (nil? (get-in d [:rate_limit_info :unifiedWindows :seven_day_opus :status])))
+        (is (not (hold? d)))))
+    (testing "解除: 窓の allowed、または同じ制限を指す最上位の allowed"
+      (is (not (hold? (step rejected {:status "allowed" :rateLimitType "five_hour"
+                                      :unifiedWindows {:seven_day_opus {:status "allowed" :utilization 0.2 :resetsAt reset}}} 60))))
+      (is (not (hold? (step rejected {:status "allowed" :rateLimitType "seven_day_opus"} 60))))
+      (is (not (hold? (step rejected {:status "allowed_warning" :rateLimitType "seven_day_opus"
+                                      :unifiedWindows {:seven_day_opus {:utilization 0.9 :resetsAt reset}}} 60)))))
+    (testing "別の制限を指す最上位の allowed だけでは解除しない。古い event でも解除しない"
+      (is (hold? (step rejected {:status "allowed" :rateLimitType "five_hour"} 60)))
+      (is (hold? (step rejected {:status "allowed" :rateLimitType "seven_day_opus"
+                                 :unifiedWindows {:seven_day_opus {:status "allowed" :utilization 0.2}}} -60))))
+    (testing "修正前の形式の snapshot: 最上位だけの拒否を次の event で窓へ移す"
+      (let [legacy {:observed_at (quot ms 1000) :observed_at_ms ms
+                    :rate_limit_info {:status "rejected" :rateLimitType "seven_day_opus" :resetsAt reset
+                                      :unifiedWindows {:seven_day_opus {:utilization 1 :resetsAt reset}}}}]
+        (is (hold? (step legacy other 60))))
+      (let [newer-window {:observed_at (quot ms 1000) :observed_at_ms ms
+                          :rate_limit_info {:status "rejected" :rateLimitType "seven_day_opus" :resetsAt reset
+                                            :unifiedWindows {:seven_day_opus {:status "allowed" :utilization 0.2 :resetsAt reset
+                                                                              :observed_at_ms (+ ms 1000)}}}}]
+        (is (not (hold? (step newer-window other 60))))))
+    (testing "別 account になった後は持ち越さない"
+      (let [d (merge! rejected (clean other) (+ ms 60000) "another")]
+        (is (not= :hold (:decision (q/route-status d "claude-opus" now "another"))))))
+    (testing "窓へ記録するので Prometheus の窓の status にも rejected が出る。拒否の直後も後続 event の後も"
+      (doseq [d [rejected (step rejected other 60)]]
+        (let [root (fs/create-temp-dir)]
+          (try
+            (fs/create-dirs (fs/path root "ai-ops/subscription"))
+            (spit (str (fs/path root "ai-ops/subscription/claude.json")) (json/generate-string d))
+            (let [text ((resolve 'ai-subscription-usage/prom-text) root (fs/create-temp-dir) now)]
+              (is (some #(and (str/starts-with? % "ai_subscription_window_status{")
+                              (str/includes? % "limit=\"seven_day_opus\"")
+                              (str/includes? % "status=\"rejected\""))
+                        (str/split-lines text))))
+            (finally (fs/delete-tree root))))))))
+
 (deftest unknown-does-not-hold
   (testing "観測なし・reset 後未観測・古い観測は hold しないが clear とも言わない"
     (doseq [d [(data {})
