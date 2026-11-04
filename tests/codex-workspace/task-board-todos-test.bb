@@ -275,6 +275,46 @@
         (is (zero? (:exit (run "add" "BOXP-10" "--vault" d "--optional" "--text" (str "perm " perm) "--source" "test"))))
         (is (= (fs/posix->str before) (fs/posix->str (mode))))
         (is (str/includes? (slurp (str path)) (str "perm " perm)))))))
+(deftest writes-keep-ticket-owner
+  (let [d (fs/create-temp-dir) path (fs/path d "BOXP-13.md")
+        me (task-board-todos/file-owner d)
+        leftovers #(mapv str (fs/glob d ".todo-*" {:hidden true}))
+        ;; Owner of the ticket, seen as someone else: nobody here can chown for real.
+        as-other (fn [f]
+                   (with-redefs [task-board-todos/file-owner
+                                 (let [real task-board-todos/file-owner]
+                                   (fn [p] (if (= (str p) (str path)) :other (real p))))]
+                     (f)))]
+    (testing "same owner: nothing to hand over, the real calls work"
+      (spit (str path) "base")
+      (task-board-todos/set-owner! path me)
+      (is (true? (task-board-todos/write-if-unchanged path "base" "mine")))
+      (is (= me (task-board-todos/file-owner path))))
+    (testing "root: the temp copy is handed to the ticket's owner before the rename"
+      (spit (str path) "base")
+      (fs/set-posix-file-permissions path "rw-r--r--")
+      (let [handed (atom nil)]
+        (with-redefs [task-board-todos/set-owner! (fn [_ owner] (reset! handed owner))]
+          (as-other #(task-board-todos/atomic-write path "mine")))
+        (is (= :other @handed))
+        (is (= "mine" (slurp (str path))))))
+    (testing "not root, 0644: refuses and leaves the ticket and no temp file"
+      (spit (str path) "base")
+      (fs/set-posix-file-permissions path "rw-r--r--")
+      (with-redefs [task-board-todos/set-owner! (fn [_ _] (throw (java.io.IOException. "not permitted")))]
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"would lose write access"
+                              (as-other #(task-board-todos/atomic-write path "mine"))))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"would lose write access"
+                              (as-other #(task-board-todos/write-if-unchanged path "base" "mine")))))
+      (is (= "base" (slurp (str path))))
+      (is (empty? (leftovers))))
+    (testing "not root, 0664 with the same group: the owner keeps access through the group"
+      (spit (str path) "base")
+      (fs/set-posix-file-permissions path "rw-rw-r--")
+      (with-redefs [task-board-todos/set-owner! (fn [_ _] (throw (java.io.IOException. "not permitted")))]
+        (as-other #(task-board-todos/atomic-write path "mine")))
+      (is (= "mine" (slurp (str path))))
+      (is (empty? (leftovers))))))
 (deftest ticket-lock-spans-containers
   (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-12.md")
         ;; A container of its own: same vault volume, different temp dir.

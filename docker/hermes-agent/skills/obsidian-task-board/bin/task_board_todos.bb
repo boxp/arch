@@ -226,9 +226,33 @@
                     c (.getChannel r)]
           (let [_lock (.lock c)] (with-lock path f))))
     (with-lock path f)))
+(defn file-owner [p] (Files/getOwner p (make-array java.nio.file.LinkOption 0)))
+(defn set-owner! [p owner] (Files/setOwner p owner))
+(defn file-group [p] (Files/getAttribute p "posix:group" (make-array java.nio.file.LinkOption 0)))
+(defn owner-can-still-write?
+  "Whether p's owner keeps write access to tmp without owning it: through other-write,
+  or group-write with p's group, assuming the owner belongs to that group."
+  [tmp p]
+  (try (let [mode (fs/posix->str (fs/posix-file-permissions tmp))]
+         (or (= \w (nth mode 7))
+             (and (= \w (nth mode 4)) (= (file-group tmp) (file-group p)))))
+       (catch Exception _ false)))
+(defn keep-owner!
+  "Renaming tmp over p makes tmp's owner the ticket's owner. Only root can hand a file
+  over, so a writer who cannot must not replace a ticket its owner would lose access to
+  (0644 owned by someone else): fail with the ticket untouched."
+  [tmp p]
+  (let [owner (file-owner p)]
+    (when-not (or (= owner (file-owner tmp))
+                  (try (set-owner! tmp owner) true (catch Exception _ false))
+                  (owner-can-still-write? tmp p))
+      (Files/deleteIfExists tmp)
+      (throw (ex-info (str "cannot replace " p ": owned by " owner " who would lose write access; fix its owner or mode")
+                      {:path (str p)})))))
 (defn temp-copy
-  "A hidden temp file beside p holding text. createTempFile is 0600: a ticket's mode
-  and group carry over so other readers (runner, Hermes, sync) are not locked out."
+  "A hidden temp file beside p holding text. createTempFile is 0600: a ticket's mode,
+  group and owner carry over so other readers and writers (runner, Hermes, sync) are
+  not locked out. The owner goes last: only the file's owner can change the others."
   [p text]
   (let [tmp (Files/createTempFile (.getParent p)
                                   ".todo-"
@@ -239,9 +263,10 @@
       (try (fs/set-posix-file-permissions tmp (fs/posix-file-permissions p))
            (catch UnsupportedOperationException _ nil))
       (try (Files/setAttribute tmp "posix:group"
-                               (Files/getAttribute p "posix:group" (make-array java.nio.file.LinkOption 0))
+                               (file-group p)
                                (make-array java.nio.file.LinkOption 0))
-           (catch Exception _ nil)))
+           (catch Exception _ nil))
+      (keep-owner! tmp p))
     tmp))
 (defn replace-file
   [tmp p]
