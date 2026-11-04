@@ -148,6 +148,14 @@
               (catch Exception e
                 (log! (str "subscription module unavailable: " (.getMessage e))) false))))
 
+(def provider-quota-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_provider_quota.bb")))
+
+(def provider-quota-module-loaded?
+  (delay (try (load-file provider-quota-module-path) true
+              (catch Exception e
+                (log! (str "provider quota module unavailable: " (.getMessage e))) false))))
+
 (declare root)
 
 (defn assignee-runtime [assignee]
@@ -2149,7 +2157,8 @@
 ;; reported as unknown, never as "no alerts", and the raw response stays in
 ;; memory: summary.edn keeps only the allowlisted names.
 (def ai-ops-alert-allowlist
-  #{"AiOpsOutcomeBurnFast" "AiOpsOutcomeBurnSlow" "AiOpsOutcomeMeasurementStale" "AiOpsHarnessEvalRegression"})
+  #{"AiOpsOutcomeBurnFast" "AiOpsOutcomeBurnSlow" "AiOpsOutcomeMeasurementStale" "AiOpsHarnessEvalRegression"
+    "AiProviderQuotaExhausted" "AiProviderQuotaObservationStale"})
 
 (defn ai-ops-alerts-config []
   (let [uid (System/getenv "CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID")]
@@ -2177,6 +2186,7 @@
                      (cond-> {:alertname alertname :state (str (or state "unknown"))}
                        (string? (:severity labels)) (assoc :severity (:severity labels))
                        (string? (:window labels)) (assoc :window (:window labels))
+                       (string? (:scope labels)) (assoc :scope (:scope labels))
                        (string? (:definition_version labels)) (assoc :definition-version (:definition_version labels)))))))
          distinct
          (sort-by (juxt :alertname :window :state))
@@ -2204,10 +2214,11 @@
           (log! (str "ai ops alerts read failed: " (.getMessage e)))
           {:status "unavailable" :reason "response-unreadable"})))))
 
-(defn ai-ops-alert-line [{:keys [alertname state severity window definition-version]}]
+(defn ai-ops-alert-line [{:keys [alertname state severity window scope definition-version]}]
   (str alertname "{state=" state
        (when severity (str ",severity=" severity))
        (when window (str ",window=" window))
+       (when scope (str ",scope=" scope))
        (when definition-version (str ",definition_version=" definition-version))
        "}"))
 
@@ -2240,6 +2251,61 @@
          "- Allowed when an alert is firing: record the evidence in this ticket's Notes (alert name, window, counts and definition version from the ai-ops-quality dashboard), isolate the likely cause (model update / harness update / external outage / task difficulty), re-evaluate under the same conditions, and propose small fixes inside the already approved scope.\n"
          "- Not allowed because of these alerts: releasing gates, approvals or locks; resetting retry or continuation budgets; automatic production changes; re-sending notifications; restarting Pods or Hermes; declaring an SLO met or missed. Alerts are context for your judgment, not a blocker: keep working this ticket's approved scope.\n\n")))
 
+;; BOXP-405 AIOPS-QUOTA: provider usage limits as a decision input, separate from
+;; the outcome SLO. The state comes from the local snapshot of the CLI's own
+;; rate_limit_event values. Every failure here fails open and reads as unknown:
+;; a broken quota read must not stop runs or look like available quota.
+(defn claude-quota-snapshot []
+  (if (and @subscription-module-loaded? @provider-quota-module-loaded?)
+    ((resolve 'ai-subscription-usage/snapshot) (fs/path (root) "ai-ops/subscription/claude.json"))
+    {:state "unavailable"}))
+
+(defn provider-quota-prompt
+  "The usage limit section for a Claude route; nil for other runtimes."
+  ([agent]
+   (when (claude-assignee? agent)
+     (try
+       (provider-quota-prompt agent (claude-quota-snapshot) (quot (System/currentTimeMillis) 1000))
+       (catch Exception e
+         (log! (str "provider quota read failed: " (.getMessage e)))
+         (provider-quota-prompt agent {:state "unavailable"} 0)))))
+  ([agent {:keys [state data]} now-s]
+   (when (claude-assignee? agent)
+     (if (= "ok" state)
+       ((resolve 'ai-provider-quota/prompt-section) data agent now-s
+        ((resolve 'ai-subscription-usage/claude-account-scope)))
+       (str "Provider usage limits (利用枠): unknown, no readable observation (" state "). Do not read this as available.\n")))))
+
+(defn provider-quota-status
+  "Route decision for a Claude agent, or nil when it is not a Claude route or the
+  state cannot be read."
+  [agent]
+  (when (claude-assignee? agent)
+    (try
+      (let [{:keys [state data]} (claude-quota-snapshot)]
+        (when (= "ok" state)
+          ((resolve 'ai-provider-quota/route-status) data agent (quot (System/currentTimeMillis) 1000)
+           ((resolve 'ai-subscription-usage/claude-account-scope)))))
+      (catch Exception e
+        (log! (str "provider quota read failed: " (.getMessage e)))
+        nil))))
+
+(defn provider-quota-summary-fields [status]
+  (if status
+    {:provider-quota (select-keys status [:route :decision :scope :limits :resets-at :definition-version])}
+    {}))
+
+(defn run-provider-rate-limit
+  "The limit that stopped a run, from its events, or nil."
+  [events-path]
+  (try
+    (when (and @provider-quota-module-loaded? (fs/exists? events-path))
+      (with-open [reader (io/reader (str events-path))]
+        ((resolve 'ai-provider-quota/run-rate-limit) (line-seq reader))))
+    (catch Exception e
+      (log! (str "provider rate limit read failed: " (.getMessage e)))
+      nil)))
+
 (defn prompt-for
   ([action ticket-id lane workspace agent]
    (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
@@ -2262,6 +2328,7 @@
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
                     (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
                     (ai-ops-decision-prompt ai-ops)
+                    (provider-quota-prompt agent)
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
                              "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: continue.\n"
@@ -3033,7 +3100,8 @@
         last-message-path (fs/path dir "last-message.md")
         evidence-path (str (fs/path dir "delegation.json"))
         ai-ops (fetch-ai-ops-alerts)
-        ai-ops-fields (ai-ops-summary-fields ai-ops)]
+        ai-ops-fields (merge (ai-ops-summary-fields ai-ops)
+                             (provider-quota-summary-fields (provider-quota-status agent)))]
     (fs/create-dirs dir)
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent ai-ops))
     (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))
@@ -4020,6 +4088,15 @@
     (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
     :else "reason unavailable"))
 
+(defn run-blocker-reason
+  "The safe reason, naming the provider limit when one stopped the process. The
+  category stays agent-process-error so the observed category enums do not change."
+  [ticket-id run-id result exit review-gate exception]
+  (or (when (and (nil? exception) (not (zero? (long (or exit 0)))))
+        (when-let [limit (run-provider-rate-limit (fs/path (run-dir ticket-id run-id) "events.jsonl"))]
+          ((resolve 'ai-provider-quota/run-rate-limit-reason) limit)))
+      (blocker-safe-reason result exit review-gate exception)))
+
 (defn blocker-note [ticket-id run-id action category reason]
   (let [dir (str (run-dir ticket-id run-id))]
     (str "Blocked transition recorded: ticket=" ticket-id
@@ -4043,7 +4120,7 @@
 
 (defn record-blocked-transition! [ticket-id run-id action result exit review-gate exception]
   (let [category (blocker-category result exit review-gate exception)
-        reason (blocker-safe-reason result exit review-gate exception)]
+        reason (run-blocker-reason ticket-id run-id result exit review-gate exception)]
     (try
       (when-not (blocked-transition-recorded? ticket-id run-id)
         (append-note! ticket-id (blocker-note ticket-id run-id action category reason)))
@@ -4089,7 +4166,7 @@
                           :result result
                           :review-gate (persisted-review-gate review-gate)
                           :blocker-category (blocker-category result exit review-gate exception)
-                          :blocker-reason (blocker-safe-reason result exit review-gate exception)
+                          :blocker-reason (run-blocker-reason ticket-id run-id result exit review-gate exception)
                           :finished-at (now-str)}
                    (and (= "agent-reported-blocked" (blocker-category result exit review-gate exception))
                         (or (nil? review-gate) (:ok? review-gate)))
@@ -4240,6 +4317,35 @@
         (finally
           (release-lock! ticket-id lock))))))
 
+(def provider-quota-hold-actions #{:implement :review-fix :blocked-retry})
+(def provider-quota-hold-logged (atom #{}))
+
+(defn provider-quota-hold-enabled? []
+  (not= "off" (env "CODEX_TASK_BOARD_PROVIDER_QUOTA_HOLD" "on")))
+
+(defn provider-quota-hold!
+  "True when this agent's route has a rejected limit that has not reset, so a new
+  run would stop at once. The card, assignee, claim and budgets stay as they are;
+  it starts on a later tick after the reset or once a newer observation clears the
+  limit. Notes get one line per route, limit and reset."
+  [ticket-id action assignee]
+  (let [status (when (and (provider-quota-hold-actions action) (provider-quota-hold-enabled?))
+                 (provider-quota-status assignee))]
+    (when (= :hold (:decision status))
+      (let [reason ((resolve 'ai-provider-quota/hold-reason) status)
+            marker (str "quota-hold=" ticket-id "/" (:route status) "/"
+                        (str/join "," (:limits status)) "/" (:resets-at status))]
+        (when-not (contains? @provider-quota-hold-logged marker)
+          (swap! provider-quota-hold-logged conj marker)
+          (log! (str "not starting " ticket-id ": " reason))
+          (try
+            (when-not (str/includes? (slurp (str (ticket-path ticket-id))) marker)
+              (append-note! ticket-id (str "Run not started: " reason "; " marker
+                                           "; the card, assignee and budgets are unchanged; it starts after the reset or a newer observation.")))
+            (catch Exception e
+              (log! (str "could not note quota hold for " ticket-id ": " (.getMessage e)))))))
+      true)))
+
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
@@ -4260,7 +4366,8 @@
                      ;; moved back without a grant) is stopped formally here.
                      (stop-exhausted-ticket! ticket-id candidate status assignee lane ticket-text)
                      nil)
-                 candidate)]
+                 candidate)
+        action (when-not (provider-quota-hold! ticket-id action assignee) action)]
     (when action
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (when-let [lock (acquire-lock! ticket-id action effective-lane)]
@@ -5146,7 +5253,9 @@
   ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
   (with-redefs [record-task-board-event! (fn [& _] nil)
                 record-ai-ops-event! (fn [& _] nil)
-                record-ai-ops-gate! (fn [& _] nil)]
+                record-ai-ops-gate! (fn [& _] nil)
+                ;; The live quota snapshot must not decide whether self-test cards start.
+                provider-quota-status (fn [_] nil)]
     (run-tests*!)))
 
 (defn run-tests*! []
@@ -5863,6 +5972,19 @@
               ["wait reason values" (mapv #(wait-reason-marker (str "TASK_BOARD_WAIT_REASON: " %)) ["owner-decision" "external-hold" "new-scope" "AGENT-RECOVERABLE"]) ["owner-decision" "external-hold" "new-scope" "agent-recoverable"]]
               ["invalid wait reason" (wait-reason-marker "TASK_BOARD_WAIT_REASON: private") nil]
               ["absent wait reason" (wait-reason-marker "nothing") nil]
+              ;; BOXP-405 AIOPS-QUOTA: unknown is not available and fails open.
+              ["provider quota prompt is omitted for other runtimes" (provider-quota-prompt "codex" {:state "no_snapshot"} 0) nil]
+              ["provider quota prompt says unknown without a snapshot"
+               (boolean (re-find #"unknown, no readable observation \(no_snapshot\)" (provider-quota-prompt "claude-fable" {:state "no_snapshot"} 0))) true]
+              ["provider quota summary is empty without a status" (provider-quota-summary-fields nil) {}]
+              ["provider quota hold ignores other actions"
+               (with-redefs [provider-quota-status (fn [_] {:decision :hold})] (provider-quota-hold! "TEST-1" :recover "claude-fable")) nil]
+              ["provider quota hold can be turned off"
+               (with-redefs [provider-quota-hold-enabled? (fn [] false) provider-quota-status (fn [_] {:decision :hold})] (provider-quota-hold! "TEST-1" :implement "claude-fable")) nil]
+              ["provider quota hold passes a clear route"
+               (with-redefs [provider-quota-status (fn [_] {:decision :clear})] (provider-quota-hold! "TEST-1" :implement "claude-opus")) nil]
+              ["provider quota hold passes an unreadable state"
+               (with-redefs [provider-quota-status (fn [_] nil)] (provider-quota-hold! "TEST-1" :implement "claude-opus")) nil]
               ;; BOXP-405: AI Ops decision support keeps allowlisted alert names only.
               ["ai ops alerts parse allowlist and sort"
                (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[{\"labels\":{\"alertname\":\"Watchdog\",\"severity\":\"none\"},\"state\":\"firing\"},{\"labels\":{\"alertname\":\"AiOpsOutcomeMeasurementStale\",\"severity\":\"warning\",\"definition_version\":\"outcome/v1-draft\"},\"annotations\":{\"description\":\"SECRET-BODY\"},\"state\":\"pending\"},{\"labels\":{\"alertname\":\"AiOpsOutcomeBurnFast\",\"severity\":\"warning\",\"window\":\"7d\"},\"state\":\"firing\",\"value\":\"2.5\"}]}}")
