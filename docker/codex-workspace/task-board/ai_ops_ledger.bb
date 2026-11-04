@@ -1030,14 +1030,14 @@
           (<= (utf8-length fail-text) budget) fail-text
           :else "")))
 (defn v2-export-text
-  "Run the v1 export into `tmp` and return the text to append to sli.prom: the v1
+  "Run the v2 export into `tmp` and return the text to append to sli.prom: the v2
   series plus `ai_ops_v2_export_ok`, which is 0 when the export failed, timed out,
   produced nothing or would push sli.prom past `budget` bytes. The limit is checked
-  on the exact bytes that will be appended (body + the export_ok lines), so a v1
-  failure near the limit never pushes the v0 output over sli-limit. When even the
-  export_ok lines do not fit, nothing is appended and the v0 output stands alone."
+  on the exact bytes that will be appended (body + the export_ok lines), so a v2
+  failure near the limit never pushes the preceding output over sli-limit. When even the
+  export_ok lines do not fit, nothing is appended and the preceding output stands alone."
   [root vault tmp deadline budget]
-  (let [tail (fn [ok?] (str "# HELP ai_ops_v2_export_ok slo-draft/v2 export succeeded in the last SLI refresh (0 = v1 series are stale or absent).\n"
+  (let [tail (fn [ok?] (str "# HELP ai_ops_v2_export_ok slo-draft/v2 export succeeded in the last SLI refresh (0 = v2 series are stale or absent).\n"
                             "# TYPE ai_ops_v2_export_ok gauge\n"
                             "ai_ops_v2_export_ok " (if ok? 1 0) "\n"))
         body (try (when (and (run-sli-command! ["bb" slo-script "prom" (str root) (str vault)] tmp deadline)
