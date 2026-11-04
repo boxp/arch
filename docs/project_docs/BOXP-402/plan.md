@@ -22,3 +22,9 @@ SLO 数値の正式承認、新 alert、Langfuse、routing 変更、本文収集
 ## 配備の注意
 
 arch main への merge は `build-codex-workspace-image.yml` → argocd-image-updater により **codex-workspace Pod の自動再起動**を伴う。再起動の要否・時期は Owner 確認を 1 回とる（BOXP-402 Notes）。ダッシュボード（lolice）は再起動なしで反映できるので先に配備する。
+
+## 進捗（2026-11-04）
+
+- lolice PR #1029（dashboard 再構成）は merge 済み（2abd4e5）。Grafana `ai-ops-quality` version 7 で readback 済み。生成スクリプトは `tools/build-dashboard.bb`（入力: lolice `b5906a2` 時点の JSON）。
+- arch 側（本 PR）: runner の `TASK_BOARD_WAIT_REASON` 記録、`ai_ops_slo.bb` の `prom` export、ledger の v2 連結。実装は Codex（gpt-6.1-terra）へ委譲し、30 分の上限で打ち切られたが commit は残ったので、テスト（slo 13 件 / ledger 100 件 / runner suite / BOXP-360 tools）を claude-fable が実行して検証した。
+- 実データでの `prom` 出力（read-only）: continue 停止 8（再開済み 8、15 分超 0）、救援 0、Blocked 193 件はすべて理由未記録（記録開始前）、Ready 21 枚中 担当不一致 13、移行 Done 20（Owner 受入あり 2）。ticket ID は出力に含まれない。
