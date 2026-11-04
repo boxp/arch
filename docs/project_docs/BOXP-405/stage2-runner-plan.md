@@ -27,3 +27,10 @@ TASK_BOARD_TEST_ONLY="test_ai_ops_alerts_prompt_section_and_summary test_ai_ops_
 python3 tests/codex-workspace/ci-partition-test.py
 # 実環境 read-only（本 Pod 内、uid=P1809F7CD0C75ACF3）: {:status "ok", :alerts []} と節の生成を確認済み（2026-11-04）
 ```
+
+## 反映の集約（再起動 1 回）
+
+codex-workspace は `Recreate` で、`docker/codex-workspace/**` の main push ごとに image が build され image updater が rollout する。段階 1〜3 の個別 merge と deployment env の変更は別々の rollout になり得るため、次のように 1 回へ集約する。
+
+- 段階 1〜3 を 1 つの PR にまとめ、main への push を 1 回にする。
+- datasource uid は deployment env ではなく image の `ENV` に持たせる（secret ではない。token/URL は既存の runner 環境変数）。lolice 側の manifest 変更を不要にする。
