@@ -24,12 +24,12 @@
 
 (deftest rescue-definition
   (doseq [[name input expected] rescue-cases]
-    (is (= expected (user/rescue-class input)) name)))
+    (is (= expected (ai-ops-slo/rescue-class input)) name)))
 
 (defn write-ledger
   "移行 ledger を置く。rows は [ticket 新レーン]。"
   [vault rows]
-  (let [f (apply fs/path vault user/migration-ledger-path)]
+  (let [f (apply fs/path vault ai-ops-slo/migration-ledger-path)]
     (fs/create-dirs (fs/parent f))
     (spit (str f) (str/join "\n" (cons "| 票 | 元担当 | 新レーン | 根拠 |"
                                         (for [[t lane] rows] (format "| [[Tickets/%s|%s]] | boxp/boxp | %s | SECRETBODY |" t t lane)))))))
@@ -202,8 +202,8 @@
         h (fn [day hour] (format "2026-11-%02dT%02d:00:00Z" day hour))]
     (fs/create-dirs (fs/path vault "Tickets"))
     (fs/create-dirs (fs/path vault "Boards"))
-    (fs/create-dirs (apply fs/path vault user/migration-ledger-path))
-    (fs/delete (apply fs/path vault user/migration-ledger-path))
+    (fs/create-dirs (apply fs/path vault ai-ops-slo/migration-ledger-path))
+    (fs/delete (apply fs/path vault ai-ops-slo/migration-ledger-path))
     ;; 20: すぐ次 run へ続く健全な継続
     (run "BOXP-20" "20261101T000000Z" {:started-at (h 1 0) :finished-at (h 1 1)})
     (run "BOXP-20" "20261101T010500Z" {:started-at "2026-11-01T01:05:00Z" :finished-at (h 1 2) :result "done"})
@@ -233,7 +233,7 @@
                           "## Blocked" "- [ ] [[Tickets/BOXP-25|T]] #ticket assignee::boxp" "- [ ] [[Tickets/BOXP-24|T]] #ticket assignee::boxp"
                           "## Done" "- [x] [[Tickets/BOXP-20|T]] #ticket assignee::boxp" "- [x] [[Tickets/BOXP-21|T]] #ticket assignee::boxp"
                           "- [x] [[Tickets/BOXP-26|T]] #ticket assignee::boxp" "- [x] [[Tickets/BOXP-27|T]] #ticket assignee::boxp"]))
-    (spit (str (apply fs/path vault user/migration-ledger-path))
+    (spit (str (apply fs/path vault ai-ops-slo/migration-ledger-path))
           (str/join "\n" ["| 票 | 元担当 | 新レーン | 根拠 |"
                           "| [[Tickets/BOXP-26|BOXP-26]] | boxp/boxp | Done | SECRETBODY |"
                           "| [[Tickets/BOXP-22|BOXP-22]] | boxp/boxp | Ready | Done へ戻す案 SECRETBODY |"]))
@@ -250,16 +250,16 @@
         (is (= {:total 3 :followed 2 :followed_over_15m 1 :followed_over_24h 1 :open 1 :open_over_15m 1 :open_over_24h 1}
                (select-keys (:continue_stops j) [:total :followed :followed_over_15m :followed_over_24h :open :open_over_15m :open_over_24h]))))
       (testing "既承認の停滞は continue だけを分母にし、Blocked を混ぜない"
-        (is (= {:status "measuring" :numerator 2 :denominator 3 :excluded_unclassified_blocked 1} (:approved_work_stall j))))
+        (is (= {:status "measuring" :numerator 2 :denominator 3 :excluded_unclassified_blocked 1 :blocked_agent_recoverable 0 :blocked_acceptable_wait 0} (:approved_work_stall j))))
       (testing "Owner 接触で再開した停止だけが救援。監督の note と接触なしは救援でない"
-        (is (= {:status "continue_stops_only" :rescue 1 :not_rescue 2 :unknown 0 :excluded_unclassified_blocked 1} (:owner_rescue j))))
+        (is (= {:status "continue_stops_only" :rescue 1 :not_rescue 2 :unknown 0 :excluded_unclassified_blocked 1 :blocked_acceptable_wait 0} (:owner_rescue j))))
       (testing "owner-acceptance は確認待ちとして別掲し、停滞に入れない"
         (is (= 1 (get-in j [:owner_acceptance_stops :total]))))
       (testing "移行で Done になった票を受入に数えない。新レーンが Done の行だけを見る"
         (is (= {:closed_by_acceptance 1 :closed_by_migration 1} (select-keys (:review_stops j) [:closed_by_acceptance :closed_by_migration])))
         (is (= {:ledger_read true :tickets_moved_to_done 1 :tickets_with_owner_acceptance 0} (:migration j))))
       (testing "Blocked の category は件数だけ出し、理由は分類済みと扱わない"
-        (is (= {:total 1 :reason_classified false :by_category {:none-recorded 1}} (:blocked_stops j))))
+        (is (= {:total 1 :reason_classified false :by_category {:none-recorded 1} :by_wait_reason {:unrecorded 1}} (:blocked_stops j))))
       (testing "continue と done を最初の結果に数え、gate 失敗と Blocked だけの task は打切り"
         (is (= {:reached 6 :censored 2 :unevaluated 0}
                (select-keys (:first_run_to_first_outcome j) [:reached :censored :unevaluated])))))))
@@ -294,7 +294,7 @@
       (run "BOXP-33" {:status "succeeded" :result "blocked" :action "groom"})
       (let [j (json/parse-string (run-tool (str (fs/path d "root")) (str vault)) true)]
         (is (= {:total 3 :reason_classified false
-                :by_category {:pr-gate-budget 1 :agent-reported-blocked 1 :none-recorded 1}}
+                :by_category {:pr-gate-budget 1 :agent-reported-blocked 1 :none-recorded 1} :by_wait_reason {:unrecorded 3}}
                (:blocked_stops j)))
         (is (= 3 (get-in j [:approved_work_stall :excluded_unclassified_blocked])))))))
 
@@ -310,8 +310,8 @@
   (testing "migrated-owner-accepted の票は ledger で Done でも受入に数え、移行に数えない"
     (let [review (fn [t] {:ticket t :kind "review" :state :closed :from (java.time.Instant/parse "2026-11-01T00:00:00Z")})
           closed [(review "BOXP-387") (review "BOXP-215") (review "BOXP-1000") (review "BOXP-1001")]]
-      (with-redefs [user/stops (fn [& _] closed)]
-        (let [j (user/snapshot {} {} {} (constantly nil) (java.time.Instant/parse "2026-11-03T00:00:00Z")
+      (with-redefs [ai-ops-slo/stops (fn [& _] closed)]
+        (let [j (ai-ops-slo/snapshot {} {} {} (constantly nil) (java.time.Instant/parse "2026-11-03T00:00:00Z")
                                {:migrated-done #{"BOXP-387" "BOXP-215" "BOXP-1000"}})]
           (is (= {:closed_by_acceptance 3 :closed_by_migration 1 :closed_unclassified 0}
                  (select-keys (:review_stops j) [:closed_by_acceptance :closed_by_migration :closed_unclassified])))
@@ -327,7 +327,7 @@
                       (is (= {:ledger_read false :tickets_moved_to_done nil :tickets_with_owner_acceptance nil} (:migration j)))
                       (is (false? (get-in j [:coverage :migration_ledger_read])))
                       (is (false? (get-in j [:coverage :complete]))))))
-        ledger #(apply fs/path % user/migration-ledger-path)]
+        ledger #(apply fs/path % ai-ops-slo/migration-ledger-path)]
     (fs/with-temp-dir [d {}]
       (let [[root vault] (write-continue-fixture d)]
         (fs/delete (ledger vault))
@@ -375,5 +375,38 @@
       (stop-and-resume "BOXP-31")
       (ticket "BOXP-31" late)
       (is (= {:rescue 2 :not_rescue 0 :unknown 0} (rescue)) "猶予を過ぎた接触 1 回でも救援"))))
+
+(deftest wait-reasons-and-current-board
+  (let [reasons ["owner-decision" "external-hold" "new-scope" "agent-recoverable" nil]
+        runs (into {} (map-indexed (fn [i reason] [(str "BOXP-" i) [{:status "blocked" :result "blocked" :wait-reason reason :finished-at "2026-11-04T00:00:00Z"}]]) reasons))
+        board (merge (into {} (map-indexed (fn [i _] [(str "BOXP-" i) {:lane "Blocked"}]) reasons))
+                     {"BOXP-10" {:lane "Ready" :assignee "codex"} "BOXP-11" {:lane "Ready" :assignee "codex"}
+                      "BOXP-12" {:lane "Ready" :assignee "boxp"} "BOXP-13" {:lane "In Progress"}})
+        runs (assoc runs "BOXP-12" [{:status "succeeded" :result "owner-acceptance"}])
+        snapshot (ai-ops-slo/snapshot runs {} board #(if (= % "BOXP-10") "codex" "other") (java.time.Instant/parse "2026-11-04T12:00:00Z") {})]
+    (is (= 5 (get-in snapshot [:blocked_stops :total])))
+    (is (= (zipmap (map #(or % "unrecorded") reasons) (repeat 1)) (get-in snapshot [:blocked_stops :by_wait_reason])))
+    (is (true? (get-in snapshot [:blocked_stops :reason_classified])))
+    (is (= 1 (get-in snapshot [:approved_work_stall :blocked_agent_recoverable])))
+    ;; 理由付きの Blocked は continue の停止ではないので、停滞の分母にも救援なしにも入れず別掲する
+    (is (= 0 (get-in snapshot [:approved_work_stall :denominator])))
+    (is (= "no_observations" (get-in snapshot [:approved_work_stall :status])))
+    (is (= 3 (get-in snapshot [:approved_work_stall :blocked_acceptable_wait])))
+    (is (= 0 (get-in snapshot [:owner_rescue :not_rescue])))
+    (is (= 3 (get-in snapshot [:owner_rescue :blocked_acceptable_wait])))
+    (doseq [state ["blocked_owner_decision" "blocked_external_hold" "blocked_new_scope" "blocked_agent_recoverable" "blocked_unrecorded" "ready_not_started" "ready_assignee_mismatch" "waiting_owner_acceptance" "running"]]
+      (is (= 1 (get-in snapshot [:board_tasks state])) state))))
+
+(deftest prom-empty-board-and-unreadable-ledger
+  (fs/with-temp-dir [d {}]
+    (let [root (fs/path d "root") vault (fs/path d "vault")]
+      (doseq [p [(fs/path root "runs") (fs/path vault "Tickets") (fs/path vault "Boards")]] (fs/create-dirs p))
+      (spit (str (fs/path vault "Boards" "Task Board.md")) "## Ready\n")
+      (let [out (ai-ops-slo/prom (str root) (str vault))]
+        (is (not (re-find #"BOXP-[0-9]+" out)))
+        (is (str/includes? out "ai_ops_v2_board_tasks{state=\"done\"} 0"))
+        (is (str/includes? out "ai_ops_v2_owner_rescue_status{status=\"no_observations\"} 1"))
+        (is (str/includes? out "ai_ops_v2_migration_ledger_read 0"))
+        (is (not (str/includes? out "ai_ops_v2_migration{part=")))))))
 
 (let [{:keys [fail error]} (run-tests)] (System/exit (if (pos? (+ fail error)) 1 0)))

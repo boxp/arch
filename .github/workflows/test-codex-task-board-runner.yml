@@ -80,6 +80,7 @@ jobs:
           time tests/codex-workspace/task-board-events-test.sh
           time tests/codex-workspace/ai-ops-ledger-test.sh
           time bash tests/codex-workspace/ai-subscription-usage-test.sh
+          time bb tests/ai-observability/test_slo_snapshot.bb
           time docs/project_docs/BOXP-360/tools/test.sh
           time tests/codex-workspace/localllm-source-check-test.sh
           time bb docker/codex-workspace/novel-board/novel_board_runner.bb test

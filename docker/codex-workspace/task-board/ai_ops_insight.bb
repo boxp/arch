@@ -150,6 +150,7 @@
         {:run-id (str (fs/file-name (fs/parent f)))
          :status (kw (:status s)) :action (kw (summary-action s))
          :result (effective-result (kw (:status s)) (kw (summary-action s)) (kw (:result s)) (:finished-at s))
+         :wait-reason (when (and (string? (:wait-reason s)) (#{"owner-decision" "external-hold" "new-scope" "agent-recoverable"} (:wait-reason s))) (:wait-reason s))
          :blocker (kw (:blocker-category s)) :agent (kw (:agent s))
          :started-at (:started-at s) :finished-at (:finished-at s)
          :gate (kw (get-in s [:review-gate :gate]))

@@ -13,3 +13,7 @@ GitHub rules API の main 必須 check は `status-check`（ruleset 2 件）。�
 `env -i PATH="$PATH" HOME="$HOME"` で同時に 4 グループを実行。残り 12 suite は 242 秒、localllm-docs は 771 秒、runner shard 1 は 449 秒で成功。shard 0 は 366 秒で既存の shutdown finalize 待機時間検査が失敗（`early=true`）。該当ケース単独では 24 秒で成功し、shard 0 の全体再実行も 445 秒で成功した。再実行した shard 0 と初回 shard 1 の成功ログの `CASE` を一覧と多重集合で照合し、127 ケース各 1 回、qwen-eval 1 回を確認。shard 0 は 64 ケース＋qwen、shard 1 は 63 ケース。再実行は初回の失敗を取り消す証拠ではなく、並列負荷と時間依存の不安定性は GitHub 上で複数回検証が必要。
 
 ローカル遅いケースの例: shard 0 の Review 廃止契約 40 秒、reasoning routing 35 秒、複数 PR の budget 24 秒、shard 1 の budget 境界 52 秒。ローカルは共有マシンであり GitHub Actions の短縮時間として扱わない。ログは作業時 `/tmp/boxp404-clean/` に保存。initial の AI Ops suite は実サービス環境変数の継承で失敗したため、環境を消去して実行し直した。通常の GitHub CI、main 実行、queue 時間、消費 runner 時間と複数回の安定性は未測定。
+
+## main 4b78e2595 への追従（2026-11-04）
+
+BOXP-402（PR 14459）の merge で main の workflow に `bb tests/ai-observability/test_slo_snapshot.bb` が追加され、対象は 15 コマンドになった。保存済みコミット 950e2ef60 を作り直さず main を merge し、競合解消で同 suite を `remaining` グループへ追加して `ci-partition-test.py` の検査対象にも加えた。上記の 14 コマンド・127 ケースの記述と baseline は d9918e319 時点の記録としてそのまま残す。`remaining` は 13 suite になる。

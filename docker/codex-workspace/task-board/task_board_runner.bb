@@ -2183,7 +2183,7 @@
            "Do the requested work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\n")
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
 
       :blocked-retry
       (str common
@@ -2192,7 +2192,7 @@
            "Do the work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\n")
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
 
       :implement
       (str common
@@ -2201,7 +2201,7 @@
            "Do the work end to end where possible, including focused validation.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\n"))))
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n"))))
 
 (defn normalize-result
   "BOXP-395: `review` is the retired spelling of `continue`. Runs started before
@@ -2212,6 +2212,9 @@
 (defn result-marker [text]
   (when-let [[_ value] (re-find #"(?im)^TASK_BOARD_RESULT:\s*(done|continue|review|blocked)\s*$" (or text ""))]
     (normalize-result value)))
+
+(defn wait-reason-marker [text]
+  (some-> (re-find #"(?im)^TASK_BOARD_WAIT_REASON:\s*(owner-decision|external-hold|new-scope|agent-recoverable)\s*$" (or text "")) second str/lower-case))
 
 (defn github-pr-url? [text]
   (boolean (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))))
@@ -3956,7 +3959,7 @@
                    " because Notes recording failed"))
         false))))
 
-(defn block-ticket! [ticket-id run-id action result exit review-gate exception]
+(defn block-ticket! [ticket-id run-id action result exit review-gate exception last-message]
   (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
     ;; Keep the post-audit transition inside this boundary.  Otherwise a
     ;; failure here escapes to process-card!'s catch, which invokes this
@@ -3975,13 +3978,16 @@
       ;; interpreted. Correct that provisional status only after the Blocked
       ;; transition itself has succeeded.
       (mark-run! ticket-id run-id :blocked
-                 {:action action
-                  :exit-code exit
-                  :result result
-                  :review-gate (persisted-review-gate review-gate)
-                  :blocker-category (blocker-category result exit review-gate exception)
-                  :blocker-reason (blocker-safe-reason result exit review-gate exception)
-                  :finished-at (now-str)})
+                 (cond-> {:action action
+                          :exit-code exit
+                          :result result
+                          :review-gate (persisted-review-gate review-gate)
+                          :blocker-category (blocker-category result exit review-gate exception)
+                          :blocker-reason (blocker-safe-reason result exit review-gate exception)
+                          :finished-at (now-str)}
+                   (and (= "agent-reported-blocked" (blocker-category result exit review-gate exception))
+                        (or (nil? review-gate) (:ok? review-gate)))
+                   (assoc :wait-reason (wait-reason-marker last-message))))
       true
       (catch Exception e
         (log! (str "blocked transition state update failed for " ticket-id "/" run-id
@@ -4299,7 +4305,7 @@
                 (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
                   (record-superseded! ticket-id run-id action assignee effective-lane result exit review-gate revision)
                   (if (and (= "blocked" next-status) (not= "owner-acceptance" outcome))
-                  (if (block-ticket! ticket-id run-id action result exit review-gate nil)
+                  (if (block-ticket! ticket-id run-id action result exit review-gate nil last-message)
                     (do (record-task-board-event! ticket-id run-id status "blocked" result)
                         (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) "blocked" "blocked"
                                                {:result result :exit_code exit}))
@@ -4385,7 +4391,7 @@
                         (append-note! ticket-id (str "localllm docs run " (:run-id lock)
                                                      " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
-                    (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                    (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e nil)
                       (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                           (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
                       (restore-card-state! ticket-id status assignee)))))
@@ -5748,6 +5754,15 @@
               ;; BOXP-395: no outcome can name the retired Review lane.
               ["Review is not a target lane" (contains? status->lane "review") false]
               ["legacy review marker is continue" (result-marker "x\nTASK_BOARD_RESULT: review\n") "continue"]
+              ["wait reason values" (mapv #(wait-reason-marker (str "TASK_BOARD_WAIT_REASON: " %)) ["owner-decision" "external-hold" "new-scope" "AGENT-RECOVERABLE"]) ["owner-decision" "external-hold" "new-scope" "agent-recoverable"]]
+              ["invalid wait reason" (wait-reason-marker "TASK_BOARD_WAIT_REASON: private") nil]
+              ["absent wait reason" (wait-reason-marker "nothing") nil]
+              ["blocked summary wait reason"
+               (let [saved (atom nil)]
+                 (with-redefs [record-blocked-transition! (constantly true) move-card! (constantly nil)
+                               update-frontmatter! (constantly nil) mark-run! (fn [_ _ _ extra] (reset! saved extra))]
+                   (block-ticket! "BOXP-1" "run" :implement "blocked" 0 nil nil "TASK_BOARD_WAIT_REASON: external-hold"))
+                 (:wait-reason @saved)) "external-hold"]
               ["continue marker" (result-marker "x\nTASK_BOARD_RESULT: continue\n") "continue"]
               ["gate pass returns to Ready" (final-status :implement "continue" 0 {:ok? true}) "ready"]
               ["legacy review gate pass returns to Ready" (final-status :implement "review" 0 {:ok? true}) "ready"]

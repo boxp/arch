@@ -40,6 +40,7 @@ class PartitionTest(unittest.TestCase):
             'tests/codex-workspace/task-board-events-test.sh',
             'tests/codex-workspace/ai-ops-ledger-test.sh',
             'bash tests/codex-workspace/ai-subscription-usage-test.sh',
+            'bb tests/ai-observability/test_slo_snapshot.bb',
             'docs/project_docs/BOXP-360/tools/test.sh',
             'tests/codex-workspace/localllm-docs-test.sh',
             'tests/codex-workspace/localllm-source-check-test.sh',
