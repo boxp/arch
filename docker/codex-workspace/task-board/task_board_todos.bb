@@ -307,7 +307,11 @@
   happens on that file after the swap and cannot go stale. A rename-based writer that
   landed first is the displaced file. An in-place writer (ob sync: open with O_TRUNC)
   that opened path before the swap has already truncated the displaced file, so it
-  cannot compare equal, and swapping back lets its remaining writes land at path."
+  cannot compare equal, and swapping back lets its remaining writes land at path.
+
+  Without the swap (older coreutils, a filesystem lacking RENAME_EXCHANGE) a compare and
+  a rename stay separate steps and a writer between them would be lost, so it refuses:
+  the ticket stays as it is and the caller fails loudly."
   [path expected text]
   (when (= expected (slurp (str path)))
     (let [p (.toPath (java.io.File. (str path)))
@@ -323,11 +327,10 @@
                   (do (exchange-files tmp p)
                       (keep-conflict! tmp p "ticket changed twice during the write")))
                 (keep-conflict! tmp p "could not restore the ticket after a conflict")))
-          ;; No exchange here (older coreutils, other filesystem): the compare and the
-          ;; rename are separate steps, so a writer between them is still overwritten.
-          (when (= expected (slurp (str path)))
-            (replace-file tmp p)
-            true))
+          (throw (ex-info (str "cannot update " p " safely: atomic exchange is unavailable"
+                               " (needs coreutils >= 9.5 and RENAME_EXCHANGE on this"
+                               " filesystem); the ticket was not changed")
+                          {:path (str p)})))
         (finally (Files/deleteIfExists tmp))))))
 (defn with-conflict-retry
   "Run f again from a fresh read when it reports a :todo-conflict."

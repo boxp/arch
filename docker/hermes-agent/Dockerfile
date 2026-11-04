@@ -69,6 +69,9 @@ RUN set -eux; \
     rm -rf "$tmp"; \
     bb --version
 
+# task_board_todos.bb refuses to update a ticket without `mv --exchange` (BOXP-408).
+RUN mv --help | grep -q -- --exchange
+
 COPY skills/ /opt/boxp/hermes-agent/skills/
 COPY patches/ /opt/boxp/hermes-agent/patches/
 

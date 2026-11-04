@@ -16,7 +16,7 @@ Plan の `TD-NN【必須|任意|取消】` 行を要件の正本とし、実行�
 
 ## 完了作業での補足
 - runner のチケット書き込みにも helper と共通の per-ticket lock を追加し、`todo_state` は同じロック内で再読して更新する。`board_rev` は変更しない。
-- per-ticket lock は vault 内の `.task-board-locks/` に置き、同じ volume のコンテナ間でも排他する。従来の `/tmp` の lock も併せて取り、未更新の helper とも排他する。lock の届かない書き手（`ob sync` など）には、`mv --exchange` で原子交換し、押し出された内容を比較する compare-and-swap で上書きを防ぐ。不一致なら戻して読み直す。 置換時は mode・group・所有者を引き継ぐ。所有者を渡せず、元の所有者が書けなくなる場合は置換せず失敗する。
+- per-ticket lock は vault 内の `.task-board-locks/` に置き、同じ volume のコンテナ間でも排他する。従来の `/tmp` の lock も併せて取り、未更新の helper とも排他する。lock の届かない書き手（`ob sync` など）には、`mv --exchange` で原子交換し、押し出された内容を比較する compare-and-swap で上書きを防ぐ。不一致なら戻して読み直す。交換できない環境（coreutils 9.5 未満、非対応 filesystem）では置換せず失敗する。両イメージはビルド時に `mv --exchange` の有無を確認する。 置換時は mode・group・所有者を引き継ぐ。所有者を渡せず、元の所有者が書けなくなる場合は置換せず失敗する。
 - Done・Blocked 直後の再照合も継続予算を消費し、保留時の最終ステータスと run summary を後続の記録へ伝播する。
 - hook の trust bypass は既存の無人承認バイパス時のみ使用する。hook 無効化時も終了 gate は維持する。
 - Claude の `--settings` にはチケット ID をコマンド引数へ出さない一時リンクを使用し、その参照先を run-dir の `todo-hooks.json` とする。

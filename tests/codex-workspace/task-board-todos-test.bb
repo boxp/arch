@@ -465,12 +465,17 @@
       (is (= "second" (slurp (str path))))
       (is (= ["first"] (map slurp (leftovers dir))))
       (run! fs/delete (leftovers dir)))
-    (testing "without exchange support the plain path still writes and rechecks"
+    (testing "without exchange support it refuses: nothing overwritten, nothing left behind"
       (spit (str path) "base")
       (with-redefs [task-board-todos/exchange-files (fn [_ _] false)]
-        (is (true? (task-board-todos/write-if-unchanged path "base" "mine")))
-        (is (= "mine" (slurp (str path))))
-        (is (not (task-board-todos/write-if-unchanged path "base" "other")))
-        (is (= "mine" (slurp (str path)))))
+        (is (thrown-with-msg? clojure.lang.ExceptionInfo #"atomic exchange is unavailable"
+                              (task-board-todos/write-if-unchanged path "base" "mine")))
+        (is (= "base" (slurp (str path))))
+        (testing "a writer arriving during the failed swap is kept"
+          (with-redefs [task-board-todos/exchange-files
+                        (fn [_ _] (spit (str path) "synced") false)]
+            (is (thrown-with-msg? clojure.lang.ExceptionInfo #"atomic exchange is unavailable"
+                                  (task-board-todos/write-if-unchanged path "base" "mine"))))
+          (is (= "synced" (slurp (str path))))))
       (is (empty? (leftovers dir))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))
