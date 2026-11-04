@@ -2,6 +2,7 @@
 
 (ns task-board
   (:require [babashka.fs :as fs]
+            [clojure.java.shell :as shell]
             [clojure.string :as str])
   (:import [java.io RandomAccessFile]
            [java.security MessageDigest]))
@@ -718,7 +719,24 @@
 (defn usage []
   (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|verify-dispatch|delete|control-intent> [args]\nverify-dispatch ID --expected-rev R [--assignee A] [--json]: started/awaiting-pickup (0), duplicate-cards (3), reverted (4), pending-sync (5), unknown (6)"))
 
+(defn root-user? []
+  (let [uid (try
+              (let [{:keys [exit out]} (shell/sh "id" "-u")
+                    value (str/trim out)]
+                (when (and (zero? exit) (re-matches #"[0-9]+" value)) value))
+              (catch Exception _ nil))]
+    (if uid
+      (boolean (re-matches #"0+" uid))
+      (= "root" (System/getProperty "user.name")))))
+
+(defn guard-root-write! [cmd]
+  (when (and (#{"create" "update" "append-note" "request-codex" "delete"} cmd)
+             (root-user?))
+    (die (str "Root cannot run Task Board write commands (including --dry-run). Use:\n"
+              "kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-setuidgid hermes bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb <command> ..."))))
+
 (defn -main [& args]
+  (guard-root-write! (first args))
   (let [cmd (first args)
         opts (parse-args (rest args))
         id (first (:positionals opts))]
