@@ -6,6 +6,7 @@ from contextlib import nullcontext
 import importlib.util
 import json
 import logging
+import os
 import sys
 import tempfile
 import types
@@ -89,6 +90,42 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(self.shape("[SILENT]", marker=True)[1])
             self.assertTrue((await self.send("[SILENT]")).success)
         self.assertFalse(self.calls)
+
+    def policy(self, quiet_hours, timezone_name):
+        path = self.vault.parent / "Projects/task-board-events/quiet-policy.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"quiet_hours": quiet_hours, "timezone": timezone_name}))
+
+    async def test_gate_follows_dispatcher_quiet_policy(self):
+        self.note("notified")
+        self.policy("2-9", "UTC")  # 03:00 UTC is 12:00 JST: only the published zone makes it quiet.
+        self.assertTrue((await self.send("report")).success)
+        self.assertFalse(self.calls)
+        self.policy("off", "Asia/Tokyo")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc)):
+            self.assertTrue((await self.send("report")).success)
+        self.assertEqual(self.calls, ["report"])
+
+    def test_quiet_policy_invalid_values(self):
+        self.policy("25-30", "Asia/Tokyo")  # The dispatcher never matches this window either.
+        self.assertFalse(delivery.quiet_now(self.vault))
+        self.policy("2-9", "Not/AZone")
+        self.assertTrue(delivery.quiet_now(self.vault))
+        (self.vault.parent / "Projects/task-board-events/quiet-policy.json").write_text("{broken")
+        with patch.dict(os.environ, {"CODEX_TASK_BOARD_EVENT_QUIET_HOURS": "off"}):
+            self.assertFalse(delivery.quiet_now(self.vault))
+
+    def test_digest_silence_writes_receipt_only_for_silent_proof(self):
+        event = "BOXP-999-digest-20261030T120000Z-abcdef12"
+        source = NS(platform=NS(value="webhook"), chat_id="webhook:task-board:" + event)
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (event + ".json")
+        self.note("deferred", event=event)
+        delivery.shape(source, {}, "[SILENT]", True, self.vault)
+        self.assertFalse(path.exists())
+        (self.vault / "BOXP-999.md").unlink()
+        self.note("silent", event=event)
+        self.assertTrue(delivery.shape(source, {}, "[SILENT]", True, self.vault)[1])
+        self.assertEqual(json.loads(path.read_text())["state"], "silent")
 
     def test_digest_identity(self):
         event = "BOXP-999-digest-20261030T120000Z-abcdef12"

@@ -84,6 +84,7 @@ def shape(source, result, response, marker, vault=VAULT):
         return notice(event, "agent_failed"), False
     if marker:
         if proof in {"silent", "deferred", "continued"}:
+            digest_silence_receipt(vault, event, proof)
             logger.info("task-board outcome event=%s classification=proven_silent", event)
             return response, True
         return notice(event, "missing_reply"), False
@@ -109,14 +110,32 @@ def clock():
     return datetime.now(timezone.utc)
 
 
-def quiet_now():
-    spec = os.getenv("BOXP_TASK_BOARD_QUIET_HOURS", "2-9")
+def quiet_policy(vault=VAULT):
+    """The dispatcher publishes its effective window; before its first tick use the same inputs."""
+    spec = os.getenv("CODEX_TASK_BOARD_EVENT_QUIET_HOURS", "2-9")
+    zone = os.getenv("CODEX_TASK_BOARD_EVENT_TIMEZONE", "Asia/Tokyo")
+    try:
+        policy = json.loads((Path(vault).parent / "Projects/task-board-events/quiet-policy.json").read_text())
+        if isinstance(policy["quiet_hours"], str) and isinstance(policy["timezone"], str):
+            return policy["quiet_hours"], policy["timezone"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return spec, zone
+
+
+def quiet_now(vault=VAULT):
+    """Same semantics as the dispatcher's quiet-at?: an unparsable spec means no quiet hours."""
+    spec, zone = quiet_policy(vault)
     match = re.fullmatch(r"(\d{1,2})-(\d{1,2})", spec)
-    if not match or any(int(x) > 23 for x in match.groups()):
-        start, end = 2, 9
-    else:
-        start, end = map(int, match.groups())
-    hour = clock().astimezone(ZoneInfo("Asia/Tokyo")).hour
+    if not match:
+        return False
+    start, end = map(int, match.groups())
+    try:
+        hour = clock().astimezone(ZoneInfo(zone)).hour
+    except (KeyError, ValueError, OSError):
+        # Hold rather than risk a night send; the held event stays recoverable.
+        logger.warning("task-board quiet policy has an invalid timezone")
+        return True
     return start <= hour < end if start <= end else hour >= start or hour < end
 
 
@@ -140,6 +159,12 @@ def vault_receipt(vault, event, state, classification):
         logger.warning("task-board vault receipt unavailable event=%s", event)
 
 
+def digest_silence_receipt(vault, event, proof):
+    """A digest ends without a send only on this proof of an intentional silence."""
+    if "-digest-" in event and proof == "silent":
+        vault_receipt(vault, event, "silent", "silent")
+
+
 async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vault=VAULT):
     """None for unrelated routes. At most one notice and one report per event.
 
@@ -160,6 +185,7 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
     proof = receipt(event, ticket, vault)
     if is_intentional_silence_response(content):
         if proof in {"silent", "deferred", "continued"}:
+            digest_silence_receipt(vault, event, proof)
             return SendResult(success=True)
         content = notice(event, "missing_reply")
     elif not content.strip():
@@ -168,7 +194,7 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
         # Preserve a potentially necessary report, but do not claim its work succeeded.
         content += "\n\n" + notice(event, "missing_or_conflicting_receipt")
     classification = "unresolved" if NOTICE in content else proof
-    if quiet_now():
+    if quiet_now(vault):
         vault_receipt(vault, event, "quiet-held", classification)
         return SendResult(success=True)
     try:

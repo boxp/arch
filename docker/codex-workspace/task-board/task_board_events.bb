@@ -287,14 +287,28 @@
 ;; Quiet hours (02:00-09:00 JST by default): events are kept, not sent
 ;; ---------------------------------------------------------------------------
 
+(defn quiet-spec [] (env "CODEX_TASK_BOARD_EVENT_QUIET_HOURS" "2-9"))
+(defn event-timezone [] (env "CODEX_TASK_BOARD_EVENT_TIMEZONE" "Asia/Tokyo"))
+
 (defn quiet-hours []
-  (let [spec (env "CODEX_TASK_BOARD_EVENT_QUIET_HOURS" "2-9")]
-    (when-let [[_ start end] (re-matches #"(\d{1,2})-(\d{1,2})" spec)]
-      [(Long/parseLong start) (Long/parseLong end)])))
+  (when-let [[_ start end] (re-matches #"(\d{1,2})-(\d{1,2})" (quiet-spec))]
+    [(Long/parseLong start) (Long/parseLong end)]))
+
+;; The Hermes send gate runs in another container, so this dispatcher publishes
+;; its effective window as the single source of truth for that gate.
+(defn publish-quiet-policy! []
+  (let [path (fs/path (vault) "Projects/task-board-events/quiet-policy.json")
+        body (json/generate-string {:quiet_hours (quiet-spec) :timezone (event-timezone)})]
+    (when-not (= body (try (slurp (str path)) (catch Exception _ nil)))
+      (fs/create-dirs (fs/parent path))
+      (let [temporary (fs/create-temp-file {:dir (fs/parent path) :prefix ".quiet-policy-"})]
+        (try (spit (str temporary) body)
+             (fs/move temporary path {:replace-existing true :atomic-move true})
+             (finally (fs/delete-if-exists temporary)))))))
 
 (defn quiet-at? [^Instant instant]
   (when-let [[start end] (quiet-hours)]
-    (let [zone (ZoneId/of (env "CODEX_TASK_BOARD_EVENT_TIMEZONE" "Asia/Tokyo"))
+    (let [zone (ZoneId/of (event-timezone))
           hour (.getHour (ZonedDateTime/ofInstant instant zone))]
       (if (<= start end)
         (and (>= hour start) (< hour end))
@@ -529,8 +543,10 @@
                       (update acc :waiting inc))
                   (and (not digest) (#{:notified :question} marker) (not timeout?) (quiet-or-starting?))
                   (update acc :waiting inc)
-                  (and marker (or (not digest) (= marker :silent)
-                                  (and (#{:notified :question} marker) (= receipt "sent"))))
+                  (and marker (or (not digest)
+                                  (and (#{:notified :question :silent} marker) (= receipt "sent"))
+                                  ;; Only the gate's proof of an intentional [SILENT] ends a digest without a send.
+                                  (and (= marker :silent) (= receipt "silent"))))
                   (do (when digest (finish-items! event (done-dir) :handled))
                       (move-event! (assoc event :status :handled :handled-at (now-str)) (done-dir))
                       (update acc :handled inc))
@@ -592,6 +608,7 @@
 
 (defn tick! []
   (ensure-dirs!)
+  (try (publish-quiet-policy!) (catch Exception e (log! (str "quiet policy publish failed: " (.getMessage e)))))
   (let [changes (try (detect-lane-changes!)
                      (catch Exception e (log! (str "lane diff failed: " (.getMessage e))) []))
         reconciled (try (reconcile-accepted!)

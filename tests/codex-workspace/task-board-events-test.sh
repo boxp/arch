@@ -640,6 +640,33 @@ test_digest_marker_without_receipt_is_not_delivered() {
   [[ -f "${CASE_STATE}/outbox/unhandled/item.edn" ]] || fail "unconfirmed digest item must reach unhandled"
 }
 
+test_digest_silent_needs_gate_proof() {
+  new_case
+  local id
+  id="$(accepted_digest "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  note_marker "${CASE_VAULT}" BOXP-901 "${id}" silent
+  day_tick
+  [[ -f "${CASE_STATE}/outbox/pending/item.edn" ]] || fail "silent marker alone must not finish the item"
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0
+  [[ -f "${CASE_STATE}/outbox/unhandled/item.edn" ]] || fail "unproven silent digest item must reach unhandled"
+
+  new_case
+  id="$(accepted_digest "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  note_marker "${CASE_VAULT}" BOXP-901 "${id}" silent
+  write_receipt "${CASE_VAULT}" "${id}" silent "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  day_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  [[ -f "${CASE_STATE}/outbox/done/item.edn" ]] || fail "proven silent digest must finish its item"
+}
+
+test_quiet_policy_is_published_for_the_gate() {
+  new_case
+  local policy="${CASE_VAULT}/Projects/task-board-events/quiet-policy.json"
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="1-8" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_TIMEZONE=UTC >/dev/null
+  assert_file_contains "${policy}" '"quiet_hours":"1-8"'
+  assert_file_contains "${policy}" '"timezone":"UTC"'
+}
+
 test_digest_uncertain_receipt_is_never_resent() {
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
@@ -709,6 +736,8 @@ test_marker_summary_cannot_forge_result
 test_digest_collapses_and_is_sent_once
 test_digest_transport_failure_retries_then_unhandled
 test_digest_marker_without_receipt_is_not_delivered
+test_digest_silent_needs_gate_proof
+test_quiet_policy_is_published_for_the_gate
 test_digest_uncertain_receipt_is_never_resent
 test_quiet_held_receipt_returns_to_digest_unless_stale
 test_notified_marker_waits_for_gate_near_quiet_start

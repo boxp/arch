@@ -54,4 +54,6 @@ merge すると image updater の自動 rollout が起きるため、merge 前�
 
 - `quiet-held` は `updated_at` が現在の `accepted-at` 以降のときだけ有効。昼の再配信で実送信された event を digest へ戻さない。
 - notified / question の marker は送信より先に書かれるため、静音開始の 600 秒前からは timeout まで完了を保留し、02:00 境界の保留通知を落とさない。
+- digest の完了は `sent` か、gate が意図的な [SILENT] を確認して書く receipt `silent`（marker も silent の場合）に限る。silent marker だけでは未配信のまま完了しない。
+- 静音時間の正本は dispatcher の `CODEX_TASK_BOARD_EVENT_QUIET_HOURS` / `CODEX_TASK_BOARD_EVENT_TIMEZONE`。別コンテナの Hermes gate が同じ値を使えるよう、dispatcher が tick ごとに vault の `Projects/task-board-events/quiet-policy.json` へ公開する（変更時のみ書込み）。初回公開前は gate も同じ env 名と既定値を使う。解釈不能な時間指定は dispatcher と同じく静音なし、不正な timezone は gate が保留する。
 - 関連 PR の boxp/lolice 側は route prompt と annotation の更新で、merge すると Hermes が 1 回 rollout する。
