@@ -405,17 +405,20 @@
                             children (str (when (:ac o) (str "\n  - AC: " (:ac o)))
                                           (when (:priority o)
                                             (str "\n  - 優先度: " (:priority o))))
+                            requested (map norm (remove str/blank? (str/split-lines children)))
+                            ;; Without --id, the same text is a retry only when the item
+                            ;; already holds every requested condition; otherwise the new
+                            ;; AC/priority must be saved as its own item, never dropped.
                             existing (some #(when (or (= id (:id %))
                                                       (and (nil? (:id o))
                                                            (= tag (:tag %))
-                                                           (= (norm body)
-                                                              (norm (:text %)))))
+                                                           (= (norm body) (norm (:text %)))
+                                                           (every? (set (map norm (:children %)))
+                                                                   requested)))
                                               %)
                                            (parse-items text))]
                         (if existing
-                          (if (or (and (nil? (:id o))
-                                       (= tag (:tag existing))
-                                       (= (norm body) (norm (:text existing))))
+                          (if (or (nil? (:id o))
                                   (= (item-hash existing)
                                      (item-hash {:id id,
                                                  :tag tag,

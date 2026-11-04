@@ -18,6 +18,37 @@
       (is (zero? (:exit (run "done" "BOXP-1" "TD-02" "--vault" d "--evidence" "verified"))))
       (is (= rev (:rev (task-board-todos/ticket-view (slurp (str path))))))
       (is (= 4 (:exit (run "skip" "BOXP-1" "TD-02" "--vault" d "--reason" "no")))))))
+(deftest add-without-id-keeps-new-conditions
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-11.md")
+        run (fn [& args] @(p/process (into ["bb" module] args) {:out :string :err :string}))
+        add (fn [& args] (:exit (apply run "add" "BOXP-11" "--vault" d "--source" "test" args)))
+        items #(task-board-todos/parse-items (slurp (str path)))
+        children-of (fn [id] (mapv str/trim (remove (fn [c] (str/includes? c "由来:")) (:children (first (filter (fn [i] (= id (:id i))) (items)))))))]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) "---\nstatus: ready\n---\n## Summary\nhello\n## Plan\n## Notes\n")
+    (testing "a retry with the same or fewer conditions is a no-op"
+      (is (zero? (add "--required" "--text" "work" "--ac" "a" "--priority" "high")))
+      (let [before (slurp (str path))]
+        (is (zero? (add "--required" "--text" "work" "--ac" "a" "--priority" "high")))
+        (is (zero? (add "--required" "--text" " work  " "--ac" "a")))
+        (is (zero? (add "--required" "--text" "work")))
+        (is (= before (slurp (str path))))))
+    (testing "a different AC or priority is saved and bumps the revision"
+      (let [rev (:rev (task-board-todos/ticket-view (slurp (str path))))]
+        (is (zero? (add "--required" "--text" "work" "--ac" "b")))
+        (is (not= rev (:rev (task-board-todos/ticket-view (slurp (str path))))))
+        (is (= ["- AC: a" "- 優先度: high"] (children-of "TD-01")))
+        (is (= ["- AC: b"] (children-of "TD-02"))))
+      (is (zero? (add "--required" "--text" "work" "--ac" "a" "--priority" "low")))
+      (is (= ["- AC: a" "- 優先度: low"] (children-of "TD-03"))))
+    (testing "retrying any saved variant does not add another item"
+      (let [before (slurp (str path))]
+        (is (zero? (add "--required" "--text" "work" "--ac" "b")))
+        (is (= before (slurp (str path))))))
+    (testing "an explicit ID with different content is still refused"
+      (let [before (slurp (str path))]
+        (is (not (zero? (add "--id" "TD-01" "--required" "--text" "work" "--ac" "z"))))
+        (is (= before (slurp (str path))))))))
 (deftest copies (is (= (slurp module) (slurp "docker/hermes-agent/skills/obsidian-task-board/bin/task_board_todos.bb"))))
 (deftest parser-boundaries-and-position
   (let [text "## Plan\n```\n- [ ] TD-01【必須】same\n```\n- [ ] TD-01【必須】same\n- [ ] worker step\n  - child\nTD-02 を先に実施\n- TD-03 bad\n## Notes\n- [ ] TD-04【必須】no\n"
