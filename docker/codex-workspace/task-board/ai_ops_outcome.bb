@@ -43,12 +43,15 @@
         ;; closed だけの到達は日精度なので、同じ日に始まった run をやり直しと誤認しないよう翌日 0 時以降の run だけ数える
         rework-from (when out (if outcome out (.plusSeconds out 86400)))
         unreadable? #(= "unreadable" (:status %))
-        ;; 選ばれた成果より前に読めない run があると最初の成果時刻が分からない。closed で到達した後 (翌日 0 時以降) の
-        ;; 読めない run は到達の事実を変えないので unevaluated にしない (やり直しには数える)。
+        ;; 選ばれた成果より前に始まった読めない run はそれより早く成果に達していたかもしれず、最初の成果時刻が分からない。
+        ;; run の並び順 (run ID) に頼らず開始時刻で判定する (成果 run の開始後・終了前に始まった読めない run も含める)。
+        ;; 成果時刻以降 (closed だけの到達は翌日 0 時以降) に始まった読めない run は到達の事実を変えないので
+        ;; unevaluated にしない (やり直しには数える)。
+        earliest-known (or outcome rework-from)
         uncertain? (boolean (or (unreadable? (first runs)) (nil? start)
-                                (cond outcome (some unreadable? (take-while #(not (and (outcome? %) (= outcome (ai-ops-insight/parse-inst (:finished-at %))))) runs))
-                                      out (some #(and (unreadable? %) (let [s (ai-ops-slo/run-start %)] (or (nil? s) (neg? (compare s rework-from))))) runs)
-                                      :else (some unreadable? runs))))
+                                (if earliest-known
+                                  (some #(and (unreadable? %) (let [s (ai-ops-slo/run-start %)] (or (nil? s) (neg? (compare s earliest-known))))) runs)
+                                  (some unreadable? runs))))
         hours (when (and start out) (let [h (ai-ops-slo/hours-between start out)] (if outcome h (max 0 h))))
         blocked (last (filter #(or (= "blocked" (:status %)) (= "blocked" (:result %))) runs))
         wait? (or (and (= "Blocked" (:lane card)) (#{"owner-decision" "external-hold" "new-scope"} (:wait-reason blocked)))

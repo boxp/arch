@@ -63,6 +63,19 @@
       (add-run root vault 51 "2026-10-29T00:00:00Z" nil nil nil nil nil true)
       (add-run root vault 51 "2026-10-30T00:00:00Z" "2026-10-30T01:00:00Z" "done")
       (is (= 1 (get-in (ai-ops-outcome/snapshot root vault now) [:windows "7d" :unevaluated]))))))
+(deftest unreadable-run-overlapping-outcome-run
+  ;; 成果 run の開始後・終了前に始まった読めない run は run ID 順では成果 run の後に並ぶが、より早く成果に達した
+  ;; 可能性があるので unevaluated にする。成果の終了後に始まった読めない run はやり直しにだけ数える。
+  (fs/with-temp-dir [d {}]
+    (let [[root vault] (fixture d)]
+      (add-run root vault 90 "2026-10-10T00:00:00Z" "2026-10-10T03:00:00Z" "done")
+      (add-run root vault 90 "2026-10-10T01:00:00Z" nil nil nil nil nil true)
+      (add-run root vault 91 "2026-10-10T00:00:00Z" "2026-10-10T03:00:00Z" "done")
+      (add-run root vault 91 "2026-10-10T04:00:00Z" nil nil nil nil nil true)
+      (let [w (get-in (ai-ops-outcome/snapshot root vault now) [:windows "28d"])]
+        (is (= 1 (:unevaluated w)))
+        (is (= 1 (:reached_in_budget w)))
+        (is (= {:matured 1 :rework 1 :pending 0} (:rework w)))))))
 (deftest closed-earlier-than-run-outcome-wins
   (fs/with-temp-dir [d {}]
     (let [[root vault] (fixture d)]
