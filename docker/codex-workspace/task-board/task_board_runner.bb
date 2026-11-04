@@ -2166,6 +2166,10 @@
   (let [data (json/parse-string body true)]
     (when-not (= "success" (:status data))
       (throw (ex-info "alerts query was not successful" {:status (:status data)})))
+    ;; A successful status with a missing or non-list data.alerts is a malformed
+    ;; response, not "no alerts": fail so the caller reports it as unavailable.
+    (when-not (sequential? (get-in data [:data :alerts]))
+      (throw (ex-info "alerts query response has no data.alerts list" {:status (:status data)})))
     (->> (get-in data [:data :alerts])
          (keep (fn [{:keys [labels state]}]
                  (let [alertname (:alertname labels)]
@@ -5868,6 +5872,14 @@
                (try (parse-ai-ops-alerts "{\"status\":\"error\",\"errorType\":\"bad_data\"}") :parsed (catch Exception _ :rejected)) :rejected]
               ["ai ops alerts parse rejects malformed json"
                (try (parse-ai-ops-alerts "<html>") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success without data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success with null data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":null}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success with non-list data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":{}}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse accepts success with empty data.alerts"
+               (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[]}}") []]
               ["ai ops summary fields distinguish ok, empty and unavailable"
                [(ai-ops-summary-fields nil)
                 (ai-ops-summary-fields {:status "ok" :alerts []})
