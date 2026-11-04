@@ -511,6 +511,28 @@
     (move-event! (assoc item ::path path :digest-id (:event-id digest) :status status
                         (if (= status :handled) :delivered-at :unhandled-at) (now-str)) dir)))
 
+(defn reissue-digest!
+  "Hermes dedupes on the event id, so re-sending a held digest under its old id
+  would never run the agent again. Continue under a new id derived from the old
+  one: an interrupted reissue resumes on the next tick without a second digest."
+  [digest]
+  (let [old-id (:event-id digest)
+        id (str/replace old-id #"[a-f0-9]+$" (subs (sha256-hex old-id) 0 12))]
+    (when-not (some #(fs/exists? (fs/path % (str id ".edn")))
+                    [(pending-dir) (done-dir) (failed-dir) (unhandled-dir)])
+      (write-event! (pending-dir)
+                    (-> digest
+                        (dissoc ::path :accepted-at :processed-at :last-http-status :hermes-status)
+                        (assoc :event-id id :status :pending :attempts 0 :redeliveries 0
+                               :created-at (now-str) :reissue-of old-id))))
+    (doseq [path (event-files (pending-dir))
+            :let [item (read-event path)]
+            :when (and item (= :notify-pending (:status item))
+                       (contains? (digest-item-ids digest) (:event-id item)))]
+      (write-event! (pending-dir) (assoc item :digest-id id)))
+    (move-event! (assoc digest :status :superseded :superseded-by id :superseded-at (now-str)) (done-dir))
+    (log! (str "quiet-held digest " old-id " reissued as " id))))
+
 (defn reconcile-accepted! []
   ;; Finish orphaned items after a crash or a digest transport failure.
   (let [events (vec (all-events))
@@ -527,8 +549,12 @@
                     digest (digest? event)
                     timeout? (>= (seconds-since (:accepted-at event)) (handle-timeout-seconds))]
                 (cond
+                  ;; A hold proves nothing was sent, marker or not.
+                  (and digest (= receipt "quiet-held"))
+                  (do (reissue-digest! event)
+                      (update acc :waiting inc))
                   (and marker (= receipt "quiet-held"))
-                  (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status (if digest :pending :notify-pending) :processed-at (now-str))))
+                  (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
                       (update acc :waiting inc))
                   (and marker (not digest) (= marker :deferred))
                   (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
@@ -567,7 +593,7 @@
 (defn build-digest! []
   (if (quiet-now?) 0
       (let [events (vec (all-events))
-            digests (filter digest? events)
+            digests (remove #(= :superseded (:status %)) (filter digest? events))
             ;; A digest is written before its items are stamped; repair interrupted writes first.
             claimed (into {} (mapcat (fn [d] (map (fn [id] [id (:event-id d)]) (digest-item-ids d))) digests))
             pending (filter #(and (= :notify-pending (:status %)) (not (digest? %))) events)]

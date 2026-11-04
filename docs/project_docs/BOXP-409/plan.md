@@ -56,6 +56,7 @@ merge すると image updater の自動 rollout が起きるため、merge 前�
 - notified / question の marker は送信より先に書かれ、送信が遅れて静音に入ることがある。そのため marker だけでは完了せず、gate が全 event に書く receipt で判定する。timeout まで receipt がなければ done にせず digest で回収する（二重通知はありうるが欠落はしない）。
 - 静音保留は receipt が唯一の証拠なので、書き込みに失敗したら gate は送信成功を返さない。
 - gate の receipt を前提にするため、配備順は Hermes を先にする。Hermes が古いままだと notified の event は timeout 後に digest へ回り、二重通知になる。
+- 静音保留された digest は同じ event ID で再送しない。Hermes が ID で重複排除するためエージェントが再実行されず、朝の通知が欠落するから。元 ID から決定的に導いた新 ID で発行し直し、項目を新 digest に付け替え、元 digest は `:superseded` で done へ移す（marker の有無を問わない）。中断しても次 tick で再開でき、digest は増えない。
 - digest の完了は `sent` か、gate が意図的な [SILENT] を確認して書く receipt `silent`（marker も silent の場合）に限る。silent marker だけでは未配信のまま完了しない。
 - 静音時間の正本は dispatcher の `CODEX_TASK_BOARD_EVENT_QUIET_HOURS` / `CODEX_TASK_BOARD_EVENT_TIMEZONE`。別コンテナの Hermes gate が同じ値を使えるよう、dispatcher が tick ごとに vault の `Projects/task-board-events/quiet-policy.json` へ公開する（変更時のみ書込み）。初回公開前は gate も同じ env 名と既定値を使う。解釈不能な時間指定は dispatcher と同じく静音なし、不正な timezone は gate が保留する。
 - 関連 PR の boxp/lolice 側は route prompt と annotation の更新で、merge すると Hermes が 1 回 rollout する。

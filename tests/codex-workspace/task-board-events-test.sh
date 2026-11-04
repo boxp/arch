@@ -705,6 +705,52 @@ test_quiet_held_receipt_returns_to_digest_unless_stale() {
   [[ -f "${CASE_STATE}/outbox/done/held.edn" ]] || fail "a fresh sent receipt must finish the redelivery"
 }
 
+test_quiet_held_digest_is_reissued_under_a_new_id() {
+  local with_marker id new_digest new_id
+  for with_marker in yes no; do
+    new_case
+    start_receiver "${CASE_TMP}" "${CASE_PORT}"
+    id="$(accepted_digest "2026-11-04T16:59:00Z")"
+    [[ "${with_marker}" == no ]] || note_marker "${CASE_VAULT}" BOXP-901 "${id}" notified
+    write_receipt "${CASE_VAULT}" "${id}" quiet-held "2026-11-04T17:01:00+00:00"
+    night_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+    assert_file_contains "${CASE_STATE}/outbox/done/${id}.edn" ':status :superseded'
+    [[ "$(digest_count)" -eq 1 ]] || fail "a held digest must continue as exactly one digest"
+    new_digest="$(find "${CASE_STATE}/outbox/pending" -name '*-digest-*.edn')"
+    new_id="$(basename "${new_digest}" .edn)"
+    [[ "${new_id}" != "${id}" && "${new_id}" =~ ^BOXP-901-digest-[0-9]{8}T[0-9]{6}Z-[a-f0-9]+$ ]] || fail "reissue id must be new and match the gate pattern: ${new_id}"
+    assert_file_contains "${new_digest}" ':status :pending'
+    assert_file_contains "${CASE_STATE}/outbox/pending/item.edn" ":digest-id \"${new_id}\""
+    [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "a reissued digest must wait for the end of quiet hours"
+    day_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+    assert_file_contains "${CASE_TMP}/receiver.log" "${new_id}"
+    assert_file_not_contains "${CASE_TMP}/receiver.log" "${id}"
+    [[ "$(digest_count)" -eq 1 ]] || fail "morning tick must not build another digest"
+    # The old marker and receipt say nothing about the reissued digest.
+    assert_file_contains "${new_digest}" ':status :accepted'
+    note_marker "${CASE_VAULT}" BOXP-901 "${new_id}" notified
+    write_receipt "${CASE_VAULT}" "${new_id}" sent "$(date -u +%Y-%m-%dT%H:%M:%S+00:00 -d '+1 minute')"
+    day_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+    [[ -f "${CASE_STATE}/outbox/done/${new_id}.edn" && -f "${CASE_STATE}/outbox/done/item.edn" ]] || fail "a sent reissue must finish its item"
+    stop_receiver
+  done
+
+  # An interrupted reissue resumes without a second digest or a lost stamp.
+  new_case
+  id="$(accepted_digest "2026-11-04T16:59:00Z")"
+  write_receipt "${CASE_VAULT}" "${id}" quiet-held "2026-11-04T17:01:00+00:00"
+  cp "${CASE_STATE}/outbox/pending/${id}.edn" "${CASE_TMP}/old.edn"
+  cp "${CASE_STATE}/outbox/pending/item.edn" "${CASE_TMP}/item.edn"
+  night_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  cp "${CASE_TMP}/old.edn" "${CASE_STATE}/outbox/pending/${id}.edn"
+  cp "${CASE_TMP}/item.edn" "${CASE_STATE}/outbox/pending/item.edn"
+  rm "${CASE_STATE}/outbox/done/${id}.edn"
+  night_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  [[ "$(digest_count)" -eq 1 ]] || fail "a resumed reissue must not duplicate the digest"
+  new_id="$(basename "$(find "${CASE_STATE}/outbox/pending" -name '*-digest-*.edn')" .edn)"
+  assert_file_contains "${CASE_STATE}/outbox/pending/item.edn" ":digest-id \"${new_id}\""
+}
+
 test_notified_marker_needs_gate_evidence() {
   new_case
   local at="2026-11-04T16:30:00Z"
@@ -756,6 +802,7 @@ test_digest_silent_needs_gate_proof
 test_quiet_policy_is_published_for_the_gate
 test_digest_uncertain_receipt_is_never_resent
 test_quiet_held_receipt_returns_to_digest_unless_stale
+test_quiet_held_digest_is_reissued_under_a_new_id
 test_notified_marker_needs_gate_evidence
 
 echo "task-board-events tests passed"
