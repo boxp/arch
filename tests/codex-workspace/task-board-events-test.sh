@@ -469,6 +469,223 @@ test_pending_legacy_review_event_is_still_delivered() {
   stop_receiver
 }
 
+test_digest_restart_and_delivery_receipt() {
+  new_case
+  mkdir -p "${CASE_STATE}/outbox/pending"
+  cat >"${CASE_STATE}/outbox/pending/old.edn" <<'EDN'
+{:event-id "old" :ticket-id "BOXP-901" :event-type "task-board.lane-changed" :to-status "blocked" :created-at "2026-01-01T00:00:00Z" :status :notify-pending}
+EDN
+  cat >"${CASE_STATE}/outbox/pending/new.edn" <<'EDN'
+{:event-id "new" :ticket-id "BOXP-901" :event-type "task-board.lane-changed" :to-status "done" :created-at "2026-01-02T00:00:00Z" :status :notify-pending}
+EDN
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env >/dev/null
+  local digest
+  digest="$(find "${CASE_STATE}/outbox/pending" -name '*-digest-*.edn')"
+  [[ -n "${digest}" ]] || fail "digest must be created"
+  assert_file_contains "${digest}" ':event-id "new"'
+  assert_file_contains "${digest}" ':superseded \["old"\]'
+  # Reconstruct a crash after digest creation and before one item was stamped.
+  sed -i -E 's/ :digest-id "[^"]+"//' "${CASE_STATE}/outbox/pending/old.edn"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env >/dev/null
+  [[ "$(find "${CASE_STATE}/outbox/pending" -name '*-digest-*.edn' | wc -l)" -eq 1 ]] || fail "restart duplicated digest"
+  assert_file_contains "${CASE_STATE}/outbox/pending/old.edn" ':digest-id '
+  local id
+  id="$(basename "${digest}" .edn)"
+  bb -e '(let [p (first *command-line-args*) e (clojure.edn/read-string (slurp p))] (spit p (pr-str (assoc e :status :accepted :accepted-at "2026-01-01T00:00:00Z"))))' "${digest}"
+  printf '\nhandled event=%s result=notified summary=fixture\n' "${id}" >>"${CASE_VAULT}/Tickets/BOXP-901.md"
+  mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivery-receipts"
+  printf '{"event":"%s","state":"sent"}' "${id}" >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/${id}.json"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=10000 >/dev/null
+  [[ -f "${CASE_STATE}/outbox/done/${id}.edn" && -f "${CASE_STATE}/outbox/done/old.edn" && -f "${CASE_STATE}/outbox/done/new.edn" ]] || fail "sent digest must complete its items"
+}
+
+# --- BOXP-409: night processing and morning digest ---
+ALWAYS_QUIET="0-24"
+
+seed_event() {
+  # seed_event <state> <id> <ticket> <status> <created-at> [extra edn]
+  mkdir -p "$1/outbox/pending"
+  printf '{:event-id "%s" :ticket-id "%s" :event-type "task-board.run-finished" :to-status "blocked" :created-at "%s" :status %s :attempts 0 :redeliveries 0 %s}' \
+    "$2" "$3" "$5" "$4" "${6:-}" >"$1/outbox/pending/$2.edn"
+}
+
+night_tick() {
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="${ALWAYS_QUIET}" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" "$@" >"${CASE_TMP}/tick.out"
+}
+
+day_tick() {
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="off" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" "$@" >"${CASE_TMP}/tick.out"
+}
+
+note_marker() {
+  printf '\n- 2026-11-04 18:00:00 UTC [kohako-event]: [kohako-event] handled event=%s run=r result=%s summary=%s\n' "$3" "$4" "${5:-fixture}" >>"$1/Tickets/$2.md"
+}
+
+write_receipt() {
+  mkdir -p "$1/Projects/task-board-events/delivery-receipts"
+  printf '{"event":"%s","state":"%s","updated_at":"%s"}' "$2" "$3" "$4" >"$1/Projects/task-board-events/delivery-receipts/$2.json"
+}
+
+digest_count() {
+  find "${CASE_STATE}/outbox/pending" -name '*-digest-*.edn' | wc -l
+}
+
+test_night_gate_off_or_invalid_keeps_legacy_hold() {
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
+  night_tick
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "gate off must keep the night hold"
+  echo '{:enabled "yes"' >"${CASE_STATE}/outbox/night-processing.edn"
+  night_tick
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "invalid gate must fail closed"
+  assert_file_contains "${CASE_TMP}/tick.out" 'invalid or unreadable night-processing.edn'
+  stop_receiver
+}
+
+test_night_gate_posts_defer_and_limits_tickets() {
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  write_ticket "${CASE_VAULT}" BOXP-902 blocked
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-901 r1 in-progress blocked blocked >/dev/null
+  record "${CASE_VAULT}" "${CASE_STATE}" BOXP-902 r2 in-progress blocked blocked >/dev/null
+  echo '{:enabled true :only-tickets #{"BOXP-901"}}' >"${CASE_STATE}/outbox/night-processing.edn"
+  night_tick
+  assert_file_contains "${CASE_TMP}/receiver.log" 'BOXP-901-r1-blocked'
+  assert_file_contains "${CASE_TMP}/receiver.log" 'notify_mode.*defer'
+  assert_file_not_contains "${CASE_TMP}/receiver.log" 'BOXP-902-r2-blocked'
+  assert_file_contains "${CASE_STATE}/outbox/pending/BOXP-902-r2-blocked.edn" ':attempts 0'
+  stop_receiver
+}
+
+test_night_results_split_digest_and_done() {
+  new_case
+  local at="2026-11-04T18:00:00Z"
+  write_ticket "${CASE_VAULT}" BOXP-902 blocked
+  write_ticket "${CASE_VAULT}" BOXP-903 blocked
+  seed_event "${CASE_STATE}" d1 BOXP-901 :accepted "${at}" ":accepted-at \"${at}\" :notify-mode \"defer\""
+  seed_event "${CASE_STATE}" s1 BOXP-902 :accepted "${at}" ":accepted-at \"${at}\" :notify-mode \"defer\""
+  seed_event "${CASE_STATE}" c1 BOXP-903 :accepted "${at}" ":accepted-at \"${at}\" :notify-mode \"defer\""
+  note_marker "${CASE_VAULT}" BOXP-901 d1 deferred
+  note_marker "${CASE_VAULT}" BOXP-902 s1 silent
+  note_marker "${CASE_VAULT}" BOXP-903 c1 continued
+  night_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  assert_file_contains "${CASE_STATE}/outbox/pending/d1.edn" ':status :notify-pending'
+  [[ -f "${CASE_STATE}/outbox/done/s1.edn" && -f "${CASE_STATE}/outbox/done/c1.edn" ]] || fail "silent and continued must finish"
+  [[ "$(digest_count)" -eq 0 ]] || fail "no digest may be built during quiet hours"
+}
+
+test_marker_summary_cannot_forge_result() {
+  new_case
+  local at="2026-11-04T18:00:00Z"
+  seed_event "${CASE_STATE}" f1 BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
+  note_marker "${CASE_VAULT}" BOXP-901 f1 silent 'result=deferred'
+  night_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  [[ -f "${CASE_STATE}/outbox/done/f1.edn" ]] || fail "summary text must not change the result"
+}
+
+test_digest_collapses_and_is_sent_once() {
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  seed_event "${CASE_STATE}" newer BOXP-901 :notify-pending "2026-11-04T18:10:00Z"
+  seed_event "${CASE_STATE}" older BOXP-901 :notify-pending "2026-11-04T18:00:00Z"
+  day_tick
+  [[ "$(digest_count)" -eq 1 ]] || fail "exactly one digest expected"
+  assert_file_contains "${CASE_TMP}/receiver.log" 'task-board.morning-digest'
+  assert_file_contains "$(find "${CASE_STATE}/outbox/pending" -name '*-digest-*.edn')" ':event-id "newer"'
+  assert_file_contains "$(find "${CASE_STATE}/outbox/pending" -name '*-digest-*.edn')" ':superseded \["older"\]'
+  day_tick
+  day_tick
+  [[ "$(digest_count)" -eq 1 ]] || fail "repeat ticks must not build another digest"
+  [[ "$(grep -c 'morning-digest' "${CASE_TMP}/receiver.log")" -eq 1 ]] || fail "digest must be sent once"
+  stop_receiver
+}
+
+test_digest_transport_failure_retries_then_unhandled() {
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  echo 500 >"${CASE_TMP}/mode"
+  seed_event "${CASE_STATE}" item BOXP-901 :notify-pending "2026-11-04T18:00:00Z"
+  day_tick CODEX_TASK_BOARD_EVENT_MAX_BACKOFF_SECONDS=0
+  assert_file_contains "${CASE_STATE}/outbox/pending/item.edn" ':status :notify-pending'
+  [[ "$(digest_count)" -eq 1 ]] || fail "digest must survive a failed POST"
+  day_tick CODEX_TASK_BOARD_EVENT_MAX_ATTEMPTS=1 CODEX_TASK_BOARD_EVENT_MAX_BACKOFF_SECONDS=0
+  sleep 1
+  day_tick CODEX_TASK_BOARD_EVENT_MAX_ATTEMPTS=1 CODEX_TASK_BOARD_EVENT_MAX_BACKOFF_SECONDS=0
+  day_tick CODEX_TASK_BOARD_EVENT_MAX_ATTEMPTS=1 CODEX_TASK_BOARD_EVENT_MAX_BACKOFF_SECONDS=0
+  [[ -f "${CASE_STATE}/outbox/unhandled/item.edn" ]] || fail "item of a failed digest must reach unhandled"
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/item.edn" ':status :notify-undelivered'
+  stop_receiver
+}
+
+accepted_digest() {
+  # Prints the id of a digest accepted long ago, with one item.
+  local id="BOXP-901-digest-20261104T180000Z-abc123"
+  seed_event "${CASE_STATE}" item BOXP-901 :notify-pending "2026-11-04T18:00:00Z" ":digest-id \"${id}\""
+  printf '{:event-id "%s" :ticket-id "BOXP-901" :event-type "task-board.morning-digest" :created-at "2026-11-05T00:00:00Z" :status :accepted :accepted-at "%s" :attempts 1 :redeliveries 0 :digest-items [{:ticket-id "BOXP-901" :event-id "item" :superseded []}]}' \
+    "${id}" "$1" >"${CASE_STATE}/outbox/pending/${id}.edn"
+  echo "${id}"
+}
+
+test_digest_marker_without_receipt_is_not_delivered() {
+  new_case
+  local id
+  id="$(accepted_digest "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  note_marker "${CASE_VAULT}" BOXP-901 "${id}" notified
+  day_tick
+  [[ -f "${CASE_STATE}/outbox/pending/item.edn" ]] || fail "marker alone must not finish the item"
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0
+  [[ -f "${CASE_STATE}/outbox/unhandled/item.edn" ]] || fail "unconfirmed digest item must reach unhandled"
+}
+
+test_digest_uncertain_receipt_is_never_resent() {
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  local id
+  id="$(accepted_digest "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  note_marker "${CASE_VAULT}" BOXP-901 "${id}" notified
+  write_receipt "${CASE_VAULT}" "${id}" uncertain "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  day_tick
+  [[ -f "${CASE_STATE}/outbox/unhandled/${id}.edn" && -f "${CASE_STATE}/outbox/unhandled/item.edn" ]] || fail "uncertain must go to unhandled"
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "uncertain delivery must not be re-sent"
+  stop_receiver
+}
+
+test_quiet_held_receipt_returns_to_digest_unless_stale() {
+  new_case
+  local accepted="2026-11-04T17:59:00Z"
+  seed_event "${CASE_STATE}" held BOXP-901 :accepted "${accepted}" ":accepted-at \"${accepted}\""
+  note_marker "${CASE_VAULT}" BOXP-901 held notified
+  write_receipt "${CASE_VAULT}" held quiet-held "2026-11-04T18:01:00+00:00"
+  night_tick
+  assert_file_contains "${CASE_STATE}/outbox/pending/held.edn" ':status :notify-pending'
+
+  new_case
+  # The redelivery was accepted after the hold, so it really sent.
+  seed_event "${CASE_STATE}" held BOXP-901 :accepted "${accepted}" ":accepted-at \"2026-11-05T00:05:00Z\""
+  note_marker "${CASE_VAULT}" BOXP-901 held notified
+  write_receipt "${CASE_VAULT}" held quiet-held "2026-11-04T18:01:00+00:00"
+  day_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  [[ -f "${CASE_STATE}/outbox/done/held.edn" ]] || fail "stale quiet-held must not reopen a delivered event"
+}
+
+test_notified_marker_waits_for_gate_near_quiet_start() {
+  new_case
+  # 01:55 JST on 2026-11-05: 02:00 is inside the grace window.
+  local at="2026-11-04T16:55:00Z"
+  seed_event "${CASE_STATE}" edge BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
+  note_marker "${CASE_VAULT}" BOXP-901 edge notified
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="2-9" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T16:55:30Z" >/dev/null
+  [[ -f "${CASE_STATE}/outbox/pending/edge.edn" ]] || fail "marker before the quiet boundary must wait for the gate"
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="2-9" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T16:56:00Z" CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0 \
+    CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000 >/dev/null
+  [[ -f "${CASE_STATE}/outbox/done/edge.edn" ]] || fail "no hold reported before the timeout: the send happened"
+}
+
 test_signed_delivery_is_accepted
 test_wrong_secret_is_rejected_and_retried_with_backoff
 test_duplicate_event_id_is_reported_as_duplicate
@@ -484,5 +701,16 @@ test_non_trigger_statuses_are_ignored
 test_missing_secret_never_sends
 test_review_lane_migration_is_silent
 test_pending_legacy_review_event_is_still_delivered
+test_digest_restart_and_delivery_receipt
+test_night_gate_off_or_invalid_keeps_legacy_hold
+test_night_gate_posts_defer_and_limits_tickets
+test_night_results_split_digest_and_done
+test_marker_summary_cannot_forge_result
+test_digest_collapses_and_is_sent_once
+test_digest_transport_failure_retries_then_unhandled
+test_digest_marker_without_receipt_is_not_delivered
+test_digest_uncertain_receipt_is_never_resent
+test_quiet_held_receipt_returns_to_digest_unless_stale
+test_notified_marker_waits_for_gate_near_quiet_start
 
 echo "task-board-events tests passed"

@@ -12,7 +12,8 @@
 ;; Lifecycle of one event file:
 ;;   pending  (:status :pending)   -> POST accepted by Hermes (2xx)
 ;;   pending  (:status :accepted)  -> handled marker found in ticket Notes
-;;   done/                          (processing completed)
+;;   pending  (:status :notify-pending) -> morning digest -> done/
+;;   done/                          (processing and delivery completed)
 ;;   unhandled/                     (accepted, redelivered, never marked handled)
 ;;   failed/                        (transport attempts exhausted)
 ;;
@@ -25,7 +26,7 @@
             [cheshire.core :as json]
             [clojure.edn :as edn]
             [clojure.string :as str])
-  (:import [java.time Instant ZoneId ZonedDateTime]
+  (:import [java.time Instant OffsetDateTime ZoneId ZonedDateTime]
            [java.security MessageDigest]
            [javax.crypto Mac]
            [javax.crypto.spec SecretKeySpec]))
@@ -184,7 +185,8 @@
   [ticket-id to-status]
   (let [window (dedupe-window-seconds)]
     (first (filter (fn [e]
-                     (and (= ticket-id (:ticket-id e))
+                     (and (not= "task-board.morning-digest" (:event-type e))
+                          (= ticket-id (:ticket-id e))
                           (= to-status (:to-status e))
                           (< (seconds-since (:created-at e)) window)))
                    (all-events)))))
@@ -290,13 +292,34 @@
     (when-let [[_ start end] (re-matches #"(\d{1,2})-(\d{1,2})" spec)]
       [(Long/parseLong start) (Long/parseLong end)])))
 
-(defn quiet-now? []
+(defn quiet-at? [^Instant instant]
   (when-let [[start end] (quiet-hours)]
     (let [zone (ZoneId/of (env "CODEX_TASK_BOARD_EVENT_TIMEZONE" "Asia/Tokyo"))
-          hour (.getHour (ZonedDateTime/ofInstant (now) zone))]
+          hour (.getHour (ZonedDateTime/ofInstant instant zone))]
       (if (<= start end)
         (and (>= hour start) (< hour end))
         (or (>= hour start) (< hour end))))))
+
+(defn quiet-now? [] (quiet-at? (now)))
+
+;; A notified marker is appended just before the final send, and the Hermes gate
+;; may hold that send once quiet hours begin: keep such an event until the gate
+;; had time to report. Daytime completion is not delayed.
+(def quiet-send-grace-seconds 600)
+(defn quiet-or-starting? []
+  (or (quiet-now?) (quiet-at? (.plusSeconds (now) quiet-send-grace-seconds))))
+
+(def night-config-warning (atom nil))
+(defn night-config []
+  (let [path (str (fs/path (outbox-dir) "night-processing.edn"))
+        config (try (edn/read-string (slurp path)) (catch Exception _ nil))
+        valid? (and (map? config) (boolean? (:enabled config))
+                    (or (nil? (:only-tickets config))
+                        (and (set? (:only-tickets config)) (every? string? (:only-tickets config)))))
+        warning (when (and (fs/exists? path) (not valid?)) "invalid or unreadable night-processing.edn; disabled")]
+    (when (and warning (not= warning @night-config-warning)) (log! warning))
+    (reset! night-config-warning warning)
+    (if valid? config {:enabled false :only-tickets nil})))
 
 ;; ---------------------------------------------------------------------------
 ;; Signed delivery
@@ -326,7 +349,9 @@
     :revision (:revision event)
     :created_at (:created-at event)
     :attempt (inc (:attempts event 0))
-    :redelivery (:redeliveries event 0)}))
+    :redelivery (:redeliveries event 0)
+    :notify_mode (or (:notify-mode event) "normal")
+    :digest_items (if (:digest-items event) (json/generate-string (:digest-items event)) "")}))
 
 (defn signed-headers
   "Hermes generic V2 signature: HMAC-SHA256 hex of \"<timestamp>.<body>\"."
@@ -382,26 +407,32 @@
     (fs/delete-if-exists (::path event))
     (str target)))
 
+(declare digest?)
+
 (defn flush-pending!
   "Send due pending events in creation order. During quiet hours nothing is
   sent and every event stays in the outbox."
   []
-  (let [pending (->> (event-files (pending-dir))
+  (let [config (night-config)
+        quiet? (quiet-now?)
+        pending (->> (event-files (pending-dir))
                      (keep (fn [p] (some-> (read-event p) (assoc ::path p))))
                      (filter #(= :pending (:status %)))
                      (sort-by :created-at))]
     (cond
       (empty? pending) {:sent 0 :deferred 0 :failed 0}
 
-      (quiet-now?)
-      (do (log! (str (count pending) " pending event(s) deferred by quiet hours"))
-          {:sent 0 :deferred (count pending) :failed 0})
-
       :else
       (reduce (fn [acc event]
-                (if-not (due? event)
-                  (update acc :deferred inc)
-                  (let [{:keys [ok? status hermes-status error]} (send-event! event)
+                (if (or (not (due? event))
+                        (and quiet? (or (digest? event) (not (and (:enabled config)
+                                              (or (nil? (:only-tickets config))
+                                                  (contains? (:only-tickets config) (:ticket-id event))))))))
+                  (do (when (and quiet? (due? event)) (log! "pending event deferred by quiet hours"))
+                      (update acc :deferred inc))
+                  (let [mode (if quiet? "defer" "normal")
+                        event (assoc event :notify-mode mode)
+                        {:keys [ok? status hermes-status error]} (send-event! event)
                         attempts (inc (:attempts event 0))]
                     (if ok?
                       (do (write-event! (pending-dir)
@@ -441,54 +472,112 @@
 ;; Processing completion: Kohako appends a Notes line that names the event id
 ;; ---------------------------------------------------------------------------
 
-(defn handled-marker? [line event-id]
-  (boolean
-   (and (re-find (re-pattern (str "event=" (java.util.regex.Pattern/quote event-id) "(\\s|$)")) line)
-        (re-find #"(?i)handled" line))))
+(defn marker-result [line event-id]
+  (let [prefix (first (str/split line #"\bsummary=" 2))]
+    (when (and (re-find (re-pattern (str "(?:^|\\s)event=" (java.util.regex.Pattern/quote event-id) "(\\s|$)")) prefix)
+               (re-find #"(?i)handled" prefix))
+      (or (some-> (re-find #"(?:^|\s)result=(notified|question|silent|continued|deferred)(?:\s|$)" prefix) second keyword)
+          :legacy))))
 
+(defn handled-marker? [line event-id] (boolean (marker-result line event-id)))
 (defn handled-in-notes? [event]
-  (let [path (ticket-path (:ticket-id event))]
-    (and (fs/exists? path)
-         (boolean (some #(handled-marker? % (:event-id event))
-                        (str/split-lines (slurp path)))))))
+  (try (last (keep #(marker-result % (:event-id event))
+                   (str/split-lines (slurp (ticket-path (:ticket-id event))))) )
+       (catch Exception _ nil)))
 
-(defn reconcile-accepted!
-  "Accepted events either finish (handled marker found) or, after the handle
-  timeout, go back to :pending for a redelivery with the same event id. Hermes
-  answers `duplicate` while its idempotency cache still holds the id; after a
-  gateway restart the redelivery starts the agent again. Exhausted events go
-  to unhandled/ for the low-frequency reconciliation cron."
-  []
-  (let [accepted (->> (event-files (pending-dir))
-                      (keep (fn [p] (some-> (read-event p) (assoc ::path p))))
-                      (filter #(= :accepted (:status %))))]
+(defn receipt-state
+  "A quiet-held receipt only speaks for the current delivery: a redelivery
+  accepted after the hold can really send, so the older receipt must not put it
+  back into the digest."
+  [event]
+  (try (let [r (json/parse-string (slurp (str (fs/path (vault) "Projects/task-board-events/delivery-receipts" (str (:event-id event) ".json")))) true)
+             stale? (and (= "quiet-held" (:state r))
+                         (.isBefore (.toInstant (OffsetDateTime/parse (:updated_at r)))
+                                    (Instant/parse (:accepted-at event))))]
+         (when (and (= (:event r) (:event-id event)) (not stale?)) (:state r)))
+       (catch Exception _ nil)))
+(defn digest? [e] (= "task-board.morning-digest" (:event-type e)))
+(defn digest-item-ids [e] (set (mapcat #(cons (:event-id %) (:superseded %)) (:digest-items e))))
+(defn finish-items! [digest dir status]
+  (doseq [path (event-files (pending-dir))
+          :let [item (read-event path)]
+          :when (and item (contains? (digest-item-ids digest) (:event-id item)))]
+    (move-event! (assoc item ::path path :digest-id (:event-id digest) :status status
+                        (if (= status :handled) :delivered-at :unhandled-at) (now-str)) dir)))
+
+(defn reconcile-accepted! []
+  ;; Finish orphaned items after a crash or a digest transport failure.
+  (let [events (vec (all-events))
+        by-id (into {} (map (juxt :event-id identity) events))]
+    (doseq [item events :when (and (= :notify-pending (:status item)) (:digest-id item))]
+      (let [digest (get by-id (:digest-id item))]
+        (when (or (nil? digest) (#{:failed :unhandled :notify-undelivered} (:status digest)))
+          (move-event! (assoc item :status :notify-undelivered :unhandled-at (now-str)) (unhandled-dir)))
+        (when (= :handled (:status digest))
+          (move-event! (assoc item :status :handled :delivered-at (now-str)) (done-dir)))))
     (reduce (fn [acc event]
-              (cond
-                (handled-in-notes? event)
-                (do (move-event! (assoc event :status :handled :handled-at (now-str)) (done-dir))
-                    (log! (str "handled " (:event-id event)))
-                    (update acc :handled inc))
-
-                (< (seconds-since (:accepted-at event)) (handle-timeout-seconds))
-                (update acc :waiting inc)
-
-                (< (:redeliveries event 0) (max-redeliveries))
-                (do (write-event! (pending-dir)
-                                  (-> event
-                                      (dissoc ::path :accepted-at)
-                                      (assoc :status :pending
-                                             :redeliveries (inc (:redeliveries event 0)))))
-                    (log! (str "redelivering " (:event-id event) " (no handled marker after "
-                               (handle-timeout-seconds) "s)"))
-                    (update acc :redelivered inc))
-
-                :else
-                (do (move-event! (assoc event :status :unhandled :unhandled-at (now-str)) (unhandled-dir))
-                    (log! (str "unhandled " (:event-id event) " after "
-                               (:redeliveries event 0) " redelivery(ies)"))
-                    (update acc :unhandled inc))))
+              (let [marker (handled-in-notes? event)
+                    receipt (receipt-state event)
+                    digest (digest? event)
+                    timeout? (>= (seconds-since (:accepted-at event)) (handle-timeout-seconds))]
+                (cond
+                  (and marker (= receipt "quiet-held"))
+                  (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status (if digest :pending :notify-pending) :processed-at (now-str))))
+                      (update acc :waiting inc))
+                  (and marker (not digest) (= marker :deferred))
+                  (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
+                      (update acc :waiting inc))
+                  (and (not digest) (#{:notified :question} marker) (not timeout?) (quiet-or-starting?))
+                  (update acc :waiting inc)
+                  (and marker (or (not digest) (= marker :silent)
+                                  (and (#{:notified :question} marker) (= receipt "sent"))))
+                  (do (when digest (finish-items! event (done-dir) :handled))
+                      (move-event! (assoc event :status :handled :handled-at (now-str)) (done-dir))
+                      (update acc :handled inc))
+                  (and digest marker (or (= receipt "uncertain") timeout?))
+                  (do (finish-items! event (unhandled-dir) :notify-undelivered)
+                      (move-event! (assoc event :status :notify-undelivered :unhandled-at (now-str)) (unhandled-dir))
+                      (log! (str "digest delivery unconfirmed " (:event-id event)))
+                      (update acc :unhandled inc))
+                  (not timeout?) (update acc :waiting inc)
+                  (and (not marker) (< (:redeliveries event 0) (max-redeliveries)))
+                  (do (write-event! (pending-dir) (-> event (dissoc ::path :accepted-at)
+                                                     (assoc :status :pending :redeliveries (inc (:redeliveries event 0)))))
+                      (update acc :redelivered inc))
+                  :else
+                  (do (when digest (finish-items! event (unhandled-dir) :notify-undelivered))
+                      (move-event! (assoc event :status :unhandled :unhandled-at (now-str)) (unhandled-dir))
+                      (update acc :unhandled inc)))))
             {:handled 0 :waiting 0 :redelivered 0 :unhandled 0}
-            accepted)))
+            (filter #(= :accepted (:status %)) events))))
+
+(defn build-digest! []
+  (if (quiet-now?) 0
+      (let [events (vec (all-events))
+            digests (filter digest? events)
+            ;; A digest is written before its items are stamped; repair interrupted writes first.
+            claimed (into {} (mapcat (fn [d] (map (fn [id] [id (:event-id d)]) (digest-item-ids d))) digests))
+            pending (filter #(and (= :notify-pending (:status %)) (not (digest? %))) events)]
+        (doseq [item pending :let [id (get claimed (:event-id item))] :when (and id (nil? (:digest-id item)))]
+          (write-event! (pending-dir) (-> item (dissoc ::path) (assoc :digest-id id))))
+        (let [items (remove #(or (:digest-id %) (get claimed (:event-id %))) pending)]
+          (if (empty? items) 0
+              (let [ordered (sort-by (juxt :created-at :event-id) items)
+                    groups (vals (group-by :ticket-id ordered))
+                    entries (->> groups (map (fn [xs] (let [xs (sort-by (juxt :created-at :event-id) xs) newest (last xs)]
+                                                       {:ticket-id (:ticket-id newest) :event-id (:event-id newest)
+                                                        :to-status (:to-status newest) :superseded (mapv :event-id (butlast xs))})))
+                                 (sort-by :ticket-id) vec)
+                    anchor (first ordered)
+                    hash (subs (sha256-hex (str/join "\n" (sort (map :event-id items)))) 0 12)
+                    ts (-> (:created-at anchor) (str/replace #"[-:]" "") (str/replace #"\.\d+" ""))
+                    id (str (:ticket-id anchor) "-digest-" ts "-" hash)
+                    digest {:schema-version schema-version :event-id id :event-type "task-board.morning-digest"
+                            :ticket-id (:ticket-id anchor) :created-at (now-str) :status :pending
+                            :attempts 0 :redeliveries 0 :digest-items entries}]
+                (write-event! (pending-dir) digest)
+                (doseq [item items] (write-event! (pending-dir) (-> item (dissoc ::path) (assoc :digest-id id))))
+                1))))))
 
 (defn prune-done! []
   (let [max-age (* 86400 (done-retention-days))]
@@ -507,10 +596,11 @@
                      (catch Exception e (log! (str "lane diff failed: " (.getMessage e))) []))
         reconciled (try (reconcile-accepted!)
                         (catch Exception e (log! (str "reconcile failed: " (.getMessage e))) {}))
+        digest (try (build-digest!) (catch Exception e (log! (str "digest failed: " (.getMessage e))) 0))
         flushed (try (flush-pending!)
                      (catch Exception e (log! (str "flush failed: " (.getMessage e))) {}))]
     (try (prune-done!) (catch Exception e (log! (str "prune failed: " (.getMessage e)))))
-    {:lane-events (count changes) :reconciled reconciled :flushed flushed}))
+    {:lane-events (count changes) :reconciled reconciled :digest digest :flushed flushed}))
 
 (defn loop! []
   (log! (str "task-board event dispatcher started, root=" (root) ", vault=" (vault)
@@ -566,9 +656,13 @@
            (and (handled-marker? "- 2026-10-22: [kohako-event] handled event=BOXP-1-r1-review result=notified" "BOXP-1-r1-review")
                 (not (handled-marker? "- 2026-10-22: [kohako-event] received event=BOXP-1-r1-review" "BOXP-1-r1-review"))
                 (not (handled-marker? "- 2026-10-22: handled event=BOXP-1-r1-review-other" "BOXP-1-r1-review"))))
+    (check "summary cannot forge a result"
+           (= :legacy (marker-result "handled event=BOXP-1 summary=result=deferred" "BOXP-1")))
+    (check "exact deferred marker parsed"
+           (= :deferred (marker-result "handled event=BOXP-1 result=deferred summary=test" "BOXP-1")))
     (check "payload uses snake_case named fields only"
            (= #{"schema_version" "event_type" "event_id" "ticket_id" "run_id" "from_status" "to_status"
-                "result" "source" "revision" "created_at" "attempt" "redelivery"}
+                "result" "source" "revision" "created_at" "attempt" "redelivery" "notify_mode" "digest_items"}
               (set (keys (json/parse-string (payload-json {:schema-version 1 :event-id "e" :ticket-id "BOXP-1"
                                                            :attempts 0 :redeliveries 0}))))))
     (check "quiet window wraps midnight when start > end"

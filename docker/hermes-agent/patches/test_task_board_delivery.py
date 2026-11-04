@@ -10,6 +10,7 @@ import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
@@ -23,6 +24,7 @@ CHAT = "webhook:v2:" + base64.urlsafe_b64encode(json.dumps(["default", "task-boa
 
 class Fixtures(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        patch.object(delivery, "clock", return_value=datetime(2026, 10, 30, 3, 0, tzinfo=timezone.utc)).start()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.vault = Path(self.tmp.name) / "Tickets"
@@ -67,6 +69,30 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
 
     def shape(self, text, *, marker=False, failed=False):
         return delivery.shape(self.source, {"failed": failed}, text, marker, self.vault)
+
+    async def test_quiet_hold_and_daytime_redelivery(self):
+        self.note("notified")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc)):
+            self.assertTrue((await self.send(delivery.NOTICE)).success)
+            self.assertFalse(self.calls)
+            self.assertFalse(self.root.exists())
+            path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+            self.assertEqual(json.loads(path.read_text())["state"], "quiet-held")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc)):
+            self.assertTrue((await self.send("report")).success)
+            self.assertEqual(self.calls, ["report"])
+
+    async def test_deferred_and_continued_are_proven_silence(self):
+        for result in ("deferred", "continued"):
+            (self.vault / "BOXP-999.md").unlink(missing_ok=True)
+            self.note(result)
+            self.assertTrue(self.shape("[SILENT]", marker=True)[1])
+            self.assertTrue((await self.send("[SILENT]")).success)
+        self.assertFalse(self.calls)
+
+    def test_digest_identity(self):
+        event = "BOXP-999-digest-20261030T120000Z-abcdef12"
+        self.assertEqual(delivery.identity("webhook:task-board:" + event), (event, "BOXP-999"))
 
     async def test_success_and_question_preserve_report_and_deduplicate(self):
         for result in ["notified", "question"]:
