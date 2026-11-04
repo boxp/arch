@@ -4321,7 +4321,8 @@
         (finally
           (release-lock! ticket-id lock))))))
 
-(def provider-quota-hold-actions #{:implement :review-fix :blocked-retry})
+;; Every action that starts an agent, including Backlog grooming.
+(def provider-quota-hold-actions #{:groom :implement :review-fix :blocked-retry})
 (def provider-quota-hold-logged (atom #{}))
 
 (defn provider-quota-hold-enabled? []
@@ -5983,6 +5984,11 @@
               ["provider quota summary is empty without a status" (provider-quota-summary-fields nil) {}]
               ["provider quota hold ignores other actions"
                (with-redefs [provider-quota-status (fn [_] {:decision :hold})] (provider-quota-hold! "TEST-1" :recover "claude-fable")) nil]
+              ["provider quota hold stops Backlog grooming"
+               (with-redefs [provider-quota-status (fn [_] {:decision :hold :route "claude-fable" :scope :model :limits ["fable_7d"] :resets-at 1})
+                             log! (fn [& _] nil) append-note! (fn [& _] nil) ticket-path (fn [_] "/nonexistent")]
+                 @provider-quota-module-loaded?
+                 (provider-quota-hold! "TEST-1" :groom "claude-fable")) true]
               ["provider quota hold can be turned off"
                (with-redefs [provider-quota-hold-enabled? (fn [] false) provider-quota-status (fn [_] {:decision :hold})] (provider-quota-hold! "TEST-1" :implement "claude-fable")) nil]
               ["provider quota hold passes a clear route"
