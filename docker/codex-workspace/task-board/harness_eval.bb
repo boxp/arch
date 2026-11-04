@@ -21,6 +21,7 @@
 ;; 既に budget.edn か試行記録がある DIR への plan は拒否する (古い試行を別の計画の結果として集計しないため)。
 ;; 再開は同じ DIR への run で行い、新しい計画には新しい DIR を使う。
 ;; STOP で aborted と記録した試行は未実行なので、STOP を外した次の run で実行する。
+;; ハーネスか課題の内容が計画時と違う DIR への run は拒否する (別の条件の試行を計画時の版として記録しないため)。
 ;; DIR に残すのは metadata (trials/*.edn) だけで、prompt 本文・エージェント出力・stderr は残さない。
 (ns harness-eval)
 (require '[babashka.fs :as fs]
@@ -95,15 +96,31 @@
       (conj (str "1 試行の timeout " trial-timeout-seconds " 秒は 1.." (:trial-timeout-seconds limits) " の外"))
       (> total (:max-trials limits)) (conj (str "合計試行 " total " > " (:max-trials limits))))))
 
+(defn content-sha256
+  "[名前 ファイル] の組を名前順に並べ、名前と内容の sha256 (hex) を返す。"
+  [named-files]
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")]
+    (doseq [[n f] (sort-by first named-files)]
+      (.update md (.getBytes (str n "\u0000") "UTF-8"))
+      (.update md (fs/read-all-bytes f)))
+    (apply str (map #(format "%02x" %) (.digest md)))))
+
 (defn harness-content-version
   "ハーネス版の既定値。image には .git が入らないので、self-dir 直下のファイル (runner と評価本体) の
   名前と内容の sha256 で識別する。checkout と image で内容が同じなら同じ値になる。"
   []
-  (let [md (java.security.MessageDigest/getInstance "SHA-256")]
-    (doseq [f (sort-by (comp str fs/file-name) (filter fs/regular-file? (fs/list-dir self-dir)))]
-      (.update md (.getBytes (str (fs/file-name f) "\u0000") "UTF-8"))
-      (.update md (fs/read-all-bytes f)))
-    (str "tb-" (subs (apply str (map #(format "%02x" %) (.digest md))) 0 12))))
+  (str "tb-" (subs (content-sha256 (for [f (fs/list-dir self-dir) :when (fs/regular-file? f)]
+                                     [(str (fs/file-name f)) f]))
+                   0 12)))
+
+(defn tasks-content-version
+  "計画に含む課題の版。課題ディレクトリ以下の全ファイル (task.edn / base / accept.sh) の相対パスと内容で識別する。"
+  [tasks]
+  (str "tasks-" (subs (content-sha256 (for [{:keys [id dir]} tasks
+                                            f (file-seq (fs/file dir))
+                                            :when (fs/regular-file? f)]
+                                        [(str id "/" (fs/relativize dir f)) f]))
+                      0 12)))
 
 (defn existing-plan-records
   "DIR に残っている計画・試行の記録。plan はこれを上書きも流用もしない。"
@@ -132,6 +149,9 @@
               :trial-timeout-seconds (parse-long* (arg args "--trial-timeout-seconds" nil) 600)
               :model-rev (arg args "--model-rev" "unknown")
               :harness-version (or (arg args "--harness-version" nil) (harness-content-version))
+              ;; --harness-version を明示しても、再開時の照合は実際の内容で行う。
+              :harness-content-version (harness-content-version)
+              :tasks-content-version (tasks-content-version tasks)
               :limits limits}
         violations (budget-violations plan)]
     (if (seq violations)
@@ -358,6 +378,13 @@
   (and (fs/exists? path)
        (not= "aborted" (:outcome (edn/read-string (slurp (str path)))))))
 
+(defn plan-drift
+  "計画時と内容が変わった対象の名前。変わったまま実行すると、別の条件の試行が計画時の版として記録される。"
+  [budget tasks]
+  (cond-> []
+    (not= (:harness-content-version budget) (harness-content-version)) (conj "ハーネス")
+    (not= (:tasks-content-version budget) (tasks-content-version tasks)) (conj "課題")))
+
 (defn run! [args]
   (let [out (or (arg args "--out" nil) (throw (ex-info "--out が必要" {})))
         budget (read-budget out)
@@ -366,6 +393,11 @@
                             " --print --output-format stream-json --verbose --dangerously-skip-permissions"))
         stop-file (arg args "--stop-file" (str (fs/path out "STOP")))
         tasks (load-tasks (:tasks-dir budget) (set (:tasks budget)))
+        drift (plan-drift budget tasks)
+        _ (when (seq drift)
+            (binding [*out* *err*]
+              (println (str (str/join "と" drift) "の内容が計画時と違うため実行しない。新しい条件の評価には新しい --out で plan する: " out)))
+            (System/exit 2))
         contract (when (some #{"B"} (:arms budget)) (fetch-contract))
         opts (assoc budget :agent-cmd agent-cmd)
         plan (for [task tasks, arm (:arms budget), rep (range 1 (inc (:reps budget)))] [task arm rep])

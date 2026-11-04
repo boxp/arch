@@ -265,6 +265,61 @@
       (spit (str (fs/path tb "task_board_runner.bb")) "\n;; changed\n" :append true)
       (is (not= v1 (plan-version)) "runner が変われば別の版"))))
 
+(deftest run-refuses-when-content-differs-from-the-plan
+  (let [setup (fn [plan-args]
+                (let [image (tmp)
+                      tb (fs/path image "opt" "task-board")
+                      out (tmp)
+                      tool' (str (fs/path tb "harness_eval.bb"))
+                      exec (fn [& args] @(p/process (into ["bb" tool'] (map str args)) {:out :string :err :string}))]
+                  (fs/create-dirs (fs/parent tb))
+                  (fs/copy-tree task-board-dir tb)
+                  (let [r (apply exec "plan" "--out" out "--only" "T01,T02" "--arms" "A" plan-args)]
+                    (is (zero? (:exit r)) (:err r)))
+                  {:tb tb :out out :resume #(exec "run" "--out" out "--agent-cmd" fake-agent)}))
+        refused? (fn [{:keys [out resume]} expected]
+                   (let [r (resume)]
+                     (is (= 2 (:exit r)))
+                     (is (str/includes? (:err r) expected))
+                     (is (str/includes? (:err r) "新しい --out"))
+                     (is (empty? (fs/list-dir (fs/path out "trials"))) "拒否したら試行を記録しない")))]
+    (testing "内容が同じなら実行する"
+      (let [{:keys [out resume]} (setup [])]
+        (is (zero? (:exit (resume))))
+        (is (= 2 (count (trials out))))))
+    (testing "runner が変われば再開しない"
+      (let [{:keys [tb] :as ctx} (setup [])]
+        (spit (str (fs/path tb "task_board_runner.bb")) "\n;; changed\n" :append true)
+        (refused? ctx "ハーネス")))
+    (testing "--harness-version を明示していても内容の変更を見逃さない"
+      (let [{:keys [tb] :as ctx} (setup ["--harness-version" "pinned"])]
+        (spit (str (fs/path tb "harness_eval.bb")) "\n;; changed\n" :append true)
+        (refused? ctx "ハーネス")))
+    (doseq [[what rel] [["受入手順" "T01/accept.sh"] ["課題定義" "T02/task.edn"]]]
+      (testing (str what "が変われば再開しない")
+        (let [{:keys [tb] :as ctx} (setup [])]
+          (spit (str (fs/path tb "harness-eval-tasks" rel)) "\n;; changed\n" :append true)
+          (refused? ctx "課題"))))
+    (testing "課題の base が変われば再開しない"
+      (let [{:keys [tb] :as ctx} (setup [])
+            base (first (filter fs/regular-file? (file-seq (fs/file (fs/path tb "harness-eval-tasks" "T01" "base")))))]
+        (spit (str base) "\n" :append true)
+        (refused? ctx "課題")))
+    (testing "計画に含まない課題の変更は影響しない"
+      (let [{:keys [tb out resume]} (setup [])]
+        (spit (str (fs/path tb "harness-eval-tasks" "T03" "accept.sh")) "\n# changed\n" :append true)
+        (is (zero? (:exit (resume))))
+        (is (= 2 (count (trials out))))))
+    (testing "途中まで実行した DIR でも、変更後は残りを旧版として記録しない"
+      (let [{:keys [tb out resume]} (setup [])]
+        (spit (str (fs/path out "STOP")) "")
+        (is (zero? (:exit (resume))))
+        (is (every? #(= "aborted" (:outcome %)) (trials out)))
+        (fs/delete (fs/path out "STOP"))
+        (spit (str (fs/path tb "task_board_runner.bb")) "\n;; changed\n" :append true)
+        (is (= 2 (:exit (resume))))
+        (is (every? #(= "aborted" (:outcome %)) (trials out)))))))
+
 (deftest run-is-resumable-and-skips-recorded-trials
   (let [out (tmp)]
     (is (zero? (:exit (plan! out :reps 1 :only "T01,T02" :arms "A"))))
