@@ -2187,6 +2187,8 @@
                        (string? (:severity labels)) (assoc :severity (:severity labels))
                        (string? (:window labels)) (assoc :window (:window labels))
                        (string? (:scope labels)) (assoc :scope (:scope labels))
+                       (string? (:model_rev labels)) (assoc :model-rev (:model_rev labels))
+                       (string? (:harness_version labels)) (assoc :harness-version (:harness_version labels))
                        (string? (:definition_version labels)) (assoc :definition-version (:definition_version labels)))))))
          distinct
          (sort-by (juxt :alertname :window :state))
@@ -2214,11 +2216,13 @@
           (log! (str "ai ops alerts read failed: " (.getMessage e)))
           {:status "unavailable" :reason "response-unreadable"})))))
 
-(defn ai-ops-alert-line [{:keys [alertname state severity window scope definition-version]}]
+(defn ai-ops-alert-line [{:keys [alertname state severity window scope model-rev harness-version definition-version]}]
   (str alertname "{state=" state
        (when severity (str ",severity=" severity))
        (when window (str ",window=" window))
        (when scope (str ",scope=" scope))
+       (when model-rev (str ",model_rev=" model-rev))
+       (when harness-version (str ",harness_version=" harness-version))
        (when definition-version (str ",definition_version=" definition-version))
        "}"))
 
@@ -5985,6 +5989,10 @@
                (with-redefs [provider-quota-status (fn [_] {:decision :clear})] (provider-quota-hold! "TEST-1" :implement "claude-opus")) nil]
               ["provider quota hold passes an unreadable state"
                (with-redefs [provider-quota-status (fn [_] nil)] (provider-quota-hold! "TEST-1" :implement "claude-opus")) nil]
+              ;; BOXP-405: the comparison alert names the model and harness version it is about.
+              ["ai ops alert line names model and harness version"
+               (ai-ops-alert-line (first (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[{\"labels\":{\"alertname\":\"AiOpsHarnessEvalRegression\",\"severity\":\"warning\",\"model_rev\":\"m1\",\"harness_version\":\"tb-1\"},\"state\":\"firing\"}]}}")))
+               "AiOpsHarnessEvalRegression{state=firing,severity=warning,model_rev=m1,harness_version=tb-1}"]
               ;; BOXP-405: AI Ops decision support keeps allowlisted alert names only.
               ["ai ops alerts parse allowlist and sort"
                (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[{\"labels\":{\"alertname\":\"Watchdog\",\"severity\":\"none\"},\"state\":\"firing\"},{\"labels\":{\"alertname\":\"AiOpsOutcomeMeasurementStale\",\"severity\":\"warning\",\"definition_version\":\"outcome/v1-draft\"},\"annotations\":{\"description\":\"SECRET-BODY\"},\"state\":\"pending\"},{\"labels\":{\"alertname\":\"AiOpsOutcomeBurnFast\",\"severity\":\"warning\",\"window\":\"7d\"},\"state\":\"firing\",\"value\":\"2.5\"}]}}")
