@@ -204,3 +204,14 @@ Summary には「誰の・何の設定案を・どのノートへ」を自然文
 ## Failure Handling
 
 If the helper refuses a change, report the exact command and error. Common causes are missing ticket files, malformed frontmatter delimiters, missing board lanes, or multiple board cards for one ticket. Prefer `show` and `list --json` to inspect state before retrying.
+
+
+## Hermes での実行
+
+Hermes への `kubectl exec` は root で動くため、書き込み系コマンドは `--dry-run` を含め拒否されます。root が lock や vault のファイルを作ると gateway が書き込めなくなるためです。次のように Hermes ユーザーに切り替えて実行してください。
+
+```sh
+kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-setuidgid hermes bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb <command> ...
+```
+
+`--vault "$OBSIDIAN_VAULT_PATH"` を指定する場合は、変数をコンテナ内のシェルで展開します（例: `kubectl ... -- sh -c 'exec /command/s6-setuidgid hermes bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb list --vault "$OBSIDIAN_VAULT_PATH"'`）。
