@@ -42,6 +42,7 @@ class PartitionTest(unittest.TestCase):
             'bash tests/codex-workspace/ai-subscription-usage-test.sh',
             'bb tests/ai-observability/test_slo_snapshot.bb',
             'bb tests/ai-observability/test_outcome.bb',
+            'bb tests/harness-eval/test_harness_eval.bb',
             'docs/project_docs/BOXP-360/tools/test.sh',
             'tests/codex-workspace/localllm-docs-test.sh',
             'tests/codex-workspace/localllm-source-check-test.sh',

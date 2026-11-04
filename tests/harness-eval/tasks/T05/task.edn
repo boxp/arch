@@ -1,0 +1,6 @@
+{:id "T05"
+ :title "Markdown の表に 1 行追加する"
+ :difficulty "easy"
+ :requirement "`runbook.md` の「## 環境変数」節の表に、行 `| LOG_LEVEL | ログの詳細度 | info |` を末尾に追加する。他の節（## 概要、## 手順、## 注意）と表の既存行・見出し行は変えない。"
+ :acceptance "`bash test.sh` が成功すること（追加行の存在と、他の節が元のままであることを検査する）。"
+ :allowed-files ["runbook.md"]}
