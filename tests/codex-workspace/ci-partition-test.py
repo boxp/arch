@@ -10,7 +10,7 @@ ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
 def check_cases(cases, definitions):
-    if len(cases) != 127 or len(set(cases)) != len(cases):
+    if len(cases) != 130 or len(set(cases)) != len(cases):
         raise ValueError('missing or duplicate baseline case')
     if set(cases) != {name for name in definitions if name.startswith('test_')} | {'root_guard_test'}:
         raise ValueError('missing or unknown case')
@@ -41,6 +41,8 @@ class PartitionTest(unittest.TestCase):
             'tests/codex-workspace/ai-ops-ledger-test.sh',
             'bash tests/codex-workspace/ai-subscription-usage-test.sh',
             'bb tests/ai-observability/test_slo_snapshot.bb',
+            'bb tests/ai-observability/test_outcome.bb',
+            'bb tests/harness-eval/test_harness_eval.bb',
             'docs/project_docs/BOXP-360/tools/test.sh',
             'tests/codex-workspace/localllm-docs-test.sh',
             'tests/codex-workspace/localllm-source-check-test.sh',

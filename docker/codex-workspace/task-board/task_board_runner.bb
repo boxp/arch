@@ -2142,7 +2142,108 @@
            (str/join ", " (map (fn [[url head]] (str url " @ " head)) (:checked-pr-heads gate)))
            ". If a PR's head has since changed, these results do not apply to it: return continue so the gates run again.\n"))))
 
-(defn prompt-for [action ticket-id lane workspace agent]
+;; BOXP-405 stage 2: AI Ops decision support. The runner reads the AiOps*
+;; Prometheus alerts once per run through the existing Grafana datasource proxy
+;; (read-only, opt-in through CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID) and
+;; shows the agent only allowlisted alert names and labels. A failed read is
+;; reported as unknown, never as "no alerts", and the raw response stays in
+;; memory: summary.edn keeps only the allowlisted names.
+(def ai-ops-alert-allowlist
+  #{"AiOpsOutcomeBurnFast" "AiOpsOutcomeBurnSlow" "AiOpsOutcomeMeasurementStale" "AiOpsHarnessEvalRegression"})
+
+(defn ai-ops-alerts-config []
+  (let [uid (System/getenv "CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID")]
+    (when-not (str/blank? uid)
+      {:uid uid
+       :url (System/getenv "GRAFANA_URL")
+       :token (System/getenv "GRAFANA_SERVICE_ACCOUNT_TOKEN")
+       :timeout-seconds (env-long "CODEX_TASK_BOARD_AI_OPS_ALERTS_TIMEOUT_SECONDS" "5")})))
+
+(defn parse-ai-ops-alerts
+  "Allowlisted alerts from a Prometheus /api/v1/alerts body, sorted and without
+  annotations or values. Throws on a malformed or unsuccessful response."
+  [body]
+  (let [data (json/parse-string body true)]
+    (when-not (= "success" (:status data))
+      (throw (ex-info "alerts query was not successful" {:status (:status data)})))
+    ;; A successful status with a missing or non-list data.alerts is a malformed
+    ;; response, not "no alerts": fail so the caller reports it as unavailable.
+    (when-not (sequential? (get-in data [:data :alerts]))
+      (throw (ex-info "alerts query response has no data.alerts list" {:status (:status data)})))
+    (->> (get-in data [:data :alerts])
+         (keep (fn [{:keys [labels state]}]
+                 (let [alertname (:alertname labels)]
+                   (when (contains? ai-ops-alert-allowlist alertname)
+                     (cond-> {:alertname alertname :state (str (or state "unknown"))}
+                       (string? (:severity labels)) (assoc :severity (:severity labels))
+                       (string? (:window labels)) (assoc :window (:window labels))
+                       (string? (:definition_version labels)) (assoc :definition-version (:definition_version labels)))))))
+         distinct
+         (sort-by (juxt :alertname :window :state))
+         vec)))
+
+(defn fetch-ai-ops-alerts
+  "nil when disabled; {:status \"ok\" :alerts [...]} or {:status \"unavailable\" :reason ...}."
+  []
+  (when-let [{:keys [uid url token timeout-seconds]} (ai-ops-alerts-config)]
+    (if (or (str/blank? url) (str/blank? token))
+      {:status "unavailable" :reason "grafana-env-missing"}
+      (try
+        (let [endpoint (str (str/replace url #"/+$" "") "/api/datasources/proxy/uid/" uid "/api/v1/alerts")
+              ;; curl expands the token from its own environment, so it is on
+              ;; neither the command line nor disk.
+              result @(p/process ["curl" "--fail" "--silent" "--show-error" "--max-time" (str timeout-seconds)
+                                  "--variable" "%GRAFANA_SERVICE_ACCOUNT_TOKEN"
+                                  "--expand-header" "Authorization: Bearer {{GRAFANA_SERVICE_ACCOUNT_TOKEN}}"
+                                  endpoint]
+                                 {:out :string :err :string})]
+          (if (zero? (:exit result))
+            {:status "ok" :alerts (parse-ai-ops-alerts (:out result))}
+            {:status "unavailable" :reason (str "curl-exit-" (:exit result))}))
+        (catch Exception e
+          (log! (str "ai ops alerts read failed: " (.getMessage e)))
+          {:status "unavailable" :reason "response-unreadable"})))))
+
+(defn ai-ops-alert-line [{:keys [alertname state severity window definition-version]}]
+  (str alertname "{state=" state
+       (when severity (str ",severity=" severity))
+       (when window (str ",window=" window))
+       (when definition-version (str ",definition_version=" definition-version))
+       "}"))
+
+(defn ai-ops-summary-fields
+  "summary.edn fields for the alert read: allowlisted names only, and the read
+  status so a failed read is distinguishable from no alerts."
+  [ai-ops]
+  (cond
+    (nil? ai-ops) {}
+    (= "ok" (:status ai-ops)) {:ai-ops-alerts-status "ok"
+                               :ai-ops-alerts (vec (distinct (map :alertname (:alerts ai-ops))))}
+    :else {:ai-ops-alerts-status "unavailable"}))
+
+(defn ai-ops-decision-prompt [ai-ops]
+  (when ai-ops
+    (str "AI Ops decision support (AI Ops 判断支援):\n"
+         "- Source: Prometheus alerts named AiOps* read once at run start through the Grafana datasource proxy (read-only). Definition outcome/v1-draft with provisional thresholds; this is not a formal SLO.\n"
+         "- Status: "
+         (cond
+           (not= "ok" (:status ai-ops))
+           (str "unavailable (measurement could not be read: " (or (:reason ai-ops) "unknown") "). Treat this as unknown, not as 'no alerts'.")
+
+           (empty? (:alerts ai-ops))
+           "no AiOps alerts are firing or pending."
+
+           :else
+           (str "alerts " (str/join "; " (map ai-ops-alert-line (:alerts ai-ops))) "."))
+         "\n"
+         "- Meaning: AiOpsOutcomeBurnFast = the 7-day window consumes the outcome error budget at >= 2x; AiOpsOutcomeBurnSlow = the 28-day window at >= 1x; AiOpsOutcomeMeasurementStale = the outcome export failed or is older than 2h, so outcome numbers are not trustworthy right now; AiOpsHarnessEvalRegression = the fixed-task comparison suggests the current harness underperforms the minimal setup on the same model.\n"
+         "- Allowed when an alert is firing: record the evidence in this ticket's Notes (alert name, window, counts and definition version from the ai-ops-quality dashboard), isolate the likely cause (model update / harness update / external outage / task difficulty), re-evaluate under the same conditions, and propose small fixes inside the already approved scope.\n"
+         "- Not allowed because of these alerts: releasing gates, approvals or locks; resetting retry or continuation budgets; automatic production changes; re-sending notifications; restarting Pods or Hermes; declaring an SLO met or missed. Alerts are context for your judgment, not a blocker: keep working this ticket's approved scope.\n\n")))
+
+(defn prompt-for
+  ([action ticket-id lane workspace agent]
+   (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
+  ([action ticket-id lane workspace agent ai-ops]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
         base-agent (:base-assignee (parse-codex-assignee agent))
@@ -2160,6 +2261,7 @@
                     (when (contains? claude-assignee->model agent) (claude-policy-prompt agent))
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
                     (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
+                    (ai-ops-decision-prompt ai-ops)
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
                              "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: continue.\n"
@@ -2201,7 +2303,7 @@
            "Do the work end to end where possible, including focused validation.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n"))))
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")))))
 
 (defn normalize-result
   "BOXP-395: `review` is the retired spelling of `continue`. Runs started before
@@ -2929,10 +3031,12 @@
         stdout-path (fs/path dir "events.jsonl")
         stderr-path (fs/path dir "stderr.log")
         last-message-path (fs/path dir "last-message.md")
-        evidence-path (str (fs/path dir "delegation.json"))]
+        evidence-path (str (fs/path dir "delegation.json"))
+        ai-ops (fetch-ai-ops-alerts)
+        ai-ops-fields (ai-ops-summary-fields ai-ops)]
     (fs/create-dirs dir)
-    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
-    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
+    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent ai-ops))
+    (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))
     (let [agent-args (if (claude-assignee? agent)
                        (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "stream-json" "--verbose"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
@@ -3032,24 +3136,26 @@
         ;; interruption from the terminating side (the next owner re-marks the
         ;; run through the planned-shutdown marker and keeps `:shutdown`).
         (mark-run! ticket-id run :interrupted
-                   {:action action
-                    :agent agent
-                    :lane lane
-                    :reason "planned workspace shutdown"
-                    :shutdown {:owner-id (owner-id)
-                               :instance-id runner-instance-id
-                               :agent-exit-code exit
-                               :agent-stopped-at (now-str)}})
+                   (merge {:action action
+                           :agent agent
+                           :lane lane
+                           :reason "planned workspace shutdown"
+                           :shutdown {:owner-id (owner-id)
+                                      :instance-id runner-instance-id
+                                      :agent-exit-code exit
+                                      :agent-stopped-at (now-str)}}
+                          ai-ops-fields))
         (let [status (if (zero? exit) :succeeded :failed)]
           (mark-run! ticket-id run status
-                     {:action action
-                      :agent agent
-                      :lane lane
-                      :exit-code exit
-                      :idle-timeout? idle-timeout?
-                      :delegation-ok? delegation-ok?
-                      :result marker
-                      :finished-at (now-str)})))
+                     (merge {:action action
+                             :agent agent
+                             :lane lane
+                             :exit-code exit
+                             :idle-timeout? idle-timeout?
+                             :delegation-ok? delegation-ok?
+                             :result marker
+                             :finished-at (now-str)}
+                            ai-ops-fields))))
       {:exit exit
        :result marker
        :run-id run
@@ -5757,6 +5863,43 @@
               ["wait reason values" (mapv #(wait-reason-marker (str "TASK_BOARD_WAIT_REASON: " %)) ["owner-decision" "external-hold" "new-scope" "AGENT-RECOVERABLE"]) ["owner-decision" "external-hold" "new-scope" "agent-recoverable"]]
               ["invalid wait reason" (wait-reason-marker "TASK_BOARD_WAIT_REASON: private") nil]
               ["absent wait reason" (wait-reason-marker "nothing") nil]
+              ;; BOXP-405: AI Ops decision support keeps allowlisted alert names only.
+              ["ai ops alerts parse allowlist and sort"
+               (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[{\"labels\":{\"alertname\":\"Watchdog\",\"severity\":\"none\"},\"state\":\"firing\"},{\"labels\":{\"alertname\":\"AiOpsOutcomeMeasurementStale\",\"severity\":\"warning\",\"definition_version\":\"outcome/v1-draft\"},\"annotations\":{\"description\":\"SECRET-BODY\"},\"state\":\"pending\"},{\"labels\":{\"alertname\":\"AiOpsOutcomeBurnFast\",\"severity\":\"warning\",\"window\":\"7d\"},\"state\":\"firing\",\"value\":\"2.5\"}]}}")
+               [{:alertname "AiOpsOutcomeBurnFast" :state "firing" :severity "warning" :window "7d"}
+                {:alertname "AiOpsOutcomeMeasurementStale" :state "pending" :severity "warning" :definition-version "outcome/v1-draft"}]]
+              ["ai ops alerts parse rejects an unsuccessful response"
+               (try (parse-ai-ops-alerts "{\"status\":\"error\",\"errorType\":\"bad_data\"}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects malformed json"
+               (try (parse-ai-ops-alerts "<html>") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success without data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success with null data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":null}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success with non-list data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":{}}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse accepts success with empty data.alerts"
+               (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[]}}") []]
+              ["ai ops summary fields distinguish ok, empty and unavailable"
+               [(ai-ops-summary-fields nil)
+                (ai-ops-summary-fields {:status "ok" :alerts []})
+                (ai-ops-summary-fields {:status "ok" :alerts [{:alertname "AiOpsOutcomeBurnFast" :window "7d" :state "firing"} {:alertname "AiOpsOutcomeBurnFast" :window "7d" :state "pending"}]})
+                (ai-ops-summary-fields {:status "unavailable" :reason "curl-exit-7"})]
+               [{} {:ai-ops-alerts-status "ok" :ai-ops-alerts []} {:ai-ops-alerts-status "ok" :ai-ops-alerts ["AiOpsOutcomeBurnFast"]} {:ai-ops-alerts-status "unavailable"}]]
+              ["ai ops prompt is omitted when disabled" (ai-ops-decision-prompt nil) nil]
+              ["ai ops prompt states unavailable as unknown"
+               (boolean (re-find #"Status: unavailable \(measurement could not be read: curl-exit-7\)\. Treat this as unknown, not as 'no alerts'"
+                                 (ai-ops-decision-prompt {:status "unavailable" :reason "curl-exit-7"}))) true]
+              ["ai ops prompt lists firing alerts with labels"
+               (boolean (re-find #"Status: alerts AiOpsOutcomeBurnFast\{state=firing,severity=warning,window=7d\}; AiOpsOutcomeMeasurementStale\{state=pending\}\."
+                                 (ai-ops-decision-prompt {:status "ok" :alerts [{:alertname "AiOpsOutcomeBurnFast" :state "firing" :severity "warning" :window "7d"} {:alertname "AiOpsOutcomeMeasurementStale" :state "pending"}]}))) true]
+              ["ai ops prompt says none when nothing fires"
+               (boolean (re-find #"Status: no AiOps alerts are firing or pending\." (ai-ops-decision-prompt {:status "ok" :alerts []}))) true]
+              ["ai ops alerts disabled without datasource uid"
+               (with-redefs [ai-ops-alerts-config (constantly nil)] (fetch-ai-ops-alerts)) nil]
+              ["ai ops alerts unavailable without grafana env"
+               (with-redefs [ai-ops-alerts-config (constantly {:uid "ds" :url nil :token nil :timeout-seconds 5})] (fetch-ai-ops-alerts))
+               {:status "unavailable" :reason "grafana-env-missing"}]
               ["blocked summary wait reason"
                (let [saved (atom nil)]
                  (with-redefs [record-blocked-transition! (constantly true) move-card! (constantly nil)

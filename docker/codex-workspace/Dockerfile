@@ -20,6 +20,10 @@ ARG NODE_MAJOR=26
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CODEX_TASK_BOARD_CLAUDE_BIN=/usr/bin/claude
+# BOXP-405: run 開始時に AiOps* アラートを Grafana datasource proxy 経由で read-only に読むための
+# monitoring Prometheus datasource uid（secret ではない）。token/URL は既存の runner 環境変数を使う。
+# lolice の deployment env へ足すと image 更新と別の rollout が増えるため image 側で既定値を持つ。
+ENV CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=P1809F7CD0C75ACF3
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \

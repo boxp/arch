@@ -13,6 +13,7 @@ on:
       - docker/codex-workspace/recurring-events/**
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
+      - tests/harness-eval/**
       - docs/project_docs/BOXP-360/tools/**
       - .github/workflows/test-codex-task-board-runner.yml
   push:
@@ -28,6 +29,7 @@ on:
       - docker/codex-workspace/recurring-events/**
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
+      - tests/harness-eval/**
       - docs/project_docs/BOXP-360/tools/**
       - .github/workflows/test-codex-task-board-runner.yml
   workflow_dispatch: {}
@@ -81,6 +83,8 @@ jobs:
           time tests/codex-workspace/ai-ops-ledger-test.sh
           time bash tests/codex-workspace/ai-subscription-usage-test.sh
           time bb tests/ai-observability/test_slo_snapshot.bb
+          time bb tests/ai-observability/test_outcome.bb
+          time bb tests/harness-eval/test_harness_eval.bb
           time docs/project_docs/BOXP-360/tools/test.sh
           time tests/codex-workspace/localllm-source-check-test.sh
           time bb docker/codex-workspace/novel-board/novel_board_runner.bb test

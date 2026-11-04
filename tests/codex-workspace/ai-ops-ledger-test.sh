@@ -526,6 +526,17 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
     (let [s (ai-ops-ledger/v2-export-text root vault tmpfile deadline 10000)]
       (assert (str/includes? s "ai_ops_v2_export_ok 0"))
       (assert (not (str/includes? s "ai_ops_v2_info"))))))
+(let [s (slurp (str (ai-ops-ledger/sli-path root)))
+      tmpfile (java.io.File/createTempFile "outcome-test" ".prom") deadline (+ (System/currentTimeMillis) 30000)]
+  (assert (str/includes? s "ai_ops_outcome_export_ok 1"))
+  (assert (str/includes? s "ai_ops_outcome_info"))
+  (assert (str/includes? s "ai_ops_v2_info"))
+  (assert (str/includes? (ai-ops-ledger/outcome-export-text root vault tmpfile deadline 200) "ai_ops_outcome_export_ok 0"))
+  (with-redefs [ai-ops-ledger/outcome-script "/nonexistent"]
+    (let [out (ai-ops-ledger/outcome-export-text root vault tmpfile deadline 10000)]
+      (assert (str/includes? out "ai_ops_outcome_export_ok 0"))
+      (assert (not (str/includes? out "ai_ops_outcome_info")))))
+  (fs/delete-if-exists tmpfile))
 (def old (slurp (str (ai-ops-ledger/sli-path root))))
 ;; 容量上限付近: v1 の追記は実際に追記するバイト数で判定し、v0 の出力を上限超えにしない。
 ;; (旧実装は余白を 128 bytes 固定と見積もり、export_ok の HELP/TYPE/値だけでそれを超えて sli.prom 全体が
@@ -627,8 +638,8 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
       (assert (< (- (System/currentTimeMillis) start) 500) "async refresh must not block the caller"))
     (loop [i 0] (when (and @ai-ops-ledger/sli-refresh-running (< i 100)) (Thread/sleep 100) (recur (inc i))))
     (assert (not @ai-ops-ledger/sli-refresh-running))
-    ;; extract + prom (v0) + insight prom (v1)
-    (assert (= 4 @calls))))
+    ;; extract + prom (v0) + insight (v1) + slo (v2) + outcome
+    (assert (= 5 @calls))))
 (println "ai-ops-ledger-test: SLI export ledger merge and async refresh passed")'
 
 # A refresh in another process (resident loop vs manual tick) holds sli.lock
@@ -686,7 +697,8 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
                           :event_type "run.finished" :status "succeeded" :occurred_at "2026-10-31T00:00:09Z" :occurred_precision "second"
                           :run_id "20261031T000003Z-ee2d7526" :event_id (str conv "/20261031T000003Z-ee2d7526:finished")})])
 (spit src (str (str/join "\n" hermes-lines) "\n"))
-(def far-deadline (+ (System/currentTimeMillis) 60000))
+;; reserve (既定 45 秒) を引いても取り込み時間が残るよう、遅い CI runner でも尽きない十分先の期限にする
+(def far-deadline (+ (System/currentTimeMillis) 3600000))
 (defn snapshot-maps [] (map #(json/parse-string % true) (str/split-lines (slurp (str (ai-ops-ledger/hermes-mirror-path root))))))
 (def hermes-maps (map #(json/parse-string % true) hermes-lines))
 ;; 未設定: 何もしない (nil)、入力にも何も足さない
