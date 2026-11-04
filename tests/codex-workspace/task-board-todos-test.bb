@@ -129,7 +129,8 @@
     (spit (str (fs/path dir "todo-start.edn")) (pr-str {:rev "old"}))
     (let [first-output (:out (hook))]
       (is (str/includes? first-output "truncated"))
-      (is (< (count first-output) 2400)))
+      ;; The delta is capped at 1950 characters; the worker commands add a fixed block.
+      (is (< (count first-output) 3500)))
     (is (= "" (:out (hook))))
     (is (fs/exists? (fs/path dir "todo-delivery.edn")))))
 (deftest terminal-metadata-does-not-accumulate-mock-path

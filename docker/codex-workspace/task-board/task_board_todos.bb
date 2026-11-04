@@ -267,6 +267,16 @@
 (defn require-value
   [v label]
   (or (not-empty v) (throw (ex-info (str "missing " label) {}))))
+(def module-path *file*)
+(defn worker-commands
+  "A TODO can arrive after the prompt, on a ticket that was legacy at start, so the
+  delivered message has to be self-sufficient."
+  [ticket vault rev]
+  (let [cmd (str "bb " module-path " %s " ticket " %s--vault " vault)]
+    (str "Acknowledge: " (format cmd "ack" "") " --rev " rev " --run \"$CODEX_TASK_BOARD_RUN_ID\" --source worker\n"
+         "After doing an item: " (format cmd "done" "TD-NN ") " --evidence TEXT\n"
+         "Optional item you will not do: " (format cmd "skip" "TD-NN ") " --reason TEXT\n"
+         "Required items cannot be skipped: return blocked. A result from an older revision will not be applied.")))
 (defn hook
   [o]
   (try
@@ -278,7 +288,7 @@
           start (edn/read-string (slurp (str (fs/path dir "todo-start.edn"))))
           rev (:rev view)
           gate (gate-decision {:view view, :start-rev (:rev start), :result "blocked"})
-          msg (str (diff-text view) "\nRun status then ack --rev " rev ".")
+          msg (str (diff-text view) "\n" (worker-commands (:ticket o) (:vault o) rev))
           event (:event o)]
       (with-lock delivery
         (fn []
