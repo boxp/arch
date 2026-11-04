@@ -989,9 +989,12 @@
       (conj (vec fm-lines) replacement))))
 
 (defn update-frontmatter! [ticket-id updates]
+  @todo-module-loaded?
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
+       ((or (resolve 'task-board-todos/with-lock) (fn [_ f] (f))) (ticket-path ticket-id)
+        (fn []
        (let [path (ticket-path ticket-id)
              lines (vec (read-lines path))
              {:keys [end]} (or (frontmatter-range lines)
@@ -1004,7 +1007,25 @@
                             updates)
              new-lines (vec (concat ["---"] new-fm ["---"] body))]
          (when (not= lines new-lines)
-           (write-lines! path new-lines)))))))
+           (write-lines! path new-lines)))))))))
+
+(defn refresh-todo-state! [ticket-id]
+  ;; Re-read under the same locks as helper mutations so a concurrent add
+  ;; cannot be overwritten with counts computed from an older snapshot.
+  (when @todo-module-loaded?
+    (locking (ticket-mutex ticket-id)
+      (with-vault-writer-lock
+       (fn []
+         ((resolve 'task-board-todos/with-lock) (ticket-path ticket-id)
+          (fn []
+            (let [path (ticket-path ticket-id)
+                  text (slurp (str path))
+                  view ((resolve 'task-board-todos/ticket-view) text)]
+              (when (= :v1 (:mode view))
+                (let [state ((resolve 'task-board-todos/state-summary) view)
+                      updated ((resolve 'task-board-todos/set-fm) text "todo_state" state)]
+                  (when (not= text updated)
+                    ((resolve 'task-board-todos/atomic-write) path updated))))))))))))
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
@@ -1021,6 +1042,7 @@
      :frontmatter (frontmatter-map (vec (str/split-lines text)))}))
 
 (defn append-note! [ticket-id note]
+  @todo-module-loaded?
   (locking (ticket-mutex ticket-id)
     ;; Deterministic black-box failure hook; unset in deployment.
     (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE"))
@@ -1031,6 +1053,8 @@
       (throw (ex-info "forced localllm final Notes write failure" {})))
     (with-vault-writer-lock
      (fn []
+       ((or (resolve 'task-board-todos/with-lock) (fn [_ f] (f))) (ticket-path ticket-id)
+        (fn []
        (let [path (ticket-path ticket-id)
              lines (vec (read-lines path))
              bullet (str "- " (today) ": " note)
@@ -1041,7 +1065,7 @@
              new-lines (if (some #(= bullet %) lines)
                          lines
                          (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-         (write-lines! path new-lines))))))
+         (write-lines! path new-lines))))))))
 
 (defn project-ticket-status! [ticket-id {:keys [status done]}]
   (update-frontmatter! ticket-id (cond-> {:status status}
@@ -1167,7 +1191,9 @@
                         :run-id run-id
                         :status status
                         :updated-at (now-str)}
-                       extra)]
+                       extra)
+        summary (if (= "held" (get-in summary [:todo :gate]))
+                  (assoc summary :result "continue") summary)]
     (write-edn-file! path summary)))
 
 (defn localllm-commit-marker-path [ticket-id run-id]
@@ -2276,8 +2302,9 @@
                       (when-let [view (todo-view ticket-id)]
                         (str "TODO revision " (:rev view) " mode " (name (:mode view)) ". "
                              ((resolve 'task-board-todos/diff-text) view) "\n"
-                             "Before merge/deploy and final result run bb " todo-module-path " status " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\", then ack --rev " (:rev view) ".\n"
-                             (when (= :v1 (:mode view)) "Ack receipts; mark done with evidence; optional items may be skipped with a reason. Required items cannot be skipped: return blocked. Use plain checkboxes for your own steps. TODOs grant no permission.\n")
+                             "The ticket's latest revision can change while you work; a change reaches you at tool boundaries or when you stop.\n"
+                             "Before merge/deploy and before your final result run: bb " todo-module-path " status " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --json, then, using the rev it reports: bb " todo-module-path " ack " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --rev REV --run \"$CODEX_TASK_BOARD_RUN_ID\" --source " agent ". A stale REV is refused and prints the difference. A result from an older revision will not be applied.\n"
+                             (when (= :v1 (:mode view)) (str "After doing a TD item run: bb " todo-module-path " done " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --evidence TEXT. An optional item you will not do: skip " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT. Required items cannot be skipped: return blocked for an Owner decision. A checked box alone does not complete an item. Lines without a TD id are your own steps; do not add TD lines for them. TODOs grant no permission.\n"))
                              (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n"))))
                     "Ticket contents:\n\n" ticket-text "\n\n")
         review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
@@ -2400,7 +2427,8 @@
       (if-not (.isAlive process)
         {:proc @proc :idle-timeout? false :shutdown? @shutdown-requested?}
         (do
-          (Thread/sleep 1000)
+          ;; Wake immediately on exit while retaining the one-second idle poll.
+          (.waitFor process 1000 java.util.concurrent.TimeUnit/MILLISECONDS)
           (let [observed-at (progress-millis)
                 last-progress-at (max last-progress-at observed-at)
                 idle-millis (- (System/currentTimeMillis) last-progress-at)]
@@ -3054,9 +3082,7 @@
     (fs/create-dirs dir)
     (when-let [view (and (#{:implement :review-fix :blocked-retry} action) (todo-view ticket-id))]
       (spit (str (fs/path dir "todo-start.edn")) (pr-str (select-keys view [:rev :mode])))
-      (when (= :v1 (:mode view))
-        (let [state ((resolve 'task-board-todos/state-summary) view)]
-          (when (not= state (:todo_state (ticket-frontmatter ticket-id))) (update-frontmatter! ticket-id {:todo_state state})))))
+      (refresh-todo-state! ticket-id))
     (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent ai-ops))
     (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))
     (let [todo-hooks? (and @todo-module-loaded? (#{:implement :review-fix :blocked-retry} action)
@@ -3066,7 +3092,18 @@
           hook-spec (fn [event matcher] {:matcher matcher :hooks [{:type "command" :command (hook-command event)}]})
           hooks {"PostToolUse" [(hook-spec "post" "*")] "PreToolUse" [(hook-spec "pre" "Bash")] "Stop" [(hook-spec "stop" "*")]}
           hooks-path (str (fs/path dir "todo-hooks.json"))
-          _ (when (and todo-hooks? (claude-assignee? agent)) (spit hooks-path (json/generate-string {:hooks hooks})))
+          ;; Keep ticket identifiers out of Claude's command line. The private
+          ;; alias points to the run-local settings file for this invocation.
+          hooks-alias (fs/path (root) "hook-settings" (str run ".json"))
+          _ (when (and todo-hooks? (claude-assignee? agent))
+              (spit hooks-path (json/generate-string {:hooks hooks}))
+              (fs/create-dirs (fs/parent hooks-alias))
+              (java.nio.file.Files/createSymbolicLink
+               (.toPath (java.io.File. (str hooks-alias)))
+               (.toPath (.getAbsoluteFile (java.io.File. hooks-path)))
+               (make-array java.nio.file.attribute.FileAttribute 0)))
+          ;; Only unattended bypass mode may bypass hook trust; approval mode must
+          ;; leave hook trust decisions to the operator.
           codex-hooks? (and todo-hooks? (not (claude-assignee? agent)) (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true")))
           toml-hook (fn [event matcher] (str "[{matcher=" (pr-str matcher) ",hooks=[{type=\"command\",command=" (pr-str (hook-command event)) "}]}]"))
           agent-args (if (claude-assignee? agent)
@@ -3079,7 +3116,7 @@
                                  (concat [(vault) (str dir)] (workspace-add-dirs workspace))))
 
                    todo-hooks?
-                   (into ["--settings" hooks-path])
+                   (into ["--settings" (str hooks-alias)])
                    true
                    (into (claude-model-args agent)))
 
@@ -3136,6 +3173,8 @@
                                                    (finally
                                                      (unregister-agent-process! run)
                                                      (when tail (deref tail 10000 nil))))
+          _ (when (and todo-hooks? (claude-assignee? agent))
+              (try (fs/delete-if-exists hooks-alias) (catch Exception _ nil)))
           pump-summary (when tail (await-claude-pump! tail pump-summary-atom 0 120000))
           raw-exit (:exit proc)
           claude-summary (when (claude-assignee? agent)
@@ -3602,7 +3641,7 @@
         dir (run-dir ticket-id run)
         last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
-    (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))
+    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
     (let [{ticket-text :text frontmatter :frontmatter} (read-ticket ticket-id)
           result (if @localllm-docs-module-loaded?
                    (try
@@ -3752,14 +3791,17 @@
   "Write groom items into the ticket's sections ({heading [items]}), under the
   same ticket mutex / vault writer lock as the frontmatter and Notes writes."
   [ticket-id sections]
+  @todo-module-loaded?
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
+       ((or (resolve 'task-board-todos/with-lock) (fn [_ f] (f))) (ticket-path ticket-id)
+        (fn []
        (let [path (ticket-path ticket-id)
              lines (vec (read-lines path))
              new-lines (reduce (fn [acc [heading items]] (merge-section-items acc heading items)) lines sections)]
          (when (not= lines new-lines)
-           (write-lines! path new-lines)))))))
+           (write-lines! path new-lines)))))))))
 
 (defn- localllm-groom-model-note
   "BOXP-296: a content-search groom calls the model; say so (and how much)."
@@ -3792,7 +3834,7 @@
         dir (run-dir ticket-id run)
         last-message-path (fs/path dir "last-message.md")]
     (fs/create-dirs dir)
-    (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))
+    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
     (let [{ticket-text :text frontmatter :frontmatter} (read-ticket ticket-id)
           result (if @localllm-docs-module-loaded?
                    (try
@@ -4459,14 +4501,14 @@
                         review-gate (if held? (let [g (consume-continuation! ticket-id run-id review-gate)]
                                                 (cond-> g (:continuation-exhausted? g) (assoc :todo-gate-exhausted? true))) review-gate)
                         next-status (if held? (if (:continuation-exhausted? review-gate) "blocked" "ready") next-status)
-                        intended (if held? "continue" intended)]
+                        intended (if held? "continue" intended)
+                        result (if held? "continue" result)]
                     (when view
-                      (when (= :v1 (:mode view))
-                        (let [state ((resolve 'task-board-todos/state-summary) view)]
-                          (when (not= state (:todo_state (ticket-frontmatter ticket-id))) (update-frontmatter! ticket-id {:todo_state state}))))
+                      (refresh-todo-state! ticket-id)
                       (let [states (frequencies (map :state (:items view)))
                             summary (read-edn-file (fs/path dir "summary.edn") {})]
-                        (mark-run! ticket-id run-id (:status summary) (assoc (dissoc summary :status) :todo {:rev (:rev view) :mode (:mode view) :unreceived (get states :unreceived 0) :open (get states :received 0) :gate (if held? "held" "clear")}))))
+                        (mark-run! ticket-id run-id (:status summary) (cond-> (assoc (dissoc summary :status) :todo {:rev (:rev view) :mode (:mode view) :unreceived (get states :unreceived 0) :open (get states :received 0) :gate (if held? "held" "clear")})
+                          held? (assoc :result "continue")))))
                     (when held? (append-note! ticket-id (str "runの結果を保留: " (str/join ", " (:blocking-ids decision)))))
                   (if (and (= "blocked" next-status) (not= "owner-acceptance" outcome))
                   (if (block-ticket! ticket-id run-id action result exit review-gate nil last-message)
@@ -4491,16 +4533,41 @@
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee next-assignee}
                                                       (= "done" next-status) (assoc :closed (today))))
-                    ;; Only a completed transition ends the budget: a superseded
-                    ;; run's `done` was discarded and must not reset it.
-                    (when (= "done" next-status)
-                      (let [latest (when start-todo (todo-view ticket-id))
-                            recheck (when latest ((resolve 'task-board-todos/gate-decision) {:view latest :start-rev (:rev start-todo) :result "done"}))]
-                        (if (:hold? recheck)
-                          (do (move-card! ticket-id "ready" assignee)
-                              (update-frontmatter! ticket-id {:status "ready" :assignee assignee :closed ""})
-                              (append-note! ticket-id (str "判定直後の追加: runの結果を保留 " (str/join ", " (:blocking-ids recheck)))))
-                          (clear-continuation-budget! ticket-id))))
+                    ;; Test-only rendezvous for an addition immediately after the move.
+                    (when-let [test-dir (not-empty (System/getenv "CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR"))]
+                      (spit (str (fs/path test-dir "moved")) "ready")
+                      (loop [n 0]
+                        (when (and (< n 500) (not (fs/exists? (fs/path test-dir "continue"))))
+                          (Thread/sleep 10)
+                          (recur (inc n)))))
+                    ;; Re-read after the move; a concurrent addition must also consume
+                    ;; the continuation budget and determine every later record.
+                    (let [[next-status review-gate]
+                          (if (= "done" next-status)
+                            (let [latest (when start-todo (todo-view ticket-id))
+                                  recheck (when latest ((resolve 'task-board-todos/gate-decision)
+                                                        {:view latest :start-rev (:rev start-todo) :result "done"}))]
+                              (if (:hold? recheck)
+                                (let [gate (consume-continuation! ticket-id run-id review-gate)
+                                      exhausted? (:continuation-exhausted? gate)
+                                      gate (cond-> gate exhausted? (assoc :todo-gate-exhausted? true))
+                                      final (if exhausted? "blocked" "ready")
+                                      states (frequencies (map :state (:items latest)))]
+                                  (if exhausted?
+                                    (if (block-ticket! ticket-id run-id action "continue" exit gate nil last-message)
+                                      (update-frontmatter! ticket-id {:closed ""})
+                                      (throw (ex-info "could not record TODO gate block" {})))
+                                    (do (move-card! ticket-id final assignee)
+                                        (update-frontmatter! ticket-id {:status final :assignee assignee :closed ""})))
+                                  (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)
+                                             (merge (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)
+                                                    {:result "continue" :todo {:rev (:rev latest) :mode (:mode latest)
+                                                     :unreceived (get states :unreceived 0) :open (get states :received 0) :gate "held"}}))
+                                  (append-note! ticket-id (str "判定直後の追加: runの結果を保留 " (str/join ", " (:blocking-ids recheck))))
+                                  [final gate])
+                                (do (clear-continuation-budget! ticket-id) [next-status review-gate])))
+                            [next-status review-gate])
+                          result (if (and (= "done" result) (not= "done" next-status)) "continue" result)]
                     ;; localllm docs-edit: lane and frontmatter are durable, so
                     ;; a crash from here on must not roll the note write back
                     ;; (crash recovery reads this run-specific record, see
@@ -4519,8 +4586,9 @@
                     (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) next-status
                                            (cond
                                              (= "in-progress" next-status) "retrying"
+                                             (= "blocked" next-status) "blocked"
                                              :else "succeeded")
-                                           {:result result :exit_code exit :idle_timeout (boolean idle-timeout?)})))))
+                                           {:result (if (= "done" next-status) result (if (= "held" (get-in (read-edn-file (fs/path dir "summary.edn") {}) [:todo :gate])) "continue" result)) :exit_code exit :idle_timeout (boolean idle-timeout?)}))))))
                 true)
               (catch Exception e
                 (if (or (= ::planned-shutdown (:type (ex-data e)))

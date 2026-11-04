@@ -13,3 +13,10 @@ Plan の `TD-NN【必須|任意|取消】` 行を要件の正本とし、実行�
 
 ## 安全境界
 新権限・課金なし。強制 kill なし。一括移行なし。Novel Board、localllm、PR gate、lane は不変。image の配備は codex-workspace/Hermes の再起動を伴うため、merge 前に対象・回数・影響・復帰を Owner に確認する。
+
+## 完了作業での補足
+- runner のチケット書き込みにも helper と共通の per-ticket lock を追加し、`todo_state` は同じロック内で再読して更新する。`board_rev` は変更しない。
+- Done 直後の再照合も継続予算を消費し、保留時の最終ステータスと run summary を後続の記録へ伝播する。
+- hook の trust bypass は既存の無人承認バイパス時のみ使用する。hook 無効化時も終了 gate は維持する。
+- Claude の `--settings` にはチケット ID をコマンド引数へ出さない一時リンクを使用し、その参照先を run-dir の `todo-hooks.json` とする。
+- 短時間で終了する agent を 1 秒の polling 待ちで遅延させないよう、プロセス終了で即時復帰する待機に変更する。idle の監視間隔は 1 秒のままとする。
