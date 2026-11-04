@@ -20,6 +20,7 @@
 ;; 受入は課題同梱の accept.sh (エージェントの出力を見ない) と allowed-files の差分検査で独立に判定する。
 ;; 既に budget.edn か試行記録がある DIR への plan は拒否する (古い試行を別の計画の結果として集計しないため)。
 ;; 再開は同じ DIR への run で行い、新しい計画には新しい DIR を使う。
+;; STOP で aborted と記録した試行は未実行なので、STOP を外した次の run で実行する。
 ;; DIR に残すのは metadata (trials/*.edn) だけで、prompt 本文・エージェント出力・stderr は残さない。
 (ns harness-eval)
 (require '[babashka.fs :as fs]
@@ -39,7 +40,6 @@
 
 (def self-path (str (fs/absolutize *file*)))
 (def self-dir (str (fs/parent self-path)))
-(def repo-root (str (fs/parent (fs/parent (fs/parent self-dir)))))
 ;; 固定課題は image に同梱する (Dockerfile の COPY task-board/ で /opt/codex-workspace/task-board/ へ入る)。
 (def default-tasks-dir (str (fs/path self-dir "harness-eval-tasks")))
 (def runner-path (str (fs/path self-dir "task_board_runner.bb")))
@@ -95,10 +95,15 @@
       (conj (str "1 試行の timeout " trial-timeout-seconds " 秒は 1.." (:trial-timeout-seconds limits) " の外"))
       (> total (:max-trials limits)) (conj (str "合計試行 " total " > " (:max-trials limits))))))
 
-(defn git-short-sha [dir]
-  (let [r (try @(p/process ["git" "rev-parse" "--short" "HEAD"] {:dir dir :out :string :err :string})
-               (catch Exception _ nil))]
-    (if (and r (zero? (:exit r))) (str/trim (:out r)) "unknown")))
+(defn harness-content-version
+  "ハーネス版の既定値。image には .git が入らないので、self-dir 直下のファイル (runner と評価本体) の
+  名前と内容の sha256 で識別する。checkout と image で内容が同じなら同じ値になる。"
+  []
+  (let [md (java.security.MessageDigest/getInstance "SHA-256")]
+    (doseq [f (sort-by (comp str fs/file-name) (filter fs/regular-file? (fs/list-dir self-dir)))]
+      (.update md (.getBytes (str (fs/file-name f) "\u0000") "UTF-8"))
+      (.update md (fs/read-all-bytes f)))
+    (str "tb-" (subs (apply str (map #(format "%02x" %) (.digest md))) 0 12))))
 
 (defn existing-plan-records
   "DIR に残っている計画・試行の記録。plan はこれを上書きも流用もしない。"
@@ -126,7 +131,7 @@
               :arms (vec (str/split (arg args "--arms" (str/join "," default-arms)) #","))
               :trial-timeout-seconds (parse-long* (arg args "--trial-timeout-seconds" nil) 600)
               :model-rev (arg args "--model-rev" "unknown")
-              :harness-version (or (arg args "--harness-version" nil) (git-short-sha repo-root))
+              :harness-version (or (arg args "--harness-version" nil) (harness-content-version))
               :limits limits}
         violations (budget-violations plan)]
     (if (seq violations)
@@ -347,6 +352,12 @@
 
 (defn trial-path [out task-id arm rep] (fs/path out "trials" (str task-id "-" arm "-" rep ".edn")))
 
+(defn trial-done?
+  "実行済みの試行記録があるか。aborted は未実行の印なので、再開時に実行する。"
+  [path]
+  (and (fs/exists? path)
+       (not= "aborted" (:outcome (edn/read-string (slurp (str path)))))))
+
 (defn run! [args]
   (let [out (or (arg args "--out" nil) (throw (ex-info "--out が必要" {})))
         budget (read-budget out)
@@ -363,7 +374,7 @@
     (doseq [[task arm rep] plan]
       (let [path (trial-path out (:id task) arm rep)]
         (cond
-          (fs/exists? path) nil
+          (trial-done? path) nil
           (or @aborted (fs/exists? stop-file))
           (do (reset! aborted true)
               (spit (str path) (pr-str {:task (:id task) :arm arm :rep rep :outcome "aborted" :model-rev (:model-rev budget)

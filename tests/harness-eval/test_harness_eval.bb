@@ -234,6 +234,37 @@
       (is (= 3 (:aborted (arm cmp "A"))))
       (is (not (re-find #"outcome=\"aborted\"" (prom! out)))))))
 
+(deftest stop-file-removal-resumes-aborted-trials
+  (let [out (tmp) stop (fs/path out "STOP")]
+    (is (zero? (:exit (plan! out :only "T01" :arms "A" :reps 3))))
+    (spit (str stop) "")
+    (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})
+    (is (every? #(= "aborted" (:outcome %)) (trials out)))
+    (fs/delete stop)
+    (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})
+    (is (= ["pass" "pass" "pass"] (map :outcome (trials out))) "STOP を外すと aborted を実行する")
+    (let [a (arm (compare! out) "A")]
+      (is (= 3 (:trials a)))
+      (is (= 0 (:aborted a))))))
+
+(deftest default-harness-version-identifies-content-without-git
+  (let [image (tmp)
+        tb (fs/path image "opt/task-board")
+        plan-version (fn []
+                       (let [out (tmp)
+                             r @(p/process ["bb" (str (fs/path tb "harness_eval.bb")) "plan" "--out" out
+                                            "--tasks-dir" tasks-dir "--only" "T01"]
+                                           {:out :string :err :string})]
+                         (is (zero? (:exit r)) (:err r))
+                         (:harness-version (edn/read-string (slurp (str (fs/path out "budget.edn")))))))]
+    (fs/create-dirs tb)
+    (doseq [n ["harness_eval.bb" "task_board_runner.bb"]] (fs/copy (fs/path task-board-dir n) (fs/path tb n)))
+    (let [v1 (plan-version)]
+      (is (re-matches #"tb-[0-9a-f]{12}" v1) "Git repository の外でも unknown にならない")
+      (is (= v1 (plan-version)) "内容が同じなら同じ版")
+      (spit (str (fs/path tb "task_board_runner.bb")) "\n;; changed\n" :append true)
+      (is (not= v1 (plan-version)) "runner が変われば別の版"))))
+
 (deftest run-is-resumable-and-skips-recorded-trials
   (let [out (tmp)]
     (is (zero? (:exit (plan! out :reps 1 :only "T01,T02" :arms "A"))))
