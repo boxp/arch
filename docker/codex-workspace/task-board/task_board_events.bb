@@ -11,7 +11,7 @@
 ;;
 ;; Lifecycle of one event file:
 ;;   pending  (:status :pending)   -> POST accepted by Hermes (2xx)
-;;   pending  (:status :accepted)  -> handled marker found in ticket Notes
+;;   pending  (:status :accepted)  -> handled marker and, for a sent report, the gate receipt
 ;;   pending  (:status :notify-pending) -> morning digest -> done/
 ;;   done/                          (processing and delivery completed)
 ;;   unhandled/                     (accepted, redelivered, never marked handled)
@@ -316,13 +316,6 @@
 
 (defn quiet-now? [] (quiet-at? (now)))
 
-;; A notified marker is appended just before the final send, and the Hermes gate
-;; may hold that send once quiet hours begin: keep such an event until the gate
-;; had time to report. Daytime completion is not delayed.
-(def quiet-send-grace-seconds 600)
-(defn quiet-or-starting? []
-  (or (quiet-now?) (quiet-at? (.plusSeconds (now) quiet-send-grace-seconds))))
-
 (def night-config-warning (atom nil))
 (defn night-config []
   (let [path (str (fs/path (outbox-dir) "night-processing.edn"))
@@ -500,12 +493,11 @@
        (catch Exception _ nil)))
 
 (defn receipt-state
-  "A quiet-held receipt only speaks for the current delivery: a redelivery
-  accepted after the hold can really send, so the older receipt must not put it
-  back into the digest."
+  "A receipt only speaks for the current delivery: one older than the current
+  acceptance says nothing about what this delivery did."
   [event]
   (try (let [r (json/parse-string (slurp (str (fs/path (vault) "Projects/task-board-events/delivery-receipts" (str (:event-id event) ".json")))) true)
-             stale? (and (= "quiet-held" (:state r))
+             stale? (and (:updated_at r)
                          (.isBefore (.toInstant (OffsetDateTime/parse (:updated_at r)))
                                     (Instant/parse (:accepted-at event))))]
          (when (and (= (:event r) (:event-id event)) (not stale?)) (:state r)))
@@ -541,20 +533,25 @@
                   (and marker (not digest) (= marker :deferred))
                   (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
                       (update acc :waiting inc))
-                  (and (not digest) (#{:notified :question} marker) (not timeout?) (quiet-or-starting?))
-                  (update acc :waiting inc)
-                  (and marker (or (not digest)
+                  ;; A notified/question marker is written before the send, which may
+                  ;; come late and be held: only the gate's receipt proves the outcome.
+                  (and marker (or (and (not digest) (not (#{:notified :question} marker)))
                                   (and (#{:notified :question :silent} marker) (= receipt "sent"))
                                   ;; Only the gate's proof of an intentional [SILENT] ends a digest without a send.
-                                  (and (= marker :silent) (= receipt "silent"))))
+                                  (and digest (= marker :silent) (= receipt "silent"))))
                   (do (when digest (finish-items! event (done-dir) :handled))
                       (move-event! (assoc event :status :handled :handled-at (now-str)) (done-dir))
                       (update acc :handled inc))
-                  (and digest marker (or (= receipt "uncertain") timeout?))
-                  (do (finish-items! event (unhandled-dir) :notify-undelivered)
+                  (and marker (or (= receipt "uncertain") (and digest timeout?)))
+                  (do (when digest (finish-items! event (unhandled-dir) :notify-undelivered))
                       (move-event! (assoc event :status :notify-undelivered :unhandled-at (now-str)) (unhandled-dir))
-                      (log! (str "digest delivery unconfirmed " (:event-id event)))
+                      (log! (str "delivery unconfirmed " (:event-id event)))
                       (update acc :unhandled inc))
+                  ;; No gate evidence by the timeout: the morning digest still reports it.
+                  (and marker timeout?)
+                  (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
+                      (log! (str "no delivery receipt, returning to digest " (:event-id event)))
+                      (update acc :waiting inc))
                   (not timeout?) (update acc :waiting inc)
                   (and (not marker) (< (:redeliveries event 0) (max-redeliveries)))
                   (do (write-event! (pending-dir) (-> event (dissoc ::path :accepted-at)

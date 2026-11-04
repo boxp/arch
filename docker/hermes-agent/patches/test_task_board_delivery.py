@@ -83,6 +83,19 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((await self.send("report")).success)
             self.assertEqual(self.calls, ["report"])
 
+    async def test_quiet_hold_fails_when_receipt_cannot_be_written(self):
+        self.note("notified")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc)), \
+                patch.object(delivery.os, "replace", side_effect=OSError("read-only")):
+            self.assertFalse((await self.send("report")).success)
+        self.assertFalse(self.calls)
+
+    async def test_daytime_send_writes_vault_receipt_for_every_event(self):
+        self.note("notified")
+        self.assertTrue((await self.send("report")).success)
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+        self.assertEqual(json.loads(path.read_text())["state"], "sent")
+
     async def test_deferred_and_continued_are_proven_silence(self):
         for result in ("deferred", "continued"):
             (self.vault / "BOXP-999.md").unlink(missing_ok=True)

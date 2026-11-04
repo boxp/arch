@@ -17,7 +17,7 @@
 
 | marker の result | 意味 | dispatcher |
 |---|---|---|
-| notified / question | 通常時間に通知 | done（既存） |
+| notified / question | 通常時間に通知 | 配信 receipt `sent` で done。`uncertain` は unhandled、timeout まで receipt なしは notify-pending |
 | silent | 処理済み・通知不要 | done |
 | continued | 既承認の継続を helper で実施し readback 済み | done |
 | deferred | 処理済み・朝に本人判断/重要成果を回収 | notify-pending |
@@ -52,8 +52,10 @@ merge すると image updater の自動 rollout が起きるため、merge 前�
 
 ## 実装時に確定した点
 
-- `quiet-held` は `updated_at` が現在の `accepted-at` 以降のときだけ有効。昼の再配信で実送信された event を digest へ戻さない。
-- notified / question の marker は送信より先に書かれるため、静音開始の 600 秒前からは timeout まで完了を保留し、02:00 境界の保留通知を落とさない。
+- receipt は `updated_at` が現在の `accepted-at` 以降のときだけ有効。古い receipt は今回の配信の証拠にしない。
+- notified / question の marker は送信より先に書かれ、送信が遅れて静音に入ることがある。そのため marker だけでは完了せず、gate が全 event に書く receipt で判定する。timeout まで receipt がなければ done にせず digest で回収する（二重通知はありうるが欠落はしない）。
+- 静音保留は receipt が唯一の証拠なので、書き込みに失敗したら gate は送信成功を返さない。
+- gate の receipt を前提にするため、配備順は Hermes を先にする。Hermes が古いままだと notified の event は timeout 後に digest へ回り、二重通知になる。
 - digest の完了は `sent` か、gate が意図的な [SILENT] を確認して書く receipt `silent`（marker も silent の場合）に限る。silent marker だけでは未配信のまま完了しない。
 - 静音時間の正本は dispatcher の `CODEX_TASK_BOARD_EVENT_QUIET_HOURS` / `CODEX_TASK_BOARD_EVENT_TIMEZONE`。別コンテナの Hermes gate が同じ値を使えるよう、dispatcher が tick ごとに vault の `Projects/task-board-events/quiet-policy.json` へ公開する（変更時のみ書込み）。初回公開前は gate も同じ env 名と既定値を使う。解釈不能な時間指定は dispatcher と同じく静音なし、不正な timezone は gate が保留する。
 - 関連 PR の boxp/lolice 側は route prompt と annotation の更新で、merge すると Hermes が 1 回 rollout する。

@@ -155,8 +155,10 @@ def vault_receipt(vault, event, state, classification):
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
+        return True
     except Exception:
         logger.warning("task-board vault receipt unavailable event=%s", event)
+        return False
 
 
 def digest_silence_receipt(vault, event, proof):
@@ -195,8 +197,10 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
         content += "\n\n" + notice(event, "missing_or_conflicting_receipt")
     classification = "unresolved" if NOTICE in content else proof
     if quiet_now(vault):
-        vault_receipt(vault, event, "quiet-held", classification)
-        return SendResult(success=True)
+        # The receipt is the only evidence of the hold: without it this is not a success.
+        if vault_receipt(vault, event, "quiet-held", classification):
+            return SendResult(success=True)
+        return SendResult(success=False, error=f"Quiet hold unrecorded; reconcile event={event}")
     try:
         # Resolve the authorized destination before creating any delivery intent.
         delivery = retained_destination(adapter, chat_id)
@@ -220,12 +224,10 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
             if path.exists():
                 previous = json.loads(path.read_text())
                 if previous.get("state") == "sent" and previous.get("event") == event:
-                    if "-digest-" in event:
-                        vault_receipt(vault, event, "sent", previous.get("classification"))
+                    vault_receipt(vault, event, "sent", previous.get("classification"))
                     logger.info("task-board duplicate event=%s classification=%s", event, previous.get("classification"))
                     return SendResult(success=True)
-                if "-digest-" in event:
-                    vault_receipt(vault, event, "uncertain", previous.get("classification"))
+                vault_receipt(vault, event, "uncertain", previous.get("classification"))
                 return SendResult(success=False, error=f"Delivery uncertain; reconcile event={event}")
 
             def save(state):
@@ -249,13 +251,11 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 sent = await adapter._deliver_to(delivery, chat_id, content)
             except Exception:
                 save("uncertain")
-                if "-digest-" in event:
-                    vault_receipt(vault, event, "uncertain", classification)
+                vault_receipt(vault, event, "uncertain", classification)
                 logger.warning("task-board delivery event=%s classification=%s state=uncertain", event, classification)
                 return SendResult(success=False, error=f"Delivery uncertain; reconcile event={event}")
             save("sent" if sent.success else "uncertain")
-            if "-digest-" in event:
-                vault_receipt(vault, event, "sent" if sent.success else "uncertain", classification)
+            vault_receipt(vault, event, "sent" if sent.success else "uncertain", classification)
             logger.info("task-board delivery event=%s classification=%s state=%s", event, classification,
                         "sent" if sent.success else "uncertain")
             return sent

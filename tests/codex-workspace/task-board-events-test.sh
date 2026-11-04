@@ -386,6 +386,10 @@ test_handled_marker_completes_event() {
   echo "- 2026-10-22: [kohako-event] handled event=BOXP-901-r1-blocked ticket=BOXP-901 result=notified" >>"${CASE_VAULT}/Tickets/BOXP-901.md"
   run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
+  [[ -f "${CASE_STATE}/outbox/pending/BOXP-901-r1-blocked.edn" ]] || fail "a notified marker alone must not finish the event"
+  write_receipt "${CASE_VAULT}" BOXP-901-r1-blocked sent "2099-01-01T00:00:00+00:00"
+  run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="${CASE_URL}" CODEX_TASK_BOARD_EVENT_WEBHOOK_SECRET="${SECRET}" >/dev/null
   [[ -f "${CASE_STATE}/outbox/done/BOXP-901-r1-blocked.edn" ]] || fail "handled event must move to done/"
   assert_file_contains "${CASE_STATE}/outbox/done/BOXP-901-r1-blocked.edn" ':status :handled'
   [[ "$(count_files "${CASE_STATE}/outbox/pending")" -eq 0 ]] || fail "pending must be empty"
@@ -690,27 +694,39 @@ test_quiet_held_receipt_returns_to_digest_unless_stale() {
   assert_file_contains "${CASE_STATE}/outbox/pending/held.edn" ':status :notify-pending'
 
   new_case
-  # The redelivery was accepted after the hold, so it really sent.
+  # The redelivery was accepted after the hold, so that hold says nothing about it.
   seed_event "${CASE_STATE}" held BOXP-901 :accepted "${accepted}" ":accepted-at \"2026-11-05T00:05:00Z\""
   note_marker "${CASE_VAULT}" BOXP-901 held notified
   write_receipt "${CASE_VAULT}" held quiet-held "2026-11-04T18:01:00+00:00"
-  day_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
-  [[ -f "${CASE_STATE}/outbox/done/held.edn" ]] || fail "stale quiet-held must not reopen a delivered event"
+  day_tick CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-05T00:06:00Z"
+  assert_file_contains "${CASE_STATE}/outbox/pending/held.edn" ':status :accepted'
+  write_receipt "${CASE_VAULT}" held sent "2026-11-05T00:05:30+00:00"
+  day_tick CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-05T00:06:00Z" CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  [[ -f "${CASE_STATE}/outbox/done/held.edn" ]] || fail "a fresh sent receipt must finish the redelivery"
 }
 
-test_notified_marker_waits_for_gate_near_quiet_start() {
+test_notified_marker_needs_gate_evidence() {
   new_case
-  # 01:55 JST on 2026-11-05: 02:00 is inside the grace window.
-  local at="2026-11-04T16:55:00Z"
-  seed_event "${CASE_STATE}" edge BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
-  note_marker "${CASE_VAULT}" BOXP-901 edge notified
+  local at="2026-11-04T16:30:00Z"
+  # The send is still running well after the marker, and the quiet window opens meanwhile.
+  seed_event "${CASE_STATE}" late BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
+  note_marker "${CASE_VAULT}" BOXP-901 late notified
   CODEX_TASK_BOARD_EVENT_QUIET_HOURS="2-9" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
-    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T16:55:30Z" >/dev/null
-  [[ -f "${CASE_STATE}/outbox/pending/edge.edn" ]] || fail "marker before the quiet boundary must wait for the gate"
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T16:40:00Z" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/pending/late.edn" ':status :accepted'
+  # Past the timeout without a receipt: never done, the digest still reports it.
   CODEX_TASK_BOARD_EVENT_QUIET_HOURS="2-9" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
-    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T16:56:00Z" CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0 \
-    CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000 >/dev/null
-  [[ -f "${CASE_STATE}/outbox/done/edge.edn" ]] || fail "no hold reported before the timeout: the send happened"
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T17:01:00Z" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/pending/late.edn" ':status :notify-pending'
+  [[ ! -f "${CASE_STATE}/outbox/done/late.edn" ]] || fail "a marker without evidence must not finish"
+
+  new_case
+  seed_event "${CASE_STATE}" unsure BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
+  note_marker "${CASE_VAULT}" BOXP-901 unsure question
+  write_receipt "${CASE_VAULT}" unsure uncertain "2026-11-04T16:31:00+00:00"
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="2-9" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T16:40:00Z" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/unsure.edn" ':status :notify-undelivered'
 }
 
 test_signed_delivery_is_accepted
@@ -740,6 +756,6 @@ test_digest_silent_needs_gate_proof
 test_quiet_policy_is_published_for_the_gate
 test_digest_uncertain_receipt_is_never_resent
 test_quiet_held_receipt_returns_to_digest_unless_stale
-test_notified_marker_waits_for_gate_near_quiet_start
+test_notified_marker_needs_gate_evidence
 
 echo "task-board-events tests passed"
