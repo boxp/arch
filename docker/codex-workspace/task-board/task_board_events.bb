@@ -438,7 +438,13 @@
                   (do (when (and quiet? (due? event)) (log! "pending event deferred by quiet hours"))
                       (update acc :deferred inc))
                   (let [mode (if quiet? "defer" "normal")
-                        event (assoc event :notify-mode mode)
+                        ;; The start of this delivery, kept across retries and saved before the
+                        ;; POST: Hermes can finish and write its receipt before we see the response,
+                        ;; and a lost response or a crash here ends in a retry of the same delivery.
+                        first-attempt? (not (:delivery-started-at event))
+                        event (assoc event :notify-mode mode
+                                     :delivery-started-at (or (:delivery-started-at event) (now-str)))
+                        _ (when first-attempt? (write-event! (pending-dir) (dissoc event ::path)))
                         {:keys [ok? status hermes-status error]} (send-event! event)
                         attempts (inc (:attempts event 0))]
                     (if ok?
@@ -493,13 +499,14 @@
        (catch Exception _ nil)))
 
 (defn receipt-state
-  "A receipt only speaks for the current delivery: one older than the current
-  acceptance says nothing about what this delivery did."
+  "A receipt only speaks for the current delivery: one older than the start of
+  that delivery says nothing about what it did. Events accepted before
+  :delivery-started-at existed fall back to :accepted-at."
   [event]
   (try (let [r (json/parse-string (slurp (str (fs/path (vault) "Projects/task-board-events/delivery-receipts" (str (:event-id event) ".json")))) true)
              stale? (and (:updated_at r)
                          (.isBefore (.toInstant (OffsetDateTime/parse (:updated_at r)))
-                                    (Instant/parse (:accepted-at event))))]
+                                    (Instant/parse (or (:delivery-started-at event) (:accepted-at event)))))]
          (when (and (= (:event r) (:event-id event)) (not stale?)) (:state r)))
        (catch Exception _ nil)))
 (defn digest? [e] (= "task-board.morning-digest" (:event-type e)))
@@ -522,7 +529,7 @@
                     [(pending-dir) (done-dir) (failed-dir) (unhandled-dir)])
       (write-event! (pending-dir)
                     (-> digest
-                        (dissoc ::path :accepted-at :processed-at :last-http-status :hermes-status)
+                        (dissoc ::path :delivery-started-at :accepted-at :processed-at :last-http-status :hermes-status)
                         (assoc :event-id id :status :pending :attempts 0 :redeliveries 0
                                :created-at (now-str) :reissue-of old-id))))
     (doseq [path (event-files (pending-dir))
@@ -580,7 +587,7 @@
                       (update acc :waiting inc))
                   (not timeout?) (update acc :waiting inc)
                   (and (not marker) (< (:redeliveries event 0) (max-redeliveries)))
-                  (do (write-event! (pending-dir) (-> event (dissoc ::path :accepted-at)
+                  (do (write-event! (pending-dir) (-> event (dissoc ::path :delivery-started-at :accepted-at)
                                                      (assoc :status :pending :redeliveries (inc (:redeliveries event 0)))))
                       (update acc :redelivered inc))
                   :else

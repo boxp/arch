@@ -74,6 +74,13 @@ write_fake_receiver() {
       :else
       (let [dup? (contains? @seen id)]
         (swap! seen conj id)
+        ;; Hermes finishing before the dispatcher sees the response.
+        (when (and (not dup?) (= mode "receipt-first"))
+          (let [dir (str (System/getenv "FAKE_RECEIPT_DIR"))]
+            (fs/create-dirs dir)
+            (spit (str (fs/path dir (str id ".json")))
+                  (json/generate-string {:event id :state "sent" :updated_at (str (java.time.Instant/now))})))
+          (Thread/sleep 50))
         (record! {:id id :outcome (if dup? "duplicate" "accepted") :payload (json/parse-string body)})
         (if dup?
           {:status 200 :headers {"content-type" "application/json"} :body (json/generate-string {:status "duplicate" :delivery_id id})}
@@ -775,6 +782,52 @@ test_notified_marker_needs_gate_evidence() {
   assert_file_contains "${CASE_STATE}/outbox/unhandled/unsure.edn" ':status :notify-undelivered'
 }
 
+test_receipt_written_before_the_response_counts() {
+  new_case
+  printf 'receipt-first' >"${CASE_TMP}/mode"
+  FAKE_RECEIPT_DIR="${CASE_VAULT}/Projects/task-board-events/delivery-receipts" start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  seed_event "${CASE_STATE}" fast BOXP-901 :pending "2026-11-04T18:00:00Z"
+  note_marker "${CASE_VAULT}" BOXP-901 fast notified
+  # A tick reconciles before it sends, so the receipt is judged on the next one.
+  day_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  assert_file_contains "${CASE_STATE}/outbox/pending/fast.edn" ':status :accepted'
+  day_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  stop_receiver
+  [[ -f "${CASE_STATE}/outbox/done/fast.edn" ]] || fail "a receipt written before the POST response must count"
+}
+
+test_delivery_start_survives_retry_and_is_cleared_for_a_new_delivery() {
+  # A retry of the same delivery keeps the start, so a receipt from an attempt
+  # whose response was lost still counts.
+  new_case
+  local started="2026-11-04T18:00:00Z"
+  seed_event "${CASE_STATE}" retried BOXP-901 :pending "${started}" ":delivery-started-at \"${started}\""
+  day_tick CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="http://127.0.0.1:${CASE_PORT}/down"
+  assert_file_contains "${CASE_STATE}/outbox/pending/retried.edn" ":delivery-started-at \"${started}\""
+  assert_file_contains "${CASE_STATE}/outbox/pending/retried.edn" ':status :pending'
+
+  # The start is on disk before the POST even when the first attempt fails.
+  new_case
+  seed_event "${CASE_STATE}" first BOXP-901 :pending "${started}"
+  day_tick CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="http://127.0.0.1:${CASE_PORT}/down"
+  assert_file_contains "${CASE_STATE}/outbox/pending/first.edn" ':delivery-started-at'
+
+  # A redelivery is a new delivery: the earlier receipt no longer speaks for it.
+  new_case
+  seed_event "${CASE_STATE}" again BOXP-901 :accepted "${started}" ":delivery-started-at \"${started}\" :accepted-at \"${started}\""
+  day_tick CODEX_TASK_BOARD_EVENT_WEBHOOK_URL="http://127.0.0.1:${CASE_PORT}/down" CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T19:00:00Z"
+  assert_file_contains "${CASE_STATE}/outbox/pending/again.edn" ':redeliveries 1'
+  assert_file_contains "${CASE_STATE}/outbox/pending/again.edn" ':delivery-started-at "2026-11-04T19:00:00Z"'
+
+  # Mid-delivery evidence: after the start but before :accepted-at still counts.
+  new_case
+  seed_event "${CASE_STATE}" mid BOXP-901 :accepted "${started}" ":delivery-started-at \"${started}\" :accepted-at \"2026-11-04T18:00:10Z\""
+  note_marker "${CASE_VAULT}" BOXP-901 mid notified
+  write_receipt "${CASE_VAULT}" mid sent "2026-11-04T18:00:05+00:00"
+  day_tick CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:01:00Z" CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
+  [[ -f "${CASE_STATE}/outbox/done/mid.edn" ]] || fail "a receipt after the start must count"
+}
+
 test_signed_delivery_is_accepted
 test_wrong_secret_is_rejected_and_retried_with_backoff
 test_duplicate_event_id_is_reported_as_duplicate
@@ -804,5 +857,7 @@ test_digest_uncertain_receipt_is_never_resent
 test_quiet_held_receipt_returns_to_digest_unless_stale
 test_quiet_held_digest_is_reissued_under_a_new_id
 test_notified_marker_needs_gate_evidence
+test_receipt_written_before_the_response_counts
+test_delivery_start_survives_retry_and_is_cleared_for_a_new_delivery
 
 echo "task-board-events tests passed"
