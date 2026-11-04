@@ -1033,7 +1033,7 @@
                 (let [state ((resolve 'task-board-todos/state-summary) view)
                       updated ((resolve 'task-board-todos/set-fm) text "todo_state" state)]
                   (when (not= text updated)
-                    ((resolve 'task-board-todos/atomic-write) path updated))))))))))))
+                    ((resolve 'task-board-todos/write-if-unchanged) path text updated))))))))))))
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))

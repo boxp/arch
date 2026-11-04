@@ -185,7 +185,8 @@
     (if (> (count s) 1950)
       (str (subs s 0 1950) "\n... truncated; read the ticket for the rest.")
       s)))
-(defn with-lock
+(defn with-local-lock
+  "Per-container lock in the temp dir; also what helpers without the shared lock take."
   [path f]
   (let [dir (fs/path (System/getProperty "java.io.tmpdir") "task-board-locks")
         name (str (subs (sha (.getCanonicalPath (java.io.File. (str path)))) 0 16)
@@ -196,6 +197,26 @@
     (with-open [r (RandomAccessFile. (str (fs/path dir name)) "rw")
                 c (.getChannel r)]
       (let [_lock (.lock c)] (f)))))
+(defn shared-lock-path
+  "Lock for a ticket at <vault>/Tickets/<file>, on the vault's own volume. Containers
+  sharing that volume have separate /tmp, so only this lock excludes them. It is named
+  by file only because the volume can be mounted at more than one path."
+  [ticket-path]
+  (let [vault (fs/parent (fs/parent (fs/absolutize ticket-path)))]
+    (fs/path vault
+             ".task-board-locks"
+             (str (str/replace (str (fs/file-name ticket-path)) #"[^a-zA-Z0-9._-]" "_")
+                  ".lock"))))
+(defn with-lock
+  "Ticket lock: the shared lock, then the local one so helpers that only know the
+  local lock are still excluded. Pods with their own volume cannot be locked out;
+  write-if-unchanged covers those and the sync daemon."
+  [path f]
+  (let [lock-file (shared-lock-path path)]
+    (fs/create-dirs (fs/parent lock-file))
+    (with-open [r (RandomAccessFile. (str lock-file) "rw")
+                c (.getChannel r)]
+      (let [_lock (.lock c)] (with-local-lock path f)))))
 (defn with-writer
   [path f]
   (if-let [dir (let [value (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR")]
@@ -228,6 +249,25 @@
                                  [StandardCopyOption/REPLACE_EXISTING
                                   StandardCopyOption/ATOMIC_MOVE]))
          (finally (Files/deleteIfExists tmp)))))
+(defn write-if-unchanged
+  "Replace path only if it still holds expected. False means a writer outside our
+  locks changed it (sync daemon, another replica): re-read rather than overwrite."
+  [path expected text]
+  (when (= expected (slurp (str path)))
+    (atomic-write path text)
+    true))
+(defn with-conflict-retry
+  "Run f again from a fresh read when it reports a :todo-conflict."
+  [f]
+  (loop [attempts 3]
+    (let [result (try (f)
+                      (catch clojure.lang.ExceptionInfo e
+                        (if (and (:todo-conflict (ex-data e)) (> attempts 1))
+                          ::conflict
+                          (throw e))))]
+      (if (= ::conflict result)
+        (do (Thread/sleep 200) (recur (dec attempts)))
+        result))))
 (defn set-fm
   [text k v]
   (let [[_ fm rest] (re-find #"(?s)^---\s*\n(.*?)\n---(.*)$" text)]
@@ -319,7 +359,7 @@
           gate (gate-decision {:view view, :start-rev (:rev start), :result "blocked"})
           msg (str (diff-text view) "\n" (worker-commands (:ticket o) (:vault o) rev))
           event (:event o)]
-      (with-lock delivery
+      (with-local-lock delivery
         (fn []
           (let [state (if (fs/exists? delivery) (edn/read-string (slurp (str delivery))) {})]
             (case event
@@ -368,7 +408,9 @@
                     (boolean (re-matches #"0+" uid))
                     (= "root" (System/getProperty "user.name"))))
             (die "Root cannot run Task Board write commands" 1))
-          (with-writer
+          (with-conflict-retry
+           (fn []
+            (with-writer
             path
             (fn []
               (let [text (slurp (str path))
@@ -522,10 +564,11 @@
                 (let [new-text (set-fm new-text
                                        "todo_state"
                                        (state-summary (ticket-view new-text)))]
-                  (when (not= text new-text) (atomic-write path new-text)))
+                  (when (and (not= text new-text) (not (write-if-unchanged path text new-text)))
+                    (throw (ex-info "ticket changed during the write; retry" {:todo-conflict true}))))
                 (println (state-summary (ticket-view new-text)))
                 (when (and (= cmd "add")
                            (#{"done" "blocked"} (get (frontmatter text) "status")))
-                  (println "Move the card with update to resume."))))))))))
+                  (println "Move the card with update to resume."))))))))))))
 (when (= *file* (System/getProperty "babashka.file"))
   (try (apply -main *command-line-args*) (catch Throwable e (die (.getMessage e) 1))))

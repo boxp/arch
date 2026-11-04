@@ -275,4 +275,70 @@
         (is (zero? (:exit (run "add" "BOXP-10" "--vault" d "--optional" "--text" (str "perm " perm) "--source" "test"))))
         (is (= (fs/posix->str before) (fs/posix->str (mode))))
         (is (str/includes? (slurp (str path)) (str "perm " perm)))))))
+(deftest ticket-lock-spans-containers
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-12.md")
+        ;; A container of its own: same vault volume, different temp dir.
+        other-tmp (str (fs/create-temp-dir))
+        spawn (fn [& args] (p/process (into ["bb" (str "-Djava.io.tmpdir=" other-tmp)] args) {:out :string :err :string}))
+        helper "docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
+        waits? (fn [process] (Thread/sleep 1500) (p/alive? process))]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) sample)
+    (testing "a TODO write in another container waits for the ticket lock"
+      (let [process (atom nil)]
+        (task-board-todos/with-lock path
+          (fn []
+            (reset! process (spawn module "add" "BOXP-12" "--vault" d "--optional" "--text" "from-other" "--source" "test"))
+            (is (waits? @process))
+            (is (not (str/includes? (slurp (str path)) "from-other")))))
+        (is (zero? (:exit @@process)))
+        (is (str/includes? (slurp (str path)) "from-other"))))
+    (testing "the helper in another container waits for the same lock"
+      (let [process (atom nil)]
+        (task-board-todos/with-lock path
+          (fn []
+            (reset! process (spawn helper "append-note" "BOXP-12" "--vault" d "--source" "test" "--note" "note-other"))
+            (is (waits? @process))))
+        (is (zero? (:exit @@process)))
+        (is (str/includes? (slurp (str path)) "note-other"))))
+    (testing "a helper that only knows the local lock is still excluded"
+      (let [process (atom nil)]
+        (task-board-todos/with-local-lock path
+          (fn []
+            (reset! process (p/process ["bb" module "add" "BOXP-12" "--vault" d "--optional" "--text" "from-local" "--source" "test"] {:out :string :err :string}))
+            (is (waits? @process))))
+        (is (zero? (:exit @@process)))))
+    (testing "the lock lives in a hidden vault directory and a helper dry-run does not create it"
+      (is (fs/exists? (fs/path d ".task-board-locks" "BOXP-12.md.lock")))
+      (let [fresh (str (fs/create-temp-dir)) ticket (fs/path fresh "Tickets" "BOXP-13.md")]
+        (fs/create-dirs (fs/parent ticket))
+        (spit (str ticket) sample)
+        (spit (str (fs/create-dirs (fs/path fresh "Boards")) "/Task Board.md") "## Ready\n")
+        @(p/process ["bb" helper "update" "BOXP-13" "--vault" fresh "--priority" "high" "--dry-run"] {:out :string :err :string})
+        (is (not (fs/exists? (fs/path fresh ".task-board-locks"))))))))
+(deftest write-outside-the-locks-is-not-overwritten
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-14.md")]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) sample)
+    (testing "a stale snapshot does not replace the file"
+      (is (not (task-board-todos/write-if-unchanged path "stale" "overwrite")))
+      (is (= sample (slurp (str path)))))
+    (testing "a sync that lands during the write survives and the command retries"
+      (let [original task-board-todos/write-if-unchanged calls (atom 0)]
+        (with-redefs [task-board-todos/write-if-unchanged
+                      (fn [p expected text]
+                        (when (= 1 (swap! calls inc))
+                          (spit (str p) (str (slurp (str p)) "- synced note\n")))
+                        (original p expected text))]
+          (with-out-str (task-board-todos/-main "add" "BOXP-14" "--vault" d "--optional" "--text" "added" "--source" "test")))
+        (is (= 2 @calls))
+        (is (str/includes? (slurp (str path)) "- synced note"))
+        (is (str/includes? (slurp (str path)) "added"))))
+    (testing "a conflict that never clears fails instead of overwriting"
+      (let [before (slurp (str path)) calls (atom 0)]
+        (with-redefs [task-board-todos/write-if-unchanged (fn [_ _ _] (swap! calls inc) false)]
+          (is (thrown-with-msg? clojure.lang.ExceptionInfo #"ticket changed"
+                                (with-out-str (task-board-todos/-main "add" "BOXP-14" "--vault" d "--optional" "--text" "never" "--source" "test")))))
+        (is (= 3 @calls))
+        (is (= before (slurp (str path))))))))
 (let [r (run-tests)] (when (pos? (+ (:fail r) (:error r))) (System/exit 1)))
