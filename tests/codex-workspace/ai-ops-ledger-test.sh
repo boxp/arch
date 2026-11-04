@@ -697,7 +697,8 @@ AI_OPS_MODULE="${module}" AI_OPS_TMP="${tmp}" bb -e '
                           :event_type "run.finished" :status "succeeded" :occurred_at "2026-10-31T00:00:09Z" :occurred_precision "second"
                           :run_id "20261031T000003Z-ee2d7526" :event_id (str conv "/20261031T000003Z-ee2d7526:finished")})])
 (spit src (str (str/join "\n" hermes-lines) "\n"))
-(def far-deadline (+ (System/currentTimeMillis) 60000))
+;; reserve (既定 45 秒) を引いても取り込み時間が残るよう、遅い CI runner でも尽きない十分先の期限にする
+(def far-deadline (+ (System/currentTimeMillis) 3600000))
 (defn snapshot-maps [] (map #(json/parse-string % true) (str/split-lines (slurp (str (ai-ops-ledger/hermes-mirror-path root))))))
 (def hermes-maps (map #(json/parse-string % true) hermes-lines))
 ;; 未設定: 何もしない (nil)、入力にも何も足さない
