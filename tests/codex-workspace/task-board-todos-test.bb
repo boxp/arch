@@ -49,6 +49,19 @@
       (let [before (slurp (str path))]
         (is (not (zero? (add "--id" "TD-01" "--required" "--text" "work" "--ac" "z"))))
         (is (= before (slurp (str path))))))))
+(deftest add-rejects-ids-the-parser-cannot-read
+  (let [d (str (fs/create-temp-dir)) path (fs/path d "Tickets" "BOXP-12.md")
+        body "---\nstatus: ready\n---\n## Summary\nhello\n## Plan\n## Notes\n"
+        add (fn [id] @(p/process ["bb" module "add" "BOXP-12" "--vault" d "--source" "test" "--id" id "--required" "--text" "work"] {:out :string :err :string}))]
+    (fs/create-dirs (fs/parent path))
+    (spit (str path) body)
+    (doseq [id ["TD-foo" "TD-1a" "td-01" "TD-" "X-1" "TD-01【任意】x"]]
+      (testing id
+        (is (= 4 (:exit (add id))))
+        (is (= body (slurp (str path))))))
+    (is (zero? (:exit (add "TD-7"))))
+    (is (= ["TD-7"] (mapv :id (task-board-todos/parse-items (slurp (str path))))))
+    (is (= :unreceived (:state (first (:items (task-board-todos/ticket-view (slurp (str path))))))))))
 (deftest copies (is (= (slurp module) (slurp "docker/hermes-agent/skills/obsidian-task-board/bin/task_board_todos.bb"))))
 (deftest parser-boundaries-and-position
   (let [text "## Plan\n```\n- [ ] TD-01【必須】same\n```\n- [ ] TD-01【必須】same\n- [ ] worker step\n  - child\nTD-02 を先に実施\n- TD-03 bad\n## Notes\n- [ ] TD-04【必須】no\n"

@@ -395,6 +395,10 @@
                                     (throw (ex-info "choose --required or --optional"
                                                     {})))
                             body (require-value (:text o) "--text")
+                            ;; The parser only reads TD-<digits>; any other id would be a
+                            ;; required line the gate cannot see.
+                            _ (when (and (:id o) (not (re-matches #"TD-\d+" (:id o))))
+                                (die (str "invalid TODO id (use TD-<digits>): " (:id o)) 4))
                             id (or (:id o)
                                    (format "TD-%02d"
                                            (inc (reduce max

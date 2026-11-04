@@ -218,7 +218,7 @@ kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-
 
 ## 動的TODO
 
-追加要件は Notes への append-note ではなく `bb bin/task_board_todos.bb add ID --vault VAULT --required --text 本文 --source 発信元` で登録する。任意なら `--optional` を使う。Plan の行頭に `- [ ] TD-01【必須】本文` を置き、字下げの `AC:`・`優先度:` と、実施時の `証拠:` を添える。`【任意】` と `【取消】` も使える。TODO は権限を与えない。`--id` なしの `add` は、同じタグ・同じ本文の項目が指定した `AC`/`優先度` をすべて持つ場合だけ再送として何もしない。それ以外の条件を指定すると新しい ID の項目として保存する。既存項目の条件は書き換えないので、古い条件を外すときは元の項目を `cancel` する。
+追加要件は Notes への append-note ではなく `bb bin/task_board_todos.bb add ID --vault VAULT --required --text 本文 --source 発信元` で登録する。任意なら `--optional` を使う。Plan の行頭に `- [ ] TD-01【必須】本文` を置き、字下げの `AC:`・`優先度:` と、実施時の `証拠:` を添える。`【任意】` と `【取消】` も使える。TODO は権限を与えない。`--id` は `TD-数字` のみ受け付ける。`--id` なしの `add` は、同じタグ・同じ本文の項目が指定した `AC`/`優先度` をすべて持つ場合だけ再送として何もしない。それ以外の条件を指定すると新しい ID の項目として保存する。既存項目の条件は書き換えないので、古い条件を外すときは元の項目を `cancel` する。
 
 `status ID --vault VAULT` で版と差分を確認し、frontmatter の `todo_state` でも件数を確認できる。変更は `change ID TD-01 --vault VAULT --source 発信元`、取消は `cancel ID TD-01 --vault VAULT --reason 理由 --source 発信元` を使う。受領は `ack --rev 版`、完了は `done ... --evidence 証拠` で記録する。内容を変更した項目のチェックと証拠は外れるので、新しい内容で実施し直す。必須を見送る場合は Owner の判断を求める。
 

@@ -4191,6 +4191,16 @@
                    "; preserving/restoring the prior card state: " (.getMessage e)))
         false))))
 
+(defn todo-recheck-rendezvous!
+  "Test-only pause after the lane move, for an addition landing right there; a no-op in deployment."
+  []
+  (when-let [test-dir (not-empty (System/getenv "CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR"))]
+    (spit (str (fs/path test-dir "moved")) "moved")
+    (loop [n 0]
+      (when (and (< n 500) (not (fs/exists? (fs/path test-dir "continue"))))
+        (Thread/sleep 10)
+        (recur (inc n))))))
+
 (defn restore-card-state! [ticket-id status assignee]
   ;; A legacy Review card that failed to start has no lane to return to; Ready
   ;; keeps it runnable with the same assignee and does not re-create Review.
@@ -4520,9 +4530,39 @@
                     (when held? (append-note! ticket-id (str "runの結果を保留: " (str/join ", " (:blocking-ids decision)))))
                   (if (and (= "blocked" next-status) (not= "owner-acceptance" outcome))
                   (if (block-ticket! ticket-id run-id action result exit review-gate nil last-message)
-                    (do (record-task-board-event! ticket-id run-id status "blocked" result)
-                        (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) "blocked" "blocked"
-                                               {:result result :exit_code exit}))
+                    ;; Same re-read as Done: a required item added while the card was
+                    ;; moving must not stay unreceived behind this Blocked result.
+                    (let [_ (when decision (todo-recheck-rendezvous!))
+                          latest (when (and decision (not held?)) (todo-view ticket-id))
+                          recheck (when latest ((resolve 'task-board-todos/gate-decision)
+                                                {:view latest :start-rev (:rev start-todo) :result "blocked"}))]
+                      (if (:hold? recheck)
+                        (let [gate (consume-continuation! ticket-id run-id review-gate)
+                              exhausted? (:continuation-exhausted? gate)
+                              final (if exhausted? "blocked" "ready")
+                              final-result (if exhausted? result "continue")
+                              states (frequencies (map :state (:items latest)))
+                              todo {:rev (:rev latest) :mode (:mode latest) :unreceived (get states :unreceived 0)
+                                    :open (get states :received 0) :gate "held"}
+                              summary (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)]
+                          (when-not exhausted?
+                            (move-card! ticket-id "ready" assignee)
+                            (update-frontmatter! ticket-id {:status "ready" :assignee assignee}))
+                          (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)
+                                     (assoc (if exhausted? summary (dissoc summary :blocker-category :blocker-reason :wait-reason))
+                                            :result final-result :todo todo))
+                          (append-note! ticket-id (str "判定直後の追加: "
+                                                       (if exhausted?
+                                                         "継続予算切れのためBlockedのまま。未受領: "
+                                                         "Blockedを保留して担当の次runへ継続: ")
+                                                       (str/join ", " (:blocking-ids recheck))))
+                          (record-task-board-event! ticket-id run-id status final final-result)
+                          (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) final
+                                                 (if exhausted? "blocked" "succeeded")
+                                                 {:result final-result :exit_code exit}))
+                        (do (record-task-board-event! ticket-id run-id status "blocked" result)
+                            (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) "blocked" "blocked"
+                                                   {:result result :exit_code exit}))))
                     (restore-card-state! ticket-id status assignee))
                   (let [;; A continuation stays with its worker; a groom or a
                         ;; result waiting for the Owner goes to the Owner.
@@ -4541,13 +4581,7 @@
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee next-assignee}
                                                       (= "done" next-status) (assoc :closed (today))))
-                    ;; Test-only rendezvous for an addition immediately after the move.
-                    (when-let [test-dir (not-empty (System/getenv "CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR"))]
-                      (spit (str (fs/path test-dir "moved")) "ready")
-                      (loop [n 0]
-                        (when (and (< n 500) (not (fs/exists? (fs/path test-dir "continue"))))
-                          (Thread/sleep 10)
-                          (recur (inc n)))))
+                    (todo-recheck-rendezvous!)
                     ;; Re-read after the move; a concurrent addition must also consume
                     ;; the continuation budget and determine every later record.
                     (let [[next-status review-gate]
