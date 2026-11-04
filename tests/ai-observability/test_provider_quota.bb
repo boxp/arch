@@ -66,6 +66,68 @@
       (is (= [{:route "claude-opus" :decision :unknown} {:route "claude-sonnet" :decision :unknown}]
              (q/alternatives d (route d "claude-fable") now nil))))))
 
+(defn- top-rejected [limit windows & {:keys [resets age scope] :or {resets reset age 60}}]
+  (cond-> {:observed_at_ms (* 1000 (- now age))
+           :rate_limit_info (cond-> {:status "rejected" :rateLimitType limit :unifiedWindows windows}
+                              resets (assoc :resetsAt resets))}
+    scope (assoc :account_scope scope)))
+
+(deftest top-level-rejection
+  (let [no-status (fn [w] (dissoc w :status))]
+    (testing "該当窓に status がない最上位の拒否は hold する"
+      (let [d (top-rejected "seven_day_overage_included"
+                            (update all-ok :seven_day_overage_included no-status))
+            s (route d "claude-fable")]
+        (is (= :hold (:decision s)))
+        (is (= :model (:scope s)))
+        (is (= reset (:resets-at s)))
+        (is (= :clear (:decision (route d "claude-opus"))))))
+    (testing "該当窓がなくても hold し、共有枠なら全経路に効く"
+      (let [d (top-rejected "seven_day" (dissoc all-ok :seven_day))]
+        (doseq [r ["claude-fable" "claude-opus" "claude-sonnet"]]
+          (is (= :hold (:decision (route d r))))
+          (is (= :shared (:scope (route d r)))))))
+    (testing "窓の resetsAt だけがあるときはそれを reset にする"
+      (let [d (top-rejected "seven_day_opus" all-ok :resets nil)]
+        (is (= reset (:resets-at (route d "claude-opus"))))))
+    (testing "同時刻の窓が allowed でも最上位の拒否を優先し、より新しい窓の観測なら解除する"
+      (is (= :hold (:decision (route (top-rejected "seven_day_opus" (assoc all-ok :seven_day_opus (win "allowed" 0.2))) "claude-opus"))))
+      (is (not= :hold (:decision (route (top-rejected "seven_day_opus" all-ok :age 600) "claude-opus")))))
+    (testing "reset 後は hold しない"
+      (let [d (top-rejected "seven_day_opus" (update all-ok :seven_day_opus no-status) :resets (- now 1))]
+        (is (= :unknown (:decision (route d "claude-opus"))))))
+    (testing "reset 不明の古い拒否は断定しない"
+      (let [d (top-rejected "seven_day_opus" {} :resets nil :age (* 2 q/stale-seconds))]
+        (is (not= :hold (:decision (route d "claude-opus"))))))
+    (testing "別 account の拒否では hold しない。窓が空でも最上位の印で分かる"
+      (let [d (top-rejected "seven_day_opus" {} :scope "other")]
+        (is (= :hold (:decision (route d "claude-opus"))))
+        (is (not= :hold (:decision (q/route-status d "claude-opus" now "mine"))))
+        (is (= :hold (:decision (q/route-status d "claude-opus" now "other")))))
+      (let [legacy (top-rejected "seven_day_opus" {:seven_day (win "allowed" 0.1 :scope "other")})]
+        (is (not= :hold (:decision (q/route-status legacy "claude-opus" now "mine"))))))
+    (testing "拒否でない最上位や rateLimitType のない拒否は窓を変えない"
+      (let [d (assoc-in (top-rejected "seven_day_opus" all-ok) [:rate_limit_info :status] "allowed_warning")]
+        (is (= :clear (:decision (route d "claude-opus")))))
+      (let [d (update (top-rejected "seven_day_opus" all-ok) :rate_limit_info dissoc :rateLimitType)]
+        (is (= :clear (:decision (route d "claude-opus"))))))
+    (testing "記録から判定まで: 窓に status のない event で hold し、次の event で解除される"
+      (load-file (str (fs/path (fs/parent (fs/parent (fs/parent (fs/canonicalize *file*))))
+                               "docker/codex-workspace/task-board/ai_subscription_usage.bb")))
+      (let [merge! (resolve 'ai-subscription-usage/merge-claude-snapshot)
+            clean (resolve 'ai-subscription-usage/clean-claude-rate-limit-info)
+            ms (* 1000 (- now 60))
+            rejected (merge! nil (clean {:status "rejected" :rateLimitType "seven_day_opus" :resetsAt reset
+                                         :unifiedWindows {:seven_day_opus {:utilization 1 :resetsAt reset}}})
+                             ms "mine")
+            allowed (merge! rejected (clean {:status "allowed" :rateLimitType "seven_day_opus" :resetsAt reset
+                                             :unifiedWindows {:seven_day_opus {:status "allowed" :utilization 0.2 :resetsAt reset}}})
+                            (+ ms 1000) "mine")]
+        (is (= "mine" (:account_scope rejected)))
+        (is (= :hold (:decision (q/route-status rejected "claude-opus" now "mine"))))
+        (is (not= :hold (:decision (q/route-status rejected "claude-opus" now "other"))))
+        (is (not= :hold (:decision (q/route-status allowed "claude-opus" now "mine"))))))))
+
 (deftest unknown-does-not-hold
   (testing "観測なし・reset 後未観測・古い観測は hold しないが clear とも言わない"
     (doseq [d [(data {})

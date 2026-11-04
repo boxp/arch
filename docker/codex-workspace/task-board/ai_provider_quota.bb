@@ -54,13 +54,40 @@
       (number? (:observed_at_ms window)) (assoc :observed-at (quot (:observed_at_ms window) 1000))
       (number? (:utilization window)) (assoc :utilization (:utilization window)))))
 
+(defn- effective-windows
+  "The snapshot's windows with the event-level rejection applied. A rejection can
+  be reported only at the top of the event, naming the limit in rateLimitType,
+  while that limit's window has no status or is missing. The window's own
+  observation replaces it only when strictly newer. The top level has its own
+  account mark; an older snapshot without one uses the mark on its windows."
+  [data]
+  (let [info (:rate_limit_info data)
+        windows (or (:unifiedWindows info) {})
+        limit (:rateLimitType info)
+        observed-ms (or (:observed_at_ms data)
+                        (when (number? (:observed_at data)) (* 1000 (:observed_at data))))]
+    (if (and (= "rejected" (:status info)) (string? limit))
+      (let [k (keyword limit)
+            window (get windows k)
+            newer-window? (and (number? (:observed_at_ms window)) (number? observed-ms)
+                               (> (:observed_at_ms window) observed-ms))
+            account (or (:account_scope data) (some :account_scope (vals windows)))
+            reset (or (:resetsAt info) (:resetsAt window))]
+        (if newer-window?
+          windows
+          (assoc windows k (cond-> (assoc (or window {}) :status "rejected")
+                             (number? observed-ms) (assoc :observed_at_ms observed-ms)
+                             reset (assoc :resetsAt reset)
+                             account (assoc :account_scope account)))))
+      windows)))
+
 (defn route-status
   "Decision for one Claude route. :decision is :hold (a limit it needs is rejected
   and has not reset), :clear (every limit it needs was observed fresh) or :unknown
   (nothing rejected, but not everything is known). :unknown does not hold a route:
   only a run can produce the next observation, so holding on it would never end."
   [data route now-s scope]
-  (let [windows (or (get-in data [:rate_limit_info :unifiedWindows]) {})
+  (let [windows (effective-windows data)
         shared (mapv #(window-view windows % now-s scope) shared-windows)
         model (mapv #(window-view windows % now-s scope) (get route-model-windows route []))
         exhausted (fn [views] (filter #(= :exhausted (:state %)) views))

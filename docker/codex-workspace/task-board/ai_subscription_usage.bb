@@ -73,8 +73,11 @@
                                 (into {} (remove foreign? prior)) incoming)
             windows (into {} (take max-claude-windows (sort-by (comp - :observed_at_ms val) windows)))
             top-ms (if newer? observed-ms prior-ms)]
-        {:observed_at (quot top-ms 1000) :observed_at_ms top-ms
-         :rate_limit_info (assoc (if newer? clean (:rate_limit_info data)) :unifiedWindows windows)}))))
+        ;; The top-level fields describe the newest event, so they keep that
+        ;; event's account mark. It stays in the 0600 snapshot and is not exported.
+        (cond-> {:observed_at (quot top-ms 1000) :observed_at_ms top-ms
+                 :rate_limit_info (assoc (if newer? clean (:rate_limit_info data)) :unifiedWindows windows)}
+          (if newer? stamp (:account_scope data)) (assoc :account_scope (if newer? stamp (:account_scope data))))))))
 
 (defn with-snapshot-file-lock
   "Serialize read-merge-write across runner processes. `locking` alone covers

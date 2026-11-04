@@ -59,6 +59,7 @@ bb docker/codex-workspace/task-board/ai_ops_outcome.bb snapshot "$CODEX_TASK_BOA
 成果 SLO の burn rate とは別の入力として、CLI の `rate_limit_event` 由来の数値と enum だけを使う。
 
 - `ai_provider_quota.bb`: 窓ごとの状態（`exhausted` / `near_limit` / `ok` / `expired_unobserved` / `stale` / `unobserved`）と経路の判定（`hold` / `clear` / `unknown`）。共有枠の不足は全 Claude 経路を `hold` にし、代替候補を出さない。モデル専用枠の不足は他の経路を候補として出す。
+- 拒否は窓の `status` だけでなく、event 最上位の `status=rejected` と `rateLimitType` からも判定する（該当窓に `status` がない、または窓がない event があるため）。同じ窓により新しい観測があれば窓を優先し、別 account の拒否では止めない。
 - runner: 拒否されて reset 前の経路は run を起動しない。カード・担当・claim・budget は変えず、Notes へ 1 回だけ記録する。`unknown` は止めない。読取り失敗は fail open。`CODEX_TASK_BOARD_PROVIDER_QUOTA_HOLD=off` で無効化できる。
 - exit≠0 の run で最後の `rate_limit_event` が拒否なら、Blocked の理由に範囲・制限名・reset を記す。category は `agent-process-error` のまま（集計の enum を変えない）。
 - 担当の自動変更はしない。候補の提示だけで、変更は Owner または正規 helper が行う。
