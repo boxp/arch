@@ -68,7 +68,7 @@
       (is (= "fake-model-1" (get-in cmp [:groups 0 :model_rev])) "model_rev は init イベントから取る")
       (is (pos? (get-in cmp [:groups 0 :regression :evidence :prompt_chars_gap])) "arm B の prompt は契約文の分だけ長い")
       (is (= 5 (get-in (arm cmp "A") [:tool_calls_median :total])))
-      (is (every? #(= ["claude-policy-prompt" "delegation-prompt" "append-note-instruction" "lane-contract"] (:harness-contract-fns %))
+      (is (every? #(= ["claude-policy-prompt" "ai-ops-decision-prompt" "delegation-prompt" "append-note-instruction" "lane-contract"] (:harness-contract-fns %))
                   (filter #(= "B" (:arm %)) ts)))
       (is (every? #(nil? (:harness-contract-fns %)) (filter #(= "A" (:arm %)) ts))))
     (testing "prom は劣化なしを 1、他を 0 で出し、分母に全結果を並べる"
@@ -149,6 +149,28 @@
   (spit (str (fs/path out "trials" (str task "-" a "-" rep ".edn")))
         (pr-str (cond-> {:task task :arm a :rep rep :outcome outcome :model-rev "m" :harness-version "h"}
                   seconds (assoc :seconds seconds)))))
+
+(deftest plan-refuses-a-dir-with-existing-records
+  (testing "budget.edn があれば別の計画で上書きしない"
+    (let [out (tmp)]
+      (is (zero? (:exit (plan! out :reps 1 :only "T01" :arms "A"))))
+      (let [before (slurp (str (fs/path out "budget.edn")))
+            r (plan! out :reps 2)]
+        (is (= 2 (:exit r)))
+        (is (str/includes? (:err r) "新しい --out"))
+        (is (= before (slurp (str (fs/path out "budget.edn"))))))))
+  (testing "budget.edn が無くても試行記録があれば拒否する"
+    (let [out (tmp)]
+      (fs/create-dirs (fs/path out "trials"))
+      (write-trial! out "T01" "A" 1 "pass" 10)
+      (is (= 2 (:exit (plan! out))))
+      (is (not (fs/exists? (fs/path out "budget.edn"))))))
+  (testing "古いモデルの試行が新しい計画の評価に混ざらない"
+    (let [out (tmp)]
+      (is (zero? (:exit (he {} "plan" "--out" out "--tasks-dir" tasks-dir "--only" "T01" "--arms" "A" "--model-rev" "old"))))
+      (is (zero? (:exit (run! out {}))))
+      (is (= 2 (:exit (he {} "plan" "--out" out "--tasks-dir" tasks-dir "--only" "T01" "--arms" "A" "--model-rev" "new"))))
+      (is (str/includes? (slurp (str (fs/path out "budget.edn"))) "\"old\"")))))
 
 (deftest regression-compares-only-trials-both-arms-attempted
   (let [ids ["T01" "T02" "T03" "T04" "T05" "T06"]
@@ -244,6 +266,10 @@
     (is (zero? (:exit r)) (:err r))
     (is (str/includes? (:out r) "Task Board contract"))
     (is (str/includes? (:out r) "Delegation contract"))
+    (testing "通常の runner と同じ AI Ops 判断支援節を、実取得せず固定の入力で含む"
+      (is (str/includes? (:out r) "AI Ops decision support"))
+      (is (str/includes? (:out r) "no AiOps alerts are firing or pending."))
+      (is (< (str/index-of (:out r) "AI Ops decision support") (str/index-of (:out r) "Ticket contents:"))))
     (is (str/includes? (:out r) "{{TASK_SECTION}}"))
     (is (not (str/includes? (:out r) "harness-eval arm:")) "契約文自体は課題を含まない")))
 

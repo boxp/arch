@@ -35,7 +35,7 @@
 
 ### arm B の契約文の取り方
 
-`harness_eval.bb contract` が別プロセスで `task_board_runner.bb` を `load-file` し（`babashka.file` が本ファイルなので runner の main は起動しない）、`prompt-for` が `:implement` で並べる順に `claude-policy-prompt` / `delegation-prompt` / `append-note-instruction` / `lane-contract` の出力と、`prompt-for` 内の固定文を組み立てる。`prompt-for` 自体は vault と ticket を要求するので呼ばない。使った関数名は trial の `:harness-contract-fns` に残す。契約文の変更は `harness_version`（arch の短 SHA）で追う。
+`harness_eval.bb contract` が別プロセスで `task_board_runner.bb` を `load-file` し（`babashka.file` が本ファイルなので runner の main は起動しない）、`prompt-for` が `:implement` で並べる順に `claude-policy-prompt` / `ai-ops-decision-prompt`（試行の条件を揃えネットワークも使わないため、実アラートは読まず固定の「アラートなし」を渡す）/ `delegation-prompt` / `append-note-instruction` / `lane-contract` の出力と、`prompt-for` 内の固定文を組み立てる。`prompt-for` 自体は vault と ticket を要求するので呼ばない。使った関数名は trial の `:harness-contract-fns` に残す。契約文の変更は `harness_version`（arch の短 SHA）で追う。
 
 両 arm に同じ安全条件（作業ディレクトリ外の変更・ネットワーク・secret・Task Board・vault・委譲ヘルパー・GitHub を使わない）を付ける。契約文が要求する委譲や Notes 追記は、この安全条件で「実行しない」と明示する。これは arm B の「指示の矛盾を処理するコスト」を含めた比較で、安全条件を外して勝たせる比較ではない。
 

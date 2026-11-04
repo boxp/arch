@@ -18,6 +18,8 @@
 ;; 予算は試行を始める前に DIR/budget.edn へ記録し、上限 (課題 10 / 繰返し 3 / arm 2 / 1 試行 900 秒 / 合計 60 試行)
 ;; を超える計画は拒否する。各試行は一時ディレクトリに課題の base/ を複製して git init した隔離 repo で行い、
 ;; 受入は課題同梱の accept.sh (エージェントの出力を見ない) と allowed-files の差分検査で独立に判定する。
+;; 既に budget.edn か試行記録がある DIR への plan は拒否する (古い試行を別の計画の結果として集計しないため)。
+;; 再開は同じ DIR への run で行い、新しい計画には新しい DIR を使う。
 ;; DIR に残すのは metadata (trials/*.edn) だけで、prompt 本文・エージェント出力・stderr は残さない。
 (ns harness-eval)
 (require '[babashka.fs :as fs]
@@ -98,8 +100,21 @@
                (catch Exception _ nil))]
     (if (and r (zero? (:exit r))) (str/trim (:out r)) "unknown")))
 
+(defn existing-plan-records
+  "DIR に残っている計画・試行の記録。plan はこれを上書きも流用もしない。"
+  [out]
+  (let [trials (fs/path out "trials")]
+    (cond-> []
+      (fs/exists? (fs/path out "budget.edn")) (conj "budget.edn")
+      (and (fs/exists? trials) (seq (fs/list-dir trials "*.edn"))) (conj "trials/*.edn"))))
+
 (defn plan! [args]
   (let [out (or (arg args "--out" nil) (throw (ex-info "--out が必要" {})))
+        existing (existing-plan-records out)
+        _ (when (seq existing)
+            (binding [*out* *err*]
+              (println (str "既存の記録 (" (str/join ", " existing) ") があるため plan を作らない。新しい計画には新しい --out を使う: " out)))
+            (System/exit 2))
         tasks-dir (arg args "--tasks-dir" default-tasks-dir)
         only (when-let [o (arg args "--only" nil)] (set (str/split o #",")))
         tasks (load-tasks tasks-dir only)
@@ -144,7 +159,11 @@
        "## 受入\n" (:acceptance task) "\n\n"
        "## 変更してよいファイル\n" (str/join "\n" (map #(str "- " %) (:allowed-files task))) "\n"))
 
-(def contract-fns ["claude-policy-prompt" "delegation-prompt" "append-note-instruction" "lane-contract"])
+(def contract-fns ["claude-policy-prompt" "ai-ops-decision-prompt" "delegation-prompt" "append-note-instruction" "lane-contract"])
+
+;; arm B の AI Ops 判断支援節に渡す固定の入力。試行ごとの実アラートで prompt が変わると比較条件が揃わず、
+;; 安全条件どおりネットワークも使わないので、実取得はせず「アラートなし」の通常形で節の分量と指示を再現する。
+(def contract-ai-ops-state {:status "ok" :alerts []})
 
 (defn contract-text
   "現行ハーネスの契約文。task_board_runner.bb を読み込み、prompt-for が :implement で組み立てる順に、
@@ -154,6 +173,7 @@
   (load-file runner-path)
   (let [agent "claude-fable"
         cp (resolve 'claude-policy-prompt)
+        ai (resolve 'ai-ops-decision-prompt)
         dp (resolve 'delegation-prompt)
         an (resolve 'append-note-instruction)
         lc (resolve 'lane-contract)]
@@ -166,6 +186,7 @@
          (dp)
          "Previous run summaries:\n[]\n\n"
          (cp agent)
+         (ai contract-ai-ops-state)
          "Ticket contents:\n\n{{TASK_SECTION}}\n\n"
          "Goal: implement or complete this ticket.\n"
          "First inspect the ticket Notes, relevant repos, current git state, and existing project conventions.\n"
