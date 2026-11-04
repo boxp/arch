@@ -33,13 +33,22 @@
 (defn task [runs card closed now]
   (let [start (ai-ops-slo/run-start (first runs))
         outcome? #(and (= "succeeded" (:status %)) (#{"done" "owner-acceptance"} (:result %)) (ai-ops-insight/parse-inst (:finished-at %)))
-        outcome (first (sort (keep #(when (outcome? %) (ai-ops-insight/parse-inst (:finished-at %))) runs)))
-        ;; An unreadable run ordered before the selected outcome makes its first occurrence unknown.
-        uncertain? (or (= "unreadable" (:status (first runs))) (nil? start)
-                       (some #(= "unreadable" (:status %)) (take-while #(not (and outcome (= outcome (ai-ops-insight/parse-inst (:finished-at %))) (outcome? %))) runs)))
-        out (or outcome closed)
+        run-outcome (first (sort (keep #(when (outcome? %) (ai-ops-insight/parse-inst (:finished-at %))) runs)))
+        ;; 最も早い成果時刻を使う。closed は日精度なので、run の成果より前の日なら closed を成果とし (分位には入れない)、
+        ;; 同じ日以降なら run の成果 (秒精度) を使う。
+        closed-first? (boolean (and closed (or (nil? run-outcome)
+                                               (neg? (compare closed (.truncatedTo run-outcome java.time.temporal.ChronoUnit/DAYS))))))
+        outcome (when-not closed-first? run-outcome)
+        out (if closed-first? closed run-outcome)
         ;; closed だけの到達は日精度なので、同じ日に始まった run をやり直しと誤認しないよう翌日 0 時以降の run だけ数える
         rework-from (when out (if outcome out (.plusSeconds out 86400)))
+        unreadable? #(= "unreadable" (:status %))
+        ;; 選ばれた成果より前に読めない run があると最初の成果時刻が分からない。closed で到達した後 (翌日 0 時以降) の
+        ;; 読めない run は到達の事実を変えないので unevaluated にしない (やり直しには数える)。
+        uncertain? (boolean (or (unreadable? (first runs)) (nil? start)
+                                (cond outcome (some unreadable? (take-while #(not (and (outcome? %) (= outcome (ai-ops-insight/parse-inst (:finished-at %))))) runs))
+                                      out (some #(and (unreadable? %) (let [s (ai-ops-slo/run-start %)] (or (nil? s) (neg? (compare s rework-from))))) runs)
+                                      :else (some unreadable? runs))))
         hours (when (and start out) (let [h (ai-ops-slo/hours-between start out)] (if outcome h (max 0 h))))
         blocked (last (filter #(or (= "blocked" (:status %)) (= "blocked" (:result %))) runs))
         wait? (or (and (= "Blocked" (:lane card)) (#{"owner-decision" "external-hold" "new-scope"} (:wait-reason blocked)))

@@ -63,6 +63,34 @@
       (add-run root vault 51 "2026-10-29T00:00:00Z" nil nil nil nil nil true)
       (add-run root vault 51 "2026-10-30T00:00:00Z" "2026-10-30T01:00:00Z" "done")
       (is (= 1 (get-in (ai-ops-outcome/snapshot root vault now) [:windows "7d" :unevaluated]))))))
+(deftest closed-earlier-than-run-outcome-wins
+  (fs/with-temp-dir [d {}]
+    (let [[root vault] (fixture d)]
+      ;; 70: closed 10-12 が run の done (10-15) より前の日 → closed を成果とし (48h、分位には入れない)、10-15 の run はやり直し
+      (add-run root vault 70 "2026-10-10T00:00:00Z" "2026-10-10T01:00:00Z" "continue" nil nil "2026-10-12")
+      (add-run root vault 70 "2026-10-15T00:00:00Z" "2026-10-15T01:00:00Z" "done" nil nil "2026-10-12")
+      ;; 71: closed と done が同じ日 → run の done (秒精度) を成果とし、分位に入れる
+      (add-run root vault 71 "2026-10-10T00:00:00Z" "2026-10-10T01:00:00Z" "continue" nil nil "2026-10-15")
+      (add-run root vault 71 "2026-10-15T10:00:00Z" "2026-10-15T11:00:00Z" "done" nil nil "2026-10-15")
+      (let [w (get-in (ai-ops-outcome/snapshot root vault now) [:windows "28d"])]
+        (is (= 2 (:reached_in_budget w)))
+        (is (= 0 (:unevaluated w)))
+        (is (= {:measured 1 :reached_without_run_outcome 1 :p50_h 131.0 :p90_h 131.0} (:duration w)))
+        (is (= {:matured 2 :rework 1 :pending 0} (:rework w)))))))
+(deftest unreadable-run-after-closed-only-outcome
+  (fs/with-temp-dir [d {}]
+    (let [[root vault] (fixture d)]
+      ;; 80: closed 10-29 で到達した後の読めない run (10-31) は到達を覆さない (やり直しには数える)
+      (add-run root vault 80 "2026-10-20T00:00:00Z" "2026-10-20T01:00:00Z" "continue" nil nil "2026-10-29")
+      (add-run root vault 80 "2026-10-31T00:00:00Z" nil nil nil nil "2026-10-29" true)
+      ;; 81: closed 10-29 より前に読めない run (10-21) がある → 最初の成果時刻が分からず unevaluated
+      (add-run root vault 81 "2026-10-20T00:00:00Z" "2026-10-20T01:00:00Z" "continue" nil nil "2026-10-29")
+      (add-run root vault 81 "2026-10-21T00:00:00Z" nil nil nil nil "2026-10-29" true)
+      (let [w (get-in (ai-ops-outcome/snapshot root vault now) [:windows "28d"])]
+        (is (= 2 (:started w)))
+        (is (= 1 (:reached_over_budget w)))
+        (is (= 1 (:unevaluated w)))
+        (is (= 1 (get-in w [:duration :reached_without_run_outcome])))))))
 (deftest closed-only-rework-uses-day-precision
   (fs/with-temp-dir [d {}]
     (let [[root vault] (fixture d)]
