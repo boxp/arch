@@ -10,6 +10,7 @@ BOXP-360（SLI）と BOXP-385（SLO）への連絡事項。過去の Review 系�
 | `run.finished` の `result` | `review` | `continue`（過去分の `review` は残す） |
 | `lane.changed` の `lane_to` | `review` あり | `ready` / `blocked` / `done` のみ |
 | Review 停滞（`review-wait`） | Review 到達から次 run まで | 新規には発生しない。0 ではなく「対象なし」として扱う |
+| マーカーなしの成功 run | `review` として読む | 2026-11-03 21:12 UTC（新 runner の最初の run）以降に終わった run は `continue` として読む |
 | 継続 run の分類（insight v1） | `reopen_after_review` | `continuation`。是正に数えない |
 | 現在状態 `awaiting-review` | Review の票 | 新規には発生しない。残るのは過去 snapshot のみ |
 

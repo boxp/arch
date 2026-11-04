@@ -264,6 +264,16 @@
         (is (= {:reached 6 :censored 2 :unevaluated 0}
                (select-keys (:first_run_to_first_outcome j) [:reached :censored :unevaluated])))))))
 
+(deftest unmarked-run-follows-review-retirement
+  (testing "旧 runner の run は過去の系列のまま、新 runner の run は Review 到達に数えない"
+    (let [result #(ai-ops-insight/effective-result "succeeded" "implement" nil %)]
+      (is (= "review" (result "2026-11-03T21:11:59Z")))
+      (is (= "continue" (result "2026-11-03T21:12:00Z")))
+      (is (= "review" (result nil)) "終了時刻が読めない run は過去の系列を変えない")))
+  (testing "マーカーのある run は終了時刻に関わらず、その値のまま"
+    (is (= "review" (ai-ops-insight/effective-result "succeeded" "implement" "review" "2026-11-04T00:00:00Z")))
+    (is (= "done" (ai-ops-insight/effective-result "succeeded" "implement" "done" "2026-10-01T00:00:00Z")))))
+
 (deftest blocked-stops-follow-effective-result
   (fs/with-temp-dir [d {}]
     (let [runs (fs/path d "root/runs") vault (fs/path d "vault")

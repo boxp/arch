@@ -1483,7 +1483,7 @@
                 "\n"))
          "# 指示\n"
          (if (= :revise action)
-           "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。対象ノートには前回までの作業結果が既に反映されているので、Summary / Acceptance Criteria は元の依頼として読み、最新の Review 指示を優先して対象ノートを最小限に修正する構造化差分を出力してください。既に存在する節は追加ではなく修正（replace-section）してください。"
+           "このチケットは Owner の確認後に再実行されており、Notes の末尾に人間の追加指示（改稿指示）があります。対象ノートには前回までの作業結果が既に反映されているので、Summary / Acceptance Criteria は元の依頼として読み、最新の 改稿指示を優先して対象ノートを最小限に修正する構造化差分を出力してください。既に存在する節は追加ではなく修正（replace-section）してください。"
            "チケットの Summary / Acceptance Criteria / Context / Notes の依頼にもとづいて対象ノートを更新する構造化差分を出力してください。")
          " 根拠がない、曖昧、対象外の依頼なら decision を needs-human にして changes は空にしてください。"
          " 文字数予算は " budget " 字です。summary には適用後に人間が確認すべき点を日本語で簡潔に書いてください。\n")))
@@ -1622,7 +1622,7 @@
               "\n"))
        "# 指示\n"
        (if (= :revise action)
-         (str "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。対象ノートには前回の案が『" (proposal-heading ticket-id) "』節として入っています。Review 指示を優先して案を改稿し、改稿後の案全体（title / canon_facts / proposal / conflicts / questions）を出力してください。節は runner が置き換えます。")
+         (str "このチケットは Owner の確認後に再実行されており、Notes の末尾に人間の追加指示（改稿指示）があります。対象ノートには前回の案が『" (proposal-heading ticket-id) "』節として入っています。改稿指示を優先して案を改稿し、改稿後の案全体（title / canon_facts / proposal / conflicts / questions）を出力してください。節は runner が置き換えます。")
          "チケットの Summary / Acceptance Criteria / Context / Notes の依頼にもとづき、新しい設定の案を出力してください。")
        ;; The executor caps the whole rendered section at max-change-chars; the
        ;; body budget given to the model leaves room for facts / conflicts / boilerplate.
@@ -2116,7 +2116,7 @@
                 "\n"))
          "# 指示\n"
          (if (= :revise action)
-           (str "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。前回の案を土台に、Review 指示を優先して改稿し、改稿後の案全体（name / slug / aliases / summary / 各節 / canon_facts / conflicts / questions）を出力してください。name と slug は Review 指示で求められない限り前回のままにします。ノート本文は runner が置き換えます。")
+           (str "このチケットは Owner の確認後に再実行されており、Notes の末尾に人間の追加指示（改稿指示）があります。前回の案を土台に、改稿指示を優先して改稿し、改稿後の案全体（name / slug / aliases / summary / 各節 / canon_facts / conflicts / questions）を出力してください。name と slug は 改稿指示で求められない限り前回のままにします。ノート本文は runner が置き換えます。")
            (str "チケットの Summary / Acceptance Criteria / Context / Notes の依頼にもとづき、新しい" label "の設定案を出力してください。"))
          " 各節は合わせて " max-section-chars " 字以内、canon_facts は要点だけにしてください。\n")))
 
@@ -3365,7 +3365,7 @@
             (and instruction (not (:new-instruction? instruction)))
             (finish-without-model opts {:category "localllm-no-new-instruction" :mode (:mode mode-r) :how (:how mode-r)
                                         :review-instruction instruction
-                                        :reason "Review の票に前回の localllm 結果より新しい指示が Notes にありません。改稿する内容を Notes 末尾に 1 行書いてから assignee を localllm に戻してください（前回の結果だけでは同じ案を作り直しません）"})
+                                        :reason "Blocked の票に前回の localllm 結果より新しい指示が Notes にありません。改稿する内容を Notes 末尾に 1 行書いてから assignee を localllm に戻してください（前回の結果だけでは同じ案を作り直しません）"})
 
             :else
             (let [opts (assoc opts :frontmatter (pin-frontmatter frontmatter mode-r) :mode-resolution (:how mode-r)
@@ -3713,7 +3713,7 @@
                   research-line (when-let [r (:research sel)]
                                   (str "対象選定の調査（モデル " (:model cfg) "）: " (:rounds r) " 回（search " (:searches r) ", list " (:lists r 0) ", read " (:reads r) "）、根拠 " (:evidence-chars r) " 字"
                                        (when (seq (:read-paths r)) (str "。読んだ資料: " (str/join ", " (map link (:read-paths r)))))))
-                  flow (str "実行の流れ: 計画を確認してこの票の assignee を localllm に戻す（Ready のまま）→ In Progress → 計画の対象だけに限定して書込 → Review（担当 boxp）。対象が計画後に変わっていれば書かずに停止（Backlog に戻して再計画）。改稿は Review の票の Notes 末尾に指示を書いて assignee を戻す。変更は対象ノートへ直接反映され（専用の採用操作なし）、戻すなら Obsidian の履歴機能で戻す")]
+                  flow (str "実行の流れ: 計画を確認してこの票の assignee を localllm に戻す（Ready のまま）→ In Progress → 計画の対象だけに限定して書込 → Blocked（本人確認待ち、担当 boxp）。対象が計画後に変わっていれば書かずに停止（Backlog に戻して再計画）。改稿は Blocked の票の Notes 末尾に指示を書いて assignee を戻す。変更は対象ノートへ直接反映され（専用の採用操作なし）、戻すなら Obsidian の履歴機能で戻す")]
               (cond
                 (and (not (:ok? sel)) (:shutdown? sel))
                 (merge common {:status :blocked :shutdown? true :category (:category sel) :reason (:reason sel)})
@@ -3741,13 +3741,13 @@
                                                 corpus-line research-line
                                                 (str "守る制約: 既存ノートの上書きなし（名前・slug の衝突は拒否）/ 新規ノートは通常のノートとして保存（frontmatter に `ticket` / `run` の出所だけを記録） / 既存の人物・怪獣・組織の事実は変えず原典に無い要素は新規案と明示 / 性的・露骨・残酷な描写なし / 出典は調査で読んだ資料だけ")
                                                 flow]))
-                          acceptance [(str "- [ ] `" folder "/` に新規ノート 1 件が作成され（frontmatter `ticket: " ticket-id "`）、票が Review で止まる")
+                          acceptance [(str "- [ ] `" folder "/` に新規ノート 1 件が作成され（frontmatter `ticket: " ticket-id "`）、票が Blocked（本人確認待ち）で止まる")
                                       (str "- [ ] Notes の「読んだ資料」「出典」がすべて `" (str/join "`, `" sources) "` 配下")
                                       "- [ ] 既存ノートの変更 0 件、他フォルダへの書込なし"
                                       "- [ ] 内容は Owner が Obsidian で確認し、修正は Notes に指示して同じノートを改稿、不要なら Obsidian で削除または履歴から戻す"]
                           plan-items ["- [ ] 調査: corpus を index → list / search → read（必読候補を優先）"
                                       (str "- [ ] 作成: `" folder "/<slug>.md` を 1 件（runner が名前 / slug の衝突と出典を検査。上書きしない）")
-                                      "- [ ] 確認: Owner が Review で読み、採用 / 改稿 / 取消を判断"]
+                                      "- [ ] 確認: Owner が Blocked の票で読み、採用 / 改稿 / 取消を判断"]
                           pins {:docs-mode "create" :docs-kind kind :docs-folder folder :docs-plan run-id}]
                       (merge common {:status :ready :mode "create" :kind kind :target nil :required []
                                      :sections {"## Acceptance Criteria" acceptance "## Context" (mapv #(str "- " %) context) "## Plan" plan-items}
@@ -3772,11 +3772,11 @@
                           acceptance (vec (concat (map (fn [{:keys [path section]}]
                                                          (str "- [ ] " (link path) (when (seq section) (str " の『" section "』")) " に追記 / 置換だけが入り、他の節・frontmatter・リンクは byte 不変"))
                                                        targets)
-                                                  ["- [ ] 他のノートの変更 0 件、票が Review で止まる（Notes に対象・操作・出典・audit の path）"
+                                                  ["- [ ] 他のノートの変更 0 件、票が Blocked（本人確認待ち）で止まる（Notes に対象・操作・出典・audit の path）"
                                                    "- [ ] 内容は Owner が Obsidian で確認し、修正は Notes に指示、不要なら Obsidian の履歴から戻す"]))
                           plan-items ["- [ ] 調査: corpus を index → list / search → read（対象ノートは読み取り専用で提示）"
                                       "- [ ] 適用: 計画の対象・節に限定した追記 / 置換（runner が範囲・出典・形式を検査、backup 付きで原子的に適用）"
-                                      "- [ ] 確認: Owner が Review で対象ノートを確認し、必要なら改稿指示 / Obsidian の履歴で復元"]
+                                      "- [ ] 確認: Owner が Blocked の票で対象ノートを確認し、必要なら改稿指示 / Obsidian の履歴で復元"]
                           pins {:docs-mode "amend" :docs-target (str/join ", " (map :path targets)) :docs-plan run-id}]
                       (merge common {:status :ready :mode "amend" :kind nil :target (:path (first targets)) :required (vec (remove (set (:read-paths (:research sel))) (map :path targets)))
                                      :sections {"## Acceptance Criteria" acceptance "## Context" (mapv #(str "- " %) context) "## Plan" plan-items}
@@ -3939,29 +3939,29 @@
                                         "create" (str "守る制約: 原典ノートは変更しない / 新規案は `" folder "` に未承認ノート 1 件（既存ノートの上書きなし、名前・slug の衝突は拒否）/ 既存の人物・怪獣・組織の事実は変えず、原典に無い要素は新規案と明示 / 性的・露骨・残酷な描写なし / 出典は調査で読んだ資料だけ")
                                         "propose" (str "守る制約: " (link target) " の canon 本文は変更せず、末尾の『提案（未承認）" ticket-id "』節 1 つだけを追加 / 置換 / 既存の事実は変えず、出典は読んだ資料だけ")
                                         "守る制約: 対象ノートの指定節だけを票に書かれた事実で更新し、根拠が無ければ停止する（docs-sources の資料を読んだものだけを出典にする）")
-                                      "実行の流れ: この票を Ready に置き assignee を localllm に戻す → In Progress → Review（担当 boxp）。改稿は Review の票の Notes 末尾に指示を書いて assignee を localllm に戻す（Notes に新しい指示が無い再実行は Blocked で止まる）。戻すなら Obsidian の履歴機能で戻す"]))
+                                      "実行の流れ: この票を Ready に置き assignee を localllm に戻す → In Progress → Blocked（本人確認待ち、担当 boxp）。改稿は Blocked の票の Notes 末尾に指示を書いて assignee を localllm に戻す（Notes に新しい指示が無い再実行は Blocked で止まる）。戻すなら Obsidian の履歴機能で戻す"]))
                 acceptance (case mode
                              "create" (vec (remove nil?
-                                                   [(str "- [ ] `" folder "` に未承認の新規ノート 1 件が作成され（frontmatter `status: unapproved` / `localllm-proposal: true` / `ticket: " ticket-id "`）、票が Review で止まる")
+                                                   [(str "- [ ] `" folder "` に未承認の新規ノート 1 件が作成され（frontmatter `status: unapproved` / `localllm-proposal: true` / `ticket: " ticket-id "`）、票が Blocked（本人確認待ち）で止まる")
                                                     (str "- [ ] Notes の「読んだ資料」「出典」がすべて `" (str/join "`, `" sources) "` 配下（corpus 外 0 件、合成 fixture / pilot / proposals 0 件）")
                                                     (when (seq required) (str "- [ ] 必読候補 " (count required) " 件のうち規則・世界観ノートが read 済み（Notes の 読んだ資料 で確認）"))
                                                     "- [ ] 原典ノートの変更 0 件（mtime / byte 不変）、既存ノートの上書きなし"
                                                     "- [ ] 内容（全年齢・既存事実との整合）は Owner が Obsidian で確認し、修正は Notes に指示して同じノートを改稿"]))
-                             "propose" [(str "- [ ] " (link target) " の末尾に『提案（未承認）" ticket-id "』節が 1 つだけ追加され、canon 本文は byte 不変で票が Review で止まる")
+                             "propose" [(str "- [ ] " (link target) " の末尾に『提案（未承認）" ticket-id "』節が 1 つだけ追加され、canon 本文は byte 不変で票が Blocked（本人確認待ち）で止まる")
                                         "- [ ] 提案節の出典 wikilink がすべて調査で読んだ資料（Notes の 読んだ資料）に含まれる"
                                         "- [ ] 内容は Owner が Obsidian で確認し、採用なら本文へ反映して節を削除、修正は Notes に指示"]
-                             ["- [ ] 対象ノートの指定節が票の事実どおりに更新され、票が Review で止まる（frontmatter・範囲外の本文は不変）"
+                             ["- [ ] 対象ノートの指定節が票の事実どおりに更新され、票が Blocked（本人確認待ち）で止まる（frontmatter・範囲外の本文は不変）"
                               "- [ ] 出典が docs-sources の読んだ資料に限られ、根拠の無い更新は Blocked で止まる"])
                 plan (case mode
                        "create" ["- [ ] 調査: corpus を index → list / search → read（最大 8 round、必読候補を優先）"
                                  "- [ ] 作成: 新規ノート 1 件（slug はモデルが付け、runner が名前 / slug の衝突と出典を検査。上書きしない）"
-                                 "- [ ] 確認: Owner が Review で読み、必要なら Notes に修正指示 → 同じノートを改稿"]
+                                 "- [ ] 確認: Owner が Blocked の票で読み、必要なら Notes に修正指示 → 同じノートを改稿"]
                        "propose" ["- [ ] 調査: corpus と対象ノートを index → search → read"
                                   (str "- [ ] 提案: " (link target) " 末尾に提案節 1 つ（canon 不変、自動検査付き）")
-                                  "- [ ] 確認: Owner が Review で読み、採用 / 改稿 / 削除を判断"]
+                                  "- [ ] 確認: Owner が Blocked の票で読み、採用 / 改稿 / 削除を判断"]
                        ["- [ ] 調査: 対象ノートと docs-sources を読む"
                         "- [ ] 更新: 指定節の差替え / 追記（検証に落ちれば未適用で Blocked）"
-                        "- [ ] 確認: Owner が Review で差分を確認"])
+                        "- [ ] 確認: Owner が Blocked の票で差分を確認"])
                 pins (cond-> {}
                        (not (#{:declared :target-declared} (:how mode-r))) (assoc :docs-mode mode)
                        (and (= "create" mode) (not (docs-kind-declared frontmatter)) kind) (assoc :docs-kind kind)
@@ -4390,7 +4390,7 @@
               "\n"))
        "# 指示\n"
        (if (= :revise action)
-         "このチケットは Review にあり、Notes の末尾に人間の追加指示（Review 指示）があります。前回書いた内容は対象ノートに既に反映されているので、Review 指示を優先して、対象ノートの現在の本文を最小限に直す changes（前回書いた行の修正は replace-text、同じ内容を二重に追記しない）と canon_facts / conflicts / questions を出力してください。"
+         "このチケットは Owner の確認後に再実行されており、Notes の末尾に人間の追加指示（改稿指示）があります。前回書いた内容は対象ノートに既に反映されているので、改稿指示を優先して、対象ノートの現在の本文を最小限に直す changes（前回書いた行の修正は replace-text、同じ内容を二重に追記しない）と canon_facts / conflicts / questions を出力してください。"
          "チケットの Summary / Acceptance Criteria / Context / Notes の依頼と上の計画にもとづき、対象ノートの節への追記・編集を changes として出力してください。")
        " 各 new_text は " (max 500 (- (:max-change-chars cfg) 500)) " 字以内、変更は合計 " (:max-changes cfg) " 件以内、canon_facts は要点だけにしてください。\n"))
 

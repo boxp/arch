@@ -95,7 +95,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
         research? (= "docs_research_step" schema-name)
         propose? (= "docs_setting_proposal" schema-name)
         verify? (= "docs_setting_verify" schema-name)
-        revise? (str/includes? (str user) "Review にあり")
+        revise? (str/includes? (str user) "人間の追加指示（改稿指示）")
         corpus-note "Projects/task-board-localllm-docs/refs/corpus/design-v2.md"
         ;; propose mode answers (BOXP-277 owner purpose): canon facts cite the
         ;; corpus note the scripted research read; the proposal is new text.
@@ -168,7 +168,7 @@ cat >"${TMP}/fake-llm.bb" <<'EOF'
                                            :changes changes :conflicts ["AMEND-CONFLICT: 射程の記述は原典に無い"] :questions ["射程は何歩か"] :sources [rule]}))]
     (spit req-log (str (pr-str {:uri uri :model (:model parsed) :mode mode :schema? (some? (:response_format parsed))
                                 :schema-name schema-name
-                                :stream? (:stream parsed) :revise? (str/includes? (str user) "Review にあり")
+                                :stream? (:stream parsed) :revise? (str/includes? (str user) "人間の追加指示（改稿指示）")
                                 :mentions-secret? (str/includes? (str user) "FIXTURE-DECOY")
                                 :sees-token-value? (str/includes? (str user) "SECRET-LINE-TOKEN-VALUE")
                                 :sees-redaction-marker? (str/includes? (str user) "〔秘匿")

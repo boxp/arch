@@ -118,16 +118,28 @@
 ;; マーカーの生値 (nil もあり得る) なので、そのまま使うと runner が Ready に進めた groom (マーカーが review でも
 ;; Ready) を Review 到達に数えてしまう。規則 (task_board_runner.bb final-status と一致させる):
 ;;   exit≠0 (failed) → blocked / groom → 常に ready / docs-groom → result=blocked なら blocked、それ以外 ready /
-;;   result が done|review|blocked ならその値 / それ以外 (マーカーなし・未知) → review。
+;;   result が done|review|continue|owner-acceptance|blocked ならその値 / それ以外 (マーカーなし・未知) → 旧 runner の run は review、
+;;   新 runner の run は continue (BOXP-395。docs/project_docs/BOXP-395/sli-semantic-change.md)。
 ;; interrupted/running は終了先が無いので :result の生値 (通常 nil) のまま。
-(defn effective-result [status action result]
+(def review-retired-at
+  "新 runner (sha-b779dc1) が最初の run を始めた時点。これより前に終わった run は旧定義で読む。"
+  (java.time.Instant/parse "2026-11-03T21:12:00Z"))
+
+(defn unmarked-result
+  "マーカーなしで終わった run の終了先。終了時刻が読めない run は過去の系列を変えないよう旧定義で読む。"
+  [finished-at]
+  (let [at (when (string? finished-at)
+             (try (java.time.Instant/parse finished-at) (catch Exception _ nil)))]
+    (if (and at (not (.isBefore at review-retired-at))) "continue" "review")))
+
+(defn effective-result [status action result finished-at]
   (cond
     (contains? #{"interrupted" "running" "in-progress" "unreadable"} status) result
     (= "failed" status) "blocked"
     (= "groom" action) "ready"
     (= "docs-groom" action) (if (= "blocked" result) "blocked" "ready")
     (contains? #{"done" "review" "continue" "owner-acceptance" "blocked"} result) result
-    :else "review"))
+    :else (unmarked-result finished-at)))
 
 (defn read-summary
   "読めて検証を通った summary だけ map を返す。それ以外は nil (呼び出し側で unreadable 扱い)。"
@@ -137,7 +149,7 @@
       (when (valid-summary? s (fs/parent f))
         {:run-id (str (fs/file-name (fs/parent f)))
          :status (kw (:status s)) :action (kw (summary-action s))
-         :result (effective-result (kw (:status s)) (kw (summary-action s)) (kw (:result s)))
+         :result (effective-result (kw (:status s)) (kw (summary-action s)) (kw (:result s)) (:finished-at s))
          :blocker (kw (:blocker-category s)) :agent (kw (:agent s))
          :started-at (:started-at s) :finished-at (:finished-at s)
          :gate (kw (get-in s [:review-gate :gate]))
