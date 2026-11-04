@@ -1,0 +1,6 @@
+{:id "T01"
+ :title "bb スクリプトに --json フラグを追加する"
+ :difficulty "easy"
+ :requirement "`summarize.bb` は数値の列（引数）を受け取り `count=N sum=S` を出力する。`--json` フラグを付けたときは `{\"count\":N,\"sum\":S}` を 1 行で出力するようにする。フラグなしの出力は変えない。"
+ :acceptance "`bb test.bb` が成功すること（フラグなしの既存出力と `--json` の出力を検査する）。"
+ :allowed-files ["summarize.bb"]}

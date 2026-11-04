@@ -1,0 +1,6 @@
+{:id "T06"
+ :title "bb モジュールに関数とテストを追加する"
+ :difficulty "medium"
+ :requirement "`stats.bb` に `percentile` 関数を追加する。`(percentile xs q)` は数値列 `xs`（空でない）と `q`（0〜1）を受け取り、昇順に並べた列の `ceil(q * n) - 1`（0 未満なら 0）番目の値を返す（nearest-rank 法）。空の列なら nil。`test.bb` に `percentile` のテスト（少なくとも 3 ケース: 中央値、q=1 で最大値、空で nil）を追加し、`bb test.bb` を通す。既存の `mean` と そのテストは変えない。"
+ :acceptance "`bb test.bb` が成功し、`bb check.bb` が成功すること（check.bb は percentile の挙動と test.bb にテストが追加されたことを独立に検査する）。"
+ :allowed-files ["stats.bb" "test.bb"]}
