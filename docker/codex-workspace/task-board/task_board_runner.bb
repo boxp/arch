@@ -1662,7 +1662,7 @@
 (defn pr-gate-retry-prompt [ticket-id]
   (when-let [{:keys [pr-url gate message diagnostic run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
     (str "Pending PR gate retry instruction:\n"
-         "- Target PR URL: " pr-url "\n"
+         (when pr-url (str "- Target PR URL: " pr-url "\n"))
          "- Failed gate: " gate "\n"
          "- Failure reason: " message "\n"
          (when diagnostic
@@ -1674,7 +1674,9 @@
          "- Retry count for this same PR/gate/reason: " count "/" limit "\n"
          "- Previous run summary: " run-dir "/summary.edn\n"
          "- Previous run logs: " run-dir "/events.jsonl and " run-dir "/stderr.log\n"
-         "- Expected completion state: update the same PR until draft/mergeability/CI/codex-review gates pass, then return TASK_BOARD_RESULT: continue with the PR URL.\n\n")))
+         (if (= gate "pr-url")
+           "- Re-check Notes and PR state. End the final message with the PR URL, or TASK_BOARD_REVIEW_PR: none if no repository change was made, plus exactly one TASK_BOARD_RESULT marker. A trailing reply to a background notification must not replace this report.\n\n"
+           "- Expected completion state: update the same PR until draft/mergeability/CI/codex-review gates pass, then return TASK_BOARD_RESULT: continue with the PR URL.\n\n"))))
 
 ;; --- BOXP-369: cumulative gate-failure budget ---------------------------
 ;; The short-term retry limit above is keyed by the failure fingerprint, so a
@@ -2740,7 +2742,7 @@
         :else
         {:ok? false
          :gate :pr-url
-         :retryable? false
+         :retryable? true
          :message "Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker."}))
     (catch Exception e
       {:ok? false
@@ -3888,6 +3890,7 @@
     (not (zero? (long (or exit 0)))) "agent-process-error"
     (= "blocked" result) "agent-reported-blocked"
     (:continuation-exhausted? review-gate) "continuation-limit"
+    (= :pr-url (:gate review-gate)) "pr-gate-pr-url"
     (:budget-exhausted? review-gate) "gate-failure-budget-exhausted"
     (:retry-exhausted? review-gate) "pr-gate-retry-limit"
     (and (= :codex-review (:gate review-gate)) (= :invalid-output (:failure-kind review-gate))) "codex-review-invalid-output"
