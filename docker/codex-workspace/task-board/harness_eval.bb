@@ -24,6 +24,7 @@
          '[babashka.process :as p]
          '[cheshire.core :as json]
          '[clojure.edn :as edn]
+         '[clojure.set :as set]
          '[clojure.string :as str])
 
 (def definition-version "harness-eval/v1-draft")
@@ -37,7 +38,8 @@
 (def self-path (str (fs/absolutize *file*)))
 (def self-dir (str (fs/parent self-path)))
 (def repo-root (str (fs/parent (fs/parent (fs/parent self-dir)))))
-(def default-tasks-dir (str (fs/path repo-root "tests" "harness-eval" "tasks")))
+;; 固定課題は image に同梱する (Dockerfile の COPY task-board/ で /opt/codex-workspace/task-board/ へ入る)。
+(def default-tasks-dir (str (fs/path self-dir "harness-eval-tasks")))
 (def runner-path (str (fs/path self-dir "task_board_runner.bb")))
 
 (defn now-str [] (str (java.time.Instant/now)))
@@ -389,12 +391,29 @@
                           (into {} (for [k [:read :explore :edit :bash :other :total]]
                                      [k (median (map #(get-in % [:tool-calls k]) readable))])))}))
 
-(defn regression [a b]
+(defn paired-summaries
+  "両 arm で試行された同じ「課題 × 繰返し」の組だけを集計する。途中停止などで片方にしかない試行を
+  比べると、課題の難度や件数の違いを劣化と誤認するため。"
+  [trials]
+  (let [attempted (remove #(= "aborted" (:outcome %)) trials)
+        pair-key (juxt :task :rep)
+        keys-of (fn [arm] (set (map pair-key (filter #(= arm (:arm %)) attempted))))
+        common (set/intersection (keys-of "A") (keys-of "B"))
+        paired (filter #(common (pair-key %)) attempted)
+        side (fn [arm] (arm-summary (filter #(= arm (:arm %)) paired)))]
+    {:a (side "A") :b (side "B")
+     :paired_trials (count common)
+     :excluded_unpaired_trials (- (count attempted) (count paired))}))
+
+(defn regression
+  "a / b は paired-summaries の組だけの集計。"
+  [a b]
   (cond
     (or (nil? a) (nil? b)) {:status "insufficient" :reason "arm A と arm B の両方が必要"}
     (or (< (:trials a) min-trials-per-arm) (< (:trials b) min-trials-per-arm))
-    {:status "insufficient" :reason (str "各 arm に " min-trials-per-arm " 試行以上が必要")}
+    {:status "insufficient" :reason (str "両 arm で試行された同じ課題 × 繰返しの組が " min-trials-per-arm " 以上必要")}
     :else
+    ;; a と b は同じ組の集計なので件数が揃っており、合格件数の差をそのまま比べられる。
     (let [pass-gap (- (:pass a) (:pass b))
           ratio (when (and (:seconds_p50 a) (:seconds_p50 b) (pos? (:seconds_p50 a))) (round3 (/ (:seconds_p50 b) (:seconds_p50 a))))
           slower? (and ratio (> ratio regression-p50-ratio))
@@ -420,10 +439,13 @@
      :trials_recorded (count trials)
      :note "暫定判定。件数が少ないので断定せず、同条件での再評価と原因候補の確認を推奨する。"
      :groups (vec (for [[[model-rev harness-version] ts] (sort groups)]
-                    (let [arms (into (sorted-map) (for [[arm ats] (group-by :arm ts)] [arm (arm-summary ats)]))]
+                    (let [arms (into (sorted-map) (for [[arm ats] (group-by :arm ts)] [arm (arm-summary ats)]))
+                          {:keys [a b paired_trials excluded_unpaired_trials]} (paired-summaries ts)]
                       {:model_rev model-rev :harness_version harness-version
                        :arms arms
-                       :regression (regression (get arms "A") (get arms "B"))})))}))
+                       :regression (assoc (regression (when (get arms "A") a) (when (get arms "B") b))
+                                          :paired_trials paired_trials
+                                          :excluded_unpaired_trials excluded_unpaired_trials)})))}))
 
 (defn compare! [args]
   (println (json/generate-string (compare-data (or (arg args "--out" nil) (throw (ex-info "--out が必要" {})))) {:pretty true})))

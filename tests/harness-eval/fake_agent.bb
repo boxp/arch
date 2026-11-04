@@ -10,7 +10,7 @@
 (require '[babashka.fs :as fs] '[clojure.string :as str])
 
 (def here (fs/parent (fs/canonicalize *file*)))
-(def tasks-dir (fs/path here "tasks"))
+(def tasks-dir (fs/path here ".." ".." "docker" "codex-workspace" "task-board" "harness-eval-tasks"))
 
 (defn emit! [line] (println line) (flush))
 (def init-line "{\"type\":\"system\",\"subtype\":\"init\",\"model\":\"fake-model-1\"}")

@@ -9,7 +9,8 @@
 (def repo (str (fs/parent (fs/parent here))))
 (def tool (str (fs/path repo "docker/codex-workspace/task-board/harness_eval.bb")))
 (def fake-agent (str "bb " (fs/path here "fake_agent.bb")))
-(def tasks-dir (str (fs/path here "tasks")))
+(def task-board-dir (str (fs/path repo "docker/codex-workspace/task-board")))
+(def tasks-dir (str (fs/path task-board-dir "harness-eval-tasks")))
 
 (defn he
   "harness_eval.bb を別プロセスで実行する (本番と同じ入口)。"
@@ -143,6 +144,61 @@
       (is (= 1 (:events_unreadable (arm cmp "A"))))
       (is (nil? (:tool_calls_median (arm cmp "A"))))
       (is (not (str/includes? (prom! out) "ai_ops_harness_eval_tool_calls{")) "読める試行が無ければ tool_calls を 0 で埋めない"))))
+
+(defn write-trial! [out task a rep outcome seconds]
+  (spit (str (fs/path out "trials" (str task "-" a "-" rep ".edn")))
+        (pr-str (cond-> {:task task :arm a :rep rep :outcome outcome :model-rev "m" :harness-version "h"}
+                  seconds (assoc :seconds seconds)))))
+
+(deftest regression-compares-only-trials-both-arms-attempted
+  (let [ids ["T01" "T02" "T03" "T04" "T05" "T06"]
+        setup (fn [a-outcomes b-outcomes]
+                (let [out (tmp)]
+                  (is (zero? (:exit (plan! out))))
+                  (doseq [[id o] (map vector ids a-outcomes)] (write-trial! out id "A" 1 o (when (not= "aborted" o) 10)))
+                  (doseq [[id o] (map vector ids b-outcomes)] (write-trial! out id "B" 1 o (when (not= "aborted" o) 10)))
+                  (get-in (compare! out) [:groups 0 :regression])))
+        pass3 (repeat 3 "pass") abort3 (repeat 3 "aborted")]
+    (testing "A 6 件全合格・B が途中停止で 3 件全合格なら劣化としない"
+      (let [reg (setup (repeat 6 "pass") (concat pass3 abort3))]
+        (is (= "no_regression" (:status reg)))
+        (is (= 3 (:paired_trials reg)))
+        (is (= 3 (:excluded_unpaired_trials reg)))
+        (is (= 0 (get-in reg [:evidence :pass_gap])))))
+    (testing "同じ組で B が落ちていれば途中停止があっても検知する"
+      (let [reg (setup (repeat 6 "pass") (concat ["pass" "fail" "fail"] abort3))]
+        (is (= "suspected" (:status reg)))
+        (is (= 2 (get-in reg [:evidence :pass_gap])))))
+    (testing "B の方が多く走っていても件数差で劣化を見逃さない"
+      (let [reg (setup (concat pass3 abort3) (concat ["pass" "fail" "fail"] pass3))]
+        (is (= "suspected" (:status reg)))
+        (is (= 3 (:paired_trials reg)))))
+    (testing "組の外の遅い試行は所要時間の比に入れない"
+      (let [out (tmp)]
+        (is (zero? (:exit (plan! out))))
+        (doseq [id (take 3 ids)] (write-trial! out id "A" 1 "pass" 10) (write-trial! out id "B" 1 "pass" 10))
+        (doseq [id (drop 3 ids)] (write-trial! out id "B" 1 "pass" 100))
+        (let [reg (get-in (compare! out) [:groups 0 :regression])]
+          (is (= "no_regression" (:status reg)))
+          (is (= 1.0 (get-in reg [:evidence :p50_ratio]))))))
+    (testing "重なる組が 3 未満なら判定しない"
+      (let [reg (setup (concat ["pass" "pass"] (repeat 4 "aborted")) (repeat 6 "pass"))]
+        (is (= "insufficient" (:status reg)))
+        (is (= 2 (:paired_trials reg)))))))
+
+(deftest default-tasks-dir-works-from-the-image-layout
+  ;; Dockerfile の COPY task-board/ /opt/codex-workspace/task-board/ と同じ配置で、--tasks-dir なしの plan が通ること。
+  (let [root (tmp) installed (fs/path root "opt" "codex-workspace" "task-board") out (tmp)]
+    (is (str/includes? (slurp (str (fs/path repo "docker/codex-workspace/Dockerfile")))
+                       "COPY task-board/ /opt/codex-workspace/task-board/"))
+    (fs/create-dirs (fs/parent installed))
+    (fs/copy-tree task-board-dir installed)
+    (let [r (p/shell {:out :string :err :string :continue true}
+                     "bb" (str (fs/path installed "harness_eval.bb")) "plan" "--out" out)
+          budget (edn/read-string (slurp (str (fs/path out "budget.edn"))))]
+      (is (zero? (:exit r)) (:err r))
+      (is (= ["T01" "T02" "T03" "T04" "T05" "T06"] (:tasks budget)))
+      (is (= (str (fs/path installed "harness-eval-tasks")) (:tasks-dir budget))))))
 
 (deftest stop-file-aborts-the-rest
   (let [out (tmp)]

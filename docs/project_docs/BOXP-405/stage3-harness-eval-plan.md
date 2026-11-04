@@ -16,7 +16,7 @@
 | 成果物 | 内容 |
 |---|---|
 | `docker/codex-workspace/task-board/harness_eval.bb` | `plan` / `run` / `compare` / `prom` / `contract` |
-| `tests/harness-eval/tasks/T01..T06` | 公開・非機密の固定課題（`task.edn` / `base/` / `solution/` / `accept.sh`）。easy 5・medium 1 |
+| `docker/codex-workspace/task-board/harness-eval-tasks/T01..T06` | 公開・非機密の固定課題（`task.edn` / `base/` / `solution/` / `accept.sh`）。easy 5・medium 1 |
 | `tests/harness-eval/fake_agent.bb` | CI 用の偽エージェント（solve / noop / break / sleep / garbage / error、arm B だけ別 mode 可） |
 | `tests/harness-eval/test_harness_eval.bb` | fixture テスト 12 件（CI remaining suite） |
 | `.github/workflows/test-codex-task-board-runner.yml` / `ci-partition-test.py` | suite と path filter に追加 |
@@ -41,7 +41,8 @@
 
 ### 判定（暫定。断定しない）
 
-- 各 arm の試行が 3 未満 → `insufficient`。
+- 判定は両 arm で試行された同じ「課題 × 繰返し」の組だけで行う（途中停止などで片方にしかない試行は除外し、`excluded_unpaired_trials` に件数を残す）。
+- 比較できる組が 3 未満 → `insufficient`。
 - arm B の合格が arm A より 2 件以上少ない、または所要時間 p50 が 1.5 倍超 → `suspected`。それ以外 → `no_regression`。
 - `compare` は根拠（pass_gap / p50_ratio / timeout_gap / tool_calls_total_gap / prompt_chars_gap）と「同条件での再評価を推奨」の注記を付ける。
 

@@ -6,6 +6,7 @@
 
 ## 配置
 
+- 固定課題の置き場は `docker/codex-workspace/task-board/harness-eval-tasks/`（image に同梱するため docker build context の中に置く）。以下の `tasks/` はこの場所を指す。
 - `tasks/Txx/task.edn` — `:id :title :difficulty :requirement :acceptance :allowed-files`。公開・非機密の小課題のみ。
 - `tasks/Txx/base/` — 課題の初期状態（自己完結。arch 本体に依存しない）。受入が使うテストも同梱する。
 - `tasks/Txx/solution/` — 許可ファイルだけの正解版。偽エージェントの `solve` が使う。
