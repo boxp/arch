@@ -1059,7 +1059,7 @@
   failure near the limit never pushes the preceding output over sli-limit. When even the
   export_ok lines do not fit, nothing is appended and the preceding output stands alone."
   [root vault tmp deadline budget]
-  (let [tail (fn [ok?] (str "# HELP ai_ops_outcome_export_ok outcome/v1-draft export succeeded in the last SLI refresh (0 = outcome series are stale or absent).\n"
+  (let [tail (fn [ok?] (str "# HELP ai_ops_outcome_export_ok outcome/v2-draft export succeeded in the last SLI refresh (0 = outcome series are stale or absent).\n"
                             "# TYPE ai_ops_outcome_export_ok gauge\n"
                             "ai_ops_outcome_export_ok " (if ok? 1 0) "\n"))
         body (try (when (and (run-sli-command! ["bb" outcome-script "prom" (str root) (str vault)] tmp deadline)

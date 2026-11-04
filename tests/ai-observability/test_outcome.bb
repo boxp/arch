@@ -113,6 +113,28 @@
       (add-run root vault 61 "2026-10-09T00:00:00Z" "2026-10-09T01:00:00Z" "continue" nil nil "2026-10-10")
       (add-run root vault 61 "2026-10-11T00:00:00Z" "2026-10-11T01:00:00Z" "continue" nil nil "2026-10-10")
       (is (= {:matured 2 :rework 1 :pending 0} (get-in (ai-ops-outcome/snapshot root vault now) [:windows "28d" :rework]))))))
+(deftest window-uses-decision-time
+  ;; 判定の確定時刻で窓に入れる。予算 7 日と 7 日窓では、開始時刻で入れると失敗が常に 0 件になる。
+  (fs/with-temp-dir [d {}]
+    (let [[root vault] (fixture d)]
+      ;; 100: 9 日前に開始して成果なし → 2 日前に予算切れ。7d / 28d の not_reached
+      (add-run root vault 100 "2026-10-23T00:00:00Z" "2026-10-23T01:00:00Z" "continue")
+      ;; 101: 10 日前に開始して 1 日前に成果 → 3 日前に予算切れの遅延。7d / 28d の reached_over_budget
+      (add-run root vault 101 "2026-10-22T00:00:00Z" "2026-10-31T00:00:00Z" "done")
+      ;; 102: 10 日前に開始して 9 日前に成果 → 成果は 7d の外。28d の reached_in_budget
+      (add-run root vault 102 "2026-10-22T00:00:00Z" "2026-10-23T00:00:00Z" "done")
+      ;; 103: 30 日前に開始して成果なし → 23 日前に予算切れ。28d にだけ入り、開始は 28d の外
+      (add-run root vault 103 "2026-10-02T00:00:00Z" "2026-10-02T01:00:00Z" "continue")
+      ;; 104: 36 日前に開始して成果なし → 29 日前に予算切れ。どの窓にも入らない
+      (add-run root vault 104 "2026-09-26T00:00:00Z" "2026-09-26T01:00:00Z" "continue")
+      ;; 105: 1 日前に開始して成果なし → pending は開始時刻で入れる
+      (add-run root vault 105 "2026-10-31T00:00:00Z" "2026-10-31T01:00:00Z" "continue")
+      (let [s (ai-ops-outcome/snapshot root vault now)
+            part #(select-keys % [:started :determined :reached_in_budget :reached_over_budget :not_reached :pending])]
+        (is (= {:started 1 :determined 2 :reached_in_budget 0 :reached_over_budget 1 :not_reached 1 :pending 1}
+               (part (get-in s [:windows "7d"]))))
+        (is (= {:started 4 :determined 4 :reached_in_budget 1 :reached_over_budget 1 :not_reached 2 :pending 1}
+               (part (get-in s [:windows "28d"]))))))))
 (deftest cli-usage
   (let [p (shell {:out :string :err :string :continue true} "bb" tool)]
     (is (= 2 (:exit p))) (is (str/includes? (:err p) "usage:"))))

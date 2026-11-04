@@ -2235,7 +2235,7 @@
 (defn ai-ops-decision-prompt [ai-ops]
   (when ai-ops
     (str "AI Ops decision support (AI Ops 判断支援):\n"
-         "- Source: Prometheus alerts named AiOps* read once at run start through the Grafana datasource proxy (read-only). Definition outcome/v1-draft with provisional thresholds; this is not a formal SLO.\n"
+         "- Source: Prometheus alerts named AiOps* and AiProviderQuota* read once at run start through the Grafana datasource proxy (read-only). Definition outcome/v2-draft with provisional thresholds; this is not a formal SLO.\n"
          "- Status: "
          (cond
            (not= "ok" (:status ai-ops))
@@ -2247,7 +2247,7 @@
            :else
            (str "alerts " (str/join "; " (map ai-ops-alert-line (:alerts ai-ops))) "."))
          "\n"
-         "- Meaning: AiOpsOutcomeBurnFast = the 7-day window consumes the outcome error budget at >= 2x; AiOpsOutcomeBurnSlow = the 28-day window at >= 1x; AiOpsOutcomeMeasurementStale = the outcome export failed or is older than 2h, so outcome numbers are not trustworthy right now; AiOpsHarnessEvalRegression = the fixed-task comparison suggests the current harness underperforms the minimal setup on the same model.\n"
+         "- Meaning: AiProviderQuotaExhausted = a provider usage limit is rejected until its reset (scope=shared binds every Claude model, scope=model binds one); AiProviderQuotaObservationStale = the limit state is not known; neither is an outcome SLO burn. AiOpsOutcomeBurnFast = the 7-day window consumes the outcome error budget at >= 2x; AiOpsOutcomeBurnSlow = the 28-day window at >= 1x; AiOpsOutcomeMeasurementStale = the outcome export failed or is older than 2h, so outcome numbers are not trustworthy right now; AiOpsHarnessEvalRegression = the fixed-task comparison suggests the current harness underperforms the minimal setup on the same model.\n"
          "- Allowed when an alert is firing: record the evidence in this ticket's Notes (alert name, window, counts and definition version from the ai-ops-quality dashboard), isolate the likely cause (model update / harness update / external outage / task difficulty), re-evaluate under the same conditions, and propose small fixes inside the already approved scope.\n"
          "- Not allowed because of these alerts: releasing gates, approvals or locks; resetting retry or continuation budgets; automatic production changes; re-sending notifications; restarting Pods or Hermes; declaring an SLO met or missed. Alerts are context for your judgment, not a blocker: keep working this ticket's approved scope.\n\n")))
 

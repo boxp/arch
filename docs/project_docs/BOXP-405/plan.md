@@ -1,4 +1,4 @@
-# BOXP-405: AI Ops 再設計 段階 1 — 成果指標 `outcome/v1-draft` の集計と export（計画）
+# BOXP-405: AI Ops 再設計 段階 1 — 成果指標 `outcome/v2-draft` の集計と export（計画）
 
 設計の正本は Obsidian `Projects/ai-operations-observability/redesign.md`（第 2 章: 定義と式、第 4 章: 暫定 SLO と burn rate、第 6 章: 段階別チェックリスト）。ここには arch 側の実装範囲と検証だけを置く。本 PR は設計レビューの代替ではなく、設計に沿う最小の実装単位である。
 
@@ -16,7 +16,7 @@
 2. **export の連結**: `ai_ops_ledger.bb` の `refresh-sli-locked!` が v2 の後に `outcome-export-text`（v2 と同じ予算・timeout 方式）を連結し、`ai_ops_outcome_export_ok`（失敗・timeout・空出力・予算超過で 0）を出す。v0/v1/v2 の出力は壊さない。
 3. **系列**
    ```
-   ai_ops_outcome_info{definition_version="outcome/v1-draft",budget_hours="168",rework_maturity_days="14"} 1
+   ai_ops_outcome_info{definition_version="outcome/v2-draft",budget_hours="168",rework_maturity_days="14"} 1
    ai_ops_outcome_generated_timestamp_seconds
    ai_ops_outcome_tasks{window="7d|28d",part="started|determined|reached_in_budget|reached_over_budget|not_reached|pending|excluded_legitimate_wait|unevaluated"}
    ai_ops_outcome_reach_status{window,status="no_observations|insufficient|measuring"} 1   （該当 status だけ 1、他は 0 を出す）
@@ -44,6 +44,15 @@ tests/codex-workspace/ai-ops-ledger-test.sh
 python3 tests/codex-workspace/ci-partition-test.py
 bb docker/codex-workspace/task-board/ai_ops_outcome.bb snapshot "$CODEX_TASK_BOARD_ROOT" "$CODEX_TASK_BOARD_VAULT"   # 実データ read-only、件数のみ
 ```
+
+## 定義の改訂（`outcome/v2-draft`）
+
+実データの readback で `outcome/v1-draft` の欠陥が 2 件分かったので定義を改めた。
+
+- 判定済みの区分を開始時刻で窓に入れていたため、予算 7 日に対して 7 日窓の失敗が常に 0 件で、`AiOpsOutcomeBurnFast` は発火できなかった。判定が確定した時刻（成果の時刻か、開始 + 予算のうち早い方）で窓に入れる。`pending` / `unevaluated` / `started` は開始時刻のまま。
+- burn rate が `reached_over_budget` を失敗に数えず、目標の「予算内の到達率」と合っていなかった。rule 側（lolice）で `(determined - reached_in_budget) / determined / 0.10` にする。
+
+限界: 遅れて到達した作業は、Owner 判断などの正当な待ちがあっても失敗に数える。正当な待ちの除外は現在の状態だけを見るため。
 
 ## provider 利用枠の判断支援（AIOPS-QUOTA、`quota/v1-draft`）
 
