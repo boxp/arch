@@ -266,10 +266,12 @@
                         :with_open_as_stalled {:numerator (+ over24f (count over24o))
                                                :denominator (+ (count followed) (count open))}}
       ;; 既承認の停滞は continue の停止だけ測れる。Blocked に止まった既承認作業は分類できないので分母に入らない。
-      :approved_work_stall {:status (if (zero? (+ c-denominator acceptable-blocked)) "no_observations" "measuring")
+      :approved_work_stall {:status (if (zero? c-denominator) "no_observations" "measuring")
                             :numerator (+ c-over24f c-over24o)
-                            :denominator (+ c-denominator acceptable-blocked)
+                            :denominator c-denominator
                             :excluded_unclassified_blocked unclassified-blocked
+                            ;; 理由が owner-decision / external-hold / new-scope の Blocked は正当な待ちで、分母にも分子にも入れず別掲する
+                            :blocked_acceptable_wait acceptable-blocked
                             :blocked_agent_recoverable (count (filter #(= "agent-recoverable" (:wait-reason %)) blocked-categories))}
       :instructed_not_started {:followed_over_1h (count (filter #(and (:followed? %) (> (:first-contact-wait-h %) 1)) waited))
                                :followed_over_24h (count (filter #(and (:followed? %) (> (:first-contact-wait-h %) 24)) waited))
@@ -287,9 +289,11 @@
       ;; task 単位の救援なし完了率ではなく、continue の停止で起きた救援の件数。Blocked は分類できないので unknown のまま
       :owner_rescue {:status (if (seq cs) "continue_stops_only" "no_observations")
                      :rescue (get rescue :rescue 0)
-                     :not_rescue (+ (get rescue :not-rescue 0) acceptable-blocked)
+                     :not_rescue (get rescue :not-rescue 0)
                      :unknown (get rescue :unknown 0)
-                     :excluded_unclassified_blocked unclassified-blocked}}
+                     :excluded_unclassified_blocked unclassified-blocked
+                     ;; 正当な理由が記録された Blocked。救援ではないが continue の停止でもないので件数だけ別掲する
+                     :blocked_acceptable_wait acceptable-blocked}}
       ids? (assoc-in [:ready_queue :mismatch_ids] (vec (sort mismatch))))))
 
 (defn -main [& args]
@@ -325,9 +329,9 @@
     (emit "ai_ops_v2_info" [[{:definition_version definition-version :review_retired_at "2026-11-03T21:12:00Z"} 1]])
     (emit "ai_ops_v2_generated_timestamp_seconds" [[{} (.getEpochSecond (java.time.Instant/parse (:generated_at s)))]])
     (parts "ai_ops_v2_continue_stops" :continue_stops [:total :closed :followed :followed_over_15m :followed_over_24h :open :open_over_15m :open_over_24h :unknown_lane :unknown_resume])
-    (parts "ai_ops_v2_owner_rescue" :owner_rescue [:rescue :not_rescue :unknown :excluded_unclassified_blocked])
+    (parts "ai_ops_v2_owner_rescue" :owner_rescue [:rescue :not_rescue :unknown :excluded_unclassified_blocked :blocked_acceptable_wait])
     (emit "ai_ops_v2_owner_rescue_status" [[{:status (get-in s [:owner_rescue :status])} 1]])
-    (parts "ai_ops_v2_approved_work_stall" :approved_work_stall [:numerator :denominator :excluded_unclassified_blocked :blocked_agent_recoverable])
+    (parts "ai_ops_v2_approved_work_stall" :approved_work_stall [:numerator :denominator :excluded_unclassified_blocked :blocked_agent_recoverable :blocked_acceptable_wait])
     (emit "ai_ops_v2_blocked_stops" (for [v wait-reasons] [{:wait_reason v} (get-in s [:blocked_stops :by_wait_reason (keyword v)] 0)]))
     (emit "ai_ops_v2_blocked_stops_by_category" (for [v ["external" "agent-reported-blocked" "agent-process-error" "pr-gate-pr-url" "pr-gate-budget" "runner-internal-error" "continuation-limit" "gate-failure-budget-exhausted" "pr-gate-retry-limit" "codex-review-invalid-output" "reason-unavailable" "none-recorded" "other"]] [{:category v} (get-in s [:blocked_stops :by_category (keyword v)] 0)]))
     (emit "ai_ops_v2_owner_acceptance_stops" [[{} (get-in s [:owner_acceptance_stops :total])]])

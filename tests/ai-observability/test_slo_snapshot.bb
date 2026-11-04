@@ -250,9 +250,9 @@
         (is (= {:total 3 :followed 2 :followed_over_15m 1 :followed_over_24h 1 :open 1 :open_over_15m 1 :open_over_24h 1}
                (select-keys (:continue_stops j) [:total :followed :followed_over_15m :followed_over_24h :open :open_over_15m :open_over_24h]))))
       (testing "既承認の停滞は continue だけを分母にし、Blocked を混ぜない"
-        (is (= {:status "measuring" :numerator 2 :denominator 3 :excluded_unclassified_blocked 1 :blocked_agent_recoverable 0} (:approved_work_stall j))))
+        (is (= {:status "measuring" :numerator 2 :denominator 3 :excluded_unclassified_blocked 1 :blocked_agent_recoverable 0 :blocked_acceptable_wait 0} (:approved_work_stall j))))
       (testing "Owner 接触で再開した停止だけが救援。監督の note と接触なしは救援でない"
-        (is (= {:status "continue_stops_only" :rescue 1 :not_rescue 2 :unknown 0 :excluded_unclassified_blocked 1} (:owner_rescue j))))
+        (is (= {:status "continue_stops_only" :rescue 1 :not_rescue 2 :unknown 0 :excluded_unclassified_blocked 1 :blocked_acceptable_wait 0} (:owner_rescue j))))
       (testing "owner-acceptance は確認待ちとして別掲し、停滞に入れない"
         (is (= 1 (get-in j [:owner_acceptance_stops :total]))))
       (testing "移行で Done になった票を受入に数えない。新レーンが Done の行だけを見る"
@@ -388,8 +388,12 @@
     (is (= (zipmap (map #(or % "unrecorded") reasons) (repeat 1)) (get-in snapshot [:blocked_stops :by_wait_reason])))
     (is (true? (get-in snapshot [:blocked_stops :reason_classified])))
     (is (= 1 (get-in snapshot [:approved_work_stall :blocked_agent_recoverable])))
-    (is (= 3 (get-in snapshot [:approved_work_stall :denominator])))
-    (is (= 3 (get-in snapshot [:owner_rescue :not_rescue])))
+    ;; 理由付きの Blocked は continue の停止ではないので、停滞の分母にも救援なしにも入れず別掲する
+    (is (= 0 (get-in snapshot [:approved_work_stall :denominator])))
+    (is (= "no_observations" (get-in snapshot [:approved_work_stall :status])))
+    (is (= 3 (get-in snapshot [:approved_work_stall :blocked_acceptable_wait])))
+    (is (= 0 (get-in snapshot [:owner_rescue :not_rescue])))
+    (is (= 3 (get-in snapshot [:owner_rescue :blocked_acceptable_wait])))
     (doseq [state ["blocked_owner_decision" "blocked_external_hold" "blocked_new_scope" "blocked_agent_recoverable" "blocked_unrecorded" "ready_not_started" "ready_assignee_mismatch" "waiting_owner_acceptance" "running"]]
       (is (= 1 (get-in snapshot [:board_tasks state])) state))))
 
