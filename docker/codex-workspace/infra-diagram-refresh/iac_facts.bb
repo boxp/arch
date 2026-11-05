@@ -76,8 +76,9 @@
 (defn lolice-facts [dir]
   (let [paths (tracked dir "argoproj/*.yaml" "argoproj/*.yml")
         parsed (map (fn [path]
-                      (try {:docs (yaml/parse-string (slurp (str (fs/path dir path)))
-                                                     :load-all true :unknown-tag-fn :value)}
+                      (try ;; 複数文書の解析は遅延するので、ここで実体化して例外を捕まえる
+                           {:docs (vec (yaml/parse-string (slurp (str (fs/path dir path)))
+                                                          :load-all true :unknown-tag-fn :value))}
                            (catch Exception _ {:error path})))
                     paths)]
     {:facts (concat (map #(str "lolice:dir:" %) (top-names dir "argoproj/" paths))

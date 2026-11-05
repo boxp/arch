@@ -7,7 +7,8 @@ out=${1:?usage: collect-live.sh OUT.json}
 ds=${PROM_DS_UID:-P1809F7CD0C75ACF3}
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-q(){ curl -fsS -m 30 -G -H "Authorization: Bearer $GRAFANA_SERVICE_ACCOUNT_TOKEN" "$GRAFANA_URL/api/datasources/proxy/uid/$ds/api/v1/query" --data-urlencode "query=$1"; }
+# token をプロセス引数に出さない
+q(){ curl -fsS -m 30 -G -H @<(printf 'Authorization: Bearer %s\n' "$GRAFANA_SERVICE_ACCOUNT_TOKEN") "$GRAFANA_URL/api/datasources/proxy/uid/$ds/api/v1/query" --data-urlencode "query=$1"; }
 kj(){ kubectl get --request-timeout=60s "$@" -o json; }
 get(){ local name=$1 filter=$2; shift 2; kj "$@" | jq "$filter" > "$tmp/$name.json"; }
 prom(){ local name=$1 query=$2; q "$query" | jq '[.data.result[]|{k:(.metric|to_entries[0].value),v:.value[1]}]' > "$tmp/$name.json"; }

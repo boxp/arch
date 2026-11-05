@@ -28,7 +28,8 @@
   [opts & args]
   (let [r (apply shell (merge {:out :string :err :string :continue true} opts) args)]
     (when-not (zero? (:exit r))
-      (die "failed:" (first args) (second args) (str/trim (str (:err r)))))
+      ;; docker pull の進捗などで原因が流れないよう、末尾だけ出す
+      (die "failed:" (first args) (second args) (str/join "\n" (take-last 15 (str/split-lines (str (:err r)))))))
     (str/trim (str (:out r)))))
 
 (defn sha256-file [path] (first (str/split (sh {} "sha256sum" (str path)) #"\s+")))
@@ -143,9 +144,10 @@
                       [id (sha256-file file)])))]
       (doseq [n ["lolice-lineage.webp" "lolice-architecture.webp"]]
         (let [f (fs/path thumbs n) b (fs/read-all-bytes f)]
-          (when (or (< (alength b) 5000) (> (alength b) 80000))
+          ;; stage の workflow は 2 分割まで受ける (40,000 文字 x 2)
+          (when (or (< (alength b) 5000) (> (alength b) 58000))
             (die "thumbnail size out of range:" n (alength b)))))
-      (save-manifest! ticket (assoc m :built hashes :deployed {}))
+      (save-manifest! ticket (assoc m :built hashes :deployed {} :verified false))
       (println "built" hashes))))
 
 ;; ── 配備
@@ -175,12 +177,17 @@
 (defn set-parts!
   "1 個の secret は 48 KB まで。古い分割が混ざらないよう、余る番号は消す。値は stdin で渡し、引数に出さない。"
   [env-name base parts max-parts]
-  (doseq [i (range 1 (inc max-parts))
-          :let [name (if (= 1 i) base (str base "_" i))
-                value (get (vec parts) (dec i))]]
-    (if value
-      (sh {:in value} "gh" "secret" "set" name "-R" repo "--env" env-name)
-      (shell {:continue true :out :string :err :string} "gh" "secret" "delete" name "-R" repo "--env" env-name))))
+  (when (> (count parts) max-parts) (die "too many secret parts:" base (count parts)))
+  (let [names (mapv #(if (= 1 %) base (str base "_" %)) (range 1 (inc max-parts)))
+        wanted (set (take (count parts) names))]
+    (doseq [[name value] (map vector names parts)]
+      (sh {:in value} "gh" "secret" "set" name "-R" repo "--env" env-name))
+    (doseq [name (remove wanted names)]
+      ;; 無い secret の削除は失敗するので、結果は下の一覧で確かめる
+      (shell {:continue true :out :string :err :string} "gh" "secret" "delete" name "-R" repo "--env" env-name))
+    (let [listed (set (str/split-lines (sh {} "gh" "secret" "list" "-R" repo "--env" env-name "--json" "name" "--jq" ".[].name")))
+          stale (filter #(and (listed %) (not (wanted %))) names)]
+      (when (seq stale) (die "stale secret parts remain:" (str/join "," stale))))))
 
 (defn delete-parts! [env-name base max-parts]
   (set-parts! env-name base [] max-parts))
@@ -233,14 +240,15 @@
         (println "stage deployed run" run "thumbnail" thumb-sha)
         (save-manifest! ticket (assoc (manifest ticket) :thumbnail-sha thumb-sha :stage-run run))))
     (verify-boundaries! hashes)
+    (save-manifest! ticket (assoc (manifest ticket) :verified true))
     (println "deploy verified")))
 
 ;; ── 正本の更新
 (defn cmd-promote [ticket]
   (let [m (manifest ticket) stamp (str/replace (subs (str (java.time.Instant/now)) 0 19) #"[-:]" "")]
     (doseq [{:keys [id]} diagrams]
-      (when-not (and (get-in m [:built id]) (= (get-in m [:built id]) (get-in m [:deployed id])))
-        (die "not deployed:" id)))
+      (when-not (and (:verified m) (get-in m [:built id]) (= (get-in m [:built id]) (get-in m [:deployed id])))
+        (die "not deployed and verified:" id)))
     (doseq [{:keys [id project html]} diagrams
             :let [src (fs/path (stage-dir ticket) "Projects" project)
                   dst (fs/path (vault) "Projects" project)

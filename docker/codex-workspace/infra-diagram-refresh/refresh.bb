@@ -67,10 +67,12 @@
 (defn sanitize-ci-result
   "public repo の artifact は機械の出力でも入力として疑い、形の合う事実だけを渡す。"
   [r]
-  (let [facts (fn [xs] (vec (filter #(and (string? %) (re-matches safe-fact-re %)) xs)))]
+  (let [ru (rules)
+        facts (fn [xs] (vec (filter #(and (string? %) (re-matches safe-fact-re %) (not (excluded? ru %))) xs)))]
     {:status (when (#{"no-change" "changed" "anomaly"} (:status r)) (:status r))
      :simulated (true? (:simulated r))
-     :reason (some-> (:reason r) str (subs 0 (min 200 (count (str (:reason r))))))
+     ;; 自由文を票へ渡さない
+     :reason (let [x (str (:reason r))] (when (re-matches #"[A-Za-z0-9 ._:,/=-]{1,200}" x) x))
      :added (facts (:added r))
      :removed (facts (:removed r))
      :new_categories (facts (:new_categories r))
@@ -94,7 +96,8 @@
         (= (:databaseId run) (get-in s [:ci :run-id])) (assoc-in s [:ci :api-error] nil)
         :else
         (let [res (download-result (:databaseId run))
-              simulated (:simulated res)
+              ;; 失敗した simulate は canary ではなく失敗として扱う
+              simulated (and (:simulated res) (= "success" (:conclusion run)))
               ok (and (= "success" (:conclusion run)) (#{"no-change" "changed"} (:status res)))
               base {:run-id (:databaseId run) :run-url (:url run) :run-at (:createdAt run) :head (:headSha run)
                     :conclusion (:conclusion run) :api-error nil}]
@@ -156,17 +159,16 @@
               facts (normalize-live (json/parse-string (slurp tmp) true))
               baseline (when (fs/exists? (live-baseline-path)) (:facts (read-json (live-baseline-path))))]
           (if (nil? baseline)
-            ;; 基準が無い最初の 1 回は差分と言えないので、基準を作るだけ。
-            (do (write-json! (live-baseline-path) {:schema 1 :facts facts})
+            ;; 基準が無い最初の 1 回は差分と言えないので、基準を作るだけ。ただし不完全な収集を基準にしない。
+            (do (when (< (count facts) (:min-live-facts r))
+                  (throw (ex-info "live anomaly" {:stderr (str "facts too few: " (count facts))})))
+                (write-json! (live-baseline-path) {:schema 1 :facts facts})
                 (update s :live merge {:attempted-at (str (now)) :last-success-at (str (now)) :failures 0 :failure nil :new? false :result nil}))
             (let [res (compare-facts r (:min-live-facts r) facts baseline)]
               (if (= "anomaly" (:status res))
                 (throw (ex-info "live anomaly" {:stderr (:reason res)}))
-                (do
-                  (when (= "changed" (:status res))
-                    (write-json! (live-candidate-path) {:schema 1 :facts (vec (remove #(excluded? r %) facts))}))
-                  (update s :live merge {:attempted-at (str (now)) :last-success-at (str (now)) :failures 0 :failure nil
-                                         :new? true :result res}))))))
+                (update s :live merge {:attempted-at (str (now)) :last-success-at (str (now)) :failures 0 :failure nil
+                                       :new? true :result res})))))
         (catch Exception e
           (let [n (inc (get-in s [:live :failures] 0))
                 ;; 1 行目だけ残す。kubectl の全文は vault の state に要らない。
@@ -251,9 +253,11 @@
 (defn find-ticket-by-key [key]
   (let [dir (fs/path (vault) "Tickets")]
     (when (fs/exists? dir)
-      (some (fn [f] (when (str/includes? (slurp (str f)) (str "infra-diagram-refresh-key: " key))
-                      (second (re-find #"(BOXP-\d+)\.md$" (str f)))))
-            (fs/glob dir "BOXP-*.md")))))
+      ;; 閉じた票と再起票した票が両方あるときは、開いている票を選ぶ
+      (let [ids (keep (fn [f] (when (str/includes? (slurp (str f)) (str "infra-diagram-refresh-key: " key))
+                                (second (re-find #"(BOXP-\d+)\.md$" (str f)))))
+                      (fs/glob dir "BOXP-*.md"))]
+        (or (first (remove #(= "done" (ticket-status %)) ids)) (first ids))))))
 
 (defn append-note! [id body]
   (sh "bb" (helper) "append-note" id "--vault" (vault) "--source" "infra-diagram-refresh" "--note-file" (write-file-tmp body)))
@@ -363,9 +367,12 @@
   (with-lock
     (fn []
       (let [s (read-state)]
+        ;; System/exit だと lock を残すので例外で抜ける
         (when-not (= ticket (get-in s [:active :ticket]))
-          (println "not the active ticket:" ticket (get-in s [:active :ticket]))
-          (System/exit 1))
+          (throw (ex-info (str "not the active ticket: " ticket " " (get-in s [:active :ticket])) {})))
+        ;; 監査していない live の値で基準を進めない。候補は監査した snapshot から agent が作る。
+        (when (and (= "changed" (get-in s [:live :result :status])) (not (fs/exists? (live-candidate-path))))
+          (throw (ex-info "live has a diff but no candidate: run live-candidate with the audited snapshot" {})))
         (when (fs/exists? (live-candidate-path))
           (fs/move (live-candidate-path) (live-baseline-path) {:replace-existing true}))
         ;; 結果を捨てるだけで、差分が解消したとは決めない。基準の PR が入っていなければ次の run が同じ差分を出す。
@@ -405,7 +412,8 @@
     (case cmd
       "tick" (tick!)
       "status" (status!)
-      "accept" (accept! (if (= a "--ticket") b (do (println "usage: accept --ticket BOXP-N") (System/exit 2))))
+      "accept" (try (accept! (if (= a "--ticket") b (throw (ex-info "usage: accept --ticket BOXP-N" {}))))
+                   (catch clojure.lang.ExceptionInfo e (binding [*out* *err*] (println (ex-message e))) (System/exit 1)))
       "live-candidate" (set-live-candidate! a)
       "seed-live" (seed-live! a)
       "mark-published" (mark-published! a)
