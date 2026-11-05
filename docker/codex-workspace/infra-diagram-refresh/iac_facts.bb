@@ -99,6 +99,11 @@
 
 (defn category [fact] (str/join ":" (take 3 (str/split fact #":" 4))))
 
+(defn section
+  "異常判定で使う種類。先頭 2 要素なので live:app:x は live:app、live:ns:y は live:ns になり、live 全体へまとまらない。"
+  [fact]
+  (str/join ":" (take 2 (str/split fact #":" 3))))
+
 (defn compare-facts
   "基準と比べた結果を返す。減りすぎは資源の削除と読まず anomaly にする。"
   [rules min-facts facts baseline]
@@ -107,7 +112,6 @@
         added (vec (sort (set/difference now base)))
         removed (vec (sort (set/difference base now)))
         new-cats (vec (sort (set/difference (set (map category now)) (set (map category base)))))
-        section #(str/join ":" (take 2 (str/split % #":" 3)))
         now-sections (set (map section now))
         ;; 権限拒否で 1 種類だけ空になった場合を、全部削除されたと読まない
         vanished (->> (frequencies (map section base))

@@ -81,6 +81,17 @@
     (dotimes [_ 3] (tick s))
     (is (str/includes? (ticket s "BOXP-2") "収集の異常"))
     (is (not (str/includes? (ticket s "BOXP-2") "削除")))))
+(deftest vanished-kind-reason
+  (testing "他の種類が残っていても、消えた種類だけを名指しで anomaly にする"
+    (let [d (str (fs/create-temp-dir)) facts (str d "/facts.json") base (str d "/base.json") out (str d "/out.json")
+          ns-facts (mapv #(str "live:ns:ns" %) (range 300))]
+      (write-json facts {:facts ns-facts})
+      (write-json base {:facts (into ns-facts (map #(str "live:app:a" %) (range 5)))})
+      (run {} "bb" (str refresh-dir "/iac_facts.bb") "compare" "--facts" facts "--baseline" base "--rules" rules "--out" out)
+      (let [r (read-json out)]
+        (is (= "anomaly" (:status r)))
+        (is (= "whole section vanished: live:app" (:reason r)))
+        (is (empty? (:removed r)))))))
 (deftest volatile-live
   (let [s (sandbox) snap {:namespaces (mapv #(str "ns" %) (range 60)) :observed_at "tomorrow" :pods [{:node "other"}] :cpu 999 :sync "unknown" :lb "1.2.3.4" :up 5}]
     (write-json (str (:d s) "/live.json") snap) (tick s) (is (empty? (calls s)))))
