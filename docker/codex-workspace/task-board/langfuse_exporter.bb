@@ -148,6 +148,22 @@
             (do (.append out (subs text position (.end matcher))) (recur (max (.end matcher) (inc position))))))
         (do (.append out (subs text position)) (mask-reversed-entries (str out) mark))))))
 
+(def loose-word (re-pattern "(?i)(?:password|passwd|passphrase|pwd|secret|token(?!s(?![a-z])|_?count)|api[_-]?key|access[_-]?key|private[_-]?key|credential|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z])|パスワード|暗証番号|秘密鍵|認証情報|トークン|シークレット|合言葉)"))
+(def placeholder #"\[REDACTED:[a-z_-]+\]")
+(def segment-break #"\r?\n|\\+(?:r\\+)?n|[。！？]")
+(def secret-element (re-pattern (str "(?is)(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)(?<tag>[\\w:.-]{0,64}" (.pattern loose-word) "[\\w:.-]{0,64})(?=[\\s/>&\\\\]).*?(?:(?:<|&lt;|&#0*60;|&#x0*3c;|\\\\+u003c)\\\\*/\\k<tag>\\s*(?:>|&gt;|&#0*62;|&#x0*3e;|\\\\+u003e)|\\z)")))
+
+(defn mask-secret-lines [text mark]
+  (let [matcher (.matcher segment-break text)
+        parts (loop [pos 0 out []]
+                (if (.find matcher)
+                  (recur (.end matcher) (conj out (subs text pos (.start matcher)) (.group matcher)))
+                  (conj out (subs text pos))))
+        filled (vec (filter #(not (str/blank? (nth parts %))) (range 0 (count parts) 2)))
+        hits (set (keep-indexed (fn [i p] (when (or (str/includes? (nth parts p) "ZZMASKHITZZ") (re-find loose-word (str/replace (nth parts p) placeholder ""))) i)) filled))
+        masked (set (mapcat (fn [i] (keep #(get filled %) [(dec i) i (inc i)])) hits))]
+    (apply str (map-indexed (fn [i part] (if (contains? masked i) (mark :secret_line) part)) parts))))
+
 (defn redact
   "Mask known secret forms and environment values. On any error, drop the field."
   [s values]
@@ -159,12 +175,12 @@
                                   (str/replace text (re-pattern (java.util.regex.Pattern/quote value)) (fn [_] (mark :env)))
                                   text))
                               (str s) values)
-          masked (reduce (fn [text [kind pattern]]
+          masked (mask-secret-lines (reduce (fn [text [kind pattern]]
                            (str/replace text pattern
                                         (fn [match]
                                           (let [m (if (vector? match) (first match) match)]
-                                            (if (and (= kind :entropy) (not (entropy-secret? m))) m (mark kind))))))
-                         (mask-structured with-values mark) patterns)]
+                                            (if (and (= kind :entropy) (not (entropy-secret? m))) m (str (when (re-find loose-word m) "ZZMASKHITZZ") (mark kind)))))))
+                         (mask-structured (str/replace with-values secret-element (fn [_] (mark :element))) (fn [kind] (str "ZZMASKHITZZ" (mark kind)))) patterns) mark)]
       {:value masked :redactions @counts})
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 
@@ -182,9 +198,10 @@
 (defn guard-safe?
   "Scan again instead of relying on the per-field pass."
   [text values]
-  (let [result (redact (str/replace text #"\[REDACTED:[a-z-]+\]" "") values)]
+  (let [result (redact (str/replace text placeholder "") values)]
     (and (not= "[dropped: redaction error]" (:value result))
-         (empty? (:redactions result)))))
+         (empty? (:redactions result))
+         (not (re-find loose-word (str/replace text placeholder ""))))))
 
 ;; The pass that runs on every field. Rebound in tests to prove the final guard catches a miss.
 (def ^:dynamic *redact-field* redact)
@@ -314,14 +331,28 @@
       parent (assoc :parentSpanId (span-id tid parent))
       (= level "ERROR") (assoc :status {:code 2}))))
 
-(defn- tool-span [ctx {:keys [key parent name start end input output error?]}]
+(def body-tools #{"Task" "Agent" "TodoWrite" "delegate_task" "delegate" "spawn_agent"})
+(defn- tool-input-view [input]
+  (let [input (if (string? input) (try (json/parse-string input true) (catch Exception _ input)) input)]
+    (if (map? input)
+      (let [command (or (:command input) (get input "command"))
+            program (when (string? command) (second (re-find #"^(?:[A-Za-z_][A-Za-z0-9_]*=\S+\s+)*(?:[^\s'\"]*/)?([\w.+-]+)(?:\s|$)" (str/trim command))))]
+        (cond-> {:arg_names (sort (map name (keys input)))}
+          program (assoc :command program)
+          true (merge (into {} (keep (fn [k] (let [v (or (get input k) (get input (name k)))] (when (string? v) [k v]))) [:file_path :path :notebook_path])))))
+      {:arg_names []})))
+
+(defn- tool-span [ctx {:keys [key parent name start end input output error? status]}]
   (let [input-str (if (string? input) input (json/generate-string input))
-        withheld? (or (withhold-output? input-str) (env-dump? output))]
+        body? (contains? body-tools name)
+        withheld? (and body? (or (withhold-output? input-str) (env-dump? output)))
+        out (str (or output ""))]
     (mk-span ctx {:key key :parent parent :name (str "tool:" name) :start start :end end
                   :level (when error? "ERROR")
                   :attrs-map (cond-> {"langfuse.observation.type" "tool"
-                                      "langfuse.observation.input" (if withheld? "[withheld: sensitive path]" input-str)
-                                      "langfuse.observation.output" (if withheld? "[withheld: sensitive path]" (str output))}
+                                      "langfuse.observation.input" (cond withheld? "[withheld: sensitive path]" body? input-str :else (json/generate-string (tool-input-view input)))
+                                      "langfuse.observation.output" (cond withheld? "[withheld: sensitive path]" body? out :else (json/generate-string {:omitted "tool_body_policy" :chars (count out) :lines (if (empty? out) 0 (inc (count (re-seq #"\n" out))))}))}
+                               status (assoc "langfuse.observation.metadata.status" status)
                                error? (assoc "langfuse.observation.level" "ERROR"))})))
 
 (defn- generation-span [ctx {:keys [key parent model usage start end input output]}]
@@ -413,7 +444,7 @@
                        later? (and first-sensitive (>= idx first-sensitive) (not (or (withhold-output? (:input tool)) (env-dump? (:output result)))))]
                    (tool-span ctx {:key (str gen-key ":tool:" (:id tool)) :parent gen-key :name (:name tool)
                                    :start (:ts gen) :end (or (:ts result) end)
-                                   :input (if later? "[withheld: session ran a sensitive tool]" (:input tool)) :output (if later? (str "[withheld: session ran a sensitive tool]" (when (str/includes? (str (:output result)) "[image omitted]") " [image omitted]")) (:output result)) :error? (:error? result)})))
+                                   :input (if (and later? (contains? body-tools (:name tool))) "[withheld: session ran a sensitive tool]" (:input tool)) :output (if (and later? (contains? body-tools (:name tool))) "[withheld: session ran a sensitive tool]" (:output result)) :error? (:error? result)})))
                tools))))
      gens (concat (rest gens) [nil]) (range))))
 
@@ -473,7 +504,7 @@
                 ("function_call" "custom_tool_call")
                 (update-in (ensure-open acc ts) [:open :tools] conj
                            {:call-id (:call_id p) :name (:name p) :input (codex-tool-input p) :ts ts
-                            :error? (and (:status p) (not= "completed" (:status p)))})
+                            :status (:status p) :error? (and (:status p) (not= "completed" (:status p)))})
                 ("function_call_output" "custom_tool_call_output")
                 (-> (close acc)
                     (assoc-in [:results (:call_id p)] {:output (content-text (:output p)) :ts ts})
@@ -502,7 +533,7 @@
                        later? (and first-sensitive (>= idx first-sensitive) (not (or (withhold-output? (:input tool)) (env-dump? (:output result)))))]
                    (tool-span ctx {:key (str gen-key ":tool:" (:call-id tool)) :parent gen-key :name (:name tool)
                                    :start (:ts tool) :end (or (:ts result) end)
-                                   :input (if later? "[withheld: session ran a sensitive tool]" (:input tool)) :output (if later? "[withheld: session ran a sensitive tool]" (:output result)) :error? (:error? tool)})))
+                                   :input (if (and later? (contains? body-tools (:name tool))) "[withheld: session ran a sensitive tool]" (:input tool)) :output (if (and later? (contains? body-tools (:name tool))) "[withheld: session ran a sensitive tool]" (:output result)) :status (:status tool) :error? (:error? tool)})))
                (:tools gen)))))
      gens (concat (rest gens) [nil]) (range))))
 
@@ -619,6 +650,7 @@
                     "langfuse.trace.metadata.agent" agent-name
                     "langfuse.trace.metadata.action" (str action)
                     "langfuse.trace.metadata.exporter_version" exporter-version
+                    "langfuse.trace.metadata.coverage.tool_body" "delegation_only"
                     "langfuse.trace.metadata.coverage.reasoning" "not_collected"
                     "langfuse.trace.metadata.coverage.provider_payload"
                     "partial: Claude api-request-blob and Codex response_item only; the CLI may add content it does not log"}
@@ -692,7 +724,7 @@
 (defn span-safe?
   "The final guard. It covers every string in the span, whatever the per-field pass did."
   [cfg span]
-  (let [strings (filter string? (tree-seq coll? seq span))]
+  (let [strings (concat [(:name span)] (filter string? (tree-seq coll? seq (map :value (:attributes span)))))]
     (every? #(guard-safe? % (:secret-values cfg)) strings)))
 
 (defn prepare-spans

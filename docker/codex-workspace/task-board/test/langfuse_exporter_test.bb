@@ -198,7 +198,7 @@
       (testing "root"
         (is (= "task-board-run BOXP-1" (:name root)))
         (is (nil? (:parentSpanId root)))
-        (is (str/includes? (attr-value root "langfuse.observation.input") "runner prompt"))
+        (is (= "[REDACTED:secret_line]" (attr-value root "langfuse.observation.input")))
         (is (= "runner_assembled" (attr-value root "langfuse.observation.metadata.source"))))
       (testing "observation types"
         ;; 2 main + 1 subagent + 2 in each of the two Codex threads
@@ -221,12 +221,12 @@
                     (by-name "cli-system-prompt"))))
       (testing "tool failure and withheld output"
         (let [tools (by-name "tool:Read")]
-          (is (= "[withheld: sensitive path]" (attr-value (first tools) "langfuse.observation.output"))))
+          (is (= "tool_body_policy" (:omitted (json/parse-string (attr-value (first tools) "langfuse.observation.output") true)))))
         (let [bash (first (by-name "tool:Bash"))]
           (is (= 2 (get-in bash [:status :code])))
-          (is (str/includes? (attr-value bash "langfuse.observation.output") "[image omitted]"))))
+          (is (= "tool_body_policy" (:omitted (json/parse-string (attr-value bash "langfuse.observation.output") true))))))
       (testing "generation usage and delta input"
-        (let [first-gen (first (filter #(str/includes? (or (attr-value % "langfuse.observation.input") "") "hello") (by-name "generation:claude-test")))]
+        (let [first-gen (first (by-name "generation:claude-test"))]
           (is (= {:input 10 :output 5 :cache_read_input_tokens 3 :cache_creation_input_tokens 2}
                  (json/parse-string (attr-value first-gen "langfuse.observation.usage_details") true)))
           (is (= "delta" (attr-value first-gen "langfuse.observation.metadata.input_scope")))))
@@ -476,7 +476,7 @@
                         (str "password=|\n  " v "\n")]}]
     (doseq [[group cases] groups text cases]
       (is (not (str/includes? (:value (lf/redact text [])) v)) (str group " " text)))
-    (is (str/includes? (:value (lf/redact (first (groups "A2")) [])) "keptvalue") "A2 keep sibling")
+    (is (not (str/includes? (:value (lf/redact (first (groups "A2")) [])) "keptvalue")) "A2 whole line")
     (doseq [text ["bypass=k" "compass: k" "tests passed: k" "author: k" "{\"name\":\"DB_HOST\",\"value\":\"k\"}" "--name k" "mysql -h k" "curl -u k https://x" "grep -p k"]]
       (is (= text (:value (lf/redact text []))) (str "keep " text)))
     (is (lf/guard-safe? (:value (lf/redact "--password plainwordvalue cleanbodymarker" [])) []) "A3 guard")))
@@ -533,7 +533,7 @@
                 "a:\n  password:\n  - plainwordvalue\n  name: keptvalue\n"
                 (json/generate-string (array-map :value ["plainwordvalue"] :name "DB_PASSWORD" :other "keptvalue"))]]
     (testing text (let [out (:value (lf/redact text []))]
-      (is (not (str/includes? out "plainwordvalue"))) (is (str/includes? out "keptvalue"))))))
+      (is (not (str/includes? out "plainwordvalue"))) (is (not (str/includes? out "keptvalue")))))))
 
 (deftest ordinary-structured-values
   (doseq [text [(json/generate-string {:items ["keptvalue" "keptother"]}) "names:\n  - keptvalue\n"
@@ -549,10 +549,46 @@
       (is (< elapsed 5.0) (str "seconds: " elapsed)))))
 
 (deftest structured-mask-accounting-and-limit
-  (is (= {:value "{[REDACTED:assignment]}" :redactions {:assignment 1}}
+  (is (= {:value "[REDACTED:secret_line]" :redactions {:assignment 1 :secret_line 1}}
          (lf/redact "{\"password\":[\"first\",\"second\"]}" [])))
   (is (= {:value "[dropped: redaction error]" :redactions {:error 1}}
          (lf/redact (apply str (repeat 1001 "value: [x], name: HOST\n")) []))))
+
+(deftest body-policy-and-format-independent-redaction
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        span (#'lf/tool-span ctx {:key "x" :name "Bash" :input {:command "FOO=bar /bin/echo hidden" :path "src/a" :content "hidden"} :output "one\ntwo"})
+        input (json/parse-string (attr-value span "langfuse.observation.input") true)
+        output (json/parse-string (attr-value span "langfuse.observation.output") true)]
+    (is (= "echo" (:command input)))
+    (is (= "src/a" (:path input)))
+    (is (not (str/includes? (pr-str input) "hidden")))
+    (is (= {:omitted "tool_body_policy" :chars 7 :lines 2} output)))
+  (doseq [text ["before\nmy passphrase is sample\nafter\nkeep" "before\\n秘密鍵 sample\\nafter\\nkeep" "before。token sample！after？keep"]]
+    (let [out (:value (lf/redact text []))]
+      (is (not (str/includes? out "sample")))
+      (is (not (str/includes? out "before")))
+      (is (not (str/includes? out "after")))
+      (is (str/includes? out "keep"))))
+  (doseq [text ["<secret>opaque</secret> tail" "&lt;api_key&gt;opaque&lt;/api_key&gt; tail" "<credential>opaque"]]
+    (is (str/includes? (:value (lf/redact text [])) "[REDACTED:element]")))
+  (is (false? (lf/guard-safe? "a passphrase is here" [])))
+  (is (true? (lf/guard-safe? "input_tokens token_count coverage [REDACTED:secret_line]" []))))
+
+(deftest delegation-and-coverage-policy
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [name ["Task" "Agent" "TodoWrite" "delegate_task" "spawn_agent"]]
+      (let [span (#'lf/tool-span ctx {:key name :name name :input {:prompt "work item"} :output "result"})]
+        (is (str/includes? (attr-value span "langfuse.observation.input") "work item"))
+        (is (= "result" (attr-value span "langfuse.observation.output")))))
+    (let [span (#'lf/tool-span ctx {:key "c" :name "exec" :input "{\"command\":\"A=b /usr/bin/echo hi\",\"notebook_path\":\"x.ipynb\",\"other\":\"opaque\"}" :output "ok" :status "completed"})
+          view (json/parse-string (attr-value span "langfuse.observation.input") true)]
+      (is (= "echo" (:command view)))
+      (is (= "x.ipynb" (:notebook_path view)))
+      (is (= "completed" (attr-value span "langfuse.observation.metadata.status")))
+      (is (not (str/includes? (pr-str view) "opaque")))))
+  (fs/with-temp-dir [base {}]
+    (write-fixture! base {})
+    (is (= "delegation_only" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_body")))))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
