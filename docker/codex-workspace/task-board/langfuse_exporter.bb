@@ -985,7 +985,8 @@
   "Returns :ok, :retry or :drop. A rejected payload will not succeed on a later attempt."
   [cfg body]
   (try
-    (let [client (http/client {:connect-timeout (:connect-timeout-ms cfg)})
+    ;; HTTP/1.1: the default sends `Upgrade: h2c`, and Langfuse closes such a connection unanswered.
+    (let [client (http/client {:connect-timeout (:connect-timeout-ms cfg) :version :http1.1})
           auth (.encodeToString (java.util.Base64/getEncoder)
                                 (.getBytes (str (:public-key cfg) ":" (:secret-key cfg)) "UTF-8"))
           res (http/post (str (:url cfg) "/api/public/otel/v1/traces")

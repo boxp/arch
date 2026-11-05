@@ -771,5 +771,12 @@
             spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (concat lines extra))]
         (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))))))
 
+(deftest post-batch-does-not-request-h2c-upgrade
+  ;; Langfuse closes the connection on the JDK's default `Upgrade: h2c`, without any response.
+  (fs/with-temp-dir [base {}]
+    (with-server* (fn [req] {:status (if (get-in req [:headers "upgrade"]) 500 200)})
+      (fn [url _]
+        (is (= :ok (lf/post-batch (test-config base :url url) "{}")))))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
