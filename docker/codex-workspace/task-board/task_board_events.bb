@@ -498,7 +498,7 @@
                    (str/split-lines (slurp (ticket-path (:ticket-id event))))) )
        (catch Exception _ nil)))
 
-(defn receipt-state
+(defn current-receipt
   "A receipt only speaks for the current delivery: one older than the start of
   that delivery says nothing about what it did. Events accepted before
   :delivery-started-at existed fall back to :accepted-at."
@@ -507,8 +507,13 @@
              stale? (and (:updated_at r)
                          (.isBefore (.toInstant (OffsetDateTime/parse (:updated_at r)))
                                     (Instant/parse (or (:delivery-started-at event) (:accepted-at event)))))]
-         (when (and (= (:event r) (:event-id event)) (not stale?)) (:state r)))
+         (when (and (= (:event r) (:event-id event)) (not stale?)) r))
        (catch Exception _ nil)))
+(defn receipt-state [event] (:state (current-receipt event)))
+;; The gate classifies what it sent: "unresolved" carried its reconciliation notice,
+;; so that send does not prove the business report arrived.
+(defn unconfirmed-send? [event]
+  (let [r (current-receipt event)] (and (= "sent" (:state r)) (= "unresolved" (:classification r)))))
 (defn digest? [e] (= "task-board.morning-digest" (:event-type e)))
 (defn digest-item-ids [e] (set (mapcat #(cons (:event-id %) (:superseded %)) (:digest-items e))))
 (defn finish-items! [digest dir status]
@@ -554,6 +559,7 @@
               (let [marker (handled-in-notes? event)
                     receipt (receipt-state event)
                     digest (digest? event)
+                    unconfirmed (unconfirmed-send? event)
                     timeout? (>= (seconds-since (:accepted-at event)) (handle-timeout-seconds))]
                 (cond
                   ;; A hold proves nothing was sent, marker or not.
@@ -563,22 +569,29 @@
                   (= receipt "quiet-held")
                   (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
                       (update acc :waiting inc))
+                  ;; A send that may have happened is never redelivered, marker or not.
+                  (= receipt "uncertain")
+                  (do (when digest (finish-items! event (unhandled-dir) :notify-undelivered))
+                      (move-event! (assoc event :status :notify-undelivered :unhandled-at (now-str) :delivery-receipt receipt)
+                                   (unhandled-dir))
+                      (log! (str "delivery unconfirmed " (:event-id event)))
+                      (update acc :unhandled inc))
                   (and marker (not digest) (= marker :deferred))
                   (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
                       (update acc :waiting inc))
                   ;; A notified/question marker is written before the send, which may
                   ;; come late and be held: only the gate's receipt proves the outcome.
                   (and marker (or (and (not digest) (not (#{:notified :question} marker)))
-                                  (and (#{:notified :question :silent} marker) (= receipt "sent"))
+                                  (and (#{:notified :question :silent} marker) (= receipt "sent") (not unconfirmed))
                                   ;; Only the gate's proof of an intentional [SILENT] ends a digest without a send.
                                   (and digest (= marker :silent) (= receipt "silent"))))
                   (do (when digest (finish-items! event (done-dir) :handled))
                       (move-event! (assoc event :status :handled :handled-at (now-str)) (done-dir))
                       (update acc :handled inc))
-                  ;; A send that may have happened is never redelivered, marker or not.
-                  ;; A sent receipt without a marker is the gate's notice, not a confirmed report:
-                  ;; a late marker may still finish it, then the 180m cron reconciles it.
-                  (or (= receipt "uncertain") (and marker digest timeout?) (and (= receipt "sent") (not marker) timeout?))
+                  ;; A sent receipt without a marker, or one that carried the gate's notice, is
+                  ;; not a confirmed report: a late marker or report may still finish it, then the
+                  ;; 180m cron reconciles it.
+                  (or (and marker digest timeout?) (and (= receipt "sent") (or (not marker) unconfirmed) timeout?))
                   (do (when digest (finish-items! event (unhandled-dir) :notify-undelivered))
                       (move-event! (cond-> (assoc event :status :notify-undelivered :unhandled-at (now-str))
                                      receipt (assoc :delivery-receipt receipt))

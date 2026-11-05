@@ -772,6 +772,32 @@ test_receipt_without_marker_is_not_redelivered() {
   day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=1800
   [[ -f "${CASE_STATE}/outbox/done/late.edn" ]] || fail "a late marker with a sent receipt must complete the event"
 
+  # A send that carried only the gate's notice does not prove a notified report.
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  seed_event "${CASE_STATE}" noticed BOXP-901 :accepted "${now}" ":accepted-at \"${now}\""
+  note_marker "${CASE_VAULT}" BOXP-901 noticed notified
+  mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivery-receipts"
+  printf '{"event":"noticed","state":"sent","classification":"unresolved","updated_at":"%s"}' "${now}" \
+    >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/noticed.json"
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=1800
+  assert_file_contains "${CASE_STATE}/outbox/pending/noticed.edn" ':status :accepted'
+  sleep 1
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/noticed.edn" ':status :notify-undelivered'
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "a noticed event must not be re-sent"
+  stop_receiver
+
+  # An uncertain send beats a deferred marker: the digest must not repeat what may have arrived.
+  new_case
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  seed_event "${CASE_STATE}" unsure-deferred BOXP-901 :accepted "${now}" ":accepted-at \"${now}\""
+  note_marker "${CASE_VAULT}" BOXP-901 unsure-deferred deferred
+  write_receipt "${CASE_VAULT}" unsure-deferred uncertain "${now}"
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=1800
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/unsure-deferred.edn" ':status :notify-undelivered'
+
   # The same for a digest: its items are parked with it and nothing is re-sent.
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"
