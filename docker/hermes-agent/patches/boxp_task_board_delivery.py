@@ -240,7 +240,9 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return SendResult(success=False, error=f"Delivery in flight; reconcile event={event}")
-            quiet = quiet_now(vault)
+            # A deferred event belongs to the digest: a reply after that marker, however late,
+            # is held like a night send so the same report never goes out twice.
+            quiet = quiet_now(vault) or (proof == "deferred" and "-digest-" not in event)
             # Reconcile before any quiet hold: a hold must not overwrite the evidence of
             # an earlier egress. While quiet, a report's receipt also answers for a notice.
             report = root / (key + ".json")

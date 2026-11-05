@@ -189,6 +189,15 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(path.read_text())["state"], "silent")
         self.assertFalse(self.calls)
 
+    async def test_reply_after_deferred_marker_is_held_for_the_digest(self):
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+        self.note("deferred")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)):
+            self.assertFalse(delivery.quiet_now(self.vault))
+            self.assertTrue((await self.send("report")).success)
+        self.assertFalse(self.calls)
+        self.assertEqual(json.loads(path.read_text())["state"], "quiet-held")
+
     def test_digest_silence_keeps_earlier_egress_evidence(self):
         event = "BOXP-999-digest-20261030T120000Z-abcdef12"
         source = NS(platform=NS(value="webhook"), chat_id="webhook:task-board:" + event)
