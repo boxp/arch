@@ -21,7 +21,7 @@ GitHub Actions (1 日 1 回 + 手動)            codex-cron-scheduler (非 agent
 
 ## 判断
 
-- **live 収集を CI から分離する。** GitHub-hosted runner に cluster への読取経路はなく、新規資格は承認外。public repo の Actions log と artifact に live 値を載せないためにも、live の比較は scheduler コンテナの既存 kubeconfig で行い、値は私的 vault の外へ出さない。
+- **live 収集を CI から分離する。** GitHub-hosted runner に cluster への読取経路はなく、新規資格は承認外。public repo の Actions log と artifact に live 値を載せないためにも、live の比較は scheduler コンテナの既存 kubeconfig で行い、値は private な vault とそのコンテナの staging (`~/.cache/infra-diagram-refresh`) の外へ出さず、既定の `/tmp` にも置かない。
 - **CI から runner への入口は pull。** 新しい受信 API や資格を作らない。intake が既存の `gh` 資格で、main 上の `schedule` か `workflow_dispatch` で動いた run の artifact だけを読む。public repo の issue は誰でも書けるので入力に使わない。artifact は schema を厳格に検査し、自由文を票へ渡さない。
 - **起票は既存 helper だけで行う。** 票の本文の marker を正本にして open な票を探すので、state が消えても重複しない。
 - **基準を先に進めない。** IaC の基準は配備確認後の通常 PR、live の基準は同じ段階の vault 更新でだけ進む。途中で失敗すれば次回も差分として残る。

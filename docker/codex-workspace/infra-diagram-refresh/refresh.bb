@@ -365,7 +365,9 @@
             before-run (get-in s0 [:ci :run-id])
             before-live (get-in s0 [:live :attempted-at])
             s1 (observe-live (observe-ci s0))
-            fresh? (or (not= before-run (get-in s1 [:ci :run-id]))
+            run-id (get-in s1 [:ci :run-id])
+            ;; canary は状態の確認だけ。前の未解決の差分を再起票や集約へ回さない。
+            fresh? (or (and (not= before-run run-id) (not= run-id (get-in s1 [:ci :canary :run-id])))
                        (and (not= before-live (get-in s1 [:live :attempted-at])) (get-in s1 [:live :new?]))
                        (ci-stale-failure s1))
             s2 (if fresh?

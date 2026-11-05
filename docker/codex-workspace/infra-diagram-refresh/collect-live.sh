@@ -5,7 +5,8 @@
 set -euo pipefail
 out=${1:?usage: collect-live.sh OUT.json}
 ds=${PROM_DS_UID:-P1809F7CD0C75ACF3}
-tmp=$(mktemp -d)
+# live の値を含むので既定の /tmp に置かず、出力先と同じ場所に作って必ず消す
+tmp=$(mktemp -d "$(dirname "$out")/.collect-live.XXXXXX")
 trap 'rm -rf "$tmp" "$out.tmp"' EXIT
 # token をプロセス引数に出さない
 q(){ curl -fsS -m 30 -G -H @<(printf 'Authorization: Bearer %s\n' "$GRAFANA_SERVICE_ACCOUNT_TOKEN") "$GRAFANA_URL/api/datasources/proxy/uid/$ds/api/v1/query" --data-urlencode "query=$1"; }

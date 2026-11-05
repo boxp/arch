@@ -94,7 +94,8 @@
 (def publish (str refresh-dir "/publish.bb"))
 (def diagram-dirs {"lineage" ["lolice-infrastructure-lineage" "lolice-lineage.html"]
                    "architecture" ["lolice-infrastructure-architecture" "lolice-architecture.html"]})
-(defn sha-of [f] (first (str/split (:out (run {} "sha256sum" (str f))) #"\s+")))
+(defn project-digest [dir html]
+  (str/trim (:out (run {} "bb" "-e" (str "(load-file " (pr-str publish) ") (println (project-digest " (pr-str dir) " " (pr-str html) "))")))))
 (defn publish-sandbox
   "build までを偽の道具で通す。正本は old、staging の build が new を作る。"
   []
@@ -110,7 +111,7 @@
                                (spit (str p "/tools/build.bb") (str "(spit \"data/generated.json\" \"{}\") (spit \"" html "\" \"new\")"))
                                (spit (str p "/tools/run-browser.sh") "#!/bin/sh\ncase \"$1\" in *make-thumbnail*) mkdir -p \"$3\"; head -c 6000 /dev/zero > \"$3/lolice-lineage.webp\"; head -c 6000 /dev/zero > \"$3/lolice-architecture.webp\";; esac\n")
                                (fs/set-posix-file-permissions (str p "/tools/run-browser.sh") "rwxr-xr-x")
-                               [id (sha-of (str v "/" html))])))]
+                               [id (project-digest v html)])))]
       (spit (str st "/manifest.edn") (pr-str {:ticket "BOXP-9" :bases bases :built nil :deployed {}}))
       (assoc s :st st :penv env))))
 (defn mark-deployed!
@@ -154,6 +155,83 @@
         (run penv "bb" publish "build" "BOXP-9") (mark-deployed! s)
         (spit f (pr-str (dissoc (edn/read-string (slurp f)) :built-digests)))
         (is (not (zero? (:exit (run penv "bb" publish "promote" "BOXP-9")))))))))
+(defn rebase!
+  "正本を変えたうえで stage し直した状態にする。"
+  [{:keys [st vault]}]
+  (let [f (str st "/manifest.edn") m (edn/read-string (slurp f))]
+    (spit f (pr-str (assoc m :bases (into {} (for [[id [project html]] diagram-dirs]
+                                               [id (project-digest (str vault "/Projects/" project) html)])))))))
+(deftest promote-compares-the-whole-project
+  (let [lineage "/Projects/lolice-infrastructure-lineage/"
+        same-html! (fn [s] (doseq [[_ [project html]] diagram-dirs] (spit (str (:vault s) "/Projects/" project "/" html) "new")) (rebase! s))
+        built (fn [s] (run (:penv s) "bb" publish "build" "BOXP-9") (mark-deployed! s))
+        promote (fn [s] (run (:penv s) "bb" publish "promote" "BOXP-9"))]
+    (testing "HTML が同じでも data、src、tools の更新は正本へ入り、前の版を残す"
+      (let [s (publish-sandbox) v (str (:vault s) lineage)]
+        (same-html! s) (built s)
+        (let [r (promote s)] (is (zero? (:exit r)) (:err r)))
+        (is (= "{:new true}" (slurp (str v "data/a.edn"))))
+        (is (= "src" (slurp (str v "src/s.txt"))))
+        (is (fs/exists? (str v "tools/build.bb")))
+        (is (seq (fs/glob (str v "previous") "*/data/a.edn")))
+        (is (zero? (:exit (promote s))))
+        (is (= 1 (count (fs/list-dir (str v "previous")))) "やり直しで版を増やさない")))
+    (testing "HTML が同じでも、stage の後に正本の data を変えた作業は上書きしない"
+      (let [s (publish-sandbox) v (str (:vault s) lineage)]
+        (same-html! s) (built s)
+        (spit (str v "data/a.edn") "other work")
+        (let [r (promote s)] (is (not (zero? (:exit r)))) (is (str/includes? (:err r) "changed since stage")))
+        (is (= "other work" (slurp (str v "data/a.edn"))))))
+    (testing "staging で消したファイルは正本からも消え、やり直しも通る"
+      (let [s (publish-sandbox) v (str (:vault s) lineage)]
+        (spit (str v "data/removed.edn") "old") (rebase! s) (built s)
+        (is (zero? (:exit (promote s))))
+        (is (not (fs/exists? (str v "data/removed.edn"))))
+        (is (zero? (:exit (promote s))))))
+    (testing "途中で止まった promote は再開でき、版を増やさない"
+      (let [s (publish-sandbox) v (str (:vault s) lineage) f (str (:st s) "/manifest.edn")]
+        (built s)
+        (spit (str v "data/a.edn") "half copied")
+        (spit f (pr-str (assoc-in (edn/read-string (slurp f)) [:promoting "lineage"] true)))
+        (let [r (promote s)] (is (zero? (:exit r)) (:err r)))
+        (is (= "{:new true}" (slurp (str v "data/a.edn"))))
+        (is (= "new" (slurp (str v "lolice-lineage.html"))))
+        (is (not (fs/exists? (str v "previous"))))))))
+(deftest collect-live-stays-next-to-output
+  (let [d (str (fs/create-temp-dir)) bin (str d "/bin") tmpdir (str d "/tmp") out-dir (str d "/out") out (str out-dir "/live.json") seen (str d "/seen")
+        env {"PATH" (str bin ":" (System/getenv "PATH")) "TMPDIR" tmpdir "OUT_DIR" out-dir "SEEN" seen
+             "GRAFANA_URL" "https://grafana.test" "GRAFANA_SERVICE_ACCOUNT_TOKEN" "x"}
+        collect #(run env "bash" (str refresh-dir "/collect-live.sh") out)]
+    (doseq [x [bin tmpdir out-dir]] (fs/create-dirs x))
+    (spit (str bin "/kubectl") "#!/bin/sh\n[ ! -f \"$SEEN.fail\" ] || exit 1\nls -A \"$OUT_DIR\" >> \"$SEEN\"\necho '{\"items\":[]}'\n")
+    (spit (str bin "/curl") "#!/bin/sh\necho '{\"data\":{\"result\":[]}}'\n")
+    (doseq [f ["/kubectl" "/curl"]] (fs/set-posix-file-permissions (str bin f) "rwxr-xr-x"))
+    (let [r (collect)] (is (zero? (:exit r)) (:err r)))
+    (is (str/includes? (slurp seen) ".collect-live.") "収集中の作業場所は出力先の隣")
+    (is (empty? (fs/list-dir tmpdir)) "既定の一時領域に何も置かない")
+    (is (= ["live.json"] (map #(str (fs/file-name %)) (fs/list-dir out-dir))) "作業場所を残さない")
+    (spit (str seen ".fail") "") (fs/delete out)
+    (is (not (zero? (:exit (collect)))))
+    (is (empty? (fs/list-dir out-dir)) "失敗時は何も出さず、作業場所も残さない")
+    (is (empty? (fs/list-dir tmpdir)))))
+(deftest canary-does-not-replay-unresolved-diff
+  (testing "前の未解決の差分があっても、simulate の run は起票しない"
+    (let [s (sandbox) sim (assoc changed :simulated true)]
+      (result! s changed) (tick s) (is (= 1 (count (calls s))))
+      (close! s "BOXP-2")
+      (run-id! s 2 "success") (result! s sim) (tick s)
+      (is (= 1 (count (calls s))) "閉じた票の再起票をしない")
+      (is (= "no-new-input" (:last-result (state s))))
+      (is (= 2 (get-in (state s) [:ci :canary :run-id])))
+      (testing "実 run の差分は次の tick で従来どおり起票する"
+        (run-id! s 3 "success") (result! s changed) (tick s)
+        (is (= 2 (count (calls s)))))))
+  (testing "処理中の票がある間も、simulate の run は集約しない"
+    (let [s (sandbox)]
+      (result! s changed) (tick s)
+      (run-id! s 2 "success") (result! s (assoc changed :simulated true :fingerprint (apply str (repeat 64 "c")))) (tick s)
+      (is (= 1 (count (calls s))))
+      (is (= "BOXP-2" (get-in (state s) [:active :ticket]))))))
 (deftest excluded-live-on-both-sides
   (let [s (sandbox)]
     (write-json (str (:root s) "/live-baseline.json") {:facts (conj (mapv #(str "live:ns:ns" %) (range 60)) "live:ns:ooedo-old")})

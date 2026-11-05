@@ -74,12 +74,18 @@
                       (str (fs/relativize root f) " " (sha256-bytes (fs/read-all-bytes f))))))
     "UTF-8")))
 
+(def promoted-dirs ["data" "src" "tools"])
+
+(defn project-digest
+  "promote が正本へ入れる物全体の hash。staging と正本の両方に同じ計算を使う。"
+  [p html]
+  (tree-digest p (conj (mapv #(fs/path p %) promoted-dirs) (fs/path p html))))
+
 (defn staged-digests [ticket]
   (let [dir (stage-dir ticket)]
     (into {"thumbnails" (tree-digest dir [(fs/path dir "thumbnails")])}
-          (for [{:keys [id project html]} diagrams
-                :let [p (fs/path dir "Projects" project)]]
-            [id (tree-digest p (conj (mapv #(fs/path p %) ["data" "src" "tools"]) (fs/path p html)))]))))
+          (for [{:keys [id project html]} diagrams]
+            [id (project-digest (fs/path dir "Projects" project) html)]))))
 
 (defn assert-staged-unchanged!
   "配備と正本の更新の直前に呼ぶ。記録が無い古い staging も、確かめられないので止める。"
@@ -112,7 +118,7 @@
           arch-sha (clone! "boxp/arch" arch)
           lolice-sha (clone! "boxp/lolice" lolice)
           bases (into {} (for [{:keys [id project html]} diagrams]
-                           [id (sha256-file (fs/path (vault) "Projects" project html))]))]
+                           [id (project-digest (fs/path (vault) "Projects" project) html)]))]
       (doseq [{:keys [project]} diagrams
               :let [src (fs/path (vault) "Projects" project) dst (fs/path projects project)]]
         (fs/create-dirs dst)
@@ -279,6 +285,15 @@
     (println "deploy verified")))
 
 ;; ── 正本の更新
+(defn mirror-dir!
+  "staging で消したファイルも正本から消す。残すと正本の hash が build の時点と一致しない。"
+  [src dst]
+  (when (fs/exists? src) (fs/copy-tree src dst {:replace-existing true}))
+  (when (fs/exists? dst)
+    (doseq [f (fs/glob dst "**" {:hidden true})
+            :when (and (fs/regular-file? f) (not (fs/exists? (fs/path src (fs/relativize dst f)))))]
+      (fs/delete f))))
+
 (defn cmd-promote [ticket]
   (let [m (manifest ticket) stamp (str/replace (subs (str (java.time.Instant/now)) 0 19) #"[-:]" "")]
     (doseq [{:keys [id]} diagrams]
@@ -288,19 +303,23 @@
     (doseq [{:keys [id project html]} diagrams
             :let [src (fs/path (stage-dir ticket) "Projects" project)
                   dst (fs/path (vault) "Projects" project)
-                  now-sha (sha256-file (fs/path dst html))
-                  target (get-in m [:built id])]]
-      ;; 別の作業が正本を変えていたら上書きしない。やり直しは許す。
-      (when-not (#{(get-in m [:bases id]) target} now-sha)
-        (die "vault page changed since stage, stage again:" id))
-      (when-not (= now-sha target)
-        (let [prev (fs/path dst "previous" (str stamp "-" (subs now-sha 0 8)))]
-          (fs/create-dirs prev)
-          (fs/copy (fs/path dst html) (fs/path prev html))
-          (fs/copy-tree (fs/path dst "data") (fs/path prev "data")))
-        (doseq [sub ["data" "src" "tools"]
-                :when (fs/exists? (fs/path src sub))]
-          (fs/copy-tree (fs/path src sub) (fs/path dst sub) {:replace-existing true}))
+                  now-digest (project-digest dst html)
+                  target (get-in m [:built-digests id])
+                  resuming? (get-in (manifest ticket) [:promoting id])]]
+      ;; HTML が同じでも data、src、tools の変更は正本へ入れるので、全体の hash で比べる。
+      ;; 別の作業が正本を変えていたら上書きしない。完了後のやり直しと、途中で止まった promote の再開は許す。
+      (when-not (or resuming? (#{(get-in m [:bases id]) target} now-digest))
+        (die "vault project changed since stage, stage again:" id))
+      (when-not (= now-digest target)
+        (when-not resuming?
+          (let [prev (fs/path dst "previous" (str stamp "-" (subs now-digest 0 8)))]
+            (fs/create-dirs prev)
+            (fs/copy (fs/path dst html) (fs/path prev html))
+            (doseq [sub promoted-dirs :when (fs/exists? (fs/path dst sub))]
+              (fs/copy-tree (fs/path dst sub) (fs/path prev sub))))
+          (save-manifest! ticket (assoc-in (manifest ticket) [:promoting id] true)))
+        (doseq [sub promoted-dirs]
+          (mirror-dir! (fs/path src sub) (fs/path dst sub)))
         (fs/copy (fs/path src html) (str (fs/path dst html) ".tmp") {:replace-existing true})
         (fs/move (str (fs/path dst html) ".tmp") (fs/path dst html) {:replace-existing true :atomic-move true})))
     (let [previews (fs/path (vault) "Projects/lolice-infrastructure-architecture/previews/portfolio-thumbnails")]
