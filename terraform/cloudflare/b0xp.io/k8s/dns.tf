@@ -26,8 +26,7 @@ resource "cloudflare_dns_record" "codex_task_board" {
   proxied = true
 }
 
-# BOXP-430: created only after the Access application so the hostname never resolves
-# through the tunnel without Access in front of it.
+# BOXP-430: public page. The Worker in apps/lolice-lineage answers every request here.
 resource "cloudflare_dns_record" "lolice_lineage" {
   zone_id = var.zone_id
   name    = "lolice-lineage.b0xp.io"
@@ -35,6 +34,4 @@ resource "cloudflare_dns_record" "lolice_lineage" {
   type    = "CNAME"
   ttl     = 1
   proxied = true
-
-  depends_on = [cloudflare_zero_trust_access_application.lolice_lineage]
 }

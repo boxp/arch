@@ -1,4 +1,4 @@
-// The page itself is never committed: scripts/deploy.sh fills public/ at deploy time.
+// The page itself is not committed: scripts/deploy.sh fills public/ at deploy time.
 {
   "name": "lolice-lineage",
   "main": "src/index.js",
@@ -12,9 +12,5 @@
     "run_worker_first": true,
     "html_handling": "none",
     "not_found_handling": "none"
-  },
-  "vars": {
-    "ACCESS_TEAM_DOMAIN": "https://boxp.cloudflareaccess.com",
-    "ACCESS_AUD": "7794d74f95eb26ea80dd92bb9ed30b6031609119d2123350020edd34d116efb1"
   }
 }
