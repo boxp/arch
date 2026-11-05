@@ -35,7 +35,8 @@ if [ -n "$expected" ]; then
   report $? "/sha256 matches the expected hash ($served)"
 fi
 
-code=$(curl -sS -m 30 -o "$body" -w '%{http_code}' "https://$host/" || echo 000)
+# Cloudflare rewrites HTML only for clients that ask for it, so ask the way a browser does.
+code=$(curl -sS -m 30 -H 'Accept: text/html' -H 'User-Agent: Mozilla/5.0' -o "$body" -w '%{http_code}' "https://$host/" || echo 000)
 [ "$code" = 200 ]
 report $? "anonymous GET / (status $code)"
 actual=$(sha256sum "$body" | cut -d' ' -f1)

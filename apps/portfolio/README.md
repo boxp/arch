@@ -46,6 +46,13 @@ Node 22.23.4 以上が必要です（`package.json` の `engines` 参照。Astro
 - 年収・退職理由・社外秘になり得るプロジェクト名は書かない
 - LinkedIn 側を更新したら対応するファイルを更新し、`linkedinSyncedAt` を更新する
 
+## インフラ図のページ
+
+- `/lineage`: 公開済みの lolice lineage を紹介してリンクする
+- `/architecture`: 本人限定の全体図へリンクする。`SITE_ENV=stage` のときだけ生成する
+
+図の本体はこの repo に置きません。内容は `src/lib/diagrams.ts` にあります。
+
 ## デプロイ
 
 workflow は `.github/workflows/deploy-portfolio.yml`（`apps/portfolio/**` と workflow 自身の変更で起動）。

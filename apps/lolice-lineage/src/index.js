@@ -3,7 +3,9 @@ const ASSET_PATH = "/lolice-lineage.html";
 
 const PAGE_HEADERS = {
   "Content-Type": "text/html; charset=utf-8",
-  "Cache-Control": "no-cache",
+  // no-transform keeps Cloudflare from rewriting the page (Web Analytics injects a script),
+  // so browsers get the same bytes that /sha256 reports.
+  "Cache-Control": "no-cache, no-transform",
   "X-Robots-Tag": "noindex, nofollow",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",

@@ -39,3 +39,17 @@ resource "cloudflare_dns_record" "portfolio_stage" {
   ttl     = 1
   proxied = true
 }
+
+# BOXP-435: the Worker in apps/lolice-architecture answers every request on this hostname,
+# so the record only has to be proxied. 100:: is Cloudflare's documented originless target.
+# Created after the Access application so the hostname never resolves without Access.
+resource "cloudflare_dns_record" "lolice_architecture" {
+  zone_id = var.zone_id
+  name    = local.lolice_architecture_domain
+  content = "100::"
+  type    = "AAAA"
+  ttl     = 1
+  proxied = true
+
+  depends_on = [cloudflare_zero_trust_access_application.lolice_architecture]
+}

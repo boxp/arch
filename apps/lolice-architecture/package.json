@@ -1,0 +1,11 @@
+{
+  "name": "lolice-architecture",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "devDependencies": {
+    "wrangler": "4.158.0"
+  }
+}
