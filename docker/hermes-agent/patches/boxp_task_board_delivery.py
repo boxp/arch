@@ -2,6 +2,9 @@
 
 Only the authenticated task-board adapter's canonical chat identity is eligible.
 This module never modifies Notes, replays work, or relaxes gateway authorization.
+It writes metadata-only delivery receipts alongside the vault Tickets directory.
+They are .md notes because the dispatcher reads them from another replica of the
+vault, and Obsidian Sync does not carry .json files.
 """
 from __future__ import annotations
 
@@ -14,10 +17,11 @@ import os
 import re
 from pathlib import Path
 from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger(__name__)
 VAULT = Path("/home/boxp/Documents/obsidian-headless/BOXP/Tickets")
-EVENT = re.compile(r"(BOXP-\d+)-(?:\d{8}T\d{6}Z-[a-f0-9-]+-(?:review|blocked|done)|lane-(?:review|blocked|done)-\d{8}T\d{6}Z-[a-f0-9]+)")
+EVENT = re.compile(r"(BOXP-\d+)-(?:\d{8}T\d{6}Z-[a-f0-9-]+-(?:review|blocked|done)|lane-(?:review|blocked|done)-\d{8}T\d{6}Z-[a-f0-9]+|digest-\d{8}T\d{6}Z-[a-f0-9]+)")
 NOTICE = "【Task Board 配送要確認】"
 
 
@@ -46,7 +50,7 @@ def receipt(event, ticket, vault=VAULT):
     """Read only exact helper-produced event receipts, never retain Notes bodies."""
     pattern = re.compile(
         r"^.*\[kohako-event\]: \[kohako-event\] handled event=" + re.escape(event)
-        + r" run=\S+ result=(notified|silent|question) summary=.+$"
+        + r" run=\S+ result=(notified|silent|question|deferred|continued) summary=.+$"
     )
     results = set()
     try:
@@ -81,7 +85,8 @@ def shape(source, result, response, marker, vault=VAULT):
             return response + "\n\n" + notice(event, "agent_failed"), False
         return notice(event, "agent_failed"), False
     if marker:
-        if proof == "silent":
+        if proof in {"silent", "deferred", "continued"}:
+            digest_silence_receipt(vault, event, proof)
             logger.info("task-board outcome event=%s classification=proven_silent", event)
             return response, True
         return notice(event, "missing_reply"), False
@@ -103,6 +108,98 @@ def recovered_marker(source, response, vault=VAULT):
     return notice(ident[0], "recovered_outcome_unknown")
 
 
+def clock():
+    return datetime.now(timezone.utc)
+
+
+def quiet_policy(vault=VAULT):
+    """The dispatcher publishes its effective window; before its first tick use the same inputs."""
+    spec = os.getenv("CODEX_TASK_BOARD_EVENT_QUIET_HOURS", "2-9")
+    zone = os.getenv("CODEX_TASK_BOARD_EVENT_TIMEZONE", "Asia/Tokyo")
+    try:
+        policy = json.loads((Path(vault).parent / "Projects/task-board-events/quiet-policy.md").read_text())
+        if isinstance(policy["quiet_hours"], str) and isinstance(policy["timezone"], str):
+            return policy["quiet_hours"], policy["timezone"]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return spec, zone
+
+
+def quiet_now(vault=VAULT):
+    """Same semantics as the dispatcher's quiet-at?: an unparsable spec means no quiet hours."""
+    spec, zone = quiet_policy(vault)
+    match = re.fullmatch(r"(\d{1,2})-(\d{1,2})", spec)
+    if not match:
+        return False
+    start, end = map(int, match.groups())
+    try:
+        hour = clock().astimezone(ZoneInfo(zone)).hour
+    except (KeyError, ValueError, OSError):
+        # Hold rather than risk a night send; the held event stays recoverable.
+        logger.warning("task-board quiet policy has an invalid timezone")
+        return True
+    return start <= hour < end if start <= end else hour >= start or hour < end
+
+
+def digest_claimed(vault, event):
+    """The dispatcher moved this event's report into the morning digest."""
+    return (Path(vault).parent / "Projects/task-board-events/delivery-claims" / (event + ".md")).exists()
+
+
+def vault_receipt(vault, event, state, classification):
+    try:
+        directory = Path(vault).parent / "Projects/task-board-events/delivery-receipts"
+        directory.mkdir(parents=True, exist_ok=True)
+        import tempfile
+        fd, temporary = tempfile.mkstemp(prefix=".receipt-", dir=directory)
+        try:
+            with os.fdopen(fd, "w") as stream:
+                json.dump({"event": event, "state": state, "classification": classification,
+                           "updated_at": clock().isoformat()}, stream)
+                stream.flush()
+                os.fsync(stream.fileno())
+            os.replace(temporary, directory / (event + ".md"))
+        finally:
+            if os.path.exists(temporary):
+                os.unlink(temporary)
+        return True
+    except Exception:
+        logger.warning("task-board vault receipt unavailable event=%s", event)
+        return False
+
+
+def receipt_shows_egress(vault, event, root=None):
+    """True when a send of this event happened or may have happened."""
+    if root is None:
+        try:
+            from hermes_constants import get_hermes_home
+            root = get_hermes_home() / "task-board-delivery-receipts"
+        except Exception:
+            root = None
+    paths = [Path(vault).parent / "Projects/task-board-events/delivery-receipts" / (event + ".md")]
+    if root is not None:
+        paths.append(Path(root) / (hashlib.sha256(event.encode()).hexdigest() + ".json"))
+    for path in paths:
+        try:
+            if json.loads(path.read_text()).get("state") in {"sent", "uncertain"}:
+                return True
+        except (OSError, ValueError, AttributeError):
+            pass
+    return False
+
+
+def digest_silence_receipt(vault, event, proof, root=None):
+    """A digest ends without a send, and a deferred event enters the digest, only on
+    this proof of an intentional silence.
+
+    A silence never replaces the evidence of an earlier send: the dispatcher would
+    otherwise close a digest whose report may not have arrived.
+    """
+    expected = "silent" if "-digest-" in event else "deferred"
+    if proof == expected and not receipt_shows_egress(vault, event, root):
+        vault_receipt(vault, event, "silent", proof)
+
+
 async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vault=VAULT):
     """None for unrelated routes. At most one notice and one report per event.
 
@@ -122,7 +219,8 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
     event, ticket = ident
     proof = receipt(event, ticket, vault)
     if is_intentional_silence_response(content):
-        if proof == "silent":
+        if proof in {"silent", "deferred", "continued"}:
+            digest_silence_receipt(vault, event, proof, root)
             return SendResult(success=True)
         content = notice(event, "missing_reply")
     elif not content.strip():
@@ -132,8 +230,6 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
         content += "\n\n" + notice(event, "missing_or_conflicting_receipt")
     classification = "unresolved" if NOTICE in content else proof
     try:
-        # Resolve the authorized destination before creating any delivery intent.
-        delivery = retained_destination(adapter, chat_id)
         if root is None:
             from hermes_constants import get_hermes_home
             root = get_hermes_home() / "task-board-delivery-receipts"
@@ -151,12 +247,30 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return SendResult(success=False, error=f"Delivery in flight; reconcile event={event}")
-            if path.exists():
-                previous = json.loads(path.read_text())
+            # A deferred event belongs to the digest: a reply after that marker, however late,
+            # is held like a night send so the same report never goes out twice.
+            quiet = (quiet_now(vault) or digest_claimed(vault, event)
+                     or (proof == "deferred" and "-digest-" not in event))
+            # Reconcile before any quiet hold: a hold must not overwrite the evidence of
+            # an earlier egress. While quiet, a report's receipt also answers for a notice.
+            report = root / (key + ".json")
+            for existing in [path] + ([report] if quiet and path != report else []):
+                if not existing.exists():
+                    continue
+                previous = json.loads(existing.read_text())
                 if previous.get("state") == "sent" and previous.get("event") == event:
+                    vault_receipt(vault, event, "sent", previous.get("classification"))
                     logger.info("task-board duplicate event=%s classification=%s", event, previous.get("classification"))
                     return SendResult(success=True)
+                vault_receipt(vault, event, "uncertain", previous.get("classification"))
                 return SendResult(success=False, error=f"Delivery uncertain; reconcile event={event}")
+            if quiet:
+                # The receipt is the only evidence of the hold: without it this is not a success.
+                if vault_receipt(vault, event, "quiet-held", classification):
+                    return SendResult(success=True)
+                return SendResult(success=False, error=f"Quiet hold unrecorded; reconcile event={event}")
+            # Resolve the authorized destination before creating any delivery intent.
+            delivery = retained_destination(adapter, chat_id)
 
             def save(state):
                 payload = {"event": event, "classification": classification, "state": state,
@@ -179,9 +293,11 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 sent = await adapter._deliver_to(delivery, chat_id, content)
             except Exception:
                 save("uncertain")
+                vault_receipt(vault, event, "uncertain", classification)
                 logger.warning("task-board delivery event=%s classification=%s state=uncertain", event, classification)
                 return SendResult(success=False, error=f"Delivery uncertain; reconcile event={event}")
             save("sent" if sent.success else "uncertain")
+            vault_receipt(vault, event, "sent" if sent.success else "uncertain", classification)
             logger.info("task-board delivery event=%s classification=%s state=%s", event, classification,
                         "sent" if sent.success else "uncertain")
             return sent
