@@ -107,6 +107,7 @@
           "--priority" (recur (nnext xs) (assoc opts :priority (first more)))
           "--assignee" (recur (nnext xs) (assoc opts :assignee (first more)))
           "--repo" (recur (nnext xs) (assoc opts :repo (first more)))
+          "--force-plan" (recur more (assoc opts :force-plan true))
           "--dry-run" (recur more (assoc opts :dry-run true))
           "--confirm" (recur more (assoc opts :confirm true))
           "--json" (recur more (assoc opts :json true))
@@ -159,7 +160,20 @@
       (let [_lock (.lock channel)]
         (f)))))
 
-(defn with-ticket-lock [ticket-path f] (with-file-lock ticket-path f))
+(defn with-ticket-lock
+  "Also takes the lock on the vault's volume (see task_board_todos.bb with-lock), which
+  separate containers share. A dry-run writes nothing and must not create it in the vault."
+  [opts ticket-path f]
+  (if (:dry-run opts)
+    (with-file-lock ticket-path f)
+    (let [vault (fs/parent (fs/parent (fs/absolutize ticket-path)))
+          safe-name (str/replace (str (fs/file-name ticket-path)) #"[^a-zA-Z0-9._-]" "_")
+          lock-file (fs/path vault ".task-board-locks" (str safe-name ".lock"))]
+      (fs/create-dirs (fs/parent lock-file))
+      (with-open [raf (RandomAccessFile. (str lock-file) "rw")
+                  channel (.getChannel raf)]
+        (let [_lock (.lock channel)]
+          (with-file-lock ticket-path f))))))
 (defn with-board-lock [board-path f] (with-file-lock board-path f))
 
 ;; BOXP-201 I3: opt-in lock shared with the runner and vault_writer.bb. Unset in
@@ -542,9 +556,16 @@
         result-atom (atom nil)]
     (with-board-lock bpath
       (fn []
-        (with-ticket-lock path
+        (with-ticket-lock opts path
           (fn []
             (let [ticket (ticket-data vault id)
+                  _ (when (and (:plan opts) (not (:force-plan opts)) (= "v1" (fm-get (:frontmatter-lines ticket) "todo_contract")))
+                      (load-file (str (fs/path (fs/parent (fs/canonicalize *file*)) "task_board_todos.bb")))
+                      (let [parse (resolve 'task-board-todos/parse-items) hash-item (resolve 'task-board-todos/item-hash)
+                            old (mapv (juxt :id hash-item) (parse (slurp (str path))))
+                            new (into {} (map (juxt :id hash-item) (parse (str "## Plan\n" (:plan opts)))))]
+                        (when (some (fn [[id hash]] (not= hash (get new id))) old)
+                          (die "update --plan changes existing TD items; use --force-plan to override"))))
                   board (read-text bpath)
                   old-card (card-for board id)
                   lane (or (:lane opts) (:lane old-card) (status->lane (:status ticket)) "Backlog")
@@ -596,7 +617,7 @@
     (if (:dry-run opts)
       (print-result opts result)
       (do
-        (with-ticket-lock path
+        (with-ticket-lock opts path
           (fn []
             (let [ticket (ticket-data vault id)
                   new-ticket (apply-ticket-update ticket {:append-note note :note-source (:source opts)})]
@@ -614,7 +635,7 @@
       (die "request-codex lane must be one of Backlog, Ready, or Blocked"))
     (with-board-lock bpath
       (fn []
-        (with-ticket-lock path
+        (with-ticket-lock opts path
           (fn []
             (let [ticket (ticket-data vault id)
                   board (read-text bpath)
@@ -651,7 +672,7 @@
         result-atom (atom nil)]
     (with-board-lock bpath
       (fn []
-        (with-ticket-lock path
+        (with-ticket-lock opts path
           (fn []
             (let [board (read-text bpath)
                   card (card-for board id)
