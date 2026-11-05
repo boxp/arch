@@ -2,9 +2,9 @@ FROM ubuntu:26.04@sha256:c098726dd9b9733f3e885f8de0ef375206a311b0a317eadc40d347b
 
 # Keep pinned versions here covered by renovate.json5 customManagers when adding new tools.
 ARG CODEX_VERSION=0.166.0
-ARG CLAUDE_CODE_VERSION=2.1.314
+ARG CLAUDE_CODE_VERSION=2.1.318
 ARG EVEN_TERMINAL_VERSION=0.10.5
-ARG PI_AGENT_VERSION=1.4.0
+ARG PI_AGENT_VERSION=1.5.0
 ARG OBSIDIAN_HEADLESS_VERSION=0.0.14
 ARG GH_VERSION=2.103.3
 ARG GHQ_VERSION=1.11.2
@@ -16,10 +16,14 @@ ARG YAZI_VERSION=26.9.1
 ARG CURSOR_AGENT_VERSION=2026.06.12-19-59-36-f6aba9a
 ARG KUBECTL_VERSION=1.37.1
 ARG KUSTOMIZE_VERSION=5.8.3
-ARG NODE_MAJOR=24
+ARG NODE_MAJOR=26
 
 ENV DEBIAN_FRONTEND=noninteractive
 ENV CODEX_TASK_BOARD_CLAUDE_BIN=/usr/bin/claude
+# BOXP-405: run 開始時に AiOps* アラートを Grafana datasource proxy 経由で read-only に読むための
+# monitoring Prometheus datasource uid（secret ではない）。token/URL は既存の runner 環境変数を使う。
+# lolice の deployment env へ足すと image 更新と別の rollout が増えるため image 側で既定値を持つ。
+ENV CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=P1809F7CD0C75ACF3
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 RUN apt-get update \
@@ -153,6 +157,9 @@ ENV LANG=en_US.UTF-8 \
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
 COPY dotfiles-sync.sh /opt/codex-workspace/dotfiles-sync.sh
 COPY cron/ /opt/codex-workspace/cron/
+# task_board_todos.bb refuses to update a ticket without `mv --exchange` (BOXP-408).
+RUN mv --help | grep -q -- --exchange
+
 COPY task-board/ /opt/codex-workspace/task-board/
 COPY qwen-eval/ /opt/codex-workspace/qwen-eval/
 COPY novel-board/ /opt/codex-workspace/novel-board/

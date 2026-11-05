@@ -84,7 +84,7 @@
 (def summary-enums
   {:status #{"done" "closed" "succeeded" "retrying" "accepted" "blocked" "interrupted" "review" "ready" "backlog" "failed" "in-progress" "running" "duplicate" "hold" "cancelled" "superseded"}
    :action #{"implement" "groom" "review-fix" "blocked-retry" "docs-edit" "docs-groom"}
-   :result #{"review" "blocked" "done" "ready"}})
+   :result #{"review" "continue" "owner-acceptance" "blocked" "done" "ready"}})
 
 (defn parse-inst [s] (try (java.time.Instant/parse s) (catch Exception _ nil)))
 
@@ -118,16 +118,28 @@
 ;; マーカーの生値 (nil もあり得る) なので、そのまま使うと runner が Ready に進めた groom (マーカーが review でも
 ;; Ready) を Review 到達に数えてしまう。規則 (task_board_runner.bb final-status と一致させる):
 ;;   exit≠0 (failed) → blocked / groom → 常に ready / docs-groom → result=blocked なら blocked、それ以外 ready /
-;;   result が done|review|blocked ならその値 / それ以外 (マーカーなし・未知) → review。
+;;   result が done|review|continue|owner-acceptance|blocked ならその値 / それ以外 (マーカーなし・未知) → 旧 runner の run は review、
+;;   新 runner の run は continue (BOXP-395。docs/project_docs/BOXP-395/sli-semantic-change.md)。
 ;; interrupted/running は終了先が無いので :result の生値 (通常 nil) のまま。
-(defn effective-result [status action result]
+(def review-retired-at
+  "新 runner (sha-b779dc1) が最初の run を始めた時点。これより前に終わった run は旧定義で読む。"
+  (java.time.Instant/parse "2026-11-03T21:12:00Z"))
+
+(defn unmarked-result
+  "マーカーなしで終わった run の終了先。終了時刻が読めない run は過去の系列を変えないよう旧定義で読む。"
+  [finished-at]
+  (let [at (when (string? finished-at)
+             (try (java.time.Instant/parse finished-at) (catch Exception _ nil)))]
+    (if (and at (not (.isBefore at review-retired-at))) "continue" "review")))
+
+(defn effective-result [status action result finished-at]
   (cond
     (contains? #{"interrupted" "running" "in-progress" "unreadable"} status) result
     (= "failed" status) "blocked"
     (= "groom" action) "ready"
     (= "docs-groom" action) (if (= "blocked" result) "blocked" "ready")
-    (contains? #{"done" "review" "blocked"} result) result
-    :else "review"))
+    (contains? #{"done" "review" "continue" "owner-acceptance" "blocked"} result) result
+    :else (unmarked-result finished-at)))
 
 (defn read-summary
   "読めて検証を通った summary だけ map を返す。それ以外は nil (呼び出し側で unreadable 扱い)。"
@@ -137,7 +149,8 @@
       (when (valid-summary? s (fs/parent f))
         {:run-id (str (fs/file-name (fs/parent f)))
          :status (kw (:status s)) :action (kw (summary-action s))
-         :result (effective-result (kw (:status s)) (kw (summary-action s)) (kw (:result s)))
+         :result (effective-result (kw (:status s)) (kw (summary-action s)) (kw (:result s)) (:finished-at s))
+         :wait-reason (when (and (string? (:wait-reason s)) (#{"owner-decision" "external-hold" "new-scope" "agent-recoverable"} (:wait-reason s))) (:wait-reason s))
          :blocker (kw (:blocker-category s)) :agent (kw (:agent s))
          :started-at (:started-at s) :finished-at (:finished-at s)
          :gate (kw (get-in s [:review-gate :gate]))
@@ -203,6 +216,8 @@
         (= "agent-process-error" (:blocker prev))) "resume_interrupted"
     (= "blocked" (:status prev)) "resume_after_block"
     (and (= "succeeded" (:status prev)) (#{"groom" "docs-groom"} (:action prev))) "groom_to_implement"
+    ;; BOXP-395: the worker's own next run after a passed gate is not a reopen.
+    (and (= "succeeded" (:status prev)) (= "continue" (:result prev))) "continuation"
     (and (= "succeeded" (:status prev)) (= "blocked" (:result prev))) "resume_after_block"
     (and (= "succeeded" (:status prev)) (#{"review" "done"} (:result prev))
          (#{"implement" "docs-edit" "blocked-retry"} (:action cur))) "reopen_after_review"
@@ -272,7 +287,7 @@
         runs-by-ticket (into {} (remove unreadable-task? all-runs-by-ticket))
         trs (for [[t runs] runs-by-ticket, tr (transitions runs)] (assoc tr :ticket t))
         ;; Review 到達 = review で正常終了 (succeeded) した run がある task。gate 失敗 (retrying) の run も :result "review" を持つが Owner には届いていない。
-        reached-review (set (for [[t runs] runs-by-ticket :when (some #(and (= "succeeded" (:status %)) (= "review" (:result %))) runs)] t))
+        reached-review (set (for [[t runs] runs-by-ticket :when (some #(and (= "succeeded" (:status %)) (#{"review" "owner-acceptance"} (:result %))) runs)] t))
         tasks-with (fn [pred] (set (keep #(when (pred %) (:ticket %)) trs)))
         v0-tasks (tasks-with :v0)
         ;; gate 失敗は失敗 run 自体を 1 件と数える (後続 run が未開始の最新失敗も含める)。

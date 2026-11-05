@@ -1,6 +1,26 @@
 {
   "checksums": [
     {
+      "id": "github_release/github.com/babarot/regomark/v0.3.0/regomark_darwin_amd64.tar.gz",
+      "checksum": "8E0F49FDDA4B87239EC2C640AA678F03A90AD042AED5F65A4D3DA13763BBB828",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/babarot/regomark/v0.3.0/regomark_darwin_arm64.tar.gz",
+      "checksum": "E99E14F9DB432E38766CD894C158ECF39A53AFBAD9BADC45958DBAC47EFEC783",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/babarot/regomark/v0.3.0/regomark_linux_amd64.tar.gz",
+      "checksum": "C81C15DF18229306B47E9465141ACE17C04018B65D2B5950C690F3FE58457394",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/babarot/regomark/v0.3.0/regomark_linux_arm64.tar.gz",
+      "checksum": "C5C363A025AF1DDFD597AC6DEC2A22752EF48F1192F363610B90D099A557274B",
+      "algorithm": "sha256"
+    },
+    {
       "id": "github_release/github.com/boxp/ansible-plan-formatter/v1.0.0/ansible-plan-formatter_linux_amd64.tar.gz",
       "checksum": "3A0331FC6360F5F8F592ED2257A2E3AA451B2C61461D3E82858893D30C4BFC87",
       "algorithm": "sha256"
@@ -36,28 +56,28 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.6/cloudflared-darwin-amd64.tgz",
-      "checksum": "6C04A13835CA5FF29A0C6F58D17D1F3956AAD1B7DF1631F5B5EFBC06269DEDED",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.7/cloudflared-darwin-amd64.tgz",
+      "checksum": "02F3EDFD87684DD5B705607688E4EB4B323F6E777B81E7B3A85AF556AA356848",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.6/cloudflared-darwin-arm64.tgz",
-      "checksum": "EA1E5105D35BBE16CEE5B2F7B4742059ADA341FBD35938ED827C24B85EFA51C8",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.7/cloudflared-darwin-arm64.tgz",
+      "checksum": "3586CCF397E98E5F437E60E7C307CA6AC463E110580503AF8BB8E6F9EBF831BD",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.6/cloudflared-linux-amd64",
-      "checksum": "1D356DAC769D0DBF62EBE588C4034824BBFF98D5790C2F844CC99E0E2F57462D",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.7/cloudflared-linux-amd64",
+      "checksum": "1F99FB518B83DEC2BA8D870A7CC991D82A77E6196295A3D2754BA17AB9F91872",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.6/cloudflared-linux-arm64",
-      "checksum": "0AE0E179475B2C77651A718D2B376E0151F4FCA5954702A84F02843A4D5FCAC0",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.7/cloudflared-linux-arm64",
+      "checksum": "3DF43AEDC9FF291D1735B5CB576CB97E0B157488796DB2E32B28AECABB445775",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.6/cloudflared-windows-amd64.exe",
-      "checksum": "D521B3BF68982165F0D06D76732F22D9A105EF057FF3AE4C0986F3A23190950F",
+      "id": "github_release/github.com/cloudflare/cloudflared/2026.10.7/cloudflared-windows-amd64.exe",
+      "checksum": "2493DBC168923BB3E59E5E7716F71DECED92992EEA9ACD6E9D74F84AC7751343",
       "algorithm": "sha256"
     },
     {
@@ -116,28 +136,53 @@
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.21.4/opa_darwin_amd64",
-      "checksum": "8802BD39BC14B58A705E6B3D4F4DD14F7F24EE657F0362C737338BE243190C7E",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.22.0/opa_darwin_amd64",
+      "checksum": "D1A328755979DA41A888663A99421ECAF3E94BE15B095E9AB1A86BE5DDCC90EA",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.21.4/opa_darwin_arm64_static",
-      "checksum": "4C105208A9282F590385BCCBE600875C011F0894CCF9431782DFE855E1F99AA6",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.22.0/opa_darwin_arm64_static",
+      "checksum": "41AF6DE872B3CB1D17EB604779489C83DD9BF377737873F9866814501DF6E2D1",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.21.4/opa_linux_amd64_static",
-      "checksum": "2AB571F367F293BB19523B76F92F1945BBF245003392C7F392903F95C2B9B630",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.22.0/opa_linux_amd64_static",
+      "checksum": "791790254C598A942EB140959BCEC9A47F844535A632FD01D11D870BA2A47047",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.21.4/opa_linux_arm64_static",
-      "checksum": "810AA96E44F1F852D044888CF830324E44EAFD0F510345339011347AB4DEAAB1",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.22.0/opa_linux_arm64_static",
+      "checksum": "62F64100C5DB155A7499C14668A5A453FEB7D94221736E12C7D759C0F46FC585",
       "algorithm": "sha256"
     },
     {
-      "id": "github_release/github.com/open-policy-agent/opa/v1.21.4/opa_windows_amd64.exe",
-      "checksum": "EFAD1C0EE4E3150D213F7BABDAFF3440B18B93C7368B465FCA42CDA392947F7C",
+      "id": "github_release/github.com/open-policy-agent/opa/v1.22.0/opa_windows_amd64.exe",
+      "checksum": "0C5972EF7B7042B595F92DB690FBB8BD8CF0F9A2782AB802C95C4AA58C1F05E5",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Darwin_arm64",
+      "checksum": "23A6E4EF62F288C53E65D770E9325E6D8A9C35CA3F33F6FFB5943C1F381EF540",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Darwin_x86_64",
+      "checksum": "F33FC0AC70B6A5783B92C324123C314F7FF127BB970CF1E3DDE807925CD821B7",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Linux_arm64",
+      "checksum": "D4FD44A191D5B12A5AB980F56D7EDDFED0718129C43D1EDE5E8DBC9D217FDCB8",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Linux_x86_64",
+      "checksum": "5E7D030064E307D54E6FFA3D85B8D9052D3D40B7AFA10262C86C886F8A76559D",
+      "algorithm": "sha256"
+    },
+    {
+      "id": "github_release/github.com/open-policy-agent/regal/v0.43.0/regal_Windows_x86_64.exe",
+      "checksum": "7239B548B0298FD4538B2555CCE9B09A359E4D77E12D31E4210B94F154C75215",
       "algorithm": "sha256"
     },
     {

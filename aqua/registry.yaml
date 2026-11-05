@@ -91,3 +91,19 @@ packages:
               - suzuki-shunsuke/github-comment
               - --certificate-github-workflow-ref
               - refs/tags/{{.Version}}
+
+  # aqua-registry に未登録のため local に置く。上流は checksum のみ提供で署名はない。
+  - type: github_release
+    repo_owner: babarot
+    repo_name: regomark
+    description: Check Markdown documents with rego policies
+    asset: regomark_{{.OS}}_{{.Arch}}.tar.gz
+    files:
+      - name: regomark
+    supported_envs:
+      - linux
+      - darwin
+    checksum:
+      type: github_release
+      asset: regomark_{{trimV .Version}}_checksums.txt
+      algorithm: sha256

@@ -1,0 +1,219 @@
+{
+  "note": "slo_snapshot.bb の出力 (定義版 slo-draft/v2、BOXP-395 の Review 廃止後)。提案の根拠で、正式な判定ではない。continue の停止は切替直後で、生成時点の 28 日窓は 2 件 (再開 1、開いたまま 1 が 15 分以内) だけ。率として読まない。",
+  "windows": {
+    "since_2026-10-06": {
+      "blocked_stops": {
+        "total": 99,
+        "reason_classified": false,
+        "by_category": {
+          "agent-reported-blocked": 68,
+          "agent-process-error": 25,
+          "pr-gate-pr-url": 5,
+          "gate-failure-budget-exhausted": 1
+        }
+      },
+      "instructed_not_started": {
+        "followed_over_1h": 11,
+        "followed_over_24h": 2,
+        "open_over_1h": 5,
+        "open_over_24h": 3,
+        "unevaluated_stops": 0
+      },
+      "first_run_to_first_outcome": {
+        "reached": 169,
+        "censored": 13,
+        "unevaluated": 1,
+        "p50_h": 0.7586111111111111,
+        "p90_h": 5.163611111111111
+      },
+      "resume_last_contact": {
+        "owner-relay": 94,
+        "owner-direct": 3,
+        "supervisor": 17,
+        "none-observed": 35,
+        "unknown-unreadable": 0
+      },
+      "since": "2026-10-06T00:00:00Z",
+      "ready_queue": {
+        "cards": 21,
+        "card_ticket_assignee_mismatch": 13
+      },
+      "continue_stops": {
+        "followed": 1,
+        "open": 1,
+        "closed": 0,
+        "unknown_lane": 0,
+        "followed_over_24h": 0,
+        "followed_over_15m": 0,
+        "open_over_24h": 0,
+        "total": 2,
+        "unknown_resume": 0,
+        "open_over_15m": 0
+      },
+      "generated_at": "2026-11-03T21:34:50.706853774Z",
+      "stall_reference": {
+        "followed_only": {
+          "numerator": 8,
+          "denominator": 148
+        },
+        "with_open_as_stalled": {
+          "numerator": 20,
+          "denominator": 166
+        }
+      },
+      "coverage": {
+        "complete": false,
+        "unreadable_runs": 1,
+        "tasks_with_unreadable_runs": 1,
+        "stops_with_unknown_contacts": 0,
+        "stops_with_unknown_resume": 0,
+        "migration_ledger_read": true
+      },
+      "owner_acceptance_stops": {
+        "total": 2
+      },
+      "review_stops": {
+        "followed": 148,
+        "open": 18,
+        "open_over_24h_by_lane": {
+          "Blocked": 12
+        },
+        "unknown_lane": 0,
+        "followed_over_24h": 8,
+        "open_over_24h": 12,
+        "total": 266,
+        "closed_by_acceptance": 82,
+        "closed_by_migration": 18,
+        "unknown_resume": 0,
+        "closed_unclassified": 0
+      },
+      "definition_version": "slo-draft/v2",
+      "owner_rescue": {
+        "status": "continue_stops_only",
+        "rescue": 0,
+        "not_rescue": 2,
+        "unknown": 0,
+        "excluded_unclassified_blocked": 99
+      },
+      "approved_work_stall": {
+        "status": "measuring",
+        "numerator": 0,
+        "denominator": 2,
+        "excluded_unclassified_blocked": 99
+      },
+      "migration": {
+        "ledger_read": true,
+        "tickets_moved_to_done": 20,
+        "tickets_with_owner_acceptance": 2
+      }
+    }
+  },
+  "all_history": {
+    "blocked_stops": {
+      "total": 184,
+      "reason_classified": false,
+      "by_category": {
+        "none-recorded": 52,
+        "agent-reported-blocked": 85,
+        "agent-process-error": 38,
+        "pr-gate-pr-url": 8,
+        "gate-failure-budget-exhausted": 1
+      }
+    },
+    "instructed_not_started": {
+      "followed_over_1h": 12,
+      "followed_over_24h": 3,
+      "open_over_1h": 6,
+      "open_over_24h": 4,
+      "unevaluated_stops": 0
+    },
+    "first_run_to_first_outcome": {
+      "reached": 270,
+      "censored": 55,
+      "unevaluated": 1,
+      "p50_h": 0.7836111111111111,
+      "p90_h": 8.287222222222223
+    },
+    "resume_last_contact": {
+      "owner-relay": 98,
+      "owner-direct": 3,
+      "supervisor": 17,
+      "none-observed": 130,
+      "unknown-unreadable": 0
+    },
+    "since": null,
+    "ready_queue": {
+      "cards": 21,
+      "card_ticket_assignee_mismatch": 13
+    },
+    "continue_stops": {
+      "followed": 1,
+      "open": 1,
+      "closed": 0,
+      "unknown_lane": 0,
+      "followed_over_24h": 0,
+      "followed_over_15m": 0,
+      "open_over_24h": 0,
+      "total": 2,
+      "unknown_resume": 0,
+      "open_over_15m": 0
+    },
+    "generated_at": "2026-11-03T21:34:50.881584966Z",
+    "stall_reference": {
+      "followed_only": {
+        "numerator": 15,
+        "denominator": 247
+      },
+      "with_open_as_stalled": {
+        "numerator": 33,
+        "denominator": 271
+      }
+    },
+    "coverage": {
+      "complete": false,
+      "unreadable_runs": 1,
+      "tasks_with_unreadable_runs": 1,
+      "stops_with_unknown_contacts": 0,
+      "stops_with_unknown_resume": 0,
+      "migration_ledger_read": true
+    },
+    "owner_acceptance_stops": {
+      "total": 2
+    },
+    "review_stops": {
+      "followed": 247,
+      "open": 24,
+      "open_over_24h_by_lane": {
+        "Blocked": 16,
+        "Backlog": 2
+      },
+      "unknown_lane": 0,
+      "followed_over_24h": 15,
+      "open_over_24h": 18,
+      "total": 435,
+      "closed_by_acceptance": 146,
+      "closed_by_migration": 18,
+      "unknown_resume": 0,
+      "closed_unclassified": 0
+    },
+    "definition_version": "slo-draft/v2",
+    "owner_rescue": {
+      "status": "continue_stops_only",
+      "rescue": 0,
+      "not_rescue": 2,
+      "unknown": 0,
+      "excluded_unclassified_blocked": 184
+    },
+    "approved_work_stall": {
+      "status": "measuring",
+      "numerator": 0,
+      "denominator": 2,
+      "excluded_unclassified_blocked": 184
+    },
+    "migration": {
+      "ledger_read": true,
+      "tickets_moved_to_done": 20,
+      "tickets_with_owner_acceptance": 2
+    }
+  }
+}

@@ -1,0 +1,6 @@
+{:id "T03"
+ :title "Deployment の YAML に環境変数を 1 つ追加する"
+ :difficulty "easy"
+ :requirement "`deployment.yaml` の container `app` の `env` に `LOG_LEVEL=info`（name: LOG_LEVEL, value: \"info\"）を追加する。既存の環境変数・replicas・image・labels など他の内容は変えない。"
+ :acceptance "`bb test.bb` が成功すること（YAML を読み、LOG_LEVEL が追加されていて他のフィールドが元のままであることを検査する）。"
+ :allowed-files ["deployment.yaml"]}

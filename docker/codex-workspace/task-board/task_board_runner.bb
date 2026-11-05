@@ -12,8 +12,14 @@
    "Ready" "ready"
    "In Progress" "in-progress"
    "Blocked" "blocked"
-   "Review" "review"
    "Done" "done"})
+
+;; BOXP-395: the Review lane is retired. `lane->status` / `status->lane` are the
+;; current lane set, so nothing can be moved to Review any more. A card still
+;; sitting under a leftover `## Review` heading (migration in progress, or an
+;; old helper) stays readable as the legacy status "review" so it is neither
+;; lost nor silently re-created.
+(def legacy-lane->status (assoc lane->status "Review" "review"))
 
 (def status->lane
   (into {} (map (fn [[lane status]] [status lane]) lane->status)))
@@ -94,6 +100,16 @@
         (log! (str "event outbox module unavailable (" events-module-path "): " (.getMessage e)))
         false))))
 
+(def todo-module-path (str (fs/path (fs/parent (fs/canonicalize *file*)) "task_board_todos.bb")))
+(def todo-module-loaded?
+  (delay (try (load-file todo-module-path) true
+              (catch Throwable e (log! (str "todo module unavailable: " (.getMessage e))) false))))
+(declare ticket-path)
+(defn todo-view [ticket-id]
+  (when @todo-module-loaded?
+    (try ((resolve 'task-board-todos/ticket-view) (slurp (str (ticket-path ticket-id))))
+         (catch Throwable e (log! (str "todo view unavailable: " (.getMessage e))) nil))))
+
 (def localllm-docs-module-path
   (str (fs/path (fs/parent (fs/canonicalize *file*)) "localllm_docs.bb")))
 
@@ -110,7 +126,7 @@
 
 (defn record-task-board-event!
   "Record a minimal event after a run's final transition was committed. Only
-  blocked / review / done transitions are triggers; the module skips the rest."
+  blocked / done transitions are triggers; the module skips the rest."
   [ticket-id run-id from-status to-status result]
   (when (= "true" (env "CODEX_TASK_BOARD_EVENTS_ENABLED" "true"))
     (try
@@ -141,6 +157,14 @@
   (delay (try (load-file subscription-module-path) true
               (catch Exception e
                 (log! (str "subscription module unavailable: " (.getMessage e))) false))))
+
+(def provider-quota-module-path
+  (str (fs/path (fs/parent (fs/canonicalize *file*)) "ai_provider_quota.bb")))
+
+(def provider-quota-module-loaded?
+  (delay (try (load-file provider-quota-module-path) true
+              (catch Exception e
+                (log! (str "provider quota module unavailable: " (.getMessage e))) false))))
 
 (declare root)
 
@@ -231,7 +255,7 @@
                           {:event_type "lane.changed" :lane_from from-status :lane_to to-status})))
 
 (defn ai-ops-run-lane
-  "Lane the card is in while the run executes: Ready/Review/Blocked cards are
+  "Lane the card is in while the run executes: Ready/Blocked (and legacy Review) cards are
   moved to In Progress at start, others (Backlog groom, In Progress) stay put."
   [status]
   (if (#{"ready" "review" "blocked"} status) "in-progress" status))
@@ -312,6 +336,14 @@
 
 (defn localllm-assignee? [assignee]
   (= localllm-assignee assignee))
+
+(defn todo-contract-agent?
+  "Only the Claude and Codex CLI workers run under the TODO contract: they get
+  its commands and hooks, and `todo-start.edn` subjects their result to the gate.
+  localllm and localllm-coder get none of these, so holding them would only use
+  up the continuation budget."
+  [agent]
+  (and (not (localllm-assignee? agent)) (not= localllm-coder-assignee agent)))
 
 (defn supported-assignee? [assignee]
   (or (claude-assignee? assignee)
@@ -816,10 +848,10 @@
               true))))))
 
 (defn parse-board-cards [lines]
-  (->> lane->status
+  (->> legacy-lane->status
        keys
        (mapcat (fn [lane]
-                 (let [status (lane->status lane)]
+                 (let [status (legacy-lane->status lane)]
                    (when-let [{:keys [body-start end]} (section-range lines lane)]
                      (keep-indexed
                       (fn [idx line]
@@ -973,9 +1005,12 @@
       (conj (vec fm-lines) replacement))))
 
 (defn update-frontmatter! [ticket-id updates]
+  @todo-module-loaded?
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
+       ((or (resolve 'task-board-todos/with-lock) (fn [_ f] (f))) (ticket-path ticket-id)
+        (fn []
        (let [path (ticket-path ticket-id)
              lines (vec (read-lines path))
              {:keys [end]} (or (frontmatter-range lines)
@@ -988,7 +1023,25 @@
                             updates)
              new-lines (vec (concat ["---"] new-fm ["---"] body))]
          (when (not= lines new-lines)
-           (write-lines! path new-lines)))))))
+           (write-lines! path new-lines)))))))))
+
+(defn refresh-todo-state! [ticket-id]
+  ;; Re-read under the same locks as helper mutations so a concurrent add
+  ;; cannot be overwritten with counts computed from an older snapshot.
+  (when @todo-module-loaded?
+    (locking (ticket-mutex ticket-id)
+      (with-vault-writer-lock
+       (fn []
+         ((resolve 'task-board-todos/with-lock) (ticket-path ticket-id)
+          (fn []
+            (let [path (ticket-path ticket-id)
+                  text (slurp (str path))
+                  view ((resolve 'task-board-todos/ticket-view) text)]
+              (when (= :v1 (:mode view))
+                (let [state ((resolve 'task-board-todos/state-summary) view)
+                      updated ((resolve 'task-board-todos/set-fm) text "todo_state" state)]
+                  (when (not= text updated)
+                    ((resolve 'task-board-todos/write-if-unchanged) path text updated))))))))))))
 
 (defn ticket-frontmatter [ticket-id]
   (frontmatter-map (vec (read-lines (ticket-path ticket-id)))))
@@ -1005,16 +1058,19 @@
      :frontmatter (frontmatter-map (vec (str/split-lines text)))}))
 
 (defn append-note! [ticket-id note]
+  @todo-module-loaded?
   (locking (ticket-mutex ticket-id)
     ;; Deterministic black-box failure hook; unset in deployment.
     (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE"))
                (str/includes? note "Blocked transition recorded:"))
       (throw (ex-info "forced blocker Notes write failure" {})))
     (when (and (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_LOCALLLM_FINAL_NOTE"))
-               (str/includes? note "Review で停止しました"))
+               (str/includes? note "本人確認待ちで停止しました"))
       (throw (ex-info "forced localllm final Notes write failure" {})))
     (with-vault-writer-lock
      (fn []
+       ((or (resolve 'task-board-todos/with-lock) (fn [_ f] (f))) (ticket-path ticket-id)
+        (fn []
        (let [path (ticket-path ticket-id)
              lines (vec (read-lines path))
              bullet (str "- " (today) ": " note)
@@ -1025,7 +1081,7 @@
              new-lines (if (some #(= bullet %) lines)
                          lines
                          (vec (concat (subvec lines 0 insert-idx) [bullet] (subvec lines insert-idx))))]
-         (write-lines! path new-lines))))))
+         (write-lines! path new-lines))))))))
 
 (defn project-ticket-status! [ticket-id {:keys [status done]}]
   (update-frontmatter! ticket-id (cond-> {:status status}
@@ -1144,14 +1200,16 @@
         ;; `:shutdown` is written by the terminating runner itself; keep it when
         ;; the next owner re-marks the same run as interrupted.
         previous-agent (try
-                         (select-keys (read-edn-file path {}) [:agent :shutdown])
+                         (select-keys (read-edn-file path {}) [:agent :shutdown :todo])
                          (catch Exception _ {}))
         summary (merge previous-agent
                        {:ticket ticket-id
                         :run-id run-id
                         :status status
                         :updated-at (now-str)}
-                       extra)]
+                       extra)
+        summary (if (= "held" (get-in summary [:todo :gate]))
+                  (assoc summary :result "continue") summary)]
     (write-edn-file! path summary)))
 
 (defn localllm-commit-marker-path [ticket-id run-id]
@@ -1170,6 +1228,8 @@
                    {:ticket ticket-id :run-id run-id :phase phase :status next-status :at (now-str)}))
 
 (declare sanitize-blocker-reason)
+
+(declare owner-acceptance-contract)
 
 (defn recover-localllm-write!
   "Crash recovery for a localllm docs-edit run (BOXP-277): the audit written
@@ -1202,7 +1262,10 @@
                (not (contains? #{:committed :rolled-back :conflict} phase))
                @localllm-docs-module-loaded?)
       (if (= :committing phase)
-        (let [next-status (str (:status journal "review"))
+        ;; A journal written by an older runner names the retired "review"
+        ;; status: the document was applied and now waits for the Owner, which
+        ;; is the Blocked owner-acceptance state (BOXP-395).
+        (let [next-status (let [s (str (:status journal "blocked"))] (if (= "review" s) "blocked" s))
               ticket-exists? (fs/exists? (ticket-path ticket-id))
               complete! (fn []
                           (when ticket-exists?
@@ -1218,7 +1281,8 @@
               (when ticket-exists?
                 (append-note! ticket-id (str "localllm docs run " run-id
                                              " は文書を更新した後の lane / frontmatter 遷移の途中で終了していたため、遷移を " next-status
-                                             " として完了させました（文書の更新は適用済み。戻す場合は Obsidian の履歴機能で）")))
+                                             " として完了させました（文書の更新は適用済み。戻す場合は Obsidian の履歴機能で）"
+                                             (when (= "blocked" next-status) owner-acceptance-contract))))
               (:result r))
             (let [reason (sanitize-blocker-reason (str (:reason r)))]
               ;; The notes no longer match what the run wrote (edited, restored
@@ -1232,7 +1296,7 @@
                 (move-card! ticket-id "blocked" "boxp")
                 (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
                 (append-note! ticket-id (str "localllm docs run " run-id
-                                             " は文書を更新した後の lane / frontmatter 遷移の途中で終了し、その後に対象文書が run の書込み内容から変わっていたため、遷移を完了せず Blocked にしました（文書は現在の内容のまま。backup からの復元もしていません。確認後に手動で Review / 再実行を判断してください）: "
+                                             " は文書を更新した後の lane / frontmatter 遷移の途中で終了し、その後に対象文書が run の書込み内容から変わっていたため、遷移を完了せず Blocked にしました（文書は現在の内容のまま。backup からの復元もしていません。確認後に手動で Done / 再実行を判断してください）: "
                                              reason)))
               {:conflict reason})))
         (let [restored (try ((resolve 'localllm-docs/rollback!) (vault) (str dir))
@@ -1564,24 +1628,28 @@
 (defn persisted-review-gate [review-gate]
   ;; Gate results can contain CLI stderr or review-agent text. Persist only
   ;; structured status so run summaries and retry state never copy secrets.
-  (select-keys review-gate [:ok? :gate :url :retryable? :retry-count
+  (select-keys review-gate [:ok? :gate :url :retryable? :retry-count :continuation-exhausted? :continuation-count :checked-pr-heads
                             :retry-limit :retry-exhausted? :checked-pr-urls
                             :merged-pr-urls :pr-urls :diagnostic
-                            :budget-exhausted? :gate-budget]))
+                            :budget-exhausted? :gate-budget :low-priority-findings :blocking-findings
+                            :review-judgment-failure]))
 
 (defn pr-gate-diagnostic [review-gate]
   ;; A gate's :message may contain gh stderr or review-agent text.  Keep a
   ;; useful but entirely derived diagnosis: it identifies the failing class
   ;; and next action without retaining any untrusted diagnostic text.
   (let [gate (:gate review-gate)]
-    {:format-version 1
+    (merge {:format-version 1
      :gate (some-> gate name)
      :pr-url (:url review-gate)
      :category (case gate
                  :ci "ci-check-failure"
                  :mergeability "mergeability"
                  :conflict "merge-conflict"
-                 :codex-review "codex-review-findings"
+                 :codex-review (case (:failure-kind review-gate)
+                                 :findings "codex-review-findings"
+                                 :invalid-output "codex-review-invalid-output"
+                                 "codex-review-command-error")
                  :pr-url "missing-pr-url"
                  :pr-gate "pr-gate-api-error"
                  "pr-gate-failure")
@@ -1589,10 +1657,17 @@
                :ci "One or more required CI checks failed. Inspect the PR checks."
                :mergeability "The PR is not mergeable yet. Inspect its merge state."
                :conflict "The PR has merge conflicts. Resolve conflicts and update the PR."
-               :codex-review "Codex review reported actionable findings. Inspect the review artifact."
+               :codex-review (case (:failure-kind review-gate)
+                               :findings (str "Codex review reported P0/P1 blocking finding(s). Fix only the findings listed in the blocking artifact; P2/P3/nit findings are non-blocking reference and are not retry conditions. Blocking artifact: " (get-in review-gate [:blocking-findings :path]))
+                               :invalid-output (str "Codex review output violated the result or finding format (" (:review-judgment-failure review-gate) "); the gate could not be judged and this is not treated as a finding. Inspect the review artifact and re-run review manually.")
+                               "Codex review command failed; the gate could not evaluate.")
                :pr-url "Review was requested without a GitHub PR URL."
                :pr-gate "PR gate evaluation failed. Re-run the gate after checking GitHub availability."
-               "PR gate failed; inspect the PR and referenced run artifacts.")}))
+               "PR gate failed; inspect the PR and referenced run artifacts.")}
+     (when (and (= :codex-review gate) (= :findings (:failure-kind review-gate)))
+       {:blocking-findings-path (get-in review-gate [:blocking-findings :path])
+        :blocking-findings-count (get-in review-gate [:blocking-findings :count])
+        :low-priority-findings-count (get-in review-gate [:low-priority-findings :count])}))))
 
 (defn persist-pr-gate-diagnostic! [ticket-id run-id review-gate]
   (when (and (not (:ok? review-gate)) (:gate review-gate))
@@ -1611,7 +1686,9 @@
     (str "Review gates passed."
          (when-let [merged (seq (:merged-pr-urls review-gate))]
            (str " Already-merged PR(s) skipped gates and codex review: "
-                (str/join ", " merged) ".")))
+                (str/join ", " merged) "."))
+         (when (pos? (get-in review-gate [:low-priority-findings :count] 0))
+           (str " Non-blocking low-priority review findings (P2/P3/nit): " (get-in review-gate [:low-priority-findings :count]) "; kept for reference in the review artifact(s).")))
     (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
     :else "reason unavailable"))
 
@@ -1620,7 +1697,7 @@
   ;; still distinguishes separate failures of the same PR gate, preventing a
   ;; new failure from consuming the retry budget of an earlier one.
   (let [digest (java.security.MessageDigest/getInstance "SHA-256")
-        reason (str (or (:message review-gate) "reason unavailable"))
+        reason (str (or (:fingerprint-key review-gate) (:message review-gate) "reason unavailable"))
         reason-hash (->> (.digest digest (.getBytes reason "UTF-8"))
                          (map #(format "%02x" (bit-and 0xff %)))
                          (apply str))]
@@ -1637,17 +1714,21 @@
 (defn pr-gate-retry-prompt [ticket-id]
   (when-let [{:keys [pr-url gate message diagnostic run-id run-dir count limit agent]} (latest-pr-gate-retry ticket-id)]
     (str "Pending PR gate retry instruction:\n"
-         "- Target PR URL: " pr-url "\n"
+         (when pr-url (str "- Target PR URL: " pr-url "\n"))
          "- Failed gate: " gate "\n"
          "- Failure reason: " message "\n"
          (when diagnostic
            (str "- Safe diagnostic: " (:path diagnostic)
                 " (category=" (:category diagnostic) "; detail=" (:detail diagnostic) ")\n"))
+         (when (= gate "codex-review")
+           "- Severity policy (BOXP-377): only P0/P1 findings in the blocking artifact are conditions for this retry; P2/P3/nit findings are non-blocking reference, must not be re-labelled as P1, and must not be addressed as a retry condition.\n")
          "- Retry agent: " (or agent "codex") "\n"
          "- Retry count for this same PR/gate/reason: " count "/" limit "\n"
          "- Previous run summary: " run-dir "/summary.edn\n"
          "- Previous run logs: " run-dir "/events.jsonl and " run-dir "/stderr.log\n"
-         "- Expected completion state: update the same PR until draft/mergeability/CI/codex-review gates pass, then return TASK_BOARD_RESULT: review with the PR URL.\n\n")))
+         (if (= gate "pr-url")
+           "- Re-check Notes and PR state. End the final message with the PR URL, or TASK_BOARD_REVIEW_PR: none if no repository change was made, plus exactly one TASK_BOARD_RESULT marker. A trailing reply to a background notification must not replace this report.\n\n"
+           "- Expected completion state: update the same PR until draft/mergeability/CI/codex-review gates pass, then return TASK_BOARD_RESULT: continue with the PR URL.\n\n"))))
 
 ;; --- BOXP-369: cumulative gate-failure budget ---------------------------
 ;; The short-term retry limit above is keyed by the failure fingerprint, so a
@@ -2030,7 +2111,7 @@
        "- Delegate long investigation, implementation, file editing, and test execution to Codex whenever practical. If no explicit Codex model is supplied, use the default Codex route: gpt-6.1-terra (cost-efficient), unless CODEX_TASK_BOARD_MODEL overrides it. Reserve gpt-6.1-sol (via codex-sol/codex-full assignees) for high-complexity tasks. Reserve gpt-6-astra (via codex-astra assignee) for the most demanding tasks requiring the highest capability. Use the prepared workspace and repository worktrees from this prompt.\n"
        "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
-       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.claude/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source fable --note \"<milestone summary>\". For lengthy work, log a concise checkpoint before CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS elapses; an entirely idle run is stopped and retried.\n\n"))
 
 (defn claude-policy-prompt [agent]
@@ -2040,7 +2121,7 @@
          (str "- Delegate independent investigation, implementation, file editing, and test execution to Codex whenever practical. Use the default Codex route (gpt-6.1-terra, unless CODEX_TASK_BOARD_MODEL overrides it); reserve gpt-6.1-sol for high-complexity work and gpt-6-astra for the most demanding work. Retain final judgment and verify delegated results.\n"
               "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"))
        "- Preserve the Task Board runner contract: include a concise work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
-       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n\n"))
 
 (defn codex-sol-policy-prompt [agent]
   (str "High-cost model routing policy:\n"
@@ -2048,10 +2129,10 @@
        "- Focus your own effort on task decomposition, results integration, critical decisions, and final review.\n"
        "- Delegate independent investigation, implementation, and verification to lower-cost models whenever practical. Use the codex (gpt-6.1-terra) assignee as the default delegation route, unless CODEX_TASK_BOARD_MODEL overrides it.\n"
        "- Do NOT delegate: tasks smaller than the delegation overhead, tasks requiring shared context or elevated permissions, and tasks requiring final judgment or acceptance.\n"
-       "- If delegation fails or is unavailable, report blocked. Do not use recursive delegation.\n"
+       "- If delegation fails, follow the Delegation contract. Do not use recursive delegation.\n"
        "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
-       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source codex --note \"<milestone summary>\"\n\n"))
 
 (defn codex-astra-policy-prompt [agent]
@@ -2060,10 +2141,10 @@
        "- Reserve your own compute for the most demanding subtasks: complex reasoning, cross-cutting architectural decisions, synthesis of ambiguous requirements, and final acceptance checks.\n"
        "- Aggressively delegate to lower-cost models for any work that does not require gpt-6-astra capability. Use the delegation helper for implementation and investigation.\n"
        "- Do NOT delegate: tasks requiring your full reasoning capacity, tasks with shared context that cannot be serialized, and final quality judgments.\n"
-       "- If delegation fails or is unavailable, report blocked. Do not escalate or use recursive delegation.\n"
+       "- If delegation fails, follow the Delegation contract. Do not escalate or use recursive delegation.\n"
        "- If delegation is unavailable, report blocked. Do not fall back to another API key.\n"
        "- If Codex is delegated work, preserve the Task Board runner contract: include a concise delegated-work summary in your final response and end with exactly one TASK_BOARD_RESULT marker that the runner can parse.\n"
-       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: review. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
+       "- For repository changes, make sure a GitHub PR URL is included before returning TASK_BOARD_RESULT: continue. If no repository changes were made, include TASK_BOARD_REVIEW_PR: none.\n"
        "- Progress logging: at each milestone (investigation complete, approach decided, PR created, blocker encountered), append a note to the ticket Notes by running: bb ~/.codex/skills/obsidian-task-board/bin/task-board.bb append-note TICKET_ID --vault \"$CODEX_TASK_BOARD_VAULT\" --source " agent " --note \"<milestone summary>\"\n\n"))
 
 (defn append-note-instruction [agent ticket-id]
@@ -2086,12 +2167,197 @@
 
 (defn delegation-prompt []
   (str "Delegation contract: run `python3 " delegation-helper " run` with the subtask on stdin. "
-       "This runs one lower-cost Codex child; verify its result. If it fails or is unavailable, return blocked; do not substitute another model or API. "
+       "This runs one lower-cost Codex child; verify its result. Each run gets one attempt, so put the whole subtask in it, and let the helper finish: it stops itself after 30 minutes, so give any wrapper a longer timeout and do not stop it early. "
+       "A refused second attempt ('Delegation already attempted'), a child failure or a timeout is not a blocker by itself: record what happened in Notes, then finish what you safely can or return continue so the next run gets a new attempt (automatic continuations are limited). "
+       "Delegation counts as unavailable, so return blocked, only when a retry cannot help: missing authentication or permission, an authentication or budget hold, or the same failure repeating across runs. Never substitute another model or API. "
        "If the entire task is exempt, record exactly one reason using `python3 " delegation-helper
        " exempt <reason>` where reason is small-task, shared-context, elevated-permissions, final-judgment, or full-reasoning. "
-       "Exemptions are self-reported. A successful result requires verified delegation or an explicit exemption.\n\n"))
+       "Exemptions are self-reported. A done result requires verified delegation or an explicit exemption.\n\n"))
 
-(defn prompt-for [action ticket-id lane workspace agent]
+(def lane-contract
+  ;; BOXP-395: there is no Review lane. PR code review and the runner's gates remain.
+  (str "Task Board contract: a run ending is not the task ending, and the board has no Review lane (PR code review and the runner's independent gates remain).\n"
+       "- continue: approved work remains and you can keep going. The runner evaluates the PR gates (draft, mergeability, CI, codex review) for every PR URL in your final message; on a pass the card returns to Ready with the same assignee and you continue in the next run without waiting for a person.\n"
+       "- Code review, fixes, merge, and deployment/verification inside the approved scope are part of this work. Merge only after the gates passed for the PR's current head and you confirmed approved scope, latest head, required CI, branch protection, and no unresolved P0/P1; GitHub mergeable=true alone is not enough.\n"
+       "- done: the original request's goal is demonstrated with evidence. A merge alone does not prove deployment or acceptance. If the work became unnecessary or moved to a successor, say so with the reason and successor; do not present it as achieved.\n"
+       "- blocked: only for a new Owner decision, owner-only acceptance, missing permission, an external dependency, an unrecoverable failure or a finite retry limit. Before returning it, append to Notes: reason, required input or clearing condition, who resolves it, and the next action after it clears. 'PR created', 'reported', or fixable review findings are not blockers.\n"
+       "- Outside the approved scope, or anything needing new permission, billing or an unapproved production change: do not perform it; return blocked.\n"
+       "- Do not return continue just to wait for time to pass or an outside event: the next run starts right away and automatic continuations are limited. Return blocked and give the clearing condition.\n"))
+
+(defn continuation-gate-prompt
+  "Tell a continuation run which PR heads the runner's gates passed, so a merge
+  decision is made against the reviewed head rather than the agent's memory."
+  [ticket-id]
+  (let [gate (:review-gate (last (previous-run-summaries ticket-id)))]
+    (when (and (:ok? gate) (seq (:checked-pr-heads gate)))
+      (str "Runner PR gates passed in the previous run for these PR heads: "
+           (str/join ", " (map (fn [[url head]] (str url " @ " head)) (:checked-pr-heads gate)))
+           ". If a PR's head has since changed, these results do not apply to it: return continue so the gates run again.\n"))))
+
+;; BOXP-405 stage 2: AI Ops decision support. The runner reads the AiOps*
+;; Prometheus alerts once per run through the existing Grafana datasource proxy
+;; (read-only, opt-in through CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID) and
+;; shows the agent only allowlisted alert names and labels. A failed read is
+;; reported as unknown, never as "no alerts", and the raw response stays in
+;; memory: summary.edn keeps only the allowlisted names.
+(def ai-ops-alert-allowlist
+  #{"AiOpsOutcomeBurnFast" "AiOpsOutcomeBurnSlow" "AiOpsOutcomeMeasurementStale" "AiOpsHarnessEvalRegression"
+    "AiProviderQuotaExhausted" "AiProviderQuotaObservationStale"})
+
+(defn ai-ops-alerts-config []
+  (let [uid (System/getenv "CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID")]
+    (when-not (str/blank? uid)
+      {:uid uid
+       :url (System/getenv "GRAFANA_URL")
+       :token (System/getenv "GRAFANA_SERVICE_ACCOUNT_TOKEN")
+       :timeout-seconds (env-long "CODEX_TASK_BOARD_AI_OPS_ALERTS_TIMEOUT_SECONDS" "5")})))
+
+(defn parse-ai-ops-alerts
+  "Allowlisted alerts from a Prometheus /api/v1/alerts body, sorted and without
+  annotations or values. Throws on a malformed or unsuccessful response."
+  [body]
+  (let [data (json/parse-string body true)]
+    (when-not (= "success" (:status data))
+      (throw (ex-info "alerts query was not successful" {:status (:status data)})))
+    ;; A successful status with a missing or non-list data.alerts is a malformed
+    ;; response, not "no alerts": fail so the caller reports it as unavailable.
+    (when-not (sequential? (get-in data [:data :alerts]))
+      (throw (ex-info "alerts query response has no data.alerts list" {:status (:status data)})))
+    (->> (get-in data [:data :alerts])
+         (keep (fn [{:keys [labels state]}]
+                 (let [alertname (:alertname labels)]
+                   (when (contains? ai-ops-alert-allowlist alertname)
+                     (cond-> {:alertname alertname :state (str (or state "unknown"))}
+                       (string? (:severity labels)) (assoc :severity (:severity labels))
+                       (string? (:window labels)) (assoc :window (:window labels))
+                       (string? (:scope labels)) (assoc :scope (:scope labels))
+                       (string? (:model_rev labels)) (assoc :model-rev (:model_rev labels))
+                       (string? (:harness_version labels)) (assoc :harness-version (:harness_version labels))
+                       (string? (:definition_version labels)) (assoc :definition-version (:definition_version labels)))))))
+         distinct
+         (sort-by (juxt :alertname :window :state))
+         vec)))
+
+(defn fetch-ai-ops-alerts
+  "nil when disabled; {:status \"ok\" :alerts [...]} or {:status \"unavailable\" :reason ...}."
+  []
+  (when-let [{:keys [uid url token timeout-seconds]} (ai-ops-alerts-config)]
+    (if (or (str/blank? url) (str/blank? token))
+      {:status "unavailable" :reason "grafana-env-missing"}
+      (try
+        (let [endpoint (str (str/replace url #"/+$" "") "/api/datasources/proxy/uid/" uid "/api/v1/alerts")
+              ;; curl expands the token from its own environment, so it is on
+              ;; neither the command line nor disk.
+              result @(p/process ["curl" "--fail" "--silent" "--show-error" "--max-time" (str timeout-seconds)
+                                  "--variable" "%GRAFANA_SERVICE_ACCOUNT_TOKEN"
+                                  "--expand-header" "Authorization: Bearer {{GRAFANA_SERVICE_ACCOUNT_TOKEN}}"
+                                  endpoint]
+                                 {:out :string :err :string})]
+          (if (zero? (:exit result))
+            {:status "ok" :alerts (parse-ai-ops-alerts (:out result))}
+            {:status "unavailable" :reason (str "curl-exit-" (:exit result))}))
+        (catch Exception e
+          (log! (str "ai ops alerts read failed: " (.getMessage e)))
+          {:status "unavailable" :reason "response-unreadable"})))))
+
+(defn ai-ops-alert-line [{:keys [alertname state severity window scope model-rev harness-version definition-version]}]
+  (str alertname "{state=" state
+       (when severity (str ",severity=" severity))
+       (when window (str ",window=" window))
+       (when scope (str ",scope=" scope))
+       (when model-rev (str ",model_rev=" model-rev))
+       (when harness-version (str ",harness_version=" harness-version))
+       (when definition-version (str ",definition_version=" definition-version))
+       "}"))
+
+(defn ai-ops-summary-fields
+  "summary.edn fields for the alert read: allowlisted names only, and the read
+  status so a failed read is distinguishable from no alerts."
+  [ai-ops]
+  (cond
+    (nil? ai-ops) {}
+    (= "ok" (:status ai-ops)) {:ai-ops-alerts-status "ok"
+                               :ai-ops-alerts (vec (distinct (map :alertname (:alerts ai-ops))))}
+    :else {:ai-ops-alerts-status "unavailable"}))
+
+(defn ai-ops-decision-prompt [ai-ops]
+  (when ai-ops
+    (str "AI Ops decision support (AI Ops 判断支援):\n"
+         "- Source: Prometheus alerts named AiOps* and AiProviderQuota* read once at run start through the Grafana datasource proxy (read-only). Definition outcome/v2-draft with provisional thresholds; this is not a formal SLO.\n"
+         "- Status: "
+         (cond
+           (not= "ok" (:status ai-ops))
+           (str "unavailable (measurement could not be read: " (or (:reason ai-ops) "unknown") "). Treat this as unknown, not as 'no alerts'.")
+
+           (empty? (:alerts ai-ops))
+           "no AiOps alerts are firing or pending."
+
+           :else
+           (str "alerts " (str/join "; " (map ai-ops-alert-line (:alerts ai-ops))) "."))
+         "\n"
+         "- Meaning: AiProviderQuotaExhausted = a provider usage limit is rejected until its reset (scope=shared binds every Claude model, scope=model binds one); AiProviderQuotaObservationStale = the limit state is not known; neither is an outcome SLO burn. AiOpsOutcomeBurnFast = the 7-day window consumes the outcome error budget at >= 2x; AiOpsOutcomeBurnSlow = the 28-day window at >= 1x; AiOpsOutcomeMeasurementStale = the outcome export failed or is older than 2h, so outcome numbers are not trustworthy right now; AiOpsHarnessEvalRegression = the fixed-task comparison suggests the current harness underperforms the minimal setup on the same model.\n"
+         "- Allowed when an alert is firing: record the evidence in this ticket's Notes (alert name, window, counts and definition version from the ai-ops-quality dashboard), isolate the likely cause (model update / harness update / external outage / task difficulty), re-evaluate under the same conditions, and propose small fixes inside the already approved scope.\n"
+         "- Not allowed because of these alerts: releasing gates, approvals or locks; resetting retry or continuation budgets; automatic production changes; re-sending notifications; restarting Pods or Hermes; declaring an SLO met or missed. Alerts are context for your judgment, not a blocker: keep working this ticket's approved scope.\n\n")))
+
+;; BOXP-405 AIOPS-QUOTA: provider usage limits as a decision input, separate from
+;; the outcome SLO. The state comes from the local snapshot of the CLI's own
+;; rate_limit_event values. Every failure here fails open and reads as unknown:
+;; a broken quota read must not stop runs or look like available quota.
+(defn claude-quota-snapshot []
+  (if (and @subscription-module-loaded? @provider-quota-module-loaded?)
+    ((resolve 'ai-subscription-usage/snapshot) (fs/path (root) "ai-ops/subscription/claude.json"))
+    {:state "unavailable"}))
+
+(defn provider-quota-prompt
+  "The usage limit section for a Claude route; nil for other runtimes."
+  ([agent]
+   (when (claude-assignee? agent)
+     (try
+       (provider-quota-prompt agent (claude-quota-snapshot) (quot (System/currentTimeMillis) 1000))
+       (catch Exception e
+         (log! (str "provider quota read failed: " (.getMessage e)))
+         (provider-quota-prompt agent {:state "unavailable"} 0)))))
+  ([agent {:keys [state data]} now-s]
+   (when (claude-assignee? agent)
+     (if (= "ok" state)
+       ((resolve 'ai-provider-quota/prompt-section) data agent now-s
+        ((resolve 'ai-subscription-usage/claude-account-scope)))
+       (str "Provider usage limits (利用枠): unknown, no readable observation (" state "). Do not read this as available.\n")))))
+
+(defn provider-quota-status
+  "Route decision for a Claude agent, or nil when it is not a Claude route or the
+  state cannot be read."
+  [agent]
+  (when (claude-assignee? agent)
+    (try
+      (let [{:keys [state data]} (claude-quota-snapshot)]
+        (when (= "ok" state)
+          ((resolve 'ai-provider-quota/route-status) data agent (quot (System/currentTimeMillis) 1000)
+           ((resolve 'ai-subscription-usage/claude-account-scope)))))
+      (catch Exception e
+        (log! (str "provider quota read failed: " (.getMessage e)))
+        nil))))
+
+(defn provider-quota-summary-fields [status]
+  (if status
+    {:provider-quota (select-keys status [:route :decision :scope :limits :resets-at :definition-version])}
+    {}))
+
+(defn run-provider-rate-limit
+  "The limit that stopped a run, from its events, or nil."
+  [events-path]
+  (try
+    (when (and @provider-quota-module-loaded? (fs/exists? events-path))
+      (with-open [reader (io/reader (str events-path))]
+        ((resolve 'ai-provider-quota/run-rate-limit) (line-seq reader))))
+    (catch Exception e
+      (log! (str "provider rate limit read failed: " (.getMessage e)))
+      nil)))
+
+(defn prompt-for
+  ([action ticket-id lane workspace agent]
+   (prompt-for action ticket-id lane workspace agent (fetch-ai-ops-alerts)))
+  ([action ticket-id lane workspace agent ai-ops]
   (let [ticket-text (slurp (str (ticket-path ticket-id)))
         previous (previous-run-summaries ticket-id)
         base-agent (:base-assignee (parse-codex-assignee agent))
@@ -2109,9 +2375,22 @@
                     (when (contains? claude-assignee->model agent) (claude-policy-prompt agent))
                     (when (contains? #{"codex-sol" "codex-full"} base-agent) (codex-sol-policy-prompt agent))
                     (when (= "codex-astra" base-agent) (codex-astra-policy-prompt agent))
+                    (ai-ops-decision-prompt ai-ops)
+                    (provider-quota-prompt agent)
+                    (when (and (#{:implement :review-fix :blocked-retry} action) (todo-contract-agent? agent))
+                      (when-let [view (todo-view ticket-id)]
+                        (str "TODO revision " (:rev view) " mode " (name (:mode view)) ". "
+                             ((resolve 'task-board-todos/diff-text) view) "\n"
+                             "The ticket's latest revision can change while you work; a change reaches you at tool boundaries or when you stop.\n"
+                             "Before merge/deploy and before your final result run: bb " todo-module-path " status " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --json, then, using the rev it reports: bb " todo-module-path " ack " ticket-id " --vault \"$CODEX_TASK_BOARD_VAULT\" --rev REV --run \"$CODEX_TASK_BOARD_RUN_ID\" --source " agent ". A stale REV is refused and prints the difference. A result from an older revision will not be applied.\n"
+                             (when (= :v1 (:mode view)) (str "After doing a TD item run: bb " todo-module-path " done " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --evidence TEXT. An optional item you will not do: skip " ticket-id " TD-NN --vault \"$CODEX_TASK_BOARD_VAULT\" --reason TEXT. Required items cannot be skipped: return blocked for an Owner decision. A checked box alone does not complete an item. Lines without a TD id are your own steps; do not add TD lines for them. TODOs grant no permission.\n"))
+                             (when (some #(= "held" (get-in % [:todo :gate])) previous) "The previous result was held: read back merges and external operations before proceeding; do not repeat them.\n"))))
                     "Ticket contents:\n\n" ticket-text "\n\n")
-        review-contract (str "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: review.\n"
-                             "If you return TASK_BOARD_RESULT: review, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n")]
+        review-contract (str "The codex review gate blocks only on P0/P1 findings; P2/P3/nit feedback is non-blocking and is not a reason to loop.\n"
+                             "When repository changes are part of the work, create or update a GitHub PR before returning TASK_BOARD_RESULT: continue.\n"
+                             "If you return TASK_BOARD_RESULT: continue, include either a GitHub PR URL or exactly one line TASK_BOARD_REVIEW_PR: none when no repository changes were made.\n"
+                             (continuation-gate-prompt ticket-id)
+                             lane-contract)]
     (case action
       :groom
       (str common
@@ -2120,7 +2399,7 @@
            "Then update the ticket file so Summary, Acceptance Criteria, Context, Plan, and Notes are specific enough for a human to review. Fill Context with investigation findings (system state, related docs, design rationale). Fill Plan with concrete implementation steps derived from findings.\n"
            "Keep the scope practical and preserve existing decisions.\n"
            (append-note-instruction agent ticket-id)
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: review\n")
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: continue\n")
 
       :review-fix
       (str common
@@ -2129,8 +2408,7 @@
            "Do the requested work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n"
-           "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n")
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
 
       :blocked-retry
       (str common
@@ -2139,7 +2417,7 @@
            "Do the work end to end where possible.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n")
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")
 
       :implement
       (str common
@@ -2148,12 +2426,20 @@
            "Do the work end to end where possible, including focused validation.\n"
            (append-note-instruction agent ticket-id)
            review-contract
-           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: review, or TASK_BOARD_RESULT: blocked\n"
-           "Use done only when all acceptance criteria are satisfied. Use review when human review is needed. Use blocked when external input or unavailable infrastructure blocks progress.\n"))))
+           "End your final message with exactly one marker line: TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked\nWhen returning blocked, also add exactly one line TASK_BOARD_WAIT_REASON: owner-decision | external-hold | new-scope | agent-recoverable (owner-decision = needs the Owner's decision or acceptance, external-hold = waiting on an external system/person, new-scope = work outside the approved scope, agent-recoverable = the agent could recover with a retry/fix).\n")))))
+
+(defn normalize-result
+  "BOXP-395: `review` is the retired spelling of `continue`. Runs started before
+  the rollout, or agents with an old prompt, may still return it."
+  [result]
+  (if (= "review" result) "continue" result))
 
 (defn result-marker [text]
-  (when-let [[_ value] (re-find #"(?im)^TASK_BOARD_RESULT:\s*(done|review|blocked)\s*$" (or text ""))]
-    value))
+  (when-let [[_ value] (re-find #"(?im)^TASK_BOARD_RESULT:\s*(done|continue|review|blocked)\s*$" (or text ""))]
+    (normalize-result value)))
+
+(defn wait-reason-marker [text]
+  (some-> (re-find #"(?im)^TASK_BOARD_WAIT_REASON:\s*(owner-decision|external-hold|new-scope|agent-recoverable)\s*$" (or text "")) second str/lower-case))
 
 (defn github-pr-url? [text]
   (boolean (re-find #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" (or text ""))))
@@ -2220,7 +2506,8 @@
       (if-not (.isAlive process)
         {:proc @proc :idle-timeout? false :shutdown? @shutdown-requested?}
         (do
-          (Thread/sleep 1000)
+          ;; Wake immediately on exit while retaining the one-second idle poll.
+          (.waitFor process 1000 java.util.concurrent.TimeUnit/MILLISECONDS)
           (let [observed-at (progress-millis)
                 last-progress-at (max last-progress-at observed-at)
                 idle-millis (- (System/currentTimeMillis) last-progress-at)]
@@ -2289,6 +2576,13 @@
 (defn repo-from-pr-url [pr-url]
   ;; Extract "owner/repo" from a GitHub PR URL like https://github.com/owner/repo/pull/N
   (second (re-find #"github\.com/([^/]+/[^/]+)/pull/" (str pr-url))))
+
+(defn codex-review-artifact-base [pr-url]
+  (str "codex-review-"
+       (when-let [repo (repo-from-pr-url pr-url)]
+         ;; GitHub owner names cannot contain underscores, so the first __ marks the boundary.
+         (str (str/replace repo "/" "__") "-"))
+       (last (str/split pr-url #"/"))))
 
 (defn no-ci-repo? [pr-url]
   (let [repos (no-ci-repos)
@@ -2468,26 +2762,84 @@
             (Thread/sleep (* 1000 (pr-gate-poll-seconds)))
             (recur)))))))
 
-(defn codex-review-clean? [text]
-  (boolean (re-find #"(?im)^CODEX_REVIEW_RESULT:\s*clean\s*$" (or text ""))))
-
-(defn codex-review-summary [text]
+(defn codex-review-findings [text]
   (->> (str/split-lines (or text ""))
-       (remove #(re-find #"(?im)^CODEX_REVIEW_RESULT:" %))
-       (remove str/blank?)
-       (take 6)
-       (str/join " ")))
+       (keep (fn [line]
+               (when-let [[_ body] (re-find #"(?i)^CODEX_REVIEW_FINDING:(.*)$" line)]
+                 (let [parts (str/split body #"\|" 3)
+                       token (str/trim (or (nth parts 0 nil) ""))
+                       location (str/trim (or (nth parts 1 nil) ""))
+                       description (str/trim (or (nth parts 2 nil) ""))
+                       upper (str/upper-case token)]
+                   {:severity (cond (contains? #{"P0" "P1" "P2" "P3"} upper) upper
+                                    (= "NIT" upper) "nit"
+                                    :else nil)
+                    :severity-token token
+                    :location location
+                    :description description
+                    :malformed? (or (< (count parts) 3) (str/blank? location) (str/blank? description))
+                    :line (str/trim line)}))))
+       vec))
+
+(defn classify-codex-review [text]
+  (let [markers (re-seq #"(?im)^CODEX_REVIEW_RESULT:\s*(clean|issues)\s*$" (or text ""))
+        marker (some-> markers first second str/lower-case)
+        findings (codex-review-findings text)
+        blocking (filterv #(contains? #{"P0" "P1"} (:severity %)) findings)
+        low (filterv #(contains? #{"P2" "P3" "nit"} (:severity %)) findings)
+        unstructured? (some #(and (not (str/blank? %))
+                                  (not (re-matches #"(?i)^CODEX_REVIEW_RESULT:\s*(clean|issues)\s*$" %))
+                                  (not (re-find #"(?i)^CODEX_REVIEW_FINDING:" %)))
+                            (str/split-lines (or text "")))
+        reason (cond (str/blank? text) :empty-output
+                     (nil? marker) :missing-result-marker
+                     (> (count markers) 1) :conflicting-result-marker
+                     (some #(and (nil? (:severity %)) (str/blank? (:severity-token %))) findings) :missing-severity
+                     (some #(nil? (:severity %)) findings) :unknown-severity
+                     (some :malformed? findings) :malformed-finding
+                     (and (= marker "issues") (empty? findings)) :missing-severity
+                     ;; Prose outside the contract may be an unformatted finding, so the output
+                     ;; cannot be judged whatever the marker or other lines say.
+                     unstructured? :unstructured-findings)]
+    {:verdict (cond reason :invalid (seq blocking) :blocking (seq low) :pass-low :else :clean)
+     :reason reason :blocking blocking :low low}))
+
+(defn record-codex-review-usage! [run-dir artifact-base pr-url proc duration-ms]
+  (try
+    (let [events (keep (fn [line]
+                         (try (json/parse-string line true)
+                              (catch Exception _ nil)))
+                       (str/split-lines (or (:out proc) "")))
+          thread-id (:thread_id (first (filter #(= "thread.started" (:type %)) events)))
+          raw-usage (:usage (last (filter #(= "turn.completed" (:type %)) events)))
+          keys [:input_tokens :cached_input_tokens :output_tokens :reasoning_output_tokens :cache_write_input_tokens]
+          allowed (into {} (filter (comp integer? val) (select-keys (if (map? raw-usage) raw-usage {}) keys)))
+          recorded? (and (contains? allowed :input_tokens) (contains? allowed :output_tokens))
+          record {:schema "codex-review-usage/v0" :recorded_at (str (java.time.Instant/now))
+                  :pr_url pr-url :exit_code (:exit proc) :duration_ms duration-ms
+                  :thread_id (when (string? thread-id) thread-id)
+                  :usage (when recorded? allowed) :usage_status (if recorded? "recorded" "unrecorded")}]
+      (spit (str (fs/path run-dir (str artifact-base "-usage.jsonl")))
+            (str (json/generate-string record) "\n") :append true))
+    (catch Exception e
+      (binding [*out* *err*] (println "Failed to record codex review usage:" (.getMessage e))))))
 
 (defn run-codex-review! [run-dir pr-url]
   (let [diff (run-string! ["gh" "pr" "diff" pr-url] {})
-        review-path (fs/path run-dir (str "codex-review-" (last (str/split pr-url #"/")) ".md"))
+        artifact-base (codex-review-artifact-base pr-url)
+        review-path (fs/path run-dir (str artifact-base ".md"))
         prompt (str "CODEX_REVIEW_GATE\n"
                     "Review this GitHub PR diff for actionable bugs, regressions, missing tests, or acceptance-criteria gaps.\n"
-                    "Return CODEX_REVIEW_RESULT: clean only if there are no actionable findings.\n"
-                    "Return CODEX_REVIEW_RESULT: issues when any actionable finding remains, followed by a concise summary.\n\n"
+                    "Severity policy: P0 is a critical safety problem (secret/credential leakage, data loss, destructive or irreversible operation, security hole); always blocking.\n"
+                    "P1 is a concrete defect in this diff with real impact and reproducible evidence (wrong behavior, regression, broken required test, unmet acceptance criterion); blocking.\n"
+                    "P2 is an improvement worth considering, not blocking. P3 / nit is style, naming, wording or optional cleanup, not blocking.\n"
+                    "Do not inflate severity: a hypothetical future risk, a preference, or a re-worded P2 is not a P1.\n"
+                    "Exactly one CODEX_REVIEW_RESULT line must appear. For a clean result, output exactly the single line CODEX_REVIEW_RESULT: clean and nothing else. Otherwise return CODEX_REVIEW_RESULT: issues followed by exactly one line per finding: CODEX_REVIEW_FINDING: <P0|P1|P2|P3|nit> | <file:line or area> | <one-line description>. Every CODEX_REVIEW_FINDING line must carry one of the allowed severities and contain all three fields separated by \" | \", with a non-empty location and description. Every finding must have such a line. Output nothing else: no prose, headings, or bullet lines outside those CODEX_REVIEW_FINDING lines.\n\n"
                     "PR: " pr-url "\n\n"
                     diff)
+        started-ns (System/nanoTime)
         proc @(p/process (cond-> ["codex" "exec"
+                                  "--json"
                                   "--skip-git-repo-check"
                                   "--output-last-message" (str review-path)]
                            true
@@ -2496,6 +2848,8 @@
                            true
                            (conj "-"))
                          {:in prompt :out :string :err :string})
+        duration-ms (quot (- (System/nanoTime) started-ns) 1000000)
+        _ (record-codex-review-usage! run-dir artifact-base pr-url proc duration-ms)
         last-message (when (fs/exists? review-path)
                        (slurp (str review-path)))]
     (cond
@@ -2507,21 +2861,40 @@
        :retryable? false
        :message (str "codex review command failed: " (:err proc))}
 
-      (codex-review-clean? last-message)
-      {:ok? true
-       :url pr-url
-       :gate-results [["codex-review" "pass"]]
-       :message "codex review reported no actionable findings."}
-
       :else
-      {:ok? false
-       :gate :codex-review
-       :failure-kind :findings
-       :url pr-url
-       :retryable? true
-       :message (str "codex review reported actionable findings"
-                     (when-let [summary (not-empty (codex-review-summary last-message))]
-                       (str ": " summary)))})))
+      (let [{:keys [verdict reason blocking low]} (classify-codex-review last-message)
+            low-info {:count (count low) :paths [(str review-path)]}]
+        (case verdict
+          :clean {:ok? true :url pr-url :gate-results [["codex-review" "pass"]]
+                  :message "codex review reported no actionable findings."}
+          :pass-low {:ok? true :url pr-url :gate-results [["codex-review" "pass"]]
+                     :low-priority-findings low-info
+                     :message (str "codex review reported only non-blocking low-priority findings (P2/P3/nit): " (count low) "; kept for reference in " review-path)}
+          :blocking (let [path (fs/path run-dir (str artifact-base "-blocking.md"))
+                          lines (mapv :line blocking)]
+                      (spit (str path) (str "Blocking codex review findings (P0/P1):\n" (str/join "\n" lines) "\n"))
+                      {:ok? false :gate :codex-review :failure-kind :findings :url pr-url :retryable? true
+                       :fingerprint-key (str/join "\n" lines)
+                       :blocking-findings {:count (count blocking) :path (str path)}
+                       :low-priority-findings low-info
+                       :message (str "codex review reported " (count blocking) " blocking finding(s) (P0/P1): " (str/join " " lines)
+                                     (when (pos? (count low)) (str "; " (count low) " low-priority finding(s) (P2/P3/nit) are non-blocking and excluded from the retry instruction")))})
+          :invalid {:ok? false :gate :codex-review :failure-kind :invalid-output :url pr-url :retryable? false
+                    :review-judgment-failure (name reason)
+                    :message (str "codex review output could not be judged (" (name reason) "); "
+                                  (when (= reason :conflicting-result-marker) "The output contains more than one CODEX_REVIEW_RESULT line; exactly one is required. ")
+                                  (when (= reason :malformed-finding) "A CODEX_REVIEW_FINDING line is missing its location or description. ")
+                                  "review artifact: " review-path)})))))
+
+(defn pr-head-oid
+  "Head SHA of a PR, or nil when it cannot be read; only ever used as a hint."
+  [pr-url]
+  (try
+    (let [{:keys [exit out]} @(p/process ["gh" "pr" "view" pr-url "--json" "headRefOid" "--jq" ".headRefOid"]
+                                         {:out :string :err :string})
+          sha (str/trim (str out))]
+      (when (and (zero? exit) (re-matches #"[0-9a-f]{40}" sha)) sha))
+    (catch Exception _ nil)))
 
 (defn review-gate!
   "Evaluate the PR gates. :gate-results lists every individual gate result as
@@ -2534,6 +2907,8 @@
         (loop [remaining pr-urls
                passed []
                merged []
+               heads {}
+               low-info {:count 0 :paths []}
                results [["pr-url" "pass"]]]
           (if-let [pr-url (first remaining)]
             (let [pr-state (wait-for-pr-state! pr-url)]
@@ -2551,11 +2926,14 @@
                 ;; review is skipped too. Both lists below are persisted in
                 ;; summaries and must stay URL-only.
                 (:merged? pr-state)
-                (recur (rest remaining) passed (conj merged pr-url)
+                (recur (rest remaining) passed (conj merged pr-url) heads low-info
                        (into results [["mergeability" "skip"] ["conflict" "skip"] ["ci" "skip"] ["codex-review" "skip"]]))
 
                 :else
-                (let [review (run-codex-review! run-dir pr-url)
+                (let [;; Read before the review so the recorded head is never newer
+                      ;; than the reviewed one (BOXP-395).
+                      head (pr-head-oid pr-url)
+                      review (run-codex-review! run-dir pr-url)
                       results (into results (:gate-results pr-state))]
                   (if-not (:ok? review)
                     (assoc review
@@ -2567,16 +2945,22 @@
                     ;; This field is persisted in summaries, so it must remain a
                     ;; URL list rather than carrying arbitrary check/review text.
                     (recur (rest remaining) (conj passed pr-url) merged
+                           (cond-> heads head (assoc pr-url head))
+                           (-> low-info
+                               (update :count + (get-in review [:low-priority-findings :count] 0))
+                               (update :paths into (get-in review [:low-priority-findings :paths] [])))
                            (into results (:gate-results review)))))))
-            {:ok? true
+            (cond-> {:ok? true
              :skipped? (empty? passed)
              :gate-results results
              :pr-urls pr-urls
              :checked-pr-urls passed
+             :checked-pr-heads heads
              :merged-pr-urls merged
              :message (str "PR gates passed."
                            (when (seq merged)
-                             (str " Merged PR(s) skipped: " (str/join ", " merged) ".")))}))
+                             (str " Merged PR(s) skipped: " (str/join ", " merged) ".")))}
+              (pos? (:count low-info)) (assoc :low-priority-findings low-info))))
 
         (no-repo-review-marker? last-message)
         {:ok? true
@@ -2587,7 +2971,7 @@
         :else
         {:ok? false
          :gate :pr-url
-         :retryable? false
+         :retryable? true
          :message "Review was requested without a GitHub PR URL or TASK_BOARD_REVIEW_PR: none marker."}))
     (catch Exception e
       {:ok? false
@@ -2700,9 +3084,13 @@
   The running summary (last result / assistant event, as in
   claude-stream-summary) is kept in `summary` (an atom the caller may pass in)
   so the final result survives even when the log cannot be written or the
-  caller stops waiting for the drain; the atom's value is also returned."
+  caller stops waiting for the drain; the atom's value is also returned.
+  `account-scope` is the login fixed just before the process started."
   ([stream path] (pump-claude-stream! stream path (atom {})))
   ([stream path summary]
+   (pump-claude-stream! stream path summary
+                        (when @subscription-module-loaded? ((resolve 'ai-subscription-usage/claude-account-scope)))))
+  ([stream path summary account-scope]
   (let [logged (atom #{})
         warn! (fn [k e] (when-not (@logged k) (swap! logged conj k) (log! (str k ": " (.getMessage e)))))]
     (try
@@ -2726,7 +3114,10 @@
                 (when (and (map? event) (= "rate_limit_event" (:type event)))
                   (try
                     (when @subscription-module-loaded?
-                      ((resolve 'ai-subscription-usage/record-claude-rate-limit!) (root) event received-at))
+                      (when (false? ((resolve 'ai-subscription-usage/record-claude-run-rate-limit!) (root) event received-at account-scope))
+                        (when-not (@logged "claude subscription account changed")
+                          (swap! logged conj "claude subscription account changed")
+                          (log! "claude subscription events skipped: login differs from run start"))))
                     (catch Exception e (warn! "claude subscription record failed" e))))))
             (finally
               (when writer (.close writer))))))
@@ -2764,11 +3155,38 @@
         stdout-path (fs/path dir "events.jsonl")
         stderr-path (fs/path dir "stderr.log")
         last-message-path (fs/path dir "last-message.md")
-        evidence-path (str (fs/path dir "delegation.json"))]
+        evidence-path (str (fs/path dir "delegation.json"))
+        ai-ops (fetch-ai-ops-alerts)
+        ai-ops-fields (merge (ai-ops-summary-fields ai-ops)
+                             (provider-quota-summary-fields (provider-quota-status agent)))]
     (fs/create-dirs dir)
-    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent))
-    (mark-run! ticket-id run :running {:action action :agent agent :lane lane :started-at (now-str)})
-    (let [agent-args (if (claude-assignee? agent)
+    (when-let [view (and (#{:implement :review-fix :blocked-retry} action) (todo-contract-agent? agent) (todo-view ticket-id))]
+      (spit (str (fs/path dir "todo-start.edn")) (pr-str (select-keys view [:rev :mode])))
+      (refresh-todo-state! ticket-id))
+    (spit (str prompt-path) (prompt-for action ticket-id lane workspace agent ai-ops))
+    (mark-run! ticket-id run :running (merge {:action action :agent agent :lane lane :started-at (now-str)} ai-ops-fields))
+    (let [todo-hooks? (and @todo-module-loaded? (#{:implement :review-fix :blocked-retry} action)
+                           (not= "false" (env "CODEX_TASK_BOARD_TODO_HOOKS" "true")))
+          shell-quote (fn [x] (str "'" (str/replace (str x) "'" "'\"'\"'") "'"))
+          hook-command (fn [event] (str "bb " (shell-quote todo-module-path) " hook --vault " (shell-quote (vault)) " --ticket " (shell-quote ticket-id) " --run-dir " (shell-quote dir) " --event " event))
+          hook-spec (fn [event matcher] {:matcher matcher :hooks [{:type "command" :command (hook-command event)}]})
+          hooks {"PostToolUse" [(hook-spec "post" "*")] "PreToolUse" [(hook-spec "pre" "Bash")] "Stop" [(hook-spec "stop" "*")]}
+          hooks-path (str (fs/path dir "todo-hooks.json"))
+          ;; Keep ticket identifiers out of Claude's command line. The private
+          ;; alias points to the run-local settings file for this invocation.
+          hooks-alias (fs/path (root) "hook-settings" (str run ".json"))
+          _ (when (and todo-hooks? (claude-assignee? agent))
+              (spit hooks-path (json/generate-string {:hooks hooks}))
+              (fs/create-dirs (fs/parent hooks-alias))
+              (java.nio.file.Files/createSymbolicLink
+               (.toPath (java.io.File. (str hooks-alias)))
+               (.toPath (.getAbsoluteFile (java.io.File. hooks-path)))
+               (make-array java.nio.file.attribute.FileAttribute 0)))
+          ;; Only unattended bypass mode may bypass hook trust; approval mode must
+          ;; leave hook trust decisions to the operator.
+          codex-hooks? (and todo-hooks? (not (claude-assignee? agent)) (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true")))
+          toml-hook (fn [event matcher] (str "[{matcher=" (pr-str matcher) ",hooks=[{type=\"command\",command=" (pr-str (hook-command event)) "}]}]"))
+          agent-args (if (claude-assignee? agent)
                        (cond-> [(env "CODEX_TASK_BOARD_CLAUDE_BIN" "claude") "--print" "--output-format" "stream-json" "--verbose"]
                    (= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (conj "--dangerously-skip-permissions")
@@ -2777,6 +3195,8 @@
                    (into (mapcat (fn [dir] ["--add-dir" dir])
                                  (concat [(vault) (str dir)] (workspace-add-dirs workspace))))
 
+                   todo-hooks?
+                   (into ["--settings" (str hooks-alias)])
                    true
                    (into (claude-model-args agent)))
 
@@ -2793,16 +3213,24 @@
                    (not= "true" (env "CODEX_TASK_BOARD_BYPASS_APPROVALS" "true"))
                    (into (mapcat (fn [dir] ["--add-dir" dir]) (workspace-add-dirs workspace)))
 
+                   codex-hooks?
+                   (into ["--dangerously-bypass-hook-trust" "-c" (str "hooks.PostToolUse=" (toml-hook "post" "*")) "-c" (str "hooks.PreToolUse=" (toml-hook "pre" "Bash")) "-c" (str "hooks.Stop=" (toml-hook "stop" "*"))])
                    true
                    (into (codex-model-profile-args agent))
 
                    true
                    (conj "-")))
           idle-timeout-seconds (agent-idle-timeout-seconds)
+          ;; Fix the account before the process can start using it: events carry
+          ;; no account id, and the login may change while the run is active.
+          claude-account-scope (when (and (claude-assignee? agent) @subscription-module-loaded?)
+                                 ((resolve 'ai-subscription-usage/claude-account-scope)))
           proc (p/process (into ["setsid"] agent-args) (cond-> {:in (io/file (str prompt-path))
                                               :out (if (claude-assignee? agent) :stream (io/file (str stdout-path)))
                                               :err (io/file (str stderr-path))
-                                              :extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path
+                                              :extra-env {"CODEX_TASK_BOARD_VAULT" (vault)
+                                                          "CODEX_TASK_BOARD_RUN_ID" run
+                                                          "TASK_BOARD_DELEGATION_EVIDENCE" evidence-path
                                                           "TASK_BOARD_DELEGATION_ADD_DIRS" (json/generate-string
                                                                                            (vec (cons (vault) (workspace-add-dirs workspace))))}}
                                        (claude-assignee? agent)
@@ -2816,7 +3244,7 @@
           ;; The pump fills this atom as lines arrive, so the final result is
           ;; available even if the deref below times out before the drain ends.
           pump-summary-atom (atom {})
-          tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path pump-summary-atom)))
+          tail (when (claude-assignee? agent) (future (pump-claude-stream! (:out proc) stdout-path pump-summary-atom claude-account-scope)))
           _ (register-agent-process! run (:proc proc))
           {:keys [proc idle-timeout? shutdown?]} (try
                                                    (await-agent! proc [stdout-path stderr-path (ticket-path ticket-id)] idle-timeout-seconds
@@ -2825,6 +3253,8 @@
                                                    (finally
                                                      (unregister-agent-process! run)
                                                      (when tail (deref tail 10000 nil))))
+          _ (when (and todo-hooks? (claude-assignee? agent))
+              (try (fs/delete-if-exists hooks-alias) (catch Exception _ nil)))
           pump-summary (when tail (await-claude-pump! tail pump-summary-atom 0 120000))
           raw-exit (:exit proc)
           claude-summary (when (claude-assignee? agent)
@@ -2850,6 +3280,10 @@
                              (not (zero? raw-exit))
                              shutdown? idle-timeout?
                              (= "blocked" marker)
+                             ;; BOXP-395: continue is not a finished result. A failed attempt stays in
+                             ;; the evidence, the next run gets its own, and done still has to verify.
+                             ;; The continuation limit keeps this finite.
+                             (= "continue" marker)
                              (zero? (:exit @(p/process ["python3" delegation-helper "verify"]
                                                        {:extra-env {"TASK_BOARD_DELEGATION_EVIDENCE" evidence-path}
                                                         :out :string :err :string}))))
@@ -2859,24 +3293,26 @@
         ;; interruption from the terminating side (the next owner re-marks the
         ;; run through the planned-shutdown marker and keeps `:shutdown`).
         (mark-run! ticket-id run :interrupted
-                   {:action action
-                    :agent agent
-                    :lane lane
-                    :reason "planned workspace shutdown"
-                    :shutdown {:owner-id (owner-id)
-                               :instance-id runner-instance-id
-                               :agent-exit-code exit
-                               :agent-stopped-at (now-str)}})
+                   (merge {:action action
+                           :agent agent
+                           :lane lane
+                           :reason "planned workspace shutdown"
+                           :shutdown {:owner-id (owner-id)
+                                      :instance-id runner-instance-id
+                                      :agent-exit-code exit
+                                      :agent-stopped-at (now-str)}}
+                          ai-ops-fields))
         (let [status (if (zero? exit) :succeeded :failed)]
           (mark-run! ticket-id run status
-                     {:action action
-                      :agent agent
-                      :lane lane
-                      :exit-code exit
-                      :idle-timeout? idle-timeout?
-                      :delegation-ok? delegation-ok?
-                      :result marker
-                      :finished-at (now-str)})))
+                     (merge {:action action
+                             :agent agent
+                             :lane lane
+                             :exit-code exit
+                             :idle-timeout? idle-timeout?
+                             :delegation-ok? delegation-ok?
+                             :result marker
+                             :finished-at (now-str)}
+                            ai-ops-fields))))
       {:exit exit
        :result marker
        :run-id run
@@ -2939,9 +3375,9 @@
   ;; fallback? is also true when no assistant message named a model: a run
   ;; without model evidence is never reported as a local success.
   ;; A missing marker means pi stopped mid-way (truncated output or the model
-  ;; quit early), so the partial patch never reaches Review (codex review).
+  ;; quit early), so the partial patch is never offered for acceptance (codex review).
   (cond (or (not= 0 exit) fallback?) "blocked"
-        (contains? #{"done" "review"} marker) "review"
+        (contains? #{"done" "continue" "review"} marker) "owner-acceptance"
         :else "blocked"))
 
 (defn localllm-coder-base-shas
@@ -3143,7 +3579,7 @@
                         (boolean (some #(not= model %) (:models-seen parsed))))
           result (localllm-coder-result exit (result-marker (:last-message parsed)) fallback?)
           ;; Avoid a model-supplied PR URL taking precedence over the skip marker.
-          last-message (if (= "review" result)
+          last-message (if (= "owner-acceptance" result)
                          (str (str/replace (:last-message parsed) #"https://github\.com/[^/\s]+/[^/\s]+/pull/\d+" "[PR URL omitted]") "\nTASK_BOARD_REVIEW_PR: none\n")
                          (:last-message parsed))
           ;; No patch when the restore failed, so the next run still picks the
@@ -3196,6 +3632,12 @@
          (when-let [stop (:stop r)] (when (not= :finish stop) (str ", 打ち切り=" (name stop))))
          (when (seq (:read-paths r)) (str "; 読んだ資料: " (str/join ", " (map #(str "[[" (str/replace % #"\.md$" "") "]]") (:read-paths r))))))))
 
+(defn localllm-prior-applied?
+  "An earlier localllm run of this ticket applied a change that now waits for
+  the Owner. Matches both the current note and the pre-BOXP-395 wording."
+  [ticket-text]
+  (boolean (re-find #"localllm docs run \S+ .*(?:本人確認待ち|Review )で停止しました" (or ticket-text ""))))
+
 (defn localllm-review-note [ticket-id run-id result]
   (let [applied (:applied result)
         usage (:usage result)
@@ -3211,7 +3653,7 @@
            ;; canon notes a confirmed groom plan named, saved as plain Markdown.
            ;; Facts / conflicts / questions stay in the run directory report.
            amend?
-           (str " が groom 計画の対象ノートへ追記・編集を " (:changes a 0) " 件適用し Review で停止しました（通常の本文として直接反映。内容は Obsidian で確認し、" localllm-revert-hint "。Done にはしません）。"
+           (str " が groom 計画の対象ノートへ追記・編集を " (:changes a 0) " 件適用し 本人確認待ちで停止しました（通常の本文として直接反映。内容は Obsidian で確認し、" localllm-revert-hint "。Done にはしません）。"
                 " 操作: " (str/join ", " (map (fn [[op n]] (str op "×" n)) (:ops a)))
                 "、参照した既存設定 " (:facts a 0) " 件、矛盾・要確認 " (+ (:conflicts a 0) (:auto-conflicts a 0)) " 件（うち自動検査 " (:auto-conflicts a 0) " 件）、質問 " (:questions a 0) " 件"
                 (when (pos? (:facts-dropped a 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped a 0) " 件"))
@@ -3227,8 +3669,8 @@
                 (if (:canon? c) "ノート（groom 計画で確認した設定フォルダ内）を " "提案ノートを ")
                 (if (= "replace-note" (:op c)) "改稿（置換）" "作成")
                 (if (:canon? c)
-                  (str " し Review で停止しました（既存のノートは変更していません。通常のノートとして保存。内容は Obsidian で確認し、" localllm-revert-hint "。Done にはしません）。")
-                  " し Review で停止しました（既存の設定ノートは変更していません。未承認の案で、採用は人が判断し正式フォルダへ移してください。Done にはしません）。")
+                  (str " し 本人確認待ちで停止しました（既存のノートは変更していません。通常のノートとして保存。内容は Obsidian で確認し、" localllm-revert-hint "。Done にはしません）。")
+                  " し 本人確認待ちで停止しました（既存の設定ノートは変更していません。未承認の案で、採用は人が判断し正式フォルダへ移してください。Done にはしません）。")
                 " 参照した既存設定 " (:facts c 0) " 件、矛盾・要確認 " (+ (:conflicts c 0) (:auto-conflicts c 0) (:near-names c 0)) " 件（うち自動検査 " (+ (:auto-conflicts c 0) (:near-names c 0)) " 件、名前が近い既存ノート " (:near-names c 0) " 件）、質問 " (:questions c 0) " 件"
                 (when (pos? (:facts-dropped c 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped c 0) " 件"))
                 (when (pos? (:links-dropped c 0)) (str "、未解決の wikilink を平文化 " (:links-dropped c 0) " 件"))
@@ -3237,13 +3679,13 @@
            ;; Propose mode never touches the canon: one clearly marked section
            ;; was added or replaced, adoption is the reviewer's decision.
            (str " が『提案（未承認）" ticket-id "』節を " (if (= "replace-section" (:op p)) "改稿（置換）" "追加")
-                " し Review で停止しました（canon 本文は変更していません。採用は人が判断し、採用時は本文へ反映して節を削除してください。Done にはしません）。"
+                " し 本人確認待ちで停止しました（canon 本文は変更していません。採用は人が判断し、採用時は本文へ反映して節を削除してください。Done にはしません）。"
                 " 参照した既存設定 " (:facts p 0) " 件、矛盾・要確認 " (+ (:conflicts p 0) (:auto-conflicts p 0)) " 件（うち自動検査 " (:auto-conflicts p 0) " 件）、質問 " (:questions p 0) " 件"
                 (when (pos? (:facts-dropped p 0)) (str "、出典不明で除外した既存設定 " (:facts-dropped p 0) " 件"))
                 (when (pos? (:links-dropped p 0)) (str "、未解決の wikilink を平文化 " (:links-dropped p 0) " 件"))
                 ".")
            :else
-           (str " が " (count applied) " ファイルを更新し Review で停止しました（Done にはしません）。"))
+           (str " が " (count applied) " ファイルを更新し 本人確認待ちで停止しました（Done にはしません）。"))
          " 対象: " (str/join ", " (map #(str "[[" (str/replace (:path %) #"\.md$" "") "]]" (when (:created? %) "（新規）")) applied))
          "; 操作: " (str/join ", " (map (fn [a] (str/join "/" (map :op (:ops a)))) applied))
          (when (seq (:sources result)) (str "; 出典: " (str/join ", " (map #(str "[[" (str/replace (str %) #"\.md$" "") "]]") (:sources result)))))
@@ -3272,7 +3714,7 @@
          (when (:reason result) (str "reason: " (sanitize-blocker-reason (:reason result)) "\n"))
          (when (seq (:applied result)) (str "applied: " (str/join ", " (map :path (:applied result))) "\n"))
          "TASK_BOARD_REVIEW_PR: none\n"
-         "TASK_BOARD_RESULT: " (if review? "review" "blocked") "\n")))
+         "TASK_BOARD_RESULT: " (if review? "continue" "blocked") "\n")))
 
 (defn run-localllm-docs! [ticket-id action lane origin-lane agent lock]
   (let [run (:run-id lock)
@@ -3289,7 +3731,14 @@
                        :run-dir (str dir)
                        :ticket-text ticket-text
                        :frontmatter frontmatter
-                       :action (if (= "Review" origin-lane) :revise :edit)
+                       :action (if (or (= "Review" origin-lane)
+                                     ;; BOXP-395: revising an applied result now
+                                     ;; restarts from the Blocked (owner-acceptance)
+                                     ;; card or from Ready.
+                                     (and (#{"Blocked" "Ready"} origin-lane)
+                                          (localllm-prior-applied? ticket-text)))
+                                 :revise
+                                 :edit)
                        :stop-requested? (fn [] @shutdown-requested?)
                        ;; The document write is deferred into process-card!'s
                        ;; lifecycle commit (under the shutdown monitor, together
@@ -3316,11 +3765,11 @@
                                                       (localllm-stop-note ticket-id run result)))
                             (mark-run! ticket-id run :succeeded
                                        {:action action :agent agent :lane lane :exit-code 0
-                                        :result (if review? "review" "blocked")
+                                        :result (if review? "owner-acceptance" "blocked")
                                         :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :applied :mode :propose :create])
                                         :finished-at (now-str)})
-                            (if review? "review" "blocked")))
-          ;; A staged result is reported as the intended "review" until the
+                            (if review? "owner-acceptance" "blocked")))
+          ;; A staged result is reported as the intended owner-acceptance until the
           ;; deferred commit decides; its last-message is rewritten then.
           message (localllm-last-message run (if staged? (assoc result :status :review) result))]
       (spit (str last-message-path) message)
@@ -3341,7 +3790,7 @@
                     :localllm (select-keys result [:category :model :usage :llm-elapsed-ms :staged-paths :mode])
                     :decided-at (now-str)}))
       (cond-> {:exit 0
-               :result (if (or staged? (= :review (:status result))) "review" "blocked")
+               :result (if (or staged? (= :review (:status result))) "owner-acceptance" "blocked")
                :run-id run
                :dir (str dir)
                :last-message message
@@ -3356,7 +3805,7 @@
                                  (let [final (if staged? ((:commit! result)) result)
                                        applied? (boolean (seq (:applied final)))
                                        _ (when (and applied? on-applied!) (on-applied!))
-                                       ;; The Review note below is the first
+                                       ;; The acceptance note below is the first
                                        ;; user-visible claim that the document
                                        ;; was updated. Journal the transition
                                        ;; before it, so a crash between this
@@ -3365,12 +3814,12 @@
                                        ;; rolled back under a note that says
                                        ;; the opposite (codex review).
                                        _ (when (and applied? (= :review (:status final)))
-                                           (record-localllm-commit! ticket-id run :committing "review"))
+                                           (record-localllm-commit! ticket-id run :committing "blocked"))
                                        message (localllm-last-message run final)]
                                    (spit (str last-message-path) message)
                                    (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_EXIT_AFTER_LOCALLLM_REVIEW_NOTE"))
                                      ;; Deterministic black-box crash hook (unset in
-                                     ;; deployment): die right after the Review note.
+                                     ;; deployment): die right after the acceptance note.
                                      (record-final! final)
                                      (System/exit 137))
                                    {:result (record-final! final) :last-message message
@@ -3422,14 +3871,17 @@
   "Write groom items into the ticket's sections ({heading [items]}), under the
   same ticket mutex / vault writer lock as the frontmatter and Notes writes."
   [ticket-id sections]
+  @todo-module-loaded?
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
+       ((or (resolve 'task-board-todos/with-lock) (fn [_ f] (f))) (ticket-path ticket-id)
+        (fn []
        (let [path (ticket-path ticket-id)
              lines (vec (read-lines path))
              new-lines (reduce (fn [acc [heading items]] (merge-section-items acc heading items)) lines sections)]
          (when (not= lines new-lines)
-           (write-lines! path new-lines)))))))
+           (write-lines! path new-lines)))))))))
 
 (defn- localllm-groom-model-note
   "BOXP-296: a content-search groom calls the model; say so (and how much)."
@@ -3495,7 +3947,7 @@
                        (when (:category result) (str "category: " (:category result) "\n"))
                        (when (:reason result) (str "reason: " (sanitize-blocker-reason (:reason result)) "\n"))
                        "TASK_BOARD_REVIEW_PR: none\n"
-                       "TASK_BOARD_RESULT: " (if ready? "review" "blocked") "\n")]
+                       "TASK_BOARD_RESULT: " (if ready? "continue" "blocked") "\n")]
       (write-edn-file! (fs/path dir "localllm-groom.edn") record)
       (spit (str last-message-path) message)
       (when shutdown?
@@ -3532,7 +3984,7 @@
   (cond
     ;; localllm (BOXP-277) only updates declared vault documents and never runs
     ;; a CLI agent. Every lane with work maps to the single docs-edit action
-    ;; (Review re-runs with the latest Notes). A Backlog card gets the
+    ;; (a legacy Review card re-runs with the latest Notes). A Backlog card gets the
     ;; deterministic runner-side groom (BOXP-290: no model call, no document
     ;; write), which ends in Ready + assignee boxp like every other groom.
     (localllm-assignee? assignee)
@@ -3558,28 +4010,80 @@
       "blocked" :blocked-retry
       nil)))
 
-(defn final-status [action result exit review-gate]
-  (let [intended (cond
-                   (not (zero? exit)) "blocked"
-                   (= :groom action) "ready"
-                   ;; localllm groom (BOXP-290): Ready when the ticket was
-                   ;; clarified, Blocked when it stopped with a question.
-                   (= :docs-groom action) (if (= "blocked" result) "blocked" "ready")
-                   (#{"done" "review" "blocked"} result) result
-                   :else "review")]
+(defn intended-outcome
+  "What the run itself asked for, before the PR gates are considered. `continue`
+  (also a legacy `review`, or no marker) runs the gates; `owner-acceptance` is a
+  localllm result already applied and waiting for the Owner, without PR gates."
+  [action result exit]
+  (let [result (normalize-result result)]
     (cond
-      (and (= "review" intended)
+      (not (zero? exit)) "blocked"
+      (= :groom action) "ready"
+      ;; localllm groom (BOXP-290): Ready when the ticket was
+      ;; clarified, Blocked when it stopped with a question.
+      (= :docs-groom action) (if (= "blocked" result) "blocked" "ready")
+      (#{"done" "continue" "blocked" "owner-acceptance"} result) result
+      :else "continue")))
+
+(defn final-status [action result exit review-gate]
+  (let [intended (intended-outcome action result exit)]
+    (cond
+      (and (= "continue" intended)
            (not (:ok? review-gate))
            (:retryable? review-gate)
            (not (:retry-exhausted? review-gate))
            (not (:budget-exhausted? review-gate)))
       "in-progress"
 
-      (and (= "review" intended) (not (:ok? review-gate)))
+      (and (= "continue" intended) (not (:ok? review-gate)))
+      "blocked"
+
+      ;; Gates passed: approved work remains, so the card goes back to the
+      ;; normal Ready scheduler with the same assignee.
+      (= "continue" intended)
+      "ready"
+
+      (= "owner-acceptance" intended)
       "blocked"
 
       :else
       intended)))
+
+(def owner-acceptance-contract
+  (str " 理由: 成果は適用済みで内容の受入は本人にしかできない; 必要入力: 内容確認と採否; 解消責任者: boxp;"
+       " 解除後: 問題なければ Done へ、改稿は Notes へ指示して担当を戻す。"))
+
+(defn continuation-budget-path []
+  (fs/path (root) "continuation-budget.edn"))
+
+(defn continuation-limit []
+  (env-long "CODEX_TASK_BOARD_CONTINUATION_LIMIT" "8"))
+
+(defn clear-continuation-budget! [ticket-id]
+  (with-gate-failure-budget-lock
+   (fn []
+     (let [budget (read-edn-file (continuation-budget-path) {})]
+       (when (contains? budget ticket-id)
+         (write-edn-file! (continuation-budget-path) (dissoc budget ticket-id)))))))
+
+(defn consume-continuation!
+  "Count one automatic continuation for the ticket and return the gate result:
+  unchanged with :continuation-count, or failed non-retryably past the limit so
+  the normal Blocked path applies. A repeat for the same run is not counted again."
+  [ticket-id run-id review-gate]
+  (with-gate-failure-budget-lock
+   (fn []
+     (let [budget (read-edn-file (continuation-budget-path) {})
+           {:keys [count last-run-id]} (get budget ticket-id {:count 0})
+           n (if (= last-run-id run-id) count (inc count))
+           limit (continuation-limit)]
+       (write-edn-file! (continuation-budget-path)
+                        (assoc budget ticket-id {:count n :last-run-id run-id :updated-at (now-str)}))
+       (if (> n limit)
+         (assoc review-gate
+                :ok? false :retryable? false :continuation-exhausted? true
+                :message (str "Automatic continuation limit reached (" limit " runs without done or blocked)."))
+         (assoc review-gate :continuation-count n))))))
 
 (defn final-note [run-id next-status result last-message review-gate idle-timeout?]
   (let [base (str "Codex task-board run " run-id " finished with result " next-status ".")
@@ -3617,12 +4121,25 @@
            " Retrying with Codex instruction "
            (:retry-count review-gate) "/" (:retry-limit review-gate) ".")
 
-      (and (= "review" next-status) (seq pr-urls))
+      (and (= "ready" next-status) (seq pr-urls))
       (str base " PR: " (str/join ", " pr-urls) ". "
            (persisted-review-gate-reason review-gate))
 
       :else
       base)))
+
+(defn blocker-contract
+  "BOXP-395: every Blocked transition names the input it needs, who resolves it
+  and what happens next. Fixed strings per category; never agent output."
+  [category]
+  (let [[needed resolver next-action]
+        (case category
+          "agent-reported-blocked" ["担当が Notes に記した判断点・必要入力" "Notes 記載の解消責任者" "解消後に担当を戻すと blocked-retry で再開"]
+          "todo-gate-exhausted" ["未受領 TODO の確認と続行可否" "boxp" "担当を戻して再開"]
+          "continuation-limit" ["自動継続上限の原因確認と続行可否" "boxp" "続行するなら Blocked のまま担当を戻す（blocked-retry で継続回数を再設定）"]
+          "gate-failure-budget-exhausted" ["Owner の gate-budget-grant" "boxp" "grant 後に担当を戻すと再開"]
+          ["参照先の run artifacts を確認し原因を解消" "boxp" "解消後に担当を戻すと blocked-retry で再開"])]
+    (str "; needed-input=" needed "; resolver=" resolver "; next-action=" next-action)))
 
 (defn sanitize-blocker-reason [reason]
   ;; Notes are user-visible. Keep a compact diagnosis while never copying agent
@@ -3641,9 +4158,13 @@
   (cond
     exception "runner-internal-error"
     (not (zero? (long (or exit 0)))) "agent-process-error"
+    (:todo-gate-exhausted? review-gate) "todo-gate-exhausted"
     (= "blocked" result) "agent-reported-blocked"
+    (:continuation-exhausted? review-gate) "continuation-limit"
+    (= :pr-url (:gate review-gate)) "pr-gate-pr-url"
     (:budget-exhausted? review-gate) "gate-failure-budget-exhausted"
     (:retry-exhausted? review-gate) "pr-gate-retry-limit"
+    (and (= :codex-review (:gate review-gate)) (= :invalid-output (:failure-kind review-gate))) "codex-review-invalid-output"
     (:gate review-gate) (str "pr-gate-" (name (:gate review-gate)))
     :else "reason-unavailable"))
 
@@ -3653,10 +4174,23 @@
   (cond
     exception "Runner internal error; inspect the referenced run artifacts."
     (not (zero? (long (or exit 0)))) "Agent process exited unsuccessfully; inspect the referenced run artifacts."
+    (:todo-gate-exhausted? review-gate) "TODO gate continuation limit reached."
     (= "blocked" result) "Agent reported blocked; inspect the referenced run artifacts."
+    (:continuation-exhausted? review-gate) (:message review-gate)
     (:gate-budget-report review-gate) (:gate-budget-report review-gate)
+    (and (= :codex-review (:gate review-gate)) (= :invalid-output (:failure-kind review-gate)))
+    (str "Review gate failed (codex-review); " (get-in review-gate [:diagnostic :detail]) " Diagnostic: " (get-in review-gate [:diagnostic :path]))
     (:gate review-gate) "PR gate failed; inspect the referenced run artifacts."
     :else "reason unavailable"))
+
+(defn run-blocker-reason
+  "The safe reason, naming the provider limit when one stopped the process. The
+  category stays agent-process-error so the observed category enums do not change."
+  [ticket-id run-id result exit review-gate exception]
+  (or (when (and (nil? exception) (not (zero? (long (or exit 0)))))
+        (when-let [limit (run-provider-rate-limit (fs/path (run-dir ticket-id run-id) "events.jsonl"))]
+          ((resolve 'ai-provider-quota/run-rate-limit-reason) limit)))
+      (blocker-safe-reason result exit review-gate exception)))
 
 (defn blocker-note [ticket-id run-id action category reason]
   (let [dir (str (run-dir ticket-id run-id))]
@@ -3667,6 +4201,7 @@
          "; at=" (now-str)
          "; category=" category
          "; reason=" (sanitize-blocker-reason reason)
+         (blocker-contract category)
          "; inspect run artifacts: " dir "/summary.edn, " dir "/last-message.md, "
          dir "/events.jsonl, " dir "/stderr.log.")))
 
@@ -3680,7 +4215,7 @@
 
 (defn record-blocked-transition! [ticket-id run-id action result exit review-gate exception]
   (let [category (blocker-category result exit review-gate exception)
-        reason (blocker-safe-reason result exit review-gate exception)]
+        reason (run-blocker-reason ticket-id run-id result exit review-gate exception)]
     (try
       (when-not (blocked-transition-recorded? ticket-id run-id)
         (append-note! ticket-id (blocker-note ticket-id run-id action category reason)))
@@ -3702,7 +4237,7 @@
                    " because Notes recording failed"))
         false))))
 
-(defn block-ticket! [ticket-id run-id action result exit review-gate exception]
+(defn block-ticket! [ticket-id run-id action result exit review-gate exception last-message]
   (when (record-blocked-transition! ticket-id run-id action result exit review-gate exception)
     ;; Keep the post-audit transition inside this boundary.  Otherwise a
     ;; failure here escapes to process-card!'s catch, which invokes this
@@ -3721,22 +4256,38 @@
       ;; interpreted. Correct that provisional status only after the Blocked
       ;; transition itself has succeeded.
       (mark-run! ticket-id run-id :blocked
-                 {:action action
-                  :exit-code exit
-                  :result result
-                  :review-gate (persisted-review-gate review-gate)
-                  :blocker-category (blocker-category result exit review-gate exception)
-                  :blocker-reason (blocker-safe-reason result exit review-gate exception)
-                  :finished-at (now-str)})
+                 (cond-> {:action action
+                          :exit-code exit
+                          :result result
+                          :review-gate (persisted-review-gate review-gate)
+                          :blocker-category (blocker-category result exit review-gate exception)
+                          :blocker-reason (run-blocker-reason ticket-id run-id result exit review-gate exception)
+                          :finished-at (now-str)}
+                   (and (= "agent-reported-blocked" (blocker-category result exit review-gate exception))
+                        (or (nil? review-gate) (:ok? review-gate)))
+                   (assoc :wait-reason (wait-reason-marker last-message))))
       true
       (catch Exception e
         (log! (str "blocked transition state update failed for " ticket-id "/" run-id
                    "; preserving/restoring the prior card state: " (.getMessage e)))
         false))))
 
+(defn todo-recheck-rendezvous!
+  "Test-only pause after the lane move, for an addition landing right there; a no-op in deployment."
+  []
+  (when-let [test-dir (not-empty (System/getenv "CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR"))]
+    (spit (str (fs/path test-dir "moved")) "moved")
+    (loop [n 0]
+      (when (and (< n 500) (not (fs/exists? (fs/path test-dir "continue"))))
+        (Thread/sleep 10)
+        (recur (inc n))))))
+
 (defn restore-card-state! [ticket-id status assignee]
-  (move-card! ticket-id status assignee)
-  (update-frontmatter! ticket-id {:status status :assignee assignee}))
+  ;; A legacy Review card that failed to start has no lane to return to; Ready
+  ;; keeps it runnable with the same assignee and does not re-create Review.
+  (let [status (if (= "review" status) "ready" status)]
+    (move-card! ticket-id status assignee)
+    (update-frontmatter! ticket-id {:status status :assignee assignee})))
 
 (defn ensure-not-shutting-down!
   "Abort `process-card!` when the SIGTERM hook raised the live shutdown flag.
@@ -3871,6 +4422,36 @@
         (finally
           (release-lock! ticket-id lock))))))
 
+;; Every action that starts an agent, including Backlog grooming.
+(def provider-quota-hold-actions #{:groom :implement :review-fix :blocked-retry})
+(def provider-quota-hold-logged (atom #{}))
+
+(defn provider-quota-hold-enabled? []
+  (not= "off" (env "CODEX_TASK_BOARD_PROVIDER_QUOTA_HOLD" "on")))
+
+(defn provider-quota-hold!
+  "True when this agent's route has a rejected limit that has not reset, so a new
+  run would stop at once. The card, assignee, claim and budgets stay as they are;
+  it starts on a later tick after the reset or once a newer observation clears the
+  limit. Notes get one line per route, limit and reset."
+  [ticket-id action assignee]
+  (let [status (when (and (provider-quota-hold-actions action) (provider-quota-hold-enabled?))
+                 (provider-quota-status assignee))]
+    (when (= :hold (:decision status))
+      (let [reason ((resolve 'ai-provider-quota/hold-reason) status)
+            marker (str "quota-hold=" ticket-id "/" (:route status) "/"
+                        (str/join "," (:limits status)) "/" (:resets-at status))]
+        (when-not (contains? @provider-quota-hold-logged marker)
+          (swap! provider-quota-hold-logged conj marker)
+          (log! (str "not starting " ticket-id ": " reason))
+          (try
+            (when-not (str/includes? (slurp (str (ticket-path ticket-id))) marker)
+              (append-note! ticket-id (str "Run not started: " reason "; " marker
+                                           "; the card, assignee and budgets are unchanged; it starts after the reset or a newer observation.")))
+            (catch Exception e
+              (log! (str "could not note quota hold for " ticket-id ": " (.getMessage e)))))))
+      true)))
+
 (defn process-card! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
@@ -3891,7 +4472,8 @@
                      ;; moved back without a grant) is stopped formally here.
                      (stop-exhausted-ticket! ticket-id candidate status assignee lane ticket-text)
                      nil)
-                 candidate)]
+                 candidate)
+        action (when-not (provider-quota-hold! ticket-id action assignee) action)]
     (when action
       (let [effective-lane (if (#{"ready" "review" "blocked"} status) "In Progress" lane)
             lock (when-let [lock (acquire-lock! ticket-id action effective-lane)]
@@ -3927,6 +4509,10 @@
               (begin-lifecycle-commit!)
               (reset! committing? true)
               (try
+                ;; The runner hands a stopped card to boxp, so seeing it with a
+                ;; worker again means someone explicitly resumed it.
+                (when (= :blocked-retry action)
+                  (clear-continuation-budget! ticket-id))
                 (when (#{"ready" "review" "blocked"} status)
                   (move-card! ticket-id "in-progress")
                   (update-frontmatter! ticket-id {:status "in-progress"}))
@@ -3963,18 +4549,13 @@
                         ;; Deterministic black-box failure hook; unset in deployment.
                         (throw (ex-info (env "CODEX_TASK_BOARD_TEST_RUNNER_EXCEPTION_MESSAGE"
                                              "forced runner internal error token=super-secret-token") {})))
-                    intended (cond
-                               (not (zero? exit)) "blocked"
-                               (= :groom action) "ready"
-                               (= :docs-groom action) (if (= "blocked" result) "blocked" "ready")
-                               (#{"done" "review" "blocked"} result) result
-                               :else "review")
+                    intended (intended-outcome action result exit)
                     ;; The gate can take minutes (PR checks, codex review); it
                     ;; writes nothing itself. Everything that persists state
                     ;; (gate diagnostic / retry counter, summary, lane,
                     ;; frontmatter, Notes, lock) happens after the single
                     ;; commit boundary below.
-                    gate-result (when (= "review" intended)
+                    gate-result (when (= "continue" intended)
                                   (review-gate! dir last-message))
                     _ (when gate-result
                         (record-ai-ops-gate! ticket-id run-id assignee action gate-result))
@@ -3989,6 +4570,8 @@
                                 (commit! (fn [] (reset! docs-applied? true))))
                     result (if committed (:result committed) result)
                     last-message (if committed (:last-message committed) last-message)
+                    ;; A deferred localllm commit can still end in blocked.
+                    outcome (intended-outcome action result exit)
                     review-gate (if gate-result
                                   (let [gate-result (assoc gate-result :diagnostic
                                                            (persist-pr-gate-diagnostic! ticket-id run-id gate-result))]
@@ -3997,6 +4580,13 @@
                                       (record-pr-gate-failure! ticket-id run-id assignee gate-result)
                                       gate-result))
                                   {:ok? true})
+                    ;; BOXP-395: a passed gate returns the card to Ready, so a
+                    ;; finite budget keeps a run that never finishes from
+                    ;; looping forever. Persisted first: a crash can only
+                    ;; over-count, and a rollout never resets it.
+                    review-gate (if (and (= "continue" intended) (:ok? review-gate) (not idle-timeout?))
+                                  (consume-continuation! ticket-id run-id review-gate)
+                                  review-gate)
                     next-status (if idle-timeout?
                                   "in-progress"
                                   (final-status action result exit review-gate))]
@@ -4014,8 +4604,9 @@
                 ;; frontmatter transition have both succeeded.  Writing it
                 ;; here would leave summary.edn at :blocked when a later
                 ;; blocked-state failure restores the original lane.
-                (when (and (= "review" intended)
-                           (not= "blocked" next-status))
+                (when (or (= "owner-acceptance" outcome)
+                          (and (= "continue" intended)
+                               (not= "blocked" next-status)))
                   (mark-run! ticket-id run-id (cond
                                                 (:ok? review-gate) :succeeded
                                                 (= "in-progress" next-status) :retrying
@@ -4024,47 +4615,134 @@
                               :agent assignee
                               :lane effective-lane
                               :exit-code exit
-                              :result result
+                              ;; No marker still means continue on the board.
+                              :result (if (= "continue" intended) "continue" result)
                               :review-gate (persisted-review-gate review-gate)
                               :finished-at (now-str)}))
                 (when (:ok? review-gate)
                   (clear-pr-gate-retries! ticket-id))
                 (if-let [revision (when-not @docs-applied? (superseded-revision ticket-id start-rev))]
                   (record-superseded! ticket-id run-id action assignee effective-lane result exit review-gate revision)
-                  (if (= "blocked" next-status)
-                  (if (block-ticket! ticket-id run-id action result exit review-gate nil)
-                    (do (record-task-board-event! ticket-id run-id status "blocked" result)
-                        (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) "blocked" "blocked"
-                                               {:result result :exit_code exit}))
+                  (let [start-todo (read-edn-file (fs/path dir "todo-start.edn") nil)
+                        view (when start-todo (todo-view ticket-id))
+                        decision (when (and view (zero? (long (or exit 1))) (not idle-timeout?) (:ok? review-gate) (#{"done" "blocked"} result))
+                                   ((resolve 'task-board-todos/gate-decision) {:view view :start-rev (:rev start-todo) :result result}))
+                        held? (:hold? decision)
+                        review-gate (if held? (let [g (consume-continuation! ticket-id run-id review-gate)]
+                                                (cond-> g (:continuation-exhausted? g) (assoc :todo-gate-exhausted? true))) review-gate)
+                        next-status (if held? (if (:continuation-exhausted? review-gate) "blocked" "ready") next-status)
+                        intended (if held? "continue" intended)
+                        result (if held? "continue" result)]
+                    (when view
+                      (refresh-todo-state! ticket-id)
+                      (let [states (frequencies (map :state (:items view)))
+                            summary (read-edn-file (fs/path dir "summary.edn") {})]
+                        (mark-run! ticket-id run-id (:status summary) (cond-> (assoc (dissoc summary :status) :todo {:rev (:rev view) :mode (:mode view) :unreceived (get states :unreceived 0) :open (get states :received 0) :gate (if held? "held" "clear")})
+                          held? (assoc :result "continue")))))
+                    (when held? (append-note! ticket-id (str "runの結果を保留: " (str/join ", " (:blocking-ids decision)))))
+                  (if (and (= "blocked" next-status) (not= "owner-acceptance" outcome))
+                  (if (block-ticket! ticket-id run-id action result exit review-gate nil last-message)
+                    ;; Same re-read as Done: a required item added while the card was
+                    ;; moving must not stay unreceived behind this Blocked result.
+                    (let [_ (when decision (todo-recheck-rendezvous!))
+                          latest (when (and decision (not held?)) (todo-view ticket-id))
+                          recheck (when latest ((resolve 'task-board-todos/gate-decision)
+                                                {:view latest :start-rev (:rev start-todo) :result "blocked"}))]
+                      (if (:hold? recheck)
+                        (let [gate (consume-continuation! ticket-id run-id review-gate)
+                              exhausted? (:continuation-exhausted? gate)
+                              final (if exhausted? "blocked" "ready")
+                              final-result (if exhausted? result "continue")
+                              states (frequencies (map :state (:items latest)))
+                              todo {:rev (:rev latest) :mode (:mode latest) :unreceived (get states :unreceived 0)
+                                    :open (get states :received 0) :gate "held"}
+                              summary (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)]
+                          (when-not exhausted?
+                            (move-card! ticket-id "ready" assignee)
+                            (update-frontmatter! ticket-id {:status "ready" :assignee assignee}))
+                          (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)
+                                     (assoc (if exhausted? summary (dissoc summary :blocker-category :blocker-reason :wait-reason))
+                                            :result final-result :todo todo))
+                          (append-note! ticket-id (str "判定直後の追加: "
+                                                       (if exhausted?
+                                                         "継続予算切れのためBlockedのまま。未受領: "
+                                                         "Blockedを保留して担当の次runへ継続: ")
+                                                       (str/join ", " (:blocking-ids recheck))))
+                          (record-task-board-event! ticket-id run-id status final final-result)
+                          (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) final
+                                                 (if exhausted? "blocked" "succeeded")
+                                                 {:result final-result :exit_code exit}))
+                        (do (record-task-board-event! ticket-id run-id status "blocked" result)
+                            (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) "blocked" "blocked"
+                                                   {:result result :exit_code exit}))))
                     (restore-card-state! ticket-id status assignee))
-                  (do
+                  (let [;; A continuation stays with its worker; a groom or a
+                        ;; result waiting for the Owner goes to the Owner.
+                        continuing? (and (= "ready" next-status) (= "continue" intended))
+                        next-assignee (if (or continuing? (= "in-progress" next-status)) assignee "boxp")]
                     ;; localllm docs-edit: journal the transition before it
                     ;; starts so a crash in the middle is completed (not rolled
                     ;; back) by `recover-localllm-write!`.
                     (when @docs-applied?
                       (record-localllm-commit! ticket-id run-id :committing next-status))
-                    (move-card! ticket-id next-status (if (= "in-progress" next-status) assignee "boxp"))
+                    (move-card! ticket-id next-status next-assignee)
                     (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION"))
                       ;; Deterministic black-box failure hook after the document
                       ;; write and the lane move; unset in deployment.
                       (throw (ex-info "forced failure after the lane move" {})))
                     (update-frontmatter! ticket-id (cond-> {:status next-status
-                                                             :assignee (if (= "in-progress" next-status) assignee "boxp")}
+                                                             :assignee next-assignee}
                                                       (= "done" next-status) (assoc :closed (today))))
+                    (todo-recheck-rendezvous!)
+                    ;; Re-read after the move; a concurrent addition must also consume
+                    ;; the continuation budget and determine every later record.
+                    (let [[next-status review-gate]
+                          (if (= "done" next-status)
+                            (let [latest (when start-todo (todo-view ticket-id))
+                                  recheck (when latest ((resolve 'task-board-todos/gate-decision)
+                                                        {:view latest :start-rev (:rev start-todo) :result "done"}))]
+                              (if (:hold? recheck)
+                                (let [gate (consume-continuation! ticket-id run-id review-gate)
+                                      exhausted? (:continuation-exhausted? gate)
+                                      gate (cond-> gate exhausted? (assoc :todo-gate-exhausted? true))
+                                      final (if exhausted? "blocked" "ready")
+                                      states (frequencies (map :state (:items latest)))]
+                                  (if exhausted?
+                                    (if (block-ticket! ticket-id run-id action "continue" exit gate nil last-message)
+                                      (update-frontmatter! ticket-id {:closed ""})
+                                      (throw (ex-info "could not record TODO gate block" {})))
+                                    (do (move-card! ticket-id final assignee)
+                                        (update-frontmatter! ticket-id {:status final :assignee assignee :closed ""})))
+                                  (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)
+                                             (merge (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)
+                                                    {:result "continue" :todo {:rev (:rev latest) :mode (:mode latest)
+                                                     :unreceived (get states :unreceived 0) :open (get states :received 0) :gate "held"}}))
+                                  (append-note! ticket-id (str "判定直後の追加: runの結果を保留 " (str/join ", " (:blocking-ids recheck))))
+                                  [final gate])
+                                (do (clear-continuation-budget! ticket-id) [next-status review-gate])))
+                            [next-status review-gate])
+                          result (if (and (= "done" result) (not= "done" next-status)) "continue" result)]
                     ;; localllm docs-edit: lane and frontmatter are durable, so
                     ;; a crash from here on must not roll the note write back
                     ;; (crash recovery reads this run-specific record, see
                     ;; `recover-localllm-write!`).
                     (when @docs-applied?
                       (record-localllm-commit! ticket-id run-id :committed next-status))
-                    (append-note! ticket-id (final-note run-id next-status result last-message review-gate idle-timeout?))
+                    (append-note! ticket-id (str (final-note run-id next-status result last-message review-gate idle-timeout?)
+                                                 (when continuing?
+                                                   (str " Ready継続: 担当 " assignee " のまま次 run へ（自動継続 "
+                                                        (:continuation-count review-gate) "/" (continuation-limit)
+                                                        "）。次action: 残作業を確認し、gate 通過済みなら承認範囲内で merge・配備・検証を進める。"))
+                                                 (when (= "owner-acceptance" outcome)
+                                                   owner-acceptance-contract)))
                     ;; After lane, frontmatter and Notes are durable: wake Kohako.
                     (record-task-board-event! ticket-id run-id status next-status result)
                     (record-ai-ops-finish! ticket-id run-id assignee action (ai-ops-run-lane status) next-status
                                            (cond
                                              (= "in-progress" next-status) "retrying"
+                                             (= "blocked" next-status) "blocked"
                                              :else "succeeded")
-                                           {:result result :exit_code exit :idle_timeout (boolean idle-timeout?)}))))
+                                           {:result (if (= "done" next-status) result (if (= "held" (get-in (read-edn-file (fs/path dir "summary.edn") {}) [:todo :gate])) "continue" result)) :exit_code exit :idle_timeout (boolean idle-timeout?)}))))))
                 true)
               (catch Exception e
                 (if (or (= ::planned-shutdown (:type (ex-data e)))
@@ -4099,13 +4777,13 @@
                                           (catch Exception re [{:status :error :reason (sanitize-blocker-reason (.getMessage re))}]))]
                         (log! (str "run " (:run-id lock) " for " ticket-id ": rolled back localllm docs write after a failed transition: " (pr-str restored)))
                         ;; A `:committing` journal may already exist (written
-                        ;; before the Review note); mark the run as restored so
+                        ;; before the acceptance note); mark the run as restored so
                         ;; no later recovery "completes" a rolled-back write.
                         (record-localllm-commit! ticket-id (:run-id lock) :rolled-back nil)
                         (append-note! ticket-id (str "localllm docs run " (:run-id lock)
                                                      " は文書を更新した後の状態遷移に失敗したため、backup から復元しました（未適用扱い）: "
                                                      (str/join "; " (map #(str (:path %) " " (name (:status %)) " " (:reason %)) restored))))))
-                    (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e)
+                    (if (block-ticket! ticket-id (:run-id lock) action nil nil nil e nil)
                       (do (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                           (record-ai-ops-finish! ticket-id (:run-id lock) assignee action (ai-ops-run-lane status) "blocked" "blocked" {}))
                       (restore-card-state! ticket-id status assignee)))))
@@ -4754,11 +5432,59 @@
   ;; CODEX_TASK_BOARD_ROOT when the suite runs on a host. Keep the suite pure.
   (with-redefs [record-task-board-event! (fn [& _] nil)
                 record-ai-ops-event! (fn [& _] nil)
-                record-ai-ops-gate! (fn [& _] nil)]
+                record-ai-ops-gate! (fn [& _] nil)
+                ;; The live quota snapshot must not decide whether self-test cards start.
+                provider-quota-status (fn [_] nil)]
     (run-tests*!)))
 
 (defn run-tests*! []
   (let [failures (atom [])]
+    (doseq [[input verdict reason blocking low]
+            [["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\n- real P1 defect in prose" :invalid :unstructured-findings 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\n- extra prose" :invalid :unstructured-findings 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P0 | x | a\n- extra prose" :invalid :unstructured-findings 1 0]
+             ["CODEX_REVIEW_RESULT: clean\nNo issues found." :invalid :unstructured-findings 0 0]
+             ["CODEX_REVIEW_RESULT: clean" :clean nil 0 0]
+             ["CODEX_REVIEW_RESULT: clean\n\n" :clean nil 0 0]
+             ["CODEX_REVIEW_RESULT: clean\n- real defect in prose" :invalid :unstructured-findings 0 0]
+             ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P2 | x | a\n- real defect in prose" :invalid :unstructured-findings 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: | x | b" :invalid :missing-severity 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING:" :invalid :missing-severity 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2" :invalid :malformed-finding 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x" :invalid :malformed-finding 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | | a" :invalid :malformed-finding 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1" :invalid :malformed-finding 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a | b" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: P9 | x | b" :invalid :unknown-severity 0 1]
+             ["CODEX_REVIEW_RESULT: issues\n\nCODEX_REVIEW_FINDING: P2 | x | a\n" :pass-low nil 0 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | defect" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a\nCODEX_REVIEW_FINDING: P3 | x | b\nCODEX_REVIEW_FINDING: NIT | x | c" :pass-low nil 0 3]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P1 | x | a\nCODEX_REVIEW_FINDING: P2 | x | b" :blocking nil 1 1]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P0 | x | a" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: issues\n- missing regression test" :invalid :missing-severity 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P9 | x | y" :invalid :unknown-severity 0 0]
+             ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_RESULT: issues" :invalid :conflicting-result-marker 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | a" :invalid :conflicting-result-marker 0 1]
+             ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_RESULT: clean" :invalid :conflicting-result-marker 0 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P1 | x | a" :invalid :conflicting-result-marker 1 0]
+             ["no marker" :invalid :missing-result-marker 0 0]
+             ["" :invalid :empty-output 0 0]
+             ["CODEX_REVIEW_RESULT: clean\nCODEX_REVIEW_FINDING: P1 | x | a" :blocking nil 1 0]
+             ["CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: nit | x | a\nCODEX_REVIEW_FINDING: NIT | x | b" :pass-low nil 0 2]]]
+      (let [result (classify-codex-review input)]
+        (when-not (= [verdict reason blocking low] [(:verdict result) (:reason result) (count (:blocking result)) (count (:low result))])
+          (swap! failures conj (str "codex review classification: " input)))))
+    (doseq [[url expected] [["https://github.com/boxp/example/pull/123" "codex-review-boxp__example-123"]
+                            ["https://github.com/a-b/c/pull/123" "codex-review-a-b__c-123"]
+                            ["https://github.com/a/b-c/pull/123" "codex-review-a__b-c-123"]
+                            ["https://example.test/pr/123" "codex-review-123"]]]
+      (when-not (= expected (codex-review-artifact-base url))
+        (swap! failures conj (str "codex review artifact base: " url))))
+    (let [gate {:url "https://example.test/pr/1" :gate :codex-review :fingerprint-key "P1 finding" :message "first"}
+          fingerprint (retry-fingerprint gate)]
+      (when-not (and (= fingerprint (retry-fingerprint (assoc gate :message "second")))
+                     (not= fingerprint (retry-fingerprint (assoc gate :fingerprint-key "another P1 finding"))))
+        (swap! failures conj "codex review retry fingerprint")))
     ;; Route additions or model changes require an explicit delegation-policy review.
     (when-not (= assignee->model {"codex" "gpt-6.1-terra" "codex-terra" "gpt-6.1-terra"
                                   "codex-sol" "gpt-6.1-sol" "codex-full" "gpt-6.1-sol"
@@ -4789,6 +5515,7 @@
                                     [{:gate :ci :failure-kind :timeout} "unknown"]
                                     [{:gate :mergeability :failure-kind :timeout} "unknown"]
                                     [{:gate :codex-review :failure-kind :command-error} "unknown"]
+                                    [{:gate :codex-review :failure-kind :invalid-output} "unknown"]
                                     [{:gate :pr-gate} "unknown"]
                                     [{:gate :ci} "unknown"]]]
       (when-not (= expected (:correction_origin (gate-correction gate-result)))
@@ -5293,7 +6020,10 @@
                                        (record! :review-gate!)
                                        (when (= :during-gate raise-at)
                                          (reset! shutdown-requested? true))
-                                       {:ok? true :pr-urls ["https://github.com/boxp/arch/pull/1"]})]
+                                       {:ok? true :pr-urls ["https://github.com/boxp/arch/pull/1"]})
+                        ;; The real one writes under the deployed state root.
+                        consume-continuation! (fn [_ _ gate] gate)
+                        clear-continuation-budget! (fn [_] nil)]
             (process-card! card))
           (finally
             (reset! shutdown-requested? false)))
@@ -5397,9 +6127,110 @@
                {:ok? true :status {:args ["--model" "/m"]} :model-path "/m" :size 42}]
               ["coder preflight empty" (:ok? (localllm-coder-match-model {:data []} "m")) false]
               ["coder preflight other" (:ok? (localllm-coder-match-model {:data [{:id "other"}]} "m")) false]
-              ["coder done" (localllm-coder-result 0 "done" false) "review"]
+              ["coder done" (localllm-coder-result 0 "done" false) "owner-acceptance"]
               ["coder missing" (localllm-coder-result 0 nil false) "blocked"]
-              ["coder review" (localllm-coder-result 0 "review" false) "review"]
+              ["coder legacy review" (localllm-coder-result 0 "review" false) "owner-acceptance"]
+              ["coder continue" (localllm-coder-result 0 "continue" false) "owner-acceptance"]
+              ["continuation counts each run once and stops past the limit"
+               (let [dir (str (fs/create-temp-dir))]
+                 (with-redefs [root (constantly dir)
+                               continuation-limit (constantly 2)]
+                   (let [gate {:ok? true}
+                         a (consume-continuation! "BOXP-1" "r1" gate)
+                         again (consume-continuation! "BOXP-1" "r1" gate)
+                         b (consume-continuation! "BOXP-1" "r2" gate)
+                         c (consume-continuation! "BOXP-1" "r3" gate)
+                         other (consume-continuation! "BOXP-2" "r1" gate)
+                         _ (clear-continuation-budget! "BOXP-1")
+                         fresh (consume-continuation! "BOXP-1" "r4" gate)]
+                     (mapv :continuation-count [a again b c other fresh]))))
+               [1 1 2 nil 1 1]]
+              ;; BOXP-395: no outcome can name the retired Review lane.
+              ["Review is not a target lane" (contains? status->lane "review") false]
+              ["legacy review marker is continue" (result-marker "x\nTASK_BOARD_RESULT: review\n") "continue"]
+              ["wait reason values" (mapv #(wait-reason-marker (str "TASK_BOARD_WAIT_REASON: " %)) ["owner-decision" "external-hold" "new-scope" "AGENT-RECOVERABLE"]) ["owner-decision" "external-hold" "new-scope" "agent-recoverable"]]
+              ["invalid wait reason" (wait-reason-marker "TASK_BOARD_WAIT_REASON: private") nil]
+              ["absent wait reason" (wait-reason-marker "nothing") nil]
+              ;; BOXP-405 AIOPS-QUOTA: unknown is not available and fails open.
+              ["provider quota prompt is omitted for other runtimes" (provider-quota-prompt "codex" {:state "no_snapshot"} 0) nil]
+              ["provider quota prompt says unknown without a snapshot"
+               (boolean (re-find #"unknown, no readable observation \(no_snapshot\)" (provider-quota-prompt "claude-fable" {:state "no_snapshot"} 0))) true]
+              ["provider quota summary is empty without a status" (provider-quota-summary-fields nil) {}]
+              ["provider quota hold ignores other actions"
+               (with-redefs [provider-quota-status (fn [_] {:decision :hold})] (provider-quota-hold! "TEST-1" :recover "claude-fable")) nil]
+              ["provider quota hold stops Backlog grooming"
+               (with-redefs [provider-quota-status (fn [_] {:decision :hold :route "claude-fable" :scope :model :limits ["fable_7d"] :resets-at 1})
+                             log! (fn [& _] nil) append-note! (fn [& _] nil) ticket-path (fn [_] "/nonexistent")]
+                 @provider-quota-module-loaded?
+                 (provider-quota-hold! "TEST-1" :groom "claude-fable")) true]
+              ["provider quota hold can be turned off"
+               (with-redefs [provider-quota-hold-enabled? (fn [] false) provider-quota-status (fn [_] {:decision :hold})] (provider-quota-hold! "TEST-1" :implement "claude-fable")) nil]
+              ["provider quota hold passes a clear route"
+               (with-redefs [provider-quota-status (fn [_] {:decision :clear})] (provider-quota-hold! "TEST-1" :implement "claude-opus")) nil]
+              ["provider quota hold passes an unreadable state"
+               (with-redefs [provider-quota-status (fn [_] nil)] (provider-quota-hold! "TEST-1" :implement "claude-opus")) nil]
+              ;; BOXP-405: the comparison alert names the model and harness version it is about.
+              ["ai ops alert line names model and harness version"
+               (ai-ops-alert-line (first (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[{\"labels\":{\"alertname\":\"AiOpsHarnessEvalRegression\",\"severity\":\"warning\",\"model_rev\":\"m1\",\"harness_version\":\"tb-1\"},\"state\":\"firing\"}]}}")))
+               "AiOpsHarnessEvalRegression{state=firing,severity=warning,model_rev=m1,harness_version=tb-1}"]
+              ;; BOXP-405: AI Ops decision support keeps allowlisted alert names only.
+              ["ai ops alerts parse allowlist and sort"
+               (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[{\"labels\":{\"alertname\":\"Watchdog\",\"severity\":\"none\"},\"state\":\"firing\"},{\"labels\":{\"alertname\":\"AiOpsOutcomeMeasurementStale\",\"severity\":\"warning\",\"definition_version\":\"outcome/v1-draft\"},\"annotations\":{\"description\":\"SECRET-BODY\"},\"state\":\"pending\"},{\"labels\":{\"alertname\":\"AiOpsOutcomeBurnFast\",\"severity\":\"warning\",\"window\":\"7d\"},\"state\":\"firing\",\"value\":\"2.5\"}]}}")
+               [{:alertname "AiOpsOutcomeBurnFast" :state "firing" :severity "warning" :window "7d"}
+                {:alertname "AiOpsOutcomeMeasurementStale" :state "pending" :severity "warning" :definition-version "outcome/v1-draft"}]]
+              ["ai ops alerts parse rejects an unsuccessful response"
+               (try (parse-ai-ops-alerts "{\"status\":\"error\",\"errorType\":\"bad_data\"}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects malformed json"
+               (try (parse-ai-ops-alerts "<html>") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success without data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success with null data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":null}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse rejects success with non-list data.alerts"
+               (try (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":{}}}") :parsed (catch Exception _ :rejected)) :rejected]
+              ["ai ops alerts parse accepts success with empty data.alerts"
+               (parse-ai-ops-alerts "{\"status\":\"success\",\"data\":{\"alerts\":[]}}") []]
+              ["ai ops summary fields distinguish ok, empty and unavailable"
+               [(ai-ops-summary-fields nil)
+                (ai-ops-summary-fields {:status "ok" :alerts []})
+                (ai-ops-summary-fields {:status "ok" :alerts [{:alertname "AiOpsOutcomeBurnFast" :window "7d" :state "firing"} {:alertname "AiOpsOutcomeBurnFast" :window "7d" :state "pending"}]})
+                (ai-ops-summary-fields {:status "unavailable" :reason "curl-exit-7"})]
+               [{} {:ai-ops-alerts-status "ok" :ai-ops-alerts []} {:ai-ops-alerts-status "ok" :ai-ops-alerts ["AiOpsOutcomeBurnFast"]} {:ai-ops-alerts-status "unavailable"}]]
+              ["ai ops prompt is omitted when disabled" (ai-ops-decision-prompt nil) nil]
+              ["ai ops prompt states unavailable as unknown"
+               (boolean (re-find #"Status: unavailable \(measurement could not be read: curl-exit-7\)\. Treat this as unknown, not as 'no alerts'"
+                                 (ai-ops-decision-prompt {:status "unavailable" :reason "curl-exit-7"}))) true]
+              ["ai ops prompt lists firing alerts with labels"
+               (boolean (re-find #"Status: alerts AiOpsOutcomeBurnFast\{state=firing,severity=warning,window=7d\}; AiOpsOutcomeMeasurementStale\{state=pending\}\."
+                                 (ai-ops-decision-prompt {:status "ok" :alerts [{:alertname "AiOpsOutcomeBurnFast" :state "firing" :severity "warning" :window "7d"} {:alertname "AiOpsOutcomeMeasurementStale" :state "pending"}]}))) true]
+              ["ai ops prompt says none when nothing fires"
+               (boolean (re-find #"Status: no AiOps alerts are firing or pending\." (ai-ops-decision-prompt {:status "ok" :alerts []}))) true]
+              ["ai ops alerts disabled without datasource uid"
+               (with-redefs [ai-ops-alerts-config (constantly nil)] (fetch-ai-ops-alerts)) nil]
+              ["ai ops alerts unavailable without grafana env"
+               (with-redefs [ai-ops-alerts-config (constantly {:uid "ds" :url nil :token nil :timeout-seconds 5})] (fetch-ai-ops-alerts))
+               {:status "unavailable" :reason "grafana-env-missing"}]
+              ["blocked summary wait reason"
+               (let [saved (atom nil)]
+                 (with-redefs [record-blocked-transition! (constantly true) move-card! (constantly nil)
+                               update-frontmatter! (constantly nil) mark-run! (fn [_ _ _ extra] (reset! saved extra))]
+                   (block-ticket! "BOXP-1" "run" :implement "blocked" 0 nil nil "TASK_BOARD_WAIT_REASON: external-hold"))
+                 (:wait-reason @saved)) "external-hold"]
+              ["continue marker" (result-marker "x\nTASK_BOARD_RESULT: continue\n") "continue"]
+              ["gate pass returns to Ready" (final-status :implement "continue" 0 {:ok? true}) "ready"]
+              ["legacy review gate pass returns to Ready" (final-status :implement "review" 0 {:ok? true}) "ready"]
+              ["no marker gate pass returns to Ready" (final-status :implement nil 0 {:ok? true}) "ready"]
+              ["fixable gate failure retries" (final-status :implement "continue" 0 {:ok? false :retryable? true}) "in-progress"]
+              ["exhausted gate failure blocks" (final-status :implement "continue" 0 {:ok? false :retryable? true :retry-exhausted? true}) "blocked"]
+              ["continuation limit blocks" (final-status :implement "continue" 0 {:ok? false :retryable? false :continuation-exhausted? true}) "blocked"]
+              ["done stays done" (final-status :implement "done" 0 {:ok? true}) "done"]
+              ["blocked stays blocked" (final-status :implement "blocked" 0 {:ok? true}) "blocked"]
+              ["failed exit blocks" (final-status :implement "continue" 1 {:ok? true}) "blocked"]
+              ["groom ends Ready" (final-status :groom "continue" 0 {:ok? true}) "ready"]
+              ["owner acceptance is Blocked" (final-status :docs-edit "owner-acceptance" 0 {:ok? true}) "blocked"]
+              ["legacy applied note is revisable" (localllm-prior-applied? "- x: localllm docs run r1 が 1 ファイルを更新し Review で停止しました（Done にはしません）。") true]
+              ["current applied note is revisable" (localllm-prior-applied? "- x: localllm docs run r1 が 1 ファイルを更新し 本人確認待ちで停止しました") true]
+              ["unapplied note is not revisable" (localllm-prior-applied? "- x: localllm docs run r1 が停止") false]
               ["coder blocked" (localllm-coder-result 0 "blocked" false) "blocked"]
               ["coder truncated" (localllm-coder-result 0 (result-marker (:last-message (localllm-coder-events ["{\"type\":\"message_end\",\"message\":{\"role\":\"assistant\",\"model\":\"m\",\"content\":[{\"type\":\"text\",\"text\":\"Fixed the bug; running tests\"}]}}"]))) false) "blocked"]
               ["coder fallback" (localllm-coder-result 0 "done" true) "blocked"]
@@ -5531,6 +6362,11 @@
                {:models-seen ["m" "other"] :last-message "last"}]] )]
       (if (= actual expected) (println (str "PASS: " label))
           (do (println (str "FAIL: " label " got " (pr-str actual))) (swap! failures conj label))))
+    ;; BOXP-408: only the Claude and Codex CLI workers run under the TODO contract.
+    (doseq [[agent expected] {"claude-opus" true "codex" true "codex-sol" true "localllm" false "localllm-coder" false}]
+      (if (= expected (todo-contract-agent? agent))
+        (println (str "PASS: todo contract " agent))
+        (do (println (str "FAIL: todo contract " agent)) (swap! failures conj (str "todo contract " agent)))))
     ;; BOXP-277: localllm maps to :docs-edit; BOXP-290: Backlog gets the runner-side groom.
     (doseq [[status expected] {"backlog" :docs-groom "ready" :docs-edit "in-progress" :docs-edit
                                "review" :docs-edit "blocked" :docs-edit "done" nil}]
@@ -5654,6 +6490,9 @@
            (log! (str "error completing " ticket-id ": " (.getMessage e))))))
   (reset! in-flight-futures {}))
 
+;; Only dispatch when executed as a script (`bb task_board_runner.bb ...`), so that
+;; tests can `load-file` this file to exercise pure functions without side effects.
+(when (= *file* (System/getProperty "babashka.file"))
 (case (or (first *command-line-args*) "tick")
   "tick" (let [args (vec (rest *command-line-args*))]
            (when-not (contains? #{0 2} (count args)) (usage))
@@ -5719,4 +6558,4 @@
                         (when-not (and scope key amount (pos? amount) (not (str/blank? by))) (usage))
                         (prn (gate-budget-grant! scope key amount by)))
   "test" (run-tests!)
-  (usage))
+  (usage)))

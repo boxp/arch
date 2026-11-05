@@ -80,6 +80,16 @@
       depNameTemplate: "kube-vip/kube-vip",
       datasourceTemplate: "github-releases"
     },
+    // ADR の意味検査で手動実行する claude CLI
+    {
+      customType: "regex",
+      managerFilePatterns: ["/^\\.github\\/workflows\\/adr-judge\\.yaml$/"],
+      matchStrings: [
+        "CLAUDE_CODE_VERSION: (?<currentValue>[0-9.]+)"
+      ],
+      depNameTemplate: "@anthropic-ai/claude-code",
+      datasourceTemplate: "npm"
+    },
     // Codex workspace npm package versions
     {
       customType: "regex",
