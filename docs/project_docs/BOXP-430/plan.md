@@ -27,3 +27,20 @@ HTML には内部構成が含まれるので、public repo、公開 image、未�
 ## 範囲外
 
 既存の Access policy の変更、新しい課金や資格情報、データの取り直し。
+
+## 方式変更: Cloudflare ネイティブ配信（TD-01）
+
+Owner の指示で、配信元を sidecar から Workers Static Assets に移します。lolice や workspace が止まっても閲覧でき、二重運用を残しません。
+
+- URL と Access は再利用する: `lolice-lineage.b0xp.io` と既存の Owner 限定 Access application。
+- Workers を選ぶ理由: `workers_dev` と `preview_urls` を無効にでき、Pages の `pages.dev` や preview URL より別経路が少ない。無料枠で足りるので新課金はない。
+- 二重防御: Worker でも Access の JWT を検証し、`run_worker_first` で assets の直接配信を止める。
+- 実データ: `apps/lolice-lineage/public/` は git 管理外。deploy 時に vault から hash 照合して入れる。
+
+### 順序
+
+1. この PR で配信コード、テスト、CI を入れる（実データなし、deploy なし）。
+2. Owner が upload の経路を決める。workspace には Cloudflare の資格情報がない。
+3. placeholder を deploy し、`verify-live.sh` で陰性確認する。
+4. 実 HTML を hash 照合して deploy し、Owner の SSO 後の表示と配信 hash を確認する。
+5. 検証後に旧構成を撤去する: boxp/lolice の sidecar、Service、NetworkPolicy、Chainsaw、boxp/arch の tunnel route。DNS は Worker route 用に見直す。
