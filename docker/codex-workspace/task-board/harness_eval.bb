@@ -558,10 +558,6 @@
             (binding [*out* *err*]
               (println (str (str/join "と" drift) "の内容が計画時と違うため実行しない。新しい条件の評価には新しい --out で plan する: " out)))
             (System/exit 2))
-        hold (quota-hold-until (read-run-status out))
-        _ (when (and hold (< (now-epoch) hold))
-            (binding [*out* *err*] (println (str "quota の拒否を観測済み。" (java.time.Instant/ofEpochSecond hold) " まで試行しない")))
-            (System/exit 3))
         channel (java.nio.channels.FileChannel/open
                  (fs/path out "run.lock")
                  (into-array java.nio.file.OpenOption [java.nio.file.StandardOpenOption/CREATE java.nio.file.StandardOpenOption/WRITE]))
@@ -569,6 +565,11 @@
         _ (when-not lock
             (binding [*out* *err*] (println (str "同じ DIR の run が実行中: " out)))
             (System/exit 5))
+        ;; 停止状態はロックの後で読む。先に読むと、先行 run が拒否を記録して解放する直前の確認をすり抜け、上書きして reset 前に試行を始める。
+        hold (quota-hold-until (read-run-status out))
+        _ (when (and hold (< (now-epoch) hold))
+            (binding [*out* *err*] (println (str "quota の拒否を観測済み。" (java.time.Instant/ofEpochSecond hold) " まで試行しない")))
+            (System/exit 3))
         _ (fs/create-dirs (fs/path out "trials"))
         _ (write-run-status! out {:status "running"})
         result (run-plan! out budget tasks agent-cmd stop-file)]

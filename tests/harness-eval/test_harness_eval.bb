@@ -461,6 +461,29 @@
       (is (zero? (:exit @first-run)))
       (is (= 2 (count (attempt-lines out))) "二重の run は試行を始めない"))))
 
+(deftest quota-hold-is-read-after-taking-the-lock
+  (testing "ロックを持つ run がある間は停止状態を読まない。読むのはロックの後なので、先行 run が記録した拒否を見落とさない"
+    (let [out (tmp)]
+      (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+      (let [first-run (p/process ["bb" tool "run" "--out" out "--agent-cmd" fake-agent]
+                                 {:out :string :err :string
+                                  :extra-env {"HARNESS_EVAL_FAKE_MODE" "sleep" "HARNESS_EVAL_FAKE_SLEEP_SECONDS" "6"}})]
+        (loop [i 0] (when (and (< i 100) (not (fs/exists? (fs/path out "attempts.log")))) (Thread/sleep 100) (recur (inc i))))
+        ;; 先行 run がロックを持ったまま拒否を記録した瞬間の状態。
+        (spit (str (fs/path out "run-status.edn")) (pr-str {:status "stopped_quota" :resets-at 4102444800 :at 1}))
+        (let [r (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})]
+          (is (= 5 (:exit r)) (:err r)))
+        @first-run)))
+  (testing "ロックを取った後の確認で拒否すれば、停止状態を上書きせず試行も始めない"
+    (let [out (tmp)]
+      (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+      (is (= 3 (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "quota"}))))
+      (let [before (slurp (str (fs/path out "run-status.edn")))
+            r (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})]
+        (is (= 3 (:exit r)) (:err r))
+        (is (= before (slurp (str (fs/path out "run-status.edn")))))
+        (is (= 2 (count (attempt-lines out))))))))
+
 (deftest real-model-run-requires-a-pinned-model
   (let [out (tmp)]
     (is (zero? (:exit (plan! out :only "T01" :arms "A"))))

@@ -74,6 +74,6 @@ bb docker/codex-workspace/task-board/ai_ops_outcome.bb snapshot "$CODEX_TASK_BOA
 - 実モデルの既定コマンドでモデルを固定する。
 - 子プロセスへ渡す環境変数を allowlist にする。
 - arm B の契約文を評価する経路で組み立てる。
-- quota の拒否で停止し、reset 前の再実行を拒否する。
+- quota の拒否で停止し、reset 前の再実行を拒否する。停止状態はロックを取った後で読み、先行 run が記録した拒否を見落とさない。
 - 中断分を含む累積時間の上限を設ける。
 - 同じ出力先への同時実行を拒否する。完了済みの試行を再実行しない。
