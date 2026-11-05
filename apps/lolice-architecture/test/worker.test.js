@@ -53,7 +53,7 @@ test("valid token returns the page with private headers", async () => {
   const res = await call(await sign());
   assert.equal(res.status, 200);
   assert.equal(await res.text(), BODY);
-  assert.equal(res.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(res.headers.get("Cache-Control"), "private, no-store, no-transform");
   assert.equal(res.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
   assert.equal(res.headers.get("Referrer-Policy"), "no-referrer");

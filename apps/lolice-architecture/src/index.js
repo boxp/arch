@@ -6,7 +6,9 @@ const CLOCK_SKEW_S = 60;
 
 const PAGE_HEADERS = {
   "Content-Type": "text/html; charset=utf-8",
-  "Cache-Control": "private, no-store",
+  // no-transform keeps Cloudflare from rewriting the page (Web Analytics injects a script),
+  // so the browser gets the same bytes that /sha256 reports.
+  "Cache-Control": "private, no-store, no-transform",
   "X-Robots-Tag": "noindex, nofollow",
   "X-Content-Type-Options": "nosniff",
   "Referrer-Policy": "no-referrer",

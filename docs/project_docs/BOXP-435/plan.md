@@ -42,3 +42,5 @@ lineage と同じ見た目で、インフラ全体の役割、階層、通信、
 - Worker: `npm test`（JWT、経路、AUD なしで閉じること、workflow の制約）
 - ポートフォリオ: 本番と stage の両設定でビルド。CI の検査と Lighthouse
 - 実 URL: 未認証の拒否は担当が確認する。ログイン後の表示は Owner にしか確認できない
+
+BOXP-430 の公開後検証で、ブラウザ向け応答にだけ Cloudflare Web Analytics の script が注入されると分かった。この図も同じ zone なので、`Cache-Control` に `no-transform` を付けて最初から注入を止める。zone の設定は変更しない。ログイン後の本文 hash はブラウザの開発者ツールか `/sha256` との比較で確認する。
