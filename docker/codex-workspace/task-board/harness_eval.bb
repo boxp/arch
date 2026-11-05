@@ -184,11 +184,14 @@
        "## 受入\n" (:acceptance task) "\n\n"
        "## 変更してよいファイル\n" (str/join "\n" (map #(str "- " %) (:allowed-files task))) "\n"))
 
-(def contract-fns ["claude-policy-prompt" "ai-ops-decision-prompt" "delegation-prompt" "append-note-instruction" "lane-contract"])
+(def contract-fns ["claude-policy-prompt" "ai-ops-decision-prompt" "provider-quota-prompt" "delegation-prompt" "append-note-instruction" "lane-contract"])
 
 ;; arm B の AI Ops 判断支援節に渡す固定の入力。試行ごとの実アラートで prompt が変わると比較条件が揃わず、
 ;; 安全条件どおりネットワークも使わないので、実取得はせず「アラートなし」の通常形で節の分量と指示を再現する。
 (def contract-ai-ops-state {:status "ok" :alerts []})
+
+;; 同じ理由で利用枠節も固定の入力にする。観測なしの通常形で、実 snapshot を読まない。
+(def contract-quota-state {:state "no_snapshot"})
 
 (defn contract-text
   "現行ハーネスの契約文。task_board_runner.bb を読み込み、prompt-for が :implement で組み立てる順に、
@@ -199,6 +202,7 @@
   (let [agent "claude-fable"
         cp (resolve 'claude-policy-prompt)
         ai (resolve 'ai-ops-decision-prompt)
+        pq (resolve 'provider-quota-prompt)
         dp (resolve 'delegation-prompt)
         an (resolve 'append-note-instruction)
         lc (resolve 'lane-contract)]
@@ -212,6 +216,7 @@
          "Previous run summaries:\n[]\n\n"
          (cp agent)
          (ai contract-ai-ops-state)
+         (pq agent contract-quota-state 0)
          "Ticket contents:\n\n{{TASK_SECTION}}\n\n"
          "Goal: implement or complete this ticket.\n"
          "First inspect the ticket Notes, relevant repos, current git state, and existing project conventions.\n"

@@ -1,5 +1,5 @@
 #!/usr/bin/env bb
-;; BOXP-405 段階 1: 成果指標 outcome/v1-draft を既存 metadata から read-only で集計し、件数だけを出す。
+;; BOXP-405 段階 1: 成果指標 outcome/v2-draft を既存 metadata から read-only で集計し、件数だけを出す。
 ;; 定義の正本は Obsidian Projects/ai-operations-observability/redesign.md 第 2 章、arch 側の範囲は docs/project_docs/BOXP-405/plan.md。
 ;;
 ;; Usage: bb ai_ops_outcome.bb snapshot|prom <task-board-root> <vault> [--now ISO]
@@ -8,13 +8,16 @@
 ;;   ticket ID・レーン・assignee、Tickets/*.md frontmatter の closed。本文・タイトル・Notes・prompt は読まず、ticket ID も出力しない。
 ;; 使える成果 = result done / owner-acceptance の run 終了時刻 (秒精度)、無ければ frontmatter closed (日精度、分位には入れない)。
 ;; continue / review は gate 通過であって成果ではない。開始時刻が分からない作業は窓への所属を決められないので窓別集計に入らない。
+;; 判定済みの区分は開始時刻ではなく、判定が確定した時刻で窓に入れる。成果の時刻か、予算が切れた時刻 (開始 + 予算) のうち早い方。
+;; 開始時刻で入れると、予算 7 日に対して 7 日窓の失敗が常に 0 件になる (v1-draft の欠陥)。
+;; pending / unevaluated / started は判定が確定していないので開始時刻で入れる。
 ;; 本ツールの出力は暫定 SLO の根拠で、正式な SLO 判定ではない。
 (ns ai-ops-outcome
   (:require [babashka.fs :as fs] [cheshire.core :as json] [clojure.string :as str]))
 (load-file (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_insight.bb")))
 (load-file (str (fs/path (fs/parent (fs/absolutize *file*)) "ai_ops_slo.bb")))
 
-(def definition-version "outcome/v1-draft")
+(def definition-version "outcome/v2-draft")
 (def budget-hours 168)
 (def windows {"7d" 7 "28d" 28})
 (def min-observations {"7d" 10 "28d" 20})
@@ -60,13 +63,20 @@
                     out (if (<= hours budget-hours) :reached_in_budget :reached_over_budget)
                     (<= (ai-ops-slo/hours-between start now) budget-hours) :pending
                     wait? :excluded_legitimate_wait
-                    :else :not_reached)]
-    {:start start :out out :run-outcome? (some? outcome) :hours hours :class class
+                    :else :not_reached)
+        budget-end (when start (.plusSeconds start (* 3600 budget-hours)))
+        decided (case class
+                  :reached_in_budget out
+                  (:reached_over_budget :not_reached :excluded_legitimate_wait) budget-end
+                  nil)]
+    {:start start :decided decided :out out :run-outcome? (some? outcome) :hours hours :class class
      :rework? (and out (some #(when-let [s (ai-ops-slo/run-start %)] (if outcome (pos? (compare s out)) (not (neg? (compare s rework-from))))) runs))}))
 
 (defn window-snapshot [tasks now window]
   (let [since (.minusSeconds now (* 86400 (windows window)))
-        xs (filter #(and (:start %) (not (neg? (compare (:start %) since))) (neg? (compare (:start %) now))) tasks)
+        in-window? #(and % (not (neg? (compare % since))) (neg? (compare % now)))
+        started (filter #(in-window? (:start %)) tasks)
+        xs (filter #(if (:decided %) (in-window? (:decided %)) (in-window? (:start %))) tasks)
         counts (frequencies (map :class xs))
         n #(get counts % 0)
         determined (+ (n :reached_in_budget) (n :reached_over_budget) (n :not_reached))
@@ -75,7 +85,7 @@
         cutoff (.minusSeconds now (* 86400 rework-maturity-days))
         matured (filter #(not (pos? (compare (:out %) cutoff))) reached)]
     (merge (zipmap (rest (drop 1 parts)) (map n (rest (drop 1 parts))))
-           {:started (count xs) :determined determined
+           {:started (count started) :determined determined
             :status (cond (zero? determined) "no_observations" (< determined (min-observations window)) "insufficient" :else "measuring")
             :min_observations (min-observations window)
             :reach_rate (when (pos? determined) (/ (double (Math/round (* 1000.0 (/ (n :reached_in_budget) determined)))) 1000.0))

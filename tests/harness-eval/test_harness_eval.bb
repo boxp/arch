@@ -68,7 +68,7 @@
       (is (= "fake-model-1" (get-in cmp [:groups 0 :model_rev])) "model_rev は init イベントから取る")
       (is (pos? (get-in cmp [:groups 0 :regression :evidence :prompt_chars_gap])) "arm B の prompt は契約文の分だけ長い")
       (is (= 5 (get-in (arm cmp "A") [:tool_calls_median :total])))
-      (is (every? #(= ["claude-policy-prompt" "ai-ops-decision-prompt" "delegation-prompt" "append-note-instruction" "lane-contract"] (:harness-contract-fns %))
+      (is (every? #(= ["claude-policy-prompt" "ai-ops-decision-prompt" "provider-quota-prompt" "delegation-prompt" "append-note-instruction" "lane-contract"] (:harness-contract-fns %))
                   (filter #(= "B" (:arm %)) ts)))
       (is (every? #(nil? (:harness-contract-fns %)) (filter #(= "A" (:arm %)) ts))))
     (testing "prom は劣化なしを 1、他を 0 で出し、分母に全結果を並べる"

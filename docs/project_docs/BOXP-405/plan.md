@@ -1,4 +1,4 @@
-# BOXP-405: AI Ops 再設計 段階 1 — 成果指標 `outcome/v1-draft` の集計と export（計画）
+# BOXP-405: AI Ops 再設計 段階 1 — 成果指標 `outcome/v2-draft` の集計と export（計画）
 
 設計の正本は Obsidian `Projects/ai-operations-observability/redesign.md`（第 2 章: 定義と式、第 4 章: 暫定 SLO と burn rate、第 6 章: 段階別チェックリスト）。ここには arch 側の実装範囲と検証だけを置く。本 PR は設計レビューの代替ではなく、設計に沿う最小の実装単位である。
 
@@ -16,7 +16,7 @@
 2. **export の連結**: `ai_ops_ledger.bb` の `refresh-sli-locked!` が v2 の後に `outcome-export-text`（v2 と同じ予算・timeout 方式）を連結し、`ai_ops_outcome_export_ok`（失敗・timeout・空出力・予算超過で 0）を出す。v0/v1/v2 の出力は壊さない。
 3. **系列**
    ```
-   ai_ops_outcome_info{definition_version="outcome/v1-draft",budget_hours="168",rework_maturity_days="14"} 1
+   ai_ops_outcome_info{definition_version="outcome/v2-draft",budget_hours="168",rework_maturity_days="14"} 1
    ai_ops_outcome_generated_timestamp_seconds
    ai_ops_outcome_tasks{window="7d|28d",part="started|determined|reached_in_budget|reached_over_budget|not_reached|pending|excluded_legitimate_wait|unevaluated"}
    ai_ops_outcome_reach_status{window,status="no_observations|insufficient|measuring"} 1   （該当 status だけ 1、他は 0 を出す）
@@ -44,3 +44,24 @@ tests/codex-workspace/ai-ops-ledger-test.sh
 python3 tests/codex-workspace/ci-partition-test.py
 bb docker/codex-workspace/task-board/ai_ops_outcome.bb snapshot "$CODEX_TASK_BOARD_ROOT" "$CODEX_TASK_BOARD_VAULT"   # 実データ read-only、件数のみ
 ```
+
+## 定義の改訂（`outcome/v2-draft`）
+
+実データの readback で `outcome/v1-draft` の欠陥が 2 件分かったので定義を改めた。
+
+- 判定済みの区分を開始時刻で窓に入れていたため、予算 7 日に対して 7 日窓の失敗が常に 0 件で、`AiOpsOutcomeBurnFast` は発火できなかった。判定が確定した時刻（成果の時刻か、開始 + 予算のうち早い方）で窓に入れる。`pending` / `unevaluated` / `started` は開始時刻のまま。
+- burn rate が `reached_over_budget` を失敗に数えず、目標の「予算内の到達率」と合っていなかった。rule 側（lolice）で `(determined - reached_in_budget) / determined / 0.10` にする。
+
+限界: 遅れて到達した作業は、Owner 判断などの正当な待ちがあっても失敗に数える。正当な待ちの除外は現在の状態だけを見るため。
+
+## provider 利用枠の判断支援（AIOPS-QUOTA、`quota/v1-draft`）
+
+成果 SLO の burn rate とは別の入力として、CLI の `rate_limit_event` 由来の数値と enum だけを使う。
+
+- `ai_provider_quota.bb`: 窓ごとの状態（`exhausted` / `near_limit` / `ok` / `expired_unobserved` / `stale` / `unobserved`）と経路の判定（`hold` / `clear` / `unknown`）。共有枠の不足は全 Claude 経路を `hold` にし、代替候補を出さない。モデル専用枠の不足は他の経路を候補として出す。
+- 拒否は窓の `status` だけでなく、event 最上位の `status=rejected` と `rateLimitType` からも判定する（該当窓に `status` がない、または窓がない event があるため）。同じ窓により新しい観測があれば窓を優先し、別 account の拒否では止めない。最上位の拒否は記録時に該当窓へ書き込み、次の event で最上位が上書きされても reset まで残す。status のない新しい観測では解除せず、窓の allowed か同じ制限を指す最上位の allowed で解除する。
+- runner: 拒否されて reset 前の経路は run を起動しない。カード・担当・claim・budget は変えず、Notes へ 1 回だけ記録する。`unknown` は止めない。読取り失敗は fail open。`CODEX_TASK_BOARD_PROVIDER_QUOTA_HOLD=off` で無効化できる。
+- exit≠0 の run で最後の `rate_limit_event` が拒否なら、Blocked の理由に範囲・制限名・reset を記す。category は `agent-process-error` のまま（集計の enum を変えない）。
+- 担当の自動変更はしない。候補の提示だけで、変更は Owner または正規 helper が行う。
+- 範囲は Claude 経路のみ。Codex 経路の判定は含まない。
+- 検証: `tests/ai-observability/test_provider_quota.bb`、runner self-test。
