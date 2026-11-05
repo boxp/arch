@@ -2,6 +2,7 @@
 import asyncio
 import ast
 import base64
+import hashlib
 from contextlib import nullcontext
 import importlib.util
 import json
@@ -176,6 +177,29 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.note("silent", event=event)
         self.assertTrue(delivery.shape(source, {}, "[SILENT]", True, self.vault)[1])
         self.assertEqual(json.loads(path.read_text())["state"], "silent")
+
+    def test_digest_silence_keeps_earlier_egress_evidence(self):
+        event = "BOXP-999-digest-20261030T120000Z-abcdef12"
+        source = NS(platform=NS(value="webhook"), chat_id="webhook:task-board:" + event)
+        directory = self.vault.parent / "Projects/task-board-events/delivery-receipts"
+        directory.mkdir(parents=True)
+        self.note("silent", event=event)
+        for state in ["uncertain", "sent"]:
+            (directory / (event + ".json")).write_text(json.dumps({"event": event, "state": state}))
+            delivery.shape(source, {}, "[SILENT]", True, self.vault)
+            self.assertEqual(json.loads((directory / (event + ".json")).read_text())["state"], state)
+
+    def test_digest_silence_respects_a_local_uncertain_receipt(self):
+        event = "BOXP-999-digest-20261030T120000Z-abcdef12"
+        directory = self.vault.parent / "Projects/task-board-events/delivery-receipts"
+        self.root.mkdir()
+        local = self.root / (hashlib.sha256(event.encode()).hexdigest() + ".json")
+        local.write_text(json.dumps({"event": event, "state": "uncertain"}))
+        delivery.digest_silence_receipt(self.vault, event, "silent", self.root)
+        self.assertFalse((directory / (event + ".json")).exists())
+        local.unlink()
+        delivery.digest_silence_receipt(self.vault, event, "silent", self.root)
+        self.assertEqual(json.loads((directory / (event + ".json")).read_text())["state"], "silent")
 
     def test_digest_identity(self):
         event = "BOXP-999-digest-20261030T120000Z-abcdef12"

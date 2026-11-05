@@ -161,9 +161,33 @@ def vault_receipt(vault, event, state, classification):
         return False
 
 
-def digest_silence_receipt(vault, event, proof):
-    """A digest ends without a send only on this proof of an intentional silence."""
-    if "-digest-" in event and proof == "silent":
+def receipt_shows_egress(vault, event, root=None):
+    """True when a send of this event happened or may have happened."""
+    if root is None:
+        try:
+            from hermes_constants import get_hermes_home
+            root = get_hermes_home() / "task-board-delivery-receipts"
+        except Exception:
+            root = None
+    paths = [Path(vault).parent / "Projects/task-board-events/delivery-receipts" / (event + ".json")]
+    if root is not None:
+        paths.append(Path(root) / (hashlib.sha256(event.encode()).hexdigest() + ".json"))
+    for path in paths:
+        try:
+            if json.loads(path.read_text()).get("state") in {"sent", "uncertain"}:
+                return True
+        except (OSError, ValueError, AttributeError):
+            pass
+    return False
+
+
+def digest_silence_receipt(vault, event, proof, root=None):
+    """A digest ends without a send only on this proof of an intentional silence.
+
+    A silence never replaces the evidence of an earlier send: the dispatcher would
+    otherwise close a digest whose report may not have arrived.
+    """
+    if "-digest-" in event and proof == "silent" and not receipt_shows_egress(vault, event, root):
         vault_receipt(vault, event, "silent", "silent")
 
 
@@ -187,7 +211,7 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
     proof = receipt(event, ticket, vault)
     if is_intentional_silence_response(content):
         if proof in {"silent", "deferred", "continued"}:
-            digest_silence_receipt(vault, event, proof)
+            digest_silence_receipt(vault, event, proof, root)
             return SendResult(success=True)
         content = notice(event, "missing_reply")
     elif not content.strip():

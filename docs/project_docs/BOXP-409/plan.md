@@ -42,9 +42,9 @@ hook / cron 410f / runbook を同じ文言の条件にそろえる: 登録済み
 outbox の `night-processing.edn` がない限り従来の静音保留のまま（既定 off）。restart なしで有効化/停止でき、`:only-tickets` で fixture に限定した canary が可能。
 順序: Hermes（patch + route）→ codex-workspace image → fixture canary → 全体有効化。復元はファイル削除のみ。
 
-## 再起動（Owner 別確認）
+## 再起動（Owner 承認済み）
 
-merge すると image updater の自動 rollout が起きるため、merge 前に対象・回数を確認する: Hermes 1 回、codex-workspace 1 回（実行中 run は planned shutdown）。
+merge すると image updater の自動 rollout が起きる。Owner が通常反映に必要な Hermes / codex-workspace の再起動を承認済み（Obsidian `Projects/task-board-hook-follow-through/rollout-owner-authorization.md`）。この PR の merge で Hermes と codex-workspace が各 1 回 rollout する見込みで、実回数は配備後に記録する。
 
 ## 範囲外
 
@@ -59,4 +59,6 @@ merge すると image updater の自動 rollout が起きるため、merge 前�
 - 静音保留された digest は同じ event ID で再送しない。Hermes が ID で重複排除するためエージェントが再実行されず、朝の通知が欠落するから。元 ID から決定的に導いた新 ID で発行し直し、項目を新 digest に付け替え、元 digest は `:superseded` で done へ移す（marker の有無を問わない）。中断しても次 tick で再開でき、digest は増えない。
 - digest の完了は `sent` か、gate が意図的な [SILENT] を確認して書く receipt `silent`（marker も silent の場合）に限る。silent marker だけでは未配信のまま完了しない。
 - 静音時間の正本は dispatcher の `CODEX_TASK_BOARD_EVENT_QUIET_HOURS` / `CODEX_TASK_BOARD_EVENT_TIMEZONE`。別コンテナの Hermes gate が同じ値を使えるよう、dispatcher が tick ごとに vault の `Projects/task-board-events/quiet-policy.json` へ公開する（変更時のみ書込み）。初回公開前は gate も同じ env 名と既定値を使う。解釈不能な時間指定は dispatcher と同じく静音なし、不正な timezone は gate が保留する。
-- 関連 PR の boxp/lolice 側は route prompt と annotation の更新で、merge すると Hermes が 1 回 rollout する。
+- 関連 PR の boxp/lolice 側は route prompt の更新だけで、annotation の変更は外した。route は Pod 起動時に PVC へコピーされるため、lolice を先に merge し、この PR の Hermes image rollout で反映する。
+- `deferred` marker でも本文が送信済み（receipt `sent`）なら digest に再掲載しない。timeout 後に未解決へ移し、180m cron が回収する。
+- digest の `silent` receipt は、同じ event の `sent` / `uncertain`（vault と Hermes ローカルの両方）を上書きしない。

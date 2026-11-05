@@ -798,6 +798,23 @@ test_receipt_without_marker_is_not_redelivered() {
   day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=1800
   assert_file_contains "${CASE_STATE}/outbox/unhandled/unsure-deferred.edn" ':status :notify-undelivered'
 
+  # A deferred report that was already sent is not repeated: unhandled after the timeout, no digest.
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  seed_event "${CASE_STATE}" sent-deferred BOXP-901 :accepted "${now}" ":accepted-at \"${now}\""
+  note_marker "${CASE_VAULT}" BOXP-901 sent-deferred deferred
+  write_receipt "${CASE_VAULT}" sent-deferred sent "${now}"
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=1800
+  assert_file_contains "${CASE_STATE}/outbox/pending/sent-deferred.edn" ':status :accepted'
+  sleep 1
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/sent-deferred.edn" ':status :notify-undelivered'
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/sent-deferred.edn" ':delivery-receipt "sent"'
+  [[ "$(digest_count)" == 0 ]] || fail "a sent deferred event must not enter a digest"
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "a sent deferred event must not be re-sent"
+  stop_receiver
+
   # The same for a digest: its items are parked with it and nothing is re-sent.
   new_case
   start_receiver "${CASE_TMP}" "${CASE_PORT}"

@@ -576,12 +576,14 @@
                                    (unhandled-dir))
                       (log! (str "delivery unconfirmed " (:event-id event)))
                       (update acc :unhandled inc))
-                  (and marker (not digest) (= marker :deferred))
+                  ;; A deferred report that already went out must not be repeated by the digest.
+                  (and marker (not digest) (= marker :deferred) (not= receipt "sent"))
                   (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
                       (update acc :waiting inc))
                   ;; A notified/question marker is written before the send, which may
                   ;; come late and be held: only the gate's receipt proves the outcome.
-                  (and marker (or (and (not digest) (not (#{:notified :question} marker)))
+                  (and marker (or (and (not digest) (not (#{:notified :question} marker))
+                                       (not (and (= marker :deferred) (= receipt "sent"))))
                                   (and (#{:notified :question :silent} marker) (= receipt "sent") (not unconfirmed))
                                   ;; Only the gate's proof of an intentional [SILENT] ends a digest without a send.
                                   (and digest (= marker :silent) (= receipt "silent"))))
@@ -591,7 +593,7 @@
                   ;; A sent receipt without a marker, or one that carried the gate's notice, is
                   ;; not a confirmed report: a late marker or report may still finish it, then the
                   ;; 180m cron reconciles it.
-                  (or (and marker digest timeout?) (and (= receipt "sent") (or (not marker) unconfirmed) timeout?))
+                  (or (and marker digest timeout?) (and (= receipt "sent") (or (not marker) unconfirmed (= marker :deferred)) timeout?))
                   (do (when digest (finish-items! event (unhandled-dir) :notify-undelivered))
                       (move-event! (cond-> (assoc event :status :notify-undelivered :unhandled-at (now-str))
                                      receipt (assoc :delivery-receipt receipt))
