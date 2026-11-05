@@ -13,7 +13,6 @@ on:
       - docker/codex-workspace/recurring-events/**
       - docker/codex-workspace/infra-diagram-refresh/**
       - .github/workflows/schedule-infra-diagram-refresh.yml
-      - docs/infra-diagram-refresh/**
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
       - tests/harness-eval/**
@@ -32,7 +31,6 @@ on:
       - docker/codex-workspace/recurring-events/**
       - docker/codex-workspace/infra-diagram-refresh/**
       - .github/workflows/schedule-infra-diagram-refresh.yml
-      - docs/infra-diagram-refresh/**
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
       - tests/harness-eval/**

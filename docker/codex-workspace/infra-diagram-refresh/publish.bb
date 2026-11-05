@@ -15,7 +15,8 @@
 (defn tools-dir [] (env "BROWSER_TOOLS" (str (fs/path (cache-root) "browser-tools"))))
 (defn stage-dir [ticket] (str (fs/path (cache-root) "staging" ticket)))
 (defn rules [] (edn/read-string (slurp (env "INFRA_DIAGRAM_REFRESH_RULES" (str here "/rules.edn")))))
-(defn die [& xs] (binding [*out* *err*] (println (str/join " " xs))) (System/exit 1))
+;; System/exit だと finally を飛ばして配備用の secret が残るので、例外で抜ける
+(defn die [& xs] (throw (ex-info (str/join " " xs) {:die true})))
 
 (def diagrams
   [{:id "lineage" :project "lolice-infrastructure-lineage" :html "lolice-lineage.html"
@@ -279,12 +280,17 @@
 
 (when (= *file* (System/getProperty "babashka.file"))
   (let [[cmd a b] *command-line-args*]
-    (case cmd
-      "prepare-tools" (cmd-prepare-tools)
-      "stage" (cmd-stage a)
-      "build" (cmd-build a)
-      "check-html" (cmd-check-html a b)
-      "deploy" (cmd-deploy a)
-      "promote" (cmd-promote a)
-      (do (println "usage: publish.bb prepare-tools | stage BOXP-N | build BOXP-N | check-html FILE lineage|architecture | deploy BOXP-N | promote BOXP-N")
-          (System/exit 2)))))
+    (try
+      (case cmd
+        "prepare-tools" (cmd-prepare-tools)
+        "stage" (cmd-stage a)
+        "build" (cmd-build a)
+        "check-html" (cmd-check-html a b)
+        "deploy" (cmd-deploy a)
+        "promote" (cmd-promote a)
+        (do (println "usage: publish.bb prepare-tools | stage BOXP-N | build BOXP-N | check-html FILE lineage|architecture | deploy BOXP-N | promote BOXP-N")
+            (System/exit 2)))
+      (catch clojure.lang.ExceptionInfo e
+        (when-not (:die (ex-data e)) (throw e))
+        (binding [*out* *err*] (println (ex-message e)))
+        (System/exit 1)))))

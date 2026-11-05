@@ -49,6 +49,8 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
 - 元のインフラ、モデル設定の変更。図の更新のために元を直しません
 - Secret の値、ENV、Terraform state、ConfigMap の本文の取得
 
+`publish.bb deploy` は全体図と stage が未認証で 302 になること、本番に全体図の語が無いことを確かめます。Owner が公開を承認した場合は、この検査も同時に見直します。
+
 新しい公開要素や公開範囲が必要なら、チケットを Blocked にして Owner に相談します。全体図の内容、live の値、全体図のサムネイルを public repo、Actions の log、artifact に出しません。
 
 ## 失敗したとき
