@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# usage: [MARKER=text] verify-live.sh HOST [WORKERS_SUBDOMAIN]
+# usage: [MARKER=text] [VERSION_PREFIX=hex] verify-live.sh HOST [WORKERS_SUBDOMAIN]
 # Read-only checks without credentials. Response bodies are never printed.
 set -uo pipefail
 
@@ -30,7 +30,7 @@ check_refused() {
   report "$ok" "$label (status $code)"
 }
 
-for path in / /lolice-lineage.html /data/ /owner-summary.md /index.html; do
+for path in / /sha256 /lolice-lineage.html /data/ /owner-summary.md /index.html; do
   check_refused "GET $path" "https://$host$path"
 done
 check_refused "POST /" -X POST "https://$host/"
@@ -40,6 +40,10 @@ if [ -n "$subdomain" ]; then
   code=$(curl -sS -m 20 -o "$body" -w '%{http_code}' "https://lolice-lineage.$subdomain.workers.dev/" || echo 000)
   case "$code" in 200) report 1 "workers.dev is closed (status $code)" ;; *) report 0 "workers.dev is closed (status $code)" ;; esac
   if [ -n "$marker" ] && grep -qF -- "$marker" "$body"; then report 1 "workers.dev body has no marker"; fi
+  if [ -n "${VERSION_PREFIX:-}" ]; then
+    code=$(curl -sS -m 20 -o "$body" -w '%{http_code}' "https://$VERSION_PREFIX-lolice-lineage.$subdomain.workers.dev/" || echo 000)
+    case "$code" in 200) report 1 "version preview URL is closed (status $code)" ;; *) report 0 "version preview URL is closed (status $code)" ;; esac
+  fi
 fi
 
 [ "$failures" = 0 ]

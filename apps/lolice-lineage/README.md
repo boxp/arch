@@ -2,7 +2,7 @@
 
 BOXP-429 の構成図 HTML を、Cloudflare Workers Static Assets で本人限定に配信します。
 
-- URL: `https://lolice-lineage.b0xp.io/`。`/` だけが本文を返します。
+- URL: `https://lolice-lineage.b0xp.io/`。`/` だけが本文を返します。`/sha256` は本文の hash を返します。
 - 認証: hostname を既存の Access application（Owner 限定 policy）で保護し、Worker でも Access の JWT を検証します。
 - 別経路: `workers_dev` と `preview_urls` を無効にしています。
 

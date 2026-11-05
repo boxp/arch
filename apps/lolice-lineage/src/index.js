@@ -104,10 +104,15 @@ export default {
       return plain(405, "Method Not Allowed\n", { Allow: "GET, HEAD" });
     }
     const url = new URL(request.url);
-    if (url.pathname !== "/") return plain(404, "Not Found\n");
+    if (url.pathname !== "/" && url.pathname !== "/sha256") return plain(404, "Not Found\n");
 
     const asset = await env.ASSETS.fetch(new URL(ASSET_PATH, url.origin), { method: request.method });
     if (!asset.ok) return plain(404, "Not Found\n");
+    if (url.pathname === "/sha256") {
+      // Lets the signed-in Owner compare the served bytes with the source hash.
+      const digest = await crypto.subtle.digest("SHA-256", await asset.arrayBuffer());
+      return plain(200, `${[...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("")}\n`);
+    }
     return new Response(asset.body, { status: 200, headers: PAGE_HEADERS });
   },
 };

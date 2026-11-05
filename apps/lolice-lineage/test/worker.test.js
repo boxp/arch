@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { beforeEach, test } from "node:test";
 import worker, { resetJwksCache } from "../src/index.js";
@@ -138,4 +139,27 @@ test("config closes the alternate hostnames and runs the Worker first", () => {
 test("git tracks nothing under public/", () => {
   const cwd = new URL("..", import.meta.url);
   assert.equal(execFileSync("git", ["ls-files", "public"], { cwd, encoding: "utf8" }), "");
+});
+
+test("/sha256 reports the hash of the served page after auth", async () => {
+  const res = await call(await sign(), "/sha256");
+  assert.equal(res.status, 200);
+  assert.equal((await res.text()).trim(), createHash("sha256").update(BODY).digest("hex"));
+  assert.equal(res.headers.get("Cache-Control"), "no-store");
+});
+
+test("/sha256 is refused without auth", async () => {
+  assert.equal((await call(null, "/sha256")).status, 403);
+});
+
+test("the deploy workflow keeps the private page on main and off the logs", () => {
+  const wf = readFileSync(new URL("../../../.github/workflows/deploy-lolice-lineage.yml", import.meta.url), "utf8");
+  const triggers = wf.slice(wf.indexOf("\non:"), wf.indexOf("\npermissions:"));
+  assert.match(triggers, /workflow_dispatch/);
+  assert.doesNotMatch(triggers, /pull_request|push:|schedule/);
+  assert.match(wf, /github\.ref == 'refs\/heads\/main'/);
+  assert.match(wf, /environment: lolice-lineage-deploy/);
+  assert.doesNotMatch(wf, /upload-artifact|actions\/cache|cache:|set -x|secrets: inherit/);
+  assert.doesNotMatch(wf, /cat |echo "\$PAGE/);
+  assert.equal(wf.match(/LOLICE_LINEAGE_HTML_XZ_B64 }}/g).length, 1);
 });

@@ -6,10 +6,12 @@ on:
     paths:
       - 'apps/lolice-lineage/**'
       - '.github/workflows/test-lolice-lineage.yml'
+      - '.github/workflows/deploy-lolice-lineage.yml'
   pull_request:
     paths:
       - 'apps/lolice-lineage/**'
       - '.github/workflows/test-lolice-lineage.yml'
+      - '.github/workflows/deploy-lolice-lineage.yml'
 
 permissions:
   contents: read
