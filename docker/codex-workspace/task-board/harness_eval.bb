@@ -10,10 +10,11 @@
 ;; Usage:
 ;;   bb harness_eval.bb plan    --out DIR [--tasks-dir D] [--reps N] [--arms A,B] [--trial-timeout-seconds S]
 ;;                              [--model-rev R] [--harness-version V] [--only T01,T02]
+;;                              [--max-wall-seconds S] [--contract-agent claude-opus]
 ;;   bb harness_eval.bb run     --out DIR [--agent-cmd "cmd"] [--stop-file F]
 ;;   bb harness_eval.bb compare --out DIR            (JSON を stdout へ)
 ;;   bb harness_eval.bb prom    --out DIR            (Prometheus text を stdout へ)
-;;   bb harness_eval.bb contract                     (arm B の契約文を stdout へ。内部用)
+;;   bb harness_eval.bb contract [--agent claude-opus] (arm B の契約文を stdout へ。内部用)
 ;;
 ;; 予算は試行を始める前に DIR/budget.edn へ記録し、上限 (課題 10 / 繰返し 3 / arm 2 / 1 試行 900 秒 / 合計 60 試行)
 ;; を超える計画は拒否する。各試行は一時ディレクトリに課題の base/ を複製して git init した隔離 repo で行い、
@@ -22,6 +23,9 @@
 ;; 再開は同じ DIR への run で行い、新しい計画には新しい DIR を使う。
 ;; STOP で aborted と記録した試行は未実行なので、STOP を外した次の run で実行する。
 ;; ハーネスか課題の内容が計画時と違う DIR への run は拒否する (別の条件の試行を計画時の版として記録しないため)。
+;; 同じ DIR への run は同時に 1 つだけ。試行の開始と終了は attempts.log に残し、終了記録のない試行は中断として
+;; 時間を累積に計上して再実行する。完了済みの試行は再実行しない。累積時間が --max-wall-seconds に届く試行は始めない。
+;; quota の拒否を観測したら試行を記録せずに止まり (exit 3)、reset 前の run は試行せず拒否する (reset 不明なら観測から 1 時間)。
 ;; DIR に残すのは metadata (trials/*.edn) だけで、prompt 本文・エージェント出力・stderr は残さない。
 (ns harness-eval)
 (require '[babashka.fs :as fs]
@@ -32,9 +36,13 @@
          '[clojure.string :as str])
 
 (def definition-version "harness-eval/v1-draft")
-(def limits {:tasks 10 :reps 3 :arms 2 :trial-timeout-seconds 900 :max-trials 60})
+(def limits {:tasks 10 :reps 3 :arms 2 :trial-timeout-seconds 900 :max-trials 60 :max-wall-seconds 21600})
 (def default-arms ["A" "B"])
 (def accept-timeout-seconds 120)
+(def quota-hold-without-reset-seconds 3600)
+(def default-contract-agent "claude-opus")
+;; 子プロセスへ渡す環境変数。Task Board・委譲・GitHub の接続情報を渡さないよう、許可したものだけを渡す。
+(def agent-env-allowlist #{"PATH" "HOME" "USER" "LOGNAME" "SHELL" "LANG" "LC_ALL" "LC_CTYPE" "TZ" "TERM" "TMPDIR" "CLAUDE_CONFIG_DIR"})
 (def min-trials-per-arm 3)
 (def regression-pass-gap 2)
 (def regression-p50-ratio 1.5)
@@ -84,7 +92,7 @@
 ;; 予算 (plan)
 ;; ---------------------------------------------------------------------------
 
-(defn budget-violations [{:keys [tasks reps arms trial-timeout-seconds]}]
+(defn budget-violations [{:keys [tasks reps arms trial-timeout-seconds max-wall-seconds]}]
   (let [total (* (count tasks) reps (count arms))]
     (cond-> []
       (zero? (count tasks)) (conj "課題が 0 件")
@@ -94,7 +102,9 @@
       (not-every? #{"A" "B"} arms) (conj "arm は A / B のみ")
       (or (< trial-timeout-seconds 1) (> trial-timeout-seconds (:trial-timeout-seconds limits)))
       (conj (str "1 試行の timeout " trial-timeout-seconds " 秒は 1.." (:trial-timeout-seconds limits) " の外"))
-      (> total (:max-trials limits)) (conj (str "合計試行 " total " > " (:max-trials limits))))))
+      (> total (:max-trials limits)) (conj (str "合計試行 " total " > " (:max-trials limits)))
+      (or (< max-wall-seconds 1) (> max-wall-seconds (:max-wall-seconds limits)))
+      (conj (str "累積時間 " max-wall-seconds " 秒は 1.." (:max-wall-seconds limits) " の外")))))
 
 (defn content-sha256
   "[名前 ファイル] の組を名前順に並べ、名前と内容の sha256 (hex) を返す。"
@@ -147,6 +157,8 @@
               :reps (parse-long* (arg args "--reps" nil) 1)
               :arms (vec (str/split (arg args "--arms" (str/join "," default-arms)) #","))
               :trial-timeout-seconds (parse-long* (arg args "--trial-timeout-seconds" nil) 600)
+              :max-wall-seconds (parse-long* (arg args "--max-wall-seconds" nil) (:max-wall-seconds limits))
+              :contract-agent (arg args "--contract-agent" default-contract-agent)
               :model-rev (arg args "--model-rev" "unknown")
               :harness-version (or (arg args "--harness-version" nil) (harness-content-version))
               ;; --harness-version を明示しても、再開時の照合は実際の内容で行う。
@@ -197,10 +209,9 @@
   "現行ハーネスの契約文。task_board_runner.bb を読み込み、prompt-for が :implement で組み立てる順に、
   公開 defn の出力と prompt-for 内の固定文 (vault と ticket を要求するため prompt-for 自体は呼べない) を並べる。
   このプロセスでは babashka.file が本ファイルなので runner の main は起動しない。"
-  []
+  [agent]
   (load-file runner-path)
-  (let [agent "claude-fable"
-        cp (resolve 'claude-policy-prompt)
+  (let [cp (resolve 'claude-policy-prompt)
         ai (resolve 'ai-ops-decision-prompt)
         pq (resolve 'provider-quota-prompt)
         dp (resolve 'delegation-prompt)
@@ -230,8 +241,8 @@
 
 (defn fetch-contract
   "契約文は別プロセスで取り出す (runner の定義を本 ns に混ぜない)。失敗は例外。"
-  []
-  (let [r @(p/process ["bb" self-path "contract"] {:out :string :err :string})]
+  [agent]
+  (let [r @(p/process ["bb" self-path "contract" "--agent" agent] {:out :string :err :string})]
     (when-not (zero? (:exit r)) (throw (ex-info (str "契約文の取得に失敗: " (:err r)) {})))
     (:out r)))
 
@@ -270,6 +281,11 @@
         parsed (map (fn [l] (try (json/parse-string l) (catch Exception _ ::bad))) lines)
         bad? (some #(= ::bad %) parsed)
         model (some (fn [e] (when (and (map? e) (= "system" (get e "type")) (= "init" (get e "subtype"))) (get e "model"))) parsed)
+        rejected (last (filter (fn [e] (and (map? e) (= "rate_limit_event" (get e "type"))
+                                            (= "rejected" (get-in e ["rate_limit_info" "status"]))))
+                               parsed))
+        api-429? (some (fn [e] (and (map? e) (= "result" (get e "type")) (= 429 (get e "api_error_status")))) parsed)
+        result-error? (some (fn [e] (and (map? e) (= "result" (get e "type")) (true? (get e "is_error")))) parsed)
         kinds (when-not bad?
                 (mapcat (fn [e]
                           (cond
@@ -281,6 +297,10 @@
                         parsed))]
     {:readable? (not bad?)
      :model model
+     ;; 枠の拒否で仕事が止まったときだけ true。警告の event や、拒否のあとに完了した試行では止めない。
+     :quota-rejected? (boolean (or api-429? (and rejected result-error?)))
+     :quota-limit (get-in rejected ["rate_limit_info" "rateLimitType"])
+     :quota-resets-at (let [r (get-in rejected ["rate_limit_info" "resetsAt"])] (when (number? r) (long r)))
      :tool-calls (when-not bad?
                    (let [f (frequencies kinds)]
                      {:read (get f :read 0) :explore (get f :explore 0) :edit (get f :edit 0) :bash (get f :bash 0)
@@ -303,13 +323,50 @@
   (git! repo "commit" "-q" "-m" "harness-eval base")
   (str/trim (git! repo "rev-parse" "--short" "HEAD")))
 
-(defn changed-paths [repo]
-  (->> (str/split-lines (git! repo "status" "--porcelain" "--untracked-files=all"))
-       (remove str/blank?)
-       ;; porcelain 行は "XY path" (先頭 2 文字が状態)。先頭の空白を削らない。
-       (map (fn [line] (let [path (subs line 3)]
-                         (if (str/includes? path " -> ") (last (str/split path #" -> ")) path))))
-       (map #(str/replace % #"^\"|\"$" ""))))
+(defn- tree-entries
+  "root 以下のファイルの [相対パス パス]。先頭の .git は除く。symlink はたどらない。"
+  ([root] (tree-entries root nil))
+  ([dir rel]
+   (mapcat (fn [p]
+             (let [n (str (fs/file-name p))
+                   r (if rel (str rel "/" n) n)]
+               (cond
+                 (and (nil? rel) (= n ".git")) []
+                 (fs/sym-link? p) [[r p]]
+                 (fs/directory? p {:nofollow-links true}) (tree-entries p r)
+                 :else [[r p]])))
+           (fs/list-dir dir))))
+
+(defn tree-snapshot
+  "作業ツリーの {相対パス 種類と内容の指紋}。git の状態 (commit / reset / exclude / index) に左右されない。"
+  [root]
+  (into {}
+        (for [[r p] (tree-entries root)]
+          [r (cond
+               (fs/sym-link? p) [:link (str (java.nio.file.Files/readSymbolicLink (fs/path p)))]
+               (fs/regular-file? p {:nofollow-links true}) [:file (fs/executable? p) (content-sha256 [["" p]])]
+               :else [:other])])))
+
+(defn changed-paths
+  "試行前の指紋と今の作業ツリーを比べ、変更・追加・削除されたパスを返す。"
+  [before repo]
+  (let [after (tree-snapshot repo)]
+    (->> (set/union (set (keys before)) (set (keys after)))
+         (remove #(= (get before %) (get after %)))
+         sort
+         vec)))
+
+(defn commits-added
+  "試行中に増えた commit の数。受入判定には使わず、安全条件どおりだったかの記録に残す。git が壊されていれば nil。"
+  [repo base-sha]
+  (try (Long/parseLong (str/trim (git! repo "rev-list" "--count" (str base-sha "..HEAD"))))
+       (catch Exception _ nil)))
+
+(defn agent-env
+  "試行の子プロセスの環境。許可した変数と、fixture 用の HARNESS_EVAL_* だけを渡す。"
+  []
+  (into {} (filter (fn [[k _]] (or (contains? agent-env-allowlist k) (str/starts-with? k "HARNESS_EVAL_"))))
+        (System/getenv)))
 
 (defn kill-tree! [proc]
   (try (p/destroy-tree proc) (catch Exception _ nil))
@@ -325,7 +382,7 @@
         t0 (System/nanoTime)
         proc (p/process ["setsid" "sh" "-c" agent-cmd]
                         {:dir repo :in prompt :out (fs/file events) :err (fs/file stderr)
-                         :extra-env {"HARNESS_EVAL" "1"}})
+                         :env (assoc (agent-env) "HARNESS_EVAL" "1")})
         done (future @proc)
         result (deref done (* 1000 timeout-seconds) ::timeout)
         seconds (/ (- (System/nanoTime) t0) 1e9)]
@@ -354,10 +411,11 @@
     (try
       (fs/create-dirs log-dir)
       (let [base-sha (prepare-repo! task repo)
+            before (tree-snapshot repo)
             prompt (prompt-for-arm arm task contract)
             {:keys [timeout? exit-code seconds events]} (run-agent! agent-cmd repo log-dir prompt trial-timeout-seconds)
             ev (parse-events events)
-            changed (changed-paths repo)
+            changed (changed-paths before repo)
             disallowed (remove (set (:allowed-files task)) changed)
             accept-exit (when (and (not timeout?) (zero? exit-code) (empty? disallowed)) (accept! task repo))
             outcome (cond timeout? "timeout"
@@ -365,14 +423,19 @@
                           (seq disallowed) "fail"
                           (= 0 accept-exit) "pass"
                           :else "fail")]
+        (if (:quota-rejected? ev)
+          ;; 枠の拒否は課題の成否ではないので試行として記録しない。残りは reset 後に実行する。
+          {:quota-rejected? true :quota-limit (:quota-limit ev) :quota-resets-at (:quota-resets-at ev)
+           :task (:id task) :arm arm :rep rep :seconds seconds}
         (cond-> {:task (:id task) :arm arm :rep rep :difficulty (:difficulty task)
                  :outcome outcome :seconds seconds :exit-code exit-code
                  :model-rev (or (:model ev) model-rev) :harness-version harness-version :base-sha base-sha
                  :tool-calls (:tool-calls ev) :events-readable? (:readable? ev)
                  :changed-files (count changed) :disallowed-changes (count disallowed)
+                 :commits-added (commits-added repo base-sha)
                  :accept-exit accept-exit :prompt-chars (count prompt)
                  :started-at started :finished-at (now-str)}
-          (= "B" arm) (assoc :harness-contract-fns contract-fns)))
+          (= "B" arm) (assoc :harness-contract-fns contract-fns))))
       (finally (fs/delete-tree work)))))
 
 (defn trial-path [out task-id arm rep] (fs/path out "trials" (str task-id "-" arm "-" rep ".edn")))
@@ -390,12 +453,103 @@
     (not= (:harness-content-version budget) (harness-content-version)) (conj "ハーネス")
     (not= (:tasks-content-version budget) (tasks-content-version tasks)) (conj "課題")))
 
+(defn write-atomic!
+  "途中で殺されても読めない記録を残さない。"
+  [path content]
+  (let [tmp (str path ".tmp")]
+    (spit tmp content)
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+
+(defn attempts-path [out] (str (fs/path out "attempts.log")))
+
+(defn read-attempts
+  "試行の開始と終了の記録。最後の行が書きかけなら読み飛ばす。"
+  [out]
+  (let [f (attempts-path out)]
+    (if (fs/exists? f)
+      (vec (keep #(try (edn/read-string %) (catch Exception _ nil)) (remove str/blank? (str/split-lines (slurp f)))))
+      [])))
+
+(defn append-attempt! [out m] (spit (attempts-path out) (str (pr-str m) "\n") :append true))
+
+(defn attempt-spans
+  "開始ごとの [開始 次の event]。次が同じ試行の end なら完了、そうでなければ中断。"
+  [events]
+  (map (fn [[a b]] {:start a :end (when (and (= "end" (:event b)) (= (:trial a) (:trial b))) b) :next b})
+       (filter #(= "start" (:event (first %))) (partition-all 2 1 events))))
+
+(defn interrupted-attempts [events] (filter (complement :end) (attempt-spans events)))
+
+(defn spent-seconds
+  "中断分も含む累積時間。中断した試行の実時間は分からないので、次の event までと試行の上限の短い方で多めに数える。"
+  [budget events now]
+  (let [cap (+ (or (:trial-timeout-seconds budget) 0) accept-timeout-seconds)]
+    (reduce + 0 (for [{:keys [start end next]} (attempt-spans events)]
+                  (if end
+                    (- (:at end) (:at start))
+                    (min cap (max 0 (- (or (:at next) now) (:at start)))))))))
+
+(defn read-run-status [out]
+  (let [f (fs/path out "run-status.edn")]
+    (when (fs/exists? f) (try (edn/read-string (slurp (str f))) (catch Exception _ nil)))))
+
+(defn write-run-status! [out m] (write-atomic! (str (fs/path out "run-status.edn")) (pr-str (assoc m :at (now-epoch)))))
+
+(defn quota-hold-until
+  "前の run が観測した quota の拒否で、次の試行を始めてよい時刻。"
+  [{:keys [status resets-at at]}]
+  (when (= "stopped_quota" status)
+    (or resets-at (+ (or at 0) quota-hold-without-reset-seconds))))
+
+(defn default-agent-cmd
+  "実モデルの既定コマンド。モデルを固定できない計画では実行しない (--agent-cmd を明示すれば別)。"
+  [model-rev]
+  (when (or (= "unknown" model-rev) (not (re-matches #"[A-Za-z0-9._:-]+" (str model-rev))))
+    (binding [*out* *err*] (println "--agent-cmd なしの run には plan の --model-rev が必要"))
+    (System/exit 2))
+  (str (or (System/getenv "CODEX_TASK_BOARD_CLAUDE_BIN") "claude")
+       " --print --output-format stream-json --verbose --dangerously-skip-permissions --no-session-persistence --model " model-rev))
+
+(defn run-plan!
+  "計画の未完了の試行を順に実行する。戻り値は最後の状態の map。"
+  [out budget tasks agent-cmd stop-file]
+  (let [contract (when (some #{"B"} (:arms budget)) (fetch-contract (:contract-agent budget default-contract-agent)))
+        opts (assoc budget :agent-cmd agent-cmd)
+        plan (for [task tasks, arm (:arms budget), rep (range 1 (inc (:reps budget)))] [task arm rep])
+        wall (:max-wall-seconds budget (:max-wall-seconds limits))
+        trial-cap (+ (:trial-timeout-seconds budget) accept-timeout-seconds)]
+    (loop [[[task arm rep :as item] & more] plan aborted? false]
+      (if-not item
+        (if aborted? {:status "stopped_file"} {:status "completed"})
+        (let [path (trial-path out (:id task) arm rep)
+              trial-id (str (:id task) "-" arm "-" rep)]
+          (cond
+            (trial-done? path) (recur more aborted?)
+
+            (or aborted? (fs/exists? stop-file))
+            (do (write-atomic! (str path) (pr-str {:task (:id task) :arm arm :rep rep :outcome "aborted" :model-rev (:model-rev budget)
+                                                   :harness-version (:harness-version budget) :finished-at (now-str)}))
+                (recur more true))
+
+            (> (+ (spent-seconds budget (read-attempts out) (now-epoch)) trial-cap) wall)
+            {:status "stopped_budget" :next-trial trial-id}
+
+            :else
+            (do (append-attempt! out {:event "start" :trial trial-id :at (now-epoch)})
+                (let [trial (run-trial! opts task arm rep contract)]
+                  (when-not (:quota-rejected? trial) (write-atomic! (str path) (pr-str trial)))
+                  (append-attempt! out {:event "end" :trial trial-id :at (now-epoch)
+                                        :quota-rejected (boolean (:quota-rejected? trial))})
+                  (if (:quota-rejected? trial)
+                    (do (println (str trial-id ": quota 拒否 (" (:quota-limit trial) ")"))
+                        {:status "stopped_quota" :limit (:quota-limit trial) :resets-at (:quota-resets-at trial) :next-trial trial-id})
+                    (do (println (str trial-id ": " (:outcome trial) " (" (:seconds trial) "s)"))
+                        (recur more aborted?)))))))))))
+
 (defn run! [args]
   (let [out (or (arg args "--out" nil) (throw (ex-info "--out が必要" {})))
         budget (read-budget out)
-        agent-cmd (arg args "--agent-cmd"
-                       (str (or (System/getenv "CODEX_TASK_BOARD_CLAUDE_BIN") "claude")
-                            " --print --output-format stream-json --verbose --dangerously-skip-permissions"))
+        agent-cmd (or (arg args "--agent-cmd" nil) (default-agent-cmd (:model-rev budget)))
         stop-file (arg args "--stop-file" (str (fs/path out "STOP")))
         tasks (load-tasks (:tasks-dir budget) (set (:tasks budget)))
         drift (plan-drift budget tasks)
@@ -403,24 +557,26 @@
             (binding [*out* *err*]
               (println (str (str/join "と" drift) "の内容が計画時と違うため実行しない。新しい条件の評価には新しい --out で plan する: " out)))
             (System/exit 2))
-        contract (when (some #{"B"} (:arms budget)) (fetch-contract))
-        opts (assoc budget :agent-cmd agent-cmd)
-        plan (for [task tasks, arm (:arms budget), rep (range 1 (inc (:reps budget)))] [task arm rep])
-        aborted (atom false)]
-    (fs/create-dirs (fs/path out "trials"))
-    (doseq [[task arm rep] plan]
-      (let [path (trial-path out (:id task) arm rep)]
-        (cond
-          (trial-done? path) nil
-          (or @aborted (fs/exists? stop-file))
-          (do (reset! aborted true)
-              (spit (str path) (pr-str {:task (:id task) :arm arm :rep rep :outcome "aborted" :model-rev (:model-rev budget)
-                                        :harness-version (:harness-version budget) :finished-at (now-str)})))
-          :else
-          (let [trial (run-trial! opts task arm rep contract)]
-            (spit (str path) (pr-str trial))
-            (println (str (:id task) " " arm " #" rep ": " (:outcome trial) " (" (:seconds trial) "s)"))))))
-    (when @aborted (println "stop-file により残りの試行を aborted として記録した"))))
+        hold (quota-hold-until (read-run-status out))
+        _ (when (and hold (< (now-epoch) hold))
+            (binding [*out* *err*] (println (str "quota の拒否を観測済み。" (java.time.Instant/ofEpochSecond hold) " まで試行しない")))
+            (System/exit 3))
+        channel (java.nio.channels.FileChannel/open
+                 (fs/path out "run.lock")
+                 (into-array java.nio.file.OpenOption [java.nio.file.StandardOpenOption/CREATE java.nio.file.StandardOpenOption/WRITE]))
+        lock (try (.tryLock channel) (catch Exception _ nil))
+        _ (when-not lock
+            (binding [*out* *err*] (println (str "同じ DIR の run が実行中: " out)))
+            (System/exit 5))
+        _ (fs/create-dirs (fs/path out "trials"))
+        _ (write-run-status! out {:status "running"})
+        result (run-plan! out budget tasks agent-cmd stop-file)]
+    (write-run-status! out result)
+    (case (:status result)
+      "stopped_file" (println "stop-file により残りの試行を aborted として記録した")
+      "stopped_quota" (do (println "quota の拒否により停止した") (System/exit 3))
+      "stopped_budget" (do (println "累積時間の上限により停止した") (System/exit 4))
+      nil)))
 
 ;; ---------------------------------------------------------------------------
 ;; 集計 (compare / prom)
@@ -456,6 +612,7 @@
      :seconds_p90 (round3 (quantile secs 0.9))
      :prompt_chars_median (median (keep :prompt-chars attempted))
      :events_unreadable (count (remove :events-readable? attempted))
+     :commits_added_trials (count (filter #(pos? (or (:commits-added %) 0)) attempted))
      :tool_calls_median (when (seq readable)
                           (into {} (for [k [:read :explore :edit :bash :other :total]]
                                      [k (median (map #(get-in % [:tool-calls k]) readable))])))}))
@@ -504,8 +661,13 @@
         groups (group-by (juxt :model-rev :harness-version) trials)]
     {:definition_version definition-version
      :generated_at (now-str)
-     :budget (select-keys budget [:tasks :reps :arms :trial-timeout-seconds :max-trials :created-at])
+     :budget (select-keys budget [:tasks :reps :arms :trial-timeout-seconds :max-trials :max-wall-seconds :contract-agent :model-rev :created-at])
      :trials_recorded (count trials)
+     :trials_completed (count (remove #(= "aborted" (:outcome %)) trials))
+     :run_status (read-run-status out)
+     :spent_seconds (spent-seconds budget (read-attempts out) (now-epoch))
+     :attempts (count (filter #(= "start" (:event %)) (read-attempts out)))
+     :interrupted_attempts (count (interrupted-attempts (read-attempts out)))
      :note "暫定判定。件数が少ないので断定せず、同条件での再評価と原因候補の確認を推奨する。"
      :groups (vec (for [[[model-rev harness-version] ts] (sort groups)]
                     (let [arms (into (sorted-map) (for [[arm ats] (group-by :arm ts)] [arm (arm-summary ats)]))
@@ -535,8 +697,12 @@
     (line! (str "ai_ops_harness_eval_generated_timestamp_seconds " (now-epoch)))
     (line! "# HELP ai_ops_harness_eval_budget 試行前に記録した予算。") (line! "# TYPE ai_ops_harness_eval_budget gauge")
     (doseq [[part v] [["tasks" (count (:tasks budget))] ["reps" (:reps budget)] ["arms" (count (:arms budget))]
-                      ["trial_timeout_seconds" (:trial-timeout-seconds budget)] ["max_trials" (:max-trials budget)]]]
+                      ["trial_timeout_seconds" (:trial-timeout-seconds budget)] ["max_trials" (:max-trials budget)] ["max_wall_seconds" (or (:max-wall-seconds budget) 0)]]]
       (line! (str "ai_ops_harness_eval_budget" (labels {:part part}) " " v)))
+    (line! "# HELP ai_ops_harness_eval_completed_trials 完了した試行数。max_trials に届くまでは途中の結果。") (line! "# TYPE ai_ops_harness_eval_completed_trials gauge")
+    (line! (str "ai_ops_harness_eval_completed_trials " (:trials_completed data)))
+    (line! "# HELP ai_ops_harness_eval_spent_seconds 中断分を含む累積の試行時間。") (line! "# TYPE ai_ops_harness_eval_spent_seconds gauge")
+    (line! (str "ai_ops_harness_eval_spent_seconds " (:spent_seconds data)))
     (line! "# HELP ai_ops_harness_eval_trials 課題 × arm × 結果ごとの試行数 (失敗・timeout を含む分母)。") (line! "# TYPE ai_ops_harness_eval_trials gauge")
     (doseq [[[model-rev harness-version arm task] ts] (sort (group-by (juxt :model-rev :harness-version :arm :task) trials))
             :let [by (frequencies (map :outcome ts))]
@@ -571,7 +737,7 @@
     "run" (run! (rest args))
     "compare" (compare! (rest args))
     "prom" (prom! (rest args))
-    "contract" (do (print (contract-text)) (flush))
+    "contract" (do (print (contract-text (arg (rest args) "--agent" default-contract-agent))) (flush))
     (usage!)))
 
 (when (= *file* (System/getProperty "babashka.file"))

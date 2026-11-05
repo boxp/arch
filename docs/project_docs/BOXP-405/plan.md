@@ -65,3 +65,15 @@ bb docker/codex-workspace/task-board/ai_ops_outcome.bb snapshot "$CODEX_TASK_BOA
 - 担当の自動変更はしない。候補の提示だけで、変更は Owner または正規 helper が行う。
 - 範囲は Claude 経路のみ。Codex 経路の判定は含まない。
 - 検証: `tests/ai-observability/test_provider_quota.bb`、runner self-test。
+
+## 実モデル対照評価の前提の修正 (TD-02)
+
+実モデルで評価する前に、評価器の次の点を直す。
+
+- 許可外変更の判定を `git status` から作業ツリーの内容比較へ変える。commit・削除の commit・`.git/info/exclude` で隠した変更を検出する。
+- 実モデルの既定コマンドでモデルを固定する。
+- 子プロセスへ渡す環境変数を allowlist にする。
+- arm B の契約文を評価する経路で組み立てる。
+- quota の拒否で停止し、reset 前の再実行を拒否する。
+- 中断分を含む累積時間の上限を設ける。
+- 同じ出力先への同時実行を拒否する。完了済みの試行を再実行しない。

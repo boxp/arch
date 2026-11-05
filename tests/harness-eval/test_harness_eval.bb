@@ -125,6 +125,25 @@
       (is (pos? (:disallowed-changes t)))
       (is (nil? (:accept-exit t)) "許可外の変更があれば accept は走らせない"))))
 
+(deftest committed-or-hidden-disallowed-changes-are-detected
+  (testing "許可外の変更を commit しても、削除を commit しても、exclude で隠しても fail にする"
+    (doseq [mode ["commit-break" "commit-delete" "hidden-extra"]]
+      (let [out (tmp)]
+        (is (zero? (:exit (plan! out :reps 1 :only "T01" :arms "A"))))
+        (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" mode}))))
+        (let [[t] (trials out)]
+          (is (= "fail" (:outcome t)) mode)
+          (is (pos? (:disallowed-changes t)) mode)
+          (is (nil? (:accept-exit t)) mode)))))
+  (testing "許可内の変更の commit は合格のまま、commit の事実を metadata に残す"
+    (let [out (tmp)]
+      (is (zero? (:exit (plan! out :reps 1 :only "T01" :arms "A"))))
+      (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "commit-allowed"}))))
+      (let [[t] (trials out)]
+        (is (= "pass" (:outcome t)))
+        (is (= 0 (:disallowed-changes t)))
+        (is (= 1 (:commits-added t)))))))
+
 (deftest agent-error-exit-is-error-not-fail
   (let [out (tmp)]
     (is (zero? (:exit (plan! out :reps 1 :only "T01" :arms "A"))))
@@ -346,6 +365,108 @@
       (is (not (str/includes? prom (:title task))))
       (is (not (str/includes? cmp (:title task))))
       (is (re-find #"task=\"T01\"" prom) "課題 ID だけを label に出す"))))
+
+(defn run-status [out] (edn/read-string (slurp (str (fs/path out "run-status.edn")))))
+(defn attempt-lines [out] (->> (str/split-lines (slurp (str (fs/path out "attempts.log")))) (map edn/read-string) vec))
+
+(deftest agent-does-not-receive-task-board-or-claude-session-env
+  (let [out (tmp)]
+    (is (zero? (:exit (plan! out :reps 1 :only "T01" :arms "A"))))
+    (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "env-probe"
+                                 "CODEX_TASK_BOARD_VAULT" "/nonexistent" "CLAUDECODE" "1"
+                                 "CLAUDE_CODE_SESSION_ID" "x" "GH_TOKEN" "x"}))))
+    (is (= "pass" (:outcome (first (trials out)))))))
+
+(deftest quota-rejection-stops-without-recording-a-trial
+  (testing "拒否の観測で止まり、残りを実行せず、reset 前の再開も拒否する"
+    (let [out (tmp)]
+      (is (zero? (:exit (plan! out :reps 3 :only "T01,T02"))))
+      (let [r (run! out {"HARNESS_EVAL_FAKE_MODE" "quota"})]
+        (is (= 3 (:exit r)) (:err r)))
+      (is (empty? (trials out)))
+      (let [st (run-status out)]
+        (is (= "stopped_quota" (:status st)))
+        (is (= "seven_day" (:limit st)))
+        (is (= 4102444800 (:resets-at st))))
+      (is (= 2 (count (attempt-lines out))) "開始と終了の 1 組だけ")
+      (let [r (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})]
+        (is (= 3 (:exit r)))
+        (is (str/includes? (:err r) "まで試行しない")))
+      (is (empty? (trials out)) "reset 前は試行しない")
+      (is (= 2 (count (attempt-lines out))))))
+  (testing "reset が過ぎれば完了していない試行から続ける"
+    (let [out (tmp)]
+      (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+      (is (= 3 (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "quota"}))))
+      (spit (str (fs/path out "run-status.edn")) (pr-str {:status "stopped_quota" :resets-at 1 :at 1}))
+      (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"}))))
+      (is (= ["pass"] (map :outcome (trials out))))))
+  (testing "reset 不明の 429 は観測から 1 時間止める"
+    (let [out (tmp)]
+      (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+      (is (= 3 (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "quota-no-reset"}))))
+      (is (nil? (:resets-at (run-status out))))
+      (is (= 3 (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})))))))
+
+(deftest interrupted-trial-is-rerun-and-charged-and-completed-ones-are-not
+  (let [out (tmp) now (quot (System/currentTimeMillis) 1000)]
+    (is (zero? (:exit (plan! out :reps 1 :only "T01" :timeout 60))))
+    (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"}))))
+    (let [before (count (attempt-lines out))
+          t-a (fs/path out "trials" "T01-A-1.edn")
+          t-b (fs/path out "trials" "T01-B-1.edn")
+          stamp (slurp (str t-a))]
+      ;; arm B の試行が途中で殺された状態: 開始の記録だけがあり、試行の記録がない。
+      (fs/delete t-b)
+      (spit (str (fs/path out "attempts.log")) (str (pr-str {:event "start" :trial "T01-B-1" :at (- now 1000)}) "\n") :append true)
+      (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"}))))
+      (is (= stamp (slurp (str t-a))) "完了済みは再実行しない")
+      (is (fs/exists? t-b))
+      (let [cmp (compare! out)]
+        (is (= 2 (:trials_completed cmp)))
+        (is (= 1 (:interrupted_attempts cmp)))
+        (is (>= (:spent_seconds cmp) 180) "中断分を上限 (60+120 秒) まで計上する")
+        (is (= (+ 2 (quot before 2) ) (:attempts cmp)) "開始の回数")))))
+
+(deftest cumulative-wall-budget-stops-new-trials
+  (let [out (tmp) now (quot (System/currentTimeMillis) 1000)]
+    (is (zero? (:exit (he {} "plan" "--out" out "--tasks-dir" tasks-dir "--only" "T01" "--arms" "A" "--trial-timeout-seconds" "60" "--max-wall-seconds" "200"))))
+    (spit (str (fs/path out "attempts.log"))
+          (str (pr-str {:event "start" :trial "T01-A-1" :at (- now 100)}) "\n"
+               (pr-str {:event "end" :trial "T01-A-1" :at (- now 50)}) "\n"))
+    (let [r (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})]
+      (is (= 4 (:exit r)) (:err r)))
+    (is (= "stopped_budget" (:status (run-status out))))
+    (is (empty? (trials out)))
+    (testing "6 時間を超える計画は作らない"
+      (let [o2 (tmp) r (he {} "plan" "--out" o2 "--tasks-dir" tasks-dir "--max-wall-seconds" "21601")]
+        (is (= 2 (:exit r)))))))
+
+(deftest concurrent-run-on-the-same-dir-is-refused
+  (let [out (tmp)]
+    (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+    (let [first-run (p/process ["bb" tool "run" "--out" out "--agent-cmd" fake-agent]
+                               {:out :string :err :string
+                                :extra-env {"HARNESS_EVAL_FAKE_MODE" "sleep" "HARNESS_EVAL_FAKE_SLEEP_SECONDS" "6"}})]
+      (loop [i 0] (when (and (< i 100) (not (fs/exists? (fs/path out "attempts.log")))) (Thread/sleep 100) (recur (inc i))))
+      (let [r (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})]
+        (is (= 5 (:exit r)) (:err r)))
+      (is (zero? (:exit @first-run)))
+      (is (= 2 (count (attempt-lines out))) "二重の run は試行を始めない"))))
+
+(deftest real-model-run-requires-a-pinned-model
+  (let [out (tmp)]
+    (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+    (let [r (he {} "run" "--out" out)]
+      (is (= 2 (:exit r)))
+      (is (str/includes? (:err r) "--model-rev"))
+      (is (not (fs/exists? (fs/path out "attempts.log")))))))
+
+(deftest contract-uses-the-evaluated-route
+  (doseq [agent ["claude-opus" "claude-sonnet"]]
+    (let [r (he {} "contract" "--agent" agent)]
+      (is (zero? (:exit r)) (:err r))
+      (is (str/includes? (:out r) (str "Task Board assignee/agent: " agent))))))
 
 (deftest contract-text-comes-from-the-runner
   (let [r (he {} "contract")]
