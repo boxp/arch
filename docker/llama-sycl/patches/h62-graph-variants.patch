@@ -1,0 +1,161 @@
+diff --git a/ggml/src/ggml-sycl/common.hpp b/ggml/src/ggml-sycl/common.hpp
+index 668e9be..8e714c9 100644
+--- a/ggml/src/ggml-sycl/common.hpp
++++ b/ggml/src/ggml-sycl/common.hpp
+@@ -467,6 +467,8 @@ struct ggml_sycl_graph {
+     // result of check_graph_compatibility() and the uid it was made for
+     bool     compatible     = false;
+     uint64_t compatible_uid = 0;
++    bool     variant_fresh  = false;
++    uint64_t variant_use    = 0;
+ };
+ 
+ static_assert(std::is_trivial<ggml_sycl_graph::node_properties>::value, "node_properties must be trivial");
+@@ -570,6 +572,10 @@ struct ggml_backend_sycl_context {
+     // computation is split across CPU/GPU (e.g. with --n-cpu-moe)
+     std::unordered_map<const void *, std::unique_ptr<ggml_sycl_graph>> sycl_graphs;
+ 
++    // Used only when multi-variant caching is enabled. Each executable owns device resources.
++    std::unordered_map<const void *, std::vector<std::unique_ptr<ggml_sycl_graph>>> sycl_graph_variants;
++    uint64_t graph_variant_use_counter = 0;
++
+     int64_t last_graph_eviction_sweep = 0;
+     std::optional<bool> graph_compatible;
+ 
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 0d05bac..8d2092b 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -155,6 +155,7 @@ int g_ggml_sycl_enable_sparse_fa = 0;
+ int g_ggml_sycl_debug_sparse_fa = 0;
+ int g_ggml_sycl_sparse_fa_margin = 256;
+ int g_ggml_sycl_graph_eviction_timeout = 10;
++int g_ggml_sycl_graph_variants = 0;
+ 
+ #if GGML_SYCL_DNNL
+ // ask oneDNN which matmul it picks for a small f16 problem
+@@ -451,6 +452,7 @@ static void ggml_check_sycl() try {
+             std::clamp(ggml_sycl_get_env("GGML_SYCL_XMX_GLU_MAX_COLS", GGML_SYCL_XMX_GLU_MAX_COLS), 0, GGML_SYCL_XMX_GLU_MAX_COLS);
+         g_ggml_sycl_prioritize_dmmv = ggml_sycl_get_env("GGML_SYCL_PRIORITIZE_DMMV", 0);
+         g_ggml_sycl_graph_eviction_timeout = ggml_sycl_get_env("GGML_SYCL_GRAPH_EVICTION_TIMEOUT", 10);
++        g_ggml_sycl_graph_variants = ggml_sycl_get_env("GGML_SYCL_GRAPH_VARIANTS", 0);
+         g_ggml_sycl_xmx_gather_types = ggml_sycl_get_env("GGML_SYCL_XMX_GATHER_TYPES", GGML_SYCL_XMX_GATHER_TYPES_DEFAULT);
+         g_ggml_sycl_xmx_gather_shapes = ggml_sycl_get_env("GGML_SYCL_XMX_GATHER_SHAPES", GGML_SYCL_XMX_GATHER_SHAPES_DEFAULT);
+         g_ggml_sycl_dynamic_precision =
+@@ -572,6 +574,7 @@ static void ggml_check_sycl() try {
+ #else
+         GGML_LOG_INFO("  GGML_SYCL_ENABLE_GRAPH: graph disabled by compile flag\n");
+ #endif
++        GGML_LOG_INFO("  GGML_SYCL_GRAPH_VARIANTS: %d\n", g_ggml_sycl_graph_variants);
+ 
+         GGML_LOG_INFO("  GGML_SYCL_ENABLE_OPT: %d\n", g_ggml_sycl_enable_optimize);
+         GGML_LOG_INFO("  GGML_SYCL_XMX_GATHER_TYPES: %d\n", g_ggml_sycl_xmx_gather_types);
+@@ -6862,18 +6865,23 @@ static const void * ggml_sycl_graph_get_key(ggml_cgraph * cgraph) {
+     return cgraph->nodes[0];
+ }
+ 
+-static bool ggml_sycl_graph_update_required(ggml_sycl_graph * graph, ggml_cgraph * cgraph) {
++static bool ggml_sycl_graph_update_required(ggml_sycl_graph * graph, ggml_cgraph * cgraph, bool compare_only = false) {
+     bool res = false;
+ 
+-    if (cgraph->uid != 0 && cgraph->uid == graph->uid) {
++    if (!compare_only && cgraph->uid != 0 && cgraph->uid == graph->uid) {
+         GGML_SYCL_DEBUG("[SYCL-GRAPH] graph id %" PRIu64 " reused\n", cgraph->uid);
+         GGML_ASSERT((int) graph->node_props.size() == cgraph->n_nodes);
+         return false;
+     }
+ 
+-    graph->uid = cgraph->uid;
++    if (!compare_only) {
++        graph->uid = cgraph->uid;
++    }
+ 
+     if ((int) graph->node_props.size() != cgraph->n_nodes) {
++        if (compare_only) {
++            return true;
++        }
+         res = true;
+         graph->node_props.resize(cgraph->n_nodes);
+     }
+@@ -6891,6 +6899,9 @@ static bool ggml_sycl_graph_update_required(ggml_sycl_graph * graph, ggml_cgraph
+         }
+ 
+         if (res || memcmp(&graph->node_props[i], &prop, sizeof(prop)) != 0) {
++            if (compare_only) {
++                return true;
++            }
+             graph->node_props[i] = prop;
+             res = true;
+         }
+@@ -6899,6 +6910,51 @@ static bool ggml_sycl_graph_update_required(ggml_sycl_graph * graph, ggml_cgraph
+     return res;
+ }
+ 
++// Select by the full saved properties, never by uid or node pointer alone.
++static ggml_sycl_graph * ggml_sycl_graph_variant(ggml_backend_sycl_context * ctx, ggml_cgraph * cgraph) {
++    const int64_t now = ggml_time_us();
++    const int64_t timeout = g_ggml_sycl_graph_eviction_timeout * 1'000'000LL;
++    if (now - ctx->last_graph_eviction_sweep >= timeout / 2) {
++        ctx->last_graph_eviction_sweep = now;
++        for (auto it = ctx->sycl_graph_variants.begin(); it != ctx->sycl_graph_variants.end(); ) {
++            auto & variants = it->second;
++            variants.erase(std::remove_if(variants.begin(), variants.end(), [now, timeout](const auto & graph) {
++                return now - graph->last_used_time >= timeout;
++            }), variants.end());
++            if (variants.empty()) {
++                it = ctx->sycl_graph_variants.erase(it);
++            } else {
++                ++it;
++            }
++        }
++    }
++
++    auto & variants = ctx->sycl_graph_variants[ggml_sycl_graph_get_key(cgraph)];
++    ggml_sycl_graph * selected = nullptr;
++    for (auto & variant : variants) {
++        if (!ggml_sycl_graph_update_required(variant.get(), cgraph, true)) {
++            selected = variant.get();
++            break;
++        }
++    }
++    if (!selected) {
++        if (variants.size() >= static_cast<size_t>(g_ggml_sycl_graph_variants)) {
++            auto lru = std::min_element(variants.begin(), variants.end(), [](const auto & a, const auto & b) {
++                return a->variant_use < b->variant_use;
++            });
++            variants.erase(lru);
++        }
++        variants.push_back(std::make_unique<ggml_sycl_graph>());
++        selected = variants.back().get();
++        // Save properties even for incompatible graphs, but retain the normal first warmup call.
++        ggml_sycl_graph_update_required(selected, cgraph);
++        selected->variant_fresh = true;
++    }
++    selected->last_used_time = now;
++    selected->variant_use = ++ctx->graph_variant_use_counter;
++    return selected;
++}
++
+ // Reports if ggml_sycl_mul_mat() gives this node to oneDNN. oneDNN chains the submission on events
+ // made before recording started, which SYCL graphs do not allow.
+ static bool mul_mat_uses_onednn(int device, ggml_tensor * dst) {
+@@ -7045,7 +7101,8 @@ static ggml_status ggml_backend_sycl_graph_compute(ggml_backend_t backend, ggml_
+                 sycl_ctx->graph_compatible = false;
+             }
+         } else {
+-            graph = sycl_ctx->sycl_graph(ggml_sycl_graph_get_key(cgraph));
++            graph = g_ggml_sycl_graph_variants > 0 ? ggml_sycl_graph_variant(sycl_ctx, cgraph) :
++                                                     sycl_ctx->sycl_graph(ggml_sycl_graph_get_key(cgraph));
+ 
+             // The nodes of a cgraph do not change while its uid does not, so the compatibility scan
+             // runs again only when the uid changes. A uid of 0 means it is not set.
+@@ -7067,7 +7124,8 @@ static ggml_status ggml_backend_sycl_graph_compute(ggml_backend_t backend, ggml_
+         }
+     }
+     if (use_sycl_graph) {
+-        const bool properties_changed = ggml_sycl_graph_update_required(graph, cgraph);
++        const bool properties_changed = ggml_sycl_graph_update_required(graph, cgraph) || graph->variant_fresh;
++        graph->variant_fresh = false;
+         bool replay_graph = false;
+         bool sycl_graph_update_required = false;
+ 
