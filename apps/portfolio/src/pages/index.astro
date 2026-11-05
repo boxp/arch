@@ -8,7 +8,7 @@ import { Image } from 'astro:assets';
 import profile from '../content/profile.json';
 // 本人プロフィール画像: GitHub アカウント boxp のアバター（https://github.com/boxp、原寸 460x460）。再生成・改変はしない。
 import avatar from '../assets/boxp-github-avatar.jpg';
-import { diagrams } from '../lib/diagrams';
+import { THUMBNAIL_HEIGHT, THUMBNAIL_WIDTH, diagrams } from '../lib/diagrams';
 
 const byDateDesc = (a: string, b: string) => b.localeCompare(a);
 
@@ -183,10 +183,29 @@ const formatPeriod = (start: string, end: string | null) => `${start.replace('-'
     <Section id="infrastructure" title="Infrastructure" subtitle="自宅 Kubernetes クラスタ lolice と周辺インフラを可視化した図です。">
       <ul class="grid gap-4 sm:grid-cols-2">
         {diagrams.map((d) => (
-          <li class="rounded-lg border border-line p-5">
-            <h3 class="font-semibold"><a href={`/${d.slug}`} class="hover:text-accent">{d.title}</a></h3>
-            <p class="mt-2 text-sm leading-relaxed text-fg/80">{d.lead}</p>
-            {d.access === 'owner-only' && <p class="mt-3 text-xs text-amber-200">本人限定・未公開（stage のみ）</p>}
+          <li class="h-full">
+            <a
+              href={d.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={`${d.title} を新しいタブで開く`}
+              class="group block h-full overflow-hidden rounded-lg border border-line bg-panel transition hover:border-accent focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-accent"
+            >
+              <img
+                src={d.thumbnail}
+                alt={d.thumbnailAlt}
+                width={THUMBNAIL_WIDTH}
+                height={THUMBNAIL_HEIGHT}
+                loading="lazy"
+                decoding="async"
+                class="block h-auto w-full border-b border-line"
+              />
+              <span class="block p-5">
+                <span class="block font-semibold group-hover:text-accent">{d.title}</span>
+                <span class="mt-2 block text-sm leading-relaxed text-fg/80">{d.lead}</span>
+                {d.access === 'owner-only' && <span class="mt-3 block text-xs text-amber-200">本人限定・未公開（stage のみ）</span>}
+              </span>
+            </a>
           </li>
         ))}
       </ul>

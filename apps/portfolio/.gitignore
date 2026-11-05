@@ -23,3 +23,6 @@ pnpm-debug.log*
 # jetbrains setting folder
 .idea/
 .wrangler/
+
+# 全体図のサムネイル。匿名公開が未承認なので public repo に入れない。stage の deploy が環境 secret から復元する。
+public/diagrams/lolice-architecture.webp
