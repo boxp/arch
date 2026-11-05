@@ -321,7 +321,10 @@
         (doseq [sub promoted-dirs]
           (mirror-dir! (fs/path src sub) (fs/path dst sub)))
         (fs/copy (fs/path src html) (str (fs/path dst html) ".tmp") {:replace-existing true})
-        (fs/move (str (fs/path dst html) ".tmp") (fs/path dst html) {:replace-existing true :atomic-move true})))
+        (fs/move (str (fs/path dst html) ".tmp") (fs/path dst html) {:replace-existing true :atomic-move true}))
+      ;; 印は途中で止まった間だけ残す。残すと次の再実行が再開と見なし、正本の別作業を上書きする。
+      (when (get-in (manifest ticket) [:promoting id])
+        (save-manifest! ticket (update (manifest ticket) :promoting dissoc id))))
     (let [previews (fs/path (vault) "Projects/lolice-infrastructure-architecture/previews/portfolio-thumbnails")]
       (fs/create-dirs previews)
       (doseq [n ["lolice-lineage.webp" "lolice-architecture.webp"]]

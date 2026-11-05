@@ -1,6 +1,7 @@
 #!/usr/bin/env bb
 ;; 公開 IaC から図に関わる構造の事実だけを取り出し、受入済みの基準と比べる。
-;; 値、image tag、digest、version は事実に含めない。renovate の更新だけでは差分にならない。
+;; 設定値、image tag、digest、version は事実に含めない。renovate の更新だけでは差分にならない。
+;; Service の selector と Ingress の backend は接続先そのものなので事実に含める。
 ;; usage:
 ;;   iac_facts.bb collect --arch DIR --lolice DIR --rules FILE --out FACTS.json
 ;;   iac_facts.bb compare --facts FACTS.json --baseline BASE.json --rules FILE --out RESULT.json
@@ -53,6 +54,29 @@
   (or (get-in doc [:spec :template :spec])
       (get-in doc [:spec :jobTemplate :spec :template :spec])))
 
+(defn backend-target
+  "Ingress の backend の接続先。v1 の service、resource と、古い serviceName の形を読む。"
+  [backend]
+  (let [svc (:service backend)
+        res (:resource backend)]
+    (cond
+      svc (str (:name svc) ":" (or (get-in svc [:port :number]) (get-in svc [:port :name]) "-"))
+      res (str "resource/" (:kind res) "/" (:name res))
+      (:serviceName backend) (str (:serviceName backend) ":" (or (:servicePort backend) "-")))))
+
+(defn ingress-backend-facts [id doc]
+  (let [fact (fn [host path backend]
+               (when-let [target (backend-target backend)]
+                 (str "lolice:ingress-backend:" id ":" host ":" path "->" target)))
+        spec (:spec doc)]
+    (remove nil?
+            (concat
+             (when-let [b (or (:defaultBackend spec) (:backend spec))]
+               [(fact "*" "*" b)])
+             (for [r (:rules spec)
+                   p (get-in r [:http :paths])]
+               (fact (or (:host r) "*") (or (:path p) "/") (:backend p)))))))
+
 (defn manifest-facts [doc]
   (let [kind (:kind doc)
         ns* (or (get-in doc [:metadata :namespace]) "-")
@@ -66,9 +90,15 @@
              :when (:image c)]
          (str "lolice:image:" kind "/" id ":" (image-repo (:image c))))
        (when (= "Service" kind)
-         (for [p (get-in doc [:spec :ports])] (str "lolice:svc-port:" id ":" (:port p))))
+         (concat
+          (for [p (get-in doc [:spec :ports])] (str "lolice:svc-port:" id ":" (:port p)))
+          (for [[k v] (get-in doc [:spec :selector])]
+            ;; app.kubernetes.io/name のような key は name だと接頭辞が落ちるので、keyword の全体を使う
+            (str "lolice:svc-selector:" id ":" (subs (str k) 1) "=" v))))
        (when (= "Ingress" kind)
-         (for [r (get-in doc [:spec :rules]) :when (:host r)] (str "arch:host:" (:host r))))
+         (concat
+          (for [r (get-in doc [:spec :rules]) :when (:host r)] (str "arch:host:" (:host r)))
+          (ingress-backend-facts id doc)))
        (when (= "Application" kind)
          (for [s (or (get-in doc [:spec :sources]) (some-> (get-in doc [:spec :source]) vector))]
            (str "lolice:argocd-source:" id ":" (:repoURL s) ":" (or (:chart s) (:path s)))))))))

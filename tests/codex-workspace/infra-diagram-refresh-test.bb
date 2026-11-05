@@ -196,7 +196,22 @@
         (let [r (promote s)] (is (zero? (:exit r)) (:err r)))
         (is (= "{:new true}" (slurp (str v "data/a.edn"))))
         (is (= "new" (slurp (str v "lolice-lineage.html"))))
-        (is (not (fs/exists? (str v "previous"))))))))
+        (is (not (fs/exists? (str v "previous"))))
+        (is (empty? (:promoting (edn/read-string (slurp f)))) "再開の完了で印を消す")))
+    (testing "promote の完了後に正本を変えた作業は、再実行で上書きしない"
+      (doseq [[label prepare!] {"通常の完了" (fn [_ _] nil)
+                                "再開での完了" (fn [s f] (spit f (pr-str (assoc-in (edn/read-string (slurp f)) [:promoting "lineage"] true))))}]
+        (testing label
+          (let [s (publish-sandbox) v (str (:vault s) lineage) f (str (:st s) "/manifest.edn")]
+            (built s)
+            (prepare! s f)
+            (let [r (promote s)] (is (zero? (:exit r)) (:err r)))
+            (is (empty? (:promoting (edn/read-string (slurp f)))))
+            (spit (str v "data/a.edn") "other work")
+            (let [r (promote s)]
+              (is (not (zero? (:exit r))))
+              (is (str/includes? (:err r) "changed since stage")))
+            (is (= "other work" (slurp (str v "data/a.edn"))))))))))
 (deftest collect-live-stays-next-to-output
   (let [d (str (fs/create-temp-dir)) bin (str d "/bin") tmpdir (str d "/tmp") out-dir (str d "/out") out (str out-dir "/live.json") seen (str d "/seen")
         env {"PATH" (str bin ":" (System/getenv "PATH")) "TMPDIR" tmpdir "OUT_DIR" out-dir "SEEN" seen
@@ -273,6 +288,40 @@
       (spit f "kohako.exe ゲーム参加者 openai-codex") (is (zero? (:exit (check))))
       (spit f "kohako.exe ゲーム参加者 openai-codex ooedo") (is (not (zero? (:exit (check)))))
       (spit f "kohako.exe ゲーム参加者") (is (not (zero? (:exit (check))))))))
+(deftest connection-only-changes
+  (let [d (str (fs/create-temp-dir)) arch (str d "/arch") lol (str d "/lol") r (str d "/rules.edn")
+        facts (str d "/facts.json") base (str d "/base.json") out (str d "/out.json") tool (str refresh-dir "/iac_facts.bb")
+        manifest (str lol "/argoproj/a.yaml")
+        svc (fn [selector] (str "apiVersion: v1\nkind: Service\nmetadata:\n  name: web\n  namespace: n\nspec:\n  selector:\n    app.kubernetes.io/name: " selector "\n  ports:\n    - port: 80\n"))
+        ingress (fn [host svc-name port] (str "apiVersion: networking.k8s.io/v1\nkind: Ingress\nmetadata:\n  name: web\n  namespace: n\nspec:\n  rules:\n    - host: " host "\n      http:\n        paths:\n          - path: /\n            backend:\n              service:\n                name: " svc-name "\n                port:\n                  " port "\n"))
+        collect! (fn [path] (is (zero? (:exit (run {} "bb" tool "collect" "--arch" arch "--lolice" lol "--rules" r "--out" path)))))
+        compared (fn [] (collect! facts)
+                   (run {} "bb" tool "compare" "--facts" facts "--baseline" base "--rules" r "--out" out)
+                   (read-json out))]
+    (doseq [x [arch lol]] (fs/create-dirs x) (run {} "git" "init" "-q" x))
+    (fs/create-dirs (str lol "/argoproj"))
+    (spit r "{:exclude-fact-patterns [] :max-removed-ratio 1 :min-iac-facts 0}")
+    (spit manifest (str (svc "one") "---\n" (ingress "a.b0xp.io" "web" "number: 80")))
+    (run {} "git" "-C" lol "add" ".")
+    (collect! base)
+    (is (some #{"lolice:svc-selector:n/web:app.kubernetes.io/name=one"} (:facts (read-json base))) "key の接頭辞を落とさない")
+    (is (some #{"lolice:ingress-backend:n/web:a.b0xp.io:/->web:80"} (:facts (read-json base))))
+    (testing "同じ入力は無差分" (is (= "no-change" (:status (compared)))))
+    (testing "Service の selector だけの変更を検出する"
+      (spit manifest (str (svc "two") "---\n" (ingress "a.b0xp.io" "web" "number: 80")))
+      (let [c (compared)]
+        (is (= "changed" (:status c)))
+        (is (= ["lolice:svc-selector:n/web:app.kubernetes.io/name=two"] (:added c)))))
+    (testing "Ingress の backend の service だけの変更を検出する"
+      (spit manifest (str (svc "one") "---\n" (ingress "a.b0xp.io" "other" "number: 80")))
+      (let [c (compared)]
+        (is (= "changed" (:status c)))
+        (is (= ["lolice:ingress-backend:n/web:a.b0xp.io:/->other:80"] (:added c)))))
+    (testing "Ingress の backend の port だけの変更を検出する"
+      (spit manifest (str (svc "one") "---\n" (ingress "a.b0xp.io" "web" "name: http")))
+      (let [c (compared)]
+        (is (= "changed" (:status c)))
+        (is (= ["lolice:ingress-backend:n/web:a.b0xp.io:/->web:http"] (:added c)))))))
 (deftest command-runner
   (let [s (sandbox) d (:d s) cron (str d "/cron") selector (str repo "/docker/codex-workspace/cron/select-codex-cron-job.bb") script (str repo "/docker/codex-workspace/cron/run-codex-cron.sh") env (merge (:env s) {"CODEX_CRON_ROOT" cron "CODEX_CRON_SELECTOR" selector "CODEX_CRON_RUN_ID" "test"})]
     (fs/create-dirs cron)
