@@ -649,6 +649,15 @@ test_digest_claim_waits_for_a_crossing_send() {
   day_tick "${grace[@]}" CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:36:00Z"
   [[ "$(digest_count)" -eq 1 ]] || fail "the report must reach the digest after the grace"
   assert_file_contains "${CASE_STATE}/outbox/pending/quietone.edn" ':digest-id '
+
+  # A newer item inside its grace must not hold back a report that is already due.
+  new_case
+  seed_event "${CASE_STATE}" due BOXP-901 :notify-pending "${at}" ':digest-claimed-at "2026-11-04T18:00:00Z"'
+  seed_event "${CASE_STATE}" fresh BOXP-902 :notify-pending "${at}"
+  day_tick "${grace[@]}" CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:06:00Z"
+  [[ "$(digest_count)" -eq 1 ]] || fail "a due report must not wait for a newer item"
+  assert_file_contains "${CASE_STATE}/outbox/pending/due.edn" ':digest-id '
+  assert_file_not_contains "${CASE_STATE}/outbox/pending/fresh.edn" ':digest-id '
 }
 
 test_marker_summary_cannot_forge_result() {

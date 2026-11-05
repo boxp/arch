@@ -661,11 +661,12 @@
             pending (filter #(and (= :notify-pending (:status %)) (not (digest? %))) events)]
         (doseq [item pending :let [id (get claimed (:event-id item))] :when (and id (nil? (:digest-id item)))]
           (write-event! (pending-dir) (-> item (dissoc ::path) (assoc :digest-id id))))
-        (let [items (mapv claim-for-digest! (remove #(or (:digest-id %) (get claimed (:event-id %))) pending))]
-          ;; All items wait out their grace together, so one morning stays one digest.
-          (if (or (empty? items)
-                  (some #(< (seconds-since (:digest-claimed-at %)) (digest-claim-grace-seconds)) items))
-            0
+        ;; A morning's items are claimed on the same tick, so they stay one digest. A later
+        ;; item waits for the next one: waiting for all could starve held reports.
+        (let [items (->> (remove #(or (:digest-id %) (get claimed (:event-id %))) pending)
+                         (mapv claim-for-digest!)
+                         (filter #(>= (seconds-since (:digest-claimed-at %)) (digest-claim-grace-seconds))))]
+          (if (empty? items) 0
               (let [ordered (sort-by (juxt :created-at :event-id) items)
                     groups (vals (group-by :ticket-id ordered))
                     entries (->> groups (map (fn [xs] (let [xs (sort-by (juxt :created-at :event-id) xs) newest (last xs)]
