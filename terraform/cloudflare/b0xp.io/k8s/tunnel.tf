@@ -23,6 +23,10 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "k8s_tunnel" {
         service  = "http://codex-task-board-dashboard.codex-workspace.svc.cluster.local:8080"
       },
       {
+        hostname = cloudflare_dns_record.lolice_lineage.name
+        service  = "http://lolice-lineage.codex-workspace.svc.cluster.local:8091"
+      },
+      {
         service = "http_status:404"
       },
     ]
