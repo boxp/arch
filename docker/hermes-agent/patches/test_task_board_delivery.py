@@ -78,14 +78,14 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
             self.assertTrue((await self.send(delivery.NOTICE)).success)
             self.assertFalse(self.calls)
             self.assertFalse(list(self.root.glob("*.json")))
-            path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+            path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
             self.assertEqual(json.loads(path.read_text())["state"], "quiet-held")
         with patch.object(delivery, "clock", return_value=datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc)):
             self.assertTrue((await self.send("report")).success)
             self.assertEqual(self.calls, ["report"])
 
     def vault_state(self):
-        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
         return json.loads(path.read_text())["state"]
 
     def quiet(self):
@@ -131,7 +131,7 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
     async def test_daytime_send_writes_vault_receipt_for_every_event(self):
         self.note("notified")
         self.assertTrue((await self.send("report")).success)
-        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
         self.assertEqual(json.loads(path.read_text())["state"], "sent")
 
     async def test_deferred_and_continued_are_proven_silence(self):
@@ -143,7 +143,7 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.calls)
 
     def policy(self, quiet_hours, timezone_name):
-        path = self.vault.parent / "Projects/task-board-events/quiet-policy.json"
+        path = self.vault.parent / "Projects/task-board-events/quiet-policy.md"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps({"quiet_hours": quiet_hours, "timezone": timezone_name}))
 
@@ -162,14 +162,14 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(delivery.quiet_now(self.vault))
         self.policy("2-9", "Not/AZone")
         self.assertTrue(delivery.quiet_now(self.vault))
-        (self.vault.parent / "Projects/task-board-events/quiet-policy.json").write_text("{broken")
+        (self.vault.parent / "Projects/task-board-events/quiet-policy.md").write_text("{broken")
         with patch.dict(os.environ, {"CODEX_TASK_BOARD_EVENT_QUIET_HOURS": "off"}):
             self.assertFalse(delivery.quiet_now(self.vault))
 
     def test_digest_silence_writes_receipt_only_for_silent_proof(self):
         event = "BOXP-999-digest-20261030T120000Z-abcdef12"
         source = NS(platform=NS(value="webhook"), chat_id="webhook:task-board:" + event)
-        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (event + ".json")
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (event + ".md")
         self.note("deferred", event=event)
         delivery.shape(source, {}, "[SILENT]", True, self.vault)
         self.assertFalse(path.exists())
@@ -179,7 +179,7 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(json.loads(path.read_text())["state"], "silent")
 
     async def test_deferred_silence_writes_receipt_but_continued_does_not(self):
-        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
         self.note("continued")
         self.assertTrue((await self.send("[SILENT]")).success)
         self.assertFalse(path.exists())
@@ -190,13 +190,24 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(self.calls)
 
     async def test_reply_after_deferred_marker_is_held_for_the_digest(self):
-        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
         self.note("deferred")
         with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)):
             self.assertFalse(delivery.quiet_now(self.vault))
             self.assertTrue((await self.send("report")).success)
         self.assertFalse(self.calls)
         self.assertEqual(json.loads(path.read_text())["state"], "quiet-held")
+
+    async def test_reply_after_digest_claim_is_held(self):
+        directory = self.vault.parent / "Projects/task-board-events"
+        (directory / "delivery-claims").mkdir(parents=True)
+        (directory / "delivery-claims" / (EVENT + ".md")).write_text("{}")
+        self.note("notified")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)):
+            self.assertFalse(delivery.quiet_now(self.vault))
+            self.assertTrue((await self.send("report")).success)
+        self.assertFalse(self.calls)
+        self.assertEqual(json.loads((directory / "delivery-receipts" / (EVENT + ".md")).read_text())["state"], "quiet-held")
 
     def test_digest_silence_keeps_earlier_egress_evidence(self):
         event = "BOXP-999-digest-20261030T120000Z-abcdef12"
@@ -205,9 +216,9 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         directory.mkdir(parents=True)
         self.note("silent", event=event)
         for state in ["uncertain", "sent"]:
-            (directory / (event + ".json")).write_text(json.dumps({"event": event, "state": state}))
+            (directory / (event + ".md")).write_text(json.dumps({"event": event, "state": state}))
             delivery.shape(source, {}, "[SILENT]", True, self.vault)
-            self.assertEqual(json.loads((directory / (event + ".json")).read_text())["state"], state)
+            self.assertEqual(json.loads((directory / (event + ".md")).read_text())["state"], state)
 
     def test_digest_silence_respects_a_local_uncertain_receipt(self):
         event = "BOXP-999-digest-20261030T120000Z-abcdef12"
@@ -216,10 +227,10 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         local = self.root / (hashlib.sha256(event.encode()).hexdigest() + ".json")
         local.write_text(json.dumps({"event": event, "state": "uncertain"}))
         delivery.digest_silence_receipt(self.vault, event, "silent", self.root)
-        self.assertFalse((directory / (event + ".json")).exists())
+        self.assertFalse((directory / (event + ".md")).exists())
         local.unlink()
         delivery.digest_silence_receipt(self.vault, event, "silent", self.root)
-        self.assertEqual(json.loads((directory / (event + ".json")).read_text())["state"], "silent")
+        self.assertEqual(json.loads((directory / (event + ".md")).read_text())["state"], "silent")
 
     def test_digest_identity(self):
         event = "BOXP-999-digest-20261030T120000Z-abcdef12"

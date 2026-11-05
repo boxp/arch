@@ -3,6 +3,8 @@
 Only the authenticated task-board adapter's canonical chat identity is eligible.
 This module never modifies Notes, replays work, or relaxes gateway authorization.
 It writes metadata-only delivery receipts alongside the vault Tickets directory.
+They are .md notes because the dispatcher reads them from another replica of the
+vault, and Obsidian Sync does not carry .json files.
 """
 from __future__ import annotations
 
@@ -115,7 +117,7 @@ def quiet_policy(vault=VAULT):
     spec = os.getenv("CODEX_TASK_BOARD_EVENT_QUIET_HOURS", "2-9")
     zone = os.getenv("CODEX_TASK_BOARD_EVENT_TIMEZONE", "Asia/Tokyo")
     try:
-        policy = json.loads((Path(vault).parent / "Projects/task-board-events/quiet-policy.json").read_text())
+        policy = json.loads((Path(vault).parent / "Projects/task-board-events/quiet-policy.md").read_text())
         if isinstance(policy["quiet_hours"], str) and isinstance(policy["timezone"], str):
             return policy["quiet_hours"], policy["timezone"]
     except (OSError, ValueError, KeyError, TypeError):
@@ -139,6 +141,11 @@ def quiet_now(vault=VAULT):
     return start <= hour < end if start <= end else hour >= start or hour < end
 
 
+def digest_claimed(vault, event):
+    """The dispatcher moved this event's report into the morning digest."""
+    return (Path(vault).parent / "Projects/task-board-events/delivery-claims" / (event + ".md")).exists()
+
+
 def vault_receipt(vault, event, state, classification):
     try:
         directory = Path(vault).parent / "Projects/task-board-events/delivery-receipts"
@@ -151,7 +158,7 @@ def vault_receipt(vault, event, state, classification):
                            "updated_at": clock().isoformat()}, stream)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.replace(temporary, directory / (event + ".json"))
+            os.replace(temporary, directory / (event + ".md"))
         finally:
             if os.path.exists(temporary):
                 os.unlink(temporary)
@@ -169,7 +176,7 @@ def receipt_shows_egress(vault, event, root=None):
             root = get_hermes_home() / "task-board-delivery-receipts"
         except Exception:
             root = None
-    paths = [Path(vault).parent / "Projects/task-board-events/delivery-receipts" / (event + ".json")]
+    paths = [Path(vault).parent / "Projects/task-board-events/delivery-receipts" / (event + ".md")]
     if root is not None:
         paths.append(Path(root) / (hashlib.sha256(event.encode()).hexdigest() + ".json"))
     for path in paths:
@@ -242,7 +249,8 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 return SendResult(success=False, error=f"Delivery in flight; reconcile event={event}")
             # A deferred event belongs to the digest: a reply after that marker, however late,
             # is held like a night send so the same report never goes out twice.
-            quiet = quiet_now(vault) or (proof == "deferred" and "-digest-" not in event)
+            quiet = (quiet_now(vault) or digest_claimed(vault, event)
+                     or (proof == "deferred" and "-digest-" not in event))
             # Reconcile before any quiet hold: a hold must not overwrite the evidence of
             # an earlier egress. While quiet, a report's receipt also answers for a notice.
             report = root / (key + ".json")

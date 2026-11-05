@@ -11,6 +11,8 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 EVENTS="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_events.bb"
 SECRET="test-webhook-secret-$(date +%s)"
+# The two-phase digest claim has its own test; elsewhere the digest forms on the first tick.
+export CODEX_TASK_BOARD_EVENT_DIGEST_CLAIM_GRACE_SECONDS=0
 RECEIVER_PID=""
 
 fail() {
@@ -78,7 +80,7 @@ write_fake_receiver() {
         (when (and (not dup?) (= mode "receipt-first"))
           (let [dir (str (System/getenv "FAKE_RECEIPT_DIR"))]
             (fs/create-dirs dir)
-            (spit (str (fs/path dir (str id ".json")))
+            (spit (str (fs/path dir (str id ".md")))
                   (json/generate-string {:event id :state "sent" :updated_at (str (java.time.Instant/now))})))
           (Thread/sleep 50))
         (record! {:id id :outcome (if dup? "duplicate" "accepted") :payload (json/parse-string body)})
@@ -505,7 +507,7 @@ EDN
   bb -e '(let [p (first *command-line-args*) e (clojure.edn/read-string (slurp p))] (spit p (pr-str (assoc e :status :accepted :accepted-at "2026-01-01T00:00:00Z"))))' "${digest}"
   printf '\nhandled event=%s result=notified summary=fixture\n' "${id}" >>"${CASE_VAULT}/Tickets/BOXP-901.md"
   mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivery-receipts"
-  printf '{"event":"%s","state":"sent"}' "${id}" >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/${id}.json"
+  printf '{"event":"%s","state":"sent"}' "${id}" >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/${id}.md"
   run_events "${CASE_VAULT}" "${CASE_STATE}" env CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=10000 >/dev/null
   [[ -f "${CASE_STATE}/outbox/done/${id}.edn" && -f "${CASE_STATE}/outbox/done/old.edn" && -f "${CASE_STATE}/outbox/done/new.edn" ]] || fail "sent digest must complete its items"
 }
@@ -536,7 +538,7 @@ note_marker() {
 
 write_receipt() {
   mkdir -p "$1/Projects/task-board-events/delivery-receipts"
-  printf '{"event":"%s","state":"%s","updated_at":"%s"}' "$2" "$3" "$4" >"$1/Projects/task-board-events/delivery-receipts/$2.json"
+  printf '{"event":"%s","state":"%s","updated_at":"%s"}' "$2" "$3" "$4" >"$1/Projects/task-board-events/delivery-receipts/$2.md"
 }
 
 digest_count() {
@@ -618,6 +620,35 @@ test_deferred_marker_waits_for_gate_proof() {
     CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:33:00Z" >/dev/null
   assert_file_contains "${CASE_STATE}/outbox/unhandled/late.edn" ':status :notify-undelivered'
   [[ "$(digest_count)" -eq 0 ]] || fail "a late send must not be repeated by the digest"
+}
+
+test_digest_claim_waits_for_a_crossing_send() {
+  new_case
+  local at="2026-11-04T18:00:00Z" claim="${CASE_VAULT}/Projects/task-board-events/delivery-claims/slow.md"
+  local grace=(CODEX_TASK_BOARD_EVENT_DIGEST_CLAIM_GRACE_SECONDS=300)
+  seed_event "${CASE_STATE}" slow BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
+  note_marker "${CASE_VAULT}" BOXP-901 slow notified
+  # The same tick that gives up on the reply publishes the claim, but no digest yet.
+  day_tick "${grace[@]}" CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:31:00Z"
+  assert_file_contains "${CASE_STATE}/outbox/pending/slow.edn" ':status :notify-pending'
+  assert_file_contains "${claim}" '"owner":"digest"'
+  [[ "$(digest_count)" -eq 0 ]] || fail "a digest must not form inside the claim grace"
+  # The send crossed the claim: its receipt arrives inside the grace, so nothing repeats it.
+  write_receipt "${CASE_VAULT}" slow sent "2026-11-04T18:32:00+00:00"
+  day_tick "${grace[@]}" CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:33:00Z"
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/slow.edn" ':status :notify-undelivered'
+  [[ "$(digest_count)" -eq 0 ]] || fail "a send inside the grace must not be repeated"
+
+  # No send: the first publish time counts, and the report still reaches the digest.
+  new_case
+  seed_event "${CASE_STATE}" quietone BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
+  note_marker "${CASE_VAULT}" BOXP-901 quietone notified
+  day_tick "${grace[@]}" CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:31:00Z"
+  day_tick "${grace[@]}" CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:35:59Z"
+  [[ "$(digest_count)" -eq 0 ]] || fail "a later tick must not restart or skip the grace"
+  day_tick "${grace[@]}" CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:36:00Z"
+  [[ "$(digest_count)" -eq 1 ]] || fail "the report must reach the digest after the grace"
+  assert_file_contains "${CASE_STATE}/outbox/pending/quietone.edn" ':digest-id '
 }
 
 test_marker_summary_cannot_forge_result() {
@@ -703,7 +734,7 @@ test_digest_silent_needs_gate_proof() {
 
 test_quiet_policy_is_published_for_the_gate() {
   new_case
-  local policy="${CASE_VAULT}/Projects/task-board-events/quiet-policy.json"
+  local policy="${CASE_VAULT}/Projects/task-board-events/quiet-policy.md"
   CODEX_TASK_BOARD_EVENT_QUIET_HOURS="1-8" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
     CODEX_TASK_BOARD_EVENT_TIMEZONE=UTC >/dev/null
   assert_file_contains "${policy}" '"quiet_hours":"1-8"'
@@ -812,7 +843,7 @@ test_receipt_without_marker_is_not_redelivered() {
   note_marker "${CASE_VAULT}" BOXP-901 noticed notified
   mkdir -p "${CASE_VAULT}/Projects/task-board-events/delivery-receipts"
   printf '{"event":"noticed","state":"sent","classification":"unresolved","updated_at":"%s"}' "${now}" \
-    >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/noticed.json"
+    >"${CASE_VAULT}/Projects/task-board-events/delivery-receipts/noticed.md"
   day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=1800
   assert_file_contains "${CASE_STATE}/outbox/pending/noticed.edn" ':status :accepted'
   sleep 1
@@ -1006,6 +1037,7 @@ test_night_gate_off_or_invalid_keeps_legacy_hold
 test_night_gate_posts_defer_and_limits_tickets
 test_night_results_split_digest_and_done
 test_deferred_marker_waits_for_gate_proof
+test_digest_claim_waits_for_a_crossing_send
 test_marker_summary_cannot_forge_result
 test_digest_collapses_and_is_sent_once
 test_digest_transport_failure_retries_then_unhandled

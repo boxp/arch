@@ -294,10 +294,13 @@
   (when-let [[_ start end] (re-matches #"(\d{1,2})-(\d{1,2})" (quiet-spec))]
     [(Long/parseLong start) (Long/parseLong end)]))
 
-;; The Hermes send gate runs in another container, so this dispatcher publishes
-;; its effective window as the single source of truth for that gate.
+;; The Hermes send gate runs in another container with its own replica of the
+;; vault, kept by Obsidian Sync. Only notes cross that boundary (.json is not in
+;; the synced file types), so every file shared with the gate is a .md note with
+;; one writer, and nothing here may rely on atomicity across the two replicas.
+;; This dispatcher publishes its effective window as the source of truth for the gate.
 (defn publish-quiet-policy! []
-  (let [path (fs/path (vault) "Projects/task-board-events/quiet-policy.json")
+  (let [path (fs/path (vault) "Projects/task-board-events/quiet-policy.md")
         body (json/generate-string {:quiet_hours (quiet-spec) :timezone (event-timezone)})]
     (when-not (= body (try (slurp (str path)) (catch Exception _ nil)))
       (fs/create-dirs (fs/parent path))
@@ -503,7 +506,7 @@
   that delivery says nothing about what it did. Events accepted before
   :delivery-started-at existed fall back to :accepted-at."
   [event]
-  (try (let [r (json/parse-string (slurp (str (fs/path (vault) "Projects/task-board-events/delivery-receipts" (str (:event-id event) ".json")))) true)
+  (try (let [r (json/parse-string (slurp (str (fs/path (vault) "Projects/task-board-events/delivery-receipts" (str (:event-id event) ".md")))) true)
              stale? (and (:updated_at r)
                          (.isBefore (.toInstant (OffsetDateTime/parse (:updated_at r)))
                                     (Instant/parse (or (:delivery-started-at event) (:accepted-at event)))))]
@@ -623,6 +626,32 @@
             {:handled 0 :waiting 0 :redelivered 0 :unhandled 0}
             (filter #(= :accepted (:status %)) events))))
 
+(defn digest-claim-grace-seconds [] (env-long "CODEX_TASK_BOARD_EVENT_DIGEST_CLAIM_GRACE_SECONDS" "300"))
+
+(defn publish-digest-claim!
+  "Tell the gate this event's report now belongs to the digest, so a late reply is
+  held instead of sent. The replicas allow no exclusive claim: a send that crossed
+  this note in flight shows up as a receipt during the grace period and takes the
+  item out of the digest. Only a sync stalled longer than the grace can still send
+  twice, and that never loses the report."
+  [event-id]
+  (let [path (fs/path (vault) "Projects/task-board-events/delivery-claims" (str event-id ".md"))]
+    (fs/create-dirs (fs/parent path))
+    (let [temporary (fs/create-temp-file {:dir (fs/parent path) :prefix ".claim-"})]
+      (try (spit (str temporary) (json/generate-string {:event event-id :owner "digest"}))
+           (fs/move temporary path {:replace-existing true :atomic-move true})
+           (finally (fs/delete-if-exists temporary))))))
+
+(defn claim-for-digest!
+  "Returns the item with its claim published, keeping the first publish time."
+  [item]
+  (if (:digest-claimed-at item)
+    item
+    (let [claimed (assoc item :digest-claimed-at (now-str))]
+      (publish-digest-claim! (:event-id item))
+      (write-event! (pending-dir) (dissoc claimed ::path))
+      claimed)))
+
 (defn build-digest! []
   (if (quiet-now?) 0
       (let [events (vec (all-events))
@@ -632,8 +661,11 @@
             pending (filter #(and (= :notify-pending (:status %)) (not (digest? %))) events)]
         (doseq [item pending :let [id (get claimed (:event-id item))] :when (and id (nil? (:digest-id item)))]
           (write-event! (pending-dir) (-> item (dissoc ::path) (assoc :digest-id id))))
-        (let [items (remove #(or (:digest-id %) (get claimed (:event-id %))) pending)]
-          (if (empty? items) 0
+        (let [items (mapv claim-for-digest! (remove #(or (:digest-id %) (get claimed (:event-id %))) pending))]
+          ;; All items wait out their grace together, so one morning stays one digest.
+          (if (or (empty? items)
+                  (some #(< (seconds-since (:digest-claimed-at %)) (digest-claim-grace-seconds)) items))
+            0
               (let [ordered (sort-by (juxt :created-at :event-id) items)
                     groups (vals (group-by :ticket-id ordered))
                     entries (->> groups (map (fn [xs] (let [xs (sort-by (juxt :created-at :event-id) xs) newest (last xs)]

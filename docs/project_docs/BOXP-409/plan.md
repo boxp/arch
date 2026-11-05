@@ -58,8 +58,15 @@ merge すると image updater の自動 rollout が起きる。Owner が通常�
 - gate の receipt を前提にするため、配備順は Hermes を先にする。Hermes が古いままだと notified の event は timeout 後に digest へ回り、二重通知になる。
 - 静音保留された digest は同じ event ID で再送しない。Hermes が ID で重複排除するためエージェントが再実行されず、朝の通知が欠落するから。元 ID から決定的に導いた新 ID で発行し直し、項目を新 digest に付け替え、元 digest は `:superseded` で done へ移す（marker の有無を問わない）。中断しても次 tick で再開でき、digest は増えない。
 - digest の完了は `sent` か、gate が意図的な [SILENT] を確認して書く receipt `silent`（marker も silent の場合）に限る。silent marker だけでは未配信のまま完了しない。
-- 静音時間の正本は dispatcher の `CODEX_TASK_BOARD_EVENT_QUIET_HOURS` / `CODEX_TASK_BOARD_EVENT_TIMEZONE`。別コンテナの Hermes gate が同じ値を使えるよう、dispatcher が tick ごとに vault の `Projects/task-board-events/quiet-policy.json` へ公開する（変更時のみ書込み）。初回公開前は gate も同じ env 名と既定値を使う。解釈不能な時間指定は dispatcher と同じく静音なし、不正な timezone は gate が保留する。
+- 静音時間の正本は dispatcher の `CODEX_TASK_BOARD_EVENT_QUIET_HOURS` / `CODEX_TASK_BOARD_EVENT_TIMEZONE`。別コンテナの Hermes gate が同じ値を使えるよう、dispatcher が tick ごとに vault の `Projects/task-board-events/quiet-policy.md` へ公開する（変更時のみ書込み）。初回公開前は gate も同じ env 名と既定値を使う。解釈不能な時間指定は dispatcher と同じく静音なし、不正な timezone は gate が保留する。
 - 関連 PR の boxp/lolice 側は route prompt の更新だけで、annotation の変更は外した。route は Pod 起動時に PVC へコピーされるため、lolice を先に merge し、この PR の Hermes image rollout で反映する。
 - `deferred` marker は最終応答より先に書かれるため、marker だけでは digest へ回さない。gate が [SILENT] を確認して書く receipt `silent` を待ち、timeout まで証拠がなければ digest で回収する。digest 以外の event で `deferred` marker の後に本文が来た場合、gate は時刻を問わず静音と同じく保留し送信しない（報告は digest に一本化する）。遅い応答・送信直後の crash による二重通知はこの経路では起きない。
 - `deferred` marker でも本文が送信済み（receipt `sent`）なら digest に再掲載しない。timeout 後に未解決へ移し、180m cron が回収する。digest に組み込まれる前の項目に後から `sent` / `uncertain` が届いた場合も未解決へ移す。
 - digest の `silent` receipt は、同じ event の `sent` / `uncertain`（vault と Hermes ローカルの両方）を上書きしない。
+
+## vault はコンテナ間で共有されない（配備前の実環境確認で判明）
+
+- codex-workspace と Hermes の vault は別の PVC にあり、Obsidian Sync で複製される。両 device の同期対象は `image, audio, pdf, video` と note で、`.json` は運ばれない。そのため receipt と静音 policy を `.json` のまま配備すると dispatcher に届かず、すべての event が receipt なしの timeout で digest に回り二重通知になる。
+- gate と共有するファイルはすべて `.md` にする（`delivery-receipts/<event>.md`、`quiet-policy.md`、`delivery-claims/<event>.md`）。各ファイルの書き手は片側だけで、中身は JSON。実測で `.md` は workspace から Hermes へ約 5 秒で届いた。
+- 別の複製どうしでは排他ファイルが使えないので、digest の取り込みは 2 段階にする。dispatcher は `delivery-claims/<event>.md` を公開し、`CODEX_TASK_BOARD_EVENT_DIGEST_CLAIM_GRACE_SECONDS`（既定 300 秒）待つ。gate は claim があれば送らず `quiet-held` を書く。行き違いの送信は猶予中に receipt が届き、digest に載らず未解決へ移る。
+- 残る既知のトレードオフ: 同期が猶予より長く止まり、その間に遅い送信が起きると二重通知になる。欠落はしない。
