@@ -53,16 +53,23 @@
 (defn valid-run? [r]
   (and (= "main" (:headBranch r)) (#{"schedule" "workflow_dispatch"} (:event r)) (= "completed" (:status r))))
 
+(def max-seen-runs 200)
+
 (defn unseen-runs
-  "前回読んだ run より後の完了 run を古い順に返す。canary が後から完了しても、その前の通常 run を飛ばさない。"
-  [last-id]
-  (->> (json/parse-string
-        (sh "gh" "run" "list" "-R" repo "--workflow" workflow "--branch" "main" "--limit" "30"
-            "--json" "databaseId,conclusion,status,event,headBranch,createdAt,headSha,url")
-        true)
-       (filter valid-run?)
-       (filter #(or (nil? last-id) (> (:databaseId %) last-id)))
-       (sort-by :databaseId)))
+  "まだ読んでいない完了 run を古い順に返す。読取位置は ID の大小ではなく読んだ ID の集合で持つ。
+  ID の大きい run が先に完了しても、後から完了した ID の小さい run を読み飛ばさない。"
+  [ci]
+  (let [seen (set (:seen-run-ids ci))
+        ;; 集合を持つ前の state は、記録された最後の ID までを読んだものとみなす
+        legacy (when (empty? seen) (:run-id ci))]
+    (->> (json/parse-string
+          (sh "gh" "run" "list" "-R" repo "--workflow" workflow "--branch" "main" "--limit" "30"
+              "--json" "databaseId,conclusion,status,event,headBranch,createdAt,headSha,url")
+          true)
+         (filter valid-run?)
+         (remove #(contains? seen (:databaseId %)))
+         (filter #(or (nil? legacy) (> (:databaseId %) legacy)))
+         (sort-by :databaseId))))
 
 ;; Ingress の backend の事実は host の * と ->接続先 を含む
 (def safe-fact-re #"[A-Za-z0-9._:/@+=*>\-]{1,300}")
@@ -93,38 +100,53 @@
       (catch Exception _ nil)
       (finally (fs/delete-tree dir)))))
 
+(defn max-iso [a b] (cond (nil? a) b (nil? b) a (pos? (compare a b)) a :else b))
+
 (defn observe-run
-  "1 つの run の結果を state の :ci へ反映する。:input-run-id は canary を除く最後の run で、依頼へ回すかの判定に使う。"
+  "1 つの run の結果を state の :ci へ反映する。:input-run-id は canary を除き最も新しく作られた run で、差分の :result はその run のもの。
+  この tick で読んだ失敗は :batch-failure に残し、同じ tick の後の成功で消さない。"
   [s run]
-  (let [res (download-result (:databaseId run))
+  (let [id (:databaseId run)
+        res (download-result id)
         ;; 失敗した simulate は canary ではなく失敗として扱う
         simulated (and (:simulated res) (= "success" (:conclusion run)))
         ok (and (= "success" (:conclusion run)) (#{"no-change" "changed"} (:status res)))
-        base {:run-id (:databaseId run) :run-url (:url run) :run-at (:createdAt run) :head (:headSha run)
+        ;; 後から完了した古い run の結果で、新しい run の差分を巻き戻さない
+        newest? (let [cur (get-in s [:ci :input-run-id])] (or (nil? cur) (> id cur)))
+        base {:run-id id :run-url (:url run) :run-at (:createdAt run) :head (:headSha run)
               :conclusion (:conclusion run) :api-error nil}
-        input (assoc base :input-run-id (:databaseId run) :new? true)]
+        input (assoc base :input-run-id id :new? true)
+        s (-> s
+              (update-in [:ci :seen-run-ids] #(vec (take-last max-seen-runs (sort (distinct (conj (vec %) id))))))
+              (cond-> (not simulated) (assoc-in [:ci :new-input?] true)))]
     (cond
       simulated
-      (-> s
-          (assoc-in [:ci :canary] (assoc base :status (:status res) :seen-at (str (now))))
-          (assoc-in [:ci :run-id] (:databaseId run)))
+      (cond-> (assoc-in s [:ci :canary] (assoc base :status (:status res) :seen-at (str (now))))
+        newest? (assoc-in [:ci :run-id] id))
       ok
-      (update s :ci merge input {:result res :last-success-at (:createdAt run) :failure nil})
+      (cond-> (update-in s [:ci :last-success-at] max-iso (:createdAt run))
+        newest? (update :ci merge input {:result res :failure (get-in s [:ci :batch-failure])}))
       ;; 比較できなかった run は前の差分が解消した証拠にならないので、:result は残す
       :else
-      (update s :ci merge input
-              {:failure {:kind "ci" :detail (str "conclusion=" (:conclusion run) " status=" (:status res) " " (:reason res))
-                         :key (str "ci:" (:conclusion run) ":" (:status res))}}))))
+      (let [failure {:kind "ci" :detail (str "run " id " conclusion=" (:conclusion run) " status=" (:status res) " " (:reason res))
+                     :key (str "ci:" (:conclusion run) ":" (:status res))}]
+        (cond-> (-> s
+                    (assoc-in [:ci :failure] failure)
+                    (assoc-in [:ci :batch-failure] failure))
+          newest? (update :ci merge input))))))
 
 (defn observe-ci
-  "未読の run を古い順に一度ずつ読み、state の :ci を進める。新しい run が無ければ何も変えない。"
+  "未読の run を古い順に一度ずつ読み、state の :ci を進める。新しい run が無ければ何も変えない。
+  :new-input? は canary 以外の run を 1 つ以上読んだときだけ真になる。"
   [s]
   (try
-    (reduce observe-run
-            (assoc-in s [:ci :api-error] nil)
-            (unseen-runs (get-in s [:ci :run-id])))
+    (-> (reduce observe-run
+                (update s :ci assoc :api-error nil :new-input? false :batch-failure nil)
+                (unseen-runs (:ci s)))
+        (update :ci dissoc :batch-failure))
     (catch Exception e
-      (assoc-in s [:ci :api-error] (str (ex-message e) " " (:stderr (ex-data e)))))))
+      ;; 前の tick の :new-input? を持ち越して、同じ差分を再び依頼へ回さない
+      (update s :ci assoc :new-input? false :api-error (str (ex-message e) " " (:stderr (ex-data e)))))))
 
 (defn ci-stale-failure [s]
   (let [at (or (get-in s [:ci :last-success-at]) (get s :started-at))
@@ -375,11 +397,10 @@
     (fn []
       (let [s0 (read-state)
             s0 (cond-> s0 (nil? (:started-at s0)) (assoc :started-at (str (now))))
-            before-input (get-in s0 [:ci :input-run-id])
             before-live (get-in s0 [:live :attempted-at])
             s1 (observe-live (observe-ci s0))
             ;; canary は状態の確認だけ。前の未解決の差分を再起票や集約へ回さない。
-            fresh? (or (not= before-input (get-in s1 [:ci :input-run-id]))
+            fresh? (or (get-in s1 [:ci :new-input?])
                        (and (not= before-live (get-in s1 [:live :attempted-at])) (get-in s1 [:live :new?]))
                        (ci-stale-failure s1))
             s2 (if fresh?

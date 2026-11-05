@@ -329,6 +329,46 @@
       (tick s)
       (is (str/includes? (ticket s "BOXP-2") "arch:app:example"))
       (is (str/includes? (ticket s "BOXP-2") "収集の異常")))))
+(deftest late-completed-older-run
+  (testing "ID の大きい run が先に完了しても、後から完了した小さい ID の run を読む"
+    (let [s (sandbox)]
+      (tick s)
+      (run-result! s 3 {:status "no-change" :added [] :removed [] :new_categories []})
+      (runs! s [3 "success"])
+      (tick s)
+      (is (empty? (calls s)))
+      (run-result! s 2 {:status "anomaly" :reason "bad"})
+      (runs! s [3 "success"] [2 "failure"])
+      (tick s)
+      (is (= 1 (count (calls s))) "後から完了した失敗を報告する")
+      (is (str/includes? (ticket s "BOXP-2") "収集の異常"))
+      (tick s)
+      (is (= 1 (count (calls s))) "読んだ run を読み直さない")))
+  (testing "後から完了した古い run の成功は、新しい run の差分を巻き戻さない"
+    (let [s (sandbox)]
+      (tick s)
+      (run-result! s 3 changed) (runs! s [3 "success"]) (tick s)
+      (is (= 1 (count (calls s))))
+      (run-result! s 2 {:status "no-change" :added [] :removed [] :new_categories []})
+      (runs! s [3 "success"] [2 "success"]) (tick s)
+      (is (= "changed" (get-in (state s) [:ci :result :status])))
+      (is (= 3 (get-in (state s) [:ci :input-run-id]))))))
+(deftest failure-then-success-in-one-tick
+  (testing "同じ tick で失敗の後に成功が読まれても、間の失敗を報告する"
+    (let [s (sandbox)]
+      (tick s)
+      (run-result! s 2 {:status "anomaly" :reason "bad"})
+      (run-result! s 3 {:status "no-change" :added [] :removed [] :new_categories []})
+      (runs! s [2 "failure"] [3 "success"])
+      (tick s)
+      (is (= 1 (count (calls s))))
+      (is (str/includes? (ticket s "BOXP-2") "収集の異常"))
+      (is (str/includes? (ticket s "BOXP-2") "run 2"))
+      (testing "次の tick の成功で異常は解消する"
+        (run-result! s 4 {:status "no-change" :added [] :removed [] :new_categories []})
+        (runs! s [2 "failure"] [3 "success"] [4 "success"])
+        (tick s)
+        (is (nil? (get-in (state s) [:ci :failure])))))))
 (deftest live-failure-keeps-unresolved-diff
   (let [s (sandbox)
         base (read-json (str (:root s) "/live-baseline.json"))
