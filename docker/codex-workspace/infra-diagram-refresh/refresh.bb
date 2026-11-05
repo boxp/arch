@@ -1,7 +1,7 @@
 #!/usr/bin/env bb
 ;; インフラ図の定期更新の受け口。agent を起動せず、差分か異常があるときだけ Task Board のチケットを 1 枚に集約する。
 ;; 公開 IaC の比較は boxp/arch の scheduled workflow、live metadata の比較はここで行う。live の値は vault の外へ出さない。
-;; usage: refresh.bb tick | status | accept --ticket BOXP-N | live-candidate SNAPSHOT.json
+;; usage: refresh.bb tick | status | accept --ticket BOXP-N | live-candidate SNAPSHOT.json | seed-live SNAPSHOT.json | mark-published BOXP-N
 (require '[babashka.fs :as fs]
          '[babashka.process :refer [shell process]]
          '[cheshire.core :as json]
@@ -121,7 +121,7 @@
 
 ;; ── 差分の材料: live metadata
 (defn normalize-live
-  "時刻、Pod の置き場、同期状態、IP、容量は図の構造ではないので落とす。replicas は動いているかどうかだけ残す。"
+  "時刻、Pod の置き場、同期状態、IP、容量、一時的な up や tunnel の数は図の構造ではないので落とす。replicas は動いているかどうかだけ残す。"
   [snap]
   (let [nsn #(str (:ns %) "/" (:name %))
         p (fn [prefix xs] (map #(str "live:" prefix ":" %) xs))]
@@ -136,10 +136,8 @@
           (p "es" (map (fn [x] (str (nsn x) ":" (:store x))) (:externalsecrets snap)))
           (p "mon" (map (fn [x] (str (:kind x) ":" (nsn x))) (:monitors snap)))
           (p "rj" (map (fn [x] (str (:name x) ":" (:task x))) (:recurringjobs snap)))
-          (p "bt" (map (fn [x] (str (:name x) ":" (if (:available x) "available" "unavailable"))) (:backuptargets snap)))
-          (p "backup" (map :pvc (filter #(some (fn [j] (re-find #"^c-" j)) (:jobs %)) (:longhorn_volumes snap))))
-          (p "up" (map :k (get-in snap [:prometheus :up])))
-          (p "tunnel" (map :k (get-in snap [:prometheus :tunnels]))))
+          (p "bt" (map :name (:backuptargets snap)))
+          (p "backup" (map :pvc (filter #(some (fn [j] (re-find #"^c-" j)) (:jobs %)) (:longhorn_volumes snap)))))
          distinct sort vec)))
 
 (defn collect-live! [out]
@@ -181,11 +179,10 @@
 
 ;; ── 依頼の集約
 (defn signals [s]
-  (let [accepted (set (:accepted s))
-        ci (get-in s [:ci :result])
+  (let [ci (get-in s [:ci :result])
         lv (get-in s [:live :result])
-        ci-changed (when (and (= "changed" (:status ci)) (not (accepted (:fingerprint ci)))) ci)
-        lv-changed (when (and (= "changed" (:status lv)) (not (accepted (:fingerprint lv)))) lv)
+        ci-changed (when (= "changed" (:status ci)) ci)
+        lv-changed (when (= "changed" (:status lv)) lv)
         failures (vec (keep identity [(get-in s [:ci :failure]) (get-in s [:live :failure]) (ci-stale-failure s)]))]
     {:iac ci-changed :live lv-changed :failures failures}))
 
@@ -235,6 +232,17 @@
                 "--plan" plan)]
     (:id (json/parse-string out true))))
 
+(defn create-suppressed-notice!
+  "同じ差分で agent を回し続けないよう止めたことを、agent を起動しない Backlog のカードで Owner に知らせる。"
+  [key existing]
+  (:id (json/parse-string
+        (sh "bb" (helper) "create" "--vault" (vault)
+            "--title" (str "インフラ図の定期更新が同じ差分で止まっています(" existing " の後)")
+            "--lane" "Backlog" "--assignee" "boxp" "--priority" "medium" "--repo" repo "--json"
+            "--summary" (str "同じ差分のチケットが " max-tickets-per-key " 回閉じても基準が進まなかったので、自動起票を止めました。前回の図は配信中のままです。")
+            "--context-file" (write-file-tmp (str "infra-diagram-refresh-notice: " key "\n\n`Infrastructure/Infra Diagram Refresh/README.md` の復旧手順を参照してください。")))
+        true)))
+
 (defn ticket-status [id]
   (let [f (fs/path (vault) "Tickets" (str id ".md"))]
     (when (fs/exists? f)
@@ -273,7 +281,9 @@
         (if (#{"done"} (ticket-status existing))
           ;; 同じ差分のチケットが閉じたのに基準が進んでいない。上限まで再起票し、そこで止めて status で知らせる。
           (if (>= (get-in s [:filed key] 1) max-tickets-per-key)
-            (assoc s :last-result "suppressed" :suppressed {:key key :ticket existing} :active nil)
+            (cond-> (assoc s :last-result "suppressed" :active nil)
+              (not= key (get-in s [:suppressed :key]))
+              (assoc :suppressed {:key key :ticket existing :notice (create-suppressed-notice! key existing)}))
             (let [s (update-in s [:filed key] (fnil inc 1))
                   _ (write-state! s)
                   id (create-ticket! s key sig)]
@@ -293,6 +303,41 @@
       (try (f) (finally (fs/delete-if-exists lock)))
       (println "another tick is running"))))
 
+(defn status-map [s]
+  {:last_tick_at (:last-tick-at s)
+   :last_result (:last-result s)
+   :active (:active s)
+   :suppressed (:suppressed s)
+   :last_accepted (:last-accepted s)
+   :last_published (:last-published s)
+   :ci (select-keys (:ci s) [:run-id :run-url :run-at :conclusion :last-success-at :api-error :failure :canary])
+   :live (select-keys (:live s) [:attempted-at :last-success-at :failures :failure])})
+
+(defn write-status!
+  "運用入口から今の状態が読めるよう、tick ごとに置き換える。"
+  []
+  (let [s (read-state)
+        v #(or % "未記録")
+        path (str (fs/path (root) "status.md"))
+        tmp (str path ".tmp")]
+    (spit tmp
+          (str/join
+           "\n"
+           ["# インフラ図の定期更新の状態" ""
+            "自動生成です。手で編集しません。" ""
+            (str "- 最後の確認: " (v (:last-tick-at s)) "(結果: " (v (:last-result s)) ")")
+            (str "- 最後に成功した CI の比較: " (v (get-in s [:ci :last-success-at])) "(run: " (v (get-in s [:ci :run-url])) ")")
+            (str "- 最後に成功した live の比較: " (v (get-in s [:live :last-success-at])))
+            (str "- 処理中のチケット: " (v (get-in s [:active :ticket])))
+            (str "- 最後の受入: " (v (get-in s [:last-accepted :at])) " " (or (get-in s [:last-accepted :ticket]) ""))
+            (str "- 最後の配備: " (v (get-in s [:last-published :at])) " " (or (get-in s [:last-published :ticket]) ""))
+            (str "- CI の異常: " (v (get-in s [:ci :failure :detail])) (when-let [e (get-in s [:ci :api-error])] (str "(API: " e ")")))
+            (str "- live の異常: " (v (get-in s [:live :failure :detail])) "(連続失敗 " (get-in s [:live :failures] 0) " 回)")
+            (str "- 自動起票の停止: " (if-let [x (:suppressed s)] (str (:ticket x) " の後。通知 " (:notice x)) "なし"))
+            (str "- 最後の canary: " (v (get-in s [:ci :canary :run-at])) " " (or (get-in s [:ci :canary :status]) ""))
+            ""]))
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+
 (defn tick! []
   (with-lock
     (fn []
@@ -309,6 +354,7 @@
                  (assoc s1 :last-result "no-new-input"))
             s3 (assoc s2 :last-tick-at (str (now)))]
         (write-state! s3)
+        (write-status!)
         (println "tick:" (:last-result s3) (or (some-> (:active s3) :ticket) ""))))))
 
 (defn accept!
@@ -322,14 +368,16 @@
           (System/exit 1))
         (when (fs/exists? (live-candidate-path))
           (fs/move (live-candidate-path) (live-baseline-path) {:replace-existing true}))
-        (let [fps (keep identity [(get-in s [:ci :result :fingerprint]) (get-in s [:live :result :fingerprint])])]
-          (write-state! (-> s
-                            (update :accepted #(vec (take-last 20 (concat % fps))))
-                            (assoc-in [:live :result] nil)
-                            (assoc-in [:ci :failure] nil)
-                            (assoc-in [:live :failure] nil)
-                            (assoc :active nil :last-accepted {:ticket ticket :at (str (now))})))
-          (println "accepted" ticket))))))
+        ;; 結果を捨てるだけで、差分が解消したとは決めない。基準の PR が入っていなければ次の run が同じ差分を出す。
+        (write-state! (-> s
+                          (assoc-in [:ci :result] nil)
+                          (assoc-in [:live :result] nil)
+                          (assoc-in [:ci :failure] nil)
+                          (assoc-in [:live :failure] nil)
+                          (assoc-in [:live :failures] 0)
+                          (assoc :active nil :suppressed nil :last-accepted {:ticket ticket :at (str (now))})))
+        (write-status!)
+        (println "accepted" ticket)))))
 
 (defn set-live-candidate!
   "図の生成に使った snapshot を候補にする。監査中に変わった分は次の比較で差分になる。"
@@ -339,16 +387,18 @@
                  {:schema 1 :facts (vec (remove #(excluded? r %) (normalize-live (json/parse-string (slurp snapshot) true))))})))
 
 (defn status! []
-  (let [s (read-state)]
-    (println (json/generate-string
-              {:last_tick_at (:last-tick-at s)
-               :last_result (:last-result s)
-               :active (:active s)
-               :suppressed (:suppressed s)
-               :last_accepted (:last-accepted s)
-               :ci (select-keys (:ci s) [:run-id :run-url :run-at :conclusion :last-success-at :api-error :failure :canary])
-               :live (select-keys (:live s) [:attempted-at :last-success-at :failures :failure])}
-              {:pretty true}))))
+  (println (json/generate-string (status-map (read-state)) {:pretty true})))
+
+(defn seed-live!
+  "図の生成に使った snapshot を最初の基準にする。実際の差分だけが次の比較に出る。"
+  [snapshot]
+  (let [r (rules)]
+    (write-json! (live-baseline-path)
+                 {:schema 1 :facts (vec (remove #(excluded? r %) (normalize-live (json/parse-string (slurp snapshot) true))))})
+    (println "seeded" (live-baseline-path))))
+
+(defn mark-published! [ticket]
+  (with-lock #(write-state! (assoc (read-state) :last-published {:ticket ticket :at (str (now))}))))
 
 (when (= *file* (System/getProperty "babashka.file"))
   (let [[cmd a b] *command-line-args*]
@@ -357,4 +407,6 @@
       "status" (status!)
       "accept" (accept! (if (= a "--ticket") b (do (println "usage: accept --ticket BOXP-N") (System/exit 2))))
       "live-candidate" (set-live-candidate! a)
+      "seed-live" (seed-live! a)
+      "mark-published" (mark-published! a)
       (do (println "usage: refresh.bb tick|status|accept --ticket BOXP-N|live-candidate SNAPSHOT.json") (System/exit 2)))))

@@ -106,10 +106,17 @@
         added (vec (sort (set/difference now base)))
         removed (vec (sort (set/difference base now)))
         new-cats (vec (sort (set/difference (set (map category now)) (set (map category base)))))
+        section #(str/join ":" (take 2 (str/split % #":" 3)))
+        now-sections (set (map section now))
+        ;; 権限拒否で 1 種類だけ空になった場合を、全部削除されたと読まない
+        vanished (->> (frequencies (map section base))
+                      (filter (fn [[k n]] (and (>= n 5) (not (now-sections k)))))
+                      (map first) sort vec)
         anomaly (cond
                   (< (count now) min-facts) (str "facts too few: " (count now))
                   (and (seq base) (> (/ (count removed) (count base)) (:max-removed-ratio rules)))
-                  (str "too many removed: " (count removed) "/" (count base)))]
+                  (str "too many removed: " (count removed) "/" (count base))
+                  (seq vanished) (str "whole section vanished: " (str/join "," vanished)))]
     {:status (cond anomaly "anomaly" (or (seq added) (seq removed)) "changed" :else "no-change")
      :reason anomaly
      :fact_count (count now)
