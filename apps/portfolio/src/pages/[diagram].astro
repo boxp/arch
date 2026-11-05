@@ -1,0 +1,12 @@
+---
+import DiagramPage from '../components/DiagramPage.astro';
+import { architecture } from '../lib/diagrams';
+import { isStage } from '../lib/site';
+
+// architecture の匿名公開は未承認。本番ビルドではこのページ自体を生成しない。
+export function getStaticPaths() {
+  return isStage ? [{ params: { diagram: architecture.slug } }] : [];
+}
+---
+
+<DiagramPage diagram={architecture} />
