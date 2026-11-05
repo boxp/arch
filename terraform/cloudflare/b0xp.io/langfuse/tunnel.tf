@@ -21,12 +21,6 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "langfuse_tunnel" {
         service  = "http_status:404"
       },
       {
-        # Starts the Access login instead of showing a page with one button (oidc.tf).
-        hostname = cloudflare_dns_record.langfuse.name
-        path     = "^/auth/sign-in$"
-        service  = "http://langfuse-sign-in-gateway.langfuse.svc.cluster.local:3001"
-      },
-      {
         hostname = cloudflare_dns_record.langfuse.name
         service  = "http://langfuse-web.langfuse.svc.cluster.local:3000"
       },
