@@ -11,7 +11,7 @@
 (defn sandbox []
   (let [d (str (fs/create-temp-dir)) vault (str d "/vault") root (str d "/root") bin (str d "/bin")]
     (doseq [x [vault root bin (str vault "/Tickets")]] (fs/create-dirs x))
-    (spit (str bin "/gh") "#!/bin/sh\ncase \"$2\" in list) cat \"$FAKE/run.json\";; download) [ ! -f \"$FAKE/missing\" ] || exit 1; while [ \"$1\" != -D ]; do shift; done; cp \"$FAKE/result.json\" \"$2/result.json\";; *) exit 2;; esac\n")
+    (spit (str bin "/gh") "#!/bin/sh\ncase \"$2\" in list) cat \"$FAKE/run.json\";; download) [ ! -f \"$FAKE/missing\" ] || exit 1; id=\"$3\"; src=\"$FAKE/result.json\"; [ ! -f \"$FAKE/result-$id.json\" ] || src=\"$FAKE/result-$id.json\"; while [ \"$1\" != -D ]; do shift; done; cp \"$src\" \"$2/result.json\";; *) exit 2;; esac\n")
     (spit (str bin "/kubectl") "#!/bin/sh\nexit 99\n")
     (spit (str d "/live") "#!/bin/sh\n[ ! -f \"$FAKE/fail\" ] || { echo forbidden >&2; exit 1; }; cp \"$FAKE/live.json\" \"$1\"\n")
     (doseq [f [(str bin "/gh") (str bin "/kubectl") (str d "/live")]] (fs/set-posix-file-permissions f "rwxr-xr-x"))
@@ -291,6 +291,71 @@
       (run-id! s 2 "success") (result! s (assoc changed :simulated true :fingerprint (apply str (repeat 64 "c")))) (tick s)
       (is (= 1 (count (calls s))))
       (is (= "BOXP-2" (get-in (state s) [:active :ticket]))))))
+(defn runs! [s & rs]
+  (write-json (str (:d s) "/run.json")
+              (for [[id conclusion] rs]
+                {:databaseId id :conclusion conclusion :status "completed" :event "workflow_dispatch" :headBranch "main"
+                 :createdAt (format "2026-11-05T00:%02d:00Z" id) :headSha "abc" :url (str "https://example.test/run/" id)})))
+(defn run-result! [s id x] (write-json (str (:d s) "/result-" id ".json") x))
+(deftest canary-after-normal-run
+  (testing "確認の前に canary が後から完了しても、通常 run の差分を起票する"
+    (let [s (sandbox)]
+      (tick s)
+      (run-result! s 2 changed) (run-result! s 3 (assoc changed :simulated true :added ["arch:app:fake"]))
+      ;; gh の返す順に依存しない
+      (runs! s [3 "success"] [2 "success"])
+      (tick s)
+      (is (= 1 (count (calls s))))
+      (is (str/includes? (ticket s "BOXP-2") "arch:app:example"))
+      (is (not (str/includes? (ticket s "BOXP-2") "arch:app:fake")))
+      (is (str/includes? (ticket s "BOXP-2") "https://example.test/run/2") "票の run は通常 run を指す")
+      (is (= 3 (get-in (state s) [:ci :canary :run-id])))
+      (is (= 3 (get-in (state s) [:ci :run-id])))
+      (tick s)
+      (is (= 1 (count (calls s))) "読んだ run を読み直さない")))
+  (testing "通常 run の失敗の後に canary が完了しても、失敗を報告する"
+    (let [s (sandbox)]
+      (tick s)
+      (run-result! s 2 {:status "anomaly" :reason "bad"}) (run-result! s 3 {:status "no-change" :simulated true :added [] :removed [] :new_categories []})
+      (runs! s [2 "failure"] [3 "success"])
+      (tick s)
+      (is (= 1 (count (calls s))))
+      (is (str/includes? (ticket s "BOXP-2") "収集の異常"))))
+  (testing "差分の run の後に失敗の run が続いても、差分を失わない"
+    (let [s (sandbox)]
+      (tick s)
+      (run-result! s 2 changed) (run-result! s 3 {:status "anomaly" :reason "bad"})
+      (runs! s [2 "success"] [3 "failure"])
+      (tick s)
+      (is (str/includes? (ticket s "BOXP-2") "arch:app:example"))
+      (is (str/includes? (ticket s "BOXP-2") "収集の異常")))))
+(deftest live-failure-keeps-unresolved-diff
+  (let [s (sandbox)
+        base (read-json (str (:root s) "/live-baseline.json"))
+        at (fn [h] (assoc (:env s) "INFRA_DIAGRAM_REFRESH_NOW" (str (.plusSeconds (java.time.Instant/parse "2026-11-05T01:00:00Z") (* h 3600)))))
+        tick-at (fn [h] (run (at h) "bb" refresh "tick"))
+        snap (str (:d s) "/audited.json")]
+    (write-json (str (:d s) "/live.json") {:namespaces (conj (mapv #(str "ns" %) (range 60)) "added")})
+    (fs/copy (str (:d s) "/live.json") snap)
+    (tick-at 0)
+    (let [id (get-in (state s) [:active :ticket])]
+      (is (= "changed" (get-in (state s) [:live :result :status])))
+      (spit (str (:d s) "/fail") "")
+      (tick-at 21)
+      (is (= 1 (get-in (state s) [:live :failures])))
+      (testing "収集に失敗した後も、候補なしの accept は通らない"
+        (is (not (zero? (:exit (run (:env s) "bb" refresh "accept" "--ticket" id)))))
+        (is (= id (get-in (state s) [:active :ticket])))
+        (is (= "changed" (get-in (state s) [:live :result :status])))
+        (is (= (:facts base) (:facts (read-json (str (:root s) "/live-baseline.json"))))))
+      (testing "失敗の報告に検出済みの差分が残る"
+        (tick-at 22) (tick-at 23)
+        (is (str/includes? (ticket s id) "live:ns:added"))
+        (is (str/includes? (ticket s id) "収集の異常")))
+      (testing "監査した候補があれば受け入れられる"
+        (is (zero? (:exit (run (:env s) "bb" refresh "live-candidate" "--ticket" id snap))))
+        (is (zero? (:exit (run (:env s) "bb" refresh "accept" "--ticket" id))))
+        (is (some #{"live:ns:added"} (:facts (read-json (str (:root s) "/live-baseline.json")))))))))
 (deftest excluded-live-on-both-sides
   (let [s (sandbox)]
     (write-json (str (:root s) "/live-baseline.json") {:facts (conj (mapv #(str "live:ns:ns" %) (range 60)) "live:ns:ooedo-old")})

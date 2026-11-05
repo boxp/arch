@@ -58,13 +58,14 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
 | 起きたこと | 動き | 復旧 |
 |---|---|---|
 | IaC の取得や解析の異常 | workflow が失敗し、基準は動きません。チケットを作ります | 原因を直し、workflow を再実行します |
-| live の取得失敗、権限拒否 | 資源の削除とは読みません。3 回続いたらチケットを作ります | kubeconfig と Grafana token を確認します |
+| live の取得失敗、権限拒否 | 資源の削除とは読みません。検出済みの差分は残し、候補なしの accept は止めます。3 回続いたらチケットを作ります | kubeconfig と Grafana token を確認します |
 | 検査か render の失敗 | staging で止まり、配信中の図と vault は変わりません | staging を直して build からやり直します |
 | build の後に staging を変えた | deploy と promote が止まります。検査していない内容を配備や正本にしません | `publish.bb build` からやり直します |
 | 配備の失敗 | 前回の Worker が配信を続けます。配備用の secret は消します | `publish.bb deploy` をやり直します。配備済みの図は飛ばします |
 | PR か CI の失敗 | 基準は進まず、次の run も同じ差分を出します | PR を直します |
 | 再起動 | tick は state とチケットの marker から再開し、二重に起票しません。staging は home に残ります | 不要です |
 | 同じ差分のチケットが 2 回閉じても基準が進まない | 自動起票を止め、Backlog に通知カードを置きます | 基準を直してから `refresh.bb accept --ticket <処理中の票>`、または state の `:suppressed` を消します |
+| tick の前に複数の run が完了した | 未読の run を古い順にすべて読みます。後から完了した canary が通常 run の差分や失敗を隠しません | 不要です |
 | CI の成功が 36 時間無い | 欠測として異常のチケットを作ります | workflow の状態を確認します |
 
 ## 手動の確認

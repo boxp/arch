@@ -53,14 +53,16 @@
 (defn valid-run? [r]
   (and (= "main" (:headBranch r)) (#{"schedule" "workflow_dispatch"} (:event r)) (= "completed" (:status r))))
 
-(defn latest-run []
+(defn unseen-runs
+  "前回読んだ run より後の完了 run を古い順に返す。canary が後から完了しても、その前の通常 run を飛ばさない。"
+  [last-id]
   (->> (json/parse-string
-        (sh "gh" "run" "list" "-R" repo "--workflow" workflow "--branch" "main" "--limit" "10"
+        (sh "gh" "run" "list" "-R" repo "--workflow" workflow "--branch" "main" "--limit" "30"
             "--json" "databaseId,conclusion,status,event,headBranch,createdAt,headSha,url")
         true)
        (filter valid-run?)
-       (sort-by :createdAt)
-       last))
+       (filter #(or (nil? last-id) (> (:databaseId %) last-id)))
+       (sort-by :databaseId)))
 
 ;; Ingress の backend の事実は host の * と ->接続先 を含む
 (def safe-fact-re #"[A-Za-z0-9._:/@+=*>\-]{1,300}")
@@ -91,33 +93,36 @@
       (catch Exception _ nil)
       (finally (fs/delete-tree dir)))))
 
+(defn observe-run
+  "1 つの run の結果を state の :ci へ反映する。:input-run-id は canary を除く最後の run で、依頼へ回すかの判定に使う。"
+  [s run]
+  (let [res (download-result (:databaseId run))
+        ;; 失敗した simulate は canary ではなく失敗として扱う
+        simulated (and (:simulated res) (= "success" (:conclusion run)))
+        ok (and (= "success" (:conclusion run)) (#{"no-change" "changed"} (:status res)))
+        base {:run-id (:databaseId run) :run-url (:url run) :run-at (:createdAt run) :head (:headSha run)
+              :conclusion (:conclusion run) :api-error nil}
+        input (assoc base :input-run-id (:databaseId run) :new? true)]
+    (cond
+      simulated
+      (-> s
+          (assoc-in [:ci :canary] (assoc base :status (:status res) :seen-at (str (now))))
+          (assoc-in [:ci :run-id] (:databaseId run)))
+      ok
+      (update s :ci merge input {:result res :last-success-at (:createdAt run) :failure nil})
+      ;; 比較できなかった run は前の差分が解消した証拠にならないので、:result は残す
+      :else
+      (update s :ci merge input
+              {:failure {:kind "ci" :detail (str "conclusion=" (:conclusion run) " status=" (:status res) " " (:reason res))
+                         :key (str "ci:" (:conclusion run) ":" (:status res))}}))))
+
 (defn observe-ci
-  "新しい run を一度だけ読み、state の :ci を進める。新しい run が無ければ何も変えない。"
+  "未読の run を古い順に一度ずつ読み、state の :ci を進める。新しい run が無ければ何も変えない。"
   [s]
   (try
-    (let [run (latest-run)]
-      (cond
-        (nil? run) (assoc-in s [:ci :api-error] nil)
-        (= (:databaseId run) (get-in s [:ci :run-id])) (assoc-in s [:ci :api-error] nil)
-        :else
-        (let [res (download-result (:databaseId run))
-              ;; 失敗した simulate は canary ではなく失敗として扱う
-              simulated (and (:simulated res) (= "success" (:conclusion run)))
-              ok (and (= "success" (:conclusion run)) (#{"no-change" "changed"} (:status res)))
-              base {:run-id (:databaseId run) :run-url (:url run) :run-at (:createdAt run) :head (:headSha run)
-                    :conclusion (:conclusion run) :api-error nil}]
-          (cond
-            simulated
-            (-> s
-                (assoc-in [:ci :canary] (assoc base :status (:status res) :seen-at (str (now))))
-                (assoc-in [:ci :run-id] (:databaseId run)))
-            ok
-            (update s :ci merge base {:new? true :result res :last-success-at (:createdAt run) :failure nil})
-            :else
-            (update s :ci merge base
-                    {:new? true :result nil
-                     :failure {:kind "ci" :detail (str "conclusion=" (:conclusion run) " status=" (:status res) " " (:reason res))
-                               :key (str "ci:" (:conclusion run) ":" (:status res))}})))))
+    (reduce observe-run
+            (assoc-in s [:ci :api-error] nil)
+            (unseen-runs (get-in s [:ci :run-id])))
     (catch Exception e
       (assoc-in s [:ci :api-error] (str (ex-message e) " " (:stderr (ex-data e)))))))
 
@@ -182,10 +187,11 @@
                                        :new? true :result res})))))
         (catch Exception e
           (let [n (inc (get-in s [:live :failures] 0))
+                ;; 収集の失敗は差分が解消した証拠にならないので :result は残す。accept は候補を求め続ける。
                 ;; 1 行目だけ残す。kubectl の全文は vault の state に要らない。
                 detail (first (str/split-lines (str (ex-message e) " " (:stderr (ex-data e)))))]
             (update s :live merge
-                    {:attempted-at (str (now)) :failures n :new? (>= n live-failures-before-report) :result nil
+                    {:attempted-at (str (now)) :failures n :new? (>= n live-failures-before-report)
                      :failure (when (>= n live-failures-before-report)
                                 {:kind "live" :detail (subs detail 0 (min 200 (count detail))) :key "live"})})))
         (finally (fs/delete-if-exists tmp))))))
@@ -369,12 +375,11 @@
     (fn []
       (let [s0 (read-state)
             s0 (cond-> s0 (nil? (:started-at s0)) (assoc :started-at (str (now))))
-            before-run (get-in s0 [:ci :run-id])
+            before-input (get-in s0 [:ci :input-run-id])
             before-live (get-in s0 [:live :attempted-at])
             s1 (observe-live (observe-ci s0))
-            run-id (get-in s1 [:ci :run-id])
             ;; canary は状態の確認だけ。前の未解決の差分を再起票や集約へ回さない。
-            fresh? (or (and (not= before-run run-id) (not= run-id (get-in s1 [:ci :canary :run-id])))
+            fresh? (or (not= before-input (get-in s1 [:ci :input-run-id]))
                        (and (not= before-live (get-in s1 [:live :attempted-at])) (get-in s1 [:live :new?]))
                        (ci-stale-failure s1))
             s2 (if fresh?
