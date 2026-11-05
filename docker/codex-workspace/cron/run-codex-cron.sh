@@ -22,7 +22,7 @@ eval "$(
 )"
 
 job_name="${CODEX_CRON_NAME:-${job_id}}"
-prompt_file="${CODEX_CRON_PROMPT_FILE:?CODEX_CRON_PROMPT_FILE is required}"
+prompt_file="${CODEX_CRON_PROMPT_FILE:-}"
 workdir="${CODEX_CRON_WORKDIR:-/home/boxp}"
 output_root="${CODEX_CRON_OUTPUT_ROOT:-${cron_root}/runs}"
 lock_root="${CODEX_CRON_LOCK_ROOT:-${cron_root}/locks}"
@@ -55,14 +55,20 @@ trap cleanup EXIT
 runner="$(printf '%s' "${runner}" | tr '[:upper:]' '[:lower:]')"
 case "${runner}" in
   codex | cursor | claude) ;;
+  command) ;;
   *)
     echo "unsupported codex cron runner '${runner}' for job '${job_name}'" >&2
     exit 2
     ;;
 esac
 
+if [[ "${runner}" != "command" && -z "${prompt_file}" ]]; then
+  echo "CODEX_CRON_PROMPT_FILE is required" >&2
+  exit 2
+fi
+
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-if [[ "${runner}" == "cursor" || "${runner}" == "claude" ]]; then
+if [[ "${runner}" == "cursor" || "${runner}" == "claude" || "${runner}" == "command" ]]; then
   stdout_log="${run_dir}/stdout.log"
 else
   stdout_log="${run_dir}/events.jsonl"
@@ -73,7 +79,10 @@ summary_file="${run_dir}/summary.edn"
 
 args=()
 
-if [[ "${runner}" == "codex" ]]; then
+if [[ "${runner}" == "command" ]]; then
+  # shell を通さず語に分けて実行する。agent は起動しない。
+  read -r -a args <<< "${CODEX_CRON_COMMAND:?CODEX_CRON_COMMAND is required}"
+elif [[ "${runner}" == "codex" ]]; then
   args=(exec --json --cd "${workdir}" --output-last-message "${last_message}")
 
   if [[ "${CODEX_CRON_BYPASS_APPROVALS:-true}" == "true" ]]; then
@@ -123,7 +132,7 @@ else
   fi
 fi
 
-if [[ -n "${CODEX_CRON_EXTRA_ARGS:-}" ]]; then
+if [[ -n "${CODEX_CRON_EXTRA_ARGS:-}" && "${runner}" != "command" ]]; then
   read -r -a extra_args <<< "${CODEX_CRON_EXTRA_ARGS}"
   args+=("${extra_args[@]}")
 fi
@@ -143,7 +152,9 @@ fi
 } > "${run_dir}/metadata.env"
 
 set +e
-if [[ "${runner}" == "codex" ]]; then
+if [[ "${runner}" == "command" ]]; then
+  (cd "${workdir}" && "${args[@]}") > "${stdout_log}" 2> "${stderr_log}"
+elif [[ "${runner}" == "codex" ]]; then
   codex "${args[@]}" - < "${prompt_file}" > "${stdout_log}" 2> "${stderr_log}"
 elif [[ "${runner}" == "cursor" ]]; then
   cursor-agent "${args[@]}" "$(< "${prompt_file}")" > "${stdout_log}" 2> "${stderr_log}"
@@ -153,7 +164,7 @@ fi
 exit_code=$?
 set -e
 
-if [[ ("${runner}" == "cursor" || "${runner}" == "claude") && -f "${stdout_log}" ]]; then
+if [[ ("${runner}" == "cursor" || "${runner}" == "claude" || "${runner}" == "command") && -f "${stdout_log}" ]]; then
   cp "${stdout_log}" "${last_message}"
 fi
 

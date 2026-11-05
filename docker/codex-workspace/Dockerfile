@@ -164,6 +164,7 @@ COPY task-board/ /opt/codex-workspace/task-board/
 COPY qwen-eval/ /opt/codex-workspace/qwen-eval/
 COPY novel-board/ /opt/codex-workspace/novel-board/
 COPY recurring-events/ /opt/codex-workspace/recurring-events/
+COPY infra-diagram-refresh/ /opt/codex-workspace/infra-diagram-refresh/
 COPY skills/ /opt/codex-workspace/skills/
 RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && chmod 0755 /opt/codex-workspace/dotfiles-sync.sh \
@@ -171,7 +172,8 @@ RUN chmod 0755 /usr/local/bin/codex-workspace-entrypoint \
     && find /opt/codex-workspace/cron -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/task-board -type f -name "*.bb" -exec chmod 0755 {} + \
     && find /opt/codex-workspace/novel-board -type f -name "*.bb" -exec chmod 0755 {} + \
-    && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} +
+    && find /opt/codex-workspace/recurring-events -type f -name "*.bb" -exec chmod 0755 {} + \
+    && find /opt/codex-workspace/infra-diagram-refresh -type f \( -name "*.bb" -o -name "*.sh" \) -exec chmod 0755 {} +
 
 EXPOSE 2222 3456
 ENTRYPOINT ["/usr/local/bin/codex-workspace-entrypoint"]

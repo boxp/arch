@@ -11,6 +11,8 @@ on:
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/novel-board/**
       - docker/codex-workspace/recurring-events/**
+      - docker/codex-workspace/infra-diagram-refresh/**
+      - .github/workflows/schedule-infra-diagram-refresh.yml
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
       - tests/harness-eval/**
@@ -27,6 +29,8 @@ on:
       - docker/codex-workspace/task-board/**
       - docker/codex-workspace/novel-board/**
       - docker/codex-workspace/recurring-events/**
+      - docker/codex-workspace/infra-diagram-refresh/**
+      - .github/workflows/schedule-infra-diagram-refresh.yml
       - docker/hermes-agent/skills/obsidian-task-board/**
       - tests/codex-workspace/**
       - tests/harness-eval/**
@@ -91,6 +95,7 @@ jobs:
           time bb docker/codex-workspace/novel-board/novel_board_runner.bb test
           time tests/codex-workspace/novel-board-runner-test.sh
           time tests/codex-workspace/recurring-events-test.sh
+          time bb tests/codex-workspace/infra-diagram-refresh-test.bb
           time bb tests/codex-workspace/autonomy-policy-test.bb
           time bb tests/codex-workspace/autonomy-control-test.bb
           time bb tests/codex-workspace/vault-writer-test.bb
