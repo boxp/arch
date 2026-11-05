@@ -25,3 +25,16 @@ resource "cloudflare_dns_record" "codex_task_board" {
   ttl     = 1
   proxied = true
 }
+
+# BOXP-430: created only after the Access application so the hostname never resolves
+# through the tunnel without Access in front of it.
+resource "cloudflare_dns_record" "lolice_lineage" {
+  zone_id = var.zone_id
+  name    = "lolice-lineage.b0xp.io"
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id}.cfargotunnel.com"
+  type    = "CNAME"
+  ttl     = 1
+  proxied = true
+
+  depends_on = [cloudflare_zero_trust_access_application.lolice_lineage]
+}

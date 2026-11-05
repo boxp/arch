@@ -2,14 +2,17 @@
 import asyncio
 import ast
 import base64
+import hashlib
 from contextlib import nullcontext
 import importlib.util
 import json
 import logging
+import os
 import sys
 import tempfile
 import types
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace as NS
 from unittest.mock import patch
@@ -23,6 +26,7 @@ CHAT = "webhook:v2:" + base64.urlsafe_b64encode(json.dumps(["default", "task-boa
 
 class Fixtures(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        patch.object(delivery, "clock", return_value=datetime(2026, 10, 30, 3, 0, tzinfo=timezone.utc)).start()
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.vault = Path(self.tmp.name) / "Tickets"
@@ -67,6 +71,170 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
 
     def shape(self, text, *, marker=False, failed=False):
         return delivery.shape(self.source, {"failed": failed}, text, marker, self.vault)
+
+    async def test_quiet_hold_and_daytime_redelivery(self):
+        self.note("notified")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc)):
+            self.assertTrue((await self.send(delivery.NOTICE)).success)
+            self.assertFalse(self.calls)
+            self.assertFalse(list(self.root.glob("*.json")))
+            path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
+            self.assertEqual(json.loads(path.read_text())["state"], "quiet-held")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc)):
+            self.assertTrue((await self.send("report")).success)
+            self.assertEqual(self.calls, ["report"])
+
+    def vault_state(self):
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
+        return json.loads(path.read_text())["state"]
+
+    def quiet(self):
+        return patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc))
+
+    async def test_quiet_duplicate_keeps_sent_receipt(self):
+        self.note("notified")
+        self.assertTrue((await self.send("report")).success)
+        with self.quiet():
+            self.assertTrue((await self.send("report")).success)
+            self.assertEqual(self.vault_state(), "sent")
+            # A notice for an already delivered report must not reopen it either.
+            self.assertTrue((await self.send(delivery.NOTICE)).success)
+            self.assertEqual(self.vault_state(), "sent")
+        self.assertEqual(self.calls, ["report"])
+
+    async def test_quiet_duplicate_keeps_uncertain_receipt(self):
+        self.note("notified")
+        self.fail = True
+        self.assertFalse((await self.send("report")).success)
+        with self.quiet():
+            self.assertFalse((await self.send("report")).success)
+            self.assertEqual(self.vault_state(), "uncertain")
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_quiet_report_after_notice_is_still_held(self):
+        self.note("notified")
+        self.assertTrue((await self.send(delivery.NOTICE)).success)
+        with self.quiet():
+            self.assertTrue((await self.send("report")).success)
+            self.assertEqual(self.vault_state(), "quiet-held")
+        self.assertEqual(self.calls, [delivery.NOTICE])
+        self.assertTrue((await self.send("report")).success)
+        self.assertEqual(self.calls, [delivery.NOTICE, "report"])
+
+    async def test_quiet_hold_fails_when_receipt_cannot_be_written(self):
+        self.note("notified")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc)), \
+                patch.object(delivery.os, "replace", side_effect=OSError("read-only")):
+            self.assertFalse((await self.send("report")).success)
+        self.assertFalse(self.calls)
+
+    async def test_daytime_send_writes_vault_receipt_for_every_event(self):
+        self.note("notified")
+        self.assertTrue((await self.send("report")).success)
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
+        self.assertEqual(json.loads(path.read_text())["state"], "sent")
+
+    async def test_deferred_and_continued_are_proven_silence(self):
+        for result in ("deferred", "continued"):
+            (self.vault / "BOXP-999.md").unlink(missing_ok=True)
+            self.note(result)
+            self.assertTrue(self.shape("[SILENT]", marker=True)[1])
+            self.assertTrue((await self.send("[SILENT]")).success)
+        self.assertFalse(self.calls)
+
+    def policy(self, quiet_hours, timezone_name):
+        path = self.vault.parent / "Projects/task-board-events/quiet-policy.md"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({"quiet_hours": quiet_hours, "timezone": timezone_name}))
+
+    async def test_gate_follows_dispatcher_quiet_policy(self):
+        self.note("notified")
+        self.policy("2-9", "UTC")  # 03:00 UTC is 12:00 JST: only the published zone makes it quiet.
+        self.assertTrue((await self.send("report")).success)
+        self.assertFalse(self.calls)
+        self.policy("off", "Asia/Tokyo")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc)):
+            self.assertTrue((await self.send("report")).success)
+        self.assertEqual(self.calls, ["report"])
+
+    def test_quiet_policy_invalid_values(self):
+        self.policy("25-30", "Asia/Tokyo")  # The dispatcher never matches this window either.
+        self.assertFalse(delivery.quiet_now(self.vault))
+        self.policy("2-9", "Not/AZone")
+        self.assertTrue(delivery.quiet_now(self.vault))
+        (self.vault.parent / "Projects/task-board-events/quiet-policy.md").write_text("{broken")
+        with patch.dict(os.environ, {"CODEX_TASK_BOARD_EVENT_QUIET_HOURS": "off"}):
+            self.assertFalse(delivery.quiet_now(self.vault))
+
+    def test_digest_silence_writes_receipt_only_for_silent_proof(self):
+        event = "BOXP-999-digest-20261030T120000Z-abcdef12"
+        source = NS(platform=NS(value="webhook"), chat_id="webhook:task-board:" + event)
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (event + ".md")
+        self.note("deferred", event=event)
+        delivery.shape(source, {}, "[SILENT]", True, self.vault)
+        self.assertFalse(path.exists())
+        (self.vault / "BOXP-999.md").unlink()
+        self.note("silent", event=event)
+        self.assertTrue(delivery.shape(source, {}, "[SILENT]", True, self.vault)[1])
+        self.assertEqual(json.loads(path.read_text())["state"], "silent")
+
+    async def test_deferred_silence_writes_receipt_but_continued_does_not(self):
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
+        self.note("continued")
+        self.assertTrue((await self.send("[SILENT]")).success)
+        self.assertFalse(path.exists())
+        (self.vault / "BOXP-999.md").unlink()
+        self.note("deferred")
+        self.assertTrue((await self.send("[SILENT]")).success)
+        self.assertEqual(json.loads(path.read_text())["state"], "silent")
+        self.assertFalse(self.calls)
+
+    async def test_reply_after_deferred_marker_is_held_for_the_digest(self):
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".md")
+        self.note("deferred")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)):
+            self.assertFalse(delivery.quiet_now(self.vault))
+            self.assertTrue((await self.send("report")).success)
+        self.assertFalse(self.calls)
+        self.assertEqual(json.loads(path.read_text())["state"], "quiet-held")
+
+    async def test_reply_after_digest_claim_is_held(self):
+        directory = self.vault.parent / "Projects/task-board-events"
+        (directory / "delivery-claims").mkdir(parents=True)
+        (directory / "delivery-claims" / (EVENT + ".md")).write_text("{}")
+        self.note("notified")
+        with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 12, 0, tzinfo=timezone.utc)):
+            self.assertFalse(delivery.quiet_now(self.vault))
+            self.assertTrue((await self.send("report")).success)
+        self.assertFalse(self.calls)
+        self.assertEqual(json.loads((directory / "delivery-receipts" / (EVENT + ".md")).read_text())["state"], "quiet-held")
+
+    def test_digest_silence_keeps_earlier_egress_evidence(self):
+        event = "BOXP-999-digest-20261030T120000Z-abcdef12"
+        source = NS(platform=NS(value="webhook"), chat_id="webhook:task-board:" + event)
+        directory = self.vault.parent / "Projects/task-board-events/delivery-receipts"
+        directory.mkdir(parents=True)
+        self.note("silent", event=event)
+        for state in ["uncertain", "sent"]:
+            (directory / (event + ".md")).write_text(json.dumps({"event": event, "state": state}))
+            delivery.shape(source, {}, "[SILENT]", True, self.vault)
+            self.assertEqual(json.loads((directory / (event + ".md")).read_text())["state"], state)
+
+    def test_digest_silence_respects_a_local_uncertain_receipt(self):
+        event = "BOXP-999-digest-20261030T120000Z-abcdef12"
+        directory = self.vault.parent / "Projects/task-board-events/delivery-receipts"
+        self.root.mkdir()
+        local = self.root / (hashlib.sha256(event.encode()).hexdigest() + ".json")
+        local.write_text(json.dumps({"event": event, "state": "uncertain"}))
+        delivery.digest_silence_receipt(self.vault, event, "silent", self.root)
+        self.assertFalse((directory / (event + ".md")).exists())
+        local.unlink()
+        delivery.digest_silence_receipt(self.vault, event, "silent", self.root)
+        self.assertEqual(json.loads((directory / (event + ".md")).read_text())["state"], "silent")
+
+    def test_digest_identity(self):
+        event = "BOXP-999-digest-20261030T120000Z-abcdef12"
+        self.assertEqual(delivery.identity("webhook:task-board:" + event), (event, "BOXP-999"))
 
     async def test_success_and_question_preserve_report_and_deduplicate(self):
         for result in ["notified", "question"]:

@@ -76,6 +76,85 @@ bb -e '
                   "# HELP ai_subscription_window_present AI subscription window_present."
                   "# HELP ai_subscription_limiting_window AI subscription limiting_window."]]
       (assert (clojure.string/includes? out part) part)))
+  ;; Window-level retention: an event listing only some windows must not erase the others.
+  (let [wroot (str root "-windows")
+        path (str wroot "/ai-ops/subscription/claude.json")
+        base (* now 1000)
+        fable-labels "provider=\"claude\",limit=\"seven_day_overage_included\",name=\"fable_7d\",window=\"7d\""
+        shared-labels "provider=\"claude\",limit=\"seven_day\",name=\"shared_7d\",window=\"7d\""
+        rec (fn [windows ms scope] (ai-subscription-usage/record-claude-rate-limit! wroot {:rate_limit_info {:status "allowed" :unifiedWindows windows}} ms scope))
+        win (fn [u reset] {:utilization u :resetsAt reset :status "allowed"})
+        prom #(ai-subscription-usage/prom-text wroot (str home "-empty") %)
+        has (fn [out part] (assert (clojure.string/includes? out part) part))
+        lacks (fn [out re] (assert (not (re-find re out)) (str re)))]
+    ;; Fable+shared, then shared only (Opus run): Fable keeps its own value and time.
+    (rec {:seven_day (win 0.4 (+ now 500)) :seven_day_overage_included (win 0.85 (+ now 500))} (- base 60000) "acct-a")
+    (rec {:seven_day (win 0.43 (+ now 500))} base "acct-a")
+    (let [out (prom now)]
+      (has out (str "ai_subscription_window_used_percent{" fable-labels "} 85.0"))
+      (has out (str "ai_subscription_window_observed_timestamp_seconds{" fable-labels "} " (- now 60)))
+      (has out (str "ai_subscription_window_used_percent{" shared-labels "} 43.0"))
+      (has out (str "ai_subscription_window_observed_timestamp_seconds{" shared-labels "} " now))
+      (has out "ai_subscription_window_present{provider=\"claude\",limit=\"seven_day_overage_included\",name=\"fable_7d\"} 1")
+      (has out (str "ai_subscription_observed_timestamp_seconds{provider=\"claude\"} " now)))
+    ;; A never-observed window stays absent, not 0.
+    (let [out (prom now)]
+      (has out "ai_subscription_window_present{provider=\"claude\",limit=\"five_hour\",name=\"shared_5h\"} 0")
+      (lacks out #"ai_subscription_window_used_percent\{[^\n]*five_hour"))
+    ;; Out of order: older event cannot overwrite a newer window or the top level,
+    ;; but may fill a window not seen since.
+    (rec {:seven_day (win 0.1 (+ now 500)) :five_hour (win 0.2 (+ now 100))} (- base 30000) "acct-a")
+    (let [data (:data (ai-subscription-usage/snapshot path)) out (prom now)]
+      (assert (= base (:observed_at_ms data)))
+      (has out (str "ai_subscription_window_used_percent{" shared-labels "} 43.0"))
+      (has out "ai_subscription_window_used_percent{provider=\"claude\",limit=\"five_hour\",name=\"shared_5h\",window=\"5h\"} 20.0")
+      (has out (str "ai_subscription_window_observed_timestamp_seconds{provider=\"claude\",limit=\"five_hour\",name=\"shared_5h\",window=\"5h\"} " (- now 30))))
+    ;; After reset: old used is withheld while last observation and expiry remain visible.
+    (let [out (prom (+ now 600))]
+      (lacks out #"ai_subscription_window_used_percent\{[^\n]*seven_day_overage_included")
+      (lacks out #"ai_subscription_window_status\{[^\n]*seven_day_overage_included")
+      (has out (str "ai_subscription_window_expired{" fable-labels "} 1"))
+      (has out (str "ai_subscription_window_observed_timestamp_seconds{" fable-labels "} " (- now 60))))
+    ;; A later cycle replaces the window.
+    (rec {:seven_day_overage_included (win 0.02 (+ now 9000))} (+ base 1000) "acct-a")
+    (has (prom (+ now 600)) (str "ai_subscription_window_used_percent{" fable-labels "} 2.0"))
+    ;; Unknown scope cannot prove a boundary, so it retains.
+    (rec {:seven_day (win 0.44 (+ now 500))} (+ base 2000) nil)
+    (has (prom now) (str "ai_subscription_window_used_percent{" fable-labels "} 2.0"))
+    ;; Older event of another account is ignored; a newer one drops only windows of that account.
+    (rec {:seven_day (win 0.9 (+ now 500))} (- base 90000) "acct-b")
+    (has (prom now) (str "ai_subscription_window_used_percent{" fable-labels "} 2.0"))
+    (rec {:seven_day (win 0.05 (+ now 500))} (+ base 3000) "acct-b")
+    (let [out (prom now)]
+      (lacks out #"ai_subscription_window_used_percent\{[^\n]*seven_day_overage_included")
+      (has out "ai_subscription_window_present{provider=\"claude\",limit=\"seven_day_overage_included\",name=\"fable_7d\"} 0")
+      (has out (str "ai_subscription_window_used_percent{" shared-labels "} 5.0")))
+    ;; The scope never reaches the exposition.
+    (assert (not (clojure.string/includes? (prom now) "acct-")))
+    ;; An unknown-scope event keeps the last known boundary, both on a refreshed
+    ;; window and on a window it adds, so a later account switch still drops them.
+    (rec {:seven_day (win 0.06 (+ now 500))} (+ base 4000) nil)
+    (rec {:five_hour (win 0.07 (+ now 100))} (+ base 5000) nil)
+    (let [out (prom now)]
+      (has out (str "ai_subscription_window_used_percent{" shared-labels "} 6.0"))
+      (has out "ai_subscription_window_used_percent{provider=\"claude\",limit=\"five_hour\",name=\"shared_5h\",window=\"5h\"} 7.0"))
+    (rec {:seven_day_sonnet (win 0.08 (+ now 500))} (+ base 6000) "acct-c")
+    (let [out (prom now)]
+      (lacks out #"ai_subscription_window_used_percent\{[^\n]*limit=\"seven_day\"")
+      (lacks out #"ai_subscription_window_used_percent\{[^\n]*limit=\"five_hour\"")
+      (has out "ai_subscription_window_used_percent{provider=\"claude\",limit=\"seven_day_sonnet\",name=\"sonnet_7d\",window=\"7d\"} 8.0"))
+    ;; Legacy snapshot without per-window time inherits the file time, then merges.
+    (spit path (cheshire.core/generate-string {:observed_at (- now 10) :rate_limit_info {:status "allowed" :unifiedWindows {:seven_day_overage_included (win 0.7 (+ now 500))}}}))
+    (rec {:seven_day (win 0.3 (+ now 500))} base "acct-a")
+    (let [out (prom now)]
+      (has out (str "ai_subscription_window_used_percent{" fable-labels "} 70.0"))
+      (has out (str "ai_subscription_window_observed_timestamp_seconds{" fable-labels "} " (- now 10)))))
+  ;; Concurrent writers in one process keep every distinct window.
+  (let [wroot (str root "-concurrent") base (* now 1000)
+        jobs (doall (for [i (shuffle (range 12))]
+                      (future (ai-subscription-usage/record-claude-rate-limit! wroot {:rate_limit_info {:unifiedWindows {(keyword (str "w_" i)) {:utilization 0.1}}}} (+ base i) "a"))))]
+    (doseq [job jobs] @job)
+    (assert (= 12 (count (get-in (ai-subscription-usage/snapshot (str wroot "/ai-ops/subscription/claude.json")) [:data :rate_limit_info :unifiedWindows])))))
   (let [out (ai-subscription-usage/prom-text (str root "-empty") (str home "-empty") now)]
     (assert (clojure.string/includes? out "state=\"no_snapshot\""))
     (assert (not (clojure.string/includes? out "ai_subscription_window_used_percent"))))
@@ -128,6 +207,58 @@ bb -e '
   (ai-subscription-usage/record-claude-rate-limit! root event (* now 1000))
   (assert (= "ok" (:state (ai-subscription-usage/snapshot (str root "/ai-ops/subscription/claude.json"))))))
 '
+# Separate runner processes must not lose each other's windows.
+for i in 0 1 2 3 4 5; do
+  TEST_I="${i}" bb -e '
+  (load-file (System/getenv "TEST_MODULE"))
+  (let [i (System/getenv "TEST_I")]
+    (ai-subscription-usage/record-claude-rate-limit! (str (System/getenv "TEST_ROOT") "-procs")
+      {:rate_limit_info {:unifiedWindows {(keyword (str "w_" i)) {:utilization 0.1}}}}
+      (+ 1800000000000 (Long/parseLong i)) "a"))' >/dev/null &
+done
+wait
+bb -e '
+(load-file (System/getenv "TEST_MODULE"))
+(assert (= 6 (count (get-in (ai-subscription-usage/snapshot (str (System/getenv "TEST_ROOT") "-procs/ai-ops/subscription/claude.json")) [:data :rate_limit_info :unifiedWindows]))))
+;; The account digest comes from the local config, is opaque, and is nil when absent.
+(let [dir (str (System/getenv "TEST_ROOT") "-home")]
+  (babashka.fs/create-dirs dir)
+  (spit (str dir "/.claude.json") (cheshire.core/generate-string {:oauthAccount {:accountUuid "SECRET_ACCOUNT" :emailAddress "SECRET_MAIL"}}))
+  (System/setProperty "user.home" dir)
+  (let [scope (ai-subscription-usage/claude-account-scope)]
+    (assert (re-matches #"[0-9a-f]{16}" scope)))
+  ;; A run stays bound to the account it started with. After a login switch its
+  ;; later events cannot be attributed, so they must not enter the snapshot under
+  ;; either account; the windows of the account now logged in stay intact.
+  (let [login (fn [account] (spit (str dir "/.claude.json") (cheshire.core/generate-string {:oauthAccount {:accountUuid account}})) (ai-subscription-usage/claude-account-scope))
+        rroot (str (System/getenv "TEST_ROOT") "-run-scope")
+        file (str rroot "/ai-ops/subscription/claude.json")
+        used (fn [] (get-in (ai-subscription-usage/snapshot file) [:data :rate_limit_info :unifiedWindows :seven_day :utilization]))
+        scope-of (fn [] (get-in (ai-subscription-usage/snapshot file) [:data :rate_limit_info :unifiedWindows :seven_day :account_scope]))
+        rec (fn [u ms run-scope] (ai-subscription-usage/record-claude-run-rate-limit! rroot {:rate_limit_info {:unifiedWindows {:seven_day {:utilization u}}}} ms run-scope))
+        base 1800000000000
+        a (login "account-a")]
+    (rec 0.1 base a)
+    (assert (= [0.1 a] [(used) (scope-of)]))
+    (let [b (login "account-b")]
+      ;; Run A, login now B: dropped although it is the newest event.
+      (rec 0.9 (+ base 1000) a)
+      (assert (= [0.1 a] [(used) (scope-of)]))
+      ;; A run started under B replaces the old account.
+      (rec 0.2 (+ base 2000) b)
+      (assert (= [0.2 b] [(used) (scope-of)]))
+      ;; A late event of run A cannot take the snapshot back from B.
+      (rec 0.8 (+ base 3000) a)
+      (assert (= [0.2 b] [(used) (scope-of)]))
+      ;; Unknown at start but known now: the boundary is unverified, so drop.
+      (rec 0.7 (+ base 4000) nil)
+      (assert (= [0.2 b] [(used) (scope-of)]))
+      ;; Config temporarily unreadable: the start scope still identifies the run.
+      (babashka.fs/delete (str dir "/.claude.json"))
+      (rec 0.3 (+ base 5000) b)
+      (assert (= [0.3 b] [(used) (scope-of)]))))
+  (babashka.fs/delete-if-exists (str dir "/.claude.json"))
+  (assert (nil? (ai-subscription-usage/claude-account-scope))))' >/dev/null
 mkdir -p "${tmp}/vault/Boards" "${tmp}/vault/Tickets" "${tmp}/bin"
 cat >"${tmp}/vault/Boards/Task Board.md" <<'BOARD'
 # Task Board

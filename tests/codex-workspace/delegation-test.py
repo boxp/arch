@@ -100,7 +100,9 @@ time.sleep(60)
                     status = Path(f'/proc/{pid}/status').read_text()
                     if not any(line.startswith('State:') and 'Z' in line.split()[1] for line in status.splitlines()):
                         running.append(pid)
-                except FileNotFoundError:
+                except (FileNotFoundError, ProcessLookupError):
+                    # /proc/<pid> が open 後 read 前に消えると ESRCH (ProcessLookupError) になる。
+                    # どちらもプロセスが既に停止したことを意味する。
                     pass
             if not running:
                 return

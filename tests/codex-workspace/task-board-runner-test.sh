@@ -13,6 +13,66 @@ RUNNER="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_runner.bb"
 HELPER="${ROOT_DIR}/docker/hermes-agent/skills/obsidian-task-board/bin/task-board.bb"
 export TASK_BOARD_DELEGATION_HELPER="${ROOT_DIR}/docker/codex-workspace/task-board/delegate.py"
 
+root_guard_test() {
+  local t bin before after cmd mode
+  t="$(mktemp -d)"
+  bin="$t/bin"
+  mkdir -p "$bin" "$t/vault/Boards" "$t/vault/Tickets" "$t/tmp"
+  cat > "$bin/id" <<'FAKE'
+#!/bin/sh
+printf '%s\n' "${FAKE_UID_VALUE:-0}"
+FAKE
+  chmod +x "$bin/id"
+  cat > "$t/vault/Boards/Task Board.md" <<'BOARD'
+# Task Board
+
+## Backlog
+
+- [ ] [[Tickets/BOXP-1|BOXP-1: Test]] #ticket status::backlog priority::medium
+
+## Ready
+
+## In Progress
+
+## Blocked
+
+## Done
+BOARD
+  cat > "$t/vault/Tickets/BOXP-1.md" <<'TICKET'
+---
+id: BOXP-1
+type: task
+status: backlog
+priority: medium
+---
+
+# BOXP-1: Test
+
+## Notes
+TICKET
+  before="$(cd "$t/vault" && find . -type f -print0 | sort -z | xargs -0 sha256sum)"
+  for cmd in create update append-note request-codex delete; do
+    for mode in normal dry; do
+      local extra=()
+      [[ "$mode" == dry ]] && extra=(--dry-run)
+      if PATH="$bin:$PATH" bb -Djava.io.tmpdir="$t/tmp" "$HELPER" "$cmd" BOXP-1 --vault "$t/vault" "${extra[@]}" >"$t/out" 2>"$t/err"; then
+        echo "root $cmd $mode unexpectedly succeeded" >&2; return 1
+      fi
+      grep -Fq 'kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-setuidgid hermes bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb <command> ...' "$t/err"
+      [[ ! -e "$t/tmp/task-board-locks" ]]
+    done
+  done
+  PATH="$bin:$PATH" bb -Djava.io.tmpdir="$t/tmp" "$HELPER" list --vault "$t/vault" >/dev/null
+  PATH="$bin:$PATH" bb -Djava.io.tmpdir="$t/tmp" "$HELPER" show BOXP-1 --vault "$t/vault" >/dev/null
+  [[ ! -e "$t/tmp/task-board-locks" ]]
+  after="$(cd "$t/vault" && find . -type f -print0 | sort -z | xargs -0 sha256sum)"
+  [[ "$before" == "$after" ]]
+  FAKE_UID_VALUE=1000 PATH="$bin:$PATH" bb -Djava.io.tmpdir="$t/tmp" "$HELPER" append-note BOXP-1 --vault "$t/vault" --source test --note 'non-root write' >/dev/null
+  grep -Fq 'non-root write' "$t/vault/Tickets/BOXP-1.md"
+  rm -rf "$t"
+}
+
+
 fail() {
   echo "error: $*" >&2
   exit 1
@@ -49,11 +109,17 @@ make_fake_codex() {
 set -euo pipefail
 
 last_message=""
+json=false
+if [[ -n "${CODEX_FAKE_ARG_LINES:-}" ]]; then printf '%s\n' "$@" >"${CODEX_FAKE_ARG_LINES}"; fi
 if [[ -n "${CODEX_FAKE_ARG_LOG:-}" ]]; then
   printf '%s\n' "$*" >>"${CODEX_FAKE_ARG_LOG}"
 fi
 while [[ $# -gt 0 ]]; do
   case "$1" in
+    --json)
+      json=true
+      shift
+      ;;
     --output-last-message)
       last_message="$2"
       shift 2
@@ -76,6 +142,9 @@ fi
 mkdir -p "$(dirname "${last_message}")"
 if grep -q '^CODEX_REVIEW_GATE$' "${prompt}"; then
   printf '%s\n' "${CODEX_FAKE_REVIEW_MESSAGE:-CODEX_REVIEW_RESULT: clean}" >"${last_message}"
+  if [[ "${json}" == true && "${CODEX_FAKE_REVIEW_NO_JSON:-0}" != 1 ]]; then
+    printf '%s\n' '{"type":"thread.started","thread_id":"fake-review-thread"}' '{"type":"turn.completed","usage":{"input_tokens":120,"cached_input_tokens":20,"output_tokens":30,"reasoning_output_tokens":5}}'
+  fi
   rm -f "${prompt}"
   exit 0
 fi
@@ -85,9 +154,15 @@ fi
 if [[ -n "${CODEX_FAKE_LOCK_SNAPSHOT:-}" && -n "${CODEX_FAKE_LOCK_FILE:-}" ]]; then
   cp "${CODEX_FAKE_LOCK_FILE}" "${CODEX_FAKE_LOCK_SNAPSHOT}"
 fi
+if [[ -n "${CODEX_FAKE_TODO_VAULT:-}" ]]; then
+  rev="$(bb "${CODEX_FAKE_TODO_MODULE}" status "${ticket}" --vault "${CODEX_FAKE_TODO_VAULT}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  bb "${CODEX_FAKE_TODO_MODULE}" ack "${ticket}" --vault "${CODEX_FAKE_TODO_VAULT}" --rev "${rev}" >/dev/null
+  bb "${CODEX_FAKE_TODO_MODULE}" done "${ticket}" TD-01 --vault "${CODEX_FAKE_TODO_VAULT}" --evidence test >/dev/null
+fi
 sleep "${CODEX_FAKE_SLEEP:-0}"
 printf '%s\n' "${CODEX_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}" >"${last_message}"
 rm -f "${prompt}"
+exit "${CODEX_FAKE_EXIT:-0}"
 EOF
   chmod +x "${bin_dir}/codex"
 }
@@ -162,6 +237,25 @@ EOF
   chmod +x "${bin_dir}/claude"
 }
 
+make_fake_curl() {
+  # BOXP-405: stands in for the Grafana datasource proxy read. Serves
+  # CURL_FAKE_RESPONSE_FILE, or fails with CURL_FAKE_EXIT; logs its arguments.
+  local bin_dir="$1"
+  cat >"${bin_dir}/curl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${CURL_FAKE_ARG_LOG:-}" ]]; then
+  printf '%s\n' "$*" >>"${CURL_FAKE_ARG_LOG}"
+fi
+if [[ "${CURL_FAKE_EXIT:-0}" != 0 ]]; then
+  echo "curl: (${CURL_FAKE_EXIT}) fake failure" >&2
+  exit "${CURL_FAKE_EXIT}"
+fi
+cat "${CURL_FAKE_RESPONSE_FILE}"
+EOF
+  chmod +x "${bin_dir}/curl"
+}
+
 make_fake_gh() {
   local bin_dir="$1"
   cat >"${bin_dir}/gh" <<'EOF'
@@ -171,6 +265,11 @@ set -euo pipefail
 if [[ "${GH_FAKE_FAIL:-false}" == true ]]; then
   echo "gh api failed: token=super-secret-token" >&2
   exit 1
+fi
+
+if [[ "$1 $2" == "pr view" && "$*" == *"--json headRefOid"* ]]; then
+  printf '%s\n' "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  exit 0
 fi
 
 if [[ "$1 $2" == "pr view" && "$3" =~ ^https://github.com/boxp/example/pull/[0-9]+$ ]]; then
@@ -326,6 +425,91 @@ run_tick() {
   "$@" bb "${RUNNER}" tick
 }
 
+test_review_lane_retirement_contract() {
+  local tmp vault state bin prompt_log pr_message
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/prompt"
+  pr_message=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: continue'
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_gh "${bin}"
+
+  # Gate pass and unmerged: back to Ready with the same assignee, nobody is waited for.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-501|BOXP-501: continue]] #ticket status::in-progress"
+  sed -i '/^## Review$/d' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-501 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${prompt_log}" CODEX_FAKE_MESSAGE="${pr_message}" run_tick "${vault}" "${state}" env >"${tmp}/tick1"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-501: continue\]\].*status::ready.*assignee::codex'
+  assert_file_contains "${vault}/Tickets/BOXP-501.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-501.md" '^assignee: codex$'
+  assert_file_contains "${vault}/Tickets/BOXP-501.md" 'Ready継続: 担当 codex のまま次 run へ（自動継続 1/8）'
+  assert_file_contains "${prompt_log}" 'the board has no Review lane'
+  assert_file_contains "${prompt_log}" 'TASK_BOARD_RESULT: done, TASK_BOARD_RESULT: continue, or TASK_BOARD_RESULT: blocked'
+  assert_file_not_contains "${prompt_log}" 'TASK_BOARD_RESULT: review'
+  assert_file_not_contains "${vault}/Boards/Task Board.md" '^## Review'
+
+  # The next tick continues it and names the head the gates passed.
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${prompt_log}" CODEX_FAKE_MESSAGE=$'merged and verified\nTASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/tick2"
+  assert_file_contains "${prompt_log}" 'https://github.com/boxp/example/pull/123 @ aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+  assert_file_contains "${vault}/Tickets/BOXP-501.md" '^status: done$'
+  assert_file_not_contains "${state}/continuation-budget.edn" 'BOXP-501'
+
+  # A legacy marker from a run started before the rollout does not re-create Review.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-502|BOXP-502: legacy]] #ticket status::in-progress"
+  sed -i '/^## Review$/d' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-502 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >"${tmp}/tick3"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-502: legacy\]\].*status::ready.*assignee::codex'
+  assert_file_not_contains "${vault}/Boards/Task Board.md" '^## Review'
+  assert_file_not_contains "${vault}/Boards/Task Board.md" 'status::review'
+
+  # Fixable gate failure: stays with the worker in In Progress, not with a person.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-503|BOXP-503: fixable]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-503 in-progress codex
+  PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE="${pr_message}" run_tick "${vault}" "${state}" env >"${tmp}/tick4"
+  assert_file_contains "${vault}/Tickets/BOXP-503.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-503.md" '^assignee: codex$'
+
+  # The worker's own blocked: named input, resolver and next action, nothing merged.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-504|BOXP-504: scope]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-504 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >"${tmp}/tick5"
+  assert_file_contains "${vault}/Tickets/BOXP-504.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-504.md" 'needed-input=.*resolver=.*next-action='
+
+  # A run that never finishes stops at the finite limit and is resumed only explicitly.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-505|BOXP-505: loop]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-505 in-progress codex
+  local round
+  for round in 1 2 3; do
+    PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT=2 CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/loop${round}"
+  done
+  assert_file_contains "${vault}/Tickets/BOXP-505.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-505.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Tickets/BOXP-505.md" 'category=continuation-limit'
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-505'
+  # Stays stopped: no candidate action while it belongs to boxp.
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/loop4"
+  [[ ! -e "${tmp}/starts" ]] || fail 'a stopped continuation must not start again by itself'
+  bb "${HELPER}" update BOXP-505 --vault "${vault}" --lane Blocked --assignee codex >/dev/null
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT=2 CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/loop5"
+  assert_file_contains "${vault}/Tickets/BOXP-505.md" '^status: ready$'
+
+  # A leftover Review card: with a worker it is continued, for boxp it stays visible.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-506|BOXP-506: worker]] #ticket status::in-progress"
+  sed -i '/BOXP-506/d; s/^## Review$/## Review\n\n- [ ] [[Tickets\/BOXP-506|BOXP-506: worker]] #ticket status::review\n- [ ] [[Tickets\/BOXP-507|BOXP-507: owner]] #ticket status::review/' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-506 review codex
+  write_ticket "${vault}" BOXP-507 review boxp
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/legacy"
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-506: worker\]\].*status::ready'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-507: owner\]\].*status::review'
+  bb "${HELPER}" update BOXP-507 --vault "${vault}" --lane Blocked >/dev/null
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-507:.*status::blocked'
+}
+
 test_parallel_codex_runs() {
   local tmp vault state bin log first_start second_start start_delta
   tmp="$(mktemp -d)"
@@ -395,6 +579,24 @@ test_claude_pump_drains_when_events_log_cannot_open() {
       (assert (zero? (.available input)))
       (assert (= "allowed" (get-in (ai-subscription-usage/snapshot (str (root) "/ai-ops/subscription/claude.json")) [:data :rate_limit_info :status])))
       (assert (= 1 (count (filter #(str/includes? % "claude events log open failed") @warnings)))))
+    ;; The pump attributes events to the scope fixed at process start, not to the
+    ;; login at receive time.
+    (let [home (str (System/getenv "TEST_STATE") "-home")
+          state (str (System/getenv "TEST_STATE") "-switch")
+          snapshot-path (str state "/ai-ops/subscription/claude.json")
+          event-line "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"allowed\"}}\n"
+          pump! (fn [scope] (with-redefs [root (constantly state)]
+                              (pump-claude-stream! (java.io.ByteArrayInputStream. (.getBytes event-line "UTF-8")) (System/getenv "TEST_LOG_PATH") (atom {}) scope)))
+          old-home (System/getProperty "user.home")]
+      (babashka.fs/create-dirs home)
+      (spit (str home "/.claude.json") (json/generate-string {:oauthAccount {:accountUuid "account-b"}}))
+      (System/setProperty "user.home" home)
+      (try
+        (pump! "scope-of-account-a")
+        (assert (not (babashka.fs/exists? snapshot-path)) "event of a run started under another account must not be recorded")
+        (pump! (ai-subscription-usage/claude-account-scope))
+        (assert (babashka.fs/exists? snapshot-path) "event of a run under the current account must be recorded")
+        (finally (System/setProperty "user.home" old-home))))
     ;; The caller may stop waiting for the drain (deref timeout): the shared
     ;; summary atom must already hold the result while the stream is still open.
     (let [out (java.io.PipedOutputStream.)
@@ -699,7 +901,7 @@ test_explicit_claude_error_and_review_markers_are_processed() {
   PATH="${bin}:$PATH" \
     CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-claude-review.out
-  assert_file_contains "${vault}/Tickets/BOXP-162.md" '^status: review$'
+  assert_file_contains "${vault}/Tickets/BOXP-162.md" '^status: ready$'
   assert_run_summary_contains "${state}" BOXP-162 ':agent "claude-opus"'
   summary="$(find "${state}/runs/BOXP-162" -name last-message.md -print | sort | tail -n 1)"
   assert_file_contains "${summary}" '^TASK_BOARD_RESULT: review$'
@@ -707,8 +909,9 @@ test_explicit_claude_error_and_review_markers_are_processed() {
   write_board "${vault}" "- [ ] [[Tickets/BOXP-166|BOXP-166: missing marker]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-166 in-progress claude-fable
   PATH="${bin}:$PATH" CLAUDE_FAKE_MESSAGE='completed without a task board marker' run_tick "${vault}" "${state}" env >/tmp/task-board-claude-missing-marker.out
-  assert_file_contains "${vault}/Tickets/BOXP-166.md" '^status: blocked$'
-  assert_run_summary_contains "${state}" BOXP-166 ':blocker-category "pr-gate-pr-url"'
+  assert_file_contains "${vault}/Tickets/BOXP-166.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-166.md" '^assignee: claude-fable$'
+  assert_run_summary_contains "${state}" BOXP-166 ':status :retrying'
 
   write_board "${vault}" "- [ ] [[Tickets/BOXP-167|BOXP-167: blocked marker]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-167 in-progress claude-fable
@@ -1629,6 +1832,16 @@ test_review_without_pr_is_blocked() {
 
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review.out
 
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: in-progress$'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^assignee: codex$'
+  assert_run_summary_contains "${state}" BOXP-301 ':status :retrying'
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >"${tmp}/retry"
+  assert_file_contains "${tmp}/prompt" 'Re-check Notes and PR state'
+  assert_file_contains "${tmp}/prompt" 'TASK_BOARD_REVIEW_PR: none if no repository change was made, plus exactly one TASK_BOARD_RESULT marker'
+  assert_file_contains "${tmp}/prompt" 'trailing reply to a background notification must not replace this report'
+  assert_file_not_contains "${tmp}/prompt" 'Target PR URL: nil'
+  assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: in-progress$'
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >"${tmp}/exhausted"
   assert_file_contains "${vault}/Boards/Task Board.md" '## Blocked'
   assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::blocked'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" '^status: blocked$'
@@ -1636,7 +1849,16 @@ test_review_without_pr_is_blocked() {
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'Blocked transition recorded: ticket=BOXP-301; run='
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'action=implement; at=.*category=pr-gate-pr-url'
   assert_file_contains "${vault}/Tickets/BOXP-301.md" 'inspect run artifacts: .*/summary\.edn, .*/last-message\.md, .*/events\.jsonl, .*/stderr\.log'
-  assert_file_not_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::review'
+  assert_file_not_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-301\|BOXP-301: review\]\].*status::ready'
+
+  make_fake_gh "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-399|BOXP-399: retry succeeds]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-399 in-progress codex boxp/example
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/missing"
+  assert_file_contains "${vault}/Tickets/BOXP-399.md" '^status: in-progress$'
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/success"
+  assert_file_contains "${vault}/Tickets/BOXP-399.md" '^status: ready$'
+  assert_file_not_contains "${state}/state.edn" '"BOXP-399"'
 }
 
 test_fable_reported_blocked_is_audited() {
@@ -1730,14 +1952,14 @@ test_blocker_note_failure_restores_original_lane() {
   bin="${tmp}/bin"
   mkdir -p "${bin}"
   make_fake_codex "${bin}"
-  write_board "${vault}" "- [ ] [[Tickets/BOXP-306|BOXP-306: restore review]] #ticket status::review"
-  write_ticket "${vault}" BOXP-306 review codex
-  bb "${HELPER}" update BOXP-306 --vault "${vault}" --lane Review >/dev/null
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-306|BOXP-306: restore ready]] #ticket status::ready"
+  write_ticket "${vault}" BOXP-306 ready codex
+  bb "${HELPER}" update BOXP-306 --vault "${vault}" --lane Ready >/dev/null
 
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKER_NOTE=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' run_tick "${vault}" "${state}" env >/tmp/task-board-blocker-note-restore.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-306\|BOXP-306: test ticket\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-306.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-306\|BOXP-306: test ticket\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-306.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-306.md" '^assignee: codex$'
 }
 
@@ -1775,10 +1997,10 @@ test_nonretryable_pr_gate_blocked_state_failure_keeps_summary_consistent() {
   write_board "${vault}" "- [ ] [[Tickets/BOXP-308|BOXP-308: nonretryable gate state failure]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-308 in-progress codex
 
-  # A review result without a PR URL is a non-retryable :pr-url gate
-  # failure.  The forced Blocked-state failure must restore the ticket while
+  # A zero retry limit exhausts the :pr-url gate immediately.
+  # The forced Blocked-state failure must restore the ticket while
   # keeping the provisional succeeded summary, rather than persisting :blocked.
-  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE=true \
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE=true CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=0 \
     CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-nonretryable-gate-state-failure.out
 
@@ -1804,9 +2026,9 @@ test_review_with_pr_url_is_noted() {
 
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=1 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-pr.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-401\|BOXP-401: review pr\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^status: review$'
-  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^assignee: boxp$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-401\|BOXP-401: review pr\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-401.md" '^assignee: codex$'
   assert_file_contains "${vault}/Tickets/BOXP-401.md" 'PR: https://github.com/boxp/example/pull/123'
   assert_file_contains "${vault}/Tickets/BOXP-401.md" 'Review gates passed'
 }
@@ -1824,8 +2046,8 @@ test_review_without_repo_marker_skips_pr_gates() {
 
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-none.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-402\|BOXP-402: no repo review\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-402\|BOXP-402: no repo review\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-402.md" '^status: ready$'
   # A skipped gate (no PR to check) must not be counted as a pass.
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["all" "skip"\] 1'
   assert_file_contains "${state}/ai-ops/ledger-stats.edn" '\["pr-url" "skip"\] 1'
@@ -1984,8 +2206,8 @@ test_review_p2_only_passes_without_budget() {
   local tmp vault state bin
   review_severity_setup
   CODEX_FAKE_REVIEW_MESSAGE=$'CODEX_REVIEW_RESULT: issues\nCODEX_REVIEW_FINDING: P2 | x | improve wording\nCODEX_REVIEW_FINDING: P3 | x | rename\nCODEX_REVIEW_FINDING: nit | x | cleanup' review_severity_tick
-  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-405: review issue.*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-405: review issue.*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Review gates passed'
   assert_file_contains "${vault}/Tickets/BOXP-405.md" 'Non-blocking low-priority review findings \(P2/P3/nit\): 3'
   assert_file_not_contains "${vault}/Tickets/BOXP-405.md" 'improve wording'
@@ -2104,7 +2326,7 @@ test_review_with_pr_and_none_marker_checks_pr() {
 
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nCreated PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-pr-wins.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-406\|BOXP-406: pr wins\]\].*status::review'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-406\|BOXP-406: pr wins\]\].*status::ready'
   assert_file_contains "${vault}/Tickets/BOXP-406.md" 'Review gates passed'
 }
 
@@ -2122,8 +2344,8 @@ test_review_with_multiple_pr_urls_checks_all() {
 
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PRs:\nhttps://github.com/boxp/example/pull/123\nhttps://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-multiple-prs.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-410\|BOXP-410: multiple prs\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-410.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-410\|BOXP-410: multiple prs\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-410.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-410.md" 'PR: https://github.com/boxp/example/pull/123, https://github.com/boxp/example/pull/456'
   assert_file_contains "${vault}/Tickets/BOXP-410.md" 'Review gates passed\.'
   assert_file_not_contains "${vault}/Tickets/BOXP-410.md" 'GitHub mergeStateStatus'
@@ -2176,7 +2398,7 @@ test_review_gate_keeps_lock_heartbeat_active() {
 
   read -r before after <"${log}"
   [[ "${after}" -gt "${before}" ]] || fail "expected lock heartbeat to update during PR gate, got ${before} -> ${after}"
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-412\|BOXP-412: gate heartbeat\]\].*status::review'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-412\|BOXP-412: gate heartbeat\]\].*status::ready'
 }
 
 test_review_gate_passes_codex_model_profile_to_review() {
@@ -2199,8 +2421,23 @@ test_review_gate_passes_codex_model_profile_to_review() {
     CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' \
     run_tick "${vault}" "${state}" env >/tmp/task-board-review-codex-config.out
 
-  assert_file_contains "${log}" 'codex-review-boxp__example-123\.md.*--model gpt-test.*--profile review-profile'
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-413\|BOXP-413: review codex config\]\].*status::review'
+  assert_file_contains "${log}" '--json.*codex-review-boxp__example-123\.md.*--model gpt-test.*--profile review-profile'
+  local usage_file
+  usage_file="$(find "${state}/runs/BOXP-413" -name codex-review-boxp__example-123-usage.jsonl -print -quit)"
+  assert_file_contains "${usage_file}" '"usage_status":"recorded"'
+  assert_file_contains "${usage_file}" '"input_tokens":120'
+  assert_file_contains "${usage_file}" '"thread_id":"fake-review-thread"'
+  assert_file_not_contains "${usage_file}" 'gpt-|CODEX_REVIEW'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-413\|BOXP-413: review codex config\]\].*status::ready'
+}
+
+test_review_gate_missing_usage_still_passes() {
+  local tmp vault state bin usage_file
+  review_severity_setup
+  CODEX_FAKE_REVIEW_NO_JSON=1 review_severity_tick
+  assert_file_contains "${vault}/Tickets/BOXP-405.md" '^status: ready$'
+  usage_file="$(find "${state}/runs/BOXP-405" -name codex-review-boxp__example-123-usage.jsonl -print -quit)"
+  assert_file_contains "${usage_file}" '"usage_status":"unrecorded"'
 }
 
 test_review_with_empty_ci_rollup_times_out() {
@@ -2239,8 +2476,8 @@ test_review_with_empty_ci_rollup_passes_for_no_ci_repo() {
   # Explicit opt-in: repo listed in CODEX_TASK_BOARD_NO_CI_REPOS → empty checks + CLEAN merge passes immediately
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=10 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_TASK_BOARD_NO_CI_REPOS='boxp/example' GH_FAKE_CHECKS='[]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-no-ci-repo.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-450\|BOXP-450: no ci repo\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-450.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-450\|BOXP-450: no ci repo\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-450.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-450.md" 'Review gates passed\.'
 }
 
@@ -2402,8 +2639,8 @@ test_review_with_merged_pr_skips_gates() {
   # would poll until this timeout and fail with gate=mergeability.
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_PROMPT_LOG="${prompt_log}" GH_FAKE_PR_STATE=MERGED CODEX_FAKE_MESSAGE=$'Merged PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-merged-pr.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-420\|BOXP-420: merged pr\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-420.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-420\|BOXP-420: merged pr\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-420.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-420.md" 'Review gates passed\. Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123\.'
   summary="$(find "${state}/runs/BOXP-420" -name summary.edn -print | sort | tail -n 1)"
   assert_file_contains "${summary}" ':ok\? true'
@@ -2431,8 +2668,8 @@ test_review_with_none_marker_and_merged_pr_moves_review() {
   # merged PRs must not stall the gate until the timeout.
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 GH_FAKE_PR_STATE=MERGED CODEX_FAKE_MESSAGE=$'Deployed https://github.com/boxp/example/pull/123 and https://github.com/boxp/example/pull/456 earlier.\nTASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-none-merged.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-421\|BOXP-421: none plus merged\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-421.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-421\|BOXP-421: none plus merged\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-421.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-421.md" 'Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123, https://github.com/boxp/example/pull/456\.'
   assert_file_not_contains "${vault}/Tickets/BOXP-421.md" 'Review gate failed'
   summary="$(find "${state}/runs/BOXP-421" -name summary.edn -print | sort | tail -n 1)"
@@ -2454,8 +2691,8 @@ test_review_with_open_and_merged_prs_gates_open_only() {
 
   PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_TIMEOUT_SECONDS=30 CODEX_TASK_BOARD_PR_GATE_POLL_SECONDS=1 CODEX_FAKE_PROMPT_LOG="${prompt_log}" GH_FAKE_PR_STATE_123=MERGED CODEX_FAKE_MESSAGE=$'Context: https://github.com/boxp/example/pull/123 (merged)\nCreated PR: https://github.com/boxp/example/pull/456\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-open-and-merged.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-422\|BOXP-422: open and merged\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-422.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-422\|BOXP-422: open and merged\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-422.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-422.md" 'Already-merged PR\(s\) skipped gates and codex review: https://github.com/boxp/example/pull/123\.'
   summary="$(find "${state}/runs/BOXP-422" -name summary.edn -print | sort | tail -n 1)"
   assert_file_contains "${summary}" ':checked-pr-urls \["https://github.com/boxp/example/pull/456"\]'
@@ -2554,8 +2791,8 @@ test_review_gate_pass_after_retry_moves_review() {
   PATH="${bin}:$PATH" GH_FAKE_CHECKS='[{"name":"unit","status":"COMPLETED","conclusion":"FAILURE"}]' CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-retry-then-pass-1.out
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/123\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-review-retry-then-pass-2.out
 
-  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-415\|BOXP-415: pass after retry\]\].*status::review'
-  assert_file_contains "${vault}/Tickets/BOXP-415.md" '^status: review$'
+  assert_file_contains "${vault}/Boards/Task Board.md" '\[\[Tickets/BOXP-415\|BOXP-415: pass after retry\]\].*status::ready'
+  assert_file_contains "${vault}/Tickets/BOXP-415.md" '^status: ready$'
   assert_file_contains "${vault}/Tickets/BOXP-415.md" 'PR: https://github.com/boxp/example/pull/123'
   assert_file_contains "${vault}/Tickets/BOXP-415.md" 'Review gates passed'
   assert_file_not_contains "${state}/state.edn" 'BOXP-415'
@@ -2643,6 +2880,135 @@ test_fable_implement_prompt_includes_append_note() {
   assert_file_contains "${prompt_log}" 'append-note BOXP-604'
   assert_file_contains "${prompt_log}" 'milestone'
   assert_file_contains "${prompt_log}" '\.claude/skills/obsidian-task-board'
+}
+
+test_ai_ops_alerts_prompt_section_and_summary() {
+  # BOXP-405: the runner reads AiOps* alerts once per run and shows the agent
+  # only allowlisted names; summary.edn keeps the names and the read status.
+  local tmp vault state bin prompt_log response arg_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  response="${tmp}/alerts.json"
+  arg_log="${tmp}/curl-args.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  make_fake_curl "${bin}"
+  cat >"${response}" <<'EOF'
+{"status":"success","data":{"alerts":[
+ {"labels":{"alertname":"Watchdog","severity":"none"},"annotations":{"description":"pipeline"},"state":"firing","activeAt":"2026-11-04T00:00:00Z","value":"1e+00"},
+ {"labels":{"alertname":"AiOpsOutcomeMeasurementStale","severity":"warning","component":"ai-ops","definition_version":"outcome/v1-draft"},"annotations":{"description":"SECRET-ANNOTATION"},"state":"pending","activeAt":"2026-11-04T00:00:00Z","value":"0e+00"},
+ {"labels":{"alertname":"AiOpsOutcomeBurnFast","severity":"warning","component":"ai-ops","window":"7d","definition_version":"outcome/v1-draft"},"annotations":{"description":"SECRET-ANNOTATION"},"state":"firing","activeAt":"2026-11-04T00:00:00Z","value":"2.5e+00"}
+]}}
+EOF
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-640|BOXP-640: ai ops alerts]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-640 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=ds-test \
+    GRAFANA_URL='http://grafana.test:3000/' \
+    GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
+    CURL_FAKE_RESPONSE_FILE="${response}" \
+    CURL_FAKE_ARG_LOG="${arg_log}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-alerts.out
+
+  assert_file_contains "${prompt_log}" '^AI Ops decision support'
+  assert_file_contains "${prompt_log}" 'Status: alerts AiOpsOutcomeBurnFast\{state=firing,severity=warning,window=7d,definition_version=outcome/v1-draft\}; AiOpsOutcomeMeasurementStale\{state=pending,severity=warning,definition_version=outcome/v1-draft\}\.'
+  assert_file_contains "${prompt_log}" 'Not allowed because of these alerts'
+  assert_file_not_contains "${prompt_log}" 'Watchdog'
+  assert_file_not_contains "${prompt_log}" 'SECRET-ANNOTATION'
+  assert_file_not_contains "${prompt_log}" 'glsa_fake_token_value'
+  assert_file_contains "${arg_log}" '--max-time 5 .*http://grafana.test:3000/api/datasources/proxy/uid/ds-test/api/v1/alerts'
+  assert_file_not_contains "${arg_log}" 'glsa_fake_token_value'
+  assert_run_summary_contains "${state}" BOXP-640 ':ai-ops-alerts-status "ok"'
+  assert_run_summary_contains "${state}" BOXP-640 ':ai-ops-alerts \["AiOpsOutcomeBurnFast" "AiOpsOutcomeMeasurementStale"\]'
+  assert_run_summary_contains "${state}" BOXP-640 ':result "done"'
+  if grep -q 'SECRET-ANNOTATION' "$(find "${state}/runs/BOXP-640" -name summary.edn | sort | tail -n 1)"; then
+    fail "summary must not keep alert annotations"
+  fi
+}
+
+test_ai_ops_alerts_read_failure_is_unknown_not_empty() {
+  local tmp vault state bin prompt_log
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/claude-prompt.log"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_claude "${bin}"
+  make_fake_curl "${bin}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-641|BOXP-641: ai ops alerts down]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-641 in-progress fable
+
+  PATH="${bin}:$PATH" \
+    CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" \
+    CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=ds-test \
+    GRAFANA_URL='http://grafana.test:3000' \
+    GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
+    CURL_FAKE_EXIT=7 \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-alerts-down.out
+
+  assert_file_contains "${prompt_log}" "Status: unavailable \(measurement could not be read: curl-exit-7\)\. Treat this as unknown, not as 'no alerts'\."
+  assert_run_summary_contains "${state}" BOXP-641 ':ai-ops-alerts-status "unavailable"'
+  assert_run_summary_contains "${state}" BOXP-641 ':result "done"'
+  if grep -q ':ai-ops-alerts \[' "$(find "${state}/runs/BOXP-641" -name summary.edn | sort | tail -n 1)"; then
+    fail "an unavailable read must not record an empty alert list"
+  fi
+}
+
+test_ai_ops_alerts_section_absent_when_disabled() {
+  local tmp vault state bin prompt_log response
+  tmp="$(mktemp -d)"
+  vault="${tmp}/vault"
+  state="${tmp}/state"
+  bin="${tmp}/bin"
+  prompt_log="${tmp}/codex-prompt.log"
+  response="${tmp}/alerts.json"
+  mkdir -p "${bin}"
+  make_fake_codex "${bin}"
+  make_fake_curl "${bin}"
+  printf '%s\n' '{"status":"success","data":{"alerts":[]}}' >"${response}"
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-642|BOXP-642: ai ops alerts off]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-642 in-progress codex
+
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID= \
+    GRAFANA_URL='http://grafana.test:3000' \
+    GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
+    CURL_FAKE_RESPONSE_FILE="${response}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-alerts-off.out
+
+  assert_file_not_contains "${prompt_log}" 'AI Ops decision support'
+  if grep -q ':ai-ops-alerts' "$(find "${state}/runs/BOXP-642" -name summary.edn | sort | tail -n 1)"; then
+    fail "summary must not mention AI Ops alerts when the read is disabled"
+  fi
+
+  # Enabled with no AiOps alert firing: the section says so explicitly and
+  # the summary records an empty list, distinct from an unavailable read.
+  write_board "${vault}" "- [ ] [[Tickets/BOXP-643|BOXP-643: ai ops alerts none]] #ticket status::in-progress"
+  write_ticket "${vault}" BOXP-643 in-progress codex
+  PATH="${bin}:$PATH" \
+    CODEX_FAKE_PROMPT_LOG="${prompt_log}" \
+    CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' \
+    CODEX_TASK_BOARD_AI_OPS_ALERTS_DATASOURCE_UID=ds-test \
+    GRAFANA_URL='http://grafana.test:3000' \
+    GRAFANA_SERVICE_ACCOUNT_TOKEN='glsa_fake_token_value' \
+    CURL_FAKE_RESPONSE_FILE="${response}" \
+    run_tick "${vault}" "${state}" env >/tmp/task-board-ai-ops-alerts-none.out
+
+  assert_file_contains "${prompt_log}" 'Status: no AiOps alerts are firing or pending\.'
+  assert_run_summary_contains "${state}" BOXP-643 ':ai-ops-alerts-status "ok"'
+  assert_run_summary_contains "${state}" BOXP-643 ':ai-ops-alerts \[\]'
 }
 
 test_groom_prompt_includes_append_note() {
@@ -2946,6 +3312,8 @@ BOARD
   [ "${failures}" -eq 0 ] \
     || fail "concurrent board updates lost entries in ${failures}/${rounds} rounds"
 }
+
+test_task_board_pbt_properties() { bb "${ROOT_DIR}/tests/codex-workspace/task_board_pbt_test.bb"; }
 
 prune_git() {
   git -c user.name=prune-test -c user.email=prune-test@example.com -c commit.gpgsign=false "$@"
@@ -3562,14 +3930,14 @@ test_ai_ops_ledger_records_run_lifecycle() {
     || fail "expected an agent-system gate_defect correction"
   grep ':ledger:finished"' "${ledger}" | grep -q '"status":"retrying"' || fail "expected a retrying run.finished"
   grep ':ledger:finished"' "${ledger}" | grep -q '"status":"succeeded"' || fail "expected a succeeded run.finished"
-  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_to":"review"' || fail "expected lane.changed to review"
+  grep ':ledger:lane"' "${ledger}" | grep -q '"lane_to":"ready"' || fail "expected lane.changed to ready"
   assert_file_not_contains "${ledger}" 'secret title'
   assert_file_not_contains "${ledger}" 'http'
   assert_file_not_contains "${ledger}" 'privacy_rejected'
   [[ "$(grep -c '"event_type":"run.started"' "${ledger}")" -eq 2 ]] || fail "expected two run.started ledger events"
   grep ':ledger:lane-start"' "${ledger}" | grep '"lane_from":"ready"' | grep -q '"lane_to":"in-progress"' \
     || fail "expected a start lane.changed ready -> in-progress"
-  # Start Ready -> In Progress, finish In Progress -> Review. A retry stays In
+  # Start Ready -> In Progress, finish In Progress -> Ready. A retry stays In
   # Progress: no lane.changed for in-progress -> in-progress.
   [[ "$(grep -c '"event_type":"lane.changed"' "${ledger}")" -eq 2 ]] || fail "expected two lane.changed ledger events"
   grep ':ledger:correction"' "${ledger}" | grep -q '"confidence":"high"' \
@@ -3659,11 +4027,11 @@ test_run_finished_records_outbox_event() {
 
   PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-done.out
 
-  # Second ticket in a later tick: a review result without a PR is blocked by the gate.
+  # Second ticket: exhaust the PR URL retry limit to exercise the Blocked event.
   write_board "${vault}" "- [ ] [[Tickets/BOXP-701|BOXP-701: done]] #ticket status::done
 - [ ] [[Tickets/BOXP-702|BOXP-702: blocked]] #ticket status::in-progress"
   write_ticket "${vault}" BOXP-702 in-progress codex
-  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-blocked.out
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT=0 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env >/tmp/task-board-outbox-blocked.out
 
   # done: lane, frontmatter and Notes are committed before the event is written.
   event="$(ls "${state}"/outbox/pending/BOXP-701-*-done.edn)"
@@ -3890,7 +4258,7 @@ test_gate_failure_budget_grant_resume_and_no_reset_on_success() {
   budget_set_lane "${vault}" BOXP-463 grant codex
   # Now one more run is allowed; it passes, and success does not reset counts.
   PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE=$'Created PR: https://github.com/boxp/example/pull/301\nTASK_BOARD_RESULT: review' run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 >/dev/null
-  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::review'
+  assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-463: grant\]\].*status::ready'
   out="$(CODEX_TASK_BOARD_ROOT="${state}" CODEX_TASK_BOARD_GATE_FAILURE_BUDGET=2 bb "${RUNNER}" gate-budget-status BOXP-463)"
   [[ "${out}" == *':used 2, :limit 3'* ]] || fail "success must not reset the budget: ${out}"
   # Granted budget is consumed by the next failure, which blocks again at 3/3.
@@ -4119,14 +4487,6 @@ test_gate_failure_budget_concurrent_ticks_do_not_lose_counts() {
   [[ "$(grep -o ':pr "boxp/example#501"' "${state}/gate-failure-budget.edn" | wc -l)" == 2 ]] || fail "concurrent gate failures lost a count"
 }
 
-# Focused local runs: TASK_BOARD_TEST_ONLY="test_a test_b" runs only those.
-if [[ -n "${TASK_BOARD_TEST_ONLY:-}" ]]; then
-  for t in ${TASK_BOARD_TEST_ONLY}; do "${t}"; done
-  echo "selected task-board-runner tests passed"
-  exit 0
-fi
-
-test_parallel_codex_runs
 test_delegation_gate_end_to_end() {
   local tmp vault state bin mode ticket summary
   for mode in success failed missing; do
@@ -4172,6 +4532,50 @@ CHECK
   done
 }
 
+test_recoverable_delegation_failure_continues() {
+  # BOXP-395: a run-local delegation failure stays with the worker, inside the
+  # continuation limit. It does not wait for a person and cannot reach done.
+  local tmp vault state bin ticket=BOXP-998 prompt_log
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; prompt_log="${tmp}/prompt"
+  mkdir -p "${bin}"
+  make_fake_claude "${bin}"
+  printf '#!/bin/sh\nexit 1\n' >"${bin}/codex"
+  chmod +x "${bin}/codex"
+  write_board "${vault}" "- [ ] [[Tickets/${ticket}|${ticket}: delegation]] #ticket status::in-progress"
+  write_ticket "${vault}" "${ticket}" in-progress fable
+  PATH="${bin}:$PATH" CLAUDE_FAKE_PROMPT_LOG="${prompt_log}" TEST_DELEGATION_MODE=run \
+    CLAUDE_FAKE_MESSAGE=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >/dev/null
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^assignee: fable$'
+  assert_file_contains "${prompt_log}" 'is not a blocker by itself'
+  # The failed attempt is not erased.
+  assert_file_contains "$(find "${state}/runs/${ticket}" -name delegation.json | head -n 1)" 'failed|"exit": 1'
+
+  # The next run has its own attempt, and done without verified delegation is still refused.
+  PATH="${bin}:$PATH" TEST_DELEGATION_MODE=run CLAUDE_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >/dev/null
+  assert_file_not_contains "${vault}/Tickets/${ticket}.md" '^status: done$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/${ticket}.md" 'category=agent-process-error'
+}
+
+test_helper_update_keeps_notes_copy() {
+  local tmp vault board copy
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; board="${vault}/Boards/Task Board.md"
+  copy='- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::boxp'
+  write_board "${vault}" "${copy}"
+  write_ticket "${vault}" BOXP-993 in-progress boxp
+  printf '\n## Notes\n%s\nnote about BOXP-993\n' "${copy}" >>"${board}"
+  bb "${HELPER}" update BOXP-993 --vault "${vault}" --lane Ready --json >/dev/null
+  [[ "$(grep -Fc '[[Tickets/BOXP-993|' "${board}")" == 2 ]] || fail 'expected two BOXP-993 copies'
+  sed -n '/^## Notes/,/^## /p' "${board}" | grep -Fxq -- "${copy}" || fail 'Notes copy missing'
+  assert_file_contains "${board}" '^note about BOXP-993$'
+  sed -n '/^## Ready/,/^## In Progress/p' "${board}" | grep -Fq '[[Tickets/BOXP-993|' || fail 'Ready card missing'
+  if sed -n '/^## In Progress/,/^## Blocked/p' "${board}" | grep -Fq '[[Tickets/BOXP-993|'; then
+    fail 'In Progress card remains'
+  fi
+  rm -rf "${tmp}"
+}
+
 test_assignment_revisions() {
   local tmp vault state bin rev result code
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
@@ -4212,17 +4616,23 @@ test_assignment_superseded() {
   make_fake_codex "${bin}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
   write_ticket "${vault}" BOXP-991 in-progress codex
+  # A superseded run's done is discarded, so it must not reset the continuation budget.
+  mkdir -p "${state}"
+  printf '{"BOXP-991" {:count 3}}\n' >"${state}/continuation-budget.edn"
   bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee codex >/dev/null
-  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/tick" &
   local pid=$!
   for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
   [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-991 --vault "${vault}" --required --text late --source test >/dev/null
   bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee boxp --note 'new assignment' >/dev/null
   wait "${pid}"
   assert_file_contains "${vault}/Tickets/BOXP-991.md" '^assignee: boxp$'
   assert_file_contains "${vault}/Tickets/BOXP-991.md" 'newer assignment \(board_rev'
   assert_file_contains "${vault}/Boards/Task Board.md" 'status::ready.*assignee::boxp'
   assert_run_summary_contains "${state}" BOXP-991 ':superseded-by'
+  assert_file_not_contains "${vault}/Tickets/BOXP-991.md" 'runの結果を保留'
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-991'
 }
 
 test_assignment_repairs() {
@@ -4264,128 +4674,332 @@ test_assignment_repairs() {
   assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev1}"
 }
 
-test_assignment_revisions
-test_assignment_superseded
-test_assignment_repairs
-test_delegation_gate_end_to_end
-test_fable_stream_json
-test_claude_pump_drains_when_events_log_cannot_open
-test_claude_result_survives_events_log_failure
-test_claude_stream_progress_prevents_idle_timeout_when_log_unwritable
-test_claude_events_log_omits_tool_payloads
-test_claude_run_survives_subscription_snapshot_failure
-test_subscription_metrics_disabled_removes_prom
-test_fable_assignee_runs_via_claude
-test_explicit_claude_assignees_use_fixed_models_and_pinned_binary
-test_fable_model_environment_is_legacy_only
-test_explicit_claude_error_and_review_markers_are_processed
-test_fable_agent_idle_timeout_retries
-test_fable_idle_timeout_stops_agent_children
-test_invalid_idle_timeout_does_not_start_agent
-test_fable_progress_prevents_idle_timeout
-test_codex_sol_assignee_includes_delegation_policy
-test_codex_full_assignee_includes_delegation_policy
-test_unsupported_assignee_is_ignored
-test_stale_lock_recovers
-test_planned_shutdown_lock_recovers_immediately
-test_cross_process_lock_guard_preserves_replacement_lock
-test_sigterm_writes_shutdown_marker_without_prestop
-test_sigterm_stops_in_flight_agent_and_keeps_lock_for_next_owner
-test_sigterm_kills_term_resistant_agent_within_grace
-test_expired_foreign_shutdown_marker_is_retired
-test_one_shot_tick_does_not_replace_loop_owner_instance
-test_current_owner_shutdown_marker_drains_without_recovery
-test_same_owner_new_instance_recovers_previous_instance
-test_same_owner_new_instance_retires_empty_previous_marker
-test_mismatched_shutdown_marker_does_not_recover_fresh_lock
-test_shutdown_marker_waits_for_late_matching_lock
-test_shutdown_marker_survives_late_second_lock
-test_terminated_owner_cannot_create_lock_after_marker_cleanup
-test_review_without_pr_is_blocked
-test_fable_reported_blocked_is_audited
-test_blocker_note_failure_keeps_current_lane
-test_runner_internal_error_is_audited
-test_blocker_reason_redacts_github_pat_and_spaced_api_key
-test_blocker_note_failure_restores_original_lane
-test_blocked_state_failure_records_a_single_audit_note_and_restores_lane
-test_nonretryable_pr_gate_blocked_state_failure_keeps_summary_consistent
-test_review_with_pr_url_is_noted
-test_review_without_repo_marker_skips_pr_gates
-test_review_with_conflict_is_blocked
-test_pr_gate_api_failure_is_audited
-test_fable_review_gate_retry_keeps_fable_assignee
-test_review_with_ci_failure_is_blocked
-test_review_with_codex_review_issue_is_blocked
-test_review_p1_finding_retries_and_consumes_budget
-test_review_p0_finding_blocks
-test_review_p2_only_passes_without_budget
-test_review_mixed_findings_retry_targets_only_blocking
-test_review_unknown_severity_output_stops
-test_review_p2_with_unstructured_lines_stops
-test_review_p1_with_unstructured_lines_stops
-test_review_clean_with_unstructured_lines_stops
-test_review_finding_without_severity_stops
-test_review_malformed_finding_stops
-test_review_conflicting_result_marker_stops
-test_review_same_p1_retry_count_survives_p2_changes
-test_review_with_pr_and_none_marker_checks_pr
-test_review_with_multiple_pr_urls_checks_all
-test_review_with_multiple_pr_urls_blocks_on_second_failure
-test_review_gate_keeps_lock_heartbeat_active
-test_review_gate_passes_codex_model_profile_to_review
-test_review_with_empty_ci_rollup_times_out
-test_review_with_empty_ci_rollup_passes_for_no_ci_repo
-test_review_with_empty_ci_rollup_times_out_without_no_ci_opt_in
-test_no_ci_repo_requires_clean_merge_state
-test_canonical_path_hash_symlink_isolation
-test_review_with_draft_pr_is_retried
-test_review_with_behind_merge_state_times_out
-test_review_with_merged_pr_skips_gates
-test_review_with_none_marker_and_merged_pr_moves_review
-test_review_with_open_and_merged_prs_gates_open_only
-test_retryable_pr_gate_failure_does_not_persist_raw_reason_in_notes
-test_review_gate_retry_limit_blocks
-test_review_gate_retry_limit_is_scoped_to_failure_reason
-test_review_gate_pass_after_retry_moves_review
-test_gate_failure_budget_boundary_9_10_11
-test_gate_failure_budget_multiple_prs_and_shared_pr
-test_gate_failure_budget_grant_resume_and_no_reset_on_success
-test_gate_failure_budget_stricter_short_term_limit_still_applies
-test_gate_failure_budget_stop_completes_after_interrupted_transition
-test_gate_failure_budget_stop_reports_when_blocked_card_is_reassigned
-test_gate_failure_budget_stop_is_written_once_under_concurrent_ticks
-test_gate_failure_budget_stop_is_serialized_with_grant
-test_gate_failure_budget_concurrent_updates_do_not_lose_counts
-test_gate_failure_budget_concurrent_ticks_do_not_lose_counts
-test_gate_failure_budget_concurrent_start_on_shared_pr_is_serialized
-test_groom_prompt_contains_investigation_steps
-test_implement_prompt_includes_append_note
-test_fable_implement_prompt_includes_append_note
-test_groom_prompt_includes_append_note
-test_assignee_model_routing
-test_assignee_model_tick_routing
-test_assignee_reasoning_tick_routing
-test_invalid_reasoning_assignees_are_ignored
-test_codex_astra_assignee_includes_delegation_policy
-test_concurrent_append_note_no_lost_writes
-test_cross_vault_lock_isolation
-test_concurrent_board_update_no_lost_writes
-test_prune_workspaces
-test_prune_holds_checkout_over_commit_limit
-test_prune_inspects_nested_checkouts
-test_prune_checks_reflog_commits
-test_prune_respects_board_lane
-test_prune_invalid_settings_fall_back_to_defaults
-test_loop_prunes_in_background
-test_loop_prune_can_be_disabled
-test_run_finished_records_outbox_event
-test_in_progress_retry_records_no_outbox_event
-test_outbox_disabled_by_env
-test_ai_ops_ledger_records_run_lifecycle
-test_ai_ops_ledger_disabled_by_env
-test_ai_ops_ledger_groom_from_backlog_records_actual_lane
 
-echo "task-board-runner tests passed"
+test_dynamic_todo_midrun() {
+  local tmp vault state bin pid rev board_rev
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-990 in-progress codex
+  bb "${HELPER}" update BOXP-990 --vault "${vault}" --lane Ready --assignee codex >/dev/null
+  board_rev="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-990.md")"
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_ARG_LINES="${tmp}/args" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-990 --vault "${vault}" --required --text task --source test >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^assignee: codex$'
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" 'runの結果を保留'
+  [[ "${board_rev}" == "$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-990.md")" ]] || fail 'todo_state changed board_rev'
+  assert_file_not_contains "${tmp}/tick" 'newer assignment'
+  assert_file_not_contains "${tmp}/args" '^--dangerously-bypass-hook-trust$'
+  assert_run_summary_contains "${state}" BOXP-990 ':gate "held"'
+  assert_run_summary_contains "${state}" BOXP-990 ':result "continue"'
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_TODO_VAULT="${vault}" CODEX_FAKE_TODO_MODULE="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" run_tick "${vault}" "${state}" env >"${tmp}/tick2"
+  assert_file_contains "${tmp}/prompt" "read back merges and external operations"
+  assert_file_contains "${tmp}/prompt" "TD-01【必須】task"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^status: done$'
+}
 
+# Mock paths: agents and vaults below are isolated temporary fixtures.
+test_todo_optional_and_legacy() {
+  local tmp vault state bin pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-980|BOXP-980: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-980 in-progress codex
+  # Establish a received body before the optional-only mid-run addition.
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-980 --vault "${vault}" --optional --text baseline --source test >/dev/null
+  local rev
+  rev="$(bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" status BOXP-980 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" ack BOXP-980 --vault "${vault}" --rev "${rev}" >/dev/null
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-980 --vault "${vault}" --optional --text optional --source test >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-980.md" '^status: done$'
+  assert_file_contains "${vault}/Tickets/BOXP-980.md" 'todo_state: .*unreceived=1 open=1'
+  rm -rf "${vault}" "${state}" "${tmp}/starts"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-981|BOXP-981: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-981 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/legacy" & pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  sed -i '/^## Summary$/a changed legacy body' "${vault}/Tickets/BOXP-981.md"
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-981.md" '^status: ready$'
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >"${tmp}/legacy2"
+  assert_file_contains "${vault}/Tickets/BOXP-981.md" '^status: done$'
+}
+
+test_todo_post_move_recheck() {
+  local tmp vault state bin pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-982|BOXP-982: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-982 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/moved" ]] || fail 'post-move rendezvous missing'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-982 --vault "${vault}" --required --text late --source test >/dev/null
+  touch "${tmp}/continue"; wait "${pid}"
+  if [[ "${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}" == 0 ]]; then
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" '^status: blocked$'
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" 'todo-gate-exhausted'
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" 'finished with result blocked'
+  else
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" '^status: ready$'
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" 'finished with result ready'
+  fi
+  assert_file_not_contains "${vault}/Tickets/BOXP-982.md" 'finished with result done'
+  assert_run_summary_contains "${state}" BOXP-982 ':gate "held"'
+  assert_run_summary_contains "${state}" BOXP-982 ':result "continue"'
+  local ledger
+  ledger="$(find "${state}/ai-ops/ledger" -name 'events-*.jsonl' | head -n 1)"
+  if [[ "${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}" == 0 ]]; then
+    assert_run_summary_contains "${state}" BOXP-982 ':blocker-category "todo-gate-exhausted"'
+    assert_file_contains "${ledger}" '"lane_to":"blocked"'
+    assert_file_contains "${ledger}" '"status":"blocked"'
+  else
+    assert_file_contains "${ledger}" '"lane_to":"ready"'
+    assert_file_not_contains "${ledger}" '"lane_to":"done"'
+    [[ ! -d "${state}/outbox/pending" ]] || ! find "${state}/outbox/pending" -type f | grep -q . || fail 'held run emitted a Task Board wake event'
+  fi
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-982'
+}
+
+test_todo_post_move_recheck_exhausted() {
+  CODEX_TASK_BOARD_CONTINUATION_LIMIT=0 test_todo_post_move_recheck
+}
+
+test_todo_blocked_post_move_recheck() {
+  local tmp vault state bin pid limit="${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}"
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-986|BOXP-986: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-986 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT="${limit}" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/moved" ]] || fail 'blocked post-move rendezvous missing'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" '^status: blocked$'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-986 --vault "${vault}" --required --text late --source test >/dev/null
+  touch "${tmp}/continue"; wait "${pid}"
+  assert_run_summary_contains "${state}" BOXP-986 ':gate "held"'
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-986'
+  local ledger
+  ledger="$(find "${state}/ai-ops/ledger" -name 'events-*.jsonl' | head -n 1)"
+  if [[ "${limit}" == 0 ]]; then
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" '^status: blocked$'
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" '継続予算切れのためBlockedのまま。未受領: .*TD-01'
+    assert_run_summary_contains "${state}" BOXP-986 ':status :blocked'
+    assert_file_contains "${ledger}" '"lane_to":"blocked"'
+  else
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" '^status: ready$'
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" '^assignee: codex$'
+    assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-986'
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" 'Blockedを保留して担当の次runへ継続: .*TD-01'
+    assert_run_summary_contains "${state}" BOXP-986 ':result "continue"'
+    assert_file_not_contains "$(find "${state}/runs/BOXP-986" -name summary.edn | sort | tail -n 1)" ':blocker-category'
+    assert_file_contains "${ledger}" '"lane_to":"ready"'
+    assert_file_not_contains "${ledger}" '"lane_to":"blocked"'
+  fi
+  # An optional addition leaves the Blocked result alone.
+  local vault2="${tmp}/vault2" state2="${tmp}/state2"
+  rm -f "${tmp}/moved" "${tmp}/continue"
+  write_board "${vault2}" '- [ ] [[Tickets/BOXP-987|BOXP-987: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault2}" BOXP-987 in-progress codex
+  local todo_module="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" rev
+  bb "${todo_module}" add BOXP-987 --vault "${vault2}" --required --text work --source test >/dev/null
+  rev="$(bb "${todo_module}" status BOXP-987 --vault "${vault2}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  bb "${todo_module}" ack BOXP-987 --vault "${vault2}" --rev "${rev}" >/dev/null
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault2}" "${state2}" env >"${tmp}/tick2" & pid=$!
+  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-987 --vault "${vault2}" --optional --text later --source test >/dev/null
+  touch "${tmp}/continue"; wait "${pid}"
+  assert_file_contains "${vault2}/Tickets/BOXP-987.md" '^status: blocked$'
+  assert_file_not_contains "${vault2}/Tickets/BOXP-987.md" '判定直後の追加'
+}
+
+test_todo_blocked_post_move_recheck_exhausted() {
+  CODEX_TASK_BOARD_CONTINUATION_LIMIT=0 test_todo_blocked_post_move_recheck
+}
+
+test_todo_plan_protection() {
+  local tmp vault
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-983|BOXP-983: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-983 in-progress codex
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-983 --vault "${vault}" --required --text protected --source test >/dev/null
+  if bb "${HELPER}" update BOXP-983 --vault "${vault}" --plan 'other' >"${tmp}/out" 2>"${tmp}/err"; then fail 'plan protection did not reject'; fi
+  assert_file_contains "${tmp}/err" 'changes existing TD items'
+  bb "${HELPER}" update BOXP-983 --vault "${vault}" --plan 'other' --force-plan >"${tmp}/out"
+  assert_file_not_contains "${vault}/Tickets/BOXP-983.md" 'TD-01'
+}
+
+test_todo_budget_exhausted() {
+  local tmp vault state bin pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-984|BOXP-984: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-984 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT=0 CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-984 --vault "${vault}" --required --text task --source test >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-984.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-984.md" 'todo-gate-exhausted'
+  assert_run_summary_contains "${state}" BOXP-984 ':gate "held"'
+  assert_run_summary_contains "${state}" BOXP-984 ':result "continue"'
+}
+
+test_todo_hook_arguments() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault with 'quote"; state="${tmp}/state with \"quote"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-985|BOXP-985: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-985 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_ARG_LINES="${tmp}/args" run_tick "${vault}" "${state}" env >"${tmp}/tick"
+  assert_file_contains "${tmp}/args" '^--dangerously-bypass-hook-trust$'
+  bb -e '
+    (require (quote [clojure.string :as str]))
+    (let [lines (filter #(str/starts-with? % "hooks.") (str/split-lines (slurp (first *command-line-args*))))
+          ;; TOML basic strings allow only these escapes and exclude control characters.
+          basic "\\\"(?:[^\\\"\\\\\\x00-\\x1f]|\\\\(?:[\\\"\\\\bfnrt]|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}))*\\\""
+          pattern (re-pattern (str "hooks\\.(PostToolUse|PreToolUse|Stop)=\\[\\{matcher=" basic ",hooks=\\[\\{type=\\\"command\\\",command=" basic "\\}\\]\\}\\]"))]
+      (when-not (and (= 3 (count lines)) (every? #(re-matches pattern %) lines))
+        (binding [*out* *err*] (println "invalid hook TOML"))
+        (System/exit 1)))' "${tmp}/args"
+}
+
+test_todo_concurrent_writers() {
+  local tmp vault state bin pid rev todo plan
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-986|BOXP-986: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-986 in-progress codex
+  bb "${todo}" add BOXP-986 --vault "${vault}" --id TD-01 --required --text first --source test >/dev/null
+  rev="$(bb "${todo}" status BOXP-986 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  # Race helper writes with the runner's frontmatter and Notes writes. A stale
+  # ack is an expected CAS failure and is retried after all changes settle.
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  plan=$'- [x] TD-01【必須】first\n  - 由来: test'
+  bb "${HELPER}" update BOXP-986 --vault "${vault}" --plan "$plan" >"${tmp}/checkbox" 2>&1 & local c=$!
+  bb "${todo}" add BOXP-986 --vault "${vault}" --id TD-02 --optional --text second --source test >"${tmp}/add" & local a=$!
+  bb "${HELPER}" append-note BOXP-986 --vault "${vault}" --source test --note 'parallel note' >"${tmp}/note" & local n=$!
+  bb "${todo}" ack BOXP-986 --vault "${vault}" --rev "${rev}" >"${tmp}/ack" 2>&1 & local k=$!
+  wait "$a"; wait "$n"; wait "$k" || true
+  # If the add won, the plan guard correctly rejects the stale plan.
+  wait "$c" || true
+  wait "$pid"
+  rev="$(bb "${todo}" status BOXP-986 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  bb "${todo}" ack BOXP-986 --vault "${vault}" --rev "$rev" >/dev/null
+  # update --plan serializes checkbox edits with the same file lock.
+  plan=$'- [x] TD-01【必須】first\n  - 由来: test\n- [ ] TD-02【任意】second\n  - 由来: test'
+  bb "${HELPER}" update BOXP-986 --vault "${vault}" --plan "$plan" >/dev/null
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" 'parallel note'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" '\[x\] TD-01【必須】first'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" 'TD-02【任意】second'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" '^todo_ack_rev:'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" 'runの結果を保留'
+}
+
+test_todo_restart_delivery() {
+  local tmp vault state bin old_run todo before rev
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; old_run="20260710T000000Z"
+  todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
+  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-987/${old_run}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-987|BOXP-987: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-987 in-progress codex
+  bb "${todo}" add BOXP-987 --vault "${vault}" --required --text restart-work --source test >/dev/null
+  before="$(cat "${vault}/Tickets/BOXP-987.md")"
+  bb "${todo}" add BOXP-987 --vault "${vault}" --required --text restart-work --source test >/dev/null
+  [[ "${before}" == "$(cat "${vault}/Tickets/BOXP-987.md")" ]] || fail 'duplicate add changed ticket'
+  printf '%s\n' '{:ticket "BOXP-987" :run-id "20260710T000000Z" :action :implement :lane "In Progress" :owner-id "old-pod" :owner-instance-id "old-instance" :heartbeat-at "2000-01-01T00:00:00Z"}' >"${state}/locks/BOXP-987.edn"
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_TODO_VAULT="${vault}" CODEX_FAKE_TODO_MODULE="${todo}" run_tick "${vault}" "${state}" env >"${tmp}/tick"
+  assert_file_contains "${state}/runs/BOXP-987/${old_run}/summary.edn" ':status :interrupted'
+  assert_file_contains "${tmp}/prompt" 'TD-01【必須】restart-work'
+  assert_file_contains "${vault}/Tickets/BOXP-987.md" '^status: done$'
+  rev="$(bb "${todo}" status BOXP-987 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  before="$(cat "${vault}/Tickets/BOXP-987.md")"
+  bb "${todo}" ack BOXP-987 --vault "${vault}" --rev "${rev}" >/dev/null
+  [[ "${before}" == "$(cat "${vault}/Tickets/BOXP-987.md")" ]] || fail 'duplicate ack changed ticket'
+}
+
+test_todo_preserves_existing_outcomes() {
+  local tmp vault state bin pid mode
+  for mode in continue nonzero; do
+    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    mkdir -p "${bin}"; make_fake_codex "${bin}"
+    write_board "${vault}" '- [ ] [[Tickets/BOXP-988|BOXP-988: test]] #ticket status::in-progress assignee::codex'
+    write_ticket "${vault}" BOXP-988 in-progress codex
+    local result=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' exitcode=0
+    if [[ "$mode" == nonzero ]]; then result='TASK_BOARD_RESULT: done'; exitcode=2; fi
+    PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_EXIT="${exitcode}" CODEX_FAKE_MESSAGE="${result}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+    for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+    bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-988 --vault "${vault}" --required --text later --source test >/dev/null
+    wait "${pid}"
+    if [[ "$mode" == nonzero ]]; then
+      assert_file_contains "${vault}/Tickets/BOXP-988.md" '^status: blocked$'
+    else
+      assert_file_contains "${vault}/Tickets/BOXP-988.md" '^status: ready$'
+    fi
+    assert_file_not_contains "${vault}/Tickets/BOXP-988.md" 'runの結果を保留'
+  done
+}
+
+test_todo_existing_holds_win() {
+  local tmp vault state bin pid mode todo
+  todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
+  for mode in review idle; do
+    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_claude "${bin}"
+    if [[ "$mode" == review ]]; then
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-989|BOXP-989: test]] #ticket status::in-progress assignee::codex'
+      write_ticket "${vault}" BOXP-989 in-progress codex
+      PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+    else
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-989|BOXP-989: test]] #ticket status::in-progress assignee::fable'
+      write_ticket "${vault}" BOXP-989 in-progress fable
+      PATH="${bin}:$PATH" CLAUDE_FAKE_START_LOG="${tmp}/starts" CLAUDE_FAKE_SLEEP=8 CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=2 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+    fi
+    for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+    [[ -e "${tmp}/starts" ]] || fail 'mock agent did not start'
+    bb "${todo}" add BOXP-989 --vault "${vault}" --required --text pending --source test >/dev/null
+    wait "${pid}"
+    assert_file_contains "${vault}/Tickets/BOXP-989.md" '^status: in-progress$'
+    assert_file_not_contains "${vault}/Tickets/BOXP-989.md" 'runの結果を保留'
+    if [[ "$mode" == review ]]; then
+      assert_file_contains "${vault}/Tickets/BOXP-989.md" 'Review gate failed'
+    else
+      assert_run_summary_contains "${state}" BOXP-989 ':idle-timeout\? true'
+    fi
+  done
+}
+
+# Every invocation is recorded in the checked-in baseline. Each CI shard runs a
+# deterministic subset in its own job, so vaults, processes and locks are isolated.
+mapfile -t cases < "${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"
+if [[ -n "${TASK_BOARD_TEST_ONLY:-}" ]]; then
+  read -r -a cases <<< "${TASK_BOARD_TEST_ONLY}"
+fi
+shard="${TASK_BOARD_TEST_SHARD:-0}"
+shards="${TASK_BOARD_TEST_SHARDS:-1}"
+[[ "${shards}" =~ ^[1-9][0-9]*$ && "${shard}" =~ ^[0-9]+$ ]] && (( shard < shards )) || { echo 'invalid shard' >&2; exit 1; }
+for i in "${!cases[@]}"; do
+  (( i % shards == shard )) || continue
+  t="${cases[$i]}"
+  declare -F "${t}" >/dev/null || { echo "unknown case: ${t}" >&2; exit 1; }
+  start=${SECONDS}
+  "${t}"
+  echo "CASE ${t} $((SECONDS - start))s"
+done
 # BOXP-344: isolated shared-GPU evaluation state machine; no model/network.
-python3 -B -m unittest discover -s "${ROOT_DIR}/tests/qwen-eval" -v
+if [[ "${shard}" == 0 && -z "${TASK_BOARD_TEST_ONLY:-}" ]]; then
+  start=${SECONDS}
+  python3 -B -m unittest discover -s "${ROOT_DIR}/tests/qwen-eval" -v
+  echo "CASE qwen-eval $((SECONDS - start))s"
+fi
+echo "task-board-runner shard ${shard}/${shards} passed"

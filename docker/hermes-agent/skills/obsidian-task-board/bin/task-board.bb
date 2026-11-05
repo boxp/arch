@@ -2,6 +2,7 @@
 
 (ns task-board
   (:require [babashka.fs :as fs]
+            [clojure.java.shell :as shell]
             [clojure.string :as str])
   (:import [java.io RandomAccessFile]
            [java.security MessageDigest]))
@@ -10,13 +11,16 @@
   {"Backlog" "backlog"
    "Ready" "ready"
    "In Progress" "in-progress"
-   "Review" "review"
    "Blocked" "blocked"
    "Done" "done"})
 
+;; BOXP-395: Review is retired and cannot be a destination. A leftover card stays
+;; readable so it can be moved out rather than vanish from the board.
+(def readable-lanes (assoc lanes "Review" "review"))
+
 (def status->lane (into {} (map (fn [[lane status]] [status lane]) lanes)))
 
-(def codex-request-lanes #{"Backlog" "Ready" "Review" "Blocked"})
+(def codex-request-lanes #{"Backlog" "Ready" "Blocked"})
 
 (def section-names
   {"summary" "Summary"
@@ -103,6 +107,7 @@
           "--priority" (recur (nnext xs) (assoc opts :priority (first more)))
           "--assignee" (recur (nnext xs) (assoc opts :assignee (first more)))
           "--repo" (recur (nnext xs) (assoc opts :repo (first more)))
+          "--force-plan" (recur more (assoc opts :force-plan true))
           "--dry-run" (recur more (assoc opts :dry-run true))
           "--confirm" (recur more (assoc opts :confirm true))
           "--json" (recur more (assoc opts :json true))
@@ -155,7 +160,20 @@
       (let [_lock (.lock channel)]
         (f)))))
 
-(defn with-ticket-lock [ticket-path f] (with-file-lock ticket-path f))
+(defn with-ticket-lock
+  "Also takes the lock on the vault's volume (see task_board_todos.bb with-lock), which
+  separate containers share. A dry-run writes nothing and must not create it in the vault."
+  [opts ticket-path f]
+  (if (:dry-run opts)
+    (with-file-lock ticket-path f)
+    (let [vault (fs/parent (fs/parent (fs/absolutize ticket-path)))
+          safe-name (str/replace (str (fs/file-name ticket-path)) #"[^a-zA-Z0-9._-]" "_")
+          lock-file (fs/path vault ".task-board-locks" (str safe-name ".lock"))]
+      (fs/create-dirs (fs/parent lock-file))
+      (with-open [raf (RandomAccessFile. (str lock-file) "rw")
+                  channel (.getChannel raf)]
+        (let [_lock (.lock channel)]
+          (with-file-lock ticket-path f))))))
 (defn with-board-lock [board-path f] (with-file-lock board-path f))
 
 ;; BOXP-201 I3: opt-in lock shared with the runner and vault_writer.bb. Unset in
@@ -312,7 +330,12 @@
       cards
       (let [line (first lines)
             heading (second (re-find #"^##\s+(.+?)\s*$" line))
-            lane (if (contains? lanes heading) heading lane)
+            ;; A non-lane heading (e.g. "## Notes") ends the current lane: cards
+            ;; below it belong to no lane, matching the runner's parse-board-cards.
+            lane (cond
+                   (nil? heading) lane
+                   (contains? readable-lanes heading) heading
+                   :else nil)
             card (and lane (parse-card lane line))]
         (recur (rest lines) lane (cond-> cards card (conj card)))))))
 
@@ -323,7 +346,17 @@
     (first cards)))
 
 (defn remove-card [lines id]
-  (vec (remove #(str/includes? % (str "[[Tickets/" id "|")) lines)))
+  ;; Foreign sections can contain copies that must survive lane updates.
+  (loop [remaining lines lane nil result []]
+    (if (empty? remaining)
+      result
+      (let [line (first remaining)
+            heading (second (re-find #"^##\s+(.+?)\s*$" line))
+            lane (cond (nil? heading) lane (contains? readable-lanes heading) heading :else nil)]
+        (recur (rest remaining) lane
+               (if (and lane (card-line? line) (str/includes? line (str "[[Tickets/" id "|")))
+                 result
+                 (conj result line)))))))
 
 (defn repo-values [repo]
   (cond
@@ -523,9 +556,16 @@
         result-atom (atom nil)]
     (with-board-lock bpath
       (fn []
-        (with-ticket-lock path
+        (with-ticket-lock opts path
           (fn []
             (let [ticket (ticket-data vault id)
+                  _ (when (and (:plan opts) (not (:force-plan opts)) (= "v1" (fm-get (:frontmatter-lines ticket) "todo_contract")))
+                      (load-file (str (fs/path (fs/parent (fs/canonicalize *file*)) "task_board_todos.bb")))
+                      (let [parse (resolve 'task-board-todos/parse-items) hash-item (resolve 'task-board-todos/item-hash)
+                            old (mapv (juxt :id hash-item) (parse (slurp (str path))))
+                            new (into {} (map (juxt :id hash-item) (parse (str "## Plan\n" (:plan opts)))))]
+                        (when (some (fn [[id hash]] (not= hash (get new id))) old)
+                          (die "update --plan changes existing TD items; use --force-plan to override"))))
                   board (read-text bpath)
                   old-card (card-for board id)
                   lane (or (:lane opts) (:lane old-card) (status->lane (:status ticket)) "Backlog")
@@ -577,7 +617,7 @@
     (if (:dry-run opts)
       (print-result opts result)
       (do
-        (with-ticket-lock path
+        (with-ticket-lock opts path
           (fn []
             (let [ticket (ticket-data vault id)
                   new-ticket (apply-ticket-update ticket {:append-note note :note-source (:source opts)})]
@@ -592,10 +632,10 @@
         bpath (board-path vault)
         result-atom (atom nil)]
     (when-not (contains? codex-request-lanes lane)
-      (die "request-codex lane must be one of Backlog, Ready, Review, or Blocked"))
+      (die "request-codex lane must be one of Backlog, Ready, or Blocked"))
     (with-board-lock bpath
       (fn []
-        (with-ticket-lock path
+        (with-ticket-lock opts path
           (fn []
             (let [ticket (ticket-data vault id)
                   board (read-text bpath)
@@ -632,7 +672,7 @@
         result-atom (atom nil)]
     (with-board-lock bpath
       (fn []
-        (with-ticket-lock path
+        (with-ticket-lock opts path
           (fn []
             (let [board (read-text bpath)
                   card (card-for board id)
@@ -700,7 +740,24 @@
 (defn usage []
   (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|verify-dispatch|delete|control-intent> [args]\nverify-dispatch ID --expected-rev R [--assignee A] [--json]: started/awaiting-pickup (0), duplicate-cards (3), reverted (4), pending-sync (5), unknown (6)"))
 
+(defn root-user? []
+  (let [uid (try
+              (let [{:keys [exit out]} (shell/sh "id" "-u")
+                    value (str/trim out)]
+                (when (and (zero? exit) (re-matches #"[0-9]+" value)) value))
+              (catch Exception _ nil))]
+    (if uid
+      (boolean (re-matches #"0+" uid))
+      (= "root" (System/getProperty "user.name")))))
+
+(defn guard-root-write! [cmd]
+  (when (and (#{"create" "update" "append-note" "request-codex" "delete"} cmd)
+             (root-user?))
+    (die (str "Root cannot run Task Board write commands (including --dry-run). Use:\n"
+              "kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-setuidgid hermes bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb <command> ..."))))
+
 (defn -main [& args]
+  (guard-root-write! (first args))
   (let [cmd (first args)
         opts (parse-args (rest args))
         id (first (:positionals opts))]
@@ -720,4 +777,5 @@
       "control-intent" (cmd-control-intent opts (or id (die "control-intent requires ticket id")))
       (usage))))
 
-(apply -main *command-line-args*)
+(when (= *file* (System/getProperty "babashka.file"))
+  (apply -main *command-line-args*))

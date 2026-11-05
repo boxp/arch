@@ -43,6 +43,6 @@
                           w {:ticket ticket :from-lane from :to-lane to
                              :note (str "- move " worker " " (inc i))}))))
     "crash" (must-ok (writer/transition!
-                      w {:ticket ticket :from-lane "Ready" :to-lane "Review"
+                      w {:ticket ticket :from-lane "Ready" :to-lane "Backlog"
                          :frontmatter {"assignee" "boxp"}
                          :note (str "- crash " worker)}))))

@@ -31,7 +31,7 @@
 (defn board-content []
   (str "---\n\nkanban-plugin: board\n\n---\n\n## Backlog\n\n## Ready\n\n"
        (str/join "\n" (map #(card % "Ready") tickets))
-       "\n\n\n## In Progress\n\n## Blocked\n\n## Review\n\n## Done\n\n\n"))
+       "\n\n\n## In Progress\n\n## Blocked\n\n## Done\n\n\n"))
 
 (defn new-vault []
   (let [dir (fs/create-temp-dir {:prefix "vault-writer-"})
@@ -99,8 +99,8 @@
     (writer/transition! (crash-at env step) request)
     (catch Error _ :killed)))
 
-(def to-review {:ticket "BOXP-904" :from-lane "Ready" :to-lane "Review"
-                :frontmatter {"assignee" "boxp"} :note "- moved to review"
+(def to-backlog {:ticket "BOXP-904" :from-lane "Ready" :to-lane "Backlog"
+                :frontmatter {"assignee" "boxp"} :note "- moved to backlog"
                 :expected-revision 3})
 
 (deftest atomic-write-replaces-content-without-leftovers
@@ -131,22 +131,22 @@
 (deftest transition-moves-card-and-projects-ticket
   (let [env (new-vault)
         w (new-writer env)
-        result (writer/transition! w to-review)]
+        result (writer/transition! w to-backlog)]
     (is (ok? result))
     (is (string? (:transition-id result)))
-    (is (= "Review" (lane-of env "BOXP-904")))
-    (is (str/includes? (board env) "## Review\n\n- [ ] [[Tickets/BOXP-904|"))
-    (is (str/includes? (board env) "status::review priority::medium"))
+    (is (= "Backlog" (lane-of env "BOXP-904")))
+    (is (str/includes? (board env) "## Backlog\n\n- [ ] [[Tickets/BOXP-904|"))
+    (is (str/includes? (board env) "status::backlog priority::medium"))
     (is (str/ends-with? (board env) "## Done\n\n\n") "untouched trailing lines are preserved")
     (is (= (str/replace (board-content) (str (card "BOXP-904" "Ready") "\n") "")
-           (str/replace (board env) (str (card "BOXP-904" "Review") "\n") ""))
+           (str/replace (board env) (str (card "BOXP-904" "Backlog") "\n") ""))
         "every other Board line is byte-identical")
-    (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n"))
-    (is (str/ends-with? (ticket env "BOXP-904") "- seed\n- moved to review\n"))
+    (is (str/includes? (ticket env "BOXP-904") "\nstatus: backlog\n"))
+    (is (str/ends-with? (ticket env "BOXP-904") "- seed\n- moved to backlog\n"))
     (is (= [] (pending w)))
     (is (= 2 (count (str/split-lines (journal env)))) "prepared and committed records")
     (testing "Done marks the card closed"
-      (is (ok? (writer/transition! w {:ticket "BOXP-904" :from-lane "Review" :to-lane "Done"})))
+      (is (ok? (writer/transition! w {:ticket "BOXP-904" :from-lane "Backlog" :to-lane "Done"})))
       (is (str/includes? (board env) "- [x] [[Tickets/BOXP-904|"))
       (is (str/includes? (board env) "status::done priority::medium assignee::boxp done::2026-10-01")))))
 
@@ -169,9 +169,9 @@
     (is (= (str head "\n## Notes\n\n- added\n") (append! head)))
     (testing "frontmatter updates replace existing keys and add new ones inside the block"
       (is (ok? (writer/update-ticket! w {:ticket "BOXP-904"
-                                         :frontmatter {"status" "review" "execution_intent" "pause"}})))
+                                         :frontmatter {"status" "backlog" "execution_intent" "pause"}})))
       (is (str/starts-with? (ticket env "BOXP-904")
-                            "---\nid: BOXP-904\nstatus: review\nexecution_intent: pause\n---\n")))
+                            "---\nid: BOXP-904\nstatus: backlog\nexecution_intent: pause\n---\n")))
     (testing "a ticket without frontmatter is not rewritten"
       (spit (ticket-file env "BOXP-904") "# BOXP-904: Synthetic\n")
       (is (rejected? :invalid-vault-state
@@ -182,20 +182,20 @@
   (let [env (new-vault)
         w (new-writer env)
         before (vault-snapshot env)]
-    (is (rejected? :conflict (writer/transition! w (assoc to-review :from-lane "Blocked"))))
-    (is (rejected? :conflict (writer/transition! w (assoc to-review :expected-revision 2))))
+    (is (rejected? :conflict (writer/transition! w (assoc to-backlog :from-lane "Blocked"))))
+    (is (rejected? :conflict (writer/transition! w (assoc to-backlog :expected-revision 2))))
     (is (rejected? :conflict (writer/update-ticket! w {:ticket "BOXP-904" :note "- stale"
                                                        :expected-revision 4})))
-    (doseq [request [(assoc to-review :ticket "../BOXP-904")
-                     (assoc to-review :ticket "boxp-904")
-                     (assoc to-review :to-lane "Ready")
-                     (assoc to-review :to-lane "Archive")
-                     (assoc to-review :note "- two\n- lines")
-                     (assoc to-review :frontmatter {"status" "done"})
-                     (assoc to-review :frontmatter {"bad key" "x"})
-                     (assoc to-review :frontmatter {"assignee" "boxp\nstatus: done"})
-                     (assoc to-review :expected-revision "3")
-                     (assoc to-review :guard :not-a-fn)]]
+    (doseq [request [(assoc to-backlog :ticket "../BOXP-904")
+                     (assoc to-backlog :ticket "boxp-904")
+                     (assoc to-backlog :to-lane "Ready")
+                     (assoc to-backlog :to-lane "Archive")
+                     (assoc to-backlog :note "- two\n- lines")
+                     (assoc to-backlog :frontmatter {"status" "done"})
+                     (assoc to-backlog :frontmatter {"bad key" "x"})
+                     (assoc to-backlog :frontmatter {"assignee" "boxp\nstatus: done"})
+                     (assoc to-backlog :expected-revision "3")
+                     (assoc to-backlog :guard :not-a-fn)]]
       (is (rejected? :invalid-request (writer/transition! w request))))
     (is (rejected? :invalid-request (writer/update-ticket! w {:ticket "BOXP-904"})))
     (is (= before (vault-snapshot env)))
@@ -208,16 +208,16 @@
       (spit (str (fs/path (:vault env) "Boards" "Task Board.md"))
             (str/replace (board env) "## Blocked\n" (str "## Blocked\n\n" (card "BOXP-904" "Blocked") "\n")))
       (let [before (vault-snapshot env)]
-        (is (rejected? :invalid-vault-state (writer/transition! w to-review)))
+        (is (rejected? :invalid-vault-state (writer/transition! w to-backlog)))
         (is (= before (vault-snapshot env)))))
     (testing "missing ticket file and missing card"
       (fs/delete (ticket-file env "BOXP-903"))
       (is (rejected? :invalid-vault-state
                      (writer/transition! w {:ticket "BOXP-903" :from-lane "Ready"
-                                            :to-lane "Review"})))
+                                            :to-lane "Backlog"})))
       (is (rejected? :invalid-vault-state
                      (writer/transition! w {:ticket "BOXP-999" :from-lane "Ready"
-                                            :to-lane "Review"})))
+                                            :to-lane "Backlog"})))
       (is (not (fs/exists? (ticket-file env "BOXP-903"))))
       (is (= "Ready" (lane-of env "BOXP-903"))))
     (is (= "" (journal env)))))
@@ -229,7 +229,7 @@
       (doseq [w [(new-writer env {:generation 2})
                  (new-writer env {:verify-generation nil})
                  (new-writer env {:verify-generation (constantly "yes")})]]
-        (is (rejected? :stale-generation (writer/transition! w to-review)))
+        (is (rejected? :stale-generation (writer/transition! w to-backlog)))
         (is (rejected? :stale-generation (writer/update-ticket! w {:ticket "BOXP-904" :note "- x"})))
         (is (rejected? :stale-generation (writer/recover! w)))
         (is (rejected? :stale-generation (writer/write-state! w "state.edn" identity)))))
@@ -238,13 +238,13 @@
                      (writer/transition!
                       (new-writer env {:verify-generation
                                        (fn [_] (throw (Exception. "SYNTHETIC_SECRET")))})
-                      to-review))))
+                      to-backlog))))
     (testing "a worker whose lease was taken over cannot project its result"
       (let [lease (atom {:run-id "run-old"})
             guard #(= "run-old" (:run-id @lease))]
         (reset! lease {:run-id "run-new"})
         (is (rejected? :lease-lost
-                       (writer/transition! (new-writer env) (assoc to-review :guard guard))))))
+                       (writer/transition! (new-writer env) (assoc to-backlog :guard guard))))))
     (is (= before (vault-snapshot env)))
     (is (= "" (journal env)))))
 
@@ -256,7 +256,7 @@
                              :failpoint #(when (= :after-prepare %) (reset! current 2))})
           new (new-writer env {:generation 2 :verify-generation #(= @current %)})
           before (vault-snapshot env)]
-      (is (rejected? :stale-generation (writer/transition! w to-review)))
+      (is (rejected? :stale-generation (writer/transition! w to-backlog)))
       (is (= before (vault-snapshot env)))
       (is (= 1 (count (str/split-lines (journal env)))) "only the prepared record exists")
       (is (= [:aborted] (mapv :outcome (:outcomes (writer/recover! new)))))
@@ -266,8 +266,8 @@
     (let [env (new-vault)
           current (atom 1)
           checks (atom 0)
-          other {:ticket "BOXP-903" :from-lane "Ready" :to-lane "Review" :note "- other"}]
-      (is (= :killed (crashed-transition! env :after-board to-review)))
+          other {:ticket "BOXP-903" :from-lane "Ready" :to-lane "Backlog" :note "- other"}]
+      (is (= :killed (crashed-transition! env :after-board to-backlog)))
       (is (= :killed (crashed-transition! env :after-board other)))
       ;; recover! verifies once on entry; the generation changes right after.
       (let [old (new-writer env {:verify-generation (fn [generation]
@@ -281,8 +281,8 @@
         (is (= journal-before (journal env)) "and no terminal record was appended"))
       (let [new (new-writer env {:generation 2 :verify-generation #(= @current %)})]
         (is (= [:recovered :recovered] (mapv :outcome (:outcomes (writer/recover! new)))))
-        (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n"))
-        (is (str/includes? (ticket env "BOXP-903") "\nstatus: review\n")))))
+        (is (str/includes? (ticket env "BOXP-904") "\nstatus: backlog\n"))
+        (is (str/includes? (ticket env "BOXP-903") "\nstatus: backlog\n")))))
   (testing "after the Board write the old writer stops and the new generation recovers"
     (let [env (new-vault)
           current (atom 1)
@@ -290,61 +290,61 @@
           old (new-writer env {:verify-generation verify
                                :failpoint #(when (= :after-board %) (reset! current 2))})
           new (new-writer env {:generation 2 :verify-generation verify})]
-      (is (rejected? :stale-generation (writer/transition! old to-review)))
-      (is (= "Review" (lane-of env "BOXP-904")))
+      (is (rejected? :stale-generation (writer/transition! old to-backlog)))
+      (is (= "Backlog" (lane-of env "BOXP-904")))
       (is (str/includes? (ticket env "BOXP-904") "\nstatus: ready\n")
           "the fenced writer did not write the ticket")
       (is (rejected? :stale-generation (writer/recover! old)))
       (is (= [{:ticket "BOXP-904" :outcome :recovered}]
              (mapv #(dissoc % :id) (:outcomes (writer/recover! new)))))
-      (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n")))))
+      (is (str/includes? (ticket env "BOXP-904") "\nstatus: backlog\n")))))
 
 (deftest recovery-after-a-kill-between-each-write
   (testing "killed after the journal entry: nothing was applied, so it is aborted"
     (let [env (new-vault)
           before (vault-snapshot env)
           w (new-writer env)]
-      (is (= :killed (crashed-transition! env :after-prepare to-review)))
+      (is (= :killed (crashed-transition! env :after-prepare to-backlog)))
       (is (= before (vault-snapshot env)))
       (is (= 1 (count (pending w))))
-      (is (rejected? :unresolved-journal (writer/transition! w to-review)))
+      (is (rejected? :unresolved-journal (writer/transition! w to-backlog)))
       (is (rejected? :unresolved-journal
                      (writer/update-ticket! w {:ticket "BOXP-904" :note "- blocked"})))
       (is (ok? (writer/update-ticket! w {:ticket "BOXP-903" :note "- other tickets continue"})))
       (is (= [:aborted] (mapv :outcome (:outcomes (writer/recover! w)))))
       (is (= "Ready" (lane-of env "BOXP-904")))
       (is (= [] (pending w)))
-      (is (ok? (writer/transition! w to-review)) "the transition can be decided again")))
+      (is (ok? (writer/transition! w to-backlog)) "the transition can be decided again")))
   (testing "killed after the Board write: the ticket projection is completed"
     (let [env (new-vault)
           w (new-writer env)]
-      (is (= :killed (crashed-transition! env :after-board to-review)))
-      (is (= "Review" (lane-of env "BOXP-904")))
+      (is (= :killed (crashed-transition! env :after-board to-backlog)))
+      (is (= "Backlog" (lane-of env "BOXP-904")))
       (is (str/includes? (ticket env "BOXP-904") "\nstatus: ready\n"))
       (testing "a note appended meanwhile by another writer survives recovery"
         (spit (ticket-file env "BOXP-904") (str (ticket env "BOXP-904") "- concurrent note\n")))
       (is (= [:recovered] (mapv :outcome (:outcomes (writer/recover! w)))))
-      (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n"))
+      (is (str/includes? (ticket env "BOXP-904") "\nstatus: backlog\n"))
       (is (str/ends-with? (ticket env "BOXP-904")
-                          "- seed\n- concurrent note\n- moved to review\n"))
+                          "- seed\n- concurrent note\n- moved to backlog\n"))
       (is (= [] (:outcomes (writer/recover! w))) "recovery is not repeated")))
   (testing "killed after the ticket write: recovery does not duplicate the note"
     (let [env (new-vault)
           w (new-writer env)]
-      (is (= :killed (crashed-transition! env :after-ticket to-review)))
+      (is (= :killed (crashed-transition! env :after-ticket to-backlog)))
       (is (= 1 (count (pending w))))
       (is (= [:recovered] (mapv :outcome (:outcomes (writer/recover! w)))))
-      (is (= 1 (occurrences (ticket env "BOXP-904") "- moved to review")))
+      (is (= 1 (occurrences (ticket env "BOXP-904") "- moved to backlog")))
       (is (= [] (pending w))))))
 
 (deftest recovery-never-replays-over-a-newer-change
   (testing "the owner moved the card after the crash"
     (let [env (new-vault)
           w (new-writer env)]
-      (is (= :killed (crashed-transition! env :after-board to-review)))
+      (is (= :killed (crashed-transition! env :after-board to-backlog)))
       (spit (str (fs/path (:vault env) "Boards" "Task Board.md"))
             (-> (board env)
-                (str/replace (str (card "BOXP-904" "Review") "\n") "")
+                (str/replace (str (card "BOXP-904" "Backlog") "\n") "")
                 (str/replace "## Blocked\n" (str "## Blocked\n\n" (card "BOXP-904" "Blocked") "\n"))))
       (let [before (vault-snapshot env)]
         (is (= [:superseded] (mapv :outcome (:outcomes (writer/recover! w)))))
@@ -353,14 +353,14 @@
   (testing "the control revision projection changed after the crash"
     (let [env (new-vault)
           w (new-writer env)]
-      (is (= :killed (crashed-transition! env :after-board to-review)))
+      (is (= :killed (crashed-transition! env :after-board to-backlog)))
       (spit (ticket-file env "BOXP-904")
             (str/replace (ticket env "BOXP-904") "control_revision: 3" "control_revision: 4"))
       (let [before (vault-snapshot env)]
         (is (= [:superseded] (mapv :outcome (:outcomes (writer/recover! w)))))
         (is (= before (vault-snapshot env))))))
   (testing "another writer updated the ticket after the crash"
-    (let [reassign (assoc to-review :frontmatter {"assignee" "codex-sol"})]
+    (let [reassign (assoc to-backlog :frontmatter {"assignee" "codex-sol"})]
       (doseq [[label change] [["the same frontmatter key"
                                #(str/replace % "assignee: boxp" "assignee: claude-fable")]
                               ["an unrelated part of the ticket" #(str % "- concurrent note\n")]]]
@@ -380,7 +380,7 @@
           (is (= :killed (crashed-transition! env :after-board reassign)))
           (is (= [:recovered] (mapv :outcome (:outcomes (writer/recover! w)))))
           (is (str/includes? (ticket env "BOXP-904") "\nassignee: codex-sol\n"))
-          (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n"))))
+          (is (str/includes? (ticket env "BOXP-904") "\nstatus: backlog\n"))))
       (testing "a later update made after the ticket write is kept"
         (let [env (new-vault)
               w (new-writer env)]
@@ -393,7 +393,7 @@
   (testing "a broken vault stays pending for a human"
     (let [env (new-vault)
           w (new-writer env)]
-      (is (= :killed (crashed-transition! env :after-board to-review)))
+      (is (= :killed (crashed-transition! env :after-board to-backlog)))
       (spit (str (fs/path (:vault env) "Boards" "Task Board.md"))
             (str/replace (board env) "## Blocked\n" (str "## Blocked\n\n" (card "BOXP-904" "Blocked") "\n")))
       (let [before (vault-snapshot env)]
@@ -406,10 +406,10 @@
     (testing "an interrupted append is dropped and truncated before the next record"
       (let [env (new-vault)
             w (new-writer env)]
-        (is (ok? (writer/transition! w {:ticket "BOXP-902" :from-lane "Ready" :to-lane "Review"})))
+        (is (ok? (writer/transition! w {:ticket "BOXP-902" :from-lane "Ready" :to-lane "Backlog"})))
         (spit (journal-path env) "0123abcd {:id \"torn\" :phase :prep" :append true)
         (is (= [] (pending w)))
-        (is (ok? (writer/transition! w to-review)))
+        (is (ok? (writer/transition! w to-backlog)))
         (is (not (str/includes? (journal env) "torn")))
         (is (= 4 (count (str/split-lines (journal env)))))
         (is (= [] (pending w)))))
@@ -418,11 +418,11 @@
                       #(str/replace % ":journal-version 1" ":journal-version 2")]]
         (let [env (new-vault)
               w (new-writer env)]
-          (is (ok? (writer/transition! w {:ticket "BOXP-902" :from-lane "Ready" :to-lane "Review"})))
+          (is (ok? (writer/transition! w {:ticket "BOXP-902" :from-lane "Ready" :to-lane "Backlog"})))
           (spit (journal-path env) (damage (journal env)))
           (let [before (vault-snapshot env)
                 damaged (journal env)]
-            (is (rejected? :journal-corrupt (writer/transition! w to-review)))
+            (is (rejected? :journal-corrupt (writer/transition! w to-backlog)))
             (is (rejected? :journal-corrupt (writer/update-ticket! w {:ticket "BOXP-904" :note "- x"})))
             (is (rejected? :journal-corrupt (writer/recover! w)))
             (is (rejected? :journal-corrupt (writer/pending-transitions w)))
@@ -490,7 +490,7 @@
                (shell-loop env n (str "bb '" helper-script "' append-note BOXP-901 --vault '"
                                       (:vault env) "' --source helper --note \"helper-note-$i\" >/dev/null"))
                ;; The helper moves a card while the runner's sync projects statuses.
-               (shell-loop env n (str "if (( i % 2 )); then lane=Review; else lane=Ready; fi; "
+               (shell-loop env n (str "if (( i % 2 )); then lane=Backlog; else lane=Ready; fi; "
                                       "bb '" helper-script "' update BOXP-904 --vault '" (:vault env)
                                       "' --lane \"$lane\" --priority high >/dev/null"))
                (shell-loop env n (str "bb '" runner-script "' sync >/dev/null"))]
@@ -511,8 +511,8 @@
       (doseq [i (range 1 (inc n))]
         (is (= 1 (occurrences (ticket env id) (str "- move " name " " i "\n"))))))
     (is (str/includes? (ticket env "BOXP-904") "\npriority: high\n"))
-    (is (= "Review" (lane-of env "BOXP-904")))
-    (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n")
+    (is (= "Backlog" (lane-of env "BOXP-904")))
+    (is (str/includes? (ticket env "BOXP-904") "\nstatus: backlog\n")
         "the ticket status follows the final lane")
     (doseq [id tickets]
       (is (= 1 (occurrences (board env) (str "[[Tickets/" id "|"))) "exactly one card per ticket"))
@@ -521,8 +521,8 @@
 
 (deftest killed-process-is-recovered-by-the-next-writer
   (doseq [[step lane-after-kill] [["after-prepare" "Ready"]
-                                  ["after-board" "Review"]
-                                  ["after-ticket" "Review"]]]
+                                  ["after-board" "Backlog"]
+                                  ["after-ticket" "Backlog"]]]
     (let [env (new-vault)
           _ (control-store! env)
           result @(worker env "crash" "omega" "BOXP-904" 1 step)
@@ -532,8 +532,8 @@
       (is (= 1 (count (pending w))) "the dead process released the lock and left one entry")
       (is (= [(if (= "Ready" lane-after-kill) :aborted :recovered)]
              (mapv :outcome (:outcomes (writer/recover! w)))))
-      (when (= "Review" lane-after-kill)
-        (is (str/includes? (ticket env "BOXP-904") "\nstatus: review\n"))
+      (when (= "Backlog" lane-after-kill)
+        (is (str/includes? (ticket env "BOXP-904") "\nstatus: backlog\n"))
         (is (= 1 (occurrences (ticket env "BOXP-904") "- crash omega\n"))))
       (is (= [] (pending w))))))
 
@@ -697,5 +697,20 @@
     (is (= before (vault-snapshot env)))
     (is (not (fs/exists? (:state-dir env))) "no lock, journal or state is created")))
 
+
+;; BOXP-395: Review is retired as a destination, but a leftover card can still leave it.
+(deftest retired-review-lane-is-only-a-source
+  (let [env (new-vault)
+        w (new-writer env)]
+    (testing "nothing can be moved to Review"
+      (is (rejected? :invalid-request
+                     (writer/transition! w {:ticket "BOXP-904" :from-lane "Ready" :to-lane "Review"}))))
+    (testing "a leftover Review card can be moved out"
+      (spit (str (fs/path (:vault env) "Boards" "Task Board.md"))
+            (-> (board env)
+                (str/replace (str (card "BOXP-904" "Ready") "\n") "")
+                (str/replace "## Done\n" (str "## Review\n\n" (card "BOXP-904" "Review") "\n\n## Done\n"))))
+      (is (ok? (writer/transition! w {:ticket "BOXP-904" :from-lane "Review" :to-lane "Blocked"})))
+      (is (= "Blocked" (lane-of env "BOXP-904"))))))
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

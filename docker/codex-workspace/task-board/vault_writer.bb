@@ -28,8 +28,10 @@
    "Ready" "ready"
    "In Progress" "in-progress"
    "Blocked" "blocked"
-   "Review" "review"
    "Done" "done"})
+
+;; BOXP-395: Review is retired as a destination; a leftover card can still be moved out.
+(def ^:private source-lanes (conj (set (keys lane->status)) "Review"))
 
 (def ^:private diagnostic-codes
   {:ok "ok"
@@ -168,7 +170,7 @@
   (:cards
    (reduce (fn [{:keys [lane] :as acc} [idx line]]
              (if-let [title (lane-of-heading line)]
-               (assoc acc :lane (when (contains? lane->status title) title))
+               (assoc acc :lane (when (contains? source-lanes title) title))
                (if (and lane (card-line? line) (= ticket (card-ticket line)))
                  (update acc :cards conj {:lane lane :idx idx :line line})
                  acc)))
@@ -472,7 +474,7 @@
    writer
    (fn []
      (when-not (and (valid-ticket-id? ticket)
-                    (contains? lane->status from-lane)
+                    (contains? source-lanes from-lane)
                     (contains? lane->status to-lane)
                     (not= from-lane to-lane)
                     (valid-frontmatter-updates? (or frontmatter {}))
