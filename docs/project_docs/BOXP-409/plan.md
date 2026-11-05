@@ -60,5 +60,6 @@ merge すると image updater の自動 rollout が起きる。Owner が通常�
 - digest の完了は `sent` か、gate が意図的な [SILENT] を確認して書く receipt `silent`（marker も silent の場合）に限る。silent marker だけでは未配信のまま完了しない。
 - 静音時間の正本は dispatcher の `CODEX_TASK_BOARD_EVENT_QUIET_HOURS` / `CODEX_TASK_BOARD_EVENT_TIMEZONE`。別コンテナの Hermes gate が同じ値を使えるよう、dispatcher が tick ごとに vault の `Projects/task-board-events/quiet-policy.json` へ公開する（変更時のみ書込み）。初回公開前は gate も同じ env 名と既定値を使う。解釈不能な時間指定は dispatcher と同じく静音なし、不正な timezone は gate が保留する。
 - 関連 PR の boxp/lolice 側は route prompt の更新だけで、annotation の変更は外した。route は Pod 起動時に PVC へコピーされるため、lolice を先に merge し、この PR の Hermes image rollout で反映する。
-- `deferred` marker でも本文が送信済み（receipt `sent`）なら digest に再掲載しない。timeout 後に未解決へ移し、180m cron が回収する。
+- `deferred` marker は最終応答より先に書かれるため、marker だけでは digest へ回さない。gate が [SILENT] を確認して書く receipt `silent` を待ち、timeout まで証拠がなければ digest で回収する。
+- `deferred` marker でも本文が送信済み（receipt `sent`）なら digest に再掲載しない。timeout 後に未解決へ移し、180m cron が回収する。digest に組み込まれる前の項目に後から `sent` / `uncertain` が届いた場合も未解決へ移す。
 - digest の `silent` receipt は、同じ event の `sent` / `uncertain`（vault と Hermes ローカルの両方）を上書きしない。

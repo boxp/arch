@@ -182,13 +182,15 @@ def receipt_shows_egress(vault, event, root=None):
 
 
 def digest_silence_receipt(vault, event, proof, root=None):
-    """A digest ends without a send only on this proof of an intentional silence.
+    """A digest ends without a send, and a deferred event enters the digest, only on
+    this proof of an intentional silence.
 
     A silence never replaces the evidence of an earlier send: the dispatcher would
     otherwise close a digest whose report may not have arrived.
     """
-    if "-digest-" in event and proof == "silent" and not receipt_shows_egress(vault, event, root):
-        vault_receipt(vault, event, "silent", "silent")
+    expected = "silent" if "-digest-" in event else "deferred"
+    if proof == expected and not receipt_shows_egress(vault, event, root):
+        vault_receipt(vault, event, "silent", proof)
 
 
 async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vault=VAULT):

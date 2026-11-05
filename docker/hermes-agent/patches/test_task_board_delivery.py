@@ -178,6 +178,17 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(delivery.shape(source, {}, "[SILENT]", True, self.vault)[1])
         self.assertEqual(json.loads(path.read_text())["state"], "silent")
 
+    async def test_deferred_silence_writes_receipt_but_continued_does_not(self):
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+        self.note("continued")
+        self.assertTrue((await self.send("[SILENT]")).success)
+        self.assertFalse(path.exists())
+        (self.vault / "BOXP-999.md").unlink()
+        self.note("deferred")
+        self.assertTrue((await self.send("[SILENT]")).success)
+        self.assertEqual(json.loads(path.read_text())["state"], "silent")
+        self.assertFalse(self.calls)
+
     def test_digest_silence_keeps_earlier_egress_evidence(self):
         event = "BOXP-999-digest-20261030T120000Z-abcdef12"
         source = NS(platform=NS(value="webhook"), chat_id="webhook:task-board:" + event)

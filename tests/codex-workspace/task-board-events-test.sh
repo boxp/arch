@@ -580,12 +580,44 @@ test_night_results_split_digest_and_done() {
   seed_event "${CASE_STATE}" s1 BOXP-902 :accepted "${at}" ":accepted-at \"${at}\" :notify-mode \"defer\""
   seed_event "${CASE_STATE}" c1 BOXP-903 :accepted "${at}" ":accepted-at \"${at}\" :notify-mode \"defer\""
   note_marker "${CASE_VAULT}" BOXP-901 d1 deferred
+  write_receipt "${CASE_VAULT}" d1 silent "2026-11-04T18:00:01+00:00"
   note_marker "${CASE_VAULT}" BOXP-902 s1 silent
   note_marker "${CASE_VAULT}" BOXP-903 c1 continued
   night_tick CODEX_TASK_BOARD_EVENT_DONE_RETENTION_DAYS=100000
   assert_file_contains "${CASE_STATE}/outbox/pending/d1.edn" ':status :notify-pending'
   [[ -f "${CASE_STATE}/outbox/done/s1.edn" && -f "${CASE_STATE}/outbox/done/c1.edn" ]] || fail "silent and continued must finish"
   [[ "$(digest_count)" -eq 0 ]] || fail "no digest may be built during quiet hours"
+}
+
+test_deferred_marker_waits_for_gate_proof() {
+  new_case
+  local at="2026-11-04T18:00:00Z"
+  seed_event "${CASE_STATE}" race BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
+  note_marker "${CASE_VAULT}" BOXP-901 race deferred
+  # The final reply is still running: the marker alone does not queue it for the digest.
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="off" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:10:00Z" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/pending/race.edn" ':status :accepted'
+  [[ "$(digest_count)" -eq 0 ]] || fail "a deferred marker without proof must not enter a digest"
+  # The reply goes out: nothing for the digest to repeat.
+  write_receipt "${CASE_VAULT}" race sent "2026-11-04T18:11:00+00:00"
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="off" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:12:00Z" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/pending/race.edn" ':status :accepted'
+  [[ "$(digest_count)" -eq 0 ]] || fail "a sent deferred event must not enter a digest"
+
+  # No proof by the timeout: the digest still reports it, and a send landing later pulls it out.
+  new_case
+  seed_event "${CASE_STATE}" late BOXP-901 :accepted "${at}" ":accepted-at \"${at}\""
+  note_marker "${CASE_VAULT}" BOXP-901 late deferred
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="2-9" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:31:00Z" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/pending/late.edn" ':status :notify-pending'
+  write_receipt "${CASE_VAULT}" late sent "2026-11-04T18:32:00+00:00"
+  CODEX_TASK_BOARD_EVENT_QUIET_HOURS="off" run_events "${CASE_VAULT}" "${CASE_STATE}" env \
+    CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-04T18:33:00Z" >/dev/null
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/late.edn" ':status :notify-undelivered'
+  [[ "$(digest_count)" -eq 0 ]] || fail "a late send must not be repeated by the digest"
 }
 
 test_marker_summary_cannot_forge_result() {
@@ -973,6 +1005,7 @@ test_digest_restart_and_delivery_receipt
 test_night_gate_off_or_invalid_keeps_legacy_hold
 test_night_gate_posts_defer_and_limits_tickets
 test_night_results_split_digest_and_done
+test_deferred_marker_waits_for_gate_proof
 test_marker_summary_cannot_forge_result
 test_digest_collapses_and_is_sent_once
 test_digest_transport_failure_retries_then_unhandled

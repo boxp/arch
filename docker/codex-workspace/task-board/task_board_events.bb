@@ -555,6 +555,12 @@
           (move-event! (assoc item :status :notify-undelivered :unhandled-at (now-str)) (unhandled-dir)))
         (when (= :handled (:status digest))
           (move-event! (assoc item :status :handled :delivered-at (now-str)) (done-dir)))))
+    ;; A send can land after an item returned to the digest queue (late reply past the
+    ;; timeout): once it may have gone out, the digest must not repeat it.
+    (doseq [item events :when (and (= :notify-pending (:status item)) (nil? (:digest-id item)) (not (digest? item)))]
+      (when-let [state (#{"sent" "uncertain"} (receipt-state item))]
+        (move-event! (assoc item :status :notify-undelivered :unhandled-at (now-str) :delivery-receipt state) (unhandled-dir))
+        (log! (str "delivery unconfirmed " (:event-id item)))))
     (reduce (fn [acc event]
               (let [marker (handled-in-notes? event)
                     receipt (receipt-state event)
@@ -576,14 +582,14 @@
                                    (unhandled-dir))
                       (log! (str "delivery unconfirmed " (:event-id event)))
                       (update acc :unhandled inc))
-                  ;; A deferred report that already went out must not be repeated by the digest.
-                  (and marker (not digest) (= marker :deferred) (not= receipt "sent"))
+                  ;; The marker is written before the agent's final reply, so only the gate's
+                  ;; proof of the [SILENT] rules out a send that the digest would repeat.
+                  (and (not digest) (= marker :deferred) (= receipt "silent"))
                   (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
                       (update acc :waiting inc))
                   ;; A notified/question marker is written before the send, which may
                   ;; come late and be held: only the gate's receipt proves the outcome.
-                  (and marker (or (and (not digest) (not (#{:notified :question} marker))
-                                       (not (and (= marker :deferred) (= receipt "sent"))))
+                  (and marker (or (and (not digest) (not (#{:notified :question :deferred} marker)))
                                   (and (#{:notified :question :silent} marker) (= receipt "sent") (not unconfirmed))
                                   ;; Only the gate's proof of an intentional [SILENT] ends a digest without a send.
                                   (and digest (= marker :silent) (= receipt "silent"))))
