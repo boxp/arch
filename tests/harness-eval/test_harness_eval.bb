@@ -367,7 +367,7 @@
       (is (re-find #"task=\"T01\"" prom) "課題 ID だけを label に出す"))))
 
 (defn run-status [out] (edn/read-string (slurp (str (fs/path out "run-status.edn")))))
-(defn attempt-lines [out] (->> (str/split-lines (slurp (str (fs/path out "attempts.log")))) (map edn/read-string) vec))
+(defn attempt-lines [out] (->> (str/split-lines (slurp (str (fs/path out "attempts.log")))) (remove str/blank?) (map edn/read-string) vec))
 
 (deftest agent-does-not-receive-task-board-or-claude-session-env
   (let [out (tmp)]
@@ -427,6 +427,13 @@
         (is (= 1 (:interrupted_attempts cmp)))
         (is (>= (:spent_seconds cmp) 180) "中断分を上限 (60+120 秒) まで計上する")
         (is (= (+ 2 (quot before 2) ) (:attempts cmp)) "開始の回数")))))
+
+(deftest half-written-attempt-line-does-not-hide-the-next-attempt
+  (let [out (tmp)]
+    (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+    (spit (str (fs/path out "attempts.log")) "{:event \"start\" :tri")
+    (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"}))))
+    (is (= 1 (:attempts (compare! out))))))
 
 (deftest cumulative-wall-budget-stops-new-trials
   (let [out (tmp) now (quot (System/currentTimeMillis) 1000)]

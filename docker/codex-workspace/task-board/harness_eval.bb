@@ -470,7 +470,8 @@
       (vec (keep #(try (edn/read-string %) (catch Exception _ nil)) (remove str/blank? (str/split-lines (slurp f)))))
       [])))
 
-(defn append-attempt! [out m] (spit (attempts-path out) (str (pr-str m) "\n") :append true))
+;; 行頭にも改行を書く。前の run が書きかけで殺されても、次の event が同じ行に混ざって読めなくならない。
+(defn append-attempt! [out m] (spit (attempts-path out) (str "\n" (pr-str m) "\n") :append true))
 
 (defn attempt-spans
   "開始ごとの [開始 次の event]。次が同じ試行の end なら完了、そうでなければ中断。"
