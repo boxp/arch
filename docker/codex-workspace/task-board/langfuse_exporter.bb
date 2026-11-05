@@ -52,6 +52,8 @@
 (def flag-value #"(?i)true|false|yes|no|on|off|none|null|nil|enabled|disabled|0|1")
 (def setting-name #"(?i)tokens|count|limit|max|min|ttl|timeout|expir|interval|seconds|minutes|hours|days|size|port|bytes")
 (def short-value-length 8)
+;; The text before a value may be JSON-escaped: the n of \n and the hex of \u3048 are not part of a word.
+(def short-value-start "(?:(?<![A-Za-z0-9])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9a-fA-F]{4}))")
 
 (defn secret-value?
   "Short values count too. A flag such as AUTH_ENABLED=true, or a number under a name such as
@@ -80,7 +82,7 @@
         (str/join "|" (map (fn [value]
                              (let [quoted (java.util.regex.Pattern/quote value)]
                                (if (< (count value) short-value-length)
-                                 (str "(?<![A-Za-z0-9])" quoted "(?![A-Za-z0-9])")
+                                 (str short-value-start quoted "(?![A-Za-z0-9])")
                                  quoted)))
                            (sort-by count > values))))))))
 

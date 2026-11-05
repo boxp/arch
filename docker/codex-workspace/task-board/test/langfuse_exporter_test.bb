@@ -671,7 +671,7 @@
       (is (some #{"zq7"} values))
       (is (some #{"4821"} values)))
     (testing "no name is needed in the text"
-      (doseq [text [(str "answer: " short) (str "答えは" short "です") (str "(" phrase ")") (str "user:" short "@host") (str "zq7") (str "pin 4821.")]]
+      (doseq [text [(str "answer: " short) (str "答えは" short "です") (str "(" phrase ")") (str "user:" short "@host") (str "zq7") (str "pin 4821.") "{\"a\":\"x\\nzq7\"}" "{\"a\":\"\\u3048zq7\"}"]]
         (is (= [] (filter #(str/includes? (masked text) %) [short phrase "zq7" "4821"])) text)
         (is (str/includes? (masked text) "[REDACTED:env]") text)))
     (testing "a short value inside a longer word stays, so ordinary text is readable"
