@@ -216,7 +216,7 @@
   (let [f (str (fs/create-temp-file))] (spit f content) f))
 
 (defn create-ticket! [s key sig]
-  (let [plan (str "- [ ] `Infrastructure/Infra Diagram Refresh/README.md` の手順と規則を読み、下の差分の変更元を実読して意味を判断する\n"
+  (let [plan (str "- [ ] `/opt/codex-workspace/infra-diagram-refresh/README.md` の手順と規則を読み、下の差分の変更元を実読して意味を判断する\n"
                   "- [ ] 図へ反映する差分は staging で edn を直し、検査、実ブラウザ確認、配備、実 URL 確認まで行う\n"
                   "- [ ] 図に関係ないと判断した差分は、その理由を Notes に残して基準だけ進める\n"
                   "- [ ] `iac-baseline.json` の更新を通常 PR、CI、merge で反映し、`refresh.bb accept` で live の基準を進める")
@@ -240,7 +240,7 @@
             "--title" (str "インフラ図の定期更新が同じ差分で止まっています(" existing " の後)")
             "--lane" "Backlog" "--assignee" "boxp" "--priority" "medium" "--repo" repo "--json"
             "--summary" (str "同じ差分のチケットが " max-tickets-per-key " 回閉じても基準が進まなかったので、自動起票を止めました。前回の図は配信中のままです。")
-            "--context-file" (write-file-tmp (str "infra-diagram-refresh-notice: " key "\n\n`Infrastructure/Infra Diagram Refresh/README.md` の復旧手順を参照してください。")))
+            "--context-file" (write-file-tmp (str "infra-diagram-refresh-notice: " key "\n\n`/opt/codex-workspace/infra-diagram-refresh/README.md` の復旧手順を参照してください。")))
         true)))
 
 (defn ticket-status [id]

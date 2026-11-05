@@ -135,12 +135,19 @@
     (write-json! out {:schema 1 :facts all :unparsed unparsed})
     (println "collected" (count all) "facts," (count unparsed) "unparsed files")))
 
-(defn cmd-compare [{:keys [facts baseline rules out]}]
+(defn cmd-compare [{:keys [facts baseline rules out simulate]}]
   (let [r (edn/read-string (slurp rules))
         f (read-json facts)
         b (read-json baseline)
-        result (compare-facts r (:min-iac-facts r) (:facts f) (:facts b))]
-    (write-json! out (assoc result :unparsed (:unparsed f)))
+        sim? (= "true" simulate)
+        ;; 経路の確認用。受け口はこの結果からチケットを作らない
+        now (cond-> (vec (:facts f)) sim? (conj "arch:canary:simulated-change"))
+        result (compare-facts r (:min-iac-facts r) now (:facts b))
+        ;; 解析できない manifest は消えたように見えるので、差分の結論を出さない
+        result (if (and (seq (:unparsed f)) (not= "anomaly" (:status result)))
+                 (assoc result :status "anomaly" :reason (str "unparsed manifests: " (count (:unparsed f))) :added [] :removed [] :new_categories [] :fingerprint nil)
+                 result)]
+    (write-json! out (assoc result :simulated sim? :unparsed (:unparsed f)))
     (println (:status result) "added" (count (:added result)) "removed" (count (:removed result))
              (or (:reason result) ""))))
 

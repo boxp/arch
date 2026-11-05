@@ -1,0 +1,77 @@
+name: Infra diagram refresh check
+
+# 公開 IaC の構造が受入済みの基準から変わったかを 1 日 1 回比べる。差分が無ければここで終わり、agent は起動しない。
+# 結果は artifact に置き、codex-workspace の cron が既存の gh 資格で読みに来る。ここから cluster や vault へは接続しない。
+on:
+  schedule:
+    - cron: '17 18 * * *' # 03:17 JST
+  workflow_dispatch:
+    inputs:
+      simulate:
+        description: 架空の差分を足して経路だけ試す。受け口はチケットを作らず canary として記録する
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: infra-diagram-refresh
+  cancel-in-progress: false
+
+jobs:
+  check:
+    if: github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      BABASHKA_VERSION: 1.12.218
+      TOOLS: docker/codex-workspace/infra-diagram-refresh
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: boxp/lolice
+          path: .lolice
+          persist-credentials: false
+
+      - name: Install Babashka
+        run: |
+          set -eux
+          tmp="$(mktemp -d)"
+          curl --retry 5 --retry-all-errors --connect-timeout 30 --max-time 300 -fsSL \
+            "https://github.com/babashka/babashka/releases/download/v${BABASHKA_VERSION}/babashka-${BABASHKA_VERSION}-linux-amd64-static.tar.gz" \
+            -o "${tmp}/bb.tar.gz"
+          tar -xzf "${tmp}/bb.tar.gz" -C "${tmp}"
+          sudo install -m 0755 "$(find "${tmp}" -type f -name bb | head -n 1)" /usr/local/bin/bb
+
+      - name: Collect and compare
+        env:
+          SIMULATE: ${{ inputs.simulate }}
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          bb "$TOOLS/iac_facts.bb" collect --arch . --lolice .lolice --rules "$TOOLS/rules.edn" --out out/facts.json
+          bb "$TOOLS/iac_facts.bb" compare --facts out/facts.json --baseline docs/infra-diagram-refresh/iac-baseline.json \
+            --rules "$TOOLS/rules.edn" --simulate "${SIMULATE:-false}" --out out/result.json
+          jq '{status, reason, simulated, added: (.added|length), removed: (.removed|length), new_categories, unparsed}' out/result.json
+
+      - name: Upload the result
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: infra-diagram-refresh-result
+          path: out/result.json
+          retention-days: 14
+          if-no-files-found: warn
+
+      - name: Fail on a collection anomaly
+        run: |
+          status=$(jq -r .status out/result.json)
+          [ "$status" != anomaly ] || { echo "collection anomaly: $(jq -r .reason out/result.json)" >&2; exit 1; }
