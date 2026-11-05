@@ -143,6 +143,12 @@
           (p "backup" (map :pvc (filter #(some (fn [j] (re-find #"^c-" j)) (:jobs %)) (:longhorn_volumes snap)))))
          distinct sort vec)))
 
+(defn tmp-in-root
+  "live の値を含むので vault の外へ置かない。強制終了で残っても vault の中に留まる。"
+  []
+  (fs/create-dirs (root))
+  (str (fs/create-temp-file {:dir (root) :prefix ".tmp-"})))
+
 (defn collect-live! [out]
   (sh (env "INFRA_DIAGRAM_REFRESH_COLLECT_LIVE" (str here "/collect-live.sh")) out))
 
@@ -152,7 +158,7 @@
   (if (let [h (hours-since (get-in s [:live :attempted-at]))]
         (and h (< h live-interval-hours) (zero? (get-in s [:live :failures] 0))))
     s
-    (let [tmp (str (fs/create-temp-file))]
+    (let [tmp (tmp-in-root)]
       (try
         (collect-live! tmp)
         (let [r (rules)
@@ -214,15 +220,21 @@
        (str "### 収集の異常(前回の図を保持)\n\n"
             (str/join "\n" (map #(str "- " (:kind %) ": " (:detail %)) failures))))])))
 
-(defn write-file-tmp [content]
-  (let [f (str (fs/create-temp-file))] (spit f content) f))
+(defn with-tmp-file
+  "helper に渡す本文を置き、成否によらず消す。"
+  [content f]
+  (let [p (tmp-in-root)]
+    (try (spit p content) (f p)
+         (finally (fs/delete-if-exists p)))))
 
 (defn create-ticket! [s key sig]
   (let [plan (str "- [ ] `/opt/codex-workspace/infra-diagram-refresh/README.md` の手順と規則を読み、下の差分の変更元を実読して意味を判断する\n"
                   "- [ ] 図へ反映する差分は staging で edn を直し、検査、実ブラウザ確認、配備、実 URL 確認まで行う\n"
                   "- [ ] 図に関係ないと判断した差分は、その理由を Notes に残して基準だけ進める\n"
                   "- [ ] `iac-baseline.json` の更新を通常 PR、CI、merge で反映し、`refresh.bb accept` で live の基準を進める")
-        out (sh "bb" (helper) "create" "--vault" (vault)
+        out (with-tmp-file (signal-body s key sig)
+              (fn [body-file]
+                (sh "bb" (helper) "create" "--vault" (vault)
                 "--title" (str "インフラ図の定期更新: " (subs (str (now)) 0 10) " の差分を監査して反映する")
                 "--lane" "Ready" "--assignee" (assignee) "--priority" "medium" "--repo" repo "--json"
                 "--summary" "定期チェックが図の入力の差分または収集の異常を検出した。意味を監査し、根拠のある更新だけを両図とサムネイルへ反映する。"
@@ -230,19 +242,21 @@
                                     "- [ ] 反映があれば両図とサムネイルが実 URL で新版になり、前回の図を失っていない\n"
                                     "- [ ] 基準が配備の確認後に進み、次の定期チェックが無差分で終わる\n"
                                     "- [ ] ooedo 除外と公開境界を維持している。全体図の匿名公開と portfolio 本番切替はしていない")
-                "--context-file" (write-file-tmp (signal-body s key sig))
-                "--plan" plan)]
+                "--context-file" body-file
+                "--plan" plan)))]
     (:id (json/parse-string out true))))
 
 (defn create-suppressed-notice!
   "同じ差分で agent を回し続けないよう止めたことを、agent を起動しない Backlog のカードで Owner に知らせる。"
   [key existing]
   (:id (json/parse-string
-        (sh "bb" (helper) "create" "--vault" (vault)
+        (with-tmp-file (str "infra-diagram-refresh-notice: " key "\n\n`/opt/codex-workspace/infra-diagram-refresh/README.md` の復旧手順を参照してください。")
+          (fn [body-file]
+            (sh "bb" (helper) "create" "--vault" (vault)
             "--title" (str "インフラ図の定期更新が同じ差分で止まっています(" existing " の後)")
             "--lane" "Backlog" "--assignee" "boxp" "--priority" "medium" "--repo" repo "--json"
             "--summary" (str "同じ差分のチケットが " max-tickets-per-key " 回閉じても基準が進まなかったので、自動起票を止めました。前回の図は配信中のままです。")
-            "--context-file" (write-file-tmp (str "infra-diagram-refresh-notice: " key "\n\n`/opt/codex-workspace/infra-diagram-refresh/README.md` の復旧手順を参照してください。")))
+            "--context-file" body-file)))
         true)))
 
 (defn ticket-status [id]
@@ -260,7 +274,8 @@
         (or (first (remove #(= "done" (ticket-status %)) ids)) (first ids))))))
 
 (defn append-note! [id body]
-  (sh "bb" (helper) "append-note" id "--vault" (vault) "--source" "infra-diagram-refresh" "--note-file" (write-file-tmp body)))
+  (with-tmp-file body
+    #(sh "bb" (helper) "append-note" id "--vault" (vault) "--source" "infra-diagram-refresh" "--note-file" %)))
 
 (defn dispatch-signal
   "稼働中のチケットがあれば差分をそこへ集約し、新しい run は作らない。止まって再開しても同じ key で二重に起票しない。"

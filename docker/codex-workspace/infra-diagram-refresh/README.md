@@ -60,6 +60,7 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
 | IaC の取得や解析の異常 | workflow が失敗し、基準は動きません。チケットを作ります | 原因を直し、workflow を再実行します |
 | live の取得失敗、権限拒否 | 資源の削除とは読みません。3 回続いたらチケットを作ります | kubeconfig と Grafana token を確認します |
 | 検査か render の失敗 | staging で止まり、配信中の図と vault は変わりません | staging を直して build からやり直します |
+| build の後に staging を変えた | deploy と promote が止まります。検査していない内容を配備や正本にしません | `publish.bb build` からやり直します |
 | 配備の失敗 | 前回の Worker が配信を続けます。配備用の secret は消します | `publish.bb deploy` をやり直します。配備済みの図は飛ばします |
 | PR か CI の失敗 | 基準は進まず、次の run も同じ差分を出します | PR を直します |
 | 再起動 | tick は state とチケットの marker から再開し、二重に起票しません。staging は home に残ります | 不要です |

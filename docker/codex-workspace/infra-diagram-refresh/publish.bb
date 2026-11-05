@@ -57,6 +57,38 @@
             (str "https://raw.githubusercontent.com/notofonts/noto-cjk/Sans2.004/Sans/OTF/Japanese/" n))))
     (println "tools ready:" t)))
 
+;; ── build 後の改変の検出
+;; promote が正本へ入れる物とサムネイルを build の直後に記録する。検査と配備を通った内容だけを正本にするため。
+(defn sha256-bytes [^bytes b]
+  (apply str (map #(format "%02x" %) (.digest (java.security.MessageDigest/getInstance "SHA-256") b))))
+
+(defn tree-digest
+  "root からの相対パスと内容の hash。ファイルの追加、削除、改名、変更のどれでも値が変わる。"
+  [root paths]
+  (sha256-bytes
+   (.getBytes
+    (str/join "\n"
+              (sort (for [p paths :when (fs/exists? p)
+                          f (if (fs/directory? p) (fs/glob p "**" {:hidden true}) [p])
+                          :when (fs/regular-file? f)]
+                      (str (fs/relativize root f) " " (sha256-bytes (fs/read-all-bytes f))))))
+    "UTF-8")))
+
+(defn staged-digests [ticket]
+  (let [dir (stage-dir ticket)]
+    (into {"thumbnails" (tree-digest dir [(fs/path dir "thumbnails")])}
+          (for [{:keys [id project html]} diagrams
+                :let [p (fs/path dir "Projects" project)]]
+            [id (tree-digest p (conj (mapv #(fs/path p %) ["data" "src" "tools"]) (fs/path p html)))]))))
+
+(defn assert-staged-unchanged!
+  "配備と正本の更新の直前に呼ぶ。記録が無い古い staging も、確かめられないので止める。"
+  [ticket m]
+  (let [now (staged-digests ticket)
+        changed (filter #(not= (get now %) (get-in m [:built-digests %])) (keys now))]
+    (when (seq changed)
+      (die "staged files changed after build, build again:" (str/join "," (sort changed))))))
+
 ;; ── staging
 (defn clone! [name dest]
   (sh {} "git" "clone" "-q" "--depth" "1" (str "https://github.com/" name ".git") dest)
@@ -148,7 +180,8 @@
           ;; stage の workflow は 2 分割まで受ける (40,000 文字 x 2)
           (when (or (< (alength b) 5000) (> (alength b) 58000))
             (die "thumbnail size out of range:" n (alength b)))))
-      (save-manifest! ticket (assoc m :built hashes :deployed {} :verified false))
+      ;; 検査の後に記録する。build は data/ へ生成物を書くので、書き終えた内容が基準になる。
+      (save-manifest! ticket (assoc m :built hashes :built-digests (staged-digests ticket) :deployed {} :verified false))
       (println "built" hashes))))
 
 ;; ── 配備
@@ -225,6 +258,7 @@
 (defn cmd-deploy [ticket]
   (let [m (manifest ticket) hashes (:built m)]
     (when-not hashes (die "not built:" ticket))
+    (assert-staged-unchanged! ticket m)
     (doseq [{:keys [id] :as d} diagrams]
       (when-not (= (get hashes id) (get-in (manifest ticket) [:deployed id]))
         (let [run (deploy-page! ticket d (get hashes id))]
@@ -250,6 +284,7 @@
     (doseq [{:keys [id]} diagrams]
       (when-not (and (:verified m) (get-in m [:built id]) (= (get-in m [:built id]) (get-in m [:deployed id])))
         (die "not deployed and verified:" id)))
+    (assert-staged-unchanged! ticket m)
     (doseq [{:keys [id project html]} diagrams
             :let [src (fs/path (stage-dir ticket) "Projects" project)
                   dst (fs/path (vault) "Projects" project)

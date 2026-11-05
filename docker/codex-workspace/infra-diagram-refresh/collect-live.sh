@@ -6,7 +6,7 @@ set -euo pipefail
 out=${1:?usage: collect-live.sh OUT.json}
 ds=${PROM_DS_UID:-P1809F7CD0C75ACF3}
 tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+trap 'rm -rf "$tmp" "$out.tmp"' EXIT
 # token をプロセス引数に出さない
 q(){ curl -fsS -m 30 -G -H @<(printf 'Authorization: Bearer %s\n' "$GRAFANA_SERVICE_ACCOUNT_TOKEN") "$GRAFANA_URL/api/datasources/proxy/uid/$ds/api/v1/query" --data-urlencode "query=$1"; }
 kj(){ kubectl get --request-timeout=60s "$@" -o json; }

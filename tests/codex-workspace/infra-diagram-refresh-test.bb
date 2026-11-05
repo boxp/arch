@@ -15,7 +15,7 @@
     (spit (str bin "/kubectl") "#!/bin/sh\nexit 99\n")
     (spit (str d "/live") "#!/bin/sh\n[ ! -f \"$FAKE/fail\" ] || { echo forbidden >&2; exit 1; }; cp \"$FAKE/live.json\" \"$1\"\n")
     (doseq [f [(str bin "/gh") (str bin "/kubectl") (str d "/live")]] (fs/set-posix-file-permissions f "rwxr-xr-x"))
-    (spit (str d "/helper.bb") "(require '[cheshire.core :as j] '[clojure.string :as s])\n(let [a *command-line-args* cmd (first a) v (System/getenv \"CODEX_TASK_BOARD_VAULT\") opt (fn [k] (second (drop-while #(not= k %) a))) log (str (System/getenv \"FAKE\") \"/calls\")] (spit log (str cmd \" \" (or (opt \"--lane\") (second a)) \"\\n\") :append true) (if (= cmd \"create\") (let [n (inc (count (file-seq (clojure.java.io/file (str v \"/Tickets\"))))) id (str \"BOXP-\" n)] (spit (str v \"/Tickets/\" id \".md\") (str \"---\\nstatus: ready\\n---\\n\" (slurp (opt \"--context-file\")))) (println (j/generate-string {:id id}))) (spit (str v \"/Tickets/\" (second a) \".md\") (slurp (opt \"--note-file\")) :append true)))\n")
+    (spit (str d "/helper.bb") "(require '[cheshire.core :as j] '[clojure.string :as s])\n(let [a *command-line-args* cmd (first a) v (System/getenv \"CODEX_TASK_BOARD_VAULT\") opt (fn [k] (second (drop-while #(not= k %) a))) log (str (System/getenv \"FAKE\") \"/calls\")] (spit (str (System/getenv \"FAKE\") \"/body-paths\") (str (or (opt \"--context-file\") (opt \"--note-file\")) \"\\n\") :append true) (when (.exists (clojure.java.io/file (str (System/getenv \"FAKE\") \"/helper-fail\"))) (System/exit 1)) (spit log (str cmd \" \" (or (opt \"--lane\") (second a)) \"\\n\") :append true) (if (= cmd \"create\") (let [n (inc (count (file-seq (clojure.java.io/file (str v \"/Tickets\"))))) id (str \"BOXP-\" n)] (spit (str v \"/Tickets/\" id \".md\") (str \"---\\nstatus: ready\\n---\\n\" (slurp (opt \"--context-file\")))) (println (j/generate-string {:id id}))) (spit (str v \"/Tickets/\" (second a) \".md\") (slurp (opt \"--note-file\")) :append true)))\n")
     (write-json (str d "/live.json") {:namespaces (mapv #(str "ns" %) (range 60))})
     (write-json (str root "/live-baseline.json") {:schema 1 :facts (mapv #(str "live:ns:ns" %) (range 60))})
     (write-json (str d "/run.json") [{:databaseId 1 :conclusion "success" :status "completed" :event "schedule" :headBranch "main" :createdAt "2026-11-05T00:00:00Z" :headSha "abc" :url "https://example.test/run/1"}])
@@ -70,6 +70,90 @@
     (run-id! s 2 "success") (tick s) (is (= 2 (count (calls s)))) (close! s "BOXP-3")
     (run-id! s 3 "success") (tick s) (is (= 3 (count (calls s)))) (is (str/includes? (last (calls s)) "Backlog"))
     (run-id! s 4 "success") (tick s) (is (= 3 (count (calls s))))))
+(defn body-paths [s] (str/split-lines (slurp (str (:d s) "/body-paths"))))
+(defn left-tmp [s] (filter #(str/starts-with? (str (fs/file-name %)) ".tmp-") (fs/list-dir (:root s))))
+(deftest ticket-body-files-do-not-remain
+  (testing "起票と集約の本文は vault の中に置き、終われば消す"
+    (let [s (sandbox)]
+      (result! s changed) (tick s)
+      (run-id! s 2 "success") (result! s (assoc changed :added ["arch:app:other"] :fingerprint (apply str (repeat 64 "b")))) (tick s)
+      (is (= 2 (count (body-paths s))))
+      (doseq [p (body-paths s)]
+        (is (str/starts-with? p (:root s)))
+        (is (not (fs/exists? p))))
+      (is (empty? (left-tmp s)))))
+  (testing "helper が失敗しても残さない"
+    (let [s (sandbox)]
+      (result! s changed) (spit (str (:d s) "/helper-fail") "")
+      (is (not (zero? (:exit (tick s)))))
+      (is (= 1 (count (body-paths s))))
+      (is (not (fs/exists? (first (body-paths s)))))
+      (is (empty? (left-tmp s)))))
+  (testing "live の収集の作業ファイルも残さない"
+    (let [s (sandbox)] (spit (str (:d s) "/fail") "") (tick s) (is (empty? (left-tmp s))))))
+(def publish (str refresh-dir "/publish.bb"))
+(def diagram-dirs {"lineage" ["lolice-infrastructure-lineage" "lolice-lineage.html"]
+                   "architecture" ["lolice-infrastructure-architecture" "lolice-architecture.html"]})
+(defn sha-of [f] (first (str/split (:out (run {} "sha256sum" (str f))) #"\s+")))
+(defn publish-sandbox
+  "build までを偽の道具で通す。正本は old、staging の build が new を作る。"
+  []
+  (let [s (sandbox) d (:d s) cache (str d "/cache") st (str cache "/staging/BOXP-9") r (str d "/publish-rules.edn")
+        env (merge (:env s) {"INFRA_DIAGRAM_REFRESH_CACHE" cache "INFRA_DIAGRAM_REFRESH_RULES" r})]
+    (spit r "{:exclude-fact-patterns [\"(?i)ooedo\"]}")
+    (let [bases (into {} (for [[id [project html]] diagram-dirs
+                               :let [v (str (:vault s) "/Projects/" project) p (str st "/Projects/" project)]]
+                           (do (doseq [x [(str v "/data") (str p "/data") (str p "/src") (str p "/tools")]] (fs/create-dirs x))
+                               (spit (str v "/" html) "old") (spit (str v "/data/a.edn") "old")
+                               (spit (str p "/data/a.edn") "{:new true}") (spit (str p "/src/s.txt") "src")
+                               (write-json (str p "/data/live-snapshot.json") {:namespaces ["ns1"]})
+                               (spit (str p "/tools/build.bb") (str "(spit \"data/generated.json\" \"{}\") (spit \"" html "\" \"new\")"))
+                               (spit (str p "/tools/run-browser.sh") "#!/bin/sh\ncase \"$1\" in *make-thumbnail*) mkdir -p \"$3\"; head -c 6000 /dev/zero > \"$3/lolice-lineage.webp\"; head -c 6000 /dev/zero > \"$3/lolice-architecture.webp\";; esac\n")
+                               (fs/set-posix-file-permissions (str p "/tools/run-browser.sh") "rwxr-xr-x")
+                               [id (sha-of (str v "/" html))])))]
+      (spit (str st "/manifest.edn") (pr-str {:ticket "BOXP-9" :bases bases :built nil :deployed {}}))
+      (assoc s :st st :penv env))))
+(defn mark-deployed!
+  "実配備は gh が要るので、配備の確認が済んだ状態を manifest へ書く。"
+  [{:keys [st]}]
+  (let [f (str st "/manifest.edn") m (edn/read-string (slurp f))]
+    (spit f (pr-str (assoc m :deployed (:built m) :verified true)))))
+(deftest promote-only-what-was-built
+  (let [lineage "Projects/lolice-infrastructure-lineage/"
+        cases {"data" (str lineage "data/a.edn") "src" (str lineage "src/s.txt") "tools" (str lineage "tools/build.bb")
+               "html" (str lineage "lolice-lineage.html") "thumbnail" "thumbnails/lolice-lineage.webp"}]
+    (doseq [[label rel] cases]
+      (testing (str "build 後に " label " を変えたら止まり、正本は変わらない")
+        (let [s (publish-sandbox) penv (:penv s)]
+          (is (zero? (:exit (run penv "bb" publish "build" "BOXP-9"))))
+          (mark-deployed! s)
+          (spit (str (:st s) "/" rel) "tampered")
+          (let [promote (run penv "bb" publish "promote" "BOXP-9") deploy (run penv "bb" publish "deploy" "BOXP-9")]
+            (is (not (zero? (:exit promote))))
+            (is (str/includes? (:err promote) "changed after build"))
+            (is (not (zero? (:exit deploy))))
+            (is (str/includes? (:err deploy) "changed after build")))
+          (is (= "old" (slurp (str (:vault s) "/" lineage "lolice-lineage.html"))))
+          (is (= "old" (slurp (str (:vault s) "/" lineage "data/a.edn")))))))
+    (testing "build 後にファイルを足しても止まる"
+      (let [s (publish-sandbox) penv (:penv s)]
+        (run penv "bb" publish "build" "BOXP-9") (mark-deployed! s)
+        (spit (str (:st s) "/" lineage "src/extra.txt") "x")
+        (is (not (zero? (:exit (run penv "bb" publish "promote" "BOXP-9")))))))
+    (testing "build 後に変更が無ければ正本を新版にし、やり直しも通る"
+      (let [s (publish-sandbox) penv (:penv s)]
+        (is (zero? (:exit (run penv "bb" publish "build" "BOXP-9"))))
+        (mark-deployed! s)
+        (let [r (run penv "bb" publish "promote" "BOXP-9")] (is (zero? (:exit r)) (:err r)))
+        (is (= "new" (slurp (str (:vault s) "/" lineage "lolice-lineage.html"))))
+        (is (= "{:new true}" (slurp (str (:vault s) "/" lineage "data/a.edn"))))
+        (is (fs/exists? (str (:root s) "/live-candidate.json")))
+        (is (zero? (:exit (run penv "bb" publish "promote" "BOXP-9"))))))
+    (testing "記録の無い古い staging は確かめられないので止める"
+      (let [s (publish-sandbox) penv (:penv s) f (str (:st s) "/manifest.edn")]
+        (run penv "bb" publish "build" "BOXP-9") (mark-deployed! s)
+        (spit f (pr-str (dissoc (edn/read-string (slurp f)) :built-digests)))
+        (is (not (zero? (:exit (run penv "bb" publish "promote" "BOXP-9")))))))))
 (deftest excluded-live-on-both-sides
   (let [s (sandbox)]
     (write-json (str (:root s) "/live-baseline.json") {:facts (conj (mapv #(str "live:ns:ns" %) (range 60)) "live:ns:ooedo-old")})
