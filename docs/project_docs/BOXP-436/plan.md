@@ -5,16 +5,16 @@ Owner が承認した `arch scheduled workflow → 既存 task runner → agent 
 ## 経路
 
 ```text
-GitHub Actions (1 日 1 回 + 手動)            codex-cron-scheduler (非 agent, 30 分ごと)
-  infra-diagram-watch.yml                      infra-diagrams/intake.bb
+GitHub Actions (1 日 1 回 + 手動)            codex-cron-scheduler (非 agent, 1 時間ごと)
+  schedule-infra-diagram-refresh.yml                      infra-diagram-refresh/refresh.bb
   ├ arch + lolice の公開 IaC を正規化           ├ main の watch run と artifact を検証
-  ├ 基準 (repo の baseline) と比較              ├ allowlist の live metadata を収集・比較
+  ├ 基準 (docs/infra-diagram-refresh) と比較              ├ allowlist の live metadata を収集・比較
   └ 結果を digest と項目で artifact へ   ───▶   ├ 差分 0: 記録だけで終了 (agent 起動なし)
                                                └ 差分/異常: task-board helper で起票か既存票へ集約
                                                     │
                      既存 task-board-runner ◀───────┘ (claim, 予算, 担当, gate は既存のまま)
                        └ agent が根拠を読み意味監査
-                          └ infra-diagrams/refresh.bb
+                          └ infra-diagram-refresh/publish.bb
                              staging で生成 → 検査 → 既存 deploy workflow → 実 URL 照合
                              → 基準更新 PR と vault への昇格
 ```
@@ -31,8 +31,8 @@ GitHub Actions (1 日 1 回 + 手動)            codex-cron-scheduler (非 agent
 ## 収集失敗の扱い
 
 - 取得できなかった section は「消えた」と扱わない。基準の行を残して比較し、異常として報告する。
-- 基準から項目が 30% 以上減ったら収集異常として扱う。
-- 異常は agent へ渡すが、基準は進めない。同じ異常の再起票には上限を設ける。
+- 基準から項目が 30% を超えて減る、または 5 件以上あった種類が丸ごと消える場合は、収集異常として扱う。解析できない manifest がある場合も同じ。
+- 異常は agent へ渡すが、基準は進めない。同じ内容の再起票は 2 回までとし、超えたら Backlog の通知カードに切り替える。
 
 ## 公開境界
 
@@ -43,10 +43,10 @@ GitHub Actions (1 日 1 回 + 手動)            codex-cron-scheduler (非 agent
 1. arch PR: 正規化比較、workflow、intake、refresh、テスト。
 2. image 更新の lolice PR (既存 sidecar の image 更新のみ)。
 3. vault に基準、job、日本語の運用入口を配置。
-4. 手動 canary で workflow → intake → runner → 意味監査 → 実配備 → 実 URL を通す。テストの架空構成は公開しない。
+4. canary は架空の構成を使わない。基準を配信中の図の生成時点 (arch d78cbfe, lolice c173da0) に置くと、その後に入った実際の変更 (Langfuse の OIDC など 8 件) が実差分になる。これを workflow → refresh → runner → 意味監査 → 実配備 → 実 URL に通す。
 5. 故障試験: 無差分、構成差分、新分類、収集失敗、重複 tick、runner 再起動、監査失敗、render/CI/配備失敗。
 6. 実 schedule の 1 回を観測し、運用入口へ記録。
 
 ## 435 との調整
 
-サムネイル配備は arch#14490 の stage 構成を使う。#14490 の merge を待ち、同じ deploy workflow を同時に動かさない (既存の concurrency group と、refresh 開始時の active run 確認)。
+サムネイル配備は merge 済みの arch#14490 の stage 構成を使う。同じ deploy workflow が動いている間は配備を始めない。vault の正本が staging 後に変わっていたら promote を止める。
