@@ -28,7 +28,7 @@ lineage 図、全体図、portfolio のサムネイルを実構成に追従さ�
    ```
 
    反映した場合は `staging/BOXP-N/` の arch と lolice を使います。監査の途中に入った変更を、確認せず基準へ入れないためです。
-7. live の差分を反映しない場合は `refresh.bb live-candidate <新しい snapshot>` で候補を作ります。そのあと `refresh.bb accept --ticket BOXP-N` を実行します。
+7. live の差分を反映しない場合は `refresh.bb live-candidate --ticket BOXP-N <新しい snapshot>` で候補を作ります。別の票の候補は accept で基準へ入らず消えます。そのあと `refresh.bb accept --ticket BOXP-N` を実行します。
 8. `gh workflow run schedule-infra-diagram-refresh.yml -R boxp/arch` を実行し、無差分で終わることを確かめてから done にします。
 
 ## 図の規則

@@ -1,7 +1,7 @@
 #!/usr/bin/env bb
 ;; インフラ図の定期更新の受け口。agent を起動せず、差分か異常があるときだけ Task Board のチケットを 1 枚に集約する。
 ;; 公開 IaC の比較は boxp/arch の scheduled workflow、live metadata の比較はここで行う。live の値は vault の外へ出さない。
-;; usage: refresh.bb tick | status | accept --ticket BOXP-N | live-candidate SNAPSHOT.json | seed-live SNAPSHOT.json | mark-published BOXP-N
+;; usage: refresh.bb tick | status | accept --ticket BOXP-N | live-candidate --ticket BOXP-N SNAPSHOT.json | seed-live SNAPSHOT.json | mark-published BOXP-N
 (require '[babashka.fs :as fs]
          '[babashka.process :refer [shell process]]
          '[cheshire.core :as json]
@@ -62,19 +62,24 @@
        (sort-by :createdAt)
        last))
 
-(def safe-fact-re #"[A-Za-z0-9._:/@+=\-]{1,300}")
+;; Ingress の backend の事実は host の * と ->接続先 を含む
+(def safe-fact-re #"[A-Za-z0-9._:/@+=*>\-]{1,300}")
+
+(defn safe-fact? [x] (and (string? x) (re-matches safe-fact-re x)))
 
 (defn sanitize-ci-result
   "public repo の artifact は機械の出力でも入力として疑い、形の合う事実だけを渡す。"
   [r]
   (let [ru (rules)
-        facts (fn [xs] (vec (filter #(and (string? %) (re-matches safe-fact-re %) (not (excluded? ru %))) xs)))]
+        facts (fn [xs] (vec (filter #(and (safe-fact? %) (not (excluded? ru %))) xs)))]
     {:status (when (#{"no-change" "changed" "anomaly"} (:status r)) (:status r))
      :simulated (true? (:simulated r))
      ;; 自由文を票へ渡さない
      :reason (let [x (str (:reason r))] (when (re-matches #"[A-Za-z0-9 ._:,/=-]{1,200}" x) x))
      :added (facts (:added r))
      :removed (facts (:removed r))
+     ;; 形が合わない差分を黙って消さず、件数を票へ出して workflow run の確認へつなげる
+     :rejected (count (remove safe-fact? (concat (:added r) (:removed r))))
      :new_categories (facts (:new_categories r))
      :fingerprint (when (and (string? (:fingerprint r)) (re-matches #"[0-9a-f]{64}" (:fingerprint r))) (:fingerprint r))}))
 
@@ -200,11 +205,13 @@
 (defn empty-signal? [{:keys [iac live failures]}]
   (and (nil? iac) (nil? live) (empty? failures)))
 
-(defn fact-lines [{:keys [added removed new_categories]} limit]
+(defn fact-lines [{:keys [added removed new_categories rejected]} limit]
   (let [lines (concat (map #(str "- 追加 `" % "`") added) (map #(str "- 削除 `" % "`") removed))]
     (str/join "\n"
               (concat (when (seq new_categories)
                         [(str "- **新しい分類**: " (str/join ", " (map #(str "`" % "`") new_categories)))])
+                      (when (pos? (or rejected 0))
+                        [(str "- **形式が合わず省いた差分**: " rejected " 件(workflow run の artifact で確認)")])
                       (take limit lines)
                       (when (> (count lines) limit) [(str "- ほか " (- (count lines) limit) " 件(全件は state.edn と live-candidate.json)")])))))
 
@@ -388,10 +395,15 @@
         (when-not (= ticket (get-in s [:active :ticket]))
           (throw (ex-info (str "not the active ticket: " ticket " " (get-in s [:active :ticket])) {})))
         ;; 監査していない live の値で基準を進めない。候補は監査した snapshot から agent が作る。
-        (when (and (= "changed" (get-in s [:live :result :status])) (not (fs/exists? (live-candidate-path))))
-          (throw (ex-info "live has a diff but no candidate: run live-candidate with the audited snapshot" {})))
-        (when (fs/exists? (live-candidate-path))
-          (fs/move (live-candidate-path) (live-baseline-path) {:replace-existing true}))
+        ;; 前の作業で残った候補はこの票の監査を経ていないので、基準へ入れず消す。
+        (let [own? (and (fs/exists? (live-candidate-path))
+                        (= ticket (:ticket (read-json (live-candidate-path)))))]
+          (when (and (= "changed" (get-in s [:live :result :status])) (not own?))
+            (throw (ex-info (str "live has a diff but no candidate for " ticket ": run live-candidate with the audited snapshot") {})))
+          ;; 同じ場所での置き換えなので、途中で止まっても基準は読める形のまま。:ticket はどの票で受け入れたかの記録として残る。
+          (if own?
+            (fs/move (live-candidate-path) (live-baseline-path) {:replace-existing true :atomic-move true})
+            (fs/delete-if-exists (live-candidate-path))))
         ;; 結果を捨てるだけで、差分が解消したとは決めない。基準の PR が入っていなければ次の run が同じ差分を出す。
         (write-state! (-> s
                           (assoc-in [:ci :result] nil)
@@ -404,11 +416,11 @@
         (println "accepted" ticket)))))
 
 (defn set-live-candidate!
-  "図の生成に使った snapshot を候補にする。監査中に変わった分は次の比較で差分になる。"
-  [snapshot]
+  "図の生成に使った snapshot を、監査した票の候補にする。監査中に変わった分は次の比較で差分になる。"
+  [ticket snapshot]
   (let [r (rules)]
     (write-json! (live-candidate-path)
-                 {:schema 1 :facts (vec (remove #(excluded? r %) (normalize-live (json/parse-string (slurp snapshot) true))))})))
+                 {:schema 1 :ticket ticket :facts (vec (remove #(excluded? r %) (normalize-live (json/parse-string (slurp snapshot) true))))})))
 
 (defn status! []
   (println (json/generate-string (status-map (read-state)) {:pretty true})))
@@ -425,13 +437,15 @@
   (with-lock #(write-state! (assoc (read-state) :last-published {:ticket ticket :at (str (now))}))))
 
 (when (= *file* (System/getProperty "babashka.file"))
-  (let [[cmd a b] *command-line-args*]
+  (let [[cmd a b c] *command-line-args*]
     (case cmd
       "tick" (tick!)
       "status" (status!)
       "accept" (try (accept! (if (= a "--ticket") b (throw (ex-info "usage: accept --ticket BOXP-N" {}))))
                    (catch clojure.lang.ExceptionInfo e (binding [*out* *err*] (println (ex-message e))) (System/exit 1)))
-      "live-candidate" (set-live-candidate! a)
+      "live-candidate" (if (and (= a "--ticket") b c)
+                        (set-live-candidate! b c)
+                        (do (println "usage: live-candidate --ticket BOXP-N SNAPSHOT.json") (System/exit 2)))
       "seed-live" (seed-live! a)
       "mark-published" (mark-published! a)
-      (do (println "usage: refresh.bb tick|status|accept --ticket BOXP-N|live-candidate SNAPSHOT.json") (System/exit 2)))))
+      (do (println "usage: refresh.bb tick|status|accept --ticket BOXP-N|live-candidate --ticket BOXP-N SNAPSHOT.json") (System/exit 2)))))

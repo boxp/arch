@@ -41,12 +41,56 @@
     (tick s) (is (= 2 (count (calls s)))) (is (str/starts-with? (last (calls s)) "append-note"))
     (fs/delete (str (:root s) "/state.edn")) (tick s) (is (= 2 (count (calls s))))
     (is (= "BOXP-2" (get-in (state s) [:active :ticket])))
-    (write-json (str (:root s) "/live-candidate.json") {:schema 1 :facts ["live:ns:accepted"]})
+    (write-json (str (:root s) "/live-candidate.json") {:schema 1 :ticket "BOXP-2" :facts ["live:ns:accepted"]})
     (is (not (zero? (:exit (run (:env s) "bb" refresh "accept" "--ticket" "BOXP-999")))))
     (is (not (fs/exists? (str (:root s) "/tick.lock"))) "wrong accept releases lock")
     (fs/delete-if-exists (str (:root s) "/tick.lock"))
     (is (zero? (:exit (run (:env s) "bb" refresh "accept" "--ticket" "BOXP-2"))))
     (is (= ["live:ns:accepted"] (:facts (read-json (str (:root s) "/live-baseline.json"))))) (is (nil? (:active (state s))))))
+(deftest stale-live-candidate-does-not-move-baseline
+  (testing "別の票の候補と、票の無い候補は基準へ入らない"
+    (doseq [cand [{:schema 1 :ticket "BOXP-1" :facts ["live:ns:stale"]} {:schema 1 :facts ["live:ns:stale"]}]]
+      (let [s (sandbox)
+            base (read-json (str (:root s) "/live-baseline.json"))]
+        (tick s)
+        (run-id! s 2 "success") (result! s changed) (tick s)
+        (is (= "BOXP-2" (get-in (state s) [:active :ticket])))
+        (write-json (str (:root s) "/live-candidate.json") cand)
+        (is (zero? (:exit (run (:env s) "bb" refresh "accept" "--ticket" "BOXP-2"))))
+        (is (= (:facts base) (:facts (read-json (str (:root s) "/live-baseline.json")))))
+        (is (not (fs/exists? (str (:root s) "/live-candidate.json")))))))
+  (testing "live に差分があるとき、別の票の候補では accept しない"
+    (let [s (sandbox)
+          base (read-json (str (:root s) "/live-baseline.json"))]
+      (write-json (str (:d s) "/live.json") {:namespaces (conj (mapv #(str "ns" %) (range 60)) "added")})
+      (tick s)
+      (is (= "changed" (get-in (state s) [:live :result :status])))
+      (let [id (get-in (state s) [:active :ticket])
+            cand (str (:root s) "/live-candidate.json")]
+        (write-json cand {:schema 1 :ticket "BOXP-1" :facts ["live:ns:stale"]})
+        (is (not (zero? (:exit (run (:env s) "bb" refresh "accept" "--ticket" id)))))
+        (is (= (:facts base) (:facts (read-json (str (:root s) "/live-baseline.json")))))
+        (is (= id (get-in (state s) [:active :ticket])))
+        (testing "この票の候補なら受け入れ、基準にどの票かを残す"
+          (is (zero? (:exit (run (:env s) "bb" refresh "live-candidate" "--ticket" id (str (:d s) "/live.json")))))
+          (is (zero? (:exit (run (:env s) "bb" refresh "accept" "--ticket" id))))
+          (let [b (read-json (str (:root s) "/live-baseline.json"))]
+            (is (some #{"live:ns:added"} (:facts b)))
+            (is (= id (:ticket b))))
+          (is (not (fs/exists? cand))))))))
+(deftest ingress-diff-reaches-ticket
+  (let [s (sandbox)
+        fact "lolice:ingress-backend:n/web:*:/->other:80"
+        gone "lolice:ingress-backend:n/web:a.b0xp.io:/->web:80"]
+    (tick s)
+    (run-id! s 2 "success")
+    (result! s (assoc changed :added [fact "bad`fact"] :removed [gone]))
+    (tick s)
+    (let [t (ticket s "BOXP-2")]
+      (is (str/includes? t (str "追加 `" fact "`")))
+      (is (str/includes? t (str "削除 `" gone "`")))
+      (is (str/includes? t "形式が合わず省いた差分**: 1 件"))
+      (is (not (str/includes? t "bad`fact"))))))
 (deftest failures-and-canary
   (doseq [mode [:failed :anomaly :missing]]
     (let [s (sandbox) base (slurp (str (:root s) "/live-baseline.json"))]

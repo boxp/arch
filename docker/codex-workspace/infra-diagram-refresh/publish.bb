@@ -331,7 +331,7 @@
         (fs/copy (fs/path (stage-dir ticket) "thumbnails" n) (fs/path previews n) {:replace-existing true})))
     (let [refresh (str here "/refresh.bb")
           snap (str (fs/path (stage-dir ticket) "Projects/lolice-infrastructure-lineage/data/live-snapshot.json"))]
-      (sh {} "bb" refresh "live-candidate" snap)
+      (sh {} "bb" refresh "live-candidate" "--ticket" ticket snap)
       (sh {} "bb" refresh "mark-published" ticket))
     (println "promoted" ticket)))
 
