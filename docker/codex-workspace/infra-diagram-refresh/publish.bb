@@ -300,16 +300,20 @@
       (when-not (and (:verified m) (get-in m [:built id]) (= (get-in m [:built id]) (get-in m [:deployed id])))
         (die "not deployed and verified:" id)))
     (assert-staged-unchanged! ticket m)
+    ;; HTML が同じでも data、src、tools の変更は正本へ入れるので、全体の hash で比べる。
+    ;; 別の作業が正本を変えていたら上書きしない。完了後のやり直しと、途中で止まった promote の再開は許す。
+    ;; 片方の図だけ更新して止まらないよう、全ての図を検査してから更新する。
+    (doseq [{:keys [id project html]} diagrams
+            :let [now-digest (project-digest (fs/path (vault) "Projects" project) html)]]
+      (when-not (or (get-in m [:promoting id])
+                    (#{(get-in m [:bases id]) (get-in m [:built-digests id])} now-digest))
+        (die "vault project changed since stage, stage again:" id)))
     (doseq [{:keys [id project html]} diagrams
             :let [src (fs/path (stage-dir ticket) "Projects" project)
                   dst (fs/path (vault) "Projects" project)
                   now-digest (project-digest dst html)
                   target (get-in m [:built-digests id])
                   resuming? (get-in (manifest ticket) [:promoting id])]]
-      ;; HTML が同じでも data、src、tools の変更は正本へ入れるので、全体の hash で比べる。
-      ;; 別の作業が正本を変えていたら上書きしない。完了後のやり直しと、途中で止まった promote の再開は許す。
-      (when-not (or resuming? (#{(get-in m [:bases id]) target} now-digest))
-        (die "vault project changed since stage, stage again:" id))
       (when-not (= now-digest target)
         (when-not resuming?
           (let [prev (fs/path dst "previous" (str stamp "-" (subs now-digest 0 8)))]

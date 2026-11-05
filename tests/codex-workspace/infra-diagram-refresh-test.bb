@@ -226,6 +226,16 @@
         (spit (str v "data/a.edn") "other work")
         (let [r (promote s)] (is (not (zero? (:exit r)))) (is (str/includes? (:err r) "changed since stage")))
         (is (= "other work" (slurp (str v "data/a.edn"))))))
+    (testing "全体図の正本だけが変わっていても、lineage を先に更新しない"
+      (let [s (publish-sandbox) v (str (:vault s) lineage)
+            arch (str (:vault s) "/Projects/lolice-infrastructure-architecture/")]
+        (built s)
+        (spit (str arch "data/a.edn") "other work")
+        (let [r (promote s)] (is (not (zero? (:exit r)))) (is (str/includes? (:err r) "stage again: architecture")))
+        (is (= "old" (slurp (str v "lolice-lineage.html"))))
+        (is (= "old" (slurp (str v "data/a.edn"))))
+        (is (not (fs/exists? (str v "previous"))))
+        (is (= "other work" (slurp (str arch "data/a.edn"))))))
     (testing "staging で消したファイルは正本からも消え、やり直しも通る"
       (let [s (publish-sandbox) v (str (:vault s) lineage)]
         (spit (str v "data/removed.edn") "old") (rebase! s) (built s)
