@@ -4,10 +4,10 @@
 ;; prompt 本文は決して stdout に出さない。
 ;;
 ;; env:
-;;   HARNESS_EVAL_FAKE_MODE        solve (既定) | noop | break | sleep | garbage | error
+;;   HARNESS_EVAL_FAKE_MODE        solve (既定) | noop | break | sleep | garbage | error | commit-break | commit-delete | hidden-extra | commit-allowed | env-probe | quota | quota-no-reset
 ;;   HARNESS_EVAL_FAKE_ARM_B_MODE  arm B のときだけ上書きする mode (劣化あり/なしの再現用)
 ;;   HARNESS_EVAL_FAKE_SLEEP_SECONDS  sleep mode の秒数 (既定 5)
-(require '[babashka.fs :as fs] '[clojure.string :as str])
+(require '[babashka.fs :as fs] '[babashka.process] '[clojure.string :as str])
 
 (def here (fs/parent (fs/canonicalize *file*)))
 (def tasks-dir (fs/path here ".." ".." "docker" "codex-workspace" "task-board" "harness-eval-tasks"))
@@ -64,5 +64,30 @@
               (emit! result-line))
   "garbage" (do (emit! "not json {{{") (emit! "still not json") (emit! "}}}")
                 (solve!) (emit-tool-events! (count (solution-files))) (emit! result-line))
+  "commit-break" (let [base (->> (fs/glob base-dir "**") (filter fs/regular-file?) (map #(str (fs/relativize base-dir %))) sort)
+                       sol (set (solution-files))
+                       extra (first (remove sol base))]
+                   (solve!)
+                   (spit extra "# committed outside the allowed files\n" :append true)
+                   (babashka.process/shell "git" "add" "-A")
+                   (babashka.process/shell "git" "-c" "user.name=x" "-c" "user.email=x@localhost" "commit" "-q" "-m" "x")
+                   (emit-tool-events! 2) (emit! result-line))
+  "commit-delete" (let [sol (set (solution-files))
+                        extra (first (remove sol (->> (fs/glob base-dir "**") (filter fs/regular-file?) (map #(str (fs/relativize base-dir %))) sort)))]
+                    (solve!)
+                    (babashka.process/shell "git" "rm" "-q" extra)
+                    (babashka.process/shell "git" "-c" "user.name=x" "-c" "user.email=x@localhost" "commit" "-q" "-am" "x")
+                    (emit-tool-events! 2) (emit! result-line))
+  "hidden-extra" (do (solve!) (spit ".git/info/exclude" "hidden.txt\n" :append true) (spit "hidden.txt" "x\n")
+                     (emit-tool-events! 1) (emit! result-line))
+  "commit-allowed" (do (solve!) (babashka.process/shell "git" "add" "-A")
+                       (babashka.process/shell "git" "-c" "user.name=x" "-c" "user.email=x@localhost" "commit" "-q" "-m" "x")
+                       (emit-tool-events! 1) (emit! result-line))
+  "env-probe" (let [leaked (filter #(or (str/starts-with? % "CODEX_TASK_BOARD_") (str/starts-with? % "CLAUDE_CODE_") (= % "CLAUDECODE") (= % "GH_TOKEN")) (keys (System/getenv)))]
+                (if (seq leaked) (System/exit 4) (do (solve!) (emit-tool-events! 1) (emit! result-line))))
+  "quota" (do (emit! "{\"type\":\"rate_limit_event\",\"rate_limit_info\":{\"status\":\"rejected\",\"rateLimitType\":\"seven_day\",\"resetsAt\":4102444800}}")
+              (emit! "{\"type\":\"result\",\"is_error\":true}")
+              (System/exit 1))
+  "quota-no-reset" (do (emit! "{\"type\":\"result\",\"is_error\":true,\"api_error_status\":429}") (System/exit 1))
   "error" (System/exit 3)
   (do (binding [*out* *err*] (println "unknown HARNESS_EVAL_FAKE_MODE:" mode)) (System/exit 2)))
