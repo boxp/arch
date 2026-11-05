@@ -28,7 +28,6 @@ resource "cloudflare_dns_record" "codex_task_board" {
 
 # BOXP-430: the Worker in apps/lolice-lineage answers every request on this hostname, so
 # the record only has to be proxied. 100:: is Cloudflare's documented originless target.
-# Created after the Access application so the hostname never resolves without Access.
 resource "cloudflare_dns_record" "lolice_lineage" {
   zone_id = var.zone_id
   name    = "lolice-lineage.b0xp.io"
@@ -36,6 +35,4 @@ resource "cloudflare_dns_record" "lolice_lineage" {
   type    = "AAAA"
   ttl     = 1
   proxied = true
-
-  depends_on = [cloudflare_zero_trust_access_application.lolice_lineage]
 }

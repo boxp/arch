@@ -53,11 +53,25 @@ Owner の指示で、boxp/arch の既存 GitHub Actions から deploy します�
 4. Owner が SSO 後に `/` と `/sha256` を PC とスマホで確認する。
 5. 確認後に旧構成を撤去する: boxp/lolice の sidecar、Service、NetworkPolicy、Chainsaw、boxp/arch の tunnel route。DNS は Worker route 用に見直す。
 
-## 方針変更: Cloudflare Workers Static Assets へ移行
+## 方針変更: 一般公開（TD-03）
 
-Owner の指示で、配信を `apps/lolice-lineage` の Worker へ移した。配備は `deploy-lolice-lineage.yml` が既存の Cloudflare 資格情報で行う。HTML は main 限定の環境 secret で deploy 中だけ渡し、終了後に削除する。
+Owner が lineage の内容を確認し、公開を承認した。これまでの「本人限定」は取り下げ、当該ページだけを匿名で開けるようにする。HTML は内容を変えない。
 
-旧構成の撤去はこの順で行う。Owner が SSO 後の表示を確認するまで、どちらも merge しない。
+- `lolice-lineage.b0xp.io` の Access application を削除する。共有の Owner 限定 policy、他サービス、Langfuse の認証は変更しない。
+- Worker の JWT 検証をやめる。`/` と `/sha256` 以外は引き続き 404 を返し、`workers_dev` と `preview_urls` は無効のままにする。
+- 公開するのは HTML 1 ファイルと hash だけ。vault の調査用ファイルと secret は公開しない。
+- 検索エンジン向けの `noindex` は HTML と応答ヘッダーの両方に残す。URL を知っている人が開ける状態で、ポートフォリオからのリンクは妨げない。
 
-1. この PR: tunnel の ingress を外し、DNS をオリジンのない `AAAA 100::`（proxied）に替える。Access application はそのまま使う。
-2. boxp/lolice: sidecar、Service、NetworkPolicy、専用 Chainsaw を revert する。Pod の再作成を伴う。
+### 順序
+
+1. この PR を merge して apply する。Access が消えると、旧 Worker が JWT なしの要求を 403 で拒否する。公開前は閉じた状態のまま進む。
+2. `mode=html` で Worker を再配備する。hash は `2e643047fa931f96b750597436d45c23738c50f8d80e232bef7dbe9d032a9739`。ここで公開になる。secret は配備後に削除する。
+3. 未認証の HTTP 200、hash、アイコン、PC とスマホの実ブラウザを担当が確認する。
+4. 確認後に旧構成を撤去する: arch#14480（tunnel route と DNS）、lolice#1069（sidecar 等）。
+
+## 旧構成の撤去
+
+公開後の動作を担当が確認してから、この順で行う。
+
+1. この PR: tunnel の ingress を外し、DNS をオリジンのない `AAAA 100::`（proxied）に替える。CNAME と AAAA は同じ名前で共存できないので、置き換えの間は短時間名前解決できない。
+2. boxp/lolice#1069: sidecar、Service、NetworkPolicy、専用 Chainsaw を revert する。Pod の再作成を伴う。
