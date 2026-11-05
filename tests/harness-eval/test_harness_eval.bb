@@ -408,6 +408,24 @@
       (is (nil? (:resets-at (run-status out))))
       (is (= 3 (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})))))))
 
+(deftest quota-hold-survives-a-crash-after-the-rejection
+  ;; 拒否を観測した後の記録の途中で run が死んだ状態を、attempts.log への追記を失敗させて作る。
+  (let [out (tmp)
+        log (fs/path out "attempts.log")
+        wrapper (fs/path (tmp) "agent.sh")]
+    (spit (str wrapper) (str "#!/bin/sh\nrm -f '" log "'\nmkdir '" log "'\nexec " fake-agent "\n"))
+    (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+    (let [r (he {"HARNESS_EVAL_FAKE_MODE" "quota"} "run" "--out" out "--agent-cmd" (str "sh " wrapper))]
+      (is (not (zero? (:exit r))))
+      (is (not= 3 (:exit r)) "run は正常な停止まで進んでいない"))
+    (fs/delete log)
+    (is (= "stopped_quota" (:status (run-status out))))
+    (is (= 4102444800 (:resets-at (run-status out))))
+    (let [r (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})]
+      (is (= 3 (:exit r)) (:err r))
+      (is (str/includes? (:err r) "まで試行しない")))
+    (is (not (fs/exists? (fs/path out "trials" "T01-A-1.edn"))) "reset 前は試行しない")))
+
 (deftest interrupted-trial-is-rerun-and-charged-and-completed-ones-are-not
   (let [out (tmp) now (quot (System/currentTimeMillis) 1000)]
     (is (zero? (:exit (plan! out :reps 1 :only "T01" :timeout 60))))

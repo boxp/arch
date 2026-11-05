@@ -537,13 +537,18 @@
 
             :else
             (do (append-attempt! out {:event "start" :trial trial-id :at (now-epoch)})
-                (let [trial (run-trial! opts task arm rep contract)]
-                  (when-not (:quota-rejected? trial) (write-atomic! (str path) (pr-str trial)))
+                (let [trial (run-trial! opts task arm rep contract)
+                      rejected (when (:quota-rejected? trial)
+                                 {:status "stopped_quota" :limit (:quota-limit trial) :resets-at (:quota-resets-at trial) :next-trial trial-id})]
+                  ;; 拒否の停止状態は他の記録より先に残す。ここから先で中断されても、再開が reset 前に試行を始めない。
+                  (if rejected
+                    (write-run-status! out rejected)
+                    (write-atomic! (str path) (pr-str trial)))
                   (append-attempt! out {:event "end" :trial trial-id :at (now-epoch)
                                         :quota-rejected (boolean (:quota-rejected? trial))})
-                  (if (:quota-rejected? trial)
+                  (if rejected
                     (do (println (str trial-id ": quota 拒否 (" (:quota-limit trial) ")"))
-                        {:status "stopped_quota" :limit (:quota-limit trial) :resets-at (:quota-resets-at trial) :next-trial trial-id})
+                        rejected)
                     (do (println (str trial-id ": " (:outcome trial) " (" (:seconds trial) "s)"))
                         (recur more aborted?)))))))))))
 
