@@ -52,3 +52,19 @@ Owner の指示で、boxp/arch の既存 GitHub Actions から deploy します�
 3. 環境 secret を登録し、`mode=html` で hash 照合して deploy する。確認後に secret を削除する。
 4. Owner が SSO 後に `/` と `/sha256` を PC とスマホで確認する。
 5. 確認後に旧構成を撤去する: boxp/lolice の sidecar、Service、NetworkPolicy、Chainsaw、boxp/arch の tunnel route。DNS は Worker route 用に見直す。
+
+## 方針変更: 一般公開（TD-03）
+
+Owner が lineage の内容を確認し、公開を承認した。これまでの「本人限定」は取り下げ、当該ページだけを匿名で開けるようにする。HTML は内容を変えない。
+
+- `lolice-lineage.b0xp.io` の Access application を削除する。共有の Owner 限定 policy、他サービス、Langfuse の認証は変更しない。
+- Worker の JWT 検証をやめる。`/` と `/sha256` 以外は引き続き 404 を返し、`workers_dev` と `preview_urls` は無効のままにする。
+- 公開するのは HTML 1 ファイルと hash だけ。vault の調査用ファイルと secret は公開しない。
+- 検索エンジン向けの `noindex` は HTML と応答ヘッダーの両方に残す。URL を知っている人が開ける状態で、ポートフォリオからのリンクは妨げない。
+
+### 順序
+
+1. この PR を merge して apply する。Access が消えると、旧 Worker が JWT なしの要求を 403 で拒否する。公開前は閉じた状態のまま進む。
+2. `mode=html` で Worker を再配備する。hash は `2e643047fa931f96b750597436d45c23738c50f8d80e232bef7dbe9d032a9739`。ここで公開になる。secret は配備後に削除する。
+3. 未認証の HTTP 200、hash、アイコン、PC とスマホの実ブラウザを担当が確認する。
+4. 確認後に旧構成を撤去する: arch#14480（tunnel route と DNS）、lolice#1069（sidecar 等）。

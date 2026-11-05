@@ -1,14 +1,15 @@
 # lolice-lineage
 
-BOXP-429 の構成図 HTML を、Cloudflare Workers Static Assets で本人限定に配信します。
+BOXP-429 の構成図 HTML を、Cloudflare Workers Static Assets で一般公開します。Owner が内容を確認し、公開を承認しました（BOXP-430）。
 
-- URL: `https://lolice-lineage.b0xp.io/`。`/` だけが本文を返します。`/sha256` は本文の hash を返します。
-- 認証: hostname を既存の Access application（Owner 限定 policy）で保護し、Worker でも Access の JWT を検証します。
-- 別経路: `workers_dev` と `preview_urls` を無効にしています。
+- URL: `https://lolice-lineage.b0xp.io/`。認証はありません。`/` が本文を、`/sha256` が本文の hash を返し、他のパスは 404 です。
+- 別経路: `workers_dev` と `preview_urls` は無効のままです。
+- 公開するのはこの HTML 1 ファイルだけです。vault の調査用ファイルは配信しません。
+- 検索エンジンには載せません（`noindex`）。
 
-## 実データを repo に置かない理由
+## HTML を repo に置かない理由
 
-HTML には内部構成が含まれます。この repo は public なので、コードとテストだけを置きます。`public/` は git 管理外で、deploy 時に `scripts/deploy.sh` が作ります。
+正本は vault にあり、この repo にはコードとテストだけを置きます。`public/` は git 管理外で、deploy 時に `scripts/deploy.sh` が作ります。
 
 ## 配備
 
@@ -16,12 +17,9 @@ HTML には内部構成が含まれます。この repo は public なので、�
 
 ```sh
 npm ci
-scripts/deploy.sh --placeholder
-scripts/verify-live.sh lolice-lineage.b0xp.io <workers.dev のサブドメイン>
 scripts/deploy.sh --html <vault の lolice-lineage.html> --expect-sha256 <hash>
+EXPECTED_SHA256=<hash> scripts/verify-live.sh lolice-lineage.b0xp.io <workers.dev のサブドメイン>
 ```
-
-先に placeholder で陰性確認を通し、そのあとで実データを載せます。
 
 CI からは `Deploy lolice-lineage` を `mode=html` で実行します。ページは環境 `lolice-lineage-deploy` の secret で渡し、配備後に削除します。1 個の secret は 48 KB までなので、xz と base64 をかけた値を 40,000 文字ごとに分け、`LOLICE_LINEAGE_HTML_XZ_B64`、`_2`、`_3`、`_4` の順に登録します。
 

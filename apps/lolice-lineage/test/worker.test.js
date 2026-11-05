@@ -2,21 +2,12 @@ import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { beforeEach, test } from "node:test";
-import worker, { resetJwksCache } from "../src/index.js";
+import { test } from "node:test";
+import worker from "../src/index.js";
 
-const ISS = "https://team.example.com";
-const AUD = "test-aud";
 const BODY = "<html>fixture-page</html>";
-const ALG = { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]) };
-
-const pair = await crypto.subtle.generateKey(ALG, true, ["sign", "verify"]);
-const otherPair = await crypto.subtle.generateKey(ALG, true, ["sign", "verify"]);
-const publicJwk = { ...(await crypto.subtle.exportKey("jwk", pair.publicKey)), kid: "k1" };
 
 const env = {
-  ACCESS_TEAM_DOMAIN: ISS,
-  ACCESS_AUD: AUD,
   ASSETS: {
     fetch: async (url) =>
       new URL(url).pathname === "/lolice-lineage.html"
@@ -25,35 +16,14 @@ const env = {
   },
 };
 
-const b64 = (v) => Buffer.from(typeof v === "string" ? v : new Uint8Array(v)).toString("base64url");
-const now = () => Math.floor(Date.now() / 1000);
-const goodClaims = () => ({ aud: [AUD], iss: ISS, exp: now() + 300, nbf: now() - 10 });
+const call = (path = "/", method = "GET", targetEnv = env) =>
+  worker.fetch(new Request(`https://lolice-lineage.example.com${path}`, { method }), targetEnv);
 
-async function sign(claims = goodClaims(), { header = { alg: "RS256", kid: "k1" }, key = pair.privateKey } = {}) {
-  const input = `${b64(JSON.stringify(header))}.${b64(JSON.stringify(claims))}`;
-  const sig = await crypto.subtle.sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(input));
-  return `${input}.${b64(sig)}`;
-}
-
-const call = (token, path = "/", method = "GET") =>
-  worker.fetch(
-    new Request(`https://lolice-lineage.example.com${path}`, {
-      method,
-      headers: token ? { "Cf-Access-Jwt-Assertion": token } : {},
-    }),
-    env,
-  );
-
-beforeEach(() => {
-  resetJwksCache();
-  globalThis.fetch = async () => Response.json({ keys: [publicJwk] });
-});
-
-test("valid token returns the page with private headers", async () => {
-  const res = await call(await sign());
+test("anonymous GET returns the page with its headers", async () => {
+  const res = await call();
   assert.equal(res.status, 200);
   assert.equal(await res.text(), BODY);
-  assert.equal(res.headers.get("Cache-Control"), "private, no-store");
+  assert.equal(res.headers.get("Cache-Control"), "no-cache");
   assert.equal(res.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
   assert.equal(res.headers.get("Referrer-Policy"), "no-referrer");
@@ -61,70 +31,31 @@ test("valid token returns the page with private headers", async () => {
   assert.match(res.headers.get("Content-Type"), /^text\/html/);
 });
 
-test("HEAD is allowed", async () => {
-  assert.equal((await call(await sign(), "/", "HEAD")).status, 200);
+test("HEAD returns no body", async () => {
+  const res = await call("/", "HEAD");
+  assert.equal(res.status, 200);
+  assert.equal(await res.text(), "");
 });
 
-const rejected = {
-  "missing token": async () => null,
-  garbage: async () => "garbage",
-  "garbage segments": async () => "a.b.c",
-  "wrong signature": () => sign(goodClaims(), { key: otherPair.privateKey }),
-  "alg none": async () => `${b64(JSON.stringify({ alg: "none", kid: "k1" }))}.${b64(JSON.stringify(goodClaims()))}.`,
-  HS256: () => sign(goodClaims(), { header: { alg: "HS256", kid: "k1" } }),
-  "wrong aud": () => sign({ ...goodClaims(), aud: ["other"] }),
-  "wrong iss": () => sign({ ...goodClaims(), iss: "https://evil.example.com" }),
-  expired: () => sign({ ...goodClaims(), exp: now() - 3600 }),
-  "missing exp": () => {
-    const { exp, ...claims } = goodClaims();
-    return sign(claims);
-  },
-  "nbf in the future": () => sign({ ...goodClaims(), nbf: now() + 3600 }),
-  "unknown kid": () => sign(goodClaims(), { header: { alg: "RS256", kid: "nope" } }),
-};
-
-for (const [name, makeToken] of Object.entries(rejected)) {
-  test(`rejects ${name} without the page`, async () => {
-    const res = await call(await makeToken());
-    assert.equal(res.status, 403);
-    assert.ok(!(await res.text()).includes("fixture-page"));
-  });
-}
-
-test("JWKS failure stays closed", async () => {
-  globalThis.fetch = async () => new Response("down", { status: 500 });
-  const res = await call(await sign());
-  assert.equal(res.status, 403);
-  assert.ok(!(await res.text()).includes("fixture-page"));
-});
-
-test("unauthenticated requests are refused before routing", async () => {
-  for (const [path, method] of [["/data/", "GET"], ["/lolice-lineage.html", "GET"], ["/", "POST"]]) {
-    assert.equal((await call(null, path, method)).status, 403);
-  }
-});
-
-for (const path of ["/lolice-lineage.html", "/data/", "/owner-summary.md", "//", "/%2e%2e/x", "/index.html"]) {
+for (const path of ["/lolice-lineage.html", "/data/", "/owner-summary.md", "/request.md", "//", "/%2e%2e/x", "/index.html"]) {
   test(`only / serves the page: ${path}`, async () => {
-    const res = await call(await sign(), path);
+    const res = await call(path);
     assert.equal(res.status, 404);
     assert.ok(!(await res.text()).includes("fixture-page"));
   });
 }
 
-test("POST is refused after auth", async () => {
-  const res = await call(await sign(), "/", "POST");
-  assert.equal(res.status, 405);
-  assert.equal(res.headers.get("Allow"), "GET, HEAD");
-});
+for (const method of ["POST", "PUT", "DELETE"]) {
+  test(`${method} is refused`, async () => {
+    const res = await call("/", method);
+    assert.equal(res.status, 405);
+    assert.equal(res.headers.get("Allow"), "GET, HEAD");
+  });
+}
 
 test("missing asset is a plain 404", async () => {
-  const noAsset = { ...env, ASSETS: { fetch: async () => new Response("x", { status: 404 }) } };
-  const res = await worker.fetch(
-    new Request("https://lolice-lineage.example.com/", { headers: { "Cf-Access-Jwt-Assertion": await sign() } }),
-    noAsset,
-  );
-  assert.equal(res.status, 404);
+  const noAsset = { ASSETS: { fetch: async () => new Response("x", { status: 404 }) } };
+  assert.equal((await call("/", "GET", noAsset)).status, 404);
 });
 
 test("config closes the alternate hostnames and runs the Worker first", () => {
@@ -141,18 +72,14 @@ test("git tracks nothing under public/", () => {
   assert.equal(execFileSync("git", ["ls-files", "public"], { cwd, encoding: "utf8" }), "");
 });
 
-test("/sha256 reports the hash of the served page after auth", async () => {
-  const res = await call(await sign(), "/sha256");
+test("/sha256 reports the hash of the served page", async () => {
+  const res = await call("/sha256");
   assert.equal(res.status, 200);
   assert.equal((await res.text()).trim(), createHash("sha256").update(BODY).digest("hex"));
   assert.equal(res.headers.get("Cache-Control"), "no-store");
 });
 
-test("/sha256 is refused without auth", async () => {
-  assert.equal((await call(null, "/sha256")).status, 403);
-});
-
-test("the deploy workflow keeps the private page on main and off the logs", () => {
+test("the deploy workflow keeps the page secret on main and off the logs", () => {
   const wf = readFileSync(new URL("../../../.github/workflows/deploy-lolice-lineage.yml", import.meta.url), "utf8");
   const triggers = wf.slice(wf.indexOf("\non:"), wf.indexOf("\npermissions:"));
   assert.match(triggers, /workflow_dispatch/);

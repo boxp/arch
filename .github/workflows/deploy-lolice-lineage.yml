@@ -1,17 +1,17 @@
 name: Deploy lolice-lineage
 
-# Manual only. The private page reaches this job through an environment secret
-# that GitHub hands out on main alone, and only while a deploy is in progress.
+# Manual only. The page is not committed; it reaches this job through an environment
+# secret that GitHub hands out on main alone, and only while a deploy is in progress.
 on:
   workflow_dispatch:
     inputs:
       mode:
-        description: placeholder deploys a stub page, html deploys the private page
+        description: placeholder deploys a stub page, html deploys the page
         required: true
         type: choice
         options: [placeholder, html]
       expected_sha256:
-        description: sha256 of the private page (html mode)
+        description: sha256 of the page (html mode)
         required: false
         type: string
 
@@ -45,7 +45,7 @@ jobs:
       - run: npm ci
       - run: npm test
 
-      - name: Restore the private page
+      - name: Restore the page
         if: inputs.mode == 'html'
         env:
           # One secret holds at most 48 KB, so a larger page arrives in ordered parts.
@@ -84,4 +84,5 @@ jobs:
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          EXPECTED_SHA256: ${{ inputs.expected_sha256 }}
         run: scripts/readback.sh
