@@ -332,6 +332,12 @@
       (= level "ERROR") (assoc :status {:code 2}))))
 
 (def body-tools #{"Task" "Agent" "TodoWrite" "delegate_task" "delegate" "spawn_agent"})
+(def tools-without-private-output (into body-tools #{"WebSearch" "web_search"}))
+(def withheld-model-output "[withheld: the model has seen tool output]")
+
+(defn- private-tool? [tool result]
+  (or (not (contains? tools-without-private-output (:name tool)))
+      (withhold-output? (:input tool)) (env-dump? (:output result))))
 (defn- tool-input-view [input]
   (let [input (if (string? input) (try (json/parse-string input true) (catch Exception _ input)) input)]
     (if (map? input)
@@ -342,7 +348,7 @@
           true (merge (into {} (keep (fn [k] (let [v (or (get input k) (get input (name k)))] (when (string? v) [k v]))) [:file_path :path :notebook_path])))))
       {:arg_names []})))
 
-(defn- tool-span [ctx {:keys [key parent name start end input output error? status]}]
+(defn- tool-span [ctx {:keys [key parent name start end input output error? status hide-view? private?]}]
   (let [input-str (if (string? input) input (json/generate-string input))
         body? (contains? body-tools name)
         withheld? (and body? (or (withhold-output? input-str) (env-dump? output)))
@@ -350,8 +356,9 @@
     (mk-span ctx {:key key :parent parent :name (str "tool:" name) :start start :end end
                   :level (when error? "ERROR")
                   :attrs-map (cond-> {"langfuse.observation.type" "tool"
-                                      "langfuse.observation.input" (cond withheld? "[withheld: sensitive path]" body? input-str :else (json/generate-string (tool-input-view input)))
-                                      "langfuse.observation.output" (cond withheld? "[withheld: sensitive path]" body? out :else (json/generate-string {:omitted "tool_body_policy" :chars (count out) :lines (if (empty? out) 0 (inc (count (re-seq #"\n" out))))}))}
+                                      "langfuse.observation.input" (cond hide-view? withheld-model-output withheld? withheld-model-output body? input-str :else (json/generate-string (tool-input-view input)))
+                                      "langfuse.observation.output" (cond withheld? withheld-model-output body? out :else (json/generate-string {:omitted "tool_body_policy" :chars (count out) :lines (if (empty? out) 0 (inc (count (re-seq #"\n" out))))}))}
+                               private? (assoc "langfuse.observation.metadata.output_policy" withheld-model-output)
                                status (assoc "langfuse.observation.metadata.status" status)
                                error? (assoc "langfuse.observation.level" "ERROR"))})))
 
@@ -425,7 +432,7 @@
         gens (claude-generations lines)
         end-of-log (some ->millis (reverse (map :timestamp lines)))
         sensitive-gen? (fn [gen] (some (fn [tool] (let [result (get results (:id tool))]
-                                                   (or (withhold-output? (:input tool)) (env-dump? (:output result)))))
+                                                   (private-tool? tool result)))
                                       (filter #(= "tool_use" (:type %)) (:blocks gen))))
         first-sensitive (first (keep-indexed #(when (sensitive-gen? %2) %1) gens))]
     (mapcat
@@ -438,13 +445,13 @@
          (cons
           (generation-span ctx {:key gen-key :parent parent :model (:model gen)
                                 :usage (claude-usage (:usage gen)) :start (:ts gen) :end end
-                                :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: session ran a sensitive tool]" (:input gen)) :output (if (and first-sensitive (>= idx first-sensitive)) "[withheld: session ran a sensitive tool]" (str/trim output))})
+                                :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (:input gen)) :output (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (str/trim output))})
           (map (fn [tool]
                  (let [result (get results (:id tool))
-                       later? (and first-sensitive (>= idx first-sensitive) (not (or (withhold-output? (:input tool)) (env-dump? (:output result)))))]
+                       later? (and first-sensitive (> idx first-sensitive))]
                    (tool-span ctx {:key (str gen-key ":tool:" (:id tool)) :parent gen-key :name (:name tool)
-                                   :start (:ts gen) :end (or (:ts result) end)
-                                   :input (if (and later? (contains? body-tools (:name tool))) "[withheld: session ran a sensitive tool]" (:input tool)) :output (if (and later? (contains? body-tools (:name tool))) "[withheld: session ran a sensitive tool]" (:output result)) :error? (:error? result)})))
+                                   :start (:ts gen) :end (or (:ts result) end) :private? (private-tool? tool result) :hide-view? (and later? (not (contains? body-tools (:name tool))))
+                                   :input (if (and later? (contains? body-tools (:name tool))) "[withheld: the model has seen tool output]" (:input tool)) :output (if (and later? (contains? body-tools (:name tool))) "[withheld: the model has seen tool output]" (:output result)) :error? (:error? result)})))
                tools))))
      gens (concat (rest gens) [nil]) (range))))
 
@@ -518,7 +525,7 @@
   (let [{:keys [gens results]} (codex-generations lines)
         end-of-log (some ->millis (reverse (map :timestamp lines)))
         sensitive-gen? (fn [gen] (some (fn [tool] (let [result (get results (:call-id tool))]
-                                                   (or (withhold-output? (:input tool)) (env-dump? (:output result))))) (:tools gen)))
+                                                   (private-tool? tool result))) (:tools gen)))
         first-sensitive (first (keep-indexed #(when (sensitive-gen? %2) %1) gens))]
     (mapcat
      (fn [gen next-gen idx]
@@ -527,13 +534,13 @@
              output (str/join "\n" (concat (:text gen) (map #(str "[tool_use " (:name %) "]") (:tools gen))))]
          (cons
           (generation-span ctx {:key gen-key :parent parent :model (:model gen) :usage (codex-usage (:usage gen))
-                                :start (:ts gen) :end end :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: session ran a sensitive tool]" (:input gen)) :output (if (and first-sensitive (>= idx first-sensitive)) "[withheld: session ran a sensitive tool]" output)})
+                                :start (:ts gen) :end end :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (:input gen)) :output (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" output)})
           (map (fn [tool]
                  (let [result (get results (:call-id tool))
-                       later? (and first-sensitive (>= idx first-sensitive) (not (or (withhold-output? (:input tool)) (env-dump? (:output result)))))]
+                       later? (and first-sensitive (> idx first-sensitive))]
                    (tool-span ctx {:key (str gen-key ":tool:" (:call-id tool)) :parent gen-key :name (:name tool)
-                                   :start (:ts tool) :end (or (:ts result) end)
-                                   :input (if (and later? (contains? body-tools (:name tool))) "[withheld: session ran a sensitive tool]" (:input tool)) :output (if (and later? (contains? body-tools (:name tool))) "[withheld: session ran a sensitive tool]" (:output result)) :status (:status tool) :error? (:error? tool)})))
+                                   :start (:ts tool) :end (or (:ts result) end) :private? (private-tool? tool result) :hide-view? (and later? (not (contains? body-tools (:name tool))))
+                                   :input (if (and later? (contains? body-tools (:name tool))) "[withheld: the model has seen tool output]" (:input tool)) :output (if (and later? (contains? body-tools (:name tool))) "[withheld: the model has seen tool output]" (:output result)) :status (:status tool) :error? (:error? tool)})))
                (:tools gen)))))
      gens (concat (rest gens) [nil]) (range))))
 
@@ -650,7 +657,7 @@
                     "langfuse.trace.metadata.agent" agent-name
                     "langfuse.trace.metadata.action" (str action)
                     "langfuse.trace.metadata.exporter_version" exporter-version
-                    "langfuse.trace.metadata.coverage.tool_body" "delegation_only"
+                    "langfuse.trace.metadata.coverage.tool_body" "body_tools_until_tool_output"
                     "langfuse.trace.metadata.coverage.reasoning" "not_collected"
                     "langfuse.trace.metadata.coverage.provider_payload"
                     "partial: Claude api-request-blob and Codex response_item only; the CLI may add content it does not log"}
@@ -691,11 +698,46 @@
                      (reduce (fn [acc p] (if (contains? acc (:hash p)) acc (assoc acc (:hash p) p))) {})
                      vals
                      (map #(system-prompt-span ctx (assoc % :parent "root" :ts (or (:ts %) started)))))
-        children (mapv reattr (concat (:spans claude) (mapcat :spans parts)))
-        sensitive? (some #(some (fn [a] (= "[withheld: sensitive path]" (get-in a [:value :stringValue]))) (:attributes %)) children)
+        children0 (mapv reattr (concat (:spans claude) (mapcat :spans parts)))
+        span-type (fn [span] (some #(when (= "langfuse.observation.type" (:key %)) (get-in % [:value :stringValue])) (:attributes span)))
+        private-span? (fn [span] (some #(= "langfuse.observation.metadata.output_policy" (:key %)) (:attributes span)))
+        agent-ids (set (map :spanId (filter #(= "agent" (span-type %)) children0)))
+        child-gen-ids (set (map :spanId (filter #(and (= "generation" (span-type %)) (agent-ids (:parentSpanId %))) children0)))
+        child-span? (fn [span] (or (agent-ids (:parentSpanId span)) (child-gen-ids (:parentSpanId span))))
+        run-private? (some private-span? children0)
+        child-private? (some #(and (child-span? %) (private-span? %)) children0)
+        main-gens (filter #(and (= "generation" (span-type %)) (not (child-span? %))) children0)
+        later-main-gens (set (map :spanId (rest main-gens)))
+        withhold-keys (fn [span keys]
+                        (update span :attributes (fn [items] (mapv #(if (contains? keys (:key %))
+                                                                     (assoc-in % [:value :stringValue] withheld-model-output) %) items))))
+        both #{"langfuse.observation.input" "langfuse.observation.output"}
+        input-only #{"langfuse.observation.input"}
+        body-span? (fn [span] (contains? body-tools (str/replace-first (:name span) #"^tool:" "")))
+        ;; A child's first prompt can repeat what its parent read, and the parent can repeat what any child read.
+        withhold-child (fn [span]
+                         (case (span-type span)
+                           "generation" (withhold-keys span both)
+                           "tool" (withhold-keys span (if (body-span? span) both input-only))
+                           span))
+        withhold-main (fn [span]
+                        (let [later? (later-main-gens (:parentSpanId span))]
+                          (case (span-type span)
+                            "generation" (if (later-main-gens (:spanId span)) (withhold-keys span both) span)
+                            "tool" (cond (and (body-span? span) later?) (withhold-keys span both)
+                                         (body-span? span) (withhold-keys span #{"langfuse.observation.output"})
+                                         later? (withhold-keys span input-only)
+                                         :else span)
+                            span)))
+        children (mapv (fn [span]
+                         (cond (and run-private? (child-span? span)) (withhold-child span)
+                               child-private? (withhold-main span)
+                               :else span))
+                       children0)
+        sensitive? (some #(some (fn [a] (= withheld-model-output (get-in a [:value :stringValue]))) (:attributes %)) children)
         root (if sensitive?
                (update root :attributes (fn [items] (mapv #(if (= "langfuse.observation.output" (:key %))
-                                                             (assoc-in % [:value :stringValue] "[withheld: session ran a sensitive tool]") %) items)))
+                                                             (assoc-in % [:value :stringValue] "[withheld: the model has seen tool output]") %) items)))
                root)]
     {:ticket ticket :run run :trace-id tid
      :root root

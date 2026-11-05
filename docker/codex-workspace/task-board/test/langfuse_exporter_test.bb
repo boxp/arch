@@ -588,7 +588,83 @@
       (is (not (str/includes? (pr-str view) "opaque")))))
   (fs/with-temp-dir [base {}]
     (write-fixture! base {})
-    (is (= "delegation_only" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_body")))))
+    (is (= "body_tools_until_tool_output" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_body")))))
+
+(defn privacy-lines [format tool value]
+  (if (= format :claude)
+    [{:type "user" :message {:content "first request"}}
+     {:type "assistant" :message {:id "a" :model "test" :content [{:type "text" :text "before tool"} {:type "tool_use" :id "t" :name tool :input {:command "cat /etc/app/config.yaml"}}]}}
+     {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content value}]}}
+     {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text value}]}}]
+    [{:type "response_item" :payload {:type "message" :role "user" :content "first request"}}
+     {:type "response_item" :payload {:type "message" :role "assistant" :content "before tool"}}
+     {:type "response_item" :payload {:type "function_call" :call_id "t" :name tool :arguments "{\"command\":\"cat /etc/app/config.yaml\"}"}}
+     {:type "response_item" :payload {:type "function_call_output" :call_id "t" :output value}}
+     {:type "response_item" :payload {:type "message" :role "assistant" :content value}}]))
+
+(deftest private-tool-output-and-safe-tools
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex] tool ["Bash" "Read" "unknown_tool" "TodoWrite" "WebSearch" "web_search"]]
+      (let [lines (privacy-lines format tool "plainconfigvalue")
+            spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" lines)
+            serialized (pr-str spans)]
+        (is (str/includes? serialized "first request") (str format tool))
+        (is (str/includes? serialized "before tool") (str format tool))
+        (is (= (contains? #{"TodoWrite" "WebSearch" "web_search"} tool) (str/includes? serialized "plainconfigvalue")) (str format tool))))))
+
+(deftest private-child-and-root-output
+  (doseq [format [:claude :codex] tool ["Bash" "Read" "unknown_tool"]]
+    (fs/with-temp-dir [base {}]
+      (write-fixture! base {})
+      (let [cfg (test-config base)
+            run-dir (fs/path (:root cfg) "runs" ticket run-id)
+            project (lf/claude-project-dir cfg ticket run-id)
+            day (fs/path base ".codex" "sessions" "2099" "12" "31")]
+        (spit (str (fs/path run-dir "last-message.md")) "plainconfigvalue")
+        (spit (str (fs/path run-dir "prompt.md")) "runner prompt")
+        (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "TodoWrite" "plainconfigvalue")))
+        (if (= format :claude)
+          (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl (privacy-lines :claude tool "plainconfigvalue")))
+          (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl (privacy-lines :codex tool "plainconfigvalue"))))
+        (let [spans (:spans (prepared cfg))]
+          (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format tool))
+          (is (str/includes? (pr-str spans) "runner prompt")))))))
+
+(deftest child-prompt-after-the-parent-read-a-file
+  ;; The parent passes on what it read: the child's first prompt holds the value and the child runs no private tool.
+  (doseq [format [:claude :codex]]
+    (fs/with-temp-dir [base {}]
+      (write-fixture! base {})
+      (let [cfg (test-config base)
+            run-dir (fs/path (:root cfg) "runs" ticket run-id)
+            project (lf/claude-project-dir cfg ticket run-id)
+            day (fs/path base ".codex" "sessions" "2099" "12" "31")
+            child (if (= format :claude)
+                    [{:type "user" :message {:content "goal plainconfigvalue"}}
+                     {:type "assistant" :message {:id "a" :model "test" :content [{:type "text" :text "childsaysdone"}]}}]
+                    [{:type "response_item" :payload {:type "message" :role "user" :content "goal plainconfigvalue"}}
+                     {:type "response_item" :payload {:type "message" :role "assistant" :content "childsaysdone"}}])]
+        (spit (str (fs/path run-dir "last-message.md")) "done")
+        (spit (str (fs/path run-dir "prompt.md")) "runner prompt")
+        (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "Read" "plainconfigvalue")))
+        (if (= format :claude)
+          (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl child))
+          (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl child)))
+        (let [spans (:spans (prepared cfg))]
+          (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))
+          (is (some #(re-find #"subagent:|delegate" (:name %)) spans) "the child's span exists")
+          (is (str/includes? (pr-str spans) "runner prompt")))))))
+
+(deftest later-tool-inputs-are-withheld
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [format [:claude :codex]]
+      (let [lines (privacy-lines format "Bash" "plainconfigvalue")
+            extra (if (= format :claude)
+                    [{:type "assistant" :message {:id "c" :content [{:type "tool_use" :id "u" :name "Read" :input {:file_path "/tmp/plainconfigvalue"}} {:type "tool_use" :id "v" :name "TodoWrite" :input {:text "plainconfigvalue"}}]}}]
+                    [{:type "response_item" :payload {:type "function_call" :call_id "u" :name "Read" :arguments "{\"file_path\":\"/tmp/plainconfigvalue\"}"}}
+                     {:type "response_item" :payload {:type "function_call" :call_id "v" :name "TodoWrite" :arguments "{\"text\":\"plainconfigvalue\"}"}}])
+            spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (concat lines extra))]
+        (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))))))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
