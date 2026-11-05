@@ -492,4 +492,56 @@
       (let [r (run (assoc env "PATH" (str d "/cron-bin")) "bash" script "test") summary (str cron "/runs/test/test/summary.edn")]
         (is (= (= expected :ok) (zero? (:exit r))) (:err r))
         (is (= expected (:status (edn/read-string (slurp summary)))))))))
+(defn paged-gh!
+  "gh run list の --limit を守り、新しい順に limit 件だけ返す偽の gh。"
+  [s]
+  (let [gh (str (:d s) "/bin/gh")]
+    (spit gh (str/replace (slurp gh) "list) cat \"$FAKE/run.json\";;"
+                          "list) n=30; while [ $# -gt 0 ]; do [ \"$1\" != --limit ] || n=\"$2\"; shift; done; echo \"$n\" >> \"$FAKE/limits\"; jq \"sort_by(-.databaseId) | .[:$n]\" \"$FAKE/run.json\";;"))))
+(defn many-runs! [s rs]
+  (write-json (str (:d s) "/run.json")
+              (for [[id conclusion status] rs]
+                {:databaseId id :conclusion conclusion :status (or status "completed") :event "schedule" :headBranch "main"
+                 :createdAt (str (.plusSeconds (java.time.Instant/parse "2026-11-05T00:00:00Z") id)) :headSha "abc" :url (str "https://example.test/run/" id)})))
+(def no-change {:status "no-change" :added [] :removed [] :new_categories []})
+(deftest run-backlog-beyond-first-page
+  (testing "停止中に 31 件以上完了しても、古い未読の失敗を読む"
+    (let [s (sandbox)]
+      (paged-gh! s)
+      (tick s)
+      (run-result! s 2 {:status "anomaly" :reason "bad"})
+      (doseq [id (range 3 45)] (run-result! s id no-change))
+      (many-runs! s (cons [2 "failure"] (for [id (range 3 45)] [id "success"])))
+      (tick s)
+      (is (= 1 (count (calls s))))
+      (is (str/includes? (ticket s "BOXP-2") "run 2"))
+      (is (some #{"60"} (str/split-lines (slurp (str (:d s) "/limits")))) "取得件数を増やして遡る")
+      (is (= 45 (get-in (state s) [:ci :scan-floor])))))
+  (testing "未完了の run が 30 件より古くなっても、完了後に読む"
+    (let [s (sandbox)]
+      (paged-gh! s)
+      (tick s)
+      (doseq [id (range 3 45)] (run-result! s id no-change))
+      (many-runs! s [[2 nil "in_progress"]])
+      (tick s)
+      (is (= 2 (get-in (state s) [:ci :scan-floor])))
+      (many-runs! s (cons [2 nil "in_progress"] (for [id (range 3 45)] [id "success"])))
+      (tick s)
+      (is (= 2 (get-in (state s) [:ci :scan-floor])) "未完了の run の位置を保つ")
+      (is (empty? (calls s)))
+      (run-result! s 2 changed)
+      (many-runs! s (cons [2 "success"] (for [id (range 3 45)] [id "success"])))
+      (tick s)
+      (is (some #{2} (get-in (state s) [:ci :seen-run-ids])) "後から完了した古い run を読む")
+      (is (= 45 (get-in (state s) [:ci :scan-floor])))))
+  (testing "上限まで遡れなければ、黙って捨てずに異常として起票する"
+    (let [s (update (sandbox) :env assoc "INFRA_DIAGRAM_REFRESH_RUN_LIST_MAX" "30")]
+      (paged-gh! s)
+      (tick s)
+      (doseq [id (range 2 45)] (run-result! s id no-change))
+      (many-runs! s (for [id (range 2 45)] [id "success"]))
+      (tick s)
+      (is (= 1 (count (calls s))))
+      (is (= "ci:run-backlog" (get-in (state s) [:ci :failure :key])))
+      (is (str/includes? (ticket s "BOXP-2") "遡れず")))))
 (let [{:keys [pass fail error]} (run-tests)] (println "Pass assertions:" pass) (when (pos? (+ fail error)) (System/exit 1)))

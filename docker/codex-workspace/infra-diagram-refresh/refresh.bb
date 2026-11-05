@@ -53,23 +53,58 @@
 (defn valid-run? [r]
   (and (= "main" (:headBranch r)) (#{"schedule" "workflow_dispatch"} (:event r)) (= "completed" (:status r))))
 
-(def max-seen-runs 200)
+;; 一覧の上限 (1000) より多く持ち、一覧に出る読み済み run を集合から落とさない
+(def max-seen-runs 2000)
+(def run-list-first-limit 30)
+(defn run-list-max-limit [] (parse-long (env "INFRA_DIAGRAM_REFRESH_RUN_LIST_MAX" "1000")))
+
+(defn list-runs [limit]
+  (json/parse-string
+   (sh "gh" "run" "list" "-R" repo "--workflow" workflow "--branch" "main" "--limit" (str limit)
+       "--json" "databaseId,conclusion,status,event,headBranch,createdAt,headSha,url")
+   true))
+
+(defn scan-floor
+  "一覧をどこまで遡るか。未完了だった最小の run ID、無ければ前回見た最大 ID の次。
+  読んだかどうかは ID の集合で判定し、floor は取得件数を決めるだけに使う。"
+  [ci]
+  (or (:scan-floor ci)
+      (some->> (seq (:seen-run-ids ci)) (apply min))
+      (some-> (:run-id ci) inc)))
 
 (defn unseen-runs
-  "まだ読んでいない完了 run を古い順に返す。読取位置は ID の大小ではなく読んだ ID の集合で持つ。
-  ID の大きい run が先に完了しても、後から完了した ID の小さい run を読み飛ばさない。"
+  "まだ読んでいない完了 run を古い順に返す。読取位置は ID の大小ではなく、未完了の最小 ID (floor) と読んだ ID の集合で持つ。
+  停止中に多くの run が完了しても、floor まで遡れるよう取得件数を増やして読む。上限でも届かなければ :gap で報告する。"
   [ci]
   (let [seen (set (:seen-run-ids ci))
-        ;; 集合を持つ前の state は、記録された最後の ID までを読んだものとみなす
-        legacy (when (empty? seen) (:run-id ci))]
-    (->> (json/parse-string
-          (sh "gh" "run" "list" "-R" repo "--workflow" workflow "--branch" "main" "--limit" "30"
-              "--json" "databaseId,conclusion,status,event,headBranch,createdAt,headSha,url")
-          true)
-         (filter valid-run?)
-         (remove #(contains? seen (:databaseId %)))
-         (filter #(or (nil? legacy) (> (:databaseId %) legacy)))
-         (sort-by :databaseId))))
+        ;; 集合も floor も持つ前の state は、記録された最後の ID までを読んだものとみなす
+        legacy (when (and (empty? seen) (nil? (:scan-floor ci))) (:run-id ci))
+        floor (scan-floor ci)
+        cap (run-list-max-limit)
+        [runs limit] (loop [limit run-list-first-limit]
+                       (let [rs (list-runs limit)
+                             reached? (or (nil? floor) (< (count rs) limit)
+                                          (some #(<= (:databaseId %) floor) rs))]
+                         (if (or reached? (>= limit cap)) [rs limit] (recur (min cap (* 2 limit))))))
+        reached? (or (nil? floor) (< (count runs) limit) (some #(<= (:databaseId %) floor) runs))
+        mine (filter #(and (= "main" (:headBranch %)) (#{"schedule" "workflow_dispatch"} (:event %))) runs)
+        pending (remove #(= "completed" (:status %)) mine)
+        ids (map :databaseId runs)
+        ;; 次に遡る位置: 未完了の run があればその最小 ID、無ければ今回見た最大 ID の次
+        next-floor (cond (seq pending) (apply min (map :databaseId pending))
+                         (seq ids) (inc (apply max ids))
+                         :else floor)]
+    {:runs (->> mine
+                (filter valid-run?)
+                (remove #(contains? seen (:databaseId %)))
+                (filter #(or (nil? legacy) (> (:databaseId %) legacy)))
+                (sort-by :databaseId))
+     ;; 一覧に出ていなかった小さい ID の run が未完了で現れたら、そこまで floor を戻す
+     :floor (if (or (nil? floor) (seq pending)) next-floor (max floor next-floor))
+     :gap (when-not reached?
+            {:kind "ci" :key "ci:run-backlog"
+             :detail (str "gh run list の " limit " 件で run " floor " まで遡れず、run "
+                          (apply min ids) " より古い未読 run を読んでいない。workflow の run 一覧を確認する")})}))
 
 ;; Ingress の backend の事実は host の * と ->接続先 を含む
 (def safe-fact-re #"[A-Za-z0-9._:/@+=*>\-]{1,300}")
@@ -140,10 +175,13 @@
   :new-input? は canary 以外の run を 1 つ以上読んだときだけ真になる。"
   [s]
   (try
-    (-> (reduce observe-run
-                (update s :ci assoc :api-error nil :new-input? false :batch-failure nil)
-                (unseen-runs (:ci s)))
-        (update :ci dissoc :batch-failure))
+    (let [{:keys [runs floor gap]} (unseen-runs (:ci s))
+          s (update s :ci assoc :api-error nil :new-input? false :batch-failure nil)
+          ;; 遡れなかった run は黙って捨てず、収集の異常として依頼へ回す。同じ tick の後の成功でも消さない。
+          s (cond-> s gap (update :ci assoc :failure gap :batch-failure gap :new-input? true))]
+      (-> (reduce observe-run s runs)
+          (update :ci dissoc :batch-failure)
+          (assoc-in [:ci :scan-floor] floor)))
     (catch Exception e
       ;; 前の tick の :new-input? を持ち越して、同じ差分を再び依頼へ回さない
       (update s :ci assoc :new-input? false :api-error (str (ex-message e) " " (:stderr (ex-data e)))))))
