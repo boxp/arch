@@ -576,9 +576,13 @@
                       (move-event! (assoc event :status :handled :handled-at (now-str)) (done-dir))
                       (update acc :handled inc))
                   ;; A send that may have happened is never redelivered, marker or not.
-                  (or (= receipt "uncertain") (and marker digest timeout?))
+                  ;; A sent receipt without a marker is the gate's notice, not a confirmed report:
+                  ;; a late marker may still finish it, then the 180m cron reconciles it.
+                  (or (= receipt "uncertain") (and marker digest timeout?) (and (= receipt "sent") (not marker) timeout?))
                   (do (when digest (finish-items! event (unhandled-dir) :notify-undelivered))
-                      (move-event! (assoc event :status :notify-undelivered :unhandled-at (now-str)) (unhandled-dir))
+                      (move-event! (cond-> (assoc event :status :notify-undelivered :unhandled-at (now-str))
+                                     receipt (assoc :delivery-receipt receipt))
+                                   (unhandled-dir))
                       (log! (str "delivery unconfirmed " (:event-id event)))
                       (update acc :unhandled inc))
                   ;; No gate evidence by the timeout: the morning digest still reports it.

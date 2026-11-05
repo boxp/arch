@@ -747,9 +747,45 @@ test_receipt_without_marker_is_not_redelivered() {
   [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "an uncertain digest must not be re-sent"
   stop_receiver
 
+  # A sent receipt without a marker waits for a late marker, then is parked and never re-sent.
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  local now
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  seed_event "${CASE_STATE}" reported BOXP-901 :accepted "${now}" ":accepted-at \"${now}\""
+  write_receipt "${CASE_VAULT}" reported sent "${now}"
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=1800
+  assert_file_contains "${CASE_STATE}/outbox/pending/reported.edn" ':status :accepted'
+  sleep 1
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/reported.edn" ':status :notify-undelivered'
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/reported.edn" ':delivery-receipt "sent"'
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "a sent event must not be re-sent"
+  stop_receiver
+
+  # A marker arriving before the timeout still completes it.
+  new_case
+  now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  seed_event "${CASE_STATE}" late BOXP-901 :accepted "${now}" ":accepted-at \"${now}\""
+  write_receipt "${CASE_VAULT}" late sent "${now}"
+  note_marker "${CASE_VAULT}" BOXP-901 late notified
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=1800
+  [[ -f "${CASE_STATE}/outbox/done/late.edn" ]] || fail "a late marker with a sent receipt must complete the event"
+
+  # The same for a digest: its items are parked with it and nothing is re-sent.
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  id="$(accepted_digest "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  write_receipt "${CASE_VAULT}" "${id}" sent "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  sleep 1
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0
+  [[ -f "${CASE_STATE}/outbox/unhandled/${id}.edn" && -f "${CASE_STATE}/outbox/unhandled/item.edn" ]] || fail "a sent digest without a marker must go to unhandled with its items"
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "a sent digest must not be re-sent"
+  stop_receiver
+
   # A receipt older than the delivery says nothing: normal redelivery still applies.
   local state
-  for state in quiet-held uncertain; do
+  for state in quiet-held uncertain sent; do
     new_case
     seed_event "${CASE_STATE}" old BOXP-901 :accepted "${accepted}" ":accepted-at \"${stale_accepted}\""
     write_receipt "${CASE_VAULT}" old "${state}" "${receipt_at}"
