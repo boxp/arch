@@ -127,6 +127,12 @@
 
 ;; ------------------------------------------------------------------- redact
 
+(deftest numeric-values-are-only-kept-for-token-counters
+  (doseq [text ["password=123456" "\"pin_secret\": 123456" "api_key: 123456"]]
+    (is (not (str/includes? (:value (lf/redact text [])) "123456")) text))
+  (doseq [text ["\"input_tokens\": 12" "\"cached_input_tokens\":12,\"x\":1" "total_token_count: 12"]]
+    (is (= text (:value (lf/redact text []))) text)))
+
 (deftest masks-secret-forms
   (doseq [secret [(str "sk-" "notarealsecret123")
                   (str "ghp_" "synthetic123456789")
@@ -450,6 +456,54 @@
       (is (str/includes? report ":observations"))
       (doseq [secret all-secrets] (is (not (str/includes? report secret))))
       (is (not (str/includes? report "runner prompt"))))))
+
+(deftest hardening-corpus
+  (let [v "plainwordvalue"
+        j json/generate-string
+        groups {"A1" [(j {:output (j {:password v})}) (j {:a (j {:b (j {:api_key v})})})
+                        (j {:output (json/generate-string {:token v} {:pretty true})})
+                        (j {:output (j {:secret (str "x " v)})}) (j {:output (j {:password (str "x\" " v)})})
+                        (j {:password (str "x\" " v)}) (str "{&quot;password&quot;:&quot;x " v "&quot;}")
+                        (str "{\\\"password\\\":\\\"x " v)]
+                "A2" [(j {:output (j {:password v :name "keptvalue"})})]
+                "A3" [(str "mytool --password " v) (str "mytool --api-key \"x " v "\"")
+                        (j {:cmd (str "mytool --token " v)}) (str "curl -u a:" v " https://x")
+                        (str "curl --user a:" v) (str "mysql -h db -p" v) (str "sshpass -p " v)]
+                "A4" [(j {:authorization v}) (j {:auth v}) (str "DB_PASS=" v) (j {:pass v}) (str "passphrase: " v)]
+                "A5" [(str "- name: DB_PASSWORD\n  value: " v) (j {:name "DB_PASSWORD" :value v})
+                        (j (array-map :value v :name "DB_PASSWORD")) (j {:o (j {:name "API_TOKEN" :value v})})]
+                "A6" [(str "password: |\n  a\n  " v "\n") (j {:o (str "token: >-\n  " v "\n")})
+                        (str "password=|\n  " v "\n")]}]
+    (doseq [[group cases] groups text cases]
+      (is (not (str/includes? (:value (lf/redact text [])) v)) (str group " " text)))
+    (is (str/includes? (:value (lf/redact (first (groups "A2")) [])) "keptvalue") "A2 keep sibling")
+    (doseq [text ["bypass=k" "compass: k" "tests passed: k" "author: k" "{\"name\":\"DB_HOST\",\"value\":\"k\"}" "--name k" "mysql -h k" "curl -u k https://x" "grep -p k"]]
+      (is (= text (:value (lf/redact text []))) (str "keep " text)))
+    (is (lf/guard-safe? (:value (lf/redact "--password plainwordvalue cleanbodymarker" [])) []) "A3 guard")))
+
+(deftest sensitive-command-corpus
+  (doseq [[group commands] {"B1" ["kubectl get -n ns secret x" "kubectl -n ns get secrets" "kubectl describe secret" "oc -n ns get secret"]
+                            "B2" ["env" "env LANG=C" "env -i" "env -0" "printenv" "export" "export -p" "set" "declare -p" "declare" "typeset" "cat /proc/1/environ" "process.env" "os.environ" "getenv"]
+                            "B4" ["aws ssm get-parameter" "aws ssm get-parameter --with-decryption" "aws secretsmanager get-secret-value" "aws configure get x" "aws configure export-credentials" "helm get values x" "gh auth token" "git credential" "cat auth.json" "cat .credentials-old" "cat .env.local" "cat .ssh/x" "cat .aws/x" "cat kubeconfig" "cat .git-credentials" "cat .netrc" "cat id_rsa" "cat id_ed25519" "cat secret/x" "cat mytoken"]} command commands]
+    (is (lf/withhold-output? command) (str group " " command)))
+  (doseq [command ["echo hello" "cat README.md" "reset" "kubectl get pods"]]
+    (is (not (lf/withhold-output? command)) (str "B6 " command))))
+
+(deftest sensitive-session-bodies
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        lines [{:type "response_item" :payload {:type "function_call" :call_id "1" :name "exec" :arguments "echo plainwordvalue > .env"}}
+               {:type "response_item" :payload {:type "function_call_output" :call_id "1" :output "opaqueoutput"}}
+               {:type "response_item" :payload {:type "message" :role "assistant" :content "lateropaquebody"}}]
+        spans (doall (lf/codex-spans ctx "root" "test" lines))
+        body (json/generate-string spans)]
+    (is (not (str/includes? body "plainwordvalue")) "B5 input")
+    (is (not (str/includes? body "opaqueoutput")) "B5 output")
+    (is (not (str/includes? body "lateropaquebody")) "B5 later body"))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        lines [{:type "response_item" :payload {:type "function_call" :call_id "1" :name "exec" :arguments "echo hello"}}
+               {:type "response_item" :payload {:type "function_call_output" :call_id "1" :output "PATH=/bin\nHOME=/root\nOPAQUE=plainwordvalue"}}]
+        body (json/generate-string (doall (lf/codex-spans ctx "root" "test" lines)))]
+    (is (not (str/includes? body "plainwordvalue")) "B3 env output")))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

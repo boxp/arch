@@ -18,6 +18,14 @@
 (def secret-name-pattern
   #"(?i)(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth)")
 
+(def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&#0*(?:34|39);|&#x0*(?:22|27);)")
+(def gap-pattern "(?:\\s|\\\\+[nrt])*")
+(def secret-key-pattern (str "[\\w.-]{0,64}(?:password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|authorization|(?<![a-z])pass(?![a-z])|(?<![a-z])auth(?![a-z]))[\\w.-]{0,64}"))
+(defn value-pattern [limit bare]
+  (str "(?:(?<quote>" quote-pattern ")(?:[^\\n]" (or limit "*?") "(?<!\\\\)\\k<quote>" (when-not limit "|[^\\n]*") ")|" bare ")"))
+(defn entry-key [name] (str "(?<![\\w-])" name "(?:" quote-pattern ")?" gap-pattern "[:=]" gap-pattern))
+(def entry-gap "(?:\\s|\\\\+[nrt]|,)*")
+
 (def patterns
   [[:private-key #"(?s)-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?(?:-----END (?:[A-Z ]+ )?PRIVATE KEY-----|\z)"]
    [:header #"(?im)\b(?:proxy-authorization|authorization|set-cookie|cookie)\s*:\s*[^\r\n]+"]
@@ -28,9 +36,12 @@
    [:google-key #"\bAIza[A-Za-z0-9_-]{30,}\b"]
    [:telegram #"\b[0-9]{8,12}:[A-Za-z0-9_-]{30,}\b"]
    [:bearer #"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*"]
-   ;; Numeric values are counters such as input_tokens: 12, never credentials. The optional
-   ;; backslashes cover JSON that was escaped into another string.
-   [:assignment #"(?i)(?:[\\\"']*[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth)[\w.-]*[\\\"']*\s*[:=]\s*)(?!\d+(?:[\s,;}\\\"']|$))(?:\\+\"[^\"]*\"|\"[^\"]*\"|'[^']*'|[^\s,;}]+)"]
+   [:env-entry (re-pattern (str "(?i)" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern "(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "value") (value-pattern nil "[^\\s,;}\\]]+")))]
+   [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
+   [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b)[^\s:]+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   ;; A number after a name with token in it is a counter such as input_tokens: 12.
+   [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
 
 (defn secret-values [env]
@@ -71,16 +82,20 @@
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 
 (def sensitive-path
-  #"(?i)(?:^|[/\\\s\"'])(?:auth\.json|\.credentials|\.env(?:\.[\w-]+)?|\.ssh|\.aws|kubeconfig|\.git-credentials|\.netrc|id_rsa|secrets?|[^/\s\"']*token[^/\s\"']*)(?:$|[/\\\s\"'])")
+  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_rsa|id_ed25519|secrets?(?:[/\\]|(?=$|[\s\"']))|[^/\s\"']*token[^/\s\"']*)")
 (def sensitive-command
-  #"(?i)(?:^|[;&|\s\"'])(?:env|printenv)(?:[\s\"']|$)|\bkubectl\s+(?:get|describe)\s+secrets?\b|\baws\s+ssm\s+get-parameter\b[^\n]*--with-decryption\b|\bcat\s+/proc/[^/\s]+/environ\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
+  #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env|printenv)(?:[\s\"'|;&<>)]|$)|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
 (defn withhold-output? [input]
-  (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s)))))
+  (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s)
+                                    (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))
+(defn env-dump? [output]
+  (let [s (str output)] (boolean (and (re-find #"(?:^|[^A-Za-z0-9_])PATH=" s)
+                                        (re-find #"(?:^|[^A-Za-z0-9_])HOME=" s)))))
 
 (defn guard-safe?
   "Scan again instead of relying on the per-field pass."
   [text values]
-  (let [result (redact text values)]
+  (let [result (redact (str/replace text #"\[REDACTED:[a-z-]+\]" "") values)]
     (and (not= "[dropped: redaction error]" (:value result))
          (empty? (:redactions result)))))
 
@@ -214,11 +229,11 @@
 
 (defn- tool-span [ctx {:keys [key parent name start end input output error?]}]
   (let [input-str (if (string? input) input (json/generate-string input))
-        withheld? (withhold-output? input-str)]
+        withheld? (or (withhold-output? input-str) (env-dump? output))]
     (mk-span ctx {:key key :parent parent :name (str "tool:" name) :start start :end end
                   :level (when error? "ERROR")
                   :attrs-map (cond-> {"langfuse.observation.type" "tool"
-                                      "langfuse.observation.input" input-str
+                                      "langfuse.observation.input" (if withheld? "[withheld: sensitive path]" input-str)
                                       "langfuse.observation.output" (if withheld? "[withheld: sensitive path]" (str output))}
                                error? (assoc "langfuse.observation.level" "ERROR"))})))
 
@@ -290,7 +305,11 @@
 (defn claude-spans [ctx parent prefix lines]
   (let [results (claude-results lines)
         gens (claude-generations lines)
-        end-of-log (some ->millis (reverse (map :timestamp lines)))]
+        end-of-log (some ->millis (reverse (map :timestamp lines)))
+        sensitive-gen? (fn [gen] (some (fn [tool] (let [result (get results (:id tool))]
+                                                   (or (withhold-output? (:input tool)) (env-dump? (:output result)))))
+                                      (filter #(= "tool_use" (:type %)) (:blocks gen))))
+        first-sensitive (first (keep-indexed #(when (sensitive-gen? %2) %1) gens))]
     (mapcat
      (fn [gen next-gen idx]
        (let [gen-key (str prefix "gen:" idx)
@@ -301,12 +320,13 @@
          (cons
           (generation-span ctx {:key gen-key :parent parent :model (:model gen)
                                 :usage (claude-usage (:usage gen)) :start (:ts gen) :end end
-                                :input (:input gen) :output (str/trim output)})
+                                :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: session ran a sensitive tool]" (:input gen)) :output (if (and first-sensitive (>= idx first-sensitive)) "[withheld: session ran a sensitive tool]" (str/trim output))})
           (map (fn [tool]
-                 (let [result (get results (:id tool))]
+                 (let [result (get results (:id tool))
+                       later? (and first-sensitive (>= idx first-sensitive) (not (or (withhold-output? (:input tool)) (env-dump? (:output result)))))]
                    (tool-span ctx {:key (str gen-key ":tool:" (:id tool)) :parent gen-key :name (:name tool)
                                    :start (:ts gen) :end (or (:ts result) end)
-                                   :input (:input tool) :output (:output result) :error? (:error? result)})))
+                                   :input (if later? "[withheld: session ran a sensitive tool]" (:input tool)) :output (if later? (str "[withheld: session ran a sensitive tool]" (when (str/includes? (str (:output result)) "[image omitted]") " [image omitted]")) (:output result)) :error? (:error? result)})))
                tools))))
      gens (concat (rest gens) [nil]) (range))))
 
@@ -378,7 +398,10 @@
 
 (defn codex-spans [ctx parent prefix lines]
   (let [{:keys [gens results]} (codex-generations lines)
-        end-of-log (some ->millis (reverse (map :timestamp lines)))]
+        end-of-log (some ->millis (reverse (map :timestamp lines)))
+        sensitive-gen? (fn [gen] (some (fn [tool] (let [result (get results (:call-id tool))]
+                                                   (or (withhold-output? (:input tool)) (env-dump? (:output result))))) (:tools gen)))
+        first-sensitive (first (keep-indexed #(when (sensitive-gen? %2) %1) gens))]
     (mapcat
      (fn [gen next-gen idx]
        (let [gen-key (str prefix "gen:" idx)
@@ -386,12 +409,13 @@
              output (str/join "\n" (concat (:text gen) (map #(str "[tool_use " (:name %) "]") (:tools gen))))]
          (cons
           (generation-span ctx {:key gen-key :parent parent :model (:model gen) :usage (codex-usage (:usage gen))
-                                :start (:ts gen) :end end :input (:input gen) :output output})
+                                :start (:ts gen) :end end :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: session ran a sensitive tool]" (:input gen)) :output (if (and first-sensitive (>= idx first-sensitive)) "[withheld: session ran a sensitive tool]" output)})
           (map (fn [tool]
-                 (let [result (get results (:call-id tool))]
+                 (let [result (get results (:call-id tool))
+                       later? (and first-sensitive (>= idx first-sensitive) (not (or (withhold-output? (:input tool)) (env-dump? (:output result)))))]
                    (tool-span ctx {:key (str gen-key ":tool:" (:call-id tool)) :parent gen-key :name (:name tool)
                                    :start (:ts tool) :end (or (:ts result) end)
-                                   :input (:input tool) :output (:output result) :error? (:error? tool)})))
+                                   :input (if later? "[withheld: session ran a sensitive tool]" (:input tool)) :output (if later? "[withheld: session ran a sensitive tool]" (:output result)) :error? (:error? tool)})))
                (:tools gen)))))
      gens (concat (rest gens) [nil]) (range))))
 
@@ -548,7 +572,12 @@
                      (reduce (fn [acc p] (if (contains? acc (:hash p)) acc (assoc acc (:hash p) p))) {})
                      vals
                      (map #(system-prompt-span ctx (assoc % :parent "root" :ts (or (:ts %) started)))))
-        children (map reattr (concat (:spans claude) (mapcat :spans parts)))]
+        children (mapv reattr (concat (:spans claude) (mapcat :spans parts)))
+        sensitive? (some #(some (fn [a] (= "[withheld: sensitive path]" (get-in a [:value :stringValue]))) (:attributes %)) children)
+        root (if sensitive?
+               (update root :attributes (fn [items] (mapv #(if (= "langfuse.observation.output" (:key %))
+                                                             (assoc-in % [:value :stringValue] "[withheld: session ran a sensitive tool]") %) items)))
+               root)]
     {:ticket ticket :run run :trace-id tid
      :root root
      :spans (concat prompts children)
