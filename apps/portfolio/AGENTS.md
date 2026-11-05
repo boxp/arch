@@ -8,7 +8,7 @@
 - コンテンツは `src/content/` の Content Collections（スキーマ: `src/content.config.ts`）。
 - トップは `src/pages/index.astro`。セクション共通部品は `src/components/`。インフラ図は紹介ページを作らず、トップの Infrastructure 節のカードから各図の URL へ直接リンクする（内容は `src/lib/diagrams.ts`）。図の本体はこの repo に置かない。
 - 全体図のカードは stage でだけ生成する。図の匿名公開は未承認なので、本番ビルドに URL も導線もサムネイルも出さない（CI が検査する）。
-- 全体図のサムネイル `public/diagrams/lolice-architecture.webp` はコミットしない。stage の deploy が環境 `portfolio-stage-private` の secret から復元する。stage の `dist` は public repo の artifact へ上げない。
+- 全体図のサムネイルはコミットせず、`public/` にも置かない（本番設定のビルドに混ざる）。stage の deploy がビルド後に環境 `portfolio-stage-private` の secret から `dist/diagrams/` へ復元する。stage の `dist` は public repo の artifact へ上げない。
 - OGP 画像は `npm run og` で `public/og.png` を生成する（`@resvg/resvg-js` + 同梱 Inter）。
 - デプロイはリポジトリルートの `.github/workflows/deploy-portfolio.yml`（`apps/portfolio/**` の変更で起動）。PR ではビルド + Lighthouse CI のみ、`main` push で Cloudflare Pages の stage プロジェクト `boxp-portfolio-stage`（https://portfolio-stage.b0xp.io/、Cloudflare Access で本人限定）へデプロイ。本番 `boxp-portfolio` へのデプロイは本番切替フェーズで追加する。
 - プロフィール画像は GitHub アカウント boxp のアバター（`src/assets/boxp-github-avatar.jpg`）。生成・改変した画像に差し替えない。更新するときは https://avatars.githubusercontent.com/u/1819576?v=4 を取り直す。

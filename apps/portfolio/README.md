@@ -55,7 +55,7 @@ Node 22.23.4 以上が必要です（`package.json` の `engines` 参照。Astro
 
 図の本体はこの repo に置きません。カードの内容は `src/lib/diagrams.ts` にあります。
 
-全体図のサムネイルは匿名公開が未承認なので、コミットしません。環境 `portfolio-stage-private`（main 限定）の secret `LOLICE_ARCHITECTURE_THUMBNAIL_B64`、`_2` に base64 を分割して登録し、stage の deploy が `public/diagrams/` へ復元します。secret が無いと stage の deploy は失敗します。図を更新したらサムネイルを撮り直し、secret を更新して `deploy-portfolio` を手動実行します。
+全体図のサムネイルは匿名公開が未承認なので、コミットしません。環境 `portfolio-stage-private`（main 限定）の secret `LOLICE_ARCHITECTURE_THUMBNAIL_B64`、`_2` に base64 を分割して登録し、stage の deploy がビルド後に `dist/diagrams/` へ復元します。`public/` には置かないでください。本番設定のビルドに混ざります。secret が無いと stage の deploy は失敗します。図を更新したらサムネイルを撮り直し、secret を更新して `deploy-portfolio` を手動実行します。
 
 ## デプロイ
 

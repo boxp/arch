@@ -93,6 +93,13 @@ jobs:
         working-directory: apps/portfolio
         run: npm ci
 
+      - name: Build (stage settings)
+        working-directory: apps/portfolio
+        run: npm run build
+        env:
+          SITE_ENV: stage
+          SITE_URL: ${{ env.STAGE_SITE_URL }}
+
       - name: Restore the private thumbnail
         working-directory: apps/portfolio
         env:
@@ -101,18 +108,15 @@ jobs:
           THUMBNAIL_B64_2: ${{ secrets.LOLICE_ARCHITECTURE_THUMBNAIL_B64_2 }}
         run: |
           [ -n "$THUMBNAIL_B64_1" ] || { echo "LOLICE_ARCHITECTURE_THUMBNAIL_B64 is not set" >&2; exit 1; }
-          out=public/diagrams/lolice-architecture.webp
+          # public/ に置くと本番設定のビルドにも混ざるので、ビルド後の dist にだけ入れる。
+          out=dist/diagrams/lolice-architecture.webp
           printf '%s' "$THUMBNAIL_B64_1" "$THUMBNAIL_B64_2" | base64 -d > "$out"
           [ "$(head -c 4 "$out")" = RIFF ] && [ "$(tail -c +9 "$out" | head -c 4)" = WEBP ] \
             || { echo "thumbnail is not a WebP file" >&2; exit 1; }
+          # 分割の欠落で切れた画像を通さない。RIFF のサイズ欄は全長 - 8。
+          [ "$(od -An -tu4 -j4 -N4 "$out" | tr -d ' ')" -eq "$(($(wc -c < "$out") - 8))" ] \
+            || { echo "thumbnail is truncated" >&2; exit 1; }
           sha256sum "$out"
-
-      - name: Build (stage settings)
-        working-directory: apps/portfolio
-        run: npm run build
-        env:
-          SITE_ENV: stage
-          SITE_URL: ${{ env.STAGE_SITE_URL }}
 
       - name: Check stage output links both diagrams directly
         working-directory: apps/portfolio

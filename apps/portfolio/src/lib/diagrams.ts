@@ -26,7 +26,7 @@ export const lineage: Diagram = {
   thumbnailAlt: 'lolice lineage の実画面の一部。アプリ、基盤、物理ノードの層にサービス名のタグが並んでいる。',
 };
 
-// サムネイルは public repo に置かない。stage の deploy が環境 secret から public/diagrams/ へ復元する。
+// サムネイルは public repo に置かない。stage の deploy がビルド後に環境 secret から dist/diagrams/ へ復元する。
 export const architecture: Diagram = {
   title: 'lolice architecture',
   lead: '同じクラスタを役割の単位で束ね、利用者、エッジと認証、アプリと基盤、CI と GitOps、データ、外部サービスの構造と主な流れを一望できるようにした図です。',
