@@ -560,7 +560,7 @@
                   (and digest (= receipt "quiet-held"))
                   (do (reissue-digest! event)
                       (update acc :waiting inc))
-                  (and marker (= receipt "quiet-held"))
+                  (= receipt "quiet-held")
                   (do (write-event! (pending-dir) (-> event (dissoc ::path) (assoc :status :notify-pending :processed-at (now-str))))
                       (update acc :waiting inc))
                   (and marker (not digest) (= marker :deferred))
@@ -575,7 +575,8 @@
                   (do (when digest (finish-items! event (done-dir) :handled))
                       (move-event! (assoc event :status :handled :handled-at (now-str)) (done-dir))
                       (update acc :handled inc))
-                  (and marker (or (= receipt "uncertain") (and digest timeout?)))
+                  ;; A send that may have happened is never redelivered, marker or not.
+                  (or (= receipt "uncertain") (and marker digest timeout?))
                   (do (when digest (finish-items! event (unhandled-dir) :notify-undelivered))
                       (move-event! (assoc event :status :notify-undelivered :unhandled-at (now-str)) (unhandled-dir))
                       (log! (str "delivery unconfirmed " (:event-id event)))

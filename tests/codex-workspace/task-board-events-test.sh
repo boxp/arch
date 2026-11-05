@@ -712,6 +712,53 @@ test_quiet_held_receipt_returns_to_digest_unless_stale() {
   [[ -f "${CASE_STATE}/outbox/done/held.edn" ]] || fail "a fresh sent receipt must finish the redelivery"
 }
 
+test_receipt_without_marker_is_not_redelivered() {
+  local accepted="2026-11-04T17:59:00Z" stale_accepted="2026-11-05T00:05:00Z" receipt_at="2026-11-04T18:01:00+00:00"
+
+  # A held report without a marker goes to the digest, even after the handling timeout.
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  seed_event "${CASE_STATE}" held BOXP-901 :accepted "${accepted}" ":accepted-at \"${accepted}\""
+  write_receipt "${CASE_VAULT}" held quiet-held "${receipt_at}"
+  day_tick CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0 CODEX_TASK_BOARD_EVENT_MAX_REDELIVERIES=0
+  [[ ! -f "${CASE_STATE}/outbox/unhandled/held.edn" ]] || fail "a held event must not be parked as unhandled"
+  assert_file_contains "${CASE_STATE}/outbox/pending/held.edn" ':status :notify-pending'
+  [[ "$(count_files "${CASE_STATE}/outbox/pending")" == 2 ]] || fail "the held event must be collected by one digest"
+  stop_receiver
+
+  # An uncertain send without a marker is parked at once and never sent again.
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  seed_event "${CASE_STATE}" unsure BOXP-901 :accepted "${accepted}" ":accepted-at \"${accepted}\""
+  write_receipt "${CASE_VAULT}" unsure uncertain "${receipt_at}"
+  day_tick
+  assert_file_contains "${CASE_STATE}/outbox/unhandled/unsure.edn" ':status :notify-undelivered'
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "an uncertain event must not be re-sent"
+  stop_receiver
+
+  # The same for a digest: its items are parked with it.
+  new_case
+  start_receiver "${CASE_TMP}" "${CASE_PORT}"
+  local id
+  id="$(accepted_digest "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
+  write_receipt "${CASE_VAULT}" "${id}" uncertain "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  day_tick
+  [[ -f "${CASE_STATE}/outbox/unhandled/${id}.edn" && -f "${CASE_STATE}/outbox/unhandled/item.edn" ]] || fail "an uncertain digest must go to unhandled with its items"
+  [[ ! -s "${CASE_TMP}/receiver.log" ]] || fail "an uncertain digest must not be re-sent"
+  stop_receiver
+
+  # A receipt older than the delivery says nothing: normal redelivery still applies.
+  local state
+  for state in quiet-held uncertain; do
+    new_case
+    seed_event "${CASE_STATE}" old BOXP-901 :accepted "${accepted}" ":accepted-at \"${stale_accepted}\""
+    write_receipt "${CASE_VAULT}" old "${state}" "${receipt_at}"
+    day_tick CODEX_TASK_BOARD_EVENT_CLOCK_OVERRIDE="2026-11-05T00:06:00Z" CODEX_TASK_BOARD_EVENT_HANDLE_TIMEOUT_SECONDS=0
+    [[ ! -f "${CASE_STATE}/outbox/unhandled/old.edn" ]] || fail "a stale ${state} receipt must not park the event"
+    assert_file_not_contains "${CASE_STATE}/outbox/pending/old.edn" ':status :notify-pending'
+  done
+}
+
 test_quiet_held_digest_is_reissued_under_a_new_id() {
   local with_marker id new_digest new_id
   for with_marker in yes no; do
@@ -855,6 +902,7 @@ test_digest_silent_needs_gate_proof
 test_quiet_policy_is_published_for_the_gate
 test_digest_uncertain_receipt_is_never_resent
 test_quiet_held_receipt_returns_to_digest_unless_stale
+test_receipt_without_marker_is_not_redelivered
 test_quiet_held_digest_is_reissued_under_a_new_id
 test_notified_marker_needs_gate_evidence
 test_receipt_written_before_the_response_counts
