@@ -23,6 +23,8 @@ scripts/deploy.sh --html <vault の lolice-lineage.html> --expect-sha256 <hash>
 
 先に placeholder で陰性確認を通し、そのあとで実データを載せます。
 
+CI からは `Deploy lolice-lineage` を `mode=html` で実行します。ページは環境 `lolice-lineage-deploy` の secret で渡し、配備後に削除します。1 個の secret は 48 KB までなので、xz と base64 をかけた値を 40,000 文字ごとに分け、`LOLICE_LINEAGE_HTML_XZ_B64`、`_2`、`_3`、`_4` の順に登録します。
+
 ## 撤去
 
 `npx wrangler delete --name lolice-lineage` で Worker と route を消します。

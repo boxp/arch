@@ -48,12 +48,18 @@ jobs:
       - name: Restore the private page
         if: inputs.mode == 'html'
         env:
-          PAGE_XZ_B64: ${{ secrets.LOLICE_LINEAGE_HTML_XZ_B64 }}
+          # One secret holds at most 48 KB, so a larger page arrives in ordered parts.
+          PAGE_XZ_B64_1: ${{ secrets.LOLICE_LINEAGE_HTML_XZ_B64 }}
+          PAGE_XZ_B64_2: ${{ secrets.LOLICE_LINEAGE_HTML_XZ_B64_2 }}
+          PAGE_XZ_B64_3: ${{ secrets.LOLICE_LINEAGE_HTML_XZ_B64_3 }}
+          PAGE_XZ_B64_4: ${{ secrets.LOLICE_LINEAGE_HTML_XZ_B64_4 }}
         run: |
-          [ -n "$PAGE_XZ_B64" ] || { echo "LOLICE_LINEAGE_HTML_XZ_B64 is not set" >&2; exit 1; }
+          set -o pipefail
+          [ -n "$PAGE_XZ_B64_1" ] || { echo "LOLICE_LINEAGE_HTML_XZ_B64 is not set" >&2; exit 1; }
           umask 077
           mkdir "$RUNNER_TEMP/page"
-          printf '%s' "$PAGE_XZ_B64" | base64 -d | xz -dc > "$RUNNER_TEMP/page/lolice-lineage.html"
+          printf '%s' "$PAGE_XZ_B64_1" "$PAGE_XZ_B64_2" "$PAGE_XZ_B64_3" "$PAGE_XZ_B64_4" \
+            | base64 -d | xz -dc > "$RUNNER_TEMP/page/lolice-lineage.html"
 
       - name: Deploy
         env:
