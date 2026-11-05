@@ -655,6 +655,37 @@
           (is (some #(re-find #"subagent:|delegate" (:name %)) spans) "the child's span exists")
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
+(deftest short-and-passphrase-env-values-are-masked-without-their-name
+  (let [short (str "ab" "1!")
+        phrase (str "horse" "77")
+        env {"DB_PASS" short "GPG_PASSPHRASE" phrase "API_TOKEN" "zq7"
+             "AUTH_ENABLED" "true" "TOKENIZERS_PARALLELISM" "false" "SECRET_ROTATION" "1"
+             "CLAUDE_CODE_MAX_OUTPUT_TOKENS" "64000" "PWD" "/tmp" "OLDPWD" "/"
+             "GIT_AUTHOR_NAME" "boxp" "UNRELATED" "visible" "EMPTY_TOKEN" ""
+             "PIN_PASSWORD" "4821"}
+        values (lf/secret-values env)
+        masked (fn [text] (:value (lf/redact text values)))]
+    (testing "a value short of 8 characters and PASSPHRASE reach the value mask"
+      (is (some #{short} values))
+      (is (some #{phrase} values))
+      (is (some #{"zq7"} values))
+      (is (some #{"4821"} values)))
+    (testing "no name is needed in the text"
+      (doseq [text [(str "answer: " short) (str "答えは" short "です") (str "(" phrase ")") (str "user:" short "@host") (str "zq7") (str "pin 4821.")]]
+        (is (= [] (filter #(str/includes? (masked text) %) [short phrase "zq7" "4821"])) text)
+        (is (str/includes? (masked text) "[REDACTED:env]") text)))
+    (testing "a short value inside a longer word stays, so ordinary text is readable"
+      (is (= "zq77 xzq7 horse777" (masked "zq77 xzq7 horse777"))))
+    (testing "flags, counters, working directories and authors are not credentials"
+      (doseq [v ["true" "false" "1" "64000" "/tmp" "/" "boxp" "visible" ""]]
+        (is (not-any? #{v} values) v))
+      (is (= "true false 1 64000 /tmp boxp/lolice" (masked "true false 1 64000 /tmp boxp/lolice"))))
+    (testing "one pass: a later value does not rewrite the mark of an earlier one"
+      (is (= "[REDACTED:env] [REDACTED:env]" (:value (lf/redact "longsecretvalue env" ["longsecretvalue" "env"])))))
+    (testing "the final guard sees the value too"
+      (is (false? (lf/guard-safe? (str "answer " short) values)))
+      (is (true? (lf/guard-safe? "[REDACTED:env] done" ["env"]))))))
+
 (deftest later-tool-inputs-are-withheld
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
     (doseq [format [:claude :codex]]

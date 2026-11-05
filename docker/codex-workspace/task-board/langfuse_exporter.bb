@@ -20,7 +20,7 @@
 ;; ---------------------------------------------------------------- redaction
 
 (def secret-name-pattern
-  #"(?i)(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth)")
+  #"(?i)(password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth(?!or)|(?<![a-z])pass(?![a-z]))")
 
 (def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&#0*(?:34|39);|&#x0*(?:22|27);)")
 (def gap-pattern "(?:\\s|\\\\+[nrt])*")
@@ -48,12 +48,41 @@
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
 
+(def not-a-credential-name #"^(?:PWD|OLDPWD)$")
+(def flag-value #"(?i)true|false|yes|no|on|off|none|null|nil|enabled|disabled|0|1")
+(def setting-name #"(?i)tokens|count|limit|max|min|ttl|timeout|expir|interval|seconds|minutes|hours|days|size|port|bytes")
+(def short-value-length 8)
+
+(defn secret-value?
+  "Short values count too. A flag such as AUTH_ENABLED=true, or a number under a name such as
+  MAX_OUTPUT_TOKENS, is a setting; masking it would only blank ordinary words and numbers."
+  [k v]
+  (and (string? v)
+       (not (str/blank? v))
+       (re-find secret-name-pattern k)
+       (not (re-matches not-a-credential-name k))
+       (not (re-matches flag-value v))
+       (not (and (re-matches #"\d+" v) (re-find setting-name k)))))
+
 (defn secret-values [env]
   (->> env
-       (keep (fn [[k v]] (when (and (re-find secret-name-pattern (str k))
-                                    (string? v) (<= 8 (count v))) v)))
+       (keep (fn [[k v]] (when (secret-value? (str k) v) v)))
        distinct
        (sort-by count >)))
+
+(def values-pattern
+  "One alternation, longest first, so a later value cannot rewrite the mark of an earlier one.
+  A short value has to stand alone: inside a longer word it is most likely a coincidence."
+  (memoize
+   (fn [values]
+     (when (seq values)
+       (re-pattern
+        (str/join "|" (map (fn [value]
+                             (let [quoted (java.util.regex.Pattern/quote value)]
+                               (if (< (count value) short-value-length)
+                                 (str "(?<![A-Za-z0-9])" quoted "(?![A-Za-z0-9])")
+                                 quoted)))
+                           (sort-by count > values))))))))
 
 (defn entropy-secret?
   "Ids such as run ids and UUIDs have only short hyphen-separated segments; a token has a
@@ -174,11 +203,9 @@
   (try
     (let [counts (atom {})
           mark (fn [kind] (swap! counts update kind (fnil inc 0)) (str "[REDACTED:" (name kind) "]"))
-          with-values (reduce (fn [text value]
-                                (if (str/includes? text value)
-                                  (str/replace text (re-pattern (java.util.regex.Pattern/quote value)) (fn [_] (mark :env)))
-                                  text))
-                              (str s) values)
+          with-values (if-let [pattern (values-pattern (vec values))]
+                        (str/replace (str s) pattern (fn [_] (mark :env)))
+                        (str s))
           masked (mask-secret-lines (reduce (fn [text [kind pattern]]
                            (str/replace text pattern
                                         (fn [match]
