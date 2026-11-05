@@ -98,7 +98,7 @@
   (merge (lf/config {"CODEX_TASK_BOARD_ROOT" (str (fs/path base ".codex-task-board"))
                      "CLAUDE_HOME" (str (fs/path base ".claude"))
                      "CODEX_HOME" (str (fs/path base ".codex"))
-                     "LANGFUSE_PUBLIC_KEY" "pk" "LANGFUSE_SECRET_KEY" "sk"
+                     "LANGFUSE_PUBLIC_KEY" "fixture-ingest-public" "LANGFUSE_SECRET_KEY" "fixture-ingest-private"
                      "FIXTURE_TOKEN" s-env})
          {:batch-pause-ms 0}
          overrides))
@@ -674,8 +674,11 @@
       (doseq [text [(str "answer: " short) (str "答えは" short "です") (str "(" phrase ")") (str "user:" short "@host") (str "zq7") (str "pin 4821.") "{\"a\":\"x\\nzq7\"}" "{\"a\":\"\\u3048zq7\"}"]]
         (is (= [] (filter #(str/includes? (masked text) %) [short phrase "zq7" "4821"])) text)
         (is (str/includes? (masked text) "[REDACTED:env]") text)))
-    (testing "a short value inside a longer word stays, so ordinary text is readable"
-      (is (= "zq77 xzq7 horse777" (masked "zq77 xzq7 horse777"))))
+    (testing "a value can be part of a longer word, so it is masked there too"
+      (doseq [text ["zq77" "xzq7" "horse777" "abzq7cd"]]
+        (is (= [] (filter #(str/includes? (masked text) %) ["zq7" phrase])) text)
+        (is (str/includes? (masked text) "[REDACTED:env]") text)
+        (is (false? (lf/guard-safe? text values)) text)))
     (testing "flags, counters, working directories and authors are not credentials"
       (doseq [v ["true" "false" "1" "64000" "/tmp" "/" "boxp" "visible" ""]]
         (is (not-any? #{v} values) v))

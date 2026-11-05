@@ -54,9 +54,6 @@
 (def toggle-last-word #"(?i)enabled?|disabled?|required?|parallelism|rotation")
 (def toggle-first-word #"(?i)use|enable|disable|no|skip|require")
 (def counter-last-word #"(?i)tokens|count|limit|max|min|ttl|timeout|expiry|expires|interval|seconds|minutes|hours|days|age|size|port|bytes")
-(def short-value-length 8)
-;; The text before a value may be JSON-escaped: the n of \n and the hex of \u3048 are not part of a word.
-(def short-value-start "(?:(?<![A-Za-z0-9])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9a-fA-F]{4}))")
 
 (defn setting?
   "The value and the name have to agree: PASSWORD=disabled is a password, AUTH_ENABLED=disabled is a setting."
@@ -85,17 +82,12 @@
 
 (def values-pattern
   "One alternation, longest first, so a later value cannot rewrite the mark of an earlier one.
-  A short value has to stand alone: inside a longer word it is most likely a coincidence."
+  Any length matches inside a longer word: the value can be part of it, and a blanked word costs less than a leak."
   (memoize
    (fn [values]
      (when (seq values)
        (re-pattern
-        (str/join "|" (map (fn [value]
-                             (let [quoted (java.util.regex.Pattern/quote value)]
-                               (if (< (count value) short-value-length)
-                                 (str short-value-start quoted "(?![A-Za-z0-9])")
-                                 quoted)))
-                           (sort-by count > values))))))))
+        (str/join "|" (map #(java.util.regex.Pattern/quote %) (sort-by count > values))))))))
 
 (defn entropy-secret?
   "Ids such as run ids and UUIDs have only short hyphen-separated segments; a token has a
