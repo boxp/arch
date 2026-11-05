@@ -86,25 +86,28 @@
 (def html-names {38 "amp" 60 "lt" 62 "gt" 34 "quot" 39 "apos"})
 
 (defn encoded-char
-  "Every way serialized text can carry a character. Escapes can repeat, since JSON can sit inside JSON (bounded at 255 backslashes, depth 8, to keep the scan linear)."
+  "Every way serialized text can carry a character, letters and digits included. Escapes can repeat, since JSON can sit inside JSON
+  (bounded at 255 backslashes, depth 8, to keep the scan linear) and a URL can be encoded again (%2561, same depth)."
   [code]
-  (let [ch (String. (Character/toChars (int code)))]
-    (if (and (< code 128) (re-matches #"[A-Za-z0-9]" ch))
-      ch
-      (let [literal (format "\\x{%x}" code)
-            units (if (< code 0x10000)
-                    [code]
-                    [(+ 0xD800 (bit-shift-right (- code 0x10000) 10)) (+ 0xDC00 (bit-and (- code 0x10000) 0x3FF))])
-            hex-forms (cond-> [(str/join (map #(format "\\\\{1,255}u%04x" %) units))
-                               (str/join (map #(format "%%%02x" (bit-and (int %) 0xFF)) (.getBytes ch "UTF-8")))
-                               (format "&#0*%d;" code)
-                               (format "&#x0*%x;" code)]
-                        (< code 0x100) (conj (format "\\\\{1,255}x%02x" code))
-                        (html-names code) (conj (str "&" (html-names code) ";")))]
-        (str "(?:(?i:" (str/join "|" hex-forms) ")"
-             (when-let [letter (control-escapes code)] (str "|\\\\{1,255}" letter))
-             (when (= code 32) "|\\+")
-             "|\\\\{1,255}" literal "|" literal ")")))))
+  (let [ch (String. (Character/toChars (int code)))
+        literal (format "\\x{%x}" code)
+        units (if (< code 0x10000)
+                [code]
+                [(+ 0xD800 (bit-shift-right (- code 0x10000) 10)) (+ 0xDC00 (bit-and (- code 0x10000) 0x3FF))])
+        hex-forms (cond-> [(str/join (map #(format "\\\\{1,255}u%04x" %) units))
+                           (str/join (map #(format "%%(?:25){0,8}%02x" (bit-and (int %) 0xFF)) (.getBytes ch "UTF-8")))
+                           (format "&#0*%d;" code)
+                           (format "&#x0*%x;" code)]
+                    (< code 0x100) (conj (format "\\\\{1,255}x%02x" code))
+                    (html-names code) (conj (str "&" (html-names code) ";")))]
+    (str "(?:(?i:" (str/join "|" hex-forms) ")"
+         (if (and (< code 128) (re-matches #"[A-Za-z0-9]" ch))
+           ;; \n is a newline, not an n
+           (str "|" literal)
+           (str (when-let [letter (control-escapes code)] (str "|\\\\{1,255}" letter))
+                (when (= code 32) "|\\+")
+                "|\\\\{1,255}" literal "|" literal))
+         ")")))
 
 (defn code-points [s]
   (loop [i 0 out []]
@@ -113,6 +116,12 @@
         (recur (+ i (Character/charCount (int code))) (conj out code)))
       out)))
 
+(defn value-pattern
+  "Every position can start a value, so its first character is only tried at the start of a run of backslashes: the scan stays linear."
+  [value]
+  (let [[first-char & others] (map encoded-char (code-points value))]
+    (str/join (cons (str/replace first-char "\\\\{1,255}" "(?<!\\\\)\\\\+") others))))
+
 (def values-pattern
   "One alternation, longest first, so a later value cannot rewrite the mark of an earlier one.
   Any length matches inside a longer word: the value can be part of it, and a blanked word costs less than a leak."
@@ -120,7 +129,7 @@
    (fn [values]
      (when (seq values)
        (re-pattern
-        (str/join "|" (map #(str/join (map encoded-char (code-points %))) (sort-by count > values))))))))
+        (str/join "|" (map value-pattern (sort-by count > values))))))))
 
 (defn entropy-secret?
   "Ids such as run ids and UUIDs have only short hyphen-separated segments; a token has a

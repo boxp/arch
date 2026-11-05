@@ -686,6 +686,30 @@
     (testing "neighbours of a value survive"
       (is (= "ab\"2 ab 1" (:value (lf/redact "ab\"2 ab 1" (lf/secret-values {"A_TOKEN" "ab\"1"}))))))))
 
+(deftest alphanumerics-are-masked-when-encoded-by-code-point
+  (doseq [value ["abc" "aB7" "x\"9"]]
+    (let [codes (map int value)
+          values (lf/secret-values {"API_TOKEN" value})
+          each (fn [fmt cs] (str/join (map #(format fmt %) cs)))]
+      (doseq [form [(each "\\u%04x" codes) (each "\\u%04X" codes) (each "\\\\\\u%04x" codes) (each "\\x%02x" codes)
+                    (each "%%%02x" codes) (each "%%%02X" codes) (each "%%25%02x" codes) (each "%%2525%02x" codes)
+                    (each "&#%d;" codes) (each "&#x%x;" codes)
+                    (str (first value) (each "%%%02x" (rest codes)))
+                    (str (format "\\u%04x" (first codes)) (subs value 1))]]
+        (is (= "answer [REDACTED:env] end" (:value (lf/redact (str "answer " form " end") values))) form)
+        (is (false? (lf/guard-safe? (str "answer " form " end") values)) form))))
+  (testing "a long run of backslashes neither hides a value nor slows the scan down"
+    (let [values (lf/secret-values {"API_TOKEN" "abc" "B_TOKEN" "x\"y"})
+          run (str/join (repeat 300 "\\"))
+          started (System/currentTimeMillis)]
+      (is (= "[REDACTED:env]" (:value (lf/redact (str run "u0061\\u0062\\u0063") values))))
+      (is (= "[REDACTED:env]" (:value (lf/redact (str run "u0078\\\"y") values))))
+      (is (nil? (re-find (lf/values-pattern (vec values)) (str/join (repeat 100000 "\\")))))
+      (is (< (- (System/currentTimeMillis) started) 5000))))
+  (testing "case stays exact for the literal form, and other code points are left alone"
+    (let [text "ABC %61%62%64 \\u0061bd"]
+      (is (= text (:value (lf/redact text (lf/secret-values {"API_TOKEN" "abc"}))))))))
+
 (deftest short-and-passphrase-env-values-are-masked-without-their-name
   (let [short (str "ab" "1!")
         phrase (str "horse" "77")
