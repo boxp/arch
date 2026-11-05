@@ -3,6 +3,10 @@
 ;; Stand-alone sidecar: reads run artifacts and session logs, writes only under
 ;; <root>/langfuse-exporter, shares no locks with the runner, and never affects a run.
 ;; Secrets are removed before anything reaches the spool or the network (fail closed).
+;; Started by the `task-board-langfuse-exporter` sidecar in boxp/lolice
+;; argoproj/codex-workspace/deployment.yaml (boxp/lolice#1071), not by the runner or the
+;; image entrypoint: the sidecar calls `once` every LANGFUSE_POLL_SECONDS and re-reads the
+;; ingest key from its Secret volume between ticks, so this file has no loop of its own.
 (ns langfuse-exporter
   (:require [babashka.fs :as fs]
             [babashka.http-client :as http]
@@ -241,8 +245,7 @@
      :request-timeout-ms 15000
      :batch-pause-ms 200
      :backoff-base-ms 5000
-     :backoff-max-ms 300000
-     :poll-ms (* 1000 (env-long env "LANGFUSE_POLL_SECONDS" 60))}))
+     :backoff-max-ms 300000}))
 
 ;; ---------------------------------------------------------------- utilities
 
@@ -1042,13 +1045,6 @@
       (binding [*out* *err*] (println "langfuse-exporter tick failed:" (.getName (class e))))
       nil)))
 
-(defn watch [cfg]
-  (.setPriority (Thread/currentThread) Thread/MIN_PRIORITY)
-  (loop []
-    (once cfg)
-    (Thread/sleep (long (:poll-ms cfg)))
-    (recur)))
-
 (defn dry-run-report [cfg ticket run]
   (let [{:keys [spans failed stats]} (prepare-spans cfg (build-run cfg ticket run))
         type-of (fn [span] (or (some (fn [a] (when (= "langfuse.observation.type" (:key a)) (get-in a [:value :stringValue])))
@@ -1076,7 +1072,6 @@
   (let [cfg (config (into {} (System/getenv)))
         [cmd a b flag] args]
     (case cmd
-      "watch" (watch cfg)
       "once" (do (once cfg) nil)
       "status" (prn (status-report cfg))
       "delete-state" (do (fs/delete-tree (:dir cfg)) (println "deleted exporter state and spool"))
@@ -1095,7 +1090,7 @@
             (do (binding [*out* *err*] (println "run is older than the cutoff; backfill is not allowed"))
                 (System/exit 2)))))
       (do (binding [*out* *err*]
-            (println "usage: langfuse_exporter.bb watch|once|status|delete-state|export-run <ticket> <run> [--dry-run]"))
+            (println "usage: langfuse_exporter.bb once|status|delete-state|export-run <ticket> <run> [--dry-run]"))
           (System/exit 2)))))
 
 (when (= *file* (System/getProperty "babashka.file"))
