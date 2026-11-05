@@ -67,3 +67,39 @@ resource "cloudflare_zero_trust_access_policy" "codex_task_board_policy" {
     ignore_changes = [session_duration]
   }
 }
+
+# BOXP-430: lolice-lineage.b0xp.io serves a private infrastructure map, so it reuses
+# the existing Owner-only reusable policy (Owner email + GitHub IdP, see
+# ../hitohako/access.tf) as langfuse.b0xp.io does (BOXP-428). login_method alone, as in
+# codex_task_board_policy above, would admit every GitHub user. The lookup fails the
+# plan if that policy is missing or renamed.
+data "cloudflare_zero_trust_access_policies" "all" {
+  account_id = var.account_id
+}
+
+locals {
+  owner_policy_name = "policy for hitohako-stage.b0xp.io (owner only)"
+  owner_policy_id = one([
+    for p in data.cloudflare_zero_trust_access_policies.all.result :
+    p.id if p.name == local.owner_policy_name
+  ])
+}
+
+resource "cloudflare_zero_trust_access_application" "lolice_lineage" {
+  zone_id                    = var.zone_id
+  name                       = "Access application for lolice-lineage.b0xp.io"
+  domain                     = "lolice-lineage.b0xp.io"
+  session_duration           = "24h"
+  type                       = "self_hosted"
+  http_only_cookie_attribute = true
+  same_site_cookie_attribute = "lax"
+  app_launcher_visible       = false
+  policies                   = [{ id = local.owner_policy_id }]
+
+  lifecycle {
+    precondition {
+      condition     = local.owner_policy_id != null
+      error_message = "Owner-only Access policy not found: refusing to publish lolice-lineage.b0xp.io."
+    }
+  }
+}
