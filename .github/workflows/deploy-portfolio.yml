@@ -59,6 +59,23 @@ jobs:
           SITE_ENV: stage
           SITE_URL: ${{ env.STAGE_SITE_URL }}
 
+      # architecture の匿名公開は未承認なので、本番設定のビルドに URL も導線も残さない。
+      - name: Check production output has no unapproved diagram
+        if: github.event_name == 'pull_request'
+        working-directory: apps/portfolio
+        run: |
+          test -f dist/lineage.html
+          test ! -e dist/architecture.html
+          ! grep -rq 'lolice-architecture' dist
+
+      - name: Check stage output links both diagrams
+        if: github.event_name != 'pull_request'
+        working-directory: apps/portfolio
+        run: |
+          test -f dist/lineage.html
+          test -f dist/architecture.html
+          grep -q 'lolice-architecture.b0xp.io' dist/architecture.html
+
       - name: Upload dist
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
