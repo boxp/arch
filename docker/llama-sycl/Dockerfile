@@ -42,6 +42,10 @@ RUN set -eux; \
     git checkout "${LLAMA_REF}"; \
     git rev-parse HEAD > /opt/llama-source-revision
 
+# BOXP-417 H55: 隔離評価専用の patch。既定（環境変数なし）では元の挙動と同じ
+COPY patches/ /src/patches/
+RUN cd /src/llama.cpp && git apply --verbose /src/patches/h55-small-batch-fused.patch
+
 RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
     && cmake -S /src/llama.cpp -B /src/llama.cpp/build-sycl -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \

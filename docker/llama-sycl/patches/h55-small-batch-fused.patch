@@ -1,0 +1,112 @@
+diff --git a/ggml/src/ggml-sycl/ggml-sycl.cpp b/ggml/src/ggml-sycl/ggml-sycl.cpp
+index 9ee1642..0d05bac 100644
+--- a/ggml/src/ggml-sycl/ggml-sycl.cpp
++++ b/ggml/src/ggml-sycl/ggml-sycl.cpp
+@@ -101,6 +101,7 @@ int g_ggml_sycl_debug = 0;
+ int g_ggml_sycl_dev_debug = 0;
+ int g_ggml_sycl_enable_optimize = 1;
+ int g_ggml_sycl_enable_graph = 0;
++static int g_ggml_sycl_small_batch_fused = 0;
+ int g_ggml_sycl_enable_dnn = 1;
+ int g_ggml_sycl_fa_onednn = 1;
+ int g_ggml_sycl_fa_onednn_max_kv = 0;
+@@ -432,6 +433,7 @@ static void ggml_check_sycl() try {
+         g_ggml_sycl_dev_debug = ggml_sycl_get_env("GGML_SYCL_DEV_DEBUG", 0);
+         g_ggml_sycl_enable_optimize = ggml_sycl_get_env("GGML_SYCL_ENABLE_OPT", 1);
+         g_ggml_sycl_enable_graph = ggml_sycl_get_env("GGML_SYCL_ENABLE_GRAPH", 0);
++        g_ggml_sycl_small_batch_fused = ggml_sycl_get_env("GGML_SYCL_SMALL_BATCH_FUSED", 0);
+         g_ggml_sycl_enable_dnn = ggml_sycl_get_env("GGML_SYCL_ENABLE_DNN", 1);
+         g_ggml_sycl_fa_onednn = ggml_sycl_get_env("GGML_SYCL_FA_ONEDNN", 1);
+         g_ggml_sycl_fa_onednn_max_kv = ggml_sycl_get_env("GGML_SYCL_FA_ONEDNN_MAX_KV", 0);
+@@ -5639,7 +5641,7 @@ __dpct_inline__ static void k_zero_dst_rows(
+ }
+ 
+ // returns true when ggml_sycl_mul_mat_id takes the fallback path that requires stream synchronization
+-static bool ggml_sycl_mul_mat_id_needs_sync(const ggml_tensor * dst) {
++static bool ggml_sycl_mul_mat_id_single_needs_sync(const ggml_tensor * dst) {
+     const ggml_tensor * src0 = dst->src[0];
+     const ggml_tensor * src1 = dst->src[1];
+     const ggml_tensor * ids  = dst->src[2];
+@@ -5660,12 +5662,43 @@ static bool ggml_sycl_mul_mat_id_needs_sync(const ggml_tensor * dst) {
+     return !ggml_sycl_supports_mmvq_id(src0->type);
+ }
+ 
++// Only split layouts for which each token is an independent, contiguous MMVQ input.
++static bool ggml_sycl_mul_mat_id_small_batch(const ggml_tensor * dst) {
++    const ggml_tensor * src0 = dst->src[0];
++    const ggml_tensor * src1 = dst->src[1];
++    const ggml_tensor * ids  = dst->src[2];
++    const int64_t n = src1->ne[2];
++    if (n < 2 || n > g_ggml_sycl_small_batch_fused || src1->ne[3] != 1 ||
++        ids->ne[1] != n || ids->ne[2] != 1 || ids->ne[3] != 1 ||
++        ids->type != GGML_TYPE_I32 || ids->nb[0] != sizeof(int32_t) ||
++        ids->nb[1] < (size_t) ids->ne[0] * sizeof(int32_t) ||
++        dst->ne[0] != src0->ne[1] || dst->ne[1] != ids->ne[0] ||
++        dst->ne[2] != n || dst->ne[3] != 1 || dst->nb[0] != sizeof(float) ||
++        dst->nb[1] < (size_t) dst->ne[0] * sizeof(float) ||
++        dst->nb[2] < (size_t) dst->ne[1] * dst->nb[1] ||
++        src1->nb[2] < (size_t) src1->ne[1] * src1->nb[1]) {
++        return false;
++    }
++    ggml_tensor src1_view = *src1;
++    ggml_tensor ids_view = *ids;
++    ggml_tensor dst_view = *dst;
++    src1_view.ne[2] = 1;
++    ids_view.ne[1] = 1;
++    dst_view.src[1] = &src1_view;
++    dst_view.src[2] = &ids_view;
++    return !ggml_sycl_mul_mat_id_single_needs_sync(&dst_view);
++}
++
++static bool ggml_sycl_mul_mat_id_needs_sync(const ggml_tensor * dst) {
++    return ggml_sycl_mul_mat_id_single_needs_sync(dst) && !ggml_sycl_mul_mat_id_small_batch(dst);
++}
++
+ // Fused MoE TG fast path. Returns false to fall back to the per-expert loop below.
+ static bool ggml_sycl_mul_mat_id_mmvq_fused(
+     ggml_backend_sycl_context & ctx, const ggml_tensor * src0,
+-    const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst)
++    const ggml_tensor * src1, const ggml_tensor * ids, ggml_tensor * dst, bool allow_reorder = true)
+ {
+-    if (ggml_sycl_mul_mat_id_needs_sync(dst)) return false;
++    if (ggml_sycl_mul_mat_id_single_needs_sync(dst)) return false;
+ 
+     const int64_t ne10 = src1->ne[0];
+     const int64_t ne11 = src1->ne[1];
+@@ -5679,7 +5712,9 @@ static bool ggml_sycl_mul_mat_id_mmvq_fused(
+ 
+     // Lazily reorder supported expert weights into a per-expert SoA layout, then run the reorder
+     // GEMV. Placed after the bail checks so a non-dispatchable op does not pay the reorder cost.
+-    opt_for_reorder_id(&ctx, src0);
++    if (allow_reorder) {
++        opt_for_reorder_id(&ctx, src0);
++    }
+     const ggml_tensor_extra_gpu * src0_extra =
+         static_cast<const ggml_tensor_extra_gpu *>(src0->extra);
+     const bool use_reorder = src0_extra && src0_extra->optimized_feature.reorder;
+@@ -5789,6 +5824,25 @@ static void ggml_sycl_mul_mat_id(ggml_backend_sycl_context & ctx,
+             return;
+         }
+     }
++    if (ggml_sycl_mul_mat_id_small_batch(dst)) {
++        ggml_tensor src1_view = *src1;
++        ggml_tensor ids_view = *ids;
++        ggml_tensor dst_view = *dst;
++        src1_view.ne[2] = 1;
++        ids_view.ne[1] = 1;
++        dst_view.ne[2] = 1;
++        dst_view.src[1] = &src1_view;
++        dst_view.src[2] = &ids_view;
++        for (int64_t token = 0; token < ne12; ++token) {
++            src1_view.data = (char *) src1->data + token * src1->nb[2];
++            ids_view.data = (char *) ids->data + token * ids->nb[1];
++            dst_view.data = (char *) dst->data + token * dst->nb[2];
++            // Avoid lazy reorder here: it may allocate or wait on the host.
++            const bool ok = ggml_sycl_mul_mat_id_mmvq_fused(ctx, src0, &src1_view, &ids_view, &dst_view, false);
++            GGML_ASSERT(ok);
++        }
++        return;
++    }
+     GGML_ASSERT(ggml_sycl_mul_mat_id_needs_sync(dst));
+ 
+     // The per-expert loop below reads the experts in whatever layout they have: reorder MXFP4 here as well, so prompt processing does not depend on a single-token decode having run first.
