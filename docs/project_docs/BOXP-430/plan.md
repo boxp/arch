@@ -52,3 +52,12 @@ Owner の指示で、boxp/arch の既存 GitHub Actions から deploy します�
 3. 環境 secret を登録し、`mode=html` で hash 照合して deploy する。確認後に secret を削除する。
 4. Owner が SSO 後に `/` と `/sha256` を PC とスマホで確認する。
 5. 確認後に旧構成を撤去する: boxp/lolice の sidecar、Service、NetworkPolicy、Chainsaw、boxp/arch の tunnel route。DNS は Worker route 用に見直す。
+
+## 方針変更: Cloudflare Workers Static Assets へ移行
+
+Owner の指示で、配信を `apps/lolice-lineage` の Worker へ移した。配備は `deploy-lolice-lineage.yml` が既存の Cloudflare 資格情報で行う。HTML は main 限定の環境 secret で deploy 中だけ渡し、終了後に削除する。
+
+旧構成の撤去はこの順で行う。Owner が SSO 後の表示を確認するまで、どちらも merge しない。
+
+1. この PR: tunnel の ingress を外し、DNS をオリジンのない `AAAA 100::`（proxied）に替える。Access application はそのまま使う。
+2. boxp/lolice: sidecar、Service、NetworkPolicy、専用 Chainsaw を revert する。Pod の再作成を伴う。
