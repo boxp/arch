@@ -1,13 +1,25 @@
 #!/usr/bin/env bb
-;; Fail closed: the exporter transport and session parsing are not implemented yet.
+;; BOXP-428: exports finished Task Board runs to self-hosted Langfuse over OTLP/HTTP JSON.
+;; Stand-alone sidecar: reads run artifacts and session logs, writes only under
+;; <root>/langfuse-exporter, shares no locks with the runner, and never affects a run.
+;; Secrets are removed before anything reaches the spool or the network (fail closed).
 (ns langfuse-exporter
-  (:require [clojure.string :as str]))
+  (:require [babashka.fs :as fs]
+            [babashka.http-client :as http]
+            [cheshire.core :as json]
+            [clojure.edn :as edn]
+            [clojure.string :as str]
+            [clojure.walk :as walk]))
+
+(def exporter-version "1")
+
+;; ---------------------------------------------------------------- redaction
 
 (def secret-name-pattern
   #"(?i)(password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth)")
 
 (def patterns
-  [[:private-key #"(?s)-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?-----END (?:[A-Z ]+ )?PRIVATE KEY-----"]
+  [[:private-key #"(?s)-----BEGIN (?:[A-Z ]+ )?PRIVATE KEY-----.*?(?:-----END (?:[A-Z ]+ )?PRIVATE KEY-----|\z)"]
    [:header #"(?im)\b(?:proxy-authorization|authorization|set-cookie|cookie)\s*:\s*[^\r\n]+"]
    [:url-credentials #"(?i)\b[a-z][a-z0-9+.-]*://[^\s/@:]+:[^\s/@]+@"]
    [:jwt #"\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b"]
@@ -16,18 +28,27 @@
    [:google-key #"\bAIza[A-Za-z0-9_-]{30,}\b"]
    [:telegram #"\b[0-9]{8,12}:[A-Za-z0-9_-]{30,}\b"]
    [:bearer #"(?i)\bbearer\s+[A-Za-z0-9._~+/-]+=*"]
-   [:assignment #"(?i)(?:[\"']?[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth)[\w.-]*[\"']?\s*[:=]\s*)(?:\"[^\"]*\"|'[^']*'|[^\s,;}]+)"]
+   ;; Numeric values are counters such as input_tokens: 12, never credentials. The optional
+   ;; backslashes cover JSON that was escaped into another string.
+   [:assignment #"(?i)(?:[\\\"']*[\w.-]*(?:password|passwd|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth)[\w.-]*[\\\"']*\s*[:=]\s*)(?!\d+(?:[\s,;}\\\"']|$))(?:\\+\"[^\"]*\"|\"[^\"]*\"|'[^']*'|[^\s,;}]+)"]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
 
 (defn secret-values [env]
-  (->> env (keep (fn [[k v]] (when (and (re-find secret-name-pattern (str k))
-                                          (string? v) (<= 8 (count v))) v)))
+  (->> env
+       (keep (fn [[k v]] (when (and (re-find secret-name-pattern (str k))
+                                    (string? v) (<= 8 (count v))) v)))
+       distinct
        (sort-by count >)))
 
-(defn entropy-secret? [s]
-  (and (not (re-matches #"(?i)[0-9a-f]{40}" s))
-       (>= (count (filter identity [(re-find #"[a-z]" s) (re-find #"[A-Z]" s)
-                                    (re-find #"[0-9]" s) (re-find #"[_-]" s)])) 3)))
+(defn entropy-secret?
+  "Ids such as run ids and UUIDs have only short hyphen-separated segments; a token has a
+  long mixed-case alphanumeric one. Hex-only values (git SHAs, digests) have no uppercase."
+  [s]
+  (boolean
+   (some (fn [segment]
+           (and (<= 20 (count segment))
+                (re-find #"[a-z]" segment) (re-find #"[A-Z]" segment) (re-find #"[0-9]" segment)))
+         (str/split s #"[_-]"))))
 
 (defn redact
   "Mask known secret forms and environment values. On any error, drop the field."
@@ -37,34 +58,855 @@
           mark (fn [kind] (swap! counts update kind (fnil inc 0)) (str "[REDACTED:" (name kind) "]"))
           with-values (reduce (fn [text value]
                                 (if (str/includes? text value)
-                                  (str/replace text (re-pattern (java.util.regex.Pattern/quote value)) (fn [_] (mark :env))) text))
+                                  (str/replace text (re-pattern (java.util.regex.Pattern/quote value)) (fn [_] (mark :env)))
+                                  text))
                               (str s) values)
           masked (reduce (fn [text [kind pattern]]
                            (str/replace text pattern
-                             (fn [match]
-                               (let [m (if (vector? match) (first match) match)]
-                                 (if (and (= kind :entropy) (not (entropy-secret? m))) m (mark kind))))))
+                                        (fn [match]
+                                          (let [m (if (vector? match) (first match) match)]
+                                            (if (and (= kind :entropy) (not (entropy-secret? m))) m (mark kind))))))
                          with-values patterns)]
       {:value masked :redactions @counts})
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 
 (def sensitive-path
-  #"(?i)(?:^|[/\\\s])(?:auth\.json|\.credentials|\.env(?:\.[\w-]+)?|\.ssh(?:[/\\]|$)|\.aws(?:[/\\]|$)|kubeconfig|\.git-credentials|\.netrc|id_rsa|secrets?(?:[/\\]|$)|[^/\s]*token[^/\s]*)(?:$|[/\\\s])")
+  #"(?i)(?:^|[/\\\s\"'])(?:auth\.json|\.credentials|\.env(?:\.[\w-]+)?|\.ssh|\.aws|kubeconfig|\.git-credentials|\.netrc|id_rsa|secrets?|[^/\s\"']*token[^/\s\"']*)(?:$|[/\\\s\"'])")
 (def sensitive-command
-  #"(?i)(?:^|[;&|\s])(?:env|printenv)(?:\s|$)|\bkubectl\s+(?:get|describe)\s+secrets?\b|\baws\s+ssm\s+get-parameter\b[^\n]*--with-decryption\b|\bcat\s+/proc/[^/\s]+/environ\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
+  #"(?i)(?:^|[;&|\s\"'])(?:env|printenv)(?:[\s\"']|$)|\bkubectl\s+(?:get|describe)\s+secrets?\b|\baws\s+ssm\s+get-parameter\b[^\n]*--with-decryption\b|\bcat\s+/proc/[^/\s]+/environ\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
 (defn withhold-output? [input]
   (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s)))))
 
-(defn guard-safe? [payload values]
-  ;; Scan again instead of relying on the caller's per-field pass.
-  (let [result (redact payload values)]
+(defn guard-safe?
+  "Scan again instead of relying on the per-field pass."
+  [text values]
+  (let [result (redact text values)]
     (and (not= "[dropped: redaction error]" (:value result))
          (empty? (:redactions result)))))
 
-(defn -main [& _]
-  (binding [*out* *err*]
-    (println "Exporter unavailable: session parsing and guarded delivery are not implemented."))
-  (System/exit 1))
+;; The pass that runs on every field. Rebound in tests to prove the final guard catches a miss.
+(def ^:dynamic *redact-field* redact)
+
+;; ------------------------------------------------------------------- config
+
+(defn- env-long [env k default]
+  (try (Long/parseLong (get env k "")) (catch Exception _ default)))
+
+(defn config [env]
+  (let [root (fs/path (get env "CODEX_TASK_BOARD_ROOT" (str (fs/home) "/.codex-task-board")))
+        dir (fs/path root "langfuse-exporter")]
+    {:root root
+     :dir dir
+     :spool (fs/path dir "spool")
+     :state-file (fs/path dir "state.edn")
+     :metrics-file (fs/path dir "metrics.prom")
+     :claude-projects (fs/path (get env "CLAUDE_HOME" (str (fs/home) "/.claude")) "projects")
+     :codex-sessions (fs/path (get env "CODEX_HOME" (str (fs/home) "/.codex")) "sessions")
+     :url (str/replace (get env "LANGFUSE_URL" "http://langfuse-web.langfuse.svc.cluster.local:3000") #"/+$" "")
+     :public-key (get env "LANGFUSE_PUBLIC_KEY")
+     :secret-key (get env "LANGFUSE_SECRET_KEY")
+     :secret-values (secret-values env)
+     :max-field-bytes (env-long env "LANGFUSE_MAX_FIELD_BYTES" 32768)
+     :max-spans (env-long env "LANGFUSE_MAX_SPANS_PER_RUN" 2000)
+     :max-run-bytes (env-long env "LANGFUSE_MAX_RUN_BYTES" (* 16 1024 1024))
+     :max-batch-bytes (* 2 1024 1024)
+     :max-log-bytes (* 256 1024 1024)
+     :spool-max-bytes (env-long env "LANGFUSE_SPOOL_MAX_BYTES" (* 256 1024 1024))
+     :spool-ttl-ms (* 3 86400000)
+     :max-attempts (env-long env "LANGFUSE_MAX_ATTEMPTS" 20)
+     :max-runs-per-tick (env-long env "LANGFUSE_MAX_RUNS_PER_TICK" 5)
+     :max-age-ms (* 7 86400000)
+     :marker-keep-ms (* 30 86400000)
+     :terminal-settle-ms 60000
+     :connect-timeout-ms 3000
+     :request-timeout-ms 15000
+     :batch-pause-ms 200
+     :backoff-base-ms 5000
+     :backoff-max-ms 300000
+     :poll-ms (* 1000 (env-long env "LANGFUSE_POLL_SECONDS" 60))}))
+
+;; ---------------------------------------------------------------- utilities
+
+(defn- sha256-hex [s]
+  (let [d (.digest (java.security.MessageDigest/getInstance "SHA-256") (.getBytes (str s) "UTF-8"))]
+    (apply str (map #(format "%02x" (bit-and % 0xff)) d))))
+
+(defn trace-id [ticket run] (subs (sha256-hex (str "task-board:" ticket ":" run)) 0 32))
+(defn span-id [tid k] (subs (sha256-hex (str tid k)) 0 16))
+
+(defn- ->millis [ts]
+  (try (.toEpochMilli (java.time.Instant/parse (str ts))) (catch Exception _ nil)))
+
+(defn run-started-ms
+  "Run ids start with their UTC start time, which summary.edn does not always carry."
+  [run]
+  (try
+    (let [fmt (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmss'Z'")]
+      (-> (java.time.LocalDateTime/parse (subs run 0 16) fmt)
+          (.toInstant java.time.ZoneOffset/UTC)
+          .toEpochMilli))
+    (catch Exception _ nil)))
+
+(defn- bytes-of [^String s] (alength (.getBytes s "UTF-8")))
+
+(defn truncate-field [^String s max-bytes]
+  (let [b (.getBytes s "UTF-8")]
+    (if (<= (alength b) max-bytes)
+      s
+      (str (String. b 0 (int max-bytes) "UTF-8") "…[truncated " (- (alength b) max-bytes) " bytes]"))))
+
+(defn read-jsonl
+  "Malformed lines are skipped: a partial last line must not lose the whole log."
+  [path]
+  (with-open [r (java.io.BufferedReader. (java.io.FileReader. (str path)))]
+    (doall (keep (fn [line] (try (json/parse-string line true) (catch Exception _ nil)))
+                 (line-seq r)))))
+
+(defn- safe-slurp [path] (when (fs/exists? path) (try (slurp (str path)) (catch Exception _ nil))))
+
+(defn content-text
+  "Images and binary blocks never leave as bytes. Thinking and reasoning are never included."
+  [content]
+  (cond
+    (string? content) content
+    (sequential? content)
+    (str/join "\n"
+              (keep (fn [block]
+                      (if-not (map? block)
+                        (str block)
+                        (case (str (:type block))
+                          ("text" "input_text" "output_text") (:text block)
+                          ("image" "input_image" "image_url" "document" "audio" "input_audio") "[image omitted]"
+                          "tool_result" (str "[tool_result " (:tool_use_id block) "]")
+                          ("thinking" "redacted_thinking" "reasoning" "tool_use") nil
+                          (str "[" (:type block) " omitted]"))))
+                    content))
+    (nil? content) ""
+    :else (json/generate-string content)))
+
+;; --------------------------------------------------------------- trace model
+
+(defn- attr [k v]
+  {:key k
+   :value (cond
+            (sequential? v) {:arrayValue {:values (mapv (fn [x] {:stringValue (str x)}) v)}}
+            (boolean? v) {:boolValue v}
+            (integer? v) {:intValue (str v)}
+            :else {:stringValue (str v)})})
+
+(defn- attrs [m] (mapv (fn [[k v]] (attr k v)) m))
+
+(defn- nanos [ms] (str (* (long ms) 1000000)))
+
+(defn- mk-span
+  [{:keys [tid trace-attrs]} {:keys [key parent name start end attrs-map level]}]
+  (let [start (or start 0)
+        end (max start (or end start))]
+    (cond-> {:traceId tid
+             :spanId (span-id tid key)
+             :name name
+             :kind 1
+             :startTimeUnixNano (nanos start)
+             :endTimeUnixNano (nanos end)
+             :attributes (into (attrs trace-attrs) (attrs attrs-map))}
+      parent (assoc :parentSpanId (span-id tid parent))
+      (= level "ERROR") (assoc :status {:code 2}))))
+
+(defn- tool-span [ctx {:keys [key parent name start end input output error?]}]
+  (let [input-str (if (string? input) input (json/generate-string input))
+        withheld? (withhold-output? input-str)]
+    (mk-span ctx {:key key :parent parent :name (str "tool:" name) :start start :end end
+                  :level (when error? "ERROR")
+                  :attrs-map (cond-> {"langfuse.observation.type" "tool"
+                                      "langfuse.observation.input" input-str
+                                      "langfuse.observation.output" (if withheld? "[withheld: sensitive path]" (str output))}
+                               error? (assoc "langfuse.observation.level" "ERROR"))})))
+
+(defn- generation-span [ctx {:keys [key parent model usage start end input output]}]
+  (mk-span ctx {:key key :parent parent :name (str "generation:" (or model "unknown")) :start start :end end
+                :attrs-map (cond-> {"langfuse.observation.type" "generation"
+                                    "langfuse.observation.input" input
+                                    "langfuse.observation.output" output
+                                    "langfuse.observation.metadata.input_scope" "delta"}
+                             model (assoc "langfuse.observation.model.name" model)
+                             (seq usage) (assoc "langfuse.observation.usage_details" (json/generate-string usage)))}))
+
+(defn system-prompt-span [ctx {:keys [parent hash text ts]}]
+  (mk-span ctx {:key (str "system:" hash) :parent parent :name "cli-system-prompt" :start ts :end ts
+                :attrs-map {"langfuse.observation.type" "span"
+                            "langfuse.observation.input" text
+                            "langfuse.observation.metadata.source" "cli_internal"}}))
+
+;; Claude Code session lines. One API message spans several lines sharing message.id.
+
+(defn claude-usage [{:keys [input_tokens output_tokens cache_read_input_tokens cache_creation_input_tokens]}]
+  (cond-> {}
+    input_tokens (assoc :input input_tokens)
+    output_tokens (assoc :output output_tokens)
+    cache_read_input_tokens (assoc :cache_read_input_tokens cache_read_input_tokens)
+    cache_creation_input_tokens (assoc :cache_creation_input_tokens cache_creation_input_tokens)))
+
+(defn- claude-results [lines]
+  (into {}
+        (for [line lines
+              :when (= "user" (:type line))
+              :let [content (get-in line [:message :content])]
+              :when (sequential? content)
+              block content
+              :when (= "tool_result" (:type block))]
+          [(:tool_use_id block) {:output (content-text (:content block))
+                                 :error? (true? (:is_error block))
+                                 :ts (->millis (:timestamp line))}])))
+
+(defn- claude-pending-entry [line]
+  (case (:type line)
+    "user" (content-text (get-in line [:message :content]))
+    "attachment" (json/generate-string (:attachment line))
+    nil))
+
+(defn claude-generations
+  "Group assistant lines by message id. :input holds what arrived since the previous one."
+  [lines]
+  (let [{:keys [gens]}
+        (reduce
+         (fn [{:keys [pending gens] :as acc} line]
+           (if (= "assistant" (:type line))
+             (let [msg (:message line)
+                   same? (and (seq gens) (= (:id (peek gens)) (:id msg)))
+                   gen (if same?
+                         (peek gens)
+                         {:id (:id msg) :input (str/join "\n" pending) :ts (->millis (:timestamp line)) :blocks []})
+                   gen (-> gen
+                           (assoc :model (:model msg) :usage (:usage msg))
+                           (update :blocks into (:content msg)))]
+               {:pending [] :gens (conj (if same? (pop gens) gens) gen)})
+             (if-let [entry (claude-pending-entry line)]
+               (assoc acc :pending (conj pending entry))
+               acc)))
+         {:pending [] :gens []}
+         lines)]
+    gens))
+
+(defn claude-spans [ctx parent prefix lines]
+  (let [results (claude-results lines)
+        gens (claude-generations lines)
+        end-of-log (some ->millis (reverse (map :timestamp lines)))]
+    (mapcat
+     (fn [gen next-gen idx]
+       (let [gen-key (str prefix "gen:" idx)
+             tools (filter #(= "tool_use" (:type %)) (:blocks gen))
+             end (or (:ts next-gen) end-of-log (:ts gen))
+             output (str/join "\n" (concat [(content-text (:blocks gen))]
+                                           (map #(str "[tool_use " (:name %) "]") tools)))]
+         (cons
+          (generation-span ctx {:key gen-key :parent parent :model (:model gen)
+                                :usage (claude-usage (:usage gen)) :start (:ts gen) :end end
+                                :input (:input gen) :output (str/trim output)})
+          (map (fn [tool]
+                 (let [result (get results (:id tool))]
+                   (tool-span ctx {:key (str gen-key ":tool:" (:id tool)) :parent gen-key :name (:name tool)
+                                   :start (:ts gen) :end (or (:ts result) end)
+                                   :input (:input tool) :output (:output result) :error? (:error? result)})))
+               tools))))
+     gens (concat (rest gens) [nil]) (range))))
+
+(defn- claude-system-prompts [lines]
+  (for [line lines
+        :when (and (= "api-request-blob" (:type line))
+                   (= "system" (get-in line [:message :role])))]
+    {:hash (:hash line) :text (content-text (get-in line [:message :content])) :ts nil}))
+
+;; Codex rollout lines.
+
+(defn codex-usage
+  "Codex reports cached tokens inside input and reasoning inside output. Split them so that
+  Langfuse, which sums the buckets, does not double count."
+  [{:keys [input_tokens cached_input_tokens cache_write_input_tokens output_tokens reasoning_output_tokens]}]
+  (let [cached (or cached_input_tokens 0)
+        write (or cache_write_input_tokens 0)
+        reasoning (or reasoning_output_tokens 0)]
+    (cond-> {}
+      input_tokens (assoc :input (max 0 (- input_tokens cached write)))
+      output_tokens (assoc :output (max 0 (- output_tokens reasoning)))
+      (pos? cached) (assoc :input_cached_tokens cached)
+      (pos? write) (assoc :input_cache_write_tokens write)
+      (pos? reasoning) (assoc :output_reasoning_tokens reasoning))))
+
+(defn- codex-tool-input [payload]
+  (or (:arguments payload) (:input payload) ""))
+
+(defn codex-generations [lines]
+  (let [close (fn [{:keys [open gens] :as acc}]
+                (if open (assoc acc :gens (conj gens open) :open nil) acc))
+        ensure-open (fn [{:keys [open pending model] :as acc} ts]
+                      (if open
+                        acc
+                        (assoc acc :open {:input (str/join "\n" pending) :ts ts :model model :text [] :tools []}
+                               :pending [])))
+        step
+        (fn [acc line]
+          (let [p (:payload line)
+                ts (->millis (:timestamp line))]
+            (case (:type line)
+              "turn_context" (assoc acc :model (:model p))
+              "event_msg"
+              (if (= "token_count" (:type p))
+                (let [usage (get-in p [:info :last_token_usage])
+                      acc (close acc)]
+                  (if (and usage (seq (:gens acc)) (nil? (:usage (peek (:gens acc)))))
+                    (update acc :gens (fn [gens] (conj (pop gens) (assoc (peek gens) :usage usage))))
+                    acc))
+                acc)
+              "response_item"
+              (case (:type p)
+                "message"
+                (if (= "assistant" (:role p))
+                  (update-in (ensure-open acc ts) [:open :text] conj (content-text (:content p)))
+                  (update (close acc) :pending conj (str "[" (:role p) "]\n" (content-text (:content p)))))
+                ("function_call" "custom_tool_call")
+                (update-in (ensure-open acc ts) [:open :tools] conj
+                           {:call-id (:call_id p) :name (:name p) :input (codex-tool-input p) :ts ts
+                            :error? (and (:status p) (not= "completed" (:status p)))})
+                ("function_call_output" "custom_tool_call_output")
+                (-> (close acc)
+                    (assoc-in [:results (:call_id p)] {:output (content-text (:output p)) :ts ts})
+                    (update :pending conj (str "[tool_result " (:call_id p) "]")))
+                acc)
+              acc)))
+        result (close (reduce step {:pending [] :gens [] :results {} :open nil :model nil} lines))]
+    (select-keys result [:gens :results])))
+
+(defn codex-spans [ctx parent prefix lines]
+  (let [{:keys [gens results]} (codex-generations lines)
+        end-of-log (some ->millis (reverse (map :timestamp lines)))]
+    (mapcat
+     (fn [gen next-gen idx]
+       (let [gen-key (str prefix "gen:" idx)
+             end (or (:ts next-gen) end-of-log (:ts gen))
+             output (str/join "\n" (concat (:text gen) (map #(str "[tool_use " (:name %) "]") (:tools gen))))]
+         (cons
+          (generation-span ctx {:key gen-key :parent parent :model (:model gen) :usage (codex-usage (:usage gen))
+                                :start (:ts gen) :end end :input (:input gen) :output output})
+          (map (fn [tool]
+                 (let [result (get results (:call-id tool))]
+                   (tool-span ctx {:key (str gen-key ":tool:" (:call-id tool)) :parent gen-key :name (:name tool)
+                                   :start (:ts tool) :end (or (:ts result) end)
+                                   :input (:input tool) :output (:output result) :error? (:error? tool)})))
+               (:tools gen)))))
+     gens (concat (rest gens) [nil]) (range))))
+
+(defn- codex-system-prompts [lines]
+  (for [line lines
+        :when (= "session_meta" (:type line))
+        :let [text (get-in line [:payload :base_instructions])
+              text (if (map? text) (:text text) text)]
+        :when (string? text)]
+    {:hash (sha256-hex text) :text text :ts (->millis (:timestamp line))}))
+
+(defn- lines-span-range [lines]
+  (let [ts (keep (comp ->millis :timestamp) lines)]
+    (when (seq ts) [(apply min ts) (apply max ts)])))
+
+;; Locating logs.
+
+(defn claude-project-dir [cfg ticket run]
+  (let [workspace (str (fs/path (:root cfg) "workspaces" ticket run))]
+    (fs/path (:claude-projects cfg) (str/replace workspace #"[^A-Za-z0-9]" "-"))))
+
+(defn- usable-log? [cfg path]
+  (<= (fs/size path) (:max-log-bytes cfg)))
+
+(defn find-codex-session
+  "Rollouts sit under YYYY/MM/DD. Look at the run's day and the next, so that one lookup does
+  not walk the whole session history."
+  [cfg started-ms thread]
+  (when (and (string? thread) (re-matches #"[0-9a-fA-F-]{8,64}" thread))
+    (let [day (java.time.LocalDate/ofInstant (java.time.Instant/ofEpochMilli started-ms) java.time.ZoneOffset/UTC)
+          fmt (java.time.format.DateTimeFormatter/ofPattern "yyyy/MM/dd")]
+      (first
+       (mapcat (fn [d]
+                 (let [dir (fs/path (:codex-sessions cfg) (.format d fmt))]
+                   (when (fs/directory? dir) (fs/glob dir (str "*" thread ".jsonl")))))
+               [day (.plusDays day 1)])))))
+
+(defn- codex-thread-spans
+  "Returns {:spans :prompts :status} for an agent span wrapping one Codex thread."
+  [ctx cfg started-ms {:keys [key name thread]}]
+  (if-let [path (find-codex-session cfg started-ms thread)]
+    (if (usable-log? cfg path)
+      (let [lines (read-jsonl path)
+            [start end] (lines-span-range lines)]
+        {:spans (cons (mk-span ctx {:key key :parent "root" :name name :start start :end end
+                                    :attrs-map {"langfuse.observation.type" "agent"}})
+                      (codex-spans ctx key (str key ":") lines))
+         :prompts (codex-system-prompts lines)
+         :status "observed"})
+      {:status "missing:too_large"})
+    {:status "missing:no_session"}))
+
+(defn- review-threads [run-dir]
+  (->> (fs/glob run-dir "codex-review-*-usage.jsonl")
+       (map str)
+       sort
+       (mapcat read-jsonl)
+       (keep :thread_id)
+       distinct))
+
+(defn- merge-status [statuses]
+  (cond
+    (empty? statuses) "not_applicable"
+    (every? #(= "observed" %) statuses) "observed"
+    :else (first (remove #(= "observed" %) statuses))))
+
+(defn- claude-sources [ctx cfg ticket run]
+  (let [dir (claude-project-dir cfg ticket run)
+        files (when (fs/directory? dir) (filter #(usable-log? cfg %) (sort (map str (fs/glob dir "*.jsonl")))))
+        subagents (when (fs/directory? dir)
+                    (filter #(usable-log? cfg %) (sort (map str (fs/glob dir "*/subagents/*.jsonl")))))
+        main-lines (mapcat read-jsonl files)
+        sub-parts (map-indexed
+                   (fn [idx path]
+                     (let [lines (read-jsonl path)
+                           key (str "subagent:" (fs/file-name path))
+                           [start end] (lines-span-range lines)]
+                       {:lines lines
+                        :spans (cons (mk-span ctx {:key key :parent "root" :name (str "subagent:" idx)
+                                                   :start start :end end
+                                                   :attrs-map {"langfuse.observation.type" "agent"}})
+                                     (claude-spans ctx key (str key ":") lines))}))
+                   subagents)]
+    {:spans (concat (claude-spans ctx "root" "claude:" main-lines) (mapcat :spans sub-parts))
+     :prompts (concat (claude-system-prompts main-lines) (mapcat (comp claude-system-prompts :lines) sub-parts))
+     :counts {:thinking (count (for [line main-lines
+                                     :when (= "assistant" (:type line))
+                                     block (get-in line [:message :content])
+                                     :when (= "thinking" (:type block))] block))}
+     :coverage {"coverage.claude_session" (if (seq files) "observed" "missing:no_session")
+                "coverage.subagents" (if (seq subagents) "observed" "not_applicable")}}))
+
+(defn- json-file [path]
+  (when-let [text (safe-slurp path)]
+    (try (json/parse-string text true) (catch Exception _ nil))))
+
+(defn build-run
+  "Returns {:spans raw-spans :root-key ...} for one terminal run. Nothing here is redacted yet."
+  [cfg ticket run]
+  (let [run-dir (fs/path (:root cfg) "runs" ticket run)
+        summary (edn/read-string (or (safe-slurp (fs/path run-dir "summary.edn")) "{}"))
+        started (or (run-started-ms run) 0)
+        finished (or (->millis (:finished-at summary)) started)
+        tid (trace-id ticket run)
+        agent-name (str (:agent summary "unknown"))
+        action (some-> (:action summary) name)
+        base-attrs {"langfuse.session.id" ticket
+                    "langfuse.trace.name" (str "task-board-run " ticket)
+                    "langfuse.trace.tags" (cond-> ["task-board" (str "ticket:" ticket) (str "agent:" agent-name)]
+                                            action (conj (str "action:" action)))
+                    "langfuse.trace.metadata.run_id" run
+                    "langfuse.trace.metadata.lane" (str (:lane summary ""))
+                    "langfuse.trace.metadata.status" (some-> (:status summary) name str)
+                    "langfuse.trace.metadata.agent" agent-name
+                    "langfuse.trace.metadata.action" (str action)
+                    "langfuse.trace.metadata.exporter_version" exporter-version
+                    "langfuse.trace.metadata.coverage.reasoning" "not_collected"
+                    "langfuse.trace.metadata.coverage.provider_payload"
+                    "partial: Claude api-request-blob and Codex response_item only; the CLI may add content it does not log"}
+        pre-ctx {:tid tid :trace-attrs base-attrs}
+        claude? (str/starts-with? agent-name "claude")
+        claude (when claude? (claude-sources pre-ctx cfg ticket run))
+        events (when (fs/exists? (fs/path run-dir "events.jsonl")) (read-jsonl (fs/path run-dir "events.jsonl")))
+        main-thread (:thread_id (first (filter #(= "thread.started" (:type %)) events)))
+        delegation (json-file (fs/path run-dir "delegation.json"))
+        delegate-thread (when (= "delegated" (:kind delegation)) (:thread delegation))
+        threads (concat
+                 (when main-thread [{:source "coverage.codex_session" :key "codex" :name "codex-session" :thread main-thread}])
+                 (when delegate-thread [{:source "coverage.delegate" :key "delegate" :name "delegate:codex" :thread delegate-thread}])
+                 (map-indexed (fn [i thread] {:source "coverage.review_gate" :key (str "review:" i) :name "review-gate" :thread thread})
+                              (when (fs/directory? run-dir) (review-threads run-dir))))
+        parts (mapv (fn [spec] (assoc (codex-thread-spans pre-ctx cfg started spec) :source (:source spec))) threads)
+        coverage (merge {"coverage.claude_session" "not_applicable"
+                         "coverage.subagents" "not_applicable"
+                         "coverage.codex_session" "not_applicable"
+                         "coverage.delegate" (if (= "exempt" (:kind delegation)) "not_applicable:exempt" "not_applicable")
+                         "coverage.review_gate" "not_applicable"}
+                        (:coverage claude)
+                        (into {} (map (fn [[source ps]] [source (merge-status (map :status ps))])
+                                      (group-by :source parts))))
+        trace-attrs (into base-attrs (map (fn [[k v]] [(str "langfuse.trace.metadata." k) v]) coverage))
+        ;; Spans built above carry base-attrs. Replace them so all spans show the same coverage.
+        all-attrs (attrs trace-attrs)
+        reattr (fn [span]
+                 (let [fixed (set (map :key (attrs base-attrs)))]
+                   (assoc span :attributes
+                          (into all-attrs (remove #(fixed (:key %)) (:attributes span))))))
+        ctx {:tid tid :trace-attrs trace-attrs}
+        root (mk-span ctx {:key "root" :name (str "task-board-run " ticket) :start started :end finished
+                           :attrs-map {"langfuse.observation.input" (or (safe-slurp (fs/path run-dir "prompt.md")) "")
+                                       "langfuse.observation.output" (or (safe-slurp (fs/path run-dir "last-message.md")) "")
+                                       "langfuse.observation.metadata.source" "runner_assembled"}})
+        prompts (->> (concat (:prompts claude) (mapcat :prompts parts))
+                     (reduce (fn [acc p] (if (contains? acc (:hash p)) acc (assoc acc (:hash p) p))) {})
+                     vals
+                     (map #(system-prompt-span ctx (assoc % :parent "root" :ts (or (:ts %) started)))))
+        children (map reattr (concat (:spans claude) (mapcat :spans parts)))]
+    {:ticket ticket :run run :trace-id tid
+     :root root
+     :spans (concat prompts children)
+     :counts (:counts claude)}))
+
+;; ---------------------------------------------------------------- sanitizing
+
+(defn sanitize-span
+  "Every exported string goes through redaction before truncation, so a cut can never hide a
+  secret from the mask. A failure in here costs the field, not the fail-closed property."
+  [cfg tally span]
+  (let [clean (fn [s]
+                (let [{:keys [value redactions]} (*redact-field* s (:secret-values cfg))]
+                  (when (seq redactions) (swap! tally #(merge-with + % redactions)))
+                  (truncate-field value (:max-field-bytes cfg))))]
+    (-> span
+        (update :name clean)
+        (update :attributes
+                (fn [items]
+                  (mapv (fn [item]
+                          (update item :value
+                                  #(walk/postwalk (fn [x] (if (string? x) (clean x) x)) %)))
+                        items))))))
+
+(defn span-safe?
+  "The final guard. It covers every string in the span, whatever the per-field pass did."
+  [cfg span]
+  (let [strings (filter string? (tree-seq coll? seq span))]
+    (every? #(guard-safe? % (:secret-values cfg)) strings)))
+
+(defn prepare-spans
+  "Returns {:spans :stats}: sanitized, capped and final-guarded spans (root first), or
+  :failed when the root itself does not pass the guard."
+  [cfg {:keys [root spans]}]
+  (let [tally (atom {})
+        clean-root (sanitize-span cfg tally root)
+        limit (dec (:max-spans cfg))
+        raw (take (inc limit) spans)
+        over-count? (> (count raw) limit)
+        cleaned (mapv #(sanitize-span cfg tally %) (take limit raw))
+        guarded (filterv #(span-safe? cfg %) cleaned)
+        guard-drops (- (count cleaned) (count guarded))
+        {:keys [kept bytes]}
+        (reduce (fn [{:keys [kept bytes] :as acc} span]
+                  (let [size (bytes-of (json/generate-string span))
+                        total (+ bytes size)]
+                    (if (> total (:max-run-bytes cfg))
+                      (reduced acc)
+                      {:kept (conj kept span) :bytes total})))
+                {:kept [] :bytes 0}
+                guarded)
+        truncated? (or over-count? (< (count kept) (count guarded)))
+        clean-root (cond-> clean-root
+                     truncated? (update :attributes conj (attr "langfuse.trace.metadata.coverage.truncated" "true"))
+                     (pos? guard-drops) (update :attributes conj (attr "langfuse.trace.metadata.coverage.dropped_secret_guard" (str guard-drops))))]
+    (if (span-safe? cfg clean-root)
+      {:spans (into [clean-root] kept)
+       :stats {:redactions @tally :dropped-secret-guard guard-drops :bytes bytes :truncated truncated?}}
+      {:failed "secret_guard_root"
+       :stats {:redactions @tally :dropped-secret-guard (inc guard-drops)}})))
+
+(defn- otlp-payload [spans]
+  {:resourceSpans
+   [{:resource {:attributes [(attr "service.name" "task-board")]}
+     :scopeSpans [{:scope {:name "boxp-task-board-exporter" :version exporter-version}
+                   :spans spans}]}]})
+
+(defn batches
+  "Split into payload strings below the batch limit. A span larger than the limit stands alone."
+  [cfg spans]
+  (let [{:keys [done current]}
+        (reduce (fn [{:keys [done current size]} span]
+                  (let [s (bytes-of (json/generate-string span))]
+                    (if (and (seq current) (> (+ size s) (:max-batch-bytes cfg)))
+                      {:done (conj done current) :current [span] :size s}
+                      {:done done :current (conj current span) :size (+ size s)})))
+                {:done [] :current [] :size 0}
+                spans)]
+    (mapv #(json/generate-string (otlp-payload %)) (cond-> done (seq current) (conj current)))))
+
+;; --------------------------------------------------------------------- state
+
+(defn- atomic-write [path content]
+  (let [dir (fs/parent path)
+        tmp (fs/create-temp-file {:dir dir :prefix ".tmp-"})]
+    (fs/set-posix-file-permissions tmp "rw-------")
+    (spit (str tmp) content)
+    (fs/move tmp path {:replace-existing true :atomic-move true})))
+
+(defn- ensure-dirs [cfg]
+  (fs/create-dirs (:spool cfg))
+  (fs/set-posix-file-permissions (:dir cfg) "rwx------")
+  (fs/set-posix-file-permissions (:spool cfg) "rwx------"))
+
+(defn load-state [cfg now-ms]
+  (ensure-dirs cfg)
+  (let [existing (when (fs/exists? (:state-file cfg))
+                   (try (edn/read-string (slurp (str (:state-file cfg)))) (catch Exception _ nil)))]
+    ;; A state file that cannot be read restarts the cutoff at now, so a bad file can never
+    ;; turn into a backfill of older runs.
+    (merge {:cutoff-ms now-ms :markers {} :attempts {} :metrics {}} existing)))
+
+(defn- prune-state [cfg state now-ms]
+  (update state :markers
+          (fn [markers]
+            (into {} (filter (fn [[_ m]] (< (- now-ms (:at m 0)) (:marker-keep-ms cfg))) markers)))))
+
+(defn save-state [cfg state] (atomic-write (:state-file cfg) (pr-str state)))
+
+(defn- bump [state k n] (update-in state [:metrics k] (fnil + 0) n))
+
+(defn- bump-labelled [state k label n]
+  (update-in state [:metrics k (name label)] (fnil + 0) n))
+
+(defn write-metrics [cfg state]
+  (let [m (:metrics state)
+        line (fn [k v] (str "langfuse_exporter_" k " " v))
+        labelled (fn [k label-name values]
+                   (map (fn [[label v]] (str "langfuse_exporter_" k "{" label-name "=\"" label "\"} " v)) (sort values)))
+        spool-bytes (reduce + 0 (map fs/size (fs/list-dir (:spool cfg))))
+        text (str/join "\n"
+                       (concat
+                        (map (fn [k] (line (name k) (get m k 0)))
+                             [:runs_exported :runs_failed :spans_sent :batches_sent :batches_failed
+                              :dropped_secret_guard :spool_evicted :last_success_timestamp])
+                        [(line "spool_bytes" spool-bytes)
+                         (line "idle" (if (:idle-reason state) 1 0))]
+                        (labelled "batches_dropped" "reason" (:batches_dropped m))
+                        (labelled "redactions" "kind" (:redactions m))
+                        [""]))]
+    (atomic-write (:metrics-file cfg) text)))
+
+;; --------------------------------------------------------------------- spool
+
+(defn- spool-files [cfg]
+  (->> (fs/list-dir (:spool cfg))
+       (filter #(str/ends-with? (str %) ".json"))
+       (sort-by (comp str fs/file-name))))
+
+(defn- drop-spool-file [state path reason]
+  (fs/delete-if-exists path)
+  (-> state
+      (update :attempts dissoc (str (fs/file-name path)))
+      (bump-labelled :batches_dropped reason 1)))
+
+(defn bound-spool
+  "Enforce the TTL first, then remove the oldest files until the spool fits."
+  [cfg state now-ms]
+  (let [expired? (fn [f] (> (- now-ms (.toMillis (fs/last-modified-time f))) (:spool-ttl-ms cfg)))
+        after-ttl (reduce (fn [st f] (if (expired? f) (drop-spool-file st f :ttl) st)) state (spool-files cfg))
+        files (spool-files cfg)
+        total (reduce + 0 (map fs/size files))]
+    (first
+     (reduce (fn [[st remaining] f]
+               (if (> remaining (:spool-max-bytes cfg))
+                 (let [size (fs/size f)]
+                   [(-> (drop-spool-file st f :spool_full) (bump :spool_evicted 1)) (- remaining size)])
+                 (reduced [st remaining])))
+             [after-ttl total]
+             files))))
+
+(defn enqueue! [cfg tid payloads now-ms]
+  (doseq [[i payload] (map-indexed vector payloads)]
+    (atomic-write (fs/path (:spool cfg) (format "%013d-%s-%04d.json" now-ms tid i)) payload)))
+
+(defn post-batch
+  "Returns :ok, :retry or :drop. A rejected payload will not succeed on a later attempt."
+  [cfg body]
+  (try
+    (let [client (http/client {:connect-timeout (:connect-timeout-ms cfg)})
+          auth (.encodeToString (java.util.Base64/getEncoder)
+                                (.getBytes (str (:public-key cfg) ":" (:secret-key cfg)) "UTF-8"))
+          res (http/post (str (:url cfg) "/api/public/otel/v1/traces")
+                         {:client client
+                          :timeout (:request-timeout-ms cfg)
+                          :throw false
+                          :headers {"Authorization" (str "Basic " auth)
+                                    "Content-Type" "application/json"
+                                    "x-langfuse-ingestion-version" "4"}
+                          :body body})
+          status (:status res)]
+      (cond
+        (<= 200 status 299) :ok
+        (or (= 429 status) (= 401 status) (= 403 status) (<= 500 status)) :retry
+        :else :drop))
+    (catch Throwable _ :retry)))
+
+(defn- span-count [body]
+  (count (get-in (json/parse-string body true) [:resourceSpans 0 :scopeSpans 0 :spans])))
+
+(defn drain-spool
+  "One attempt per tick when the service is failing, with exponential backoff between ticks."
+  [cfg state now-ms]
+  (if (< now-ms (:next-attempt-ms state 0))
+    state
+    (loop [st state files (spool-files cfg)]
+      (if-let [f (first files)]
+        (let [body (slurp (str f))
+              fname (str (fs/file-name f))]
+          (case (post-batch cfg body)
+            :ok (do (fs/delete-if-exists f)
+                    (Thread/sleep (long (:batch-pause-ms cfg)))
+                    (recur (-> st
+                               (update :attempts dissoc fname)
+                               (dissoc :failures :next-attempt-ms)
+                               (bump :batches_sent 1)
+                               (bump :spans_sent (span-count body))
+                               (assoc-in [:metrics :last_success_timestamp] (quot (System/currentTimeMillis) 1000)))
+                           (rest files)))
+            :drop (recur (drop-spool-file st f :rejected) (rest files))
+            :retry (let [attempts (inc (get-in st [:attempts fname] 0))
+                         failures (inc (:failures st 0))
+                         delay-ms (min (:backoff-max-ms cfg)
+                                       (* (:backoff-base-ms cfg) (bit-shift-left 1 (min 16 (dec failures)))))
+                         st (-> st
+                                (bump :batches_failed 1)
+                                (assoc :failures failures :next-attempt-ms (+ now-ms delay-ms)))]
+                     (if (>= attempts (:max-attempts cfg))
+                       (drop-spool-file st f :max_attempts)
+                       (assoc-in st [:attempts fname] attempts)))))
+        st))))
+
+;; ---------------------------------------------------------------- run export
+
+(defn- candidate-runs [cfg state now-ms]
+  (let [runs-root (fs/path (:root cfg) "runs")]
+    (when (fs/directory? runs-root)
+      (let [floor (max (:cutoff-ms state) (- now-ms (:max-age-ms cfg)))]
+        (for [ticket-dir (sort (map str (fs/list-dir runs-root)))
+              :let [ticket (str (fs/file-name ticket-dir))]
+              :when (and (re-matches #"[A-Z]+-\d+" ticket) (fs/directory? ticket-dir))
+              run-dir (sort (map str (fs/list-dir ticket-dir)))
+              :let [run (str (fs/file-name run-dir))
+                    started (run-started-ms run)]
+              :when (and started (>= started floor)
+                         (not (contains? (:markers state) (str ticket "/" run))))]
+          {:ticket ticket :run run :dir run-dir})))))
+
+(defn terminal? [cfg dir now-ms]
+  (let [summary (try (edn/read-string (or (safe-slurp (fs/path dir "summary.edn")) "{}"))
+                     (catch Exception _ {}))
+        finished (->millis (:finished-at summary))]
+    (and finished
+         (not= :running (:status summary))
+         (>= (- now-ms finished) (:terminal-settle-ms cfg)))))
+
+(defn- apply-stats [state stats]
+  (reduce (fn [st [kind n]] (bump-labelled st :redactions kind n))
+          (bump state :dropped_secret_guard (:dropped-secret-guard stats 0))
+          (:redactions stats)))
+
+(defn export-run!
+  "Spool one run. Never throws: a failed run gets a marker with a reason and is not retried."
+  [cfg state {:keys [ticket run]} now-ms]
+  (let [marker-key (str ticket "/" run)]
+    (try
+      (let [{:keys [spans failed stats]} (prepare-spans cfg (build-run cfg ticket run))
+            state (apply-stats state stats)]
+        (if failed
+          (-> state
+              (bump :runs_failed 1)
+              (assoc-in [:markers marker-key] {:status :failed :reason failed :at now-ms}))
+          (do
+            (enqueue! cfg (trace-id ticket run) (batches cfg spans) now-ms)
+            (-> state
+                (bump :runs_exported 1)
+                (assoc-in [:markers marker-key] {:status :spooled :at now-ms})))))
+      (catch Throwable e
+        (-> state
+            (bump :runs_failed 1)
+            ;; The class name only: exception messages can quote what was being parsed.
+            (assoc-in [:markers marker-key] {:status :failed :reason (.getName (class e)) :at now-ms}))))))
+
+(defn once
+  "One tick. Nothing escapes it. Without credentials it stays idle and consumes no run."
+  [cfg]
+  (try
+    (let [now-ms (System/currentTimeMillis)
+          state (load-state cfg now-ms)
+          state (prune-state cfg state now-ms)]
+      (if-not (and (:public-key cfg) (:secret-key cfg))
+        (let [state (assoc state :idle-reason "no_credentials")]
+          (save-state cfg state)
+          (write-metrics cfg state)
+          state)
+        (let [state (dissoc state :idle-reason)
+              runs (->> (candidate-runs cfg state now-ms)
+                        (filter #(terminal? cfg (:dir %) now-ms))
+                        (take (:max-runs-per-tick cfg)))
+              state (reduce (fn [st r]
+                              (let [next-state (export-run! cfg st r now-ms)]
+                                (save-state cfg next-state)
+                                next-state))
+                            state runs)
+              state (bound-spool cfg state now-ms)
+              state (drain-spool cfg state now-ms)]
+          (save-state cfg state)
+          (write-metrics cfg state)
+          state)))
+    (catch Throwable e
+      (binding [*out* *err*] (println "langfuse-exporter tick failed:" (.getName (class e))))
+      nil)))
+
+(defn watch [cfg]
+  (.setPriority (Thread/currentThread) Thread/MIN_PRIORITY)
+  (loop []
+    (once cfg)
+    (Thread/sleep (long (:poll-ms cfg)))
+    (recur)))
+
+(defn dry-run-report [cfg ticket run]
+  (let [{:keys [spans failed stats]} (prepare-spans cfg (build-run cfg ticket run))
+        type-of (fn [span] (or (some (fn [a] (when (= "langfuse.observation.type" (:key a)) (get-in a [:value :stringValue])))
+                                     (:attributes span))
+                               "span"))]
+    {:failed failed
+     :observations (frequencies (map type-of spans))
+     :batches (when spans (count (batches cfg spans)))
+     :redactions (:redactions stats)
+     :dropped_secret_guard (:dropped-secret-guard stats)
+     :truncated (boolean (:truncated stats))}))
+
+(defn status-report [cfg]
+  (let [state (load-state cfg (System/currentTimeMillis))
+        files (spool-files cfg)]
+    {:cutoff (str (java.time.Instant/ofEpochMilli (:cutoff-ms state)))
+     :configured (boolean (and (:public-key cfg) (:secret-key cfg)))
+     :markers (frequencies (map :status (vals (:markers state))))
+     :spool_files (count files)
+     :spool_bytes (reduce + 0 (map fs/size files))
+     :next_attempt_ms (:next-attempt-ms state)
+     :metrics (:metrics state)}))
+
+(defn -main [& args]
+  (let [cfg (config (into {} (System/getenv)))
+        [cmd a b flag] args]
+    (case cmd
+      "watch" (watch cfg)
+      "once" (do (once cfg) nil)
+      "status" (prn (status-report cfg))
+      "delete-state" (do (fs/delete-tree (:dir cfg)) (println "deleted exporter state and spool"))
+      "export-run"
+      (if (= "--dry-run" flag)
+        (prn (dry-run-report cfg a b))
+        (let [now-ms (System/currentTimeMillis)
+              state (load-state cfg now-ms)
+              started (run-started-ms b)]
+          (if (and started (>= started (:cutoff-ms state)))
+            (let [state (export-run! cfg state {:ticket a :run b} now-ms)
+                  state (drain-spool cfg state now-ms)]
+              (save-state cfg state)
+              (write-metrics cfg state)
+              (println (get-in state [:markers (str a "/" b) :status])))
+            (do (binding [*out* *err*] (println "run is older than the cutoff; backfill is not allowed"))
+                (System/exit 2)))))
+      (do (binding [*out* *err*]
+            (println "usage: langfuse_exporter.bb watch|once|status|delete-state|export-run <ticket> <run> [--dry-run]"))
+          (System/exit 2)))))
 
 (when (= *file* (System/getProperty "babashka.file"))
   (apply -main *command-line-args*))
