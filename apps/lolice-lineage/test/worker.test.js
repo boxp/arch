@@ -23,7 +23,7 @@ test("anonymous GET returns the page with its headers", async () => {
   const res = await call();
   assert.equal(res.status, 200);
   assert.equal(await res.text(), BODY);
-  assert.equal(res.headers.get("Cache-Control"), "no-cache");
+  assert.equal(res.headers.get("Cache-Control"), "no-cache, no-transform");
   assert.equal(res.headers.get("X-Robots-Tag"), "noindex, nofollow");
   assert.equal(res.headers.get("X-Content-Type-Options"), "nosniff");
   assert.equal(res.headers.get("Referrer-Policy"), "no-referrer");

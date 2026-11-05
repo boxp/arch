@@ -3,6 +3,7 @@ locals {
   portfolio_project_name       = "boxp-portfolio"
   portfolio_stage_project_name = "boxp-portfolio-stage"
   portfolio_stage_domain       = "portfolio-stage.b0xp.io"
+  lolice_architecture_domain   = "lolice-architecture.b0xp.io"
 }
 
 resource "cloudflare_pages_project" "iikanji" {

@@ -26,12 +26,13 @@ resource "cloudflare_dns_record" "codex_task_board" {
   proxied = true
 }
 
-# BOXP-430: public page. The Worker in apps/lolice-lineage answers every request here.
+# BOXP-430: the Worker in apps/lolice-lineage answers every request on this hostname, so
+# the record only has to be proxied. 100:: is Cloudflare's documented originless target.
 resource "cloudflare_dns_record" "lolice_lineage" {
   zone_id = var.zone_id
   name    = "lolice-lineage.b0xp.io"
-  content = "${cloudflare_zero_trust_tunnel_cloudflared.k8s_tunnel.id}.cfargotunnel.com"
-  type    = "CNAME"
+  content = "100::"
+  type    = "AAAA"
   ttl     = 1
   proxied = true
 }
