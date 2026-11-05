@@ -77,3 +77,4 @@ bb docker/codex-workspace/task-board/ai_ops_outcome.bb snapshot "$CODEX_TASK_BOA
 - quota の拒否で停止し、reset 前の再実行を拒否する。停止状態はロックを取った後で読み、先行 run が記録した拒否を見落とさない。
 - 中断分を含む累積時間の上限を設ける。
 - 同じ出力先への同時実行を拒否する。完了済みの試行を再実行しない。
+- run が強制終了されて残ったエージェントと試行を並走させない。ロック (`agent.lock`) と時間の上限はエージェント側のプロセスに持たせ、ロックが残る間の再開は exit 5 で拒否する。

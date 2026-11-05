@@ -25,6 +25,7 @@
 ;; ハーネスか課題の内容が計画時と違う DIR への run は拒否する (別の条件の試行を計画時の版として記録しないため)。
 ;; 同じ DIR への run は同時に 1 つだけ。試行の開始と終了は attempts.log に残し、終了記録のない試行は中断として
 ;; 時間を累積に計上して再実行する。完了済みの試行は再実行しない。累積時間が --max-wall-seconds に届く試行は始めない。
+;; run が強制終了されて残ったエージェントがロック (agent.lock) を持つ間は、試行を始めず exit 5 で止まる。そのエージェントは試行の上限で止まる。
 ;; quota の拒否を観測したら試行を記録せずに止まり (exit 3)、reset 前の run は試行せず拒否する (reset 不明なら観測から 1 時間)。
 ;; DIR に残すのは metadata (trials/*.edn) だけで、prompt 本文・エージェント出力・stderr は残さない。
 (ns harness-eval)
@@ -39,6 +40,9 @@
 (def limits {:tasks 10 :reps 3 :arms 2 :trial-timeout-seconds 900 :max-trials 60 :max-wall-seconds 21600})
 (def default-arms ["A" "B"])
 (def accept-timeout-seconds 120)
+;; run が殺された後も、エージェント自身の timeout が試行の上限 + この秒数で TERM、さらにこの秒数で KILL する。
+;; 合計が accept-timeout-seconds 以下なので、spent-seconds の中断分の上限に収まる。
+(def agent-kill-grace-seconds 5)
 (def quota-hold-without-reset-seconds 3600)
 (def default-contract-agent "claude-opus")
 ;; 子プロセスへ渡す環境変数。Task Board・委譲・GitHub の接続情報を渡さないよう、許可したものだけを渡す。
@@ -368,19 +372,34 @@
   (into {} (filter (fn [[k _]] (or (contains? agent-env-allowlist k) (str/starts-with? k "HARNESS_EVAL_"))))
         (System/getenv)))
 
-(defn kill-tree! [proc]
-  (try (p/destroy-tree proc) (catch Exception _ nil))
+(defn signal-group! [proc sig]
   (try (let [pid (.pid ^java.lang.Process (:proc proc))]
-         @(p/process ["kill" "-TERM" "--" (str "-" pid)] {:out :string :err :string}))
+         @(p/process ["kill" (str "-" sig) "--" (str "-" pid)] {:out :string :err :string}))
        (catch Exception _ nil)))
 
+(defn kill-tree! [proc]
+  (try (p/destroy-tree proc) (catch Exception _ nil))
+  (signal-group! proc "TERM"))
+
+(defn agent-lock-path [out] (str (fs/absolutize (fs/path out "agent.lock"))))
+
+(defn agent-lock-held?
+  "前の試行のエージェントがまだ動いているか。flock(2) のロックはエージェントのプロセスが持つので、
+  run.lock と違って run が強制終了されても残り、エージェントが終わると解放される。"
+  [out]
+  (let [free? #(zero? (:exit @(p/process ["flock" "-n" (agent-lock-path out) "true"] {:out :string :err :string})))]
+    (not (some (fn [_] (or (free?) (do (Thread/sleep 200) false))) (range 10)))))
+
 (defn run-agent!
-  "prompt を stdin で渡し、events を log-dir に書く。timeout で process group ごと止める。"
-  [agent-cmd repo log-dir prompt timeout-seconds]
+  "prompt を stdin で渡し、events を log-dir に書く。timeout で process group ごと止める。
+  run が強制終了された場合に備え、ロックと時間の上限はエージェント側のプロセスに持たせる。"
+  [agent-cmd agent-lock repo log-dir prompt timeout-seconds]
   (let [events (str (fs/path log-dir "events.jsonl"))
         stderr (str (fs/path log-dir "stderr.log"))
         t0 (System/nanoTime)
-        proc (p/process ["setsid" "sh" "-c" agent-cmd]
+        grace (str agent-kill-grace-seconds)
+        proc (p/process ["setsid" "timeout" "-k" grace (str (+ timeout-seconds agent-kill-grace-seconds))
+                         "flock" "-F" "-n" agent-lock "sh" "-c" agent-cmd]
                         {:dir repo :in prompt :out (fs/file events) :err (fs/file stderr)
                          :env (assoc (agent-env) "HARNESS_EVAL" "1")})
         done (future @proc)
@@ -389,6 +408,8 @@
     (when (= ::timeout result)
       (kill-tree! proc)
       (deref done 10000 nil))
+    ;; エージェントが残した背景プロセスはロックも持ち続けるので、次の試行の前に止める。
+    (signal-group! proc "KILL")
     {:timeout? (= ::timeout result)
      :exit-code (when-not (= ::timeout result) (:exit result))
      :seconds (double (/ (Math/round (* 1000 seconds)) 1000.0))
@@ -403,7 +424,7 @@
       (do (kill-tree! proc) :timeout)
       (:exit r))))
 
-(defn run-trial! [{:keys [agent-cmd trial-timeout-seconds model-rev harness-version]} task arm rep contract]
+(defn run-trial! [{:keys [agent-cmd agent-lock trial-timeout-seconds model-rev harness-version]} task arm rep contract]
   (let [work (fs/create-temp-dir {:prefix "harness-eval-"})
         repo (str (fs/path work "repo"))
         log-dir (str (fs/path work "log"))
@@ -413,7 +434,7 @@
       (let [base-sha (prepare-repo! task repo)
             before (tree-snapshot repo)
             prompt (prompt-for-arm arm task contract)
-            {:keys [timeout? exit-code seconds events]} (run-agent! agent-cmd repo log-dir prompt trial-timeout-seconds)
+            {:keys [timeout? exit-code seconds events]} (run-agent! agent-cmd agent-lock repo log-dir prompt trial-timeout-seconds)
             ev (parse-events events)
             changed (changed-paths before repo)
             disallowed (remove (set (:allowed-files task)) changed)
@@ -515,7 +536,7 @@
   "計画の未完了の試行を順に実行する。戻り値は最後の状態の map。"
   [out budget tasks agent-cmd stop-file]
   (let [contract (when (some #{"B"} (:arms budget)) (fetch-contract (:contract-agent budget default-contract-agent)))
-        opts (assoc budget :agent-cmd agent-cmd)
+        opts (assoc budget :agent-cmd agent-cmd :agent-lock (agent-lock-path out))
         plan (for [task tasks, arm (:arms budget), rep (range 1 (inc (:reps budget)))] [task arm rep])
         wall (:max-wall-seconds budget (:max-wall-seconds limits))
         trial-cap (+ (:trial-timeout-seconds budget) accept-timeout-seconds)]
@@ -531,6 +552,10 @@
             (do (write-atomic! (str path) (pr-str {:task (:id task) :arm arm :rep rep :outcome "aborted" :model-rev (:model-rev budget)
                                                    :harness-version (:harness-version budget) :finished-at (now-str)}))
                 (recur more true))
+
+            ;; 前の run が強制終了されて残ったエージェントと同じ試行を並走させない。
+            (agent-lock-held? out)
+            {:status "stopped_agent_running" :next-trial trial-id}
 
             (> (+ (spent-seconds budget (read-attempts out) (now-epoch)) trial-cap) wall)
             {:status "stopped_budget" :next-trial trial-id}
@@ -583,6 +608,9 @@
       "stopped_file" (println "stop-file により残りの試行を aborted として記録した")
       "stopped_quota" (do (println "quota の拒否により停止した") (System/exit 3))
       "stopped_budget" (do (println "累積時間の上限により停止した") (System/exit 4))
+      "stopped_agent_running" (do (binding [*out* *err*]
+                                    (println (str "前の run のエージェントがまだ実行中。試行の上限で止まるので、その後に再開する: " out)))
+                                  (System/exit 5))
       nil)))
 
 ;; ---------------------------------------------------------------------------

@@ -479,6 +479,50 @@
       (is (zero? (:exit @first-run)))
       (is (= 2 (count (attempt-lines out))) "二重の run は試行を始めない"))))
 
+(defn lock-free? [out]
+  (zero? (:exit @(p/process ["flock" "-n" (str (fs/path out "agent.lock")) "true"] {:out :string :err :string}))))
+
+(deftest killed-run-does-not-start-a-second-agent-for-the-trial
+  (let [out (tmp)]
+    (is (zero? (:exit (plan! out :only "T01" :arms "A" :timeout 2))))
+    (let [first-run (p/process ["bb" tool "run" "--out" out "--agent-cmd" fake-agent]
+                               {:out :string :err :string
+                                :extra-env {"HARNESS_EVAL_FAKE_MODE" "sleep" "HARNESS_EVAL_FAKE_SLEEP_SECONDS" "60"}})]
+      (loop [i 0]
+        (when (and (< i 100) (or (not (fs/exists? (fs/path out "agent.lock"))) (lock-free? out)))
+          (Thread/sleep 100) (recur (inc i))))
+      (.destroyForcibly ^java.lang.Process (:proc first-run))
+      @first-run)
+    (testing "run が殺されてもエージェントは生きており、再開は試行を始めない"
+      (let [r (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"})]
+        (is (= 5 (:exit r)) (:err r))
+        (is (str/includes? (:err r) "まだ実行中")))
+      (is (= "stopped_agent_running" (:status (run-status out))))
+      (is (= 1 (count (filter #(= "start" (:event %)) (attempt-lines out))))))
+    (testing "残ったエージェントは試行の上限で止まる"
+      (loop [i 0] (when (and (< i 150) (not (lock-free? out))) (Thread/sleep 100) (recur (inc i))))
+      (is (lock-free? out)))
+    (testing "止まった後は再開でき、中断分も計上する"
+      (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "solve"}))))
+      (let [cmp (compare! out)]
+        (is (= 1 (:trials_completed cmp)))
+        (is (= 1 (:interrupted_attempts cmp)))
+        (is (>= (:spent_seconds cmp) 2))))))
+
+(deftest agent-background-process-does-not-block-the-next-trial
+  (let [out (tmp)]
+    (is (zero? (:exit (plan! out :reps 2 :only "T01" :arms "A"))))
+    (let [r (he {"HARNESS_EVAL_FAKE_MODE" "solve"} "run" "--out" out "--agent-cmd" (str "sleep 60 & " fake-agent))]
+      (is (zero? (:exit r)) (:err r)))
+    (is (= ["pass" "pass"] (map :outcome (trials out))))
+    (is (lock-free? out))))
+
+(deftest agent-exit-code-passes-through-the-lock-wrapper
+  (let [out (tmp)]
+    (is (zero? (:exit (plan! out :only "T01" :arms "A"))))
+    (is (zero? (:exit (run! out {"HARNESS_EVAL_FAKE_MODE" "error"}))))
+    (is (= 3 (:exit-code (first (trials out)))))))
+
 (deftest quota-hold-is-read-after-taking-the-lock
   (testing "ロックを持つ run がある間は停止状態を読まない。読むのはロックの後なので、先行 run が記録した拒否を見落とさない"
     (let [out (tmp)]
