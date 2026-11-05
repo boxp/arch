@@ -95,6 +95,7 @@ jobs:
           time bb tests/codex-workspace/autonomy-control-test.bb
           time bb tests/codex-workspace/vault-writer-test.bb
           time bb tests/codex-workspace/task-board-todos-test.bb
+          time bb docker/codex-workspace/task-board/test/langfuse_exporter_test.bb
 
   test:
     timeout-minutes: 2
