@@ -20,7 +20,7 @@
 ;; ---------------------------------------------------------------- redaction
 
 (def secret-name-pattern
-  #"(?i)(password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth(?!or)|(?<![a-z])pass(?![a-z]))")
+  #"(?i)(password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth(?!ors?(?![a-z]))|(?<![a-z])pass(?![a-z]))")
 
 (def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&#0*(?:34|39);|&#x0*(?:22|27);)")
 (def gap-pattern "(?:\\s|\\\\+[nrt])*")
@@ -50,21 +50,32 @@
 
 (def not-a-credential-name #"^(?:PWD|OLDPWD)$")
 (def flag-value #"(?i)true|false|yes|no|on|off|none|null|nil|enabled|disabled|0|1")
-(def setting-name #"(?i)tokens|count|limit|max|min|ttl|timeout|expir|interval|seconds|minutes|hours|days|size|port|bytes")
+;; Whole words of the name, at its ends: MINIO_ROOT_PASSWORD holds "min" and SUPPORT_SECRET holds "port".
+(def toggle-last-word #"(?i)enabled?|disabled?|required?|parallelism|rotation")
+(def toggle-first-word #"(?i)use|enable|disable|no|skip|require")
+(def counter-last-word #"(?i)tokens|count|limit|max|min|ttl|timeout|expiry|expires|interval|seconds|minutes|hours|days|age|size|port|bytes")
 (def short-value-length 8)
 ;; The text before a value may be JSON-escaped: the n of \n and the hex of \u3048 are not part of a word.
 (def short-value-start "(?:(?<![A-Za-z0-9])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9a-fA-F]{4}))")
 
+(defn setting?
+  "The value and the name have to agree: PASSWORD=disabled is a password, AUTH_ENABLED=disabled is a setting."
+  [k v]
+  (let [words (remove str/blank? (str/split k #"[^A-Za-z0-9]+"))]
+    (cond
+      (empty? words) false
+      (re-matches flag-value v) (boolean (or (re-matches toggle-last-word (last words))
+                                             (re-matches toggle-first-word (first words))))
+      :else (boolean (and (re-matches #"\d+" v) (re-matches counter-last-word (last words)))))))
+
 (defn secret-value?
-  "Short values count too. A flag such as AUTH_ENABLED=true, or a number under a name such as
-  MAX_OUTPUT_TOKENS, is a setting; masking it would only blank ordinary words and numbers."
+  "Short values count too. Only a setting is left alone, since masking it would blank ordinary words and numbers."
   [k v]
   (and (string? v)
        (not (str/blank? v))
        (re-find secret-name-pattern k)
        (not (re-matches not-a-credential-name k))
-       (not (re-matches flag-value v))
-       (not (and (re-matches #"\d+" v) (re-find setting-name k)))))
+       (not (setting? k v))))
 
 (defn secret-values [env]
   (->> env

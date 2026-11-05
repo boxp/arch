@@ -686,6 +686,22 @@
       (is (false? (lf/guard-safe? (str "answer " short) values)))
       (is (true? (lf/guard-safe? "[REDACTED:env] done" ["env"]))))))
 
+(deftest a-value-counts-as-a-setting-only-under-a-setting-name
+  (let [credentials {"PASSWORD" (str "dis" "abled") "DB_PASSWORD" (str "tr" "ue") "AUTHORIZATION" (str "xy" "z9")
+                     "HTTP_AUTHORIZATION" (str "qw" "e8") "MINIO_ROOT_PASSWORD" (str "1234" "5678")
+                     "ADMIN_TOKEN" (str "48" "21") "SUPPORT_SECRET" (str "51" "50") "EXPORT_KEY_TOKEN" (str "77" "31")
+                     "AUTH_PORT" (str "hun" "ter2") "API_TOKENS" (str "tr" "ue2")}
+        settings {"AUTH_ENABLED" "disabled" "PASSWORD_REQUIRED" "false" "NO_AUTH" "true" "USE_TOKEN" "yes"
+                  "AUTH_TIMEOUT" "30" "TOKEN_TTL" "3600" "SESSION_COOKIE_MAX_AGE" "86400"
+                  "MAX_OUTPUT_TOKENS" "64000" "GIT_AUTHOR_NAME" "boxp" "AUTHORS" "boxp"}
+        values (lf/secret-values credentials)]
+    (doseq [[name value] credentials]
+      (is (lf/secret-value? name value) name)
+      (is (= "answer: [REDACTED:env] done" (:value (lf/redact (str "answer: " value " done") values))) name)
+      (is (false? (lf/guard-safe? (str "answer: " value " done") values)) name))
+    (doseq [[name value] settings]
+      (is (not (lf/secret-value? name value)) name))))
+
 (deftest later-tool-inputs-are-withheld
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
     (doseq [format [:claude :codex]]
