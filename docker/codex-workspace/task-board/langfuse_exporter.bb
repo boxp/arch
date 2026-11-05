@@ -61,6 +61,93 @@
                 (re-find #"[a-z]" segment) (re-find #"[A-Z]" segment) (re-find #"[0-9]" segment)))
          (str/split s #"[_-]"))))
 
+(def structured-key
+  (re-pattern (str "(?i)(?:" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern "(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "value")
+                   "|(?<![\\w-])--?" secret-key-pattern "[ \\t]+"
+                   "|[\\\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern ")")))
+(def entry-value (re-pattern (str "(?i)" (entry-key "value") "(?=[\\[{(])")))
+(def entry-name-after (re-pattern (str "(?i)(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern)))
+(def structure-token (re-pattern (str quote-pattern "|[\\[\\]{}()]")))
+(def line-break #"\r?\n|\\+(?:r\\+)?n")
+(def gap-at-end (re-pattern (str gap-pattern "\\z")))
+(def closers {\[ \] \{ \} \( \)})
+(def max-reversed-entries 1000)
+(def max-reversed-value 4096)
+
+(defn closes-quote? [token opening]
+  (let [trim #(str/replace % #"^\\+" "")
+        depth (- (count opening) (count (trim opening)))
+        token-depth (- (count token) (count (trim token)))]
+    (and (= (trim token) (trim opening))
+         (zero? (mod (- token-depth depth) (* 2 (inc depth)))))))
+
+(defn bracket-end [text start stop]
+  (let [stop (min (count text) stop) opener (.charAt text start) closer (closers opener)
+        matcher (.matcher structure-token text)]
+    (.region matcher start stop)
+    (loop [depth 0 quote nil]
+      (if (.find matcher)
+        (let [token (.group matcher) c (when (= 1 (count token)) (.charAt token 0))]
+          (cond quote (recur depth (when-not (closes-quote? token quote) quote))
+                (= c opener) (recur (inc depth) nil)
+                (= c closer) (if (= depth 1) (.end matcher) (recur (dec depth) nil))
+                (contains? #{\[ \] \{ \} \( \)} c) (recur depth nil)
+                :else (recur depth token)))
+        stop))))
+
+(defn block-end [text key-end]
+  (let [m (.matcher line-break text) start (max 0 (- key-end 256))
+        line-start (loop [pos start last-start start]
+                     (if (and (.find m pos) (< (.start m) key-end) (<= (.end m) key-end))
+                       (recur (.end m) (.end m)) last-start))
+        head (subs text line-start key-end)
+        indent (- (count head) (count (str/replace head #"^[ \t]+" "")))]
+    (loop [end key-end position key-end]
+      (if (.find m position)
+        (let [begin (.end m) has-next (.find m begin) next-start (if has-next (.start m) (count text))
+              line (subs text begin next-start) body (str/replace line #"^[ \t]+" "") column (- (count line) (count body))]
+          (cond (str/blank? body) (if has-next (recur end next-start) end)
+                (or (< column indent) (and (= column indent) (not (re-find #"^-(?:\s|$)" body)))) end
+                :else (recur next-start next-start)))
+        end))))
+
+(defn structured-end [text matcher]
+  (let [start (.start matcher) end (.end matcher)]
+    (when (< end (count text))
+      (if (contains? closers (.charAt text end))
+        (bracket-end text end (count text))
+        (let [gap (.matcher gap-at-end text) _ (.region gap start end)
+              key-end (if (.find gap) (.start gap) end)
+              breaks (.matcher line-break text) _ (.region breaks key-end end)]
+          (when (.find breaks)
+            (let [block (block-end text key-end)] (when (> block key-end) block))))))))
+
+(defn mask-reversed-entries [text mark]
+  (let [matcher (.matcher entry-value text) out (StringBuilder.)]
+    (loop [position 0 scanned 0]
+      (if (.find matcher)
+        (do
+          (when (>= scanned max-reversed-entries) (throw (ex-info "too many entries" {})))
+          (if (< (.start matcher) position)
+            (recur position (inc scanned))
+            (let [end (bracket-end text (.end matcher) (+ (.end matcher) max-reversed-value))
+                  after (.matcher entry-name-after text) _ (.region after end (count text))]
+              (if (.lookingAt after)
+                (do (.append out (subs text position (.start matcher))) (.append out (mark :env-entry))
+                    (recur end (inc scanned)))
+                (recur position (inc scanned))))))
+        (do (.append out (subs text position)) (str out))))))
+
+(defn mask-structured [text mark]
+  (let [matcher (.matcher structured-key text) out (StringBuilder.)]
+    (loop [position 0]
+      (if (.find matcher position)
+        (let [end (structured-end text matcher)]
+          (if end
+            (do (.append out (subs text position (.start matcher))) (.append out (mark :assignment)) (recur end))
+            (do (.append out (subs text position (.end matcher))) (recur (max (.end matcher) (inc position))))))
+        (do (.append out (subs text position)) (mask-reversed-entries (str out) mark))))))
+
 (defn redact
   "Mask known secret forms and environment values. On any error, drop the field."
   [s values]
@@ -77,7 +164,7 @@
                                         (fn [match]
                                           (let [m (if (vector? match) (first match) match)]
                                             (if (and (= kind :entropy) (not (entropy-secret? m))) m (mark kind))))))
-                         with-values patterns)]
+                         (mask-structured with-values mark) patterns)]
       {:value masked :redactions @counts})
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 

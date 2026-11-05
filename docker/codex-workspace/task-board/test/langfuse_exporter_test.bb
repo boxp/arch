@@ -505,5 +505,54 @@
         body (json/generate-string (doall (lf/codex-spans ctx "root" "test" lines)))]
     (is (not (str/includes? body "plainwordvalue")) "B3 env output")))
 
+(deftest structured-values
+  (let [a "firstplainvalue" b "secondplainvalue" j json/generate-string
+        cases [(j {:password [a b]}) (str "{\"password\":[\"" a "\",\"" b "\"]}")
+               (j {:credentials {:user a :pw b}}) (j {:auth [[a] {:x [b]}]})
+               (j {:password [(str "a]" a) (str "b}" b)]}) (j {:password ["a\\" (str "]" a) b]})
+               (j {:password [a b]} {:pretty true}) (j {:output (j {:password [a b]})})
+               (j {:o (j {:o (j {:token [a b]})})}) (str "{'password': ['" a "', '" b "']}")
+               (str "password = ('" a "', '" b "')") (str "PASSWORDS=(" a " " b ")")
+               (str "password: [" a ", " b "]") (str "auth: {user: " a ", pw: " b "}")
+               (str "password:\n  - " a "\n  - " b "\n") (str "password:\n- " a "\n- " b "\n")
+               (str "  credentials:\n    user: " a "\n    pw: " b "\n")
+               (j {:o (str "password:\n  - " a "\n  - " b "\n")})
+               (str "{\"password\":[\"" a "\",\"" b)
+               (j {:name "DB_PASSWORD" :value [a b]}) (j (array-map :value [a b] :name "DB_PASSWORD"))
+               (str "- name: DB_PASSWORD\n  value:\n    - " a "\n    - " b "\n")
+               (str "mytool --password [" a "," b "]")]]
+    (doseq [text cases] (testing text
+      (let [out (:value (lf/redact text []))]
+        (is (not (str/includes? out a))) (is (not (str/includes? out b))))))))
+
+(deftest structured-value-boundaries
+  (doseq [text [(json/generate-string {:password ["plainwordvalue" "]"] :name "keptvalue"})
+                (json/generate-string {:output (json/generate-string {:password ["plainwordvalue"] :name "keptvalue"})})
+                (json/generate-string {:auth {:a {:b "plainwordvalue"}} :name "keptvalue"})
+                "password:\n  - plainwordvalue\nname: keptvalue\n"
+                "a:\n  password:\n  - plainwordvalue\n  name: keptvalue\n"
+                (json/generate-string (array-map :value ["plainwordvalue"] :name "DB_PASSWORD" :other "keptvalue"))]]
+    (testing text (let [out (:value (lf/redact text []))]
+      (is (not (str/includes? out "plainwordvalue"))) (is (str/includes? out "keptvalue"))))))
+
+(deftest ordinary-structured-values
+  (doseq [text [(json/generate-string {:items ["keptvalue" "keptother"]}) "names:\n  - keptvalue\n"
+                (json/generate-string {:name "DB_HOST" :value ["keptvalue"]})
+                (json/generate-string (array-map :value ["keptvalue"] :name "DB_HOST")) "prompt_tokens: 3"]]
+    (is (= text (:value (lf/redact text []))) text)))
+
+(deftest structured-performance
+  (doseq [text [(str "{\"password\":[" (apply str (repeat 200000 "\"a\",")))
+                (str "password:\n" (apply str (repeat 200000 "  - a\n")))
+                (apply str (repeat 50000 "{\"password\":["))]]
+    (let [start (System/nanoTime) _ (lf/redact text []) elapsed (/ (- (System/nanoTime) start) 1e9)]
+      (is (< elapsed 5.0) (str "seconds: " elapsed)))))
+
+(deftest structured-mask-accounting-and-limit
+  (is (= {:value "{[REDACTED:assignment]}" :redactions {:assignment 1}}
+         (lf/redact "{\"password\":[\"first\",\"second\"]}" [])))
+  (is (= {:value "[dropped: redaction error]" :redactions {:error 1}}
+         (lf/redact (apply str (repeat 1001 "value: [x], name: HOST\n")) []))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
