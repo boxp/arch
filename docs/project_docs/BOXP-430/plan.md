@@ -68,3 +68,7 @@ Owner が lineage の内容を確認し、公開を承認した。これまで�
 2. `mode=html` で Worker を再配備する。hash は `2e643047fa931f96b750597436d45c23738c50f8d80e232bef7dbe9d032a9739`。ここで公開になる。secret は配備後に削除する。
 3. 未認証の HTTP 200、hash、アイコン、PC とスマホの実ブラウザを担当が確認する。
 4. 確認後に旧構成を撤去する: arch#14480（tunnel route と DNS）、lolice#1069（sidecar 等）。
+
+### 公開後の検証で見つけた差分
+
+公開後、ブラウザ向けの応答にだけ Cloudflare Web Analytics の script が注入され、本文の hash が正本とずれ、CSP の console error が出ていた（beacon は CSP が止めるので送信はない）。`Cache-Control` に `no-transform` を足して注入を止める。`verify-live.sh` はブラウザと同じ `Accept` で本文を取得し、この差分を検出する。zone の設定は変更しない。
