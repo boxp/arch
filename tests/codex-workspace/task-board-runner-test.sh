@@ -110,6 +110,7 @@ set -euo pipefail
 
 last_message=""
 json=false
+if [[ -n "${CODEX_FAKE_ARG_LINES:-}" ]]; then printf '%s\n' "$@" >"${CODEX_FAKE_ARG_LINES}"; fi
 if [[ -n "${CODEX_FAKE_ARG_LOG:-}" ]]; then
   printf '%s\n' "$*" >>"${CODEX_FAKE_ARG_LOG}"
 fi
@@ -153,9 +154,15 @@ fi
 if [[ -n "${CODEX_FAKE_LOCK_SNAPSHOT:-}" && -n "${CODEX_FAKE_LOCK_FILE:-}" ]]; then
   cp "${CODEX_FAKE_LOCK_FILE}" "${CODEX_FAKE_LOCK_SNAPSHOT}"
 fi
+if [[ -n "${CODEX_FAKE_TODO_VAULT:-}" ]]; then
+  rev="$(bb "${CODEX_FAKE_TODO_MODULE}" status "${ticket}" --vault "${CODEX_FAKE_TODO_VAULT}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  bb "${CODEX_FAKE_TODO_MODULE}" ack "${ticket}" --vault "${CODEX_FAKE_TODO_VAULT}" --rev "${rev}" >/dev/null
+  bb "${CODEX_FAKE_TODO_MODULE}" done "${ticket}" TD-01 --vault "${CODEX_FAKE_TODO_VAULT}" --evidence test >/dev/null
+fi
 sleep "${CODEX_FAKE_SLEEP:-0}"
 printf '%s\n' "${CODEX_FAKE_MESSAGE:-TASK_BOARD_RESULT: done}" >"${last_message}"
 rm -f "${prompt}"
+exit "${CODEX_FAKE_EXIT:-0}"
 EOF
   chmod +x "${bin_dir}/codex"
 }
@@ -4617,12 +4624,14 @@ test_assignment_superseded() {
   local pid=$!
   for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
   [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-991 --vault "${vault}" --required --text late --source test >/dev/null
   bb "${HELPER}" update BOXP-991 --vault "${vault}" --lane Ready --assignee boxp --note 'new assignment' >/dev/null
   wait "${pid}"
   assert_file_contains "${vault}/Tickets/BOXP-991.md" '^assignee: boxp$'
   assert_file_contains "${vault}/Tickets/BOXP-991.md" 'newer assignment \(board_rev'
   assert_file_contains "${vault}/Boards/Task Board.md" 'status::ready.*assignee::boxp'
   assert_run_summary_contains "${state}" BOXP-991 ':superseded-by'
+  assert_file_not_contains "${vault}/Tickets/BOXP-991.md" 'runの結果を保留'
   assert_file_contains "${state}/continuation-budget.edn" 'BOXP-991'
 }
 
@@ -4665,6 +4674,310 @@ test_assignment_repairs() {
   assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev1}"
 }
 
+
+test_dynamic_todo_midrun() {
+  local tmp vault state bin pid rev board_rev
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-990 in-progress codex
+  bb "${HELPER}" update BOXP-990 --vault "${vault}" --lane Ready --assignee codex >/dev/null
+  board_rev="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-990.md")"
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TODO_HOOKS=false CODEX_FAKE_ARG_LINES="${tmp}/args" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" &
+  pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/starts" ]] || fail 'agent did not start'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-990 --vault "${vault}" --required --text task --source test >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^status: ready$'
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^assignee: codex$'
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" 'runの結果を保留'
+  [[ "${board_rev}" == "$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-990.md")" ]] || fail 'todo_state changed board_rev'
+  assert_file_not_contains "${tmp}/tick" 'newer assignment'
+  assert_file_not_contains "${tmp}/args" '^--dangerously-bypass-hook-trust$'
+  assert_run_summary_contains "${state}" BOXP-990 ':gate "held"'
+  assert_run_summary_contains "${state}" BOXP-990 ':result "continue"'
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_TODO_VAULT="${vault}" CODEX_FAKE_TODO_MODULE="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" run_tick "${vault}" "${state}" env >"${tmp}/tick2"
+  assert_file_contains "${tmp}/prompt" "read back merges and external operations"
+  assert_file_contains "${tmp}/prompt" "TD-01【必須】task"
+  assert_file_contains "${vault}/Tickets/BOXP-990.md" '^status: done$'
+}
+
+# Mock paths: agents and vaults below are isolated temporary fixtures.
+test_todo_optional_and_legacy() {
+  local tmp vault state bin pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-980|BOXP-980: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-980 in-progress codex
+  # Establish a received body before the optional-only mid-run addition.
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-980 --vault "${vault}" --optional --text baseline --source test >/dev/null
+  local rev
+  rev="$(bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" status BOXP-980 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" ack BOXP-980 --vault "${vault}" --rev "${rev}" >/dev/null
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-980 --vault "${vault}" --optional --text optional --source test >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-980.md" '^status: done$'
+  assert_file_contains "${vault}/Tickets/BOXP-980.md" 'todo_state: .*unreceived=1 open=1'
+  rm -rf "${vault}" "${state}" "${tmp}/starts"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-981|BOXP-981: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-981 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/legacy" & pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  sed -i '/^## Summary$/a changed legacy body' "${vault}/Tickets/BOXP-981.md"
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-981.md" '^status: ready$'
+  PATH="${bin}:$PATH" run_tick "${vault}" "${state}" env >"${tmp}/legacy2"
+  assert_file_contains "${vault}/Tickets/BOXP-981.md" '^status: done$'
+}
+
+test_todo_post_move_recheck() {
+  local tmp vault state bin pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-982|BOXP-982: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-982 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/moved" ]] || fail 'post-move rendezvous missing'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-982 --vault "${vault}" --required --text late --source test >/dev/null
+  touch "${tmp}/continue"; wait "${pid}"
+  if [[ "${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}" == 0 ]]; then
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" '^status: blocked$'
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" 'todo-gate-exhausted'
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" 'finished with result blocked'
+  else
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" '^status: ready$'
+    assert_file_contains "${vault}/Tickets/BOXP-982.md" 'finished with result ready'
+  fi
+  assert_file_not_contains "${vault}/Tickets/BOXP-982.md" 'finished with result done'
+  assert_run_summary_contains "${state}" BOXP-982 ':gate "held"'
+  assert_run_summary_contains "${state}" BOXP-982 ':result "continue"'
+  local ledger
+  ledger="$(find "${state}/ai-ops/ledger" -name 'events-*.jsonl' | head -n 1)"
+  if [[ "${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}" == 0 ]]; then
+    assert_run_summary_contains "${state}" BOXP-982 ':blocker-category "todo-gate-exhausted"'
+    assert_file_contains "${ledger}" '"lane_to":"blocked"'
+    assert_file_contains "${ledger}" '"status":"blocked"'
+  else
+    assert_file_contains "${ledger}" '"lane_to":"ready"'
+    assert_file_not_contains "${ledger}" '"lane_to":"done"'
+    [[ ! -d "${state}/outbox/pending" ]] || ! find "${state}/outbox/pending" -type f | grep -q . || fail 'held run emitted a Task Board wake event'
+  fi
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-982'
+}
+
+test_todo_post_move_recheck_exhausted() {
+  CODEX_TASK_BOARD_CONTINUATION_LIMIT=0 test_todo_post_move_recheck
+}
+
+test_todo_blocked_post_move_recheck() {
+  local tmp vault state bin pid limit="${CODEX_TASK_BOARD_CONTINUATION_LIMIT:-8}"
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-986|BOXP-986: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-986 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT="${limit}" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  [[ -e "${tmp}/moved" ]] || fail 'blocked post-move rendezvous missing'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" '^status: blocked$'
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-986 --vault "${vault}" --required --text late --source test >/dev/null
+  touch "${tmp}/continue"; wait "${pid}"
+  assert_run_summary_contains "${state}" BOXP-986 ':gate "held"'
+  assert_file_contains "${state}/continuation-budget.edn" 'BOXP-986'
+  local ledger
+  ledger="$(find "${state}/ai-ops/ledger" -name 'events-*.jsonl' | head -n 1)"
+  if [[ "${limit}" == 0 ]]; then
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" '^status: blocked$'
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" '継続予算切れのためBlockedのまま。未受領: .*TD-01'
+    assert_run_summary_contains "${state}" BOXP-986 ':status :blocked'
+    assert_file_contains "${ledger}" '"lane_to":"blocked"'
+  else
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" '^status: ready$'
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" '^assignee: codex$'
+    assert_file_contains "${vault}/Boards/Task Board.md" 'BOXP-986'
+    assert_file_contains "${vault}/Tickets/BOXP-986.md" 'Blockedを保留して担当の次runへ継続: .*TD-01'
+    assert_run_summary_contains "${state}" BOXP-986 ':result "continue"'
+    assert_file_not_contains "$(find "${state}/runs/BOXP-986" -name summary.edn | sort | tail -n 1)" ':blocker-category'
+    assert_file_contains "${ledger}" '"lane_to":"ready"'
+    assert_file_not_contains "${ledger}" '"lane_to":"blocked"'
+  fi
+  # An optional addition leaves the Blocked result alone.
+  local vault2="${tmp}/vault2" state2="${tmp}/state2"
+  rm -f "${tmp}/moved" "${tmp}/continue"
+  write_board "${vault2}" '- [ ] [[Tickets/BOXP-987|BOXP-987: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault2}" BOXP-987 in-progress codex
+  local todo_module="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" rev
+  bb "${todo_module}" add BOXP-987 --vault "${vault2}" --required --text work --source test >/dev/null
+  rev="$(bb "${todo_module}" status BOXP-987 --vault "${vault2}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  bb "${todo_module}" ack BOXP-987 --vault "${vault2}" --rev "${rev}" >/dev/null
+  PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: blocked' CODEX_TASK_BOARD_TEST_TODO_RECHECK_DIR="${tmp}" run_tick "${vault2}" "${state2}" env >"${tmp}/tick2" & pid=$!
+  for _ in $(seq 1 300); do [[ -e "${tmp}/moved" ]] && break; sleep 0.1; done
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-987 --vault "${vault2}" --optional --text later --source test >/dev/null
+  touch "${tmp}/continue"; wait "${pid}"
+  assert_file_contains "${vault2}/Tickets/BOXP-987.md" '^status: blocked$'
+  assert_file_not_contains "${vault2}/Tickets/BOXP-987.md" '判定直後の追加'
+}
+
+test_todo_blocked_post_move_recheck_exhausted() {
+  CODEX_TASK_BOARD_CONTINUATION_LIMIT=0 test_todo_blocked_post_move_recheck
+}
+
+test_todo_plan_protection() {
+  local tmp vault
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-983|BOXP-983: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-983 in-progress codex
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-983 --vault "${vault}" --required --text protected --source test >/dev/null
+  if bb "${HELPER}" update BOXP-983 --vault "${vault}" --plan 'other' >"${tmp}/out" 2>"${tmp}/err"; then fail 'plan protection did not reject'; fi
+  assert_file_contains "${tmp}/err" 'changes existing TD items'
+  bb "${HELPER}" update BOXP-983 --vault "${vault}" --plan 'other' --force-plan >"${tmp}/out"
+  assert_file_not_contains "${vault}/Tickets/BOXP-983.md" 'TD-01'
+}
+
+test_todo_budget_exhausted() {
+  local tmp vault state bin pid
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-984|BOXP-984: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-984 in-progress codex
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_CONTINUATION_LIMIT=0 CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-984 --vault "${vault}" --required --text task --source test >/dev/null
+  wait "${pid}"
+  assert_file_contains "${vault}/Tickets/BOXP-984.md" '^status: blocked$'
+  assert_file_contains "${vault}/Tickets/BOXP-984.md" 'todo-gate-exhausted'
+  assert_run_summary_contains "${state}" BOXP-984 ':gate "held"'
+  assert_run_summary_contains "${state}" BOXP-984 ':result "continue"'
+}
+
+test_todo_hook_arguments() {
+  local tmp vault state bin
+  tmp="$(mktemp -d)"; vault="${tmp}/vault with 'quote"; state="${tmp}/state with \"quote"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-985|BOXP-985: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-985 in-progress codex
+  PATH="${bin}:$PATH" CODEX_FAKE_ARG_LINES="${tmp}/args" run_tick "${vault}" "${state}" env >"${tmp}/tick"
+  assert_file_contains "${tmp}/args" '^--dangerously-bypass-hook-trust$'
+  bb -e '
+    (require (quote [clojure.string :as str]))
+    (let [lines (filter #(str/starts-with? % "hooks.") (str/split-lines (slurp (first *command-line-args*))))
+          ;; TOML basic strings allow only these escapes and exclude control characters.
+          basic "\\\"(?:[^\\\"\\\\\\x00-\\x1f]|\\\\(?:[\\\"\\\\bfnrt]|u[0-9a-fA-F]{4}|U[0-9a-fA-F]{8}))*\\\""
+          pattern (re-pattern (str "hooks\\.(PostToolUse|PreToolUse|Stop)=\\[\\{matcher=" basic ",hooks=\\[\\{type=\\\"command\\\",command=" basic "\\}\\]\\}\\]"))]
+      (when-not (and (= 3 (count lines)) (every? #(re-matches pattern %) lines))
+        (binding [*out* *err*] (println "invalid hook TOML"))
+        (System/exit 1)))' "${tmp}/args"
+}
+
+test_todo_concurrent_writers() {
+  local tmp vault state bin pid rev todo plan
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-986|BOXP-986: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-986 in-progress codex
+  bb "${todo}" add BOXP-986 --vault "${vault}" --id TD-01 --required --text first --source test >/dev/null
+  rev="$(bb "${todo}" status BOXP-986 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  # Race helper writes with the runner's frontmatter and Notes writes. A stale
+  # ack is an expected CAS failure and is retried after all changes settle.
+  PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+  for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+  plan=$'- [x] TD-01【必須】first\n  - 由来: test'
+  bb "${HELPER}" update BOXP-986 --vault "${vault}" --plan "$plan" >"${tmp}/checkbox" 2>&1 & local c=$!
+  bb "${todo}" add BOXP-986 --vault "${vault}" --id TD-02 --optional --text second --source test >"${tmp}/add" & local a=$!
+  bb "${HELPER}" append-note BOXP-986 --vault "${vault}" --source test --note 'parallel note' >"${tmp}/note" & local n=$!
+  bb "${todo}" ack BOXP-986 --vault "${vault}" --rev "${rev}" >"${tmp}/ack" 2>&1 & local k=$!
+  wait "$a"; wait "$n"; wait "$k" || true
+  # If the add won, the plan guard correctly rejects the stale plan.
+  wait "$c" || true
+  wait "$pid"
+  rev="$(bb "${todo}" status BOXP-986 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  bb "${todo}" ack BOXP-986 --vault "${vault}" --rev "$rev" >/dev/null
+  # update --plan serializes checkbox edits with the same file lock.
+  plan=$'- [x] TD-01【必須】first\n  - 由来: test\n- [ ] TD-02【任意】second\n  - 由来: test'
+  bb "${HELPER}" update BOXP-986 --vault "${vault}" --plan "$plan" >/dev/null
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" 'parallel note'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" '\[x\] TD-01【必須】first'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" 'TD-02【任意】second'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" '^todo_ack_rev:'
+  assert_file_contains "${vault}/Tickets/BOXP-986.md" 'runの結果を保留'
+}
+
+test_todo_restart_delivery() {
+  local tmp vault state bin old_run todo before rev
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"; old_run="20260710T000000Z"
+  todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
+  mkdir -p "${bin}" "${state}/locks" "${state}/runs/BOXP-987/${old_run}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-987|BOXP-987: test]] #ticket status::in-progress assignee::codex'
+  write_ticket "${vault}" BOXP-987 in-progress codex
+  bb "${todo}" add BOXP-987 --vault "${vault}" --required --text restart-work --source test >/dev/null
+  before="$(cat "${vault}/Tickets/BOXP-987.md")"
+  bb "${todo}" add BOXP-987 --vault "${vault}" --required --text restart-work --source test >/dev/null
+  [[ "${before}" == "$(cat "${vault}/Tickets/BOXP-987.md")" ]] || fail 'duplicate add changed ticket'
+  printf '%s\n' '{:ticket "BOXP-987" :run-id "20260710T000000Z" :action :implement :lane "In Progress" :owner-id "old-pod" :owner-instance-id "old-instance" :heartbeat-at "2000-01-01T00:00:00Z"}' >"${state}/locks/BOXP-987.edn"
+  PATH="${bin}:$PATH" CODEX_FAKE_PROMPT_LOG="${tmp}/prompt" CODEX_FAKE_TODO_VAULT="${vault}" CODEX_FAKE_TODO_MODULE="${todo}" run_tick "${vault}" "${state}" env >"${tmp}/tick"
+  assert_file_contains "${state}/runs/BOXP-987/${old_run}/summary.edn" ':status :interrupted'
+  assert_file_contains "${tmp}/prompt" 'TD-01【必須】restart-work'
+  assert_file_contains "${vault}/Tickets/BOXP-987.md" '^status: done$'
+  rev="$(bb "${todo}" status BOXP-987 --vault "${vault}" --json | bb -e '(require (quote cheshire.core)) (println (:rev (cheshire.core/parse-string (slurp *in*) true)))')"
+  before="$(cat "${vault}/Tickets/BOXP-987.md")"
+  bb "${todo}" ack BOXP-987 --vault "${vault}" --rev "${rev}" >/dev/null
+  [[ "${before}" == "$(cat "${vault}/Tickets/BOXP-987.md")" ]] || fail 'duplicate ack changed ticket'
+}
+
+test_todo_preserves_existing_outcomes() {
+  local tmp vault state bin pid mode
+  for mode in continue nonzero; do
+    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    mkdir -p "${bin}"; make_fake_codex "${bin}"
+    write_board "${vault}" '- [ ] [[Tickets/BOXP-988|BOXP-988: test]] #ticket status::in-progress assignee::codex'
+    write_ticket "${vault}" BOXP-988 in-progress codex
+    local result=$'TASK_BOARD_REVIEW_PR: none\nTASK_BOARD_RESULT: continue' exitcode=0
+    if [[ "$mode" == nonzero ]]; then result='TASK_BOARD_RESULT: done'; exitcode=2; fi
+    PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_EXIT="${exitcode}" CODEX_FAKE_MESSAGE="${result}" run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+    for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+    bb "${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb" add BOXP-988 --vault "${vault}" --required --text later --source test >/dev/null
+    wait "${pid}"
+    if [[ "$mode" == nonzero ]]; then
+      assert_file_contains "${vault}/Tickets/BOXP-988.md" '^status: blocked$'
+    else
+      assert_file_contains "${vault}/Tickets/BOXP-988.md" '^status: ready$'
+    fi
+    assert_file_not_contains "${vault}/Tickets/BOXP-988.md" 'runの結果を保留'
+  done
+}
+
+test_todo_existing_holds_win() {
+  local tmp vault state bin pid mode todo
+  todo="${ROOT_DIR}/docker/codex-workspace/task-board/task_board_todos.bb"
+  for mode in review idle; do
+    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    mkdir -p "${bin}"; make_fake_codex "${bin}"; make_fake_claude "${bin}"
+    if [[ "$mode" == review ]]; then
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-989|BOXP-989: test]] #ticket status::in-progress assignee::codex'
+      write_ticket "${vault}" BOXP-989 in-progress codex
+      PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_SLEEP=4 CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+    else
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-989|BOXP-989: test]] #ticket status::in-progress assignee::fable'
+      write_ticket "${vault}" BOXP-989 in-progress fable
+      PATH="${bin}:$PATH" CLAUDE_FAKE_START_LOG="${tmp}/starts" CLAUDE_FAKE_SLEEP=8 CODEX_TASK_BOARD_AGENT_IDLE_TIMEOUT_SECONDS=2 run_tick "${vault}" "${state}" env >"${tmp}/tick" & pid=$!
+    fi
+    for _ in $(seq 1 100); do [[ -e "${tmp}/starts" ]] && break; sleep 0.1; done
+    [[ -e "${tmp}/starts" ]] || fail 'mock agent did not start'
+    bb "${todo}" add BOXP-989 --vault "${vault}" --required --text pending --source test >/dev/null
+    wait "${pid}"
+    assert_file_contains "${vault}/Tickets/BOXP-989.md" '^status: in-progress$'
+    assert_file_not_contains "${vault}/Tickets/BOXP-989.md" 'runの結果を保留'
+    if [[ "$mode" == review ]]; then
+      assert_file_contains "${vault}/Tickets/BOXP-989.md" 'Review gate failed'
+    else
+      assert_run_summary_contains "${state}" BOXP-989 ':idle-timeout\? true'
+    fi
+  done
+}
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.

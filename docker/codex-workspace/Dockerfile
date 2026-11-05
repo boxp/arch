@@ -157,6 +157,9 @@ ENV LANG=en_US.UTF-8 \
 COPY entrypoint.sh /usr/local/bin/codex-workspace-entrypoint
 COPY dotfiles-sync.sh /opt/codex-workspace/dotfiles-sync.sh
 COPY cron/ /opt/codex-workspace/cron/
+# task_board_todos.bb refuses to update a ticket without `mv --exchange` (BOXP-408).
+RUN mv --help | grep -q -- --exchange
+
 COPY task-board/ /opt/codex-workspace/task-board/
 COPY qwen-eval/ /opt/codex-workspace/qwen-eval/
 COPY novel-board/ /opt/codex-workspace/novel-board/

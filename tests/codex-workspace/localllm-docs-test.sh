@@ -599,6 +599,24 @@ test_apply_moves_to_review_without_cloud() {
   [[ "$(request_count)" == 1 ]] || fail "Review/boxp card must not re-run"
 }
 
+test_todo_contract_does_not_hold_a_docs_run() {
+  setup; echo normal >"${MODE_FILE}"
+  write_board "${VAULT}" Ready "- [ ] [[Tickets/BOXP-701|BOXP-701: docs]] #ticket status::ready"
+  write_ticket "${VAULT}" BOXP-701 ready localllm "${PILOT}/runbook.md"
+  bb "$(dirname "${RUNNER}")/task_board_todos.bb" add BOXP-701 --vault "${VAULT}" --required --text 'unreceived item' --source test >/dev/null
+  assert_file_contains "${VAULT}/Tickets/BOXP-701.md" '^todo_contract: v1$'
+  run_tick "${VAULT}" "${STATE}" env >"${CASE_DIR}/out"
+  # localllm is outside the TODO contract: its normal outcome stands.
+  assert_file_contains "${VAULT}/Tickets/BOXP-701.md" '^status: blocked$'
+  assert_file_contains "${VAULT}/Tickets/BOXP-701.md" '本人確認待ちで停止しました'
+  assert_file_not_contains "${VAULT}/Tickets/BOXP-701.md" 'runの結果を保留|todo-gate-exhausted'
+  local run_dir
+  run_dir="$(find "${STATE}/runs/BOXP-701" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  [[ ! -e "${run_dir}/todo-start.edn" ]] || fail 'localllm must not start under the TODO gate'
+  assert_file_contains "${run_dir}/summary.edn" ':result "owner-acceptance"'
+  [[ "$(request_count)" == 1 ]] || fail "expected exactly one request, got $(request_count)"
+}
+
 test_stream_response_is_applied() {
   setup; echo stream >"${MODE_FILE}"
   write_board "${VAULT}" "In Progress" "- [ ] [[Tickets/BOXP-701|BOXP-701: docs]] #ticket status::in-progress"
@@ -3575,6 +3593,7 @@ for t in \
   test_revision_keeps_the_notes_model_or_blocks \
   test_docs_model_outside_the_allowlist_blocks_before_any_request \
   test_stream_response_is_applied \
+  test_todo_contract_does_not_hold_a_docs_run \
   test_missing_opt_in_blocks_without_request \
   test_backlog_legacy_transcribe_ticket_is_groomed_without_a_model_call \
   test_backlog_groom_validates_explicit_targets_before_ready \
