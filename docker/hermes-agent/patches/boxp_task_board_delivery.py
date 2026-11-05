@@ -196,14 +196,7 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
         # Preserve a potentially necessary report, but do not claim its work succeeded.
         content += "\n\n" + notice(event, "missing_or_conflicting_receipt")
     classification = "unresolved" if NOTICE in content else proof
-    if quiet_now(vault):
-        # The receipt is the only evidence of the hold: without it this is not a success.
-        if vault_receipt(vault, event, "quiet-held", classification):
-            return SendResult(success=True)
-        return SendResult(success=False, error=f"Quiet hold unrecorded; reconcile event={event}")
     try:
-        # Resolve the authorized destination before creating any delivery intent.
-        delivery = retained_destination(adapter, chat_id)
         if root is None:
             from hermes_constants import get_hermes_home
             root = get_hermes_home() / "task-board-delivery-receipts"
@@ -221,14 +214,27 @@ async def send_once(adapter, chat_id, content, *, metadata=None, root=None, vaul
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 return SendResult(success=False, error=f"Delivery in flight; reconcile event={event}")
-            if path.exists():
-                previous = json.loads(path.read_text())
+            quiet = quiet_now(vault)
+            # Reconcile before any quiet hold: a hold must not overwrite the evidence of
+            # an earlier egress. While quiet, a report's receipt also answers for a notice.
+            report = root / (key + ".json")
+            for existing in [path] + ([report] if quiet and path != report else []):
+                if not existing.exists():
+                    continue
+                previous = json.loads(existing.read_text())
                 if previous.get("state") == "sent" and previous.get("event") == event:
                     vault_receipt(vault, event, "sent", previous.get("classification"))
                     logger.info("task-board duplicate event=%s classification=%s", event, previous.get("classification"))
                     return SendResult(success=True)
                 vault_receipt(vault, event, "uncertain", previous.get("classification"))
                 return SendResult(success=False, error=f"Delivery uncertain; reconcile event={event}")
+            if quiet:
+                # The receipt is the only evidence of the hold: without it this is not a success.
+                if vault_receipt(vault, event, "quiet-held", classification):
+                    return SendResult(success=True)
+                return SendResult(success=False, error=f"Quiet hold unrecorded; reconcile event={event}")
+            # Resolve the authorized destination before creating any delivery intent.
+            delivery = retained_destination(adapter, chat_id)
 
             def save(state):
                 payload = {"event": event, "classification": classification, "state": state,

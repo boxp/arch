@@ -76,12 +76,49 @@ class Fixtures(unittest.IsolatedAsyncioTestCase):
         with patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc)):
             self.assertTrue((await self.send(delivery.NOTICE)).success)
             self.assertFalse(self.calls)
-            self.assertFalse(self.root.exists())
+            self.assertFalse(list(self.root.glob("*.json")))
             path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
             self.assertEqual(json.loads(path.read_text())["state"], "quiet-held")
         with patch.object(delivery, "clock", return_value=datetime(2026, 10, 30, 0, 0, tzinfo=timezone.utc)):
             self.assertTrue((await self.send("report")).success)
             self.assertEqual(self.calls, ["report"])
+
+    def vault_state(self):
+        path = self.vault.parent / "Projects/task-board-events/delivery-receipts" / (EVENT + ".json")
+        return json.loads(path.read_text())["state"]
+
+    def quiet(self):
+        return patch.object(delivery, "clock", return_value=datetime(2026, 10, 29, 23, 59, tzinfo=timezone.utc))
+
+    async def test_quiet_duplicate_keeps_sent_receipt(self):
+        self.note("notified")
+        self.assertTrue((await self.send("report")).success)
+        with self.quiet():
+            self.assertTrue((await self.send("report")).success)
+            self.assertEqual(self.vault_state(), "sent")
+            # A notice for an already delivered report must not reopen it either.
+            self.assertTrue((await self.send(delivery.NOTICE)).success)
+            self.assertEqual(self.vault_state(), "sent")
+        self.assertEqual(self.calls, ["report"])
+
+    async def test_quiet_duplicate_keeps_uncertain_receipt(self):
+        self.note("notified")
+        self.fail = True
+        self.assertFalse((await self.send("report")).success)
+        with self.quiet():
+            self.assertFalse((await self.send("report")).success)
+            self.assertEqual(self.vault_state(), "uncertain")
+        self.assertEqual(len(self.calls), 1)
+
+    async def test_quiet_report_after_notice_is_still_held(self):
+        self.note("notified")
+        self.assertTrue((await self.send(delivery.NOTICE)).success)
+        with self.quiet():
+            self.assertTrue((await self.send("report")).success)
+            self.assertEqual(self.vault_state(), "quiet-held")
+        self.assertEqual(self.calls, [delivery.NOTICE])
+        self.assertTrue((await self.send("report")).success)
+        self.assertEqual(self.calls, [delivery.NOTICE, "report"])
 
     async def test_quiet_hold_fails_when_receipt_cannot_be_written(self):
         self.note("notified")
