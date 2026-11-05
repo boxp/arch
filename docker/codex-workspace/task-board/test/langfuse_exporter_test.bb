@@ -655,6 +655,37 @@
           (is (some #(re-find #"subagent:|delegate" (:name %)) spans) "the child's span exists")
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
+(defn- nested-json [value depth ascii-only?]
+  (nth (iterate (fn [v] (let [out (json/generate-string v {:escape-non-ascii ascii-only?})]
+                          (subs out 1 (dec (count out)))))
+                value)
+       depth))
+
+(deftest value-is-masked-in-every-serialized-form
+  (let [env {"A_TOKEN" "ab\"1" "B_TOKEN" "q'z" "C_TOKEN" "l1\nl2" "D_TOKEN" "b\\s" "E_TOKEN" "é7"
+             "F_TOKEN" "😀k" "G_TOKEN" "s p/c" "H_TOKEN" "t\tu&v<w>" "LONG_PASSWORD" "long\"value\nwith\\all"}
+        values (lf/secret-values env)
+        html (fn [v] (-> v (str/replace "&" "&amp;") (str/replace "<" "&lt;") (str/replace ">" "&gt;")
+                         (str/replace "\"" "&quot;") (str/replace "'" "&#x27;")))
+        percent (fn [v] (-> (java.net.URLEncoder/encode v "UTF-8")))]
+    (doseq [value (vals env)]
+      (doseq [form (concat [value (html value) (percent value) (str/replace (percent value) "+" "%20")
+                            (str/replace value "/" "\\/")]
+                           (for [depth [1 2 3 4] ascii-only? [false true]] (nested-json value depth ascii-only?)))]
+        (is (= "answer [REDACTED:env] end" (:value (lf/redact (str "answer " form " end") values))) form)
+        (is (false? (lf/guard-safe? (str "answer " form " end") values)) form))
+      ;; What the review found: a structure goes through JSON before it reaches the mask.
+      (doseq [structure [{:k [value]} {:k {:n (str value "x")}}]]
+        (let [text (json/generate-string structure)
+              out (:value (lf/redact text values))]
+          (is (str/includes? out "[REDACTED:env]") text)
+          (is (not (str/includes? out (nested-json value 1 false))) text)
+          (is (false? (lf/guard-safe? text values)) text))))
+    (testing "a value read from a file keeps its newline; the text shows it without"
+      (is (= "answer [REDACTED:env]" (:value (lf/redact "answer zq7mw" (lf/secret-values {"FILE_TOKEN" "zq7mw\n"}))))))
+    (testing "neighbours of a value survive"
+      (is (= "ab\"2 ab 1" (:value (lf/redact "ab\"2 ab 1" (lf/secret-values {"A_TOKEN" "ab\"1"}))))))))
+
 (deftest short-and-passphrase-env-values-are-masked-without-their-name
   (let [short (str "ab" "1!")
         phrase (str "horse" "77")
