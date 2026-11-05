@@ -21,12 +21,60 @@ permissions:
   contents: read
 
 jobs:
+  # PR は本番設定でビルドする。この dist は public repo の artifact になるので、全体図のサムネイルを含めない。
   build:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/portfolio/package-lock.json
+
+      - name: Install dependencies
+        working-directory: apps/portfolio
+        run: npm ci
+
+      # Lighthouse で本番相当のメタ（noindex なし）を検証する。
+      - name: Build (production settings)
+        working-directory: apps/portfolio
+        run: npm run build
+
+      # architecture の匿名公開は未承認なので、本番設定のビルドに URL も導線もサムネイルも残さない。
+      - name: Check production output has no unapproved diagram
+        working-directory: apps/portfolio
+        run: |
+          grep -q 'href="https://lolice-lineage.b0xp.io/"' dist/index.html
+          test -s dist/diagrams/lolice-lineage.webp
+          test ! -e dist/lineage.html
+          test ! -e dist/architecture.html
+          test ! -e dist/diagrams/lolice-architecture.webp
+          ! grep -rq 'lolice-architecture' dist
+
+      - name: Upload dist
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: portfolio-dist
+          path: apps/portfolio/dist
+          retention-days: 7
+
+  # stage は全体図のサムネイルを含む。dist を artifact に上げない。
+  deploy-stage:
+    if: github.event_name != 'pull_request' && github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: read
       deployments: write
+    environment: portfolio-stage-private
     env:
       STAGE_PROJECT_NAME: boxp-portfolio-stage
       STAGE_SITE_URL: https://portfolio-stage.b0xp.io
@@ -45,47 +93,43 @@ jobs:
         working-directory: apps/portfolio
         run: npm ci
 
-      # PR では本番設定でビルドし、Lighthouse で本番相当のメタ（noindex なし）を検証する。
-      - name: Build (production settings)
-        if: github.event_name == 'pull_request'
-        working-directory: apps/portfolio
-        run: npm run build
-
       - name: Build (stage settings)
-        if: github.event_name != 'pull_request'
         working-directory: apps/portfolio
         run: npm run build
         env:
           SITE_ENV: stage
           SITE_URL: ${{ env.STAGE_SITE_URL }}
 
-      # architecture の匿名公開は未承認なので、本番設定のビルドに URL も導線も残さない。
-      - name: Check production output has no unapproved diagram
-        if: github.event_name == 'pull_request'
+      - name: Restore the private thumbnail
+        working-directory: apps/portfolio
+        env:
+          # One secret holds at most 48 KB, so the image arrives in ordered parts.
+          THUMBNAIL_B64_1: ${{ secrets.LOLICE_ARCHITECTURE_THUMBNAIL_B64 }}
+          THUMBNAIL_B64_2: ${{ secrets.LOLICE_ARCHITECTURE_THUMBNAIL_B64_2 }}
+        run: |
+          [ -n "$THUMBNAIL_B64_1" ] || { echo "LOLICE_ARCHITECTURE_THUMBNAIL_B64 is not set" >&2; exit 1; }
+          # public/ に置くと本番設定のビルドにも混ざるので、ビルド後の dist にだけ入れる。
+          out=dist/diagrams/lolice-architecture.webp
+          printf '%s' "$THUMBNAIL_B64_1" "$THUMBNAIL_B64_2" | base64 -d > "$out"
+          [ "$(head -c 4 "$out")" = RIFF ] && [ "$(tail -c +9 "$out" | head -c 4)" = WEBP ] \
+            || { echo "thumbnail is not a WebP file" >&2; exit 1; }
+          # 分割の欠落で切れた画像を通さない。RIFF のサイズ欄は全長 - 8。
+          [ "$(od -An -tu4 -j4 -N4 "$out" | tr -d ' ')" -eq "$(($(wc -c < "$out") - 8))" ] \
+            || { echo "thumbnail is truncated" >&2; exit 1; }
+          sha256sum "$out"
+
+      - name: Check stage output links both diagrams directly
         working-directory: apps/portfolio
         run: |
-          test -f dist/lineage.html
+          grep -q 'href="https://lolice-lineage.b0xp.io/"' dist/index.html
+          grep -q 'href="https://lolice-architecture.b0xp.io/"' dist/index.html
+          test -s dist/diagrams/lolice-lineage.webp
+          test -s dist/diagrams/lolice-architecture.webp
+          test ! -e dist/lineage.html
           test ! -e dist/architecture.html
-          ! grep -rq 'lolice-architecture' dist
-
-      - name: Check stage output links both diagrams
-        if: github.event_name != 'pull_request'
-        working-directory: apps/portfolio
-        run: |
-          test -f dist/lineage.html
-          test -f dist/architecture.html
-          grep -q 'lolice-architecture.b0xp.io' dist/architecture.html
-
-      - name: Upload dist
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: portfolio-dist
-          path: apps/portfolio/dist
-          retention-days: 7
 
       # Stage only in this phase. Production (b0xp.io) is not deployed from here.
       - name: Deploy to Cloudflare Pages (stage)
-        if: github.event_name != 'pull_request'
         working-directory: apps/portfolio
         run: npx wrangler pages deploy dist --project-name "$STAGE_PROJECT_NAME" --branch main
         env:

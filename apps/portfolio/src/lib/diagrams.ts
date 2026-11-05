@@ -4,38 +4,36 @@ import { isStage } from './site';
 export type DiagramAccess = 'public' | 'owner-only';
 
 export interface Diagram {
-  slug: string;
   title: string;
   lead: string;
-  points: string[];
   url: string;
   access: DiagramAccess;
+  /** 実画面の切り出し。public/ からの配信パス。 */
+  thumbnail: string;
+  thumbnailAlt: string;
 }
 
+// サムネイルの実寸。カード幅の約 2 倍。
+export const THUMBNAIL_WIDTH = 840;
+export const THUMBNAIL_HEIGHT = 525;
+
 export const lineage: Diagram = {
-  slug: 'lineage',
   title: 'lolice lineage',
   lead: '自宅 Kubernetes クラスタ lolice と周辺インフラを構成要素の単位で分解し、由来、依存、データの流れを根拠つきで辿れるようにした図です。',
-  points: [
-    '構成要素ごとに役割、関係、根拠となる IaC のファイルと行を確認できます',
-    '上流と下流を辿って、依存と影響範囲を追えます',
-    '秘密の配布やデプロイなどの代表的な経路を順番に見られます',
-  ],
   url: 'https://lolice-lineage.b0xp.io/',
   access: 'public',
+  thumbnail: '/diagrams/lolice-lineage.webp',
+  thumbnailAlt: 'lolice lineage の実画面の一部。アプリ、基盤、物理ノードの層にサービス名のタグが並んでいる。',
 };
 
+// サムネイルは public repo に置かない。stage の deploy がビルド後に環境 secret から dist/diagrams/ へ復元する。
 export const architecture: Diagram = {
-  slug: 'architecture',
   title: 'lolice architecture',
   lead: '同じクラスタを役割の単位で束ね、利用者、エッジと認証、アプリと基盤、CI と GitOps、データ、外部サービスの構造と主な流れを一望できるようにした図です。',
-  points: [
-    '全体の階層と通信、認証、配備、データの大きな流れを 1 画面で見られます',
-    '部品を選ぶと、束ねている要素と根拠を確認できます',
-    '個々の要素の来歴は lineage へ辿れます',
-  ],
   url: 'https://lolice-architecture.b0xp.io/',
   access: 'owner-only',
+  thumbnail: '/diagrams/lolice-architecture.webp',
+  thumbnailAlt: 'lolice architecture の実画面の一部。役割ごとの色枠の中にサービスのアイコンと名前が並び、矢印と短いラベルで結ばれている。',
 };
 
 /** 本番ビルドに architecture の導線と URL を含めない。 */

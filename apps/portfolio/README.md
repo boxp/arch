@@ -46,19 +46,23 @@ Node 22.23.4 以上が必要です（`package.json` の `engines` 参照。Astro
 - 年収・退職理由・社外秘になり得るプロジェクト名は書かない
 - LinkedIn 側を更新したら対応するファイルを更新し、`linkedinSyncedAt` を更新する
 
-## インフラ図のページ
+## インフラ図のカード
 
-- `/lineage`: 公開済みの lolice lineage を紹介してリンクする
-- `/architecture`: 本人限定の全体図へリンクする。`SITE_ENV=stage` のときだけ生成する
+トップの Infrastructure 節に、実画面のサムネイルつきカードを置きます。カードは通常の `<a>` で各図へ直接飛びます。紹介ページはありません。
 
-図の本体はこの repo に置きません。内容は `src/lib/diagrams.ts` にあります。
+- lolice lineage: 公開済み。サムネイルは `public/diagrams/lolice-lineage.webp`
+- lolice architecture: 本人限定。カードは `SITE_ENV=stage` のときだけ生成します
+
+図の本体はこの repo に置きません。カードの内容は `src/lib/diagrams.ts` にあります。
+
+全体図のサムネイルは匿名公開が未承認なので、コミットしません。環境 `portfolio-stage-private`（main 限定）の secret `LOLICE_ARCHITECTURE_THUMBNAIL_B64`、`_2` に base64 を分割して登録し、stage の deploy がビルド後に `dist/diagrams/` へ復元します。`public/` には置かないでください。本番設定のビルドに混ざります。secret が無いと stage の deploy は失敗します。図を更新したらサムネイルを撮り直し、secret を更新して `deploy-portfolio` を手動実行します。
 
 ## デプロイ
 
 workflow は `.github/workflows/deploy-portfolio.yml`（`apps/portfolio/**` と workflow 自身の変更で起動）。
 
 - PR: 本番設定でビルドし Lighthouse CI（モバイルで Performance / Accessibility / SEO 各 90 以上をアサート）のみ
-- `main` への push / workflow_dispatch: `SITE_ENV=stage` でビルド後に `wrangler pages deploy dist --project-name boxp-portfolio-stage`（stage のみ。本番 `boxp-portfolio` へのデプロイは本番切替フェーズで追加する）
+- `main` への push / workflow_dispatch（main のみ）: 全体図のサムネイルを復元し、`SITE_ENV=stage` でビルド後に `wrangler pages deploy dist --project-name boxp-portfolio-stage`（stage のみ。本番 `boxp-portfolio` へのデプロイは本番切替フェーズで追加する）
 - Secrets は arch リポジトリ既存の `CLOUDFLARE_API_TOKEN` / `CLOUDFLARE_ACCOUNT_ID` を使う
 
 ### ビルド時環境変数

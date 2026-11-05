@@ -4,6 +4,8 @@
 
 lineage と同じ見た目で、インフラ全体の役割、階層、通信、認証、CI と GitOps、データの流れを一望できる図を作る。ポートフォリオに lineage と全体図の独立ページを用意し、stage で辿れるようにする。
 
+> 導線は末尾の追記で置き換えた。下の `/lineage` と `/architecture` の記述は当初の計画で、これらのページは削除済み。
+
 ## 公開範囲の区別
 
 | 対象 | 状態 | この PR の扱い |
@@ -44,3 +46,17 @@ lineage と同じ見た目で、インフラ全体の役割、階層、通信、
 - 実 URL: 未認証の拒否は担当が確認する。ログイン後の表示は Owner にしか確認できない
 
 BOXP-430 の公開後検証で、ブラウザ向け応答にだけ Cloudflare Web Analytics の script が注入されると分かった。この図も同じ zone なので、`Cache-Control` に `no-transform` を付けて最初から注入を止める。zone の設定は変更しない。ログイン後の本文 hash はブラウザの開発者ツールか `/sha256` との比較で確認する。
+
+## 追記: サムネイルから各図へ直接飛ぶ導線
+
+Owner の指定で、紹介ページ `/lineage` と `/architecture` をやめ、トップのカードのサムネイルから各図の URL へ通常のリンクで飛ぶようにした。
+
+- lineage のサムネイルは公開済みの図の実画面なので repo に置く。
+- 全体図のサムネイルは匿名公開が未承認なので repo に置かない。環境 `portfolio-stage-private`（main 限定）の secret から stage の deploy 時だけ `dist/` へ復元する。`public/` に置くと本番設定のビルドに混ざるので置かない。
+- stage の `dist` は artifact に上げない。public repo の artifact は誰でも取得できる。本番設定の `dist` だけを PR の Lighthouse に渡す。
+
+**secret を残す理由**: `main` への push のたびに stage を deploy するので、サムネイルも毎回必要になる。全体図の本体と違い、このサムネイルの secret は配備後に削除しない。以前の判断（私的な secret を保持し続けない）からの変更で、保持するのは図の一部を切り出した 1 枚だけ。全体図の本体は従来どおり Worker の deploy 後に secret を消す。
+
+**他案を採らなかった理由**: Access で保護した Worker からサムネイルを `<img>` で読む案は、そのホストの Access セッションが無い初回に画像が出ない。stage の hostname に Worker route を足す案は、担当がログインできず実際の振る舞いを確認できない。
+
+図を更新したら、サムネイルを撮り直して secret を更新し、`deploy-portfolio` を手動実行する。本番切替と全体図の匿名公開は引き続き Owner の判断を待つ。
