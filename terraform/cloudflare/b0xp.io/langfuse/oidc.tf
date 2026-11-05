@@ -19,7 +19,7 @@ locals {
     p if p.name == local.owner_policy_name
   ])
   # The account that holds OWNER in Langfuse follows the policy instead of being written twice.
-  owner_emails = [for rule in local.owner_policy.include : rule.email.email if rule.email != null]
+  owner_emails         = [for rule in local.owner_policy.include : rule.email.email if rule.email != null]
   langfuse_oidc_issuer = "https://${data.cloudflare_zero_trust_organization.current.auth_domain}/cdn-cgi/access/sso/oidc/${cloudflare_zero_trust_access_application.langfuse_oidc.saas_app.client_id}"
 }
 
