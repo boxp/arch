@@ -787,8 +787,46 @@
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
         value (str "Zq7" "plainvalue9")
         spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" (str "password: " value))))]
-    (is (str/includes? (pr-str spans) "withheld_after_secret_exposure"))
-    (is (not (str/includes? (pr-str (map #(lf/sanitize-span {:secret-values [] :max-field-bytes 100000} (atom {}) %) spans)) value)))))
+    ;; TD-05: a secret that can be pinned to its value is masked wherever it appears; later bodies stay readable.
+    (is (not (str/includes? (pr-str spans) "withheld_after_secret_exposure")))
+    (is (some #(contains? (:session-values %) value) spans))
+    (is (not (str/includes? (pr-str (map #(lf/sanitize-span {:secret-values (mapcat :session-values spans) :max-field-bytes 100000} (atom {}) %) spans)) value)))))
+
+(deftest unpinned-secret-still-withholds-later-bodies
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [output ["-----BEGIN PRIVATE KEY-----\nabc\n-----END PRIVATE KEY-----"]]
+      (let [spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" output)))]
+        (is (some #(= "value_exposure" (:private-reason %)) spans) output)
+        (is (str/includes? (pr-str spans) "withheld_after_secret_exposure") output)))))
+
+(deftest pinned-block-and-element-values-are-masked-and-bodies-continue
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [[output value] [["db:\n  password:\n    - Zq7blockvalue9\n" "Zq7blockvalue9"] ["<password>Zq7xmlvalue9</password>" "Zq7xmlvalue9"]]]
+      (let [spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" output)))
+            values (mapcat :session-values spans)]
+        (is (not (str/includes? (pr-str spans) "withheld_after_secret_exposure")) output)
+        (is (some #{value} values) output)
+        (is (not (str/includes? (pr-str (map #(lf/sanitize-span {:secret-values values :max-field-bytes 100000} (atom {}) %) spans)) value)) output)))))
+
+(deftest references-and-counters-are-not-evidence
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [output ["env:\n  - name: API_KEY\n    valueFrom:\n      secretKeyRef:\n        name: app-secrets\n        key: API_KEY\n"
+                    "token: ${GITHUB_TOKEN}" "password: <your password>" "max_output_tokens: 4000"]]
+      (let [spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" output)))]
+        (is (not (str/includes? (pr-str spans) "withheld_")) output))))
+  (is (not (lf/withhold-output? "{\"cmd\":\"ls\",\"max_output_tokens\":12000}")))
+  (is (lf/withhold-output? "cat /run/secrets/token"))
+  (is (lf/withhold-output? "cat /etc/app/secret"))
+  (is (not (lf/withhold-output? "grep -rn secret src")))
+  (is (not (lf/withhold-output? "/usr/bin/env python3 x.py")))
+  (is (not (lf/withhold-output? "env LANG=C ls")))
+  (doseq [c ["env" "env | grep A" "printenv HOME" "x; env > out"]] (is (lf/withhold-output? c) c))
+  (is (= #{"Zq7passvalue9"} (:values (#'lf/exposure "password = Zq7passvalue9")))))
+
+(deftest plain-lowercase-prose-words-are-not-session-values
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" "the token generation configuration is documented")))]
+    (is (empty? (mapcat :session-values spans)))))
 
 (deftest word-only-values-propagate-through-run
   (fs/with-temp-dir [base {}]
@@ -805,7 +843,7 @@
 (deftest exposure-limits-and-metadata
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
     (doseq [[output reason] [[(apply str (repeat 262145 "x")) "unscanned_large_output"]
-                             [(str "password " (str/join " " (map #(str "Value" % "X") (range 257)))) "too_many_session_values"]]]
+                             [(str "password " (str/join " " (map #(str "Value" % "X") (range 2049)))) "too_many_session_values"]]]
       (let [spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" output)))]
         (is (some #(= reason (:private-reason %)) spans))
         (is (some #(= "withheld_after_secret_exposure" (attr-value % "langfuse.observation.metadata.body_policy")) spans)))))
@@ -868,7 +906,7 @@
     (write-fixture! base {})
     (let [cfg (test-config base) project (lf/claude-project-dir cfg ticket run-id)
           run-dir (fs/path (:root cfg) "runs" ticket run-id)
-          values (mapv #(str "Value" % "X") (range 257))]
+          values (mapv #(str "Value" % "X") (range 2049))]
       (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "Read" (str "password " (str/join " " values)))))
       (spit (str (fs/path run-dir "prompt.md")) (str/join " " values))
       (is (:failed (prepared cfg))))))

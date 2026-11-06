@@ -263,9 +263,9 @@
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 
 (def sensitive-path
-  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_rsa|id_ed25519|secrets?(?:[/\\]|(?=$|[\s\"']))|[^/\s\"']*token[^/\s\"']*)")
+  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_rsa|id_ed25519|secrets?[/\\]|(?<=/)secrets?(?=$|[\s\"'])|[^/\s\"']*token(?!s)[^/\s\"']*)")
 (def sensitive-command
-  #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env|printenv)(?:[\s\"'|;&<>)]|$)|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
+  #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env(?:[ \t]+(?:-\S*|[A-Za-z_]\w*=\S*))*[ \t]*(?:[\"'|;&<>)`]|\\[nrt]|$)|printenv(?:[\s\"'|;&<>)]|$))|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
 (defn withhold-output? [input]
   (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s)
                                     (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))
@@ -411,34 +411,121 @@
 (def body-tools #{"Task" "Agent" "TodoWrite" "delegate_task" "delegate" "spawn_agent"})
 (def withheld-model-output "[withheld: the model has seen tool output]")
 
+(def max-session-values 2048)
+(def value-stopword #"(?i)https?|basic|bearer|digest|negotiate|user|username|name|value|true|false|null|none")
+
 (defn- candidate-values [output]
   (->> (str/split (str output) segment-break)
        (filter #(re-find loose-word %))
        (mapcat #(str/split % #"[\s\"'`,;:=<>()\[\]{}]+"))
+       ;; A plain lowercase word is prose, not a value: masking it would blank words such as "generation".
        (filter #(and (<= 6 (count %) 128) (not (re-find loose-word %))
-                     (not (re-matches #"[a-z]{1,9}" %))))
+                     (not (re-matches #"[a-z]+|[0-9]{1,5}" %))))
        set))
+
+(defn- strip-value [v]
+  (-> (str v) str/trim (str/replace #"^(?:[\"'`]|\\+[\"'nrt]?)+|(?:[\"'`,;]|\\+[\"'nrt]?)+$" "") str/trim))
+
+(def reference-value #"(?i)\$\{?[\w.-]*\}?|<[^>]*>|\{\{[^}]*\}\}|\[REDACTED:[a-z_-]+\]|\*+|x{3,}|\.\.\.|…|-|\|")
+
+(defn- reference? [t]
+  (or (str/blank? t) (re-find loose-word t) (re-matches value-stopword t) (re-matches reference-value t)
+      (re-matches #"(?i)name|key|ref|from|data" t)))
+
+(defn- token-values
+  "Values to mask for matched text. A single token is the value itself; a value of several words keeps the whole
+  text and its secret-looking tokens. A reference (a variable, placeholder, secret name or key word) is skipped.
+  A value under 4 characters is masked in place only: masking it everywhere would blank ordinary text, and it is
+  no credential on its own."
+  [raw]
+  (reduce (fn [acc v]
+            (let [tokens (remove reference? (map strip-value (str/split v #"[\s\"'`,;:=<>()\[\]{}\\]+")))]
+              (cond (or (nil? acc) (reference? v) (empty? tokens)) acc
+                    (= 1 (count tokens)) (if (< (count (first tokens)) 4) acc (conj acc (first tokens)))
+                    :else (into (conj acc v) (filter #(and (>= (count %) 6) (not (re-matches #"[a-z]+|[0-9]{1,5}" %))) tokens)))))
+          #{}
+          (keep #(let [v (strip-value %)] (when-not (str/blank? v) v)) raw)))
+
+(defn- pinned-values
+  "The values a pattern match shows, so they can be masked wherever the model repeats them, or nil (withhold)."
+  [kind m]
+  (case kind
+    :private-key nil
+    (token-values
+     (case kind
+       :header [(second (re-find #"(?s)^[^:]*:\s*(.*)$" m))]
+       :url-credentials [(second (re-find #"://[^:/@\s]*:([^@\s]*)@" m))]
+       :cli-password [(-> (last (str/split m #"\s+")) (str/replace #"^(?:-p|(?:-u|--user)=?)" "") (str/replace #"^[^:]*:(?=.)" ""))]
+       :flag [(last (str/split m #"[ \t]+"))]
+       :assignment [(second (re-find #"(?s)^.*?(?:[:=]|\\+u00(?:3[aA]|3[dD]))(.*)$" m))]
+       :bearer [(second (re-find #"(?i)bearer\s+(.*)" m))]
+       :env-entry (str/split m #"[\s\"'`,;:=<>()\[\]{}\\]+")
+       [m]))))
+
+(defn- block-values
+  "Values of secret-named YAML/JSON blocks and XML elements, or nil when one cannot be pinned."
+  [text]
+  (let [matcher (.matcher structured-key text)
+        reversed (atom 0)]
+    (mask-reversed-entries text (fn [_] (swap! reversed inc) ""))
+    (when (zero? @reversed)
+      (loop [position 0 values #{} n 0]
+        (cond
+          (> n 200) nil
+          (.find matcher position)
+          (let [end (structured-end text matcher)]
+            (if end
+              (when-let [found (token-values (str/split (subs text (.end matcher) end) #"\r?\n|\\+n"))]
+                (recur end (into values found) (inc n)))
+              (recur (max (.end matcher) (inc position)) values n)))
+          :else
+          (let [elements (map #(if (vector? %) (first %) %) (take 201 (re-seq secret-element text)))
+                pinned (map #(token-values [(str/replace % #"(?s)^[^>]*>|<[^<]*$" "")]) elements)]
+            (when (and (<= (count elements) 200) (not-any? nil? pinned))
+              (into values (apply concat pinned)))))))))
+
+(defn- exposure
+  "{:reason r} when text shows the model a secret that cannot be pinned to a value, {:values vs} when it can, nil otherwise."
+  [text]
+  (let [text (str text)]
+    (if (> (count text) 262144)
+      {:reason "unscanned_large_output"}
+      (try
+        (if-let [blocks (block-values text)]
+          (loop [[[kind pattern] & more] patterns values blocks seen 0]
+            (if-not kind
+              (when (seq values) {:values values})
+              (let [matches (take 201 (map #(if (vector? %) (first %) %) (re-seq pattern text)))
+                    matches (if (= kind :entropy) (filter entropy-secret? matches) matches)
+                    pinned (map #(pinned-values kind %) matches)]
+                (cond (> (+ seen (count matches)) 200) {:reason "unscanned_large_output"}
+                      (some nil? pinned) {:reason "value_exposure"}
+                      :else (recur more (into values (apply concat pinned)) (+ seen (count matches)))))))
+          {:reason "value_exposure"})
+        (catch Throwable _ {:reason "scan_error"})))))
 
 (def ^:dynamic *privacy-values* [])
 
-(defn- privacy-reason [tool result]
-  (let [output (str (:output result))]
-    (cond (withhold-output? (:input tool)) "sensitive_source"
-          (env-dump? output) "sensitive_source"
-          (> (count output) 262144) "unscanned_large_output"
-          (some #(not= :secret_line %) (keys (:redactions (redact output *privacy-values*)))) "value_exposure"
-          :else nil)))
+(defn- tool-exposure [tool result]
+  (let [output (str (:output result))
+        input (:input tool)
+        input (if (string? input) input (json/generate-string input))]
+    (cond (withhold-output? input) {:reason "sensitive_source"}
+          (env-dump? output) {:reason "sensitive_source"}
+          :else (let [in (exposure input) out (exposure output)]
+                  (cond (:reason in) in
+                        (:reason out) out
+                        :else {:values (into (set (:values in)) (concat (:values out) (when-not (> (count output) 262144) (candidate-values output))))})))))
+
+(defn- privacy-reason [tool result] (:reason (tool-exposure tool result)))
 (defn- privacy-analysis [ctx gens tools-of result-of]
   (let [shared (or (:session-state ctx) (atom #{}))
-        analysis (reduce (fn [{:keys [values] :as state} [idx gen]]
+        analysis (reduce (fn [state [idx gen]]
             (reduce (fn [state tool]
-                      (let [result (result-of tool)
-                            output (str (:output result))
-                            reason (privacy-reason tool result)
-                            candidates (if (or reason (> (count output) 262144)) #{} (candidate-values output))
-                            values (into (:values state) candidates)
-                            reason (or reason (when (> (count values) 256) "too_many_session_values"))]
-                        (cond-> (assoc state :values (set (take 256 values)))
+                      (let [{:keys [reason] found :values} (tool-exposure tool (result-of tool))
+                            values (into (:values state) found)
+                            reason (or reason (when (> (count values) max-session-values) "too_many_session_values"))]
+                        (cond-> (assoc state :values values)
                           reason (update :first #(or % idx))
                           reason (assoc-in [:reasons tool] reason))))
                     state (tools-of gen)))
@@ -461,7 +548,7 @@
                                private? (assoc "langfuse.observation.metadata.output_policy" withheld-model-output)
                                status (assoc "langfuse.observation.metadata.status" status)
                                error? (assoc "langfuse.observation.level" "ERROR"))})
-           :session-values (if (or sensitive? hide-view? (> (count (str output)) 262144)) #{} (set (take 256 (candidate-values output))))
+           :session-values (if (or sensitive? hide-view?) #{} (set (:values (tool-exposure {:input input} {:output output}))))
            :private-reason (or reason (privacy-reason {:input input} {:output output})))))
 
 (defn- generation-span [ctx {:keys [key parent model usage start end input output]}]
