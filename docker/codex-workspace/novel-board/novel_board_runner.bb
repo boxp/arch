@@ -2883,13 +2883,26 @@
   (fs/path (work-dir novel-id) (str "illustration.pending-" (fs/file-name run-dir) ".png")))
 
 (defn promote-illustration! [novel-id pending]
-  (let [output (illustration-path novel-id)]
+  (let [output (illustration-path novel-id)
+        metadata (fs/path (work-dir novel-id) "image-metadata.json")
+        pending-metadata (str pending ".json")
+        previous (fs/path (work-dir novel-id) (str "illustration.prev-" (str/replace (now-str) #"[:.]" "-") ".png"))]
     (when (fs/exists? output)
-      (fs/copy output (fs/path (work-dir novel-id) (str "illustration.prev-" (str/replace (now-str) #"[:.]" "-") ".png")) {:replace-existing true}))
+      (fs/copy output previous {:replace-existing true})
+      (when (fs/exists? metadata)
+        (fs/copy metadata (str previous ".json") {:replace-existing true})
+        (private-file! (str previous ".json"))))
     (java.nio.file.Files/move (fs/path pending) (fs/path output)
                              (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
     (private-file! output)
+    (if (fs/exists? pending-metadata)
+      (do (private-file! pending-metadata)
+          (fs/move pending-metadata metadata {:replace-existing true})
+          (private-file! metadata))
+      (fs/delete-if-exists metadata))
     {:ok? true :path (str output) :bytes (fs/size output)}))
+
+(def nsfw-image-reason "NSFW 挿絵は Codex 画像生成へ送信しない方針のため保留（BOXP-447）。再開条件: Owner がローカル生成経路を用意")
 
 (defn generate-illustration! [novel-id run-dir spec reference-images nsfw]
   (let [script (env "CODEX_NOVEL_BOARD_IMAGE_SCRIPT" default-image-script)
@@ -2910,7 +2923,7 @@
             (not (zero? (:exit result))) {:ok? false :reason (str "挿絵生成が exit " (:exit result) " で失敗しました。再開条件: image.log を確認")}
             (not (valid-image? pending)) {:ok? false :reason "有効な画像ファイルが生成されませんでした。再開条件: image.log を確認"}
             :else (assoc (promote-illustration! novel-id pending) :references (mapv str reference-images)))))
-      (finally (fs/delete-if-exists pending)))))
+      (finally (fs/delete-if-exists pending) (fs/delete-if-exists (str pending ".json"))))))
 
 ;; ---------------------------------------------------------------------------
 ;; Cloud route (claude / codex CLI)
@@ -3242,9 +3255,10 @@
                    :else (default-illustration-spec (:title card) (slurp (str manuscript))))
             _ (write-edn-file! (fs/path run-dir "illustration-spec.edn") (dissoc spec :prompt))
             references (select-reference-images spec candidates)
-            illustration (if (seq candidates)
-                           (generate-illustration! novel-id run-dir spec references nsfw)
-                           {:ok? false :reason (reference-shortage-reason discovery)})
+            illustration (cond
+                           nsfw {:ok? false :reason nsfw-image-reason}
+                           (seq candidates) (generate-illustration! novel-id run-dir spec references nsfw)
+                           :else {:ok? false :reason (reference-shortage-reason discovery)})
             _ (when (:ok? illustration)
                 (write-edn-file! (illustration-job-path novel-id)
                                  {:status :succeeded :run-id (str (fs/file-name run-dir))
@@ -3344,7 +3358,7 @@
             adopted (when (and (= :running (:status job)) safe-pending? (= before (:manuscript-sha job)) (valid-image? pending))
                       (promote-illustration! novel-id pending))
             _ (when (and (= :running (:status job)) (not adopted))
-                (when safe-pending? (fs/delete-if-exists pending))
+                (when safe-pending? (fs/delete-if-exists pending) (fs/delete-if-exists (str pending ".json")))
                 (write-edn-file! job-path (assoc job :status :abandoned)))
             _ (when adopted (write-edn-file! job-path (assoc job :status :succeeded :output-sha (sha256-file (illustration-path novel-id)))))
             reused (and (not adopted) (illustration-current? novel-id) (= fp (:instructions-fp (read-edn-file job-path {}))))
@@ -3361,6 +3375,7 @@
             illustration (cond
                            adopted adopted
                            reused {:ok? true :reused? true :path (str (illustration-path novel-id)) :bytes (fs/size (illustration-path novel-id))}
+                           (:nsfw card) {:ok? false :reason nsfw-image-reason}
                            (empty? candidates) {:ok? false :reason (reference-shortage-reason discovery)}
                            :else (let [running {:status :running :run-id (str (fs/file-name run-dir)) :manuscript-sha before :instructions-fp fp
                                                 :pending (str (pending-image-path novel-id run-dir)) :started-at (now-str)}

@@ -141,6 +141,7 @@ cat >"${TMP}/bin/fake-generate-image.bb" <<'EOF'
     (= "1" (System/getenv "FAKE_IMAGE_EMPTY")) (do (spit out "") (System/exit 0))
     :else (do (with-open [o (java.io.FileOutputStream. out)]
                 (.write o (byte-array [0x89 0x50 0x4e 0x47 0x0d 0x0a 0x1a 0x0a 0 0 0 0])))
+              (spit (str out ".json") "{\"route\":\"codex-native-image_gen\"}")
               (println out))))
 EOF
 chmod +x "${TMP}/bin/fake-generate-image.bb"
@@ -958,12 +959,16 @@ echo "PASS: Done without manuscript waits"
 add_card Draft "- [ ] [[Novels/NOVEL-12|NOVEL-12: 区分テスト]] #novel #nsfw status::draft assignee::localllm"
 cp "${VAULT}/Templates/Novel Management.md" "${VAULT}/Novels/NOVEL-12.md"
 write_requirements NOVEL-12
+: >>"${FAKE_IMAGE_LOG}"
+nsfw_calls_before="$(wc -l <"${FAKE_IMAGE_LOG}")"
 tick
+[[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq "${nsfw_calls_before}" ]] || fail "NSFW 挿絵生成が呼ばれた"
+assert_contains "${VAULT}/Novels/NOVEL-12.md" "NSFW 挿絵は Codex 画像生成へ送信しない"
 assert_contains "${VAULT}/Novels/NOVEL-12.md" "nsfw: true"
 assert_contains "${BOARD}" "[[Novels/NOVEL-12|NOVEL-12: 区分テスト]] #novel #nsfw status::review assignee::boxp"
 NSFW_DRAFT="${VAULT}/NSFW/小説/草稿/NOVEL-12/manuscript.md"
 NSFW_IMAGE="${VAULT}/NSFW/小説/草稿/NOVEL-12/attachments/illustration.png"
-[[ -s "${NSFW_DRAFT}" && -s "${NSFW_IMAGE}" ]] || fail "NSFW draft manuscript or illustration missing from NSFW folder"
+[[ -s "${NSFW_DRAFT}" && ! -e "${NSFW_IMAGE}" ]] || fail "NSFW 本文の保存または挿絵の抑止に失敗"
 assert_contains "${VAULT}/Novels/NOVEL-12.md" "[[NSFW/小説/草稿/NOVEL-12/manuscript|本文を読む]]"
 assert_contains "${BOARD}" "[[NSFW/小説/草稿/NOVEL-12/manuscript|草稿]]"
 [[ -f "${VAULT}/NSFW/小説/草稿/NOVEL-12/manuscript.md" ]] || fail "NSFW wiki destination does not resolve"
@@ -1742,6 +1747,10 @@ tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq 'link.png' || fail 'linked image missin
 tail -n 1 "${FAKE_IMAGE_LOG}" | grep -Fq "Owner's request for this illustration (highest priority; it overrides the composition, scene and number of characters described afterwards): 挿絵も用意してください" || fail 'image-only prompt must carry the review request'
 [[ -s "${VAULT}/Novels/Drafts/NOVEL-8801/attachments/illustration.png" ]] || fail 'image-only draft missing image'
 assert_contains "${VAULT}/Novels/NOVEL-8801.md" '![[Novels/Drafts/NOVEL-8801/attachments/illustration.png]]'
+[[ "$(stat -c %a "${STATE}/work/NOVEL-8801/image-metadata.json")" == 600 ]] || fail 'メタデータの権限が不正'
+assert_contains "${STATE}/work/NOVEL-8801/image-metadata.json" 'codex-native-image_gen'
+[[ -z "$(find "${STATE}/work/NOVEL-8801" -name 'illustration.pending-*.png.json' -print)" ]] || fail 'pending メタデータが残存'
+
 set_assignee NOVEL-8801 localllm
 tick
 [[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'duplicate image generation'
@@ -1749,11 +1758,25 @@ assert_contains "${VAULT}/Novels/NOVEL-8801.md" '同じ依頼で生成済みの�
 
 # Recovery adopts a valid pending image without calling the generator.
 cp "${STATE}/work/NOVEL-8801/illustration.png" "${STATE}/work/NOVEL-8801/illustration.pending-crash.png"
+printf '{"recovered":true}' >"${STATE}/work/NOVEL-8801/illustration.pending-crash.png.json"
 printf '{:status :running :run-id "crash" :manuscript-sha "%s" :pending "%s"}\n' "${before_image_body}" "${STATE}/work/NOVEL-8801/illustration.pending-crash.png" >"${STATE}/work/NOVEL-8801/illustration-job.edn"
 set_assignee NOVEL-8801 localllm
 tick
 [[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'recovery called generator'
-[[ ! -f "${STATE}/work/NOVEL-8801/illustration.pending-crash.png" ]] || fail 'pending image not adopted'
+[[ ! -f "${STATE}/work/NOVEL-8801/illustration.pending-crash.png" && ! -f "${STATE}/work/NOVEL-8801/illustration.pending-crash.png.json" ]] || fail 'pending が残存'
+assert_contains "${STATE}/work/NOVEL-8801/image-metadata.json" 'recovered'
+[[ "$(stat -c %a "${STATE}/work/NOVEL-8801/image-metadata.json")" == 600 ]] || fail '復旧メタデータの権限が不正'
+[[ -n "$(find "${STATE}/work/NOVEL-8801" -name 'illustration.prev-*.png.json' -print -quit)" ]] || fail '旧画像のメタデータがない'
+
+# NSFW の画像のみの依頼でも生成スクリプトを呼ばない。
+sed -i '/NOVEL-8801/s/ #novel / #novel #nsfw /' "${BOARD}"
+printf '%s\n' '- 挿絵を新しく作ってください' >"${TMP}/image-instructions.txt"
+bb "${TMP}/bin/edit.bb" replace-section "${VAULT}/Novels/NOVEL-8801.md" 'Review Instructions' "${TMP}/image-instructions.txt"
+set_assignee NOVEL-8801 localllm
+tick
+[[ "$(wc -l <"${FAKE_IMAGE_LOG}")" -eq $((image_calls_before + 1)) ]] || fail 'NSFW の画像のみの依頼で生成が呼ばれた'
+assert_contains "${VAULT}/Novels/NOVEL-8801.md" 'NSFW 挿絵は Codex 画像生成へ送信しない'
+sed -i '/NOVEL-8801/s/ #nsfw / /' "${BOARD}"
 
 # Missing references preserve both manuscript and the previous image.
 cp "${STATE}/work/NOVEL-8801/illustration.png" "${TMP}/image-before-shortage.png"
