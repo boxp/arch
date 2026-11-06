@@ -37,6 +37,19 @@ resource "cloudflare_zero_trust_tunnel_cloudflared_config" "even_g2_lab" {
         }
       },
       {
+        # BOXP-441: Studio also requires its own Access JWT at the tunnel.
+        hostname = local.kohako_studio_hostname
+        path     = "^/(kohako/|healthz$)"
+        service  = "http://kohako-studio.kohako-studio.svc.cluster.local:80"
+        origin_request = {
+          access = {
+            required  = true
+            team_name = local.zero_trust_team_name
+            aud_tag   = [cloudflare_zero_trust_access_application.kohako_studio.aud]
+          }
+        }
+      },
+      {
         service = "http_status:404"
       }
     ]
