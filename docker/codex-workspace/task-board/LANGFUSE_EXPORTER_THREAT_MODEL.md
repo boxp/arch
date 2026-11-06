@@ -93,3 +93,10 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - runner が組み立てる `prompt.md` / `last-message.md`(root span の入力/出力)も依頼文・応答と同じ判定で走査する(P0 :1130)。セッションログが欠落した run ではこの2つが唯一の本文になるため、名指しされた値(`password: huntertwo`、`the password is …`)は pin して root と run 内の全 span でマスクする。pin できない値(`password: 123`、走査不能、値過多)を含む場合は root の入力/出力と run 内の generation/tool 本文を `withheld_after_secret_exposure` で保留し、`coverage.withheld_reason` に理由を残す。
 - 実 run 26 件(BOXP-436/437/440/446/449/450、件数のみ)の比較: 子 span の body_policy 件数は修正前後で同一。差分は root に新設した `body_policy=sent` の +1 のみで、root の保留は 0 件。
 - 散文で名指しされた値の走査は本文の全行を対象にする(走査対象は呼出し側で 256 KiB に制限)。1 行に調べる上限(64)を超える秘密語がある場合は値を取りこぼさないよう保留する(P0 arch#14503 :726)。
+
+## 追記 (arch#14503 P0 :343)
+
+- 空白を含むファイル名(`sed -n 1p 'db_password backup'`、`db_password\ backup`、`dd if='db_password backup'`、`open('db_password backup')`)も、最後のパス要素が秘密語(password/passphrase/secret/credentials/token)を含めば機密源として本文を保留する。以前は空白を含む引数を一律に文章とみなして除外していた。
+- シェルの語の切り方を実際のシェルに合わせた: 隣接する引用部分と裸の部分は1語に連結し(`if='a b'`)、バックスラッシュによるエスケープ(`\ `)を解決する。
+- 文章を値に取るオプション(`--note`/`-m`/`--message`/`--body`/`--title`/`--description`/`--comment`/`--summary`/`--subject`/`--reason`/`--evidence`)の直後の空白入りの値は従来どおり文章として読める(Task Board の append-note、commit message、PR 本文)。
+- 過剰保留: 任意のプログラムに、秘密語を含む引用文を通常の引数として渡した場合(`python3 x.py "the password flow"`)はその出力を保留する。

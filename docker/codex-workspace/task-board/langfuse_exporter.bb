@@ -332,16 +332,30 @@
     (contains? mention-programs program)))
 (def stdout-sink #"(?i)^(?:/dev/(?:stdout|stderr|tty|fd/\d+)|/proc/self/fd/\d+)$")
 (def open-call
-  #"(?i)(?:\bopen|read_?text|read_?file|readFileSync|slurp|File\.read|load|cat)\s{0,8}\(\s{0,8}[\"']([^\"'\s]{1,1024})[\"']")
+  #"(?i)(?:\bopen|read_?text|read_?file|readFileSync|slurp|File\.read|load|cat)\s{0,8}\(\s{0,8}[\"']([^\"'\r\n]{1,1024})[\"']")
 
 (defn- shell-words
-  "Whitespace-separated words of one segment with quotes removed; a quoted span keeps its spaces."
+  "Words of one segment as the shell sees them: adjacent quoted and bare pieces join into one word (if='a b',
+  db_password\\ backup), quotes are removed and backslash escapes resolved, and a quoted span keeps its spaces."
   [segment]
-  (map (fn [[_ dq sq bare]] (or dq sq bare))
-       (re-seq #"\"((?:[^\"\\]|\\.){0,4096})\"|'([^']{0,4096})'|((?:[^\s\"']|\\.){1,4096})" segment)))
+  (map (fn [w] (str/replace w #"\"((?:[^\"\\]|\\.){0,4096})\"|'([^']{0,4096})'|\\(.)"
+                            (fn [[_ dq sq esc]] (or (some-> dq (str/replace #"\\(.)" "$1")) sq esc ""))))
+       (re-seq #"(?:\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'|\\.|[^\s\"'\\]){1,4096}" segment)))
 
+;; A quoted or escaped file name may contain spaces ('db_password backup', db_password\ backup), so a word with
+;; whitespace is a file name too when its last path component names a secret (P0 arch#14503 :343). Text given to a
+;; message option (--note, -m, --body, ...) is excluded by the caller, not here. Over-withholding accepted: a quoted
+;; sentence mentioning a password passed as a plain argument to an arbitrary program (python3 x.py "the password
+;; flow") withholds that output.
+(def spaced-secret-file-name
+  #"(?i)(?:[^\r\n]{0,1024}[/\\])?[^/\\\r\n]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?|tokens?)[^/\\\r\n]{0,255}")
 (defn- secret-file-word? [w]
-  (boolean (and (not (re-find #"\s" w)) (not (str/starts-with? w "-")) (re-matches secret-file-name w))))
+  (boolean (and (not (str/starts-with? w "-")) (not (re-find #"[\r\n]" w)) (<= (count w) 2048)
+                (if (re-find #"\s" w) (re-matches spaced-secret-file-name w) (re-matches secret-file-name w)))))
+;; Options whose value is free text rather than a file name (a note, a commit message, a PR body).
+(def text-options
+  #{"-m" "--message" "--note" "--notes" "--body" "--title" "--description" "--comment" "--summary" "--subject"
+    "--reason" "--evidence"})
 
 ;; A search pattern given through an option, alone or joined to its value or to other short flags (-e x, -ex,
 ;; -iex, -fpats.txt, --regexp=x, --file=pats.txt), leaves no pattern operand, so every operand is a file (P0
@@ -360,7 +374,10 @@
                               (re-matches #"-\S*|\d+" %))
                          words)
         program (some-> (first args) (str/split #"/") last)
-        operands (remove #(or (str/starts-with? % "-") (re-matches #"\d+" %)) (rest args))
+        operands (keep (fn [[prev w]] (when-not (or (str/starts-with? w "-") (re-matches #"\d+" w)
+                                                    (and (contains? text-options prev) (re-find #"\s" w)))
+                                        w))
+                       (partition 2 1 args))
         dd-input (some #(when-let [[_ f] (re-matches #"if=(.*)" %)] (secret-file-word? f)) words)
         ;; A secret-named file put in a variable (f=db_password; cat $f) is read through it later.
         assigned (some #(when-let [[_ f] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (secret-file-word? f)) (take-while #(re-matches #"[A-Za-z_]\w*=.*" %) words))]

@@ -1294,5 +1294,23 @@
   (let [line (str (apply str (repeat 70 "password; ")) "password is manywordsvalue")]
     (is (some? (:reason (#'lf/tool-exposure {:input "cat notes.txt"} {:output line}))))))
 
+;; P0 arch#14503 :343 (BOXP-428). A quoted or escaped file name with spaces ('db_password backup',
+;; db_password\ backup, if='db_password backup') was dropped as text, so the file's bare value was sent. Such a word
+;; is a file name now; text given to a message option (--note, -m, --body) stays readable.
+(deftest secret-named-file-with-spaces
+  (doseq [c ["sed -n 1p 'db_password backup'" "sed -n 1p \"db_password backup\"" "sed -n 1p db_password\\ backup"
+             "awk 1 './conf/app secret'" "sort 'my credentials.txt'" "dd if='db_password backup'"
+             "tr a-z A-Z < 'db_password backup'" "cp 'db_password backup' /dev/stdout" "grep . 'db_password backup'"
+             "python3 -c \"print(open('db_password backup').read())\"" "bash -lc \"sed -n 1p 'db_password backup'\""
+             "{\"cmd\":\"sed -n 1p 'db_password backup'\"}" "{\"file_path\":\"/tmp/db_password backup\"}"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["bb task-board.bb append-note --note 'rotate the password docs'" "git commit -m 'rotate db_password backup'"
+             "gh pr create --title 'db_password backup' --body 'rotate the password docs'" "grep -rn 'reset password flow' src"
+             "echo 'db_password backup'" "sed -n 1p 'notes backup.txt'" "bb todos.bb done BOXP-1 TD-01 --evidence 'password docs updated'"]]
+    (is (not (lf/withhold-output? c)) c))
+  (is (= "sensitive_source" (:reason (#'lf/tool-exposure {:input {:command "sed -n 1p 'db_password backup'"}} {:output "spacedbarevalue9"}))))
+  (is (nil? (:reason (#'lf/tool-exposure {:input {:command "sed -n 1p 'notes backup.txt'"}} {:output "ordinary notes"})))
+      "control: a spaced ordinary file stays readable"))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
