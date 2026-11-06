@@ -5014,7 +5014,11 @@
 (defn stale-process-hold
   ;; Fail closed: when mountinfo or the process table cannot be read, or a
   ;; live process cwd cannot be resolved, hold the run instead of deleting.
-  ([run-real] (stale-process-hold run-real "/proc/self/mountinfo" "/proc"))
+  ;; CODEX_TASK_BOARD_PRUNE_PROC_ROOT / _MOUNTINFO only redirect the scan for
+  ;; fixture tests; the decision logic and fail-closed rules are unchanged.
+  ([run-real] (stale-process-hold run-real
+                                  (or (not-empty (System/getenv "CODEX_TASK_BOARD_PRUNE_MOUNTINFO")) "/proc/self/mountinfo")
+                                  (or (not-empty (System/getenv "CODEX_TASK_BOARD_PRUNE_PROC_ROOT")) "/proc")))
   ([run-real mountinfo-path proc-root]
    (let [inside? (fn [path] (try (fs/starts-with? (fs/path path) run-real) (catch Exception _ false)))
          unescape (fn [s] (str/replace s #"\\([0-7]{3})" (fn [[_ oct]] (str (char (Integer/parseInt oct 8))))))

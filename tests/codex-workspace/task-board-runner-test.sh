@@ -3397,6 +3397,11 @@ test_stale_prune() {
     done
   done
   echo lock >"${state}/locks/BOXP-906.edn"
+  # Scan a fixture process table: CI hosts have root processes whose cwd is
+  # unreadable, which the fail-closed scan would (correctly) treat as a hold.
+  mkdir -p "${tmp}/proc/100"; ln -s / "${tmp}/proc/100/cwd"
+  echo "22 1 0:21 / / rw - ext4 /dev/root rw" >"${tmp}/mountinfo"
+  export CODEX_TASK_BOARD_PRUNE_PROC_ROOT="${tmp}/proc" CODEX_TASK_BOARD_PRUNE_MOUNTINFO="${tmp}/mountinfo"
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" --dry-run >"${out}"
   [[ -d "${ws}/BOXP-901/20200101T000000Z" ]] || fail "stale dry run removed data"
   PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
@@ -3411,6 +3416,13 @@ test_stale_prune() {
   assert_file_contains "${out}" "reason=outside-checkout path=agent-notes.md"
   assert_file_contains "${out}" 'reason=uncommitted-changes'
   assert_file_contains "${out}" 'reason=commit-not-on-github'
+  # A live process inside an otherwise deletable stale run keeps it.
+  co="$(add_prune_run "${state}" "${source}" BOXP-901 20191231T000000Z)"
+  mkdir -p "${tmp}/proc/101"; ln -s "${co}" "${tmp}/proc/101/cwd"
+  PATH="${bin}:$PATH" GH_FAKE_KNOWN_SHAS="${known}" CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE=true run_prune "${vault}" "${state}" >"${out}"
+  [[ -d "${ws}/BOXP-901/20191231T000000Z" ]] || fail "stale run with live process removed"
+  assert_file_contains "${out}" "reason=process-active"
+  unset CODEX_TASK_BOARD_PRUNE_PROC_ROOT CODEX_TASK_BOARD_PRUNE_MOUNTINFO
 }
 
 test_prune_workspaces() {
