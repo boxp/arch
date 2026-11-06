@@ -280,8 +280,14 @@
 ;; (cat secretary.txt) withholds that output. Name parts are bounded so a long line is scanned in linear time.
 (def secret-file-read
   #"(?i)(?:^|[;&|\s\"'(`])(?:cat|tac|head|tail|less|more|bat|batcat|nl|od|xxd|hexdump|strings|base64|source|\.)(?=[\s\"'])[^;&|\n]{0,1024}?(?<=[\s\"'=<])[^\s\"';|&<>]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)[A-Za-z0-9_.-]{0,64}(?=[\s\"';|&)<>]|\z)")
+;; A file tool takes the path as a JSON argument ({"file_path":"db_password"}) rather than a shell argument, so the
+;; secret word inside the last path component counts there too (P0 arch#14503 :272). Only path-valued keys are looked
+;; at, so a search pattern ({"pattern":"db_password"}) or a command mentioning the word stays readable.
+(def secret-file-arg
+  #"(?i)\"(?:file_?path|notebook_?path|path|file_?name|file|target_?file)\"\s{0,16}:\s{0,16}\"(?:[^\"]{0,1024}?[/\\])?[^/\\\"]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)[^/\\\"]{0,64}\"")
 (defn withhold-output? [input]
   (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s) (re-find secret-file-read s)
+                                    (re-find secret-file-arg s)
                                     (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))
 (defn env-dump? [output]
   (let [s (str output)] (boolean (and (re-find #"(?:^|[^A-Za-z0-9_])PATH=" s)

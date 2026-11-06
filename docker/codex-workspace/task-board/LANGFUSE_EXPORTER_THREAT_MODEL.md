@@ -56,3 +56,4 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 
 - 秘密語がファイル名の一部にある場合(`cat db_password`、`cat app-secret`、`cat aws_credentials`、`head ./conf/mysql_root_password.txt`)も、読取系コマンドの引数なら機密源として本文を保留する。`grep -rn db_password src` や `echo set db_password` などの検索・言及は対象外で読める。
 - 過剰保留: 秘密語を名前に含む普通のファイルの読取(`cat secretary.txt`)も保留する。読取系コマンド以外(`python db_password` 等)の実行出力は対象外で、既知形式/秘密語マスクのみ(許容残差)。
+- ファイル系tool(Read/NotebookRead 等)がJSON引数でパスを受ける場合(`{"file_path":"db_password"}`、`{"path":"aws_credentials"}`)も、パス値のキー(file_path/path/notebook_path/filename/file/target_file)の最後の要素に秘密語があれば機密源として本文を保留する。`{"pattern":"db_password"}` のような検索語や、コマンド文字列中の言及は対象外。過剰保留: Glob/Grep の `path` が秘密語を含むディレクトリ名(`src/secrets_manager`)なら一覧/検索結果も保留する。

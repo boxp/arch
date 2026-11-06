@@ -1026,5 +1026,23 @@
       (is (nil? (:reason (#'lf/tool-exposure {:input "grep -rn 'reset your password page' docs"} {:output "docs/a.md:1: reset your password"}))))
       (is (str/includes? sanitized "first request") "control: the request body is sent"))))
 
+
+;; P0 arch#14503 :272 (BOXP-428). A file-reading tool takes the path as a JSON argument ({"file_path":"db_password"}),
+;; not as a shell argument, so a secret word inside the file name must also make that read a sensitive source.
+(deftest secret-word-inside-tool-file-path
+  (doseq [c ["{\"file_path\":\"db_password\"}" "{\"file_path\":\"./conf/app-secret.yaml\"}" "{\"path\":\"aws_credentials\"}"
+             "{\"notebook_path\":\"/work/db_password.ipynb\"}" "{\"file_path\":\"mysql_root_password.txt\",\"limit\":10}"
+             "{\"filename\": \"DB_PASSWORD_FILE\"}"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["{\"file_path\":\"src/reset.md\"}" "{\"pattern\":\"db_password\",\"path\":\"src\"}" "{\"file_path\":\"docs/auth.md\"}"
+             "{\"command\":\"grep -rn db_password src\"}" "{\"cmd\":\"ls\",\"max_output_tokens\":12000}"]]
+    (is (not (lf/withhold-output? c)) c))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        value "plainbarevalue7"
+        spans (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "first request"}}
+                                                           {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Read" :input {:file_path "db_password"}}]}}
+                                                           {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content value}]}}
+                                                           {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "it is " value)}]}}]))]
+    (is (not (str/includes? (pr-str spans) value)))))
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
