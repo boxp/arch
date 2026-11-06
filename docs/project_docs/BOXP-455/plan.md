@@ -10,3 +10,11 @@
 6. 最新Owner/source再確認、433のみdry-run/apply/readback。432/425/active票の不変更を確認してProjects/task-board-state-reconciliationと454へ日本語で引き継ぐ。
 
 実利用版: Codex helperはdotfiles 8075e31 (sha256 0ab419acff735dca70b91112ed8be3185e09114215b4645d6f2997b7fb85db38)。Hermes PVC/image入口はsha256 f221ff2b9d3d32b96bba1417e27ef72e010dea7530634da772cacd71d0e773af。arch作業treeをorigin/main 6e109685へ更新して既存guardを継承する。
+
+## 第2段階
+
+1. runnerの終端遷移でカードとチケットに同一の新revisionを記録し、古いBoardの復旧を可能にする。
+2. 重複カードの投影・移動・dispatchを停止する。
+3. reconcile-doneで共有ロックを任意とし、vault外バックアップと置換後の読み戻しを追加する。
+
+テストは終端revision、LWW復旧、重複、superseded、修復の両ロックモード・競合・再実行を確認する。

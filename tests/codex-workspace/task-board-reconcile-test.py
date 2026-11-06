@@ -72,13 +72,31 @@ class RepairTest(unittest.TestCase):
         self.assertFalse((self.vault / '.task-board-repair-audit.edn').exists())
         self.assertEqual(len(plan['candidates']), 2)
         self.assertEqual(len(plan['removed']), 1)
-        self.call(*self.args(plan))
+        result = self.call(*self.args(plan))
+        self.assertEqual(result['writer-lock'], 'shared')
+        backup = Path(result['backup-path'])
+        self.assertEqual(backup.read_text(), self.before)
+        self.assertEqual(backup.stat().st_mode & 0o777, 0o600)
         self.assertEqual(self.board.read_text(), self.before.replace(STALE + '\n', '', 1))
         self.assertEqual(self.ticket.read_bytes(), original_ticket)
         self.assertEqual(digest(self.board), plan['after-board-sha256'])
         audit = (self.vault / '.task-board-repair-audit.edn').read_bytes()
         self.assertTrue(self.call(*self.args(plan))['noop'])
         self.assertEqual((self.vault / '.task-board-repair-audit.edn').read_bytes(), audit)
+
+    def test_without_shared_lock_and_readback_conflict(self):
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        result = self.call(*self.args(plan))
+        self.assertEqual(result['writer-lock'], 'none')
+        self.assertEqual(Path(result['backup-path']).read_text(), self.before)
+        self.assertTrue(self.call(*self.args(plan))['noop'])
+        self.board.write_text(self.before)
+        plan = self.plan()
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_READBACK_MISMATCH'] = 'true'
+        self.assertIn('post-apply readback mismatch; backup at', self.call(*self.args(plan), ok=False))
+        self.assertIn(':phase :conflict', (self.vault / '.task-board-repair-audit.edn').read_text())
+        self.assertTrue(list((self.root / 'repair-backups').glob('*-board.md')))
 
     def test_conflicts_and_missing_confirm(self):
         plan = self.plan()
@@ -133,7 +151,7 @@ class RepairTest(unittest.TestCase):
 
     def test_unknown_writer_domain_and_symlink(self):
         self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
-        self.call('--dry-run', ok=False)
+        self.assertEqual(self.plan()['writer-lock'], 'none')
         self.env['TASK_BOARD_VAULT_WRITER_LOCK_DIR'] = str(self.writer)
         saved = self.base / 'saved'
         self.board.rename(saved)

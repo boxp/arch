@@ -5027,6 +5027,47 @@ test_todo_existing_holds_win() {
   done
 }
 
+test_terminal_revision_lww_and_duplicates() {
+  local tmp vault state bin mode rev before
+  for mode in blocked done; do
+    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    mkdir -p "${bin}"; make_fake_codex "${bin}"
+    write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex rev::old'
+    write_ticket "${vault}" BOXP-991 in-progress codex
+    sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-991.md"
+    cp "${vault}/Boards/Task Board.md" "${tmp}/old"
+    PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE="TASK_BOARD_RESULT: ${mode}" run_tick "${vault}" "${state}" env >"${tmp}/run"
+    assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+    rev="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-991.md")"
+    [[ "$rev" != old && "$rev" =~ ^[a-z0-9]+-[0-9a-f]{4}$ ]] || fail 'missing fresh revision'
+    assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev}"
+    assert_run_summary_contains "${state}" BOXP-991 ':status :(blocked|succeeded)'
+    cp "${tmp}/old" "${vault}/Boards/Task Board.md"
+    for _ in 1 2 3; do CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >"${tmp}/sync"; done
+    assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+    assert_file_contains "${vault}/Boards/Task Board.md" "status::${mode}.*rev::${rev}"
+  done
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::codex rev::old'
+  write_ticket "${vault}" BOXP-990 in-progress codex
+  sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-990.md"
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/exception"
+  assert_run_summary_contains "${state}" BOXP-990 ':status :blocked'
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::codex rev::old'
+  sed -i '/^## Done/a\\n- [x] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::done assignee::boxp rev::old done::2026-01-01' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-992 in-progress codex
+  before="$(sha256sum "${vault}/Tickets/BOXP-992.md") $(stat -c %Y "${vault}/Tickets/BOXP-992.md")"
+  for _ in 1 2; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/duplicate"; done
+  [[ "$before" == "$(sha256sum "${vault}/Tickets/BOXP-992.md") $(stat -c %Y "${vault}/Tickets/BOXP-992.md")" && ! -e "${tmp}/starts" ]] || fail 'duplicate projected or dispatched'
+  if CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" TEST_RUNNER="${RUNNER}" bb -e '(System/setProperty "babashka.file" "/tmp/load-runner.bb") (load-file (System/getenv "TEST_RUNNER")) (move-card! "BOXP-992" "done")' >"${tmp}/move" 2>&1; then
+    fail 'duplicate move succeeded'
+  fi
+  assert_file_contains "${tmp}/move" 'duplicate board cards for BOXP-992'
+}
+
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a
 # deterministic subset in its own job, so vaults, processes and locks are isolated.
 mapfile -t cases < "${ROOT_DIR}/tests/codex-workspace/task-board-runner-cases.txt"

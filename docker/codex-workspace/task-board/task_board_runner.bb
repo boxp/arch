@@ -900,21 +900,41 @@
 (defn remove-index [lines idx]
   (vec (concat (subvec lines 0 idx) (subvec lines (inc idx)))))
 
+(def ^:dynamic *run-revisions* nil)
+(defn new-rev []
+  (let [rev (str (Long/toString (System/currentTimeMillis) 36) "-" (format "%04x" (rand-int 65536)))]
+    (when *run-revisions* (swap! *run-revisions* conj rev))
+    rev))
+
+(def duplicate-warnings (atom {}))
+(defn duplicate-ids! [cards]
+  (let [groups (group-by :ticket-id cards)
+        duplicates (into {} (for [[id cs] groups :when (> (count cs) 1)]
+                              [id (set (map (juxt :lane card-rev) cs))]))]
+    (doseq [[id signature] duplicates :when (not= signature (get @duplicate-warnings id))]
+      (log! (str "WARN duplicate board cards for " id ": " (pr-str signature))))
+    (reset! duplicate-warnings duplicates)
+    (set (keys duplicates))))
+
 (defn move-card!
   ([ticket-id target-status] (move-card! ticket-id target-status nil))
-  ([ticket-id target-status assignee]
+  ([ticket-id target-status assignee] (move-card! ticket-id target-status assignee nil))
+  ([ticket-id target-status assignee rev]
   (locking board-mutex
     (with-vault-writer-lock
      (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
-             card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))
+             cards (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines))
+             _ (when (> (count cards) 1) (fail (str "duplicate board cards for " ticket-id "; cannot move")))
+             card (first cards)
              target-lane (or (status->lane target-status)
                              (fail (str "invalid target status: " target-status)))]
          (when-not card
            (fail (str "ticket card not found: " ticket-id)))
          (let [new-line (cond-> (normalize-card-line (:line card) target-status)
-                          assignee (replace-or-add-attr "assignee" assignee))
+                          assignee (replace-or-add-attr "assignee" assignee)
+                          rev (replace-or-add-attr "rev" rev))
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
            (write-lines! path moved))))))))
@@ -929,7 +949,9 @@
      (fn []
        (let [path (board-path)
              lines (vec (read-lines path))
-             card (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines)))]
+             cards (filter #(= ticket-id (:ticket-id %)) (parse-board-cards lines))
+             _ (when (> (count cards) 1) (log! (str "WARN duplicate board cards for " ticket-id "; skipping repair")))
+             card (when (= 1 (count cards)) (first cards))]
          (when (and card
                     (= expected-card-rev (card-rev card))
                     (= rev (:board_rev (ticket-frontmatter ticket-id))))
@@ -947,9 +969,11 @@
   (locking (ticket-mutex ticket-id)
     (with-vault-writer-lock
      (fn []
-       (let [card (first (filter #(= ticket-id (:ticket-id %))
-                                 (parse-board-cards (vec (read-lines (board-path))))))]
-         (when (and (= board_rev (card-rev card))
+       (let [cards (filter #(= ticket-id (:ticket-id %))
+                           (parse-board-cards (vec (read-lines (board-path)))))
+             _ (when (> (count cards) 1) (log! (str "WARN duplicate board cards for " ticket-id "; skipping repair")))
+             card (when (= 1 (count cards)) (first cards))]
+         (when (and card (= board_rev (card-rev card))
                     (= expected-ticket-rev (:board_rev (ticket-frontmatter ticket-id))))
            (update-frontmatter! ticket-id updates)))))))
 
@@ -1088,8 +1112,11 @@
                                    (= "done" status) (assoc :closed (or done (today))))))
 
 (defn sync-ticket-statuses! []
-  (let [lines (vec (read-lines (board-path)))]
-    (doseq [{:keys [ticket-id] :as card} (parse-board-cards lines)
+  (let [lines (vec (read-lines (board-path)))
+        cards (parse-board-cards lines)
+        duplicates (duplicate-ids! cards)]
+    (doseq [{:keys [ticket-id] :as card} cards
+            :when (not (duplicates ticket-id))
             :when (synced-card? card)
             :let [path (ticket-path ticket-id)]
             :when (fs/exists? path)]
@@ -1100,8 +1127,9 @@
         (let [held (locking (ticket-mutex ticket-id)
                      (with-vault-writer-lock
                       (fn []
-                        (when-let [current (first (filter #(= ticket-id (:ticket-id %))
-                                                          (parse-board-cards (vec (read-lines (board-path))))))]
+                        (when-let [current (let [matches (filter #(= ticket-id (:ticket-id %))
+                                                          (parse-board-cards (vec (read-lines (board-path)))))]
+                                             (when (= 1 (count matches)) (first matches)))]
                           (when (fs/exists? path)
                             (let [held (sync-revision! current (ticket-frontmatter ticket-id))]
                               (when-not held
@@ -1269,8 +1297,9 @@
               ticket-exists? (fs/exists? (ticket-path ticket-id))
               complete! (fn []
                           (when ticket-exists?
-                            (move-card! ticket-id next-status "boxp")
-                            (update-frontmatter! ticket-id {:status next-status :assignee "boxp"})
+                            (let [rev (new-rev)]
+                              (move-card! ticket-id next-status "boxp" rev)
+                              (update-frontmatter! ticket-id {:status next-status :assignee "boxp" :board_rev rev}))
                             (record-localllm-commit! ticket-id run-id :committed next-status))
                           {:completed next-status})
               ;; Hash check + transition under the localllm write lock.
@@ -1293,8 +1322,9 @@
               (log! (str "run " run-id " for " ticket-id ": did not complete the interrupted localllm transition, the written notes changed since the write: " reason))
               (record-localllm-commit! ticket-id run-id :conflict nil)
               (when ticket-exists?
-                (move-card! ticket-id "blocked" "boxp")
-                (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                (let [rev (new-rev)]
+                  (move-card! ticket-id "blocked" "boxp" rev)
+                  (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp" :board_rev rev}))
                 (append-note! ticket-id (str "localllm docs run " run-id
                                              " は文書を更新した後の lane / frontmatter 遷移の途中で終了し、その後に対象文書が run の書込み内容から変わっていたため、遷移を完了せず Blocked にしました（文書は現在の内容のまま。backup からの復元もしていません。確認後に手動で Done / 再実行を判断してください）: "
                                              reason)))
@@ -4311,11 +4341,12 @@
       ;; have been updated.  A later card/frontmatter failure is recovered to
       ;; the prior lane by process-card!, so recording :blocked beforehand
       ;; would leave summary.edn contradicting the restored ticket state.
-      (move-card! ticket-id "blocked" "boxp")
-      ;; Deterministic black-box failure hook; unset in deployment.
-      (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
-        (throw (ex-info "forced blocked state update failure" {})))
-      (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+      (let [rev (new-rev)]
+        (move-card! ticket-id "blocked" "boxp" rev)
+        ;; Deterministic black-box failure hook; unset in deployment.
+        (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FAIL_BLOCKED_STATE_UPDATE"))
+          (throw (ex-info "forced blocked state update failure" {})))
+        (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp" :board_rev rev}))
       ;; run-agent! records a zero-exit agent as succeeded before its result is
       ;; interpreted. Correct that provisional status only after the Blocked
       ;; transition itself has succeeded.
@@ -4387,8 +4418,11 @@
           card (when (fs/exists? (board-path))
                  (first (filter #(= ticket-id (:ticket-id %)) (parse-board-cards (vec (read-lines (board-path)))))))
           cr (card-rev card)]
-      (when (or (not= ticket-rev start-rev) (and cr (not= cr start-rev)))
-        {:rev (if (not= ticket-rev start-rev) ticket-rev cr) :consistent? (= ticket-rev cr)}))
+      (let [external? #(and (not= % start-rev) (not (contains? (or (some-> *run-revisions* deref) #{}) %)))
+            ticket-changed? (external? ticket-rev)
+            card-changed? (and cr (external? cr))]
+        (when (or ticket-changed? card-changed?)
+          {:rev (if ticket-changed? ticket-rev cr) :consistent? (= ticket-rev cr)})))
     (catch Exception e
       (log! (str "superseded check failed for " ticket-id ": " (.getMessage e)))
       nil)))
@@ -4469,8 +4503,9 @@
                                     "; category=gate-failure-budget-exhausted"
                                     "; reason=" (sanitize-blocker-reason report)))
                  (try
-                   (move-card! ticket-id "blocked" "boxp")
-                   (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp"})
+                   (let [rev (new-rev)]
+                  (move-card! ticket-id "blocked" "boxp" rev)
+                  (update-frontmatter! ticket-id {:status "blocked" :assignee "boxp" :board_rev rev}))
                    (record-task-board-event! ticket-id (:run-id lock) status "blocked" nil)
                    (log! (str "gate failure budget exhausted; " ticket-id
                               (if (= "blocked" status)
@@ -4513,7 +4548,7 @@
               (log! (str "could not note quota hold for " ticket-id ": " (.getMessage e)))))))
       true)))
 
-(defn process-card! [{:keys [ticket-id lane status] :as card}]
+(defn process-card-inner! [{:keys [ticket-id lane status] :as card}]
   (let [fm (ticket-frontmatter ticket-id)
         assignee (:assignee fm)
         start-rev (:board_rev fm)
@@ -4720,8 +4755,9 @@
                                     :open (get states :received 0) :gate "held"}
                               summary (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)]
                           (when-not exhausted?
-                            (move-card! ticket-id "ready" assignee)
-                            (update-frontmatter! ticket-id {:status "ready" :assignee assignee}))
+                            (let [rev (new-rev)]
+                              (move-card! ticket-id "ready" assignee rev)
+                              (update-frontmatter! ticket-id {:status "ready" :assignee assignee :board_rev rev})))
                           (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)
                                      (assoc (if exhausted? summary (dissoc summary :blocker-category :blocker-reason :wait-reason))
                                             :result final-result :todo todo))
@@ -4741,19 +4777,21 @@
                   (let [;; A continuation stays with its worker; a groom or a
                         ;; result waiting for the Owner goes to the Owner.
                         continuing? (and (= "ready" next-status) (= "continue" intended))
-                        next-assignee (if (or continuing? (= "in-progress" next-status)) assignee "boxp")]
+                        next-assignee (if (or continuing? (= "in-progress" next-status)) assignee "boxp")
+                        rev (when (#{"done" "blocked" "ready"} next-status) (new-rev))]
                     ;; localllm docs-edit: journal the transition before it
                     ;; starts so a crash in the middle is completed (not rolled
                     ;; back) by `recover-localllm-write!`.
                     (when @docs-applied?
                       (record-localllm-commit! ticket-id run-id :committing next-status))
-                    (move-card! ticket-id next-status next-assignee)
+                    (move-card! ticket-id next-status next-assignee rev)
                     (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION"))
                       ;; Deterministic black-box failure hook after the document
                       ;; write and the lane move; unset in deployment.
                       (throw (ex-info "forced failure after the lane move" {})))
                     (update-frontmatter! ticket-id (cond-> {:status next-status
                                                              :assignee next-assignee}
+                                                      rev (assoc :board_rev rev)
                                                       (= "done" next-status) (assoc :closed (today))))
                     (todo-recheck-rendezvous!)
                     ;; Re-read after the move; a concurrent addition must also consume
@@ -4773,8 +4811,9 @@
                                     (if (block-ticket! ticket-id run-id action "continue" exit gate nil last-message)
                                       (update-frontmatter! ticket-id {:closed ""})
                                       (throw (ex-info "could not record TODO gate block" {})))
-                                    (do (move-card! ticket-id final assignee)
-                                        (update-frontmatter! ticket-id {:status final :assignee assignee :closed ""})))
+                                    (let [rev (new-rev)]
+                                      (move-card! ticket-id final assignee rev)
+                                      (update-frontmatter! ticket-id {:status final :assignee assignee :closed "" :board_rev rev})))
                                   (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)
                                              (merge (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)
                                                     {:result "continue" :todo {:rev (:rev latest) :mode (:mode latest)
@@ -4872,11 +4911,16 @@
   ;; claimed by the ad-hoc process. The `loop` never sets it.
   (atom nil))
 
+(defn process-card! [card]
+  (binding [*run-revisions* (atom #{})]
+    (process-card-inner! card)))
+
 (defn candidate-cards []
-  (let [cards (parse-board-cards (vec (read-lines (board-path))))]
+  (let [cards (parse-board-cards (vec (read-lines (board-path))))
+        duplicates (duplicate-ids! cards)]
     (->> cards
          (filter (fn [{:keys [ticket-id] :as card}]
-                   (and (or (nil? @only-ticket) (= @only-ticket ticket-id))
+                   (and (not (duplicates ticket-id)) (or (nil? @only-ticket) (= @only-ticket ticket-id))
                         (let [assignee (ticket-assignee ticket-id)]
                           (and assignee (not (rev-mismatch? card (ticket-frontmatter ticket-id)))
                                (some? (candidate-action card assignee)))))))

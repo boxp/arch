@@ -127,7 +127,7 @@ Preview a control request (dry-run only):
 
 `reconcile-done BOXP-433` は、sourceの最新runがsucceeded/doneでclaimがなく、票がdone/boxpである場合だけ使えます。既存Doneカードと日付を保持し、同じtitle/repo/rev/priorityのIn Progress/claude-opusカードを1枚だけ除きます。通常のupdateの重複拒否は維持します。他のIDや一般的な状態変更には使えません。
 
-**配備条件**: source runnerと同じUID・実source volume・同じvaultで実行します。runnerと全helper writerが同じ実ファイルの`TASK_BOARD_VAULT_WRITER_LOCK_DIR/vault-writer.lock`を使うことを配備設定と実プロセスから確認してください。未設定時は拒否します。このコマンドだけに任意のlock dirを設定しても排他の証明にはなりません。Hermesの別replicaからsource lockを使えるとは仮定しません。shared lockの配備が未確認ならapplyしないでください。root、symlink、異なるUIDのpathも拒否します。
+**配備条件**: source runnerと同じUID・実source volume・同じvaultで実行します。root、symlink、異なるUIDのpathを拒否し、source-rootはvault外に置きます。`TASK_BOARD_VAULT_WRITER_LOCK_DIR`設定時は共有writer lockも取得し、未設定時は取得しません。source guard、Boardとticketのファイルロック、各ハッシュ期待値の検証は両モードで維持します。atomic move直前にBoardがプレビュー時と同一であることを再確認し、変更前の正確なBoardをsource-rootの`repair-backups`に0600で保存・fsync・ハッシュ検証します。置換後にも読み戻して照合し、不一致ならconflictを記録して停止します。共有ロックなしではこの短い間に並行するrunnerやSyncの書き込みが失われる可能性があり、pod間の原子性は保証しません。runnerの終端revisionによる修復、またはバックアップから復旧してください。結果の`writer-lock`でモードを確認できます。
 
 ```bash
 # 全writerと同一の既存lock domainを継承した環境で実行する。
@@ -136,7 +136,7 @@ bb "$TASK_BOARD_HELPER" reconcile-done BOXP-433 \
   --dry-run --json > /tmp/BOXP-433-repair-preview.json
 ```
 
-dry-runは候補行・保持/除去理由となる属性、source-run、rev、ticket/board/after-board/source/helperのSHA-256を出します。vault/sourceにファイルを作らず、既存source guardとwriter lockを取得します。applyは`--dry-run`を外し、`--confirm`と、プレビュー値をそのまま渡す次の全引数が必要です。
+dry-runは候補行・保持/除去理由となる属性、source-run、rev、ticket/board/after-board/source/helperのSHA-256を出します。vault/sourceにファイルを作らず、既存source guardと、設定されていればwriter lockを取得します。applyは`--dry-run`を外し、`--confirm`と、プレビュー値をそのまま渡す次の全引数が必要です。
 
 - `--expected-rev`
 - `--expected-ticket-sha256`

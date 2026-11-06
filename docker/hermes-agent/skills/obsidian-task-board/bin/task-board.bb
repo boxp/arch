@@ -858,14 +858,16 @@
                             :expected-ticket-sha256 :expected-board-sha256 :expected-after-board-sha256
                             :expected-source-sha256 :expected-helper-sha256} (keys opts))
                   "unsupported option for sanctioned repair")
-  (let [vault (fs/absolutize (vault-path opts))
+  (let [repair-result-backup (atom nil)
+        vault (fs/absolutize (vault-path opts))
         root (some-> (:source-root opts) fs/absolutize)
         writer (present (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR"))
-        _ (repair-require (and root writer) "--source-root and shared TASK_BOARD_VAULT_WRITER_LOCK_DIR required")
+        _ (repair-require root "--source-root required")
+        _ (repair-require (not (.startsWith (.normalize root) (.normalize vault))) "source-root must be outside vault")
         guard (fs/path root "lock-guards" (str id ".lock"))
         bpath (board-path vault)
         tpath (ticket-path vault id)]
-    (doseq [path [vault root (fs/path writer) (fs/path writer "vault-writer.lock") guard bpath tpath]] (repair-owned-path! path))
+    (doseq [path (concat [vault root guard bpath tpath] (when writer [(fs/path writer) (fs/path writer "vault-writer.lock")]))] (repair-owned-path! path))
     ;; Same source guard as runner acquire/release. Never edit claims or stale locks.
     (with-open [raf (RandomAccessFile. (str guard) "rw") channel (.getChannel raf)]
       (let [_source-lock (.lock channel)]
@@ -873,9 +875,11 @@
         ;; source guard before committing vault changes as well.
         ((fn [f]
            ;; Require an existing shared domain; never silently invent a new one.
-           (with-open [file (RandomAccessFile. (str (fs/path writer "vault-writer.lock")) "rw")
-                       writer-channel (.getChannel file)]
-             (let [_writer-lock (.lock writer-channel)] (f))))
+           (if writer
+             (with-open [file (RandomAccessFile. (str (fs/path writer "vault-writer.lock")) "rw")
+                         writer-channel (.getChannel file)]
+               (let [_writer-lock (.lock writer-channel)] (f)))
+             (f)))
           #(with-board-lock bpath
              (fn []
                (with-ticket-lock opts tpath
@@ -900,6 +904,7 @@
                          result (merge (dissoc change :after) hashes
                                   {:action "reconcile-done" :id id :rev (:rev ticket)
                                    :status "done" :assignee "boxp" :source-run (:run-id source)
+                                   :writer-lock (if writer "shared" "none")
                                    :dry-run (boolean (:dry-run opts)) :noop (= board after)})]
                      (when-not (:dry-run opts)
                        (repair-require (:confirm opts) "apply requires --confirm")
@@ -914,11 +919,33 @@
                        (repair-require (= source (repair-source root id)) "source changed")
                        (repair-require (= ticket-sha (repair-sha (read-text tpath))) "ticket changed")
                        (when-not (= board after)
-                         (repair-audit! vault (assoc hashes :phase :prepared :id id :rev (:rev ticket)
-                                                   :source-run (:run-id source)))
-                         (repair-atomic-board! bpath board after)
-                         (repair-audit! vault (assoc hashes :phase :applied :id id :rev (:rev ticket)))))
-                     (print-result opts result)))))))))))
+                         (let [dir (fs/path root "repair-backups")
+                               _ (when (fs/exists? dir) (repair-owned-path! dir))
+                               _ (fs/create-dirs dir)
+                               _ (repair-owned-path! dir)
+                               stamp (.format (java.time.ZonedDateTime/now java.time.ZoneOffset/UTC)
+                                              (java.time.format.DateTimeFormatter/ofPattern "yyyyMMdd'T'HHmmssSSS'Z'"))
+                               backup (fs/path dir (str id "-" stamp "-board.md"))]
+                           (java.nio.file.Files/createFile backup
+                             (into-array java.nio.file.attribute.FileAttribute
+                               [(java.nio.file.attribute.PosixFilePermissions/asFileAttribute
+                                  (java.nio.file.attribute.PosixFilePermissions/fromString "rw-------"))]))
+                           (with-open [out (java.io.FileOutputStream. (.toFile backup))]
+                             (.write out (.getBytes board "UTF-8"))
+                             (.force (.getChannel out) true))
+                           (repair-require (= (:board-sha256 hashes) (repair-sha (read-text backup))) "backup hash mismatch")
+                           (repair-audit! vault (assoc hashes :phase :prepared :id id :rev (:rev ticket)
+                                                     :backup-path (str backup) :source-run (:run-id source)))
+                           (repair-atomic-board! bpath board after)
+                           (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_READBACK_MISMATCH"))
+                             (spit (str bpath) "test readback mismatch"))
+                           (let [observed (read-text bpath)]
+                             (if (= observed after)
+                               (repair-audit! vault (assoc hashes :phase :applied :id id :rev (:rev ticket)))
+                               (do (repair-audit! vault (assoc hashes :phase :conflict :id id :observed-sha256 (repair-sha observed)))
+                                   (die (str "reconcile-done: post-apply readback mismatch; backup at " backup)))))
+                           (reset! repair-result-backup (str backup)))))
+                     (print-result opts (cond-> result @repair-result-backup (assoc :backup-path @repair-result-backup)))))))))))))
 
 (defn usage []
   (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|verify-dispatch|delete|control-intent|reconcile-done> [args]\nverify-dispatch ID --expected-rev R [--assignee A] [--json]: started/awaiting-pickup (0), duplicate-cards (3), reverted (4), pending-sync (5), unknown (6)"))
