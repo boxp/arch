@@ -1,6 +1,6 @@
 # コハコ v6 リグ再構築
 
-`./rebuild.sh VAULT WORK_DIR` を実行する。履歴スクリプトは `boxp/even-g2-lab` の `origin/main` commit `2ca1027c8acdf98246623b2c46d70afa253449c9` にある `docs/project_docs/BOXP-441/` から移した。コンテナ内のパスは `/tmp/boxp441` に固定し、引数の作業ディレクトリとは `docker cp` で受け渡す。Docker、git、ネットワーク、空き容量が必要。Vault は `attachments/kohako-exe-navigation-ai-character-sheet-final.png` と `Projects/kohako-openamika-ui/live2d/gen/` を含む BOXP のルート。WORK_DIR はスクラッチとして使用し、成功時 `v6/out/kohako-v6.p2lrt` と中間 layout を置く。画像素材はリポジトリに含めない。既存の同名出力を使うディレクトリは指定しない。
+`./rebuild.sh VAULT WORK_DIR` を実行する。履歴スクリプトは `boxp/even-g2-lab` の `origin/main` commit `2ca1027c8acdf98246623b2c46d70afa253449c9` にある `docs/project_docs/BOXP-441/` から移した。コンテナ内のパスは `/tmp/boxp441` に固定し、引数の作業ディレクトリとは `docker cp` で受け渡す。Docker、git、ネットワーク、空き容量が必要。Vault は `attachments/kohako-exe-navigation-ai-character-sheet-final.png` と `Projects/kohako-openamika-ui/live2d/gen/` を含む BOXP のルート。WORK_DIR はスクラッチとして使用し、成功時 `v6/out/kohako-v6.p2lrt` と中間 layout を置く。画像素材はリポジトリに含めない。再実行時は開始時に WORK_DIR 内の出力ディレクトリ(kohako, v1〜v3, v5b, v6, v13, v14, v14b)を削除してから作り直すため、前回の成果物は残らない(psd2live と gradle-cache は再利用する)。
 
 - `kohako-min`: キャラクターシートの左上胸像 (300,60)-(980,710) を切り、目・口などを分ける。
 - `kohako-v1`, `v2`, `v3`: 承認済み gen の頭・後ろ髪を参照し、髪と顔を分離する。v5 の入力は v3。
@@ -18,3 +18,9 @@ Docker の名前付き volume と `docker cp` によりデーモンが別名前�
 ## v13 の再構築と制約
 
 同じコマンドは v6 と v13 の両方を生成し、`WORK_DIR/v13/out/kohako-v13.p2lrt` と loss report を出力する。`kohako-v13/create_parts.py` は v6 の顔・目・口を変えず、原画の後ろ髪の露出部分を body から後ろ髪へ移し、18px のフェードで境界を緩める。角度と後ろ髪の変形への追従を試すもので、体に残る髪との継ぎ目は未解消。元画像も中間画像もリポジトリには含めない。`capture.py` の Shake は曲線を線形補間した近似で、物理シミュレーションは含まない。静止画の原画は全ポーズで同一であり、回転時の正解画像ではない。
+
+## v14 / v14b の再構築
+
+同じ `rebuild.sh VAULT WORK_DIR` は v13 に続けて、`WORK_DIR/v14/out/kohako-v14.p2lrt` と比較試案 `WORK_DIR/v14b/out/kohako-v14b.p2lrt`、それぞれの loss report と静止ポーズを出力する。v14 は v13 の後ろ髪の生成由来部分を原画の髪の小片を拡張した色と線に置き換える。v14b はその上で、原画の外側の髪の暗い領域の一部を body から動く後ろ髪へ追加移動する。どちらも手作業の近似で、体側に残る髪との継ぎ目を完全には解消しない。画像生成は行わない。
+
+`kohako-v14/capture.py` は静止パラメータの描画で、物理シミュレーションではない。`kohako-v14/make_compare.py WORK_DIR OUTPUT_DIR` は Pillow と NumPy がある環境で比較 PNG と露出領域を出力する。露出マスクは別描画した後ろ髪の alpha × (1 − 前景合成 alpha) が 5% 超の位置で、v13 で移した原画の髪も含む。静止原画との色差は、動かしたポーズの美術上の正解との距離を表さない。

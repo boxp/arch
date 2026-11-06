@@ -45,7 +45,7 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-v13')
+    expect(LATEST_MODEL_ID).toBe('kohako-v14')
     expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
     expect(modelFor('?model=kohako').id).toBe('kohako')
@@ -81,10 +81,16 @@ describe('clip names', () => {
     expect(v6.rig).toBe('../kohako/kohako-v6.p2lrt')
     expect(ids.map(id => clipName(v6, id))).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
   })
-  it('selects v13 and preserves v12 as a rejected comparison', () => {
+  it('selects v14 and preserves v13 as a previous trial', () => {
     const v13 = modelFor('?model=kohako-v13')
     expect(v13.rig).toBe('../kohako/kohako-v13.p2lrt')
-    expect(v13.status).toBe('latest')
+    expect(v13.status).toBe('previous-latest')
+    const v14 = modelFor('?model=kohako-v14')
+    expect(v14.status).toBe('latest')
+    expect(modelFor('?model=kohako-v14b').status).toBe('rejected')
+    expect(v14.rig).toBe('../kohako/kohako-v14.p2lrt')
+    expect(v14.evaluation).toContain('担当評価: 不採用・本人確認用')
+    expect(Object.values(v14.clipNames ?? {})).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
     expect(v13.evaluation).toContain('本人確認用')
     expect(modelFor('?model=kohako-v12').status).toBe('rejected')
     expect(Object.values(v13.clipNames ?? {})).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
