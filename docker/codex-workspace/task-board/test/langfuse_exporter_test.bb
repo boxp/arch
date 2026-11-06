@@ -1204,6 +1204,18 @@
         (is (:reason (#'lf/body-exposure "curl -u admin:x9 https://example.test")) "control: a real -u credential still counts")
         (is (str/includes? out "list the files"))))))
 
+;; P0 arch#14503 :46 (BOXP-428). A percent-encoded user name (user%40example.com) is a real -u credential; the
+;; password after it is masked and pinned. A date format with % after -u stays readable.
+(deftest cli-user-with-percent-encoding
+  (doseq [cmd ["curl -u user%40example.com:huntertwopct https://x"
+               "curl --user=me%2Bci:huntertwopct https://x"
+               "curl -u 'user%40example.com:huntertwopct' https://x"]]
+    (is (not (str/includes? (:value (lf/redact cmd #{})) "huntertwopct")) cmd)
+    (is (contains? (:values (#'lf/body-exposure cmd)) "huntertwopct") cmd))
+  (doseq [cmd ["date -u +%Y-%m-%dT%H:%M:%SZ" "date -u '+%H:%M'" "date -u \"+%d%H:%M\""]]
+    (is (= cmd (:value (lf/redact cmd #{}))) cmd)
+    (is (nil? (:reason (#'lf/body-exposure cmd))) cmd)))
+
 ;; P0 arch#14503 :552 (BOXP-428). A whole value that is a structure word (password: username, token = value) is still
 ;; the value and is pinned, so a later bare repeat is masked. A key word inside a structure (secretKeyRef name/key)
 ;; stays a reference.

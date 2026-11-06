@@ -82,6 +82,6 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 
 - 利用者の依頼文(Claude の user 行、Codex の user/developer message)とモデル自身の応答本文も、tool 出力と同じ判定(既知形式/代入/YAML・XML ブロック/散文)で走査する。名指しされた値(`password: huntertwo`、`the password is plumorchard`)は pin し、同じ run の以後の本文と root の出力でマスクする。値を pin できない場合(`password: 123`、`the password is abc`、256KB 超で走査不能)は、その generation 自身の応答も同じ値を再掲し得るため、その generation から後の本文を `withheld_after_secret_exposure` で保留する。
 - 値全体が構造語(`password: username`、`token = value`、`{"api_key": "name"}`)でも値として pin する(4 文字未満の `key` 等は保留)。区切りのない平文の複数語の値(`password: value horsestaple`)では構造語も値の一部として pin する。`secretKeyRef: name: … key: …` のような構造の中のキー語、`${VAR}` 等の参照、`Bearer`/`Basic` の認証スキーム語は値としない。
-- 誤検出の修正: `date -u +%Y-%m-%dT%H:%M:%SZ` を `curl -u user:pass` と誤認していたため、`-u` の値が `+` で始まるもの・利用者部に `%` を含むものは対象外にした(実 run BOXP-436 で依頼文走査により 8 件が保留される退行を検出し解消)。
+- 誤検出の修正: `date -u +%Y-%m-%dT%H:%M:%SZ` を `curl -u user:pass` と誤認していたため、`-u` の値が `+` で始まるもの・利用者部に `%` に英字が続く日付書式を含むものは対象外にした。`curl -u user%40example.com:pass` のようにパーセント符号化(`%` + 16進2桁)した利用者名は認証情報として扱う(P0 arch#14503 :46)(実 run BOXP-436 で依頼文走査により 8 件が保留される退行を検出し解消)。
 - 過剰保留: 依頼文が短いラベル付き例示値を引用する run(本票 BOXP-428 自身の runner prompt は Notes に `password: 123` 等を含む)は、最初の generation から本文が保留される。`Your password is too short.` のような依頼/応答も短い語を名指しするため以後の本文を保留する。過剰マスク: `password: username` を見た run では以後 `username` という語が伏字になる。
 - 実 run の比較(件数のみ、本文は出力していない): BOXP-436 sent 25 / BOXP-437 sent 5 は変更前と同一、BOXP-438/440/446/449/450 も変更前と同一。BOXP-428 の直近 run は sent 2 → 0(上記の過剰保留)。

@@ -43,7 +43,9 @@
    [:env-entry (re-pattern (str "(?i)" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern "(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "value") (value-pattern nil "[^\\s,;}\\]]+")))]
    [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
    [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b|\+)[^\s:%]+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   ;; A user name may hold percent-encoded bytes (user%40example.com); a bare % followed by a letter is a date
+   ;; format such as date -u '+%H:%M' and is no credential.
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?!\d+:\d+\b|\+)(?:[^\s:%]|%[0-9A-Fa-f]{2})+:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
