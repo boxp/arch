@@ -13,7 +13,7 @@ it('verifies and caches verifier', async () => { let calls = 0; const a = auth(t
 it('rejects wrong user, audience, and disabled verifier', async () => { for (const a of [auth(true, review('other')), auth(true, review('sa', ['other'])), auth(false)]) expect(await a({ authorization: 'Bearer test' })).toBeNull() })
 it('isolates sessions and requests and restricts verifier approval', async () => {
   const sessions: string[] = []
-  const hermes = { run: (_id: string, _text: string, session: string, _instructions: string, cb: any) => { sessions.push(session); cb('run', { description: 'test', command: '', choices: ['once', 'deny'] }); return new Promise(() => {}) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
+  const hermes = { run: (_id: string, _text: string, session: string, _instructions: string, cb: any) => { sessions.push(session); cb('run', { description: 'test', command: 'echo hi', choices: ['once', 'deny'] }); return new Promise(() => {}) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
   const server = createServer(createApp({ authenticate: async h => h.authorization === 'owner' ? 'owner' : h.authorization === 'verifier' ? 'verifier' : null, hermes }))
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   try {
@@ -32,7 +32,7 @@ it('isolates sessions and requests and restricts verifier approval', async () =>
 })
 it('clears pending approval when the run ends with a polling failure', async () => {
   let settle: (r: any) => void = () => {}
-  const hermes = { run: (_id: string, _text: string, _session: string, _instructions: string, cb: any) => { cb('run', { description: 'test', command: '', choices: ['once', 'deny'] }); return new Promise(r => { settle = r }) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
+  const hermes = { run: (_id: string, _text: string, _session: string, _instructions: string, cb: any) => { cb('run', { description: 'test', command: 'echo hi', choices: ['once', 'deny'] }); return new Promise(r => { settle = r }) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
   const server = createServer(createApp({ authenticate: async () => 'owner', hermes }))
   await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
   try {
@@ -69,4 +69,28 @@ it('shows the full command in approvals and only allows deny when it cannot be s
   expect(shown.summary).toContain('https://example.test/some/long/path/segment')
   expect(approvalSummary({ description: '', command: 'curl -H "Authorization: Bearer abc"' }).fullyShown).toBe(false)
   expect(approvalSummary({ description: 'x', command: 'echo a', commandTruncated: true }).fullyShown).toBe(false)
+})
+it('does not allow once when the approval command is missing or empty', async () => {
+  const { approvalSummary } = await import('./conversation.js')
+  expect(approvalSummary({ description: 'x', command: '' }).fullyShown).toBe(false)
+  expect(approvalSummary({ description: 'x', command: '   ' }).fullyShown).toBe(false)
+  expect(approvalSummary({ description: 'x', command: '' }).summary).toContain('拒否のみ')
+})
+it('treats 4xx polling errors as unconfirmed outcome instead of failed, retrying 429', async () => {
+  const { createHermes } = await import('./hermes.js')
+  const json = (status: number, body: object) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
+  const make = (pollStatuses: number[]) => {
+    let polls = 0
+    const fetcher = (async (url: string) => {
+      if (url.endsWith('/v1/toolsets')) return json(200, { data: [] })
+      if (url.endsWith('/v1/runs')) return json(202, { run_id: 'run1' })
+      const status = pollStatuses[Math.min(polls++, pollStatuses.length - 1)]
+      return status === 200 ? json(200, { status: 'completed', output: 'ok' }) : json(status, {})
+    }) as unknown as typeof fetch
+    return createHermes({ url: 'http://h', key: 'k', fetch: fetcher, sleep: async () => {} })
+  }
+  const opts = { idempotencyKey: 'i', input: 'x', sessionId: 's', instructions: '', polls: 20 }
+  expect(await make([429, 429, 200]).execute(opts)).toEqual({ status: 'done', text: 'ok' })
+  expect(await make([429]).execute(opts)).toEqual({ status: 'unknown', error: 'hermes_poll_429' })
+  expect(await make([404]).execute(opts)).toEqual({ status: 'unknown', error: 'hermes_poll_404' })
 })

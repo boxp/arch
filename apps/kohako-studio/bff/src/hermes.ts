@@ -110,10 +110,17 @@ export function createHermes({
       const id = post.data?.run_id
       if (typeof id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(id)) return { status: 'unknown', error: 'hermes_schema' }
       options.onRun?.(id)
-      let waiting = false
+      let waiting = false,
+        pollErrors = 0
       for (let i = 0; i < (options.polls ?? 300); i++) {
         const poll = await request(`/v1/runs/${id}`, { headers: auth })
-        if (poll.code) return { status: 'failed', error: poll.code }
+        // 4xx（429 等）は上流 run の終了を意味しない。429 は待って再確認し、それ以外/上限超過は結果未確認(unknown)として
+        // 呼出し側に上流停止と session 切替をさせる（failed で返すと同 session で次の run が並行実行される）。
+        if (poll.code) {
+          if (poll.code === '429' && ++pollErrors <= 5) { await sleep(options.pollMs ?? 2000); continue }
+          return { status: 'unknown', error: `hermes_poll_${poll.code}` }
+        }
+        pollErrors = 0
         const status = poll.data?.status
         if (status === 'waiting_for_approval') {
           // 稼働版は pending_controls[{kind:'approval', prompt_id, execution_generation, ...}]、旧版は approval{request_id, ...}。

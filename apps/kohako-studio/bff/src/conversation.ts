@@ -36,9 +36,10 @@ export function approvalSummary(approval: { description: string; command: string
   const description = redact(approval.description).slice(0, 160)
   const rawCommand = approval.command.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim()
   const command = redact(rawCommand)
-  const fullyShown = !approval.commandTruncated && command === rawCommand
+  // command が欠落/空なら実行内容を確認できないので、一度だけ許可は出さない。
+  const fullyShown = !!rawCommand && !approval.commandTruncated && command === rawCommand
   const lines = [description || '操作の許可']
-  if (command) lines.push(`実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}`)
+  lines.push(command ? `実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}` : '実行内容: （不明のため拒否のみ可能）')
   return { summary: lines.join('\n'), fullyShown }
 }
 export function createConversation({ now, hermes, prefix }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string }) {
