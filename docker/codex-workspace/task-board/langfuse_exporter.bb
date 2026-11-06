@@ -513,18 +513,77 @@
           {:reason "value_exposure"})
         (catch Throwable _ {:reason "scan_error"})))))
 
+;; Prose that names a value with a secret word ("the password is huntertwo", "kiwimango is my password"). A plain
+;; lowercase value is pinned here although candidate-values skips plain words, because the secret word and a copula
+;; or separator name it (P0 arch#14503). A secret word without such a separator ("the token generation ...",
+;; "Reset your password") is a mention and pins nothing (TD-07).
+(def prose-connective #"(?i)a|an|the|be|been|being|to|for|of|on|in|at|by|as|it|its|this|that|these|those|and|or|my|your|our|their|his|her|new|old|current|still|just|also|now|here|there|then|set|now")
+(def prose-separator #"(?i)is|are|was|were|:|=")
+(def prose-question #"(?i)what|which|where|who|whose|how|why|when|not|no")
+(def max-prose-values 64)
+
+(defn- secret-name-token? [t]
+  (boolean (and (re-find loose-word t) (re-matches #"[A-Za-z_.-]{1,64}" t))))
+
+(defn- prose-tokens [line]
+  (->> (re-seq #"[:=]|[^\s\"'`,;:=<>()\[\]{}]+" line)
+       (map #(str/replace % #"^[.!?]+|[.!?]+$" ""))
+       (remove str/blank?)
+       vec))
+
+(defn- prose-line-values
+  "[values short?] for one line, or nil when no secret word names a value on it."
+  [line]
+  (let [tokens (prose-tokens line)
+        i (first (keep-indexed (fn [i t] (when (secret-name-token? t) i)) tokens))]
+    (when i
+      (let [name (nth tokens i)
+            after (drop (inc i) tokens)
+            gap (take-while #(or (re-matches prose-connective %) (re-matches prose-separator %)) after)
+            rest-tokens (drop (count gap) after)
+            before (reverse (take i tokens))
+            bgap (take-while #(or (re-matches prose-connective %) (re-matches prose-separator %)) before)
+            bword (first (drop (count bgap) before))
+            after-values (when (some #(re-matches prose-separator %) gap)
+                           (->> rest-tokens
+                                (remove #(or (re-matches prose-connective %) (re-matches prose-separator %)))
+                                (remove reference?)
+                                (filter #(re-matches #"[\x21-\x7e]+" %))))
+            after-values (if (and (= 1 (count after-values)) (setting? name (first after-values))) [] after-values)
+            before-value (when (and bword (some #(re-matches #"(?i)is|are|was|were" %) bgap)
+                                    (re-matches #"[\x21-\x7e]+" bword) (not (reference? bword))
+                                    (not (re-matches prose-question bword)) (not (re-find loose-word bword)))
+                           bword)
+            values (cond-> (vec after-values) before-value (conj before-value))]
+        (when (seq values)
+          [(set (filter #(>= (count %) 4) (take max-prose-values values)))
+           (or (some #(< (count %) 4) values) (> (count values) max-prose-values))])))))
+
+(defn- prose-values
+  "{:values vs} named by a secret word in prose, with {:reason \"value_exposure\"} when one is too short to pin."
+  [text]
+  (let [found (keep prose-line-values (take 4096 (str/split (str text) segment-break)))]
+    (cond-> {:values (set (mapcat first found))}
+      (some second found) (assoc :reason "value_exposure"))))
+
 (def ^:dynamic *privacy-values* [])
 
+;; Threat model and accepted residual: LANGFUSE_EXPORTER_THREAT_MODEL.md. A bare secret with no label, known format
+;; or known source (a password alone in notes.txt) is indistinguishable from ordinary output and is sent: the Owner
+;; accepted this residual for the in-cluster, Owner-only Langfuse (TD-07).
 (defn- tool-exposure [tool result]
   (let [output (str (:output result))
         input (:input tool)
         input (if (string? input) input (json/generate-string input))]
     (cond (withhold-output? input) {:reason "sensitive_source"}
           (env-dump? output) {:reason "sensitive_source"}
-          :else (let [in (exposure input) out (exposure output)]
+          :else (let [in (exposure input) out (exposure output)
+                      large? (> (count output) 262144)
+                      prose (when-not large? (prose-values output))]
                   (cond (:reason in) in
                         (:reason out) out
-                        :else {:values (into (set (:values in)) (concat (:values out) (when-not (> (count output) 262144) (candidate-values output))))})))))
+                        (:reason prose) {:reason (:reason prose)}
+                        :else {:values (into (set (:values in)) (concat (:values out) (:values prose) (when-not large? (candidate-values output))))})))))
 
 (defn- privacy-reason [tool result] (:reason (tool-exposure tool result)))
 (defn- privacy-analysis [ctx gens tools-of result-of]

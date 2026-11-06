@@ -966,5 +966,28 @@
                                                            {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "zz 123 zz"}]}}]))]
     (is (not (str/includes? (pr-str spans) "zz 123 zz")))))
 
+(deftest plain-prose-values-named-by-a-secret-word
+  ;; "the password is huntertwo": a plain lowercase value named with a copula or separator is pinned, so a later
+  ;; bare repeat is masked (P0 arch#14503 :424). A short one cannot be pinned and withholds like password: 123.
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [[output value] [["the password is huntertwo" "huntertwo"]
+                            ["The api_key was plumorchard." "plumorchard"]
+                            ["db password: hunter otterpaw" "otterpaw"]
+                            ["kiwimango is my password" "kiwimango"]]]
+      (let [lines (assoc-in (privacy-lines :claude "Bash" output) [3 :message :content] [{:type "text" :text (str "zz " value " zz")}])
+            spans (doall (lf/claude-spans ctx "root" "test:" lines))
+            sanitized (pr-str (map #(lf/sanitize-span {:secret-values (mapcat :session-values spans) :max-field-bytes 100000} (atom {}) %) spans))]
+        (is (some #(contains? (:session-values %) value) spans) output)
+        (is (not (str/includes? sanitized (str "zz " value " zz"))) output)
+        (is (not (str/includes? (pr-str spans) "withheld_after_secret_exposure")) output)))
+    (doseq [output ["the password is abc" "the token was qz7 now"]]
+      (is (= "value_exposure" (:reason (#'lf/tool-exposure {:input "cat notes.txt"} {:output output}))) output)))
+  (testing "a secret word without a named value stays readable and pins nothing"
+    (doseq [output ["the token generation configuration is documented" "Reset your password from the settings page"
+                    "if token is None:" "password_min_length: 8" "password: ${DB_PASSWORD}" "what is the password"]]
+      (let [{:keys [reason values]} (#'lf/tool-exposure {:input "cat notes.txt"} {:output output})]
+        (is (nil? reason) output)
+        (is (not-any? #{"generation" "configuration" "documented" "reset" "settings" "page" "what"} values) output)))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
