@@ -285,9 +285,75 @@
 ;; at, so a search pattern ({"pattern":"db_password"}) or a command mentioning the word stays readable.
 (def secret-file-arg
   #"(?i)\"(?:file_?path|notebook_?path|path|file_?name|file|target_?file)\"\s{0,16}:\s{0,16}\"(?:[^\"]{0,1024}?[/\\])?[^/\\\"]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)[^/\\\"]{0,64}\"")
+;; Any program can print a file it is given (sed -n 1p db_password, awk 1 db_password, python3 x.py db_password,
+;; < db_password), so the readers are not enumerated (P0 arch#14503 :280). A shell segment whose program is not a
+;; mention-only command and which takes a secret-named file as a whole argument, or redirects one in, is a source.
+;; Mention-only commands (echo, git, ls, ...) and the pattern argument of grep/rg stay readable; a quoted argument
+;; containing whitespace (a note or commit message) is text, not a file name. JSON tool input is looked at only in
+;; its command/cmd values so a description field that mentions a password stays readable.
+(def secret-file-name
+  #"(?i)(?:[^\s]{0,1024}[/\\])?[^/\\\s]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)[A-Za-z0-9_.-]{0,64}")
+(def mention-programs
+  #{"echo" "printf" "git" "ls" "find" "fd" "locate" "which" "type" "command" "man" "help" "gh" "mkdir" "rmdir" "touch"
+    "rm" "mv" "chmod" "chown" "stat" "wc" "test" "[" "cd" "pushd" "ln" "du" "file" "true" "false" "exit" "export"})
+(def search-programs #{"grep" "egrep" "fgrep" "rg" "ag" "ack" "zgrep"})
+(def prefix-programs #{"then" "do" "else" "if" "while" "until" "!" "sudo" "time" "nice" "nohup" "exec" "xargs" "env" "doas" "timeout" "stdbuf"})
+(def stdout-sink #"(?i)^(?:/dev/(?:stdout|stderr|tty|fd/\d+)|/proc/self/fd/\d+)$")
+(def open-call
+  #"(?i)(?:\bopen|read_?text|read_?file|readFileSync|slurp|File\.read|load|cat)\s{0,8}\(\s{0,8}[\"']([^\"'\s]{1,1024})[\"']")
+
+(defn- shell-words
+  "Whitespace-separated words of one segment with quotes removed; a quoted span keeps its spaces."
+  [segment]
+  (map (fn [[_ dq sq bare]] (or dq sq bare))
+       (re-seq #"\"((?:[^\"\\]|\\.){0,4096})\"|'([^']{0,4096})'|((?:[^\s\"']|\\.){1,4096})" segment)))
+
+(defn- secret-file-word? [w]
+  (boolean (and (not (re-find #"\s" w)) (not (str/starts-with? w "-")) (re-matches secret-file-name w))))
+
+(defn- segment-reads-secret-file? [segment]
+  (let [words (vec (take 512 (shell-words segment)))
+        redirected (some (fn [[a b]] (and (re-matches #"\d?<" a) b (secret-file-word? b)))
+                         (partition 2 1 (concat words [nil])))
+        inline-redirect (some #(when-let [[_ f] (re-matches #"\d?<([^<].*)" %)] (secret-file-word? f)) words)
+        args (drop-while #(or (re-matches #"[A-Za-z_]\w*=.*" %) (contains? prefix-programs (last (str/split % #"/")))
+                              (re-matches #"-\S*|\d+" %))
+                         words)
+        program (some-> (first args) (str/split #"/") last)
+        operands (remove #(or (str/starts-with? % "-") (re-matches #"\d+" %)) (rest args))
+        dd-input (some #(when-let [[_ f] (re-matches #"if=(.*)" %)] (secret-file-word? f)) words)]
+    (boolean
+     (or redirected inline-redirect dd-input
+         (and program
+              (cond (contains? search-programs program)
+                    (or (some secret-file-word? (rest operands))
+                        (and (some #(re-matches #"-e|--regexp|-f|--file" %) args) (some secret-file-word? operands)))
+                    (contains? mention-programs program) false
+                    :else (some secret-file-word? operands)))
+         (and (some #(re-matches stdout-sink %) words) (some secret-file-word? words))))))
+
+(defn- command-texts
+  "Shell text of a tool input: the command/cmd values of JSON input, else the whole input."
+  [s]
+  (let [parsed (when (str/starts-with? (str/triml s) "{") (try (json/parse-string s) (catch Exception _ nil)))]
+    (if (map? parsed)
+      (keep (fn [k] (let [v (get parsed k)] (cond (string? v) v (sequential? v) (str/join " " (map str v)))))
+            ["command" "cmd" "script" "code"])
+      [s])))
+
+(defn secret-file-command? [input]
+  (boolean (some (fn [text]
+                   (or (some (fn [[_ f]] (secret-file-word? f)) (take 256 (re-seq open-call text)))
+                     (some segment-reads-secret-file?
+                           ;; Separators inside a quoted span (a note or commit message) do not split it.
+                           (take 256 (str/split (str/replace text #"\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'"
+                                                             (fn [q] (str/replace q #"[;&|\n(){}`$]|\\n" " ")))
+                                                #"[;&|\n(){}`]|\$\(|\\n")))))
+                 (command-texts (str input)))))
+
 (defn withhold-output? [input]
   (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s) (re-find secret-file-read s)
-                                    (re-find secret-file-arg s)
+                                    (re-find secret-file-arg s) (secret-file-command? s)
                                     (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))
 (defn env-dump? [output]
   (let [s (str output)] (boolean (and (re-find #"(?:^|[^A-Za-z0-9_])PATH=" s)
@@ -545,12 +611,22 @@
        (remove str/blank?)
        vec))
 
+(declare prose-index-values)
+
 (defn- prose-line-values
   "[values short?] for one line, or nil when no secret word names a value on it."
   [line]
   (let [tokens (prose-tokens line)
-        i (first (keep-indexed (fn [i t] (when (secret-name-token? t) i)) tokens))]
-    (when i
+        ;; Every secret word on the line, not only the first (P0 arch#14503 :541): "Reset your password; kiwimango is
+        ;; my token" names kiwimango with the second word.
+        found (keep (fn [i] (prose-index-values tokens i))
+                    (take 64 (keep-indexed (fn [i t] (when (secret-name-token? t) i)) tokens)))]
+    (when (seq found)
+      [(set (mapcat first found)) (boolean (some second found))])))
+
+(defn- prose-index-values
+  [tokens i]
+  (do
       (let [name (nth tokens i)
             after (drop (inc i) tokens)
             gap (take-while #(or (re-matches prose-connective %) (re-matches prose-separator %)) after)
@@ -571,7 +647,7 @@
             values (cond-> (vec after-values) before-value (conj before-value))]
         (when (seq values)
           [(set (filter #(>= (count %) 4) (take max-prose-values values)))
-           (or (some #(< (count %) 4) values) (> (count values) max-prose-values))])))))
+           (or (some #(< (count %) 4) values) (> (count values) max-prose-values))]))))
 
 (defn- prose-values
   "{:values vs} named by a secret word in prose, with {:reason \"value_exposure\"} when one is too short to pin."

@@ -57,3 +57,11 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 秘密語がファイル名の一部にある場合(`cat db_password`、`cat app-secret`、`cat aws_credentials`、`head ./conf/mysql_root_password.txt`)も、読取系コマンドの引数なら機密源として本文を保留する。`grep -rn db_password src` や `echo set db_password` などの検索・言及は対象外で読める。
 - 過剰保留: 秘密語を名前に含む普通のファイルの読取(`cat secretary.txt`)も保留する。読取系コマンド以外(`python db_password` 等)の実行出力は対象外で、既知形式/秘密語マスクのみ(許容残差)。
 - ファイル系tool(Read/NotebookRead 等)がJSON引数でパスを受ける場合(`{"file_path":"db_password"}`、`{"path":"aws_credentials"}`)も、パス値のキー(file_path/path/notebook_path/filename/file/target_file)の最後の要素に秘密語があれば機密源として本文を保留する。`{"pattern":"db_password"}` のような検索語や、コマンド文字列中の言及は対象外。過剰保留: Glob/Grep の `path` が秘密語を含むディレクトリ名(`src/secrets_manager`)なら一覧/検索結果も保留する。
+
+## 追記 (arch#14503 P0 :280 / :541)
+
+- 読取コマンドの列挙をやめ、反転した: シェルの各セグメント(`;`/`&`/`|`/改行/`$(`/括弧/backtick で分割、引用符内の区切りでは分割しない)で、プログラムが言及専用コマンド(echo/printf/git/ls/find/gh/mkdir/rm/mv/chmod/stat/wc/cd 等)以外なら、秘密名ファイルを丸ごとの引数として受け取った時点で機密源とする(`sed -n 1p db_password`、`awk 1 db_password`、`jq . credentials.json`、`python3 show.py db_password`)。`< db_password` の入力リダイレクト、`dd if=`、`open('db_password')` 等のファイル open 呼出し、`/dev/stdout` への複写も同様。
+- `grep`/`rg` 等は最初の非オプション引数(検索語)だけを言及とみなし、2つ目以降の引数や `-e`/`-f` 使用時の秘密名ファイルは機密源(`grep . db_password`)。
+- JSON の tool 入力は `command`/`cmd`/`script`/`code` の値だけを見る(Bash の `description` が password に言及しても読める)。空白を含む引用符引数(`--note '...'`、commit message)はファイル名とみなさない。
+- 散文では行内の全ての秘密語を見る(最初の1語だけではない)。`Reset your password; kiwimango is my token` の `kiwimango` も pin する。
+- 過剰保留: 秘密語を名前に含む普通のファイルを任意のプログラムに渡すと保留(`make reset-password`、`kustomize build overlays/secrets`)。残差: 引用符内の任意コード中の非 open 系読取(`python3 -c "import x; x.load_it('db_password')"` 等)や、変数経由のパス(`f=db_password; cat $f`)は未検出で、既知形式/秘密語マスクのみ。

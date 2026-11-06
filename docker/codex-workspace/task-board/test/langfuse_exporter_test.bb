@@ -1044,5 +1044,39 @@
                                                            {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content value}]}}
                                                            {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text (str "it is " value)}]}}]))]
     (is (not (str/includes? (pr-str spans) value)))))
+
+;; P0 arch#14503 :541 (BOXP-428). Every secret word on a prose line is looked at, not only the first, so a value named
+;; by a later word ("Reset your password; kiwimango is my token") is pinned and its later repeats are masked.
+(deftest prose-values-after-a-mention-on-the-same-line
+  (doseq [[line value] [["Reset your password; kiwimango is my token" "kiwimango"]
+                        ["Reset your password, the token is limequartz" "limequartz"]
+                        ["see password docs. the secret is plumvortex" "plumvortex"]]]
+    (is (contains? (:values (#'lf/prose-values line)) value) line))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        spans (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "first request"}}
+                                                           {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Read" :input {:file_path "notes.txt"}}]}}
+                                                           {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content "Reset your password; kiwimango is my token"}]}}
+                                                           {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text "repeat: kiwimango"}]}}]))]
+    (is (some #(contains? (:session-values %) "kiwimango") spans))
+    (is (not (str/includes? (pr-str (map #(lf/sanitize-span {:secret-values (mapcat :session-values spans) :max-field-bytes 100000} (atom {}) %) spans)) "kiwimango"))))
+  (is (nil? (:reason (#'lf/prose-values "Reset your password from the settings page; the token generation is documented")))))
+
+;; P0 arch#14503 :280 (BOXP-428). Any program that takes a secret-named file as an argument (sed -n 1p db_password,
+;; awk 1 db_password, python3 x.py db_password, < db_password) can print it, so the reader is no longer enumerated:
+;; only commands that mention a name without printing the file (grep/rg pattern, echo, git, ls, ...) stay readable.
+(deftest any-program-reading-a-secret-named-file
+  (doseq [c ["sed -n 1p db_password" "awk 1 db_password" "awk '{print}' ./conf/app-secret" "cut -c1- aws_credentials"
+             "sort db_password" "jq . credentials.json" "python3 show.py db_password" "perl -pe 1 db_password"
+             "while read l; do echo $l; done < db_password" "tr a-z A-Z < /tmp/password" "grep . db_password"
+             "rg -e x src db_password" "cp db_password /dev/stdout" "dd if=db_password" "sudo sed -n 1p db_password"
+             "python3 -c \"print(open('db_password').read())\"" "x=$(sed 1q db_password)" "sed 1q db_password | head"
+             "{\"command\":[\"bash\",\"-lc\",\"awk 1 db_password\"]}" "{\"cmd\":\"sed -n 1p db_password\"}"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["grep -rn db_password src" "rg db_password docs" "echo set db_password in vault" "git commit -m 'rename db_password'"
+             "ls secrets-docs" "bb task-board.bb append-note --note 'rotate the password docs'"
+             "bb task-board.bb append-note --note \"please do (rotate) password; then credentials later\"" "if true; then echo password; fi"
+             "sed -n 1,20p docs/reset.md" "awk 1 README.md" "python3 x.py --password-file-flag-doc"
+             "{\"command\":\"ls\",\"description\":\"show password policy docs\"}" "{\"cmd\":\"ls\",\"max_output_tokens\":12000}"]]
+    (is (not (lf/withhold-output? c)) c)))
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
