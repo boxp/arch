@@ -1,7 +1,7 @@
 FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7 AS builder
 
 ARG LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
-ARG LLAMA_REF=757cad021b357f417065ddbc41a6e8f87c1f8136
+ARG LLAMA_REF=cd959bae99ff4bed22bef2604f45241c09bbb8c8
 
 ENV DEBIAN_FRONTEND=noninteractive
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
@@ -42,6 +42,10 @@ RUN set -eux; \
     git checkout "${LLAMA_REF}"; \
     git rev-parse HEAD > /opt/llama-source-revision
 
+# BOXP-417 H66: 隔離評価専用の patch。既定（LLAMA_RS_DIRECT 未設定）では元の挙動と同じ
+COPY patches/ /src/patches/
+RUN cd /src/llama.cpp && git apply --verbose /src/patches/h66-rs-direct.patch
+
 RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
     && cmake -S /src/llama.cpp -B /src/llama.cpp/build-sycl -G Ninja \
       -DCMAKE_BUILD_TYPE=Release \
@@ -59,7 +63,7 @@ RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
 FROM ubuntu:26.04@sha256:f144425ff09be612d6d9ad965196e9cdc23dae1f42110a8a11a3e9a8198759f7
 
 ARG LLAMA_REPO=https://github.com/ggml-org/llama.cpp.git
-ARG LLAMA_REF=757cad021b357f417065ddbc41a6e8f87c1f8136
+ARG LLAMA_REF=cd959bae99ff4bed22bef2604f45241c09bbb8c8
 
 LABEL org.opencontainers.image.title="llama-server SYCL" \
       org.opencontainers.image.description="Intel GPU SYCL build of llama-server for lolice local LLM workers" \

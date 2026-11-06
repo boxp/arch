@@ -1,0 +1,149 @@
+diff --git a/src/llama-graph.cpp b/src/llama-graph.cpp
+index edf1ca7..1c919e3 100644
+--- a/src/llama-graph.cpp
++++ b/src/llama-graph.cpp
+@@ -20,6 +20,7 @@
+ #include <cassert>
+ #include <cmath>
+ #include <cstring>
++#include <cstdlib>
+ #include <numeric>
+ #include <sstream>
+ #include <string>
+@@ -492,6 +493,14 @@ static void set_input_s_slot_rev(ggml_tensor * s_slot_rev) {
+     }
+ }
+ 
++static bool rs_direct_identity(const llama_memory_recurrent_context * mctx, int64_t n_seqs) {
++    static const bool enabled = [] {
++        const char * value = std::getenv("LLAMA_RS_DIRECT");
++        return value && std::strcmp(value, "1") == 0;
++    }();
++    return enabled && n_seqs == 1 && mctx->is_direct_identity();
++}
++
+ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
+     GGML_UNUSED(ubatch);
+ 
+@@ -523,6 +532,7 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
+ 
+     res &= head == mctx->get_head();
+     res &= rs_z == mctx->get_rs_z();
++    res &= direct_identity == rs_direct_identity(mctx, params.ubatch.n_seqs);
+ 
+     return res;
+ }
+@@ -1244,6 +1254,7 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
+ 
+     res &= inp_rs->head == mctx->get_recr()->get_head();
+     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
++    res &= inp_rs->direct_identity == rs_direct_identity(mctx->get_recr(), params.ubatch.n_seqs);
+ 
+     return res;
+ }
+@@ -1291,6 +1302,7 @@ bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
+ 
+     res &= inp_rs->head == mctx->get_recr()->get_head();
+     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
++    res &= inp_rs->direct_identity == rs_direct_identity(mctx->get_recr(), params.ubatch.n_seqs);
+ 
+     return res;
+ }
+@@ -1364,6 +1376,7 @@ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
+ 
+     res &= inp_rs->head == mctx->get_recr()->get_head();
+     res &= inp_rs->rs_z == mctx->get_recr()->get_rs_z();
++    res &= inp_rs->direct_identity == rs_direct_identity(mctx->get_recr(), params.ubatch.n_seqs);
+ 
+     return res;
+ }
+@@ -3984,6 +3997,7 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
+ 
+     inp->head = mctx_cur->get_head();
+     inp->rs_z = mctx_cur->get_rs_z();
++    inp->direct_identity = rs_direct_identity(mctx_cur, n_seqs);
+ 
+     return inp;
+ }
+@@ -4001,9 +4015,16 @@ ggml_tensor * llm_graph_context::build_rs(
+         ggml_tensor * s,
+             int32_t   state_size,
+             int32_t   n_seqs,
+-        const llm_graph_get_rows_fn & get_state_rows) const {
++        const llm_graph_get_rows_fn & get_state_rows,
++        bool allow_direct) const {
+     const auto * kv_state = inp->mctx;
+ 
++    if (allow_direct && inp->direct_identity && !get_state_rows) {
++        // GDN consumes this cache row before its output is copied back.
++        ggml_tensor * states = ggml_reshape_2d(ctx0, s, state_size, s->ne[1]);
++        return ggml_view_2d(ctx0, states, state_size, 1, states->nb[1], inp->head * states->nb[1]);
++    }
++
+     // a custom getter reads the states of the ubatch straight from the cache, so the gather skips the first
+     // state: it still holds the n_rs - n_seqs extra states and copies no state of a single sequence ubatch
+     ggml_tensor * state_copy = get_state_rows ? inp->s_copy_tail : inp->s_copy;
+diff --git a/src/llama-graph.h b/src/llama-graph.h
+index e1804fb..ff2ba39 100644
+--- a/src/llama-graph.h
++++ b/src/llama-graph.h
+@@ -317,6 +317,7 @@ public:
+     // used in view offsets, need to match for valid graph reuse
+     uint32_t head;
+     int32_t rs_z;
++    bool direct_identity;
+ };
+ 
+ class llm_graph_input_cross_embd : public llm_graph_input_i {
+@@ -1434,7 +1435,8 @@ struct llm_graph_context {
+             ggml_tensor * s,
+                 int32_t   state_size,
+                 int32_t   n_seqs,
+-            const llm_graph_get_rows_fn & get_state_rows = nullptr) const;
++            const llm_graph_get_rows_fn & get_state_rows = nullptr,
++            bool allow_direct = false) const;
+ 
+     ggml_tensor * build_rwkv_token_shift_load(
+         llm_graph_input_rs * inp,
+diff --git a/src/llama-memory-recurrent.cpp b/src/llama-memory-recurrent.cpp
+index 9213ac1..b920506 100644
+--- a/src/llama-memory-recurrent.cpp
++++ b/src/llama-memory-recurrent.cpp
+@@ -1360,6 +1360,12 @@ ggml_tensor * llama_memory_recurrent_context::get_p_l(int32_t il) const {
+     return mem->p_l[il];
+ }
+ 
++bool llama_memory_recurrent_context::is_direct_identity() const {
++    // Do not call s_copy here: it consumes rollback indices.
++    return !is_full && mem->n_rs_seq == 0 && mem->n == 1 && mem->rs_z < 0 &&
++           mem->cells[mem->head].src0 == (int32_t) mem->head;
++}
++
+ int32_t llama_memory_recurrent_context::s_copy(int i) const {
+     const uint32_t cell_idx = i + mem->head;
+     const int32_t  src0     = mem->cells[cell_idx].src0;
+diff --git a/src/llama-memory-recurrent.h b/src/llama-memory-recurrent.h
+index 6442fc1..f0c3a25 100644
+--- a/src/llama-memory-recurrent.h
++++ b/src/llama-memory-recurrent.h
+@@ -186,6 +186,7 @@ public:
+     ggml_tensor * get_p_l(int32_t il) const;
+ 
+     int32_t s_copy(int i) const;
++    bool is_direct_identity() const;
+ 
+ private:
+     const llama_memory_status status;
+diff --git a/src/models/qwen3next.cpp b/src/models/qwen3next.cpp
+index fd082cc..e7b367c 100644
+--- a/src/models/qwen3next.cpp
++++ b/src/models/qwen3next.cpp
+@@ -458,7 +458,7 @@ ggml_tensor * llama_model_qwen3next::graph::build_layer_attn_linear(
+ 
+     ggml_tensor * conv_input = build_conv_state(inp, conv_states_all, qkv_mixed, conv_kernel_size, conv_channels, il);
+ 
+-    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs);
++    ggml_tensor * state = build_rs(inp, ssm_states_all, hparams.n_embd_s(), n_seqs, nullptr, n_seq_tokens == 1 && cparams.fused_gdn_ar);
+     state = ggml_reshape_4d(ctx0, state, head_v_dim, head_v_dim, num_v_heads, n_seqs);
+     cb(state, "state_predelta", il);
+ 
