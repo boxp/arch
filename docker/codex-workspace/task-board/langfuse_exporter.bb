@@ -549,7 +549,7 @@
                                 :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (:input gen)) :output (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (str/trim output))})
           (map (fn [tool]
                  (let [result (get results (:id tool))
-                       later? (and first-sensitive (> idx first-sensitive))]
+                       later? (and first-sensitive (>= idx first-sensitive))]
                    (tool-span ctx {:key (str gen-key ":tool:" (:id tool)) :parent gen-key :name (:name tool)
                                    :start (:ts gen) :end (or (:ts result) end) :reason (get-in analysis [:reasons tool]) :private? (boolean (get-in analysis [:reasons tool])) :hide-view? later?
                                    :input (:input tool) :output (:output result) :error? (:error? result)})))
@@ -637,7 +637,7 @@
                                 :start (:ts gen) :end end :input (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" (:input gen)) :output (if (and first-sensitive (> idx first-sensitive)) "[withheld: the model has seen tool output]" output)})
           (map (fn [tool]
                  (let [result (get results (:call-id tool))
-                       later? (and first-sensitive (> idx first-sensitive))]
+                       later? (and first-sensitive (>= idx first-sensitive))]
                    (tool-span ctx {:key (str gen-key ":tool:" (:call-id tool)) :parent gen-key :name (:name tool)
                                    :start (:ts tool) :end (or (:ts result) end) :reason (get-in analysis [:reasons tool]) :private? (boolean (get-in analysis [:reasons tool])) :hide-view? later?
                                    :input (:input tool) :output (:output result) :status (:status tool) :error? (:error? tool)})))
@@ -847,12 +847,20 @@
     {:ticket ticket :run run :trace-id tid
      :root root
      :spans (concat prompts children)
-     :session-values (set (mapcat :session-values children0))
+     :session-values @(:session-state pre-ctx)
+     :candidate-overflow? (boolean (some #(= "too_many_session_values" (:private-reason %)) children0))
      :counts (merge (:counts claude) (frequencies (map (fn [span] (keyword (str "bodies_" (some #(when (= "langfuse.observation.metadata.body_policy" (:key %)) (get-in % [:value :stringValue])) (:attributes span))))) (filter #(#{"generation" "tool"} (span-type %)) children))))}))
 
 ;; ---------------------------------------------------------------- sanitizing
 
 (def policy-values #{"sent" "withheld_sensitive_source" "withheld_after_secret_exposure" "all_tools_masked_unless_secret_exposed" "none" "sensitive_source" "value_exposure" "unscanned_large_output" "too_many_session_values"})
+
+(defn- safe-policy-item? [cfg item]
+  (let [value (get-in item [:value :stringValue])
+        pattern (values-pattern (vec (:secret-values cfg)))]
+    (and (#{"langfuse.observation.metadata.body_policy" "langfuse.trace.metadata.coverage.tool_body" "langfuse.trace.metadata.coverage.withheld_reason"} (:key item))
+         (policy-values value)
+         (not (and pattern (re-find pattern value))))))
 
 (defn sanitize-span
   "Every exported string goes through redaction before truncation, so a cut can never hide a
@@ -868,21 +876,21 @@
         (update :attributes
                 (fn [items]
                   (mapv (fn [item]
-                          (if (and (#{"langfuse.observation.metadata.body_policy" "langfuse.trace.metadata.coverage.tool_body" "langfuse.trace.metadata.coverage.withheld_reason"} (:key item)) (policy-values (get-in item [:value :stringValue]))) item
+                          (if (safe-policy-item? cfg item) item
                             (update item :value #(walk/postwalk (fn [x] (if (string? x) (clean x) x)) %))))
                         items))))))
 
 (defn span-safe?
   "The final guard. It covers every string in the span, whatever the per-field pass did."
   [cfg span]
-  (let [items (remove #(and (#{"langfuse.observation.metadata.body_policy" "langfuse.trace.metadata.coverage.tool_body" "langfuse.trace.metadata.coverage.withheld_reason"} (:key %)) (policy-values (get-in % [:value :stringValue]))) (:attributes span))
+  (let [items (remove #(safe-policy-item? cfg %) (:attributes span))
         strings (concat [(:name span)] (filter string? (tree-seq coll? seq (map :value items))))]
     (every? #(guard-safe? % (:secret-values cfg)) strings)))
 
 (defn prepare-spans
   "Returns {:spans :stats}: sanitized, capped and final-guarded spans (root first), or
   :failed when the root itself does not pass the guard."
-  [cfg {:keys [root spans session-values]}]
+  [cfg {:keys [root spans session-values candidate-overflow?]}]
   (let [cfg (update cfg :secret-values into session-values)
         spans (map #(dissoc % :session-values :private-reason) spans)
         tally (atom {})
@@ -906,10 +914,10 @@
         clean-root (cond-> clean-root
                      truncated? (update :attributes conj (attr "langfuse.trace.metadata.coverage.truncated" "true"))
                      (pos? guard-drops) (update :attributes conj (attr "langfuse.trace.metadata.coverage.dropped_secret_guard" (str guard-drops))))]
-    (if (span-safe? cfg clean-root)
+    (if (and (not candidate-overflow?) (span-safe? cfg clean-root))
       {:spans (into [clean-root] kept)
        :stats {:redactions @tally :dropped-secret-guard guard-drops :bytes bytes :truncated truncated?}}
-      {:failed "secret_guard_root"
+      {:failed (if candidate-overflow? "too_many_session_values" "secret_guard_root")
        :stats {:redactions @tally :dropped-secret-guard (inc guard-drops)}})))
 
 (defn- otlp-payload [spans]

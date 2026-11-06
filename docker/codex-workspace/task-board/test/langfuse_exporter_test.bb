@@ -832,6 +832,47 @@
         (is (not (str/includes? body value)))
         (is (str/includes? body "withheld_sensitive_source"))))))
 
+(deftest same-generation-tools-after-sensitive-source-are-withheld
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        value "ordinarySyntheticValue"
+        lines [{:type "assistant" :message {:id "a" :content [{:type "tool_use" :id "a" :name "Read" :input {:file_path "/tmp/.env"}}
+                                                                  {:type "tool_use" :id "b" :name "Bash" :input {:command "ls"}}]}}
+               {:type "user" :message {:content [{:type "tool_result" :tool_use_id "a" :content value}
+                                                  {:type "tool_result" :tool_use_id "b" :content value}]}}]
+        spans (lf/claude-spans ctx "root" "test:" lines)]
+    (is (not (str/includes? (pr-str spans) value)))))
+
+(deftest policy-metadata-does-not-expose-known-values
+  (let [value "withheld_after_secret_exposure"
+        span {:name "safe" :attributes [{:key "langfuse.observation.metadata.body_policy" :value {:stringValue value}}]}
+        cfg {:secret-values [value] :max-field-bytes 10000}
+        clean (lf/sanitize-span cfg (atom {}) span)]
+    (is (not (str/includes? (pr-str clean) value)))))
+
+(deftest candidates-from-withheld-tools-mask-root-fields
+  (fs/with-temp-dir [base {}]
+    (write-fixture! base {})
+    (let [cfg (test-config base) project (lf/claude-project-dir cfg ticket run-id)
+          run-dir (fs/path (:root cfg) "runs" ticket run-id)
+          value "UnusualSyntheticValue"
+          lines (privacy-lines :claude "Read" "ignored")
+          lines (assoc-in lines [1 :message :content 1 :input] {:file_path "/tmp/.env"})
+          lines (concat lines [{:type "assistant" :message {:id "z" :content [{:type "tool_use" :id "z" :name "Read" :input {:file_path "README.md"}}]}}
+                               {:type "user" :message {:content [{:type "tool_result" :tool_use_id "z" :content (str "the password is " value)}]}}])]
+      (spit (str (fs/path project "sess.jsonl")) (jsonl lines))
+      (spit (str (fs/path run-dir "prompt.md")) (str "please use " value))
+      (is (not (str/includes? (pr-str (:spans (prepared cfg))) value))))))
+
+(deftest candidate-overflow-fails-closed-for-entire-run
+  (fs/with-temp-dir [base {}]
+    (write-fixture! base {})
+    (let [cfg (test-config base) project (lf/claude-project-dir cfg ticket run-id)
+          run-dir (fs/path (:root cfg) "runs" ticket run-id)
+          values (mapv #(str "Value" % "X") (range 257))]
+      (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "Read" (str "password " (str/join " " values)))))
+      (spit (str (fs/path run-dir "prompt.md")) (str/join " " values))
+      (is (:failed (prepared cfg))))))
+
 (deftest post-batch-does-not-request-h2c-upgrade
   ;; Langfuse closes the connection on the JDK's default `Upgrade: h2c`, without any response.
   (fs/with-temp-dir [base {}]
