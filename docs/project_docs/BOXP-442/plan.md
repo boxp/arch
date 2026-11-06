@@ -14,3 +14,14 @@
 - Enter / Space、上下矢印、Home / End、Escape、Tab、選択後のフォーカス復帰、外側のボタンクリック時のフォーカス、モバイルのタップを確認。ライト・ダークの保存と再読み込み、システム選択による保存削除と OS 配色変更への追従を確認。
 - localStorage が例外を投げる場合も選択可能。JavaScript 無効時は UI が非表示で、OS の dark 設定が CSS に反映されることを確認。
 - Lighthouse はローカルでは未計測。PR の既存 CI で確認する。
+
+## 本番昇格（Owner承認後）
+
+- Ownerの「概ねよい」をstageの概括的受入として記録。個別項目をOwnerが確認したとは扱わない。本番反映・両図カードと受入済みサムネイルの公開はTD-01で明示承認済み。
+- 対象はPR #14505のmerge `938fea18ace7d80f1ccc5e617ae6fa2fabcfdba0`、stage配備 `aab1f765`（run 42149962617）。apps/portfolio tree `20bd35550635deb9cf8c6c2e7244c50a8c82885e`。調査時mainも同commit。
+- 既存本番b0xp.ioのPagesプロジェクトshanghaiへ正規wrangler経路で手動配備する。DNS/domain/Access/stage/他siteの変更は行わない。将来用boxp-portfolioへのドメイン移行は不要。
+- 手動workflowは既定inspect（read-only）で現在の本番deployment UUID・production branch・復元先の成功状態を記録。promote時は記録したUUIDと現在の本番の一致を必須とし、更新競合を拒否する。rollback操作は同projectの成功したproduction deploymentだけを指定可能。
+- 固定commitをcheckoutし、唯一のoverlayで既存architectureカードのproduction表示制約を解除する。デザイン・経歴・図本体の変更はない。production URL/SEOは本番設定でbuildしstageバナー/noindexを含めない。
+- 既存main限定environment portfolio-stage-privateのgateとsecretをそのまま利用。stageへ配備しない。受入済みサムネイルをdistへ復元し、stage runのSHA256 `9a080a742651e5e48a31db717f53f28a4ea56922daf39289b2e1827a32d7af51`に一致しない場合は拒否。原資料やdistのartifact公開はしない。
+- PRの現headに対するCI/P0P1 review・ruleset・最新TODOを確認後merge。inspect→promote→公開実URLをChromiumのPC/mobileで検証する。重大回帰時は記録した旧正常版へ限定rollbackし実URLを再検証する。
+- コマンド: `gh workflow run promote-portfolio-production.yml --ref main -f operation=inspect`、その後 `-f operation=promote -f rollback_deployment_id=<inspectのUUID>`。復元は `-f operation=rollback -f rollback_deployment_id=<旧UUID>`。providerの拒否は迂回しない。
