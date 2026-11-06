@@ -779,19 +779,47 @@
 
 (defn card-rev [card] (when-let [line (:line card)] (attr-value line "rev")))
 
+
+(defn superseded-card-lines-path [ticket-id]
+  (fs/path (root) "superseded-card-lines" (str ticket-id ".edn")))
+
+(defn superseded-card-lines
+  "Exact rev-less card lines this runner itself replaced on the Board."
+  [ticket-id]
+  (try (let [path (superseded-card-lines-path ticket-id)]
+         (if (fs/exists? path) (set (edn/read-string (slurp (str path)))) #{}))
+       (catch Exception _ #{})))
+
+(defn record-superseded-card-line!
+  "Remember a rev-less card line the runner is about to replace, so a Board copy
+  restored from before the replacement can be recognised (see rev-mismatch?)."
+  [ticket-id old-line new-line]
+  (when (and old-line (not= old-line new-line) (not (attr-value old-line "rev")))
+    (try
+      (let [path (superseded-card-lines-path ticket-id)
+            current (if (fs/exists? path) (vec (edn/read-string (slurp (str path)))) [])]
+        (when-not (some #{old-line} current)
+          (fs/create-dirs (fs/parent path))
+          (spit (str path) (str (pr-str (vec (take-last 32 (conj current old-line)))) "\n"))))
+      (catch Exception _ nil))))
+
 (defn rev-mismatch?
   "A card whose rev:: differs from the ticket's board_rev. A card without rev::
   is legacy and normally follows its ticket, except when the ticket was moved
-  to a terminal state (done / blocked) with a revision and the card shows
-  another status: that card predates the terminal stamp (e.g. an older Board
-  copy restored by a last-writer-wins sync) and must not be projected back."
+  to a terminal state (done / blocked) with a revision and the card is exactly
+  a rev-less line this runner already replaced while the ticket still holds
+  the terminal transition's Owner assignment: that card is an older Board copy
+  restored by a last-writer-wins sync and must not be projected back. A
+  re-request that also reassigns the ticket is still followed."
   [card fm]
   (let [cr (card-rev card)]
     (if cr
       (not= cr (:board_rev fm))
       (boolean (and (not (str/blank? (:board_rev fm)))
                     (#{"done" "blocked"} (:status fm))
-                    (not= (:status fm) (:status card)))))))
+                    (not= (:status fm) (:status card))
+                    (= "boxp" (:assignee fm))
+                    (contains? (superseded-card-lines (:ticket-id card)) (:line card)))))))
 
 (def revision-mismatches (atom {}))
 
@@ -949,6 +977,7 @@
                           (string? rev) (replace-or-add-attr "rev" rev))
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
+           (record-superseded-card-line! ticket-id (:line card) new-line)
            (write-lines! path moved))))))))
 
 (defn repair-card-revision!
@@ -970,6 +999,7 @@
            (let [new-line (cond-> (-> (normalize-card-line (:line card) target-status)
                                       (replace-or-add-attr "rev" rev))
                             assignee (replace-or-add-attr "assignee" assignee))]
+             (record-superseded-card-line! ticket-id (:line card) new-line)
              (write-lines! path (insert-after-heading (remove-index lines (:idx card))
                                                       (status->lane target-status) new-line)))))))))
 
