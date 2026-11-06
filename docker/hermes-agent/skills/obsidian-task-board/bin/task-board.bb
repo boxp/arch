@@ -865,15 +865,31 @@
                    (make-array java.nio.file.LinkOption 0)))
        (catch Exception _ nil)))
 
+(defn repair-proc-uid [proc]
+  (try (java.nio.file.Files/getAttribute (fs/path proc) "unix:uid"
+                                         (make-array java.nio.file.LinkOption 0))
+       (catch Exception _ nil)))
+
 (defn repair-open-holders
   "PIDs that hold the inode at `p` open, plus PIDs whose descriptors cannot be
-  inspected (unknown counts as holding: fail closed). Vanished PIDs are ignored."
+  inspected (unknown counts as holding: fail closed). Vanished PIDs are ignored.
+  Processes of another UID are only considered when the inode is group/other
+  writable: task-board writers run as this non-root UID (root is refused), and
+  an owner-only-writable inode cannot be written by another non-root UID, so
+  their unreadable /proc/<pid>/fd (e.g. root daemons) is not a writer signal."
   [p]
-  (let [k (repair-file-key p)]
+  (let [k (repair-file-key p)
+        uid (Long/parseLong (str/trim (:out (shell/sh "id" "-u"))))
+        mode (try (java.nio.file.Files/getAttribute (fs/path p) "unix:mode"
+                                                    (make-array java.nio.file.LinkOption 0))
+                  (catch Exception _ nil))
+        foreign-writable? (or (nil? mode) (not (zero? (bit-and mode 2r000010010))))]
     (repair-require k (str "cannot identify displaced board inode " p))
     (vec (for [proc (fs/list-dir "/proc")
                :let [pid (str (fs/file-name proc))]
                :when (re-matches #"\d+" pid)
+               :let [owner (repair-proc-uid proc)]
+               :when (or foreign-writable? (nil? owner) (= uid owner))
                :let [fds (try (vec (fs/list-dir (fs/path proc "fd")))
                               (catch java.nio.file.NoSuchFileException _ [])
                               (catch Exception _ (when (fs/exists? proc) ::unknown)))]
