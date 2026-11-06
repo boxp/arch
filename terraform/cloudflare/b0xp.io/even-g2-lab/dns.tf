@@ -19,3 +19,18 @@ resource "cloudflare_dns_record" "kohako_g2" {
     cloudflare_zero_trust_tunnel_cloudflared_config.even_g2_lab,
   ]
 }
+
+# BOXP-441: Access とトンネル設定の後に公開する。
+resource "cloudflare_dns_record" "kohako_studio" {
+  zone_id = var.zone_id
+  name    = local.kohako_studio_hostname
+  content = "${cloudflare_zero_trust_tunnel_cloudflared.even_g2_lab.id}.cfargotunnel.com"
+  type    = "CNAME"
+  ttl     = 1
+  proxied = true
+
+  depends_on = [
+    cloudflare_zero_trust_access_application.kohako_studio,
+    cloudflare_zero_trust_tunnel_cloudflared_config.even_g2_lab,
+  ]
+}

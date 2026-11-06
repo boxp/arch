@@ -22,7 +22,8 @@ data "cloudflare_zero_trust_organization" "current" {
 }
 
 locals {
-  kohako_g2_hostname = "kohako-g2.b0xp.io"
+  kohako_studio_hostname = "kohako-studio.b0xp.io"
+  kohako_g2_hostname     = "kohako-g2.b0xp.io"
   # Same Owner email as hitohako-stage / portfolio-stage, and the user shown on
   # the Owner's enrolled Android device (BOXP-324 4-6-8).
   kohako_g2_owner_emails = ["tiyotiyouda@gmail.com"]
@@ -57,6 +58,21 @@ resource "cloudflare_zero_trust_access_application" "kohako_g2" {
   zone_id                     = var.zone_id
   name                        = "Access application for ${local.kohako_g2_hostname}"
   domain                      = local.kohako_g2_hostname
+  type                        = "self_hosted"
+  session_duration            = "24h"
+  allow_authenticate_via_warp = true
+  enable_binding_cookie       = false
+  http_only_cookie_attribute  = true
+  same_site_cookie_attribute  = "lax"
+  app_launcher_visible        = false
+  policies                    = [{ id = cloudflare_zero_trust_access_policy.kohako_g2_owner.id }]
+}
+
+# BOXP-441: コード/モデルの公開許可は画面の Access 解除ではない。
+resource "cloudflare_zero_trust_access_application" "kohako_studio" {
+  zone_id                     = var.zone_id
+  name                        = "Access application for ${local.kohako_studio_hostname}"
+  domain                      = local.kohako_studio_hostname
   type                        = "self_hosted"
   session_duration            = "24h"
   allow_authenticate_via_warp = true
