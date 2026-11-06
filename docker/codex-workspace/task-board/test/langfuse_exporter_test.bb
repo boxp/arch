@@ -1070,7 +1070,7 @@
              "while read l; do echo $l; done < db_password" "tr a-z A-Z < /tmp/password" "grep . db_password"
              "rg -e x src db_password" "cp db_password /dev/stdout" "dd if=db_password" "sudo sed -n 1p db_password"
              "python3 -c \"print(open('db_password').read())\"" "x=$(sed 1q db_password)" "sed 1q db_password | head"
-             "{\"command\":[\"bash\",\"-lc\",\"awk 1 db_password\"]}" "{\"cmd\":\"sed -n 1p db_password\"}"]]
+             "{\"command\":[\"bash\",\"-lc\",\"awk 1 db_password\"]}" "{\"cmd\":\"sed -n 1p db_password\"}" "f=db_password; cat $f"]]
     (is (lf/withhold-output? c) c))
   (doseq [c ["grep -rn db_password src" "rg db_password docs" "echo set db_password in vault" "git commit -m 'rename db_password'"
              "ls secrets-docs" "bb task-board.bb append-note --note 'rotate the password docs'"

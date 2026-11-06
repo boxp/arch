@@ -321,9 +321,11 @@
                          words)
         program (some-> (first args) (str/split #"/") last)
         operands (remove #(or (str/starts-with? % "-") (re-matches #"\d+" %)) (rest args))
-        dd-input (some #(when-let [[_ f] (re-matches #"if=(.*)" %)] (secret-file-word? f)) words)]
+        dd-input (some #(when-let [[_ f] (re-matches #"if=(.*)" %)] (secret-file-word? f)) words)
+        ;; A secret-named file put in a variable (f=db_password; cat $f) is read through it later.
+        assigned (some #(when-let [[_ f] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (secret-file-word? f)) (take-while #(re-matches #"[A-Za-z_]\w*=.*" %) words))]
     (boolean
-     (or redirected inline-redirect dd-input
+     (or redirected inline-redirect dd-input assigned
          (and program
               (cond (contains? search-programs program)
                     (or (some secret-file-word? (rest operands))

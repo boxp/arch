@@ -64,4 +64,4 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - `grep`/`rg` 等は最初の非オプション引数(検索語)だけを言及とみなし、2つ目以降の引数や `-e`/`-f` 使用時の秘密名ファイルは機密源(`grep . db_password`)。
 - JSON の tool 入力は `command`/`cmd`/`script`/`code` の値だけを見る(Bash の `description` が password に言及しても読める)。空白を含む引用符引数(`--note '...'`、commit message)はファイル名とみなさない。
 - 散文では行内の全ての秘密語を見る(最初の1語だけではない)。`Reset your password; kiwimango is my token` の `kiwimango` も pin する。
-- 過剰保留: 秘密語を名前に含む普通のファイルを任意のプログラムに渡すと保留(`make reset-password`、`kustomize build overlays/secrets`)。残差: 引用符内の任意コード中の非 open 系読取(`python3 -c "import x; x.load_it('db_password')"` 等)や、変数経由のパス(`f=db_password; cat $f`)は未検出で、既知形式/秘密語マスクのみ。
+- 過剰保留: 秘密語を名前に含む普通のファイルを任意のプログラムに渡すと保留(`make reset-password`、`kustomize build overlays/secrets`)。残差: 引用符内の任意コード中の非 open 系読取(`python3 -c "import x; x.load_it('db_password')"` 等)は未検出(変数への代入 `f=db_password` は機密源として保留する)で、既知形式/秘密語マスクのみ。
