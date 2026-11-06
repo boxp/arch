@@ -274,9 +274,12 @@
   #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env(?:[ \t]+(?:-\S*|[A-Za-z_]\w*=\S*))*[ \t]*(?:[\"'|;&<>)`]|\\[nrt]|$)|printenv(?:[\s\"'|;&<>)]|$))|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
 ;; A file-reading command whose argument list names a secret file anywhere (cat password /tmp/other) prints that
 ;; file; the bare-word clause of sensitive-path only sees it as the last argument, so grep/rg/echo searches and
-;; messages that mention the word stay readable (P0 arch#14503 :272).
+;; messages that mention the word stay readable (P0 arch#14503 :272). The secret word may sit inside the file name
+;; (db_password, app-secret, aws_credentials, mysql_root_password.txt, ./conf/db_password) since such a file holds a
+;; bare value the same way. Over-withholding accepted: reading an ordinary file whose name contains the word
+;; (cat secretary.txt) withholds that output. Name parts are bounded so a long line is scanned in linear time.
 (def secret-file-read
-  #"(?i)(?:^|[;&|\s\"'(`])(?:cat|tac|head|tail|less|more|bat|batcat|nl|od|xxd|hexdump|strings|base64|source|\.)(?=[\s\"'])[^;&|\n]{0,1024}?(?<=[\s\"'=])(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)(?=[\s\"';|&)]|\z)")
+  #"(?i)(?:^|[;&|\s\"'(`])(?:cat|tac|head|tail|less|more|bat|batcat|nl|od|xxd|hexdump|strings|base64|source|\.)(?=[\s\"'])[^;&|\n]{0,1024}?(?<=[\s\"'=<])[^\s\"';|&<>]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?)[A-Za-z0-9_.-]{0,64}(?=[\s\"';|&)<>]|\z)")
 (defn withhold-output? [input]
   (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s) (re-find secret-file-read s)
                                     (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))

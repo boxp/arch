@@ -989,6 +989,17 @@
         (is (nil? reason) output)
         (is (not-any? #{"generation" "configuration" "documented" "reset" "settings" "page" "what"} values) output)))))
 
+;; P0 arch#14503 :272 (BOXP-428). A secret word inside a file name (db_password, app-secret, aws_credentials)
+;; names a file holding a bare value just like password itself; only whole-argument names were caught before.
+(deftest secret-word-inside-file-name
+  (doseq [c ["cat db_password" "cat db_password /tmp/other" "head -n 1 ./db_password" "cat app-secret" "cat aws_credentials"
+             "cat DB_PASSWORD_FILE" "less root.passwd" "tail -n1 mysql_root_password" "bat old_passwords"
+             "{\"command\":\"cat db_password\"}" "cat db_password; echo done"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["grep -rn db_password src" "echo set db_password in vault" "rg db_password docs" "cat docs/reset.md README.md"
+             "git commit -m 'rename db_password'" "{\"cmd\":\"ls\",\"max_output_tokens\":12000}"]]
+    (is (not (lf/withhold-output? c)) c)))
+
 ;; P0 arch#14503 :272 / :580 (BOXP-428). A secret-named file read with further arguments is still a source, and a
 ;; value named in prose in the tool input is pinned so the bare output and later repeats are masked.
 (deftest secret-named-file-with-more-arguments
