@@ -50,6 +50,7 @@ try {
   }
   for (const url of ['https://lolice-lineage.b0xp.io/', 'https://lolice-architecture.b0xp.io/']) {
     const response = await fetch(url, { redirect: 'follow' });
+    await response.arrayBuffer(); // Consume the body so the connection can close.
     console.log(`${url} HTTP ${response.status}`);
     if (!response.ok) failed = true;
   }
