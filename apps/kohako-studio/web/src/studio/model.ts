@@ -1,4 +1,4 @@
-import { LATEST_MODEL_ID, normalizeModelId } from '../live2d/model'
+import { LATEST_MODEL_ID, normalizeModelId, rigModels, type RigModelId } from '../live2d/model'
 export type State = 'idle' | 'listening' | 'thinking' | 'speaking' | 'done' | 'approval' | 'failed' | 'offline' | 'stopped'
 export const presentation: Record<State, { label: string; face: string }> = {
   idle: { label: '待機中', face: 'idle' }, listening: { label: '聞いています', face: 'listening' },
@@ -38,11 +38,10 @@ export const rigStateOf: Record<State, 'idle' | 'listening' | 'thinking' | 'spea
 export function wantsRig(search: string): boolean {
   return new URLSearchParams(search).get('face') !== 'static'
 }
-/** Studio で使う Web リグのモデル ID。既定は最新の配備済み本人モデル（LATEST_MODEL_ID）。`?model=kohako-v0|kohako|kohako-v5|kohako-v6` で比較・戻し用の版を選ぶ（他者の sample は選ばない）。 */
-export function studioRigModelId(search: string): 'kohako' | 'kohako-v5' | 'kohako-v6' {
+/** 本人モデルを選択し、未指定・不明値・サンプル指定は最新にする。 */
+export function studioRigModelId(search: string): RigModelId {
   const id = normalizeModelId(new URLSearchParams(search).get('model'))
-  if (id === 'kohako' || id === 'kohako-v5' || id === 'kohako-v6') return id
-  return LATEST_MODEL_ID as 'kohako-v6'
+  return rigModels.find(m => m.id === id && m.id !== 'sample')?.id ?? LATEST_MODEL_ID
 }
 /** 読み上げが無効・使えない・失敗したときに、応答文の長さから口パクだけ見せる秒数（1.5〜10 秒）。 */
 export function silentSpeechSeconds(text: string): number {
