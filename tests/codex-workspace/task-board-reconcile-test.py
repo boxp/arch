@@ -160,6 +160,33 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(self.plan()['retained-checked'], 1)
 
     @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_write_during_restore_exchange_is_preserved_and_reported(self):
+        # P1: a writer that updates the Board between the pre-restore read and
+        # the restoring exchange must not vanish: its content is preserved and
+        # named in the conflict, and the late-writer inode stays live.
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        after = self.before.replace(STALE + '\n', '', 1)
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE'] = 'true'
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_RESTORE_RACE'] = 'true'
+        try:
+            err = self.call(*self.args(plan), ok=False)
+        finally:
+            self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE')
+            self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_RESTORE_RACE')
+        self.assertIn('board also changed during restore', err)
+        self.assertEqual(self.board.read_text(), self.before + 'late writer\n')
+        raced = list((self.root / 'repair-backups').glob('BOXP-433-*-restore-raced.md'))
+        self.assertEqual(len(raced), 1)
+        self.assertEqual(raced[0].read_text(), after + 'racing writer\n')
+        self.assertIn(str(raced[0]), err)
+        self.assertIn('restore-raced', (self.vault / '.task-board-repair-audit.edn').read_text())
+
+    def test_helper_is_executable(self):
+        # P1: SKILL.md checks -x and existing callers execute the helper directly.
+        self.assertTrue(os.access(HELPER, os.X_OK))
+
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
     def test_open_descriptor_on_displaced_board_restores_original(self):
         # P0: a writer that still has the old Board open after the wait could
         # write later; the command must restore that inode as the Board and fail.

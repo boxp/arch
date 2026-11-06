@@ -1072,10 +1072,28 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                                  "late write to displaced board; writer content restored")
                         displaced-copy (preserve! "late-displaced" rpath)]
                     (if (= after (read-text path))
-                      (do (repair-exchange! rpath path)
-                          (let [now (read-text rpath)]
-                            {:conflict reason :preserved [displaced-copy]
-                             :retained [{:retained-path rpath :retained-sha256 (repair-sha now)}]}))
+                      (do (when (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_RESTORE_RACE"))
+                            ;; Deterministic hook: another writer updates the Board between
+                            ;; the pre-restore read and the restoring exchange.
+                            (let [other (fs/path (fs/parent path) (str ".reconcile-433-other-" (random-uuid) ".tmp"))]
+                              (spit (str other) (str after "racing writer\n"))
+                              (java.nio.file.Files/move other (fs/path path)
+                                (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE
+                                                                     java.nio.file.StandardCopyOption/REPLACE_EXISTING]))))
+                          (repair-exchange! rpath path)
+                          ;; The exchange displaced whatever was live at that instant. If a
+                          ;; writer updated the Board after the pre-restore read, that
+                          ;; update is now in rpath: preserve it and report it, never drop
+                          ;; it silently. The restored (late-writer) inode stays live because
+                          ;; a holder may still write through it.
+                          (let [now (read-text rpath)
+                                retained [{:retained-path rpath :retained-sha256 (repair-sha now)}]]
+                            (if (= now after)
+                              {:conflict reason :preserved [displaced-copy] :retained retained}
+                              (let [newer-copy (preserve! "restore-raced" rpath)]
+                                {:conflict (str reason "; board also changed during restore; merge " newer-copy
+                                                " (now in " rpath ") into the Board manually")
+                                 :preserved [displaced-copy newer-copy] :retained retained}))))
                       {:conflict (str reason " failed: board replaced again; merge " displaced-copy " manually")
                        :preserved [displaced-copy]
                        :retained [{:retained-path rpath :retained-sha256 (repair-sha (read-text rpath))}]}))))
@@ -1088,10 +1106,16 @@ fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
                   (if (= returned after)
                     {:conflict "board changed concurrently; concurrent content restored"
                      :preserved [displaced-copy] :retained (retain! "replaced")}
-                    (let [returned-copy (preserve! "newer" tmp)]
+                    (let [returned-copy (preserve! "newer" tmp)
+                          displaced-content (read-text displaced-copy)]
                       (repair-exchange! tmp path)
-                      {:conflict "board changed repeatedly during repair; newest content restored"
-                       :preserved [displaced-copy returned-copy] :retained (retain! "replaced")})))))))
+                      ;; Whatever this exchange displaced must be the concurrent content
+                      ;; already preserved; anything else is yet another update: preserve it too.
+                      (let [again (read-text tmp)
+                            extra (when-not (= again displaced-content) [(preserve! "newest" tmp)])]
+                        {:conflict (str "board changed repeatedly during repair; newest content restored"
+                                        (when extra (str "; merge " (first extra) " into the Board manually")))
+                         :preserved (into [displaced-copy returned-copy] extra) :retained (retain! "replaced")}))))))))
         (do
           (java.nio.file.Files/move tmp (fs/path path)
             (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE
