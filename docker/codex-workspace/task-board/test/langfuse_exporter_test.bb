@@ -1256,6 +1256,17 @@
     (is (= cmd (:value (lf/redact cmd #{}))) cmd)
     (is (nil? (:reason (#'lf/body-exposure cmd))) cmd)))
 
+;; P0 arch#14503 :50 (BOXP-428). An empty user name (curl -u :huntertwo) is a valid -u credential; the password is
+;; masked and pinned like any other -u value. A date format after -u stays readable.
+(deftest cli-user-with-empty-name
+  (doseq [cmd ["curl -u :huntertwoempty https://x" "curl --user=:huntertwoempty https://x" "curl --user :huntertwoempty https://x"
+               "curl -u ':huntertwoempty' https://x" "curl -u \":huntertwoempty\" https://x" "curl -u:huntertwoempty https://x"]]
+    (is (not (str/includes? (:value (lf/redact cmd #{})) "huntertwoempty")) cmd)
+    (is (contains? (:values (#'lf/body-exposure cmd)) "huntertwoempty") cmd))
+  (doseq [cmd ["date -u +%Y-%m-%dT%H:%M:%SZ" "date -u '+%H:%M'" "ls -u notes.txt"]]
+    (is (= cmd (:value (lf/redact cmd #{}))) cmd)
+    (is (nil? (:reason (#'lf/body-exposure cmd))) cmd)))
+
 ;; P0 arch#14503 :1130 (BOXP-428). With no session log, the run's prompt.md and last-message.md are the only bodies.
 ;; A value named in the prompt is pinned, so a bare repeat in the last message is masked; one that cannot be pinned
 ;; withholds the root bodies. An ordinary prompt and reply stay readable.
