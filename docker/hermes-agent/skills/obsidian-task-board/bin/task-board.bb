@@ -881,10 +881,11 @@
 
 (defn repair-scan-holders
   "Scan /proc for the inode at `p`. Returns {:holders [...] :uninspected [...]}
-  as pid(comm) labels. Processes of another UID are only considered when the
-  inode is group/other writable: task-board writers run as this non-root UID
-  (root is refused) and an owner-only-writable inode cannot be written by
-  another non-root UID. A process whose fd table the kernel refuses to show to
+  as pid(comm) labels. Processes of this UID and of root (UID 0, which can
+  write any inode regardless of its mode) are always considered; processes of
+  another non-root UID only when the inode is group/other writable, since an
+  owner-only-writable inode cannot be written by another non-root UID. A
+  process whose fd table the kernel refuses to show to
   this same user (different saved ids/capabilities, non-dumpable, LSM) is
   reported as uninspected; the caller treats it as a possible holder unless
   the kernel write lease proves no writer remains. Vanished PIDs are ignored."
@@ -898,7 +899,7 @@
     (repair-require k (str "cannot identify displaced board inode " p))
     (reduce (fn [acc proc]
               (let [owner (repair-proc-uid proc)]
-                (if-not (or foreign-writable? (nil? owner) (= uid owner))
+                (if-not (or foreign-writable? (nil? owner) (= uid owner) (zero? owner))
                   acc
                   (let [fds (try (vec (fs/list-dir (fs/path proc "fd")))
                                  (catch java.nio.file.NoSuchFileException _ [])

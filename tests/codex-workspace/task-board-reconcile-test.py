@@ -275,6 +275,35 @@ class RepairTest(unittest.TestCase):
         self.env.pop('CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS')
 
     @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    @unittest.skipUnless(os.geteuid() != 0 and subprocess.run(['sudo', '-n', 'true'], capture_output=True).returncode == 0,
+                         'passwordless sudo unavailable')
+    def test_root_holder_fails_closed_without_lease(self):
+        # P1: without a lease the /proc scan must also consider root, which can
+        # write an owner-only Board; a root writer holding the old inode must
+        # not let the repair report success.
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE'] = 'true'
+        self.env['CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS'] = '300'
+        self.board.chmod(0o600)
+        self.before = self.board.read_text()
+        plan = self.plan()
+        ready = self.base / 'root-holder-ready'
+        holder = subprocess.Popen(['sudo', '-n', 'sh', '-c', 'exec 3<>"$1"; : > "$2"; sleep 5',
+                                   'sh', str(self.board), str(ready)])
+        self.addCleanup(holder.wait)
+        for _ in range(200):
+            if ready.exists():
+                break
+            subprocess.run(['sleep', '0.05'])
+        self.assertTrue(ready.exists())
+        err = self.call(*self.args(plan), ok=False)
+        self.assertIn('displaced board still open by', err)
+        self.assertEqual(self.board.read_text(), self.before)
+        holder.wait()
+        self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE')
+        self.env.pop('CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS')
+
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
     def test_retained_inode_checked_after_clean_apply(self):
         self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
         plan = self.plan()
