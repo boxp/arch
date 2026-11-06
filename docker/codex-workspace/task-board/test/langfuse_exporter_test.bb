@@ -823,6 +823,24 @@
   (doseq [c ["env" "env | grep A" "printenv HOME" "x; env > out"]] (is (lf/withhold-output? c) c))
   (is (= #{"Zq7passvalue9"} (:values (#'lf/exposure "password = Zq7passvalue9")))))
 
+(deftest token-and-key-files-are-sensitive-sources
+  ;; A file named for tokens holds a bare value with no key or format to mask, so reading it withholds the body.
+  (doseq [c ["cat /tmp/tokens" "cat /tmp/token" "cat tokens" "{\"path\":\"/tmp/tokens\"}" "cat /var/lib/app/tokens"
+             "cat tokens.json" "cat refresh_tokens.txt" "cat /run/app/access-token" "cat token.txt" "ls /var/lib/tokens/"
+             "cat /etc/app/private.key" "cat /etc/ssl/server.pem" "cat client.pfx" "cat ~/.ssh/id_ecdsa" "cat ~/.gnupg/x"
+             "cat .env.local"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["{\"cmd\":\"ls\",\"max_output_tokens\":12000}" "cat keyboard.md" "cat api-keys.md" "cat keymap.py"
+             "echo pem_path" "grep -rn max_tokens src"]]
+    (is (not (lf/withhold-output? c)) c))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        value "abcde12345"
+        spans (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "first request"}}
+                                                           {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat /tmp/tokens"}}]}}
+                                                           {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content value}]}}
+                                                           {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text value}]}}]))]
+    (is (not (str/includes? (pr-str spans) value)))))
+
 (deftest plain-lowercase-prose-words-are-not-session-values
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
         spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" "the token generation configuration is documented")))]

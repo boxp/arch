@@ -262,8 +262,12 @@
       {:value masked :redactions @counts})
     (catch Throwable _ {:value "[dropped: redaction error]" :redactions {:error 1}})))
 
+;; Same sources as the Hermes observer (_SENSITIVE_PATH). A file named for tokens (/tmp/tokens, tokens.json,
+;; refresh_tokens.txt) or a private key/keystore file holds a bare value with no key or known format left to mask,
+;; so reading it withholds the body. A bare key such as max_output_tokens has no path separator or extension, so it
+;; is not a path. File-name parts are bounded so a long line is scanned in linear time.
 (def sensitive-path
-  #"(?i)(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_rsa|id_ed25519|secrets?[/\\]|(?<=/)secrets?(?=$|[\s\"'])|[^/\s\"']*token(?!s)[^/\s\"']*)")
+  #"(?i)(?:(?:^|[/\\\s\"'=])(?:auth\.json|\.credentials[^/\s\"']*|\.env[^/\s\"']*|\.ssh(?:[/\\]|\b)|\.aws(?:[/\\]|\b)|kubeconfig|\.git-credentials|\.netrc|id_(?:rsa|dsa|ecdsa|ed25519)(?:_sk)?|\.gnupg(?:[/\\]|\b)|secrets?[/\\]|(?<=/)secrets?(?=$|[\s\"'])|tokens?(?=[\s\"'/\\]|\z)|[^/\\\s\"'=]{0,255}?token(?=[\s\"'/\;|&)]|\z)|[^/\\\s\"'=]{0,255}?\.(?:key|pem|p8|p12|pfx|jks|keystore|ppk)(?=[\s\"';|&)]|\z))|[/\\][^/\\\s\"']{0,255}?token|token[^/\\\s\"']{0,255}?(?:\.[A-Za-z0-9]+(?![\w-])|[/\\]))")
 (def sensitive-command
   #"(?i)(?:^|[;&|\s\"'(`/]|\\[nrt])(?:env(?:[ \t]+(?:-\S*|[A-Za-z_]\w*=\S*))*[ \t]*(?:[\"'|;&<>)`]|\\[nrt]|$)|printenv(?:[\s\"'|;&<>)]|$))|(?:^|[;&|\s\"'(`/])(?:set|export|declare|typeset)(?:\s+-[a-z]*[px]\b|[ \t]*(?:$|[|;&<>\"')`#]|\\[nrt\"]))|\benviron\b|\bprocess\.env\b|\bgetenv\b|\baws\b[^|;&\n]{0,1024}\b(?:ssm\s+get-parameter|secretsmanager\s+get-|configure\s+(?:get|export-credentials))|\bhelm\s+get\b|\bgh\s+auth\s+token\b|\bgit\s+credential\b")
 (defn withhold-output? [input]
