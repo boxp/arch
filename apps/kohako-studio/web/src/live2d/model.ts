@@ -107,10 +107,26 @@ export const rigModels: readonly RigModel[] = [
   },
 ]
 
-/** URL の `?model=` からモデルを選ぶ。無い・不明な値なら先頭（コハコ）。 */
+/**
+ * クエリ無しの URL で表示する「最新の配備済み本人モデル」。新しい版を配備したらここを更新する。
+ * 本人の美術受入とは別で、検証版として表示する（受入済みの意味ではない）。
+ */
+export const LATEST_MODEL_ID: RigModelId = 'kohako-v6'
+
+/** `?model=` の値をモデル ID に直す（`kohako-v0` は v0 の別名）。 */
+export function normalizeModelId(id: string | null): string | null {
+  return id === 'kohako-v0' ? 'kohako' : id
+}
+
+/** URL の `?model=` からモデルを選ぶ。無い・不明な値なら最新の配備済み本人モデル。 */
 export function modelFor(search: string): RigModel {
-  const id = new URLSearchParams(search).get('model')
-  return rigModels.find(m => m.id === id) ?? (rigModels[0] as RigModel)
+  const id = normalizeModelId(new URLSearchParams(search).get('model'))
+  return rigModels.find(m => m.id === id) ?? (rigModels.find(m => m.id === LATEST_MODEL_ID) as RigModel)
+}
+
+/** 表示中のモデルが「クエリ無しで出る最新配備版」か、明示指定された比較用の版かの説明。 */
+export function modelStatus(model: Pick<RigModel, 'id'>): string {
+  return model.id === LATEST_MODEL_ID ? '最新の配備版（検証中・本人の美術受入前）' : '比較・戻し用の旧版／サンプル（?model で指定）'
 }
 
 /** モデルのクリップ ID を表示名に直す（名前が無い ID はそのまま）。 */

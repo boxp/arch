@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { FrameMeter, clipIdFor, clipName, micMouth, modelFor, poseFor, rigModels, rigStates, speechMouth } from './model'
+import { FrameMeter, LATEST_MODEL_ID, clipIdFor, clipName, micMouth, modelFor, modelStatus, poseFor, rigModels, rigStates, speechMouth } from './model'
 
 const expressions = ['angry', 'gloom', 'sad', 'shy', 'sleepy', 'smile', 'surprised']
 const clips = ['Blink', 'Idle', 'Nod', 'Shake', 'Talk']
@@ -42,11 +42,16 @@ describe('FrameMeter', () => {
 
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
-    expect(modelFor('').id).toBe('kohako')
-    expect(modelFor('?model=unknown').id).toBe('kohako')
+    expect(modelFor('').id).toBe(LATEST_MODEL_ID)
+    expect(LATEST_MODEL_ID).toBe('kohako-v6')
+    expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
-    expect(modelFor('?model=kohako-v1').id).toBe('kohako')
-    expect(modelFor('?model=kohako-v2').id).toBe('kohako')
+    expect(modelFor('?model=kohako').id).toBe('kohako')
+    expect(modelFor('?model=kohako-v0').id).toBe('kohako')
+    expect(modelFor('?model=kohako-v1').id).toBe(LATEST_MODEL_ID)
+    expect(modelFor('?model=kohako-v2').id).toBe(LATEST_MODEL_ID)
+    expect(modelStatus(modelFor(''))).toContain('最新の配備版')
+    expect(modelStatus(modelFor('?model=kohako-v0'))).toContain('旧版')
     expect(rigModels.map(m => m.id)).toEqual(['kohako', 'kohako-v5', 'kohako-v6', 'sample'])
   })
 })
@@ -92,7 +97,7 @@ describe('mouthLevel', () => {
   })
   it('v6 以外のモデルは細かな口開度をそのまま保つ', async () => {
     const { mouthLevel, modelFor } = await import('./model')
-    for (const id of ['', '?model=kohako-v5', '?model=sample']) {
+    for (const id of ['?model=kohako-v0', '?model=kohako-v5', '?model=sample']) {
       const m = modelFor(id)
       expect(mouthLevel(m, 0.1)).toBeCloseTo(0.1)
       expect(mouthLevel(m, 0.12)).toBeCloseTo(0.12)

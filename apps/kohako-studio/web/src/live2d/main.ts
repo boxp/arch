@@ -1,6 +1,6 @@
 import '../studio/style.css'
 import './style.css'
-import { FrameMeter, clipName, micMouth, modelFor, mouthLevel, rigModels, rigStates, speechMouth, stateLabels, type RigState } from './model'
+import { FrameMeter, clipName, micMouth, modelFor, modelStatus, mouthLevel, rigModels, rigStates, speechMouth, stateLabels, type RigState } from './model'
 import { applyPose, loadRig, type Player } from './rig'
 
 // runtime（p2l.js / p2l_runtime.wasm）は sample 配下を共用し、モデルの .p2lrt だけを切り替える。
@@ -9,7 +9,7 @@ const model = modelFor(location.search)
 
 const el = <T extends HTMLElement>(id: string) => document.getElementById(id) as T
 const canvas = el<HTMLCanvasElement>('stage'), error = el('error'), metrics = el('metrics')
-el('model-name').textContent = model.name
+el('model-name').textContent = `${model.name}・${modelStatus(model)}`
 el('model-notice').textContent = model.notice
 el('model-credits').textContent = model.credits
 for (const m of rigModels) {
