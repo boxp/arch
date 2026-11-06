@@ -105,3 +105,22 @@ it('treats 4xx polling errors as unconfirmed outcome instead of failed, retrying
   expect(await make([429]).execute(opts)).toEqual({ status: 'unknown', error: 'hermes_poll_429' })
   expect(await make([404]).execute(opts)).toEqual({ status: 'unknown', error: 'hermes_poll_404' })
 })
+it('rotates the session even without a run id when the create request outcome is unknown', async () => {
+  const sessions: string[] = [], stopped: string[] = []
+  let settle: (r: any) => void = () => {}
+  const hermes = { run: (_id: string, _text: string, session: string) => { sessions.push(session); return new Promise(r => { settle = r }) }, approve: async () => 'ok', stop: async (id: string) => { stopped.push(id); return 'ok' } } as unknown as ReturnType<typeof createHermes>
+  const server = createServer(createApp({ authenticate: async () => 'owner', hermes }))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    const send = (requestId: string) => fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId, kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }) })
+    expect((await send('owner-801')).status).toBe(202)
+    settle({ status: 'unknown', error: 'hermes_unreachable' }); await new Promise(r => setTimeout(r, 10))
+    expect(stopped).toEqual([])
+    expect((await send('owner-802')).status).toBe(202)
+    expect(sessions[1]).not.toBe(sessions[0])
+    settle({ status: 'failed', error: 'failed' }); await new Promise(r => setTimeout(r, 10))
+    expect((await send('owner-803')).status).toBe(202)
+    expect(sessions[2]).toBe(sessions[1])
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})

@@ -152,13 +152,14 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
         }
       // ポーリング失敗/タイムアウト等で上流 run の終了を確認できないまま pending を解除すると、
       // 次のメッセージが同じ session で並行実行される。停止を依頼し、次回は必ず別 session に切り替える。
-      const releaseUpstream = async (result: { status: string }) => {
-        if (result.status === 'done' || !entry.runId) return
-        if (result.status === 'unknown' || (result as { error?: string }).error === 'internal_error') {
-          sessionStartedAt = Math.max(now(), sessionStartedAt + 1)
-          console.warn('kohako_web_conv session_rotated upstream_unconfirmed')
-          await hermes.stop(entry.runId)
-        }
+      // runId の有無に依らない: POST /v1/runs が上流で受理された後に応答だけ失われた（timeout/切断/schema 不正）場合も
+      // run は動いている可能性があるので、結果未確定(unknown/internal_error)なら常に session を切り替える。
+      // 停止は runId が分かっている時だけ依頼できる。
+      const releaseUpstream = async (result: { status: string; error?: string }) => {
+        if (result.status !== 'unknown' && result.error !== 'internal_error') return
+        sessionStartedAt = Math.max(now(), sessionStartedAt + 1)
+        console.warn('kohako_web_conv session_rotated upstream_unconfirmed')
+        if (entry.runId) await hermes.stop(entry.runId)
       }
       void (async () => {
         let result = await hermes.run(input.requestId, input.text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun)
