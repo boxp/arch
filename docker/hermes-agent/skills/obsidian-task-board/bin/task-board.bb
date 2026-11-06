@@ -870,13 +870,34 @@
                                          (make-array java.nio.file.LinkOption 0))
        (catch Exception _ nil)))
 
+(defn repair-proc-cap-prm
+  "Permitted capability mask of a /proc entry (status is world-readable), or nil."
+  [proc]
+  (try (some->> (java.nio.file.Files/readAllLines (fs/path proc "status"))
+                (some #(when (str/starts-with? % "CapPrm:") (str/trim (subs % 7))))
+                (#(BigInteger. ^String % 16)))
+       (catch Exception _ nil)))
+
+(defn repair-privileged-beyond-self?
+  "True when `proc` holds capabilities this process lacks. That is the reason a
+  same-UID /proc/<pid>/fd is unreadable (ptrace read check); task-board writers
+  run unprivileged (root refused), so such a process is not a Board writer."
+  [proc]
+  (let [mine (repair-proc-cap-prm "/proc/self")
+        theirs (repair-proc-cap-prm proc)]
+    (boolean (and mine theirs
+                  (not (zero? (.signum (.andNot ^BigInteger theirs ^BigInteger mine))))))))
+
 (defn repair-open-holders
   "PIDs that hold the inode at `p` open, plus PIDs whose descriptors cannot be
   inspected (unknown counts as holding: fail closed). Vanished PIDs are ignored.
   Processes of another UID are only considered when the inode is group/other
   writable: task-board writers run as this non-root UID (root is refused), and
   an owner-only-writable inode cannot be written by another non-root UID, so
-  their unreadable /proc/<pid>/fd (e.g. root daemons) is not a writer signal."
+  their unreadable /proc/<pid>/fd (e.g. root daemons) is not a writer signal.
+  A same-UID process whose fd table is unreadable only because it holds
+  capabilities beyond ours (e.g. a CI agent) is likewise not a writer; any other
+  unreadable fd table still counts as holding."
   [p]
   (let [k (repair-file-key p)
         uid (Long/parseLong (str/trim (:out (shell/sh "id" "-u"))))
@@ -892,9 +913,14 @@
                :when (or foreign-writable? (nil? owner) (= uid owner))
                :let [fds (try (vec (fs/list-dir (fs/path proc "fd")))
                               (catch java.nio.file.NoSuchFileException _ [])
-                              (catch Exception _ (when (fs/exists? proc) ::unknown)))]
+                              (catch Exception _
+                                (when (and (fs/exists? proc)
+                                           (not (and (not foreign-writable?)
+                                                     (repair-privileged-beyond-self? proc))))
+                                  ::unknown)))]
                :when (or (= ::unknown fds) (some #(= k (repair-file-key %)) fds))]
-           (str pid "(" (or (try (str/trim (slurp (str (fs/path proc "comm")))) (catch Exception _ nil)) "?")
+           (str pid "(" (or (try (str/trim (first (java.nio.file.Files/readAllLines (fs/path proc "comm"))))
+                                 (catch Exception _ nil)) "?")
                 (when (= ::unknown fds) ",fd-unreadable") ")")))))
 
 (defn repair-wait-holders!
