@@ -69,16 +69,53 @@ resource "cloudflare_zero_trust_access_application" "kohako_g2" {
 }
 
 # BOXP-441: コード/モデルの公開許可は画面の Access 解除ではない。
+# Studio は端末非依存の Web UI なので、G2 用の kohako_g2_owner（Owner email AND
+# Require Gateway）を流用せず専用 policy に分離する（Owner 指定 2026-11-06:
+# One Client/WARP 不要・GitHub 認証のみ）。
+# - include は Owner の email のみ（GitHub でログインした全員ではない）。
+# - require で既存 GitHub IdP 経由のログインを要求し、他 IdP（one-time PIN 等）や
+#   WARP client session での email 一致だけでは通らない。
+# - allowed_idps も GitHub のみにし、ログイン画面に他の入口を出さない。
+# - kohako_g2_owner / kohako_g2 application と tunnel の AUD 検証は変更しない。
+data "cloudflare_zero_trust_access_identity_providers" "all" {
+  account_id = var.account_id
+}
+
+locals {
+  github_idp_id = [
+    for p in data.cloudflare_zero_trust_access_identity_providers.all.result :
+    p.id if p.type == "github"
+  ][0]
+}
+
+resource "cloudflare_zero_trust_access_policy" "kohako_studio_owner" {
+  account_id = var.account_id
+  name       = "policy for ${local.kohako_studio_hostname} (owner via GitHub)"
+  decision   = "allow"
+  include = [
+    for email in local.kohako_g2_owner_emails : {
+      email = { email = email }
+    }
+  ]
+  require = [{
+    login_method = {
+      id = local.github_idp_id
+    }
+  }]
+}
+
 resource "cloudflare_zero_trust_access_application" "kohako_studio" {
   zone_id                     = var.zone_id
   name                        = "Access application for ${local.kohako_studio_hostname}"
   domain                      = local.kohako_studio_hostname
   type                        = "self_hosted"
   session_duration            = "24h"
-  allow_authenticate_via_warp = true
+  allow_authenticate_via_warp = false
+  allowed_idps                = [local.github_idp_id]
+  auto_redirect_to_identity   = true
   enable_binding_cookie       = false
   http_only_cookie_attribute  = true
   same_site_cookie_attribute  = "lax"
   app_launcher_visible        = false
-  policies                    = [{ id = cloudflare_zero_trust_access_policy.kohako_g2_owner.id }]
+  policies                    = [{ id = cloudflare_zero_trust_access_policy.kohako_studio_owner.id }]
 }
