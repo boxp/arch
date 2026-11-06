@@ -70,6 +70,17 @@ it('shows the full command in approvals and only allows deny when it cannot be s
   expect(approvalSummary({ description: '', command: 'curl -H "Authorization: Bearer abc"' }).fullyShown).toBe(false)
   expect(approvalSummary({ description: 'x', command: 'echo a', commandTruncated: true }).fullyShown).toBe(false)
 })
+it('does not allow once when the approval command contains newlines or other control characters', async () => {
+  const { approvalSummary } = await import('./conversation.js')
+  const multi = approvalSummary({ description: 'x', command: 'echo safe\nrm -rf /tmp/target' })
+  expect(multi.fullyShown).toBe(false)
+  expect(multi.summary).toContain('echo safe\\nrm -rf /tmp/target')
+  expect(multi.summary).toContain('拒否のみ')
+  expect(approvalSummary({ description: 'x', command: 'echo a\rrm b' }).fullyShown).toBe(false)
+  expect(approvalSummary({ description: 'x', command: 'echo a\tb' }).fullyShown).toBe(false)
+  expect(approvalSummary({ description: 'x', command: 'echo \x1b[2Ka' }).fullyShown).toBe(false)
+  expect(approvalSummary({ description: 'x', command: 'echo a b' }).fullyShown).toBe(true)
+})
 it('does not allow once when the approval command is missing or empty', async () => {
   const { approvalSummary } = await import('./conversation.js')
   expect(approvalSummary({ description: 'x', command: '' }).fullyShown).toBe(false)

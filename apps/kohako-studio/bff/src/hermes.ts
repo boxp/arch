@@ -130,7 +130,8 @@ export function createHermes({
           const strip = (value: unknown) => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim() : ''
           const clean = (value: unknown) => strip(value).slice(0, 160)
           // command は Owner が許可対象を確認する本体なので切り詰めず、収まらない場合は印を付けて拒否のみにする。
-          const command = strip(raw.command)
+          // 改行等の制御文字は空白へ潰さず原文のまま渡す（複数コマンドを 1 行に見せないため。判定と表示は approvalSummary 側）。
+          const command = typeof raw.command === 'string' ? raw.command.trim() : ''
           const rawId = control ? raw.prompt_id : raw.request_id
           const requestId = typeof rawId === 'string' && /^[\x21-\x7e]{1,256}$/.test(rawId) ? rawId : undefined
           const generation = control && Number.isSafeInteger(raw.execution_generation) ? (raw.execution_generation as number) : undefined

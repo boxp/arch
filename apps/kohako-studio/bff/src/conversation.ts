@@ -34,10 +34,15 @@ function redact(text: string) {
  */
 export function approvalSummary(approval: { description: string; command: string; commandTruncated?: boolean }) {
   const description = redact(approval.description).slice(0, 160)
-  const rawCommand = approval.command.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim()
+  // 改行・タブ等の制御文字は空白へ潰すと `echo safe\nrm -rf ...` のような複数コマンドを 1 行に見せてしまう。
+  // \n 等の可視表記に置き換えて表示し、制御文字を含む command は全文を正しく確認できないとみなして拒否のみにする。
+  const hasControl = /[\x00-\x1f\x7f-\x9f]/.test(approval.command)
+  const rawCommand = approval.command
+    .replace(/[\x00-\x1f\x7f-\x9f]/g, (c) => c === '\n' ? '\\n' : c === '\r' ? '\\r' : c === '\t' ? '\\t' : `\\x${c.charCodeAt(0).toString(16).padStart(2, '0')}`)
+    .trim()
   const command = redact(rawCommand)
   // command が欠落/空なら実行内容を確認できないので、一度だけ許可は出さない。
-  const fullyShown = !!rawCommand && !approval.commandTruncated && command === rawCommand
+  const fullyShown = !!rawCommand && !hasControl && !approval.commandTruncated && command === rawCommand
   const lines = [description || '操作の許可']
   lines.push(command ? `実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}` : '実行内容: （不明のため拒否のみ可能）')
   return { summary: lines.join('\n'), fullyShown }
