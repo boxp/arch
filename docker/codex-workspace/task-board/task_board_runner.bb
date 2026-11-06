@@ -934,7 +934,8 @@
            (fail (str "ticket card not found: " ticket-id)))
          (let [new-line (cond-> (normalize-card-line (:line card) target-status)
                           assignee (replace-or-add-attr "assignee" assignee)
-                          rev (replace-or-add-attr "rev" rev))
+                          (= ::remove-rev rev) (remove-attr "rev")
+                          (string? rev) (replace-or-add-attr "rev" rev))
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
            (write-lines! path moved))))))))
@@ -4380,8 +4381,15 @@
 (defn restore-card-state! [ticket-id status assignee]
   ;; A legacy Review card that failed to start has no lane to return to; Ready
   ;; keeps it runnable with the same assignee and does not re-create Review.
-  (let [status (if (= "review" status) "ready" status)]
-    (move-card! ticket-id status assignee)
+  ;; A failed terminal transition may already have stamped a fresh rev on the
+  ;; card; realign the card with the ticket's revision so the restored card is
+  ;; not later treated as a revision mismatch (and skipped as a candidate).
+  (let [status (if (= "review" status) "ready" status)
+        ticket-rev (try {:rev (:board_rev (ticket-frontmatter ticket-id))}
+                        (catch Exception _ nil))]
+    (move-card! ticket-id status assignee
+                (when ticket-rev
+                  (if (str/blank? (:rev ticket-rev)) ::remove-rev (:rev ticket-rev))))
     (update-frontmatter! ticket-id {:status status :assignee assignee})))
 
 (defn ensure-not-shutting-down!
