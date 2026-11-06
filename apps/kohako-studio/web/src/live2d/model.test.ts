@@ -45,7 +45,7 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-v12')
+    expect(LATEST_MODEL_ID).toBe('kohako-v13')
     expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
     expect(modelFor('?model=kohako').id).toBe('kohako')
@@ -81,6 +81,14 @@ describe('clip names', () => {
     expect(v6.rig).toBe('../kohako/kohako-v6.p2lrt')
     expect(ids.map(id => clipName(v6, id))).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
   })
+  it('selects v13 and preserves v12 as a rejected comparison', () => {
+    const v13 = modelFor('?model=kohako-v13')
+    expect(v13.rig).toBe('../kohako/kohako-v13.p2lrt')
+    expect(v13.status).toBe('latest')
+    expect(v13.evaluation).toContain('本人確認用')
+    expect(modelFor('?model=kohako-v12').status).toBe('rejected')
+    expect(Object.values(v13.clipNames ?? {})).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
+  })
   it('keeps the sample clip ids as they are', () => {
     const sample = modelFor('?model=sample')
     expect(clipName(sample, 'Nod')).toBe('Nod')
@@ -108,5 +116,15 @@ describe('mouthLevel', () => {
       expect(mouthLevel(m, 1.5)).toBe(1)
       expect(mouthLevel(m, Number.NaN)).toBe(0)
     }
+  })
+})
+
+describe('lookFor', () => {
+  it('本人モデルは首振りを抑え、サンプルは原寸のまま', async () => {
+    const { lookFor, KOHAKO_LOOK_SCALE } = await import('./model')
+    const [x, y] = lookFor(modelFor('?model=kohako-v13'), 0.6, 0.5)
+    expect(x).toBeCloseTo(0.6 * KOHAKO_LOOK_SCALE); expect(y).toBeCloseTo(0.5 * KOHAKO_LOOK_SCALE)
+    expect(Math.abs(x)).toBeLessThan(0.25)
+    expect(lookFor(modelFor('?model=sample'), 0.6, 0.5)).toEqual([0.6, 0.5])
   })
 })

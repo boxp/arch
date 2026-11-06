@@ -68,7 +68,7 @@ export class FrameMeter {
   }
 }
 
-export type RigModelId = 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'sample'
+export type RigModelId = 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'sample'
 export type RigModel = { id: RigModelId; label: string; name: string; rig: string; notice: string; credits: string; clipNames?: Readonly<Record<string, string>>; skipSmallMouth?: boolean; status: 'latest' | 'previous-latest' | 'old' | 'rejected'; evaluation: string; problems: string }
 
 export const rigModels: readonly RigModel[] = [
@@ -91,7 +91,7 @@ export const rigModels: readonly RigModel[] = [
     },
   },
   {
-    id: 'kohako-v6', status: 'previous-latest', evaluation: '前回の最新配備版', problems: 'まつげ残り、閉眼の四角いパッチ、口が上すぎ、前髪下の赤み。口パク動作確認済み。', label: 'コハコ v6 試作（目・口・額）', name: 'コハコ 本人モデル v6 試作', rig: '../kohako/kohako-v6.p2lrt',
+    id: 'kohako-v6', status: 'old', evaluation: '前回の最新配備版', problems: 'まつげ残り、閉眼の四角いパッチ、口が上すぎ、前髪下の赤み。口パク動作確認済み。', label: 'コハコ v6 試作（目・口・額）', name: 'コハコ 本人モデル v6 試作', rig: '../kohako/kohako-v6.p2lrt',
     skipSmallMouth: true,
     notice: 'v5 の目尻・閉眼時のまつげと額の下地を調整し、閉じた口の位置を上げた試作です。小さく開いた口（0.1〜0.3）では閉口線と開口が重なるため、口パクではこの帯を飛ばしています。後ろ髪の大半は体と同じ層で揺れません。Nod クリップと腕・手・眉は未対応です。',
     credits: 'コハコ: Owner のオリジナルキャラクター（正本シートからの派生と、正本を参照して生成した下地。公開許可済み）。',
@@ -104,7 +104,8 @@ export const rigModels: readonly RigModel[] = [
   { id: 'kohako-v2', label: 'コハコ v2', name: 'コハコ v2', rig: '../kohako/kohako-v2.p2lrt', status: 'old', evaluation: '旧版・試作', problems: '顔を分離し頬の継ぎ目を解消。頭頂の白縁、前髪隙間、三つ編み下の補完跡。', notice: '顔を分離し頬の継ぎ目を解消。頭頂の白縁、前髪隙間、三つ編み下の補完跡。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
   { id: 'kohako-v3', label: 'コハコ v3', name: 'コハコ v3', rig: '../kohako/kohako-v3.p2lrt', status: 'old', evaluation: '旧版・試作', problems: '頭頂の白縁を軽減。桜飾り脇の白縁、前髪隙間の肌色、三つ編み下の補完跡。', notice: '頭頂の白縁を軽減。桜飾り脇の白縁、前髪隙間の肌色、三つ編み下の補完跡。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
   { id: 'kohako-v11', label: 'コハコ v11', name: 'コハコ v11', rig: '../kohako/kohako-v11.p2lrt', status: 'rejected', evaluation: '担当評価: 不採用', problems: '開眼の縁は解消。閉眼の白い補修面と太い二重まつげが v6 より悪化。口 0.5 の二重線、額の赤三角。', notice: '開眼の縁は解消。閉眼の白い補修面と太い二重まつげが v6 より悪化。口 0.5 の二重線、額の赤三角。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
-  { id: 'kohako-v12', label: 'コハコ v12', name: 'コハコ v12', rig: '../kohako/kohako-v12.p2lrt', status: 'latest', evaluation: '最新の試作（担当評価: 不採用・本人確認用）', problems: '目・額は v6 と同じ。口 0.75/1 は原画にほぼ一致、閉口は高い位置のギザついた平坦線、0.25/0.5 は二重線。', notice: '目・額は v6 と同じ。口 0.75/1 は原画にほぼ一致、閉口は高い位置のギザついた平坦線、0.25/0.5 は二重線。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
+  { id: 'kohako-v12', label: 'コハコ v12', name: 'コハコ v12', rig: '../kohako/kohako-v12.p2lrt', status: 'rejected', evaluation: '担当評価: 不採用', problems: '目・額は v6 と同じ。口 0.75/1 は原画にほぼ一致、閉口は高い位置のギザついた平坦線、0.25/0.5 は二重線。', notice: '目・額は v6 と同じ。口 0.75/1 は原画にほぼ一致、閉口は高い位置のギザついた平坦線、0.25/0.5 は二重線。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
+  { id: 'kohako-v13', label: 'コハコ v13', name: 'コハコ v13', rig: '../kohako/kohako-v13.p2lrt', status: 'latest', evaluation: '最新の試作（髪の大きなずれは首振り抑制で改善・目口額は未達、本人確認用）', problems: '髪の大きなずれの主因は「考え中」の首振り（約40°）でした。全本人モデル共通で首振りを0.3倍（最大約21°）に抑えて解消。v13 の後ろ髪レイヤー移動自体の効果は小さく、後ろ髪の大半は体と同じ層で揺れません。目・口・額は v6 の課題が残っています。', notice: '原画由来の後ろ髪の露出部分を体から後ろ髪レイヤーへ移した試作です。静止画の髪の輪郭は原画とおおむね一致しており、大きなずれは「考え中」の首振りで頭髪が体側の髪から外れて後ろ髪の下地が見えることが原因でした（首振りを抑えて解消）。目・口・額は v6 と同じです。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
   {
     id: 'sample', status: 'old', evaluation: '比較用サンプル', problems: '本人モデルではありません。', label: 'サンプル（tml）', name: 'tml（PSD2Live の CC0 サンプル）', rig: 'tml.p2lrt',
     notice: '比較用のサンプルです。コハコのモデルではありません。',
@@ -116,7 +117,20 @@ export const rigModels: readonly RigModel[] = [
  * クエリ無しの URL で表示する「最新の配備済み本人モデル」。新しい版を配備したらここを更新する。
  * 本人の美術受入とは別で、検証版として表示する（受入済みの意味ではない）。
  */
-export const LATEST_MODEL_ID: RigModelId = 'kohako-v12'
+export const LATEST_MODEL_ID: RigModelId = 'kohako-v13'
+
+/**
+ * 本人モデルの視線（= 首振り）の倍率。BOXP-441 TD-18: 「考え中」の視線 (0.6, 0.5) と待機モーションが重なると
+ * AngleX が約 40° まで回り、頭髪の塊が体側の長い髪から外れて後ろ髪の下地が露出した（実ブラウザで再現）。
+ * 本人モデルは髪が体と同じ層に残っているため、首振りを継ぎ目が目立たない範囲に抑える。サンプルは原寸のまま。
+ */
+export const KOHAKO_LOOK_SCALE = 0.3
+
+/** モデルに合わせて視線を縮める。 */
+export function lookFor(model: RigModel, x: number, y: number): [number, number] {
+  const s = model.id === 'sample' ? 1 : KOHAKO_LOOK_SCALE
+  return [x * s, y * s]
+}
 
 /** `?model=` の値をモデル ID に直す（`kohako-v0` は v0 の別名）。 */
 export function normalizeModelId(id: string | null): string | null {

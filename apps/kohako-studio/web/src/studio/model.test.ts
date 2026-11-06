@@ -23,8 +23,8 @@ describe('Studio の状態', () => {
     expect(wantsRig('')).toBe(true)
     expect(wantsRig('?face=static')).toBe(false)
   })
-  it('?model で本人モデルの試作だけを選べ、既定と sample 指定はコハコ v0 になる', () => {
-    expect(studioRigModelId('')).toBe('kohako-v12')
+  it('?model で本人モデルの試作だけを選べ、既定と sample 指定は最新の本人モデルになる', () => {
+    expect(studioRigModelId('')).toBe('kohako-v13')
     expect(studioRigModelId('?model=kohako')).toBe('kohako')
     expect(studioRigModelId('?model=kohako-v0')).toBe('kohako')
     expect(studioRigModelId('?model=kohako-v2')).toBe('kohako-v2')
@@ -32,10 +32,11 @@ describe('Studio の状態', () => {
     expect(studioRigModelId('?model=kohako-v5')).toBe('kohako-v5')
     expect(studioRigModelId('?model=kohako-v6')).toBe('kohako-v6')
     expect(studioRigModelId('?model=kohako-v1&face=rig')).toBe('kohako-v1')
-    expect(studioRigModelId('?model=sample')).toBe('kohako-v12')
-    expect(studioRigModelId('?model=unknown')).toBe('kohako-v12')
+    expect(studioRigModelId('?model=sample')).toBe('kohako-v13')
+    expect(studioRigModelId('?model=unknown')).toBe('kohako-v13')
     expect(studioRigModelId('?model=kohako-v11')).toBe('kohako-v11')
     expect(studioRigModelId('?model=kohako-v12')).toBe('kohako-v12')
+    expect(studioRigModelId('?model=kohako-v13')).toBe('kohako-v13')
   })
 })
 

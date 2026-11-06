@@ -1,5 +1,5 @@
 // BOXP-441: PSD2Live の .p2lrt を WebAssembly runtime + WebGL で描画する共通ローダー（公式 Cubism Core 不使用）。
-import { clipIdFor, clipName, poseFor, type Pose, type RigModel, type RigState } from './model'
+import { clipIdFor, clipName, lookFor, poseFor, type Pose, type RigModel, type RigState } from './model'
 
 // p2l.js（PSD2Live web player, MIT）が公開する API のうち、この画面群で使うもの。
 export interface Player {
@@ -35,6 +35,6 @@ export async function loadRig(canvas: HTMLCanvasElement, model: RigModel, runtim
 export function applyPose(player: Player, model: RigModel, state: RigState): Pose {
   const ids = player.clips
   const pose = poseFor(state, player.expressions, ids.map(id => clipName(model, id)))
-  player.expression(pose.expression); player.play(clipIdFor(model, ids, pose.clip)); player.lookAt(...pose.look)
+  player.expression(pose.expression); player.play(clipIdFor(model, ids, pose.clip)); player.lookAt(...lookFor(model, ...pose.look))
   return pose
 }

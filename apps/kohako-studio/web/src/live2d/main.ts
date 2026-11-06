@@ -1,6 +1,6 @@
 import '../studio/style.css'
 import './style.css'
-import { FrameMeter, clipName, micMouth, modelFor, modelStatus, mouthLevel, rigStates, speechMouth, stateLabels, type RigState } from './model'
+import { FrameMeter, clipName, lookFor, micMouth, modelFor, modelStatus, mouthLevel, rigStates, speechMouth, stateLabels, type RigState } from './model'
 import { setupSelector } from './selector'
 import { applyPose, loadRig, type Player } from './rig'
 
@@ -76,7 +76,7 @@ async function load() {
     input.addEventListener('input', () => p.setParameter(range.id, Number(input.value)))
     label.append(input); values.append(label)
   }
-  canvas.addEventListener('pointermove', e => { const r = canvas.getBoundingClientRect(); p.lookAt(((e.clientX - r.left) / r.width) * 2 - 1, 1 - ((e.clientY - r.top) / r.height) * 2) })
+  canvas.addEventListener('pointermove', e => { const r = canvas.getBoundingClientRect(); p.lookAt(...lookFor(model, ((e.clientX - r.left) / r.width) * 2 - 1, 1 - ((e.clientY - r.top) / r.height) * 2)) })
   canvas.addEventListener('pointerleave', () => apply(state))
   apply('idle')
   requestAnimationFrame(tick)
