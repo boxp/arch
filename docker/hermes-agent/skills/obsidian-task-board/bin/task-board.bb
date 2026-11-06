@@ -2,9 +2,10 @@
 
 (ns task-board
   (:require [babashka.fs :as fs]
+            [clojure.edn :as edn]
             [clojure.java.shell :as shell]
             [clojure.string :as str])
-  (:import [java.io RandomAccessFile]
+  (:import [java.io RandomAccessFile PushbackReader StringReader]
            [java.security MessageDigest]))
 
 (def lanes
@@ -100,6 +101,12 @@
           "--note-file" (recur (nnext xs) (assoc opts :note (slurp (first more))))
           "--source" (recur (nnext xs) (assoc opts :source (first more)))
           "--intent" (recur (nnext xs) (assoc opts :intent (first more)))
+          "--source-root" (recur (nnext xs) (assoc opts :source-root (first more)))
+          "--expected-ticket-sha256" (recur (nnext xs) (assoc opts :expected-ticket-sha256 (first more)))
+          "--expected-board-sha256" (recur (nnext xs) (assoc opts :expected-board-sha256 (first more)))
+          "--expected-after-board-sha256" (recur (nnext xs) (assoc opts :expected-after-board-sha256 (first more)))
+          "--expected-source-sha256" (recur (nnext xs) (assoc opts :expected-source-sha256 (first more)))
+          "--expected-helper-sha256" (recur (nnext xs) (assoc opts :expected-helper-sha256 (first more)))
           "--expected-rev" (recur (nnext xs) (assoc opts :expected-rev (first more)))
           "--expected-revision" (recur (nnext xs) (assoc opts :expected-revision (first more)))
           "--actor" (recur (nnext xs) (assoc opts :actor (first more)))
@@ -737,8 +744,184 @@
                         :projection (frontmatter-projection ticket)
                         :writes []})))
 
+(defn repair-sha [s]
+  (apply str (map #(format "%02x" (bit-and 0xff %))
+                  (.digest (MessageDigest/getInstance "SHA-256") (.getBytes s "UTF-8")))))
+
+(defn repair-require [condition message]
+  (when-not condition (die (str "reconcile-done: " message))))
+
+(defn repair-owned-path! [path]
+  ;; Never follow a symlink into another vault/source or write a root-owned path.
+  (let [path (fs/path path)
+        uid (Long/parseLong (str/trim (:out (shell/sh "id" "-u"))))]
+    (repair-require (and (fs/exists? path)
+                         (= (str (fs/absolutize path)) (str (fs/canonicalize path)))
+                         (= uid (java.nio.file.Files/getAttribute path "unix:uid"
+                                   (make-array java.nio.file.LinkOption 0))))
+                    (str "unsafe path or UID: " path))))
+
+(defn repair-source [root id]
+  (repair-owned-path! (fs/path root "locks"))
+  (repair-require (not (or (fs/exists? (fs/path root "locks" (str id ".edn")))
+                           (fs/sym-link? (fs/path root "locks" (str id ".edn")))))
+                  "active or unresolved source claim")
+  (let [runs (sort (map str (fs/list-dir (fs/path root "runs" id))))
+        run (last runs)
+        _ (repair-require (some? run) "missing source run")
+        _ (doseq [path [(fs/path root "runs") (fs/path root "runs" id) (fs/path run)
+                         (fs/path run "summary.edn")]] (repair-owned-path! path))
+        raw (read-text (fs/path run "summary.edn"))
+        summary (try
+                  (with-open [reader (PushbackReader. (StringReader. raw))]
+                    (let [value (edn/read {:eof ::end} reader)]
+                      (when (= ::end (edn/read {:eof ::end} reader)) value)))
+                  (catch Exception _ nil))]
+    (repair-require (and (= id (:ticket summary))
+                         (re-matches #"[0-9]{8}T[0-9]{6}Z-[a-f0-9-]{36}" (str (fs/file-name run)))
+                         (= (str (fs/file-name run)) (:run-id summary))
+                         (= :succeeded (:status summary)) (= "done" (:result summary))
+                         (try (java.time.Instant/parse (:finished-at summary))
+                              (catch Exception _ false)))
+                    "latest source run is not proven succeeded/done")
+    {:run-id (:run-id summary) :sha256 (repair-sha raw)}))
+
+(defn repair-board [board ticket]
+  (repair-require (not (str/includes? board "\r")) "CRLF board is unsupported")
+  (let [id (:id ticket)
+        ;; Preserve every byte outside the exact stale line, including terminal blanks.
+        lines (str/split board #"\n" -1)
+        _ (doseq [lane ["In Progress" "Done"]]
+            (repair-require (= 1 (count (filter (fn [line] (= line (str "## " lane))) lines)))
+                            "missing or duplicate lane heading"))
+        candidates (loop [xs lines idx 0 lane nil cards []]
+                     (if (empty? xs) cards
+                       (let [line (first xs)
+                             heading (second (re-find #"^##\s+(.+?)\s*$" line))
+                             lane (if heading (when (contains? readable-lanes heading) heading) lane)
+                             related? (str/includes? line (str "[[Tickets/" id))
+                             card (when (and lane related?) (parse-card lane line))]
+                         (when (and lane related?)
+                           (repair-require (and card (= id (:id card))
+                                                (= line (card-line (assoc card :repo (:repo card)))))
+                                           "ambiguous, malformed or annotated target card"))
+                         (recur (rest xs) (inc idx) lane
+                                (cond-> cards card (conj (assoc card :index idx)))))))
+        matches-ticket? (fn [card]
+                          (and (= (:title ticket) (:title card))
+                               (= (:rev ticket) (:rev card))
+                               (= (:priority ticket) (:priority card))
+                               (= (repo-values (:repo ticket)) (:repo card))))
+        done (filter #(and (= "Done" (:lane %)) (= "done" (:status %))
+                           (:done %) (= "boxp" (:assignee %))
+                           (= (fm-get (:frontmatter-lines ticket) "closed") (:done-date %))
+                           (matches-ticket? %)) candidates)
+        stale (filter #(and (= "In Progress" (:lane %)) (= "in-progress" (:status %))
+                            (not (:done %)) (nil? (:done-date %))
+                            (= "claude-opus" (:assignee %)) (matches-ticket? %)) candidates)]
+    (repair-require (and (= 1 (count done)) (<= (count stale) 1)
+                         (= (count candidates) (+ 1 (count stale))))
+                    "expected one canonical Done card and at most one matching stale card")
+    (doseq [card stale]
+      (let [next-line (get lines (inc (:index card)) "")]
+        (repair-require (or (str/blank? next-line) (card-line? next-line)
+                            (str/starts-with? next-line "## ")) "stale card has attached content")))
+    {:candidates candidates :kept (first done) :removed (vec stale)
+     :after (str/join "\n" (keep-indexed
+                               (fn [idx line] (when-not (= idx (:index (first stale))) line)) lines))}))
+
+(defn repair-audit! [vault record]
+  (let [path (fs/path vault ".task-board-repair-audit.edn")]
+    (when (fs/exists? path) (repair-owned-path! path))
+    (spit (str path) (str (pr-str (assoc record :at (str (java.time.Instant/now)))) "\n") :append true)
+    (with-open [raf (RandomAccessFile. (str path) "rw")] (.force (.getChannel raf) true))))
+
+(defn repair-atomic-board! [path before after]
+  (let [tmp (fs/path (fs/parent path) (str ".reconcile-433-" (random-uuid) ".tmp"))]
+    (try
+      (spit (str tmp) after)
+      (with-open [raf (RandomAccessFile. (str tmp) "rw")] (.force (.getChannel raf) true))
+      (java.nio.file.Files/setPosixFilePermissions tmp
+        (java.nio.file.Files/getPosixFilePermissions (fs/path path)
+          (make-array java.nio.file.LinkOption 0)))
+      (repair-require (= before (read-text path)) "board changed before atomic replacement")
+      (java.nio.file.Files/move tmp (fs/path path)
+        (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE
+                                             java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
+      (finally (fs/delete-if-exists tmp)))))
+
+(defn cmd-reconcile-done [opts id]
+  ;; Deliberately no general force/dedupe operation. This is the approved 433 repair.
+  (repair-require (= "BOXP-433" id) "only BOXP-433 is sanctioned")
+  (repair-require (= [id] (:positionals opts)) "unexpected arguments")
+  (repair-require (every? #{:positionals :vault :source-root :dry-run :json :confirm :expected-rev
+                            :expected-ticket-sha256 :expected-board-sha256 :expected-after-board-sha256
+                            :expected-source-sha256 :expected-helper-sha256} (keys opts))
+                  "unsupported option for sanctioned repair")
+  (let [vault (fs/absolutize (vault-path opts))
+        root (some-> (:source-root opts) fs/absolutize)
+        writer (present (System/getenv "TASK_BOARD_VAULT_WRITER_LOCK_DIR"))
+        _ (repair-require (and root writer) "--source-root and shared TASK_BOARD_VAULT_WRITER_LOCK_DIR required")
+        guard (fs/path root "lock-guards" (str id ".lock"))
+        bpath (board-path vault)
+        tpath (ticket-path vault id)]
+    (doseq [path [vault root (fs/path writer) (fs/path writer "vault-writer.lock") guard bpath tpath]] (repair-owned-path! path))
+    ;; Same source guard as runner acquire/release. Never edit claims or stale locks.
+    (with-open [raf (RandomAccessFile. (str guard) "rw") channel (.getChannel raf)]
+      (let [_source-lock (.lock channel)]
+        ;; The outer CLI wrapper must NOT take writer lock first: runner acquires
+        ;; source guard before committing vault changes as well.
+        ((fn [f]
+           ;; Require an existing shared domain; never silently invent a new one.
+           (with-open [file (RandomAccessFile. (str (fs/path writer "vault-writer.lock")) "rw")
+                       writer-channel (.getChannel file)]
+             (let [_writer-lock (.lock writer-channel)] (f))))
+          #(with-board-lock bpath
+             (fn []
+               (with-ticket-lock opts tpath
+                 (fn []
+                   (let [board (read-text bpath) ticket (ticket-data vault id)
+                         source (repair-source root id)
+                         helper-sha (repair-sha (read-text *file*))
+                         ticket-sha (repair-sha (read-text tpath))
+                         _ (repair-require (and (= id (fm-get (:frontmatter-lines ticket) "id"))
+                                                (= "done" (:status ticket)) (= "boxp" (:assignee ticket))
+                                                (every? (fn [k] (= 1 (count (filter (fn [line] (str/starts-with? line (str k ":")))
+                                                                                   (:frontmatter-lines ticket)))))
+                                                        ["id" "status" "assignee" "board_rev" "priority" "repo" "closed"])
+                                                (seq (:rev ticket))
+                                                (re-matches #"[0-9]{4}-[0-9]{2}-[0-9]{2}"
+                                                  (or (fm-get (:frontmatter-lines ticket) "closed") "")))
+                                           "ticket is not done/boxp with revision and closed date")
+                         {:keys [after] :as change} (repair-board board ticket)
+                         hashes {:ticket-sha256 ticket-sha :board-sha256 (repair-sha board)
+                                 :after-board-sha256 (repair-sha after)
+                                 :source-sha256 (:sha256 source) :helper-sha256 helper-sha}
+                         result (merge (dissoc change :after) hashes
+                                  {:action "reconcile-done" :id id :rev (:rev ticket)
+                                   :status "done" :assignee "boxp" :source-run (:run-id source)
+                                   :dry-run (boolean (:dry-run opts)) :noop (= board after)})]
+                     (when-not (:dry-run opts)
+                       (repair-require (:confirm opts) "apply requires --confirm")
+                       (doseq [[k value] (assoc (dissoc hashes :board-sha256) :rev (:rev ticket))]
+                         (repair-require (= value (get opts (keyword (str "expected-" (name k)))))
+                                         (str "expectation mismatch: " (name k))))
+                       (repair-require (and (re-matches #"[a-f0-9]{64}" (or (:expected-board-sha256 opts) ""))
+                                            (or (= (:board-sha256 hashes) (:expected-board-sha256 opts))
+                                                (and (= board after)
+                                                     (= (:board-sha256 hashes) (:expected-after-board-sha256 opts)))))
+                                       "board expectation mismatch")
+                       (repair-require (= source (repair-source root id)) "source changed")
+                       (repair-require (= ticket-sha (repair-sha (read-text tpath))) "ticket changed")
+                       (when-not (= board after)
+                         (repair-audit! vault (assoc hashes :phase :prepared :id id :rev (:rev ticket)
+                                                   :source-run (:run-id source)))
+                         (repair-atomic-board! bpath board after)
+                         (repair-audit! vault (assoc hashes :phase :applied :id id :rev (:rev ticket)))))
+                     (print-result opts result)))))))))))
+
 (defn usage []
-  (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|verify-dispatch|delete|control-intent> [args]\nverify-dispatch ID --expected-rev R [--assignee A] [--json]: started/awaiting-pickup (0), duplicate-cards (3), reverted (4), pending-sync (5), unknown (6)"))
+  (die "Usage: task-board.bb <list|show|create|update|append-note|request-codex|verify-dispatch|delete|control-intent|reconcile-done> [args]\nverify-dispatch ID --expected-rev R [--assignee A] [--json]: started/awaiting-pickup (0), duplicate-cards (3), reverted (4), pending-sync (5), unknown (6)"))
 
 (defn root-user? []
   (let [uid (try
@@ -751,7 +934,7 @@
       (= "root" (System/getProperty "user.name")))))
 
 (defn guard-root-write! [cmd]
-  (when (and (#{"create" "update" "append-note" "request-codex" "delete"} cmd)
+  (when (and (#{"create" "update" "append-note" "request-codex" "delete" "reconcile-done"} cmd)
              (root-user?))
     (die (str "Root cannot run Task Board write commands (including --dry-run). Use:\n"
               "kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-setuidgid hermes bb /opt/data/skills/note-taking/obsidian-task-board/bin/task-board.bb <command> ..."))))
@@ -762,6 +945,7 @@
         opts (parse-args (rest args))
         id (first (:positionals opts))]
     (case cmd
+      "reconcile-done" (cmd-reconcile-done opts (or id (die "reconcile-done requires ticket id")))
       "list" (cmd-list opts)
       "verify-dispatch" (cmd-verify-dispatch opts (or id (die "verify-dispatch requires ticket id")))
       "show" (cmd-show opts (or id (die "show requires ticket id")))

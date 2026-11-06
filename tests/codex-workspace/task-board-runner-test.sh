@@ -51,7 +51,7 @@ priority: medium
 ## Notes
 TICKET
   before="$(cd "$t/vault" && find . -type f -print0 | sort -z | xargs -0 sha256sum)"
-  for cmd in create update append-note request-codex delete; do
+  for cmd in create update append-note request-codex delete reconcile-done; do
     for mode in normal dry; do
       local extra=()
       [[ "$mode" == dry ]] && extra=(--dry-run)

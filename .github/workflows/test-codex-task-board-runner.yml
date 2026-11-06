@@ -82,6 +82,7 @@ jobs:
         if: matrix.group == 'remaining'
         run: |
           set -euo pipefail
+          time python3 tests/codex-workspace/task-board-reconcile-test.py
           time python3 tests/codex-workspace/delegation-test.py
           time tests/codex-workspace/task-board-events-test.sh
           time tests/codex-workspace/ai-ops-ledger-test.sh
