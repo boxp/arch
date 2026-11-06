@@ -1,5 +1,5 @@
 import './style.css'
-import { interpretRequest, outgoingMessage, pcm16, type Outgoing, presentation, rigStateOf, silentSpeechSeconds, studioRigModelId, wantsRig, type State } from './model'
+import { interpretRequest, newOutgoing, pcm16, resolveUnconfirmed, sendOutcomeUnknown, type Outgoing, presentation, rigStateOf, silentSpeechSeconds, studioRigModelId, wantsRig, type State } from './model'
 import { modelFor, mouthLevel, speechMouth } from '../live2d/model'
 import { applyPose, loadRig, type Player } from '../live2d/rig'
 
@@ -93,15 +93,36 @@ async function poll(id: string) {
 el<HTMLFormElement>('form').addEventListener('submit', async event => {
   event.preventDefault(); const text = message.value.trim(); if (!text || busy || !enabled || recording || starting) return
   if (synthesis) window.speechSynthesis.cancel()
-  const payload = outgoingMessage(unconfirmed, text, Date.now(), () => crypto.randomUUID())
-  if (payload === unconfirmed && payload.text !== text) { message.value = payload.text; log('受理未確認の前回メッセージを同じ ID で再送します（重複実行防止）。') }
-  error.textContent = ''; busy = true; accepted = false; requestId = payload.requestId; started = Date.now(); show('thinking')
-  try {
-    const result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
-    unconfirmed = null
-    if (result.status !== 202) { busy = false; requestId = ''; fail(result.status, result.data); return }
-    accepted = true; show(state); void poll(requestId)
-  } catch { unconfirmed = payload; busy = false; requestId = ''; error.textContent = '送信結果を確認できません。もう一度送信すると同じメッセージを同じ ID で再確認します（二重実行はしません）。'; show('failed') }
+  error.textContent = ''; busy = true; accepted = false; started = Date.now(); show('thinking')
+  let payload: Outgoing
+  if (unconfirmed) {
+    // 受理未確認の送信がある間は新しい ID を発行せず、まず BFF に状態を照会して確定させる。
+    const pending = unconfirmed
+    let lookup: Awaited<ReturnType<typeof call>> | null = null
+    try { lookup = await call(`requests/${pending.requestId}`) } catch { lookup = null }
+    const decision = resolveUnconfirmed(pending, lookup ? lookup.status : null, Date.now())
+    if (decision === 'attach') {
+      unconfirmed = null; message.value = pending.text; requestId = pending.requestId; accepted = true
+      log('受理未確認だった前回メッセージは受理済みでした。再送せず結果を追跡します。'); show('thinking'); void poll(requestId); return
+    }
+    if (decision === 'wait') {
+      busy = false; message.value = pending.text
+      error.textContent = '前回の送信が受理されたか確認できません。二重実行を避けるため、確認できるまで新しい送信は行いません。しばらくしてから再度送信してください。'; show('failed'); return
+    }
+    if (decision === 'resend') { payload = pending; if (pending.text !== text) { message.value = pending.text; log('受理未確認の前回メッセージを同じ ID で再送します（重複実行防止）。') } }
+    else { unconfirmed = null; payload = newOutgoing(text, Date.now(), () => crypto.randomUUID()) }
+  } else payload = newOutgoing(text, Date.now(), () => crypto.randomUUID())
+  requestId = payload.requestId
+  let result: Awaited<ReturnType<typeof call>> | null = null
+  try { result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }) } catch { result = null }
+  if (result && result.status === 202) { unconfirmed = null; accepted = true; show(state); void poll(requestId); return }
+  busy = false; requestId = ''
+  // 再送が拒否された場合（期限切れ到着の 410 等）も、先行送信が受理済みの可能性があるので次回の照会まで保持する。
+  if (sendOutcomeUnknown(result ? result.status : null) || payload === unconfirmed) {
+    unconfirmed = payload
+    error.textContent = '送信結果を確認できません。もう一度送信すると、まず前回の受理状況を確認します（二重実行はしません）。'; show('failed'); return
+  }
+  fail(result!.status, result!.data)
 })
 async function decide(choice: 'once' | 'deny') {
   if (!requestId || !approvalId) return

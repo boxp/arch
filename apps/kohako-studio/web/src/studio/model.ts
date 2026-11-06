@@ -48,11 +48,28 @@ export function silentSpeechSeconds(text: string): number {
   return Math.min(10, Math.max(1.5, chars / 8))
 }
 export type Outgoing = { kind: 'text'; text: string; requestId: string; expiresAt: number }
-/**
- * 送信ペイロードを決める。前回の送信が「受理されたか不明」（応答喪失）なら、期限内である限り
- * 同じ requestId・本文・期限をそのまま再送する（BFF が requestId で冪等に扱い、Hermes での重複実行を防ぐ）。
- */
-export function outgoingMessage(unconfirmed: Outgoing | null, text: string, now: number, newId: () => string): Outgoing {
-  if (unconfirmed && unconfirmed.expiresAt > now + 5_000) return unconfirmed
+/** 期限切れと判断する前に置く猶予（端末と BFF の時計ずれ・遅延到着に備える）。 */
+export const EXPIRY_GRACE_MS = 60_000
+export function newOutgoing(text: string, now: number, newId: () => string): Outgoing {
   return { kind: 'text', text, requestId: newId(), expiresAt: now + 300_000 }
+}
+/**
+ * 受理未確認の送信をどう扱うかを、BFF への照会結果 (GET requests/:id の HTTP status、通信失敗は null) から決める。
+ * 規則: 受理が確定しない限り新しい requestId は発行しない。
+ * - 200: 既に受理済み → 再送せずその要求を追跡する。
+ * - 404 かつ期限内: 未受理 → 同じ requestId・本文・期限で再送する（BFF が冪等に扱う）。
+ * - 404 かつ期限+猶予を過ぎた: BFF は期限切れの到着を 410 で拒否するので以後受理されない → 新しい ID で送れる。
+ * - それ以外（通信失敗・5xx・404 だが猶予内で期限切れ）: 状態不明のまま保持し、送らない。
+ */
+export function resolveUnconfirmed(unconfirmed: Outgoing, lookupStatus: number | null, now: number): 'attach' | 'resend' | 'new' | 'wait' {
+  if (lookupStatus === 200) return 'attach'
+  if (lookupStatus === 404) {
+    if (unconfirmed.expiresAt > now) return 'resend'
+    if (unconfirmed.expiresAt + EXPIRY_GRACE_MS <= now) return 'new'
+  }
+  return 'wait'
+}
+/** POST messages の結果が「受理されたか不明」か（通信失敗または 5xx はプロキシ越しに処理済みの可能性がある）。 */
+export function sendOutcomeUnknown(status: number | null): boolean {
+  return status === null || status >= 500
 }

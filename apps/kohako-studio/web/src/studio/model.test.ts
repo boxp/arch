@@ -35,14 +35,27 @@ describe('Studio の状態', () => {
 })
 
 describe('送信の再送', () => {
-  it('受理未確認の送信は期限内なら同じ requestId とペイロードで再送する', async () => {
-    const { outgoingMessage } = await import('./model')
-    let n = 0; const id = () => `id-${++n}`
-    const first = outgoingMessage(null, 'こんにちは', 1000, id)
+  it('受理未確認の送信は照会で確定するまで新しい requestId を発行しない', async () => {
+    const { newOutgoing, resolveUnconfirmed, EXPIRY_GRACE_MS } = await import('./model')
+    const first = newOutgoing('こんにちは', 1000, () => 'id-1')
     expect(first).toEqual({ kind: 'text', text: 'こんにちは', requestId: 'id-1', expiresAt: 301000 })
-    expect(outgoingMessage(first, 'こんにちは', 2000, id)).toBe(first)
-    expect(outgoingMessage(first, '別の文', 2000, id)).toBe(first)
-    const expired = outgoingMessage(first, 'こんにちは', 299000, id)
-    expect(expired.requestId).toBe('id-2')
+    // 期限の5秒前でも、受理済み(200)なら再送せず追跡し、未受理(404)なら同じ ID で再送する。
+    expect(resolveUnconfirmed(first, 200, 297000)).toBe('attach')
+    expect(resolveUnconfirmed(first, 404, 297000)).toBe('resend')
+    // 照会できない(通信失敗/5xx)なら期限前後を問わず新しい ID を出さない。
+    expect(resolveUnconfirmed(first, null, 297000)).toBe('wait')
+    expect(resolveUnconfirmed(first, 502, 10_000_000)).toBe('wait')
+    // 期限切れ直後(猶予内)はまだ遅延到着の可能性があるので待つ。
+    expect(resolveUnconfirmed(first, 404, 301000)).toBe('wait')
+    expect(resolveUnconfirmed(first, 404, 301000 + EXPIRY_GRACE_MS)).toBe('new')
+    // 期限切れ後でも受理済みなら追跡する。
+    expect(resolveUnconfirmed(first, 200, 10_000_000)).toBe('attach')
+  })
+  it('通信失敗と 5xx は受理不明として扱う', async () => {
+    const { sendOutcomeUnknown } = await import('./model')
+    expect(sendOutcomeUnknown(null)).toBe(true)
+    expect(sendOutcomeUnknown(502)).toBe(true)
+    expect(sendOutcomeUnknown(410)).toBe(false)
+    expect(sendOutcomeUnknown(429)).toBe(false)
   })
 })
