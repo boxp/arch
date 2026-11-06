@@ -33,3 +33,16 @@ describe('Studio の状態', () => {
     expect(studioRigModelId('?model=sample')).toBe('kohako')
   })
 })
+
+describe('送信の再送', () => {
+  it('受理未確認の送信は期限内なら同じ requestId とペイロードで再送する', async () => {
+    const { outgoingMessage } = await import('./model')
+    let n = 0; const id = () => `id-${++n}`
+    const first = outgoingMessage(null, 'こんにちは', 1000, id)
+    expect(first).toEqual({ kind: 'text', text: 'こんにちは', requestId: 'id-1', expiresAt: 301000 })
+    expect(outgoingMessage(first, 'こんにちは', 2000, id)).toBe(first)
+    expect(outgoingMessage(first, '別の文', 2000, id)).toBe(first)
+    const expired = outgoingMessage(first, 'こんにちは', 299000, id)
+    expect(expired.requestId).toBe('id-2')
+  })
+})

@@ -1,5 +1,5 @@
 import './style.css'
-import { interpretRequest, pcm16, presentation, rigStateOf, silentSpeechSeconds, studioRigModelId, wantsRig, type State } from './model'
+import { interpretRequest, outgoingMessage, pcm16, type Outgoing, presentation, rigStateOf, silentSpeechSeconds, studioRigModelId, wantsRig, type State } from './model'
 import { modelFor, mouthLevel, speechMouth } from '../live2d/model'
 import { applyPose, loadRig, type Player } from '../live2d/rig'
 
@@ -9,6 +9,8 @@ const error = el('error'), approvalBox = el('approval'), reply = el('reply')
 let state: State = 'offline', enabled = false, stt = false, requestId = '', started = 0, approvalId = '', busy = false, accepted = false
 let recording: { stream: MediaStream; context: AudioContext; source: MediaStreamAudioSourceNode; processor: ScriptProcessorNode; chunks: Float32Array[]; size: number; timer: number } | null = null
 let starting = false, held = false
+// 送信したが受理されたか確認できなかったメッセージ。再送時は同じ requestId で送り重複実行を防ぐ。
+let unconfirmed: Outgoing | null = null
 const synthesis = 'speechSynthesis' in window && 'SpeechSynthesisUtterance' in window
 speech.disabled = !synthesis
 speech.addEventListener('change', () => { if (!speech.checked && synthesis) { window.speechSynthesis.cancel(); if (state === 'speaking') show('done') } })
@@ -91,12 +93,15 @@ async function poll(id: string) {
 el<HTMLFormElement>('form').addEventListener('submit', async event => {
   event.preventDefault(); const text = message.value.trim(); if (!text || busy || !enabled || recording || starting) return
   if (synthesis) window.speechSynthesis.cancel()
-  error.textContent = ''; busy = true; accepted = false; requestId = crypto.randomUUID(); started = Date.now(); show('thinking')
+  const payload = outgoingMessage(unconfirmed, text, Date.now(), () => crypto.randomUUID())
+  if (payload === unconfirmed && payload.text !== text) { message.value = payload.text; log('受理未確認の前回メッセージを同じ ID で再送します（重複実行防止）。') }
+  error.textContent = ''; busy = true; accepted = false; requestId = payload.requestId; started = Date.now(); show('thinking')
   try {
-    const result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ kind: 'text', text, requestId, expiresAt: Date.now() + 300_000 }) })
+    const result = await call('messages', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+    unconfirmed = null
     if (result.status !== 202) { busy = false; requestId = ''; fail(result.status, result.data); return }
     accepted = true; show(state); void poll(requestId)
-  } catch { busy = false; requestId = ''; error.textContent = '送信結果を確認できません。再送する前に接続を確認してください。'; show('failed') }
+  } catch { unconfirmed = payload; busy = false; requestId = ''; error.textContent = '送信結果を確認できません。もう一度送信すると同じメッセージを同じ ID で再確認します（二重実行はしません）。'; show('failed') }
 })
 async function decide(choice: 'once' | 'deny') {
   if (!requestId || !approvalId) return

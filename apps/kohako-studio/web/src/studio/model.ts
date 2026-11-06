@@ -47,3 +47,12 @@ export function silentSpeechSeconds(text: string): number {
   const chars = [...text.replace(/\s+/g, '')].length
   return Math.min(10, Math.max(1.5, chars / 8))
 }
+export type Outgoing = { kind: 'text'; text: string; requestId: string; expiresAt: number }
+/**
+ * 送信ペイロードを決める。前回の送信が「受理されたか不明」（応答喪失）なら、期限内である限り
+ * 同じ requestId・本文・期限をそのまま再送する（BFF が requestId で冪等に扱い、Hermes での重複実行を防ぐ）。
+ */
+export function outgoingMessage(unconfirmed: Outgoing | null, text: string, now: number, newId: () => string): Outgoing {
+  if (unconfirmed && unconfirmed.expiresAt > now + 5_000) return unconfirmed
+  return { kind: 'text', text, requestId: newId(), expiresAt: now + 300_000 }
+}
