@@ -223,3 +223,7 @@ kubectl -n hermes-agent exec deploy/hermes-agent -c hermes-agent -- /command/s6-
 `status ID --vault VAULT` で版と差分を確認し、frontmatter の `todo_state` でも件数を確認できる。変更は `change ID TD-01 --vault VAULT --source 発信元`、取消は `cancel ID TD-01 --vault VAULT --reason 理由 --source 発信元` を使う。受領は `ack --rev 版`、完了は `done ... --evidence 証拠` で記録する。内容を変更した項目のチェックと証拠は外れるので、新しい内容で実施し直す。必須を見送る場合は Owner の判断を求める。
 
 通知は即時ではなく、開始時、次のツール境界、終了判断時、または次の run で届く。Done や Blocked の票に追加した場合は `update --lane Ready` でカードを移動して再開する。
+
+## ゲート失敗予算
+
+累積失敗による停止は ticket pool（実 PR 数×10、未登録時は10、および ticket grant）で判定する。PR の失敗回数・旧上限・旧 grant は監査用であり、PR 単独の上限到達では停止しない。`gate-budget-status BOXP-N` の PR `:legacy-limit-reached?` は旧上限到達、`:exhausted? false` は停止条件でないことを示す。再開時の追加枠は ticket に付与する。CI・レビュー gate、同一 PR の別 ticket 同時実行排他は維持する。

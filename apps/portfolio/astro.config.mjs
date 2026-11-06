@@ -11,7 +11,7 @@ const site = process.env.SITE_URL ?? 'https://b0xp.io';
 export default defineConfig({
   site,
   trailingSlash: 'never',
-  // Pages は /lineage/index.html を /lineage/ へ転送するので、trailingSlash: 'never' と揃えて lineage.html を出す。
+  // Pages は /foo/index.html を /foo/ へ転送するので、trailingSlash: 'never' と揃えて foo.html を出す。
   build: { format: 'file' },
   integrations: [sitemap()],
   env: {

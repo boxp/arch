@@ -20,7 +20,7 @@
 ;; ---------------------------------------------------------------- redaction
 
 (def secret-name-pattern
-  #"(?i)(password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth(?!or)|(?<![a-z])pass(?![a-z]))")
+  #"(?i)(password|passwd|passphrase|pwd|secret|token|api[_-]?key|access[_-]?key|private[_-]?key|client[_-]?secret|credential|session[_-]?id|cookie|auth(?!ors?(?![a-z]))|(?<![a-z])pass(?![a-z]))")
 
 (def quote-pattern "(?:\\\\*[\"']|\\\\+u00(?:22|27)|&quot;|&#0*(?:34|39);|&#x0*(?:22|27);)")
 (def gap-pattern "(?:\\s|\\\\+[nrt])*")
@@ -50,41 +50,86 @@
 
 (def not-a-credential-name #"^(?:PWD|OLDPWD)$")
 (def flag-value #"(?i)true|false|yes|no|on|off|none|null|nil|enabled|disabled|0|1")
-(def setting-name #"(?i)tokens|count|limit|max|min|ttl|timeout|expir|interval|seconds|minutes|hours|days|size|port|bytes")
-(def short-value-length 8)
-;; The text before a value may be JSON-escaped: the n of \n and the hex of \u3048 are not part of a word.
-(def short-value-start "(?:(?<![A-Za-z0-9])|(?<=\\\\[nrtbf])|(?<=\\\\u[0-9a-fA-F]{4}))")
+;; Whole words of the name, at its ends: MINIO_ROOT_PASSWORD holds "min" and SUPPORT_SECRET holds "port".
+(def toggle-last-word #"(?i)enabled?|disabled?|required?|parallelism|rotation")
+(def toggle-first-word #"(?i)use|enable|disable|no|skip|require")
+(def counter-last-word #"(?i)tokens|count|limit|max|min|ttl|timeout|expiry|expires|interval|seconds|minutes|hours|days|age|size|port|bytes")
+
+(defn setting?
+  "The value and the name have to agree: PASSWORD=disabled is a password, AUTH_ENABLED=disabled is a setting."
+  [k v]
+  (let [words (remove str/blank? (str/split k #"[^A-Za-z0-9]+"))]
+    (cond
+      (empty? words) false
+      (re-matches flag-value v) (boolean (or (re-matches toggle-last-word (last words))
+                                             (re-matches toggle-first-word (first words))))
+      :else (boolean (and (re-matches #"\d+" v) (re-matches counter-last-word (last words)))))))
 
 (defn secret-value?
-  "Short values count too. A flag such as AUTH_ENABLED=true, or a number under a name such as
-  MAX_OUTPUT_TOKENS, is a setting; masking it would only blank ordinary words and numbers."
+  "Short values count too. Only a setting is left alone, since masking it would blank ordinary words and numbers."
   [k v]
   (and (string? v)
        (not (str/blank? v))
        (re-find secret-name-pattern k)
        (not (re-matches not-a-credential-name k))
-       (not (re-matches flag-value v))
-       (not (and (re-matches #"\d+" v) (re-find setting-name k)))))
+       (not (setting? k v))))
 
 (defn secret-values [env]
   (->> env
        (keep (fn [[k v]] (when (secret-value? (str k) v) v)))
+       ;; A value read from a file keeps its newline; the text shows it without.
+       (mapcat (fn [v] [v (str/trim v)]))
        distinct
        (sort-by count >)))
 
+(def control-escapes {10 "n" 13 "r" 9 "t" 8 "b" 12 "f"})
+(def html-names {38 "amp" 60 "lt" 62 "gt" 34 "quot" 39 "apos"})
+
+(defn encoded-char
+  "Every way serialized text can carry a character, letters and digits included. Escapes can repeat, since JSON can sit inside JSON
+  (bounded at 255 backslashes, depth 8, to keep the scan linear) and a URL can be encoded again (%2561, same depth)."
+  [code]
+  (let [ch (String. (Character/toChars (int code)))
+        literal (format "\\x{%x}" code)
+        units (if (< code 0x10000)
+                [code]
+                [(+ 0xD800 (bit-shift-right (- code 0x10000) 10)) (+ 0xDC00 (bit-and (- code 0x10000) 0x3FF))])
+        hex-forms (cond-> [(str/join (map #(format "\\\\{1,255}u%04x" %) units))
+                           (str/join (map #(format "%%(?:25){0,8}%02x" (bit-and (int %) 0xFF)) (.getBytes ch "UTF-8")))
+                           (format "&#0*%d;" code)
+                           (format "&#x0*%x;" code)]
+                    (< code 0x100) (conj (format "\\\\{1,255}x%02x" code))
+                    (html-names code) (conj (str "&" (html-names code) ";")))]
+    (str "(?:(?i:" (str/join "|" hex-forms) ")"
+         (if (and (< code 128) (re-matches #"[A-Za-z0-9]" ch))
+           ;; \n is a newline, not an n
+           (str "|" literal)
+           (str (when-let [letter (control-escapes code)] (str "|\\\\{1,255}" letter))
+                (when (= code 32) "|\\+")
+                "|\\\\{1,255}" literal "|" literal))
+         ")")))
+
+(defn code-points [s]
+  (loop [i 0 out []]
+    (if (< i (count s))
+      (let [code (Character/codePointAt ^String s (int i))]
+        (recur (+ i (Character/charCount (int code))) (conj out code)))
+      out)))
+
+(defn value-pattern
+  "Every position can start a value, so its first character is only tried at the start of a run of backslashes: the scan stays linear."
+  [value]
+  (let [[first-char & others] (map encoded-char (code-points value))]
+    (str/join (cons (str/replace first-char "\\\\{1,255}" "(?<!\\\\)\\\\+") others))))
+
 (def values-pattern
   "One alternation, longest first, so a later value cannot rewrite the mark of an earlier one.
-  A short value has to stand alone: inside a longer word it is most likely a coincidence."
+  Any length matches inside a longer word: the value can be part of it, and a blanked word costs less than a leak."
   (memoize
    (fn [values]
      (when (seq values)
        (re-pattern
-        (str/join "|" (map (fn [value]
-                             (let [quoted (java.util.regex.Pattern/quote value)]
-                               (if (< (count value) short-value-length)
-                                 (str short-value-start quoted "(?![A-Za-z0-9])")
-                                 quoted)))
-                           (sort-by count > values))))))))
+        (str/join "|" (map value-pattern (sort-by count > values))))))))
 
 (defn entropy-secret?
   "Ids such as run ids and UUIDs have only short hyphen-separated segments; a token has a
@@ -940,7 +985,8 @@
   "Returns :ok, :retry or :drop. A rejected payload will not succeed on a later attempt."
   [cfg body]
   (try
-    (let [client (http/client {:connect-timeout (:connect-timeout-ms cfg)})
+    ;; HTTP/1.1: the default sends `Upgrade: h2c`, and Langfuse closes such a connection unanswered.
+    (let [client (http/client {:connect-timeout (:connect-timeout-ms cfg) :version :http1.1})
           auth (.encodeToString (java.util.Base64/getEncoder)
                                 (.getBytes (str (:public-key cfg) ":" (:secret-key cfg)) "UTF-8"))
           res (http/post (str (:url cfg) "/api/public/otel/v1/traces")

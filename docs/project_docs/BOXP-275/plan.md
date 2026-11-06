@@ -33,7 +33,7 @@
 
 | collection | loader | 主なフィールド |
 | --- | --- | --- |
-| experience | glob `src/content/experience/*.md`（`_` 始まりは除外） | company, title, start, end, location, summary, linkedinSyncedAt |
+| experience | glob `src/content/experience/*.md`（`_` 始まりは除外） | company, title, start(YYYY or YYYY-MM), startQualifier(exact/by), end, location, summary, verifiedAt, sources[], linkedinSyncedAt(任意) |
 | skills | file `skills.json` | category, order, items[{name, evidence[]}] |
 | projects | file `projects.json` | repo, name, description, language, tags, lastUpdated, stars, archived |
 | articles | file `articles.json` | title, url, publishedAt, publisher, summary |
@@ -46,7 +46,7 @@ profile（名前・ハンドル・一言紹介・SNS リンク）は `src/conten
 | セクション | 転記元 | 取得日 | 状態 |
 | --- | --- | --- | --- |
 | プロフィール画像 | GitHub アバター https://avatars.githubusercontent.com/u/1819576?v=4 | 2026-10-23 | 完了（460x460 JPEG 原寸。`?s=1024` でも原寸以上は配信されない） |
-| 経歴（experience） | LinkedIn プロフィール https://www.linkedin.com/in/景太郎-竹内-98623b330/ （本人提供の PDF または Data export、vault `Projects/BOXP-275/linkedin/`） | URL は 2026-10-23 受領、本文は未取得 | **未着手**。LinkedIn はログイン壁（authwall）のため agent からは本文を取得できない。本人提供の PDF / テキスト受領後に転記し、`linkedinSyncedAt` に転記日を記録して本人レビューを受ける。それまでセクションは「準備中」+ LinkedIn リンク表示 |
+| 経歴（experience） | 本人 Medium @boxpketaro の公開記事（eureka-engineering publication）の自己紹介。LinkedIn は未ログインでは本文取得不可（迂回しない） | 2026-11-06 | 公開記事で裏付けのある 2 件（エウレカ: Web フロントエンドエンジニア 〜2023、SRE 2024〜現在）を掲載。入社年月は不明のため「2018 以前」表記。各エントリに出典 URL（`sources`）を持たせ画面にも表示。LinkedIn 本文/PDF を受領したら突き合わせて `linkedinSyncedAt` を記録 |
 | スキル（skills） | GitHub 公開リポジトリの言語・内容（`gh repo list boxp`） | 2026-10-23 | 暫定。LinkedIn の Skills と突き合わせて更新する |
 | プロジェクト（projects） | `gh repo list boxp --source --no-archived`（fork 除外）の pushedAt / description | 2026-10-23 | 完了 |
 | 記事（articles） | 本人 Medium プロフィール https://medium.com/@boxpketaro の RSS（`medium.com/feed/@boxpketaro`、author = BOXP(Keitaro Takeuchi)） | 2026-10-23 | 9 本すべて掲載（2018〜2025、公開先はいずれも eureka-engineering publication）。Lunar レビュー記事は Medium に無く公開 URL 未確認のため未掲載 |
@@ -57,7 +57,14 @@ profile（名前・ハンドル・一言紹介・SNS リンク）は `src/conten
 
 - 会社名・役職・期間（年月）・担当領域の要約（1〜3 行）のみ。
 - 年収・退職理由・社外秘になり得るプロジェクト名は載せない。
-- 公開情報から分かっている範囲（参考）: GitHub プロフィールの company は `@eure`、記事は eureka-engineering の Medium publication に掲載。これらは LinkedIn エクスポートで裏取りするまで experience には書かない。
+- 2026-11-06 本人依頼「経歴をなんとか探し出して埋めてほしい」により、LinkedIn 待ちをやめ、本人の公開記事など公開されている一次情報で裏付けのある範囲だけを掲載する方針に変更。根拠の無い年月・役職名・数字・学歴は書かず、期間は根拠の粒度（年）に合わせる。
+
+## 配色テーマ（2026-11-06）
+
+- 白ベース（light）が既定、dark パレットも提供。サイト上の「ライト / ダーク / システム」切替で明示選択したものを `localStorage` に保存し最優先。
+- 未選択（システム）では OS の `prefers-color-scheme: dark` のときだけ dark、それ以外は白。システムへ戻すと保存値を削除する。初回ロード時に何も保存しない。
+- `<head>` の inline script で描画前に `data-theme` を設定（ちらつき防止）。JS 無効時は CSS の media query で同じ判定をし、切替 UI は隠す。
+- lineage / architecture 図の本体、hitohako サイトは対象外。
 
 ## 作業手順
 
@@ -67,7 +74,8 @@ profile（名前・ハンドル・一言紹介・SNS リンク）は `src/conten
 4. [x] GitHub アバターをヒーローに採用、Medium プロフィール URL を `@boxpketaro` に修正、本人 Medium RSS で記事一覧を 9 本に更新
 5. [x] stage の Cloudflare Access（本人限定、pages.dev 含む）を `access.tf` に追加
 6. [ ] merge → tfaction apply → stage 再デプロイ → 未認証で拒否・pages.dev 直 URL も拒否されることを確認（本人ログインでの閲覧確認は本人作業）
-7. [ ] LinkedIn エクスポート提供後に experience / skills を転記し本人レビュー
+7. [x] 公開記事で裏付けのある経歴を experience に掲載（2026-11-06）。LinkedIn 本文受領時に突き合わせ
+10. [x] 白ベース既定 + ライト/ダーク/システム切替（2026-11-06）
 8. [ ] 本番切替 PR（`dns.tf` の CNAME を `cloudflare_pages_project.portfolio.subdomain` へ、`cloudflare_pages_domain` を b0xp.io / www.b0xp.io に追加、本番デプロイ step 追加）。旧 `shanghai` プロジェクトからカスタムドメインを外してから apply
 9. [ ] 後片付け: boxp/boxp プロフィール README のリンク確認、shanghai-next / boxp/b0xp.io の archive または README 誘導、旧 Pages プロジェクト `shanghai` の削除可否
 

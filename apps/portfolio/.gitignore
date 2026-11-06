@@ -23,3 +23,6 @@ pnpm-debug.log*
 # jetbrains setting folder
 .idea/
 .wrangler/
+
+# 全体図のサムネイル。portfolio 本番への掲載が未承認なので repo に入れない。誤って置いたときのコミット防止。
+public/diagrams/lolice-architecture.webp

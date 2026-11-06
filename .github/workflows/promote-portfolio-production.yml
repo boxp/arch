@@ -1,0 +1,130 @@
+name: Promote accepted portfolio to production
+
+# BOXP-442: Owner accepted stage 938fea18/aab1f765 and approved b0xp.io,
+# including both public diagram cards and the accepted architecture thumbnail.
+# Keep the existing production project/domains/DNS and all stage gates unchanged.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Inspect current production, promote the accepted site, or roll back
+        required: true
+        default: inspect
+        type: choice
+        options: [inspect, promote, rollback]
+      rollback_deployment_id:
+        description: Previously inspected production UUID (required for promote or rollback)
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: portfolio-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    if: github.repository == 'boxp/arch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # Reuse the existing main-only environment holding the accepted thumbnail.
+    # This does not change its policy or deploy to the stage Pages project.
+    environment: portfolio-stage-private
+    env:
+      OPERATION: ${{ inputs.operation }}
+      ROLLBACK_ID: ${{ inputs.rollback_deployment_id }}
+    steps:
+      - name: Inspect production and validate the restoration point
+        id: production
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          node <<'JS'
+          const fs = require('node:fs');
+          const assert = require('node:assert/strict');
+          const base = `https://api.cloudflare.com/client/v4/accounts/${process.env.CLOUDFLARE_ACCOUNT_ID}/pages/projects/shanghai`;
+          async function api(path, method = 'GET') {
+            const r = await fetch(base + path, {method, headers: {Authorization: `Bearer ${process.env.CLOUDFLARE_API_TOKEN}`, 'Content-Type': 'application/json'}, ...(method === 'POST' ? {body: '{}'} : {})});
+            const d = await r.json();
+            if (!r.ok || !d.success) throw new Error(`Cloudflare ${r.status}: ${JSON.stringify(d.errors)}`);
+            return d.result;
+          }
+          (async () => {
+            const p = await api('');
+            assert.ok(p.domains.includes('b0xp.io'), 'Existing project must own b0xp.io');
+            const current = p.canonical_deployment;
+            assert.equal(current.environment, 'production');
+            assert.equal(current.latest_stage.status, 'success');
+            const saved = {project: p.name, production_branch: p.production_branch, source_type: p.source?.type ?? 'direct-upload', deployment_id: current.id, url: current.url, commit: current.deployment_trigger?.metadata?.commit_hash, domains: p.domains};
+            console.log(JSON.stringify(saved, null, 2));
+            fs.appendFileSync(process.env.GITHUB_STEP_SUMMARY, `## Production before operation\n\n\`\`\`json\n${JSON.stringify(saved, null, 2)}\n\`\`\`\n`);
+            fs.appendFileSync(process.env.GITHUB_OUTPUT, `branch=${p.production_branch}\n`);
+            if (process.env.OPERATION === 'inspect') return;
+            assert.match(process.env.ROLLBACK_ID, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+            const restore = await api(`/deployments/${process.env.ROLLBACK_ID}`);
+            assert.equal(restore.environment, 'production');
+            assert.equal(restore.latest_stage.status, 'success');
+            if (process.env.OPERATION === 'promote') {
+              assert.equal(current.id, restore.id, 'Production changed since inspection; inspect again');
+            } else {
+              assert.equal(process.env.OPERATION, 'rollback');
+              const rolled = await api(`/deployments/${restore.id}/rollback`, 'POST');
+              console.log(`Restored deployment ${rolled.id}`);
+            }
+          })().catch(e => {console.error(e); process.exitCode = 1;});
+          JS
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: inputs.operation == 'promote'
+        with:
+          ref: 938fea18ace7d80f1ccc5e617ae6fa2fabcfdba0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        if: inputs.operation == 'promote'
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: apps/portfolio/package-lock.json
+      - name: Build accepted source with approved production visibility
+        if: inputs.operation == 'promote'
+        working-directory: apps/portfolio
+        env:
+          SITE_ENV: production
+          SITE_URL: https://b0xp.io
+          THUMBNAIL_B64_1: ${{ secrets.LOLICE_ARCHITECTURE_THUMBNAIL_B64 }}
+          THUMBNAIL_B64_2: ${{ secrets.LOLICE_ARCHITECTURE_THUMBNAIL_B64_2 }}
+        run: |
+          # The only overlay activates the already accepted second card for production.
+          # Fail closed if the immutable accepted source differs from this exact guard.
+          python3 <<'PY'
+          from pathlib import Path
+          p = Path('src/lib/diagrams.ts')
+          old = 'export const diagrams: Diagram[] = isStage ? [lineage, architecture] : [lineage];'
+          text = p.read_text()
+          assert text.count(old) == 1
+          p.write_text(text.replace(old, 'export const diagrams: Diagram[] = [lineage, architecture];').replace("import { isStage } from './site';\n", ''))
+          PY
+          npm ci
+          npm run build
+          test -n "$THUMBNAIL_B64_1"
+          printf '%s' "$THUMBNAIL_B64_1" "$THUMBNAIL_B64_2" | base64 -d > dist/diagrams/lolice-architecture.webp
+          # Match the exact accepted stage thumbnail; never publish a changed secret.
+          echo '9a080a742651e5e48a31db717f53f28a4ea56922daf39289b2e1827a32d7af51  dist/diagrams/lolice-architecture.webp' | sha256sum -c -
+          grep -q 'href="https://lolice-lineage.b0xp.io/"' dist/index.html
+          grep -q 'href="https://lolice-architecture.b0xp.io/"' dist/index.html
+          test -s dist/diagrams/lolice-lineage.webp
+          test ! -e dist/lineage.html
+          test ! -e dist/architecture.html
+          grep -q 'rel="canonical" href="https://b0xp.io/index.html"' dist/index.html
+          if grep -riE 'noindex|portfolio-stage|boxp-portfolio-stage' dist; then exit 1; fi
+          if grep -q 'Disallow: /' dist/robots.txt; then exit 1; fi
+      - name: Deploy to existing production Pages project
+        if: inputs.operation == 'promote'
+        working-directory: apps/portfolio
+        env:
+          PRODUCTION_BRANCH: ${{ steps.production.outputs.branch }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: npx wrangler pages deploy dist --project-name shanghai --branch "$PRODUCTION_BRANCH" --commit-hash 938fea18ace7d80f1ccc5e617ae6fa2fabcfdba0 --commit-dirty=true

@@ -87,6 +87,14 @@ resource "cloudflare_zero_trust_device_default_profile" "warp_include" {
       description = "kohako-g2 (Access Require Gateway)"
     },
     {
+      # BOXP-441: Kohako Studio reuses the kohako-g2 Owner policy (Require
+      # Gateway). Without this host the Owner device sent kohako-studio traffic
+      # outside WARP ("WARP off / Gateway off") and Access returned 403.
+      # Same shared-IP side effect as kohako-g2.b0xp.io above.
+      host        = "kohako-studio.b0xp.io"
+      description = "kohako-studio (Access Require Gateway)"
+    },
+    {
       # BOXP-328: Split Tunnels Include mode must also include the team domain
       # (<team>.cloudflareaccess.com) for device posture checks and client
       # sessions (Cloudflare docs: "Routes for Split Tunnels Include mode").

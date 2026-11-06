@@ -33,10 +33,9 @@ cd "$app_dir"
 if [ "$dry_run" = true ]; then
   outdir=$(mktemp -d)
   trap 'rm -rf "$outdir"' EXIT
-  npx wrangler deploy --dry-run --outdir "$outdir" --var ACCESS_AUD:dry-run
+  npx wrangler deploy --dry-run --outdir "$outdir"
 else
   : "${CLOUDFLARE_API_TOKEN:?CLOUDFLARE_API_TOKEN is required}"
   : "${CLOUDFLARE_ACCOUNT_ID:?CLOUDFLARE_ACCOUNT_ID is required}"
-  aud=$("$app_dir/scripts/access-aud.sh" lolice-architecture.b0xp.io)
-  npx wrangler deploy --var "ACCESS_AUD:$aud"
+  npx wrangler deploy
 fi

@@ -1,5 +1,7 @@
 # BOXP-369: 同一ticket・PRのゲート累積失敗10回で自動再試行を止める
 
+> 履歴資料: PR 個別上限による停止は BOXP-450 で廃止。現行仕様は [BOXP-450](../BOXP-450/plan.md) を参照。
+
 ## 背景
 
 BOXP-360 で、`task_board_runner.bb` の短期 retry 上限（`CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT`、既定 2）が
@@ -15,7 +17,7 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 | 数えない対象 | agent プロセス異常終了・idle timeout・planned shutdown などのインフラ中断（gate に到達しない）、non-retryable gate 失敗（すでに即 Blocked） |
 | 分類と根拠 | `class` = `ci-failure` / `review-findings` / `merge-state` / `result-unknown`（timeout 等）。根拠として `class-basis = gate=…; failure-kind=…` と派生 diagnostic category のみを記録。本文・stderr は記録しない |
 | 単位 | (1) ticket 単位 (2) 正規 PR 単位 `owner/repo#N`（小文字化）。どちらかが上限に達したら停止 |
-| 初期上限 | 10。`CODEX_TASK_BOARD_GATE_FAILURE_BUDGET` は **下げる方向のみ** 有効（10 超は 10 に丸め、最小 1） |
+| 初期上限 | BOXP-448 以降、ticket の基準は評価済み PR 数 N に応じ unit×max(1,N) となり、grant 以外でも増える。PR は unit のまま。unit は 10。`CODEX_TASK_BOARD_GATE_FAILURE_BUDGET` は **下げる方向のみ** 有効（10 超は 10 に丸め、最小 1） |
 | 停止 | used が limit に達した失敗（10 回目）で、短期上限が残っていても `in-progress` に戻さず Blocked + assignee boxp へ遷移。category=`gate-failure-budget-exhausted` |
 | 11 回目の防止 | 予算超過 ticket（ticket 自身、失敗歴のある PR、または ticket 本文/Notes が参照する PR のいずれか）は、カードや担当を戻しても `implement` / `review-fix` / `blocked-retry` の自動 run を開始しない（ログのみ）。PR URL は大文字小文字・scheme 有無を問わず抽出し正規化する |
 | 開始の直列化 | ticket lock 取得直後・lane/Notes 遷移前に、予算 lock 下で上限を再確認し `:reservations` に予約（ticket・run-id・対象 PR）を書く。別 ticket の生きた予約が同じ PR を持つ間はその run を開始しない（lock を戻すだけで状態変更なし）。予約の生存は「その ticket の lock が同じ run-id で stale でない」ことで判定し（heartbeat の書換と競合しないよう ticket lock guard 下で読み、存在する空 lock は生存扱い）、終了・クラッシュ・回収時の明示解放は不要 |
@@ -46,7 +48,7 @@ CI check 名が変わるたびに count が 1 に戻り、58 回連続で自動�
 
 `reason=` に以下を記載する（数値・gate 名・分類・派生 category・artifact パスのみ。本文や秘密は含めない）。
 
-- 上限: `ticket BOXP-N used/limit, PR owner/repo#N used/limit`
+- 上限: `ticket BOXP-N used/limit (PR数N=N×unit), PR owner/repo#N used/limit`
 - 直近: gate / 分類 / 分類根拠 / 未解決 category / 根拠 diagnostic パス
 - 実施済み: 自動修正 run 回数と分類別内訳
 - 必要判断: 方針決定と、上限到達した各スコープ（ticket / PR）それぞれへの `gate-budget-grant` コマンドによる明示再開

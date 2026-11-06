@@ -57,6 +57,12 @@ workflows:
         - 'docker/login-action@dbcb813823bdd20940b903addbd779551569679f'
         - 'docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302'
         - 'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069'
+    '.github/workflows/build-kohako-studio-image.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc'
+        - 'docker/login-action@dbcb813823bdd20940b903addbd779551569679f'
+        - 'docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302'
+        - 'docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069'
     '.github/workflows/build-llama-sycl-image.yml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc'
@@ -128,6 +134,9 @@ workflows:
         - 'actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093'
         - 'actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97'
         - 'aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329'
+    '.github/workflows/promote-portfolio-production.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1'
     '.github/workflows/release-module.yaml':
         - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
         - 'aquaproj/aqua-installer@82d0e83878a8657c4a6f2ff1755d3bfbfc67f329'
@@ -153,6 +162,9 @@ workflows:
         - 'aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd'
         - 'suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10'
         - 'tibdex/github-app-token@3beb63f4bd073e61482598c45c71c1019b59b73a'
+    '.github/workflows/schedule-infra-diagram-refresh.yml':
+        - 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+        - 'actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9'
     '.github/workflows/sync-drift-issue-description.yaml':
         - 'suzuki-shunsuke/tfaction@07a983968cbace490e9059103a7019a638c65e10'
     '.github/workflows/tailscale-wif-plan.yaml':

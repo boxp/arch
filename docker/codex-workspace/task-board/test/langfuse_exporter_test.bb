@@ -98,7 +98,7 @@
   (merge (lf/config {"CODEX_TASK_BOARD_ROOT" (str (fs/path base ".codex-task-board"))
                      "CLAUDE_HOME" (str (fs/path base ".claude"))
                      "CODEX_HOME" (str (fs/path base ".codex"))
-                     "LANGFUSE_PUBLIC_KEY" "pk" "LANGFUSE_SECRET_KEY" "sk"
+                     "LANGFUSE_PUBLIC_KEY" "fixture-ingest-public" "LANGFUSE_SECRET_KEY" "fixture-ingest-private"
                      "FIXTURE_TOKEN" s-env})
          {:batch-pause-ms 0}
          overrides))
@@ -655,6 +655,61 @@
           (is (some #(re-find #"subagent:|delegate" (:name %)) spans) "the child's span exists")
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
+(defn- nested-json [value depth ascii-only?]
+  (nth (iterate (fn [v] (let [out (json/generate-string v {:escape-non-ascii ascii-only?})]
+                          (subs out 1 (dec (count out)))))
+                value)
+       depth))
+
+(deftest value-is-masked-in-every-serialized-form
+  (let [env {"A_TOKEN" "ab\"1" "B_TOKEN" "q'z" "C_TOKEN" "l1\nl2" "D_TOKEN" "b\\s" "E_TOKEN" "é7"
+             "F_TOKEN" "😀k" "G_TOKEN" "s p/c" "H_TOKEN" "t\tu&v<w>" "LONG_PASSWORD" "long\"value\nwith\\all"}
+        values (lf/secret-values env)
+        html (fn [v] (-> v (str/replace "&" "&amp;") (str/replace "<" "&lt;") (str/replace ">" "&gt;")
+                         (str/replace "\"" "&quot;") (str/replace "'" "&#x27;")))
+        percent (fn [v] (-> (java.net.URLEncoder/encode v "UTF-8")))]
+    (doseq [value (vals env)]
+      (doseq [form (concat [value (html value) (percent value) (str/replace (percent value) "+" "%20")
+                            (str/replace value "/" "\\/")]
+                           (for [depth [1 2 3 4] ascii-only? [false true]] (nested-json value depth ascii-only?)))]
+        (is (= "answer [REDACTED:env] end" (:value (lf/redact (str "answer " form " end") values))) form)
+        (is (false? (lf/guard-safe? (str "answer " form " end") values)) form))
+      ;; What the review found: a structure goes through JSON before it reaches the mask.
+      (doseq [structure [{:k [value]} {:k {:n (str value "x")}}]]
+        (let [text (json/generate-string structure)
+              out (:value (lf/redact text values))]
+          (is (str/includes? out "[REDACTED:env]") text)
+          (is (not (str/includes? out (nested-json value 1 false))) text)
+          (is (false? (lf/guard-safe? text values)) text))))
+    (testing "a value read from a file keeps its newline; the text shows it without"
+      (is (= "answer [REDACTED:env]" (:value (lf/redact "answer zq7mw" (lf/secret-values {"FILE_TOKEN" "zq7mw\n"}))))))
+    (testing "neighbours of a value survive"
+      (is (= "ab\"2 ab 1" (:value (lf/redact "ab\"2 ab 1" (lf/secret-values {"A_TOKEN" "ab\"1"}))))))))
+
+(deftest alphanumerics-are-masked-when-encoded-by-code-point
+  (doseq [value ["abc" "aB7" "x\"9"]]
+    (let [codes (map int value)
+          values (lf/secret-values {"API_TOKEN" value})
+          each (fn [fmt cs] (str/join (map #(format fmt %) cs)))]
+      (doseq [form [(each "\\u%04x" codes) (each "\\u%04X" codes) (each "\\\\\\u%04x" codes) (each "\\x%02x" codes)
+                    (each "%%%02x" codes) (each "%%%02X" codes) (each "%%25%02x" codes) (each "%%2525%02x" codes)
+                    (each "&#%d;" codes) (each "&#x%x;" codes)
+                    (str (first value) (each "%%%02x" (rest codes)))
+                    (str (format "\\u%04x" (first codes)) (subs value 1))]]
+        (is (= "answer [REDACTED:env] end" (:value (lf/redact (str "answer " form " end") values))) form)
+        (is (false? (lf/guard-safe? (str "answer " form " end") values)) form))))
+  (testing "a long run of backslashes neither hides a value nor slows the scan down"
+    (let [values (lf/secret-values {"API_TOKEN" "abc" "B_TOKEN" "x\"y"})
+          run (str/join (repeat 300 "\\"))
+          started (System/currentTimeMillis)]
+      (is (= "[REDACTED:env]" (:value (lf/redact (str run "u0061\\u0062\\u0063") values))))
+      (is (= "[REDACTED:env]" (:value (lf/redact (str run "u0078\\\"y") values))))
+      (is (nil? (re-find (lf/values-pattern (vec values)) (str/join (repeat 100000 "\\")))))
+      (is (< (- (System/currentTimeMillis) started) 5000))))
+  (testing "case stays exact for the literal form, and other code points are left alone"
+    (let [text "ABC %61%62%64 \\u0061bd"]
+      (is (= text (:value (lf/redact text (lf/secret-values {"API_TOKEN" "abc"}))))))))
+
 (deftest short-and-passphrase-env-values-are-masked-without-their-name
   (let [short (str "ab" "1!")
         phrase (str "horse" "77")
@@ -674,8 +729,11 @@
       (doseq [text [(str "answer: " short) (str "答えは" short "です") (str "(" phrase ")") (str "user:" short "@host") (str "zq7") (str "pin 4821.") "{\"a\":\"x\\nzq7\"}" "{\"a\":\"\\u3048zq7\"}"]]
         (is (= [] (filter #(str/includes? (masked text) %) [short phrase "zq7" "4821"])) text)
         (is (str/includes? (masked text) "[REDACTED:env]") text)))
-    (testing "a short value inside a longer word stays, so ordinary text is readable"
-      (is (= "zq77 xzq7 horse777" (masked "zq77 xzq7 horse777"))))
+    (testing "a value can be part of a longer word, so it is masked there too"
+      (doseq [text ["zq77" "xzq7" "horse777" "abzq7cd"]]
+        (is (= [] (filter #(str/includes? (masked text) %) ["zq7" phrase])) text)
+        (is (str/includes? (masked text) "[REDACTED:env]") text)
+        (is (false? (lf/guard-safe? text values)) text)))
     (testing "flags, counters, working directories and authors are not credentials"
       (doseq [v ["true" "false" "1" "64000" "/tmp" "/" "boxp" "visible" ""]]
         (is (not-any? #{v} values) v))
@@ -685,6 +743,22 @@
     (testing "the final guard sees the value too"
       (is (false? (lf/guard-safe? (str "answer " short) values)))
       (is (true? (lf/guard-safe? "[REDACTED:env] done" ["env"]))))))
+
+(deftest a-value-counts-as-a-setting-only-under-a-setting-name
+  (let [credentials {"PASSWORD" (str "dis" "abled") "DB_PASSWORD" (str "tr" "ue") "AUTHORIZATION" (str "xy" "z9")
+                     "HTTP_AUTHORIZATION" (str "qw" "e8") "MINIO_ROOT_PASSWORD" (str "1234" "5678")
+                     "ADMIN_TOKEN" (str "48" "21") "SUPPORT_SECRET" (str "51" "50") "EXPORT_KEY_TOKEN" (str "77" "31")
+                     "AUTH_PORT" (str "hun" "ter2") "API_TOKENS" (str "tr" "ue2")}
+        settings {"AUTH_ENABLED" "disabled" "PASSWORD_REQUIRED" "false" "NO_AUTH" "true" "USE_TOKEN" "yes"
+                  "AUTH_TIMEOUT" "30" "TOKEN_TTL" "3600" "SESSION_COOKIE_MAX_AGE" "86400"
+                  "MAX_OUTPUT_TOKENS" "64000" "GIT_AUTHOR_NAME" "boxp" "AUTHORS" "boxp"}
+        values (lf/secret-values credentials)]
+    (doseq [[name value] credentials]
+      (is (lf/secret-value? name value) name)
+      (is (= "answer: [REDACTED:env] done" (:value (lf/redact (str "answer: " value " done") values))) name)
+      (is (false? (lf/guard-safe? (str "answer: " value " done") values)) name))
+    (doseq [[name value] settings]
+      (is (not (lf/secret-value? name value)) name))))
 
 (deftest later-tool-inputs-are-withheld
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
@@ -696,6 +770,13 @@
                      {:type "response_item" :payload {:type "function_call" :call_id "v" :name "TodoWrite" :arguments "{\"text\":\"plainconfigvalue\"}"}}])
             spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (concat lines extra))]
         (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))))))
+
+(deftest post-batch-does-not-request-h2c-upgrade
+  ;; Langfuse closes the connection on the JDK's default `Upgrade: h2c`, without any response.
+  (fs/with-temp-dir [base {}]
+    (with-server* (fn [req] {:status (if (get-in req [:headers "upgrade"]) 500 200)})
+      (fn [url _]
+        (is (= :ok (lf/post-batch (test-config base :url url) "{}")))))))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
