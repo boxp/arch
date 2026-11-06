@@ -38,7 +38,11 @@ try {
       assert.equal(await page.locator('a[href="https://lolice-lineage.b0xp.io/"]').count(), 1);
       const architecture = await page.locator('a[href="https://lolice-architecture.b0xp.io/"]').count();
       assert.equal(architecture, 1, 'Both accepted diagram cards must be public');
-      for (const img of await page.locator('img').all()) assert.ok(await img.evaluate(el => el.complete && el.naturalWidth > 0), `image failed: ${await img.getAttribute('src')}`);
+      for (const img of await page.locator('img').all()) {
+        // Lazy images load after entering the viewport, especially on mobile.
+        await img.scrollIntoViewIfNeeded();
+        await page.waitForFunction(src => Array.from(document.images).some(el => el.getAttribute('src') === src && el.complete && el.naturalWidth > 0), await img.getAttribute('src'));
+      }
       assert.deepEqual(errors, []);
       console.log(`${label}: OK`);
     } catch (e) { failed = true; console.error(`${label}:`, e); }
