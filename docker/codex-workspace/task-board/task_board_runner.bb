@@ -1748,7 +1748,8 @@
 ;; ticket and PRs the Owner excluded (`gate-budget-exclude-pr`).  Notes links
 ;; alone never count.  Grants without :kind predate BOXP-448 and only act as a
 ;; floor (no double counting with unit x N); new grants are :additive.  The
-;; per-PR limit stays unit + PR grants.  See docs/project_docs/BOXP-448/plan.md.
+;; BOXP-450: PR counts and historical limits are audit-only; only the ticket
+;; pool can stop a run. See docs/project_docs/BOXP-450/plan.md.
 
 (def gate-failure-budget-max 10)
 
@@ -1851,7 +1852,8 @@
         {:scope scope :key key :used used :limit limit :exhausted? (>= used limit)
          :scope-prs prs :n n :base base :legacy-granted legacy :additive-granted additive})
       (let [limit (+ unit (sum grants))]
-        {:scope scope :key key :used used :limit limit :exhausted? (>= used limit)}))))
+        {:scope scope :key key :used used :limit limit :exhausted? false
+         :legacy-limit-reached? (>= used limit)}))))
 
 (defn record-gate-pr-registrations! [ticket-id run-id gate-result]
   (with-gate-failure-budget-lock
@@ -1933,12 +1935,10 @@
        vec))
 
 (defn gate-budget-exhausted-in? [budget ticket-id pr-ids]
-  (boolean (some :exhausted? (cons (gate-budget-status budget :ticket ticket-id)
-                                   (map #(gate-budget-status budget :pr %) pr-ids)))))
+  (:exhausted? (gate-budget-status budget :ticket ticket-id)))
 
 (defn gate-budget-exhausted-for-ticket?
-  "True when the ticket's own cumulative budget, or that of any PR it has
-  failed on or that its text (body/Notes) references, is spent.  A cheap
+  "True when the ticket's own cumulative budget is spent. A cheap
   pre-check before taking the ticket lock; `reserve-gate-budget-run!` is the
   authoritative check.  `ticket-text` is the ticket file content (nil when
   unreadable)."
@@ -1973,8 +1973,7 @@
   lane/Notes transition.  Under the budget lock it re-checks exhaustion and
   serializes runs per PR: while another ticket's live run holds a PR this
   ticket references or has failed on, this run does not start.  Without that,
-  two tickets on the same PR could both pass the check near the limit and
-  keep failing after it is spent.  Returns true when the run may start."
+  two tickets could concurrently modify the same PR.  Returns true when the run may start."
   [ticket-id run-id ticket-text]
   (with-gate-failure-budget-lock
    (fn []
@@ -2010,9 +2009,9 @@
   (let [failures (->> (vals (:failures (read-gate-failure-budget)))
                       (filter #(= ticket-id (:ticket %))))
         by-class (frequencies (map :class failures))]
-    (str "ゲート累積失敗上限に到達したため自動再試行を停止しました。"
+    (str "ticket のゲート累積失敗上限に到達したため自動再試行を停止しました。"
          " 上限: "
-         (str/join ", " (map #(str (if (= :ticket (:scope %)) "ticket " "PR ")
+         (str/join ", " (map #(str (if (= :ticket (:scope %)) "ticket " "PR (旧上限・監査) ")
                                    (:key %) " " (:used %) "/" (:limit %)
                                    (when (= :ticket (:scope %))
                                      (str " (PR数N=" (:n %) "×" (gate-failure-budget-limit) ")")))
@@ -2023,12 +2022,12 @@
                 " (" (gate-failure-class-basis review-gate) ")"
                 (when-let [diagnostic (:diagnostic review-gate)]
                   (str " 未解決=" (:category diagnostic) " 根拠=" (:path diagnostic))))
-           (str "。 直近: 上限到達済みの ticket/PR が自動 run の対象になっていたため"
+           (str "。 直近: 上限到達済みの ticket が自動 run の対象になっていたため"
                 "（前回の停止遷移が未完了、またはカード/担当が戻された）、run を開始せず停止状態へ戻しました"))
          "。 実施済み: 自動修正run " (count failures) "回 ("
          (str/join ", " (map (fn [[k v]] (str k "=" v)) (sort by-class)))
          ")。 必要判断: 未解決指摘への方針を決め、続行する場合は Owner が"
-         " 上限到達した各スコープへ "
+         " ticket へ "
          (str/join " と " (map #(str "`task_board_runner.bb gate-budget-grant " (:key %)
                                       " --amount N --by <Owner>`")
                                (filter :exhausted? statuses)))
@@ -4202,7 +4201,7 @@
           "agent-reported-blocked" ["担当が Notes に記した判断点・必要入力" "Notes 記載の解消責任者" "解消後に担当を戻すと blocked-retry で再開"]
           "todo-gate-exhausted" ["未受領 TODO の確認と続行可否" "boxp" "担当を戻して再開"]
           "continuation-limit" ["自動継続上限の原因確認と続行可否" "boxp" "続行するなら Blocked のまま担当を戻す（blocked-retry で継続回数を再設定）"]
-          "gate-failure-budget-exhausted" ["Owner の gate-budget-grant" "boxp" "grant 後に担当を戻すと再開"]
+          "gate-failure-budget-exhausted" ["Owner の ticket gate-budget-grant" "boxp" "ticket grant 後に担当を戻すと再開"]
           ["参照先の run artifacts を確認し原因を解消" "boxp" "解消後に担当を戻すと blocked-retry で再開"])]
     (str "; needed-input=" needed "; resolver=" resolver "; next-action=" next-action)))
 
@@ -4409,8 +4408,7 @@
     (if (:consistent? revision) (append-note! ticket-id note) (log! note))))
 
 (defn stop-exhausted-ticket!
-  "BOXP-369: formal stop made outside a run.  The ticket (or a PR it failed on
-  or references) is over budget but the card is not Blocked: the runner died
+  "Formal stop made outside a run. The ticket is over budget but the card is not Blocked: the runner died
   between the 10th record and the Blocked transition, or the card/assignee was
   put back without a grant.  Logging alone would leave the card silently
   stuck, so take the ticket lock (no reservation, no run), write the Japanese
@@ -4436,9 +4434,7 @@
         (with-gate-failure-budget-lock
          (fn []
            (let [budget (read-gate-failure-budget)
-                 pr-ids (gate-budget-ticket-pr-ids budget ticket-id ticket-text)
-                 statuses (into [(gate-budget-status budget :ticket ticket-id)]
-                                (filter :exhausted? (map #(gate-budget-status budget :pr %) pr-ids)))
+                 statuses [(gate-budget-status budget :ticket ticket-id)]
                  ;; Re-read the card under the lock: a concurrent tick may have
                  ;; completed this stop already (Blocked + boxp has no candidate
                  ;; action), and the stale pre-lock status/assignee must not
@@ -5524,7 +5520,25 @@
         (swap! db assoc-in [:pr-registrations "BOXP-2|owner/repo#4" :registered-at] "0000")
         (record-gate-pr-registrations! "BOXP-1" "third" {:ok? false :url (url 3) :merged-pr-urls [(url 2) (url 4)]})
         (check "budget N=3 and earlier owner" (and (= 3 (:n (status))) (= 30 (:limit (status)))))
-        (check "PR limit independent" (= 10 (:limit (gate-budget-status @db :pr "owner/repo#1"))))
+        (check "PR legacy limit retained" (= 10 (:limit (gate-budget-status @db :pr "owner/repo#1"))))
+        ;; A pre-448 ledger with 17 PR failures and a legacy PR grant is read
+        ;; unchanged; its threshold cannot exhaust a ticket with a 20 pool.
+        (let [legacy {:failures (into {} (for [i (range 17)] [(str i) {:ticket "BOXP-1" :pr "owner/repo#1" :run-id (str i)}]))
+                      :grants [{:scope :pr :key "owner/repo#1" :amount 7}]
+                      :pr-registrations {"one" {:ticket "BOXP-1" :pr "owner/repo#1" :registered-at "1"}
+                                         "two" {:ticket "BOXP-1" :pr "owner/repo#2" :registered-at "1"}}}
+              pr (gate-budget-status legacy :pr "owner/repo#1")]
+          (check "legacy PR 17/17 remains audit-only" (and (= 17 (:used pr) (:limit pr)) (:legacy-limit-reached? pr)
+                                                            (not (:exhausted? pr))
+                                                            (= 20 (:limit (gate-budget-status legacy :ticket "BOXP-1")))
+                                                            (not (gate-budget-exhausted-in? legacy "BOXP-1" ["owner/repo#1"])))))
+        (let [before (count (:failures @db))
+              gate {:url (url 1) :gate :ci}]
+          (record-gate-failure-budget! "BOXP-1" "repeat" "agent" gate)
+          (let [recorded (:failures @db)]
+            (record-gate-failure-budget! "BOXP-1" "repeat" "agent" gate)
+            (check "same run is idempotent and preserves event" (and (= (inc before) (count (:failures @db)))
+                                                                       (= recorded (:failures @db))))))
         (with-redefs [gate-failure-budget-limit (constantly 2)]
           (check "tightened unit" (= 6 (:limit (status)))))
         (let [history (:failures @db)]

@@ -1,5 +1,7 @@
 # BOXP-448: 票失敗枠を実PR数×10へ共通実装
 
+> 履歴資料: PR 個別上限による停止は BOXP-450 で廃止。現行仕様は [BOXP-450](../BOXP-450/plan.md) を参照。
+
 ## 現状 (arch main 100784d8f / 配備版と同一を diff で確認)
 
 - `docker/codex-workspace/task-board/task_board_runner.bb`
