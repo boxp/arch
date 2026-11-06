@@ -11,7 +11,7 @@ const base = 'https://b0xp.io/';
 let failed = false;
 try {
   for (const [label, viewport] of [['PC', { width: 1280, height: 800 }], ['mobile', { width: 390, height: 844 }]]) {
-    const context = await browser.newContext({ viewport, colorScheme: 'light' });
+    const context = await browser.newContext({ viewport, colorScheme: 'light', isMobile: label === 'mobile', hasTouch: label === 'mobile' });
     const page = await context.newPage();
     const errors = [];
     page.on('pageerror', e => errors.push(e.message));
@@ -37,7 +37,7 @@ try {
       assert.equal(await trigger.getAttribute('aria-expanded'), 'false');
       assert.equal(await page.locator('a[href="https://lolice-lineage.b0xp.io/"]').count(), 1);
       const architecture = await page.locator('a[href="https://lolice-architecture.b0xp.io/"]').count();
-      console.log(`${label}: architecture card count=${architecture} (accepted production source expects 0; stage expects 1)`);
+      assert.equal(architecture, 1, 'Both accepted diagram cards must be public');
       for (const img of await page.locator('img').all()) assert.ok(await img.evaluate(el => el.complete && el.naturalWidth > 0), `image failed: ${await img.getAttribute('src')}`);
       assert.deepEqual(errors, []);
       console.log(`${label}: OK`);

@@ -14,11 +14,14 @@
 - Enter / Space、上下矢印、Home / End、Escape、Tab、選択後のフォーカス復帰、外側のボタンクリック時のフォーカス、モバイルのタップを確認。ライト・ダークの保存と再読み込み、システム選択による保存削除と OS 配色変更への追従を確認。
 - localStorage が例外を投げる場合も選択可能。JavaScript 無効時は UI が非表示で、OS の dark 設定が CSS に反映されることを確認。
 - Lighthouse はローカルでは未計測。PR の既存 CI で確認する。
-# BOXP-442: portfolio production promotion
 
-- Accepted stage: commit `938fea18ace7d80f1ccc5e617ae6fa2fabcfdba0` (PR #14505, stage Pages deployment `aab1f765`, Actions run 42149962617). Its `apps/portfolio` tree is `20bd35550635deb9cf8c6c2e7244c50a8c82885e`; fetched main was the same commit at investigation time.
-- b0xp.io is served by existing Pages project `shanghai` (`shanghai-4t4.pages.dev`); `boxp-portfolio` has no production domain. Keep DNS, domains, Access, stage and other sites unchanged.
-- Introduce a separate manually dispatched workflow, fixed to the accepted commit and production build settings, targeting `shanghai`. Never automatically deploy on merge. Preserve the production build's existing public-only diagram policy: lineage is included; architecture and its private thumbnail are excluded. The two-link stage experience cannot be produced by this unchanged production build. Do not use stage secrets in production.
-- Before running: confirm the current production deployment UUID and provider rollback support, project production branch, API token permissions and whether this project accepts direct uploads. Configure `portfolio-production` GitHub environment with appropriate required reviewers and main-only deployment policy before enabling the workflow. Provider failures must not be bypassed. A syntactically valid UUID input is an audit record, not proof the deployment exists or is rollback-capable.
-- After PR gates and merge, the owner may run `gh workflow run promote-portfolio-production.yml --ref main -f rollback_deployment_id=<UUID>` and monitor `gh run watch <run-id>`. Record the new Pages deployment ID. Verify b0xp.io using the prepared live Playwright checks. Roll back via Cloudflare Pages `shanghai` production deployment history: select the recorded previous successful production deployment and use Rollback to this deployment; verify b0xp.io again. This requires confirming provider capability and credentials before promotion.
-- Risk: the existing Pages project may be Git-integrated and reject direct uploads. A rejected deployment is a stop condition. Do not modify DNS, Access or provider settings to work around it.
+## 本番昇格（Owner承認後）
+
+- Ownerの「概ねよい」をstageの概括的受入として記録。個別項目をOwnerが確認したとは扱わない。本番反映・両図カードと受入済みサムネイルの公開はTD-01で明示承認済み。
+- 対象はPR #14505のmerge `938fea18ace7d80f1ccc5e617ae6fa2fabcfdba0`、stage配備 `aab1f765`（run 42149962617）。apps/portfolio tree `20bd35550635deb9cf8c6c2e7244c50a8c82885e`。調査時mainも同commit。
+- 既存本番b0xp.ioのPagesプロジェクトshanghaiへ正規wrangler経路で手動配備する。DNS/domain/Access/stage/他siteの変更は行わない。将来用boxp-portfolioへのドメイン移行は不要。
+- 手動workflowは既定inspect（read-only）で現在の本番deployment UUID・production branch・復元先の成功状態を記録。promote時は記録したUUIDと現在の本番の一致を必須とし、更新競合を拒否する。rollback操作は同projectの成功したproduction deploymentだけを指定可能。
+- 固定commitをcheckoutし、唯一のoverlayで既存architectureカードのproduction表示制約を解除する。デザイン・経歴・図本体の変更はない。production URL/SEOは本番設定でbuildしstageバナー/noindexを含めない。
+- 既存main限定environment portfolio-stage-privateのgateとsecretをそのまま利用。stageへ配備しない。受入済みサムネイルをdistへ復元し、stage runのSHA256 `9a080a742651e5e48a31db717f53f28a4ea56922daf39289b2e1827a32d7af51`に一致しない場合は拒否。原資料やdistのartifact公開はしない。
+- PRの現headに対するCI/P0P1 review・ruleset・最新TODOを確認後merge。inspect→promote→公開実URLをChromiumのPC/mobileで検証する。重大回帰時は記録した旧正常版へ限定rollbackし実URLを再検証する。
+- コマンド: `gh workflow run promote-portfolio-production.yml --ref main -f operation=inspect`、その後 `-f operation=promote -f rollback_deployment_id=<inspectのUUID>`。復元は `-f operation=rollback -f rollback_deployment_id=<旧UUID>`。providerの拒否は迂回しない。
