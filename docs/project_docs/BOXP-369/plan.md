@@ -1,5 +1,7 @@
 # BOXP-369: 同一ticket・PRのゲート累積失敗10回で自動再試行を止める
 
+> 履歴資料: PR 個別上限による停止は BOXP-450 で廃止。現行仕様は [BOXP-450](../BOXP-450/plan.md) を参照。
+
 ## 背景
 
 BOXP-360 で、`task_board_runner.bb` の短期 retry 上限（`CODEX_TASK_BOARD_PR_GATE_RETRY_LIMIT`、既定 2）が
