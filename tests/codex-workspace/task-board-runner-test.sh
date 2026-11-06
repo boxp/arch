@@ -4700,7 +4700,12 @@ test_assignment_repairs() {
   PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
   assert_file_contains "${tmp}/tick" 'the card write was lost, repairing the card from ticket rev=.* for BOXP-992|BOXP-992; the card write was lost'
   assert_file_contains "${tmp}/starts" BOXP-992
-  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${new}"
+  # The dispatched run's terminal transition issues a fresh revision on both
+  # the card and the ticket, so the repaired stale revision is gone.
+  rev1="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-992.md")"
+  [[ -n "${rev1}" && "${rev1}" != "${old}" ]] || fail "stale ticket revision after repair: ${rev1}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${rev1}"
+  assert_file_not_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${old}"
   # A newer card whose ticket never arrives: after the warn window the ticket frontmatter is repaired from the card.
   rm -rf "${vault}" "${state}" "${tmp}/starts"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::codex rev::${new}"
@@ -4708,10 +4713,13 @@ test_assignment_repairs() {
   sed -i "s/^type: task$/type: task\nboard_rev: ${old}/" "${vault}/Tickets/BOXP-993.md"
   PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
   assert_file_contains "${tmp}/tick" 'WARN: assignment revision mismatch persisted for BOXP-993'
-  assert_file_contains "${vault}/Tickets/BOXP-993.md" "^board_rev: ${new}$"
   # The repaired ticket carries the card's assignee, so the same tick dispatches it.
   assert_file_contains "${tmp}/tick" 'processing BOXP-993 from In Progress'
   assert_file_contains "${tmp}/starts" BOXP-993
+  # The dispatched run's terminal transition then issues a fresh revision to both.
+  rev1="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-993.md")"
+  [[ -n "${rev1}" && "${rev1}" != "${old}" ]] || fail "stale ticket revision after repair: ${rev1}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-993.*rev::${rev1}"
   # Notes and text edits keep the revision; only a lane or assignee change issues a new one.
   rm -rf "${vault}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-994|BOXP-994: test]] #ticket status::in-progress assignee::boxp'
@@ -5025,6 +5033,74 @@ test_todo_existing_holds_win() {
       assert_run_summary_contains "${state}" BOXP-989 ':idle-timeout\? true'
     fi
   done
+}
+
+test_terminal_revision_lww_and_duplicates() {
+  local tmp vault state bin mode rev before variant
+  # norev: a legacy card without rev:: before the terminal stamp must not be
+  # projected back either when the old Board copy is restored.
+  for variant in rev norev; do
+  for mode in blocked done; do
+    tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+    mkdir -p "${bin}"; make_fake_codex "${bin}"
+    if [[ "${variant}" == rev ]]; then
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex rev::old'
+      write_ticket "${vault}" BOXP-991 in-progress codex
+      sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-991.md"
+    else
+      write_board "${vault}" '- [ ] [[Tickets/BOXP-991|BOXP-991: test]] #ticket status::in-progress assignee::codex'
+      write_ticket "${vault}" BOXP-991 in-progress codex
+    fi
+    cp "${vault}/Boards/Task Board.md" "${tmp}/old"
+    PATH="${bin}:$PATH" CODEX_FAKE_MESSAGE="TASK_BOARD_RESULT: ${mode}" run_tick "${vault}" "${state}" env >"${tmp}/run"
+    assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+    rev="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-991.md")"
+    [[ "$rev" != old && "$rev" =~ ^[a-z0-9]+-[0-9a-f]{4}$ ]] || fail 'missing fresh revision'
+    assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev}"
+    assert_run_summary_contains "${state}" BOXP-991 ':status :(blocked|succeeded)'
+    cp "${tmp}/old" "${vault}/Boards/Task Board.md"
+    for _ in 1 2 3; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/held-starts" CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >>"${tmp}/sync"; done
+    assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+    [[ ! -e "${tmp}/held-starts" ]] || fail 'restored card dispatched'
+    if [[ "${variant}" == rev ]]; then
+      assert_file_contains "${vault}/Boards/Task Board.md" "status::${mode}.*rev::${rev}"
+    else
+      # The pre-transition rev-less line is indistinguishable from a user who
+      # rebuilt it by hand: it is held (no projection / dispatch) but never
+      # rewritten, so a hand-made re-request is not reverted to ${mode}.
+      cmp -s "${tmp}/old" "${vault}/Boards/Task Board.md" || fail 'held rev-less card was rewritten'
+      assert_file_contains "${tmp}/sync" "WARN: BOXP-991 card equals the pre-transition rev-less line"
+      # A re-request moves the same rev-less line to another lane (here Ready,
+      # e.g. edited on a replica that still showed the old Board). It differs
+      # from the pre-transition Board and must be followed, not reverted.
+      sed -n '/BOXP-991/p' "${tmp}/old" >"${tmp}/line"
+      write_board "${vault}" ''
+      sed -i "/^## Ready/r ${tmp}/line" "${vault}/Boards/Task Board.md"
+      for _ in 1 2; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >"${tmp}/rerequest"; done
+      assert_file_not_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+      assert_file_not_contains "${vault}/Boards/Task Board.md" "BOXP-991.*status::${mode}"
+    fi
+  done
+  done
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-990|BOXP-990: test]] #ticket status::in-progress assignee::codex rev::old'
+  write_ticket "${vault}" BOXP-990 in-progress codex
+  sed -i '/^status:/a board_rev: old' "${vault}/Tickets/BOXP-990.md"
+  PATH="${bin}:$PATH" CODEX_TASK_BOARD_TEST_FORCE_POST_COMMIT_EXCEPTION=true CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: done' run_tick "${vault}" "${state}" env >"${tmp}/exception"
+  assert_run_summary_contains "${state}" BOXP-990 ':status :blocked'
+  tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"
+  mkdir -p "${bin}"; make_fake_codex "${bin}"
+  write_board "${vault}" '- [ ] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::in-progress assignee::codex rev::old'
+  sed -i '/^## Done/a\\n- [x] [[Tickets/BOXP-992|BOXP-992: test]] #ticket status::done assignee::boxp rev::old done::2026-01-01' "${vault}/Boards/Task Board.md"
+  write_ticket "${vault}" BOXP-992 in-progress codex
+  before="$(sha256sum "${vault}/Tickets/BOXP-992.md") $(stat -c %Y "${vault}/Tickets/BOXP-992.md")"
+  for _ in 1 2; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env >"${tmp}/duplicate"; done
+  [[ "$before" == "$(sha256sum "${vault}/Tickets/BOXP-992.md") $(stat -c %Y "${vault}/Tickets/BOXP-992.md")" && ! -e "${tmp}/starts" ]] || fail 'duplicate projected or dispatched'
+  if CODEX_TASK_BOARD_VAULT="${vault}" CODEX_TASK_BOARD_ROOT="${state}" TEST_RUNNER="${RUNNER}" bb -e '(System/setProperty "babashka.file" "/tmp/load-runner.bb") (load-file (System/getenv "TEST_RUNNER")) (move-card! "BOXP-992" "done")' >"${tmp}/move" 2>&1; then
+    fail 'duplicate move succeeded'
+  fi
+  assert_file_contains "${tmp}/move" 'duplicate board cards for BOXP-992'
 }
 
 # Every invocation is recorded in the checked-in baseline. Each CI shard runs a

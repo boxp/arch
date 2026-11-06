@@ -127,7 +127,7 @@ Preview a control request (dry-run only):
 
 `reconcile-done BOXP-433` は、sourceの最新runがsucceeded/doneでclaimがなく、票がdone/boxpである場合だけ使えます。既存Doneカードと日付を保持し、同じtitle/repo/rev/priorityのIn Progress/claude-opusカードを1枚だけ除きます。通常のupdateの重複拒否は維持します。他のIDや一般的な状態変更には使えません。
 
-**配備条件**: source runnerと同じUID・実source volume・同じvaultで実行します。runnerと全helper writerが同じ実ファイルの`TASK_BOARD_VAULT_WRITER_LOCK_DIR/vault-writer.lock`を使うことを配備設定と実プロセスから確認してください。未設定時は拒否します。このコマンドだけに任意のlock dirを設定しても排他の証明にはなりません。Hermesの別replicaからsource lockを使えるとは仮定しません。shared lockの配備が未確認ならapplyしないでください。root、symlink、異なるUIDのpathも拒否します。
+**配備条件**: source runnerと同じUID・実source volume・同じvaultで実行します。root、symlink、異なるUIDのpathを拒否し、source-rootはvault外に置きます。`TASK_BOARD_VAULT_WRITER_LOCK_DIR`設定時は共有writer lockも取得し、未設定時は取得しません。source guard、Boardとticketのファイルロック、各ハッシュ期待値の検証は両モードで維持します。atomic move直前にBoardがプレビュー時と同一であることを再確認し、変更前の正確なBoardをsource-rootの`repair-backups`に0600で保存・fsync・ハッシュ検証します。置換は`mv --exchange`(renameat2 RENAME_EXCHANGE)で行い、置き換えられた実ファイルを保持して既定1秒(`CODEX_TASK_BOARD_RECONCILE_SETTLE_MS`)後にプレビュー時の内容と照合します。最終確認後にrunnerやSyncが書き込んでいた場合はその内容をBoardへ戻し、各版を`repair-backups`へ保存してconflictを監査記録し非0で停止します（並行書き込みを黙って上書きしません）。置換後も読み戻して照合します。置換用ファイルは最初からvault内`.task-board-repair-retained/`に作り、交換の前に監査へ`:retain-pending`（パスと許容ハッシュ=置換後/置換前）を記録するため、交換で外れた旧Board inodeは削除されず常に追跡済みのパスに残ります（交換直後にプロセスが強制終了しても未追跡になりません）。完了時は`:retained`で最終ハッシュを、交換しなかった場合は`:retain-cancelled`を記録します。交換を中断したpending記録は以後の実行で許容ハッシュとの一致と書込みfd保持者が無いことを確認し、不一致なら`interrupted repair`で非0終了します。交換前に旧Boardを開いていたwriterへの対策として、成功を返す前に保持inodeへ書込み用fdを持つプロセスが無くなるまで最大30秒(`CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS`)待ってから内容を再照合します。判定はカーネルのread lease(`fcntl F_SETLEASE F_RDLCK`、`python3`で取得)で行い、UIDやnon-dumpableで`/proc`からfd表を隠されたプロセスの書込みfdも検出します。leaseが使えない環境（python3無し・非対応FS等）では`/proc`走査（同一UIDとroot(UID 0は権限に関係なく書込可能なため常に対象)、旧inodeがgroup/other書込可能なら全UID）で判定し、fd表を検査できないプロセスは保持中とみなします(fail-closed)。保持中プロセスはpid(comm)で報告します。待機後も開かれている、または遅延書込みがあった場合は、旧inodeを交換で再びBoardへ戻し（writerの更新・以後の書込みが実Boardへ届く）、各版を保存してconflictを監査記録し非0終了します。この戻し交換の直前にBoardが別writerに更新されていた場合も、交換で外れたその内容を`repair-backups`の`*-restore-raced.md`へ保存しconflictメッセージにパスを含めます（黙って失いません）。同一ホストから見えないwriter（別pod等）向けの残余対策として、以後のreconcile-done実行（dry-run含む）は保持ファイルを全件照合し、変化や欠落があれば`late concurrent write detected`等で非0終了するため、apply後は時間を置いてdry-runで読み戻し、検出時は保持ファイルの内容を手動でBoardへ統合してください。共有writer lock未設定時は、交換前に旧Boardを開いた別pod/別ホストのwriterも検出できることを前提条件として確認し、満たさなければBoardに触れず拒否します：Boardのファイルシステムが単一カーネルからのみ到達できるローカル種別（ext2/ext3・ext4・xfs・btrfs・tmpfs・overlayfs・zfs・f2fs・ramfs。RWOブロックボリュームは単一ノードにしか接続されず、同一ノードの別podは同じカーネルのleaseで検出可能）であり、かつカーネルleaseが利用可能であること。nfs・cifs・ceph・fuse等の共有/ネットワークFSや未知の種別（`may be shared with other hosts`）、lease不可（`kernel write lease unavailable`、/proc走査は自PID名前空間しか見えないため）は共有writer lockを必須とします。`mv --exchange`が使えない環境では、共有writer lock設定時のみ通常のatomic moveを使い、未設定なら拒否します。pod間の原子的書き込みは保証せず、検出・正本保全・回復で扱います。結果の`writer-lock`でモードを確認できます。
 
 ```bash
 # 全writerと同一の既存lock domainを継承した環境で実行する。
@@ -136,7 +136,7 @@ bb "$TASK_BOARD_HELPER" reconcile-done BOXP-433 \
   --dry-run --json > /tmp/BOXP-433-repair-preview.json
 ```
 
-dry-runは候補行・保持/除去理由となる属性、source-run、rev、ticket/board/after-board/source/helperのSHA-256を出します。vault/sourceにファイルを作らず、既存source guardとwriter lockを取得します。applyは`--dry-run`を外し、`--confirm`と、プレビュー値をそのまま渡す次の全引数が必要です。
+dry-runは候補行・保持/除去理由となる属性、source-run、rev、ticket/board/after-board/source/helperのSHA-256を出します。vault/sourceにファイルを作らず、既存source guardと、設定されていればwriter lockを取得します。applyは`--dry-run`を外し、`--confirm`と、プレビュー値をそのまま渡す次の全引数が必要です。
 
 - `--expected-rev`
 - `--expected-ticket-sha256`
