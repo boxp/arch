@@ -9,7 +9,12 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   const label = document.createElement('label'); label.htmlFor = select.id; label.textContent = '試作の選択 '
   const all = [...rigModels.filter(m => includeSample || m.id !== 'sample'), ...lostPrototypes]
   all.sort((a, b) => {
-    const number = (id: string) => id === 'kohako' ? 0 : id === 'sample' ? 99 : Number(id.split('v').pop())
+    const number = (id: string) => {
+      if (id === 'kohako') return 0
+      if (id === 'sample') return 99
+      const match = id.match(/v(\d+)([a-z])?$/)
+      return match ? Number(match[1]) + (match[2] ? (match[2].charCodeAt(0) - 96) / 100 : 0) : 98
+    }
     return number(a.id) - number(b.id)
   })
   for (const item of all) {
@@ -25,7 +30,7 @@ export function setupSelector(container: HTMLElement, includeSample: boolean): b
   details.textContent = `${select.selectedOptions[0]?.textContent} — ${selected.evaluation}。問題: ${selected.problems} 最新の試作は ${LATEST_MODEL_ID.replace('kohako-', '')}（担当評価は選択欄を参照）です。`
   container.append(label, select, details)
   if (model.id === LATEST_MODEL_ID && !lost) {
-    const link = document.createElement('a'); link.href = './kohako/live2d/compare/kohako-v13-hair-shift-web.png'; link.textContent = '髪のずれ 修正前後の比較（実ブラウザ）'; const link2 = document.createElement('a'); link2.href = './kohako/live2d/compare/kohako-v13-compare-hair.png'; link2.textContent = '静止・角度別の比較'; container.append(link, ' ／ ', link2)
+    const link = document.createElement('a'); link.href = './kohako/live2d/compare/kohako-v13-hair-shift-web.png'; link.textContent = '髪のずれ 修正前後の比較（実ブラウザ）'; const link2 = document.createElement('a'); link2.href = './kohako/live2d/compare/kohako-v14-compare-hair.jpg'; link2.textContent = 'v13・v14 静止／角度別の比較'; const mask = document.createElement('a'); mask.href = './kohako/live2d/compare/kohako-v14-exposure-mask.jpg'; mask.textContent = '後ろ髪の露出領域'; const shake = document.createElement('a'); shake.href = './kohako/live2d/compare/kohako-v14-shake.gif'; shake.textContent = '首振りの静止3点を往復'; container.append(link, ' ／ ', link2, ' ／ ', mask, ' ／ ', shake)
   }
   if (lost) {
     const note = document.createElement('p'); note.textContent = 'p2lrt は作業ディレクトリ消失により未保存・再現不能です。比較画像を表示します。'; container.append(note)
