@@ -4894,7 +4894,7 @@
 ;; ---------------------------------------------------------------------------
 
 (def default-workspace-retention-days 3)
-(def default-workspace-prune-interval-seconds 21600)
+(def default-workspace-prune-interval-seconds 3600)
 (def max-unpushed-commits-per-checkout 200)
 
 (defn parse-prune-enabled [value]
@@ -4938,6 +4938,13 @@
   (prune-setting "CODEX_TASK_BOARD_WORKSPACE_PRUNE_INTERVAL_SECONDS"
                  #(parse-bounded-long % default-workspace-prune-interval-seconds 1)))
 
+(defn stale-prune-enabled? []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_STALE_PRUNE" parse-prune-enabled))
+(defn stale-retention-hours []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_STALE_RUN_RETENTION_HOURS" #(parse-bounded-long % 12 1)))
+(defn keep-latest-runs []
+  (prune-setting "CODEX_TASK_BOARD_WORKSPACE_KEEP_LATEST_RUNS" #(parse-bounded-long % 2 1)))
+
 (defn workspaces-dir []
   (fs/path (root) "workspaces"))
 
@@ -4951,6 +4958,60 @@
       (.toInstant (java.time.LocalDateTime/parse timestamp run-id-timestamp-formatter)
                   java.time.ZoneOffset/UTC)
       (catch Exception _ nil))))
+
+(defn stale-run-decision [run-id run-ids now-instant hours keep-latest]
+  (let [started (run-id-instant run-id)
+        ;; Unknown timestamps consume slots, but the newest known run is always protected.
+        unknown (count (remove run-id-instant run-ids))
+        protected (set (take (max 1 (- keep-latest unknown))
+                             (sort-by (juxt run-id-instant str) #(compare %2 %1)
+                                      (filter run-id-instant run-ids))))]
+    (cond
+      (nil? started) {:eligible? false :reason "run-id-timestamp-unparseable"}
+      (contains? protected run-id) {:eligible? false :reason "latest-run"}
+      (not (.isBefore started (.minus now-instant (java.time.Duration/ofHours hours))))
+      {:eligible? false :reason "within-stale-retention"}
+      :else {:eligible? true})))
+
+(declare command-result one-line child-directories)
+
+(def regenerable-components
+  #{"node_modules" ".terraform" ".cpcache" "__pycache__" ".pytest_cache"
+    ".mypy_cache" ".ruff_cache" ".venv" ".next" ".turbo" ".gradle"
+    "target" ".shadow-cljs" ".eslintcache"})
+(defn ignored-allowed? [path]
+  (let [parts (str/split path #"/")]
+    (or (some regenerable-components parts)
+        (some #{[".clj-kondo" ".cache"] [".lsp" ".cache"]} (partition 2 1 parts)))))
+
+(defn inspect-ignored [checkout]
+  ;; NUL output avoids ambiguity from quoted names and embedded newlines.
+  (let [result (command-result ["git" "-C" (str checkout) "status" "--porcelain" "-z" "--ignored=matching"])]
+    (if-not (zero? (:exit result))
+      "git-error"
+      (some (fn [entry]
+              (when (str/starts-with? entry "!! ")
+                (let [path (subs entry 3)]
+                  (when-not (ignored-allowed? path) (str "ignored-unknown path=" (one-line path))))))
+            (str/split (:out result) #"\u0000")))))
+
+(defn stale-process-hold [run-real]
+  ;; Missing /proc or mountinfo is treated as no mount information; readable
+  ;; process cwd links are still checked when available.
+  (let [inside? (fn [path] (try (fs/starts-with? (fs/path path) run-real) (catch Exception _ false)))
+        mountinfo (try (slurp "/proc/self/mountinfo") (catch Exception _ ""))
+        mounts (map #(nth (str/split % #" ") 4 "") (str/split-lines mountinfo))
+        unescape (fn [s] (str/replace s #"\\([0-7]{3})" (fn [[_ oct]] (str (char (Integer/parseInt oct 8))))))]
+    (cond
+      (some #(inside? (unescape %)) mounts) "mount-present"
+      (try
+        (some (fn [entry]
+                (when (re-matches #"[0-9]+" (fs/file-name entry))
+                  (try (inside? (str (fs/real-path (fs/path entry "cwd"))))
+                       (catch Exception _ false))))
+              (fs/list-dir "/proc"))
+        (catch Exception _ false)) "process-active"
+      :else nil)))
 
 (defn parse-closed-date [value]
   (try
@@ -5211,6 +5272,7 @@
       ;; The board lane is the source of truth and frontmatter only follows at
       ;; the next sync, so a card moved out of Done wins over `status: done`.
       ;; Tickets without a card are judged by frontmatter alone.
+      (nil? (ticket-frontmatter-or-nil ticket-id)) {:eligible? false :reason "ticket-missing"}
       (some #(not= "Done" %) card-lanes) {:eligible? false :reason "not-done"}
       :else (prune-ticket-decision (ticket-frontmatter-or-nil ticket-id) today-date retention-days))))
 
@@ -5220,12 +5282,16 @@
   [{:keys [dry-run? now-instant retention-days gh-cache planned] :as ctx} ticket-id run-id]
   (let [run-path (run-workspace-dir ticket-id run-id)
         ticket (prune-ticket-status ctx ticket-id)
-        run (prune-run-decision run-id now-instant retention-days)
+        mode (if (:eligible? ticket) :done :stale)
+        stale? (and (stale-prune-enabled?) (contains? #{"not-done" "within-retention"} (:reason ticket)))
+        run-ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
+        run (if (= mode :done) (prune-run-decision run-id now-instant retention-days)
+                (stale-run-decision run-id run-ids now-instant (stale-retention-hours) (keep-latest-runs)))
         hold (fn [reason] {:result :held :reason reason})]
     (cond
       (not (fs/exists? run-path {:nofollow-links true})) {:result :gone}
-      (not (:eligible? ticket)) {:result :ticket-skipped :reason (:reason ticket)}
-      (= "within-retention" (:reason run)) {:result :recent}
+      (and (not (:eligible? ticket)) (not stale?)) {:result :ticket-skipped :reason (:reason ticket)}
+      (contains? #{"within-retention" "within-stale-retention" "latest-run"} (:reason run)) {:result :recent}
       (not (:eligible? run)) (hold (:reason run))
       (not (safe-run-workspace-path? ticket-id run-id run-path)) (hold "unsafe-path")
       :else
@@ -5234,6 +5300,9 @@
                               (assoc (inspect-checkout run-real checkout gh-cache) :path checkout))
                             (find-checkouts run-path))
             held (first (filter :hold checkouts))
+            stale-hold (when (= mode :stale)
+                         (or (stale-process-hold run-real)
+                             (some #(inspect-ignored (:path %)) checkouts)))
             branch (ticket-worktree-branch ticket-id run-id)
             branch-repos (distinct (keep (fn [{:keys [external-common-dir repo]}]
                                            (when external-common-dir
@@ -5246,15 +5315,22 @@
           held
           (hold (str (:hold held) " checkout=" (fs/relativize run-path (:path held))))
 
+          stale-hold (hold stale-hold)
+
           dry-run?
           (do
             (swap! planned conj (str run-path))
             (log! (str "prune: delete " run-path " (dry-run)"))
             (doseq [[common-dir repo] branch-repos]
               (prune-run-branch! ctx common-dir repo branch))
-            {:result :deleted})
+            {:result :deleted :mode mode})
 
-          (not (:eligible? @recheck))
+          (or (and (= mode :done) (not (:eligible? @recheck)))
+              (and (= mode :stale)
+                   (or (not (contains? #{"not-done" "within-retention"} (:reason @recheck)))
+                       (not (:eligible? (stale-run-decision run-id
+                              (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))
+                              (now) (stale-retention-hours) (keep-latest-runs)))))))
           {:result :ticket-skipped :reason (:reason @recheck)}
 
           :else
@@ -5264,7 +5340,7 @@
               (log! (str "prune: delete " run-path))
               (doseq [[common-dir repo] branch-repos]
                 (prune-run-branch! ctx common-dir repo branch))
-              {:result :deleted})))))))
+              {:result :deleted :mode mode})))))))
 
 (defn child-directories [dir]
   (if (fs/directory? dir)
@@ -5281,12 +5357,13 @@
         run-ids (map fs/file-name (child-directories (fs/path (workspaces-dir) ticket-id)))]
     (cond
       (empty? run-ids) nil
-      (not (:eligible? pre)) (skip-ticket! (:reason pre))
+      (and (not (:eligible? pre))
+           (not (and (stale-prune-enabled?) (contains? #{"not-done" "within-retention"} (:reason pre))))) (skip-ticket! (:reason pre))
       :else
       (loop [[run-id & more] run-ids]
         (when (and run-id (not (stop?)))
           (let [run-path (run-workspace-dir ticket-id run-id)
-                {:keys [result reason]}
+                {:keys [result reason mode]}
                 (try
                   (with-ticket-lock-guard
                    ticket-id
@@ -5294,7 +5371,8 @@
                   (catch Exception e
                     {:result :held :reason (str "error " (one-line (.getMessage e)))}))]
             (case result
-              :deleted (swap! stats update :deleted inc)
+              :deleted (do (swap! stats update :deleted inc)
+                           (when (= mode :stale) (swap! stats update :stale-deleted inc)))
               :recent (swap! stats update :recent inc)
               :held (do
                       (swap! stats update :held inc)
@@ -5339,7 +5417,7 @@
               :gh-cache (atom {})
               :affected-repos (atom #{})
               :planned (atom #{})
-              :stats (atom {:deleted 0 :held 0 :recent 0 :branches 0 :empty-dirs 0 :skipped {}})}
+              :stats (atom {:stale-deleted 0 :deleted 0 :held 0 :recent 0 :branches 0 :empty-dirs 0 :skipped {}})}
          guarded (fn [label path f]
                    (try
                      (f)
@@ -5360,8 +5438,9 @@
            (log! (str "prune: error worktree-prune " common-dir " " (one-line (:err pruned)))))))
      (when (stop?)
        (log! "prune: stopped early because the runner is draining"))
-     (let [{:keys [deleted held recent branches empty-dirs skipped]} @(:stats ctx)]
+     (let [{:keys [deleted stale-deleted held recent branches empty-dirs skipped]} @(:stats ctx)]
        (log! (str "prune: summary deleted=" deleted
+                  " stale-deleted=" stale-deleted
                   " held=" held
                   " skipped=" (reduce + 0 (vals skipped))
                   " recent-runs=" recent
@@ -5384,18 +5463,21 @@
        (or (nil? last-started-nanos)
            (>= (- now-nanos last-started-nanos) (* interval-seconds 1000000000)))))
 
-(defn maybe-start-workspace-prune! []
-  (when (and (workspace-prune-enabled?)
-             (workspace-prune-due? @workspace-prune-run (System/nanoTime)
-                                   (workspace-prune-interval-seconds))
-             (not (draining?)))
-    (reset! workspace-prune-run
-            {:last-started-nanos (System/nanoTime)
-             :future (future
-                       (try
-                         (prune-workspaces! {:stop? draining?})
-                         (catch Throwable t
-                           (log! (str "prune: failed: " (.getMessage t))))))})))
+(defn maybe-start-workspace-prune!
+  ([] (maybe-start-workspace-prune! false))
+  ([force?]
+   (locking workspace-prune-run
+     (when (and (workspace-prune-enabled?)
+                (workspace-prune-due? @workspace-prune-run (System/nanoTime)
+                                      (if force? 0 (workspace-prune-interval-seconds)))
+                (not (draining?)))
+       (reset! workspace-prune-run
+               {:last-started-nanos (System/nanoTime)
+                :future (future
+                          (try
+                            (prune-workspaces! {:stop? draining?})
+                            (catch Throwable t
+                              (log! (str "prune: failed: " (.getMessage t))))))})))))
 
 ;; Map of ticket-id -> future for currently running process-card! calls.
 ;; Persists across tick! invocations so the loop can detect new candidates
@@ -5414,6 +5496,30 @@
       (swap! in-flight-futures #(apply dissoc % completed-ids)))
     completed-ids))
 
+(defn disk-low? [free-bytes free-inode-percent min-bytes min-inode-percent]
+  (or (and (some? free-bytes) (< free-bytes min-bytes))
+      (and (some? free-inode-percent) (< free-inode-percent min-inode-percent))))
+
+(defn disk-guard-measure []
+  (let [bytes (try (let [file (java.io.File. (str (root)))]
+                     (when (pos? (.getTotalSpace file)) (.getUsableSpace file)))
+                   (catch Exception _ nil))
+        df (command-result ["df" "-Pi" (str (root))])
+        fields (when (and (zero? (:exit df)) (seq (str/split-lines (:out df))))
+                 (str/split (str/trim (last (str/split-lines (:out df)))) #"\s+"))
+        inode (try (when (>= (count fields) 6)
+                     (- 100 (Long/parseLong (str/replace (nth fields (- (count fields) 2)) "%" ""))))
+                   (catch Exception _ nil))]
+    {:free-bytes bytes :free-inode-percent inode}))
+
+(defn disk-guard []
+  (let [{:keys [free-bytes free-inode-percent] :as measured} (disk-guard-measure)
+        min-bytes (prune-setting "CODEX_TASK_BOARD_MIN_FREE_BYTES" #(parse-bounded-long % 8589934592 0))
+        min-inode (prune-setting "CODEX_TASK_BOARD_MIN_FREE_INODE_PERCENT" #(parse-bounded-long % 3 0))]
+    (when (and (nil? free-bytes) (nil? free-inode-percent))
+      (log! "disk-guard: measurement failed; allowing new runs"))
+    (assoc measured :low? (disk-low? free-bytes free-inode-percent min-bytes min-inode))))
+
 (defn tick! []
   (recover-locks!)
   (if (draining?)
@@ -5423,7 +5529,13 @@
       (let [done (collect-completed-futures!)
             in-flight-ids (set (keys @in-flight-futures))
             candidates (candidate-cards)
-            new-candidates (remove #(contains? in-flight-ids (:ticket-id %)) candidates)]
+            new-candidates (vec (remove #(contains? in-flight-ids (:ticket-id %)) candidates))
+            {:keys [low? free-bytes free-inode-percent]} (when (seq new-candidates) (disk-guard))
+            _ (when low?
+                (log! (str "disk-guard: low free space free-bytes=" free-bytes
+                           " free-inode-percent=" free-inode-percent " ; not starting " (count new-candidates) " candidate(s)"))
+                (maybe-start-workspace-prune! true))
+            new-candidates (if low? [] new-candidates)]
         (doseq [card new-candidates]
           (let [f (future
                     (log! (str "processing " (:ticket-id card) " from " (:lane card)))
@@ -5998,6 +6110,35 @@
           (do
             (println (str "FAIL: " label " expected=" (pr-str expected) " actual=" (pr-str actual)))
             (swap! failures conj label)))))
+
+    (let [ids ["20260928T000000Z" "20260929T000000Z" "20260930T000000Z" "bad"]
+          instant (java.time.Instant/parse "2026-10-01T12:00:00Z")
+          cases [["stale old" (:eligible? (stale-run-decision (first ids) ids instant 12 2)) true]
+                 ["stale latest" (:reason (stale-run-decision (nth ids 2) ids instant 12 2)) "latest-run"]
+                 ["stale unknown" (:reason (stale-run-decision "bad" ids instant 12 2)) "run-id-timestamp-unparseable"]
+                 ["unknown consumes slot" (:eligible? (stale-run-decision (nth ids 1) ids instant 12 2)) true]
+                 ["latest survives unknowns" (:reason (stale-run-decision (nth ids 2) (concat ids ["bad2"]) instant 12 2)) "latest-run"]
+                 ["stale hours" (:reason (stale-run-decision (first ids) ids instant 100 1)) "within-stale-retention"]
+                 ["ignored cache" (boolean (ignored-allowed? "x/.clj-kondo/.cache/a")) true]
+                 ["ignored node" (boolean (ignored-allowed? "x/node_modules/a")) true]
+                 ["disk low bytes" (boolean (disk-low? 9 50 10 3)) true]
+                 ["disk low inodes" (boolean (disk-low? 10 2 10 3)) true]
+                 ["disk equal" (boolean (disk-low? 10 3 10 3)) false]
+                 ["stale default hours" (parse-bounded-long nil 12 1) {:value 12}]
+                 ["stale invalid keep" (parse-bounded-long "0" 2 1) {:value 2 :invalid? true}]]]
+      (doseq [[label actual expected] (concat cases (map #(vector (str "ignored " %) (boolean (ignored-allowed? %)) false)
+                                                          ["dist/" "out.csv" ".env" "results/" ".lsp/other"]))]
+        (if (= actual expected) (println (str "PASS: " label))
+            (do (println (str "FAIL: " label)) (swap! failures conj label)))))
+    (let [started (atom []) pruned (atom false)]
+      (with-redefs [candidate-cards (fn [] [{:ticket-id "TEST-DISK" :lane "Ready"}])
+                    recover-locks! (fn [] nil) draining? (fn [] false) sync-all! (fn [] nil)
+                    disk-guard (fn [] {:low? true :free-bytes 1 :free-inode-percent 1})
+                    maybe-start-workspace-prune! (fn [& _] (reset! pruned true))
+                    process-card! (fn [card] (swap! started conj card))]
+        (tick!))
+      (if (and (empty? @started) @pruned) (println "PASS: disk guard blocks tick")
+          (swap! failures conj "disk guard blocks tick")))
 
     ;; Shutdown race: an agent registered while `stop-in-flight-agents!` is
     ;; waiting, and one registered after it finished, must both be killed.
