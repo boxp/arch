@@ -120,3 +120,9 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 既知の認証ファイルは、シェルが引用符・エスケープを連結した後の語でも判定する(P0 :421): `cat ~/.npm''rc`、`cat ~/.np\mrc`、`cat ~/'.npmrc'`、`bash -lc "cat ~/.npm''rc"`。照合は語全体またはパス要素単位で、引用を含む語だけを再走査するため、引用付き引数の連結で別の語と融合した文字列(`rg 'x' a.bb",max_output_tokens`)をファイル名と誤認しない(最初の試作では全体照合で実 run BOXP-436 の sent 33→3 となる退行を検出し、語単位へ変更した)。
 - 処理量: 200KB の Base64 連続で約 40ms、2 万個の短い Base64 語 + 500 値で約 1.1 秒(非同期の exporter 内)。
 - 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
+
+## 追記 (arch#14503 P0 :719)
+
+- 値全体が秘密語単体(`password: secrets`、`token = credentials`、`{"api_key": "passphrase"}`、`the password is secrets`)の場合も、その語を値として pin する(以前は参照扱いで除外し、後続本文の裸の再掲が送信されていた)。4 文字未満(`password: pwd`)は value_exposure で保留。`${PASSWORD}` などの参照、長い値の中の名前、env エントリの変数名(`PASSWORD=...` の `PASSWORD`)は従来どおり値としない。
+- 過剰マスク: `password: secret` や `password: <secret>` のような説明・雛形を読むと、以後同じ run で `secret` などの語が伏字になる(保留はしない)。
+- 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。

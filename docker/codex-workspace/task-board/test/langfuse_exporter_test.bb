@@ -1379,7 +1379,6 @@
       (is (not (lf/guard-safe? (str "out " enc) #{v})) enc))
     ;; Controls: ordinary Base64, prose and a bare secret word stay readable; a bare name is not pinned.
     (is (= "aGVsbG8gd29ybGQ= ordinary words" (:value (lf/redact "aGVsbG8gd29ybGQ= ordinary words" #{v}))))
-    (is (empty? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output "password: secrets"}))))
     (is (empty? (:values (#'lf/body-exposure "Reset your password from the settings page."))))))
 
 ;; P0 arch#14503 :421 (BOXP-428). Quote and escape pieces join before known auth paths are matched.
@@ -1406,6 +1405,24 @@
     ;; Control: a long ordinary run without a pinned value stays readable.
     (let [plain (apply str (repeat 70000 "A"))]
       (is (= (str "x " plain " y") (:value (lf/redact (str "x " plain " y") #{v})))))))
+
+;; P0 arch#14503 :719 (BOXP-428). A value that is a bare secret word (password: secrets) was taken for a reference
+;; and not pinned, so a later bare repeat was sent. The whole value is pinned now; a name inside a longer value, an env
+;; name and a reference are still not values.
+(deftest bare-secret-word-value-is-pinned
+  (doseq [[text v] [["password: secrets" "secrets"] ["token = credentials" "credentials"] ["{\"api_key\": \"passphrase\"}" "passphrase"]
+                    ["PASSWORD='secret'" "secret"] ["the password is secrets" "secrets"] ["my token was credential" "credential"]]]
+    (is (contains? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})) v) text)
+    (is (contains? (:values (#'lf/body-exposure text)) v) text)
+    (let [{:keys [value]} (lf/redact (str "later " v " again") #{v})]
+      (is (not (str/includes? value (str " " v " "))) text)))
+  ;; Too short to pin: withheld instead.
+  (is (= "value_exposure" (:reason (#'lf/body-exposure "password: pwd"))))
+  ;; Controls: references and names around a value are not pinned as values.
+  (doseq [text ["password: ${PASSWORD}" "Reset your password from the settings page." "password: mysecret123"]]
+    (is (not (contains? (:values (#'lf/body-exposure text)) "password")) text)
+    (is (not (contains? (:values (#'lf/body-exposure text)) "secret")) text))
+  (is (nil? (:reason (#'lf/body-exposure "Reset your password from the settings page.")))))
 
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

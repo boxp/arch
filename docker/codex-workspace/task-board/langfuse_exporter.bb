@@ -749,6 +749,9 @@
                   tokens (if (structural? v) (remove #(or (reference? %) (contains? keys %)) parts) (filter plain-value-token? parts))]
               (cond (nil? acc) acc
                     (or (re-matches literal-value v) (re-matches structure-word v)) (when (>= (count v) 4) (conj acc v))
+                    ;; A whole value that is a bare secret word (password: secrets) is the value, not a name, and can
+                    ;; be repeated bare later (P0 arch#14503 :719). A name inside a longer value is still skipped.
+                    (and (secret-name? v) (re-matches #"[\x21-\x7e]+" v)) (when (>= (count v) 4) (conj acc v))
                     (or (reference? v) (empty? tokens)) acc
                     (some #(< (count %) 4) tokens) nil
                     (= 1 (count tokens)) (conj acc (first tokens))
@@ -771,7 +774,8 @@
                      ;; A setting such as password_min_length: 8 is no value to pin or withhold for.
                      (if (setting? (str k) (strip-value v)) [] [v]))
        :bearer [(second (re-find #"(?i)bearer\s+(.*)" m))]
-       :env-entry (str/split m #"[\s\"'`,;:=<>()\[\]{}\\]+")
+       ;; The env name of an entry (PASSWORD=...) is a name, never the value.
+       :env-entry (remove secret-name? (str/split m #"[\s\"'`,;:=<>()\[\]{}\\]+"))
        [m]))))
 
 (defn- block-values
@@ -864,6 +868,11 @@
                                 (remove #(or (re-matches prose-connective %) (re-matches prose-separator %)))
                                 (filter plain-value-token?)
                                 (filter #(re-matches #"[\x21-\x7e]+" %))))
+            ;; A bare secret word after a separator (the password is secrets) is the value (P0 arch#14503 :719).
+            after-values (if (and (empty? after-values) (some #(re-matches prose-separator %) gap))
+                           (let [t (first (remove #(re-matches prose-connective %) rest-tokens))]
+                             (if (and t (secret-name? t) (re-matches #"[\x21-\x7e]+" t)) [t] after-values))
+                           after-values)
             after-values (if (and (= 1 (count after-values)) (setting? name (first after-values))) [] after-values)
             before-value (when (and bword (some #(re-matches #"(?i)is|are|was|were" %) bgap)
                                     (re-matches #"[\x21-\x7e]+" bword) (not (reference? bword))
