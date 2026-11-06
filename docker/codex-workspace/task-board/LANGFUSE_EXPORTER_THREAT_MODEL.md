@@ -102,3 +102,10 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 過剰保留: 任意のプログラムに、秘密語を含む引用文を通常の引数として渡した場合(`python3 x.py "the password flow"`)はその出力を保留する。
 
 - 走査上限の fail-closed (P0 arch#14503 segment-reads-secret-file?): 1セグメント512語、256セグメント、open() 呼出し256件を超えるコマンドは、上限より後ろを走査しない代わりに全体を機密源として扱い本文を保留する（`sed -n 1p <512個の引数> db_password` を防ぐ）。過剰保留: 上限を超える長いコマンドは通常ファイルだけを読む場合でも出力本文が保留される。
+
+## 追記 (arch#14503 P0 :343 グロブ)
+
+- 読取コマンドの引数・`<` リダイレクト・`dd if=` に、秘密語を綴る、または秘密語の一部(3文字以上)をワイルドカードの隣に置いたグロブ/ブレース展開がある場合は、展開先が秘密名ファイルになり得るため機密源として本文を保留する(fail-closed): `cat db_password*`、`cat db_pass*`、`sed -n 1p *word`、`awk 1 ?b_password`、`cat pass[w]ord`、`cat cred*`、`cat db_pass{word,}`、`cat {db,app}_password`。
+- 引用符内・エスケープしたワイルドカード(`jq '.[0]'`、`python3 -c 'print(a[0])'`)、URL、グロブのフィルタ値(`rg -g '*.py'`、`--glob`、`--include`、`find -name`)、言及専用コマンド(`ls db_*`、`echo *`)は対象外。
+- 許容残差(TD-07): 見えている文字に秘密語が現れないグロブ(`cat db_*`、`cat ./conf/*`、`cat src/*.py`)は、`cat $f` や `xargs cat` と同じく実際に読むファイル名がコマンドに現れないため検出しない。一律に保留すると実 run の可視性が大きく落ちる(試算: BOXP-436 の run で sent 26→6、BOXP-440 で 42→3。主因は `grep -rn x dir/*.bb` のような通常のグロブ読取)ため採らない。
+- 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。

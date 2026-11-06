@@ -334,13 +334,14 @@
 (def open-call
   #"(?i)(?:\bopen|read_?text|read_?file|readFileSync|slurp|File\.read|load|cat)\s{0,8}\(\s{0,8}[\"']([^\"'\r\n]{1,1024})[\"']")
 
+(def ^:private raw-word #"(?:\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'|\\.|[^\s\"'\\]){1,4096}")
 (defn- shell-words
   "Words of one segment as the shell sees them: adjacent quoted and bare pieces join into one word (if='a b',
   db_password\\ backup), quotes are removed and backslash escapes resolved, and a quoted span keeps its spaces."
   [segment]
   (map (fn [w] (str/replace w #"\"((?:[^\"\\]|\\.){0,4096})\"|'([^']{0,4096})'|\\(.)"
                             (fn [[_ dq sq esc]] (or (some-> dq (str/replace #"\\(.)" "$1")) sq esc ""))))
-       (re-seq #"(?:\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'|\\.|[^\s\"'\\]){1,4096}" segment)))
+       (re-seq raw-word segment)))
 
 ;; A quoted or escaped file name may contain spaces ('db_password backup', db_password\ backup), so a word with
 ;; whitespace is a file name too when its last path component names a secret (P0 arch#14503 :343). Text given to a
@@ -352,6 +353,41 @@
 (defn- secret-file-word? [w]
   (boolean (and (not (str/starts-with? w "-")) (not (re-find #"[\r\n]" w)) (<= (count w) 2048)
                 (if (re-find #"\s" w) (re-matches spaced-secret-file-name w) (re-matches secret-file-name w)))))
+;; A glob or brace word whose literal text spells a secret word or part of one next to a wildcard (db_password*,
+;; db_pass*, *word, ?b_password, pass[w]ord, db_pass{word,}, cred*) may expand to a secret-named file, so a reader
+;; given one is treated as a source (fail-closed, P0 arch#14503 :343 cat db_password*). A glob whose visible text
+;; names no secret word (*.bb, src/*, notes*, db_*) is not: like cat $f or xargs cat, the file name is not in the
+;; command, which is the residual the Owner accepted (TD-07, LANGFUSE_EXPORTER_THREAT_MODEL.md). The value of a
+;; glob-filter option (rg -g '*.py', --include) is a filter, not a file, and is excluded by the caller.
+;; Only the unquoted, unescaped part of the raw word decides whether it is a glob, so a quoted jq filter ('.[0]')
+;; or python code is text; a URL (https://h/?q=1) is not a file name either.
+(defn- glob-raw-word? [raw]
+  (let [bare (str/replace raw #"\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'|\\." "")]
+    (boolean (and (not (str/starts-with? raw "-")) (<= (count raw) 2048) (not (str/includes? raw "://"))
+                  (re-find #"[*?\[]" bare)))))
+(def secret-words ["passwords" "passwds" "passphrases" "secrets" "credentials" "tokens"])
+(defn- aimed-glob?
+  "True when the last path component of glob word w spells a secret word, or a piece of one of 3+ characters sits
+  next to a wildcard where the rest of the word could fill in."
+  [w]
+  (let [name (str/lower-case (last (str/split (str w) #"[/\\]")))
+        parts (str/split name #"\*|\?|\[[^\]]{0,256}\]" -1)
+        n (count parts)]
+    (boolean
+     (and (< 1 n 256)
+          (some (fn [[i f]]
+                  (let [before (pos? i) after (< i (dec n)) len (count f)]
+                    (or (re-find #"passw(?:or)?d|passphrase|secret|credential|token" f)
+                        (and after (some (fn [k] (let [sfx (subs f (- len k))] (some #(str/starts-with? % sfx) secret-words)))
+                                         (range 3 (inc (min len 16)))))
+                        (and before (some (fn [k] (let [pfx (subs f 0 k)] (some #(or (str/ends-with? % pfx) (str/ends-with? % (str pfx "s"))) secret-words)))
+                                          (range 3 (inc (min len 16)))))
+                        (and before after (>= len 3) (some #(str/includes? % f) secret-words)))))
+                (map-indexed vector parts))))))
+(def glob-value-options
+  #{"-g" "--glob" "--iglob" "--include" "--exclude" "--exclude-dir" "--include-dir" "-t" "--type" "-T" "--type-not"
+    "--name" "-name" "-iname" "-path" "-ipath" "-regex"})
+
 ;; Options whose value is free text rather than a file name (a note, a commit message, a PR body).
 (def text-options
   #{"-m" "--message" "--note" "--notes" "--body" "--title" "--description" "--comment" "--summary" "--subject"
@@ -379,18 +415,22 @@
 (defn- segment-reads-secret-file? [segment]
   (let [all-words (shell-words segment)
         words (vec (take max-scanned-words all-words))
-        redirected (some (fn [[a b]] (and (re-matches #"\d?<" a) b (secret-file-word? b)))
+        globbed (set (keep (fn [[raw w]] (when (and (glob-raw-word? raw) (aimed-glob? w)) w))
+                           (map vector (take max-scanned-words (re-seq raw-word segment)) words)))
+        possible-secret-file-word? (fn [w] (or (secret-file-word? w) (contains? globbed w)))
+        redirected (some (fn [[a b]] (and (re-matches #"\d?<" a) b (possible-secret-file-word? b)))
                          (partition 2 1 (concat words [nil])))
-        inline-redirect (some #(when-let [[_ f] (re-matches #"\d?<([^<].*)" %)] (secret-file-word? f)) words)
+        inline-redirect (some #(when-let [[_ f] (re-matches #"\d?<([^<].*)" %)] (or (secret-file-word? f) (contains? globbed %))) words)
         args (drop-while #(or (re-matches #"[A-Za-z_]\w*=.*" %) (contains? prefix-programs (last (str/split % #"/")))
                               (re-matches #"-\S*|\d+" %))
                          words)
         program (some-> (first args) (str/split #"/") last)
         operands (keep (fn [[prev w]] (when-not (or (str/starts-with? w "-") (re-matches #"\d+" w)
-                                                    (and (contains? text-options prev) (re-find #"\s" w)))
+                                                    (and (contains? text-options prev) (re-find #"\s" w))
+                                                    (contains? glob-value-options prev))
                                         w))
                        (partition 2 1 args))
-        dd-input (some #(when-let [[_ f] (re-matches #"if=(.*)" %)] (secret-file-word? f)) words)
+        dd-input (some #(when-let [[_ f] (re-matches #"if=(.*)" %)] (or (secret-file-word? f) (contains? globbed %))) words)
         ;; A secret-named file put in a variable (f=db_password; cat $f) is read through it later.
         assigned (some #(when-let [[_ f] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (secret-file-word? f)) (take-while #(re-matches #"[A-Za-z_]\w*=.*" %) words))]
     (boolean
@@ -398,10 +438,10 @@
          redirected inline-redirect dd-input assigned
          (and program
               (cond (contains? search-programs program)
-                    (or (some secret-file-word? (rest operands))
-                        (and (some pattern-option? (rest args)) (some secret-file-word? operands)))
+                    (or (some possible-secret-file-word? (rest operands))
+                        (and (some pattern-option? (rest args)) (some possible-secret-file-word? operands)))
                     (mention-only? program (rest args)) false
-                    :else (some secret-file-word? operands)))
+                    :else (some possible-secret-file-word? operands)))
          (and (some #(re-matches stdout-sink %) words) (some secret-file-word? words))))))
 
 (defn- command-texts
@@ -417,8 +457,12 @@
   (boolean (some (fn [text]
                    (let [opens (re-seq open-call text)
                          ;; Separators inside a quoted span (a note or commit message) do not split it.
-                         segments (str/split (str/replace text #"\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'"
-                                                          (fn [q] (str/replace q #"[;&|\n(){}`$]|\\n" " ")))
+                         ;; An unquoted brace expansion (db_pass{word,}) is kept in its word as a glob before
+                         ;; braces split segments, so it counts as an unknown file set like db_pass*.
+                         segments (str/split (str/replace (str/replace text #"\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'"
+                                                                       (fn [q] (str/replace q #"[;&|\n(){}`$]|\\n" " ")))
+                                                          #"(?<!\$)\{[^{}\s;&|]{0,1024}(?:,|\.\.)[^{}\s;&|]{0,1024}\}"
+                                                          (fn [b] (str/replace b #"[{},]|\.\." "*")))
                                              #"[;&|\n(){}`]|\$\(|\\n")]
                      (or (over-limit? max-scanned-items opens)
                          (over-limit? max-scanned-items segments)

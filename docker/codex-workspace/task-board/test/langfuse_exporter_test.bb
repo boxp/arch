@@ -1330,5 +1330,24 @@
              (str/join "; " (map #(str "echo " %) (range 100)))]]
     (is (not (lf/withhold-output? c)) (subs c 0 40))))
 
+(deftest secret-file-glob
+  ;; P0 arch#14503 :343: a glob or brace word may expand to a secret-named file, so a reader given one withholds.
+  (doseq [c ["cat db_password*" "cat db_pass*" "cat ./conf/db_pass*" "sed -n 1p *word" "awk 1 ?b_password" "cat db_pass{word,}"
+             "cat cred*" "cat pass[w]ord" "cat *_secr*" "python3 x.py app-tok*" "cat {db,app}_password"
+             "head -n 3 [d]b_password" "cat < db_pass*" "cat <db_pass*" "dd if=db_pass* status=none" "grep -h . db_pass*"
+             "rg -e x conf/db_pass*" "{\"cmd\":\"cat db_password*\"}" "bash -lc 'cat db_password*'"]]
+    (is (lf/withhold-output? c) c))
+  (is (= "sensitive_source" (:reason (#'lf/tool-exposure {:input {:command "cat db_password*"}} {:output "globbarevalue9q"}))))
+  ;; Quoted globs are literal text; glob filters and mention-only commands stay readable.
+  (doseq [c ["ls db_*" "echo *" "find . -name '*.py'" "rg -n foo -g '*.py'" "rg -n foo --glob '*.md' src"
+             "grep -rn foo --include='*.py' src" "jq '.[0]' out.json" "python3 -c 'print(a[0])'" "curl -s https://h/?q=1"
+             "git status" "cat notes.txt" "cat 'db*'.txt.md" "echo db_password*"
+             "grep -rn 'x' /opt/codex-workspace/cron/*.bb 2>/dev/null | head" "head -n 5 docs/*.md" "cat src/*.py"
+             "case \"$l\" in *status::ready*) sleep 30;; *) echo \"$l\";; esac" "cat notes{1,2}.txt"]]
+    (is (not (lf/withhold-output? c)) c))
+  ;; Accepted residual (TD-07): a glob whose visible text names no secret word may still expand to one.
+  (doseq [c ["cat db_*" "cat ./conf/*"]]
+    (is (not (lf/withhold-output? c)) c)))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
