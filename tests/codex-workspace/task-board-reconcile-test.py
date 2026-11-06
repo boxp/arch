@@ -135,6 +135,40 @@ class RepairTest(unittest.TestCase):
                 self.assertTrue(list((self.root / 'repair-backups').glob('BOXP-433-*-displaced.md')))
                 self.assertFalse(list((self.vault / 'Boards').glob('.reconcile-433-*')))
 
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_late_write_to_displaced_inode_is_retained_and_detected(self):
+        # P0: a writer holding the old Board inode open writes after the settle
+        # delay. The displaced inode must not be deleted and later runs must fail.
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE'] = 'true'
+        try:
+            result = self.call(*self.args(plan))
+        finally:
+            self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE')
+        self.assertEqual(self.board.read_text(), self.before.replace(STALE + '\n', '', 1))
+        retained = list((self.vault / '.task-board-repair-retained').glob('BOXP-433-*-displaced.md'))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].read_text(), self.before + 'late writer\n')
+        self.assertFalse(list((self.vault / 'Boards').glob('.reconcile-433-*')))
+        for args in (['--dry-run'], self.args(plan)):
+            self.assertIn('late concurrent write detected', self.call(*args, ok=False))
+
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_retained_inode_checked_after_clean_apply(self):
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        self.call(*self.args(plan))
+        retained = list((self.vault / '.task-board-repair-retained').glob('BOXP-433-*-displaced.md'))
+        self.assertEqual(len(retained), 1)
+        self.assertEqual(retained[0].read_text(), self.before)
+        self.assertEqual(self.plan()['retained-checked'], 1)
+        with retained[0].open('a') as f:
+            f.write('written after the run finished\n')
+        self.assertIn('late concurrent write detected', self.call('--dry-run', ok=False))
+        retained[0].unlink()
+        self.assertIn('retained displaced board missing', self.call('--dry-run', ok=False))
+
     def test_without_exchange_requires_shared_lock(self):
         fake = self.base / 'nomv'
         fake.mkdir()

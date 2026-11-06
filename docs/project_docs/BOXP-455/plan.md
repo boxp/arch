@@ -20,3 +20,8 @@
 テストは終端revision、LWW復旧、重複、superseded、修復の両ロックモード・競合・再実行を確認する。
 
 レビュー対応: rev::を持たない旧カードも、票がrev付きでdone/blockedかつカードの状態が異なり、票の担当が終端遷移時のboxpのままで、さらにそのカード行がrunner自身が以前置き換えたrev無し行(state root の superseded-card-lines に記録)と完全一致する場合は、古いBoardの復元とみなして投影・dispatchを保留し、警告期間後に票からカードを修復する。票の担当も変える再依頼は従来どおり追従する。
+
+## codex-review P0 (late writer) 対応
+
+- 置換で外れた旧Board inodeは削除せず vault内 `.task-board-repair-retained/` へ同一inodeでrenameし保持、パスとハッシュを監査記録。
+- 以後のreconcile-done実行（dry-run含む）で保持inodeを全件照合し、遅延書込み・欠落を検出したら非0終了。apply後は時間を置いたdry-runで読み戻す。

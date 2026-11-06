@@ -856,20 +856,73 @@
   (try (Long/parseLong (or (System/getenv "CODEX_TASK_BOARD_RECONCILE_SETTLE_MS") "1000"))
        (catch Exception _ 1000)))
 
+(defn repair-retained-dir [vault]
+  ;; Inside the vault so displaced Board inodes stay on the same filesystem and
+  ;; can be renamed (not copied): a writer still holding the old inode open
+  ;; keeps writing into the retained file instead of a deleted one.
+  (let [dir (fs/path vault ".task-board-repair-retained")]
+    (when (fs/exists? dir) (repair-owned-path! dir))
+    (fs/create-dirs dir)
+    (repair-owned-path! dir)
+    dir))
+
+(defn repair-retain! [tmp retain-dir label]
+  ;; Never delete an inode that has been the live Board. Rename it (same inode)
+  ;; into the retained dir; if that is impossible keep it where it is.
+  (let [dst (fs/path retain-dir (str "BOXP-433-" (random-uuid) "-" label ".md"))]
+    (try
+      (java.nio.file.Files/move tmp dst
+        (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE]))
+      (str dst)
+      (catch Exception _ (str tmp)))))
+
+(defn repair-check-retained!
+  "Late-write detection: a writer that opened the Board before the exchange
+  and wrote after the settle delay changed a retained displaced inode. Every
+  retained inode must still hold exactly the content recorded at apply time."
+  [vault]
+  (let [path (fs/path vault ".task-board-repair-audit.edn")]
+    (if-not (fs/exists? path)
+      0
+      (do
+        (repair-owned-path! path)
+        (let [records (keep (fn [line]
+                              (when-not (str/blank? line)
+                                (let [record (try (edn/read-string line) (catch Exception _ ::bad))]
+                                  (repair-require (map? record) "unreadable repair audit record")
+                                  (when (:retained-path record) record))))
+                            (str/split-lines (read-text path)))]
+          (doseq [{:keys [retained-path retained-sha256]} records]
+            (repair-require (fs/exists? retained-path)
+                            (str "retained displaced board missing: " retained-path))
+            (repair-owned-path! retained-path)
+            (repair-require (= retained-sha256 (repair-sha (read-text retained-path)))
+                            (str "late concurrent write detected in retained displaced board " retained-path
+                                 "; merge it into the Board manually before any further repair")))
+          (count records))))))
+
 (defn repair-atomic-board!
   "Replace the board with `after` only if the replaced content was exactly
   `before`. With an atomic exchange the displaced file is kept and compared
   after a settle delay (covering an in-place write already in flight), so a
   runner/Sync write that landed after the last check is detected and put
-  back instead of being silently overwritten. Without exchange support only a
-  shared writer lock may fall back to a plain atomic move. Returns
-  {:conflict nil} or {:conflict reason :preserved [paths]}."
-  [path before after {:keys [exchange? preserve-dir]}]
+  back instead of being silently overwritten. Displaced inodes are never
+  deleted: they are renamed into `retain-dir` so a writer that still holds
+  one open writes into a retained file that later runs check
+  (repair-check-retained!). Without exchange support only a shared writer
+  lock may fall back to a plain atomic move. Returns {:conflict nil
+  :retained [...]} or {:conflict reason :preserved [paths] :retained [...]}."
+  [path before after {:keys [exchange? preserve-dir retain-dir]}]
   (let [tmp (fs/path (fs/parent path) (str ".reconcile-433-" (random-uuid) ".tmp"))
+        exchanged? (atom false)
         preserve! (fn [label src]
                     (let [dst (fs/path preserve-dir (str "BOXP-433-" (random-uuid) "-" label ".md"))]
                       (spit (str dst) (read-text src))
-                      (str dst)))]
+                      (str dst)))
+        retain! (fn [label]
+                  (let [content (read-text tmp)]
+                    [{:retained-path (repair-retain! tmp retain-dir label)
+                      :retained-sha256 (repair-sha content)}]))]
     (try
       (spit (str tmp) after)
       (with-open [raf (RandomAccessFile. (str tmp) "rw")] (.force (.getChannel raf) true))
@@ -887,10 +940,18 @@
       (if exchange?
         (do
           (repair-exchange! tmp path)
+          (reset! exchanged? true)
           (Thread/sleep (repair-settle-ms))
           (let [displaced (read-text tmp)]
             (if (= displaced before)
-              {:conflict nil}
+              (if (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_LATE_WRITE"))
+                ;; Deterministic hook: a writer opened the old inode before the
+                ;; exchange and writes through that descriptor after the check.
+                (with-open [out (java.io.FileOutputStream. (str tmp) true)]
+                  (let [r (retain! "displaced")]
+                    (.write out (.getBytes "late writer\n" "UTF-8"))
+                    {:conflict nil :retained r}))
+                {:conflict nil :retained (retain! "displaced")})
               ;; Someone else wrote between the check and the exchange: put
               ;; their content back. If the board changed again meanwhile,
               ;; restore that newest content too; every version is preserved.
@@ -899,17 +960,18 @@
                 (let [returned (read-text tmp)]
                   (if (= returned after)
                     {:conflict "board changed concurrently; concurrent content restored"
-                     :preserved [displaced-copy]}
+                     :preserved [displaced-copy] :retained (retain! "replaced")}
                     (let [returned-copy (preserve! "newer" tmp)]
                       (repair-exchange! tmp path)
                       {:conflict "board changed repeatedly during repair; newest content restored"
-                       :preserved [displaced-copy returned-copy]})))))))
+                       :preserved [displaced-copy returned-copy] :retained (retain! "replaced")})))))))
         (do
           (java.nio.file.Files/move tmp (fs/path path)
             (into-array java.nio.file.CopyOption [java.nio.file.StandardCopyOption/ATOMIC_MOVE
                                                  java.nio.file.StandardCopyOption/REPLACE_EXISTING]))
           {:conflict nil}))
-      (finally (fs/delete-if-exists tmp)))))
+      ;; Only a temp file that never became the live Board may be deleted.
+      (finally (when-not @exchanged? (fs/delete-if-exists tmp))))))
 
 (defn cmd-reconcile-done [opts id]
   ;; Deliberately no general force/dedupe operation. This is the approved 433 repair.
@@ -945,7 +1007,8 @@
              (fn []
                (with-ticket-lock opts tpath
                  (fn []
-                   (let [board (read-text bpath) ticket (ticket-data vault id)
+                   (let [retained-checked (repair-check-retained! vault)
+                         board (read-text bpath) ticket (ticket-data vault id)
                          source (repair-source root id)
                          helper-sha (repair-sha (read-text *file*))
                          ticket-sha (repair-sha (read-text tpath))
@@ -966,6 +1029,7 @@
                                   {:action "reconcile-done" :id id :rev (:rev ticket)
                                    :status "done" :assignee "boxp" :source-run (:run-id source)
                                    :writer-lock (if writer "shared" "none")
+                                   :retained-checked retained-checked
                                    :dry-run (boolean (:dry-run opts)) :noop (= board after)})]
                      (when-not (:dry-run opts)
                        (repair-require (:confirm opts) "apply requires --confirm")
@@ -1000,8 +1064,12 @@
                            (repair-require (= (:board-sha256 hashes) (repair-sha (read-text backup))) "backup hash mismatch")
                            (repair-audit! vault (assoc hashes :phase :prepared :id id :rev (:rev ticket)
                                                      :backup-path (str backup) :source-run (:run-id source)))
-                           (let [{:keys [conflict preserved]} (repair-atomic-board! bpath board after
-                                                                {:exchange? exchange? :preserve-dir dir})]
+                           (let [{:keys [conflict preserved retained]} (repair-atomic-board! bpath board after
+                                                                {:exchange? exchange? :preserve-dir dir
+                                                                 :retain-dir (when exchange? (repair-retained-dir vault))})]
+                             ;; One audit line per retained inode so later runs can detect late writes.
+                             (doseq [r retained]
+                               (repair-audit! vault (assoc r :phase :retained :id id :backup-path (str backup))))
                              (when conflict
                                (repair-audit! vault (assoc hashes :phase :conflict :id id :reason conflict
                                                          :preserved preserved :backup-path (str backup)))
