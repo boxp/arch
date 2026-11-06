@@ -5022,7 +5022,10 @@
   ([run-real mountinfo-path proc-root]
    (let [inside? (fn [path] (try (fs/starts-with? (fs/path path) run-real) (catch Exception _ false)))
          unescape (fn [s] (str/replace s #"\\([0-7]{3})" (fn [[_ oct]] (str (char (Integer/parseInt oct 8))))))
-         mountinfo (try (slurp mountinfo-path) (catch Exception _ nil))
+         ;; procfs reports size 0; bb slurp fails on it with "Invalid argument",
+         ;; so read the bytes directly.
+         mountinfo (try (String. (java.nio.file.Files/readAllBytes (fs/path mountinfo-path)) "UTF-8")
+                        (catch Exception _ nil))
          mounts (when mountinfo
                   (map #(nth (str/split % #" ") 4 nil) (str/split-lines mountinfo)))
          procs (try (doall (filter #(re-matches #"[0-9]+" (fs/file-name %)) (fs/list-dir proc-root)))
@@ -6170,7 +6173,12 @@
                  ["proc hold proc missing" (stale-process-hold run-real (str mi) (str (fs/path tmp "noproc"))) "process-scan-unavailable"]
                  ["proc hold proc empty" (stale-process-hold run-real (str mi) (str proc-empty)) "process-scan-unavailable"]
                  ["proc hold cwd inside" (stale-process-hold run-real (str mi) (str proc-in)) "process-active"]
-                 ["proc hold cwd unreadable" (stale-process-hold run-real (str mi) (str proc-bad)) "process-cwd-unreadable"]]]
+                 ["proc hold cwd unreadable" (stale-process-hold run-real (str mi) (str proc-bad)) "process-cwd-unreadable"]
+                 ;; Real procfs mountinfo must be readable (bb slurp fails on it).
+                 ["proc hold real procfs mountinfo"
+                  (when (fs/exists? "/proc/self/mountinfo")
+                    (stale-process-hold run-real "/proc/self/mountinfo" (str proc-ok)))
+                  nil]]]
           (if (= actual expected) (println (str "PASS: " label))
               (do (println (str "FAIL: " label " actual=" (pr-str actual))) (swap! failures conj label))))
         (finally (fs/delete-tree tmp))))

@@ -191,7 +191,7 @@ Pod の再起動が必要）。反映後、sidecar ログに `workspace prune en
 
 ### BOXP-453: stale run と容量ガード
 
-Done の保持期間中、および未完了の票では、ロックされていない票の古い run を検査する。最新の run と判定できない run を保護し、GitHub の commit、未保存変更、ignored ファイル、mount、プロセスの cwd を確認してから削除する。`/proc` や mountinfo が利用できない場合、mount 情報は見つからなかったものとして扱い、取得可能なプロセスの cwd は引き続き検査する。
+Done の保持期間中、および未完了の票では、ロックされていない票の古い run を検査する。最新の run と判定できない run を保護し、GitHub の commit、未保存変更、ignored ファイル、mount、プロセスの cwd を確認してから削除する。mountinfo を読めない・解析できない場合、`/proc` を列挙できない場合、生存プロセスの cwd を解決できない場合は、いずれも安全側に倒して run を保持する（fail-closed）。procfs のファイルはサイズ 0 と報告されるため、mountinfo は babashka の `slurp` ではなくバイト列として直接読む。
 
 | 設定 | 既定値 | 内容 |
 | --- | --- | --- |
