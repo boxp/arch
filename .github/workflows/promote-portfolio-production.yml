@@ -116,7 +116,7 @@ jobs:
           test -s dist/diagrams/lolice-lineage.webp
           test ! -e dist/lineage.html
           test ! -e dist/architecture.html
-          grep -q 'rel="canonical" href="https://b0xp.io/"' dist/index.html
+          grep -q 'rel="canonical" href="https://b0xp.io/index.html"' dist/index.html
           if grep -riE 'noindex|portfolio-stage|boxp-portfolio-stage' dist; then exit 1; fi
           if grep -q 'Disallow: /' dist/robots.txt; then exit 1; fi
       - name: Deploy to existing production Pages project
