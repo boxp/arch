@@ -4700,7 +4700,12 @@ test_assignment_repairs() {
   PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
   assert_file_contains "${tmp}/tick" 'the card write was lost, repairing the card from ticket rev=.* for BOXP-992|BOXP-992; the card write was lost'
   assert_file_contains "${tmp}/starts" BOXP-992
-  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${new}"
+  # The dispatched run's terminal transition issues a fresh revision on both
+  # the card and the ticket, so the repaired stale revision is gone.
+  rev1="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-992.md")"
+  [[ -n "${rev1}" && "${rev1}" != "${old}" ]] || fail "stale ticket revision after repair: ${rev1}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${rev1}"
+  assert_file_not_contains "${vault}/Boards/Task Board.md" "BOXP-992.*rev::${old}"
   # A newer card whose ticket never arrives: after the warn window the ticket frontmatter is repaired from the card.
   rm -rf "${vault}" "${state}" "${tmp}/starts"
   write_board "${vault}" "- [ ] [[Tickets/BOXP-993|BOXP-993: test]] #ticket status::in-progress assignee::codex rev::${new}"
@@ -4708,10 +4713,13 @@ test_assignment_repairs() {
   sed -i "s/^type: task$/type: task\nboard_rev: ${old}/" "${vault}/Tickets/BOXP-993.md"
   PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" run_tick "${vault}" "${state}" env CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 >"${tmp}/tick" 2>&1
   assert_file_contains "${tmp}/tick" 'WARN: assignment revision mismatch persisted for BOXP-993'
-  assert_file_contains "${vault}/Tickets/BOXP-993.md" "^board_rev: ${new}$"
   # The repaired ticket carries the card's assignee, so the same tick dispatches it.
   assert_file_contains "${tmp}/tick" 'processing BOXP-993 from In Progress'
   assert_file_contains "${tmp}/starts" BOXP-993
+  # The dispatched run's terminal transition then issues a fresh revision to both.
+  rev1="$(sed -n 's/^board_rev: //p' "${vault}/Tickets/BOXP-993.md")"
+  [[ -n "${rev1}" && "${rev1}" != "${old}" ]] || fail "stale ticket revision after repair: ${rev1}"
+  assert_file_contains "${vault}/Boards/Task Board.md" "BOXP-993.*rev::${rev1}"
   # Notes and text edits keep the revision; only a lane or assignee change issues a new one.
   rm -rf "${vault}"
   write_board "${vault}" '- [ ] [[Tickets/BOXP-994|BOXP-994: test]] #ticket status::in-progress assignee::boxp'
