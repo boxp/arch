@@ -173,11 +173,12 @@ export function mouthLevel(model: Pick<RigModel, 'skipSmallMouth'>, level: numbe
   return Math.min(1, 0.35 + 0.65 * level)
 }
 
-export type LostPrototype = { id: string; evaluation: string; problems: string; images: string[] }
+export type LostPrototype = { id: string; evaluation: string; problems: string; images: string[]; note?: string }
 export const lostPrototypes: readonly LostPrototype[] = [
   { id: 'kohako-v4', evaluation: '消失・担当不採用', problems: '生成した衣装下地の桜飾り・金縁が正本と合わず、揺れで縦筋。', images: ['./kohako/live2d/compare/kohako-v4-compare-v3.png'] },
   { id: 'kohako-v7', evaluation: '消失・担当不採用', problems: '閉眼パッチは消えたが目周りがぼけ、開眼の目尻に白縁。口 0.5/1 に二重線。', images: ['./kohako/live2d/compare/kohako-v7-compare-eyes.png', './kohako/live2d/compare/kohako-v7-compare-mouth.png', './kohako/live2d/compare/kohako-v7-compare-forehead.png'] },
   { id: 'kohako-v8', evaluation: '消失・担当不採用', problems: '閉眼が平坦線と肌ブロック、開眼の目頭に明るい三角、口 0.1〜0.5 に二重線。', images: ['./kohako/live2d/compare/kohako-v8-compare-eyes.png', './kohako/live2d/compare/kohako-v8-compare-mouth.png'] },
   { id: 'kohako-v9', evaluation: '消失・担当不採用', problems: '閉眼に縦筋とまつ毛の垂れ、口 1.0 で上唇段差、額 Y−30 の縦筋が悪化。', images: ['./kohako/live2d/compare/kohako-v9-compare-eyes.png'] },
   { id: 'kohako-v10', evaluation: '消失・担当不採用', problems: '開眼の縁は解消。閉眼の上まぶたが平坦な淡色で二重線の断片が残る。', images: ['./kohako/live2d/compare/kohako-v10-compare-eyes.png'] },
+  { id: 'kohako-v18', evaluation: '担当不採用(画像生成なしの調整案)', problems: '案a: 閉口/半開きの交差を 0.08〜0.12 に狭めると口 0.1〜0.2 から二重線が出て悪化。閉眼を EyeOpen 0〜0.35 で線形交差すると 0.1〜0.2 で青い目とまつ毛の二重弧。案b: 半開きパッチを広げ縁をぼかすと頬・首元に黒/青の断片。口 1 の上唇は ±1px ずらしでも元位置が最良。いずれも v17 より悪いため v17 のまま。', images: ['./kohako/live2d/compare/kohako-v18a-compare-mouth.jpg', './kohako/live2d/compare/kohako-v18a-compare-eyes.jpg', './kohako/live2d/compare/kohako-v18b-compare-mouth.jpg'], note: 'v18 の調整案は v17 より悪化したため p2lrt は配備していません(最終結果は v17 と同一)。試した案の比較画像を表示します(各画像は 原画 / v17 / 調整案 の順)。' },
 ]
