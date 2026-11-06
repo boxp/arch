@@ -1143,5 +1143,25 @@
   (doseq [c ["cat package.json" "npm install" "cat README.md" "ls ~/.config" "cat ~/.bashrc" "cat docs/npm-guide.md"]]
     (is (not (lf/withhold-output? c)) c)))
 
+;; P0 arch#14503 :273 (BOXP-428). A token word inside a file name with more name after it (access_tokens_backup,
+;; refresh_token_old, api-tokens-2024) names a file holding a bare token just like tokens.json or db_password, so
+;; any program reading it (or a file tool given it as a path) is a source. Mentions stay readable.
+(deftest token-word-inside-file-name
+  (doseq [c ["cat access_tokens_backup" "head -n1 refresh_token_old" "sed -n 1p ./conf/api-tokens-2024" "awk 1 tokens_backup"
+             "cat access_tokens_backup /tmp/other" "less /var/lib/app/access_tokens_backup" "f=access_tokens_backup; cat $f"
+             "{\"file_path\":\"access_tokens_backup\"}" "{\"command\":\"cat access_tokens_backup\"}" "python3 show.py ACCESS_TOKEN_BACKUP"]]
+    (is (lf/withhold-output? c) c))
+  (doseq [c ["grep -rn access_tokens_backup src" "echo rotate access_tokens_backup" "rg tokens_backup docs"
+             "git commit -m 'rename access_tokens_backup'" "{\"cmd\":\"ls\",\"max_output_tokens\":12000}" "grep -rn max_tokens src"
+             "cat docs/reset.md README.md" "cat keyboard.md"]]
+    (is (not (lf/withhold-output? c)) c))
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        value "plainbaretok9q"
+        spans (doall (lf/claude-spans ctx "root" "test:" [{:type "user" :message {:content "first request"}}
+                                                           {:type "assistant" :message {:id "a" :model "test" :content [{:type "tool_use" :id "t" :name "Bash" :input {:command "cat access_tokens_backup"}}]}}
+                                                           {:type "user" :message {:content [{:type "tool_result" :tool_use_id "t" :content value}]}}
+                                                           {:type "assistant" :message {:id "b" :model "test" :content [{:type "text" :text value}]}}]))]
+    (is (not (str/includes? (pr-str spans) value)))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

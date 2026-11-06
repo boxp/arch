@@ -70,6 +70,7 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 
 - `git`/`gh`/`find`/`fd` を一律に言及専用とせず、ファイル内容を出力しない形だけを言及専用とする(既定で拒否)。`git` は内容を出力しない subcommand(add/commit/status/push/pull/fetch/branch/switch/checkout/restore/rm/mv/reset/init/clone/remote/tag/merge/rebase/cherry-pick/revert/worktree/rev-parse)で、かつ `-p`/`--patch`/`-i`/`-v`/`-u` 等を伴わない場合だけ言及専用。`git show HEAD:db_password`、`git cat-file -p`、`git diff`/`log -p`/`blame`/`grep`/`archive`/`config -f`、未知の alias、`git add -p db_password` は機密源。`gh api`/`gist`/`release` 等、`find -exec`/`fd -x` も機密源。`command` は前置き(`command cat db_password`)として扱う。
 - 過剰保留: `git log -- db_password` のように内容を出さない読取系 subcommand も、秘密名ファイルを引数にすると保留する。
+- token/tokens も秘密語として同じ扱いにする(P0 arch#14503 :273): `cat access_tokens_backup`、`head refresh_token_old`、`sed -n 1p api-tokens-2024`、`{"file_path":"access_tokens_backup"}` は機密源。ラベルも既知形式もない裸のトークンが入るため。`grep -rn access_tokens_backup src`、`echo …`、`git commit -m …` などの言及と、`{"max_output_tokens":…}` のような非パス値は対象外。過剰保留: `cat max_tokens_doc` や `python3 count_tokens.py` のように token を名前に含む普通のファイルの読取も保留する。
 
 ## 追記 (arch#14503 P0 :548 / :272)
 
