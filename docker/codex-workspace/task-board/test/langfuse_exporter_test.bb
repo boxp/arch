@@ -221,10 +221,10 @@
                     (by-name "cli-system-prompt"))))
       (testing "tool failure and withheld output"
         (let [tools (by-name "tool:Read")]
-          (is (= "tool_body_policy" (:omitted (json/parse-string (attr-value (first tools) "langfuse.observation.output") true)))))
+          (is (str/includes? (attr-value (first tools) "langfuse.observation.output") "[withheld")))
         (let [bash (first (by-name "tool:Bash"))]
           (is (= 2 (get-in bash [:status :code])))
-          (is (= "tool_body_policy" (:omitted (json/parse-string (attr-value bash "langfuse.observation.output") true))))))
+          (is (str/includes? (attr-value bash "langfuse.observation.output") "[withheld"))))
       (testing "generation usage and delta input"
         (let [first-gen (first (by-name "generation:claude-test"))]
           (is (= {:input 10 :output 5 :cache_read_input_tokens 3 :cache_creation_input_tokens 2}
@@ -556,13 +556,10 @@
 
 (deftest body-policy-and-format-independent-redaction
   (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
-        span (#'lf/tool-span ctx {:key "x" :name "Bash" :input {:command "FOO=bar /bin/echo hidden" :path "src/a" :content "hidden"} :output "one\ntwo"})
-        input (json/parse-string (attr-value span "langfuse.observation.input") true)
-        output (json/parse-string (attr-value span "langfuse.observation.output") true)]
-    (is (= "echo" (:command input)))
-    (is (= "src/a" (:path input)))
-    (is (not (str/includes? (pr-str input) "hidden")))
-    (is (= {:omitted "tool_body_policy" :chars 7 :lines 2} output)))
+        span (#'lf/tool-span ctx {:key "x" :name "Bash" :input {:command "echo hello"} :output "one\ntwo"})]
+    (is (str/includes? (attr-value span "langfuse.observation.input") "echo hello"))
+    (is (= "one\ntwo" (attr-value span "langfuse.observation.output")))
+    (is (= "sent" (attr-value span "langfuse.observation.metadata.body_policy"))))
   (doseq [text ["before\nmy passphrase is sample\nafter\nkeep" "before\\n秘密鍵 sample\\nafter\\nkeep" "before。token sample！after？keep"]]
     (let [out (:value (lf/redact text []))]
       (is (not (str/includes? out "sample")))
@@ -582,13 +579,13 @@
         (is (= "result" (attr-value span "langfuse.observation.output")))))
     (let [span (#'lf/tool-span ctx {:key "c" :name "exec" :input "{\"command\":\"A=b /usr/bin/echo hi\",\"notebook_path\":\"x.ipynb\",\"other\":\"opaque\"}" :output "ok" :status "completed"})
           view (json/parse-string (attr-value span "langfuse.observation.input") true)]
-      (is (= "echo" (:command view)))
+      (is (= "A=b /usr/bin/echo hi" (:command view)))
       (is (= "x.ipynb" (:notebook_path view)))
       (is (= "completed" (attr-value span "langfuse.observation.metadata.status")))
-      (is (not (str/includes? (pr-str view) "opaque")))))
+      (is (str/includes? (pr-str view) "opaque"))))
   (fs/with-temp-dir [base {}]
     (write-fixture! base {})
-    (is (= "body_tools_until_tool_output" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_body")))))
+    (is (= "all_tools_masked_unless_secret_exposed" (attr-value (first (:spans (prepared (test-config base)))) "langfuse.trace.metadata.coverage.tool_body")))))
 
 (defn privacy-lines [format tool value]
   (if (= format :claude)
@@ -610,7 +607,7 @@
             serialized (pr-str spans)]
         (is (str/includes? serialized "first request") (str format tool))
         (is (str/includes? serialized "before tool") (str format tool))
-        (is (= (contains? #{"TodoWrite" "WebSearch" "web_search"} tool) (str/includes? serialized "plainconfigvalue")) (str format tool))))))
+        (is (str/includes? serialized "plainconfigvalue") (str format tool))))))
 
 (deftest private-child-and-root-output
   (doseq [format [:claude :codex] tool ["Bash" "Read" "unknown_tool"]]
@@ -627,7 +624,7 @@
           (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl (privacy-lines :claude tool "plainconfigvalue")))
           (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl (privacy-lines :codex tool "plainconfigvalue"))))
         (let [spans (:spans (prepared cfg))]
-          (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format tool))
+          (is (str/includes? (pr-str spans) "plainconfigvalue") (str format tool))
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
 (deftest child-prompt-after-the-parent-read-a-file
@@ -651,7 +648,7 @@
           (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl child))
           (spit (str (fs/path day (str "rollout-" thread-delegate ".jsonl"))) (jsonl child)))
         (let [spans (:spans (prepared cfg))]
-          (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))
+          (is (str/includes? (pr-str spans) "plainconfigvalue") (str format))
           (is (some #(re-find #"subagent:|delegate" (:name %)) spans) "the child's span exists")
           (is (str/includes? (pr-str spans) "runner prompt")))))))
 
@@ -769,7 +766,71 @@
                     [{:type "response_item" :payload {:type "function_call" :call_id "u" :name "Read" :arguments "{\"file_path\":\"/tmp/plainconfigvalue\"}"}}
                      {:type "response_item" :payload {:type "function_call" :call_id "v" :name "TodoWrite" :arguments "{\"text\":\"plainconfigvalue\"}"}}])
             spans ((if (= format :claude) lf/claude-spans lf/codex-spans) ctx "root" "test:" (concat lines extra))]
-        (is (not (str/includes? (pr-str spans) "plainconfigvalue")) (str format))))))
+        (is (str/includes? (pr-str spans) "plainconfigvalue") (str format))))))
+
+(deftest evidence-based-tool-bodies
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        lines [{:type "user" :message {:content "initial request"}}
+               {:type "assistant" :message {:id "a" :content [{:type "tool_use" :id "r" :name "Read" :input {:file_path "/repo/README.md"}}]}}
+               {:type "user" :message {:content [{:type "tool_result" :tool_use_id "r" :content "safe readme body MARKER_SAFE_OUT"}]}}
+               {:type "assistant" :message {:id "b" :content [{:type "tool_use" :id "b" :name "Bash" :input {:command "ls -la"}}]}}
+               {:type "user" :message {:content [{:type "tool_result" :tool_use_id "b" :content "listing"}]}}
+               {:type "assistant" :message {:id "c" :content [{:type "text" :text "final answer MARKER_SAFE_REPLY"}]}}
+               {:type "user" :message {:content "later user turn"}}
+               {:type "assistant" :message {:id "d" :content [{:type "text" :text "done"}]}}]
+        body (json/generate-string (doall (lf/claude-spans ctx "root" "test:" lines)))]
+    (doseq [marker ["MARKER_SAFE_OUT" "/repo/README.md" "ls -la" "MARKER_SAFE_REPLY" "later user turn" "body_policy" "sent"]]
+      (is (str/includes? body marker) marker))
+    (is (not (str/includes? body "[withheld")))))
+
+(deftest evidence-based-value-exposure
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}
+        value (str "Zq7" "plainvalue9")
+        spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" (str "password: " value))))]
+    (is (str/includes? (pr-str spans) "withheld_after_secret_exposure"))
+    (is (not (str/includes? (pr-str (map #(lf/sanitize-span {:secret-values [] :max-field-bytes 100000} (atom {}) %) spans)) value)))))
+
+(deftest word-only-values-propagate-through-run
+  (fs/with-temp-dir [base {}]
+    (write-fixture! base {})
+    (let [cfg (test-config base) project (lf/claude-project-dir cfg ticket run-id)
+          value (str "Zq7" "plainvalue9")
+          lines (privacy-lines :claude "Read" (str "the password is " value))
+          lines (assoc-in lines [3 :message :content] [{:type "text" :text (str "here it is " value)}])]
+      (spit (str (fs/path project "sess.jsonl")) (jsonl lines))
+      (let [body (pr-str (:spans (prepared cfg)))]
+        (is (not (str/includes? body value)))
+        (is (str/includes? body "here it is"))))))
+
+(deftest exposure-limits-and-metadata
+  (let [ctx {:tid "01234567890123456789012345678901" :trace-attrs {}}]
+    (doseq [[output reason] [[(apply str (repeat 262145 "x")) "unscanned_large_output"]
+                             [(str "password " (str/join " " (map #(str "Value" % "X") (range 257)))) "too_many_session_values"]]]
+      (let [spans (doall (lf/claude-spans ctx "root" "test:" (privacy-lines :claude "Read" output)))]
+        (is (some #(= reason (:private-reason %)) spans))
+        (is (some #(= "withheld_after_secret_exposure" (attr-value % "langfuse.observation.metadata.body_policy")) spans)))))
+  (fs/with-temp-dir [base {}]
+    (write-fixture! base {})
+    (let [cfg (test-config base) data (lf/build-run cfg ticket run-id)
+          root (first (:spans (lf/prepare-spans cfg data)))]
+      (is (= "sensitive_source" (attr-value root "langfuse.trace.metadata.coverage.withheld_reason")))
+      (is (pos? (get-in data [:counts :bodies_withheld_sensitive_source] 0)))
+      (is (pos? (get-in data [:counts :bodies_withheld_after_secret_exposure] 0))))))
+
+(deftest sensitive-child-still-withholds-parent-and-root
+  (fs/with-temp-dir [base {}]
+    (write-fixture! base {})
+    (let [cfg (test-config base) project (lf/claude-project-dir cfg ticket run-id)
+          run-dir (fs/path (:root cfg) "runs" ticket run-id)
+          value (str "synthetic" "ChildPrivateValue")
+          child (privacy-lines :claude "Read" value)
+          child (assoc-in child [1 :message :content 1 :input] {:file_path "/a/.env"})]
+      (spit (str (fs/path run-dir "last-message.md")) value)
+      (spit (str (fs/path project "sess.jsonl")) (jsonl (privacy-lines :claude "Task" value)))
+      (spit (str (fs/path project "sess" "subagents" "agent-a.jsonl")) (jsonl child))
+      (let [body (pr-str (:spans (prepared cfg)))]
+        (is (not (str/includes? body value)))
+        (is (str/includes? body "withheld_sensitive_source"))))))
 
 (deftest post-batch-does-not-request-h2c-upgrade
   ;; Langfuse closes the connection on the JDK's default `Upgrade: h2c`, without any response.
