@@ -92,3 +92,4 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - `curl -u 12345:67890` のように利用者名・パスワードが数字だけの値も認証情報として扱う(P0 :49)。以前は `数字:数字` を時刻とみなして対象外にしていたが、日付書式の除外は `+%` + 英字だけで足りるため撤廃した。
 - runner が組み立てる `prompt.md` / `last-message.md`(root span の入力/出力)も依頼文・応答と同じ判定で走査する(P0 :1130)。セッションログが欠落した run ではこの2つが唯一の本文になるため、名指しされた値(`password: huntertwo`、`the password is …`)は pin して root と run 内の全 span でマスクする。pin できない値(`password: 123`、走査不能、値過多)を含む場合は root の入力/出力と run 内の generation/tool 本文を `withheld_after_secret_exposure` で保留し、`coverage.withheld_reason` に理由を残す。
 - 実 run 26 件(BOXP-436/437/440/446/449/450、件数のみ)の比較: 子 span の body_policy 件数は修正前後で同一。差分は root に新設した `body_policy=sent` の +1 のみで、root の保留は 0 件。
+- 散文で名指しされた値の走査は本文の全行を対象にする(走査対象は呼出し側で 256 KiB に制限)。1 行に調べる上限(64)を超える秘密語がある場合は値を取りこぼさないよう保留する(P0 arch#14503 :726)。

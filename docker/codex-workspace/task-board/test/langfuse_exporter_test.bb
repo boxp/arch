@@ -1280,5 +1280,19 @@
       (is (str/includes? o "rootpromptmarker") "control: an ordinary prompt is sent")
       (is (str/includes? o "rootreplymarker") "control: an ordinary reply is sent"))))
 
+;; P0 arch#14503 :726 (BOXP-428). prose-values scanned only the first 4096 lines and dropped the rest, so a value
+;; named after line 4096 was neither pinned nor withheld. Every line of a scannable body is scanned now, and a line
+;; with more secret words than are examined withholds instead of dropping the rest.
+(deftest prose-values-scan-every-line
+  (let [filler (apply str (repeat 5000 "ordinary line\n"))]
+    (doseq [text [(str filler "the password is huntertwolate") (str filler "lateprosevalue is my token")]]
+      (let [value (if (str/includes? text "huntertwolate") "huntertwolate" "lateprosevalue")]
+        (is (contains? (:values (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})) value))
+        (is (contains? (:values (#'lf/body-exposure text)) value))))
+    (is (= "value_exposure" (:reason (#'lf/tool-exposure {:input "cat notes.txt"} {:output (str filler "the password is abc")}))))
+    (is (nil? (:reason (#'lf/tool-exposure {:input "cat notes.txt"} {:output filler}))) "control: long ordinary output stays readable"))
+  (let [line (str (apply str (repeat 70 "password; ")) "password is manywordsvalue")]
+    (is (some? (:reason (#'lf/tool-exposure {:input "cat notes.txt"} {:output line}))))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

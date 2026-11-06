@@ -683,10 +683,12 @@
   (let [tokens (prose-tokens line)
         ;; Every secret word on the line, not only the first (P0 arch#14503 :541): "Reset your password; kiwimango is
         ;; my token" names kiwimango with the second word.
-        found (keep (fn [i] (prose-index-values tokens i))
-                    (take 64 (keep-indexed (fn [i t] (when (secret-name-token? t) i)) tokens)))]
-    (when (seq found)
-      [(set (mapcat first found)) (boolean (some second found))])))
+        idxs (keep-indexed (fn [i t] (when (secret-name-token? t) i)) tokens)
+        ;; More secret words than are examined cannot be pinned, so the line withholds instead of dropping the rest.
+        too-many? (> (count (take 65 idxs)) 64)
+        found (keep (fn [i] (prose-index-values tokens i)) (take 64 idxs))]
+    (cond too-many? [(set (mapcat first found)) true]
+          (seq found) [(set (mapcat first found)) (boolean (some second found))])))
 
 (defn- prose-index-values
   [tokens i]
@@ -716,7 +718,9 @@
 (defn- prose-values
   "{:values vs} named by a secret word in prose, with {:reason \"value_exposure\"} when one is too short to pin."
   [text]
-  (let [found (keep prose-line-values (take 4096 (str/split (str text) segment-break)))]
+  ;; Every line is scanned (P0 arch#14503 :726): the first 4096 only left a value named later unpinned. Callers bound
+  ;; the body to 256 KiB, so this stays linear in that size.
+  (let [found (keep prose-line-values (str/split (str text) segment-break))]
     (cond-> {:values (set (mapcat first found))}
       (some second found) (assoc :reason "value_exposure"))))
 
