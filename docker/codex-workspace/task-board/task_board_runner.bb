@@ -4762,10 +4762,11 @@
                               todo {:rev (:rev latest) :mode (:mode latest) :unreceived (get states :unreceived 0)
                                     :open (get states :received 0) :gate "held"}
                               summary (dissoc (read-edn-file (fs/path dir "summary.edn") {}) :status)]
+                          ;; A held result is not a terminal transition: the
+                          ;; assignment (and its revision) stays as it was.
                           (when-not exhausted?
-                            (let [rev (new-rev)]
-                              (move-card! ticket-id "ready" assignee rev)
-                              (update-frontmatter! ticket-id {:status "ready" :assignee assignee :board_rev rev})))
+                            (move-card! ticket-id "ready" assignee)
+                            (update-frontmatter! ticket-id {:status "ready" :assignee assignee}))
                           (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)
                                      (assoc (if exhausted? summary (dissoc summary :blocker-category :blocker-reason :wait-reason))
                                             :result final-result :todo todo))
@@ -4786,7 +4787,11 @@
                         ;; result waiting for the Owner goes to the Owner.
                         continuing? (and (= "ready" next-status) (= "continue" intended))
                         next-assignee (if (or continuing? (= "in-progress" next-status)) assignee "boxp")
-                        rev (when (#{"done" "blocked" "ready"} next-status) (new-rev))]
+                        ;; Terminal (done / blocked) transitions issue a fresh
+                        ;; revision so a stale synced Board copy cannot project
+                        ;; the earlier lane back. A continuation keeps the
+                        ;; assignment and its revision.
+                        rev (when (#{"done" "blocked"} next-status) (new-rev))]
                     ;; localllm docs-edit: journal the transition before it
                     ;; starts so a crash in the middle is completed (not rolled
                     ;; back) by `recover-localllm-write!`.
@@ -4819,7 +4824,9 @@
                                     (if (block-ticket! ticket-id run-id action "continue" exit gate nil last-message)
                                       (update-frontmatter! ticket-id {:closed ""})
                                       (throw (ex-info "could not record TODO gate block" {})))
-                                    (let [rev (new-rev)]
+                                    ;; The Done stamp is withdrawn: the held result keeps
+                                    ;; the run's starting assignment revision.
+                                    (let [rev (if (str/blank? start-rev) (new-rev) start-rev)]
                                       (move-card! ticket-id final assignee rev)
                                       (update-frontmatter! ticket-id {:status final :assignee assignee :closed "" :board_rev rev})))
                                   (mark-run! ticket-id run-id (if exhausted? :blocked :succeeded)

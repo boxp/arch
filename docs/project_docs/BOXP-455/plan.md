@@ -13,7 +13,7 @@
 
 ## 第2段階
 
-1. runnerの終端遷移でカードとチケットに同一の新revisionを記録し、古いBoardの復旧を可能にする。
+1. runnerの終端遷移(done/blocked)でカードとチケットに同一の新revisionを記録し、古いBoardの復旧を可能にする。ready継続やTODO保留は担当継続のため既存revisionを維持し、失敗遷移の復元時はカードrevを票のrevへ再整合する。
 2. 重複カードの投影・移動・dispatchを停止する。
 3. reconcile-doneで共有ロックを任意とし、vault外バックアップと置換後の読み戻しを追加する。
 
