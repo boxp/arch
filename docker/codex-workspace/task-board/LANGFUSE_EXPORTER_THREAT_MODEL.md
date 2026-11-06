@@ -115,6 +115,7 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 
 - 値の中に秘密語を含むもの(`password: mysecret123`、`token = my-token-value`)も値として pin する(P0 :639)。以前は秘密語を含む語を一律に名前とみなして除外していた。名前として除外するのは秘密語単体(`password`、`api_key`、`secrets`)と、非 ASCII で秘密語を含む語(`トークン数`)、構造の中で `:`/`=` が続くキー語(`secretKeyRef: name: app-secrets`)だけ。過剰マスク: 値位置に置かれた名前(`password = DB_PASSWORD`)は以後同じ run で伏字になる。
 - pin 値・環境変数値の符号化された再掲は、符号化の種類を列挙せず、本文中の Base64/base64url/hex らしい連続を復号して値を探す(復号開始位置を Base64 は 4 通り、hex は 2 通り試すため、長い符号化文字列の途中に値があっても検出する)。見つかればその連続ごと `[REDACTED:env]` にし、最終ガードも同じ処理で再検査する。4 文字未満の値は乱数的な復号結果に一致するため復号側では探さない。普通の Base64(`aGVsbG8gd29ybGQ=`)や英文はそのまま読める。
+- 符号化文字の連続は長さの上限なしで1つの連続として扱う(以前は 65,536 文字で分割され、境界をまたぐ値の符号化がどちらの断片でも見つからなかった。P0 arch#14503 :260)。4,194,304 文字を超える連続は復号せず丸ごと `[REDACTED:env]` にする(fail-closed、pin 値がある場合のみ)。
 - 許容残差(TD-07): base32、rot13、gzip、二重符号化、大文字化、言い換えなど上記以外の変換は検出しない。
 - 既知の認証ファイルは、シェルが引用符・エスケープを連結した後の語でも判定する(P0 :421): `cat ~/.npm''rc`、`cat ~/.np\mrc`、`cat ~/'.npmrc'`、`bash -lc "cat ~/.npm''rc"`。照合は語全体またはパス要素単位で、引用を含む語だけを再走査するため、引用付き引数の連結で別の語と融合した文字列(`rg 'x' a.bb",max_output_tokens`)をファイル名と誤認しない(最初の試作では全体照合で実 run BOXP-436 の sent 33→3 となる退行を検出し、語単位へ変更した)。
 - 処理量: 200KB の Base64 連続で約 40ms、2 万個の短い Base64 語 + 500 値で約 1.1 秒(非同期の exporter 内)。

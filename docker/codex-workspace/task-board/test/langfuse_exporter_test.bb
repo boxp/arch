@@ -1391,5 +1391,21 @@
   (doseq [c ["cat package''.json" "cat ~/.bash''rc" "cat notes''.txt"]]
     (is (not (lf/withhold-output? c)) c)))
 
+;; P0 arch#14503 :260 (BOXP-428). A run of encoding characters longer than 65,536 was split into separate matches, so
+;; a pinned value whose Base64 form straddled the split was found in neither part. The whole run is decoded now, and a
+;; run past the decode bound is masked whole (fail-closed).
+(deftest long-encoded-run-is-not-split
+  (let [v (str "my" "secret" "123")
+        b64 (.encodeToString (java.util.Base64/getEncoder) (.getBytes v "UTF-8"))]
+    (doseq [pad [65530 65532 65535 70000 131070]]
+      (let [enc (str (apply str (repeat pad "A")) b64 (apply str (repeat 100 "B")))
+            {:keys [value]} (lf/redact (str "out " enc " done") #{v})]
+        (is (not (str/includes? value b64)) pad)
+        (is (str/includes? value "[REDACTED:env]") pad)
+        (is (not (lf/guard-safe? (str "out " enc) #{v})) pad)))
+    ;; Control: a long ordinary run without a pinned value stays readable.
+    (let [plain (apply str (repeat 70000 "A"))]
+      (is (= (str "x " plain " y") (:value (lf/redact (str "x " plain " y") #{v})))))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

@@ -256,7 +256,11 @@
 ;; longer encoded string is found too. Values under 4 characters are not looked for in decoded bytes: they would
 ;; match random decodings. Accepted residual (TD-07, LANGFUSE_EXPORTER_THREAT_MODEL.md): other transforms (base32,
 ;; rot13, gzip, double encoding, paraphrase) are not decoded.
-(def encoded-run #"[A-Za-z0-9+/_-]{4,65536}={0,2}")
+;; The run is matched whole (no length cap): a capped match split a long run, and a value encoded across the split
+;; was found in neither part (P0 arch#14503 :260). A run longer than max-decoded-run is masked whole without decoding
+;; (fail-closed), so decoding stays bounded. Fields reaching redact are bounded by the caller.
+(def encoded-run #"[A-Za-z0-9+/_-]{4,}={0,2}")
+(def max-decoded-run 4194304)
 (def max-encoded-runs 100000)
 
 (defn- decodings [run]
@@ -289,7 +293,8 @@
                    (fn [run]
                      (when (> (swap! seen inc) max-encoded-runs) (throw (ex-info "too many encoded runs" {})))
                      (if (and (>= (count run) min-run)
-                              (some (fn [d] (some #(str/includes? d %) needles)) (decodings run)))
+                              (or (> (count run) max-decoded-run)
+                                  (some (fn [d] (some #(str/includes? d %) needles)) (decodings run))))
                        (mark :env)
                        run))))))
 
