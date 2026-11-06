@@ -121,6 +121,8 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       const applyResult = (settled: Awaited<ReturnType<typeof hermes.run>>) => {
           const result = entry.cancelRequested && settled.status === 'failed' ? { status: 'failed' as const, error: 'cancelled' } : settled
           entry.status = result.status
+          // 終了した run の承認待ちは無効化する（ポーリング失敗/タイムアウトで approval が残り承認待ちを返し続けないように）。
+          if (entry.approval) entry.approval.active = false
           if (result.status === 'done') {
             entry.reply = { text: result.text, at: now() }
             lastExchange = { text: input.text.slice(0, 500), reply: result.text.slice(0, 1000) }
@@ -139,7 +141,10 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
           if (result.status === 'failed' && result.error === 'unknown_execution') result = { status: 'failed', error: 'session_paused' }
         }
         applyResult(result)
-      })().catch((e) => { console.error('conversation settle failed', e instanceof Error ? e.message : 'unknown') })
+      })().catch((e) => {
+        console.error('conversation settle failed', e instanceof Error ? e.message : 'unknown')
+        if (entry.status === 'pending') applyResult({ status: 'failed', error: 'internal_error' })
+      })
       return entry
     },
   }

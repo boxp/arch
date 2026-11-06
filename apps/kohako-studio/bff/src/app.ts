@@ -7,7 +7,8 @@ type Principal = 'owner' | 'verifier'
 export function createApp(opts: { authenticate: (headers: IncomingMessage['headers']) => Promise<Principal | null>; hermes?: ReturnType<typeof createHermes>; sttUrl?: string; now?: () => number; fetch?: typeof fetch }) {
   const now = opts.now ?? Date.now, fetcher = opts.fetch ?? fetch
   const conversations = opts.hermes ? { owner: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-web' }), verifier: createConversation({ now, hermes: opts.hermes, prefix: 'kohako-verify' }) } : undefined
-  const view = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => ({ requestId: e.requestId, status: e.approval?.active && !e.approval.consumed ? 'approval' : e.status, ...(e.reply ? { reply: e.reply } : {}), ...(e.error ? { error: e.error } : {}), ...(e.approval?.active && !e.approval.consumed ? { approval: { approvalId: e.approval.approvalId, summary: e.approval.summary, expiresAt: e.approval.expiresAt } } : {}) })
+  const awaitingApproval = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => e.status === 'pending' && !!e.approval?.active && !e.approval.consumed
+  const view = (e: NonNullable<ReturnType<NonNullable<typeof conversations>['owner']['get']>>) => ({ requestId: e.requestId, status: awaitingApproval(e) ? 'approval' : e.status, ...(e.reply ? { reply: e.reply } : {}), ...(e.error ? { error: e.error } : {}), ...(awaitingApproval(e) && e.approval ? { approval: { approvalId: e.approval.approvalId, summary: e.approval.summary, expiresAt: e.approval.expiresAt } } : {}) })
   return async (req: IncomingMessage, res: ServerResponse) => {
     const json = (status: number, data: unknown) => { res.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(data)) }
     try {

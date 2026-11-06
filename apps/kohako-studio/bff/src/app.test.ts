@@ -30,3 +30,17 @@ it('isolates sessions and requests and restricts verifier approval', async () =>
     expect(instructions).not.toMatch(/G2|グラス|眼鏡|メガネ/)
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+it('clears pending approval when the run ends with a polling failure', async () => {
+  let settle: (r: any) => void = () => {}
+  const hermes = { run: (_id: string, _text: string, _session: string, _instructions: string, cb: any) => { cb('run', { description: 'test', command: '', choices: ['once', 'deny'] }); return new Promise(r => { settle = r }) }, approve: async () => 'ok', stop: async () => 'ok' } as unknown as ReturnType<typeof createHermes>
+  const server = createServer(createApp({ authenticate: async () => 'owner', hermes }))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    expect((await fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId: 'owner-456', kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }) })).status).toBe(202)
+    expect((await (await fetch(base + 'requests/owner-456')).json() as any).status).toBe('approval')
+    settle({ status: 'failed', error: 'poll_timeout' }); await new Promise(r => setTimeout(r, 10))
+    const item = await (await fetch(base + 'requests/owner-456')).json() as any
+    expect(item.status).toBe('failed'); expect(item.approval).toBeUndefined()
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
