@@ -24,3 +24,9 @@ Docker の名前付き volume と `docker cp` によりデーモンが別名前�
 同じ `rebuild.sh VAULT WORK_DIR` は v13 に続けて、`WORK_DIR/v14/out/kohako-v14.p2lrt` と比較試案 `WORK_DIR/v14b/out/kohako-v14b.p2lrt`、それぞれの loss report と静止ポーズを出力する。v14 は v13 の後ろ髪の生成由来部分を原画の髪の小片を拡張した色と線に置き換える。v14b はその上で、原画の外側の髪の暗い領域の一部を body から動く後ろ髪へ追加移動する。どちらも手作業の近似で、体側に残る髪との継ぎ目を完全には解消しない。画像生成は行わない。
 
 `kohako-v14/capture.py` は静止パラメータの描画で、物理シミュレーションではない。`kohako-v14/make_compare.py WORK_DIR OUTPUT_DIR` は Pillow と NumPy がある環境で比較 PNG と露出領域を出力する。露出マスクは別描画した後ろ髪の alpha × (1 − 前景合成 alpha) が 5% 超の位置で、v13 で移した原画の髪も含む。静止原画との色差は、動かしたポーズの美術上の正解との距離を表さない。
+
+## v15 / v15b の再構築
+
+同じ `rebuild.sh VAULT WORK_DIR` で `v15/out/kohako-v15.p2lrt` と `v15b/out/kohako-v15b.p2lrt`、loss report、静止ポーズ、選択マスクを出力する。v15 は v14 の体側の暗色領域を後ろ髪へ移し、v15b はより広い範囲に原画の画素を使い、肩付近に Telea 補完の体追従下地を加える。画像生成は行わない。両案ともマスクは手作業の近似で、完全分離や実時間の物理品質は保証しない。再実行時には v15、v15b の出力ディレクトリも削除する。
+
+v15c は v15b に加え、既存の三つ編みの裏に残る暗い体側補完を選択して除き、原画の外周で半透明の後ろ髪画素に 1 px の defringe を適用する。v15e は v15 の閉眼層だけを、Vault に既存の `codex-eyes-closed-v14-1.png` を ECC で合わせて肌色を補正した素材に差し替える。生成素材の作成はこのスクリプトでは行わない。`v15e/out/v15e-eyes.png` は物理シミュレーションなしの正面と X±20 の閉眼で、`v13/out/v15e-eyes.png` も比較用に出る。`kohako-v15/make_compare.py WORK_DIR OUTPUT_DIR` および `kohako-v15e/make_compare.py WORK_DIR OUTPUT_DIR` で比較画像を再生成できる。実行には Pillow が必要。v15c と v15e の出力ディレクトリも再実行時に削除される。
