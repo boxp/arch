@@ -132,3 +132,9 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 値全体が秘密語単体(`password: secrets`、`token = credentials`、`{"api_key": "passphrase"}`、`the password is secrets`)の場合も、その語を値として pin する(以前は参照扱いで除外し、後続本文の裸の再掲が送信されていた)。4 文字未満(`password: pwd`)は value_exposure で保留。`${PASSWORD}` などの参照、長い値の中の名前、env エントリの変数名(`PASSWORD=...` の `PASSWORD`)は従来どおり値としない。
 - 過剰マスク: `password: secret` や `password: <secret>` のような説明・雛形を読むと、以後同じ run で `secret` などの語が伏字になる(保留はしない)。
 - 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
+
+## 追記 (arch#14503 P0 secret-file-word?)
+
+- ハイフンで始まる秘密名ファイルも、必ずファイル名になる位置では機密源として扱う: オプション終端 `--` の後の被演算子(`sed -n 1p -- -db_password`、`grep -h x -- -db_password`、`grep -- -x -db_password` の2つ目以降)、入力リダイレクト(`< -db_password`、`<-db_password`)、`dd if=-db_password`、変数代入(`f=-db_password`)、`open('-db_password')`。以前は先頭 `-` の語を一律にオプションとみなして除外し、ラベルのない秘密値が送信されていた。
+- `--` より前の先頭 `-` の語は従来どおりオプションとして扱う(`--password-file=x.cnf`、`--token-ttl 5` で保留しない)。grep/rg で `--` の直後の最初の被演算子は検索語のまま(`grep -rn -- -password src` は読める)。`echo`/`ls` 等の言及専用コマンドも対象外。
+- 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。

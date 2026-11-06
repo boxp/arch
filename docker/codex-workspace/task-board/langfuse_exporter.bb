@@ -406,9 +406,14 @@
 ;; flow") withholds that output.
 (def spaced-secret-file-name
   #"(?i)(?:[^\r\n]{0,1024}[/\\])?[^/\\\r\n]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?|tokens?)[^/\\\r\n]{0,255}")
-(defn- secret-file-word? [w]
-  (boolean (and (not (str/starts-with? w "-")) (not (re-find #"[\r\n]" w)) (<= (count w) 2048)
+;; A word in a position that is always a file name (after the end-of-options marker --, a redirect, dd if=, a
+;; variable assignment, open('...')) may begin with a hyphen (sed -n 1p -- -db_password), so the option exclusion
+;; applies only where the word could be an option (P0 arch#14503 secret-file-word?).
+(defn- secret-file-name? [w]
+  (boolean (and (not (re-find #"[\r\n]" w)) (<= (count w) 2048)
                 (if (re-find #"\s" w) (re-matches spaced-secret-file-name w) (re-matches secret-file-name w)))))
+(defn- secret-file-word? [w]
+  (and (not (str/starts-with? w "-")) (secret-file-name? w)))
 ;; A glob or brace word whose literal text spells a secret word or part of one next to a wildcard (db_password*,
 ;; db_pass*, *word, ?b_password, pass[w]ord, db_pass{word,}, cred*) may expand to a secret-named file, so a reader
 ;; given one is treated as a source (fail-closed, P0 arch#14503 :343 cat db_password*). A glob whose visible text
@@ -419,7 +424,7 @@
 ;; or python code is text; a URL (https://h/?q=1) is not a file name either.
 (defn- glob-raw-word? [raw]
   (let [bare (str/replace raw #"\"(?:[^\"\\]|\\.){0,4096}\"|'[^']{0,4096}'|\\." "")]
-    (boolean (and (not (str/starts-with? raw "-")) (<= (count raw) 2048) (not (str/includes? raw "://"))
+    (boolean (and (<= (count raw) 2048) (not (str/includes? raw "://"))
                   (re-find #"[*?\[]" bare)))))
 (def secret-words ["passwords" "passwds" "passphrases" "secrets" "credentials" "tokens"])
 (defn- aimed-glob?
@@ -473,31 +478,39 @@
         words (vec (take max-scanned-words all-words))
         globbed (set (keep (fn [[raw w]] (when (and (glob-raw-word? raw) (aimed-glob? w)) w))
                            (map vector (take max-scanned-words (re-seq raw-word segment)) words)))
-        possible-secret-file-word? (fn [w] (or (secret-file-word? w) (contains? globbed w)))
-        redirected (some (fn [[a b]] (and (re-matches #"\d?<" a) b (possible-secret-file-word? b)))
+        ;; Globs (aimed-glob?) are found for every word; outside the always-a-file positions a leading-hyphen
+        ;; word is still treated as an option below.
+        possible-secret-file-word? (fn [w] (and (not (str/starts-with? w "-")) (or (secret-file-word? w) (contains? globbed w))))
+        file-position-word? (fn [w] (or (secret-file-name? w) (contains? globbed w)))
+        redirected (some (fn [[a b]] (and (re-matches #"\d?<" a) b (file-position-word? b)))
                          (partition 2 1 (concat words [nil])))
-        inline-redirect (some #(when-let [[_ f] (re-matches #"\d?<([^<].*)" %)] (or (secret-file-word? f) (contains? globbed %))) words)
+        inline-redirect (some #(when-let [[_ f] (re-matches #"\d?<([^<].*)" %)] (or (secret-file-name? f) (contains? globbed %))) words)
         args (drop-while #(or (re-matches #"[A-Za-z_]\w*=.*" %) (contains? prefix-programs (last (str/split % #"/")))
                               (re-matches #"-\S*|\d+" %))
                          words)
         program (some-> (first args) (str/split #"/") last)
-        operands (keep (fn [[prev w]] (when-not (or (str/starts-with? w "-") (re-matches #"\d+" w)
-                                                    (and (contains? text-options prev) (re-find #"\s" w))
-                                                    (contains? glob-value-options prev))
-                                        w))
-                       (partition 2 1 args))
-        dd-input (some #(when-let [[_ f] (re-matches #"if=(.*)" %)] (or (secret-file-word? f) (contains? globbed %))) words)
-        ;; A secret-named file put in a variable (f=db_password; cat $f) is read through it later.
-        assigned (some #(when-let [[_ f] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (secret-file-word? f)) (take-while #(re-matches #"[A-Za-z_]\w*=.*" %) words))]
+        ;; Everything after the end-of-options marker -- is an operand, even a word that begins with a hyphen.
+        [before-end after-end] (split-with #(not= "--" %) args)
+        after-end (rest after-end)
+        operands (concat (keep (fn [[prev w]] (when-not (or (str/starts-with? w "-") (re-matches #"\d+" w)
+                                                            (and (contains? text-options prev) (re-find #"\s" w))
+                                                            (contains? glob-value-options prev))
+                                                w))
+                               (partition 2 1 before-end))
+                         after-end)
+        operand-secret? (fn [w] (if (str/starts-with? w "-") (file-position-word? w) (possible-secret-file-word? w)))
+        dd-input (some #(when-let [[_ f] (re-matches #"if=(.*)" %)] (or (secret-file-name? f) (contains? globbed %))) words)
+        ;; A secret-named file put in a variable (f=db_password; cat $f, f=-db_password) is read through it later.
+        assigned (some #(when-let [[_ f] (re-matches #"[A-Za-z_]\w*=(.*)" %)] (secret-file-name? f)) (take-while #(re-matches #"[A-Za-z_]\w*=.*" %) words))]
     (boolean
      (or (over-limit? max-scanned-words all-words)
          redirected inline-redirect dd-input assigned
          (and program
               (cond (contains? search-programs program)
-                    (or (some possible-secret-file-word? (rest operands))
-                        (and (some pattern-option? (rest args)) (some possible-secret-file-word? operands)))
+                    (or (some operand-secret? (rest operands))
+                        (and (some pattern-option? (rest before-end)) (some operand-secret? operands)))
                     (mention-only? program (rest args)) false
-                    :else (some possible-secret-file-word? operands)))
+                    :else (some operand-secret? operands)))
          (and (some #(re-matches stdout-sink %) words) (some secret-file-word? words))))))
 
 (defn- command-texts
@@ -542,7 +555,7 @@
                          ;; Quotes and escapes are joined as the shell does before known auth files are matched, so
                          ;; cat ~/.npm''rc or cat ~/.np\mrc reads ~/.npmrc (P0 arch#14503 :421).
                          (some quoted-auth-file? segments)
-                         (some (fn [[_ f]] (secret-file-word? f)) opens)
+                         (some (fn [[_ f]] (secret-file-name? f)) opens)
                          (some segment-reads-secret-file? segments))))
                  (command-texts (str input)))))
 

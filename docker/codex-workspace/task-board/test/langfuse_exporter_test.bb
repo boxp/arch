@@ -1509,5 +1509,21 @@
   (doseq [cmd ["date -u '+%H:%M'" "ls -u my\\ notes.txt" "curl -u user https://x"]]
     (is (= cmd (:value (lf/redact cmd #{}))) cmd)))
 
+;; P0 arch#14503 secret-file-word? (BOXP-428). A secret-named file whose name begins with a hyphen, given after the
+;; end-of-options marker (sed -n 1p -- -db_password) or in a position that is always a file (< -db_password,
+;; if=-db_password), was excluded as an option and its unlabeled value was sent.
+(deftest secret-file-leading-hyphen
+  (doseq [c ["sed -n 1p -- -db_password" "cat -- -db_password" "awk 1 -- ./x -app-secret.txt" "grep -h x -- -db_password"
+             "grep -- -x -db_password" "cat < -db_password" "cat <-db_password" "dd if=-db_password status=none"
+             "f=-db_password; cat -- \"$f\"" "cat -- -db_pass*" "{\"cmd\":\"sed -n 1p -- -db_password\"}"
+             "bash -lc 'sed -n 1p -- -db_password'" "python3 -c \"print(open('-db_password').read())\""]]
+    (is (lf/withhold-output? c) c))
+  (is (= "sensitive_source" (:reason (#'lf/tool-exposure {:input {:command "sed -n 1p -- -db_password"}}
+                                                            {:output "hyphenbarevalue9"}))))
+  ;; Options that merely name a secret stay options, and a grep pattern after -- is still the pattern.
+  (doseq [c ["mysql --password-file=x.cnf -e 'select 1'" "python3 x.py --token-ttl 5" "grep -rn -- -password src"
+             "git commit -m 'x' -- notes.md" "echo -- -db_password" "ls -- -db_password" "cat -- notes.md"]]
+    (is (not (lf/withhold-output? c)) c)))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
