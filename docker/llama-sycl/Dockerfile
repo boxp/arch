@@ -52,7 +52,7 @@ RUN source /opt/intel/oneapi/setvars.sh >/dev/null 2>&1 \
       -DGGML_NATIVE=OFF \
       -DCMAKE_C_COMPILER=icx \
       -DCMAKE_CXX_COMPILER=icpx \
-    && cmake --build /src/llama.cpp/build-sycl --target llama-server test-backend-ops -j"$(nproc)" \
+    && cmake --build /src/llama.cpp/build-sycl --target llama-server test-backend-ops test-export-graph-ops -j"$(nproc)" \
     && install -d -m 0755 /opt/llama.cpp/bin \
     && cp -a /src/llama.cpp/build-sycl/bin/. /opt/llama.cpp/bin/
 
