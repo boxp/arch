@@ -43,11 +43,11 @@
    [:env-entry (re-pattern (str "(?i)" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern "(?:" quote-pattern ")?" entry-gap "(?:" quote-pattern ")?" (entry-key "value") (value-pattern nil "[^\\s,;}\\]]+")))]
    [:env-entry (re-pattern (str "(?i)" (entry-key "value") (value-pattern "{0,4096}?" "[^\\s,;}\\]]+") entry-gap "(?:" quote-pattern ")?" (entry-key "name") "(?:" quote-pattern ")?" secret-key-pattern))]
    [:flag (re-pattern (str "(?i)(?<![\\w-])--?" secret-key-pattern "[ \\t]+(?!-)" (value-pattern nil "\\S+")))]
-   ;; A user name may hold percent-encoded bytes (user%40example.com); a bare % followed by a letter is a date
-   ;; format such as date -u '+%H:%M' and is no credential. Only +% (a date format) is skipped: a user name can
-   ;; start with + (curl -u +admin:huntertwo, P0 arch#14503 :48). Digits only (curl -u 12345:67890) is a credential
-   ;; too, not a time (P0 arch#14503 :49). The user name may be empty (curl -u :huntertwo, P0 arch#14503 :50).
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+%[A-Za-z])(?:[^\s:%]|%[0-9A-Fa-f]{2})*:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   ;; The user name is any run of non-space, non-colon characters: it may hold percent-encoded bytes
+   ;; (user%40example.com) or a bare % (curl -u user%name:huntertwo, P0 arch#14503 :50), start with + (curl -u
+   ;; +admin:huntertwo, :48), be digits only (curl -u 12345:67890, :49) or be empty (curl -u :huntertwo, :50). Only a
+   ;; date format after -u (date -u '+%H:%M', date -u +"%H:%M") is skipped: + then % then a letter, quotes allowed.
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?%[A-Za-z])[^\s:]*:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
