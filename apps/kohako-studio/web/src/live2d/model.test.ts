@@ -45,7 +45,7 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-v15')
+    expect(LATEST_MODEL_ID).toBe('kohako-v16')
     expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
     expect(modelFor('?model=kohako').id).toBe('kohako')
@@ -81,14 +81,16 @@ describe('clip names', () => {
     expect(v6.rig).toBe('../kohako/kohako-v6.p2lrt')
     expect(ids.map(id => clipName(v6, id))).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
   })
-  it('selects v15 and preserves v14 as the previous trial', () => {
+  it('selects v16 and preserves v15 as the previous trial', () => {
     const v13 = modelFor('?model=kohako-v13')
     expect(v13.rig).toBe('../kohako/kohako-v13.p2lrt')
     expect(v13.status).toBe('old')
     const v14 = modelFor('?model=kohako-v14')
-    expect(v14.status).toBe('previous-latest')
+    expect(v14.status).toBe('old')
     expect(modelFor('?model=kohako-v14b').status).toBe('rejected')
-    expect(modelFor('?model=kohako-v15').status).toBe('latest')
+    expect(modelFor('?model=kohako-v15').status).toBe('previous-latest')
+    expect(modelFor('?model=kohako-v16').status).toBe('latest')
+    expect(modelFor('?model=kohako-v16').rig).toBe('../kohako/kohako-v16.p2lrt')
     expect(modelFor('?model=kohako-v15b').status).toBe('rejected')
     expect(modelFor('?model=kohako-v15c').status).toBe('rejected')
     expect(modelFor('?model=kohako-v15e').status).toBe('rejected')

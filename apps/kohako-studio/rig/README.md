@@ -30,3 +30,7 @@ Docker の名前付き volume と `docker cp` によりデーモンが別名前�
 同じ `rebuild.sh VAULT WORK_DIR` で `v15/out/kohako-v15.p2lrt` と `v15b/out/kohako-v15b.p2lrt`、loss report、静止ポーズ、選択マスクを出力する。v15 は v14 の体側の暗色領域を後ろ髪へ移し、v15b はより広い範囲に原画の画素を使い、肩付近に Telea 補完の体追従下地を加える。画像生成は行わない。両案ともマスクは手作業の近似で、完全分離や実時間の物理品質は保証しない。再実行時には v15、v15b の出力ディレクトリも削除する。
 
 v15c は v15b に加え、既存の三つ編みの裏に残る暗い体側補完を選択して除き、原画の外周で半透明の後ろ髪画素に 1 px の defringe を適用する。v15e は v15 の閉眼層だけを、Vault に既存の `codex-eyes-closed-v14-1.png` を ECC で合わせて肌色を補正した素材に差し替える。生成素材の作成はこのスクリプトでは行わない。`v15e/out/v15e-eyes.png` は物理シミュレーションなしの正面と X±20 の閉眼で、`v13/out/v15e-eyes.png` も比較用に出る。`kohako-v15/make_compare.py WORK_DIR OUTPUT_DIR` および `kohako-v15e/make_compare.py WORK_DIR OUTPUT_DIR` で比較画像を再生成できる。実行には Pillow が必要。v15c と v15e の出力ディレクトリも再実行時に削除される。
+
+## v16 の再構築
+
+同じコマンドで v13 の layout に既存の閉眼素材と `codex-mouth-closed-v16-1.png` を位置合わせし、`v16/out/kohako-v16.p2lrt` と比較用の静止ポーズを出力する。素材の SHA-256 を検証する。閉眼は v15e と同じ ECC と肌色補正を使い、開眼・閉眼の不透明度は 0.30〜0.35 で交差させる。閉口は目・口を除く顔周辺で ECC を行い、肌色を補正した楕円パッチを用いる。再実行時に v16 出力も削除する。`kohako-v16/make_compare.py WORK_DIR OUTPUT_DIR` で静止比較 JPEG を作る。角度付き原画は静止原画の繰り返しであり、動作中の正解画像ではない。画像生成は再構築では行わない。
