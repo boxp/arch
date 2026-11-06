@@ -51,8 +51,9 @@
    ;; letters after the %a directive, so it is a credential (P0 arch#14503 :50). Accepted residual: a password made only
    ;; of %-directives and punctuation (+%a:%b) is read as a date format.
    ;; The credential is one shell word: quoted parts may hold spaces (curl -u 'user:my secret', P0 arch#14503 :50) and an
-   ;; unclosed quote runs to the end of the line. The colon may sit inside or outside the quotes.
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))(?=(?:'[^'\n:]*'|\"[^\"\n:]*\"|[^\s'\":])*(?:'[^'\n:]*:|\"[^\"\n:]*:|:))(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|[^\s'\"])+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   ;; unclosed quote runs to the end of the line. The colon may sit inside or outside the quotes. A backslash escape is
+   ;; part of the word, so an escaped space does not end it (curl -u user:longpass\ secretvalue, P0 arch#14503 :55).
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))(?=(?:'[^'\n:]*'|\"[^\"\n:]*\"|\\[^\n:]|[^\s'\":\\])*(?:'[^'\n:]*:|\"[^\"\n:]*:|\\?:))(?:'[^'\n]{0,4096}'?|\"(?:[^\"\\\n]|\\.){0,4096}\"?|\\[^\n]|[^\s'\"\\])+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])
@@ -545,10 +546,25 @@
                          (some segment-reads-secret-file? segments))))
                  (command-texts (str input)))))
 
+(defn- json-unescaped
+  "JSON escapes decoded at any nesting depth (\\u006f, \\\\u006f, \\/), so an escaped path names the file it reads
+  ({\"file_path\":\"db_passw\\u006frd\"}, P0 arch#14503 :343). A decoded quote or backslash stays escaped and a control
+  character becomes a space, so the JSON shape is kept for the path and command checks."
+  [s]
+  (-> s
+      (str/replace #"(?<!\\)\\+u([0-9a-fA-F]{4})"
+                   (fn [[_ h]] (let [c (char (Integer/parseInt h 16))]
+                                 (cond (= c \") "\\\"" (= c \\) "\\\\" (< (int c) 32) " " :else (str c)))))
+      (str/replace #"(?<!\\)\\+/" "/")))
+
+(defn- withhold-text? [s]
+  (boolean (or (re-find sensitive-path s) (re-find sensitive-command s) (re-find secret-file-read s)
+               (re-find secret-file-arg s) (secret-file-command? s)
+               (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s)))))
+
 (defn withhold-output? [input]
-  (let [s (str input)] (boolean (or (re-find sensitive-path s) (re-find sensitive-command s) (re-find secret-file-read s)
-                                    (re-find secret-file-arg s) (secret-file-command? s)
-                                    (and (re-find #"(?i)\b(?:kubectl|oc)\s" s) (re-find #"(?i)secret" s))))))
+  (let [s (str input) d (json-unescaped s)]
+    (or (withhold-text? s) (and (not= d s) (withhold-text? d)))))
 (defn env-dump? [output]
   (let [s (str output)] (boolean (and (re-find #"(?:^|[^A-Za-z0-9_])PATH=" s)
                                         (re-find #"(?:^|[^A-Za-z0-9_])HOME=" s)))))
@@ -775,7 +791,8 @@
        :url-credentials [(second (re-find #"://[^:/@\s]*:([^@\s]*)@" m))]
        :cli-password [(if (re-find #"^(?i)(?:-u|--user)" m)
                         ;; One shell word that may be quoted and hold spaces: drop the quotes, then the user name.
-                        (-> m (str/replace #"^(?i)(?:-u|--user)[ \t=]*" "") (str/replace #"[\"']" "") (str/replace #"^[^:]*:(?=.)" ""))
+                        (-> m (str/replace #"^(?i)(?:-u|--user)[ \t=]*" "") (str/replace #"[\"']" "") (str/replace #"^(?:\\.|[^:\\])*:(?=.)" "")
+                            (str/replace #"\\(.)" "$1"))
                         (-> (last (str/split m #"\s+")) (str/replace #"^-p" "")))]
        :flag [(last (str/split m #"[ \t]+"))]
        :assignment (let [[_ k v] (re-find #"(?s)^[\"']?([\w.-]*).*?(?:[:=]|\\+u00(?:3[aA]|3[dD]))(.*)$" m)]

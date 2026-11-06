@@ -1481,5 +1481,33 @@
                (str "git commit -m 'rotate db_password" long65 "'")]]
       (is (not (lf/withhold-output? c)) (subs c 0 (min 50 (count c)))))))
 
+;; P0 arch#14503 :343 (BOXP-428). A JSON path argument was matched without decoding, so
+;; {"file_path":"db_password"} read a secret-named file and its bare output was sent. JSON escapes (\uXXXX at any
+;; nesting depth, \/) are decoded before the source checks; ordinary escaped input stays readable.
+(deftest json-escaped-secret-path
+  (doseq [c ["{\"file_path\":\"db_passw\\u006frd\"}" "{\"file_path\":\"\\/tmp\\/db_\\u0070assword\"}"
+             "{\"path\":\"aws_cred\\u0065ntials\"}" "{\"file_path\":\"\\u002e\\u006epmrc\"}"
+             "{\"cmd\":\"cat db_passw\\u006frd\"}" "{\"command\":\"cat ~/.np\\u006drc\"}"
+             "{\"file_path\":\"db_passw\\\\u006frd\"}"]]
+    (is (lf/withhold-output? c) c))
+  (is (= "sensitive_source" (:reason (#'lf/tool-exposure {:input "{\"file_path\":\"db_passw\\u006frd\"}"}
+                                                            {:output "jsonescapedvalue9"}))))
+  (doseq [c ["{\"file_path\":\"src/n\\u006ftes.md\"}" "{\"pattern\":\"db_passw\\u006frd\",\"path\":\"src\"}"
+             "{\"command\":\"echo caf\\u00e9\"}" "{\"file_path\":\"docs\\/auth.md\"}"]]
+    (is (not (lf/withhold-output? c)) c)))
+
+;; P0 arch#14503 :55 (BOXP-428). A backslash-escaped space in an unquoted -u credential (curl -u user:longpass\
+;; secretvalue) ended the masked word at the space and the rest of the password was sent. A backslash escape is part
+;; of the shell word now, and the pinned value is the unescaped password.
+(deftest cli-user-escaped-space
+  (doseq [cmd ["curl -u user:longpass\\ escspacezz https://x" "curl --user=user:a\\ b\\ escspacezz https://x"
+               "curl -u ci\\ bot:pass\\ escspacezz https://x" "curl -u user\\:x:pass\\ escspacezz"]]
+    (is (not (str/includes? (:value (lf/redact cmd #{})) "escspacezz")) cmd)
+    (let [{:keys [values reason]} (#'lf/body-exposure cmd)]
+      (is (or reason (some #(str/includes? % "escspacezz") values)) cmd)))
+  (is (contains? (:values (#'lf/body-exposure "curl -u user:longpass\\ escspacezz https://x")) "longpass escspacezz"))
+  (doseq [cmd ["date -u '+%H:%M'" "ls -u my\\ notes.txt" "curl -u user https://x"]]
+    (is (= cmd (:value (lf/redact cmd #{}))) cmd)))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
