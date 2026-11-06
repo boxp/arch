@@ -323,11 +323,14 @@ class RepairTest(unittest.TestCase):
         self.assertFalse((self.root / 'repair-backups').exists() and list((self.root / 'repair-backups').iterdir()))
         # The shared writer lock serializes every cooperating writer, so the
         # repair may proceed there (holders on this kernel are still checked).
+        # The lease stays available here: the no-lease /proc fallback fails
+        # closed on hosts where root daemons hide their fd tables (CI runners),
+        # which test_uninspectable_process_fails_closed_without_lease covers.
+        self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE')
         self.env['TASK_BOARD_VAULT_WRITER_LOCK_DIR'] = str(self.writer)
         self.env['CODEX_TASK_BOARD_TEST_RECONCILE_FSTYPE'] = 'nfs'
         self.assertEqual(self.call(*self.args(plan))['writer-lock'], 'shared')
         self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_FSTYPE')
-        self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE')
 
     @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
     def test_retained_inode_checked_after_clean_apply(self):
