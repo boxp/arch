@@ -17,17 +17,29 @@ type Entry = {
   cancelRequested?: boolean
   approval?: { approvalId: string; runId: string; hermesRequestId?: string; generation?: number; summary: string; expiresAt: number; consumed: boolean; choice?: 'once' | 'deny'; result?: 'ok' | 'not_pending' | 'unknown'; denyOnly: boolean; active: boolean; pendingResult?: Promise<'ok' | 'not_pending' | 'unknown'> }
 }
-/**
- * 承認画面に出す文。Owner が何を許可するのか分かるよう path・URL は残し（伏せると判断できない）、
- * 鍵らしき文字列だけを伏せる（Hermes 側でも伏字済み）。Hermes の gate は全文が収まる操作だけを承認に回す。
- */
-export function approvalSummary(text: string) {
+/** 鍵らしき文字列だけを伏せる。path・URL は Owner が対象を判断するのに必要なので残す。 */
+function redact(text: string) {
   return text
     .replace(/[\x00-\x1f\x7f-\x9f]/g, ' ')
     .replace(/\b(?:token|key|secret|password|bearer)\b\s*[:=]?\s*\S+/gi, '<secret>')
-    .replace(/[A-Za-z0-9_\-+/=]{32,}/g, '<secret>')
+    .split(/(\s+)/)
+    // 32 文字以上の英数字の塊は鍵とみなす。ただし / や . で区切られた path・URL 断片は残す。
+    .map((word) => (/^[A-Za-z0-9_\-+=]{32,}$/.test(word) || (/^[A-Za-z0-9_\-+/=]{40,}$/.test(word) && !/^\.{0,2}\//.test(word) && !word.includes('//')) ? '<secret>' : word))
+    .join('')
     .trim()
-    .slice(0, 160)
+}
+/**
+ * 承認画面に出す文。説明だけでなく実際の command を全文で出す（Owner が操作内容と対象を確認できるように）。
+ * command が切り詰められた/伏字が必要だった場合は全文を確認できないので fullyShown=false を返し、拒否のみにする。
+ */
+export function approvalSummary(approval: { description: string; command: string; commandTruncated?: boolean }) {
+  const description = redact(approval.description).slice(0, 160)
+  const rawCommand = approval.command.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim()
+  const command = redact(rawCommand)
+  const fullyShown = !approval.commandTruncated && command === rawCommand
+  const lines = [description || '操作の許可']
+  if (command) lines.push(`実行内容: ${command}${fullyShown ? '' : '（全文を表示できないため拒否のみ可能）'}`)
+  return { summary: lines.join('\n'), fullyShown }
 }
 export function createConversation({ now, hermes, prefix }: { now: () => number; hermes: ReturnType<typeof createHermes>; prefix: string }) {
   const entries = new Map<string, Entry>()
@@ -99,7 +111,8 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
       const onApproval: NonNullable<Parameters<typeof hermes.run>[4]> = (runId, approval) => {
           if (!approval) { if (entry.approval) entry.approval.active = false; return }
           if (entry.approval && entry.approval.active && entry.approval.runId === runId && (approval.requestId ? entry.approval.hermesRequestId === approval.requestId : !entry.approval.hermesRequestId && !entry.approval.consumed)) return
-          entry.approval = { approvalId: randomBytes(8).toString('hex'), runId, hermesRequestId: approval.requestId, generation: approval.generation, summary: approvalSummary(approval.description || approval.command || '操作の許可'), expiresAt: now() + 280_000, consumed: false, active: true, denyOnly: !approval.choices.includes('once') }
+          const shown = approvalSummary(approval)
+          entry.approval = { approvalId: randomBytes(8).toString('hex'), runId, hermesRequestId: approval.requestId, generation: approval.generation, summary: shown.summary, expiresAt: now() + 280_000, consumed: false, active: true, denyOnly: !approval.choices.includes('once') || !shown.fullyShown }
           // 放置は拒否: 期限で一度だけ deny を中継する（Hermes 側の timeout を待たずに会話を空ける）。
           const pending = entry.approval
           if (pending.denyOnly) {
@@ -131,6 +144,16 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
           // 共有 claim の保存失敗（容量不足等）で process を落とさない。claim file は claimed のまま残り、再実行はされない。
           try { onSettled?.(result.status) } catch (e) { console.error('decision settle failed', e instanceof Error ? e.message : 'unknown') }
         }
+      // ポーリング失敗/タイムアウト等で上流 run の終了を確認できないまま pending を解除すると、
+      // 次のメッセージが同じ session で並行実行される。停止を依頼し、次回は必ず別 session に切り替える。
+      const releaseUpstream = async (result: { status: string }) => {
+        if (result.status === 'done' || !entry.runId) return
+        if (result.status === 'unknown' || (result as { error?: string }).error === 'internal_error') {
+          sessionStartedAt = Math.max(now(), sessionStartedAt + 1)
+          console.warn('kohako_web_conv session_rotated upstream_unconfirmed')
+          await hermes.stop(entry.runId)
+        }
+      }
       void (async () => {
         let result = await hermes.run(input.requestId, input.text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, undefined, onRun)
         if (result.status === 'failed' && result.error === 'unknown_execution' && !entry.approval) {
@@ -140,10 +163,14 @@ export function createConversation({ now, hermes, prefix }: { now: () => number;
           result = await hermes.run(input.requestId, input.text, `${prefix}-${sessionStartedAt.toString(36)}`, instructions, onApproval, 1, onRun)
           if (result.status === 'failed' && result.error === 'unknown_execution') result = { status: 'failed', error: 'session_paused' }
         }
+        await releaseUpstream(result)
         applyResult(result)
-      })().catch((e) => {
+      })().catch(async (e) => {
         console.error('conversation settle failed', e instanceof Error ? e.message : 'unknown')
-        if (entry.status === 'pending') applyResult({ status: 'failed', error: 'internal_error' })
+        if (entry.status !== 'pending') return
+        const result = { status: 'failed' as const, error: 'internal_error' }
+        try { await releaseUpstream(result) } catch { /* rotate 済み */ }
+        applyResult(result)
       })
       return entry
     },

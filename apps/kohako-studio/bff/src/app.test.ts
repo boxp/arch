@@ -44,3 +44,29 @@ it('clears pending approval when the run ends with a polling failure', async () 
     expect(item.status).toBe('failed'); expect(item.approval).toBeUndefined()
   } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
 })
+it('stops the upstream run and rotates the session when the run outcome is unknown', async () => {
+  const sessions: string[] = [], stopped: string[] = []
+  let settle: (r: any) => void = () => {}
+  const hermes = { run: (_id: string, _text: string, session: string, _i: string, _cb: any, _a: any, onRun: any) => { sessions.push(session); onRun(`run${sessions.length}`); return new Promise(r => { settle = r }) }, approve: async () => 'ok', stop: async (id: string) => { stopped.push(id); return 'ok' } } as unknown as ReturnType<typeof createHermes>
+  const server = createServer(createApp({ authenticate: async () => 'owner', hermes }))
+  await new Promise<void>(resolve => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/kohako/api/v1/`
+    const send = (requestId: string) => fetch(base + 'messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ requestId, kind: 'text', text: 'hello', expiresAt: Date.now() + 60000 }) })
+    expect((await send('owner-701')).status).toBe(202)
+    settle({ status: 'unknown', error: 'hermes_unreachable' }); await new Promise(r => setTimeout(r, 10))
+    expect(stopped).toEqual(['run1'])
+    expect((await send('owner-702')).status).toBe(202)
+    expect(sessions[1]).not.toBe(sessions[0])
+  } finally { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())) }
+})
+it('shows the full command in approvals and only allows deny when it cannot be shown in full', async () => {
+  const { approvalSummary } = await import('./conversation.js')
+  const shown = approvalSummary({ description: 'ファイルを削除', command: 'rm -rf /home/user/projects/very-long-directory-name-for-testing/build https://example.test/some/long/path/segment' })
+  expect(shown.fullyShown).toBe(true)
+  expect(shown.summary).toContain('ファイルを削除')
+  expect(shown.summary).toContain('rm -rf /home/user/projects/very-long-directory-name-for-testing/build')
+  expect(shown.summary).toContain('https://example.test/some/long/path/segment')
+  expect(approvalSummary({ description: '', command: 'curl -H "Authorization: Bearer abc"' }).fullyShown).toBe(false)
+  expect(approvalSummary({ description: 'x', command: 'echo a', commandTruncated: true }).fullyShown).toBe(false)
+})

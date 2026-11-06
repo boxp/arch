@@ -1,5 +1,6 @@
-export type Approval = { requestId?: string; generation?: number; description: string; command: string; choices: ('once' | 'deny')[] }
+export type Approval = { requestId?: string; generation?: number; description: string; command: string; commandTruncated?: boolean; choices: ('once' | 'deny')[] }
 type Result = { status: 'done'; text: string; model?: string } | { status: 'failed'; error: string } | { status: 'unknown'; error?: string }
+export const APPROVAL_COMMAND_MAX = 2000
 export type RunOptions = {
   idempotencyKey: string
   input: string
@@ -119,12 +120,15 @@ export function createHermes({
           const controls = Array.isArray(poll.data?.pending_controls) ? (poll.data.pending_controls as unknown[]) : []
           const control = controls.find((x): x is Record<string, unknown> => !!x && typeof x === 'object' && (x as Record<string, unknown>).kind === 'approval')
           const raw = control ?? (poll.data?.approval && typeof poll.data.approval === 'object' ? poll.data.approval as Record<string, unknown> : {})
-          const clean = (value: unknown) => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f-\x9f]/g, '').trim().slice(0, 160) : ''
+          const strip = (value: unknown) => typeof value === 'string' ? value.replace(/[\x00-\x1f\x7f-\x9f]/g, ' ').trim() : ''
+          const clean = (value: unknown) => strip(value).slice(0, 160)
+          // command は Owner が許可対象を確認する本体なので切り詰めず、収まらない場合は印を付けて拒否のみにする。
+          const command = strip(raw.command)
           const rawId = control ? raw.prompt_id : raw.request_id
           const requestId = typeof rawId === 'string' && /^[\x21-\x7e]{1,256}$/.test(rawId) ? rawId : undefined
           const generation = control && Number.isSafeInteger(raw.execution_generation) ? (raw.execution_generation as number) : undefined
           const choices: Approval['choices'] = Array.isArray(raw.choices) && raw.choices.includes('once') && raw.choices.includes('deny') ? ['once', 'deny'] : ['deny']
-          options.onApproval?.(id, { requestId, generation, description: clean(raw.description), command: clean(raw.command), choices })
+          options.onApproval?.(id, { requestId, generation, description: clean(raw.description), command: command.slice(0, APPROVAL_COMMAND_MAX), commandTruncated: command.length > APPROVAL_COMMAND_MAX, choices })
           waiting = true
           await sleep(options.pollMs ?? 2000)
           continue
