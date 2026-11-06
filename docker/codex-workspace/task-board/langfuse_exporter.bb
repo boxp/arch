@@ -930,8 +930,10 @@
                              (if (and t (secret-name? t) (re-matches #"[\x21-\x7e]+" t)) [t] after-values))
                            after-values)
             after-values (if (and (= 1 (count after-values)) (setting? name (first after-values))) [] after-values)
+            ;; Before the copula only a variable, placeholder or secret name is a reference. A structure, literal or
+            ;; scheme word there (username is my password) is the value and is pinned (P0 arch#14503 :933).
             before-value (when (and bword (some #(re-matches #"(?i)is|are|was|were" %) bgap)
-                                    (re-matches #"[\x21-\x7e]+" bword) (not (reference? bword))
+                                    (re-matches #"[\x21-\x7e]+" bword) (not (reference-only? bword))
                                     (not (re-matches prose-question bword)) (not (re-find loose-word bword)))
                            bword)
             values (cond-> (vec after-values) before-value (conj before-value))]

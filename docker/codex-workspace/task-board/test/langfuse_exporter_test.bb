@@ -1565,5 +1565,28 @@
       (is (contains? vals "schemectlvalue9") text)
       (is (not-any? #(re-matches #"(?i)bearer|basic" %) vals) text))))
 
+;; P0 arch#14503 :933 (BOXP-428). A value before the secret word that equals a structure or stop word
+;; ("username is my password") was skipped as a reference, so it was not pinned and a later bare repeat was sent.
+;; Before the copula only a variable, placeholder or secret name is a reference; any other word is the value.
+(deftest prose-value-before-secret-word-that-is-a-structure-word
+  (doseq [[text v] [["username is my password" "username"] ["value is my token" "value"]
+                    ["bearer is the password" "bearer"] ["null was my api_key" "null"] ["Name is your password." "Name"]]]
+    (is (contains? (:values (#'lf/body-exposure text)) v) text)
+    ;; A tool output either pins the value or withholds (bearer is ... also reads as a short Authorization value).
+    (let [{:keys [reason values]} (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})]
+      (is (or (contains? values v) (= "value_exposure" reason)) text))
+    (let [vals (:values (#'lf/body-exposure text))
+          b64 (.encodeToString (java.util.Base64/getEncoder) (.getBytes ^String v "UTF-8"))
+          {:keys [value]} (lf/redact (str "later " v " and " b64 " again") vals)]
+      (is (not (str/includes? value (str " " v " "))) text)
+      (is (not (str/includes? value b64)) text)))
+  (testing "a short structure word before the copula withholds instead of pinning"
+    (is (= "value_exposure" (:reason (#'lf/tool-exposure {:input "cat notes.txt"} {:output "key is my password"})))))
+  (testing "references and questions before the copula still pin nothing"
+    (doseq [text ["what is my password" "it is my password" "this is the token"]]
+      (let [{:keys [reason values]} (#'lf/tool-exposure {:input "cat notes.txt"} {:output text})]
+        (is (nil? reason) text)
+        (is (empty? values) text)))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))

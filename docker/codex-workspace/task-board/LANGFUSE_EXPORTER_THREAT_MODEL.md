@@ -152,3 +152,10 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 区切りのない複数語の値の中の方式名(`curl -u 'admin:horsestaple bearer'`、`password: secretvalue basic`)も値の一部として pin する。ただし資格情報の先頭に置かれた方式名(`Authorization: Bearer xyz`、`the token is Bearer xyz`)は方式であり値ではないため、従来どおり後続の資格情報だけを pin する。
 - 過剰マスク: 方式名がパスワードとして現れた run では、以後同じ run で `bearer` 等の語も伏字になる(保留はしない)。
 - 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
+
+## 追記 (arch#14503 P0 :933)
+
+- 秘密語より前に置かれた値(`username is my password`、`value is my token`、`null was my api_key`)が構造語・リテラル・方式名と一致する場合も、その語を値として pin する。以前は秘密語の前の語を `reference?`(構造語/停止語を含む)で除外していたため、後続本文の裸の再掲や Base64 形が送信されていた。秘密語の前で除外するのは変数・プレースホルダー・秘密名(`reference-only?`)と疑問詞・接続語(what/it/this 等)だけにした。
+- 4 文字未満の語(`key is my password`)は pin できないため従来どおり value_exposure で保留する。
+- 過剰マスク: `Name is your password.` のような文を読むと以後同じ run で `Name` 等の語が伏字になる(保留はしない)。
+- 実 run 28 件(BOXP-436/437/440/446/449/450、件数のみ)の body_policy 件数は修正前後で完全一致。
