@@ -46,8 +46,11 @@
    ;; The user name is any run of non-space, non-colon characters: it may hold percent-encoded bytes
    ;; (user%40example.com) or a bare % (curl -u user%name:huntertwo, P0 arch#14503 :50), start with + (curl -u
    ;; +admin:huntertwo, :48), be digits only (curl -u 12345:67890, :49) or be empty (curl -u :huntertwo, :50). Only a
-   ;; date format after -u (date -u '+%H:%M', date -u +"%H:%M") is skipped: + then % then a letter, quotes allowed.
-   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?%[A-Za-z])[^\s:]*:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
+   ;; date format after -u (date -u '+%H:%M', date -u +"%H:%M", +%Y-%m-%dT%H:%M:%SZ) is skipped, and only when the whole
+   ;; argument is a format: every letter is a %-directive or a literal T/Z, the rest punctuation. +%admin:huntertwo has
+   ;; letters after the %a directive, so it is a credential (P0 arch#14503 :50). Accepted residual: a password made only
+   ;; of %-directives and punctuation (+%a:%b) is read as a date format.
+   [:cli-password #"(?i)(?<![\w-])(?:-u|--user)[ \t=]*(?![\"']?\+[\"']?(?:%[-_0^#:]?[A-Za-z]|(?-i:[TZ])(?![A-Za-z])|[^A-Za-z0-9\s%\"'])+[\"']?(?=[\s;&|)]|\z))[^\s:]*:\S+|\b(?:mysql\w*|mariadb\w*)\b[^\n|;&]{0,512}?\s-p\S+|\bsshpass\b[^\n|;&]{0,512}?\s-p[ \t]*\S+"]
    ;; A number after a name with token in it is a counter such as input_tokens: 12.
    [:assignment (re-pattern (str "(?i)[\"']?" secret-key-pattern "(?:" quote-pattern ")?" gap-pattern "(?:[:=]|\\\\+u00(?:3[aA]|3[dD]))" gap-pattern "(?!(?<=token[\\w.-]{0,16}[\"'\\\\]{0,8}\\s{0,4}[:=]\\s{0,4})\\d+(?:[\\s,;}\\\\\"']|$))(?:[|>][-+]?\\d?(?:(?:\\n|\\\\+n)[ \\t]+(?:(?!\\\\+n)[^\\n])*)+|" (value-pattern nil "[^\\s,;}\\]]+") ")"))]
    [:entropy #"\b[A-Za-z0-9_-]{40,}\b"]])

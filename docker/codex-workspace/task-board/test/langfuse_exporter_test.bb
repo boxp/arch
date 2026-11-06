@@ -1279,6 +1279,17 @@
   (doseq [cmd ["date -u +%Y-%m-%dT%H:%M:%SZ" "date -u '+%H:%M'" "date -u \"+%d%H:%M\"" "date -u +\"%H:%M\"" "date -u +'%H:%M:%S'"]]
     (is (= cmd (:value (lf/redact cmd #{}))) cmd)
     (is (nil? (:reason (#'lf/body-exposure cmd))) cmd)))
+;; P0 arch#14503 :50 (BOXP-428). A user name that starts like a date format (curl -u +%admin:huntertwo) is still a
+;; -u credential: only an argument made wholly of %-directives, literal T/Z and punctuation is a date format.
+(deftest cli-user-date-like-prefix
+  (doseq [cmd ["curl -u +%admin:huntertwodatelike https://x" "curl -u '+%admin:huntertwodatelike' https://x"
+               "curl --user=+%a:huntertwodatelike https://x" "curl -u +%H:huntertwodatelike https://x"
+               "curl -u +\"%admin:huntertwodatelike\" https://x" "curl -u +%H:%Mhuntertwodatelike https://x"]]
+    (is (not (str/includes? (:value (lf/redact cmd #{})) "huntertwodatelike")) cmd)
+    (is (some #(str/includes? % "huntertwodatelike") (:values (#'lf/body-exposure cmd))) cmd))
+  (doseq [cmd ["date -u +%Y-%m-%dT%H:%M:%SZ" "date -u +%FT%TZ" "date -u '+%H:%M'" "x=$(date -u +%H:%M)" "date -u +%H:%M; ls"]]
+    (is (= cmd (:value (lf/redact cmd #{}))) cmd)
+    (is (nil? (:reason (#'lf/body-exposure cmd))) cmd)))
 ;; P0 arch#14503 :1130 (BOXP-428). With no session log, the run's prompt.md and last-message.md are the only bodies.
 ;; A value named in the prompt is pinned, so a bare repeat in the last message is masked; one that cannot be pinned
 ;; withholds the root bodies. An ordinary prompt and reply stay readable.
