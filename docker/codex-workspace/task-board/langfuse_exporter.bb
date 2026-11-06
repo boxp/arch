@@ -338,12 +338,12 @@
 ;; bare value the same way. Over-withholding accepted: reading an ordinary file whose name contains the word
 ;; (cat secretary.txt) withholds that output. Name parts are bounded so a long line is scanned in linear time.
 (def secret-file-read
-  #"(?i)(?:^|[;&|\s\"'(`])(?:cat|tac|head|tail|less|more|bat|batcat|nl|od|xxd|hexdump|strings|base64|source|\.)(?=[\s\"'])[^;&|\n]{0,1024}?(?<=[\s\"'=<])[^\s\"';|&<>]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?|tokens?)[A-Za-z0-9_.-]{0,64}(?=[\s\"';|&)<>]|\z)")
+  #"(?i)(?:^|[;&|\s\"'(`])(?:cat|tac|head|tail|less|more|bat|batcat|nl|od|xxd|hexdump|strings|base64|source|\.)(?=[\s\"'])[^;&|\n]{0,1024}?(?<=[\s\"'=<])[^\s\"';|&<>]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?|tokens?)[^\s\"';|&<>()/\\]{0,255}(?=[\s\"';|&)<>]|\z)")
 ;; A file tool takes the path as a JSON argument ({"file_path":"db_password"}) rather than a shell argument, so the
 ;; secret word inside the last path component counts there too (P0 arch#14503 :272). Only path-valued keys are looked
 ;; at, so a search pattern ({"pattern":"db_password"}) or a command mentioning the word stays readable.
 (def secret-file-arg
-  #"(?i)\"(?:file_?path|notebook_?path|path|file_?name|file|target_?file)\"\s{0,16}:\s{0,16}\"(?:[^\"]{0,1024}?[/\\])?[^/\\\"]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?|tokens?)[^/\\\"]{0,64}\"")
+  #"(?i)\"(?:file_?path|notebook_?path|path|file_?name|file|target_?file)\"\s{0,16}:\s{0,16}\"(?:[^\"]{0,1024}?[/\\])?[^/\\\"]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?|tokens?)[^/\\\"]{0,255}\"")
 ;; Any program can print a file it is given (sed -n 1p db_password, awk 1 db_password, python3 x.py db_password,
 ;; < db_password), so the readers are not enumerated (P0 arch#14503 :280). A shell segment whose program is not a
 ;; mention-only command and which takes a secret-named file as a whole argument, or redirects one in, is a source.
@@ -351,7 +351,7 @@
 ;; containing whitespace (a note or commit message) is text, not a file name. JSON tool input is looked at only in
 ;; its command/cmd values so a description field that mentions a password stays readable.
 (def secret-file-name
-  #"(?i)(?:[^\s]{0,1024}[/\\])?[^/\\\s]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?|tokens?)[A-Za-z0-9_.-]{0,64}")
+  #"(?i)(?:[^\s]{0,1024}[/\\])?[^/\\\s]{0,255}?(?:passw(?:or)?ds?|passphrases?|secrets?|credentials?|tokens?)[^/\\\s]{0,255}")
 (def mention-programs
   #{"echo" "printf" "ls" "locate" "which" "type" "man" "help" "mkdir" "rmdir" "touch"
     "rm" "mv" "chmod" "chown" "stat" "wc" "test" "[" "cd" "pushd" "ln" "du" "file" "true" "false" "exit" "export"})

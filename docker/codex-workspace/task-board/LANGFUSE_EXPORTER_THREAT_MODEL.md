@@ -105,6 +105,7 @@ Withholding a whole run only because a tool ran or a secret word was mentioned i
 - 過剰保留: 任意のプログラムに、秘密語を含む引用文を通常の引数として渡した場合(`python3 x.py "the password flow"`)はその出力を保留する。
 
 - 走査上限の fail-closed (P0 arch#14503 segment-reads-secret-file?): 1セグメント512語、256セグメント、open() 呼出し256件を超えるコマンドは、上限より後ろを走査しない代わりに全体を機密源として扱い本文を保留する（`sed -n 1p <512個の引数> db_password` を防ぐ）。過剰保留: 上限を超える長いコマンドは通常ファイルだけを読む場合でも出力本文が保留される。
+- 秘密名ファイルの名前の長さ (P0 arch#14503 secret-file-name): 秘密語の後ろの部分は以前 `[A-Za-z0-9_.-]` 64文字までしか見ておらず、`cat db_password<65文字以上>` や `db_password+backup` 等が機密源にならなかった。最後のパス要素の残り(区切り・空白以外の任意文字、ファイル名上限の255バイトまで)を受け付ける。シェル引数・読取コマンド・JSON の file_path すべて同じ。過剰保留: `python3 x.py token=abc` のように秘密語の後に `=` や `:` が続く引数も秘密名ファイルとみなし保留する。
 
 ## 追記 (arch#14503 P0 :343 グロブ)
 

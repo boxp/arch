@@ -1447,5 +1447,23 @@
     (is (not (contains? (:values (#'lf/body-exposure text)) "secret")) text))
   (is (nil? (:reason (#'lf/body-exposure "Reset your password from the settings page.")))))
 
+;; P0 arch#14503 secret-file-name (BOXP-428). The part of a file name after the secret word was capped at 64 of
+;; [A-Za-z0-9_.-], so `cat db_password<65+ chars>` (or a name with + @ : , after the word) was not a source and the
+;; file's bare value was sent. The rest of the last path component (up to the 255-byte name limit) is accepted now.
+(deftest secret-file-name-long-suffix
+  (let [long65 (apply str (repeat 65 "a"))
+        long250 (apply str (repeat 250 "b"))]
+    (doseq [c [(str "cat db_password" long65) (str "sed -n 1p db_password" long65) (str "awk 1 ./conf/db_password" long250)
+               (str "cat db_secret" long65 ".txt") "cat db_password+backup" "cat db_password@2026" "sed -n 1p db_password,old"
+               (str "{\"cmd\":\"sed -n 1p db_password" long65 "\"}") (str "{\"file_path\":\"/tmp/db_password" long250 "\"}")
+               (str "bash -lc 'cat db_password" long65 "'") (str "tr a-z A-Z < db_password" long65)]]
+      (is (lf/withhold-output? c) (subs c 0 (min 50 (count c)))))
+    (is (= "sensitive_source" (:reason (#'lf/tool-exposure {:input {:command (str "cat db_password" long65)}}
+                                                              {:output "longsuffixvalue9"}))))
+    ;; Controls: mentions and ordinary long names stay readable.
+    (doseq [c [(str "grep -rn db_password" long65 " src") (str "echo db_password" long65) (str "cat notes" long65 ".txt")
+               (str "git commit -m 'rotate db_password" long65 "'")]]
+      (is (not (lf/withhold-output? c)) (subs c 0 (min 50 (count c)))))))
+
 (let [{:keys [fail error]} (run-tests)]
   (when (pos? (+ fail error)) (System/exit 1)))
