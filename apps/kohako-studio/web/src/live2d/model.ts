@@ -68,7 +68,7 @@ export class FrameMeter {
   }
 }
 
-export type RigModelId = 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'kohako-v14' | 'kohako-v14b' | 'kohako-v15' | 'kohako-v15b' | 'kohako-v15c' | 'kohako-v15e' | 'kohako-v16' | 'sample'
+export type RigModelId = 'kohako' | 'kohako-v1' | 'kohako-v2' | 'kohako-v3' | 'kohako-v5' | 'kohako-v6' | 'kohako-v11' | 'kohako-v12' | 'kohako-v13' | 'kohako-v14' | 'kohako-v14b' | 'kohako-v15' | 'kohako-v15b' | 'kohako-v15c' | 'kohako-v15e' | 'kohako-v16' | 'kohako-v17' | 'sample'
 export type RigModel = { id: RigModelId; label: string; name: string; rig: string; notice: string; credits: string; clipNames?: Readonly<Record<string, string>>; skipSmallMouth?: boolean; status: 'latest' | 'previous-latest' | 'old' | 'rejected'; evaluation: string; problems: string }
 
 export const rigModels: readonly RigModel[] = [
@@ -112,7 +112,8 @@ export const rigModels: readonly RigModel[] = [
   { id: 'kohako-v15b', label: 'コハコ v15b', name: 'コハコ v15b', rig: '../kohako/kohako-v15b.p2lrt', status: 'rejected', evaluation: '担当評価: 不採用・比較用', problems: '手描きに近い選択範囲と補完は近似で、外側の輪郭と明るい筋が残ります。', notice: '原画の髪画素と肩付近の局所補完を使う比較試作です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
   { id: 'kohako-v15c', label: 'コハコ v15c', name: 'コハコ v15c', rig: '../kohako/kohako-v15c.p2lrt', status: 'rejected', evaluation: '担当評価: 不採用・比較用', problems: '三つ編み裏の体側補完を減らした試作。顔横に白い抜けが生じ、細い明線も残ります。', notice: 'v15b から、独立した三つ編みの裏に残る暗い体側補完を削り、髪の外周の半透明画素を補正した試作です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
   { id: 'kohako-v15e', label: 'コハコ v15e', name: 'コハコ v15e', rig: '../kohako/kohako-v15e.p2lrt', status: 'rejected', evaluation: '担当評価: 不採用・閉眼素材の比較用', problems: '完全に閉じた状態は v13 より改善。半開きには肌色パッチと青い目が残り、閉眼への切り替えが不自然です。髪は v15 と同じ課題が残ります。', notice: 'v15 の閉眼だけ、事前生成された画像の目周辺を位置合わせして重ねた試作です。開眼素材は v15 と同じです。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
-  { id: 'kohako-v16', label: 'コハコ v16', name: 'コハコ v16', rig: '../kohako/kohako-v16.p2lrt', status: 'latest', evaluation: '最新の試作・担当評価: 不採用', problems: '完全閉眼（まぶたの弧）と閉口（原画位置の穏やかな笑み）は v13 より改善。一方、閉眼は 0.3〜0.35 の切替が急で、目周辺に肌色境界が残ります。口 0.25〜0.5 に閉口線と開口の二重線が残り、口 1 の上唇に段差があります。髪は v13 と同じく体側に残る髪との継ぎ目が残ります。', notice: 'v13 に閉眼と閉口の生成素材を位置合わせして統合した試作です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
+  { id: 'kohako-v16', label: 'コハコ v16', name: 'コハコ v16', rig: '../kohako/kohako-v16.p2lrt', status: 'rejected', evaluation: '前回の試作・担当評価: 不採用', problems: '完全閉眼（まぶたの弧）と閉口（原画位置の穏やかな笑み）は v13 より改善。一方、閉眼は 0.3〜0.35 の切替が急で、目周辺に肌色境界が残ります。口 0.25〜0.5 に閉口線と開口の二重線が残り、口 1 の上唇に段差があります。髪は v13 と同じく体側に残る髪との継ぎ目が残ります。', notice: 'v13 に閉眼と閉口の生成素材を位置合わせして統合した試作です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' }, skipSmallMouth: true },
+  { id: 'kohako-v17', label: 'コハコ v17', name: 'コハコ v17', rig: '../kohako/kohako-v17.p2lrt', status: 'latest', evaluation: '最新の試作・担当評価: 不採用', problems: '口 0.4〜0.5 は v16 の二重線から単一の口形に改善。一方、口 0.25 では閉口線と半開き口の二重線が残り、0.4〜0.5 でも口端に線の断片が残ります。口 1 の上唇に段差があり、閉眼は切替が急で目周辺に肌色境界があります。髪は v13 と同じく体側に残る髪との継ぎ目が残ります。', notice: 'v16 に半開き口の生成素材を位置合わせして統合した試作です。', credits: 'コハコ: Owner のオリジナルキャラクターからの派生。', clipNames: { 'modifier:m13:6d6f74696f6e': 'Shake', 'modifier:m14:6d6f74696f6e': 'Idle', 'modifier:m15:6d6f74696f6e': 'Blink', 'modifier:m16:6d6f74696f6e': 'Talk' } },
   {
     id: 'sample', status: 'old', evaluation: '比較用サンプル', problems: '本人モデルではありません。', label: 'サンプル（tml）', name: 'tml（PSD2Live の CC0 サンプル）', rig: 'tml.p2lrt',
     notice: '比較用のサンプルです。コハコのモデルではありません。',
@@ -124,7 +125,7 @@ export const rigModels: readonly RigModel[] = [
  * クエリ無しの URL で表示する「最新の配備済み本人モデル」。新しい版を配備したらここを更新する。
  * 本人の美術受入とは別で、検証版として表示する（受入済みの意味ではない）。
  */
-export const LATEST_MODEL_ID: RigModelId = 'kohako-v16'
+export const LATEST_MODEL_ID: RigModelId = 'kohako-v17'
 
 /**
  * 本人モデルの視線（= 首振り）の倍率。BOXP-441 TD-18: 「考え中」の視線 (0.6, 0.5) と待機モーションが重なると

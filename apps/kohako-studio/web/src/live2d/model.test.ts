@@ -45,7 +45,7 @@ describe('FrameMeter', () => {
 describe('modelFor', () => {
   it('defaults to the Kohako model and keeps the sample selectable', () => {
     expect(modelFor('').id).toBe(LATEST_MODEL_ID)
-    expect(LATEST_MODEL_ID).toBe('kohako-v16')
+    expect(LATEST_MODEL_ID).toBe('kohako-v17')
     expect(modelFor('?model=unknown').id).toBe(LATEST_MODEL_ID)
     expect(modelFor('?model=sample').id).toBe('sample')
     expect(modelFor('?model=kohako').id).toBe('kohako')
@@ -81,7 +81,7 @@ describe('clip names', () => {
     expect(v6.rig).toBe('../kohako/kohako-v6.p2lrt')
     expect(ids.map(id => clipName(v6, id))).toEqual(['Shake', 'Idle', 'Blink', 'Talk'])
   })
-  it('selects v16 and preserves v15 as the previous trial', () => {
+  it('selects v17 and preserves v16 for comparison', () => {
     const v13 = modelFor('?model=kohako-v13')
     expect(v13.rig).toBe('../kohako/kohako-v13.p2lrt')
     expect(v13.status).toBe('old')
@@ -89,7 +89,9 @@ describe('clip names', () => {
     expect(v14.status).toBe('old')
     expect(modelFor('?model=kohako-v14b').status).toBe('rejected')
     expect(modelFor('?model=kohako-v15').status).toBe('previous-latest')
-    expect(modelFor('?model=kohako-v16').status).toBe('latest')
+    expect(modelFor('?model=kohako-v16').status).toBe('rejected')
+    expect(modelFor('?model=kohako-v17').status).toBe('latest')
+    expect(modelFor('?model=kohako-v17').rig).toBe('../kohako/kohako-v17.p2lrt')
     expect(modelFor('?model=kohako-v16').rig).toBe('../kohako/kohako-v16.p2lrt')
     expect(modelFor('?model=kohako-v15b').status).toBe('rejected')
     expect(modelFor('?model=kohako-v15c').status).toBe('rejected')
@@ -112,6 +114,7 @@ describe('clip names', () => {
 describe('mouthLevel', () => {
   it('v6 だけ小開度の二重線帯を飛ばし、閉口か 0.35 以上の開口にする', async () => {
     const { mouthLevel, modelFor } = await import('./model')
+    expect(mouthLevel(modelFor('?model=kohako-v17'), 0.4)).toBe(0.4)
     const v6 = modelFor('?model=kohako-v6')
     expect(mouthLevel(v6, 0)).toBe(0)
     expect(mouthLevel(v6, 0.1)).toBe(0)
