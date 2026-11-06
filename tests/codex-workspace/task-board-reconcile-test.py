@@ -188,6 +188,66 @@ class RepairTest(unittest.TestCase):
         self.assertEqual(self.plan()['retained-checked'], 1)
 
     @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_non_dumpable_writer_is_detected(self):
+        # P0: a same-UID writer whose fd table /proc hides (non-dumpable) must
+        # not be skipped: the kernel write lease still sees its descriptor.
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        plan = self.plan()
+        ready = self.base / 'holder-ready'
+        code = ('import ctypes, os, sys, time\n'
+                'ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n'
+                'f = open(sys.argv[1], "r+")\n'
+                'open(sys.argv[2], "w").close()\n'
+                'time.sleep(30)\n')
+        holder = subprocess.Popen(['python3', '-I', '-c', code, str(self.board), str(ready)])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        for _ in range(200):
+            if ready.exists():
+                break
+            subprocess.run(['sleep', '0.05'])
+        self.assertTrue(ready.exists())
+        try:
+            os.listdir(f'/proc/{holder.pid}/fd')
+            hidden = False
+        except PermissionError:
+            hidden = True
+        self.env['CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS'] = '300'
+        err = self.call(*self.args(plan), ok=False)
+        self.assertIn('displaced board still open by', err)
+        if hidden:
+            self.assertRegex(err, 'hidden from /proc|fd table not inspectable')
+        self.assertEqual(self.board.read_text(), self.before)
+        holder.kill()
+        holder.wait()
+        self.env.pop('CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS')
+
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
+    def test_uninspectable_process_fails_closed_without_lease(self):
+        # Without a kernel lease the /proc scan decides; a clean apply still
+        # succeeds when every relevant process is inspectable, and the probe
+        # result is never treated as proof of absence.
+        self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
+        self.env['CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE'] = 'true'
+        self.env['CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS'] = '300'
+        plan = self.plan()
+        holder = subprocess.Popen(['sh', '-c', 'exec 3<>"$1"; sleep 30', 'sh', str(self.board)])
+        self.addCleanup(holder.wait)
+        self.addCleanup(holder.kill)
+        for _ in range(100):
+            if any(os.path.realpath(f'/proc/{holder.pid}/fd/{fd}') == str(self.board)
+                   for fd in os.listdir(f'/proc/{holder.pid}/fd')):
+                break
+            subprocess.run(['sleep', '0.05'])
+        err = self.call(*self.args(plan), ok=False)
+        self.assertIn(str(holder.pid), err)
+        self.assertEqual(self.board.read_text(), self.before)
+        holder.kill()
+        holder.wait()
+        self.env.pop('CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE')
+        self.env.pop('CODEX_TASK_BOARD_RECONCILE_HOLDER_WAIT_MS')
+
+    @unittest.skipUnless(EXCHANGE, 'mv --exchange unavailable')
     def test_retained_inode_checked_after_clean_apply(self):
         self.env.pop('TASK_BOARD_VAULT_WRITER_LOCK_DIR')
         plan = self.plan()

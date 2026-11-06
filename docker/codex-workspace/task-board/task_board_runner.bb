@@ -784,33 +784,40 @@
   (fs/path (root) "superseded-card-lines" (str ticket-id ".edn")))
 
 (defn superseded-card-lines
-  "Exact rev-less card lines this runner itself replaced on the Board."
+  "Exact [lane line] pairs of rev-less cards this runner itself replaced on
+  the Board."
   [ticket-id]
   (try (let [path (superseded-card-lines-path ticket-id)]
-         (if (fs/exists? path) (set (edn/read-string (slurp (str path)))) #{}))
+         (if (fs/exists? path) (set (filter vector? (edn/read-string (slurp (str path))))) #{}))
        (catch Exception _ #{})))
 
 (defn record-superseded-card-line!
-  "Remember a rev-less card line the runner is about to replace, so a Board copy
-  restored from before the replacement can be recognised (see rev-mismatch?)."
-  [ticket-id old-line new-line]
-  (when (and old-line (not= old-line new-line) (not (attr-value old-line "rev")))
+  "Remember the lane and rev-less line of a card the runner is about to
+  replace, so a Board copy restored from before the replacement can be
+  recognised (see rev-mismatch?)."
+  [ticket-id old-card new-line]
+  (when (and (:line old-card) (not= (:line old-card) new-line) (not (attr-value (:line old-card) "rev")))
     (try
       (let [path (superseded-card-lines-path ticket-id)
-            current (if (fs/exists? path) (vec (edn/read-string (slurp (str path)))) [])]
-        (when-not (some #{old-line} current)
+            current (if (fs/exists? path) (vec (filter vector? (edn/read-string (slurp (str path))))) [])
+            entry [(:lane old-card) (:line old-card)]]
+        (when-not (some #{entry} current)
           (fs/create-dirs (fs/parent path))
-          (spit (str path) (str (pr-str (vec (take-last 32 (conj current old-line)))) "\n"))))
+          (spit (str path) (str (pr-str (vec (take-last 32 (conj current entry)))) "\n"))))
       (catch Exception _ nil))))
 
 (defn rev-mismatch?
   "A card whose rev:: differs from the ticket's board_rev. A card without rev::
   is legacy and normally follows its ticket, except when the ticket was moved
   to a terminal state (done / blocked) with a revision and the card is exactly
-  a rev-less line this runner already replaced while the ticket still holds
-  the terminal transition's Owner assignment: that card is an older Board copy
-  restored by a last-writer-wins sync and must not be projected back. A
-  re-request that also reassigns the ticket is still followed."
+  a rev-less line this runner already replaced, still in the lane it had when
+  it was replaced, while the ticket still holds the terminal transition's
+  Owner assignment: nothing about that card differs from the pre-transition
+  Board, so it may be an older Board copy restored by a last-writer-wins sync
+  and must not be projected back (sync-revision! holds it without rewriting
+  either side). A re-request that changes the card -- moved to another lane
+  (e.g. Ready) or its text / assignee edited -- is followed like any other
+  rev-less edit."
   [card fm]
   (let [cr (card-rev card)]
     (if cr
@@ -819,7 +826,7 @@
                     (#{"done" "blocked"} (:status fm))
                     (not= (:status fm) (:status card))
                     (= "boxp" (:assignee fm))
-                    (contains? (superseded-card-lines (:ticket-id card)) (:line card)))))))
+                    (contains? (superseded-card-lines (:ticket-id card)) [(:lane card) (:line card)]))))))
 
 (def revision-mismatches (atom {}))
 
@@ -867,7 +874,23 @@
             expired? (> (.toNanos (java.time.Duration/between (:first-seen entry) (now)))
                         (* 1000000000 (rev-mismatch-warn-seconds)))]
         (cond
-          (and expired? ticket-at (or (nil? card-rev') (and card-at (> ticket-at card-at))) ticket-lane)
+          ;; A rev-less card identical to the line this runner replaced (lane
+          ;; and text) is either an older Board copy restored by sync or a user
+          ;; who rebuilt exactly that line by hand; the two cannot be told
+          ;; apart. Neither side is overwritten: projection and dispatch stay
+          ;; held and the card is left as written. Any edit that makes the card
+          ;; differ (another lane such as Ready, another assignee, or a helper
+          ;; update that stamps rev::) is followed normally.
+          (nil? card-rev')
+          (do (when (and expired? (not (:warned? entry)))
+                (swap! revision-mismatches assoc-in [id :warned?] true)
+                (log! (str "WARN: " id " card equals the pre-transition rev-less line in " (:lane card)
+                           " while the ticket is " (:status fm) " rev=" ticket-rev
+                           "; holding projection and dispatch without rewriting the card. Move the card to Ready"
+                           " or update it with the helper to re-request, or set it to the ticket's state.")))
+              true)
+
+          (and expired? ticket-at card-at (> ticket-at card-at) ticket-lane)
           (do (log! (str "WARN: assignment revision mismatch persisted for " id "; the card write was lost, repairing the card from ticket rev=" ticket-rev
                          " (card rev=" card-rev' ")"))
               (swap! revision-mismatches dissoc id)
@@ -977,7 +1000,7 @@
                           (string? rev) (replace-or-add-attr "rev" rev))
                without (remove-index lines (:idx card))
                moved (insert-after-heading without target-lane new-line)]
-           (record-superseded-card-line! ticket-id (:line card) new-line)
+           (record-superseded-card-line! ticket-id card new-line)
            (write-lines! path moved))))))))
 
 (defn repair-card-revision!
@@ -999,7 +1022,7 @@
            (let [new-line (cond-> (-> (normalize-card-line (:line card) target-status)
                                       (replace-or-add-attr "rev" rev))
                             assignee (replace-or-add-attr "assignee" assignee))]
-             (record-superseded-card-line! ticket-id (:line card) new-line)
+             (record-superseded-card-line! ticket-id card new-line)
              (write-lines! path (insert-after-heading (remove-index lines (:idx card))
                                                       (status->lane target-status) new-line)))))))))
 

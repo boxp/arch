@@ -882,10 +882,9 @@
   inode is group/other writable: task-board writers run as this non-root UID
   (root is refused) and an owner-only-writable inode cannot be written by
   another non-root UID. A process whose fd table the kernel refuses to show to
-  this same user (different saved ids/capabilities, non-dumpable, LSM, e.g.
-  (sd-pam) or a CI agent) is not a plain task-board writer -- those (bb, git,
-  sync clients) run as this user and are always inspectable -- so it is
-  reported as uninspected instead of holding. Vanished PIDs are ignored."
+  this same user (different saved ids/capabilities, non-dumpable, LSM) is
+  reported as uninspected; the caller treats it as a possible holder unless
+  the kernel write lease proves no writer remains. Vanished PIDs are ignored."
   [p]
   (let [k (repair-file-key p)
         uid (Long/parseLong (str/trim (:out (shell/sh "id" "-u"))))
@@ -908,21 +907,57 @@
             {:holders [] :uninspected []}
             (filter #(re-matches #"\d+" (str (fs/file-name %))) (fs/list-dir "/proc")))))
 
+(def repair-lease-probe
+  ;; F_SETLEASE is not reachable from the JVM. A read lease is granted only
+  ;; while no process on this host -- any UID, dumpable or not -- has the inode
+  ;; open for writing (or mapped writable), so it proves that no writer can
+  ;; still write into the displaced inode. Exit 0 free, 3 open for write,
+  ;; 4 unavailable (no python3, unsupported filesystem, leases disabled).
+  "import errno, fcntl, os, sys
+F_SETLEASE = getattr(fcntl, 'F_SETLEASE', 1024)
+try:
+    fd = os.open(sys.argv[1], os.O_RDONLY)
+except OSError:
+    sys.exit(4)
+try:
+    fcntl.fcntl(fd, F_SETLEASE, fcntl.F_RDLCK)
+except OSError as e:
+    sys.exit(3 if e.errno in (errno.EAGAIN, errno.EBUSY) else 4)
+fcntl.fcntl(fd, F_SETLEASE, fcntl.F_UNLCK)
+")
+
+(defn repair-write-lease
+  "Kernel check whether any process still has the inode at `p` open for
+  writing: :free, :busy or :unavailable."
+  [p]
+  (if (= "true" (System/getenv "CODEX_TASK_BOARD_TEST_RECONCILE_NO_LEASE"))
+    :unavailable
+    (let [r (try (shell/sh "python3" "-I" "-c" repair-lease-probe (str p))
+                 (catch Exception _ {:exit 4}))]
+      (case (:exit r) 0 :free 3 :busy :unavailable))))
+
 (defn repair-wait-holders!
-  "Wait until no visible process holds the displaced inode open. After that no
-  write can reach it any more (its old name now resolves to the new Board), so
-  comparing its content afterwards is final for this host. Returns remaining
-  holder PIDs (empty on success). Uninspectable processes are named on stderr."
+  "Wait until no process can still write into the displaced inode. After that
+  no write can reach it any more (its old name now resolves to the new Board),
+  so comparing its content afterwards is final for this host. The proof is a
+  kernel read lease (repair-write-lease), which also covers same-UID writers
+  whose fd table /proc hides (non-dumpable etc.). Only when leases are
+  unavailable does the /proc scan decide, and then a process whose fd table
+  cannot be inspected counts as a holder (fail closed). Returns the remaining
+  holders (empty on success)."
   [p]
   (let [deadline (+ (System/currentTimeMillis) (repair-holder-wait-ms))]
     (loop []
-      (let [{:keys [holders uninspected]} (repair-scan-holders p)]
+      (let [lease (repair-write-lease p)
+            holders (if (= :free lease)
+                      []
+                      (let [{:keys [holders uninspected]} (repair-scan-holders p)
+                            hs (into holders (map #(str % "[fd table not inspectable]") uninspected))]
+                        (if (and (= :busy lease) (empty? hs))
+                          ["(open for write by a process hidden from /proc)"]
+                          hs)))]
         (if (or (empty? holders) (> (System/currentTimeMillis) deadline))
-          (do (when (seq uninspected)
-                (binding [*out* *err*]
-                  (println (str "reconcile-done: warning: fd table not inspectable (not a plain task-board writer): "
-                                (str/join "," uninspected)))))
-              holders)
+          holders
           (do (Thread/sleep 100) (recur)))))))
 
 (defn repair-retained-dir [vault]

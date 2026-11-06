@@ -5059,9 +5059,27 @@ test_terminal_revision_lww_and_duplicates() {
     assert_file_contains "${vault}/Boards/Task Board.md" "rev::${rev}"
     assert_run_summary_contains "${state}" BOXP-991 ':status :(blocked|succeeded)'
     cp "${tmp}/old" "${vault}/Boards/Task Board.md"
-    for _ in 1 2 3; do CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >"${tmp}/sync"; done
+    for _ in 1 2 3; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/held-starts" CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >>"${tmp}/sync"; done
     assert_file_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
-    assert_file_contains "${vault}/Boards/Task Board.md" "status::${mode}.*rev::${rev}"
+    [[ ! -e "${tmp}/held-starts" ]] || fail 'restored card dispatched'
+    if [[ "${variant}" == rev ]]; then
+      assert_file_contains "${vault}/Boards/Task Board.md" "status::${mode}.*rev::${rev}"
+    else
+      # The pre-transition rev-less line is indistinguishable from a user who
+      # rebuilt it by hand: it is held (no projection / dispatch) but never
+      # rewritten, so a hand-made re-request is not reverted to ${mode}.
+      cmp -s "${tmp}/old" "${vault}/Boards/Task Board.md" || fail 'held rev-less card was rewritten'
+      assert_file_contains "${tmp}/sync" "WARN: BOXP-991 card equals the pre-transition rev-less line"
+      # A re-request moves the same rev-less line to another lane (here Ready,
+      # e.g. edited on a replica that still showed the old Board). It differs
+      # from the pre-transition Board and must be followed, not reverted.
+      sed -n '/BOXP-991/p' "${tmp}/old" >"${tmp}/line"
+      write_board "${vault}" ''
+      sed -i "/^## Ready/r ${tmp}/line" "${vault}/Boards/Task Board.md"
+      for _ in 1 2; do PATH="${bin}:$PATH" CODEX_FAKE_START_LOG="${tmp}/starts" CODEX_FAKE_MESSAGE='TASK_BOARD_RESULT: continue' CODEX_TASK_BOARD_REV_MISMATCH_WARN_SECONDS=0 run_tick "${vault}" "${state}" env >"${tmp}/rerequest"; done
+      assert_file_not_contains "${vault}/Tickets/BOXP-991.md" "^status: ${mode}$"
+      assert_file_not_contains "${vault}/Boards/Task Board.md" "BOXP-991.*status::${mode}"
+    fi
   done
   done
   tmp="$(mktemp -d)"; vault="${tmp}/vault"; state="${tmp}/state"; bin="${tmp}/bin"

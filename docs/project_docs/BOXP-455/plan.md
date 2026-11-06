@@ -19,10 +19,10 @@
 
 テストは終端revision、LWW復旧、重複、superseded、修復の両ロックモード・競合・再実行を確認する。
 
-レビュー対応: rev::を持たない旧カードも、票がrev付きでdone/blockedかつカードの状態が異なり、票の担当が終端遷移時のboxpのままで、さらにそのカード行がrunner自身が以前置き換えたrev無し行(state root の superseded-card-lines に記録)と完全一致する場合は、古いBoardの復元とみなして投影・dispatchを保留し、警告期間後に票からカードを修復する。票の担当も変える再依頼は従来どおり追従する。
+レビュー対応: rev::を持たない旧カードも、票がrev付きでdone/blockedかつカードの状態が異なり、票の担当が終端遷移時のboxpのままで、さらにそのカード行がrunner自身が以前置き換えたrev無し行(state root の superseded-card-lines に記録)と完全一致する場合は、古いBoardの復元の可能性があるため投影・dispatchを保留する。ただし同じlaneで同一行を手で作り直した再依頼とは区別できないため、カードも票も書き換えず警告のみ出す（再依頼をDone/Blockedへ戻さない）。laneやassignee・本文を変えた再依頼(Readyへの移動等)やhelper更新(rev付与)は従来どおり追従する。記録はlaneと行の組。
 
 ## codex-review P0 (late writer) 対応
 
 - 置換で外れた旧Board inodeは削除せず vault内 `.task-board-repair-retained/` へ同一inodeでrenameし保持、パスとハッシュを監査記録。
-- 成功を返す前に`/proc/*/fd`を走査し、保持inodeを開くプロセスが無くなるまで待って（既定30秒。同一UIDのプロセスを対象とし、group/other書込可能なinodeなら全UID。同一ユーザーにもfd表示が拒否されるプロセスは通常のwriterではないため保持判定から外しstderrに警告）再照合。待機後も開かれている／遅延書込みがあれば旧inodeを交換でBoardへ戻し、各版保存・conflict監査・非0終了（更新が保持ファイルだけに残る成功を返さない）。
+- 成功を返す前に、保持inodeへ書込みfdを持つプロセスが無くなるまで待って（既定30秒）再照合。判定はカーネルのread lease(F_SETLEASE F_RDLCK)で、non-dumpable等で/procからfd表を隠した同一UIDのwriterも検出する。lease不可の環境では/proc走査で判定し、fd表を検査できないプロセスは保持中扱い(fail-closed)。待機後も開かれている／遅延書込みがあれば旧inodeを交換でBoardへ戻し、各版保存・conflict監査・非0終了（更新が保持ファイルだけに残る成功を返さない）。
 - 以後のreconcile-done実行（dry-run含む）で保持inodeを全件照合し、遅延書込み・欠落を検出したら非0終了。apply後は時間を置いたdry-runで読み戻す。（同一ホストから見えないwriter向けの残余対策）
